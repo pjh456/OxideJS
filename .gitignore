@@ -1,0 +1,10 @@
+# Local Envs
+.env
+
+
+# Local Tmps
+.tmp/
+.cache/
+
+# Local Agent
+.planning/
