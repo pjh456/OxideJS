@@ -3,6 +3,7 @@ use std::process::ExitCode;
 
 use ansi_term::Colour::Red;
 use clap::{Parser, Subcommand};
+use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
 
 #[derive(Parser)]
@@ -22,6 +23,7 @@ struct Cli {
 enum Commands {
     Eval { code: String },
     Run { file: String },
+    Compile { file: String },
     Bench { suite: Option<String> },
     Test { suite: Option<String> },
 }
@@ -32,6 +34,7 @@ fn main() -> ExitCode {
     match cli.command {
         Some(Commands::Eval { code }) => eval(&code),
         Some(Commands::Run { file }) => run(&file),
+        Some(Commands::Compile { file }) => compile(&file),
         Some(Commands::Bench { .. }) => not_implemented("bench"),
         Some(Commands::Test { .. }) => not_implemented("test"),
         None => repl(),
@@ -59,6 +62,39 @@ fn run(file: &str) -> ExitCode {
         Ok(source) => eval(&source),
         Err(err) => {
             eprintln!("{}", Red.paint(format!("Cannot read {file}: {err}")));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn compile(file: &str) -> ExitCode {
+    let source = match fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(err) => {
+            eprintln!("{}", Red.paint(format!("Cannot read {file}: {err}")));
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let allocator = Allocator::default();
+    let program = match oxide_parser::parse(&allocator, &source) {
+        Ok(p) => p,
+        Err(errors) => {
+            for err in &errors {
+                eprintln!("{}", Red.paint(err.to_string()));
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let compiler = Compiler::new();
+    match compiler.compile(&program) {
+        Ok(module) => {
+            print!("{module}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("{}", Red.paint(err));
             ExitCode::FAILURE
         }
     }

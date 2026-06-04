@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 oxide_parser = { path = "../oxide_parser" }
+oxide_compiler = { path = "../oxide_compiler" }
 oxide_api = { path = "../oxide_api" }
 clap.workspace = true
 rustyline.workspace = true

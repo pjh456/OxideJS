@@ -755,6 +755,7 @@ dependencies = [
  "ansi_term",
  "clap",
  "oxide_api",
+ "oxide_compiler",
  "oxide_parser",
  "rustyline",
 ]
