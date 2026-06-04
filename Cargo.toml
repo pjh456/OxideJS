@@ -31,6 +31,7 @@ dashmap = "6"
 rayon = "1"
 bumpalo = "3"
 hashbrown = "0.14"
+proptest = "1"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
