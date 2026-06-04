@@ -1,0 +1,43 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/oxide_parser",
+    "crates/oxide_compiler",
+    "crates/oxide_vm",
+    "crates/oxide_kernel",
+    "crates/oxide_api",
+    "crates/oxide_cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.80"
+
+[workspace.dependencies]
+oxc_parser = "0.134.0"
+oxc_allocator = "0.134.0"
+oxc_ast = "0.134.0"
+oxc_span = "0.134.0"
+oxc_diagnostics = "0.134.0"
+oxc_syntax = "0.134.0"
+clap = { version = "4", features = ["derive"] }
+rustyline = "14"
+ansi_term = "0.12"
+serde = "1"
+serde_json = "1"
+dashmap = "6"
+rayon = "1"
+bumpalo = "3"
+hashbrown = "0.14"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+warnings = { level = "deny", priority = -1 }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
