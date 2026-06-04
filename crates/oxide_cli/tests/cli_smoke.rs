@@ -9,10 +9,7 @@ fn eval_simple_expression() {
 
     assert!(output.status.success(), "eval 1+2 should exit 0");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("HALT"),
-        "output should contain HALT bytecode: {stdout}"
-    );
+    assert!(stdout.trim() == "3", "output should be '3': {stdout}");
 }
 
 #[test]
@@ -43,10 +40,7 @@ fn run_file() {
 
     assert!(output.status.success(), "run hello.js should exit 0");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("HALT"),
-        "run output should contain bytecode: {stdout}"
-    );
+    assert!(stdout.trim() == "3", "run output should be '3': {stdout}");
 }
 
 #[test]
