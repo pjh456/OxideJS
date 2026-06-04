@@ -10,8 +10,8 @@ fn eval_simple_expression() {
     assert!(output.status.success(), "eval 1+2 should exit 0");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Program"),
-        "output should contain AST node: {stdout}"
+        stdout.contains("HALT"),
+        "output should contain HALT bytecode: {stdout}"
     );
 }
 
@@ -44,8 +44,8 @@ fn run_file() {
     assert!(output.status.success(), "run hello.js should exit 0");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Program"),
-        "run output should contain AST node"
+        stdout.contains("HALT"),
+        "run output should contain bytecode: {stdout}"
     );
 }
 

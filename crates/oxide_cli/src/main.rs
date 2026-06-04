@@ -21,11 +21,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Eval { code: String },
-    Run { file: String },
-    Compile { file: String },
-    Bench { suite: Option<String> },
-    Test { suite: Option<String> },
+    Eval {
+        code: String,
+    },
+    Run {
+        file: String,
+    },
+    Compile {
+        #[arg(short = 'e')]
+        expr: Option<String>,
+        file: Option<String>,
+    },
+    Bench {
+        suite: Option<String>,
+    },
+    Test {
+        suite: Option<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -34,7 +46,7 @@ fn main() -> ExitCode {
     match cli.command {
         Some(Commands::Eval { code }) => eval(&code),
         Some(Commands::Run { file }) => run(&file),
-        Some(Commands::Compile { file }) => compile(&file),
+        Some(Commands::Compile { expr, file }) => compile(expr, file),
         Some(Commands::Bench { .. }) => not_implemented("bench"),
         Some(Commands::Test { .. }) => not_implemented("test"),
         None => repl(),
@@ -43,15 +55,24 @@ fn main() -> ExitCode {
 
 fn eval(code: &str) -> ExitCode {
     let allocator = Allocator::default();
-    match oxide_parser::parse(&allocator, code) {
-        Ok(program) => {
-            println!("{program:#?}");
-            ExitCode::SUCCESS
-        }
+    let program = match oxide_parser::parse(&allocator, code) {
+        Ok(p) => p,
         Err(errors) => {
             for err in &errors {
                 eprintln!("{}", Red.paint(err.to_string()));
             }
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let compiler = Compiler::new();
+    match compiler.compile(&program) {
+        Ok(module) => {
+            print!("{module}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("{}", Red.paint(err));
             ExitCode::FAILURE
         }
     }
@@ -67,13 +88,23 @@ fn run(file: &str) -> ExitCode {
     }
 }
 
-fn compile(file: &str) -> ExitCode {
-    let source = match fs::read_to_string(file) {
-        Ok(s) => s,
-        Err(err) => {
-            eprintln!("{}", Red.paint(format!("Cannot read {file}: {err}")));
-            return ExitCode::FAILURE;
+fn compile(expr: Option<String>, file: Option<String>) -> ExitCode {
+    let source = if let Some(code) = expr {
+        code
+    } else if let Some(path) = file {
+        match fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(err) => {
+                eprintln!("{}", Red.paint(format!("Cannot read {path}: {err}")));
+                return ExitCode::FAILURE;
+            }
         }
+    } else {
+        eprintln!(
+            "{}",
+            Red.paint("compile requires -e '<code>' or a file path")
+        );
+        return ExitCode::FAILURE;
     };
 
     let allocator = Allocator::default();
