@@ -19,7 +19,7 @@ impl From<oxc_diagnostics::OxcDiagnostic> for OxideError {
         let span = diag
             .labels
             .clone()
-            .and_then(|labels| labels.first().map(|l| (l.offset() as usize, (l.offset() + l.len()) as usize)))
+            .and_then(|labels| labels.first().map(|l| (l.offset(), l.offset() + l.len())))
             .unwrap_or((0, 0));
 
         OxideError {
