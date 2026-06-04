@@ -73,8 +73,15 @@ impl Compiler {
         ctx.max_regs = ctx.max_regs.max(1);
         ctx.reset_regs();
 
+        let mut last_result = 0u8;
         for stmt in &program.body {
-            self.emit_statement(stmt, &mut ctx)?;
+            if let Some(r) = self.emit_statement(stmt, &mut ctx)? {
+                last_result = r;
+            }
+        }
+
+        if last_result != 0 {
+            ctx.emit(opcode::encode(OpCode::LOAD_VAR, 0, last_result, 0));
         }
         ctx.emit(opcode::encode(OpCode::HALT, 0, 0, 0));
 
@@ -191,35 +198,43 @@ impl Compiler {
 // ── Pass 2: Emitter ──
 
 impl Compiler {
-    fn emit_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<(), String> {
+    fn emit_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
         match stmt {
             Statement::ExpressionStatement(es) => {
-                self.emit_expression(&es.expression, ctx)?;
+                Ok(Some(self.emit_expression(&es.expression, ctx)?))
             }
             Statement::VariableDeclaration(decl) => {
+                let mut r = None;
                 for d in &decl.declarations {
                     if let Some(init) = &d.init {
-                        self.emit_expression(init, ctx)?;
+                        r = Some(self.emit_expression(init, ctx)?);
                     }
                 }
+                Ok(r)
             }
-            Statement::ReturnStatement(ret) => match &ret.argument {
-                Some(expr) => {
-                    let r = self.emit_expression(expr, ctx)?;
-                    ctx.emit(opcode::encode(OpCode::RETURN, r, 0, 0));
+            Statement::ReturnStatement(ret) => {
+                match &ret.argument {
+                    Some(expr) => {
+                        let r = self.emit_expression(expr, ctx)?;
+                        ctx.emit(opcode::encode(OpCode::RETURN, r, 0, 0));
+                    }
+                    None => {
+                        ctx.emit(opcode::encode(OpCode::RETURN, 0, 0, 0));
+                    }
                 }
-                None => {
-                    ctx.emit(opcode::encode(OpCode::RETURN, 0, 0, 0));
-                }
-            },
+                Ok(None)
+            }
             Statement::BlockStatement(block) => {
+                let mut r = None;
                 for s in &block.body {
-                    self.emit_statement(s, ctx)?;
+                    if let Some(rr) = self.emit_statement(s, ctx)? {
+                        r = Some(rr);
+                    }
                 }
+                Ok(r)
             }
-            _ => {}
+            _ => Ok(None),
         }
-        Ok(())
     }
 
     fn emit_expression(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u8, String> {
