@@ -33,6 +33,8 @@ bumpalo = "3"
 hashbrown = "0.14"
 proptest = "1"
 rustc-hash = "2"
+fast-float = "0.2"
+ryu = "1"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }

@@ -11,6 +11,8 @@ oxide_compiler = { path = "../oxide_compiler" }
 oxide_kernel = { path = "../oxide_kernel" }
 bumpalo.workspace = true
 hashbrown.workspace = true
+fast-float.workspace = true
+ryu.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

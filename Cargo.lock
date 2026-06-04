@@ -294,6 +294,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
 
 [[package]]
+name = "fast-float"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95765f67b4b18863968b4a1bd5bb576f732b29a4a28c7cd84c09fa3e2875f33c"
+
+[[package]]
 name = "fastrand"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -795,10 +801,12 @@ name = "oxide_vm"
 version = "0.1.0"
 dependencies = [
  "bumpalo",
+ "fast-float",
  "hashbrown 0.14.5",
  "oxide_compiler",
  "oxide_kernel",
  "proptest",
+ "ryu",
 ]
 
 [[package]]
