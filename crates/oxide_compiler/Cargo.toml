@@ -10,3 +10,4 @@ description = "OxideJS - AST to bytecode compiler"
 oxide_parser = { path = "../oxide_parser" }
 serde.workspace = true
 serde_json.workspace = true
+rustc-hash.workspace = true

@@ -32,6 +32,7 @@ rayon = "1"
 bumpalo = "3"
 hashbrown = "0.14"
 proptest = "1"
+rustc-hash = "2"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }

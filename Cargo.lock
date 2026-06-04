@@ -764,6 +764,7 @@ name = "oxide_compiler"
 version = "0.1.0"
 dependencies = [
  "oxide_parser",
+ "rustc-hash",
  "serde",
  "serde_json",
 ]
