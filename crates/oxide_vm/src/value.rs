@@ -37,6 +37,11 @@ fn get_tag(bits: u64) -> u64 {
 pub struct JsValue(u64);
 
 impl JsValue {
+    #[allow(dead_code)]
+    pub(crate) fn from_bits(bits: u64) -> Self {
+        Self(bits)
+    }
+
     pub fn int(v: i32) -> Self {
         Self(make_tag(TAG_INT) | (v as u32 as u64))
     }
@@ -44,7 +49,7 @@ impl JsValue {
     pub fn float(v: f64) -> Self {
         let bits = v.to_bits();
         if is_nan_bits(bits) {
-            Self(QNAN_PREFIX | 1)
+            Self(QNAN_PREFIX | (7u64 << TAG_SHIFT) | 1)
         } else {
             Self(bits)
         }
@@ -69,15 +74,15 @@ impl JsValue {
     }
 
     pub fn is_double(&self) -> bool {
-        !is_nan_bits(self.0)
+        !is_nan_boxed(self.0)
     }
 
     pub fn is_int(&self) -> bool {
-        get_tag(self.0) == TAG_INT
+        is_nan_boxed(self.0) && get_tag(self.0) == TAG_INT
     }
 
     pub fn is_bool(&self) -> bool {
-        get_tag(self.0) == TAG_BOOL
+        is_nan_boxed(self.0) && get_tag(self.0) == TAG_BOOL
     }
 
     pub fn is_null(&self) -> bool {
@@ -89,7 +94,7 @@ impl JsValue {
     }
 
     pub fn is_object(&self) -> bool {
-        get_tag(self.0) == TAG_OBJECT
+        is_nan_boxed(self.0) && get_tag(self.0) == TAG_OBJECT
     }
 
     pub fn as_double(&self) -> f64 {
@@ -115,6 +120,10 @@ impl JsValue {
 
 fn is_nan_bits(bits: u64) -> bool {
     (bits & EXP_MASK) == EXP_MASK && (bits & MANTISSA_MASK) != 0
+}
+
+fn is_nan_boxed(bits: u64) -> bool {
+    (0xFFF8..=0xFFFC).contains(&((bits >> 48) as u16))
 }
 
 impl fmt::Display for JsValue {
@@ -170,5 +179,97 @@ impl fmt::Debug for JsValue {
         } else {
             write!(f, "JsValue(Unknown)")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::JsValue;
+    use proptest::prelude::*;
+    use proptest::test_runner::TestRunner;
+
+    #[test]
+    fn int_roundtrip_prop() {
+        let mut runner = TestRunner::default();
+        runner
+            .run(&(i32::MIN..=i32::MAX), |v| {
+                let val = JsValue::int(v);
+                assert!(val.is_int());
+                assert_eq!(val.as_int(), v);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn float_roundtrip_prop() {
+        let mut runner = TestRunner::default();
+        runner
+            .run(&any::<f64>(), |v| {
+                let val = JsValue::float(v);
+                assert!(val.is_double());
+                if !v.is_nan() {
+                    assert_eq!(val.as_double(), v);
+                }
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn bool_roundtrip_prop() {
+        let mut runner = TestRunner::default();
+        runner
+            .run(&any::<bool>(), |v| {
+                let val = JsValue::bool(v);
+                assert!(val.is_bool());
+                assert_eq!(val.as_bool(), v);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn random_u64_type_safety() {
+        let mut runner = TestRunner::default();
+        runner
+            .run(&any::<u64>(), |bits| {
+                let val = JsValue::from_bits(bits);
+                let matched = [
+                    val.is_double(),
+                    val.is_int(),
+                    val.is_bool(),
+                    val.is_null(),
+                    val.is_undefined(),
+                    val.is_object(),
+                ];
+                let count = matched.iter().filter(|&&x| x).count();
+                assert_eq!(count, 1, "bits={bits:#018x} matched {count} types");
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn null_identity() {
+        assert_eq!(JsValue::null(), JsValue::null());
+    }
+
+    #[test]
+    fn undefined_identity() {
+        assert_eq!(JsValue::undefined(), JsValue::undefined());
+    }
+
+    #[test]
+    fn canonicalization_idempotent() {
+        let mut runner = TestRunner::default();
+        runner
+            .run(&any::<f64>(), |v| {
+                let a = JsValue::float(v);
+                let b = JsValue::float(a.as_double());
+                assert_eq!(a, b);
+                Ok(())
+            })
+            .unwrap();
     }
 }
