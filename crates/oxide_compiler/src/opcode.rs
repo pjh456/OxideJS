@@ -7,6 +7,7 @@ use std::fmt;
 /// for future phases (IC, profiling, parallelization).
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
 pub enum OpCode {
     // ── Arithmetic (0x00-0x0F) ──
     ADD = 0x00,
@@ -149,4 +150,40 @@ impl fmt::Display for OpCode {
         };
         write!(f, "{name}")
     }
+}
+
+/// 4-byte instruction.
+///
+/// Layout: `[opcode: u8] [rd: u8] [a: u8] [b: u8]`
+/// - `rd` — destination register
+/// - `a` — first source register, or imm16 low byte
+/// - `b` — second source register, or imm16 high byte
+pub type Instr = u32;
+
+pub fn encode(op: OpCode, rd: u8, a: u8, b: u8) -> Instr {
+    ((b as Instr) << 24) | ((a as Instr) << 16) | ((rd as Instr) << 8) | (op as Instr)
+}
+
+pub fn opcode(instr: Instr) -> OpCode {
+    OpCode::try_from((instr & 0xFF) as u8).unwrap_or(OpCode::NOP)
+}
+
+pub fn rd(instr: Instr) -> u8 {
+    ((instr >> 8) & 0xFF) as u8
+}
+
+pub fn a(instr: Instr) -> u8 {
+    ((instr >> 16) & 0xFF) as u8
+}
+
+pub fn b(instr: Instr) -> u8 {
+    ((instr >> 24) & 0xFF) as u8
+}
+
+pub fn imm16(instr: Instr) -> u16 {
+    ((instr >> 16) & 0xFFFF) as u16
+}
+
+pub fn offset16(instr: Instr) -> i16 {
+    ((instr >> 16) & 0xFFFF) as i16
 }
