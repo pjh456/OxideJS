@@ -16,3 +16,4 @@ ryu.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+oxide_parser = { path = "../oxide_parser" }

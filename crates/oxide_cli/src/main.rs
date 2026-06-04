@@ -5,6 +5,7 @@ use ansi_term::Colour::Red;
 use clap::{Parser, Subcommand};
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
+use oxide_vm::vm::Vm;
 
 #[derive(Parser)]
 #[command(name = "oxide", version, about = "OxideJS - Rust JavaScript engine")]
@@ -66,9 +67,18 @@ fn eval(code: &str) -> ExitCode {
     };
 
     let compiler = Compiler::new();
-    match compiler.compile(&program) {
-        Ok(module) => {
-            print!("{module}");
+    let module = match compiler.compile(&program) {
+        Ok(m) => m,
+        Err(err) => {
+            eprintln!("{}", Red.paint(err));
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut vm = Vm::new();
+    match vm.run(&module) {
+        Ok(result) => {
+            println!("{result}");
             ExitCode::SUCCESS
         }
         Err(err) => {
