@@ -3,4 +3,5 @@
 pub mod coercion;
 pub mod mem;
 pub mod value;
+pub mod vm;
 pub use value::JsValue;
