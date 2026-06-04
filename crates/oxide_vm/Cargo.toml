@@ -1,0 +1,13 @@
+[package]
+name = "oxide_vm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OxideJS - Register-based VM with epoch arena memory"
+
+[dependencies]
+oxide_compiler = { path = "../oxide_compiler" }
+oxide_kernel = { path = "../oxide_kernel" }
+bumpalo.workspace = true
+hashbrown.workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "oxide_kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OxideJS - Shared kernel (CodeForge, ShapeForge, IcForge, StringForge, BuiltinWorld)"
+
+[dependencies]
+oxide_compiler = { path = "../oxide_compiler" }
+dashmap.workspace = true

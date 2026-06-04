@@ -1,0 +1,15 @@
+[package]
+name = "oxide_parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OxideJS - JavaScript parser (oxc_parser re-export)"
+
+[dependencies]
+oxc_parser.workspace = true
+oxc_allocator.workspace = true
+oxc_ast.workspace = true
+oxc_span.workspace = true
+oxc_diagnostics.workspace = true
+oxc_syntax.workspace = true

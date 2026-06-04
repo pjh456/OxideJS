@@ -1,0 +1,18 @@
+[package]
+name = "oxide_cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OxideJS - CLI tool"
+
+[[bin]]
+name = "oxide"
+path = "src/main.rs"
+
+[dependencies]
+oxide_parser = { path = "../oxide_parser" }
+oxide_api = { path = "../oxide_api" }
+clap.workspace = true
+rustyline.workspace = true
+ansi_term.workspace = true

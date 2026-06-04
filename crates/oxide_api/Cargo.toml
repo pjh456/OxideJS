@@ -1,0 +1,15 @@
+[package]
+name = "oxide_api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OxideJS - Public API surface"
+
+[dependencies]
+oxide_parser = { path = "../oxide_parser" }
+oxide_compiler = { path = "../oxide_compiler" }
+oxide_vm = { path = "../oxide_vm" }
+oxide_kernel = { path = "../oxide_kernel" }
+serde_json.workspace = true
+rayon.workspace = true

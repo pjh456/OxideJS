@@ -10,3 +10,6 @@
 .planning/
 AGENTS.md
 .claude/
+
+# Build Artifacts
+target/
