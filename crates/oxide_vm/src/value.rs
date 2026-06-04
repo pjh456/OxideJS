@@ -33,8 +33,37 @@ fn get_tag(bits: u64) -> u64 {
 }
 
 #[repr(transparent)]
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone)]
 pub struct JsValue(u64);
+
+impl PartialEq for JsValue {
+    fn eq(&self, other: &Self) -> bool {
+        if self.is_int() && other.is_int() {
+            return self.as_int() == other.as_int();
+        }
+        if self.is_double() && other.is_double() {
+            let a = self.as_double();
+            let b = other.as_double();
+            if a.is_nan() || b.is_nan() {
+                return false;
+            }
+            return a == b;
+        }
+        if self.is_bool() && other.is_bool() {
+            return self.as_bool() == other.as_bool();
+        }
+        if self.is_null() && other.is_null() {
+            return true;
+        }
+        if self.is_undefined() && other.is_undefined() {
+            return true;
+        }
+        if self.is_object() && other.is_object() {
+            return self.as_ptr() == other.as_ptr();
+        }
+        false
+    }
+}
 
 impl JsValue {
     #[allow(dead_code)]
@@ -86,11 +115,11 @@ impl JsValue {
     }
 
     pub fn is_null(&self) -> bool {
-        self.0 == make_tag(TAG_NULL)
+        is_nan_boxed(self.0) && get_tag(self.0) == TAG_NULL
     }
 
     pub fn is_undefined(&self) -> bool {
-        self.0 == make_tag(TAG_UNDEFINED)
+        is_nan_boxed(self.0) && get_tag(self.0) == TAG_UNDEFINED
     }
 
     pub fn is_object(&self) -> bool {
