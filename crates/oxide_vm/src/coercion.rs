@@ -1,4 +1,5 @@
 use crate::vm::Vm;
+use oxide_kernel::string_forge::StringForge;
 use oxide_types::object::JsObject;
 use oxide_types::shape::EMPTY_SHAPE_ID;
 use oxide_types::value::JsValue;
@@ -32,7 +33,7 @@ pub fn to_number(val: JsValue) -> f64 {
     f64::NAN
 }
 
-pub fn to_string(vm: &Vm, val: JsValue) -> String {
+pub fn to_string(string_forge: &StringForge, val: JsValue) -> String {
     if val.is_int() {
         return val.as_int().to_string();
     }
@@ -64,7 +65,9 @@ pub fn to_string(vm: &Vm, val: JsValue) -> String {
         return "undefined".to_string();
     }
     if val.is_string() {
-        return vm.lookup_str(val).unwrap_or_default();
+        return string_forge
+            .lookup(val.as_string_index())
+            .unwrap_or_default();
     }
     if val.is_object() {
         panic_to_object();
@@ -173,10 +176,14 @@ fn strict_double_eq(a: f64, b: f64) -> bool {
     a == b
 }
 
-pub fn relational_compare(vm: &Vm, lhs: JsValue, rhs: JsValue) -> Option<bool> {
+pub fn relational_compare(string_forge: &StringForge, lhs: JsValue, rhs: JsValue) -> Option<bool> {
     if lhs.is_string() && rhs.is_string() {
-        let ls = vm.lookup_str(lhs).unwrap_or_default();
-        let rs = vm.lookup_str(rhs).unwrap_or_default();
+        let ls = string_forge
+            .lookup(lhs.as_string_index())
+            .unwrap_or_default();
+        let rs = string_forge
+            .lookup(rhs.as_string_index())
+            .unwrap_or_default();
         return Some(ls < rs);
     }
     let l = to_number(lhs);

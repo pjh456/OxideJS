@@ -149,8 +149,8 @@ impl Vm {
                     let lhs = self.regs[a];
                     let rhs = self.regs[b];
                     if lhs.is_string() || rhs.is_string() {
-                        let ls = coercion::to_string(self, lhs);
-                        let rs = coercion::to_string(self, rhs);
+                        let ls = coercion::to_string(self.kernel.string_forge().as_ref(), lhs);
+                        let rs = coercion::to_string(self.kernel.string_forge().as_ref(), rhs);
                         let concat = format!("{ls}{rs}");
                         self.regs[rd] = self.intern(&concat);
                     } else {
@@ -200,22 +200,38 @@ impl Vm {
                 }
 
                 OpCode::LT => {
-                    let rel = coercion::relational_compare(self, self.regs[a], self.regs[b]);
+                    let rel = coercion::relational_compare(
+                        self.kernel.string_forge().as_ref(),
+                        self.regs[a],
+                        self.regs[b],
+                    );
                     self.regs[rd] = JsValue::bool(rel.unwrap_or(false));
                 }
 
                 OpCode::GT => {
-                    let rel = coercion::relational_compare(self, self.regs[b], self.regs[a]);
+                    let rel = coercion::relational_compare(
+                        self.kernel.string_forge().as_ref(),
+                        self.regs[b],
+                        self.regs[a],
+                    );
                     self.regs[rd] = JsValue::bool(rel.unwrap_or(false));
                 }
 
                 OpCode::LTE => {
-                    let rel = coercion::relational_compare(self, self.regs[b], self.regs[a]);
+                    let rel = coercion::relational_compare(
+                        self.kernel.string_forge().as_ref(),
+                        self.regs[b],
+                        self.regs[a],
+                    );
                     self.regs[rd] = JsValue::bool(!rel.unwrap_or(true));
                 }
 
                 OpCode::GTE => {
-                    let rel = coercion::relational_compare(self, self.regs[a], self.regs[b]);
+                    let rel = coercion::relational_compare(
+                        self.kernel.string_forge().as_ref(),
+                        self.regs[a],
+                        self.regs[b],
+                    );
                     self.regs[rd] = JsValue::bool(!rel.unwrap_or(true));
                 }
 
