@@ -3,6 +3,7 @@
 pub mod coercion;
 pub mod mem;
 pub mod object;
+pub mod shape;
 pub mod value;
 pub mod vm;
 pub use value::JsValue;
