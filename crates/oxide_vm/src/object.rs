@@ -2,8 +2,6 @@ use crate::value::JsValue;
 
 pub type ShapeId = u32;
 
-pub const EMPTY_SHAPE_ID: ShapeId = 0;
-
 /// Layout:
 ///   header: u32 bits
 ///     [0:23]   shape_id
@@ -178,6 +176,7 @@ impl JsObject {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shape::EMPTY_SHAPE_ID;
 
     #[test]
     fn object_size_64_bytes() {

@@ -5,6 +5,9 @@ use oxide_compiler::module::CompiledModule;
 use oxide_compiler::opcode::{self, OpCode};
 
 use crate::coercion;
+use crate::mem::Epoch;
+use crate::object::JsObject;
+use crate::shape::EMPTY_SHAPE_ID;
 use crate::value::JsValue;
 
 pub struct CallFrame {
@@ -21,6 +24,7 @@ pub struct Vm {
     frames: Vec<CallFrame>,
     string_table: HashMap<String, u32>,
     string_reverse: Vec<String>,
+    pub epoch: Epoch,
 }
 
 impl Vm {
@@ -33,6 +37,7 @@ impl Vm {
             frames: Vec::with_capacity(128),
             string_table: HashMap::with_capacity(64),
             string_reverse: Vec::with_capacity(64),
+            epoch: Epoch::new(),
         }
     }
 
@@ -241,6 +246,34 @@ impl Vm {
                         self.regs[0] = result;
                     } else {
                         return Ok(result);
+                    }
+                }
+
+                OpCode::NEW_OBJECT => {
+                    let obj = self
+                        .epoch
+                        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+                    self.regs[rd] = JsValue::object(obj as *mut u8);
+                }
+
+                OpCode::NEW_ARRAY => {
+                    let n = opcode::imm16(instr) as usize;
+                    let obj =
+                        self.epoch
+                            .alloc(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::null(), n));
+                    self.regs[rd] = JsValue::object(obj as *mut u8);
+                }
+
+                OpCode::SET_ELEM => {
+                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
+                    if obj_ptr.is_null() {
+                        return Err("SET_ELEM on non-object".into());
+                    }
+                    let idx = self.regs[a].as_int() as usize;
+                    let obj = unsafe { &mut *obj_ptr };
+                    obj.set_prop(idx as u8, self.regs[b]);
+                    if idx as u8 >= obj.prop_count() {
+                        obj.set_prop_count(idx as u8 + 1);
                     }
                 }
 
