@@ -51,8 +51,16 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Eval { code }) => eval(&code),
-        Some(Commands::Run { file }) => run(&file),
+        Some(Commands::Eval { code }) => {
+            let kernel = make_kernel();
+            let pool = make_pool(&kernel);
+            eval(&code, &kernel, &pool)
+        }
+        Some(Commands::Run { file }) => {
+            let kernel = make_kernel();
+            let pool = make_pool(&kernel);
+            run(&file, &kernel, &pool)
+        }
         Some(Commands::Compile { expr, file }) => compile(expr, file),
         Some(Commands::Bench { .. }) => not_implemented("bench"),
         Some(Commands::Test { .. }) => not_implemented("test"),
@@ -64,14 +72,15 @@ fn make_kernel() -> Arc<OxideKernel> {
     Arc::new(OxideKernel::new(KernelConfig::standard()))
 }
 
-fn eval(code: &str) -> ExitCode {
-    let kernel = make_kernel();
-    let pool = VmPool::new(
-        Arc::clone(&kernel),
+fn make_pool(kernel: &Arc<OxideKernel>) -> Arc<VmPool> {
+    VmPool::new(
+        Arc::clone(kernel),
         kernel.config().min_pool_size,
         kernel.config().max_pool_size,
-    );
+    )
+}
 
+fn eval(code: &str, kernel: &Arc<OxideKernel>, pool: &Arc<VmPool>) -> ExitCode {
     let allocator = Allocator::default();
     let program = match oxide_parser::parse(&allocator, code) {
         Ok(p) => p,
@@ -149,9 +158,9 @@ fn print_value(string_forge: &StringForge, val: JsValue) {
     }
 }
 
-fn run(file: &str) -> ExitCode {
+fn run(file: &str, kernel: &Arc<OxideKernel>, pool: &Arc<VmPool>) -> ExitCode {
     match fs::read_to_string(file) {
-        Ok(source) => eval(&source),
+        Ok(source) => eval(&source, kernel, pool),
         Err(err) => {
             eprintln!("{}", Red.paint(format!("Cannot read {file}: {err}")));
             ExitCode::FAILURE
@@ -214,6 +223,9 @@ fn repl() -> ExitCode {
         }
     };
 
+    let kernel = make_kernel();
+    let pool = make_pool(&kernel);
+
     loop {
         match rl.readline("oxide> ") {
             Ok(line) => {
@@ -226,7 +238,7 @@ fn repl() -> ExitCode {
                     return ExitCode::SUCCESS;
                 }
                 rl.add_history_entry(trimmed).ok();
-                eval(trimmed);
+                eval(trimmed, &kernel, &pool);
             }
             Err(ReadlineError::Interrupted) => {
                 println!("^C");
