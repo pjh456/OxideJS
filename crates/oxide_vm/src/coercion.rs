@@ -1,3 +1,5 @@
+use crate::object::JsObject;
+use crate::shape::EMPTY_SHAPE_ID;
 use crate::value::JsValue;
 use crate::vm::Vm;
 
@@ -184,6 +186,25 @@ pub fn string_concat(lhs: &str, rhs: &str) -> String {
     s
 }
 
-fn panic_to_object() {
-    panic!("ToObject not yet implemented (Phase 6)")
+fn panic_to_object() -> ! {
+    panic!("ToObject failed: null or undefined cannot be converted to object")
+}
+
+pub fn to_object(val: JsValue, vm: &mut Vm) -> Result<JsValue, &'static str> {
+    if val.is_object() {
+        return Ok(val);
+    }
+    if val.is_null() || val.is_undefined() {
+        return Err("TypeError: Cannot convert null or undefined to object");
+    }
+    let proto_ptr = &*vm.object_prototype as *const JsObject as *mut JsObject;
+    let proto_val = JsValue::from_js_object(proto_ptr);
+    let obj = vm
+        .epoch
+        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
+    let obj_val = JsValue::from_js_object(obj);
+    let obj_ref = unsafe { &mut *obj };
+    obj_ref.set_inline_prop(0, val);
+    obj_ref.set_prop_count(1);
+    Ok(obj_val)
 }

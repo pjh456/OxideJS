@@ -142,9 +142,28 @@ impl JsObject {
         self.proto
     }
 
-    pub fn set_proto(&mut self, proto: JsValue) {
+    pub fn set_proto(&mut self, proto: JsValue) -> Result<(), &'static str> {
+        if proto.is_null() {
+            self.proto = proto;
+            self.generation = self.generation.wrapping_add(1);
+            return Ok(());
+        }
+        if !proto.is_object() {
+            return Err("__proto__ must be an object or null");
+        }
+        let mut cursor = proto;
+        let self_ptr = self as *const JsObject;
+        while cursor.is_object() {
+            let cursor_ptr = cursor.as_js_object_ptr();
+            if cursor_ptr == self_ptr as *mut JsObject {
+                return Err("cyclic __proto__ value");
+            }
+            let obj = unsafe { &*cursor_ptr };
+            cursor = obj.proto;
+        }
         self.proto = proto;
         self.generation = self.generation.wrapping_add(1);
+        Ok(())
     }
 
     pub fn generation(&self) -> u32 {
