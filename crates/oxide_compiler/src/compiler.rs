@@ -347,6 +347,33 @@ impl Compiler {
                 ));
                 Ok(r)
             }
+            Expression::ObjectExpression(obj) => {
+                let obj_reg = ctx.alloc_reg();
+                ctx.emit(opcode::encode(OpCode::NEW_OBJECT, obj_reg, 0, 0));
+                for prop in &obj.properties {
+                    let oxide_parser::ObjectPropertyKind::ObjectProperty(p) = prop else {
+                        return Err("spread properties not yet supported".into());
+                    };
+                    let prop_name = match &p.key {
+                        oxide_parser::PropertyKey::StaticIdentifier(ident) => {
+                            ident.name.as_str().to_string()
+                        }
+                        oxide_parser::PropertyKey::StringLiteral(s) => s.value.to_string(),
+                        _ => return Err("unsupported object property key type".into()),
+                    };
+                    let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
+                    let key_reg = ctx.alloc_reg();
+                    ctx.emit(opcode::encode(
+                        OpCode::LOAD_CONST,
+                        key_reg,
+                        (idx & 0xFF) as u8,
+                        ((idx >> 8) & 0xFF) as u8,
+                    ));
+                    let val_reg = self.emit_expression(&p.value, ctx)?;
+                    ctx.emit(opcode::encode(OpCode::SET_PROP, obj_reg, val_reg, key_reg));
+                }
+                Ok(obj_reg)
+            }
             _ => Err(format!(
                 "unsupported expression type: {:?}",
                 std::mem::discriminant(expr)
