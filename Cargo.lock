@@ -808,6 +808,7 @@ dependencies = [
  "oxide_kernel",
  "oxide_parser",
  "proptest",
+ "rustc-hash",
  "ryu",
 ]
 

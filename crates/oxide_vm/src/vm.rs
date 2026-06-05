@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use oxide_compiler::compiler::Constant;
 use oxide_compiler::module::CompiledModule;
 use oxide_compiler::opcode::{self, OpCode};
@@ -17,6 +19,8 @@ pub struct Vm {
     bytecode: Vec<opcode::Instr>,
     constants: Vec<JsValue>,
     frames: Vec<CallFrame>,
+    string_table: HashMap<String, u32>,
+    string_reverse: Vec<String>,
 }
 
 impl Vm {
@@ -27,11 +31,61 @@ impl Vm {
             bytecode: Vec::new(),
             constants: Vec::new(),
             frames: Vec::with_capacity(128),
+            string_table: HashMap::with_capacity(64),
+            string_reverse: Vec::with_capacity(64),
         }
     }
 
+    pub fn intern(&mut self, s: &str) -> JsValue {
+        if let Some(&idx) = self.string_table.get(s) {
+            return JsValue::string(idx, hash16(s));
+        }
+        let idx = self.string_reverse.len() as u32;
+        self.string_reverse.push(s.to_string());
+        self.string_table.insert(s.to_string(), idx);
+        JsValue::string(idx, hash16(s))
+    }
+
+    pub fn lookup_str(&self, val: JsValue) -> Option<&str> {
+        if !val.is_string() {
+            return None;
+        }
+        let idx = val.as_string_index() as usize;
+        self.string_reverse.get(idx).map(|s| s.as_str())
+    }
+
     pub fn run(&mut self, module: &CompiledModule) -> Result<JsValue, String> {
-        self.constants = module.constants.iter().map(convert_constant).collect();
+        self.string_table.clear();
+        self.string_reverse.clear();
+
+        let string_entries: Vec<String> = module
+            .constants
+            .iter()
+            .filter_map(|c| {
+                if let Constant::String(s) = c {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for s in &string_entries {
+            self.intern(s);
+        }
+        self.constants = module
+            .constants
+            .iter()
+            .map(|c| match c {
+                Constant::Number(v) => JsValue::float(*v),
+                Constant::String(s) => {
+                    let idx = self.string_table.get(s.as_str()).copied().unwrap_or(0);
+                    JsValue::string(idx, hash16(s))
+                }
+                Constant::Boolean(b) => JsValue::bool(*b),
+                Constant::Null => JsValue::null(),
+                Constant::Undefined => JsValue::undefined(),
+            })
+            .collect();
         self.bytecode = module.bytecode.clone();
         self.pc = 0;
         self.regs = [JsValue::undefined(); 256];
@@ -68,23 +122,18 @@ impl Vm {
                 }
 
                 OpCode::ADD => {
-                    let lhs = coercion::to_primitive(self.regs[a]);
-                    let rhs = coercion::to_primitive(self.regs[b]);
-                    if lhs.is_object() || rhs.is_object() {
-                        return Err("ADD with objects not yet supported".into());
+                    let lhs = self.regs[a];
+                    let rhs = self.regs[b];
+                    if lhs.is_string() || rhs.is_string() {
+                        let ls = coercion::to_string(self, lhs);
+                        let rs = coercion::to_string(self, rhs);
+                        let concat = format!("{ls}{rs}");
+                        self.regs[rd] = self.intern(&concat);
+                    } else {
+                        let ln = coercion::to_number(lhs);
+                        let rn = coercion::to_number(rhs);
+                        self.regs[rd] = JsValue::float(ln + rn);
                     }
-                    if lhs.is_double()
-                        && lhs.as_double().is_nan()
-                        && lhs.as_double().to_bits() & 0x000F_FFFF_FFFF_FFFF == 0
-                    {
-                        // Actually this is too complex. Simpler: just check if it's a string via our JsValue type system.
-                    }
-                    // String concat: JsValue doesn't have is_string yet (Phase 6).
-                    // For Phase 5, strings come as NaN-boxed objects — we don't have string JsValues.
-                    // Addition defaults to numeric.
-                    let ln = coercion::to_number(lhs);
-                    let rn = coercion::to_number(rhs);
-                    self.regs[rd] = JsValue::float(ln + rn);
                 }
 
                 OpCode::SUB => {
@@ -212,12 +261,9 @@ impl Default for Vm {
     }
 }
 
-fn convert_constant(c: &Constant) -> JsValue {
-    match c {
-        Constant::Number(v) => JsValue::float(*v),
-        Constant::String(_s) => JsValue::null(),
-        Constant::Boolean(b) => JsValue::bool(*b),
-        Constant::Null => JsValue::null(),
-        Constant::Undefined => JsValue::undefined(),
-    }
+fn hash16(s: &str) -> u16 {
+    use std::hash::{Hash, Hasher};
+    let mut h = rustc_hash::FxHasher::default();
+    s.hash(&mut h);
+    (h.finish() >> 48) as u16
 }

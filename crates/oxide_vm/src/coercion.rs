@@ -1,4 +1,5 @@
 use crate::value::JsValue;
+use crate::vm::Vm;
 
 pub fn to_primitive(val: JsValue) -> JsValue {
     if val.is_object() {
@@ -29,7 +30,7 @@ pub fn to_number(val: JsValue) -> f64 {
     f64::NAN
 }
 
-pub fn to_string(val: JsValue) -> String {
+pub fn to_string(vm: &Vm, val: JsValue) -> String {
     if val.is_int() {
         return val.as_int().to_string();
     }
@@ -57,6 +58,9 @@ pub fn to_string(val: JsValue) -> String {
     if val.is_undefined() {
         return "undefined".to_string();
     }
+    if val.is_string() {
+        return vm.lookup_str(val).unwrap_or("").to_string();
+    }
     if val.is_object() {
         panic_to_object();
     }
@@ -77,6 +81,9 @@ pub fn to_boolean(val: JsValue) -> bool {
         let d = val.as_double();
         return !(d == 0.0 || d == -0.0 || d.is_nan());
     }
+    if val.is_string() {
+        return true;
+    }
     if val.is_object() {
         return true;
     }
@@ -89,6 +96,9 @@ pub fn abstract_eq(lhs: JsValue, rhs: JsValue) -> bool {
     }
     if lhs.is_undefined() && rhs.is_null() {
         return true;
+    }
+    if lhs.is_string() && rhs.is_string() {
+        return lhs == rhs;
     }
     if lhs.is_int() && rhs.is_int() {
         return lhs.as_int() == rhs.as_int();
@@ -141,6 +151,9 @@ pub fn strict_eq(lhs: JsValue, rhs: JsValue) -> bool {
     }
     if lhs.is_undefined() && rhs.is_undefined() {
         return true;
+    }
+    if lhs.is_string() && rhs.is_string() {
+        return lhs == rhs;
     }
     if lhs.is_object() && rhs.is_object() {
         return lhs.as_ptr() == rhs.as_ptr();
