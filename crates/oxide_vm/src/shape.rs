@@ -6,6 +6,7 @@ pub type ShapeId = u32;
 pub type StringIndex = u32;
 
 pub const EMPTY_SHAPE_ID: ShapeId = 1;
+const EMPTY_SENTINEL: StringIndex = u32::MAX;
 
 #[derive(Debug, Clone)]
 pub struct Shape {
@@ -35,7 +36,7 @@ impl ShapeStore {
     fn create_empty_shape(&mut self) {
         let empty = Arc::new(Shape {
             id: EMPTY_SHAPE_ID,
-            property_name: 0,
+            property_name: EMPTY_SENTINEL,
             property_offset: 0,
             parent: None,
         });
@@ -80,7 +81,7 @@ impl ShapeStore {
         while let Some(id) = cursor {
             match self.get_shape(id) {
                 Some(s) => {
-                    if s.property_name != 0 {
+                    if s.property_name != EMPTY_SENTINEL {
                         count += 1;
                     }
                     cursor = s.parent;
@@ -96,7 +97,7 @@ impl ShapeStore {
         while let Some(id) = cursor {
             match self.get_shape(id) {
                 Some(s) => {
-                    if s.property_name == prop_name {
+                    if s.property_name == prop_name && s.property_name != EMPTY_SENTINEL {
                         return Some(s.property_offset);
                     }
                     cursor = s.parent;
@@ -113,7 +114,7 @@ impl ShapeStore {
         while let Some(id) = cursor {
             match self.get_shape(id) {
                 Some(s) => {
-                    if s.property_name != 0 {
+                    if s.property_name != EMPTY_SENTINEL {
                         count += 1;
                     }
                     cursor = s.parent;
