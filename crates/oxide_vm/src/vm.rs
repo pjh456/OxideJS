@@ -8,9 +8,10 @@ use oxide_compiler::opcode::{self, OpCode};
 
 use crate::coercion;
 use oxide_kernel::kernel::{KernelConfig, OxideKernel};
+use oxide_kernel::prop_forge::PropTemplate;
 use oxide_types::mem::{Epoch, P};
 use oxide_types::object::JsObject;
-use oxide_types::shape::{self, EMPTY_SHAPE_ID};
+use oxide_types::shape::EMPTY_SHAPE_ID;
 use oxide_types::value::JsValue;
 
 pub struct CallFrame {
@@ -77,13 +78,21 @@ impl Vm {
     }
 
     fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
-        if let Some(offset) = shape::lookup_offset(obj.shape_id(), prop_name_si) {
+        if let Some(offset) = self
+            .kernel
+            .shape_forge()
+            .lookup_offset(obj.shape_id(), prop_name_si)
+        {
             return Some(obj.get_prop(offset));
         }
         let mut proto = obj.proto();
         while proto.is_object() {
             let proto_obj = unsafe { &*proto.as_js_object_ptr() };
-            if let Some(offset) = shape::lookup_offset(proto_obj.shape_id(), prop_name_si) {
+            if let Some(offset) = self
+                .kernel
+                .shape_forge()
+                .lookup_offset(proto_obj.shape_id(), prop_name_si)
+            {
                 return Some(proto_obj.get_prop(offset));
             }
             proto = proto_obj.proto();
@@ -298,9 +307,19 @@ impl Vm {
 
                     if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
                         self.regs[a] = obj.get_prop(cached_offset);
+                    } else if let Some(template) =
+                        self.kernel.prop_forge().get_template(obj.shape_id())
+                    {
+                        let new_ext =
+                            (obj.shape_id() & 0x00FF_FFFF) | ((template.offset as u32) << 24);
+                        self.bytecode[self.pc - 1] = new_ext;
+                        self.regs[a] = obj.get_prop(template.offset);
                     } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
-                        let offset =
-                            shape::lookup_offset(obj.shape_id(), prop_name_si).unwrap_or(0);
+                        let offset = self
+                            .kernel
+                            .shape_forge()
+                            .lookup_offset(obj.shape_id(), prop_name_si)
+                            .unwrap_or(0);
                         let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
                         self.bytecode[self.pc - 1] = new_ext;
                         self.regs[a] = val;
@@ -324,13 +343,20 @@ impl Vm {
                     if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
                         obj.set_prop(cached_offset, self.regs[a]);
                     } else {
-                        if let Some(offset) = shape::lookup_offset(obj.shape_id(), prop_name_si) {
+                        if let Some(offset) = self
+                            .kernel
+                            .shape_forge()
+                            .lookup_offset(obj.shape_id(), prop_name_si)
+                        {
                             let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
                             self.bytecode[self.pc - 1] = new_ext;
                             obj.set_prop(offset, self.regs[a]);
                         } else {
                             let new_offset = obj.prop_count();
-                            let new_shape_id = shape::make_shape(obj.shape_id(), prop_name_si);
+                            let new_shape_id = self
+                                .kernel
+                                .shape_forge()
+                                .make_shape(obj.shape_id(), prop_name_si);
                             obj.set_shape_id(new_shape_id);
                             obj.set_prop_count(new_offset + 1);
                             obj.set_prop(new_offset, self.regs[a]);
@@ -338,6 +364,14 @@ impl Vm {
                             let new_ext =
                                 (new_shape_id & 0x00FF_FFFF) | ((new_offset as u32) << 24);
                             self.bytecode[self.pc - 1] = new_ext;
+                            self.kernel.prop_forge().upsert(
+                                new_shape_id,
+                                PropTemplate {
+                                    shape_id: new_shape_id,
+                                    offset: new_offset,
+                                    generation: obj.generation(),
+                                },
+                            );
                         }
                     }
                 }
@@ -360,11 +394,18 @@ impl Vm {
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
-                    if let Some(offset) = shape::lookup_offset(obj.shape_id(), prop_name_si) {
+                    if let Some(offset) = self
+                        .kernel
+                        .shape_forge()
+                        .lookup_offset(obj.shape_id(), prop_name_si)
+                    {
                         obj.set_prop(offset, self.regs[a]);
                     } else {
                         let new_offset = obj.prop_count();
-                        let new_shape_id = shape::make_shape(obj.shape_id(), prop_name_si);
+                        let new_shape_id = self
+                            .kernel
+                            .shape_forge()
+                            .make_shape(obj.shape_id(), prop_name_si);
                         obj.set_shape_id(new_shape_id);
                         obj.set_prop_count(new_offset + 1);
                         obj.set_prop_expand(new_offset, self.regs[a], self.epoch.bump());
@@ -399,11 +440,18 @@ impl Vm {
                         return Err("SET_PROP_DYNAMIC key not a string".into());
                     }
                     let prop_name_si = key_val.as_string_index();
-                    if let Some(offset) = shape::lookup_offset(obj.shape_id(), prop_name_si) {
+                    if let Some(offset) = self
+                        .kernel
+                        .shape_forge()
+                        .lookup_offset(obj.shape_id(), prop_name_si)
+                    {
                         obj.set_prop(offset, self.regs[b]);
                     } else {
                         let new_offset = obj.prop_count();
-                        let new_shape_id = shape::make_shape(obj.shape_id(), prop_name_si);
+                        let new_shape_id = self
+                            .kernel
+                            .shape_forge()
+                            .make_shape(obj.shape_id(), prop_name_si);
                         obj.set_shape_id(new_shape_id);
                         obj.set_prop_count(new_offset + 1);
                         obj.set_prop_expand(new_offset, self.regs[b], self.epoch.bump());
