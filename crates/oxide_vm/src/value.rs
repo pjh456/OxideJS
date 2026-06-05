@@ -17,12 +17,18 @@ const TAG_BOOL: u64 = 1;
 const TAG_NULL: u64 = 2;
 const TAG_UNDEFINED: u64 = 3;
 const TAG_OBJECT: u64 = 4;
+const TAG_STRING: u64 = 5;
 
 /// 48-bit pointer mask (x86-64 canonical VA)
 const PTR_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 
 /// 32-bit integer payload mask
 const INT_MASK: u64 = 0x0000_0000_FFFF_FFFF;
+
+/// String payload: [hash_prefix:16bit][table_index:32bit]
+const STRING_HASH_SHIFT: u64 = 32;
+const STRING_HASH_MASK: u64 = 0xFFFF_0000_0000;
+const STRING_INDEX_MASK: u64 = 0x0000_FFFF_FFFF;
 
 fn make_tag(tag: u64) -> u64 {
     QNAN_PREFIX | (tag << TAG_SHIFT)
@@ -60,6 +66,14 @@ impl PartialEq for JsValue {
         }
         if self.is_object() && other.is_object() {
             return self.as_ptr() == other.as_ptr();
+        }
+        if self.is_string() && other.is_string() {
+            let ha = self.as_string_hash();
+            let hb = other.as_string_hash();
+            if ha != hb {
+                return false;
+            }
+            return self.as_string_index() == other.as_string_index();
         }
         false
     }
@@ -102,6 +116,15 @@ impl JsValue {
         Self(make_tag(TAG_OBJECT) | addr)
     }
 
+    pub fn string(index: u32, hash: u16) -> Self {
+        let payload = ((hash as u64) << STRING_HASH_SHIFT) | (index as u64);
+        debug_assert!(
+            payload & !(STRING_HASH_MASK | STRING_INDEX_MASK) == 0,
+            "string payload overflow"
+        );
+        Self(make_tag(TAG_STRING) | payload)
+    }
+
     pub fn is_double(&self) -> bool {
         !is_nan_boxed(self.0)
     }
@@ -126,6 +149,10 @@ impl JsValue {
         is_nan_boxed(self.0) && get_tag(self.0) == TAG_OBJECT
     }
 
+    pub fn is_string(&self) -> bool {
+        is_nan_boxed(self.0) && get_tag(self.0) == TAG_STRING
+    }
+
     pub fn as_double(&self) -> f64 {
         debug_assert!(self.is_double(), "JsValue is not a double");
         f64::from_bits(self.0)
@@ -145,6 +172,21 @@ impl JsValue {
         debug_assert!(self.is_object(), "JsValue is not an object");
         (self.0 & PTR_MASK) as *const u8
     }
+
+    pub fn as_object_ptr(&self) -> *mut u8 {
+        debug_assert!(self.is_object(), "JsValue is not an object");
+        (self.0 & PTR_MASK) as *mut u8
+    }
+
+    pub fn as_string_index(&self) -> u32 {
+        debug_assert!(self.is_string(), "JsValue is not a string");
+        (self.0 & STRING_INDEX_MASK) as u32
+    }
+
+    pub fn as_string_hash(&self) -> u16 {
+        debug_assert!(self.is_string(), "JsValue is not a string");
+        ((self.0 & STRING_HASH_MASK) >> STRING_HASH_SHIFT) as u16
+    }
 }
 
 fn is_nan_bits(bits: u64) -> bool {
@@ -152,7 +194,7 @@ fn is_nan_bits(bits: u64) -> bool {
 }
 
 fn is_nan_boxed(bits: u64) -> bool {
-    (0xFFF8..=0xFFFC).contains(&((bits >> 48) as u16))
+    (0xFFF8..=0xFFFD).contains(&((bits >> 48) as u16))
 }
 
 impl fmt::Display for JsValue {
@@ -180,6 +222,8 @@ impl fmt::Display for JsValue {
             write!(f, "undefined")
         } else if self.is_object() {
             write!(f, "{{object}}")
+        } else if self.is_string() {
+            write!(f, "{{string}}")
         } else {
             write!(f, "{{unknown}}")
         }
@@ -205,6 +249,13 @@ impl fmt::Debug for JsValue {
             write!(f, "JsValue(Undefined)")
         } else if self.is_object() {
             write!(f, "JsValue(Object({:p}))", self.as_ptr())
+        } else if self.is_string() {
+            write!(
+                f,
+                "JsValue(String(idx={}, hash={:#06x}))",
+                self.as_string_index(),
+                self.as_string_hash()
+            )
         } else {
             write!(f, "JsValue(Unknown)")
         }
@@ -271,6 +322,7 @@ mod tests {
                     val.is_null(),
                     val.is_undefined(),
                     val.is_object(),
+                    val.is_string(),
                 ];
                 let count = matched.iter().filter(|&&x| x).count();
                 assert_eq!(count, 1, "bits={bits:#018x} matched {count} types");
