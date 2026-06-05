@@ -309,6 +309,82 @@ impl Vm {
                     }
                 }
 
+                OpCode::GET_PROP => {
+                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
+                    if obj_ptr.is_null() {
+                        return Err("GET_PROP on non-object".into());
+                    }
+                    let obj = unsafe { &*obj_ptr };
+                    let prop_val = self.constants[opcode::imm16(instr) as usize];
+                    let prop_name_si = prop_val.as_string_index();
+                    if let Some(offset) = shape::lookup_offset(obj.shape_id(), prop_name_si) {
+                        self.regs[a] = obj.get_prop(offset);
+                    } else {
+                        self.regs[a] = JsValue::undefined();
+                    }
+                }
+
+                OpCode::GET_PROP_DYNAMIC => {
+                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
+                    if obj_ptr.is_null() {
+                        return Err("GET_PROP_DYNAMIC on non-object".into());
+                    }
+                    let obj = unsafe { &*obj_ptr };
+                    let key_val = self.regs[a];
+                    if !key_val.is_string() {
+                        return Err("GET_PROP_DYNAMIC key not a string".into());
+                    }
+                    let prop_name_si = key_val.as_string_index();
+                    if let Some(offset) = shape::lookup_offset(obj.shape_id(), prop_name_si) {
+                        self.regs[b] = obj.get_prop(offset);
+                    } else {
+                        self.regs[b] = JsValue::undefined();
+                    }
+                }
+
+                OpCode::SET_PROP => {
+                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
+                    if obj_ptr.is_null() {
+                        return Err("SET_PROP on non-object".into());
+                    }
+                    let obj = unsafe { &mut *obj_ptr };
+                    let prop_val = self.constants[opcode::imm16(instr) as usize];
+                    let prop_name_si = prop_val.as_string_index();
+                    if let Some(offset) = shape::lookup_offset(obj.shape_id(), prop_name_si) {
+                        obj.set_prop(offset, self.regs[a]);
+                    } else {
+                        let new_offset = obj.prop_count();
+                        let new_shape_id = shape::make_shape(obj.shape_id(), prop_name_si);
+                        obj.set_shape_id(new_shape_id);
+                        obj.set_prop_count(new_offset + 1);
+                        obj.set_prop(new_offset, self.regs[a]);
+                        obj.bump_generation();
+                    }
+                }
+
+                OpCode::SET_PROP_DYNAMIC => {
+                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
+                    if obj_ptr.is_null() {
+                        return Err("SET_PROP_DYNAMIC on non-object".into());
+                    }
+                    let obj = unsafe { &mut *obj_ptr };
+                    let key_val = self.regs[a];
+                    if !key_val.is_string() {
+                        return Err("SET_PROP_DYNAMIC key not a string".into());
+                    }
+                    let prop_name_si = key_val.as_string_index();
+                    if let Some(offset) = shape::lookup_offset(obj.shape_id(), prop_name_si) {
+                        obj.set_prop(offset, self.regs[b]);
+                    } else {
+                        let new_offset = obj.prop_count();
+                        let new_shape_id = shape::make_shape(obj.shape_id(), prop_name_si);
+                        obj.set_shape_id(new_shape_id);
+                        obj.set_prop_count(new_offset + 1);
+                        obj.set_prop(new_offset, self.regs[b]);
+                        obj.bump_generation();
+                    }
+                }
+
                 OpCode::NEW_OBJECT => {
                     let obj = self
                         .epoch
