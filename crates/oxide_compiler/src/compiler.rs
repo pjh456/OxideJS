@@ -230,6 +230,9 @@ impl Compiler {
                 self.count_expression(&member.expression, ctx);
                 ctx.alloc_reg();
             }
+            Expression::ParenthesizedExpression(p) => {
+                self.count_expression(&p.expression, ctx);
+            }
             _ => {
                 ctx.alloc_reg();
             }
@@ -493,10 +496,8 @@ impl Compiler {
                     Err("assignment target not supported".into())
                 }
             }
-            _ => Err(format!(
-                "unsupported expression type: {:?}",
-                std::mem::discriminant(expr)
-            )),
+            Expression::ParenthesizedExpression(p) => self.emit_expression(&p.expression, ctx),
+            _ => Err(format!("unsupported expression type: {:?}", expr)),
         }
     }
 }
