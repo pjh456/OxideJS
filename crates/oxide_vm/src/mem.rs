@@ -90,6 +90,10 @@ impl Epoch {
         self.bump.alloc(value)
     }
 
+    pub fn bump(&self) -> &bumpalo::Bump {
+        &self.bump
+    }
+
     /// Bump-allocate a value using a closure for initialization.
     /// Better for compiler optimization — construct directly on arena.
     pub fn alloc_with<T, F>(&self, f: F) -> *mut T

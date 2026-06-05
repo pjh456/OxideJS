@@ -76,6 +76,13 @@ impl Vm {
         None
     }
 
+    pub fn rerun(&mut self) -> Result<JsValue, String> {
+        self.pc = 0;
+        self.regs = [JsValue::undefined(); 256];
+        self.frames.clear();
+        self.dispatch()
+    }
+
     pub fn run(&mut self, module: &CompiledModule) -> Result<JsValue, String> {
         self.string_table.clear();
         self.string_reverse.clear();
@@ -349,7 +356,7 @@ impl Vm {
                         let new_shape_id = shape::make_shape(obj.shape_id(), prop_name_si);
                         obj.set_shape_id(new_shape_id);
                         obj.set_prop_count(new_offset + 1);
-                        obj.set_prop(new_offset, self.regs[a]);
+                        obj.set_prop_expand(new_offset, self.regs[a], &self.epoch.bump());
                         obj.bump_generation();
                     }
                 }
@@ -388,7 +395,7 @@ impl Vm {
                         let new_shape_id = shape::make_shape(obj.shape_id(), prop_name_si);
                         obj.set_shape_id(new_shape_id);
                         obj.set_prop_count(new_offset + 1);
-                        obj.set_prop(new_offset, self.regs[b]);
+                        obj.set_prop_expand(new_offset, self.regs[b], &self.epoch.bump());
                         obj.bump_generation();
                     }
                 }

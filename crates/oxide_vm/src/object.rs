@@ -138,6 +138,13 @@ impl JsObject {
         }
     }
 
+    pub fn set_prop_expand(&mut self, offset: u8, val: JsValue, bump: &bumpalo::Bump) {
+        if offset >= 4 && (self.overflow.is_null() || offset >= self.prop_count()) {
+            self.alloc_overflow(bump, (offset as usize) + 1);
+        }
+        self.set_prop(offset, val);
+    }
+
     pub fn proto(&self) -> JsValue {
         self.proto
     }
