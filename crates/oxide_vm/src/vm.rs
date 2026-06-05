@@ -205,22 +205,22 @@ impl Vm {
                 }
 
                 OpCode::LT => {
-                    let rel = coercion::relational_compare(self.regs[a], self.regs[b]);
+                    let rel = coercion::relational_compare(self, self.regs[a], self.regs[b]);
                     self.regs[rd] = JsValue::bool(rel.unwrap_or(false));
                 }
 
                 OpCode::GT => {
-                    let rel = coercion::relational_compare(self.regs[b], self.regs[a]);
+                    let rel = coercion::relational_compare(self, self.regs[b], self.regs[a]);
                     self.regs[rd] = JsValue::bool(rel.unwrap_or(false));
                 }
 
                 OpCode::LTE => {
-                    let rel = coercion::relational_compare(self.regs[b], self.regs[a]);
+                    let rel = coercion::relational_compare(self, self.regs[b], self.regs[a]);
                     self.regs[rd] = JsValue::bool(!rel.unwrap_or(true));
                 }
 
                 OpCode::GTE => {
-                    let rel = coercion::relational_compare(self.regs[a], self.regs[b]);
+                    let rel = coercion::relational_compare(self, self.regs[a], self.regs[b]);
                     self.regs[rd] = JsValue::bool(!rel.unwrap_or(true));
                 }
 

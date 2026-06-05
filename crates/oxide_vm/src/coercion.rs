@@ -48,6 +48,9 @@ pub fn to_string(vm: &Vm, val: JsValue) -> String {
                 "-Infinity".to_string()
             };
         }
+        if d.is_finite() && d.fract() == 0.0 {
+            return (d as i64).to_string();
+        }
         let mut buf = ryu::Buffer::new();
         return buf.format(d).to_string();
     }
@@ -170,7 +173,12 @@ fn strict_double_eq(a: f64, b: f64) -> bool {
     a == b
 }
 
-pub fn relational_compare(lhs: JsValue, rhs: JsValue) -> Option<bool> {
+pub fn relational_compare(vm: &Vm, lhs: JsValue, rhs: JsValue) -> Option<bool> {
+    if lhs.is_string() && rhs.is_string() {
+        let ls = vm.lookup_str(lhs).unwrap_or("");
+        let rs = vm.lookup_str(rhs).unwrap_or("");
+        return Some(ls < rs);
+    }
     let l = to_number(lhs);
     let r = to_number(rhs);
     if l.is_nan() || r.is_nan() {
