@@ -7,7 +7,7 @@ use oxide_compiler::opcode::{self, OpCode};
 use crate::coercion;
 use crate::mem::Epoch;
 use crate::object::JsObject;
-use crate::shape::EMPTY_SHAPE_ID;
+use crate::shape::{self, EMPTY_SHAPE_ID};
 use crate::value::JsValue;
 
 pub struct CallFrame {
@@ -246,6 +246,66 @@ impl Vm {
                         self.regs[0] = result;
                     } else {
                         return Ok(result);
+                    }
+                }
+
+                OpCode::IC_GET_PROP => {
+                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
+                    if obj_ptr.is_null() {
+                        return Err("IC_GET_PROP on non-object".into());
+                    }
+                    let obj = unsafe { &*obj_ptr };
+                    let prop_val = self.constants[opcode::imm16(instr) as usize];
+                    let prop_name_si = prop_val.as_string_index();
+                    let ext = self.bytecode[self.pc];
+                    self.pc += 1;
+                    let cached_shape_id = ext & 0x00FF_FFFF;
+                    let cached_offset = ((ext >> 24) & 0xFF) as u8;
+
+                    if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
+                        self.regs[a] = obj.get_prop(cached_offset);
+                    } else {
+                        if let Some(offset) = shape::lookup_offset(obj.shape_id(), prop_name_si) {
+                            let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
+                            self.bytecode[self.pc - 1] = new_ext;
+                            self.regs[a] = obj.get_prop(offset);
+                        } else {
+                            self.regs[a] = JsValue::undefined();
+                        }
+                    }
+                }
+
+                OpCode::IC_SET_PROP => {
+                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
+                    if obj_ptr.is_null() {
+                        return Err("IC_SET_PROP on non-object".into());
+                    }
+                    let obj = unsafe { &mut *obj_ptr };
+                    let prop_val = self.constants[opcode::imm16(instr) as usize];
+                    let prop_name_si = prop_val.as_string_index();
+                    let ext = self.bytecode[self.pc];
+                    self.pc += 1;
+                    let cached_shape_id = ext & 0x00FF_FFFF;
+                    let cached_offset = ((ext >> 24) & 0xFF) as u8;
+
+                    if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
+                        obj.set_prop(cached_offset, self.regs[a]);
+                    } else {
+                        if let Some(offset) = shape::lookup_offset(obj.shape_id(), prop_name_si) {
+                            let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
+                            self.bytecode[self.pc - 1] = new_ext;
+                            obj.set_prop(offset, self.regs[a]);
+                        } else {
+                            let new_offset = obj.prop_count();
+                            let new_shape_id = shape::make_shape(obj.shape_id(), prop_name_si);
+                            obj.set_shape_id(new_shape_id);
+                            obj.set_prop_count(new_offset + 1);
+                            obj.set_prop(new_offset, self.regs[a]);
+                            obj.bump_generation();
+                            let new_ext =
+                                (new_shape_id & 0x00FF_FFFF) | ((new_offset as u32) << 24);
+                            self.bytecode[self.pc - 1] = new_ext;
+                        }
                     }
                 }
 
