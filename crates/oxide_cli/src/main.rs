@@ -92,7 +92,7 @@ fn eval(code: &str) -> ExitCode {
 fn format_result(vm: &Vm, val: JsValue) {
     if val.is_string() {
         if let Some(s) = vm.lookup_str(val) {
-            println!("{s}");
+            println!("\"{s}\"");
         } else {
             println!("{val}");
         }
@@ -124,7 +124,7 @@ fn format_result(vm: &Vm, val: JsValue) {
 fn print_value(vm: &Vm, val: JsValue) {
     if val.is_string() {
         if let Some(s) = vm.lookup_str(val) {
-            print!("{s}");
+            print!("\"{s}\"");
         } else {
             print!("{val}");
         }
