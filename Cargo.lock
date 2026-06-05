@@ -762,6 +762,7 @@ dependencies = [
  "clap",
  "oxide_api",
  "oxide_compiler",
+ "oxide_kernel",
  "oxide_parser",
  "oxide_vm",
  "rustyline",

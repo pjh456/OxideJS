@@ -1,11 +1,16 @@
+#![allow(clippy::arc_with_non_send_sync)]
+
 use std::fs;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use ansi_term::Colour::Red;
 use clap::{Parser, Subcommand};
 use oxide_compiler::compiler::Compiler;
+use oxide_kernel::kernel::{KernelConfig, OxideKernel};
+use oxide_kernel::string_forge::StringForge;
 use oxide_parser::Allocator;
-use oxide_vm::vm::Vm;
+use oxide_vm::vm_pool::VmPool;
 use oxide_vm::JsValue;
 
 #[derive(Parser)]
@@ -55,7 +60,18 @@ fn main() -> ExitCode {
     }
 }
 
+fn make_kernel() -> Arc<OxideKernel> {
+    Arc::new(OxideKernel::new(KernelConfig::standard()))
+}
+
 fn eval(code: &str) -> ExitCode {
+    let kernel = make_kernel();
+    let pool = VmPool::new(
+        Arc::clone(&kernel),
+        kernel.config().min_pool_size,
+        kernel.config().max_pool_size,
+    );
+
     let allocator = Allocator::default();
     let program = match oxide_parser::parse(&allocator, code) {
         Ok(p) => p,
@@ -68,7 +84,7 @@ fn eval(code: &str) -> ExitCode {
     };
 
     let compiler = Compiler::new();
-    let module = match compiler.compile(&program) {
+    let module = match kernel.code_forge().get_or_compile(&program, &compiler) {
         Ok(m) => m,
         Err(err) => {
             eprintln!("{}", Red.paint(err));
@@ -76,10 +92,10 @@ fn eval(code: &str) -> ExitCode {
         }
     };
 
-    let mut vm = Vm::new();
-    match vm.run(&module) {
+    let mut guard = pool.spawn();
+    match guard.vm_mut().run(&module) {
         Ok(result) => {
-            format_result(&vm, result);
+            format_result(kernel.string_forge().as_ref(), result);
             ExitCode::SUCCESS
         }
         Err(err) => {
@@ -89,9 +105,9 @@ fn eval(code: &str) -> ExitCode {
     }
 }
 
-fn format_result(vm: &Vm, val: JsValue) {
+fn format_result(string_forge: &StringForge, val: JsValue) {
     if val.is_string() {
-        if let Some(s) = vm.lookup_str(val) {
+        if let Some(s) = string_forge.lookup(val.as_string_index()) {
             println!("\"{s}\"");
         } else {
             println!("{val}");
@@ -111,7 +127,7 @@ fn format_result(vm: &Vm, val: JsValue) {
             }
             first = false;
             print!("{:?}: ", i);
-            print_value(vm, prop_val);
+            print_value(string_forge, prop_val);
         }
         println!("}}");
     } else if val.is_undefined() {
@@ -121,9 +137,9 @@ fn format_result(vm: &Vm, val: JsValue) {
     }
 }
 
-fn print_value(vm: &Vm, val: JsValue) {
+fn print_value(string_forge: &StringForge, val: JsValue) {
     if val.is_string() {
-        if let Some(s) = vm.lookup_str(val) {
+        if let Some(s) = string_forge.lookup(val.as_string_index()) {
             print!("\"{s}\"");
         } else {
             print!("{val}");
