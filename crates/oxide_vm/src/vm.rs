@@ -1,10 +1,13 @@
-use std::collections::HashMap;
+#![allow(clippy::arc_with_non_send_sync)]
+
+use std::sync::Arc;
 
 use oxide_compiler::compiler::Constant;
 use oxide_compiler::module::CompiledModule;
 use oxide_compiler::opcode::{self, OpCode};
 
 use crate::coercion;
+use oxide_kernel::kernel::{KernelConfig, OxideKernel};
 use oxide_types::mem::{Epoch, P};
 use oxide_types::object::JsObject;
 use oxide_types::shape::{self, EMPTY_SHAPE_ID};
@@ -22,8 +25,8 @@ pub struct Vm {
     bytecode: Vec<opcode::Instr>,
     constants: Vec<JsValue>,
     frames: Vec<CallFrame>,
-    string_table: HashMap<String, u32>,
-    string_reverse: Vec<String>,
+    kernel: Arc<OxideKernel>,
+    interned_strings: Vec<u32>,
     pub epoch: Epoch,
     pub object_prototype: P<JsObject>,
 }
@@ -36,11 +39,18 @@ impl Vm {
             bytecode: Vec::new(),
             constants: Vec::new(),
             frames: Vec::with_capacity(128),
-            string_table: HashMap::with_capacity(64),
-            string_reverse: Vec::with_capacity(64),
+            kernel: Arc::new(OxideKernel::new(KernelConfig::minimal())),
+            interned_strings: Vec::new(),
             epoch: Epoch::new(),
             object_prototype: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
         }
+    }
+
+    pub fn with_kernel(kernel: Arc<OxideKernel>) -> Self {
+        let mut vm = Self::new();
+        vm.kernel = Arc::clone(&kernel);
+        vm.object_prototype = P::clone(&kernel.builtin_world().object_proto);
+        vm
     }
 
     pub fn reset(&mut self) {
@@ -49,27 +59,21 @@ impl Vm {
         self.bytecode.clear();
         self.constants.clear();
         self.frames.clear();
-        self.string_table.clear();
-        self.string_reverse.clear();
         self.epoch.reset();
+        self.interned_strings.clear();
     }
 
     pub fn intern(&mut self, s: &str) -> JsValue {
-        if let Some(&idx) = self.string_table.get(s) {
-            return JsValue::string(idx, hash16(s));
-        }
-        let idx = self.string_reverse.len() as u32;
-        self.string_reverse.push(s.to_string());
-        self.string_table.insert(s.to_string(), idx);
-        JsValue::string(idx, hash16(s))
+        let (idx, hash) = self.kernel.string_forge().intern(s);
+        self.interned_strings.push(idx);
+        JsValue::string(idx, hash)
     }
 
-    pub fn lookup_str(&self, val: JsValue) -> Option<&str> {
+    pub fn lookup_str(&self, val: JsValue) -> Option<String> {
         if !val.is_string() {
             return None;
         }
-        let idx = val.as_string_index() as usize;
-        self.string_reverse.get(idx).map(|s| s.as_str())
+        self.kernel.string_forge().lookup(val.as_string_index())
     }
 
     fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
@@ -95,32 +99,12 @@ impl Vm {
     }
 
     pub fn run(&mut self, module: &CompiledModule) -> Result<JsValue, String> {
-        self.string_table.clear();
-        self.string_reverse.clear();
-
-        let string_entries: Vec<String> = module
-            .constants
-            .iter()
-            .filter_map(|c| {
-                if let Constant::String(s) = c {
-                    Some(s.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        for s in &string_entries {
-            self.intern(s);
-        }
         self.constants = module
             .constants
             .iter()
             .map(|c| match c {
                 Constant::Number(v) => JsValue::float(*v),
-                Constant::String(s) => {
-                    let idx = self.string_table.get(s.as_str()).copied().unwrap_or(0);
-                    JsValue::string(idx, hash16(s))
-                }
+                Constant::String(s) => self.intern(s),
                 Constant::Boolean(b) => JsValue::bool(*b),
                 Constant::Null => JsValue::null(),
                 Constant::Undefined => JsValue::undefined(),
@@ -504,11 +488,4 @@ impl Default for Vm {
     fn default() -> Self {
         Self::new()
     }
-}
-
-fn hash16(s: &str) -> u16 {
-    use std::hash::{Hash, Hasher};
-    let mut h = rustc_hash::FxHasher::default();
-    s.hash(&mut h);
-    (h.finish() >> 48) as u16
 }
