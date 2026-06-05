@@ -117,15 +117,6 @@ impl Default for Interner {
     }
 }
 
-pub struct KernelConfig {
-    pub min_pool_size: usize,
-    pub max_pool_size: Option<usize>,
-    pub max_dead_strings: Option<usize>,
-    pub warmup_builtin_shapes: bool,
-    pub warmup_builtin_code: bool,
-    pub warmup_builtin_ic: bool,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,18 +184,5 @@ mod tests {
         interner.intern("live");
         interner.maybe_sweep(Some(100));
         assert_eq!(interner.lookup(0), Some("live".to_string()));
-    }
-}
-
-impl Default for KernelConfig {
-    fn default() -> Self {
-        Self {
-            min_pool_size: 4,
-            max_pool_size: None,
-            max_dead_strings: Some(10_000),
-            warmup_builtin_shapes: true,
-            warmup_builtin_code: false,
-            warmup_builtin_ic: false,
-        }
     }
 }
