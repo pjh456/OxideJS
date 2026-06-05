@@ -250,13 +250,12 @@ impl Vm {
                 }
 
                 OpCode::IC_GET_PROP => {
-                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
+                    let obj_ptr = self.regs[a].as_object_ptr() as *mut JsObject;
                     if obj_ptr.is_null() {
                         return Err("IC_GET_PROP on non-object".into());
                     }
                     let obj = unsafe { &*obj_ptr };
-                    let prop_val = self.constants[opcode::imm16(instr) as usize];
-                    let prop_name_si = prop_val.as_string_index();
+                    let prop_name_si = self.regs[b].as_string_index();
                     let ext = self.bytecode[self.pc];
                     self.pc += 1;
                     let cached_shape_id = ext & 0x00FF_FFFF;
@@ -281,8 +280,7 @@ impl Vm {
                         return Err("IC_SET_PROP on non-object".into());
                     }
                     let obj = unsafe { &mut *obj_ptr };
-                    let prop_val = self.constants[opcode::imm16(instr) as usize];
-                    let prop_name_si = prop_val.as_string_index();
+                    let prop_name_si = self.regs[b].as_string_index();
                     let ext = self.bytecode[self.pc];
                     self.pc += 1;
                     let cached_shape_id = ext & 0x00FF_FFFF;

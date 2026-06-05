@@ -314,6 +314,39 @@ impl Compiler {
                     Err(format!("unsupported unary operator: {:?}", un.operator))
                 }
             }
+            Expression::StaticMemberExpression(member) => {
+                let obj_reg = self.emit_expression(&member.object, ctx)?;
+                let prop_name = member.property.name.as_str();
+                let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
+                let key_reg = ctx.alloc_reg();
+                ctx.emit(opcode::encode(
+                    OpCode::LOAD_CONST,
+                    key_reg,
+                    (idx & 0xFF) as u8,
+                    ((idx >> 8) & 0xFF) as u8,
+                ));
+                let result_reg = ctx.alloc_reg();
+                ctx.emit(opcode::encode(
+                    OpCode::IC_GET_PROP,
+                    result_reg,
+                    obj_reg,
+                    key_reg,
+                ));
+                ctx.emit(0);
+                Ok(result_reg)
+            }
+            Expression::ComputedMemberExpression(member) => {
+                let obj_reg = self.emit_expression(&member.object, ctx)?;
+                let key_reg = self.emit_expression(&member.expression, ctx)?;
+                let r = ctx.alloc_reg();
+                ctx.emit(opcode::encode(
+                    OpCode::GET_PROP_DYNAMIC,
+                    obj_reg,
+                    key_reg,
+                    r,
+                ));
+                Ok(r)
+            }
             _ => Err(format!(
                 "unsupported expression type: {:?}",
                 std::mem::discriminant(expr)
