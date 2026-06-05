@@ -17,19 +17,19 @@ pub struct StringEntry {
     pub hash: u16,
 }
 
-struct InternerInner {
+struct StringForgeInner {
     map: HashMap<String, u32, FxBuildHasher>,
     entries: Vec<StringEntry>,
 }
 
-pub struct Interner {
-    inner: RwLock<InternerInner>,
+pub struct StringForge {
+    inner: RwLock<StringForgeInner>,
 }
 
-impl Interner {
+impl StringForge {
     pub fn new() -> Self {
         Self {
-            inner: RwLock::new(InternerInner {
+            inner: RwLock::new(StringForgeInner {
                 map: HashMap::with_hasher(FxBuildHasher::default()),
                 entries: Vec::new(),
             }),
@@ -111,7 +111,7 @@ impl Interner {
     }
 }
 
-impl Default for Interner {
+impl Default for StringForge {
     fn default() -> Self {
         Self::new()
     }
@@ -133,56 +133,56 @@ mod tests {
 
     #[test]
     fn test_intern_dedup() {
-        let interner = Interner::new();
-        let (i1, h1) = interner.intern("abc");
-        let (i2, h2) = interner.intern("abc");
+        let string_forge = StringForge::new();
+        let (i1, h1) = string_forge.intern("abc");
+        let (i2, h2) = string_forge.intern("abc");
         assert_eq!(i1, i2);
         assert_eq!(h1, h2);
     }
 
     #[test]
     fn test_intern_different() {
-        let interner = Interner::new();
-        let (i1, _) = interner.intern("x");
-        let (i2, _) = interner.intern("y");
+        let string_forge = StringForge::new();
+        let (i1, _) = string_forge.intern("x");
+        let (i2, _) = string_forge.intern("y");
         assert_ne!(i1, i2);
     }
 
     #[test]
     fn test_lookup_found() {
-        let interner = Interner::new();
-        let (idx, _) = interner.intern("hello");
-        assert_eq!(interner.lookup(idx), Some("hello".to_string()));
+        let string_forge = StringForge::new();
+        let (idx, _) = string_forge.intern("hello");
+        assert_eq!(string_forge.lookup(idx), Some("hello".to_string()));
     }
 
     #[test]
     fn test_lookup_not_found() {
-        let interner = Interner::new();
-        assert_eq!(interner.lookup(99999), None);
+        let string_forge = StringForge::new();
+        assert_eq!(string_forge.lookup(99999), None);
     }
 
     #[test]
     fn test_ref_count_and_decref() {
-        let interner = Interner::new();
-        let (idx, _) = interner.intern("s");
-        assert_eq!(interner.lookup(idx), Some("s".to_string()));
-        interner.decref(idx);
-        assert_eq!(interner.lookup(idx), Some("s".to_string()));
+        let string_forge = StringForge::new();
+        let (idx, _) = string_forge.intern("s");
+        assert_eq!(string_forge.lookup(idx), Some("s".to_string()));
+        string_forge.decref(idx);
+        assert_eq!(string_forge.lookup(idx), Some("s".to_string()));
     }
 
     #[test]
     fn test_maybe_sweep_noop_when_none() {
-        let interner = Interner::new();
-        interner.intern("live");
-        interner.maybe_sweep(None);
-        assert!(interner.lookup(0).is_some());
+        let string_forge = StringForge::new();
+        string_forge.intern("live");
+        string_forge.maybe_sweep(None);
+        assert!(string_forge.lookup(0).is_some());
     }
 
     #[test]
     fn test_maybe_sweep_skip_below_threshold() {
-        let interner = Interner::new();
-        interner.intern("live");
-        interner.maybe_sweep(Some(100));
-        assert_eq!(interner.lookup(0), Some("live".to_string()));
+        let string_forge = StringForge::new();
+        string_forge.intern("live");
+        string_forge.maybe_sweep(Some(100));
+        assert_eq!(string_forge.lookup(0), Some("live".to_string()));
     }
 }

@@ -3,7 +3,7 @@ use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
 use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
-use crate::string_forge::Interner;
+use crate::string_forge::StringForge;
 
 pub struct BuiltinWorld {
     pub object_proto: P<JsObject>,
@@ -24,12 +24,12 @@ pub struct BuiltinWorld {
     pub symbol_constructor: P<JsObject>,
 }
 
-fn intern_label(interner: &Interner, label: &str) -> u32 {
-    interner.intern(label).0
+fn intern_label(string_forge: &StringForge, label: &str) -> u32 {
+    string_forge.intern(label).0
 }
 
 fn make_pair(
-    string_forge: &Interner,
+    string_forge: &StringForge,
     shape_forge: &ShapeForge,
     name: &str,
     si_prototype: u32,
@@ -59,7 +59,7 @@ fn make_pair(
 }
 
 impl BuiltinWorld {
-    pub fn new(string_forge: &Interner, shape_forge: &ShapeForge) -> Self {
+    pub fn new(string_forge: &StringForge, shape_forge: &ShapeForge) -> Self {
         let si_prototype = intern_label(string_forge, "prototype");
         let si_constructor = intern_label(string_forge, "constructor");
         let si_name = intern_label(string_forge, "name");
@@ -157,10 +157,10 @@ impl BuiltinWorld {
 mod tests {
     use super::*;
     use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
-    use crate::string_forge::Interner;
+    use crate::string_forge::StringForge;
 
     fn make_world() -> BuiltinWorld {
-        let sf = Interner::new();
+        let sf = StringForge::new();
         let sh = ShapeForge::new();
         BuiltinWorld::new(&sf, &sh)
     }

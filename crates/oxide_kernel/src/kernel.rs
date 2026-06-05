@@ -6,7 +6,7 @@ use crate::builtin::BuiltinWorld;
 use crate::code_forge::CodeForge;
 use crate::prop_forge::PropForge;
 use crate::shape_forge::ShapeForge;
-use crate::string_forge::Interner;
+use crate::string_forge::StringForge;
 
 pub struct KernelConfig {
     pub min_pool_size: usize,
@@ -60,7 +60,7 @@ impl Default for KernelConfig {
 
 pub struct OxideKernel {
     pub config: KernelConfig,
-    pub string_forge: Arc<Interner>,
+    pub string_forge: Arc<StringForge>,
     pub shape_forge: Arc<ShapeForge>,
     pub code_forge: Arc<CodeForge>,
     pub prop_forge: Arc<PropForge>,
@@ -69,7 +69,7 @@ pub struct OxideKernel {
 
 impl OxideKernel {
     pub fn new(config: KernelConfig) -> Self {
-        let string_forge = Arc::new(Interner::new());
+        let string_forge = Arc::new(StringForge::new());
         let shape_forge = Arc::new(ShapeForge::new());
         let builtin_world = Arc::new(BuiltinWorld::new(&string_forge, &shape_forge));
         let code_forge = Arc::new(CodeForge::new());
@@ -85,7 +85,7 @@ impl OxideKernel {
         }
     }
 
-    pub fn string_forge(&self) -> &Arc<Interner> {
+    pub fn string_forge(&self) -> &Arc<StringForge> {
         &self.string_forge
     }
 
