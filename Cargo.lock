@@ -782,7 +782,9 @@ name = "oxide_kernel"
 version = "0.1.0"
 dependencies = [
  "dashmap",
+ "hashbrown 0.14.5",
  "oxide_compiler",
+ "rustc-hash",
 ]
 
 [[package]]

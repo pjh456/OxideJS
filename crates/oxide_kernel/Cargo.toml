@@ -9,3 +9,5 @@ description = "OxideJS - Shared kernel (CodeForge, ShapeForge, IcForge, StringFo
 [dependencies]
 oxide_compiler = { path = "../oxide_compiler" }
 dashmap.workspace = true
+hashbrown.workspace = true
+rustc-hash.workspace = true
