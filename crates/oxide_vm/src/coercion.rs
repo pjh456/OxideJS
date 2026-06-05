@@ -64,7 +64,7 @@ pub fn to_string(vm: &Vm, val: JsValue) -> String {
         return "undefined".to_string();
     }
     if val.is_string() {
-        return vm.lookup_str(val).unwrap_or("").to_string();
+        return vm.lookup_str(val).unwrap_or_default();
     }
     if val.is_object() {
         panic_to_object();
@@ -175,8 +175,8 @@ fn strict_double_eq(a: f64, b: f64) -> bool {
 
 pub fn relational_compare(vm: &Vm, lhs: JsValue, rhs: JsValue) -> Option<bool> {
     if lhs.is_string() && rhs.is_string() {
-        let ls = vm.lookup_str(lhs).unwrap_or("");
-        let rs = vm.lookup_str(rhs).unwrap_or("");
+        let ls = vm.lookup_str(lhs).unwrap_or_default();
+        let rs = vm.lookup_str(rhs).unwrap_or_default();
         return Some(ls < rs);
     }
     let l = to_number(lhs);
