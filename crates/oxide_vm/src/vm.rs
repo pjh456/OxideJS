@@ -5,7 +5,7 @@ use oxide_compiler::module::CompiledModule;
 use oxide_compiler::opcode::{self, OpCode};
 
 use crate::coercion;
-use crate::mem::Epoch;
+use crate::mem::{Epoch, P};
 use crate::object::JsObject;
 use crate::shape::{self, EMPTY_SHAPE_ID};
 use crate::value::JsValue;
@@ -25,6 +25,7 @@ pub struct Vm {
     string_table: HashMap<String, u32>,
     string_reverse: Vec<String>,
     pub epoch: Epoch,
+    pub object_prototype: P<JsObject>,
 }
 
 impl Vm {
@@ -38,6 +39,7 @@ impl Vm {
             string_table: HashMap::with_capacity(64),
             string_reverse: Vec::with_capacity(64),
             epoch: Epoch::new(),
+            object_prototype: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
         }
     }
 
@@ -382,17 +384,22 @@ impl Vm {
                 }
 
                 OpCode::NEW_OBJECT => {
-                    let obj = self
-                        .epoch
-                        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+                    let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
+                    let obj = self.epoch.alloc(JsObject::new_empty(
+                        EMPTY_SHAPE_ID,
+                        JsValue::from_js_object(proto_ptr),
+                    ));
                     self.regs[rd] = JsValue::object(obj as *mut u8);
                 }
 
                 OpCode::NEW_ARRAY => {
+                    let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
                     let n = opcode::imm16(instr) as usize;
-                    let obj =
-                        self.epoch
-                            .alloc(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::null(), n));
+                    let obj = self.epoch.alloc(JsObject::new_array(
+                        EMPTY_SHAPE_ID,
+                        JsValue::from_js_object(proto_ptr),
+                        n,
+                    ));
                     self.regs[rd] = JsValue::object(obj as *mut u8);
                 }
 
