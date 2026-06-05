@@ -43,6 +43,17 @@ impl Vm {
         }
     }
 
+    pub fn reset(&mut self) {
+        self.regs = [JsValue::undefined(); 256];
+        self.pc = 0;
+        self.bytecode.clear();
+        self.constants.clear();
+        self.frames.clear();
+        self.string_table.clear();
+        self.string_reverse.clear();
+        self.epoch.reset();
+    }
+
     pub fn intern(&mut self, s: &str) -> JsValue {
         if let Some(&idx) = self.string_table.get(s) {
             return JsValue::string(idx, hash16(s));
