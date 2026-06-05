@@ -5,6 +5,7 @@ use ansi_term::Colour::Red;
 use clap::{Parser, Subcommand};
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
+use oxide_vm::value::JsValue;
 use oxide_vm::vm::Vm;
 
 #[derive(Parser)]
@@ -78,13 +79,57 @@ fn eval(code: &str) -> ExitCode {
     let mut vm = Vm::new();
     match vm.run(&module) {
         Ok(result) => {
-            println!("{result}");
+            format_result(&vm, result);
             ExitCode::SUCCESS
         }
         Err(err) => {
             eprintln!("{}", Red.paint(err));
             ExitCode::FAILURE
         }
+    }
+}
+
+fn format_result(vm: &Vm, val: JsValue) {
+    if val.is_string() {
+        if let Some(s) = vm.lookup_str(val) {
+            println!("{s}");
+        } else {
+            println!("{val}");
+        }
+    } else if val.is_object() {
+        let obj = unsafe { &*val.as_js_object_ptr() };
+        print!("{{");
+        let count = obj.prop_count() as usize;
+        let mut first = true;
+        for i in 0..count.min(4) {
+            let prop_val = obj.get_inline_prop(i as u8);
+            if prop_val.is_undefined() {
+                continue;
+            }
+            if !first {
+                print!(", ");
+            }
+            first = false;
+            print!("{:?}: ", i);
+            print_value(vm, prop_val);
+        }
+        println!("}}");
+    } else if val.is_undefined() {
+        println!("undefined");
+    } else {
+        println!("{val}");
+    }
+}
+
+fn print_value(vm: &Vm, val: JsValue) {
+    if val.is_string() {
+        if let Some(s) = vm.lookup_str(val) {
+            print!("{s}");
+        } else {
+            print!("{val}");
+        }
+    } else {
+        print!("{val}");
     }
 }
 
