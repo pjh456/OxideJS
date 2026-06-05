@@ -1,5 +1,7 @@
 use std::fmt;
 
+use crate::object::JsObject;
+
 /// Quiet NaN prefix — bits 63-51 = sign(1) + exponent(0x7FF) + quiet_bit(1)
 const QNAN_PREFIX: u64 = 0xFFF8_0000_0000_0000;
 
@@ -176,6 +178,17 @@ impl JsValue {
     pub fn as_object_ptr(&self) -> *mut u8 {
         debug_assert!(self.is_object(), "JsValue is not an object");
         (self.0 & PTR_MASK) as *mut u8
+    }
+
+    pub fn as_js_object_ptr(&self) -> *mut JsObject {
+        debug_assert!(self.is_object(), "JsValue is not an object");
+        (self.0 & PTR_MASK) as *mut JsObject
+    }
+
+    pub fn from_js_object(ptr: *mut JsObject) -> Self {
+        let addr = ptr as u64;
+        debug_assert!(addr <= PTR_MASK, "object pointer must fit in 48 bits");
+        Self(make_tag(TAG_OBJECT) | addr)
     }
 
     pub fn as_string_index(&self) -> u32 {
