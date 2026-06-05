@@ -24,6 +24,7 @@ pub enum OpCode {
     GT = 0x13,
     LTE = 0x14,
     GTE = 0x15,
+    IN = 0x16,
 
     // ── Control Flow (0x20-0x2F) ──
     JMP = 0x20,
@@ -39,9 +40,16 @@ pub enum OpCode {
     CALL = 0x40,
     RETURN = 0x41,
 
-    // ── Object Property — placeholders (0x50-0x5F) ──
+    // ── Object Property (0x50-0x5F) ──
     IC_GET_PROP = 0x50,
     IC_SET_PROP = 0x51,
+    GET_PROP = 0x52,
+    GET_PROP_DYNAMIC = 0x53,
+    SET_PROP = 0x54,
+    SET_PROP_DYNAMIC = 0x55,
+    NEW_OBJECT = 0x56,
+    NEW_ARRAY = 0x57,
+    SET_ELEM = 0x58,
 
     // ── Profiling — placeholders (0x60-0x6F) ──
     PROFILE_TYPE = 0x60,
@@ -56,15 +64,15 @@ pub enum OpCode {
     // ── Misc (0xF0-0xFF) ──
     NOP = 0xF0,
     HALT = 0xF1,
+    TYPEOF = 0xF2,
+    VOID = 0xF3,
 }
 
 impl OpCode {
     pub fn is_implemented(&self) -> bool {
         !matches!(
             self,
-            OpCode::IC_GET_PROP
-                | OpCode::IC_SET_PROP
-                | OpCode::PROFILE_TYPE
+            OpCode::PROFILE_TYPE
                 | OpCode::PROFILE_SHAPE
                 | OpCode::PROFILE_BRANCH
                 | OpCode::PROFILE_CALL
@@ -91,6 +99,7 @@ impl TryFrom<u8> for OpCode {
             0x13 => Ok(OpCode::GT),
             0x14 => Ok(OpCode::LTE),
             0x15 => Ok(OpCode::GTE),
+            0x16 => Ok(OpCode::IN),
             0x20 => Ok(OpCode::JMP),
             0x21 => Ok(OpCode::JMP_IF_FALSE),
             0x22 => Ok(OpCode::JMP_IF_TRUE),
@@ -101,6 +110,13 @@ impl TryFrom<u8> for OpCode {
             0x41 => Ok(OpCode::RETURN),
             0x50 => Ok(OpCode::IC_GET_PROP),
             0x51 => Ok(OpCode::IC_SET_PROP),
+            0x52 => Ok(OpCode::GET_PROP),
+            0x53 => Ok(OpCode::GET_PROP_DYNAMIC),
+            0x54 => Ok(OpCode::SET_PROP),
+            0x55 => Ok(OpCode::SET_PROP_DYNAMIC),
+            0x56 => Ok(OpCode::NEW_OBJECT),
+            0x57 => Ok(OpCode::NEW_ARRAY),
+            0x58 => Ok(OpCode::SET_ELEM),
             0x60 => Ok(OpCode::PROFILE_TYPE),
             0x61 => Ok(OpCode::PROFILE_SHAPE),
             0x62 => Ok(OpCode::PROFILE_BRANCH),
@@ -109,6 +125,8 @@ impl TryFrom<u8> for OpCode {
             0x71 => Ok(OpCode::JOIN),
             0xF0 => Ok(OpCode::NOP),
             0xF1 => Ok(OpCode::HALT),
+            0xF2 => Ok(OpCode::TYPEOF),
+            0xF3 => Ok(OpCode::VOID),
             _ => Err(()),
         }
     }
@@ -129,6 +147,7 @@ impl fmt::Display for OpCode {
             OpCode::GT => "GT",
             OpCode::LTE => "LTE",
             OpCode::GTE => "GTE",
+            OpCode::IN => "IN",
             OpCode::JMP => "JMP",
             OpCode::JMP_IF_FALSE => "JMP_IF_FALSE",
             OpCode::JMP_IF_TRUE => "JMP_IF_TRUE",
@@ -139,6 +158,13 @@ impl fmt::Display for OpCode {
             OpCode::RETURN => "RETURN",
             OpCode::IC_GET_PROP => "IC_GET_PROP",
             OpCode::IC_SET_PROP => "IC_SET_PROP",
+            OpCode::GET_PROP => "GET_PROP",
+            OpCode::GET_PROP_DYNAMIC => "GET_PROP_DYNAMIC",
+            OpCode::SET_PROP => "SET_PROP",
+            OpCode::SET_PROP_DYNAMIC => "SET_PROP_DYNAMIC",
+            OpCode::NEW_OBJECT => "NEW_OBJECT",
+            OpCode::NEW_ARRAY => "NEW_ARRAY",
+            OpCode::SET_ELEM => "SET_ELEM",
             OpCode::PROFILE_TYPE => "PROFILE_TYPE",
             OpCode::PROFILE_SHAPE => "PROFILE_SHAPE",
             OpCode::PROFILE_BRANCH => "PROFILE_BRANCH",
@@ -147,6 +173,8 @@ impl fmt::Display for OpCode {
             OpCode::JOIN => "JOIN",
             OpCode::NOP => "NOP",
             OpCode::HALT => "HALT",
+            OpCode::TYPEOF => "TYPEOF",
+            OpCode::VOID => "VOID",
         };
         write!(f, "{name}")
     }
