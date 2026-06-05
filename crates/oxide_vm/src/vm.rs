@@ -356,7 +356,7 @@ impl Vm {
                         let new_shape_id = shape::make_shape(obj.shape_id(), prop_name_si);
                         obj.set_shape_id(new_shape_id);
                         obj.set_prop_count(new_offset + 1);
-                        obj.set_prop_expand(new_offset, self.regs[a], &self.epoch.bump());
+                        obj.set_prop_expand(new_offset, self.regs[a], self.epoch.bump());
                         obj.bump_generation();
                     }
                 }
@@ -395,7 +395,7 @@ impl Vm {
                         let new_shape_id = shape::make_shape(obj.shape_id(), prop_name_si);
                         obj.set_shape_id(new_shape_id);
                         obj.set_prop_count(new_offset + 1);
-                        obj.set_prop_expand(new_offset, self.regs[b], &self.epoch.bump());
+                        obj.set_prop_expand(new_offset, self.regs[b], self.epoch.bump());
                         obj.bump_generation();
                     }
                 }

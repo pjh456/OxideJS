@@ -162,7 +162,7 @@ impl JsObject {
         let self_ptr = self as *const JsObject;
         while cursor.is_object() {
             let cursor_ptr = cursor.as_js_object_ptr();
-            if cursor_ptr == self_ptr as *mut JsObject {
+            if std::ptr::eq(cursor_ptr, self_ptr) {
                 return Err("cyclic __proto__ value");
             }
             let obj = unsafe { &*cursor_ptr };
