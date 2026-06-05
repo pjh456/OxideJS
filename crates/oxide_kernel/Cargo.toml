@@ -8,6 +8,7 @@ description = "OxideJS - Shared kernel (CodeForge, ShapeForge, IcForge, StringFo
 
 [dependencies]
 oxide_compiler = { path = "../oxide_compiler" }
+oxide_parser = { path = "../oxide_parser" }
 dashmap.workspace = true
 hashbrown.workspace = true
 rustc-hash.workspace = true

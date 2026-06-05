@@ -784,6 +784,7 @@ dependencies = [
  "dashmap",
  "hashbrown 0.14.5",
  "oxide_compiler",
+ "oxide_parser",
  "rustc-hash",
 ]
 
