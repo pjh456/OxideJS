@@ -11,3 +11,6 @@ oxide_parser = { path = "../oxide_parser" }
 serde.workspace = true
 serde_json.workspace = true
 rustc-hash.workspace = true
+
+[dev-dependencies]
+oxide_kernel = { path = "../oxide_kernel" }

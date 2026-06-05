@@ -10,7 +10,6 @@ description = "OxideJS - Shared kernel (CodeForge, ShapeForge, PropForge, String
 oxide_compiler = { path = "../oxide_compiler" }
 oxide_parser = { path = "../oxide_parser" }
 oxide_types = { path = "../oxide_types" }
-bumpalo.workspace = true
 dashmap.workspace = true
 hashbrown.workspace = true
 rustc-hash.workspace = true

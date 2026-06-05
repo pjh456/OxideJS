@@ -10,7 +10,6 @@ description = "OxideJS - Register-based VM with epoch arena memory"
 oxide_compiler = { path = "../oxide_compiler" }
 oxide_kernel = { path = "../oxide_kernel" }
 oxide_types = { path = "../oxide_types" }
-rustc-hash.workspace = true
 fast-float.workspace = true
 ryu.workspace = true
 
