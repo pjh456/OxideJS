@@ -1,9 +1,6 @@
 #![doc = "OxideJS - Register-based VM with epoch arena memory"]
 
 pub mod coercion;
-pub mod mem;
-pub mod object;
-pub mod shape;
-pub mod value;
 pub mod vm;
-pub use value::JsValue;
+pub mod vm_pool;
+pub use oxide_types::value::JsValue;

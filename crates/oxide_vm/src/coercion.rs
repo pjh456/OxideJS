@@ -1,7 +1,7 @@
-use crate::object::JsObject;
-use crate::shape::EMPTY_SHAPE_ID;
-use crate::value::JsValue;
 use crate::vm::Vm;
+use oxide_types::object::JsObject;
+use oxide_types::shape::EMPTY_SHAPE_ID;
+use oxide_types::value::JsValue;
 
 pub fn to_primitive(val: JsValue) -> JsValue {
     if val.is_object() {

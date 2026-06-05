@@ -5,8 +5,8 @@ use ansi_term::Colour::Red;
 use clap::{Parser, Subcommand};
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
-use oxide_vm::value::JsValue;
 use oxide_vm::vm::Vm;
+use oxide_vm::JsValue;
 
 #[derive(Parser)]
 #[command(name = "oxide", version, about = "OxideJS - Rust JavaScript engine")]

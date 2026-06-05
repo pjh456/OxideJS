@@ -2,10 +2,9 @@
 
 use std::sync::{Arc, Condvar, Mutex};
 
-use oxide_vm::mem::P;
-use oxide_vm::vm::Vm;
-
-use crate::kernel::OxideKernel;
+use crate::vm::Vm;
+use oxide_kernel::kernel::OxideKernel;
+use oxide_types::mem::P;
 
 struct VmPoolInner {
     available: Vec<Vm>,
@@ -29,7 +28,11 @@ pub struct VmGuard {
 }
 
 impl VmPool {
-    pub fn new(kernel: Arc<OxideKernel>, min_size: usize, max_size: Option<usize>) -> Arc<Self> {
+    pub fn new(
+        kernel: Arc<OxideKernel>,
+        #[allow(dead_code)] min_size: usize,
+        max_size: Option<usize>,
+    ) -> Arc<Self> {
         let pool = Arc::new(Self {
             kernel,
             inner: Mutex::new(VmPoolInner {
@@ -140,7 +143,7 @@ impl Drop for VmGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::KernelConfig;
+    use oxide_kernel::kernel::KernelConfig;
 
     fn test_kernel() -> Arc<OxideKernel> {
         Arc::new(OxideKernel::new(KernelConfig::minimal()))

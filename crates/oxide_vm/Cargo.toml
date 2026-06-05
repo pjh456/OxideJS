@@ -8,8 +8,8 @@ description = "OxideJS - Register-based VM with epoch arena memory"
 
 [dependencies]
 oxide_compiler = { path = "../oxide_compiler" }
-bumpalo.workspace = true
-hashbrown.workspace = true
+oxide_kernel = { path = "../oxide_kernel" }
+oxide_types = { path = "../oxide_types" }
 rustc-hash.workspace = true
 fast-float.workspace = true
 ryu.workspace = true

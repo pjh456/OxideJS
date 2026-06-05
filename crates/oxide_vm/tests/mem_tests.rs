@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use oxide_vm::mem::{Epoch, PersistentHeap};
+use oxide_types::mem::{Epoch, PersistentHeap};
 
 #[test]
 fn epoch_alloc_and_read() {

@@ -1,6 +1,6 @@
-use oxide_vm::mem::P;
-use oxide_vm::object::JsObject;
-use oxide_vm::value::JsValue;
+use oxide_types::mem::P;
+use oxide_types::object::JsObject;
+use oxide_types::value::JsValue;
 
 use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use crate::string_forge::Interner;

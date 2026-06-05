@@ -1,13 +1,12 @@
 #![allow(clippy::arc_with_non_send_sync)]
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::builtin::BuiltinWorld;
 use crate::code_forge::CodeForge;
 use crate::prop_forge::PropForge;
 use crate::shape_forge::ShapeForge;
 use crate::string_forge::Interner;
-use crate::vm_pool::{VmGuard, VmPool};
 
 pub struct KernelConfig {
     pub min_pool_size: usize,
@@ -66,8 +65,6 @@ pub struct OxideKernel {
     pub code_forge: Arc<CodeForge>,
     pub prop_forge: Arc<PropForge>,
     pub builtin_world: Arc<BuiltinWorld>,
-    #[allow(dead_code)]
-    vm_pool: Mutex<Option<Arc<VmPool>>>,
 }
 
 impl OxideKernel {
@@ -85,26 +82,7 @@ impl OxideKernel {
             code_forge,
             prop_forge,
             builtin_world,
-            vm_pool: Mutex::new(None),
         }
-    }
-
-    pub fn init_vm_pool(self: &Arc<Self>) {
-        let pool = VmPool::new(
-            Arc::clone(self),
-            self.config.min_pool_size,
-            self.config.max_pool_size,
-        );
-        *self.vm_pool.lock().unwrap() = Some(pool);
-    }
-
-    pub fn spawn(&self) -> VmGuard {
-        self.vm_pool
-            .lock()
-            .unwrap()
-            .as_ref()
-            .expect("vm_pool not initialized — call init_vm_pool() first")
-            .spawn()
     }
 
     pub fn string_forge(&self) -> &Arc<Interner> {
@@ -172,15 +150,5 @@ mod tests {
         assert!(!KernelConfig::minimal().warmup_builtin_ic);
         assert!(KernelConfig::full().warmup_builtin_ic);
         assert_eq!(KernelConfig::full().max_pool_size, None);
-    }
-
-    #[test]
-    fn test_kernel_spawn() {
-        let kernel = Arc::new(OxideKernel::new(KernelConfig::minimal()));
-        kernel.init_vm_pool();
-        let guard = kernel.spawn();
-        drop(guard);
-        let guard2 = kernel.spawn();
-        drop(guard2);
     }
 }

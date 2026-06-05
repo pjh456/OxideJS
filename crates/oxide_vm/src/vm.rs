@@ -5,10 +5,10 @@ use oxide_compiler::module::CompiledModule;
 use oxide_compiler::opcode::{self, OpCode};
 
 use crate::coercion;
-use crate::mem::{Epoch, P};
-use crate::object::JsObject;
-use crate::shape::{self, EMPTY_SHAPE_ID};
-use crate::value::JsValue;
+use oxide_types::mem::{Epoch, P};
+use oxide_types::object::JsObject;
+use oxide_types::shape::{self, EMPTY_SHAPE_ID};
+use oxide_types::value::JsValue;
 
 pub struct CallFrame {
     pub return_addr: usize,

@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/oxide_parser",
     "crates/oxide_compiler",
+    "crates/oxide_types",
     "crates/oxide_vm",
     "crates/oxide_kernel",
     "crates/oxide_api",

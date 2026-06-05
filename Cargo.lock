@@ -786,7 +786,7 @@ dependencies = [
  "hashbrown 0.14.5",
  "oxide_compiler",
  "oxide_parser",
- "oxide_vm",
+ "oxide_types",
  "rustc-hash",
 ]
 
@@ -803,14 +803,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "oxide_vm"
+name = "oxide_types"
 version = "0.1.0"
 dependencies = [
  "bumpalo",
- "fast-float",
  "hashbrown 0.14.5",
+ "proptest",
+ "rustc-hash",
+]
+
+[[package]]
+name = "oxide_vm"
+version = "0.1.0"
+dependencies = [
+ "fast-float",
  "oxide_compiler",
+ "oxide_kernel",
  "oxide_parser",
+ "oxide_types",
  "proptest",
  "rustc-hash",
  "ryu",

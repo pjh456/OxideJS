@@ -4,12 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "OxideJS - Shared kernel (CodeForge, ShapeForge, IcForge, StringForge, BuiltinWorld)"
+description = "OxideJS - Shared kernel (CodeForge, ShapeForge, PropForge, StringForge, BuiltinWorld)"
 
 [dependencies]
 oxide_compiler = { path = "../oxide_compiler" }
 oxide_parser = { path = "../oxide_parser" }
-oxide_vm = { path = "../oxide_vm" }
+oxide_types = { path = "../oxide_types" }
 bumpalo.workspace = true
 dashmap.workspace = true
 hashbrown.workspace = true
