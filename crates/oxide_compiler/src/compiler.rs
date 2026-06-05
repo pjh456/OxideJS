@@ -169,8 +169,22 @@ impl Compiler {
                 ctx.alloc_reg();
             }
             Expression::AssignmentExpression(assign) => {
-                self.count_expression(&assign.right, ctx);
-                ctx.alloc_reg();
+                if let oxide_parser::AssignmentTarget::StaticMemberExpression(member) = &assign.left
+                {
+                    self.count_expression(&member.object, ctx);
+                    self.count_expression(&assign.right, ctx);
+                    ctx.alloc_reg();
+                } else if let oxide_parser::AssignmentTarget::ComputedMemberExpression(member) =
+                    &assign.left
+                {
+                    self.count_expression(&member.object, ctx);
+                    self.count_expression(&member.expression, ctx);
+                    self.count_expression(&assign.right, ctx);
+                    ctx.alloc_reg();
+                } else {
+                    self.count_expression(&assign.right, ctx);
+                    ctx.alloc_reg();
+                }
             }
             Expression::ConditionalExpression(cond) => {
                 self.count_expression(&cond.test, ctx);
@@ -186,6 +200,34 @@ impl Compiler {
             Expression::LogicalExpression(log) => {
                 self.count_expression(&log.left, ctx);
                 self.count_expression(&log.right, ctx);
+                ctx.alloc_reg();
+            }
+            Expression::ObjectExpression(obj) => {
+                ctx.alloc_reg();
+                for prop in &obj.properties {
+                    if let oxide_parser::ObjectPropertyKind::ObjectProperty(p) = prop {
+                        ctx.alloc_reg();
+                        self.count_expression(&p.value, ctx);
+                    }
+                }
+            }
+            Expression::ArrayExpression(arr) => {
+                ctx.alloc_reg();
+                for elem in &arr.elements {
+                    if let Some(e) = elem.as_expression() {
+                        self.count_expression(e, ctx);
+                        ctx.alloc_reg();
+                    }
+                }
+            }
+            Expression::StaticMemberExpression(member) => {
+                self.count_expression(&member.object, ctx);
+                ctx.alloc_reg();
+                ctx.alloc_reg();
+            }
+            Expression::ComputedMemberExpression(member) => {
+                self.count_expression(&member.object, ctx);
+                self.count_expression(&member.expression, ctx);
                 ctx.alloc_reg();
             }
             _ => {
@@ -373,6 +415,71 @@ impl Compiler {
                     ctx.emit(opcode::encode(OpCode::SET_PROP, obj_reg, val_reg, key_reg));
                 }
                 Ok(obj_reg)
+            }
+            Expression::ArrayExpression(arr) => {
+                let arr_reg = ctx.alloc_reg();
+                let n = arr.elements.len() as u16;
+                ctx.emit(opcode::encode(
+                    OpCode::NEW_ARRAY,
+                    arr_reg,
+                    (n & 0xFF) as u8,
+                    ((n >> 8) & 0xFF) as u8,
+                ));
+                for (i, elem) in arr.elements.iter().enumerate() {
+                    let Some(e) = elem.as_expression() else {
+                        return Err("spread not supported".into());
+                    };
+                    let val_reg = self.emit_expression(e, ctx)?;
+                    let idx_reg = ctx.alloc_reg();
+                    let idx = ctx.add_constant(Constant::Number(i as f64));
+                    ctx.emit(opcode::encode(
+                        OpCode::LOAD_CONST,
+                        idx_reg,
+                        (idx & 0xFF) as u8,
+                        ((idx >> 8) & 0xFF) as u8,
+                    ));
+                    ctx.emit(opcode::encode(OpCode::SET_ELEM, arr_reg, idx_reg, val_reg));
+                }
+                Ok(arr_reg)
+            }
+            Expression::AssignmentExpression(assign) => {
+                if let oxide_parser::AssignmentTarget::StaticMemberExpression(member) = &assign.left
+                {
+                    let obj_reg = self.emit_expression(&member.object, ctx)?;
+                    let val_reg = self.emit_expression(&assign.right, ctx)?;
+                    let prop_name = member.property.name.as_str();
+                    let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
+                    let key_reg = ctx.alloc_reg();
+                    ctx.emit(opcode::encode(
+                        OpCode::LOAD_CONST,
+                        key_reg,
+                        (idx & 0xFF) as u8,
+                        ((idx >> 8) & 0xFF) as u8,
+                    ));
+                    ctx.emit(opcode::encode(
+                        OpCode::IC_SET_PROP,
+                        obj_reg,
+                        val_reg,
+                        key_reg,
+                    ));
+                    ctx.emit(0);
+                    Ok(val_reg)
+                } else if let oxide_parser::AssignmentTarget::ComputedMemberExpression(member) =
+                    &assign.left
+                {
+                    let obj_reg = self.emit_expression(&member.object, ctx)?;
+                    let key_reg = self.emit_expression(&member.expression, ctx)?;
+                    let val_reg = self.emit_expression(&assign.right, ctx)?;
+                    ctx.emit(opcode::encode(
+                        OpCode::SET_PROP_DYNAMIC,
+                        obj_reg,
+                        key_reg,
+                        val_reg,
+                    ));
+                    Ok(val_reg)
+                } else {
+                    Err("assignment target not supported".into())
+                }
             }
             _ => Err(format!(
                 "unsupported expression type: {:?}",
