@@ -4,7 +4,6 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use crate::vm::Vm;
 use oxide_kernel::kernel::OxideKernel;
-use oxide_types::mem::P;
 
 struct VmPoolInner {
     available: Vec<Vm>,
@@ -57,9 +56,7 @@ impl VmPool {
     }
 
     fn new_vm(kernel: &Arc<OxideKernel>) -> Vm {
-        let mut vm = Vm::new();
-        vm.object_prototype = P::clone(&kernel.builtin_world().object_proto);
-        vm
+        Vm::with_kernel(Arc::clone(kernel))
     }
 
     fn replace_vm(&self) -> Vm {
