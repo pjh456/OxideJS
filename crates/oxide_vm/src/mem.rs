@@ -14,6 +14,13 @@ impl<T> P<T> {
     pub fn new(value: T) -> Self {
         Self(Arc::new(value))
     }
+
+    pub fn from_arena(value: &T) -> Self
+    where
+        T: Clone,
+    {
+        Self(Arc::new(value.clone()))
+    }
 }
 
 impl<T> Clone for P<T> {

@@ -1,5 +1,6 @@
 #![doc = "OxideJS - Shared kernel (CodeForge, ShapeForge, IcForge, StringForge, BuiltinWorld)"]
 
+pub mod builtin;
 pub mod code_forge;
 pub mod prop_forge;
 pub mod shape_forge;
