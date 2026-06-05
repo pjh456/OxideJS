@@ -340,6 +340,7 @@ impl Compiler {
                     BinaryOperator::GreaterThan => OpCode::GT,
                     BinaryOperator::LessEqualThan => OpCode::LTE,
                     BinaryOperator::GreaterEqualThan => OpCode::GTE,
+                    BinaryOperator::In => OpCode::IN,
                     _ => return Err(format!("unsupported binary operator: {:?}", bin.operator)),
                 };
                 let r = ctx.alloc_reg();
@@ -348,12 +349,23 @@ impl Compiler {
             }
             Expression::UnaryExpression(un) => {
                 let arg = self.emit_expression(&un.argument, ctx)?;
-                if matches!(un.operator, UnaryOperator::UnaryNegation) {
-                    let r = ctx.alloc_reg();
-                    ctx.emit(opcode::encode(OpCode::NEG, r, arg, 0));
-                    Ok(r)
-                } else {
-                    Err(format!("unsupported unary operator: {:?}", un.operator))
+                match un.operator {
+                    UnaryOperator::UnaryNegation => {
+                        let r = ctx.alloc_reg();
+                        ctx.emit(opcode::encode(OpCode::NEG, r, arg, 0));
+                        Ok(r)
+                    }
+                    UnaryOperator::Typeof => {
+                        let r = ctx.alloc_reg();
+                        ctx.emit(opcode::encode(OpCode::TYPEOF, r, arg, 0));
+                        Ok(r)
+                    }
+                    UnaryOperator::Void => {
+                        let r = ctx.alloc_reg();
+                        ctx.emit(opcode::encode(OpCode::VOID, r, arg, 0));
+                        Ok(r)
+                    }
+                    _ => Err(format!("unsupported unary operator: {:?}", un.operator)),
                 }
             }
             Expression::StaticMemberExpression(member) => {

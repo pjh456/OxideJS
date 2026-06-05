@@ -426,6 +426,51 @@ impl Vm {
                     }
                 }
 
+                OpCode::TYPEOF => {
+                    let val = self.regs[a];
+                    let result = if val.is_undefined() {
+                        "undefined"
+                    } else if val.is_null() {
+                        "object"
+                    } else if val.is_bool() {
+                        "boolean"
+                    } else if val.is_int() || val.is_double() {
+                        "number"
+                    } else if val.is_string() {
+                        "string"
+                    } else if val.is_object() {
+                        let obj = unsafe { &*val.as_js_object_ptr() };
+                        if obj.is_function() {
+                            "function"
+                        } else {
+                            "object"
+                        }
+                    } else {
+                        "undefined"
+                    };
+                    self.regs[rd] = self.intern(result);
+                }
+
+                OpCode::VOID => {
+                    self.regs[rd] = JsValue::undefined();
+                }
+
+                OpCode::IN => {
+                    let key_val = self.regs[a];
+                    let obj_ptr = self.regs[b].as_object_ptr() as *mut JsObject;
+                    if obj_ptr.is_null() {
+                        return Err("IN right-hand side is not an object".into());
+                    }
+                    let obj = unsafe { &*obj_ptr };
+                    let prop_name_si = if key_val.is_string() {
+                        key_val.as_string_index()
+                    } else {
+                        return Err("IN key must be a string".into());
+                    };
+                    let found = self.resolve_property(obj, prop_name_si).is_some();
+                    self.regs[rd] = JsValue::bool(found);
+                }
+
                 _ => {
                     if !op.is_implemented() {
                         return Ok(JsValue::undefined());
