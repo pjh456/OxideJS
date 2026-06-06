@@ -153,8 +153,9 @@ impl Compiler {
 
         let mut last_result: Option<u8> = None;
         for stmt in &program.body {
-            if let Some(r) = self.emit_statement(stmt, &mut ctx)? {
-                last_result = Some(r);
+            match self.emit_statement(stmt, &mut ctx)? {
+                Some(r) => last_result = Some(r),
+                None => last_result = None,
             }
         }
 
