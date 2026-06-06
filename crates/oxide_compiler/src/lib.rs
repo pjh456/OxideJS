@@ -3,3 +3,4 @@
 pub mod compiler;
 pub mod module;
 pub mod opcode;
+pub mod symbol_table;

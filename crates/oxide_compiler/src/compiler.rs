@@ -1,5 +1,6 @@
 use crate::module::CompiledModule;
 use crate::opcode::{self, OpCode};
+use crate::symbol_table::SymbolTable;
 
 pub use oxide_parser::{BinaryOperator, Expression, Statement, UnaryOperator};
 
@@ -20,6 +21,8 @@ struct CompileCtx {
     constants: Vec<Constant>,
     next_reg: u8,
     max_regs: u8,
+    #[allow(dead_code)]
+    symbols: SymbolTable,
 }
 
 impl CompileCtx {
@@ -29,6 +32,7 @@ impl CompileCtx {
             constants: Vec::new(),
             next_reg: 0,
             max_regs: 0,
+            symbols: SymbolTable::new(),
         }
     }
 
@@ -56,6 +60,37 @@ impl CompileCtx {
         let idx = self.constants.len();
         self.constants.push(c);
         idx as u16
+    }
+
+    #[allow(dead_code)]
+    fn push_scope(&mut self) {
+        self.symbols.push_scope();
+    }
+
+    #[allow(dead_code)]
+    fn pop_scope(&mut self) {
+        self.symbols.pop_scope();
+    }
+
+    #[allow(dead_code)]
+    fn declare(&mut self, name: &str, reg: u8) -> Result<(), String> {
+        self.symbols.declare(name, reg)
+    }
+
+    #[allow(dead_code)]
+    fn lookup(&self, name: &str) -> Result<u8, String> {
+        self.symbols.lookup(name)
+    }
+
+    #[allow(dead_code)]
+    fn lookup_or_global(&mut self, name: &str) -> u8 {
+        let reg = self.alloc_reg();
+        self.symbols.lookup_or_global(name, reg)
+    }
+
+    #[allow(dead_code)]
+    fn init_var(&mut self, name: &str) {
+        self.symbols.init_var(name);
     }
 }
 
