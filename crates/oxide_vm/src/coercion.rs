@@ -5,9 +5,6 @@ use oxide_types::shape::EMPTY_SHAPE_ID;
 use oxide_types::value::JsValue;
 
 pub fn to_primitive(val: JsValue) -> JsValue {
-    if val.is_object() {
-        panic_to_object();
-    }
     val
 }
 
@@ -34,7 +31,7 @@ pub fn to_number(val: JsValue, string_forge: &StringForge) -> f64 {
         return s.parse::<f64>().unwrap_or(f64::NAN);
     }
     if val.is_object() {
-        panic_to_object();
+        return f64::NAN;
     }
     f64::NAN
 }
@@ -76,7 +73,7 @@ pub fn to_string(string_forge: &StringForge, val: JsValue) -> String {
             .unwrap_or_default();
     }
     if val.is_object() {
-        panic_to_object();
+        return "[object]".to_string();
     }
     String::new()
 }
@@ -148,7 +145,7 @@ pub fn abstract_eq(lhs: JsValue, rhs: JsValue, string_forge: &StringForge) -> bo
         return false;
     }
     if lhs.is_object() || rhs.is_object() {
-        panic_to_object();
+        return lhs.is_object() && rhs.is_object() && lhs.as_ptr() == rhs.as_ptr();
     }
     false
 }
@@ -208,10 +205,6 @@ pub fn string_concat(lhs: &str, rhs: &str) -> String {
     s.push_str(lhs);
     s.push_str(rhs);
     s
-}
-
-fn panic_to_object() -> ! {
-    panic!("ToObject failed: null or undefined cannot be converted to object")
 }
 
 pub fn same_value(lhs: JsValue, rhs: JsValue) -> bool {
