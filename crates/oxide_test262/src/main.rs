@@ -2,7 +2,6 @@ use oxide_compiler::compiler::Compiler;
 use oxide_kernel::kernel::{KernelConfig, OxideKernel};
 use oxide_vm::vm::Vm;
 use serde::Deserialize;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,6 +37,7 @@ struct TestMeta {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 enum TestOutcome {
     Pass(String),
     Fail(String),
@@ -45,6 +45,7 @@ enum TestOutcome {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct TestResult {
     path: PathBuf,
     outcome: TestOutcome,
@@ -396,14 +397,6 @@ fn main() {
             continue;
         }
 
-        let rel = path.strip_prefix(&test262_root).unwrap_or(path);
-        if let Ok(mut f) = std::fs::File::create("test262-crash.log") {
-            let _ = write!(f, "{}\n", rel.display());
-            let _ = f.flush();
-        }
-        eprintln!("  running: {}", rel.display());
-        let _ = std::io::stderr().flush();
-
         let result = run_test(path, &source, &meta, &kernel);
         match &result.outcome {
             TestOutcome::Pass(_) => stats.pass += 1,
@@ -416,49 +409,29 @@ fn main() {
 
     eprintln!();
 
-    let mut pass_count = 0;
-    let mut fail_count = 0;
-    let mut skip_count = 0;
-
-    for r in &results {
-        match &r.outcome {
-            TestOutcome::Pass(msg) => {
-                pass_count += 1;
-                let rel = r.path.strip_prefix(&test262_root).unwrap_or(&r.path);
-                println!("PASS  [{:>7}ms] {} -- {msg}", r.duration_ms, rel.display());
-            }
-            TestOutcome::Fail(msg) => {
-                fail_count += 1;
-                let rel = r.path.strip_prefix(&test262_root).unwrap_or(&r.path);
-                println!("FAIL  [{:>7}ms] {} -- {msg}", r.duration_ms, rel.display());
-            }
-            TestOutcome::Skip(_msg) => {
-                skip_count += 1;
-            }
-        }
-    }
+    let ran = stats.pass + stats.fail;
 
     println!();
     println!("═══════════════════════════════════════");
     println!("  test262 results");
     println!("═══════════════════════════════════════");
     println!("  total  : {}", results.len());
-    println!("  pass   : {pass_count}");
-    println!("  fail   : {fail_count}");
-    println!("  skip   : {skip_count}");
+    println!("  pass   : {}", stats.pass);
+    println!("  fail   : {}", stats.fail);
+    println!("  skip   : {}", stats.skip);
     println!("  time   : {:?}", Duration::from_millis(stats.total_ms));
     println!(
         "  pass%  : {:.1}% (of ran: {:.1}%)",
-        pass_count as f64 / results.len() as f64 * 100.0,
-        if pass_count + fail_count > 0 {
-            pass_count as f64 / (pass_count + fail_count) as f64 * 100.0
+        stats.pass as f64 / results.len() as f64 * 100.0,
+        if ran > 0 {
+            stats.pass as f64 / ran as f64 * 100.0
         } else {
             0.0
         }
     );
     println!("═══════════════════════════════════════");
 
-    if fail_count > 0 {
+    if stats.fail > 0 {
         std::process::exit(1);
     }
 }
