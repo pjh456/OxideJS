@@ -382,12 +382,7 @@ impl Compiler {
                     (idx & 0xFF) as u8,
                     ((idx >> 8) & 0xFF) as u8,
                 ));
-                ctx.emit(opcode::encode(
-                    OpCode::IC_GET_PROP,
-                    0,
-                    obj_reg,
-                    key_reg,
-                ));
+                ctx.emit(opcode::encode(OpCode::IC_GET_PROP, 0, obj_reg, key_reg));
                 ctx.emit(0);
                 Ok(obj_reg)
             }
