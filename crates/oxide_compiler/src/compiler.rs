@@ -151,15 +151,23 @@ impl Compiler {
         ctx.max_regs = ctx.max_regs.max(1);
         ctx.reset_regs();
 
-        let mut last_result = 0u8;
+        let mut last_result: Option<u8> = None;
         for stmt in &program.body {
             if let Some(r) = self.emit_statement(stmt, &mut ctx)? {
-                last_result = r;
+                last_result = Some(r);
             }
         }
 
-        if last_result != 0 {
-            ctx.emit(opcode::encode(OpCode::LOAD_VAR, 0, last_result, 0));
+        if let Some(r) = last_result {
+            ctx.emit(opcode::encode(OpCode::LOAD_VAR, 0, r, 0));
+        } else {
+            let undef_idx = ctx.add_constant(Constant::Undefined);
+            ctx.emit(opcode::encode(
+                OpCode::LOAD_CONST,
+                0,
+                (undef_idx & 0xFF) as u8,
+                ((undef_idx >> 8) & 0xFF) as u8,
+            ));
         }
         ctx.emit(opcode::encode(OpCode::HALT, 0, 0, 0));
 

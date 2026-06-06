@@ -165,3 +165,169 @@ fn eval_multi_stmt_last_value() {
 fn eval_var_declaration() {
     assert_eq!(eval("var x = 42"), "42");
 }
+
+#[test]
+fn eval_if_true() {
+    assert_eq!(eval("if (true) { 1 } else { 2 }"), "1");
+}
+
+#[test]
+fn eval_if_false() {
+    assert_eq!(eval("if (false) { 1 } else { 2 }"), "2");
+}
+
+#[test]
+fn eval_if_without_else_true() {
+    assert_eq!(eval("if (true) { 42 }"), "42");
+}
+
+#[test]
+fn eval_if_without_else_false() {
+    assert_eq!(eval("if (false) { 42 }"), "undefined");
+}
+
+#[test]
+fn eval_dangling_else() {
+    assert_eq!(eval("if (true) { if (false) { 1 } else { 2 } }"), "2");
+}
+
+#[test]
+fn eval_while_zero_iterations() {
+    assert_eq!(eval("var x = 0; while (false) { x = 1; } x"), "0");
+}
+
+#[test]
+fn eval_while_multi_iterations() {
+    assert_eq!(eval("var i = 0; while (i < 3) { i = i + 1; } i"), "3");
+}
+
+#[test]
+fn eval_while_result_undefined() {
+    assert_eq!(eval("while (false) { 1; }"), "undefined");
+}
+
+#[test]
+fn eval_for_basic() {
+    assert_eq!(
+        eval("var r = 0; for (i = 0; i < 3; i = i + 1) { r = r + i; } r"),
+        "3"
+    );
+}
+
+#[test]
+fn eval_for_no_test() {
+    assert_eq!(
+        eval("var r = 0; for (i = 0; ; i = i + 1) { if (i >= 3) { break; } r = r + i; } r"),
+        "3"
+    );
+}
+
+#[test]
+fn eval_for_no_init_update() {
+    assert_eq!(eval("var i = 0; for (; i < 3; ) { i = i + 1; } i"), "3");
+}
+
+#[test]
+fn eval_ternary_true() {
+    assert_eq!(eval("true ? 1 : 2"), "1");
+}
+
+#[test]
+fn eval_ternary_false() {
+    assert_eq!(eval("false ? 1 : 2"), "2");
+}
+
+#[test]
+fn eval_ternary_nested() {
+    assert_eq!(eval("true ? (false ? 1 : 2) : 3"), "2");
+}
+
+#[test]
+fn eval_not_true() {
+    assert_eq!(eval("!true"), "false");
+}
+
+#[test]
+fn eval_not_false() {
+    assert_eq!(eval("!false"), "true");
+}
+
+#[test]
+fn eval_not_zero() {
+    assert_eq!(eval("!0"), "true");
+}
+
+#[test]
+fn eval_not_string() {
+    assert_eq!(eval("!'hello'"), "false");
+}
+
+#[test]
+fn eval_and_short_circuit() {
+    assert_eq!(eval("var x = 0; false && (x = 5); x"), "0");
+}
+
+#[test]
+fn eval_and_truthy() {
+    assert_eq!(eval("1 && 2"), "2");
+}
+
+#[test]
+fn eval_and_falsy_first() {
+    assert_eq!(eval("0 && 2"), "0");
+}
+
+#[test]
+fn eval_or_short_circuit() {
+    assert_eq!(eval("var x = 0; true || (x = 5); x"), "0");
+}
+
+#[test]
+fn eval_or_truthy_first() {
+    assert_eq!(eval("1 || 2"), "1");
+}
+
+#[test]
+fn eval_or_falsy_both() {
+    assert_eq!(eval("0 || false"), "false");
+}
+
+#[test]
+fn eval_break_in_while() {
+    assert_eq!(
+        eval("var i = 0; while (true) { i = i + 1; if (i >= 3) { break; } } i"),
+        "3"
+    );
+}
+
+#[test]
+fn eval_continue_in_while() {
+    assert_eq!(
+        eval("var i = 0; var r = 0; while (i < 5) { i = i + 1; if (i == 3) { continue; } r = r + 1; } r"),
+        "4"
+    );
+}
+
+#[test]
+fn eval_break_in_nested_loop() {
+    assert_eq!(
+        eval("var x = 0; while (true) { while (true) { x = x + 1; if (x >= 3) { break; } } break; } x"),
+        "3"
+    );
+}
+
+#[test]
+fn eval_break_in_for() {
+    assert_eq!(
+        eval("var r = 0; for (i = 0; i < 10; i = i + 1) { if (i >= 3) { break; } r = r + i; } r"),
+        "3"
+    );
+}
+
+#[test]
+fn eval_control_flow_complex() {
+    assert_eq!(
+        eval("var r = 0; for (i = 0; i < 5; i = i + 1) { if (i == 2) { continue; } r = r + i; } r"),
+        "8"
+    );
+}

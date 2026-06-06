@@ -546,6 +546,21 @@ impl Vm {
                     self.regs[rd] = JsValue::bool(found);
                 }
 
+                OpCode::NOT => {
+                    let cond = coercion::to_boolean(self.regs[a]);
+                    self.regs[rd] = JsValue::bool(!cond);
+                }
+
+                OpCode::AND => {
+                    let cond = coercion::to_boolean(self.regs[a]);
+                    self.regs[rd] = if cond { self.regs[b] } else { self.regs[a] };
+                }
+
+                OpCode::OR => {
+                    let cond = coercion::to_boolean(self.regs[a]);
+                    self.regs[rd] = if cond { self.regs[a] } else { self.regs[b] };
+                }
+
                 _ => {
                     if !op.is_implemented() {
                         return Ok(JsValue::undefined());
