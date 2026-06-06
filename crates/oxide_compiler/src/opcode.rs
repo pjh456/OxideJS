@@ -25,8 +25,11 @@ pub enum OpCode {
     LTE = 0x14,
     GTE = 0x15,
     IN = 0x16,
+    NOT = 0x17,
+    AND = 0x18,
+    OR = 0x19,
 
-    // ── Control Flow (0x20-0x2F) ──
+    // -- Control Flow (0x20-0x2F) --
     JMP = 0x20,
     JMP_IF_FALSE = 0x21,
     JMP_IF_TRUE = 0x22,
@@ -100,6 +103,9 @@ impl TryFrom<u8> for OpCode {
             0x14 => Ok(OpCode::LTE),
             0x15 => Ok(OpCode::GTE),
             0x16 => Ok(OpCode::IN),
+            0x17 => Ok(OpCode::NOT),
+            0x18 => Ok(OpCode::AND),
+            0x19 => Ok(OpCode::OR),
             0x20 => Ok(OpCode::JMP),
             0x21 => Ok(OpCode::JMP_IF_FALSE),
             0x22 => Ok(OpCode::JMP_IF_TRUE),
@@ -148,6 +154,9 @@ impl fmt::Display for OpCode {
             OpCode::LTE => "LTE",
             OpCode::GTE => "GTE",
             OpCode::IN => "IN",
+            OpCode::NOT => "NOT",
+            OpCode::AND => "AND",
+            OpCode::OR => "OR",
             OpCode::JMP => "JMP",
             OpCode::JMP_IF_FALSE => "JMP_IF_FALSE",
             OpCode::JMP_IF_TRUE => "JMP_IF_TRUE",
@@ -214,4 +223,22 @@ pub fn imm16(instr: Instr) -> u16 {
 
 pub fn offset16(instr: Instr) -> i16 {
     ((instr >> 16) & 0xFFFF) as i16
+}
+
+pub fn encode_jmp(offset: i16) -> Instr {
+    let lo = (offset as u16 & 0xFF) as u8;
+    let hi = ((offset as u16 >> 8) & 0xFF) as u8;
+    encode(OpCode::JMP, 0, lo, hi)
+}
+
+pub fn encode_jmp_if_false(rd: u8, offset: i16) -> Instr {
+    let lo = (offset as u16 & 0xFF) as u8;
+    let hi = ((offset as u16 >> 8) & 0xFF) as u8;
+    encode(OpCode::JMP_IF_FALSE, rd, lo, hi)
+}
+
+pub fn encode_jmp_if_true(rd: u8, offset: i16) -> Instr {
+    let lo = (offset as u16 & 0xFF) as u8;
+    let hi = ((offset as u16 >> 8) & 0xFF) as u8;
+    encode(OpCode::JMP_IF_TRUE, rd, lo, hi)
 }
