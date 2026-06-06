@@ -121,6 +121,11 @@ impl Compiler {
             }
             Expression::CallExpression(call) => {
                 self.count_expression(&call.callee, ctx);
+                for arg in &call.arguments {
+                    if let Some(expr) = arg.as_expression() {
+                        self.count_expression(expr, ctx);
+                    }
+                }
                 ctx.alloc_reg();
                 ctx.projected_pc += 1; // CALL
             }
