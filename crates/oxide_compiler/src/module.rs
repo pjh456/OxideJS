@@ -1,7 +1,15 @@
 use std::fmt;
 
-use crate::compiler::Constant;
 use crate::opcode::{self, OpCode};
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Constant {
+    Number(f64),
+    String(String),
+    Boolean(bool),
+    Null,
+    Undefined,
+}
 
 pub struct CompiledModule {
     pub bytecode: Vec<opcode::Instr>,
