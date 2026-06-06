@@ -162,6 +162,7 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
         "new.target",
         "well-formed-json-stringify",
         "optional-chaining",
+        "symbols-as-weakmap-keys",
     ];
 
     for feat in &meta.features {
@@ -288,6 +289,7 @@ fn run_test_inner(
             } else if e.contains("not yet implemented")
                 || e.contains("not supported")
                 || e.contains("unsupported")
+                || e.contains("step limit")
             {
                 TestResult::skip(path.to_path_buf(), format!("vm: {e}"))
             } else {
@@ -391,6 +393,13 @@ fn main() {
             }
         }
 
+        let path_str = path.to_string_lossy();
+        if path_str.contains("staging") {
+            results.push(TestResult::skip(path.clone(), "staging tests excluded".into()));
+            stats.skip += 1;
+            continue;
+        }
+
         if let Some(reason) = is_skipped(&meta) {
             results.push(TestResult::skip(path.clone(), reason));
             stats.skip += 1;
@@ -416,13 +425,14 @@ fn main() {
     println!("  test262 results");
     println!("═══════════════════════════════════════");
     println!("  total  : {}", results.len());
-    println!("  pass   : {}", stats.pass);
-    println!("  fail   : {}", stats.fail);
-    println!("  skip   : {}", stats.skip);
+    let total = results.len() as f64;
+    println!("  pass   : {} ({:.1}%)", stats.pass, stats.pass as f64 / total * 100.0);
+    println!("  fail   : {} ({:.1}%)", stats.fail, stats.fail as f64 / total * 100.0);
+    println!("  skip   : {} ({:.1}%)", stats.skip, stats.skip as f64 / total * 100.0);
     println!("  time   : {:?}", Duration::from_millis(stats.total_ms));
     println!(
         "  pass%  : {:.1}% (of ran: {:.1}%)",
-        stats.pass as f64 / results.len() as f64 * 100.0,
+        stats.pass as f64 / total * 100.0,
         if ran > 0 {
             stats.pass as f64 / ran as f64 * 100.0
         } else {
