@@ -121,10 +121,10 @@ impl Compiler {
                             ctx.projected_pc += 1; // STORE_VAR (value from FOR_IN_NEXT)
                         }
                     }
-                oxide_parser::ForStatementLeft::AssignmentTargetIdentifier(_) => {
-                    ctx.alloc_reg(); // key register
-                    ctx.projected_pc += 1; // STORE_VAR
-                }
+                    oxide_parser::ForStatementLeft::AssignmentTargetIdentifier(_) => {
+                        ctx.alloc_reg(); // key register
+                        ctx.projected_pc += 1; // STORE_VAR
+                    }
                     _ => {}
                 }
 

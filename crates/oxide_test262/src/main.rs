@@ -186,7 +186,11 @@ fn run_test(path: &Path, source: &str, meta: &TestMeta) -> TestResult {
         Ok(r) => r,
         Err(_panic) => {
             let dur = start.elapsed().as_millis() as u64;
-            TestResult::fail(path.to_path_buf(), dur, "engine panic (unsupported feature)")
+            TestResult::fail(
+                path.to_path_buf(),
+                dur,
+                "engine panic (unsupported feature)",
+            )
         }
     }
 }
@@ -350,10 +354,7 @@ fn main() {
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) => {
-                results.push(TestResult::skip(
-                    path.clone(),
-                    format!("read error: {e}"),
-                ));
+                results.push(TestResult::skip(path.clone(), format!("read error: {e}")));
                 stats.skip += 1;
                 continue;
             }

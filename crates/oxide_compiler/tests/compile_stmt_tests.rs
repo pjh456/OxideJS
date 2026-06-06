@@ -204,7 +204,10 @@ fn compile_do_while_emits_body_before_test() {
 #[test]
 fn compile_do_while_break() {
     let module = compile_source("do { break; } while (true)");
-    assert!(!module.bytecode.is_empty(), "do-while with break should compile");
+    assert!(
+        !module.bytecode.is_empty(),
+        "do-while with break should compile"
+    );
 }
 
 #[test]
@@ -251,7 +254,10 @@ fn compile_for_in_let_decl() {
 fn compile_switch_emits_jmp_if_true() {
     let module = compile_source("var x=0; switch(x){case 1:1;case 2:2;}");
     assert!(
-        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::JMP_IF_TRUE),
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::JMP_IF_TRUE),
         "switch should emit JMP_IF_TRUE"
     );
 }

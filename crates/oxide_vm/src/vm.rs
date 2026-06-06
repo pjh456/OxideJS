@@ -583,8 +583,7 @@ impl Vm {
                     let obj = unsafe { &*obj_val.as_js_object_ptr() };
                     let shape_id = obj.shape_id();
 
-                    let mut keys_vec =
-                        bumpalo::collections::Vec::new_in(self.epoch.bump());
+                    let mut keys_vec = bumpalo::collections::Vec::new_in(self.epoch.bump());
                     let mut cursor = Some(shape_id);
                     while let Some(id) = cursor {
                         if id == oxide_kernel::shape_forge::EMPTY_SHAPE_ID {

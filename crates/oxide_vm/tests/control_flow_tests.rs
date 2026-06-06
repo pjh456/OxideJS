@@ -171,10 +171,7 @@ fn eval_do_while_continue() {
 
 #[test]
 fn eval_for_in_enumerates_keys() {
-    assert_eq!(
-        eval("var n=0; for (k in {a:1,b:2}) { n=n+1; } n"),
-        "2"
-    );
+    assert_eq!(eval("var n=0; for (k in {a:1,b:2}) { n=n+1; } n"), "2");
 }
 
 #[test]
@@ -231,26 +228,17 @@ fn eval_switch_basic_match() {
 
 #[test]
 fn eval_switch_fallthrough() {
-    assert_eq!(
-        eval("var x=0;switch(1){case 1:case 2:x=42;}x"),
-        "42"
-    );
+    assert_eq!(eval("var x=0;switch(1){case 1:case 2:x=42;}x"), "42");
 }
 
 #[test]
 fn eval_switch_default() {
-    assert_eq!(
-        eval("var x=0;switch(99){case 1:x=10;default:x=30;}x"),
-        "30"
-    );
+    assert_eq!(eval("var x=0;switch(99){case 1:x=10;default:x=30;}x"), "30");
 }
 
 #[test]
 fn eval_switch_no_match_no_default() {
-    assert_eq!(
-        eval("var x=0;switch(99){case 1:x=10;}x"),
-        "0"
-    );
+    assert_eq!(eval("var x=0;switch(99){case 1:x=10;}x"), "0");
 }
 
 #[test]

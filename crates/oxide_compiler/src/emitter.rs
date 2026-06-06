@@ -306,7 +306,9 @@ impl Compiler {
                 let break_label = if let Some(sw_label) = ctx.current_switch() {
                     *sw_label
                 } else {
-                    let (bl, _) = ctx.current_loop().ok_or("break outside switch or loop".to_string())?;
+                    let (bl, _) = ctx
+                        .current_loop()
+                        .ok_or("break outside switch or loop".to_string())?;
                     *bl
                 };
                 let break_pos = ctx.resolve_label(break_label)?;
