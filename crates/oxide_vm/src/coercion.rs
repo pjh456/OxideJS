@@ -11,7 +11,7 @@ pub fn to_primitive(val: JsValue) -> JsValue {
     val
 }
 
-pub fn to_number(val: JsValue) -> f64 {
+pub fn to_number(val: JsValue, string_forge: &StringForge) -> f64 {
     if val.is_int() {
         return val.as_int() as f64;
     }
@@ -26,6 +26,12 @@ pub fn to_number(val: JsValue) -> f64 {
     }
     if val.is_undefined() {
         return f64::NAN;
+    }
+    if val.is_string() {
+        let s = string_forge
+            .lookup(val.as_string_index())
+            .unwrap_or_default();
+        return s.parse::<f64>().unwrap_or(f64::NAN);
     }
     if val.is_object() {
         panic_to_object();
@@ -98,7 +104,7 @@ pub fn to_boolean(val: JsValue) -> bool {
     false
 }
 
-pub fn abstract_eq(lhs: JsValue, rhs: JsValue) -> bool {
+pub fn abstract_eq(lhs: JsValue, rhs: JsValue, string_forge: &StringForge) -> bool {
     if lhs.is_null() && rhs.is_undefined() {
         return true;
     }
@@ -124,16 +130,16 @@ pub fn abstract_eq(lhs: JsValue, rhs: JsValue) -> bool {
         return true;
     }
     if (lhs.is_int() || lhs.is_double()) && (rhs.is_int() || rhs.is_double()) {
-        return strict_double_eq(to_number(lhs), to_number(rhs));
+        return strict_double_eq(to_number(lhs, string_forge), to_number(rhs, string_forge));
     }
     if (lhs.is_int() || lhs.is_double()) && rhs.is_bool() {
-        return to_number(lhs) == to_number(rhs);
+        return to_number(lhs, string_forge) == to_number(rhs, string_forge);
     }
     if lhs.is_bool() && (rhs.is_int() || rhs.is_double()) {
-        return to_number(lhs) == to_number(rhs);
+        return to_number(lhs, string_forge) == to_number(rhs, string_forge);
     }
     if lhs.is_bool() || rhs.is_bool() {
-        return to_number(lhs) == to_number(rhs);
+        return to_number(lhs, string_forge) == to_number(rhs, string_forge);
     }
     if lhs.is_null() || rhs.is_null() {
         return false;
@@ -186,8 +192,8 @@ pub fn relational_compare(string_forge: &StringForge, lhs: JsValue, rhs: JsValue
             .unwrap_or_default();
         return Some(ls < rs);
     }
-    let l = to_number(lhs);
-    let r = to_number(rhs);
+    let l = to_number(lhs, string_forge);
+    let r = to_number(rhs, string_forge);
     if l.is_nan() || r.is_nan() {
         return None;
     }

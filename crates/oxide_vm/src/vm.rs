@@ -164,48 +164,56 @@ impl Vm {
                         let concat = format!("{ls}{rs}");
                         self.regs[rd] = self.intern(&concat);
                     } else {
-                        let ln = coercion::to_number(lhs);
-                        let rn = coercion::to_number(rhs);
+                        let ln = coercion::to_number(lhs, self.kernel.string_forge().as_ref());
+                        let rn = coercion::to_number(rhs, self.kernel.string_forge().as_ref());
                         self.regs[rd] = JsValue::float(ln + rn);
                     }
                 }
 
                 OpCode::SUB => {
-                    let l = coercion::to_number(self.regs[a]);
-                    let r = coercion::to_number(self.regs[b]);
+                    let l = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
+                    let r = coercion::to_number(self.regs[b], self.kernel.string_forge().as_ref());
                     self.regs[rd] = JsValue::float(l - r);
                 }
 
                 OpCode::MUL => {
-                    let l = coercion::to_number(self.regs[a]);
-                    let r = coercion::to_number(self.regs[b]);
+                    let l = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
+                    let r = coercion::to_number(self.regs[b], self.kernel.string_forge().as_ref());
                     self.regs[rd] = JsValue::float(l * r);
                 }
 
                 OpCode::DIV => {
-                    let l = coercion::to_number(self.regs[a]);
-                    let r = coercion::to_number(self.regs[b]);
+                    let l = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
+                    let r = coercion::to_number(self.regs[b], self.kernel.string_forge().as_ref());
                     self.regs[rd] = JsValue::float(l / r);
                 }
 
                 OpCode::MOD => {
-                    let l = coercion::to_number(self.regs[a]);
-                    let r = coercion::to_number(self.regs[b]);
+                    let l = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
+                    let r = coercion::to_number(self.regs[b], self.kernel.string_forge().as_ref());
                     self.regs[rd] = JsValue::float(l % r);
                 }
 
                 OpCode::NEG => {
-                    let v = coercion::to_number(self.regs[a]);
+                    let v = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
                     self.regs[rd] = JsValue::float(-v);
                 }
 
                 OpCode::EQ => {
-                    let eq = coercion::abstract_eq(self.regs[a], self.regs[b]);
+                    let eq = coercion::abstract_eq(
+                        self.regs[a],
+                        self.regs[b],
+                        self.kernel.string_forge().as_ref(),
+                    );
                     self.regs[rd] = JsValue::bool(eq);
                 }
 
                 OpCode::NEQ => {
-                    let ne = !coercion::abstract_eq(self.regs[a], self.regs[b]);
+                    let ne = !coercion::abstract_eq(
+                        self.regs[a],
+                        self.regs[b],
+                        self.kernel.string_forge().as_ref(),
+                    );
                     self.regs[rd] = JsValue::bool(ne);
                 }
 
