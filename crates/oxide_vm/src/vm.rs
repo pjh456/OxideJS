@@ -108,6 +108,44 @@ impl Vm {
         None
     }
 
+    fn set_member_prop(
+        &mut self,
+        obj: &mut JsObject,
+        prop_name_si: u32,
+        val: JsValue,
+    ) -> Result<(), String> {
+        if let Some(offset) = self
+            .kernel
+            .shape_forge()
+            .lookup_offset(obj.shape_id(), prop_name_si)
+        {
+            let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
+            self.bytecode[self.pc - 1] = new_ext;
+            obj.set_prop(offset, val);
+        } else {
+            let new_offset = obj.prop_count();
+            let new_shape_id = self
+                .kernel
+                .shape_forge()
+                .make_shape(obj.shape_id(), prop_name_si);
+            let new_ext = (new_shape_id & 0x00FF_FFFF) | ((new_offset as u32) << 24);
+            self.bytecode[self.pc - 1] = new_ext;
+            obj.set_shape_id(new_shape_id);
+            obj.set_prop_count(new_offset + 1);
+            obj.set_prop_expand(new_offset, val, self.epoch.bump());
+            obj.bump_generation();
+            self.kernel.prop_forge().upsert(
+                new_shape_id,
+                PropTemplate {
+                    shape_id: new_shape_id,
+                    offset: new_offset,
+                    generation: obj.generation(),
+                },
+            );
+        }
+        Ok(())
+    }
+
     pub fn rerun(&mut self) -> Result<JsValue, String> {
         self.pc = 0;
         self.regs = [JsValue::undefined(); 256];
@@ -659,6 +697,531 @@ impl Vm {
                     let n = coercion::to_number(self.regs[rd], self.kernel.string_forge().as_ref());
                     self.regs[a] = JsValue::float(n);
                     self.regs[rd] = JsValue::float(n - 1.0);
+                }
+
+                OpCode::MEMBER_INC => {
+                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
+                    if obj_ptr.is_null() {
+                        return Err("MEMBER_INC on non-object".into());
+                    }
+                    let obj = unsafe { &mut *obj_ptr };
+                    let prop_name_si = self.regs[b].as_string_index();
+                    let ext = self.bytecode[self.pc];
+                    self.pc += 1;
+                    let cached_shape_id = ext & 0x00FF_FFFF;
+                    let cached_offset = ((ext >> 24) & 0xFF) as u8;
+
+                    let prop_val = if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
+                        obj.get_prop(cached_offset)
+                    } else if let Some(template) =
+                        self.kernel.prop_forge().get_template(obj.shape_id())
+                    {
+                        let new_ext =
+                            (obj.shape_id() & 0x00FF_FFFF) | ((template.offset as u32) << 24);
+                        self.bytecode[self.pc - 1] = new_ext;
+                        obj.get_prop(template.offset)
+                    } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
+                        let offset = self
+                            .kernel
+                            .shape_forge()
+                            .lookup_offset(obj.shape_id(), prop_name_si)
+                            .unwrap_or(0);
+                        let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
+                        self.bytecode[self.pc - 1] = new_ext;
+                        val
+                    } else {
+                        JsValue::undefined()
+                    };
+
+                    let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
+                    let new_val = JsValue::float(n + 1.0);
+
+                    let offset = if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
+                        cached_offset
+                    } else if let Some(off) = self
+                        .kernel
+                        .shape_forge()
+                        .lookup_offset(obj.shape_id(), prop_name_si)
+                    {
+                        off
+                    } else {
+                        let new_offset = obj.prop_count();
+                        let new_shape_id = self
+                            .kernel
+                            .shape_forge()
+                            .make_shape(obj.shape_id(), prop_name_si);
+                        obj.set_shape_id(new_shape_id);
+                        obj.set_prop_count(new_offset + 1);
+                        obj.set_prop_expand(new_offset, new_val, self.epoch.bump());
+                        obj.bump_generation();
+                        let new_ext = (new_shape_id & 0x00FF_FFFF) | ((new_offset as u32) << 24);
+                        self.bytecode[self.pc - 1] = new_ext;
+                        self.kernel.prop_forge().upsert(
+                            new_shape_id,
+                            PropTemplate {
+                                shape_id: new_shape_id,
+                                offset: new_offset,
+                                generation: obj.generation(),
+                            },
+                        );
+                        self.regs[a] = new_val;
+                        continue;
+                    };
+                    obj.set_prop(offset, new_val);
+                    self.regs[a] = new_val;
+                }
+
+                OpCode::MEMBER_DEC => {
+                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
+                    if obj_ptr.is_null() {
+                        return Err("MEMBER_DEC on non-object".into());
+                    }
+                    let obj = unsafe { &mut *obj_ptr };
+                    let prop_name_si = self.regs[b].as_string_index();
+                    let ext = self.bytecode[self.pc];
+                    self.pc += 1;
+                    let cached_shape_id = ext & 0x00FF_FFFF;
+                    let cached_offset = ((ext >> 24) & 0xFF) as u8;
+
+                    let prop_val = if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
+                        obj.get_prop(cached_offset)
+                    } else if let Some(template) =
+                        self.kernel.prop_forge().get_template(obj.shape_id())
+                    {
+                        let new_ext =
+                            (obj.shape_id() & 0x00FF_FFFF) | ((template.offset as u32) << 24);
+                        self.bytecode[self.pc - 1] = new_ext;
+                        obj.get_prop(template.offset)
+                    } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
+                        let offset = self
+                            .kernel
+                            .shape_forge()
+                            .lookup_offset(obj.shape_id(), prop_name_si)
+                            .unwrap_or(0);
+                        let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
+                        self.bytecode[self.pc - 1] = new_ext;
+                        val
+                    } else {
+                        JsValue::undefined()
+                    };
+
+                    let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
+                    let new_val = JsValue::float(n - 1.0);
+
+                    let offset = if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
+                        cached_offset
+                    } else if let Some(off) = self
+                        .kernel
+                        .shape_forge()
+                        .lookup_offset(obj.shape_id(), prop_name_si)
+                    {
+                        off
+                    } else {
+                        let new_offset = obj.prop_count();
+                        let new_shape_id = self
+                            .kernel
+                            .shape_forge()
+                            .make_shape(obj.shape_id(), prop_name_si);
+                        obj.set_shape_id(new_shape_id);
+                        obj.set_prop_count(new_offset + 1);
+                        obj.set_prop_expand(new_offset, new_val, self.epoch.bump());
+                        obj.bump_generation();
+                        let new_ext = (new_shape_id & 0x00FF_FFFF) | ((new_offset as u32) << 24);
+                        self.bytecode[self.pc - 1] = new_ext;
+                        self.kernel.prop_forge().upsert(
+                            new_shape_id,
+                            PropTemplate {
+                                shape_id: new_shape_id,
+                                offset: new_offset,
+                                generation: obj.generation(),
+                            },
+                        );
+                        self.regs[a] = new_val;
+                        continue;
+                    };
+                    obj.set_prop(offset, new_val);
+                    self.regs[a] = new_val;
+                }
+
+                OpCode::DYN_MEMBER_INC => {
+                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
+                    if obj_ptr.is_null() {
+                        return Err("DYN_MEMBER_INC on non-object".into());
+                    }
+                    let obj = unsafe { &mut *obj_ptr };
+                    let key_val = self.regs[a];
+                    if !key_val.is_string() {
+                        return Err("DYN_MEMBER_INC key not a string".into());
+                    }
+                    let prop_name_si = key_val.as_string_index();
+                    let prop_val = self
+                        .resolve_property(obj, prop_name_si)
+                        .unwrap_or(JsValue::undefined());
+                    let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
+                    let new_val = JsValue::float(n + 1.0);
+
+                    if let Some(offset) = self
+                        .kernel
+                        .shape_forge()
+                        .lookup_offset(obj.shape_id(), prop_name_si)
+                    {
+                        obj.set_prop(offset, new_val);
+                    } else {
+                        let new_offset = obj.prop_count();
+                        let new_shape_id = self
+                            .kernel
+                            .shape_forge()
+                            .make_shape(obj.shape_id(), prop_name_si);
+                        obj.set_shape_id(new_shape_id);
+                        obj.set_prop_count(new_offset + 1);
+                        obj.set_prop_expand(new_offset, new_val, self.epoch.bump());
+                        obj.bump_generation();
+                    };
+                    self.regs[b] = new_val;
+                }
+
+                OpCode::DYN_MEMBER_DEC => {
+                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
+                    if obj_ptr.is_null() {
+                        return Err("DYN_MEMBER_DEC on non-object".into());
+                    }
+                    let obj = unsafe { &mut *obj_ptr };
+                    let key_val = self.regs[a];
+                    if !key_val.is_string() {
+                        return Err("DYN_MEMBER_DEC key not a string".into());
+                    }
+                    let prop_name_si = key_val.as_string_index();
+                    let prop_val = self
+                        .resolve_property(obj, prop_name_si)
+                        .unwrap_or(JsValue::undefined());
+                    let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
+                    let new_val = JsValue::float(n - 1.0);
+
+                    if let Some(offset) = self
+                        .kernel
+                        .shape_forge()
+                        .lookup_offset(obj.shape_id(), prop_name_si)
+                    {
+                        obj.set_prop(offset, new_val);
+                    } else {
+                        let new_offset = obj.prop_count();
+                        let new_shape_id = self
+                            .kernel
+                            .shape_forge()
+                            .make_shape(obj.shape_id(), prop_name_si);
+                        obj.set_shape_id(new_shape_id);
+                        obj.set_prop_count(new_offset + 1);
+                        obj.set_prop_expand(new_offset, new_val, self.epoch.bump());
+                        obj.bump_generation();
+                    };
+                    self.regs[b] = new_val;
+                }
+
+                OpCode::COMPOUND_MEMBER_ADD => {
+                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
+                    if obj_ptr.is_null() {
+                        return Err("COMPOUND_MEMBER_ADD on non-object".into());
+                    }
+                    let obj = unsafe { &mut *obj_ptr };
+                    let prop_name_si = self.regs[b].as_string_index();
+                    let ext = self.bytecode[self.pc];
+                    self.pc += 1;
+                    let cached_shape_id = ext & 0x00FF_FFFF;
+                    let cached_offset = ((ext >> 24) & 0xFF) as u8;
+
+                    let prop_val = if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
+                        obj.get_prop(cached_offset)
+                    } else if let Some(template) =
+                        self.kernel.prop_forge().get_template(obj.shape_id())
+                    {
+                        let new_ext =
+                            (obj.shape_id() & 0x00FF_FFFF) | ((template.offset as u32) << 24);
+                        self.bytecode[self.pc - 1] = new_ext;
+                        obj.get_prop(template.offset)
+                    } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
+                        let offset = self
+                            .kernel
+                            .shape_forge()
+                            .lookup_offset(obj.shape_id(), prop_name_si)
+                            .unwrap_or(0);
+                        let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
+                        self.bytecode[self.pc - 1] = new_ext;
+                        val
+                    } else {
+                        JsValue::undefined()
+                    };
+
+                    let rhs = self.regs[a];
+                    let new_val = if prop_val.is_string() || rhs.is_string() {
+                        let ls = coercion::to_string(self.kernel.string_forge().as_ref(), prop_val);
+                        let rs = coercion::to_string(self.kernel.string_forge().as_ref(), rhs);
+                        let concat = format!("{ls}{rs}");
+                        self.intern(&concat)
+                    } else {
+                        let ln = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
+                        let rn = coercion::to_number(rhs, self.kernel.string_forge().as_ref());
+                        JsValue::float(ln + rn)
+                    };
+
+                    if let Some(offset) = self
+                        .kernel
+                        .shape_forge()
+                        .lookup_offset(obj.shape_id(), prop_name_si)
+                    {
+                        let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
+                        self.bytecode[self.pc - 1] = new_ext;
+                        obj.set_prop(offset, new_val);
+                    } else {
+                        let new_offset = obj.prop_count();
+                        let new_shape_id = self
+                            .kernel
+                            .shape_forge()
+                            .make_shape(obj.shape_id(), prop_name_si);
+                        let new_ext = (new_shape_id & 0x00FF_FFFF) | ((new_offset as u32) << 24);
+                        self.bytecode[self.pc - 1] = new_ext;
+                        obj.set_shape_id(new_shape_id);
+                        obj.set_prop_count(new_offset + 1);
+                        obj.set_prop_expand(new_offset, new_val, self.epoch.bump());
+                        obj.bump_generation();
+                        self.kernel.prop_forge().upsert(
+                            new_shape_id,
+                            PropTemplate {
+                                shape_id: new_shape_id,
+                                offset: new_offset,
+                                generation: obj.generation(),
+                            },
+                        );
+                    }
+                    self.regs[a] = new_val;
+                }
+
+                OpCode::COMPOUND_MEMBER_SUB => {
+                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
+                    if obj_ptr.is_null() {
+                        return Err("COMPOUND_MEMBER_SUB on non-object".into());
+                    }
+                    let obj = unsafe { &mut *obj_ptr };
+                    let prop_name_si = self.regs[b].as_string_index();
+                    let ext = self.bytecode[self.pc];
+                    self.pc += 1;
+                    let cached_shape_id = ext & 0x00FF_FFFF;
+                    let cached_offset = ((ext >> 24) & 0xFF) as u8;
+
+                    let prop_val = if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
+                        obj.get_prop(cached_offset)
+                    } else if let Some(template) =
+                        self.kernel.prop_forge().get_template(obj.shape_id())
+                    {
+                        let new_ext =
+                            (obj.shape_id() & 0x00FF_FFFF) | ((template.offset as u32) << 24);
+                        self.bytecode[self.pc - 1] = new_ext;
+                        obj.get_prop(template.offset)
+                    } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
+                        let offset = self
+                            .kernel
+                            .shape_forge()
+                            .lookup_offset(obj.shape_id(), prop_name_si)
+                            .unwrap_or(0);
+                        let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
+                        self.bytecode[self.pc - 1] = new_ext;
+                        val
+                    } else {
+                        JsValue::undefined()
+                    };
+
+                    let ln = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
+                    let rn = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
+                    let new_val = JsValue::float(ln - rn);
+                    self.regs[a] = new_val;
+                    if let Some(offset) = self
+                        .kernel
+                        .shape_forge()
+                        .lookup_offset(obj.shape_id(), prop_name_si)
+                    {
+                        let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
+                        self.bytecode[self.pc - 1] = new_ext;
+                        obj.set_prop(offset, new_val);
+                    } else {
+                        let new_offset = obj.prop_count();
+                        let new_shape_id = self
+                            .kernel
+                            .shape_forge()
+                            .make_shape(obj.shape_id(), prop_name_si);
+                        let new_ext = (new_shape_id & 0x00FF_FFFF) | ((new_offset as u32) << 24);
+                        self.bytecode[self.pc - 1] = new_ext;
+                        obj.set_shape_id(new_shape_id);
+                        obj.set_prop_count(new_offset + 1);
+                        obj.set_prop_expand(new_offset, new_val, self.epoch.bump());
+                        obj.bump_generation();
+                        self.kernel.prop_forge().upsert(
+                            new_shape_id,
+                            PropTemplate {
+                                shape_id: new_shape_id,
+                                offset: new_offset,
+                                generation: obj.generation(),
+                            },
+                        );
+                    }
+                }
+
+                OpCode::COMPOUND_MEMBER_MUL => {
+                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
+                    if obj_ptr.is_null() {
+                        return Err("COMPOUND_MEMBER_MUL on non-object".into());
+                    }
+                    let obj = unsafe { &mut *obj_ptr };
+                    let prop_name_si = self.regs[b].as_string_index();
+                    let ext = self.bytecode[self.pc];
+                    self.pc += 1;
+                    let cached_shape_id = ext & 0x00FF_FFFF;
+
+                    let prop_val = if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
+                        obj.get_prop(((ext >> 24) & 0xFF) as u8)
+                    } else if let Some(template) =
+                        self.kernel.prop_forge().get_template(obj.shape_id())
+                    {
+                        let new_ext =
+                            (obj.shape_id() & 0x00FF_FFFF) | ((template.offset as u32) << 24);
+                        self.bytecode[self.pc - 1] = new_ext;
+                        obj.get_prop(template.offset)
+                    } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
+                        let offset = self
+                            .kernel
+                            .shape_forge()
+                            .lookup_offset(obj.shape_id(), prop_name_si)
+                            .unwrap_or(0);
+                        let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
+                        self.bytecode[self.pc - 1] = new_ext;
+                        val
+                    } else {
+                        JsValue::undefined()
+                    };
+
+                    let ln = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
+                    let rn = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
+                    let new_val = JsValue::float(ln * rn);
+                    self.regs[a] = new_val;
+                    self.set_member_prop(obj, prop_name_si, new_val)?;
+                }
+
+                OpCode::COMPOUND_MEMBER_DIV => {
+                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
+                    if obj_ptr.is_null() {
+                        return Err("COMPOUND_MEMBER_DIV on non-object".into());
+                    }
+                    let obj = unsafe { &mut *obj_ptr };
+                    let prop_name_si = self.regs[b].as_string_index();
+                    let ext = self.bytecode[self.pc];
+                    self.pc += 1;
+                    let cached_shape_id = ext & 0x00FF_FFFF;
+
+                    let prop_val = if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
+                        obj.get_prop(((ext >> 24) & 0xFF) as u8)
+                    } else if let Some(template) =
+                        self.kernel.prop_forge().get_template(obj.shape_id())
+                    {
+                        let new_ext =
+                            (obj.shape_id() & 0x00FF_FFFF) | ((template.offset as u32) << 24);
+                        self.bytecode[self.pc - 1] = new_ext;
+                        obj.get_prop(template.offset)
+                    } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
+                        let offset = self
+                            .kernel
+                            .shape_forge()
+                            .lookup_offset(obj.shape_id(), prop_name_si)
+                            .unwrap_or(0);
+                        let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
+                        self.bytecode[self.pc - 1] = new_ext;
+                        val
+                    } else {
+                        JsValue::undefined()
+                    };
+
+                    let ln = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
+                    let rn = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
+                    let new_val = JsValue::float(ln / rn);
+                    self.regs[a] = new_val;
+                    self.set_member_prop(obj, prop_name_si, new_val)?;
+                }
+
+                OpCode::COMPOUND_MEMBER_MOD => {
+                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
+                    if obj_ptr.is_null() {
+                        return Err("COMPOUND_MEMBER_MOD on non-object".into());
+                    }
+                    let obj = unsafe { &mut *obj_ptr };
+                    let prop_name_si = self.regs[b].as_string_index();
+                    let ext = self.bytecode[self.pc];
+                    self.pc += 1;
+                    let cached_shape_id = ext & 0x00FF_FFFF;
+
+                    let prop_val = if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
+                        obj.get_prop(((ext >> 24) & 0xFF) as u8)
+                    } else if let Some(template) =
+                        self.kernel.prop_forge().get_template(obj.shape_id())
+                    {
+                        let new_ext =
+                            (obj.shape_id() & 0x00FF_FFFF) | ((template.offset as u32) << 24);
+                        self.bytecode[self.pc - 1] = new_ext;
+                        obj.get_prop(template.offset)
+                    } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
+                        let offset = self
+                            .kernel
+                            .shape_forge()
+                            .lookup_offset(obj.shape_id(), prop_name_si)
+                            .unwrap_or(0);
+                        let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
+                        self.bytecode[self.pc - 1] = new_ext;
+                        val
+                    } else {
+                        JsValue::undefined()
+                    };
+
+                    let ln = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
+                    let rn = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
+                    let new_val = JsValue::float(ln % rn);
+                    self.regs[a] = new_val;
+                    self.set_member_prop(obj, prop_name_si, new_val)?;
+                }
+
+                OpCode::COMPOUND_MEMBER_EXP => {
+                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
+                    if obj_ptr.is_null() {
+                        return Err("COMPOUND_MEMBER_EXP on non-object".into());
+                    }
+                    let obj = unsafe { &mut *obj_ptr };
+                    let prop_name_si = self.regs[b].as_string_index();
+                    let ext = self.bytecode[self.pc];
+                    self.pc += 1;
+                    let cached_shape_id = ext & 0x00FF_FFFF;
+
+                    let prop_val = if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
+                        obj.get_prop(((ext >> 24) & 0xFF) as u8)
+                    } else if let Some(template) =
+                        self.kernel.prop_forge().get_template(obj.shape_id())
+                    {
+                        let new_ext =
+                            (obj.shape_id() & 0x00FF_FFFF) | ((template.offset as u32) << 24);
+                        self.bytecode[self.pc - 1] = new_ext;
+                        obj.get_prop(template.offset)
+                    } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
+                        let offset = self
+                            .kernel
+                            .shape_forge()
+                            .lookup_offset(obj.shape_id(), prop_name_si)
+                            .unwrap_or(0);
+                        let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
+                        self.bytecode[self.pc - 1] = new_ext;
+                        val
+                    } else {
+                        JsValue::undefined()
+                    };
+
+                    let ln = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
+                    let rn = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
+                    let new_val = JsValue::float(ln.powf(rn));
+                    self.regs[a] = new_val;
+                    self.set_member_prop(obj, prop_name_si, new_val)?;
                 }
 
                 OpCode::FOR_IN_INIT => {

@@ -606,14 +606,29 @@ impl Compiler {
                         (idx & 0xFF) as u8,
                         ((idx >> 8) & 0xFF) as u8,
                     ));
-                    ctx.emit(opcode::encode(
-                        OpCode::IC_SET_PROP,
-                        obj_reg,
-                        val_reg,
-                        key_reg,
-                    ));
-                    ctx.emit(0);
-                    Ok(val_reg)
+                    if assign.operator != AssignmentOperator::Assign {
+                        let op = match assign.operator {
+                            AssignmentOperator::Addition => OpCode::COMPOUND_MEMBER_ADD,
+                            AssignmentOperator::Subtraction => OpCode::COMPOUND_MEMBER_SUB,
+                            AssignmentOperator::Multiplication => OpCode::COMPOUND_MEMBER_MUL,
+                            AssignmentOperator::Division => OpCode::COMPOUND_MEMBER_DIV,
+                            AssignmentOperator::Remainder => OpCode::COMPOUND_MEMBER_MOD,
+                            AssignmentOperator::Exponential => OpCode::COMPOUND_MEMBER_EXP,
+                            _ => unreachable!(),
+                        };
+                        ctx.emit(opcode::encode(op, obj_reg, val_reg, key_reg));
+                        ctx.emit(0);
+                        Ok(val_reg)
+                    } else {
+                        ctx.emit(opcode::encode(
+                            OpCode::IC_SET_PROP,
+                            obj_reg,
+                            val_reg,
+                            key_reg,
+                        ));
+                        ctx.emit(0);
+                        Ok(val_reg)
+                    }
                 } else if let oxide_parser::AssignmentTarget::ComputedMemberExpression(member) =
                     &assign.left
                 {
@@ -669,6 +684,37 @@ impl Compiler {
                     };
                     ctx.emit(opcode::encode(op, var_reg, result_reg, result_reg));
                     Ok(result_reg)
+                }
+                SimpleAssignmentTarget::StaticMemberExpression(member) => {
+                    let obj_reg = self.emit_expression(&member.object, ctx)?;
+                    let prop_name = member.property.name.as_str();
+                    let key_idx = ctx.add_constant(Constant::String(prop_name.to_string()));
+                    let key_reg = ctx.alloc_reg();
+                    ctx.emit(opcode::encode(
+                        OpCode::LOAD_CONST,
+                        key_reg,
+                        (key_idx & 0xFF) as u8,
+                        ((key_idx >> 8) & 0xFF) as u8,
+                    ));
+                    let val_reg = ctx.alloc_reg();
+                    let op = match update.operator {
+                        UpdateOperator::Increment => OpCode::MEMBER_INC,
+                        UpdateOperator::Decrement => OpCode::MEMBER_DEC,
+                    };
+                    ctx.emit(opcode::encode(op, obj_reg, val_reg, key_reg));
+                    ctx.emit(0);
+                    Ok(val_reg)
+                }
+                SimpleAssignmentTarget::ComputedMemberExpression(member) => {
+                    let obj_reg = self.emit_expression(&member.object, ctx)?;
+                    let key_reg = self.emit_expression(&member.expression, ctx)?;
+                    let val_reg = ctx.alloc_reg();
+                    let op = match update.operator {
+                        UpdateOperator::Increment => OpCode::DYN_MEMBER_INC,
+                        UpdateOperator::Decrement => OpCode::DYN_MEMBER_DEC,
+                    };
+                    ctx.emit(opcode::encode(op, obj_reg, key_reg, val_reg));
+                    Ok(val_reg)
                 }
                 _ => Err("member update not yet supported".into()),
             },

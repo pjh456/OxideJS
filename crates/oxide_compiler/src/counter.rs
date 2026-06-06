@@ -1,4 +1,6 @@
-use oxide_parser::{Expression, ForStatementInit, SimpleAssignmentTarget, Statement};
+use oxide_parser::{
+    AssignmentOperator, Expression, ForStatementInit, SimpleAssignmentTarget, Statement,
+};
 
 use crate::compiler::{is_side_effect_free, CompileCtx, Compiler, Label};
 
@@ -210,8 +212,12 @@ impl Compiler {
                 {
                     self.count_expression(&member.object, ctx);
                     self.count_expression(&assign.right, ctx);
+                    if assign.operator != AssignmentOperator::Assign {
+                        ctx.alloc_reg();
+                        ctx.projected_pc += 1;
+                    }
                     ctx.alloc_reg();
-                    ctx.projected_pc += 1; // IC_SET_PROP
+                    ctx.projected_pc += 1; // IC_SET_PROP or COMPOUND_MEMBER_*
                 } else if let oxide_parser::AssignmentTarget::ComputedMemberExpression(member) =
                     &assign.left
                 {
@@ -316,6 +322,19 @@ impl Compiler {
             }
             Expression::UpdateExpression(update) => match &update.argument {
                 SimpleAssignmentTarget::AssignmentTargetIdentifier(_) => {
+                    ctx.alloc_reg();
+                    ctx.projected_pc += 1;
+                }
+                SimpleAssignmentTarget::StaticMemberExpression(member) => {
+                    self.count_expression(&member.object, ctx);
+                    ctx.alloc_reg();
+                    ctx.projected_pc += 1;
+                    ctx.alloc_reg();
+                    ctx.projected_pc += 1;
+                }
+                SimpleAssignmentTarget::ComputedMemberExpression(member) => {
+                    self.count_expression(&member.object, ctx);
+                    self.count_expression(&member.expression, ctx);
                     ctx.alloc_reg();
                     ctx.projected_pc += 1;
                 }

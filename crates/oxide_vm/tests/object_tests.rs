@@ -42,3 +42,78 @@ fn eval_object_property_read() {
 fn eval_object_missing_property() {
     assert_eq!(eval("({a:1}).b"), "undefined");
 }
+
+#[test]
+fn eval_member_inc_post() {
+    assert_eq!(eval("var obj={x:1}; obj.x++; obj.x"), "2");
+}
+
+#[test]
+fn eval_member_inc_post_expr() {
+    assert_eq!(eval("var obj={x:1}; obj.x++"), "2");
+}
+
+#[test]
+fn eval_member_dec() {
+    assert_eq!(eval("var obj={x:5}; obj.x--; obj.x"), "4");
+}
+
+#[test]
+fn eval_member_dec_expr() {
+    assert_eq!(eval("var obj={x:5}; obj.x--"), "4");
+}
+
+#[test]
+fn eval_member_inc_pre() {
+    assert_eq!(eval("var obj={x:5}; ++obj.x; obj.x"), "6");
+}
+
+#[test]
+fn eval_dyn_member_inc() {
+    assert_eq!(eval("var obj={a:3}; var k='a'; obj[k]++"), "4");
+}
+
+#[test]
+fn eval_dyn_member_inc_var() {
+    assert_eq!(eval("var obj={a:3}; var k='a'; obj[k]++; obj.a"), "4");
+}
+
+#[test]
+fn eval_compound_member_add() {
+    assert_eq!(eval("var obj={x:5}; obj.x+=3; obj.x"), "8");
+}
+
+#[test]
+fn eval_compound_member_sub() {
+    assert_eq!(eval("var obj={x:10}; obj.x-=2; obj.x"), "8");
+}
+
+#[test]
+fn eval_compound_member_mul() {
+    assert_eq!(eval("var obj={x:2}; obj.x*=3; obj.x"), "6");
+}
+
+#[test]
+fn eval_compound_member_div() {
+    assert_eq!(eval("var obj={x:10}; obj.x/=2; obj.x"), "5");
+}
+
+#[test]
+fn eval_compound_member_mod() {
+    assert_eq!(eval("var obj={x:7}; obj.x%=3; obj.x"), "1");
+}
+
+#[test]
+fn eval_compound_member_exp() {
+    assert_eq!(eval("var obj={x:2}; obj.x**=3; obj.x"), "8");
+}
+
+#[test]
+fn eval_compound_member_expr_val() {
+    assert_eq!(eval("var obj={x:5}; var y=obj.x+=3; y"), "8");
+}
+
+#[test]
+fn eval_member_multi_inc() {
+    assert_eq!(eval("var obj={}; obj.x=0; obj.x++; obj.x++; obj.x"), "2");
+}

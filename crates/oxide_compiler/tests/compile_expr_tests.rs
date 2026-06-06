@@ -298,3 +298,63 @@ fn compile_inc_dec_diff_opcodes() {
     assert!(has_inc_pre, "++x should emit INC_PRE");
     assert!(has_dec_pre, "--x should emit DEC_PRE");
 }
+
+#[test]
+fn compile_member_inc() {
+    let module = compile_source("var obj={x:1}; obj.x++");
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::MEMBER_INC),
+        "obj.x++ should emit MEMBER_INC"
+    );
+}
+
+#[test]
+fn compile_dyn_member_inc() {
+    let module = compile_source("var obj={a:3}; var k='a'; obj[k]++");
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::DYN_MEMBER_INC),
+        "obj[k]++ should emit DYN_MEMBER_INC"
+    );
+}
+
+#[test]
+fn compile_compound_member_add() {
+    let module = compile_source("var obj={x:1}; obj.x+=1");
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::COMPOUND_MEMBER_ADD),
+        "obj.x+=1 should emit COMPOUND_MEMBER_ADD"
+    );
+}
+
+#[test]
+fn compile_compound_member_assign_ok() {
+    let result = std::panic::catch_unwind(|| {
+        compile_source("var obj={x:1}; obj.x+=1");
+    });
+    assert!(result.is_ok(), "obj.x+=1 should compile without error");
+}
+
+#[test]
+fn compile_prefix_member_inc_ok() {
+    let result = std::panic::catch_unwind(|| {
+        compile_source("var obj={x:1}; ++obj.x");
+    });
+    assert!(result.is_ok(), "++obj.x should compile without error");
+}
+
+#[test]
+fn compile_compound_member_exp_ok() {
+    let result = std::panic::catch_unwind(|| {
+        compile_source("var obj={x:1}; obj.x**=2");
+    });
+    assert!(result.is_ok(), "obj.x**=2 should compile without error");
+}
