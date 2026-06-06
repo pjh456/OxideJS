@@ -140,6 +140,7 @@ impl Compiler {
             }
             Statement::VariableDeclaration(decl) => {
                 for d in &decl.declarations {
+                    ctx.alloc_reg();
                     if let Some(init) = &d.init {
                         self.count_expression(init, ctx);
                     }
@@ -282,8 +283,29 @@ impl Compiler {
             Statement::VariableDeclaration(decl) => {
                 let mut r = None;
                 for d in &decl.declarations {
+                    let name = match &d.id {
+                        oxide_parser::BindingPattern::BindingIdentifier(bi) => bi.name.as_str(),
+                        _ => return Err("destructuring not supported".into()),
+                    };
+                    let var_reg = ctx.alloc_reg();
+                    ctx.declare(name, var_reg)?;
                     if let Some(init) = &d.init {
-                        r = Some(self.emit_expression(init, ctx)?);
+                        let val_reg = self.emit_expression(init, ctx)?;
+                        ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, 0));
+                        ctx.init_var(name);
+                        r = Some(val_reg);
+                    } else {
+                        let idx = ctx.add_constant(Constant::Undefined);
+                        let tmp = ctx.alloc_reg();
+                        ctx.emit(opcode::encode(
+                            OpCode::LOAD_CONST,
+                            tmp,
+                            (idx & 0xFF) as u8,
+                            ((idx >> 8) & 0xFF) as u8,
+                        ));
+                        ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, tmp, 0));
+                        ctx.init_var(name);
+                        r = Some(var_reg);
                     }
                 }
                 Ok(r)
@@ -301,12 +323,14 @@ impl Compiler {
                 Ok(None)
             }
             Statement::BlockStatement(block) => {
+                ctx.push_scope();
                 let mut r = None;
                 for s in &block.body {
                     if let Some(rr) = self.emit_statement(s, ctx)? {
                         r = Some(rr);
                     }
                 }
+                ctx.pop_scope();
                 Ok(r)
             }
             _ => Ok(None),
@@ -530,6 +554,12 @@ impl Compiler {
                 } else {
                     Err("assignment target not supported".into())
                 }
+            }
+            Expression::Identifier(ident) => {
+                let var_reg = ctx.lookup(ident.name.as_str())?;
+                let r = ctx.alloc_reg();
+                ctx.emit(opcode::encode(OpCode::LOAD_VAR, r, var_reg, 0));
+                Ok(r)
             }
             Expression::ParenthesizedExpression(p) => self.emit_expression(&p.expression, ctx),
             _ => Err(format!("unsupported expression type: {:?}", expr)),
