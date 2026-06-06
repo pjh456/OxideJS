@@ -211,6 +211,18 @@ fn compile(expr: Option<String>, file: Option<String>) -> ExitCode {
     }
 }
 
+fn bracket_balance(line: &str) -> i32 {
+    let mut count = 0i32;
+    for ch in line.chars() {
+        match ch {
+            '(' | '[' | '{' => count += 1,
+            ')' | ']' | '}' => count -= 1,
+            _ => {}
+        }
+    }
+    count
+}
+
 fn repl() -> ExitCode {
     use rustyline::error::ReadlineError;
     use rustyline::DefaultEditor;
@@ -225,9 +237,16 @@ fn repl() -> ExitCode {
 
     let kernel = make_kernel();
     let pool = make_pool(&kernel);
+    let mut source = String::new();
+    let mut input_buf = String::new();
 
     loop {
-        match rl.readline("oxide> ") {
+        let prompt = if input_buf.is_empty() {
+            "oxide> "
+        } else {
+            "...> "
+        };
+        match rl.readline(prompt) {
             Ok(line) => {
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
@@ -238,7 +257,29 @@ fn repl() -> ExitCode {
                     return ExitCode::SUCCESS;
                 }
                 rl.add_history_entry(trimmed).ok();
-                eval(trimmed, &kernel, &pool);
+
+                if !input_buf.is_empty() {
+                    input_buf.push('\n');
+                }
+                input_buf.push_str(trimmed);
+
+                let balance = bracket_balance(&input_buf);
+                if balance > 0 {
+                    continue;
+                }
+
+                let mut full_code = source.clone();
+                if !full_code.is_empty() {
+                    full_code.push(';');
+                }
+                full_code.push_str(&input_buf);
+
+                let result = eval(&full_code, &kernel, &pool);
+                input_buf.clear();
+
+                if result == ExitCode::SUCCESS {
+                    source = full_code;
+                }
             }
             Err(ReadlineError::Interrupted) => {
                 println!("^C");
@@ -255,7 +296,6 @@ fn repl() -> ExitCode {
         }
     }
 }
-
 fn not_implemented(command: &str) -> ExitCode {
     use ansi_term::Colour::Yellow;
     eprintln!(
