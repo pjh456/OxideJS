@@ -1,6 +1,8 @@
 use crate::compiler::Label;
 use crate::opcode::{self, OpCode};
-use oxide_parser::{AssignmentOperator, Expression, ForStatementInit, Statement, UnaryOperator};
+use oxide_parser::{
+    AssignmentOperator, Expression, ForStatementInit, ForStatementLeft, Statement, UnaryOperator,
+};
 
 use crate::compiler::{is_int_literal, is_side_effect_free, BinaryOperator, CompileCtx, Compiler};
 use crate::module::Constant;
@@ -139,6 +141,24 @@ impl Compiler {
                 ctx.pop_loop();
                 Ok(None)
             }
+            Statement::DoWhileStatement(dw) => {
+                let id = ctx.next_label_id();
+                let start_label = Label::DoWhileStart(id);
+                let end_label = Label::DoWhileEnd(id);
+
+                ctx.push_loop(end_label, start_label);
+
+                self.emit_statement(&dw.body, ctx)?;
+
+                let test_reg = self.emit_expression(&dw.test, ctx)?;
+
+                let start_pos = ctx.resolve_label(start_label)?;
+                let offset = (start_pos as isize) - (ctx.bytecode.len() as isize);
+                ctx.emit(opcode::encode_jmp_if_true(test_reg, offset as i16));
+
+                ctx.pop_loop();
+                Ok(None)
+            }
             Statement::ForStatement(fr) => {
                 let id = ctx.next_label_id();
                 let start_label = Label::ForStart(id);
@@ -190,10 +210,106 @@ impl Compiler {
 
                 Ok(None)
             }
+            Statement::ForInStatement(fi) => {
+                let id = ctx.next_label_id();
+                let start_label = Label::ForInStart(id);
+                let end_label = Label::ForInEnd(id);
+
+                let obj_reg = self.emit_expression(&fi.right, ctx)?;
+                ctx.emit(opcode::encode(OpCode::FOR_IN_INIT, 0, obj_reg, 0));
+
+                ctx.push_loop(end_label, start_label);
+
+                let done_reg = ctx.alloc_reg();
+                ctx.emit(opcode::encode(OpCode::FOR_IN_DONE, done_reg, 0, 0));
+
+                let end_pos = ctx.resolve_label(end_label)?;
+                let cleanup_jmp_offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
+                ctx.emit(opcode::encode_jmp_if_false(done_reg, 2));
+                ctx.emit(opcode::encode_jmp(cleanup_jmp_offset as i16));
+
+                let key_reg = ctx.alloc_reg();
+                ctx.emit(opcode::encode(OpCode::FOR_IN_NEXT, key_reg, 0, 0));
+
+                match &fi.left {
+                    ForStatementLeft::VariableDeclaration(decl) => {
+                        for d in &decl.declarations {
+                            let name = match &d.id {
+                                oxide_parser::BindingPattern::BindingIdentifier(bi) => {
+                                    bi.name.as_str()
+                                }
+                                _ => return Err("destructuring not supported".into()),
+                            };
+                            let var_reg = ctx.alloc_reg();
+                            ctx.declare(name, var_reg)?;
+                            ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, key_reg, 0));
+                            ctx.init_var(name);
+                        }
+                    }
+                    ForStatementLeft::AssignmentTargetIdentifier(id_ref) => {
+                        let name = id_ref.name.as_str();
+                        let var_reg = ctx.lookup_or_global(name);
+                        ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, key_reg, 0));
+                    }
+                    _ => return Err("unsupported for-in left-hand side".into()),
+                }
+
+                self.emit_statement(&fi.body, ctx)?;
+
+                let start_pos = ctx.resolve_label(start_label)?;
+                let offset = (start_pos as isize) - (ctx.bytecode.len() as isize);
+                ctx.emit(opcode::encode_jmp(offset as i16));
+
+                ctx.emit(opcode::encode(OpCode::FOR_IN_CLEANUP, 0, 0, 0));
+
+                ctx.pop_loop();
+                Ok(None)
+            }
+            Statement::SwitchStatement(sw) => {
+                let id = ctx.next_label_id();
+                let end_label = Label::SwitchEnd(id);
+                ctx.push_switch(end_label);
+
+                let disc_reg = self.emit_expression(&sw.discriminant, ctx)?;
+                let cases = &sw.cases;
+
+                for (case_idx, case) in cases.iter().enumerate() {
+                    if let Some(test) = &case.test {
+                        let test_reg = self.emit_expression(test, ctx)?;
+                        let eq_reg = ctx.alloc_reg();
+                        ctx.emit(opcode::encode(OpCode::EQ, eq_reg, disc_reg, test_reg));
+
+                        let case_label = Label::SwitchCase(id * 256 + case_idx as u32);
+                        let body_pos = ctx.resolve_label(case_label)?;
+                        let offset = (body_pos as isize) - (ctx.bytecode.len() as isize);
+                        ctx.emit(opcode::encode_jmp_if_true(eq_reg, offset as i16));
+                    }
+                }
+
+                let has_default = cases.iter().any(|c| c.test.is_none());
+                if !has_default {
+                    let end_pos = ctx.resolve_label(end_label)?;
+                    let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
+                    ctx.emit(opcode::encode_jmp(offset as i16));
+                }
+
+                for case in cases.iter() {
+                    for s in &case.consequent {
+                        self.emit_statement(s, ctx)?;
+                    }
+                }
+
+                ctx.pop_switch();
+                Ok(None)
+            }
             Statement::BreakStatement(_) => {
-                let (break_label, _) =
-                    ctx.current_loop().ok_or("break outside loop".to_string())?;
-                let break_pos = ctx.resolve_label(*break_label)?;
+                let break_label = if let Some(sw_label) = ctx.current_switch() {
+                    *sw_label
+                } else {
+                    let (bl, _) = ctx.current_loop().ok_or("break outside switch or loop".to_string())?;
+                    *bl
+                };
+                let break_pos = ctx.resolve_label(break_label)?;
                 let offset = (break_pos as isize) - (ctx.bytecode.len() as isize);
                 ctx.emit(opcode::encode_jmp(offset as i16));
                 Ok(None)

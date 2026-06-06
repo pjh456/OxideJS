@@ -57,6 +57,17 @@ impl Compiler {
                 ctx.projected_pc += 1; // JMP (backward)
                 ctx.label_map.insert(end_label, ctx.projected_pc);
             }
+            Statement::DoWhileStatement(dw) => {
+                let id = ctx.next_label_id();
+                let start_label = Label::DoWhileStart(id);
+                let end_label = Label::DoWhileEnd(id);
+
+                ctx.label_map.insert(start_label, ctx.projected_pc);
+                self.count_statement(&dw.body, ctx);
+                self.count_expression(&dw.test, ctx);
+                ctx.projected_pc += 1; // JMP_IF_TRUE (backward)
+                ctx.label_map.insert(end_label, ctx.projected_pc);
+            }
             Statement::ForStatement(fr) => {
                 let id = ctx.next_label_id();
                 let start_label = Label::ForStart(id);
@@ -90,6 +101,71 @@ impl Compiler {
                 }
                 ctx.projected_pc += 1; // JMP (backward)
                 ctx.label_map.insert(end_label, ctx.projected_pc);
+            }
+            Statement::ForInStatement(fi) => {
+                let id = ctx.next_label_id();
+                let start_label = Label::ForInStart(id);
+                let end_label = Label::ForInEnd(id);
+
+                self.count_expression(&fi.right, ctx);
+                ctx.projected_pc += 1; // FOR_IN_INIT
+
+                ctx.label_map.insert(start_label, ctx.projected_pc);
+                ctx.projected_pc += 3; // FOR_IN_DONE + JMP_IF_FALSE + JMP cleanup
+
+                ctx.projected_pc += 1; // FOR_IN_NEXT
+                match &fi.left {
+                    oxide_parser::ForStatementLeft::VariableDeclaration(decl) => {
+                        for _d in &decl.declarations {
+                            ctx.alloc_reg();
+                            ctx.projected_pc += 1; // STORE_VAR (value from FOR_IN_NEXT)
+                        }
+                    }
+                oxide_parser::ForStatementLeft::AssignmentTargetIdentifier(_) => {
+                    ctx.alloc_reg(); // key register
+                    ctx.projected_pc += 1; // STORE_VAR
+                }
+                    _ => {}
+                }
+
+                self.count_statement(&fi.body, ctx);
+                ctx.projected_pc += 1; // JMP back to start
+
+                ctx.label_map.insert(end_label, ctx.projected_pc);
+                ctx.projected_pc += 1; // FOR_IN_CLEANUP
+            }
+            Statement::SwitchStatement(sw) => {
+                let id = ctx.next_label_id();
+                let end_label = Label::SwitchEnd(id);
+                ctx.push_switch(end_label);
+
+                self.count_expression(&sw.discriminant, ctx);
+
+                let cases = &sw.cases;
+                for case in cases.iter() {
+                    if let Some(test) = &case.test {
+                        self.count_expression(test, ctx);
+                        ctx.projected_pc += 1; // EQ
+                        ctx.alloc_reg(); // eq result
+                        ctx.projected_pc += 1; // JMP_IF_TRUE
+                    }
+                }
+
+                let has_default = cases.iter().any(|c| c.test.is_none());
+                if !has_default {
+                    ctx.projected_pc += 1; // JMP to SwitchEnd (no match)
+                }
+
+                for (case_idx, case) in cases.iter().enumerate() {
+                    let case_label = Label::SwitchCase(id * 256 + case_idx as u32);
+                    ctx.label_map.insert(case_label, ctx.projected_pc);
+                    for s in &case.consequent {
+                        self.count_statement(s, ctx);
+                    }
+                }
+
+                ctx.label_map.insert(end_label, ctx.projected_pc);
+                ctx.pop_switch();
             }
             Statement::BreakStatement(_) => {
                 ctx.projected_pc += 1; // JMP

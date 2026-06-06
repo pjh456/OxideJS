@@ -9,9 +9,9 @@ use oxide_compiler::opcode::{self, OpCode};
 use crate::coercion;
 use oxide_kernel::kernel::{KernelConfig, OxideKernel};
 use oxide_kernel::prop_forge::PropTemplate;
+use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::mem::{Epoch, P};
 use oxide_types::object::JsObject;
-use oxide_types::shape::EMPTY_SHAPE_ID;
 use oxide_types::value::JsValue;
 
 pub struct CallFrame {
@@ -20,12 +20,18 @@ pub struct CallFrame {
     pub n_args: u8,
 }
 
+pub struct ForInIter<'bump> {
+    pub keys: bumpalo::collections::Vec<'bump, JsValue>,
+    pub index: usize,
+}
+
 pub struct Vm {
     regs: [JsValue; 256],
     pc: usize,
     bytecode: Vec<opcode::Instr>,
     constants: Vec<JsValue>,
     frames: Vec<CallFrame>,
+    pub for_in_iters: Vec<*mut u8>,
     kernel: Arc<OxideKernel>,
     interned_strings: Vec<u32>,
     pub epoch: Epoch,
@@ -40,6 +46,7 @@ impl Vm {
             bytecode: Vec::new(),
             constants: Vec::new(),
             frames: Vec::with_capacity(128),
+            for_in_iters: Vec::new(),
             kernel: Arc::new(OxideKernel::new(KernelConfig::minimal())),
             interned_strings: Vec::new(),
             epoch: Epoch::new(),
@@ -60,6 +67,7 @@ impl Vm {
         self.bytecode.clear();
         self.constants.clear();
         self.frames.clear();
+        self.for_in_iters.clear();
         self.epoch.reset();
         self.interned_strings.clear();
     }
@@ -104,6 +112,7 @@ impl Vm {
         self.pc = 0;
         self.regs = [JsValue::undefined(); 256];
         self.frames.clear();
+        self.for_in_iters.clear();
         self.dispatch()
     }
 
@@ -564,6 +573,81 @@ impl Vm {
                     let cond =
                         coercion::to_boolean(self.regs[a], self.kernel.string_forge().as_ref());
                     self.regs[rd] = if cond { self.regs[a] } else { self.regs[b] };
+                }
+
+                OpCode::FOR_IN_INIT => {
+                    let obj_val = self.regs[a];
+                    if !obj_val.is_object() {
+                        return Err("TypeError: for-in right-hand side is not an object".into());
+                    }
+                    let obj = unsafe { &*obj_val.as_js_object_ptr() };
+                    let shape_id = obj.shape_id();
+
+                    let mut keys_vec =
+                        bumpalo::collections::Vec::new_in(self.epoch.bump());
+                    let mut cursor = Some(shape_id);
+                    while let Some(id) = cursor {
+                        if id == oxide_kernel::shape_forge::EMPTY_SHAPE_ID {
+                            break;
+                        }
+                        if let Some(shape) = self.kernel.shape_forge().get_shape(id) {
+                            if shape.property_name != u32::MAX {
+                                let hash = self
+                                    .kernel
+                                    .string_forge()
+                                    .get_hash(shape.property_name)
+                                    .unwrap_or(0);
+                                keys_vec.push(JsValue::string(shape.property_name, hash));
+                            }
+                            cursor = shape.parent;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    let iter = self.epoch.alloc(ForInIter {
+                        keys: keys_vec,
+                        index: 0,
+                    });
+                    self.for_in_iters.push(iter as *mut u8);
+                }
+
+                OpCode::FOR_IN_NEXT => {
+                    let iter_ptr = self
+                        .for_in_iters
+                        .last()
+                        .copied()
+                        .map(|p| p as *mut ForInIter)
+                        .unwrap_or(std::ptr::null_mut());
+                    if iter_ptr.is_null() {
+                        return Err("FOR_IN_NEXT without active iterator".into());
+                    }
+                    let iter = unsafe { &mut *iter_ptr };
+                    if iter.index < iter.keys.len() {
+                        self.regs[rd] = iter.keys[iter.index];
+                        iter.index += 1;
+                    } else {
+                        self.regs[rd] = JsValue::undefined();
+                    }
+                }
+
+                OpCode::FOR_IN_DONE => {
+                    let iter_ptr = self
+                        .for_in_iters
+                        .last()
+                        .copied()
+                        .map(|p| p as *mut ForInIter)
+                        .unwrap_or(std::ptr::null_mut());
+                    if iter_ptr.is_null() {
+                        self.regs[rd] = JsValue::bool(true);
+                    } else {
+                        let iter = unsafe { &*iter_ptr };
+                        self.regs[rd] = JsValue::bool(iter.index >= iter.keys.len());
+                    }
+                }
+
+                OpCode::FOR_IN_CLEANUP => {
+                    self.for_in_iters.pop();
                 }
 
                 _ => {

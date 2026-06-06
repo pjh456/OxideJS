@@ -176,3 +176,102 @@ fn regression_redundant_jmp_if_without_else() {
         "final opcode should be HALT, not dangling JMP"
     );
 }
+
+#[test]
+fn compile_do_while_emits_jmp_if_true() {
+    let module = compile_source("do { 1 } while (true)");
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::JMP_IF_TRUE),
+        "do-while should contain JMP_IF_TRUE"
+    );
+}
+
+#[test]
+fn compile_do_while_emits_body_before_test() {
+    let module = compile_source("var x = true; do { 1 } while (x)");
+    let has_opcodes_before_jmp = module
+        .bytecode
+        .iter()
+        .take_while(|&&i| opcode::opcode(i) != OpCode::JMP_IF_TRUE)
+        .count()
+        > 1;
+    assert!(has_opcodes_before_jmp, "body should emit before test");
+}
+
+#[test]
+fn compile_do_while_break() {
+    let module = compile_source("do { break; } while (true)");
+    assert!(!module.bytecode.is_empty(), "do-while with break should compile");
+}
+
+#[test]
+fn compile_do_while_continue() {
+    let module = compile_source("var x = 0; do { continue; } while (x < 5)");
+    assert!(
+        !module.bytecode.is_empty(),
+        "do-while with continue should compile"
+    );
+}
+
+#[test]
+fn compile_for_in_emits_opcodes() {
+    let module = compile_source("var obj={a:1}; for (k in obj) {}");
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::FOR_IN_INIT),
+        "for-in should emit FOR_IN_INIT"
+    );
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::FOR_IN_NEXT),
+        "for-in should emit FOR_IN_NEXT"
+    );
+}
+
+#[test]
+fn compile_for_in_var_decl() {
+    let module = compile_source("var obj={a:1}; for (var k in obj) { k }");
+    assert!(!module.bytecode.is_empty());
+}
+
+#[test]
+fn compile_for_in_let_decl() {
+    let module = compile_source("var obj={a:1}; for (let k in obj) { k }");
+    assert!(!module.bytecode.is_empty());
+}
+
+#[test]
+fn compile_switch_emits_jmp_if_true() {
+    let module = compile_source("var x=0; switch(x){case 1:1;case 2:2;}");
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::JMP_IF_TRUE),
+        "switch should emit JMP_IF_TRUE"
+    );
+}
+
+#[test]
+fn compile_switch_default() {
+    let module = compile_source("var x=0; switch(x){default:0;}");
+    assert!(!module.bytecode.is_empty());
+}
+
+#[test]
+fn compile_switch_break() {
+    let module = compile_source("var x=0; switch(x){case 1:break;}");
+    assert!(!module.bytecode.is_empty());
+}
+
+#[test]
+fn compile_continue_in_switch_errors() {
+    let result = std::panic::catch_unwind(|| {
+        compile_source("var x=0; switch(x){case 1:continue;}");
+    });
+    assert!(result.is_err(), "continue inside switch should error");
+}
