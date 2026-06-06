@@ -176,7 +176,13 @@ impl Vm {
     }
 
     fn dispatch(&mut self) -> Result<JsValue, String> {
+        let mut steps: u64 = 0;
+        const MAX_STEPS: u64 = 100_000_000;
         loop {
+            steps += 1;
+            if steps > MAX_STEPS {
+                return Err(format!("VM step limit exceeded at pc={}", self.pc));
+            }
             if self.pc >= self.bytecode.len() {
                 return Err("program counter out of bounds".into());
             }
