@@ -4,7 +4,7 @@ use crate::symbol_table::SymbolTable;
 
 pub use crate::hash::structural_hash;
 pub use crate::module::Constant;
-pub use oxide_parser::{BinaryOperator, Expression, Statement, UnaryOperator};
+pub use oxide_parser::{AssignmentOperator, BinaryOperator, Expression, Statement, UnaryOperator};
 
 pub struct Compiler;
 
@@ -78,7 +78,6 @@ impl CompileCtx {
         self.symbols.lookup(name)
     }
 
-    #[allow(dead_code)]
     fn lookup_or_global(&mut self, name: &str) -> u8 {
         let reg = self.alloc_reg();
         self.symbols.lookup_or_global(name, reg)
@@ -550,6 +549,17 @@ impl Compiler {
                         key_reg,
                         val_reg,
                     ));
+                    Ok(val_reg)
+                } else if let oxide_parser::AssignmentTarget::AssignmentTargetIdentifier(id_ref) =
+                    &assign.left
+                {
+                    if assign.operator != AssignmentOperator::Assign {
+                        return Err("compound assignment not yet supported".into());
+                    }
+                    let val_reg = self.emit_expression(&assign.right, ctx)?;
+                    let name = id_ref.name.as_str();
+                    let var_reg = ctx.lookup_or_global(name);
+                    ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, 0));
                     Ok(val_reg)
                 } else {
                     Err("assignment target not supported".into())
