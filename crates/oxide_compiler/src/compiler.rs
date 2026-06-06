@@ -81,7 +81,7 @@ impl CompileCtx {
 
     pub(crate) fn alloc_reg(&mut self) -> u8 {
         let r = self.next_reg;
-        self.next_reg += 1;
+        self.next_reg = self.next_reg.wrapping_add(1);
         if self.next_reg > self.max_regs {
             self.max_regs = self.next_reg;
         }
