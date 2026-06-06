@@ -171,17 +171,23 @@ impl JsValue {
     }
 
     pub fn as_ptr(&self) -> *const u8 {
-        debug_assert!(self.is_object(), "JsValue is not an object");
+        if !self.is_object() {
+            return std::ptr::null();
+        }
         (self.0 & PTR_MASK) as *const u8
     }
 
     pub fn as_object_ptr(&self) -> *mut u8 {
-        debug_assert!(self.is_object(), "JsValue is not an object");
+        if !self.is_object() {
+            return std::ptr::null_mut();
+        }
         (self.0 & PTR_MASK) as *mut u8
     }
 
     pub fn as_js_object_ptr(&self) -> *mut JsObject {
-        debug_assert!(self.is_object(), "JsValue is not an object");
+        if !self.is_object() {
+            return std::ptr::null_mut();
+        }
         (self.0 & PTR_MASK) as *mut JsObject
     }
 

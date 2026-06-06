@@ -92,6 +92,39 @@ fn object_pointer_roundtrip() {
 }
 
 #[test]
+fn as_ptr_non_object_returns_null() {
+    assert!(JsValue::int(0).as_ptr().is_null());
+    assert!(JsValue::float(0.0).as_ptr().is_null());
+    assert!(JsValue::bool(true).as_ptr().is_null());
+    assert!(JsValue::null().as_ptr().is_null());
+    assert!(JsValue::undefined().as_ptr().is_null());
+    let x = 42u8;
+    assert!(!JsValue::object(&x as *const u8).as_ptr().is_null());
+}
+
+#[test]
+fn as_object_ptr_non_object_returns_null() {
+    assert!(JsValue::int(0).as_object_ptr().is_null());
+    assert!(JsValue::float(0.0).as_object_ptr().is_null());
+    assert!(JsValue::bool(true).as_object_ptr().is_null());
+    assert!(JsValue::null().as_object_ptr().is_null());
+    assert!(JsValue::undefined().as_object_ptr().is_null());
+    let x = 42u8;
+    assert!(!JsValue::object(&x as *const u8).as_object_ptr().is_null());
+}
+
+#[test]
+fn as_js_object_ptr_non_object_returns_null() {
+    assert!(JsValue::int(0).as_js_object_ptr().is_null());
+    assert!(JsValue::float(0.0).as_js_object_ptr().is_null());
+    assert!(JsValue::bool(true).as_js_object_ptr().is_null());
+    assert!(JsValue::null().as_js_object_ptr().is_null());
+    assert!(JsValue::undefined().as_js_object_ptr().is_null());
+    let x = 42u8;
+    assert!(!JsValue::object(&x as *const u8).as_js_object_ptr().is_null());
+}
+
+#[test]
 fn display_int() {
     assert_eq!(format!("{}", JsValue::int(42)), "42");
     assert_eq!(format!("{}", JsValue::int(-1)), "-1");
