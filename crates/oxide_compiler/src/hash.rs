@@ -1,4 +1,4 @@
-use oxide_parser::{Expression, Statement};
+use oxide_parser::{Expression, ForStatementInit, Statement};
 
 pub fn structural_hash(program: &oxide_parser::Program) -> u64 {
     use std::hash::Hasher;
@@ -53,8 +53,13 @@ fn hash_statement(stmt: &Statement, h: &mut rustc_hash::FxHasher) {
             if let Some(init) = &fr.init {
                 if let Some(expr) = init.as_expression() {
                     hash_expression(expr, h);
-                } else if init.is_var_declaration() {
-                    0u8.hash(h);
+                } else if let ForStatementInit::VariableDeclaration(decl) = init {
+                    (decl.declarations.len() as u32).hash(h);
+                    for d in &decl.declarations {
+                        if let Some(init_expr) = &d.init {
+                            hash_expression(init_expr, h);
+                        }
+                    }
                 }
             }
             if let Some(test) = &fr.test {

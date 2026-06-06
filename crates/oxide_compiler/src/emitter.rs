@@ -1,6 +1,6 @@
 use crate::compiler::Label;
 use crate::opcode::{self, OpCode};
-use oxide_parser::{AssignmentOperator, Expression, Statement, UnaryOperator};
+use oxide_parser::{AssignmentOperator, Expression, ForStatementInit, Statement, UnaryOperator};
 
 use crate::compiler::{is_int_literal, is_side_effect_free, BinaryOperator, CompileCtx, Compiler};
 use crate::module::Constant;
@@ -150,10 +150,22 @@ impl Compiler {
                 if let Some(init) = &fr.init {
                     if let Some(expr) = init.as_expression() {
                         self.emit_expression(expr, ctx)?;
-                    } else if init.is_var_declaration() {
-                        return Err(
-                            "for-loop `let` init not yet supported; use expression init".into()
-                        );
+                    } else if let ForStatementInit::VariableDeclaration(decl) = init {
+                        for d in &decl.declarations {
+                            let name = match &d.id {
+                                oxide_parser::BindingPattern::BindingIdentifier(bi) => {
+                                    bi.name.as_str()
+                                }
+                                _ => return Err("destructuring not supported".into()),
+                            };
+                            let var_reg = ctx.alloc_reg();
+                            ctx.declare(name, var_reg)?;
+                            if let Some(init_expr) = &d.init {
+                                let val_reg = self.emit_expression(init_expr, ctx)?;
+                                ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, 0));
+                                ctx.init_var(name);
+                            }
+                        }
                     }
                 }
 

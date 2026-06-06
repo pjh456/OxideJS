@@ -1,4 +1,4 @@
-use oxide_parser::{Expression, Statement};
+use oxide_parser::{Expression, ForStatementInit, Statement};
 
 use crate::compiler::{is_side_effect_free, CompileCtx, Compiler, Label};
 
@@ -13,8 +13,10 @@ impl Compiler {
                     ctx.alloc_reg();
                     if let Some(init) = &d.init {
                         self.count_expression(init, ctx);
+                        ctx.projected_pc += 1; // STORE_VAR
+                    } else {
+                        ctx.projected_pc += 2; // LOAD_CONST(undefined) + STORE_VAR
                     }
-                    ctx.projected_pc += 1; // STORE_VAR
                 }
             }
             Statement::ReturnStatement(ret) => {
@@ -64,6 +66,16 @@ impl Compiler {
                 if let Some(init) = &fr.init {
                     if let Some(expr) = init.as_expression() {
                         self.count_expression(expr, ctx);
+                    } else if let ForStatementInit::VariableDeclaration(decl) = init {
+                        for d in &decl.declarations {
+                            ctx.alloc_reg();
+                            if let Some(init_expr) = &d.init {
+                                self.count_expression(init_expr, ctx);
+                                ctx.projected_pc += 1; // STORE_VAR
+                            } else {
+                                ctx.projected_pc += 2; // LOAD_CONST(undefined) + STORE_VAR
+                            }
+                        }
                     }
                 }
                 ctx.label_map.insert(start_label, ctx.projected_pc);
