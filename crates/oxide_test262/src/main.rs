@@ -223,7 +223,6 @@ fn run_test_inner(path: &Path, source: &str, meta: &TestMeta) -> TestResult {
             }
             if e.contains("not yet implemented")
                 || e.contains("not supported")
-                || e.contains("compound assignment")
                 || e.contains("is not defined")
                 || e.contains("FunctionDeclaration")
                 || e.contains("FunctionExpression")
@@ -232,7 +231,6 @@ fn run_test_inner(path: &Path, source: &str, meta: &TestMeta) -> TestResult {
                 || e.contains("unsupported statement")
                 || e.contains("NewExpression")
                 || e.contains("CallExpression")
-                || e.contains("UpdateExpression")
                 || e.contains("destructuring")
                 || e.contains("SpreadElement")
             {
