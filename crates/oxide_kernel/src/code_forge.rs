@@ -61,7 +61,7 @@ mod tests {
         let a1 = Allocator::default();
         let a2 = Allocator::default();
         let p1 = oxide_parser::parse(&a1, "var x = 1; var y = 2;").expect("parse failed");
-        let p2 = oxide_parser::parse(&a2, "var a = 3; var b = 4;").expect("parse failed");
+        let p2 = oxide_parser::parse(&a2, "var a = 1; var b = 2;").expect("parse failed");
         assert_eq!(structural_hash(&p1), structural_hash(&p2));
     }
 

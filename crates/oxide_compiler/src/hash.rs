@@ -23,6 +23,11 @@ fn hash_statement(stmt: &Statement, h: &mut rustc_hash::FxHasher) {
         Statement::VariableDeclaration(decl) => {
             1u8.hash(h);
             (decl.declarations.len() as u32).hash(h);
+            for d in &decl.declarations {
+                if let Some(init) = &d.init {
+                    hash_expression(init, h);
+                }
+            }
         }
         Statement::ReturnStatement(ret) => {
             2u8.hash(h);
@@ -107,6 +112,21 @@ fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher) {
             hash_expression(&cond.test, h);
             hash_expression(&cond.consequent, h);
             hash_expression(&cond.alternate, h);
+        }
+        Expression::Identifier(_) => {
+            5u8.hash(h);
+        }
+        Expression::NumericLiteral(num) => {
+            6u8.hash(h);
+            num.value.to_bits().hash(h);
+        }
+        Expression::StringLiteral(s) => {
+            7u8.hash(h);
+            s.value.hash(h);
+        }
+        Expression::BooleanLiteral(b) => {
+            8u8.hash(h);
+            b.value.hash(h);
         }
         _ => {
             std::mem::discriminant(expr).hash(h);

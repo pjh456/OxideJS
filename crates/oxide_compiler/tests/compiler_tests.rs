@@ -103,8 +103,29 @@ fn structural_hash_hit() {
 #[test]
 fn structural_hash_same_shape() {
     let hash_a = parse_to_hash("var x = 1 + 2; var y = x;");
-    let hash_b = parse_to_hash("var a = 3 + 4; var b = a;");
+    let hash_b = parse_to_hash("var a = 1 + 2; var b = a;");
     assert_eq!(hash_a, hash_b);
+}
+
+#[test]
+fn structural_hash_different_init_values() {
+    let hash_a = parse_to_hash("var x = 1 + 2;");
+    let hash_b = parse_to_hash("var y = 3 + 4;");
+    assert_ne!(hash_a, hash_b);
+}
+
+#[test]
+fn structural_hash_different_string_literals() {
+    let hash_a = parse_to_hash(r#"var x = "hello";"#);
+    let hash_b = parse_to_hash(r#"var x = "world";"#);
+    assert_ne!(hash_a, hash_b);
+}
+
+#[test]
+fn structural_hash_different_booleans() {
+    let hash_a = parse_to_hash("var x = true;");
+    let hash_b = parse_to_hash("var x = false;");
+    assert_ne!(hash_a, hash_b);
 }
 
 #[test]
