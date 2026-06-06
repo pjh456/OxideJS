@@ -325,6 +325,14 @@ fn eval_break_in_for() {
 }
 
 #[test]
+fn eval_continue_in_for() {
+    assert_eq!(
+        eval("var r = 0; for (i = 0; i < 5; i = i + 1) { if (i == 3) { continue; } r = r + i; } r"),
+        "7"
+    );
+}
+
+#[test]
 fn eval_control_flow_complex() {
     assert_eq!(
         eval("var r = 0; for (i = 0; i < 5; i = i + 1) { if (i == 2) { continue; } r = r + i; } r"),
