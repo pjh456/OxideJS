@@ -228,6 +228,14 @@ fn compile_break_outside_loop_errors() {
 }
 
 #[test]
+fn compile_continue_outside_loop_errors() {
+    let result = std::panic::catch_unwind(|| {
+        compile_source("continue;");
+    });
+    assert!(result.is_err(), "continue outside loop should error");
+}
+
+#[test]
 fn compile_logical_not() {
     let module = compile_source("!true");
     assert!(
