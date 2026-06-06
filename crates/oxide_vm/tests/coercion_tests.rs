@@ -62,7 +62,13 @@ fn test_same_value_nan() {
 
 #[test]
 fn test_same_value_type_mismatch() {
-    assert!(!coercion::same_value(JsValue::int(1), JsValue::float(1.0)));
+    assert!(!coercion::same_value(JsValue::int(1), JsValue::bool(true)));
+}
+
+#[test]
+fn test_same_value_int_float_equal() {
+    assert!(coercion::same_value(JsValue::int(1), JsValue::float(1.0)));
+    assert!(!coercion::same_value(JsValue::int(1), JsValue::float(2.0)));
 }
 
 #[test]
@@ -77,7 +83,19 @@ fn test_strict_equality_nan() {
 fn test_strict_equality_type_mismatch() {
     assert!(!coercion::strict_equality(
         JsValue::int(1),
+        JsValue::bool(true)
+    ));
+}
+
+#[test]
+fn test_strict_equality_int_float_equal() {
+    assert!(coercion::strict_equality(
+        JsValue::int(1),
         JsValue::float(1.0)
+    ));
+    assert!(!coercion::strict_equality(
+        JsValue::int(1),
+        JsValue::float(2.0)
     ));
 }
 

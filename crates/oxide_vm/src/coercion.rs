@@ -207,6 +207,16 @@ pub fn string_concat(lhs: &str, rhs: &str) -> String {
     s
 }
 
+fn to_f64(val: JsValue) -> f64 {
+    if val.is_int() {
+        val.as_int() as f64
+    } else if val.is_double() {
+        val.as_double()
+    } else {
+        f64::NAN
+    }
+}
+
 pub fn same_value(lhs: JsValue, rhs: JsValue) -> bool {
     if lhs.is_double() && rhs.is_double() {
         let a = lhs.as_double();
@@ -223,6 +233,17 @@ pub fn same_value(lhs: JsValue, rhs: JsValue) -> bool {
     }
     if lhs.is_int() && rhs.is_int() {
         return lhs.as_int() == rhs.as_int();
+    }
+    if (lhs.is_int() || lhs.is_double()) && (rhs.is_int() || rhs.is_double()) {
+        let a = to_f64(lhs);
+        let b = to_f64(rhs);
+        if a.is_nan() && b.is_nan() {
+            return true;
+        }
+        if a == 0.0 && b == 0.0 {
+            return a.is_sign_negative() == b.is_sign_negative();
+        }
+        return a == b;
     }
     if lhs.is_bool() && rhs.is_bool() {
         return lhs.as_bool() == rhs.as_bool();
