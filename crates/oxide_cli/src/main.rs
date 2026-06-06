@@ -125,22 +125,26 @@ fn format_result(string_forge: &StringForge, val: JsValue) {
         }
     } else if val.is_object() {
         let obj = unsafe { &*val.as_js_object_ptr() };
-        print!("{{");
-        let count = obj.prop_count() as usize;
-        let mut first = true;
-        for i in 0..count.min(4) {
-            let prop_val = obj.get_inline_prop(i as u8);
-            if prop_val.is_undefined() {
-                continue;
+        if obj.is_function() {
+            println!("[Function]");
+        } else {
+            print!("{{");
+            let count = obj.prop_count() as usize;
+            let mut first = true;
+            for i in 0..count.min(4) {
+                let prop_val = obj.get_inline_prop(i as u8);
+                if prop_val.is_undefined() {
+                    continue;
+                }
+                if !first {
+                    print!(", ");
+                }
+                first = false;
+                print!("{:?}: ", i);
+                print_value(string_forge, prop_val);
             }
-            if !first {
-                print!(", ");
-            }
-            first = false;
-            print!("{:?}: ", i);
-            print_value(string_forge, prop_val);
+            println!("}}");
         }
-        println!("}}");
     } else if val.is_undefined() {
         println!("undefined");
     } else {
