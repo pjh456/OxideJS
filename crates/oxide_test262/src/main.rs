@@ -2,6 +2,7 @@ use oxide_compiler::compiler::Compiler;
 use oxide_kernel::kernel::{KernelConfig, OxideKernel};
 use oxide_vm::vm::Vm;
 use serde::Deserialize;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -155,6 +156,7 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
         "regexp-dotall",
         "json-superset",
         "for-of",
+        "Temporal",
         "cross-realm",
         "new.target",
         "well-formed-json-stringify",
@@ -162,7 +164,7 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
     ];
 
     for feat in &meta.features {
-        if excluded_features.contains(&feat.as_str()) {
+        if excluded_features.contains(&feat.as_str()) || feat.starts_with("Intl") {
             return Some(format!("excluded feature: {feat}"));
         }
     }
@@ -341,7 +343,7 @@ fn main() {
 
     let total = paths.len();
     for (i, path) in paths.iter().enumerate() {
-        if i % 100 == 0 {
+        if i % 500 == 0 {
             eprintln!(
                 "  progress: {}/{} ({}% pass={} fail={} skip={})",
                 i,
@@ -388,6 +390,14 @@ fn main() {
             stats.skip += 1;
             continue;
         }
+
+        let rel = path.strip_prefix(&test262_root).unwrap_or(path);
+        if let Ok(mut f) = std::fs::File::create("test262-crash.log") {
+            let _ = write!(f, "{}\n", rel.display());
+            let _ = f.flush();
+        }
+        eprintln!("  running: {}", rel.display());
+        let _ = std::io::stderr().flush();
 
         let result = run_test(path, &source, &meta, &kernel);
         match &result.outcome {

@@ -13,3 +13,4 @@ AGENTS.md
 
 # Build Artifacts
 target/
+test262-crash.log
