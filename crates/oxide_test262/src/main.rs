@@ -1,7 +1,9 @@
 use oxide_compiler::compiler::Compiler;
+use oxide_kernel::kernel::{KernelConfig, OxideKernel};
 use oxide_vm::vm::Vm;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use walkdir::WalkDir;
 
@@ -175,11 +177,11 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
     None
 }
 
-fn run_test(path: &Path, source: &str, meta: &TestMeta) -> TestResult {
+fn run_test(path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<OxideKernel>) -> TestResult {
     let start = std::time::Instant::now();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_test_inner(path, source, meta)
+        run_test_inner(path, source, meta, kernel)
     }));
 
     match result {
@@ -195,7 +197,7 @@ fn run_test(path: &Path, source: &str, meta: &TestMeta) -> TestResult {
     }
 }
 
-fn run_test_inner(path: &Path, source: &str, meta: &TestMeta) -> TestResult {
+fn run_test_inner(path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<OxideKernel>) -> TestResult {
     let start = std::time::Instant::now();
 
     let code = strip_meta(source);
@@ -240,7 +242,7 @@ fn run_test_inner(path: &Path, source: &str, meta: &TestMeta) -> TestResult {
         }
     };
 
-    let mut vm = Vm::new();
+    let mut vm = Vm::with_kernel(Arc::clone(kernel));
     match vm.run(&module) {
         Ok(result) => {
             let dur = start.elapsed().as_millis() as u64;
@@ -332,6 +334,8 @@ fn main() {
     let paths = discover_tests(&test262_root);
     eprintln!("found {} test files", paths.len());
 
+    let kernel = Arc::new(OxideKernel::new(KernelConfig::minimal()));
+
     let mut stats = RunStats::default();
     let mut results: Vec<TestResult> = Vec::new();
 
@@ -385,7 +389,7 @@ fn main() {
             continue;
         }
 
-        let result = run_test(path, &source, &meta);
+        let result = run_test(path, &source, &meta, &kernel);
         match &result.outcome {
             TestOutcome::Pass(_) => stats.pass += 1,
             TestOutcome::Fail(_) => stats.fail += 1,
