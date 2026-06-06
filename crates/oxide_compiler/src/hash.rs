@@ -45,6 +45,19 @@ fn hash_statement(stmt: &Statement, h: &mut rustc_hash::FxHasher) {
         }
         Statement::ForStatement(fr) => {
             5u8.hash(h);
+            if let Some(init) = &fr.init {
+                if let Some(expr) = init.as_expression() {
+                    hash_expression(expr, h);
+                } else if init.is_var_declaration() {
+                    0u8.hash(h);
+                }
+            }
+            if let Some(test) = &fr.test {
+                hash_expression(test, h);
+            }
+            if let Some(update) = &fr.update {
+                hash_expression(update, h);
+            }
             hash_statement(&fr.body, h);
         }
         Statement::BlockStatement(block) => {
@@ -88,6 +101,12 @@ fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher) {
             std::mem::discriminant(&log.operator).hash(h);
             hash_expression(&log.left, h);
             hash_expression(&log.right, h);
+        }
+        Expression::ConditionalExpression(cond) => {
+            4u8.hash(h);
+            hash_expression(&cond.test, h);
+            hash_expression(&cond.consequent, h);
+            hash_expression(&cond.alternate, h);
         }
         _ => {
             std::mem::discriminant(expr).hash(h);
