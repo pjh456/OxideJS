@@ -8,6 +8,7 @@ members = [
     "crates/oxide_kernel",
     "crates/oxide_api",
     "crates/oxide_cli",
+    "crates/oxide_test262",
 ]
 
 [workspace.package]

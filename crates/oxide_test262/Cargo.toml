@@ -1,0 +1,20 @@
+[package]
+name = "oxide_test262"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OxideJS - test262 ECMAScript test suite runner"
+
+[[bin]]
+name = "test262-runner"
+path = "src/main.rs"
+
+[dependencies]
+oxide_compiler = { path = "../oxide_compiler" }
+oxide_vm = { path = "../oxide_vm" }
+oxide_parser = { path = "../oxide_parser" }
+oxide_kernel = { path = "../oxide_kernel" }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+walkdir = "2"
