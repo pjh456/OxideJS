@@ -14,8 +14,18 @@ pub(crate) fn is_int_literal(value: f64) -> bool {
     value.fract() == 0.0 && value >= i32::MIN as f64 && value <= i32::MAX as f64
 }
 
+pub(crate) fn is_side_effect_free(expr: &Expression) -> bool {
+    matches!(
+        expr,
+        Expression::NumericLiteral(_)
+            | Expression::StringLiteral(_)
+            | Expression::BooleanLiteral(_)
+            | Expression::NullLiteral(_)
+            | Expression::Identifier(_)
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
 pub(crate) enum Label {
     IfElse(u32),
     IfEnd(u32),
@@ -26,11 +36,8 @@ pub(crate) enum Label {
     ForEnd(u32),
     TernaryEnd(u32),
     TernaryElse(u32),
-    BreakTarget(u32),
-    ContinueTarget(u32),
 }
 
-#[allow(dead_code)]
 pub(crate) struct CompileCtx {
     pub(crate) bytecode: Vec<opcode::Instr>,
     pub(crate) constants: Vec<Constant>,
@@ -43,7 +50,6 @@ pub(crate) struct CompileCtx {
     pub(crate) projected_pc: usize,
 }
 
-#[allow(dead_code)]
 impl CompileCtx {
     pub(crate) fn new() -> Self {
         Self {
@@ -75,6 +81,7 @@ impl CompileCtx {
     pub(crate) fn reset_regs(&mut self) {
         self.next_reg = 0;
         self.projected_pc = 0;
+        self.label_counter = 0;
     }
 
     pub(crate) fn add_constant(&mut self, c: Constant) -> u16 {

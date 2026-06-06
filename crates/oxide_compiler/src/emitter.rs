@@ -1,7 +1,8 @@
+use crate::compiler::Label;
 use crate::opcode::{self, OpCode};
 use oxide_parser::{AssignmentOperator, Expression, Statement, UnaryOperator};
 
-use crate::compiler::{is_int_literal, BinaryOperator, CompileCtx, Compiler};
+use crate::compiler::{is_int_literal, is_side_effect_free, BinaryOperator, CompileCtx, Compiler};
 use crate::module::Constant;
 
 impl Compiler {
@@ -66,6 +67,130 @@ impl Compiler {
                 }
                 ctx.pop_scope();
                 Ok(r)
+            }
+            Statement::IfStatement(ifs) => {
+                let id = ctx.next_label_id();
+                let else_label = Label::IfElse(id);
+                let end_label = Label::IfEnd(id);
+
+                let test_reg = self.emit_expression(&ifs.test, ctx)?;
+
+                let else_pos = ctx.label_map[&else_label];
+                let offset = (else_pos as isize) - (ctx.bytecode.len() as isize);
+                ctx.emit(opcode::encode_jmp_if_false(test_reg, offset as i16));
+
+                let cons_reg = self.emit_statement(&ifs.consequent, ctx)?;
+                let result_reg = ctx.alloc_reg();
+                if let Some(r) = cons_reg {
+                    ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, r, 0));
+                } else {
+                    let undef_idx = ctx.add_constant(Constant::Undefined);
+                    ctx.emit(opcode::encode(
+                        OpCode::LOAD_CONST,
+                        result_reg,
+                        (undef_idx & 0xFF) as u8,
+                        ((undef_idx >> 8) & 0xFF) as u8,
+                    ));
+                }
+
+                let end_pos = ctx.label_map[&end_label];
+                let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
+                ctx.emit(opcode::encode_jmp(offset as i16));
+
+                if let Some(alt) = &ifs.alternate {
+                    let alt_reg = self.emit_statement(alt, ctx)?;
+                    if let Some(r) = alt_reg {
+                        ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, r, 0));
+                    } else {
+                        let undef_idx = ctx.add_constant(Constant::Undefined);
+                        ctx.emit(opcode::encode(
+                            OpCode::LOAD_CONST,
+                            result_reg,
+                            (undef_idx & 0xFF) as u8,
+                            ((undef_idx >> 8) & 0xFF) as u8,
+                        ));
+                    }
+                }
+
+                Ok(Some(result_reg))
+            }
+            Statement::WhileStatement(wh) => {
+                let id = ctx.next_label_id();
+                let start_label = Label::WhileStart(id);
+                let end_label = Label::WhileEnd(id);
+
+                ctx.push_loop(end_label, start_label);
+
+                let test_reg = self.emit_expression(&wh.test, ctx)?;
+
+                let end_pos = ctx.label_map[&end_label];
+                let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
+                ctx.emit(opcode::encode_jmp_if_false(test_reg, offset as i16));
+
+                self.emit_statement(&wh.body, ctx)?;
+
+                let start_pos = ctx.label_map[&start_label];
+                let offset = (start_pos as isize) - (ctx.bytecode.len() as isize);
+                ctx.emit(opcode::encode_jmp(offset as i16));
+
+                ctx.pop_loop();
+                Ok(None)
+            }
+            Statement::ForStatement(fr) => {
+                let id = ctx.next_label_id();
+                let start_label = Label::ForStart(id);
+                let update_label = Label::ForUpdate(id);
+                let end_label = Label::ForEnd(id);
+
+                ctx.push_loop(end_label, update_label);
+
+                if let Some(init) = &fr.init {
+                    if let Some(expr) = init.as_expression() {
+                        self.emit_expression(expr, ctx)?;
+                    } else if init.is_var_declaration() {
+                        return Err(
+                            "for-loop `let` init not yet supported; use expression init".into()
+                        );
+                    }
+                }
+
+                if let Some(test) = &fr.test {
+                    let test_reg = self.emit_expression(test, ctx)?;
+                    let end_pos = ctx.label_map[&end_label];
+                    let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
+                    ctx.emit(opcode::encode_jmp_if_false(test_reg, offset as i16));
+                }
+
+                self.emit_statement(&fr.body, ctx)?;
+
+                if let Some(update) = &fr.update {
+                    self.emit_expression(update, ctx)?;
+                }
+
+                let start_pos = ctx.label_map[&start_label];
+                let offset = (start_pos as isize) - (ctx.bytecode.len() as isize);
+                ctx.emit(opcode::encode_jmp(offset as i16));
+
+                ctx.pop_loop();
+
+                Ok(None)
+            }
+            Statement::BreakStatement(_) => {
+                let (break_label, _) =
+                    ctx.current_loop().ok_or("break outside loop".to_string())?;
+                let break_pos = ctx.label_map[break_label];
+                let offset = (break_pos as isize) - (ctx.bytecode.len() as isize);
+                ctx.emit(opcode::encode_jmp(offset as i16));
+                Ok(None)
+            }
+            Statement::ContinueStatement(_) => {
+                let (_, continue_label) = ctx
+                    .current_loop()
+                    .ok_or("continue outside loop".to_string())?;
+                let continue_pos = ctx.label_map[continue_label];
+                let offset = (continue_pos as isize) - (ctx.bytecode.len() as isize);
+                ctx.emit(opcode::encode_jmp(offset as i16));
+                Ok(None)
             }
             _ => Ok(None),
         }
@@ -165,7 +290,85 @@ impl Compiler {
                         ctx.emit(opcode::encode(OpCode::VOID, r, arg, 0));
                         Ok(r)
                     }
+                    UnaryOperator::LogicalNot => {
+                        let r = ctx.alloc_reg();
+                        ctx.emit(opcode::encode(OpCode::NOT, r, arg, 0));
+                        Ok(r)
+                    }
                     _ => Err(format!("unsupported unary operator: {:?}", un.operator)),
+                }
+            }
+            Expression::ConditionalExpression(cond) => {
+                let id = ctx.next_label_id();
+                let else_label = Label::TernaryElse(id);
+                let end_label = Label::TernaryEnd(id);
+
+                let test_reg = self.emit_expression(&cond.test, ctx)?;
+                let else_pos = ctx.label_map[&else_label];
+                let end_pos = ctx.label_map[&end_label];
+
+                let offset = (else_pos as isize) - (ctx.bytecode.len() as isize);
+                ctx.emit(opcode::encode_jmp_if_false(test_reg, offset as i16));
+
+                let cons_reg = self.emit_expression(&cond.consequent, ctx)?;
+                let result_reg = ctx.alloc_reg();
+                ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, cons_reg, 0));
+
+                let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
+                ctx.emit(opcode::encode_jmp(offset as i16));
+
+                let alt_reg = self.emit_expression(&cond.alternate, ctx)?;
+                ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, alt_reg, 0));
+
+                Ok(result_reg)
+            }
+            Expression::LogicalExpression(log) => {
+                use oxide_parser::LogicalOperator;
+                let left_reg = self.emit_expression(&log.left, ctx)?;
+
+                if is_side_effect_free(&log.left) && is_side_effect_free(&log.right) {
+                    let right_reg = self.emit_expression(&log.right, ctx)?;
+                    let r = ctx.alloc_reg();
+                    let op = match log.operator {
+                        LogicalOperator::And => OpCode::AND,
+                        LogicalOperator::Or => OpCode::OR,
+                        LogicalOperator::Coalesce => {
+                            return Err("nullish coalescing not supported".into());
+                        }
+                    };
+                    ctx.emit(opcode::encode(op, r, left_reg, right_reg));
+                    Ok(r)
+                } else {
+                    let id = ctx.next_label_id();
+                    let skip_label = match log.operator {
+                        LogicalOperator::And => Label::TernaryEnd(id),
+                        LogicalOperator::Or => Label::TernaryElse(id),
+                        LogicalOperator::Coalesce => {
+                            return Err("nullish coalescing not supported".into());
+                        }
+                    };
+                    let skip_pos = ctx.label_map[&skip_label];
+
+                    let dup_reg = ctx.alloc_reg();
+                    ctx.emit(opcode::encode(OpCode::LOAD_VAR, dup_reg, left_reg, 0));
+
+                    let offset = (skip_pos as isize) - (ctx.bytecode.len() as isize);
+                    match log.operator {
+                        LogicalOperator::And => {
+                            ctx.emit(opcode::encode_jmp_if_false(dup_reg, offset as i16));
+                        }
+                        LogicalOperator::Or => {
+                            ctx.emit(opcode::encode_jmp_if_true(dup_reg, offset as i16));
+                        }
+                        LogicalOperator::Coalesce => {
+                            return Err("nullish coalescing not supported".into());
+                        }
+                    }
+
+                    let right_reg = self.emit_expression(&log.right, ctx)?;
+                    ctx.emit(opcode::encode(OpCode::LOAD_VAR, dup_reg, right_reg, 0));
+
+                    Ok(dup_reg)
                 }
             }
             Expression::StaticMemberExpression(member) => {
