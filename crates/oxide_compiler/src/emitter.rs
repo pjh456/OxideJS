@@ -75,7 +75,7 @@ impl Compiler {
 
                 let test_reg = self.emit_expression(&ifs.test, ctx)?;
 
-                let else_pos = ctx.label_map[&else_label];
+                let else_pos = ctx.resolve_label(else_label)?;
                 let offset = (else_pos as isize) - (ctx.bytecode.len() as isize);
                 ctx.emit(opcode::encode_jmp_if_false(test_reg, offset as i16));
 
@@ -95,7 +95,7 @@ impl Compiler {
 
                 let has_alt = ifs.alternate.is_some();
                 if has_alt {
-                    let end_pos = ctx.label_map[&end_label];
+                    let end_pos = ctx.resolve_label(end_label)?;
                     let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
                     ctx.emit(opcode::encode_jmp(offset as i16));
                 }
@@ -126,13 +126,13 @@ impl Compiler {
 
                 let test_reg = self.emit_expression(&wh.test, ctx)?;
 
-                let end_pos = ctx.label_map[&end_label];
+                let end_pos = ctx.resolve_label(end_label)?;
                 let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
                 ctx.emit(opcode::encode_jmp_if_false(test_reg, offset as i16));
 
                 self.emit_statement(&wh.body, ctx)?;
 
-                let start_pos = ctx.label_map[&start_label];
+                let start_pos = ctx.resolve_label(start_label)?;
                 let offset = (start_pos as isize) - (ctx.bytecode.len() as isize);
                 ctx.emit(opcode::encode_jmp(offset as i16));
 
@@ -171,7 +171,7 @@ impl Compiler {
 
                 if let Some(test) = &fr.test {
                     let test_reg = self.emit_expression(test, ctx)?;
-                    let end_pos = ctx.label_map[&end_label];
+                    let end_pos = ctx.resolve_label(end_label)?;
                     let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
                     ctx.emit(opcode::encode_jmp_if_false(test_reg, offset as i16));
                 }
@@ -182,7 +182,7 @@ impl Compiler {
                     self.emit_expression(update, ctx)?;
                 }
 
-                let start_pos = ctx.label_map[&start_label];
+                let start_pos = ctx.resolve_label(start_label)?;
                 let offset = (start_pos as isize) - (ctx.bytecode.len() as isize);
                 ctx.emit(opcode::encode_jmp(offset as i16));
 
@@ -193,7 +193,7 @@ impl Compiler {
             Statement::BreakStatement(_) => {
                 let (break_label, _) =
                     ctx.current_loop().ok_or("break outside loop".to_string())?;
-                let break_pos = ctx.label_map[break_label];
+                let break_pos = ctx.resolve_label(*break_label)?;
                 let offset = (break_pos as isize) - (ctx.bytecode.len() as isize);
                 ctx.emit(opcode::encode_jmp(offset as i16));
                 Ok(None)
@@ -202,7 +202,7 @@ impl Compiler {
                 let (_, continue_label) = ctx
                     .current_loop()
                     .ok_or("continue outside loop".to_string())?;
-                let continue_pos = ctx.label_map[continue_label];
+                let continue_pos = ctx.resolve_label(*continue_label)?;
                 let offset = (continue_pos as isize) - (ctx.bytecode.len() as isize);
                 ctx.emit(opcode::encode_jmp(offset as i16));
                 Ok(None)
@@ -319,8 +319,8 @@ impl Compiler {
                 let end_label = Label::TernaryEnd(id);
 
                 let test_reg = self.emit_expression(&cond.test, ctx)?;
-                let else_pos = ctx.label_map[&else_label];
-                let end_pos = ctx.label_map[&end_label];
+                let else_pos = ctx.resolve_label(else_label)?;
+                let end_pos = ctx.resolve_label(end_label)?;
 
                 let offset = (else_pos as isize) - (ctx.bytecode.len() as isize);
                 ctx.emit(opcode::encode_jmp_if_false(test_reg, offset as i16));
@@ -362,7 +362,7 @@ impl Compiler {
                             return Err("nullish coalescing not supported".into());
                         }
                     };
-                    let skip_pos = ctx.label_map[&skip_label];
+                    let skip_pos = ctx.resolve_label(skip_label)?;
 
                     let dup_reg = ctx.alloc_reg();
                     ctx.emit(opcode::encode(OpCode::LOAD_VAR, dup_reg, left_reg, 0));

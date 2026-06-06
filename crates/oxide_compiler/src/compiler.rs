@@ -93,6 +93,13 @@ impl CompileCtx {
         idx as u16
     }
 
+    pub(crate) fn resolve_label(&self, label: Label) -> Result<usize, String> {
+        self.label_map
+            .get(&label)
+            .copied()
+            .ok_or_else(|| format!("Label {:?} not found in bytecode map", label))
+    }
+
     pub(crate) fn push_scope(&mut self) {
         self.symbols.push_scope();
     }
