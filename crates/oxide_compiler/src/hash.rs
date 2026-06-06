@@ -125,8 +125,15 @@ fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher) {
             std::mem::discriminant(&un.operator).hash(h);
             hash_expression(&un.argument, h);
         }
-        Expression::CallExpression(_) => {
+        Expression::CallExpression(call) => {
             2u8.hash(h);
+            (call.arguments.len() as u32).hash(h);
+            hash_expression(&call.callee, h);
+            for arg in &call.arguments {
+                if let Some(expr) = arg.as_expression() {
+                    hash_expression(expr, h);
+                }
+            }
         }
         Expression::LogicalExpression(log) => {
             3u8.hash(h);

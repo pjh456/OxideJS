@@ -73,6 +73,13 @@ impl SymbolTable {
         reg_for_new
     }
 
+    pub fn pre_register_global(&mut self, name: &str, reg: u8) {
+        self.scopes[0].entry(name.to_string()).or_insert(Binding {
+            reg,
+            initialized: true,
+        });
+    }
+
     pub fn init_var(&mut self, name: &str) {
         let current = self.scopes.last_mut().unwrap();
         if let Some(b) = current.get_mut(name) {

@@ -783,6 +783,7 @@ dependencies = [
 name = "oxide_kernel"
 version = "0.1.0"
 dependencies = [
+ "bumpalo",
  "dashmap",
  "hashbrown 0.14.5",
  "oxide_compiler",

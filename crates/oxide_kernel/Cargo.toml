@@ -13,3 +13,4 @@ oxide_types = { path = "../oxide_types" }
 dashmap.workspace = true
 hashbrown.workspace = true
 rustc-hash.workspace = true
+bumpalo.workspace = true

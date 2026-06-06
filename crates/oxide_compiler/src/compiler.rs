@@ -57,6 +57,7 @@ pub(crate) struct CompileCtx {
     pub(crate) switch_stack: Vec<Label>,
     pub(crate) label_counter: u32,
     pub(crate) projected_pc: usize,
+    pub(crate) builtin_reg_map: Vec<(String, u8)>,
 }
 
 impl CompileCtx {
@@ -72,6 +73,7 @@ impl CompileCtx {
             switch_stack: Vec::new(),
             label_counter: 0,
             projected_pc: 0,
+            builtin_reg_map: Vec::new(),
         }
     }
 
@@ -164,6 +166,19 @@ impl CompileCtx {
     pub(crate) fn current_switch(&self) -> Option<&Label> {
         self.switch_stack.last()
     }
+
+    pub(crate) fn pre_register_builtins(&mut self) {
+        let builtins = [
+            "NaN", "undefined", "Object", "Array", "String", "Number", "Boolean",
+            "Function", "Error", "Math", "JSON", "Promise", "parseInt", "parseFloat",
+            "isNaN", "isFinite",
+        ];
+        for name in &builtins {
+            let reg = self.alloc_reg();
+            self.symbols.pre_register_global(name, reg);
+            self.builtin_reg_map.push((name.to_string(), reg));
+        }
+    }
 }
 
 impl Compiler {
@@ -173,6 +188,7 @@ impl Compiler {
 
     pub fn compile(&self, program: &oxide_parser::Program) -> Result<CompiledModule, String> {
         let mut ctx = CompileCtx::new();
+        ctx.pre_register_builtins();
 
         for stmt in &program.body {
             self.count_statement(stmt, &mut ctx);
@@ -205,6 +221,7 @@ impl Compiler {
             bytecode: ctx.bytecode,
             constants: ctx.constants,
             n_registers: ctx.max_regs,
+            builtin_reg_map: ctx.builtin_reg_map,
         })
     }
 }

@@ -151,6 +151,30 @@ impl BuiltinWorld {
             symbol_constructor,
         }
     }
+
+    pub fn bind_method(
+        proto: &mut JsObject,
+        shape_forge: &ShapeForge,
+        string_forge: &StringForge,
+        method_name: &str,
+        native_fn_ptr: *const (),
+        arg_count: u8,
+    ) -> Result<(), String> {
+        let si = string_forge.intern(method_name).0;
+        let mut wrapper = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        wrapper.set_function(true);
+        wrapper.set_native_fn(Some(native_fn_ptr));
+        wrapper.set_native_arg_count(arg_count);
+        let wrapper_val = JsValue::from_js_object(Box::into_raw(wrapper));
+        let new_offset = proto.prop_count();
+        let new_shape = shape_forge.make_shape(proto.shape_id(), si);
+        proto.set_shape_id(new_shape);
+        proto.set_prop_count(new_offset + 1);
+        let bump = bumpalo::Bump::new();
+        proto.set_prop_expand(new_offset, wrapper_val, &bump);
+        proto.bump_generation();
+        Ok(())
+    }
 }
 
 #[cfg(test)]

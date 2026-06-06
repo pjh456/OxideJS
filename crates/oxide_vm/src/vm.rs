@@ -7,6 +7,7 @@ use oxide_compiler::module::CompiledModule;
 use oxide_compiler::opcode::{self, OpCode};
 
 use crate::coercion;
+use crate::native::NativeFn;
 use oxide_kernel::kernel::{KernelConfig, OxideKernel};
 use oxide_kernel::prop_forge::PropTemplate;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
@@ -171,6 +172,27 @@ impl Vm {
         self.pc = 0;
         self.regs = [JsValue::undefined(); 256];
         self.frames.clear();
+
+        for (name, reg) in &module.builtin_reg_map {
+            let si = self.kernel.string_forge().intern(name.as_str()).0;
+            let global = self.kernel.global_object();
+            let mut shape_id = global.shape_id();
+            let mut found: Option<u8> = None;
+            while shape_id != EMPTY_SHAPE_ID {
+                if let Some(shape) = self.kernel.shape_forge().get_shape(shape_id) {
+                    if shape.property_name == si {
+                        found = Some(shape.property_offset);
+                        break;
+                    }
+                    shape_id = shape.parent.unwrap_or(EMPTY_SHAPE_ID);
+                } else {
+                    break;
+                }
+            }
+            if let Some(offset) = found {
+                self.regs[*reg as usize] = global.get_prop(offset);
+            }
+        }
 
         self.dispatch()
     }
@@ -353,6 +375,45 @@ impl Vm {
                 }
 
                 OpCode::CALL => {
+                    let callee_reg = rd;
+                    let this_reg = a as u8;
+                    let first_arg_reg = b as u8;
+
+                    let callee = self.regs[callee_reg];
+
+                    if callee.is_object() {
+                        let obj_ptr = callee.as_js_object_ptr();
+                        if !obj_ptr.is_null() {
+                            let obj = unsafe { &*obj_ptr };
+                            if obj.is_function() && obj.native_fn().is_some() {
+                                let ext = self.bytecode[self.pc];
+                                self.pc += 1;
+                                let arg_count = (ext & 0xFF) as usize;
+
+                                let mut args_buf = [0u8; 257];
+                                args_buf[0] = this_reg;
+                                for i in 0..arg_count.min(256) {
+                                    args_buf[i + 1] =
+                                        first_arg_reg.wrapping_add(i as u8);
+                                }
+                                let args_slice = &args_buf[..arg_count + 1];
+
+                                let func: NativeFn =
+                                    unsafe { std::mem::transmute(obj.native_fn().unwrap()) };
+                                match func(self, args_slice) {
+                                    Ok(val) => self.regs[0] = val,
+                                    Err(err_val) => {
+                                        return Err(format!(
+                                            "Native error: {:?}",
+                                            err_val
+                                        ));
+                                    }
+                                }
+                                continue;
+                            }
+                        }
+                    }
+
                     let offset = opcode::offset16(instr) as usize;
                     self.frames.push(CallFrame {
                         return_addr: self.pc,

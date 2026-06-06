@@ -2,10 +2,14 @@
 
 use std::sync::Arc;
 
+use oxide_types::mem::P;
+use oxide_types::object::JsObject;
+use oxide_types::value::JsValue;
+
 use crate::builtin::BuiltinWorld;
 use crate::code_forge::CodeForge;
 use crate::prop_forge::PropForge;
-use crate::shape_forge::ShapeForge;
+use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use crate::string_forge::StringForge;
 
 pub struct KernelConfig {
@@ -65,6 +69,7 @@ pub struct OxideKernel {
     pub code_forge: Arc<CodeForge>,
     pub prop_forge: Arc<PropForge>,
     pub builtin_world: Arc<BuiltinWorld>,
+    pub global_object: P<JsObject>,
 }
 
 impl OxideKernel {
@@ -75,6 +80,23 @@ impl OxideKernel {
         let code_forge = Arc::new(CodeForge::new());
         let prop_forge = Arc::new(PropForge::new());
 
+        let mut global_obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
+
+        let si_nan = string_forge.intern("NaN").0;
+        let si_undef = string_forge.intern("undefined").0;
+
+        let nan_shape = shape_forge.make_shape(EMPTY_SHAPE_ID, si_nan);
+        global_obj.set_shape_id(nan_shape);
+        global_obj.set_prop_count(1);
+        global_obj.set_inline_prop(0, JsValue::float(f64::NAN));
+
+        let undef_shape = shape_forge.make_shape(nan_shape, si_undef);
+        global_obj.set_shape_id(undef_shape);
+        global_obj.set_prop_count(2);
+        global_obj.set_inline_prop(1, JsValue::undefined());
+
+        let global_object = P::new(global_obj);
+
         Self {
             config,
             string_forge,
@@ -82,6 +104,7 @@ impl OxideKernel {
             code_forge,
             prop_forge,
             builtin_world,
+            global_object,
         }
     }
 
@@ -107,6 +130,10 @@ impl OxideKernel {
 
     pub fn config(&self) -> &KernelConfig {
         &self.config
+    }
+
+    pub fn global_object(&self) -> &P<JsObject> {
+        &self.global_object
     }
 }
 

@@ -16,6 +16,7 @@ pub struct CompiledModule {
     pub bytecode: Vec<opcode::Instr>,
     pub constants: Vec<Constant>,
     pub n_registers: u8,
+    pub builtin_reg_map: Vec<(String, u8)>,
 }
 
 impl fmt::Display for CompiledModule {

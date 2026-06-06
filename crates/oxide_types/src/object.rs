@@ -2,37 +2,40 @@ use crate::value::JsValue;
 
 pub type ShapeId = u32;
 
-/// Layout:
+/// Layout (72B):
 ///   header: u32 bits
 ///     [0:23]   shape_id
 ///     [24:28]  prop_count (5 bits, 0-31)
 ///     [29]     is_array
 ///     [30]     is_extensible
 ///     [31]     is_function
+///   native_arg_count: u8 (1 byte + 3 pad)
 ///   inline[0..=3]: 4 x JsValue (32 bytes)
-///   overflow: *mut JsValue (8 bytes, null if ≤4 properties)
+///   overflow: *mut JsValue (8 bytes, null if <=4 properties)
 ///   proto: JsValue (8 bytes)
-///   generation: u32 (4 bytes)
-///   _pad: u32 (4 bytes, 64B total = one cache line)
+///   generation: u32 (4 bytes + 4 pad)
+///   native_fn: u64 (8 bytes, 0 = None sentinel)
 #[repr(C)]
 pub struct JsObject {
     header: u32,
+    native_arg_count: u8,
     inline: [JsValue; 4],
     overflow: *mut JsValue,
     proto: JsValue,
     generation: u32,
-    _pad: u32,
+    native_fn: u64,
 }
 
 impl JsObject {
     pub fn new_empty(shape_id: ShapeId, proto: JsValue) -> Self {
         Self {
             header: (shape_id & 0x00FF_FFFF) | (1 << 30),
+            native_arg_count: 0,
             inline: [JsValue::undefined(); 4],
             overflow: std::ptr::null_mut(),
             proto,
             generation: 1,
-            _pad: 0,
+            native_fn: 0,
         }
     }
 
@@ -44,11 +47,12 @@ impl JsObject {
     ) -> Self {
         let mut obj = Self {
             header: (shape_id & 0x00FF_FFFF) | (1 << 30) | (1 << 29),
+            native_arg_count: 0,
             inline: [JsValue::undefined(); 4],
             overflow: std::ptr::null_mut(),
             proto,
             generation: 1,
-            _pad: 0,
+            native_fn: 0,
         };
         let count = (n_elements as u8).min(31);
         obj.set_prop_count(count);
@@ -189,6 +193,26 @@ impl JsObject {
         self.generation = self.generation.wrapping_add(1);
     }
 
+    pub fn native_fn(&self) -> Option<*const ()> {
+        if self.native_fn == 0 {
+            None
+        } else {
+            Some(self.native_fn as *const ())
+        }
+    }
+
+    pub fn set_native_fn(&mut self, ptr: Option<*const ()>) {
+        self.native_fn = ptr.map_or(0, |p| p as u64);
+    }
+
+    pub fn native_arg_count(&self) -> u8 {
+        self.native_arg_count
+    }
+
+    pub fn set_native_arg_count(&mut self, n: u8) {
+        self.native_arg_count = n;
+    }
+
     pub fn alloc_overflow(&mut self, _bump: &bumpalo::Bump, new_count: usize) -> *mut JsValue {
         use std::alloc::Layout;
         debug_assert!(new_count > 4);
@@ -213,11 +237,11 @@ mod tests {
     use crate::shape::EMPTY_SHAPE_ID;
 
     #[test]
-    fn object_size_64_bytes() {
+    fn object_size_72_bytes() {
         assert_eq!(
             std::mem::size_of::<JsObject>(),
-            64,
-            "JsObject layout mismatch — expected 64B (one cache line)"
+            72,
+            "JsObject layout mismatch - expected 72B"
         );
     }
 

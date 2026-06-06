@@ -668,10 +668,10 @@ impl Compiler {
                             ctx.emit(opcode::encode(op, var_reg, rhs, 0));
                             Ok(var_reg)
                         } else {
-                            return Err(format!(
+                            Err(format!(
                                 "compound assignment operator {:?} not supported",
                                 assign.operator
-                            ));
+                            ))
                         }
                     } else {
                         let val_reg = self.emit_expression(&assign.right, ctx)?;
@@ -738,6 +738,37 @@ impl Compiler {
                 Ok(r)
             }
             Expression::ParenthesizedExpression(p) => self.emit_expression(&p.expression, ctx),
+            Expression::CallExpression(call) => {
+                let callee_reg = self.emit_expression(&call.callee, ctx)?;
+                let this_idx = ctx.add_constant(Constant::Undefined);
+                let this_reg = ctx.alloc_reg();
+                ctx.emit(opcode::encode(
+                    OpCode::LOAD_CONST,
+                    this_reg,
+                    (this_idx & 0xFF) as u8,
+                    ((this_idx >> 8) & 0xFF) as u8,
+                ));
+                let mut arg_regs = Vec::new();
+                for arg in &call.arguments {
+                    if let Some(expr) = arg.as_expression() {
+                        arg_regs.push(self.emit_expression(expr, ctx)?);
+                    }
+                }
+                let first_arg_reg = if arg_regs.is_empty() {
+                    0u8
+                } else {
+                    arg_regs[0]
+                };
+                let result_reg = ctx.alloc_reg();
+                ctx.emit(opcode::encode(
+                    OpCode::CALL,
+                    callee_reg,
+                    this_reg,
+                    first_arg_reg,
+                ));
+                ctx.emit(arg_regs.len() as u32);
+                Ok(result_reg)
+            }
             _ => Err(format!("unsupported expression type: {:?}", expr)),
         }
     }
