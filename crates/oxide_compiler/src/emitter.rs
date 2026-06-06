@@ -1,7 +1,8 @@
 use crate::compiler::Label;
 use crate::opcode::{self, OpCode};
 use oxide_parser::{
-    AssignmentOperator, Expression, ForStatementInit, ForStatementLeft, Statement, UnaryOperator,
+    AssignmentOperator, Expression, ForStatementInit, ForStatementLeft, SimpleAssignmentTarget,
+    Statement, UnaryOperator, UpdateOperator,
 };
 
 use crate::compiler::{is_int_literal, is_side_effect_free, BinaryOperator, CompileCtx, Compiler};
@@ -655,6 +656,22 @@ impl Compiler {
                     Err("assignment target not supported".into())
                 }
             }
+            Expression::UpdateExpression(update) => match &update.argument {
+                SimpleAssignmentTarget::AssignmentTargetIdentifier(id) => {
+                    let name = id.name.as_str();
+                    let var_reg = ctx.lookup_or_global(name);
+                    let result_reg = ctx.alloc_reg();
+                    let op = match (update.operator, update.prefix) {
+                        (UpdateOperator::Increment, true) => OpCode::INC_PRE,
+                        (UpdateOperator::Increment, false) => OpCode::INC_POST,
+                        (UpdateOperator::Decrement, true) => OpCode::DEC_PRE,
+                        (UpdateOperator::Decrement, false) => OpCode::DEC_POST,
+                    };
+                    ctx.emit(opcode::encode(op, var_reg, result_reg, result_reg));
+                    Ok(result_reg)
+                }
+                _ => Err("member update not yet supported".into()),
+            },
             Expression::Identifier(ident) => {
                 let var_reg = ctx.lookup(ident.name.as_str())?;
                 let r = ctx.alloc_reg();

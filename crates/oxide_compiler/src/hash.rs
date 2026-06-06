@@ -1,4 +1,4 @@
-use oxide_parser::{Expression, ForStatementInit, Statement};
+use oxide_parser::{Expression, ForStatementInit, SimpleAssignmentTarget, Statement};
 
 pub fn structural_hash(program: &oxide_parser::Program) -> u64 {
     use std::hash::Hasher;
@@ -159,6 +159,26 @@ fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher) {
             11u8.hash(h);
             std::mem::discriminant(&assign.operator).hash(h);
             hash_expression(&assign.right, h);
+        }
+        Expression::UpdateExpression(update) => {
+            12u8.hash(h);
+            std::mem::discriminant(&update.operator).hash(h);
+            update.prefix.hash(h);
+            match &update.argument {
+                SimpleAssignmentTarget::AssignmentTargetIdentifier(_) => {
+                    0u8.hash(h);
+                }
+                SimpleAssignmentTarget::StaticMemberExpression(member) => {
+                    1u8.hash(h);
+                    hash_expression(&member.object, h);
+                }
+                SimpleAssignmentTarget::ComputedMemberExpression(member) => {
+                    2u8.hash(h);
+                    hash_expression(&member.object, h);
+                    hash_expression(&member.expression, h);
+                }
+                _ => {}
+            }
         }
         _ => {
             std::mem::discriminant(expr).hash(h);

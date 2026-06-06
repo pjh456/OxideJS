@@ -635,6 +635,32 @@ impl Vm {
                     self.regs[rd] = if cond { self.regs[a] } else { self.regs[b] };
                 }
 
+                OpCode::INC_PRE => {
+                    let n = coercion::to_number(self.regs[rd], self.kernel.string_forge().as_ref());
+                    let result = JsValue::float(n + 1.0);
+                    self.regs[rd] = result;
+                    self.regs[a] = result;
+                }
+
+                OpCode::INC_POST => {
+                    let n = coercion::to_number(self.regs[rd], self.kernel.string_forge().as_ref());
+                    self.regs[a] = JsValue::float(n);
+                    self.regs[rd] = JsValue::float(n + 1.0);
+                }
+
+                OpCode::DEC_PRE => {
+                    let n = coercion::to_number(self.regs[rd], self.kernel.string_forge().as_ref());
+                    let result = JsValue::float(n - 1.0);
+                    self.regs[rd] = result;
+                    self.regs[a] = result;
+                }
+
+                OpCode::DEC_POST => {
+                    let n = coercion::to_number(self.regs[rd], self.kernel.string_forge().as_ref());
+                    self.regs[a] = JsValue::float(n);
+                    self.regs[rd] = JsValue::float(n - 1.0);
+                }
+
                 OpCode::FOR_IN_INIT => {
                     let obj_val = self.regs[a];
                     if !obj_val.is_object() {

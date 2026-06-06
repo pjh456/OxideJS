@@ -242,3 +242,59 @@ fn compile_compound_exp_no_error() {
     });
     assert!(result.is_ok(), "x**=2 should compile without error");
 }
+
+#[test]
+fn compile_inc_pre() {
+    let module = compile_source("++x");
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::INC_PRE),
+        "++x should emit INC_PRE opcode"
+    );
+}
+
+#[test]
+fn compile_inc_post() {
+    let module = compile_source("x++");
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::INC_POST),
+        "x++ should emit INC_POST opcode"
+    );
+}
+
+#[test]
+fn compile_inc_no_error() {
+    let result = std::panic::catch_unwind(|| {
+        compile_source("x++");
+    });
+    assert!(result.is_ok(), "x++ should compile without error");
+}
+
+#[test]
+fn compile_dec_no_error() {
+    let result = std::panic::catch_unwind(|| {
+        compile_source("x--");
+    });
+    assert!(result.is_ok(), "x-- should compile without error");
+}
+
+#[test]
+fn compile_inc_dec_diff_opcodes() {
+    let m1 = compile_source("++x");
+    let m2 = compile_source("--x");
+    let has_inc_pre = m1
+        .bytecode
+        .iter()
+        .any(|&i| opcode::opcode(i) == OpCode::INC_PRE);
+    let has_dec_pre = m2
+        .bytecode
+        .iter()
+        .any(|&i| opcode::opcode(i) == OpCode::DEC_PRE);
+    assert!(has_inc_pre, "++x should emit INC_PRE");
+    assert!(has_dec_pre, "--x should emit DEC_PRE");
+}

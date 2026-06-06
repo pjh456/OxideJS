@@ -1,4 +1,4 @@
-use oxide_parser::{Expression, ForStatementInit, Statement};
+use oxide_parser::{Expression, ForStatementInit, SimpleAssignmentTarget, Statement};
 
 use crate::compiler::{is_side_effect_free, CompileCtx, Compiler, Label};
 
@@ -314,6 +314,15 @@ impl Compiler {
             Expression::ParenthesizedExpression(p) => {
                 self.count_expression(&p.expression, ctx);
             }
+            Expression::UpdateExpression(update) => match &update.argument {
+                SimpleAssignmentTarget::AssignmentTargetIdentifier(_) => {
+                    ctx.alloc_reg();
+                    ctx.projected_pc += 1;
+                }
+                _ => {
+                    ctx.alloc_reg();
+                }
+            },
             _ => {
                 ctx.alloc_reg();
                 ctx.projected_pc += 1; // LOAD_CONST or LOAD_VAR
