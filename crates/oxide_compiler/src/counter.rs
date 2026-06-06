@@ -205,9 +205,8 @@ impl Compiler {
             }
             Expression::StaticMemberExpression(member) => {
                 self.count_expression(&member.object, ctx);
-                ctx.alloc_reg(); // key register
+                ctx.alloc_reg();
                 ctx.projected_pc += 1; // LOAD_CONST key
-                ctx.alloc_reg(); // result register
                 ctx.projected_pc += 1; // IC_GET_PROP
                 ctx.projected_pc += 1; // IC ext word
             }

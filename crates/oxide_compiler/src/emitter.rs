@@ -382,15 +382,14 @@ impl Compiler {
                     (idx & 0xFF) as u8,
                     ((idx >> 8) & 0xFF) as u8,
                 ));
-                let result_reg = ctx.alloc_reg();
                 ctx.emit(opcode::encode(
                     OpCode::IC_GET_PROP,
-                    result_reg,
+                    0,
                     obj_reg,
                     key_reg,
                 ));
                 ctx.emit(0);
-                Ok(result_reg)
+                Ok(obj_reg)
             }
             Expression::ComputedMemberExpression(member) => {
                 let obj_reg = self.emit_expression(&member.object, ctx)?;
