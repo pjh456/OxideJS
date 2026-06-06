@@ -214,6 +214,48 @@ fn panic_to_object() -> ! {
     panic!("ToObject failed: null or undefined cannot be converted to object")
 }
 
+pub fn same_value(lhs: JsValue, rhs: JsValue) -> bool {
+    if lhs.is_double() && rhs.is_double() {
+        let a = lhs.as_double();
+        let b = rhs.as_double();
+        if a.is_nan() && b.is_nan() {
+            return true;
+        }
+        if a == 0.0 && b == 0.0 {
+            let a_neg = a.is_sign_negative();
+            let b_neg = b.is_sign_negative();
+            return a_neg == b_neg;
+        }
+        return a == b;
+    }
+    if lhs.is_int() && rhs.is_int() {
+        return lhs.as_int() == rhs.as_int();
+    }
+    if lhs.is_bool() && rhs.is_bool() {
+        return lhs.as_bool() == rhs.as_bool();
+    }
+    if lhs.is_null() && rhs.is_null() {
+        return true;
+    }
+    if lhs.is_undefined() && rhs.is_undefined() {
+        return true;
+    }
+    if lhs.is_string() && rhs.is_string() {
+        return lhs == rhs;
+    }
+    if lhs.is_object() && rhs.is_object() {
+        return lhs.as_ptr() == rhs.as_ptr();
+    }
+    false
+}
+
+pub fn strict_equality(lhs: JsValue, rhs: JsValue) -> bool {
+    if lhs.is_double() && rhs.is_double() {
+        return strict_double_eq(lhs.as_double(), rhs.as_double());
+    }
+    same_value(lhs, rhs)
+}
+
 pub fn to_object(val: JsValue, vm: &mut Vm) -> Result<JsValue, &'static str> {
     if val.is_object() {
         return Ok(val);

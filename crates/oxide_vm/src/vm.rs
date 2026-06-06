@@ -262,6 +262,21 @@ impl Vm {
                     self.regs[rd] = JsValue::bool(!rel.unwrap_or(true));
                 }
 
+                OpCode::STRICT_EQ => {
+                    let eq = coercion::strict_equality(self.regs[a], self.regs[b]);
+                    self.regs[rd] = JsValue::bool(eq);
+                }
+
+                OpCode::STRICT_NEQ => {
+                    let ne = !coercion::strict_equality(self.regs[a], self.regs[b]);
+                    self.regs[rd] = JsValue::bool(ne);
+                }
+
+                OpCode::UNARY_PLUS => {
+                    let v = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
+                    self.regs[rd] = JsValue::float(v);
+                }
+
                 OpCode::JMP => {
                     let offset = opcode::offset16(instr) as isize;
                     self.pc = ((self.pc as isize) + offset - 1) as usize;

@@ -58,3 +58,67 @@ fn eval_comparison_gte() {
 fn eval_string_number_eq() {
     assert_eq!(eval("5 == 5"), "true");
 }
+
+#[test]
+fn eval_strict_eq_true() {
+    assert_eq!(eval("1 === 1"), "true");
+}
+
+#[test]
+fn eval_strict_eq_false_type() {
+    assert_eq!(eval("1 === '1'"), "false");
+}
+
+#[test]
+fn eval_strict_eq_null_undefined() {
+    let source = r#" 
+    var undef;
+    undef === null
+    "#;
+    assert_eq!(eval(source), "false");
+}
+
+#[test]
+fn eval_strict_eq_bool_number() {
+    assert_eq!(eval("true === 1"), "false");
+}
+
+#[test]
+fn eval_strict_eq_signed_zero() {
+    assert_eq!(eval("+0 === -0"), "true");
+}
+
+#[test]
+fn eval_strict_neq_true() {
+    assert_eq!(eval("1 !== '1'"), "true");
+}
+
+#[test]
+fn eval_strict_neq_false() {
+    assert_eq!(eval("1 !== 1"), "false");
+}
+
+#[test]
+fn eval_unary_plus_number() {
+    assert_eq!(eval("+'42'"), "42");
+}
+
+#[test]
+fn eval_unary_plus_bool() {
+    assert_eq!(eval("+true"), "1");
+}
+
+#[test]
+fn eval_unary_plus_null() {
+    assert_eq!(eval("+null"), "0");
+}
+
+#[test]
+fn eval_unary_plus_nan() {
+    assert_eq!(eval("+'hello'"), "NaN");
+}
+
+#[test]
+fn eval_unary_plus_false() {
+    assert_eq!(eval("+false"), "0");
+}

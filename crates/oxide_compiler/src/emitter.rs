@@ -399,6 +399,8 @@ impl Compiler {
                     BinaryOperator::LessEqualThan => OpCode::LTE,
                     BinaryOperator::GreaterEqualThan => OpCode::GTE,
                     BinaryOperator::In => OpCode::IN,
+                    BinaryOperator::StrictEquality => OpCode::STRICT_EQ,
+                    BinaryOperator::StrictInequality => OpCode::STRICT_NEQ,
                     _ => return Err(format!("unsupported binary operator: {:?}", bin.operator)),
                 };
                 let r = ctx.alloc_reg();
@@ -426,6 +428,11 @@ impl Compiler {
                     UnaryOperator::LogicalNot => {
                         let r = ctx.alloc_reg();
                         ctx.emit(opcode::encode(OpCode::NOT, r, arg, 0));
+                        Ok(r)
+                    }
+                    UnaryOperator::UnaryPlus => {
+                        let r = ctx.alloc_reg();
+                        ctx.emit(opcode::encode(OpCode::UNARY_PLUS, r, arg, 0));
                         Ok(r)
                     }
                     _ => Err(format!("unsupported unary operator: {:?}", un.operator)),

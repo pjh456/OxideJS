@@ -1,5 +1,7 @@
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
+use oxide_types::value::JsValue;
+use oxide_vm::coercion;
 use oxide_vm::vm::Vm;
 
 fn eval(source: &str) -> String {
@@ -32,4 +34,57 @@ fn eval_coercion_bool_equals_int() {
 #[test]
 fn eval_not_falsy() {
     assert_eq!(eval("!0"), "true");
+}
+
+#[test]
+fn test_same_value_signed_zero() {
+    assert!(!coercion::same_value(
+        JsValue::float(0.0),
+        JsValue::float(-0.0)
+    ));
+}
+
+#[test]
+fn test_strict_equality_signed_zero() {
+    assert!(coercion::strict_equality(
+        JsValue::float(0.0),
+        JsValue::float(-0.0)
+    ));
+}
+
+#[test]
+fn test_same_value_nan() {
+    assert!(coercion::same_value(
+        JsValue::float(f64::NAN),
+        JsValue::float(f64::NAN)
+    ));
+}
+
+#[test]
+fn test_same_value_type_mismatch() {
+    assert!(!coercion::same_value(JsValue::int(1), JsValue::float(1.0)));
+}
+
+#[test]
+fn test_strict_equality_nan() {
+    assert!(!coercion::strict_equality(
+        JsValue::float(f64::NAN),
+        JsValue::float(f64::NAN)
+    ));
+}
+
+#[test]
+fn test_strict_equality_type_mismatch() {
+    assert!(!coercion::strict_equality(
+        JsValue::int(1),
+        JsValue::float(1.0)
+    ));
+}
+
+#[test]
+fn test_strict_equality_null_undefined() {
+    assert!(!coercion::strict_equality(
+        JsValue::null(),
+        JsValue::undefined()
+    ));
 }

@@ -131,3 +131,74 @@ fn regression_coalesce_consistency() {
         "a ?? b should produce an error (not silently misbehave)"
     );
 }
+
+#[test]
+fn compile_strict_eq() {
+    let module = compile_source("1 === 2");
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::STRICT_EQ),
+        "1 === 2 should emit STRICT_EQ opcode"
+    );
+}
+
+#[test]
+fn compile_strict_neq() {
+    let module = compile_source("1 !== 2");
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::STRICT_NEQ),
+        "1 !== 2 should emit STRICT_NEQ opcode"
+    );
+}
+
+#[test]
+fn compile_unary_plus() {
+    let module = compile_source("+'hello'");
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::UNARY_PLUS),
+        "+'hello' should emit UNARY_PLUS opcode"
+    );
+}
+
+#[test]
+fn compile_typeof_strict_eq() {
+    let module = compile_source("typeof 42 === 'number'");
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::TYPEOF),
+        "should emit TYPEOF opcode"
+    );
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::STRICT_EQ),
+        "should emit STRICT_EQ opcode"
+    );
+}
+
+#[test]
+fn compile_strict_eq_no_error() {
+    let result = std::panic::catch_unwind(|| {
+        compile_source("1 === 2");
+    });
+    assert!(result.is_ok(), "1 === 2 should compile without error");
+}
+
+#[test]
+fn compile_unary_plus_no_error() {
+    let result = std::panic::catch_unwind(|| {
+        compile_source("+'hello'");
+    });
+    assert!(result.is_ok(), "+'hello' should compile without error");
+}
