@@ -58,8 +58,10 @@ impl SymbolTable {
     }
 
     pub fn lookup_or_global(&mut self, name: &str, reg_for_new: u8) -> u8 {
-        if let Ok(reg) = self.lookup(name) {
-            return reg;
+        for scope in self.scopes.iter().rev() {
+            if let Some(b) = scope.get(name) {
+                return b.reg;
+            }
         }
         self.scopes[0].insert(
             name.to_string(),
