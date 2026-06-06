@@ -199,7 +199,12 @@ fn run_test(path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<OxideKernel
     }
 }
 
-fn run_test_inner(path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<OxideKernel>) -> TestResult {
+fn run_test_inner(
+    path: &Path,
+    source: &str,
+    meta: &TestMeta,
+    kernel: &Arc<OxideKernel>,
+) -> TestResult {
     let start = std::time::Instant::now();
 
     let code = strip_meta(source);

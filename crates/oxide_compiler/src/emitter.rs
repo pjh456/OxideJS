@@ -646,33 +646,33 @@ impl Compiler {
                     &assign.left
                 {
                     if assign.operator != AssignmentOperator::Assign {
-                    if assign.operator == AssignmentOperator::Addition
-                        || assign.operator == AssignmentOperator::Subtraction
-                        || assign.operator == AssignmentOperator::Multiplication
-                        || assign.operator == AssignmentOperator::Division
-                        || assign.operator == AssignmentOperator::Remainder
-                        || assign.operator == AssignmentOperator::Exponential
-                    {
-                        let rhs = self.emit_expression(&assign.right, ctx)?;
-                        let name = id_ref.name.as_str();
-                        let var_reg = ctx.lookup_or_global(name);
-                        let op = match assign.operator {
-                            AssignmentOperator::Addition => OpCode::COMPOUND_ADD,
-                            AssignmentOperator::Subtraction => OpCode::COMPOUND_SUB,
-                            AssignmentOperator::Multiplication => OpCode::COMPOUND_MUL,
-                            AssignmentOperator::Division => OpCode::COMPOUND_DIV,
-                            AssignmentOperator::Remainder => OpCode::COMPOUND_MOD,
-                            AssignmentOperator::Exponential => OpCode::COMPOUND_EXP,
-                            _ => unreachable!(),
-                        };
-                        ctx.emit(opcode::encode(op, var_reg, rhs, 0));
-                        Ok(var_reg)
-                    } else {
-                        return Err(format!(
-                            "compound assignment operator {:?} not supported",
-                            assign.operator
-                        ));
-                    }
+                        if assign.operator == AssignmentOperator::Addition
+                            || assign.operator == AssignmentOperator::Subtraction
+                            || assign.operator == AssignmentOperator::Multiplication
+                            || assign.operator == AssignmentOperator::Division
+                            || assign.operator == AssignmentOperator::Remainder
+                            || assign.operator == AssignmentOperator::Exponential
+                        {
+                            let rhs = self.emit_expression(&assign.right, ctx)?;
+                            let name = id_ref.name.as_str();
+                            let var_reg = ctx.lookup_or_global(name);
+                            let op = match assign.operator {
+                                AssignmentOperator::Addition => OpCode::COMPOUND_ADD,
+                                AssignmentOperator::Subtraction => OpCode::COMPOUND_SUB,
+                                AssignmentOperator::Multiplication => OpCode::COMPOUND_MUL,
+                                AssignmentOperator::Division => OpCode::COMPOUND_DIV,
+                                AssignmentOperator::Remainder => OpCode::COMPOUND_MOD,
+                                AssignmentOperator::Exponential => OpCode::COMPOUND_EXP,
+                                _ => unreachable!(),
+                            };
+                            ctx.emit(opcode::encode(op, var_reg, rhs, 0));
+                            Ok(var_reg)
+                        } else {
+                            return Err(format!(
+                                "compound assignment operator {:?} not supported",
+                                assign.operator
+                            ));
+                        }
                     } else {
                         let val_reg = self.emit_expression(&assign.right, ctx)?;
                         let name = id_ref.name.as_str();
