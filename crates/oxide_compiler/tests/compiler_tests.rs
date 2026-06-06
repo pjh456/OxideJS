@@ -139,3 +139,146 @@ fn compile_return_value() {
         "function declaration should produce bytecode"
     );
 }
+
+#[test]
+fn compile_if_else_emits_jmp_if_false() {
+    let module = compile_source("if (true) { 1 } else { 2 }");
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::JMP_IF_FALSE),
+        "if/else should contain JMP_IF_FALSE"
+    );
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::JMP),
+        "if/else should contain JMP"
+    );
+}
+
+#[test]
+fn compile_while_emits_jump_back() {
+    let module = compile_source("while (true) { 1 }");
+    let jmp_ops: Vec<_> = module
+        .bytecode
+        .iter()
+        .filter(|&&i| opcode::opcode(i) == OpCode::JMP)
+        .collect();
+    assert!(!jmp_ops.is_empty(), "while should contain JMP (backward)");
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::JMP_IF_FALSE),
+        "while should contain JMP_IF_FALSE"
+    );
+}
+
+#[test]
+fn compile_for_emits_jumps() {
+    let module = compile_source("for (i=0; i<3; i=i+1) { 1 }");
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::JMP_IF_FALSE),
+        "for should contain JMP_IF_FALSE"
+    );
+}
+
+#[test]
+fn compile_ternary_emits_jumps() {
+    let module = compile_source("true ? 1 : 2");
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::JMP_IF_FALSE),
+        "ternary should contain JMP_IF_FALSE"
+    );
+}
+
+#[test]
+fn compile_break_in_loop() {
+    let module = compile_source("while (true) { break; }");
+    assert!(
+        !module.bytecode.is_empty(),
+        "break should compile without error"
+    );
+}
+
+#[test]
+fn compile_continue_in_loop() {
+    let module = compile_source("while (true) { continue; }");
+    assert!(
+        !module.bytecode.is_empty(),
+        "continue should compile without error"
+    );
+}
+
+#[test]
+fn compile_break_outside_loop_errors() {
+    let result = std::panic::catch_unwind(|| {
+        compile_source("break;");
+    });
+    assert!(result.is_err(), "break outside loop should error");
+}
+
+#[test]
+fn compile_logical_not() {
+    let module = compile_source("!true");
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::NOT),
+        "!true should emit NOT opcode"
+    );
+}
+
+#[test]
+fn compile_logical_and_simple() {
+    let module = compile_source("1 && 2");
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::AND),
+        "simple && should emit AND opcode"
+    );
+}
+
+#[test]
+fn compile_logical_or_simple() {
+    let module = compile_source("0 || 1");
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::OR),
+        "simple || should emit OR opcode"
+    );
+}
+
+#[test]
+fn compile_nested_if() {
+    let module = compile_source("var a=1,b=0; if (a) { if (b) { 1 } else { 2 } }");
+    let jmp_if_false_count = module
+        .bytecode
+        .iter()
+        .filter(|&&i| opcode::opcode(i) == OpCode::JMP_IF_FALSE)
+        .count();
+    assert!(
+        jmp_if_false_count >= 2,
+        "nested if should have 2+ JMP_IF_FALSE"
+    );
+}
+
+#[test]
+fn compile_empty_while_body() {
+    let module = compile_source("while (false) {}");
+    assert!(!module.bytecode.is_empty(), "empty while should compile");
+}
