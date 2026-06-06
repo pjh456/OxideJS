@@ -8,6 +8,10 @@ pub use oxide_parser::{BinaryOperator, Expression, Statement, UnaryOperator};
 
 pub struct Compiler;
 
+fn is_int_literal(value: f64) -> bool {
+    value.fract() == 0.0 && value >= i32::MIN as f64 && value <= i32::MAX as f64
+}
+
 struct CompileCtx {
     bytecode: Vec<opcode::Instr>,
     constants: Vec<Constant>,
@@ -312,7 +316,11 @@ impl Compiler {
     fn emit_expression(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u8, String> {
         match expr {
             Expression::NumericLiteral(n) => {
-                let idx = ctx.add_constant(Constant::Number(n.value));
+                let idx = if is_int_literal(n.value) {
+                    ctx.add_constant(Constant::Int(n.value as i32))
+                } else {
+                    ctx.add_constant(Constant::Number(n.value))
+                };
                 let r = ctx.alloc_reg();
                 ctx.emit(opcode::encode(
                     OpCode::LOAD_CONST,

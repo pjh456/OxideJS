@@ -5,6 +5,7 @@ use crate::opcode::{self, OpCode};
 #[derive(Debug, Clone, PartialEq)]
 pub enum Constant {
     Number(f64),
+    Int(i32),
     String(String),
     Boolean(bool),
     Null,

@@ -34,7 +34,7 @@ fn compile_constants() {
     assert!(!module.constants.is_empty());
     assert_eq!(
         module.constants[0],
-        oxide_compiler::compiler::Constant::Number(42.0)
+        oxide_compiler::compiler::Constant::Int(42)
     );
 }
 
@@ -120,7 +120,7 @@ fn compile_var_declaration() {
     assert!(!module.bytecode.is_empty());
     assert_eq!(
         module.constants[0],
-        oxide_compiler::compiler::Constant::Number(42.0)
+        oxide_compiler::compiler::Constant::Int(42)
     );
 }
 

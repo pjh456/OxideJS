@@ -34,7 +34,7 @@ fn object_create_and_read() {
     assert!(obj.is_object());
     let obj_ref = unsafe { &*obj.as_js_object_ptr() };
     assert_eq!(obj_ref.prop_count(), 1, "object should have 1 property");
-    assert!(obj_ref.get_inline_prop(0).is_double());
+    assert!(obj_ref.get_inline_prop(0).is_int());
 }
 
 #[test]

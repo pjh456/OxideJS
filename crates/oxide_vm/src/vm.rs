@@ -113,6 +113,7 @@ impl Vm {
             .iter()
             .map(|c| match c {
                 Constant::Number(v) => JsValue::float(*v),
+                Constant::Int(v) => JsValue::int(*v),
                 Constant::String(s) => self.intern(s),
                 Constant::Boolean(b) => JsValue::bool(*b),
                 Constant::Null => JsValue::null(),
