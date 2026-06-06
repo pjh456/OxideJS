@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::module::CompiledModule;
 use crate::opcode::{self, OpCode};
 use crate::symbol_table::SymbolTable;
@@ -12,14 +14,36 @@ pub(crate) fn is_int_literal(value: f64) -> bool {
     value.fract() == 0.0 && value >= i32::MIN as f64 && value <= i32::MAX as f64
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(dead_code)]
+pub(crate) enum Label {
+    IfElse(u32),
+    IfEnd(u32),
+    WhileStart(u32),
+    WhileEnd(u32),
+    ForStart(u32),
+    ForUpdate(u32),
+    ForEnd(u32),
+    TernaryEnd(u32),
+    TernaryElse(u32),
+    BreakTarget(u32),
+    ContinueTarget(u32),
+}
+
+#[allow(dead_code)]
 pub(crate) struct CompileCtx {
     pub(crate) bytecode: Vec<opcode::Instr>,
     pub(crate) constants: Vec<Constant>,
     next_reg: u8,
     pub(crate) max_regs: u8,
     symbols: SymbolTable,
+    pub(crate) label_map: HashMap<Label, usize>,
+    pub(crate) loop_stack: Vec<(Label, Label)>,
+    pub(crate) label_counter: u32,
+    pub(crate) projected_pc: usize,
 }
 
+#[allow(dead_code)]
 impl CompileCtx {
     pub(crate) fn new() -> Self {
         Self {
@@ -28,6 +52,10 @@ impl CompileCtx {
             next_reg: 0,
             max_regs: 0,
             symbols: SymbolTable::new(),
+            label_map: HashMap::new(),
+            loop_stack: Vec::new(),
+            label_counter: 0,
+            projected_pc: 0,
         }
     }
 
@@ -46,6 +74,7 @@ impl CompileCtx {
 
     pub(crate) fn reset_regs(&mut self) {
         self.next_reg = 0;
+        self.projected_pc = 0;
     }
 
     pub(crate) fn add_constant(&mut self, c: Constant) -> u16 {
@@ -80,6 +109,24 @@ impl CompileCtx {
 
     pub(crate) fn init_var(&mut self, name: &str) {
         self.symbols.init_var(name);
+    }
+
+    pub(crate) fn next_label_id(&mut self) -> u32 {
+        let id = self.label_counter;
+        self.label_counter += 1;
+        id
+    }
+
+    pub(crate) fn push_loop(&mut self, break_label: Label, continue_label: Label) {
+        self.loop_stack.push((break_label, continue_label));
+    }
+
+    pub(crate) fn pop_loop(&mut self) {
+        self.loop_stack.pop();
+    }
+
+    pub(crate) fn current_loop(&self) -> Option<&(Label, Label)> {
+        self.loop_stack.last()
     }
 }
 

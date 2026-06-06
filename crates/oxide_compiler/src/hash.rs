@@ -53,6 +53,12 @@ fn hash_statement(stmt: &Statement, h: &mut rustc_hash::FxHasher) {
                 hash_statement(s, h);
             }
         }
+        Statement::BreakStatement(_) => {
+            7u8.hash(h);
+        }
+        Statement::ContinueStatement(_) => {
+            8u8.hash(h);
+        }
         _ => {
             std::mem::discriminant(stmt).hash(h);
         }
