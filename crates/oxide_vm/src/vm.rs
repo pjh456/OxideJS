@@ -259,7 +259,8 @@ impl Vm {
                 }
 
                 OpCode::JMP_IF_FALSE => {
-                    let cond = coercion::to_boolean(self.regs[rd]);
+                    let cond =
+                        coercion::to_boolean(self.regs[rd], self.kernel.string_forge().as_ref());
                     if !cond {
                         let offset = opcode::offset16(instr) as isize;
                         self.pc = ((self.pc as isize) + offset - 1) as usize;
@@ -267,7 +268,8 @@ impl Vm {
                 }
 
                 OpCode::JMP_IF_TRUE => {
-                    let cond = coercion::to_boolean(self.regs[rd]);
+                    let cond =
+                        coercion::to_boolean(self.regs[rd], self.kernel.string_forge().as_ref());
                     if cond {
                         let offset = opcode::offset16(instr) as isize;
                         self.pc = ((self.pc as isize) + offset - 1) as usize;
@@ -547,17 +549,20 @@ impl Vm {
                 }
 
                 OpCode::NOT => {
-                    let cond = coercion::to_boolean(self.regs[a]);
+                    let cond =
+                        coercion::to_boolean(self.regs[a], self.kernel.string_forge().as_ref());
                     self.regs[rd] = JsValue::bool(!cond);
                 }
 
                 OpCode::AND => {
-                    let cond = coercion::to_boolean(self.regs[a]);
+                    let cond =
+                        coercion::to_boolean(self.regs[a], self.kernel.string_forge().as_ref());
                     self.regs[rd] = if cond { self.regs[b] } else { self.regs[a] };
                 }
 
                 OpCode::OR => {
-                    let cond = coercion::to_boolean(self.regs[a]);
+                    let cond =
+                        coercion::to_boolean(self.regs[a], self.kernel.string_forge().as_ref());
                     self.regs[rd] = if cond { self.regs[a] } else { self.regs[b] };
                 }
 

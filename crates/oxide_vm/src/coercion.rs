@@ -81,7 +81,7 @@ pub fn to_string(string_forge: &StringForge, val: JsValue) -> String {
     String::new()
 }
 
-pub fn to_boolean(val: JsValue) -> bool {
+pub fn to_boolean(val: JsValue, string_forge: &StringForge) -> bool {
     if val.is_undefined() || val.is_null() {
         return false;
     }
@@ -96,7 +96,10 @@ pub fn to_boolean(val: JsValue) -> bool {
         return !(d == 0.0 || d == -0.0 || d.is_nan());
     }
     if val.is_string() {
-        return true;
+        let s = string_forge
+            .lookup(val.as_string_index())
+            .unwrap_or_default();
+        return !s.is_empty();
     }
     if val.is_object() {
         return true;
