@@ -93,9 +93,12 @@ impl Compiler {
                     ));
                 }
 
-                let end_pos = ctx.label_map[&end_label];
-                let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
-                ctx.emit(opcode::encode_jmp(offset as i16));
+                let has_alt = ifs.alternate.is_some();
+                if has_alt {
+                    let end_pos = ctx.label_map[&end_label];
+                    let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
+                    ctx.emit(opcode::encode_jmp(offset as i16));
+                }
 
                 if let Some(alt) = &ifs.alternate {
                     let alt_reg = self.emit_statement(alt, ctx)?;

@@ -33,7 +33,9 @@ impl Compiler {
                 self.count_statement(&ifs.consequent, ctx);
                 ctx.alloc_reg(); // result register
                 ctx.projected_pc += 1; // LOAD_VAR result <- consequent
-                ctx.projected_pc += 1; // JMP (skip else)
+                if ifs.alternate.is_some() {
+                    ctx.projected_pc += 1; // JMP (skip else)
+                }
                 ctx.label_map.insert(else_label, ctx.projected_pc);
                 if let Some(alt_stmt) = &ifs.alternate {
                     self.count_statement(alt_stmt, ctx);
@@ -173,7 +175,7 @@ impl Compiler {
                         LogicalOperator::And => Label::TernaryEnd(id),
                         LogicalOperator::Or => Label::TernaryElse(id),
                         LogicalOperator::Coalesce => {
-                            return;
+                            unreachable!()
                         }
                     };
                     ctx.label_map.insert(skip_label, ctx.projected_pc);
