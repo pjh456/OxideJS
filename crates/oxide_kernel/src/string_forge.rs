@@ -69,6 +69,11 @@ impl StringForge {
         inner.entries.get(idx as usize).map(|e| e.data.clone())
     }
 
+    pub fn get_hash(&self, idx: u32) -> Option<u16> {
+        let inner = self.inner.read().unwrap();
+        inner.entries.get(idx as usize).map(|e| e.hash)
+    }
+
     pub fn decref(&self, idx: u32) {
         let inner = self.inner.read().unwrap();
         if let Some(entry) = inner.entries.get(idx as usize) {

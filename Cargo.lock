@@ -817,6 +817,7 @@ dependencies = [
 name = "oxide_vm"
 version = "0.1.0"
 dependencies = [
+ "bumpalo",
  "fast-float",
  "oxide_compiler",
  "oxide_kernel",

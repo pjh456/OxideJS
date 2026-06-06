@@ -30,7 +30,7 @@ serde = "1"
 serde_json = "1"
 dashmap = "6"
 rayon = "1"
-bumpalo = "3"
+bumpalo = { version = "3", features = ["collections"] }
 hashbrown = "0.14"
 proptest = "1"
 rustc-hash = "2"

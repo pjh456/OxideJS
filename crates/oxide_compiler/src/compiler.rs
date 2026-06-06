@@ -26,6 +26,7 @@ pub(crate) fn is_side_effect_free(expr: &Expression) -> bool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(dead_code)]
 pub(crate) enum Label {
     IfElse(u32),
     IfEnd(u32),
@@ -36,6 +37,12 @@ pub(crate) enum Label {
     ForEnd(u32),
     TernaryEnd(u32),
     TernaryElse(u32),
+    DoWhileStart(u32),
+    DoWhileEnd(u32),
+    ForInStart(u32),
+    ForInEnd(u32),
+    SwitchEnd(u32),
+    SwitchCase(u32),
 }
 
 pub(crate) struct CompileCtx {
@@ -46,6 +53,8 @@ pub(crate) struct CompileCtx {
     symbols: SymbolTable,
     pub(crate) label_map: HashMap<Label, usize>,
     pub(crate) loop_stack: Vec<(Label, Label)>,
+    #[allow(dead_code)]
+    pub(crate) switch_stack: Vec<Label>,
     pub(crate) label_counter: u32,
     pub(crate) projected_pc: usize,
 }
@@ -60,6 +69,7 @@ impl CompileCtx {
             symbols: SymbolTable::new(),
             label_map: HashMap::new(),
             loop_stack: Vec::new(),
+            switch_stack: Vec::new(),
             label_counter: 0,
             projected_pc: 0,
         }
@@ -141,6 +151,18 @@ impl CompileCtx {
 
     pub(crate) fn current_loop(&self) -> Option<&(Label, Label)> {
         self.loop_stack.last()
+    }
+
+    pub(crate) fn push_switch(&mut self, break_label: Label) {
+        self.switch_stack.push(break_label);
+    }
+
+    pub(crate) fn pop_switch(&mut self) {
+        self.switch_stack.pop();
+    }
+
+    pub(crate) fn current_switch(&self) -> Option<&Label> {
+        self.switch_stack.last()
     }
 }
 

@@ -82,6 +82,28 @@ fn hash_statement(stmt: &Statement, h: &mut rustc_hash::FxHasher) {
         Statement::ContinueStatement(_) => {
             8u8.hash(h);
         }
+        Statement::DoWhileStatement(dw) => {
+            9u8.hash(h);
+            hash_statement(&dw.body, h);
+            hash_expression(&dw.test, h);
+        }
+        Statement::ForInStatement(fi) => {
+            10u8.hash(h);
+            hash_expression(&fi.right, h);
+            hash_statement(&fi.body, h);
+        }
+        Statement::SwitchStatement(sw) => {
+            11u8.hash(h);
+            hash_expression(&sw.discriminant, h);
+            for case in &sw.cases {
+                if let Some(test) = &case.test {
+                    hash_expression(test, h);
+                }
+                for s in &case.consequent {
+                    hash_statement(s, h);
+                }
+            }
+        }
         _ => {
             std::mem::discriminant(stmt).hash(h);
         }
