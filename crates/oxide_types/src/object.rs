@@ -36,19 +36,26 @@ impl JsObject {
         }
     }
 
-    pub fn new_array(shape_id: ShapeId, proto: JsValue, n_elements: usize) -> Self {
-        assert!(
-            n_elements <= 4,
-            "arrays with >4 inline elements not yet supported"
-        );
-        Self {
+    pub fn new_array(
+        shape_id: ShapeId,
+        proto: JsValue,
+        n_elements: usize,
+        bump: &bumpalo::Bump,
+    ) -> Self {
+        let mut obj = Self {
             header: (shape_id & 0x00FF_FFFF) | (1 << 30) | (1 << 29),
             inline: [JsValue::undefined(); 4],
             overflow: std::ptr::null_mut(),
             proto,
             generation: 1,
             _pad: 0,
+        };
+        let count = (n_elements as u8).min(31);
+        obj.set_prop_count(count);
+        if n_elements > 4 {
+            obj.alloc_overflow(bump, n_elements);
         }
+        obj
     }
 
     pub fn shape_id(&self) -> ShapeId {
@@ -255,7 +262,8 @@ mod tests {
 
     #[test]
     fn new_array_flags() {
-        let obj = JsObject::new_array(5, JsValue::null(), 3);
+        let bump = bumpalo::Bump::new();
+        let obj = JsObject::new_array(5, JsValue::null(), 3, &bump);
         assert!(obj.is_array());
         assert_eq!(obj.shape_id(), 5);
     }

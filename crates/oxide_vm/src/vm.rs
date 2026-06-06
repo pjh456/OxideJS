@@ -544,10 +544,12 @@ impl Vm {
                 OpCode::NEW_ARRAY => {
                     let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
                     let n = opcode::imm16(instr) as usize;
+                    let bump = self.epoch.bump();
                     let obj = self.epoch.alloc(JsObject::new_array(
                         EMPTY_SHAPE_ID,
                         JsValue::from_js_object(proto_ptr),
                         n,
+                        bump,
                     ));
                     self.regs[rd] = JsValue::object(obj as *mut u8);
                 }
