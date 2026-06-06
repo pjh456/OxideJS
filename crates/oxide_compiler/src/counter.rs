@@ -273,9 +273,7 @@ impl Compiler {
                     let skip_label = match log.operator {
                         LogicalOperator::And => Label::TernaryEnd(id),
                         LogicalOperator::Or => Label::TernaryElse(id),
-                        LogicalOperator::Coalesce => {
-                            unreachable!()
-                        }
+                        LogicalOperator::Coalesce => Label::TernaryEnd(id),
                     };
                     ctx.label_map.insert(skip_label, ctx.projected_pc);
                 }
