@@ -21,6 +21,10 @@ impl<T> P<T> {
     {
         Self(Arc::new(value.clone()))
     }
+
+    pub fn as_ptr(&self) -> *const T {
+        Arc::as_ptr(&self.0)
+    }
 }
 
 impl<T> Clone for P<T> {

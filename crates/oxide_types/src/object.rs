@@ -229,6 +229,26 @@ impl JsObject {
         self.overflow = ptr;
         ptr
     }
+
+    pub fn alloc_overflow_heap(&mut self, new_count: usize) -> *mut JsValue {
+        debug_assert!(new_count > 4);
+        debug_assert!(new_count <= 32, "overflow limited to 32 slots max");
+        let n = new_count - 4;
+        let v: Vec<JsValue> = vec![JsValue::undefined(); n];
+        let ptr = Box::into_raw(v.into_boxed_slice()) as *mut JsValue;
+        self.overflow = ptr;
+        ptr
+    }
+
+    pub fn set_prop_expand_heap(&mut self, offset: u8, val: JsValue) {
+        if offset >= 4 {
+            let needed = (offset as usize) + 1;
+            if self.overflow.is_null() || offset >= self.prop_count() + 4 {
+                self.alloc_overflow_heap(needed.max(8));
+            }
+        }
+        self.set_prop(offset, val);
+    }
 }
 
 #[cfg(test)]

@@ -5,6 +5,14 @@ use oxide_types::value::JsValue;
 use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use crate::string_forge::StringForge;
 
+pub struct ObjectMethods {
+    pub keys: *const (),
+    pub create: *const (),
+    pub assign: *const (),
+    pub define_property: *const (),
+    pub get_own_property_descriptor: *const (),
+}
+
 pub struct BuiltinWorld {
     pub object_proto: P<JsObject>,
     pub array_proto: P<JsObject>,
@@ -152,6 +160,36 @@ impl BuiltinWorld {
         }
     }
 
+    pub fn bind_object_methods(
+        &self,
+        methods: &ObjectMethods,
+        string_forge: &StringForge,
+        shape_forge: &ShapeForge,
+    ) {
+        let ctor_ptr = P::as_ptr(&self.object_constructor) as *mut JsObject;
+        let ctor = unsafe { &mut *ctor_ptr };
+
+        let _ = Self::bind_method(ctor, shape_forge, string_forge, "keys", methods.keys, 1);
+        let _ = Self::bind_method(ctor, shape_forge, string_forge, "create", methods.create, 2);
+        let _ = Self::bind_method(ctor, shape_forge, string_forge, "assign", methods.assign, 2);
+        let _ = Self::bind_method(
+            ctor,
+            shape_forge,
+            string_forge,
+            "defineProperty",
+            methods.define_property,
+            3,
+        );
+        let _ = Self::bind_method(
+            ctor,
+            shape_forge,
+            string_forge,
+            "getOwnPropertyDescriptor",
+            methods.get_own_property_descriptor,
+            2,
+        );
+    }
+
     pub fn bind_method(
         proto: &mut JsObject,
         shape_forge: &ShapeForge,
@@ -170,8 +208,7 @@ impl BuiltinWorld {
         let new_shape = shape_forge.make_shape(proto.shape_id(), si);
         proto.set_shape_id(new_shape);
         proto.set_prop_count(new_offset + 1);
-        let bump = bumpalo::Bump::new();
-        proto.set_prop_expand(new_offset, wrapper_val, &bump);
+        proto.set_prop_expand_heap(new_offset, wrapper_val);
         proto.bump_generation();
         Ok(())
     }

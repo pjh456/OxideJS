@@ -91,7 +91,7 @@ impl CompileCtx {
     }
 
     pub(crate) fn reset_regs(&mut self) {
-        self.next_reg = 0;
+        self.next_reg = self.builtin_reg_map.len() as u8;
         self.projected_pc = 0;
         self.label_counter = 0;
     }
@@ -169,9 +169,22 @@ impl CompileCtx {
 
     pub(crate) fn pre_register_builtins(&mut self) {
         let builtins = [
-            "NaN", "undefined", "Object", "Array", "String", "Number", "Boolean",
-            "Function", "Error", "Math", "JSON", "Promise", "parseInt", "parseFloat",
-            "isNaN", "isFinite",
+            "NaN",
+            "undefined",
+            "Object",
+            "Array",
+            "String",
+            "Number",
+            "Boolean",
+            "Function",
+            "Error",
+            "Math",
+            "JSON",
+            "Promise",
+            "parseInt",
+            "parseFloat",
+            "isNaN",
+            "isFinite",
         ];
         for name in &builtins {
             let reg = self.alloc_reg();

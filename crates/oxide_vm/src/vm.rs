@@ -8,6 +8,7 @@ use oxide_compiler::opcode::{self, OpCode};
 
 use crate::coercion;
 use crate::native::NativeFn;
+use oxide_kernel::builtin::ObjectMethods;
 use oxide_kernel::kernel::{KernelConfig, OxideKernel};
 use oxide_kernel::prop_forge::PropTemplate;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
@@ -39,8 +40,39 @@ pub struct Vm {
     pub object_prototype: P<JsObject>,
 }
 
+pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
+    let methods = ObjectMethods {
+        keys: crate::builtins::object::object_keys as *const (),
+        create: crate::builtins::object::object_create as *const (),
+        assign: crate::builtins::object::object_assign as *const (),
+        define_property: crate::builtins::object::object_define_property as *const (),
+        get_own_property_descriptor: crate::builtins::object::object_get_own_property_descriptor
+            as *const (),
+    };
+    kernel.builtin_world().bind_object_methods(
+        &methods,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
+    );
+
+    let global_ptr = kernel.global_object().as_ptr() as *mut JsObject;
+    let global = unsafe { &mut *global_ptr };
+    let si_obj = kernel.string_forge().intern("Object").0;
+    let obj_shape = kernel.shape_forge().make_shape(global.shape_id(), si_obj);
+    let obj_val = JsValue::from_js_object(
+        kernel.builtin_world().object_constructor.as_ptr() as *mut JsObject
+    );
+    let cur_count = global.prop_count();
+    global.set_shape_id(obj_shape);
+    global.set_prop_count(cur_count + 1);
+    let bump = bumpalo::Bump::new();
+    global.set_prop_expand(cur_count, obj_val, &bump);
+}
+
 impl Vm {
     pub fn new() -> Self {
+        let kernel = Arc::new(OxideKernel::new(KernelConfig::minimal()));
+        init_kernel_builtins(&kernel);
         Self {
             regs: [JsValue::undefined(); 256],
             pc: 0,
@@ -48,7 +80,7 @@ impl Vm {
             constants: Vec::new(),
             frames: Vec::with_capacity(128),
             for_in_iters: Vec::new(),
-            kernel: Arc::new(OxideKernel::new(KernelConfig::minimal())),
+            kernel,
             interned_strings: Vec::new(),
             epoch: Epoch::new(),
             object_prototype: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
@@ -56,10 +88,42 @@ impl Vm {
     }
 
     pub fn with_kernel(kernel: Arc<OxideKernel>) -> Self {
-        let mut vm = Self::new();
-        vm.kernel = Arc::clone(&kernel);
-        vm.object_prototype = P::clone(&kernel.builtin_world().object_proto);
-        vm
+        Self {
+            regs: [JsValue::undefined(); 256],
+            pc: 0,
+            bytecode: Vec::new(),
+            constants: Vec::new(),
+            frames: Vec::with_capacity(128),
+            for_in_iters: Vec::new(),
+            kernel: Arc::clone(&kernel),
+            interned_strings: Vec::new(),
+            epoch: Epoch::new(),
+            object_prototype: P::clone(&kernel.builtin_world().object_proto),
+        }
+    }
+
+    pub fn kernel(&self) -> &Arc<OxideKernel> {
+        &self.kernel
+    }
+
+    pub fn reg(&self, idx: u8) -> JsValue {
+        self.regs[idx as usize]
+    }
+
+    pub fn set_reg(&mut self, idx: u8, val: JsValue) {
+        self.regs[idx as usize] = val;
+    }
+
+    pub fn regs_mut(&mut self) -> &mut [JsValue; 256] {
+        &mut self.regs
+    }
+
+    pub fn epoch_mut(&mut self) -> &mut Epoch {
+        &mut self.epoch
+    }
+
+    pub fn epoch(&self) -> &Epoch {
+        &self.epoch
     }
 
     pub fn reset(&mut self) {
@@ -393,8 +457,7 @@ impl Vm {
                                 let mut args_buf = [0u8; 257];
                                 args_buf[0] = this_reg;
                                 for i in 0..arg_count.min(256) {
-                                    args_buf[i + 1] =
-                                        first_arg_reg.wrapping_add(i as u8);
+                                    args_buf[i + 1] = first_arg_reg.wrapping_add(i as u8);
                                 }
                                 let args_slice = &args_buf[..arg_count + 1];
 
@@ -403,10 +466,7 @@ impl Vm {
                                 match func(self, args_slice) {
                                     Ok(val) => self.regs[0] = val,
                                     Err(err_val) => {
-                                        return Err(format!(
-                                            "Native error: {:?}",
-                                            err_val
-                                        ));
+                                        return Err(format!("Native error: {:?}", err_val));
                                     }
                                 }
                                 continue;
@@ -414,13 +474,7 @@ impl Vm {
                         }
                     }
 
-                    let offset = opcode::offset16(instr) as usize;
-                    self.frames.push(CallFrame {
-                        return_addr: self.pc,
-                        n_locals: b as u8,
-                        n_args: a as u8,
-                    });
-                    self.pc = offset;
+                    return Err("CALL target is not a native function".into());
                 }
 
                 OpCode::RETURN => {

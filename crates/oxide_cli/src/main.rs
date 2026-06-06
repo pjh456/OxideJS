@@ -69,7 +69,9 @@ fn main() -> ExitCode {
 }
 
 fn make_kernel() -> Arc<OxideKernel> {
-    Arc::new(OxideKernel::new(KernelConfig::standard()))
+    let kernel = Arc::new(OxideKernel::new(KernelConfig::standard()));
+    oxide_vm::vm::init_kernel_builtins(&kernel);
+    kernel
 }
 
 fn make_pool(kernel: &Arc<OxideKernel>) -> Arc<VmPool> {

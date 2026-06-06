@@ -121,7 +121,9 @@ fn as_js_object_ptr_non_object_returns_null() {
     assert!(JsValue::null().as_js_object_ptr().is_null());
     assert!(JsValue::undefined().as_js_object_ptr().is_null());
     let x = 42u8;
-    assert!(!JsValue::object(&x as *const u8).as_js_object_ptr().is_null());
+    assert!(!JsValue::object(&x as *const u8)
+        .as_js_object_ptr()
+        .is_null());
 }
 
 #[test]

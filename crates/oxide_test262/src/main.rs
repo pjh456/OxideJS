@@ -395,7 +395,10 @@ fn main() {
 
         let path_str = path.to_string_lossy();
         if path_str.contains("staging") {
-            results.push(TestResult::skip(path.clone(), "staging tests excluded".into()));
+            results.push(TestResult::skip(
+                path.clone(),
+                "staging tests excluded".into(),
+            ));
             stats.skip += 1;
             continue;
         }
@@ -426,9 +429,21 @@ fn main() {
     println!("═══════════════════════════════════════");
     println!("  total  : {}", results.len());
     let total = results.len() as f64;
-    println!("  pass   : {} ({:.1}%)", stats.pass, stats.pass as f64 / total * 100.0);
-    println!("  fail   : {} ({:.1}%)", stats.fail, stats.fail as f64 / total * 100.0);
-    println!("  skip   : {} ({:.1}%)", stats.skip, stats.skip as f64 / total * 100.0);
+    println!(
+        "  pass   : {} ({:.1}%)",
+        stats.pass,
+        stats.pass as f64 / total * 100.0
+    );
+    println!(
+        "  fail   : {} ({:.1}%)",
+        stats.fail,
+        stats.fail as f64 / total * 100.0
+    );
+    println!(
+        "  skip   : {} ({:.1}%)",
+        stats.skip,
+        stats.skip as f64 / total * 100.0
+    );
     println!("  time   : {:?}", Duration::from_millis(stats.total_ms));
     println!(
         "  pass%  : {:.1}% (of ran: {:.1}%)",

@@ -739,15 +739,37 @@ impl Compiler {
             }
             Expression::ParenthesizedExpression(p) => self.emit_expression(&p.expression, ctx),
             Expression::CallExpression(call) => {
-                let callee_reg = self.emit_expression(&call.callee, ctx)?;
-                let this_idx = ctx.add_constant(Constant::Undefined);
-                let this_reg = ctx.alloc_reg();
-                ctx.emit(opcode::encode(
-                    OpCode::LOAD_CONST,
-                    this_reg,
-                    (this_idx & 0xFF) as u8,
-                    ((this_idx >> 8) & 0xFF) as u8,
-                ));
+                let (callee_reg, this_reg) = match &call.callee {
+                    Expression::StaticMemberExpression(member) => {
+                        let obj_reg = self.emit_expression(&member.object, ctx)?;
+                        let prop_name = member.property.name.as_str();
+                        let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
+                        let key_reg = ctx.alloc_reg();
+                        ctx.emit(opcode::encode(
+                            OpCode::LOAD_CONST,
+                            key_reg,
+                            (idx & 0xFF) as u8,
+                            ((idx >> 8) & 0xFF) as u8,
+                        ));
+                        let callee_reg = ctx.alloc_reg();
+                        ctx.emit(opcode::encode(OpCode::LOAD_VAR, callee_reg, obj_reg, 0));
+                        ctx.emit(opcode::encode(OpCode::IC_GET_PROP, 0, callee_reg, key_reg));
+                        ctx.emit(0);
+                        (callee_reg, obj_reg)
+                    }
+                    _ => {
+                        let callee_reg = self.emit_expression(&call.callee, ctx)?;
+                        let this_idx = ctx.add_constant(Constant::Undefined);
+                        let this_reg = ctx.alloc_reg();
+                        ctx.emit(opcode::encode(
+                            OpCode::LOAD_CONST,
+                            this_reg,
+                            (this_idx & 0xFF) as u8,
+                            ((this_idx >> 8) & 0xFF) as u8,
+                        ));
+                        (callee_reg, this_reg)
+                    }
+                };
                 let mut arg_regs = Vec::new();
                 for arg in &call.arguments {
                     if let Some(expr) = arg.as_expression() {
@@ -759,7 +781,6 @@ impl Compiler {
                 } else {
                     arg_regs[0]
                 };
-                let result_reg = ctx.alloc_reg();
                 ctx.emit(opcode::encode(
                     OpCode::CALL,
                     callee_reg,
@@ -767,7 +788,7 @@ impl Compiler {
                     first_arg_reg,
                 ));
                 ctx.emit(arg_regs.len() as u32);
-                Ok(result_reg)
+                Ok(0u8)
             }
             _ => Err(format!("unsupported expression type: {:?}", expr)),
         }
