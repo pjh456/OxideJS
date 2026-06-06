@@ -97,3 +97,10 @@ fn regression_conditionalexpression_hash() {
         "different expression types with same test must produce different hashes"
     );
 }
+
+#[test]
+fn hash_compound_vs_simple_assign() {
+    let hash_a = parse_to_hash("x=1");
+    let hash_b = parse_to_hash("x+=1");
+    assert_ne!(hash_a, hash_b, "x=1 and x+=1 must produce different hashes");
+}

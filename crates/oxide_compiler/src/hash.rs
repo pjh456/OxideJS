@@ -155,6 +155,11 @@ fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher) {
             8u8.hash(h);
             b.value.hash(h);
         }
+        Expression::AssignmentExpression(assign) => {
+            11u8.hash(h);
+            std::mem::discriminant(&assign.operator).hash(h);
+            hash_expression(&assign.right, h);
+        }
         _ => {
             std::mem::discriminant(expr).hash(h);
         }

@@ -223,7 +223,7 @@ impl Compiler {
                 } else {
                     self.count_expression(&assign.right, ctx);
                     ctx.alloc_reg();
-                    ctx.projected_pc += 1; // STORE_VAR
+                    ctx.projected_pc += 1;
                 }
             }
             Expression::ConditionalExpression(cond) => {

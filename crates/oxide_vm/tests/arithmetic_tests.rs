@@ -63,3 +63,43 @@ fn eval_division_by_zero() {
 fn eval_string_concat() {
     assert_eq!(eval("1 + 2 + 3"), "6");
 }
+
+#[test]
+fn eval_compound_add() {
+    assert_eq!(eval("var x=5; x+=3; x"), "8");
+}
+
+#[test]
+fn eval_compound_sub() {
+    assert_eq!(eval("var x=10; x-=4; x"), "6");
+}
+
+#[test]
+fn eval_compound_mul() {
+    assert_eq!(eval("var x=2; x*=3; x"), "6");
+}
+
+#[test]
+fn eval_compound_div() {
+    assert_eq!(eval("var x=10; x/=2; x"), "5");
+}
+
+#[test]
+fn eval_compound_mod() {
+    assert_eq!(eval("var x=7; x%=3; x"), "1");
+}
+
+#[test]
+fn eval_compound_exp() {
+    assert_eq!(eval("var x=2; x**=3; x"), "8");
+}
+
+#[test]
+fn eval_compound_add_expr_value() {
+    assert_eq!(eval("var x=5; x+=3"), "8");
+}
+
+#[test]
+fn eval_compound_undefined() {
+    assert_eq!(eval("var x; x+=1; x"), "NaN");
+}

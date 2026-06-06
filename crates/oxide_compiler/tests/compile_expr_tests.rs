@@ -202,3 +202,43 @@ fn compile_unary_plus_no_error() {
     });
     assert!(result.is_ok(), "+'hello' should compile without error");
 }
+
+#[test]
+fn compile_compound_add() {
+    let module = compile_source("var x=0; x+=1");
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::COMPOUND_ADD),
+        "x+=1 should emit COMPOUND_ADD opcode"
+    );
+}
+
+#[test]
+fn compile_compound_exp() {
+    let module = compile_source("var x=0; x**=2");
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::COMPOUND_EXP),
+        "x**=2 should emit COMPOUND_EXP opcode"
+    );
+}
+
+#[test]
+fn compile_compound_assign_no_error() {
+    let result = std::panic::catch_unwind(|| {
+        compile_source("x+=1");
+    });
+    assert!(result.is_ok(), "x+=1 should compile without error");
+}
+
+#[test]
+fn compile_compound_exp_no_error() {
+    let result = std::panic::catch_unwind(|| {
+        compile_source("x**=2");
+    });
+    assert!(result.is_ok(), "x**=2 should compile without error");
+}

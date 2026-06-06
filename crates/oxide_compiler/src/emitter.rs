@@ -630,13 +630,27 @@ impl Compiler {
                     &assign.left
                 {
                     if assign.operator != AssignmentOperator::Assign {
-                        return Err("compound assignment not yet supported".into());
+                        let rhs = self.emit_expression(&assign.right, ctx)?;
+                        let name = id_ref.name.as_str();
+                        let var_reg = ctx.lookup_or_global(name);
+                        let op = match assign.operator {
+                            AssignmentOperator::Addition => OpCode::COMPOUND_ADD,
+                            AssignmentOperator::Subtraction => OpCode::COMPOUND_SUB,
+                            AssignmentOperator::Multiplication => OpCode::COMPOUND_MUL,
+                            AssignmentOperator::Division => OpCode::COMPOUND_DIV,
+                            AssignmentOperator::Remainder => OpCode::COMPOUND_MOD,
+                            AssignmentOperator::Exponential => OpCode::COMPOUND_EXP,
+                            _ => unreachable!(),
+                        };
+                        ctx.emit(opcode::encode(op, var_reg, rhs, 0));
+                        Ok(var_reg)
+                    } else {
+                        let val_reg = self.emit_expression(&assign.right, ctx)?;
+                        let name = id_ref.name.as_str();
+                        let var_reg = ctx.lookup_or_global(name);
+                        ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, 0));
+                        Ok(val_reg)
                     }
-                    let val_reg = self.emit_expression(&assign.right, ctx)?;
-                    let name = id_ref.name.as_str();
-                    let var_reg = ctx.lookup_or_global(name);
-                    ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, 0));
-                    Ok(val_reg)
                 } else {
                     Err("assignment target not supported".into())
                 }

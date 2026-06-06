@@ -527,6 +527,51 @@ impl Vm {
                     }
                 }
 
+                OpCode::COMPOUND_ADD => {
+                    let lhs = self.regs[rd];
+                    let rhs = self.regs[a];
+                    if lhs.is_string() || rhs.is_string() {
+                        let ls = coercion::to_string(self.kernel.string_forge().as_ref(), lhs);
+                        let rs = coercion::to_string(self.kernel.string_forge().as_ref(), rhs);
+                        let concat = format!("{ls}{rs}");
+                        self.regs[rd] = self.intern(&concat);
+                    } else {
+                        let ln = coercion::to_number(lhs, self.kernel.string_forge().as_ref());
+                        let rn = coercion::to_number(rhs, self.kernel.string_forge().as_ref());
+                        self.regs[rd] = JsValue::float(ln + rn);
+                    }
+                }
+
+                OpCode::COMPOUND_SUB => {
+                    let l = coercion::to_number(self.regs[rd], self.kernel.string_forge().as_ref());
+                    let r = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
+                    self.regs[rd] = JsValue::float(l - r);
+                }
+
+                OpCode::COMPOUND_MUL => {
+                    let l = coercion::to_number(self.regs[rd], self.kernel.string_forge().as_ref());
+                    let r = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
+                    self.regs[rd] = JsValue::float(l * r);
+                }
+
+                OpCode::COMPOUND_DIV => {
+                    let l = coercion::to_number(self.regs[rd], self.kernel.string_forge().as_ref());
+                    let r = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
+                    self.regs[rd] = JsValue::float(l / r);
+                }
+
+                OpCode::COMPOUND_MOD => {
+                    let l = coercion::to_number(self.regs[rd], self.kernel.string_forge().as_ref());
+                    let r = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
+                    self.regs[rd] = JsValue::float(l % r);
+                }
+
+                OpCode::COMPOUND_EXP => {
+                    let l = coercion::to_number(self.regs[rd], self.kernel.string_forge().as_ref());
+                    let r = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
+                    self.regs[rd] = JsValue::float(l.powf(r));
+                }
+
                 OpCode::TYPEOF => {
                     let val = self.regs[a];
                     let result = if val.is_undefined() {
