@@ -646,6 +646,13 @@ impl Compiler {
                     &assign.left
                 {
                     if assign.operator != AssignmentOperator::Assign {
+                    if assign.operator == AssignmentOperator::Addition
+                        || assign.operator == AssignmentOperator::Subtraction
+                        || assign.operator == AssignmentOperator::Multiplication
+                        || assign.operator == AssignmentOperator::Division
+                        || assign.operator == AssignmentOperator::Remainder
+                        || assign.operator == AssignmentOperator::Exponential
+                    {
                         let rhs = self.emit_expression(&assign.right, ctx)?;
                         let name = id_ref.name.as_str();
                         let var_reg = ctx.lookup_or_global(name);
@@ -660,6 +667,12 @@ impl Compiler {
                         };
                         ctx.emit(opcode::encode(op, var_reg, rhs, 0));
                         Ok(var_reg)
+                    } else {
+                        return Err(format!(
+                            "compound assignment operator {:?} not supported",
+                            assign.operator
+                        ));
+                    }
                     } else {
                         let val_reg = self.emit_expression(&assign.right, ctx)?;
                         let name = id_ref.name.as_str();
