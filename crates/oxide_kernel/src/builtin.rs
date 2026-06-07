@@ -34,6 +34,16 @@ pub struct ArrayMethods {
     pub flat_map: *const (),
 }
 
+pub struct ErrorMethods {
+    pub error: *const (),
+    pub type_error: *const (),
+    pub reference_error: *const (),
+    pub range_error: *const (),
+    pub syntax_error: *const (),
+    pub uri_error: *const (),
+    pub eval_error: *const (),
+}
+
 pub struct BuiltinWorld {
     pub object_proto: P<JsObject>,
     pub array_proto: P<JsObject>,
@@ -51,6 +61,12 @@ pub struct BuiltinWorld {
     pub boolean_constructor: P<JsObject>,
     pub error_constructor: P<JsObject>,
     pub symbol_constructor: P<JsObject>,
+    pub type_error_proto: P<JsObject>,
+    pub reference_error_proto: P<JsObject>,
+    pub range_error_proto: P<JsObject>,
+    pub syntax_error_proto: P<JsObject>,
+    pub uri_error_proto: P<JsObject>,
+    pub eval_error_proto: P<JsObject>,
 }
 
 fn intern_label(string_forge: &StringForge, label: &str) -> u32 {
@@ -161,6 +177,14 @@ impl BuiltinWorld {
             si_name,
         );
 
+        let error_proto_val = JsValue::from_js_object(error_proto.as_ptr() as *mut JsObject);
+        let type_error_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val));
+        let reference_error_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val));
+        let range_error_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val));
+        let syntax_error_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val));
+        let uri_error_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val));
+        let eval_error_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val));
+
         Self {
             object_proto,
             array_proto,
@@ -178,6 +202,12 @@ impl BuiltinWorld {
             boolean_constructor,
             error_constructor,
             symbol_constructor,
+            type_error_proto,
+            reference_error_proto,
+            range_error_proto,
+            syntax_error_proto,
+            uri_error_proto,
+            eval_error_proto,
         }
     }
 
@@ -299,6 +329,66 @@ impl BuiltinWorld {
             string_forge,
             "flatMap",
             methods.flat_map,
+            1,
+        );
+    }
+
+    pub fn bind_error_methods(
+        &self,
+        methods: &ErrorMethods,
+        string_forge: &StringForge,
+        shape_forge: &ShapeForge,
+    ) {
+        let ctor_ptr = P::as_ptr(&self.error_constructor) as *mut JsObject;
+        let ctor = unsafe { &mut *ctor_ptr };
+
+        let _ = Self::bind_method(ctor, shape_forge, string_forge, "Error", methods.error, 1);
+        let _ = Self::bind_method(
+            ctor,
+            shape_forge,
+            string_forge,
+            "TypeError",
+            methods.type_error,
+            1,
+        );
+        let _ = Self::bind_method(
+            ctor,
+            shape_forge,
+            string_forge,
+            "ReferenceError",
+            methods.reference_error,
+            1,
+        );
+        let _ = Self::bind_method(
+            ctor,
+            shape_forge,
+            string_forge,
+            "RangeError",
+            methods.range_error,
+            1,
+        );
+        let _ = Self::bind_method(
+            ctor,
+            shape_forge,
+            string_forge,
+            "SyntaxError",
+            methods.syntax_error,
+            1,
+        );
+        let _ = Self::bind_method(
+            ctor,
+            shape_forge,
+            string_forge,
+            "URIError",
+            methods.uri_error,
+            1,
+        );
+        let _ = Self::bind_method(
+            ctor,
+            shape_forge,
+            string_forge,
+            "EvalError",
+            methods.eval_error,
             1,
         );
     }
