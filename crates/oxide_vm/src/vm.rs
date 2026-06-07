@@ -717,6 +717,9 @@ fn bind_date(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     let sf = kernel.string_forge().as_ref();
     let sh = kernel.shape_forge().as_ref();
 
+    ctor.set_native_fn(Some(crate::builtins::date::date_constructor as *const ()));
+    ctor.set_native_arg_count(7);
+
     bind_method!(
         kernel.builtin_world(),
         ctor,
@@ -1053,7 +1056,11 @@ fn bind_date(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
 
 fn bind_set(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     let ctor_ptr = kernel.builtin_world().set_constructor.as_ptr() as *mut JsObject;
+    let ctor = unsafe { &mut *ctor_ptr };
     let proto_ptr = kernel.builtin_world().set_proto.as_ptr() as *mut JsObject;
+
+    ctor.set_native_fn(Some(crate::builtins::set::set_constructor as *const ()));
+    ctor.set_native_arg_count(1);
     let proto = unsafe { &mut *proto_ptr };
     let sf = kernel.string_forge().as_ref();
     let sh = kernel.shape_forge().as_ref();
@@ -1114,7 +1121,11 @@ fn bind_set(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
 
 fn bind_map(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     let ctor_ptr = kernel.builtin_world().map_constructor.as_ptr() as *mut JsObject;
+    let ctor = unsafe { &mut *ctor_ptr };
     let proto_ptr = kernel.builtin_world().map_proto.as_ptr() as *mut JsObject;
+
+    ctor.set_native_fn(Some(crate::builtins::map::map_constructor as *const ()));
+    ctor.set_native_arg_count(1);
     let proto = unsafe { &mut *proto_ptr };
     let sf = kernel.string_forge().as_ref();
     let sh = kernel.shape_forge().as_ref();
@@ -1182,7 +1193,7 @@ fn bind_map(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     global.bump_generation();
 }
 
-fn bind_boolean(kernel: &Arc<OxideKernel>) {
+fn bind_boolean(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     let ctor_ptr = kernel.builtin_world().boolean_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };
     let proto_ptr = kernel.builtin_world().boolean_proto.as_ptr() as *mut JsObject;
@@ -1213,6 +1224,13 @@ fn bind_boolean(kernel: &Arc<OxideKernel>) {
         crate::builtins::boolean::boolean_prototype_to_string,
         0
     );
+
+    let si_b = kernel.string_forge().intern("Boolean").0;
+    let b_shape = kernel.shape_forge().make_shape(global.shape_id(), si_b);
+    let b_val = JsValue::from_js_object(ctor_ptr);
+    global.set_shape_id(b_shape);
+    global.ensure_hash_props().push(Box::new(b_val));
+    global.bump_generation();
 }
 
 fn bind_function(kernel: &Arc<OxideKernel>) {
@@ -1242,7 +1260,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_date(kernel, global);
     bind_set(kernel, global);
     bind_map(kernel, global);
-    bind_boolean(kernel);
+    bind_boolean(kernel, global);
     bind_function(kernel);
 }
 

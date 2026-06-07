@@ -76,6 +76,41 @@ pub fn date_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
     let timestamp = if args.len() < 2 {
         Utc::now().timestamp_millis() as f64
+    } else if args.len() > 2 {
+        let y = coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref()) as i32;
+        let m = coercion::to_number(vm.reg(args[2]), vm.kernel().string_forge().as_ref()) as u32;
+        let d = if args.len() > 3 {
+            coercion::to_number(vm.reg(args[3]), vm.kernel().string_forge().as_ref()) as u32
+        } else {
+            1
+        };
+        let h = if args.len() > 4 {
+            coercion::to_number(vm.reg(args[4]), vm.kernel().string_forge().as_ref()) as u32
+        } else {
+            0
+        };
+        let min = if args.len() > 5 {
+            coercion::to_number(vm.reg(args[5]), vm.kernel().string_forge().as_ref()) as u32
+        } else {
+            0
+        };
+        let sec = if args.len() > 6 {
+            coercion::to_number(vm.reg(args[6]), vm.kernel().string_forge().as_ref()) as u32
+        } else {
+            0
+        };
+        let ms = if args.len() > 7 {
+            coercion::to_number(vm.reg(args[7]), vm.kernel().string_forge().as_ref()) as u32
+        } else {
+            0
+        };
+        NaiveDate::from_ymd_opt(y, m + 1, d)
+            .and_then(|nd| {
+                nd.and_hms_milli_opt(h, min, sec, ms)
+                    .and_then(|ndt| ndt.and_local_timezone(Utc).earliest())
+            })
+            .map(|dt| dt.timestamp_millis() as f64)
+            .unwrap_or(f64::NAN)
     } else {
         let val = vm.reg(args[1]);
         if val.is_string() {
@@ -120,45 +155,7 @@ pub fn date_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
             let obj = unsafe { &*val.as_js_object_ptr() };
             get_timestamp(obj)
         } else {
-            let y =
-                coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref()) as i32;
-            let m = if args.len() > 2 {
-                coercion::to_number(vm.reg(args[2]), vm.kernel().string_forge().as_ref()) as u32
-            } else {
-                0
-            };
-            let d = if args.len() > 3 {
-                coercion::to_number(vm.reg(args[3]), vm.kernel().string_forge().as_ref()) as u32
-            } else {
-                1
-            };
-            let h = if args.len() > 4 {
-                coercion::to_number(vm.reg(args[4]), vm.kernel().string_forge().as_ref()) as u32
-            } else {
-                0
-            };
-            let min = if args.len() > 5 {
-                coercion::to_number(vm.reg(args[5]), vm.kernel().string_forge().as_ref()) as u32
-            } else {
-                0
-            };
-            let sec = if args.len() > 6 {
-                coercion::to_number(vm.reg(args[6]), vm.kernel().string_forge().as_ref()) as u32
-            } else {
-                0
-            };
-            let ms = if args.len() > 7 {
-                coercion::to_number(vm.reg(args[7]), vm.kernel().string_forge().as_ref()) as u32
-            } else {
-                0
-            };
-            NaiveDate::from_ymd_opt(y, m + 1, d)
-                .and_then(|nd| {
-                    nd.and_hms_milli_opt(h, min, sec, ms)
-                        .and_then(|ndt| ndt.and_local_timezone(Utc).earliest())
-                })
-                .map(|dt| dt.timestamp_millis() as f64)
-                .unwrap_or(f64::NAN)
+            f64::NAN
         }
     };
 
