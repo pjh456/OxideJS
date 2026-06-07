@@ -571,6 +571,17 @@ impl Vm {
         self.kernel.string_forge().lookup(val.as_string_index())
     }
 
+    fn template_prop_ptr(&self, obj: &JsObject, template: &PropTemplate) -> Option<*const JsValue> {
+        let pos = template.position as usize;
+        obj.hash_props_vec().and_then(|vec| {
+            if pos < vec.len() {
+                Some(&*vec[pos] as *const JsValue)
+            } else {
+                None
+            }
+        })
+    }
+
     fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
         if let Some(pos) = self
             .kernel
@@ -634,7 +645,7 @@ impl Vm {
                     new_shape_id,
                     PropTemplate {
                         shape_id: new_shape_id,
-                        ptr_bits: ptr as u64,
+                        position: new_pos,
                         generation: obj.generation(),
                     },
                 );
@@ -954,12 +965,19 @@ impl Vm {
                     } else if let Some(template) =
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
-                        if template.ptr_bits != 0 {
-                            let ptr = template.ptr_bits;
-                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
-                            self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr >> 32) as u32;
-                            self.regs[a] = unsafe { *(ptr as *const JsValue) };
+                        let pos = template.position as usize;
+                        if let Some(vec) = obj.hash_props_vec() {
+                            if pos < vec.len() {
+                                let ptr = &*vec[pos] as *const JsValue;
+                                self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
+                                self.bytecode[self.pc - 2] = ptr as u32;
+                                self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                                self.regs[a] = unsafe { *(ptr) };
+                            } else {
+                                self.regs[a] = self
+                                    .resolve_property(obj, prop_name_si)
+                                    .unwrap_or(JsValue::undefined());
+                            }
                         } else {
                             self.regs[a] = self
                                 .resolve_property(obj, prop_name_si)
@@ -1029,7 +1047,7 @@ impl Vm {
                                     new_shape_id,
                                     PropTemplate {
                                         shape_id: new_shape_id,
-                                        ptr_bits: ptr as u64,
+                                        position: new_pos,
                                         generation: obj.generation(),
                                     },
                                 );
@@ -1306,12 +1324,12 @@ impl Vm {
                     } else if let Some(template) =
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
-                        if template.ptr_bits != 0 {
-                            let ptr = template.ptr_bits;
+                        if let Some(ptr) = self.template_prop_ptr(obj, &template) {
+                            
                             self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
                             self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr >> 32) as u32;
-                            unsafe { *(ptr as *const JsValue) }
+                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                            unsafe { *ptr }
                         } else {
                             self.resolve_property(obj, prop_name_si)
                                 .unwrap_or(JsValue::undefined())
@@ -1367,7 +1385,7 @@ impl Vm {
                                 new_shape_id,
                                 PropTemplate {
                                     shape_id: new_shape_id,
-                                    ptr_bits: ptr as u64,
+                                    position: new_pos,
                                     generation: obj.generation(),
                                 },
                             );
@@ -1400,12 +1418,12 @@ impl Vm {
                     } else if let Some(template) =
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
-                        if template.ptr_bits != 0 {
-                            let ptr = template.ptr_bits;
+                        if let Some(ptr) = self.template_prop_ptr(obj, &template) {
+                            
                             self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
                             self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr >> 32) as u32;
-                            unsafe { *(ptr as *const JsValue) }
+                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                            unsafe { *ptr }
                         } else {
                             self.resolve_property(obj, prop_name_si)
                                 .unwrap_or(JsValue::undefined())
@@ -1461,7 +1479,7 @@ impl Vm {
                                 new_shape_id,
                                 PropTemplate {
                                     shape_id: new_shape_id,
-                                    ptr_bits: ptr as u64,
+                                    position: new_pos,
                                     generation: obj.generation(),
                                 },
                             );
@@ -1564,12 +1582,12 @@ impl Vm {
                     } else if let Some(template) =
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
-                        if template.ptr_bits != 0 {
-                            let ptr = template.ptr_bits;
+                        if let Some(ptr) = self.template_prop_ptr(obj, &template) {
+                            
                             self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
                             self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr >> 32) as u32;
-                            unsafe { *(ptr as *const JsValue) }
+                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                            unsafe { *ptr }
                         } else {
                             self.resolve_property(obj, prop_name_si)
                                 .unwrap_or(JsValue::undefined())
@@ -1628,12 +1646,12 @@ impl Vm {
                     } else if let Some(template) =
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
-                        if template.ptr_bits != 0 {
-                            let ptr = template.ptr_bits;
+                        if let Some(ptr) = self.template_prop_ptr(obj, &template) {
+                            
                             self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
                             self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr >> 32) as u32;
-                            unsafe { *(ptr as *const JsValue) }
+                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                            unsafe { *ptr }
                         } else {
                             self.resolve_property(obj, prop_name_si)
                                 .unwrap_or(JsValue::undefined())
@@ -1683,12 +1701,12 @@ impl Vm {
                     } else if let Some(template) =
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
-                        if template.ptr_bits != 0 {
-                            let ptr = template.ptr_bits;
+                        if let Some(ptr) = self.template_prop_ptr(obj, &template) {
+                            
                             self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
                             self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr >> 32) as u32;
-                            unsafe { *(ptr as *const JsValue) }
+                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                            unsafe { *ptr }
                         } else {
                             self.resolve_property(obj, prop_name_si)
                                 .unwrap_or(JsValue::undefined())
@@ -1738,12 +1756,12 @@ impl Vm {
                     } else if let Some(template) =
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
-                        if template.ptr_bits != 0 {
-                            let ptr = template.ptr_bits;
+                        if let Some(ptr) = self.template_prop_ptr(obj, &template) {
+                            
                             self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
                             self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr >> 32) as u32;
-                            unsafe { *(ptr as *const JsValue) }
+                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                            unsafe { *ptr }
                         } else {
                             self.resolve_property(obj, prop_name_si)
                                 .unwrap_or(JsValue::undefined())
@@ -1793,12 +1811,12 @@ impl Vm {
                     } else if let Some(template) =
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
-                        if template.ptr_bits != 0 {
-                            let ptr = template.ptr_bits;
+                        if let Some(ptr) = self.template_prop_ptr(obj, &template) {
+                            
                             self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
                             self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr >> 32) as u32;
-                            unsafe { *(ptr as *const JsValue) }
+                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                            unsafe { *ptr }
                         } else {
                             self.resolve_property(obj, prop_name_si)
                                 .unwrap_or(JsValue::undefined())
@@ -1848,12 +1866,12 @@ impl Vm {
                     } else if let Some(template) =
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
-                        if template.ptr_bits != 0 {
-                            let ptr = template.ptr_bits;
+                        if let Some(ptr) = self.template_prop_ptr(obj, &template) {
+                            
                             self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
                             self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr >> 32) as u32;
-                            unsafe { *(ptr as *const JsValue) }
+                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                            unsafe { *ptr }
                         } else {
                             self.resolve_property(obj, prop_name_si)
                                 .unwrap_or(JsValue::undefined())

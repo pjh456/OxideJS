@@ -7,7 +7,7 @@ use crate::shape_forge::ShapeId;
 #[derive(Debug, Clone)]
 pub struct PropTemplate {
     pub shape_id: ShapeId,
-    pub ptr_bits: u64,
+    pub position: u8,
     pub generation: u32,
 }
 
@@ -67,13 +67,13 @@ mod tests {
         let forge = PropForge::new();
         let t = PropTemplate {
             shape_id: 1,
-            ptr_bits: 3,
+            position: 3,
             generation: 10,
         };
         forge.upsert(1, t);
         let got = forge.get_template(1).unwrap();
         assert_eq!(got.shape_id, 1);
-        assert_eq!(got.ptr_bits, 3);
+        assert_eq!(got.position, 3);
         assert_eq!(got.generation, 10);
     }
 
@@ -84,7 +84,7 @@ mod tests {
             1,
             PropTemplate {
                 shape_id: 1,
-                ptr_bits: 3,
+                position: 3,
                 generation: 10,
             },
         );
@@ -92,7 +92,7 @@ mod tests {
             1,
             PropTemplate {
                 shape_id: 1,
-                ptr_bits: 7,
+                position: 7,
                 generation: 5,
             },
         );
@@ -107,7 +107,7 @@ mod tests {
             1,
             PropTemplate {
                 shape_id: 1,
-                ptr_bits: 3,
+                position: 3,
                 generation: 5,
             },
         );
@@ -115,12 +115,12 @@ mod tests {
             1,
             PropTemplate {
                 shape_id: 1,
-                ptr_bits: 7,
+                position: 7,
                 generation: 10,
             },
         );
         let got = forge.get_template(1).unwrap();
         assert_eq!(got.generation, 10);
-        assert_eq!(got.ptr_bits, 7);
+        assert_eq!(got.position, 7);
     }
 }
