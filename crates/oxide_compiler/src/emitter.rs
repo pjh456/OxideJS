@@ -1036,6 +1036,11 @@ impl Compiler {
                 ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, 0, 0));
                 Ok(result_reg)
             }
+            Expression::ThisExpression(_) => {
+                let r = ctx.alloc_reg();
+                ctx.emit(opcode::encode(OpCode::LOAD_VAR, r, 254, 0));
+                Ok(r)
+            }
             _ => Err(format!("unsupported expression type: {:?}", expr)),
         }
     }

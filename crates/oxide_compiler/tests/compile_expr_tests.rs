@@ -358,3 +358,21 @@ fn compile_compound_member_exp_ok() {
     });
     assert!(result.is_ok(), "obj.x**=2 should compile without error");
 }
+
+#[test]
+fn compile_this_in_function_ok() {
+    let module = compile_source("function f() { return this; }");
+    assert!(!module.bytecode.is_empty());
+}
+
+#[test]
+fn compile_this_member_assign_ok() {
+    let module = compile_source("function f() { this.x = 1; }");
+    assert!(!module.bytecode.is_empty());
+}
+
+#[test]
+fn compile_this_member_read_ok() {
+    let module = compile_source("function f() { return this.x; }");
+    assert!(!module.bytecode.is_empty());
+}

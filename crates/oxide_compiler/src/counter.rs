@@ -440,6 +440,10 @@ impl Compiler {
             Expression::ParenthesizedExpression(p) => {
                 self.count_expression(&p.expression, ctx);
             }
+            Expression::ThisExpression(_) => {
+                ctx.alloc_reg();
+                ctx.projected_pc += 1; // LOAD_VAR from reg 254
+            }
             Expression::UpdateExpression(update) => match &update.argument {
                 SimpleAssignmentTarget::AssignmentTargetIdentifier(_) => {
                     ctx.alloc_reg();

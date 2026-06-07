@@ -148,3 +148,41 @@ fn fd_returns_new_array() {
     let result = eval(&mut vm, "function f() { return new Array(3); } f()").unwrap();
     assert!(result.is_object());
 }
+
+// --- this expression ---
+
+#[test]
+fn this_in_function_reads_value() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "function f() { return this; } f()").unwrap();
+    assert!(
+        result.is_object(),
+        "expected object (function as this), got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn this_in_function_assign_member() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "function f(m) { this.message = m; } f('hello'); 1").unwrap();
+    assert_eq!(result.as_int(), 1);
+}
+
+#[test]
+fn this_member_access() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "function f() { this.x = 42; return this.x; } f()").unwrap();
+    assert_eq!(result.as_int(), 42);
+}
+
+#[test]
+fn this_in_constructor_sets_proto() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "function Ctor(m) { this.message = m; } Ctor.prototype = new Object(); 1",
+    )
+    .unwrap();
+    assert_eq!(result.as_int(), 1);
+}
