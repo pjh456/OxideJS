@@ -65,6 +65,15 @@ macro_rules! throw_err {
             Err(e) => return Err(e),
         }
     }};
+    ($self:ident, SyntaxError, $msg:expr) => {{
+        let error = crate::builtins::error::create_syntax_error($self, $msg);
+        $self.exception_value = Some(error);
+        $self.pending_error_kind = Some("SyntaxError");
+        match $self.unwind() {
+            Ok(()) => continue,
+            Err(e) => return Err(e),
+        }
+    }};
 }
 
 pub struct CallFrame {
