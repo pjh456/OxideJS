@@ -2,7 +2,7 @@ use crate::value::JsValue;
 
 pub type ShapeId = u32;
 
-/// Layout (40B):
+/// Layout (48B):
 ///   header: u32 bits
 ///     [0:23]   shape_id
 ///     [29]     is_array
@@ -13,6 +13,7 @@ pub type ShapeId = u32;
 ///   proto: JsValue (8 bytes)
 ///   generation: u32 (4 bytes + 4 pad)
 ///   native_fn: u64 (8 bytes, 0 = None sentinel)
+///   sub_module_index: u32 (4 bytes + 4 pad, index into CompiledModule.sub_modules)
 #[repr(C)]
 pub struct JsObject {
     header: u32,
@@ -23,6 +24,8 @@ pub struct JsObject {
     generation: u32,
     _pad2: [u8; 4],
     native_fn: u64,
+    sub_module_index: u32,
+    _pad3: [u8; 4],
 }
 
 impl JsObject {
@@ -36,6 +39,8 @@ impl JsObject {
             generation: 1,
             _pad2: [0; 4],
             native_fn: 0,
+            sub_module_index: 0,
+            _pad3: [0; 4],
         }
     }
 
@@ -54,6 +59,8 @@ impl JsObject {
             generation: 1,
             _pad2: [0; 4],
             native_fn: 0,
+            sub_module_index: 0,
+            _pad3: [0; 4],
         };
         let vec = Box::new(vec![Box::new(JsValue::undefined()); n_elements]);
         obj.hash_props = Box::into_raw(vec) as *mut u8;
@@ -246,6 +253,14 @@ impl JsObject {
     pub fn set_native_arg_count(&mut self, n: u8) {
         self.native_arg_count = n;
     }
+
+    pub fn sub_module_index(&self) -> u32 {
+        self.sub_module_index
+    }
+
+    pub fn set_sub_module_index(&mut self, idx: u32) {
+        self.sub_module_index = idx;
+    }
 }
 
 #[cfg(test)]
@@ -257,8 +272,8 @@ mod tests {
     fn object_size_bounds() {
         let sz = std::mem::size_of::<JsObject>();
         assert!(
-            sz >= 32 && sz <= 64,
-            "JsObject layout mismatch - expected 32-64B, got {sz}B"
+            sz >= 40 && sz <= 56,
+            "JsObject layout mismatch - expected 40-56B, got {sz}B"
         );
     }
 

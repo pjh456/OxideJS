@@ -104,6 +104,18 @@ fn hash_statement(stmt: &Statement, h: &mut rustc_hash::FxHasher) {
                 }
             }
         }
+        Statement::FunctionDeclaration(fd) => {
+            12u8.hash(h);
+            if let Some(id) = &fd.id {
+                id.name.as_str().hash(h);
+            }
+            (fd.params.items.len() as u32).hash(h);
+            if let Some(body) = &fd.body {
+                for s in &body.statements {
+                    hash_statement(s, h);
+                }
+            }
+        }
         _ => {
             std::mem::discriminant(stmt).hash(h);
         }
@@ -185,6 +197,25 @@ fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher) {
                     hash_expression(&member.expression, h);
                 }
                 _ => {}
+            }
+        }
+        Expression::FunctionExpression(fe) => {
+            13u8.hash(h);
+            (fe.params.items.len() as u32).hash(h);
+            if let Some(body) = &fe.body {
+                for s in &body.statements {
+                    hash_statement(s, h);
+                }
+            }
+        }
+        Expression::NewExpression(ne) => {
+            14u8.hash(h);
+            hash_expression(&ne.callee, h);
+            (ne.arguments.len() as u32).hash(h);
+            for arg in &ne.arguments {
+                if let Some(expr) = arg.as_expression() {
+                    hash_expression(expr, h);
+                }
             }
         }
         _ => {

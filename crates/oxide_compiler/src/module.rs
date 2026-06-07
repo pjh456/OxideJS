@@ -17,8 +17,28 @@ pub struct CompiledModule {
     pub bytecode: Vec<opcode::Instr>,
     pub constants: Vec<Constant>,
     pub n_registers: u8,
+    pub n_args: u8,
     pub builtin_reg_map: Vec<(String, u8)>,
     pub sub_modules: Vec<CompiledModule>,
+}
+
+impl CompiledModule {
+    pub fn new() -> Self {
+        Self {
+            bytecode: Vec::new(),
+            constants: Vec::new(),
+            n_registers: 0,
+            n_args: 0,
+            builtin_reg_map: Vec::new(),
+            sub_modules: Vec::new(),
+        }
+    }
+}
+
+impl Default for CompiledModule {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Clone for CompiledModule {
@@ -27,6 +47,7 @@ impl Clone for CompiledModule {
             bytecode: self.bytecode.clone(),
             constants: self.constants.clone(),
             n_registers: self.n_registers,
+            n_args: self.n_args,
             builtin_reg_map: self.builtin_reg_map.clone(),
             sub_modules: self.sub_modules.clone(),
         }

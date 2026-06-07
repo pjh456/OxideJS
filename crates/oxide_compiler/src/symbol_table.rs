@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
-struct Binding {
-    reg: u8,
-    initialized: bool,
+pub(crate) struct Binding {
+    pub(crate) reg: u8,
+    pub(crate) initialized: bool,
 }
 
 pub struct SymbolTable {
-    scopes: Vec<HashMap<String, Binding>>,
+    pub(crate) scopes: Vec<HashMap<String, Binding>>,
 }
 
 impl Default for SymbolTable {
@@ -71,6 +71,24 @@ impl SymbolTable {
             },
         );
         reg_for_new
+    }
+
+    /// Declare a variable that is already initialized (for FunctionDeclaration hoisting).
+    /// If the name already exists in the current scope, just mark it as initialized.
+    pub fn declare_initialized(&mut self, name: &str, reg: u8) -> Result<(), String> {
+        let current = self.scopes.last_mut().unwrap();
+        if let Some(b) = current.get_mut(name) {
+            b.initialized = true;
+            return Ok(());
+        }
+        current.insert(
+            name.to_string(),
+            Binding {
+                reg,
+                initialized: true,
+            },
+        );
+        Ok(())
     }
 
     pub fn pre_register_global(&mut self, name: &str, reg: u8) {

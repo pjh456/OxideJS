@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::module::CompiledModule;
 use crate::opcode::{self, OpCode};
-use crate::symbol_table::SymbolTable;
+use crate::symbol_table::{Binding, SymbolTable};
 
 pub use crate::hash::structural_hash;
 pub use crate::module::Constant;
@@ -58,6 +58,7 @@ pub(crate) struct CompileCtx {
     pub(crate) label_counter: u32,
     pub(crate) projected_pc: usize,
     pub(crate) builtin_reg_map: Vec<(String, u8)>,
+    pub(crate) sub_modules: Vec<CompiledModule>,
 }
 
 impl CompileCtx {
@@ -74,6 +75,7 @@ impl CompileCtx {
             label_counter: 0,
             projected_pc: 0,
             builtin_reg_map: Vec::new(),
+            sub_modules: Vec::new(),
         }
     }
 
@@ -122,6 +124,10 @@ impl CompileCtx {
 
     pub(crate) fn declare(&mut self, name: &str, reg: u8) -> Result<(), String> {
         self.symbols.declare(name, reg)
+    }
+
+    pub(crate) fn declare_initialized(&mut self, name: &str, reg: u8) -> Result<(), String> {
+        self.symbols.declare_initialized(name, reg)
     }
 
     pub(crate) fn lookup(&self, name: &str) -> Result<u8, String> {
@@ -203,6 +209,84 @@ impl Compiler {
         Self
     }
 
+    /// Compile a function body (used for FD and FE).
+    /// This performs both counting and emitting in one pass.
+    pub(crate) fn compile_function_body<'a>(
+        &self,
+        param_names: &[String],
+        body_stmts: &[Statement<'a>],
+        parent_ctx: &CompileCtx,
+    ) -> Result<CompiledModule, String> {
+        let mut ctx = CompileCtx::new();
+
+        // Inherit parent's builtin_reg_map so builtin identifiers (Math, Object, etc.)
+        // resolve to the correct pre-allocated registers in the sub-module's register file.
+        ctx.builtin_reg_map = parent_ctx.builtin_reg_map.clone();
+
+        // Inherit parent's global scope entries so previously-declared function names
+        // are visible from within the body.
+        for (name, binding) in &parent_ctx.symbols.scopes[0] {
+            ctx.symbols.scopes[0].insert(
+                name.clone(),
+                Binding {
+                    reg: binding.reg,
+                    initialized: binding.initialized,
+                },
+            );
+        }
+
+        // Align next_reg with builtin count so both count and emit passes start at the
+        // same register offset (params go after builtin slots).
+        ctx.reset_regs();
+
+        // Function body scope - params and local vars
+        ctx.push_scope();
+
+        // Register parameters as initialized.
+        for name in param_names {
+            let reg = ctx.alloc_reg();
+            ctx.declare_initialized(name, reg)?;
+        }
+
+        // Count pass
+        for stmt in body_stmts {
+            self.count_statement(stmt, &mut ctx);
+        }
+        ctx.max_regs = ctx.max_regs.max(1);
+        ctx.reset_regs();
+
+        // Emit pass - reallocate params (same order = same regs after reset)
+        for name in param_names {
+            let reg = ctx.alloc_reg();
+            ctx.declare_initialized(name, reg)?;
+        }
+
+        // Emit body statements.
+        // After all statements, emit an implicit RETURN undefined.
+        for stmt in body_stmts {
+            let _ = self.emit_statement(stmt, &mut ctx)?;
+        }
+
+        let undef_idx = ctx.add_constant(Constant::Undefined);
+        let undef_reg = ctx.alloc_reg();
+        ctx.emit(opcode::encode(
+            OpCode::LOAD_CONST,
+            undef_reg,
+            (undef_idx & 0xFF) as u8,
+            ((undef_idx >> 8) & 0xFF) as u8,
+        ));
+        ctx.emit(opcode::encode(OpCode::RETURN, undef_reg, 0, 0));
+
+        Ok(CompiledModule {
+            bytecode: ctx.bytecode,
+            constants: ctx.constants,
+            n_registers: ctx.max_regs,
+            n_args: param_names.len() as u8,
+            builtin_reg_map: ctx.builtin_reg_map,
+            sub_modules: ctx.sub_modules,
+        })
+    }
+
     pub fn compile(&self, program: &oxide_parser::Program) -> Result<CompiledModule, String> {
         let mut ctx = CompileCtx::new();
         ctx.pre_register_builtins();
@@ -213,8 +297,20 @@ impl Compiler {
         ctx.max_regs = ctx.max_regs.max(1);
         ctx.reset_regs();
 
+        // First sub-pass: emit FunctionDeclarations (hoisting)
+        // This ensures function objects are available before any code runs.
+        for stmt in &program.body {
+            if matches!(stmt, Statement::FunctionDeclaration(_)) {
+                self.emit_statement(stmt, &mut ctx)?;
+            }
+        }
+
+        // Second sub-pass: emit all other statements
         let mut last_result: Option<u8> = None;
         for stmt in &program.body {
+            if matches!(stmt, Statement::FunctionDeclaration(_)) {
+                continue; // Already emitted above
+            }
             match self.emit_statement(stmt, &mut ctx)? {
                 Some(r) => last_result = Some(r),
                 None => last_result = None,
@@ -238,8 +334,9 @@ impl Compiler {
             bytecode: ctx.bytecode,
             constants: ctx.constants,
             n_registers: ctx.max_regs,
+            n_args: 0,
             builtin_reg_map: ctx.builtin_reg_map,
-            sub_modules: Vec::new(),
+            sub_modules: ctx.sub_modules,
         })
     }
 }

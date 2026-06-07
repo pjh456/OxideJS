@@ -180,6 +180,21 @@ impl Compiler {
                     self.count_statement(s, ctx);
                 }
             }
+            Statement::FunctionDeclaration(fd) => {
+                let name = if let Some(id) = &fd.id {
+                    id.name.to_string()
+                } else {
+                    return;
+                };
+
+                // Hoisting: declare function name as initialized
+                let func_reg = ctx.alloc_reg();
+                let _ = ctx.declare_initialized(&name, func_reg);
+
+                // Body is compiled in the emit pass only.
+                // FD emits LOAD_CONST(BytecodeFunc) + STORE_VAR
+                ctx.projected_pc += 2;
+            }
             _ => {}
         }
     }
@@ -217,7 +232,21 @@ impl Compiler {
                         self.count_expression(expr, ctx);
                     }
                 }
-                ctx.projected_pc += 2;
+                // CALL_NATIVE: 1 opcode + 1 ext word; CALL(0x40): 1 opcode
+                let is_builtin = match &call.callee {
+                    Expression::Identifier(ident) => ctx.is_builtin(ident.name.as_str()),
+                    Expression::StaticMemberExpression(m) => {
+                        if let Expression::Identifier(ident) = &m.object {
+                            ctx.is_builtin(ident.name.as_str())
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false,
+                };
+                ctx.projected_pc += if is_builtin { 2 } else { 1 };
+                ctx.alloc_reg(); // result register
+                ctx.projected_pc += 1; // LOAD_VAR result <- regs[0]
             }
             Expression::AssignmentExpression(assign) => {
                 if let oxide_parser::AssignmentTarget::StaticMemberExpression(member) = &assign.left
@@ -303,6 +332,24 @@ impl Compiler {
                         ctx.projected_pc += 1; // SET_PROP
                     }
                 }
+            }
+            Expression::FunctionExpression(_fe) => {
+                // No hoisting - function created at expression position.
+                // Body is compiled in the emit pass only.
+                ctx.alloc_reg();
+                ctx.projected_pc += 1; // LOAD_CONST
+            }
+            Expression::NewExpression(ne) => {
+                // Count callee expression
+                self.count_expression(&ne.callee, ctx);
+                // Count arguments
+                for arg in &ne.arguments {
+                    if let Some(expr) = arg.as_expression() {
+                        self.count_expression(expr, ctx);
+                    }
+                }
+                ctx.alloc_reg(); // result register
+                ctx.projected_pc += 2; // NEW_EXPRESSION + ext word
             }
             Expression::ArrayExpression(arr) => {
                 ctx.alloc_reg();

@@ -326,6 +326,51 @@ impl Compiler {
                 ctx.emit(opcode::encode_jmp(offset as i16));
                 Ok(None)
             }
+            Statement::FunctionDeclaration(fd) => {
+                // FunctionDeclaration: emit LOAD_CONST(BytecodeFunc) + STORE_VAR
+                let name = if let Some(id) = &fd.id {
+                    id.name.to_string()
+                } else {
+                    return Err("FunctionDeclaration without name".into());
+                };
+
+                // Extract params
+                let mut param_names = Vec::new();
+                for param in &fd.params.items {
+                    if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &param.pattern {
+                        param_names.push(bi.name.to_string());
+                    }
+                }
+
+                // Extract body statements (pass by reference)
+                let body_stmts: &[Statement] = if let Some(body) = &fd.body {
+                    &body.statements
+                } else {
+                    &[]
+                };
+
+                // Compile body into sub-module
+                let sub_module = self.compile_function_body(&param_names, body_stmts, ctx)?;
+                ctx.sub_modules.push(sub_module);
+                // 1-indexed: 0 = no sub_module (sentinel)
+                let sub_idx = ctx.sub_modules.len() as u32;
+
+                // Add BytecodeFunc constant and emit LOAD_CONST + STORE_VAR
+                let const_idx = ctx.add_constant(Constant::BytecodeFunc(sub_idx));
+                let func_reg = ctx.alloc_reg();
+                ctx.emit(opcode::encode(
+                    OpCode::LOAD_CONST,
+                    func_reg,
+                    (const_idx & 0xFF) as u8,
+                    ((const_idx >> 8) & 0xFF) as u8,
+                ));
+
+                // Get the register that was allocated for this FD in the counter pass
+                let var_reg = ctx.lookup_or_global(&name);
+                ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, func_reg, 0));
+
+                Ok(None)
+            }
             _ => Ok(None),
         }
     }
@@ -745,6 +790,59 @@ impl Compiler {
                 ctx.emit(opcode::encode(OpCode::LOAD_VAR, r, var_reg, 0));
                 Ok(r)
             }
+            Expression::FunctionExpression(fe) => {
+                // FunctionExpression: compile body, emit LOAD_CONST(BytecodeFunc)
+                let mut param_names = Vec::new();
+                for param in &fe.params.items {
+                    if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &param.pattern {
+                        param_names.push(bi.name.to_string());
+                    }
+                }
+
+                let body_stmts: &[Statement] = if let Some(body) = &fe.body {
+                    &body.statements
+                } else {
+                    &[]
+                };
+
+                let sub_module = self.compile_function_body(&param_names, body_stmts, ctx)?;
+                ctx.sub_modules.push(sub_module);
+                // 1-indexed: 0 = no sub_module (sentinel)
+                let sub_idx = ctx.sub_modules.len() as u32;
+
+                let const_idx = ctx.add_constant(Constant::BytecodeFunc(sub_idx));
+                let r = ctx.alloc_reg();
+                ctx.emit(opcode::encode(
+                    OpCode::LOAD_CONST,
+                    r,
+                    (const_idx & 0xFF) as u8,
+                    ((const_idx >> 8) & 0xFF) as u8,
+                ));
+                Ok(r)
+            }
+            Expression::NewExpression(ne) => {
+                let constructor_reg = self.emit_expression(&ne.callee, ctx)?;
+                let mut arg_regs = Vec::new();
+                for arg in &ne.arguments {
+                    if let Some(expr) = arg.as_expression() {
+                        arg_regs.push(self.emit_expression(expr, ctx)?);
+                    }
+                }
+                let first_arg_reg = if arg_regs.is_empty() {
+                    0u8
+                } else {
+                    arg_regs[0]
+                };
+                let r = ctx.alloc_reg();
+                ctx.emit(opcode::encode(
+                    OpCode::NEW_EXPRESSION,
+                    r,
+                    constructor_reg,
+                    first_arg_reg,
+                ));
+                ctx.emit(arg_regs.len() as u32);
+                Ok(r)
+            }
             Expression::ParenthesizedExpression(p) => self.emit_expression(&p.expression, ctx),
             Expression::CallExpression(call) => {
                 let (callee_reg, this_reg) = match &call.callee {
@@ -795,11 +893,28 @@ impl Compiler {
                     Expression::Identifier(ident) if ctx.is_builtin(ident.name.as_str()) => {
                         OpCode::CALL_NATIVE
                     }
+                    Expression::StaticMemberExpression(m) => {
+                        if let Expression::Identifier(ident) = &m.object {
+                            if ctx.is_builtin(ident.name.as_str()) {
+                                OpCode::CALL_NATIVE
+                            } else {
+                                OpCode::CALL
+                            }
+                        } else {
+                            OpCode::CALL
+                        }
+                    }
                     _ => OpCode::CALL,
                 };
                 ctx.emit(opcode::encode(op, callee_reg, this_reg, first_arg_reg));
-                ctx.emit(arg_regs.len() as u32);
-                Ok(0u8)
+                if matches!(op, OpCode::CALL_NATIVE) {
+                    ctx.emit(arg_regs.len() as u32);
+                }
+                // Copy result from regs[0] into a dedicated register so multiple
+                // call expressions don't overwrite each other.
+                let result_reg = ctx.alloc_reg();
+                ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, 0, 0));
+                Ok(result_reg)
             }
             _ => Err(format!("unsupported expression type: {:?}", expr)),
         }

@@ -63,6 +63,10 @@ pub struct Vm {
     pub math_rng_state: u64,
     sub_modules: Vec<CompiledModule>,
     sub_module_constants: Vec<Vec<JsValue>>,
+    /// Stack of saved bytecode for nested bytecode calls
+    saved_bytecode_stack: Vec<Vec<opcode::Instr>>,
+    /// Stack of saved constants for nested bytecode calls
+    saved_constants_stack: Vec<Vec<JsValue>>,
 }
 
 fn bind_object(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
@@ -87,6 +91,16 @@ fn bind_object(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     );
     global.set_shape_id(obj_shape);
     global.push_prop(obj_val);
+
+    // Set native constructor on Object
+    {
+        let obj_ctor_ptr = kernel.builtin_world().object_constructor.as_ptr() as *mut JsObject;
+        let obj_ctor = unsafe { &mut *obj_ctor_ptr };
+        obj_ctor.set_native_fn(Some(
+            crate::builtins::object::object_constructor as *const (),
+        ));
+        obj_ctor.set_native_arg_count(1);
+    }
 }
 
 fn bind_array(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
@@ -124,6 +138,14 @@ fn bind_array(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     global.set_shape_id(arr_shape);
     global.ensure_hash_props().push(Box::new(arr_val));
     global.bump_generation();
+
+    // Set native constructor on Array
+    {
+        let arr_ctor_ptr = kernel.builtin_world().array_constructor.as_ptr() as *mut JsObject;
+        let arr_ctor = unsafe { &mut *arr_ctor_ptr };
+        arr_ctor.set_native_fn(Some(crate::builtins::array::array_constructor as *const ()));
+        arr_ctor.set_native_arg_count(1);
+    }
 }
 
 fn bind_error(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
@@ -636,6 +658,8 @@ impl Vm {
             math_rng_state: 0,
             sub_modules: Vec::new(),
             sub_module_constants: Vec::new(),
+            saved_bytecode_stack: Vec::new(),
+            saved_constants_stack: Vec::new(),
         }
     }
 
@@ -654,6 +678,8 @@ impl Vm {
             math_rng_state: 0,
             sub_modules: Vec::new(),
             sub_module_constants: Vec::new(),
+            saved_bytecode_stack: Vec::new(),
+            saved_constants_stack: Vec::new(),
         }
     }
 
@@ -713,6 +739,34 @@ impl Vm {
         let (idx, hash) = self.kernel.string_forge().intern(s);
         self.interned_strings.push(idx);
         JsValue::string(idx, hash)
+    }
+
+    /// Create a function JsObject for a BytecodeFunc constant.
+    fn create_function_object(&mut self, sub_idx: u32) -> JsValue {
+        let func_proto_ptr = self.kernel.builtin_world().function_proto.as_ptr() as *mut JsObject;
+        let proto_val = JsValue::from_js_object(func_proto_ptr);
+        let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto_val);
+        obj.set_function(true);
+        obj.set_sub_module_index(sub_idx);
+        let obj_ptr = self.epoch.alloc(obj);
+        JsValue::object(obj_ptr as *mut u8)
+    }
+
+    /// Convert a CompiledModule's constants into JsValue vec.
+    fn convert_constants(&mut self, module: &CompiledModule) -> Vec<JsValue> {
+        module
+            .constants
+            .iter()
+            .map(|c| match c {
+                Constant::Number(v) => JsValue::float(*v),
+                Constant::Int(v) => JsValue::int(*v),
+                Constant::String(s) => self.intern(s),
+                Constant::Boolean(b) => JsValue::bool(*b),
+                Constant::Null => JsValue::null(),
+                Constant::Undefined => JsValue::undefined(),
+                Constant::BytecodeFunc(idx) => self.create_function_object(*idx),
+            })
+            .collect()
     }
 
     pub fn lookup_str(&self, val: JsValue) -> Option<String> {
@@ -814,25 +868,15 @@ impl Vm {
     }
 
     pub fn run(&mut self, module: &CompiledModule) -> Result<JsValue, String> {
-        self.constants = module
-            .constants
-            .iter()
-            .map(|c| match c {
-                Constant::Number(v) => JsValue::float(*v),
-                Constant::Int(v) => JsValue::int(*v),
-                Constant::String(s) => self.intern(s),
-                Constant::Boolean(b) => JsValue::bool(*b),
-                Constant::Null => JsValue::null(),
-                Constant::Undefined => JsValue::undefined(),
-                Constant::BytecodeFunc(_idx) => JsValue::undefined(),
-            })
-            .collect();
+        self.constants = self.convert_constants(module);
         self.sub_modules = module.sub_modules.clone();
         self.sub_module_constants = vec![Vec::new(); self.sub_modules.len()];
         self.bytecode = module.bytecode.clone();
         self.pc = 0;
         self.regs = [JsValue::undefined(); 256];
         self.frames.clear();
+        self.saved_bytecode_stack.clear();
+        self.saved_constants_stack.clear();
 
         for (name, reg) in &module.builtin_reg_map {
             let si = self.kernel.string_forge().intern(name.as_str()).0;
@@ -1048,35 +1092,111 @@ impl Vm {
                         let obj_ptr = callee.as_js_object_ptr();
                         if !obj_ptr.is_null() {
                             let obj = unsafe { &*obj_ptr };
-                            if obj.is_function() && obj.native_fn().is_some() {
-                                let ext = self.bytecode[self.pc];
-                                self.pc += 1;
-                                let arg_count = (ext & 0xFF) as usize;
+                            if obj.is_function() {
+                                if obj.native_fn().is_some() {
+                                    // Native call - use extension word for arg_count
+                                    let ext = self.bytecode[self.pc];
+                                    self.pc += 1;
+                                    let arg_count = (ext & 0xFF) as usize;
 
-                                let mut args_buf = [0u8; 257];
-                                args_buf[0] = this_reg;
-                                for i in 0..arg_count.min(256) {
-                                    args_buf[i + 1] = first_arg_reg.wrapping_add(i as u8);
-                                }
-                                let args_slice = &args_buf[..arg_count + 1];
-
-                                let func: NativeFn =
-                                    unsafe { std::mem::transmute(obj.native_fn().unwrap()) };
-                                self.regs[254] = callee;
-                                match func(self, args_slice) {
-                                    Ok(val) => self.regs[0] = val,
-                                    Err(err_val) => {
-                                        return Err(format!("Native error: {:?}", err_val));
+                                    let mut args_buf = [0u8; 257];
+                                    args_buf[0] = this_reg;
+                                    for i in 0..arg_count.min(256) {
+                                        args_buf[i + 1] = first_arg_reg.wrapping_add(i as u8);
                                     }
+                                    let args_slice = &args_buf[..arg_count + 1];
+
+                                    let func: NativeFn =
+                                        unsafe { std::mem::transmute(obj.native_fn().unwrap()) };
+                                    self.regs[254] = callee;
+                                    match func(self, args_slice) {
+                                        Ok(val) => self.regs[0] = val,
+                                        Err(err_val) => {
+                                            return Err(format!("Native error: {:?}", err_val));
+                                        }
+                                    }
+                                    continue;
+                                } else if obj.sub_module_index() > 0 {
+                                    // 1-indexed sub_module_index (0 = not a bytecode function)
+                                    let sub_idx = obj.sub_module_index() as usize - 1;
+                                    if sub_idx >= self.sub_modules.len() {
+                                        return Err(format!(
+                                            "CALL: sub_module_index {} out of bounds (max {})",
+                                            sub_idx,
+                                            self.sub_modules.len()
+                                        ));
+                                    }
+
+                                    // Clone sub_module data before mutably borrowing self
+                                    let sub_bytecode = self.sub_modules[sub_idx].bytecode.clone();
+                                    let sub_n_args = self.sub_modules[sub_idx].n_args as usize;
+                                    let sub_constants = self.sub_modules[sub_idx].constants.clone();
+                                    let sub_builtin_count =
+                                        self.sub_modules[sub_idx].builtin_reg_map.len();
+
+                                    // Copy args to regs[sub_builtin_count..sub_builtin_count+n_args]
+                                    // (builtins occupy regs[0..sub_builtin_count-1])
+                                    for i in 0..sub_n_args {
+                                        let src_reg = first_arg_reg.wrapping_add(i as u8) as usize;
+                                        self.regs[sub_builtin_count + i] = self.regs[src_reg];
+                                    }
+                                    // Set this (reg 254 convention)
+                                    self.regs[254] = callee;
+
+                                    // Save current bytecode/constants
+                                    self.saved_bytecode_stack
+                                        .push(std::mem::take(&mut self.bytecode));
+                                    self.saved_constants_stack
+                                        .push(std::mem::take(&mut self.constants));
+
+                                    // Push call frame
+                                    self.frames.push(CallFrame {
+                                        return_addr: self.pc,
+                                        n_locals: sub_n_args as u8,
+                                        n_args: sub_n_args as u8,
+                                        function_obj_reg: callee_reg as u8,
+                                        frame_base: sub_builtin_count as u8,
+                                    });
+
+                                    // Convert sub_module constants
+                                    self.bytecode = sub_bytecode;
+                                    self.constants = sub_constants
+                                        .iter()
+                                        .map(|c| match c {
+                                            Constant::Number(v) => JsValue::float(*v),
+                                            Constant::Int(v) => JsValue::int(*v),
+                                            Constant::String(s) => self.intern(s),
+                                            Constant::Boolean(b) => JsValue::bool(*b),
+                                            Constant::Null => JsValue::null(),
+                                            Constant::Undefined => JsValue::undefined(),
+                                            Constant::BytecodeFunc(idx) => {
+                                                self.create_function_object(*idx)
+                                            }
+                                        })
+                                        .collect();
+
+                                    // Pre-fill builtin registers from the global object
+                                    // (same as Vm::run does for the main module).
+                                    for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map {
+                                        let si = self.kernel.string_forge().intern(name.as_str()).0;
+                                        let global = self.kernel.global_object();
+                                        if let Some(pos) = self
+                                            .kernel
+                                            .shape_forge()
+                                            .lookup_position(global.shape_id(), si)
+                                        {
+                                            self.regs[*reg as usize] = global.get_prop_at(pos);
+                                        }
+                                    }
+
+                                    self.pc = 0;
+                                    continue;
                                 }
-                                continue;
                             }
-                            // bytecode path skeleton - wired in plan 12.1-03
-                            return Err("bytecode function calls not yet supported".into());
                         }
                     }
 
-                    return Err("CALL target is not a native function".into());
+                    return Err("CALL target is not callable".into());
                 }
 
                 OpCode::CALL_NATIVE => {
@@ -1161,11 +1281,10 @@ impl Vm {
                     // If constructor has native_fn, call it with this=new_obj
                     if ctor_obj.native_fn().is_some() {
                         let new_obj_val = JsValue::object(new_obj as *mut u8);
-                        // this_reg = register holding new_obj; we use regs[255] as scratch
                         self.regs[255] = new_obj_val;
 
                         let mut args_buf = [0u8; 257];
-                        args_buf[0] = 255u8; // this = new_obj
+                        args_buf[0] = 255u8;
                         for i in 0..arg_count.min(256) {
                             args_buf[i + 1] = first_arg_reg.wrapping_add(i as u8);
                         }
@@ -1176,11 +1295,10 @@ impl Vm {
                         self.regs[254] = constructor;
                         match func(self, args_slice) {
                             Ok(val) => {
-                                // If constructor returns an object, use that; else use new_obj
                                 if val.is_object() {
-                                    self.regs[0] = val;
+                                    self.regs[rd] = val;
                                 } else {
-                                    self.regs[0] = new_obj_val;
+                                    self.regs[rd] = new_obj_val;
                                 }
                             }
                             Err(err_val) => {
@@ -1198,10 +1316,14 @@ impl Vm {
                 OpCode::RETURN => {
                     let result = self.regs[rd];
                     if let Some(frame) = self.frames.pop() {
+                        // Restore caller's saved bytecode and constants
+                        if let Some(saved_bc) = self.saved_bytecode_stack.pop() {
+                            self.bytecode = saved_bc;
+                        }
+                        if let Some(saved_consts) = self.saved_constants_stack.pop() {
+                            self.constants = saved_consts;
+                        }
                         // Restore caller's pc and merge result into caller's regs[0].
-                        // frame.frame_base marks the first register of the caller frame;
-                        // when bytecode calls are wired in 12.1-03, registers above
-                        // frame_base will be cleared on RETURN.
                         self.pc = frame.return_addr;
                         self.regs[0] = result;
                     } else {
