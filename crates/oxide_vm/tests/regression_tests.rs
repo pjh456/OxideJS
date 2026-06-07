@@ -61,7 +61,7 @@ fn regression_recursion_depth_limit() {
 fn regression_throw_statement_errors() {
     assert_eq!(
         eval("throw 'error'"),
-        "compile error: throw statement not supported"
+        "vm error: opcode THROW not yet implemented"
     );
 }
 

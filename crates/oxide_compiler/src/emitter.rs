@@ -371,7 +371,102 @@ impl Compiler {
 
                 Ok(None)
             }
-            Statement::ThrowStatement(_) => Err("throw statement not supported".into()),
+            Statement::ThrowStatement(ts) => {
+                let exc_reg = self.emit_expression(&ts.argument, ctx)?;
+                ctx.emit(opcode::encode(OpCode::THROW, exc_reg, 0, 0));
+                Ok(None)
+            }
+            Statement::TryStatement(ts) => {
+                let id = ctx.next_label_id();
+                let catch_label = Label::CatchBody(id);
+                let try_end_label = Label::TryEnd(id);
+                let has_catch = ts.handler.is_some();
+                let has_finally = ts.finalizer.is_some();
+
+                let mut try_finally_begin_pos: Option<usize> = None;
+                let mut try_begin_pos: Option<usize> = None;
+
+                if has_finally {
+                    try_finally_begin_pos = Some(ctx.bytecode.len());
+                    ctx.emit(opcode::encode_try_finally_begin(0)); // placeholder
+                }
+
+                if has_catch {
+                    try_begin_pos = Some(ctx.bytecode.len());
+                    ctx.emit(opcode::encode_try_begin(0)); // placeholder
+                }
+
+                for s in &ts.block.body {
+                    self.emit_statement(s, ctx)?;
+                }
+
+                if has_catch {
+                    ctx.emit(opcode::encode(OpCode::TRY_END, 0, 0, 0));
+                }
+
+                let jmp_needed = has_catch || has_finally;
+                let jmp_skip_pos = if jmp_needed {
+                    let pos = ctx.bytecode.len();
+                    ctx.emit(opcode::encode_jmp(0)); // placeholder
+                    Some(pos)
+                } else {
+                    None
+                };
+
+                let catch_label_pc = ctx.bytecode.len();
+                ctx.label_map.insert(catch_label, catch_label_pc);
+
+                if let Some(try_begin_pc) = try_begin_pos {
+                    let offset = catch_label_pc as isize - (try_begin_pc as isize + 1);
+                    ctx.bytecode[try_begin_pc] = opcode::encode_try_begin(offset as i16);
+                }
+
+                if let Some(catch) = &ts.handler {
+                    ctx.push_scope();
+                    if let Some(param) = &catch.param {
+                        let catch_reg = ctx.alloc_reg();
+                        if let oxide_parser::BindingPattern::BindingIdentifier(bi) =
+                            &param.pattern
+                        {
+                            ctx.declare_initialized(bi.name.as_str(), catch_reg)?;
+                            ctx.emit(opcode::encode(OpCode::STORE_VAR, catch_reg, 0, 0));
+                        }
+                    }
+                    for s in &catch.body.body {
+                        self.emit_statement(s, ctx)?;
+                    }
+                    ctx.pop_scope();
+                }
+
+                if has_finally {
+                    let finally_label = Label::FinallyBody(id);
+                    let finally_label_pc = ctx.bytecode.len();
+                    ctx.label_map.insert(finally_label, finally_label_pc);
+
+                    if let Some(fb_pos) = try_finally_begin_pos {
+                        let offset = finally_label_pc as isize - (fb_pos as isize + 1);
+                        ctx.bytecode[fb_pos] = opcode::encode_try_finally_begin(offset as i16);
+                    }
+
+                    if let Some(jmp_pos) = jmp_skip_pos {
+                        let offset = finally_label_pc as isize - (jmp_pos as isize + 1);
+                        ctx.bytecode[jmp_pos] = opcode::encode_jmp(offset as i16);
+                    }
+
+                    for s in &ts.finalizer.as_ref().unwrap().body {
+                        self.emit_statement(s, ctx)?;
+                    }
+                    ctx.emit(opcode::encode(OpCode::TRY_FINALLY_END, 0, 0, 0));
+                } else if let Some(jmp_pos) = jmp_skip_pos {
+                    let offset = ctx.bytecode.len() as isize - (jmp_pos as isize + 1);
+                    ctx.bytecode[jmp_pos] = opcode::encode_jmp(offset as i16);
+                }
+
+                let try_end_pc = ctx.bytecode.len();
+                ctx.label_map.insert(try_end_label, try_end_pc);
+
+                Ok(None)
+            }
             _ => Ok(None),
         }
     }

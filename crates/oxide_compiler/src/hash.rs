@@ -116,8 +116,32 @@ fn hash_statement(stmt: &Statement, h: &mut rustc_hash::FxHasher) {
                 }
             }
         }
-        Statement::ThrowStatement(_ts) => {
+        Statement::ThrowStatement(ts) => {
             14u8.hash(h);
+            hash_expression(&ts.argument, h);
+        }
+        Statement::TryStatement(ts) => {
+            34u8.hash(h);
+            for s in &ts.block.body {
+                hash_statement(s, h);
+            }
+            if let Some(catch) = &ts.handler {
+                if let Some(param) = &catch.param {
+                    if let oxide_parser::BindingPattern::BindingIdentifier(bi) =
+                        &param.pattern
+                    {
+                        bi.name.as_str().hash(h);
+                    }
+                }
+                for s in &catch.body.body {
+                    hash_statement(s, h);
+                }
+            }
+            if let Some(finally) = &ts.finalizer {
+                for s in &finally.body {
+                    hash_statement(s, h);
+                }
+            }
         }
         _ => {
             std::mem::discriminant(stmt).hash(h);

@@ -43,6 +43,9 @@ pub(crate) enum Label {
     ForInEnd(u32),
     SwitchEnd(u32),
     SwitchCase(u32),
+    CatchBody(u32),
+    FinallyBody(u32),
+    TryEnd(u32),
 }
 
 pub(crate) struct CompileCtx {

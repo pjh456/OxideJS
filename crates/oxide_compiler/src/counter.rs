@@ -195,8 +195,61 @@ impl Compiler {
                 // FD emits LOAD_CONST(BytecodeFunc) + STORE_VAR
                 ctx.projected_pc += 2;
             }
-            Statement::ThrowStatement(_) => {
-                // throw not yet implemented; emit pass will error
+            Statement::ThrowStatement(ts) => {
+                self.count_expression(&ts.argument, ctx);
+                ctx.projected_pc += 1; // THROW
+            }
+            Statement::TryStatement(ts) => {
+                let id = ctx.next_label_id();
+                let catch_label = Label::CatchBody(id);
+                let try_end_label = Label::TryEnd(id);
+                let has_catch = ts.handler.is_some();
+                let has_finally = ts.finalizer.is_some();
+
+                if has_finally {
+                    ctx.projected_pc += 1; // TRY_FINALLY_BEGIN (before try body)
+                }
+
+                if has_catch {
+                    ctx.projected_pc += 1; // TRY_BEGIN (before try body)
+                }
+
+                for s in &ts.block.body {
+                    self.count_statement(s, ctx);
+                }
+
+                if has_catch {
+                    ctx.projected_pc += 1; // TRY_END
+                }
+
+                let jmp_needed = has_catch || has_finally;
+                if jmp_needed {
+                    ctx.projected_pc += 1; // JMP
+                }
+
+                ctx.label_map.insert(catch_label, ctx.projected_pc);
+                if let Some(catch) = &ts.handler {
+                    ctx.push_scope();
+                    if let Some(_param) = &catch.param {
+                        ctx.alloc_reg();
+                        ctx.projected_pc += 1; // STORE_VAR
+                    }
+                    for cs in &catch.body.body {
+                        self.count_statement(cs, ctx);
+                    }
+                    ctx.pop_scope();
+                }
+
+                if let Some(finally) = &ts.finalizer {
+                    let finally_label = Label::FinallyBody(id);
+                    ctx.label_map.insert(finally_label, ctx.projected_pc);
+                    for fs in &finally.body {
+                        self.count_statement(fs, ctx);
+                    }
+                    ctx.projected_pc += 1; // TRY_FINALLY_END
+                }
+
+                ctx.label_map.insert(try_end_label, ctx.projected_pc);
             }
             _ => {}
         }

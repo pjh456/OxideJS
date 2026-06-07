@@ -55,7 +55,14 @@ pub enum OpCode {
     SWITCH_TABLE = 0x2C,
     FOR_IN_CLEANUP = 0x2D,
 
-    // ── Variable (0x30-0x3F) ──
+    // -- Exception (0x2E-0x2F, 0x33-0x35) --
+    THROW = 0x2E,
+    TRY_BEGIN = 0x2F,
+    TRY_END = 0x33,
+    TRY_FINALLY_BEGIN = 0x34,
+    TRY_FINALLY_END = 0x35,
+
+    // -- Variable (0x30-0x32) --
     LOAD_VAR = 0x30,
     STORE_VAR = 0x31,
     LOAD_CONST = 0x32,
@@ -178,9 +185,14 @@ impl TryFrom<u8> for OpCode {
             0x2B => Ok(OpCode::FOR_IN_DONE),
             0x2C => Ok(OpCode::SWITCH_TABLE),
             0x2D => Ok(OpCode::FOR_IN_CLEANUP),
+            0x2E => Ok(OpCode::THROW),
+            0x2F => Ok(OpCode::TRY_BEGIN),
             0x30 => Ok(OpCode::LOAD_VAR),
             0x31 => Ok(OpCode::STORE_VAR),
             0x32 => Ok(OpCode::LOAD_CONST),
+            0x33 => Ok(OpCode::TRY_END),
+            0x34 => Ok(OpCode::TRY_FINALLY_BEGIN),
+            0x35 => Ok(OpCode::TRY_FINALLY_END),
             0x40 => Ok(OpCode::CALL),
             0x41 => Ok(OpCode::RETURN),
             0x42 => Ok(OpCode::CALL_NATIVE),
@@ -259,6 +271,11 @@ impl fmt::Display for OpCode {
             OpCode::FOR_IN_DONE => "FOR_IN_DONE",
             OpCode::SWITCH_TABLE => "SWITCH_TABLE",
             OpCode::FOR_IN_CLEANUP => "FOR_IN_CLEANUP",
+            OpCode::THROW => "THROW",
+            OpCode::TRY_BEGIN => "TRY_BEGIN",
+            OpCode::TRY_END => "TRY_END",
+            OpCode::TRY_FINALLY_BEGIN => "TRY_FINALLY_BEGIN",
+            OpCode::TRY_FINALLY_END => "TRY_FINALLY_END",
             OpCode::LOAD_VAR => "LOAD_VAR",
             OpCode::STORE_VAR => "STORE_VAR",
             OpCode::LOAD_CONST => "LOAD_CONST",
@@ -352,4 +369,16 @@ pub fn encode_jmp_if_true(rd: u8, offset: i16) -> Instr {
     let lo = (offset as u16 & 0xFF) as u8;
     let hi = ((offset as u16 >> 8) & 0xFF) as u8;
     encode(OpCode::JMP_IF_TRUE, rd, lo, hi)
+}
+
+pub fn encode_try_begin(offset: i16) -> Instr {
+    let lo = (offset as u16 & 0xFF) as u8;
+    let hi = ((offset as u16 >> 8) & 0xFF) as u8;
+    encode(OpCode::TRY_BEGIN, 0, lo, hi)
+}
+
+pub fn encode_try_finally_begin(offset: i16) -> Instr {
+    let lo = (offset as u16 & 0xFF) as u8;
+    let hi = ((offset as u16 >> 8) & 0xFF) as u8;
+    encode(OpCode::TRY_FINALLY_BEGIN, 0, lo, hi)
 }
