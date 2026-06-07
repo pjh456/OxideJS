@@ -2333,28 +2333,38 @@ impl Vm {
                     if !obj_val.is_object() {
                         return Err("TypeError: for-in right-hand side is not an object".into());
                     }
-                    let obj = unsafe { &*obj_val.as_js_object_ptr() };
-                    let shape_id = obj.shape_id();
 
                     let mut keys_vec = bumpalo::collections::Vec::new_in(self.epoch.bump());
-                    let mut cursor = Some(shape_id);
-                    while let Some(id) = cursor {
-                        if id == oxide_kernel::shape_forge::EMPTY_SHAPE_ID {
+                    let mut seen = std::collections::HashSet::new();
+                    let mut current = obj_val;
+
+                    loop {
+                        if !current.is_object() {
                             break;
                         }
-                        if let Some(shape) = self.kernel.shape_forge().get_shape(id) {
-                            if shape.property_name != u32::MAX {
-                                let hash = self
-                                    .kernel
-                                    .string_forge()
-                                    .get_hash(shape.property_name)
-                                    .unwrap_or(0);
-                                keys_vec.push(JsValue::string(shape.property_name, hash));
+                        let cur = unsafe { &*current.as_js_object_ptr() };
+                        let mut cursor = Some(cur.shape_id());
+                        while let Some(id) = cursor {
+                            if id == EMPTY_SHAPE_ID {
+                                break;
                             }
-                            cursor = shape.parent;
-                        } else {
-                            break;
+                            if let Some(shape) = self.kernel.shape_forge().get_shape(id) {
+                                if shape.property_name != u32::MAX
+                                    && seen.insert(shape.property_name)
+                                {
+                                    let hash = self
+                                        .kernel
+                                        .string_forge()
+                                        .get_hash(shape.property_name)
+                                        .unwrap_or(0);
+                                    keys_vec.push(JsValue::string(shape.property_name, hash));
+                                }
+                                cursor = shape.parent;
+                            } else {
+                                break;
+                            }
                         }
+                        current = cur.proto();
                     }
 
                     let iter = self.epoch.alloc(ForInIter {

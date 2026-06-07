@@ -64,3 +64,12 @@ fn regression_throw_statement_errors() {
         "compile error: throw statement not supported"
     );
 }
+
+#[test]
+fn regression_for_in_prototype_chain() {
+    assert_eq!(
+        eval("var c=0;for(var k in {a:1}){c=c+1;}c"),
+        "2",
+        "for-in should include inherited constructor from prototype"
+    );
+}
