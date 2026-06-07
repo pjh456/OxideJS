@@ -12,6 +12,14 @@ macro_rules! bind_method {
     };
 }
 
+#[macro_export]
+macro_rules! bind_methods {
+    ($world:expr, $target:expr, $sf:expr, $sh:expr,
+     $(($name:literal, $func:path, $nargs:literal)),* $(,)?) => {
+        $( bind_method!($world, $target, $sf, $sh, $name, $func, $nargs); )*
+    };
+}
+
 pub struct ObjectMethods {
     pub keys: *const (),
     pub create: *const (),

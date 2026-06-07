@@ -6,35 +6,16 @@ use oxide_compiler::compiler::Constant;
 use oxide_compiler::module::CompiledModule;
 use oxide_compiler::opcode::{self, OpCode};
 
+use crate::bindings;
+pub use crate::bindings::init_kernel_builtins;
 use crate::coercion;
 use crate::native::NativeFn;
-use oxide_kernel::bind_method;
-use oxide_kernel::builtin::{
-    ArrayMethods, ErrorMethods, FunctionMethods, NumberMethods, ObjectMethods, StringMethods,
-};
 use oxide_kernel::kernel::{KernelConfig, OxideKernel};
 use oxide_kernel::prop_forge::PropTemplate;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::mem::{Epoch, P};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
-
-/// Invoke a native function via CALL_NATIVE dispatch.
-/// args[0] = this_reg, args[1..=n] = contiguous arg registers.
-#[allow(unused_macros)]
-macro_rules! native_call {
-    ($vm:ident, $callee:expr, $this_reg:expr, $first_arg_reg:expr, $arg_count:expr) => {{
-        let mut args_buf = [0u8; 257];
-        args_buf[0] = $this_reg;
-        for i in 0..($arg_count as usize).min(256) {
-            args_buf[i + 1] = $first_arg_reg.wrapping_add(i as u8);
-        }
-        let args_slice = &args_buf[..($arg_count as usize).min(256) + 1];
-        let func: NativeFn = unsafe { std::mem::transmute($callee.native_fn().unwrap()) };
-        $vm.regs[254] = JsValue::from_js_object($callee as *const JsObject as *mut JsObject);
-        func($vm, args_slice)
-    }};
-}
 
 #[allow(unused_macros)]
 macro_rules! throw_err {
@@ -76,6 +57,82 @@ macro_rules! throw_err {
     }};
 }
 
+macro_rules! binary_arith {
+    ($self:ident, $a:expr, $b:expr, $rd:expr, $op:tt) => {{
+        let l = coercion::to_number($self.regs[$a], $self.kernel.string_forge().as_ref());
+        let r = coercion::to_number($self.regs[$b], $self.kernel.string_forge().as_ref());
+        $self.regs[$rd] = JsValue::float(l $op r);
+    }}
+}
+
+macro_rules! compound_arith {
+    ($self:ident, $rd:expr, $a:expr, $op:tt) => {{
+        let l = coercion::to_number($self.regs[$rd], $self.kernel.string_forge().as_ref());
+        let r = coercion::to_number($self.regs[$a], $self.kernel.string_forge().as_ref());
+        $self.regs[$rd] = JsValue::float(l $op r);
+    }}
+}
+
+macro_rules! set_or_create_prop {
+    ($self:ident, $obj:expr, $prop_name_si:expr, $new_val:expr) => {{
+        if let Some(pos) = $self
+            .kernel
+            .shape_forge()
+            .lookup_position($obj.shape_id(), $prop_name_si)
+        {
+            $obj.set_prop_at(pos, $new_val);
+        } else {
+            let new_shape_id = $self
+                .kernel
+                .shape_forge()
+                .make_shape($obj.shape_id(), $prop_name_si);
+            $obj.set_shape_id(new_shape_id);
+            $obj.push_prop($new_val);
+            $obj.bump_generation();
+        }
+    }};
+}
+
+macro_rules! member_read_prop {
+    ($self:ident, $obj:expr, $prop_name_si:expr) => {{
+        let ext0 = $self.bytecode[$self.pc];
+        let ext1 = $self.bytecode[$self.pc + 1];
+        let ext2 = $self.bytecode[$self.pc + 2];
+        $self.pc += 3;
+        let cached_shape_id = ext0 & 0x00FF_FFFF;
+        let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
+
+        if cached_shape_id != 0 && cached_shape_id == $obj.shape_id() && cached_ptr != 0 {
+            unsafe { *(cached_ptr as *const JsValue) }
+        } else if let Some(template) = $self.kernel.prop_forge().get_template($obj.shape_id()) {
+            if let Some(ptr) = $self.template_prop_ptr($obj, &template) {
+                $self.bytecode[$self.pc - 3] = $obj.shape_id() & 0x00FF_FFFF;
+                $self.bytecode[$self.pc - 2] = ptr as u32;
+                $self.bytecode[$self.pc - 1] = (ptr as u64 >> 32) as u32;
+                unsafe { *ptr }
+            } else {
+                $self
+                    .resolve_property($obj, $prop_name_si)
+                    .unwrap_or(JsValue::undefined())
+            }
+        } else if let Some(val) = $self.resolve_property($obj, $prop_name_si) {
+            let pos = $self
+                .kernel
+                .shape_forge()
+                .lookup_position($obj.shape_id(), $prop_name_si)
+                .unwrap_or(0);
+            if let Some(ptr) = $obj.prop_ptr_at(pos) {
+                $self.bytecode[$self.pc - 3] = $obj.shape_id() & 0x00FF_FFFF;
+                $self.bytecode[$self.pc - 2] = ptr as u32;
+                $self.bytecode[$self.pc - 1] = (ptr as u64 >> 32) as u32;
+            }
+            val
+        } else {
+            JsValue::undefined()
+        }
+    }};
+}
+
 pub struct CallFrame {
     pub return_addr: usize,
     pub n_locals: u8,
@@ -96,1178 +153,31 @@ pub struct TryHandler {
 }
 
 pub struct Vm {
-    regs: [JsValue; 256],
-    pc: usize,
-    bytecode: Vec<opcode::Instr>,
-    constants: Vec<JsValue>,
-    frames: Vec<CallFrame>,
+    pub(crate) regs: [JsValue; 256],
+    pub(crate) pc: usize,
+    pub(crate) bytecode: Vec<opcode::Instr>,
+    pub(crate) constants: Vec<JsValue>,
+    pub(crate) frames: Vec<CallFrame>,
     pub for_in_iters: Vec<*mut u8>,
-    kernel: Arc<OxideKernel>,
-    interned_strings: Vec<u32>,
+    pub(crate) kernel: Arc<OxideKernel>,
+    pub(crate) interned_strings: Vec<u32>,
     pub epoch: Epoch,
     pub object_prototype: P<JsObject>,
     pub math_rng_state: u64,
-    sub_modules: Vec<CompiledModule>,
-    sub_module_constants: Vec<Vec<JsValue>>,
-    /// Stack of saved bytecode for nested bytecode calls
-    saved_bytecode_stack: Vec<Vec<opcode::Instr>>,
-    /// Stack of saved constants for nested bytecode calls
-    saved_constants_stack: Vec<Vec<JsValue>>,
-    try_stack: Vec<TryHandler>,
-    exception_value: Option<JsValue>,
-    pending_exception: Option<JsValue>,
-    pending_error_kind: Option<&'static str>,
-}
-
-fn bind_object(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
-    let methods = ObjectMethods {
-        keys: crate::builtins::object::object_keys as *const (),
-        create: crate::builtins::object::object_create as *const (),
-        assign: crate::builtins::object::object_assign as *const (),
-        define_property: crate::builtins::object::object_define_property as *const (),
-        get_own_property_descriptor: crate::builtins::object::object_get_own_property_descriptor
-            as *const (),
-        freeze: crate::builtins::object::object_freeze as *const (),
-        seal: crate::builtins::object::object_seal as *const (),
-        prevent_extensions: crate::builtins::object::object_prevent_extensions as *const (),
-        is_frozen: crate::builtins::object::object_is_frozen as *const (),
-        is_sealed: crate::builtins::object::object_is_sealed as *const (),
-        is_extensible: crate::builtins::object::object_is_extensible as *const (),
-        get_own_property_names: crate::builtins::object::object_get_own_property_names as *const (),
-    };
-    kernel.builtin_world().bind_object_methods(
-        &methods,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-    );
-
-    let si_obj = kernel.string_forge().intern("Object").0;
-    let obj_shape = kernel.shape_forge().make_shape(global.shape_id(), si_obj);
-    let obj_val = JsValue::from_js_object(
-        kernel.builtin_world().object_constructor.as_ptr() as *mut JsObject
-    );
-    global.set_shape_id(obj_shape);
-    global.push_prop(obj_val);
-
-    // Set native constructor on Object
-    {
-        let obj_ctor_ptr = kernel.builtin_world().object_constructor.as_ptr() as *mut JsObject;
-        let obj_ctor = unsafe { &mut *obj_ctor_ptr };
-        obj_ctor.set_native_fn(Some(
-            crate::builtins::object::object_constructor as *const (),
-        ));
-        obj_ctor.set_native_arg_count(1);
-    }
-}
-
-fn bind_array(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
-    let _array_methods = ArrayMethods {
-        push: crate::builtins::array::array_push as *const (),
-        pop: crate::builtins::array::array_pop as *const (),
-        slice: crate::builtins::array::array_slice as *const (),
-        splice: crate::builtins::array::array_splice as *const (),
-        concat: crate::builtins::array::array_concat as *const (),
-        join: crate::builtins::array::array_join as *const (),
-        index_of: crate::builtins::array::array_index_of as *const (),
-        includes: crate::builtins::array::array_includes as *const (),
-        reverse: crate::builtins::array::array_reverse as *const (),
-        for_each: crate::builtins::array::array_for_each as *const (),
-        map: crate::builtins::array::array_map as *const (),
-        filter: crate::builtins::array::array_filter as *const (),
-        reduce: crate::builtins::array::array_reduce as *const (),
-        find: crate::builtins::array::array_find as *const (),
-        some: crate::builtins::array::array_some as *const (),
-        every: crate::builtins::array::array_every as *const (),
-        flat: crate::builtins::array::array_flat as *const (),
-        flat_map: crate::builtins::array::array_flat_map as *const (),
-    };
-
-    kernel.builtin_world().bind_array_methods(
-        &_array_methods,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-    );
-
-    let si_arr = kernel.string_forge().intern("Array").0;
-    let arr_shape = kernel.shape_forge().make_shape(global.shape_id(), si_arr);
-    let arr_val =
-        JsValue::from_js_object(kernel.builtin_world().array_constructor.as_ptr() as *mut JsObject);
-    global.set_shape_id(arr_shape);
-    global.ensure_hash_props().push(Box::new(arr_val));
-    global.bump_generation();
-
-    // Set native constructor on Array
-    {
-        let arr_ctor_ptr = kernel.builtin_world().array_constructor.as_ptr() as *mut JsObject;
-        let arr_ctor = unsafe { &mut *arr_ctor_ptr };
-        arr_ctor.set_native_fn(Some(crate::builtins::array::array_constructor as *const ()));
-        arr_ctor.set_native_arg_count(1);
-    }
-}
-
-fn bind_error(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
-    let error_methods = ErrorMethods {
-        error: crate::builtins::error::error_constructor as *const (),
-        type_error: crate::builtins::error::type_error_constructor as *const (),
-        reference_error: crate::builtins::error::reference_error_constructor as *const (),
-        range_error: crate::builtins::error::range_error_constructor as *const (),
-        syntax_error: crate::builtins::error::syntax_error_constructor as *const (),
-        uri_error: crate::builtins::error::uri_error_constructor as *const (),
-        eval_error: crate::builtins::error::eval_error_constructor as *const (),
-    };
-    kernel.builtin_world().bind_error_methods(
-        &error_methods,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-    );
-
-    let si_err = kernel.string_forge().intern("Error").0;
-    let err_shape = kernel.shape_forge().make_shape(global.shape_id(), si_err);
-    let err_val =
-        JsValue::from_js_object(kernel.builtin_world().error_constructor.as_ptr() as *mut JsObject);
-    global.set_shape_id(err_shape);
-    global.ensure_hash_props().push(Box::new(err_val));
-    global.bump_generation();
-
-    {
-        let err_ctor_ptr = kernel.builtin_world().error_constructor.as_ptr() as *mut JsObject;
-        let err_ctor = unsafe { &mut *err_ctor_ptr };
-        err_ctor.set_native_fn(Some(crate::builtins::error::error_constructor as *const ()));
-    }
-}
-
-fn bind_string(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
-    let string_methods = StringMethods {
-        index_of: crate::builtins::string::string_index_of as *const (),
-        includes: crate::builtins::string::string_includes as *const (),
-        char_at: crate::builtins::string::string_char_at as *const (),
-        char_code_at: crate::builtins::string::string_char_code_at as *const (),
-        concat: crate::builtins::string::string_concat as *const (),
-        slice: crate::builtins::string::string_slice as *const (),
-        substring: crate::builtins::string::string_substring as *const (),
-        to_upper_case: crate::builtins::string::string_to_upper_case as *const (),
-        to_lower_case: crate::builtins::string::string_to_lower_case as *const (),
-        trim: crate::builtins::string::string_trim as *const (),
-        repeat: crate::builtins::string::string_repeat as *const (),
-        pad_start: crate::builtins::string::string_pad_start as *const (),
-        pad_end: crate::builtins::string::string_pad_end as *const (),
-        starts_with: crate::builtins::string::string_starts_with as *const (),
-        ends_with: crate::builtins::string::string_ends_with as *const (),
-        split: crate::builtins::string::string_split as *const (),
-        replace: crate::builtins::string::string_replace as *const (),
-        match_fn: crate::builtins::string::string_match_fn as *const (),
-        search: crate::builtins::string::string_search as *const (),
-    };
-    kernel.builtin_world().bind_string_methods(
-        &string_methods,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-    );
-
-    let si_str = kernel.string_forge().intern("String").0;
-    let str_shape = kernel.shape_forge().make_shape(global.shape_id(), si_str);
-    let str_val = JsValue::from_js_object(
-        kernel.builtin_world().string_constructor.as_ptr() as *mut JsObject
-    );
-    global.set_shape_id(str_shape);
-    global.ensure_hash_props().push(Box::new(str_val));
-    global.bump_generation();
-}
-
-fn bind_number(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
-    let number_methods = NumberMethods {
-        is_nan: crate::builtins::number::number_is_nan as *const (),
-        is_finite: crate::builtins::number::number_is_finite as *const (),
-        parse_int: crate::builtins::number::number_parse_int as *const (),
-        parse_float: crate::builtins::number::number_parse_float as *const (),
-        to_string: crate::builtins::number::number_to_string as *const (),
-        to_fixed: crate::builtins::number::number_to_fixed as *const (),
-    };
-    kernel.builtin_world().bind_number_methods(
-        &number_methods,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-    );
-
-    let si_num = kernel.string_forge().intern("Number").0;
-    let num_shape = kernel.shape_forge().make_shape(global.shape_id(), si_num);
-    let num_val = JsValue::from_js_object(
-        kernel.builtin_world().number_constructor.as_ptr() as *mut JsObject
-    );
-    global.set_shape_id(num_shape);
-    global.ensure_hash_props().push(Box::new(num_val));
-    global.bump_generation();
-
-    {
-        let num_ctor_ptr = kernel.builtin_world().number_constructor.as_ptr() as *mut JsObject;
-        let num_ctor = unsafe { &mut *num_ctor_ptr };
-        num_ctor.set_native_fn(Some(
-            crate::builtins::number::number_constructor as *const (),
-        ));
-        num_ctor.set_native_arg_count(1);
-    }
-
-    let pi_fn = crate::builtins::number::number_parse_int as *const ();
-    let pf_fn = crate::builtins::number::number_parse_float as *const ();
-    bind_method!(
-        kernel.builtin_world(),
-        global,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "parseInt",
-        pi_fn,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        global,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "parseFloat",
-        pf_fn,
-        1
-    );
-}
-
-fn bind_math(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
-    let math_ptr = kernel.builtin_world().math_object.as_ptr() as *mut JsObject;
-    let math = unsafe { &mut *math_ptr };
-
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "abs",
-        crate::builtins::math::math_abs,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "acos",
-        crate::builtins::math::math_acos,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "asin",
-        crate::builtins::math::math_asin,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "atan",
-        crate::builtins::math::math_atan,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "atan2",
-        crate::builtins::math::math_atan2,
-        2
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "cbrt",
-        crate::builtins::math::math_cbrt,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "ceil",
-        crate::builtins::math::math_ceil,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "cos",
-        crate::builtins::math::math_cos,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "cosh",
-        crate::builtins::math::math_cosh,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "exp",
-        crate::builtins::math::math_exp,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "floor",
-        crate::builtins::math::math_floor,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "hypot",
-        crate::builtins::math::math_hypot,
-        2
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "imul",
-        crate::builtins::math::math_imul,
-        2
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "log",
-        crate::builtins::math::math_log,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "log10",
-        crate::builtins::math::math_log10,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "log2",
-        crate::builtins::math::math_log2,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "max",
-        crate::builtins::math::math_max,
-        2
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "min",
-        crate::builtins::math::math_min,
-        2
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "pow",
-        crate::builtins::math::math_pow,
-        2
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "random",
-        crate::builtins::math::math_random,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "round",
-        crate::builtins::math::math_round,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "sign",
-        crate::builtins::math::math_sign,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "sin",
-        crate::builtins::math::math_sin,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "sinh",
-        crate::builtins::math::math_sinh,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "sqrt",
-        crate::builtins::math::math_sqrt,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "tan",
-        crate::builtins::math::math_tan,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "tanh",
-        crate::builtins::math::math_tanh,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "trunc",
-        crate::builtins::math::math_trunc,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "acosh",
-        crate::builtins::math::math_acosh,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "asinh",
-        crate::builtins::math::math_asinh,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "atanh",
-        crate::builtins::math::math_atanh,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "clz32",
-        crate::builtins::math::math_clz32,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "expm1",
-        crate::builtins::math::math_expm1,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "fround",
-        crate::builtins::math::math_fround,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        math,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "log1p",
-        crate::builtins::math::math_log1p,
-        1
-    );
-
-    for (name, val) in [
-        ("PI", std::f64::consts::PI),
-        ("E", std::f64::consts::E),
-        ("LN10", std::f64::consts::LN_10),
-        ("LN2", std::f64::consts::LN_2),
-        ("LOG10E", std::f64::consts::LOG10_E),
-        ("LOG2E", std::f64::consts::LOG2_E),
-        ("SQRT1_2", std::f64::consts::FRAC_1_SQRT_2),
-        ("SQRT2", std::f64::consts::SQRT_2),
-    ] {
-        let si = kernel.string_forge().as_ref().intern(name).0;
-        let sh_c = kernel
-            .shape_forge()
-            .as_ref()
-            .make_shape(math.shape_id(), si);
-        math.set_shape_id(sh_c);
-        math.ensure_hash_props().push(Box::new(JsValue::float(val)));
-    }
-
-    let si_m = kernel.string_forge().intern("Math").0;
-    let m_shape = kernel.shape_forge().make_shape(global.shape_id(), si_m);
-    let m_val =
-        JsValue::from_js_object(kernel.builtin_world().math_object.as_ptr() as *mut JsObject);
-    global.set_shape_id(m_shape);
-    global.ensure_hash_props().push(Box::new(m_val));
-    global.bump_generation();
-}
-
-fn bind_json(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
-    let json_ptr = kernel.builtin_world().json_object.as_ptr() as *mut JsObject;
-    let json = unsafe { &mut *json_ptr };
-
-    bind_method!(
-        kernel.builtin_world(),
-        json,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "parse",
-        crate::builtins::json::json_parse,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        json,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-        "stringify",
-        crate::builtins::json::json_stringify,
-        1
-    );
-
-    let si_j = kernel.string_forge().intern("JSON").0;
-    let j_shape = kernel.shape_forge().make_shape(global.shape_id(), si_j);
-    let j_val =
-        JsValue::from_js_object(kernel.builtin_world().json_object.as_ptr() as *mut JsObject);
-    global.set_shape_id(j_shape);
-    global.ensure_hash_props().push(Box::new(j_val));
-    global.bump_generation();
-}
-
-fn bind_date(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
-    let ctor_ptr = kernel.builtin_world().date_constructor.as_ptr() as *mut JsObject;
-    let ctor = unsafe { &mut *ctor_ptr };
-    let proto_ptr = kernel.builtin_world().date_proto.as_ptr() as *mut JsObject;
-    let proto = unsafe { &mut *proto_ptr };
-    let sf = kernel.string_forge().as_ref();
-    let sh = kernel.shape_forge().as_ref();
-
-    ctor.set_native_fn(Some(crate::builtins::date::date_constructor as *const ()));
-    ctor.set_native_arg_count(7);
-
-    bind_method!(
-        kernel.builtin_world(),
-        ctor,
-        sf,
-        sh,
-        "now",
-        crate::builtins::date::date_now,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        ctor,
-        sf,
-        sh,
-        "parse",
-        crate::builtins::date::date_parse,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        ctor,
-        sf,
-        sh,
-        "UTC",
-        crate::builtins::date::date_utc,
-        7
-    );
-
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "getTime",
-        crate::builtins::date::date_get_time,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "getFullYear",
-        crate::builtins::date::date_get_full_year,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "getMonth",
-        crate::builtins::date::date_get_month,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "getDate",
-        crate::builtins::date::date_get_date,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "getDay",
-        crate::builtins::date::date_get_day,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "getHours",
-        crate::builtins::date::date_get_hours,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "getMinutes",
-        crate::builtins::date::date_get_minutes,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "getSeconds",
-        crate::builtins::date::date_get_seconds,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "getMilliseconds",
-        crate::builtins::date::date_get_milliseconds,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "getUTCFullYear",
-        crate::builtins::date::date_get_utc_full_year,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "getUTCMonth",
-        crate::builtins::date::date_get_utc_month,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "getUTCDate",
-        crate::builtins::date::date_get_utc_date,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "getUTCDay",
-        crate::builtins::date::date_get_utc_day,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "getUTCHours",
-        crate::builtins::date::date_get_utc_hours,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "getUTCMinutes",
-        crate::builtins::date::date_get_utc_minutes,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "getUTCSeconds",
-        crate::builtins::date::date_get_utc_seconds,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "getUTCMilliseconds",
-        crate::builtins::date::date_get_utc_milliseconds,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "getTimezoneOffset",
-        crate::builtins::date::date_get_timezone_offset,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "setTime",
-        crate::builtins::date::date_set_time,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "setFullYear",
-        crate::builtins::date::date_set_full_year,
-        3
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "setMonth",
-        crate::builtins::date::date_set_month,
-        2
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "setDate",
-        crate::builtins::date::date_set_date,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "setHours",
-        crate::builtins::date::date_set_hours,
-        4
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "setMinutes",
-        crate::builtins::date::date_set_minutes,
-        3
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "setSeconds",
-        crate::builtins::date::date_set_seconds,
-        2
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "setMilliseconds",
-        crate::builtins::date::date_set_milliseconds,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "toISOString",
-        crate::builtins::date::date_to_iso_string,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "toJSON",
-        crate::builtins::date::date_to_json,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "toString",
-        crate::builtins::date::date_to_string,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "toDateString",
-        crate::builtins::date::date_to_date_string,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "toTimeString",
-        crate::builtins::date::date_to_time_string,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "toUTCString",
-        crate::builtins::date::date_to_utc_string,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "valueOf",
-        crate::builtins::date::date_value_of,
-        0
-    );
-
-    let si_d = kernel.string_forge().intern("Date").0;
-    let d_shape = kernel.shape_forge().make_shape(global.shape_id(), si_d);
-    let d_val = JsValue::from_js_object(ctor_ptr);
-    global.set_shape_id(d_shape);
-    global.ensure_hash_props().push(Box::new(d_val));
-    global.bump_generation();
-}
-
-fn bind_set(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
-    let ctor_ptr = kernel.builtin_world().set_constructor.as_ptr() as *mut JsObject;
-    let ctor = unsafe { &mut *ctor_ptr };
-    let proto_ptr = kernel.builtin_world().set_proto.as_ptr() as *mut JsObject;
-
-    ctor.set_native_fn(Some(crate::builtins::set::set_constructor as *const ()));
-    ctor.set_native_arg_count(1);
-    let proto = unsafe { &mut *proto_ptr };
-    let sf = kernel.string_forge().as_ref();
-    let sh = kernel.shape_forge().as_ref();
-
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "add",
-        crate::builtins::set::set_add,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "has",
-        crate::builtins::set::set_has,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "delete",
-        crate::builtins::set::set_delete,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "clear",
-        crate::builtins::set::set_clear,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "size",
-        crate::builtins::set::set_size,
-        0
-    );
-
-    let si_s = kernel.string_forge().intern("Set").0;
-    let s_shape = kernel.shape_forge().make_shape(global.shape_id(), si_s);
-    let s_val = JsValue::from_js_object(ctor_ptr);
-    global.set_shape_id(s_shape);
-    global.ensure_hash_props().push(Box::new(s_val));
-    global.bump_generation();
-}
-
-fn bind_map(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
-    let ctor_ptr = kernel.builtin_world().map_constructor.as_ptr() as *mut JsObject;
-    let ctor = unsafe { &mut *ctor_ptr };
-    let proto_ptr = kernel.builtin_world().map_proto.as_ptr() as *mut JsObject;
-
-    ctor.set_native_fn(Some(crate::builtins::map::map_constructor as *const ()));
-    ctor.set_native_arg_count(1);
-    let proto = unsafe { &mut *proto_ptr };
-    let sf = kernel.string_forge().as_ref();
-    let sh = kernel.shape_forge().as_ref();
-
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "set",
-        crate::builtins::map::map_set,
-        2
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "get",
-        crate::builtins::map::map_get,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "has",
-        crate::builtins::map::map_has,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "delete",
-        crate::builtins::map::map_delete,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "clear",
-        crate::builtins::map::map_clear,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "size",
-        crate::builtins::map::map_size,
-        0
-    );
-
-    let si_m = kernel.string_forge().intern("Map").0;
-    let m_shape = kernel.shape_forge().make_shape(global.shape_id(), si_m);
-    let m_val = JsValue::from_js_object(ctor_ptr);
-    global.set_shape_id(m_shape);
-    global.ensure_hash_props().push(Box::new(m_val));
-    global.bump_generation();
-}
-
-fn bind_boolean(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
-    let ctor_ptr = kernel.builtin_world().boolean_constructor.as_ptr() as *mut JsObject;
-    let ctor = unsafe { &mut *ctor_ptr };
-    let proto_ptr = kernel.builtin_world().boolean_proto.as_ptr() as *mut JsObject;
-    let proto = unsafe { &mut *proto_ptr };
-    let sf = kernel.string_forge().as_ref();
-    let sh = kernel.shape_forge().as_ref();
-
-    ctor.set_native_fn(Some(
-        crate::builtins::boolean::boolean_constructor as *const (),
-    ));
-    ctor.set_native_arg_count(1);
-
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "valueOf",
-        crate::builtins::boolean::boolean_prototype_value_of,
-        0
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "toString",
-        crate::builtins::boolean::boolean_prototype_to_string,
-        0
-    );
-
-    let si_b = kernel.string_forge().intern("Boolean").0;
-    let b_shape = kernel.shape_forge().make_shape(global.shape_id(), si_b);
-    let b_val = JsValue::from_js_object(ctor_ptr);
-    global.set_shape_id(b_shape);
-    global.ensure_hash_props().push(Box::new(b_val));
-    global.bump_generation();
-}
-
-fn bind_function(kernel: &Arc<OxideKernel>) {
-    let function_methods = FunctionMethods {
-        call: crate::builtins::function::function_call as *const (),
-        apply: crate::builtins::function::function_apply as *const (),
-        bind: crate::builtins::function::function_bind as *const (),
-    };
-    kernel.builtin_world().bind_function_methods(
-        &function_methods,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
-    );
-}
-
-pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
-    let global_ptr = kernel.global_object().as_ptr() as *mut JsObject;
-    let global = unsafe { &mut *global_ptr };
-
-    bind_object(kernel, global);
-    bind_array(kernel, global);
-    bind_error(kernel, global);
-    bind_string(kernel, global);
-    bind_number(kernel, global);
-    bind_math(kernel, global);
-    bind_json(kernel, global);
-    bind_date(kernel, global);
-    bind_set(kernel, global);
-    bind_map(kernel, global);
-    bind_boolean(kernel, global);
-    bind_function(kernel);
+    pub(crate) sub_modules: Vec<CompiledModule>,
+    pub(crate) sub_module_constants: Vec<Vec<JsValue>>,
+    pub(crate) saved_bytecode_stack: Vec<Vec<opcode::Instr>>,
+    pub(crate) saved_constants_stack: Vec<Vec<JsValue>>,
+    pub(crate) try_stack: Vec<TryHandler>,
+    pub(crate) exception_value: Option<JsValue>,
+    pub(crate) pending_exception: Option<JsValue>,
+    pub(crate) pending_error_kind: Option<&'static str>,
 }
 
 impl Vm {
     pub fn new() -> Self {
         let kernel = Arc::new(OxideKernel::new(KernelConfig::minimal()));
-        init_kernel_builtins(&kernel);
+        bindings::init_kernel_builtins(&kernel);
         let obj_proto = P::clone(&kernel.builtin_world().object_proto);
         Self {
             regs: [JsValue::undefined(); 256],
@@ -1563,7 +473,7 @@ impl Vm {
         Err("bytecode function calls not yet supported".into())
     }
 
-    fn unwind(&mut self) -> Result<(), String> {
+    pub(crate) fn unwind(&mut self) -> Result<(), String> {
         while let Some(handler) = self.try_stack.pop() {
             if let Some(finally_pc) = handler.finally_pc {
                 if self.pending_exception.is_none() {
@@ -1635,27 +545,19 @@ impl Vm {
                 }
 
                 OpCode::SUB => {
-                    let l = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
-                    let r = coercion::to_number(self.regs[b], self.kernel.string_forge().as_ref());
-                    self.regs[rd] = JsValue::float(l - r);
+                    binary_arith!(self, a, b, rd, -);
                 }
 
                 OpCode::MUL => {
-                    let l = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
-                    let r = coercion::to_number(self.regs[b], self.kernel.string_forge().as_ref());
-                    self.regs[rd] = JsValue::float(l * r);
+                    binary_arith!(self, a, b, rd, *);
                 }
 
                 OpCode::DIV => {
-                    let l = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
-                    let r = coercion::to_number(self.regs[b], self.kernel.string_forge().as_ref());
-                    self.regs[rd] = JsValue::float(l / r);
+                    binary_arith!(self, a, b, rd, /);
                 }
 
                 OpCode::MOD => {
-                    let l = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
-                    let r = coercion::to_number(self.regs[b], self.kernel.string_forge().as_ref());
-                    self.regs[rd] = JsValue::float(l % r);
+                    binary_arith!(self, a, b, rd, %);
                 }
 
                 OpCode::NEG => {
@@ -1775,45 +677,21 @@ impl Vm {
                         if !obj_ptr.is_null() {
                             let obj = unsafe { &*obj_ptr };
                             if obj.is_function() {
-                                // Always consume extension word for arg_count
                                 let ext = self.bytecode[self.pc];
                                 self.pc += 1;
                                 let arg_count = (ext & 0xFF) as usize;
 
                                 if obj.native_fn().is_some() {
-                                    // Native call
-                                    let mut args_buf = [0u8; 257];
-                                    args_buf[0] = this_reg;
-                                    for i in 0..arg_count.min(256) {
-                                        args_buf[i + 1] = first_arg_reg.wrapping_add(i as u8);
+                                    match self.dispatch_native_call(
+                                        obj,
+                                        callee,
+                                        this_reg,
+                                        first_arg_reg,
+                                        arg_count,
+                                    ) {
+                                        Ok(()) => continue,
+                                        Err(e) => return Err(e),
                                     }
-                                    let args_slice = &args_buf[..arg_count + 1];
-
-                                    let func: NativeFn =
-                                        unsafe { std::mem::transmute(obj.native_fn().unwrap()) };
-                                    self.regs[254] = callee;
-                                    match func(self, args_slice) {
-                                        Ok(val) => self.regs[0] = val,
-                                        Err(err_val) => {
-                                            let msg = if err_val.is_string() {
-                                                self.kernel()
-                                                    .string_forge()
-                                                    .lookup(err_val.as_string_index())
-                                                    .unwrap_or_else(|| format!("{err_val}"))
-                                            } else {
-                                                format!("{err_val}")
-                                            };
-                                            let error =
-                                                crate::builtins::error::create_error(self, &msg);
-                                            self.exception_value = Some(error);
-                                            self.pending_error_kind = Some("Error");
-                                            match self.unwind() {
-                                                Ok(()) => continue,
-                                                Err(e) => return Err(e),
-                                            }
-                                        }
-                                    }
-                                    continue;
                                 } else if obj.sub_module_index() > 0 {
                                     // 1-indexed sub_module_index (0 = not a bytecode function)
                                     let sub_idx = obj.sub_module_index() as usize - 1;
@@ -1930,35 +808,7 @@ impl Vm {
                     self.pc += 1;
                     let arg_count = (ext & 0xFF) as usize;
 
-                    let mut args_buf = [0u8; 257];
-                    args_buf[0] = this_reg;
-                    for i in 0..arg_count.min(256) {
-                        args_buf[i + 1] = first_arg_reg.wrapping_add(i as u8);
-                    }
-                    let args_slice = &args_buf[..arg_count + 1];
-
-                    let func: NativeFn = unsafe { std::mem::transmute(obj.native_fn().unwrap()) };
-                    self.regs[254] = callee;
-                    match func(self, args_slice) {
-                        Ok(val) => self.regs[0] = val,
-                        Err(err_val) => {
-                            let msg = if err_val.is_string() {
-                                self.kernel()
-                                    .string_forge()
-                                    .lookup(err_val.as_string_index())
-                                    .unwrap_or_else(|| format!("{err_val}"))
-                            } else {
-                                format!("{err_val}")
-                            };
-                            let error = crate::builtins::error::create_error(self, &msg);
-                            self.exception_value = Some(error);
-                            self.pending_error_kind = Some("Error");
-                            match self.unwind() {
-                                Ok(()) => continue,
-                                Err(e) => return Err(e),
-                            }
-                        }
-                    }
+                    self.dispatch_native_call(obj, callee, this_reg, first_arg_reg, arg_count)?;
                 }
 
                 OpCode::NEW_EXPRESSION => {
@@ -2323,27 +1173,19 @@ impl Vm {
                 }
 
                 OpCode::COMPOUND_SUB => {
-                    let l = coercion::to_number(self.regs[rd], self.kernel.string_forge().as_ref());
-                    let r = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
-                    self.regs[rd] = JsValue::float(l - r);
+                    compound_arith!(self, rd, a, -);
                 }
 
                 OpCode::COMPOUND_MUL => {
-                    let l = coercion::to_number(self.regs[rd], self.kernel.string_forge().as_ref());
-                    let r = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
-                    self.regs[rd] = JsValue::float(l * r);
+                    compound_arith!(self, rd, a, *);
                 }
 
                 OpCode::COMPOUND_DIV => {
-                    let l = coercion::to_number(self.regs[rd], self.kernel.string_forge().as_ref());
-                    let r = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
-                    self.regs[rd] = JsValue::float(l / r);
+                    compound_arith!(self, rd, a, /);
                 }
 
                 OpCode::COMPOUND_MOD => {
-                    let l = coercion::to_number(self.regs[rd], self.kernel.string_forge().as_ref());
-                    let r = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
-                    self.regs[rd] = JsValue::float(l % r);
+                    compound_arith!(self, rd, a, %);
                 }
 
                 OpCode::COMPOUND_EXP => {
@@ -2448,55 +1290,12 @@ impl Vm {
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
-                    let ext0 = self.bytecode[self.pc];
-                    let ext1 = self.bytecode[self.pc + 1];
-                    let ext2 = self.bytecode[self.pc + 2];
-                    self.pc += 3;
-                    let cached_shape_id = ext0 & 0x00FF_FFFF;
-                    let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
-
-                    let prop_val = if cached_shape_id != 0
-                        && cached_shape_id == obj.shape_id()
-                        && cached_ptr != 0
-                    {
-                        unsafe { *(cached_ptr as *const JsValue) }
-                    } else if let Some(template) =
-                        self.kernel.prop_forge().get_template(obj.shape_id())
-                    {
-                        if let Some(ptr) = self.template_prop_ptr(obj, &template) {
-                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
-                            self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
-                            unsafe { *ptr }
-                        } else {
-                            self.resolve_property(obj, prop_name_si)
-                                .unwrap_or(JsValue::undefined())
-                        }
-                    } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
-                        let pos = self
-                            .kernel
-                            .shape_forge()
-                            .lookup_position(obj.shape_id(), prop_name_si)
-                            .unwrap_or(0);
-                        if let Some(ptr) = obj.prop_ptr_at(pos) {
-                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
-                            self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
-                        }
-                        val
-                    } else {
-                        JsValue::undefined()
-                    };
+                    let prop_val = member_read_prop!(self, obj, prop_name_si);
 
                     let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
                     let new_val = JsValue::float(n + 1.0);
 
-                    if cached_shape_id != 0 && cached_shape_id == obj.shape_id() && cached_ptr != 0
-                    {
-                        unsafe {
-                            *(cached_ptr as *mut JsValue) = new_val;
-                        }
-                    } else if let Some(pos) = self
+                    if let Some(pos) = self
                         .kernel
                         .shape_forge()
                         .lookup_position(obj.shape_id(), prop_name_si)
@@ -2541,55 +1340,12 @@ impl Vm {
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
-                    let ext0 = self.bytecode[self.pc];
-                    let ext1 = self.bytecode[self.pc + 1];
-                    let ext2 = self.bytecode[self.pc + 2];
-                    self.pc += 3;
-                    let cached_shape_id = ext0 & 0x00FF_FFFF;
-                    let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
-
-                    let prop_val = if cached_shape_id != 0
-                        && cached_shape_id == obj.shape_id()
-                        && cached_ptr != 0
-                    {
-                        unsafe { *(cached_ptr as *const JsValue) }
-                    } else if let Some(template) =
-                        self.kernel.prop_forge().get_template(obj.shape_id())
-                    {
-                        if let Some(ptr) = self.template_prop_ptr(obj, &template) {
-                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
-                            self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
-                            unsafe { *ptr }
-                        } else {
-                            self.resolve_property(obj, prop_name_si)
-                                .unwrap_or(JsValue::undefined())
-                        }
-                    } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
-                        let pos = self
-                            .kernel
-                            .shape_forge()
-                            .lookup_position(obj.shape_id(), prop_name_si)
-                            .unwrap_or(0);
-                        if let Some(ptr) = obj.prop_ptr_at(pos) {
-                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
-                            self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
-                        }
-                        val
-                    } else {
-                        JsValue::undefined()
-                    };
+                    let prop_val = member_read_prop!(self, obj, prop_name_si);
 
                     let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
                     let new_val = JsValue::float(n - 1.0);
 
-                    if cached_shape_id != 0 && cached_shape_id == obj.shape_id() && cached_ptr != 0
-                    {
-                        unsafe {
-                            *(cached_ptr as *mut JsValue) = new_val;
-                        }
-                    } else if let Some(pos) = self
+                    if let Some(pos) = self
                         .kernel
                         .shape_forge()
                         .lookup_position(obj.shape_id(), prop_name_si)
@@ -2643,22 +1399,7 @@ impl Vm {
                         .unwrap_or(JsValue::undefined());
                     let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
                     let new_val = JsValue::float(n + 1.0);
-
-                    if let Some(pos) = self
-                        .kernel
-                        .shape_forge()
-                        .lookup_position(obj.shape_id(), prop_name_si)
-                    {
-                        obj.set_prop_at(pos, new_val);
-                    } else {
-                        let new_shape_id = self
-                            .kernel
-                            .shape_forge()
-                            .make_shape(obj.shape_id(), prop_name_si);
-                        obj.set_shape_id(new_shape_id);
-                        obj.push_prop(new_val);
-                        obj.bump_generation();
-                    };
+                    set_or_create_prop!(self, obj, prop_name_si, new_val);
                     self.regs[b] = new_val;
                 }
 
@@ -2678,22 +1419,7 @@ impl Vm {
                         .unwrap_or(JsValue::undefined());
                     let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
                     let new_val = JsValue::float(n - 1.0);
-
-                    if let Some(pos) = self
-                        .kernel
-                        .shape_forge()
-                        .lookup_position(obj.shape_id(), prop_name_si)
-                    {
-                        obj.set_prop_at(pos, new_val);
-                    } else {
-                        let new_shape_id = self
-                            .kernel
-                            .shape_forge()
-                            .make_shape(obj.shape_id(), prop_name_si);
-                        obj.set_shape_id(new_shape_id);
-                        obj.push_prop(new_val);
-                        obj.bump_generation();
-                    };
+                    set_or_create_prop!(self, obj, prop_name_si, new_val);
                     self.regs[b] = new_val;
                 }
 
