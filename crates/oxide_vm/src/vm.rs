@@ -1260,7 +1260,22 @@ impl Vm {
                                     match func(self, args_slice) {
                                         Ok(val) => self.regs[0] = val,
                                         Err(err_val) => {
-                                            return Err(format!("Native error: {:?}", err_val));
+                                            let msg = if err_val.is_string() {
+                                                self.kernel()
+                                                    .string_forge()
+                                                    .lookup(err_val.as_string_index())
+                                                    .unwrap_or_else(|| format!("{err_val}"))
+                                            } else {
+                                                format!("{err_val}")
+                                            };
+                                            let error =
+                                                crate::builtins::error::create_error(self, &msg);
+                                            self.exception_value = Some(error);
+                                            self.pending_error_kind = Some("Error");
+                                            match self.unwind() {
+                                                Ok(()) => continue,
+                                                Err(e) => return Err(e),
+                                            }
                                         }
                                     }
                                     continue;
@@ -1392,7 +1407,21 @@ impl Vm {
                     match func(self, args_slice) {
                         Ok(val) => self.regs[0] = val,
                         Err(err_val) => {
-                            return Err(format!("Native error: {:?}", err_val));
+                            let msg = if err_val.is_string() {
+                                self.kernel()
+                                    .string_forge()
+                                    .lookup(err_val.as_string_index())
+                                    .unwrap_or_else(|| format!("{err_val}"))
+                            } else {
+                                format!("{err_val}")
+                            };
+                            let error = crate::builtins::error::create_error(self, &msg);
+                            self.exception_value = Some(error);
+                            self.pending_error_kind = Some("Error");
+                            match self.unwind() {
+                                Ok(()) => continue,
+                                Err(e) => return Err(e),
+                            }
                         }
                     }
                 }
