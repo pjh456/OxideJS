@@ -521,27 +521,11 @@ impl Vm {
                 OpCode::HALT => return Ok(self.regs[0]),
 
                 OpCode::LOAD_CONST => {
-                    let idx = opcode::imm16(instr) as usize;
-                    if idx < self.constants.len() {
-                        self.regs[rd] = self.constants[idx];
-                    } else {
-                        return Err(format!("constant index {idx} out of bounds"));
-                    }
+                    self.dispatch_load_const(rd, instr)?;
                 }
 
                 OpCode::ADD => {
-                    let lhs = self.regs[a];
-                    let rhs = self.regs[b];
-                    if lhs.is_string() || rhs.is_string() {
-                        let ls = coercion::to_string(self.kernel.string_forge().as_ref(), lhs);
-                        let rs = coercion::to_string(self.kernel.string_forge().as_ref(), rhs);
-                        let concat = format!("{ls}{rs}");
-                        self.regs[rd] = self.intern(&concat);
-                    } else {
-                        let ln = coercion::to_number(lhs, self.kernel.string_forge().as_ref());
-                        let rn = coercion::to_number(rhs, self.kernel.string_forge().as_ref());
-                        self.regs[rd] = JsValue::float(ln + rn);
-                    }
+                    self.dispatch_add(rd, a, b);
                 }
 
                 OpCode::SUB => {
@@ -566,67 +550,35 @@ impl Vm {
                 }
 
                 OpCode::EQ => {
-                    let eq = coercion::abstract_eq(
-                        self.regs[a],
-                        self.regs[b],
-                        self.kernel.string_forge().as_ref(),
-                    );
-                    self.regs[rd] = JsValue::bool(eq);
+                    self.dispatch_eq(rd, a, b);
                 }
 
                 OpCode::NEQ => {
-                    let ne = !coercion::abstract_eq(
-                        self.regs[a],
-                        self.regs[b],
-                        self.kernel.string_forge().as_ref(),
-                    );
-                    self.regs[rd] = JsValue::bool(ne);
+                    self.dispatch_neq(rd, a, b);
                 }
 
                 OpCode::LT => {
-                    let rel = coercion::relational_compare(
-                        self.kernel.string_forge().as_ref(),
-                        self.regs[a],
-                        self.regs[b],
-                    );
-                    self.regs[rd] = JsValue::bool(rel.unwrap_or(false));
+                    self.dispatch_lt(rd, a, b);
                 }
 
                 OpCode::GT => {
-                    let rel = coercion::relational_compare(
-                        self.kernel.string_forge().as_ref(),
-                        self.regs[b],
-                        self.regs[a],
-                    );
-                    self.regs[rd] = JsValue::bool(rel.unwrap_or(false));
+                    self.dispatch_gt(rd, a, b);
                 }
 
                 OpCode::LTE => {
-                    let rel = coercion::relational_compare(
-                        self.kernel.string_forge().as_ref(),
-                        self.regs[b],
-                        self.regs[a],
-                    );
-                    self.regs[rd] = JsValue::bool(!rel.unwrap_or(true));
+                    self.dispatch_lte(rd, a, b);
                 }
 
                 OpCode::GTE => {
-                    let rel = coercion::relational_compare(
-                        self.kernel.string_forge().as_ref(),
-                        self.regs[a],
-                        self.regs[b],
-                    );
-                    self.regs[rd] = JsValue::bool(!rel.unwrap_or(true));
+                    self.dispatch_gte(rd, a, b);
                 }
 
                 OpCode::STRICT_EQ => {
-                    let eq = coercion::strict_equality(self.regs[a], self.regs[b]);
-                    self.regs[rd] = JsValue::bool(eq);
+                    self.dispatch_strict_eq(rd, a, b);
                 }
 
                 OpCode::STRICT_NEQ => {
-                    let ne = !coercion::strict_equality(self.regs[a], self.regs[b]);
-                    self.regs[rd] = JsValue::bool(ne);
+                    self.dispatch_strict_neq(rd, a, b);
                 }
 
                 OpCode::UNARY_PLUS => {
@@ -1195,28 +1147,7 @@ impl Vm {
                 }
 
                 OpCode::TYPEOF => {
-                    let val = self.regs[a];
-                    let result = if val.is_undefined() {
-                        "undefined"
-                    } else if val.is_null() {
-                        "object"
-                    } else if val.is_bool() {
-                        "boolean"
-                    } else if val.is_int() || val.is_double() {
-                        "number"
-                    } else if val.is_string() {
-                        "string"
-                    } else if val.is_object() {
-                        let obj = unsafe { &*val.as_js_object_ptr() };
-                        if obj.is_function() {
-                            "function"
-                        } else {
-                            "object"
-                        }
-                    } else {
-                        "undefined"
-                    };
-                    self.regs[rd] = self.intern(result);
+                    self.dispatch_typeof(rd, a);
                 }
 
                 OpCode::VOID => {
@@ -1240,21 +1171,15 @@ impl Vm {
                 }
 
                 OpCode::NOT => {
-                    let cond =
-                        coercion::to_boolean(self.regs[a], self.kernel.string_forge().as_ref());
-                    self.regs[rd] = JsValue::bool(!cond);
+                    self.dispatch_not(rd, a);
                 }
 
                 OpCode::AND => {
-                    let cond =
-                        coercion::to_boolean(self.regs[a], self.kernel.string_forge().as_ref());
-                    self.regs[rd] = if cond { self.regs[b] } else { self.regs[a] };
+                    self.dispatch_and(rd, a, b);
                 }
 
                 OpCode::OR => {
-                    let cond =
-                        coercion::to_boolean(self.regs[a], self.kernel.string_forge().as_ref());
-                    self.regs[rd] = if cond { self.regs[a] } else { self.regs[b] };
+                    self.dispatch_or(rd, a, b);
                 }
 
                 OpCode::INC_PRE => {
@@ -1430,45 +1355,7 @@ impl Vm {
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
-                    let ext0 = self.bytecode[self.pc];
-                    let ext1 = self.bytecode[self.pc + 1];
-                    let ext2 = self.bytecode[self.pc + 2];
-                    self.pc += 3;
-                    let cached_shape_id = ext0 & 0x00FF_FFFF;
-                    let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
-
-                    let prop_val = if cached_shape_id != 0
-                        && cached_shape_id == obj.shape_id()
-                        && cached_ptr != 0
-                    {
-                        unsafe { *(cached_ptr as *const JsValue) }
-                    } else if let Some(template) =
-                        self.kernel.prop_forge().get_template(obj.shape_id())
-                    {
-                        if let Some(ptr) = self.template_prop_ptr(obj, &template) {
-                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
-                            self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
-                            unsafe { *ptr }
-                        } else {
-                            self.resolve_property(obj, prop_name_si)
-                                .unwrap_or(JsValue::undefined())
-                        }
-                    } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
-                        let pos = self
-                            .kernel
-                            .shape_forge()
-                            .lookup_position(obj.shape_id(), prop_name_si)
-                            .unwrap_or(0);
-                        if let Some(ptr) = obj.prop_ptr_at(pos) {
-                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
-                            self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
-                        }
-                        val
-                    } else {
-                        JsValue::undefined()
-                    };
+                    let prop_val = member_read_prop!(self, obj, prop_name_si);
 
                     let rhs = self.regs[a];
                     let new_val = if prop_val.is_string() || rhs.is_string() {
@@ -1493,45 +1380,7 @@ impl Vm {
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
-                    let ext0 = self.bytecode[self.pc];
-                    let ext1 = self.bytecode[self.pc + 1];
-                    let ext2 = self.bytecode[self.pc + 2];
-                    self.pc += 3;
-                    let cached_shape_id = ext0 & 0x00FF_FFFF;
-                    let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
-
-                    let prop_val = if cached_shape_id != 0
-                        && cached_shape_id == obj.shape_id()
-                        && cached_ptr != 0
-                    {
-                        unsafe { *(cached_ptr as *const JsValue) }
-                    } else if let Some(template) =
-                        self.kernel.prop_forge().get_template(obj.shape_id())
-                    {
-                        if let Some(ptr) = self.template_prop_ptr(obj, &template) {
-                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
-                            self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
-                            unsafe { *ptr }
-                        } else {
-                            self.resolve_property(obj, prop_name_si)
-                                .unwrap_or(JsValue::undefined())
-                        }
-                    } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
-                        let pos = self
-                            .kernel
-                            .shape_forge()
-                            .lookup_position(obj.shape_id(), prop_name_si)
-                            .unwrap_or(0);
-                        if let Some(ptr) = obj.prop_ptr_at(pos) {
-                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
-                            self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
-                        }
-                        val
-                    } else {
-                        JsValue::undefined()
-                    };
+                    let prop_val = member_read_prop!(self, obj, prop_name_si);
 
                     let ln = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
                     let rn = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
@@ -1547,45 +1396,7 @@ impl Vm {
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
-                    let ext0 = self.bytecode[self.pc];
-                    let ext1 = self.bytecode[self.pc + 1];
-                    let ext2 = self.bytecode[self.pc + 2];
-                    self.pc += 3;
-                    let cached_shape_id = ext0 & 0x00FF_FFFF;
-                    let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
-
-                    let prop_val = if cached_shape_id != 0
-                        && cached_shape_id == obj.shape_id()
-                        && cached_ptr != 0
-                    {
-                        unsafe { *(cached_ptr as *const JsValue) }
-                    } else if let Some(template) =
-                        self.kernel.prop_forge().get_template(obj.shape_id())
-                    {
-                        if let Some(ptr) = self.template_prop_ptr(obj, &template) {
-                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
-                            self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
-                            unsafe { *ptr }
-                        } else {
-                            self.resolve_property(obj, prop_name_si)
-                                .unwrap_or(JsValue::undefined())
-                        }
-                    } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
-                        let pos = self
-                            .kernel
-                            .shape_forge()
-                            .lookup_position(obj.shape_id(), prop_name_si)
-                            .unwrap_or(0);
-                        if let Some(ptr) = obj.prop_ptr_at(pos) {
-                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
-                            self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
-                        }
-                        val
-                    } else {
-                        JsValue::undefined()
-                    };
+                    let prop_val = member_read_prop!(self, obj, prop_name_si);
 
                     let ln = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
                     let rn = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
@@ -1601,45 +1412,7 @@ impl Vm {
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
-                    let ext0 = self.bytecode[self.pc];
-                    let ext1 = self.bytecode[self.pc + 1];
-                    let ext2 = self.bytecode[self.pc + 2];
-                    self.pc += 3;
-                    let cached_shape_id = ext0 & 0x00FF_FFFF;
-                    let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
-
-                    let prop_val = if cached_shape_id != 0
-                        && cached_shape_id == obj.shape_id()
-                        && cached_ptr != 0
-                    {
-                        unsafe { *(cached_ptr as *const JsValue) }
-                    } else if let Some(template) =
-                        self.kernel.prop_forge().get_template(obj.shape_id())
-                    {
-                        if let Some(ptr) = self.template_prop_ptr(obj, &template) {
-                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
-                            self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
-                            unsafe { *ptr }
-                        } else {
-                            self.resolve_property(obj, prop_name_si)
-                                .unwrap_or(JsValue::undefined())
-                        }
-                    } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
-                        let pos = self
-                            .kernel
-                            .shape_forge()
-                            .lookup_position(obj.shape_id(), prop_name_si)
-                            .unwrap_or(0);
-                        if let Some(ptr) = obj.prop_ptr_at(pos) {
-                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
-                            self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
-                        }
-                        val
-                    } else {
-                        JsValue::undefined()
-                    };
+                    let prop_val = member_read_prop!(self, obj, prop_name_si);
 
                     let ln = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
                     let rn = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
@@ -1655,45 +1428,7 @@ impl Vm {
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
-                    let ext0 = self.bytecode[self.pc];
-                    let ext1 = self.bytecode[self.pc + 1];
-                    let ext2 = self.bytecode[self.pc + 2];
-                    self.pc += 3;
-                    let cached_shape_id = ext0 & 0x00FF_FFFF;
-                    let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
-
-                    let prop_val = if cached_shape_id != 0
-                        && cached_shape_id == obj.shape_id()
-                        && cached_ptr != 0
-                    {
-                        unsafe { *(cached_ptr as *const JsValue) }
-                    } else if let Some(template) =
-                        self.kernel.prop_forge().get_template(obj.shape_id())
-                    {
-                        if let Some(ptr) = self.template_prop_ptr(obj, &template) {
-                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
-                            self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
-                            unsafe { *ptr }
-                        } else {
-                            self.resolve_property(obj, prop_name_si)
-                                .unwrap_or(JsValue::undefined())
-                        }
-                    } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
-                        let pos = self
-                            .kernel
-                            .shape_forge()
-                            .lookup_position(obj.shape_id(), prop_name_si)
-                            .unwrap_or(0);
-                        if let Some(ptr) = obj.prop_ptr_at(pos) {
-                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
-                            self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
-                        }
-                        val
-                    } else {
-                        JsValue::undefined()
-                    };
+                    let prop_val = member_read_prop!(self, obj, prop_name_si);
 
                     let ln = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
                     let rn = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
@@ -1709,45 +1444,7 @@ impl Vm {
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
-                    let ext0 = self.bytecode[self.pc];
-                    let ext1 = self.bytecode[self.pc + 1];
-                    let ext2 = self.bytecode[self.pc + 2];
-                    self.pc += 3;
-                    let cached_shape_id = ext0 & 0x00FF_FFFF;
-                    let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
-
-                    let prop_val = if cached_shape_id != 0
-                        && cached_shape_id == obj.shape_id()
-                        && cached_ptr != 0
-                    {
-                        unsafe { *(cached_ptr as *const JsValue) }
-                    } else if let Some(template) =
-                        self.kernel.prop_forge().get_template(obj.shape_id())
-                    {
-                        if let Some(ptr) = self.template_prop_ptr(obj, &template) {
-                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
-                            self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
-                            unsafe { *ptr }
-                        } else {
-                            self.resolve_property(obj, prop_name_si)
-                                .unwrap_or(JsValue::undefined())
-                        }
-                    } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
-                        let pos = self
-                            .kernel
-                            .shape_forge()
-                            .lookup_position(obj.shape_id(), prop_name_si)
-                            .unwrap_or(0);
-                        if let Some(ptr) = obj.prop_ptr_at(pos) {
-                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
-                            self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
-                        }
-                        val
-                    } else {
-                        JsValue::undefined()
-                    };
+                    let prop_val = member_read_prop!(self, obj, prop_name_si);
 
                     let ln = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
                     let rn = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
