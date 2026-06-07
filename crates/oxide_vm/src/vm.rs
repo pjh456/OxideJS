@@ -8,7 +8,7 @@ use oxide_compiler::opcode::{self, OpCode};
 
 use crate::coercion;
 use crate::native::NativeFn;
-use oxide_kernel::builtin::ObjectMethods;
+use oxide_kernel::builtin::{ArrayMethods, ObjectMethods};
 use oxide_kernel::kernel::{KernelConfig, OxideKernel};
 use oxide_kernel::prop_forge::PropTemplate;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
@@ -67,6 +67,44 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     global.set_prop_count(cur_count + 1);
     let bump = bumpalo::Bump::new();
     global.set_prop_expand(cur_count, obj_val, &bump);
+
+    let _array_methods = ArrayMethods {
+        push: crate::builtins::array::array_push as *const (),
+        pop: crate::builtins::array::array_pop as *const (),
+        slice: crate::builtins::array::array_slice as *const (),
+        splice: crate::builtins::array::array_splice as *const (),
+        concat: crate::builtins::array::array_concat as *const (),
+        join: crate::builtins::array::array_join as *const (),
+        index_of: crate::builtins::array::array_index_of as *const (),
+        includes: crate::builtins::array::array_includes as *const (),
+        reverse: crate::builtins::array::array_reverse as *const (),
+        for_each: crate::builtins::array::array_for_each as *const (),
+        map: crate::builtins::array::array_map as *const (),
+        filter: crate::builtins::array::array_filter as *const (),
+        reduce: crate::builtins::array::array_reduce as *const (),
+        find: crate::builtins::array::array_find as *const (),
+        some: crate::builtins::array::array_some as *const (),
+        every: crate::builtins::array::array_every as *const (),
+        flat: crate::builtins::array::array_flat as *const (),
+        flat_map: crate::builtins::array::array_flat_map as *const (),
+    };
+
+    kernel.builtin_world().bind_array_methods(
+        &_array_methods,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
+    );
+
+    let si_arr = kernel.string_forge().intern("Array").0;
+    let arr_shape = kernel.shape_forge().make_shape(global.shape_id(), si_arr);
+    let arr_val =
+        JsValue::from_js_object(kernel.builtin_world().array_constructor.as_ptr() as *mut JsObject);
+    let cur_count = global.prop_count();
+    global.set_shape_id(arr_shape);
+    global.set_prop_count(cur_count + 1);
+    let bump2 = bumpalo::Bump::new();
+    global.set_prop_expand(cur_count, arr_val, &bump2);
+    global.bump_generation();
 }
 
 impl Vm {
@@ -663,7 +701,8 @@ impl Vm {
                 }
 
                 OpCode::NEW_ARRAY => {
-                    let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
+                    let proto_ptr =
+                        self.kernel.builtin_world().array_proto.as_ptr() as *mut JsObject;
                     let n = opcode::imm16(instr) as usize;
                     let bump = self.epoch.bump();
                     let obj = self.epoch.alloc(JsObject::new_array(

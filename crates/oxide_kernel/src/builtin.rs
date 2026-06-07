@@ -13,6 +13,27 @@ pub struct ObjectMethods {
     pub get_own_property_descriptor: *const (),
 }
 
+pub struct ArrayMethods {
+    pub push: *const (),
+    pub pop: *const (),
+    pub slice: *const (),
+    pub splice: *const (),
+    pub concat: *const (),
+    pub join: *const (),
+    pub index_of: *const (),
+    pub includes: *const (),
+    pub reverse: *const (),
+    pub for_each: *const (),
+    pub map: *const (),
+    pub filter: *const (),
+    pub reduce: *const (),
+    pub find: *const (),
+    pub some: *const (),
+    pub every: *const (),
+    pub flat: *const (),
+    pub flat_map: *const (),
+}
+
 pub struct BuiltinWorld {
     pub object_proto: P<JsObject>,
     pub array_proto: P<JsObject>,
@@ -187,6 +208,98 @@ impl BuiltinWorld {
             "getOwnPropertyDescriptor",
             methods.get_own_property_descriptor,
             2,
+        );
+    }
+
+    pub fn bind_array_methods(
+        &self,
+        methods: &ArrayMethods,
+        string_forge: &StringForge,
+        shape_forge: &ShapeForge,
+    ) {
+        let proto_ptr = P::as_ptr(&self.array_proto) as *mut JsObject;
+        let proto = unsafe { &mut *proto_ptr };
+
+        let _ = Self::bind_method(proto, shape_forge, string_forge, "push", methods.push, 1);
+        let _ = Self::bind_method(proto, shape_forge, string_forge, "pop", methods.pop, 0);
+        let _ = Self::bind_method(proto, shape_forge, string_forge, "slice", methods.slice, 2);
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "splice",
+            methods.splice,
+            2,
+        );
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "concat",
+            methods.concat,
+            1,
+        );
+        let _ = Self::bind_method(proto, shape_forge, string_forge, "join", methods.join, 1);
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "indexOf",
+            methods.index_of,
+            1,
+        );
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "includes",
+            methods.includes,
+            1,
+        );
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "reverse",
+            methods.reverse,
+            0,
+        );
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "forEach",
+            methods.for_each,
+            1,
+        );
+        let _ = Self::bind_method(proto, shape_forge, string_forge, "map", methods.map, 1);
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "filter",
+            methods.filter,
+            1,
+        );
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "reduce",
+            methods.reduce,
+            1,
+        );
+        let _ = Self::bind_method(proto, shape_forge, string_forge, "find", methods.find, 1);
+        let _ = Self::bind_method(proto, shape_forge, string_forge, "some", methods.some, 1);
+        let _ = Self::bind_method(proto, shape_forge, string_forge, "every", methods.every, 1);
+        let _ = Self::bind_method(proto, shape_forge, string_forge, "flat", methods.flat, 0);
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "flatMap",
+            methods.flat_map,
+            1,
         );
     }
 
