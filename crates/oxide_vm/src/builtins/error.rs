@@ -47,6 +47,11 @@ pub fn create_type_error(vm: &mut Vm, msg: &str) -> JsValue {
     create_error_object(vm, proto_ptr, "TypeError", msg)
 }
 
+pub fn create_error(vm: &mut Vm, msg: &str) -> JsValue {
+    let proto_ptr = P::as_ptr(&vm.kernel().builtin_world().error_proto) as *mut JsObject;
+    create_error_object(vm, proto_ptr, "Error", msg)
+}
+
 pub fn create_reference_error(vm: &mut Vm, msg: &str) -> JsValue {
     let proto_ptr = P::as_ptr(&vm.kernel().builtin_world().reference_error_proto) as *mut JsObject;
     create_error_object(vm, proto_ptr, "ReferenceError", msg)

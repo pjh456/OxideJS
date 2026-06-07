@@ -36,6 +36,37 @@ macro_rules! native_call {
     }};
 }
 
+#[allow(unused_macros)]
+macro_rules! throw_err {
+    ($self:ident, Error, $msg:expr) => {{
+        let error = crate::builtins::error::create_error($self, $msg);
+        $self.exception_value = Some(error);
+        $self.pending_error_kind = Some("Error");
+        match $self.unwind() {
+            Ok(()) => continue,
+            Err(e) => return Err(e),
+        }
+    }};
+    ($self:ident, TypeError, $msg:expr) => {{
+        let error = crate::builtins::error::create_type_error($self, $msg);
+        $self.exception_value = Some(error);
+        $self.pending_error_kind = Some("TypeError");
+        match $self.unwind() {
+            Ok(()) => continue,
+            Err(e) => return Err(e),
+        }
+    }};
+    ($self:ident, ReferenceError, $msg:expr) => {{
+        let error = crate::builtins::error::create_reference_error($self, $msg);
+        $self.exception_value = Some(error);
+        $self.pending_error_kind = Some("ReferenceError");
+        match $self.unwind() {
+            Ok(()) => continue,
+            Err(e) => return Err(e),
+        }
+    }};
+}
+
 pub struct CallFrame {
     pub return_addr: usize,
     pub n_locals: u8,
@@ -965,11 +996,9 @@ impl Vm {
                 return Ok(());
             }
         }
-        let msg = self
-            .exception_value
-            .take()
-            .map(|v| format!("uncaught {v}"))
-            .unwrap_or_else(|| "uncaught exception".to_string());
+        let exc = self.exception_value.take().unwrap_or(JsValue::undefined());
+        let kind_str = self.pending_error_kind.take().unwrap_or("Error");
+        let msg = format!("uncaught {kind_str}: {exc}");
         Err(msg)
     }
 
@@ -1271,7 +1300,7 @@ impl Vm {
                         }
                     }
 
-                    return Err("TypeError: CALL target is not callable".into());
+                    throw_err!(self, TypeError, "CALL target is not callable");
                 }
 
                 OpCode::CALL_NATIVE => {
@@ -1282,15 +1311,19 @@ impl Vm {
                     let callee = self.regs[callee_reg];
 
                     if !callee.is_object() {
-                        return Err("TypeError: CALL_NATIVE target is not an object".into());
+                        throw_err!(self, TypeError, "CALL_NATIVE target is not an object");
                     }
                     let obj_ptr = callee.as_js_object_ptr();
                     if obj_ptr.is_null() {
-                        return Err("TypeError: CALL_NATIVE target is null".into());
+                        throw_err!(self, TypeError, "CALL_NATIVE target is null");
                     }
                     let obj = unsafe { &*obj_ptr };
                     if !obj.is_function() || obj.native_fn().is_none() {
-                        return Err("TypeError: CALL_NATIVE target is not a native function".into());
+                        throw_err!(
+                            self,
+                            TypeError,
+                            "CALL_NATIVE target is not a native function"
+                        );
                     }
 
                     let ext = self.bytecode[self.pc];
@@ -1320,18 +1353,22 @@ impl Vm {
 
                     let constructor = self.regs[constructor_reg];
                     if !constructor.is_object() {
-                        return Err(
-                            "TypeError: NEW_EXPRESSION: constructor is not an object".into()
+                        throw_err!(
+                            self,
+                            TypeError,
+                            "NEW_EXPRESSION: constructor is not an object"
                         );
                     }
                     let ctor_ptr = constructor.as_js_object_ptr();
                     if ctor_ptr.is_null() {
-                        return Err("TypeError: NEW_EXPRESSION: constructor is null".into());
+                        throw_err!(self, TypeError, "NEW_EXPRESSION: constructor is null");
                     }
                     let ctor_obj = unsafe { &*ctor_ptr };
                     if !ctor_obj.is_function() {
-                        return Err(
-                            "TypeError: NEW_EXPRESSION: constructor is not a function".into()
+                        throw_err!(
+                            self,
+                            TypeError,
+                            "NEW_EXPRESSION: constructor is not a function"
                         );
                     }
 
@@ -1436,7 +1473,7 @@ impl Vm {
                                 continue;
                             }
                         }
-                        return Err("TypeError: IC_GET_PROP on non-object".into());
+                        throw_err!(self, TypeError, "IC_GET_PROP on non-object");
                     }
                     let obj = unsafe { &*obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
@@ -1491,7 +1528,7 @@ impl Vm {
                 OpCode::IC_SET_PROP => {
                     let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
                     if obj_ptr.is_null() {
-                        return Err("TypeError: IC_SET_PROP on non-object".into());
+                        throw_err!(self, TypeError, "IC_SET_PROP on non-object");
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
@@ -1547,7 +1584,7 @@ impl Vm {
                 OpCode::GET_PROP => {
                     let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
                     if obj_ptr.is_null() {
-                        return Err("TypeError: GET_PROP on non-object".into());
+                        throw_err!(self, TypeError, "GET_PROP on non-object");
                     }
                     let obj = unsafe { &*obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
@@ -1558,7 +1595,7 @@ impl Vm {
                 OpCode::SET_PROP => {
                     let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
                     if obj_ptr.is_null() {
-                        return Err("TypeError: SET_PROP on non-object".into());
+                        throw_err!(self, TypeError, "SET_PROP on non-object");
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
@@ -1582,12 +1619,12 @@ impl Vm {
                 OpCode::GET_PROP_DYNAMIC => {
                     let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
                     if obj_ptr.is_null() {
-                        return Err("TypeError: GET_PROP_DYNAMIC on non-object".into());
+                        throw_err!(self, TypeError, "GET_PROP_DYNAMIC on non-object");
                     }
                     let obj = unsafe { &*obj_ptr };
                     let key_val = self.regs[a];
                     if !key_val.is_string() {
-                        return Err("TypeError: GET_PROP_DYNAMIC key not a string".into());
+                        throw_err!(self, TypeError, "GET_PROP_DYNAMIC key not a string");
                     }
                     let prop_name_si = key_val.as_string_index();
                     self.regs[b] = self
@@ -1598,12 +1635,12 @@ impl Vm {
                 OpCode::SET_PROP_DYNAMIC => {
                     let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
                     if obj_ptr.is_null() {
-                        return Err("TypeError: SET_PROP_DYNAMIC on non-object".into());
+                        throw_err!(self, TypeError, "SET_PROP_DYNAMIC on non-object");
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let key_val = self.regs[a];
                     if !key_val.is_string() {
-                        return Err("TypeError: SET_PROP_DYNAMIC key not a string".into());
+                        throw_err!(self, TypeError, "SET_PROP_DYNAMIC key not a string");
                     }
                     let prop_name_si = key_val.as_string_index();
                     if let Some(pos) = self
@@ -1649,7 +1686,7 @@ impl Vm {
                 OpCode::SET_ELEM => {
                     let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
                     if obj_ptr.is_null() {
-                        return Err("TypeError: SET_ELEM on non-object".into());
+                        throw_err!(self, TypeError, "SET_ELEM on non-object");
                     }
                     let idx = self.regs[a].as_int() as usize;
                     let obj = unsafe { &mut *obj_ptr };
@@ -1734,13 +1771,13 @@ impl Vm {
                     let key_val = self.regs[a];
                     let obj_ptr = self.regs[b].as_object_ptr() as *mut JsObject;
                     if obj_ptr.is_null() {
-                        return Err("TypeError: IN right-hand side is not an object".into());
+                        throw_err!(self, TypeError, "IN right-hand side is not an object");
                     }
                     let obj = unsafe { &*obj_ptr };
                     let prop_name_si = if key_val.is_string() {
                         key_val.as_string_index()
                     } else {
-                        return Err("TypeError: IN key must be a string".into());
+                        throw_err!(self, TypeError, "IN key must be a string");
                     };
                     let found = self.resolve_property(obj, prop_name_si).is_some();
                     self.regs[rd] = JsValue::bool(found);
@@ -1793,7 +1830,7 @@ impl Vm {
                 OpCode::MEMBER_INC => {
                     let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
                     if obj_ptr.is_null() {
-                        return Err("TypeError: MEMBER_INC on non-object".into());
+                        throw_err!(self, TypeError, "MEMBER_INC on non-object");
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
@@ -1886,7 +1923,7 @@ impl Vm {
                 OpCode::MEMBER_DEC => {
                     let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
                     if obj_ptr.is_null() {
-                        return Err("TypeError: MEMBER_DEC on non-object".into());
+                        throw_err!(self, TypeError, "MEMBER_DEC on non-object");
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
@@ -1979,12 +2016,12 @@ impl Vm {
                 OpCode::DYN_MEMBER_INC => {
                     let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
                     if obj_ptr.is_null() {
-                        return Err("TypeError: DYN_MEMBER_INC on non-object".into());
+                        throw_err!(self, TypeError, "DYN_MEMBER_INC on non-object");
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let key_val = self.regs[a];
                     if !key_val.is_string() {
-                        return Err("TypeError: DYN_MEMBER_INC key not a string".into());
+                        throw_err!(self, TypeError, "DYN_MEMBER_INC key not a string");
                     }
                     let prop_name_si = key_val.as_string_index();
                     let prop_val = self
@@ -2014,12 +2051,12 @@ impl Vm {
                 OpCode::DYN_MEMBER_DEC => {
                     let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
                     if obj_ptr.is_null() {
-                        return Err("TypeError: DYN_MEMBER_DEC on non-object".into());
+                        throw_err!(self, TypeError, "DYN_MEMBER_DEC on non-object");
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let key_val = self.regs[a];
                     if !key_val.is_string() {
-                        return Err("TypeError: DYN_MEMBER_DEC key not a string".into());
+                        throw_err!(self, TypeError, "DYN_MEMBER_DEC key not a string");
                     }
                     let prop_name_si = key_val.as_string_index();
                     let prop_val = self
@@ -2049,7 +2086,7 @@ impl Vm {
                 OpCode::COMPOUND_MEMBER_ADD => {
                     let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
                     if obj_ptr.is_null() {
-                        return Err("TypeError: COMPOUND_MEMBER_ADD on non-object".into());
+                        throw_err!(self, TypeError, "COMPOUND_MEMBER_ADD on non-object");
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
@@ -2112,7 +2149,7 @@ impl Vm {
                 OpCode::COMPOUND_MEMBER_SUB => {
                     let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
                     if obj_ptr.is_null() {
-                        return Err("TypeError: COMPOUND_MEMBER_SUB on non-object".into());
+                        throw_err!(self, TypeError, "COMPOUND_MEMBER_SUB on non-object");
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
@@ -2166,7 +2203,7 @@ impl Vm {
                 OpCode::COMPOUND_MEMBER_MUL => {
                     let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
                     if obj_ptr.is_null() {
-                        return Err("TypeError: COMPOUND_MEMBER_MUL on non-object".into());
+                        throw_err!(self, TypeError, "COMPOUND_MEMBER_MUL on non-object");
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
@@ -2220,7 +2257,7 @@ impl Vm {
                 OpCode::COMPOUND_MEMBER_DIV => {
                     let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
                     if obj_ptr.is_null() {
-                        return Err("TypeError: COMPOUND_MEMBER_DIV on non-object".into());
+                        throw_err!(self, TypeError, "COMPOUND_MEMBER_DIV on non-object");
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
@@ -2274,7 +2311,7 @@ impl Vm {
                 OpCode::COMPOUND_MEMBER_MOD => {
                     let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
                     if obj_ptr.is_null() {
-                        return Err("TypeError: COMPOUND_MEMBER_MOD on non-object".into());
+                        throw_err!(self, TypeError, "COMPOUND_MEMBER_MOD on non-object");
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
@@ -2328,7 +2365,7 @@ impl Vm {
                 OpCode::COMPOUND_MEMBER_EXP => {
                     let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
                     if obj_ptr.is_null() {
-                        return Err("TypeError: COMPOUND_MEMBER_EXP on non-object".into());
+                        throw_err!(self, TypeError, "COMPOUND_MEMBER_EXP on non-object");
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
@@ -2382,7 +2419,7 @@ impl Vm {
                 OpCode::FOR_IN_INIT => {
                     let obj_val = self.regs[a];
                     if !obj_val.is_object() {
-                        return Err("TypeError: for-in right-hand side is not an object".into());
+                        throw_err!(self, TypeError, "for-in right-hand side is not an object");
                     }
 
                     let mut keys_vec = bumpalo::collections::Vec::new_in(self.epoch.bump());

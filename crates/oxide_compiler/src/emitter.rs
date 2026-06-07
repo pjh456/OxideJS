@@ -462,8 +462,7 @@ impl Compiler {
                     ctx.label_map.insert(finally_label, finally_label_pc);
                     if let Some(fb_pos) = try_finally_begin_pos {
                         let offset = finally_label_pc as isize - (fb_pos as isize);
-                        ctx.bytecode[fb_pos] =
-                            opcode::encode_try_finally_begin(offset as i16);
+                        ctx.bytecode[fb_pos] = opcode::encode_try_finally_begin(offset as i16);
                     }
 
                     if let Some(jmp_pos) = jmp_skip_pos {

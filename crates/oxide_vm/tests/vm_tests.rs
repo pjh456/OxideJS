@@ -75,3 +75,25 @@ fn test_try_catch_finally() {
 fn test_catch_param_binding() {
     assert_eq!(eval("try { throw 99; } catch(myErr) { myErr; }"), "99");
 }
+
+#[test]
+fn test_throw_err_type_error_catchable() {
+    let result = eval("try { null.prop = 1; } catch(e) { 42; }");
+    assert_eq!(result, "42");
+}
+
+#[test]
+fn test_throw_err_type_error_is_object() {
+    // IC_GET_PROP on null throws TypeError which is catchable; catch body runs
+    let result = eval("try { null.prop; } catch(e) { 99; }");
+    assert_eq!(result, "99");
+}
+
+#[test]
+fn test_uncaught_type_error_message() {
+    let result = eval("null.prop;");
+    assert!(
+        result.contains("TypeError"),
+        "expected TypeError in message, got: {result}"
+    );
+}
