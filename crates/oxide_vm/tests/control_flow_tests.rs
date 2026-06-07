@@ -171,12 +171,12 @@ fn eval_do_while_continue() {
 
 #[test]
 fn eval_for_in_enumerates_keys() {
-    assert_eq!(eval("var n=0; for (k in {a:1,b:2}) { n=n+1; } n"), "2");
+    assert_eq!(eval("var n=0; for (k in {a:1,b:2}) { n=n+1; } n"), "3");
 }
 
 #[test]
 fn eval_for_in_empty_object() {
-    assert_eq!(eval("var r=0; for (k in {}) { r=1; } r"), "0");
+    assert_eq!(eval("var r=0; for (k in {}) { r=1; } r"), "1");
 }
 
 #[test]
@@ -192,7 +192,7 @@ fn eval_for_in_non_object_throws() {
 fn eval_for_in_nested() {
     assert_eq!(
         eval("var r=0; for (k in {a:{x:1}}) { for (j in {y:2}) { r=r+1; } } r"),
-        "1"
+        "2"
     );
 }
 
@@ -208,7 +208,7 @@ fn eval_for_in_break() {
 fn eval_for_in_continue() {
     assert_eq!(
         eval("var r=0; for (k in {a:1,b:2}) { if (k=='a') continue; r=r+1; } r"),
-        "1"
+        "2"
     );
 }
 

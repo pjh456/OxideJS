@@ -685,6 +685,7 @@ impl Vm {
     pub fn new() -> Self {
         let kernel = Arc::new(OxideKernel::new(KernelConfig::minimal()));
         init_kernel_builtins(&kernel);
+        let obj_proto = P::clone(&kernel.builtin_world().object_proto);
         Self {
             regs: [JsValue::undefined(); 256],
             pc: 0,
@@ -695,7 +696,7 @@ impl Vm {
             kernel,
             interned_strings: Vec::new(),
             epoch: Epoch::new(),
-            object_prototype: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+            object_prototype: obj_proto,
             math_rng_state: 0,
             sub_modules: Vec::new(),
             sub_module_constants: Vec::new(),
