@@ -112,6 +112,7 @@ pub struct BuiltinWorld {
     pub uri_error_proto: P<JsObject>,
     pub eval_error_proto: P<JsObject>,
     pub math_object: P<JsObject>,
+    pub json_object: P<JsObject>,
 }
 
 fn intern_label(string_forge: &StringForge, label: &str) -> u32 {
@@ -242,6 +243,8 @@ impl BuiltinWorld {
 
         let math_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
 
+        let json_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+
         /// Overwrite placeholder slots (set up by make_pair) with real values.
         /// ctor.vec[0] = constructor.prototype -> proto
         /// proto.vec[0] = proto.constructor -> ctor
@@ -293,6 +296,7 @@ impl BuiltinWorld {
             uri_error_proto,
             eval_error_proto,
             math_object,
+            json_object,
         }
     }
 

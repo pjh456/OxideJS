@@ -850,6 +850,7 @@ dependencies = [
  "proptest",
  "regex",
  "ryu",
+ "serde_json",
 ]
 
 [[package]]

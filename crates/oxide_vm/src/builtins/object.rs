@@ -7,7 +7,7 @@ use crate::coercion;
 use crate::native::NativeResult;
 use crate::vm::Vm;
 
-fn walk_own_keys(vm: &Vm, obj: &JsObject) -> Vec<(u32, u8)> {
+pub(crate) fn walk_own_keys(vm: &Vm, obj: &JsObject) -> Vec<(u32, u8)> {
     let mut keys: Vec<(u32, u8)> = Vec::new();
     let shape_id = obj.shape_id();
     let mut pos: u8 = 0;
