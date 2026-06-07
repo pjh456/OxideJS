@@ -212,6 +212,12 @@ fn bind_error(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     global.set_shape_id(err_shape);
     global.ensure_hash_props().push(Box::new(err_val));
     global.bump_generation();
+
+    {
+        let err_ctor_ptr = kernel.builtin_world().error_constructor.as_ptr() as *mut JsObject;
+        let err_ctor = unsafe { &mut *err_ctor_ptr };
+        err_ctor.set_native_fn(Some(crate::builtins::error::error_constructor as *const ()));
+    }
 }
 
 fn bind_string(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
