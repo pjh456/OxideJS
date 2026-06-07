@@ -9,7 +9,7 @@ use oxide_compiler::opcode::{self, OpCode};
 use crate::coercion;
 use crate::native::NativeFn;
 use oxide_kernel::builtin::{
-    ArrayMethods, ErrorMethods, NumberMethods, ObjectMethods, StringMethods,
+    ArrayMethods, ErrorMethods, FunctionMethods, NumberMethods, ObjectMethods, StringMethods,
 };
 use oxide_kernel::kernel::{KernelConfig, OxideKernel};
 use oxide_kernel::prop_forge::PropTemplate;
@@ -206,7 +206,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
 
     let pi_fn = crate::builtins::number::number_parse_int as *const ();
     let pf_fn = crate::builtins::number::number_parse_float as *const ();
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         global,
         kernel.shape_forge().as_ref(),
         kernel.string_forge().as_ref(),
@@ -214,7 +214,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         pi_fn,
         1,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         global,
         kernel.shape_forge().as_ref(),
         kernel.string_forge().as_ref(),
@@ -228,7 +228,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     let sf = kernel.string_forge().as_ref();
     let sh = kernel.shape_forge().as_ref();
 
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -236,7 +236,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_abs as *const (),
         1,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -244,7 +244,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_acos as *const (),
         1,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -252,7 +252,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_asin as *const (),
         1,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -260,7 +260,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_atan as *const (),
         1,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -268,7 +268,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_atan2 as *const (),
         2,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -276,7 +276,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_cbrt as *const (),
         1,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -284,7 +284,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_ceil as *const (),
         1,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -292,7 +292,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_cos as *const (),
         1,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -300,7 +300,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_cosh as *const (),
         1,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -308,7 +308,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_exp as *const (),
         1,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -316,7 +316,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_floor as *const (),
         1,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -324,7 +324,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_hypot as *const (),
         2,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -332,7 +332,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_imul as *const (),
         2,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -340,7 +340,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_log as *const (),
         1,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -348,7 +348,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_log10 as *const (),
         1,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -356,7 +356,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_log2 as *const (),
         1,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -364,7 +364,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_max as *const (),
         2,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -372,7 +372,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_min as *const (),
         2,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -380,7 +380,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_pow as *const (),
         2,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -388,7 +388,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_random as *const (),
         0,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -396,7 +396,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_round as *const (),
         1,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -404,7 +404,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_sign as *const (),
         1,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -412,7 +412,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_sin as *const (),
         1,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -420,7 +420,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_sinh as *const (),
         1,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -428,7 +428,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_sqrt as *const (),
         1,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -436,7 +436,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_tan as *const (),
         1,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -444,7 +444,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         crate::builtins::math::math_tanh as *const (),
         1,
     );
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+    let _ = kernel.builtin_world().bind_method(
         math,
         sh,
         sf,
@@ -472,6 +472,17 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     global.set_prop_count(cur_count + 1);
     global.set_prop_expand_heap(cur_count, m_val);
     global.bump_generation();
+
+    let function_methods = FunctionMethods {
+        call: crate::builtins::function::function_call as *const (),
+        apply: crate::builtins::function::function_apply as *const (),
+        bind: crate::builtins::function::function_bind as *const (),
+    };
+    kernel.builtin_world().bind_function_methods(
+        &function_methods,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
+    );
 }
 
 impl Vm {
@@ -887,6 +898,7 @@ impl Vm {
 
                                 let func: NativeFn =
                                     unsafe { std::mem::transmute(obj.native_fn().unwrap()) };
+                                self.regs[254] = callee;
                                 match func(self, args_slice) {
                                     Ok(val) => self.regs[0] = val,
                                     Err(err_val) => {

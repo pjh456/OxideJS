@@ -75,6 +75,12 @@ pub struct NumberMethods {
     pub to_fixed: *const (),
 }
 
+pub struct FunctionMethods {
+    pub call: *const (),
+    pub apply: *const (),
+    pub bind: *const (),
+}
+
 pub struct BuiltinWorld {
     pub object_proto: P<JsObject>,
     pub array_proto: P<JsObject>,
@@ -136,6 +142,10 @@ fn make_pair(
 }
 
 impl BuiltinWorld {
+    fn fn_proto_val(&self) -> JsValue {
+        JsValue::from_js_object(self.function_proto.as_ptr() as *mut JsObject)
+    }
+
     pub fn new(string_forge: &StringForge, shape_forge: &ShapeForge) -> Self {
         let si_prototype = intern_label(string_forge, "prototype");
         let si_constructor = intern_label(string_forge, "constructor");
@@ -219,6 +229,24 @@ impl BuiltinWorld {
 
         let math_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
 
+        fn wire_ctor_proto(ctor: &P<JsObject>, proto: &P<JsObject>) {
+            let ctor_ptr = ctor.as_ptr() as *mut JsObject;
+            let ctor = unsafe { &mut *ctor_ptr };
+            ctor.set_inline_prop(0, JsValue::from_js_object(proto.as_ptr() as *mut JsObject));
+            let proto_ptr = proto.as_ptr() as *mut JsObject;
+            let proto = unsafe { &mut *proto_ptr };
+            proto.set_inline_prop(0, JsValue::from_js_object(ctor_ptr));
+        }
+
+        wire_ctor_proto(&object_constructor, &object_proto);
+        wire_ctor_proto(&array_constructor, &array_proto);
+        wire_ctor_proto(&function_constructor, &function_proto);
+        wire_ctor_proto(&string_constructor, &string_proto);
+        wire_ctor_proto(&number_constructor, &number_proto);
+        wire_ctor_proto(&boolean_constructor, &boolean_proto);
+        wire_ctor_proto(&error_constructor, &error_proto);
+        wire_ctor_proto(&symbol_constructor, &symbol_proto);
+
         Self {
             object_proto,
             array_proto,
@@ -255,10 +283,10 @@ impl BuiltinWorld {
         let ctor_ptr = P::as_ptr(&self.object_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
 
-        let _ = Self::bind_method(ctor, shape_forge, string_forge, "keys", methods.keys, 1);
-        let _ = Self::bind_method(ctor, shape_forge, string_forge, "create", methods.create, 2);
-        let _ = Self::bind_method(ctor, shape_forge, string_forge, "assign", methods.assign, 2);
-        let _ = Self::bind_method(
+        let _ = self.bind_method(ctor, shape_forge, string_forge, "keys", methods.keys, 1);
+        let _ = self.bind_method(ctor, shape_forge, string_forge, "create", methods.create, 2);
+        let _ = self.bind_method(ctor, shape_forge, string_forge, "assign", methods.assign, 2);
+        let _ = self.bind_method(
             ctor,
             shape_forge,
             string_forge,
@@ -266,7 +294,7 @@ impl BuiltinWorld {
             methods.define_property,
             3,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             ctor,
             shape_forge,
             string_forge,
@@ -285,10 +313,10 @@ impl BuiltinWorld {
         let proto_ptr = P::as_ptr(&self.array_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
 
-        let _ = Self::bind_method(proto, shape_forge, string_forge, "push", methods.push, 1);
-        let _ = Self::bind_method(proto, shape_forge, string_forge, "pop", methods.pop, 0);
-        let _ = Self::bind_method(proto, shape_forge, string_forge, "slice", methods.slice, 2);
-        let _ = Self::bind_method(
+        let _ = self.bind_method(proto, shape_forge, string_forge, "push", methods.push, 1);
+        let _ = self.bind_method(proto, shape_forge, string_forge, "pop", methods.pop, 0);
+        let _ = self.bind_method(proto, shape_forge, string_forge, "slice", methods.slice, 2);
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -296,7 +324,7 @@ impl BuiltinWorld {
             methods.splice,
             2,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -304,8 +332,8 @@ impl BuiltinWorld {
             methods.concat,
             1,
         );
-        let _ = Self::bind_method(proto, shape_forge, string_forge, "join", methods.join, 1);
-        let _ = Self::bind_method(
+        let _ = self.bind_method(proto, shape_forge, string_forge, "join", methods.join, 1);
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -313,7 +341,7 @@ impl BuiltinWorld {
             methods.index_of,
             1,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -321,7 +349,7 @@ impl BuiltinWorld {
             methods.includes,
             1,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -329,7 +357,7 @@ impl BuiltinWorld {
             methods.reverse,
             0,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -337,8 +365,8 @@ impl BuiltinWorld {
             methods.for_each,
             1,
         );
-        let _ = Self::bind_method(proto, shape_forge, string_forge, "map", methods.map, 1);
-        let _ = Self::bind_method(
+        let _ = self.bind_method(proto, shape_forge, string_forge, "map", methods.map, 1);
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -346,7 +374,7 @@ impl BuiltinWorld {
             methods.filter,
             1,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -354,11 +382,11 @@ impl BuiltinWorld {
             methods.reduce,
             1,
         );
-        let _ = Self::bind_method(proto, shape_forge, string_forge, "find", methods.find, 1);
-        let _ = Self::bind_method(proto, shape_forge, string_forge, "some", methods.some, 1);
-        let _ = Self::bind_method(proto, shape_forge, string_forge, "every", methods.every, 1);
-        let _ = Self::bind_method(proto, shape_forge, string_forge, "flat", methods.flat, 0);
-        let _ = Self::bind_method(
+        let _ = self.bind_method(proto, shape_forge, string_forge, "find", methods.find, 1);
+        let _ = self.bind_method(proto, shape_forge, string_forge, "some", methods.some, 1);
+        let _ = self.bind_method(proto, shape_forge, string_forge, "every", methods.every, 1);
+        let _ = self.bind_method(proto, shape_forge, string_forge, "flat", methods.flat, 0);
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -377,8 +405,8 @@ impl BuiltinWorld {
         let ctor_ptr = P::as_ptr(&self.error_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
 
-        let _ = Self::bind_method(ctor, shape_forge, string_forge, "Error", methods.error, 1);
-        let _ = Self::bind_method(
+        let _ = self.bind_method(ctor, shape_forge, string_forge, "Error", methods.error, 1);
+        let _ = self.bind_method(
             ctor,
             shape_forge,
             string_forge,
@@ -386,7 +414,7 @@ impl BuiltinWorld {
             methods.type_error,
             1,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             ctor,
             shape_forge,
             string_forge,
@@ -394,7 +422,7 @@ impl BuiltinWorld {
             methods.reference_error,
             1,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             ctor,
             shape_forge,
             string_forge,
@@ -402,7 +430,7 @@ impl BuiltinWorld {
             methods.range_error,
             1,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             ctor,
             shape_forge,
             string_forge,
@@ -410,7 +438,7 @@ impl BuiltinWorld {
             methods.syntax_error,
             1,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             ctor,
             shape_forge,
             string_forge,
@@ -418,7 +446,7 @@ impl BuiltinWorld {
             methods.uri_error,
             1,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             ctor,
             shape_forge,
             string_forge,
@@ -437,7 +465,7 @@ impl BuiltinWorld {
         let proto_ptr = P::as_ptr(&self.string_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
 
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -445,7 +473,7 @@ impl BuiltinWorld {
             methods.index_of,
             1,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -453,7 +481,7 @@ impl BuiltinWorld {
             methods.includes,
             1,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -461,7 +489,7 @@ impl BuiltinWorld {
             methods.char_at,
             1,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -469,7 +497,7 @@ impl BuiltinWorld {
             methods.char_code_at,
             1,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -477,8 +505,8 @@ impl BuiltinWorld {
             methods.concat,
             1,
         );
-        let _ = Self::bind_method(proto, shape_forge, string_forge, "slice", methods.slice, 2);
-        let _ = Self::bind_method(
+        let _ = self.bind_method(proto, shape_forge, string_forge, "slice", methods.slice, 2);
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -486,7 +514,7 @@ impl BuiltinWorld {
             methods.substring,
             2,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -494,7 +522,7 @@ impl BuiltinWorld {
             methods.to_upper_case,
             0,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -502,8 +530,8 @@ impl BuiltinWorld {
             methods.to_lower_case,
             0,
         );
-        let _ = Self::bind_method(proto, shape_forge, string_forge, "trim", methods.trim, 0);
-        let _ = Self::bind_method(
+        let _ = self.bind_method(proto, shape_forge, string_forge, "trim", methods.trim, 0);
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -511,7 +539,7 @@ impl BuiltinWorld {
             methods.repeat,
             1,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -519,7 +547,7 @@ impl BuiltinWorld {
             methods.pad_start,
             1,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -527,7 +555,7 @@ impl BuiltinWorld {
             methods.pad_end,
             1,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -535,7 +563,7 @@ impl BuiltinWorld {
             methods.starts_with,
             1,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -543,8 +571,8 @@ impl BuiltinWorld {
             methods.ends_with,
             1,
         );
-        let _ = Self::bind_method(proto, shape_forge, string_forge, "split", methods.split, 1);
-        let _ = Self::bind_method(
+        let _ = self.bind_method(proto, shape_forge, string_forge, "split", methods.split, 1);
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -552,7 +580,7 @@ impl BuiltinWorld {
             methods.replace,
             2,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -560,7 +588,7 @@ impl BuiltinWorld {
             methods.match_fn,
             1,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -581,8 +609,8 @@ impl BuiltinWorld {
         let proto_ptr = P::as_ptr(&self.number_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
 
-        let _ = Self::bind_method(ctor, shape_forge, string_forge, "isNaN", methods.is_nan, 1);
-        let _ = Self::bind_method(
+        let _ = self.bind_method(ctor, shape_forge, string_forge, "isNaN", methods.is_nan, 1);
+        let _ = self.bind_method(
             ctor,
             shape_forge,
             string_forge,
@@ -590,7 +618,7 @@ impl BuiltinWorld {
             methods.is_finite,
             1,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             ctor,
             shape_forge,
             string_forge,
@@ -598,7 +626,7 @@ impl BuiltinWorld {
             methods.parse_int,
             1,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             ctor,
             shape_forge,
             string_forge,
@@ -607,7 +635,7 @@ impl BuiltinWorld {
             1,
         );
 
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -615,7 +643,7 @@ impl BuiltinWorld {
             methods.to_string,
             0,
         );
-        let _ = Self::bind_method(
+        let _ = self.bind_method(
             proto,
             shape_forge,
             string_forge,
@@ -625,7 +653,47 @@ impl BuiltinWorld {
         );
     }
 
+    pub fn bind_function_methods(
+        &self,
+        methods: &FunctionMethods,
+        string_forge: &StringForge,
+        shape_forge: &ShapeForge,
+    ) {
+        let proto_ptr = P::as_ptr(&self.function_proto) as *mut JsObject;
+        let proto = unsafe { &mut *proto_ptr };
+        let fp = self.fn_proto_val();
+
+        let _ = Self::bind_method_static(
+            proto,
+            shape_forge,
+            string_forge,
+            "call",
+            methods.call,
+            1,
+            fp,
+        );
+        let _ = Self::bind_method_static(
+            proto,
+            shape_forge,
+            string_forge,
+            "apply",
+            methods.apply,
+            2,
+            fp,
+        );
+        let _ = Self::bind_method_static(
+            proto,
+            shape_forge,
+            string_forge,
+            "bind",
+            methods.bind,
+            1,
+            fp,
+        );
+    }
+
     pub fn bind_method(
+        &self,
         proto: &mut JsObject,
         shape_forge: &ShapeForge,
         string_forge: &StringForge,
@@ -633,8 +701,36 @@ impl BuiltinWorld {
         native_fn_ptr: *const (),
         arg_count: u8,
     ) -> Result<(), String> {
+        Self::bind_method_static(
+            proto,
+            shape_forge,
+            string_forge,
+            method_name,
+            native_fn_ptr,
+            arg_count,
+            self.fn_proto_val(),
+        )
+    }
+
+    pub fn bind_method_static(
+        proto: &mut JsObject,
+        shape_forge: &ShapeForge,
+        string_forge: &StringForge,
+        method_name: &str,
+        native_fn_ptr: *const (),
+        arg_count: u8,
+        wrapper_proto: JsValue,
+    ) -> Result<(), String> {
         let si = string_forge.intern(method_name).0;
+        let wrapper_proto_ptr = if wrapper_proto.is_object() {
+            wrapper_proto.as_js_object_ptr()
+        } else {
+            std::ptr::null_mut()
+        };
         let mut wrapper = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        if !wrapper_proto_ptr.is_null() {
+            wrapper.set_proto(wrapper_proto).ok();
+        }
         wrapper.set_function(true);
         wrapper.set_native_fn(Some(native_fn_ptr));
         wrapper.set_native_arg_count(arg_count);
