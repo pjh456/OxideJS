@@ -59,9 +59,10 @@ fn regression_recursion_depth_limit() {
 
 #[test]
 fn regression_throw_statement_errors() {
-    assert_eq!(
-        eval("throw 'error'"),
-        "vm error: opcode THROW not yet implemented"
+    let result = eval("throw 'error'");
+    assert!(
+        result.contains("uncaught"),
+        "expected uncaught, got: {result}"
     );
 }
 

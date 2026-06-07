@@ -1191,12 +1191,13 @@ impl Vm {
                         if !obj_ptr.is_null() {
                             let obj = unsafe { &*obj_ptr };
                             if obj.is_function() {
-                                if obj.native_fn().is_some() {
-                                    // Native call - use extension word for arg_count
-                                    let ext = self.bytecode[self.pc];
-                                    self.pc += 1;
-                                    let arg_count = (ext & 0xFF) as usize;
+                                // Always consume extension word for arg_count
+                                let ext = self.bytecode[self.pc];
+                                self.pc += 1;
+                                let arg_count = (ext & 0xFF) as usize;
 
+                                if obj.native_fn().is_some() {
+                                    // Native call
                                     let mut args_buf = [0u8; 257];
                                     args_buf[0] = this_reg;
                                     for i in 0..arg_count.min(256) {

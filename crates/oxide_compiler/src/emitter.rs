@@ -1029,9 +1029,7 @@ impl Compiler {
                     _ => OpCode::CALL,
                 };
                 ctx.emit(opcode::encode(op, callee_reg, this_reg, first_arg_reg));
-                if matches!(op, OpCode::CALL_NATIVE) {
-                    ctx.emit(arg_regs.len() as u32);
-                }
+                ctx.emit(arg_regs.len() as u32);
                 // Copy result from regs[0] into a dedicated register so multiple
                 // call expressions don't overwrite each other.
                 let result_reg = ctx.alloc_reg();
