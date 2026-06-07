@@ -115,3 +115,101 @@ fn math_trunc() {
     let result = eval(&mut vm, "Math.trunc(3.9)").unwrap();
     assert!((result.as_double() - 3.0).abs() < 0.0001);
 }
+
+#[test]
+fn math_acosh() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Math.acosh(1)").unwrap();
+    assert!((result.as_double() - 0.0).abs() < 0.0001);
+}
+
+#[test]
+fn math_asinh() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Math.asinh(0)").unwrap();
+    assert!((result.as_double() - 0.0).abs() < 0.0001);
+}
+
+#[test]
+fn math_atanh() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Math.atanh(0)").unwrap();
+    assert!((result.as_double() - 0.0).abs() < 0.0001);
+}
+
+#[test]
+fn math_clz32() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Math.clz32(0)").unwrap();
+    assert_eq!(result.as_int(), 32);
+}
+
+#[test]
+fn math_expm1() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Math.expm1(0)").unwrap();
+    assert!((result.as_double() - 0.0).abs() < 0.0001);
+}
+
+#[test]
+fn math_fround() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Math.fround(1.5)").unwrap();
+    assert!((result.as_double() - 1.5).abs() < 0.0001);
+}
+
+#[test]
+fn math_log1p() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Math.log1p(0)").unwrap();
+    assert!((result.as_double() - 0.0).abs() < 0.0001);
+}
+
+#[test]
+fn math_constant_e() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Math.E").unwrap();
+    assert!((result.as_double() - std::f64::consts::E).abs() < 0.0001);
+}
+
+#[test]
+fn math_constant_ln10() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Math.LN10").unwrap();
+    assert!((result.as_double() - std::f64::consts::LN_10).abs() < 0.0001);
+}
+
+#[test]
+fn math_constant_ln2() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Math.LN2").unwrap();
+    assert!((result.as_double() - std::f64::consts::LN_2).abs() < 0.0001);
+}
+
+#[test]
+fn math_constant_log10e() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Math.LOG10E").unwrap();
+    assert!((result.as_double() - std::f64::consts::LOG10_E).abs() < 0.0001);
+}
+
+#[test]
+fn math_constant_log2e() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Math.LOG2E").unwrap();
+    assert!((result.as_double() - std::f64::consts::LOG2_E).abs() < 0.0001);
+}
+
+#[test]
+fn math_constant_sqrt1_2() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Math.SQRT1_2").unwrap();
+    assert!((result.as_double() - std::f64::consts::FRAC_1_SQRT_2).abs() < 0.0001);
+}
+
+#[test]
+fn math_constant_sqrt2() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Math.SQRT2").unwrap();
+    assert!((result.as_double() - std::f64::consts::SQRT_2).abs() < 0.0001);
+}

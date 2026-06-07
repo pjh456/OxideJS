@@ -61,7 +61,7 @@ pub struct Vm {
     pub math_rng_state: u64,
 }
 
-pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
+fn bind_object(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     let methods = ObjectMethods {
         keys: crate::builtins::object::object_keys as *const (),
         create: crate::builtins::object::object_create as *const (),
@@ -76,8 +76,6 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         kernel.shape_forge().as_ref(),
     );
 
-    let global_ptr = kernel.global_object().as_ptr() as *mut JsObject;
-    let global = unsafe { &mut *global_ptr };
     let si_obj = kernel.string_forge().intern("Object").0;
     let obj_shape = kernel.shape_forge().make_shape(global.shape_id(), si_obj);
     let obj_val = JsValue::from_js_object(
@@ -85,7 +83,9 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     );
     global.set_shape_id(obj_shape);
     global.push_prop(obj_val);
+}
 
+fn bind_array(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     let _array_methods = ArrayMethods {
         push: crate::builtins::array::array_push as *const (),
         pop: crate::builtins::array::array_pop as *const (),
@@ -120,7 +120,9 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     global.set_shape_id(arr_shape);
     global.ensure_hash_props().push(Box::new(arr_val));
     global.bump_generation();
+}
 
+fn bind_error(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     let error_methods = ErrorMethods {
         error: crate::builtins::error::error_constructor as *const (),
         type_error: crate::builtins::error::type_error_constructor as *const (),
@@ -143,7 +145,9 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     global.set_shape_id(err_shape);
     global.ensure_hash_props().push(Box::new(err_val));
     global.bump_generation();
+}
 
+fn bind_string(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     let string_methods = StringMethods {
         index_of: crate::builtins::string::string_index_of as *const (),
         includes: crate::builtins::string::string_includes as *const (),
@@ -179,7 +183,9 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     global.set_shape_id(str_shape);
     global.ensure_hash_props().push(Box::new(str_val));
     global.bump_generation();
+}
 
+fn bind_number(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     let number_methods = NumberMethods {
         is_nan: crate::builtins::number::number_is_nan as *const (),
         is_finite: crate::builtins::number::number_is_finite as *const (),
@@ -232,17 +238,17 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         pf_fn,
         1
     );
+}
 
+fn bind_math(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     let math_ptr = kernel.builtin_world().math_object.as_ptr() as *mut JsObject;
     let math = unsafe { &mut *math_ptr };
-    let sf = kernel.string_forge().as_ref();
-    let sh = kernel.shape_forge().as_ref();
 
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "abs",
         crate::builtins::math::math_abs,
         1
@@ -250,8 +256,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "acos",
         crate::builtins::math::math_acos,
         1
@@ -259,8 +265,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "asin",
         crate::builtins::math::math_asin,
         1
@@ -268,8 +274,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "atan",
         crate::builtins::math::math_atan,
         1
@@ -277,8 +283,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "atan2",
         crate::builtins::math::math_atan2,
         2
@@ -286,8 +292,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "cbrt",
         crate::builtins::math::math_cbrt,
         1
@@ -295,8 +301,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "ceil",
         crate::builtins::math::math_ceil,
         1
@@ -304,8 +310,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "cos",
         crate::builtins::math::math_cos,
         1
@@ -313,8 +319,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "cosh",
         crate::builtins::math::math_cosh,
         1
@@ -322,8 +328,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "exp",
         crate::builtins::math::math_exp,
         1
@@ -331,8 +337,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "floor",
         crate::builtins::math::math_floor,
         1
@@ -340,8 +346,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "hypot",
         crate::builtins::math::math_hypot,
         2
@@ -349,8 +355,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "imul",
         crate::builtins::math::math_imul,
         2
@@ -358,8 +364,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "log",
         crate::builtins::math::math_log,
         1
@@ -367,8 +373,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "log10",
         crate::builtins::math::math_log10,
         1
@@ -376,8 +382,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "log2",
         crate::builtins::math::math_log2,
         1
@@ -385,8 +391,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "max",
         crate::builtins::math::math_max,
         2
@@ -394,8 +400,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "min",
         crate::builtins::math::math_min,
         2
@@ -403,8 +409,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "pow",
         crate::builtins::math::math_pow,
         2
@@ -412,8 +418,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "random",
         crate::builtins::math::math_random,
         0
@@ -421,8 +427,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "round",
         crate::builtins::math::math_round,
         1
@@ -430,8 +436,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "sign",
         crate::builtins::math::math_sign,
         1
@@ -439,8 +445,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "sin",
         crate::builtins::math::math_sin,
         1
@@ -448,8 +454,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "sinh",
         crate::builtins::math::math_sinh,
         1
@@ -457,8 +463,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "sqrt",
         crate::builtins::math::math_sqrt,
         1
@@ -466,8 +472,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "tan",
         crate::builtins::math::math_tan,
         1
@@ -475,8 +481,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "tanh",
         crate::builtins::math::math_tanh,
         1
@@ -484,19 +490,93 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_method!(
         kernel.builtin_world(),
         math,
-        sf,
-        sh,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "trunc",
         crate::builtins::math::math_trunc,
         1
     );
+    bind_method!(
+        kernel.builtin_world(),
+        math,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
+        "acosh",
+        crate::builtins::math::math_acosh,
+        1
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        math,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
+        "asinh",
+        crate::builtins::math::math_asinh,
+        1
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        math,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
+        "atanh",
+        crate::builtins::math::math_atanh,
+        1
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        math,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
+        "clz32",
+        crate::builtins::math::math_clz32,
+        1
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        math,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
+        "expm1",
+        crate::builtins::math::math_expm1,
+        1
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        math,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
+        "fround",
+        crate::builtins::math::math_fround,
+        1
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        math,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
+        "log1p",
+        crate::builtins::math::math_log1p,
+        1
+    );
 
-    let pi_val = JsValue::float(std::f64::consts::PI);
-    {
-        let si_pi = sf.intern("PI").0;
-        let sh_pi = sh.make_shape(math.shape_id(), si_pi);
-        math.set_shape_id(sh_pi);
-        math.ensure_hash_props().push(Box::new(pi_val));
+    for (name, val) in [
+        ("PI", std::f64::consts::PI),
+        ("E", std::f64::consts::E),
+        ("LN10", std::f64::consts::LN_10),
+        ("LN2", std::f64::consts::LN_2),
+        ("LOG10E", std::f64::consts::LOG10_E),
+        ("LOG2E", std::f64::consts::LOG2_E),
+        ("SQRT1_2", std::f64::consts::FRAC_1_SQRT_2),
+        ("SQRT2", std::f64::consts::SQRT_2),
+    ] {
+        let si = kernel.string_forge().as_ref().intern(name).0;
+        let sh_c = kernel
+            .shape_forge()
+            .as_ref()
+            .make_shape(math.shape_id(), si);
+        math.set_shape_id(sh_c);
+        math.ensure_hash_props().push(Box::new(JsValue::float(val)));
     }
 
     let si_m = kernel.string_forge().intern("Math").0;
@@ -506,7 +586,9 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     global.set_shape_id(m_shape);
     global.ensure_hash_props().push(Box::new(m_val));
     global.bump_generation();
+}
 
+fn bind_function(kernel: &Arc<OxideKernel>) {
     let function_methods = FunctionMethods {
         call: crate::builtins::function::function_call as *const (),
         apply: crate::builtins::function::function_apply as *const (),
@@ -517,6 +599,19 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         kernel.string_forge().as_ref(),
         kernel.shape_forge().as_ref(),
     );
+}
+
+pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
+    let global_ptr = kernel.global_object().as_ptr() as *mut JsObject;
+    let global = unsafe { &mut *global_ptr };
+
+    bind_object(kernel, global);
+    bind_array(kernel, global);
+    bind_error(kernel, global);
+    bind_string(kernel, global);
+    bind_number(kernel, global);
+    bind_math(kernel, global);
+    bind_function(kernel);
 }
 
 impl Vm {
