@@ -108,7 +108,11 @@ fn eval(code: &str, kernel: &Arc<OxideKernel>, pool: &Arc<VmPool>) -> ExitCode {
     let mut guard = pool.spawn();
     match guard.vm_mut().run(&module) {
         Ok(result) => {
-            format_result(kernel.string_forge().as_ref(), kernel.shape_forge().as_ref(), result);
+            format_result(
+                kernel.string_forge().as_ref(),
+                kernel.shape_forge().as_ref(),
+                result,
+            );
             ExitCode::SUCCESS
         }
         Err(err) => {
