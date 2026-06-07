@@ -118,6 +118,22 @@ impl OpCode {
                 | OpCode::JOIN
         )
     }
+
+    pub fn has_ic_ext_words(&self) -> bool {
+        matches!(
+            self,
+            OpCode::IC_GET_PROP
+                | OpCode::IC_SET_PROP
+                | OpCode::MEMBER_INC
+                | OpCode::MEMBER_DEC
+                | OpCode::COMPOUND_MEMBER_ADD
+                | OpCode::COMPOUND_MEMBER_SUB
+                | OpCode::COMPOUND_MEMBER_MUL
+                | OpCode::COMPOUND_MEMBER_DIV
+                | OpCode::COMPOUND_MEMBER_MOD
+                | OpCode::COMPOUND_MEMBER_EXP
+        )
+    }
 }
 
 impl TryFrom<u8> for OpCode {

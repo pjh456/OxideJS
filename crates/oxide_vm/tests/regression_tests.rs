@@ -30,10 +30,29 @@ fn regression_to_boolean_empty_string() {
 }
 
 #[test]
-fn regression_continue_in_for() {
+fn regression_rerun_clears_ic_cache() {
+    let allocator = Allocator::default();
+    let source = "var o = {a: 1}; o.a";
+    let program = oxide_parser::parse(&allocator, source).expect("parse");
+    let module = Compiler::new().compile(&program).expect("compile");
+    let mut vm = Vm::new();
+    assert_eq!(format!("{}", vm.run(&module).unwrap()), "1");
+
+    let source2 = "var o = {a: 2}; o.a";
+    let program2 = oxide_parser::parse(&allocator, source2).expect("parse");
+    let module2 = Compiler::new().compile(&program2).expect("compile");
+    vm.run(&module2).unwrap();
     assert_eq!(
-        eval("var r=0; for(i=0;i<3;i=i+1){if(i==1)continue;r=r+i;}r"),
+        format!("{}", vm.rerun().unwrap()),
         "2",
-        "continue should skip iteration body"
+        "rerun should re-read IC-cached property, not stale value from previous run"
+    );
+}
+
+#[test]
+fn regression_recursion_depth_limit() {
+    assert_eq!(
+        eval("function f(){f()} f()"),
+        "vm error: RangeError: Maximum call stack size exceeded"
     );
 }

@@ -864,7 +864,25 @@ impl Vm {
         self.regs = [JsValue::undefined(); 256];
         self.frames.clear();
         self.for_in_iters.clear();
+        self.clear_ic_caches();
         self.dispatch()
+    }
+
+    fn clear_ic_caches(&mut self) {
+        let mut i = 0;
+        while i < self.bytecode.len() {
+            let op = opcode::opcode(self.bytecode[i]);
+            if op.has_ic_ext_words() {
+                if i + 3 < self.bytecode.len() {
+                    self.bytecode[i + 1] = 0;
+                    self.bytecode[i + 2] = 0;
+                    self.bytecode[i + 3] = 0;
+                }
+                i += 4;
+            } else {
+                i += 1;
+            }
+        }
     }
 
     pub fn run(&mut self, module: &CompiledModule) -> Result<JsValue, String> {
