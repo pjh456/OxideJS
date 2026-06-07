@@ -581,7 +581,7 @@ impl Compiler {
                     };
                     let val_reg = self.emit_expression(e, ctx)?;
                     let idx_reg = ctx.alloc_reg();
-                    let idx = ctx.add_constant(Constant::Number(i as f64));
+                    let idx = ctx.add_constant(Constant::Int(i as i32));
                     ctx.emit(opcode::encode(
                         OpCode::LOAD_CONST,
                         idx_reg,
