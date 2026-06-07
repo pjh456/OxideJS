@@ -371,6 +371,7 @@ impl Compiler {
 
                 Ok(None)
             }
+            Statement::ThrowStatement(_) => Err("throw statement not supported".into()),
             _ => Ok(None),
         }
     }

@@ -56,3 +56,11 @@ fn regression_recursion_depth_limit() {
         "vm error: RangeError: Maximum call stack size exceeded"
     );
 }
+
+#[test]
+fn regression_throw_statement_errors() {
+    assert_eq!(
+        eval("throw 'error'"),
+        "compile error: throw statement not supported"
+    );
+}

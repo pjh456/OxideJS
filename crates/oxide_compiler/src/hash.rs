@@ -116,6 +116,9 @@ fn hash_statement(stmt: &Statement, h: &mut rustc_hash::FxHasher) {
                 }
             }
         }
+        Statement::ThrowStatement(_ts) => {
+            14u8.hash(h);
+        }
         _ => {
             std::mem::discriminant(stmt).hash(h);
         }

@@ -195,6 +195,9 @@ impl Compiler {
                 // FD emits LOAD_CONST(BytecodeFunc) + STORE_VAR
                 ctx.projected_pc += 2;
             }
+            Statement::ThrowStatement(_) => {
+                // throw not yet implemented; emit pass will error
+            }
             _ => {}
         }
     }
