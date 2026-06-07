@@ -241,11 +241,8 @@ impl JsObject {
     }
 
     pub fn set_prop_expand_heap(&mut self, offset: u8, val: JsValue) {
-        if offset >= 4 {
-            let needed = (offset as usize) + 1;
-            if self.overflow.is_null() || offset >= self.prop_count() + 4 {
-                self.alloc_overflow_heap(needed.max(8));
-            }
+        if offset >= 4 && self.overflow.is_null() {
+            self.alloc_overflow_heap(32);
         }
         self.set_prop(offset, val);
     }
