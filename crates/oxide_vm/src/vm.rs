@@ -1145,6 +1145,12 @@ impl Vm {
                                         ));
                                     }
 
+                                    if self.frames.len() >= self.kernel.config.max_call_depth {
+                                        return Err(
+                                            "RangeError: Maximum call stack size exceeded".into()
+                                        );
+                                    }
+
                                     // Clone sub_module data before mutably borrowing self
                                     let sub_bytecode = self.sub_modules[sub_idx].bytecode.clone();
                                     let sub_n_args = self.sub_modules[sub_idx].n_args as usize;
