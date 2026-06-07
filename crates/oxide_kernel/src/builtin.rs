@@ -66,6 +66,15 @@ pub struct StringMethods {
     pub search: *const (),
 }
 
+pub struct NumberMethods {
+    pub is_nan: *const (),
+    pub is_finite: *const (),
+    pub parse_int: *const (),
+    pub parse_float: *const (),
+    pub to_string: *const (),
+    pub to_fixed: *const (),
+}
+
 pub struct BuiltinWorld {
     pub object_proto: P<JsObject>,
     pub array_proto: P<JsObject>,
@@ -554,6 +563,61 @@ impl BuiltinWorld {
             "search",
             methods.search,
             1,
+        );
+    }
+
+    pub fn bind_number_methods(
+        &self,
+        methods: &NumberMethods,
+        string_forge: &StringForge,
+        shape_forge: &ShapeForge,
+    ) {
+        let ctor_ptr = P::as_ptr(&self.number_constructor) as *mut JsObject;
+        let ctor = unsafe { &mut *ctor_ptr };
+        let proto_ptr = P::as_ptr(&self.number_proto) as *mut JsObject;
+        let proto = unsafe { &mut *proto_ptr };
+
+        let _ = Self::bind_method(ctor, shape_forge, string_forge, "isNaN", methods.is_nan, 1);
+        let _ = Self::bind_method(
+            ctor,
+            shape_forge,
+            string_forge,
+            "isFinite",
+            methods.is_finite,
+            1,
+        );
+        let _ = Self::bind_method(
+            ctor,
+            shape_forge,
+            string_forge,
+            "parseInt",
+            methods.parse_int,
+            1,
+        );
+        let _ = Self::bind_method(
+            ctor,
+            shape_forge,
+            string_forge,
+            "parseFloat",
+            methods.parse_float,
+            1,
+        );
+
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "toString",
+            methods.to_string,
+            0,
+        );
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "toFixed",
+            methods.to_fixed,
+            0,
         );
     }
 

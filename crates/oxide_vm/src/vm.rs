@@ -8,7 +8,9 @@ use oxide_compiler::opcode::{self, OpCode};
 
 use crate::coercion;
 use crate::native::NativeFn;
-use oxide_kernel::builtin::{ArrayMethods, ErrorMethods, ObjectMethods, StringMethods};
+use oxide_kernel::builtin::{
+    ArrayMethods, ErrorMethods, NumberMethods, ObjectMethods, StringMethods,
+};
 use oxide_kernel::kernel::{KernelConfig, OxideKernel};
 use oxide_kernel::prop_forge::PropTemplate;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
@@ -65,8 +67,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     let cur_count = global.prop_count();
     global.set_shape_id(obj_shape);
     global.set_prop_count(cur_count + 1);
-    let bump = bumpalo::Bump::new();
-    global.set_prop_expand(cur_count, obj_val, &bump);
+    global.set_prop_expand_heap(cur_count, obj_val);
 
     let _array_methods = ArrayMethods {
         push: crate::builtins::array::array_push as *const (),
@@ -102,8 +103,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     let cur_count = global.prop_count();
     global.set_shape_id(arr_shape);
     global.set_prop_count(cur_count + 1);
-    let bump2 = bumpalo::Bump::new();
-    global.set_prop_expand(cur_count, arr_val, &bump2);
+    global.set_prop_expand_heap(cur_count, arr_val);
     global.bump_generation();
 
     let error_methods = ErrorMethods {
@@ -128,8 +128,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     let cur_count = global.prop_count();
     global.set_shape_id(err_shape);
     global.set_prop_count(cur_count + 1);
-    let bump3 = bumpalo::Bump::new();
-    global.set_prop_expand(cur_count, err_val, &bump3);
+    global.set_prop_expand_heap(cur_count, err_val);
     global.bump_generation();
 
     let string_methods = StringMethods {
@@ -167,9 +166,61 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     let cur_count = global.prop_count();
     global.set_shape_id(str_shape);
     global.set_prop_count(cur_count + 1);
-    let bump4 = bumpalo::Bump::new();
-    global.set_prop_expand(cur_count, str_val, &bump4);
+    global.set_prop_expand_heap(cur_count, str_val);
     global.bump_generation();
+
+    let number_methods = NumberMethods {
+        is_nan: crate::builtins::number::number_is_nan as *const (),
+        is_finite: crate::builtins::number::number_is_finite as *const (),
+        parse_int: crate::builtins::number::number_parse_int as *const (),
+        parse_float: crate::builtins::number::number_parse_float as *const (),
+        to_string: crate::builtins::number::number_to_string as *const (),
+        to_fixed: crate::builtins::number::number_to_fixed as *const (),
+    };
+    kernel.builtin_world().bind_number_methods(
+        &number_methods,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
+    );
+
+    let si_num = kernel.string_forge().intern("Number").0;
+    let num_shape = kernel.shape_forge().make_shape(global.shape_id(), si_num);
+    let num_val = JsValue::from_js_object(
+        kernel.builtin_world().number_constructor.as_ptr() as *mut JsObject
+    );
+    let cur_count = global.prop_count();
+    global.set_shape_id(num_shape);
+    global.set_prop_count(cur_count + 1);
+    global.set_prop_expand_heap(cur_count, num_val);
+    global.bump_generation();
+
+    {
+        let num_ctor_ptr = kernel.builtin_world().number_constructor.as_ptr() as *mut JsObject;
+        let num_ctor = unsafe { &mut *num_ctor_ptr };
+        num_ctor.set_native_fn(Some(
+            crate::builtins::number::number_constructor as *const (),
+        ));
+        num_ctor.set_native_arg_count(1);
+    }
+
+    let pi_fn = crate::builtins::number::number_parse_int as *const ();
+    let pf_fn = crate::builtins::number::number_parse_float as *const ();
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        global,
+        kernel.shape_forge().as_ref(),
+        kernel.string_forge().as_ref(),
+        "parseInt",
+        pi_fn,
+        1,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        global,
+        kernel.shape_forge().as_ref(),
+        kernel.string_forge().as_ref(),
+        "parseFloat",
+        pf_fn,
+        1,
+    );
 }
 
 impl Vm {
@@ -597,6 +648,17 @@ impl Vm {
                         if val.is_string() {
                             let proto_ptr =
                                 self.kernel.builtin_world().string_proto.as_ptr() as *mut JsObject;
+                            let proto = unsafe { &*proto_ptr };
+                            let prop_name_si = self.regs[b].as_string_index();
+                            if let Some(resolved) = self.resolve_property(proto, prop_name_si) {
+                                self.regs[a] = resolved;
+                                self.pc += 1;
+                                continue;
+                            }
+                        }
+                        if val.is_int() || val.is_double() {
+                            let proto_ptr =
+                                self.kernel.builtin_world().number_proto.as_ptr() as *mut JsObject;
                             let proto = unsafe { &*proto_ptr };
                             let prop_name_si = self.regs[b].as_string_index();
                             if let Some(resolved) = self.resolve_property(proto, prop_name_si) {

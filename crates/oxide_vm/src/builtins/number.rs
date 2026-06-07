@@ -1,0 +1,169 @@
+use oxide_types::value::JsValue;
+
+use crate::coercion;
+use crate::native::NativeResult;
+use crate::vm::Vm;
+
+pub fn number_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let n = if args.len() > 1 {
+        coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref())
+    } else {
+        0.0
+    };
+    if n.fract() == 0.0 && n.is_finite() && n >= i32::MIN as f64 && n <= i32::MAX as f64 {
+        Ok(JsValue::int(n as i32))
+    } else {
+        Ok(JsValue::float(n))
+    }
+}
+
+pub fn number_is_nan(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    if args.len() < 2 {
+        return Ok(JsValue::bool(false));
+    }
+    let val = vm.reg(args[1]);
+    if val.is_double() {
+        Ok(JsValue::bool(val.as_double().is_nan()))
+    } else {
+        Ok(JsValue::bool(false))
+    }
+}
+
+pub fn number_is_finite(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    if args.len() < 2 {
+        return Ok(JsValue::bool(false));
+    }
+    let val = vm.reg(args[1]);
+    if val.is_int() {
+        return Ok(JsValue::bool(true));
+    }
+    if val.is_double() {
+        return Ok(JsValue::bool(val.as_double().is_finite()));
+    }
+    let n = coercion::to_number(val, vm.kernel().string_forge().as_ref());
+    Ok(JsValue::bool(n.is_finite()))
+}
+
+pub fn number_parse_int(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    if args.len() < 2 {
+        return Ok(JsValue::float(f64::NAN));
+    }
+    let sf = vm.kernel().string_forge().as_ref();
+    let s = coercion::to_string(sf, vm.reg(args[1]));
+    let s = s.trim();
+
+    if s.is_empty() {
+        return Ok(JsValue::float(f64::NAN));
+    }
+
+    let radix = if args.len() > 2 {
+        let r = coercion::to_number(vm.reg(args[2]), sf) as i32;
+        if r == 0 {
+            10
+        } else {
+            r.clamp(2, 36)
+        }
+    } else {
+        10
+    };
+
+    let (rest, hex) = if s.starts_with("0x") || s.starts_with("0X") {
+        if radix == 16 || radix == 0 || (args.len() <= 2) {
+            (s[2..].to_string(), true)
+        } else {
+            (s.to_string(), false)
+        }
+    } else {
+        (s.to_string(), false)
+    };
+
+    let actual_radix = if hex { 16u32 } else { radix as u32 };
+
+    if let Ok(n) = i32::from_str_radix(&rest, actual_radix) {
+        return Ok(JsValue::int(n));
+    }
+
+    Ok(JsValue::float(f64::NAN))
+}
+
+pub fn number_parse_float(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    if args.len() < 2 {
+        return Ok(JsValue::float(f64::NAN));
+    }
+    let sf = vm.kernel().string_forge().as_ref();
+    let s = coercion::to_string(sf, vm.reg(args[1]));
+    let s = s.trim();
+
+    if s.is_empty() {
+        return Ok(JsValue::float(f64::NAN));
+    }
+
+    match fast_float::parse::<f64, _>(&s) {
+        Ok(v) => Ok(JsValue::float(v)),
+        Err(_) => Ok(JsValue::float(f64::NAN)),
+    }
+}
+
+pub fn number_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let n = coercion::to_number(vm.reg(args[0]), vm.kernel().string_forge().as_ref());
+    let radix = if args.len() > 1 {
+        let r = coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref()) as u32;
+        r.clamp(2, 36)
+    } else {
+        10u32
+    };
+
+    if radix == 10 {
+        if n.is_nan() {
+            return Ok(vm.intern("NaN"));
+        }
+        if n.is_infinite() {
+            if n.is_sign_positive() {
+                return Ok(vm.intern("Infinity"));
+            }
+            return Ok(vm.intern("-Infinity"));
+        }
+        if n.fract() == 0.0 && n >= i32::MIN as f64 && n <= i32::MAX as f64 {
+            return Ok(vm.intern(&(n as i64).to_string()));
+        }
+        let mut buf = ryu::Buffer::new();
+        Ok(vm.intern(buf.format(n)))
+    } else {
+        if n.is_nan() {
+            return Ok(vm.intern("NaN"));
+        }
+        let nn = n as i64;
+        let mut result = String::new();
+        let mut value = nn.abs();
+        if value == 0 {
+            result.push('0');
+        } else {
+            let chars = "0123456789abcdefghijklmnopqrstuvwxyz";
+            let mut digits = Vec::new();
+            while value > 0 {
+                digits.push(chars.as_bytes()[(value % radix as i64) as usize] as char);
+                value /= radix as i64;
+            }
+            for ch in digits.iter().rev() {
+                result.push(*ch);
+            }
+        }
+        if nn < 0 {
+            result.insert(0, '-');
+        }
+        Ok(vm.intern(&result))
+    }
+}
+
+pub fn number_to_fixed(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let n = coercion::to_number(vm.reg(args[0]), vm.kernel().string_forge().as_ref());
+    let digits = if args.len() > 1 {
+        coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref()) as usize
+    } else {
+        0usize
+    }
+    .min(20);
+
+    let formatted = format!("{:.digits$}", n);
+    Ok(vm.intern(&formatted))
+}
