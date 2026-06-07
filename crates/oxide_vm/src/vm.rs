@@ -127,6 +127,13 @@ fn bind_object(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
         define_property: crate::builtins::object::object_define_property as *const (),
         get_own_property_descriptor: crate::builtins::object::object_get_own_property_descriptor
             as *const (),
+        freeze: crate::builtins::object::object_freeze as *const (),
+        seal: crate::builtins::object::object_seal as *const (),
+        prevent_extensions: crate::builtins::object::object_prevent_extensions as *const (),
+        is_frozen: crate::builtins::object::object_is_frozen as *const (),
+        is_sealed: crate::builtins::object::object_is_sealed as *const (),
+        is_extensible: crate::builtins::object::object_is_extensible as *const (),
+        get_own_property_names: crate::builtins::object::object_get_own_property_names as *const (),
     };
     kernel.builtin_world().bind_object_methods(
         &methods,

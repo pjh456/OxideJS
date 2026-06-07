@@ -18,6 +18,13 @@ pub struct ObjectMethods {
     pub assign: *const (),
     pub define_property: *const (),
     pub get_own_property_descriptor: *const (),
+    pub freeze: *const (),
+    pub seal: *const (),
+    pub prevent_extensions: *const (),
+    pub is_frozen: *const (),
+    pub is_sealed: *const (),
+    pub is_extensible: *const (),
+    pub get_own_property_names: *const (),
 }
 
 pub struct ArrayMethods {
@@ -327,6 +334,48 @@ impl BuiltinWorld {
             "getOwnPropertyDescriptor",
             methods.get_own_property_descriptor,
             2,
+        );
+        let _ = self.bind_method(ctor, shape_forge, string_forge, "freeze", methods.freeze, 1);
+        let _ = self.bind_method(ctor, shape_forge, string_forge, "seal", methods.seal, 1);
+        let _ = self.bind_method(
+            ctor,
+            shape_forge,
+            string_forge,
+            "preventExtensions",
+            methods.prevent_extensions,
+            1,
+        );
+        let _ = self.bind_method(
+            ctor,
+            shape_forge,
+            string_forge,
+            "isFrozen",
+            methods.is_frozen,
+            1,
+        );
+        let _ = self.bind_method(
+            ctor,
+            shape_forge,
+            string_forge,
+            "isSealed",
+            methods.is_sealed,
+            1,
+        );
+        let _ = self.bind_method(
+            ctor,
+            shape_forge,
+            string_forge,
+            "isExtensible",
+            methods.is_extensible,
+            1,
+        );
+        let _ = self.bind_method(
+            ctor,
+            shape_forge,
+            string_forge,
+            "getOwnPropertyNames",
+            methods.get_own_property_names,
+            1,
         );
     }
 

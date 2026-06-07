@@ -238,3 +238,85 @@ pub fn object_get_own_property_descriptor(vm: &mut Vm, args: &[u8]) -> NativeRes
 
     Ok(JsValue::from_js_object(desc))
 }
+
+fn require_obj_arg(vm: &mut Vm, args: &[u8], fn_name: &str) -> Result<*mut JsObject, JsValue> {
+    if args.len() < 2 {
+        return Err(crate::builtins::error::create_type_error(
+            vm,
+            &format!("Object.{fn_name} called on non-object"),
+        ));
+    }
+    let val = vm.reg(args[1]);
+    if !val.is_object() {
+        return Err(crate::builtins::error::create_type_error(
+            vm,
+            &format!("Object.{fn_name} called on non-object"),
+        ));
+    }
+    let ptr = val.as_js_object_ptr();
+    if ptr.is_null() {
+        return Err(crate::builtins::error::create_type_error(
+            vm,
+            &format!("Object.{fn_name} called on non-object"),
+        ));
+    }
+    Ok(ptr)
+}
+
+pub fn object_freeze(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    require_obj_arg(vm, args, "freeze")?;
+    Ok(vm.reg(args[1]))
+}
+
+pub fn object_seal(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    require_obj_arg(vm, args, "seal")?;
+    Ok(vm.reg(args[1]))
+}
+
+pub fn object_prevent_extensions(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    require_obj_arg(vm, args, "preventExtensions")?;
+    Ok(vm.reg(args[1]))
+}
+
+pub fn object_is_frozen(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    require_obj_arg(vm, args, "isFrozen")?;
+    Ok(JsValue::bool(false))
+}
+
+pub fn object_is_sealed(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    require_obj_arg(vm, args, "isSealed")?;
+    Ok(JsValue::bool(false))
+}
+
+pub fn object_is_extensible(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    require_obj_arg(vm, args, "isExtensible")?;
+    Ok(JsValue::bool(true))
+}
+
+pub fn object_get_own_property_names(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let obj_ptr = require_obj_arg(vm, args, "getOwnPropertyNames")?;
+
+    let key_names: Vec<String> = {
+        let obj = unsafe { &*obj_ptr };
+        let keys = walk_own_keys(vm, obj);
+        keys.iter()
+            .map(|(si, _)| vm.kernel().string_forge().lookup(*si).unwrap_or_default())
+            .collect()
+    };
+
+    let n = key_names.len().min(255);
+    let array_proto = vm.kernel().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let arr = vm.epoch().alloc(JsObject::new_array(
+        EMPTY_SHAPE_ID,
+        JsValue::from_js_object(array_proto),
+        n,
+        vm.epoch().bump(),
+    ));
+    for k in key_names.iter().take(n) {
+        let str_val = vm.intern(k);
+        unsafe {
+            (*arr).ensure_hash_props().push(Box::new(str_val));
+        }
+    }
+    Ok(JsValue::from_js_object(arr))
+}
