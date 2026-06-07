@@ -49,6 +49,12 @@ pub struct ForInIter<'bump> {
     pub index: usize,
 }
 
+pub struct TryHandler {
+    pub catch_pc: Option<usize>,
+    pub finally_pc: Option<usize>,
+    pub frame_depth: usize,
+}
+
 pub struct Vm {
     regs: [JsValue; 256],
     pc: usize,
@@ -67,6 +73,10 @@ pub struct Vm {
     saved_bytecode_stack: Vec<Vec<opcode::Instr>>,
     /// Stack of saved constants for nested bytecode calls
     saved_constants_stack: Vec<Vec<JsValue>>,
+    try_stack: Vec<TryHandler>,
+    exception_value: Option<JsValue>,
+    pending_exception: Option<JsValue>,
+    pending_error_kind: Option<&'static str>,
 }
 
 fn bind_object(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
@@ -660,6 +670,10 @@ impl Vm {
             sub_module_constants: Vec::new(),
             saved_bytecode_stack: Vec::new(),
             saved_constants_stack: Vec::new(),
+            try_stack: Vec::new(),
+            exception_value: None,
+            pending_exception: None,
+            pending_error_kind: None,
         }
     }
 
@@ -680,6 +694,10 @@ impl Vm {
             sub_module_constants: Vec::new(),
             saved_bytecode_stack: Vec::new(),
             saved_constants_stack: Vec::new(),
+            try_stack: Vec::new(),
+            exception_value: None,
+            pending_exception: None,
+            pending_error_kind: None,
         }
     }
 
@@ -864,6 +882,10 @@ impl Vm {
         self.regs = [JsValue::undefined(); 256];
         self.frames.clear();
         self.for_in_iters.clear();
+        self.try_stack.clear();
+        self.exception_value = None;
+        self.pending_exception = None;
+        self.pending_error_kind = None;
         self.clear_ic_caches();
         self.dispatch()
     }
@@ -895,6 +917,10 @@ impl Vm {
         self.frames.clear();
         self.saved_bytecode_stack.clear();
         self.saved_constants_stack.clear();
+        self.try_stack.clear();
+        self.exception_value = None;
+        self.pending_exception = None;
+        self.pending_error_kind = None;
 
         for (name, reg) in &module.builtin_reg_map {
             let si = self.kernel.string_forge().intern(name.as_str()).0;
@@ -920,6 +946,31 @@ impl Vm {
         _args_regs: &[u8],
     ) -> Result<JsValue, String> {
         Err("bytecode function calls not yet supported".into())
+    }
+
+    fn unwind(&mut self) -> Result<(), String> {
+        while let Some(handler) = self.try_stack.pop() {
+            if let Some(finally_pc) = handler.finally_pc {
+                if self.pending_exception.is_none() {
+                    self.pending_exception = self.exception_value.take();
+                }
+                self.try_stack.push(handler);
+                self.pc = finally_pc;
+                return Ok(());
+            }
+            if let Some(catch_pc) = handler.catch_pc {
+                let exc = self.exception_value.take().unwrap_or(JsValue::undefined());
+                self.regs[0] = exc;
+                self.pc = catch_pc;
+                return Ok(());
+            }
+        }
+        let msg = self
+            .exception_value
+            .take()
+            .map(|v| format!("uncaught {v}"))
+            .unwrap_or_else(|| "uncaught exception".to_string());
+        Err(msg)
     }
 
     fn dispatch(&mut self) -> Result<JsValue, String> {
@@ -1264,7 +1315,7 @@ impl Vm {
                 }
 
                 OpCode::NEW_EXPRESSION => {
-                    let constructor_reg = a as usize;
+                    let constructor_reg = a;
                     let first_arg_reg = b as u8;
 
                     let constructor = self.regs[constructor_reg];
@@ -2410,6 +2461,55 @@ impl Vm {
 
                 OpCode::FOR_IN_CLEANUP => {
                     self.for_in_iters.pop();
+                }
+
+                OpCode::THROW => {
+                    let exc_value = self.regs[rd];
+                    self.exception_value = Some(exc_value);
+                    match self.unwind() {
+                        Ok(()) => continue,
+                        Err(e) => return Err(e),
+                    }
+                }
+
+                OpCode::TRY_BEGIN => {
+                    let offset = opcode::offset16(instr) as isize;
+                    let catch_pc = if offset == 0 {
+                        None
+                    } else {
+                        Some(((self.pc as isize) + offset - 1) as usize)
+                    };
+                    self.try_stack.push(TryHandler {
+                        catch_pc,
+                        finally_pc: None,
+                        frame_depth: self.frames.len(),
+                    });
+                }
+
+                OpCode::TRY_END => {
+                    self.try_stack.pop();
+                }
+
+                OpCode::TRY_FINALLY_BEGIN => {
+                    let offset = opcode::offset16(instr) as isize;
+                    let finally_pc = ((self.pc as isize) + offset - 1) as usize;
+                    self.try_stack.push(TryHandler {
+                        catch_pc: None,
+                        finally_pc: Some(finally_pc),
+                        frame_depth: self.frames.len(),
+                    });
+                }
+
+                OpCode::TRY_FINALLY_END => {
+                    self.try_stack.pop();
+                    if self.pending_exception.is_some() && self.exception_value.is_none() {
+                        self.exception_value = self.pending_exception.take();
+                        match self.unwind() {
+                            Ok(()) => continue,
+                            Err(e) => return Err(e),
+                        }
+                    }
+                    self.pending_exception = None;
                 }
 
                 _ => {

@@ -127,9 +127,7 @@ fn hash_statement(stmt: &Statement, h: &mut rustc_hash::FxHasher) {
             }
             if let Some(catch) = &ts.handler {
                 if let Some(param) = &catch.param {
-                    if let oxide_parser::BindingPattern::BindingIdentifier(bi) =
-                        &param.pattern
-                    {
+                    if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &param.pattern {
                         bi.name.as_str().hash(h);
                     }
                 }

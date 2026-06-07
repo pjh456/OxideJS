@@ -206,6 +206,8 @@ impl Compiler {
                 let has_catch = ts.handler.is_some();
                 let has_finally = ts.finalizer.is_some();
 
+                ctx.alloc_reg(); // result_reg
+
                 if has_finally {
                     ctx.projected_pc += 1; // TRY_FINALLY_BEGIN (before try body)
                 }
@@ -217,6 +219,7 @@ impl Compiler {
                 for s in &ts.block.body {
                     self.count_statement(s, ctx);
                 }
+                ctx.projected_pc += 1; // LOAD_VAR result_reg (if try body has result)
 
                 if has_catch {
                     ctx.projected_pc += 1; // TRY_END
@@ -237,6 +240,7 @@ impl Compiler {
                     for cs in &catch.body.body {
                         self.count_statement(cs, ctx);
                     }
+                    ctx.projected_pc += 1; // LOAD_VAR result_reg (if catch body has result)
                     ctx.pop_scope();
                 }
 
@@ -246,6 +250,7 @@ impl Compiler {
                     for fs in &finally.body {
                         self.count_statement(fs, ctx);
                     }
+                    ctx.projected_pc += 1; // LOAD_VAR result_reg (if finally has result)
                     ctx.projected_pc += 1; // TRY_FINALLY_END
                 }
 

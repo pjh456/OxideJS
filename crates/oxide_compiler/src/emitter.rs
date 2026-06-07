@@ -383,6 +383,7 @@ impl Compiler {
                 let has_catch = ts.handler.is_some();
                 let has_finally = ts.finalizer.is_some();
 
+                let result_reg = ctx.alloc_reg();
                 let mut try_finally_begin_pos: Option<usize> = None;
                 let mut try_begin_pos: Option<usize> = None;
 
@@ -396,9 +397,18 @@ impl Compiler {
                     ctx.emit(opcode::encode_try_begin(0)); // placeholder
                 }
 
+                let mut last_try_result: Option<u8> = None;
                 for s in &ts.block.body {
-                    self.emit_statement(s, ctx)?;
+                    if let Some(r) = self.emit_statement(s, ctx)? {
+                        last_try_result = Some(r);
+                    }
                 }
+                ctx.emit(opcode::encode(
+                    OpCode::LOAD_VAR,
+                    result_reg,
+                    last_try_result.unwrap_or(result_reg),
+                    0,
+                ));
 
                 if has_catch {
                     ctx.emit(opcode::encode(OpCode::TRY_END, 0, 0, 0));
@@ -417,7 +427,7 @@ impl Compiler {
                 ctx.label_map.insert(catch_label, catch_label_pc);
 
                 if let Some(try_begin_pc) = try_begin_pos {
-                    let offset = catch_label_pc as isize - (try_begin_pc as isize + 1);
+                    let offset = catch_label_pc as isize - (try_begin_pc as isize);
                     ctx.bytecode[try_begin_pc] = opcode::encode_try_begin(offset as i16);
                 }
 
@@ -425,16 +435,24 @@ impl Compiler {
                     ctx.push_scope();
                     if let Some(param) = &catch.param {
                         let catch_reg = ctx.alloc_reg();
-                        if let oxide_parser::BindingPattern::BindingIdentifier(bi) =
-                            &param.pattern
+                        if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &param.pattern
                         {
                             ctx.declare_initialized(bi.name.as_str(), catch_reg)?;
                             ctx.emit(opcode::encode(OpCode::STORE_VAR, catch_reg, 0, 0));
                         }
                     }
+                    let mut last_catch_result: Option<u8> = None;
                     for s in &catch.body.body {
-                        self.emit_statement(s, ctx)?;
+                        if let Some(r) = self.emit_statement(s, ctx)? {
+                            last_catch_result = Some(r);
+                        }
                     }
+                    ctx.emit(opcode::encode(
+                        OpCode::LOAD_VAR,
+                        result_reg,
+                        last_catch_result.unwrap_or(result_reg),
+                        0,
+                    ));
                     ctx.pop_scope();
                 }
 
@@ -442,30 +460,39 @@ impl Compiler {
                     let finally_label = Label::FinallyBody(id);
                     let finally_label_pc = ctx.bytecode.len();
                     ctx.label_map.insert(finally_label, finally_label_pc);
-
                     if let Some(fb_pos) = try_finally_begin_pos {
-                        let offset = finally_label_pc as isize - (fb_pos as isize + 1);
-                        ctx.bytecode[fb_pos] = opcode::encode_try_finally_begin(offset as i16);
+                        let offset = finally_label_pc as isize - (fb_pos as isize);
+                        ctx.bytecode[fb_pos] =
+                            opcode::encode_try_finally_begin(offset as i16);
                     }
 
                     if let Some(jmp_pos) = jmp_skip_pos {
-                        let offset = finally_label_pc as isize - (jmp_pos as isize + 1);
+                        let offset = finally_label_pc as isize - (jmp_pos as isize);
                         ctx.bytecode[jmp_pos] = opcode::encode_jmp(offset as i16);
                     }
 
+                    let mut last_finally_result: Option<u8> = None;
                     for s in &ts.finalizer.as_ref().unwrap().body {
-                        self.emit_statement(s, ctx)?;
+                        if let Some(r) = self.emit_statement(s, ctx)? {
+                            last_finally_result = Some(r);
+                        }
                     }
+                    ctx.emit(opcode::encode(
+                        OpCode::LOAD_VAR,
+                        result_reg,
+                        last_finally_result.unwrap_or(result_reg),
+                        0,
+                    ));
                     ctx.emit(opcode::encode(OpCode::TRY_FINALLY_END, 0, 0, 0));
                 } else if let Some(jmp_pos) = jmp_skip_pos {
-                    let offset = ctx.bytecode.len() as isize - (jmp_pos as isize + 1);
+                    let offset = ctx.bytecode.len() as isize - (jmp_pos as isize);
                     ctx.bytecode[jmp_pos] = opcode::encode_jmp(offset as i16);
                 }
 
                 let try_end_pc = ctx.bytecode.len();
                 ctx.label_map.insert(try_end_label, try_end_pc);
 
-                Ok(None)
+                Ok(Some(result_reg))
             }
             _ => Ok(None),
         }
