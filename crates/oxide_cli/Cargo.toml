@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 oxide_parser = { path = "../oxide_parser" }
+oxide_types = { path = "../oxide_types" }
 oxide_compiler = { path = "../oxide_compiler" }
 oxide_vm = { path = "../oxide_vm" }
 oxide_kernel = { path = "../oxide_kernel" }

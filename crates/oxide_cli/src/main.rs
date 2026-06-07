@@ -8,8 +8,10 @@ use ansi_term::Colour::Red;
 use clap::{Parser, Subcommand};
 use oxide_compiler::compiler::Compiler;
 use oxide_kernel::kernel::{KernelConfig, OxideKernel};
+use oxide_kernel::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use oxide_kernel::string_forge::StringForge;
 use oxide_parser::Allocator;
+use oxide_types::object::JsObject;
 use oxide_vm::vm_pool::VmPool;
 use oxide_vm::JsValue;
 
@@ -106,7 +108,7 @@ fn eval(code: &str, kernel: &Arc<OxideKernel>, pool: &Arc<VmPool>) -> ExitCode {
     let mut guard = pool.spawn();
     match guard.vm_mut().run(&module) {
         Ok(result) => {
-            format_result(kernel.string_forge().as_ref(), result);
+            format_result(kernel.string_forge().as_ref(), kernel.shape_forge().as_ref(), result);
             ExitCode::SUCCESS
         }
         Err(err) => {
@@ -116,52 +118,78 @@ fn eval(code: &str, kernel: &Arc<OxideKernel>, pool: &Arc<VmPool>) -> ExitCode {
     }
 }
 
-fn format_result(string_forge: &StringForge, val: JsValue) {
+fn format_result(string_forge: &StringForge, shape_forge: &ShapeForge, val: JsValue) {
+    println!("{}", format_js_value(string_forge, shape_forge, val));
+}
+
+fn format_js_value(string_forge: &StringForge, shape_forge: &ShapeForge, val: JsValue) -> String {
     if val.is_string() {
         if let Some(s) = string_forge.lookup(val.as_string_index()) {
-            println!("\"{s}\"");
+            format!("\"{s}\"")
         } else {
-            println!("{val}");
+            format!("{val}")
         }
     } else if val.is_object() {
         let obj = unsafe { &*val.as_js_object_ptr() };
         if obj.is_function() {
-            println!("[Function]");
+            "[Function]".to_string()
+        } else if obj.is_array() {
+            format_array(string_forge, shape_forge, obj)
         } else {
-            print!("{{");
-            let count = obj.prop_count() as usize;
-            let mut first = true;
-            for i in 0..count.min(4) {
-                let prop_val = obj.get_prop_at(i as u8);
-                if prop_val.is_undefined() {
-                    continue;
-                }
-                if !first {
-                    print!(", ");
-                }
-                first = false;
-                print!("{:?}: ", i);
-                print_value(string_forge, prop_val);
-            }
-            println!("}}");
+            format_object(string_forge, shape_forge, obj)
         }
     } else if val.is_undefined() {
-        println!("undefined");
+        "undefined".to_string()
     } else {
-        println!("{val}");
+        format!("{val}")
     }
 }
 
-fn print_value(string_forge: &StringForge, val: JsValue) {
-    if val.is_string() {
-        if let Some(s) = string_forge.lookup(val.as_string_index()) {
-            print!("\"{s}\"");
-        } else {
-            print!("{val}");
+fn format_object(string_forge: &StringForge, shape_forge: &ShapeForge, obj: &JsObject) -> String {
+    let mut entries = Vec::new();
+    let shape_id = obj.shape_id();
+    let mut shape_ids = Vec::new();
+    let mut cursor = Some(shape_id);
+    while let Some(id) = cursor {
+        if id == EMPTY_SHAPE_ID {
+            break;
         }
-    } else {
-        print!("{val}");
+        if let Some(shape) = shape_forge.get_shape(id) {
+            cursor = shape.parent;
+            if shape.property_name != u32::MAX {
+                shape_ids.push(id);
+            }
+        } else {
+            break;
+        }
     }
+    let mut pos: u8 = 0;
+    for id in shape_ids.iter().rev() {
+        if let Some(shape) = shape_forge.get_shape(*id) {
+            if shape.property_name != 0 {
+                let prop_val = obj.get_prop_at(pos);
+                if prop_val.is_undefined() {
+                    pos += 1;
+                    continue;
+                }
+                let name = string_forge.lookup(shape.property_name).unwrap_or_default();
+                let val_str = format_js_value(string_forge, shape_forge, prop_val);
+                entries.push(format!("\"{name}\": {val_str}"));
+            }
+        }
+        pos += 1;
+    }
+    format!("{{{}}}", entries.join(", "))
+}
+
+fn format_array(string_forge: &StringForge, shape_forge: &ShapeForge, obj: &JsObject) -> String {
+    let len = obj.prop_vec_len();
+    let mut items = Vec::new();
+    for i in 0..len {
+        let val = obj.get_prop_at(i as u8);
+        items.push(format_js_value(string_forge, shape_forge, val));
+    }
+    format!("[{}]", items.join(", "))
 }
 
 fn run(file: &str, kernel: &Arc<OxideKernel>, pool: &Arc<VmPool>) -> ExitCode {

@@ -773,6 +773,7 @@ dependencies = [
  "oxide_compiler",
  "oxide_kernel",
  "oxide_parser",
+ "oxide_types",
  "oxide_vm",
  "rustyline",
 ]
