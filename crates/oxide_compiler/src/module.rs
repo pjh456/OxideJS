@@ -10,6 +10,7 @@ pub enum Constant {
     Boolean(bool),
     Null,
     Undefined,
+    BytecodeFunc(u32),
 }
 
 pub struct CompiledModule {
@@ -17,6 +18,19 @@ pub struct CompiledModule {
     pub constants: Vec<Constant>,
     pub n_registers: u8,
     pub builtin_reg_map: Vec<(String, u8)>,
+    pub sub_modules: Vec<CompiledModule>,
+}
+
+impl Clone for CompiledModule {
+    fn clone(&self) -> Self {
+        Self {
+            bytecode: self.bytecode.clone(),
+            constants: self.constants.clone(),
+            n_registers: self.n_registers,
+            builtin_reg_map: self.builtin_reg_map.clone(),
+            sub_modules: self.sub_modules.clone(),
+        }
+    }
 }
 
 impl fmt::Display for CompiledModule {
@@ -24,7 +38,12 @@ impl fmt::Display for CompiledModule {
         writeln!(f, "; n_registers = {}", self.n_registers)?;
         writeln!(f, "; constants:")?;
         for (i, c) in self.constants.iter().enumerate() {
-            writeln!(f, ";   [{i}] = {:?}", c)?;
+            match c {
+                Constant::BytecodeFunc(idx) => {
+                    writeln!(f, ";   [{i}] = BytecodeFunc(sub_module[{idx}])")?
+                }
+                other => writeln!(f, ";   [{i}] = {other:?}")?,
+            }
         }
         writeln!(f)?;
         for (offset, &instr) in self.bytecode.iter().enumerate() {

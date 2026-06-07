@@ -40,6 +40,8 @@ pub struct CallFrame {
     pub return_addr: usize,
     pub n_locals: u8,
     pub n_args: u8,
+    pub function_obj_reg: u8,
+    pub frame_base: u8,
 }
 
 pub struct ForInIter<'bump> {
@@ -59,6 +61,8 @@ pub struct Vm {
     pub epoch: Epoch,
     pub object_prototype: P<JsObject>,
     pub math_rng_state: u64,
+    sub_modules: Vec<CompiledModule>,
+    sub_module_constants: Vec<Vec<JsValue>>,
 }
 
 fn bind_object(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
@@ -630,6 +634,8 @@ impl Vm {
             epoch: Epoch::new(),
             object_prototype: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             math_rng_state: 0,
+            sub_modules: Vec::new(),
+            sub_module_constants: Vec::new(),
         }
     }
 
@@ -646,6 +652,8 @@ impl Vm {
             epoch: Epoch::new(),
             object_prototype: P::clone(&kernel.builtin_world().object_proto),
             math_rng_state: 0,
+            sub_modules: Vec::new(),
+            sub_module_constants: Vec::new(),
         }
     }
 
@@ -816,8 +824,11 @@ impl Vm {
                 Constant::Boolean(b) => JsValue::bool(*b),
                 Constant::Null => JsValue::null(),
                 Constant::Undefined => JsValue::undefined(),
+                Constant::BytecodeFunc(_idx) => JsValue::undefined(),
             })
             .collect();
+        self.sub_modules = module.sub_modules.clone();
+        self.sub_module_constants = vec![Vec::new(); self.sub_modules.len()];
         self.bytecode = module.bytecode.clone();
         self.pc = 0;
         self.regs = [JsValue::undefined(); 256];
@@ -836,6 +847,17 @@ impl Vm {
         }
 
         self.dispatch()
+    }
+
+    /// Call a bytecode function from native code (D-09).
+    /// Stub: sub_module storage not yet wired (plan 12.1-03).
+    #[allow(dead_code)]
+    pub fn call_bytecode_func(
+        &mut self,
+        _callback_obj: &JsObject,
+        _args_regs: &[u8],
+    ) -> Result<JsValue, String> {
+        Err("bytecode function calls not yet supported".into())
     }
 
     fn dispatch(&mut self) -> Result<JsValue, String> {
@@ -1049,15 +1071,137 @@ impl Vm {
                                 }
                                 continue;
                             }
+                            // bytecode path skeleton - wired in plan 12.1-03
+                            return Err("bytecode function calls not yet supported".into());
                         }
                     }
 
                     return Err("CALL target is not a native function".into());
                 }
 
+                OpCode::CALL_NATIVE => {
+                    let callee_reg = rd;
+                    let this_reg = a as u8;
+                    let first_arg_reg = b as u8;
+
+                    let callee = self.regs[callee_reg];
+
+                    if !callee.is_object() {
+                        return Err("CALL_NATIVE target is not an object".into());
+                    }
+                    let obj_ptr = callee.as_js_object_ptr();
+                    if obj_ptr.is_null() {
+                        return Err("CALL_NATIVE target is null".into());
+                    }
+                    let obj = unsafe { &*obj_ptr };
+                    if !obj.is_function() || obj.native_fn().is_none() {
+                        return Err("CALL_NATIVE target is not a native function".into());
+                    }
+
+                    let ext = self.bytecode[self.pc];
+                    self.pc += 1;
+                    let arg_count = (ext & 0xFF) as usize;
+
+                    let mut args_buf = [0u8; 257];
+                    args_buf[0] = this_reg;
+                    for i in 0..arg_count.min(256) {
+                        args_buf[i + 1] = first_arg_reg.wrapping_add(i as u8);
+                    }
+                    let args_slice = &args_buf[..arg_count + 1];
+
+                    let func: NativeFn = unsafe { std::mem::transmute(obj.native_fn().unwrap()) };
+                    self.regs[254] = callee;
+                    match func(self, args_slice) {
+                        Ok(val) => self.regs[0] = val,
+                        Err(err_val) => {
+                            return Err(format!("Native error: {:?}", err_val));
+                        }
+                    }
+                }
+
+                OpCode::NEW_EXPRESSION => {
+                    let constructor_reg = a as usize;
+                    let first_arg_reg = b as u8;
+
+                    let constructor = self.regs[constructor_reg];
+                    if !constructor.is_object() {
+                        return Err("NEW_EXPRESSION: constructor is not an object".into());
+                    }
+                    let ctor_ptr = constructor.as_js_object_ptr();
+                    if ctor_ptr.is_null() {
+                        return Err("NEW_EXPRESSION: constructor is null".into());
+                    }
+                    let ctor_obj = unsafe { &*ctor_ptr };
+                    if !ctor_obj.is_function() {
+                        return Err("NEW_EXPRESSION: constructor is not a function".into());
+                    }
+
+                    // Read extension word for arg_count
+                    let ext = self.bytecode[self.pc];
+                    self.pc += 1;
+                    let arg_count = (ext & 0xFF) as usize;
+
+                    // Create new empty object
+                    let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
+                    let new_obj = self.epoch.alloc(JsObject::new_empty(
+                        EMPTY_SHAPE_ID,
+                        JsValue::from_js_object(proto_ptr),
+                    ));
+
+                    // Look up constructor.prototype and set as proto of new object
+                    let proto_si = self.kernel.string_forge().intern("prototype").0;
+                    if let Some(proto_val) = self.resolve_property(ctor_obj, proto_si) {
+                        if proto_val.is_object() {
+                            let new_obj_mut = unsafe { &mut *new_obj };
+                            let proto_obj_ptr = proto_val.as_js_object_ptr();
+                            let _ = new_obj_mut.set_proto(JsValue::from_js_object(proto_obj_ptr));
+                        }
+                    }
+
+                    // If constructor has native_fn, call it with this=new_obj
+                    if ctor_obj.native_fn().is_some() {
+                        let new_obj_val = JsValue::object(new_obj as *mut u8);
+                        // this_reg = register holding new_obj; we use regs[255] as scratch
+                        self.regs[255] = new_obj_val;
+
+                        let mut args_buf = [0u8; 257];
+                        args_buf[0] = 255u8; // this = new_obj
+                        for i in 0..arg_count.min(256) {
+                            args_buf[i + 1] = first_arg_reg.wrapping_add(i as u8);
+                        }
+                        let args_slice = &args_buf[..arg_count + 1];
+
+                        let func: NativeFn =
+                            unsafe { std::mem::transmute(ctor_obj.native_fn().unwrap()) };
+                        self.regs[254] = constructor;
+                        match func(self, args_slice) {
+                            Ok(val) => {
+                                // If constructor returns an object, use that; else use new_obj
+                                if val.is_object() {
+                                    self.regs[0] = val;
+                                } else {
+                                    self.regs[0] = new_obj_val;
+                                }
+                            }
+                            Err(err_val) => {
+                                return Err(format!("Native constructor error: {:?}", err_val));
+                            }
+                        }
+                    } else {
+                        // Bytecode constructor - wired in plan 12.1-03
+                        return Err(
+                            "NEW_EXPRESSION: bytecode constructors not yet supported".into()
+                        );
+                    }
+                }
+
                 OpCode::RETURN => {
                     let result = self.regs[rd];
                     if let Some(frame) = self.frames.pop() {
+                        // Restore caller's pc and merge result into caller's regs[0].
+                        // frame.frame_base marks the first register of the caller frame;
+                        // when bytecode calls are wired in 12.1-03, registers above
+                        // frame_base will be cleared on RETURN.
                         self.pc = frame.return_addr;
                         self.regs[0] = result;
                     } else {

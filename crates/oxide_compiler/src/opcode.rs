@@ -60,9 +60,11 @@ pub enum OpCode {
     STORE_VAR = 0x31,
     LOAD_CONST = 0x32,
 
-    // ── Call (0x40-0x4F) ──
+    // -- Call (0x40-0x4F) --
     CALL = 0x40,
     RETURN = 0x41,
+    CALL_NATIVE = 0x42,
+    NEW_EXPRESSION = 0x43,
 
     // ── Object Property (0x50-0x5F) ──
     IC_GET_PROP = 0x50,
@@ -165,6 +167,8 @@ impl TryFrom<u8> for OpCode {
             0x32 => Ok(OpCode::LOAD_CONST),
             0x40 => Ok(OpCode::CALL),
             0x41 => Ok(OpCode::RETURN),
+            0x42 => Ok(OpCode::CALL_NATIVE),
+            0x43 => Ok(OpCode::NEW_EXPRESSION),
             0x50 => Ok(OpCode::IC_GET_PROP),
             0x51 => Ok(OpCode::IC_SET_PROP),
             0x52 => Ok(OpCode::GET_PROP),
@@ -244,6 +248,8 @@ impl fmt::Display for OpCode {
             OpCode::LOAD_CONST => "LOAD_CONST",
             OpCode::CALL => "CALL",
             OpCode::RETURN => "RETURN",
+            OpCode::CALL_NATIVE => "CALL_NATIVE",
+            OpCode::NEW_EXPRESSION => "NEW_EXPRESSION",
             OpCode::IC_GET_PROP => "IC_GET_PROP",
             OpCode::IC_SET_PROP => "IC_SET_PROP",
             OpCode::GET_PROP => "GET_PROP",

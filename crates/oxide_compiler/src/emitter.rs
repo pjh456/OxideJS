@@ -791,12 +791,13 @@ impl Compiler {
                 } else {
                     arg_regs[0]
                 };
-                ctx.emit(opcode::encode(
-                    OpCode::CALL,
-                    callee_reg,
-                    this_reg,
-                    first_arg_reg,
-                ));
+                let op = match &call.callee {
+                    Expression::Identifier(ident) if ctx.is_builtin(ident.name.as_str()) => {
+                        OpCode::CALL_NATIVE
+                    }
+                    _ => OpCode::CALL,
+                };
+                ctx.emit(opcode::encode(op, callee_reg, this_reg, first_arg_reg));
                 ctx.emit(arg_regs.len() as u32);
                 Ok(0u8)
             }

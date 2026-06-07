@@ -167,6 +167,10 @@ impl CompileCtx {
         self.switch_stack.last()
     }
 
+    pub(crate) fn is_builtin(&self, name: &str) -> bool {
+        self.builtin_reg_map.iter().any(|(n, _)| n == name)
+    }
+
     pub(crate) fn pre_register_builtins(&mut self) {
         let builtins = [
             "NaN",
@@ -235,6 +239,7 @@ impl Compiler {
             constants: ctx.constants,
             n_registers: ctx.max_regs,
             builtin_reg_map: ctx.builtin_reg_map,
+            sub_modules: Vec::new(),
         })
     }
 }
