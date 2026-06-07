@@ -8,6 +8,7 @@ use oxide_compiler::opcode::{self, OpCode};
 
 use crate::coercion;
 use crate::native::NativeFn;
+use oxide_kernel::bind_method;
 use oxide_kernel::builtin::{
     ArrayMethods, ErrorMethods, FunctionMethods, NumberMethods, ObjectMethods, StringMethods,
 };
@@ -17,6 +18,23 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::mem::{Epoch, P};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
+
+/// Invoke a native function via CALL_NATIVE dispatch.
+/// args[0] = this_reg, args[1..=n] = contiguous arg registers.
+#[allow(unused_macros)]
+macro_rules! native_call {
+    ($vm:ident, $callee:expr, $this_reg:expr, $first_arg_reg:expr, $arg_count:expr) => {{
+        let mut args_buf = [0u8; 257];
+        args_buf[0] = $this_reg;
+        for i in 0..($arg_count as usize).min(256) {
+            args_buf[i + 1] = $first_arg_reg.wrapping_add(i as u8);
+        }
+        let args_slice = &args_buf[..($arg_count as usize).min(256) + 1];
+        let func: NativeFn = unsafe { std::mem::transmute($callee.native_fn().unwrap()) };
+        $vm.regs[254] = JsValue::from_js_object($callee as *const JsObject as *mut JsObject);
+        func($vm, args_slice)
+    }};
+}
 
 pub struct CallFrame {
     pub return_addr: usize,
@@ -196,21 +214,23 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
 
     let pi_fn = crate::builtins::number::number_parse_int as *const ();
     let pf_fn = crate::builtins::number::number_parse_float as *const ();
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         global,
-        kernel.shape_forge().as_ref(),
         kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "parseInt",
         pi_fn,
-        1,
+        1
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         global,
-        kernel.shape_forge().as_ref(),
         kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
         "parseFloat",
         pf_fn,
-        1,
+        1
     );
 
     let math_ptr = kernel.builtin_world().math_object.as_ptr() as *mut JsObject;
@@ -218,229 +238,257 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     let sf = kernel.string_forge().as_ref();
     let sh = kernel.shape_forge().as_ref();
 
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "abs",
-        crate::builtins::math::math_abs as *const (),
-        1,
+        crate::builtins::math::math_abs,
+        1
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "acos",
-        crate::builtins::math::math_acos as *const (),
-        1,
+        crate::builtins::math::math_acos,
+        1
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "asin",
-        crate::builtins::math::math_asin as *const (),
-        1,
+        crate::builtins::math::math_asin,
+        1
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "atan",
-        crate::builtins::math::math_atan as *const (),
-        1,
+        crate::builtins::math::math_atan,
+        1
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "atan2",
-        crate::builtins::math::math_atan2 as *const (),
-        2,
+        crate::builtins::math::math_atan2,
+        2
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "cbrt",
-        crate::builtins::math::math_cbrt as *const (),
-        1,
+        crate::builtins::math::math_cbrt,
+        1
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "ceil",
-        crate::builtins::math::math_ceil as *const (),
-        1,
+        crate::builtins::math::math_ceil,
+        1
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "cos",
-        crate::builtins::math::math_cos as *const (),
-        1,
+        crate::builtins::math::math_cos,
+        1
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "cosh",
-        crate::builtins::math::math_cosh as *const (),
-        1,
+        crate::builtins::math::math_cosh,
+        1
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "exp",
-        crate::builtins::math::math_exp as *const (),
-        1,
+        crate::builtins::math::math_exp,
+        1
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "floor",
-        crate::builtins::math::math_floor as *const (),
-        1,
+        crate::builtins::math::math_floor,
+        1
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "hypot",
-        crate::builtins::math::math_hypot as *const (),
-        2,
+        crate::builtins::math::math_hypot,
+        2
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "imul",
-        crate::builtins::math::math_imul as *const (),
-        2,
+        crate::builtins::math::math_imul,
+        2
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "log",
-        crate::builtins::math::math_log as *const (),
-        1,
+        crate::builtins::math::math_log,
+        1
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "log10",
-        crate::builtins::math::math_log10 as *const (),
-        1,
+        crate::builtins::math::math_log10,
+        1
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "log2",
-        crate::builtins::math::math_log2 as *const (),
-        1,
+        crate::builtins::math::math_log2,
+        1
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "max",
-        crate::builtins::math::math_max as *const (),
-        2,
+        crate::builtins::math::math_max,
+        2
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "min",
-        crate::builtins::math::math_min as *const (),
-        2,
+        crate::builtins::math::math_min,
+        2
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "pow",
-        crate::builtins::math::math_pow as *const (),
-        2,
+        crate::builtins::math::math_pow,
+        2
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "random",
-        crate::builtins::math::math_random as *const (),
-        0,
+        crate::builtins::math::math_random,
+        0
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "round",
-        crate::builtins::math::math_round as *const (),
-        1,
+        crate::builtins::math::math_round,
+        1
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "sign",
-        crate::builtins::math::math_sign as *const (),
-        1,
+        crate::builtins::math::math_sign,
+        1
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "sin",
-        crate::builtins::math::math_sin as *const (),
-        1,
+        crate::builtins::math::math_sin,
+        1
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "sinh",
-        crate::builtins::math::math_sinh as *const (),
-        1,
+        crate::builtins::math::math_sinh,
+        1
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "sqrt",
-        crate::builtins::math::math_sqrt as *const (),
-        1,
+        crate::builtins::math::math_sqrt,
+        1
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "tan",
-        crate::builtins::math::math_tan as *const (),
-        1,
+        crate::builtins::math::math_tan,
+        1
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "tanh",
-        crate::builtins::math::math_tanh as *const (),
-        1,
+        crate::builtins::math::math_tanh,
+        1
     );
-    let _ = kernel.builtin_world().bind_method(
+    bind_method!(
+        kernel.builtin_world(),
         math,
-        sh,
         sf,
+        sh,
         "trunc",
-        crate::builtins::math::math_trunc as *const (),
-        1,
+        crate::builtins::math::math_trunc,
+        1
     );
 
     let pi_val = JsValue::float(std::f64::consts::PI);
@@ -1325,7 +1373,6 @@ impl Vm {
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
                         if let Some(ptr) = self.template_prop_ptr(obj, &template) {
-                            
                             self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
                             self.bytecode[self.pc - 2] = ptr as u32;
                             self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
@@ -1419,7 +1466,6 @@ impl Vm {
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
                         if let Some(ptr) = self.template_prop_ptr(obj, &template) {
-                            
                             self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
                             self.bytecode[self.pc - 2] = ptr as u32;
                             self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
@@ -1583,7 +1629,6 @@ impl Vm {
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
                         if let Some(ptr) = self.template_prop_ptr(obj, &template) {
-                            
                             self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
                             self.bytecode[self.pc - 2] = ptr as u32;
                             self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
@@ -1647,7 +1692,6 @@ impl Vm {
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
                         if let Some(ptr) = self.template_prop_ptr(obj, &template) {
-                            
                             self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
                             self.bytecode[self.pc - 2] = ptr as u32;
                             self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
@@ -1702,7 +1746,6 @@ impl Vm {
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
                         if let Some(ptr) = self.template_prop_ptr(obj, &template) {
-                            
                             self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
                             self.bytecode[self.pc - 2] = ptr as u32;
                             self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
@@ -1757,7 +1800,6 @@ impl Vm {
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
                         if let Some(ptr) = self.template_prop_ptr(obj, &template) {
-                            
                             self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
                             self.bytecode[self.pc - 2] = ptr as u32;
                             self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
@@ -1812,7 +1854,6 @@ impl Vm {
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
                         if let Some(ptr) = self.template_prop_ptr(obj, &template) {
-                            
                             self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
                             self.bytecode[self.pc - 2] = ptr as u32;
                             self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
@@ -1867,7 +1908,6 @@ impl Vm {
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
                         if let Some(ptr) = self.template_prop_ptr(obj, &template) {
-                            
                             self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
                             self.bytecode[self.pc - 2] = ptr as u32;
                             self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;

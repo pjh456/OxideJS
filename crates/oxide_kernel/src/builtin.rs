@@ -5,6 +5,13 @@ use oxide_types::value::JsValue;
 use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use crate::string_forge::StringForge;
 
+#[macro_export]
+macro_rules! bind_method {
+    ($world:expr, $target:expr, $sf:expr, $sh:expr, $name:literal, $func:path, $nargs:literal) => {
+        let _ = $world.bind_method($target, $sh, $sf, $name, $func as *const (), $nargs);
+    };
+}
+
 pub struct ObjectMethods {
     pub keys: *const (),
     pub create: *const (),
