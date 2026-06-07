@@ -709,6 +709,512 @@ fn bind_json(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     global.bump_generation();
 }
 
+fn bind_date(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
+    let ctor_ptr = kernel.builtin_world().date_constructor.as_ptr() as *mut JsObject;
+    let ctor = unsafe { &mut *ctor_ptr };
+    let proto_ptr = kernel.builtin_world().date_proto.as_ptr() as *mut JsObject;
+    let proto = unsafe { &mut *proto_ptr };
+    let sf = kernel.string_forge().as_ref();
+    let sh = kernel.shape_forge().as_ref();
+
+    bind_method!(
+        kernel.builtin_world(),
+        ctor,
+        sf,
+        sh,
+        "now",
+        crate::builtins::date::date_now,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        ctor,
+        sf,
+        sh,
+        "parse",
+        crate::builtins::date::date_parse,
+        1
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        ctor,
+        sf,
+        sh,
+        "UTC",
+        crate::builtins::date::date_utc,
+        7
+    );
+
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "getTime",
+        crate::builtins::date::date_get_time,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "getFullYear",
+        crate::builtins::date::date_get_full_year,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "getMonth",
+        crate::builtins::date::date_get_month,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "getDate",
+        crate::builtins::date::date_get_date,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "getDay",
+        crate::builtins::date::date_get_day,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "getHours",
+        crate::builtins::date::date_get_hours,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "getMinutes",
+        crate::builtins::date::date_get_minutes,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "getSeconds",
+        crate::builtins::date::date_get_seconds,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "getMilliseconds",
+        crate::builtins::date::date_get_milliseconds,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "getUTCFullYear",
+        crate::builtins::date::date_get_utc_full_year,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "getUTCMonth",
+        crate::builtins::date::date_get_utc_month,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "getUTCDate",
+        crate::builtins::date::date_get_utc_date,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "getUTCDay",
+        crate::builtins::date::date_get_utc_day,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "getUTCHours",
+        crate::builtins::date::date_get_utc_hours,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "getUTCMinutes",
+        crate::builtins::date::date_get_utc_minutes,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "getUTCSeconds",
+        crate::builtins::date::date_get_utc_seconds,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "getUTCMilliseconds",
+        crate::builtins::date::date_get_utc_milliseconds,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "getTimezoneOffset",
+        crate::builtins::date::date_get_timezone_offset,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "setTime",
+        crate::builtins::date::date_set_time,
+        1
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "setFullYear",
+        crate::builtins::date::date_set_full_year,
+        3
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "setMonth",
+        crate::builtins::date::date_set_month,
+        2
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "setDate",
+        crate::builtins::date::date_set_date,
+        1
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "setHours",
+        crate::builtins::date::date_set_hours,
+        4
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "setMinutes",
+        crate::builtins::date::date_set_minutes,
+        3
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "setSeconds",
+        crate::builtins::date::date_set_seconds,
+        2
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "setMilliseconds",
+        crate::builtins::date::date_set_milliseconds,
+        1
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "toISOString",
+        crate::builtins::date::date_to_iso_string,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "toJSON",
+        crate::builtins::date::date_to_json,
+        1
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "toString",
+        crate::builtins::date::date_to_string,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "toDateString",
+        crate::builtins::date::date_to_date_string,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "toTimeString",
+        crate::builtins::date::date_to_time_string,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "toUTCString",
+        crate::builtins::date::date_to_utc_string,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "valueOf",
+        crate::builtins::date::date_value_of,
+        0
+    );
+
+    let si_d = kernel.string_forge().intern("Date").0;
+    let d_shape = kernel.shape_forge().make_shape(global.shape_id(), si_d);
+    let d_val = JsValue::from_js_object(ctor_ptr);
+    global.set_shape_id(d_shape);
+    global.ensure_hash_props().push(Box::new(d_val));
+    global.bump_generation();
+}
+
+fn bind_set(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
+    let ctor_ptr = kernel.builtin_world().set_constructor.as_ptr() as *mut JsObject;
+    let proto_ptr = kernel.builtin_world().set_proto.as_ptr() as *mut JsObject;
+    let proto = unsafe { &mut *proto_ptr };
+    let sf = kernel.string_forge().as_ref();
+    let sh = kernel.shape_forge().as_ref();
+
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "add",
+        crate::builtins::set::set_add,
+        1
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "has",
+        crate::builtins::set::set_has,
+        1
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "delete",
+        crate::builtins::set::set_delete,
+        1
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "clear",
+        crate::builtins::set::set_clear,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "size",
+        crate::builtins::set::set_size,
+        0
+    );
+
+    let si_s = kernel.string_forge().intern("Set").0;
+    let s_shape = kernel.shape_forge().make_shape(global.shape_id(), si_s);
+    let s_val = JsValue::from_js_object(ctor_ptr);
+    global.set_shape_id(s_shape);
+    global.ensure_hash_props().push(Box::new(s_val));
+    global.bump_generation();
+}
+
+fn bind_map(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
+    let ctor_ptr = kernel.builtin_world().map_constructor.as_ptr() as *mut JsObject;
+    let proto_ptr = kernel.builtin_world().map_proto.as_ptr() as *mut JsObject;
+    let proto = unsafe { &mut *proto_ptr };
+    let sf = kernel.string_forge().as_ref();
+    let sh = kernel.shape_forge().as_ref();
+
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "set",
+        crate::builtins::map::map_set,
+        2
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "get",
+        crate::builtins::map::map_get,
+        1
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "has",
+        crate::builtins::map::map_has,
+        1
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "delete",
+        crate::builtins::map::map_delete,
+        1
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "clear",
+        crate::builtins::map::map_clear,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "size",
+        crate::builtins::map::map_size,
+        0
+    );
+
+    let si_m = kernel.string_forge().intern("Map").0;
+    let m_shape = kernel.shape_forge().make_shape(global.shape_id(), si_m);
+    let m_val = JsValue::from_js_object(ctor_ptr);
+    global.set_shape_id(m_shape);
+    global.ensure_hash_props().push(Box::new(m_val));
+    global.bump_generation();
+}
+
+fn bind_boolean(kernel: &Arc<OxideKernel>) {
+    let ctor_ptr = kernel.builtin_world().boolean_constructor.as_ptr() as *mut JsObject;
+    let ctor = unsafe { &mut *ctor_ptr };
+    let proto_ptr = kernel.builtin_world().boolean_proto.as_ptr() as *mut JsObject;
+    let proto = unsafe { &mut *proto_ptr };
+    let sf = kernel.string_forge().as_ref();
+    let sh = kernel.shape_forge().as_ref();
+
+    ctor.set_native_fn(Some(
+        crate::builtins::boolean::boolean_constructor as *const (),
+    ));
+    ctor.set_native_arg_count(1);
+
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "valueOf",
+        crate::builtins::boolean::boolean_prototype_value_of,
+        0
+    );
+    bind_method!(
+        kernel.builtin_world(),
+        proto,
+        sf,
+        sh,
+        "toString",
+        crate::builtins::boolean::boolean_prototype_to_string,
+        0
+    );
+}
+
 fn bind_function(kernel: &Arc<OxideKernel>) {
     let function_methods = FunctionMethods {
         call: crate::builtins::function::function_call as *const (),
@@ -733,6 +1239,10 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_number(kernel, global);
     bind_math(kernel, global);
     bind_json(kernel, global);
+    bind_date(kernel, global);
+    bind_set(kernel, global);
+    bind_map(kernel, global);
+    bind_boolean(kernel);
     bind_function(kernel);
 }
 

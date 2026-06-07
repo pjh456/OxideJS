@@ -120,6 +120,12 @@ pub struct BuiltinWorld {
     pub eval_error_proto: P<JsObject>,
     pub math_object: P<JsObject>,
     pub json_object: P<JsObject>,
+    pub date_constructor: P<JsObject>,
+    pub date_proto: P<JsObject>,
+    pub set_constructor: P<JsObject>,
+    pub set_proto: P<JsObject>,
+    pub map_constructor: P<JsObject>,
+    pub map_proto: P<JsObject>,
 }
 
 fn intern_label(string_forge: &StringForge, label: &str) -> u32 {
@@ -252,6 +258,31 @@ impl BuiltinWorld {
 
         let json_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
 
+        let (date_proto, date_constructor) = make_pair(
+            string_forge,
+            shape_forge,
+            "Date",
+            si_prototype,
+            si_constructor,
+            si_name,
+        );
+        let (set_proto, set_constructor) = make_pair(
+            string_forge,
+            shape_forge,
+            "Set",
+            si_prototype,
+            si_constructor,
+            si_name,
+        );
+        let (map_proto, map_constructor) = make_pair(
+            string_forge,
+            shape_forge,
+            "Map",
+            si_prototype,
+            si_constructor,
+            si_name,
+        );
+
         /// Overwrite placeholder slots (set up by make_pair) with real values.
         /// ctor.vec[0] = constructor.prototype -> proto
         /// proto.vec[0] = proto.constructor -> ctor
@@ -278,6 +309,9 @@ impl BuiltinWorld {
         wire_ctor_proto(&boolean_constructor, &boolean_proto);
         wire_ctor_proto(&error_constructor, &error_proto);
         wire_ctor_proto(&symbol_constructor, &symbol_proto);
+        wire_ctor_proto(&date_constructor, &date_proto);
+        wire_ctor_proto(&set_constructor, &set_proto);
+        wire_ctor_proto(&map_constructor, &map_proto);
 
         Self {
             object_proto,
@@ -304,6 +338,12 @@ impl BuiltinWorld {
             eval_error_proto,
             math_object,
             json_object,
+            date_constructor,
+            date_proto,
+            set_constructor,
+            set_proto,
+            map_constructor,
+            map_proto,
         }
     }
 

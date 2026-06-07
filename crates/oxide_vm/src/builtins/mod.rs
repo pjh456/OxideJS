@@ -1,9 +1,13 @@
 pub mod array;
+pub mod boolean;
+pub mod date;
 pub mod error;
 pub mod function;
 pub mod global;
 pub mod json;
+pub mod map;
 pub mod math;
 pub mod number;
 pub mod object;
+pub mod set;
 pub mod string;

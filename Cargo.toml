@@ -39,6 +39,8 @@ fast-float = "0.2"
 ryu = "1"
 memchr = "2"
 regex = "1"
+indexmap = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }

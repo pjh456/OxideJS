@@ -16,6 +16,8 @@ ryu.workspace = true
 memchr.workspace = true
 regex.workspace = true
 serde_json.workspace = true
+chrono.workspace = true
+indexmap.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
