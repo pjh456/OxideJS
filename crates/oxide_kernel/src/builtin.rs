@@ -98,6 +98,7 @@ pub struct BuiltinWorld {
     pub syntax_error_proto: P<JsObject>,
     pub uri_error_proto: P<JsObject>,
     pub eval_error_proto: P<JsObject>,
+    pub math_object: P<JsObject>,
 }
 
 fn intern_label(string_forge: &StringForge, label: &str) -> u32 {
@@ -216,6 +217,8 @@ impl BuiltinWorld {
         let uri_error_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val));
         let eval_error_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val));
 
+        let math_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+
         Self {
             object_proto,
             array_proto,
@@ -239,6 +242,7 @@ impl BuiltinWorld {
             syntax_error_proto,
             uri_error_proto,
             eval_error_proto,
+            math_object,
         }
     }
 

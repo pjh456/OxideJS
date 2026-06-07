@@ -40,6 +40,7 @@ pub struct Vm {
     interned_strings: Vec<u32>,
     pub epoch: Epoch,
     pub object_prototype: P<JsObject>,
+    pub math_rng_state: u64,
 }
 
 pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
@@ -221,6 +222,256 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
         pf_fn,
         1,
     );
+
+    let math_ptr = kernel.builtin_world().math_object.as_ptr() as *mut JsObject;
+    let math = unsafe { &mut *math_ptr };
+    let sf = kernel.string_forge().as_ref();
+    let sh = kernel.shape_forge().as_ref();
+
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "abs",
+        crate::builtins::math::math_abs as *const (),
+        1,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "acos",
+        crate::builtins::math::math_acos as *const (),
+        1,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "asin",
+        crate::builtins::math::math_asin as *const (),
+        1,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "atan",
+        crate::builtins::math::math_atan as *const (),
+        1,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "atan2",
+        crate::builtins::math::math_atan2 as *const (),
+        2,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "cbrt",
+        crate::builtins::math::math_cbrt as *const (),
+        1,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "ceil",
+        crate::builtins::math::math_ceil as *const (),
+        1,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "cos",
+        crate::builtins::math::math_cos as *const (),
+        1,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "cosh",
+        crate::builtins::math::math_cosh as *const (),
+        1,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "exp",
+        crate::builtins::math::math_exp as *const (),
+        1,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "floor",
+        crate::builtins::math::math_floor as *const (),
+        1,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "hypot",
+        crate::builtins::math::math_hypot as *const (),
+        2,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "imul",
+        crate::builtins::math::math_imul as *const (),
+        2,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "log",
+        crate::builtins::math::math_log as *const (),
+        1,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "log10",
+        crate::builtins::math::math_log10 as *const (),
+        1,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "log2",
+        crate::builtins::math::math_log2 as *const (),
+        1,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "max",
+        crate::builtins::math::math_max as *const (),
+        2,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "min",
+        crate::builtins::math::math_min as *const (),
+        2,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "pow",
+        crate::builtins::math::math_pow as *const (),
+        2,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "random",
+        crate::builtins::math::math_random as *const (),
+        0,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "round",
+        crate::builtins::math::math_round as *const (),
+        1,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "sign",
+        crate::builtins::math::math_sign as *const (),
+        1,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "sin",
+        crate::builtins::math::math_sin as *const (),
+        1,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "sinh",
+        crate::builtins::math::math_sinh as *const (),
+        1,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "sqrt",
+        crate::builtins::math::math_sqrt as *const (),
+        1,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "tan",
+        crate::builtins::math::math_tan as *const (),
+        1,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "tanh",
+        crate::builtins::math::math_tanh as *const (),
+        1,
+    );
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method(
+        math,
+        sh,
+        sf,
+        "trunc",
+        crate::builtins::math::math_trunc as *const (),
+        1,
+    );
+
+    let pi_val = JsValue::float(std::f64::consts::PI);
+    {
+        let si_pi = sf.intern("PI").0;
+        let sh_pi = sh.make_shape(math.shape_id(), si_pi);
+        let cur = math.prop_count();
+        math.set_shape_id(sh_pi);
+        math.set_prop_count(cur + 1);
+        math.set_prop_expand_heap(cur, pi_val);
+    }
+
+    let si_m = kernel.string_forge().intern("Math").0;
+    let m_shape = kernel.shape_forge().make_shape(global.shape_id(), si_m);
+    let m_val =
+        JsValue::from_js_object(kernel.builtin_world().math_object.as_ptr() as *mut JsObject);
+    let cur_count = global.prop_count();
+    global.set_shape_id(m_shape);
+    global.set_prop_count(cur_count + 1);
+    global.set_prop_expand_heap(cur_count, m_val);
+    global.bump_generation();
 }
 
 impl Vm {
@@ -238,6 +489,7 @@ impl Vm {
             interned_strings: Vec::new(),
             epoch: Epoch::new(),
             object_prototype: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+            math_rng_state: 0,
         }
     }
 
@@ -253,7 +505,25 @@ impl Vm {
             interned_strings: Vec::new(),
             epoch: Epoch::new(),
             object_prototype: P::clone(&kernel.builtin_world().object_proto),
+            math_rng_state: 0,
         }
+    }
+
+    pub fn step_rng(&mut self) {
+        if self.math_rng_state == 0 {
+            self.math_rng_state = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64;
+        }
+        self.math_rng_state = self
+            .math_rng_state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+    }
+
+    pub fn math_rng_value(&self) -> f64 {
+        (self.math_rng_state >> 33) as f64 / (1u64 << 31) as f64
     }
 
     pub fn kernel(&self) -> &Arc<OxideKernel> {
