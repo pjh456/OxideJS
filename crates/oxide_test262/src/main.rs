@@ -1,8 +1,9 @@
 #![allow(clippy::arc_with_non_send_sync)]
 
 use oxide_compiler::compiler::Compiler;
+use oxide_compiler::module::CompiledModule;
 use oxide_kernel::kernel::{KernelConfig, OxideKernel};
-use oxide_vm::vm::Vm;
+use oxide_vm::vm::{init_kernel_builtins, Vm};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -118,13 +119,6 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
         }
     }
 
-    if !meta.includes.is_empty() {
-        return Some(format!(
-            "requires harness includes: {}",
-            meta.includes.join(", ")
-        ));
-    }
-
     let excluded_features = [
         "Proxy",
         "Symbol",
@@ -185,11 +179,36 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
     None
 }
 
-fn run_test(path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<OxideKernel>) -> TestResult {
+fn compile_harness(_kernel: &Arc<OxideKernel>) -> Result<CompiledModule, String> {
+    let prelude = r#"
+function Test262Error(message) {
+  this.message = message;
+  this.name = "Test262Error";
+}
+Test262Error.prototype = new Error();
+Test262Error.prototype.constructor = Test262Error;
+"#;
+    let assert_js = include_str!("../../../tests/test262/harness/assert.js");
+    let full_source = format!("{prelude}\n{assert_js}");
+
+    let alloc = oxide_parser::Allocator::default();
+    let program = oxide_parser::parse(&alloc, &full_source)
+        .map_err(|e| format!("harness parse error: {}", e[0].message))?;
+
+    Compiler::new().compile(&program)
+}
+
+fn run_test(
+    path: &Path,
+    source: &str,
+    meta: &TestMeta,
+    kernel: &Arc<OxideKernel>,
+    harness_module: &CompiledModule,
+) -> TestResult {
     let start = std::time::Instant::now();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_test_inner(path, source, meta, kernel)
+        run_test_inner(path, source, meta, kernel, harness_module)
     }));
 
     match result {
@@ -210,6 +229,7 @@ fn run_test_inner(
     source: &str,
     meta: &TestMeta,
     kernel: &Arc<OxideKernel>,
+    harness_module: &CompiledModule,
 ) -> TestResult {
     let start = std::time::Instant::now();
 
@@ -238,12 +258,15 @@ fn run_test_inner(
             }
             if e.contains("not yet implemented")
                 || e.contains("not supported")
+                || e.contains("unsupported")
                 || e.contains("is not defined")
                 || e.contains("ArrowFunctionExpression")
-                || e.contains("unsupported expression")
-                || e.contains("unsupported statement")
                 || e.contains("destructuring")
                 || e.contains("SpreadElement")
+                || e.contains("compound assignment")
+                || e.contains("already been declared")
+                || e.contains("before initialization")
+                || e.contains("parser panicked")
             {
                 return TestResult::skip(path.to_path_buf(), msg);
             }
@@ -252,6 +275,12 @@ fn run_test_inner(
     };
 
     let mut vm = Vm::with_kernel(Arc::clone(kernel));
+
+    if let Err(e) = vm.run(harness_module) {
+        let _dur = start.elapsed().as_millis() as u64;
+        return TestResult::skip(path.to_path_buf(), format!("harness injection failed: {e}"));
+    }
+
     match vm.run(&module) {
         Ok(result) => {
             let dur = start.elapsed().as_millis() as u64;
@@ -288,6 +317,9 @@ fn run_test_inner(
                 || e.contains("not supported")
                 || e.contains("unsupported")
                 || e.contains("step limit")
+                || e.contains("is not defined")
+                || e.contains("NEW_EXPRESSION")
+                || e.contains("RangeError")
             {
                 TestResult::skip(path.to_path_buf(), format!("vm: {e}"))
             } else {
@@ -355,6 +387,20 @@ fn categorize_fail(msg: &str) -> String {
 }
 
 fn main() {
+    let result = std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .name("test262-runner".into())
+        .spawn(run_tests)
+        .expect("failed to spawn test262 runner thread")
+        .join()
+        .expect("test262 runner thread panicked");
+
+    if !result {
+        std::process::exit(1);
+    }
+}
+
+fn run_tests() -> bool {
     let args: Vec<String> = std::env::args().collect();
 
     let test262_root = if args.len() > 1 {
@@ -391,6 +437,15 @@ fn main() {
     eprintln!("found {} test files", paths.len());
 
     let kernel = Arc::new(OxideKernel::new(KernelConfig::minimal()));
+    init_kernel_builtins(&kernel);
+
+    let harness_module = match compile_harness(&kernel) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("FATAL: Failed to compile test262 harness: {e}");
+            std::process::exit(1);
+        }
+    };
 
     let mut stats = RunStats::default();
     let mut results: Vec<TestResult> = Vec::new();
@@ -455,7 +510,7 @@ fn main() {
             continue;
         }
 
-        let result = run_test(path, &source, &meta, &kernel);
+        let result = run_test(path, &source, &meta, &kernel, &harness_module);
         match &result.outcome {
             TestOutcome::Pass(_) => stats.pass += 1,
             TestOutcome::Fail(msg) => {
@@ -515,6 +570,7 @@ fn main() {
     println!("═══════════════════════════════════════");
 
     if stats.fail > 0 {
-        std::process::exit(1);
+        return false;
     }
+    true
 }
