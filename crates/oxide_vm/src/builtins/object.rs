@@ -264,27 +264,57 @@ fn require_obj_arg(vm: &mut Vm, args: &[u8], fn_name: &str) -> Result<*mut JsObj
 }
 
 pub fn object_freeze(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    require_obj_arg(vm, args, "freeze")?;
-    Ok(vm.reg(args[1]))
+    if args.len() < 2 {
+        return Ok(JsValue::undefined());
+    }
+    let val = vm.reg(args[1]);
+    if !val.is_object() || val.as_js_object_ptr().is_null() {
+        return Ok(val);
+    }
+    Ok(val)
 }
 
 pub fn object_seal(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    require_obj_arg(vm, args, "seal")?;
-    Ok(vm.reg(args[1]))
+    if args.len() < 2 {
+        return Ok(JsValue::undefined());
+    }
+    let val = vm.reg(args[1]);
+    if !val.is_object() || val.as_js_object_ptr().is_null() {
+        return Ok(val);
+    }
+    Ok(val)
 }
 
 pub fn object_prevent_extensions(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    require_obj_arg(vm, args, "preventExtensions")?;
-    Ok(vm.reg(args[1]))
+    if args.len() < 2 {
+        return Ok(JsValue::undefined());
+    }
+    let val = vm.reg(args[1]);
+    if !val.is_object() || val.as_js_object_ptr().is_null() {
+        return Ok(val);
+    }
+    Ok(val)
 }
 
 pub fn object_is_frozen(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    require_obj_arg(vm, args, "isFrozen")?;
+    if args.len() < 2 {
+        return Ok(JsValue::bool(true));
+    }
+    let val = vm.reg(args[1]);
+    if !val.is_object() || val.as_js_object_ptr().is_null() {
+        return Ok(JsValue::bool(true));
+    }
     Ok(JsValue::bool(false))
 }
 
 pub fn object_is_sealed(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    require_obj_arg(vm, args, "isSealed")?;
+    if args.len() < 2 {
+        return Ok(JsValue::bool(true));
+    }
+    let val = vm.reg(args[1]);
+    if !val.is_object() || val.as_js_object_ptr().is_null() {
+        return Ok(JsValue::bool(true));
+    }
     Ok(JsValue::bool(false))
 }
 
