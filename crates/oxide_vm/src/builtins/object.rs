@@ -9,18 +9,31 @@ use crate::vm::Vm;
 
 fn walk_own_keys(vm: &Vm, obj: &JsObject) -> Vec<(u32, u8)> {
     let mut keys: Vec<(u32, u8)> = Vec::new();
-    let mut shape_id = obj.shape_id();
-    while shape_id != EMPTY_SHAPE_ID {
-        if let Some(shape) = vm.kernel().shape_forge().get_shape(shape_id) {
-            if shape.property_name != 0 {
-                keys.push((shape.property_name, shape.property_offset));
+    let shape_id = obj.shape_id();
+    let mut pos: u8 = 0;
+    let mut shape_ids = Vec::new();
+    let mut cursor = Some(shape_id);
+    while let Some(id) = cursor {
+        if id == EMPTY_SHAPE_ID {
+            break;
+        }
+        if let Some(shape) = vm.kernel().shape_forge().get_shape(id) {
+            cursor = shape.parent;
+            if shape.property_name != u32::MAX {
+                shape_ids.push(id);
             }
-            shape_id = shape.parent.unwrap_or(EMPTY_SHAPE_ID);
         } else {
             break;
         }
     }
-    keys.reverse();
+    for id in shape_ids.iter().rev() {
+        if let Some(shape) = vm.kernel().shape_forge().get_shape(*id) {
+            if shape.property_name != 0 {
+                keys.push((shape.property_name, pos));
+            }
+        }
+        pos += 1;
+    }
     keys
 }
 
@@ -62,14 +75,11 @@ pub fn object_keys(vm: &mut Vm, args: &[u8]) -> NativeResult {
         n,
         vm.epoch().bump(),
     ));
-    for (i, k) in key_names.iter().take(n).enumerate() {
+    for k in key_names.iter().take(n) {
         let str_val = vm.intern(k);
         unsafe {
-            (*arr).set_prop(i as u8, str_val);
+            (*arr).ensure_hash_props().push(Box::new(str_val));
         }
-    }
-    unsafe {
-        (*arr).set_prop_count(n as u8);
     }
     Ok(JsValue::from_js_object(arr))
 }
@@ -100,10 +110,8 @@ pub fn object_assign(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if target_ptr.is_null() {
         return Ok(target_val);
     }
-    let mut target_prop_count;
     {
         let target = unsafe { &mut *target_ptr };
-        target_prop_count = target.prop_count() as usize;
         for &arg_reg in args.iter().skip(2) {
             let source_val = vm.reg(arg_reg);
             if !source_val.is_object() {
@@ -116,9 +124,8 @@ pub fn object_assign(vm: &mut Vm, args: &[u8]) -> NativeResult {
             let source = unsafe { &*source_ptr };
             let source_keys = walk_own_keys(vm, source);
             for (_si, offset) in source_keys {
-                let prop_val = source.get_prop(offset);
-                target.set_prop_expand(target_prop_count as u8, prop_val, vm.epoch().bump());
-                target_prop_count += 1;
+                let prop_val = source.get_prop_at(offset);
+                target.push_prop(prop_val);
             }
         }
     }
@@ -149,17 +156,16 @@ pub fn object_define_property(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let si = vm.kernel().string_forge().intern(&prop_name_str).0;
     let shape_forge = vm.kernel().shape_forge().as_ref();
     let new_shape = shape_forge.make_shape(unsafe { (&*obj_ptr).shape_id() }, si);
-    let new_offset;
+    let value = {
+        let desc = unsafe { &*desc_ptr };
+        desc.hash_props_vec()
+            .and_then(|v| v.first().map(|b| **b))
+            .unwrap_or(JsValue::undefined())
+    };
     {
         let obj = unsafe { &mut *obj_ptr };
-        new_offset = obj.prop_count();
         obj.set_shape_id(new_shape);
-        obj.set_prop_count(new_offset + 1);
-    }
-    let desc = unsafe { &*desc_ptr };
-    let value = desc.get_prop(0);
-    unsafe {
-        (&mut *obj_ptr).set_prop_expand(new_offset, value, vm.epoch().bump());
+        obj.ensure_hash_props().push(Box::new(value));
     }
     Ok(obj_val)
 }
@@ -186,7 +192,7 @@ pub fn object_get_own_property_descriptor(vm: &mut Vm, args: &[u8]) -> NativeRes
         let mut found = false;
         for (prop_si, offset) in keys {
             if prop_si == si {
-                found_value = obj.get_prop(offset);
+                found_value = obj.get_prop_at(offset);
                 found = true;
                 break;
             }
@@ -206,7 +212,6 @@ pub fn object_get_own_property_descriptor(vm: &mut Vm, args: &[u8]) -> NativeRes
         JsValue::from_js_object(desc_proto),
     ));
     let true_val = JsValue::bool(true);
-    let b = vm.epoch().bump();
     let sf = unsafe { &*sf_ptr };
     let sh = unsafe { &*sh_ptr };
 
@@ -214,26 +219,22 @@ pub fn object_get_own_property_descriptor(vm: &mut Vm, args: &[u8]) -> NativeRes
     let si_val = sf.intern("value").0;
     let sh_val = sh.make_shape(EMPTY_SHAPE_ID, si_val);
     d.set_shape_id(sh_val);
-    d.set_prop_count(1);
-    d.set_prop_expand(0, found_value, b);
+    d.ensure_hash_props().push(Box::new(found_value));
 
     let si_wr = sf.intern("writable").0;
     let sh_wr = sh.make_shape(sh_val, si_wr);
     d.set_shape_id(sh_wr);
-    d.set_prop_count(2);
-    d.set_prop_expand(1, true_val, b);
+    d.ensure_hash_props().push(Box::new(true_val));
 
     let si_en = sf.intern("enumerable").0;
     let sh_en = sh.make_shape(sh_wr, si_en);
     d.set_shape_id(sh_en);
-    d.set_prop_count(3);
-    d.set_prop_expand(2, true_val, b);
+    d.ensure_hash_props().push(Box::new(true_val));
 
     let si_cf = sf.intern("configurable").0;
     let sh_cf = sh.make_shape(sh_en, si_cf);
     d.set_shape_id(sh_cf);
-    d.set_prop_count(4);
-    d.set_prop_expand(3, true_val, b);
+    d.ensure_hash_props().push(Box::new(true_val));
 
     Ok(JsValue::from_js_object(desc))
 }

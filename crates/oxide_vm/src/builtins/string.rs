@@ -24,7 +24,7 @@ fn make_string_array(vm: &mut Vm, parts: &[String]) -> JsValue {
     unsafe {
         for (i, s) in parts.iter().enumerate().take(n) {
             let sv = vm.intern(s);
-            (*arr).set_prop(i as u8, sv);
+            (*arr).set_prop_at(i as u8, sv);
         }
         (*arr).set_prop_count(n as u8);
     }

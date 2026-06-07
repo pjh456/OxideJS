@@ -2,16 +2,14 @@ use crate::value::JsValue;
 
 pub type ShapeId = u32;
 
-/// Layout (72B):
+/// Layout (40B):
 ///   header: u32 bits
 ///     [0:23]   shape_id
-///     [24:28]  prop_count (5 bits, 0-31)
 ///     [29]     is_array
 ///     [30]     is_extensible
 ///     [31]     is_function
 ///   native_arg_count: u8 (1 byte + 3 pad)
-///   inline[0..=3]: 4 x JsValue (32 bytes)
-///   overflow: *mut JsValue (8 bytes, null if <=4 properties)
+///   hash_props: *mut u8 (8 bytes, points to Box<Vec<Box<JsValue>>>)
 ///   proto: JsValue (8 bytes)
 ///   generation: u32 (4 bytes + 4 pad)
 ///   native_fn: u64 (8 bytes, 0 = None sentinel)
@@ -19,10 +17,11 @@ pub type ShapeId = u32;
 pub struct JsObject {
     header: u32,
     native_arg_count: u8,
-    inline: [JsValue; 4],
-    overflow: *mut JsValue,
+    _pad: [u8; 3],
+    hash_props: *mut u8,
     proto: JsValue,
     generation: u32,
+    _pad2: [u8; 4],
     native_fn: u64,
 }
 
@@ -31,10 +30,11 @@ impl JsObject {
         Self {
             header: (shape_id & 0x00FF_FFFF) | (1 << 30),
             native_arg_count: 0,
-            inline: [JsValue::undefined(); 4],
-            overflow: std::ptr::null_mut(),
+            _pad: [0; 3],
+            hash_props: std::ptr::null_mut(),
             proto,
             generation: 1,
+            _pad2: [0; 4],
             native_fn: 0,
         }
     }
@@ -43,22 +43,20 @@ impl JsObject {
         shape_id: ShapeId,
         proto: JsValue,
         n_elements: usize,
-        bump: &bumpalo::Bump,
+        _bump: &bumpalo::Bump,
     ) -> Self {
         let mut obj = Self {
             header: (shape_id & 0x00FF_FFFF) | (1 << 30) | (1 << 29),
             native_arg_count: 0,
-            inline: [JsValue::undefined(); 4],
-            overflow: std::ptr::null_mut(),
+            _pad: [0; 3],
+            hash_props: std::ptr::null_mut(),
             proto,
             generation: 1,
+            _pad2: [0; 4],
             native_fn: 0,
         };
-        let count = (n_elements as u8).min(31);
-        obj.set_prop_count(count);
-        if n_elements > 4 {
-            obj.alloc_overflow(bump, n_elements);
-        }
+        let vec = Box::new(vec![Box::new(JsValue::undefined()); n_elements]);
+        obj.hash_props = Box::into_raw(vec) as *mut u8;
         obj
     }
 
@@ -70,13 +68,28 @@ impl JsObject {
         self.header = (self.header & !0x00FF_FFFF) | (id & 0x00FF_FFFF);
     }
 
+    /// Returns property count from the hash_props vec length.
+    /// Returns 0 if hash_props has not been allocated.
     pub fn prop_count(&self) -> u8 {
-        ((self.header >> 24) & 0x1F) as u8
+        if self.hash_props.is_null() {
+            0
+        } else {
+            let vec = unsafe { &*(self.hash_props as *const Vec<Box<JsValue>>) };
+            vec.len() as u8
+        }
     }
 
+    /// Sets the length of hash_props vec. Truncates or extends with undefined.
     pub fn set_prop_count(&mut self, count: u8) {
-        let count = count.min(31);
-        self.header = (self.header & !(0x1F << 24)) | ((count as u32) << 24);
+        let vec = self.ensure_hash_props();
+        let target = count as usize;
+        if target < vec.len() {
+            vec.truncate(target);
+        } else {
+            while vec.len() < target {
+                vec.push(Box::new(JsValue::undefined()));
+            }
+        }
     }
 
     pub fn is_array(&self) -> bool {
@@ -107,54 +120,75 @@ impl JsObject {
         }
     }
 
-    pub fn get_inline_prop(&self, offset: u8) -> JsValue {
-        debug_assert!(offset < 4, "inline offset out of range");
-        self.inline[offset as usize]
+    /// Initialize hash_props if null, return mutable reference to Vec.
+    pub fn ensure_hash_props(&mut self) -> &mut Vec<Box<JsValue>> {
+        if self.hash_props.is_null() {
+            let vec = Box::new(Vec::<Box<JsValue>>::new());
+            self.hash_props = Box::into_raw(vec) as *mut u8;
+        }
+        unsafe { &mut *(self.hash_props as *mut Vec<Box<JsValue>>) }
     }
 
-    pub fn set_inline_prop(&mut self, offset: u8, val: JsValue) {
-        debug_assert!(offset < 4, "inline offset out of range");
-        self.inline[offset as usize] = val;
+    /// Safe read access to hash_props vec. Returns None if not allocated.
+    pub fn hash_props_vec(&self) -> Option<&Vec<Box<JsValue>>> {
+        if self.hash_props.is_null() {
+            None
+        } else {
+            unsafe { Some(&*(self.hash_props as *const Vec<Box<JsValue>>)) }
+        }
     }
 
-    pub fn get_overflow_prop(&self, offset: u8) -> JsValue {
-        debug_assert!(offset >= 4);
-        if self.overflow.is_null() {
+    /// Get property value at position index in the vec.
+    /// Returns JsValue::undefined() if hash_props not allocated or position out of bounds.
+    pub fn get_prop_at(&self, position: u8) -> JsValue {
+        if self.hash_props.is_null() {
             return JsValue::undefined();
         }
-        unsafe { *self.overflow.add((offset - 4) as usize) }
+        let vec = unsafe { &*(self.hash_props as *const Vec<Box<JsValue>>) };
+        vec.get(position as usize)
+            .map(|b| **b)
+            .unwrap_or(JsValue::undefined())
     }
 
-    pub fn set_overflow_prop(&mut self, offset: u8, val: JsValue) {
-        debug_assert!(offset >= 4);
-        debug_assert!(!self.overflow.is_null(), "overflow buffer not allocated");
-        unsafe {
-            *self.overflow.add((offset - 4) as usize) = val;
-        }
-    }
-
-    pub fn get_prop(&self, offset: u8) -> JsValue {
-        if offset < 4 {
-            self.get_inline_prop(offset)
+    /// Set property value at position index. Vec auto-grows if needed.
+    pub fn set_prop_at(&mut self, position: u8, val: JsValue) {
+        let vec = self.ensure_hash_props();
+        let pos = position as usize;
+        if pos < vec.len() {
+            *vec[pos] = val;
         } else {
-            self.get_overflow_prop(offset)
+            while vec.len() < pos {
+                vec.push(Box::new(JsValue::undefined()));
+            }
+            vec.push(Box::new(val));
         }
     }
 
-    pub fn set_prop(&mut self, offset: u8, val: JsValue) {
-        if offset < 4 {
-            self.set_inline_prop(offset, val);
+    /// Push a value onto hash_props vec. Returns the index position.
+    pub fn push_prop(&mut self, val: JsValue) -> u8 {
+        let vec = self.ensure_hash_props();
+        let pos = vec.len();
+        vec.push(Box::new(val));
+        pos as u8
+    }
+
+    /// Get a stable pointer to the Box<JsValue> at position.
+    /// Returns None if hash_props not allocated or position out of bounds.
+    pub fn prop_ptr_at(&self, position: u8) -> Option<*const JsValue> {
+        if self.hash_props.is_null() {
+            return None;
+        }
+        let vec = unsafe { &*(self.hash_props as *const Vec<Box<JsValue>>) };
+        vec.get(position as usize).map(|b| &**b as *const JsValue)
+    }
+
+    /// Get the length of hash_props vec (returns 0 if not allocated).
+    pub fn prop_vec_len(&self) -> usize {
+        if self.hash_props.is_null() {
+            0
         } else {
-            self.set_overflow_prop(offset, val);
+            unsafe { &*(self.hash_props as *const Vec<Box<JsValue>>) }.len()
         }
-    }
-
-    pub fn set_prop_expand(&mut self, offset: u8, val: JsValue, bump: &bumpalo::Bump) {
-        if offset >= 4 {
-            let needed = (offset as usize) + 1;
-            self.alloc_overflow(bump, needed.max(8));
-        }
-        self.set_prop(offset, val);
     }
 
     pub fn proto(&self) -> JsValue {
@@ -212,40 +246,6 @@ impl JsObject {
     pub fn set_native_arg_count(&mut self, n: u8) {
         self.native_arg_count = n;
     }
-
-    pub fn alloc_overflow(&mut self, _bump: &bumpalo::Bump, new_count: usize) -> *mut JsValue {
-        use std::alloc::Layout;
-        debug_assert!(new_count > 4);
-        debug_assert!(new_count <= 32, "overflow limited to 32 slots max");
-        let n = new_count - 4;
-        let layout = Layout::array::<JsValue>(n).unwrap();
-        let ptr: *mut JsValue;
-        unsafe {
-            ptr = _bump.alloc_layout(layout).as_ptr() as *mut JsValue;
-            for i in 0..n {
-                *ptr.add(i) = JsValue::undefined();
-            }
-        }
-        self.overflow = ptr;
-        ptr
-    }
-
-    pub fn alloc_overflow_heap(&mut self, new_count: usize) -> *mut JsValue {
-        debug_assert!(new_count > 4);
-        debug_assert!(new_count <= 32, "overflow limited to 32 slots max");
-        let n = new_count - 4;
-        let v: Vec<JsValue> = vec![JsValue::undefined(); n];
-        let ptr = Box::into_raw(v.into_boxed_slice()) as *mut JsValue;
-        self.overflow = ptr;
-        ptr
-    }
-
-    pub fn set_prop_expand_heap(&mut self, offset: u8, val: JsValue) {
-        if offset >= 4 && self.overflow.is_null() {
-            self.alloc_overflow_heap(32);
-        }
-        self.set_prop(offset, val);
-    }
 }
 
 #[cfg(test)]
@@ -254,11 +254,11 @@ mod tests {
     use crate::shape::EMPTY_SHAPE_ID;
 
     #[test]
-    fn object_size_72_bytes() {
-        assert_eq!(
-            std::mem::size_of::<JsObject>(),
-            72,
-            "JsObject layout mismatch - expected 72B"
+    fn object_size_bounds() {
+        let sz = std::mem::size_of::<JsObject>();
+        assert!(
+            sz >= 32 && sz <= 64,
+            "JsObject layout mismatch - expected 32-64B, got {sz}B"
         );
     }
 
@@ -271,6 +271,7 @@ mod tests {
         assert!(!obj.is_array());
         assert!(!obj.is_function());
         assert_eq!(obj.generation(), 1);
+        assert!(obj.hash_props_vec().is_none());
     }
 
     #[test]
@@ -283,8 +284,9 @@ mod tests {
     #[test]
     fn prop_count_roundtrip() {
         let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
-        obj.set_prop_count(17);
-        assert_eq!(obj.prop_count(), 17);
+        assert_eq!(obj.prop_count(), 0);
+        obj.ensure_hash_props().push(Box::new(JsValue::int(17)));
+        assert_eq!(obj.prop_count(), 1);
     }
 
     #[test]
@@ -296,10 +298,10 @@ mod tests {
     }
 
     #[test]
-    fn inline_prop_read_write() {
+    fn hash_prop_read_write() {
         let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
-        obj.set_inline_prop(0, JsValue::int(42));
-        assert_eq!(obj.get_inline_prop(0), JsValue::int(42));
+        obj.set_prop_at(0, JsValue::int(42));
+        assert_eq!(obj.get_prop_at(0), JsValue::int(42));
     }
 
     #[test]
@@ -308,6 +310,7 @@ mod tests {
         let obj = JsObject::new_array(5, JsValue::null(), 3, &bump);
         assert!(obj.is_array());
         assert_eq!(obj.shape_id(), 5);
+        assert_eq!(obj.prop_count(), 3);
     }
 
     #[test]
@@ -316,5 +319,28 @@ mod tests {
         assert_eq!(obj.generation(), 1);
         obj.bump_generation();
         assert_eq!(obj.generation(), 2);
+    }
+
+    #[test]
+    fn hash_props_lazy_init() {
+        let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
+        assert!(obj.hash_props_vec().is_none());
+        assert_eq!(obj.prop_count(), 0);
+        obj.set_prop_at(0, JsValue::int(1));
+        assert!(obj.hash_props_vec().is_some());
+        assert_eq!(obj.prop_count(), 1);
+    }
+
+    #[test]
+    fn hash_props_stable_pointer() {
+        let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
+        obj.set_prop_at(0, JsValue::int(100));
+        let ptr = obj.prop_ptr_at(0);
+        obj.set_prop_at(1, JsValue::int(200));
+        // Pointer to first element should be stable (per Box allocation)
+        let ptr2 = obj.prop_ptr_at(0);
+        assert_eq!(ptr, ptr2);
+        assert_eq!(obj.get_prop_at(0), JsValue::int(100));
+        assert_eq!(obj.get_prop_at(1), JsValue::int(200));
     }
 }

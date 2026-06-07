@@ -13,7 +13,6 @@ const EMPTY_SENTINEL: StringIndex = u32::MAX;
 pub struct Shape {
     pub id: ShapeId,
     pub property_name: StringIndex,
-    pub property_offset: u8,
     pub parent: Option<ShapeId>,
 }
 
@@ -35,7 +34,6 @@ impl ShapeForge {
             let empty = Arc::new(Shape {
                 id: EMPTY_SHAPE_ID,
                 property_name: EMPTY_SENTINEL,
-                property_offset: 0,
                 parent: None,
             });
             debug_assert_eq!(shapes.len(), 0);
@@ -48,7 +46,7 @@ impl ShapeForge {
         ((parent_id as u64) << 32) | (prop_name as u64)
     }
 
-    fn compute_offset_inner(shape_id: ShapeId, shapes: &[Option<Arc<Shape>>]) -> u8 {
+    fn compute_depth(shape_id: ShapeId, shapes: &[Option<Arc<Shape>>]) -> u8 {
         let mut count = 0u8;
         let mut cursor = Some(shape_id);
         while let Some(id) = cursor {
@@ -62,7 +60,7 @@ impl ShapeForge {
                 None => break,
             }
         }
-        count.min(31)
+        count
     }
 
     pub fn make_shape(&self, parent_id: ShapeId, prop_name: StringIndex) -> ShapeId {
@@ -72,16 +70,11 @@ impl ShapeForge {
             return *entry;
         }
 
-        let shapes_read = self.shapes.read().unwrap();
-        let prop_offset = Self::compute_offset_inner(parent_id, &shapes_read);
-        drop(shapes_read);
-
         let new_id = self.next_id.fetch_add(1, Ordering::Relaxed);
 
         let shape = Arc::new(Shape {
             id: new_id,
             property_name: prop_name,
-            property_offset: prop_offset,
             parent: Some(parent_id),
         });
 
@@ -101,21 +94,41 @@ impl ShapeForge {
         shapes.get((id - 1) as usize).and_then(|s| s.clone())
     }
 
-    pub fn lookup_offset(&self, shape_id: ShapeId, prop_name: StringIndex) -> Option<u8> {
+    pub fn lookup_position(&self, shape_id: ShapeId, prop_name: StringIndex) -> Option<u8> {
+        let shapes = self.shapes.read().unwrap();
+        let total_depth = Self::compute_depth(shape_id, &shapes);
+        let mut step: u8 = 0;
+        let mut cursor = Some(shape_id);
+        while let Some(id) = cursor {
+            match shapes.get((id - 1) as usize).and_then(|s| s.clone()) {
+                Some(s) => {
+                    if s.property_name == prop_name && s.property_name != EMPTY_SENTINEL {
+                        return Some(total_depth - step - 1);
+                    }
+                    cursor = s.parent;
+                    step += 1;
+                }
+                None => return None,
+            }
+        }
+        None
+    }
+
+    pub fn has_property(&self, shape_id: ShapeId, prop_name: StringIndex) -> bool {
         let shapes = self.shapes.read().unwrap();
         let mut cursor = Some(shape_id);
         while let Some(id) = cursor {
             match shapes.get((id - 1) as usize).and_then(|s| s.clone()) {
                 Some(s) => {
                     if s.property_name == prop_name && s.property_name != EMPTY_SENTINEL {
-                        return Some(s.property_offset);
+                        return true;
                     }
                     cursor = s.parent;
                 }
-                None => return None,
+                None => return false,
             }
         }
-        None
+        false
     }
 
     pub fn shape_prop_count(&self, shape_id: ShapeId) -> u8 {
@@ -195,10 +208,10 @@ mod tests {
 
         assert_eq!(forge.shape_prop_count(s3), 3);
 
-        assert_eq!(forge.lookup_offset(s3, 1_000_030), Some(2));
-        assert_eq!(forge.lookup_offset(s3, 1_000_020), Some(1));
-        assert_eq!(forge.lookup_offset(s3, 1_000_010), Some(0));
-        assert_eq!(forge.lookup_offset(s3, 99), None);
+        assert_eq!(forge.lookup_position(s3, 1_000_030), Some(2));
+        assert_eq!(forge.lookup_position(s3, 1_000_020), Some(1));
+        assert_eq!(forge.lookup_position(s3, 1_000_010), Some(0));
+        assert_eq!(forge.lookup_position(s3, 99), None);
     }
 
     #[test]
@@ -223,8 +236,8 @@ mod tests {
         let s4 = forge.make_shape(s3, 1_000_100);
         assert_ne!(s1, s3);
         assert_ne!(s2, s4);
-        assert_eq!(forge.lookup_offset(s2, 1_000_070), Some(0));
-        assert_eq!(forge.lookup_offset(s4, 1_000_090), Some(0));
+        assert_eq!(forge.lookup_position(s2, 1_000_070), Some(0));
+        assert_eq!(forge.lookup_position(s4, 1_000_090), Some(0));
     }
 
     #[test]
@@ -251,5 +264,15 @@ mod tests {
         let id2 = h2.join().unwrap();
         assert_eq!(id1, id2);
         assert!(id1 > EMPTY_SHAPE_ID);
+    }
+
+    #[test]
+    fn has_property_works() {
+        let forge = ShapeForge::new();
+        let s1 = forge.make_shape(EMPTY_SHAPE_ID, 1_000_300);
+        let s2 = forge.make_shape(s1, 1_000_310);
+        assert!(forge.has_property(s2, 1_000_300));
+        assert!(forge.has_property(s2, 1_000_310));
+        assert!(!forge.has_property(s2, 99));
     }
 }

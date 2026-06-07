@@ -1,3 +1,5 @@
+#![allow(clippy::arc_with_non_send_sync)]
+
 use oxide_compiler::compiler::Compiler;
 use oxide_kernel::kernel::{KernelConfig, OxideKernel};
 use oxide_vm::vm::Vm;
@@ -255,8 +257,7 @@ fn run_test_inner(
     match vm.run(&module) {
         Ok(result) => {
             let dur = start.elapsed().as_millis() as u64;
-            if meta.negative.is_some() {
-                let neg = meta.negative.as_ref().unwrap();
+            if let Some(neg) = meta.negative.as_ref() {
                 return TestResult::fail(
                     path.to_path_buf(),
                     dur,
@@ -267,8 +268,7 @@ fn run_test_inner(
         }
         Err(e) => {
             let dur = start.elapsed().as_millis() as u64;
-            if meta.negative.is_some() {
-                let neg = meta.negative.as_ref().unwrap();
+            if let Some(neg) = meta.negative.as_ref() {
                 if e.contains("TypeError") && neg.error_type == "TypeError" {
                     return TestResult::pass(path.to_path_buf(), dur, format!("expected: {e}"));
                 }
@@ -303,7 +303,7 @@ fn discover_tests(test262_root: &Path) -> Vec<PathBuf> {
     WalkDir::new(test262_root)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "js"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "js"))
         .map(|e| e.path().to_path_buf())
         .collect()
 }

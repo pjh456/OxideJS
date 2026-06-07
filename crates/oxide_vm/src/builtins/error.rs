@@ -28,8 +28,7 @@ fn create_error_object(
     let msg_val = vm.intern(message);
     unsafe {
         (*obj).set_shape_id(sh_message);
-        (*obj).set_prop_count(1);
-        (*obj).set_inline_prop(0, msg_val);
+        (*obj).push_prop(msg_val);
     }
 
     let si_name = sf.intern("name").0;
@@ -37,8 +36,7 @@ fn create_error_object(
     let name_val = vm.intern(name);
     unsafe {
         (*obj).set_shape_id(sh_name);
-        (*obj).set_prop_count(2);
-        (*obj).set_inline_prop(1, name_val);
+        (*obj).push_prop(name_val);
     }
 
     JsValue::from_js_object(obj)

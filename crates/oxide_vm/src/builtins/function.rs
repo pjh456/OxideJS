@@ -40,8 +40,14 @@ fn invoke_target(
 fn bind_dispatcher(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let wrapper_val = vm.reg(254);
     let wrapper = unsafe { &*wrapper_val.as_js_object_ptr() };
-    let bound_target = wrapper.get_prop(0);
-    let bound_this = wrapper.get_prop(1);
+    let bound_target = wrapper
+        .hash_props_vec()
+        .and_then(|v| v.first().map(|b| **b))
+        .unwrap_or(JsValue::undefined());
+    let bound_this = wrapper
+        .hash_props_vec()
+        .and_then(|v| v.get(1).map(|b| **b))
+        .unwrap_or(JsValue::undefined());
 
     let n = args.len().saturating_sub(1);
     let base = 230u8;
@@ -101,11 +107,14 @@ pub fn function_apply(vm: &mut Vm, args: &[u8]) -> NativeResult {
             if !arr_ptr.is_null() {
                 let arr = unsafe { &*arr_ptr };
                 if arr.is_array() {
-                    let n = arr.prop_count() as usize;
+                    let n = arr.hash_props_vec().map_or(0, |v| v.len());
                     let base = 200u8;
                     arg_regs = (0..n).map(|i| base + i as u8).collect();
                     for i in 0..n {
-                        vm.set_reg(base + i as u8, arr.get_prop(i as u8));
+                        let vec = arr.hash_props_vec();
+                        if let Some(v) = vec.and_then(|v| v.get(i)) {
+                            vm.set_reg(base + i as u8, **v);
+                        }
                     }
                 } else {
                     arg_regs = Vec::new();
@@ -143,9 +152,8 @@ pub fn function_bind(vm: &mut Vm, args: &[u8]) -> NativeResult {
         (*wrapper).set_function(true);
         (*wrapper).set_native_fn(Some(bind_dispatcher as *const ()));
         (*wrapper).set_native_arg_count(0);
-        (*wrapper).set_prop_count(2);
-        (*wrapper).set_inline_prop(0, target_val);
-        (*wrapper).set_inline_prop(1, bound_this);
+        (*wrapper).ensure_hash_props().push(Box::new(target_val));
+        (*wrapper).ensure_hash_props().push(Box::new(bound_this));
     }
 
     Ok(JsValue::from_js_object(wrapper))

@@ -12,7 +12,6 @@ const EMPTY_SENTINEL: StringIndex = u32::MAX;
 pub struct Shape {
     pub id: ShapeId,
     pub property_name: StringIndex,
-    pub property_offset: u8,
     pub parent: Option<ShapeId>,
 }
 
@@ -37,7 +36,6 @@ impl ShapeStore {
         let empty = Arc::new(Shape {
             id: EMPTY_SHAPE_ID,
             property_name: EMPTY_SENTINEL,
-            property_offset: 0,
             parent: None,
         });
         debug_assert_eq!(self.shapes.len(), 0);
@@ -55,14 +53,12 @@ impl ShapeStore {
             return existing;
         }
 
-        let prop_offset = self.compute_offset(parent_id);
         let new_id = self.next_id;
         self.next_id += 1;
 
         let shape = Arc::new(Shape {
             id: new_id,
             property_name: prop_name,
-            property_offset: prop_offset,
             parent: Some(parent_id),
         });
 
@@ -75,37 +71,52 @@ impl ShapeStore {
         new_id
     }
 
-    fn compute_offset(&self, shape_id: ShapeId) -> u8 {
-        let mut count = 0u8;
+    fn lookup_position(&self, shape_id: ShapeId, prop_name: StringIndex) -> Option<u8> {
+        let mut depth: u8 = 0;
         let mut cursor = Some(shape_id);
         while let Some(id) = cursor {
             match self.get_shape(id) {
                 Some(s) => {
-                    if s.property_name != EMPTY_SENTINEL {
-                        count += 1;
-                    }
                     cursor = s.parent;
+                    if s.property_name != EMPTY_SENTINEL {
+                        depth += 1;
+                    }
                 }
                 None => break,
             }
         }
-        count.min(31)
-    }
-
-    fn lookup_offset(&self, shape_id: ShapeId, prop_name: StringIndex) -> Option<u8> {
-        let mut cursor = Some(shape_id);
+        let total_depth = depth;
+        let mut step: u8 = 0;
+        cursor = Some(shape_id);
         while let Some(id) = cursor {
             match self.get_shape(id) {
                 Some(s) => {
                     if s.property_name == prop_name && s.property_name != EMPTY_SENTINEL {
-                        return Some(s.property_offset);
+                        return Some(total_depth - step - 1);
                     }
                     cursor = s.parent;
+                    step += 1;
                 }
                 None => return None,
             }
         }
         None
+    }
+
+    fn has_property(&self, shape_id: ShapeId, prop_name: StringIndex) -> bool {
+        let mut cursor = Some(shape_id);
+        while let Some(id) = cursor {
+            match self.get_shape(id) {
+                Some(s) => {
+                    if s.property_name == prop_name && s.property_name != EMPTY_SENTINEL {
+                        return true;
+                    }
+                    cursor = s.parent;
+                }
+                None => return false,
+            }
+        }
+        false
     }
 
     fn shape_prop_count(&self, shape_id: ShapeId) -> u8 {
@@ -140,8 +151,12 @@ pub fn make_shape(parent_id: ShapeId, prop_name: StringIndex) -> ShapeId {
     store().lock().unwrap().make_shape(parent_id, prop_name)
 }
 
-pub fn lookup_offset(shape_id: ShapeId, prop_name: StringIndex) -> Option<u8> {
-    store().lock().unwrap().lookup_offset(shape_id, prop_name)
+pub fn lookup_position(shape_id: ShapeId, prop_name: StringIndex) -> Option<u8> {
+    store().lock().unwrap().lookup_position(shape_id, prop_name)
+}
+
+pub fn has_property(shape_id: ShapeId, prop_name: StringIndex) -> bool {
+    store().lock().unwrap().has_property(shape_id, prop_name)
 }
 
 pub fn shape_prop_count(shape_id: ShapeId) -> u8 {
@@ -198,10 +213,10 @@ mod tests {
 
         assert_eq!(shape_prop_count(s3), 3);
 
-        assert_eq!(lookup_offset(s3, 1_000_030), Some(2));
-        assert_eq!(lookup_offset(s3, 1_000_020), Some(1));
-        assert_eq!(lookup_offset(s3, 1_000_010), Some(0));
-        assert_eq!(lookup_offset(s3, 99), None);
+        assert_eq!(lookup_position(s3, 1_000_030), Some(2));
+        assert_eq!(lookup_position(s3, 1_000_020), Some(1));
+        assert_eq!(lookup_position(s3, 1_000_010), Some(0));
+        assert_eq!(lookup_position(s3, 99), None);
     }
 
     #[test]
@@ -224,7 +239,16 @@ mod tests {
         let s4 = make_shape(s3, 1_000_100);
         assert_ne!(s1, s3);
         assert_ne!(s2, s4);
-        assert_eq!(lookup_offset(s2, 1_000_070), Some(0));
-        assert_eq!(lookup_offset(s4, 1_000_090), Some(0));
+        assert_eq!(lookup_position(s2, 1_000_070), Some(0));
+        assert_eq!(lookup_position(s4, 1_000_090), Some(0));
+    }
+
+    #[test]
+    fn has_property_works() {
+        let s1 = make_shape(EMPTY_SHAPE_ID, 1_000_110);
+        let s2 = make_shape(s1, 1_000_120);
+        assert!(has_property(s2, 1_000_110));
+        assert!(has_property(s2, 1_000_120));
+        assert!(!has_property(s2, 99));
     }
 }

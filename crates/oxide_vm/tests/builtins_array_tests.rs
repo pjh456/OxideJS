@@ -17,7 +17,7 @@ fn array_push_adds_element() {
     let result = eval("var a = [1,2]; a.push(3); a").unwrap();
     let obj = unsafe { &*result.as_js_object_ptr() };
     assert_eq!(obj.prop_count(), 3);
-    assert_eq!(obj.get_prop(2), oxide_types::value::JsValue::int(3));
+    assert_eq!(obj.get_prop_at(2), oxide_types::value::JsValue::int(3));
 }
 
 #[test]
@@ -50,8 +50,8 @@ fn array_slice_returns_subarray() {
     let result = eval("[1,2,3,4].slice(1,3)").unwrap();
     let obj = unsafe { &*result.as_js_object_ptr() };
     assert_eq!(obj.prop_count(), 2);
-    assert_eq!(obj.get_prop(0), oxide_types::value::JsValue::int(2));
-    assert_eq!(obj.get_prop(1), oxide_types::value::JsValue::int(3));
+    assert_eq!(obj.get_prop_at(0), oxide_types::value::JsValue::int(2));
+    assert_eq!(obj.get_prop_at(1), oxide_types::value::JsValue::int(3));
 }
 
 #[test]
@@ -66,7 +66,7 @@ fn array_concat_combines() {
     let result = eval("[1,2].concat([3,4])").unwrap();
     let obj = unsafe { &*result.as_js_object_ptr() };
     assert_eq!(obj.prop_count(), 4);
-    assert_eq!(obj.get_prop(3), oxide_types::value::JsValue::int(4));
+    assert_eq!(obj.get_prop_at(3), oxide_types::value::JsValue::int(4));
 }
 
 #[test]
@@ -110,9 +110,9 @@ fn array_includes_false() {
 fn array_reverse_mutates() {
     let result = eval("var a = [1,2,3]; a.reverse(); a").unwrap();
     let obj = unsafe { &*result.as_js_object_ptr() };
-    assert_eq!(obj.get_prop(0), oxide_types::value::JsValue::int(3));
-    assert_eq!(obj.get_prop(1), oxide_types::value::JsValue::int(2));
-    assert_eq!(obj.get_prop(2), oxide_types::value::JsValue::int(1));
+    assert_eq!(obj.get_prop_at(0), oxide_types::value::JsValue::int(3));
+    assert_eq!(obj.get_prop_at(1), oxide_types::value::JsValue::int(2));
+    assert_eq!(obj.get_prop_at(2), oxide_types::value::JsValue::int(1));
 }
 
 #[test]
@@ -120,8 +120,8 @@ fn array_splice_remove() {
     let result = eval("[1,2,3,4].splice(1,2)").unwrap();
     let obj = unsafe { &*result.as_js_object_ptr() };
     assert_eq!(obj.prop_count(), 2);
-    assert_eq!(obj.get_prop(0), oxide_types::value::JsValue::int(2));
-    assert_eq!(obj.get_prop(1), oxide_types::value::JsValue::int(3));
+    assert_eq!(obj.get_prop_at(0), oxide_types::value::JsValue::int(2));
+    assert_eq!(obj.get_prop_at(1), oxide_types::value::JsValue::int(3));
 }
 
 #[test]

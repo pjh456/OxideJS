@@ -126,17 +126,23 @@ fn make_pair(
 
     let proto_shape = shape_forge.make_shape(EMPTY_SHAPE_ID, si_constructor);
     proto.set_shape_id(proto_shape);
-    proto.set_prop_count(1);
+    // proto shape: EMPTY -> "constructor" (slot 0)
 
     let ctor_shape1 = shape_forge.make_shape(EMPTY_SHAPE_ID, si_prototype);
     let ctor_shape2 = shape_forge.make_shape(ctor_shape1, si_name);
     ctor.set_shape_id(ctor_shape2);
-    ctor.set_prop_count(2);
+    // ctor shape: EMPTY -> "prototype" (slot 0) -> "name" (slot 1)
     ctor.set_function(true);
 
-    proto.set_inline_prop(0, JsValue::undefined());
-    ctor.set_inline_prop(0, JsValue::undefined());
-    ctor.set_inline_prop(1, JsValue::undefined());
+    // Pre-allocate Vec slots so wire_ctor_proto can overwrite vec[0] later.
+    // Proto: 1 property ("constructor"), Ctor: 2 properties ("prototype", "name").
+    proto
+        .ensure_hash_props()
+        .push(Box::new(JsValue::undefined())); // slot 0: "constructor" placeholder
+    ctor.ensure_hash_props()
+        .push(Box::new(JsValue::undefined())); // slot 0: "prototype" placeholder
+    ctor.ensure_hash_props()
+        .push(Box::new(JsValue::undefined())); // slot 1: "name" placeholder
 
     (P::new(proto), P::new(ctor))
 }
@@ -229,13 +235,22 @@ impl BuiltinWorld {
 
         let math_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
 
+        /// Overwrite placeholder slots (set up by make_pair) with real values.
+        /// ctor.vec[0] = constructor.prototype -> proto
+        /// proto.vec[0] = proto.constructor -> ctor
         fn wire_ctor_proto(ctor: &P<JsObject>, proto: &P<JsObject>) {
             let ctor_ptr = ctor.as_ptr() as *mut JsObject;
             let ctor = unsafe { &mut *ctor_ptr };
-            ctor.set_inline_prop(0, JsValue::from_js_object(proto.as_ptr() as *mut JsObject));
+            let vec = ctor.ensure_hash_props();
+            if !vec.is_empty() {
+                *vec[0] = JsValue::from_js_object(proto.as_ptr() as *mut JsObject);
+            }
             let proto_ptr = proto.as_ptr() as *mut JsObject;
             let proto = unsafe { &mut *proto_ptr };
-            proto.set_inline_prop(0, JsValue::from_js_object(ctor_ptr));
+            let pvec = proto.ensure_hash_props();
+            if !pvec.is_empty() {
+                *pvec[0] = JsValue::from_js_object(ctor_ptr);
+            }
         }
 
         wire_ctor_proto(&object_constructor, &object_proto);
@@ -735,11 +750,9 @@ impl BuiltinWorld {
         wrapper.set_native_fn(Some(native_fn_ptr));
         wrapper.set_native_arg_count(arg_count);
         let wrapper_val = JsValue::from_js_object(Box::into_raw(wrapper));
-        let new_offset = proto.prop_count();
         let new_shape = shape_forge.make_shape(proto.shape_id(), si);
         proto.set_shape_id(new_shape);
-        proto.set_prop_count(new_offset + 1);
-        proto.set_prop_expand_heap(new_offset, wrapper_val);
+        proto.ensure_hash_props().push(Box::new(wrapper_val));
         proto.bump_generation();
         Ok(())
     }

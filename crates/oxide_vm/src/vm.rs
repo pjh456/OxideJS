@@ -65,10 +65,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     let obj_val = JsValue::from_js_object(
         kernel.builtin_world().object_constructor.as_ptr() as *mut JsObject
     );
-    let cur_count = global.prop_count();
     global.set_shape_id(obj_shape);
-    global.set_prop_count(cur_count + 1);
-    global.set_prop_expand_heap(cur_count, obj_val);
+    global.push_prop(obj_val);
 
     let _array_methods = ArrayMethods {
         push: crate::builtins::array::array_push as *const (),
@@ -101,10 +99,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     let arr_shape = kernel.shape_forge().make_shape(global.shape_id(), si_arr);
     let arr_val =
         JsValue::from_js_object(kernel.builtin_world().array_constructor.as_ptr() as *mut JsObject);
-    let cur_count = global.prop_count();
     global.set_shape_id(arr_shape);
-    global.set_prop_count(cur_count + 1);
-    global.set_prop_expand_heap(cur_count, arr_val);
+    global.ensure_hash_props().push(Box::new(arr_val));
     global.bump_generation();
 
     let error_methods = ErrorMethods {
@@ -126,10 +122,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     let err_shape = kernel.shape_forge().make_shape(global.shape_id(), si_err);
     let err_val =
         JsValue::from_js_object(kernel.builtin_world().error_constructor.as_ptr() as *mut JsObject);
-    let cur_count = global.prop_count();
     global.set_shape_id(err_shape);
-    global.set_prop_count(cur_count + 1);
-    global.set_prop_expand_heap(cur_count, err_val);
+    global.ensure_hash_props().push(Box::new(err_val));
     global.bump_generation();
 
     let string_methods = StringMethods {
@@ -164,10 +158,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     let str_val = JsValue::from_js_object(
         kernel.builtin_world().string_constructor.as_ptr() as *mut JsObject
     );
-    let cur_count = global.prop_count();
     global.set_shape_id(str_shape);
-    global.set_prop_count(cur_count + 1);
-    global.set_prop_expand_heap(cur_count, str_val);
+    global.ensure_hash_props().push(Box::new(str_val));
     global.bump_generation();
 
     let number_methods = NumberMethods {
@@ -189,10 +181,8 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     let num_val = JsValue::from_js_object(
         kernel.builtin_world().number_constructor.as_ptr() as *mut JsObject
     );
-    let cur_count = global.prop_count();
     global.set_shape_id(num_shape);
-    global.set_prop_count(cur_count + 1);
-    global.set_prop_expand_heap(cur_count, num_val);
+    global.ensure_hash_props().push(Box::new(num_val));
     global.bump_generation();
 
     {
@@ -457,20 +447,16 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     {
         let si_pi = sf.intern("PI").0;
         let sh_pi = sh.make_shape(math.shape_id(), si_pi);
-        let cur = math.prop_count();
         math.set_shape_id(sh_pi);
-        math.set_prop_count(cur + 1);
-        math.set_prop_expand_heap(cur, pi_val);
+        math.ensure_hash_props().push(Box::new(pi_val));
     }
 
     let si_m = kernel.string_forge().intern("Math").0;
     let m_shape = kernel.shape_forge().make_shape(global.shape_id(), si_m);
     let m_val =
         JsValue::from_js_object(kernel.builtin_world().math_object.as_ptr() as *mut JsObject);
-    let cur_count = global.prop_count();
     global.set_shape_id(m_shape);
-    global.set_prop_count(cur_count + 1);
-    global.set_prop_expand_heap(cur_count, m_val);
+    global.ensure_hash_props().push(Box::new(m_val));
     global.bump_generation();
 
     let function_methods = FunctionMethods {
@@ -586,22 +572,28 @@ impl Vm {
     }
 
     fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
-        if let Some(offset) = self
+        if let Some(pos) = self
             .kernel
             .shape_forge()
-            .lookup_offset(obj.shape_id(), prop_name_si)
+            .lookup_position(obj.shape_id(), prop_name_si)
         {
-            return Some(obj.get_prop(offset));
+            let val = obj.get_prop_at(pos);
+            if !val.is_undefined() || obj.prop_vec_len() > pos as usize {
+                return Some(val);
+            }
         }
         let mut proto = obj.proto();
         while proto.is_object() {
             let proto_obj = unsafe { &*proto.as_js_object_ptr() };
-            if let Some(offset) = self
+            if let Some(pos) = self
                 .kernel
                 .shape_forge()
-                .lookup_offset(proto_obj.shape_id(), prop_name_si)
+                .lookup_position(proto_obj.shape_id(), prop_name_si)
             {
-                return Some(proto_obj.get_prop(offset));
+                let val = proto_obj.get_prop_at(pos);
+                if !val.is_undefined() || proto_obj.prop_vec_len() > pos as usize {
+                    return Some(val);
+                }
             }
             proto = proto_obj.proto();
         }
@@ -614,34 +606,39 @@ impl Vm {
         prop_name_si: u32,
         val: JsValue,
     ) -> Result<(), String> {
-        if let Some(offset) = self
+        if let Some(pos) = self
             .kernel
             .shape_forge()
-            .lookup_offset(obj.shape_id(), prop_name_si)
+            .lookup_position(obj.shape_id(), prop_name_si)
         {
-            let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
-            self.bytecode[self.pc - 1] = new_ext;
-            obj.set_prop(offset, val);
+            obj.set_prop_at(pos, val);
+            // IC write-back: 3 extension words (shape_id + ptr_lo + ptr_hi)
+            if let Some(ptr) = obj.prop_ptr_at(pos) {
+                self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
+                self.bytecode[self.pc - 2] = ptr as u32;
+                self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+            }
         } else {
-            let new_offset = obj.prop_count();
             let new_shape_id = self
                 .kernel
                 .shape_forge()
                 .make_shape(obj.shape_id(), prop_name_si);
-            let new_ext = (new_shape_id & 0x00FF_FFFF) | ((new_offset as u32) << 24);
-            self.bytecode[self.pc - 1] = new_ext;
             obj.set_shape_id(new_shape_id);
-            obj.set_prop_count(new_offset + 1);
-            obj.set_prop_expand(new_offset, val, self.epoch.bump());
+            let new_pos = obj.push_prop(val);
             obj.bump_generation();
-            self.kernel.prop_forge().upsert(
-                new_shape_id,
-                PropTemplate {
-                    shape_id: new_shape_id,
-                    offset: new_offset,
-                    generation: obj.generation(),
-                },
-            );
+            if let Some(ptr) = obj.prop_ptr_at(new_pos) {
+                self.bytecode[self.pc - 3] = new_shape_id & 0x00FF_FFFF;
+                self.bytecode[self.pc - 2] = ptr as u32;
+                self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                self.kernel.prop_forge().upsert(
+                    new_shape_id,
+                    PropTemplate {
+                        shape_id: new_shape_id,
+                        ptr_bits: ptr as u64,
+                        generation: obj.generation(),
+                    },
+                );
+            }
         }
         Ok(())
     }
@@ -675,21 +672,12 @@ impl Vm {
         for (name, reg) in &module.builtin_reg_map {
             let si = self.kernel.string_forge().intern(name.as_str()).0;
             let global = self.kernel.global_object();
-            let mut shape_id = global.shape_id();
-            let mut found: Option<u8> = None;
-            while shape_id != EMPTY_SHAPE_ID {
-                if let Some(shape) = self.kernel.shape_forge().get_shape(shape_id) {
-                    if shape.property_name == si {
-                        found = Some(shape.property_offset);
-                        break;
-                    }
-                    shape_id = shape.parent.unwrap_or(EMPTY_SHAPE_ID);
-                } else {
-                    break;
-                }
-            }
-            if let Some(offset) = found {
-                self.regs[*reg as usize] = global.get_prop(offset);
+            if let Some(pos) = self
+                .kernel
+                .shape_forge()
+                .lookup_position(global.shape_id(), si)
+            {
+                self.regs[*reg as usize] = global.get_prop_at(pos);
             }
         }
 
@@ -934,7 +922,7 @@ impl Vm {
                             let prop_name_si = self.regs[b].as_string_index();
                             if let Some(resolved) = self.resolve_property(proto, prop_name_si) {
                                 self.regs[a] = resolved;
-                                self.pc += 1;
+                                self.pc += 3;
                                 continue;
                             }
                         }
@@ -945,7 +933,7 @@ impl Vm {
                             let prop_name_si = self.regs[b].as_string_index();
                             if let Some(resolved) = self.resolve_property(proto, prop_name_si) {
                                 self.regs[a] = resolved;
-                                self.pc += 1;
+                                self.pc += 3;
                                 continue;
                             }
                         }
@@ -953,28 +941,41 @@ impl Vm {
                     }
                     let obj = unsafe { &*obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
-                    let ext = self.bytecode[self.pc];
-                    self.pc += 1;
-                    let cached_shape_id = ext & 0x00FF_FFFF;
-                    let cached_offset = ((ext >> 24) & 0xFF) as u8;
+                    let ext0 = self.bytecode[self.pc];
+                    let ext1 = self.bytecode[self.pc + 1];
+                    let ext2 = self.bytecode[self.pc + 2];
+                    self.pc += 3;
+                    let cached_shape_id = ext0 & 0x00FF_FFFF;
+                    let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
 
-                    if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
-                        self.regs[a] = obj.get_prop(cached_offset);
+                    if cached_shape_id != 0 && cached_shape_id == obj.shape_id() && cached_ptr != 0
+                    {
+                        self.regs[a] = unsafe { *(cached_ptr as *const JsValue) };
                     } else if let Some(template) =
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
-                        let new_ext =
-                            (obj.shape_id() & 0x00FF_FFFF) | ((template.offset as u32) << 24);
-                        self.bytecode[self.pc - 1] = new_ext;
-                        self.regs[a] = obj.get_prop(template.offset);
+                        if template.ptr_bits != 0 {
+                            let ptr = template.ptr_bits;
+                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
+                            self.bytecode[self.pc - 2] = ptr as u32;
+                            self.bytecode[self.pc - 1] = (ptr >> 32) as u32;
+                            self.regs[a] = unsafe { *(ptr as *const JsValue) };
+                        } else {
+                            self.regs[a] = self
+                                .resolve_property(obj, prop_name_si)
+                                .unwrap_or(JsValue::undefined());
+                        }
                     } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
-                        let offset = self
+                        let pos = self
                             .kernel
                             .shape_forge()
-                            .lookup_offset(obj.shape_id(), prop_name_si)
+                            .lookup_position(obj.shape_id(), prop_name_si)
                             .unwrap_or(0);
-                        let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
-                        self.bytecode[self.pc - 1] = new_ext;
+                        if let Some(ptr) = obj.prop_ptr_at(pos) {
+                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
+                            self.bytecode[self.pc - 2] = ptr as u32;
+                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                        }
                         self.regs[a] = val;
                     } else {
                         self.regs[a] = JsValue::undefined();
@@ -988,43 +989,51 @@ impl Vm {
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
-                    let ext = self.bytecode[self.pc];
-                    self.pc += 1;
-                    let cached_shape_id = ext & 0x00FF_FFFF;
-                    let cached_offset = ((ext >> 24) & 0xFF) as u8;
+                    let ext0 = self.bytecode[self.pc];
+                    let ext1 = self.bytecode[self.pc + 1];
+                    let ext2 = self.bytecode[self.pc + 2];
+                    self.pc += 3;
+                    let cached_shape_id = ext0 & 0x00FF_FFFF;
+                    let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
 
-                    if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
-                        obj.set_prop(cached_offset, self.regs[a]);
+                    if cached_shape_id != 0 && cached_shape_id == obj.shape_id() && cached_ptr != 0
+                    {
+                        unsafe {
+                            *(cached_ptr as *mut JsValue) = self.regs[a];
+                        }
                     } else {
-                        if let Some(offset) = self
+                        if let Some(pos) = self
                             .kernel
                             .shape_forge()
-                            .lookup_offset(obj.shape_id(), prop_name_si)
+                            .lookup_position(obj.shape_id(), prop_name_si)
                         {
-                            let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
-                            self.bytecode[self.pc - 1] = new_ext;
-                            obj.set_prop(offset, self.regs[a]);
+                            obj.set_prop_at(pos, self.regs[a]);
+                            if let Some(ptr) = obj.prop_ptr_at(pos) {
+                                self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
+                                self.bytecode[self.pc - 2] = ptr as u32;
+                                self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                            }
                         } else {
-                            let new_offset = obj.prop_count();
                             let new_shape_id = self
                                 .kernel
                                 .shape_forge()
                                 .make_shape(obj.shape_id(), prop_name_si);
                             obj.set_shape_id(new_shape_id);
-                            obj.set_prop_count(new_offset + 1);
-                            obj.set_prop(new_offset, self.regs[a]);
+                            let new_pos = obj.push_prop(self.regs[a]);
                             obj.bump_generation();
-                            let new_ext =
-                                (new_shape_id & 0x00FF_FFFF) | ((new_offset as u32) << 24);
-                            self.bytecode[self.pc - 1] = new_ext;
-                            self.kernel.prop_forge().upsert(
-                                new_shape_id,
-                                PropTemplate {
-                                    shape_id: new_shape_id,
-                                    offset: new_offset,
-                                    generation: obj.generation(),
-                                },
-                            );
+                            if let Some(ptr) = obj.prop_ptr_at(new_pos) {
+                                self.bytecode[self.pc - 3] = new_shape_id & 0x00FF_FFFF;
+                                self.bytecode[self.pc - 2] = ptr as u32;
+                                self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                                self.kernel.prop_forge().upsert(
+                                    new_shape_id,
+                                    PropTemplate {
+                                        shape_id: new_shape_id,
+                                        ptr_bits: ptr as u64,
+                                        generation: obj.generation(),
+                                    },
+                                );
+                            }
                         }
                     }
                 }
@@ -1047,21 +1056,19 @@ impl Vm {
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
-                    if let Some(offset) = self
+                    if let Some(pos) = self
                         .kernel
                         .shape_forge()
-                        .lookup_offset(obj.shape_id(), prop_name_si)
+                        .lookup_position(obj.shape_id(), prop_name_si)
                     {
-                        obj.set_prop(offset, self.regs[a]);
+                        obj.set_prop_at(pos, self.regs[a]);
                     } else {
-                        let new_offset = obj.prop_count();
                         let new_shape_id = self
                             .kernel
                             .shape_forge()
                             .make_shape(obj.shape_id(), prop_name_si);
                         obj.set_shape_id(new_shape_id);
-                        obj.set_prop_count(new_offset + 1);
-                        obj.set_prop_expand(new_offset, self.regs[a], self.epoch.bump());
+                        obj.push_prop(self.regs[a]);
                         obj.bump_generation();
                     }
                 }
@@ -1093,21 +1100,19 @@ impl Vm {
                         return Err("SET_PROP_DYNAMIC key not a string".into());
                     }
                     let prop_name_si = key_val.as_string_index();
-                    if let Some(offset) = self
+                    if let Some(pos) = self
                         .kernel
                         .shape_forge()
-                        .lookup_offset(obj.shape_id(), prop_name_si)
+                        .lookup_position(obj.shape_id(), prop_name_si)
                     {
-                        obj.set_prop(offset, self.regs[b]);
+                        obj.set_prop_at(pos, self.regs[b]);
                     } else {
-                        let new_offset = obj.prop_count();
                         let new_shape_id = self
                             .kernel
                             .shape_forge()
                             .make_shape(obj.shape_id(), prop_name_si);
                         obj.set_shape_id(new_shape_id);
-                        obj.set_prop_count(new_offset + 1);
-                        obj.set_prop_expand(new_offset, self.regs[b], self.epoch.bump());
+                        obj.push_prop(self.regs[b]);
                         obj.bump_generation();
                     }
                 }
@@ -1142,10 +1147,7 @@ impl Vm {
                     }
                     let idx = self.regs[a].as_int() as usize;
                     let obj = unsafe { &mut *obj_ptr };
-                    obj.set_prop(idx as u8, self.regs[b]);
-                    if idx as u8 >= obj.prop_count() {
-                        obj.set_prop_count(idx as u8 + 1);
-                    }
+                    obj.set_prop_at(idx as u8, self.regs[b]);
                 }
 
                 OpCode::COMPOUND_ADD => {
@@ -1289,28 +1291,42 @@ impl Vm {
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
-                    let ext = self.bytecode[self.pc];
-                    self.pc += 1;
-                    let cached_shape_id = ext & 0x00FF_FFFF;
-                    let cached_offset = ((ext >> 24) & 0xFF) as u8;
+                    let ext0 = self.bytecode[self.pc];
+                    let ext1 = self.bytecode[self.pc + 1];
+                    let ext2 = self.bytecode[self.pc + 2];
+                    self.pc += 3;
+                    let cached_shape_id = ext0 & 0x00FF_FFFF;
+                    let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
 
-                    let prop_val = if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
-                        obj.get_prop(cached_offset)
+                    let prop_val = if cached_shape_id != 0
+                        && cached_shape_id == obj.shape_id()
+                        && cached_ptr != 0
+                    {
+                        unsafe { *(cached_ptr as *const JsValue) }
                     } else if let Some(template) =
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
-                        let new_ext =
-                            (obj.shape_id() & 0x00FF_FFFF) | ((template.offset as u32) << 24);
-                        self.bytecode[self.pc - 1] = new_ext;
-                        obj.get_prop(template.offset)
+                        if template.ptr_bits != 0 {
+                            let ptr = template.ptr_bits;
+                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
+                            self.bytecode[self.pc - 2] = ptr as u32;
+                            self.bytecode[self.pc - 1] = (ptr >> 32) as u32;
+                            unsafe { *(ptr as *const JsValue) }
+                        } else {
+                            self.resolve_property(obj, prop_name_si)
+                                .unwrap_or(JsValue::undefined())
+                        }
                     } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
-                        let offset = self
+                        let pos = self
                             .kernel
                             .shape_forge()
-                            .lookup_offset(obj.shape_id(), prop_name_si)
+                            .lookup_position(obj.shape_id(), prop_name_si)
                             .unwrap_or(0);
-                        let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
-                        self.bytecode[self.pc - 1] = new_ext;
+                        if let Some(ptr) = obj.prop_ptr_at(pos) {
+                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
+                            self.bytecode[self.pc - 2] = ptr as u32;
+                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                        }
                         val
                     } else {
                         JsValue::undefined()
@@ -1319,38 +1335,46 @@ impl Vm {
                     let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
                     let new_val = JsValue::float(n + 1.0);
 
-                    let offset = if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
-                        cached_offset
-                    } else if let Some(off) = self
+                    if cached_shape_id != 0 && cached_shape_id == obj.shape_id() && cached_ptr != 0
+                    {
+                        unsafe {
+                            *(cached_ptr as *mut JsValue) = new_val;
+                        }
+                    } else if let Some(pos) = self
                         .kernel
                         .shape_forge()
-                        .lookup_offset(obj.shape_id(), prop_name_si)
+                        .lookup_position(obj.shape_id(), prop_name_si)
                     {
-                        off
+                        obj.set_prop_at(pos, new_val);
+                        if let Some(ptr) = obj.prop_ptr_at(pos) {
+                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
+                            self.bytecode[self.pc - 2] = ptr as u32;
+                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                        }
                     } else {
-                        let new_offset = obj.prop_count();
                         let new_shape_id = self
                             .kernel
                             .shape_forge()
                             .make_shape(obj.shape_id(), prop_name_si);
                         obj.set_shape_id(new_shape_id);
-                        obj.set_prop_count(new_offset + 1);
-                        obj.set_prop_expand(new_offset, new_val, self.epoch.bump());
+                        let new_pos = obj.push_prop(new_val);
                         obj.bump_generation();
-                        let new_ext = (new_shape_id & 0x00FF_FFFF) | ((new_offset as u32) << 24);
-                        self.bytecode[self.pc - 1] = new_ext;
-                        self.kernel.prop_forge().upsert(
-                            new_shape_id,
-                            PropTemplate {
-                                shape_id: new_shape_id,
-                                offset: new_offset,
-                                generation: obj.generation(),
-                            },
-                        );
+                        if let Some(ptr) = obj.prop_ptr_at(new_pos) {
+                            self.bytecode[self.pc - 3] = new_shape_id & 0x00FF_FFFF;
+                            self.bytecode[self.pc - 2] = ptr as u32;
+                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                            self.kernel.prop_forge().upsert(
+                                new_shape_id,
+                                PropTemplate {
+                                    shape_id: new_shape_id,
+                                    ptr_bits: ptr as u64,
+                                    generation: obj.generation(),
+                                },
+                            );
+                        }
                         self.regs[a] = new_val;
                         continue;
                     };
-                    obj.set_prop(offset, new_val);
                     self.regs[a] = new_val;
                 }
 
@@ -1361,28 +1385,42 @@ impl Vm {
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
-                    let ext = self.bytecode[self.pc];
-                    self.pc += 1;
-                    let cached_shape_id = ext & 0x00FF_FFFF;
-                    let cached_offset = ((ext >> 24) & 0xFF) as u8;
+                    let ext0 = self.bytecode[self.pc];
+                    let ext1 = self.bytecode[self.pc + 1];
+                    let ext2 = self.bytecode[self.pc + 2];
+                    self.pc += 3;
+                    let cached_shape_id = ext0 & 0x00FF_FFFF;
+                    let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
 
-                    let prop_val = if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
-                        obj.get_prop(cached_offset)
+                    let prop_val = if cached_shape_id != 0
+                        && cached_shape_id == obj.shape_id()
+                        && cached_ptr != 0
+                    {
+                        unsafe { *(cached_ptr as *const JsValue) }
                     } else if let Some(template) =
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
-                        let new_ext =
-                            (obj.shape_id() & 0x00FF_FFFF) | ((template.offset as u32) << 24);
-                        self.bytecode[self.pc - 1] = new_ext;
-                        obj.get_prop(template.offset)
+                        if template.ptr_bits != 0 {
+                            let ptr = template.ptr_bits;
+                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
+                            self.bytecode[self.pc - 2] = ptr as u32;
+                            self.bytecode[self.pc - 1] = (ptr >> 32) as u32;
+                            unsafe { *(ptr as *const JsValue) }
+                        } else {
+                            self.resolve_property(obj, prop_name_si)
+                                .unwrap_or(JsValue::undefined())
+                        }
                     } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
-                        let offset = self
+                        let pos = self
                             .kernel
                             .shape_forge()
-                            .lookup_offset(obj.shape_id(), prop_name_si)
+                            .lookup_position(obj.shape_id(), prop_name_si)
                             .unwrap_or(0);
-                        let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
-                        self.bytecode[self.pc - 1] = new_ext;
+                        if let Some(ptr) = obj.prop_ptr_at(pos) {
+                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
+                            self.bytecode[self.pc - 2] = ptr as u32;
+                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                        }
                         val
                     } else {
                         JsValue::undefined()
@@ -1391,38 +1429,46 @@ impl Vm {
                     let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
                     let new_val = JsValue::float(n - 1.0);
 
-                    let offset = if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
-                        cached_offset
-                    } else if let Some(off) = self
+                    if cached_shape_id != 0 && cached_shape_id == obj.shape_id() && cached_ptr != 0
+                    {
+                        unsafe {
+                            *(cached_ptr as *mut JsValue) = new_val;
+                        }
+                    } else if let Some(pos) = self
                         .kernel
                         .shape_forge()
-                        .lookup_offset(obj.shape_id(), prop_name_si)
+                        .lookup_position(obj.shape_id(), prop_name_si)
                     {
-                        off
+                        obj.set_prop_at(pos, new_val);
+                        if let Some(ptr) = obj.prop_ptr_at(pos) {
+                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
+                            self.bytecode[self.pc - 2] = ptr as u32;
+                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                        }
                     } else {
-                        let new_offset = obj.prop_count();
                         let new_shape_id = self
                             .kernel
                             .shape_forge()
                             .make_shape(obj.shape_id(), prop_name_si);
                         obj.set_shape_id(new_shape_id);
-                        obj.set_prop_count(new_offset + 1);
-                        obj.set_prop_expand(new_offset, new_val, self.epoch.bump());
+                        let new_pos = obj.push_prop(new_val);
                         obj.bump_generation();
-                        let new_ext = (new_shape_id & 0x00FF_FFFF) | ((new_offset as u32) << 24);
-                        self.bytecode[self.pc - 1] = new_ext;
-                        self.kernel.prop_forge().upsert(
-                            new_shape_id,
-                            PropTemplate {
-                                shape_id: new_shape_id,
-                                offset: new_offset,
-                                generation: obj.generation(),
-                            },
-                        );
+                        if let Some(ptr) = obj.prop_ptr_at(new_pos) {
+                            self.bytecode[self.pc - 3] = new_shape_id & 0x00FF_FFFF;
+                            self.bytecode[self.pc - 2] = ptr as u32;
+                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                            self.kernel.prop_forge().upsert(
+                                new_shape_id,
+                                PropTemplate {
+                                    shape_id: new_shape_id,
+                                    ptr_bits: ptr as u64,
+                                    generation: obj.generation(),
+                                },
+                            );
+                        }
                         self.regs[a] = new_val;
                         continue;
                     };
-                    obj.set_prop(offset, new_val);
                     self.regs[a] = new_val;
                 }
 
@@ -1443,21 +1489,19 @@ impl Vm {
                     let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
                     let new_val = JsValue::float(n + 1.0);
 
-                    if let Some(offset) = self
+                    if let Some(pos) = self
                         .kernel
                         .shape_forge()
-                        .lookup_offset(obj.shape_id(), prop_name_si)
+                        .lookup_position(obj.shape_id(), prop_name_si)
                     {
-                        obj.set_prop(offset, new_val);
+                        obj.set_prop_at(pos, new_val);
                     } else {
-                        let new_offset = obj.prop_count();
                         let new_shape_id = self
                             .kernel
                             .shape_forge()
                             .make_shape(obj.shape_id(), prop_name_si);
                         obj.set_shape_id(new_shape_id);
-                        obj.set_prop_count(new_offset + 1);
-                        obj.set_prop_expand(new_offset, new_val, self.epoch.bump());
+                        obj.push_prop(new_val);
                         obj.bump_generation();
                     };
                     self.regs[b] = new_val;
@@ -1480,21 +1524,19 @@ impl Vm {
                     let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
                     let new_val = JsValue::float(n - 1.0);
 
-                    if let Some(offset) = self
+                    if let Some(pos) = self
                         .kernel
                         .shape_forge()
-                        .lookup_offset(obj.shape_id(), prop_name_si)
+                        .lookup_position(obj.shape_id(), prop_name_si)
                     {
-                        obj.set_prop(offset, new_val);
+                        obj.set_prop_at(pos, new_val);
                     } else {
-                        let new_offset = obj.prop_count();
                         let new_shape_id = self
                             .kernel
                             .shape_forge()
                             .make_shape(obj.shape_id(), prop_name_si);
                         obj.set_shape_id(new_shape_id);
-                        obj.set_prop_count(new_offset + 1);
-                        obj.set_prop_expand(new_offset, new_val, self.epoch.bump());
+                        obj.push_prop(new_val);
                         obj.bump_generation();
                     };
                     self.regs[b] = new_val;
@@ -1507,28 +1549,42 @@ impl Vm {
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
-                    let ext = self.bytecode[self.pc];
-                    self.pc += 1;
-                    let cached_shape_id = ext & 0x00FF_FFFF;
-                    let cached_offset = ((ext >> 24) & 0xFF) as u8;
+                    let ext0 = self.bytecode[self.pc];
+                    let ext1 = self.bytecode[self.pc + 1];
+                    let ext2 = self.bytecode[self.pc + 2];
+                    self.pc += 3;
+                    let cached_shape_id = ext0 & 0x00FF_FFFF;
+                    let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
 
-                    let prop_val = if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
-                        obj.get_prop(cached_offset)
+                    let prop_val = if cached_shape_id != 0
+                        && cached_shape_id == obj.shape_id()
+                        && cached_ptr != 0
+                    {
+                        unsafe { *(cached_ptr as *const JsValue) }
                     } else if let Some(template) =
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
-                        let new_ext =
-                            (obj.shape_id() & 0x00FF_FFFF) | ((template.offset as u32) << 24);
-                        self.bytecode[self.pc - 1] = new_ext;
-                        obj.get_prop(template.offset)
+                        if template.ptr_bits != 0 {
+                            let ptr = template.ptr_bits;
+                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
+                            self.bytecode[self.pc - 2] = ptr as u32;
+                            self.bytecode[self.pc - 1] = (ptr >> 32) as u32;
+                            unsafe { *(ptr as *const JsValue) }
+                        } else {
+                            self.resolve_property(obj, prop_name_si)
+                                .unwrap_or(JsValue::undefined())
+                        }
                     } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
-                        let offset = self
+                        let pos = self
                             .kernel
                             .shape_forge()
-                            .lookup_offset(obj.shape_id(), prop_name_si)
+                            .lookup_position(obj.shape_id(), prop_name_si)
                             .unwrap_or(0);
-                        let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
-                        self.bytecode[self.pc - 1] = new_ext;
+                        if let Some(ptr) = obj.prop_ptr_at(pos) {
+                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
+                            self.bytecode[self.pc - 2] = ptr as u32;
+                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                        }
                         val
                     } else {
                         JsValue::undefined()
@@ -1546,35 +1602,7 @@ impl Vm {
                         JsValue::float(ln + rn)
                     };
 
-                    if let Some(offset) = self
-                        .kernel
-                        .shape_forge()
-                        .lookup_offset(obj.shape_id(), prop_name_si)
-                    {
-                        let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
-                        self.bytecode[self.pc - 1] = new_ext;
-                        obj.set_prop(offset, new_val);
-                    } else {
-                        let new_offset = obj.prop_count();
-                        let new_shape_id = self
-                            .kernel
-                            .shape_forge()
-                            .make_shape(obj.shape_id(), prop_name_si);
-                        let new_ext = (new_shape_id & 0x00FF_FFFF) | ((new_offset as u32) << 24);
-                        self.bytecode[self.pc - 1] = new_ext;
-                        obj.set_shape_id(new_shape_id);
-                        obj.set_prop_count(new_offset + 1);
-                        obj.set_prop_expand(new_offset, new_val, self.epoch.bump());
-                        obj.bump_generation();
-                        self.kernel.prop_forge().upsert(
-                            new_shape_id,
-                            PropTemplate {
-                                shape_id: new_shape_id,
-                                offset: new_offset,
-                                generation: obj.generation(),
-                            },
-                        );
-                    }
+                    self.set_member_prop(obj, prop_name_si, new_val)?;
                     self.regs[a] = new_val;
                 }
 
@@ -1585,28 +1613,42 @@ impl Vm {
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
-                    let ext = self.bytecode[self.pc];
-                    self.pc += 1;
-                    let cached_shape_id = ext & 0x00FF_FFFF;
-                    let cached_offset = ((ext >> 24) & 0xFF) as u8;
+                    let ext0 = self.bytecode[self.pc];
+                    let ext1 = self.bytecode[self.pc + 1];
+                    let ext2 = self.bytecode[self.pc + 2];
+                    self.pc += 3;
+                    let cached_shape_id = ext0 & 0x00FF_FFFF;
+                    let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
 
-                    let prop_val = if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
-                        obj.get_prop(cached_offset)
+                    let prop_val = if cached_shape_id != 0
+                        && cached_shape_id == obj.shape_id()
+                        && cached_ptr != 0
+                    {
+                        unsafe { *(cached_ptr as *const JsValue) }
                     } else if let Some(template) =
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
-                        let new_ext =
-                            (obj.shape_id() & 0x00FF_FFFF) | ((template.offset as u32) << 24);
-                        self.bytecode[self.pc - 1] = new_ext;
-                        obj.get_prop(template.offset)
+                        if template.ptr_bits != 0 {
+                            let ptr = template.ptr_bits;
+                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
+                            self.bytecode[self.pc - 2] = ptr as u32;
+                            self.bytecode[self.pc - 1] = (ptr >> 32) as u32;
+                            unsafe { *(ptr as *const JsValue) }
+                        } else {
+                            self.resolve_property(obj, prop_name_si)
+                                .unwrap_or(JsValue::undefined())
+                        }
                     } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
-                        let offset = self
+                        let pos = self
                             .kernel
                             .shape_forge()
-                            .lookup_offset(obj.shape_id(), prop_name_si)
+                            .lookup_position(obj.shape_id(), prop_name_si)
                             .unwrap_or(0);
-                        let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
-                        self.bytecode[self.pc - 1] = new_ext;
+                        if let Some(ptr) = obj.prop_ptr_at(pos) {
+                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
+                            self.bytecode[self.pc - 2] = ptr as u32;
+                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                        }
                         val
                     } else {
                         JsValue::undefined()
@@ -1616,35 +1658,7 @@ impl Vm {
                     let rn = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
                     let new_val = JsValue::float(ln - rn);
                     self.regs[a] = new_val;
-                    if let Some(offset) = self
-                        .kernel
-                        .shape_forge()
-                        .lookup_offset(obj.shape_id(), prop_name_si)
-                    {
-                        let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
-                        self.bytecode[self.pc - 1] = new_ext;
-                        obj.set_prop(offset, new_val);
-                    } else {
-                        let new_offset = obj.prop_count();
-                        let new_shape_id = self
-                            .kernel
-                            .shape_forge()
-                            .make_shape(obj.shape_id(), prop_name_si);
-                        let new_ext = (new_shape_id & 0x00FF_FFFF) | ((new_offset as u32) << 24);
-                        self.bytecode[self.pc - 1] = new_ext;
-                        obj.set_shape_id(new_shape_id);
-                        obj.set_prop_count(new_offset + 1);
-                        obj.set_prop_expand(new_offset, new_val, self.epoch.bump());
-                        obj.bump_generation();
-                        self.kernel.prop_forge().upsert(
-                            new_shape_id,
-                            PropTemplate {
-                                shape_id: new_shape_id,
-                                offset: new_offset,
-                                generation: obj.generation(),
-                            },
-                        );
-                    }
+                    self.set_member_prop(obj, prop_name_si, new_val)?;
                 }
 
                 OpCode::COMPOUND_MEMBER_MUL => {
@@ -1654,27 +1668,42 @@ impl Vm {
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
-                    let ext = self.bytecode[self.pc];
-                    self.pc += 1;
-                    let cached_shape_id = ext & 0x00FF_FFFF;
+                    let ext0 = self.bytecode[self.pc];
+                    let ext1 = self.bytecode[self.pc + 1];
+                    let ext2 = self.bytecode[self.pc + 2];
+                    self.pc += 3;
+                    let cached_shape_id = ext0 & 0x00FF_FFFF;
+                    let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
 
-                    let prop_val = if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
-                        obj.get_prop(((ext >> 24) & 0xFF) as u8)
+                    let prop_val = if cached_shape_id != 0
+                        && cached_shape_id == obj.shape_id()
+                        && cached_ptr != 0
+                    {
+                        unsafe { *(cached_ptr as *const JsValue) }
                     } else if let Some(template) =
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
-                        let new_ext =
-                            (obj.shape_id() & 0x00FF_FFFF) | ((template.offset as u32) << 24);
-                        self.bytecode[self.pc - 1] = new_ext;
-                        obj.get_prop(template.offset)
+                        if template.ptr_bits != 0 {
+                            let ptr = template.ptr_bits;
+                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
+                            self.bytecode[self.pc - 2] = ptr as u32;
+                            self.bytecode[self.pc - 1] = (ptr >> 32) as u32;
+                            unsafe { *(ptr as *const JsValue) }
+                        } else {
+                            self.resolve_property(obj, prop_name_si)
+                                .unwrap_or(JsValue::undefined())
+                        }
                     } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
-                        let offset = self
+                        let pos = self
                             .kernel
                             .shape_forge()
-                            .lookup_offset(obj.shape_id(), prop_name_si)
+                            .lookup_position(obj.shape_id(), prop_name_si)
                             .unwrap_or(0);
-                        let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
-                        self.bytecode[self.pc - 1] = new_ext;
+                        if let Some(ptr) = obj.prop_ptr_at(pos) {
+                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
+                            self.bytecode[self.pc - 2] = ptr as u32;
+                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                        }
                         val
                     } else {
                         JsValue::undefined()
@@ -1694,27 +1723,42 @@ impl Vm {
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
-                    let ext = self.bytecode[self.pc];
-                    self.pc += 1;
-                    let cached_shape_id = ext & 0x00FF_FFFF;
+                    let ext0 = self.bytecode[self.pc];
+                    let ext1 = self.bytecode[self.pc + 1];
+                    let ext2 = self.bytecode[self.pc + 2];
+                    self.pc += 3;
+                    let cached_shape_id = ext0 & 0x00FF_FFFF;
+                    let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
 
-                    let prop_val = if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
-                        obj.get_prop(((ext >> 24) & 0xFF) as u8)
+                    let prop_val = if cached_shape_id != 0
+                        && cached_shape_id == obj.shape_id()
+                        && cached_ptr != 0
+                    {
+                        unsafe { *(cached_ptr as *const JsValue) }
                     } else if let Some(template) =
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
-                        let new_ext =
-                            (obj.shape_id() & 0x00FF_FFFF) | ((template.offset as u32) << 24);
-                        self.bytecode[self.pc - 1] = new_ext;
-                        obj.get_prop(template.offset)
+                        if template.ptr_bits != 0 {
+                            let ptr = template.ptr_bits;
+                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
+                            self.bytecode[self.pc - 2] = ptr as u32;
+                            self.bytecode[self.pc - 1] = (ptr >> 32) as u32;
+                            unsafe { *(ptr as *const JsValue) }
+                        } else {
+                            self.resolve_property(obj, prop_name_si)
+                                .unwrap_or(JsValue::undefined())
+                        }
                     } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
-                        let offset = self
+                        let pos = self
                             .kernel
                             .shape_forge()
-                            .lookup_offset(obj.shape_id(), prop_name_si)
+                            .lookup_position(obj.shape_id(), prop_name_si)
                             .unwrap_or(0);
-                        let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
-                        self.bytecode[self.pc - 1] = new_ext;
+                        if let Some(ptr) = obj.prop_ptr_at(pos) {
+                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
+                            self.bytecode[self.pc - 2] = ptr as u32;
+                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                        }
                         val
                     } else {
                         JsValue::undefined()
@@ -1734,27 +1778,42 @@ impl Vm {
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
-                    let ext = self.bytecode[self.pc];
-                    self.pc += 1;
-                    let cached_shape_id = ext & 0x00FF_FFFF;
+                    let ext0 = self.bytecode[self.pc];
+                    let ext1 = self.bytecode[self.pc + 1];
+                    let ext2 = self.bytecode[self.pc + 2];
+                    self.pc += 3;
+                    let cached_shape_id = ext0 & 0x00FF_FFFF;
+                    let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
 
-                    let prop_val = if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
-                        obj.get_prop(((ext >> 24) & 0xFF) as u8)
+                    let prop_val = if cached_shape_id != 0
+                        && cached_shape_id == obj.shape_id()
+                        && cached_ptr != 0
+                    {
+                        unsafe { *(cached_ptr as *const JsValue) }
                     } else if let Some(template) =
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
-                        let new_ext =
-                            (obj.shape_id() & 0x00FF_FFFF) | ((template.offset as u32) << 24);
-                        self.bytecode[self.pc - 1] = new_ext;
-                        obj.get_prop(template.offset)
+                        if template.ptr_bits != 0 {
+                            let ptr = template.ptr_bits;
+                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
+                            self.bytecode[self.pc - 2] = ptr as u32;
+                            self.bytecode[self.pc - 1] = (ptr >> 32) as u32;
+                            unsafe { *(ptr as *const JsValue) }
+                        } else {
+                            self.resolve_property(obj, prop_name_si)
+                                .unwrap_or(JsValue::undefined())
+                        }
                     } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
-                        let offset = self
+                        let pos = self
                             .kernel
                             .shape_forge()
-                            .lookup_offset(obj.shape_id(), prop_name_si)
+                            .lookup_position(obj.shape_id(), prop_name_si)
                             .unwrap_or(0);
-                        let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
-                        self.bytecode[self.pc - 1] = new_ext;
+                        if let Some(ptr) = obj.prop_ptr_at(pos) {
+                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
+                            self.bytecode[self.pc - 2] = ptr as u32;
+                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                        }
                         val
                     } else {
                         JsValue::undefined()
@@ -1774,27 +1833,42 @@ impl Vm {
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let prop_name_si = self.regs[b].as_string_index();
-                    let ext = self.bytecode[self.pc];
-                    self.pc += 1;
-                    let cached_shape_id = ext & 0x00FF_FFFF;
+                    let ext0 = self.bytecode[self.pc];
+                    let ext1 = self.bytecode[self.pc + 1];
+                    let ext2 = self.bytecode[self.pc + 2];
+                    self.pc += 3;
+                    let cached_shape_id = ext0 & 0x00FF_FFFF;
+                    let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
 
-                    let prop_val = if cached_shape_id != 0 && cached_shape_id == obj.shape_id() {
-                        obj.get_prop(((ext >> 24) & 0xFF) as u8)
+                    let prop_val = if cached_shape_id != 0
+                        && cached_shape_id == obj.shape_id()
+                        && cached_ptr != 0
+                    {
+                        unsafe { *(cached_ptr as *const JsValue) }
                     } else if let Some(template) =
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
-                        let new_ext =
-                            (obj.shape_id() & 0x00FF_FFFF) | ((template.offset as u32) << 24);
-                        self.bytecode[self.pc - 1] = new_ext;
-                        obj.get_prop(template.offset)
+                        if template.ptr_bits != 0 {
+                            let ptr = template.ptr_bits;
+                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
+                            self.bytecode[self.pc - 2] = ptr as u32;
+                            self.bytecode[self.pc - 1] = (ptr >> 32) as u32;
+                            unsafe { *(ptr as *const JsValue) }
+                        } else {
+                            self.resolve_property(obj, prop_name_si)
+                                .unwrap_or(JsValue::undefined())
+                        }
                     } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
-                        let offset = self
+                        let pos = self
                             .kernel
                             .shape_forge()
-                            .lookup_offset(obj.shape_id(), prop_name_si)
+                            .lookup_position(obj.shape_id(), prop_name_si)
                             .unwrap_or(0);
-                        let new_ext = (obj.shape_id() & 0x00FF_FFFF) | ((offset as u32) << 24);
-                        self.bytecode[self.pc - 1] = new_ext;
+                        if let Some(ptr) = obj.prop_ptr_at(pos) {
+                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
+                            self.bytecode[self.pc - 2] = ptr as u32;
+                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                        }
                         val
                     } else {
                         JsValue::undefined()

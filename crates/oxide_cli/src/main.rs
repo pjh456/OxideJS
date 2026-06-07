@@ -132,7 +132,7 @@ fn format_result(string_forge: &StringForge, val: JsValue) {
             let count = obj.prop_count() as usize;
             let mut first = true;
             for i in 0..count.min(4) {
-                let prop_val = obj.get_inline_prop(i as u8);
+                let prop_val = obj.get_prop_at(i as u8);
                 if prop_val.is_undefined() {
                     continue;
                 }

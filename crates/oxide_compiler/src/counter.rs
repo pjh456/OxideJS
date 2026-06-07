@@ -204,7 +204,7 @@ impl Compiler {
                         ctx.alloc_reg();
                         ctx.projected_pc += 1;
                         ctx.alloc_reg();
-                        ctx.projected_pc += 3;
+                        ctx.projected_pc += 5; // LOAD_VAR + IC_GET_PROP + 3 ext words
                     }
                     _ => {
                         self.count_expression(&call.callee, ctx);
@@ -229,7 +229,9 @@ impl Compiler {
                         ctx.projected_pc += 1;
                     }
                     ctx.alloc_reg();
+                    ctx.projected_pc += 1; // LOAD_CONST key
                     ctx.projected_pc += 1; // IC_SET_PROP or COMPOUND_MEMBER_*
+                    ctx.projected_pc += 3; // 3 IC ext words
                 } else if let oxide_parser::AssignmentTarget::ComputedMemberExpression(member) =
                     &assign.left
                 {
@@ -319,7 +321,7 @@ impl Compiler {
                 ctx.alloc_reg();
                 ctx.projected_pc += 1; // LOAD_CONST key
                 ctx.projected_pc += 1; // IC_GET_PROP
-                ctx.projected_pc += 1; // IC ext word
+                ctx.projected_pc += 3; // 3 IC ext words
             }
             Expression::ComputedMemberExpression(member) => {
                 self.count_expression(&member.object, ctx);
@@ -340,7 +342,8 @@ impl Compiler {
                     ctx.alloc_reg();
                     ctx.projected_pc += 1;
                     ctx.alloc_reg();
-                    ctx.projected_pc += 1;
+                    ctx.projected_pc += 1; // MEMBER_INC/MEMBER_DEC opcode
+                    ctx.projected_pc += 3; // 3 IC ext words
                 }
                 SimpleAssignmentTarget::ComputedMemberExpression(member) => {
                     self.count_expression(&member.object, ctx);

@@ -87,13 +87,15 @@ impl OxideKernel {
 
         let nan_shape = shape_forge.make_shape(EMPTY_SHAPE_ID, si_nan);
         global_obj.set_shape_id(nan_shape);
-        global_obj.set_prop_count(1);
-        global_obj.set_inline_prop(0, JsValue::float(f64::NAN));
+        global_obj
+            .ensure_hash_props()
+            .push(Box::new(JsValue::float(f64::NAN)));
 
         let undef_shape = shape_forge.make_shape(nan_shape, si_undef);
         global_obj.set_shape_id(undef_shape);
-        global_obj.set_prop_count(2);
-        global_obj.set_inline_prop(1, JsValue::undefined());
+        global_obj
+            .ensure_hash_props()
+            .push(Box::new(JsValue::undefined()));
 
         let global_object = P::new(global_obj);
 

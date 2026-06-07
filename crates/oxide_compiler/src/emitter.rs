@@ -525,6 +525,8 @@ impl Compiler {
                 ));
                 ctx.emit(opcode::encode(OpCode::IC_GET_PROP, 0, obj_reg, key_reg));
                 ctx.emit(0);
+                ctx.emit(0);
+                ctx.emit(0);
                 Ok(obj_reg)
             }
             Expression::ComputedMemberExpression(member) => {
@@ -618,6 +620,8 @@ impl Compiler {
                         };
                         ctx.emit(opcode::encode(op, obj_reg, val_reg, key_reg));
                         ctx.emit(0);
+                        ctx.emit(0);
+                        ctx.emit(0);
                         Ok(val_reg)
                     } else {
                         ctx.emit(opcode::encode(
@@ -626,6 +630,8 @@ impl Compiler {
                             val_reg,
                             key_reg,
                         ));
+                        ctx.emit(0);
+                        ctx.emit(0);
                         ctx.emit(0);
                         Ok(val_reg)
                     }
@@ -716,6 +722,8 @@ impl Compiler {
                     };
                     ctx.emit(opcode::encode(op, obj_reg, val_reg, key_reg));
                     ctx.emit(0);
+                    ctx.emit(0);
+                    ctx.emit(0);
                     Ok(val_reg)
                 }
                 SimpleAssignmentTarget::ComputedMemberExpression(member) => {
@@ -754,6 +762,8 @@ impl Compiler {
                         let callee_reg = ctx.alloc_reg();
                         ctx.emit(opcode::encode(OpCode::LOAD_VAR, callee_reg, obj_reg, 0));
                         ctx.emit(opcode::encode(OpCode::IC_GET_PROP, 0, callee_reg, key_reg));
+                        ctx.emit(0);
+                        ctx.emit(0);
                         ctx.emit(0);
                         (callee_reg, obj_reg)
                     }
