@@ -184,6 +184,7 @@ impl CompileCtx {
         let builtins = [
             "NaN",
             "undefined",
+            "Infinity",
             "Object",
             "Array",
             "String",

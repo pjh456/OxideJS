@@ -88,6 +88,7 @@ impl OxideKernel {
 
         let si_nan = string_forge.intern("NaN").0;
         let si_undef = string_forge.intern("undefined").0;
+        let si_infinity = string_forge.intern("Infinity").0;
 
         let nan_shape = shape_forge.make_shape(EMPTY_SHAPE_ID, si_nan);
         global_obj.set_shape_id(nan_shape);
@@ -100,6 +101,12 @@ impl OxideKernel {
         global_obj
             .ensure_hash_props()
             .push(Box::new(JsValue::undefined()));
+
+        let inf_shape = shape_forge.make_shape(undef_shape, si_infinity);
+        global_obj.set_shape_id(inf_shape);
+        global_obj
+            .ensure_hash_props()
+            .push(Box::new(JsValue::float(f64::INFINITY)));
 
         let global_object = P::new(global_obj);
 

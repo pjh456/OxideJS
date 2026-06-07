@@ -376,3 +376,15 @@ fn compile_this_member_read_ok() {
     let module = compile_source("function f() { return this.x; }");
     assert!(!module.bytecode.is_empty());
 }
+
+#[test]
+fn compile_infinity_ok() {
+    let module = compile_source("Infinity");
+    assert!(!module.bytecode.is_empty());
+}
+
+#[test]
+fn compile_neg_infinity_ok() {
+    let module = compile_source("1 / -Infinity");
+    assert!(!module.bytecode.is_empty());
+}

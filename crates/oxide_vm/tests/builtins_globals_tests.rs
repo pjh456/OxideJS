@@ -37,3 +37,45 @@ fn typeof_undefined_is_undefined() {
     let result = eval("typeof undefined").unwrap();
     assert!(result.is_string());
 }
+
+#[test]
+fn eval_infinity_returns_infinity() {
+    let result = eval("Infinity").unwrap();
+    assert!(result.is_double());
+    assert!(result.as_double().is_infinite());
+    assert!(result.as_double().is_sign_positive());
+}
+
+#[test]
+fn eval_neg_infinity_via_division() {
+    let result = eval("1 / Infinity").unwrap();
+    assert!(result.is_double());
+    assert_eq!(result.as_double(), 0.0);
+}
+
+#[test]
+fn typeof_infinity_is_number() {
+    let result = eval("typeof Infinity").unwrap();
+    assert!(result.is_string());
+}
+
+#[test]
+fn infinity_ne_nan() {
+    let result = eval("Infinity !== NaN").unwrap();
+    assert!(result.is_bool());
+    assert!(result.as_bool());
+}
+
+#[test]
+fn infinity_gt_large_number() {
+    let result = eval("Infinity > 1e308").unwrap();
+    assert!(result.is_bool());
+    assert!(result.as_bool());
+}
+
+#[test]
+fn division_by_zero_gives_infinity() {
+    let result = eval("1 / 0").unwrap();
+    assert!(result.is_double());
+    assert!(result.as_double().is_infinite());
+}
