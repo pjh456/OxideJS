@@ -13,6 +13,8 @@ oxide_types = { path = "../oxide_types" }
 bumpalo.workspace = true
 fast-float.workspace = true
 ryu.workspace = true
+memchr.workspace = true
+regex.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

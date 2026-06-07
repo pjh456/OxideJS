@@ -8,7 +8,7 @@ use oxide_compiler::opcode::{self, OpCode};
 
 use crate::coercion;
 use crate::native::NativeFn;
-use oxide_kernel::builtin::{ArrayMethods, ErrorMethods, ObjectMethods};
+use oxide_kernel::builtin::{ArrayMethods, ErrorMethods, ObjectMethods, StringMethods};
 use oxide_kernel::kernel::{KernelConfig, OxideKernel};
 use oxide_kernel::prop_forge::PropTemplate;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
@@ -130,6 +130,45 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     global.set_prop_count(cur_count + 1);
     let bump3 = bumpalo::Bump::new();
     global.set_prop_expand(cur_count, err_val, &bump3);
+    global.bump_generation();
+
+    let string_methods = StringMethods {
+        index_of: crate::builtins::string::string_index_of as *const (),
+        includes: crate::builtins::string::string_includes as *const (),
+        char_at: crate::builtins::string::string_char_at as *const (),
+        char_code_at: crate::builtins::string::string_char_code_at as *const (),
+        concat: crate::builtins::string::string_concat as *const (),
+        slice: crate::builtins::string::string_slice as *const (),
+        substring: crate::builtins::string::string_substring as *const (),
+        to_upper_case: crate::builtins::string::string_to_upper_case as *const (),
+        to_lower_case: crate::builtins::string::string_to_lower_case as *const (),
+        trim: crate::builtins::string::string_trim as *const (),
+        repeat: crate::builtins::string::string_repeat as *const (),
+        pad_start: crate::builtins::string::string_pad_start as *const (),
+        pad_end: crate::builtins::string::string_pad_end as *const (),
+        starts_with: crate::builtins::string::string_starts_with as *const (),
+        ends_with: crate::builtins::string::string_ends_with as *const (),
+        split: crate::builtins::string::string_split as *const (),
+        replace: crate::builtins::string::string_replace as *const (),
+        match_fn: crate::builtins::string::string_match_fn as *const (),
+        search: crate::builtins::string::string_search as *const (),
+    };
+    kernel.builtin_world().bind_string_methods(
+        &string_methods,
+        kernel.string_forge().as_ref(),
+        kernel.shape_forge().as_ref(),
+    );
+
+    let si_str = kernel.string_forge().intern("String").0;
+    let str_shape = kernel.shape_forge().make_shape(global.shape_id(), si_str);
+    let str_val = JsValue::from_js_object(
+        kernel.builtin_world().string_constructor.as_ptr() as *mut JsObject
+    );
+    let cur_count = global.prop_count();
+    global.set_shape_id(str_shape);
+    global.set_prop_count(cur_count + 1);
+    let bump4 = bumpalo::Bump::new();
+    global.set_prop_expand(cur_count, str_val, &bump4);
     global.bump_generation();
 }
 
@@ -552,8 +591,20 @@ impl Vm {
                 }
 
                 OpCode::IC_GET_PROP => {
-                    let obj_ptr = self.regs[a].as_object_ptr() as *mut JsObject;
+                    let val = self.regs[a];
+                    let obj_ptr = val.as_object_ptr() as *mut JsObject;
                     if obj_ptr.is_null() {
+                        if val.is_string() {
+                            let proto_ptr =
+                                self.kernel.builtin_world().string_proto.as_ptr() as *mut JsObject;
+                            let proto = unsafe { &*proto_ptr };
+                            let prop_name_si = self.regs[b].as_string_index();
+                            if let Some(resolved) = self.resolve_property(proto, prop_name_si) {
+                                self.regs[a] = resolved;
+                                self.pc += 1;
+                                continue;
+                            }
+                        }
                         return Err("IC_GET_PROP on non-object".into());
                     }
                     let obj = unsafe { &*obj_ptr };

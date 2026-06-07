@@ -44,6 +44,28 @@ pub struct ErrorMethods {
     pub eval_error: *const (),
 }
 
+pub struct StringMethods {
+    pub index_of: *const (),
+    pub includes: *const (),
+    pub char_at: *const (),
+    pub char_code_at: *const (),
+    pub concat: *const (),
+    pub slice: *const (),
+    pub substring: *const (),
+    pub to_upper_case: *const (),
+    pub to_lower_case: *const (),
+    pub trim: *const (),
+    pub repeat: *const (),
+    pub pad_start: *const (),
+    pub pad_end: *const (),
+    pub starts_with: *const (),
+    pub ends_with: *const (),
+    pub split: *const (),
+    pub replace: *const (),
+    pub match_fn: *const (),
+    pub search: *const (),
+}
+
 pub struct BuiltinWorld {
     pub object_proto: P<JsObject>,
     pub array_proto: P<JsObject>,
@@ -389,6 +411,148 @@ impl BuiltinWorld {
             string_forge,
             "EvalError",
             methods.eval_error,
+            1,
+        );
+    }
+
+    pub fn bind_string_methods(
+        &self,
+        methods: &StringMethods,
+        string_forge: &StringForge,
+        shape_forge: &ShapeForge,
+    ) {
+        let proto_ptr = P::as_ptr(&self.string_proto) as *mut JsObject;
+        let proto = unsafe { &mut *proto_ptr };
+
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "indexOf",
+            methods.index_of,
+            1,
+        );
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "includes",
+            methods.includes,
+            1,
+        );
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "charAt",
+            methods.char_at,
+            1,
+        );
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "charCodeAt",
+            methods.char_code_at,
+            1,
+        );
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "concat",
+            methods.concat,
+            1,
+        );
+        let _ = Self::bind_method(proto, shape_forge, string_forge, "slice", methods.slice, 2);
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "substring",
+            methods.substring,
+            2,
+        );
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "toUpperCase",
+            methods.to_upper_case,
+            0,
+        );
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "toLowerCase",
+            methods.to_lower_case,
+            0,
+        );
+        let _ = Self::bind_method(proto, shape_forge, string_forge, "trim", methods.trim, 0);
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "repeat",
+            methods.repeat,
+            1,
+        );
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "padStart",
+            methods.pad_start,
+            1,
+        );
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "padEnd",
+            methods.pad_end,
+            1,
+        );
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "startsWith",
+            methods.starts_with,
+            1,
+        );
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "endsWith",
+            methods.ends_with,
+            1,
+        );
+        let _ = Self::bind_method(proto, shape_forge, string_forge, "split", methods.split, 1);
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "replace",
+            methods.replace,
+            2,
+        );
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "match",
+            methods.match_fn,
+            1,
+        );
+        let _ = Self::bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "search",
+            methods.search,
             1,
         );
     }
