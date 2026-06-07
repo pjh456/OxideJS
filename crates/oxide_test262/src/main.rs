@@ -4,6 +4,7 @@ use oxide_compiler::compiler::Compiler;
 use oxide_kernel::kernel::{KernelConfig, OxideKernel};
 use oxide_vm::vm::Vm;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -103,6 +104,7 @@ struct RunStats {
     fail: usize,
     skip: usize,
     total_ms: u64,
+    fail_categories: HashMap<String, usize>,
 }
 
 fn is_skipped(meta: &TestMeta) -> Option<String> {
@@ -237,13 +239,9 @@ fn run_test_inner(
             if e.contains("not yet implemented")
                 || e.contains("not supported")
                 || e.contains("is not defined")
-                || e.contains("FunctionDeclaration")
-                || e.contains("FunctionExpression")
                 || e.contains("ArrowFunctionExpression")
                 || e.contains("unsupported expression")
                 || e.contains("unsupported statement")
-                || e.contains("NewExpression")
-                || e.contains("CallExpression")
                 || e.contains("destructuring")
                 || e.contains("SpreadElement")
             {
@@ -306,6 +304,54 @@ fn discover_tests(test262_root: &Path) -> Vec<PathBuf> {
         .filter(|e| e.path().extension().is_some_and(|ext| ext == "js"))
         .map(|e| e.path().to_path_buf())
         .collect()
+}
+
+fn categorize_fail(msg: &str) -> String {
+    if msg.contains("compile error:") {
+        let reason = msg.trim_start_matches("compile error: ").trim();
+        if reason.contains("already been declared") {
+            "compile: already declared".into()
+        } else if reason.contains("not yet implemented") {
+            "compile: not yet implemented".into()
+        } else if reason.contains("unsupported") {
+            "compile: unsupported".into()
+        } else if reason.contains("is not defined") {
+            "compile: not defined".into()
+        } else {
+            format!(
+                "compile: other ({})",
+                reason.chars().take(60).collect::<String>()
+            )
+        }
+    } else if msg.contains("parse error:") {
+        "parse error".into()
+    } else if msg.contains("vm error:") {
+        let reason = msg.trim_start_matches("vm error: ").trim();
+        if reason.contains("CALL_NATIVE target") {
+            "vm: CALL_NATIVE no target".into()
+        } else if reason.contains("not callable") {
+            "vm: not callable".into()
+        } else if reason.contains("not yet implemented") {
+            "vm: not yet implemented".into()
+        } else if reason.contains("step limit") {
+            "vm: step limit".into()
+        } else if reason.contains("not defined") {
+            "vm: not defined".into()
+        } else if reason.contains("unsupported") {
+            "vm: unsupported".into()
+        } else {
+            format!(
+                "vm: other ({})",
+                reason.chars().take(60).collect::<String>()
+            )
+        }
+    } else if msg.contains("engine panic") {
+        "engine panic".into()
+    } else if msg.contains("expected runtime error") {
+        "expected runtime error".into()
+    } else {
+        format!("other: {}", msg.chars().take(80).collect::<String>())
+    }
 }
 
 fn main() {
@@ -412,7 +458,11 @@ fn main() {
         let result = run_test(path, &source, &meta, &kernel);
         match &result.outcome {
             TestOutcome::Pass(_) => stats.pass += 1,
-            TestOutcome::Fail(_) => stats.fail += 1,
+            TestOutcome::Fail(msg) => {
+                let cat = categorize_fail(msg);
+                *stats.fail_categories.entry(cat).or_insert(0) += 1;
+                stats.fail += 1;
+            }
             TestOutcome::Skip(_) => stats.skip += 1,
         }
         stats.total_ms += result.duration_ms;
@@ -454,6 +504,14 @@ fn main() {
             0.0
         }
     );
+    if !stats.fail_categories.is_empty() {
+        println!("  --- FAIL categories ---");
+        let mut cats: Vec<_> = stats.fail_categories.iter().collect();
+        cats.sort_by_key(|(_, c)| -(**c as isize));
+        for (cat, count) in cats {
+            println!("    {:>4}  {}", count, cat);
+        }
+    }
     println!("═══════════════════════════════════════");
 
     if stats.fail > 0 {
