@@ -377,8 +377,9 @@ impl Compiler {
                 };
 
                 // Compile body into sub-module
-                let sub_module =
+                let mut sub_module =
                     self.compile_function_body(&param_names, body_stmts, ctx, false)?;
+                sub_module.function_name = Some(name.clone());
                 ctx.sub_modules.push(sub_module);
                 // 1-indexed: 0 = no sub_module (sentinel)
                 let sub_idx = ctx.sub_modules.len() as u32;
@@ -1223,8 +1224,11 @@ impl Compiler {
                     &[]
                 };
 
-                let sub_module =
+                let mut sub_module =
                     self.compile_function_body(&param_names, body_stmts, ctx, false)?;
+                if let Some(id) = &fe.id {
+                    sub_module.function_name = Some(id.name.to_string());
+                }
                 ctx.sub_modules.push(sub_module);
                 // 1-indexed: 0 = no sub_module (sentinel)
                 let sub_idx = ctx.sub_modules.len() as u32;

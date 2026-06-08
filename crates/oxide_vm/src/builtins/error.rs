@@ -163,3 +163,35 @@ pub fn error_stack_getter(vm: &mut Vm, _args: &[u8]) -> NativeResult {
     let si = vm.kernel().string_forge().intern(&result).0;
     Ok(JsValue::string(si, 0))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::error_stack_getter;
+    use crate::vm::{CallFrame, Vm};
+    use oxide_types::value::JsValue;
+
+    #[test]
+    fn error_stack_uses_call_frame_function_name() {
+        let mut vm = Vm::new();
+        let name_si = vm.kernel().string_forge().intern("foo").0;
+        vm.frames.push(CallFrame {
+            return_addr: 0,
+            function_name: name_si,
+            caller_reg_limit: 1,
+            saved_regs: vec![JsValue::undefined()].into_boxed_slice(),
+            saved_this: JsValue::undefined(),
+            saved_new_target: JsValue::undefined(),
+        });
+
+        let stack = error_stack_getter(&mut vm, &[0]).unwrap();
+        let stack_str = vm
+            .kernel()
+            .string_forge()
+            .lookup(stack.as_string_index())
+            .unwrap_or_default();
+        assert!(
+            stack_str.contains("foo"),
+            "expected function name in stack: {stack_str}"
+        );
+    }
+}

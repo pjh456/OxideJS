@@ -135,10 +135,6 @@ macro_rules! member_read_prop {
 
 pub struct CallFrame {
     pub return_addr: usize,
-    pub n_locals: u8,
-    pub n_args: u8,
-    pub function_obj_reg: u8,
-    pub frame_base: u8,
     pub function_name: u32,
     pub caller_reg_limit: u8,
     pub saved_regs: Box<[JsValue]>,
@@ -779,11 +775,11 @@ impl Vm {
                                     // Push call frame
                                     self.frames.push(CallFrame {
                                         return_addr: self.pc,
-                                        n_locals: sub_n_args as u8,
-                                        n_args: sub_n_args as u8,
-                                        function_obj_reg: callee_reg as u8,
-                                        frame_base: sub_param_base as u8,
-                                        function_name: 0,
+                                        function_name: self.sub_modules[sub_idx]
+                                            .function_name
+                                            .as_deref()
+                                            .map(|name| self.kernel.string_forge().intern(name).0)
+                                            .unwrap_or(0),
                                         caller_reg_limit,
                                         saved_regs,
                                         saved_this,
