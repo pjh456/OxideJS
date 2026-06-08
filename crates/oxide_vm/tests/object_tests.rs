@@ -117,3 +117,23 @@ fn eval_compound_member_expr_val() {
 fn eval_member_multi_inc() {
     assert_eq!(eval("var obj={}; obj.x=0; obj.x++; obj.x++; obj.x"), "2");
 }
+
+#[test]
+fn eval_numeric_property_key_roundtrip() {
+    assert_eq!(eval("var o={}; o[1]=42; o['1']"), "42");
+}
+
+#[test]
+fn eval_numeric_dynamic_property_key_roundtrip() {
+    assert_eq!(eval("var o={}; var k=1; o[k]=42; o['1']"), "42");
+}
+
+#[test]
+fn eval_numeric_property_key_compound_update() {
+    assert_eq!(eval("var o={}; o[1]=2; o[1]++; o['1']"), "3");
+}
+
+#[test]
+fn eval_in_operator_coerces_numeric_key() {
+    assert_eq!(eval("var o={}; o[1]=42; 1 in o"), "true");
+}

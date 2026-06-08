@@ -390,6 +390,14 @@ impl Vm {
         self.kernel.string_forge().lookup(val.as_string_index())
     }
 
+    fn property_key_si(&mut self, val: JsValue) -> u32 {
+        if val.is_string() {
+            return val.as_string_index();
+        }
+        let key = coercion::to_string(self.kernel.string_forge().as_ref(), val);
+        self.kernel.string_forge().intern(&key).0
+    }
+
     fn template_prop_ptr(&self, obj: &JsObject, template: &PropTemplate) -> Option<*const JsValue> {
         let pos = template.position as usize;
         obj.hash_props_vec().and_then(|vec| {
@@ -998,7 +1006,7 @@ impl Vm {
                             let proto_ptr =
                                 self.kernel.builtin_world().string_proto.as_ptr() as *mut JsObject;
                             let proto = unsafe { &*proto_ptr };
-                            let prop_name_si = self.regs[b].as_string_index();
+                            let prop_name_si = self.property_key_si(self.regs[b]);
                             if let Some(resolved) = self.resolve_property(proto, prop_name_si) {
                                 self.regs[a] = resolved;
                                 self.pc += 3;
@@ -1009,7 +1017,7 @@ impl Vm {
                             let proto_ptr =
                                 self.kernel.builtin_world().number_proto.as_ptr() as *mut JsObject;
                             let proto = unsafe { &*proto_ptr };
-                            let prop_name_si = self.regs[b].as_string_index();
+                            let prop_name_si = self.property_key_si(self.regs[b]);
                             if let Some(resolved) = self.resolve_property(proto, prop_name_si) {
                                 self.regs[a] = resolved;
                                 self.pc += 3;
@@ -1019,7 +1027,7 @@ impl Vm {
                         throw_err!(self, TypeError, "IC_GET_PROP on non-object");
                     }
                     let obj = unsafe { &*obj_ptr };
-                    let prop_name_si = self.regs[b].as_string_index();
+                    let prop_name_si = self.property_key_si(self.regs[b]);
                     let ext0 = self.bytecode[self.pc];
                     let ext1 = self.bytecode[self.pc + 1];
                     let ext2 = self.bytecode[self.pc + 2];
@@ -1081,7 +1089,7 @@ impl Vm {
                         throw_err!(self, TypeError, "IC_SET_PROP on non-object");
                     }
                     let obj = unsafe { &mut *obj_ptr };
-                    let prop_name_si = self.regs[b].as_string_index();
+                    let prop_name_si = self.property_key_si(self.regs[b]);
                     let ext0 = self.bytecode[self.pc];
                     let ext1 = self.bytecode[self.pc + 1];
                     let ext2 = self.bytecode[self.pc + 2];
@@ -1138,7 +1146,7 @@ impl Vm {
                         throw_err!(self, TypeError, "GET_PROP on non-object");
                     }
                     let obj = unsafe { &*obj_ptr };
-                    let prop_name_si = self.regs[b].as_string_index();
+                    let prop_name_si = self.property_key_si(self.regs[b]);
                     self.regs[a] = self
                         .resolve_property(obj, prop_name_si)
                         .unwrap_or(JsValue::undefined());
@@ -1149,7 +1157,7 @@ impl Vm {
                         throw_err!(self, TypeError, "SET_PROP on non-object");
                     }
                     let obj = unsafe { &mut *obj_ptr };
-                    let prop_name_si = self.regs[b].as_string_index();
+                    let prop_name_si = self.property_key_si(self.regs[b]);
                     if let Some(pos) = self
                         .kernel
                         .shape_forge()
@@ -1174,10 +1182,7 @@ impl Vm {
                     }
                     let obj = unsafe { &*obj_ptr };
                     let key_val = self.regs[a];
-                    if !key_val.is_string() {
-                        throw_err!(self, TypeError, "GET_PROP_DYNAMIC key not a string");
-                    }
-                    let prop_name_si = key_val.as_string_index();
+                    let prop_name_si = self.property_key_si(key_val);
                     self.regs[b] = self
                         .resolve_property(obj, prop_name_si)
                         .unwrap_or(JsValue::undefined());
@@ -1190,10 +1195,7 @@ impl Vm {
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let key_val = self.regs[a];
-                    if !key_val.is_string() {
-                        throw_err!(self, TypeError, "SET_PROP_DYNAMIC key not a string");
-                    }
-                    let prop_name_si = key_val.as_string_index();
+                    let prop_name_si = self.property_key_si(key_val);
                     if let Some(pos) = self
                         .kernel
                         .shape_forge()
@@ -1367,15 +1369,7 @@ impl Vm {
                         self.regs[rd] = JsValue::bool(true);
                     } else {
                         let key_val = self.regs[b];
-                        let prop_name_si = if key_val.is_string() {
-                            key_val.as_string_index()
-                        } else {
-                            let s = crate::coercion::to_string(
-                                self.kernel.string_forge().as_ref(),
-                                key_val,
-                            );
-                            self.kernel.string_forge().intern(&s).0
-                        };
+                        let prop_name_si = self.property_key_si(key_val);
                         let obj_ptr = obj_val.as_js_object_ptr();
                         let obj = unsafe { &mut *obj_ptr };
                         if let Some(pos) = self
@@ -1439,11 +1433,7 @@ impl Vm {
                         throw_err!(self, TypeError, "IN right-hand side is not an object");
                     }
                     let obj = unsafe { &*obj_ptr };
-                    let prop_name_si = if key_val.is_string() {
-                        key_val.as_string_index()
-                    } else {
-                        throw_err!(self, TypeError, "IN key must be a string");
-                    };
+                    let prop_name_si = self.property_key_si(key_val);
                     let found = self.resolve_property(obj, prop_name_si).is_some();
                     self.regs[rd] = JsValue::bool(found);
                 }
@@ -1492,7 +1482,7 @@ impl Vm {
                         throw_err!(self, TypeError, "MEMBER_INC on non-object");
                     }
                     let obj = unsafe { &mut *obj_ptr };
-                    let prop_name_si = self.regs[b].as_string_index();
+                    let prop_name_si = self.property_key_si(self.regs[b]);
                     let prop_val = member_read_prop!(self, obj, prop_name_si);
 
                     let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
@@ -1543,7 +1533,7 @@ impl Vm {
                         throw_err!(self, TypeError, "MEMBER_DEC on non-object");
                     }
                     let obj = unsafe { &mut *obj_ptr };
-                    let prop_name_si = self.regs[b].as_string_index();
+                    let prop_name_si = self.property_key_si(self.regs[b]);
                     let prop_val = member_read_prop!(self, obj, prop_name_si);
 
                     let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
@@ -1595,10 +1585,7 @@ impl Vm {
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let key_val = self.regs[a];
-                    if !key_val.is_string() {
-                        throw_err!(self, TypeError, "DYN_MEMBER_INC key not a string");
-                    }
-                    let prop_name_si = key_val.as_string_index();
+                    let prop_name_si = self.property_key_si(key_val);
                     let prop_val = self
                         .resolve_property(obj, prop_name_si)
                         .unwrap_or(JsValue::undefined());
@@ -1615,10 +1602,7 @@ impl Vm {
                     }
                     let obj = unsafe { &mut *obj_ptr };
                     let key_val = self.regs[a];
-                    if !key_val.is_string() {
-                        throw_err!(self, TypeError, "DYN_MEMBER_DEC key not a string");
-                    }
-                    let prop_name_si = key_val.as_string_index();
+                    let prop_name_si = self.property_key_si(key_val);
                     let prop_val = self
                         .resolve_property(obj, prop_name_si)
                         .unwrap_or(JsValue::undefined());
@@ -1634,7 +1618,7 @@ impl Vm {
                         throw_err!(self, TypeError, "COMPOUND_MEMBER_ADD on non-object");
                     }
                     let obj = unsafe { &mut *obj_ptr };
-                    let prop_name_si = self.regs[b].as_string_index();
+                    let prop_name_si = self.property_key_si(self.regs[b]);
                     let prop_val = member_read_prop!(self, obj, prop_name_si);
 
                     let rhs = self.regs[a];
@@ -1659,7 +1643,7 @@ impl Vm {
                         throw_err!(self, TypeError, "COMPOUND_MEMBER_SUB on non-object");
                     }
                     let obj = unsafe { &mut *obj_ptr };
-                    let prop_name_si = self.regs[b].as_string_index();
+                    let prop_name_si = self.property_key_si(self.regs[b]);
                     let prop_val = member_read_prop!(self, obj, prop_name_si);
 
                     let ln = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
@@ -1675,7 +1659,7 @@ impl Vm {
                         throw_err!(self, TypeError, "COMPOUND_MEMBER_MUL on non-object");
                     }
                     let obj = unsafe { &mut *obj_ptr };
-                    let prop_name_si = self.regs[b].as_string_index();
+                    let prop_name_si = self.property_key_si(self.regs[b]);
                     let prop_val = member_read_prop!(self, obj, prop_name_si);
 
                     let ln = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
@@ -1691,7 +1675,7 @@ impl Vm {
                         throw_err!(self, TypeError, "COMPOUND_MEMBER_DIV on non-object");
                     }
                     let obj = unsafe { &mut *obj_ptr };
-                    let prop_name_si = self.regs[b].as_string_index();
+                    let prop_name_si = self.property_key_si(self.regs[b]);
                     let prop_val = member_read_prop!(self, obj, prop_name_si);
 
                     let ln = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
@@ -1707,7 +1691,7 @@ impl Vm {
                         throw_err!(self, TypeError, "COMPOUND_MEMBER_MOD on non-object");
                     }
                     let obj = unsafe { &mut *obj_ptr };
-                    let prop_name_si = self.regs[b].as_string_index();
+                    let prop_name_si = self.property_key_si(self.regs[b]);
                     let prop_val = member_read_prop!(self, obj, prop_name_si);
 
                     let ln = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
@@ -1723,7 +1707,7 @@ impl Vm {
                         throw_err!(self, TypeError, "COMPOUND_MEMBER_EXP on non-object");
                     }
                     let obj = unsafe { &mut *obj_ptr };
-                    let prop_name_si = self.regs[b].as_string_index();
+                    let prop_name_si = self.property_key_si(self.regs[b]);
                     let prop_val = member_read_prop!(self, obj, prop_name_si);
 
                     let ln = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
