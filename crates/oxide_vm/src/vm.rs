@@ -1854,9 +1854,6 @@ impl Vm {
                 }
 
                 _ => {
-                    if !op.is_implemented() {
-                        return Ok(JsValue::undefined());
-                    }
                     return Err(format!("opcode {op} not yet implemented"));
                 }
             }
@@ -2014,5 +2011,22 @@ mod tests {
         assert_eq!(vm.bytecode[0], 0x0034_5678);
         assert_eq!(vm.bytecode[1], ptr as u32);
         assert_eq!(vm.bytecode[2], (ptr as u64 >> 32) as u32);
+    }
+
+    #[test]
+    fn unimplemented_profile_opcode_fails_explicitly() {
+        let module = CompiledModule {
+            bytecode: vec![
+                opcode::encode(opcode::OpCode::PROFILE_TYPE, 0, 0, 0),
+                opcode::encode(opcode::OpCode::HALT, 0, 0, 0),
+            ],
+            n_registers: 1,
+            ..CompiledModule::new()
+        };
+        let mut vm = Vm::new();
+        let err = vm
+            .run(&module)
+            .expect_err("unimplemented opcode should fail explicitly");
+        assert_eq!(err, "opcode PROFILE_TYPE not yet implemented");
     }
 }
