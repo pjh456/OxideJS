@@ -105,7 +105,11 @@ macro_rules! member_read_prop {
         if cached_shape_id != 0 && cached_shape_id == $obj.shape_id() && cached_ptr != 0 {
             unsafe { *(cached_ptr as *const JsValue) }
         } else if let Some(template) = $self.kernel.prop_forge().get_template($obj.shape_id()) {
-            if let Some(ptr) = $self.template_prop_ptr($obj, &template) {
+            if template.prop_name != $prop_name_si {
+                $self
+                    .resolve_property($obj, $prop_name_si)
+                    .unwrap_or(JsValue::undefined())
+            } else if let Some(ptr) = $self.template_prop_ptr($obj, &template) {
                 $self.bytecode[$self.pc - 3] = $obj.shape_id() & 0x00FF_FFFF;
                 $self.bytecode[$self.pc - 2] = ptr as u32;
                 $self.bytecode[$self.pc - 1] = (ptr as u64 >> 32) as u32;
@@ -116,15 +120,16 @@ macro_rules! member_read_prop {
                     .unwrap_or(JsValue::undefined())
             }
         } else if let Some(val) = $self.resolve_property($obj, $prop_name_si) {
-            let pos = $self
+            if let Some(pos) = $self
                 .kernel
                 .shape_forge()
                 .lookup_position($obj.shape_id(), $prop_name_si)
-                .unwrap_or(0);
-            if let Some(ptr) = $obj.prop_ptr_at(pos) {
-                $self.bytecode[$self.pc - 3] = $obj.shape_id() & 0x00FF_FFFF;
-                $self.bytecode[$self.pc - 2] = ptr as u32;
-                $self.bytecode[$self.pc - 1] = (ptr as u64 >> 32) as u32;
+            {
+                if let Some(ptr) = $obj.prop_ptr_at(pos) {
+                    $self.bytecode[$self.pc - 3] = $obj.shape_id() & 0x00FF_FFFF;
+                    $self.bytecode[$self.pc - 2] = ptr as u32;
+                    $self.bytecode[$self.pc - 1] = (ptr as u64 >> 32) as u32;
+                }
             }
             val
         } else {
@@ -397,6 +402,10 @@ impl Vm {
     }
 
     fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
+        let length_si = self.kernel.string_forge().intern("length").0;
+        if obj.is_array() && prop_name_si == length_si {
+            return Some(JsValue::int(obj.prop_count() as i32));
+        }
         if let Some(pos) = self
             .kernel
             .shape_forge()
@@ -459,6 +468,7 @@ impl Vm {
                     new_shape_id,
                     PropTemplate {
                         shape_id: new_shape_id,
+                        prop_name: prop_name_si,
                         position: new_pos,
                         generation: obj.generation(),
                     },
@@ -1023,14 +1033,20 @@ impl Vm {
                     } else if let Some(template) =
                         self.kernel.prop_forge().get_template(obj.shape_id())
                     {
-                        let pos = template.position as usize;
-                        if let Some(vec) = obj.hash_props_vec() {
-                            if pos < vec.len() {
-                                let ptr = &*vec[pos] as *const JsValue;
-                                self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
-                                self.bytecode[self.pc - 2] = ptr as u32;
-                                self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
-                                self.regs[a] = unsafe { *(ptr) };
+                        if template.prop_name == prop_name_si {
+                            let pos = template.position as usize;
+                            if let Some(vec) = obj.hash_props_vec() {
+                                if pos < vec.len() {
+                                    let ptr = &*vec[pos] as *const JsValue;
+                                    self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
+                                    self.bytecode[self.pc - 2] = ptr as u32;
+                                    self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                                    self.regs[a] = unsafe { *(ptr) };
+                                } else {
+                                    self.regs[a] = self
+                                        .resolve_property(obj, prop_name_si)
+                                        .unwrap_or(JsValue::undefined());
+                                }
                             } else {
                                 self.regs[a] = self
                                     .resolve_property(obj, prop_name_si)
@@ -1042,15 +1058,16 @@ impl Vm {
                                 .unwrap_or(JsValue::undefined());
                         }
                     } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
-                        let pos = self
+                        if let Some(pos) = self
                             .kernel
                             .shape_forge()
                             .lookup_position(obj.shape_id(), prop_name_si)
-                            .unwrap_or(0);
-                        if let Some(ptr) = obj.prop_ptr_at(pos) {
-                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
-                            self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                        {
+                            if let Some(ptr) = obj.prop_ptr_at(pos) {
+                                self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
+                                self.bytecode[self.pc - 2] = ptr as u32;
+                                self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                            }
                         }
                         self.regs[a] = val;
                     } else {
@@ -1105,6 +1122,7 @@ impl Vm {
                                     new_shape_id,
                                     PropTemplate {
                                         shape_id: new_shape_id,
+                                        prop_name: prop_name_si,
                                         position: new_pos,
                                         generation: obj.generation(),
                                     },
@@ -1221,9 +1239,9 @@ impl Vm {
                     if obj_ptr.is_null() {
                         throw_err!(self, TypeError, "SET_ELEM on non-object");
                     }
-                    let idx = self.regs[a].as_int() as usize;
+                    let idx = self.regs[a].as_int().max(0) as u32;
                     let obj = unsafe { &mut *obj_ptr };
-                    obj.set_prop_at(idx as u8, self.regs[b]);
+                    obj.set_prop_at(idx, self.regs[b]);
                 }
 
                 OpCode::COMPOUND_ADD => {
@@ -1507,6 +1525,7 @@ impl Vm {
                                 new_shape_id,
                                 PropTemplate {
                                     shape_id: new_shape_id,
+                                    prop_name: prop_name_si,
                                     position: new_pos,
                                     generation: obj.generation(),
                                 },
@@ -1557,6 +1576,7 @@ impl Vm {
                                 new_shape_id,
                                 PropTemplate {
                                     shape_id: new_shape_id,
+                                    prop_name: prop_name_si,
                                     position: new_pos,
                                     generation: obj.generation(),
                                 },

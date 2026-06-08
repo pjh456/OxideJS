@@ -71,8 +71,8 @@ impl ShapeStore {
         new_id
     }
 
-    fn lookup_position(&self, shape_id: ShapeId, prop_name: StringIndex) -> Option<u8> {
-        let mut depth: u8 = 0;
+    fn lookup_position(&self, shape_id: ShapeId, prop_name: StringIndex) -> Option<u32> {
+        let mut depth: u32 = 0;
         let mut cursor = Some(shape_id);
         while let Some(id) = cursor {
             match self.get_shape(id) {
@@ -86,7 +86,7 @@ impl ShapeStore {
             }
         }
         let total_depth = depth;
-        let mut step: u8 = 0;
+        let mut step: u32 = 0;
         cursor = Some(shape_id);
         while let Some(id) = cursor {
             match self.get_shape(id) {
@@ -119,8 +119,8 @@ impl ShapeStore {
         false
     }
 
-    fn shape_prop_count(&self, shape_id: ShapeId) -> u8 {
-        let mut count = 0u8;
+    fn shape_prop_count(&self, shape_id: ShapeId) -> u32 {
+        let mut count = 0u32;
         let mut cursor = Some(shape_id);
         while let Some(id) = cursor {
             match self.get_shape(id) {
@@ -151,7 +151,7 @@ pub fn make_shape(parent_id: ShapeId, prop_name: StringIndex) -> ShapeId {
     store().lock().unwrap().make_shape(parent_id, prop_name)
 }
 
-pub fn lookup_position(shape_id: ShapeId, prop_name: StringIndex) -> Option<u8> {
+pub fn lookup_position(shape_id: ShapeId, prop_name: StringIndex) -> Option<u32> {
     store().lock().unwrap().lookup_position(shape_id, prop_name)
 }
 
@@ -159,7 +159,7 @@ pub fn has_property(shape_id: ShapeId, prop_name: StringIndex) -> bool {
     store().lock().unwrap().has_property(shape_id, prop_name)
 }
 
-pub fn shape_prop_count(shape_id: ShapeId) -> u8 {
+pub fn shape_prop_count(shape_id: ShapeId) -> u32 {
     store().lock().unwrap().shape_prop_count(shape_id)
 }
 

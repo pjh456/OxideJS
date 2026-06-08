@@ -167,7 +167,7 @@ fn format_object(string_forge: &StringForge, shape_forge: &ShapeForge, obj: &JsO
             break;
         }
     }
-    let mut pos: u8 = 0;
+    let mut pos: u32 = 0;
     for id in shape_ids.iter().rev() {
         if let Some(shape) = shape_forge.get_shape(*id) {
             if shape.property_name != 0 {
@@ -190,7 +190,7 @@ fn format_array(string_forge: &StringForge, shape_forge: &ShapeForge, obj: &JsOb
     let len = obj.prop_vec_len();
     let mut items = Vec::new();
     for i in 0..len {
-        let val = obj.get_prop_at(i as u8);
+        let val = obj.get_prop_at(i);
         items.push(format_js_value(string_forge, shape_forge, val));
     }
     format!("[{}]", items.join(", "))

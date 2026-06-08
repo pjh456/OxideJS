@@ -7,10 +7,10 @@ use crate::coercion;
 use crate::native::NativeResult;
 use crate::vm::Vm;
 
-pub(crate) fn walk_own_keys(vm: &Vm, obj: &JsObject) -> Vec<(u32, u8)> {
-    let mut keys: Vec<(u32, u8)> = Vec::new();
+pub(crate) fn walk_own_keys(vm: &Vm, obj: &JsObject) -> Vec<(u32, u32)> {
+    let mut keys: Vec<(u32, u32)> = Vec::new();
     let shape_id = obj.shape_id();
-    let mut pos: u8 = 0;
+    let mut pos: u32 = 0;
     let mut shape_ids = Vec::new();
     let mut cursor = Some(shape_id);
     while let Some(id) = cursor {
@@ -67,7 +67,7 @@ pub fn object_keys(vm: &mut Vm, args: &[u8]) -> NativeResult {
             .collect();
     }
 
-    let n = key_names.len().min(255);
+    let n = key_names.len();
     let array_proto = vm.kernel().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let arr = vm.epoch().alloc(JsObject::new_array(
         EMPTY_SHAPE_ID,
@@ -75,11 +75,14 @@ pub fn object_keys(vm: &mut Vm, args: &[u8]) -> NativeResult {
         n,
         vm.epoch().bump(),
     ));
-    for k in key_names.iter().take(n) {
+    for (i, k) in key_names.iter().enumerate() {
         let str_val = vm.intern(k);
         unsafe {
-            (*arr).ensure_hash_props().push(Box::new(str_val));
+            (*arr).set_prop_at(i, str_val);
         }
+    }
+    unsafe {
+        (*arr).set_prop_count(n);
     }
     Ok(JsValue::from_js_object(arr))
 }
@@ -334,7 +337,7 @@ pub fn object_get_own_property_names(vm: &mut Vm, args: &[u8]) -> NativeResult {
             .collect()
     };
 
-    let n = key_names.len().min(255);
+    let n = key_names.len();
     let array_proto = vm.kernel().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let arr = vm.epoch().alloc(JsObject::new_array(
         EMPTY_SHAPE_ID,
@@ -342,11 +345,14 @@ pub fn object_get_own_property_names(vm: &mut Vm, args: &[u8]) -> NativeResult {
         n,
         vm.epoch().bump(),
     ));
-    for k in key_names.iter().take(n) {
+    for (i, k) in key_names.iter().enumerate() {
         let str_val = vm.intern(k);
         unsafe {
-            (*arr).ensure_hash_props().push(Box::new(str_val));
+            (*arr).set_prop_at(i, str_val);
         }
+    }
+    unsafe {
+        (*arr).set_prop_count(n);
     }
     Ok(JsValue::from_js_object(arr))
 }
@@ -399,7 +405,7 @@ pub fn object_entries(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let obj_ptr = require_obj_arg(vm, args, "entries")?;
     let obj = unsafe { &*obj_ptr };
     let keys = walk_own_keys(vm, obj);
-    let n = keys.len().min(255);
+    let n = keys.len();
     let array_proto = vm.kernel().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let arr = vm.epoch().alloc(JsObject::new_array(
         EMPTY_SHAPE_ID,
@@ -407,7 +413,7 @@ pub fn object_entries(vm: &mut Vm, args: &[u8]) -> NativeResult {
         n,
         vm.epoch().bump(),
     ));
-    for (_i, (si, offset)) in keys.iter().enumerate().take(n) {
+    for (i, (si, offset)) in keys.iter().enumerate() {
         let key_str = vm.kernel().string_forge().lookup(*si).unwrap_or_default();
         let key_val = vm.intern(&key_str);
         let val = obj.get_prop_at(*offset);
@@ -421,10 +427,11 @@ pub fn object_entries(vm: &mut Vm, args: &[u8]) -> NativeResult {
             (*pair).set_prop_at(0, key_val);
             (*pair).set_prop_at(1, val);
             (*pair).set_prop_count(2);
-            (*arr)
-                .ensure_hash_props()
-                .push(Box::new(JsValue::from_js_object(pair)));
+            (*arr).set_prop_at(i, JsValue::from_js_object(pair));
         }
+    }
+    unsafe {
+        (*arr).set_prop_count(n);
     }
     Ok(JsValue::from_js_object(arr))
 }
@@ -433,7 +440,7 @@ pub fn object_values(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let obj_ptr = require_obj_arg(vm, args, "values")?;
     let obj = unsafe { &*obj_ptr };
     let keys = walk_own_keys(vm, obj);
-    let n = keys.len().min(255);
+    let n = keys.len();
     let array_proto = vm.kernel().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let arr = vm.epoch().alloc(JsObject::new_array(
         EMPTY_SHAPE_ID,
@@ -441,14 +448,14 @@ pub fn object_values(vm: &mut Vm, args: &[u8]) -> NativeResult {
         n,
         vm.epoch().bump(),
     ));
-    for (i, (_si, offset)) in keys.iter().enumerate().take(n) {
+    for (i, (_si, offset)) in keys.iter().enumerate() {
         let val = obj.get_prop_at(*offset);
         unsafe {
-            (*arr).set_prop_at(i as u8, val);
+            (*arr).set_prop_at(i, val);
         }
     }
     unsafe {
-        (*arr).set_prop_count(n as u8);
+        (*arr).set_prop_count(n);
     }
     Ok(JsValue::from_js_object(arr))
 }

@@ -2,6 +2,41 @@ use crate::value::JsValue;
 
 pub type ShapeId = u32;
 
+pub trait PropIndex {
+    fn to_u32(self) -> u32;
+}
+
+impl PropIndex for u8 {
+    fn to_u32(self) -> u32 {
+        self as u32
+    }
+}
+
+impl PropIndex for u16 {
+    fn to_u32(self) -> u32 {
+        self as u32
+    }
+}
+
+impl PropIndex for u32 {
+    fn to_u32(self) -> u32 {
+        self
+    }
+}
+
+impl PropIndex for usize {
+    fn to_u32(self) -> u32 {
+        self as u32
+    }
+}
+
+impl PropIndex for i32 {
+    fn to_u32(self) -> u32 {
+        debug_assert!(self >= 0, "property index must be non-negative");
+        self.max(0) as u32
+    }
+}
+
 /// Layout (56B):
 ///   header: u32 bits
 ///     [0:23]   shape_id
@@ -82,19 +117,19 @@ impl JsObject {
 
     /// Returns property count from the hash_props vec length.
     /// Returns 0 if hash_props has not been allocated.
-    pub fn prop_count(&self) -> u8 {
+    pub fn prop_count(&self) -> u32 {
         if self.hash_props.is_null() {
             0
         } else {
             let vec = unsafe { &*(self.hash_props as *const Vec<Box<JsValue>>) };
-            vec.len() as u8
+            vec.len() as u32
         }
     }
 
     /// Sets the length of hash_props vec. Truncates or extends with undefined.
-    pub fn set_prop_count(&mut self, count: u8) {
+    pub fn set_prop_count(&mut self, count: impl PropIndex) {
         let vec = self.ensure_hash_props();
-        let target = count as usize;
+        let target = count.to_u32() as usize;
         if target < vec.len() {
             vec.truncate(target);
         } else {
@@ -152,20 +187,20 @@ impl JsObject {
 
     /// Get property value at position index in the vec.
     /// Returns JsValue::undefined() if hash_props not allocated or position out of bounds.
-    pub fn get_prop_at(&self, position: u8) -> JsValue {
+    pub fn get_prop_at(&self, position: impl PropIndex) -> JsValue {
         if self.hash_props.is_null() {
             return JsValue::undefined();
         }
         let vec = unsafe { &*(self.hash_props as *const Vec<Box<JsValue>>) };
-        vec.get(position as usize)
+        vec.get(position.to_u32() as usize)
             .map(|b| **b)
             .unwrap_or(JsValue::undefined())
     }
 
     /// Set property value at position index. Vec auto-grows if needed.
-    pub fn set_prop_at(&mut self, position: u8, val: JsValue) {
+    pub fn set_prop_at(&mut self, position: impl PropIndex, val: JsValue) {
         let vec = self.ensure_hash_props();
-        let pos = position as usize;
+        let pos = position.to_u32() as usize;
         if pos < vec.len() {
             *vec[pos] = val;
         } else {
@@ -177,21 +212,22 @@ impl JsObject {
     }
 
     /// Push a value onto hash_props vec. Returns the index position.
-    pub fn push_prop(&mut self, val: JsValue) -> u8 {
+    pub fn push_prop(&mut self, val: JsValue) -> u32 {
         let vec = self.ensure_hash_props();
         let pos = vec.len();
         vec.push(Box::new(val));
-        pos as u8
+        pos as u32
     }
 
     /// Get a stable pointer to the Box<JsValue> at position.
     /// Returns None if hash_props not allocated or position out of bounds.
-    pub fn prop_ptr_at(&self, position: u8) -> Option<*const JsValue> {
+    pub fn prop_ptr_at(&self, position: impl PropIndex) -> Option<*const JsValue> {
         if self.hash_props.is_null() {
             return None;
         }
         let vec = unsafe { &*(self.hash_props as *const Vec<Box<JsValue>>) };
-        vec.get(position as usize).map(|b| &**b as *const JsValue)
+        vec.get(position.to_u32() as usize)
+            .map(|b| &**b as *const JsValue)
     }
 
     /// Get the length of hash_props vec (returns 0 if not allocated).

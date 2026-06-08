@@ -100,11 +100,11 @@ pub fn array_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     ));
     for i in 0..n_elems {
         unsafe {
-            (*arr).set_prop_at(i as u8, vm.reg(args[1 + i]));
+            (*arr).set_prop_at(i, vm.reg(args[1 + i]));
         }
     }
     unsafe {
-        (*arr).set_prop_count(n_elems as u8);
+        (*arr).set_prop_count(n_elems);
     }
     Ok(JsValue::from_js_object(arr))
 }
@@ -112,14 +112,13 @@ pub fn array_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn array_push(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
     let arr = unsafe { &mut *arr_ptr };
-    let mut len = arr.prop_count() as usize;
+    let mut len = arr.prop_count();
     for &arg_reg in args.iter().skip(1) {
         let val = vm.reg(arg_reg);
-        arr.set_prop_at(len as u8, val);
+        arr.set_prop_at(len, val);
         len += 1;
     }
-    let stored_len = (len as u8).min(31);
-    arr.set_prop_count(stored_len);
+    arr.set_prop_count(len);
     Ok(JsValue::int(len as i32))
 }
 
@@ -156,9 +155,9 @@ pub fn array_slice(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let new_arr = create_new_array(vm, count);
     unsafe {
         for i in 0..count {
-            (*new_arr).set_prop_at(i as u8, arr.get_prop_at((start + i) as u8));
+            (*new_arr).set_prop_at(i, arr.get_prop_at(start + i));
         }
-        (*new_arr).set_prop_count(count.min(31) as u8);
+        (*new_arr).set_prop_count(count);
     }
     Ok(JsValue::from_js_object(new_arr))
 }
@@ -191,36 +190,36 @@ pub fn array_splice(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
     let mut removed: Vec<JsValue> = Vec::new();
     for i in 0..delete_count {
-        removed.push(arr.get_prop_at((start + i) as u8));
+        removed.push(arr.get_prop_at(start + i));
     }
 
     if insert_count > delete_count {
         let shift = insert_count - delete_count;
         for i in (start + delete_count..n).rev() {
-            let val = arr.get_prop_at(i as u8);
-            arr.set_prop_at((i + shift) as u8, val);
+            let val = arr.get_prop_at(i);
+            arr.set_prop_at(i + shift, val);
         }
     } else if insert_count < delete_count {
         let shift = delete_count - insert_count;
         for i in start + delete_count..n {
-            let val = arr.get_prop_at(i as u8);
-            arr.set_prop_at((i - shift) as u8, val);
+            let val = arr.get_prop_at(i);
+            arr.set_prop_at(i - shift, val);
         }
     }
 
     for i in 0..insert_count {
-        arr.set_prop_at((start + i) as u8, vm.reg(args[3 + i]));
+        arr.set_prop_at(start + i, vm.reg(args[3 + i]));
     }
 
     let new_len = n + insert_count - delete_count;
-    arr.set_prop_count(new_len.min(31) as u8);
+    arr.set_prop_count(new_len);
 
     let removed_arr = create_new_array(vm, removed.len());
     unsafe {
         for (i, val) in removed.iter().enumerate() {
-            (*removed_arr).set_prop_at(i as u8, *val);
+            (*removed_arr).set_prop_at(i, *val);
         }
-        (*removed_arr).set_prop_count(removed.len().min(31) as u8);
+        (*removed_arr).set_prop_count(removed.len());
     }
     Ok(JsValue::from_js_object(removed_arr))
 }
@@ -231,7 +230,7 @@ pub fn array_concat(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let n = arr.prop_count() as usize;
     let mut all: Vec<JsValue> = Vec::new();
     for i in 0..n {
-        all.push(arr.get_prop_at(i as u8));
+        all.push(arr.get_prop_at(i));
     }
     for &arg_reg in args.iter().skip(1) {
         let val = vm.reg(arg_reg);
@@ -242,7 +241,7 @@ pub fn array_concat(vm: &mut Vm, args: &[u8]) -> NativeResult {
                 if o.is_array() {
                     let on = o.prop_count() as usize;
                     for i in 0..on {
-                        all.push(o.get_prop_at(i as u8));
+                        all.push(o.get_prop_at(i));
                     }
                     continue;
                 }
@@ -253,9 +252,9 @@ pub fn array_concat(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let new_arr = create_new_array(vm, all.len());
     unsafe {
         for (i, val) in all.iter().enumerate() {
-            (*new_arr).set_prop_at(i as u8, *val);
+            (*new_arr).set_prop_at(i, *val);
         }
-        (*new_arr).set_prop_count(all.len().min(31) as u8);
+        (*new_arr).set_prop_count(all.len());
     }
     Ok(JsValue::from_js_object(new_arr))
 }
@@ -272,7 +271,7 @@ pub fn array_join(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let sf = vm.kernel().string_forge().as_ref();
     let parts: Vec<String> = (0..n)
         .map(|i| {
-            let v = arr.get_prop_at(i as u8);
+            let v = arr.get_prop_at(i);
             if v.is_undefined() || v.is_null() {
                 String::new()
             } else {
@@ -294,7 +293,7 @@ pub fn array_index_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let target = vm.reg(args[1]);
     for i in 0..n {
-        if coercion::strict_equality(arr.get_prop_at(i as u8), target) {
+        if coercion::strict_equality(arr.get_prop_at(i), target) {
             return Ok(JsValue::int(i as i32));
         }
     }
@@ -310,7 +309,7 @@ pub fn array_includes(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let target = vm.reg(args[1]);
     for i in 0..n {
-        let elem = arr.get_prop_at(i as u8);
+        let elem = arr.get_prop_at(i);
         if elem.is_double() && target.is_double() {
             let ea = elem.as_double();
             let ta = target.as_double();
@@ -332,9 +331,9 @@ pub fn array_reverse(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let mut i = 0;
     let mut j = n.saturating_sub(1);
     while i < j {
-        let tmp = arr.get_prop_at(i as u8);
-        arr.set_prop_at(i as u8, arr.get_prop_at(j as u8));
-        arr.set_prop_at(j as u8, tmp);
+        let tmp = arr.get_prop_at(i);
+        arr.set_prop_at(i, arr.get_prop_at(j));
+        arr.set_prop_at(j, tmp);
         i += 1;
         j = j.saturating_sub(1);
     }
@@ -361,7 +360,7 @@ pub fn array_flat(vm: &mut Vm, args: &[u8]) -> NativeResult {
                     let o = unsafe { &*ptr };
                     if o.is_array() {
                         let on = o.prop_count() as usize;
-                        let sub: Vec<JsValue> = (0..on).map(|i| o.get_prop_at(i as u8)).collect();
+                        let sub: Vec<JsValue> = (0..on).map(|i| o.get_prop_at(i)).collect();
                         let flat = flatten(&sub, remaining_depth - 1);
                         out.extend(flat);
                         continue;
@@ -373,14 +372,14 @@ pub fn array_flat(vm: &mut Vm, args: &[u8]) -> NativeResult {
         out
     }
 
-    let all: Vec<JsValue> = (0..n).map(|i| arr.get_prop_at(i as u8)).collect();
+    let all: Vec<JsValue> = (0..n).map(|i| arr.get_prop_at(i)).collect();
     let flat = flatten(&all, depth);
     let new_arr = create_new_array(vm, flat.len());
     unsafe {
         for (i, val) in flat.iter().enumerate() {
-            (*new_arr).set_prop_at(i as u8, *val);
+            (*new_arr).set_prop_at(i, *val);
         }
-        (*new_arr).set_prop_count(flat.len().min(31) as u8);
+        (*new_arr).set_prop_count(flat.len());
     }
     Ok(JsValue::from_js_object(new_arr))
 }
@@ -401,7 +400,7 @@ pub fn array_for_each(vm: &mut Vm, args: &[u8]) -> NativeResult {
         JsValue::undefined()
     };
     for i in 0..n {
-        let elem = unsafe { (*arr_ptr).get_prop_at(i as u8) };
+        let elem = unsafe { (*arr_ptr).get_prop_at(i) };
         let _ = invoke_native_callback(
             vm,
             callback_val,
@@ -429,7 +428,7 @@ pub fn array_map(vm: &mut Vm, args: &[u8]) -> NativeResult {
     };
     let new_arr = create_new_array(vm, n);
     for i in 0..n {
-        let elem = unsafe { (*arr_ptr).get_prop_at(i as u8) };
+        let elem = unsafe { (*arr_ptr).get_prop_at(i) };
         match invoke_native_callback(
             vm,
             callback_val,
@@ -437,13 +436,13 @@ pub fn array_map(vm: &mut Vm, args: &[u8]) -> NativeResult {
             &[elem, JsValue::int(i as i32), vm.reg(args[0])],
         ) {
             Ok(mapped) => unsafe {
-                (*new_arr).set_prop_at(i as u8, mapped);
+                (*new_arr).set_prop_at(i, mapped);
             },
             Err(_) => return Err(JsValue::undefined()),
         }
     }
     unsafe {
-        (*new_arr).set_prop_count(n.min(31) as u8);
+        (*new_arr).set_prop_count(n);
     }
     Ok(JsValue::from_js_object(new_arr))
 }
@@ -465,7 +464,7 @@ pub fn array_filter(vm: &mut Vm, args: &[u8]) -> NativeResult {
     };
     let mut kept: Vec<JsValue> = Vec::new();
     for i in 0..n {
-        let elem = unsafe { (*arr_ptr).get_prop_at(i as u8) };
+        let elem = unsafe { (*arr_ptr).get_prop_at(i) };
         match invoke_native_callback(
             vm,
             callback_val,
@@ -484,9 +483,9 @@ pub fn array_filter(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let new_arr = create_new_array(vm, kept.len());
     unsafe {
         for (i, val) in kept.iter().enumerate() {
-            (*new_arr).set_prop_at(i as u8, *val);
+            (*new_arr).set_prop_at(i, *val);
         }
-        (*new_arr).set_prop_count(kept.len().min(31) as u8);
+        (*new_arr).set_prop_count(kept.len());
     }
     Ok(JsValue::from_js_object(new_arr))
 }
@@ -516,7 +515,7 @@ pub fn array_reduce(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let this_val = JsValue::undefined();
     for i in start_idx..n {
-        let elem = unsafe { (*arr_ptr).get_prop_at(i as u8) };
+        let elem = unsafe { (*arr_ptr).get_prop_at(i) };
         match invoke_native_callback(
             vm,
             callback_val,
@@ -546,7 +545,7 @@ pub fn array_find(vm: &mut Vm, args: &[u8]) -> NativeResult {
         JsValue::undefined()
     };
     for i in 0..n {
-        let elem = unsafe { (*arr_ptr).get_prop_at(i as u8) };
+        let elem = unsafe { (*arr_ptr).get_prop_at(i) };
         match invoke_native_callback(
             vm,
             callback_val,
@@ -581,7 +580,7 @@ pub fn array_some(vm: &mut Vm, args: &[u8]) -> NativeResult {
         JsValue::undefined()
     };
     for i in 0..n {
-        let elem = unsafe { (*arr_ptr).get_prop_at(i as u8) };
+        let elem = unsafe { (*arr_ptr).get_prop_at(i) };
         match invoke_native_callback(
             vm,
             callback_val,
@@ -616,7 +615,7 @@ pub fn array_every(vm: &mut Vm, args: &[u8]) -> NativeResult {
         JsValue::undefined()
     };
     for i in 0..n {
-        let elem = unsafe { (*arr_ptr).get_prop_at(i as u8) };
+        let elem = unsafe { (*arr_ptr).get_prop_at(i) };
         match invoke_native_callback(
             vm,
             callback_val,
@@ -652,7 +651,7 @@ pub fn array_flat_map(vm: &mut Vm, args: &[u8]) -> NativeResult {
     };
     let mut flat: Vec<JsValue> = Vec::new();
     for i in 0..n {
-        let elem = unsafe { (*arr_ptr).get_prop_at(i as u8) };
+        let elem = unsafe { (*arr_ptr).get_prop_at(i) };
         match invoke_native_callback(
             vm,
             callback_val,
@@ -667,7 +666,7 @@ pub fn array_flat_map(vm: &mut Vm, args: &[u8]) -> NativeResult {
                         if r.is_array() {
                             let rn = r.prop_count() as usize;
                             for j in 0..rn {
-                                flat.push(r.get_prop_at(j as u8));
+                                flat.push(r.get_prop_at(j));
                             }
                             continue;
                         }
@@ -681,9 +680,9 @@ pub fn array_flat_map(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let new_arr = create_new_array(vm, flat.len());
     unsafe {
         for (i, val) in flat.iter().enumerate() {
-            (*new_arr).set_prop_at(i as u8, *val);
+            (*new_arr).set_prop_at(i, *val);
         }
-        (*new_arr).set_prop_count(flat.len().min(31) as u8);
+        (*new_arr).set_prop_count(flat.len());
     }
     Ok(JsValue::from_js_object(new_arr))
 }
@@ -710,14 +709,14 @@ pub fn array_unshift(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let len = arr.prop_count();
     let n_items = args.len().saturating_sub(1);
     for i in (0..len as usize).rev() {
-        let v = arr.get_prop_at(i as u8);
-        arr.set_prop_at(i as u8 + n_items as u8, v);
+        let v = arr.get_prop_at(i);
+        arr.set_prop_at(i + n_items, v);
     }
     for (j, &arg_reg) in args.iter().skip(1).enumerate() {
-        arr.set_prop_at(j as u8, vm.reg(arg_reg));
+        arr.set_prop_at(j, vm.reg(arg_reg));
     }
-    let new_len = (len as usize + n_items).min(31);
-    arr.set_prop_count(new_len as u8);
+    let new_len = len as usize + n_items;
+    arr.set_prop_count(new_len);
     Ok(JsValue::int(new_len as i32))
 }
 
@@ -743,7 +742,7 @@ pub fn array_fill(vm: &mut Vm, args: &[u8]) -> NativeResult {
         len
     };
     for i in start..end {
-        arr.set_prop_at(i as u8, value);
+        arr.set_prop_at(i, value);
     }
     Ok(vm.reg(args[0]))
 }
@@ -776,8 +775,8 @@ pub fn array_copy_within(vm: &mut Vm, args: &[u8]) -> NativeResult {
         if to >= len {
             break;
         }
-        let v = arr.get_prop_at(from as u8);
-        arr.set_prop_at(to as u8, v);
+        let v = arr.get_prop_at(from);
+        arr.set_prop_at(to, v);
         to += 1;
     }
     Ok(vm.reg(args[0]))
@@ -798,7 +797,7 @@ pub fn array_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if index < 0 || index >= len {
         return Ok(JsValue::undefined());
     }
-    Ok(arr.get_prop_at(index as u8))
+    Ok(arr.get_prop_at(index))
 }
 
 pub fn array_last_index_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
@@ -811,7 +810,7 @@ pub fn array_last_index_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
         JsValue::undefined()
     };
     for i in (0..len).rev() {
-        if coercion::strict_equality(arr.get_prop_at(i as u8), search) {
+        if coercion::strict_equality(arr.get_prop_at(i), search) {
             return Ok(JsValue::int(i));
         }
     }
@@ -831,7 +830,7 @@ pub fn array_find_index(vm: &mut Vm, args: &[u8]) -> NativeResult {
         JsValue::undefined()
     };
     for i in 0..n {
-        let elem = unsafe { (*arr_ptr).get_prop_at(i as u8) };
+        let elem = unsafe { (*arr_ptr).get_prop_at(i) };
         match invoke_native_callback(
             vm,
             callback_val,
@@ -862,7 +861,7 @@ pub fn array_find_last(vm: &mut Vm, args: &[u8]) -> NativeResult {
         JsValue::undefined()
     };
     for i in (0..n).rev() {
-        let elem = unsafe { (*arr_ptr).get_prop_at(i as u8) };
+        let elem = unsafe { (*arr_ptr).get_prop_at(i) };
         match invoke_native_callback(
             vm,
             callback_val,
@@ -893,10 +892,10 @@ pub fn array_reduce_right(vm: &mut Vm, args: &[u8]) -> NativeResult {
         if n == 0 {
             return Err(JsValue::undefined());
         }
-        (unsafe { (*arr_ptr).get_prop_at(n as u8 - 1) }, n as i32 - 2)
+        (unsafe { (*arr_ptr).get_prop_at(n - 1) }, n as i32 - 2)
     };
     for i in (0..=start_idx).rev() {
-        let elem = unsafe { (*arr_ptr).get_prop_at(i as u8) };
+        let elem = unsafe { (*arr_ptr).get_prop_at(i) };
         match invoke_native_callback(
             vm,
             callback_val,
@@ -914,14 +913,14 @@ pub fn array_sort(vm: &mut Vm, _args: &[u8]) -> NativeResult {
     let arr_ptr = get_this_array_ref(vm.reg(_args[0]))?;
     let arr = unsafe { &mut *arr_ptr };
     let len = arr.prop_count() as usize;
-    let mut vals: Vec<JsValue> = (0..len).map(|i| arr.get_prop_at(i as u8)).collect();
+    let mut vals: Vec<JsValue> = (0..len).map(|i| arr.get_prop_at(i)).collect();
     vals.sort_by(|a, b| {
         let sa = coercion::to_string(vm.kernel().string_forge().as_ref(), *a);
         let sb = coercion::to_string(vm.kernel().string_forge().as_ref(), *b);
         sa.cmp(&sb)
     });
     for (i, &v) in vals.iter().enumerate() {
-        arr.set_prop_at(i as u8, v);
+        arr.set_prop_at(i, v);
     }
     Ok(vm.reg(_args[0]))
 }

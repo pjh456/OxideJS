@@ -13,7 +13,7 @@ fn this_string(vm: &Vm, args: &[u8]) -> String {
 
 fn make_string_array(vm: &mut Vm, parts: &[String]) -> JsValue {
     let proto = vm.kernel().builtin_world().array_proto.as_ptr() as *mut JsObject;
-    let n = parts.len().min(31);
+    let n = parts.len();
     let arr = vm.epoch().alloc(JsObject::new_array(
         EMPTY_SHAPE_ID,
         JsValue::from_js_object(proto),
@@ -21,11 +21,11 @@ fn make_string_array(vm: &mut Vm, parts: &[String]) -> JsValue {
         vm.epoch().bump(),
     ));
     unsafe {
-        for (i, s) in parts.iter().enumerate().take(n) {
+        for (i, s) in parts.iter().enumerate() {
             let sv = vm.intern(s);
-            (*arr).set_prop_at(i as u8, sv);
+            (*arr).set_prop_at(i, sv);
         }
-        (*arr).set_prop_count(n as u8);
+        (*arr).set_prop_count(n);
     }
     JsValue::from_js_object(arr)
 }

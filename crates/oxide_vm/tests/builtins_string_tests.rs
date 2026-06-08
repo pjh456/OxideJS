@@ -143,6 +143,10 @@ fn string_split_comma() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "'a,b,c'.split(',')").unwrap();
     assert!(result.is_object());
+    let obj = unsafe { &*result.as_js_object_ptr() };
+    assert_eq!(obj.prop_count(), 3);
+    assert_eq!(to_str(&vm, obj.get_prop_at(0)), "a");
+    assert_eq!(to_str(&vm, obj.get_prop_at(2)), "c");
 }
 
 #[test]

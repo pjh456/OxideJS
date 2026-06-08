@@ -318,19 +318,8 @@ impl Compiler {
                         self.count_expression(expr, ctx);
                     }
                 }
-                // CALL_NATIVE: 1 opcode + 1 ext word; CALL(0x40): 1 opcode
-                let is_builtin = match &call.callee {
-                    Expression::Identifier(ident) => ctx.is_builtin(ident.name.as_str()),
-                    Expression::StaticMemberExpression(m) => {
-                        if let Expression::Identifier(ident) = &m.object {
-                            ctx.is_builtin(ident.name.as_str())
-                        } else {
-                            false
-                        }
-                    }
-                    _ => false,
-                };
-                ctx.projected_pc += if is_builtin { 2 } else { 1 };
+                // CALL and CALL_NATIVE both carry 1 ext word for arg_count.
+                ctx.projected_pc += 2;
                 ctx.alloc_reg(); // result register
                 ctx.projected_pc += 1; // LOAD_VAR result <- regs[0]
             }

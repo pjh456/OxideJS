@@ -16,11 +16,15 @@ fn eval(source: &str) -> Result<oxide_types::value::JsValue, String> {
 fn object_keys_empty() {
     let result = eval("Object.keys({})").unwrap();
     assert!(result.is_object());
+    let obj = unsafe { &*result.as_js_object_ptr() };
+    assert_eq!(obj.prop_count(), 0);
 }
 
 #[test]
 fn object_keys_has_own_property() {
-    eval("Object.keys({a:1})").unwrap();
+    let result = eval("Object.keys({a:1,b:2})").unwrap();
+    let obj = unsafe { &*result.as_js_object_ptr() };
+    assert_eq!(obj.prop_count(), 2);
 }
 
 #[test]
@@ -68,10 +72,14 @@ fn object_has_own_true() {
 fn object_entries_returns_array() {
     let result = eval("Object.entries({a:1,b:2})").unwrap();
     assert!(result.is_object());
+    let obj = unsafe { &*result.as_js_object_ptr() };
+    assert_eq!(obj.prop_count(), 2);
 }
 
 #[test]
 fn object_values_returns_array() {
     let result = eval("Object.values({a:1,b:2})").unwrap();
     assert!(result.is_object());
+    let obj = unsafe { &*result.as_js_object_ptr() };
+    assert_eq!(obj.prop_count(), 2);
 }

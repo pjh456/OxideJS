@@ -27,13 +27,7 @@ fn json_parse_object() {
     let result = eval(&mut vm, "JSON.parse('{\"a\":1,\"b\":2}')").unwrap();
     assert!(result.is_object());
     let obj = unsafe { &*result.as_js_object_ptr() };
-    let mut count = 0;
-    for i in 0..obj.prop_vec_len() {
-        if !obj.get_prop_at(i as u8).is_undefined() {
-            count += 1;
-        }
-    }
-    assert_eq!(count, 2);
+    assert_eq!(obj.prop_count(), 2);
 }
 
 #[test]
@@ -43,7 +37,8 @@ fn json_parse_array() {
     assert!(result.is_object());
     let obj = unsafe { &*result.as_js_object_ptr() };
     assert!(obj.is_array());
-    assert_eq!(obj.prop_vec_len(), 3);
+    assert_eq!(obj.prop_count(), 3);
+    assert_eq!(obj.get_prop_at(2).as_double(), 3.0);
 }
 
 #[test]

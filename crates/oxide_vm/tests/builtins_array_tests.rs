@@ -39,6 +39,21 @@ fn array_push_returns_true_length_beyond_31() {
 }
 
 #[test]
+fn array_length_tracks_more_than_31_elements() {
+    let result = eval("var a=[]; for (var i=0;i<40;i=i+1) a.push(i); a.length").unwrap();
+    assert_eq!(result.as_int(), 40);
+}
+
+#[test]
+fn array_push_preserves_slots_beyond_255() {
+    let result = eval("var a=[]; for (var i=0;i<257;i=i+1) a.push(i); a").unwrap();
+    let obj = unsafe { &*result.as_js_object_ptr() };
+    assert_eq!(obj.prop_count(), 257);
+    let tail = obj.get_prop_at(256);
+    assert_eq!(tail.as_double(), 256.0);
+}
+
+#[test]
 fn array_pop_returns_last() {
     let result = eval("[1,2,3].pop()").unwrap();
     assert_eq!(result.as_int(), 3);

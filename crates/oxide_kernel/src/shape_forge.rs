@@ -46,8 +46,8 @@ impl ShapeForge {
         ((parent_id as u64) << 32) | (prop_name as u64)
     }
 
-    fn compute_depth(shape_id: ShapeId, shapes: &[Option<Arc<Shape>>]) -> u8 {
-        let mut count = 0u8;
+    fn compute_depth(shape_id: ShapeId, shapes: &[Option<Arc<Shape>>]) -> u32 {
+        let mut count = 0u32;
         let mut cursor = Some(shape_id);
         while let Some(id) = cursor {
             match shapes.get((id - 1) as usize).and_then(|s| s.clone()) {
@@ -94,10 +94,10 @@ impl ShapeForge {
         shapes.get((id - 1) as usize).and_then(|s| s.clone())
     }
 
-    pub fn lookup_position(&self, shape_id: ShapeId, prop_name: StringIndex) -> Option<u8> {
+    pub fn lookup_position(&self, shape_id: ShapeId, prop_name: StringIndex) -> Option<u32> {
         let shapes = self.shapes.read().unwrap();
         let total_depth = Self::compute_depth(shape_id, &shapes);
-        let mut step: u8 = 0;
+        let mut step: u32 = 0;
         let mut cursor = Some(shape_id);
         while let Some(id) = cursor {
             match shapes.get((id - 1) as usize).and_then(|s| s.clone()) {
@@ -131,9 +131,9 @@ impl ShapeForge {
         false
     }
 
-    pub fn shape_prop_count(&self, shape_id: ShapeId) -> u8 {
+    pub fn shape_prop_count(&self, shape_id: ShapeId) -> u32 {
         let shapes = self.shapes.read().unwrap();
-        let mut count = 0u8;
+        let mut count = 0u32;
         let mut cursor = Some(shape_id);
         while let Some(id) = cursor {
             match shapes.get((id - 1) as usize).and_then(|s| s.clone()) {

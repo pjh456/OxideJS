@@ -58,7 +58,7 @@ fn value_to_jsvalue(vm: &mut Vm, val: &serde_json::Value) -> JsValue {
             for (i, v) in arr.iter().enumerate() {
                 let jsv = value_to_jsvalue(vm, v);
                 unsafe {
-                    (*array_obj).set_prop_at(i as u8, jsv);
+                    (*array_obj).set_prop_at(i, jsv);
                 }
             }
             JsValue::from_js_object(array_obj)
@@ -216,7 +216,7 @@ fn stringify_array(
         if i > 0 {
             out.push(',');
         }
-        let val = obj.get_prop_at(i as u8);
+        let val = obj.get_prop_at(i);
         let is_function = val.is_object() && {
             let ptr = val.as_js_object_ptr();
             if ptr.is_null() {
