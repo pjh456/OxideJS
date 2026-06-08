@@ -118,9 +118,9 @@ pub fn array_push(vm: &mut Vm, args: &[u8]) -> NativeResult {
         arr.set_prop_at(len as u8, val);
         len += 1;
     }
-    let new_len = (len as u8).min(31);
-    arr.set_prop_count(new_len);
-    Ok(JsValue::int(new_len as i32))
+    let stored_len = (len as u8).min(31);
+    arr.set_prop_count(stored_len);
+    Ok(JsValue::int(len as i32))
 }
 
 pub fn array_pop(vm: &mut Vm, args: &[u8]) -> NativeResult {

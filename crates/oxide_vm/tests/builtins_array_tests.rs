@@ -1,4 +1,5 @@
 use oxide_compiler::compiler::Compiler;
+use oxide_vm::builtins::array::{array_constructor, array_push};
 use oxide_vm::vm::Vm;
 
 fn eval(source: &str) -> Result<oxide_types::value::JsValue, String> {
@@ -24,6 +25,17 @@ fn array_push_adds_element() {
 fn array_push_returns_length() {
     let result = eval("[1,2,3].push(4)").unwrap();
     assert_eq!(result.as_int(), 4);
+}
+
+#[test]
+fn array_push_returns_true_length_beyond_31() {
+    let mut vm = Vm::new();
+    vm.set_reg(1, oxide_types::value::JsValue::int(31));
+    let array = array_constructor(&mut vm, &[0, 1]).unwrap();
+    vm.set_reg(0, array);
+    vm.set_reg(1, oxide_types::value::JsValue::int(99));
+    let result = array_push(&mut vm, &[0, 1]).unwrap();
+    assert_eq!(result.as_int(), 32);
 }
 
 #[test]
