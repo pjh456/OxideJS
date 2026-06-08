@@ -84,6 +84,34 @@ fn regression_throw_statement_errors() {
         result.contains("uncaught"),
         "expected uncaught, got: {result}"
     );
+    assert!(
+        result.contains("uncaught Error"),
+        "expected string throw to default to Error, got: {result}"
+    );
+}
+
+#[test]
+fn regression_throw_statement_preserves_type_error_kind() {
+    assert_eq!(
+        eval("try { throw new TypeError('boom') } catch (e) { e.name == 'TypeError' }"),
+        "true"
+    );
+    assert_eq!(
+        eval("throw new TypeError('boom')"),
+        "vm error: uncaught TypeError: {object}"
+    );
+}
+
+#[test]
+fn regression_throw_statement_preserves_syntax_error_kind() {
+    assert_eq!(
+        eval("try { throw new SyntaxError('boom') } catch (e) { e.name == 'SyntaxError' }"),
+        "true"
+    );
+    assert_eq!(
+        eval("throw new SyntaxError('boom')"),
+        "vm error: uncaught SyntaxError: {object}"
+    );
 }
 
 #[test]

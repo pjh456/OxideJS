@@ -390,6 +390,30 @@ impl Vm {
         self.kernel.string_forge().lookup(val.as_string_index())
     }
 
+    fn thrown_error_kind(&self, val: JsValue) -> &'static str {
+        if !val.is_object() {
+            return "Error";
+        }
+        let name_si = self.kernel.string_forge().intern("name").0;
+        let obj = unsafe { &*val.as_js_object_ptr() };
+        let Some(name_val) = self.resolve_property(obj, name_si) else {
+            return "Error";
+        };
+        let Some(name) = self.lookup_str(name_val) else {
+            return "Error";
+        };
+        match name.as_str() {
+            "TypeError" => "TypeError",
+            "ReferenceError" => "ReferenceError",
+            "RangeError" => "RangeError",
+            "SyntaxError" => "SyntaxError",
+            "URIError" => "URIError",
+            "EvalError" => "EvalError",
+            "Error" => "Error",
+            _ => "Error",
+        }
+    }
+
     fn property_key_si(&mut self, val: JsValue) -> u32 {
         if val.is_string() {
             return val.as_string_index();
@@ -1823,6 +1847,7 @@ impl Vm {
                 OpCode::THROW => {
                     let exc_value = self.regs[rd];
                     self.exception_value = Some(exc_value);
+                    self.pending_error_kind = Some(self.thrown_error_kind(exc_value));
                     match self.unwind() {
                         Ok(()) => continue,
                         Err(e) => return Err(e),

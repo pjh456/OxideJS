@@ -137,3 +137,25 @@ fn reference_error_is_defined() {
     let result = eval("typeof ReferenceError").unwrap();
     assert!(result.is_string());
 }
+
+#[test]
+fn error_subtype_constructors_produce_named_objects() {
+    assert_eq!(
+        format!("{}", eval("new Error('boom').name == 'Error'").unwrap()),
+        "true"
+    );
+    assert_eq!(
+        format!(
+            "{}",
+            eval("new TypeError('boom').name == 'TypeError'").unwrap()
+        ),
+        "true"
+    );
+    assert_eq!(
+        format!(
+            "{}",
+            eval("new SyntaxError('boom').name == 'SyntaxError'").unwrap()
+        ),
+        "true"
+    );
+}
