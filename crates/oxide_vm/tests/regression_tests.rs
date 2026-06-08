@@ -152,3 +152,27 @@ fn regression_new_expression_bytecode_constructor_error_is_catchable() {
         "expected bytecode constructor capability error to enter catch"
     );
 }
+
+#[test]
+fn regression_delete_static_property_throws_type_error() {
+    assert_eq!(
+        eval("try { var o={x:1}; delete o.x; 0 } catch (e) { e.name == 'TypeError' }"),
+        "true"
+    );
+    assert_eq!(
+        eval("var o={x:1}; delete o.x"),
+        "vm error: uncaught TypeError: {object}"
+    );
+}
+
+#[test]
+fn regression_delete_dynamic_property_throws_type_error() {
+    assert_eq!(
+        eval("try { var o={x:1}; delete o['x']; 0 } catch (e) { e.name == 'TypeError' }"),
+        "true"
+    );
+    assert_eq!(
+        eval("var o={x:1}; var k='x'; delete o[k]"),
+        "vm error: uncaught TypeError: {object}"
+    );
+}

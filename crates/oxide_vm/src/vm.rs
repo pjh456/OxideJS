@@ -1368,50 +1368,15 @@ impl Vm {
                 }
 
                 OpCode::DELETE_PROP_STATIC => {
-                    let obj_val = self.regs[a];
-                    if !obj_val.is_object() {
-                        self.regs[rd] = JsValue::bool(true);
-                    } else {
-                        let obj_ptr = obj_val.as_js_object_ptr();
-                        let obj = unsafe { &mut *obj_ptr };
-                        let ext = self.bytecode[self.pc];
-                        self.pc += 1;
-                        let const_idx = ext as usize;
-                        let prop_name_val = self.constants[const_idx];
-                        if !prop_name_val.is_string() {
-                            self.regs[rd] = JsValue::bool(true);
-                            continue;
-                        }
-                        let prop_name_si = prop_name_val.as_string_index();
-                        if let Some(pos) = self
-                            .kernel
-                            .shape_forge()
-                            .lookup_position(obj.shape_id(), prop_name_si)
-                        {
-                            obj.set_prop_at(pos, JsValue::undefined());
-                        }
-                        self.regs[rd] = JsValue::bool(true);
-                    }
+                    let _ = self.bytecode[self.pc];
+                    self.pc += 1;
+                    throw_err!(self, TypeError, "property deletion not supported");
                 }
 
                 OpCode::DELETE_PROP_DYNAMIC => {
-                    let obj_val = self.regs[a];
-                    if !obj_val.is_object() {
-                        self.regs[rd] = JsValue::bool(true);
-                    } else {
-                        let key_val = self.regs[b];
-                        let prop_name_si = self.property_key_si(key_val);
-                        let obj_ptr = obj_val.as_js_object_ptr();
-                        let obj = unsafe { &mut *obj_ptr };
-                        if let Some(pos) = self
-                            .kernel
-                            .shape_forge()
-                            .lookup_position(obj.shape_id(), prop_name_si)
-                        {
-                            obj.set_prop_at(pos, JsValue::undefined());
-                        }
-                        self.regs[rd] = JsValue::bool(true);
-                    }
+                    let _ = self.regs[a];
+                    let _ = self.regs[b];
+                    throw_err!(self, TypeError, "property deletion not supported");
                 }
 
                 OpCode::INSTANCEOF => {
