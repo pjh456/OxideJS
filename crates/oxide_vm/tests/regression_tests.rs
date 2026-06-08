@@ -1,4 +1,7 @@
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
+use oxide_kernel::kernel::{KernelConfig, OxideKernel};
 use oxide_parser::Allocator;
 use oxide_vm::vm::Vm;
 
@@ -13,6 +16,23 @@ fn eval(source: &str) -> String {
         Err(e) => return format!("compile error: {e}"),
     };
     let mut vm = Vm::new();
+    match vm.run(&module) {
+        Ok(result) => format!("{result}"),
+        Err(e) => format!("vm error: {e}"),
+    }
+}
+
+fn eval_with_kernel(source: &str, kernel: Arc<OxideKernel>) -> String {
+    let allocator = Allocator::default();
+    let program = match oxide_parser::parse(&allocator, source) {
+        Ok(p) => p,
+        Err(e) => return format!("parse error: {}", e[0].message),
+    };
+    let module = match Compiler::new().compile(&program) {
+        Ok(m) => m,
+        Err(e) => return format!("compile error: {e}"),
+    };
+    let mut vm = Vm::with_kernel(kernel);
     match vm.run(&module) {
         Ok(result) => format!("{result}"),
         Err(e) => format!("vm error: {e}"),
@@ -72,5 +92,17 @@ fn regression_for_in_prototype_chain() {
         eval("var c=0;for(var k in {a:1}){c=c+1;}c"),
         "2",
         "for-in should include inherited constructor from prototype"
+    );
+}
+
+#[test]
+fn regression_vm_step_limit_is_configurable() {
+    let mut config = KernelConfig::minimal();
+    config.max_steps = Some(5);
+    let kernel = Arc::new(OxideKernel::new(config));
+    let result = eval_with_kernel("while (true) {}", kernel);
+    assert!(
+        result.contains("VM step limit exceeded"),
+        "expected configurable step limit error, got: {result}"
     );
 }

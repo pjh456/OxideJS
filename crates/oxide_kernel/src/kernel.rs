@@ -16,6 +16,7 @@ pub struct KernelConfig {
     pub min_pool_size: usize,
     pub max_pool_size: Option<usize>,
     pub max_dead_strings: Option<usize>,
+    pub max_steps: Option<u64>,
     pub max_call_depth: usize,
     pub warmup_builtin_shapes: bool,
     pub warmup_builtin_code: bool,
@@ -28,6 +29,7 @@ impl KernelConfig {
             min_pool_size: 4,
             max_pool_size: Some(8),
             max_dead_strings: Some(10_000),
+            max_steps: None,
             max_call_depth: 1024,
             warmup_builtin_shapes: true,
             warmup_builtin_code: false,
@@ -40,6 +42,7 @@ impl KernelConfig {
             min_pool_size: 8,
             max_pool_size: Some(32),
             max_dead_strings: Some(10_000),
+            max_steps: None,
             max_call_depth: 1024,
             warmup_builtin_shapes: true,
             warmup_builtin_code: true,
@@ -52,6 +55,7 @@ impl KernelConfig {
             min_pool_size: 16,
             max_pool_size: None,
             max_dead_strings: Some(5_000),
+            max_steps: None,
             max_call_depth: 1024,
             warmup_builtin_shapes: true,
             warmup_builtin_code: true,
@@ -187,6 +191,9 @@ mod tests {
     fn test_kernel_config_presets() {
         assert_eq!(KernelConfig::minimal().max_pool_size, Some(8));
         assert_eq!(KernelConfig::standard().max_pool_size, Some(32));
+        assert_eq!(KernelConfig::minimal().max_steps, None);
+        assert_eq!(KernelConfig::standard().max_steps, None);
+        assert_eq!(KernelConfig::full().max_steps, None);
         assert!(!KernelConfig::minimal().warmup_builtin_ic);
         assert!(KernelConfig::full().warmup_builtin_ic);
         assert_eq!(KernelConfig::full().max_pool_size, None);
