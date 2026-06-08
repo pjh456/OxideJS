@@ -338,60 +338,84 @@ impl Vm {
         JsValue::object(obj_ptr as *mut u8)
     }
 
-    /// Convert a CompiledModule's constants into JsValue vec.
-    fn convert_constants(&mut self, module: &CompiledModule) -> Vec<JsValue> {
-        module
-            .constants
-            .iter()
-            .map(|c| match c {
-                Constant::Number(v) => JsValue::float(*v),
-                Constant::Int(v) => JsValue::int(*v),
-                Constant::String(s) => self.intern(s),
-                Constant::Boolean(b) => JsValue::bool(*b),
-                Constant::Null => JsValue::null(),
-                Constant::Undefined => JsValue::undefined(),
-                Constant::BytecodeFunc(idx) => {
-                    // 1-indexed: idx 1 = sub_modules[0], idx 0 = sentinel
-                    let sub_idx = *idx as usize;
-                    let is_arrow = if sub_idx > 0 && sub_idx <= module.sub_modules.len() {
-                        module.sub_modules[sub_idx - 1].is_arrow
-                    } else {
-                        false
-                    };
-                    self.create_function_object(*idx, is_arrow)
-                }
-                Constant::RegExp(pattern, flags) => {
-                    let pat_si = self.kernel.string_forge().intern(pattern).0;
-                    let flags_si = self.kernel.string_forge().intern(flags).0;
-                    let pat_val = JsValue::string(pat_si, 0);
-                    let flags_val = JsValue::string(flags_si, 0);
+    fn error_text(&self, val: JsValue) -> String {
+        if let Some(s) = self.lookup_str(val) {
+            return s;
+        }
+        if val.is_object() {
+            let obj = unsafe { &*val.as_js_object_ptr() };
+            let name_si = self.kernel.string_forge().intern("name").0;
+            let message_si = self.kernel.string_forge().intern("message").0;
+            let name = self
+                .resolve_property(obj, name_si)
+                .and_then(|v| self.lookup_str(v))
+                .unwrap_or_else(|| "Error".to_string());
+            let message = self
+                .resolve_property(obj, message_si)
+                .and_then(|v| self.lookup_str(v))
+                .unwrap_or_default();
+            return if message.is_empty() {
+                name
+            } else {
+                format!("{name}: {message}")
+            };
+        }
+        format!("{val}")
+    }
 
-                    let native_fn =
-                        self.kernel.builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
-                    let ctor = unsafe { &*native_fn };
-                    let ctor_fn = ctor.native_fn();
-                    if ctor_fn.is_none() {
-                        return JsValue::undefined();
-                    }
-                    let saved_0 = self.regs[0];
-                    let saved_1 = self.regs[1];
-                    let saved_2 = self.regs[2];
-                    self.regs[0] = JsValue::undefined();
-                    self.regs[1] = pat_val;
-                    self.regs[2] = flags_val;
-                    let func: crate::native::NativeFn =
-                        unsafe { std::mem::transmute(ctor_fn.unwrap()) };
-                    let result = func(self, &[0, 1, 2]);
-                    self.regs[0] = saved_0;
-                    self.regs[1] = saved_1;
-                    self.regs[2] = saved_2;
-                    match result {
-                        Ok(val) => val,
-                        Err(_) => JsValue::undefined(),
-                    }
-                }
-            })
-            .collect()
+    fn convert_constant(&mut self, constant: &Constant) -> Result<JsValue, String> {
+        match constant {
+            Constant::Number(v) => Ok(JsValue::float(*v)),
+            Constant::Int(v) => Ok(JsValue::int(*v)),
+            Constant::String(s) => Ok(self.intern(s)),
+            Constant::Boolean(b) => Ok(JsValue::bool(*b)),
+            Constant::Null => Ok(JsValue::null()),
+            Constant::Undefined => Ok(JsValue::undefined()),
+            Constant::BytecodeFunc(idx) => {
+                let sub_idx = *idx as usize;
+                let is_arrow = if sub_idx > 0 && sub_idx <= self.sub_modules.len() {
+                    self.sub_modules[sub_idx - 1].is_arrow
+                } else {
+                    false
+                };
+                Ok(self.create_function_object(*idx, is_arrow))
+            }
+            Constant::RegExp(pattern, flags) => {
+                let pat_si = self.kernel.string_forge().intern(pattern).0;
+                let flags_si = self.kernel.string_forge().intern(flags).0;
+                let pat_val = JsValue::string(pat_si, 0);
+                let flags_val = JsValue::string(flags_si, 0);
+
+                let ctor_ptr =
+                    self.kernel.builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
+                let ctor = unsafe { &*ctor_ptr };
+                let Some(native_fn) = ctor.native_fn() else {
+                    return Err("SyntaxError: RegExp constructor unavailable".into());
+                };
+
+                let saved_0 = self.regs[0];
+                let saved_1 = self.regs[1];
+                let saved_2 = self.regs[2];
+                self.regs[0] = JsValue::undefined();
+                self.regs[1] = pat_val;
+                self.regs[2] = flags_val;
+                let func: crate::native::NativeFn = unsafe { std::mem::transmute(native_fn) };
+                let result = func(self, &[0, 1, 2]);
+                self.regs[0] = saved_0;
+                self.regs[1] = saved_1;
+                self.regs[2] = saved_2;
+                result.map_err(|err| self.error_text(err))
+            }
+        }
+    }
+
+    /// Convert a module constant pool into runtime values.
+    fn convert_constants(&mut self, constants: &[Constant]) -> Result<Vec<JsValue>, String> {
+        let mut values = Vec::with_capacity(constants.len());
+        for constant in constants {
+            values.push(self.convert_constant(constant)?);
+        }
+        Ok(values)
     }
 
     pub fn lookup_str(&self, val: JsValue) -> Option<String> {
@@ -547,8 +571,8 @@ impl Vm {
 
     pub fn run(&mut self, module: &CompiledModule) -> Result<JsValue, String> {
         self.clear_execution_state();
-        self.constants = self.convert_constants(module);
         self.sub_modules = module.sub_modules.clone();
+        self.constants = self.convert_constants(&module.constants)?;
         self.sub_module_constants = vec![Vec::new(); self.sub_modules.len()];
         self.bytecode = module.bytecode.clone();
         self.root_reg_limit = module.n_registers.max(1);
@@ -804,6 +828,9 @@ impl Vm {
                                     };
                                     self.regs[255] = JsValue::undefined();
 
+                                    let converted_sub_constants =
+                                        self.convert_constants(&sub_constants)?;
+
                                     // Save current bytecode/constants
                                     self.saved_bytecode_stack
                                         .push(std::mem::take(&mut self.bytecode));
@@ -824,31 +851,8 @@ impl Vm {
                                         saved_new_target,
                                     });
 
-                                    // Convert sub_module constants
                                     self.bytecode = sub_bytecode;
-                                    self.constants = sub_constants
-                                        .iter()
-                                        .map(|c| match c {
-                                            Constant::Number(v) => JsValue::float(*v),
-                                            Constant::Int(v) => JsValue::int(*v),
-                                            Constant::String(s) => self.intern(s),
-                                            Constant::Boolean(b) => JsValue::bool(*b),
-                                            Constant::Null => JsValue::null(),
-                                            Constant::Undefined => JsValue::undefined(),
-                                            Constant::BytecodeFunc(idx) => {
-                                                let idx_usize = *idx as usize;
-                                                let nested_is_arrow = if idx_usize > 0
-                                                    && idx_usize <= self.sub_modules.len()
-                                                {
-                                                    self.sub_modules[idx_usize - 1].is_arrow
-                                                } else {
-                                                    false
-                                                };
-                                                self.create_function_object(*idx, nested_is_arrow)
-                                            }
-                                            Constant::RegExp(_, _) => JsValue::undefined(),
-                                        })
-                                        .collect();
+                                    self.constants = converted_sub_constants;
 
                                     // Pre-fill builtin registers from the global object
                                     // (same as Vm::run does for the main module).
@@ -1883,7 +1887,7 @@ impl Default for Vm {
 #[cfg(test)]
 mod tests {
     use super::{opcode, JsValue, TryHandler, Vm};
-    use oxide_compiler::module::CompiledModule;
+    use oxide_compiler::module::{CompiledModule, Constant};
 
     #[test]
     fn reset_clears_runtime_state_like_rerun() {
@@ -1962,5 +1966,54 @@ mod tests {
                 .expect_err("FOR_OF opcode should fail explicitly");
             assert_eq!(err, expected);
         }
+    }
+
+    #[test]
+    fn invalid_regexp_constant_fails_explicitly() {
+        let module = CompiledModule {
+            constants: vec![Constant::RegExp("[".into(), "".into())],
+            bytecode: vec![opcode::encode(opcode::OpCode::HALT, 0, 0, 0)],
+            n_registers: 1,
+            ..CompiledModule::new()
+        };
+        let mut vm = Vm::new();
+        let err = vm
+            .run(&module)
+            .expect_err("invalid RegExp constant should fail explicitly");
+        assert!(
+            err.contains("SyntaxError: Invalid regular expression"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn invalid_regexp_constant_in_submodule_fails_explicitly() {
+        let submodule = CompiledModule {
+            constants: vec![Constant::RegExp("[".into(), "".into())],
+            bytecode: vec![opcode::encode(opcode::OpCode::RETURN, 0, 0, 0)],
+            n_registers: 1,
+            ..CompiledModule::new()
+        };
+        let module = CompiledModule {
+            constants: vec![Constant::BytecodeFunc(1), Constant::Undefined],
+            bytecode: vec![
+                opcode::encode(opcode::OpCode::LOAD_CONST, 0, 0, 0),
+                opcode::encode(opcode::OpCode::LOAD_CONST, 1, 1, 0),
+                opcode::encode(opcode::OpCode::CALL, 0, 1, 0),
+                0,
+                opcode::encode(opcode::OpCode::HALT, 0, 0, 0),
+            ],
+            n_registers: 2,
+            sub_modules: vec![submodule],
+            ..CompiledModule::new()
+        };
+        let mut vm = Vm::new();
+        let err = vm
+            .run(&module)
+            .expect_err("invalid submodule RegExp constant should fail explicitly");
+        assert!(
+            err.contains("SyntaxError: Invalid regular expression"),
+            "unexpected error: {err}"
+        );
     }
 }
