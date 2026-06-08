@@ -38,4 +38,17 @@ fn function_to_string_includes_function() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "Math.max.toString()").unwrap();
     assert!(result.is_string());
+    let rendered = vm
+        .kernel()
+        .string_forge()
+        .lookup(result.as_string_index())
+        .unwrap_or_default();
+    assert!(rendered.contains("function"), "got: {}", rendered);
+}
+
+#[test]
+fn function_to_string_non_function_throws() {
+    let mut vm = Vm::new();
+    let err = eval(&mut vm, "Function.prototype.toString.call(1)").unwrap_err();
+    assert!(err.contains("TypeError"), "got: {}", err);
 }

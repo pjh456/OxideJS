@@ -160,15 +160,53 @@ pub fn function_bind(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn function_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    if !this_val.is_object() {
+        return Err(crate::builtins::error::create_type_error(
+            vm,
+            "Function.prototype.toString called on non-function",
+        ));
+    }
+
+    let func = unsafe { &*this_val.as_js_object_ptr() };
+    if !func.is_function() {
+        return Err(crate::builtins::error::create_type_error(
+            vm,
+            "Function.prototype.toString called on non-function",
+        ));
+    }
+
+    let name_si = vm.kernel().string_forge().intern("name").0;
     let name = vm
-        .kernel()
-        .string_forge()
-        .lookup(vm.reg(args[0]).as_string_index())
-        .unwrap_or_default();
-    let result = if name.is_empty() {
-        "function () { [native code] }".to_string()
+        .resolve_property(func, name_si)
+        .and_then(|v| {
+            if v.is_string() {
+                vm.kernel().string_forge().lookup(v.as_string_index())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| {
+            let sub_idx = func.sub_module_index();
+            if sub_idx > 0 && (sub_idx as usize) <= vm.sub_modules.len() {
+                vm.sub_modules[sub_idx as usize - 1]
+                    .function_name
+                    .clone()
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            }
+        });
+
+    let body = if func.native_fn().is_some() {
+        "[native code]"
     } else {
-        format!("function {}() {{ [native code] }}", name)
+        "[bytecode]"
+    };
+    let result = if name.is_empty() {
+        format!("function () {{ {body} }}")
+    } else {
+        format!("function {name}() {{ {body} }}")
     };
     let si = vm.kernel().string_forge().intern(&result).0;
     Ok(JsValue::string(si, 0))
