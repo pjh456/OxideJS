@@ -428,3 +428,44 @@ pub fn string_search(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     Ok(JsValue::int(-1))
 }
+
+pub fn string_trim_start(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let s = this_string(vm, args);
+    Ok(vm.intern(s.trim_start()))
+}
+
+pub fn string_trim_end(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let s = this_string(vm, args);
+    Ok(vm.intern(s.trim_end()))
+}
+
+pub fn string_code_point_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let s = this_string(vm, args);
+    let pos = if args.len() > 1 {
+        coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref()) as usize
+    } else { 0 };
+    let chars: Vec<char> = s.chars().collect();
+    if pos >= chars.len() { return Ok(JsValue::undefined()); }
+    let c = chars[pos] as u32;
+    if (0xD800..=0xDBFF).contains(&c) && pos + 1 < chars.len() {
+        let next = chars[pos + 1] as u32;
+        if (0xDC00..=0xDFFF).contains(&next) {
+            let cp = 0x10000 + ((c - 0xD800) << 10) + (next - 0xDC00);
+            return Ok(JsValue::int(cp as i32));
+        }
+    }
+    Ok(JsValue::int(c as i32))
+}
+
+pub fn string_normalize(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    use unicode_normalization::UnicodeNormalization;
+    let s = this_string(vm, args);
+    let form = if args.len() > 1 { as_string(vm, vm.reg(args[1])) } else { "NFC".to_string() };
+    let result: String = match form.as_str() {
+        "NFD" => s.nfd().collect(),
+        "NFKC" => s.nfkc().collect(),
+        "NFKD" => s.nfkd().collect(),
+        _ => s.nfc().collect(),
+    };
+    Ok(vm.intern(&result))
+}

@@ -33,6 +33,12 @@ pub struct ObjectMethods {
     pub is_sealed: *const (),
     pub is_extensible: *const (),
     pub get_own_property_names: *const (),
+    pub define_properties: *const (),
+    pub from_entries: *const (),
+    pub get_prototype_of: *const (),
+    pub has_own: *const (),
+    pub entries: *const (),
+    pub values: *const (),
 }
 
 pub struct ArrayMethods {
@@ -54,6 +60,16 @@ pub struct ArrayMethods {
     pub every: *const (),
     pub flat: *const (),
     pub flat_map: *const (),
+    pub shift: *const (),
+    pub unshift: *const (),
+    pub fill: *const (),
+    pub copy_within: *const (),
+    pub at: *const (),
+    pub last_index_of: *const (),
+    pub find_index: *const (),
+    pub find_last: *const (),
+    pub reduce_right: *const (),
+    pub sort: *const (),
 }
 
 pub struct ErrorMethods {
@@ -86,6 +102,12 @@ pub struct StringMethods {
     pub replace: *const (),
     pub match_fn: *const (),
     pub search: *const (),
+    pub trim_start: *const (),
+    pub trim_end: *const (),
+    pub code_point_at: *const (),
+    pub normalize: *const (),
+    pub match_all: *const (),
+    pub replace_all: *const (),
 }
 
 pub struct RegExpMethods {
@@ -457,6 +479,10 @@ impl BuiltinWorld {
             methods.get_own_property_names,
             1,
         );
+        let _ = self.bind_method(ctor, shape_forge, string_forge, "defineProperties", methods.define_properties, 2);
+        let _ = self.bind_method(ctor, shape_forge, string_forge, "fromEntries", methods.from_entries, 1);
+        let _ = self.bind_method(ctor, shape_forge, string_forge, "getPrototypeOf", methods.get_prototype_of, 1);
+        let _ = self.bind_method(ctor, shape_forge, string_forge, "hasOwn", methods.has_own, 2);
     }
 
     pub fn bind_array_methods(
@@ -549,6 +575,16 @@ impl BuiltinWorld {
             methods.flat_map,
             1,
         );
+        let _ = self.bind_method(proto, shape_forge, string_forge, "shift", methods.shift, 0);
+        let _ = self.bind_method(proto, shape_forge, string_forge, "unshift", methods.unshift, 1);
+        let _ = self.bind_method(proto, shape_forge, string_forge, "fill", methods.fill, 1);
+        let _ = self.bind_method(proto, shape_forge, string_forge, "copyWithin", methods.copy_within, 2);
+        let _ = self.bind_method(proto, shape_forge, string_forge, "at", methods.at, 1);
+        let _ = self.bind_method(proto, shape_forge, string_forge, "lastIndexOf", methods.last_index_of, 1);
+        let _ = self.bind_method(proto, shape_forge, string_forge, "findIndex", methods.find_index, 1);
+        let _ = self.bind_method(proto, shape_forge, string_forge, "findLast", methods.find_last, 1);
+        let _ = self.bind_method(proto, shape_forge, string_forge, "reduceRight", methods.reduce_right, 1);
+        let _ = self.bind_method(proto, shape_forge, string_forge, "sort", methods.sort, 0);
     }
 
     pub fn bind_error_methods(
@@ -751,6 +787,10 @@ impl BuiltinWorld {
             methods.search,
             1,
         );
+        let _ = self.bind_method(proto, shape_forge, string_forge, "trimStart", methods.trim_start, 0);
+        let _ = self.bind_method(proto, shape_forge, string_forge, "trimEnd", methods.trim_end, 0);
+        let _ = self.bind_method(proto, shape_forge, string_forge, "codePointAt", methods.code_point_at, 1);
+        let _ = self.bind_method(proto, shape_forge, string_forge, "normalize", methods.normalize, 0);
     }
 
     pub fn bind_number_methods(

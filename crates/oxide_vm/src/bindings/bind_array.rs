@@ -25,6 +25,16 @@ pub fn bind_array(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
         every: crate::builtins::array::array_every as *const (),
         flat: crate::builtins::array::array_flat as *const (),
         flat_map: crate::builtins::array::array_flat_map as *const (),
+        shift: crate::builtins::array::array_shift as *const (),
+        unshift: crate::builtins::array::array_unshift as *const (),
+        fill: crate::builtins::array::array_fill as *const (),
+        copy_within: crate::builtins::array::array_copy_within as *const (),
+        at: crate::builtins::array::array_at as *const (),
+        last_index_of: crate::builtins::array::array_last_index_of as *const (),
+        find_index: crate::builtins::array::array_find_index as *const (),
+        find_last: crate::builtins::array::array_find_last as *const (),
+        reduce_right: crate::builtins::array::array_reduce_right as *const (),
+        sort: crate::builtins::array::array_sort as *const (),
     };
 
     kernel.builtin_world().bind_array_methods(
