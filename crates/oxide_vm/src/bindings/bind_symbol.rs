@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use oxide_kernel::bind_methods;
+use crate::bindings::{apply_binding_table, configure_native_constructor};
 use oxide_kernel::kernel::OxideKernel;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
@@ -12,15 +12,22 @@ pub fn bind_symbol(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     let ctor = unsafe { &mut *ctor_ptr };
     let proto_ptr = kernel.builtin_world().symbol_proto.as_ptr() as *mut JsObject;
     let proto = unsafe { &mut *proto_ptr };
-    let sf = kernel.string_forge().as_ref();
-    let sh = kernel.shape_forge().as_ref();
 
-    bind_methods!(
+    configure_native_constructor(
+        ctor,
+        crate::builtins::symbol::symbol_constructor as *const (),
+        1,
+    );
+
+    apply_binding_table(
         kernel.builtin_world(),
         proto,
-        sf,
-        sh,
-        ("toString", crate::builtins::symbol::symbol_to_string, 0),
+        kernel,
+        &[(
+            "toString",
+            crate::builtins::symbol::symbol_to_string as *const (),
+            0,
+        )],
     );
 
     for (name, val) in [
@@ -68,4 +75,5 @@ fn bind_well_known_symbol(
     let shape_id = kernel.shape_forge().make_shape(ctor.shape_id(), si);
     ctor.set_shape_id(shape_id);
     ctor.ensure_hash_props().push(Box::new(val));
+    ctor.bump_generation();
 }

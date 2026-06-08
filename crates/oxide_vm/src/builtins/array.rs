@@ -6,6 +6,20 @@ use crate::coercion;
 use crate::native::{NativeFn, NativeResult};
 use crate::vm::Vm;
 
+macro_rules! array_ptr {
+    ($vm:expr, $args:expr) => {
+        get_this_array_ref($vm.reg($args[0]))?
+    };
+}
+
+macro_rules! array_ptr_len {
+    ($vm:expr, $args:expr) => {{
+        let arr_ptr = array_ptr!($vm, $args);
+        let len = unsafe { (*arr_ptr).prop_count() } as usize;
+        (arr_ptr, len)
+    }};
+}
+
 fn get_this_array_ref(val: JsValue) -> Result<*mut JsObject, JsValue> {
     if !val.is_object() {
         return Err(JsValue::undefined());
@@ -110,7 +124,7 @@ pub fn array_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_push(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
+    let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &mut *arr_ptr };
     let mut len = arr.prop_count();
     for &arg_reg in args.iter().skip(1) {
@@ -123,7 +137,7 @@ pub fn array_push(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_pop(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
+    let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &mut *arr_ptr };
     let len = arr.prop_count();
     if len == 0 {
@@ -135,7 +149,7 @@ pub fn array_pop(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_slice(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
+    let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
     let n = arr.prop_count() as usize;
     let start = if args.len() > 1 {
@@ -163,7 +177,7 @@ pub fn array_slice(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_splice(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
+    let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &mut *arr_ptr };
     let n = arr.prop_count() as usize;
 
@@ -225,7 +239,7 @@ pub fn array_splice(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_concat(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
+    let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
     let n = arr.prop_count() as usize;
     let mut all: Vec<JsValue> = Vec::new();
@@ -260,7 +274,7 @@ pub fn array_concat(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_join(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
+    let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
     let n = arr.prop_count() as usize;
     let sep = if args.len() > 1 {
@@ -285,7 +299,7 @@ pub fn array_join(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_index_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
+    let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
     let n = arr.prop_count() as usize;
     if args.len() < 2 {
@@ -301,7 +315,7 @@ pub fn array_index_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_includes(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
+    let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
     let n = arr.prop_count() as usize;
     if args.len() < 2 {
@@ -325,7 +339,7 @@ pub fn array_includes(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_reverse(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
+    let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &mut *arr_ptr };
     let n = arr.prop_count() as usize;
     let mut i = 0;
@@ -341,7 +355,7 @@ pub fn array_reverse(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_flat(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
+    let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
     let n = arr.prop_count() as usize;
     let depth = if args.len() > 1 {
@@ -385,8 +399,7 @@ pub fn array_flat(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_for_each(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
-    let n = unsafe { (*arr_ptr).prop_count() } as usize;
+    let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
         return Err(JsValue::undefined());
     }
@@ -412,8 +425,7 @@ pub fn array_for_each(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_map(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
-    let n = unsafe { (*arr_ptr).prop_count() } as usize;
+    let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
         return Err(JsValue::undefined());
     }
@@ -448,8 +460,7 @@ pub fn array_map(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_filter(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
-    let n = unsafe { (*arr_ptr).prop_count() } as usize;
+    let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
         return Err(JsValue::undefined());
     }
@@ -491,8 +502,7 @@ pub fn array_filter(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_reduce(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
-    let n = unsafe { (*arr_ptr).prop_count() } as usize;
+    let (arr_ptr, n) = array_ptr_len!(vm, args);
     if n == 0 && args.len() < 3 {
         return Err(JsValue::undefined());
     }
@@ -530,8 +540,7 @@ pub fn array_reduce(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_find(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
-    let n = unsafe { (*arr_ptr).prop_count() } as usize;
+    let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
         return Ok(JsValue::undefined());
     }
@@ -565,8 +574,7 @@ pub fn array_find(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_some(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
-    let n = unsafe { (*arr_ptr).prop_count() } as usize;
+    let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
         return Ok(JsValue::bool(false));
     }
@@ -600,8 +608,7 @@ pub fn array_some(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_every(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
-    let n = unsafe { (*arr_ptr).prop_count() } as usize;
+    let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
         return Ok(JsValue::bool(false));
     }
@@ -635,8 +642,7 @@ pub fn array_every(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_flat_map(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
-    let n = unsafe { (*arr_ptr).prop_count() } as usize;
+    let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
         return Err(JsValue::undefined());
     }
@@ -688,7 +694,7 @@ pub fn array_flat_map(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_shift(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
+    let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &mut *arr_ptr };
     let len = arr.prop_count();
     if len == 0 {
@@ -704,7 +710,7 @@ pub fn array_shift(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_unshift(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
+    let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &mut *arr_ptr };
     let len = arr.prop_count();
     let n_items = args.len().saturating_sub(1);
@@ -721,7 +727,7 @@ pub fn array_unshift(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_fill(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
+    let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &mut *arr_ptr };
     let len = arr.prop_count() as usize;
     let value = if args.len() > 1 {
@@ -748,7 +754,7 @@ pub fn array_fill(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_copy_within(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
+    let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &mut *arr_ptr };
     let len = arr.prop_count() as usize;
     if len == 0 {
@@ -783,7 +789,7 @@ pub fn array_copy_within(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
+    let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
     let len = arr.prop_count() as i32;
     let mut index = if args.len() > 1 {
@@ -801,7 +807,7 @@ pub fn array_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_last_index_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
+    let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
     let len = arr.prop_count() as i32;
     let search = if args.len() > 1 {
@@ -818,8 +824,7 @@ pub fn array_last_index_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_find_index(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
-    let n = unsafe { (*arr_ptr).prop_count() } as usize;
+    let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
         return Ok(JsValue::int(-1));
     }
@@ -849,8 +854,10 @@ pub fn array_find_index(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_find_last(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
-    let n = unsafe { (*arr_ptr).prop_count() } as i32;
+    let (arr_ptr, n) = {
+        let (arr_ptr, len) = array_ptr_len!(vm, args);
+        (arr_ptr, len as i32)
+    };
     if args.len() < 2 {
         return Ok(JsValue::undefined());
     }
@@ -880,8 +887,7 @@ pub fn array_find_last(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_reduce_right(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
-    let n = unsafe { (*arr_ptr).prop_count() } as usize;
+    let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
         return Err(JsValue::undefined());
     }
@@ -910,7 +916,7 @@ pub fn array_reduce_right(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_sort(vm: &mut Vm, _args: &[u8]) -> NativeResult {
-    let arr_ptr = get_this_array_ref(vm.reg(_args[0]))?;
+    let arr_ptr = array_ptr!(vm, _args);
     let arr = unsafe { &mut *arr_ptr };
     let len = arr.prop_count() as usize;
     let mut vals: Vec<JsValue> = (0..len).map(|i| arr.get_prop_at(i)).collect();

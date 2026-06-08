@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::bind_constructor_hash;
-use oxide_kernel::bind_methods;
+use crate::bindings::{apply_binding_table, configure_native_constructor};
 use oxide_kernel::kernel::OxideKernel;
 use oxide_types::object::JsObject;
 
@@ -10,29 +10,29 @@ pub fn bind_boolean(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     let ctor = unsafe { &mut *ctor_ptr };
     let proto_ptr = kernel.builtin_world().boolean_proto.as_ptr() as *mut JsObject;
     let proto = unsafe { &mut *proto_ptr };
-    let sf = kernel.string_forge().as_ref();
-    let sh = kernel.shape_forge().as_ref();
 
-    ctor.set_native_fn(Some(
+    configure_native_constructor(
+        ctor,
         crate::builtins::boolean::boolean_constructor as *const (),
-    ));
-    ctor.set_native_arg_count(1);
+        1,
+    );
 
-    bind_methods!(
+    apply_binding_table(
         kernel.builtin_world(),
         proto,
-        sf,
-        sh,
-        (
-            "valueOf",
-            crate::builtins::boolean::boolean_prototype_value_of,
-            0
-        ),
-        (
-            "toString",
-            crate::builtins::boolean::boolean_prototype_to_string,
-            0
-        ),
+        kernel,
+        &[
+            (
+                "valueOf",
+                crate::builtins::boolean::boolean_prototype_value_of as *const (),
+                0,
+            ),
+            (
+                "toString",
+                crate::builtins::boolean::boolean_prototype_to_string as *const (),
+                0,
+            ),
+        ],
     );
 
     bind_constructor_hash!(

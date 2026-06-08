@@ -15,7 +15,10 @@ pub mod bind_symbol;
 
 use std::sync::Arc;
 
+use oxide_kernel::builtin::BuiltinWorld;
 use oxide_kernel::kernel::OxideKernel;
+use oxide_types::object::JsObject;
+use oxide_types::value::JsValue;
 
 #[macro_export]
 macro_rules! bind_constructor {
@@ -44,6 +47,41 @@ macro_rules! bind_constructor_hash {
         ctor.set_native_fn(Some($ctor_fn as *const ()));
         ctor.set_native_arg_count($nargs);
     }};
+}
+
+pub(crate) fn configure_native_constructor(
+    ctor: &mut JsObject,
+    native_fn: *const (),
+    arg_count: u8,
+) {
+    ctor.set_native_fn(Some(native_fn));
+    ctor.set_native_arg_count(arg_count);
+}
+
+pub(crate) fn apply_binding_table(
+    world: &BuiltinWorld,
+    target: &mut JsObject,
+    kernel: &Arc<OxideKernel>,
+    bindings: &[(&'static str, *const (), u8)],
+) {
+    let shape_forge = kernel.shape_forge().as_ref();
+    let string_forge = kernel.string_forge().as_ref();
+    for (name, func, nargs) in bindings {
+        let _ = world.bind_method(target, shape_forge, string_forge, name, *func, *nargs);
+    }
+}
+
+pub(crate) fn bind_global_value(
+    kernel: &Arc<OxideKernel>,
+    global: &mut JsObject,
+    name: &str,
+    value: JsValue,
+) {
+    let si = kernel.string_forge().intern(name).0;
+    let shape = kernel.shape_forge().make_shape(global.shape_id(), si);
+    global.set_shape_id(shape);
+    global.ensure_hash_props().push(Box::new(value));
+    global.bump_generation();
 }
 
 pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {

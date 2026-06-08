@@ -19,38 +19,8 @@ use oxide_types::value::JsValue;
 
 #[allow(unused_macros)]
 macro_rules! throw_err {
-    ($self:ident, Error, $msg:expr) => {{
-        let error = crate::builtins::error::create_error($self, $msg);
-        $self.exception_value = Some(error);
-        $self.pending_error_kind = Some("Error");
-        match $self.unwind() {
-            Ok(()) => continue,
-            Err(e) => return Err(e),
-        }
-    }};
-    ($self:ident, TypeError, $msg:expr) => {{
-        let error = crate::builtins::error::create_type_error($self, $msg);
-        $self.exception_value = Some(error);
-        $self.pending_error_kind = Some("TypeError");
-        match $self.unwind() {
-            Ok(()) => continue,
-            Err(e) => return Err(e),
-        }
-    }};
-    ($self:ident, ReferenceError, $msg:expr) => {{
-        let error = crate::builtins::error::create_reference_error($self, $msg);
-        $self.exception_value = Some(error);
-        $self.pending_error_kind = Some("ReferenceError");
-        match $self.unwind() {
-            Ok(()) => continue,
-            Err(e) => return Err(e),
-        }
-    }};
-    ($self:ident, SyntaxError, $msg:expr) => {{
-        let error = crate::builtins::error::create_syntax_error($self, $msg);
-        $self.exception_value = Some(error);
-        $self.pending_error_kind = Some("SyntaxError");
-        match $self.unwind() {
+    ($self:ident, $kind:ident, $msg:expr) => {{
+        match $self.raise_error_kind(stringify!($kind), $msg) {
             Ok(()) => continue,
             Err(e) => return Err(e),
         }
