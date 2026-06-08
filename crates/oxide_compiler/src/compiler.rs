@@ -96,6 +96,15 @@ impl CompileCtx {
         self.bytecode.push(instr);
     }
 
+    pub(crate) fn emit_load_const(&mut self, reg: u8, idx: u16) {
+        self.emit(opcode::encode(
+            OpCode::LOAD_CONST,
+            reg,
+            (idx & 0xFF) as u8,
+            ((idx >> 8) & 0xFF) as u8,
+        ));
+    }
+
     pub(crate) fn alloc_reg(&mut self) -> u8 {
         let r = self.next_reg;
         self.next_reg = self.next_reg.wrapping_add(1);

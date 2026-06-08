@@ -52,12 +52,7 @@ impl Compiler {
                     } else {
                         let idx = ctx.add_constant(Constant::Undefined);
                         let tmp = ctx.alloc_reg();
-                        ctx.emit(opcode::encode(
-                            OpCode::LOAD_CONST,
-                            tmp,
-                            (idx & 0xFF) as u8,
-                            ((idx >> 8) & 0xFF) as u8,
-                        ));
+                        ctx.emit_load_const(tmp, idx);
                         ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, tmp, 0));
                         ctx.init_var(name);
                         r = Some(var_reg);
@@ -105,12 +100,7 @@ impl Compiler {
                     ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, r, 0));
                 } else {
                     let undef_idx = ctx.add_constant(Constant::Undefined);
-                    ctx.emit(opcode::encode(
-                        OpCode::LOAD_CONST,
-                        result_reg,
-                        (undef_idx & 0xFF) as u8,
-                        ((undef_idx >> 8) & 0xFF) as u8,
-                    ));
+                    ctx.emit_load_const(result_reg, undef_idx);
                 }
 
                 let has_alt = ifs.alternate.is_some();
@@ -126,12 +116,7 @@ impl Compiler {
                         ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, r, 0));
                     } else {
                         let undef_idx = ctx.add_constant(Constant::Undefined);
-                        ctx.emit(opcode::encode(
-                            OpCode::LOAD_CONST,
-                            result_reg,
-                            (undef_idx & 0xFF) as u8,
-                            ((undef_idx >> 8) & 0xFF) as u8,
-                        ));
+                        ctx.emit_load_const(result_reg, undef_idx);
                     }
                 }
 
@@ -389,12 +374,7 @@ impl Compiler {
                 // Add BytecodeFunc constant and emit LOAD_CONST + STORE_VAR
                 let const_idx = ctx.add_constant(Constant::BytecodeFunc(sub_idx));
                 let func_reg = ctx.alloc_reg();
-                ctx.emit(opcode::encode(
-                    OpCode::LOAD_CONST,
-                    func_reg,
-                    (const_idx & 0xFF) as u8,
-                    ((const_idx >> 8) & 0xFF) as u8,
-                ));
+                ctx.emit_load_const(func_reg, const_idx);
 
                 // Get the register that was allocated for this FD in the counter pass
                 let var_reg = ctx.lookup_or_global(&name);
@@ -546,45 +526,25 @@ impl Compiler {
                     ctx.add_constant(Constant::Number(n.value))
                 };
                 let r = ctx.alloc_reg();
-                ctx.emit(opcode::encode(
-                    OpCode::LOAD_CONST,
-                    r,
-                    (idx & 0xFF) as u8,
-                    ((idx >> 8) & 0xFF) as u8,
-                ));
+                ctx.emit_load_const(r, idx);
                 Ok(r)
             }
             Expression::StringLiteral(s) => {
                 let idx = ctx.add_constant(Constant::String(s.value.to_string()));
                 let r = ctx.alloc_reg();
-                ctx.emit(opcode::encode(
-                    OpCode::LOAD_CONST,
-                    r,
-                    (idx & 0xFF) as u8,
-                    ((idx >> 8) & 0xFF) as u8,
-                ));
+                ctx.emit_load_const(r, idx);
                 Ok(r)
             }
             Expression::BooleanLiteral(b) => {
                 let idx = ctx.add_constant(Constant::Boolean(b.value));
                 let r = ctx.alloc_reg();
-                ctx.emit(opcode::encode(
-                    OpCode::LOAD_CONST,
-                    r,
-                    (idx & 0xFF) as u8,
-                    ((idx >> 8) & 0xFF) as u8,
-                ));
+                ctx.emit_load_const(r, idx);
                 Ok(r)
             }
             Expression::NullLiteral(_) => {
                 let idx = ctx.add_constant(Constant::Null);
                 let r = ctx.alloc_reg();
-                ctx.emit(opcode::encode(
-                    OpCode::LOAD_CONST,
-                    r,
-                    (idx & 0xFF) as u8,
-                    ((idx >> 8) & 0xFF) as u8,
-                ));
+                ctx.emit_load_const(r, idx);
                 Ok(r)
             }
             Expression::BinaryExpression(bin) => {
@@ -789,12 +749,7 @@ impl Compiler {
                     };
                     let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
                     let key_reg = ctx.alloc_reg();
-                    ctx.emit(opcode::encode(
-                        OpCode::LOAD_CONST,
-                        key_reg,
-                        (idx & 0xFF) as u8,
-                        ((idx >> 8) & 0xFF) as u8,
-                    ));
+                    ctx.emit_load_const(key_reg, idx);
                     let val_reg = self.emit_expression(&p.value, ctx)?;
                     // Name inference (D-04): if property value is an arrow function,
                     // set the compiled sub_module's function_name to the property key.
@@ -823,12 +778,7 @@ impl Compiler {
                     let val_reg = self.emit_expression(e, ctx)?;
                     let idx_reg = ctx.alloc_reg();
                     let idx = ctx.add_constant(Constant::Int(i as i32));
-                    ctx.emit(opcode::encode(
-                        OpCode::LOAD_CONST,
-                        idx_reg,
-                        (idx & 0xFF) as u8,
-                        ((idx >> 8) & 0xFF) as u8,
-                    ));
+                    ctx.emit_load_const(idx_reg, idx);
                     ctx.emit(opcode::encode(OpCode::SET_ELEM, arr_reg, idx_reg, val_reg));
                 }
                 Ok(arr_reg)
@@ -841,12 +791,7 @@ impl Compiler {
                     let prop_name = member.property.name.as_str();
                     let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
                     let key_reg = ctx.alloc_reg();
-                    ctx.emit(opcode::encode(
-                        OpCode::LOAD_CONST,
-                        key_reg,
-                        (idx & 0xFF) as u8,
-                        ((idx >> 8) & 0xFF) as u8,
-                    ));
+                    ctx.emit_load_const(key_reg, idx);
                     if assign.operator != AssignmentOperator::Assign {
                         let op = match assign.operator {
                             AssignmentOperator::Addition => OpCode::COMPOUND_MEMBER_ADD,
@@ -1070,20 +1015,10 @@ impl Compiler {
                         .unwrap_or_default();
                     let const_idx = ctx.add_constant(Constant::String(s));
                     let str_reg = ctx.alloc_reg();
-                    ctx.emit(opcode::encode(
-                        OpCode::LOAD_CONST,
-                        str_reg,
-                        (const_idx & 0xFF) as u8,
-                        ((const_idx >> 8) & 0xFF) as u8,
-                    ));
+                    ctx.emit_load_const(str_reg, const_idx);
                     let idx_const = ctx.add_constant(Constant::Int(i as i32));
                     let idx_reg = ctx.alloc_reg();
-                    ctx.emit(opcode::encode(
-                        OpCode::LOAD_CONST,
-                        idx_reg,
-                        (idx_const & 0xFF) as u8,
-                        ((idx_const >> 8) & 0xFF) as u8,
-                    ));
+                    ctx.emit_load_const(idx_reg, idx_const);
                     ctx.emit(opcode::encode(
                         OpCode::SET_ELEM,
                         cooked_temp,
@@ -1104,20 +1039,10 @@ impl Compiler {
                     let raw = quasi.value.raw.to_string();
                     let const_idx = ctx.add_constant(Constant::String(raw));
                     let str_reg = ctx.alloc_reg();
-                    ctx.emit(opcode::encode(
-                        OpCode::LOAD_CONST,
-                        str_reg,
-                        (const_idx & 0xFF) as u8,
-                        ((const_idx >> 8) & 0xFF) as u8,
-                    ));
+                    ctx.emit_load_const(str_reg, const_idx);
                     let idx_const = ctx.add_constant(Constant::Int(i as i32));
                     let idx_reg = ctx.alloc_reg();
-                    ctx.emit(opcode::encode(
-                        OpCode::LOAD_CONST,
-                        idx_reg,
-                        (idx_const & 0xFF) as u8,
-                        ((idx_const >> 8) & 0xFF) as u8,
-                    ));
+                    ctx.emit_load_const(idx_reg, idx_const);
                     ctx.emit(opcode::encode(OpCode::SET_ELEM, raw_temp, idx_reg, str_reg));
                 }
 
@@ -1150,12 +1075,7 @@ impl Compiler {
                 // 6. Emit undefined as this_arg
                 let undef_idx = ctx.add_constant(Constant::Undefined);
                 let undef_reg = ctx.alloc_reg();
-                ctx.emit(opcode::encode(
-                    OpCode::LOAD_CONST,
-                    undef_reg,
-                    (undef_idx & 0xFF) as u8,
-                    ((undef_idx >> 8) & 0xFF) as u8,
-                ));
+                ctx.emit_load_const(undef_reg, undef_idx);
 
                 // 7. Emit CALL(tag, undefined, cooked_slot)
                 let arg_count = 2 + expressions.len();
@@ -1203,12 +1123,7 @@ impl Compiler {
 
                 let const_idx = ctx.add_constant(Constant::BytecodeFunc(sub_idx));
                 let r = ctx.alloc_reg();
-                ctx.emit(opcode::encode(
-                    OpCode::LOAD_CONST,
-                    r,
-                    (const_idx & 0xFF) as u8,
-                    ((const_idx >> 8) & 0xFF) as u8,
-                ));
+                ctx.emit_load_const(r, const_idx);
                 Ok(r)
             }
             Expression::FunctionExpression(fe) => {
@@ -1237,12 +1152,7 @@ impl Compiler {
 
                 let const_idx = ctx.add_constant(Constant::BytecodeFunc(sub_idx));
                 let r = ctx.alloc_reg();
-                ctx.emit(opcode::encode(
-                    OpCode::LOAD_CONST,
-                    r,
-                    (const_idx & 0xFF) as u8,
-                    ((const_idx >> 8) & 0xFF) as u8,
-                ));
+                ctx.emit_load_const(r, const_idx);
                 Ok(r)
             }
             Expression::NewExpression(ne) => {
@@ -1276,12 +1186,7 @@ impl Compiler {
                         let prop_name = member.property.name.as_str();
                         let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
                         let key_reg = ctx.alloc_reg();
-                        ctx.emit(opcode::encode(
-                            OpCode::LOAD_CONST,
-                            key_reg,
-                            (idx & 0xFF) as u8,
-                            ((idx >> 8) & 0xFF) as u8,
-                        ));
+                        ctx.emit_load_const(key_reg, idx);
                         let callee_reg = ctx.alloc_reg();
                         ctx.emit(opcode::encode(OpCode::LOAD_VAR, callee_reg, obj_reg, 0));
                         ctx.emit(opcode::encode(OpCode::IC_GET_PROP, 0, callee_reg, key_reg));
@@ -1294,12 +1199,7 @@ impl Compiler {
                         let callee_reg = self.emit_expression(&call.callee, ctx)?;
                         let this_idx = ctx.add_constant(Constant::Undefined);
                         let this_reg = ctx.alloc_reg();
-                        ctx.emit(opcode::encode(
-                            OpCode::LOAD_CONST,
-                            this_reg,
-                            (this_idx & 0xFF) as u8,
-                            ((this_idx >> 8) & 0xFF) as u8,
-                        ));
+                        ctx.emit_load_const(this_reg, this_idx);
                         (callee_reg, this_reg)
                     }
                 };
@@ -1354,12 +1254,7 @@ impl Compiler {
                         let ci = ctx
                             .add_constant(Constant::RegExp(pattern.to_string(), flags.to_string()));
                         let r = ctx.alloc_reg();
-                        ctx.emit(opcode::encode(
-                            OpCode::LOAD_CONST,
-                            r,
-                            (ci & 0xFF) as u8,
-                            ((ci >> 8) & 0xFF) as u8,
-                        ));
+                        ctx.emit_load_const(r, ci);
                         Ok(r)
                     } else {
                         Err(format!("unsupported expression type: {:?}", expr))

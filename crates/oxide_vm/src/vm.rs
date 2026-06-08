@@ -73,67 +73,6 @@ macro_rules! compound_arith {
     }}
 }
 
-macro_rules! set_or_create_prop {
-    ($self:ident, $obj:expr, $prop_name_si:expr, $new_val:expr) => {{
-        if let Some(pos) = $self
-            .kernel
-            .shape_forge()
-            .lookup_position($obj.shape_id(), $prop_name_si)
-        {
-            $obj.set_prop_at(pos, $new_val);
-        } else {
-            let new_shape_id = $self
-                .kernel
-                .shape_forge()
-                .make_shape($obj.shape_id(), $prop_name_si);
-            $obj.set_shape_id(new_shape_id);
-            $obj.push_prop($new_val);
-            $obj.bump_generation();
-        }
-    }};
-}
-
-macro_rules! member_read_prop {
-    ($self:ident, $obj:expr, $prop_name_si:expr) => {{
-        let ext0 = $self.bytecode[$self.pc];
-        let ext1 = $self.bytecode[$self.pc + 1];
-        let ext2 = $self.bytecode[$self.pc + 2];
-        $self.pc += 3;
-        let cached_shape_id = ext0 & 0x00FF_FFFF;
-        let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
-
-        if cached_shape_id != 0 && cached_shape_id == $obj.shape_id() && cached_ptr != 0 {
-            unsafe { *(cached_ptr as *const JsValue) }
-        } else if let Some(template) = $self.kernel.prop_forge().get_template($obj.shape_id()) {
-            if template.prop_name != $prop_name_si {
-                $self
-                    .resolve_property($obj, $prop_name_si)
-                    .unwrap_or(JsValue::undefined())
-            } else if let Some(ptr) = $self.template_prop_ptr($obj, &template) {
-                $self.write_ic_back($obj.shape_id(), ptr);
-                unsafe { *ptr }
-            } else {
-                $self
-                    .resolve_property($obj, $prop_name_si)
-                    .unwrap_or(JsValue::undefined())
-            }
-        } else if let Some(val) = $self.resolve_property($obj, $prop_name_si) {
-            if let Some(pos) = $self
-                .kernel
-                .shape_forge()
-                .lookup_position($obj.shape_id(), $prop_name_si)
-            {
-                if let Some(ptr) = $obj.prop_ptr_at(pos) {
-                    $self.write_ic_back($obj.shape_id(), ptr);
-                }
-            }
-            val
-        } else {
-            JsValue::undefined()
-        }
-    }};
-}
-
 pub struct CallFrame {
     pub return_addr: usize,
     pub function_name: u32,
@@ -183,6 +122,22 @@ pub struct Vm {
 }
 
 impl Vm {
+    pub(crate) fn raise_error_kind(&mut self, kind: &'static str, msg: &str) -> Result<(), String> {
+        let error = match kind {
+            "TypeError" => crate::builtins::error::create_type_error(self, msg),
+            "ReferenceError" => crate::builtins::error::create_reference_error(self, msg),
+            "SyntaxError" => crate::builtins::error::create_syntax_error(self, msg),
+            _ => crate::builtins::error::create_error(self, msg),
+        };
+        self.exception_value = Some(error);
+        self.pending_error_kind = Some(kind);
+        self.unwind()
+    }
+
+    pub(crate) fn raise_type_error(&mut self, msg: &str) -> Result<(), String> {
+        self.raise_error_kind("TypeError", msg)
+    }
+
     pub fn new() -> Self {
         let kernel = Arc::new(OxideKernel::new(KernelConfig::minimal()));
         bindings::init_kernel_builtins(&kernel);
@@ -445,7 +400,7 @@ impl Vm {
         }
     }
 
-    fn property_key_si(&mut self, val: JsValue) -> u32 {
+    pub(crate) fn property_key_si(&mut self, val: JsValue) -> u32 {
         if val.is_string() {
             return val.as_string_index();
         }
@@ -453,7 +408,11 @@ impl Vm {
         self.kernel.string_forge().intern(&key).0
     }
 
-    fn template_prop_ptr(&self, obj: &JsObject, template: &PropTemplate) -> Option<*const JsValue> {
+    pub(crate) fn template_prop_ptr(
+        &self,
+        obj: &JsObject,
+        template: &PropTemplate,
+    ) -> Option<*const JsValue> {
         let pos = template.position as usize;
         obj.hash_props_vec().and_then(|vec| {
             if pos < vec.len() {
@@ -464,7 +423,7 @@ impl Vm {
         })
     }
 
-    fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
+    pub(crate) fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
         let length_si = self.kernel.string_forge().intern("length").0;
         if obj.is_array() && prop_name_si == length_si {
             return Some(JsValue::int(obj.prop_count() as i32));
@@ -497,7 +456,44 @@ impl Vm {
         None
     }
 
-    fn set_member_prop(
+    pub(crate) fn read_member_prop(&mut self, obj: &JsObject, prop_name_si: u32) -> JsValue {
+        let ext0 = self.bytecode[self.pc];
+        let ext1 = self.bytecode[self.pc + 1];
+        let ext2 = self.bytecode[self.pc + 2];
+        self.pc += 3;
+        let cached_shape_id = ext0 & 0x00FF_FFFF;
+        let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
+
+        if cached_shape_id != 0 && cached_shape_id == obj.shape_id() && cached_ptr != 0 {
+            unsafe { *(cached_ptr as *const JsValue) }
+        } else if let Some(template) = self.kernel.prop_forge().get_template(obj.shape_id()) {
+            if template.prop_name != prop_name_si {
+                self.resolve_property(obj, prop_name_si)
+                    .unwrap_or(JsValue::undefined())
+            } else if let Some(ptr) = self.template_prop_ptr(obj, &template) {
+                self.write_ic_back(obj.shape_id(), ptr);
+                unsafe { *ptr }
+            } else {
+                self.resolve_property(obj, prop_name_si)
+                    .unwrap_or(JsValue::undefined())
+            }
+        } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
+            if let Some(pos) = self
+                .kernel
+                .shape_forge()
+                .lookup_position(obj.shape_id(), prop_name_si)
+            {
+                if let Some(ptr) = obj.prop_ptr_at(pos) {
+                    self.write_ic_back(obj.shape_id(), ptr);
+                }
+            }
+            val
+        } else {
+            JsValue::undefined()
+        }
+    }
+
+    pub(crate) fn set_member_prop(
         &mut self,
         obj: &mut JsObject,
         prop_name_si: u32,
@@ -537,7 +533,30 @@ impl Vm {
         Ok(())
     }
 
-    fn write_ic_back(&mut self, shape_id: u32, ptr: *const JsValue) {
+    pub(crate) fn set_or_create_prop_value(
+        &mut self,
+        obj: &mut JsObject,
+        prop_name_si: u32,
+        val: JsValue,
+    ) {
+        if let Some(pos) = self
+            .kernel
+            .shape_forge()
+            .lookup_position(obj.shape_id(), prop_name_si)
+        {
+            obj.set_prop_at(pos, val);
+        } else {
+            let new_shape_id = self
+                .kernel
+                .shape_forge()
+                .make_shape(obj.shape_id(), prop_name_si);
+            obj.set_shape_id(new_shape_id);
+            obj.push_prop(val);
+            obj.bump_generation();
+        }
+    }
+
+    pub(crate) fn write_ic_back(&mut self, shape_id: u32, ptr: *const JsValue) {
         debug_assert!(
             self.pc >= 3,
             "IC write-back requires 3 extension words before pc"
@@ -1035,211 +1054,14 @@ impl Vm {
                     }
                 }
 
-                OpCode::IC_GET_PROP => {
-                    let val = self.regs[a];
-                    let obj_ptr = val.as_object_ptr() as *mut JsObject;
-                    if obj_ptr.is_null() {
-                        if val.is_string() {
-                            let proto_ptr =
-                                self.kernel.builtin_world().string_proto.as_ptr() as *mut JsObject;
-                            let proto = unsafe { &*proto_ptr };
-                            let prop_name_si = self.property_key_si(self.regs[b]);
-                            if let Some(resolved) = self.resolve_property(proto, prop_name_si) {
-                                self.regs[a] = resolved;
-                                self.pc += 3;
-                                continue;
-                            }
-                        }
-                        if val.is_int() || val.is_double() {
-                            let proto_ptr =
-                                self.kernel.builtin_world().number_proto.as_ptr() as *mut JsObject;
-                            let proto = unsafe { &*proto_ptr };
-                            let prop_name_si = self.property_key_si(self.regs[b]);
-                            if let Some(resolved) = self.resolve_property(proto, prop_name_si) {
-                                self.regs[a] = resolved;
-                                self.pc += 3;
-                                continue;
-                            }
-                        }
-                        throw_err!(self, TypeError, "IC_GET_PROP on non-object");
-                    }
-                    let obj = unsafe { &*obj_ptr };
-                    let prop_name_si = self.property_key_si(self.regs[b]);
-                    let ext0 = self.bytecode[self.pc];
-                    let ext1 = self.bytecode[self.pc + 1];
-                    let ext2 = self.bytecode[self.pc + 2];
-                    self.pc += 3;
-                    let cached_shape_id = ext0 & 0x00FF_FFFF;
-                    let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
-
-                    if cached_shape_id != 0 && cached_shape_id == obj.shape_id() && cached_ptr != 0
-                    {
-                        self.regs[a] = unsafe { *(cached_ptr as *const JsValue) };
-                    } else if let Some(template) =
-                        self.kernel.prop_forge().get_template(obj.shape_id())
-                    {
-                        if template.prop_name == prop_name_si {
-                            let pos = template.position as usize;
-                            if let Some(vec) = obj.hash_props_vec() {
-                                if pos < vec.len() {
-                                    let ptr = &*vec[pos] as *const JsValue;
-                                    self.write_ic_back(obj.shape_id(), ptr);
-                                    self.regs[a] = unsafe { *(ptr) };
-                                } else {
-                                    self.regs[a] = self
-                                        .resolve_property(obj, prop_name_si)
-                                        .unwrap_or(JsValue::undefined());
-                                }
-                            } else {
-                                self.regs[a] = self
-                                    .resolve_property(obj, prop_name_si)
-                                    .unwrap_or(JsValue::undefined());
-                            }
-                        } else {
-                            self.regs[a] = self
-                                .resolve_property(obj, prop_name_si)
-                                .unwrap_or(JsValue::undefined());
-                        }
-                    } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
-                        if let Some(pos) = self
-                            .kernel
-                            .shape_forge()
-                            .lookup_position(obj.shape_id(), prop_name_si)
-                        {
-                            if let Some(ptr) = obj.prop_ptr_at(pos) {
-                                self.write_ic_back(obj.shape_id(), ptr);
-                            }
-                        }
-                        self.regs[a] = val;
-                    } else {
-                        self.regs[a] = JsValue::undefined();
-                    }
-                }
-
-                OpCode::IC_SET_PROP => {
-                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
-                    if obj_ptr.is_null() {
-                        throw_err!(self, TypeError, "IC_SET_PROP on non-object");
-                    }
-                    let obj = unsafe { &mut *obj_ptr };
-                    let prop_name_si = self.property_key_si(self.regs[b]);
-                    let ext0 = self.bytecode[self.pc];
-                    let ext1 = self.bytecode[self.pc + 1];
-                    let ext2 = self.bytecode[self.pc + 2];
-                    self.pc += 3;
-                    let cached_shape_id = ext0 & 0x00FF_FFFF;
-                    let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
-
-                    if cached_shape_id != 0 && cached_shape_id == obj.shape_id() && cached_ptr != 0
-                    {
-                        unsafe {
-                            *(cached_ptr as *mut JsValue) = self.regs[a];
-                        }
-                    } else {
-                        if let Some(pos) = self
-                            .kernel
-                            .shape_forge()
-                            .lookup_position(obj.shape_id(), prop_name_si)
-                        {
-                            obj.set_prop_at(pos, self.regs[a]);
-                            if let Some(ptr) = obj.prop_ptr_at(pos) {
-                                self.write_ic_back(obj.shape_id(), ptr);
-                            }
-                        } else {
-                            let new_shape_id = self
-                                .kernel
-                                .shape_forge()
-                                .make_shape(obj.shape_id(), prop_name_si);
-                            obj.set_shape_id(new_shape_id);
-                            let new_pos = obj.push_prop(self.regs[a]);
-                            obj.bump_generation();
-                            if let Some(ptr) = obj.prop_ptr_at(new_pos) {
-                                self.write_ic_back(new_shape_id, ptr);
-                                self.kernel.prop_forge().upsert(
-                                    new_shape_id,
-                                    PropTemplate {
-                                        shape_id: new_shape_id,
-                                        prop_name: prop_name_si,
-                                        position: new_pos,
-                                        generation: obj.generation(),
-                                    },
-                                );
-                            }
-                        }
-                    }
-                }
-
-                OpCode::GET_PROP => {
-                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
-                    if obj_ptr.is_null() {
-                        throw_err!(self, TypeError, "GET_PROP on non-object");
-                    }
-                    let obj = unsafe { &*obj_ptr };
-                    let prop_name_si = self.property_key_si(self.regs[b]);
-                    self.regs[a] = self
-                        .resolve_property(obj, prop_name_si)
-                        .unwrap_or(JsValue::undefined());
-                }
-                OpCode::SET_PROP => {
-                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
-                    if obj_ptr.is_null() {
-                        throw_err!(self, TypeError, "SET_PROP on non-object");
-                    }
-                    let obj = unsafe { &mut *obj_ptr };
-                    let prop_name_si = self.property_key_si(self.regs[b]);
-                    if let Some(pos) = self
-                        .kernel
-                        .shape_forge()
-                        .lookup_position(obj.shape_id(), prop_name_si)
-                    {
-                        obj.set_prop_at(pos, self.regs[a]);
-                    } else {
-                        let new_shape_id = self
-                            .kernel
-                            .shape_forge()
-                            .make_shape(obj.shape_id(), prop_name_si);
-                        obj.set_shape_id(new_shape_id);
-                        obj.push_prop(self.regs[a]);
-                        obj.bump_generation();
-                    }
-                }
-
-                OpCode::GET_PROP_DYNAMIC => {
-                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
-                    if obj_ptr.is_null() {
-                        throw_err!(self, TypeError, "GET_PROP_DYNAMIC on non-object");
-                    }
-                    let obj = unsafe { &*obj_ptr };
-                    let key_val = self.regs[a];
-                    let prop_name_si = self.property_key_si(key_val);
-                    self.regs[b] = self
-                        .resolve_property(obj, prop_name_si)
-                        .unwrap_or(JsValue::undefined());
-                }
-
-                OpCode::SET_PROP_DYNAMIC => {
-                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
-                    if obj_ptr.is_null() {
-                        throw_err!(self, TypeError, "SET_PROP_DYNAMIC on non-object");
-                    }
-                    let obj = unsafe { &mut *obj_ptr };
-                    let key_val = self.regs[a];
-                    let prop_name_si = self.property_key_si(key_val);
-                    if let Some(pos) = self
-                        .kernel
-                        .shape_forge()
-                        .lookup_position(obj.shape_id(), prop_name_si)
-                    {
-                        obj.set_prop_at(pos, self.regs[b]);
-                    } else {
-                        let new_shape_id = self
-                            .kernel
-                            .shape_forge()
-                            .make_shape(obj.shape_id(), prop_name_si);
-                        obj.set_shape_id(new_shape_id);
-                        obj.push_prop(self.regs[b]);
-                        obj.bump_generation();
-                    }
+                OpCode::IC_GET_PROP
+                | OpCode::IC_SET_PROP
+                | OpCode::GET_PROP
+                | OpCode::SET_PROP
+                | OpCode::GET_PROP_DYNAMIC
+                | OpCode::SET_PROP_DYNAMIC
+                | OpCode::SET_ELEM => {
+                    self.dispatch_property_op(op, rd, a, b)?;
                 }
 
                 OpCode::NEW_OBJECT => {
@@ -1263,16 +1085,6 @@ impl Vm {
                         bump,
                     ));
                     self.regs[rd] = JsValue::object(obj as *mut u8);
-                }
-
-                OpCode::SET_ELEM => {
-                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
-                    if obj_ptr.is_null() {
-                        throw_err!(self, TypeError, "SET_ELEM on non-object");
-                    }
-                    let idx = self.regs[a].as_int().max(0) as u32;
-                    let obj = unsafe { &mut *obj_ptr };
-                    obj.set_prop_at(idx, self.regs[b]);
                 }
 
                 OpCode::COMPOUND_ADD => {
@@ -1470,237 +1282,17 @@ impl Vm {
                     self.regs[rd] = JsValue::float(n - 1.0);
                 }
 
-                OpCode::MEMBER_INC => {
-                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
-                    if obj_ptr.is_null() {
-                        throw_err!(self, TypeError, "MEMBER_INC on non-object");
-                    }
-                    let obj = unsafe { &mut *obj_ptr };
-                    let prop_name_si = self.property_key_si(self.regs[b]);
-                    let prop_val = member_read_prop!(self, obj, prop_name_si);
-
-                    let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
-                    let new_val = JsValue::float(n + 1.0);
-
-                    if let Some(pos) = self
-                        .kernel
-                        .shape_forge()
-                        .lookup_position(obj.shape_id(), prop_name_si)
-                    {
-                        obj.set_prop_at(pos, new_val);
-                        if let Some(ptr) = obj.prop_ptr_at(pos) {
-                            self.write_ic_back(obj.shape_id(), ptr);
-                        }
-                    } else {
-                        let new_shape_id = self
-                            .kernel
-                            .shape_forge()
-                            .make_shape(obj.shape_id(), prop_name_si);
-                        obj.set_shape_id(new_shape_id);
-                        let new_pos = obj.push_prop(new_val);
-                        obj.bump_generation();
-                        if let Some(ptr) = obj.prop_ptr_at(new_pos) {
-                            self.write_ic_back(new_shape_id, ptr);
-                            self.kernel.prop_forge().upsert(
-                                new_shape_id,
-                                PropTemplate {
-                                    shape_id: new_shape_id,
-                                    prop_name: prop_name_si,
-                                    position: new_pos,
-                                    generation: obj.generation(),
-                                },
-                            );
-                        }
-                        self.regs[a] = new_val;
-                        continue;
-                    };
-                    self.regs[a] = new_val;
-                }
-
-                OpCode::MEMBER_DEC => {
-                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
-                    if obj_ptr.is_null() {
-                        throw_err!(self, TypeError, "MEMBER_DEC on non-object");
-                    }
-                    let obj = unsafe { &mut *obj_ptr };
-                    let prop_name_si = self.property_key_si(self.regs[b]);
-                    let prop_val = member_read_prop!(self, obj, prop_name_si);
-
-                    let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
-                    let new_val = JsValue::float(n - 1.0);
-
-                    if let Some(pos) = self
-                        .kernel
-                        .shape_forge()
-                        .lookup_position(obj.shape_id(), prop_name_si)
-                    {
-                        obj.set_prop_at(pos, new_val);
-                        if let Some(ptr) = obj.prop_ptr_at(pos) {
-                            self.write_ic_back(obj.shape_id(), ptr);
-                        }
-                    } else {
-                        let new_shape_id = self
-                            .kernel
-                            .shape_forge()
-                            .make_shape(obj.shape_id(), prop_name_si);
-                        obj.set_shape_id(new_shape_id);
-                        let new_pos = obj.push_prop(new_val);
-                        obj.bump_generation();
-                        if let Some(ptr) = obj.prop_ptr_at(new_pos) {
-                            self.write_ic_back(new_shape_id, ptr);
-                            self.kernel.prop_forge().upsert(
-                                new_shape_id,
-                                PropTemplate {
-                                    shape_id: new_shape_id,
-                                    prop_name: prop_name_si,
-                                    position: new_pos,
-                                    generation: obj.generation(),
-                                },
-                            );
-                        }
-                        self.regs[a] = new_val;
-                        continue;
-                    };
-                    self.regs[a] = new_val;
-                }
-
-                OpCode::DYN_MEMBER_INC => {
-                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
-                    if obj_ptr.is_null() {
-                        throw_err!(self, TypeError, "DYN_MEMBER_INC on non-object");
-                    }
-                    let obj = unsafe { &mut *obj_ptr };
-                    let key_val = self.regs[a];
-                    let prop_name_si = self.property_key_si(key_val);
-                    let prop_val = self
-                        .resolve_property(obj, prop_name_si)
-                        .unwrap_or(JsValue::undefined());
-                    let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
-                    let new_val = JsValue::float(n + 1.0);
-                    set_or_create_prop!(self, obj, prop_name_si, new_val);
-                    self.regs[b] = new_val;
-                }
-
-                OpCode::DYN_MEMBER_DEC => {
-                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
-                    if obj_ptr.is_null() {
-                        throw_err!(self, TypeError, "DYN_MEMBER_DEC on non-object");
-                    }
-                    let obj = unsafe { &mut *obj_ptr };
-                    let key_val = self.regs[a];
-                    let prop_name_si = self.property_key_si(key_val);
-                    let prop_val = self
-                        .resolve_property(obj, prop_name_si)
-                        .unwrap_or(JsValue::undefined());
-                    let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
-                    let new_val = JsValue::float(n - 1.0);
-                    set_or_create_prop!(self, obj, prop_name_si, new_val);
-                    self.regs[b] = new_val;
-                }
-
-                OpCode::COMPOUND_MEMBER_ADD => {
-                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
-                    if obj_ptr.is_null() {
-                        throw_err!(self, TypeError, "COMPOUND_MEMBER_ADD on non-object");
-                    }
-                    let obj = unsafe { &mut *obj_ptr };
-                    let prop_name_si = self.property_key_si(self.regs[b]);
-                    let prop_val = member_read_prop!(self, obj, prop_name_si);
-
-                    let rhs = self.regs[a];
-                    let new_val = if prop_val.is_string() || rhs.is_string() {
-                        let ls = coercion::to_string(self.kernel.string_forge().as_ref(), prop_val);
-                        let rs = coercion::to_string(self.kernel.string_forge().as_ref(), rhs);
-                        let concat = format!("{ls}{rs}");
-                        self.intern(&concat)
-                    } else {
-                        let ln = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
-                        let rn = coercion::to_number(rhs, self.kernel.string_forge().as_ref());
-                        JsValue::float(ln + rn)
-                    };
-
-                    self.set_member_prop(obj, prop_name_si, new_val)?;
-                    self.regs[a] = new_val;
-                }
-
-                OpCode::COMPOUND_MEMBER_SUB => {
-                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
-                    if obj_ptr.is_null() {
-                        throw_err!(self, TypeError, "COMPOUND_MEMBER_SUB on non-object");
-                    }
-                    let obj = unsafe { &mut *obj_ptr };
-                    let prop_name_si = self.property_key_si(self.regs[b]);
-                    let prop_val = member_read_prop!(self, obj, prop_name_si);
-
-                    let ln = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
-                    let rn = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
-                    let new_val = JsValue::float(ln - rn);
-                    self.regs[a] = new_val;
-                    self.set_member_prop(obj, prop_name_si, new_val)?;
-                }
-
-                OpCode::COMPOUND_MEMBER_MUL => {
-                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
-                    if obj_ptr.is_null() {
-                        throw_err!(self, TypeError, "COMPOUND_MEMBER_MUL on non-object");
-                    }
-                    let obj = unsafe { &mut *obj_ptr };
-                    let prop_name_si = self.property_key_si(self.regs[b]);
-                    let prop_val = member_read_prop!(self, obj, prop_name_si);
-
-                    let ln = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
-                    let rn = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
-                    let new_val = JsValue::float(ln * rn);
-                    self.regs[a] = new_val;
-                    self.set_member_prop(obj, prop_name_si, new_val)?;
-                }
-
-                OpCode::COMPOUND_MEMBER_DIV => {
-                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
-                    if obj_ptr.is_null() {
-                        throw_err!(self, TypeError, "COMPOUND_MEMBER_DIV on non-object");
-                    }
-                    let obj = unsafe { &mut *obj_ptr };
-                    let prop_name_si = self.property_key_si(self.regs[b]);
-                    let prop_val = member_read_prop!(self, obj, prop_name_si);
-
-                    let ln = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
-                    let rn = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
-                    let new_val = JsValue::float(ln / rn);
-                    self.regs[a] = new_val;
-                    self.set_member_prop(obj, prop_name_si, new_val)?;
-                }
-
-                OpCode::COMPOUND_MEMBER_MOD => {
-                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
-                    if obj_ptr.is_null() {
-                        throw_err!(self, TypeError, "COMPOUND_MEMBER_MOD on non-object");
-                    }
-                    let obj = unsafe { &mut *obj_ptr };
-                    let prop_name_si = self.property_key_si(self.regs[b]);
-                    let prop_val = member_read_prop!(self, obj, prop_name_si);
-
-                    let ln = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
-                    let rn = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
-                    let new_val = JsValue::float(ln % rn);
-                    self.regs[a] = new_val;
-                    self.set_member_prop(obj, prop_name_si, new_val)?;
-                }
-
-                OpCode::COMPOUND_MEMBER_EXP => {
-                    let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
-                    if obj_ptr.is_null() {
-                        throw_err!(self, TypeError, "COMPOUND_MEMBER_EXP on non-object");
-                    }
-                    let obj = unsafe { &mut *obj_ptr };
-                    let prop_name_si = self.property_key_si(self.regs[b]);
-                    let prop_val = member_read_prop!(self, obj, prop_name_si);
-
-                    let ln = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
-                    let rn = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
-                    let new_val = JsValue::float(ln.powf(rn));
-                    self.regs[a] = new_val;
-                    self.set_member_prop(obj, prop_name_si, new_val)?;
+                OpCode::MEMBER_INC
+                | OpCode::MEMBER_DEC
+                | OpCode::DYN_MEMBER_INC
+                | OpCode::DYN_MEMBER_DEC
+                | OpCode::COMPOUND_MEMBER_ADD
+                | OpCode::COMPOUND_MEMBER_SUB
+                | OpCode::COMPOUND_MEMBER_MUL
+                | OpCode::COMPOUND_MEMBER_DIV
+                | OpCode::COMPOUND_MEMBER_MOD
+                | OpCode::COMPOUND_MEMBER_EXP => {
+                    self.dispatch_member_op(op, rd, a, b)?;
                 }
 
                 OpCode::FOR_IN_INIT => {

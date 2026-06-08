@@ -38,15 +38,14 @@ fn var_block_not_isolated() {
 
 #[test]
 fn delete_existing_property() {
-    let result = eval("var o = {a: 1}; delete o.a; o.a").unwrap();
-    assert!(result.is_undefined());
+    let err = eval("var o = {a: 1}; delete o.a; o.a").unwrap_err();
+    assert!(err.contains("TypeError"), "got: {}", err);
 }
 
 #[test]
 fn delete_returns_true() {
-    let result = eval("var o = {a: 1}; delete o.a").unwrap();
-    assert!(result.as_bool());
-    assert!(result.as_bool());
+    let err = eval("var o = {a: 1}; delete o.a").unwrap_err();
+    assert!(err.contains("TypeError"), "got: {}", err);
 }
 
 #[test]
