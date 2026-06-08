@@ -1,8 +1,18 @@
+use oxide_compiler::compiler::Compiler;
+use oxide_types::value::JsValue;
 use oxide_vm::builtins::error;
 use oxide_vm::vm::Vm;
 
 fn make_vm() -> Vm {
     Vm::new()
+}
+
+fn eval(source: &str) -> Result<JsValue, String> {
+    let allocator = oxide_parser::Allocator::default();
+    let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse: {}", e))?;
+    let module = Compiler::new().compile(&program).map_err(|e| format!("Compile: {}", e))?;
+    let mut vm = make_vm();
+    vm.run(&module)
 }
 
 #[test]
@@ -106,4 +116,22 @@ fn error_name_is_string_property() {
     let obj = unsafe { &*err.as_js_object_ptr() };
     let n = obj.prop_count();
     assert!(n >= 2);
+}
+
+#[test]
+fn error_to_string_returns_string() {
+    let result = eval("new Error('test').toString()").unwrap();
+    assert!(result.is_string());
+}
+
+#[test]
+fn type_error_is_defined() {
+    let result = eval("typeof TypeError").unwrap();
+    assert!(result.is_string());
+}
+
+#[test]
+fn reference_error_is_defined() {
+    let result = eval("typeof ReferenceError").unwrap();
+    assert!(result.is_string());
 }

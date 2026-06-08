@@ -80,6 +80,8 @@ pub struct ErrorMethods {
     pub syntax_error: *const (),
     pub uri_error: *const (),
     pub eval_error: *const (),
+    pub to_string: *const (),
+    pub stack: *const (),
 }
 
 pub struct StringMethods {
@@ -123,12 +125,18 @@ pub struct NumberMethods {
     pub parse_float: *const (),
     pub to_string: *const (),
     pub to_fixed: *const (),
+    pub is_integer: *const (),
+    pub is_safe_integer: *const (),
+    pub to_exponential: *const (),
+    pub to_precision: *const (),
+    pub value_of: *const (),
 }
 
 pub struct FunctionMethods {
     pub call: *const (),
     pub apply: *const (),
     pub bind: *const (),
+    pub to_string: *const (),
 }
 
 pub struct BuiltinWorld {
@@ -650,6 +658,11 @@ impl BuiltinWorld {
             methods.eval_error,
             1,
         );
+
+        let proto_ptr = P::as_ptr(&self.error_proto) as *mut JsObject;
+        let proto = unsafe { &mut *proto_ptr };
+        let _ = self.bind_method(proto, shape_forge, string_forge, "toString", methods.to_string, 0);
+        let _ = self.bind_method(proto, shape_forge, string_forge, "stack", methods.stack, 0);
     }
 
     pub fn bind_string_methods(
@@ -853,6 +866,11 @@ impl BuiltinWorld {
             methods.to_fixed,
             0,
         );
+        let _ = self.bind_method(ctor, shape_forge, string_forge, "isInteger", methods.is_integer, 1);
+        let _ = self.bind_method(ctor, shape_forge, string_forge, "isSafeInteger", methods.is_safe_integer, 1);
+        let _ = self.bind_method(proto, shape_forge, string_forge, "toExponential", methods.to_exponential, 0);
+        let _ = self.bind_method(proto, shape_forge, string_forge, "toPrecision", methods.to_precision, 0);
+        let _ = self.bind_method(proto, shape_forge, string_forge, "valueOf", methods.value_of, 0);
     }
 
     pub fn bind_function_methods(
@@ -892,6 +910,7 @@ impl BuiltinWorld {
             1,
             fp,
         );
+        let _ = Self::bind_method_static(proto, shape_forge, string_forge, "toString", methods.to_string, 0, fp);
     }
 
     pub fn bind_method(

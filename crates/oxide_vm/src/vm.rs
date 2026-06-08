@@ -139,6 +139,7 @@ pub struct CallFrame {
     pub n_args: u8,
     pub function_obj_reg: u8,
     pub frame_base: u8,
+    pub function_name: u32,
 }
 
 pub struct ForInIter<'bump> {
@@ -729,6 +730,7 @@ impl Vm {
                                         n_args: sub_n_args as u8,
                                         function_obj_reg: callee_reg as u8,
                                         frame_base: sub_builtin_count as u8,
+                                        function_name: 0,
                                     });
 
                                     // Convert sub_module constants

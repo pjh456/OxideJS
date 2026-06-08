@@ -8,6 +8,7 @@ pub fn bind_function(kernel: &Arc<OxideKernel>) {
         call: crate::builtins::function::function_call as *const (),
         apply: crate::builtins::function::function_apply as *const (),
         bind: crate::builtins::function::function_bind as *const (),
+        to_string: crate::builtins::function::function_to_string as *const (),
     };
     kernel.builtin_world().bind_function_methods(
         &function_methods,

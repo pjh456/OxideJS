@@ -32,3 +32,10 @@ fn function_bind_creates_wrapper() {
     let result = eval(&mut vm, "var b = Math.max.bind(null, 1); b(5)").unwrap();
     assert!((result.as_double() - 5.0).abs() < 0.0001);
 }
+
+#[test]
+fn function_to_string_includes_function() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Math.max.toString()").unwrap();
+    assert!(result.is_string());
+}

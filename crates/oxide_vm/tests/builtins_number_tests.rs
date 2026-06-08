@@ -98,3 +98,32 @@ fn to_fixed_of_number() {
         .unwrap_or_default();
     assert_eq!(s, "3.14");
 }
+
+#[test]
+fn number_is_integer_true() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Number.isInteger(42)").unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn number_is_integer_false() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Number.isInteger(42.5)").unwrap();
+    assert!(!result.as_bool());
+}
+
+#[test]
+fn number_epsilon_is_positive() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Number.EPSILON > 0").unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn number_to_exponential() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var n = 123.456; n.toExponential(2)").unwrap();
+    let s = vm.kernel().string_forge().lookup(result.as_string_index()).unwrap_or_default();
+    assert_eq!(s, "1.23e2");
+}
