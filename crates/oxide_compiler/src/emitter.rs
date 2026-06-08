@@ -2,7 +2,7 @@ use crate::compiler::Label;
 use crate::opcode::{self, OpCode};
 use oxide_parser::{
     AssignmentOperator, Expression, ForStatementInit, ForStatementLeft, SimpleAssignmentTarget,
-    Statement, UnaryOperator, UpdateOperator,
+    Statement, UnaryOperator, UpdateOperator, VariableDeclarationKind,
 };
 
 use crate::compiler::{is_int_literal, is_side_effect_free, BinaryOperator, CompileCtx, Compiler};
@@ -25,12 +25,24 @@ impl Compiler {
                         oxide_parser::BindingPattern::BindingIdentifier(bi) => bi.name.as_str(),
                         _ => return Err("destructuring not supported".into()),
                     };
+                    let is_const = matches!(decl.kind, VariableDeclarationKind::Const);
+                    if is_const && d.init.is_none() {
+                        return Err("const declaration must have an initializer".into());
+                    }
                     let var_reg = ctx.alloc_reg();
-                    ctx.declare(name, var_reg)?;
+                    ctx.declare(name, var_reg, decl.kind, is_const)?;
                     if let Some(init) = &d.init {
                         let val_reg = self.emit_expression(init, ctx)?;
-                        ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, 0));
+                        let const_flag = if is_const { 1 } else { 0 };
+                        ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, const_flag));
                         ctx.init_var(name);
+                        // Name inference (D-04): if the initializer is an arrow function,
+                        // set the compiled sub_module's function_name.
+                        if matches!(*init, Expression::ArrowFunctionExpression(_)) {
+                            if let Some(sub_mod) = ctx.sub_modules.last_mut() {
+                                sub_mod.function_name = Some(name.to_string());
+                            }
+                        }
                         r = Some(val_reg);
                     } else {
                         let idx = ctx.add_constant(Constant::Undefined);
@@ -180,7 +192,7 @@ impl Compiler {
                                 _ => return Err("destructuring not supported".into()),
                             };
                             let var_reg = ctx.alloc_reg();
-                            ctx.declare(name, var_reg)?;
+                            ctx.declare(name, var_reg, decl.kind, matches!(decl.kind, VariableDeclarationKind::Const))?;
                             if let Some(init_expr) = &d.init {
                                 let val_reg = self.emit_expression(init_expr, ctx)?;
                                 ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, 0));
@@ -242,7 +254,7 @@ impl Compiler {
                                 _ => return Err("destructuring not supported".into()),
                             };
                             let var_reg = ctx.alloc_reg();
-                            ctx.declare(name, var_reg)?;
+                            ctx.declare(name, var_reg, decl.kind, matches!(decl.kind, VariableDeclarationKind::Const))?;
                             ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, key_reg, 0));
                             ctx.init_var(name);
                         }
@@ -350,7 +362,8 @@ impl Compiler {
                 };
 
                 // Compile body into sub-module
-                let sub_module = self.compile_function_body(&param_names, body_stmts, ctx)?;
+                let sub_module =
+                    self.compile_function_body(&param_names, body_stmts, ctx, false)?;
                 ctx.sub_modules.push(sub_module);
                 // 1-indexed: 0 = no sub_module (sentinel)
                 let sub_idx = ctx.sub_modules.len() as u32;
@@ -437,7 +450,12 @@ impl Compiler {
                         let catch_reg = ctx.alloc_reg();
                         if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &param.pattern
                         {
-                            ctx.declare_initialized(bi.name.as_str(), catch_reg)?;
+                            ctx.declare_initialized(
+                                bi.name.as_str(),
+                                catch_reg,
+                                VariableDeclarationKind::Let,
+                                false,
+                            )?;
                             ctx.emit(opcode::encode(OpCode::STORE_VAR, catch_reg, 0, 0));
                         }
                     }
@@ -567,6 +585,7 @@ impl Compiler {
                     BinaryOperator::LessEqualThan => OpCode::LTE,
                     BinaryOperator::GreaterEqualThan => OpCode::GTE,
                     BinaryOperator::In => OpCode::IN,
+                    BinaryOperator::Instanceof => OpCode::INSTANCEOF,
                     BinaryOperator::StrictEquality => OpCode::STRICT_EQ,
                     BinaryOperator::StrictInequality => OpCode::STRICT_NEQ,
                     _ => return Err(format!("unsupported binary operator: {:?}", bin.operator)),
@@ -602,6 +621,30 @@ impl Compiler {
                         let r = ctx.alloc_reg();
                         ctx.emit(opcode::encode(OpCode::UNARY_PLUS, r, arg, 0));
                         Ok(r)
+                    }
+                    UnaryOperator::Delete => {
+                        match &un.argument {
+                            Expression::Identifier(_) => {
+                                Err("delete of global variable is not allowed in strict mode".into())
+                            }
+                            Expression::StaticMemberExpression(member) => {
+                                let obj_reg = self.emit_expression(&member.object, ctx)?;
+                                let prop_name = member.property.name.as_str();
+                                let const_idx = ctx.add_constant(Constant::String(prop_name.to_string()));
+                                let r = ctx.alloc_reg();
+                                ctx.emit(opcode::encode(OpCode::DELETE_PROP_STATIC, r, obj_reg, 0));
+                                ctx.emit(const_idx as u32);
+                                Ok(r)
+                            }
+                            Expression::ComputedMemberExpression(member) => {
+                                let obj_reg = self.emit_expression(&member.object, ctx)?;
+                                let key_reg = self.emit_expression(&member.expression, ctx)?;
+                                let r = ctx.alloc_reg();
+                                ctx.emit(opcode::encode(OpCode::DELETE_PROP_DYNAMIC, r, obj_reg, key_reg));
+                                Ok(r)
+                            }
+                            _ => Err("invalid delete target".into()),
+                        }
                     }
                     _ => Err(format!("unsupported unary operator: {:?}", un.operator)),
                 }
@@ -731,6 +774,13 @@ impl Compiler {
                         ((idx >> 8) & 0xFF) as u8,
                     ));
                     let val_reg = self.emit_expression(&p.value, ctx)?;
+                    // Name inference (D-04): if property value is an arrow function,
+                    // set the compiled sub_module's function_name to the property key.
+                    if matches!(&p.value, Expression::ArrowFunctionExpression(_)) {
+                        if let Some(sub_mod) = ctx.sub_modules.last_mut() {
+                            sub_mod.function_name = Some(prop_name.to_string());
+                        }
+                    }
                     ctx.emit(opcode::encode(OpCode::SET_PROP, obj_reg, val_reg, key_reg));
                 }
                 Ok(obj_reg)
@@ -850,7 +900,9 @@ impl Compiler {
                         let val_reg = self.emit_expression(&assign.right, ctx)?;
                         let name = id_ref.name.as_str();
                         let var_reg = ctx.lookup_or_global(name);
-                        ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, 0));
+                        let is_const = ctx.lookup_const_flag(name);
+                        let const_flag = if is_const { 1 } else { 0 };
+                        ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, const_flag));
                         Ok(val_reg)
                     }
                 } else {
@@ -912,6 +964,226 @@ impl Compiler {
                 ctx.emit(opcode::encode(OpCode::LOAD_VAR, r, var_reg, 0));
                 Ok(r)
             }
+            // TemplateLiteral: interleaved quasis + expressions via TEMPLATE_STR opcode (D-07)
+            Expression::TemplateLiteral(tl) => {
+                let r = ctx.alloc_reg();
+                let quasis = &tl.quasis;
+                let expressions = &tl.expressions;
+                let segment_count = quasis.len() + expressions.len();
+
+                // Evaluate each expression, collecting registers
+                let expr_regs: Vec<u8> = expressions
+                    .iter()
+                    .map(|e| self.emit_expression(e, ctx))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                // Add each quasi string to constant pool
+                let quasi_const_idxs: Vec<u16> = quasis
+                    .iter()
+                    .map(|q| {
+                        let s = q
+                            .value
+                            .cooked
+                            .as_ref()
+                            .map(|c| c.to_string())
+                            .unwrap_or_default();
+                        ctx.add_constant(Constant::String(s))
+                    })
+                    .collect();
+
+                // Compute total length hint
+                let total_len_hint: usize = quasis
+                    .iter()
+                    .map(|q| q.value.cooked.as_ref().map(|c| c.len()).unwrap_or(0))
+                    .sum();
+
+                // Emit TEMPLATE_STR rd, 0, 0
+                ctx.emit(opcode::encode(OpCode::TEMPLATE_STR, r, 0, 0));
+
+                // Ext word 0: (segment_count << 16) | (total_len_hint & 0xFFFF)
+                ctx.emit(((segment_count as u32) << 16) | (total_len_hint as u32 & 0xFFFF));
+
+                // Interleave segments: quasi[0], expr[0], quasi[1], expr[1], ...
+                let mut expr_iter = expr_regs.iter();
+                for const_idx in quasi_const_idxs.iter() {
+                    // Quasi: is_expression=0, bits 0-15 = const_idx
+                    ctx.emit(*const_idx as u32 & 0x7FFF_FFFF);
+
+                    // Expression (if any remaining)
+                    if let Some(expr_reg) = expr_iter.next() {
+                        // Expression: is_expression=1, bits 0-15 = reg
+                        ctx.emit(0x8000_0000u32 | (*expr_reg as u32));
+                    }
+                }
+
+                Ok(r)
+            }
+            // TaggedTemplateExpression: tag`str ${expr}` => CALL(tag, undefined, cooked_array, raw_array, ...exprs) (D-08)
+            Expression::TaggedTemplateExpression(tt) => {
+                let quasis = &tt.quasi.quasis;
+                let expressions = &tt.quasi.expressions;
+
+                // 1. Evaluate tag expression
+                let tag_reg = self.emit_expression(&tt.tag, ctx)?;
+
+                // 2. Build cooked strings array (into a temp register)
+                let cooked_temp = ctx.alloc_reg();
+                ctx.emit(opcode::encode(
+                    OpCode::NEW_ARRAY,
+                    cooked_temp,
+                    quasis.len() as u8,
+                    0,
+                ));
+                for (i, quasi) in quasis.iter().enumerate() {
+                    let s = quasi
+                        .value
+                        .cooked
+                        .as_ref()
+                        .map(|c| c.to_string())
+                        .unwrap_or_default();
+                    let const_idx = ctx.add_constant(Constant::String(s));
+                    let str_reg = ctx.alloc_reg();
+                    ctx.emit(opcode::encode(
+                        OpCode::LOAD_CONST,
+                        str_reg,
+                        (const_idx & 0xFF) as u8,
+                        ((const_idx >> 8) & 0xFF) as u8,
+                    ));
+                    let idx_const = ctx.add_constant(Constant::Int(i as i32));
+                    let idx_reg = ctx.alloc_reg();
+                    ctx.emit(opcode::encode(
+                        OpCode::LOAD_CONST,
+                        idx_reg,
+                        (idx_const & 0xFF) as u8,
+                        ((idx_const >> 8) & 0xFF) as u8,
+                    ));
+                    ctx.emit(opcode::encode(
+                        OpCode::SET_ELEM,
+                        cooked_temp,
+                        idx_reg,
+                        str_reg,
+                    ));
+                }
+
+                // 3. Build raw strings array (into a temp register)
+                let raw_temp = ctx.alloc_reg();
+                ctx.emit(opcode::encode(
+                    OpCode::NEW_ARRAY,
+                    raw_temp,
+                    quasis.len() as u8,
+                    0,
+                ));
+                for (i, quasi) in quasis.iter().enumerate() {
+                    let raw = quasi.value.raw.to_string();
+                    let const_idx = ctx.add_constant(Constant::String(raw));
+                    let str_reg = ctx.alloc_reg();
+                    ctx.emit(opcode::encode(
+                        OpCode::LOAD_CONST,
+                        str_reg,
+                        (const_idx & 0xFF) as u8,
+                        ((const_idx >> 8) & 0xFF) as u8,
+                    ));
+                    let idx_const = ctx.add_constant(Constant::Int(i as i32));
+                    let idx_reg = ctx.alloc_reg();
+                    ctx.emit(opcode::encode(
+                        OpCode::LOAD_CONST,
+                        idx_reg,
+                        (idx_const & 0xFF) as u8,
+                        ((idx_const >> 8) & 0xFF) as u8,
+                    ));
+                    ctx.emit(opcode::encode(OpCode::SET_ELEM, raw_temp, idx_reg, str_reg));
+                }
+
+                // 4. Evaluate expression arguments (into temp registers)
+                let mut expr_temps = Vec::new();
+                for expr in expressions {
+                    expr_temps.push(self.emit_expression(expr, ctx)?);
+                }
+
+                // 5. Allocate consecutive argument slots: cooked, raw, expr[0], expr[1], ...
+                let cooked_slot = ctx.alloc_reg();
+                let raw_slot = ctx.alloc_reg();
+                let mut expr_slots = Vec::new();
+                for _ in expressions {
+                    expr_slots.push(ctx.alloc_reg());
+                }
+
+                // Copy temps to consecutive slots using LOAD_VAR (register-to-register move)
+                ctx.emit(opcode::encode(
+                    OpCode::LOAD_VAR,
+                    cooked_slot,
+                    cooked_temp,
+                    0,
+                ));
+                ctx.emit(opcode::encode(OpCode::LOAD_VAR, raw_slot, raw_temp, 0));
+                for (slot, temp) in expr_slots.iter().zip(expr_temps.iter()) {
+                    ctx.emit(opcode::encode(OpCode::LOAD_VAR, *slot, *temp, 0));
+                }
+
+                // 6. Emit undefined as this_arg
+                let undef_idx = ctx.add_constant(Constant::Undefined);
+                let undef_reg = ctx.alloc_reg();
+                ctx.emit(opcode::encode(
+                    OpCode::LOAD_CONST,
+                    undef_reg,
+                    (undef_idx & 0xFF) as u8,
+                    ((undef_idx >> 8) & 0xFF) as u8,
+                ));
+
+                // 7. Emit CALL(tag, undefined, cooked_slot)
+                let arg_count = 2 + expressions.len();
+                ctx.emit(opcode::encode(
+                    OpCode::CALL,
+                    tag_reg,
+                    undef_reg,
+                    cooked_slot,
+                ));
+                ctx.emit(arg_count as u32);
+
+                // 8. Result from regs[0]
+                let result_reg = ctx.alloc_reg();
+                ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, 0, 0));
+                Ok(result_reg)
+            }
+            // ArrowFunctionExpression: compile body, capture lexical this (D-01)
+            // Name inference (D-04) happens at assignment site - see VariableDeclaration/ObjectProperty.
+            Expression::ArrowFunctionExpression(arrow) => {
+                // Rest params not yet supported (D-06 placeholder)
+                if let Some(_rest) = &arrow.params.rest {
+                    return Err("rest params in arrow functions not yet supported".into());
+                }
+
+                // Extract param names (same pattern as FunctionExpression)
+                let mut param_names = Vec::new();
+                for param in &arrow.params.items {
+                    if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &param.pattern {
+                        param_names.push(bi.name.to_string());
+                    }
+                }
+
+                // Expression body: pass body statements directly with is_expression_body=true.
+                // Statement body: pass body statements with is_expression_body=false.
+                let body_stmts = &arrow.body.statements;
+                let is_expr_body = arrow.expression;
+
+                let mut sub_module =
+                    self.compile_function_body(&param_names, body_stmts, ctx, is_expr_body)?;
+                sub_module.is_arrow = true;
+
+                ctx.sub_modules.push(sub_module);
+                // 1-indexed: 0 = no sub_module (sentinel)
+                let sub_idx = ctx.sub_modules.len() as u32;
+
+                let const_idx = ctx.add_constant(Constant::BytecodeFunc(sub_idx));
+                let r = ctx.alloc_reg();
+                ctx.emit(opcode::encode(
+                    OpCode::LOAD_CONST,
+                    r,
+                    (const_idx & 0xFF) as u8,
+                    ((const_idx >> 8) & 0xFF) as u8,
+                ));
+                Ok(r)
+            }
             Expression::FunctionExpression(fe) => {
                 // FunctionExpression: compile body, emit LOAD_CONST(BytecodeFunc)
                 let mut param_names = Vec::new();
@@ -927,7 +1199,8 @@ impl Compiler {
                     &[]
                 };
 
-                let sub_module = self.compile_function_body(&param_names, body_stmts, ctx)?;
+                let sub_module =
+                    self.compile_function_body(&param_names, body_stmts, ctx, false)?;
                 ctx.sub_modules.push(sub_module);
                 // 1-indexed: 0 = no sub_module (sentinel)
                 let sub_idx = ctx.sub_modules.len() as u32;
@@ -1048,10 +1321,8 @@ impl Compiler {
                         let last_slash = raw_str.rfind('/').unwrap_or(raw_str.len() - 1);
                         let pattern = &raw_str[1..last_slash];
                         let flags = &raw_str[last_slash + 1..];
-                        let ci = ctx.add_constant(Constant::RegExp(
-                            pattern.to_string(),
-                            flags.to_string(),
-                        ));
+                        let ci = ctx
+                            .add_constant(Constant::RegExp(pattern.to_string(), flags.to_string()));
                         let r = ctx.alloc_reg();
                         ctx.emit(opcode::encode(
                             OpCode::LOAD_CONST,
@@ -1061,16 +1332,10 @@ impl Compiler {
                         ));
                         Ok(r)
                     } else {
-                        Err(format!(
-                            "unsupported expression type: {:?}",
-                            expr
-                        ))
+                        Err(format!("unsupported expression type: {:?}", expr))
                     }
                 } else {
-                    Err(format!(
-                        "unsupported expression type: {:?}",
-                        expr
-                    ))
+                    Err(format!("unsupported expression type: {:?}", expr))
                 }
             }
             _ => Err(format!("unsupported expression type: {:?}", expr)),

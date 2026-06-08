@@ -1,5 +1,6 @@
 use oxide_parser::{
     AssignmentOperator, Expression, ForStatementInit, SimpleAssignmentTarget, Statement,
+    UnaryOperator, VariableDeclarationKind,
 };
 
 use crate::compiler::{is_side_effect_free, CompileCtx, Compiler, Label};
@@ -189,7 +190,7 @@ impl Compiler {
 
                 // Hoisting: declare function name as initialized
                 let func_reg = ctx.alloc_reg();
-                let _ = ctx.declare_initialized(&name, func_reg);
+                let _ = ctx.declare_initialized(&name, func_reg, VariableDeclarationKind::Var, false);
 
                 // Body is compiled in the emit pass only.
                 // FD emits LOAD_CONST(BytecodeFunc) + STORE_VAR
@@ -269,9 +270,32 @@ impl Compiler {
                 ctx.projected_pc += 1; // ADD/SUB/MUL/DIV/etc.
             }
             Expression::UnaryExpression(un) => {
-                self.count_expression(&un.argument, ctx);
-                ctx.alloc_reg();
-                ctx.projected_pc += 1; // NEG/TYPEOF/VOID/NOT
+                match un.operator {
+                    UnaryOperator::Delete => {
+                        match &un.argument {
+                            Expression::Identifier(_) => {
+                                // SyntaxError at compile time, no bytecode cost
+                            }
+                            Expression::StaticMemberExpression(member) => {
+                                self.count_expression(&member.object, ctx);
+                                ctx.alloc_reg();
+                                ctx.projected_pc += 2; // DELETE_PROP_STATIC + ext word
+                            }
+                            Expression::ComputedMemberExpression(member) => {
+                                self.count_expression(&member.object, ctx);
+                                self.count_expression(&member.expression, ctx);
+                                ctx.alloc_reg();
+                                ctx.projected_pc += 1; // DELETE_PROP_DYNAMIC
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {
+                        self.count_expression(&un.argument, ctx);
+                        ctx.alloc_reg();
+                        ctx.projected_pc += 1; // NEG/TYPEOF/VOID/NOT
+                    }
+                }
             }
             Expression::CallExpression(call) => {
                 match &call.callee {
@@ -393,6 +417,78 @@ impl Compiler {
                         ctx.projected_pc += 1; // SET_PROP
                     }
                 }
+            }
+            Expression::TemplateLiteral(tl) => {
+                // TemplateLiteral: N quasis (strings) + M expressions interleaved.
+                // Allocate 1 result reg + count expressions.
+                for expr in &tl.expressions {
+                    self.count_expression(expr, ctx);
+                }
+                ctx.alloc_reg(); // result reg
+                let segment_count = tl.quasis.len() + tl.expressions.len();
+                // TEMPLATE_STR opcode + ext words (1 header + ceil(segments/1) per u32)
+                ctx.projected_pc += 1 + 1 + segment_count;
+            }
+            Expression::TaggedTemplateExpression(tt) => {
+                // Tagged template: tag expr + quasis as LOAD_CONST + expression args + CALL
+                // Consecutive arg registers at end (via LOAD_VAR copies)
+                self.count_expression(&tt.tag, ctx);
+                let quasi_count = tt.quasi.quasis.len();
+                // Each quasi: LOAD_CONST string + LOAD_CONST index + SET_ELEM
+                // for both cooked and raw arrays
+                for _ in 0..quasi_count {
+                    ctx.alloc_reg(); // str_reg
+                    ctx.projected_pc += 1; // LOAD_CONST string
+                    ctx.alloc_reg(); // idx_reg
+                    ctx.projected_pc += 1; // LOAD_CONST index
+                    ctx.projected_pc += 1; // SET_ELEM (cooked)
+                }
+                // Cooked array: alloc + NEW_ARRAY
+                ctx.alloc_reg(); // cooked_temp
+                ctx.projected_pc += 1; // NEW_ARRAY
+
+                for _ in 0..quasi_count {
+                    ctx.alloc_reg(); // str_reg
+                    ctx.projected_pc += 1; // LOAD_CONST string
+                    ctx.alloc_reg(); // idx_reg
+                    ctx.projected_pc += 1; // LOAD_CONST index
+                    ctx.projected_pc += 1; // SET_ELEM (raw)
+                }
+                // Raw array: alloc + NEW_ARRAY
+                ctx.alloc_reg(); // raw_temp
+                ctx.projected_pc += 1; // NEW_ARRAY
+
+                // Count expression arguments
+                for expr in &tt.quasi.expressions {
+                    self.count_expression(expr, ctx);
+                }
+
+                // Consecutive arg slots: cooked_slot, raw_slot, N expr_slots
+                ctx.alloc_reg(); // cooked_slot
+                ctx.alloc_reg(); // raw_slot
+                for _ in &tt.quasi.expressions {
+                    ctx.alloc_reg(); // expr_slot
+                    ctx.projected_pc += 1; // LOAD_VAR
+                }
+                // LOAD_VAR for cooked and raw
+                ctx.projected_pc += 2;
+
+                // undefined this arg
+                ctx.alloc_reg();
+                ctx.projected_pc += 1; // LOAD_CONST
+
+                // CALL + ext word
+                ctx.projected_pc += 2;
+
+                // Result reg + LOAD_VAR
+                ctx.alloc_reg();
+                ctx.projected_pc += 1; // LOAD_VAR
+            }
+            Expression::ArrowFunctionExpression(_arrow) => {
+                // Arrow functions: alloc 1 register for the function value.
+                // Body is compiled in the emit pass only (same pattern as FE).
+                ctx.alloc_reg();
+                ctx.projected_pc += 1; // LOAD_CONST
             }
             Expression::FunctionExpression(_fe) => {
                 // No hoisting - function created at expression position.

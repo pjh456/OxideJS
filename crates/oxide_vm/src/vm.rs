@@ -297,12 +297,19 @@ impl Vm {
     }
 
     /// Create a function JsObject for a BytecodeFunc constant.
-    fn create_function_object(&mut self, sub_idx: u32) -> JsValue {
+    /// When `is_arrow` is true, captures the current `this` (regs[254])
+    /// for lexical this binding at call time (D-01).
+    fn create_function_object(&mut self, sub_idx: u32, is_arrow: bool) -> JsValue {
         let func_proto_ptr = self.kernel.builtin_world().function_proto.as_ptr() as *mut JsObject;
         let proto_val = JsValue::from_js_object(func_proto_ptr);
         let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto_val);
         obj.set_function(true);
         obj.set_sub_module_index(sub_idx);
+        if is_arrow {
+            obj.set_arrow(true);
+            // Capture lexical `this` from the enclosing scope (regs[254]).
+            obj.set_captured_this(self.regs[254]);
+        }
         let obj_ptr = self.epoch.alloc(obj);
         JsValue::object(obj_ptr as *mut u8)
     }
@@ -319,14 +326,24 @@ impl Vm {
                 Constant::Boolean(b) => JsValue::bool(*b),
                 Constant::Null => JsValue::null(),
                 Constant::Undefined => JsValue::undefined(),
-                Constant::BytecodeFunc(idx) => self.create_function_object(*idx),
+                Constant::BytecodeFunc(idx) => {
+                    // 1-indexed: idx 1 = sub_modules[0], idx 0 = sentinel
+                    let sub_idx = *idx as usize;
+                    let is_arrow = if sub_idx > 0 && sub_idx <= module.sub_modules.len() {
+                        module.sub_modules[sub_idx - 1].is_arrow
+                    } else {
+                        false
+                    };
+                    self.create_function_object(*idx, is_arrow)
+                }
                 Constant::RegExp(pattern, flags) => {
                     let pat_si = self.kernel.string_forge().intern(pattern).0;
                     let flags_si = self.kernel.string_forge().intern(flags).0;
                     let pat_val = JsValue::string(pat_si, 0);
                     let flags_val = JsValue::string(flags_si, 0);
 
-                    let native_fn = self.kernel.builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
+                    let native_fn =
+                        self.kernel.builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
                     let ctor = unsafe { &*native_fn };
                     let ctor_fn = ctor.native_fn();
                     if ctor_fn.is_none() {
@@ -338,7 +355,8 @@ impl Vm {
                     self.regs[0] = JsValue::undefined();
                     self.regs[1] = pat_val;
                     self.regs[2] = flags_val;
-                    let func: crate::native::NativeFn = unsafe { std::mem::transmute(ctor_fn.unwrap()) };
+                    let func: crate::native::NativeFn =
+                        unsafe { std::mem::transmute(ctor_fn.unwrap()) };
                     let result = func(self, &[0, 1, 2]);
                     self.regs[0] = saved_0;
                     self.regs[1] = saved_1;
@@ -347,7 +365,7 @@ impl Vm {
                         Ok(val) => val,
                         Err(_) => JsValue::undefined(),
                     }
-                },
+                }
             })
             .collect()
     }
@@ -654,6 +672,16 @@ impl Vm {
                 }
 
                 OpCode::STORE_VAR => {
+                    if b != 0 {
+                        // const guard: check if already initialized
+                        if !self.regs[rd].is_undefined() {
+                            throw_err!(
+                                self,
+                                TypeError,
+                                "Assignment to constant variable"
+                            );
+                        }
+                    }
                     self.regs[rd] = self.regs[a];
                 }
 
@@ -707,6 +735,7 @@ impl Vm {
                                     let sub_constants = self.sub_modules[sub_idx].constants.clone();
                                     let sub_builtin_count =
                                         self.sub_modules[sub_idx].builtin_reg_map.len();
+                                    let sub_is_arrow = self.sub_modules[sub_idx].is_arrow;
 
                                     // Copy args to regs[sub_builtin_count..sub_builtin_count+n_args]
                                     // (builtins occupy regs[0..sub_builtin_count-1])
@@ -714,8 +743,13 @@ impl Vm {
                                         let src_reg = first_arg_reg.wrapping_add(i as u8) as usize;
                                         self.regs[sub_builtin_count + i] = self.regs[src_reg];
                                     }
-                                    // Set this (reg 254 convention)
-                                    self.regs[254] = callee;
+                                    // Set this (reg 254 convention).
+                                    // Arrow functions use captured lexical `this` (D-01).
+                                    self.regs[254] = if sub_is_arrow {
+                                        obj.captured_this()
+                                    } else {
+                                        callee
+                                    };
 
                                     // Save current bytecode/constants
                                     self.saved_bytecode_stack
@@ -745,7 +779,15 @@ impl Vm {
                                             Constant::Null => JsValue::null(),
                                             Constant::Undefined => JsValue::undefined(),
                                             Constant::BytecodeFunc(idx) => {
-                                                self.create_function_object(*idx)
+                                                let idx_usize = *idx as usize;
+                                                let nested_is_arrow = if idx_usize > 0
+                                                    && idx_usize <= self.sub_modules.len()
+                                                {
+                                                    self.sub_modules[idx_usize - 1].is_arrow
+                                                } else {
+                                                    false
+                                                };
+                                                self.create_function_object(*idx, nested_is_arrow)
                                             }
                                             Constant::RegExp(_, _) => JsValue::undefined(),
                                         })
@@ -827,6 +869,14 @@ impl Vm {
                             self,
                             TypeError,
                             "NEW_EXPRESSION: constructor is not a function"
+                        );
+                    }
+                    // Arrow functions cannot be used as constructors (D-03)
+                    if ctor_obj.is_arrow() {
+                        throw_err!(
+                            self,
+                            TypeError,
+                            "arrow functions cannot be used as constructors"
                         );
                     }
 
@@ -1194,6 +1244,143 @@ impl Vm {
 
                 OpCode::VOID => {
                     self.regs[rd] = JsValue::undefined();
+                }
+
+                OpCode::TEMPLATE_STR => {
+                    // Read header ext word: (segment_count << 16) | (total_len_hint & 0xFFFF)
+                    let header = self.bytecode[self.pc];
+                    self.pc += 1;
+                    let segment_count = (header >> 16) as usize;
+                    let len_hint = (header & 0xFFFF) as usize;
+
+                    // Build result string
+                    let mut result = String::with_capacity(len_hint.max(16));
+                    for _ in 0..segment_count {
+                        let seg = self.bytecode[self.pc];
+                        self.pc += 1;
+                        if (seg >> 31) == 1 {
+                            // Expression: register value
+                            let reg = (seg & 0x7F) as u8;
+                            let val = self.regs[reg as usize];
+                            let s = if val.is_string() {
+                                self.kernel()
+                                    .string_forge()
+                                    .lookup(val.as_string_index())
+                                    .unwrap_or_default()
+                            } else {
+                                format!("{}", val)
+                            };
+                            result.push_str(&s);
+                        } else {
+                            // Quasi: constant string
+                            let const_idx = (seg & 0x7FFF_FFFF) as usize;
+                            if const_idx < self.constants.len() {
+                                let val = self.constants[const_idx];
+                                if val.is_string() {
+                                    let s = self
+                                        .kernel()
+                                        .string_forge()
+                                        .lookup(val.as_string_index())
+                                        .unwrap_or_default();
+                                    result.push_str(&s);
+                                }
+                            }
+                        }
+                    }
+                    let si = self.kernel.string_forge().intern(&result).0;
+                    self.regs[rd] = JsValue::string(si, 0);
+                }
+
+                OpCode::DELETE_PROP_STATIC => {
+                    let obj_val = self.regs[a];
+                    if !obj_val.is_object() {
+                        self.regs[rd] = JsValue::bool(true);
+                    } else {
+                        let obj_ptr = obj_val.as_js_object_ptr();
+                        let obj = unsafe { &mut *obj_ptr };
+                        let ext = self.bytecode[self.pc];
+                        self.pc += 1;
+                        let const_idx = ext as usize;
+                        let prop_name_val = self.constants[const_idx];
+                        if !prop_name_val.is_string() {
+                            self.regs[rd] = JsValue::bool(true);
+                            continue;
+                        }
+                        let prop_name_si = prop_name_val.as_string_index();
+                        if let Some(pos) = self.kernel.shape_forge().lookup_position(
+                            obj.shape_id(),
+                            prop_name_si,
+                        ) {
+                            obj.set_prop_at(pos, JsValue::undefined());
+                        }
+                        self.regs[rd] = JsValue::bool(true);
+                    }
+                }
+
+                OpCode::DELETE_PROP_DYNAMIC => {
+                    let obj_val = self.regs[a];
+                    if !obj_val.is_object() {
+                        self.regs[rd] = JsValue::bool(true);
+                    } else {
+                        let key_val = self.regs[b];
+                        let prop_name_si = if key_val.is_string() {
+                            key_val.as_string_index()
+                        } else {
+                            let s = crate::coercion::to_string(
+                                self.kernel.string_forge().as_ref(),
+                                key_val,
+                            );
+                            self.kernel.string_forge().intern(&s).0
+                        };
+                        let obj_ptr = obj_val.as_js_object_ptr();
+                        let obj = unsafe { &mut *obj_ptr };
+                        if let Some(pos) = self.kernel.shape_forge().lookup_position(
+                            obj.shape_id(),
+                            prop_name_si,
+                        ) {
+                            obj.set_prop_at(pos, JsValue::undefined());
+                        }
+                        self.regs[rd] = JsValue::bool(true);
+                    }
+                }
+
+                OpCode::INSTANCEOF => {
+                    let lhs_val = self.regs[a];
+                    let rhs_val = self.regs[b];
+
+                    if !rhs_val.is_object() {
+                        throw_err!(self, TypeError, "INSTANCEOF right-hand side is not callable");
+                    }
+                    if !lhs_val.is_object() {
+                        self.regs[rd] = JsValue::bool(false);
+                        continue;
+                    }
+
+                    let rhs_obj = unsafe { &*rhs_val.as_js_object_ptr() };
+                    let proto_si = self.kernel.string_forge().intern("prototype").0;
+                    let ctor_proto = self.resolve_property(rhs_obj, proto_si);
+
+                    let ctor_proto_ptr = match ctor_proto {
+                        Some(v) if v.is_object() => v.as_js_object_ptr(),
+                        _ => {
+                            self.regs[rd] = JsValue::bool(false);
+                            continue;
+                        }
+                    };
+
+                    let mut proto = unsafe { &*lhs_val.as_js_object_ptr() }.proto();
+                    loop {
+                        if !proto.is_object() {
+                            self.regs[rd] = JsValue::bool(false);
+                            break;
+                        }
+                        let proto_ptr = proto.as_js_object_ptr();
+                        if proto_ptr == ctor_proto_ptr {
+                            self.regs[rd] = JsValue::bool(true);
+                            break;
+                        }
+                        proto = unsafe { &*proto_ptr }.proto();
+                    }
                 }
 
                 OpCode::IN => {
@@ -1581,11 +1768,11 @@ impl Vm {
 
                 OpCode::FOR_OF_INIT => {}
 
-                OpCode::FOR_OF_NEXT => {},
+                OpCode::FOR_OF_NEXT => {}
 
-                OpCode::FOR_OF_DONE => {},
+                OpCode::FOR_OF_DONE => {}
 
-                OpCode::FOR_OF_CLOSE => {},
+                OpCode::FOR_OF_CLOSE => {}
 
                 OpCode::THROW => {
                     let exc_value = self.regs[rd];

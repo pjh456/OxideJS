@@ -6,7 +6,9 @@ use crate::symbol_table::{Binding, SymbolTable};
 
 pub use crate::hash::structural_hash;
 pub use crate::module::Constant;
+pub use oxide_parser::VariableDeclarationKind;
 pub use oxide_parser::{AssignmentOperator, BinaryOperator, Expression, Statement, UnaryOperator};
+use crate::symbol_table::ScopeKind;
 
 pub struct Compiler;
 
@@ -63,6 +65,10 @@ pub(crate) struct CompileCtx {
     pub(crate) projected_pc: usize,
     pub(crate) builtin_reg_map: Vec<(String, u8)>,
     pub(crate) sub_modules: Vec<CompiledModule>,
+    /// Register holding `this` in the enclosing function context.
+    /// Used by arrow functions to capture lexical `this` (D-01).
+    /// Initialized to 254 (conventional this register) at the top level.
+    pub(crate) enclosing_this_reg: u8,
 }
 
 impl CompileCtx {
@@ -80,6 +86,7 @@ impl CompileCtx {
             projected_pc: 0,
             builtin_reg_map: Vec::new(),
             sub_modules: Vec::new(),
+            enclosing_this_reg: 254, // conventional this register at top level
         }
     }
 
@@ -126,12 +133,29 @@ impl CompileCtx {
         self.symbols.pop_scope();
     }
 
-    pub(crate) fn declare(&mut self, name: &str, reg: u8) -> Result<(), String> {
-        self.symbols.declare(name, reg)
+    pub(crate) fn declare(
+        &mut self,
+        name: &str,
+        reg: u8,
+        kind: VariableDeclarationKind,
+        is_const: bool,
+    ) -> Result<(), String> {
+        self.symbols.declare(name, reg, kind, is_const)
     }
 
-    pub(crate) fn declare_initialized(&mut self, name: &str, reg: u8) -> Result<(), String> {
-        self.symbols.declare_initialized(name, reg)
+    pub(crate) fn declare_initialized(
+        &mut self,
+        name: &str,
+        reg: u8,
+        kind: VariableDeclarationKind,
+        is_const: bool,
+    ) -> Result<(), String> {
+        self.symbols.declare_initialized(name, reg, kind, is_const)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn push_scope_with_kind(&mut self, kind: ScopeKind) {
+        self.symbols.push_scope_with_kind(kind);
     }
 
     pub(crate) fn lookup(&self, name: &str) -> Result<u8, String> {
@@ -141,6 +165,10 @@ impl CompileCtx {
     pub(crate) fn lookup_or_global(&mut self, name: &str) -> u8 {
         let reg = self.alloc_reg();
         self.symbols.lookup_or_global(name, reg)
+    }
+
+    pub(crate) fn lookup_const_flag(&self, name: &str) -> bool {
+        self.symbols.lookup_is_const(name)
     }
 
     pub(crate) fn init_var(&mut self, name: &str) {
@@ -225,13 +253,16 @@ impl Compiler {
         Self
     }
 
-    /// Compile a function body (used for FD and FE).
+    /// Compile a function body (used for FD, FE, and arrow functions).
     /// This performs both counting and emitting in one pass.
+    /// When `is_expression_body` is true (arrow function with expression body),
+    /// the last expression's value is returned instead of undefined.
     pub(crate) fn compile_function_body<'a>(
         &self,
         param_names: &[String],
         body_stmts: &[Statement<'a>],
         parent_ctx: &CompileCtx,
+        is_expression_body: bool,
     ) -> Result<CompiledModule, String> {
         let mut ctx = CompileCtx::new();
 
@@ -239,14 +270,18 @@ impl Compiler {
         // resolve to the correct pre-allocated registers in the sub-module's register file.
         ctx.builtin_reg_map = parent_ctx.builtin_reg_map.clone();
 
+        // Propagate enclosing_this_reg so nested arrow functions capture the correct `this`.
+        ctx.enclosing_this_reg = parent_ctx.enclosing_this_reg;
+
         // Inherit parent's global scope entries so previously-declared function names
         // are visible from within the body.
-        for (name, binding) in &parent_ctx.symbols.scopes[0] {
-            ctx.symbols.scopes[0].insert(
+        for (name, binding) in &parent_ctx.symbols.scopes[0].bindings {
+            ctx.symbols.scopes[0].bindings.insert(
                 name.clone(),
                 Binding {
                     reg: binding.reg,
                     initialized: binding.initialized,
+                    is_const: binding.is_const,
                 },
             );
         }
@@ -256,12 +291,12 @@ impl Compiler {
         ctx.reset_regs();
 
         // Function body scope - params and local vars
-        ctx.push_scope();
+        ctx.push_scope_with_kind(ScopeKind::FunctionScope);
 
         // Register parameters as initialized.
         for name in param_names {
             let reg = ctx.alloc_reg();
-            ctx.declare_initialized(name, reg)?;
+            ctx.declare_initialized(name, reg, VariableDeclarationKind::Var, false)?;
         }
 
         // Count pass
@@ -274,24 +309,45 @@ impl Compiler {
         // Emit pass - reallocate params (same order = same regs after reset)
         for name in param_names {
             let reg = ctx.alloc_reg();
-            ctx.declare_initialized(name, reg)?;
+            ctx.declare_initialized(name, reg, VariableDeclarationKind::Var, false)?;
         }
 
         // Emit body statements.
-        // After all statements, emit an implicit RETURN undefined.
+        // Capture the last statement's expression result for expression-body arrows.
+        let mut last_result_reg = None;
         for stmt in body_stmts {
-            let _ = self.emit_statement(stmt, &mut ctx)?;
+            if let Some(reg) = self.emit_statement(stmt, &mut ctx)? {
+                last_result_reg = Some(reg);
+            }
         }
 
-        let undef_idx = ctx.add_constant(Constant::Undefined);
-        let undef_reg = ctx.alloc_reg();
-        ctx.emit(opcode::encode(
-            OpCode::LOAD_CONST,
-            undef_reg,
-            (undef_idx & 0xFF) as u8,
-            ((undef_idx >> 8) & 0xFF) as u8,
-        ));
-        ctx.emit(opcode::encode(OpCode::RETURN, undef_reg, 0, 0));
+        // Emit implicit RETURN: expression body returns the last expression,
+        // statement body returns undefined.
+        if is_expression_body {
+            if let Some(reg) = last_result_reg {
+                ctx.emit(opcode::encode(OpCode::RETURN, reg, 0, 0));
+            } else {
+                let undef_idx = ctx.add_constant(Constant::Undefined);
+                let undef_reg = ctx.alloc_reg();
+                ctx.emit(opcode::encode(
+                    OpCode::LOAD_CONST,
+                    undef_reg,
+                    (undef_idx & 0xFF) as u8,
+                    ((undef_idx >> 8) & 0xFF) as u8,
+                ));
+                ctx.emit(opcode::encode(OpCode::RETURN, undef_reg, 0, 0));
+            }
+        } else {
+            let undef_idx = ctx.add_constant(Constant::Undefined);
+            let undef_reg = ctx.alloc_reg();
+            ctx.emit(opcode::encode(
+                OpCode::LOAD_CONST,
+                undef_reg,
+                (undef_idx & 0xFF) as u8,
+                ((undef_idx >> 8) & 0xFF) as u8,
+            ));
+            ctx.emit(opcode::encode(OpCode::RETURN, undef_reg, 0, 0));
+        }
 
         Ok(CompiledModule {
             bytecode: ctx.bytecode,
@@ -300,6 +356,9 @@ impl Compiler {
             n_args: param_names.len() as u8,
             builtin_reg_map: ctx.builtin_reg_map,
             sub_modules: ctx.sub_modules,
+            is_arrow: false,
+            captured_this_const_idx: 0,
+            function_name: None,
         })
     }
 
@@ -353,6 +412,9 @@ impl Compiler {
             n_args: 0,
             builtin_reg_map: ctx.builtin_reg_map,
             sub_modules: ctx.sub_modules,
+            is_arrow: false,
+            captured_this_const_idx: 0,
+            function_name: None,
         })
     }
 }

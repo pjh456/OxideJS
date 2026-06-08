@@ -9,7 +9,7 @@ fn make_vm() -> Vm {
 
 fn eval(source: &str) -> Result<JsValue, String> {
     let allocator = oxide_parser::Allocator::default();
-    let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse: {}", e))?;
+    let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse: {:?}", e))?;
     let module = Compiler::new().compile(&program).map_err(|e| format!("Compile: {}", e))?;
     let mut vm = make_vm();
     vm.run(&module)

@@ -66,6 +66,14 @@ pub enum OpCode {
     FOR_OF_DONE = 0x36,
     FOR_OF_CLOSE = 0x37,
 
+    // -- Template Literal (0x38) --
+    TEMPLATE_STR = 0x38,
+
+    // -- Small Language Features (0x39-0x3B) --
+    DELETE_PROP_STATIC = 0x39,
+    DELETE_PROP_DYNAMIC = 0x3A,
+    INSTANCEOF = 0x3B,
+
     // -- Variable (0x30-0x32) --
     LOAD_VAR = 0x30,
     STORE_VAR = 0x31,
@@ -201,6 +209,10 @@ impl TryFrom<u8> for OpCode {
             0x35 => Ok(OpCode::TRY_FINALLY_END),
             0x36 => Ok(OpCode::FOR_OF_DONE),
             0x37 => Ok(OpCode::FOR_OF_CLOSE),
+            0x38 => Ok(OpCode::TEMPLATE_STR),
+            0x39 => Ok(OpCode::DELETE_PROP_STATIC),
+            0x3A => Ok(OpCode::DELETE_PROP_DYNAMIC),
+            0x3B => Ok(OpCode::INSTANCEOF),
             0x40 => Ok(OpCode::CALL),
             0x41 => Ok(OpCode::RETURN),
             0x42 => Ok(OpCode::CALL_NATIVE),
@@ -288,6 +300,10 @@ impl fmt::Display for OpCode {
             OpCode::TRY_FINALLY_END => "TRY_FINALLY_END",
             OpCode::FOR_OF_DONE => "FOR_OF_DONE",
             OpCode::FOR_OF_CLOSE => "FOR_OF_CLOSE",
+            OpCode::TEMPLATE_STR => "TEMPLATE_STR",
+            OpCode::DELETE_PROP_STATIC => "DELETE_PROP_STATIC",
+            OpCode::DELETE_PROP_DYNAMIC => "DELETE_PROP_DYNAMIC",
+            OpCode::INSTANCEOF => "INSTANCEOF",
             OpCode::LOAD_VAR => "LOAD_VAR",
             OpCode::STORE_VAR => "STORE_VAR",
             OpCode::LOAD_CONST => "LOAD_CONST",

@@ -21,6 +21,15 @@ pub struct CompiledModule {
     pub n_args: u8,
     pub builtin_reg_map: Vec<(String, u8)>,
     pub sub_modules: Vec<CompiledModule>,
+    /// True when this module is an arrow function body (D-01).
+    /// Arrow functions capture lexical `this` from the enclosing scope.
+    pub is_arrow: bool,
+    /// Index into `constants` holding the captured `this` JsValue.
+    /// 0 means "not captured - use standard this binding".
+    pub captured_this_const_idx: u16,
+    /// Function name inferred from assignment context (D-04).
+    /// Set at the VariableDeclaration / ObjectProperty assignment site.
+    pub function_name: Option<String>,
 }
 
 impl CompiledModule {
@@ -32,6 +41,9 @@ impl CompiledModule {
             n_args: 0,
             builtin_reg_map: Vec::new(),
             sub_modules: Vec::new(),
+            is_arrow: false,
+            captured_this_const_idx: 0,
+            function_name: None,
         }
     }
 }
@@ -51,6 +63,9 @@ impl Clone for CompiledModule {
             n_args: self.n_args,
             builtin_reg_map: self.builtin_reg_map.clone(),
             sub_modules: self.sub_modules.clone(),
+            is_arrow: self.is_arrow,
+            captured_this_const_idx: self.captured_this_const_idx,
+            function_name: self.function_name.clone(),
         }
     }
 }

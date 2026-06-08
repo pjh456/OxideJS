@@ -21,7 +21,7 @@ fn hash_statement(stmt: &Statement, h: &mut rustc_hash::FxHasher) {
             hash_expression(&es.expression, h);
         }
         Statement::VariableDeclaration(decl) => {
-            1u8.hash(h);
+            std::mem::discriminant(&decl.kind).hash(h);
             (decl.declarations.len() as u32).hash(h);
             for d in &decl.declarations {
                 if let Some(init) = &d.init {
@@ -54,6 +54,7 @@ fn hash_statement(stmt: &Statement, h: &mut rustc_hash::FxHasher) {
                 if let Some(expr) = init.as_expression() {
                     hash_expression(expr, h);
                 } else if let ForStatementInit::VariableDeclaration(decl) = init {
+                    std::mem::discriminant(&decl.kind).hash(h);
                     (decl.declarations.len() as u32).hash(h);
                     for d in &decl.declarations {
                         if let Some(init_expr) = &d.init {
@@ -222,6 +223,28 @@ fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher) {
                     hash_expression(&member.expression, h);
                 }
                 _ => {}
+            }
+        }
+        Expression::TemplateLiteral(tl) => {
+            16u8.hash(h);
+            (tl.quasis.len() as u32).hash(h);
+            for expr in &tl.expressions {
+                hash_expression(expr, h);
+            }
+        }
+        Expression::TaggedTemplateExpression(tt) => {
+            17u8.hash(h);
+            hash_expression(&tt.tag, h);
+            (tt.quasi.quasis.len() as u32).hash(h);
+            for expr in &tt.quasi.expressions {
+                hash_expression(expr, h);
+            }
+        }
+        Expression::ArrowFunctionExpression(arrow) => {
+            15u8.hash(h);
+            (arrow.params.items.len() as u32).hash(h);
+            for s in &arrow.body.statements {
+                hash_statement(s, h);
             }
         }
         Expression::FunctionExpression(fe) => {

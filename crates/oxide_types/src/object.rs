@@ -2,9 +2,10 @@ use crate::value::JsValue;
 
 pub type ShapeId = u32;
 
-/// Layout (48B):
+/// Layout (56B):
 ///   header: u32 bits
 ///     [0:23]   shape_id
+///     [28]     is_arrow
 ///     [29]     is_array
 ///     [30]     is_extensible
 ///     [31]     is_function
@@ -14,6 +15,7 @@ pub type ShapeId = u32;
 ///   generation: u32 (4 bytes + 4 pad)
 ///   native_fn: u64 (8 bytes, 0 = None sentinel)
 ///   sub_module_index: u32 (4 bytes + 4 pad, index into CompiledModule.sub_modules)
+///   captured_this: JsValue (8 bytes, lexical this for arrow functions)
 #[repr(C)]
 pub struct JsObject {
     header: u32,
@@ -26,6 +28,7 @@ pub struct JsObject {
     native_fn: u64,
     sub_module_index: u32,
     _pad3: [u8; 4],
+    captured_this: JsValue,
 }
 
 impl JsObject {
@@ -41,6 +44,7 @@ impl JsObject {
             native_fn: 0,
             sub_module_index: 0,
             _pad3: [0; 4],
+            captured_this: JsValue::undefined(),
         }
     }
 
@@ -61,6 +65,7 @@ impl JsObject {
             native_fn: 0,
             sub_module_index: 0,
             _pad3: [0; 4],
+            captured_this: JsValue::undefined(),
         };
         let vec = Box::new(vec![Box::new(JsValue::undefined()); n_elements]);
         obj.hash_props = Box::into_raw(vec) as *mut u8;
@@ -260,6 +265,30 @@ impl JsObject {
 
     pub fn set_sub_module_index(&mut self, idx: u32) {
         self.sub_module_index = idx;
+    }
+
+    /// Arrow function flag (header bit 28).
+    /// When true, CALL dispatch captures lexical `this` from creation time.
+    pub fn is_arrow(&self) -> bool {
+        (self.header >> 28) & 1 != 0
+    }
+
+    pub fn set_arrow(&mut self, v: bool) {
+        if v {
+            self.header |= 1 << 28;
+        } else {
+            self.header &= !(1 << 28);
+        }
+    }
+
+    /// Lexical `this` captured at arrow function creation time.
+    /// Only meaningful when `is_arrow()` returns true.
+    pub fn captured_this(&self) -> JsValue {
+        self.captured_this
+    }
+
+    pub fn set_captured_this(&mut self, v: JsValue) {
+        self.captured_this = v;
     }
 }
 
