@@ -160,3 +160,66 @@ fn array_empty_literal() {
     assert!(obj.is_array());
     assert_eq!(obj.prop_count(), 0);
 }
+
+#[test]
+fn array_shift_removes_first() {
+    let result = eval("[1,2,3].shift()").unwrap();
+    assert_eq!(result.as_int(), 1);
+}
+
+#[test]
+fn array_unshift_adds_front() {
+    let result = eval("[3].unshift(1,2)").unwrap();
+    assert_eq!(result.as_int(), 3);
+}
+
+#[test]
+fn array_fill_replaces() {
+    let result = eval("[1,2,3,4].fill(0,1,3)").unwrap();
+    let obj = unsafe { &*result.as_js_object_ptr() };
+    assert_eq!(obj.prop_count(), 4);
+}
+
+#[test]
+fn array_at_positive() {
+    let result = eval("[10,20,30].at(1)").unwrap();
+    assert_eq!(result.as_int(), 20);
+}
+
+#[test]
+fn array_at_negative() {
+    let result = eval("[10,20,30].at(-1)").unwrap();
+    assert_eq!(result.as_int(), 30);
+}
+
+#[test]
+fn array_last_index_of_found() {
+    let result = eval("[1,2,3,2].lastIndexOf(2)").unwrap();
+    assert_eq!(result.as_int(), 3);
+}
+
+#[test]
+fn array_last_index_of_not_found() {
+    let result = eval("[1,2,3].lastIndexOf(99)").unwrap();
+    assert_eq!(result.as_int(), -1);
+}
+
+#[test]
+fn array_sort_default() {
+    let result = eval("[3,1,2].sort()").unwrap();
+    let obj = unsafe { &*result.as_js_object_ptr() };
+    assert_eq!(obj.prop_count(), 3);
+}
+
+#[test]
+fn array_copy_within_copies() {
+    let result = eval("[1,2,3,4,5].copyWithin(0,3)").unwrap();
+    assert!(result.is_object());
+}
+
+#[test]
+fn array_fill_single() {
+    let result = eval("[1,2,3].fill(0)").unwrap();
+    let obj = unsafe { &*result.as_js_object_ptr() };
+    assert_eq!(obj.get_prop_at(0).as_int(), 0);
+}

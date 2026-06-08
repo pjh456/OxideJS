@@ -24,8 +24,8 @@ pub fn bind_object(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
         from_entries: crate::builtins::object::object_from_entries as *const (),
         get_prototype_of: crate::builtins::object::object_get_prototype_of as *const (),
         has_own: crate::builtins::object::object_has_own as *const (),
-        entries: std::ptr::null(),
-        values: std::ptr::null(),
+        entries: crate::builtins::object::object_entries as *const (),
+        values: crate::builtins::object::object_values as *const (),
     };
     kernel.builtin_world().bind_object_methods(
         &methods,

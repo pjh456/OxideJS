@@ -469,3 +469,36 @@ pub fn string_normalize(vm: &mut Vm, args: &[u8]) -> NativeResult {
     };
     Ok(vm.intern(&result))
 }
+
+pub fn string_match_all(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let s = this_string(vm, args);
+    if args.len() < 2 { return Err(JsValue::undefined()); }
+    let pattern_val = vm.reg(args[1]);
+    if is_regexp_obj(pattern_val, vm) {
+        let re_ptr = pattern_val.as_js_object_ptr();
+        let re = unsafe { &*re_ptr };
+        let fn_ptr = match re.native_fn() { Some(p) => p, None => return Ok(JsValue::undefined()) };
+        let regex = unsafe { &*(fn_ptr as *const regex::Regex) };
+        let matches: Vec<String> = regex.find_iter(&s).map(|m| m.as_str().to_string()).collect();
+        return Ok(make_string_array(vm, &matches));
+    }
+    Ok(JsValue::undefined())
+}
+
+pub fn string_replace_all(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let s = this_string(vm, args);
+    if args.len() < 2 { return Ok(vm.intern(&s)); }
+    let pattern_val = vm.reg(args[1]);
+    let replacement = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { String::new() };
+    if is_regexp_obj(pattern_val, vm) {
+        let re_ptr = pattern_val.as_js_object_ptr();
+        let re = unsafe { &*re_ptr };
+        let fn_ptr = match re.native_fn() { Some(p) => p, None => return Ok(vm.intern(&s)) };
+        let regex = unsafe { &*(fn_ptr as *const regex::Regex) };
+        let result = regex.replace_all(&s, replacement.as_str()).to_string();
+        return Ok(vm.intern(&result));
+    }
+    let pattern = as_string(vm, pattern_val);
+    let result = s.replace(&pattern, &replacement);
+    Ok(vm.intern(&result))
+}

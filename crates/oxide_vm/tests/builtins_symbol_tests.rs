@@ -119,3 +119,10 @@ fn symbol_not_equals_string() {
     let result = eval(&mut vm, "Symbol() === 'symbol'").unwrap();
     assert!(!result.as_bool());
 }
+
+#[test]
+fn symbol_iterator_exists() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "typeof Symbol.iterator").unwrap();
+    assert_eq!(to_str(&vm, result), "object");
+}

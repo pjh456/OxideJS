@@ -42,6 +42,8 @@ pub enum OpCode {
     JMP = 0x20,
     JMP_IF_FALSE = 0x21,
     JMP_IF_TRUE = 0x22,
+    FOR_OF_INIT = 0x23,
+    FOR_OF_NEXT = 0x24,
 
     // -- Update (0x25-0x28) --
     INC_PRE = 0x25,
@@ -61,6 +63,8 @@ pub enum OpCode {
     TRY_END = 0x33,
     TRY_FINALLY_BEGIN = 0x34,
     TRY_FINALLY_END = 0x35,
+    FOR_OF_DONE = 0x36,
+    FOR_OF_CLOSE = 0x37,
 
     // -- Variable (0x30-0x32) --
     LOAD_VAR = 0x30,
@@ -176,6 +180,8 @@ impl TryFrom<u8> for OpCode {
             0x20 => Ok(OpCode::JMP),
             0x21 => Ok(OpCode::JMP_IF_FALSE),
             0x22 => Ok(OpCode::JMP_IF_TRUE),
+            0x23 => Ok(OpCode::FOR_OF_INIT),
+            0x24 => Ok(OpCode::FOR_OF_NEXT),
             0x25 => Ok(OpCode::INC_PRE),
             0x26 => Ok(OpCode::INC_POST),
             0x27 => Ok(OpCode::DEC_PRE),
@@ -193,6 +199,8 @@ impl TryFrom<u8> for OpCode {
             0x33 => Ok(OpCode::TRY_END),
             0x34 => Ok(OpCode::TRY_FINALLY_BEGIN),
             0x35 => Ok(OpCode::TRY_FINALLY_END),
+            0x36 => Ok(OpCode::FOR_OF_DONE),
+            0x37 => Ok(OpCode::FOR_OF_CLOSE),
             0x40 => Ok(OpCode::CALL),
             0x41 => Ok(OpCode::RETURN),
             0x42 => Ok(OpCode::CALL_NATIVE),
@@ -262,6 +270,8 @@ impl fmt::Display for OpCode {
             OpCode::JMP => "JMP",
             OpCode::JMP_IF_FALSE => "JMP_IF_FALSE",
             OpCode::JMP_IF_TRUE => "JMP_IF_TRUE",
+            OpCode::FOR_OF_INIT => "FOR_OF_INIT",
+            OpCode::FOR_OF_NEXT => "FOR_OF_NEXT",
             OpCode::INC_PRE => "INC_PRE",
             OpCode::INC_POST => "INC_POST",
             OpCode::DEC_PRE => "DEC_PRE",
@@ -276,6 +286,8 @@ impl fmt::Display for OpCode {
             OpCode::TRY_END => "TRY_END",
             OpCode::TRY_FINALLY_BEGIN => "TRY_FINALLY_BEGIN",
             OpCode::TRY_FINALLY_END => "TRY_FINALLY_END",
+            OpCode::FOR_OF_DONE => "FOR_OF_DONE",
+            OpCode::FOR_OF_CLOSE => "FOR_OF_CLOSE",
             OpCode::LOAD_VAR => "LOAD_VAR",
             OpCode::STORE_VAR => "STORE_VAR",
             OpCode::LOAD_CONST => "LOAD_CONST",

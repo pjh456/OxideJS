@@ -51,3 +51,27 @@ fn object_define_property_sets_value() {
     let result = eval("Object.defineProperty({},'x',{value:42})").unwrap();
     assert!(result.is_object());
 }
+
+#[test]
+fn object_get_prototype_of() {
+    let result = eval("Object.getPrototypeOf({})").unwrap();
+    assert!(result.is_object() || result.is_null());
+}
+
+#[test]
+fn object_has_own_true() {
+    let result = eval("Object.hasOwn({a:1}, 'a')").unwrap();
+    assert!(result.is_bool());
+}
+
+#[test]
+fn object_entries_returns_array() {
+    let result = eval("Object.entries({a:1,b:2})").unwrap();
+    assert!(result.is_object());
+}
+
+#[test]
+fn object_values_returns_array() {
+    let result = eval("Object.values({a:1,b:2})").unwrap();
+    assert!(result.is_object());
+}

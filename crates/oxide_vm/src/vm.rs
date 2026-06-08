@@ -174,6 +174,8 @@ pub struct Vm {
     pub(crate) pending_error_kind: Option<&'static str>,
     pub(crate) symbol_counter: u32,
     pub(crate) symbol_descriptions: Vec<String>,
+    #[allow(dead_code)]
+    pub(crate) for_of_iters: Vec<*mut u8>,
 }
 
 impl Vm {
@@ -203,6 +205,7 @@ impl Vm {
             pending_error_kind: None,
             symbol_counter: 0,
             symbol_descriptions: Vec::new(),
+            for_of_iters: Vec::new(),
         }
     }
 
@@ -230,6 +233,7 @@ impl Vm {
             pending_error_kind: None,
             symbol_counter: 0,
             symbol_descriptions: Vec::new(),
+            for_of_iters: Vec::new(),
         }
     }
 
@@ -1572,6 +1576,14 @@ impl Vm {
                 OpCode::FOR_IN_CLEANUP => {
                     self.for_in_iters.pop();
                 }
+
+                OpCode::FOR_OF_INIT => {}
+
+                OpCode::FOR_OF_NEXT => {},
+
+                OpCode::FOR_OF_DONE => {},
+
+                OpCode::FOR_OF_CLOSE => {},
 
                 OpCode::THROW => {
                     let exc_value = self.regs[rd];

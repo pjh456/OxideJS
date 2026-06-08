@@ -379,3 +379,40 @@ pub fn object_has_own(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if !key_val.is_string() { return Ok(JsValue::bool(false)); }
     Ok(JsValue::bool(false))
 }
+
+pub fn object_entries(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let obj_ptr = require_obj_arg(vm, args, "entries")?;
+    let obj = unsafe { &*obj_ptr };
+    let keys = walk_own_keys(vm, obj);
+    let n = keys.len().min(255);
+    let array_proto = vm.kernel().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let arr = vm.epoch().alloc(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), n, vm.epoch().bump()));
+    for (_i, (si, offset)) in keys.iter().enumerate().take(n) {
+        let key_str = vm.kernel().string_forge().lookup(*si).unwrap_or_default();
+        let key_val = vm.intern(&key_str);
+        let val = obj.get_prop_at(*offset);
+        let pair = vm.epoch().alloc(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), 2, vm.epoch().bump()));
+        unsafe {
+            (*pair).set_prop_at(0, key_val);
+            (*pair).set_prop_at(1, val);
+            (*pair).set_prop_count(2);
+            (*arr).ensure_hash_props().push(Box::new(JsValue::from_js_object(pair)));
+        }
+    }
+    Ok(JsValue::from_js_object(arr))
+}
+
+pub fn object_values(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let obj_ptr = require_obj_arg(vm, args, "values")?;
+    let obj = unsafe { &*obj_ptr };
+    let keys = walk_own_keys(vm, obj);
+    let n = keys.len().min(255);
+    let array_proto = vm.kernel().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let arr = vm.epoch().alloc(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), n, vm.epoch().bump()));
+    for (i, (_si, offset)) in keys.iter().enumerate().take(n) {
+        let val = obj.get_prop_at(*offset);
+        unsafe { (*arr).set_prop_at(i as u8, val); }
+    }
+    unsafe { (*arr).set_prop_count(n as u8); }
+    Ok(JsValue::from_js_object(arr))
+}

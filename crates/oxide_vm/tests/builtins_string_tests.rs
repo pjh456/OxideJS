@@ -165,3 +165,45 @@ fn string_search_not_found() {
     let result = eval(&mut vm, "'hello'.search('x')").unwrap();
     assert_eq!(result.as_int(), -1);
 }
+
+#[test]
+fn string_trim_start() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "'  hi  '.trimStart()").unwrap();
+    assert_eq!(to_str(&vm, result), "hi  ");
+}
+
+#[test]
+fn string_trim_end() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "'  hi  '.trimEnd()").unwrap();
+    assert_eq!(to_str(&vm, result), "  hi");
+}
+
+#[test]
+fn string_code_point_at_ascii() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "'ABC'.codePointAt(1)").unwrap();
+    assert_eq!(result.as_int(), 66);
+}
+
+#[test]
+fn string_normalize_nfc() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "'hello'.normalize('NFC')").unwrap();
+    assert_eq!(to_str(&vm, result), "hello");
+}
+
+#[test]
+fn string_match_all() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "'aba'.matchAll(/a/g)").unwrap();
+    assert!(result.is_object());
+}
+
+#[test]
+fn string_replace_all() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "'aba'.replaceAll('a', 'c')").unwrap();
+    assert_eq!(to_str(&vm, result), "cbc");
+}

@@ -168,6 +168,7 @@ pub struct BuiltinWorld {
     pub sym_replace: P<JsObject>,
     pub sym_search: P<JsObject>,
     pub sym_split: P<JsObject>,
+    pub sym_iterator: P<JsObject>,
 }
 
 fn intern_label(string_forge: &StringForge, label: &str) -> u32 {
@@ -337,6 +338,7 @@ impl BuiltinWorld {
         let sym_replace = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let sym_search = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let sym_split = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let sym_iterator = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
 
         /// Overwrite placeholder slots (set up by make_pair) with real values.
         /// ctor.vec[0] = constructor.prototype -> proto
@@ -406,6 +408,7 @@ impl BuiltinWorld {
             sym_replace,
             sym_search,
             sym_split,
+            sym_iterator,
         }
     }
 
@@ -483,6 +486,8 @@ impl BuiltinWorld {
         let _ = self.bind_method(ctor, shape_forge, string_forge, "fromEntries", methods.from_entries, 1);
         let _ = self.bind_method(ctor, shape_forge, string_forge, "getPrototypeOf", methods.get_prototype_of, 1);
         let _ = self.bind_method(ctor, shape_forge, string_forge, "hasOwn", methods.has_own, 2);
+        let _ = self.bind_method(ctor, shape_forge, string_forge, "entries", methods.entries, 1);
+        let _ = self.bind_method(ctor, shape_forge, string_forge, "values", methods.values, 1);
     }
 
     pub fn bind_array_methods(
@@ -791,6 +796,8 @@ impl BuiltinWorld {
         let _ = self.bind_method(proto, shape_forge, string_forge, "trimEnd", methods.trim_end, 0);
         let _ = self.bind_method(proto, shape_forge, string_forge, "codePointAt", methods.code_point_at, 1);
         let _ = self.bind_method(proto, shape_forge, string_forge, "normalize", methods.normalize, 0);
+        let _ = self.bind_method(proto, shape_forge, string_forge, "matchAll", methods.match_all, 1);
+        let _ = self.bind_method(proto, shape_forge, string_forge, "replaceAll", methods.replace_all, 2);
     }
 
     pub fn bind_number_methods(

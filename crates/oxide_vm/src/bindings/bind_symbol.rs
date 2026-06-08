@@ -45,6 +45,11 @@ pub fn bind_symbol(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     );
     bind_well_known_symbol(kernel, ctor, sf, sh, "split", sym_split_val);
 
+    let sym_iterator_val = JsValue::from_js_object(
+        kernel.builtin_world().sym_iterator.as_ptr() as *mut JsObject,
+    );
+    bind_well_known_symbol(kernel, ctor, sf, sh, "iterator", sym_iterator_val);
+
     bind_constructor_hash!(
         kernel,
         global,
