@@ -7,7 +7,7 @@ use crate::string_forge::StringForge;
 
 #[macro_export]
 macro_rules! bind_method {
-    ($world:expr, $target:expr, $sf:expr, $sh:expr, $name:literal, $func:path, $nargs:literal) => {
+    ($world:expr, $target:expr, $sf:expr, $sh:expr, $name:literal, $func:expr, $nargs:expr) => {
         let _ = $world.bind_method($target, $sh, $sf, $name, $func as *const (), $nargs);
     };
 }
@@ -15,8 +15,26 @@ macro_rules! bind_method {
 #[macro_export]
 macro_rules! bind_methods {
     ($world:expr, $target:expr, $sf:expr, $sh:expr,
-     $(($name:literal, $func:path, $nargs:literal)),* $(,)?) => {
+     $(($name:literal, $func:expr, $nargs:expr)),* $(,)?) => {
         $( bind_method!($world, $target, $sf, $sh, $name, $func, $nargs); )*
+    };
+}
+
+#[macro_export]
+macro_rules! bind_methods_static {
+    ($target:expr, $sf:expr, $sh:expr, $wrapper_proto:expr,
+     $(($name:literal, $func:expr, $nargs:expr)),* $(,)?) => {
+        $(
+            let _ = $crate::builtin::BuiltinWorld::bind_method_static(
+                $target,
+                $sh,
+                $sf,
+                $name,
+                $func,
+                $nargs,
+                $wrapper_proto,
+            );
+        )*
     };
 }
 
@@ -448,109 +466,34 @@ impl BuiltinWorld {
     ) {
         let ctor_ptr = P::as_ptr(&self.object_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
-
-        let _ = self.bind_method(ctor, shape_forge, string_forge, "keys", methods.keys, 1);
-        let _ = self.bind_method(ctor, shape_forge, string_forge, "create", methods.create, 2);
-        let _ = self.bind_method(ctor, shape_forge, string_forge, "assign", methods.assign, 2);
-        let _ = self.bind_method(
+        bind_methods!(
+            self,
             ctor,
-            shape_forge,
             string_forge,
-            "defineProperty",
-            methods.define_property,
-            3,
-        );
-        let _ = self.bind_method(
-            ctor,
             shape_forge,
-            string_forge,
-            "getOwnPropertyDescriptor",
-            methods.get_own_property_descriptor,
-            2,
+            ("keys", methods.keys, 1),
+            ("create", methods.create, 2),
+            ("assign", methods.assign, 2),
+            ("defineProperty", methods.define_property, 3),
+            (
+                "getOwnPropertyDescriptor",
+                methods.get_own_property_descriptor,
+                2
+            ),
+            ("freeze", methods.freeze, 1),
+            ("seal", methods.seal, 1),
+            ("preventExtensions", methods.prevent_extensions, 1),
+            ("isFrozen", methods.is_frozen, 1),
+            ("isSealed", methods.is_sealed, 1),
+            ("isExtensible", methods.is_extensible, 1),
+            ("getOwnPropertyNames", methods.get_own_property_names, 1),
+            ("defineProperties", methods.define_properties, 2),
+            ("fromEntries", methods.from_entries, 1),
+            ("getPrototypeOf", methods.get_prototype_of, 1),
+            ("hasOwn", methods.has_own, 2),
+            ("entries", methods.entries, 1),
+            ("values", methods.values, 1),
         );
-        let _ = self.bind_method(ctor, shape_forge, string_forge, "freeze", methods.freeze, 1);
-        let _ = self.bind_method(ctor, shape_forge, string_forge, "seal", methods.seal, 1);
-        let _ = self.bind_method(
-            ctor,
-            shape_forge,
-            string_forge,
-            "preventExtensions",
-            methods.prevent_extensions,
-            1,
-        );
-        let _ = self.bind_method(
-            ctor,
-            shape_forge,
-            string_forge,
-            "isFrozen",
-            methods.is_frozen,
-            1,
-        );
-        let _ = self.bind_method(
-            ctor,
-            shape_forge,
-            string_forge,
-            "isSealed",
-            methods.is_sealed,
-            1,
-        );
-        let _ = self.bind_method(
-            ctor,
-            shape_forge,
-            string_forge,
-            "isExtensible",
-            methods.is_extensible,
-            1,
-        );
-        let _ = self.bind_method(
-            ctor,
-            shape_forge,
-            string_forge,
-            "getOwnPropertyNames",
-            methods.get_own_property_names,
-            1,
-        );
-        let _ = self.bind_method(
-            ctor,
-            shape_forge,
-            string_forge,
-            "defineProperties",
-            methods.define_properties,
-            2,
-        );
-        let _ = self.bind_method(
-            ctor,
-            shape_forge,
-            string_forge,
-            "fromEntries",
-            methods.from_entries,
-            1,
-        );
-        let _ = self.bind_method(
-            ctor,
-            shape_forge,
-            string_forge,
-            "getPrototypeOf",
-            methods.get_prototype_of,
-            1,
-        );
-        let _ = self.bind_method(
-            ctor,
-            shape_forge,
-            string_forge,
-            "hasOwn",
-            methods.has_own,
-            2,
-        );
-        let _ = self.bind_method(
-            ctor,
-            shape_forge,
-            string_forge,
-            "entries",
-            methods.entries,
-            1,
-        );
-        let _ = self.bind_method(ctor, shape_forge, string_forge, "values", methods.values, 1);
     }
 
     pub fn bind_array_methods(
@@ -561,140 +504,40 @@ impl BuiltinWorld {
     ) {
         let proto_ptr = P::as_ptr(&self.array_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
-
-        let _ = self.bind_method(proto, shape_forge, string_forge, "push", methods.push, 1);
-        let _ = self.bind_method(proto, shape_forge, string_forge, "pop", methods.pop, 0);
-        let _ = self.bind_method(proto, shape_forge, string_forge, "slice", methods.slice, 2);
-        let _ = self.bind_method(
+        bind_methods!(
+            self,
             proto,
-            shape_forge,
             string_forge,
-            "splice",
-            methods.splice,
-            2,
-        );
-        let _ = self.bind_method(
-            proto,
             shape_forge,
-            string_forge,
-            "concat",
-            methods.concat,
-            1,
+            ("push", methods.push, 1),
+            ("pop", methods.pop, 0),
+            ("slice", methods.slice, 2),
+            ("splice", methods.splice, 2),
+            ("concat", methods.concat, 1),
+            ("join", methods.join, 1),
+            ("indexOf", methods.index_of, 1),
+            ("includes", methods.includes, 1),
+            ("reverse", methods.reverse, 0),
+            ("forEach", methods.for_each, 1),
+            ("map", methods.map, 1),
+            ("filter", methods.filter, 1),
+            ("reduce", methods.reduce, 1),
+            ("find", methods.find, 1),
+            ("some", methods.some, 1),
+            ("every", methods.every, 1),
+            ("flat", methods.flat, 0),
+            ("flatMap", methods.flat_map, 1),
+            ("shift", methods.shift, 0),
+            ("unshift", methods.unshift, 1),
+            ("fill", methods.fill, 1),
+            ("copyWithin", methods.copy_within, 2),
+            ("at", methods.at, 1),
+            ("lastIndexOf", methods.last_index_of, 1),
+            ("findIndex", methods.find_index, 1),
+            ("findLast", methods.find_last, 1),
+            ("reduceRight", methods.reduce_right, 1),
+            ("sort", methods.sort, 0),
         );
-        let _ = self.bind_method(proto, shape_forge, string_forge, "join", methods.join, 1);
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "indexOf",
-            methods.index_of,
-            1,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "includes",
-            methods.includes,
-            1,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "reverse",
-            methods.reverse,
-            0,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "forEach",
-            methods.for_each,
-            1,
-        );
-        let _ = self.bind_method(proto, shape_forge, string_forge, "map", methods.map, 1);
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "filter",
-            methods.filter,
-            1,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "reduce",
-            methods.reduce,
-            1,
-        );
-        let _ = self.bind_method(proto, shape_forge, string_forge, "find", methods.find, 1);
-        let _ = self.bind_method(proto, shape_forge, string_forge, "some", methods.some, 1);
-        let _ = self.bind_method(proto, shape_forge, string_forge, "every", methods.every, 1);
-        let _ = self.bind_method(proto, shape_forge, string_forge, "flat", methods.flat, 0);
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "flatMap",
-            methods.flat_map,
-            1,
-        );
-        let _ = self.bind_method(proto, shape_forge, string_forge, "shift", methods.shift, 0);
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "unshift",
-            methods.unshift,
-            1,
-        );
-        let _ = self.bind_method(proto, shape_forge, string_forge, "fill", methods.fill, 1);
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "copyWithin",
-            methods.copy_within,
-            2,
-        );
-        let _ = self.bind_method(proto, shape_forge, string_forge, "at", methods.at, 1);
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "lastIndexOf",
-            methods.last_index_of,
-            1,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "findIndex",
-            methods.find_index,
-            1,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "findLast",
-            methods.find_last,
-            1,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "reduceRight",
-            methods.reduce_right,
-            1,
-        );
-        let _ = self.bind_method(proto, shape_forge, string_forge, "sort", methods.sort, 0);
     }
 
     pub fn bind_error_methods(
@@ -705,68 +548,30 @@ impl BuiltinWorld {
     ) {
         let ctor_ptr = P::as_ptr(&self.error_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
-
-        let _ = self.bind_method(ctor, shape_forge, string_forge, "Error", methods.error, 1);
-        let _ = self.bind_method(
+        bind_methods!(
+            self,
             ctor,
-            shape_forge,
             string_forge,
-            "TypeError",
-            methods.type_error,
-            1,
-        );
-        let _ = self.bind_method(
-            ctor,
             shape_forge,
-            string_forge,
-            "ReferenceError",
-            methods.reference_error,
-            1,
-        );
-        let _ = self.bind_method(
-            ctor,
-            shape_forge,
-            string_forge,
-            "RangeError",
-            methods.range_error,
-            1,
-        );
-        let _ = self.bind_method(
-            ctor,
-            shape_forge,
-            string_forge,
-            "SyntaxError",
-            methods.syntax_error,
-            1,
-        );
-        let _ = self.bind_method(
-            ctor,
-            shape_forge,
-            string_forge,
-            "URIError",
-            methods.uri_error,
-            1,
-        );
-        let _ = self.bind_method(
-            ctor,
-            shape_forge,
-            string_forge,
-            "EvalError",
-            methods.eval_error,
-            1,
+            ("Error", methods.error, 1),
+            ("TypeError", methods.type_error, 1),
+            ("ReferenceError", methods.reference_error, 1),
+            ("RangeError", methods.range_error, 1),
+            ("SyntaxError", methods.syntax_error, 1),
+            ("URIError", methods.uri_error, 1),
+            ("EvalError", methods.eval_error, 1),
         );
 
         let proto_ptr = P::as_ptr(&self.error_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
-        let _ = self.bind_method(
+        bind_methods!(
+            self,
             proto,
-            shape_forge,
             string_forge,
-            "toString",
-            methods.to_string,
-            0,
+            shape_forge,
+            ("toString", methods.to_string, 0),
+            ("stack", methods.stack, 0),
         );
-        let _ = self.bind_method(proto, shape_forge, string_forge, "stack", methods.stack, 0);
     }
 
     pub fn bind_string_methods(
@@ -777,185 +582,36 @@ impl BuiltinWorld {
     ) {
         let proto_ptr = P::as_ptr(&self.string_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
-
-        let _ = self.bind_method(
+        bind_methods!(
+            self,
             proto,
-            shape_forge,
             string_forge,
-            "indexOf",
-            methods.index_of,
-            1,
-        );
-        let _ = self.bind_method(
-            proto,
             shape_forge,
-            string_forge,
-            "includes",
-            methods.includes,
-            1,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "charAt",
-            methods.char_at,
-            1,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "charCodeAt",
-            methods.char_code_at,
-            1,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "concat",
-            methods.concat,
-            1,
-        );
-        let _ = self.bind_method(proto, shape_forge, string_forge, "slice", methods.slice, 2);
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "substring",
-            methods.substring,
-            2,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "toUpperCase",
-            methods.to_upper_case,
-            0,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "toLowerCase",
-            methods.to_lower_case,
-            0,
-        );
-        let _ = self.bind_method(proto, shape_forge, string_forge, "trim", methods.trim, 0);
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "repeat",
-            methods.repeat,
-            1,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "padStart",
-            methods.pad_start,
-            1,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "padEnd",
-            methods.pad_end,
-            1,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "startsWith",
-            methods.starts_with,
-            1,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "endsWith",
-            methods.ends_with,
-            1,
-        );
-        let _ = self.bind_method(proto, shape_forge, string_forge, "split", methods.split, 1);
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "replace",
-            methods.replace,
-            2,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "match",
-            methods.match_fn,
-            1,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "search",
-            methods.search,
-            1,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "trimStart",
-            methods.trim_start,
-            0,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "trimEnd",
-            methods.trim_end,
-            0,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "codePointAt",
-            methods.code_point_at,
-            1,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "normalize",
-            methods.normalize,
-            0,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "matchAll",
-            methods.match_all,
-            1,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "replaceAll",
-            methods.replace_all,
-            2,
+            ("indexOf", methods.index_of, 1),
+            ("includes", methods.includes, 1),
+            ("charAt", methods.char_at, 1),
+            ("charCodeAt", methods.char_code_at, 1),
+            ("concat", methods.concat, 1),
+            ("slice", methods.slice, 2),
+            ("substring", methods.substring, 2),
+            ("toUpperCase", methods.to_upper_case, 0),
+            ("toLowerCase", methods.to_lower_case, 0),
+            ("trim", methods.trim, 0),
+            ("repeat", methods.repeat, 1),
+            ("padStart", methods.pad_start, 1),
+            ("padEnd", methods.pad_end, 1),
+            ("startsWith", methods.starts_with, 1),
+            ("endsWith", methods.ends_with, 1),
+            ("split", methods.split, 1),
+            ("replace", methods.replace, 2),
+            ("match", methods.match_fn, 1),
+            ("search", methods.search, 1),
+            ("trimStart", methods.trim_start, 0),
+            ("trimEnd", methods.trim_end, 0),
+            ("codePointAt", methods.code_point_at, 1),
+            ("normalize", methods.normalize, 0),
+            ("matchAll", methods.match_all, 1),
+            ("replaceAll", methods.replace_all, 2),
         );
     }
 
@@ -969,88 +625,28 @@ impl BuiltinWorld {
         let ctor = unsafe { &mut *ctor_ptr };
         let proto_ptr = P::as_ptr(&self.number_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
-
-        let _ = self.bind_method(ctor, shape_forge, string_forge, "isNaN", methods.is_nan, 1);
-        let _ = self.bind_method(
+        bind_methods!(
+            self,
             ctor,
-            shape_forge,
             string_forge,
-            "isFinite",
-            methods.is_finite,
-            1,
-        );
-        let _ = self.bind_method(
-            ctor,
             shape_forge,
-            string_forge,
-            "parseInt",
-            methods.parse_int,
-            1,
+            ("isNaN", methods.is_nan, 1),
+            ("isFinite", methods.is_finite, 1),
+            ("parseInt", methods.parse_int, 1),
+            ("parseFloat", methods.parse_float, 1),
+            ("isInteger", methods.is_integer, 1),
+            ("isSafeInteger", methods.is_safe_integer, 1),
         );
-        let _ = self.bind_method(
-            ctor,
-            shape_forge,
-            string_forge,
-            "parseFloat",
-            methods.parse_float,
-            1,
-        );
-
-        let _ = self.bind_method(
+        bind_methods!(
+            self,
             proto,
-            shape_forge,
             string_forge,
-            "toString",
-            methods.to_string,
-            0,
-        );
-        let _ = self.bind_method(
-            proto,
             shape_forge,
-            string_forge,
-            "toFixed",
-            methods.to_fixed,
-            0,
-        );
-        let _ = self.bind_method(
-            ctor,
-            shape_forge,
-            string_forge,
-            "isInteger",
-            methods.is_integer,
-            1,
-        );
-        let _ = self.bind_method(
-            ctor,
-            shape_forge,
-            string_forge,
-            "isSafeInteger",
-            methods.is_safe_integer,
-            1,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "toExponential",
-            methods.to_exponential,
-            0,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "toPrecision",
-            methods.to_precision,
-            0,
-        );
-        let _ = self.bind_method(
-            proto,
-            shape_forge,
-            string_forge,
-            "valueOf",
-            methods.value_of,
-            0,
+            ("toString", methods.to_string, 0),
+            ("toFixed", methods.to_fixed, 0),
+            ("toExponential", methods.to_exponential, 0),
+            ("toPrecision", methods.to_precision, 0),
+            ("valueOf", methods.value_of, 0),
         );
     }
 
@@ -1063,42 +659,15 @@ impl BuiltinWorld {
         let proto_ptr = P::as_ptr(&self.function_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
         let fp = self.fn_proto_val();
-
-        let _ = Self::bind_method_static(
+        bind_methods_static!(
             proto,
-            shape_forge,
             string_forge,
-            "call",
-            methods.call,
-            1,
-            fp,
-        );
-        let _ = Self::bind_method_static(
-            proto,
             shape_forge,
-            string_forge,
-            "apply",
-            methods.apply,
-            2,
             fp,
-        );
-        let _ = Self::bind_method_static(
-            proto,
-            shape_forge,
-            string_forge,
-            "bind",
-            methods.bind,
-            1,
-            fp,
-        );
-        let _ = Self::bind_method_static(
-            proto,
-            shape_forge,
-            string_forge,
-            "toString",
-            methods.to_string,
-            0,
-            fp,
+            ("call", methods.call, 1),
+            ("apply", methods.apply, 2),
+            ("bind", methods.bind, 1),
+            ("toString", methods.to_string, 0),
         );
     }
 

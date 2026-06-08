@@ -131,3 +131,17 @@ fn number_to_exponential() {
         .unwrap_or_default();
     assert_eq!(s, "1.23e2");
 }
+
+#[test]
+fn number_static_constants_remain_bound() {
+    let mut vm = Vm::new();
+    assert_eq!(
+        eval(&mut vm, "Number.MAX_SAFE_INTEGER")
+            .unwrap()
+            .as_double(),
+        9007199254740991f64
+    );
+    assert!(eval(&mut vm, "Number.POSITIVE_INFINITY > 0")
+        .unwrap()
+        .as_bool());
+}
