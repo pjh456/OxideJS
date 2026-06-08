@@ -140,6 +140,10 @@ pub struct CallFrame {
     pub function_obj_reg: u8,
     pub frame_base: u8,
     pub function_name: u32,
+    pub caller_reg_limit: u8,
+    pub saved_regs: Box<[JsValue]>,
+    pub saved_this: JsValue,
+    pub saved_new_target: JsValue,
 }
 
 pub struct ForInIter<'bump> {
@@ -177,6 +181,8 @@ pub struct Vm {
     pub(crate) symbol_descriptions: Vec<String>,
     #[allow(dead_code)]
     pub(crate) for_of_iters: Vec<*mut u8>,
+    pub(crate) root_reg_limit: u8,
+    pub(crate) active_reg_limit: u8,
 }
 
 impl Vm {
@@ -207,6 +213,8 @@ impl Vm {
             symbol_counter: 0,
             symbol_descriptions: Vec::new(),
             for_of_iters: Vec::new(),
+            root_reg_limit: 0,
+            active_reg_limit: 0,
         }
     }
 
@@ -235,6 +243,8 @@ impl Vm {
             symbol_counter: 0,
             symbol_descriptions: Vec::new(),
             for_of_iters: Vec::new(),
+            root_reg_limit: 0,
+            active_reg_limit: 0,
         }
     }
 
@@ -288,6 +298,8 @@ impl Vm {
         self.for_in_iters.clear();
         self.epoch.reset();
         self.interned_strings.clear();
+        self.root_reg_limit = 0;
+        self.active_reg_limit = 0;
     }
 
     pub fn intern(&mut self, s: &str) -> JsValue {
@@ -463,6 +475,7 @@ impl Vm {
     pub fn rerun(&mut self) -> Result<JsValue, String> {
         self.pc = 0;
         self.regs = [JsValue::undefined(); 256];
+        self.active_reg_limit = self.root_reg_limit;
         self.frames.clear();
         self.for_in_iters.clear();
         self.try_stack.clear();
@@ -497,6 +510,8 @@ impl Vm {
         self.bytecode = module.bytecode.clone();
         self.pc = 0;
         self.regs = [JsValue::undefined(); 256];
+        self.root_reg_limit = module.n_registers.max(1);
+        self.active_reg_limit = self.root_reg_limit;
         self.frames.clear();
         self.saved_bytecode_stack.clear();
         self.saved_constants_stack.clear();
@@ -729,16 +744,22 @@ impl Vm {
                                     // Clone sub_module data before mutably borrowing self
                                     let sub_bytecode = self.sub_modules[sub_idx].bytecode.clone();
                                     let sub_n_args = self.sub_modules[sub_idx].n_args as usize;
+                                    let sub_n_registers = self.sub_modules[sub_idx].n_registers;
                                     let sub_constants = self.sub_modules[sub_idx].constants.clone();
-                                    let sub_builtin_count =
-                                        self.sub_modules[sub_idx].builtin_reg_map.len();
+                                    let sub_param_base =
+                                        self.sub_modules[sub_idx].param_base as usize;
                                     let sub_is_arrow = self.sub_modules[sub_idx].is_arrow;
+                                    let caller_reg_limit = self.active_reg_limit.max(1);
+                                    let saved_regs = self.regs[..caller_reg_limit as usize]
+                                        .to_vec()
+                                        .into_boxed_slice();
+                                    let saved_this = self.regs[254];
+                                    let saved_new_target = self.regs[255];
 
-                                    // Copy args to regs[sub_builtin_count..sub_builtin_count+n_args]
-                                    // (builtins occupy regs[0..sub_builtin_count-1])
+                                    // Copy args into the callee's parameter register window.
                                     for i in 0..sub_n_args {
                                         let src_reg = first_arg_reg.wrapping_add(i as u8) as usize;
-                                        self.regs[sub_builtin_count + i] = self.regs[src_reg];
+                                        self.regs[sub_param_base + i] = self.regs[src_reg];
                                     }
                                     // Set this (reg 254 convention).
                                     // Arrow functions use captured lexical `this` (D-01).
@@ -747,6 +768,7 @@ impl Vm {
                                     } else {
                                         callee
                                     };
+                                    self.regs[255] = JsValue::undefined();
 
                                     // Save current bytecode/constants
                                     self.saved_bytecode_stack
@@ -760,8 +782,12 @@ impl Vm {
                                         n_locals: sub_n_args as u8,
                                         n_args: sub_n_args as u8,
                                         function_obj_reg: callee_reg as u8,
-                                        frame_base: sub_builtin_count as u8,
+                                        frame_base: sub_param_base as u8,
                                         function_name: 0,
+                                        caller_reg_limit,
+                                        saved_regs,
+                                        saved_this,
+                                        saved_new_target,
                                     });
 
                                     // Convert sub_module constants
@@ -804,6 +830,7 @@ impl Vm {
                                         }
                                     }
 
+                                    self.active_reg_limit = sub_n_registers.max(1);
                                     self.pc = 0;
                                     continue;
                                 }
@@ -944,6 +971,11 @@ impl Vm {
                         if let Some(saved_consts) = self.saved_constants_stack.pop() {
                             self.constants = saved_consts;
                         }
+                        let restore_len = frame.saved_regs.len();
+                        self.regs[..restore_len].copy_from_slice(&frame.saved_regs);
+                        self.regs[254] = frame.saved_this;
+                        self.regs[255] = frame.saved_new_target;
+                        self.active_reg_limit = frame.caller_reg_limit;
                         // Restore caller's pc and merge result into caller's regs[0].
                         self.pc = frame.return_addr;
                         self.regs[0] = result;

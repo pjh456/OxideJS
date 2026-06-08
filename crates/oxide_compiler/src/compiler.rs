@@ -56,6 +56,7 @@ pub(crate) struct CompileCtx {
     pub(crate) constants: Vec<Constant>,
     next_reg: u8,
     pub(crate) max_regs: u8,
+    reserved_reg_start: u8,
     symbols: SymbolTable,
     pub(crate) label_map: HashMap<Label, usize>,
     pub(crate) loop_stack: Vec<(Label, Label)>,
@@ -78,6 +79,7 @@ impl CompileCtx {
             constants: Vec::new(),
             next_reg: 0,
             max_regs: 0,
+            reserved_reg_start: 0,
             symbols: SymbolTable::new(),
             label_map: HashMap::new(),
             loop_stack: Vec::new(),
@@ -104,7 +106,7 @@ impl CompileCtx {
     }
 
     pub(crate) fn reset_regs(&mut self) {
-        self.next_reg = self.builtin_reg_map.len() as u8;
+        self.next_reg = (self.builtin_reg_map.len() as u8).max(self.reserved_reg_start);
         self.projected_pc = 0;
         self.label_counter = 0;
     }
@@ -275,6 +277,7 @@ impl Compiler {
 
         // Inherit parent's global scope entries so previously-declared function names
         // are visible from within the body.
+        let mut inherited_reg_start = ctx.builtin_reg_map.len() as u8;
         for (name, binding) in &parent_ctx.symbols.scopes[0].bindings {
             ctx.symbols.scopes[0].bindings.insert(
                 name.clone(),
@@ -284,7 +287,9 @@ impl Compiler {
                     is_const: binding.is_const,
                 },
             );
+            inherited_reg_start = inherited_reg_start.max(binding.reg.saturating_add(1));
         }
+        ctx.reserved_reg_start = inherited_reg_start;
 
         // Align next_reg with builtin count so both count and emit passes start at the
         // same register offset (params go after builtin slots).
@@ -292,6 +297,8 @@ impl Compiler {
 
         // Function body scope - params and local vars
         ctx.push_scope_with_kind(ScopeKind::FunctionScope);
+
+        let param_base = ctx.next_reg;
 
         // Register parameters as initialized.
         for name in param_names {
@@ -354,6 +361,7 @@ impl Compiler {
             constants: ctx.constants,
             n_registers: ctx.max_regs,
             n_args: param_names.len() as u8,
+            param_base,
             builtin_reg_map: ctx.builtin_reg_map,
             sub_modules: ctx.sub_modules,
             is_arrow: false,
@@ -410,6 +418,7 @@ impl Compiler {
             constants: ctx.constants,
             n_registers: ctx.max_regs,
             n_args: 0,
+            param_base: ctx.builtin_reg_map.len() as u8,
             builtin_reg_map: ctx.builtin_reg_map,
             sub_modules: ctx.sub_modules,
             is_arrow: false,

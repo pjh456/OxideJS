@@ -94,6 +94,28 @@ fn two_funcs_called_from_global() {
     assert!((result.as_double() - 3.0).abs() < 0.0001);
 }
 
+#[test]
+fn call_preserves_previous_call_result_register() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "function g() { return 10; } function h() { return 20; } function f() { return g() + h(); } f()",
+    )
+    .unwrap();
+    assert!((result.as_double() - 30.0).abs() < 0.0001);
+}
+
+#[test]
+fn call_preserves_local_across_nested_bytecode_call() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "function g() { return 10; } function h() { return 20; } function f() { var x = g(); return x + h(); } f()",
+    )
+    .unwrap();
+    assert!((result.as_double() - 30.0).abs() < 0.0001);
+}
+
 // --- Builtins inside functions ---
 
 #[test]

@@ -19,6 +19,7 @@ pub struct CompiledModule {
     pub constants: Vec<Constant>,
     pub n_registers: u8,
     pub n_args: u8,
+    pub param_base: u8,
     pub builtin_reg_map: Vec<(String, u8)>,
     pub sub_modules: Vec<CompiledModule>,
     /// True when this module is an arrow function body (D-01).
@@ -39,6 +40,7 @@ impl CompiledModule {
             constants: Vec::new(),
             n_registers: 0,
             n_args: 0,
+            param_base: 0,
             builtin_reg_map: Vec::new(),
             sub_modules: Vec::new(),
             is_arrow: false,
@@ -61,6 +63,7 @@ impl Clone for CompiledModule {
             constants: self.constants.clone(),
             n_registers: self.n_registers,
             n_args: self.n_args,
+            param_base: self.param_base,
             builtin_reg_map: self.builtin_reg_map.clone(),
             sub_modules: self.sub_modules.clone(),
             is_arrow: self.is_arrow,
