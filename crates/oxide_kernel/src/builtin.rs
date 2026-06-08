@@ -88,6 +88,12 @@ pub struct StringMethods {
     pub search: *const (),
 }
 
+pub struct RegExpMethods {
+    pub exec: *const (),
+    pub test: *const (),
+    pub to_string: *const (),
+}
+
 pub struct NumberMethods {
     pub is_nan: *const (),
     pub is_finite: *const (),
@@ -134,6 +140,12 @@ pub struct BuiltinWorld {
     pub set_proto: P<JsObject>,
     pub map_constructor: P<JsObject>,
     pub map_proto: P<JsObject>,
+    pub regexp_constructor: P<JsObject>,
+    pub regexp_proto: P<JsObject>,
+    pub sym_match: P<JsObject>,
+    pub sym_replace: P<JsObject>,
+    pub sym_search: P<JsObject>,
+    pub sym_split: P<JsObject>,
 }
 
 fn intern_label(string_forge: &StringForge, label: &str) -> u32 {
@@ -290,6 +302,19 @@ impl BuiltinWorld {
             si_constructor,
             si_name,
         );
+        let (regexp_proto, regexp_constructor) = make_pair(
+            string_forge,
+            shape_forge,
+            "RegExp",
+            si_prototype,
+            si_constructor,
+            si_name,
+        );
+
+        let sym_match = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let sym_replace = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let sym_search = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let sym_split = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
 
         /// Overwrite placeholder slots (set up by make_pair) with real values.
         /// ctor.vec[0] = constructor.prototype -> proto
@@ -320,6 +345,7 @@ impl BuiltinWorld {
         wire_ctor_proto(&date_constructor, &date_proto);
         wire_ctor_proto(&set_constructor, &set_proto);
         wire_ctor_proto(&map_constructor, &map_proto);
+        wire_ctor_proto(&regexp_constructor, &regexp_proto);
 
         Self {
             object_proto,
@@ -352,6 +378,12 @@ impl BuiltinWorld {
             set_proto,
             map_constructor,
             map_proto,
+            regexp_constructor,
+            regexp_proto,
+            sym_match,
+            sym_replace,
+            sym_search,
+            sym_split,
         }
     }
 

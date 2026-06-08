@@ -8,8 +8,10 @@ pub mod bind_map;
 pub mod bind_math;
 pub mod bind_number;
 pub mod bind_object;
+pub mod bind_regexp;
 pub mod bind_set;
 pub mod bind_string;
+pub mod bind_symbol;
 
 use std::sync::Arc;
 
@@ -60,4 +62,6 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_map::bind_map(kernel, global);
     bind_boolean::bind_boolean(kernel, global);
     bind_function::bind_function(kernel);
+    bind_regexp::bind_regexp(kernel, global);
+    bind_symbol::bind_symbol(kernel, global);
 }

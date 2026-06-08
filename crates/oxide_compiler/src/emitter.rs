@@ -1041,6 +1041,38 @@ impl Compiler {
                 ctx.emit(opcode::encode(OpCode::LOAD_VAR, r, 254, 0));
                 Ok(r)
             }
+            Expression::RegExpLiteral(lit) => {
+                if let Some(raw) = &lit.raw {
+                    let raw_str = raw.to_string();
+                    if raw_str.len() >= 2 && raw_str.starts_with('/') {
+                        let last_slash = raw_str.rfind('/').unwrap_or(raw_str.len() - 1);
+                        let pattern = &raw_str[1..last_slash];
+                        let flags = &raw_str[last_slash + 1..];
+                        let ci = ctx.add_constant(Constant::RegExp(
+                            pattern.to_string(),
+                            flags.to_string(),
+                        ));
+                        let r = ctx.alloc_reg();
+                        ctx.emit(opcode::encode(
+                            OpCode::LOAD_CONST,
+                            r,
+                            (ci & 0xFF) as u8,
+                            ((ci >> 8) & 0xFF) as u8,
+                        ));
+                        Ok(r)
+                    } else {
+                        Err(format!(
+                            "unsupported expression type: {:?}",
+                            expr
+                        ))
+                    }
+                } else {
+                    Err(format!(
+                        "unsupported expression type: {:?}",
+                        expr
+                    ))
+                }
+            }
             _ => Err(format!("unsupported expression type: {:?}", expr)),
         }
     }

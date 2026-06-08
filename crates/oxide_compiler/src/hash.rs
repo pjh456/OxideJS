@@ -243,6 +243,12 @@ fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher) {
                 }
             }
         }
+        Expression::RegExpLiteral(lit) => {
+            if let Some(raw) = &lit.raw {
+                raw.to_string().hash(h);
+            }
+            std::mem::discriminant(expr).hash(h);
+        }
         _ => {
             std::mem::discriminant(expr).hash(h);
         }

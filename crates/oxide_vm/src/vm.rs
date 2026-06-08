@@ -172,6 +172,8 @@ pub struct Vm {
     pub(crate) exception_value: Option<JsValue>,
     pub(crate) pending_exception: Option<JsValue>,
     pub(crate) pending_error_kind: Option<&'static str>,
+    pub(crate) symbol_counter: u32,
+    pub(crate) symbol_descriptions: Vec<String>,
 }
 
 impl Vm {
@@ -199,10 +201,13 @@ impl Vm {
             exception_value: None,
             pending_exception: None,
             pending_error_kind: None,
+            symbol_counter: 0,
+            symbol_descriptions: Vec::new(),
         }
     }
 
     pub fn with_kernel(kernel: Arc<OxideKernel>) -> Self {
+        let obj_proto = P::clone(&kernel.builtin_world().object_proto);
         Self {
             regs: [JsValue::undefined(); 256],
             pc: 0,
@@ -210,10 +215,10 @@ impl Vm {
             constants: Vec::new(),
             frames: Vec::with_capacity(128),
             for_in_iters: Vec::new(),
-            kernel: Arc::clone(&kernel),
+            kernel,
             interned_strings: Vec::new(),
             epoch: Epoch::new(),
-            object_prototype: P::clone(&kernel.builtin_world().object_proto),
+            object_prototype: obj_proto,
             math_rng_state: 0,
             sub_modules: Vec::new(),
             sub_module_constants: Vec::new(),
@@ -223,6 +228,8 @@ impl Vm {
             exception_value: None,
             pending_exception: None,
             pending_error_kind: None,
+            symbol_counter: 0,
+            symbol_descriptions: Vec::new(),
         }
     }
 
@@ -308,6 +315,34 @@ impl Vm {
                 Constant::Null => JsValue::null(),
                 Constant::Undefined => JsValue::undefined(),
                 Constant::BytecodeFunc(idx) => self.create_function_object(*idx),
+                Constant::RegExp(pattern, flags) => {
+                    let pat_si = self.kernel.string_forge().intern(pattern).0;
+                    let flags_si = self.kernel.string_forge().intern(flags).0;
+                    let pat_val = JsValue::string(pat_si, 0);
+                    let flags_val = JsValue::string(flags_si, 0);
+
+                    let native_fn = self.kernel.builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
+                    let ctor = unsafe { &*native_fn };
+                    let ctor_fn = ctor.native_fn();
+                    if ctor_fn.is_none() {
+                        return JsValue::undefined();
+                    }
+                    let saved_0 = self.regs[0];
+                    let saved_1 = self.regs[1];
+                    let saved_2 = self.regs[2];
+                    self.regs[0] = JsValue::undefined();
+                    self.regs[1] = pat_val;
+                    self.regs[2] = flags_val;
+                    let func: crate::native::NativeFn = unsafe { std::mem::transmute(ctor_fn.unwrap()) };
+                    let result = func(self, &[0, 1, 2]);
+                    self.regs[0] = saved_0;
+                    self.regs[1] = saved_1;
+                    self.regs[2] = saved_2;
+                    match result {
+                        Ok(val) => val,
+                        Err(_) => JsValue::undefined(),
+                    }
+                },
             })
             .collect()
     }
@@ -706,6 +741,7 @@ impl Vm {
                                             Constant::BytecodeFunc(idx) => {
                                                 self.create_function_object(*idx)
                                             }
+                                            Constant::RegExp(_, _) => JsValue::undefined(),
                                         })
                                         .collect();
 

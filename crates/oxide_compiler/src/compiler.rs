@@ -22,6 +22,7 @@ pub(crate) fn is_side_effect_free(expr: &Expression) -> bool {
             | Expression::BooleanLiteral(_)
             | Expression::NullLiteral(_)
             | Expression::Identifier(_)
+            | Expression::RegExpLiteral(_)
     )
 }
 
@@ -198,6 +199,8 @@ impl CompileCtx {
             "Date",
             "Set",
             "Map",
+            "RegExp",
+            "Symbol",
             "parseInt",
             "parseFloat",
             "isNaN",

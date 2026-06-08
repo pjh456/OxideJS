@@ -465,8 +465,13 @@ impl Compiler {
                 }
                 _ => {
                     ctx.alloc_reg();
+                    ctx.projected_pc += 1;
                 }
             },
+            Expression::RegExpLiteral(_) => {
+                ctx.alloc_reg();
+                ctx.projected_pc += 1;
+            }
             _ => {
                 ctx.alloc_reg();
                 ctx.projected_pc += 1; // LOAD_CONST or LOAD_VAR

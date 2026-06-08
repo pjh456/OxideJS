@@ -6,7 +6,6 @@ use crate::coercion;
 use crate::native::NativeResult;
 use crate::vm::Vm;
 use memchr::memchr;
-use regex::Regex;
 
 fn this_string(vm: &Vm, args: &[u8]) -> String {
     coercion::to_string(vm.kernel().string_forge().as_ref(), vm.reg(args[0]))
@@ -33,6 +32,27 @@ fn make_string_array(vm: &mut Vm, parts: &[String]) -> JsValue {
 
 fn as_string(vm: &Vm, val: JsValue) -> String {
     coercion::to_string(vm.kernel().string_forge().as_ref(), val)
+}
+
+fn is_regexp_obj(val: JsValue, vm: &Vm) -> bool {
+    if !val.is_object() {
+        return false;
+    }
+    let ptr = val.as_js_object_ptr();
+    if ptr.is_null() {
+        return false;
+    }
+    let obj = unsafe { &*ptr };
+    let proto = obj.proto();
+    if !proto.is_object() {
+        return false;
+    }
+    let proto_ptr = proto.as_js_object_ptr();
+    if proto_ptr.is_null() {
+        return false;
+    }
+    let rp = vm.kernel().builtin_world().regexp_proto.as_ptr() as *mut JsObject;
+    std::ptr::eq(proto_ptr, rp)
 }
 
 pub fn string_index_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
@@ -291,27 +311,35 @@ pub fn string_split(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let parts = vec![s.clone()];
         return Ok(make_string_array(vm, &parts));
     }
-    let sep = as_string(vm, vm.reg(args[1]));
+    let sep_val = vm.reg(args[1]);
     let limit = if args.len() > 2 {
         coercion::to_number(vm.reg(args[2]), vm.kernel().string_forge().as_ref()) as usize
     } else {
         usize::MAX
     };
 
-    let parts: Vec<String>;
-    if sep.starts_with('/') && sep.len() > 2 && sep.ends_with('/') {
-        let pattern = &sep[1..sep.len() - 1];
-        if let Ok(re) = Regex::new(pattern) {
-            let raw: Vec<&str> = re.split(&s).collect();
-            parts = raw.iter().map(|p| p.to_string()).take(limit).collect();
-        } else {
-            parts = vec![s.clone()];
-        }
-    } else if sep.is_empty() {
-        parts = s.chars().map(|c| c.to_string()).take(limit).collect();
-    } else {
-        parts = s.split(&sep).map(|p| p.to_string()).take(limit).collect();
+    if is_regexp_obj(sep_val, vm) {
+        let re_ptr = sep_val.as_js_object_ptr();
+        let re = unsafe { &*re_ptr };
+        let fn_ptr = match re.native_fn() {
+            Some(p) => p,
+            None => {
+                let parts = vec![s.clone()];
+                return Ok(make_string_array(vm, &parts));
+            }
+        };
+        let regex = unsafe { &*(fn_ptr as *const regex::Regex) };
+        let raw: Vec<&str> = regex.split(&s).collect();
+        let parts: Vec<String> = raw.iter().map(|p| p.to_string()).take(limit).collect();
+        return Ok(make_string_array(vm, &parts));
     }
+
+    let sep = as_string(vm, sep_val);
+    let parts: Vec<String> = if sep.is_empty() {
+        s.chars().map(|c| c.to_string()).take(limit).collect()
+    } else {
+        s.split(&sep).map(|p| p.to_string()).take(limit).collect()
+    };
     Ok(make_string_array(vm, &parts))
 }
 
@@ -320,23 +348,27 @@ pub fn string_replace(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return Ok(vm.intern(&s));
     }
-    let pattern = as_string(vm, vm.reg(args[1]));
+    let pattern_val = vm.reg(args[1]);
     let replacement = if args.len() > 2 {
         as_string(vm, vm.reg(args[2]))
     } else {
         String::new()
     };
 
-    let result = if pattern.starts_with('/') && pattern.len() > 2 && pattern.ends_with('/') {
-        let pat = &pattern[1..pattern.len() - 1];
-        if let Ok(re) = Regex::new(pat) {
-            re.replace_all(&s, replacement.as_str()).to_string()
-        } else {
-            s.clone()
-        }
-    } else {
-        s.replacen(&pattern, &replacement, 1)
-    };
+    if is_regexp_obj(pattern_val, vm) {
+        let re_ptr = pattern_val.as_js_object_ptr();
+        let re = unsafe { &*re_ptr };
+        let fn_ptr = match re.native_fn() {
+            Some(p) => p,
+            None => return Ok(vm.intern(&s)),
+        };
+        let regex = unsafe { &*(fn_ptr as *const regex::Regex) };
+        let result = regex.replace_all(&s, replacement.as_str()).to_string();
+        return Ok(vm.intern(&result));
+    }
+
+    let pattern = as_string(vm, pattern_val);
+    let result = s.replacen(&pattern, &replacement, 1);
     Ok(vm.intern(&result))
 }
 
@@ -345,14 +377,22 @@ pub fn string_match_fn(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return Ok(JsValue::undefined());
     }
-    let pattern = as_string(vm, vm.reg(args[1]));
-    if pattern.starts_with('/') && pattern.len() > 2 && pattern.ends_with('/') {
-        let pat = &pattern[1..pattern.len() - 1];
-        if let Ok(re) = Regex::new(pat) {
-            let matches: Vec<String> = re.find_iter(&s).map(|m| m.as_str().to_string()).collect();
-            return Ok(make_string_array(vm, &matches));
-        }
-    } else if let Some(pos) = s.find(&pattern) {
+    let pattern_val = vm.reg(args[1]);
+
+    if is_regexp_obj(pattern_val, vm) {
+        let re_ptr = pattern_val.as_js_object_ptr();
+        let re = unsafe { &*re_ptr };
+        let fn_ptr = match re.native_fn() {
+            Some(p) => p,
+            None => return Ok(JsValue::undefined()),
+        };
+        let regex = unsafe { &*(fn_ptr as *const regex::Regex) };
+        let matches: Vec<String> = regex.find_iter(&s).map(|m| m.as_str().to_string()).collect();
+        return Ok(make_string_array(vm, &matches));
+    }
+
+    let pattern = as_string(vm, pattern_val);
+    if let Some(pos) = s.find(&pattern) {
         return Ok(make_string_array(
             vm,
             &[s[pos..pos + pattern.len()].to_string()],
@@ -366,15 +406,24 @@ pub fn string_search(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return Ok(JsValue::int(-1));
     }
-    let pattern = as_string(vm, vm.reg(args[1]));
-    if pattern.starts_with('/') && pattern.len() > 2 && pattern.ends_with('/') {
-        let pat = &pattern[1..pattern.len() - 1];
-        if let Ok(re) = Regex::new(pat) {
-            if let Some(m) = re.find(&s) {
-                return Ok(JsValue::int(m.start() as i32));
-            }
+    let pattern_val = vm.reg(args[1]);
+
+    if is_regexp_obj(pattern_val, vm) {
+        let re_ptr = pattern_val.as_js_object_ptr();
+        let re = unsafe { &*re_ptr };
+        let fn_ptr = match re.native_fn() {
+            Some(p) => p,
+            None => return Ok(JsValue::int(-1)),
+        };
+        let regex = unsafe { &*(fn_ptr as *const regex::Regex) };
+        if let Some(m) = regex.find(&s) {
+            return Ok(JsValue::int(m.start() as i32));
         }
-    } else if let Some(pos) = s.find(&pattern) {
+        return Ok(JsValue::int(-1));
+    }
+
+    let pattern = as_string(vm, pattern_val);
+    if let Some(pos) = s.find(&pattern) {
         return Ok(JsValue::int(pos as i32));
     }
     Ok(JsValue::int(-1))

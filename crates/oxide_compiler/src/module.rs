@@ -11,6 +11,7 @@ pub enum Constant {
     Null,
     Undefined,
     BytecodeFunc(u32),
+    RegExp(String, String),
 }
 
 pub struct CompiledModule {

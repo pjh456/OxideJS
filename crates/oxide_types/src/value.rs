@@ -20,6 +20,7 @@ const TAG_NULL: u64 = 2;
 const TAG_UNDEFINED: u64 = 3;
 const TAG_OBJECT: u64 = 4;
 const TAG_STRING: u64 = 5;
+const TAG_SYMBOL: u64 = 6;
 
 /// 48-bit pointer mask (x86-64 canonical VA)
 const PTR_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
@@ -76,6 +77,9 @@ impl PartialEq for JsValue {
                 return false;
             }
             return self.as_string_index() == other.as_string_index();
+        }
+        if self.is_symbol() && other.is_symbol() {
+            return self.as_symbol_index() == other.as_symbol_index();
         }
         false
     }
@@ -206,6 +210,19 @@ impl JsValue {
         debug_assert!(self.is_string(), "JsValue is not a string");
         ((self.0 & STRING_HASH_MASK) >> STRING_HASH_SHIFT) as u16
     }
+
+    pub fn symbol(index: u32) -> Self {
+        Self(make_tag(TAG_SYMBOL) | (index as u64))
+    }
+
+    pub fn is_symbol(&self) -> bool {
+        is_nan_boxed(self.0) && get_tag(self.0) == TAG_SYMBOL
+    }
+
+    pub fn as_symbol_index(&self) -> u32 {
+        debug_assert!(self.is_symbol());
+        (self.0 & STRING_INDEX_MASK) as u32
+    }
 }
 
 fn is_nan_bits(bits: u64) -> bool {
@@ -213,7 +230,7 @@ fn is_nan_bits(bits: u64) -> bool {
 }
 
 fn is_nan_boxed(bits: u64) -> bool {
-    (0xFFF8..=0xFFFD).contains(&((bits >> 48) as u16))
+    (0xFFF8..=0xFFFE).contains(&((bits >> 48) as u16))
 }
 
 impl fmt::Display for JsValue {
@@ -243,6 +260,8 @@ impl fmt::Display for JsValue {
             write!(f, "{{object}}")
         } else if self.is_string() {
             write!(f, "{{string}}")
+        } else if self.is_symbol() {
+            write!(f, "Symbol(idx={})", self.as_symbol_index())
         } else {
             write!(f, "{{unknown}}")
         }
@@ -275,6 +294,8 @@ impl fmt::Debug for JsValue {
                 self.as_string_index(),
                 self.as_string_hash()
             )
+        } else if self.is_symbol() {
+            write!(f, "JsValue(Symbol(idx={}))", self.as_symbol_index())
         } else {
             write!(f, "JsValue(Unknown)")
         }
@@ -342,6 +363,7 @@ mod tests {
                     val.is_undefined(),
                     val.is_object(),
                     val.is_string(),
+                    val.is_symbol(),
                 ];
                 let count = matched.iter().filter(|&&x| x).count();
                 assert_eq!(count, 1, "bits={bits:#018x} matched {count} types");

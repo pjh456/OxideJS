@@ -25,6 +25,8 @@ impl Vm {
             "number"
         } else if val.is_string() {
             "string"
+        } else if val.is_symbol() {
+            "symbol"
         } else if val.is_object() {
             let obj = unsafe { &*val.as_js_object_ptr() };
             if obj.is_function() {
