@@ -28,9 +28,7 @@ pub fn bind_number(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
 
     let si_num = kernel.string_forge().intern("Number").0;
     let num_shape = kernel.shape_forge().make_shape(global.shape_id(), si_num);
-    let num_val = JsValue::from_js_object(
-        kernel.builtin_world().number_constructor.as_ptr() as *mut JsObject
-    );
+    let num_val = JsValue::from_js_object(kernel.builtin_world().number_constructor.as_ptr() as *mut JsObject);
     global.set_shape_id(num_shape);
     global.ensure_hash_props().push(Box::new(num_val));
     global.bump_generation();
@@ -38,9 +36,7 @@ pub fn bind_number(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     {
         let num_ctor_ptr = kernel.builtin_world().number_constructor.as_ptr() as *mut JsObject;
         let num_ctor = unsafe { &mut *num_ctor_ptr };
-        num_ctor.set_native_fn(Some(
-            crate::builtins::number::number_constructor as *const (),
-        ));
+        num_ctor.set_native_fn(Some(crate::builtins::number::number_constructor as *const ()));
         num_ctor.set_native_arg_count(1);
 
         for (name, value) in [
@@ -55,9 +51,7 @@ pub fn bind_number(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
         ] {
             num_ctor.ensure_hash_props().push(Box::new(value));
             let prop_si = kernel.string_forge().intern(name).0;
-            let next_shape = kernel
-                .shape_forge()
-                .make_shape(num_ctor.shape_id(), prop_si);
+            let next_shape = kernel.shape_forge().make_shape(num_ctor.shape_id(), prop_si);
             num_ctor.set_shape_id(next_shape);
         }
     }

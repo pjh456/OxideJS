@@ -1,25 +1,17 @@
 use oxide_compiler::compiler::Compiler;
 use oxide_types::value::JsValue;
-use oxide_vm::builtins::map::{
-    map_clear, map_constructor as new_map, map_delete, map_get, map_has, map_set, map_size,
-};
+use oxide_vm::builtins::map::{map_clear, map_constructor as new_map, map_delete, map_get, map_has, map_set, map_size};
 use oxide_vm::vm::Vm;
 
 fn eval(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
     let allocator = oxide_parser::Allocator::default();
-    let program =
-        oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
-    let module = Compiler::new()
-        .compile(&program)
-        .map_err(|e| format!("Compile error: {}", e))?;
+    let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
+    let module = Compiler::new().compile(&program).map_err(|e| format!("Compile error: {}", e))?;
     vm.run(&module)
 }
 
 fn str_val(vm: &Vm, val: JsValue) -> String {
-    vm.kernel()
-        .string_forge()
-        .lookup(val.as_string_index())
-        .unwrap_or_default()
+    vm.kernel().string_forge().lookup(val.as_string_index()).unwrap_or_default()
 }
 
 // -- direct native fn tests --
@@ -101,10 +93,6 @@ fn map_new_has() {
 #[test]
 fn map_new_delete() {
     let mut vm = Vm::new();
-    let r = eval(
-        &mut vm,
-        "var m = new Map(); m.set('x', 10); m.delete('x'); m.has('x')",
-    )
-    .unwrap();
+    let r = eval(&mut vm, "var m = new Map(); m.set('x', 10); m.delete('x'); m.has('x')").unwrap();
     assert!(!r.as_bool());
 }

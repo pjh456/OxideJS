@@ -7,10 +7,7 @@ pub use oxc_allocator::Allocator;
 pub use oxc_ast::ast::*;
 pub use oxc_span::Span;
 
-pub fn parse<'a>(
-    allocator: &'a Allocator,
-    source: &'a str,
-) -> Result<Program<'a>, Vec<OxideError>> {
+pub fn parse<'a>(allocator: &'a Allocator, source: &'a str) -> Result<Program<'a>, Vec<OxideError>> {
     use oxc_parser::Parser;
     use oxc_span::SourceType;
 

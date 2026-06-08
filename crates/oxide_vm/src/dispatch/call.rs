@@ -5,11 +5,7 @@ use oxide_types::value::JsValue;
 
 impl Vm {
     #[inline(always)]
-    pub(crate) fn build_native_args(
-        first_arg_reg: u8,
-        arg_count: usize,
-        this_reg: u8,
-    ) -> ([u8; 257], usize) {
+    pub(crate) fn build_native_args(first_arg_reg: u8, arg_count: usize, this_reg: u8) -> ([u8; 257], usize) {
         let mut args_buf = [0u8; 257];
         args_buf[0] = this_reg;
         let n = arg_count.min(256);
@@ -21,12 +17,7 @@ impl Vm {
 
     #[inline(always)]
     pub(crate) fn dispatch_native_call(
-        &mut self,
-        obj: &JsObject,
-        callee: JsValue,
-        this_reg: u8,
-        first_arg_reg: u8,
-        arg_count: usize,
+        &mut self, obj: &JsObject, callee: JsValue, this_reg: u8, first_arg_reg: u8, arg_count: usize,
     ) -> Result<(), String> {
         let (args_buf, len) = Self::build_native_args(first_arg_reg, arg_count, this_reg);
         let args_slice = &args_buf[..len];

@@ -98,8 +98,7 @@ impl StringForge {
             return;
         }
 
-        let mut new_map: HashMap<String, u32, FxBuildHasher> =
-            HashMap::with_hasher(FxBuildHasher::default());
+        let mut new_map: HashMap<String, u32, FxBuildHasher> = HashMap::with_hasher(FxBuildHasher::default());
         let mut new_entries = Vec::with_capacity(inner.entries.len() - dead_count);
 
         for entry in inner.entries.drain(..) {

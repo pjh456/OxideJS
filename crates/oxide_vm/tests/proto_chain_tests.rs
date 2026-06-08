@@ -5,9 +5,7 @@ use oxide_vm::vm::Vm;
 fn eval(source: &str) -> Result<JsValue, String> {
     let allocator = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse: {:?}", e))?;
-    let module = Compiler::new()
-        .compile(&program)
-        .map_err(|e| format!("Compile: {}", e))?;
+    let module = Compiler::new().compile(&program).map_err(|e| format!("Compile: {}", e))?;
     let mut vm = Vm::new();
     vm.run(&module)
 }
@@ -15,36 +13,21 @@ fn eval(source: &str) -> Result<JsValue, String> {
 macro_rules! assert_bool {
     ($expr:expr, $expected:expr, $msg:expr) => {
         let r = $expr.unwrap();
-        assert!(
-            r.is_bool() && r.as_bool() == $expected,
-            "{}: expected {}, got {:?}",
-            $msg,
-            $expected,
-            r
-        );
+        assert!(r.is_bool() && r.as_bool() == $expected, "{}: expected {}, got {:?}", $msg, $expected, r);
     };
 }
 
 macro_rules! assert_undefined {
     ($expr:expr, $msg:expr) => {
         let r = $expr.unwrap();
-        assert!(
-            r.is_undefined(),
-            "{}: expected undefined, got {:?}",
-            $msg,
-            r
-        );
+        assert!(r.is_undefined(), "{}: expected undefined, got {:?}", $msg, r);
     };
 }
 
 // -- Proto chains: every (non-Object) constructor.prototype should inherit from Object.prototype --
 #[test]
 fn array_proto_chain() {
-    assert_bool!(
-        eval("Object.getPrototypeOf(Array.prototype) === Object.prototype"),
-        true,
-        "Array proto"
-    );
+    assert_bool!(eval("Object.getPrototypeOf(Array.prototype) === Object.prototype"), true, "Array proto");
 }
 
 #[test]
@@ -57,20 +40,12 @@ fn function_proto_chain() {
 
 #[test]
 fn string_proto_chain() {
-    assert_bool!(
-        eval("Object.getPrototypeOf(String.prototype) === Object.prototype"),
-        true,
-        "String proto"
-    );
+    assert_bool!(eval("Object.getPrototypeOf(String.prototype) === Object.prototype"), true, "String proto");
 }
 
 #[test]
 fn number_proto_chain() {
-    assert_bool!(
-        eval("Object.getPrototypeOf(Number.prototype) === Object.prototype"),
-        true,
-        "Number proto"
-    );
+    assert_bool!(eval("Object.getPrototypeOf(Number.prototype) === Object.prototype"), true, "Number proto");
 }
 
 #[test]
@@ -84,56 +59,32 @@ fn boolean_proto_chain() {
 
 #[test]
 fn error_proto_chain() {
-    assert_bool!(
-        eval("Object.getPrototypeOf(Error.prototype) === Object.prototype"),
-        true,
-        "Error proto"
-    );
+    assert_bool!(eval("Object.getPrototypeOf(Error.prototype) === Object.prototype"), true, "Error proto");
 }
 
 #[test]
 fn symbol_proto_chain() {
-    assert_bool!(
-        eval("Object.getPrototypeOf(Symbol.prototype) === Object.prototype"),
-        true,
-        "Symbol proto"
-    );
+    assert_bool!(eval("Object.getPrototypeOf(Symbol.prototype) === Object.prototype"), true, "Symbol proto");
 }
 
 #[test]
 fn date_proto_chain() {
-    assert_bool!(
-        eval("Object.getPrototypeOf(Date.prototype) === Object.prototype"),
-        true,
-        "Date proto"
-    );
+    assert_bool!(eval("Object.getPrototypeOf(Date.prototype) === Object.prototype"), true, "Date proto");
 }
 
 #[test]
 fn set_proto_chain() {
-    assert_bool!(
-        eval("Object.getPrototypeOf(Set.prototype) === Object.prototype"),
-        true,
-        "Set proto"
-    );
+    assert_bool!(eval("Object.getPrototypeOf(Set.prototype) === Object.prototype"), true, "Set proto");
 }
 
 #[test]
 fn map_proto_chain() {
-    assert_bool!(
-        eval("Object.getPrototypeOf(Map.prototype) === Object.prototype"),
-        true,
-        "Map proto"
-    );
+    assert_bool!(eval("Object.getPrototypeOf(Map.prototype) === Object.prototype"), true, "Map proto");
 }
 
 #[test]
 fn regexp_proto_chain() {
-    assert_bool!(
-        eval("Object.getPrototypeOf(RegExp.prototype) === Object.prototype"),
-        true,
-        "RegExp proto"
-    );
+    assert_bool!(eval("Object.getPrototypeOf(RegExp.prototype) === Object.prototype"), true, "RegExp proto");
 }
 
 // -- Object.prototype is the root, its __proto__ is null --
@@ -147,20 +98,12 @@ fn object_proto_is_root() {
 #[test]
 fn array_instanceof_object() {
     assert_bool!(eval("[] instanceof Object"), true, "[] instanceof Object");
-    assert_bool!(
-        eval("new Array() instanceof Object"),
-        true,
-        "new Array instanceof Object"
-    );
+    assert_bool!(eval("new Array() instanceof Object"), true, "new Array instanceof Object");
 }
 
 #[test]
 fn function_instanceof_object() {
-    assert_bool!(
-        eval("(function() {}) instanceof Object"),
-        true,
-        "function instanceof Object"
-    );
+    assert_bool!(eval("(function() {}) instanceof Object"), true, "function instanceof Object");
 }
 
 #[test]
@@ -179,110 +122,62 @@ fn boolean_not_instanceof_function() {
 
 #[test]
 fn number_instanceof_object() {
-    assert_bool!(
-        eval("new Number(1) instanceof Object"),
-        true,
-        "new Number instanceof Object"
-    );
+    assert_bool!(eval("new Number(1) instanceof Object"), true, "new Number instanceof Object");
 }
 
 #[test]
 fn boolean_instanceof_object() {
-    assert_bool!(
-        eval("new Boolean(true) instanceof Object"),
-        true,
-        "new Boolean instanceof Object"
-    );
+    assert_bool!(eval("new Boolean(true) instanceof Object"), true, "new Boolean instanceof Object");
 }
 
 #[test]
 fn error_instanceof_object() {
-    assert_bool!(
-        eval("new Error() instanceof Object"),
-        true,
-        "new Error instanceof Object"
-    );
+    assert_bool!(eval("new Error() instanceof Object"), true, "new Error instanceof Object");
 }
 
 #[test]
 fn date_instanceof_object() {
-    assert_bool!(
-        eval("new Date() instanceof Object"),
-        true,
-        "new Date instanceof Object"
-    );
+    assert_bool!(eval("new Date() instanceof Object"), true, "new Date instanceof Object");
 }
 
 #[test]
 fn set_instanceof_object() {
-    assert_bool!(
-        eval("new Set() instanceof Object"),
-        true,
-        "new Set instanceof Object"
-    );
+    assert_bool!(eval("new Set() instanceof Object"), true, "new Set instanceof Object");
 }
 
 #[test]
 fn map_instanceof_object() {
-    assert_bool!(
-        eval("new Map() instanceof Object"),
-        true,
-        "new Map instanceof Object"
-    );
+    assert_bool!(eval("new Map() instanceof Object"), true, "new Map instanceof Object");
 }
 
 #[test]
 fn regexp_instanceof_object() {
     assert_bool!(eval("/a/ instanceof Object"), true, "/a/ instanceof Object");
-    assert_bool!(
-        eval("new RegExp('a') instanceof Object"),
-        true,
-        "new RegExp instanceof Object"
-    );
+    assert_bool!(eval("new RegExp('a') instanceof Object"), true, "new RegExp instanceof Object");
 }
 
 #[test]
 fn object_instanceof_object() {
-    assert_bool!(
-        eval("({}) instanceof Object"),
-        true,
-        "({}) instanceof Object"
-    );
+    assert_bool!(eval("({}) instanceof Object"), true, "({}) instanceof Object");
 }
 
 // -- instanceof for native types should NOT respond to their own false positives --
 #[test]
 fn number_not_instanceof_array() {
-    assert_bool!(
-        eval("new Number(1) instanceof Array"),
-        false,
-        "Number instanceof Array"
-    );
+    assert_bool!(eval("new Number(1) instanceof Array"), false, "Number instanceof Array");
 }
 
 #[test]
 fn object_not_instanceof_regexp() {
-    assert_bool!(
-        eval("({}) instanceof RegExp"),
-        false,
-        "({}) instanceof RegExp"
-    );
+    assert_bool!(eval("({}) instanceof RegExp"), false, "({}) instanceof RegExp");
 }
 
 // -- Primitives should NOT be instanceof their wrapper constructors (no autoboxing) --
 #[test]
 fn primitives_not_instanceof() {
     assert_bool!(eval("1 instanceof Number"), false, "1 instanceof Number");
-    assert_bool!(
-        eval("'hi' instanceof String"),
-        false,
-        "'hi' instanceof String"
-    );
-    assert_bool!(
-        eval("true instanceof Boolean"),
-        false,
-        "true instanceof Boolean"
-    );
+    assert_bool!(eval("'hi' instanceof String"), false, "'hi' instanceof String");
+    assert_bool!(eval("true instanceof Boolean"), false, "true instanceof Boolean");
 }
 
 // -- VOID regression --

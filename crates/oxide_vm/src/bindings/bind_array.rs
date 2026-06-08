@@ -44,12 +44,5 @@ pub fn bind_array(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     );
 
     let ctor_ptr = kernel.builtin_world().array_constructor.as_ptr() as *mut JsObject;
-    bind_constructor_hash!(
-        kernel,
-        global,
-        "Array",
-        ctor_ptr,
-        crate::builtins::array::array_constructor,
-        1
-    );
+    bind_constructor_hash!(kernel, global, "Array", ctor_ptr, crate::builtins::array::array_constructor, 1);
 }

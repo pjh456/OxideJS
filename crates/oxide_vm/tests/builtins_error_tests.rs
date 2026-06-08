@@ -10,9 +10,7 @@ fn make_vm() -> Vm {
 fn eval(source: &str) -> Result<JsValue, String> {
     let allocator = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse: {:?}", e))?;
-    let module = Compiler::new()
-        .compile(&program)
-        .map_err(|e| format!("Compile: {}", e))?;
+    let module = Compiler::new().compile(&program).map_err(|e| format!("Compile: {}", e))?;
     let mut vm = make_vm();
     vm.run(&module)
 }
@@ -140,22 +138,7 @@ fn reference_error_is_defined() {
 
 #[test]
 fn error_subtype_constructors_produce_named_objects() {
-    assert_eq!(
-        format!("{}", eval("new Error('boom').name == 'Error'").unwrap()),
-        "true"
-    );
-    assert_eq!(
-        format!(
-            "{}",
-            eval("new TypeError('boom').name == 'TypeError'").unwrap()
-        ),
-        "true"
-    );
-    assert_eq!(
-        format!(
-            "{}",
-            eval("new SyntaxError('boom').name == 'SyntaxError'").unwrap()
-        ),
-        "true"
-    );
+    assert_eq!(format!("{}", eval("new Error('boom').name == 'Error'").unwrap()), "true");
+    assert_eq!(format!("{}", eval("new TypeError('boom').name == 'TypeError'").unwrap()), "true");
+    assert_eq!(format!("{}", eval("new SyntaxError('boom').name == 'SyntaxError'").unwrap()), "true");
 }

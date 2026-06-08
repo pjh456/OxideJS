@@ -37,10 +37,7 @@ fn eval_val(source: &str) -> (Vm, Result<JsValue, String>) {
 
 fn to_str(vm: &Vm, val: JsValue) -> String {
     if val.is_string() {
-        vm.kernel()
-            .string_forge()
-            .lookup(val.as_string_index())
-            .unwrap_or_default()
+        vm.kernel().string_forge().lookup(val.as_string_index()).unwrap_or_default()
     } else {
         format!("{}", val)
     }
@@ -99,11 +96,7 @@ fn tagged_template_basic() {
     // This avoids bytecode function call complexity.
     let result = eval("Math.max`hello ${42} world`");
     // Math.max on the args should work - just verify it doesn't crash
-    assert!(
-        !result.starts_with("vm error:"),
-        "Tagged template should not crash, got: {}",
-        result
-    );
+    assert!(!result.starts_with("vm error:"), "Tagged template should not crash, got: {}", result);
 }
 
 #[test]
@@ -111,8 +104,5 @@ fn tagged_template_compiles_no_error() {
     // Verify that tagged templates compile without error (even if the tag
     // function behavior isn't fully tested)
     let result = eval("function t(s,v){ return s[0]+v; } t`x${1}`");
-    assert!(
-        !result.starts_with("compile error:"),
-        "Tagged template should compile"
-    );
+    assert!(!result.starts_with("compile error:"), "Tagged template should compile");
 }

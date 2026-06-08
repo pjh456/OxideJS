@@ -19,13 +19,7 @@ fn get_regexp_ptr(vm: &Vm, args: &[u8]) -> Result<*mut JsObject, JsValue> {
     }
     let ptr = this_val.as_js_object_ptr();
     if ptr.is_null() {
-        return Err(JsValue::string(
-            vm.kernel()
-                .string_forge()
-                .intern("TypeError: null object")
-                .0,
-            0,
-        ));
+        return Err(JsValue::string(vm.kernel().string_forge().intern("TypeError: null object").0, 0));
     }
     Ok(ptr)
 }
@@ -101,10 +95,7 @@ pub fn regexp_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
         }
         Err(e) => {
             let msg = format!("SyntaxError: Invalid regular expression: {}", e);
-            return Err(JsValue::string(
-                vm.kernel().string_forge().intern(&msg).0,
-                0,
-            ));
+            return Err(JsValue::string(vm.kernel().string_forge().intern(&msg).0, 0));
         }
     }
 
@@ -128,13 +119,7 @@ pub fn regexp_test(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
     let fn_ptr = match re.native_fn() {
         None => {
-            return Err(JsValue::string(
-                vm.kernel()
-                    .string_forge()
-                    .intern("TypeError: invalid RegExp")
-                    .0,
-                0,
-            ));
+            return Err(JsValue::string(vm.kernel().string_forge().intern("TypeError: invalid RegExp").0, 0));
         }
         Some(p) => p,
     };
@@ -144,8 +129,7 @@ pub fn regexp_test(vm: &mut Vm, args: &[u8]) -> NativeResult {
         vm.kernel().string_forge().as_ref(),
         vm.reg(if args.len() > 1 { args[1] } else { args[0] }),
     );
-    let last_index =
-        coercion::to_number(get_prop(re, 0), vm.kernel().string_forge().as_ref()) as usize;
+    let last_index = coercion::to_number(get_prop(re, 0), vm.kernel().string_forge().as_ref()) as usize;
     let is_global = get_prop(re, 3).as_bool();
 
     if is_global {
@@ -163,13 +147,7 @@ pub fn regexp_exec(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let re = unsafe { &*re_ptr };
         match re.native_fn() {
             None => {
-                return Err(JsValue::string(
-                    vm.kernel()
-                        .string_forge()
-                        .intern("TypeError: invalid RegExp")
-                        .0,
-                    0,
-                ));
+                return Err(JsValue::string(vm.kernel().string_forge().intern("TypeError: invalid RegExp").0, 0));
             }
             Some(p) => p,
         }
@@ -200,25 +178,19 @@ pub fn regexp_exec(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if let Some(m) = match_result {
         let mut match_obj = JsObject::new_empty(
             EMPTY_SHAPE_ID,
-            JsValue::from_js_object(
-                vm.kernel().builtin_world().array_proto.as_ptr() as *mut JsObject
-            ),
+            JsValue::from_js_object(vm.kernel().builtin_world().array_proto.as_ptr() as *mut JsObject),
         );
 
         let full_match = &haystack[m.start()..m.end()];
         let full_si = vm.kernel().string_forge().intern(full_match).0;
-        match_obj
-            .ensure_hash_props()
-            .push(Box::new(JsValue::string(full_si, 0)));
+        match_obj.ensure_hash_props().push(Box::new(JsValue::string(full_si, 0)));
 
         let captures = regex.captures(&haystack[m.start()..m.end()]);
         if let Some(caps) = &captures {
             for i in 1..caps.len() {
                 let cap_str = caps.get(i).map(|cm| cm.as_str()).unwrap_or("");
                 let si = vm.kernel().string_forge().intern(cap_str).0;
-                match_obj
-                    .ensure_hash_props()
-                    .push(Box::new(JsValue::string(si, 0)));
+                match_obj.ensure_hash_props().push(Box::new(JsValue::string(si, 0)));
             }
         }
 

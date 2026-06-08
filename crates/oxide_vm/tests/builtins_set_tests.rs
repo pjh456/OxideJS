@@ -1,17 +1,12 @@
 use oxide_compiler::compiler::Compiler;
 use oxide_types::value::JsValue;
-use oxide_vm::builtins::set::{
-    set_add, set_clear, set_constructor as new_set, set_delete, set_has, set_size,
-};
+use oxide_vm::builtins::set::{set_add, set_clear, set_constructor as new_set, set_delete, set_has, set_size};
 use oxide_vm::vm::Vm;
 
 fn eval(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
     let allocator = oxide_parser::Allocator::default();
-    let program =
-        oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
-    let module = Compiler::new()
-        .compile(&program)
-        .map_err(|e| format!("Compile error: {}", e))?;
+    let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
+    let module = Compiler::new().compile(&program).map_err(|e| format!("Compile error: {}", e))?;
     vm.run(&module)
 }
 
@@ -119,10 +114,6 @@ fn set_new_has_missing() {
 #[test]
 fn set_new_delete() {
     let mut vm = Vm::new();
-    let r = eval(
-        &mut vm,
-        "var s = new Set(); s.add(1); s.add(2); s.delete(1); s.has(1)",
-    )
-    .unwrap();
+    let r = eval(&mut vm, "var s = new Set(); s.add(1); s.add(2); s.delete(1); s.has(1)").unwrap();
     assert!(!r.as_bool());
 }

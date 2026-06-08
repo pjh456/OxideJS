@@ -25,20 +25,14 @@ fn compile_constants() {
     let module = compile_source("42");
 
     assert!(!module.constants.is_empty());
-    assert_eq!(
-        module.constants[0],
-        oxide_compiler::compiler::Constant::Int(42)
-    );
+    assert_eq!(module.constants[0], oxide_compiler::compiler::Constant::Int(42));
 }
 
 #[test]
 fn compile_negation() {
     let module = compile_source("-5");
 
-    let has_neg = module
-        .bytecode
-        .iter()
-        .any(|&i| opcode::opcode(i) == OpCode::NEG);
+    let has_neg = module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::NEG);
     assert!(has_neg);
 }
 
@@ -65,10 +59,7 @@ fn compile_binary_ops() {
 
     for (src, expected_op) in tests {
         let module = compile_source(src);
-        let has_op = module
-            .bytecode
-            .iter()
-            .any(|&i| opcode::opcode(i) == expected_op);
+        let has_op = module.bytecode.iter().any(|&i| opcode::opcode(i) == expected_op);
         assert!(has_op, "expected {:?} in '{src}'", expected_op);
     }
 }
@@ -77,10 +68,7 @@ fn compile_binary_ops() {
 fn compile_ternary_emits_jumps() {
     let module = compile_source("true ? 1 : 2");
     assert!(
-        module
-            .bytecode
-            .iter()
-            .any(|&i| opcode::opcode(i) == OpCode::JMP_IF_FALSE),
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::JMP_IF_FALSE),
         "ternary should contain JMP_IF_FALSE"
     );
 }
@@ -89,10 +77,7 @@ fn compile_ternary_emits_jumps() {
 fn compile_logical_not() {
     let module = compile_source("!true");
     assert!(
-        module
-            .bytecode
-            .iter()
-            .any(|&i| opcode::opcode(i) == OpCode::NOT),
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::NOT),
         "!true should emit NOT opcode"
     );
 }
@@ -101,10 +86,7 @@ fn compile_logical_not() {
 fn compile_logical_and_simple() {
     let module = compile_source("1 && 2");
     assert!(
-        module
-            .bytecode
-            .iter()
-            .any(|&i| opcode::opcode(i) == OpCode::AND),
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::AND),
         "simple && should emit AND opcode"
     );
 }
@@ -113,10 +95,7 @@ fn compile_logical_and_simple() {
 fn compile_logical_or_simple() {
     let module = compile_source("0 || 1");
     assert!(
-        module
-            .bytecode
-            .iter()
-            .any(|&i| opcode::opcode(i) == OpCode::OR),
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::OR),
         "simple || should emit OR opcode"
     );
 }
@@ -126,20 +105,14 @@ fn regression_coalesce_consistency() {
     let result = std::panic::catch_unwind(|| {
         compile_source("a ?? b");
     });
-    assert!(
-        result.is_err(),
-        "a ?? b should produce an error (not silently misbehave)"
-    );
+    assert!(result.is_err(), "a ?? b should produce an error (not silently misbehave)");
 }
 
 #[test]
 fn compile_strict_eq() {
     let module = compile_source("1 === 2");
     assert!(
-        module
-            .bytecode
-            .iter()
-            .any(|&i| opcode::opcode(i) == OpCode::STRICT_EQ),
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::STRICT_EQ),
         "1 === 2 should emit STRICT_EQ opcode"
     );
 }
@@ -148,10 +121,7 @@ fn compile_strict_eq() {
 fn compile_strict_neq() {
     let module = compile_source("1 !== 2");
     assert!(
-        module
-            .bytecode
-            .iter()
-            .any(|&i| opcode::opcode(i) == OpCode::STRICT_NEQ),
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::STRICT_NEQ),
         "1 !== 2 should emit STRICT_NEQ opcode"
     );
 }
@@ -160,10 +130,7 @@ fn compile_strict_neq() {
 fn compile_unary_plus() {
     let module = compile_source("+'hello'");
     assert!(
-        module
-            .bytecode
-            .iter()
-            .any(|&i| opcode::opcode(i) == OpCode::UNARY_PLUS),
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::UNARY_PLUS),
         "+'hello' should emit UNARY_PLUS opcode"
     );
 }
@@ -172,17 +139,11 @@ fn compile_unary_plus() {
 fn compile_typeof_strict_eq() {
     let module = compile_source("typeof 42 === 'number'");
     assert!(
-        module
-            .bytecode
-            .iter()
-            .any(|&i| opcode::opcode(i) == OpCode::TYPEOF),
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::TYPEOF),
         "should emit TYPEOF opcode"
     );
     assert!(
-        module
-            .bytecode
-            .iter()
-            .any(|&i| opcode::opcode(i) == OpCode::STRICT_EQ),
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::STRICT_EQ),
         "should emit STRICT_EQ opcode"
     );
 }
@@ -207,10 +168,7 @@ fn compile_unary_plus_no_error() {
 fn compile_compound_add() {
     let module = compile_source("var x=0; x+=1");
     assert!(
-        module
-            .bytecode
-            .iter()
-            .any(|&i| opcode::opcode(i) == OpCode::COMPOUND_ADD),
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::COMPOUND_ADD),
         "x+=1 should emit COMPOUND_ADD opcode"
     );
 }
@@ -219,10 +177,7 @@ fn compile_compound_add() {
 fn compile_compound_exp() {
     let module = compile_source("var x=0; x**=2");
     assert!(
-        module
-            .bytecode
-            .iter()
-            .any(|&i| opcode::opcode(i) == OpCode::COMPOUND_EXP),
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::COMPOUND_EXP),
         "x**=2 should emit COMPOUND_EXP opcode"
     );
 }
@@ -247,10 +202,7 @@ fn compile_compound_exp_no_error() {
 fn compile_inc_pre() {
     let module = compile_source("++x");
     assert!(
-        module
-            .bytecode
-            .iter()
-            .any(|&i| opcode::opcode(i) == OpCode::INC_PRE),
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::INC_PRE),
         "++x should emit INC_PRE opcode"
     );
 }
@@ -259,10 +211,7 @@ fn compile_inc_pre() {
 fn compile_inc_post() {
     let module = compile_source("x++");
     assert!(
-        module
-            .bytecode
-            .iter()
-            .any(|&i| opcode::opcode(i) == OpCode::INC_POST),
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::INC_POST),
         "x++ should emit INC_POST opcode"
     );
 }
@@ -287,14 +236,8 @@ fn compile_dec_no_error() {
 fn compile_inc_dec_diff_opcodes() {
     let m1 = compile_source("++x");
     let m2 = compile_source("--x");
-    let has_inc_pre = m1
-        .bytecode
-        .iter()
-        .any(|&i| opcode::opcode(i) == OpCode::INC_PRE);
-    let has_dec_pre = m2
-        .bytecode
-        .iter()
-        .any(|&i| opcode::opcode(i) == OpCode::DEC_PRE);
+    let has_inc_pre = m1.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::INC_PRE);
+    let has_dec_pre = m2.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::DEC_PRE);
     assert!(has_inc_pre, "++x should emit INC_PRE");
     assert!(has_dec_pre, "--x should emit DEC_PRE");
 }
@@ -303,10 +246,7 @@ fn compile_inc_dec_diff_opcodes() {
 fn compile_member_inc() {
     let module = compile_source("var obj={x:1}; obj.x++");
     assert!(
-        module
-            .bytecode
-            .iter()
-            .any(|&i| opcode::opcode(i) == OpCode::MEMBER_INC),
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::MEMBER_INC),
         "obj.x++ should emit MEMBER_INC"
     );
 }
@@ -315,10 +255,7 @@ fn compile_member_inc() {
 fn compile_dyn_member_inc() {
     let module = compile_source("var obj={a:3}; var k='a'; obj[k]++");
     assert!(
-        module
-            .bytecode
-            .iter()
-            .any(|&i| opcode::opcode(i) == OpCode::DYN_MEMBER_INC),
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::DYN_MEMBER_INC),
         "obj[k]++ should emit DYN_MEMBER_INC"
     );
 }

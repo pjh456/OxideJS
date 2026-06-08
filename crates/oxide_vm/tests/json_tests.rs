@@ -4,19 +4,13 @@ use oxide_vm::vm::Vm;
 
 fn eval(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
     let allocator = oxide_parser::Allocator::default();
-    let program =
-        oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
-    let module = Compiler::new()
-        .compile(&program)
-        .map_err(|e| format!("Compile error: {}", e))?;
+    let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
+    let module = Compiler::new().compile(&program).map_err(|e| format!("Compile error: {}", e))?;
     vm.run(&module)
 }
 
 fn string_value(vm: &Vm, val: JsValue) -> String {
-    vm.kernel()
-        .string_forge()
-        .lookup(val.as_string_index())
-        .unwrap_or_default()
+    vm.kernel().string_forge().lookup(val.as_string_index()).unwrap_or_default()
 }
 
 // -- JSON.parse --
@@ -90,11 +84,7 @@ fn json_parse_null() {
 #[test]
 fn json_parse_nested() {
     let mut vm = Vm::new();
-    let result = eval(
-        &mut vm,
-        "JSON.parse('{\"a\":1,\"b\":[1,2],\"c\":{\"d\":\"hello\"}}')",
-    )
-    .unwrap();
+    let result = eval(&mut vm, "JSON.parse('{\"a\":1,\"b\":[1,2],\"c\":{\"d\":\"hello\"}}')").unwrap();
     assert!(result.is_object());
 }
 
@@ -200,11 +190,7 @@ fn json_parse_stringify_roundtrip() {
 #[test]
 fn json_roundtrip_array() {
     let mut vm = Vm::new();
-    let _ = eval(
-        &mut vm,
-        "var arr = JSON.parse(JSON.stringify([1,2,3])); arr",
-    )
-    .unwrap();
+    let _ = eval(&mut vm, "var arr = JSON.parse(JSON.stringify([1,2,3])); arr").unwrap();
 }
 
 // -- Edge cases --

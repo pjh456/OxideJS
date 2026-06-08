@@ -83,12 +83,7 @@ impl JsObject {
         }
     }
 
-    pub fn new_array(
-        shape_id: ShapeId,
-        proto: JsValue,
-        n_elements: usize,
-        _bump: &bumpalo::Bump,
-    ) -> Self {
+    pub fn new_array(shape_id: ShapeId, proto: JsValue, n_elements: usize, _bump: &bumpalo::Bump) -> Self {
         let mut obj = Self {
             header: (shape_id & 0x00FF_FFFF) | (1 << 30) | (1 << 29),
             native_arg_count: 0,
@@ -192,9 +187,7 @@ impl JsObject {
             return JsValue::undefined();
         }
         let vec = unsafe { &*(self.hash_props as *const Vec<Box<JsValue>>) };
-        vec.get(position.to_u32() as usize)
-            .map(|b| **b)
-            .unwrap_or(JsValue::undefined())
+        vec.get(position.to_u32() as usize).map(|b| **b).unwrap_or(JsValue::undefined())
     }
 
     /// Set property value at position index. Vec auto-grows if needed.
@@ -226,8 +219,7 @@ impl JsObject {
             return None;
         }
         let vec = unsafe { &*(self.hash_props as *const Vec<Box<JsValue>>) };
-        vec.get(position.to_u32() as usize)
-            .map(|b| &**b as *const JsValue)
+        vec.get(position.to_u32() as usize).map(|b| &**b as *const JsValue)
     }
 
     /// Get the length of hash_props vec (returns 0 if not allocated).
@@ -336,10 +328,7 @@ mod tests {
     #[test]
     fn object_size_bounds() {
         let sz = std::mem::size_of::<JsObject>();
-        assert!(
-            sz >= 40 && sz <= 56,
-            "JsObject layout mismatch - expected 40-56B, got {sz}B"
-        );
+        assert!(sz >= 40 && sz <= 56, "JsObject layout mismatch - expected 40-56B, got {sz}B");
     }
 
     #[test]

@@ -38,26 +38,17 @@ fn eval_not_falsy() {
 
 #[test]
 fn test_same_value_signed_zero() {
-    assert!(!coercion::same_value(
-        JsValue::float(0.0),
-        JsValue::float(-0.0)
-    ));
+    assert!(!coercion::same_value(JsValue::float(0.0), JsValue::float(-0.0)));
 }
 
 #[test]
 fn test_strict_equality_signed_zero() {
-    assert!(coercion::strict_equality(
-        JsValue::float(0.0),
-        JsValue::float(-0.0)
-    ));
+    assert!(coercion::strict_equality(JsValue::float(0.0), JsValue::float(-0.0)));
 }
 
 #[test]
 fn test_same_value_nan() {
-    assert!(coercion::same_value(
-        JsValue::float(f64::NAN),
-        JsValue::float(f64::NAN)
-    ));
+    assert!(coercion::same_value(JsValue::float(f64::NAN), JsValue::float(f64::NAN)));
 }
 
 #[test]
@@ -73,36 +64,21 @@ fn test_same_value_int_float_equal() {
 
 #[test]
 fn test_strict_equality_nan() {
-    assert!(!coercion::strict_equality(
-        JsValue::float(f64::NAN),
-        JsValue::float(f64::NAN)
-    ));
+    assert!(!coercion::strict_equality(JsValue::float(f64::NAN), JsValue::float(f64::NAN)));
 }
 
 #[test]
 fn test_strict_equality_type_mismatch() {
-    assert!(!coercion::strict_equality(
-        JsValue::int(1),
-        JsValue::bool(true)
-    ));
+    assert!(!coercion::strict_equality(JsValue::int(1), JsValue::bool(true)));
 }
 
 #[test]
 fn test_strict_equality_int_float_equal() {
-    assert!(coercion::strict_equality(
-        JsValue::int(1),
-        JsValue::float(1.0)
-    ));
-    assert!(!coercion::strict_equality(
-        JsValue::int(1),
-        JsValue::float(2.0)
-    ));
+    assert!(coercion::strict_equality(JsValue::int(1), JsValue::float(1.0)));
+    assert!(!coercion::strict_equality(JsValue::int(1), JsValue::float(2.0)));
 }
 
 #[test]
 fn test_strict_equality_null_undefined() {
-    assert!(!coercion::strict_equality(
-        JsValue::null(),
-        JsValue::undefined()
-    ));
+    assert!(!coercion::strict_equality(JsValue::null(), JsValue::undefined()));
 }

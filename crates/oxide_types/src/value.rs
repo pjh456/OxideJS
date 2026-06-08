@@ -124,10 +124,7 @@ impl JsValue {
 
     pub fn string(index: u32, hash: u16) -> Self {
         let payload = ((hash as u64) << STRING_HASH_SHIFT) | (index as u64);
-        debug_assert!(
-            payload & !(STRING_HASH_MASK | STRING_INDEX_MASK) == 0,
-            "string payload overflow"
-        );
+        debug_assert!(payload & !(STRING_HASH_MASK | STRING_INDEX_MASK) == 0, "string payload overflow");
         Self(make_tag(TAG_STRING) | payload)
     }
 
@@ -288,12 +285,7 @@ impl fmt::Debug for JsValue {
         } else if self.is_object() {
             write!(f, "JsValue(Object({:p}))", self.as_ptr())
         } else if self.is_string() {
-            write!(
-                f,
-                "JsValue(String(idx={}, hash={:#06x}))",
-                self.as_string_index(),
-                self.as_string_hash()
-            )
+            write!(f, "JsValue(String(idx={}, hash={:#06x}))", self.as_string_index(), self.as_string_hash())
         } else if self.is_symbol() {
             write!(f, "JsValue(Symbol(idx={}))", self.as_symbol_index())
         } else {

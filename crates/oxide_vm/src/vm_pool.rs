@@ -27,11 +27,7 @@ pub struct VmGuard {
 }
 
 impl VmPool {
-    pub fn new(
-        kernel: Arc<OxideKernel>,
-        #[allow(dead_code)] min_size: usize,
-        max_size: Option<usize>,
-    ) -> Arc<Self> {
+    pub fn new(kernel: Arc<OxideKernel>, #[allow(dead_code)] min_size: usize, max_size: Option<usize>) -> Arc<Self> {
         let pool = Arc::new(Self {
             kernel,
             inner: Mutex::new(VmPoolInner {

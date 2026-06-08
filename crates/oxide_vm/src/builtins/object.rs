@@ -38,9 +38,7 @@ pub(crate) fn walk_own_keys(vm: &Vm, obj: &JsObject) -> Vec<(u32, u32)> {
 }
 
 pub fn object_constructor(vm: &mut Vm, _args: &[u8]) -> NativeResult {
-    let obj = vm
-        .epoch()
-        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+    let obj = vm.epoch().alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
     Ok(JsValue::from_js_object(obj))
 }
 
@@ -95,9 +93,7 @@ pub fn object_create(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if !proto_val.is_null() && !proto_val.is_object() {
         return Ok(JsValue::undefined());
     }
-    let obj = vm
-        .epoch()
-        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
+    let obj = vm.epoch().alloc(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
     Ok(JsValue::from_js_object(obj))
 }
 
@@ -210,10 +206,9 @@ pub fn object_get_own_property_descriptor(vm: &mut Vm, args: &[u8]) -> NativeRes
     let sf_ptr = vm.kernel().string_forge().as_ref() as *const StringForge;
     let sh_ptr = vm.kernel().shape_forge().as_ref() as *const ShapeForge;
     let desc_proto = vm.kernel().builtin_world().object_proto.as_ptr() as *mut JsObject;
-    let desc = vm.epoch().alloc(JsObject::new_empty(
-        EMPTY_SHAPE_ID,
-        JsValue::from_js_object(desc_proto),
-    ));
+    let desc = vm
+        .epoch()
+        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(desc_proto)));
     let true_val = JsValue::bool(true);
     let sf = unsafe { &*sf_ptr };
     let sh = unsafe { &*sh_ptr };

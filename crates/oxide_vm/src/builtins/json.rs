@@ -11,25 +11,19 @@ use crate::vm::Vm;
 
 pub fn json_parse(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
-        return Err(crate::builtins::error::create_syntax_error(
-            vm,
-            "JSON.parse requires 1 argument",
-        ));
+        return Err(crate::builtins::error::create_syntax_error(vm, "JSON.parse requires 1 argument"));
     }
     let val = vm.reg(args[1]);
     if !val.is_string() {
-        return Err(crate::builtins::error::create_syntax_error(
-            vm,
-            "JSON.parse: argument is not a string",
-        ));
+        return Err(crate::builtins::error::create_syntax_error(vm, "JSON.parse: argument is not a string"));
     }
     let text = {
         let si = val.as_string_index();
         vm.kernel().string_forge().lookup(si).unwrap_or_default()
     };
 
-    let parsed: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|e| crate::builtins::error::create_syntax_error(vm, &format!("{}", e)))?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| crate::builtins::error::create_syntax_error(vm, &format!("{}", e)))?;
 
     Ok(value_to_jsvalue(vm, &parsed))
 }
@@ -65,8 +59,7 @@ fn value_to_jsvalue(vm: &mut Vm, val: &serde_json::Value) -> JsValue {
         }
         serde_json::Value::Object(map) => {
             let object_proto = vm.kernel().builtin_world().object_proto.as_ptr() as *mut JsObject;
-            let mut obj =
-                JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto));
+            let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto));
             for (key, val) in map {
                 let si = vm.kernel().string_forge().intern(key).0;
                 let jsv = value_to_jsvalue(vm, val);
@@ -95,12 +88,7 @@ pub fn json_stringify(vm: &mut Vm, args: &[u8]) -> NativeResult {
     Ok(vm.intern(&output))
 }
 
-fn jsvalue_to_json(
-    vm: &Vm,
-    val: JsValue,
-    visited: &mut HashSet<*const u8>,
-    out: &mut String,
-) -> Result<(), ()> {
+fn jsvalue_to_json(vm: &Vm, val: JsValue, visited: &mut HashSet<*const u8>, out: &mut String) -> Result<(), ()> {
     if val.is_null() {
         out.push_str("null");
     } else if val.is_undefined() {
@@ -169,12 +157,7 @@ fn stringify_string(s: &str, out: &mut String) {
     out.push('"');
 }
 
-fn stringify_object(
-    vm: &Vm,
-    obj: &JsObject,
-    visited: &mut HashSet<*const u8>,
-    out: &mut String,
-) -> Result<(), ()> {
+fn stringify_object(vm: &Vm, obj: &JsObject, visited: &mut HashSet<*const u8>, out: &mut String) -> Result<(), ()> {
     out.push('{');
     let keys = walk_own_keys(vm, obj);
     let mut first = true;
@@ -204,12 +187,7 @@ fn stringify_object(
     Ok(())
 }
 
-fn stringify_array(
-    vm: &Vm,
-    obj: &JsObject,
-    visited: &mut HashSet<*const u8>,
-    out: &mut String,
-) -> Result<(), ()> {
+fn stringify_array(vm: &Vm, obj: &JsObject, visited: &mut HashSet<*const u8>, out: &mut String) -> Result<(), ()> {
     out.push('[');
     let len = obj.prop_vec_len();
     for i in 0..len {

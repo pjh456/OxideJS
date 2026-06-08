@@ -5,12 +5,7 @@ use oxide_types::value::JsValue;
 use crate::native::{NativeFn, NativeResult};
 use crate::vm::Vm;
 
-fn invoke_target(
-    vm: &mut Vm,
-    target_val: JsValue,
-    this_val: JsValue,
-    arg_regs: &[u8],
-) -> NativeResult {
+fn invoke_target(vm: &mut Vm, target_val: JsValue, this_val: JsValue, arg_regs: &[u8]) -> NativeResult {
     if !target_val.is_object() {
         return Err(JsValue::undefined());
     }
@@ -79,11 +74,7 @@ pub fn function_call(vm: &mut Vm, args: &[u8]) -> NativeResult {
         return Err(JsValue::undefined());
     }
     let target_val = vm.reg(args[0]);
-    let this_val = if args.len() > 1 {
-        vm.reg(args[1])
-    } else {
-        JsValue::undefined()
-    };
+    let this_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let arg_regs: Vec<u8> = args.iter().skip(2).copied().collect();
     invoke_target(vm, target_val, this_val, &arg_regs)
 }
@@ -93,11 +84,7 @@ pub fn function_apply(vm: &mut Vm, args: &[u8]) -> NativeResult {
         return Err(JsValue::undefined());
     }
     let target_val = vm.reg(args[0]);
-    let this_val = if args.len() > 1 {
-        vm.reg(args[1])
-    } else {
-        JsValue::undefined()
-    };
+    let this_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
 
     let arg_regs: Vec<u8>;
     if args.len() > 2 {
@@ -139,15 +126,9 @@ pub fn function_bind(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if !target_val.is_object() {
         return Err(JsValue::undefined());
     }
-    let bound_this = if args.len() > 1 {
-        vm.reg(args[1])
-    } else {
-        JsValue::undefined()
-    };
+    let bound_this = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
 
-    let wrapper = vm
-        .epoch()
-        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+    let wrapper = vm.epoch().alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
     unsafe {
         (*wrapper).set_function(true);
         (*wrapper).set_native_fn(Some(bind_dispatcher as *const ()));
@@ -189,20 +170,13 @@ pub fn function_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
         .unwrap_or_else(|| {
             let sub_idx = func.sub_module_index();
             if sub_idx > 0 && (sub_idx as usize) <= vm.sub_modules.len() {
-                vm.sub_modules[sub_idx as usize - 1]
-                    .function_name
-                    .clone()
-                    .unwrap_or_default()
+                vm.sub_modules[sub_idx as usize - 1].function_name.clone().unwrap_or_default()
             } else {
                 String::new()
             }
         });
 
-    let body = if func.native_fn().is_some() {
-        "[native code]"
-    } else {
-        "[bytecode]"
-    };
+    let body = if func.native_fn().is_some() { "[native code]" } else { "[bytecode]" };
     let result = if name.is_empty() {
         format!("function () {{ {body} }}")
     } else {

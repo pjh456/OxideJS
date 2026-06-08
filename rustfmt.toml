@@ -1,1 +1,16 @@
-max_width = 100
+max_width = 120
+use_small_heuristics = "Max"
+
+fn_call_width = 90
+attr_fn_like_width = 90
+struct_lit_width = 30
+struct_variant_width = 50
+array_width = 90
+chain_width = 80
+
+single_line_if_else_max_width = 80
+single_line_let_else_max_width = 80
+fn_params_layout = "Compressed"
+
+edition = "2021"
+style_edition = "2021"

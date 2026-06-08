@@ -9,16 +9,10 @@ use crate::coercion;
 use crate::native::NativeResult;
 use crate::vm::Vm;
 
-fn create_error_object(
-    vm: &mut Vm,
-    error_proto_ptr: *mut JsObject,
-    name: &str,
-    message: &str,
-) -> JsValue {
-    let obj = vm.epoch().alloc(JsObject::new_empty(
-        EMPTY_SHAPE_ID,
-        JsValue::from_js_object(error_proto_ptr),
-    ));
+fn create_error_object(vm: &mut Vm, error_proto_ptr: *mut JsObject, name: &str, message: &str) -> JsValue {
+    let obj = vm
+        .epoch()
+        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(error_proto_ptr)));
 
     let sf = Arc::clone(vm.kernel().string_forge());
     let sh = Arc::clone(vm.kernel().shape_forge());
@@ -132,18 +126,13 @@ pub fn error_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
             .map(|b| **b)
             .unwrap_or(JsValue::undefined());
         (
-            vm.lookup_str(name_val)
-                .unwrap_or_else(|| "Error".to_string()),
+            vm.lookup_str(name_val).unwrap_or_else(|| "Error".to_string()),
             vm.lookup_str(msg_val).unwrap_or_default(),
         )
     } else {
         ("Error".to_string(), String::new())
     };
-    let result = if msg.is_empty() {
-        name
-    } else {
-        format!("{}: {}", name, msg)
-    };
+    let result = if msg.is_empty() { name } else { format!("{}: {}", name, msg) };
     let si = vm.kernel().string_forge().intern(&result).0;
     Ok(JsValue::string(si, 0))
 }
@@ -184,14 +173,7 @@ mod tests {
         });
 
         let stack = error_stack_getter(&mut vm, &[0]).unwrap();
-        let stack_str = vm
-            .kernel()
-            .string_forge()
-            .lookup(stack.as_string_index())
-            .unwrap_or_default();
-        assert!(
-            stack_str.contains("foo"),
-            "expected function name in stack: {stack_str}"
-        );
+        let stack_str = vm.kernel().string_forge().lookup(stack.as_string_index()).unwrap_or_default();
+        assert!(stack_str.contains("foo"), "expected function name in stack: {stack_str}");
     }
 }

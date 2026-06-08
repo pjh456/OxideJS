@@ -27,12 +27,5 @@ pub fn bind_map(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
         ],
     );
 
-    bind_constructor_hash!(
-        kernel,
-        global,
-        "Map",
-        ctor_ptr,
-        crate::builtins::map::map_constructor,
-        1
-    );
+    bind_constructor_hash!(kernel, global, "Map", ctor_ptr, crate::builtins::map::map_constructor, 1);
 }

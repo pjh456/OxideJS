@@ -19,15 +19,9 @@ fn eval_syntax_error() {
         .output()
         .expect("failed to run oxide eval");
 
-    assert!(
-        !output.status.success(),
-        "syntax error should exit non-zero"
-    );
+    assert!(!output.status.success(), "syntax error should exit non-zero");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !stderr.is_empty(),
-        "syntax error should produce stderr output"
-    );
+    assert!(!stderr.is_empty(), "syntax error should produce stderr output");
 }
 
 #[test]
@@ -51,8 +45,5 @@ fn bench_not_implemented() {
         .expect("failed to run oxide bench");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("not yet implemented"),
-        "bench should print not-implemented message"
-    );
+    assert!(stderr.contains("not yet implemented"), "bench should print not-implemented message");
 }

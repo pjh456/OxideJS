@@ -202,11 +202,7 @@ fn intern_label(string_forge: &StringForge, label: &str) -> u32 {
 }
 
 fn make_pair(
-    string_forge: &StringForge,
-    shape_forge: &ShapeForge,
-    name: &str,
-    si_prototype: u32,
-    si_constructor: u32,
+    string_forge: &StringForge, shape_forge: &ShapeForge, name: &str, si_prototype: u32, si_constructor: u32,
     si_name: u32,
 ) -> (P<JsObject>, P<JsObject>) {
     intern_label(string_forge, name);
@@ -226,13 +222,9 @@ fn make_pair(
 
     // Pre-allocate Vec slots so wire_ctor_proto can overwrite vec[0] later.
     // Proto: 1 property ("constructor"), Ctor: 2 properties ("prototype", "name").
-    proto
-        .ensure_hash_props()
-        .push(Box::new(JsValue::undefined())); // slot 0: "constructor" placeholder
-    ctor.ensure_hash_props()
-        .push(Box::new(JsValue::undefined())); // slot 0: "prototype" placeholder
-    ctor.ensure_hash_props()
-        .push(Box::new(JsValue::undefined())); // slot 1: "name" placeholder
+    proto.ensure_hash_props().push(Box::new(JsValue::undefined())); // slot 0: "constructor" placeholder
+    ctor.ensure_hash_props().push(Box::new(JsValue::undefined())); // slot 0: "prototype" placeholder
+    ctor.ensure_hash_props().push(Box::new(JsValue::undefined())); // slot 1: "name" placeholder
 
     (P::new(proto), P::new(ctor))
 }
@@ -250,70 +242,22 @@ impl BuiltinWorld {
         intern_label(string_forge, "toString");
         intern_label(string_forge, "valueOf");
 
-        let (object_proto, object_constructor) = make_pair(
-            string_forge,
-            shape_forge,
-            "Object",
-            si_prototype,
-            si_constructor,
-            si_name,
-        );
-        let (array_proto, array_constructor) = make_pair(
-            string_forge,
-            shape_forge,
-            "Array",
-            si_prototype,
-            si_constructor,
-            si_name,
-        );
-        let (function_proto, function_constructor) = make_pair(
-            string_forge,
-            shape_forge,
-            "Function",
-            si_prototype,
-            si_constructor,
-            si_name,
-        );
-        let (string_proto, string_constructor) = make_pair(
-            string_forge,
-            shape_forge,
-            "String",
-            si_prototype,
-            si_constructor,
-            si_name,
-        );
-        let (number_proto, number_constructor) = make_pair(
-            string_forge,
-            shape_forge,
-            "Number",
-            si_prototype,
-            si_constructor,
-            si_name,
-        );
-        let (boolean_proto, boolean_constructor) = make_pair(
-            string_forge,
-            shape_forge,
-            "Boolean",
-            si_prototype,
-            si_constructor,
-            si_name,
-        );
-        let (error_proto, error_constructor) = make_pair(
-            string_forge,
-            shape_forge,
-            "Error",
-            si_prototype,
-            si_constructor,
-            si_name,
-        );
-        let (symbol_proto, symbol_constructor) = make_pair(
-            string_forge,
-            shape_forge,
-            "Symbol",
-            si_prototype,
-            si_constructor,
-            si_name,
-        );
+        let (object_proto, object_constructor) =
+            make_pair(string_forge, shape_forge, "Object", si_prototype, si_constructor, si_name);
+        let (array_proto, array_constructor) =
+            make_pair(string_forge, shape_forge, "Array", si_prototype, si_constructor, si_name);
+        let (function_proto, function_constructor) =
+            make_pair(string_forge, shape_forge, "Function", si_prototype, si_constructor, si_name);
+        let (string_proto, string_constructor) =
+            make_pair(string_forge, shape_forge, "String", si_prototype, si_constructor, si_name);
+        let (number_proto, number_constructor) =
+            make_pair(string_forge, shape_forge, "Number", si_prototype, si_constructor, si_name);
+        let (boolean_proto, boolean_constructor) =
+            make_pair(string_forge, shape_forge, "Boolean", si_prototype, si_constructor, si_name);
+        let (error_proto, error_constructor) =
+            make_pair(string_forge, shape_forge, "Error", si_prototype, si_constructor, si_name);
+        let (symbol_proto, symbol_constructor) =
+            make_pair(string_forge, shape_forge, "Symbol", si_prototype, si_constructor, si_name);
 
         let error_proto_val = JsValue::from_js_object(error_proto.as_ptr() as *mut JsObject);
         let type_error_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val));
@@ -327,38 +271,14 @@ impl BuiltinWorld {
 
         let json_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
 
-        let (date_proto, date_constructor) = make_pair(
-            string_forge,
-            shape_forge,
-            "Date",
-            si_prototype,
-            si_constructor,
-            si_name,
-        );
-        let (set_proto, set_constructor) = make_pair(
-            string_forge,
-            shape_forge,
-            "Set",
-            si_prototype,
-            si_constructor,
-            si_name,
-        );
-        let (map_proto, map_constructor) = make_pair(
-            string_forge,
-            shape_forge,
-            "Map",
-            si_prototype,
-            si_constructor,
-            si_name,
-        );
-        let (regexp_proto, regexp_constructor) = make_pair(
-            string_forge,
-            shape_forge,
-            "RegExp",
-            si_prototype,
-            si_constructor,
-            si_name,
-        );
+        let (date_proto, date_constructor) =
+            make_pair(string_forge, shape_forge, "Date", si_prototype, si_constructor, si_name);
+        let (set_proto, set_constructor) =
+            make_pair(string_forge, shape_forge, "Set", si_prototype, si_constructor, si_name);
+        let (map_proto, map_constructor) =
+            make_pair(string_forge, shape_forge, "Map", si_prototype, si_constructor, si_name);
+        let (regexp_proto, regexp_constructor) =
+            make_pair(string_forge, shape_forge, "RegExp", si_prototype, si_constructor, si_name);
 
         let sym_match = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let sym_replace = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
@@ -458,12 +378,7 @@ impl BuiltinWorld {
         }
     }
 
-    pub fn bind_object_methods(
-        &self,
-        methods: &ObjectMethods,
-        string_forge: &StringForge,
-        shape_forge: &ShapeForge,
-    ) {
+    pub fn bind_object_methods(&self, methods: &ObjectMethods, string_forge: &StringForge, shape_forge: &ShapeForge) {
         let ctor_ptr = P::as_ptr(&self.object_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
         bind_methods!(
@@ -475,11 +390,7 @@ impl BuiltinWorld {
             ("create", methods.create, 2),
             ("assign", methods.assign, 2),
             ("defineProperty", methods.define_property, 3),
-            (
-                "getOwnPropertyDescriptor",
-                methods.get_own_property_descriptor,
-                2
-            ),
+            ("getOwnPropertyDescriptor", methods.get_own_property_descriptor, 2),
             ("freeze", methods.freeze, 1),
             ("seal", methods.seal, 1),
             ("preventExtensions", methods.prevent_extensions, 1),
@@ -496,12 +407,7 @@ impl BuiltinWorld {
         );
     }
 
-    pub fn bind_array_methods(
-        &self,
-        methods: &ArrayMethods,
-        string_forge: &StringForge,
-        shape_forge: &ShapeForge,
-    ) {
+    pub fn bind_array_methods(&self, methods: &ArrayMethods, string_forge: &StringForge, shape_forge: &ShapeForge) {
         let proto_ptr = P::as_ptr(&self.array_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
         bind_methods!(
@@ -540,12 +446,7 @@ impl BuiltinWorld {
         );
     }
 
-    pub fn bind_error_methods(
-        &self,
-        methods: &ErrorMethods,
-        string_forge: &StringForge,
-        shape_forge: &ShapeForge,
-    ) {
+    pub fn bind_error_methods(&self, methods: &ErrorMethods, string_forge: &StringForge, shape_forge: &ShapeForge) {
         let ctor_ptr = P::as_ptr(&self.error_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
         bind_methods!(
@@ -574,12 +475,7 @@ impl BuiltinWorld {
         );
     }
 
-    pub fn bind_string_methods(
-        &self,
-        methods: &StringMethods,
-        string_forge: &StringForge,
-        shape_forge: &ShapeForge,
-    ) {
+    pub fn bind_string_methods(&self, methods: &StringMethods, string_forge: &StringForge, shape_forge: &ShapeForge) {
         let proto_ptr = P::as_ptr(&self.string_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
         bind_methods!(
@@ -615,12 +511,7 @@ impl BuiltinWorld {
         );
     }
 
-    pub fn bind_number_methods(
-        &self,
-        methods: &NumberMethods,
-        string_forge: &StringForge,
-        shape_forge: &ShapeForge,
-    ) {
+    pub fn bind_number_methods(&self, methods: &NumberMethods, string_forge: &StringForge, shape_forge: &ShapeForge) {
         let ctor_ptr = P::as_ptr(&self.number_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
         let proto_ptr = P::as_ptr(&self.number_proto) as *mut JsObject;
@@ -651,10 +542,7 @@ impl BuiltinWorld {
     }
 
     pub fn bind_function_methods(
-        &self,
-        methods: &FunctionMethods,
-        string_forge: &StringForge,
-        shape_forge: &ShapeForge,
+        &self, methods: &FunctionMethods, string_forge: &StringForge, shape_forge: &ShapeForge,
     ) {
         let proto_ptr = P::as_ptr(&self.function_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
@@ -672,13 +560,8 @@ impl BuiltinWorld {
     }
 
     pub fn bind_method(
-        &self,
-        proto: &mut JsObject,
-        shape_forge: &ShapeForge,
-        string_forge: &StringForge,
-        method_name: &str,
-        native_fn_ptr: *const (),
-        arg_count: u8,
+        &self, proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &StringForge, method_name: &str,
+        native_fn_ptr: *const (), arg_count: u8,
     ) -> Result<(), String> {
         Self::bind_method_static(
             proto,
@@ -692,13 +575,8 @@ impl BuiltinWorld {
     }
 
     pub fn bind_method_static(
-        proto: &mut JsObject,
-        shape_forge: &ShapeForge,
-        string_forge: &StringForge,
-        method_name: &str,
-        native_fn_ptr: *const (),
-        arg_count: u8,
-        wrapper_proto: JsValue,
+        proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &StringForge, method_name: &str,
+        native_fn_ptr: *const (), arg_count: u8, wrapper_proto: JsValue,
     ) -> Result<(), String> {
         let si = string_forge.intern(method_name).0;
         let wrapper_proto_ptr = if wrapper_proto.is_object() {
@@ -748,10 +626,7 @@ mod tests {
             &w.symbol_proto,
         ];
         for p in protos {
-            assert!(
-                p.shape_id() > EMPTY_SHAPE_ID,
-                "proto should have a non-empty shape"
-            );
+            assert!(p.shape_id() > EMPTY_SHAPE_ID, "proto should have a non-empty shape");
         }
     }
 
@@ -803,9 +678,6 @@ mod tests {
             w.object_constructor.shape_id() > EMPTY_SHAPE_ID,
             "constructor should have prototype + name shape"
         );
-        assert!(
-            w.object_proto.shape_id() > EMPTY_SHAPE_ID,
-            "prototype should have constructor shape"
-        );
+        assert!(w.object_proto.shape_id() > EMPTY_SHAPE_ID, "prototype should have constructor shape");
     }
 }

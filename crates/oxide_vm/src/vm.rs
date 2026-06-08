@@ -275,11 +275,7 @@ impl Vm {
                 .resolve_property(obj, message_si)
                 .and_then(|v| self.lookup_str(v))
                 .unwrap_or_default();
-            return if message.is_empty() {
-                name
-            } else {
-                format!("{name}: {message}")
-            };
+            return if message.is_empty() { name } else { format!("{name}: {message}") };
         }
         format!("{val}")
     }
@@ -307,8 +303,7 @@ impl Vm {
                 let pat_val = JsValue::string(pat_si, 0);
                 let flags_val = JsValue::string(flags_si, 0);
 
-                let ctor_ptr =
-                    self.kernel.builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
+                let ctor_ptr = self.kernel.builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
                 let ctor = unsafe { &*ctor_ptr };
                 let Some(native_fn) = ctor.native_fn() else {
                     return Err("SyntaxError: RegExp constructor unavailable".into());
@@ -378,19 +373,10 @@ impl Vm {
         self.kernel.string_forge().intern(&key).0
     }
 
-    pub(crate) fn template_prop_ptr(
-        &self,
-        obj: &JsObject,
-        template: &PropTemplate,
-    ) -> Option<*const JsValue> {
+    pub(crate) fn template_prop_ptr(&self, obj: &JsObject, template: &PropTemplate) -> Option<*const JsValue> {
         let pos = template.position as usize;
-        obj.hash_props_vec().and_then(|vec| {
-            if pos < vec.len() {
-                Some(&*vec[pos] as *const JsValue)
-            } else {
-                None
-            }
-        })
+        obj.hash_props_vec()
+            .and_then(|vec| if pos < vec.len() { Some(&*vec[pos] as *const JsValue) } else { None })
     }
 
     pub(crate) fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
@@ -398,11 +384,7 @@ impl Vm {
         if obj.is_array() && prop_name_si == length_si {
             return Some(JsValue::int(obj.prop_count() as i32));
         }
-        if let Some(pos) = self
-            .kernel
-            .shape_forge()
-            .lookup_position(obj.shape_id(), prop_name_si)
-        {
+        if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             let val = obj.get_prop_at(pos);
             if !val.is_undefined() || obj.prop_vec_len() > pos as usize {
                 return Some(val);
@@ -411,11 +393,7 @@ impl Vm {
         let mut proto = obj.proto();
         while proto.is_object() {
             let proto_obj = unsafe { &*proto.as_js_object_ptr() };
-            if let Some(pos) = self
-                .kernel
-                .shape_forge()
-                .lookup_position(proto_obj.shape_id(), prop_name_si)
-            {
+            if let Some(pos) = self.kernel.shape_forge().lookup_position(proto_obj.shape_id(), prop_name_si) {
                 let val = proto_obj.get_prop_at(pos);
                 if !val.is_undefined() || proto_obj.prop_vec_len() > pos as usize {
                     return Some(val);
@@ -438,21 +416,15 @@ impl Vm {
             unsafe { *(cached_ptr as *const JsValue) }
         } else if let Some(template) = self.kernel.prop_forge().get_template(obj.shape_id()) {
             if template.prop_name != prop_name_si {
-                self.resolve_property(obj, prop_name_si)
-                    .unwrap_or(JsValue::undefined())
+                self.resolve_property(obj, prop_name_si).unwrap_or(JsValue::undefined())
             } else if let Some(ptr) = self.template_prop_ptr(obj, &template) {
                 self.write_ic_back(obj.shape_id(), ptr);
                 unsafe { *ptr }
             } else {
-                self.resolve_property(obj, prop_name_si)
-                    .unwrap_or(JsValue::undefined())
+                self.resolve_property(obj, prop_name_si).unwrap_or(JsValue::undefined())
             }
         } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
-            if let Some(pos) = self
-                .kernel
-                .shape_forge()
-                .lookup_position(obj.shape_id(), prop_name_si)
-            {
+            if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
                 if let Some(ptr) = obj.prop_ptr_at(pos) {
                     self.write_ic_back(obj.shape_id(), ptr);
                 }
@@ -464,26 +436,16 @@ impl Vm {
     }
 
     pub(crate) fn set_member_prop(
-        &mut self,
-        obj: &mut JsObject,
-        prop_name_si: u32,
-        val: JsValue,
+        &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue,
     ) -> Result<(), String> {
-        if let Some(pos) = self
-            .kernel
-            .shape_forge()
-            .lookup_position(obj.shape_id(), prop_name_si)
-        {
+        if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             obj.set_prop_at(pos, val);
             // IC write-back: 3 extension words (shape_id + ptr_lo + ptr_hi)
             if let Some(ptr) = obj.prop_ptr_at(pos) {
                 self.write_ic_back(obj.shape_id(), ptr);
             }
         } else {
-            let new_shape_id = self
-                .kernel
-                .shape_forge()
-                .make_shape(obj.shape_id(), prop_name_si);
+            let new_shape_id = self.kernel.shape_forge().make_shape(obj.shape_id(), prop_name_si);
             obj.set_shape_id(new_shape_id);
             let new_pos = obj.push_prop(val);
             obj.bump_generation();
@@ -503,23 +465,11 @@ impl Vm {
         Ok(())
     }
 
-    pub(crate) fn set_or_create_prop_value(
-        &mut self,
-        obj: &mut JsObject,
-        prop_name_si: u32,
-        val: JsValue,
-    ) {
-        if let Some(pos) = self
-            .kernel
-            .shape_forge()
-            .lookup_position(obj.shape_id(), prop_name_si)
-        {
+    pub(crate) fn set_or_create_prop_value(&mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue) {
+        if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             obj.set_prop_at(pos, val);
         } else {
-            let new_shape_id = self
-                .kernel
-                .shape_forge()
-                .make_shape(obj.shape_id(), prop_name_si);
+            let new_shape_id = self.kernel.shape_forge().make_shape(obj.shape_id(), prop_name_si);
             obj.set_shape_id(new_shape_id);
             obj.push_prop(val);
             obj.bump_generation();
@@ -527,10 +477,7 @@ impl Vm {
     }
 
     pub(crate) fn write_ic_back(&mut self, shape_id: u32, ptr: *const JsValue) {
-        debug_assert!(
-            self.pc >= 3,
-            "IC write-back requires 3 extension words before pc"
-        );
+        debug_assert!(self.pc >= 3, "IC write-back requires 3 extension words before pc");
         self.bytecode[self.pc - 3] = shape_id & 0x00FF_FFFF;
         self.bytecode[self.pc - 2] = ptr as u32;
         self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
@@ -572,11 +519,7 @@ impl Vm {
         for (name, reg) in &module.builtin_reg_map {
             let si = self.kernel.string_forge().intern(name.as_str()).0;
             let global = self.kernel.global_object();
-            if let Some(pos) = self
-                .kernel
-                .shape_forge()
-                .lookup_position(global.shape_id(), si)
-            {
+            if let Some(pos) = self.kernel.shape_forge().lookup_position(global.shape_id(), si) {
                 self.regs[*reg as usize] = global.get_prop_at(pos);
             }
         }
@@ -587,11 +530,7 @@ impl Vm {
     /// Call a bytecode function from native code (D-09).
     /// Stub: sub_module storage not yet wired (plan 12.1-03).
     #[allow(dead_code)]
-    pub fn call_bytecode_func(
-        &mut self,
-        _callback_obj: &JsObject,
-        _args_regs: &[u8],
-    ) -> Result<JsValue, String> {
+    pub fn call_bytecode_func(&mut self, _callback_obj: &JsObject, _args_regs: &[u8]) -> Result<JsValue, String> {
         Err("bytecode function calls not yet supported".into())
     }
 
@@ -715,8 +654,7 @@ impl Vm {
                 }
 
                 OpCode::JMP_IF_FALSE => {
-                    let cond =
-                        coercion::to_boolean(self.regs[rd], self.kernel.string_forge().as_ref());
+                    let cond = coercion::to_boolean(self.regs[rd], self.kernel.string_forge().as_ref());
                     if !cond {
                         let offset = opcode::offset16(instr) as isize;
                         self.pc = ((self.pc as isize) + offset - 1) as usize;
@@ -724,8 +662,7 @@ impl Vm {
                 }
 
                 OpCode::JMP_IF_TRUE => {
-                    let cond =
-                        coercion::to_boolean(self.regs[rd], self.kernel.string_forge().as_ref());
+                    let cond = coercion::to_boolean(self.regs[rd], self.kernel.string_forge().as_ref());
                     if cond {
                         let offset = opcode::offset16(instr) as isize;
                         self.pc = ((self.pc as isize) + offset - 1) as usize;
@@ -763,13 +700,7 @@ impl Vm {
                                 let arg_count = (ext & 0xFF) as usize;
 
                                 if obj.native_fn().is_some() {
-                                    match self.dispatch_native_call(
-                                        obj,
-                                        callee,
-                                        this_reg,
-                                        first_arg_reg,
-                                        arg_count,
-                                    ) {
+                                    match self.dispatch_native_call(obj, callee, this_reg, first_arg_reg, arg_count) {
                                         Ok(()) => continue,
                                         Err(e) => return Err(e),
                                     }
@@ -785,9 +716,7 @@ impl Vm {
                                     }
 
                                     if self.frames.len() >= self.kernel.config.max_call_depth {
-                                        return Err(
-                                            "RangeError: Maximum call stack size exceeded".into()
-                                        );
+                                        return Err("RangeError: Maximum call stack size exceeded".into());
                                     }
 
                                     // Clone sub_module data before mutably borrowing self
@@ -795,13 +724,10 @@ impl Vm {
                                     let sub_n_args = self.sub_modules[sub_idx].n_args as usize;
                                     let sub_n_registers = self.sub_modules[sub_idx].n_registers;
                                     let sub_constants = self.sub_modules[sub_idx].constants.clone();
-                                    let sub_param_base =
-                                        self.sub_modules[sub_idx].param_base as usize;
+                                    let sub_param_base = self.sub_modules[sub_idx].param_base as usize;
                                     let sub_is_arrow = self.sub_modules[sub_idx].is_arrow;
                                     let caller_reg_limit = self.active_reg_limit.max(1);
-                                    let saved_regs = self.regs[..caller_reg_limit as usize]
-                                        .to_vec()
-                                        .into_boxed_slice();
+                                    let saved_regs = self.regs[..caller_reg_limit as usize].to_vec().into_boxed_slice();
                                     let saved_this = self.regs[254];
                                     let saved_new_target = self.regs[255];
 
@@ -812,21 +738,14 @@ impl Vm {
                                     }
                                     // Set this (reg 254 convention).
                                     // Arrow functions use captured lexical `this` (D-01).
-                                    self.regs[254] = if sub_is_arrow {
-                                        obj.captured_this()
-                                    } else {
-                                        callee
-                                    };
+                                    self.regs[254] = if sub_is_arrow { obj.captured_this() } else { callee };
                                     self.regs[255] = JsValue::undefined();
 
-                                    let converted_sub_constants =
-                                        self.convert_constants(&sub_constants)?;
+                                    let converted_sub_constants = self.convert_constants(&sub_constants)?;
 
                                     // Save current bytecode/constants
-                                    self.saved_bytecode_stack
-                                        .push(std::mem::take(&mut self.bytecode));
-                                    self.saved_constants_stack
-                                        .push(std::mem::take(&mut self.constants));
+                                    self.saved_bytecode_stack.push(std::mem::take(&mut self.bytecode));
+                                    self.saved_constants_stack.push(std::mem::take(&mut self.constants));
 
                                     // Push call frame
                                     self.frames.push(CallFrame {
@@ -850,10 +769,8 @@ impl Vm {
                                     for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map {
                                         let si = self.kernel.string_forge().intern(name.as_str()).0;
                                         let global = self.kernel.global_object();
-                                        if let Some(pos) = self
-                                            .kernel
-                                            .shape_forge()
-                                            .lookup_position(global.shape_id(), si)
+                                        if let Some(pos) =
+                                            self.kernel.shape_forge().lookup_position(global.shape_id(), si)
                                         {
                                             self.regs[*reg as usize] = global.get_prop_at(pos);
                                         }
@@ -886,11 +803,7 @@ impl Vm {
                     }
                     let obj = unsafe { &*obj_ptr };
                     if !obj.is_function() || obj.native_fn().is_none() {
-                        throw_err!(
-                            self,
-                            TypeError,
-                            "CALL_NATIVE target is not a native function"
-                        );
+                        throw_err!(self, TypeError, "CALL_NATIVE target is not a native function");
                     }
 
                     let ext = self.bytecode[self.pc];
@@ -906,11 +819,7 @@ impl Vm {
 
                     let constructor = self.regs[constructor_reg];
                     if !constructor.is_object() {
-                        throw_err!(
-                            self,
-                            TypeError,
-                            "NEW_EXPRESSION: constructor is not an object"
-                        );
+                        throw_err!(self, TypeError, "NEW_EXPRESSION: constructor is not an object");
                     }
                     let ctor_ptr = constructor.as_js_object_ptr();
                     if ctor_ptr.is_null() {
@@ -918,19 +827,11 @@ impl Vm {
                     }
                     let ctor_obj = unsafe { &*ctor_ptr };
                     if !ctor_obj.is_function() {
-                        throw_err!(
-                            self,
-                            TypeError,
-                            "NEW_EXPRESSION: constructor is not a function"
-                        );
+                        throw_err!(self, TypeError, "NEW_EXPRESSION: constructor is not a function");
                     }
                     // Arrow functions cannot be used as constructors (D-03)
                     if ctor_obj.is_arrow() {
-                        throw_err!(
-                            self,
-                            TypeError,
-                            "arrow functions cannot be used as constructors"
-                        );
+                        throw_err!(self, TypeError, "arrow functions cannot be used as constructors");
                     }
 
                     // Read extension word for arg_count
@@ -940,10 +841,9 @@ impl Vm {
 
                     // Create new empty object
                     let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
-                    let new_obj = self.epoch.alloc(JsObject::new_empty(
-                        EMPTY_SHAPE_ID,
-                        JsValue::from_js_object(proto_ptr),
-                    ));
+                    let new_obj = self
+                        .epoch
+                        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
 
                     // Look up constructor.prototype and set as proto of new object
                     let proto_si = self.kernel.string_forge().intern("prototype").0;
@@ -967,8 +867,7 @@ impl Vm {
                         }
                         let args_slice = &args_buf[..arg_count + 1];
 
-                        let func: NativeFn =
-                            unsafe { std::mem::transmute(ctor_obj.native_fn().unwrap()) };
+                        let func: NativeFn = unsafe { std::mem::transmute(ctor_obj.native_fn().unwrap()) };
                         self.regs[254] = constructor;
                         match func(self, args_slice) {
                             Ok(val) => {
@@ -1036,16 +935,14 @@ impl Vm {
 
                 OpCode::NEW_OBJECT => {
                     let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
-                    let obj = self.epoch.alloc(JsObject::new_empty(
-                        EMPTY_SHAPE_ID,
-                        JsValue::from_js_object(proto_ptr),
-                    ));
+                    let obj = self
+                        .epoch
+                        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
                     self.regs[rd] = JsValue::object(obj as *mut u8);
                 }
 
                 OpCode::NEW_ARRAY => {
-                    let proto_ptr =
-                        self.kernel.builtin_world().array_proto.as_ptr() as *mut JsObject;
+                    let proto_ptr = self.kernel.builtin_world().array_proto.as_ptr() as *mut JsObject;
                     let n = opcode::imm16(instr) as usize;
                     let bump = self.epoch.bump();
                     let obj = self.epoch.alloc(JsObject::new_array(
@@ -1119,10 +1016,7 @@ impl Vm {
                             let reg = (seg & 0x7F) as u8;
                             let val = self.regs[reg as usize];
                             let s = if val.is_string() {
-                                self.kernel()
-                                    .string_forge()
-                                    .lookup(val.as_string_index())
-                                    .unwrap_or_default()
+                                self.kernel().string_forge().lookup(val.as_string_index()).unwrap_or_default()
                             } else {
                                 format!("{}", val)
                             };
@@ -1133,11 +1027,8 @@ impl Vm {
                             if const_idx < self.constants.len() {
                                 let val = self.constants[const_idx];
                                 if val.is_string() {
-                                    let s = self
-                                        .kernel()
-                                        .string_forge()
-                                        .lookup(val.as_string_index())
-                                        .unwrap_or_default();
+                                    let s =
+                                        self.kernel().string_forge().lookup(val.as_string_index()).unwrap_or_default();
                                     result.push_str(&s);
                                 }
                             }
@@ -1164,11 +1055,7 @@ impl Vm {
                     let rhs_val = self.regs[b];
 
                     if !rhs_val.is_object() {
-                        throw_err!(
-                            self,
-                            TypeError,
-                            "INSTANCEOF right-hand side is not callable"
-                        );
+                        throw_err!(self, TypeError, "INSTANCEOF right-hand side is not callable");
                     }
                     if !lhs_val.is_object() {
                         self.regs[rd] = JsValue::bool(false);
@@ -1286,14 +1173,8 @@ impl Vm {
                                 break;
                             }
                             if let Some(shape) = self.kernel.shape_forge().get_shape(id) {
-                                if shape.property_name != u32::MAX
-                                    && seen.insert(shape.property_name)
-                                {
-                                    let hash = self
-                                        .kernel
-                                        .string_forge()
-                                        .get_hash(shape.property_name)
-                                        .unwrap_or(0);
+                                if shape.property_name != u32::MAX && seen.insert(shape.property_name) {
+                                    let hash = self.kernel.string_forge().get_hash(shape.property_name).unwrap_or(0);
                                     keys_vec.push(JsValue::string(shape.property_name, hash));
                                 }
                                 cursor = shape.parent;
@@ -1304,10 +1185,7 @@ impl Vm {
                         current = cur.proto();
                     }
 
-                    let iter = self.epoch.alloc(ForInIter {
-                        keys: keys_vec,
-                        index: 0,
-                    });
+                    let iter = self.epoch.alloc(ForInIter { keys: keys_vec, index: 0 });
                     self.for_in_iters.push(iter as *mut u8);
                 }
 
@@ -1480,35 +1358,18 @@ mod tests {
     #[test]
     fn for_of_opcodes_fail_explicitly() {
         for (op, expected) in [
-            (
-                opcode::OpCode::FOR_OF_INIT,
-                "opcode FOR_OF_INIT not yet implemented",
-            ),
-            (
-                opcode::OpCode::FOR_OF_NEXT,
-                "opcode FOR_OF_NEXT not yet implemented",
-            ),
-            (
-                opcode::OpCode::FOR_OF_DONE,
-                "opcode FOR_OF_DONE not yet implemented",
-            ),
-            (
-                opcode::OpCode::FOR_OF_CLOSE,
-                "opcode FOR_OF_CLOSE not yet implemented",
-            ),
+            (opcode::OpCode::FOR_OF_INIT, "opcode FOR_OF_INIT not yet implemented"),
+            (opcode::OpCode::FOR_OF_NEXT, "opcode FOR_OF_NEXT not yet implemented"),
+            (opcode::OpCode::FOR_OF_DONE, "opcode FOR_OF_DONE not yet implemented"),
+            (opcode::OpCode::FOR_OF_CLOSE, "opcode FOR_OF_CLOSE not yet implemented"),
         ] {
             let module = CompiledModule {
-                bytecode: vec![
-                    opcode::encode(op, 0, 0, 0),
-                    opcode::encode(opcode::OpCode::HALT, 0, 0, 0),
-                ],
+                bytecode: vec![opcode::encode(op, 0, 0, 0), opcode::encode(opcode::OpCode::HALT, 0, 0, 0)],
                 n_registers: 1,
                 ..CompiledModule::new()
             };
             let mut vm = Vm::new();
-            let err = vm
-                .run(&module)
-                .expect_err("FOR_OF opcode should fail explicitly");
+            let err = vm.run(&module).expect_err("FOR_OF opcode should fail explicitly");
             assert_eq!(err, expected);
         }
     }
@@ -1522,13 +1383,8 @@ mod tests {
             ..CompiledModule::new()
         };
         let mut vm = Vm::new();
-        let err = vm
-            .run(&module)
-            .expect_err("invalid RegExp constant should fail explicitly");
-        assert!(
-            err.contains("SyntaxError: Invalid regular expression"),
-            "unexpected error: {err}"
-        );
+        let err = vm.run(&module).expect_err("invalid RegExp constant should fail explicitly");
+        assert!(err.contains("SyntaxError: Invalid regular expression"), "unexpected error: {err}");
     }
 
     #[test]
@@ -1556,10 +1412,7 @@ mod tests {
         let err = vm
             .run(&module)
             .expect_err("invalid submodule RegExp constant should fail explicitly");
-        assert!(
-            err.contains("SyntaxError: Invalid regular expression"),
-            "unexpected error: {err}"
-        );
+        assert!(err.contains("SyntaxError: Invalid regular expression"), "unexpected error: {err}");
     }
 
     #[test]
@@ -1586,9 +1439,7 @@ mod tests {
             ..CompiledModule::new()
         };
         let mut vm = Vm::new();
-        let err = vm
-            .run(&module)
-            .expect_err("unimplemented opcode should fail explicitly");
+        let err = vm.run(&module).expect_err("unimplemented opcode should fail explicitly");
         assert_eq!(err, "opcode PROFILE_TYPE not yet implemented");
     }
 }

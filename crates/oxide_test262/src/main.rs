@@ -192,18 +192,14 @@ Test262Error.prototype.constructor = Test262Error;
     let full_source = format!("{prelude}\n{assert_js}");
 
     let alloc = oxide_parser::Allocator::default();
-    let program = oxide_parser::parse(&alloc, &full_source)
-        .map_err(|e| format!("harness parse error: {}", e[0].message))?;
+    let program =
+        oxide_parser::parse(&alloc, &full_source).map_err(|e| format!("harness parse error: {}", e[0].message))?;
 
     Compiler::new().compile(&program)
 }
 
 fn run_test(
-    path: &Path,
-    source: &str,
-    meta: &TestMeta,
-    kernel: &Arc<OxideKernel>,
-    harness_module: &CompiledModule,
+    path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<OxideKernel>, harness_module: &CompiledModule,
 ) -> TestResult {
     let start = std::time::Instant::now();
 
@@ -215,21 +211,13 @@ fn run_test(
         Ok(r) => r,
         Err(_panic) => {
             let dur = start.elapsed().as_millis() as u64;
-            TestResult::fail(
-                path.to_path_buf(),
-                dur,
-                "engine panic (unsupported feature)",
-            )
+            TestResult::fail(path.to_path_buf(), dur, "engine panic (unsupported feature)")
         }
     }
 }
 
 fn run_test_inner(
-    path: &Path,
-    source: &str,
-    meta: &TestMeta,
-    kernel: &Arc<OxideKernel>,
-    harness_module: &CompiledModule,
+    path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<OxideKernel>, harness_module: &CompiledModule,
 ) -> TestResult {
     let start = std::time::Instant::now();
 
@@ -308,11 +296,7 @@ fn run_test_inner(
                 if e.contains(&neg.error_type) {
                     return TestResult::pass(path.to_path_buf(), dur, format!("expected: {e}"));
                 }
-                TestResult::fail(
-                    path.to_path_buf(),
-                    dur,
-                    format!("expected {} error, got: {e}", neg.error_type),
-                )
+                TestResult::fail(path.to_path_buf(), dur, format!("expected {} error, got: {e}", neg.error_type))
             } else if e.contains("not yet implemented")
                 || e.contains("not supported")
                 || e.contains("unsupported")
@@ -350,10 +334,7 @@ fn categorize_fail(msg: &str) -> String {
         } else if reason.contains("is not defined") {
             "compile: not defined".into()
         } else {
-            format!(
-                "compile: other ({})",
-                reason.chars().take(60).collect::<String>()
-            )
+            format!("compile: other ({})", reason.chars().take(60).collect::<String>())
         }
     } else if msg.contains("parse error:") {
         "parse error".into()
@@ -372,10 +353,7 @@ fn categorize_fail(msg: &str) -> String {
         } else if reason.contains("unsupported") {
             "vm: unsupported".into()
         } else {
-            format!(
-                "vm: other ({})",
-                reason.chars().take(60).collect::<String>()
-            )
+            format!("vm: other ({})", reason.chars().take(60).collect::<String>())
         }
     } else if msg.contains("engine panic") {
         "engine panic".into()
@@ -426,11 +404,7 @@ fn run_tests() -> bool {
         std::process::exit(1);
     }
 
-    let filter = if args.len() > 2 {
-        Some(args[2].clone())
-    } else {
-        None
-    };
+    let filter = if args.len() > 2 { Some(args[2].clone()) } else { None };
 
     eprintln!("discovering tests in: {}", test262_root.display());
     let paths = discover_tests(&test262_root);
@@ -476,10 +450,7 @@ fn run_tests() -> bool {
         let meta = match parse_meta(&source) {
             Some(m) => m,
             None => {
-                results.push(TestResult::skip(
-                    path.clone(),
-                    String::from("no YAML metadata"),
-                ));
+                results.push(TestResult::skip(path.clone(), String::from("no YAML metadata")));
                 stats.skip += 1;
                 continue;
             }
@@ -496,10 +467,7 @@ fn run_tests() -> bool {
 
         let path_str = path.to_string_lossy();
         if path_str.contains("staging") {
-            results.push(TestResult::skip(
-                path.clone(),
-                "staging tests excluded".into(),
-            ));
+            results.push(TestResult::skip(path.clone(), "staging tests excluded".into()));
             stats.skip += 1;
             continue;
         }
@@ -534,30 +502,14 @@ fn run_tests() -> bool {
     println!("═══════════════════════════════════════");
     println!("  total  : {}", results.len());
     let total = results.len() as f64;
-    println!(
-        "  pass   : {} ({:.1}%)",
-        stats.pass,
-        stats.pass as f64 / total * 100.0
-    );
-    println!(
-        "  fail   : {} ({:.1}%)",
-        stats.fail,
-        stats.fail as f64 / total * 100.0
-    );
-    println!(
-        "  skip   : {} ({:.1}%)",
-        stats.skip,
-        stats.skip as f64 / total * 100.0
-    );
+    println!("  pass   : {} ({:.1}%)", stats.pass, stats.pass as f64 / total * 100.0);
+    println!("  fail   : {} ({:.1}%)", stats.fail, stats.fail as f64 / total * 100.0);
+    println!("  skip   : {} ({:.1}%)", stats.skip, stats.skip as f64 / total * 100.0);
     println!("  time   : {:?}", Duration::from_millis(stats.total_ms));
     println!(
         "  pass%  : {:.1}% (of ran: {:.1}%)",
         stats.pass as f64 / total * 100.0,
-        if ran > 0 {
-            stats.pass as f64 / ran as f64 * 100.0
-        } else {
-            0.0
-        }
+        if ran > 0 { stats.pass as f64 / ran as f64 * 100.0 } else { 0.0 }
     );
     if !stats.fail_categories.is_empty() {
         println!("  --- FAIL categories ---");

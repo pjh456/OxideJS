@@ -79,9 +79,7 @@ impl fmt::Display for CompiledModule {
         writeln!(f, "; constants:")?;
         for (i, c) in self.constants.iter().enumerate() {
             match c {
-                Constant::BytecodeFunc(idx) => {
-                    writeln!(f, ";   [{i}] = BytecodeFunc(sub_module[{idx}])")?
-                }
+                Constant::BytecodeFunc(idx) => writeln!(f, ";   [{i}] = BytecodeFunc(sub_module[{idx}])")?,
                 other => writeln!(f, ";   [{i}] = {other:?}")?,
             }
         }

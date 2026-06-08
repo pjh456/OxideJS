@@ -18,9 +18,7 @@ pub struct PropForge {
 
 impl PropForge {
     pub fn new() -> Self {
-        Self {
-            templates: DashMap::new(),
-        }
+        Self { templates: DashMap::new() }
     }
 
     pub fn get_template(&self, shape_id: ShapeId) -> Option<Arc<PropTemplate>> {

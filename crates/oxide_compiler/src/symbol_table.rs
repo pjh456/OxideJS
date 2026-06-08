@@ -47,10 +47,7 @@ impl SymbolTable {
     }
 
     pub(crate) fn push_scope_with_kind(&mut self, kind: ScopeKind) {
-        self.scopes.push(Scope {
-            bindings: HashMap::new(),
-            kind,
-        });
+        self.scopes.push(Scope { bindings: HashMap::new(), kind });
     }
 
     pub fn pop_scope(&mut self) {
@@ -69,11 +66,7 @@ impl SymbolTable {
     }
 
     pub fn declare(
-        &mut self,
-        name: &str,
-        reg: u8,
-        kind: VariableDeclarationKind,
-        is_const: bool,
+        &mut self, name: &str, reg: u8, kind: VariableDeclarationKind, is_const: bool,
     ) -> Result<(), String> {
         let target_idx = if matches!(kind, VariableDeclarationKind::Var) {
             self.find_var_target_scope()
@@ -138,11 +131,7 @@ impl SymbolTable {
     }
 
     pub fn declare_initialized(
-        &mut self,
-        name: &str,
-        reg: u8,
-        kind: VariableDeclarationKind,
-        is_const: bool,
+        &mut self, name: &str, reg: u8, kind: VariableDeclarationKind, is_const: bool,
     ) -> Result<(), String> {
         let target_idx = if matches!(kind, VariableDeclarationKind::Var) {
             self.find_var_target_scope()
@@ -167,14 +156,11 @@ impl SymbolTable {
     }
 
     pub fn pre_register_global(&mut self, name: &str, reg: u8) {
-        self.scopes[0]
-            .bindings
-            .entry(name.to_string())
-            .or_insert(Binding {
-                reg,
-                initialized: true,
-                is_const: false,
-            });
+        self.scopes[0].bindings.entry(name.to_string()).or_insert(Binding {
+            reg,
+            initialized: true,
+            is_const: false,
+        });
     }
 
     pub fn init_var(&mut self, name: &str) {
@@ -220,10 +206,7 @@ mod tests {
     fn tdz_error() {
         let mut st = SymbolTable::new();
         st.declare("x", 0, l(), false).unwrap();
-        assert!(st
-            .lookup("x")
-            .unwrap_err()
-            .contains("before initialization"));
+        assert!(st.lookup("x").unwrap_err().contains("before initialization"));
     }
 
     #[test]

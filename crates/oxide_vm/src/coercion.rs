@@ -25,9 +25,7 @@ pub fn to_number(val: JsValue, string_forge: &StringForge) -> f64 {
         return f64::NAN;
     }
     if val.is_string() {
-        let s = string_forge
-            .lookup(val.as_string_index())
-            .unwrap_or_default();
+        let s = string_forge.lookup(val.as_string_index()).unwrap_or_default();
         return s.parse::<f64>().unwrap_or(f64::NAN);
     }
     if val.is_object() {
@@ -68,9 +66,7 @@ pub fn to_string(string_forge: &StringForge, val: JsValue) -> String {
         return "undefined".to_string();
     }
     if val.is_string() {
-        return string_forge
-            .lookup(val.as_string_index())
-            .unwrap_or_default();
+        return string_forge.lookup(val.as_string_index()).unwrap_or_default();
     }
     if val.is_object() {
         return "[object]".to_string();
@@ -93,9 +89,7 @@ pub fn to_boolean(val: JsValue, string_forge: &StringForge) -> bool {
         return !(d == 0.0 || d == -0.0 || d.is_nan());
     }
     if val.is_string() {
-        let s = string_forge
-            .lookup(val.as_string_index())
-            .unwrap_or_default();
+        let s = string_forge.lookup(val.as_string_index()).unwrap_or_default();
         return !s.is_empty();
     }
     if val.is_object() {
@@ -190,12 +184,8 @@ fn strict_double_eq(a: f64, b: f64) -> bool {
 
 pub fn relational_compare(string_forge: &StringForge, lhs: JsValue, rhs: JsValue) -> Option<bool> {
     if lhs.is_string() && rhs.is_string() {
-        let ls = string_forge
-            .lookup(lhs.as_string_index())
-            .unwrap_or_default();
-        let rs = string_forge
-            .lookup(rhs.as_string_index())
-            .unwrap_or_default();
+        let ls = string_forge.lookup(lhs.as_string_index()).unwrap_or_default();
+        let rs = string_forge.lookup(rhs.as_string_index()).unwrap_or_default();
         return Some(ls < rs);
     }
     let l = to_number(lhs, string_forge);
@@ -288,9 +278,7 @@ pub fn to_object(val: JsValue, vm: &mut Vm) -> Result<JsValue, &'static str> {
     }
     let proto_ptr = &*vm.object_prototype as *const JsObject as *mut JsObject;
     let proto_val = JsValue::from_js_object(proto_ptr);
-    let obj = vm
-        .epoch
-        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
+    let obj = vm.epoch.alloc(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
     let obj_val = JsValue::from_js_object(obj);
     let obj_ref = unsafe { &mut *obj };
     obj_ref.ensure_hash_props().push(Box::new(val));

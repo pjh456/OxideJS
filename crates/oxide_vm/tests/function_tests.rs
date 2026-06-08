@@ -4,11 +4,8 @@ use oxide_vm::vm::Vm;
 
 fn eval(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
     let allocator = oxide_parser::Allocator::default();
-    let program =
-        oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
-    let module = Compiler::new()
-        .compile(&program)
-        .map_err(|e| format!("Compile error: {}", e))?;
+    let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
+    let module = Compiler::new().compile(&program).map_err(|e| format!("Compile error: {}", e))?;
     vm.run(&module)
 }
 
@@ -61,11 +58,7 @@ fn fe_basic() {
 #[test]
 fn fe_with_params() {
     let mut vm = Vm::new();
-    let result = eval(
-        &mut vm,
-        "var mul = function(x,y) { return x * y; }; mul(6, 7)",
-    )
-    .unwrap();
+    let result = eval(&mut vm, "var mul = function(x,y) { return x * y; }; mul(6, 7)").unwrap();
     assert!((result.as_double() - 42.0).abs() < 0.0001);
 }
 
@@ -74,22 +67,14 @@ fn fe_with_params() {
 #[test]
 fn cross_func_call() {
     let mut vm = Vm::new();
-    let result = eval(
-        &mut vm,
-        "function a() { return 1; } function b() { return a() + 2; } b()",
-    )
-    .unwrap();
+    let result = eval(&mut vm, "function a() { return 1; } function b() { return a() + 2; } b()").unwrap();
     assert!((result.as_double() - 3.0).abs() < 0.0001);
 }
 
 #[test]
 fn two_funcs_called_from_global() {
     let mut vm = Vm::new();
-    let result = eval(
-        &mut vm,
-        "function a() { return 1; } function b() { return 2; } a() + b()",
-    )
-    .unwrap();
+    let result = eval(&mut vm, "function a() { return 1; } function b() { return 2; } a() + b()").unwrap();
     assert!(result.is_double(), "expected double, got: {:?}", result);
     assert!((result.as_double() - 3.0).abs() < 0.0001);
 }
@@ -147,11 +132,7 @@ fn fd_calls_builtin_two_args() {
 #[test]
 fn fd_chain_call() {
     let mut vm = Vm::new();
-    let result = eval(
-        &mut vm,
-        "function a() { return 10; } function b() { return a(); } b()",
-    )
-    .unwrap();
+    let result = eval(&mut vm, "function a() { return 10; } function b() { return a(); } b()").unwrap();
     assert_eq!(result.as_int(), 10);
 }
 
@@ -177,11 +158,7 @@ fn fd_returns_new_array() {
 fn this_in_function_reads_value() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "function f() { return this; } f()").unwrap();
-    assert!(
-        result.is_object(),
-        "expected object (function as this), got: {:?}",
-        result
-    );
+    assert!(result.is_object(), "expected object (function as this), got: {:?}", result);
 }
 
 #[test]
@@ -201,10 +178,6 @@ fn this_member_access() {
 #[test]
 fn this_in_constructor_sets_proto() {
     let mut vm = Vm::new();
-    let result = eval(
-        &mut vm,
-        "function Ctor(m) { this.message = m; } Ctor.prototype = new Object(); 1",
-    )
-    .unwrap();
+    let result = eval(&mut vm, "function Ctor(m) { this.message = m; } Ctor.prototype = new Object(); 1").unwrap();
     assert_eq!(result.as_int(), 1);
 }

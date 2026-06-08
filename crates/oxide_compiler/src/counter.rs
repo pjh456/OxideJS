@@ -1,6 +1,6 @@
 use oxide_parser::{
-    AssignmentOperator, Expression, ForStatementInit, SimpleAssignmentTarget, Statement,
-    UnaryOperator, VariableDeclarationKind,
+    AssignmentOperator, Expression, ForStatementInit, SimpleAssignmentTarget, Statement, UnaryOperator,
+    VariableDeclarationKind,
 };
 
 use crate::compiler::{is_side_effect_free, CompileCtx, Compiler, Label};
@@ -192,8 +192,7 @@ impl Compiler {
 
                 // Hoisting: declare function name as initialized
                 let func_reg = ctx.alloc_reg();
-                let _ =
-                    ctx.declare_initialized(&name, func_reg, VariableDeclarationKind::Var, false);
+                let _ = ctx.declare_initialized(&name, func_reg, VariableDeclarationKind::Var, false);
 
                 // Body is compiled in the emit pass only.
                 // FD emits LOAD_CONST(BytecodeFunc) + STORE_VAR
@@ -326,8 +325,7 @@ impl Compiler {
                 ctx.projected_pc += 1; // LOAD_VAR result <- regs[0]
             }
             Expression::AssignmentExpression(assign) => {
-                if let oxide_parser::AssignmentTarget::StaticMemberExpression(member) = &assign.left
-                {
+                if let oxide_parser::AssignmentTarget::StaticMemberExpression(member) = &assign.left {
                     self.count_expression(&member.object, ctx);
                     self.count_expression(&assign.right, ctx);
                     if assign.operator != AssignmentOperator::Assign {
@@ -338,9 +336,7 @@ impl Compiler {
                     ctx.projected_pc += 1; // LOAD_CONST key
                     ctx.projected_pc += 1; // IC_SET_PROP or COMPOUND_MEMBER_*
                     ctx.projected_pc += 3; // 3 IC ext words
-                } else if let oxide_parser::AssignmentTarget::ComputedMemberExpression(member) =
-                    &assign.left
-                {
+                } else if let oxide_parser::AssignmentTarget::ComputedMemberExpression(member) = &assign.left {
                     self.count_expression(&member.object, ctx);
                     self.count_expression(&member.expression, ctx);
                     self.count_expression(&assign.right, ctx);

@@ -13,10 +13,7 @@ fn compile_source(source: &str) -> oxide_compiler::module::CompiledModule {
 fn symbol_table_declare_and_lookup() {
     let module = compile_source("var x = 42;");
     assert!(!module.bytecode.is_empty());
-    assert_eq!(
-        module.constants[0],
-        oxide_compiler::compiler::Constant::Int(42)
-    );
+    assert_eq!(module.constants[0], oxide_compiler::compiler::Constant::Int(42));
 }
 
 #[test]
@@ -36,10 +33,7 @@ fn symbol_table_tdz_global_shadow() {
     let result = std::panic::catch_unwind(|| {
         compile_source("var x = 1; { var x = x; }");
     });
-    assert!(
-        result.is_err(),
-        "TDZ: accessing x in its own initializer inside a block should error"
-    );
+    assert!(result.is_err(), "TDZ: accessing x in its own initializer inside a block should error");
 }
 
 #[test]
@@ -56,8 +50,5 @@ fn symbol_table_duplicate_var() {
 #[test]
 fn symbol_table_undeclared_auto_global() {
     let module = compile_source("x = 5;");
-    assert!(
-        !module.bytecode.is_empty(),
-        "undeclared assignment should auto-create global"
-    );
+    assert!(!module.bytecode.is_empty(), "undeclared assignment should auto-create global");
 }

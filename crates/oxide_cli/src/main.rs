@@ -77,11 +77,7 @@ fn make_kernel() -> Arc<OxideKernel> {
 }
 
 fn make_pool(kernel: &Arc<OxideKernel>) -> Arc<VmPool> {
-    VmPool::new(
-        Arc::clone(kernel),
-        kernel.config().min_pool_size,
-        kernel.config().max_pool_size,
-    )
+    VmPool::new(Arc::clone(kernel), kernel.config().min_pool_size, kernel.config().max_pool_size)
 }
 
 fn eval(code: &str, kernel: &Arc<OxideKernel>, pool: &Arc<VmPool>) -> ExitCode {
@@ -108,11 +104,7 @@ fn eval(code: &str, kernel: &Arc<OxideKernel>, pool: &Arc<VmPool>) -> ExitCode {
     let mut guard = pool.spawn();
     match guard.vm_mut().run(&module) {
         Ok(result) => {
-            format_result(
-                kernel.string_forge().as_ref(),
-                kernel.shape_forge().as_ref(),
-                result,
-            );
+            format_result(kernel.string_forge().as_ref(), kernel.shape_forge().as_ref(), result);
             ExitCode::SUCCESS
         }
         Err(err) => {
@@ -218,10 +210,7 @@ fn compile(expr: Option<String>, file: Option<String>) -> ExitCode {
             }
         }
     } else {
-        eprintln!(
-            "{}",
-            Red.paint("compile requires -e '<code>' or a file path")
-        );
+        eprintln!("{}", Red.paint("compile requires -e '<code>' or a file path"));
         return ExitCode::FAILURE;
     };
 
@@ -279,11 +268,7 @@ fn repl() -> ExitCode {
     let mut input_buf = String::new();
 
     loop {
-        let prompt = if input_buf.is_empty() {
-            "oxide> "
-        } else {
-            "...> "
-        };
+        let prompt = if input_buf.is_empty() { "oxide> " } else { "...> " };
         match rl.readline(prompt) {
             Ok(line) => {
                 let trimmed = line.trim();
@@ -336,9 +321,6 @@ fn repl() -> ExitCode {
 }
 fn not_implemented(command: &str) -> ExitCode {
     use ansi_term::Colour::Yellow;
-    eprintln!(
-        "{}",
-        Yellow.paint(format!("'{command}' is not yet implemented"))
-    );
+    eprintln!("{}", Yellow.paint(format!("'{command}' is not yet implemented")));
     ExitCode::SUCCESS
 }

@@ -18,16 +18,8 @@ fn arg1(vm: &Vm, args: &[u8]) -> f64 {
 
 fn arg2(vm: &Vm, args: &[u8]) -> (f64, f64) {
     (
-        if args.len() > 1 {
-            num(vm, args[1])
-        } else {
-            f64::NAN
-        },
-        if args.len() > 2 {
-            num(vm, args[2])
-        } else {
-            f64::NAN
-        },
+        if args.len() > 1 { num(vm, args[1]) } else { f64::NAN },
+        if args.len() > 2 { num(vm, args[2]) } else { f64::NAN },
     )
 }
 
@@ -82,11 +74,7 @@ pub fn math_atan2(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
 pub fn math_round(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let x = arg1(vm, args);
-    let r = if x < 0.0 {
-        (x - 0.5).ceil()
-    } else {
-        (x + 0.5).floor()
-    };
+    let r = if x < 0.0 { (x - 0.5).ceil() } else { (x + 0.5).floor() };
     Ok(JsValue::float(r))
 }
 

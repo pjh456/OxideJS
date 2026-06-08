@@ -5,9 +5,7 @@ use oxide_vm::vm::Vm;
 fn eval(source: &str) -> Result<JsValue, String> {
     let allocator = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse: {:?}", e))?;
-    let module = Compiler::new()
-        .compile(&program)
-        .map_err(|e| format!("Compile: {}", e))?;
+    let module = Compiler::new().compile(&program).map_err(|e| format!("Compile: {}", e))?;
     let mut vm = Vm::new();
     vm.run(&module)
 }
@@ -23,11 +21,7 @@ fn const_reassignment_throws() {
     let result = eval("const x = 1; x = 2");
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(
-        err.contains("TypeError") || err.contains("constant"),
-        "got: {}",
-        err
-    );
+    assert!(err.contains("TypeError") || err.contains("constant"), "got: {}", err);
 }
 
 #[test]

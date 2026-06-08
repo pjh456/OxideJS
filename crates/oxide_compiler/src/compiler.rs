@@ -97,12 +97,7 @@ impl CompileCtx {
     }
 
     pub(crate) fn emit_load_const(&mut self, reg: u8, idx: u16) {
-        self.emit(opcode::encode(
-            OpCode::LOAD_CONST,
-            reg,
-            (idx & 0xFF) as u8,
-            ((idx >> 8) & 0xFF) as u8,
-        ));
+        self.emit(opcode::encode(OpCode::LOAD_CONST, reg, (idx & 0xFF) as u8, ((idx >> 8) & 0xFF) as u8));
     }
 
     pub(crate) fn alloc_reg(&mut self) -> u8 {
@@ -153,21 +148,13 @@ impl CompileCtx {
     }
 
     pub(crate) fn declare(
-        &mut self,
-        name: &str,
-        reg: u8,
-        kind: VariableDeclarationKind,
-        is_const: bool,
+        &mut self, name: &str, reg: u8, kind: VariableDeclarationKind, is_const: bool,
     ) -> Result<(), String> {
         self.symbols.declare(name, reg, kind, is_const)
     }
 
     pub(crate) fn declare_initialized(
-        &mut self,
-        name: &str,
-        reg: u8,
-        kind: VariableDeclarationKind,
-        is_const: bool,
+        &mut self, name: &str, reg: u8, kind: VariableDeclarationKind, is_const: bool,
     ) -> Result<(), String> {
         self.symbols.declare_initialized(name, reg, kind, is_const)
     }
@@ -277,11 +264,7 @@ impl Compiler {
     /// When `is_expression_body` is true (arrow function with expression body),
     /// the last expression's value is returned instead of undefined.
     pub(crate) fn compile_function_body<'a>(
-        &self,
-        param_names: &[String],
-        body_stmts: &[Statement<'a>],
-        parent_ctx: &CompileCtx,
-        is_expression_body: bool,
+        &self, param_names: &[String], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx, is_expression_body: bool,
     ) -> Result<CompiledModule, String> {
         let mut ctx = CompileCtx::new();
 

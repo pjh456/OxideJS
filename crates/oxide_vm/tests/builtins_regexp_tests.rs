@@ -4,19 +4,13 @@ use oxide_vm::vm::Vm;
 
 fn eval(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
     let allocator = oxide_parser::Allocator::default();
-    let program =
-        oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
-    let module = Compiler::new()
-        .compile(&program)
-        .map_err(|e| format!("Compile error: {}", e))?;
+    let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
+    let module = Compiler::new().compile(&program).map_err(|e| format!("Compile error: {}", e))?;
     vm.run(&module)
 }
 
 fn to_str(vm: &Vm, val: JsValue) -> String {
-    vm.kernel()
-        .string_forge()
-        .lookup(val.as_string_index())
-        .unwrap_or_default()
+    vm.kernel().string_forge().lookup(val.as_string_index()).unwrap_or_default()
 }
 
 // --- RegExp constructor ---
@@ -154,11 +148,7 @@ fn regexp_exec_global_last_index_advances() {
 #[test]
 fn regexp_exec_global_resets_on_exhaustion() {
     let mut vm = Vm::new();
-    let result = eval(
-        &mut vm,
-        "var re = /a/g; re.exec('a'); re.exec('a') === null",
-    )
-    .unwrap();
+    let result = eval(&mut vm, "var re = /a/g; re.exec('a'); re.exec('a') === null").unwrap();
     assert!(result.as_bool());
 }
 

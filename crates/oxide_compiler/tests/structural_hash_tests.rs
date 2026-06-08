@@ -23,17 +23,10 @@ fn structural_hash_hit() {
     let allocator = Allocator::default();
     let program = oxide_parser::parse(&allocator, "1 + 2").expect("parse failed");
 
-    let m1 = forge
-        .get_or_compile(&program, &compiler)
-        .expect("first compile");
-    let m2 = forge
-        .get_or_compile(&program, &compiler)
-        .expect("second compile");
+    let m1 = forge.get_or_compile(&program, &compiler).expect("first compile");
+    let m2 = forge.get_or_compile(&program, &compiler).expect("second compile");
 
-    assert_eq!(
-        (m1.bytecode.len(), m1.n_registers),
-        (m2.bytecode.len(), m2.n_registers)
-    );
+    assert_eq!((m1.bytecode.len(), m1.n_registers), (m2.bytecode.len(), m2.n_registers));
 }
 
 #[test]
@@ -75,27 +68,18 @@ fn structural_hash_different_shape() {
 fn regression_forstatement_hash() {
     let hash_a = parse_to_hash("for(i=0;i<3;i++){1}");
     let hash_b = parse_to_hash("for(;;){1}");
-    assert_ne!(
-        hash_a, hash_b,
-        "different for-loop init/test/update must produce different hashes"
-    );
+    assert_ne!(hash_a, hash_b, "different for-loop init/test/update must produce different hashes");
 }
 
 #[test]
 fn regression_conditionalexpression_hash() {
     let hash_a = parse_to_hash("a?1:2");
     let hash_b = parse_to_hash("a?3:4");
-    assert_ne!(
-        hash_a, hash_b,
-        "different ternary branches must produce different hashes"
-    );
+    assert_ne!(hash_a, hash_b, "different ternary branches must produce different hashes");
 
     let hash_c = parse_to_hash("a?1:2");
     let hash_d = parse_to_hash("a?1:2||3");
-    assert_ne!(
-        hash_c, hash_d,
-        "different expression types with same test must produce different hashes"
-    );
+    assert_ne!(hash_c, hash_d, "different expression types with same test must produce different hashes");
 }
 
 #[test]

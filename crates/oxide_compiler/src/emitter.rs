@@ -1,23 +1,17 @@
 use crate::compiler::Label;
 use crate::opcode::{self, OpCode};
 use oxide_parser::{
-    AssignmentOperator, Expression, ForStatementInit, ForStatementLeft, SimpleAssignmentTarget,
-    Statement, UnaryOperator, UpdateOperator, VariableDeclarationKind,
+    AssignmentOperator, Expression, ForStatementInit, ForStatementLeft, SimpleAssignmentTarget, Statement,
+    UnaryOperator, UpdateOperator, VariableDeclarationKind,
 };
 
 use crate::compiler::{is_int_literal, is_side_effect_free, BinaryOperator, CompileCtx, Compiler};
 use crate::module::Constant;
 
 impl Compiler {
-    pub(crate) fn emit_statement(
-        &self,
-        stmt: &Statement,
-        ctx: &mut CompileCtx,
-    ) -> Result<Option<u8>, String> {
+    pub(crate) fn emit_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
         match stmt {
-            Statement::ExpressionStatement(es) => {
-                Ok(Some(self.emit_expression(&es.expression, ctx)?))
-            }
+            Statement::ExpressionStatement(es) => Ok(Some(self.emit_expression(&es.expression, ctx)?)),
             Statement::VariableDeclaration(decl) => {
                 let mut r = None;
                 for d in &decl.declarations {
@@ -34,12 +28,7 @@ impl Compiler {
                     if let Some(init) = &d.init {
                         let val_reg = self.emit_expression(init, ctx)?;
                         let const_flag = if is_const { 1 } else { 0 };
-                        ctx.emit(opcode::encode(
-                            OpCode::STORE_VAR,
-                            var_reg,
-                            val_reg,
-                            const_flag,
-                        ));
+                        ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, const_flag));
                         ctx.init_var(name);
                         // Name inference (D-04): if the initializer is an arrow function,
                         // set the compiled sub_module's function_name.
@@ -176,18 +165,11 @@ impl Compiler {
                     } else if let ForStatementInit::VariableDeclaration(decl) = init {
                         for d in &decl.declarations {
                             let name = match &d.id {
-                                oxide_parser::BindingPattern::BindingIdentifier(bi) => {
-                                    bi.name.as_str()
-                                }
+                                oxide_parser::BindingPattern::BindingIdentifier(bi) => bi.name.as_str(),
                                 _ => return Err("destructuring not supported".into()),
                             };
                             let var_reg = ctx.alloc_reg();
-                            ctx.declare(
-                                name,
-                                var_reg,
-                                decl.kind,
-                                matches!(decl.kind, VariableDeclarationKind::Const),
-                            )?;
+                            ctx.declare(name, var_reg, decl.kind, matches!(decl.kind, VariableDeclarationKind::Const))?;
                             if let Some(init_expr) = &d.init {
                                 let val_reg = self.emit_expression(init_expr, ctx)?;
                                 ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, 0));
@@ -243,18 +225,11 @@ impl Compiler {
                     ForStatementLeft::VariableDeclaration(decl) => {
                         for d in &decl.declarations {
                             let name = match &d.id {
-                                oxide_parser::BindingPattern::BindingIdentifier(bi) => {
-                                    bi.name.as_str()
-                                }
+                                oxide_parser::BindingPattern::BindingIdentifier(bi) => bi.name.as_str(),
                                 _ => return Err("destructuring not supported".into()),
                             };
                             let var_reg = ctx.alloc_reg();
-                            ctx.declare(
-                                name,
-                                var_reg,
-                                decl.kind,
-                                matches!(decl.kind, VariableDeclarationKind::Const),
-                            )?;
+                            ctx.declare(name, var_reg, decl.kind, matches!(decl.kind, VariableDeclarationKind::Const))?;
                             ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, key_reg, 0));
                             ctx.init_var(name);
                         }
@@ -321,9 +296,7 @@ impl Compiler {
                 let break_label = if let Some(sw_label) = ctx.current_switch() {
                     *sw_label
                 } else {
-                    let (bl, _) = ctx
-                        .current_loop()
-                        .ok_or("break outside switch or loop".to_string())?;
+                    let (bl, _) = ctx.current_loop().ok_or("break outside switch or loop".to_string())?;
                     *bl
                 };
                 let break_pos = ctx.resolve_label(break_label)?;
@@ -332,9 +305,7 @@ impl Compiler {
                 Ok(None)
             }
             Statement::ContinueStatement(_) => {
-                let (_, continue_label) = ctx
-                    .current_loop()
-                    .ok_or("continue outside loop".to_string())?;
+                let (_, continue_label) = ctx.current_loop().ok_or("continue outside loop".to_string())?;
                 let continue_pos = ctx.resolve_label(*continue_label)?;
                 let offset = (continue_pos as isize) - (ctx.bytecode.len() as isize);
                 ctx.emit(opcode::encode_jmp(offset as i16));
@@ -357,15 +328,10 @@ impl Compiler {
                 }
 
                 // Extract body statements (pass by reference)
-                let body_stmts: &[Statement] = if let Some(body) = &fd.body {
-                    &body.statements
-                } else {
-                    &[]
-                };
+                let body_stmts: &[Statement] = if let Some(body) = &fd.body { &body.statements } else { &[] };
 
                 // Compile body into sub-module
-                let mut sub_module =
-                    self.compile_function_body(&param_names, body_stmts, ctx, false)?;
+                let mut sub_module = self.compile_function_body(&param_names, body_stmts, ctx, false)?;
                 sub_module.function_name = Some(name.clone());
                 ctx.sub_modules.push(sub_module);
                 // 1-indexed: 0 = no sub_module (sentinel)
@@ -414,12 +380,7 @@ impl Compiler {
                         last_try_result = Some(r);
                     }
                 }
-                ctx.emit(opcode::encode(
-                    OpCode::LOAD_VAR,
-                    result_reg,
-                    last_try_result.unwrap_or(result_reg),
-                    0,
-                ));
+                ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, last_try_result.unwrap_or(result_reg), 0));
 
                 if has_catch {
                     ctx.emit(opcode::encode(OpCode::TRY_END, 0, 0, 0));
@@ -446,14 +407,8 @@ impl Compiler {
                     ctx.push_scope();
                     if let Some(param) = &catch.param {
                         let catch_reg = ctx.alloc_reg();
-                        if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &param.pattern
-                        {
-                            ctx.declare_initialized(
-                                bi.name.as_str(),
-                                catch_reg,
-                                VariableDeclarationKind::Let,
-                                false,
-                            )?;
+                        if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &param.pattern {
+                            ctx.declare_initialized(bi.name.as_str(), catch_reg, VariableDeclarationKind::Let, false)?;
                             ctx.emit(opcode::encode(OpCode::STORE_VAR, catch_reg, 0, 0));
                         }
                     }
@@ -463,12 +418,7 @@ impl Compiler {
                             last_catch_result = Some(r);
                         }
                     }
-                    ctx.emit(opcode::encode(
-                        OpCode::LOAD_VAR,
-                        result_reg,
-                        last_catch_result.unwrap_or(result_reg),
-                        0,
-                    ));
+                    ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, last_catch_result.unwrap_or(result_reg), 0));
                     ctx.pop_scope();
                 }
 
@@ -513,11 +463,7 @@ impl Compiler {
         }
     }
 
-    pub(crate) fn emit_expression(
-        &self,
-        expr: &Expression,
-        ctx: &mut CompileCtx,
-    ) -> Result<u8, String> {
+    pub(crate) fn emit_expression(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u8, String> {
         match expr {
             Expression::NumericLiteral(n) => {
                 let idx = if is_int_literal(n.value) {
@@ -607,8 +553,7 @@ impl Compiler {
                         Expression::StaticMemberExpression(member) => {
                             let obj_reg = self.emit_expression(&member.object, ctx)?;
                             let prop_name = member.property.name.as_str();
-                            let const_idx =
-                                ctx.add_constant(Constant::String(prop_name.to_string()));
+                            let const_idx = ctx.add_constant(Constant::String(prop_name.to_string()));
                             let r = ctx.alloc_reg();
                             ctx.emit(opcode::encode(OpCode::DELETE_PROP_STATIC, r, obj_reg, 0));
                             ctx.emit(const_idx as u32);
@@ -618,12 +563,7 @@ impl Compiler {
                             let obj_reg = self.emit_expression(&member.object, ctx)?;
                             let key_reg = self.emit_expression(&member.expression, ctx)?;
                             let r = ctx.alloc_reg();
-                            ctx.emit(opcode::encode(
-                                OpCode::DELETE_PROP_DYNAMIC,
-                                r,
-                                obj_reg,
-                                key_reg,
-                            ));
+                            ctx.emit(opcode::encode(OpCode::DELETE_PROP_DYNAMIC, r, obj_reg, key_reg));
                             Ok(r)
                         }
                         _ => Err("invalid delete target".into()),
@@ -709,12 +649,7 @@ impl Compiler {
                 let prop_name = member.property.name.as_str();
                 let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
                 let key_reg = ctx.alloc_reg();
-                ctx.emit(opcode::encode(
-                    OpCode::LOAD_CONST,
-                    key_reg,
-                    (idx & 0xFF) as u8,
-                    ((idx >> 8) & 0xFF) as u8,
-                ));
+                ctx.emit(opcode::encode(OpCode::LOAD_CONST, key_reg, (idx & 0xFF) as u8, ((idx >> 8) & 0xFF) as u8));
                 ctx.emit(opcode::encode(OpCode::IC_GET_PROP, 0, obj_reg, key_reg));
                 ctx.emit(0);
                 ctx.emit(0);
@@ -725,12 +660,7 @@ impl Compiler {
                 let obj_reg = self.emit_expression(&member.object, ctx)?;
                 let key_reg = self.emit_expression(&member.expression, ctx)?;
                 let r = ctx.alloc_reg();
-                ctx.emit(opcode::encode(
-                    OpCode::GET_PROP_DYNAMIC,
-                    obj_reg,
-                    key_reg,
-                    r,
-                ));
+                ctx.emit(opcode::encode(OpCode::GET_PROP_DYNAMIC, obj_reg, key_reg, r));
                 Ok(r)
             }
             Expression::ObjectExpression(obj) => {
@@ -741,9 +671,7 @@ impl Compiler {
                         return Err("spread properties not yet supported".into());
                     };
                     let prop_name = match &p.key {
-                        oxide_parser::PropertyKey::StaticIdentifier(ident) => {
-                            ident.name.as_str().to_string()
-                        }
+                        oxide_parser::PropertyKey::StaticIdentifier(ident) => ident.name.as_str().to_string(),
                         oxide_parser::PropertyKey::StringLiteral(s) => s.value.to_string(),
                         _ => return Err("unsupported object property key type".into()),
                     };
@@ -765,12 +693,7 @@ impl Compiler {
             Expression::ArrayExpression(arr) => {
                 let arr_reg = ctx.alloc_reg();
                 let n = arr.elements.len() as u16;
-                ctx.emit(opcode::encode(
-                    OpCode::NEW_ARRAY,
-                    arr_reg,
-                    (n & 0xFF) as u8,
-                    ((n >> 8) & 0xFF) as u8,
-                ));
+                ctx.emit(opcode::encode(OpCode::NEW_ARRAY, arr_reg, (n & 0xFF) as u8, ((n >> 8) & 0xFF) as u8));
                 for (i, elem) in arr.elements.iter().enumerate() {
                     let Some(e) = elem.as_expression() else {
                         return Err("spread not supported".into());
@@ -784,8 +707,7 @@ impl Compiler {
                 Ok(arr_reg)
             }
             Expression::AssignmentExpression(assign) => {
-                if let oxide_parser::AssignmentTarget::StaticMemberExpression(member) = &assign.left
-                {
+                if let oxide_parser::AssignmentTarget::StaticMemberExpression(member) = &assign.left {
                     let obj_reg = self.emit_expression(&member.object, ctx)?;
                     let val_reg = self.emit_expression(&assign.right, ctx)?;
                     let prop_name = member.property.name.as_str();
@@ -808,33 +730,19 @@ impl Compiler {
                         ctx.emit(0);
                         Ok(val_reg)
                     } else {
-                        ctx.emit(opcode::encode(
-                            OpCode::IC_SET_PROP,
-                            obj_reg,
-                            val_reg,
-                            key_reg,
-                        ));
+                        ctx.emit(opcode::encode(OpCode::IC_SET_PROP, obj_reg, val_reg, key_reg));
                         ctx.emit(0);
                         ctx.emit(0);
                         ctx.emit(0);
                         Ok(val_reg)
                     }
-                } else if let oxide_parser::AssignmentTarget::ComputedMemberExpression(member) =
-                    &assign.left
-                {
+                } else if let oxide_parser::AssignmentTarget::ComputedMemberExpression(member) = &assign.left {
                     let obj_reg = self.emit_expression(&member.object, ctx)?;
                     let key_reg = self.emit_expression(&member.expression, ctx)?;
                     let val_reg = self.emit_expression(&assign.right, ctx)?;
-                    ctx.emit(opcode::encode(
-                        OpCode::SET_PROP_DYNAMIC,
-                        obj_reg,
-                        key_reg,
-                        val_reg,
-                    ));
+                    ctx.emit(opcode::encode(OpCode::SET_PROP_DYNAMIC, obj_reg, key_reg, val_reg));
                     Ok(val_reg)
-                } else if let oxide_parser::AssignmentTarget::AssignmentTargetIdentifier(id_ref) =
-                    &assign.left
-                {
+                } else if let oxide_parser::AssignmentTarget::AssignmentTargetIdentifier(id_ref) = &assign.left {
                     if assign.operator != AssignmentOperator::Assign {
                         if assign.operator == AssignmentOperator::Addition
                             || assign.operator == AssignmentOperator::Subtraction
@@ -858,10 +766,7 @@ impl Compiler {
                             ctx.emit(opcode::encode(op, var_reg, rhs, 0));
                             Ok(var_reg)
                         } else {
-                            Err(format!(
-                                "compound assignment operator {:?} not supported",
-                                assign.operator
-                            ))
+                            Err(format!("compound assignment operator {:?} not supported", assign.operator))
                         }
                     } else {
                         let val_reg = self.emit_expression(&assign.right, ctx)?;
@@ -869,12 +774,7 @@ impl Compiler {
                         let var_reg = ctx.lookup_or_global(name);
                         let is_const = ctx.lookup_const_flag(name);
                         let const_flag = if is_const { 1 } else { 0 };
-                        ctx.emit(opcode::encode(
-                            OpCode::STORE_VAR,
-                            var_reg,
-                            val_reg,
-                            const_flag,
-                        ));
+                        ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, const_flag));
                         Ok(val_reg)
                     }
                 } else {
@@ -953,12 +853,7 @@ impl Compiler {
                 let quasi_const_idxs: Vec<u16> = quasis
                     .iter()
                     .map(|q| {
-                        let s = q
-                            .value
-                            .cooked
-                            .as_ref()
-                            .map(|c| c.to_string())
-                            .unwrap_or_default();
+                        let s = q.value.cooked.as_ref().map(|c| c.to_string()).unwrap_or_default();
                         ctx.add_constant(Constant::String(s))
                     })
                     .collect();
@@ -1000,41 +895,21 @@ impl Compiler {
 
                 // 2. Build cooked strings array (into a temp register)
                 let cooked_temp = ctx.alloc_reg();
-                ctx.emit(opcode::encode(
-                    OpCode::NEW_ARRAY,
-                    cooked_temp,
-                    quasis.len() as u8,
-                    0,
-                ));
+                ctx.emit(opcode::encode(OpCode::NEW_ARRAY, cooked_temp, quasis.len() as u8, 0));
                 for (i, quasi) in quasis.iter().enumerate() {
-                    let s = quasi
-                        .value
-                        .cooked
-                        .as_ref()
-                        .map(|c| c.to_string())
-                        .unwrap_or_default();
+                    let s = quasi.value.cooked.as_ref().map(|c| c.to_string()).unwrap_or_default();
                     let const_idx = ctx.add_constant(Constant::String(s));
                     let str_reg = ctx.alloc_reg();
                     ctx.emit_load_const(str_reg, const_idx);
                     let idx_const = ctx.add_constant(Constant::Int(i as i32));
                     let idx_reg = ctx.alloc_reg();
                     ctx.emit_load_const(idx_reg, idx_const);
-                    ctx.emit(opcode::encode(
-                        OpCode::SET_ELEM,
-                        cooked_temp,
-                        idx_reg,
-                        str_reg,
-                    ));
+                    ctx.emit(opcode::encode(OpCode::SET_ELEM, cooked_temp, idx_reg, str_reg));
                 }
 
                 // 3. Build raw strings array (into a temp register)
                 let raw_temp = ctx.alloc_reg();
-                ctx.emit(opcode::encode(
-                    OpCode::NEW_ARRAY,
-                    raw_temp,
-                    quasis.len() as u8,
-                    0,
-                ));
+                ctx.emit(opcode::encode(OpCode::NEW_ARRAY, raw_temp, quasis.len() as u8, 0));
                 for (i, quasi) in quasis.iter().enumerate() {
                     let raw = quasi.value.raw.to_string();
                     let const_idx = ctx.add_constant(Constant::String(raw));
@@ -1061,12 +936,7 @@ impl Compiler {
                 }
 
                 // Copy temps to consecutive slots using LOAD_VAR (register-to-register move)
-                ctx.emit(opcode::encode(
-                    OpCode::LOAD_VAR,
-                    cooked_slot,
-                    cooked_temp,
-                    0,
-                ));
+                ctx.emit(opcode::encode(OpCode::LOAD_VAR, cooked_slot, cooked_temp, 0));
                 ctx.emit(opcode::encode(OpCode::LOAD_VAR, raw_slot, raw_temp, 0));
                 for (slot, temp) in expr_slots.iter().zip(expr_temps.iter()) {
                     ctx.emit(opcode::encode(OpCode::LOAD_VAR, *slot, *temp, 0));
@@ -1079,12 +949,7 @@ impl Compiler {
 
                 // 7. Emit CALL(tag, undefined, cooked_slot)
                 let arg_count = 2 + expressions.len();
-                ctx.emit(opcode::encode(
-                    OpCode::CALL,
-                    tag_reg,
-                    undef_reg,
-                    cooked_slot,
-                ));
+                ctx.emit(opcode::encode(OpCode::CALL, tag_reg, undef_reg, cooked_slot));
                 ctx.emit(arg_count as u32);
 
                 // 8. Result from regs[0]
@@ -1113,8 +978,7 @@ impl Compiler {
                 let body_stmts = &arrow.body.statements;
                 let is_expr_body = arrow.expression;
 
-                let mut sub_module =
-                    self.compile_function_body(&param_names, body_stmts, ctx, is_expr_body)?;
+                let mut sub_module = self.compile_function_body(&param_names, body_stmts, ctx, is_expr_body)?;
                 sub_module.is_arrow = true;
 
                 ctx.sub_modules.push(sub_module);
@@ -1135,14 +999,9 @@ impl Compiler {
                     }
                 }
 
-                let body_stmts: &[Statement] = if let Some(body) = &fe.body {
-                    &body.statements
-                } else {
-                    &[]
-                };
+                let body_stmts: &[Statement] = if let Some(body) = &fe.body { &body.statements } else { &[] };
 
-                let mut sub_module =
-                    self.compile_function_body(&param_names, body_stmts, ctx, false)?;
+                let mut sub_module = self.compile_function_body(&param_names, body_stmts, ctx, false)?;
                 if let Some(id) = &fe.id {
                     sub_module.function_name = Some(id.name.to_string());
                 }
@@ -1163,18 +1022,9 @@ impl Compiler {
                         arg_regs.push(self.emit_expression(expr, ctx)?);
                     }
                 }
-                let first_arg_reg = if arg_regs.is_empty() {
-                    0u8
-                } else {
-                    arg_regs[0]
-                };
+                let first_arg_reg = if arg_regs.is_empty() { 0u8 } else { arg_regs[0] };
                 let r = ctx.alloc_reg();
-                ctx.emit(opcode::encode(
-                    OpCode::NEW_EXPRESSION,
-                    r,
-                    constructor_reg,
-                    first_arg_reg,
-                ));
+                ctx.emit(opcode::encode(OpCode::NEW_EXPRESSION, r, constructor_reg, first_arg_reg));
                 ctx.emit(arg_regs.len() as u32);
                 Ok(r)
             }
@@ -1209,15 +1059,9 @@ impl Compiler {
                         arg_regs.push(self.emit_expression(expr, ctx)?);
                     }
                 }
-                let first_arg_reg = if arg_regs.is_empty() {
-                    0u8
-                } else {
-                    arg_regs[0]
-                };
+                let first_arg_reg = if arg_regs.is_empty() { 0u8 } else { arg_regs[0] };
                 let op = match &call.callee {
-                    Expression::Identifier(ident) if ctx.is_builtin(ident.name.as_str()) => {
-                        OpCode::CALL_NATIVE
-                    }
+                    Expression::Identifier(ident) if ctx.is_builtin(ident.name.as_str()) => OpCode::CALL_NATIVE,
                     Expression::StaticMemberExpression(m) => {
                         if let Expression::Identifier(ident) = &m.object {
                             if ctx.is_builtin(ident.name.as_str()) {
@@ -1251,8 +1095,7 @@ impl Compiler {
                         let last_slash = raw_str.rfind('/').unwrap_or(raw_str.len() - 1);
                         let pattern = &raw_str[1..last_slash];
                         let flags = &raw_str[last_slash + 1..];
-                        let ci = ctx
-                            .add_constant(Constant::RegExp(pattern.to_string(), flags.to_string()));
+                        let ci = ctx.add_constant(Constant::RegExp(pattern.to_string(), flags.to_string()));
                         let r = ctx.alloc_reg();
                         ctx.emit_load_const(r, ci);
                         Ok(r)

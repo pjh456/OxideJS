@@ -12,11 +12,7 @@ pub fn bind_regexp(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     let proto_ptr = kernel.builtin_world().regexp_proto.as_ptr() as *mut JsObject;
     let proto = unsafe { &mut *proto_ptr };
 
-    configure_native_constructor(
-        ctor,
-        crate::builtins::regexp::regexp_constructor as *const (),
-        2,
-    );
+    configure_native_constructor(ctor, crate::builtins::regexp::regexp_constructor as *const (), 2);
 
     apply_binding_table(
         kernel.builtin_world(),
@@ -25,20 +21,9 @@ pub fn bind_regexp(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
         &[
             ("exec", crate::builtins::regexp::regexp_exec as *const (), 1),
             ("test", crate::builtins::regexp::regexp_test as *const (), 1),
-            (
-                "toString",
-                crate::builtins::regexp::regexp_to_string as *const (),
-                0,
-            ),
+            ("toString", crate::builtins::regexp::regexp_to_string as *const (), 0),
         ],
     );
 
-    bind_constructor_hash!(
-        kernel,
-        global,
-        "RegExp",
-        ctor_ptr,
-        crate::builtins::regexp::regexp_constructor,
-        2
-    );
+    bind_constructor_hash!(kernel, global, "RegExp", ctor_ptr, crate::builtins::regexp::regexp_constructor, 2);
 }

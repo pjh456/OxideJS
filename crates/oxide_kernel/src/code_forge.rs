@@ -13,15 +13,11 @@ pub struct CodeForge {
 
 impl CodeForge {
     pub fn new() -> Self {
-        Self {
-            map: DashMap::new(),
-        }
+        Self { map: DashMap::new() }
     }
 
     pub fn get_or_compile(
-        &self,
-        program: &oxide_parser::Program,
-        compiler: &Compiler,
+        &self, program: &oxide_parser::Program, compiler: &Compiler,
     ) -> Result<Arc<CompiledModule>, String> {
         let hash = structural_hash(program);
 
@@ -81,17 +77,10 @@ mod tests {
         let allocator = Allocator::default();
         let program = oxide_parser::parse(&allocator, "1 + 2").expect("parse failed");
 
-        let first = forge
-            .get_or_compile(&program, &compiler)
-            .expect("first compile");
-        let second = forge
-            .get_or_compile(&program, &compiler)
-            .expect("second compile");
+        let first = forge.get_or_compile(&program, &compiler).expect("first compile");
+        let second = forge.get_or_compile(&program, &compiler).expect("second compile");
 
-        assert_eq!(
-            (first.bytecode.len(), first.n_registers),
-            (second.bytecode.len(), second.n_registers)
-        );
+        assert_eq!((first.bytecode.len(), first.n_registers), (second.bytecode.len(), second.n_registers));
     }
 
     #[test]

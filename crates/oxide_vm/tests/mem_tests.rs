@@ -43,10 +43,7 @@ fn epoch_benchmark_1m_allocations() {
 
     let elapsed = start.elapsed();
     if cfg!(debug_assertions) {
-        println!(
-            "1M allocations took {}ms (debug build - skipping timing assertion)",
-            elapsed.as_millis()
-        );
+        println!("1M allocations took {}ms (debug build - skipping timing assertion)", elapsed.as_millis());
     } else {
         assert!(
             elapsed.as_millis() < 200,

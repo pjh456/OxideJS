@@ -15,11 +15,7 @@ pub fn bind_json(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
         kernel,
         &[
             ("parse", crate::builtins::json::json_parse as *const (), 1),
-            (
-                "stringify",
-                crate::builtins::json::json_stringify as *const (),
-                1,
-            ),
+            ("stringify", crate::builtins::json::json_stringify as *const (), 1),
         ],
     );
 

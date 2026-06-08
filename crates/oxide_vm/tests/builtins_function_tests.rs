@@ -4,11 +4,8 @@ use oxide_vm::vm::Vm;
 
 fn eval(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
     let allocator = oxide_parser::Allocator::default();
-    let program =
-        oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
-    let module = Compiler::new()
-        .compile(&program)
-        .map_err(|e| format!("Compile error: {}", e))?;
+    let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
+    let module = Compiler::new().compile(&program).map_err(|e| format!("Compile error: {}", e))?;
     vm.run(&module)
 }
 
@@ -38,11 +35,7 @@ fn function_to_string_includes_function() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "Math.max.toString()").unwrap();
     assert!(result.is_string());
-    let rendered = vm
-        .kernel()
-        .string_forge()
-        .lookup(result.as_string_index())
-        .unwrap_or_default();
+    let rendered = vm.kernel().string_forge().lookup(result.as_string_index()).unwrap_or_default();
     assert!(rendered.contains("function"), "got: {}", rendered);
 }
 

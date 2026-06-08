@@ -3,19 +3,13 @@ use oxide_vm::vm::Vm;
 
 fn eval(vm: &mut Vm, source: &str) -> Result<oxide_types::value::JsValue, String> {
     let allocator = oxide_parser::Allocator::default();
-    let program =
-        oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
-    let module = Compiler::new()
-        .compile(&program)
-        .map_err(|e| format!("Compile error: {}", e))?;
+    let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
+    let module = Compiler::new().compile(&program).map_err(|e| format!("Compile error: {}", e))?;
     vm.run(&module)
 }
 
 fn str_val(vm: &Vm, val: oxide_types::value::JsValue) -> String {
-    vm.kernel()
-        .string_forge()
-        .lookup(val.as_string_index())
-        .unwrap_or_default()
+    vm.kernel().string_forge().lookup(val.as_string_index()).unwrap_or_default()
 }
 
 // -- static methods --
@@ -92,11 +86,7 @@ fn date_set_time() {
 #[test]
 fn date_set_full_year() {
     let mut vm = Vm::new();
-    let r = eval(
-        &mut vm,
-        "var d = new Date(2020, 0, 1); d.setFullYear(2025); d.getFullYear()",
-    )
-    .unwrap();
+    let r = eval(&mut vm, "var d = new Date(2020, 0, 1); d.setFullYear(2025); d.getFullYear()").unwrap();
     assert_eq!(r.as_double(), 2025.0);
 }
 

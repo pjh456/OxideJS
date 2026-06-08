@@ -27,10 +27,7 @@ fn test_throw_caught_by_catch() {
 #[test]
 fn test_throw_without_catch() {
     let result = eval("throw 'err';");
-    assert!(
-        result.contains("uncaught"),
-        "expected uncaught, got: {result}"
-    );
+    assert!(result.contains("uncaught"), "expected uncaught, got: {result}");
 }
 
 #[test]
@@ -41,34 +38,22 @@ fn test_try_finally_normal_path() {
 #[test]
 fn test_try_finally_exception_path() {
     let result = eval("var x = 0; try { throw 1; } finally { x = 2; }");
-    assert!(
-        result.contains("uncaught"),
-        "expected uncaught, got: {result}"
-    );
+    assert!(result.contains("uncaught"), "expected uncaught, got: {result}");
 }
 
 #[test]
 fn test_nested_try_inner_catches() {
-    assert_eq!(
-        eval("try { try { throw 1; } catch(e) { e; } } catch(e) { 2; }"),
-        "1"
-    );
+    assert_eq!(eval("try { try { throw 1; } catch(e) { e; } } catch(e) { 2; }"), "1");
 }
 
 #[test]
 fn test_nested_try_outer_catches() {
-    assert_eq!(
-        eval("try { try { throw 1; } catch(e) { throw 2; } } catch(e) { e; }"),
-        "2"
-    );
+    assert_eq!(eval("try { try { throw 1; } catch(e) { throw 2; } } catch(e) { e; }"), "2");
 }
 
 #[test]
 fn test_try_catch_finally() {
-    assert_eq!(
-        eval("var x = 0; try { x = 1; } catch(e) { x = 2; } finally { x = 3; } x;"),
-        "3"
-    );
+    assert_eq!(eval("var x = 0; try { x = 1; } catch(e) { x = 2; } finally { x = 3; } x;"), "3");
 }
 
 #[test]
@@ -92,8 +77,5 @@ fn test_throw_err_type_error_is_object() {
 #[test]
 fn test_uncaught_type_error_message() {
     let result = eval("null.prop;");
-    assert!(
-        result.contains("TypeError"),
-        "expected TypeError in message, got: {result}"
-    );
+    assert!(result.contains("TypeError"), "expected TypeError in message, got: {result}");
 }

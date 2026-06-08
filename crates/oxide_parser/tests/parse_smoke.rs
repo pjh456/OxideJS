@@ -13,10 +13,7 @@ fn parse_empty_string() {
     let result = oxide_parser::parse(&allocator, "");
     assert!(result.is_ok(), "empty string should parse");
     let program = result.unwrap();
-    assert!(
-        program.body.is_empty(),
-        "empty program should have empty body"
-    );
+    assert!(program.body.is_empty(), "empty program should have empty body");
 }
 
 #[test]
@@ -25,10 +22,7 @@ fn parse_function_declaration() {
     let result = oxide_parser::parse(&allocator, "function foo() { return 42; }");
     assert!(result.is_ok(), "function declaration should parse");
     let program = result.unwrap();
-    assert!(
-        !program.body.is_empty(),
-        "program with function should not be empty"
-    );
+    assert!(!program.body.is_empty(), "program with function should not be empty");
 }
 
 #[test]
@@ -37,10 +31,7 @@ fn parse_syntax_error() {
     let result = oxide_parser::parse(&allocator, "function(");
     assert!(result.is_err(), "syntax error should return Err");
     let errors = result.unwrap_err();
-    assert!(
-        !errors.is_empty(),
-        "syntax error should produce at least one error"
-    );
+    assert!(!errors.is_empty(), "syntax error should produce at least one error");
 }
 
 #[test]

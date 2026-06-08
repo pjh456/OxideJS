@@ -26,12 +26,5 @@ pub fn bind_set(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
         ],
     );
 
-    bind_constructor_hash!(
-        kernel,
-        global,
-        "Set",
-        ctor_ptr,
-        crate::builtins::set::set_constructor,
-        1
-    );
+    bind_constructor_hash!(kernel, global, "Set", ctor_ptr, crate::builtins::set::set_constructor, 1);
 }

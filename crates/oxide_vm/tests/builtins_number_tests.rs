@@ -4,11 +4,8 @@ use oxide_vm::vm::Vm;
 
 fn eval(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
     let allocator = oxide_parser::Allocator::default();
-    let program =
-        oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
-    let module = Compiler::new()
-        .compile(&program)
-        .map_err(|e| format!("Compile error: {}", e))?;
+    let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
+    let module = Compiler::new().compile(&program).map_err(|e| format!("Compile error: {}", e))?;
     vm.run(&module)
 }
 
@@ -79,11 +76,7 @@ fn number_constructor() {
 fn to_string_of_number() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "var n = 42; n.toString()").unwrap();
-    let s = vm
-        .kernel()
-        .string_forge()
-        .lookup(result.as_string_index())
-        .unwrap_or_default();
+    let s = vm.kernel().string_forge().lookup(result.as_string_index()).unwrap_or_default();
     assert_eq!(s, "42");
 }
 
@@ -91,11 +84,7 @@ fn to_string_of_number() {
 fn to_fixed_of_number() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "var n = 3.14159; n.toFixed(2)").unwrap();
-    let s = vm
-        .kernel()
-        .string_forge()
-        .lookup(result.as_string_index())
-        .unwrap_or_default();
+    let s = vm.kernel().string_forge().lookup(result.as_string_index()).unwrap_or_default();
     assert_eq!(s, "3.14");
 }
 
@@ -124,24 +113,13 @@ fn number_epsilon_is_positive() {
 fn number_to_exponential() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "var n = 123.456; n.toExponential(2)").unwrap();
-    let s = vm
-        .kernel()
-        .string_forge()
-        .lookup(result.as_string_index())
-        .unwrap_or_default();
+    let s = vm.kernel().string_forge().lookup(result.as_string_index()).unwrap_or_default();
     assert_eq!(s, "1.23e2");
 }
 
 #[test]
 fn number_static_constants_remain_bound() {
     let mut vm = Vm::new();
-    assert_eq!(
-        eval(&mut vm, "Number.MAX_SAFE_INTEGER")
-            .unwrap()
-            .as_double(),
-        9007199254740991f64
-    );
-    assert!(eval(&mut vm, "Number.POSITIVE_INFINITY > 0")
-        .unwrap()
-        .as_bool());
+    assert_eq!(eval(&mut vm, "Number.MAX_SAFE_INTEGER").unwrap().as_double(), 9007199254740991f64);
+    assert!(eval(&mut vm, "Number.POSITIVE_INFINITY > 0").unwrap().as_bool());
 }

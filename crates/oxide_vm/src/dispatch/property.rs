@@ -6,13 +6,7 @@ use oxide_types::value::JsValue;
 use crate::vm::Vm;
 
 impl Vm {
-    pub(crate) fn dispatch_property_op(
-        &mut self,
-        op: OpCode,
-        rd: usize,
-        a: usize,
-        b: usize,
-    ) -> Result<(), String> {
+    pub(crate) fn dispatch_property_op(&mut self, op: OpCode, rd: usize, a: usize, b: usize) -> Result<(), String> {
         match op {
             OpCode::IC_GET_PROP => self.dispatch_ic_get_prop(a, b),
             OpCode::IC_SET_PROP => self.dispatch_ic_set_prop(rd, a, b),
@@ -70,21 +64,13 @@ impl Vm {
                     self.write_ic_back(obj.shape_id(), ptr);
                     self.regs[a] = unsafe { *ptr };
                 } else {
-                    self.regs[a] = self
-                        .resolve_property(obj, prop_name_si)
-                        .unwrap_or(JsValue::undefined());
+                    self.regs[a] = self.resolve_property(obj, prop_name_si).unwrap_or(JsValue::undefined());
                 }
             } else {
-                self.regs[a] = self
-                    .resolve_property(obj, prop_name_si)
-                    .unwrap_or(JsValue::undefined());
+                self.regs[a] = self.resolve_property(obj, prop_name_si).unwrap_or(JsValue::undefined());
             }
         } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
-            if let Some(pos) = self
-                .kernel
-                .shape_forge()
-                .lookup_position(obj.shape_id(), prop_name_si)
-            {
+            if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
                 if let Some(ptr) = obj.prop_ptr_at(pos) {
                     self.write_ic_back(obj.shape_id(), ptr);
                 }
@@ -117,20 +103,13 @@ impl Vm {
             unsafe {
                 *(cached_ptr as *mut JsValue) = self.regs[a];
             }
-        } else if let Some(pos) = self
-            .kernel
-            .shape_forge()
-            .lookup_position(obj.shape_id(), prop_name_si)
-        {
+        } else if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             obj.set_prop_at(pos, self.regs[a]);
             if let Some(ptr) = obj.prop_ptr_at(pos) {
                 self.write_ic_back(obj.shape_id(), ptr);
             }
         } else {
-            let new_shape_id = self
-                .kernel
-                .shape_forge()
-                .make_shape(obj.shape_id(), prop_name_si);
+            let new_shape_id = self.kernel.shape_forge().make_shape(obj.shape_id(), prop_name_si);
             obj.set_shape_id(new_shape_id);
             let new_pos = obj.push_prop(self.regs[a]);
             obj.bump_generation();
@@ -159,9 +138,7 @@ impl Vm {
         }
         let obj = unsafe { &*obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[b]);
-        self.regs[a] = self
-            .resolve_property(obj, prop_name_si)
-            .unwrap_or(JsValue::undefined());
+        self.regs[a] = self.resolve_property(obj, prop_name_si).unwrap_or(JsValue::undefined());
         Ok(())
     }
 
@@ -173,17 +150,10 @@ impl Vm {
         }
         let obj = unsafe { &mut *obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[b]);
-        if let Some(pos) = self
-            .kernel
-            .shape_forge()
-            .lookup_position(obj.shape_id(), prop_name_si)
-        {
+        if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             obj.set_prop_at(pos, self.regs[a]);
         } else {
-            let new_shape_id = self
-                .kernel
-                .shape_forge()
-                .make_shape(obj.shape_id(), prop_name_si);
+            let new_shape_id = self.kernel.shape_forge().make_shape(obj.shape_id(), prop_name_si);
             obj.set_shape_id(new_shape_id);
             obj.push_prop(self.regs[a]);
             obj.bump_generation();
@@ -199,9 +169,7 @@ impl Vm {
         }
         let obj = unsafe { &*obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[a]);
-        self.regs[b] = self
-            .resolve_property(obj, prop_name_si)
-            .unwrap_or(JsValue::undefined());
+        self.regs[b] = self.resolve_property(obj, prop_name_si).unwrap_or(JsValue::undefined());
         Ok(())
     }
 
@@ -213,17 +181,10 @@ impl Vm {
         }
         let obj = unsafe { &mut *obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[a]);
-        if let Some(pos) = self
-            .kernel
-            .shape_forge()
-            .lookup_position(obj.shape_id(), prop_name_si)
-        {
+        if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             obj.set_prop_at(pos, self.regs[b]);
         } else {
-            let new_shape_id = self
-                .kernel
-                .shape_forge()
-                .make_shape(obj.shape_id(), prop_name_si);
+            let new_shape_id = self.kernel.shape_forge().make_shape(obj.shape_id(), prop_name_si);
             obj.set_shape_id(new_shape_id);
             obj.push_prop(self.regs[b]);
             obj.bump_generation();

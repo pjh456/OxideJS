@@ -30,10 +30,7 @@ fn is_date(vm: &Vm, obj: &JsObject) -> bool {
 
 fn ensure_date(vm: &mut Vm, obj: &JsObject) -> NativeResult {
     if !is_date(vm, obj) {
-        return Err(crate::builtins::error::create_type_error(
-            vm,
-            "called on incompatible receiver",
-        ));
+        return Err(crate::builtins::error::create_type_error(vm, "called on incompatible receiver"));
     }
     Ok(JsValue::undefined())
 }
@@ -114,11 +111,7 @@ pub fn date_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     } else {
         let val = vm.reg(args[1]);
         if val.is_string() {
-            let s = vm
-                .kernel()
-                .string_forge()
-                .lookup(val.as_string_index())
-                .unwrap_or_default();
+            let s = vm.kernel().string_forge().lookup(val.as_string_index()).unwrap_or_default();
             let formats = ["%Y-%m-%dT%H:%M:%S%.fZ", "%Y-%m-%dT%H:%M:%S%.f"];
             let mut ts = f64::NAN;
             for fmt in &formats {
@@ -129,10 +122,7 @@ pub fn date_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
             }
             if ts.is_nan() {
                 if let Ok(nd) = NaiveDate::parse_from_str(&s, "%Y-%m-%d") {
-                    if let Some(ndt) = nd
-                        .and_hms_opt(0, 0, 0)
-                        .and_then(|n| n.and_local_timezone(Utc).earliest())
-                    {
+                    if let Some(ndt) = nd.and_hms_opt(0, 0, 0).and_then(|n| n.and_local_timezone(Utc).earliest()) {
                         ts = ndt.timestamp_millis() as f64;
                     }
                 }
@@ -192,11 +182,7 @@ pub fn date_parse(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if !val.is_string() {
         return Ok(JsValue::float(f64::NAN));
     }
-    let s = vm
-        .kernel()
-        .string_forge()
-        .lookup(val.as_string_index())
-        .unwrap_or_default();
+    let s = vm.kernel().string_forge().lookup(val.as_string_index()).unwrap_or_default();
     let formats = ["%Y-%m-%dT%H:%M:%S%.fZ", "%Y-%m-%dT%H:%M:%S%.f"];
     let mut ts = f64::NAN;
     for fmt in &formats {
@@ -207,10 +193,7 @@ pub fn date_parse(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     if ts.is_nan() {
         if let Ok(nd) = NaiveDate::parse_from_str(&s, "%Y-%m-%d") {
-            if let Some(ndt) = nd
-                .and_hms_opt(0, 0, 0)
-                .and_then(|n| n.and_local_timezone(Utc).earliest())
-            {
+            if let Some(ndt) = nd.and_hms_opt(0, 0, 0).and_then(|n| n.and_local_timezone(Utc).earliest()) {
                 ts = ndt.timestamp_millis() as f64;
             }
         }
@@ -227,10 +210,7 @@ macro_rules! make_getter {
         pub fn $name(vm: &mut Vm, args: &[u8]) -> NativeResult {
             let raw = vm.reg(if args.is_empty() { 0 } else { args[0] });
             if !raw.is_object() {
-                return Err(crate::builtins::error::create_type_error(
-                    vm,
-                    "called on incompatible receiver",
-                ));
+                return Err(crate::builtins::error::create_type_error(vm, "called on incompatible receiver"));
             }
             let obj = unsafe { &*raw.as_js_object_ptr() };
             ensure_date(vm, obj)?;
@@ -251,10 +231,7 @@ macro_rules! make_utc_getter {
         pub fn $name(vm: &mut Vm, args: &[u8]) -> NativeResult {
             let raw = vm.reg(if args.is_empty() { 0 } else { args[0] });
             if !raw.is_object() {
-                return Err(crate::builtins::error::create_type_error(
-                    vm,
-                    "called on incompatible receiver",
-                ));
+                return Err(crate::builtins::error::create_type_error(vm, "called on incompatible receiver"));
             }
             let obj = unsafe { &*raw.as_js_object_ptr() };
             ensure_date(vm, obj)?;
@@ -270,83 +247,27 @@ macro_rules! make_utc_getter {
     };
 }
 
-make_getter!(
-    date_get_time,
-    |dt: DateTime<Utc>| dt.timestamp_millis() as f64,
-    f64::NAN
-);
-make_getter!(
-    date_get_full_year,
-    |dt: DateTime<Utc>| dt.year() as f64,
-    f64::NAN
-);
-make_getter!(
-    date_get_month,
-    |dt: DateTime<Utc>| dt.month0() as f64,
-    f64::NAN
-);
+make_getter!(date_get_time, |dt: DateTime<Utc>| dt.timestamp_millis() as f64, f64::NAN);
+make_getter!(date_get_full_year, |dt: DateTime<Utc>| dt.year() as f64, f64::NAN);
+make_getter!(date_get_month, |dt: DateTime<Utc>| dt.month0() as f64, f64::NAN);
 make_getter!(date_get_date, |dt: DateTime<Utc>| dt.day() as f64, f64::NAN);
-make_getter!(
-    date_get_day,
-    |dt: DateTime<Utc>| dt.weekday().num_days_from_sunday() as f64,
-    f64::NAN
-);
-make_getter!(
-    date_get_hours,
-    |dt: DateTime<Utc>| dt.hour() as f64,
-    f64::NAN
-);
-make_getter!(
-    date_get_minutes,
-    |dt: DateTime<Utc>| dt.minute() as f64,
-    f64::NAN
-);
-make_getter!(
-    date_get_seconds,
-    |dt: DateTime<Utc>| dt.second() as f64,
-    f64::NAN
-);
-make_getter!(
-    date_get_milliseconds,
-    |dt: DateTime<Utc>| dt.timestamp_subsec_millis() as f64,
-    f64::NAN
-);
+make_getter!(date_get_day, |dt: DateTime<Utc>| dt.weekday().num_days_from_sunday() as f64, f64::NAN);
+make_getter!(date_get_hours, |dt: DateTime<Utc>| dt.hour() as f64, f64::NAN);
+make_getter!(date_get_minutes, |dt: DateTime<Utc>| dt.minute() as f64, f64::NAN);
+make_getter!(date_get_seconds, |dt: DateTime<Utc>| dt.second() as f64, f64::NAN);
+make_getter!(date_get_milliseconds, |dt: DateTime<Utc>| dt.timestamp_subsec_millis() as f64, f64::NAN);
 
-make_utc_getter!(
-    date_get_utc_full_year,
-    |ndt: NaiveDateTime| ndt.date().year() as f64,
-    f64::NAN
-);
-make_utc_getter!(
-    date_get_utc_month,
-    |ndt: NaiveDateTime| ndt.date().month0() as f64,
-    f64::NAN
-);
-make_utc_getter!(
-    date_get_utc_date,
-    |ndt: NaiveDateTime| ndt.date().day() as f64,
-    f64::NAN
-);
+make_utc_getter!(date_get_utc_full_year, |ndt: NaiveDateTime| ndt.date().year() as f64, f64::NAN);
+make_utc_getter!(date_get_utc_month, |ndt: NaiveDateTime| ndt.date().month0() as f64, f64::NAN);
+make_utc_getter!(date_get_utc_date, |ndt: NaiveDateTime| ndt.date().day() as f64, f64::NAN);
 make_utc_getter!(
     date_get_utc_day,
     |ndt: NaiveDateTime| ndt.date().weekday().num_days_from_sunday() as f64,
     f64::NAN
 );
-make_utc_getter!(
-    date_get_utc_hours,
-    |ndt: NaiveDateTime| ndt.time().hour() as f64,
-    f64::NAN
-);
-make_utc_getter!(
-    date_get_utc_minutes,
-    |ndt: NaiveDateTime| ndt.time().minute() as f64,
-    f64::NAN
-);
-make_utc_getter!(
-    date_get_utc_seconds,
-    |ndt: NaiveDateTime| ndt.time().second() as f64,
-    f64::NAN
-);
+make_utc_getter!(date_get_utc_hours, |ndt: NaiveDateTime| ndt.time().hour() as f64, f64::NAN);
+make_utc_getter!(date_get_utc_minutes, |ndt: NaiveDateTime| ndt.time().minute() as f64, f64::NAN);
+make_utc_getter!(date_get_utc_seconds, |ndt: NaiveDateTime| ndt.time().second() as f64, f64::NAN);
 make_utc_getter!(
     date_get_utc_milliseconds,
     |ndt: NaiveDateTime| ndt.time().nanosecond() as f64 / 1_000_000.0,
@@ -356,10 +277,7 @@ make_utc_getter!(
 pub fn date_get_timezone_offset(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let raw = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if !raw.is_object() {
-        return Err(crate::builtins::error::create_type_error(
-            vm,
-            "called on incompatible receiver",
-        ));
+        return Err(crate::builtins::error::create_type_error(vm, "called on incompatible receiver"));
     }
     let obj = unsafe { &*raw.as_js_object_ptr() };
     ensure_date(vm, obj)?;
@@ -382,10 +300,7 @@ fn get_opt_arg(vm: &Vm, args: &[u8], idx: usize, default: u32) -> u32 {
 pub fn date_set_time(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let raw = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if !raw.is_object() {
-        return Err(crate::builtins::error::create_type_error(
-            vm,
-            "called on incompatible receiver",
-        ));
+        return Err(crate::builtins::error::create_type_error(vm, "called on incompatible receiver"));
     }
     let obj = unsafe { &mut *raw.as_js_object_ptr() };
     ensure_date(vm, obj)?;
@@ -438,10 +353,7 @@ pub fn date_set_month(vm: &mut Vm, args: &[u8]) -> NativeResult {
         None => return Ok(JsValue::float(f64::NAN)),
     };
     let d = get_opt_arg(vm, args, 2, dt.day0());
-    let nd = dt
-        .with_month0(v as u32)
-        .and_then(|x| x.with_day0(d))
-        .unwrap_or(dt);
+    let nd = dt.with_month0(v as u32).and_then(|x| x.with_day0(d)).unwrap_or(dt);
     let ts = nd.timestamp_millis() as f64;
     set_timestamp(obj, ts);
     Ok(JsValue::float(ts))
@@ -563,10 +475,7 @@ pub fn date_set_milliseconds(vm: &mut Vm, args: &[u8]) -> NativeResult {
 fn date_to_string_inner(vm: &mut Vm, args: &[u8], format_str: &str, invalid: &str) -> NativeResult {
     let raw = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if !raw.is_object() {
-        return Err(crate::builtins::error::create_type_error(
-            vm,
-            "called on incompatible receiver",
-        ));
+        return Err(crate::builtins::error::create_type_error(vm, "called on incompatible receiver"));
     }
     let obj = unsafe { &*raw.as_js_object_ptr() };
     ensure_date(vm, obj)?;
@@ -588,10 +497,7 @@ pub fn date_to_iso_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn date_to_json(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let raw = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if !raw.is_object() {
-        return Err(crate::builtins::error::create_type_error(
-            vm,
-            "called on incompatible receiver",
-        ));
+        return Err(crate::builtins::error::create_type_error(vm, "called on incompatible receiver"));
     }
     let obj = unsafe { &*raw.as_js_object_ptr() };
     ensure_date(vm, obj)?;
@@ -625,10 +531,7 @@ pub fn date_to_utc_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn date_value_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let raw = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if !raw.is_object() {
-        return Err(crate::builtins::error::create_type_error(
-            vm,
-            "called on incompatible receiver",
-        ));
+        return Err(crate::builtins::error::create_type_error(vm, "called on incompatible receiver"));
     }
     let obj = unsafe { &*raw.as_js_object_ptr() };
     ensure_date(vm, obj)?;

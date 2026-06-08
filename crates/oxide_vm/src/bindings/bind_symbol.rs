@@ -13,21 +13,13 @@ pub fn bind_symbol(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     let proto_ptr = kernel.builtin_world().symbol_proto.as_ptr() as *mut JsObject;
     let proto = unsafe { &mut *proto_ptr };
 
-    configure_native_constructor(
-        ctor,
-        crate::builtins::symbol::symbol_constructor as *const (),
-        1,
-    );
+    configure_native_constructor(ctor, crate::builtins::symbol::symbol_constructor as *const (), 1);
 
     apply_binding_table(
         kernel.builtin_world(),
         proto,
         kernel,
-        &[(
-            "toString",
-            crate::builtins::symbol::symbol_to_string as *const (),
-            0,
-        )],
+        &[("toString", crate::builtins::symbol::symbol_to_string as *const (), 0)],
     );
 
     for (name, val) in [
@@ -55,22 +47,10 @@ pub fn bind_symbol(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
         bind_well_known_symbol(kernel, ctor, name, val);
     }
 
-    bind_constructor_hash!(
-        kernel,
-        global,
-        "Symbol",
-        ctor_ptr,
-        crate::builtins::symbol::symbol_constructor,
-        1
-    );
+    bind_constructor_hash!(kernel, global, "Symbol", ctor_ptr, crate::builtins::symbol::symbol_constructor, 1);
 }
 
-fn bind_well_known_symbol(
-    kernel: &Arc<OxideKernel>,
-    ctor: &mut JsObject,
-    name: &str,
-    val: JsValue,
-) {
+fn bind_well_known_symbol(kernel: &Arc<OxideKernel>, ctor: &mut JsObject, name: &str, val: JsValue) {
     let si = kernel.string_forge().intern(name).0;
     let shape_id = kernel.shape_forge().make_shape(ctor.shape_id(), si);
     ctor.set_shape_id(shape_id);

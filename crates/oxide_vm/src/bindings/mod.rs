@@ -49,20 +49,13 @@ macro_rules! bind_constructor_hash {
     }};
 }
 
-pub(crate) fn configure_native_constructor(
-    ctor: &mut JsObject,
-    native_fn: *const (),
-    arg_count: u8,
-) {
+pub(crate) fn configure_native_constructor(ctor: &mut JsObject, native_fn: *const (), arg_count: u8) {
     ctor.set_native_fn(Some(native_fn));
     ctor.set_native_arg_count(arg_count);
 }
 
 pub(crate) fn apply_binding_table(
-    world: &BuiltinWorld,
-    target: &mut JsObject,
-    kernel: &Arc<OxideKernel>,
-    bindings: &[(&'static str, *const (), u8)],
+    world: &BuiltinWorld, target: &mut JsObject, kernel: &Arc<OxideKernel>, bindings: &[(&'static str, *const (), u8)],
 ) {
     let shape_forge = kernel.shape_forge().as_ref();
     let string_forge = kernel.string_forge().as_ref();
@@ -71,12 +64,7 @@ pub(crate) fn apply_binding_table(
     }
 }
 
-pub(crate) fn bind_global_value(
-    kernel: &Arc<OxideKernel>,
-    global: &mut JsObject,
-    name: &str,
-    value: JsValue,
-) {
+pub(crate) fn bind_global_value(kernel: &Arc<OxideKernel>, global: &mut JsObject, name: &str, value: JsValue) {
     let si = kernel.string_forge().intern(name).0;
     let shape = kernel.shape_forge().make_shape(global.shape_id(), si);
     global.set_shape_id(shape);

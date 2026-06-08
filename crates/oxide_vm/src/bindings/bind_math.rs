@@ -66,18 +66,14 @@ pub fn bind_math(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
         ("SQRT2", std::f64::consts::SQRT_2),
     ] {
         let si = kernel.string_forge().as_ref().intern(name).0;
-        let sh_c = kernel
-            .shape_forge()
-            .as_ref()
-            .make_shape(math.shape_id(), si);
+        let sh_c = kernel.shape_forge().as_ref().make_shape(math.shape_id(), si);
         math.set_shape_id(sh_c);
         math.ensure_hash_props().push(Box::new(JsValue::float(val)));
     }
 
     let si_m = kernel.string_forge().intern("Math").0;
     let m_shape = kernel.shape_forge().make_shape(global.shape_id(), si_m);
-    let m_val =
-        JsValue::from_js_object(kernel.builtin_world().math_object.as_ptr() as *mut JsObject);
+    let m_val = JsValue::from_js_object(kernel.builtin_world().math_object.as_ptr() as *mut JsObject);
     global.set_shape_id(m_shape);
     global.ensure_hash_props().push(Box::new(m_val));
     global.bump_generation();

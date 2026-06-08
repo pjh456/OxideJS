@@ -24,11 +24,7 @@ fn bench_1m_property_reads() {
     }
     let elapsed = start.elapsed();
     let ns_per = elapsed.as_nanos() as f64 / N as f64;
-    println!(
-        "1M IC property reads: {:.2}ms ({:.0} ns/read)",
-        elapsed.as_secs_f64() * 1000.0,
-        ns_per
-    );
+    println!("1M IC property reads: {:.2}ms ({:.0} ns/read)", elapsed.as_secs_f64() * 1000.0, ns_per);
     if cfg!(debug_assertions) {
         println!("  (debug build -- skipping timing assertion)");
     } else {

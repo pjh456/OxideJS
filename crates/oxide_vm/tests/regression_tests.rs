@@ -42,11 +42,7 @@ fn eval_with_kernel(source: &str, kernel: Arc<OxideKernel>) -> String {
 #[test]
 fn regression_to_boolean_empty_string() {
     assert_eq!(eval("!''"), "true", "NOT empty string should be true");
-    assert_eq!(
-        eval("if ('') { 1 } else { 2 }"),
-        "2",
-        "empty string should be falsy"
-    );
+    assert_eq!(eval("if ('') { 1 } else { 2 }"), "2", "empty string should be falsy");
 }
 
 #[test]
@@ -71,19 +67,13 @@ fn regression_rerun_clears_ic_cache() {
 
 #[test]
 fn regression_recursion_depth_limit() {
-    assert_eq!(
-        eval("function f(){f()} f()"),
-        "vm error: RangeError: Maximum call stack size exceeded"
-    );
+    assert_eq!(eval("function f(){f()} f()"), "vm error: RangeError: Maximum call stack size exceeded");
 }
 
 #[test]
 fn regression_throw_statement_errors() {
     let result = eval("throw 'error'");
-    assert!(
-        result.contains("uncaught"),
-        "expected uncaught, got: {result}"
-    );
+    assert!(result.contains("uncaught"), "expected uncaught, got: {result}");
     assert!(
         result.contains("uncaught Error"),
         "expected string throw to default to Error, got: {result}"
@@ -92,14 +82,8 @@ fn regression_throw_statement_errors() {
 
 #[test]
 fn regression_throw_statement_preserves_type_error_kind() {
-    assert_eq!(
-        eval("try { throw new TypeError('boom') } catch (e) { e.name == 'TypeError' }"),
-        "true"
-    );
-    assert_eq!(
-        eval("throw new TypeError('boom')"),
-        "vm error: uncaught TypeError: {object}"
-    );
+    assert_eq!(eval("try { throw new TypeError('boom') } catch (e) { e.name == 'TypeError' }"), "true");
+    assert_eq!(eval("throw new TypeError('boom')"), "vm error: uncaught TypeError: {object}");
 }
 
 #[test]
@@ -108,10 +92,7 @@ fn regression_throw_statement_preserves_syntax_error_kind() {
         eval("try { throw new SyntaxError('boom') } catch (e) { e.name == 'SyntaxError' }"),
         "true"
     );
-    assert_eq!(
-        eval("throw new SyntaxError('boom')"),
-        "vm error: uncaught SyntaxError: {object}"
-    );
+    assert_eq!(eval("throw new SyntaxError('boom')"), "vm error: uncaught SyntaxError: {object}");
 }
 
 #[test]
@@ -155,24 +136,12 @@ fn regression_new_expression_bytecode_constructor_error_is_catchable() {
 
 #[test]
 fn regression_delete_static_property_throws_type_error() {
-    assert_eq!(
-        eval("try { var o={x:1}; delete o.x; 0 } catch (e) { e.name == 'TypeError' }"),
-        "true"
-    );
-    assert_eq!(
-        eval("var o={x:1}; delete o.x"),
-        "vm error: uncaught TypeError: {object}"
-    );
+    assert_eq!(eval("try { var o={x:1}; delete o.x; 0 } catch (e) { e.name == 'TypeError' }"), "true");
+    assert_eq!(eval("var o={x:1}; delete o.x"), "vm error: uncaught TypeError: {object}");
 }
 
 #[test]
 fn regression_delete_dynamic_property_throws_type_error() {
-    assert_eq!(
-        eval("try { var o={x:1}; delete o['x']; 0 } catch (e) { e.name == 'TypeError' }"),
-        "true"
-    );
-    assert_eq!(
-        eval("var o={x:1}; var k='x'; delete o[k]"),
-        "vm error: uncaught TypeError: {object}"
-    );
+    assert_eq!(eval("try { var o={x:1}; delete o['x']; 0 } catch (e) { e.name == 'TypeError' }"), "true");
+    assert_eq!(eval("var o={x:1}; var k='x'; delete o[k]"), "vm error: uncaught TypeError: {object}");
 }

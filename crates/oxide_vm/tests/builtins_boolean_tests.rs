@@ -1,28 +1,20 @@
 use oxide_compiler::compiler::Compiler;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
-use oxide_vm::builtins::boolean::{
-    boolean_constructor, boolean_prototype_to_string, boolean_prototype_value_of,
-};
+use oxide_vm::builtins::boolean::{boolean_constructor, boolean_prototype_to_string, boolean_prototype_value_of};
 use oxide_vm::vm::Vm;
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 
 fn eval(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
     let allocator = oxide_parser::Allocator::default();
-    let program =
-        oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
-    let module = Compiler::new()
-        .compile(&program)
-        .map_err(|e| format!("Compile error: {}", e))?;
+    let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
+    let module = Compiler::new().compile(&program).map_err(|e| format!("Compile error: {}", e))?;
     vm.run(&module)
 }
 
 fn str_val(vm: &Vm, val: JsValue) -> String {
-    vm.kernel()
-        .string_forge()
-        .lookup(val.as_string_index())
-        .unwrap_or_default()
+    vm.kernel().string_forge().lookup(val.as_string_index()).unwrap_or_default()
 }
 
 // -- direct native fn tests --

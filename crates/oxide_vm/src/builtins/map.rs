@@ -8,37 +8,22 @@ use crate::vm::Vm;
 
 const MAP_PROP_INDEX: u8 = 0;
 
-fn get_map_inner(
-    vm: &mut Vm,
-    this_val: JsValue,
-) -> Result<*mut indexmap::IndexMap<SetKey, JsValue>, JsValue> {
+fn get_map_inner(vm: &mut Vm, this_val: JsValue) -> Result<*mut indexmap::IndexMap<SetKey, JsValue>, JsValue> {
     if !this_val.is_object() {
-        return Err(crate::builtins::error::create_type_error(
-            vm,
-            "called on non-Map object",
-        ));
+        return Err(crate::builtins::error::create_type_error(vm, "called on non-Map object"));
     }
     let map_ptr = this_val.as_js_object_ptr();
     if map_ptr.is_null() {
-        return Err(crate::builtins::error::create_type_error(
-            vm,
-            "Map internal state invalid",
-        ));
+        return Err(crate::builtins::error::create_type_error(vm, "Map internal state invalid"));
     }
     let map_obj = unsafe { &*map_ptr };
     let inner_val = map_obj.get_prop_at(MAP_PROP_INDEX);
     if !inner_val.is_object() {
-        return Err(crate::builtins::error::create_type_error(
-            vm,
-            "Map internal state invalid",
-        ));
+        return Err(crate::builtins::error::create_type_error(vm, "Map internal state invalid"));
     }
     let inner_ptr = inner_val.as_js_object_ptr() as *mut indexmap::IndexMap<SetKey, JsValue>;
     if inner_ptr.is_null() {
-        return Err(crate::builtins::error::create_type_error(
-            vm,
-            "Map internal state invalid",
-        ));
+        return Err(crate::builtins::error::create_type_error(vm, "Map internal state invalid"));
     }
     Ok(inner_ptr)
 }

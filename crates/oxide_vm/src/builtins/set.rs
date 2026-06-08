@@ -25,10 +25,7 @@ impl PartialEq for SetKey {
             }
             return a == b;
         }
-        unsafe {
-            std::mem::transmute::<JsValue, u64>(self.0)
-                == std::mem::transmute::<JsValue, u64>(other.0)
-        }
+        unsafe { std::mem::transmute::<JsValue, u64>(self.0) == std::mem::transmute::<JsValue, u64>(other.0) }
     }
 }
 
@@ -51,37 +48,22 @@ impl Hash for SetKey {
     }
 }
 
-fn get_set_inner(
-    vm: &mut Vm,
-    this_val: JsValue,
-) -> Result<*mut indexmap::IndexSet<SetKey>, JsValue> {
+fn get_set_inner(vm: &mut Vm, this_val: JsValue) -> Result<*mut indexmap::IndexSet<SetKey>, JsValue> {
     if !this_val.is_object() {
-        return Err(crate::builtins::error::create_type_error(
-            vm,
-            "called on non-Set object",
-        ));
+        return Err(crate::builtins::error::create_type_error(vm, "called on non-Set object"));
     }
     let set_ptr = this_val.as_js_object_ptr();
     if set_ptr.is_null() {
-        return Err(crate::builtins::error::create_type_error(
-            vm,
-            "Set internal state invalid",
-        ));
+        return Err(crate::builtins::error::create_type_error(vm, "Set internal state invalid"));
     }
     let set_obj = unsafe { &*set_ptr };
     let inner_val = set_obj.get_prop_at(SET_PROP_INDEX);
     if !inner_val.is_object() {
-        return Err(crate::builtins::error::create_type_error(
-            vm,
-            "Set internal state invalid",
-        ));
+        return Err(crate::builtins::error::create_type_error(vm, "Set internal state invalid"));
     }
     let inner_ptr = inner_val.as_js_object_ptr() as *mut indexmap::IndexSet<SetKey>;
     if inner_ptr.is_null() {
-        return Err(crate::builtins::error::create_type_error(
-            vm,
-            "Set internal state invalid",
-        ));
+        return Err(crate::builtins::error::create_type_error(vm, "Set internal state invalid"));
     }
     Ok(inner_ptr)
 }
