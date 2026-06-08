@@ -299,6 +299,7 @@ impl Compiler {
                 ctx.push_switch(end_label);
 
                 let disc_reg = self.emit_expression(&sw.discriminant, ctx)?;
+                let compare_reg_checkpoint = ctx.reg_checkpoint();
                 let cases = &sw.cases;
 
                 for (case_idx, case) in cases.iter().enumerate() {
@@ -307,10 +308,11 @@ impl Compiler {
                         let eq_reg = ctx.alloc_reg();
                         ctx.emit(opcode::encode(OpCode::EQ, eq_reg, disc_reg, test_reg));
 
-                        let case_label = Label::SwitchCase(id * 256 + case_idx as u32);
+                        let case_label = Label::SwitchCase(id, case_idx as u32);
                         let body_pos = ctx.resolve_label(case_label)?;
                         let offset = (body_pos as isize) - (ctx.bytecode.len() as isize);
                         ctx.emit(opcode::encode_jmp_if_true(eq_reg, offset as i16));
+                        ctx.restore_reg_checkpoint(compare_reg_checkpoint);
                     }
                 }
 

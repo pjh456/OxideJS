@@ -281,3 +281,25 @@ fn compile_continue_in_switch_errors() {
     });
     assert!(result.is_err(), "continue inside switch should error");
 }
+
+#[test]
+fn compile_large_adjacent_switches_do_not_collide_labels() {
+    let mut source = String::from("var r=0;switch(256){");
+    for i in 0..=256 {
+        source.push_str(&format!("case {i}:"));
+        if i == 256 {
+            source.push_str("r=1;break;");
+        }
+    }
+    source.push_str("}switch(0){case 0:r=r+1;break;}r");
+    let module = compile_source(&source);
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .filter(|&&i| opcode::opcode(i) == OpCode::JMP_IF_TRUE)
+            .count()
+            >= 258,
+        "expected both large switches to compile with distinct case labels"
+    );
+}

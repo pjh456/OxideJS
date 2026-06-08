@@ -256,3 +256,16 @@ fn eval_break_in_switch_in_loop() {
         "2"
     );
 }
+
+#[test]
+fn eval_large_adjacent_switches_do_not_collide_labels() {
+    let mut source = String::from("var r=0;switch(256){");
+    for i in 0..=256 {
+        source.push_str(&format!("case {i}:"));
+        if i == 256 {
+            source.push_str("r=1;break;");
+        }
+    }
+    source.push_str("}switch(0){case 0:r=r+1;break;}r");
+    assert_eq!(eval(&source), "2");
+}

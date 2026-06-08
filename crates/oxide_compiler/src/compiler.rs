@@ -45,7 +45,7 @@ pub(crate) enum Label {
     ForInStart(u32),
     ForInEnd(u32),
     SwitchEnd(u32),
-    SwitchCase(u32),
+    SwitchCase(u32, u32),
     CatchBody(u32),
     FinallyBody(u32),
     TryEnd(u32),
@@ -109,6 +109,14 @@ impl CompileCtx {
         self.next_reg = (self.builtin_reg_map.len() as u8).max(self.reserved_reg_start);
         self.projected_pc = 0;
         self.label_counter = 0;
+    }
+
+    pub(crate) fn reg_checkpoint(&self) -> u8 {
+        self.next_reg
+    }
+
+    pub(crate) fn restore_reg_checkpoint(&mut self, checkpoint: u8) {
+        self.next_reg = checkpoint;
     }
 
     pub(crate) fn add_constant(&mut self, c: Constant) -> u16 {

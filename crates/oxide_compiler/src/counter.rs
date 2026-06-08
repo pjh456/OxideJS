@@ -143,6 +143,7 @@ impl Compiler {
                 ctx.push_switch(end_label);
 
                 self.count_expression(&sw.discriminant, ctx);
+                let compare_reg_checkpoint = ctx.reg_checkpoint();
 
                 let cases = &sw.cases;
                 for case in cases.iter() {
@@ -151,6 +152,7 @@ impl Compiler {
                         ctx.projected_pc += 1; // EQ
                         ctx.alloc_reg(); // eq result
                         ctx.projected_pc += 1; // JMP_IF_TRUE
+                        ctx.restore_reg_checkpoint(compare_reg_checkpoint);
                     }
                 }
 
@@ -160,7 +162,7 @@ impl Compiler {
                 }
 
                 for (case_idx, case) in cases.iter().enumerate() {
-                    let case_label = Label::SwitchCase(id * 256 + case_idx as u32);
+                    let case_label = Label::SwitchCase(id, case_idx as u32);
                     ctx.label_map.insert(case_label, ctx.projected_pc);
                     for s in &case.consequent {
                         self.count_statement(s, ctx);
