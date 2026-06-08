@@ -692,7 +692,9 @@ pub fn array_shift(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
     let arr = unsafe { &mut *arr_ptr };
     let len = arr.prop_count();
-    if len == 0 { return Ok(JsValue::undefined()); }
+    if len == 0 {
+        return Ok(JsValue::undefined());
+    }
     let first = arr.get_prop_at(0);
     for i in 1..len {
         let v = arr.get_prop_at(i);
@@ -723,15 +725,26 @@ pub fn array_fill(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
     let arr = unsafe { &mut *arr_ptr };
     let len = arr.prop_count() as usize;
-    let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let value = if args.len() > 1 {
+        vm.reg(args[1])
+    } else {
+        JsValue::undefined()
+    };
     let start = if args.len() > 2 {
-        (coercion::to_number(vm.reg(args[2]), vm.kernel().string_forge().as_ref()) as i32).max(0) as usize
-    } else { 0 };
+        (coercion::to_number(vm.reg(args[2]), vm.kernel().string_forge().as_ref()) as i32).max(0)
+            as usize
+    } else {
+        0
+    };
     let end = if args.len() > 3 {
         let e = coercion::to_number(vm.reg(args[3]), vm.kernel().string_forge().as_ref()) as i32;
         (e as usize).min(len)
-    } else { len };
-    for i in start..end { arr.set_prop_at(i as u8, value); }
+    } else {
+        len
+    };
+    for i in start..end {
+        arr.set_prop_at(i as u8, value);
+    }
     Ok(vm.reg(args[0]))
 }
 
@@ -739,13 +752,30 @@ pub fn array_copy_within(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
     let arr = unsafe { &mut *arr_ptr };
     let len = arr.prop_count() as usize;
-    if len == 0 { return Ok(vm.reg(args[0])); }
-    let target = if args.len() > 1 { (coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref()) as i32) as usize } else { 0 };
-    let start = if args.len() > 2 { (coercion::to_number(vm.reg(args[2]), vm.kernel().string_forge().as_ref()) as i32) as usize } else { 0 };
-    let end = if args.len() > 3 { (coercion::to_number(vm.reg(args[3]), vm.kernel().string_forge().as_ref()) as i32 as usize).min(len) } else { len };
+    if len == 0 {
+        return Ok(vm.reg(args[0]));
+    }
+    let target = if args.len() > 1 {
+        (coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref()) as i32) as usize
+    } else {
+        0
+    };
+    let start = if args.len() > 2 {
+        (coercion::to_number(vm.reg(args[2]), vm.kernel().string_forge().as_ref()) as i32) as usize
+    } else {
+        0
+    };
+    let end = if args.len() > 3 {
+        (coercion::to_number(vm.reg(args[3]), vm.kernel().string_forge().as_ref()) as i32 as usize)
+            .min(len)
+    } else {
+        len
+    };
     let mut to = target;
     for from in start..end {
-        if to >= len { break; }
+        if to >= len {
+            break;
+        }
         let v = arr.get_prop_at(from as u8);
         arr.set_prop_at(to as u8, v);
         to += 1;
@@ -757,9 +787,17 @@ pub fn array_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
     let arr = unsafe { &*arr_ptr };
     let len = arr.prop_count() as i32;
-    let mut index = if args.len() > 1 { coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref()) as i32 } else { 0 };
-    if index < 0 { index += len; }
-    if index < 0 || index >= len { return Ok(JsValue::undefined()); }
+    let mut index = if args.len() > 1 {
+        coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref()) as i32
+    } else {
+        0
+    };
+    if index < 0 {
+        index += len;
+    }
+    if index < 0 || index >= len {
+        return Ok(JsValue::undefined());
+    }
     Ok(arr.get_prop_at(index as u8))
 }
 
@@ -767,7 +805,11 @@ pub fn array_last_index_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
     let arr = unsafe { &*arr_ptr };
     let len = arr.prop_count() as i32;
-    let search = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let search = if args.len() > 1 {
+        vm.reg(args[1])
+    } else {
+        JsValue::undefined()
+    };
     for i in (0..len).rev() {
         if coercion::strict_equality(arr.get_prop_at(i as u8), search) {
             return Ok(JsValue::int(i));
@@ -779,13 +821,28 @@ pub fn array_last_index_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn array_find_index(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
     let n = unsafe { (*arr_ptr).prop_count() } as usize;
-    if args.len() < 2 { return Ok(JsValue::int(-1)); }
+    if args.len() < 2 {
+        return Ok(JsValue::int(-1));
+    }
     let callback_val = vm.reg(args[1]);
-    let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let this_val = if args.len() > 2 {
+        vm.reg(args[2])
+    } else {
+        JsValue::undefined()
+    };
     for i in 0..n {
         let elem = unsafe { (*arr_ptr).get_prop_at(i as u8) };
-        match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i as i32), vm.reg(args[0])]) {
-            Ok(r) => { if coercion::to_boolean(r, vm.kernel().string_forge().as_ref()) { return Ok(JsValue::int(i as i32)); } }
+        match invoke_native_callback(
+            vm,
+            callback_val,
+            this_val,
+            &[elem, JsValue::int(i as i32), vm.reg(args[0])],
+        ) {
+            Ok(r) => {
+                if coercion::to_boolean(r, vm.kernel().string_forge().as_ref()) {
+                    return Ok(JsValue::int(i as i32));
+                }
+            }
             Err(_) => return Err(JsValue::undefined()),
         }
     }
@@ -795,13 +852,28 @@ pub fn array_find_index(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn array_find_last(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
     let n = unsafe { (*arr_ptr).prop_count() } as i32;
-    if args.len() < 2 { return Ok(JsValue::undefined()); }
+    if args.len() < 2 {
+        return Ok(JsValue::undefined());
+    }
     let callback_val = vm.reg(args[1]);
-    let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let this_val = if args.len() > 2 {
+        vm.reg(args[2])
+    } else {
+        JsValue::undefined()
+    };
     for i in (0..n).rev() {
         let elem = unsafe { (*arr_ptr).get_prop_at(i as u8) };
-        match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i), vm.reg(args[0])]) {
-            Ok(r) => { if coercion::to_boolean(r, vm.kernel().string_forge().as_ref()) { return Ok(elem); } }
+        match invoke_native_callback(
+            vm,
+            callback_val,
+            this_val,
+            &[elem, JsValue::int(i), vm.reg(args[0])],
+        ) {
+            Ok(r) => {
+                if coercion::to_boolean(r, vm.kernel().string_forge().as_ref()) {
+                    return Ok(elem);
+                }
+            }
             Err(_) => return Err(JsValue::undefined()),
         }
     }
@@ -811,17 +883,26 @@ pub fn array_find_last(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn array_reduce_right(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let arr_ptr = get_this_array_ref(vm.reg(args[0]))?;
     let n = unsafe { (*arr_ptr).prop_count() } as usize;
-    if args.len() < 2 { return Err(JsValue::undefined()); }
+    if args.len() < 2 {
+        return Err(JsValue::undefined());
+    }
     let callback_val = vm.reg(args[1]);
     let (mut acc, start_idx): (JsValue, i32) = if args.len() > 2 {
         (vm.reg(args[2]), n as i32 - 1)
     } else {
-        if n == 0 { return Err(JsValue::undefined()); }
+        if n == 0 {
+            return Err(JsValue::undefined());
+        }
         (unsafe { (*arr_ptr).get_prop_at(n as u8 - 1) }, n as i32 - 2)
     };
     for i in (0..=start_idx).rev() {
         let elem = unsafe { (*arr_ptr).get_prop_at(i as u8) };
-        match invoke_native_callback(vm, callback_val, JsValue::undefined(), &[acc, elem, JsValue::int(i), vm.reg(args[0])]) {
+        match invoke_native_callback(
+            vm,
+            callback_val,
+            JsValue::undefined(),
+            &[acc, elem, JsValue::int(i), vm.reg(args[0])],
+        ) {
             Ok(r) => acc = r,
             Err(_) => return Err(JsValue::undefined()),
         }
@@ -839,6 +920,8 @@ pub fn array_sort(vm: &mut Vm, _args: &[u8]) -> NativeResult {
         let sb = coercion::to_string(vm.kernel().string_forge().as_ref(), *b);
         sa.cmp(&sb)
     });
-    for (i, &v) in vals.iter().enumerate() { arr.set_prop_at(i as u8, v); }
+    for (i, &v) in vals.iter().enumerate() {
+        arr.set_prop_at(i as u8, v);
+    }
     Ok(vm.reg(_args[0]))
 }

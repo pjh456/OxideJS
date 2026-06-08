@@ -32,12 +32,54 @@ pub fn bind_error(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     global.ensure_hash_props().push(Box::new(err_val));
     global.bump_generation();
 
-    bind_constructor_hash!(kernel, global, "TypeError", kernel.builtin_world().type_error_proto.as_ptr() as *mut JsObject, crate::builtins::error::type_error_constructor, 1);
-    bind_constructor_hash!(kernel, global, "ReferenceError", kernel.builtin_world().reference_error_proto.as_ptr() as *mut JsObject, crate::builtins::error::reference_error_constructor, 1);
-    bind_constructor_hash!(kernel, global, "RangeError", kernel.builtin_world().range_error_proto.as_ptr() as *mut JsObject, crate::builtins::error::range_error_constructor, 1);
-    bind_constructor_hash!(kernel, global, "SyntaxError", kernel.builtin_world().syntax_error_proto.as_ptr() as *mut JsObject, crate::builtins::error::syntax_error_constructor, 1);
-    bind_constructor_hash!(kernel, global, "URIError", kernel.builtin_world().uri_error_proto.as_ptr() as *mut JsObject, crate::builtins::error::uri_error_constructor, 1);
-    bind_constructor_hash!(kernel, global, "EvalError", kernel.builtin_world().eval_error_proto.as_ptr() as *mut JsObject, crate::builtins::error::eval_error_constructor, 1);
+    bind_constructor_hash!(
+        kernel,
+        global,
+        "TypeError",
+        kernel.builtin_world().type_error_proto.as_ptr() as *mut JsObject,
+        crate::builtins::error::type_error_constructor,
+        1
+    );
+    bind_constructor_hash!(
+        kernel,
+        global,
+        "ReferenceError",
+        kernel.builtin_world().reference_error_proto.as_ptr() as *mut JsObject,
+        crate::builtins::error::reference_error_constructor,
+        1
+    );
+    bind_constructor_hash!(
+        kernel,
+        global,
+        "RangeError",
+        kernel.builtin_world().range_error_proto.as_ptr() as *mut JsObject,
+        crate::builtins::error::range_error_constructor,
+        1
+    );
+    bind_constructor_hash!(
+        kernel,
+        global,
+        "SyntaxError",
+        kernel.builtin_world().syntax_error_proto.as_ptr() as *mut JsObject,
+        crate::builtins::error::syntax_error_constructor,
+        1
+    );
+    bind_constructor_hash!(
+        kernel,
+        global,
+        "URIError",
+        kernel.builtin_world().uri_error_proto.as_ptr() as *mut JsObject,
+        crate::builtins::error::uri_error_constructor,
+        1
+    );
+    bind_constructor_hash!(
+        kernel,
+        global,
+        "EvalError",
+        kernel.builtin_world().eval_error_proto.as_ptr() as *mut JsObject,
+        crate::builtins::error::eval_error_constructor,
+        1
+    );
 
     {
         let err_ctor_ptr = kernel.builtin_world().error_constructor.as_ptr() as *mut JsObject;

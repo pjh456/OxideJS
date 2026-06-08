@@ -43,44 +43,72 @@ pub fn bind_number(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
         ));
         num_ctor.set_native_arg_count(1);
 
-        num_ctor.ensure_hash_props().push(Box::new(JsValue::float(2.220446049250313e-16)));
+        num_ctor
+            .ensure_hash_props()
+            .push(Box::new(JsValue::float(2.220446049250313e-16)));
         let eps_si = kernel.string_forge().intern("EPSILON").0;
         let _shape1 = kernel.shape_forge().make_shape(num_ctor.shape_id(), eps_si);
         num_ctor.set_shape_id(_shape1);
 
-        num_ctor.ensure_hash_props().push(Box::new(JsValue::float(9007199254740991f64)));
+        num_ctor
+            .ensure_hash_props()
+            .push(Box::new(JsValue::float(9007199254740991f64)));
         let max_safe_si = kernel.string_forge().intern("MAX_SAFE_INTEGER").0;
-        let _shape2 = kernel.shape_forge().make_shape(num_ctor.shape_id(), max_safe_si);
+        let _shape2 = kernel
+            .shape_forge()
+            .make_shape(num_ctor.shape_id(), max_safe_si);
         num_ctor.set_shape_id(_shape2);
 
-        num_ctor.ensure_hash_props().push(Box::new(JsValue::float(-9007199254740991f64)));
+        num_ctor
+            .ensure_hash_props()
+            .push(Box::new(JsValue::float(-9007199254740991f64)));
         let min_safe_si = kernel.string_forge().intern("MIN_SAFE_INTEGER").0;
-        let _shape3 = kernel.shape_forge().make_shape(num_ctor.shape_id(), min_safe_si);
+        let _shape3 = kernel
+            .shape_forge()
+            .make_shape(num_ctor.shape_id(), min_safe_si);
         num_ctor.set_shape_id(_shape3);
 
-        num_ctor.ensure_hash_props().push(Box::new(JsValue::float(1.7976931348623157e308)));
+        num_ctor
+            .ensure_hash_props()
+            .push(Box::new(JsValue::float(1.7976931348623157e308)));
         let max_val_si = kernel.string_forge().intern("MAX_VALUE").0;
-        let _shape4 = kernel.shape_forge().make_shape(num_ctor.shape_id(), max_val_si);
+        let _shape4 = kernel
+            .shape_forge()
+            .make_shape(num_ctor.shape_id(), max_val_si);
         num_ctor.set_shape_id(_shape4);
 
-        num_ctor.ensure_hash_props().push(Box::new(JsValue::float(5e-324)));
+        num_ctor
+            .ensure_hash_props()
+            .push(Box::new(JsValue::float(5e-324)));
         let min_val_si = kernel.string_forge().intern("MIN_VALUE").0;
-        let _shape5 = kernel.shape_forge().make_shape(num_ctor.shape_id(), min_val_si);
+        let _shape5 = kernel
+            .shape_forge()
+            .make_shape(num_ctor.shape_id(), min_val_si);
         num_ctor.set_shape_id(_shape5);
 
-        num_ctor.ensure_hash_props().push(Box::new(JsValue::float(f64::NAN)));
+        num_ctor
+            .ensure_hash_props()
+            .push(Box::new(JsValue::float(f64::NAN)));
         let nan_si = kernel.string_forge().intern("NaN").0;
         let _shape6 = kernel.shape_forge().make_shape(num_ctor.shape_id(), nan_si);
         num_ctor.set_shape_id(_shape6);
 
-        num_ctor.ensure_hash_props().push(Box::new(JsValue::float(f64::NEG_INFINITY)));
+        num_ctor
+            .ensure_hash_props()
+            .push(Box::new(JsValue::float(f64::NEG_INFINITY)));
         let neg_inf_si = kernel.string_forge().intern("NEGATIVE_INFINITY").0;
-        let _shape7 = kernel.shape_forge().make_shape(num_ctor.shape_id(), neg_inf_si);
+        let _shape7 = kernel
+            .shape_forge()
+            .make_shape(num_ctor.shape_id(), neg_inf_si);
         num_ctor.set_shape_id(_shape7);
 
-        num_ctor.ensure_hash_props().push(Box::new(JsValue::float(f64::INFINITY)));
+        num_ctor
+            .ensure_hash_props()
+            .push(Box::new(JsValue::float(f64::INFINITY)));
         let pos_inf_si = kernel.string_forge().intern("POSITIVE_INFINITY").0;
-        let _shape8 = kernel.shape_forge().make_shape(num_ctor.shape_id(), pos_inf_si);
+        let _shape8 = kernel
+            .shape_forge()
+            .make_shape(num_ctor.shape_id(), pos_inf_si);
         num_ctor.set_shape_id(_shape8);
     }
 

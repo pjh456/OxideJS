@@ -352,18 +352,29 @@ pub fn object_get_own_property_names(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn object_define_properties(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    if args.len() < 3 { return Ok(vm.reg(args[1])); }
+    if args.len() < 3 {
+        return Ok(vm.reg(args[1]));
+    }
     let _obj_ptr = require_obj_arg(vm, args, "defineProperties")?;
     let desc_val = vm.reg(args[2]);
-    if !desc_val.is_object() { return Ok(vm.reg(args[1])); }
+    if !desc_val.is_object() {
+        return Ok(vm.reg(args[1]));
+    }
     Ok(vm.reg(args[1]))
 }
 
 pub fn object_from_entries(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    if args.len() < 2 { return Ok(JsValue::null()); }
+    if args.len() < 2 {
+        return Ok(JsValue::null());
+    }
     let entries = vm.reg(args[1]);
-    if !entries.is_object() { return Ok(JsValue::null()); }
-    let obj_ptr = vm.epoch().alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(vm.kernel().builtin_world().object_proto.as_ptr() as *mut JsObject)));
+    if !entries.is_object() {
+        return Ok(JsValue::null());
+    }
+    let obj_ptr = vm.epoch().alloc(JsObject::new_empty(
+        EMPTY_SHAPE_ID,
+        JsValue::from_js_object(vm.kernel().builtin_world().object_proto.as_ptr() as *mut JsObject),
+    ));
     Ok(JsValue::from_js_object(obj_ptr))
 }
 
@@ -373,10 +384,14 @@ pub fn object_get_prototype_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn object_has_own(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    if args.len() < 3 { return Ok(JsValue::bool(false)); }
+    if args.len() < 3 {
+        return Ok(JsValue::bool(false));
+    }
     let _obj_ptr = require_obj_arg(vm, args, "hasOwn")?;
     let key_val = vm.reg(args[2]);
-    if !key_val.is_string() { return Ok(JsValue::bool(false)); }
+    if !key_val.is_string() {
+        return Ok(JsValue::bool(false));
+    }
     Ok(JsValue::bool(false))
 }
 
@@ -386,17 +401,29 @@ pub fn object_entries(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let keys = walk_own_keys(vm, obj);
     let n = keys.len().min(255);
     let array_proto = vm.kernel().builtin_world().array_proto.as_ptr() as *mut JsObject;
-    let arr = vm.epoch().alloc(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), n, vm.epoch().bump()));
+    let arr = vm.epoch().alloc(JsObject::new_array(
+        EMPTY_SHAPE_ID,
+        JsValue::from_js_object(array_proto),
+        n,
+        vm.epoch().bump(),
+    ));
     for (_i, (si, offset)) in keys.iter().enumerate().take(n) {
         let key_str = vm.kernel().string_forge().lookup(*si).unwrap_or_default();
         let key_val = vm.intern(&key_str);
         let val = obj.get_prop_at(*offset);
-        let pair = vm.epoch().alloc(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), 2, vm.epoch().bump()));
+        let pair = vm.epoch().alloc(JsObject::new_array(
+            EMPTY_SHAPE_ID,
+            JsValue::from_js_object(array_proto),
+            2,
+            vm.epoch().bump(),
+        ));
         unsafe {
             (*pair).set_prop_at(0, key_val);
             (*pair).set_prop_at(1, val);
             (*pair).set_prop_count(2);
-            (*arr).ensure_hash_props().push(Box::new(JsValue::from_js_object(pair)));
+            (*arr)
+                .ensure_hash_props()
+                .push(Box::new(JsValue::from_js_object(pair)));
         }
     }
     Ok(JsValue::from_js_object(arr))
@@ -408,11 +435,20 @@ pub fn object_values(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let keys = walk_own_keys(vm, obj);
     let n = keys.len().min(255);
     let array_proto = vm.kernel().builtin_world().array_proto.as_ptr() as *mut JsObject;
-    let arr = vm.epoch().alloc(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), n, vm.epoch().bump()));
+    let arr = vm.epoch().alloc(JsObject::new_array(
+        EMPTY_SHAPE_ID,
+        JsValue::from_js_object(array_proto),
+        n,
+        vm.epoch().bump(),
+    ));
     for (i, (_si, offset)) in keys.iter().enumerate().take(n) {
         let val = obj.get_prop_at(*offset);
-        unsafe { (*arr).set_prop_at(i as u8, val); }
+        unsafe {
+            (*arr).set_prop_at(i as u8, val);
+        }
     }
-    unsafe { (*arr).set_prop_count(n as u8); }
+    unsafe {
+        (*arr).set_prop_count(n as u8);
+    }
     Ok(JsValue::from_js_object(arr))
 }

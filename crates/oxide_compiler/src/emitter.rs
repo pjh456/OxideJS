@@ -34,7 +34,12 @@ impl Compiler {
                     if let Some(init) = &d.init {
                         let val_reg = self.emit_expression(init, ctx)?;
                         let const_flag = if is_const { 1 } else { 0 };
-                        ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, const_flag));
+                        ctx.emit(opcode::encode(
+                            OpCode::STORE_VAR,
+                            var_reg,
+                            val_reg,
+                            const_flag,
+                        ));
                         ctx.init_var(name);
                         // Name inference (D-04): if the initializer is an arrow function,
                         // set the compiled sub_module's function_name.
@@ -192,7 +197,12 @@ impl Compiler {
                                 _ => return Err("destructuring not supported".into()),
                             };
                             let var_reg = ctx.alloc_reg();
-                            ctx.declare(name, var_reg, decl.kind, matches!(decl.kind, VariableDeclarationKind::Const))?;
+                            ctx.declare(
+                                name,
+                                var_reg,
+                                decl.kind,
+                                matches!(decl.kind, VariableDeclarationKind::Const),
+                            )?;
                             if let Some(init_expr) = &d.init {
                                 let val_reg = self.emit_expression(init_expr, ctx)?;
                                 ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, 0));
@@ -254,7 +264,12 @@ impl Compiler {
                                 _ => return Err("destructuring not supported".into()),
                             };
                             let var_reg = ctx.alloc_reg();
-                            ctx.declare(name, var_reg, decl.kind, matches!(decl.kind, VariableDeclarationKind::Const))?;
+                            ctx.declare(
+                                name,
+                                var_reg,
+                                decl.kind,
+                                matches!(decl.kind, VariableDeclarationKind::Const),
+                            )?;
                             ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, key_reg, 0));
                             ctx.init_var(name);
                         }
@@ -622,30 +637,34 @@ impl Compiler {
                         ctx.emit(opcode::encode(OpCode::UNARY_PLUS, r, arg, 0));
                         Ok(r)
                     }
-                    UnaryOperator::Delete => {
-                        match &un.argument {
-                            Expression::Identifier(_) => {
-                                Err("delete of global variable is not allowed in strict mode".into())
-                            }
-                            Expression::StaticMemberExpression(member) => {
-                                let obj_reg = self.emit_expression(&member.object, ctx)?;
-                                let prop_name = member.property.name.as_str();
-                                let const_idx = ctx.add_constant(Constant::String(prop_name.to_string()));
-                                let r = ctx.alloc_reg();
-                                ctx.emit(opcode::encode(OpCode::DELETE_PROP_STATIC, r, obj_reg, 0));
-                                ctx.emit(const_idx as u32);
-                                Ok(r)
-                            }
-                            Expression::ComputedMemberExpression(member) => {
-                                let obj_reg = self.emit_expression(&member.object, ctx)?;
-                                let key_reg = self.emit_expression(&member.expression, ctx)?;
-                                let r = ctx.alloc_reg();
-                                ctx.emit(opcode::encode(OpCode::DELETE_PROP_DYNAMIC, r, obj_reg, key_reg));
-                                Ok(r)
-                            }
-                            _ => Err("invalid delete target".into()),
+                    UnaryOperator::Delete => match &un.argument {
+                        Expression::Identifier(_) => {
+                            Err("delete of global variable is not allowed in strict mode".into())
                         }
-                    }
+                        Expression::StaticMemberExpression(member) => {
+                            let obj_reg = self.emit_expression(&member.object, ctx)?;
+                            let prop_name = member.property.name.as_str();
+                            let const_idx =
+                                ctx.add_constant(Constant::String(prop_name.to_string()));
+                            let r = ctx.alloc_reg();
+                            ctx.emit(opcode::encode(OpCode::DELETE_PROP_STATIC, r, obj_reg, 0));
+                            ctx.emit(const_idx as u32);
+                            Ok(r)
+                        }
+                        Expression::ComputedMemberExpression(member) => {
+                            let obj_reg = self.emit_expression(&member.object, ctx)?;
+                            let key_reg = self.emit_expression(&member.expression, ctx)?;
+                            let r = ctx.alloc_reg();
+                            ctx.emit(opcode::encode(
+                                OpCode::DELETE_PROP_DYNAMIC,
+                                r,
+                                obj_reg,
+                                key_reg,
+                            ));
+                            Ok(r)
+                        }
+                        _ => Err("invalid delete target".into()),
+                    },
                     _ => Err(format!("unsupported unary operator: {:?}", un.operator)),
                 }
             }
@@ -902,7 +921,12 @@ impl Compiler {
                         let var_reg = ctx.lookup_or_global(name);
                         let is_const = ctx.lookup_const_flag(name);
                         let const_flag = if is_const { 1 } else { 0 };
-                        ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, const_flag));
+                        ctx.emit(opcode::encode(
+                            OpCode::STORE_VAR,
+                            var_reg,
+                            val_reg,
+                            const_flag,
+                        ));
                         Ok(val_reg)
                     }
                 } else {

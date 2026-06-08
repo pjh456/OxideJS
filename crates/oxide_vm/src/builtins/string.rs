@@ -387,7 +387,10 @@ pub fn string_match_fn(vm: &mut Vm, args: &[u8]) -> NativeResult {
             None => return Ok(JsValue::undefined()),
         };
         let regex = unsafe { &*(fn_ptr as *const regex::Regex) };
-        let matches: Vec<String> = regex.find_iter(&s).map(|m| m.as_str().to_string()).collect();
+        let matches: Vec<String> = regex
+            .find_iter(&s)
+            .map(|m| m.as_str().to_string())
+            .collect();
         return Ok(make_string_array(vm, &matches));
     }
 
@@ -443,9 +446,13 @@ pub fn string_code_point_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let pos = if args.len() > 1 {
         coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref()) as usize
-    } else { 0 };
+    } else {
+        0
+    };
     let chars: Vec<char> = s.chars().collect();
-    if pos >= chars.len() { return Ok(JsValue::undefined()); }
+    if pos >= chars.len() {
+        return Ok(JsValue::undefined());
+    }
     let c = chars[pos] as u32;
     if (0xD800..=0xDBFF).contains(&c) && pos + 1 < chars.len() {
         let next = chars[pos + 1] as u32;
@@ -460,7 +467,11 @@ pub fn string_code_point_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn string_normalize(vm: &mut Vm, args: &[u8]) -> NativeResult {
     use unicode_normalization::UnicodeNormalization;
     let s = this_string(vm, args);
-    let form = if args.len() > 1 { as_string(vm, vm.reg(args[1])) } else { "NFC".to_string() };
+    let form = if args.len() > 1 {
+        as_string(vm, vm.reg(args[1]))
+    } else {
+        "NFC".to_string()
+    };
     let result: String = match form.as_str() {
         "NFD" => s.nfd().collect(),
         "NFKC" => s.nfkc().collect(),
@@ -472,14 +483,22 @@ pub fn string_normalize(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
 pub fn string_match_all(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
-    if args.len() < 2 { return Err(JsValue::undefined()); }
+    if args.len() < 2 {
+        return Err(JsValue::undefined());
+    }
     let pattern_val = vm.reg(args[1]);
     if is_regexp_obj(pattern_val, vm) {
         let re_ptr = pattern_val.as_js_object_ptr();
         let re = unsafe { &*re_ptr };
-        let fn_ptr = match re.native_fn() { Some(p) => p, None => return Ok(JsValue::undefined()) };
+        let fn_ptr = match re.native_fn() {
+            Some(p) => p,
+            None => return Ok(JsValue::undefined()),
+        };
         let regex = unsafe { &*(fn_ptr as *const regex::Regex) };
-        let matches: Vec<String> = regex.find_iter(&s).map(|m| m.as_str().to_string()).collect();
+        let matches: Vec<String> = regex
+            .find_iter(&s)
+            .map(|m| m.as_str().to_string())
+            .collect();
         return Ok(make_string_array(vm, &matches));
     }
     Ok(JsValue::undefined())
@@ -487,13 +506,22 @@ pub fn string_match_all(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
 pub fn string_replace_all(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
-    if args.len() < 2 { return Ok(vm.intern(&s)); }
+    if args.len() < 2 {
+        return Ok(vm.intern(&s));
+    }
     let pattern_val = vm.reg(args[1]);
-    let replacement = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { String::new() };
+    let replacement = if args.len() > 2 {
+        as_string(vm, vm.reg(args[2]))
+    } else {
+        String::new()
+    };
     if is_regexp_obj(pattern_val, vm) {
         let re_ptr = pattern_val.as_js_object_ptr();
         let re = unsafe { &*re_ptr };
-        let fn_ptr = match re.native_fn() { Some(p) => p, None => return Ok(vm.intern(&s)) };
+        let fn_ptr = match re.native_fn() {
+            Some(p) => p,
+            None => return Ok(vm.intern(&s)),
+        };
         let regex = unsafe { &*(fn_ptr as *const regex::Regex) };
         let result = regex.replace_all(&s, replacement.as_str()).to_string();
         return Ok(vm.intern(&result));

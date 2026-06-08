@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-    use oxide_parser::VariableDeclarationKind;
+use oxide_parser::VariableDeclarationKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScopeKind {
@@ -190,7 +190,7 @@ impl SymbolTable {
 #[cfg(test)]
 mod tests {
     use super::SymbolTable;
-use oxide_parser::VariableDeclarationKind;
+    use oxide_parser::VariableDeclarationKind;
 
     fn v() -> VariableDeclarationKind {
         VariableDeclarationKind::Var

@@ -25,29 +25,24 @@ pub fn bind_symbol(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
         0
     );
 
-    let sym_match_val = JsValue::from_js_object(
-        kernel.builtin_world().sym_match.as_ptr() as *mut JsObject,
-    );
+    let sym_match_val =
+        JsValue::from_js_object(kernel.builtin_world().sym_match.as_ptr() as *mut JsObject);
     bind_well_known_symbol(kernel, ctor, sf, sh, "match", sym_match_val);
 
-    let sym_replace_val = JsValue::from_js_object(
-        kernel.builtin_world().sym_replace.as_ptr() as *mut JsObject,
-    );
+    let sym_replace_val =
+        JsValue::from_js_object(kernel.builtin_world().sym_replace.as_ptr() as *mut JsObject);
     bind_well_known_symbol(kernel, ctor, sf, sh, "replace", sym_replace_val);
 
-    let sym_search_val = JsValue::from_js_object(
-        kernel.builtin_world().sym_search.as_ptr() as *mut JsObject,
-    );
+    let sym_search_val =
+        JsValue::from_js_object(kernel.builtin_world().sym_search.as_ptr() as *mut JsObject);
     bind_well_known_symbol(kernel, ctor, sf, sh, "search", sym_search_val);
 
-    let sym_split_val = JsValue::from_js_object(
-        kernel.builtin_world().sym_split.as_ptr() as *mut JsObject,
-    );
+    let sym_split_val =
+        JsValue::from_js_object(kernel.builtin_world().sym_split.as_ptr() as *mut JsObject);
     bind_well_known_symbol(kernel, ctor, sf, sh, "split", sym_split_val);
 
-    let sym_iterator_val = JsValue::from_js_object(
-        kernel.builtin_world().sym_iterator.as_ptr() as *mut JsObject,
-    );
+    let sym_iterator_val =
+        JsValue::from_js_object(kernel.builtin_world().sym_iterator.as_ptr() as *mut JsObject);
     bind_well_known_symbol(kernel, ctor, sf, sh, "iterator", sym_iterator_val);
 
     bind_constructor_hash!(

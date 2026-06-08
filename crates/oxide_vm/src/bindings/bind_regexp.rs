@@ -14,7 +14,9 @@ pub fn bind_regexp(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     let sf = kernel.string_forge().as_ref();
     let sh = kernel.shape_forge().as_ref();
 
-    ctor.set_native_fn(Some(crate::builtins::regexp::regexp_constructor as *const ()));
+    ctor.set_native_fn(Some(
+        crate::builtins::regexp::regexp_constructor as *const (),
+    ));
     ctor.set_native_arg_count(2);
 
     bind_method!(

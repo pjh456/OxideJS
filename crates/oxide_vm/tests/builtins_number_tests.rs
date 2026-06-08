@@ -124,6 +124,10 @@ fn number_epsilon_is_positive() {
 fn number_to_exponential() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "var n = 123.456; n.toExponential(2)").unwrap();
-    let s = vm.kernel().string_forge().lookup(result.as_string_index()).unwrap_or_default();
+    let s = vm
+        .kernel()
+        .string_forge()
+        .lookup(result.as_string_index())
+        .unwrap_or_default();
     assert_eq!(s, "1.23e2");
 }

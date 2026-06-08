@@ -177,7 +177,10 @@ pub fn number_is_integer(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn number_is_safe_integer(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let val = vm.reg(if args.len() > 1 { args[1] } else { args[0] });
     let n = coercion::to_number(val, vm.kernel().string_forge().as_ref());
-    let safe = n.trunc() == n && n.is_finite() && n >= -9007199254740991i64 as f64 && n <= 9007199254740991i64 as f64;
+    let safe = n.trunc() == n
+        && n.is_finite()
+        && n >= -9007199254740991i64 as f64
+        && n <= 9007199254740991i64 as f64;
     Ok(JsValue::bool(safe))
 }
 
@@ -185,10 +188,19 @@ pub fn number_to_exponential(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let n = coercion::to_number(vm.reg(args[0]), vm.kernel().string_forge().as_ref());
     let digits = if args.len() > 1 {
         coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref()) as usize
-    } else { 0usize }.min(100);
-    if n.is_nan() { return Ok(vm.intern("NaN")); }
+    } else {
+        0usize
+    }
+    .min(100);
+    if n.is_nan() {
+        return Ok(vm.intern("NaN"));
+    }
     if n.is_infinite() {
-        return Ok(vm.intern(if n.is_sign_positive() { "Infinity" } else { "-Infinity" }));
+        return Ok(vm.intern(if n.is_sign_positive() {
+            "Infinity"
+        } else {
+            "-Infinity"
+        }));
     }
     let formatted = format!("{:.digits$e}", n);
     Ok(vm.intern(&formatted))
@@ -198,10 +210,19 @@ pub fn number_to_precision(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let n = coercion::to_number(vm.reg(args[0]), vm.kernel().string_forge().as_ref());
     let precision = if args.len() > 1 {
         coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref()) as usize
-    } else { 0usize }.min(21);
-    if n.is_nan() { return Ok(vm.intern("NaN")); }
+    } else {
+        0usize
+    }
+    .min(21);
+    if n.is_nan() {
+        return Ok(vm.intern("NaN"));
+    }
     if n.is_infinite() {
-        return Ok(vm.intern(if n.is_sign_positive() { "Infinity" } else { "-Infinity" }));
+        return Ok(vm.intern(if n.is_sign_positive() {
+            "Infinity"
+        } else {
+            "-Infinity"
+        }));
     }
     let formatted = format!("{:.precision$}", n);
     Ok(vm.intern(&formatted))

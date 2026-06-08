@@ -160,7 +160,11 @@ pub fn function_bind(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn function_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let name = vm.kernel().string_forge().lookup(vm.reg(args[0]).as_string_index()).unwrap_or_default();
+    let name = vm
+        .kernel()
+        .string_forge()
+        .lookup(vm.reg(args[0]).as_string_index())
+        .unwrap_or_default();
     let result = if name.is_empty() {
         "function () { [native code] }".to_string()
     } else {

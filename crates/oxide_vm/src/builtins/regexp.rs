@@ -86,9 +86,7 @@ pub fn regexp_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
     let mut obj = JsObject::new_empty(
         EMPTY_SHAPE_ID,
-        JsValue::from_js_object(
-            vm.kernel().builtin_world().regexp_proto.as_ptr() as *mut JsObject,
-        ),
+        JsValue::from_js_object(vm.kernel().builtin_world().regexp_proto.as_ptr() as *mut JsObject),
     );
 
     let compiled = regex::RegexBuilder::new(&pattern)
@@ -185,8 +183,7 @@ pub fn regexp_exec(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
     let (last_index, is_global) = {
         let re = unsafe { &*re_ptr };
-        let li =
-            coercion::to_number(get_prop(re, 0), vm.kernel().string_forge().as_ref()) as usize;
+        let li = coercion::to_number(get_prop(re, 0), vm.kernel().string_forge().as_ref()) as usize;
         let g = get_prop(re, 3).as_bool();
         (li, g)
     };
@@ -204,7 +201,7 @@ pub fn regexp_exec(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let mut match_obj = JsObject::new_empty(
             EMPTY_SHAPE_ID,
             JsValue::from_js_object(
-                vm.kernel().builtin_world().array_proto.as_ptr() as *mut JsObject,
+                vm.kernel().builtin_world().array_proto.as_ptr() as *mut JsObject
             ),
         );
 

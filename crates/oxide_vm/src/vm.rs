@@ -675,11 +675,7 @@ impl Vm {
                     if b != 0 {
                         // const guard: check if already initialized
                         if !self.regs[rd].is_undefined() {
-                            throw_err!(
-                                self,
-                                TypeError,
-                                "Assignment to constant variable"
-                            );
+                            throw_err!(self, TypeError, "Assignment to constant variable");
                         }
                     }
                     self.regs[rd] = self.regs[a];
@@ -1307,10 +1303,11 @@ impl Vm {
                             continue;
                         }
                         let prop_name_si = prop_name_val.as_string_index();
-                        if let Some(pos) = self.kernel.shape_forge().lookup_position(
-                            obj.shape_id(),
-                            prop_name_si,
-                        ) {
+                        if let Some(pos) = self
+                            .kernel
+                            .shape_forge()
+                            .lookup_position(obj.shape_id(), prop_name_si)
+                        {
                             obj.set_prop_at(pos, JsValue::undefined());
                         }
                         self.regs[rd] = JsValue::bool(true);
@@ -1334,10 +1331,11 @@ impl Vm {
                         };
                         let obj_ptr = obj_val.as_js_object_ptr();
                         let obj = unsafe { &mut *obj_ptr };
-                        if let Some(pos) = self.kernel.shape_forge().lookup_position(
-                            obj.shape_id(),
-                            prop_name_si,
-                        ) {
+                        if let Some(pos) = self
+                            .kernel
+                            .shape_forge()
+                            .lookup_position(obj.shape_id(), prop_name_si)
+                        {
                             obj.set_prop_at(pos, JsValue::undefined());
                         }
                         self.regs[rd] = JsValue::bool(true);
@@ -1349,7 +1347,11 @@ impl Vm {
                     let rhs_val = self.regs[b];
 
                     if !rhs_val.is_object() {
-                        throw_err!(self, TypeError, "INSTANCEOF right-hand side is not callable");
+                        throw_err!(
+                            self,
+                            TypeError,
+                            "INSTANCEOF right-hand side is not callable"
+                        );
                     }
                     if !lhs_val.is_object() {
                         self.regs[rd] = JsValue::bool(false);

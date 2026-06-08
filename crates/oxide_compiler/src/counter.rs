@@ -190,7 +190,8 @@ impl Compiler {
 
                 // Hoisting: declare function name as initialized
                 let func_reg = ctx.alloc_reg();
-                let _ = ctx.declare_initialized(&name, func_reg, VariableDeclarationKind::Var, false);
+                let _ =
+                    ctx.declare_initialized(&name, func_reg, VariableDeclarationKind::Var, false);
 
                 // Body is compiled in the emit pass only.
                 // FD emits LOAD_CONST(BytecodeFunc) + STORE_VAR

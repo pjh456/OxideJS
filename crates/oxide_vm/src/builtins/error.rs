@@ -121,14 +121,29 @@ pub fn error_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(args[0]);
     let (name, msg) = if this_val.is_object() {
         let obj = unsafe { &*this_val.as_js_object_ptr() };
-        let name_val = obj.hash_props_vec().and_then(|v| v.first()).map(|b| **b).unwrap_or(JsValue::undefined());
-        let msg_val = obj.hash_props_vec().and_then(|v| v.get(1)).map(|b| **b).unwrap_or(JsValue::undefined());
-        (vm.lookup_str(name_val).unwrap_or_else(|| "Error".to_string()),
-         vm.lookup_str(msg_val).unwrap_or_default())
+        let name_val = obj
+            .hash_props_vec()
+            .and_then(|v| v.first())
+            .map(|b| **b)
+            .unwrap_or(JsValue::undefined());
+        let msg_val = obj
+            .hash_props_vec()
+            .and_then(|v| v.get(1))
+            .map(|b| **b)
+            .unwrap_or(JsValue::undefined());
+        (
+            vm.lookup_str(name_val)
+                .unwrap_or_else(|| "Error".to_string()),
+            vm.lookup_str(msg_val).unwrap_or_default(),
+        )
     } else {
         ("Error".to_string(), String::new())
     };
-    let result = if msg.is_empty() { name } else { format!("{}: {}", name, msg) };
+    let result = if msg.is_empty() {
+        name
+    } else {
+        format!("{}: {}", name, msg)
+    };
     let si = vm.kernel().string_forge().intern(&result).0;
     Ok(JsValue::string(si, 0))
 }
@@ -136,7 +151,11 @@ pub fn error_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn error_stack_getter(vm: &mut Vm, _args: &[u8]) -> NativeResult {
     let mut lines = vec![];
     for frame in vm.frames.iter().rev() {
-        let func_name = vm.kernel().string_forge().lookup(frame.function_name).unwrap_or_else(|| "<anonymous>".to_string());
+        let func_name = vm
+            .kernel()
+            .string_forge()
+            .lookup(frame.function_name)
+            .unwrap_or_else(|| "<anonymous>".to_string());
         lines.push(format!("    at {} (native)", func_name));
     }
     lines.push("    at <anonymous> (native)".to_string());

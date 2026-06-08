@@ -154,7 +154,11 @@ fn regexp_exec_global_last_index_advances() {
 #[test]
 fn regexp_exec_global_resets_on_exhaustion() {
     let mut vm = Vm::new();
-    let result = eval(&mut vm, "var re = /a/g; re.exec('a'); re.exec('a') === null").unwrap();
+    let result = eval(
+        &mut vm,
+        "var re = /a/g; re.exec('a'); re.exec('a') === null",
+    )
+    .unwrap();
     assert!(result.as_bool());
 }
 
