@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use oxide_kernel::bind_method;
+use oxide_kernel::bind_methods;
 use oxide_kernel::kernel::OxideKernel;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
@@ -15,35 +15,38 @@ pub fn bind_symbol(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     let sf = kernel.string_forge().as_ref();
     let sh = kernel.shape_forge().as_ref();
 
-    bind_method!(
+    bind_methods!(
         kernel.builtin_world(),
         proto,
         sf,
         sh,
-        "toString",
-        crate::builtins::symbol::symbol_to_string,
-        0
+        ("toString", crate::builtins::symbol::symbol_to_string, 0),
     );
 
-    let sym_match_val =
-        JsValue::from_js_object(kernel.builtin_world().sym_match.as_ptr() as *mut JsObject);
-    bind_well_known_symbol(kernel, ctor, sf, sh, "match", sym_match_val);
-
-    let sym_replace_val =
-        JsValue::from_js_object(kernel.builtin_world().sym_replace.as_ptr() as *mut JsObject);
-    bind_well_known_symbol(kernel, ctor, sf, sh, "replace", sym_replace_val);
-
-    let sym_search_val =
-        JsValue::from_js_object(kernel.builtin_world().sym_search.as_ptr() as *mut JsObject);
-    bind_well_known_symbol(kernel, ctor, sf, sh, "search", sym_search_val);
-
-    let sym_split_val =
-        JsValue::from_js_object(kernel.builtin_world().sym_split.as_ptr() as *mut JsObject);
-    bind_well_known_symbol(kernel, ctor, sf, sh, "split", sym_split_val);
-
-    let sym_iterator_val =
-        JsValue::from_js_object(kernel.builtin_world().sym_iterator.as_ptr() as *mut JsObject);
-    bind_well_known_symbol(kernel, ctor, sf, sh, "iterator", sym_iterator_val);
+    for (name, val) in [
+        (
+            "match",
+            JsValue::from_js_object(kernel.builtin_world().sym_match.as_ptr() as *mut JsObject),
+        ),
+        (
+            "replace",
+            JsValue::from_js_object(kernel.builtin_world().sym_replace.as_ptr() as *mut JsObject),
+        ),
+        (
+            "search",
+            JsValue::from_js_object(kernel.builtin_world().sym_search.as_ptr() as *mut JsObject),
+        ),
+        (
+            "split",
+            JsValue::from_js_object(kernel.builtin_world().sym_split.as_ptr() as *mut JsObject),
+        ),
+        (
+            "iterator",
+            JsValue::from_js_object(kernel.builtin_world().sym_iterator.as_ptr() as *mut JsObject),
+        ),
+    ] {
+        bind_well_known_symbol(kernel, ctor, name, val);
+    }
 
     bind_constructor_hash!(
         kernel,
@@ -58,8 +61,6 @@ pub fn bind_symbol(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
 fn bind_well_known_symbol(
     kernel: &Arc<OxideKernel>,
     ctor: &mut JsObject,
-    _sf: &oxide_kernel::string_forge::StringForge,
-    _sh: &oxide_kernel::shape_forge::ShapeForge,
     name: &str,
     val: JsValue,
 ) {

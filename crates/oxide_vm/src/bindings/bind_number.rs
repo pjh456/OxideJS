@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
+use oxide_kernel::bind_methods;
 use oxide_kernel::builtin::NumberMethods;
 use oxide_kernel::kernel::OxideKernel;
-use oxide_kernel::{bind_method, bind_methods};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 

@@ -16,7 +16,7 @@ macro_rules! bind_method {
 macro_rules! bind_methods {
     ($world:expr, $target:expr, $sf:expr, $sh:expr,
      $(($name:literal, $func:expr, $nargs:expr)),* $(,)?) => {
-        $( bind_method!($world, $target, $sf, $sh, $name, $func, $nargs); )*
+        $( $crate::bind_method!($world, $target, $sf, $sh, $name, $func, $nargs); )*
     };
 }
 

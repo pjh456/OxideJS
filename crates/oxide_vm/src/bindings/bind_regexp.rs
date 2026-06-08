@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use oxide_kernel::bind_method;
+use oxide_kernel::bind_methods;
 use oxide_kernel::kernel::OxideKernel;
 use oxide_types::object::JsObject;
 
@@ -19,32 +19,14 @@ pub fn bind_regexp(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     ));
     ctor.set_native_arg_count(2);
 
-    bind_method!(
+    bind_methods!(
         kernel.builtin_world(),
         proto,
         sf,
         sh,
-        "exec",
-        crate::builtins::regexp::regexp_exec,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "test",
-        crate::builtins::regexp::regexp_test,
-        1
-    );
-    bind_method!(
-        kernel.builtin_world(),
-        proto,
-        sf,
-        sh,
-        "toString",
-        crate::builtins::regexp::regexp_to_string,
-        0
+        ("exec", crate::builtins::regexp::regexp_exec, 1),
+        ("test", crate::builtins::regexp::regexp_test, 1),
+        ("toString", crate::builtins::regexp::regexp_to_string, 0),
     );
 
     bind_constructor_hash!(
