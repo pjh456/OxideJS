@@ -290,13 +290,24 @@ impl Vm {
         &self.epoch
     }
 
-    pub fn reset(&mut self) {
+    fn clear_execution_state(&mut self) {
         self.regs = [JsValue::undefined(); 256];
         self.pc = 0;
-        self.bytecode.clear();
-        self.constants.clear();
         self.frames.clear();
         self.for_in_iters.clear();
+        self.for_of_iters.clear();
+        self.saved_bytecode_stack.clear();
+        self.saved_constants_stack.clear();
+        self.try_stack.clear();
+        self.exception_value = None;
+        self.pending_exception = None;
+        self.pending_error_kind = None;
+    }
+
+    pub fn reset(&mut self) {
+        self.clear_execution_state();
+        self.bytecode.clear();
+        self.constants.clear();
         self.epoch.reset();
         self.interned_strings.clear();
         self.root_reg_limit = 0;
@@ -511,15 +522,8 @@ impl Vm {
     }
 
     pub fn rerun(&mut self) -> Result<JsValue, String> {
-        self.pc = 0;
-        self.regs = [JsValue::undefined(); 256];
+        self.clear_execution_state();
         self.active_reg_limit = self.root_reg_limit;
-        self.frames.clear();
-        self.for_in_iters.clear();
-        self.try_stack.clear();
-        self.exception_value = None;
-        self.pending_exception = None;
-        self.pending_error_kind = None;
         self.clear_ic_caches();
         self.dispatch()
     }
@@ -542,21 +546,13 @@ impl Vm {
     }
 
     pub fn run(&mut self, module: &CompiledModule) -> Result<JsValue, String> {
+        self.clear_execution_state();
         self.constants = self.convert_constants(module);
         self.sub_modules = module.sub_modules.clone();
         self.sub_module_constants = vec![Vec::new(); self.sub_modules.len()];
         self.bytecode = module.bytecode.clone();
-        self.pc = 0;
-        self.regs = [JsValue::undefined(); 256];
         self.root_reg_limit = module.n_registers.max(1);
         self.active_reg_limit = self.root_reg_limit;
-        self.frames.clear();
-        self.saved_bytecode_stack.clear();
-        self.saved_constants_stack.clear();
-        self.try_stack.clear();
-        self.exception_value = None;
-        self.pending_exception = None;
-        self.pending_error_kind = None;
 
         for (name, reg) in &module.builtin_reg_map {
             let si = self.kernel.string_forge().intern(name.as_str()).0;
@@ -1908,5 +1904,53 @@ impl Vm {
 impl Default for Vm {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{opcode, JsValue, TryHandler, Vm};
+
+    #[test]
+    fn reset_clears_runtime_state_like_rerun() {
+        let mut vm = Vm::new();
+        vm.regs[1] = JsValue::int(7);
+        vm.pc = 3;
+        vm.frames.push(super::CallFrame {
+            return_addr: 1,
+            function_name: 0,
+            caller_reg_limit: 2,
+            saved_regs: vec![JsValue::undefined()].into_boxed_slice(),
+            saved_this: JsValue::undefined(),
+            saved_new_target: JsValue::undefined(),
+        });
+        vm.for_in_iters.push(std::ptr::dangling_mut::<u8>());
+        vm.for_of_iters.push(std::ptr::dangling_mut::<u8>());
+        vm.saved_bytecode_stack
+            .push(vec![opcode::encode(opcode::OpCode::HALT, 0, 0, 0)]);
+        vm.saved_constants_stack.push(vec![JsValue::int(1)]);
+        vm.try_stack.push(TryHandler {
+            catch_pc: Some(1),
+            finally_pc: None,
+            frame_depth: 0,
+        });
+        vm.exception_value = Some(JsValue::int(2));
+        vm.pending_exception = Some(JsValue::int(3));
+        vm.pending_error_kind = Some("TypeError");
+
+        vm.reset();
+
+        assert_eq!(vm.pc, 0);
+        assert!(vm.frames.is_empty());
+        assert!(vm.for_in_iters.is_empty());
+        assert!(vm.for_of_iters.is_empty());
+        assert!(vm.saved_bytecode_stack.is_empty());
+        assert!(vm.saved_constants_stack.is_empty());
+        assert!(vm.try_stack.is_empty());
+        assert!(vm.exception_value.is_none());
+        assert!(vm.pending_exception.is_none());
+        assert!(vm.pending_error_kind.is_none());
+        assert!(vm.bytecode.is_empty());
+        assert!(vm.constants.is_empty());
     }
 }
