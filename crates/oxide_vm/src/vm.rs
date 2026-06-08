@@ -110,9 +110,7 @@ macro_rules! member_read_prop {
                     .resolve_property($obj, $prop_name_si)
                     .unwrap_or(JsValue::undefined())
             } else if let Some(ptr) = $self.template_prop_ptr($obj, &template) {
-                $self.bytecode[$self.pc - 3] = $obj.shape_id() & 0x00FF_FFFF;
-                $self.bytecode[$self.pc - 2] = ptr as u32;
-                $self.bytecode[$self.pc - 1] = (ptr as u64 >> 32) as u32;
+                $self.write_ic_back($obj.shape_id(), ptr);
                 unsafe { *ptr }
             } else {
                 $self
@@ -126,9 +124,7 @@ macro_rules! member_read_prop {
                 .lookup_position($obj.shape_id(), $prop_name_si)
             {
                 if let Some(ptr) = $obj.prop_ptr_at(pos) {
-                    $self.bytecode[$self.pc - 3] = $obj.shape_id() & 0x00FF_FFFF;
-                    $self.bytecode[$self.pc - 2] = ptr as u32;
-                    $self.bytecode[$self.pc - 1] = (ptr as u64 >> 32) as u32;
+                    $self.write_ic_back($obj.shape_id(), ptr);
                 }
             }
             val
@@ -515,9 +511,7 @@ impl Vm {
             obj.set_prop_at(pos, val);
             // IC write-back: 3 extension words (shape_id + ptr_lo + ptr_hi)
             if let Some(ptr) = obj.prop_ptr_at(pos) {
-                self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
-                self.bytecode[self.pc - 2] = ptr as u32;
-                self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                self.write_ic_back(obj.shape_id(), ptr);
             }
         } else {
             let new_shape_id = self
@@ -528,9 +522,7 @@ impl Vm {
             let new_pos = obj.push_prop(val);
             obj.bump_generation();
             if let Some(ptr) = obj.prop_ptr_at(new_pos) {
-                self.bytecode[self.pc - 3] = new_shape_id & 0x00FF_FFFF;
-                self.bytecode[self.pc - 2] = ptr as u32;
-                self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                self.write_ic_back(new_shape_id, ptr);
                 self.kernel.prop_forge().upsert(
                     new_shape_id,
                     PropTemplate {
@@ -543,6 +535,16 @@ impl Vm {
             }
         }
         Ok(())
+    }
+
+    fn write_ic_back(&mut self, shape_id: u32, ptr: *const JsValue) {
+        debug_assert!(
+            self.pc >= 3,
+            "IC write-back requires 3 extension words before pc"
+        );
+        self.bytecode[self.pc - 3] = shape_id & 0x00FF_FFFF;
+        self.bytecode[self.pc - 2] = ptr as u32;
+        self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
     }
 
     pub fn rerun(&mut self) -> Result<JsValue, String> {
@@ -1081,9 +1083,7 @@ impl Vm {
                             if let Some(vec) = obj.hash_props_vec() {
                                 if pos < vec.len() {
                                     let ptr = &*vec[pos] as *const JsValue;
-                                    self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
-                                    self.bytecode[self.pc - 2] = ptr as u32;
-                                    self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                                    self.write_ic_back(obj.shape_id(), ptr);
                                     self.regs[a] = unsafe { *(ptr) };
                                 } else {
                                     self.regs[a] = self
@@ -1107,9 +1107,7 @@ impl Vm {
                             .lookup_position(obj.shape_id(), prop_name_si)
                         {
                             if let Some(ptr) = obj.prop_ptr_at(pos) {
-                                self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
-                                self.bytecode[self.pc - 2] = ptr as u32;
-                                self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                                self.write_ic_back(obj.shape_id(), ptr);
                             }
                         }
                         self.regs[a] = val;
@@ -1145,9 +1143,7 @@ impl Vm {
                         {
                             obj.set_prop_at(pos, self.regs[a]);
                             if let Some(ptr) = obj.prop_ptr_at(pos) {
-                                self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
-                                self.bytecode[self.pc - 2] = ptr as u32;
-                                self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                                self.write_ic_back(obj.shape_id(), ptr);
                             }
                         } else {
                             let new_shape_id = self
@@ -1158,9 +1154,7 @@ impl Vm {
                             let new_pos = obj.push_prop(self.regs[a]);
                             obj.bump_generation();
                             if let Some(ptr) = obj.prop_ptr_at(new_pos) {
-                                self.bytecode[self.pc - 3] = new_shape_id & 0x00FF_FFFF;
-                                self.bytecode[self.pc - 2] = ptr as u32;
-                                self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                                self.write_ic_back(new_shape_id, ptr);
                                 self.kernel.prop_forge().upsert(
                                     new_shape_id,
                                     PropTemplate {
@@ -1495,9 +1489,7 @@ impl Vm {
                     {
                         obj.set_prop_at(pos, new_val);
                         if let Some(ptr) = obj.prop_ptr_at(pos) {
-                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
-                            self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                            self.write_ic_back(obj.shape_id(), ptr);
                         }
                     } else {
                         let new_shape_id = self
@@ -1508,9 +1500,7 @@ impl Vm {
                         let new_pos = obj.push_prop(new_val);
                         obj.bump_generation();
                         if let Some(ptr) = obj.prop_ptr_at(new_pos) {
-                            self.bytecode[self.pc - 3] = new_shape_id & 0x00FF_FFFF;
-                            self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                            self.write_ic_back(new_shape_id, ptr);
                             self.kernel.prop_forge().upsert(
                                 new_shape_id,
                                 PropTemplate {
@@ -1546,9 +1536,7 @@ impl Vm {
                     {
                         obj.set_prop_at(pos, new_val);
                         if let Some(ptr) = obj.prop_ptr_at(pos) {
-                            self.bytecode[self.pc - 3] = obj.shape_id() & 0x00FF_FFFF;
-                            self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                            self.write_ic_back(obj.shape_id(), ptr);
                         }
                     } else {
                         let new_shape_id = self
@@ -1559,9 +1547,7 @@ impl Vm {
                         let new_pos = obj.push_prop(new_val);
                         obj.bump_generation();
                         if let Some(ptr) = obj.prop_ptr_at(new_pos) {
-                            self.bytecode[self.pc - 3] = new_shape_id & 0x00FF_FFFF;
-                            self.bytecode[self.pc - 2] = ptr as u32;
-                            self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+                            self.write_ic_back(new_shape_id, ptr);
                             self.kernel.prop_forge().upsert(
                                 new_shape_id,
                                 PropTemplate {
@@ -2015,5 +2001,18 @@ mod tests {
             err.contains("SyntaxError: Invalid regular expression"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn write_ic_back_updates_three_extension_words() {
+        let mut vm = Vm::new();
+        vm.bytecode = vec![0, 0, 0];
+        vm.pc = 3;
+        let boxed = Box::new(JsValue::int(42));
+        let ptr = &*boxed as *const JsValue;
+        vm.write_ic_back(0x1234_5678, ptr);
+        assert_eq!(vm.bytecode[0], 0x0034_5678);
+        assert_eq!(vm.bytecode[1], ptr as u32);
+        assert_eq!(vm.bytecode[2], (ptr as u64 >> 32) as u32);
     }
 }
