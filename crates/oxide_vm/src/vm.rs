@@ -1797,13 +1797,21 @@ impl Vm {
                     self.for_in_iters.pop();
                 }
 
-                OpCode::FOR_OF_INIT => {}
+                OpCode::FOR_OF_INIT => {
+                    return Err("opcode FOR_OF_INIT not yet implemented".into());
+                }
 
-                OpCode::FOR_OF_NEXT => {}
+                OpCode::FOR_OF_NEXT => {
+                    return Err("opcode FOR_OF_NEXT not yet implemented".into());
+                }
 
-                OpCode::FOR_OF_DONE => {}
+                OpCode::FOR_OF_DONE => {
+                    return Err("opcode FOR_OF_DONE not yet implemented".into());
+                }
 
-                OpCode::FOR_OF_CLOSE => {}
+                OpCode::FOR_OF_CLOSE => {
+                    return Err("opcode FOR_OF_CLOSE not yet implemented".into());
+                }
 
                 OpCode::THROW => {
                     let exc_value = self.regs[rd];
@@ -1875,6 +1883,7 @@ impl Default for Vm {
 #[cfg(test)]
 mod tests {
     use super::{opcode, JsValue, TryHandler, Vm};
+    use oxide_compiler::module::CompiledModule;
 
     #[test]
     fn reset_clears_runtime_state_like_rerun() {
@@ -1917,5 +1926,41 @@ mod tests {
         assert!(vm.pending_error_kind.is_none());
         assert!(vm.bytecode.is_empty());
         assert!(vm.constants.is_empty());
+    }
+
+    #[test]
+    fn for_of_opcodes_fail_explicitly() {
+        for (op, expected) in [
+            (
+                opcode::OpCode::FOR_OF_INIT,
+                "opcode FOR_OF_INIT not yet implemented",
+            ),
+            (
+                opcode::OpCode::FOR_OF_NEXT,
+                "opcode FOR_OF_NEXT not yet implemented",
+            ),
+            (
+                opcode::OpCode::FOR_OF_DONE,
+                "opcode FOR_OF_DONE not yet implemented",
+            ),
+            (
+                opcode::OpCode::FOR_OF_CLOSE,
+                "opcode FOR_OF_CLOSE not yet implemented",
+            ),
+        ] {
+            let module = CompiledModule {
+                bytecode: vec![
+                    opcode::encode(op, 0, 0, 0),
+                    opcode::encode(opcode::OpCode::HALT, 0, 0, 0),
+                ],
+                n_registers: 1,
+                ..CompiledModule::new()
+            };
+            let mut vm = Vm::new();
+            let err = vm
+                .run(&module)
+                .expect_err("FOR_OF opcode should fail explicitly");
+            assert_eq!(err, expected);
+        }
     }
 }
