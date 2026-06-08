@@ -377,6 +377,26 @@ impl BuiltinWorld {
         wire_ctor_proto(&date_constructor, &date_proto);
         wire_ctor_proto(&set_constructor, &set_proto);
         wire_ctor_proto(&map_constructor, &map_proto);
+
+        // Wire prototype chains: all constructor prototypes inherit from Object.prototype.
+        let obj_proto_val = JsValue::from_js_object(object_proto.as_ptr() as *mut JsObject);
+        let non_object_protos: [&P<JsObject>; 11] = [
+            &array_proto,
+            &function_proto,
+            &string_proto,
+            &number_proto,
+            &boolean_proto,
+            &error_proto,
+            &symbol_proto,
+            &date_proto,
+            &set_proto,
+            &map_proto,
+            &regexp_proto,
+        ];
+        for proto in &non_object_protos {
+            let p = proto.as_ptr() as *mut JsObject;
+            unsafe { &mut *p }.set_proto(obj_proto_val).ok();
+        }
         wire_ctor_proto(&regexp_constructor, &regexp_proto);
 
         Self {
@@ -490,11 +510,46 @@ impl BuiltinWorld {
             methods.get_own_property_names,
             1,
         );
-        let _ = self.bind_method(ctor, shape_forge, string_forge, "defineProperties", methods.define_properties, 2);
-        let _ = self.bind_method(ctor, shape_forge, string_forge, "fromEntries", methods.from_entries, 1);
-        let _ = self.bind_method(ctor, shape_forge, string_forge, "getPrototypeOf", methods.get_prototype_of, 1);
-        let _ = self.bind_method(ctor, shape_forge, string_forge, "hasOwn", methods.has_own, 2);
-        let _ = self.bind_method(ctor, shape_forge, string_forge, "entries", methods.entries, 1);
+        let _ = self.bind_method(
+            ctor,
+            shape_forge,
+            string_forge,
+            "defineProperties",
+            methods.define_properties,
+            2,
+        );
+        let _ = self.bind_method(
+            ctor,
+            shape_forge,
+            string_forge,
+            "fromEntries",
+            methods.from_entries,
+            1,
+        );
+        let _ = self.bind_method(
+            ctor,
+            shape_forge,
+            string_forge,
+            "getPrototypeOf",
+            methods.get_prototype_of,
+            1,
+        );
+        let _ = self.bind_method(
+            ctor,
+            shape_forge,
+            string_forge,
+            "hasOwn",
+            methods.has_own,
+            2,
+        );
+        let _ = self.bind_method(
+            ctor,
+            shape_forge,
+            string_forge,
+            "entries",
+            methods.entries,
+            1,
+        );
         let _ = self.bind_method(ctor, shape_forge, string_forge, "values", methods.values, 1);
     }
 
@@ -589,14 +644,56 @@ impl BuiltinWorld {
             1,
         );
         let _ = self.bind_method(proto, shape_forge, string_forge, "shift", methods.shift, 0);
-        let _ = self.bind_method(proto, shape_forge, string_forge, "unshift", methods.unshift, 1);
+        let _ = self.bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "unshift",
+            methods.unshift,
+            1,
+        );
         let _ = self.bind_method(proto, shape_forge, string_forge, "fill", methods.fill, 1);
-        let _ = self.bind_method(proto, shape_forge, string_forge, "copyWithin", methods.copy_within, 2);
+        let _ = self.bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "copyWithin",
+            methods.copy_within,
+            2,
+        );
         let _ = self.bind_method(proto, shape_forge, string_forge, "at", methods.at, 1);
-        let _ = self.bind_method(proto, shape_forge, string_forge, "lastIndexOf", methods.last_index_of, 1);
-        let _ = self.bind_method(proto, shape_forge, string_forge, "findIndex", methods.find_index, 1);
-        let _ = self.bind_method(proto, shape_forge, string_forge, "findLast", methods.find_last, 1);
-        let _ = self.bind_method(proto, shape_forge, string_forge, "reduceRight", methods.reduce_right, 1);
+        let _ = self.bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "lastIndexOf",
+            methods.last_index_of,
+            1,
+        );
+        let _ = self.bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "findIndex",
+            methods.find_index,
+            1,
+        );
+        let _ = self.bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "findLast",
+            methods.find_last,
+            1,
+        );
+        let _ = self.bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "reduceRight",
+            methods.reduce_right,
+            1,
+        );
         let _ = self.bind_method(proto, shape_forge, string_forge, "sort", methods.sort, 0);
     }
 
@@ -661,7 +758,14 @@ impl BuiltinWorld {
 
         let proto_ptr = P::as_ptr(&self.error_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
-        let _ = self.bind_method(proto, shape_forge, string_forge, "toString", methods.to_string, 0);
+        let _ = self.bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "toString",
+            methods.to_string,
+            0,
+        );
         let _ = self.bind_method(proto, shape_forge, string_forge, "stack", methods.stack, 0);
     }
 
@@ -805,12 +909,54 @@ impl BuiltinWorld {
             methods.search,
             1,
         );
-        let _ = self.bind_method(proto, shape_forge, string_forge, "trimStart", methods.trim_start, 0);
-        let _ = self.bind_method(proto, shape_forge, string_forge, "trimEnd", methods.trim_end, 0);
-        let _ = self.bind_method(proto, shape_forge, string_forge, "codePointAt", methods.code_point_at, 1);
-        let _ = self.bind_method(proto, shape_forge, string_forge, "normalize", methods.normalize, 0);
-        let _ = self.bind_method(proto, shape_forge, string_forge, "matchAll", methods.match_all, 1);
-        let _ = self.bind_method(proto, shape_forge, string_forge, "replaceAll", methods.replace_all, 2);
+        let _ = self.bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "trimStart",
+            methods.trim_start,
+            0,
+        );
+        let _ = self.bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "trimEnd",
+            methods.trim_end,
+            0,
+        );
+        let _ = self.bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "codePointAt",
+            methods.code_point_at,
+            1,
+        );
+        let _ = self.bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "normalize",
+            methods.normalize,
+            0,
+        );
+        let _ = self.bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "matchAll",
+            methods.match_all,
+            1,
+        );
+        let _ = self.bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "replaceAll",
+            methods.replace_all,
+            2,
+        );
     }
 
     pub fn bind_number_methods(
@@ -866,11 +1012,46 @@ impl BuiltinWorld {
             methods.to_fixed,
             0,
         );
-        let _ = self.bind_method(ctor, shape_forge, string_forge, "isInteger", methods.is_integer, 1);
-        let _ = self.bind_method(ctor, shape_forge, string_forge, "isSafeInteger", methods.is_safe_integer, 1);
-        let _ = self.bind_method(proto, shape_forge, string_forge, "toExponential", methods.to_exponential, 0);
-        let _ = self.bind_method(proto, shape_forge, string_forge, "toPrecision", methods.to_precision, 0);
-        let _ = self.bind_method(proto, shape_forge, string_forge, "valueOf", methods.value_of, 0);
+        let _ = self.bind_method(
+            ctor,
+            shape_forge,
+            string_forge,
+            "isInteger",
+            methods.is_integer,
+            1,
+        );
+        let _ = self.bind_method(
+            ctor,
+            shape_forge,
+            string_forge,
+            "isSafeInteger",
+            methods.is_safe_integer,
+            1,
+        );
+        let _ = self.bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "toExponential",
+            methods.to_exponential,
+            0,
+        );
+        let _ = self.bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "toPrecision",
+            methods.to_precision,
+            0,
+        );
+        let _ = self.bind_method(
+            proto,
+            shape_forge,
+            string_forge,
+            "valueOf",
+            methods.value_of,
+            0,
+        );
     }
 
     pub fn bind_function_methods(
@@ -910,7 +1091,15 @@ impl BuiltinWorld {
             1,
             fp,
         );
-        let _ = Self::bind_method_static(proto, shape_forge, string_forge, "toString", methods.to_string, 0, fp);
+        let _ = Self::bind_method_static(
+            proto,
+            shape_forge,
+            string_forge,
+            "toString",
+            methods.to_string,
+            0,
+            fp,
+        );
     }
 
     pub fn bind_method(
@@ -1026,14 +1215,16 @@ mod tests {
     #[test]
     fn test_protos_have_null_proto() {
         let w = make_world();
+        // Object.prototype is the root - its __proto__ is null.
         assert!(w.object_proto.proto().is_null());
-        assert!(w.array_proto.proto().is_null());
-        assert!(w.function_proto.proto().is_null());
-        assert!(w.string_proto.proto().is_null());
-        assert!(w.number_proto.proto().is_null());
-        assert!(w.boolean_proto.proto().is_null());
-        assert!(w.error_proto.proto().is_null());
-        assert!(w.symbol_proto.proto().is_null());
+        // All other constructor prototypes inherit from Object.prototype.
+        assert!(w.array_proto.proto().is_object());
+        assert!(w.function_proto.proto().is_object());
+        assert!(w.string_proto.proto().is_object());
+        assert!(w.number_proto.proto().is_object());
+        assert!(w.boolean_proto.proto().is_object());
+        assert!(w.error_proto.proto().is_object());
+        assert!(w.symbol_proto.proto().is_object());
     }
 
     #[test]
