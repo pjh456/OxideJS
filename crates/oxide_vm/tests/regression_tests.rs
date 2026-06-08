@@ -106,3 +106,21 @@ fn regression_vm_step_limit_is_configurable() {
         "expected configurable step limit error, got: {result}"
     );
 }
+
+#[test]
+fn regression_new_expression_native_constructor_error_is_catchable() {
+    assert_eq!(
+        eval("try { new RegExp('['); 0 } catch (e) { 1 }"),
+        "1",
+        "expected native constructor error to enter catch"
+    );
+}
+
+#[test]
+fn regression_new_expression_bytecode_constructor_error_is_catchable() {
+    assert_eq!(
+        eval("try { function C() {} new C(); 0 } catch (e) { 1 }"),
+        "1",
+        "expected bytecode constructor capability error to enter catch"
+    );
+}

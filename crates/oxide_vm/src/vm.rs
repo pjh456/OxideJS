@@ -964,14 +964,25 @@ impl Vm {
                                 }
                             }
                             Err(err_val) => {
-                                return Err(format!("Native constructor error: {:?}", err_val));
+                                self.exception_value = Some(err_val);
+                                self.pending_error_kind = Some("Error");
+                                match self.unwind() {
+                                    Ok(()) => continue,
+                                    Err(e) => return Err(e),
+                                }
                             }
                         }
                     } else {
-                        // Bytecode constructor - wired in plan 12.1-03
-                        return Err(
-                            "NEW_EXPRESSION: bytecode constructors not yet supported".into()
+                        let error = crate::builtins::error::create_error(
+                            self,
+                            "NEW_EXPRESSION: bytecode constructors not yet supported",
                         );
+                        self.exception_value = Some(error);
+                        self.pending_error_kind = Some("Error");
+                        match self.unwind() {
+                            Ok(()) => continue,
+                            Err(e) => return Err(e),
+                        }
                     }
                 }
 
