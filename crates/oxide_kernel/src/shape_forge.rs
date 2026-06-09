@@ -47,6 +47,9 @@ impl ShapeForge {
     }
 
     fn compute_depth(shape_id: ShapeId, shapes: &[Option<Arc<Shape>>]) -> u32 {
+        if shape_id == 0 {
+            return 0;
+        }
         let mut count = 0u32;
         let mut cursor = Some(shape_id);
         while let Some(id) = cursor {
