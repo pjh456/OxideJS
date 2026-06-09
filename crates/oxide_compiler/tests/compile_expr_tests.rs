@@ -9,6 +9,16 @@ fn compile_source(source: &str) -> oxide_compiler::module::CompiledModule {
     compiler.compile(&program).expect("compile failed")
 }
 
+fn compile_source_err(source: &str) -> String {
+    let allocator = Allocator::default();
+    let program = oxide_parser::parse(&allocator, source).expect("parse failed");
+    let compiler = Compiler::new();
+    match compiler.compile(&program) {
+        Ok(_) => panic!("compile should fail"),
+        Err(err) => err,
+    }
+}
+
 #[test]
 fn compile_simple_expr() {
     let module = compile_source("1 + 2");
@@ -18,6 +28,20 @@ fn compile_simple_expr() {
 
     let last = opcode::opcode(*module.bytecode.last().unwrap());
     assert_eq!(last, OpCode::HALT);
+}
+
+#[test]
+fn unsupported_logical_assignment_returns_compile_error() {
+    let err = compile_source_err("let x = 0; x ||= 1;");
+    assert!(err.contains("compound assignment operator"));
+    assert!(err.contains("not supported"));
+}
+
+#[test]
+fn unsupported_member_logical_assignment_returns_compile_error() {
+    let err = compile_source_err("let obj = { x: 0 }; obj.x ||= 1;");
+    assert!(err.contains("compound assignment operator"));
+    assert!(err.contains("not supported"));
 }
 
 #[test]

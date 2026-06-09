@@ -908,7 +908,9 @@ impl Compiler {
                             AssignmentOperator::Division => OpCode::COMPOUND_MEMBER_DIV,
                             AssignmentOperator::Remainder => OpCode::COMPOUND_MEMBER_MOD,
                             AssignmentOperator::Exponential => OpCode::COMPOUND_MEMBER_EXP,
-                            _ => unreachable!(),
+                            _ => {
+                                return Err(format!("compound assignment operator {:?} not supported", assign.operator))
+                            }
                         };
                         ctx.emit(opcode::encode(op, obj_reg, val_reg, key_reg));
                         ctx.emit(0);
@@ -947,7 +949,12 @@ impl Compiler {
                                 AssignmentOperator::Division => OpCode::COMPOUND_DIV,
                                 AssignmentOperator::Remainder => OpCode::COMPOUND_MOD,
                                 AssignmentOperator::Exponential => OpCode::COMPOUND_EXP,
-                                _ => unreachable!(),
+                                _ => {
+                                    return Err(format!(
+                                        "compound assignment operator {:?} not supported",
+                                        assign.operator
+                                    ))
+                                }
                             };
                             ctx.emit(opcode::encode(op, var_reg, rhs, 0));
                             Ok(var_reg)
