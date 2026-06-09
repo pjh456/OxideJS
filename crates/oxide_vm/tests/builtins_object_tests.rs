@@ -118,7 +118,25 @@ fn object_get_prototype_of() {
 #[test]
 fn object_has_own_true() {
     let (_vm, result) = eval("Object.hasOwn({a:1}, 'a')").unwrap();
-    assert!(result.is_bool());
+    assert_eq!(result, JsValue::bool(true));
+}
+
+#[test]
+fn object_has_own_false_for_inherited_property() {
+    let (_vm, result) = eval("Object.hasOwn({}, 'toString')").unwrap();
+    assert_eq!(result, JsValue::bool(false));
+}
+
+#[test]
+fn object_proto_has_own_property_call_works() {
+    let (_vm, result) = eval("Object.prototype.hasOwnProperty.call(Object, 'assign')").unwrap();
+    assert_eq!(result, JsValue::bool(true));
+}
+
+#[test]
+fn object_proto_property_is_enumerable_call_works() {
+    let (_vm, result) = eval("Object.prototype.propertyIsEnumerable.call(Object, 'assign')").unwrap();
+    assert_eq!(result, JsValue::bool(true));
 }
 
 #[test]

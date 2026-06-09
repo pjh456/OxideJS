@@ -58,6 +58,8 @@ pub struct ObjectMethods {
     pub has_own: *const (),
     pub entries: *const (),
     pub values: *const (),
+    pub has_own_property: *const (),
+    pub property_is_enumerable: *const (),
 }
 
 pub struct ArrayMethods {
@@ -407,6 +409,17 @@ impl BuiltinWorld {
             ("hasOwn", methods.has_own, 2),
             ("entries", methods.entries, 1),
             ("values", methods.values, 1),
+        );
+
+        let proto_ptr = P::as_ptr(&self.object_proto) as *mut JsObject;
+        let proto = unsafe { &mut *proto_ptr };
+        bind_methods!(
+            self,
+            proto,
+            string_forge,
+            shape_forge,
+            ("hasOwnProperty", methods.has_own_property, 1),
+            ("propertyIsEnumerable", methods.property_is_enumerable, 1),
         );
     }
 

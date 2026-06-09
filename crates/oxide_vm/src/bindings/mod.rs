@@ -87,7 +87,7 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_set::bind_set(kernel, global);
     bind_map::bind_map(kernel, global);
     bind_boolean::bind_boolean(kernel, global);
-    bind_function::bind_function(kernel);
+    bind_function::bind_function(kernel, global);
     bind_regexp::bind_regexp(kernel, global);
     bind_symbol::bind_symbol(kernel, global);
 

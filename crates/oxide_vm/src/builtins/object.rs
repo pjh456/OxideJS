@@ -447,12 +447,49 @@ pub fn object_has_own(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if args.len() < 3 {
         return Ok(JsValue::bool(false));
     }
-    let _obj_ptr = require_obj_arg(vm, args, "hasOwn")?;
-    let key_val = vm.reg(args[2]);
-    if !key_val.is_string() {
+    let obj_ptr = require_obj_arg(vm, args, "hasOwn")?;
+    let key_si = vm.property_key_si(vm.reg(args[2]));
+    let obj = unsafe { &*obj_ptr };
+    Ok(JsValue::bool(vm.get_own_property_slot(obj, key_si).is_some()))
+}
+
+pub fn object_proto_has_own_property(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    if args.len() < 2 {
         return Ok(JsValue::bool(false));
     }
-    Ok(JsValue::bool(false))
+    let this_val = vm.reg(args[0]);
+    if !this_val.is_object() || this_val.as_js_object_ptr().is_null() {
+        return Err(crate::builtins::error::create_type_error(
+            vm,
+            "Object.prototype.hasOwnProperty called on non-object",
+        ));
+    }
+    let key_si = vm.property_key_si(vm.reg(args[1]));
+    let obj = unsafe { &*this_val.as_js_object_ptr() };
+    Ok(JsValue::bool(vm.get_own_property_slot(obj, key_si).is_some()))
+}
+
+pub fn object_proto_property_is_enumerable(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    if args.len() < 2 {
+        return Ok(JsValue::bool(false));
+    }
+    let this_val = vm.reg(args[0]);
+    if !this_val.is_object() || this_val.as_js_object_ptr().is_null() {
+        return Err(crate::builtins::error::create_type_error(
+            vm,
+            "Object.prototype.propertyIsEnumerable called on non-object",
+        ));
+    }
+    let key_si = vm.property_key_si(vm.reg(args[1]));
+    let obj = unsafe { &*this_val.as_js_object_ptr() };
+    let Some(pos) = vm.get_own_property_slot(obj, key_si) else {
+        return Ok(JsValue::bool(false));
+    };
+    let enumerable = obj
+        .prop_meta_at(pos)
+        .map(|meta| meta.attributes.enumerable())
+        .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable());
+    Ok(JsValue::bool(enumerable))
 }
 
 pub fn object_entries(vm: &mut Vm, args: &[u8]) -> NativeResult {

@@ -31,6 +31,25 @@ fn function_bind_creates_wrapper() {
 }
 
 #[test]
+fn function_constructor_is_global() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "typeof Function").unwrap();
+    let rendered = vm.kernel().string_forge().lookup(result.as_string_index()).unwrap_or_default();
+    assert_eq!(rendered, "function");
+}
+
+#[test]
+fn function_call_bind_supports_uncurried_native_methods() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var __push = Function.prototype.call.bind(Array.prototype.push); var a = []; __push(a, 'x'); a.length",
+    )
+    .unwrap();
+    assert_eq!(result, JsValue::int(1));
+}
+
+#[test]
 fn function_call_invokes_bytecode_function() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "function add(a, b) { return a + b; } add.call(null, 2, 3)").unwrap();

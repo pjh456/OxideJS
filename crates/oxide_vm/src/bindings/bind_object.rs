@@ -26,6 +26,8 @@ pub fn bind_object(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
         has_own: crate::builtins::object::object_has_own as *const (),
         entries: crate::builtins::object::object_entries as *const (),
         values: crate::builtins::object::object_values as *const (),
+        has_own_property: crate::builtins::object::object_proto_has_own_property as *const (),
+        property_is_enumerable: crate::builtins::object::object_proto_property_is_enumerable as *const (),
     };
     kernel
         .builtin_world()
