@@ -72,6 +72,7 @@ pub(crate) struct CompileCtx {
     pub(crate) enclosing_this_reg: u8,
     pub(crate) in_derived_constructor: bool,
     pub(crate) in_instance_method: bool,
+    pub(crate) in_static_method: bool,
 }
 
 impl CompileCtx {
@@ -93,6 +94,7 @@ impl CompileCtx {
             enclosing_this_reg: 254, // conventional this register at top level
             in_derived_constructor: false,
             in_instance_method: false,
+            in_static_method: false,
         }
     }
 
@@ -303,6 +305,7 @@ impl Compiler {
         ctx.enclosing_this_reg = parent_ctx.enclosing_this_reg;
         ctx.in_derived_constructor = parent_ctx.in_derived_constructor;
         ctx.in_instance_method = parent_ctx.in_instance_method;
+        ctx.in_static_method = parent_ctx.in_static_method;
 
         // Inherit parent's global scope entries so previously-declared function names
         // are visible from within the body.

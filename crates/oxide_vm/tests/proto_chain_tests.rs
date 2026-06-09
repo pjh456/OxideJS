@@ -170,6 +170,15 @@ fn derived_class_instanceof_parent() {
     );
 }
 
+#[test]
+fn derived_constructor_inherits_parent_constructor_chain() {
+    assert_bool!(
+        eval("class A {} class B extends A {} Object.getPrototypeOf(B) === A"),
+        true,
+        "derived constructor __proto__ parent"
+    );
+}
+
 // -- instanceof for native types should NOT respond to their own false positives --
 #[test]
 fn number_not_instanceof_array() {

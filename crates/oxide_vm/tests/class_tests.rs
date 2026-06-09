@@ -113,3 +113,39 @@ fn derived_method_super_call_uses_current_receiver() {
     .unwrap();
     assert_num(result, 3.0);
 }
+
+#[test]
+fn static_method_is_callable_on_constructor() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "class A { static m(){ return 1 } } A.m()").unwrap();
+    assert_eq!(result.as_int(), 1);
+}
+
+#[test]
+fn static_and_instance_methods_do_not_collide() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class A { m(){ return 1 } static m(){ return 2 } } let a = new A(); a.m() + A.m()",
+    )
+    .unwrap();
+    assert_num(result, 3.0);
+}
+
+#[test]
+fn derived_static_method_super_call_resolves_parent_constructor() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class A { static m(){ return 1 } } class B extends A { static n(){ return super.m() + 1 } } B.n()",
+    )
+    .unwrap();
+    assert_num(result, 2.0);
+}
+
+#[test]
+fn inherited_static_method_is_found_on_constructor_chain() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "class A { static m(){ return 4 } } class B extends A {} B.m()").unwrap();
+    assert_eq!(result.as_int(), 4);
+}

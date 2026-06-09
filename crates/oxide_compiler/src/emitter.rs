@@ -21,6 +21,7 @@ impl Compiler {
     fn emit_class(&self, class: &Class, ctx: &mut CompileCtx) -> Result<u8, String> {
         let mut constructor_method = None;
         let mut instance_methods = Vec::new();
+        let mut static_methods = Vec::new();
         let is_derived = class.super_class.is_some();
 
         for element in &class.body.body {
@@ -28,9 +29,6 @@ impl Compiler {
                 return Err("class fields/accessors/static blocks not yet supported".into());
             };
             let method = method.as_ref();
-            if method.r#static {
-                return Err("static methods not yet supported".into());
-            }
             if method.computed {
                 return Err("computed class methods not yet supported".into());
             }
@@ -44,7 +42,11 @@ impl Compiler {
                 }
                 MethodDefinitionKind::Method => {
                     let name = self.class_property_name(&method.key)?;
-                    instance_methods.push((method, name));
+                    if method.r#static {
+                        static_methods.push((method, name));
+                    } else {
+                        instance_methods.push((method, name));
+                    }
                 }
                 MethodDefinitionKind::Get | MethodDefinitionKind::Set => {
                     return Err("getters/setters not yet supported".into());
@@ -124,6 +126,28 @@ impl Compiler {
             let key_reg = ctx.alloc_reg();
             ctx.emit_load_const(key_reg, key_idx);
             ctx.emit(opcode::encode(OpCode::SET_PROP, proto_reg, method_reg, key_reg));
+        }
+
+        for (method, method_name) in static_methods {
+            let (param_names, body_stmts) = self.extract_function_parts(method.value.as_ref())?;
+            let saved_static = ctx.in_static_method;
+            ctx.in_static_method = true;
+            let mut method_module =
+                self.compile_function_body_with_bindings(&param_names, body_stmts, ctx, false, &self_binding)?;
+            ctx.in_static_method = saved_static;
+            method_module.function_name = Some(method_name.clone());
+            method_module.needs_home_object = true;
+            ctx.sub_modules.push(method_module);
+
+            let method_idx = ctx.add_constant(Constant::BytecodeFunc(ctx.sub_modules.len() as u32));
+            let method_reg = ctx.alloc_reg();
+            ctx.emit_load_const(method_reg, method_idx);
+            ctx.emit(opcode::encode(OpCode::SET_HOME_OBJECT, method_reg, ctor_reg, 0));
+
+            let key_idx = ctx.add_constant(Constant::String(method_name));
+            let key_reg = ctx.alloc_reg();
+            ctx.emit_load_const(key_reg, key_idx);
+            ctx.emit(opcode::encode(OpCode::SET_PROP, ctor_reg, method_reg, key_reg));
         }
 
         let ctor_key_idx = ctx.add_constant(Constant::String("constructor".to_string()));
@@ -789,7 +813,7 @@ impl Compiler {
             }
             Expression::StaticMemberExpression(member) => {
                 if matches!(&member.object, Expression::Super(_)) {
-                    if !ctx.in_instance_method && !ctx.in_derived_constructor {
+                    if !ctx.in_instance_method && !ctx.in_static_method && !ctx.in_derived_constructor {
                         return Err("super property only supported in class methods".into());
                     }
                     let prop_name = member.property.name.as_str();
@@ -799,7 +823,12 @@ impl Compiler {
                     let this_reg = ctx.alloc_reg();
                     ctx.emit(opcode::encode(OpCode::LOAD_VAR, this_reg, 254, 0));
                     let result_reg = ctx.alloc_reg();
-                    ctx.emit(opcode::encode(OpCode::SUPER_GET_PROP, result_reg, this_reg, key_reg));
+                    let op = if ctx.in_static_method {
+                        OpCode::SUPER_STATIC_GET_PROP
+                    } else {
+                        OpCode::SUPER_GET_PROP
+                    };
+                    ctx.emit(opcode::encode(op, result_reg, this_reg, key_reg));
                     return Ok(result_reg);
                 }
                 let obj_reg = self.emit_expression(&member.object, ctx)?;
@@ -1220,10 +1249,15 @@ impl Compiler {
                         ctx.emit_load_const(key_reg, idx);
                         let callee_reg = ctx.alloc_reg();
                         if is_super_member {
-                            if !ctx.in_instance_method && !ctx.in_derived_constructor {
+                            if !ctx.in_instance_method && !ctx.in_static_method && !ctx.in_derived_constructor {
                                 return Err("super property only supported in class methods".into());
                             }
-                            ctx.emit(opcode::encode(OpCode::SUPER_GET_PROP, callee_reg, obj_reg, key_reg));
+                            let op = if ctx.in_static_method {
+                                OpCode::SUPER_STATIC_GET_PROP
+                            } else {
+                                OpCode::SUPER_GET_PROP
+                            };
+                            ctx.emit(opcode::encode(op, callee_reg, obj_reg, key_reg));
                         } else {
                             ctx.emit(opcode::encode(OpCode::LOAD_VAR, callee_reg, obj_reg, 0));
                             ctx.emit(opcode::encode(OpCode::IC_GET_PROP, 0, callee_reg, key_reg));
