@@ -118,6 +118,8 @@ struct HarnessSources {
     sources: HashMap<&'static str, &'static str>,
 }
 
+type HarnessPrefixCache = HashMap<Vec<String>, String>;
+
 impl HarnessSources {
     fn new() -> Self {
         let mut sources = HashMap::new();
@@ -197,16 +199,20 @@ fn append_source_chunk(out: &mut String, name: &str, source: &str) {
     out.push('\n');
 }
 
-fn build_test_source(meta: &TestMeta, source: &str, harness: &HarnessSources) -> Result<String, String> {
-    let mut full_source = String::new();
-    append_source_chunk(&mut full_source, "Test262Error prelude", test262_error_prelude());
+fn harness_key(meta: &TestMeta) -> Vec<String> {
+    meta.includes.clone()
+}
+
+fn build_harness_source(meta: &TestMeta, harness: &HarnessSources) -> Result<String, String> {
+    let mut source = String::new();
+    append_source_chunk(&mut source, "Test262Error prelude", test262_error_prelude());
     append_source_chunk(
-        &mut full_source,
+        &mut source,
         "sta.js",
         harness.get("sta.js").ok_or_else(|| String::from("unknown harness: sta.js"))?,
     );
     append_source_chunk(
-        &mut full_source,
+        &mut source,
         "assert.js",
         harness
             .get("assert.js")
@@ -217,10 +223,22 @@ fn build_test_source(meta: &TestMeta, source: &str, harness: &HarnessSources) ->
             return Err(format!("out-of-scope harness: {include}"));
         }
         let include_source = harness.get(include).ok_or_else(|| format!("unknown harness: {include}"))?;
-        append_source_chunk(&mut full_source, include, include_source);
+        append_source_chunk(&mut source, include, include_source);
     }
-    append_source_chunk(&mut full_source, "test source", strip_meta(source));
-    Ok(full_source)
+    Ok(source)
+}
+
+fn get_harness_prefix(
+    meta: &TestMeta, harness: &HarnessSources, cache: &mut HarnessPrefixCache,
+) -> Result<String, String> {
+    let key = harness_key(meta);
+    if let Some(prefix) = cache.get(&key) {
+        return Ok(prefix.clone());
+    }
+
+    let source = build_harness_source(meta, harness)?;
+    cache.insert(key, source.clone());
+    Ok(source)
 }
 
 impl RunConfig {
@@ -332,12 +350,13 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
 }
 
 fn run_test(
-    path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<OxideKernel>, harness: &HarnessSources, no_skip: bool,
+    path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<OxideKernel>, harness: &HarnessSources,
+    harness_cache: &mut HarnessPrefixCache, no_skip: bool,
 ) -> TestResult {
     let start = std::time::Instant::now();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_test_inner(path, source, meta, kernel, harness, no_skip)
+        run_test_inner(path, source, meta, kernel, harness, harness_cache, no_skip)
     }));
 
     match result {
@@ -350,12 +369,17 @@ fn run_test(
 }
 
 fn run_test_inner(
-    path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<OxideKernel>, harness: &HarnessSources, no_skip: bool,
+    path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<OxideKernel>, harness: &HarnessSources,
+    harness_cache: &mut HarnessPrefixCache, no_skip: bool,
 ) -> TestResult {
     let start = std::time::Instant::now();
 
-    let code = match build_test_source(meta, source, harness) {
-        Ok(code) => code,
+    let code = match get_harness_prefix(meta, harness, harness_cache) {
+        Ok(prefix) => {
+            let mut code = prefix;
+            append_source_chunk(&mut code, "test source", strip_meta(source));
+            code
+        }
         Err(e) => {
             let dur = start.elapsed().as_millis() as u64;
             if no_skip {
@@ -578,6 +602,7 @@ fn run_tests() -> bool {
     let kernel = Arc::new(OxideKernel::new(KernelConfig::minimal()));
     init_kernel_builtins(&kernel);
     let harness_sources = HarnessSources::new();
+    let mut harness_cache = HarnessPrefixCache::new();
 
     let mut stats = RunStats::default();
     let mut results: Vec<TestResult> = Vec::new();
@@ -638,7 +663,7 @@ fn run_tests() -> bool {
             }
         }
 
-        let result = run_test(path, &source, &meta, &kernel, &harness_sources, config.no_skip);
+        let result = run_test(path, &source, &meta, &kernel, &harness_sources, &mut harness_cache, config.no_skip);
         match &result.outcome {
             TestOutcome::Pass(_) => stats.pass += 1,
             TestOutcome::Fail(msg) => {
