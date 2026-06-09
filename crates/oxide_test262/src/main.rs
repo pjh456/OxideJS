@@ -108,6 +108,48 @@ struct RunStats {
     fail_categories: HashMap<String, usize>,
 }
 
+#[derive(Debug, Default)]
+struct RunConfig {
+    test262_root: Option<PathBuf>,
+    filter: Option<String>,
+    no_skip: bool,
+}
+
+impl RunConfig {
+    fn parse(args: &[String]) -> Result<Self, String> {
+        let mut config = Self::default();
+        let mut positional = Vec::new();
+
+        for arg in args.iter().skip(1) {
+            match arg.as_str() {
+                "--no-skip" => config.no_skip = true,
+                "--help" | "-h" => return Err(Self::usage()),
+                _ if arg.starts_with("--") => return Err(format!("unknown option: {arg}\n\n{}", Self::usage())),
+                _ => positional.push(arg.clone()),
+            }
+        }
+
+        if let Some(root) = positional.first() {
+            config.test262_root = Some(PathBuf::from(root));
+        }
+        if let Some(filter) = positional.get(1) {
+            config.filter = Some(filter.clone());
+        }
+        if positional.len() > 2 {
+            return Err(format!("too many positional arguments\n\n{}", Self::usage()));
+        }
+
+        Ok(config)
+    }
+
+    fn usage() -> String {
+        "usage: test262-runner [--no-skip] [test262-root] [path-filter]\n\
+         \n\
+         --no-skip  Run capability-excluded tests and count unsupported compile/runtime results as failures."
+            .into()
+    }
+}
+
 fn is_skipped(meta: &TestMeta) -> Option<String> {
     for flag in &meta.flags {
         match flag.as_str() {
@@ -202,11 +244,12 @@ Test262Error.prototype.constructor = Test262Error;
 
 fn run_test(
     path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<OxideKernel>, harness_module: &CompiledModule,
+    no_skip: bool,
 ) -> TestResult {
     let start = std::time::Instant::now();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_test_inner(path, source, meta, kernel, harness_module)
+        run_test_inner(path, source, meta, kernel, harness_module, no_skip)
     }));
 
     match result {
@@ -220,6 +263,7 @@ fn run_test(
 
 fn run_test_inner(
     path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<OxideKernel>, harness_module: &CompiledModule,
+    no_skip: bool,
 ) -> TestResult {
     let start = std::time::Instant::now();
 
@@ -259,6 +303,9 @@ fn run_test_inner(
                 || e.contains("before initialization")
                 || e.contains("parser panicked")
             {
+                if no_skip {
+                    return TestResult::fail(path.to_path_buf(), dur, msg);
+                }
                 return TestResult::skip(path.to_path_buf(), msg);
             }
             return TestResult::fail(path.to_path_buf(), dur, msg);
@@ -268,8 +315,12 @@ fn run_test_inner(
     let mut vm = Vm::with_kernel(Arc::clone(kernel));
 
     if let Err(e) = vm.run(harness_module) {
-        let _dur = start.elapsed().as_millis() as u64;
-        return TestResult::skip(path.to_path_buf(), format!("harness injection failed: {e}"));
+        let dur = start.elapsed().as_millis() as u64;
+        let msg = format!("harness injection failed: {e}");
+        if no_skip {
+            return TestResult::fail(path.to_path_buf(), dur, msg);
+        }
+        return TestResult::skip(path.to_path_buf(), msg);
     }
 
     match vm.run(&module) {
@@ -309,6 +360,9 @@ fn run_test_inner(
                 || e.contains("NEW_EXPRESSION")
                 || e.contains("RangeError")
             {
+                if no_skip {
+                    return TestResult::fail(path.to_path_buf(), dur, format!("vm error: {e}"));
+                }
                 TestResult::skip(path.to_path_buf(), format!("vm: {e}"))
             } else {
                 TestResult::fail(path.to_path_buf(), dur, format!("vm error: {e}"))
@@ -386,9 +440,16 @@ fn main() {
 
 fn run_tests() -> bool {
     let args: Vec<String> = std::env::args().collect();
+    let config = match RunConfig::parse(&args) {
+        Ok(config) => config,
+        Err(msg) => {
+            eprintln!("{msg}");
+            return false;
+        }
+    };
 
-    let test262_root = if args.len() > 1 {
-        PathBuf::from(&args[1])
+    let test262_root = if let Some(root) = config.test262_root.clone() {
+        root
     } else {
         let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         p.pop();
@@ -410,9 +471,12 @@ fn run_tests() -> bool {
         std::process::exit(1);
     }
 
-    let filter = if args.len() > 2 { Some(args[2].clone()) } else { None };
+    let filter = config.filter.clone();
 
     eprintln!("discovering tests in: {}", test262_root.display());
+    if config.no_skip {
+        eprintln!("no-skip mode: capability filters disabled; unsupported results count as failures");
+    }
     let paths = discover_tests(&test262_root);
     eprintln!("found {} test files", paths.len());
 
@@ -478,13 +542,15 @@ fn run_tests() -> bool {
             continue;
         }
 
-        if let Some(reason) = is_skipped(&meta) {
-            results.push(TestResult::skip(path.clone(), reason));
-            stats.skip += 1;
-            continue;
+        if !config.no_skip {
+            if let Some(reason) = is_skipped(&meta) {
+                results.push(TestResult::skip(path.clone(), reason));
+                stats.skip += 1;
+                continue;
+            }
         }
 
-        let result = run_test(path, &source, &meta, &kernel, &harness_module);
+        let result = run_test(path, &source, &meta, &kernel, &harness_module, config.no_skip);
         match &result.outcome {
             TestOutcome::Pass(_) => stats.pass += 1,
             TestOutcome::Fail(msg) => {
