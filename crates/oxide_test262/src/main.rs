@@ -114,15 +114,13 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
             "module" => return Some("module tests excluded".into()),
             "async" => return Some("async tests excluded".into()),
             "raw" => return Some("raw tests excluded".into()),
-            "onlyStrict" => return Some("strict-only excluded".into()),
             _ => {}
         }
     }
 
+    // Keep broad implemented feature tags runnable; exclude only unsupported subfeatures.
     let excluded_features = [
         "Proxy",
-        "Symbol",
-        "Symbol.match",
         "BigInt",
         "generators",
         "generator",
@@ -130,11 +128,8 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
         "default-parameters",
         "destructuring-binding",
         "destructuring",
-        "arrow-function",
         "rest-parameters",
         "spread",
-        "class",
-        "super",
         "WeakMap",
         "WeakSet",
         "WeakRef",
@@ -161,6 +156,13 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
         "well-formed-json-stringify",
         "optional-chaining",
         "symbols-as-weakmap-keys",
+        "class-fields-public",
+        "class-fields-private",
+        "class-static-block",
+        "class-methods-private",
+        "class-accessors-private",
+        "class-fields-public-static",
+        "class-fields-private-static",
     ];
 
     for feat in &meta.features {
@@ -245,6 +247,7 @@ fn run_test_inner(
                 return TestResult::pass(path.to_path_buf(), dur, msg);
             }
             if e.contains("not yet implemented")
+                || e.contains("not yet supported")
                 || e.contains("not supported")
                 || e.contains("unsupported")
                 || e.contains("is not defined")
@@ -298,6 +301,7 @@ fn run_test_inner(
                 }
                 TestResult::fail(path.to_path_buf(), dur, format!("expected {} error, got: {e}", neg.error_type))
             } else if e.contains("not yet implemented")
+                || e.contains("not yet supported")
                 || e.contains("not supported")
                 || e.contains("unsupported")
                 || e.contains("step limit")
@@ -329,6 +333,8 @@ fn categorize_fail(msg: &str) -> String {
             "compile: already declared".into()
         } else if reason.contains("not yet implemented") {
             "compile: not yet implemented".into()
+        } else if reason.contains("not yet supported") {
+            "compile: not yet supported".into()
         } else if reason.contains("unsupported") {
             "compile: unsupported".into()
         } else if reason.contains("is not defined") {
