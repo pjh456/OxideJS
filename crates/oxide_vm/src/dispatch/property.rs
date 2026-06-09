@@ -27,7 +27,8 @@ impl Vm {
                 let proto_ptr = self.kernel.builtin_world().string_proto.as_ptr() as *mut JsObject;
                 let proto = unsafe { &*proto_ptr };
                 let prop_name_si = self.property_key_si(self.regs[b]);
-                if let Some(resolved) = self.resolve_property(proto, prop_name_si) {
+                let resolved = self.ordinary_get(proto, prop_name_si, val)?;
+                if !resolved.is_undefined() {
                     self.regs[a] = resolved;
                     self.pc += 3;
                     return Ok(());
@@ -37,7 +38,8 @@ impl Vm {
                 let proto_ptr = self.kernel.builtin_world().number_proto.as_ptr() as *mut JsObject;
                 let proto = unsafe { &*proto_ptr };
                 let prop_name_si = self.property_key_si(self.regs[b]);
-                if let Some(resolved) = self.resolve_property(proto, prop_name_si) {
+                let resolved = self.ordinary_get(proto, prop_name_si, val)?;
+                if !resolved.is_undefined() {
                     self.regs[a] = resolved;
                     self.pc += 3;
                     return Ok(());
@@ -53,6 +55,10 @@ impl Vm {
         let ext1 = self.bytecode[self.pc + 1];
         let ext2 = self.bytecode[self.pc + 2];
         self.pc += 3;
+        if obj.has_prop_meta() {
+            self.regs[a] = self.ordinary_get(obj, prop_name_si, val)?;
+            return Ok(());
+        }
         let cached_shape_id = ext0 & 0x00FF_FFFF;
         let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
 
@@ -64,20 +70,19 @@ impl Vm {
                     self.write_ic_back(obj.shape_id(), ptr);
                     self.regs[a] = unsafe { *ptr };
                 } else {
-                    self.regs[a] = self.resolve_property(obj, prop_name_si).unwrap_or(JsValue::undefined());
+                    self.regs[a] = self.ordinary_get(obj, prop_name_si, val)?;
                 }
             } else {
-                self.regs[a] = self.resolve_property(obj, prop_name_si).unwrap_or(JsValue::undefined());
+                self.regs[a] = self.ordinary_get(obj, prop_name_si, val)?;
             }
-        } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
+        } else {
+            let resolved = self.ordinary_get(obj, prop_name_si, val)?;
             if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
                 if let Some(ptr) = obj.prop_ptr_at(pos) {
                     self.write_ic_back(obj.shape_id(), ptr);
                 }
             }
-            self.regs[a] = val;
-        } else {
-            self.regs[a] = JsValue::undefined();
+            self.regs[a] = resolved;
         }
 
         Ok(())
@@ -103,22 +108,28 @@ impl Vm {
         let ext1 = self.bytecode[self.pc + 1];
         let ext2 = self.bytecode[self.pc + 2];
         self.pc += 3;
+        let value = self.regs[a];
+        let receiver = self.regs[rd];
+        if obj.has_prop_meta() {
+            self.ordinary_set(obj, prop_name_si, value, receiver)?;
+            return Ok(());
+        }
         let cached_shape_id = ext0 & 0x00FF_FFFF;
         let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
 
         if cached_shape_id != 0 && cached_shape_id == obj.shape_id() && cached_ptr != 0 {
             unsafe {
-                *(cached_ptr as *mut JsValue) = self.regs[a];
+                *(cached_ptr as *mut JsValue) = value;
             }
         } else if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
-            obj.set_prop_at(pos, self.regs[a]);
+            obj.set_prop_at(pos, value);
             if let Some(ptr) = obj.prop_ptr_at(pos) {
                 self.write_ic_back(obj.shape_id(), ptr);
             }
         } else {
             let new_shape_id = self.kernel.shape_forge().make_shape(obj.shape_id(), prop_name_si);
             obj.set_shape_id(new_shape_id);
-            let new_pos = obj.push_prop(self.regs[a]);
+            let new_pos = obj.push_prop(value);
             obj.bump_generation();
             if let Some(ptr) = obj.prop_ptr_at(new_pos) {
                 self.write_ic_back(new_shape_id, ptr);
@@ -145,7 +156,7 @@ impl Vm {
         }
         let obj = unsafe { &*obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[b]);
-        self.regs[a] = self.resolve_property(obj, prop_name_si).unwrap_or(JsValue::undefined());
+        self.regs[a] = self.ordinary_get(obj, prop_name_si, self.regs[rd])?;
         Ok(())
     }
 
@@ -161,14 +172,7 @@ impl Vm {
             obj.set_proto(self.regs[a]).map_err(|e| e.to_string())?;
             return Ok(());
         }
-        if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
-            obj.set_prop_at(pos, self.regs[a]);
-        } else {
-            let new_shape_id = self.kernel.shape_forge().make_shape(obj.shape_id(), prop_name_si);
-            obj.set_shape_id(new_shape_id);
-            obj.push_prop(self.regs[a]);
-            obj.bump_generation();
-        }
+        self.ordinary_set(obj, prop_name_si, self.regs[a], self.regs[rd])?;
         Ok(())
     }
 
@@ -180,7 +184,7 @@ impl Vm {
         }
         let obj = unsafe { &*obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[a]);
-        self.regs[b] = self.resolve_property(obj, prop_name_si).unwrap_or(JsValue::undefined());
+        self.regs[b] = self.ordinary_get(obj, prop_name_si, self.regs[rd])?;
         Ok(())
     }
 
@@ -196,14 +200,7 @@ impl Vm {
             obj.set_proto(self.regs[b]).map_err(|e| e.to_string())?;
             return Ok(());
         }
-        if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
-            obj.set_prop_at(pos, self.regs[b]);
-        } else {
-            let new_shape_id = self.kernel.shape_forge().make_shape(obj.shape_id(), prop_name_si);
-            obj.set_shape_id(new_shape_id);
-            obj.push_prop(self.regs[b]);
-            obj.bump_generation();
-        }
+        self.ordinary_set(obj, prop_name_si, self.regs[b], self.regs[rd])?;
         Ok(())
     }
 

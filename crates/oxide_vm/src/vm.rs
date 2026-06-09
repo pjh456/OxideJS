@@ -427,63 +427,264 @@ impl Vm {
         None
     }
 
-    pub(crate) fn read_member_prop(&mut self, obj: &JsObject, prop_name_si: u32) -> JsValue {
+    pub(crate) fn get_own_property_slot(&self, obj: &JsObject, prop_name_si: u32) -> Option<u32> {
+        let length_si = self.kernel.string_forge().intern("length").0;
+        if obj.is_array() && prop_name_si == length_si {
+            return None;
+        }
+        self.kernel
+            .shape_forge()
+            .lookup_position(obj.shape_id(), prop_name_si)
+            .and_then(|pos| {
+                let val = obj.get_prop_at(pos);
+                if !val.is_undefined() || obj.prop_vec_len() > pos as usize {
+                    Some(pos)
+                } else {
+                    None
+                }
+            })
+    }
+
+    fn call_function_sync(&mut self, callee: JsValue, receiver: JsValue, args: &[JsValue]) -> Result<JsValue, String> {
+        if !callee.is_object() {
+            return Err("TypeError: accessor is not callable".into());
+        }
+        let callee_obj = unsafe { &*callee.as_js_object_ptr() };
+        if !callee_obj.is_function() {
+            return Err("TypeError: accessor is not callable".into());
+        }
+
+        if let Some(native_fn) = callee_obj.native_fn() {
+            let saved_regs = self.regs;
+            let saved_this = self.regs[254];
+            let saved_callee = self.regs[253];
+            self.regs[253] = receiver;
+            for (idx, arg) in args.iter().enumerate() {
+                self.regs[240 + idx] = *arg;
+            }
+            let mut arg_regs = [0u8; 17];
+            arg_regs[0] = 253;
+            for idx in 0..args.len().min(16) {
+                arg_regs[idx + 1] = 240 + idx as u8;
+            }
+            let func: NativeFn = unsafe { std::mem::transmute(native_fn) };
+            let result = func(self, &arg_regs[..args.len().min(16) + 1]);
+            self.regs = saved_regs;
+            self.regs[254] = saved_this;
+            self.regs[253] = saved_callee;
+            return result.map_err(|err| self.error_text(err));
+        }
+
+        if callee_obj.sub_module_index() == 0 {
+            return Err("TypeError: accessor is not callable".into());
+        }
+        let sub_idx = callee_obj.sub_module_index() as usize - 1;
+        if sub_idx >= self.sub_modules.len() {
+            return Err(format!(
+                "accessor sub_module_index {} out of bounds (max {})",
+                sub_idx,
+                self.sub_modules.len()
+            ));
+        }
+        if self.frames.len() >= self.kernel.config.max_call_depth {
+            return Err("RangeError: Maximum call stack size exceeded".into());
+        }
+
+        let saved_regs = self.regs;
+        let saved_pc = self.pc;
+        let saved_bytecode = std::mem::take(&mut self.bytecode);
+        let saved_constants = std::mem::take(&mut self.constants);
+        let saved_frames = std::mem::take(&mut self.frames);
+        let saved_bytecode_stack = std::mem::take(&mut self.saved_bytecode_stack);
+        let saved_constants_stack = std::mem::take(&mut self.saved_constants_stack);
+        let saved_active_reg_limit = self.active_reg_limit;
+        let saved_exception_value = self.exception_value.take();
+        let saved_pending_exception = self.pending_exception.take();
+        let saved_pending_error_kind = self.pending_error_kind.take();
+
+        let sub = self.sub_modules[sub_idx].clone();
+        let sub_param_base = sub.param_base as usize;
+        let sub_arg_count = sub.n_args as usize;
+        for i in 0..sub_arg_count {
+            self.regs[sub_param_base + i] = args.get(i).copied().unwrap_or(JsValue::undefined());
+        }
+        self.regs[254] = if sub.is_arrow { callee_obj.captured_this() } else { receiver };
+        self.regs[255] = JsValue::undefined();
+        self.bytecode = sub.bytecode;
+        let converted_constants = match self.convert_constants(&sub.constants) {
+            Ok(constants) => constants,
+            Err(err) => {
+                self.regs = saved_regs;
+                self.pc = saved_pc;
+                self.bytecode = saved_bytecode;
+                self.constants = saved_constants;
+                self.frames = saved_frames;
+                self.saved_bytecode_stack = saved_bytecode_stack;
+                self.saved_constants_stack = saved_constants_stack;
+                self.active_reg_limit = saved_active_reg_limit;
+                self.exception_value = saved_exception_value;
+                self.pending_exception = saved_pending_exception;
+                self.pending_error_kind = saved_pending_error_kind;
+                return Err(err);
+            }
+        };
+        self.constants = converted_constants;
+        for (name, reg) in &sub.builtin_reg_map {
+            let si = self.kernel.string_forge().intern(name.as_str()).0;
+            let global = self.kernel.global_object();
+            if let Some(pos) = self.kernel.shape_forge().lookup_position(global.shape_id(), si) {
+                self.regs[*reg as usize] = global.get_prop_at(pos);
+            }
+        }
+        self.active_reg_limit = sub.n_registers.max(1);
+        self.pc = 0;
+
+        let result = self.dispatch();
+
+        self.regs = saved_regs;
+        self.pc = saved_pc;
+        self.bytecode = saved_bytecode;
+        self.constants = saved_constants;
+        self.frames = saved_frames;
+        self.saved_bytecode_stack = saved_bytecode_stack;
+        self.saved_constants_stack = saved_constants_stack;
+        self.active_reg_limit = saved_active_reg_limit;
+        self.exception_value = saved_exception_value;
+        self.pending_exception = saved_pending_exception;
+        self.pending_error_kind = saved_pending_error_kind;
+
+        result
+    }
+
+    pub(crate) fn ordinary_get(
+        &mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue,
+    ) -> Result<JsValue, String> {
+        let length_si = self.kernel.string_forge().intern("length").0;
+        if obj.is_array() && prop_name_si == length_si {
+            return Ok(JsValue::int(obj.prop_count() as i32));
+        }
+        if let Some(pos) = self.get_own_property_slot(obj, prop_name_si) {
+            if let Some(meta) = obj.prop_meta_at(pos) {
+                if meta.is_accessor {
+                    return if meta.get.is_undefined() {
+                        Ok(JsValue::undefined())
+                    } else {
+                        self.call_function_sync(meta.get, receiver, &[])
+                    };
+                }
+            }
+            return Ok(obj.get_prop_at(pos));
+        }
+        let proto = obj.proto();
+        if proto.is_object() {
+            let proto_obj = unsafe { &*proto.as_js_object_ptr() };
+            return self.ordinary_get(proto_obj, prop_name_si, receiver);
+        }
+        Ok(JsValue::undefined())
+    }
+
+    fn inherited_property_meta(&self, obj: &JsObject, prop_name_si: u32) -> Option<oxide_types::object::PropMetaEntry> {
+        let mut proto = obj.proto();
+        while proto.is_object() {
+            let proto_obj = unsafe { &*proto.as_js_object_ptr() };
+            if let Some(pos) = self.get_own_property_slot(proto_obj, prop_name_si) {
+                return proto_obj.prop_meta_at(pos);
+            }
+            proto = proto_obj.proto();
+        }
+        None
+    }
+
+    pub(crate) fn ordinary_set(
+        &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue,
+    ) -> Result<(), String> {
+        if let Some(pos) = self.get_own_property_slot(obj, prop_name_si) {
+            if let Some(meta) = obj.prop_meta_at(pos) {
+                if meta.is_accessor {
+                    if meta.set.is_undefined() {
+                        return self.raise_type_error("property has no setter");
+                    }
+                    self.call_function_sync(meta.set, receiver, &[val])?;
+                    return Ok(());
+                }
+                if !meta.attributes.writable() {
+                    return self.raise_type_error("cannot assign to read-only property");
+                }
+            }
+            obj.set_prop_at(pos, val);
+            return Ok(());
+        }
+
+        if let Some(meta) = self.inherited_property_meta(obj, prop_name_si) {
+            if meta.is_accessor {
+                if meta.set.is_undefined() {
+                    return self.raise_type_error("property has no setter");
+                }
+                self.call_function_sync(meta.set, receiver, &[val])?;
+                return Ok(());
+            }
+            if !meta.attributes.writable() {
+                return self.raise_type_error("cannot assign to read-only property");
+            }
+        }
+
+        self.set_or_create_prop_value(obj, prop_name_si, val);
+        Ok(())
+    }
+
+    pub(crate) fn read_member_prop(
+        &mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue,
+    ) -> Result<JsValue, String> {
         let ext0 = self.bytecode[self.pc];
         let ext1 = self.bytecode[self.pc + 1];
         let ext2 = self.bytecode[self.pc + 2];
         self.pc += 3;
+        if obj.has_prop_meta() {
+            return self.ordinary_get(obj, prop_name_si, receiver);
+        }
         let cached_shape_id = ext0 & 0x00FF_FFFF;
         let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
 
-        if cached_shape_id != 0 && cached_shape_id == obj.shape_id() && cached_ptr != 0 {
+        let val = if cached_shape_id != 0 && cached_shape_id == obj.shape_id() && cached_ptr != 0 {
             unsafe { *(cached_ptr as *const JsValue) }
         } else if let Some(template) = self.kernel.prop_forge().get_template(obj.shape_id()) {
             if template.prop_name != prop_name_si {
-                self.resolve_property(obj, prop_name_si).unwrap_or(JsValue::undefined())
+                self.ordinary_get(obj, prop_name_si, receiver)?
             } else if let Some(ptr) = self.template_prop_ptr(obj, &template) {
                 self.write_ic_back(obj.shape_id(), ptr);
                 unsafe { *ptr }
             } else {
-                self.resolve_property(obj, prop_name_si).unwrap_or(JsValue::undefined())
+                self.ordinary_get(obj, prop_name_si, receiver)?
             }
-        } else if let Some(val) = self.resolve_property(obj, prop_name_si) {
+        } else {
+            let resolved = self.ordinary_get(obj, prop_name_si, receiver)?;
             if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
-                if let Some(ptr) = obj.prop_ptr_at(pos) {
-                    self.write_ic_back(obj.shape_id(), ptr);
+                if !obj.is_accessor_meta(pos) {
+                    if let Some(ptr) = obj.prop_ptr_at(pos) {
+                        self.write_ic_back(obj.shape_id(), ptr);
+                    }
                 }
             }
-            val
-        } else {
-            JsValue::undefined()
-        }
+            resolved
+        };
+        Ok(val)
     }
 
     pub(crate) fn set_member_prop(
-        &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue,
+        &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue,
     ) -> Result<(), String> {
         if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+            if obj.has_prop_meta() {
+                self.ordinary_set(obj, prop_name_si, val, receiver)?;
+                return Ok(());
+            }
             obj.set_prop_at(pos, val);
             // IC write-back: 3 extension words (shape_id + ptr_lo + ptr_hi)
             if let Some(ptr) = obj.prop_ptr_at(pos) {
                 self.write_ic_back(obj.shape_id(), ptr);
             }
         } else {
-            let new_shape_id = self.kernel.shape_forge().make_shape(obj.shape_id(), prop_name_si);
-            obj.set_shape_id(new_shape_id);
-            let new_pos = obj.push_prop(val);
-            obj.bump_generation();
-            if let Some(ptr) = obj.prop_ptr_at(new_pos) {
-                self.write_ic_back(new_shape_id, ptr);
-                self.kernel.prop_forge().upsert(
-                    new_shape_id,
-                    PropTemplate {
-                        shape_id: new_shape_id,
-                        prop_name: prop_name_si,
-                        position: new_pos,
-                        generation: obj.generation(),
-                    },
-                );
-            }
+            self.ordinary_set(obj, prop_name_si, val, receiver)?;
         }
         Ok(())
     }
@@ -1648,7 +1849,65 @@ impl Default for Vm {
 #[cfg(test)]
 mod tests {
     use super::{opcode, JsValue, TryHandler, Vm};
+    use crate::native::NativeResult;
     use oxide_compiler::module::{CompiledModule, Constant};
+    use oxide_types::object::{JsObject, PropAttributes};
+
+    fn native_return_7(_vm: &mut Vm, _args: &[u8]) -> NativeResult {
+        Ok(JsValue::int(7))
+    }
+
+    fn native_get_marker(vm: &mut Vm, args: &[u8]) -> NativeResult {
+        let this_val = vm.reg(args[0]);
+        if !this_val.is_object() {
+            return Ok(JsValue::undefined());
+        }
+        let marker_si = vm.kernel.string_forge().intern("marker").0;
+        let obj = unsafe { &*this_val.as_js_object_ptr() };
+        Ok(vm.resolve_property(obj, marker_si).unwrap_or(JsValue::undefined()))
+    }
+
+    fn native_set_marker(vm: &mut Vm, args: &[u8]) -> NativeResult {
+        let this_val = vm.reg(args[0]);
+        let value = vm.reg(args[1]);
+        if !this_val.is_object() {
+            return Ok(JsValue::undefined());
+        }
+        let marker_si = vm.kernel.string_forge().intern("marker").0;
+        let obj = unsafe { &mut *this_val.as_js_object_ptr() };
+        vm.set_or_create_prop_value(obj, marker_si, value);
+        Ok(JsValue::undefined())
+    }
+
+    fn native_function(vm: &mut Vm, f: crate::native::NativeFn) -> JsValue {
+        let proto = vm.kernel.builtin_world().function_proto.as_ptr() as *mut JsObject;
+        let mut obj = JsObject::new_empty(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
+        obj.set_function(true);
+        obj.set_native_fn(Some(f as *const ()));
+        JsValue::object(vm.epoch.alloc(obj) as *mut u8)
+    }
+
+    fn plain_object(vm: &mut Vm) -> JsValue {
+        let proto = vm.kernel.builtin_world().object_proto.as_ptr() as *mut JsObject;
+        let obj = JsObject::new_empty(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
+        JsValue::object(vm.epoch.alloc(obj) as *mut u8)
+    }
+
+    fn add_accessor(vm: &mut Vm, obj_val: JsValue, name: &str, get: JsValue, set: JsValue) {
+        let si = vm.kernel.string_forge().intern(name).0;
+        let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
+        let shape_id = vm.kernel.shape_forge().make_shape(obj.shape_id(), si);
+        obj.set_shape_id(shape_id);
+        let pos = obj.push_prop(JsValue::undefined());
+        obj.set_accessor_meta(pos, get, set, PropAttributes::DEFAULT_DATA);
+        obj.bump_generation();
+    }
+
+    fn set_data(vm: &mut Vm, obj_val: JsValue, name: &str, val: JsValue) {
+        let si = vm.kernel.string_forge().intern(name).0;
+        let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
+        vm.set_or_create_prop_value(obj, si, val);
+    }
 
     #[test]
     fn reset_clears_runtime_state_like_rerun() {
@@ -1783,5 +2042,110 @@ mod tests {
         let mut vm = Vm::new();
         let err = vm.run(&module).expect_err("unimplemented opcode should fail explicitly");
         assert_eq!(err, "opcode PROFILE_TYPE not yet implemented");
+    }
+
+    #[test]
+    fn ordinary_get_calls_own_native_getter() {
+        let mut vm = Vm::new();
+        let obj_val = plain_object(&mut vm);
+        let getter = native_function(&mut vm, native_return_7);
+        add_accessor(&mut vm, obj_val, "x", getter, JsValue::undefined());
+
+        let x_si = vm.kernel.string_forge().intern("x").0;
+        let obj = unsafe { &*obj_val.as_js_object_ptr() };
+        let value = vm.ordinary_get(obj, x_si, obj_val).expect("getter");
+        assert_eq!(value, JsValue::int(7));
+    }
+
+    #[test]
+    fn ordinary_set_calls_own_native_setter() {
+        let mut vm = Vm::new();
+        let obj_val = plain_object(&mut vm);
+        let setter = native_function(&mut vm, native_set_marker);
+        add_accessor(&mut vm, obj_val, "x", JsValue::undefined(), setter);
+
+        let x_si = vm.kernel.string_forge().intern("x").0;
+        let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
+        vm.ordinary_set(obj, x_si, JsValue::int(9), obj_val).expect("setter");
+
+        let marker_si = vm.kernel.string_forge().intern("marker").0;
+        let obj = unsafe { &*obj_val.as_js_object_ptr() };
+        assert_eq!(vm.resolve_property(obj, marker_si), Some(JsValue::int(9)));
+    }
+
+    #[test]
+    fn inherited_getter_uses_original_receiver() {
+        let mut vm = Vm::new();
+        let proto_val = plain_object(&mut vm);
+        let child_val = plain_object(&mut vm);
+        let getter = native_function(&mut vm, native_get_marker);
+        add_accessor(&mut vm, proto_val, "x", getter, JsValue::undefined());
+        set_data(&mut vm, child_val, "marker", JsValue::int(42));
+        unsafe {
+            (*child_val.as_js_object_ptr()).set_proto(proto_val).expect("proto");
+        }
+
+        let x_si = vm.kernel.string_forge().intern("x").0;
+        let child = unsafe { &*child_val.as_js_object_ptr() };
+        let value = vm.ordinary_get(child, x_si, child_val).expect("getter");
+        assert_eq!(value, JsValue::int(42));
+    }
+
+    #[test]
+    fn inherited_setter_uses_original_receiver() {
+        let mut vm = Vm::new();
+        let proto_val = plain_object(&mut vm);
+        let child_val = plain_object(&mut vm);
+        let setter = native_function(&mut vm, native_set_marker);
+        add_accessor(&mut vm, proto_val, "x", JsValue::undefined(), setter);
+        unsafe {
+            (*child_val.as_js_object_ptr()).set_proto(proto_val).expect("proto");
+        }
+
+        let x_si = vm.kernel.string_forge().intern("x").0;
+        let child = unsafe { &mut *child_val.as_js_object_ptr() };
+        vm.ordinary_set(child, x_si, JsValue::int(12), child_val).expect("setter");
+
+        let marker_si = vm.kernel.string_forge().intern("marker").0;
+        let child = unsafe { &*child_val.as_js_object_ptr() };
+        let proto = unsafe { &*proto_val.as_js_object_ptr() };
+        assert_eq!(vm.resolve_property(child, marker_si), Some(JsValue::int(12)));
+        assert_eq!(vm.resolve_property(proto, marker_si), None);
+    }
+
+    #[test]
+    fn deep_inherited_setter_uses_original_receiver() {
+        let mut vm = Vm::new();
+        let grand_proto_val = plain_object(&mut vm);
+        let proto_val = plain_object(&mut vm);
+        let child_val = plain_object(&mut vm);
+        let setter = native_function(&mut vm, native_set_marker);
+        add_accessor(&mut vm, grand_proto_val, "x", JsValue::undefined(), setter);
+        unsafe {
+            (*proto_val.as_js_object_ptr()).set_proto(grand_proto_val).expect("proto");
+            (*child_val.as_js_object_ptr()).set_proto(proto_val).expect("proto");
+        }
+
+        let x_si = vm.kernel.string_forge().intern("x").0;
+        let child = unsafe { &mut *child_val.as_js_object_ptr() };
+        vm.ordinary_set(child, x_si, JsValue::int(15), child_val).expect("setter");
+
+        let marker_si = vm.kernel.string_forge().intern("marker").0;
+        let child = unsafe { &*child_val.as_js_object_ptr() };
+        assert_eq!(vm.resolve_property(child, marker_si), Some(JsValue::int(15)));
+    }
+
+    #[test]
+    fn ordinary_data_property_still_reads_and_writes_without_meta() {
+        let mut vm = Vm::new();
+        let obj_val = plain_object(&mut vm);
+        set_data(&mut vm, obj_val, "x", JsValue::int(1));
+
+        let x_si = vm.kernel.string_forge().intern("x").0;
+        let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
+        assert!(!obj.has_prop_meta());
+        assert_eq!(vm.ordinary_get(obj, x_si, obj_val).expect("get"), JsValue::int(1));
+        vm.ordinary_set(obj, x_si, JsValue::int(2), obj_val).expect("set");
+        assert_eq!(vm.ordinary_get(obj, x_si, obj_val).expect("get"), JsValue::int(2));
     }
 }

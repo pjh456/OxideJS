@@ -2,6 +2,70 @@ use crate::value::JsValue;
 
 pub type ShapeId = u32;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PropAttributes(pub u8);
+
+impl PropAttributes {
+    pub const WRITABLE: u8 = 0b001;
+    pub const ENUMERABLE: u8 = 0b010;
+    pub const CONFIGURABLE: u8 = 0b100;
+    pub const DEFAULT_DATA: Self = Self(Self::WRITABLE | Self::ENUMERABLE | Self::CONFIGURABLE);
+
+    pub const fn new(writable: bool, enumerable: bool, configurable: bool) -> Self {
+        let mut bits = 0;
+        if writable {
+            bits |= Self::WRITABLE;
+        }
+        if enumerable {
+            bits |= Self::ENUMERABLE;
+        }
+        if configurable {
+            bits |= Self::CONFIGURABLE;
+        }
+        Self(bits)
+    }
+
+    pub const fn writable(self) -> bool {
+        self.0 & Self::WRITABLE != 0
+    }
+
+    pub const fn enumerable(self) -> bool {
+        self.0 & Self::ENUMERABLE != 0
+    }
+
+    pub const fn configurable(self) -> bool {
+        self.0 & Self::CONFIGURABLE != 0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PropMetaEntry {
+    pub attributes: PropAttributes,
+    pub get: JsValue,
+    pub set: JsValue,
+    pub is_accessor: bool,
+}
+
+impl PropMetaEntry {
+    pub fn data(attributes: PropAttributes) -> Self {
+        Self {
+            attributes,
+            get: JsValue::undefined(),
+            set: JsValue::undefined(),
+            is_accessor: false,
+        }
+    }
+
+    pub fn accessor(get: JsValue, set: JsValue, attributes: PropAttributes) -> Self {
+        Self {
+            attributes,
+            get,
+            set,
+            is_accessor: true,
+        }
+    }
+}
+
 pub trait PropIndex {
     fn to_u32(self) -> u32;
 }
@@ -48,6 +112,7 @@ impl PropIndex for i32 {
 ///     [31]     is_function
 ///   native_arg_count: u8 (1 byte + 3 pad)
 ///   hash_props: *mut u8 (8 bytes, points to Box<Vec<Box<JsValue>>>)
+///   prop_meta: *mut u8 (8 bytes, points to Box<Vec<Option<PropMetaEntry>>>)
 ///   proto: JsValue (8 bytes)
 ///   generation: u32 (4 bytes + 4 pad)
 ///   native_fn: u64 (8 bytes, 0 = None sentinel)
@@ -60,6 +125,7 @@ pub struct JsObject {
     native_arg_count: u8,
     _pad: [u8; 3],
     hash_props: *mut u8,
+    prop_meta: *mut u8,
     proto: JsValue,
     generation: u32,
     _pad2: [u8; 4],
@@ -77,6 +143,7 @@ impl JsObject {
             native_arg_count: 0,
             _pad: [0; 3],
             hash_props: std::ptr::null_mut(),
+            prop_meta: std::ptr::null_mut(),
             proto,
             generation: 1,
             _pad2: [0; 4],
@@ -94,6 +161,7 @@ impl JsObject {
             native_arg_count: 0,
             _pad: [0; 3],
             hash_props: std::ptr::null_mut(),
+            prop_meta: std::ptr::null_mut(),
             proto,
             generation: 1,
             _pad2: [0; 4],
@@ -129,15 +197,87 @@ impl JsObject {
 
     /// Sets the length of hash_props vec. Truncates or extends with undefined.
     pub fn set_prop_count(&mut self, count: impl PropIndex) {
-        let vec = self.ensure_hash_props();
         let target = count.to_u32() as usize;
-        if target < vec.len() {
-            vec.truncate(target);
-        } else {
-            while vec.len() < target {
-                vec.push(Box::new(JsValue::undefined()));
+        {
+            let vec = self.ensure_hash_props();
+            if target < vec.len() {
+                vec.truncate(target);
+            } else {
+                while vec.len() < target {
+                    vec.push(Box::new(JsValue::undefined()));
+                }
             }
         }
+        if let Some(meta) = self.prop_meta_vec_mut() {
+            if target < meta.len() {
+                meta.truncate(target);
+            } else {
+                while meta.len() < target {
+                    meta.push(None);
+                }
+            }
+        }
+    }
+
+    pub fn has_prop_meta(&self) -> bool {
+        !self.prop_meta.is_null()
+    }
+
+    pub fn ensure_prop_meta(&mut self) -> &mut Vec<Option<PropMetaEntry>> {
+        if self.prop_meta.is_null() {
+            let len = self.prop_vec_len();
+            let vec = Box::new(vec![None::<PropMetaEntry>; len]);
+            self.prop_meta = Box::into_raw(vec) as *mut u8;
+        }
+        unsafe { &mut *(self.prop_meta as *mut Vec<Option<PropMetaEntry>>) }
+    }
+
+    pub fn prop_meta_vec(&self) -> Option<&Vec<Option<PropMetaEntry>>> {
+        if self.prop_meta.is_null() {
+            None
+        } else {
+            unsafe { Some(&*(self.prop_meta as *const Vec<Option<PropMetaEntry>>)) }
+        }
+    }
+
+    fn prop_meta_vec_mut(&mut self) -> Option<&mut Vec<Option<PropMetaEntry>>> {
+        if self.prop_meta.is_null() {
+            None
+        } else {
+            unsafe { Some(&mut *(self.prop_meta as *mut Vec<Option<PropMetaEntry>>)) }
+        }
+    }
+
+    pub fn prop_meta_at(&self, position: impl PropIndex) -> Option<PropMetaEntry> {
+        let pos = position.to_u32() as usize;
+        self.prop_meta_vec().and_then(|vec| vec.get(pos).copied().flatten())
+    }
+
+    pub fn set_data_meta(&mut self, position: impl PropIndex, attributes: PropAttributes) {
+        self.set_meta_at(position, PropMetaEntry::data(attributes));
+    }
+
+    pub fn set_accessor_meta(
+        &mut self, position: impl PropIndex, get: JsValue, set: JsValue, attributes: PropAttributes,
+    ) {
+        self.set_meta_at(position, PropMetaEntry::accessor(get, set, attributes));
+    }
+
+    pub fn is_accessor_meta(&self, position: impl PropIndex) -> bool {
+        self.prop_meta_at(position).is_some_and(|entry| entry.is_accessor)
+    }
+
+    fn set_meta_at(&mut self, position: impl PropIndex, entry: PropMetaEntry) {
+        let pos = position.to_u32() as usize;
+        let prop_len = self.prop_vec_len();
+        if pos >= prop_len {
+            self.set_prop_count(pos + 1);
+        }
+        let meta = self.ensure_prop_meta();
+        while meta.len() <= pos {
+            meta.push(None);
+        }
+        meta[pos] = Some(entry);
     }
 
     pub fn is_array(&self) -> bool {
@@ -198,15 +338,22 @@ impl JsObject {
 
     /// Set property value at position index. Vec auto-grows if needed.
     pub fn set_prop_at(&mut self, position: impl PropIndex, val: JsValue) {
-        let vec = self.ensure_hash_props();
         let pos = position.to_u32() as usize;
-        if pos < vec.len() {
-            *vec[pos] = val;
-        } else {
-            while vec.len() < pos {
-                vec.push(Box::new(JsValue::undefined()));
+        {
+            let vec = self.ensure_hash_props();
+            if pos < vec.len() {
+                *vec[pos] = val;
+            } else {
+                while vec.len() < pos {
+                    vec.push(Box::new(JsValue::undefined()));
+                }
+                vec.push(Box::new(val));
             }
-            vec.push(Box::new(val));
+        }
+        if let Some(meta) = self.prop_meta_vec_mut() {
+            while meta.len() <= pos {
+                meta.push(None);
+            }
         }
     }
 
@@ -215,6 +362,9 @@ impl JsObject {
         let vec = self.ensure_hash_props();
         let pos = vec.len();
         vec.push(Box::new(val));
+        if let Some(meta) = self.prop_meta_vec_mut() {
+            meta.push(None);
+        }
         pos as u32
     }
 
@@ -381,6 +531,7 @@ mod tests {
         assert!(!obj.is_function());
         assert_eq!(obj.generation(), 1);
         assert!(obj.hash_props_vec().is_none());
+        assert!(!obj.has_prop_meta());
     }
 
     #[test]
@@ -451,5 +602,39 @@ mod tests {
         assert_eq!(ptr, ptr2);
         assert_eq!(obj.get_prop_at(0), JsValue::int(100));
         assert_eq!(obj.get_prop_at(1), JsValue::int(200));
+    }
+
+    #[test]
+    fn prop_meta_lazy_init() {
+        let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
+        obj.set_prop_at(0, JsValue::int(1));
+        assert!(!obj.has_prop_meta());
+
+        obj.set_data_meta(0, PropAttributes::new(false, true, false));
+        assert!(obj.has_prop_meta());
+        let meta = obj.prop_meta_at(0).expect("meta");
+        assert!(!meta.is_accessor);
+        assert!(!meta.attributes.writable());
+        assert!(meta.attributes.enumerable());
+        assert!(!meta.attributes.configurable());
+    }
+
+    #[test]
+    fn accessor_meta_roundtrip_and_alignment() {
+        let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
+        obj.set_prop_at(0, JsValue::int(1));
+        obj.set_accessor_meta(2, JsValue::int(10), JsValue::int(11), PropAttributes::new(false, false, true));
+
+        assert_eq!(obj.prop_count(), 3);
+        assert!(obj.is_accessor_meta(2));
+        let meta = obj.prop_meta_at(2).expect("accessor meta");
+        assert_eq!(meta.get, JsValue::int(10));
+        assert_eq!(meta.set, JsValue::int(11));
+        assert!(!meta.attributes.writable());
+        assert!(!meta.attributes.enumerable());
+        assert!(meta.attributes.configurable());
+
+        obj.push_prop(JsValue::int(4));
+        assert_eq!(obj.prop_meta_vec().expect("meta").len(), obj.prop_vec_len());
     }
 }

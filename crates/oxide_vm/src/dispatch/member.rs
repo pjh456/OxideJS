@@ -46,11 +46,12 @@ impl Vm {
         let Ok((obj_ptr, prop_name_si)) = self.member_target(rd, b, "MEMBER_INC on non-object") else {
             return Ok(());
         };
+        let receiver = self.regs[rd];
         let obj = unsafe { &mut *obj_ptr };
-        let prop_val = self.read_member_prop(obj, prop_name_si);
+        let prop_val = self.read_member_prop(obj, prop_name_si, receiver)?;
         let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
         let new_val = JsValue::float(n + 1.0);
-        self.set_member_prop(obj, prop_name_si, new_val)?;
+        self.set_member_prop(obj, prop_name_si, new_val, receiver)?;
         self.regs[a] = new_val;
         Ok(())
     }
@@ -59,11 +60,12 @@ impl Vm {
         let Ok((obj_ptr, prop_name_si)) = self.member_target(rd, b, "MEMBER_DEC on non-object") else {
             return Ok(());
         };
+        let receiver = self.regs[rd];
         let obj = unsafe { &mut *obj_ptr };
-        let prop_val = self.read_member_prop(obj, prop_name_si);
+        let prop_val = self.read_member_prop(obj, prop_name_si, receiver)?;
         let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
         let new_val = JsValue::float(n - 1.0);
-        self.set_member_prop(obj, prop_name_si, new_val)?;
+        self.set_member_prop(obj, prop_name_si, new_val, receiver)?;
         self.regs[a] = new_val;
         Ok(())
     }
@@ -74,12 +76,13 @@ impl Vm {
             self.raise_type_error("DYN_MEMBER_INC on non-object")?;
             return Ok(());
         }
+        let receiver = self.regs[rd];
         let obj = unsafe { &mut *obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[a]);
-        let prop_val = self.resolve_property(obj, prop_name_si).unwrap_or(JsValue::undefined());
+        let prop_val = self.ordinary_get(obj, prop_name_si, receiver)?;
         let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
         let new_val = JsValue::float(n + 1.0);
-        self.set_or_create_prop_value(obj, prop_name_si, new_val);
+        self.ordinary_set(obj, prop_name_si, new_val, receiver)?;
         self.regs[b] = new_val;
         Ok(())
     }
@@ -90,12 +93,13 @@ impl Vm {
             self.raise_type_error("DYN_MEMBER_DEC on non-object")?;
             return Ok(());
         }
+        let receiver = self.regs[rd];
         let obj = unsafe { &mut *obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[a]);
-        let prop_val = self.resolve_property(obj, prop_name_si).unwrap_or(JsValue::undefined());
+        let prop_val = self.ordinary_get(obj, prop_name_si, receiver)?;
         let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
         let new_val = JsValue::float(n - 1.0);
-        self.set_or_create_prop_value(obj, prop_name_si, new_val);
+        self.ordinary_set(obj, prop_name_si, new_val, receiver)?;
         self.regs[b] = new_val;
         Ok(())
     }
@@ -104,8 +108,9 @@ impl Vm {
         let Ok((obj_ptr, prop_name_si)) = self.member_target(rd, b, "COMPOUND_MEMBER_ADD on non-object") else {
             return Ok(());
         };
+        let receiver = self.regs[rd];
         let obj = unsafe { &mut *obj_ptr };
-        let prop_val = self.read_member_prop(obj, prop_name_si);
+        let prop_val = self.read_member_prop(obj, prop_name_si, receiver)?;
         let rhs = self.regs[a];
         let new_val = if prop_val.is_string() || rhs.is_string() {
             let ls = coercion::to_string(self.kernel.string_forge().as_ref(), prop_val);
@@ -116,7 +121,7 @@ impl Vm {
             let rn = coercion::to_number(rhs, self.kernel.string_forge().as_ref());
             JsValue::float(ln + rn)
         };
-        self.set_member_prop(obj, prop_name_si, new_val)?;
+        self.set_member_prop(obj, prop_name_si, new_val, receiver)?;
         self.regs[a] = new_val;
         Ok(())
     }
@@ -130,13 +135,14 @@ impl Vm {
         let Ok((obj_ptr, prop_name_si)) = self.member_target(rd, b, error_msg) else {
             return Ok(());
         };
+        let receiver = self.regs[rd];
         let obj = unsafe { &mut *obj_ptr };
-        let prop_val = self.read_member_prop(obj, prop_name_si);
+        let prop_val = self.read_member_prop(obj, prop_name_si, receiver)?;
         let ln = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
         let rn = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
         let new_val = JsValue::float(op(ln, rn));
         self.regs[a] = new_val;
-        self.set_member_prop(obj, prop_name_si, new_val)?;
+        self.set_member_prop(obj, prop_name_si, new_val, receiver)?;
         Ok(())
     }
 }
