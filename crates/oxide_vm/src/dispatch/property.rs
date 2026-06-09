@@ -98,6 +98,11 @@ impl Vm {
         let prop_name_si = self.property_key_si(self.regs[b]);
         if self.kernel.string_forge().lookup(prop_name_si).as_deref() == Some("__proto__") {
             let obj = unsafe { &mut *obj_ptr };
+            if self.is_object_prototype(obj_ptr) && !self.regs[a].is_null() {
+                self.raise_type_error("Object.prototype.__proto__ is immutable")?;
+                self.pc += 3;
+                return Ok(());
+            }
             obj.set_proto(self.regs[a]).map_err(|e| e.to_string())?;
             self.pc += 3;
             return Ok(());
@@ -171,6 +176,10 @@ impl Vm {
         let obj = unsafe { &mut *obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[b]);
         if self.kernel.string_forge().lookup(prop_name_si).as_deref() == Some("__proto__") {
+            if self.is_object_prototype(obj_ptr) && !self.regs[a].is_null() {
+                self.raise_type_error("Object.prototype.__proto__ is immutable")?;
+                return Ok(());
+            }
             obj.set_proto(self.regs[a]).map_err(|e| e.to_string())?;
             return Ok(());
         }
@@ -199,6 +208,10 @@ impl Vm {
         let obj = unsafe { &mut *obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[a]);
         if self.kernel.string_forge().lookup(prop_name_si).as_deref() == Some("__proto__") {
+            if self.is_object_prototype(obj_ptr) && !self.regs[b].is_null() {
+                self.raise_type_error("Object.prototype.__proto__ is immutable")?;
+                return Ok(());
+            }
             obj.set_proto(self.regs[b]).map_err(|e| e.to_string())?;
             return Ok(());
         }

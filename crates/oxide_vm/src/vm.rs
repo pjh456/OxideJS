@@ -198,6 +198,11 @@ impl Vm {
         &self.kernel
     }
 
+    pub(crate) fn is_object_prototype(&self, ptr: *const JsObject) -> bool {
+        let proto_ptr = self.kernel.builtin_world().object_proto.as_ptr();
+        std::ptr::eq(ptr, proto_ptr)
+    }
+
     pub fn reg(&self, idx: u8) -> JsValue {
         self.regs[idx as usize]
     }
