@@ -19,17 +19,23 @@ impl Vm {
     pub(crate) fn dispatch_native_call(
         &mut self, obj: &JsObject, callee: JsValue, this_reg: u8, first_arg_reg: u8, arg_count: usize,
     ) -> Result<(), String> {
+        if self.native_call_depth >= self.kernel.config.max_call_depth {
+            return Err("RangeError: Maximum call stack size exceeded".into());
+        }
         let (args_buf, len) = Self::build_native_args(first_arg_reg, arg_count, this_reg);
         let args_slice = &args_buf[..len];
 
         let func: NativeFn = unsafe { std::mem::transmute(obj.native_fn().unwrap()) };
         self.regs[254] = callee;
+        self.native_call_depth += 1;
         match func(self, args_slice) {
             Ok(val) => {
+                self.native_call_depth -= 1;
                 self.regs[0] = val;
                 Ok(())
             }
             Err(err_val) => {
+                self.native_call_depth -= 1;
                 let (error, kind) = if err_val.is_object() {
                     (err_val, self.thrown_error_kind(err_val))
                 } else {

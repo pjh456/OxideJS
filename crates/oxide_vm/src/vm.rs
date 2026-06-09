@@ -93,6 +93,7 @@ pub struct Vm {
     pub(crate) for_of_iters: Vec<*mut u8>,
     pub(crate) root_reg_limit: u8,
     pub(crate) active_reg_limit: u8,
+    pub(crate) native_call_depth: usize,
 }
 
 impl Vm {
@@ -141,6 +142,7 @@ impl Vm {
             for_of_iters: Vec::new(),
             root_reg_limit: 0,
             active_reg_limit: 0,
+            native_call_depth: 0,
         }
     }
 
@@ -171,6 +173,7 @@ impl Vm {
             for_of_iters: Vec::new(),
             root_reg_limit: 0,
             active_reg_limit: 0,
+            native_call_depth: 0,
         }
     }
 
@@ -227,6 +230,7 @@ impl Vm {
         self.exception_value = None;
         self.pending_exception = None;
         self.pending_error_kind = None;
+        self.native_call_depth = 0;
     }
 
     pub fn reset(&mut self) {
@@ -482,6 +486,9 @@ impl Vm {
         }
 
         if let Some(native_fn) = callee_obj.native_fn() {
+            if self.native_call_depth >= self.kernel.config.max_call_depth {
+                return Err("RangeError: Maximum call stack size exceeded".into());
+            }
             let saved_regs = self.regs;
             let saved_this = self.regs[254];
             let saved_callee = self.regs[253];
@@ -496,7 +503,9 @@ impl Vm {
                 arg_regs[idx + 1] = 240 + idx as u8;
             }
             let func: NativeFn = unsafe { std::mem::transmute(native_fn) };
+            self.native_call_depth += 1;
             let result = func(self, &arg_regs[..args.len().min(16) + 1]);
+            self.native_call_depth -= 1;
             self.regs = saved_regs;
             self.regs[254] = saved_this;
             self.regs[253] = saved_callee;
