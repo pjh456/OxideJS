@@ -599,7 +599,14 @@ fn run_tests() -> bool {
     let paths = discover_tests(&test262_root);
     eprintln!("found {} test files", paths.len());
 
-    let kernel = Arc::new(OxideKernel::new(KernelConfig::minimal()));
+    // Bound each test's execution so a single infinite-loop / unsupported-feature
+    // loop fails (or skips) instead of stalling the whole serial run. The VM already
+    // emits a "VM step limit exceeded" error on overrun, which the runner classifies
+    // as a step-limit result (skip by default, fail under --no-skip). Override only the
+    // runner's local config; KernelConfig::minimal() stays unbounded for other crates.
+    let mut kernel_config = KernelConfig::minimal();
+    kernel_config.max_steps = Some(50_000_000);
+    let kernel = Arc::new(OxideKernel::new(kernel_config));
     init_kernel_builtins(&kernel);
     let harness_sources = HarnessSources::new();
     let mut harness_cache = HarnessPrefixCache::new();
