@@ -571,6 +571,9 @@ fn build_runner_kernel() -> Arc<OxideKernel> {
     // runner's local config; KernelConfig::minimal() stays unbounded for other crates.
     let mut kernel_config = KernelConfig::minimal();
     kernel_config.max_steps = Some(50_000_000);
+    // Keep test262 recursion tests from reaching Rust's native stack before the
+    // VM converts deep JS calls into a catchable RangeError.
+    kernel_config.max_call_depth = 256;
     let kernel = Arc::new(OxideKernel::new(kernel_config));
     init_kernel_builtins(&kernel);
     kernel
@@ -691,10 +694,13 @@ fn run_tests() -> bool {
     // own kernel + harness-source registry + prefix cache. Only `PathBuf` and
     // `TestResult` (both `Send`) cross thread boundaries. Workers pull test
     // indices from a shared atomic cursor for dynamic load balancing.
-    let workers = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
+    let workers = std::env::var("OXIDE_TEST262_WORKERS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1))
         .min(total.max(1));
+    let trace_paths = std::env::var_os("OXIDE_TEST262_TRACE").is_some();
 
     eprintln!("running on {workers} worker thread(s)");
 
@@ -726,6 +732,9 @@ fn run_tests() -> bool {
                             let i = cursor.fetch_add(1, Ordering::Relaxed);
                             if i >= total {
                                 break;
+                            }
+                            if trace_paths {
+                                eprintln!("  running: {}", paths_ref[i].display());
                             }
 
                             let result = process_path(
