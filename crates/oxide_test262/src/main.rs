@@ -525,8 +525,8 @@ fn discover_tests(test262_root: &Path) -> Vec<PathBuf> {
 /// exactly one `TestResult`. Worker-owned state (`kernel`, `harness_sources`,
 /// `harness_cache`) never crosses a thread boundary.
 fn process_path(
-    path: &Path, filter: &Option<String>, no_skip: bool, kernel: &Arc<OxideKernel>,
-    harness_sources: &HarnessSources, harness_cache: &mut HarnessPrefixCache,
+    path: &Path, filter: &Option<String>, no_skip: bool, kernel: &Arc<OxideKernel>, harness_sources: &HarnessSources,
+    harness_cache: &mut HarnessPrefixCache,
 ) -> TestResult {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -691,7 +691,10 @@ fn run_tests() -> bool {
     // own kernel + harness-source registry + prefix cache. Only `PathBuf` and
     // `TestResult` (both `Send`) cross thread boundaries. Workers pull test
     // indices from a shared atomic cursor for dynamic load balancing.
-    let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(total.max(1));
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(total.max(1));
 
     eprintln!("running on {workers} worker thread(s)");
 
@@ -748,7 +751,10 @@ fn run_tests() -> bool {
             })
             .collect();
 
-        handles.into_iter().map(|h| h.join().expect("test262 worker thread panicked")).collect()
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("test262 worker thread panicked"))
+            .collect()
     });
 
     // Reduce partial stats and restore discovery order for deterministic output.

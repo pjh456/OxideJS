@@ -445,7 +445,9 @@ impl Vm {
             })
     }
 
-    fn call_function_sync(&mut self, callee: JsValue, receiver: JsValue, args: &[JsValue]) -> Result<JsValue, String> {
+    pub(crate) fn call_function_sync(
+        &mut self, callee: JsValue, receiver: JsValue, args: &[JsValue],
+    ) -> Result<JsValue, String> {
         if !callee.is_object() {
             return Err("TypeError: accessor is not callable".into());
         }
@@ -861,7 +863,12 @@ impl Vm {
         }
         let exc = self.exception_value.take().unwrap_or(JsValue::undefined());
         let kind_str = self.pending_error_kind.take().unwrap_or("Error");
-        let msg = format!("uncaught {kind_str}: {exc}");
+        let exc_text = self.error_text(exc);
+        let msg = if exc_text.starts_with(kind_str) {
+            format!("uncaught {exc_text}")
+        } else {
+            format!("uncaught {kind_str}: {exc_text}")
+        };
         Err(msg)
     }
 

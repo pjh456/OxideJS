@@ -83,7 +83,7 @@ fn regression_throw_statement_errors() {
 #[test]
 fn regression_throw_statement_preserves_type_error_kind() {
     assert_eq!(eval("try { throw new TypeError('boom') } catch (e) { e.name == 'TypeError' }"), "true");
-    assert_eq!(eval("throw new TypeError('boom')"), "vm error: uncaught TypeError: {object}");
+    assert_eq!(eval("throw new TypeError('boom')"), "vm error: uncaught TypeError: boom");
 }
 
 #[test]
@@ -92,7 +92,7 @@ fn regression_throw_statement_preserves_syntax_error_kind() {
         eval("try { throw new SyntaxError('boom') } catch (e) { e.name == 'SyntaxError' }"),
         "true"
     );
-    assert_eq!(eval("throw new SyntaxError('boom')"), "vm error: uncaught SyntaxError: {object}");
+    assert_eq!(eval("throw new SyntaxError('boom')"), "vm error: uncaught SyntaxError: boom");
 }
 
 #[test]
@@ -137,11 +137,17 @@ fn regression_new_expression_bytecode_constructor_error_is_catchable() {
 #[test]
 fn regression_delete_static_property_throws_type_error() {
     assert_eq!(eval("try { var o={x:1}; delete o.x; 0 } catch (e) { e.name == 'TypeError' }"), "true");
-    assert_eq!(eval("var o={x:1}; delete o.x"), "vm error: uncaught TypeError: {object}");
+    assert_eq!(
+        eval("var o={x:1}; delete o.x"),
+        "vm error: uncaught TypeError: property deletion not supported"
+    );
 }
 
 #[test]
 fn regression_delete_dynamic_property_throws_type_error() {
     assert_eq!(eval("try { var o={x:1}; delete o['x']; 0 } catch (e) { e.name == 'TypeError' }"), "true");
-    assert_eq!(eval("var o={x:1}; var k='x'; delete o[k]"), "vm error: uncaught TypeError: {object}");
+    assert_eq!(
+        eval("var o={x:1}; var k='x'; delete o[k]"),
+        "vm error: uncaught TypeError: property deletion not supported"
+    );
 }

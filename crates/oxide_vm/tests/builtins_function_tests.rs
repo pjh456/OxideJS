@@ -31,6 +31,34 @@ fn function_bind_creates_wrapper() {
 }
 
 #[test]
+fn function_call_invokes_bytecode_function() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "function add(a, b) { return a + b; } add.call(null, 2, 3)").unwrap();
+    assert!((result.as_double() - 5.0).abs() < 0.0001);
+}
+
+#[test]
+fn function_apply_invokes_bytecode_function() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "function add(a, b) { return a + b; } add.apply(null, [2, 3])").unwrap();
+    assert!((result.as_double() - 5.0).abs() < 0.0001);
+}
+
+#[test]
+fn function_bind_invokes_bytecode_function() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "function add1(a) { return a + 1; } var bound = add1.bind(null); bound(2)").unwrap();
+    assert!((result.as_double() - 3.0).abs() < 0.0001);
+}
+
+#[test]
+fn function_call_preserves_bytecode_throw_kind() {
+    let mut vm = Vm::new();
+    let err = eval(&mut vm, "function fail() { throw new TypeError('boom'); } fail.call(null)").unwrap_err();
+    assert!(err.contains("uncaught TypeError: boom"), "got: {err}");
+}
+
+#[test]
 fn function_to_string_includes_function() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "Math.max.toString()").unwrap();

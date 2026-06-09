@@ -2,34 +2,42 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-use crate::native::{NativeFn, NativeResult};
+use crate::native::NativeResult;
 use crate::vm::Vm;
 
+/// Rebuild a typed JS error object from `call_function_sync`'s `String` error.
+///
+/// `call_function_sync` collapses thrown exceptions to a `String` shaped like
+/// `"TypeError: message"`. Native builtins must return `Err(JsValue)`, and
+/// test262 negative tests match on the error's `name`, so we parse the prefix
+/// back into the right error kind instead of flattening everything to `Error`.
+fn error_from_text(vm: &mut Vm, text: &str) -> JsValue {
+    use crate::builtins::error;
+    let text = text.strip_prefix("uncaught ").unwrap_or(text);
+    let (kind, msg) = match text.split_once(": ") {
+        Some((k, m)) => (k, m),
+        None => ("", text),
+    };
+    match kind {
+        "TypeError" => error::create_type_error(vm, msg),
+        "ReferenceError" => error::create_reference_error(vm, msg),
+        "RangeError" => error::create_range_error(vm, msg),
+        "SyntaxError" => error::create_syntax_error(vm, msg),
+        _ => error::create_error(vm, text),
+    }
+}
+
+/// Invoke any callee (native or user/bytecode function) with an explicit
+/// receiver and register-sourced arguments.
+///
+/// Delegates to `Vm::call_function_sync`, the engine's unified synchronous call
+/// path (also used by getter/setter dispatch). The previous hand-rolled version
+/// only supported native targets, so `Function.prototype.call/apply/bind` threw
+/// on user functions — a major test262 harness blocker.
 fn invoke_target(vm: &mut Vm, target_val: JsValue, this_val: JsValue, arg_regs: &[u8]) -> NativeResult {
-    if !target_val.is_object() {
-        return Err(JsValue::undefined());
-    }
-    let tgt_ptr = target_val.as_js_object_ptr();
-    if tgt_ptr.is_null() {
-        return Err(JsValue::undefined());
-    }
-    let tgt = unsafe { &*tgt_ptr };
-    if !tgt.is_function() || tgt.native_fn().is_none() {
-        return Err(JsValue::undefined());
-    }
-    let func: NativeFn = unsafe { std::mem::transmute(tgt.native_fn().unwrap()) };
-
-    let base = 230u8;
-    let n = arg_regs.len();
-    let mut args_buf = [0u8; 64];
-    args_buf[0] = base;
-    vm.set_reg(base, this_val);
-    for (i, &reg) in arg_regs.iter().enumerate().take(n.min(63)) {
-        vm.set_reg(base + 1 + i as u8, vm.reg(reg));
-        args_buf[i + 1] = base + 1 + i as u8;
-    }
-
-    func(vm, &args_buf[..n + 1])
+    let args: Vec<JsValue> = arg_regs.iter().map(|&r| vm.reg(r)).collect();
+    vm.call_function_sync(target_val, this_val, &args)
+        .map_err(|msg| error_from_text(vm, &msg))
 }
 
 fn bind_dispatcher(vm: &mut Vm, args: &[u8]) -> NativeResult {
@@ -44,29 +52,9 @@ fn bind_dispatcher(vm: &mut Vm, args: &[u8]) -> NativeResult {
         .and_then(|v| v.get(1).map(|b| **b))
         .unwrap_or(JsValue::undefined());
 
-    let n = args.len().saturating_sub(1);
-    let base = 230u8;
-    let mut args_buf = [0u8; 64];
-    args_buf[0] = base;
-    vm.set_reg(base, bound_this);
-    for (i, &reg) in args.iter().skip(1).enumerate().take(n.min(63)) {
-        vm.set_reg(base + 1 + i as u8, vm.reg(reg));
-        args_buf[i + 1] = base + 1 + i as u8;
-    }
-
-    if !bound_target.is_object() {
-        return Err(JsValue::undefined());
-    }
-    let tgt_ptr = bound_target.as_js_object_ptr();
-    if tgt_ptr.is_null() {
-        return Err(JsValue::undefined());
-    }
-    let tgt = unsafe { &*tgt_ptr };
-    if !tgt.is_function() || tgt.native_fn().is_none() {
-        return Err(JsValue::undefined());
-    }
-    let func: NativeFn = unsafe { std::mem::transmute(tgt.native_fn().unwrap()) };
-    func(vm, &args_buf[..n + 1])
+    // Forward bound call arguments (skip args[0], the bound-wrapper receiver).
+    let arg_regs: Vec<u8> = args.iter().skip(1).copied().collect();
+    invoke_target(vm, bound_target, bound_this, &arg_regs)
 }
 
 pub fn function_call(vm: &mut Vm, args: &[u8]) -> NativeResult {
