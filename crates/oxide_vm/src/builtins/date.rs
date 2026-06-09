@@ -35,6 +35,34 @@ fn ensure_date(vm: &mut Vm, obj: &JsObject) -> NativeResult {
     Ok(JsValue::undefined())
 }
 
+fn date_this_mut(vm: &mut Vm, args: &[u8]) -> Result<*mut JsObject, JsValue> {
+    let raw = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    if !raw.is_object() {
+        return Err(crate::builtins::error::create_type_error(vm, "called on incompatible receiver"));
+    }
+    let obj_ptr = raw.as_js_object_ptr();
+    if obj_ptr.is_null() {
+        return Err(crate::builtins::error::create_type_error(vm, "called on incompatible receiver"));
+    }
+    let obj = unsafe { &*obj_ptr };
+    ensure_date(vm, obj)?;
+    Ok(obj_ptr)
+}
+
+fn date_this(vm: &mut Vm, args: &[u8]) -> Result<*const JsObject, JsValue> {
+    let raw = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    if !raw.is_object() {
+        return Err(crate::builtins::error::create_type_error(vm, "called on incompatible receiver"));
+    }
+    let obj_ptr = raw.as_js_object_ptr();
+    if obj_ptr.is_null() {
+        return Err(crate::builtins::error::create_type_error(vm, "called on incompatible receiver"));
+    }
+    let obj = unsafe { &*obj_ptr };
+    ensure_date(vm, obj)?;
+    Ok(obj_ptr)
+}
+
 fn dt_from_ms(ms: f64) -> Option<DateTime<Utc>> {
     if !ms.is_finite() {
         return None;
@@ -208,12 +236,7 @@ pub fn date_utc(_vm: &mut Vm, _args: &[u8]) -> NativeResult {
 macro_rules! make_getter {
     ($name:ident, $f:expr, $df:expr) => {
         pub fn $name(vm: &mut Vm, args: &[u8]) -> NativeResult {
-            let raw = vm.reg(if args.is_empty() { 0 } else { args[0] });
-            if !raw.is_object() {
-                return Err(crate::builtins::error::create_type_error(vm, "called on incompatible receiver"));
-            }
-            let obj = unsafe { &*raw.as_js_object_ptr() };
-            ensure_date(vm, obj)?;
+            let obj = unsafe { &*date_this(vm, args)? };
             let ms = get_timestamp(obj);
             if !ms.is_finite() {
                 return Ok(JsValue::float($df));
@@ -229,12 +252,7 @@ macro_rules! make_getter {
 macro_rules! make_utc_getter {
     ($name:ident, $f:expr, $df:expr) => {
         pub fn $name(vm: &mut Vm, args: &[u8]) -> NativeResult {
-            let raw = vm.reg(if args.is_empty() { 0 } else { args[0] });
-            if !raw.is_object() {
-                return Err(crate::builtins::error::create_type_error(vm, "called on incompatible receiver"));
-            }
-            let obj = unsafe { &*raw.as_js_object_ptr() };
-            ensure_date(vm, obj)?;
+            let obj = unsafe { &*date_this(vm, args)? };
             let ms = get_timestamp(obj);
             if !ms.is_finite() {
                 return Ok(JsValue::float($df));
@@ -275,12 +293,7 @@ make_utc_getter!(
 );
 
 pub fn date_get_timezone_offset(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let raw = vm.reg(if args.is_empty() { 0 } else { args[0] });
-    if !raw.is_object() {
-        return Err(crate::builtins::error::create_type_error(vm, "called on incompatible receiver"));
-    }
-    let obj = unsafe { &*raw.as_js_object_ptr() };
-    ensure_date(vm, obj)?;
+    let _obj = unsafe { &*date_this(vm, args)? };
     let offset_min = local_offset_minutes();
     Ok(JsValue::float(offset_min as f64))
 }
@@ -298,12 +311,7 @@ fn get_opt_arg(vm: &Vm, args: &[u8], idx: usize, default: u32) -> u32 {
 }
 
 pub fn date_set_time(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let raw = vm.reg(if args.is_empty() { 0 } else { args[0] });
-    if !raw.is_object() {
-        return Err(crate::builtins::error::create_type_error(vm, "called on incompatible receiver"));
-    }
-    let obj = unsafe { &mut *raw.as_js_object_ptr() };
-    ensure_date(vm, obj)?;
+    let obj = unsafe { &mut *date_this_mut(vm, args)? };
     let val = if args.len() > 1 {
         coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref())
     } else {
@@ -314,11 +322,9 @@ pub fn date_set_time(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn date_set_full_year(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let val = vm.reg(args[1]);
+    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let v = coercion::to_number(val, vm.kernel().string_forge().as_ref());
-    let raw = vm.reg(args[0]);
-    let obj = unsafe { &mut *raw.as_js_object_ptr() };
-    ensure_date(vm, obj)?;
+    let obj = unsafe { &mut *date_this_mut(vm, args)? };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
         return Ok(JsValue::float(f64::NAN));
@@ -339,11 +345,9 @@ pub fn date_set_full_year(vm: &mut Vm, args: &[u8]) -> NativeResult {
     Ok(JsValue::float(ts))
 }
 pub fn date_set_month(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let val = vm.reg(args[1]);
+    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let v = coercion::to_number(val, vm.kernel().string_forge().as_ref());
-    let raw = vm.reg(args[0]);
-    let obj = unsafe { &mut *raw.as_js_object_ptr() };
-    ensure_date(vm, obj)?;
+    let obj = unsafe { &mut *date_this_mut(vm, args)? };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
         return Ok(JsValue::float(f64::NAN));
@@ -359,11 +363,9 @@ pub fn date_set_month(vm: &mut Vm, args: &[u8]) -> NativeResult {
     Ok(JsValue::float(ts))
 }
 pub fn date_set_date(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let val = vm.reg(args[1]);
+    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let v = coercion::to_number(val, vm.kernel().string_forge().as_ref());
-    let raw = vm.reg(args[0]);
-    let obj = unsafe { &mut *raw.as_js_object_ptr() };
-    ensure_date(vm, obj)?;
+    let obj = unsafe { &mut *date_this_mut(vm, args)? };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
         return Ok(JsValue::float(f64::NAN));
@@ -378,11 +380,9 @@ pub fn date_set_date(vm: &mut Vm, args: &[u8]) -> NativeResult {
     Ok(JsValue::float(ts))
 }
 pub fn date_set_hours(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let val = vm.reg(args[1]);
+    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let v = coercion::to_number(val, vm.kernel().string_forge().as_ref());
-    let raw = vm.reg(args[0]);
-    let obj = unsafe { &mut *raw.as_js_object_ptr() };
-    ensure_date(vm, obj)?;
+    let obj = unsafe { &mut *date_this_mut(vm, args)? };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
         return Ok(JsValue::float(f64::NAN));
@@ -405,11 +405,9 @@ pub fn date_set_hours(vm: &mut Vm, args: &[u8]) -> NativeResult {
     Ok(JsValue::float(ts))
 }
 pub fn date_set_minutes(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let val = vm.reg(args[1]);
+    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let v = coercion::to_number(val, vm.kernel().string_forge().as_ref());
-    let raw = vm.reg(args[0]);
-    let obj = unsafe { &mut *raw.as_js_object_ptr() };
-    ensure_date(vm, obj)?;
+    let obj = unsafe { &mut *date_this_mut(vm, args)? };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
         return Ok(JsValue::float(f64::NAN));
@@ -430,11 +428,9 @@ pub fn date_set_minutes(vm: &mut Vm, args: &[u8]) -> NativeResult {
     Ok(JsValue::float(ts))
 }
 pub fn date_set_seconds(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let val = vm.reg(args[1]);
+    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let v = coercion::to_number(val, vm.kernel().string_forge().as_ref());
-    let raw = vm.reg(args[0]);
-    let obj = unsafe { &mut *raw.as_js_object_ptr() };
-    ensure_date(vm, obj)?;
+    let obj = unsafe { &mut *date_this_mut(vm, args)? };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
         return Ok(JsValue::float(f64::NAN));
@@ -453,11 +449,9 @@ pub fn date_set_seconds(vm: &mut Vm, args: &[u8]) -> NativeResult {
     Ok(JsValue::float(ts))
 }
 pub fn date_set_milliseconds(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let val = vm.reg(args[1]);
+    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let v = coercion::to_number(val, vm.kernel().string_forge().as_ref());
-    let raw = vm.reg(args[0]);
-    let obj = unsafe { &mut *raw.as_js_object_ptr() };
-    ensure_date(vm, obj)?;
+    let obj = unsafe { &mut *date_this_mut(vm, args)? };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
         return Ok(JsValue::float(f64::NAN));
@@ -473,12 +467,7 @@ pub fn date_set_milliseconds(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 fn date_to_string_inner(vm: &mut Vm, args: &[u8], format_str: &str, invalid: &str) -> NativeResult {
-    let raw = vm.reg(if args.is_empty() { 0 } else { args[0] });
-    if !raw.is_object() {
-        return Err(crate::builtins::error::create_type_error(vm, "called on incompatible receiver"));
-    }
-    let obj = unsafe { &*raw.as_js_object_ptr() };
-    ensure_date(vm, obj)?;
+    let obj = unsafe { &*date_this(vm, args)? };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
         return Ok(vm.intern(invalid));
@@ -495,12 +484,7 @@ pub fn date_to_iso_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn date_to_json(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let raw = vm.reg(if args.is_empty() { 0 } else { args[0] });
-    if !raw.is_object() {
-        return Err(crate::builtins::error::create_type_error(vm, "called on incompatible receiver"));
-    }
-    let obj = unsafe { &*raw.as_js_object_ptr() };
-    ensure_date(vm, obj)?;
+    let obj = unsafe { &*date_this(vm, args)? };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
         return Ok(JsValue::null());
@@ -529,12 +513,7 @@ pub fn date_to_utc_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn date_value_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let raw = vm.reg(if args.is_empty() { 0 } else { args[0] });
-    if !raw.is_object() {
-        return Err(crate::builtins::error::create_type_error(vm, "called on incompatible receiver"));
-    }
-    let obj = unsafe { &*raw.as_js_object_ptr() };
-    ensure_date(vm, obj)?;
+    let obj = unsafe { &*date_this(vm, args)? };
     let ms = get_timestamp(obj);
     Ok(JsValue::float(ms))
 }
