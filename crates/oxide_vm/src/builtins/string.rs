@@ -11,6 +11,33 @@ fn this_string(vm: &Vm, args: &[u8]) -> String {
     coercion::to_string(vm.kernel().string_forge().as_ref(), vm.reg(args[0]))
 }
 
+fn boxed_primitive_value(this_val: JsValue) -> Option<JsValue> {
+    if !this_val.is_object() {
+        return None;
+    }
+    let ptr = this_val.as_js_object_ptr();
+    if ptr.is_null() {
+        return None;
+    }
+    let obj = unsafe { &*ptr };
+    let val = obj.get_prop_at(0);
+    if val.is_undefined() && obj.prop_count() == 0 {
+        None
+    } else {
+        Some(val)
+    }
+}
+
+pub fn string_value_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(args[0]);
+    if this_val.is_string() {
+        return Ok(this_val);
+    }
+    boxed_primitive_value(this_val).ok_or_else(|| {
+        crate::builtins::error::create_type_error(vm, "String.prototype.valueOf called on non-String object")
+    })
+}
+
 fn make_string_array(vm: &mut Vm, parts: &[String]) -> JsValue {
     let proto = vm.kernel().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let n = parts.len();

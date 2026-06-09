@@ -99,12 +99,11 @@ pub fn object_create(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
 pub fn object_assign(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
-        return Err(JsValue::undefined());
+        return Err(crate::builtins::error::create_type_error(vm, "Object.assign requires a target"));
     }
     let target_val = vm.reg(args[1]);
-    if !target_val.is_object() {
-        return Ok(target_val);
-    }
+    let target_val =
+        coercion::to_object(target_val, vm).map_err(|msg| crate::builtins::error::create_type_error(vm, msg))?;
     let target_ptr = target_val.as_js_object_ptr();
     if target_ptr.is_null() {
         return Ok(target_val);

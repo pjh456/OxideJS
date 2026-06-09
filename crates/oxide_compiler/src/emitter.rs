@@ -556,14 +556,14 @@ impl Compiler {
                 // 1-indexed: 0 = no sub_module (sentinel)
                 let sub_idx = ctx.sub_modules.len() as u32;
 
-                // Add BytecodeFunc constant and emit LOAD_CONST + STORE_VAR
+                // Use the register allocated during the count/hoist pass. Calling
+                // lookup_or_global here would allocate an extra register during
+                // emission and desynchronize later function declaration bindings.
+                let var_reg = ctx.lookup(&name)?;
+                ctx.reserve_reg(var_reg);
                 let const_idx = ctx.add_constant(Constant::BytecodeFunc(sub_idx));
-                let func_reg = ctx.alloc_reg();
-                ctx.emit_load_const(func_reg, const_idx);
-
-                // Get the register that was allocated for this FD in the counter pass
-                let var_reg = ctx.lookup_or_global(&name);
-                ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, func_reg, 0));
+                ctx.emit_load_const(var_reg, const_idx);
+                ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, var_reg, 0));
 
                 Ok(None)
             }

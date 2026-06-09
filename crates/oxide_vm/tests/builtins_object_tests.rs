@@ -38,6 +38,14 @@ fn object_assign_copies() {
 }
 
 #[test]
+fn object_assign_boxes_primitive_target() {
+    let (_vm, result) = eval("var result = Object.assign('a'); result.valueOf()").unwrap();
+    assert!(result.is_string());
+    let rendered = _vm.kernel().string_forge().lookup(result.as_string_index()).unwrap_or_default();
+    assert_eq!(rendered, "a");
+}
+
+#[test]
 fn object_is_uses_same_value_semantics() {
     let (_vm, result) = eval("Object.is(NaN, NaN)").unwrap();
     assert_eq!(result, JsValue::bool(true));

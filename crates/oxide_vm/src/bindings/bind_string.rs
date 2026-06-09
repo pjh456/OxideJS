@@ -32,6 +32,7 @@ pub fn bind_string(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
         normalize: crate::builtins::string::string_normalize as *const (),
         match_all: crate::builtins::string::string_match_all as *const (),
         replace_all: crate::builtins::string::string_replace_all as *const (),
+        value_of: crate::builtins::string::string_value_of as *const (),
     };
     kernel.builtin_world().bind_string_methods(
         &string_methods,

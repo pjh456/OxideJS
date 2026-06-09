@@ -129,6 +129,16 @@ impl CompileCtx {
         self.next_reg = checkpoint;
     }
 
+    pub(crate) fn reserve_reg(&mut self, reg: u8) {
+        let next = reg.wrapping_add(1);
+        if self.next_reg <= reg {
+            self.next_reg = next;
+        }
+        if self.max_regs < next {
+            self.max_regs = next;
+        }
+    }
+
     pub(crate) fn add_constant(&mut self, c: Constant) -> u16 {
         if let Some(idx) = self.constants.iter().position(|x| x == &c) {
             return idx as u16;

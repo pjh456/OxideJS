@@ -266,7 +266,32 @@ impl Vm {
             obj.set_captured_this(self.regs[254]);
         }
         let obj_ptr = self.epoch.alloc(obj);
-        JsValue::object(obj_ptr as *mut u8)
+        let func_val = JsValue::object(obj_ptr as *mut u8);
+
+        if !is_arrow {
+            let object_proto_ptr = self.kernel.builtin_world().object_proto.as_ptr() as *mut JsObject;
+            let prototype_obj = self
+                .epoch
+                .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto_ptr)));
+            let prototype_val = JsValue::from_js_object(prototype_obj);
+
+            let constructor_si = self.kernel.string_forge().intern("constructor").0;
+            let constructor_shape = self.kernel.shape_forge().make_shape(EMPTY_SHAPE_ID, constructor_si);
+            let prototype = unsafe { &mut *prototype_obj };
+            prototype.set_shape_id(constructor_shape);
+            let constructor_pos = prototype.push_prop(func_val);
+            prototype.set_data_meta(constructor_pos, PropAttributes::new(true, false, true));
+            prototype.bump_generation();
+
+            let prototype_si = self.kernel.string_forge().intern("prototype").0;
+            let func = unsafe { &mut *obj_ptr };
+            let prototype_shape = self.kernel.shape_forge().make_shape(func.shape_id(), prototype_si);
+            func.set_shape_id(prototype_shape);
+            func.ensure_hash_props().push(Box::new(prototype_val));
+            func.bump_generation();
+        }
+
+        func_val
     }
 
     fn error_text(&self, val: JsValue) -> String {
@@ -1812,8 +1837,18 @@ impl Vm {
                             }
                             if let Some(shape) = self.kernel.shape_forge().get_shape(id) {
                                 if shape.property_name != u32::MAX && seen.insert(shape.property_name) {
-                                    let hash = self.kernel.string_forge().get_hash(shape.property_name).unwrap_or(0);
-                                    keys_vec.push(JsValue::string(shape.property_name, hash));
+                                    let enumerable = self
+                                        .kernel
+                                        .shape_forge()
+                                        .lookup_position(cur.shape_id(), shape.property_name)
+                                        .and_then(|pos| cur.prop_meta_at(pos))
+                                        .map(|meta| meta.attributes.enumerable())
+                                        .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable());
+                                    if enumerable {
+                                        let hash =
+                                            self.kernel.string_forge().get_hash(shape.property_name).unwrap_or(0);
+                                        keys_vec.push(JsValue::string(shape.property_name, hash));
+                                    }
                                 }
                                 cursor = shape.parent;
                             } else {

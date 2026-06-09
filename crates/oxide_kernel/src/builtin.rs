@@ -1,5 +1,5 @@
 use oxide_types::mem::P;
-use oxide_types::object::JsObject;
+use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
 use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
@@ -132,6 +132,7 @@ pub struct StringMethods {
     pub normalize: *const (),
     pub match_all: *const (),
     pub replace_all: *const (),
+    pub value_of: *const (),
 }
 
 pub struct RegExpMethods {
@@ -421,6 +422,12 @@ impl BuiltinWorld {
             ("hasOwnProperty", methods.has_own_property, 1),
             ("propertyIsEnumerable", methods.property_is_enumerable, 1),
         );
+        for name in ["hasOwnProperty", "propertyIsEnumerable"] {
+            let si = string_forge.intern(name).0;
+            if let Some(pos) = shape_forge.lookup_position(proto.shape_id(), si) {
+                proto.set_data_meta(pos, PropAttributes::new(true, false, true));
+            }
+        }
     }
 
     pub fn bind_array_methods(&self, methods: &ArrayMethods, string_forge: &StringForge, shape_forge: &ShapeForge) {
@@ -528,6 +535,7 @@ impl BuiltinWorld {
             ("normalize", methods.normalize, 0),
             ("matchAll", methods.match_all, 1),
             ("replaceAll", methods.replace_all, 2),
+            ("valueOf", methods.value_of, 0),
         );
     }
 

@@ -188,3 +188,22 @@ fn this_in_constructor_sets_proto() {
     let result = eval(&mut vm, "function Ctor(m) { this.message = m; } Ctor.prototype = new Object(); 1").unwrap();
     assert_eq!(result.as_int(), 1);
 }
+
+#[test]
+fn function_declaration_has_default_prototype_object() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "function Ctor() {} Ctor.prototype.constructor === Ctor").unwrap();
+    assert_eq!(result, JsValue::bool(true));
+}
+
+#[test]
+fn function_default_prototype_accepts_member_assignment() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "function Test262Error(message) { this.message = message || ''; } Test262Error.prototype.toString = function () { return this.message; }; new Test262Error('ok').toString()",
+    )
+    .unwrap();
+    let rendered = vm.kernel().string_forge().lookup(result.as_string_index()).unwrap_or_default();
+    assert_eq!(rendered, "ok");
+}
