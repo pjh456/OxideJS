@@ -259,12 +259,35 @@ impl Compiler {
         Self
     }
 
+    pub(crate) fn extract_function_parts<'a>(
+        &self, function: &'a oxide_parser::Function<'a>,
+    ) -> Result<(Vec<String>, &'a [Statement<'a>]), String> {
+        let mut param_names = Vec::new();
+        for param in &function.params.items {
+            match &param.pattern {
+                oxide_parser::BindingPattern::BindingIdentifier(bi) => {
+                    param_names.push(bi.name.to_string());
+                }
+                _ => return Err("destructuring parameters not supported".into()),
+            }
+        }
+        let body_stmts: &[Statement] = if let Some(body) = &function.body { &body.statements } else { &[] };
+        Ok((param_names, body_stmts))
+    }
+
     /// Compile a function body (used for FD, FE, and arrow functions).
     /// This performs both counting and emitting in one pass.
     /// When `is_expression_body` is true (arrow function with expression body),
     /// the last expression's value is returned instead of undefined.
     pub(crate) fn compile_function_body<'a>(
         &self, param_names: &[String], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx, is_expression_body: bool,
+    ) -> Result<CompiledModule, String> {
+        self.compile_function_body_with_bindings(param_names, body_stmts, parent_ctx, is_expression_body, &[])
+    }
+
+    pub(crate) fn compile_function_body_with_bindings<'a>(
+        &self, param_names: &[String], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx, is_expression_body: bool,
+        extra_bindings: &[(&str, u8)],
     ) -> Result<CompiledModule, String> {
         let mut ctx = CompileCtx::new();
 
@@ -288,6 +311,17 @@ impl Compiler {
                 },
             );
             inherited_reg_start = inherited_reg_start.max(binding.reg.saturating_add(1));
+        }
+        for (name, reg) in extra_bindings {
+            ctx.symbols.scopes[0].bindings.insert(
+                (*name).to_string(),
+                Binding {
+                    reg: *reg,
+                    initialized: true,
+                    is_const: true,
+                },
+            );
+            inherited_reg_start = inherited_reg_start.max(reg.saturating_add(1));
         }
         ctx.reserved_reg_start = inherited_reg_start;
 
@@ -367,6 +401,7 @@ impl Compiler {
             is_arrow: false,
             captured_this_const_idx: 0,
             function_name: None,
+            is_class_constructor: false,
         })
     }
 
@@ -424,6 +459,7 @@ impl Compiler {
             is_arrow: false,
             captured_this_const_idx: 0,
             function_name: None,
+            is_class_constructor: false,
         })
     }
 }

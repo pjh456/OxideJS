@@ -1,14 +1,109 @@
 use crate::compiler::Label;
 use crate::opcode::{self, OpCode};
 use oxide_parser::{
-    AssignmentOperator, Expression, ForStatementInit, ForStatementLeft, SimpleAssignmentTarget, Statement,
-    UnaryOperator, UpdateOperator, VariableDeclarationKind,
+    AssignmentOperator, Class, ClassElement, Expression, ForStatementInit, ForStatementLeft, MethodDefinitionKind,
+    PropertyKey, SimpleAssignmentTarget, Statement, UnaryOperator, UpdateOperator, VariableDeclarationKind,
 };
 
 use crate::compiler::{is_int_literal, is_side_effect_free, BinaryOperator, CompileCtx, Compiler};
 use crate::module::Constant;
 
 impl Compiler {
+    fn class_property_name(&self, key: &PropertyKey) -> Result<String, String> {
+        match key {
+            PropertyKey::StaticIdentifier(ident) => Ok(ident.name.as_str().to_string()),
+            PropertyKey::StringLiteral(s) => Ok(s.value.to_string()),
+            PropertyKey::PrivateIdentifier(_) => Err("private class elements not yet supported".into()),
+            _ => Err("unsupported class property key type".into()),
+        }
+    }
+
+    fn emit_class(&self, class: &Class, ctx: &mut CompileCtx) -> Result<u8, String> {
+        if class.super_class.is_some() {
+            return Err("class extends not yet supported".into());
+        }
+
+        let mut constructor_method = None;
+        let mut instance_methods = Vec::new();
+
+        for element in &class.body.body {
+            let ClassElement::MethodDefinition(method) = element else {
+                return Err("class fields/accessors/static blocks not yet supported".into());
+            };
+            let method = method.as_ref();
+            if method.r#static {
+                return Err("static methods not yet supported".into());
+            }
+            if method.computed {
+                return Err("computed class methods not yet supported".into());
+            }
+
+            match method.kind {
+                MethodDefinitionKind::Constructor => {
+                    if constructor_method.is_some() {
+                        return Err("duplicate class constructor".into());
+                    }
+                    constructor_method = Some(method);
+                }
+                MethodDefinitionKind::Method => {
+                    let name = self.class_property_name(&method.key)?;
+                    instance_methods.push((method, name));
+                }
+                MethodDefinitionKind::Get | MethodDefinitionKind::Set => {
+                    return Err("getters/setters not yet supported".into());
+                }
+            }
+        }
+
+        let ctor_name = class.id.as_ref().map(|id| id.name.to_string());
+        let ctor_reg = ctx.alloc_reg();
+        let proto_reg = ctx.alloc_reg();
+        let self_binding = ctor_name.as_deref().map(|name| vec![(name, ctor_reg)]).unwrap_or_default();
+
+        let mut ctor_module = if let Some(method) = constructor_method {
+            let (param_names, body_stmts) = self.extract_function_parts(method.value.as_ref())?;
+            self.compile_function_body_with_bindings(&param_names, body_stmts, ctx, false, &self_binding)?
+        } else {
+            self.compile_function_body_with_bindings(&[], &[], ctx, false, &self_binding)?
+        };
+        ctor_module.is_class_constructor = true;
+        ctor_module.function_name = ctor_name.clone();
+        ctx.sub_modules.push(ctor_module);
+
+        let ctor_idx = ctx.add_constant(Constant::BytecodeFunc(ctx.sub_modules.len() as u32));
+        ctx.emit_load_const(ctor_reg, ctor_idx);
+        ctx.emit(opcode::encode(OpCode::NEW_OBJECT, proto_reg, 0, 0));
+
+        for (method, method_name) in instance_methods {
+            let (param_names, body_stmts) = self.extract_function_parts(method.value.as_ref())?;
+            let mut method_module =
+                self.compile_function_body_with_bindings(&param_names, body_stmts, ctx, false, &self_binding)?;
+            method_module.function_name = Some(method_name.clone());
+            ctx.sub_modules.push(method_module);
+
+            let method_idx = ctx.add_constant(Constant::BytecodeFunc(ctx.sub_modules.len() as u32));
+            let method_reg = ctx.alloc_reg();
+            ctx.emit_load_const(method_reg, method_idx);
+
+            let key_idx = ctx.add_constant(Constant::String(method_name));
+            let key_reg = ctx.alloc_reg();
+            ctx.emit_load_const(key_reg, key_idx);
+            ctx.emit(opcode::encode(OpCode::SET_PROP, proto_reg, method_reg, key_reg));
+        }
+
+        let ctor_key_idx = ctx.add_constant(Constant::String("constructor".to_string()));
+        let ctor_key_reg = ctx.alloc_reg();
+        ctx.emit_load_const(ctor_key_reg, ctor_key_idx);
+        ctx.emit(opcode::encode(OpCode::SET_PROP, proto_reg, ctor_reg, ctor_key_reg));
+
+        let proto_key_idx = ctx.add_constant(Constant::String("prototype".to_string()));
+        let proto_key_reg = ctx.alloc_reg();
+        ctx.emit_load_const(proto_key_reg, proto_key_idx);
+        ctx.emit(opcode::encode(OpCode::SET_PROP, ctor_reg, proto_reg, proto_key_reg));
+
+        Ok(ctor_reg)
+    }
+
     pub(crate) fn emit_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
         match stmt {
             Statement::ExpressionStatement(es) => Ok(Some(self.emit_expression(&es.expression, ctx)?)),
@@ -346,6 +441,19 @@ impl Compiler {
                 let var_reg = ctx.lookup_or_global(&name);
                 ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, func_reg, 0));
 
+                Ok(None)
+            }
+            Statement::ClassDeclaration(class) => {
+                let name = class
+                    .id
+                    .as_ref()
+                    .map(|id| id.name.to_string())
+                    .ok_or_else(|| "ClassDeclaration without name".to_string())?;
+                let var_reg = ctx.alloc_reg();
+                ctx.declare(&name, var_reg, VariableDeclarationKind::Let, false)?;
+                ctx.init_var(&name);
+                let ctor_reg = self.emit_class(class, ctx)?;
+                ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, ctor_reg, 0));
                 Ok(None)
             }
             Statement::ThrowStatement(ts) => {
@@ -1014,6 +1122,7 @@ impl Compiler {
                 ctx.emit_load_const(r, const_idx);
                 Ok(r)
             }
+            Expression::ClassExpression(class) => self.emit_class(class, ctx),
             Expression::NewExpression(ne) => {
                 let constructor_reg = self.emit_expression(&ne.callee, ctx)?;
                 let mut arg_regs = Vec::new();

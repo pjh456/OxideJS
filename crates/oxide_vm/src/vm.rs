@@ -50,6 +50,8 @@ pub struct CallFrame {
     pub saved_regs: Box<[JsValue]>,
     pub saved_this: JsValue,
     pub saved_new_target: JsValue,
+    pub construct_result_reg: Option<u8>,
+    pub constructed_this: Option<JsValue>,
 }
 
 pub struct ForInIter<'bump> {
@@ -244,12 +246,13 @@ impl Vm {
     /// Create a function JsObject for a BytecodeFunc constant.
     /// When `is_arrow` is true, captures the current `this` (regs[254])
     /// for lexical this binding at call time (D-01).
-    fn create_function_object(&mut self, sub_idx: u32, is_arrow: bool) -> JsValue {
+    fn create_function_object(&mut self, sub_idx: u32, is_arrow: bool, is_class_constructor: bool) -> JsValue {
         let func_proto_ptr = self.kernel.builtin_world().function_proto.as_ptr() as *mut JsObject;
         let proto_val = JsValue::from_js_object(func_proto_ptr);
         let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto_val);
         obj.set_function(true);
         obj.set_sub_module_index(sub_idx);
+        obj.set_class_constructor(is_class_constructor);
         if is_arrow {
             obj.set_arrow(true);
             // Capture lexical `this` from the enclosing scope (regs[254]).
@@ -290,12 +293,13 @@ impl Vm {
             Constant::Undefined => Ok(JsValue::undefined()),
             Constant::BytecodeFunc(idx) => {
                 let sub_idx = *idx as usize;
-                let is_arrow = if sub_idx > 0 && sub_idx <= self.sub_modules.len() {
-                    self.sub_modules[sub_idx - 1].is_arrow
+                let (is_arrow, is_class_constructor) = if sub_idx > 0 && sub_idx <= self.sub_modules.len() {
+                    let sub_module = &self.sub_modules[sub_idx - 1];
+                    (sub_module.is_arrow, sub_module.is_class_constructor)
                 } else {
-                    false
+                    (false, false)
                 };
-                Ok(self.create_function_object(*idx, is_arrow))
+                Ok(self.create_function_object(*idx, is_arrow, is_class_constructor))
             }
             Constant::RegExp(pattern, flags) => {
                 let pat_si = self.kernel.string_forge().intern(pattern).0;
@@ -483,6 +487,21 @@ impl Vm {
         self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
     }
 
+    fn restore_frame(&mut self, frame: CallFrame) {
+        if let Some(saved_bc) = self.saved_bytecode_stack.pop() {
+            self.bytecode = saved_bc;
+        }
+        if let Some(saved_consts) = self.saved_constants_stack.pop() {
+            self.constants = saved_consts;
+        }
+        let restore_len = frame.saved_regs.len();
+        self.regs[..restore_len].copy_from_slice(&frame.saved_regs);
+        self.regs[254] = frame.saved_this;
+        self.regs[255] = frame.saved_new_target;
+        self.active_reg_limit = frame.caller_reg_limit;
+        self.pc = frame.return_addr;
+    }
+
     pub fn rerun(&mut self) -> Result<JsValue, String> {
         self.clear_execution_state();
         self.active_reg_limit = self.root_reg_limit;
@@ -536,6 +555,11 @@ impl Vm {
 
     pub(crate) fn unwind(&mut self) -> Result<(), String> {
         while let Some(handler) = self.try_stack.pop() {
+            while self.frames.len() > handler.frame_depth {
+                if let Some(frame) = self.frames.pop() {
+                    self.restore_frame(frame);
+                }
+            }
             if let Some(finally_pc) = handler.finally_pc {
                 if self.pending_exception.is_none() {
                     self.pending_exception = self.exception_value.take();
@@ -550,6 +574,9 @@ impl Vm {
                 self.pc = catch_pc;
                 return Ok(());
             }
+        }
+        while let Some(frame) = self.frames.pop() {
+            self.restore_frame(frame);
         }
         let exc = self.exception_value.take().unwrap_or(JsValue::undefined());
         let kind_str = self.pending_error_kind.take().unwrap_or("Error");
@@ -695,6 +722,9 @@ impl Vm {
                         if !obj_ptr.is_null() {
                             let obj = unsafe { &*obj_ptr };
                             if obj.is_function() {
+                                if obj.is_class_constructor() {
+                                    throw_err!(self, TypeError, "class constructor cannot be invoked without 'new'");
+                                }
                                 let ext = self.bytecode[self.pc];
                                 self.pc += 1;
                                 let arg_count = (ext & 0xFF) as usize;
@@ -738,7 +768,8 @@ impl Vm {
                                     }
                                     // Set this (reg 254 convention).
                                     // Arrow functions use captured lexical `this` (D-01).
-                                    self.regs[254] = if sub_is_arrow { obj.captured_this() } else { callee };
+                                    self.regs[254] =
+                                        if sub_is_arrow { obj.captured_this() } else { self.regs[this_reg as usize] };
                                     self.regs[255] = JsValue::undefined();
 
                                     let converted_sub_constants = self.convert_constants(&sub_constants)?;
@@ -759,6 +790,8 @@ impl Vm {
                                         saved_regs,
                                         saved_this,
                                         saved_new_target,
+                                        construct_result_reg: None,
+                                        constructed_this: None,
                                     });
 
                                     self.bytecode = sub_bytecode;
@@ -886,6 +919,72 @@ impl Vm {
                                 }
                             }
                         }
+                    } else if ctor_obj.sub_module_index() > 0 {
+                        let sub_idx = ctor_obj.sub_module_index() as usize - 1;
+                        if sub_idx >= self.sub_modules.len() {
+                            return Err(format!(
+                                "NEW_EXPRESSION: sub_module_index {} out of bounds (max {})",
+                                sub_idx,
+                                self.sub_modules.len()
+                            ));
+                        }
+
+                        if self.frames.len() >= self.kernel.config.max_call_depth {
+                            return Err("RangeError: Maximum call stack size exceeded".into());
+                        }
+
+                        let new_obj_val = JsValue::object(new_obj as *mut u8);
+                        let sub_bytecode = self.sub_modules[sub_idx].bytecode.clone();
+                        let sub_n_args = self.sub_modules[sub_idx].n_args as usize;
+                        let sub_n_registers = self.sub_modules[sub_idx].n_registers;
+                        let sub_constants = self.sub_modules[sub_idx].constants.clone();
+                        let sub_param_base = self.sub_modules[sub_idx].param_base as usize;
+                        let caller_reg_limit = self.active_reg_limit.max(1);
+                        let saved_regs = self.regs[..caller_reg_limit as usize].to_vec().into_boxed_slice();
+                        let saved_this = self.regs[254];
+                        let saved_new_target = self.regs[255];
+
+                        for i in 0..sub_n_args {
+                            let src_reg = first_arg_reg.wrapping_add(i as u8) as usize;
+                            self.regs[sub_param_base + i] = self.regs[src_reg];
+                        }
+                        self.regs[254] = new_obj_val;
+                        self.regs[255] = constructor;
+
+                        let converted_sub_constants = self.convert_constants(&sub_constants)?;
+
+                        self.saved_bytecode_stack.push(std::mem::take(&mut self.bytecode));
+                        self.saved_constants_stack.push(std::mem::take(&mut self.constants));
+
+                        self.frames.push(CallFrame {
+                            return_addr: self.pc,
+                            function_name: self.sub_modules[sub_idx]
+                                .function_name
+                                .as_deref()
+                                .map(|name| self.kernel.string_forge().intern(name).0)
+                                .unwrap_or(0),
+                            caller_reg_limit,
+                            saved_regs,
+                            saved_this,
+                            saved_new_target,
+                            construct_result_reg: Some(rd as u8),
+                            constructed_this: Some(new_obj_val),
+                        });
+
+                        self.bytecode = sub_bytecode;
+                        self.constants = converted_sub_constants;
+
+                        for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map {
+                            let si = self.kernel.string_forge().intern(name.as_str()).0;
+                            let global = self.kernel.global_object();
+                            if let Some(pos) = self.kernel.shape_forge().lookup_position(global.shape_id(), si) {
+                                self.regs[*reg as usize] = global.get_prop_at(pos);
+                            }
+                        }
+
+                        self.active_reg_limit = sub_n_registers.max(1);
+                        self.pc = 0;
+                        continue;
                     } else {
                         let error = crate::builtins::error::create_error(
                             self,
@@ -903,21 +1002,17 @@ impl Vm {
                 OpCode::RETURN => {
                     let result = self.regs[rd];
                     if let Some(frame) = self.frames.pop() {
-                        // Restore caller's saved bytecode and constants
-                        if let Some(saved_bc) = self.saved_bytecode_stack.pop() {
-                            self.bytecode = saved_bc;
+                        let construct_result_reg = frame.construct_result_reg;
+                        let constructed_this = frame.constructed_this;
+                        self.restore_frame(frame);
+                        if let (Some(target_reg), Some(constructed_this)) =
+                            (construct_result_reg, constructed_this)
+                        {
+                            self.regs[target_reg as usize] = if result.is_object() { result } else { constructed_this };
+                            self.regs[0] = self.regs[target_reg as usize];
+                        } else {
+                            self.regs[0] = result;
                         }
-                        if let Some(saved_consts) = self.saved_constants_stack.pop() {
-                            self.constants = saved_consts;
-                        }
-                        let restore_len = frame.saved_regs.len();
-                        self.regs[..restore_len].copy_from_slice(&frame.saved_regs);
-                        self.regs[254] = frame.saved_this;
-                        self.regs[255] = frame.saved_new_target;
-                        self.active_reg_limit = frame.caller_reg_limit;
-                        // Restore caller's pc and merge result into caller's regs[0].
-                        self.pc = frame.return_addr;
-                        self.regs[0] = result;
                     } else {
                         return Ok(result);
                     }
@@ -1324,6 +1419,8 @@ mod tests {
             saved_regs: vec![JsValue::undefined()].into_boxed_slice(),
             saved_this: JsValue::undefined(),
             saved_new_target: JsValue::undefined(),
+            construct_result_reg: None,
+            constructed_this: None,
         });
         vm.for_in_iters.push(std::ptr::dangling_mut::<u8>());
         vm.for_of_iters.push(std::ptr::dangling_mut::<u8>());

@@ -1,11 +1,41 @@
 use oxide_parser::{
-    AssignmentOperator, Expression, ForStatementInit, SimpleAssignmentTarget, Statement, UnaryOperator,
-    VariableDeclarationKind,
+    AssignmentOperator, ClassElement, Expression, ForStatementInit, MethodDefinitionKind, SimpleAssignmentTarget,
+    Statement, UnaryOperator, VariableDeclarationKind,
 };
 
 use crate::compiler::{is_side_effect_free, CompileCtx, Compiler, Label};
 
 impl Compiler {
+    fn count_class(&self, class: &oxide_parser::Class, ctx: &mut CompileCtx) {
+        ctx.alloc_reg(); // ctor_reg
+        ctx.alloc_reg(); // proto_reg
+        ctx.projected_pc += 2; // LOAD_CONST ctor + NEW_OBJECT proto
+
+        for element in &class.body.body {
+            let ClassElement::MethodDefinition(method) = element else {
+                continue;
+            };
+            let method = method.as_ref();
+            match method.kind {
+                MethodDefinitionKind::Constructor => {}
+                MethodDefinitionKind::Method => {
+                    ctx.alloc_reg(); // method_reg
+                    ctx.alloc_reg(); // key_reg
+                    ctx.projected_pc += 3; // LOAD_CONST method + LOAD_CONST key + SET_PROP
+                }
+                MethodDefinitionKind::Get | MethodDefinitionKind::Set => {}
+            }
+        }
+
+        ctx.alloc_reg(); // constructor key
+        ctx.projected_pc += 1; // LOAD_CONST "constructor"
+        ctx.projected_pc += 1; // SET_PROP proto.constructor = ctor
+
+        ctx.alloc_reg(); // prototype key
+        ctx.projected_pc += 1; // LOAD_CONST "prototype"
+        ctx.projected_pc += 1; // SET_PROP ctor.prototype = proto
+    }
+
     pub(crate) fn count_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) {
         match stmt {
             Statement::ExpressionStatement(es) => {
@@ -197,6 +227,11 @@ impl Compiler {
                 // Body is compiled in the emit pass only.
                 // FD emits LOAD_CONST(BytecodeFunc) + STORE_VAR
                 ctx.projected_pc += 2;
+            }
+            Statement::ClassDeclaration(class) => {
+                ctx.alloc_reg(); // class binding reg
+                self.count_class(class, ctx);
+                ctx.projected_pc += 1; // STORE_VAR binding <- ctor
             }
             Statement::ThrowStatement(ts) => {
                 self.count_expression(&ts.argument, ctx);
@@ -483,6 +518,9 @@ impl Compiler {
                 // Body is compiled in the emit pass only.
                 ctx.alloc_reg();
                 ctx.projected_pc += 1; // LOAD_CONST
+            }
+            Expression::ClassExpression(class) => {
+                self.count_class(class, ctx);
             }
             Expression::NewExpression(ne) => {
                 // Count callee expression

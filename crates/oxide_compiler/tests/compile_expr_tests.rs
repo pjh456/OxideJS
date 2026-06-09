@@ -325,3 +325,27 @@ fn compile_neg_infinity_ok() {
     let module = compile_source("1 / -Infinity");
     assert!(!module.bytecode.is_empty());
 }
+
+#[test]
+fn compile_class_expression_emits_constructor_value() {
+    let module = compile_source("const C = class Foo { method() { return 2; } }; C");
+    assert_eq!(module.sub_modules.len(), 2, "expected constructor + method submodules");
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .filter(|&&i| opcode::opcode(i) == OpCode::SET_PROP)
+            .count()
+            >= 3,
+        "class expression should wire method/constructor/prototype properties"
+    );
+}
+
+#[test]
+fn compile_class_expression_default_constructor() {
+    let module = compile_source("class A {}; (class B {})");
+    assert!(
+        module.sub_modules.iter().any(|m| m.is_class_constructor),
+        "expected at least one class constructor submodule"
+    );
+}

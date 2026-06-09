@@ -1,4 +1,4 @@
-use oxide_parser::{Expression, ForStatementInit, SimpleAssignmentTarget, Statement};
+use oxide_parser::{ClassElement, Expression, ForStatementInit, PropertyKey, SimpleAssignmentTarget, Statement};
 
 pub fn structural_hash(program: &oxide_parser::Program) -> u64 {
     use std::hash::Hasher;
@@ -117,6 +117,16 @@ fn hash_statement(stmt: &Statement, h: &mut rustc_hash::FxHasher) {
                 }
             }
         }
+        Statement::ClassDeclaration(class) => {
+            13u8.hash(h);
+            if let Some(id) = &class.id {
+                id.name.as_str().hash(h);
+            }
+            class.super_class.is_some().hash(h);
+            for element in &class.body.body {
+                hash_class_element(element, h);
+            }
+        }
         Statement::ThrowStatement(ts) => {
             14u8.hash(h);
             hash_expression(&ts.argument, h);
@@ -144,6 +154,53 @@ fn hash_statement(stmt: &Statement, h: &mut rustc_hash::FxHasher) {
         }
         _ => {
             std::mem::discriminant(stmt).hash(h);
+        }
+    }
+}
+
+fn hash_property_key(key: &PropertyKey, h: &mut rustc_hash::FxHasher) {
+    use std::hash::Hash;
+
+    match key {
+        PropertyKey::StaticIdentifier(ident) => {
+            0u8.hash(h);
+            ident.name.as_str().hash(h);
+        }
+        PropertyKey::StringLiteral(s) => {
+            1u8.hash(h);
+            s.value.hash(h);
+        }
+        PropertyKey::PrivateIdentifier(pi) => {
+            2u8.hash(h);
+            pi.name.as_str().hash(h);
+        }
+        _ => {
+            3u8.hash(h);
+            std::mem::discriminant(key).hash(h);
+        }
+    }
+}
+
+fn hash_class_element(element: &ClassElement, h: &mut rustc_hash::FxHasher) {
+    use std::hash::Hash;
+
+    match element {
+        ClassElement::MethodDefinition(method) => {
+            0u8.hash(h);
+            method.r#static.hash(h);
+            method.computed.hash(h);
+            std::mem::discriminant(&method.kind).hash(h);
+            hash_property_key(&method.key, h);
+            (method.value.params.items.len() as u32).hash(h);
+            if let Some(body) = &method.value.body {
+                for stmt in &body.statements {
+                    hash_statement(stmt, h);
+                }
+            }
+        }
+        _ => {
+            1u8.hash(h);
+            std::mem::discriminant(element).hash(h);
         }
     }
 }
@@ -254,6 +311,16 @@ fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher) {
                 for s in &body.statements {
                     hash_statement(s, h);
                 }
+            }
+        }
+        Expression::ClassExpression(class) => {
+            18u8.hash(h);
+            if let Some(id) = &class.id {
+                id.name.as_str().hash(h);
+            }
+            class.super_class.is_some().hash(h);
+            for element in &class.body.body {
+                hash_class_element(element, h);
             }
         }
         Expression::NewExpression(ne) => {

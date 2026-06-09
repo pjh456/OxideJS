@@ -170,6 +170,8 @@ mod tests {
             saved_regs: vec![JsValue::undefined()].into_boxed_slice(),
             saved_this: JsValue::undefined(),
             saved_new_target: JsValue::undefined(),
+            construct_result_reg: None,
+            constructed_this: None,
         });
 
         let stack = error_stack_getter(&mut vm, &[0]).unwrap();

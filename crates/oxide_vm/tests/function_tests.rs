@@ -158,20 +158,27 @@ fn fd_returns_new_array() {
 fn this_in_function_reads_value() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "function f() { return this; } f()").unwrap();
-    assert!(result.is_object(), "expected object (function as this), got: {:?}", result);
+    assert!(result.is_undefined(), "expected undefined in strict-mode call, got: {:?}", result);
 }
 
 #[test]
 fn this_in_function_assign_member() {
     let mut vm = Vm::new();
-    let result = eval(&mut vm, "function f(m) { this.message = m; } f('hello'); 1").unwrap();
-    assert_eq!(result.as_int(), 1);
+    let err = eval(&mut vm, "function f(m) { this.message = m; } f('hello'); 1").unwrap_err();
+    assert!(err.contains("TypeError"), "expected TypeError, got: {err}");
 }
 
 #[test]
 fn this_member_access() {
     let mut vm = Vm::new();
-    let result = eval(&mut vm, "function f() { this.x = 42; return this.x; } f()").unwrap();
+    let err = eval(&mut vm, "function f() { this.x = 42; return this.x; } f()").unwrap_err();
+    assert!(err.contains("TypeError"), "expected TypeError, got: {err}");
+}
+
+#[test]
+fn member_call_uses_receiver_as_this() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var o = { x: 42, f: function() { return this.x; } }; o.f()").unwrap();
     assert_eq!(result.as_int(), 42);
 }
 

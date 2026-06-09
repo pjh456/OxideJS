@@ -244,3 +244,37 @@ fn compile_large_adjacent_switches_do_not_collide_labels() {
         "expected both large switches to compile with distinct case labels"
     );
 }
+
+#[test]
+fn compile_class_declaration_emits_constructor_and_prototype_setup() {
+    let module = compile_source("class A { m() { return 1; } }");
+    assert_eq!(module.sub_modules.len(), 2, "expected constructor + method submodules");
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .filter(|&&i| opcode::opcode(i) == OpCode::NEW_OBJECT)
+            .count()
+            >= 1,
+        "class should allocate a prototype object"
+    );
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .filter(|&&i| opcode::opcode(i) == OpCode::SET_PROP)
+            .count()
+            >= 3,
+        "class should assign method, constructor, and prototype properties"
+    );
+}
+
+#[test]
+fn compile_class_declaration_default_constructor_creates_submodule() {
+    let module = compile_source("class A {}");
+    assert_eq!(module.sub_modules.len(), 1, "expected synthesized default constructor");
+    assert!(
+        module.sub_modules[0].is_class_constructor,
+        "default constructor submodule should be marked as class constructor"
+    );
+}

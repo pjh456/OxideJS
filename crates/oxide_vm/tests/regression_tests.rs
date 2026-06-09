@@ -128,9 +128,9 @@ fn regression_new_expression_native_constructor_error_is_catchable() {
 #[test]
 fn regression_new_expression_bytecode_constructor_error_is_catchable() {
     assert_eq!(
-        eval("try { function C() {} new C(); 0 } catch (e) { 1 }"),
+        eval("try { class C { constructor() { throw new Error('boom') } } new C(); 0 } catch (e) { 1 }"),
         "1",
-        "expected bytecode constructor capability error to enter catch"
+        "expected bytecode class constructor error to enter catch"
     );
 }
 

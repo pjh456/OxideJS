@@ -31,6 +31,9 @@ pub struct CompiledModule {
     /// Function name inferred from assignment context (D-04).
     /// Set at the VariableDeclaration / ObjectProperty assignment site.
     pub function_name: Option<String>,
+    /// True when this bytecode function is a class constructor.
+    /// Ordinary CALL must reject it, while NEW_EXPRESSION may construct through it.
+    pub is_class_constructor: bool,
 }
 
 impl CompiledModule {
@@ -46,6 +49,7 @@ impl CompiledModule {
             is_arrow: false,
             captured_this_const_idx: 0,
             function_name: None,
+            is_class_constructor: false,
         }
     }
 }
@@ -69,6 +73,7 @@ impl Clone for CompiledModule {
             is_arrow: self.is_arrow,
             captured_this_const_idx: self.captured_this_const_idx,
             function_name: self.function_name.clone(),
+            is_class_constructor: self.is_class_constructor,
         }
     }
 }

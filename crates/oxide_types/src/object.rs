@@ -40,6 +40,7 @@ impl PropIndex for i32 {
 /// Layout (56B):
 ///   header: u32 bits
 ///     [0:23]   shape_id
+///     [27]     is_class_constructor
 ///     [28]     is_arrow
 ///     [29]     is_array
 ///     [30]     is_extensible
@@ -317,6 +318,20 @@ impl JsObject {
 
     pub fn set_captured_this(&mut self, v: JsValue) {
         self.captured_this = v;
+    }
+
+    /// Class constructor flag (header bit 27).
+    /// Ordinary CALL rejects objects with this flag; NEW_EXPRESSION is allowed.
+    pub fn is_class_constructor(&self) -> bool {
+        (self.header >> 27) & 1 != 0
+    }
+
+    pub fn set_class_constructor(&mut self, v: bool) {
+        if v {
+            self.header |= 1 << 27;
+        } else {
+            self.header &= !(1 << 27);
+        }
     }
 }
 
