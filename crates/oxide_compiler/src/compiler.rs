@@ -70,6 +70,8 @@ pub(crate) struct CompileCtx {
     /// Used by arrow functions to capture lexical `this` (D-01).
     /// Initialized to 254 (conventional this register) at the top level.
     pub(crate) enclosing_this_reg: u8,
+    pub(crate) in_derived_constructor: bool,
+    pub(crate) in_instance_method: bool,
 }
 
 impl CompileCtx {
@@ -89,6 +91,8 @@ impl CompileCtx {
             builtin_reg_map: Vec::new(),
             sub_modules: Vec::new(),
             enclosing_this_reg: 254, // conventional this register at top level
+            in_derived_constructor: false,
+            in_instance_method: false,
         }
     }
 
@@ -297,6 +301,8 @@ impl Compiler {
 
         // Propagate enclosing_this_reg so nested arrow functions capture the correct `this`.
         ctx.enclosing_this_reg = parent_ctx.enclosing_this_reg;
+        ctx.in_derived_constructor = parent_ctx.in_derived_constructor;
+        ctx.in_instance_method = parent_ctx.in_instance_method;
 
         // Inherit parent's global scope entries so previously-declared function names
         // are visible from within the body.
@@ -402,6 +408,8 @@ impl Compiler {
             captured_this_const_idx: 0,
             function_name: None,
             is_class_constructor: false,
+            is_derived_constructor: false,
+            needs_home_object: false,
         })
     }
 
@@ -460,6 +468,8 @@ impl Compiler {
             captured_this_const_idx: 0,
             function_name: None,
             is_class_constructor: false,
+            is_derived_constructor: false,
+            needs_home_object: false,
         })
     }
 }

@@ -50,8 +50,10 @@ pub struct CallFrame {
     pub saved_regs: Box<[JsValue]>,
     pub saved_this: JsValue,
     pub saved_new_target: JsValue,
+    pub callee: JsValue,
     pub construct_result_reg: Option<u8>,
     pub constructed_this: Option<JsValue>,
+    pub is_derived_constructor: bool,
 }
 
 pub struct ForInIter<'bump> {
@@ -246,13 +248,18 @@ impl Vm {
     /// Create a function JsObject for a BytecodeFunc constant.
     /// When `is_arrow` is true, captures the current `this` (regs[254])
     /// for lexical this binding at call time (D-01).
-    fn create_function_object(&mut self, sub_idx: u32, is_arrow: bool, is_class_constructor: bool) -> JsValue {
+    fn create_function_object(
+        &mut self, sub_idx: u32, is_arrow: bool, is_class_constructor: bool, is_derived_constructor: bool,
+        needs_home_object: bool,
+    ) -> JsValue {
         let func_proto_ptr = self.kernel.builtin_world().function_proto.as_ptr() as *mut JsObject;
         let proto_val = JsValue::from_js_object(func_proto_ptr);
         let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto_val);
         obj.set_function(true);
         obj.set_sub_module_index(sub_idx);
         obj.set_class_constructor(is_class_constructor);
+        obj.set_derived_constructor(is_derived_constructor);
+        let _ = needs_home_object;
         if is_arrow {
             obj.set_arrow(true);
             // Capture lexical `this` from the enclosing scope (regs[254]).
@@ -293,13 +300,25 @@ impl Vm {
             Constant::Undefined => Ok(JsValue::undefined()),
             Constant::BytecodeFunc(idx) => {
                 let sub_idx = *idx as usize;
-                let (is_arrow, is_class_constructor) = if sub_idx > 0 && sub_idx <= self.sub_modules.len() {
-                    let sub_module = &self.sub_modules[sub_idx - 1];
-                    (sub_module.is_arrow, sub_module.is_class_constructor)
-                } else {
-                    (false, false)
-                };
-                Ok(self.create_function_object(*idx, is_arrow, is_class_constructor))
+                let (is_arrow, is_class_constructor, is_derived_constructor, needs_home_object) =
+                    if sub_idx > 0 && sub_idx <= self.sub_modules.len() {
+                        let sub_module = &self.sub_modules[sub_idx - 1];
+                        (
+                            sub_module.is_arrow,
+                            sub_module.is_class_constructor,
+                            sub_module.is_derived_constructor,
+                            sub_module.needs_home_object,
+                        )
+                    } else {
+                        (false, false, false, false)
+                    };
+                Ok(self.create_function_object(
+                    *idx,
+                    is_arrow,
+                    is_class_constructor,
+                    is_derived_constructor,
+                    needs_home_object,
+                ))
             }
             Constant::RegExp(pattern, flags) => {
                 let pat_si = self.kernel.string_forge().intern(pattern).0;
@@ -697,6 +716,12 @@ impl Vm {
                 }
 
                 OpCode::LOAD_VAR => {
+                    if a == 254
+                        && self.frames.last().map(|frame| frame.is_derived_constructor).unwrap_or(false)
+                        && self.regs[a].is_undefined()
+                    {
+                        throw_err!(self, ReferenceError, "must call super constructor before using 'this'");
+                    }
                     self.regs[rd] = self.regs[a];
                 }
 
@@ -790,8 +815,10 @@ impl Vm {
                                         saved_regs,
                                         saved_this,
                                         saved_new_target,
+                                        callee,
                                         construct_result_reg: None,
                                         constructed_this: None,
+                                        is_derived_constructor: false,
                                     });
 
                                     self.bytecode = sub_bytecode;
@@ -948,7 +975,11 @@ impl Vm {
                             let src_reg = first_arg_reg.wrapping_add(i as u8) as usize;
                             self.regs[sub_param_base + i] = self.regs[src_reg];
                         }
-                        self.regs[254] = new_obj_val;
+                        self.regs[254] = if ctor_obj.is_derived_constructor() {
+                            JsValue::undefined()
+                        } else {
+                            new_obj_val
+                        };
                         self.regs[255] = constructor;
 
                         let converted_sub_constants = self.convert_constants(&sub_constants)?;
@@ -967,8 +998,10 @@ impl Vm {
                             saved_regs,
                             saved_this,
                             saved_new_target,
+                            callee: constructor,
                             construct_result_reg: Some(rd as u8),
                             constructed_this: Some(new_obj_val),
+                            is_derived_constructor: ctor_obj.is_derived_constructor(),
                         });
 
                         self.bytecode = sub_bytecode;
@@ -999,15 +1032,173 @@ impl Vm {
                     }
                 }
 
+                OpCode::SUPER_CALL => {
+                    let first_arg_reg = a as u8;
+                    let ext = self.bytecode[self.pc];
+                    self.pc += 1;
+                    let arg_count = (ext & 0xFF) as usize;
+
+                    let Some(frame) = self.frames.last() else {
+                        throw_err!(self, ReferenceError, "super() used outside class constructor");
+                    };
+                    if !frame.is_derived_constructor {
+                        throw_err!(self, ReferenceError, "super() used outside derived constructor");
+                    }
+                    if !self.regs[254].is_undefined() {
+                        throw_err!(self, ReferenceError, "super() called more than once");
+                    }
+                    let Some(derived_this) = frame.constructed_this else {
+                        throw_err!(self, ReferenceError, "super() without derived this");
+                    };
+
+                    let new_target = self.regs[255];
+                    if !new_target.is_object() {
+                        throw_err!(self, TypeError, "super() new.target is not an object");
+                    }
+                    let new_target_obj = unsafe { &*new_target.as_js_object_ptr() };
+                    let super_ctor = new_target_obj.proto();
+                    if !super_ctor.is_object() {
+                        throw_err!(self, TypeError, "super constructor is not an object");
+                    }
+                    let super_obj = unsafe { &*super_ctor.as_js_object_ptr() };
+                    if !super_obj.is_function() {
+                        throw_err!(self, TypeError, "super constructor is not a function");
+                    }
+
+                    if super_obj.native_fn().is_some() {
+                        self.regs[253] = derived_this;
+                        let (args_buf, len) = Self::build_native_args(first_arg_reg, arg_count, 253);
+                        let func: NativeFn = unsafe { std::mem::transmute(super_obj.native_fn().unwrap()) };
+                        match func(self, &args_buf[..len]) {
+                            Ok(val) => {
+                                self.regs[254] = if val.is_object() { val } else { derived_this };
+                                self.regs[rd] = self.regs[254];
+                            }
+                            Err(err_val) => {
+                                self.exception_value = Some(err_val);
+                                self.pending_error_kind = Some("Error");
+                                match self.unwind() {
+                                    Ok(()) => continue,
+                                    Err(e) => return Err(e),
+                                }
+                            }
+                        }
+                    } else if super_obj.sub_module_index() > 0 {
+                        let sub_idx = super_obj.sub_module_index() as usize - 1;
+                        if sub_idx >= self.sub_modules.len() {
+                            return Err(format!(
+                                "SUPER_CALL: sub_module_index {} out of bounds (max {})",
+                                sub_idx,
+                                self.sub_modules.len()
+                            ));
+                        }
+                        if self.frames.len() >= self.kernel.config.max_call_depth {
+                            return Err("RangeError: Maximum call stack size exceeded".into());
+                        }
+
+                        let sub_bytecode = self.sub_modules[sub_idx].bytecode.clone();
+                        let sub_n_args = self.sub_modules[sub_idx].n_args as usize;
+                        let sub_n_registers = self.sub_modules[sub_idx].n_registers;
+                        let sub_constants = self.sub_modules[sub_idx].constants.clone();
+                        let sub_param_base = self.sub_modules[sub_idx].param_base as usize;
+                        let caller_reg_limit = self.active_reg_limit.max(1);
+                        let saved_regs = self.regs[..caller_reg_limit as usize].to_vec().into_boxed_slice();
+                        let saved_this = self.regs[254];
+                        let saved_new_target = self.regs[255];
+
+                        for i in 0..sub_n_args {
+                            let src_reg = first_arg_reg.wrapping_add(i as u8) as usize;
+                            self.regs[sub_param_base + i] = self.regs[src_reg];
+                        }
+                        self.regs[254] = derived_this;
+                        self.regs[255] = new_target;
+
+                        let converted_sub_constants = self.convert_constants(&sub_constants)?;
+                        self.saved_bytecode_stack.push(std::mem::take(&mut self.bytecode));
+                        self.saved_constants_stack.push(std::mem::take(&mut self.constants));
+                        self.frames.push(CallFrame {
+                            return_addr: self.pc,
+                            function_name: self.sub_modules[sub_idx]
+                                .function_name
+                                .as_deref()
+                                .map(|name| self.kernel.string_forge().intern(name).0)
+                                .unwrap_or(0),
+                            caller_reg_limit,
+                            saved_regs,
+                            saved_this,
+                            saved_new_target,
+                            callee: super_ctor,
+                            construct_result_reg: Some(254),
+                            constructed_this: Some(derived_this),
+                            is_derived_constructor: super_obj.is_derived_constructor(),
+                        });
+
+                        self.bytecode = sub_bytecode;
+                        self.constants = converted_sub_constants;
+                        for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map {
+                            let si = self.kernel.string_forge().intern(name.as_str()).0;
+                            let global = self.kernel.global_object();
+                            if let Some(pos) = self.kernel.shape_forge().lookup_position(global.shape_id(), si) {
+                                self.regs[*reg as usize] = global.get_prop_at(pos);
+                            }
+                        }
+                        self.active_reg_limit = sub_n_registers.max(1);
+                        self.pc = 0;
+                        continue;
+                    } else {
+                        throw_err!(self, TypeError, "super constructor is not callable");
+                    }
+                }
+
+                OpCode::SUPER_GET_PROP | OpCode::SUPER_STATIC_GET_PROP => {
+                    let key_val = self.regs[b];
+                    let prop_name_si = self.property_key_si(key_val);
+                    let Some(frame) = self.frames.last() else {
+                        throw_err!(self, ReferenceError, "super property used outside function");
+                    };
+                    if !frame.callee.is_object() {
+                        throw_err!(self, ReferenceError, "super property has no home object");
+                    }
+                    let callee_obj = unsafe { &*frame.callee.as_js_object_ptr() };
+                    let home_object = callee_obj.home_object();
+                    if !home_object.is_object() {
+                        throw_err!(self, ReferenceError, "super property has no home object");
+                    }
+                    let home_obj = unsafe { &*home_object.as_js_object_ptr() };
+                    let super_base = home_obj.proto();
+                    if !super_base.is_object() {
+                        self.regs[rd] = JsValue::undefined();
+                    } else {
+                        let super_obj = unsafe { &*super_base.as_js_object_ptr() };
+                        self.regs[rd] = self.resolve_property(super_obj, prop_name_si).unwrap_or(JsValue::undefined());
+                    }
+                }
+
+                OpCode::SET_HOME_OBJECT => {
+                    let func_val = self.regs[rd];
+                    let home_val = self.regs[a];
+                    if !func_val.is_object() || !home_val.is_object() {
+                        throw_err!(self, TypeError, "SET_HOME_OBJECT expects function and object");
+                    }
+                    let func_obj = unsafe { &mut *func_val.as_js_object_ptr() };
+                    if !func_obj.is_function() {
+                        throw_err!(self, TypeError, "SET_HOME_OBJECT target is not a function");
+                    }
+                    func_obj.set_home_object(home_val);
+                }
+
                 OpCode::RETURN => {
                     let result = self.regs[rd];
                     if let Some(frame) = self.frames.pop() {
                         let construct_result_reg = frame.construct_result_reg;
                         let constructed_this = frame.constructed_this;
+                        let is_derived_constructor = frame.is_derived_constructor;
+                        let callee_this = self.regs[254];
                         self.restore_frame(frame);
-                        if let (Some(target_reg), Some(constructed_this)) =
-                            (construct_result_reg, constructed_this)
-                        {
+                        if let (Some(target_reg), Some(constructed_this)) = (construct_result_reg, constructed_this) {
+                            if is_derived_constructor && result.is_undefined() && callee_this.is_undefined() {
+                                throw_err!(self, ReferenceError, "derived constructor must call super()");
+                            }
                             self.regs[target_reg as usize] = if result.is_object() { result } else { constructed_this };
                             self.regs[0] = self.regs[target_reg as usize];
                         } else {
@@ -1419,8 +1610,10 @@ mod tests {
             saved_regs: vec![JsValue::undefined()].into_boxed_slice(),
             saved_this: JsValue::undefined(),
             saved_new_target: JsValue::undefined(),
+            callee: JsValue::undefined(),
             construct_result_reg: None,
             constructed_this: None,
+            is_derived_constructor: false,
         });
         vm.for_in_iters.push(std::ptr::dangling_mut::<u8>());
         vm.for_of_iters.push(std::ptr::dangling_mut::<u8>());

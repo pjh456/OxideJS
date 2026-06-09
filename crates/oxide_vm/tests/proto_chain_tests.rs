@@ -161,6 +161,15 @@ fn object_instanceof_object() {
     assert_bool!(eval("({}) instanceof Object"), true, "({}) instanceof Object");
 }
 
+#[test]
+fn derived_class_instanceof_parent() {
+    assert_bool!(
+        eval("class A {} class B extends A {} let b = new B(); b instanceof A"),
+        true,
+        "derived class instanceof parent"
+    );
+}
+
 // -- instanceof for native types should NOT respond to their own false positives --
 #[test]
 fn number_not_instanceof_array() {

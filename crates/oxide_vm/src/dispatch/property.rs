@@ -90,8 +90,15 @@ impl Vm {
             return Ok(());
         }
 
-        let obj = unsafe { &mut *obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[b]);
+        if self.kernel.string_forge().lookup(prop_name_si).as_deref() == Some("__proto__") {
+            let obj = unsafe { &mut *obj_ptr };
+            obj.set_proto(self.regs[a]).map_err(|e| e.to_string())?;
+            self.pc += 3;
+            return Ok(());
+        }
+
+        let obj = unsafe { &mut *obj_ptr };
         let ext0 = self.bytecode[self.pc];
         let ext1 = self.bytecode[self.pc + 1];
         let ext2 = self.bytecode[self.pc + 2];
@@ -150,6 +157,10 @@ impl Vm {
         }
         let obj = unsafe { &mut *obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[b]);
+        if self.kernel.string_forge().lookup(prop_name_si).as_deref() == Some("__proto__") {
+            obj.set_proto(self.regs[a]).map_err(|e| e.to_string())?;
+            return Ok(());
+        }
         if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             obj.set_prop_at(pos, self.regs[a]);
         } else {
@@ -181,6 +192,10 @@ impl Vm {
         }
         let obj = unsafe { &mut *obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[a]);
+        if self.kernel.string_forge().lookup(prop_name_si).as_deref() == Some("__proto__") {
+            obj.set_proto(self.regs[b]).map_err(|e| e.to_string())?;
+            return Ok(());
+        }
         if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             obj.set_prop_at(pos, self.regs[b]);
         } else {

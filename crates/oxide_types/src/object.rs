@@ -37,9 +37,10 @@ impl PropIndex for i32 {
     }
 }
 
-/// Layout (56B):
+/// Layout:
 ///   header: u32 bits
 ///     [0:23]   shape_id
+///     [26]     is_derived_constructor
 ///     [27]     is_class_constructor
 ///     [28]     is_arrow
 ///     [29]     is_array
@@ -52,6 +53,7 @@ impl PropIndex for i32 {
 ///   native_fn: u64 (8 bytes, 0 = None sentinel)
 ///   sub_module_index: u32 (4 bytes + 4 pad, index into CompiledModule.sub_modules)
 ///   captured_this: JsValue (8 bytes, lexical this for arrow functions)
+///   home_object: JsValue (8 bytes, [[HomeObject]] for super lookup)
 #[repr(C)]
 pub struct JsObject {
     header: u32,
@@ -65,6 +67,7 @@ pub struct JsObject {
     sub_module_index: u32,
     _pad3: [u8; 4],
     captured_this: JsValue,
+    home_object: JsValue,
 }
 
 impl JsObject {
@@ -81,6 +84,7 @@ impl JsObject {
             sub_module_index: 0,
             _pad3: [0; 4],
             captured_this: JsValue::undefined(),
+            home_object: JsValue::undefined(),
         }
     }
 
@@ -97,6 +101,7 @@ impl JsObject {
             sub_module_index: 0,
             _pad3: [0; 4],
             captured_this: JsValue::undefined(),
+            home_object: JsValue::undefined(),
         };
         let vec = Box::new(vec![Box::new(JsValue::undefined()); n_elements]);
         obj.hash_props = Box::into_raw(vec) as *mut u8;
@@ -333,6 +338,26 @@ impl JsObject {
             self.header &= !(1 << 27);
         }
     }
+
+    pub fn is_derived_constructor(&self) -> bool {
+        (self.header >> 26) & 1 != 0
+    }
+
+    pub fn set_derived_constructor(&mut self, v: bool) {
+        if v {
+            self.header |= 1 << 26;
+        } else {
+            self.header &= !(1 << 26);
+        }
+    }
+
+    pub fn home_object(&self) -> JsValue {
+        self.home_object
+    }
+
+    pub fn set_home_object(&mut self, v: JsValue) {
+        self.home_object = v;
+    }
 }
 
 #[cfg(test)]
@@ -343,7 +368,7 @@ mod tests {
     #[test]
     fn object_size_bounds() {
         let sz = std::mem::size_of::<JsObject>();
-        assert!(sz >= 40 && sz <= 56, "JsObject layout mismatch - expected 40-56B, got {sz}B");
+        assert!(sz >= 40 && sz <= 72, "JsObject layout mismatch - expected 40-72B, got {sz}B");
     }
 
     #[test]

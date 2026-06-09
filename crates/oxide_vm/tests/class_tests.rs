@@ -9,6 +9,11 @@ fn eval(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
     vm.run(&module)
 }
 
+fn assert_num(value: JsValue, expected: f64) {
+    let actual = if value.is_int() { value.as_int() as f64 } else { value.as_double() };
+    assert!((actual - expected).abs() < 0.0001, "expected {expected}, got {actual}");
+}
+
 #[test]
 fn class_declaration_is_function_value() {
     let mut vm = Vm::new();
@@ -67,4 +72,44 @@ fn class_constructor_primitive_return_preserves_instance() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "class A { constructor() { this.x = 1; return 5; } } new A().x").unwrap();
     assert_eq!(result.as_int(), 1);
+}
+
+#[test]
+fn derived_constructor_super_initializes_parent_state() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class A { constructor(){ this.x = 1 } } class B extends A { constructor(){ super(); this.y = 2 } } let b = new B(); b.x + b.y",
+    )
+    .unwrap();
+    assert_num(result, 3.0);
+}
+
+#[test]
+fn derived_default_constructor_delegates_to_parent() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "class A { constructor(){ this.x = 1 } } class B extends A {} new B().x").unwrap();
+    assert_eq!(result.as_int(), 1);
+}
+
+#[test]
+fn derived_constructor_this_before_super_throws_reference_error() {
+    let mut vm = Vm::new();
+    let err = eval(
+        &mut vm,
+        "class A { constructor(){ this.x = 1 } } class B extends A { constructor(){ this.x = 2; super(); } } new B()",
+    )
+    .unwrap_err();
+    assert!(err.contains("ReferenceError"), "expected ReferenceError, got: {err}");
+}
+
+#[test]
+fn derived_method_super_call_uses_current_receiver() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class A { m(){ return this.x } } class B extends A { constructor(){ super(); this.x = 2 } m(){ return super.m() + 1 } } new B().m()",
+    )
+    .unwrap();
+    assert_num(result, 3.0);
 }

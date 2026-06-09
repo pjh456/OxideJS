@@ -9,7 +9,17 @@ impl Compiler {
     fn count_class(&self, class: &oxide_parser::Class, ctx: &mut CompileCtx) {
         ctx.alloc_reg(); // ctor_reg
         ctx.alloc_reg(); // proto_reg
+        if let Some(super_class) = &class.super_class {
+            self.count_expression(super_class, ctx);
+        }
         ctx.projected_pc += 2; // LOAD_CONST ctor + NEW_OBJECT proto
+
+        if class.super_class.is_some() {
+            ctx.alloc_reg(); // parent prototype key
+            ctx.alloc_reg(); // parent prototype value
+            ctx.alloc_reg(); // __proto__ key
+            ctx.projected_pc += 5; // LOAD_CONST + GET_PROP + LOAD_CONST + two SET_PROP
+        }
 
         for element in &class.body.body {
             let ClassElement::MethodDefinition(method) = element else {
@@ -21,7 +31,7 @@ impl Compiler {
                 MethodDefinitionKind::Method => {
                     ctx.alloc_reg(); // method_reg
                     ctx.alloc_reg(); // key_reg
-                    ctx.projected_pc += 3; // LOAD_CONST method + LOAD_CONST key + SET_PROP
+                    ctx.projected_pc += 4; // LOAD_CONST method + SET_HOME_OBJECT + LOAD_CONST key + SET_PROP
                 }
                 MethodDefinitionKind::Get | MethodDefinitionKind::Set => {}
             }
@@ -335,13 +345,32 @@ impl Compiler {
                 }
             }
             Expression::CallExpression(call) => {
+                if matches!(&call.callee, Expression::Super(_)) {
+                    for arg in &call.arguments {
+                        if let Some(expr) = arg.as_expression() {
+                            self.count_expression(expr, ctx);
+                        }
+                    }
+                    ctx.alloc_reg();
+                    ctx.projected_pc += 2; // SUPER_CALL + arg_count ext word
+                    return;
+                }
                 match &call.callee {
                     Expression::StaticMemberExpression(member) => {
-                        self.count_expression(&member.object, ctx);
-                        ctx.alloc_reg();
-                        ctx.projected_pc += 1;
-                        ctx.alloc_reg();
-                        ctx.projected_pc += 5; // LOAD_VAR + IC_GET_PROP + 3 ext words
+                        if matches!(&member.object, Expression::Super(_)) {
+                            ctx.alloc_reg(); // this register
+                            ctx.projected_pc += 1; // LOAD_VAR this
+                            ctx.alloc_reg(); // key
+                            ctx.projected_pc += 1; // LOAD_CONST key
+                            ctx.alloc_reg(); // callee
+                            ctx.projected_pc += 1; // SUPER_GET_PROP
+                        } else {
+                            self.count_expression(&member.object, ctx);
+                            ctx.alloc_reg();
+                            ctx.projected_pc += 1;
+                            ctx.alloc_reg();
+                            ctx.projected_pc += 5; // LOAD_VAR + IC_GET_PROP + 3 ext words
+                        }
                     }
                     _ => {
                         self.count_expression(&call.callee, ctx);
@@ -547,6 +576,15 @@ impl Compiler {
                 }
             }
             Expression::StaticMemberExpression(member) => {
+                if matches!(&member.object, Expression::Super(_)) {
+                    ctx.alloc_reg(); // key
+                    ctx.projected_pc += 1; // LOAD_CONST key
+                    ctx.alloc_reg(); // this
+                    ctx.projected_pc += 1; // LOAD_VAR this
+                    ctx.alloc_reg(); // result
+                    ctx.projected_pc += 1; // SUPER_GET_PROP
+                    return;
+                }
                 self.count_expression(&member.object, ctx);
                 ctx.alloc_reg();
                 ctx.projected_pc += 1; // LOAD_CONST key

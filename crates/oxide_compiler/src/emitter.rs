@@ -19,12 +19,9 @@ impl Compiler {
     }
 
     fn emit_class(&self, class: &Class, ctx: &mut CompileCtx) -> Result<u8, String> {
-        if class.super_class.is_some() {
-            return Err("class extends not yet supported".into());
-        }
-
         let mut constructor_method = None;
         let mut instance_methods = Vec::new();
+        let is_derived = class.super_class.is_some();
 
         for element in &class.body.body {
             let ClassElement::MethodDefinition(method) = element else {
@@ -59,14 +56,33 @@ impl Compiler {
         let ctor_reg = ctx.alloc_reg();
         let proto_reg = ctx.alloc_reg();
         let self_binding = ctor_name.as_deref().map(|name| vec![(name, ctor_reg)]).unwrap_or_default();
+        let super_reg = if let Some(super_expr) = &class.super_class {
+            Some(self.emit_expression(super_expr, ctx)?)
+        } else {
+            None
+        };
+
+        let saved_derived = ctx.in_derived_constructor;
+        ctx.in_derived_constructor = is_derived;
 
         let mut ctor_module = if let Some(method) = constructor_method {
             let (param_names, body_stmts) = self.extract_function_parts(method.value.as_ref())?;
             self.compile_function_body_with_bindings(&param_names, body_stmts, ctx, false, &self_binding)?
         } else {
-            self.compile_function_body_with_bindings(&[], &[], ctx, false, &self_binding)?
+            let mut module = self.compile_function_body_with_bindings(&[], &[], ctx, false, &self_binding)?;
+            if is_derived {
+                module.bytecode.clear();
+                module.constants.clear();
+                module.n_registers = 1;
+                module.bytecode.push(opcode::encode(OpCode::SUPER_CALL, 0, 0, 0));
+                module.bytecode.push(0);
+                module.bytecode.push(opcode::encode(OpCode::RETURN, 0, 0, 0));
+            }
+            module
         };
+        ctx.in_derived_constructor = saved_derived;
         ctor_module.is_class_constructor = true;
+        ctor_module.is_derived_constructor = is_derived;
         ctor_module.function_name = ctor_name.clone();
         ctx.sub_modules.push(ctor_module);
 
@@ -74,16 +90,35 @@ impl Compiler {
         ctx.emit_load_const(ctor_reg, ctor_idx);
         ctx.emit(opcode::encode(OpCode::NEW_OBJECT, proto_reg, 0, 0));
 
+        if let Some(super_reg) = super_reg {
+            let proto_key_idx = ctx.add_constant(Constant::String("prototype".to_string()));
+            let parent_proto_key_reg = ctx.alloc_reg();
+            ctx.emit_load_const(parent_proto_key_reg, proto_key_idx);
+            let parent_proto_reg = ctx.alloc_reg();
+            ctx.emit(opcode::encode(OpCode::GET_PROP, super_reg, parent_proto_reg, parent_proto_key_reg));
+
+            let proto_link_idx = ctx.add_constant(Constant::String("__proto__".to_string()));
+            let proto_link_key_reg = ctx.alloc_reg();
+            ctx.emit_load_const(proto_link_key_reg, proto_link_idx);
+            ctx.emit(opcode::encode(OpCode::SET_PROP, proto_reg, parent_proto_reg, proto_link_key_reg));
+            ctx.emit(opcode::encode(OpCode::SET_PROP, ctor_reg, super_reg, proto_link_key_reg));
+        }
+
         for (method, method_name) in instance_methods {
             let (param_names, body_stmts) = self.extract_function_parts(method.value.as_ref())?;
+            let saved_method = ctx.in_instance_method;
+            ctx.in_instance_method = true;
             let mut method_module =
                 self.compile_function_body_with_bindings(&param_names, body_stmts, ctx, false, &self_binding)?;
+            ctx.in_instance_method = saved_method;
             method_module.function_name = Some(method_name.clone());
+            method_module.needs_home_object = true;
             ctx.sub_modules.push(method_module);
 
             let method_idx = ctx.add_constant(Constant::BytecodeFunc(ctx.sub_modules.len() as u32));
             let method_reg = ctx.alloc_reg();
             ctx.emit_load_const(method_reg, method_idx);
+            ctx.emit(opcode::encode(OpCode::SET_HOME_OBJECT, method_reg, proto_reg, 0));
 
             let key_idx = ctx.add_constant(Constant::String(method_name));
             let key_reg = ctx.alloc_reg();
@@ -753,6 +788,20 @@ impl Compiler {
                 }
             }
             Expression::StaticMemberExpression(member) => {
+                if matches!(&member.object, Expression::Super(_)) {
+                    if !ctx.in_instance_method && !ctx.in_derived_constructor {
+                        return Err("super property only supported in class methods".into());
+                    }
+                    let prop_name = member.property.name.as_str();
+                    let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
+                    let key_reg = ctx.alloc_reg();
+                    ctx.emit_load_const(key_reg, idx);
+                    let this_reg = ctx.alloc_reg();
+                    ctx.emit(opcode::encode(OpCode::LOAD_VAR, this_reg, 254, 0));
+                    let result_reg = ctx.alloc_reg();
+                    ctx.emit(opcode::encode(OpCode::SUPER_GET_PROP, result_reg, this_reg, key_reg));
+                    return Ok(result_reg);
+                }
                 let obj_reg = self.emit_expression(&member.object, ctx)?;
                 let prop_name = member.property.name.as_str();
                 let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
@@ -1139,19 +1188,49 @@ impl Compiler {
             }
             Expression::ParenthesizedExpression(p) => self.emit_expression(&p.expression, ctx),
             Expression::CallExpression(call) => {
+                if matches!(&call.callee, Expression::Super(_)) {
+                    if !ctx.in_derived_constructor {
+                        return Err("super() only supported in derived constructors".into());
+                    }
+                    let mut arg_regs = Vec::new();
+                    for arg in &call.arguments {
+                        if let Some(expr) = arg.as_expression() {
+                            arg_regs.push(self.emit_expression(expr, ctx)?);
+                        }
+                    }
+                    let first_arg_reg = if arg_regs.is_empty() { 0u8 } else { arg_regs[0] };
+                    let result_reg = ctx.alloc_reg();
+                    ctx.emit(opcode::encode(OpCode::SUPER_CALL, result_reg, first_arg_reg, 0));
+                    ctx.emit(arg_regs.len() as u32);
+                    return Ok(result_reg);
+                }
                 let (callee_reg, this_reg) = match &call.callee {
                     Expression::StaticMemberExpression(member) => {
-                        let obj_reg = self.emit_expression(&member.object, ctx)?;
+                        let is_super_member = matches!(&member.object, Expression::Super(_));
+                        let obj_reg = if is_super_member {
+                            let this_reg = ctx.alloc_reg();
+                            ctx.emit(opcode::encode(OpCode::LOAD_VAR, this_reg, 254, 0));
+                            this_reg
+                        } else {
+                            self.emit_expression(&member.object, ctx)?
+                        };
                         let prop_name = member.property.name.as_str();
                         let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
                         let key_reg = ctx.alloc_reg();
                         ctx.emit_load_const(key_reg, idx);
                         let callee_reg = ctx.alloc_reg();
-                        ctx.emit(opcode::encode(OpCode::LOAD_VAR, callee_reg, obj_reg, 0));
-                        ctx.emit(opcode::encode(OpCode::IC_GET_PROP, 0, callee_reg, key_reg));
-                        ctx.emit(0);
-                        ctx.emit(0);
-                        ctx.emit(0);
+                        if is_super_member {
+                            if !ctx.in_instance_method && !ctx.in_derived_constructor {
+                                return Err("super property only supported in class methods".into());
+                            }
+                            ctx.emit(opcode::encode(OpCode::SUPER_GET_PROP, callee_reg, obj_reg, key_reg));
+                        } else {
+                            ctx.emit(opcode::encode(OpCode::LOAD_VAR, callee_reg, obj_reg, 0));
+                            ctx.emit(opcode::encode(OpCode::IC_GET_PROP, 0, callee_reg, key_reg));
+                            ctx.emit(0);
+                            ctx.emit(0);
+                            ctx.emit(0);
+                        }
                         (callee_reg, obj_reg)
                     }
                     _ => {

@@ -123,6 +123,9 @@ fn hash_statement(stmt: &Statement, h: &mut rustc_hash::FxHasher) {
                 id.name.as_str().hash(h);
             }
             class.super_class.is_some().hash(h);
+            if let Some(super_class) = &class.super_class {
+                hash_expression(super_class, h);
+            }
             for element in &class.body.body {
                 hash_class_element(element, h);
             }
@@ -319,6 +322,9 @@ fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher) {
                 id.name.as_str().hash(h);
             }
             class.super_class.is_some().hash(h);
+            if let Some(super_class) = &class.super_class {
+                hash_expression(super_class, h);
+            }
             for element in &class.body.body {
                 hash_class_element(element, h);
             }
@@ -332,6 +338,9 @@ fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher) {
                     hash_expression(expr, h);
                 }
             }
+        }
+        Expression::Super(_) => {
+            19u8.hash(h);
         }
         Expression::RegExpLiteral(lit) => {
             if let Some(raw) = &lit.raw {

@@ -34,6 +34,11 @@ pub struct CompiledModule {
     /// True when this bytecode function is a class constructor.
     /// Ordinary CALL must reject it, while NEW_EXPRESSION may construct through it.
     pub is_class_constructor: bool,
+    /// True when this class constructor has an `extends` clause.
+    /// `this` stays uninitialized until SUPER_CALL completes.
+    pub is_derived_constructor: bool,
+    /// True for prototype methods whose function object needs a runtime home_object.
+    pub needs_home_object: bool,
 }
 
 impl CompiledModule {
@@ -50,6 +55,8 @@ impl CompiledModule {
             captured_this_const_idx: 0,
             function_name: None,
             is_class_constructor: false,
+            is_derived_constructor: false,
+            needs_home_object: false,
         }
     }
 }
@@ -74,6 +81,8 @@ impl Clone for CompiledModule {
             captured_this_const_idx: self.captured_this_const_idx,
             function_name: self.function_name.clone(),
             is_class_constructor: self.is_class_constructor,
+            is_derived_constructor: self.is_derived_constructor,
+            needs_home_object: self.needs_home_object,
         }
     }
 }
