@@ -105,6 +105,21 @@ pub fn array_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     Ok(JsValue::from_js_object(arr))
 }
 
+pub fn array_is_array(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    if args.len() < 2 {
+        return Ok(JsValue::bool(false));
+    }
+    let val = vm.reg(args[1]);
+    if !val.is_object() {
+        return Ok(JsValue::bool(false));
+    }
+    let ptr = val.as_js_object_ptr();
+    if ptr.is_null() {
+        return Ok(JsValue::bool(false));
+    }
+    Ok(JsValue::bool(unsafe { &*ptr }.is_array()))
+}
+
 pub fn array_push(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &mut *arr_ptr };

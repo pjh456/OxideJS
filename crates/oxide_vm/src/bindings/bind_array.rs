@@ -7,6 +7,7 @@ use oxide_types::object::JsObject;
 
 pub fn bind_array(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     let _array_methods = ArrayMethods {
+        is_array: crate::builtins::array::array_is_array as *const (),
         push: crate::builtins::array::array_push as *const (),
         pop: crate::builtins::array::array_pop as *const (),
         slice: crate::builtins::array::array_slice as *const (),

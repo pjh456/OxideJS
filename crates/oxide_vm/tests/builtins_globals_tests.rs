@@ -76,3 +76,10 @@ fn division_by_zero_gives_infinity() {
     assert!(result.is_double());
     assert!(result.as_double().is_infinite());
 }
+
+#[test]
+fn global_this_points_to_global_object() {
+    let result = eval("globalThis.Object === Object").unwrap();
+    assert!(result.is_bool());
+    assert!(result.as_bool());
+}

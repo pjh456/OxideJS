@@ -399,6 +399,12 @@ fn compile_infinity_ok() {
 }
 
 #[test]
+fn compile_global_this_ok() {
+    let module = compile_source("globalThis");
+    assert!(!module.bytecode.is_empty());
+}
+
+#[test]
 fn compile_neg_infinity_ok() {
     let module = compile_source("1 / -Infinity");
     assert!(!module.bytecode.is_empty());

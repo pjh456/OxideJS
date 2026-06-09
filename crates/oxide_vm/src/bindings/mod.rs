@@ -90,4 +90,6 @@ pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
     bind_function::bind_function(kernel);
     bind_regexp::bind_regexp(kernel, global);
     bind_symbol::bind_symbol(kernel, global);
+
+    bind_global_value(kernel, global, "globalThis", JsValue::from_js_object(global_ptr));
 }

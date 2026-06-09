@@ -226,6 +226,7 @@ impl CompileCtx {
             "NaN",
             "undefined",
             "Infinity",
+            "globalThis",
             "Object",
             "Array",
             "String",

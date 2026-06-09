@@ -36,7 +36,7 @@ fn function_to_string_includes_function() {
     let result = eval(&mut vm, "Math.max.toString()").unwrap();
     assert!(result.is_string());
     let rendered = vm.kernel().string_forge().lookup(result.as_string_index()).unwrap_or_default();
-    assert!(rendered.contains("function"), "got: {}", rendered);
+    assert_eq!(rendered, "function max() { [native code] }");
 }
 
 #[test]

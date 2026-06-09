@@ -131,6 +131,12 @@ pub fn object_assign(vm: &mut Vm, args: &[u8]) -> NativeResult {
     Ok(target_val)
 }
 
+pub fn object_is(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let lhs = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let rhs = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    Ok(JsValue::bool(coercion::same_value(lhs, rhs)))
+}
+
 pub fn object_define_property(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if args.len() < 4 {
         return Err(JsValue::undefined());

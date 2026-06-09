@@ -188,6 +188,15 @@ fn array_empty_literal() {
 }
 
 #[test]
+fn array_is_array_static_method() {
+    let (_vm, result) = eval("Array.isArray([])").unwrap();
+    assert_eq!(result, JsValue::bool(true));
+
+    let (_vm, result) = eval("Array.isArray({})").unwrap();
+    assert_eq!(result, JsValue::bool(false));
+}
+
+#[test]
 fn array_shift_removes_first() {
     let (_vm, result) = eval("[1,2,3].shift()").unwrap();
     assert_eq!(result.as_int(), 1);

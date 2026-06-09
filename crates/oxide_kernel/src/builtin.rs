@@ -42,6 +42,7 @@ pub struct ObjectMethods {
     pub keys: *const (),
     pub create: *const (),
     pub assign: *const (),
+    pub is: *const (),
     pub define_property: *const (),
     pub get_own_property_descriptor: *const (),
     pub freeze: *const (),
@@ -60,6 +61,7 @@ pub struct ObjectMethods {
 }
 
 pub struct ArrayMethods {
+    pub is_array: *const (),
     pub push: *const (),
     pub pop: *const (),
     pub slice: *const (),
@@ -389,6 +391,7 @@ impl BuiltinWorld {
             ("keys", methods.keys, 1),
             ("create", methods.create, 2),
             ("assign", methods.assign, 2),
+            ("is", methods.is, 2),
             ("defineProperty", methods.define_property, 3),
             ("getOwnPropertyDescriptor", methods.get_own_property_descriptor, 2),
             ("freeze", methods.freeze, 1),
@@ -408,6 +411,10 @@ impl BuiltinWorld {
     }
 
     pub fn bind_array_methods(&self, methods: &ArrayMethods, string_forge: &StringForge, shape_forge: &ShapeForge) {
+        let ctor_ptr = P::as_ptr(&self.array_constructor) as *mut JsObject;
+        let ctor = unsafe { &mut *ctor_ptr };
+        bind_methods!(self, ctor, string_forge, shape_forge, ("isArray", methods.is_array, 1),);
+
         let proto_ptr = P::as_ptr(&self.array_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
         bind_methods!(
@@ -591,6 +598,12 @@ impl BuiltinWorld {
         wrapper.set_function(true);
         wrapper.set_native_fn(Some(native_fn_ptr));
         wrapper.set_native_arg_count(arg_count);
+        let si_name = string_forge.intern("name").0;
+        let name_shape = shape_forge.make_shape(wrapper.shape_id(), si_name);
+        wrapper.set_shape_id(name_shape);
+        wrapper
+            .ensure_hash_props()
+            .push(Box::new(JsValue::string(string_forge.intern(method_name).0, 0)));
         let wrapper_val = JsValue::from_js_object(Box::into_raw(wrapper));
         let new_shape = shape_forge.make_shape(proto.shape_id(), si);
         proto.set_shape_id(new_shape);

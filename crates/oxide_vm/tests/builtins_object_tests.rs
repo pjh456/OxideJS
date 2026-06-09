@@ -38,6 +38,18 @@ fn object_assign_copies() {
 }
 
 #[test]
+fn object_is_uses_same_value_semantics() {
+    let (_vm, result) = eval("Object.is(NaN, NaN)").unwrap();
+    assert_eq!(result, JsValue::bool(true));
+
+    let (_vm, result) = eval("Object.is(1, 1)").unwrap();
+    assert_eq!(result, JsValue::bool(true));
+
+    let (_vm, result) = eval("Object.is(1, '1')").unwrap();
+    assert_eq!(result, JsValue::bool(false));
+}
+
+#[test]
 fn object_get_own_property_descriptor_value() {
     let (_vm, result) = eval("Object.getOwnPropertyDescriptor({a:1},'a')").unwrap();
     assert!(result.is_object());

@@ -1,7 +1,6 @@
 #![allow(clippy::arc_with_non_send_sync)]
 
 use oxide_compiler::compiler::Compiler;
-use oxide_compiler::module::CompiledModule;
 use oxide_kernel::kernel::{KernelConfig, OxideKernel};
 use oxide_vm::vm::{init_kernel_builtins, Vm};
 use serde::Deserialize;
@@ -115,6 +114,115 @@ struct RunConfig {
     no_skip: bool,
 }
 
+struct HarnessSources {
+    sources: HashMap<&'static str, &'static str>,
+}
+
+impl HarnessSources {
+    fn new() -> Self {
+        let mut sources = HashMap::new();
+        sources.insert("sta.js", include_str!("../../../tests/test262/harness/sta.js"));
+        sources.insert("assert.js", include_str!("../../../tests/test262/harness/assert.js"));
+        sources.insert("propertyHelper.js", include_str!("../../../tests/test262/harness/propertyHelper.js"));
+        sources.insert("compareArray.js", include_str!("../../../tests/test262/harness/compareArray.js"));
+        sources.insert("fnGlobalObject.js", include_str!("../../../tests/test262/harness/fnGlobalObject.js"));
+        sources.insert("nans.js", include_str!("../../../tests/test262/harness/nans.js"));
+        sources.insert("dateConstants.js", include_str!("../../../tests/test262/harness/dateConstants.js"));
+        sources.insert(
+            "decimalToHexString.js",
+            include_str!("../../../tests/test262/harness/decimalToHexString.js"),
+        );
+        sources.insert("isConstructor.js", include_str!("../../../tests/test262/harness/isConstructor.js"));
+        sources.insert("nativeErrors.js", include_str!("../../../tests/test262/harness/nativeErrors.js"));
+        sources.insert(
+            "nativeFunctionMatcher.js",
+            include_str!("../../../tests/test262/harness/nativeFunctionMatcher.js"),
+        );
+        sources.insert("regExpUtils.js", include_str!("../../../tests/test262/harness/regExpUtils.js"));
+        sources.insert(
+            "assertRelativeDateMs.js",
+            include_str!("../../../tests/test262/harness/assertRelativeDateMs.js"),
+        );
+        sources.insert(
+            "wellKnownIntrinsicObjects.js",
+            include_str!("../../../tests/test262/harness/wellKnownIntrinsicObjects.js"),
+        );
+        sources.insert("typeCoercion.js", include_str!("../../../tests/test262/harness/typeCoercion.js"));
+        sources.insert("deepEqual.js", include_str!("../../../tests/test262/harness/deepEqual.js"));
+        Self { sources }
+    }
+
+    fn get(&self, name: &str) -> Option<&'static str> {
+        self.sources.get(name).copied()
+    }
+}
+
+fn is_blacklisted_harness(name: &str) -> bool {
+    matches!(
+        name,
+        "testTypedArray.js"
+            | "testIntl.js"
+            | "testAtomics.js"
+            | "atomicsHelper.js"
+            | "proxyTrapsHelper.js"
+            | "temporalHelpers.js"
+            | "tcoHelper.js"
+            | "asyncHelpers.js"
+            | "promiseHelper.js"
+            | "detachArrayBuffer.js"
+            | "resizableArrayBufferUtils.js"
+            | "byteConversionValues.js"
+            | "compareIterator.js"
+            | "iteratorZipUtils.js"
+            | "doneprintHandle.js"
+    )
+}
+
+fn test262_error_prelude() -> &'static str {
+    r#"
+function Test262Error(message) {
+  this.message = message;
+  this.name = "Test262Error";
+}
+Test262Error.prototype = new Error();
+Test262Error.prototype.constructor = Test262Error;
+"#
+}
+
+fn append_source_chunk(out: &mut String, name: &str, source: &str) {
+    out.push_str("\n// ---- test262 harness: ");
+    out.push_str(name);
+    out.push_str(" ----\n");
+    out.push_str(source);
+    out.push('\n');
+}
+
+fn build_test_source(meta: &TestMeta, source: &str, harness: &HarnessSources) -> Result<String, String> {
+    let mut full_source = String::new();
+    append_source_chunk(&mut full_source, "Test262Error prelude", test262_error_prelude());
+    append_source_chunk(
+        &mut full_source,
+        "sta.js",
+        harness.get("sta.js").ok_or_else(|| String::from("unknown harness: sta.js"))?,
+    );
+    append_source_chunk(
+        &mut full_source,
+        "assert.js",
+        harness
+            .get("assert.js")
+            .ok_or_else(|| String::from("unknown harness: assert.js"))?,
+    );
+    for include in &meta.includes {
+        if is_blacklisted_harness(include) {
+            return Err(format!("out-of-scope harness: {include}"));
+        }
+        let include_source = harness.get(include).ok_or_else(|| format!("unknown harness: {include}"))?;
+        append_source_chunk(&mut full_source, include, include_source);
+    }
+    append_source_chunk(&mut full_source, "test source", strip_meta(source));
+    Ok(full_source)
+}
+
 impl RunConfig {
     fn parse(args: &[String]) -> Result<Self, String> {
         let mut config = Self::default();
@@ -223,33 +331,13 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
     None
 }
 
-fn compile_harness(_kernel: &Arc<OxideKernel>) -> Result<CompiledModule, String> {
-    let prelude = r#"
-function Test262Error(message) {
-  this.message = message;
-  this.name = "Test262Error";
-}
-Test262Error.prototype = new Error();
-Test262Error.prototype.constructor = Test262Error;
-"#;
-    let assert_js = include_str!("../../../tests/test262/harness/assert.js");
-    let full_source = format!("{prelude}\n{assert_js}");
-
-    let alloc = oxide_parser::Allocator::default();
-    let program =
-        oxide_parser::parse(&alloc, &full_source).map_err(|e| format!("harness parse error: {}", e[0].message))?;
-
-    Compiler::new().compile(&program)
-}
-
 fn run_test(
-    path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<OxideKernel>, harness_module: &CompiledModule,
-    no_skip: bool,
+    path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<OxideKernel>, harness: &HarnessSources, no_skip: bool,
 ) -> TestResult {
     let start = std::time::Instant::now();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_test_inner(path, source, meta, kernel, harness_module, no_skip)
+        run_test_inner(path, source, meta, kernel, harness, no_skip)
     }));
 
     match result {
@@ -262,15 +350,23 @@ fn run_test(
 }
 
 fn run_test_inner(
-    path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<OxideKernel>, harness_module: &CompiledModule,
-    no_skip: bool,
+    path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<OxideKernel>, harness: &HarnessSources, no_skip: bool,
 ) -> TestResult {
     let start = std::time::Instant::now();
 
-    let code = strip_meta(source);
+    let code = match build_test_source(meta, source, harness) {
+        Ok(code) => code,
+        Err(e) => {
+            let dur = start.elapsed().as_millis() as u64;
+            if no_skip {
+                return TestResult::fail(path.to_path_buf(), dur, e);
+            }
+            return TestResult::skip(path.to_path_buf(), e);
+        }
+    };
 
     let alloc = oxide_parser::Allocator::default();
-    let program = match oxide_parser::parse(&alloc, code) {
+    let program = match oxide_parser::parse(&alloc, &code) {
         Ok(p) => p,
         Err(errs) => {
             let dur = start.elapsed().as_millis() as u64;
@@ -313,15 +409,6 @@ fn run_test_inner(
     };
 
     let mut vm = Vm::with_kernel(Arc::clone(kernel));
-
-    if let Err(e) = vm.run(harness_module) {
-        let dur = start.elapsed().as_millis() as u64;
-        let msg = format!("harness injection failed: {e}");
-        if no_skip {
-            return TestResult::fail(path.to_path_buf(), dur, msg);
-        }
-        return TestResult::skip(path.to_path_buf(), msg);
-    }
 
     match vm.run(&module) {
         Ok(result) => {
@@ -417,6 +504,14 @@ fn categorize_fail(msg: &str) -> String {
         }
     } else if msg.contains("engine panic") {
         "engine panic".into()
+    } else if msg.contains("out-of-scope harness:") {
+        "harness: blacklisted".into()
+    } else if msg.contains("unknown harness:") {
+        "harness: unknown".into()
+    } else if msg.contains("harness compile error:") {
+        "harness: compile error".into()
+    } else if msg.contains("harness runtime error:") {
+        "harness: runtime error".into()
     } else if msg.contains("expected runtime error") {
         "expected runtime error".into()
     } else {
@@ -471,7 +566,7 @@ fn run_tests() -> bool {
         std::process::exit(1);
     }
 
-    let filter = config.filter.clone();
+    let filter = config.filter.clone().map(|f| f.replace('\\', "/"));
 
     eprintln!("discovering tests in: {}", test262_root.display());
     if config.no_skip {
@@ -482,14 +577,7 @@ fn run_tests() -> bool {
 
     let kernel = Arc::new(OxideKernel::new(KernelConfig::minimal()));
     init_kernel_builtins(&kernel);
-
-    let harness_module = match compile_harness(&kernel) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("FATAL: Failed to compile test262 harness: {e}");
-            std::process::exit(1);
-        }
-    };
+    let harness_sources = HarnessSources::new();
 
     let mut stats = RunStats::default();
     let mut results: Vec<TestResult> = Vec::new();
@@ -527,7 +615,7 @@ fn run_tests() -> bool {
         };
 
         if let Some(filter_str) = &filter {
-            let path_str = path.to_string_lossy();
+            let path_str = path.to_string_lossy().replace('\\', "/");
             if !path_str.contains(filter_str.as_str()) {
                 results.push(TestResult::skip(path.clone(), "filtered".into()));
                 stats.skip += 1;
@@ -550,7 +638,7 @@ fn run_tests() -> bool {
             }
         }
 
-        let result = run_test(path, &source, &meta, &kernel, &harness_module, config.no_skip);
+        let result = run_test(path, &source, &meta, &kernel, &harness_sources, config.no_skip);
         match &result.outcome {
             TestOutcome::Pass(_) => stats.pass += 1,
             TestOutcome::Fail(msg) => {

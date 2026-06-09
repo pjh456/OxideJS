@@ -10,6 +10,7 @@ pub fn bind_object(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
         keys: crate::builtins::object::object_keys as *const (),
         create: crate::builtins::object::object_create as *const (),
         assign: crate::builtins::object::object_assign as *const (),
+        is: crate::builtins::object::object_is as *const (),
         define_property: crate::builtins::object::object_define_property as *const (),
         get_own_property_descriptor: crate::builtins::object::object_get_own_property_descriptor as *const (),
         freeze: crate::builtins::object::object_freeze as *const (),
