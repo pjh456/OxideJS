@@ -486,6 +486,7 @@ impl Vm {
             let saved_this = self.regs[254];
             let saved_callee = self.regs[253];
             self.regs[253] = receiver;
+            self.regs[254] = callee;
             for (idx, arg) in args.iter().enumerate() {
                 self.regs[240 + idx] = *arg;
             }
