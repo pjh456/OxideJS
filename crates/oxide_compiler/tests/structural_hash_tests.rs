@@ -37,6 +37,13 @@ fn structural_hash_same_shape() {
 }
 
 #[test]
+fn structural_hash_identifier_renaming_remains_normalized() {
+    let hash_a = parse_to_hash("var left = 1; left + left");
+    let hash_b = parse_to_hash("var right = 1; right + right");
+    assert_eq!(hash_a, hash_b);
+}
+
+#[test]
 fn structural_hash_different_init_values() {
     let hash_a = parse_to_hash("var x = 1 + 2;");
     let hash_b = parse_to_hash("var y = 3 + 4;");
@@ -87,4 +94,26 @@ fn hash_compound_vs_simple_assign() {
     let hash_a = parse_to_hash("x=1");
     let hash_b = parse_to_hash("x+=1");
     assert_ne!(hash_a, hash_b, "x=1 and x+=1 must produce different hashes");
+}
+
+#[test]
+fn object_literal_data_get_set_shapes_differ() {
+    let data = parse_to_hash("var o = { x: 1 };");
+    let getter = parse_to_hash("var o = { get x() { return 1; } };");
+    let setter = parse_to_hash("var o = { set x(v) { this.y = v; } };");
+
+    assert_ne!(data, getter, "data and getter properties must hash differently");
+    assert_ne!(data, setter, "data and setter properties must hash differently");
+    assert_ne!(getter, setter, "getter and setter properties must hash differently");
+}
+
+#[test]
+fn class_method_getter_static_setter_shapes_differ() {
+    let method = parse_to_hash("class A { x() { return 1; } }");
+    let getter = parse_to_hash("class A { get x() { return 1; } }");
+    let static_setter = parse_to_hash("class A { static set x(v) { this.y = v; } }");
+
+    assert_ne!(method, getter, "method and getter must hash differently");
+    assert_ne!(method, static_setter, "method and static setter must hash differently");
+    assert_ne!(getter, static_setter, "getter and static setter must hash differently");
 }
