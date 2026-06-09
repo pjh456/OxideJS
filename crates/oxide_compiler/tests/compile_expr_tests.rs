@@ -79,6 +79,12 @@ fn compile_binary_ops() {
         ("10 / 2", OpCode::DIV),
         ("7 % 3", OpCode::MOD),
         ("5 - 2", OpCode::SUB),
+        ("5 & 3", OpCode::BIT_AND),
+        ("5 | 2", OpCode::BIT_OR),
+        ("5 ^ 1", OpCode::BIT_XOR),
+        ("1 << 3", OpCode::SHL),
+        ("-8 >> 1", OpCode::SHR),
+        ("-1 >>> 0", OpCode::USHR),
     ];
 
     for (src, expected_op) in tests {
@@ -86,6 +92,15 @@ fn compile_binary_ops() {
         let has_op = module.bytecode.iter().any(|&i| opcode::opcode(i) == expected_op);
         assert!(has_op, "expected {:?} in '{src}'", expected_op);
     }
+}
+
+#[test]
+fn compile_bitwise_not() {
+    let module = compile_source("~0");
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::BIT_NOT),
+        "~0 should emit BIT_NOT opcode"
+    );
 }
 
 #[test]
@@ -204,6 +219,27 @@ fn compile_compound_exp() {
         module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::COMPOUND_EXP),
         "x**=2 should emit COMPOUND_EXP opcode"
     );
+}
+
+#[test]
+fn compile_compound_bitwise_ops() {
+    let tests = [
+        ("var x=5; x&=3", OpCode::COMPOUND_AND),
+        ("var x=5; x|=2", OpCode::COMPOUND_OR),
+        ("var x=5; x^=1", OpCode::COMPOUND_XOR),
+        ("var x=1; x<<=5", OpCode::COMPOUND_SHL),
+        ("var x=-8; x>>=1", OpCode::COMPOUND_SHR),
+        ("var x=-1; x>>>=0", OpCode::COMPOUND_USHR),
+    ];
+
+    for (src, expected_op) in tests {
+        let module = compile_source(src);
+        assert!(
+            module.bytecode.iter().any(|&i| opcode::opcode(i) == expected_op),
+            "expected {:?} in '{src}'",
+            expected_op
+        );
+    }
 }
 
 #[test]

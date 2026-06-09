@@ -103,3 +103,53 @@ fn eval_compound_add_expr_value() {
 fn eval_compound_undefined() {
     assert_eq!(eval("var x; x+=1; x"), "NaN");
 }
+
+#[test]
+fn eval_bitwise_direct_ops() {
+    assert_eq!(eval("5 & 3"), "1");
+    assert_eq!(eval("5 | 2"), "7");
+    assert_eq!(eval("5 ^ 1"), "4");
+    assert_eq!(eval("1 << 3"), "8");
+    assert_eq!(eval("-8 >> 1"), "-4");
+    assert_eq!(eval("-1 >>> 0"), "4294967295");
+    assert_eq!(eval("~0"), "-1");
+}
+
+#[test]
+fn eval_bitwise_coercion() {
+    assert_eq!(eval("'3' | 0"), "3");
+    assert_eq!(eval("'x' | 0"), "0");
+    assert_eq!(eval("undefined | 0"), "0");
+    assert_eq!(eval("NaN | 0"), "0");
+    assert_eq!(eval("1.9 | 0"), "1");
+    assert_eq!(eval("-1.9 | 0"), "-1");
+}
+
+#[test]
+fn eval_shift_masking() {
+    assert_eq!(eval("1 << 32"), "1");
+    assert_eq!(eval("1 << 33"), "2");
+    assert_eq!(eval("8 >> 33"), "4");
+}
+
+#[test]
+fn eval_ushr_boundaries() {
+    assert_eq!(eval("2147483647 >>> 0"), "2147483647");
+    assert_eq!(eval("2147483648 >>> 0"), "2147483648");
+    assert_eq!(eval("-1 >>> 1"), "2147483647");
+}
+
+#[test]
+fn eval_compound_bitwise_ops() {
+    assert_eq!(eval("var x=5; x &= 3; x"), "1");
+    assert_eq!(eval("var x=5; x |= 2; x"), "7");
+    assert_eq!(eval("var x=5; x ^= 1; x"), "4");
+    assert_eq!(eval("var x=1; x <<= 5; x"), "32");
+    assert_eq!(eval("var x=-8; x >>= 1; x"), "-4");
+    assert_eq!(eval("var x=-1; x >>>= 0; x"), "4294967295");
+}
+
+#[test]
+fn eval_bitwise_in_control_flow() {
+    assert_eq!(eval("var x=3; if ((x & 1) == 1) { 7 } else { 9 }"), "7");
+}

@@ -1,4 +1,5 @@
 pub(crate) mod arithmetic;
+pub(crate) mod bitwise;
 pub(crate) mod call;
 pub(crate) mod comparison;
 pub(crate) mod control_flow;

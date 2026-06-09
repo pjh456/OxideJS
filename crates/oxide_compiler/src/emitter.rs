@@ -669,6 +669,12 @@ impl Compiler {
                     BinaryOperator::Multiplication => OpCode::MUL,
                     BinaryOperator::Division => OpCode::DIV,
                     BinaryOperator::Remainder => OpCode::MOD,
+                    BinaryOperator::BitwiseAnd => OpCode::BIT_AND,
+                    BinaryOperator::BitwiseOR => OpCode::BIT_OR,
+                    BinaryOperator::BitwiseXOR => OpCode::BIT_XOR,
+                    BinaryOperator::ShiftLeft => OpCode::SHL,
+                    BinaryOperator::ShiftRight => OpCode::SHR,
+                    BinaryOperator::ShiftRightZeroFill => OpCode::USHR,
                     BinaryOperator::Equality => OpCode::EQ,
                     BinaryOperator::Inequality => OpCode::NEQ,
                     BinaryOperator::LessThan => OpCode::LT,
@@ -708,6 +714,11 @@ impl Compiler {
                         ctx.emit(opcode::encode(OpCode::NOT, r, arg, 0));
                         Ok(r)
                     }
+                    UnaryOperator::BitwiseNot => {
+                        let r = ctx.alloc_reg();
+                        ctx.emit(opcode::encode(OpCode::BIT_NOT, r, arg, 0));
+                        Ok(r)
+                    }
                     UnaryOperator::UnaryPlus => {
                         let r = ctx.alloc_reg();
                         ctx.emit(opcode::encode(OpCode::UNARY_PLUS, r, arg, 0));
@@ -735,7 +746,6 @@ impl Compiler {
                         }
                         _ => Err("invalid delete target".into()),
                     },
-                    _ => Err(format!("unsupported unary operator: {:?}", un.operator)),
                 }
             }
             Expression::ConditionalExpression(cond) => {
@@ -938,6 +948,12 @@ impl Compiler {
                             || assign.operator == AssignmentOperator::Division
                             || assign.operator == AssignmentOperator::Remainder
                             || assign.operator == AssignmentOperator::Exponential
+                            || assign.operator == AssignmentOperator::BitwiseAnd
+                            || assign.operator == AssignmentOperator::BitwiseOR
+                            || assign.operator == AssignmentOperator::BitwiseXOR
+                            || assign.operator == AssignmentOperator::ShiftLeft
+                            || assign.operator == AssignmentOperator::ShiftRight
+                            || assign.operator == AssignmentOperator::ShiftRightZeroFill
                         {
                             let rhs = self.emit_expression(&assign.right, ctx)?;
                             let name = id_ref.name.as_str();
@@ -949,6 +965,12 @@ impl Compiler {
                                 AssignmentOperator::Division => OpCode::COMPOUND_DIV,
                                 AssignmentOperator::Remainder => OpCode::COMPOUND_MOD,
                                 AssignmentOperator::Exponential => OpCode::COMPOUND_EXP,
+                                AssignmentOperator::BitwiseAnd => OpCode::COMPOUND_AND,
+                                AssignmentOperator::BitwiseOR => OpCode::COMPOUND_OR,
+                                AssignmentOperator::BitwiseXOR => OpCode::COMPOUND_XOR,
+                                AssignmentOperator::ShiftLeft => OpCode::COMPOUND_SHL,
+                                AssignmentOperator::ShiftRight => OpCode::COMPOUND_SHR,
+                                AssignmentOperator::ShiftRightZeroFill => OpCode::COMPOUND_USHR,
                                 _ => {
                                     return Err(format!(
                                         "compound assignment operator {:?} not supported",

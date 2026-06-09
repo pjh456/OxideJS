@@ -34,6 +34,23 @@ pub fn to_number(val: JsValue, string_forge: &StringForge) -> f64 {
     f64::NAN
 }
 
+pub fn to_uint32(val: JsValue, string_forge: &StringForge) -> u32 {
+    let n = to_number(val, string_forge);
+    if n == 0.0 || !n.is_finite() {
+        return 0;
+    }
+    n.trunc().rem_euclid(4_294_967_296.0) as u32
+}
+
+pub fn to_int32(val: JsValue, string_forge: &StringForge) -> i32 {
+    let int = to_uint32(val, string_forge);
+    if int > i32::MAX as u32 {
+        (int as i64 - 4_294_967_296i64) as i32
+    } else {
+        int as i32
+    }
+}
+
 pub fn to_string(string_forge: &StringForge, val: JsValue) -> String {
     if val.is_int() {
         return val.as_int().to_string();

@@ -657,6 +657,34 @@ impl Vm {
                     self.regs[rd] = JsValue::float(-v);
                 }
 
+                OpCode::BIT_AND => {
+                    self.dispatch_bit_and(rd, a, b);
+                }
+
+                OpCode::BIT_OR => {
+                    self.dispatch_bit_or(rd, a, b);
+                }
+
+                OpCode::BIT_XOR => {
+                    self.dispatch_bit_xor(rd, a, b);
+                }
+
+                OpCode::SHL => {
+                    self.dispatch_shl(rd, a, b);
+                }
+
+                OpCode::SHR => {
+                    self.dispatch_shr(rd, a, b);
+                }
+
+                OpCode::USHR => {
+                    self.dispatch_ushr(rd, a, b);
+                }
+
+                OpCode::BIT_NOT => {
+                    self.dispatch_bit_not(rd, a);
+                }
+
                 OpCode::EQ => {
                     self.dispatch_eq(rd, a, b);
                 }
@@ -1275,6 +1303,30 @@ impl Vm {
                     let l = coercion::to_number(self.regs[rd], self.kernel.string_forge().as_ref());
                     let r = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
                     self.regs[rd] = JsValue::float(l.powf(r));
+                }
+
+                OpCode::COMPOUND_AND => {
+                    self.dispatch_compound_bit_and(rd, a);
+                }
+
+                OpCode::COMPOUND_OR => {
+                    self.dispatch_compound_bit_or(rd, a);
+                }
+
+                OpCode::COMPOUND_XOR => {
+                    self.dispatch_compound_bit_xor(rd, a);
+                }
+
+                OpCode::COMPOUND_SHL => {
+                    self.dispatch_compound_shl(rd, a);
+                }
+
+                OpCode::COMPOUND_SHR => {
+                    self.dispatch_compound_shr(rd, a);
+                }
+
+                OpCode::COMPOUND_USHR => {
+                    self.dispatch_compound_ushr(rd, a);
                 }
 
                 OpCode::TYPEOF => {

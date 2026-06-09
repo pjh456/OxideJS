@@ -82,3 +82,26 @@ fn test_strict_equality_int_float_equal() {
 fn test_strict_equality_null_undefined() {
     assert!(!coercion::strict_equality(JsValue::null(), JsValue::undefined()));
 }
+
+#[test]
+fn test_to_int32_and_to_uint32() {
+    let vm = Vm::new();
+    let sf = vm.kernel().string_forge().as_ref();
+    let string_three = {
+        let (idx, hash) = vm.kernel().string_forge().intern("3");
+        JsValue::string(idx, hash)
+    };
+    let string_bad = {
+        let (idx, hash) = vm.kernel().string_forge().intern("x");
+        JsValue::string(idx, hash)
+    };
+
+    assert_eq!(coercion::to_int32(string_three, sf), 3);
+    assert_eq!(coercion::to_int32(string_bad, sf), 0);
+    assert_eq!(coercion::to_int32(JsValue::undefined(), sf), 0);
+    assert_eq!(coercion::to_int32(JsValue::float(1.9), sf), 1);
+    assert_eq!(coercion::to_int32(JsValue::float(-1.9), sf), -1);
+    assert_eq!(coercion::to_int32(JsValue::float(f64::NAN), sf), 0);
+    assert_eq!(coercion::to_int32(JsValue::float(f64::INFINITY), sf), 0);
+    assert_eq!(coercion::to_uint32(JsValue::int(-1), sf), 4_294_967_295);
+}
