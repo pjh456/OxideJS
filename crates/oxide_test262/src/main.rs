@@ -6,6 +6,7 @@ use oxide_vm::vm::{init_kernel_builtins, Vm};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use walkdir::WalkDir;
@@ -105,6 +106,34 @@ struct RunStats {
     skip: usize,
     total_ms: u64,
     fail_categories: HashMap<String, usize>,
+}
+
+impl RunStats {
+    /// Fold another worker's partial stats into this one. Used to reduce
+    /// per-worker results back into a single total after parallel execution.
+    fn merge(&mut self, other: RunStats) {
+        self.pass += other.pass;
+        self.fail += other.fail;
+        self.skip += other.skip;
+        self.total_ms += other.total_ms;
+        for (cat, count) in other.fail_categories {
+            *self.fail_categories.entry(cat).or_insert(0) += count;
+        }
+    }
+
+    /// Record a single test result into the running totals.
+    fn record(&mut self, result: &TestResult) {
+        match &result.outcome {
+            TestOutcome::Pass(_) => self.pass += 1,
+            TestOutcome::Fail(msg) => {
+                let cat = categorize_fail(msg);
+                *self.fail_categories.entry(cat).or_insert(0) += 1;
+                self.fail += 1;
+            }
+            TestOutcome::Skip(_) => self.skip += 1,
+        }
+        self.total_ms += result.duration_ms;
+    }
 }
 
 #[derive(Debug, Default)]
@@ -491,6 +520,62 @@ fn discover_tests(test262_root: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Per-test pipeline shared by the serial and parallel execution paths:
+/// read the file, parse metadata, apply skip filters, then run. Returns
+/// exactly one `TestResult`. Worker-owned state (`kernel`, `harness_sources`,
+/// `harness_cache`) never crosses a thread boundary.
+fn process_path(
+    path: &Path, filter: &Option<String>, no_skip: bool, kernel: &Arc<OxideKernel>,
+    harness_sources: &HarnessSources, harness_cache: &mut HarnessPrefixCache,
+) -> TestResult {
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => return TestResult::skip(path.to_path_buf(), format!("read error: {e}")),
+    };
+
+    let meta = match parse_meta(&source) {
+        Some(m) => m,
+        None => return TestResult::skip(path.to_path_buf(), String::from("no YAML metadata")),
+    };
+
+    if let Some(filter_str) = filter {
+        let path_str = path.to_string_lossy().replace('\\', "/");
+        if !path_str.contains(filter_str.as_str()) {
+            return TestResult::skip(path.to_path_buf(), "filtered".into());
+        }
+    }
+
+    if path.to_string_lossy().contains("staging") {
+        return TestResult::skip(path.to_path_buf(), "staging tests excluded".into());
+    }
+
+    if !no_skip {
+        if let Some(reason) = is_skipped(&meta) {
+            return TestResult::skip(path.to_path_buf(), reason);
+        }
+    }
+
+    run_test(path, &source, &meta, kernel, harness_sources, harness_cache, no_skip)
+}
+
+/// Build a runner kernel with a bounded step limit. Each parallel worker owns
+/// its own kernel because `OxideKernel` is `!Send` (it holds `P<JsObject>` =
+/// `Arc<JsObject>`, and `JsObject` stores raw `*mut u8` property pointers).
+/// Nothing kernel-shaped can cross a thread boundary, so sharing is impossible;
+/// per-worker construction is the only correct design.
+fn build_runner_kernel() -> Arc<OxideKernel> {
+    // Bound each test's execution so a single infinite-loop / unsupported-feature
+    // loop fails (or skips) instead of stalling the run. The VM emits a
+    // "VM step limit exceeded" error on overrun, which the runner classifies as a
+    // step-limit result (skip by default, fail under --no-skip). Override only the
+    // runner's local config; KernelConfig::minimal() stays unbounded for other crates.
+    let mut kernel_config = KernelConfig::minimal();
+    kernel_config.max_steps = Some(50_000_000);
+    let kernel = Arc::new(OxideKernel::new(kernel_config));
+    init_kernel_builtins(&kernel);
+    kernel
+}
+
 fn categorize_fail(msg: &str) -> String {
     if msg.contains("compile error:") {
         let reason = msg.trim_start_matches("compile error: ").trim();
@@ -599,90 +684,82 @@ fn run_tests() -> bool {
     let paths = discover_tests(&test262_root);
     eprintln!("found {} test files", paths.len());
 
-    // Bound each test's execution so a single infinite-loop / unsupported-feature
-    // loop fails (or skips) instead of stalling the whole serial run. The VM already
-    // emits a "VM step limit exceeded" error on overrun, which the runner classifies
-    // as a step-limit result (skip by default, fail under --no-skip). Override only the
-    // runner's local config; KernelConfig::minimal() stays unbounded for other crates.
-    let mut kernel_config = KernelConfig::minimal();
-    kernel_config.max_steps = Some(50_000_000);
-    let kernel = Arc::new(OxideKernel::new(kernel_config));
-    init_kernel_builtins(&kernel);
-    let harness_sources = HarnessSources::new();
-    let mut harness_cache = HarnessPrefixCache::new();
-
-    let mut stats = RunStats::default();
-    let mut results: Vec<TestResult> = Vec::new();
-
     let total = paths.len();
-    for (i, path) in paths.iter().enumerate() {
-        if i % 500 == 0 {
-            eprintln!(
-                "  progress: {}/{} ({}% pass={} fail={} skip={})",
-                i,
-                total,
-                i * 100 / total,
-                stats.pass,
-                stats.fail,
-                stats.skip
-            );
-        }
 
-        let source = match std::fs::read_to_string(path) {
-            Ok(s) => s,
-            Err(e) => {
-                results.push(TestResult::skip(path.clone(), format!("read error: {e}")));
-                stats.skip += 1;
-                continue;
-            }
-        };
+    // Determine worker count. `OxideKernel`/`Vm` are `!Send`, so we cannot share
+    // one kernel via Arc across threads; instead each worker builds and owns its
+    // own kernel + harness-source registry + prefix cache. Only `PathBuf` and
+    // `TestResult` (both `Send`) cross thread boundaries. Workers pull test
+    // indices from a shared atomic cursor for dynamic load balancing.
+    let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(total.max(1));
 
-        let meta = match parse_meta(&source) {
-            Some(m) => m,
-            None => {
-                results.push(TestResult::skip(path.clone(), String::from("no YAML metadata")));
-                stats.skip += 1;
-                continue;
-            }
-        };
+    eprintln!("running on {workers} worker thread(s)");
 
-        if let Some(filter_str) = &filter {
-            let path_str = path.to_string_lossy().replace('\\', "/");
-            if !path_str.contains(filter_str.as_str()) {
-                results.push(TestResult::skip(path.clone(), "filtered".into()));
-                stats.skip += 1;
-                continue;
-            }
-        }
+    let cursor = AtomicUsize::new(0);
+    let progress = AtomicUsize::new(0);
+    let filter = &filter;
+    let no_skip = config.no_skip;
+    let paths_ref = &paths;
 
-        let path_str = path.to_string_lossy();
-        if path_str.contains("staging") {
-            results.push(TestResult::skip(path.clone(), "staging tests excluded".into()));
-            stats.skip += 1;
-            continue;
-        }
+    // Each worker returns its partial stats plus (index, result) pairs so the
+    // final results vector can be restored to discovery order for stable output.
+    let partials: Vec<(RunStats, Vec<(usize, TestResult)>)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                let cursor = &cursor;
+                let progress = &progress;
+                // Match main()'s 16MB stack: the VM recurses on deeply nested
+                // test programs and would overflow the default worker stack.
+                std::thread::Builder::new()
+                    .stack_size(16 * 1024 * 1024)
+                    .spawn_scoped(scope, move || {
+                        let kernel = build_runner_kernel();
+                        let harness_sources = HarnessSources::new();
+                        let mut harness_cache = HarnessPrefixCache::new();
+                        let mut stats = RunStats::default();
+                        let mut out: Vec<(usize, TestResult)> = Vec::new();
 
-        if !config.no_skip {
-            if let Some(reason) = is_skipped(&meta) {
-                results.push(TestResult::skip(path.clone(), reason));
-                stats.skip += 1;
-                continue;
-            }
-        }
+                        loop {
+                            let i = cursor.fetch_add(1, Ordering::Relaxed);
+                            if i >= total {
+                                break;
+                            }
 
-        let result = run_test(path, &source, &meta, &kernel, &harness_sources, &mut harness_cache, config.no_skip);
-        match &result.outcome {
-            TestOutcome::Pass(_) => stats.pass += 1,
-            TestOutcome::Fail(msg) => {
-                let cat = categorize_fail(msg);
-                *stats.fail_categories.entry(cat).or_insert(0) += 1;
-                stats.fail += 1;
-            }
-            TestOutcome::Skip(_) => stats.skip += 1,
-        }
-        stats.total_ms += result.duration_ms;
-        results.push(result);
+                            let result = process_path(
+                                &paths_ref[i],
+                                filter,
+                                no_skip,
+                                &kernel,
+                                &harness_sources,
+                                &mut harness_cache,
+                            );
+                            stats.record(&result);
+                            out.push((i, result));
+
+                            let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
+                            if done % 500 == 0 || done == total {
+                                eprintln!("  progress: {done}/{total} ({}%)", done * 100 / total);
+                            }
+                        }
+
+                        (stats, out)
+                    })
+                    .expect("failed to spawn test262 worker thread")
+            })
+            .collect();
+
+        handles.into_iter().map(|h| h.join().expect("test262 worker thread panicked")).collect()
+    });
+
+    // Reduce partial stats and restore discovery order for deterministic output.
+    let mut stats = RunStats::default();
+    let mut indexed: Vec<(usize, TestResult)> = Vec::with_capacity(total);
+    for (partial_stats, partial_results) in partials {
+        stats.merge(partial_stats);
+        indexed.extend(partial_results);
     }
+    indexed.sort_by_key(|(i, _)| *i);
+    let results: Vec<TestResult> = indexed.into_iter().map(|(_, r)| r).collect();
 
     eprintln!();
 
