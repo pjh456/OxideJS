@@ -1,6 +1,6 @@
 use oxide_kernel::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use oxide_kernel::string_forge::StringForge;
-use oxide_types::object::JsObject;
+use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
 use crate::coercion;
@@ -153,18 +153,54 @@ pub fn object_define_property(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let prop_name_str = coercion::to_string(vm.kernel().string_forge().as_ref(), vm.reg(args[2]));
     let si = vm.kernel().string_forge().intern(&prop_name_str).0;
-    let shape_forge = vm.kernel().shape_forge().as_ref();
-    let new_shape = shape_forge.make_shape(unsafe { (&*obj_ptr).shape_id() }, si);
-    let value = {
-        let desc = unsafe { &*desc_ptr };
-        desc.hash_props_vec()
-            .and_then(|v| v.first().map(|b| **b))
-            .unwrap_or(JsValue::undefined())
-    };
-    {
-        let obj = unsafe { &mut *obj_ptr };
-        obj.set_shape_id(new_shape);
-        obj.ensure_hash_props().push(Box::new(value));
+
+    let value_si = vm.kernel().string_forge().intern("value").0;
+    let get_si = vm.kernel().string_forge().intern("get").0;
+    let set_si = vm.kernel().string_forge().intern("set").0;
+    let writable_si = vm.kernel().string_forge().intern("writable").0;
+    let enumerable_si = vm.kernel().string_forge().intern("enumerable").0;
+    let configurable_si = vm.kernel().string_forge().intern("configurable").0;
+
+    let desc = unsafe { &*desc_ptr };
+    let value_field = own_field(vm, desc, value_si);
+    let get_field = own_field(vm, desc, get_si);
+    let set_field = own_field(vm, desc, set_si);
+    let writable_field = own_field(vm, desc, writable_si);
+    let enumerable = own_field(vm, desc, enumerable_si)
+        .map(|v| coercion::to_boolean(v, vm.kernel().string_forge().as_ref()))
+        .unwrap_or(false);
+    let configurable = own_field(vm, desc, configurable_si)
+        .map(|v| coercion::to_boolean(v, vm.kernel().string_forge().as_ref()))
+        .unwrap_or(false);
+
+    let has_data = value_field.is_some() || writable_field.is_some();
+    let has_accessor = get_field.is_some() || set_field.is_some();
+    if has_data && has_accessor {
+        return Err(crate::builtins::error::create_type_error(
+            vm,
+            "Invalid property descriptor: cannot mix data and accessor fields",
+        ));
+    }
+
+    let obj = unsafe { &mut *obj_ptr };
+    if has_accessor {
+        let get = get_field.unwrap_or(JsValue::undefined());
+        let set = set_field.unwrap_or(JsValue::undefined());
+        if (!get.is_undefined() && !is_callable(get)) || (!set.is_undefined() && !is_callable(set)) {
+            return Err(crate::builtins::error::create_type_error(
+                vm,
+                "accessor descriptor get/set must be callable or undefined",
+            ));
+        }
+        vm.define_accessor_property(obj, si, get, set, PropAttributes::new(false, enumerable, configurable))
+            .map_err(|_| crate::builtins::error::create_type_error(vm, "Cannot define property"))?;
+    } else {
+        let value = value_field.unwrap_or(JsValue::undefined());
+        let writable = writable_field
+            .map(|v| coercion::to_boolean(v, vm.kernel().string_forge().as_ref()))
+            .unwrap_or(false);
+        vm.define_data_property(obj, si, value, PropAttributes::new(writable, enumerable, configurable))
+            .map_err(|_| crate::builtins::error::create_type_error(vm, "Cannot define property"))?;
     }
     Ok(obj_val)
 }
@@ -184,19 +220,21 @@ pub fn object_get_own_property_descriptor(vm: &mut Vm, args: &[u8]) -> NativeRes
     let prop_name_str = coercion::to_string(vm.kernel().string_forge().as_ref(), vm.reg(args[2]));
     let si = vm.kernel().string_forge().intern(&prop_name_str).0;
 
-    let (found_value, found) = {
+    let (found_value, found_meta, found) = {
         let obj = unsafe { &*obj_ptr };
         let keys = walk_own_keys(vm, obj);
         let mut found_value = JsValue::undefined();
+        let mut found_meta = None;
         let mut found = false;
         for (prop_si, offset) in keys {
             if prop_si == si {
                 found_value = obj.get_prop_at(offset);
+                found_meta = obj.prop_meta_at(offset);
                 found = true;
                 break;
             }
         }
-        (found_value, found)
+        (found_value, found_meta, found)
     };
 
     if !found {
@@ -209,32 +247,47 @@ pub fn object_get_own_property_descriptor(vm: &mut Vm, args: &[u8]) -> NativeRes
     let desc = vm
         .epoch()
         .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(desc_proto)));
-    let true_val = JsValue::bool(true);
     let sf = unsafe { &*sf_ptr };
     let sh = unsafe { &*sh_ptr };
 
     let d: &mut JsObject = unsafe { &mut *desc };
-    let si_val = sf.intern("value").0;
-    let sh_val = sh.make_shape(EMPTY_SHAPE_ID, si_val);
-    d.set_shape_id(sh_val);
-    d.ensure_hash_props().push(Box::new(found_value));
-
-    let si_wr = sf.intern("writable").0;
-    let sh_wr = sh.make_shape(sh_val, si_wr);
-    d.set_shape_id(sh_wr);
-    d.ensure_hash_props().push(Box::new(true_val));
-
-    let si_en = sf.intern("enumerable").0;
-    let sh_en = sh.make_shape(sh_wr, si_en);
-    d.set_shape_id(sh_en);
-    d.ensure_hash_props().push(Box::new(true_val));
-
-    let si_cf = sf.intern("configurable").0;
-    let sh_cf = sh.make_shape(sh_en, si_cf);
-    d.set_shape_id(sh_cf);
-    d.ensure_hash_props().push(Box::new(true_val));
+    let meta = found_meta.unwrap_or_else(|| oxide_types::object::PropMetaEntry::data(PropAttributes::DEFAULT_DATA));
+    if meta.is_accessor {
+        push_desc_prop(d, sh, sf.intern("get").0, meta.get);
+        push_desc_prop(d, sh, sf.intern("set").0, meta.set);
+        push_desc_prop(d, sh, sf.intern("enumerable").0, JsValue::bool(meta.attributes.enumerable()));
+        push_desc_prop(d, sh, sf.intern("configurable").0, JsValue::bool(meta.attributes.configurable()));
+    } else {
+        push_desc_prop(d, sh, sf.intern("value").0, found_value);
+        push_desc_prop(d, sh, sf.intern("writable").0, JsValue::bool(meta.attributes.writable()));
+        push_desc_prop(d, sh, sf.intern("enumerable").0, JsValue::bool(meta.attributes.enumerable()));
+        push_desc_prop(d, sh, sf.intern("configurable").0, JsValue::bool(meta.attributes.configurable()));
+    }
 
     Ok(JsValue::from_js_object(desc))
+}
+
+fn own_field(vm: &Vm, obj: &JsObject, prop_si: u32) -> Option<JsValue> {
+    vm.kernel()
+        .shape_forge()
+        .lookup_position(obj.shape_id(), prop_si)
+        .and_then(|pos| {
+            if obj.prop_vec_len() > pos as usize {
+                Some(obj.get_prop_at(pos))
+            } else {
+                None
+            }
+        })
+}
+
+fn is_callable(value: JsValue) -> bool {
+    value.is_object() && unsafe { &*value.as_js_object_ptr() }.is_function()
+}
+
+fn push_desc_prop(obj: &mut JsObject, shape_forge: &ShapeForge, prop_si: u32, val: JsValue) {
+    let shape_id = shape_forge.make_shape(obj.shape_id(), prop_si);
+    obj.set_shape_id(shape_id);
+    obj.push_prop(val);
 }
 
 fn require_obj_arg(vm: &mut Vm, args: &[u8], fn_name: &str) -> Result<*mut JsObject, JsValue> {

@@ -2,7 +2,8 @@ use crate::compiler::Label;
 use crate::opcode::{self, OpCode};
 use oxide_parser::{
     AssignmentOperator, Class, ClassElement, Expression, ForStatementInit, ForStatementLeft, MethodDefinitionKind,
-    PropertyKey, SimpleAssignmentTarget, Statement, UnaryOperator, UpdateOperator, VariableDeclarationKind,
+    PropertyKey, PropertyKind, SimpleAssignmentTarget, Statement, UnaryOperator, UpdateOperator,
+    VariableDeclarationKind,
 };
 
 use crate::compiler::{is_int_literal, is_side_effect_free, BinaryOperator, CompileCtx, Compiler};
@@ -22,6 +23,8 @@ impl Compiler {
         let mut constructor_method = None;
         let mut instance_methods = Vec::new();
         let mut static_methods = Vec::new();
+        let mut instance_accessors = Vec::new();
+        let mut static_accessors = Vec::new();
         let is_derived = class.super_class.is_some();
 
         for element in &class.body.body {
@@ -49,7 +52,12 @@ impl Compiler {
                     }
                 }
                 MethodDefinitionKind::Get | MethodDefinitionKind::Set => {
-                    return Err("getters/setters not yet supported".into());
+                    let name = self.class_property_name(&method.key)?;
+                    if method.r#static {
+                        static_accessors.push((method, name));
+                    } else {
+                        instance_accessors.push((method, name));
+                    }
                 }
             }
         }
@@ -128,6 +136,19 @@ impl Compiler {
             ctx.emit(opcode::encode(OpCode::SET_PROP, proto_reg, method_reg, key_reg));
         }
 
+        for (method, method_name) in instance_accessors {
+            let accessor_reg = self.emit_class_method_function(method, &method_name, proto_reg, ctx, &self_binding)?;
+            let undef_reg = self.emit_undefined(ctx);
+            let (get_reg, set_reg) = match method.kind {
+                MethodDefinitionKind::Get => (accessor_reg, undef_reg),
+                MethodDefinitionKind::Set => (undef_reg, accessor_reg),
+                _ => unreachable!(),
+            };
+            let key_idx = ctx.add_constant(Constant::String(method_name));
+            ctx.emit(opcode::encode(OpCode::DEFINE_ACCESSOR, proto_reg, get_reg, set_reg));
+            ctx.emit(key_idx as u32);
+        }
+
         for (method, method_name) in static_methods {
             let (param_names, body_stmts) = self.extract_function_parts(method.value.as_ref())?;
             let saved_static = ctx.in_static_method;
@@ -150,6 +171,19 @@ impl Compiler {
             ctx.emit(opcode::encode(OpCode::SET_PROP, ctor_reg, method_reg, key_reg));
         }
 
+        for (method, method_name) in static_accessors {
+            let accessor_reg = self.emit_class_method_function(method, &method_name, ctor_reg, ctx, &self_binding)?;
+            let undef_reg = self.emit_undefined(ctx);
+            let (get_reg, set_reg) = match method.kind {
+                MethodDefinitionKind::Get => (accessor_reg, undef_reg),
+                MethodDefinitionKind::Set => (undef_reg, accessor_reg),
+                _ => unreachable!(),
+            };
+            let key_idx = ctx.add_constant(Constant::String(method_name));
+            ctx.emit(opcode::encode(OpCode::DEFINE_ACCESSOR, ctor_reg, get_reg, set_reg));
+            ctx.emit(key_idx as u32);
+        }
+
         let ctor_key_idx = ctx.add_constant(Constant::String("constructor".to_string()));
         let ctor_key_reg = ctx.alloc_reg();
         ctx.emit_load_const(ctor_key_reg, ctor_key_idx);
@@ -161,6 +195,37 @@ impl Compiler {
         ctx.emit(opcode::encode(OpCode::SET_PROP, ctor_reg, proto_reg, proto_key_reg));
 
         Ok(ctor_reg)
+    }
+
+    fn emit_undefined(&self, ctx: &mut CompileCtx) -> u8 {
+        let idx = ctx.add_constant(Constant::Undefined);
+        let reg = ctx.alloc_reg();
+        ctx.emit_load_const(reg, idx);
+        reg
+    }
+
+    fn emit_class_method_function(
+        &self, method: &oxide_parser::MethodDefinition, method_name: &str, home_reg: u8, ctx: &mut CompileCtx,
+        self_binding: &[(&str, u8)],
+    ) -> Result<u8, String> {
+        let (param_names, body_stmts) = self.extract_function_parts(method.value.as_ref())?;
+        let saved_instance = ctx.in_instance_method;
+        let saved_static = ctx.in_static_method;
+        ctx.in_instance_method = !method.r#static;
+        ctx.in_static_method = method.r#static;
+        let mut method_module =
+            self.compile_function_body_with_bindings(&param_names, body_stmts, ctx, false, self_binding)?;
+        ctx.in_instance_method = saved_instance;
+        ctx.in_static_method = saved_static;
+        method_module.function_name = Some(method_name.to_string());
+        method_module.needs_home_object = true;
+        ctx.sub_modules.push(method_module);
+
+        let method_idx = ctx.add_constant(Constant::BytecodeFunc(ctx.sub_modules.len() as u32));
+        let method_reg = ctx.alloc_reg();
+        ctx.emit_load_const(method_reg, method_idx);
+        ctx.emit(opcode::encode(OpCode::SET_HOME_OBJECT, method_reg, home_reg, 0));
+        Ok(method_reg)
     }
 
     pub(crate) fn emit_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
@@ -871,18 +936,34 @@ impl Compiler {
                         oxide_parser::PropertyKey::StringLiteral(s) => s.value.to_string(),
                         _ => return Err("unsupported object property key type".into()),
                     };
-                    let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
-                    let key_reg = ctx.alloc_reg();
-                    ctx.emit_load_const(key_reg, idx);
-                    let val_reg = self.emit_expression(&p.value, ctx)?;
-                    // Name inference (D-04): if property value is an arrow function,
-                    // set the compiled sub_module's function_name to the property key.
-                    if matches!(&p.value, Expression::ArrowFunctionExpression(_)) {
+                    if matches!(p.kind, PropertyKind::Get | PropertyKind::Set) {
+                        let accessor_reg = self.emit_expression(&p.value, ctx)?;
                         if let Some(sub_mod) = ctx.sub_modules.last_mut() {
                             sub_mod.function_name = Some(prop_name.to_string());
                         }
+                        let undef_reg = self.emit_undefined(ctx);
+                        let (get_reg, set_reg) = match p.kind {
+                            PropertyKind::Get => (accessor_reg, undef_reg),
+                            PropertyKind::Set => (undef_reg, accessor_reg),
+                            _ => unreachable!(),
+                        };
+                        let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
+                        ctx.emit(opcode::encode(OpCode::DEFINE_ACCESSOR, obj_reg, get_reg, set_reg));
+                        ctx.emit(idx as u32);
+                    } else {
+                        let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
+                        let key_reg = ctx.alloc_reg();
+                        ctx.emit_load_const(key_reg, idx);
+                        let val_reg = self.emit_expression(&p.value, ctx)?;
+                        // Name inference (D-04): if property value is an arrow function,
+                        // set the compiled sub_module's function_name to the property key.
+                        if matches!(&p.value, Expression::ArrowFunctionExpression(_)) {
+                            if let Some(sub_mod) = ctx.sub_modules.last_mut() {
+                                sub_mod.function_name = Some(prop_name.to_string());
+                            }
+                        }
+                        ctx.emit(opcode::encode(OpCode::SET_PROP, obj_reg, val_reg, key_reg));
                     }
-                    ctx.emit(opcode::encode(OpCode::SET_PROP, obj_reg, val_reg, key_reg));
                 }
                 Ok(obj_reg)
             }

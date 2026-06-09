@@ -137,3 +137,18 @@ fn eval_numeric_property_key_compound_update() {
 fn eval_in_operator_coerces_numeric_key() {
     assert_eq!(eval("var o={}; o[1]=42; 1 in o"), "true");
 }
+
+#[test]
+fn object_literal_getter_returns_value() {
+    assert_eq!(eval("var o={ get x(){ return 7 } }; o.x"), "7");
+}
+
+#[test]
+fn object_literal_setter_updates_receiver() {
+    assert_eq!(eval("var o={ set x(v){ this.y=v } }; o.x=4; o.y"), "4");
+}
+
+#[test]
+fn object_literal_getter_setter_pair() {
+    assert_eq!(eval("var o={ get x(){ return this.y }, set x(v){ this.y=v } }; o.x=9; o.x"), "9");
+}

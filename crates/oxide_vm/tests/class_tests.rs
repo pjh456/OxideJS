@@ -30,6 +30,27 @@ fn class_method_is_on_prototype() {
 }
 
 #[test]
+fn class_instance_getter_returns_value() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "class A { get x() { return 2; } } new A().x").unwrap();
+    assert_eq!(result.as_int(), 2);
+}
+
+#[test]
+fn class_instance_setter_updates_receiver() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "class A { set x(v) { this.y = v; } } var a = new A(); a.x = 4; a.y").unwrap();
+    assert_eq!(result.as_int(), 4);
+}
+
+#[test]
+fn class_static_getter_returns_value() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "class A { static get x() { return 5; } } A.x").unwrap();
+    assert_eq!(result.as_int(), 5);
+}
+
+#[test]
 fn class_constructor_initializes_instance_state() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "class A { constructor(x) { this.x = x; } } new A(3).x").unwrap();

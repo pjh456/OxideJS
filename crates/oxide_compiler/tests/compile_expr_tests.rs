@@ -73,6 +73,24 @@ fn compile_multiple_stmts() {
 }
 
 #[test]
+fn compile_object_literal_getter_emits_define_accessor() {
+    let module = compile_source("var o = { get x() { return 1; } };");
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::DEFINE_ACCESSOR),
+        "object literal getter should emit DEFINE_ACCESSOR"
+    );
+}
+
+#[test]
+fn compile_object_literal_setter_emits_define_accessor() {
+    let module = compile_source("var o = { set x(v) { this.y = v; } };");
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::DEFINE_ACCESSOR),
+        "object literal setter should emit DEFINE_ACCESSOR"
+    );
+}
+
+#[test]
 fn compile_binary_ops() {
     let tests = [
         ("3 * 4", OpCode::MUL),

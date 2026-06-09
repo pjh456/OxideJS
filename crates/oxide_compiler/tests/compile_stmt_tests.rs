@@ -278,3 +278,21 @@ fn compile_class_declaration_default_constructor_creates_submodule() {
         "default constructor submodule should be marked as class constructor"
     );
 }
+
+#[test]
+fn compile_class_instance_getter_emits_define_accessor() {
+    let module = compile_source("class A { get x() { return 1; } }");
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::DEFINE_ACCESSOR),
+        "class getter should emit DEFINE_ACCESSOR"
+    );
+}
+
+#[test]
+fn compile_class_static_setter_emits_define_accessor() {
+    let module = compile_source("class A { static set x(v) { this.y = v; } }");
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::DEFINE_ACCESSOR),
+        "static class setter should emit DEFINE_ACCESSOR"
+    );
+}

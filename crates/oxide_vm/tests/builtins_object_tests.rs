@@ -56,6 +56,48 @@ fn object_define_property_sets_value() {
 }
 
 #[test]
+fn object_define_property_data_defaults_non_writable() {
+    let (_vm, result) =
+        eval("var o={}; Object.defineProperty(o,'x',{value:1}); Object.getOwnPropertyDescriptor(o,'x').writable")
+            .unwrap();
+    assert_eq!(result, JsValue::bool(false));
+}
+
+#[test]
+fn object_define_property_accessor_descriptor_gets() {
+    let (_vm, result) = eval(
+        "var o={}; Object.defineProperty(o,'x',{get:function(){return 7}, enumerable:true, configurable:true}); o.x",
+    )
+    .unwrap();
+    assert_eq!(result, JsValue::int(7));
+}
+
+#[test]
+fn object_define_property_rejects_mixed_descriptor() {
+    let err = match eval("var o={}; Object.defineProperty(o,'x',{value:1,get:function(){return 2}})") {
+        Ok(_) => panic!("expected mixed descriptor to fail"),
+        Err(err) => err,
+    };
+    assert!(err.contains("TypeError"));
+}
+
+#[test]
+fn object_define_property_non_writable_assignment_throws() {
+    let err = match eval("var o={}; Object.defineProperty(o,'x',{value:1}); o.x=2") {
+        Ok(_) => panic!("expected assignment to fail"),
+        Err(err) => err,
+    };
+    assert!(err.contains("TypeError"));
+}
+
+#[test]
+fn object_get_own_property_descriptor_accessor_shape() {
+    let (_vm, result) =
+        eval("var o={}; Object.defineProperty(o,'x',{get:function(){return 1}, configurable:true}); Object.getOwnPropertyDescriptor(o,'x').value").unwrap();
+    assert!(result.is_undefined());
+}
+
+#[test]
 fn object_get_prototype_of() {
     let (_vm, result) = eval("Object.getPrototypeOf({})").unwrap();
     assert!(result.is_object() || result.is_null());

@@ -30,17 +30,21 @@ impl Vm {
                 Ok(())
             }
             Err(err_val) => {
-                let msg = if err_val.is_string() {
-                    self.kernel()
-                        .string_forge()
-                        .lookup(err_val.as_string_index())
-                        .unwrap_or_else(|| format!("{err_val}"))
+                let (error, kind) = if err_val.is_object() {
+                    (err_val, self.thrown_error_kind(err_val))
                 } else {
-                    format!("{err_val}")
+                    let msg = if err_val.is_string() {
+                        self.kernel()
+                            .string_forge()
+                            .lookup(err_val.as_string_index())
+                            .unwrap_or_else(|| format!("{err_val}"))
+                    } else {
+                        format!("{err_val}")
+                    };
+                    (crate::builtins::error::create_error(self, &msg), "Error")
                 };
-                let error = crate::builtins::error::create_error(self, &msg);
                 self.exception_value = Some(error);
-                self.pending_error_kind = Some("Error");
+                self.pending_error_kind = Some(kind);
                 self.unwind()
             }
         }

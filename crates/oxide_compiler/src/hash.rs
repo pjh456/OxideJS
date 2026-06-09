@@ -1,4 +1,6 @@
-use oxide_parser::{ClassElement, Expression, ForStatementInit, PropertyKey, SimpleAssignmentTarget, Statement};
+use oxide_parser::{
+    ClassElement, Expression, ForStatementInit, ObjectPropertyKind, PropertyKey, SimpleAssignmentTarget, Statement,
+};
 
 pub fn structural_hash(program: &oxide_parser::Program) -> u64 {
     use std::hash::Hasher;
@@ -327,6 +329,25 @@ fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher) {
             }
             for element in &class.body.body {
                 hash_class_element(element, h);
+            }
+        }
+        Expression::ObjectExpression(obj) => {
+            20u8.hash(h);
+            (obj.properties.len() as u32).hash(h);
+            for prop in &obj.properties {
+                match prop {
+                    ObjectPropertyKind::ObjectProperty(p) => {
+                        0u8.hash(h);
+                        std::mem::discriminant(&p.kind).hash(h);
+                        p.method.hash(h);
+                        p.computed.hash(h);
+                        hash_property_key(&p.key, h);
+                        hash_expression(&p.value, h);
+                    }
+                    ObjectPropertyKind::SpreadProperty(_) => {
+                        1u8.hash(h);
+                    }
+                }
             }
         }
         Expression::NewExpression(ne) => {

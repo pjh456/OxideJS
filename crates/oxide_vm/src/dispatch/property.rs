@@ -127,21 +127,23 @@ impl Vm {
                 self.write_ic_back(obj.shape_id(), ptr);
             }
         } else {
-            let new_shape_id = self.kernel.shape_forge().make_shape(obj.shape_id(), prop_name_si);
-            obj.set_shape_id(new_shape_id);
-            let new_pos = obj.push_prop(value);
-            obj.bump_generation();
-            if let Some(ptr) = obj.prop_ptr_at(new_pos) {
-                self.write_ic_back(new_shape_id, ptr);
-                self.kernel.prop_forge().upsert(
-                    new_shape_id,
-                    PropTemplate {
-                        shape_id: new_shape_id,
-                        prop_name: prop_name_si,
-                        position: new_pos,
-                        generation: obj.generation(),
-                    },
-                );
+            let old_shape = obj.shape_id();
+            self.ordinary_set(obj, prop_name_si, value, receiver)?;
+            if old_shape != obj.shape_id() {
+                if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+                    if let Some(ptr) = obj.prop_ptr_at(pos) {
+                        self.write_ic_back(obj.shape_id(), ptr);
+                        self.kernel.prop_forge().upsert(
+                            obj.shape_id(),
+                            PropTemplate {
+                                shape_id: obj.shape_id(),
+                                prop_name: prop_name_si,
+                                position: pos,
+                                generation: obj.generation(),
+                            },
+                        );
+                    }
+                }
             }
         }
 

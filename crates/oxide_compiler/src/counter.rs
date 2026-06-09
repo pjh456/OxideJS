@@ -33,7 +33,11 @@ impl Compiler {
                     ctx.alloc_reg(); // key_reg
                     ctx.projected_pc += 4; // LOAD_CONST method + SET_HOME_OBJECT + LOAD_CONST key + SET_PROP
                 }
-                MethodDefinitionKind::Get | MethodDefinitionKind::Set => {}
+                MethodDefinitionKind::Get | MethodDefinitionKind::Set => {
+                    ctx.alloc_reg(); // method_reg
+                    ctx.alloc_reg(); // undefined getter/setter placeholder
+                    ctx.projected_pc += 5; // LOAD_CONST method + SET_HOME_OBJECT + LOAD_CONST undefined + DEFINE_ACCESSOR + ext
+                }
             }
         }
 
@@ -463,10 +467,16 @@ impl Compiler {
                 ctx.projected_pc += 1; // NEW_OBJECT
                 for prop in &obj.properties {
                     if let oxide_parser::ObjectPropertyKind::ObjectProperty(p) = prop {
-                        ctx.alloc_reg();
-                        ctx.projected_pc += 1; // LOAD_CONST key
-                        self.count_expression(&p.value, ctx);
-                        ctx.projected_pc += 1; // SET_PROP
+                        if matches!(p.kind, oxide_parser::PropertyKind::Get | oxide_parser::PropertyKind::Set) {
+                            self.count_expression(&p.value, ctx);
+                            ctx.alloc_reg(); // undefined getter/setter placeholder
+                            ctx.projected_pc += 3; // LOAD_CONST undefined + DEFINE_ACCESSOR + ext
+                        } else {
+                            ctx.alloc_reg();
+                            ctx.projected_pc += 1; // LOAD_CONST key
+                            self.count_expression(&p.value, ctx);
+                            ctx.projected_pc += 1; // SET_PROP
+                        }
                     }
                 }
             }

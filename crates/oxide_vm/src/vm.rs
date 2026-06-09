@@ -14,7 +14,7 @@ use oxide_kernel::kernel::{KernelConfig, OxideKernel};
 use oxide_kernel::prop_forge::PropTemplate;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::mem::{Epoch, P};
-use oxide_types::object::JsObject;
+use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
 #[allow(unused_macros)]
@@ -364,7 +364,7 @@ impl Vm {
         self.kernel.string_forge().lookup(val.as_string_index())
     }
 
-    fn thrown_error_kind(&self, val: JsValue) -> &'static str {
+    pub(crate) fn thrown_error_kind(&self, val: JsValue) -> &'static str {
         if !val.is_object() {
             return "Error";
         }
@@ -698,6 +698,67 @@ impl Vm {
             obj.push_prop(val);
             obj.bump_generation();
         }
+    }
+
+    pub(crate) fn define_data_property(
+        &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, attributes: PropAttributes,
+    ) -> Result<(), String> {
+        let pos = if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+            pos
+        } else {
+            let new_shape_id = self.kernel.shape_forge().make_shape(obj.shape_id(), prop_name_si);
+            obj.set_shape_id(new_shape_id);
+            obj.push_prop(JsValue::undefined())
+        };
+        if let Some(current) = obj.prop_meta_at(pos) {
+            if !current.attributes.configurable() {
+                if current.is_accessor {
+                    return self.raise_type_error("cannot redefine non-configurable property");
+                }
+                if current.attributes.enumerable() != attributes.enumerable() {
+                    return self.raise_type_error("cannot redefine non-configurable property");
+                }
+                if !current.attributes.writable()
+                    && (attributes.writable() || !coercion::same_value(obj.get_prop_at(pos), val))
+                {
+                    return self.raise_type_error("cannot redefine non-configurable property");
+                }
+                if current.attributes.configurable() != attributes.configurable() {
+                    return self.raise_type_error("cannot redefine non-configurable property");
+                }
+            }
+        }
+        obj.set_prop_at(pos, val);
+        obj.set_data_meta(pos, attributes);
+        obj.bump_generation();
+        Ok(())
+    }
+
+    pub(crate) fn define_accessor_property(
+        &mut self, obj: &mut JsObject, prop_name_si: u32, get: JsValue, set: JsValue, attributes: PropAttributes,
+    ) -> Result<(), String> {
+        let pos = if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+            pos
+        } else {
+            let new_shape_id = self.kernel.shape_forge().make_shape(obj.shape_id(), prop_name_si);
+            obj.set_shape_id(new_shape_id);
+            obj.push_prop(JsValue::undefined())
+        };
+        if let Some(current) = obj.prop_meta_at(pos) {
+            if !current.attributes.configurable()
+                && (!current.is_accessor
+                    || current.attributes.enumerable() != attributes.enumerable()
+                    || current.attributes.configurable() != attributes.configurable()
+                    || current.get != get
+                    || current.set != set)
+            {
+                return self.raise_type_error("cannot redefine non-configurable property");
+            }
+        }
+        obj.set_prop_at(pos, JsValue::undefined());
+        obj.set_accessor_meta(pos, get, set, attributes);
+        obj.bump_generation();
+        Ok(())
     }
 
     pub(crate) fn write_ic_back(&mut self, shape_id: u32, ptr: *const JsValue) {
@@ -1399,7 +1460,7 @@ impl Vm {
                         self.regs[rd] = JsValue::undefined();
                     } else {
                         let super_obj = unsafe { &*super_base.as_js_object_ptr() };
-                        self.regs[rd] = self.resolve_property(super_obj, prop_name_si).unwrap_or(JsValue::undefined());
+                        self.regs[rd] = self.ordinary_get(super_obj, prop_name_si, self.regs[a])?;
                     }
                 }
 
@@ -1414,6 +1475,37 @@ impl Vm {
                         throw_err!(self, TypeError, "SET_HOME_OBJECT target is not a function");
                     }
                     func_obj.set_home_object(home_val);
+                }
+
+                OpCode::DEFINE_ACCESSOR => {
+                    let prop_idx = self.bytecode[self.pc] as usize;
+                    self.pc += 1;
+                    if prop_idx >= self.constants.len() {
+                        throw_err!(self, TypeError, "DEFINE_ACCESSOR constant index out of bounds");
+                    }
+                    let obj_val = self.regs[rd];
+                    if !obj_val.is_object() {
+                        throw_err!(self, TypeError, "DEFINE_ACCESSOR target is not object");
+                    }
+                    let prop_name_si = self.property_key_si(self.constants[prop_idx]);
+                    let getter = self.regs[a];
+                    let setter = self.regs[b];
+                    let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
+                    let existing = self
+                        .get_own_property_slot(obj, prop_name_si)
+                        .and_then(|pos| obj.prop_meta_at(pos))
+                        .filter(|meta| meta.is_accessor);
+                    let get = if getter.is_undefined() {
+                        existing.map(|meta| meta.get).unwrap_or(JsValue::undefined())
+                    } else {
+                        getter
+                    };
+                    let set = if setter.is_undefined() {
+                        existing.map(|meta| meta.set).unwrap_or(JsValue::undefined())
+                    } else {
+                        setter
+                    };
+                    self.define_accessor_property(obj, prop_name_si, get, set, PropAttributes::DEFAULT_DATA)?;
                 }
 
                 OpCode::RETURN => {
