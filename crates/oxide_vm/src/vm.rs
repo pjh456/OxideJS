@@ -1127,6 +1127,10 @@ impl Vm {
             }
         }
 
+        // Global execution context: `this` binds to the global object (ES5 §10.4.1).
+        let global_ptr = self.kernel.global_object().as_ptr() as *mut JsObject;
+        self.regs[254] = JsValue::from_js_object(global_ptr);
+
         self.dispatch()
     }
 
