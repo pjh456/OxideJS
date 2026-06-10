@@ -1,5 +1,5 @@
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_types::object::JsObject;
+use oxide_types::object::{JsObject, NativeFnPtr};
 use oxide_types::value::JsValue;
 
 use crate::coercion;
@@ -91,11 +91,15 @@ pub fn regexp_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     match compiled {
         Ok(re) => {
             let re_ptr = Box::into_raw(Box::new(re));
-            obj.set_native_fn(Some(re_ptr as *const ()));
+            // SAFETY: re_ptr is a Box<regex::Regex> pointer stored by the constructor via
+            // NativeFnPtr::from_raw(re_ptr as *const ()). RegExp objects repurpose the native_fn
+            // field to hold the compiled Regex — not a NativeFn pointer. Valid for the object's
+            // lifetime because the Box is never freed (intentional leak tied to epoch).
+            obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(re_ptr as *const ()) }));
         }
         Err(e) => {
             let msg = format!("SyntaxError: Invalid regular expression: {}", e);
-            return Err(JsValue::string(vm.kernel().string_forge().intern(&msg).0, 0));
+            return NativeResult::Err(JsValue::string(vm.kernel().string_forge().intern(&msg).0, 0));
         }
     }
 
@@ -110,21 +114,28 @@ pub fn regexp_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     set_prop(&mut obj, "unicode", JsValue::bool(false), vm);
 
     let obj_ptr = vm.epoch().alloc(obj);
-    Ok(JsValue::from_js_object(obj_ptr))
+    NativeResult::Ok(JsValue::from_js_object(obj_ptr))
 }
 
 pub fn regexp_test(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let re_ptr = get_regexp_ptr(vm, args)?;
+    let re_ptr = match get_regexp_ptr(vm, args) {
+        Ok(ptr) => ptr,
+        Err(err) => return NativeResult::Err(err),
+    };
     let re = unsafe { &*re_ptr };
 
     let fn_ptr = match re.native_fn() {
         None => {
-            return Err(JsValue::string(vm.kernel().string_forge().intern("TypeError: invalid RegExp").0, 0));
+            return NativeResult::Err(JsValue::string(
+                vm.kernel().string_forge().intern("TypeError: invalid RegExp").0,
+                0,
+            ));
         }
         Some(p) => p,
     };
 
-    let regex = unsafe { &*(fn_ptr as *const regex::Regex) };
+    // SAFETY: fn_ptr holds a Box<regex::Regex> pointer stored by regexp_constructor.
+    let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
     let haystack = coercion::to_string(
         vm.kernel().string_forge().as_ref(),
         vm.reg(if args.len() > 1 { args[1] } else { args[0] }),
@@ -134,26 +145,33 @@ pub fn regexp_test(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
     if is_global {
         let result = regex.find_at(&haystack, last_index).is_some();
-        Ok(JsValue::bool(result))
+        NativeResult::Ok(JsValue::bool(result))
     } else {
-        Ok(JsValue::bool(regex.is_match(&haystack)))
+        NativeResult::Ok(JsValue::bool(regex.is_match(&haystack)))
     }
 }
 
 pub fn regexp_exec(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let re_ptr = get_regexp_ptr(vm, args)?;
+    let re_ptr = match get_regexp_ptr(vm, args) {
+        Ok(ptr) => ptr,
+        Err(err) => return NativeResult::Err(err),
+    };
 
     let fn_ptr = {
         let re = unsafe { &*re_ptr };
         match re.native_fn() {
             None => {
-                return Err(JsValue::string(vm.kernel().string_forge().intern("TypeError: invalid RegExp").0, 0));
+                return NativeResult::Err(JsValue::string(
+                    vm.kernel().string_forge().intern("TypeError: invalid RegExp").0,
+                    0,
+                ));
             }
             Some(p) => p,
         }
     };
 
-    let regex = unsafe { &*(fn_ptr as *const regex::Regex) };
+    // SAFETY: fn_ptr holds a Box<regex::Regex> pointer stored by regexp_constructor.
+    let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
     let haystack = coercion::to_string(
         vm.kernel().string_forge().as_ref(),
         vm.reg(if args.len() > 1 { args[1] } else { args[0] }),
@@ -168,7 +186,7 @@ pub fn regexp_exec(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
     let match_result = if is_global {
         if last_index > haystack.len() {
-            return Ok(JsValue::null());
+            return NativeResult::Ok(JsValue::null());
         }
         regex.find_at(&haystack, last_index)
     } else {
@@ -204,17 +222,20 @@ pub fn regexp_exec(vm: &mut Vm, args: &[u8]) -> NativeResult {
         }
 
         let obj_ptr = vm.epoch().alloc(match_obj);
-        Ok(JsValue::from_js_object(obj_ptr))
+        NativeResult::Ok(JsValue::from_js_object(obj_ptr))
     } else {
         if is_global {
             set_prop_at(re_ptr, 0, JsValue::int(0));
         }
-        Ok(JsValue::null())
+        NativeResult::Ok(JsValue::null())
     }
 }
 
 pub fn regexp_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let re_ptr = get_regexp_ptr(vm, args)?;
+    let re_ptr = match get_regexp_ptr(vm, args) {
+        Ok(ptr) => ptr,
+        Err(err) => return NativeResult::Err(err),
+    };
     let re = unsafe { &*re_ptr };
     let source = {
         let val = get_prop(re, 1);
@@ -226,5 +247,5 @@ pub fn regexp_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
     };
     let result = format!("/{}/{}", source, flags);
     let si = vm.kernel().string_forge().intern(&result).0;
-    Ok(JsValue::string(si, 0))
+    NativeResult::Ok(JsValue::string(si, 0))
 }

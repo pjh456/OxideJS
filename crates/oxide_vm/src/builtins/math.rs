@@ -25,20 +25,20 @@ fn arg2(vm: &Vm, args: &[u8]) -> (f64, f64) {
 
 pub fn math_abs(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
-        return Ok(JsValue::float(f64::NAN));
+        return NativeResult::Ok(JsValue::float(f64::NAN));
     }
     let x = vm.reg(args[1]);
     if x.is_int() {
-        Ok(JsValue::int(x.as_int().abs()))
+        NativeResult::Ok(JsValue::int(x.as_int().abs()))
     } else {
-        Ok(JsValue::float(num(vm, args[1]).abs()))
+        NativeResult::Ok(JsValue::float(num(vm, args[1]).abs()))
     }
 }
 
 macro_rules! math_unary {
     ($name:ident, $op:ident) => {
         pub fn $name(vm: &mut Vm, args: &[u8]) -> NativeResult {
-            Ok(JsValue::float(arg1(vm, args).$op()))
+            NativeResult::Ok(JsValue::float(arg1(vm, args).$op()))
         }
     };
 }
@@ -69,87 +69,87 @@ math_unary!(math_trunc, trunc);
 
 pub fn math_atan2(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let (a, b) = arg2(vm, args);
-    Ok(JsValue::float(a.atan2(b)))
+    NativeResult::Ok(JsValue::float(a.atan2(b)))
 }
 
 pub fn math_round(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let x = arg1(vm, args);
     let r = if x < 0.0 { (x - 0.5).ceil() } else { (x + 0.5).floor() };
-    Ok(JsValue::float(r))
+    NativeResult::Ok(JsValue::float(r))
 }
 
 pub fn math_sign(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let x = arg1(vm, args);
     if x.is_nan() {
-        Ok(JsValue::float(f64::NAN))
+        NativeResult::Ok(JsValue::float(f64::NAN))
     } else if x > 0.0 {
-        Ok(JsValue::int(1))
+        NativeResult::Ok(JsValue::int(1))
     } else if x < 0.0 {
-        Ok(JsValue::int(-1))
+        NativeResult::Ok(JsValue::int(-1))
     } else {
-        Ok(JsValue::float(x))
+        NativeResult::Ok(JsValue::float(x))
     }
 }
 
 pub fn math_clz32(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let n = arg1(vm, args) as u32;
-    Ok(JsValue::int(n.leading_zeros() as i32))
+    NativeResult::Ok(JsValue::int(n.leading_zeros() as i32))
 }
 
 pub fn math_fround(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    Ok(JsValue::float(arg1(vm, args) as f32 as f64))
+    NativeResult::Ok(JsValue::float(arg1(vm, args) as f32 as f64))
 }
 
 pub fn math_hypot(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let (a, b) = arg2(vm, args);
-    Ok(JsValue::float(a.hypot(b)))
+    NativeResult::Ok(JsValue::float(a.hypot(b)))
 }
 
 pub fn math_imul(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let (a, b) = arg2(vm, args);
-    Ok(JsValue::int((a as i32).wrapping_mul(b as i32)))
+    NativeResult::Ok(JsValue::int((a as i32).wrapping_mul(b as i32)))
 }
 
 pub fn math_pow(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let (a, b) = arg2(vm, args);
-    Ok(JsValue::float(a.powf(b)))
+    NativeResult::Ok(JsValue::float(a.powf(b)))
 }
 
 pub fn math_max(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
-        return Ok(JsValue::float(f64::NEG_INFINITY));
+        return NativeResult::Ok(JsValue::float(f64::NEG_INFINITY));
     }
     let mut m = f64::NEG_INFINITY;
     for &r in args.iter().skip(1) {
         let x = num(vm, r);
         if x.is_nan() {
-            return Ok(JsValue::float(f64::NAN));
+            return NativeResult::Ok(JsValue::float(f64::NAN));
         }
         if x > m {
             m = x;
         }
     }
-    Ok(JsValue::float(m))
+    NativeResult::Ok(JsValue::float(m))
 }
 
 pub fn math_min(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
-        return Ok(JsValue::float(f64::INFINITY));
+        return NativeResult::Ok(JsValue::float(f64::INFINITY));
     }
     let mut m = f64::INFINITY;
     for &r in args.iter().skip(1) {
         let x = num(vm, r);
         if x.is_nan() {
-            return Ok(JsValue::float(f64::NAN));
+            return NativeResult::Ok(JsValue::float(f64::NAN));
         }
         if x < m {
             m = x;
         }
     }
-    Ok(JsValue::float(m))
+    NativeResult::Ok(JsValue::float(m))
 }
 
 pub fn math_random(vm: &mut Vm, _args: &[u8]) -> NativeResult {
     vm.step_rng();
-    Ok(JsValue::float(vm.math_rng_value()))
+    NativeResult::Ok(JsValue::float(vm.math_rng_value()))
 }

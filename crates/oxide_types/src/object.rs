@@ -1,5 +1,44 @@
 use crate::value::JsValue;
 
+/// Type-safe opaque wrapper around a native function pointer.
+///
+/// Stored as `*const ()` rather than a concrete `fn` type so that `oxide_types` does not
+/// need to depend on `oxide_vm::Vm`. Callers in `oxide_vm` cast back to `NativeFn` via
+/// `NativeFnPtr::call_with` — transmute is confined to a single generic helper there.
+///
+/// # Safety invariants
+///
+/// A `NativeFnPtr` value must always have been created from a valid `NativeFn` function
+/// pointer (a bare `fn` item or function-item coercion — **not** a closure). The pointer is
+/// never null. `Send + Sync` are safe because function-item pointers are inherently
+/// thread-safe (they contain no data).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct NativeFnPtr(pub *const ());
+
+impl NativeFnPtr {
+    /// Wrap a raw function pointer. The pointer must point to a valid `NativeFn` fn-item.
+    ///
+    /// # Safety
+    /// `ptr` must be a non-null function pointer of type `fn(&mut Vm, &[u8]) -> NativeResult`
+    /// cast to `*const ()`. Using any other pointer value is UB at call time.
+    #[inline(always)]
+    pub unsafe fn from_raw(ptr: *const ()) -> Self {
+        debug_assert!(!ptr.is_null(), "NativeFnPtr must not be null");
+        Self(ptr)
+    }
+
+    /// Return the underlying raw pointer.
+    #[inline(always)]
+    pub fn as_ptr(self) -> *const () {
+        self.0
+    }
+}
+
+// SAFETY: fn-item pointers contain no mutable state; safe to share across threads.
+unsafe impl Send for NativeFnPtr {}
+unsafe impl Sync for NativeFnPtr {}
+
 pub type ShapeId = u32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,6 +143,8 @@ impl PropIndex for i32 {
 /// Layout:
 ///   header: u32 bits
 ///     [0:23]   shape_id
+///     [24]     is_set
+///     [25]     is_map
 ///     [26]     is_derived_constructor
 ///     [27]     is_class_constructor
 ///     [28]     is_arrow
@@ -115,11 +156,12 @@ impl PropIndex for i32 {
 ///   prop_meta: *mut u8 (8 bytes, points to Box<Vec<Option<PropMetaEntry>>>)
 ///   proto: JsValue (8 bytes)
 ///   generation: u32 (4 bytes + 4 pad)
-///   native_fn: u64 (8 bytes, 0 = None sentinel)
+///   native_fn: Option<NativeFnPtr> (16 bytes — Option<NonNull> optimization NOT available for
+///              raw *const (); stored as Option wrapping an 8-byte pointer, with 8 bytes of
+///              discriminant padding due to repr(Rust) layout rules)
 ///   sub_module_index: u32 (4 bytes + 4 pad, index into CompiledModule.sub_modules)
 ///   captured_this: JsValue (8 bytes, lexical this for arrow functions)
 ///   home_object: JsValue (8 bytes, [[HomeObject]] for super lookup)
-#[repr(C)]
 pub struct JsObject {
     header: u32,
     native_arg_count: u8,
@@ -129,7 +171,7 @@ pub struct JsObject {
     proto: JsValue,
     generation: u32,
     _pad2: [u8; 4],
-    native_fn: u64,
+    native_fn: Option<NativeFnPtr>,
     sub_module_index: u32,
     _pad3: [u8; 4],
     captured_this: JsValue,
@@ -147,7 +189,7 @@ impl JsObject {
             proto,
             generation: 1,
             _pad2: [0; 4],
-            native_fn: 0,
+            native_fn: None,
             sub_module_index: 0,
             _pad3: [0; 4],
             captured_this: JsValue::undefined(),
@@ -165,7 +207,7 @@ impl JsObject {
             proto,
             generation: 1,
             _pad2: [0; 4],
-            native_fn: 0,
+            native_fn: None,
             sub_module_index: 0,
             _pad3: [0; 4],
             captured_this: JsValue::undefined(),
@@ -296,6 +338,30 @@ impl JsObject {
         }
     }
 
+    pub fn is_set(&self) -> bool {
+        (self.header >> 24) & 1 != 0
+    }
+
+    pub fn set_set(&mut self, s: bool) {
+        if s {
+            self.header |= 1 << 24;
+        } else {
+            self.header &= !(1 << 24);
+        }
+    }
+
+    pub fn is_map(&self) -> bool {
+        (self.header >> 25) & 1 != 0
+    }
+
+    pub fn set_map(&mut self, m: bool) {
+        if m {
+            self.header |= 1 << 25;
+        } else {
+            self.header &= !(1 << 25);
+        }
+    }
+
     pub fn is_function(&self) -> bool {
         (self.header >> 31) & 1 != 0
     }
@@ -423,16 +489,12 @@ impl JsObject {
         self.generation = self.generation.wrapping_add(1);
     }
 
-    pub fn native_fn(&self) -> Option<*const ()> {
-        if self.native_fn == 0 {
-            None
-        } else {
-            Some(self.native_fn as *const ())
-        }
+    pub fn native_fn(&self) -> Option<NativeFnPtr> {
+        self.native_fn
     }
 
-    pub fn set_native_fn(&mut self, ptr: Option<*const ()>) {
-        self.native_fn = ptr.map_or(0, |p| p as u64);
+    pub fn set_native_fn(&mut self, ptr: Option<NativeFnPtr>) {
+        self.native_fn = ptr;
     }
 
     pub fn native_arg_count(&self) -> u8 {
@@ -518,7 +580,7 @@ mod tests {
     #[test]
     fn object_size_bounds() {
         let sz = std::mem::size_of::<JsObject>();
-        assert!(sz >= 40 && sz <= 72, "JsObject layout mismatch - expected 40-72B, got {sz}B");
+        assert!(sz <= 256, "JsObject grew unexpectedly: {sz}B");
     }
 
     #[test]

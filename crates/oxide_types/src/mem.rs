@@ -96,7 +96,12 @@ impl Epoch {
     }
 
     /// Bump-allocate a value and return a raw pointer to it.
-    /// The pointer is valid until `reset()` is called.
+    ///
+    /// # Safety
+    ///
+    /// The returned pointer is valid until `reset()` is called on this epoch.
+    /// Callers must not store it beyond that boundary, and must ensure no
+    /// aliases are used after the arena is reset.
     pub fn alloc<T>(&self, value: T) -> *mut T {
         self.bump.alloc(value)
     }

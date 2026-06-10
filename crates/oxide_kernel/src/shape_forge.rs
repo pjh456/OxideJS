@@ -100,16 +100,18 @@ impl ShapeForge {
     pub fn lookup_position(&self, shape_id: ShapeId, prop_name: StringIndex) -> Option<u32> {
         let shapes = self.shapes.read().unwrap();
         let total_depth = Self::compute_depth(shape_id, &shapes);
-        let mut step: u32 = 0;
+        let mut prop_steps: u32 = 0;
         let mut cursor = Some(shape_id);
         while let Some(id) = cursor {
             match shapes.get((id - 1) as usize).and_then(|s| s.clone()) {
                 Some(s) => {
-                    if s.property_name == prop_name && s.property_name != EMPTY_SENTINEL {
-                        return Some(total_depth - step - 1);
+                    if s.property_name != EMPTY_SENTINEL {
+                        if s.property_name == prop_name {
+                            return total_depth.checked_sub(prop_steps + 1);
+                        }
+                        prop_steps += 1;
                     }
                     cursor = s.parent;
-                    step += 1;
                 }
                 None => return None,
             }

@@ -1,5 +1,5 @@
 use oxide_types::mem::P;
-use oxide_types::object::{JsObject, PropAttributes};
+use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
 use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
@@ -7,9 +7,12 @@ use crate::string_forge::StringForge;
 
 #[macro_export]
 macro_rules! bind_method {
-    ($world:expr, $target:expr, $sf:expr, $sh:expr, $name:literal, $func:expr, $nargs:expr) => {
-        let _ = $world.bind_method($target, $sh, $sf, $name, $func as *const (), $nargs);
-    };
+    ($world:expr, $target:expr, $sf:expr, $sh:expr, $name:literal, $func:expr, $nargs:expr) => {{
+        let _raw: *const () = $func as *const ();
+        // SAFETY: $func is a NativeFn fn-item; a fn-item coerced to *const () is always valid.
+        let _func_ptr = unsafe { oxide_types::object::NativeFnPtr::from_raw(_raw) };
+        let _ = $world.bind_method($target, $sh, $sf, $name, _func_ptr, $nargs);
+    }};
 }
 
 #[macro_export]
@@ -24,17 +27,14 @@ macro_rules! bind_methods {
 macro_rules! bind_methods_static {
     ($target:expr, $sf:expr, $sh:expr, $wrapper_proto:expr,
      $(($name:literal, $func:expr, $nargs:expr)),* $(,)?) => {
-        $(
+        $({
+            let _raw: *const () = $func as *const ();
+            // SAFETY: $func is a NativeFn fn-item; valid to coerce and wrap.
+            let _func_ptr = unsafe { oxide_types::object::NativeFnPtr::from_raw(_raw) };
             let _ = $crate::builtin::BuiltinWorld::bind_method_static(
-                $target,
-                $sh,
-                $sf,
-                $name,
-                $func,
-                $nargs,
-                $wrapper_proto,
+                $target, $sh, $sf, $name, _func_ptr, $nargs, $wrapper_proto,
             );
-        )*
+        })*
     };
 }
 
@@ -589,7 +589,7 @@ impl BuiltinWorld {
 
     pub fn bind_method(
         &self, proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &StringForge, method_name: &str,
-        native_fn_ptr: *const (), arg_count: u8,
+        native_fn_ptr: NativeFnPtr, arg_count: u8,
     ) -> Result<(), String> {
         Self::bind_method_static(
             proto,
@@ -604,7 +604,7 @@ impl BuiltinWorld {
 
     pub fn bind_method_static(
         proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &StringForge, method_name: &str,
-        native_fn_ptr: *const (), arg_count: u8, wrapper_proto: JsValue,
+        native_fn_ptr: NativeFnPtr, arg_count: u8, wrapper_proto: JsValue,
     ) -> Result<(), String> {
         let si = string_forge.intern(method_name).0;
         let wrapper_proto_ptr = if wrapper_proto.is_object() {
@@ -617,6 +617,8 @@ impl BuiltinWorld {
             wrapper.set_proto(wrapper_proto).ok();
         }
         wrapper.set_function(true);
+        // The NativeFnPtr invariant is upheld by callers (see bind_method / bind_method_static
+        // callers, all of which use fn-item expressions).
         wrapper.set_native_fn(Some(native_fn_ptr));
         wrapper.set_native_arg_count(arg_count);
         let si_name = string_forge.intern("name").0;

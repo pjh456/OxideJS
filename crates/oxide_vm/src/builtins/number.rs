@@ -11,49 +11,49 @@ pub fn number_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
         0.0
     };
     if n.fract() == 0.0 && n.is_finite() && n >= i32::MIN as f64 && n <= i32::MAX as f64 {
-        Ok(JsValue::int(n as i32))
+        NativeResult::Ok(JsValue::int(n as i32))
     } else {
-        Ok(JsValue::float(n))
+        NativeResult::Ok(JsValue::float(n))
     }
 }
 
 pub fn number_is_nan(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
-        return Ok(JsValue::bool(false));
+        return NativeResult::Ok(JsValue::bool(false));
     }
     let val = vm.reg(args[1]);
     if val.is_double() {
-        Ok(JsValue::bool(val.as_double().is_nan()))
+        NativeResult::Ok(JsValue::bool(val.as_double().is_nan()))
     } else {
-        Ok(JsValue::bool(false))
+        NativeResult::Ok(JsValue::bool(false))
     }
 }
 
 pub fn number_is_finite(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
-        return Ok(JsValue::bool(false));
+        return NativeResult::Ok(JsValue::bool(false));
     }
     let val = vm.reg(args[1]);
     if val.is_int() {
-        return Ok(JsValue::bool(true));
+        return NativeResult::Ok(JsValue::bool(true));
     }
     if val.is_double() {
-        return Ok(JsValue::bool(val.as_double().is_finite()));
+        return NativeResult::Ok(JsValue::bool(val.as_double().is_finite()));
     }
     let n = coercion::to_number(val, vm.kernel().string_forge().as_ref());
-    Ok(JsValue::bool(n.is_finite()))
+    NativeResult::Ok(JsValue::bool(n.is_finite()))
 }
 
 pub fn number_parse_int(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
-        return Ok(JsValue::float(f64::NAN));
+        return NativeResult::Ok(JsValue::float(f64::NAN));
     }
     let sf = vm.kernel().string_forge().as_ref();
     let s = coercion::to_string(sf, vm.reg(args[1]));
     let s = s.trim();
 
     if s.is_empty() {
-        return Ok(JsValue::float(f64::NAN));
+        return NativeResult::Ok(JsValue::float(f64::NAN));
     }
 
     let radix = if args.len() > 2 {
@@ -80,27 +80,27 @@ pub fn number_parse_int(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let actual_radix = if hex { 16u32 } else { radix as u32 };
 
     if let Ok(n) = i32::from_str_radix(&rest, actual_radix) {
-        return Ok(JsValue::int(n));
+        return NativeResult::Ok(JsValue::int(n));
     }
 
-    Ok(JsValue::float(f64::NAN))
+    NativeResult::Ok(JsValue::float(f64::NAN))
 }
 
 pub fn number_parse_float(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
-        return Ok(JsValue::float(f64::NAN));
+        return NativeResult::Ok(JsValue::float(f64::NAN));
     }
     let sf = vm.kernel().string_forge().as_ref();
     let s = coercion::to_string(sf, vm.reg(args[1]));
     let s = s.trim();
 
     if s.is_empty() {
-        return Ok(JsValue::float(f64::NAN));
+        return NativeResult::Ok(JsValue::float(f64::NAN));
     }
 
     match fast_float::parse::<f64, _>(&s) {
-        Ok(v) => Ok(JsValue::float(v)),
-        Err(_) => Ok(JsValue::float(f64::NAN)),
+        Ok(v) => NativeResult::Ok(JsValue::float(v)),
+        Err(_) => NativeResult::Ok(JsValue::float(f64::NAN)),
     }
 }
 
@@ -115,22 +115,22 @@ pub fn number_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
     if radix == 10 {
         if n.is_nan() {
-            return Ok(vm.intern("NaN"));
+            return NativeResult::Ok(vm.intern("NaN"));
         }
         if n.is_infinite() {
             if n.is_sign_positive() {
-                return Ok(vm.intern("Infinity"));
+                return NativeResult::Ok(vm.intern("Infinity"));
             }
-            return Ok(vm.intern("-Infinity"));
+            return NativeResult::Ok(vm.intern("-Infinity"));
         }
         if n.fract() == 0.0 && n >= i32::MIN as f64 && n <= i32::MAX as f64 {
-            return Ok(vm.intern(&(n as i64).to_string()));
+            return NativeResult::Ok(vm.intern(&(n as i64).to_string()));
         }
         let mut buf = ryu::Buffer::new();
-        Ok(vm.intern(buf.format(n)))
+        NativeResult::Ok(vm.intern(buf.format(n)))
     } else {
         if n.is_nan() {
-            return Ok(vm.intern("NaN"));
+            return NativeResult::Ok(vm.intern("NaN"));
         }
         let nn = n as i64;
         let mut result = String::new();
@@ -151,7 +151,7 @@ pub fn number_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
         if nn < 0 {
             result.insert(0, '-');
         }
-        Ok(vm.intern(&result))
+        NativeResult::Ok(vm.intern(&result))
     }
 }
 
@@ -165,20 +165,20 @@ pub fn number_to_fixed(vm: &mut Vm, args: &[u8]) -> NativeResult {
     .min(20);
 
     let formatted = format!("{:.digits$}", n);
-    Ok(vm.intern(&formatted))
+    NativeResult::Ok(vm.intern(&formatted))
 }
 
 pub fn number_is_integer(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let val = vm.reg(if args.len() > 1 { args[1] } else { args[0] });
     let n = coercion::to_number(val, vm.kernel().string_forge().as_ref());
-    Ok(JsValue::bool(n.trunc() == n && n.is_finite()))
+    NativeResult::Ok(JsValue::bool(n.trunc() == n && n.is_finite()))
 }
 
 pub fn number_is_safe_integer(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let val = vm.reg(if args.len() > 1 { args[1] } else { args[0] });
     let n = coercion::to_number(val, vm.kernel().string_forge().as_ref());
     let safe = n.trunc() == n && n.is_finite() && n >= -9007199254740991i64 as f64 && n <= 9007199254740991i64 as f64;
-    Ok(JsValue::bool(safe))
+    NativeResult::Ok(JsValue::bool(safe))
 }
 
 pub fn number_to_exponential(vm: &mut Vm, args: &[u8]) -> NativeResult {
@@ -190,13 +190,13 @@ pub fn number_to_exponential(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     .min(100);
     if n.is_nan() {
-        return Ok(vm.intern("NaN"));
+        return NativeResult::Ok(vm.intern("NaN"));
     }
     if n.is_infinite() {
-        return Ok(vm.intern(if n.is_sign_positive() { "Infinity" } else { "-Infinity" }));
+        return NativeResult::Ok(vm.intern(if n.is_sign_positive() { "Infinity" } else { "-Infinity" }));
     }
     let formatted = format!("{:.digits$e}", n);
-    Ok(vm.intern(&formatted))
+    NativeResult::Ok(vm.intern(&formatted))
 }
 
 pub fn number_to_precision(vm: &mut Vm, args: &[u8]) -> NativeResult {
@@ -208,19 +208,19 @@ pub fn number_to_precision(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     .min(21);
     if n.is_nan() {
-        return Ok(vm.intern("NaN"));
+        return NativeResult::Ok(vm.intern("NaN"));
     }
     if n.is_infinite() {
-        return Ok(vm.intern(if n.is_sign_positive() { "Infinity" } else { "-Infinity" }));
+        return NativeResult::Ok(vm.intern(if n.is_sign_positive() { "Infinity" } else { "-Infinity" }));
     }
     let formatted = format!("{:.precision$}", n);
-    Ok(vm.intern(&formatted))
+    NativeResult::Ok(vm.intern(&formatted))
 }
 
 pub fn number_value_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(args[0]);
     if this_val.is_int() || this_val.is_double() {
-        return Ok(this_val);
+        return NativeResult::Ok(this_val);
     }
-    Ok(JsValue::float(f64::NAN))
+    NativeResult::Ok(JsValue::float(f64::NAN))
 }

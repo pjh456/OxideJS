@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use oxide_kernel::builtin::BuiltinWorld;
 use oxide_kernel::kernel::OxideKernel;
-use oxide_types::object::JsObject;
+use oxide_types::object::{JsObject, NativeFnPtr};
 use oxide_types::value::JsValue;
 
 #[macro_export]
@@ -29,7 +29,8 @@ macro_rules! bind_constructor {
         $global.set_shape_id(shape);
         $global.push_prop(val);
         let ctor = unsafe { &mut *$ctor_ptr };
-        ctor.set_native_fn(Some($ctor_fn as *const ()));
+        // SAFETY: $ctor_fn is a fn-item expression; casting to *const () preserves validity.
+        ctor.set_native_fn(Some(unsafe { oxide_types::object::NativeFnPtr::from_raw($ctor_fn as *const ()) }));
         ctor.set_native_arg_count($nargs);
     }};
 }
@@ -44,13 +45,15 @@ macro_rules! bind_constructor_hash {
         $global.ensure_hash_props().push(Box::new(val));
         $global.bump_generation();
         let ctor = unsafe { &mut *$ctor_ptr };
-        ctor.set_native_fn(Some($ctor_fn as *const ()));
+        // SAFETY: $ctor_fn is a fn-item expression; casting to *const () preserves validity.
+        ctor.set_native_fn(Some(unsafe { oxide_types::object::NativeFnPtr::from_raw($ctor_fn as *const ()) }));
         ctor.set_native_arg_count($nargs);
     }};
 }
 
 pub(crate) fn configure_native_constructor(ctor: &mut JsObject, native_fn: *const (), arg_count: u8) {
-    ctor.set_native_fn(Some(native_fn));
+    // SAFETY: native_fn is always a valid NativeFn fn-item pointer cast to *const () by callers.
+    ctor.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(native_fn) }));
     ctor.set_native_arg_count(arg_count);
 }
 
@@ -60,7 +63,9 @@ pub(crate) fn apply_binding_table(
     let shape_forge = kernel.shape_forge().as_ref();
     let string_forge = kernel.string_forge().as_ref();
     for (name, func, nargs) in bindings {
-        let _ = world.bind_method(target, shape_forge, string_forge, name, *func, *nargs);
+        // SAFETY: all entries in the binding table are NativeFn fn-item pointers cast to *const ().
+        let fn_ptr = unsafe { oxide_types::object::NativeFnPtr::from_raw(*func) };
+        let _ = world.bind_method(target, shape_forge, string_forge, name, fn_ptr, *nargs);
     }
 }
 

@@ -42,18 +42,18 @@ pub fn boolean_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     };
 
     if !is_ctor {
-        return Ok(JsValue::bool(bool_val));
+        return NativeResult::Ok(JsValue::bool(bool_val));
     }
 
     let obj = unsafe { &mut *this_val.as_js_object_ptr() };
     obj.push_prop(JsValue::bool(bool_val));
-    Ok(this_val)
+    NativeResult::Ok(this_val)
 }
 
 pub fn boolean_prototype_value_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if !this_val.is_object() {
-        return Err(crate::builtins::error::create_type_error(
+        return NativeResult::Err(crate::builtins::error::create_type_error(
             vm,
             "Boolean.prototype.valueOf called on non-Boolean object",
         ));
@@ -62,19 +62,19 @@ pub fn boolean_prototype_value_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let boolean_proto = vm.kernel().builtin_world().boolean_proto.as_ptr() as *mut JsObject;
     let proto_ptr = obj.proto().as_js_object_ptr();
     if proto_ptr.is_null() || !std::ptr::eq(proto_ptr, boolean_proto) {
-        return Err(crate::builtins::error::create_type_error(
+        return NativeResult::Err(crate::builtins::error::create_type_error(
             vm,
             "Boolean.prototype.valueOf called on non-Boolean object",
         ));
     }
     let val = obj.get_prop_at(0);
-    Ok(val)
+    NativeResult::Ok(val)
 }
 
 pub fn boolean_prototype_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if !this_val.is_object() {
-        return Err(crate::builtins::error::create_type_error(
+        return NativeResult::Err(crate::builtins::error::create_type_error(
             vm,
             "Boolean.prototype.toString called on non-Boolean object",
         ));
@@ -83,7 +83,7 @@ pub fn boolean_prototype_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let boolean_proto = vm.kernel().builtin_world().boolean_proto.as_ptr() as *mut JsObject;
     let proto_ptr = obj.proto().as_js_object_ptr();
     if proto_ptr.is_null() || !std::ptr::eq(proto_ptr, boolean_proto) {
-        return Err(crate::builtins::error::create_type_error(
+        return NativeResult::Err(crate::builtins::error::create_type_error(
             vm,
             "Boolean.prototype.toString called on non-Boolean object",
         ));
@@ -95,8 +95,8 @@ pub fn boolean_prototype_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
         !val.is_null() && !val.is_undefined()
     };
     if is_true {
-        Ok(vm.intern("true"))
+        NativeResult::Ok(vm.intern("true"))
     } else {
-        Ok(vm.intern("false"))
+        NativeResult::Ok(vm.intern("false"))
     }
 }

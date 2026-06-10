@@ -33,11 +33,9 @@ impl Vm {
     }
 
     fn member_target(&mut self, rd: usize, b: usize, error_msg: &str) -> Result<(*mut JsObject, u32), String> {
-        let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
-        if obj_ptr.is_null() {
-            self.raise_type_error(error_msg)?;
+        let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], error_msg)? else {
             return Err(String::new());
-        }
+        };
         let prop_name_si = self.property_key_si(self.regs[b]);
         Ok((obj_ptr, prop_name_si))
     }
@@ -71,11 +69,9 @@ impl Vm {
     }
 
     fn dispatch_dyn_member_inc(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
-        let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
-        if obj_ptr.is_null() {
-            self.raise_type_error("DYN_MEMBER_INC on non-object")?;
+        let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "DYN_MEMBER_INC on non-object")? else {
             return Ok(());
-        }
+        };
         let receiver = self.regs[rd];
         let obj = unsafe { &mut *obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[a]);
@@ -88,11 +84,9 @@ impl Vm {
     }
 
     fn dispatch_dyn_member_dec(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
-        let obj_ptr = self.regs[rd].as_object_ptr() as *mut JsObject;
-        if obj_ptr.is_null() {
-            self.raise_type_error("DYN_MEMBER_DEC on non-object")?;
+        let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "DYN_MEMBER_DEC on non-object")? else {
             return Ok(());
-        }
+        };
         let receiver = self.regs[rd];
         let obj = unsafe { &mut *obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[a]);

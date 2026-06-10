@@ -3,7 +3,7 @@ use std::sync::Arc;
 use oxide_kernel::bind_methods;
 use oxide_kernel::builtin::NumberMethods;
 use oxide_kernel::kernel::OxideKernel;
-use oxide_types::object::JsObject;
+use oxide_types::object::{JsObject, NativeFnPtr};
 use oxide_types::value::JsValue;
 
 pub fn bind_number(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
@@ -36,7 +36,8 @@ pub fn bind_number(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     {
         let num_ctor_ptr = kernel.builtin_world().number_constructor.as_ptr() as *mut JsObject;
         let num_ctor = unsafe { &mut *num_ctor_ptr };
-        num_ctor.set_native_fn(Some(crate::builtins::number::number_constructor as *const ()));
+        // SAFETY: number_constructor is a NativeFn fn-item.
+        num_ctor.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(crate::builtins::number::number_constructor as *const ()) }));
         num_ctor.set_native_arg_count(1);
 
         for (name, value) in [

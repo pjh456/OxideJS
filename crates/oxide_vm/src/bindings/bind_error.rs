@@ -3,7 +3,7 @@ use std::sync::Arc;
 use oxide_kernel::builtin::ErrorMethods;
 use oxide_kernel::kernel::OxideKernel;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_types::object::JsObject;
+use oxide_types::object::{JsObject, NativeFnPtr};
 use oxide_types::value::JsValue;
 
 fn bind_error_subtype_constructor(
@@ -15,7 +15,8 @@ fn bind_error_subtype_constructor(
 
     let mut ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(function_proto_ptr)));
     ctor.set_function(true);
-    ctor.set_native_fn(Some(ctor_fn));
+    // SAFETY: ctor_fn is a NativeFn fn-item pointer cast to *const () by callers.
+    ctor.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(ctor_fn) }));
     ctor.set_native_arg_count(1);
 
     let si_prototype = sf.intern("prototype").0;
@@ -112,6 +113,7 @@ pub fn bind_error(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     {
         let err_ctor_ptr = kernel.builtin_world().error_constructor.as_ptr() as *mut JsObject;
         let err_ctor = unsafe { &mut *err_ctor_ptr };
-        err_ctor.set_native_fn(Some(crate::builtins::error::error_constructor as *const ()));
+        // SAFETY: error_constructor is a NativeFn fn-item.
+        err_ctor.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(crate::builtins::error::error_constructor as *const ()) }));
     }
 }

@@ -1,43 +1,17 @@
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_types::object::JsObject;
+use oxide_types::object::{JsObject, NativeFnPtr};
 use oxide_types::value::JsValue;
 
 use crate::native::NativeResult;
 use crate::vm::Vm;
 
-/// Rebuild a typed JS error object from `call_function_sync`'s `String` error.
-///
-/// `call_function_sync` collapses thrown exceptions to a `String` shaped like
-/// `"TypeError: message"`. Native builtins must return `Err(JsValue)`, and
-/// test262 negative tests match on the error's `name`, so we parse the prefix
-/// back into the right error kind instead of flattening everything to `Error`.
-fn error_from_text(vm: &mut Vm, text: &str) -> JsValue {
-    use crate::builtins::error;
-    let text = text.strip_prefix("uncaught ").unwrap_or(text);
-    let (kind, msg) = match text.split_once(": ") {
-        Some((k, m)) => (k, m),
-        None => ("", text),
-    };
-    match kind {
-        "TypeError" => error::create_type_error(vm, msg),
-        "ReferenceError" => error::create_reference_error(vm, msg),
-        "RangeError" => error::create_range_error(vm, msg),
-        "SyntaxError" => error::create_syntax_error(vm, msg),
-        _ => error::create_error(vm, text),
-    }
-}
-
-/// Invoke any callee (native or user/bytecode function) with an explicit
-/// receiver and register-sourced arguments.
-///
-/// Delegates to `Vm::call_function_sync`, the engine's unified synchronous call
-/// path (also used by getter/setter dispatch). The previous hand-rolled version
-/// only supported native targets, so `Function.prototype.call/apply/bind` threw
-/// on user functions — a major test262 harness blocker.
 fn invoke_target(vm: &mut Vm, target_val: JsValue, this_val: JsValue, arg_regs: &[u8]) -> NativeResult {
     let args: Vec<JsValue> = arg_regs.iter().map(|&r| vm.reg(r)).collect();
-    vm.call_function_sync(target_val, this_val, &args)
-        .map_err(|msg| error_from_text(vm, &msg))
+    NativeResult::TailCall {
+        callee: target_val,
+        this: this_val,
+        args,
+    }
 }
 
 fn bind_dispatcher(vm: &mut Vm, args: &[u8]) -> NativeResult {
@@ -59,7 +33,7 @@ fn bind_dispatcher(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
 pub fn function_call(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if args.is_empty() {
-        return Err(JsValue::undefined());
+        return NativeResult::Err(JsValue::undefined());
     }
     let target_val = vm.reg(args[0]);
     let this_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
@@ -69,7 +43,7 @@ pub fn function_call(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
 pub fn function_apply(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if args.is_empty() {
-        return Err(JsValue::undefined());
+        return NativeResult::Err(JsValue::undefined());
     }
     let target_val = vm.reg(args[0]);
     let this_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
@@ -82,7 +56,8 @@ pub fn function_apply(vm: &mut Vm, args: &[u8]) -> NativeResult {
             if !arr_ptr.is_null() {
                 let arr = unsafe { &*arr_ptr };
                 if arr.is_array() {
-                    let n = arr.hash_props_vec().map_or(0, |v| v.len());
+                    let max_args = 55usize; // base=200, max safe register is 255.
+                    let n = arr.hash_props_vec().map_or(0, |v| v.len()).min(max_args);
                     let base = 200u8;
                     arg_regs = (0..n).map(|i| base + i as u8).collect();
                     for i in 0..n {
@@ -108,30 +83,31 @@ pub fn function_apply(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
 pub fn function_bind(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if args.is_empty() {
-        return Err(JsValue::undefined());
+        return NativeResult::Err(JsValue::undefined());
     }
     let target_val = vm.reg(args[0]);
     if !target_val.is_object() {
-        return Err(JsValue::undefined());
+        return NativeResult::Err(JsValue::undefined());
     }
     let bound_this = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
 
     let wrapper = vm.epoch().alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
     unsafe {
         (*wrapper).set_function(true);
-        (*wrapper).set_native_fn(Some(bind_dispatcher as *const ()));
+        // SAFETY: bind_dispatcher is a NativeFn fn-item; valid to store as NativeFnPtr.
+        (*wrapper).set_native_fn(Some(NativeFnPtr::from_raw(bind_dispatcher as *const ())));
         (*wrapper).set_native_arg_count(0);
         (*wrapper).ensure_hash_props().push(Box::new(target_val));
         (*wrapper).ensure_hash_props().push(Box::new(bound_this));
     }
 
-    Ok(JsValue::from_js_object(wrapper))
+    NativeResult::Ok(JsValue::from_js_object(wrapper))
 }
 
 pub fn function_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if !this_val.is_object() {
-        return Err(crate::builtins::error::create_type_error(
+        return NativeResult::Err(crate::builtins::error::create_type_error(
             vm,
             "Function.prototype.toString called on non-function",
         ));
@@ -139,7 +115,7 @@ pub fn function_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
     let func = unsafe { &*this_val.as_js_object_ptr() };
     if !func.is_function() {
-        return Err(crate::builtins::error::create_type_error(
+        return NativeResult::Err(crate::builtins::error::create_type_error(
             vm,
             "Function.prototype.toString called on non-function",
         ));
@@ -171,5 +147,5 @@ pub fn function_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
         format!("function {name}() {{ {body} }}")
     };
     let si = vm.kernel().string_forge().intern(&result).0;
-    Ok(JsValue::string(si, 0))
+    NativeResult::Ok(JsValue::string(si, 0))
 }

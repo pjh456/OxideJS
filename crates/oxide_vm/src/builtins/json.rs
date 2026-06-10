@@ -11,21 +11,26 @@ use crate::vm::Vm;
 
 pub fn json_parse(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
-        return Err(crate::builtins::error::create_syntax_error(vm, "JSON.parse requires 1 argument"));
+        return NativeResult::Err(crate::builtins::error::create_syntax_error(vm, "JSON.parse requires 1 argument"));
     }
     let val = vm.reg(args[1]);
     if !val.is_string() {
-        return Err(crate::builtins::error::create_syntax_error(vm, "JSON.parse: argument is not a string"));
+        return NativeResult::Err(crate::builtins::error::create_syntax_error(
+            vm,
+            "JSON.parse: argument is not a string",
+        ));
     }
     let text = {
         let si = val.as_string_index();
         vm.kernel().string_forge().lookup(si).unwrap_or_default()
     };
 
-    let parsed: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| crate::builtins::error::create_syntax_error(vm, &format!("{}", e)))?;
+    let parsed: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(crate::builtins::error::create_syntax_error(vm, &format!("{}", e))),
+    };
 
-    Ok(value_to_jsvalue(vm, &parsed))
+    NativeResult::Ok(value_to_jsvalue(vm, &parsed))
 }
 
 fn value_to_jsvalue(vm: &mut Vm, val: &serde_json::Value) -> JsValue {
@@ -75,17 +80,18 @@ fn value_to_jsvalue(vm: &mut Vm, val: &serde_json::Value) -> JsValue {
 
 pub fn json_stringify(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
-        return Ok(JsValue::undefined());
+        return NativeResult::Ok(JsValue::undefined());
     }
     let value = vm.reg(args[1]);
     if value.is_undefined() {
-        return Ok(JsValue::undefined());
+        return NativeResult::Ok(JsValue::undefined());
     }
     let mut visited = HashSet::new();
     let mut output = String::new();
-    jsvalue_to_json(vm, value, &mut visited, &mut output)
-        .map_err(|_| crate::builtins::error::create_type_error(vm, "cyclic object value"))?;
-    Ok(vm.intern(&output))
+    if jsvalue_to_json(vm, value, &mut visited, &mut output).is_err() {
+        return NativeResult::Err(crate::builtins::error::create_type_error(vm, "cyclic object value"));
+    };
+    NativeResult::Ok(vm.intern(&output))
 }
 
 fn jsvalue_to_json(vm: &Vm, val: JsValue, visited: &mut HashSet<*const u8>, out: &mut String) -> Result<(), ()> {

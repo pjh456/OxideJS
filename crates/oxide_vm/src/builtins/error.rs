@@ -72,43 +72,43 @@ fn get_msg(vm: &mut Vm, args: &[u8]) -> String {
 pub fn error_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let msg = get_msg(vm, args);
     let proto_ptr = P::as_ptr(&vm.kernel().builtin_world().error_proto) as *mut JsObject;
-    Ok(create_error_object(vm, proto_ptr, "Error", &msg))
+    NativeResult::Ok(create_error_object(vm, proto_ptr, "Error", &msg))
 }
 
 pub fn type_error_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let msg = get_msg(vm, args);
     let proto_ptr = P::as_ptr(&vm.kernel().builtin_world().type_error_proto) as *mut JsObject;
-    Ok(create_error_object(vm, proto_ptr, "TypeError", &msg))
+    NativeResult::Ok(create_error_object(vm, proto_ptr, "TypeError", &msg))
 }
 
 pub fn reference_error_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let msg = get_msg(vm, args);
     let proto_ptr = P::as_ptr(&vm.kernel().builtin_world().reference_error_proto) as *mut JsObject;
-    Ok(create_error_object(vm, proto_ptr, "ReferenceError", &msg))
+    NativeResult::Ok(create_error_object(vm, proto_ptr, "ReferenceError", &msg))
 }
 
 pub fn range_error_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let msg = get_msg(vm, args);
     let proto_ptr = P::as_ptr(&vm.kernel().builtin_world().range_error_proto) as *mut JsObject;
-    Ok(create_error_object(vm, proto_ptr, "RangeError", &msg))
+    NativeResult::Ok(create_error_object(vm, proto_ptr, "RangeError", &msg))
 }
 
 pub fn syntax_error_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let msg = get_msg(vm, args);
     let proto_ptr = P::as_ptr(&vm.kernel().builtin_world().syntax_error_proto) as *mut JsObject;
-    Ok(create_error_object(vm, proto_ptr, "SyntaxError", &msg))
+    NativeResult::Ok(create_error_object(vm, proto_ptr, "SyntaxError", &msg))
 }
 
 pub fn uri_error_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let msg = get_msg(vm, args);
     let proto_ptr = P::as_ptr(&vm.kernel().builtin_world().uri_error_proto) as *mut JsObject;
-    Ok(create_error_object(vm, proto_ptr, "URIError", &msg))
+    NativeResult::Ok(create_error_object(vm, proto_ptr, "URIError", &msg))
 }
 
 pub fn eval_error_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let msg = get_msg(vm, args);
     let proto_ptr = P::as_ptr(&vm.kernel().builtin_world().eval_error_proto) as *mut JsObject;
-    Ok(create_error_object(vm, proto_ptr, "EvalError", &msg))
+    NativeResult::Ok(create_error_object(vm, proto_ptr, "EvalError", &msg))
 }
 
 pub fn error_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
@@ -134,7 +134,7 @@ pub fn error_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
     };
     let result = if msg.is_empty() { name } else { format!("{}: {}", name, msg) };
     let si = vm.kernel().string_forge().intern(&result).0;
-    Ok(JsValue::string(si, 0))
+    NativeResult::Ok(JsValue::string(si, 0))
 }
 
 pub fn error_stack_getter(vm: &mut Vm, _args: &[u8]) -> NativeResult {
@@ -150,13 +150,13 @@ pub fn error_stack_getter(vm: &mut Vm, _args: &[u8]) -> NativeResult {
     lines.push("    at <anonymous> (native)".to_string());
     let result = lines.join("\n");
     let si = vm.kernel().string_forge().intern(&result).0;
-    Ok(JsValue::string(si, 0))
+    NativeResult::Ok(JsValue::string(si, 0))
 }
 
 #[cfg(test)]
 mod tests {
     use super::error_stack_getter;
-    use crate::vm::{CallFrame, Vm};
+    use crate::vm::{CallFrame, FrameContinuation, Vm};
     use oxide_types::value::JsValue;
 
     #[test]
@@ -174,6 +174,7 @@ mod tests {
             construct_result_reg: None,
             constructed_this: None,
             is_derived_constructor: false,
+            continuation: FrameContinuation::None,
         });
 
         let stack = error_stack_getter(&mut vm, &[0]).unwrap();

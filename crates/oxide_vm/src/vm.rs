@@ -9,13 +9,22 @@ use oxide_compiler::opcode::{self, OpCode};
 use crate::bindings;
 pub use crate::bindings::init_kernel_builtins;
 use crate::coercion;
-use crate::native::NativeFn;
+use crate::native::{NativeFn, NativeResult};
 use oxide_kernel::kernel::{KernelConfig, OxideKernel};
-use oxide_kernel::prop_forge::PropTemplate;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::mem::{Epoch, P};
-use oxide_types::object::{JsObject, PropAttributes};
+use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
+
+/// Convert a `NativeFnPtr` to a callable `NativeFn`.
+///
+/// # Safety
+/// The pointer stored in `ptr` must have been created from a valid `NativeFn` fn-item.
+/// This is the single point in the codebase where `NativeFnPtr → NativeFn` coercion happens.
+#[inline(always)]
+pub(crate) unsafe fn native_fn_ptr_to_fn(ptr: NativeFnPtr) -> NativeFn {
+    std::mem::transmute::<*const (), NativeFn>(ptr.as_ptr())
+}
 
 #[allow(unused_macros)]
 macro_rules! throw_err {
@@ -43,6 +52,13 @@ macro_rules! compound_arith {
     }}
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum FrameContinuation {
+    None,
+    AccessorGet { target_reg: u8 },
+    AccessorSet,
+}
+
 pub struct CallFrame {
     pub return_addr: usize,
     pub function_name: u32,
@@ -54,6 +70,7 @@ pub struct CallFrame {
     pub construct_result_reg: Option<u8>,
     pub constructed_this: Option<JsValue>,
     pub is_derived_constructor: bool,
+    pub continuation: FrameContinuation,
 }
 
 pub struct ForInIter<'bump> {
@@ -73,7 +90,7 @@ pub struct Vm {
     pub(crate) bytecode: Vec<opcode::Instr>,
     pub(crate) constants: Vec<JsValue>,
     pub(crate) frames: Vec<CallFrame>,
-    pub for_in_iters: Vec<*mut u8>,
+    pub for_in_iters: Vec<*mut ForInIter<'static>>,
     pub(crate) kernel: Arc<OxideKernel>,
     pub(crate) interned_strings: Vec<u32>,
     pub epoch: Epoch,
@@ -94,9 +111,29 @@ pub struct Vm {
     pub(crate) root_reg_limit: u8,
     pub(crate) active_reg_limit: u8,
     pub(crate) native_call_depth: usize,
+    /// Set to Some(target_reg) when `ordinary_get` pushes a bytecode accessor frame.
+    /// The dispatch loop checks this flag and skips writing `regs[target_reg]` from the
+    /// call result — the value will be delivered by the RETURN handler instead.
+    pub(crate) accessor_frame_target_reg: Option<u8>,
 }
 
 impl Vm {
+    pub(crate) fn checked_object_ptr(
+        &mut self, val: JsValue, error_msg: &str,
+    ) -> Result<Option<*mut JsObject>, String> {
+        if !val.is_object() {
+            self.raise_type_error(error_msg)?;
+            return Ok(None);
+        }
+        let ptr = val.as_js_object_ptr();
+        let addr = ptr as usize;
+        if ptr.is_null() || addr < 0x10000 || addr % std::mem::align_of::<JsObject>() != 0 {
+            self.raise_type_error(error_msg)?;
+            return Ok(None);
+        }
+        Ok(Some(ptr))
+    }
+
     pub(crate) fn raise_error_kind(&mut self, kind: &'static str, msg: &str) -> Result<(), String> {
         let error = match kind {
             "TypeError" => crate::builtins::error::create_type_error(self, msg),
@@ -143,6 +180,7 @@ impl Vm {
             root_reg_limit: 0,
             active_reg_limit: 0,
             native_call_depth: 0,
+            accessor_frame_target_reg: None,
         }
     }
 
@@ -174,6 +212,7 @@ impl Vm {
             root_reg_limit: 0,
             active_reg_limit: 0,
             native_call_depth: 0,
+            accessor_frame_target_reg: None,
         }
     }
 
@@ -372,7 +411,9 @@ impl Vm {
                 self.regs[0] = JsValue::undefined();
                 self.regs[1] = pat_val;
                 self.regs[2] = flags_val;
-                let func: crate::native::NativeFn = unsafe { std::mem::transmute(native_fn) };
+                // SAFETY: regexp constructor was registered via set_native_fn with a valid NativeFn pointer;
+                // native_fn_ptr_to_fn is the single coercion point for NativeFnPtr → NativeFn.
+                let func: crate::native::NativeFn = unsafe { native_fn_ptr_to_fn(native_fn) };
                 let result = func(self, &[0, 1, 2]);
                 self.regs[0] = saved_0;
                 self.regs[1] = saved_1;
@@ -428,12 +469,6 @@ impl Vm {
         }
         let key = coercion::to_string(self.kernel.string_forge().as_ref(), val);
         self.kernel.string_forge().intern(&key).0
-    }
-
-    pub(crate) fn template_prop_ptr(&self, obj: &JsObject, template: &PropTemplate) -> Option<*const JsValue> {
-        let pos = template.position as usize;
-        obj.hash_props_vec()
-            .and_then(|vec| if pos < vec.len() { Some(&*vec[pos] as *const JsValue) } else { None })
     }
 
     pub(crate) fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
@@ -507,16 +542,31 @@ impl Vm {
             for idx in 0..args.len().min(16) {
                 arg_regs[idx + 1] = 240 + idx as u8;
             }
-            let func: NativeFn = unsafe { std::mem::transmute(native_fn) };
+            // SAFETY: native_fn was set via set_native_fn with a valid NativeFn pointer;
+            // native_fn_ptr_to_fn is the single coercion point for NativeFnPtr → NativeFn.
+            let func: NativeFn = unsafe { native_fn_ptr_to_fn(native_fn) };
             self.native_call_depth += 1;
             let result = func(self, &arg_regs[..args.len().min(16) + 1]);
             self.native_call_depth -= 1;
             self.regs = saved_regs;
             self.regs[254] = saved_this;
             self.regs[253] = saved_callee;
-            return result.map_err(|err| self.error_text(err));
+            return match result {
+                NativeResult::Ok(val) => Ok(val),
+                NativeResult::Err(err) => Err(self.error_text(err)),
+                NativeResult::TailCall { callee, this, args } => self.call_function_sync(callee, this, &args),
+            };
         }
 
+        let mut sub_vm = Vm::with_kernel(Arc::clone(&self.kernel));
+        sub_vm.sub_modules = self.sub_modules.clone();
+        sub_vm.sub_module_constants = self.sub_module_constants.clone();
+        sub_vm.call_function_sync_in_sub_vm(callee, callee_obj, receiver, args)
+    }
+
+    fn call_function_sync_in_sub_vm(
+        &mut self, callee: JsValue, callee_obj: &JsObject, receiver: JsValue, args: &[JsValue],
+    ) -> Result<JsValue, String> {
         if callee_obj.sub_module_index() == 0 {
             return Err("TypeError: accessor is not callable".into());
         }
@@ -528,49 +578,17 @@ impl Vm {
                 self.sub_modules.len()
             ));
         }
-        if self.frames.len() >= self.kernel.config.max_call_depth {
-            return Err("RangeError: Maximum call stack size exceeded".into());
-        }
-
-        let saved_regs = self.regs;
-        let saved_pc = self.pc;
-        let saved_bytecode = std::mem::take(&mut self.bytecode);
-        let saved_constants = std::mem::take(&mut self.constants);
-        let saved_frames = std::mem::take(&mut self.frames);
-        let saved_bytecode_stack = std::mem::take(&mut self.saved_bytecode_stack);
-        let saved_constants_stack = std::mem::take(&mut self.saved_constants_stack);
-        let saved_active_reg_limit = self.active_reg_limit;
-        let saved_exception_value = self.exception_value.take();
-        let saved_pending_exception = self.pending_exception.take();
-        let saved_pending_error_kind = self.pending_error_kind.take();
 
         let sub = self.sub_modules[sub_idx].clone();
-        let sub_param_base = sub.param_base as usize;
-        let sub_arg_count = sub.n_args as usize;
-        for i in 0..sub_arg_count {
-            self.regs[sub_param_base + i] = args.get(i).copied().unwrap_or(JsValue::undefined());
+        self.bytecode = sub.bytecode;
+        self.constants = self.convert_constants(&sub.constants)?;
+        self.active_reg_limit = sub.n_registers.max(1);
+        self.root_reg_limit = self.active_reg_limit;
+        for i in 0..sub.n_args as usize {
+            self.regs[sub.param_base as usize + i] = args.get(i).copied().unwrap_or(JsValue::undefined());
         }
         self.regs[254] = if sub.is_arrow { callee_obj.captured_this() } else { receiver };
         self.regs[255] = JsValue::undefined();
-        self.bytecode = sub.bytecode;
-        let converted_constants = match self.convert_constants(&sub.constants) {
-            Ok(constants) => constants,
-            Err(err) => {
-                self.regs = saved_regs;
-                self.pc = saved_pc;
-                self.bytecode = saved_bytecode;
-                self.constants = saved_constants;
-                self.frames = saved_frames;
-                self.saved_bytecode_stack = saved_bytecode_stack;
-                self.saved_constants_stack = saved_constants_stack;
-                self.active_reg_limit = saved_active_reg_limit;
-                self.exception_value = saved_exception_value;
-                self.pending_exception = saved_pending_exception;
-                self.pending_error_kind = saved_pending_error_kind;
-                return Err(err);
-            }
-        };
-        self.constants = converted_constants;
         for (name, reg) in &sub.builtin_reg_map {
             let si = self.kernel.string_forge().intern(name.as_str()).0;
             let global = self.kernel.global_object();
@@ -578,28 +596,113 @@ impl Vm {
                 self.regs[*reg as usize] = global.get_prop_at(pos);
             }
         }
-        self.active_reg_limit = sub.n_registers.max(1);
+        let _ = callee;
+        self.dispatch()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn push_bytecode_frame(
+        &mut self, callee: JsValue, this_value: JsValue, args: &[JsValue], construct_result_reg: Option<u8>,
+        constructed_this: Option<JsValue>, new_target: JsValue, continuation: FrameContinuation,
+    ) -> Result<(), String> {
+        if !callee.is_object() {
+            return Err("TypeError: CALL target is not callable".into());
+        }
+        let obj = unsafe { &*callee.as_js_object_ptr() };
+        if !obj.is_function() || obj.sub_module_index() == 0 {
+            return Err("TypeError: CALL target is not callable".into());
+        }
+        let sub_idx = obj.sub_module_index() as usize - 1;
+        if sub_idx >= self.sub_modules.len() {
+            return Err(format!(
+                "CALL: sub_module_index {} out of bounds (max {})",
+                sub_idx,
+                self.sub_modules.len()
+            ));
+        }
+        if self.frames.len() >= self.kernel.config.max_call_depth {
+            return Err("RangeError: Maximum call stack size exceeded".into());
+        }
+
+        let sub_bytecode = self.sub_modules[sub_idx].bytecode.clone();
+        let sub_n_args = self.sub_modules[sub_idx].n_args as usize;
+        let sub_n_registers = self.sub_modules[sub_idx].n_registers;
+        let sub_constants = self.sub_modules[sub_idx].constants.clone();
+        let sub_param_base = self.sub_modules[sub_idx].param_base as usize;
+        let sub_is_arrow = self.sub_modules[sub_idx].is_arrow;
+        let caller_reg_limit = self.active_reg_limit.max(1);
+        let saved_regs = self.regs[..caller_reg_limit as usize].to_vec().into_boxed_slice();
+        let saved_this = self.regs[254];
+        let saved_new_target = self.regs[255];
+
+        for i in 0..sub_n_args {
+            self.regs[sub_param_base + i] = args.get(i).copied().unwrap_or(JsValue::undefined());
+        }
+        self.regs[254] = if sub_is_arrow { obj.captured_this() } else { this_value };
+        self.regs[255] = new_target;
+
+        let converted_sub_constants = self.convert_constants(&sub_constants)?;
+        self.saved_bytecode_stack.push(std::mem::take(&mut self.bytecode));
+        self.saved_constants_stack.push(std::mem::take(&mut self.constants));
+
+        let function_name = self.sub_modules[sub_idx]
+            .function_name
+            .as_deref()
+            .map(|name| self.kernel.string_forge().intern(name).0)
+            .unwrap_or(0);
+
+        self.frames.push(CallFrame {
+            return_addr: self.pc,
+            function_name,
+            caller_reg_limit,
+            saved_regs,
+            saved_this,
+            saved_new_target,
+            callee,
+            construct_result_reg,
+            constructed_this,
+            is_derived_constructor: obj.is_derived_constructor(),
+            continuation,
+        });
+
+        self.bytecode = sub_bytecode;
+        self.constants = converted_sub_constants;
+        for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map.clone() {
+            let si = self.kernel.string_forge().intern(name.as_str()).0;
+            let global = self.kernel.global_object();
+            if let Some(pos) = self.kernel.shape_forge().lookup_position(global.shape_id(), si) {
+                self.regs[*reg as usize] = global.get_prop_at(pos);
+            }
+        }
+
+        self.active_reg_limit = sub_n_registers.max(1);
         self.pc = 0;
-
-        let result = self.dispatch();
-
-        self.regs = saved_regs;
-        self.pc = saved_pc;
-        self.bytecode = saved_bytecode;
-        self.constants = saved_constants;
-        self.frames = saved_frames;
-        self.saved_bytecode_stack = saved_bytecode_stack;
-        self.saved_constants_stack = saved_constants_stack;
-        self.active_reg_limit = saved_active_reg_limit;
-        self.exception_value = saved_exception_value;
-        self.pending_exception = saved_pending_exception;
-        self.pending_error_kind = saved_pending_error_kind;
-
-        result
+        Ok(())
     }
 
     pub(crate) fn ordinary_get(
         &mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue,
+    ) -> Result<JsValue, String> {
+        self.ordinary_get_inner(obj, prop_name_si, receiver, None)
+    }
+
+    /// `ordinary_get` with an optional dispatch-loop target register.
+    ///
+    /// When `target_reg` is `Some(r)` and the property is a bytecode accessor getter,
+    /// this method pushes a bytecode frame with `FrameContinuation::AccessorGet { target_reg: r }`
+    /// and sets `self.accessor_frame_target_reg = Some(r)`. The caller must then return
+    /// `Ok(JsValue::undefined())` — the real value will be stored by the `RETURN` handler.
+    ///
+    /// When `target_reg` is `None`, bytecode getters are executed via a sub-VM (safe for callers
+    /// outside the dispatch loop, such as tests).
+    pub(crate) fn ordinary_get_with_target(
+        &mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue, target_reg: u8,
+    ) -> Result<JsValue, String> {
+        self.ordinary_get_inner(obj, prop_name_si, receiver, Some(target_reg))
+    }
+
+    fn ordinary_get_inner(
+        &mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue, target_reg: Option<u8>,
     ) -> Result<JsValue, String> {
         let length_si = self.kernel.string_forge().intern("length").0;
         if obj.is_array() && prop_name_si == length_si {
@@ -610,6 +713,15 @@ impl Vm {
                 if meta.is_accessor {
                     return if meta.get.is_undefined() {
                         Ok(JsValue::undefined())
+                    } else if let Some(tr) = target_reg {
+                        // Dispatch loop path: push bytecode frame, return sentinel.
+                        let getter = meta.get;
+                        let pushed = self.push_bytecode_getter_frame(getter, receiver, tr)?;
+                        if pushed {
+                            return Ok(JsValue::undefined()); // RETURN handler delivers value
+                        }
+                        // Native getter — value already written to regs[tr] by push_bytecode_getter_frame
+                        Ok(self.regs[tr as usize])
                     } else {
                         self.call_function_sync(meta.get, receiver, &[])
                     };
@@ -620,9 +732,41 @@ impl Vm {
         let proto = obj.proto();
         if proto.is_object() {
             let proto_obj = unsafe { &*proto.as_js_object_ptr() };
-            return self.ordinary_get(proto_obj, prop_name_si, receiver);
+            return self.ordinary_get_inner(proto_obj, prop_name_si, receiver, target_reg);
         }
         Ok(JsValue::undefined())
+    }
+
+    /// Push a bytecode frame for a getter accessor, or call native getters inline.
+    ///
+    /// Returns `true` if a bytecode frame was pushed (dispatch loop must `continue`).
+    /// Returns `false` if the getter was native (result already in `regs[target_reg]`).
+    fn push_bytecode_getter_frame(
+        &mut self, getter: JsValue, receiver: JsValue, target_reg: u8,
+    ) -> Result<bool, String> {
+        if !getter.is_object() {
+            return Err("TypeError: getter is not callable".into());
+        }
+        let getter_obj = unsafe { &*getter.as_js_object_ptr() };
+        if !getter_obj.is_function() {
+            return Err("TypeError: getter is not callable".into());
+        }
+
+        if getter_obj.native_fn().is_some() {
+            // Native getter — call inline, store result
+            let result = self.call_function_sync(getter, receiver, &[])?;
+            self.regs[target_reg as usize] = result;
+            return Ok(false);
+        }
+
+        // Bytecode getter — push frame
+        self.push_bytecode_frame(
+            getter, receiver, &[], None, None,
+            JsValue::undefined(),
+            FrameContinuation::AccessorGet { target_reg },
+        )?;
+        self.accessor_frame_target_reg = Some(target_reg);
+        Ok(true)
     }
 
     fn inherited_property_meta(&self, obj: &JsObject, prop_name_si: u32) -> Option<oxide_types::object::PropMetaEntry> {
@@ -640,14 +784,28 @@ impl Vm {
     pub(crate) fn ordinary_set(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue,
     ) -> Result<(), String> {
+        self.ordinary_set_inner(obj, prop_name_si, val, receiver, false)
+    }
+
+    /// `ordinary_set` variant for the dispatch loop: bytecode setters push a frame instead
+    /// of spawning a sub-VM.
+    pub(crate) fn ordinary_set_dispatch(
+        &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue,
+    ) -> Result<(), String> {
+        self.ordinary_set_inner(obj, prop_name_si, val, receiver, true)
+    }
+
+    fn ordinary_set_inner(
+        &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue,
+        use_frame_push: bool,
+    ) -> Result<(), String> {
         if let Some(pos) = self.get_own_property_slot(obj, prop_name_si) {
             if let Some(meta) = obj.prop_meta_at(pos) {
                 if meta.is_accessor {
                     if meta.set.is_undefined() {
                         return self.raise_type_error("property has no setter");
                     }
-                    self.call_function_sync(meta.set, receiver, &[val])?;
-                    return Ok(());
+                    return self.call_or_push_setter(meta.set, receiver, val, use_frame_push);
                 }
                 if !meta.attributes.writable() {
                     return self.raise_type_error("cannot assign to read-only property");
@@ -662,8 +820,7 @@ impl Vm {
                 if meta.set.is_undefined() {
                     return self.raise_type_error("property has no setter");
                 }
-                self.call_function_sync(meta.set, receiver, &[val])?;
-                return Ok(());
+                return self.call_or_push_setter(meta.set, receiver, val, use_frame_push);
             }
             if !meta.attributes.writable() {
                 return self.raise_type_error("cannot assign to read-only property");
@@ -674,41 +831,70 @@ impl Vm {
         Ok(())
     }
 
+    /// Call a setter — either inline (for native setters or sub-VM path) or via frame push
+    /// (for bytecode setters inside the dispatch loop).
+    fn call_or_push_setter(
+        &mut self, setter: JsValue, receiver: JsValue, val: JsValue, use_frame_push: bool,
+    ) -> Result<(), String> {
+        if !use_frame_push {
+            self.call_function_sync(setter, receiver, &[val])?;
+            return Ok(());
+        }
+        if !setter.is_object() {
+            return self.raise_type_error("setter is not callable");
+        }
+        let setter_obj = unsafe { &*setter.as_js_object_ptr() };
+        if !setter_obj.is_function() {
+            return self.raise_type_error("setter is not callable");
+        }
+        if setter_obj.native_fn().is_some() {
+            // Native setter — call inline
+            self.call_function_sync(setter, receiver, &[val])?;
+            return Ok(());
+        }
+        // Bytecode setter — push frame; result is discarded via AccessorSet
+        self.push_bytecode_frame(
+            setter, receiver, &[val], None, None,
+            JsValue::undefined(),
+            FrameContinuation::AccessorSet,
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn read_member_prop(
         &mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue,
     ) -> Result<JsValue, String> {
         let ext0 = self.bytecode[self.pc];
         let ext1 = self.bytecode[self.pc + 1];
-        let ext2 = self.bytecode[self.pc + 2];
+        let _ext2 = self.bytecode[self.pc + 2];
         self.pc += 3;
         if obj.has_prop_meta() {
             return self.ordinary_get(obj, prop_name_si, receiver);
         }
         let cached_shape_id = ext0 & 0x00FF_FFFF;
-        let cached_ptr = ((ext2 as u64) << 32) | (ext1 as u64);
+        let cached_slot = ext1;
 
-        let val = if cached_shape_id != 0 && cached_shape_id == obj.shape_id() && cached_ptr != 0 {
-            unsafe { *(cached_ptr as *const JsValue) }
-        } else if let Some(template) = self.kernel.prop_forge().get_template(obj.shape_id()) {
-            if template.prop_name != prop_name_si {
-                self.ordinary_get(obj, prop_name_si, receiver)?
-            } else if let Some(ptr) = self.template_prop_ptr(obj, &template) {
-                self.write_ic_back(obj.shape_id(), ptr);
-                unsafe { *ptr }
+        let val =
+            if cached_shape_id != 0 && cached_shape_id == obj.shape_id() && cached_slot < obj.prop_vec_len() as u32 {
+                obj.get_prop_at(cached_slot)
+            } else if let Some(template) = self.kernel.prop_forge().get_template(obj.shape_id()) {
+                if template.prop_name != prop_name_si {
+                    self.ordinary_get(obj, prop_name_si, receiver)?
+                } else if template.position < obj.prop_vec_len() as u32 {
+                    self.write_ic_back(obj.shape_id(), template.position);
+                    obj.get_prop_at(template.position)
+                } else {
+                    self.ordinary_get(obj, prop_name_si, receiver)?
+                }
             } else {
-                self.ordinary_get(obj, prop_name_si, receiver)?
-            }
-        } else {
-            let resolved = self.ordinary_get(obj, prop_name_si, receiver)?;
-            if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
-                if !obj.is_accessor_meta(pos) {
-                    if let Some(ptr) = obj.prop_ptr_at(pos) {
-                        self.write_ic_back(obj.shape_id(), ptr);
+                let resolved = self.ordinary_get(obj, prop_name_si, receiver)?;
+                if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+                    if !obj.is_accessor_meta(pos) {
+                        self.write_ic_back(obj.shape_id(), pos);
                     }
                 }
-            }
-            resolved
-        };
+                resolved
+            };
         Ok(val)
     }
 
@@ -721,10 +907,8 @@ impl Vm {
                 return Ok(());
             }
             obj.set_prop_at(pos, val);
-            // IC write-back: 3 extension words (shape_id + ptr_lo + ptr_hi)
-            if let Some(ptr) = obj.prop_ptr_at(pos) {
-                self.write_ic_back(obj.shape_id(), ptr);
-            }
+            // IC write-back: 3 extension words (shape_id + slot_index + reserved)
+            self.write_ic_back(obj.shape_id(), pos);
         } else {
             self.ordinary_set(obj, prop_name_si, val, receiver)?;
         }
@@ -803,11 +987,11 @@ impl Vm {
         Ok(())
     }
 
-    pub(crate) fn write_ic_back(&mut self, shape_id: u32, ptr: *const JsValue) {
+    pub(crate) fn write_ic_back(&mut self, shape_id: u32, slot_index: u32) {
         debug_assert!(self.pc >= 3, "IC write-back requires 3 extension words before pc");
         self.bytecode[self.pc - 3] = shape_id & 0x00FF_FFFF;
-        self.bytecode[self.pc - 2] = ptr as u32;
-        self.bytecode[self.pc - 1] = (ptr as u64 >> 32) as u32;
+        self.bytecode[self.pc - 2] = slot_index;
+        self.bytecode[self.pc - 1] = 0;
     }
 
     fn restore_frame(&mut self, frame: CallFrame) {
@@ -1097,84 +1281,18 @@ impl Vm {
                                         Err(e) => return Err(e),
                                     }
                                 } else if obj.sub_module_index() > 0 {
-                                    // 1-indexed sub_module_index (0 = not a bytecode function)
-                                    let sub_idx = obj.sub_module_index() as usize - 1;
-                                    if sub_idx >= self.sub_modules.len() {
-                                        return Err(format!(
-                                            "CALL: sub_module_index {} out of bounds (max {})",
-                                            sub_idx,
-                                            self.sub_modules.len()
-                                        ));
-                                    }
-
-                                    if self.frames.len() >= self.kernel.config.max_call_depth {
-                                        return Err("RangeError: Maximum call stack size exceeded".into());
-                                    }
-
-                                    // Clone sub_module data before mutably borrowing self
-                                    let sub_bytecode = self.sub_modules[sub_idx].bytecode.clone();
-                                    let sub_n_args = self.sub_modules[sub_idx].n_args as usize;
-                                    let sub_n_registers = self.sub_modules[sub_idx].n_registers;
-                                    let sub_constants = self.sub_modules[sub_idx].constants.clone();
-                                    let sub_param_base = self.sub_modules[sub_idx].param_base as usize;
-                                    let sub_is_arrow = self.sub_modules[sub_idx].is_arrow;
-                                    let caller_reg_limit = self.active_reg_limit.max(1);
-                                    let saved_regs = self.regs[..caller_reg_limit as usize].to_vec().into_boxed_slice();
-                                    let saved_this = self.regs[254];
-                                    let saved_new_target = self.regs[255];
-
-                                    // Copy args into the callee's parameter register window.
-                                    for i in 0..sub_n_args {
-                                        let src_reg = first_arg_reg.wrapping_add(i as u8) as usize;
-                                        self.regs[sub_param_base + i] = self.regs[src_reg];
-                                    }
-                                    // Set this (reg 254 convention).
-                                    // Arrow functions use captured lexical `this` (D-01).
-                                    self.regs[254] =
-                                        if sub_is_arrow { obj.captured_this() } else { self.regs[this_reg as usize] };
-                                    self.regs[255] = JsValue::undefined();
-
-                                    let converted_sub_constants = self.convert_constants(&sub_constants)?;
-
-                                    // Save current bytecode/constants
-                                    self.saved_bytecode_stack.push(std::mem::take(&mut self.bytecode));
-                                    self.saved_constants_stack.push(std::mem::take(&mut self.constants));
-
-                                    // Push call frame
-                                    self.frames.push(CallFrame {
-                                        return_addr: self.pc,
-                                        function_name: self.sub_modules[sub_idx]
-                                            .function_name
-                                            .as_deref()
-                                            .map(|name| self.kernel.string_forge().intern(name).0)
-                                            .unwrap_or(0),
-                                        caller_reg_limit,
-                                        saved_regs,
-                                        saved_this,
-                                        saved_new_target,
+                                    let args: Vec<JsValue> = (0..arg_count)
+                                        .map(|i| self.regs[first_arg_reg.wrapping_add(i as u8) as usize])
+                                        .collect();
+                                    self.push_bytecode_frame(
                                         callee,
-                                        construct_result_reg: None,
-                                        constructed_this: None,
-                                        is_derived_constructor: false,
-                                    });
-
-                                    self.bytecode = sub_bytecode;
-                                    self.constants = converted_sub_constants;
-
-                                    // Pre-fill builtin registers from the global object
-                                    // (same as Vm::run does for the main module).
-                                    for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map {
-                                        let si = self.kernel.string_forge().intern(name.as_str()).0;
-                                        let global = self.kernel.global_object();
-                                        if let Some(pos) =
-                                            self.kernel.shape_forge().lookup_position(global.shape_id(), si)
-                                        {
-                                            self.regs[*reg as usize] = global.get_prop_at(pos);
-                                        }
-                                    }
-
-                                    self.active_reg_limit = sub_n_registers.max(1);
-                                    self.pc = 0;
+                                        self.regs[this_reg as usize],
+                                        &args,
+                                        None,
+                                        None,
+                                        JsValue::undefined(),
+                                        FrameContinuation::None,
+                                    )?;
                                     continue;
                                 }
                             }
@@ -1264,23 +1382,28 @@ impl Vm {
                         }
                         let args_slice = &args_buf[..arg_count + 1];
 
-                        let func: NativeFn = unsafe { std::mem::transmute(ctor_obj.native_fn().unwrap()) };
+                        // SAFETY: native_fn was set via set_native_fn with a valid NativeFn pointer;
+                        // native_fn_ptr_to_fn is the single coercion point for NativeFnPtr → NativeFn.
+                        let func: NativeFn = unsafe { native_fn_ptr_to_fn(ctor_obj.native_fn().unwrap()) };
                         self.regs[254] = constructor;
                         match func(self, args_slice) {
-                            Ok(val) => {
+                            NativeResult::Ok(val) => {
                                 if val.is_object() {
                                     self.regs[rd] = val;
                                 } else {
                                     self.regs[rd] = new_obj_val;
                                 }
                             }
-                            Err(err_val) => {
+                            NativeResult::Err(err_val) => {
                                 self.exception_value = Some(err_val);
                                 self.pending_error_kind = Some("Error");
                                 match self.unwind() {
                                     Ok(()) => continue,
                                     Err(e) => return Err(e),
                                 }
+                            }
+                            NativeResult::TailCall { .. } => {
+                                throw_err!(self, TypeError, "constructor tail call not supported");
                             }
                         }
                     } else if ctor_obj.sub_module_index() > 0 {
@@ -1339,6 +1462,7 @@ impl Vm {
                             construct_result_reg: Some(rd as u8),
                             constructed_this: Some(new_obj_val),
                             is_derived_constructor: ctor_obj.is_derived_constructor(),
+                            continuation: FrameContinuation::None,
                         });
 
                         self.bytecode = sub_bytecode;
@@ -1405,19 +1529,24 @@ impl Vm {
                     if super_obj.native_fn().is_some() {
                         self.regs[253] = derived_this;
                         let (args_buf, len) = Self::build_native_args(first_arg_reg, arg_count, 253);
-                        let func: NativeFn = unsafe { std::mem::transmute(super_obj.native_fn().unwrap()) };
+                        // SAFETY: native_fn was set via set_native_fn with a valid NativeFn pointer;
+                        // native_fn_ptr_to_fn is the single coercion point for NativeFnPtr → NativeFn.
+                        let func: NativeFn = unsafe { native_fn_ptr_to_fn(super_obj.native_fn().unwrap()) };
                         match func(self, &args_buf[..len]) {
-                            Ok(val) => {
+                            NativeResult::Ok(val) => {
                                 self.regs[254] = if val.is_object() { val } else { derived_this };
                                 self.regs[rd] = self.regs[254];
                             }
-                            Err(err_val) => {
+                            NativeResult::Err(err_val) => {
                                 self.exception_value = Some(err_val);
                                 self.pending_error_kind = Some("Error");
                                 match self.unwind() {
                                     Ok(()) => continue,
                                     Err(e) => return Err(e),
                                 }
+                            }
+                            NativeResult::TailCall { .. } => {
+                                throw_err!(self, TypeError, "super constructor tail call not supported");
                             }
                         }
                     } else if super_obj.sub_module_index() > 0 {
@@ -1468,6 +1597,7 @@ impl Vm {
                             construct_result_reg: Some(254),
                             constructed_this: Some(derived_this),
                             is_derived_constructor: super_obj.is_derived_constructor(),
+                            continuation: FrameContinuation::None,
                         });
 
                         self.bytecode = sub_bytecode;
@@ -1507,7 +1637,10 @@ impl Vm {
                         self.regs[rd] = JsValue::undefined();
                     } else {
                         let super_obj = unsafe { &*super_base.as_js_object_ptr() };
-                        self.regs[rd] = self.ordinary_get(super_obj, prop_name_si, self.regs[a])?;
+                        let val = self.ordinary_get_with_target(super_obj, prop_name_si, self.regs[a], rd as u8)?;
+                        if self.accessor_frame_target_reg.take().is_none() {
+                            self.regs[rd] = val;
+                        }
                     }
                 }
 
@@ -1561,6 +1694,7 @@ impl Vm {
                         let construct_result_reg = frame.construct_result_reg;
                         let constructed_this = frame.constructed_this;
                         let is_derived_constructor = frame.is_derived_constructor;
+                        let continuation = frame.continuation;
                         let callee_this = self.regs[254];
                         self.restore_frame(frame);
                         if let (Some(target_reg), Some(constructed_this)) = (construct_result_reg, constructed_this) {
@@ -1570,7 +1704,15 @@ impl Vm {
                             self.regs[target_reg as usize] = if result.is_object() { result } else { constructed_this };
                             self.regs[0] = self.regs[target_reg as usize];
                         } else {
-                            self.regs[0] = result;
+                            match continuation {
+                                FrameContinuation::None => {
+                                    self.regs[0] = result;
+                                }
+                                FrameContinuation::AccessorGet { target_reg } => {
+                                    self.regs[target_reg as usize] = result;
+                                }
+                                FrameContinuation::AccessorSet => {}
+                            }
                         }
                     } else {
                         return Ok(result);
@@ -1874,16 +2016,13 @@ impl Vm {
                     }
 
                     let iter = self.epoch.alloc(ForInIter { keys: keys_vec, index: 0 });
-                    self.for_in_iters.push(iter as *mut u8);
+                    // SAFETY: ForInIter is arena-allocated and valid until `epoch.reset()`;
+                    // dispatch clears `for_in_iters` before resetting the epoch.
+                    self.for_in_iters.push(iter.cast::<ForInIter<'static>>());
                 }
 
                 OpCode::FOR_IN_NEXT => {
-                    let iter_ptr = self
-                        .for_in_iters
-                        .last()
-                        .copied()
-                        .map(|p| p as *mut ForInIter)
-                        .unwrap_or(std::ptr::null_mut());
+                    let iter_ptr = self.for_in_iters.last().copied().unwrap_or(std::ptr::null_mut());
                     if iter_ptr.is_null() {
                         return Err("FOR_IN_NEXT without active iterator".into());
                     }
@@ -1897,12 +2036,7 @@ impl Vm {
                 }
 
                 OpCode::FOR_IN_DONE => {
-                    let iter_ptr = self
-                        .for_in_iters
-                        .last()
-                        .copied()
-                        .map(|p| p as *mut ForInIter)
-                        .unwrap_or(std::ptr::null_mut());
+                    let iter_ptr = self.for_in_iters.last().copied().unwrap_or(std::ptr::null_mut());
                     if iter_ptr.is_null() {
                         self.regs[rd] = JsValue::bool(true);
                     } else {
@@ -1999,40 +2133,42 @@ impl Default for Vm {
 mod tests {
     use super::{opcode, JsValue, TryHandler, Vm};
     use crate::native::NativeResult;
+    use oxide_types::object::NativeFnPtr;
     use oxide_compiler::module::{CompiledModule, Constant};
     use oxide_types::object::{JsObject, PropAttributes};
 
     fn native_return_7(_vm: &mut Vm, _args: &[u8]) -> NativeResult {
-        Ok(JsValue::int(7))
+        NativeResult::Ok(JsValue::int(7))
     }
 
     fn native_get_marker(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let this_val = vm.reg(args[0]);
         if !this_val.is_object() {
-            return Ok(JsValue::undefined());
+            return NativeResult::Ok(JsValue::undefined());
         }
         let marker_si = vm.kernel.string_forge().intern("marker").0;
         let obj = unsafe { &*this_val.as_js_object_ptr() };
-        Ok(vm.resolve_property(obj, marker_si).unwrap_or(JsValue::undefined()))
+        NativeResult::Ok(vm.resolve_property(obj, marker_si).unwrap_or(JsValue::undefined()))
     }
 
     fn native_set_marker(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let this_val = vm.reg(args[0]);
         let value = vm.reg(args[1]);
         if !this_val.is_object() {
-            return Ok(JsValue::undefined());
+            return NativeResult::Ok(JsValue::undefined());
         }
         let marker_si = vm.kernel.string_forge().intern("marker").0;
         let obj = unsafe { &mut *this_val.as_js_object_ptr() };
         vm.set_or_create_prop_value(obj, marker_si, value);
-        Ok(JsValue::undefined())
+        NativeResult::Ok(JsValue::undefined())
     }
 
     fn native_function(vm: &mut Vm, f: crate::native::NativeFn) -> JsValue {
         let proto = vm.kernel.builtin_world().function_proto.as_ptr() as *mut JsObject;
         let mut obj = JsObject::new_empty(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
         obj.set_function(true);
-        obj.set_native_fn(Some(f as *const ()));
+        // SAFETY: f is a NativeFn fn-item; valid to store as NativeFnPtr.
+        obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(f as *const ()) }));
         JsValue::object(vm.epoch.alloc(obj) as *mut u8)
     }
 
@@ -2074,8 +2210,9 @@ mod tests {
             construct_result_reg: None,
             constructed_this: None,
             is_derived_constructor: false,
+            continuation: super::FrameContinuation::None,
         });
-        vm.for_in_iters.push(std::ptr::dangling_mut::<u8>());
+        vm.for_in_iters.push(std::ptr::dangling_mut::<super::ForInIter<'static>>());
         vm.for_of_iters.push(std::ptr::dangling_mut::<u8>());
         vm.saved_bytecode_stack
             .push(vec![opcode::encode(opcode::OpCode::HALT, 0, 0, 0)]);
@@ -2170,12 +2307,10 @@ mod tests {
         let mut vm = Vm::new();
         vm.bytecode = vec![0, 0, 0];
         vm.pc = 3;
-        let boxed = Box::new(JsValue::int(42));
-        let ptr = &*boxed as *const JsValue;
-        vm.write_ic_back(0x1234_5678, ptr);
+        vm.write_ic_back(0x1234_5678, 7);
         assert_eq!(vm.bytecode[0], 0x0034_5678);
-        assert_eq!(vm.bytecode[1], ptr as u32);
-        assert_eq!(vm.bytecode[2], (ptr as u64 >> 32) as u32);
+        assert_eq!(vm.bytecode[1], 7);
+        assert_eq!(vm.bytecode[2], 0);
     }
 
     #[test]

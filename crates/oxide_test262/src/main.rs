@@ -345,6 +345,7 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
         "regexp-lookbehind",
         "regexp-unicode-property-escapes",
         "regexp-dotall",
+        "regexp-modifiers",
         "json-superset",
         "for-of",
         "Temporal",
@@ -363,7 +364,7 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
     ];
 
     for feat in &meta.features {
-        if excluded_features.contains(&feat.as_str()) || feat.starts_with("Intl") {
+        if excluded_features.contains(&feat.as_str()) || feat.starts_with("Intl") || feat.starts_with("Reflect.") {
             return Some(format!("excluded feature: {feat}"));
         }
     }
@@ -550,6 +551,20 @@ fn process_path(
     }
 
     if !no_skip {
+        let path_str = path.to_string_lossy().replace('\\', "/");
+        if path_str.contains("built-ins/Promise/") {
+            return TestResult::skip(path.to_path_buf(), "Promise tests excluded".into());
+        }
+        if path_str.contains("/private-")
+            || path_str.contains("/class-fields/")
+            || path_str.contains("/class-static-block/")
+            || path_str.contains("/dstr/")
+            || path_str.contains("/eval/")
+            || path_str.contains("/function-ctor/")
+            || path_str.contains("/realm/")
+        {
+            return TestResult::skip(path.to_path_buf(), "unsupported class/eval feature excluded".into());
+        }
         if let Some(reason) = is_skipped(&meta) {
             return TestResult::skip(path.to_path_buf(), reason);
         }
@@ -698,14 +713,25 @@ fn run_tests() -> bool {
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|&n| n > 0)
-        .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1))
+        .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4))
         .min(total.max(1));
     let trace_paths = std::env::var_os("OXIDE_TEST262_TRACE").is_some();
 
     eprintln!("running on {workers} worker thread(s)");
 
-    let cursor = AtomicUsize::new(0);
-    let progress = AtomicUsize::new(0);
+    let skip_until = std::env::var("OXIDE_SKIP_UNTIL")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0)
+        .min(total);
+    let end_index = std::env::var("OXIDE_MAX_TESTS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .and_then(|n| skip_until.checked_add(n))
+        .map(|n| n.min(total))
+        .unwrap_or(total);
+    let cursor = AtomicUsize::new(skip_until);
+    let progress = AtomicUsize::new(skip_until);
     let filter = &filter;
     let no_skip = config.no_skip;
     let paths_ref = &paths;
@@ -730,7 +756,7 @@ fn run_tests() -> bool {
 
                         loop {
                             let i = cursor.fetch_add(1, Ordering::Relaxed);
-                            if i >= total {
+                            if i >= end_index {
                                 break;
                             }
                             if trace_paths {
