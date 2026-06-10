@@ -342,7 +342,6 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
         "WeakRef",
         "Reflect",
         "Intl",
-        "Promise",
         "TypedArray",
         "DataView",
         "ArrayBuffer",
@@ -357,7 +356,6 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
         "regexp-dotall",
         "regexp-modifiers",
         "json-superset",
-        "for-of",
         "Temporal",
         "cross-realm",
         "new.target",
@@ -381,7 +379,6 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
 
     if meta.description.contains("generator")
         || meta.description.contains("async")
-        || meta.description.contains("eval ")
     {
         return Some("description matches excluded pattern".into());
     }
@@ -455,10 +452,7 @@ fn run_test_inner(
                 || e.contains("not supported")
                 || e.contains("unsupported")
                 || e.contains("is not defined")
-                || e.contains("ArrowFunctionExpression")
-                || e.contains("destructuring")
                 || e.contains("SpreadElement")
-                || e.contains("compound assignment")
                 || e.contains("already been declared")
                 || e.contains("parser panicked")
             {
