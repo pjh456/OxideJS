@@ -73,6 +73,9 @@ pub(crate) struct CompileCtx {
     pub(crate) in_derived_constructor: bool,
     pub(crate) in_instance_method: bool,
     pub(crate) in_static_method: bool,
+    /// Set when alloc_reg() overflows into the reserved this/new.target range (≥254).
+    /// Checked after each emit phase to produce a compile error rather than silent corruption.
+    pub(crate) reg_overflow: bool,
 }
 
 impl CompileCtx {
@@ -95,6 +98,7 @@ impl CompileCtx {
             in_derived_constructor: false,
             in_instance_method: false,
             in_static_method: false,
+            reg_overflow: false,
         }
     }
 
@@ -108,6 +112,14 @@ impl CompileCtx {
 
     pub(crate) fn alloc_reg(&mut self) -> u8 {
         let r = self.next_reg;
+        // Registers 254 (this) and 255 (new.target) are reserved by the VM.
+        // Allocating into them silently corrupts the call convention, turning
+        // method calls' `this` into garbage. Clamp to 253 and set a flag so
+        // the compiler can surface a proper error after the emit pass.
+        if r >= 254 {
+            self.reg_overflow = true;
+            return 253; // clamp to last safe register; emit continues but reg_overflow triggers error
+        }
         self.next_reg = self.next_reg.wrapping_add(1);
         if self.next_reg > self.max_regs {
             self.max_regs = self.next_reg;
@@ -410,6 +422,10 @@ impl Compiler {
             ctx.emit(opcode::encode(OpCode::RETURN, undef_reg, 0, 0));
         }
 
+        if ctx.reg_overflow {
+            return Err("RangeError: function body uses too many registers (max 253)".into());
+        }
+
         Ok(CompiledModule {
             bytecode: ctx.bytecode,
             constants: ctx.constants,
@@ -469,6 +485,10 @@ impl Compiler {
             ));
         }
         ctx.emit(opcode::encode(OpCode::HALT, 0, 0, 0));
+
+        if ctx.reg_overflow {
+            return Err("RangeError: function body uses too many registers (max 253)".into());
+        }
 
         Ok(CompiledModule {
             bytecode: ctx.bytecode,
