@@ -84,6 +84,26 @@ pub struct TryHandler {
     pub frame_depth: usize,
 }
 
+/// Heap-allocated snapshot used by `call_bytecode_function_inline`.
+/// Keeping it on the heap prevents Rust stack overflow when JS code
+/// chains multiple sync bytecode calls (e.g. sort comparator, accessor).
+struct InlineSyncState {
+    regs: Box<[JsValue; 256]>,
+    pc: usize,
+    bytecode: Vec<opcode::Instr>,
+    constants: Vec<JsValue>,
+    active_reg_limit: u8,
+    root_reg_limit: u8,
+    try_stack: Vec<TryHandler>,
+    frames: Vec<CallFrame>,
+    exception_value: Option<JsValue>,
+    pending_exception: Option<JsValue>,
+    pending_error_kind: Option<&'static str>,
+    for_in_iters: Vec<*mut ForInIter<'static>>,
+    saved_bytecode_stack: Vec<Vec<opcode::Instr>>,
+    saved_constants_stack: Vec<Vec<JsValue>>,
+}
+
 pub struct Vm {
     pub(crate) regs: [JsValue; 256],
     pub(crate) pc: usize,
@@ -567,6 +587,8 @@ impl Vm {
 
     /// Execute a bytecode user function on `self`, saving and restoring all execution state.
     /// Objects allocated during the call live in `self.epoch` and remain valid after return.
+    /// State is heap-allocated via `InlineSyncState` to avoid Rust stack overflow on deep
+    /// call chains (e.g. Array.prototype methods invoking user comparators).
     fn call_bytecode_function_inline(
         &mut self, callee: JsValue, callee_obj: &JsObject, receiver: JsValue, args: &[JsValue],
     ) -> Result<JsValue, String> {
@@ -588,21 +610,23 @@ impl Vm {
         let sub = self.sub_modules[sub_idx].clone();
         let converted_constants = self.convert_constants(&sub.constants)?;
 
-        // Save execution state.
-        let saved_regs = self.regs;
-        let saved_pc = self.pc;
-        let saved_bytecode = std::mem::take(&mut self.bytecode);
-        let saved_constants = std::mem::take(&mut self.constants);
-        let saved_active_reg_limit = self.active_reg_limit;
-        let saved_root_reg_limit = self.root_reg_limit;
-        let saved_try_stack = std::mem::take(&mut self.try_stack);
-        let saved_frames = std::mem::take(&mut self.frames);
-        let saved_exception = self.exception_value.take();
-        let saved_pending = self.pending_exception.take();
-        let saved_pending_kind = self.pending_error_kind.take();
-        let saved_for_in_iters = std::mem::take(&mut self.for_in_iters);
-        let saved_saved_bytecode_stack = std::mem::take(&mut self.saved_bytecode_stack);
-        let saved_saved_constants_stack = std::mem::take(&mut self.saved_constants_stack);
+        // Heap-allocate the saved state so this function's Rust stack frame stays small.
+        let saved = Box::new(InlineSyncState {
+            regs: Box::new(self.regs),
+            pc: self.pc,
+            bytecode: std::mem::take(&mut self.bytecode),
+            constants: std::mem::take(&mut self.constants),
+            active_reg_limit: self.active_reg_limit,
+            root_reg_limit: self.root_reg_limit,
+            try_stack: std::mem::take(&mut self.try_stack),
+            frames: std::mem::take(&mut self.frames),
+            exception_value: self.exception_value.take(),
+            pending_exception: self.pending_exception.take(),
+            pending_error_kind: self.pending_error_kind.take(),
+            for_in_iters: std::mem::take(&mut self.for_in_iters),
+            saved_bytecode_stack: std::mem::take(&mut self.saved_bytecode_stack),
+            saved_constants_stack: std::mem::take(&mut self.saved_constants_stack),
+        });
 
         // Set up callee.
         self.regs = [JsValue::undefined(); 256];
@@ -627,21 +651,21 @@ impl Vm {
 
         let result = self.dispatch();
 
-        // Restore execution state.
-        self.regs = saved_regs;
-        self.pc = saved_pc;
-        self.bytecode = saved_bytecode;
-        self.constants = saved_constants;
-        self.active_reg_limit = saved_active_reg_limit;
-        self.root_reg_limit = saved_root_reg_limit;
-        self.try_stack = saved_try_stack;
-        self.frames = saved_frames;
-        self.exception_value = saved_exception;
-        self.pending_exception = saved_pending;
-        self.pending_error_kind = saved_pending_kind;
-        self.for_in_iters = saved_for_in_iters;
-        self.saved_bytecode_stack = saved_saved_bytecode_stack;
-        self.saved_constants_stack = saved_saved_constants_stack;
+        // Restore execution state from heap-allocated save.
+        self.regs = *saved.regs;
+        self.pc = saved.pc;
+        self.bytecode = saved.bytecode;
+        self.constants = saved.constants;
+        self.active_reg_limit = saved.active_reg_limit;
+        self.root_reg_limit = saved.root_reg_limit;
+        self.try_stack = saved.try_stack;
+        self.frames = saved.frames;
+        self.exception_value = saved.exception_value;
+        self.pending_exception = saved.pending_exception;
+        self.pending_error_kind = saved.pending_error_kind;
+        self.for_in_iters = saved.for_in_iters;
+        self.saved_bytecode_stack = saved.saved_bytecode_stack;
+        self.saved_constants_stack = saved.saved_constants_stack;
 
         result
     }
