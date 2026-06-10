@@ -1605,6 +1605,7 @@ impl Vm {
 
                     if super_obj.native_fn().is_some() {
                         self.regs[253] = derived_this;
+                        self.regs[254] = super_ctor; // bind_dispatcher reads regs[254] as the wrapper callee
                         let (args_buf, len) = Self::build_native_args(first_arg_reg, arg_count, 253);
                         // SAFETY: native_fn was set via set_native_fn with a valid NativeFn pointer;
                         // native_fn_ptr_to_fn is the single coercion point for NativeFnPtr → NativeFn.
@@ -1622,8 +1623,16 @@ impl Vm {
                                     Err(e) => return Err(e),
                                 }
                             }
-                            NativeResult::TailCall { .. } => {
-                                throw_err!(self, TypeError, "super constructor tail call not supported");
+                            NativeResult::TailCall { callee, this, args } => {
+                                // e.g. bound function: resolve the tail call, use its return
+                                // value as the constructed instance (or fall back to derived_this).
+                                match self.call_function_sync(callee, this, &args) {
+                                    Ok(val) => {
+                                        self.regs[254] = if val.is_object() { val } else { derived_this };
+                                        self.regs[rd] = self.regs[254];
+                                    }
+                                    Err(e) => return Err(e),
+                                }
                             }
                         }
                     } else if super_obj.sub_module_index() > 0 {
