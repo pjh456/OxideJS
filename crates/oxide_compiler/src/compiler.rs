@@ -308,15 +308,19 @@ impl Compiler {
     /// This performs both counting and emitting in one pass.
     /// When `is_expression_body` is true (arrow function with expression body),
     /// the last expression's value is returned instead of undefined.
+    /// `is_arrow` controls whether super flags are inherited from the parent scope
+    /// (true for arrow functions, which have lexical super) or reset to false
+    /// (false for regular functions, which create a new super scope).
     pub(crate) fn compile_function_body<'a>(
-        &self, param_names: &[String], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx, is_expression_body: bool,
+        &self, param_names: &[String], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
+        is_expression_body: bool, is_arrow: bool,
     ) -> Result<CompiledModule, String> {
-        self.compile_function_body_with_bindings(param_names, body_stmts, parent_ctx, is_expression_body, &[])
+        self.compile_function_body_with_bindings(param_names, body_stmts, parent_ctx, is_expression_body, &[], is_arrow)
     }
 
     pub(crate) fn compile_function_body_with_bindings<'a>(
         &self, param_names: &[String], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx, is_expression_body: bool,
-        extra_bindings: &[(&str, u8)],
+        extra_bindings: &[(&str, u8)], is_arrow: bool,
     ) -> Result<CompiledModule, String> {
         let mut ctx = CompileCtx::new();
 
@@ -326,9 +330,16 @@ impl Compiler {
 
         // Propagate enclosing_this_reg so nested arrow functions capture the correct `this`.
         ctx.enclosing_this_reg = parent_ctx.enclosing_this_reg;
-        ctx.in_derived_constructor = parent_ctx.in_derived_constructor;
-        ctx.in_instance_method = parent_ctx.in_instance_method;
-        ctx.in_static_method = parent_ctx.in_static_method;
+        // Only arrow functions have lexical super; regular functions create a new super scope.
+        if is_arrow {
+            ctx.in_derived_constructor = parent_ctx.in_derived_constructor;
+            ctx.in_instance_method = parent_ctx.in_instance_method;
+            ctx.in_static_method = parent_ctx.in_static_method;
+        } else {
+            ctx.in_derived_constructor = false;
+            ctx.in_instance_method = false;
+            ctx.in_static_method = false;
+        }
 
         // Inherit parent's global scope entries so previously-declared function names
         // are visible from within the body.

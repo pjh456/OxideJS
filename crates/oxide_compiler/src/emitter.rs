@@ -77,9 +77,9 @@ impl Compiler {
 
         let mut ctor_module = if let Some(method) = constructor_method {
             let (param_names, body_stmts) = self.extract_function_parts(method.value.as_ref())?;
-            self.compile_function_body_with_bindings(&param_names, body_stmts, ctx, false, &self_binding)?
+            self.compile_function_body_with_bindings(&param_names, body_stmts, ctx, false, &self_binding, false)?
         } else {
-            let mut module = self.compile_function_body_with_bindings(&[], &[], ctx, false, &self_binding)?;
+            let mut module = self.compile_function_body_with_bindings(&[], &[], ctx, false, &self_binding, false)?;
             if is_derived {
                 module.bytecode.clear();
                 module.constants.clear();
@@ -119,7 +119,7 @@ impl Compiler {
             let saved_method = ctx.in_instance_method;
             ctx.in_instance_method = true;
             let mut method_module =
-                self.compile_function_body_with_bindings(&param_names, body_stmts, ctx, false, &self_binding)?;
+                self.compile_function_body_with_bindings(&param_names, body_stmts, ctx, false, &self_binding, false)?;
             ctx.in_instance_method = saved_method;
             method_module.function_name = Some(method_name.clone());
             method_module.needs_home_object = true;
@@ -154,7 +154,7 @@ impl Compiler {
             let saved_static = ctx.in_static_method;
             ctx.in_static_method = true;
             let mut method_module =
-                self.compile_function_body_with_bindings(&param_names, body_stmts, ctx, false, &self_binding)?;
+                self.compile_function_body_with_bindings(&param_names, body_stmts, ctx, false, &self_binding, false)?;
             ctx.in_static_method = saved_static;
             method_module.function_name = Some(method_name.clone());
             method_module.needs_home_object = true;
@@ -214,7 +214,7 @@ impl Compiler {
         ctx.in_instance_method = !method.r#static;
         ctx.in_static_method = method.r#static;
         let mut method_module =
-            self.compile_function_body_with_bindings(&param_names, body_stmts, ctx, false, self_binding)?;
+            self.compile_function_body_with_bindings(&param_names, body_stmts, ctx, false, self_binding, false)?;
         ctx.in_instance_method = saved_instance;
         ctx.in_static_method = saved_static;
         method_module.function_name = Some(method_name.to_string());
@@ -550,7 +550,7 @@ impl Compiler {
                 let body_stmts: &[Statement] = if let Some(body) = &fd.body { &body.statements } else { &[] };
 
                 // Compile body into sub-module
-                let mut sub_module = self.compile_function_body(&param_names, body_stmts, ctx, false)?;
+                let mut sub_module = self.compile_function_body(&param_names, body_stmts, ctx, false, false)?;
                 sub_module.function_name = Some(name.clone());
                 ctx.sub_modules.push(sub_module);
                 // 1-indexed: 0 = no sub_module (sentinel)
@@ -791,7 +791,7 @@ impl Compiler {
                     }
                     UnaryOperator::Delete => match &un.argument {
                         Expression::Identifier(_) => {
-                            Err("delete of global variable is not allowed in strict mode".into())
+                            Err("SyntaxError: delete of an unqualified identifier in strict mode".into())
                         }
                         Expression::StaticMemberExpression(member) => {
                             let obj_reg = self.emit_expression(&member.object, ctx)?;
@@ -1274,7 +1274,7 @@ impl Compiler {
                 let body_stmts = &arrow.body.statements;
                 let is_expr_body = arrow.expression;
 
-                let mut sub_module = self.compile_function_body(&param_names, body_stmts, ctx, is_expr_body)?;
+                let mut sub_module = self.compile_function_body(&param_names, body_stmts, ctx, is_expr_body, true)?;
                 sub_module.is_arrow = true;
 
                 ctx.sub_modules.push(sub_module);
@@ -1297,7 +1297,7 @@ impl Compiler {
 
                 let body_stmts: &[Statement] = if let Some(body) = &fe.body { &body.statements } else { &[] };
 
-                let mut sub_module = self.compile_function_body(&param_names, body_stmts, ctx, false)?;
+                let mut sub_module = self.compile_function_body(&param_names, body_stmts, ctx, false, false)?;
                 if let Some(id) = &fe.id {
                     sub_module.function_name = Some(id.name.to_string());
                 }

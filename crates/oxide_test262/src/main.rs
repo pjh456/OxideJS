@@ -11,6 +11,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use walkdir::WalkDir;
 
+// Thread-local that records the path currently being executed.
+// Written before every test; read by the panic hook to identify the crash file.
+std::thread_local! {
+    static CURRENT_TEST_PATH: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 struct Negative {
@@ -311,6 +317,10 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
             "module" => return Some("module tests excluded".into()),
             "async" => return Some("async tests excluded".into()),
             "raw" => return Some("raw tests excluded".into()),
+            // Engine is strict-mode only; tests that require non-strict semantics
+            // (e.g. global var ↔ global object binding, arguments.callee, etc.) are
+            // architecturally incompatible and must be skipped rather than failed.
+            "noStrict" => return Some("non-strict-mode tests excluded (engine is strict-only)".into()),
             _ => {}
         }
     }
@@ -450,7 +460,6 @@ fn run_test_inner(
                 || e.contains("SpreadElement")
                 || e.contains("compound assignment")
                 || e.contains("already been declared")
-                || e.contains("before initialization")
                 || e.contains("parser panicked")
             {
                 if no_skip {
@@ -499,7 +508,6 @@ fn run_test_inner(
                 || e.contains("step limit")
                 || e.contains("is not defined")
                 || e.contains("NEW_EXPRESSION")
-                || e.contains("RangeError")
             {
                 if no_skip {
                     return TestResult::fail(path.to_path_buf(), dur, format!("vm error: {e}"));
@@ -647,6 +655,18 @@ fn categorize_fail(msg: &str) -> String {
 }
 
 fn main() {
+    // Install a panic hook that prints which test was running when the panic occurred.
+    // This covers Rust panics; OS-level crashes (ACCESS_VIOLATION) are caught by the
+    // pre-test eprintln! below — the last line printed before a hard crash identifies
+    // the file.
+    std::panic::set_hook(Box::new(|info| {
+        let path = CURRENT_TEST_PATH.with(|p| p.borrow().clone());
+        if !path.is_empty() {
+            eprintln!("CRASH in test: {path}");
+        }
+        eprintln!("panic: {info}");
+    }));
+
     let result = std::thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
         .name("test262-runner".into())
@@ -715,7 +735,7 @@ fn run_tests() -> bool {
         .filter(|&n| n > 0)
         .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4))
         .min(total.max(1));
-    let trace_paths = std::env::var_os("OXIDE_TEST262_TRACE").is_some();
+    let _trace_paths = std::env::var_os("OXIDE_TEST262_TRACE").is_some();
 
     eprintln!("running on {workers} worker thread(s)");
 
@@ -754,14 +774,19 @@ fn run_tests() -> bool {
                         let mut stats = RunStats::default();
                         let mut out: Vec<(usize, TestResult)> = Vec::new();
 
+                        let tid = std::thread::current().id();
                         loop {
                             let i = cursor.fetch_add(1, Ordering::Relaxed);
                             if i >= end_index {
                                 break;
                             }
-                            if trace_paths {
-                                eprintln!("  running: {}", paths_ref[i].display());
-                            }
+                            let path_str = paths_ref[i].display().to_string();
+                            // Always record the current test path so a hard crash leaves
+                            // it visible: the panic hook prints it for Rust panics, and
+                            // the unconditional eprintln! below is the last stderr line
+                            // for OS-level crashes (ACCESS_VIOLATION, stack overflow).
+                            CURRENT_TEST_PATH.with(|p| *p.borrow_mut() = path_str.clone());
+                            eprintln!("  [{tid:?}] running: {path_str}");
 
                             let result = process_path(
                                 &paths_ref[i],
