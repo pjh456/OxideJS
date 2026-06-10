@@ -558,13 +558,16 @@ impl Vm {
             };
         }
 
-        let mut sub_vm = Vm::with_kernel(Arc::clone(&self.kernel));
-        sub_vm.sub_modules = self.sub_modules.clone();
-        sub_vm.sub_module_constants = self.sub_module_constants.clone();
-        sub_vm.call_function_sync_in_sub_vm(callee, callee_obj, receiver, args)
+        // Run bytecode function inline on self (same epoch) to prevent use-after-free.
+        // A separate sub-VM would own a different epoch; returning a JsValue that contains
+        // a pointer into the sub-VM epoch and then dropping the sub-VM causes a dangling
+        // pointer / access violation in release builds.
+        self.call_bytecode_function_inline(callee, callee_obj, receiver, args)
     }
 
-    fn call_function_sync_in_sub_vm(
+    /// Execute a bytecode user function on `self`, saving and restoring all execution state.
+    /// Objects allocated during the call live in `self.epoch` and remain valid after return.
+    fn call_bytecode_function_inline(
         &mut self, callee: JsValue, callee_obj: &JsObject, receiver: JsValue, args: &[JsValue],
     ) -> Result<JsValue, String> {
         if callee_obj.sub_module_index() == 0 {
@@ -578,10 +581,34 @@ impl Vm {
                 self.sub_modules.len()
             ));
         }
+        if self.frames.len() >= self.kernel.config.max_call_depth {
+            return Err("RangeError: Maximum call stack size exceeded".into());
+        }
 
         let sub = self.sub_modules[sub_idx].clone();
+        let converted_constants = self.convert_constants(&sub.constants)?;
+
+        // Save execution state.
+        let saved_regs = self.regs;
+        let saved_pc = self.pc;
+        let saved_bytecode = std::mem::take(&mut self.bytecode);
+        let saved_constants = std::mem::take(&mut self.constants);
+        let saved_active_reg_limit = self.active_reg_limit;
+        let saved_root_reg_limit = self.root_reg_limit;
+        let saved_try_stack = std::mem::take(&mut self.try_stack);
+        let saved_frames = std::mem::take(&mut self.frames);
+        let saved_exception = self.exception_value.take();
+        let saved_pending = self.pending_exception.take();
+        let saved_pending_kind = self.pending_error_kind.take();
+        let saved_for_in_iters = std::mem::take(&mut self.for_in_iters);
+        let saved_saved_bytecode_stack = std::mem::take(&mut self.saved_bytecode_stack);
+        let saved_saved_constants_stack = std::mem::take(&mut self.saved_constants_stack);
+
+        // Set up callee.
+        self.regs = [JsValue::undefined(); 256];
+        self.pc = 0;
         self.bytecode = sub.bytecode;
-        self.constants = self.convert_constants(&sub.constants)?;
+        self.constants = converted_constants;
         self.active_reg_limit = sub.n_registers.max(1);
         self.root_reg_limit = self.active_reg_limit;
         for i in 0..sub.n_args as usize {
@@ -597,7 +624,26 @@ impl Vm {
             }
         }
         let _ = callee;
-        self.dispatch()
+
+        let result = self.dispatch();
+
+        // Restore execution state.
+        self.regs = saved_regs;
+        self.pc = saved_pc;
+        self.bytecode = saved_bytecode;
+        self.constants = saved_constants;
+        self.active_reg_limit = saved_active_reg_limit;
+        self.root_reg_limit = saved_root_reg_limit;
+        self.try_stack = saved_try_stack;
+        self.frames = saved_frames;
+        self.exception_value = saved_exception;
+        self.pending_exception = saved_pending;
+        self.pending_error_kind = saved_pending_kind;
+        self.for_in_iters = saved_for_in_iters;
+        self.saved_bytecode_stack = saved_saved_bytecode_stack;
+        self.saved_constants_stack = saved_saved_constants_stack;
+
+        result
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -693,8 +739,8 @@ impl Vm {
     /// and sets `self.accessor_frame_target_reg = Some(r)`. The caller must then return
     /// `Ok(JsValue::undefined())` — the real value will be stored by the `RETURN` handler.
     ///
-    /// When `target_reg` is `None`, bytecode getters are executed via a sub-VM (safe for callers
-    /// outside the dispatch loop, such as tests).
+    /// When `target_reg` is `None`, bytecode getters run inline via `call_function_sync`
+    /// (same epoch, no sub-VM). Safe for callers outside the dispatch loop.
     pub(crate) fn ordinary_get_with_target(
         &mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue, target_reg: u8,
     ) -> Result<JsValue, String> {
@@ -761,7 +807,11 @@ impl Vm {
 
         // Bytecode getter — push frame
         self.push_bytecode_frame(
-            getter, receiver, &[], None, None,
+            getter,
+            receiver,
+            &[],
+            None,
+            None,
             JsValue::undefined(),
             FrameContinuation::AccessorGet { target_reg },
         )?;
@@ -796,8 +846,7 @@ impl Vm {
     }
 
     fn ordinary_set_inner(
-        &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue,
-        use_frame_push: bool,
+        &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, use_frame_push: bool,
     ) -> Result<(), String> {
         if let Some(pos) = self.get_own_property_slot(obj, prop_name_si) {
             if let Some(meta) = obj.prop_meta_at(pos) {
@@ -854,7 +903,11 @@ impl Vm {
         }
         // Bytecode setter — push frame; result is discarded via AccessorSet
         self.push_bytecode_frame(
-            setter, receiver, &[val], None, None,
+            setter,
+            receiver,
+            &[val],
+            None,
+            None,
             JsValue::undefined(),
             FrameContinuation::AccessorSet,
         )?;
@@ -2133,8 +2186,8 @@ impl Default for Vm {
 mod tests {
     use super::{opcode, JsValue, TryHandler, Vm};
     use crate::native::NativeResult;
-    use oxide_types::object::NativeFnPtr;
     use oxide_compiler::module::{CompiledModule, Constant};
+    use oxide_types::object::NativeFnPtr;
     use oxide_types::object::{JsObject, PropAttributes};
 
     fn native_return_7(_vm: &mut Vm, _args: &[u8]) -> NativeResult {

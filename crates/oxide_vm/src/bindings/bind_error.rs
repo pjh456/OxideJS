@@ -114,6 +114,8 @@ pub fn bind_error(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
         let err_ctor_ptr = kernel.builtin_world().error_constructor.as_ptr() as *mut JsObject;
         let err_ctor = unsafe { &mut *err_ctor_ptr };
         // SAFETY: error_constructor is a NativeFn fn-item.
-        err_ctor.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(crate::builtins::error::error_constructor as *const ()) }));
+        err_ctor.set_native_fn(Some(unsafe {
+            NativeFnPtr::from_raw(crate::builtins::error::error_constructor as *const ())
+        }));
     }
 }

@@ -92,3 +92,29 @@ fn function_to_string_non_function_throws() {
     let err = eval(&mut vm, "Function.prototype.toString.call(1)").unwrap_err();
     assert!(err.contains("TypeError"), "got: {}", err);
 }
+
+#[test]
+fn function_call_returns_object_stays_valid() {
+    // Regression: call_function_sync used to run bytecode in a sub-VM with a separate
+    // epoch; objects allocated in the sub-VM epoch became dangling after sub-VM drop.
+    // This test forces the returned object to be dereferenced after the call returns.
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "function f() { return {x: 42}; } f.call(null).x").unwrap();
+    assert_eq!(result, JsValue::int(42));
+}
+
+#[test]
+fn function_apply_returns_object_stays_valid() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "function f(a) { return {v: a + 1}; } f.apply(null, [9]).v").unwrap();
+    assert!((result.as_double() - 10.0).abs() < 0.0001);
+}
+
+#[test]
+fn getter_returns_object_stays_valid() {
+    // Same class of bug: ordinary_get sync-path (target_reg=None) for bytecode
+    // accessor ran in sub-VM; returned object was freed on sub-VM drop.
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var o = { get p() { return {z: 7}; } }; o.p.z").unwrap();
+    assert_eq!(result, JsValue::int(7));
+}
