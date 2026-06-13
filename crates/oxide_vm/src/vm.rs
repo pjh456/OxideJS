@@ -112,21 +112,21 @@ pub struct TryHandler {
 /// Heap-allocated snapshot used by `call_bytecode_function_inline`.
 /// Keeping it on the heap prevents Rust stack overflow when JS code
 /// chains multiple sync bytecode calls (e.g. sort comparator, accessor).
-struct InlineSyncState {
-    regs: Box<[JsValue; 256]>,
-    pc: usize,
-    bytecode: Vec<opcode::Instr>,
-    constants: Vec<JsValue>,
-    active_reg_limit: u8,
-    root_reg_limit: u8,
-    try_stack: Vec<TryHandler>,
-    frames: SmallVec<[CallFrame; 16]>,
-    exception_value: Option<JsValue>,
-    pending_exception: Option<JsValue>,
-    pending_error_kind: Option<&'static str>,
-    for_in_iters: Vec<*mut ForInIter<'static>>,
-    saved_bytecode_stack: Vec<Vec<opcode::Instr>>,
-    saved_constants_stack: Vec<Vec<JsValue>>,
+pub(crate) struct InlineSyncState {
+    pub(crate) regs: Box<[JsValue; 256]>,
+    pub(crate) pc: usize,
+    pub(crate) bytecode: Vec<opcode::Instr>,
+    pub(crate) constants: Vec<JsValue>,
+    pub(crate) active_reg_limit: u8,
+    pub(crate) root_reg_limit: u8,
+    pub(crate) try_stack: Vec<TryHandler>,
+    pub(crate) frames: SmallVec<[CallFrame; 16]>,
+    pub(crate) exception_value: Option<JsValue>,
+    pub(crate) pending_exception: Option<JsValue>,
+    pub(crate) pending_error_kind: Option<&'static str>,
+    pub(crate) for_in_iters: Vec<*mut ForInIter<'static>>,
+    pub(crate) saved_bytecode_stack: Vec<Vec<opcode::Instr>>,
+    pub(crate) saved_constants_stack: Vec<Vec<JsValue>>,
 }
 
 pub struct Vm {
@@ -377,91 +377,6 @@ impl Vm {
         // a pointer into the sub-VM epoch and then dropping the sub-VM causes a dangling
         // pointer / access violation in release builds.
         self.call_bytecode_function_inline(callee, callee_obj, receiver, args)
-    }
-
-    /// Execute a bytecode user function on `self`, saving and restoring all execution state.
-    /// Objects allocated during the call live in `self.epoch` and remain valid after return.
-    /// State is heap-allocated via `InlineSyncState` to avoid Rust stack overflow on deep
-    /// call chains (e.g. Array.prototype methods invoking user comparators).
-    fn call_bytecode_function_inline(
-        &mut self, callee: JsValue, callee_obj: &JsObject, receiver: JsValue, args: &[JsValue],
-    ) -> Result<JsValue, String> {
-        if callee_obj.sub_module_index() == 0 {
-            return Err("TypeError: accessor is not callable".into());
-        }
-        let sub_idx = callee_obj.sub_module_index() as usize - 1;
-        if sub_idx >= self.sub_modules.len() {
-            return Err(format!(
-                "accessor sub_module_index {} out of bounds (max {})",
-                sub_idx,
-                self.sub_modules.len()
-            ));
-        }
-        if self.frames.len() >= self.kernel.config.max_call_depth {
-            return Err("RangeError: Maximum call stack size exceeded".into());
-        }
-
-        let sub = self.sub_modules[sub_idx].clone();
-        let converted_constants = self.convert_constants(&sub.constants).map_err(String::from)?;
-
-        // Heap-allocate the saved state so this function's Rust stack frame stays small.
-        let saved = Box::new(InlineSyncState {
-            regs: Box::new(self.regs),
-            pc: self.pc,
-            bytecode: std::mem::take(&mut self.bytecode),
-            constants: std::mem::take(&mut self.constants),
-            active_reg_limit: self.active_reg_limit,
-            root_reg_limit: self.root_reg_limit,
-            try_stack: std::mem::take(&mut self.try_stack),
-            frames: std::mem::take(&mut self.frames),
-            exception_value: self.exception_value.take(),
-            pending_exception: self.pending_exception.take(),
-            pending_error_kind: self.pending_error_kind.take(),
-            for_in_iters: std::mem::take(&mut self.for_in_iters),
-            saved_bytecode_stack: std::mem::take(&mut self.saved_bytecode_stack),
-            saved_constants_stack: std::mem::take(&mut self.saved_constants_stack),
-        });
-
-        // Set up callee.
-        self.regs = [JsValue::undefined(); 256];
-        self.pc = 0;
-        self.bytecode = sub.bytecode;
-        self.constants = converted_constants;
-        self.active_reg_limit = sub.n_registers.max(1);
-        self.root_reg_limit = self.active_reg_limit;
-        for i in 0..sub.n_args as usize {
-            self.regs[sub.param_base as usize + i] = args.get(i).copied().unwrap_or(JsValue::undefined());
-        }
-        self.regs[254] = if sub.is_arrow { callee_obj.captured_this() } else { receiver };
-        self.regs[255] = JsValue::undefined();
-        for (name, reg) in &sub.builtin_reg_map {
-            let si = self.kernel.string_forge().intern(name.as_str()).0;
-            let global = self.kernel.global_object();
-            if let Some(pos) = self.kernel.shape_forge().lookup_position(global.shape_id(), si) {
-                self.regs[*reg as usize] = global.get_prop_at(pos);
-            }
-        }
-        let _ = callee;
-
-        let result = self.dispatch();
-
-        // Restore execution state from heap-allocated save.
-        self.regs = *saved.regs;
-        self.pc = saved.pc;
-        self.bytecode = saved.bytecode;
-        self.constants = saved.constants;
-        self.active_reg_limit = saved.active_reg_limit;
-        self.root_reg_limit = saved.root_reg_limit;
-        self.try_stack = saved.try_stack;
-        self.frames = saved.frames;
-        self.exception_value = saved.exception_value;
-        self.pending_exception = saved.pending_exception;
-        self.pending_error_kind = saved.pending_error_kind;
-        self.for_in_iters = saved.for_in_iters;
-        self.saved_bytecode_stack = saved.saved_bytecode_stack;
-        self.saved_constants_stack = saved.saved_constants_stack;
-
-        result
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -865,113 +780,7 @@ impl Vm {
         self.bytecode[self.pc - 1] = 0;
     }
 
-    fn restore_frame(&mut self, frame: CallFrame) {
-        if let Some(saved_bc) = self.saved_bytecode_stack.pop() {
-            self.bytecode = saved_bc;
-        }
-        if let Some(saved_consts) = self.saved_constants_stack.pop() {
-            self.constants = saved_consts;
-        }
-        let restore_len = frame.saved_regs.len();
-        self.regs[..restore_len].copy_from_slice(&frame.saved_regs);
-        self.regs[254] = frame.saved_this;
-        self.regs[255] = frame.saved_new_target;
-        self.active_reg_limit = frame.caller_reg_limit;
-        self.pc = frame.return_addr;
-    }
-
-    pub fn rerun(&mut self) -> Result<JsValue, String> {
-        self.clear_execution_state();
-        self.active_reg_limit = self.root_reg_limit;
-        self.clear_ic_caches();
-        self.dispatch()
-    }
-
-    fn clear_ic_caches(&mut self) {
-        let mut i = 0;
-        while i < self.bytecode.len() {
-            let op = opcode::opcode(self.bytecode[i]);
-            if op.has_ic_ext_words() {
-                if i + 3 < self.bytecode.len() {
-                    self.bytecode[i + 1] = 0;
-                    self.bytecode[i + 2] = 0;
-                    self.bytecode[i + 3] = 0;
-                }
-                i += 4;
-            } else {
-                i += 1;
-            }
-        }
-    }
-
-    pub fn run(&mut self, module: &CompiledModule) -> Result<JsValue, String> {
-        self.clear_execution_state();
-        self.sub_modules = module.sub_modules.clone();
-        self.constants = self.convert_constants(&module.constants).map_err(String::from)?;
-        self.sub_module_constants = vec![Vec::new(); self.sub_modules.len()];
-        self.bytecode = module.bytecode.clone();
-        self.root_reg_limit = module.n_registers.max(1);
-        self.active_reg_limit = self.root_reg_limit;
-
-        for (name, reg) in &module.builtin_reg_map {
-            let si = self.kernel.string_forge().intern(name.as_str()).0;
-            let global = self.kernel.global_object();
-            if let Some(pos) = self.kernel.shape_forge().lookup_position(global.shape_id(), si) {
-                self.regs[*reg as usize] = global.get_prop_at(pos);
-            }
-        }
-
-        // Global execution context: `this` binds to the global object (ES5 §10.4.1).
-        let global_ptr = self.kernel.global_object().as_ptr() as *mut JsObject;
-        self.regs[254] = JsValue::from_js_object(global_ptr);
-
-        self.dispatch()
-    }
-
-    /// Call a bytecode function from native code (D-09).
-    /// Stub: sub_module storage not yet wired (plan 12.1-03).
-    #[allow(dead_code)]
-    pub fn call_bytecode_func(&mut self, _callback_obj: &JsObject, _args_regs: &[u8]) -> Result<JsValue, String> {
-        Err("bytecode function calls not yet supported".into())
-    }
-
-    pub(crate) fn unwind(&mut self) -> Result<(), String> {
-        while let Some(handler) = self.try_stack.pop() {
-            while self.frames.len() > handler.frame_depth {
-                if let Some(frame) = self.frames.pop() {
-                    self.restore_frame(frame);
-                }
-            }
-            if let Some(finally_pc) = handler.finally_pc {
-                if self.pending_exception.is_none() {
-                    self.pending_exception = self.exception_value.take();
-                }
-                self.try_stack.push(handler);
-                self.pc = finally_pc;
-                return Ok(());
-            }
-            if let Some(catch_pc) = handler.catch_pc {
-                let exc = self.exception_value.take().unwrap_or(JsValue::undefined());
-                self.regs[0] = exc;
-                self.pc = catch_pc;
-                return Ok(());
-            }
-        }
-        while let Some(frame) = self.frames.pop() {
-            self.restore_frame(frame);
-        }
-        let exc = self.exception_value.take().unwrap_or(JsValue::undefined());
-        let kind_str = self.pending_error_kind.take().unwrap_or("Error");
-        let exc_text = self.error_text(exc);
-        let msg = if exc_text.starts_with(kind_str) {
-            format!("uncaught {exc_text}")
-        } else {
-            format!("uncaught {kind_str}: {exc_text}")
-        };
-        Err(msg)
-    }
-
-    fn dispatch(&mut self) -> Result<JsValue, String> {
+    pub(crate) fn dispatch(&mut self) -> Result<JsValue, String> {
         let mut steps: u64 = 0;
         loop {
             steps += 1;
