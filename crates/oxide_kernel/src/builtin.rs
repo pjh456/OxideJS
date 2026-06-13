@@ -227,9 +227,9 @@ fn make_pair(
 
     // Pre-allocate Vec slots so wire_ctor_proto can overwrite vec[0] later.
     // Proto: 1 property ("constructor"), Ctor: 2 properties ("prototype", "name").
-    proto.ensure_hash_props().push(Box::new(JsValue::undefined())); // slot 0: "constructor" placeholder
-    ctor.ensure_hash_props().push(Box::new(JsValue::undefined())); // slot 0: "prototype" placeholder
-    ctor.ensure_hash_props().push(Box::new(JsValue::undefined())); // slot 1: "name" placeholder
+    proto.ensure_hash_props().push(JsValue::undefined()); // slot 0: "constructor" placeholder
+    ctor.ensure_hash_props().push(JsValue::undefined()); // slot 0: "prototype" placeholder
+    ctor.ensure_hash_props().push(JsValue::undefined()); // slot 1: "name" placeholder
 
     (P::new(proto), P::new(ctor))
 }
@@ -299,13 +299,13 @@ impl BuiltinWorld {
             let ctor = unsafe { &mut *ctor_ptr };
             let vec = ctor.ensure_hash_props();
             if !vec.is_empty() {
-                *vec[0] = JsValue::from_js_object(proto.as_ptr() as *mut JsObject);
+                vec[0] = JsValue::from_js_object(proto.as_ptr() as *mut JsObject);
             }
             let proto_ptr = proto.as_ptr() as *mut JsObject;
             let proto = unsafe { &mut *proto_ptr };
             let pvec = proto.ensure_hash_props();
             if !pvec.is_empty() {
-                *pvec[0] = JsValue::from_js_object(ctor_ptr);
+                pvec[0] = JsValue::from_js_object(ctor_ptr);
             }
         }
 
@@ -626,11 +626,11 @@ impl BuiltinWorld {
         wrapper.set_shape_id(name_shape);
         wrapper
             .ensure_hash_props()
-            .push(Box::new(JsValue::string(string_forge.intern(method_name).0, 0)));
+            .push(JsValue::string(string_forge.intern(method_name).0, 0));
         let wrapper_val = JsValue::from_js_object(Box::into_raw(wrapper));
         let new_shape = shape_forge.make_shape(proto.shape_id(), si);
         proto.set_shape_id(new_shape);
-        proto.ensure_hash_props().push(Box::new(wrapper_val));
+        proto.ensure_hash_props().push(wrapper_val);
         proto.bump_generation();
         Ok(())
     }

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use oxide_compiler::compiler::Constant;
 use oxide_compiler::module::CompiledModule;
 use oxide_compiler::opcode::{self, OpCode};
+use smallvec::SmallVec;
 
 use crate::bindings;
 pub use crate::bindings::init_kernel_builtins;
@@ -13,6 +14,7 @@ use crate::native::{NativeFn, NativeResult};
 use oxide_kernel::kernel::{KernelConfig, OxideKernel};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_kernel::{vm_debug, vm_trace};
+use oxide_types::error::{JsError, JsErrorKind};
 use oxide_types::mem::{Epoch, P};
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
@@ -25,6 +27,30 @@ use oxide_types::value::JsValue;
 #[inline(always)]
 pub(crate) unsafe fn native_fn_ptr_to_fn(ptr: NativeFnPtr) -> NativeFn {
     std::mem::transmute::<*const (), NativeFn>(ptr.as_ptr())
+}
+
+fn js_error_kind(kind: &'static str) -> JsErrorKind {
+    match kind {
+        "TypeError" => JsErrorKind::TypeError,
+        "RangeError" => JsErrorKind::RangeError,
+        "ReferenceError" => JsErrorKind::ReferenceError,
+        "SyntaxError" => JsErrorKind::SyntaxError,
+        "URIError" => JsErrorKind::URIError,
+        "EvalError" => JsErrorKind::EvalError,
+        _ => JsErrorKind::Error,
+    }
+}
+
+fn js_error_kind_name(kind: JsErrorKind) -> &'static str {
+    match kind {
+        JsErrorKind::TypeError => "TypeError",
+        JsErrorKind::RangeError => "RangeError",
+        JsErrorKind::ReferenceError => "ReferenceError",
+        JsErrorKind::SyntaxError => "SyntaxError",
+        JsErrorKind::Error => "Error",
+        JsErrorKind::URIError => "URIError",
+        JsErrorKind::EvalError => "EvalError",
+    }
 }
 
 #[allow(unused_macros)]
@@ -96,7 +122,7 @@ struct InlineSyncState {
     active_reg_limit: u8,
     root_reg_limit: u8,
     try_stack: Vec<TryHandler>,
-    frames: Vec<CallFrame>,
+    frames: SmallVec<[CallFrame; 16]>,
     exception_value: Option<JsValue>,
     pending_exception: Option<JsValue>,
     pending_error_kind: Option<&'static str>,
@@ -110,7 +136,7 @@ pub struct Vm {
     pub(crate) pc: usize,
     pub(crate) bytecode: Vec<opcode::Instr>,
     pub(crate) constants: Vec<JsValue>,
-    pub(crate) frames: Vec<CallFrame>,
+    pub(crate) frames: SmallVec<[CallFrame; 16]>,
     pub for_in_iters: Vec<*mut ForInIter<'static>>,
     pub(crate) kernel: Arc<OxideKernel>,
     pub(crate) interned_strings: Vec<u32>,
@@ -156,11 +182,16 @@ impl Vm {
     }
 
     pub(crate) fn raise_error_kind(&mut self, kind: &'static str, msg: &str) -> Result<(), String> {
+        self.raise_js_error(JsError::new(js_error_kind(kind), msg))
+    }
+
+    pub(crate) fn raise_js_error(&mut self, err: JsError) -> Result<(), String> {
+        let kind = js_error_kind_name(err.kind);
         let error = match kind {
-            "TypeError" => crate::builtins::error::create_type_error(self, msg),
-            "ReferenceError" => crate::builtins::error::create_reference_error(self, msg),
-            "SyntaxError" => crate::builtins::error::create_syntax_error(self, msg),
-            _ => crate::builtins::error::create_error(self, msg),
+            "TypeError" => crate::builtins::error::create_type_error(self, &err.message),
+            "ReferenceError" => crate::builtins::error::create_reference_error(self, &err.message),
+            "SyntaxError" => crate::builtins::error::create_syntax_error(self, &err.message),
+            _ => crate::builtins::error::create_error(self, &err.message),
         };
         self.exception_value = Some(error);
         self.pending_error_kind = Some(kind);
@@ -180,7 +211,7 @@ impl Vm {
             pc: 0,
             bytecode: Vec::new(),
             constants: Vec::new(),
-            frames: Vec::with_capacity(128),
+            frames: SmallVec::new(),
             for_in_iters: Vec::new(),
             kernel,
             interned_strings: Vec::new(),
@@ -212,7 +243,7 @@ impl Vm {
             pc: 0,
             bytecode: Vec::new(),
             constants: Vec::new(),
-            frames: Vec::with_capacity(128),
+            frames: SmallVec::new(),
             for_in_iters: Vec::new(),
             kernel,
             interned_strings: Vec::new(),
@@ -284,6 +315,11 @@ impl Vm {
     }
 
     fn clear_execution_state(&mut self) {
+        // Reset contract:
+        // - Clears register file, pc, frame/iterator stacks, saved execution stacks,
+        //   try handlers, pending exceptions, and native call depth.
+        // - Leaves kernel-owned shared state intact.
+        // - `reset()` additionally clears bytecode/constants and resets epoch ownership.
         self.regs = [JsValue::undefined(); 256];
         self.pc = 0;
         self.frames.clear();
@@ -356,7 +392,7 @@ impl Vm {
             let func = unsafe { &mut *obj_ptr };
             let prototype_shape = self.kernel.shape_forge().make_shape(func.shape_id(), prototype_si);
             func.set_shape_id(prototype_shape);
-            func.ensure_hash_props().push(Box::new(prototype_val));
+            func.ensure_hash_props().push(prototype_val);
             func.bump_generation();
         }
 
@@ -384,7 +420,7 @@ impl Vm {
         format!("{val}")
     }
 
-    fn convert_constant(&mut self, constant: &Constant) -> Result<JsValue, String> {
+    fn convert_constant(&mut self, constant: &Constant) -> Result<JsValue, JsError> {
         match constant {
             Constant::Number(v) => Ok(JsValue::float(*v)),
             Constant::Int(v) => Ok(JsValue::int(*v)),
@@ -423,7 +459,7 @@ impl Vm {
                 let ctor_ptr = self.kernel.builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
                 let ctor = unsafe { &*ctor_ptr };
                 let Some(native_fn) = ctor.native_fn() else {
-                    return Err("SyntaxError: RegExp constructor unavailable".into());
+                    return Err(JsError::syntax_error("RegExp constructor unavailable"));
                 };
 
                 let saved_0 = self.regs[0];
@@ -439,13 +475,13 @@ impl Vm {
                 self.regs[0] = saved_0;
                 self.regs[1] = saved_1;
                 self.regs[2] = saved_2;
-                result.map_err(|err| self.error_text(err))
+                result.map_err(|err| JsError::syntax_error(self.error_text(err)))
             }
         }
     }
 
     /// Convert a module constant pool into runtime values.
-    fn convert_constants(&mut self, constants: &[Constant]) -> Result<Vec<JsValue>, String> {
+    fn convert_constants(&mut self, constants: &[Constant]) -> Result<Vec<JsValue>, JsError> {
         let mut values = Vec::with_capacity(constants.len());
         for constant in constants {
             values.push(self.convert_constant(constant)?);
@@ -609,7 +645,7 @@ impl Vm {
         }
 
         let sub = self.sub_modules[sub_idx].clone();
-        let converted_constants = self.convert_constants(&sub.constants)?;
+        let converted_constants = self.convert_constants(&sub.constants).map_err(String::from)?;
 
         // Heap-allocate the saved state so this function's Rust stack frame stays small.
         let saved = Box::new(InlineSyncState {
@@ -712,7 +748,7 @@ impl Vm {
         self.regs[254] = if sub_is_arrow { obj.captured_this() } else { this_value };
         self.regs[255] = new_target;
 
-        let converted_sub_constants = self.convert_constants(&sub_constants)?;
+        let converted_sub_constants = self.convert_constants(&sub_constants).map_err(String::from)?;
         self.saved_bytecode_stack.push(std::mem::take(&mut self.bytecode));
         self.saved_constants_stack.push(std::mem::take(&mut self.constants));
 
@@ -1114,7 +1150,7 @@ impl Vm {
     pub fn run(&mut self, module: &CompiledModule) -> Result<JsValue, String> {
         self.clear_execution_state();
         self.sub_modules = module.sub_modules.clone();
-        self.constants = self.convert_constants(&module.constants)?;
+        self.constants = self.convert_constants(&module.constants).map_err(String::from)?;
         self.sub_module_constants = vec![Vec::new(); self.sub_modules.len()];
         self.bytecode = module.bytecode.clone();
         self.root_reg_limit = module.n_registers.max(1);

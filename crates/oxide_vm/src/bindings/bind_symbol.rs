@@ -54,6 +54,6 @@ fn bind_well_known_symbol(kernel: &Arc<OxideKernel>, ctor: &mut JsObject, name: 
     let si = kernel.string_forge().intern(name).0;
     let shape_id = kernel.shape_forge().make_shape(ctor.shape_id(), si);
     ctor.set_shape_id(shape_id);
-    ctor.ensure_hash_props().push(Box::new(val));
+    ctor.ensure_hash_props().push(val);
     ctor.bump_generation();
 }

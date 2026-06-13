@@ -118,12 +118,12 @@ pub fn error_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let name_val = obj
             .hash_props_vec()
             .and_then(|v| v.first())
-            .map(|b| **b)
+            .copied()
             .unwrap_or(JsValue::undefined());
         let msg_val = obj
             .hash_props_vec()
             .and_then(|v| v.get(1))
-            .map(|b| **b)
+            .copied()
             .unwrap_or(JsValue::undefined());
         (
             vm.lookup_str(name_val).unwrap_or_else(|| "Error".to_string()),

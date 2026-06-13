@@ -19,11 +19,11 @@ fn bind_dispatcher(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let wrapper = unsafe { &*wrapper_val.as_js_object_ptr() };
     let bound_target = wrapper
         .hash_props_vec()
-        .and_then(|v| v.first().map(|b| **b))
+        .and_then(|v| v.first().copied())
         .unwrap_or(JsValue::undefined());
     let bound_this = wrapper
         .hash_props_vec()
-        .and_then(|v| v.get(1).map(|b| **b))
+        .and_then(|v| v.get(1).copied())
         .unwrap_or(JsValue::undefined());
 
     // Forward bound call arguments (skip args[0], the bound-wrapper receiver).
@@ -63,7 +63,7 @@ pub fn function_apply(vm: &mut Vm, args: &[u8]) -> NativeResult {
                     for i in 0..n {
                         let vec = arr.hash_props_vec();
                         if let Some(v) = vec.and_then(|v| v.get(i)) {
-                            vm.set_reg(base + i as u8, **v);
+                            vm.set_reg(base + i as u8, *v);
                         }
                     }
                 } else {
@@ -97,8 +97,8 @@ pub fn function_bind(vm: &mut Vm, args: &[u8]) -> NativeResult {
         // SAFETY: bind_dispatcher is a NativeFn fn-item; valid to store as NativeFnPtr.
         (*wrapper).set_native_fn(Some(NativeFnPtr::from_raw(bind_dispatcher as *const ())));
         (*wrapper).set_native_arg_count(0);
-        (*wrapper).ensure_hash_props().push(Box::new(target_val));
-        (*wrapper).ensure_hash_props().push(Box::new(bound_this));
+        (*wrapper).ensure_hash_props().push(target_val);
+        (*wrapper).ensure_hash_props().push(bound_this);
     }
 
     NativeResult::Ok(JsValue::from_js_object(wrapper))

@@ -54,6 +54,7 @@ pub(crate) enum Label {
 pub(crate) struct CompileCtx {
     pub(crate) bytecode: Vec<opcode::Instr>,
     pub(crate) constants: Vec<Constant>,
+    constant_map: HashMap<ConstantKey, u16>,
     next_reg: u8,
     pub(crate) max_regs: u8,
     reserved_reg_start: u8,
@@ -85,11 +86,23 @@ pub(crate) enum FunctionBodyContext {
     ClassElement,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum ConstantKey {
+    Number(u64),
+    Int(i32),
+    String(String),
+    Boolean(bool),
+    Null,
+    Undefined,
+    BytecodeFunc(u32),
+}
+
 impl CompileCtx {
     pub(crate) fn new() -> Self {
         Self {
             bytecode: Vec::new(),
             constants: Vec::new(),
+            constant_map: HashMap::new(),
             next_reg: 0,
             max_regs: 0,
             reserved_reg_start: 0,
@@ -159,9 +172,17 @@ impl CompileCtx {
     }
 
     pub(crate) fn add_constant(&mut self, c: Constant) -> u16 {
-        if let Some(idx) = self.constants.iter().position(|x| x == &c) {
-            return idx as u16;
+        if let Some(key) = ConstantKey::from_constant(&c) {
+            if let Some(&idx) = self.constant_map.get(&key) {
+                return idx;
+            }
+
+            let idx = self.constants.len() as u16;
+            self.constants.push(c);
+            self.constant_map.insert(key, idx);
+            return idx;
         }
+
         let idx = self.constants.len();
         self.constants.push(c);
         idx as u16
@@ -286,6 +307,21 @@ impl CompileCtx {
             let reg = self.alloc_reg();
             self.symbols.pre_register_global(name, reg);
             self.builtin_reg_map.push((name.to_string(), reg));
+        }
+    }
+}
+
+impl ConstantKey {
+    fn from_constant(value: &Constant) -> Option<Self> {
+        match value {
+            Constant::Number(v) => Some(Self::Number(v.to_bits())),
+            Constant::Int(v) => Some(Self::Int(*v)),
+            Constant::String(v) => Some(Self::String(v.clone())),
+            Constant::Boolean(v) => Some(Self::Boolean(*v)),
+            Constant::Null => Some(Self::Null),
+            Constant::Undefined => Some(Self::Undefined),
+            Constant::BytecodeFunc(v) => Some(Self::BytecodeFunc(*v)),
+            Constant::RegExp(_, _) => None,
         }
     }
 }

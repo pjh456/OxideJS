@@ -53,6 +53,17 @@ fn compile_constants() {
 }
 
 #[test]
+fn compile_dedups_identical_string_constants() {
+    let module = compile_source("var a = 'hello'; var b = 'hello';");
+    let count = module
+        .constants
+        .iter()
+        .filter(|c| matches!(c, oxide_compiler::compiler::Constant::String(s) if s == "hello"))
+        .count();
+    assert_eq!(count, 1, "identical string constants should be interned once per module");
+}
+
+#[test]
 fn compile_negation() {
     let module = compile_source("-5");
 

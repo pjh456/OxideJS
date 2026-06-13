@@ -306,7 +306,7 @@ pub fn to_object(val: JsValue, vm: &mut Vm) -> Result<JsValue, &'static str> {
     let obj = vm.epoch.alloc(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
     let obj_val = JsValue::from_js_object(obj);
     let obj_ref = unsafe { &mut *obj };
-    obj_ref.ensure_hash_props().push(Box::new(val));
+    obj_ref.ensure_hash_props().push(val);
     obj_ref.set_prop_count(1);
     Ok(obj_val)
 }

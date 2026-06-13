@@ -9,13 +9,21 @@ use crate::{kernel_debug, kernel_info};
 
 pub use oxide_compiler::compiler::structural_hash;
 
+/// Shared compiled-module cache.
+///
+/// Concurrency model:
+/// - Read-heavy after warmup: cache hits dominate steady-state execution.
+/// - Backed by a fixed-shard `DashMap` so lookup contention stays predictable across
+///   developer machines and CI hosts.
 pub struct CodeForge {
     map: DashMap<u64, Arc<CompiledModule>>,
 }
 
 impl CodeForge {
     pub fn new() -> Self {
-        Self { map: DashMap::new() }
+        Self {
+            map: DashMap::with_shard_amount(16),
+        }
     }
 
     pub fn get_or_compile(

@@ -44,6 +44,6 @@ pub fn bind_string(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     let str_shape = kernel.shape_forge().make_shape(global.shape_id(), si_str);
     let str_val = JsValue::from_js_object(kernel.builtin_world().string_constructor.as_ptr() as *mut JsObject);
     global.set_shape_id(str_shape);
-    global.ensure_hash_props().push(Box::new(str_val));
+    global.ensure_hash_props().push(str_val);
     global.bump_generation();
 }
