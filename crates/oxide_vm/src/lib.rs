@@ -7,4 +7,5 @@ mod dispatch;
 pub mod native;
 pub mod vm;
 pub mod vm_pool;
+mod vm_support;
 pub use oxide_types::value::JsValue;
