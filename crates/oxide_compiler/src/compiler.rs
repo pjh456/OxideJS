@@ -78,6 +78,13 @@ pub(crate) struct CompileCtx {
     pub(crate) reg_overflow: bool,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum FunctionBodyContext {
+    Ordinary,
+    Arrow,
+    ClassElement,
+}
+
 impl CompileCtx {
     pub(crate) fn new() -> Self {
         Self {
@@ -315,12 +322,24 @@ impl Compiler {
         &self, param_names: &[String], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx, is_expression_body: bool,
         is_arrow: bool,
     ) -> Result<CompiledModule, String> {
-        self.compile_function_body_with_bindings(param_names, body_stmts, parent_ctx, is_expression_body, &[], is_arrow)
+        let body_context = if is_arrow {
+            FunctionBodyContext::Arrow
+        } else {
+            FunctionBodyContext::Ordinary
+        };
+        self.compile_function_body_with_bindings(
+            param_names,
+            body_stmts,
+            parent_ctx,
+            is_expression_body,
+            &[],
+            body_context,
+        )
     }
 
     pub(crate) fn compile_function_body_with_bindings<'a>(
         &self, param_names: &[String], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx, is_expression_body: bool,
-        extra_bindings: &[(&str, u8)], is_arrow: bool,
+        extra_bindings: &[(&str, u8)], body_context: FunctionBodyContext,
     ) -> Result<CompiledModule, String> {
         let mut ctx = CompileCtx::new();
 
@@ -330,8 +349,9 @@ impl Compiler {
 
         // Propagate enclosing_this_reg so nested arrow functions capture the correct `this`.
         ctx.enclosing_this_reg = parent_ctx.enclosing_this_reg;
-        // Only arrow functions have lexical super; regular functions create a new super scope.
-        if is_arrow {
+        // Arrow functions inherit lexical super. Class method bodies also need the
+        // class-provided super context for their top-level body compilation.
+        if matches!(body_context, FunctionBodyContext::Arrow | FunctionBodyContext::ClassElement) {
             ctx.in_derived_constructor = parent_ctx.in_derived_constructor;
             ctx.in_instance_method = parent_ctx.in_instance_method;
             ctx.in_static_method = parent_ctx.in_static_method;

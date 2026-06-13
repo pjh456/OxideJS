@@ -6,7 +6,7 @@ use oxide_parser::{
     VariableDeclarationKind,
 };
 
-use crate::compiler::{is_int_literal, is_side_effect_free, BinaryOperator, CompileCtx, Compiler};
+use crate::compiler::{is_int_literal, is_side_effect_free, BinaryOperator, CompileCtx, Compiler, FunctionBodyContext};
 use crate::module::Constant;
 
 impl Compiler {
@@ -77,9 +77,23 @@ impl Compiler {
 
         let mut ctor_module = if let Some(method) = constructor_method {
             let (param_names, body_stmts) = self.extract_function_parts(method.value.as_ref())?;
-            self.compile_function_body_with_bindings(&param_names, body_stmts, ctx, false, &self_binding, false)?
+            self.compile_function_body_with_bindings(
+                &param_names,
+                body_stmts,
+                ctx,
+                false,
+                &self_binding,
+                FunctionBodyContext::ClassElement,
+            )?
         } else {
-            let mut module = self.compile_function_body_with_bindings(&[], &[], ctx, false, &self_binding, false)?;
+            let mut module = self.compile_function_body_with_bindings(
+                &[],
+                &[],
+                ctx,
+                false,
+                &self_binding,
+                FunctionBodyContext::ClassElement,
+            )?;
             if is_derived {
                 module.bytecode.clear();
                 module.constants.clear();
@@ -118,8 +132,14 @@ impl Compiler {
             let (param_names, body_stmts) = self.extract_function_parts(method.value.as_ref())?;
             let saved_method = ctx.in_instance_method;
             ctx.in_instance_method = true;
-            let mut method_module =
-                self.compile_function_body_with_bindings(&param_names, body_stmts, ctx, false, &self_binding, false)?;
+            let mut method_module = self.compile_function_body_with_bindings(
+                &param_names,
+                body_stmts,
+                ctx,
+                false,
+                &self_binding,
+                FunctionBodyContext::ClassElement,
+            )?;
             ctx.in_instance_method = saved_method;
             method_module.function_name = Some(method_name.clone());
             method_module.needs_home_object = true;
@@ -153,8 +173,14 @@ impl Compiler {
             let (param_names, body_stmts) = self.extract_function_parts(method.value.as_ref())?;
             let saved_static = ctx.in_static_method;
             ctx.in_static_method = true;
-            let mut method_module =
-                self.compile_function_body_with_bindings(&param_names, body_stmts, ctx, false, &self_binding, false)?;
+            let mut method_module = self.compile_function_body_with_bindings(
+                &param_names,
+                body_stmts,
+                ctx,
+                false,
+                &self_binding,
+                FunctionBodyContext::ClassElement,
+            )?;
             ctx.in_static_method = saved_static;
             method_module.function_name = Some(method_name.clone());
             method_module.needs_home_object = true;
@@ -213,8 +239,14 @@ impl Compiler {
         let saved_static = ctx.in_static_method;
         ctx.in_instance_method = !method.r#static;
         ctx.in_static_method = method.r#static;
-        let mut method_module =
-            self.compile_function_body_with_bindings(&param_names, body_stmts, ctx, false, self_binding, false)?;
+        let mut method_module = self.compile_function_body_with_bindings(
+            &param_names,
+            body_stmts,
+            ctx,
+            false,
+            self_binding,
+            FunctionBodyContext::ClassElement,
+        )?;
         ctx.in_instance_method = saved_instance;
         ctx.in_static_method = saved_static;
         method_module.function_name = Some(method_name.to_string());
