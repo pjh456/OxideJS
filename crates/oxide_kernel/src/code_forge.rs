@@ -5,6 +5,8 @@ use dashmap::DashMap;
 use oxide_compiler::compiler::Compiler;
 use oxide_compiler::module::CompiledModule;
 
+use crate::{kernel_debug, kernel_info};
+
 pub use oxide_compiler::compiler::structural_hash;
 
 pub struct CodeForge {
@@ -22,11 +24,13 @@ impl CodeForge {
         let hash = structural_hash(program);
 
         if let Some(module) = self.map.get(&hash) {
+            kernel_info!("CodeForge hit hash={:#x}", hash);
             return Ok(Arc::clone(&module));
         }
 
         let module = compiler.compile(program)?;
         let module = Arc::new(module);
+        kernel_debug!("CodeForge miss hash={:#x}", hash);
 
         Ok(Arc::clone(self.map.entry(hash).or_insert(module).value()))
     }

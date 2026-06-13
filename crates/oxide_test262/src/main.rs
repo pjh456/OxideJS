@@ -377,9 +377,7 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
         }
     }
 
-    if meta.description.contains("generator")
-        || meta.description.contains("async")
-    {
+    if meta.description.contains("generator") || meta.description.contains("async") {
         return Some("description matches excluded pattern".into());
     }
 

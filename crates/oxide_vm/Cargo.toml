@@ -19,6 +19,7 @@ serde_json.workspace = true
 chrono.workspace = true
 indexmap.workspace = true
 unicode-normalization.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

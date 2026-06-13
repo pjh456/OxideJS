@@ -3,6 +3,8 @@ use std::sync::{Arc, RwLock};
 
 use dashmap::DashMap;
 
+use crate::kernel_debug;
+
 pub type ShapeId = u32;
 pub type StringIndex = u32;
 
@@ -70,6 +72,7 @@ impl ShapeForge {
         let key = Self::pack_key(parent_id, prop_name);
 
         if let Some(entry) = self.transitions.get(&key) {
+            kernel_debug!("ShapeForge transition cached parent={} prop={} -> id={}", parent_id, prop_name, *entry);
             return *entry;
         }
 
@@ -89,7 +92,14 @@ impl ShapeForge {
             shapes[(new_id - 1) as usize] = Some(shape);
         }
 
-        *self.transitions.entry(key).or_insert(new_id).value()
+        let entry = self.transitions.entry(key).or_insert(new_id);
+        let id = *entry.value();
+        if id == new_id {
+            kernel_debug!("ShapeForge transition parent={} prop={} -> id={}", parent_id, prop_name, new_id);
+        } else {
+            kernel_debug!("ShapeForge transition cached parent={} prop={} -> id={}", parent_id, prop_name, id);
+        }
+        id
     }
 
     pub fn get_shape(&self, id: ShapeId) -> Option<Arc<Shape>> {

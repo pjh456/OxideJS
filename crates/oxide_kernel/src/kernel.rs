@@ -8,6 +8,7 @@ use oxide_types::value::JsValue;
 
 use crate::builtin::BuiltinWorld;
 use crate::code_forge::CodeForge;
+use crate::logging::{init_logging, LogLevel, SUBSYSTEM_COUNT};
 use crate::prop_forge::PropForge;
 use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use crate::string_forge::StringForge;
@@ -18,6 +19,7 @@ pub struct KernelConfig {
     pub max_dead_strings: Option<usize>,
     pub max_steps: Option<u64>,
     pub max_call_depth: usize,
+    pub log_levels: [LogLevel; SUBSYSTEM_COUNT],
     pub warmup_builtin_shapes: bool,
     pub warmup_builtin_code: bool,
     pub warmup_builtin_ic: bool,
@@ -31,6 +33,7 @@ impl KernelConfig {
             max_dead_strings: Some(10_000),
             max_steps: None,
             max_call_depth: 1024,
+            log_levels: [LogLevel::Off; SUBSYSTEM_COUNT],
             warmup_builtin_shapes: true,
             warmup_builtin_code: false,
             warmup_builtin_ic: false,
@@ -44,6 +47,7 @@ impl KernelConfig {
             max_dead_strings: Some(10_000),
             max_steps: None,
             max_call_depth: 1024,
+            log_levels: [LogLevel::Off; SUBSYSTEM_COUNT],
             warmup_builtin_shapes: true,
             warmup_builtin_code: true,
             warmup_builtin_ic: false,
@@ -57,6 +61,7 @@ impl KernelConfig {
             max_dead_strings: Some(5_000),
             max_steps: None,
             max_call_depth: 1024,
+            log_levels: [LogLevel::Off; SUBSYSTEM_COUNT],
             warmup_builtin_shapes: true,
             warmup_builtin_code: true,
             warmup_builtin_ic: true,
@@ -82,6 +87,8 @@ pub struct OxideKernel {
 
 impl OxideKernel {
     pub fn new(config: KernelConfig) -> Self {
+        init_logging(&config.log_levels);
+
         let string_forge = Arc::new(StringForge::new());
         let shape_forge = Arc::new(ShapeForge::new());
         let builtin_world = Arc::new(BuiltinWorld::new(&string_forge, &shape_forge));
@@ -188,6 +195,7 @@ mod tests {
         assert_eq!(KernelConfig::minimal().max_steps, None);
         assert_eq!(KernelConfig::standard().max_steps, None);
         assert_eq!(KernelConfig::full().max_steps, None);
+        assert_eq!(KernelConfig::minimal().log_levels, [LogLevel::Off; SUBSYSTEM_COUNT]);
         assert!(!KernelConfig::minimal().warmup_builtin_ic);
         assert!(KernelConfig::full().warmup_builtin_ic);
         assert_eq!(KernelConfig::full().max_pool_size, None);
