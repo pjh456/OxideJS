@@ -5,6 +5,8 @@ use std::sync::RwLock;
 use hashbrown::hash_map::DefaultHashBuilder as FxBuildHasher;
 use hashbrown::HashMap;
 
+use crate::{kernel_debug, kernel_trace};
+
 pub fn hash16(s: &str) -> u16 {
     let mut h = rustc_hash::FxHasher::default();
     s.hash(&mut h);
@@ -42,6 +44,7 @@ impl StringForge {
             if let Some(&idx) = inner.map.get(s) {
                 let entry = &inner.entries[idx as usize];
                 entry.ref_count.fetch_add(1, Ordering::Release);
+                kernel_trace!("StringForge intern hit idx={}", idx);
                 return (idx, entry.hash);
             }
         }
@@ -50,6 +53,7 @@ impl StringForge {
         if let Some(&idx) = inner.map.get(s) {
             let entry = &inner.entries[idx as usize];
             entry.ref_count.fetch_add(1, Ordering::Release);
+            kernel_trace!("StringForge intern hit idx={}", idx);
             return (idx, entry.hash);
         }
 
@@ -61,6 +65,7 @@ impl StringForge {
             ref_count: AtomicU32::new(1),
             hash: h,
         });
+        kernel_debug!("StringForge intern new idx={} len={}", idx, s.len());
         (idx, h)
     }
 

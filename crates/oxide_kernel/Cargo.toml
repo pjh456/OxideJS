@@ -14,3 +14,5 @@ dashmap.workspace = true
 hashbrown.workspace = true
 rustc-hash.workspace = true
 bumpalo.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

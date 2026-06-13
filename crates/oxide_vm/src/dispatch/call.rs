@@ -1,5 +1,6 @@
 use crate::native::{NativeFn, NativeResult};
 use crate::vm::{native_fn_ptr_to_fn, FrameContinuation, Vm};
+use oxide_kernel::{builtins_debug, builtins_trace};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
@@ -24,6 +25,7 @@ impl Vm {
         }
         let (args_buf, len) = Self::build_native_args(first_arg_reg, arg_count, this_reg);
         let args_slice = &args_buf[..len];
+        builtins_debug!("native_call depth={} args={}", self.native_call_depth, arg_count);
 
         // SAFETY: native_fn was set via set_native_fn with a valid NativeFn pointer;
         // native_fn_ptr_to_fn is the single coercion point for NativeFnPtr → NativeFn.
@@ -33,6 +35,7 @@ impl Vm {
         match func(self, args_slice) {
             NativeResult::Ok(val) => {
                 self.native_call_depth -= 1;
+                builtins_trace!("native_call ok depth={}", self.native_call_depth);
                 self.regs[0] = val;
                 Ok(())
             }
@@ -49,6 +52,7 @@ impl Vm {
                     } else {
                         format!("{err_val}")
                     };
+                    builtins_debug!("native_call err={}", msg);
                     (crate::builtins::error::create_error(self, &msg), "Error")
                 };
                 self.exception_value = Some(error);

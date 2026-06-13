@@ -1,5 +1,6 @@
 use oxide_compiler::opcode::OpCode;
 use oxide_kernel::prop_forge::PropTemplate;
+use oxide_kernel::{ic_debug, ic_trace};
 use oxide_types::object::JsObject;
 
 use crate::vm::Vm;
@@ -71,18 +72,28 @@ impl Vm {
 
         if cached_shape_id != 0 && cached_shape_id == obj.shape_id() && cached_slot < obj.prop_vec_len() as u32 {
             self.regs[a] = obj.get_prop_at(cached_slot);
+            ic_trace!("IC_GET hit shape={} slot={}", cached_shape_id, cached_slot);
         } else if let Some(template) = self.kernel.prop_forge().get_template(obj.shape_id()) {
             if template.prop_name == prop_name_si {
                 if template.position < obj.prop_vec_len() as u32 {
                     self.write_ic_back(obj.shape_id(), template.position);
+                    ic_debug!(
+                        "IC_GET propforge hit shape={} prop={} slot={}",
+                        obj.shape_id(),
+                        prop_name_si,
+                        template.position
+                    );
                     self.regs[a] = obj.get_prop_at(template.position);
                 } else {
+                    ic_debug!("IC_GET miss shape={} prop={}", obj.shape_id(), prop_name_si);
                     self.regs[a] = self.ordinary_get(obj, prop_name_si, val)?;
                 }
             } else {
+                ic_debug!("IC_GET miss shape={} prop={}", obj.shape_id(), prop_name_si);
                 self.regs[a] = self.ordinary_get(obj, prop_name_si, val)?;
             }
         } else {
+            ic_debug!("IC_GET miss shape={} prop={}", obj.shape_id(), prop_name_si);
             let resolved = self.ordinary_get(obj, prop_name_si, val)?;
             if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
                 self.write_ic_back(obj.shape_id(), pos);
@@ -127,15 +138,18 @@ impl Vm {
 
         if cached_shape_id != 0 && cached_shape_id == obj.shape_id() && cached_slot < obj.prop_vec_len() as u32 {
             obj.set_prop_at(cached_slot, value);
+            ic_trace!("IC_SET hit shape={} slot={}", cached_shape_id, cached_slot);
         } else if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             obj.set_prop_at(pos, value);
             self.write_ic_back(obj.shape_id(), pos);
+            ic_debug!("IC_SET write-back shape={} slot={}", obj.shape_id(), pos);
         } else {
             let old_shape = obj.shape_id();
             self.ordinary_set_dispatch(obj, prop_name_si, value, receiver)?;
             if old_shape != obj.shape_id() {
                 if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
                     self.write_ic_back(obj.shape_id(), pos);
+                    ic_debug!("IC_SET write-back shape={} slot={}", obj.shape_id(), pos);
                     self.kernel.prop_forge().upsert(
                         obj.shape_id(),
                         PropTemplate {

@@ -312,8 +312,8 @@ impl Compiler {
     /// (true for arrow functions, which have lexical super) or reset to false
     /// (false for regular functions, which create a new super scope).
     pub(crate) fn compile_function_body<'a>(
-        &self, param_names: &[String], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
-        is_expression_body: bool, is_arrow: bool,
+        &self, param_names: &[String], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx, is_expression_body: bool,
+        is_arrow: bool,
     ) -> Result<CompiledModule, String> {
         self.compile_function_body_with_bindings(param_names, body_stmts, parent_ctx, is_expression_body, &[], is_arrow)
     }

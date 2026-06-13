@@ -12,6 +12,7 @@ use crate::coercion;
 use crate::native::{NativeFn, NativeResult};
 use oxide_kernel::kernel::{KernelConfig, OxideKernel};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
+use oxide_kernel::{vm_debug, vm_trace};
 use oxide_types::mem::{Epoch, P};
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
@@ -1355,6 +1356,13 @@ impl Vm {
                                 let ext = self.bytecode[self.pc];
                                 self.pc += 1;
                                 let arg_count = (ext & 0xFF) as usize;
+                                vm_debug!(
+                                    "CALL rd={} this={} args={} depth={}",
+                                    rd,
+                                    this_reg,
+                                    arg_count,
+                                    self.frames.len()
+                                );
 
                                 if obj.native_fn().is_some() {
                                     match self.dispatch_native_call(obj, callee, this_reg, first_arg_reg, arg_count) {
@@ -1405,6 +1413,7 @@ impl Vm {
                     let ext = self.bytecode[self.pc];
                     self.pc += 1;
                     let arg_count = (ext & 0xFF) as usize;
+                    vm_debug!("CALL_NATIVE rd={} args={}", rd, arg_count);
 
                     self.dispatch_native_call(obj, callee, this_reg, first_arg_reg, arg_count)?;
                 }
@@ -1412,6 +1421,7 @@ impl Vm {
                 OpCode::NEW_EXPRESSION => {
                     let constructor_reg = a;
                     let first_arg_reg = b as u8;
+                    vm_debug!("NEW_EXPRESSION rd={}", rd);
 
                     let constructor = self.regs[constructor_reg];
                     if !constructor.is_object() {
@@ -1780,6 +1790,7 @@ impl Vm {
 
                 OpCode::RETURN => {
                     let result = self.regs[rd];
+                    vm_debug!("RETURN depth={}", self.frames.len());
                     if let Some(frame) = self.frames.pop() {
                         let construct_result_reg = frame.construct_result_reg;
                         let constructed_this = frame.constructed_this;
@@ -2156,6 +2167,7 @@ impl Vm {
                 }
 
                 OpCode::THROW => {
+                    vm_debug!("THROW pc={}", self.pc);
                     let exc_value = self.regs[rd];
                     self.exception_value = Some(exc_value);
                     self.pending_error_kind = Some(self.thrown_error_kind(exc_value));
@@ -2166,6 +2178,7 @@ impl Vm {
                 }
 
                 OpCode::TRY_BEGIN => {
+                    vm_trace!("TRY_BEGIN frame_depth={}", self.frames.len());
                     let offset = opcode::offset16(instr) as isize;
                     let catch_pc = if offset == 0 {
                         None
