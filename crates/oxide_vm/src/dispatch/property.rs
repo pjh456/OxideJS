@@ -2,8 +2,31 @@ use oxide_compiler::opcode::OpCode;
 use oxide_kernel::prop_forge::PropTemplate;
 use oxide_kernel::{ic_debug, ic_trace};
 use oxide_types::object::JsObject;
+use oxide_types::value::JsValue;
 
 use crate::vm::Vm;
+
+#[inline(always)]
+fn ic_get_hit(obj: &JsObject, shape_id: u32, slot_index: u32) -> Option<JsValue> {
+    if shape_id != 0 && obj.shape_id() == shape_id && slot_index < obj.prop_vec_len() as u32 {
+        Some(obj.get_prop_at(slot_index))
+    } else {
+        None
+    }
+}
+
+#[inline(always)]
+fn ic_set_hit(obj: &mut JsObject, shape_id: u32, slot_index: u32, value: JsValue) -> bool {
+    if shape_id != 0 && obj.shape_id() == shape_id && slot_index < obj.prop_vec_len() as u32 {
+        obj.set_prop_at(slot_index, value);
+        true
+    } else {
+        false
+    }
+}
+
+#[cold]
+fn prop_cache_miss() {}
 
 impl Vm {
     pub(crate) fn dispatch_property_op(&mut self, op: OpCode, rd: usize, a: usize, b: usize) -> Result<(), String> {
@@ -70,10 +93,11 @@ impl Vm {
         let cached_shape_id = ext0 & 0x00FF_FFFF;
         let cached_slot = ext1;
 
-        if cached_shape_id != 0 && cached_shape_id == obj.shape_id() && cached_slot < obj.prop_vec_len() as u32 {
-            self.regs[a] = obj.get_prop_at(cached_slot);
+        if let Some(value) = ic_get_hit(obj, cached_shape_id, cached_slot) {
+            self.regs[a] = value;
             ic_trace!("IC_GET hit shape={} slot={}", cached_shape_id, cached_slot);
         } else if let Some(template) = self.kernel.prop_forge().get_template(obj.shape_id()) {
+            prop_cache_miss();
             if template.prop_name == prop_name_si {
                 if template.position < obj.prop_vec_len() as u32 {
                     self.write_ic_back(obj.shape_id(), template.position);
@@ -93,6 +117,7 @@ impl Vm {
                 self.regs[a] = self.ordinary_get(obj, prop_name_si, val)?;
             }
         } else {
+            prop_cache_miss();
             ic_debug!("IC_GET miss shape={} prop={}", obj.shape_id(), prop_name_si);
             let resolved = self.ordinary_get(obj, prop_name_si, val)?;
             if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
@@ -136,14 +161,15 @@ impl Vm {
         let cached_shape_id = ext0 & 0x00FF_FFFF;
         let cached_slot = ext1;
 
-        if cached_shape_id != 0 && cached_shape_id == obj.shape_id() && cached_slot < obj.prop_vec_len() as u32 {
-            obj.set_prop_at(cached_slot, value);
+        if ic_set_hit(obj, cached_shape_id, cached_slot, value) {
             ic_trace!("IC_SET hit shape={} slot={}", cached_shape_id, cached_slot);
         } else if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+            prop_cache_miss();
             obj.set_prop_at(pos, value);
             self.write_ic_back(obj.shape_id(), pos);
             ic_debug!("IC_SET write-back shape={} slot={}", obj.shape_id(), pos);
         } else {
+            prop_cache_miss();
             let old_shape = obj.shape_id();
             self.ordinary_set_dispatch(obj, prop_name_si, value, receiver)?;
             if old_shape != obj.shape_id() {

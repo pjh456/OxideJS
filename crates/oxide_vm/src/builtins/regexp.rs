@@ -43,13 +43,13 @@ fn set_prop(obj: &mut JsObject, name: &str, val: JsValue, vm: &Vm) {
     let si = vm.kernel().string_forge().intern(name).0;
     let shape_id = vm.kernel().shape_forge().make_shape(obj.shape_id(), si);
     obj.set_shape_id(shape_id);
-    obj.ensure_hash_props().push(Box::new(val));
+    obj.ensure_hash_props().push(val);
 }
 
 fn get_prop(obj: &JsObject, idx: usize) -> JsValue {
     obj.hash_props_vec()
         .and_then(|v| v.get(idx))
-        .map(|b| **b)
+        .copied()
         .unwrap_or(JsValue::undefined())
 }
 
@@ -57,9 +57,9 @@ fn set_prop_at(obj: *mut JsObject, idx: usize, val: JsValue) {
     unsafe {
         let re = &mut *obj;
         if let Some(vec) = re.hash_props_vec() {
-            let ptr = vec.as_ptr() as *mut Box<JsValue>;
+            let ptr = vec.as_ptr() as *mut JsValue;
             let v = &mut *ptr.add(idx);
-            **v = val;
+            *v = val;
         }
     }
 }
@@ -201,14 +201,14 @@ pub fn regexp_exec(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
         let full_match = &haystack[m.start()..m.end()];
         let full_si = vm.kernel().string_forge().intern(full_match).0;
-        match_obj.ensure_hash_props().push(Box::new(JsValue::string(full_si, 0)));
+        match_obj.ensure_hash_props().push(JsValue::string(full_si, 0));
 
         let captures = regex.captures(&haystack[m.start()..m.end()]);
         if let Some(caps) = &captures {
             for i in 1..caps.len() {
                 let cap_str = caps.get(i).map(|cm| cm.as_str()).unwrap_or("");
                 let si = vm.kernel().string_forge().intern(cap_str).0;
-                match_obj.ensure_hash_props().push(Box::new(JsValue::string(si, 0)));
+                match_obj.ensure_hash_props().push(JsValue::string(si, 0));
             }
         }
 

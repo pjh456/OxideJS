@@ -70,7 +70,7 @@ fn value_to_jsvalue(vm: &mut Vm, val: &serde_json::Value) -> JsValue {
                 let jsv = value_to_jsvalue(vm, val);
                 let new_shape = vm.kernel().shape_forge().make_shape(obj.shape_id(), si);
                 obj.set_shape_id(new_shape);
-                obj.ensure_hash_props().push(Box::new(jsv));
+                obj.ensure_hash_props().push(jsv);
             }
             let obj_ptr = vm.epoch().alloc(obj);
             JsValue::from_js_object(obj_ptr)

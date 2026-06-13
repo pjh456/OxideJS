@@ -42,7 +42,7 @@ macro_rules! bind_constructor_hash {
         let shape = $kernel.shape_forge().make_shape($global.shape_id(), si);
         let val = $crate::JsValue::from_js_object($ctor_ptr);
         $global.set_shape_id(shape);
-        $global.ensure_hash_props().push(Box::new(val));
+        $global.ensure_hash_props().push(val);
         $global.bump_generation();
         let ctor = unsafe { &mut *$ctor_ptr };
         // SAFETY: $ctor_fn is a fn-item expression; casting to *const () preserves validity.
@@ -73,7 +73,7 @@ pub(crate) fn bind_global_value(kernel: &Arc<OxideKernel>, global: &mut JsObject
     let si = kernel.string_forge().intern(name).0;
     let shape = kernel.shape_forge().make_shape(global.shape_id(), si);
     global.set_shape_id(shape);
-    global.ensure_hash_props().push(Box::new(value));
+    global.ensure_hash_props().push(value);
     global.bump_generation();
 }
 

@@ -24,6 +24,14 @@ struct StringForgeInner {
     entries: Vec<StringEntry>,
 }
 
+/// Global string interning pool shared by all VMs.
+///
+/// Concurrency model:
+/// `StringForge` keeps a single `RwLock` around the interner state.
+/// - `lookup()` takes a shared read lock and scales across readers.
+/// - `intern()` uses a read-check then write-check pattern to keep hot-path hits cheap.
+/// - New string insertion is serialized, which matches the workload here: most strings
+///   are interned early and later accesses are dominated by reads.
 pub struct StringForge {
     inner: RwLock<StringForgeInner>,
 }

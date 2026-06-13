@@ -152,7 +152,7 @@ impl PropIndex for i32 {
 ///     [30]     is_extensible
 ///     [31]     is_function
 ///   native_arg_count: u8 (1 byte + 3 pad)
-///   hash_props: *mut u8 (8 bytes, points to Box<Vec<Box<JsValue>>>)
+///   hash_props: *mut u8 (8 bytes, points to Box<Vec<JsValue>>)
 ///   prop_meta: *mut u8 (8 bytes, points to Box<Vec<Option<PropMetaEntry>>>)
 ///   proto: JsValue (8 bytes)
 ///   generation: u32 (4 bytes + 4 pad)
@@ -213,7 +213,7 @@ impl JsObject {
             captured_this: JsValue::undefined(),
             home_object: JsValue::undefined(),
         };
-        let vec = Box::new(vec![Box::new(JsValue::undefined()); n_elements]);
+        let vec = Box::new(vec![JsValue::undefined(); n_elements]);
         obj.hash_props = Box::into_raw(vec) as *mut u8;
         obj
     }
@@ -232,7 +232,9 @@ impl JsObject {
         if self.hash_props.is_null() {
             0
         } else {
-            let vec = unsafe { &*(self.hash_props as *const Vec<Box<JsValue>>) };
+            // SAFETY: hash_props is either null or was created from Box<Vec<JsValue>>
+            // in ensure_hash_props/new_array and remains owned by this object.
+            let vec = unsafe { &*(self.hash_props as *const Vec<JsValue>) };
             vec.len() as u32
         }
     }
@@ -246,7 +248,7 @@ impl JsObject {
                 vec.truncate(target);
             } else {
                 while vec.len() < target {
-                    vec.push(Box::new(JsValue::undefined()));
+                    vec.push(JsValue::undefined());
                 }
             }
         }
@@ -271,6 +273,8 @@ impl JsObject {
             let vec = Box::new(vec![None::<PropMetaEntry>; len]);
             self.prop_meta = Box::into_raw(vec) as *mut u8;
         }
+        // SAFETY: prop_meta was set from Box<Vec<Option<PropMetaEntry>>> in
+        // ensure_prop_meta and remains valid while this object owns it.
         unsafe { &mut *(self.prop_meta as *mut Vec<Option<PropMetaEntry>>) }
     }
 
@@ -278,6 +282,8 @@ impl JsObject {
         if self.prop_meta.is_null() {
             None
         } else {
+            // SAFETY: prop_meta was set from Box<Vec<Option<PropMetaEntry>>> in
+            // ensure_prop_meta and remains valid while this object owns it.
             unsafe { Some(&*(self.prop_meta as *const Vec<Option<PropMetaEntry>>)) }
         }
     }
@@ -286,6 +292,8 @@ impl JsObject {
         if self.prop_meta.is_null() {
             None
         } else {
+            // SAFETY: prop_meta was set from Box<Vec<Option<PropMetaEntry>>> in
+            // ensure_prop_meta and remains valid while this object owns it.
             unsafe { Some(&mut *(self.prop_meta as *mut Vec<Option<PropMetaEntry>>)) }
         }
     }
@@ -375,20 +383,22 @@ impl JsObject {
     }
 
     /// Initialize hash_props if null, return mutable reference to Vec.
-    pub fn ensure_hash_props(&mut self) -> &mut Vec<Box<JsValue>> {
+    pub fn ensure_hash_props(&mut self) -> &mut Vec<JsValue> {
         if self.hash_props.is_null() {
-            let vec = Box::new(Vec::<Box<JsValue>>::new());
+            let vec = Box::new(Vec::<JsValue>::new());
             self.hash_props = Box::into_raw(vec) as *mut u8;
         }
-        unsafe { &mut *(self.hash_props as *mut Vec<Box<JsValue>>) }
+        // SAFETY: hash_props was set from Box<Vec<JsValue>> in this method or new_array.
+        unsafe { &mut *(self.hash_props as *mut Vec<JsValue>) }
     }
 
     /// Safe read access to hash_props vec. Returns None if not allocated.
-    pub fn hash_props_vec(&self) -> Option<&Vec<Box<JsValue>>> {
+    pub fn hash_props_vec(&self) -> Option<&Vec<JsValue>> {
         if self.hash_props.is_null() {
             None
         } else {
-            unsafe { Some(&*(self.hash_props as *const Vec<Box<JsValue>>)) }
+            // SAFETY: hash_props was set from Box<Vec<JsValue>> in ensure_hash_props/new_array.
+            unsafe { Some(&*(self.hash_props as *const Vec<JsValue>)) }
         }
     }
 
@@ -398,8 +408,9 @@ impl JsObject {
         if self.hash_props.is_null() {
             return JsValue::undefined();
         }
-        let vec = unsafe { &*(self.hash_props as *const Vec<Box<JsValue>>) };
-        vec.get(position.to_u32() as usize).map(|b| **b).unwrap_or(JsValue::undefined())
+        // SAFETY: hash_props was set from Box<Vec<JsValue>> in ensure_hash_props/new_array.
+        let vec = unsafe { &*(self.hash_props as *const Vec<JsValue>) };
+        vec.get(position.to_u32() as usize).copied().unwrap_or(JsValue::undefined())
     }
 
     /// Set property value at position index. Vec auto-grows if needed.
@@ -408,12 +419,12 @@ impl JsObject {
         {
             let vec = self.ensure_hash_props();
             if pos < vec.len() {
-                *vec[pos] = val;
+                vec[pos] = val;
             } else {
                 while vec.len() < pos {
-                    vec.push(Box::new(JsValue::undefined()));
+                    vec.push(JsValue::undefined());
                 }
-                vec.push(Box::new(val));
+                vec.push(val);
             }
         }
         if let Some(meta) = self.prop_meta_vec_mut() {
@@ -427,21 +438,22 @@ impl JsObject {
     pub fn push_prop(&mut self, val: JsValue) -> u32 {
         let vec = self.ensure_hash_props();
         let pos = vec.len();
-        vec.push(Box::new(val));
+        vec.push(val);
         if let Some(meta) = self.prop_meta_vec_mut() {
             meta.push(None);
         }
         pos as u32
     }
 
-    /// Get a stable pointer to the Box<JsValue> at position.
+    /// Get a pointer to the JsValue at position.
     /// Returns None if hash_props not allocated or position out of bounds.
     pub fn prop_ptr_at(&self, position: impl PropIndex) -> Option<*const JsValue> {
         if self.hash_props.is_null() {
             return None;
         }
-        let vec = unsafe { &*(self.hash_props as *const Vec<Box<JsValue>>) };
-        vec.get(position.to_u32() as usize).map(|b| &**b as *const JsValue)
+        // SAFETY: hash_props was set from Box<Vec<JsValue>> in ensure_hash_props/new_array.
+        let vec = unsafe { &*(self.hash_props as *const Vec<JsValue>) };
+        vec.get(position.to_u32() as usize).map(|v| v as *const JsValue)
     }
 
     /// Get the length of hash_props vec (returns 0 if not allocated).
@@ -449,7 +461,8 @@ impl JsObject {
         if self.hash_props.is_null() {
             0
         } else {
-            unsafe { &*(self.hash_props as *const Vec<Box<JsValue>>) }.len()
+            // SAFETY: hash_props was set from Box<Vec<JsValue>> in ensure_hash_props/new_array.
+            unsafe { &*(self.hash_props as *const Vec<JsValue>) }.len()
         }
     }
 
@@ -473,6 +486,8 @@ impl JsObject {
             if std::ptr::eq(cursor_ptr, self_ptr) {
                 return Err("cyclic __proto__ value");
             }
+            debug_assert!(!cursor_ptr.is_null(), "prototype cursor pointer must not be null");
+            // SAFETY: cursor is known to be an object JsValue, so it encodes a valid JsObject pointer.
             let obj = unsafe { &*cursor_ptr };
             cursor = obj.proto;
         }
@@ -607,7 +622,7 @@ mod tests {
     fn prop_count_roundtrip() {
         let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
         assert_eq!(obj.prop_count(), 0);
-        obj.ensure_hash_props().push(Box::new(JsValue::int(17)));
+        obj.ensure_hash_props().push(JsValue::int(17));
         assert_eq!(obj.prop_count(), 1);
     }
 
@@ -654,14 +669,10 @@ mod tests {
     }
 
     #[test]
-    fn hash_props_stable_pointer() {
+    fn hash_props_flat_storage_roundtrip() {
         let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
         obj.set_prop_at(0, JsValue::int(100));
-        let ptr = obj.prop_ptr_at(0);
         obj.set_prop_at(1, JsValue::int(200));
-        // Pointer to first element should be stable (per Box allocation)
-        let ptr2 = obj.prop_ptr_at(0);
-        assert_eq!(ptr, ptr2);
         assert_eq!(obj.get_prop_at(0), JsValue::int(100));
         assert_eq!(obj.get_prop_at(1), JsValue::int(200));
     }

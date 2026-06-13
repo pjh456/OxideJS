@@ -982,6 +982,7 @@ dependencies = [
  "regex",
  "ryu",
  "serde_json",
+ "smallvec",
  "tracing",
  "unicode-normalization",
 ]

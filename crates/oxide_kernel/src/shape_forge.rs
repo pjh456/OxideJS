@@ -18,6 +18,13 @@ pub struct Shape {
     pub parent: Option<ShapeId>,
 }
 
+/// Shared hidden-class store.
+///
+/// Concurrency model:
+/// - `shapes` is append-mostly behind an `RwLock`.
+/// - `transitions` is a sharded `DashMap` keyed by `(parent_shape, property_name)`.
+/// - Shard count is fixed for reproducible contention behavior across machines instead
+///   of relying on DashMap's CPU-dependent default.
 pub struct ShapeForge {
     shapes: RwLock<Vec<Option<Arc<Shape>>>>,
     transitions: DashMap<u64, ShapeId>,
@@ -28,7 +35,7 @@ impl ShapeForge {
     pub fn new() -> Self {
         let forge = Self {
             shapes: RwLock::new(Vec::with_capacity(256)),
-            transitions: DashMap::with_capacity(256),
+            transitions: DashMap::with_capacity_and_shard_amount(256, 16),
             next_id: AtomicU32::new(2),
         };
         {
