@@ -11,7 +11,7 @@ use crate::coercion;
 use crate::native::{NativeFn, NativeResult};
 use oxide_kernel::kernel::OxideKernel;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_kernel::{vm_debug, vm_trace};
+use oxide_kernel::vm_debug;
 use oxide_types::error::{JsError, JsErrorKind};
 use oxide_types::mem::{Epoch, P};
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
@@ -619,84 +619,14 @@ impl Vm {
                     self.regs[rd] = self.regs[a];
                 }
 
-                OpCode::CALL => {
-                    let callee_reg = rd;
-                    let this_reg = a as u8;
-                    let first_arg_reg = b as u8;
-
-                    let callee = self.regs[callee_reg];
-
-                    if callee.is_object() {
-                        let obj_ptr = callee.as_js_object_ptr();
-                        if !obj_ptr.is_null() {
-                            let obj = unsafe { &*obj_ptr };
-                            if obj.is_function() {
-                                if obj.is_class_constructor() {
-                                    throw_err!(self, TypeError, "class constructor cannot be invoked without 'new'");
-                                }
-                                let ext = self.bytecode[self.pc];
-                                self.pc += 1;
-                                let arg_count = (ext & 0xFF) as usize;
-                                vm_debug!(
-                                    "CALL rd={} this={} args={} depth={}",
-                                    rd,
-                                    this_reg,
-                                    arg_count,
-                                    self.frames.len()
-                                );
-
-                                if obj.native_fn().is_some() {
-                                    match self.dispatch_native_call(obj, callee, this_reg, first_arg_reg, arg_count) {
-                                        Ok(()) => continue,
-                                        Err(e) => return Err(e),
-                                    }
-                                } else if obj.sub_module_index() > 0 {
-                                    let args: Vec<JsValue> = (0..arg_count)
-                                        .map(|i| self.regs[first_arg_reg.wrapping_add(i as u8) as usize])
-                                        .collect();
-                                    self.push_bytecode_frame(
-                                        callee,
-                                        self.regs[this_reg as usize],
-                                        &args,
-                                        None,
-                                        None,
-                                        JsValue::undefined(),
-                                        FrameContinuation::None,
-                                    )?;
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-
-                    throw_err!(self, TypeError, "CALL target is not callable");
-                }
+                OpCode::CALL => match self.dispatch_call(rd, a, b) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(e) => return Err(e),
+                },
 
                 OpCode::CALL_NATIVE => {
-                    let callee_reg = rd;
-                    let this_reg = a as u8;
-                    let first_arg_reg = b as u8;
-
-                    let callee = self.regs[callee_reg];
-
-                    if !callee.is_object() {
-                        throw_err!(self, TypeError, "CALL_NATIVE target is not an object");
-                    }
-                    let obj_ptr = callee.as_js_object_ptr();
-                    if obj_ptr.is_null() {
-                        throw_err!(self, TypeError, "CALL_NATIVE target is null");
-                    }
-                    let obj = unsafe { &*obj_ptr };
-                    if !obj.is_function() || obj.native_fn().is_none() {
-                        throw_err!(self, TypeError, "CALL_NATIVE target is not a native function");
-                    }
-
-                    let ext = self.bytecode[self.pc];
-                    self.pc += 1;
-                    let arg_count = (ext & 0xFF) as usize;
-                    vm_debug!("CALL_NATIVE rd={} args={}", rd, arg_count);
-
-                    self.dispatch_native_call(obj, callee, this_reg, first_arg_reg, arg_count)?;
+                    self.dispatch_call_native(rd, a, b)?;
                 }
 
                 OpCode::NEW_EXPRESSION => {
@@ -1039,67 +969,14 @@ impl Vm {
                 }
 
                 OpCode::DEFINE_ACCESSOR => {
-                    let prop_idx = self.bytecode[self.pc] as usize;
-                    self.pc += 1;
-                    if prop_idx >= self.constants.len() {
-                        throw_err!(self, TypeError, "DEFINE_ACCESSOR constant index out of bounds");
-                    }
-                    let obj_val = self.regs[rd];
-                    if !obj_val.is_object() {
-                        throw_err!(self, TypeError, "DEFINE_ACCESSOR target is not object");
-                    }
-                    let prop_name_si = self.property_key_si(self.constants[prop_idx]);
-                    let getter = self.regs[a];
-                    let setter = self.regs[b];
-                    let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
-                    let existing = self
-                        .get_own_property_slot(obj, prop_name_si)
-                        .and_then(|pos| obj.prop_meta_at(pos))
-                        .filter(|meta| meta.is_accessor);
-                    let get = if getter.is_undefined() {
-                        existing.map(|meta| meta.get).unwrap_or(JsValue::undefined())
-                    } else {
-                        getter
-                    };
-                    let set = if setter.is_undefined() {
-                        existing.map(|meta| meta.set).unwrap_or(JsValue::undefined())
-                    } else {
-                        setter
-                    };
-                    self.define_accessor_property(obj, prop_name_si, get, set, PropAttributes::DEFAULT_DATA)?;
+                    self.dispatch_define_accessor(rd, a, b)?;
                 }
 
-                OpCode::RETURN => {
-                    let result = self.regs[rd];
-                    vm_debug!("RETURN depth={}", self.frames.len());
-                    if let Some(frame) = self.frames.pop() {
-                        let construct_result_reg = frame.construct_result_reg;
-                        let constructed_this = frame.constructed_this;
-                        let is_derived_constructor = frame.is_derived_constructor;
-                        let continuation = frame.continuation;
-                        let callee_this = self.regs[254];
-                        self.restore_frame(frame);
-                        if let (Some(target_reg), Some(constructed_this)) = (construct_result_reg, constructed_this) {
-                            if is_derived_constructor && result.is_undefined() && callee_this.is_undefined() {
-                                throw_err!(self, ReferenceError, "derived constructor must call super()");
-                            }
-                            self.regs[target_reg as usize] = if result.is_object() { result } else { constructed_this };
-                            self.regs[0] = self.regs[target_reg as usize];
-                        } else {
-                            match continuation {
-                                FrameContinuation::None => {
-                                    self.regs[0] = result;
-                                }
-                                FrameContinuation::AccessorGet { target_reg } => {
-                                    self.regs[target_reg as usize] = result;
-                                }
-                                FrameContinuation::AccessorSet => {}
-                            }
-                        }
-                    } else {
-                        return Ok(result);
-                    }
-                }
+                OpCode::RETURN => match self.dispatch_return(rd) {
+                    Ok(Some(result)) => return Ok(result),
+                    Ok(None) => {}
+                    Err(e) => return Err(e),
+                },
 
                 OpCode::IC_GET_PROP
                 | OpCode::IC_SET_PROP
@@ -1447,57 +1324,29 @@ impl Vm {
                     return Err("opcode FOR_OF_CLOSE not yet implemented".into());
                 }
 
-                OpCode::THROW => {
-                    vm_debug!("THROW pc={}", self.pc);
-                    let exc_value = self.regs[rd];
-                    self.exception_value = Some(exc_value);
-                    self.pending_error_kind = Some(self.thrown_error_kind(exc_value));
-                    match self.unwind() {
-                        Ok(()) => continue,
-                        Err(e) => return Err(e),
-                    }
-                }
+                OpCode::THROW => match self.dispatch_throw(rd) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(e) => return Err(e),
+                },
 
                 OpCode::TRY_BEGIN => {
-                    vm_trace!("TRY_BEGIN frame_depth={}", self.frames.len());
-                    let offset = opcode::offset16(instr) as isize;
-                    let catch_pc = if offset == 0 {
-                        None
-                    } else {
-                        Some(((self.pc as isize) + offset - 1) as usize)
-                    };
-                    self.try_stack.push(TryHandler {
-                        catch_pc,
-                        finally_pc: None,
-                        frame_depth: self.frames.len(),
-                    });
+                    self.dispatch_try_begin(instr);
                 }
 
                 OpCode::TRY_END => {
-                    self.try_stack.pop();
+                    self.dispatch_try_end();
                 }
 
                 OpCode::TRY_FINALLY_BEGIN => {
-                    let offset = opcode::offset16(instr) as isize;
-                    let finally_pc = ((self.pc as isize) + offset - 1) as usize;
-                    self.try_stack.push(TryHandler {
-                        catch_pc: None,
-                        finally_pc: Some(finally_pc),
-                        frame_depth: self.frames.len(),
-                    });
+                    self.dispatch_try_finally_begin(instr);
                 }
 
-                OpCode::TRY_FINALLY_END => {
-                    self.try_stack.pop();
-                    if self.pending_exception.is_some() && self.exception_value.is_none() {
-                        self.exception_value = self.pending_exception.take();
-                        match self.unwind() {
-                            Ok(()) => continue,
-                            Err(e) => return Err(e),
-                        }
-                    }
-                    self.pending_exception = None;
-                }
+                OpCode::TRY_FINALLY_END => match self.dispatch_try_finally_end() {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(e) => return Err(e),
+                },
 
                 _ => {
                     return Err(format!("opcode {op} not yet implemented"));

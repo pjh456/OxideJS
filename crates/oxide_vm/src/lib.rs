@@ -6,6 +6,7 @@ pub mod coercion;
 mod dispatch;
 pub mod native;
 pub mod vm;
+mod vm_dispatch_ctrl;
 pub mod vm_pool;
 mod vm_props;
 mod vm_runtime;
