@@ -1,4 +1,5 @@
 pub mod array;
+pub mod array_buffer;
 pub mod boolean;
 pub mod date;
 pub mod error;

@@ -195,6 +195,8 @@ pub struct BuiltinWorld {
     pub map_proto: P<JsObject>,
     pub regexp_constructor: P<JsObject>,
     pub regexp_proto: P<JsObject>,
+    pub array_buffer_constructor: P<JsObject>,
+    pub array_buffer_proto: P<JsObject>,
     pub sym_match: P<JsObject>,
     pub sym_replace: P<JsObject>,
     pub sym_search: P<JsObject>,
@@ -285,6 +287,8 @@ impl BuiltinWorld {
             make_pair(string_forge, shape_forge, "Map", si_prototype, si_constructor, si_name);
         let (regexp_proto, regexp_constructor) =
             make_pair(string_forge, shape_forge, "RegExp", si_prototype, si_constructor, si_name);
+        let (array_buffer_proto, array_buffer_constructor) =
+            make_pair(string_forge, shape_forge, "ArrayBuffer", si_prototype, si_constructor, si_name);
 
         let sym_match = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let sym_replace = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
@@ -322,10 +326,11 @@ impl BuiltinWorld {
         wire_ctor_proto(&date_constructor, &date_proto);
         wire_ctor_proto(&set_constructor, &set_proto);
         wire_ctor_proto(&map_constructor, &map_proto);
+        wire_ctor_proto(&array_buffer_constructor, &array_buffer_proto);
 
         // Wire prototype chains: all constructor prototypes inherit from Object.prototype.
         let obj_proto_val = JsValue::from_js_object(object_proto.as_ptr() as *mut JsObject);
-        let non_object_protos: [&P<JsObject>; 11] = [
+        let non_object_protos: [&P<JsObject>; 12] = [
             &array_proto,
             &function_proto,
             &string_proto,
@@ -337,6 +342,7 @@ impl BuiltinWorld {
             &set_proto,
             &map_proto,
             &regexp_proto,
+            &array_buffer_proto,
         ];
         for proto in &non_object_protos {
             let p = proto.as_ptr() as *mut JsObject;
@@ -377,6 +383,8 @@ impl BuiltinWorld {
             map_proto,
             regexp_constructor,
             regexp_proto,
+            array_buffer_constructor,
+            array_buffer_proto,
             sym_match,
             sym_replace,
             sym_search,

@@ -188,6 +188,9 @@ impl JsObject {
     pub const OBJ_TYPE_BOOLEAN_OBJ: u8 = 3;
     pub const OBJ_TYPE_NUMBER_OBJ: u8 = 4;
     pub const OBJ_TYPE_STRING_OBJ: u8 = 5;
+    pub const OBJ_TYPE_ARRAY_BUFFER: u8 = 6;
+    pub const OBJ_TYPE_DATA_VIEW: u8 = 7;
+    pub const OBJ_TYPE_TYPED_ARRAY: u8 = 8;
 
     #[inline]
     pub fn is_date_obj(&self) -> bool {
@@ -208,6 +211,18 @@ impl JsObject {
     #[inline]
     pub fn is_string_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_STRING_OBJ
+    }
+    #[inline]
+    pub fn is_array_buffer_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_ARRAY_BUFFER
+    }
+    #[inline]
+    pub fn is_data_view_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_DATA_VIEW
+    }
+    #[inline]
+    pub fn is_typed_array_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_TYPED_ARRAY
     }
 
     pub fn new_empty(shape_id: ShapeId, proto: JsValue) -> Self {
