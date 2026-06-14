@@ -16,8 +16,8 @@ use oxide_types::value::JsValue;
 impl Vm {
     pub fn new() -> Self {
         let core = KernelCore::new(KernelConfig::minimal());
-        let session = KernelSession::new(&core);
-        bindings::init_kernel_builtins(&core, &session);
+        let mut session = KernelSession::new(&core);
+        bindings::init_kernel_builtins(&core, &mut session);
         let obj_proto = P::clone(&session.builtin_world().object_proto);
         Self {
             regs: [JsValue::undefined(); 256],
@@ -51,8 +51,8 @@ impl Vm {
     }
 
     pub fn with_kernel_core(core: Arc<KernelCore>) -> Self {
-        let session = KernelSession::new(&core);
-        bindings::init_kernel_builtins(&core, &session);
+        let mut session = KernelSession::new(&core);
+        bindings::init_kernel_builtins(&core, &mut session);
         let obj_proto = P::clone(&session.builtin_world().object_proto);
         Self {
             regs: [JsValue::undefined(); 256],
@@ -86,8 +86,8 @@ impl Vm {
     }
 
     pub fn full_reset(&mut self) {
-        let new_session = KernelSession::new(&self.kernel_core);
-        bindings::init_kernel_builtins(&self.kernel_core, &new_session);
+        let mut new_session = KernelSession::new(&self.kernel_core);
+        bindings::init_kernel_builtins(&self.kernel_core, &mut new_session);
         self.object_prototype = P::clone(&new_session.builtin_world().object_proto);
         self.session = new_session;
         self.clear_execution_state();
