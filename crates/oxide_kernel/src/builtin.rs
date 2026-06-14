@@ -199,6 +199,29 @@ pub struct BuiltinWorld {
     pub array_buffer_proto: P<JsObject>,
     pub data_view_constructor: P<JsObject>,
     pub data_view_proto: P<JsObject>,
+    pub typed_array_proto: P<JsObject>,
+    pub int8array_constructor: P<JsObject>,
+    pub int8array_proto: P<JsObject>,
+    pub uint8array_constructor: P<JsObject>,
+    pub uint8array_proto: P<JsObject>,
+    pub uint8clampedarray_constructor: P<JsObject>,
+    pub uint8clampedarray_proto: P<JsObject>,
+    pub int16array_constructor: P<JsObject>,
+    pub int16array_proto: P<JsObject>,
+    pub uint16array_constructor: P<JsObject>,
+    pub uint16array_proto: P<JsObject>,
+    pub int32array_constructor: P<JsObject>,
+    pub int32array_proto: P<JsObject>,
+    pub uint32array_constructor: P<JsObject>,
+    pub uint32array_proto: P<JsObject>,
+    pub float32array_constructor: P<JsObject>,
+    pub float32array_proto: P<JsObject>,
+    pub float64array_constructor: P<JsObject>,
+    pub float64array_proto: P<JsObject>,
+    pub bigint64array_constructor: P<JsObject>,
+    pub bigint64array_proto: P<JsObject>,
+    pub biguint64array_constructor: P<JsObject>,
+    pub biguint64array_proto: P<JsObject>,
     pub sym_match: P<JsObject>,
     pub sym_replace: P<JsObject>,
     pub sym_search: P<JsObject>,
@@ -293,6 +316,30 @@ impl BuiltinWorld {
             make_pair(string_forge, shape_forge, "ArrayBuffer", si_prototype, si_constructor, si_name);
         let (data_view_proto, data_view_constructor) =
             make_pair(string_forge, shape_forge, "DataView", si_prototype, si_constructor, si_name);
+        let obj_proto_val = JsValue::from_js_object(object_proto.as_ptr() as *mut JsObject);
+        let typed_array_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, obj_proto_val));
+        let (int8array_proto, int8array_constructor) =
+            make_pair(string_forge, shape_forge, "Int8Array", si_prototype, si_constructor, si_name);
+        let (uint8array_proto, uint8array_constructor) =
+            make_pair(string_forge, shape_forge, "Uint8Array", si_prototype, si_constructor, si_name);
+        let (uint8clampedarray_proto, uint8clampedarray_constructor) =
+            make_pair(string_forge, shape_forge, "Uint8ClampedArray", si_prototype, si_constructor, si_name);
+        let (int16array_proto, int16array_constructor) =
+            make_pair(string_forge, shape_forge, "Int16Array", si_prototype, si_constructor, si_name);
+        let (uint16array_proto, uint16array_constructor) =
+            make_pair(string_forge, shape_forge, "Uint16Array", si_prototype, si_constructor, si_name);
+        let (int32array_proto, int32array_constructor) =
+            make_pair(string_forge, shape_forge, "Int32Array", si_prototype, si_constructor, si_name);
+        let (uint32array_proto, uint32array_constructor) =
+            make_pair(string_forge, shape_forge, "Uint32Array", si_prototype, si_constructor, si_name);
+        let (float32array_proto, float32array_constructor) =
+            make_pair(string_forge, shape_forge, "Float32Array", si_prototype, si_constructor, si_name);
+        let (float64array_proto, float64array_constructor) =
+            make_pair(string_forge, shape_forge, "Float64Array", si_prototype, si_constructor, si_name);
+        let (bigint64array_proto, bigint64array_constructor) =
+            make_pair(string_forge, shape_forge, "BigInt64Array", si_prototype, si_constructor, si_name);
+        let (biguint64array_proto, biguint64array_constructor) =
+            make_pair(string_forge, shape_forge, "BigUint64Array", si_prototype, si_constructor, si_name);
 
         let sym_match = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let sym_replace = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
@@ -332,10 +379,20 @@ impl BuiltinWorld {
         wire_ctor_proto(&map_constructor, &map_proto);
         wire_ctor_proto(&array_buffer_constructor, &array_buffer_proto);
         wire_ctor_proto(&data_view_constructor, &data_view_proto);
+        wire_ctor_proto(&int8array_constructor, &int8array_proto);
+        wire_ctor_proto(&uint8array_constructor, &uint8array_proto);
+        wire_ctor_proto(&uint8clampedarray_constructor, &uint8clampedarray_proto);
+        wire_ctor_proto(&int16array_constructor, &int16array_proto);
+        wire_ctor_proto(&uint16array_constructor, &uint16array_proto);
+        wire_ctor_proto(&int32array_constructor, &int32array_proto);
+        wire_ctor_proto(&uint32array_constructor, &uint32array_proto);
+        wire_ctor_proto(&float32array_constructor, &float32array_proto);
+        wire_ctor_proto(&float64array_constructor, &float64array_proto);
+        wire_ctor_proto(&bigint64array_constructor, &bigint64array_proto);
+        wire_ctor_proto(&biguint64array_constructor, &biguint64array_proto);
 
         // Wire prototype chains: all constructor prototypes inherit from Object.prototype.
-        let obj_proto_val = JsValue::from_js_object(object_proto.as_ptr() as *mut JsObject);
-        let non_object_protos: [&P<JsObject>; 13] = [
+        let non_object_protos: [&P<JsObject>; 14] = [
             &array_proto,
             &function_proto,
             &string_proto,
@@ -349,10 +406,29 @@ impl BuiltinWorld {
             &regexp_proto,
             &array_buffer_proto,
             &data_view_proto,
+            &typed_array_proto,
         ];
         for proto in &non_object_protos {
             let p = proto.as_ptr() as *mut JsObject;
             unsafe { &mut *p }.set_proto(obj_proto_val).ok();
+        }
+        let typed_array_proto_val = JsValue::from_js_object(typed_array_proto.as_ptr() as *mut JsObject);
+        let typed_array_protos: [&P<JsObject>; 11] = [
+            &int8array_proto,
+            &uint8array_proto,
+            &uint8clampedarray_proto,
+            &int16array_proto,
+            &uint16array_proto,
+            &int32array_proto,
+            &uint32array_proto,
+            &float32array_proto,
+            &float64array_proto,
+            &bigint64array_proto,
+            &biguint64array_proto,
+        ];
+        for proto in &typed_array_protos {
+            let p = proto.as_ptr() as *mut JsObject;
+            unsafe { &mut *p }.set_proto(typed_array_proto_val).ok();
         }
         wire_ctor_proto(&regexp_constructor, &regexp_proto);
 
@@ -393,6 +469,29 @@ impl BuiltinWorld {
             array_buffer_proto,
             data_view_constructor,
             data_view_proto,
+            typed_array_proto,
+            int8array_constructor,
+            int8array_proto,
+            uint8array_constructor,
+            uint8array_proto,
+            uint8clampedarray_constructor,
+            uint8clampedarray_proto,
+            int16array_constructor,
+            int16array_proto,
+            uint16array_constructor,
+            uint16array_proto,
+            int32array_constructor,
+            int32array_proto,
+            uint32array_constructor,
+            uint32array_proto,
+            float32array_constructor,
+            float32array_proto,
+            float64array_constructor,
+            float64array_proto,
+            bigint64array_constructor,
+            bigint64array_proto,
+            biguint64array_constructor,
+            biguint64array_proto,
             sym_match,
             sym_replace,
             sym_search,

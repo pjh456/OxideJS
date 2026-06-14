@@ -18,6 +18,7 @@ pub mod bind_set;
 pub mod bind_string;
 pub mod bind_stubs;
 pub mod bind_symbol;
+pub mod bind_typed_array;
 
 use std::sync::Arc;
 
@@ -91,6 +92,7 @@ pub fn init_kernel_builtins(core: &Arc<KernelCore>, session: &mut KernelSession)
     bind_array::bind_array(core, session, global);
     bind_array_buffer::bind_array_buffer(core, session, global);
     bind_data_view::bind_data_view(core, session, global);
+    bind_typed_array::bind_typed_array(core, session, global);
     bind_error::bind_error(core, session, global);
     bind_string::bind_string(core, session, global);
     bind_number::bind_number(core, session, global);
