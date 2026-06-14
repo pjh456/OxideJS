@@ -18,3 +18,4 @@ pub mod set;
 pub mod string;
 pub mod stubs;
 pub mod symbol;
+pub mod typed_array;

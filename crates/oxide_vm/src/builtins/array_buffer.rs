@@ -50,7 +50,7 @@ fn set_named_prop(vm: &mut Vm, obj: &mut JsObject, name: &str, value: JsValue, a
     let _ = vm.define_data_property(obj, si, value, attributes);
 }
 
-fn new_array_buffer(vm: &mut Vm, data: Vec<u8>) -> *mut JsObject {
+pub(crate) fn new_array_buffer(vm: &mut Vm, data: Vec<u8>) -> *mut JsObject {
     let proto = vm.session().builtin_world().array_buffer_proto.as_ptr() as *mut JsObject;
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
     obj.type_tag = JsObject::OBJ_TYPE_ARRAY_BUFFER;
