@@ -17,6 +17,16 @@ pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
 
     apply_binding_table(
         session.builtin_world(),
+        ctor,
+        core,
+        &[
+            ("for", crate::builtins::symbol::symbol_for as *const (), 1),
+            ("keyFor", crate::builtins::symbol::symbol_key_for as *const (), 1),
+        ],
+    );
+
+    apply_binding_table(
+        session.builtin_world(),
         proto,
         core,
         &[("toString", crate::builtins::symbol::symbol_to_string as *const (), 0)],

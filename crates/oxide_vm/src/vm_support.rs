@@ -42,6 +42,7 @@ impl Vm {
             pending_error_kind: None,
             symbol_counter: 0,
             symbol_descriptions: Vec::new(),
+            symbol_registry: std::collections::HashMap::new(),
             for_of_iters: Vec::new(),
             root_reg_limit: 0,
             active_reg_limit: 0,
@@ -77,6 +78,7 @@ impl Vm {
             pending_error_kind: None,
             symbol_counter: 0,
             symbol_descriptions: Vec::new(),
+            symbol_registry: std::collections::HashMap::new(),
             for_of_iters: Vec::new(),
             root_reg_limit: 0,
             active_reg_limit: 0,
@@ -95,6 +97,9 @@ impl Vm {
         self.constants.clear();
         self.epoch.reset();
         self.interned_strings.clear();
+        self.symbol_counter = 0;
+        self.symbol_descriptions.clear();
+        self.symbol_registry.clear();
         self.root_reg_limit = 0;
         self.active_reg_limit = 0;
     }

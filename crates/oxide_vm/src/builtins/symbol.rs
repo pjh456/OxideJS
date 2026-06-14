@@ -60,3 +60,37 @@ pub fn symbol_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let si = vm.kernel_core().string_forge().intern(&result).0;
     NativeResult::Ok(JsValue::string(si, 0))
 }
+
+pub fn symbol_for(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let key = if args.len() > 1 {
+        coercion::to_string(vm.kernel_core().string_forge().as_ref(), vm.reg(args[1]))
+    } else {
+        "undefined".to_string()
+    };
+
+    if let Some(&idx) = vm.symbol_registry.get(&key) {
+        return NativeResult::Ok(JsValue::symbol(idx));
+    }
+
+    let idx = vm.symbol_descriptions.len() as u32;
+    vm.symbol_descriptions.push(key.clone());
+    vm.symbol_registry.insert(key, idx);
+    NativeResult::Ok(JsValue::symbol(idx))
+}
+
+pub fn symbol_key_for(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let sym = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    if !sym.is_symbol() {
+        return NativeResult::Err(crate::builtins::error::create_type_error(vm, "is not a symbol"));
+    }
+
+    let idx = sym.as_symbol_index();
+    for (key, &registered_idx) in &vm.symbol_registry {
+        if registered_idx == idx {
+            let si = vm.kernel_core().string_forge().intern(key).0;
+            return NativeResult::Ok(JsValue::string(si, 0));
+        }
+    }
+
+    NativeResult::Ok(JsValue::undefined())
+}
