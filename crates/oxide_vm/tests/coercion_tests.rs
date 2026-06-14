@@ -86,13 +86,13 @@ fn test_strict_equality_null_undefined() {
 #[test]
 fn test_to_int32_and_to_uint32() {
     let vm = Vm::new();
-    let sf = vm.kernel().string_forge().as_ref();
+    let sf = vm.kernel_core().string_forge().as_ref();
     let string_three = {
-        let (idx, hash) = vm.kernel().string_forge().intern("3");
+        let (idx, hash) = vm.kernel_core().string_forge().intern("3");
         JsValue::string(idx, hash)
     };
     let string_bad = {
-        let (idx, hash) = vm.kernel().string_forge().intern("x");
+        let (idx, hash) = vm.kernel_core().string_forge().intern("x");
         JsValue::string(idx, hash)
     };
 

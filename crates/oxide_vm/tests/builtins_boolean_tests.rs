@@ -14,7 +14,7 @@ fn eval(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
 }
 
 fn str_val(vm: &Vm, val: JsValue) -> String {
-    vm.kernel().string_forge().lookup(val.as_string_index()).unwrap_or_default()
+    vm.kernel_core().string_forge().lookup(val.as_string_index()).unwrap_or_default()
 }
 
 // -- direct native fn tests --
@@ -25,7 +25,7 @@ fn bool_ctor_call(vm: &mut Vm, arg: JsValue) -> JsValue {
 }
 
 fn bool_ctor_new(vm: &mut Vm, arg: JsValue) -> JsValue {
-    let proto_ptr = vm.kernel().builtin_world().boolean_proto.as_ptr() as *mut JsObject;
+    let proto_ptr = vm.session().builtin_world().boolean_proto.as_ptr() as *mut JsObject;
     let wrapper = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr));
     let ptr = vm.epoch().alloc(wrapper);
     let val = JsValue::from_js_object(ptr);

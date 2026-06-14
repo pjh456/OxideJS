@@ -15,10 +15,10 @@ pub fn symbol_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
             if proto.is_object() {
                 let proto_ptr = proto.as_js_object_ptr();
                 if !proto_ptr.is_null() {
-                    let sp = vm.kernel().builtin_world().symbol_proto.as_ptr() as *mut JsObject;
+                    let sp = vm.session().builtin_world().symbol_proto.as_ptr() as *mut JsObject;
                     if std::ptr::eq(proto_ptr, sp) {
                         return NativeResult::Err(JsValue::string(
-                            vm.kernel().string_forge().intern("TypeError: Symbol is not a constructor").0,
+                            vm.kernel_core().string_forge().intern("TypeError: Symbol is not a constructor").0,
                             0,
                         ));
                     }
@@ -28,7 +28,7 @@ pub fn symbol_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
 
     let description = if args.len() > 1 {
-        coercion::to_string(vm.kernel().string_forge().as_ref(), vm.reg(args[1]))
+        coercion::to_string(vm.kernel_core().string_forge().as_ref(), vm.reg(args[1]))
     } else {
         String::new()
     };
@@ -43,7 +43,7 @@ pub fn symbol_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(args[0]);
     if !this_val.is_symbol() {
         return NativeResult::Err(JsValue::string(
-            vm.kernel()
+            vm.kernel_core()
                 .string_forge()
                 .intern("TypeError: Symbol.prototype.toString requires a Symbol")
                 .0,
@@ -54,6 +54,6 @@ pub fn symbol_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let idx = this_val.as_symbol_index();
     let desc = vm.symbol_descriptions.get(idx as usize).cloned().unwrap_or_default();
     let result = format!("Symbol({})", desc);
-    let si = vm.kernel().string_forge().intern(&result).0;
+    let si = vm.kernel_core().string_forge().intern(&result).0;
     NativeResult::Ok(JsValue::string(si, 0))
 }

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use oxide_compiler::compiler::Compiler;
-use oxide_kernel::kernel::{KernelConfig, OxideKernel};
+use oxide_kernel::kernel::{KernelConfig, KernelCore};
 use oxide_parser::Allocator;
 use oxide_vm::vm::Vm;
 
@@ -22,7 +22,7 @@ fn eval(source: &str) -> String {
     }
 }
 
-fn eval_with_kernel(source: &str, kernel: Arc<OxideKernel>) -> String {
+fn eval_with_kernel(source: &str, kernel: Arc<KernelCore>) -> String {
     let allocator = Allocator::default();
     let program = match oxide_parser::parse(&allocator, source) {
         Ok(p) => p,
@@ -32,7 +32,7 @@ fn eval_with_kernel(source: &str, kernel: Arc<OxideKernel>) -> String {
         Ok(m) => m,
         Err(e) => return format!("compile error: {e}"),
     };
-    let mut vm = Vm::with_kernel(kernel);
+    let mut vm = Vm::with_kernel_core(kernel);
     match vm.run(&module) {
         Ok(result) => format!("{result}"),
         Err(e) => format!("vm error: {e}"),
@@ -108,7 +108,7 @@ fn regression_for_in_prototype_chain() {
 fn regression_vm_step_limit_is_configurable() {
     let mut config = KernelConfig::minimal();
     config.max_steps = Some(5);
-    let kernel = Arc::new(OxideKernel::new(config));
+    let kernel = KernelCore::new(config);
     let result = eval_with_kernel("while (true) {}", kernel);
     assert!(
         result.contains("VM step limit exceeded"),

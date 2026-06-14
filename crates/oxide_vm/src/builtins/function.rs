@@ -121,12 +121,12 @@ pub fn function_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
         ));
     }
 
-    let name_si = vm.kernel().string_forge().intern("name").0;
+    let name_si = vm.kernel_core().string_forge().intern("name").0;
     let name = vm
         .resolve_property(func, name_si)
         .and_then(|v| {
             if v.is_string() {
-                vm.kernel().string_forge().lookup(v.as_string_index())
+                vm.kernel_core().string_forge().lookup(v.as_string_index())
             } else {
                 None
             }
@@ -146,6 +146,6 @@ pub fn function_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
     } else {
         format!("function {name}() {{ {body} }}")
     };
-    let si = vm.kernel().string_forge().intern(&result).0;
+    let si = vm.kernel_core().string_forge().intern(&result).0;
     NativeResult::Ok(JsValue::string(si, 0))
 }

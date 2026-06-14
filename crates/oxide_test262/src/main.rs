@@ -1,8 +1,8 @@
 #![allow(clippy::arc_with_non_send_sync)]
 
 use oxide_compiler::compiler::Compiler;
-use oxide_kernel::kernel::{KernelConfig, OxideKernel};
-use oxide_vm::vm::{init_kernel_builtins, Vm};
+use oxide_kernel::kernel::{KernelConfig, KernelCore};
+use oxide_vm::vm::Vm;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -385,7 +385,7 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
 }
 
 fn run_test(
-    path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<OxideKernel>, harness: &HarnessSources,
+    path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<KernelCore>, harness: &HarnessSources,
     harness_cache: &mut HarnessPrefixCache, no_skip: bool,
 ) -> TestResult {
     let start = std::time::Instant::now();
@@ -404,7 +404,7 @@ fn run_test(
 }
 
 fn run_test_inner(
-    path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<OxideKernel>, harness: &HarnessSources,
+    path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<KernelCore>, harness: &HarnessSources,
     harness_cache: &mut HarnessPrefixCache, no_skip: bool,
 ) -> TestResult {
     let start = std::time::Instant::now();
@@ -463,7 +463,7 @@ fn run_test_inner(
         }
     };
 
-    let mut vm = Vm::with_kernel(Arc::clone(kernel));
+    let mut vm = Vm::with_kernel_core(Arc::clone(kernel));
 
     match vm.run(&module) {
         Ok(result) => {
@@ -526,7 +526,7 @@ fn discover_tests(test262_root: &Path) -> Vec<PathBuf> {
 /// exactly one `TestResult`. Worker-owned state (`kernel`, `harness_sources`,
 /// `harness_cache`) never crosses a thread boundary.
 fn process_path(
-    path: &Path, filter: &Option<String>, no_skip: bool, kernel: &Arc<OxideKernel>, harness_sources: &HarnessSources,
+    path: &Path, filter: &Option<String>, no_skip: bool, kernel: &Arc<KernelCore>, harness_sources: &HarnessSources,
     harness_cache: &mut HarnessPrefixCache,
 ) -> TestResult {
     let source = match std::fs::read_to_string(path) {
@@ -574,11 +574,11 @@ fn process_path(
 }
 
 /// Build a runner kernel with a bounded step limit. Each parallel worker owns
-/// its own kernel because `OxideKernel` is `!Send` (it holds `P<JsObject>` =
-/// `Arc<JsObject>`, and `JsObject` stores raw `*mut u8` property pointers).
-/// Nothing kernel-shaped can cross a thread boundary, so sharing is impossible;
-/// per-worker construction is the only correct design.
-fn build_runner_kernel() -> Arc<OxideKernel> {
+/// its own kernel because `KernelCore` + session state is `!Send` (it holds
+/// `P<JsObject>` = `Arc<JsObject>`, and `JsObject` stores raw `*mut u8` property
+/// pointers). Nothing kernel-shaped can cross a thread boundary, so sharing is
+/// impossible; per-worker construction is the only correct design.
+fn build_runner_kernel() -> Arc<KernelCore> {
     // Bound each test's execution so a single infinite-loop / unsupported-feature
     // loop fails (or skips) instead of stalling the run. The VM emits a
     // "VM step limit exceeded" error on overrun, which the runner classifies as a
@@ -589,9 +589,7 @@ fn build_runner_kernel() -> Arc<OxideKernel> {
     // Keep test262 recursion tests from reaching Rust's native stack before the
     // VM converts deep JS calls into a catchable RangeError.
     kernel_config.max_call_depth = 256;
-    let kernel = Arc::new(OxideKernel::new(kernel_config));
-    init_kernel_builtins(&kernel);
-    kernel
+    KernelCore::new(kernel_config)
 }
 
 fn categorize_fail(msg: &str) -> String {
@@ -716,7 +714,7 @@ fn run_tests() -> bool {
 
     let total = paths.len();
 
-    // Determine worker count. `OxideKernel`/`Vm` are `!Send`, so we cannot share
+    // Determine worker count. `KernelCore` + session state is `!Send` (it holds
     // one kernel via Arc across threads; instead each worker builds and owns its
     // own kernel + harness-source registry + prefix cache. Only `PathBuf` and
     // `TestResult` (both `Send`) cross thread boundaries. Workers pull test

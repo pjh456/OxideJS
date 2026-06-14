@@ -20,7 +20,7 @@ impl Vm {
     pub(crate) fn dispatch_native_call(
         &mut self, obj: &JsObject, callee: JsValue, this_reg: u8, first_arg_reg: u8, arg_count: usize,
     ) -> Result<(), String> {
-        if self.native_call_depth >= self.kernel.config.max_call_depth {
+        if self.native_call_depth >= self.kernel_core.config.max_call_depth {
             return Err("RangeError: Maximum call stack size exceeded".into());
         }
         let (args_buf, len) = Self::build_native_args(first_arg_reg, arg_count, this_reg);
@@ -45,7 +45,7 @@ impl Vm {
                     (err_val, self.thrown_error_kind(err_val))
                 } else {
                     let msg = if err_val.is_string() {
-                        self.kernel()
+                        self.kernel_core
                             .string_forge()
                             .lookup(err_val.as_string_index())
                             .unwrap_or_else(|| format!("{err_val}"))

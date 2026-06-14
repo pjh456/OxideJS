@@ -6,7 +6,7 @@ use crate::vm::Vm;
 
 pub fn number_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let n = if args.len() > 1 {
-        coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref())
+        coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref())
     } else {
         0.0
     };
@@ -40,7 +40,7 @@ pub fn number_is_finite(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if val.is_double() {
         return NativeResult::Ok(JsValue::bool(val.as_double().is_finite()));
     }
-    let n = coercion::to_number(val, vm.kernel().string_forge().as_ref());
+    let n = coercion::to_number(val, vm.kernel_core().string_forge().as_ref());
     NativeResult::Ok(JsValue::bool(n.is_finite()))
 }
 
@@ -48,7 +48,7 @@ pub fn number_parse_int(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-    let sf = vm.kernel().string_forge().as_ref();
+    let sf = vm.kernel_core().string_forge().as_ref();
     let s = coercion::to_string(sf, vm.reg(args[1]));
     let s = s.trim();
 
@@ -90,7 +90,7 @@ pub fn number_parse_float(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-    let sf = vm.kernel().string_forge().as_ref();
+    let sf = vm.kernel_core().string_forge().as_ref();
     let s = coercion::to_string(sf, vm.reg(args[1]));
     let s = s.trim();
 
@@ -105,9 +105,9 @@ pub fn number_parse_float(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn number_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let n = coercion::to_number(vm.reg(args[0]), vm.kernel().string_forge().as_ref());
+    let n = coercion::to_number(vm.reg(args[0]), vm.kernel_core().string_forge().as_ref());
     let radix = if args.len() > 1 {
-        let r = coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref()) as u32;
+        let r = coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref()) as u32;
         r.clamp(2, 36)
     } else {
         10u32
@@ -156,9 +156,9 @@ pub fn number_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn number_to_fixed(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let n = coercion::to_number(vm.reg(args[0]), vm.kernel().string_forge().as_ref());
+    let n = coercion::to_number(vm.reg(args[0]), vm.kernel_core().string_forge().as_ref());
     let digits = if args.len() > 1 {
-        coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref()) as usize
+        coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref()) as usize
     } else {
         0usize
     }
@@ -170,21 +170,21 @@ pub fn number_to_fixed(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
 pub fn number_is_integer(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let val = vm.reg(if args.len() > 1 { args[1] } else { args[0] });
-    let n = coercion::to_number(val, vm.kernel().string_forge().as_ref());
+    let n = coercion::to_number(val, vm.kernel_core().string_forge().as_ref());
     NativeResult::Ok(JsValue::bool(n.trunc() == n && n.is_finite()))
 }
 
 pub fn number_is_safe_integer(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let val = vm.reg(if args.len() > 1 { args[1] } else { args[0] });
-    let n = coercion::to_number(val, vm.kernel().string_forge().as_ref());
+    let n = coercion::to_number(val, vm.kernel_core().string_forge().as_ref());
     let safe = n.trunc() == n && n.is_finite() && n >= -9007199254740991i64 as f64 && n <= 9007199254740991i64 as f64;
     NativeResult::Ok(JsValue::bool(safe))
 }
 
 pub fn number_to_exponential(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let n = coercion::to_number(vm.reg(args[0]), vm.kernel().string_forge().as_ref());
+    let n = coercion::to_number(vm.reg(args[0]), vm.kernel_core().string_forge().as_ref());
     let digits = if args.len() > 1 {
-        coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref()) as usize
+        coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref()) as usize
     } else {
         0usize
     }
@@ -200,9 +200,9 @@ pub fn number_to_exponential(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 pub fn number_to_precision(vm: &mut Vm, args: &[u8]) -> NativeResult {
-    let n = coercion::to_number(vm.reg(args[0]), vm.kernel().string_forge().as_ref());
+    let n = coercion::to_number(vm.reg(args[0]), vm.kernel_core().string_forge().as_ref());
     let precision = if args.len() > 1 {
-        coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref()) as usize
+        coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref()) as usize
     } else {
         0usize
     }

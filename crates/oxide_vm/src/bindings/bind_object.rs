@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
-use crate::bind_constructor;
 use oxide_kernel::builtin::ObjectMethods;
-use oxide_kernel::kernel::OxideKernel;
+use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 
-pub fn bind_object(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
+use crate::bind_constructor;
+
+pub fn bind_object(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let methods = ObjectMethods {
         keys: crate::builtins::object::object_keys as *const (),
         create: crate::builtins::object::object_create as *const (),
@@ -29,10 +30,10 @@ pub fn bind_object(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
         has_own_property: crate::builtins::object::object_proto_has_own_property as *const (),
         property_is_enumerable: crate::builtins::object::object_proto_property_is_enumerable as *const (),
     };
-    kernel
+    session
         .builtin_world()
-        .bind_object_methods(&methods, kernel.string_forge().as_ref(), kernel.shape_forge().as_ref());
+        .bind_object_methods(&methods, core.string_forge().as_ref(), core.shape_forge().as_ref());
 
-    let ctor_ptr = kernel.builtin_world().object_constructor.as_ptr() as *mut JsObject;
-    bind_constructor!(kernel, global, "Object", ctor_ptr, crate::builtins::object::object_constructor, 1);
+    let ctor_ptr = session.builtin_world().object_constructor.as_ptr() as *mut JsObject;
+    bind_constructor!(core, global, "Object", ctor_ptr, crate::builtins::object::object_constructor, 1);
 }

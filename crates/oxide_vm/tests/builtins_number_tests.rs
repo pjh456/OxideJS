@@ -76,7 +76,7 @@ fn number_constructor() {
 fn to_string_of_number() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "var n = 42; n.toString()").unwrap();
-    let s = vm.kernel().string_forge().lookup(result.as_string_index()).unwrap_or_default();
+    let s = vm.kernel_core().string_forge().lookup(result.as_string_index()).unwrap_or_default();
     assert_eq!(s, "42");
 }
 
@@ -84,7 +84,7 @@ fn to_string_of_number() {
 fn to_fixed_of_number() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "var n = 3.14159; n.toFixed(2)").unwrap();
-    let s = vm.kernel().string_forge().lookup(result.as_string_index()).unwrap_or_default();
+    let s = vm.kernel_core().string_forge().lookup(result.as_string_index()).unwrap_or_default();
     assert_eq!(s, "3.14");
 }
 
@@ -113,7 +113,7 @@ fn number_epsilon_is_positive() {
 fn number_to_exponential() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "var n = 123.456; n.toExponential(2)").unwrap();
-    let s = vm.kernel().string_forge().lookup(result.as_string_index()).unwrap_or_default();
+    let s = vm.kernel_core().string_forge().lookup(result.as_string_index()).unwrap_or_default();
     assert_eq!(s, "1.23e2");
 }
 

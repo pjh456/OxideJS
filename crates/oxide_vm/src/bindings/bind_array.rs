@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
-use crate::bind_constructor_hash;
 use oxide_kernel::builtin::ArrayMethods;
-use oxide_kernel::kernel::OxideKernel;
+use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 
-pub fn bind_array(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
+use crate::bind_constructor_hash;
+
+pub fn bind_array(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let _array_methods = ArrayMethods {
         is_array: crate::builtins::array::array_is_array as *const (),
         push: crate::builtins::array::array_push as *const (),
@@ -38,12 +39,12 @@ pub fn bind_array(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
         sort: crate::builtins::array::array_sort as *const (),
     };
 
-    kernel.builtin_world().bind_array_methods(
+    session.builtin_world().bind_array_methods(
         &_array_methods,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
+        core.string_forge().as_ref(),
+        core.shape_forge().as_ref(),
     );
 
-    let ctor_ptr = kernel.builtin_world().array_constructor.as_ptr() as *mut JsObject;
-    bind_constructor_hash!(kernel, global, "Array", ctor_ptr, crate::builtins::array::array_constructor, 1);
+    let ctor_ptr = session.builtin_world().array_constructor.as_ptr() as *mut JsObject;
+    bind_constructor_hash!(core, global, "Array", ctor_ptr, crate::builtins::array::array_constructor, 1);
 }

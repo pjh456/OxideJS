@@ -20,7 +20,7 @@ impl Vm {
                 self.sub_modules.len()
             ));
         }
-        if self.frames.len() >= self.kernel.config.max_call_depth {
+        if self.frames.len() >= self.kernel_core.config.max_call_depth {
             return Err("RangeError: Maximum call stack size exceeded".into());
         }
 
@@ -56,9 +56,9 @@ impl Vm {
         self.regs[254] = if sub.is_arrow { callee_obj.captured_this() } else { receiver };
         self.regs[255] = JsValue::undefined();
         for (name, reg) in &sub.builtin_reg_map {
-            let si = self.kernel.string_forge().intern(name.as_str()).0;
-            let global = self.kernel.global_object();
-            if let Some(pos) = self.kernel.shape_forge().lookup_position(global.shape_id(), si) {
+            let si = self.kernel_core.string_forge().intern(name.as_str()).0;
+            let global = self.session.global_object();
+            if let Some(pos) = self.kernel_core.shape_forge().lookup_position(global.shape_id(), si) {
                 self.regs[*reg as usize] = global.get_prop_at(pos);
             }
         }
@@ -133,14 +133,14 @@ impl Vm {
         self.active_reg_limit = self.root_reg_limit;
 
         for (name, reg) in &module.builtin_reg_map {
-            let si = self.kernel.string_forge().intern(name.as_str()).0;
-            let global = self.kernel.global_object();
-            if let Some(pos) = self.kernel.shape_forge().lookup_position(global.shape_id(), si) {
+            let si = self.kernel_core.string_forge().intern(name.as_str()).0;
+            let global = self.session.global_object();
+            if let Some(pos) = self.kernel_core.shape_forge().lookup_position(global.shape_id(), si) {
                 self.regs[*reg as usize] = global.get_prop_at(pos);
             }
         }
 
-        let global_ptr = self.kernel.global_object().as_ptr() as *mut JsObject;
+        let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;
         self.regs[254] = JsValue::from_js_object(global_ptr);
 
         self.dispatch()

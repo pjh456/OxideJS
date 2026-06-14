@@ -1,18 +1,18 @@
 use std::sync::Arc;
 
 use crate::bindings::{apply_binding_table, bind_global_value};
-use oxide_kernel::kernel::OxideKernel;
+use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-pub fn bind_json(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
-    let json_ptr = kernel.builtin_world().json_object.as_ptr() as *mut JsObject;
+pub fn bind_json(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
+    let json_ptr = session.builtin_world().json_object.as_ptr() as *mut JsObject;
     let json = unsafe { &mut *json_ptr };
 
     apply_binding_table(
-        kernel.builtin_world(),
+        session.builtin_world(),
         json,
-        kernel,
+        core,
         &[
             ("parse", crate::builtins::json::json_parse as *const (), 1),
             ("stringify", crate::builtins::json::json_stringify as *const (), 1),
@@ -20,9 +20,9 @@ pub fn bind_json(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     );
 
     bind_global_value(
-        kernel,
+        core,
         global,
         "JSON",
-        JsValue::from_js_object(kernel.builtin_world().json_object.as_ptr() as *mut JsObject),
+        JsValue::from_js_object(session.builtin_world().json_object.as_ptr() as *mut JsObject),
     );
 }

@@ -69,7 +69,7 @@ fn new_map_inner() -> *mut indexmap::IndexMap<SetKey, JsValue> {
 }
 
 fn alloc_map(vm: &mut Vm) -> *mut JsObject {
-    let map_proto = vm.kernel().builtin_world().map_proto.as_ptr() as *mut JsObject;
+    let map_proto = vm.session().builtin_world().map_proto.as_ptr() as *mut JsObject;
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(map_proto));
     obj.set_map(true);
     // SAFETY: new_map_inner() returns a valid Box<IndexMap> pointer; stored as a JsValue

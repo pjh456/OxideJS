@@ -17,7 +17,7 @@ pub(crate) fn walk_own_keys(vm: &Vm, obj: &JsObject) -> Vec<(u32, u32)> {
         if id == EMPTY_SHAPE_ID {
             break;
         }
-        if let Some(shape) = vm.kernel().shape_forge().get_shape(id) {
+        if let Some(shape) = vm.kernel_core().shape_forge().get_shape(id) {
             cursor = shape.parent;
             if shape.property_name != u32::MAX {
                 shape_ids.push(id);
@@ -27,7 +27,7 @@ pub(crate) fn walk_own_keys(vm: &Vm, obj: &JsObject) -> Vec<(u32, u32)> {
         }
     }
     for id in shape_ids.iter().rev() {
-        if let Some(shape) = vm.kernel().shape_forge().get_shape(*id) {
+        if let Some(shape) = vm.kernel_core().shape_forge().get_shape(*id) {
             if shape.property_name != 0 {
                 keys.push((shape.property_name, pos));
             }
@@ -61,12 +61,12 @@ pub fn object_keys(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let keys = walk_own_keys(vm, obj);
         key_names = keys
             .iter()
-            .map(|(si, _offset)| vm.kernel().string_forge().lookup(*si).unwrap_or_default())
+            .map(|(si, _offset)| vm.kernel_core().string_forge().lookup(*si).unwrap_or_default())
             .collect();
     }
 
     let n = key_names.len();
-    let array_proto = vm.kernel().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let arr = vm.epoch().alloc(JsObject::new_array(
         EMPTY_SHAPE_ID,
         JsValue::from_js_object(array_proto),
@@ -158,15 +158,15 @@ pub fn object_define_property(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if desc_ptr.is_null() {
         return NativeResult::Err(JsValue::undefined());
     }
-    let prop_name_str = coercion::to_string(vm.kernel().string_forge().as_ref(), vm.reg(args[2]));
-    let si = vm.kernel().string_forge().intern(&prop_name_str).0;
+    let prop_name_str = coercion::to_string(vm.kernel_core().string_forge().as_ref(), vm.reg(args[2]));
+    let si = vm.kernel_core().string_forge().intern(&prop_name_str).0;
 
-    let value_si = vm.kernel().string_forge().intern("value").0;
-    let get_si = vm.kernel().string_forge().intern("get").0;
-    let set_si = vm.kernel().string_forge().intern("set").0;
-    let writable_si = vm.kernel().string_forge().intern("writable").0;
-    let enumerable_si = vm.kernel().string_forge().intern("enumerable").0;
-    let configurable_si = vm.kernel().string_forge().intern("configurable").0;
+    let value_si = vm.kernel_core().string_forge().intern("value").0;
+    let get_si = vm.kernel_core().string_forge().intern("get").0;
+    let set_si = vm.kernel_core().string_forge().intern("set").0;
+    let writable_si = vm.kernel_core().string_forge().intern("writable").0;
+    let enumerable_si = vm.kernel_core().string_forge().intern("enumerable").0;
+    let configurable_si = vm.kernel_core().string_forge().intern("configurable").0;
 
     let desc = unsafe { &*desc_ptr };
     let value_field = own_field(vm, desc, value_si);
@@ -174,10 +174,10 @@ pub fn object_define_property(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let set_field = own_field(vm, desc, set_si);
     let writable_field = own_field(vm, desc, writable_si);
     let enumerable = own_field(vm, desc, enumerable_si)
-        .map(|v| coercion::to_boolean(v, vm.kernel().string_forge().as_ref()))
+        .map(|v| coercion::to_boolean(v, vm.kernel_core().string_forge().as_ref()))
         .unwrap_or(false);
     let configurable = own_field(vm, desc, configurable_si)
-        .map(|v| coercion::to_boolean(v, vm.kernel().string_forge().as_ref()))
+        .map(|v| coercion::to_boolean(v, vm.kernel_core().string_forge().as_ref()))
         .unwrap_or(false);
 
     let has_data = value_field.is_some() || writable_field.is_some();
@@ -208,7 +208,7 @@ pub fn object_define_property(vm: &mut Vm, args: &[u8]) -> NativeResult {
     } else {
         let value = value_field.unwrap_or(JsValue::undefined());
         let writable = writable_field
-            .map(|v| coercion::to_boolean(v, vm.kernel().string_forge().as_ref()))
+            .map(|v| coercion::to_boolean(v, vm.kernel_core().string_forge().as_ref()))
             .unwrap_or(false);
         if vm
             .define_data_property(obj, si, value, PropAttributes::new(writable, enumerable, configurable))
@@ -232,8 +232,8 @@ pub fn object_get_own_property_descriptor(vm: &mut Vm, args: &[u8]) -> NativeRes
     if obj_ptr.is_null() {
         return NativeResult::Ok(JsValue::undefined());
     }
-    let prop_name_str = coercion::to_string(vm.kernel().string_forge().as_ref(), vm.reg(args[2]));
-    let si = vm.kernel().string_forge().intern(&prop_name_str).0;
+    let prop_name_str = coercion::to_string(vm.kernel_core().string_forge().as_ref(), vm.reg(args[2]));
+    let si = vm.kernel_core().string_forge().intern(&prop_name_str).0;
 
     let (found_value, found_meta, found) = {
         let obj = unsafe { &*obj_ptr };
@@ -256,9 +256,9 @@ pub fn object_get_own_property_descriptor(vm: &mut Vm, args: &[u8]) -> NativeRes
         return NativeResult::Ok(JsValue::undefined());
     }
 
-    let sf_ptr = vm.kernel().string_forge().as_ref() as *const StringForge;
-    let sh_ptr = vm.kernel().shape_forge().as_ref() as *const ShapeForge;
-    let desc_proto = vm.kernel().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let sf_ptr = vm.kernel_core().string_forge().as_ref() as *const StringForge;
+    let sh_ptr = vm.kernel_core().shape_forge().as_ref() as *const ShapeForge;
+    let desc_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
     let desc = vm
         .epoch()
         .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(desc_proto)));
@@ -283,7 +283,7 @@ pub fn object_get_own_property_descriptor(vm: &mut Vm, args: &[u8]) -> NativeRes
 }
 
 fn own_field(vm: &Vm, obj: &JsObject, prop_si: u32) -> Option<JsValue> {
-    vm.kernel()
+    vm.kernel_core()
         .shape_forge()
         .lookup_position(obj.shape_id(), prop_si)
         .and_then(|pos| {
@@ -405,12 +405,12 @@ pub fn object_get_own_property_names(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let obj = unsafe { &*obj_ptr };
         let keys = walk_own_keys(vm, obj);
         keys.iter()
-            .map(|(si, _)| vm.kernel().string_forge().lookup(*si).unwrap_or_default())
+            .map(|(si, _)| vm.kernel_core().string_forge().lookup(*si).unwrap_or_default())
             .collect()
     };
 
     let n = key_names.len();
-    let array_proto = vm.kernel().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let arr = vm.epoch().alloc(JsObject::new_array(
         EMPTY_SHAPE_ID,
         JsValue::from_js_object(array_proto),
@@ -451,7 +451,7 @@ pub fn object_from_entries(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let obj_ptr = vm.epoch().alloc(JsObject::new_empty(
         EMPTY_SHAPE_ID,
-        JsValue::from_js_object(vm.kernel().builtin_world().object_proto.as_ptr() as *mut JsObject),
+        JsValue::from_js_object(vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject),
     ));
     NativeResult::Ok(JsValue::from_js_object(obj_ptr))
 }
@@ -515,7 +515,7 @@ pub fn object_entries(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let obj = unsafe { &*obj_ptr };
     let keys = walk_own_keys(vm, obj);
     let n = keys.len();
-    let array_proto = vm.kernel().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let arr = vm.epoch().alloc(JsObject::new_array(
         EMPTY_SHAPE_ID,
         JsValue::from_js_object(array_proto),
@@ -523,7 +523,7 @@ pub fn object_entries(vm: &mut Vm, args: &[u8]) -> NativeResult {
         vm.epoch().bump(),
     ));
     for (i, (si, offset)) in keys.iter().enumerate() {
-        let key_str = vm.kernel().string_forge().lookup(*si).unwrap_or_default();
+        let key_str = vm.kernel_core().string_forge().lookup(*si).unwrap_or_default();
         let key_val = vm.intern(&key_str);
         let val = obj.get_prop_at(*offset);
         let pair = vm.epoch().alloc(JsObject::new_array(
@@ -550,7 +550,7 @@ pub fn object_values(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let obj = unsafe { &*obj_ptr };
     let keys = walk_own_keys(vm, obj);
     let n = keys.len();
-    let array_proto = vm.kernel().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let arr = vm.epoch().alloc(JsObject::new_array(
         EMPTY_SHAPE_ID,
         JsValue::from_js_object(array_proto),

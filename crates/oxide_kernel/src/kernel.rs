@@ -13,6 +13,7 @@ use crate::prop_forge::PropForge;
 use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use crate::string_forge::StringForge;
 
+#[derive(Clone)]
 pub struct KernelConfig {
     pub min_pool_size: usize,
     pub max_pool_size: Option<usize>,
@@ -75,55 +76,24 @@ impl Default for KernelConfig {
     }
 }
 
-pub struct OxideKernel {
+/// Immutable, permanently shared state across all VM instances.
+/// Never rebuilt after construction — forge tables are append-only.
+pub struct KernelCore {
     pub config: KernelConfig,
     pub string_forge: Arc<StringForge>,
     pub shape_forge: Arc<ShapeForge>,
     pub code_forge: Arc<CodeForge>,
     pub prop_forge: Arc<PropForge>,
-    pub builtin_world: Arc<BuiltinWorld>,
-    pub global_object: P<JsObject>,
 }
 
-impl OxideKernel {
-    pub fn new(config: KernelConfig) -> Self {
+impl KernelCore {
+    pub fn new(config: KernelConfig) -> Arc<Self> {
         init_logging(&config.log_levels);
-
         let string_forge = Arc::new(StringForge::new());
         let shape_forge = Arc::new(ShapeForge::new());
-        let builtin_world = Arc::new(BuiltinWorld::new(&string_forge, &shape_forge));
         let code_forge = Arc::new(CodeForge::new());
         let prop_forge = Arc::new(PropForge::new());
-
-        let mut global_obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
-
-        let si_nan = string_forge.intern("NaN").0;
-        let si_undef = string_forge.intern("undefined").0;
-        let si_infinity = string_forge.intern("Infinity").0;
-
-        let nan_shape = shape_forge.make_shape(EMPTY_SHAPE_ID, si_nan);
-        global_obj.set_shape_id(nan_shape);
-        global_obj.ensure_hash_props().push(JsValue::float(f64::NAN));
-
-        let undef_shape = shape_forge.make_shape(nan_shape, si_undef);
-        global_obj.set_shape_id(undef_shape);
-        global_obj.ensure_hash_props().push(JsValue::undefined());
-
-        let inf_shape = shape_forge.make_shape(undef_shape, si_infinity);
-        global_obj.set_shape_id(inf_shape);
-        global_obj.ensure_hash_props().push(JsValue::float(f64::INFINITY));
-
-        let global_object = P::new(global_obj);
-
-        Self {
-            config,
-            string_forge,
-            shape_forge,
-            code_forge,
-            prop_forge,
-            builtin_world,
-            global_object,
-        }
+        Arc::new(Self { config, string_forge, shape_forge, code_forge, prop_forge })
     }
 
     pub fn string_forge(&self) -> &Arc<StringForge> {
@@ -142,18 +112,54 @@ impl OxideKernel {
         &self.prop_forge
     }
 
-    pub fn builtin_world(&self) -> &Arc<BuiltinWorld> {
-        &self.builtin_world
-    }
-
     pub fn config(&self) -> &KernelConfig {
         &self.config
+    }
+}
+
+/// Per-session mutable state: builtin prototype objects and the global object.
+/// Rebuilt on full_reset() to achieve complete isolation between JS executions.
+pub struct KernelSession {
+    pub builtin_world: Arc<BuiltinWorld>,
+    pub global_object: P<JsObject>,
+}
+
+impl KernelSession {
+    /// Build a fresh session from a KernelCore. All string/shape intern calls hit
+    /// cache on second and subsequent calls — net cost is < 0.5 ms.
+    pub fn new(core: &KernelCore) -> Self {
+        let builtin_world = Arc::new(BuiltinWorld::new(&core.string_forge, &core.shape_forge));
+
+        let mut global_obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
+
+        let si_nan = core.string_forge.intern("NaN").0;
+        let si_undef = core.string_forge.intern("undefined").0;
+        let si_infinity = core.string_forge.intern("Infinity").0;
+
+        let nan_shape = core.shape_forge.make_shape(EMPTY_SHAPE_ID, si_nan);
+        global_obj.set_shape_id(nan_shape);
+        global_obj.ensure_hash_props().push(JsValue::float(f64::NAN));
+
+        let undef_shape = core.shape_forge.make_shape(nan_shape, si_undef);
+        global_obj.set_shape_id(undef_shape);
+        global_obj.ensure_hash_props().push(JsValue::undefined());
+
+        let inf_shape = core.shape_forge.make_shape(undef_shape, si_infinity);
+        global_obj.set_shape_id(inf_shape);
+        global_obj.ensure_hash_props().push(JsValue::float(f64::INFINITY));
+
+        Self { builtin_world, global_object: P::new(global_obj) }
+    }
+
+    pub fn builtin_world(&self) -> &Arc<BuiltinWorld> {
+        &self.builtin_world
     }
 
     pub fn global_object(&self) -> &P<JsObject> {
         &self.global_object
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -162,29 +168,31 @@ mod tests {
 
     #[test]
     fn test_kernel_new() {
-        let kernel = OxideKernel::new(KernelConfig::minimal());
-        let (idx, _) = kernel.string_forge().intern("test");
-        assert!(idx > 0);
+        let core = KernelCore::new(KernelConfig::minimal());
+        let (i1, _) = core.string_forge().intern("test");
+        let (i2, _) = core.string_forge().intern("test");
+        assert_eq!(i1, i2);
     }
 
     #[test]
     fn test_kernel_builtins_accessible() {
-        let kernel = OxideKernel::new(KernelConfig::minimal());
-        assert!(!kernel.builtin_world().object_proto.is_function());
-        assert!(kernel.builtin_world().object_constructor.is_function());
+        let core = KernelCore::new(KernelConfig::minimal());
+        let session = KernelSession::new(&core);
+        assert!(!session.builtin_world().object_proto.is_function());
+        assert!(session.builtin_world().object_constructor.is_function());
     }
 
     #[test]
     fn test_kernel_shape_forge() {
-        let kernel = OxideKernel::new(KernelConfig::minimal());
-        assert!(kernel.shape_forge().get_shape(EMPTY_SHAPE_ID).is_some());
+        let core = KernelCore::new(KernelConfig::minimal());
+        assert!(core.shape_forge().get_shape(EMPTY_SHAPE_ID).is_some());
     }
 
     #[test]
     fn test_kernel_string_forge() {
-        let kernel = OxideKernel::new(KernelConfig::minimal());
-        let (i1, _) = kernel.string_forge().intern("hello");
-        let (i2, _) = kernel.string_forge().intern("hello");
+        let core = KernelCore::new(KernelConfig::minimal());
+        let (i1, _) = core.string_forge().intern("hello");
+        let (i2, _) = core.string_forge().intern("hello");
         assert_eq!(i1, i2);
     }
 
@@ -199,5 +207,14 @@ mod tests {
         assert!(!KernelConfig::minimal().warmup_builtin_ic);
         assert!(KernelConfig::full().warmup_builtin_ic);
         assert_eq!(KernelConfig::full().max_pool_size, None);
+    }
+
+    #[test]
+    fn test_session_rebuild_shares_forges() {
+        let core = KernelCore::new(KernelConfig::minimal());
+        let (i1, _) = core.string_forge().intern("hello");
+        let _s2 = KernelSession::new(&core);
+        let (i2, _) = core.string_forge().intern("hello");
+        assert_eq!(i1, i2);
     }
 }

@@ -47,7 +47,7 @@ impl Vm {
         let receiver = self.regs[rd];
         let obj = unsafe { &mut *obj_ptr };
         let prop_val = self.read_member_prop(obj, prop_name_si, receiver)?;
-        let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
+        let n = coercion::to_number(prop_val, self.kernel_core.string_forge().as_ref());
         let new_val = JsValue::float(n + 1.0);
         self.set_member_prop(obj, prop_name_si, new_val, receiver)?;
         self.regs[a] = new_val;
@@ -61,7 +61,7 @@ impl Vm {
         let receiver = self.regs[rd];
         let obj = unsafe { &mut *obj_ptr };
         let prop_val = self.read_member_prop(obj, prop_name_si, receiver)?;
-        let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
+        let n = coercion::to_number(prop_val, self.kernel_core.string_forge().as_ref());
         let new_val = JsValue::float(n - 1.0);
         self.set_member_prop(obj, prop_name_si, new_val, receiver)?;
         self.regs[a] = new_val;
@@ -76,7 +76,7 @@ impl Vm {
         let obj = unsafe { &mut *obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[a]);
         let prop_val = self.ordinary_get(obj, prop_name_si, receiver)?;
-        let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
+        let n = coercion::to_number(prop_val, self.kernel_core.string_forge().as_ref());
         let new_val = JsValue::float(n + 1.0);
         self.ordinary_set(obj, prop_name_si, new_val, receiver)?;
         self.regs[b] = new_val;
@@ -91,7 +91,7 @@ impl Vm {
         let obj = unsafe { &mut *obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[a]);
         let prop_val = self.ordinary_get(obj, prop_name_si, receiver)?;
-        let n = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
+        let n = coercion::to_number(prop_val, self.kernel_core.string_forge().as_ref());
         let new_val = JsValue::float(n - 1.0);
         self.ordinary_set(obj, prop_name_si, new_val, receiver)?;
         self.regs[b] = new_val;
@@ -107,12 +107,12 @@ impl Vm {
         let prop_val = self.read_member_prop(obj, prop_name_si, receiver)?;
         let rhs = self.regs[a];
         let new_val = if prop_val.is_string() || rhs.is_string() {
-            let ls = coercion::to_string(self.kernel.string_forge().as_ref(), prop_val);
-            let rs = coercion::to_string(self.kernel.string_forge().as_ref(), rhs);
+            let ls = coercion::to_string(self.kernel_core.string_forge().as_ref(), prop_val);
+            let rs = coercion::to_string(self.kernel_core.string_forge().as_ref(), rhs);
             self.intern(&format!("{ls}{rs}"))
         } else {
-            let ln = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
-            let rn = coercion::to_number(rhs, self.kernel.string_forge().as_ref());
+            let ln = coercion::to_number(prop_val, self.kernel_core.string_forge().as_ref());
+            let rn = coercion::to_number(rhs, self.kernel_core.string_forge().as_ref());
             JsValue::float(ln + rn)
         };
         self.set_member_prop(obj, prop_name_si, new_val, receiver)?;
@@ -132,8 +132,8 @@ impl Vm {
         let receiver = self.regs[rd];
         let obj = unsafe { &mut *obj_ptr };
         let prop_val = self.read_member_prop(obj, prop_name_si, receiver)?;
-        let ln = coercion::to_number(prop_val, self.kernel.string_forge().as_ref());
-        let rn = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
+        let ln = coercion::to_number(prop_val, self.kernel_core.string_forge().as_ref());
+        let rn = coercion::to_number(self.regs[a], self.kernel_core.string_forge().as_ref());
         let new_val = JsValue::float(op(ln, rn));
         self.regs[a] = new_val;
         self.set_member_prop(obj, prop_name_si, new_val, receiver)?;
