@@ -158,16 +158,28 @@ impl JsValue {
 
     pub fn as_double(&self) -> f64 {
         debug_assert!(self.is_double(), "JsValue is not a double");
+        #[cfg(not(debug_assertions))]
+        if !self.is_double() {
+            return f64::NAN;
+        }
         f64::from_bits(self.0)
     }
 
     pub fn as_int(&self) -> i32 {
         debug_assert!(self.is_int(), "JsValue is not an int");
+        #[cfg(not(debug_assertions))]
+        if !self.is_int() {
+            return 0;
+        }
         (self.0 & INT_MASK) as i32
     }
 
     pub fn as_bool(&self) -> bool {
         debug_assert!(self.is_bool(), "JsValue is not a bool");
+        #[cfg(not(debug_assertions))]
+        if !self.is_bool() {
+            return false;
+        }
         (self.0 & 1) != 0
     }
 

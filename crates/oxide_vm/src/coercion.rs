@@ -293,19 +293,20 @@ pub fn to_object(val: JsValue, vm: &mut Vm) -> Result<JsValue, &'static str> {
     if val.is_null() || val.is_undefined() {
         return Err("TypeError: Cannot convert null or undefined to object");
     }
-    let proto_ptr = if val.is_string() {
-        vm.kernel().builtin_world().string_proto.as_ptr() as *mut JsObject
+    let (proto_ptr, type_tag) = if val.is_string() {
+        (vm.kernel().builtin_world().string_proto.as_ptr() as *mut JsObject, JsObject::OBJ_TYPE_STRING_OBJ)
     } else if val.is_int() || val.is_double() {
-        vm.kernel().builtin_world().number_proto.as_ptr() as *mut JsObject
+        (vm.kernel().builtin_world().number_proto.as_ptr() as *mut JsObject, JsObject::OBJ_TYPE_NUMBER_OBJ)
     } else if val.is_bool() {
-        vm.kernel().builtin_world().boolean_proto.as_ptr() as *mut JsObject
+        (vm.kernel().builtin_world().boolean_proto.as_ptr() as *mut JsObject, JsObject::OBJ_TYPE_BOOLEAN_OBJ)
     } else {
-        &*vm.object_prototype as *const JsObject as *mut JsObject
+        (&*vm.object_prototype as *const JsObject as *mut JsObject, JsObject::OBJ_TYPE_PLAIN)
     };
     let proto_val = JsValue::from_js_object(proto_ptr);
     let obj = vm.epoch.alloc(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
     let obj_val = JsValue::from_js_object(obj);
     let obj_ref = unsafe { &mut *obj };
+    obj_ref.type_tag = type_tag;
     obj_ref.ensure_hash_props().push(val);
     obj_ref.set_prop_count(1);
     Ok(obj_val)
