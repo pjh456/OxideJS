@@ -6,6 +6,102 @@ use oxide_parser::{
 use crate::compiler::{is_side_effect_free, CompileCtx, Compiler, Label};
 
 impl Compiler {
+    fn count_binding_pattern(&self, pattern: &oxide_parser::BindingPattern, ctx: &mut CompileCtx) {
+        match pattern {
+            oxide_parser::BindingPattern::BindingIdentifier(_) => {
+                ctx.alloc_reg();
+                ctx.projected_pc += 1;
+            }
+            oxide_parser::BindingPattern::ArrayPattern(ap) => {
+                ctx.projected_pc += 1; // FOR_OF_INIT
+                for elem in &ap.elements {
+                    ctx.alloc_reg();
+                    ctx.projected_pc += 1; // FOR_OF_DONE
+                    ctx.alloc_reg();
+                    ctx.projected_pc += 1; // FOR_OF_NEXT
+                    if let Some(inner) = elem {
+                        self.count_binding_pattern(inner, ctx);
+                    }
+                }
+                if let Some(rest) = &ap.rest {
+                    self.count_rest_array(ctx);
+                    self.count_binding_pattern(&rest.argument, ctx);
+                }
+                ctx.projected_pc += 1; // FOR_OF_CLOSE
+            }
+            oxide_parser::BindingPattern::ObjectPattern(op) => {
+                for prop in &op.properties {
+                    ctx.alloc_reg();
+                    ctx.projected_pc += 5; // LOAD_VAR + LOAD_CONST + IC_GET_PROP + 3 ext
+                    ctx.alloc_reg();
+                    self.count_binding_pattern(&prop.value, ctx);
+                }
+                if let Some(rest) = &op.rest {
+                    ctx.alloc_reg();
+                    ctx.projected_pc += 2; // REST_OBJECT + ext
+                    self.count_binding_pattern(&rest.argument, ctx);
+                }
+            }
+            oxide_parser::BindingPattern::AssignmentPattern(ap) => {
+                ctx.alloc_reg();
+                ctx.projected_pc += 2; // LOAD_CONST undefined + STRICT_EQ
+                ctx.projected_pc += 1; // JMP_IF_FALSE
+                self.count_expression(&ap.right, ctx);
+                ctx.projected_pc += 1; // LOAD_VAR default
+                self.count_binding_pattern(&ap.left, ctx);
+            }
+        }
+    }
+
+    fn count_rest_array(&self, ctx: &mut CompileCtx) {
+        ctx.alloc_reg(); // rest
+        ctx.projected_pc += 1; // NEW_ARRAY
+        ctx.alloc_reg(); // idx
+        ctx.projected_pc += 1; // LOAD_CONST 0
+        ctx.alloc_reg(); // has
+        ctx.projected_pc += 2; // FOR_OF_DONE + JMP_IF_FALSE
+        ctx.alloc_reg(); // val
+        ctx.projected_pc += 1; // FOR_OF_NEXT
+        ctx.projected_pc += 1; // SET_ELEM
+        ctx.alloc_reg(); // inc tmp
+        ctx.projected_pc += 2; // INC_PRE + JMP
+    }
+
+    fn count_array_assignment(&self, ap: &oxide_parser::ArrayAssignmentTarget, ctx: &mut CompileCtx) {
+        ctx.projected_pc += 1; // FOR_OF_INIT
+        for elem in &ap.elements {
+            ctx.alloc_reg();
+            ctx.projected_pc += 1; // FOR_OF_DONE
+            ctx.alloc_reg();
+            ctx.projected_pc += 1; // FOR_OF_NEXT
+            if elem.is_some() {
+                ctx.alloc_reg();
+                ctx.projected_pc += 1;
+            }
+        }
+        if ap.rest.is_some() {
+            self.count_rest_array(ctx);
+            ctx.alloc_reg();
+            ctx.projected_pc += 1;
+        }
+        ctx.projected_pc += 1; // FOR_OF_CLOSE
+    }
+
+    fn count_object_assignment(&self, op: &oxide_parser::ObjectAssignmentTarget, ctx: &mut CompileCtx) {
+        for _ in &op.properties {
+            ctx.alloc_reg();
+            ctx.projected_pc += 5; // LOAD_VAR + LOAD_CONST + IC_GET_PROP + 3 ext
+            ctx.alloc_reg();
+            ctx.projected_pc += 1;
+        }
+        if op.rest.is_some() {
+            ctx.alloc_reg();
+            ctx.projected_pc += 2; // REST_OBJECT + ext
+            ctx.alloc_reg();
+            ctx.projected_pc += 1;
+        }
+    }
+
     fn count_class(&self, class: &oxide_parser::Class, ctx: &mut CompileCtx) {
         ctx.alloc_reg(); // ctor_reg
         ctx.alloc_reg(); // proto_reg
@@ -57,11 +153,11 @@ impl Compiler {
             }
             Statement::VariableDeclaration(decl) => {
                 for d in &decl.declarations {
-                    ctx.alloc_reg();
                     if let Some(init) = &d.init {
                         self.count_expression(init, ctx);
-                        ctx.projected_pc += 1; // STORE_VAR
+                        self.count_binding_pattern(&d.id, ctx);
                     } else {
+                        ctx.alloc_reg();
                         ctx.projected_pc += 2; // LOAD_CONST(undefined) + STORE_VAR
                     }
                 }
@@ -126,11 +222,11 @@ impl Compiler {
                         self.count_expression(expr, ctx);
                     } else if let ForStatementInit::VariableDeclaration(decl) = init {
                         for d in &decl.declarations {
-                            ctx.alloc_reg();
                             if let Some(init_expr) = &d.init {
                                 self.count_expression(init_expr, ctx);
-                                ctx.projected_pc += 1; // STORE_VAR
+                                self.count_binding_pattern(&d.id, ctx);
                             } else {
+                                ctx.alloc_reg();
                                 ctx.projected_pc += 2; // LOAD_CONST(undefined) + STORE_VAR
                             }
                         }
@@ -180,6 +276,41 @@ impl Compiler {
 
                 ctx.label_map.insert(end_label, ctx.projected_pc);
                 ctx.projected_pc += 1; // FOR_IN_CLEANUP
+            }
+            Statement::ForOfStatement(fo) => {
+                let id = ctx.next_label_id();
+                let start_label = Label::ForOfStart(id);
+                let end_label = Label::ForOfEnd(id);
+
+                self.count_expression(&fo.right, ctx);
+                ctx.projected_pc += 1; // FOR_OF_INIT
+                ctx.label_map.insert(start_label, ctx.projected_pc);
+                ctx.alloc_reg(); // has_reg
+                ctx.projected_pc += 2; // FOR_OF_DONE + JMP_IF_FALSE
+                ctx.alloc_reg(); // val_reg
+                ctx.projected_pc += 1; // FOR_OF_NEXT
+                match &fo.left {
+                    oxide_parser::ForStatementLeft::VariableDeclaration(decl) => {
+                        for d in &decl.declarations {
+                            self.count_binding_pattern(&d.id, ctx);
+                        }
+                    }
+                    oxide_parser::ForStatementLeft::AssignmentTargetIdentifier(_) => {
+                        ctx.alloc_reg();
+                        ctx.projected_pc += 1;
+                    }
+                    oxide_parser::ForStatementLeft::ArrayAssignmentTarget(ap) => {
+                        self.count_array_assignment(ap, ctx);
+                    }
+                    oxide_parser::ForStatementLeft::ObjectAssignmentTarget(op) => {
+                        self.count_object_assignment(op, ctx);
+                    }
+                    _ => {}
+                }
+                self.count_statement(&fo.body, ctx);
+                ctx.projected_pc += 1; // JMP back
+                ctx.label_map.insert(end_label, ctx.projected_pc);
+                ctx.projected_pc += 1; // FOR_OF_CLOSE
             }
             Statement::SwitchStatement(sw) => {
                 let id = ctx.next_label_id();
@@ -410,6 +541,12 @@ impl Compiler {
                     self.count_expression(&assign.right, ctx);
                     ctx.alloc_reg();
                     ctx.projected_pc += 1; // SET_PROP_DYNAMIC
+                } else if let oxide_parser::AssignmentTarget::ArrayAssignmentTarget(ap) = &assign.left {
+                    self.count_expression(&assign.right, ctx);
+                    self.count_array_assignment(ap, ctx);
+                } else if let oxide_parser::AssignmentTarget::ObjectAssignmentTarget(op) = &assign.left {
+                    self.count_expression(&assign.right, ctx);
+                    self.count_object_assignment(op, ctx);
                 } else {
                     self.count_expression(&assign.right, ctx);
                     ctx.alloc_reg();

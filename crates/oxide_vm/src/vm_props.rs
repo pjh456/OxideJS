@@ -23,6 +23,13 @@ impl Vm {
         if obj.is_array() && prop_name_si == length_si {
             return Ok(JsValue::int(obj.prop_count() as i32));
         }
+        if obj.is_array() {
+            if let Some(index) = self.array_index_from_property_key(prop_name_si) {
+                if index < obj.prop_vec_len() as u32 {
+                    return Ok(obj.get_prop_at(index));
+                }
+            }
+        }
         if let Some(pos) = self.get_own_property_slot(obj, prop_name_si) {
             if let Some(meta) = obj.prop_meta_at(pos) {
                 if meta.is_accessor {

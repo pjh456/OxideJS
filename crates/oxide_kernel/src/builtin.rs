@@ -92,6 +92,7 @@ pub struct ArrayMethods {
     pub find_last: *const (),
     pub reduce_right: *const (),
     pub sort: *const (),
+    pub values: *const (),
 }
 
 pub struct ErrorMethods {
@@ -588,7 +589,16 @@ impl BuiltinWorld {
             ("findLast", methods.find_last, 1),
             ("reduceRight", methods.reduce_right, 1),
             ("sort", methods.sort, 0),
+            ("values", methods.values, 0),
         );
+
+        let si = string_forge.intern("@@iterator").0;
+        let raw = methods.values;
+        // SAFETY: methods.values is a NativeFn fn-item passed by the VM binding layer.
+        let func_ptr = unsafe { NativeFnPtr::from_raw(raw) };
+        let _ =
+            Self::bind_method_static(proto, shape_forge, string_forge, "@@iterator", func_ptr, 0, self.fn_proto_val());
+        debug_assert!(shape_forge.lookup_position(proto.shape_id(), si).is_some());
     }
 
     pub fn bind_error_methods(&self, methods: &ErrorMethods, string_forge: &StringForge, shape_forge: &ShapeForge) {

@@ -44,6 +44,8 @@ pub(crate) enum Label {
     DoWhileEnd(u32),
     ForInStart(u32),
     ForInEnd(u32),
+    ForOfStart(u32),
+    ForOfEnd(u32),
     SwitchEnd(u32),
     SwitchCase(u32, u32),
     CatchBody(u32),
@@ -84,6 +86,23 @@ pub(crate) enum FunctionBodyContext {
     Ordinary,
     Arrow,
     ClassElement,
+}
+
+pub(crate) enum ParamSpec<'a> {
+    Identifier(String),
+    Pattern {
+        synthetic_name: String,
+        pattern: &'a oxide_parser::BindingPattern<'a>,
+    },
+}
+
+impl ParamSpec<'_> {
+    pub(crate) fn register_name(&self) -> &str {
+        match self {
+            Self::Identifier(name) => name,
+            Self::Pattern { synthetic_name, .. } => synthetic_name,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -366,18 +385,23 @@ impl Compiler {
 
     pub(crate) fn extract_function_parts<'a>(
         &self, function: &'a oxide_parser::Function<'a>,
-    ) -> Result<(Vec<String>, &'a [Statement<'a>]), String> {
-        let mut param_names = Vec::new();
-        for param in &function.params.items {
+    ) -> Result<(Vec<ParamSpec<'a>>, &'a [Statement<'a>]), String> {
+        let mut param_specs = Vec::new();
+        for (idx, param) in function.params.items.iter().enumerate() {
             match &param.pattern {
                 oxide_parser::BindingPattern::BindingIdentifier(bi) => {
-                    param_names.push(bi.name.to_string());
+                    param_specs.push(ParamSpec::Identifier(bi.name.to_string()));
                 }
-                _ => return Err("destructuring parameters not supported".into()),
+                pattern => {
+                    param_specs.push(ParamSpec::Pattern {
+                        synthetic_name: format!("@@param_{idx}"),
+                        pattern,
+                    });
+                }
             }
         }
         let body_stmts: &[Statement] = if let Some(body) = &function.body { &body.statements } else { &[] };
-        Ok((param_names, body_stmts))
+        Ok((param_specs, body_stmts))
     }
 
     /// Compile a function body (used for FD, FE, and arrow functions).
@@ -388,8 +412,8 @@ impl Compiler {
     /// (true for arrow functions, which have lexical super) or reset to false
     /// (false for regular functions, which create a new super scope).
     pub(crate) fn compile_function_body<'a>(
-        &self, param_names: &[String], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx, is_expression_body: bool,
-        is_arrow: bool,
+        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
+        is_expression_body: bool, is_arrow: bool,
     ) -> Result<CompiledModule, String> {
         let body_context = if is_arrow {
             FunctionBodyContext::Arrow
@@ -397,7 +421,7 @@ impl Compiler {
             FunctionBodyContext::Ordinary
         };
         self.compile_function_body_with_bindings(
-            param_names,
+            param_specs,
             body_stmts,
             parent_ctx,
             is_expression_body,
@@ -407,8 +431,8 @@ impl Compiler {
     }
 
     pub(crate) fn compile_function_body_with_bindings<'a>(
-        &self, param_names: &[String], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx, is_expression_body: bool,
-        extra_bindings: &[(&str, u8)], body_context: FunctionBodyContext,
+        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
+        is_expression_body: bool, extra_bindings: &[(&str, u8)], body_context: FunctionBodyContext,
     ) -> Result<CompiledModule, String> {
         let mut ctx = CompileCtx::new();
 
@@ -467,7 +491,8 @@ impl Compiler {
         let param_base = ctx.next_reg;
 
         // Register parameters as initialized.
-        for name in param_names {
+        for spec in param_specs {
+            let name = spec.register_name();
             let reg = ctx.alloc_reg();
             ctx.declare_initialized(name, reg, VariableDeclarationKind::Var, false)?;
         }
@@ -480,9 +505,17 @@ impl Compiler {
         ctx.reset_regs();
 
         // Emit pass - reallocate params (same order = same regs after reset)
-        for name in param_names {
+        for spec in param_specs {
+            let name = spec.register_name();
             let reg = ctx.alloc_reg();
             ctx.declare_initialized(name, reg, VariableDeclarationKind::Var, false)?;
+        }
+
+        for spec in param_specs {
+            if let ParamSpec::Pattern { synthetic_name, pattern } = spec {
+                let src_reg = ctx.lookup(synthetic_name)?;
+                self.emit_binding_pattern(pattern, src_reg, VariableDeclarationKind::Var, false, &mut ctx)?;
+            }
         }
 
         // Emit body statements.
@@ -530,7 +563,7 @@ impl Compiler {
             bytecode: ctx.bytecode,
             constants: ctx.constants,
             n_registers: ctx.max_regs,
-            n_args: param_names.len() as u8,
+            n_args: param_specs.len() as u8,
             param_base,
             builtin_reg_map: ctx.builtin_reg_map,
             sub_modules: ctx.sub_modules,

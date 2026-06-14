@@ -125,6 +125,8 @@ pub(crate) struct InlineSyncState {
     pub(crate) pending_exception: Option<JsValue>,
     pub(crate) pending_error_kind: Option<&'static str>,
     pub(crate) for_in_iters: Vec<*mut ForInIter<'static>>,
+    pub(crate) for_of_iters: Vec<JsValue>,
+    pub(crate) last_for_of_result: JsValue,
     pub(crate) saved_bytecode_stack: Vec<Vec<opcode::Instr>>,
     pub(crate) saved_constants_stack: Vec<Vec<JsValue>>,
 }
@@ -153,8 +155,8 @@ pub struct Vm {
     pub(crate) symbol_counter: u32,
     pub(crate) symbol_descriptions: Vec<String>,
     pub(crate) symbol_registry: HashMap<String, u32>,
-    #[allow(dead_code)]
-    pub(crate) for_of_iters: Vec<*mut u8>,
+    pub(crate) for_of_iters: Vec<JsValue>,
+    pub(crate) last_for_of_result: JsValue,
     pub(crate) root_reg_limit: u8,
     pub(crate) active_reg_limit: u8,
     pub(crate) native_call_depth: usize,
@@ -291,10 +293,25 @@ impl Vm {
         self.kernel_core.string_forge().intern(&key).0
     }
 
+    pub(crate) fn array_index_from_property_key(&self, prop_name_si: u32) -> Option<u32> {
+        let key = self.kernel_core.string_forge().lookup(prop_name_si)?;
+        if key.is_empty() || (key.len() > 1 && key.starts_with('0')) {
+            return None;
+        }
+        key.parse::<u32>().ok()
+    }
+
     pub(crate) fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
         let length_si = self.kernel_core.string_forge().intern("length").0;
         if obj.is_array() && prop_name_si == length_si {
             return Some(JsValue::int(obj.prop_count() as i32));
+        }
+        if obj.is_array() {
+            if let Some(index) = self.array_index_from_property_key(prop_name_si) {
+                if index < obj.prop_vec_len() as u32 {
+                    return Some(obj.get_prop_at(index));
+                }
+            }
         }
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             let val = obj.get_prop_at(pos);
@@ -324,6 +341,13 @@ impl Vm {
         let length_si = self.kernel_core.string_forge().intern("length").0;
         if obj.is_array() && prop_name_si == length_si {
             return None;
+        }
+        if obj.is_array() {
+            if let Some(index) = self.array_index_from_property_key(prop_name_si) {
+                if index < obj.prop_vec_len() as u32 {
+                    return Some(index);
+                }
+            }
         }
         self.kernel_core
             .shape_forge()
@@ -1020,19 +1044,23 @@ impl Vm {
                 }
 
                 OpCode::FOR_OF_INIT => {
-                    return Err("opcode FOR_OF_INIT not yet implemented".into());
+                    self.dispatch_for_of_init(a)?;
                 }
 
                 OpCode::FOR_OF_NEXT => {
-                    return Err("opcode FOR_OF_NEXT not yet implemented".into());
+                    self.dispatch_for_of_next(rd)?;
                 }
 
                 OpCode::FOR_OF_DONE => {
-                    return Err("opcode FOR_OF_DONE not yet implemented".into());
+                    self.dispatch_for_of_done(rd)?;
                 }
 
                 OpCode::FOR_OF_CLOSE => {
-                    return Err("opcode FOR_OF_CLOSE not yet implemented".into());
+                    self.dispatch_for_of_close()?;
+                }
+
+                OpCode::REST_OBJECT => {
+                    self.dispatch_rest_object(rd, a)?;
                 }
 
                 OpCode::THROW => match self.dispatch_throw(rd) {
@@ -1157,7 +1185,7 @@ mod tests {
             continuation: super::FrameContinuation::None,
         });
         vm.for_in_iters.push(std::ptr::dangling_mut::<super::ForInIter<'static>>());
-        vm.for_of_iters.push(std::ptr::dangling_mut::<u8>());
+        vm.for_of_iters.push(JsValue::undefined());
         vm.saved_bytecode_stack
             .push(vec![opcode::encode(opcode::OpCode::HALT, 0, 0, 0)]);
         vm.saved_constants_stack.push(vec![JsValue::int(1)]);
@@ -1201,22 +1229,21 @@ mod tests {
     }
 
     #[test]
-    fn for_of_opcodes_fail_explicitly() {
-        for (op, expected) in [
-            (opcode::OpCode::FOR_OF_INIT, "opcode FOR_OF_INIT not yet implemented"),
-            (opcode::OpCode::FOR_OF_NEXT, "opcode FOR_OF_NEXT not yet implemented"),
-            (opcode::OpCode::FOR_OF_DONE, "opcode FOR_OF_DONE not yet implemented"),
-            (opcode::OpCode::FOR_OF_CLOSE, "opcode FOR_OF_CLOSE not yet implemented"),
-        ] {
-            let module = CompiledModule {
-                bytecode: vec![opcode::encode(op, 0, 0, 0), opcode::encode(opcode::OpCode::HALT, 0, 0, 0)],
-                n_registers: 1,
-                ..CompiledModule::new()
-            };
-            let mut vm = Vm::new();
-            let err = vm.run(&module).expect_err("FOR_OF opcode should fail explicitly");
-            assert_eq!(err, expected);
-        }
+    fn for_of_close_pops_iterator_stack() {
+        let module = CompiledModule {
+            bytecode: vec![
+                opcode::encode(opcode::OpCode::FOR_OF_CLOSE, 0, 0, 0),
+                opcode::encode(opcode::OpCode::HALT, 0, 0, 0),
+            ],
+            n_registers: 1,
+            ..CompiledModule::new()
+        };
+        let mut vm = Vm::new();
+        vm.for_of_iters.push(JsValue::undefined());
+
+        vm.run(&module).expect("FOR_OF_CLOSE should tolerate non-object sentinel");
+
+        assert!(vm.for_of_iters.is_empty());
     }
 
     #[test]

@@ -840,3 +840,11 @@ pub fn array_sort(vm: &mut Vm, _args: &[u8]) -> NativeResult {
     }
     NativeResult::Ok(vm.reg(_args[0]))
 }
+
+pub fn array_values(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(args[0]);
+    match crate::builtins::iterator::make_iterator_for_value(vm, this_val) {
+        Ok(iterator) => NativeResult::Ok(iterator),
+        Err(err) => NativeResult::Err(err),
+    }
+}

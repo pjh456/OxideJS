@@ -37,6 +37,7 @@ pub fn bind_array(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         find_last: crate::builtins::array::array_find_last as *const (),
         reduce_right: crate::builtins::array::array_reduce_right as *const (),
         sort: crate::builtins::array::array_sort as *const (),
+        values: crate::builtins::array::array_values as *const (),
     };
 
     session.builtin_world().bind_array_methods(

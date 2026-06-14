@@ -327,4 +327,131 @@ impl Vm {
     pub(crate) fn dispatch_for_in_cleanup(&mut self) {
         self.for_in_iters.pop();
     }
+
+    pub(crate) fn dispatch_for_of_init(&mut self, a: usize) -> Result<(), String> {
+        let iterable = self.regs[a];
+        match crate::builtins::iterator::make_iterator_for_value(self, iterable) {
+            Ok(iterator) => {
+                self.for_of_iters.push(iterator);
+                self.last_for_of_result = JsValue::undefined();
+                Ok(())
+            }
+            Err(err) => {
+                self.exception_value = Some(err);
+                self.pending_error_kind = Some(self.thrown_error_kind(err));
+                self.unwind()
+            }
+        }
+    }
+
+    pub(crate) fn dispatch_for_of_done(&mut self, rd: usize) -> Result<(), String> {
+        let Some(iterator) = self.for_of_iters.last().copied() else {
+            return Err("FOR_OF_DONE without active iterator".into());
+        };
+        if !iterator.is_object() {
+            return Err("FOR_OF_DONE iterator is not an object".into());
+        }
+
+        let iter_obj = unsafe { &*iterator.as_js_object_ptr() };
+        let next_si = self.kernel_core.string_forge().intern("next").0;
+        let next_fn = self.ordinary_get(iter_obj, next_si, iterator)?;
+        let result = self.call_function_sync(next_fn, iterator, &[])?;
+        if !result.is_object() {
+            return self.raise_type_error("iterator result is not an object");
+        }
+
+        let result_obj = unsafe { &*result.as_js_object_ptr() };
+        let done_si = self.kernel_core.string_forge().intern("done").0;
+        let done_val = self.ordinary_get(result_obj, done_si, result)?;
+        let done = crate::coercion::to_boolean(done_val, self.kernel_core.string_forge().as_ref());
+        self.last_for_of_result = result;
+        self.regs[rd] = JsValue::bool(!done);
+        Ok(())
+    }
+
+    pub(crate) fn dispatch_for_of_next(&mut self, rd: usize) -> Result<(), String> {
+        let result = self.last_for_of_result;
+        if !result.is_object() {
+            self.regs[rd] = JsValue::undefined();
+            return Ok(());
+        }
+        let result_obj = unsafe { &*result.as_js_object_ptr() };
+        let value_si = self.kernel_core.string_forge().intern("value").0;
+        self.regs[rd] = self.ordinary_get(result_obj, value_si, result)?;
+        Ok(())
+    }
+
+    pub(crate) fn dispatch_for_of_close(&mut self) -> Result<(), String> {
+        let Some(iterator) = self.for_of_iters.pop() else {
+            return Ok(());
+        };
+        if !iterator.is_object() {
+            return Ok(());
+        }
+        let iter_obj = unsafe { &*iterator.as_js_object_ptr() };
+        let return_si = self.kernel_core.string_forge().intern("return").0;
+        let return_fn = self.ordinary_get(iter_obj, return_si, iterator)?;
+        if return_fn.is_object() {
+            let return_obj = unsafe { &*return_fn.as_js_object_ptr() };
+            if return_obj.is_function() {
+                let _ = self.call_function_sync(return_fn, iterator, &[])?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn dispatch_rest_object(&mut self, rd: usize, a: usize) -> Result<(), String> {
+        let src = self.regs[a];
+        if !src.is_object() {
+            return self.raise_type_error("Cannot destructure property of null/undefined");
+        }
+        let excluded_idx = self.bytecode[self.pc] as usize;
+        self.pc += 1;
+        let excluded = self
+            .constants
+            .get(excluded_idx)
+            .and_then(|v| {
+                if v.is_string() {
+                    self.kernel_core.string_forge().lookup(v.as_string_index())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+        let excluded: std::collections::HashSet<&str> = excluded.split('\0').filter(|s| !s.is_empty()).collect();
+
+        let proto_ptr = self.session.builtin_world().object_proto.as_ptr() as *mut JsObject;
+        let rest_ptr = self.epoch.alloc(JsObject::new_empty(
+            oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
+            JsValue::from_js_object(proto_ptr),
+        ));
+        let src_obj = unsafe { &*src.as_js_object_ptr() };
+        let mut cursor = Some(src_obj.shape_id());
+        while let Some(shape_id) = cursor {
+            if shape_id == oxide_kernel::shape_forge::EMPTY_SHAPE_ID {
+                break;
+            }
+            let Some(shape) = self.kernel_core.shape_forge().get_shape(shape_id) else {
+                break;
+            };
+            if shape.property_name != u32::MAX {
+                if let Some(name) = self.kernel_core.string_forge().lookup(shape.property_name) {
+                    if !excluded.contains(name.as_str()) {
+                        if let Some(pos) = self
+                            .kernel_core
+                            .shape_forge()
+                            .lookup_position(src_obj.shape_id(), shape.property_name)
+                        {
+                            let val = src_obj.get_prop_at(pos);
+                            let rest = unsafe { &mut *rest_ptr };
+                            self.set_or_create_prop_value(rest, shape.property_name, val);
+                        }
+                    }
+                }
+            }
+            cursor = shape.parent;
+        }
+        self.regs[rd] = JsValue::from_js_object(rest_ptr);
+        Ok(())
+    }
 }

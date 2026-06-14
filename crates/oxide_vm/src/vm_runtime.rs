@@ -40,6 +40,8 @@ impl Vm {
             pending_exception: self.pending_exception.take(),
             pending_error_kind: self.pending_error_kind.take(),
             for_in_iters: std::mem::take(&mut self.for_in_iters),
+            for_of_iters: std::mem::take(&mut self.for_of_iters),
+            last_for_of_result: self.last_for_of_result,
             saved_bytecode_stack: std::mem::take(&mut self.saved_bytecode_stack),
             saved_constants_stack: std::mem::take(&mut self.saved_constants_stack),
         });
@@ -78,6 +80,8 @@ impl Vm {
         self.pending_exception = saved.pending_exception;
         self.pending_error_kind = saved.pending_error_kind;
         self.for_in_iters = saved.for_in_iters;
+        self.for_of_iters = saved.for_of_iters;
+        self.last_for_of_result = saved.last_for_of_result;
         self.saved_bytecode_stack = saved.saved_bytecode_stack;
         self.saved_constants_stack = saved.saved_constants_stack;
 

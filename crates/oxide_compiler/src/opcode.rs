@@ -73,6 +73,7 @@ pub enum OpCode {
     DELETE_PROP_STATIC = 0x39,
     DELETE_PROP_DYNAMIC = 0x3A,
     INSTANCEOF = 0x3B,
+    REST_OBJECT = 0x3E,
 
     // -- Variable (0x30-0x32) --
     LOAD_VAR = 0x30,
@@ -233,6 +234,7 @@ impl TryFrom<u8> for OpCode {
             0x39 => Ok(OpCode::DELETE_PROP_STATIC),
             0x3A => Ok(OpCode::DELETE_PROP_DYNAMIC),
             0x3B => Ok(OpCode::INSTANCEOF),
+            0x3E => Ok(OpCode::REST_OBJECT),
             0x40 => Ok(OpCode::CALL),
             0x41 => Ok(OpCode::RETURN),
             0x42 => Ok(OpCode::CALL_NATIVE),
@@ -342,6 +344,7 @@ impl fmt::Display for OpCode {
             OpCode::DELETE_PROP_STATIC => "DELETE_PROP_STATIC",
             OpCode::DELETE_PROP_DYNAMIC => "DELETE_PROP_DYNAMIC",
             OpCode::INSTANCEOF => "INSTANCEOF",
+            OpCode::REST_OBJECT => "REST_OBJECT",
             OpCode::LOAD_VAR => "LOAD_VAR",
             OpCode::STORE_VAR => "STORE_VAR",
             OpCode::LOAD_CONST => "LOAD_CONST",
