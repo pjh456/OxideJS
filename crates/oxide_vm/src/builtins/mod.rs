@@ -1,6 +1,7 @@
 pub mod array;
 pub mod array_buffer;
 pub mod boolean;
+pub mod data_view;
 pub mod date;
 pub mod error;
 pub mod function;
