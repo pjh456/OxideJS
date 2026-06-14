@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use oxide_kernel::builtin::StringMethods;
-use oxide_kernel::kernel::OxideKernel;
+use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-pub fn bind_string(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
+pub fn bind_string(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let string_methods = StringMethods {
         index_of: crate::builtins::string::string_index_of as *const (),
         includes: crate::builtins::string::string_includes as *const (),
@@ -34,15 +34,15 @@ pub fn bind_string(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
         replace_all: crate::builtins::string::string_replace_all as *const (),
         value_of: crate::builtins::string::string_value_of as *const (),
     };
-    kernel.builtin_world().bind_string_methods(
+    session.builtin_world().bind_string_methods(
         &string_methods,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
+        core.string_forge().as_ref(),
+        core.shape_forge().as_ref(),
     );
 
-    let si_str = kernel.string_forge().intern("String").0;
-    let str_shape = kernel.shape_forge().make_shape(global.shape_id(), si_str);
-    let str_val = JsValue::from_js_object(kernel.builtin_world().string_constructor.as_ptr() as *mut JsObject);
+    let si_str = core.string_forge().intern("String").0;
+    let str_shape = core.shape_forge().make_shape(global.shape_id(), si_str);
+    let str_val = JsValue::from_js_object(session.builtin_world().string_constructor.as_ptr() as *mut JsObject);
     global.set_shape_id(str_shape);
     global.ensure_hash_props().push(str_val);
     global.bump_generation();

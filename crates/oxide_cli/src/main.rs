@@ -7,7 +7,7 @@ use std::sync::Arc;
 use ansi_term::Colour::Red;
 use clap::{Parser, Subcommand};
 use oxide_compiler::compiler::Compiler;
-use oxide_kernel::kernel::{KernelConfig, OxideKernel};
+use oxide_kernel::kernel::{KernelConfig, KernelCore};
 use oxide_kernel::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use oxide_kernel::string_forge::StringForge;
 use oxide_parser::Allocator;
@@ -70,17 +70,15 @@ fn main() -> ExitCode {
     }
 }
 
-fn make_kernel() -> Arc<OxideKernel> {
-    let kernel = Arc::new(OxideKernel::new(KernelConfig::standard()));
-    oxide_vm::vm::init_kernel_builtins(&kernel);
-    kernel
+fn make_kernel() -> Arc<KernelCore> {
+    KernelCore::new(KernelConfig::standard())
 }
 
-fn make_pool(kernel: &Arc<OxideKernel>) -> Arc<VmPool> {
-    VmPool::new(Arc::clone(kernel), kernel.config().min_pool_size, kernel.config().max_pool_size)
+fn make_pool(kernel: &Arc<KernelCore>) -> Arc<VmPool> {
+    VmPool::new(Arc::clone(kernel), kernel.config.min_pool_size, kernel.config.max_pool_size)
 }
 
-fn eval(code: &str, kernel: &Arc<OxideKernel>, pool: &Arc<VmPool>) -> ExitCode {
+fn eval(code: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>) -> ExitCode {
     let allocator = Allocator::default();
     let program = match oxide_parser::parse(&allocator, code) {
         Ok(p) => p,
@@ -188,7 +186,7 @@ fn format_array(string_forge: &StringForge, shape_forge: &ShapeForge, obj: &JsOb
     format!("[{}]", items.join(", "))
 }
 
-fn run(file: &str, kernel: &Arc<OxideKernel>, pool: &Arc<VmPool>) -> ExitCode {
+fn run(file: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>) -> ExitCode {
     match fs::read_to_string(file) {
         Ok(source) => eval(&source, kernel, pool),
         Err(err) => {

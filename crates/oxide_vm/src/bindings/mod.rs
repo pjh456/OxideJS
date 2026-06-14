@@ -16,15 +16,15 @@ pub mod bind_symbol;
 use std::sync::Arc;
 
 use oxide_kernel::builtin::BuiltinWorld;
-use oxide_kernel::kernel::OxideKernel;
+use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::{JsObject, NativeFnPtr};
 use oxide_types::value::JsValue;
 
 #[macro_export]
 macro_rules! bind_constructor {
-    ($kernel:expr, $global:expr, $name:literal, $ctor_ptr:expr, $ctor_fn:path, $nargs:literal) => {{
-        let si = $kernel.string_forge().intern($name).0;
-        let shape = $kernel.shape_forge().make_shape($global.shape_id(), si);
+    ($core:expr, $global:expr, $name:literal, $ctor_ptr:expr, $ctor_fn:path, $nargs:literal) => {{
+        let si = $core.string_forge().intern($name).0;
+        let shape = $core.shape_forge().make_shape($global.shape_id(), si);
         let val = $crate::JsValue::from_js_object($ctor_ptr);
         $global.set_shape_id(shape);
         $global.push_prop(val);
@@ -37,9 +37,9 @@ macro_rules! bind_constructor {
 
 #[macro_export]
 macro_rules! bind_constructor_hash {
-    ($kernel:expr, $global:expr, $name:literal, $ctor_ptr:expr, $ctor_fn:path, $nargs:literal) => {{
-        let si = $kernel.string_forge().intern($name).0;
-        let shape = $kernel.shape_forge().make_shape($global.shape_id(), si);
+    ($core:expr, $global:expr, $name:literal, $ctor_ptr:expr, $ctor_fn:path, $nargs:literal) => {{
+        let si = $core.string_forge().intern($name).0;
+        let shape = $core.shape_forge().make_shape($global.shape_id(), si);
         let val = $crate::JsValue::from_js_object($ctor_ptr);
         $global.set_shape_id(shape);
         $global.ensure_hash_props().push(val);
@@ -58,10 +58,10 @@ pub(crate) fn configure_native_constructor(ctor: &mut JsObject, native_fn: *cons
 }
 
 pub(crate) fn apply_binding_table(
-    world: &BuiltinWorld, target: &mut JsObject, kernel: &Arc<OxideKernel>, bindings: &[(&'static str, *const (), u8)],
+    world: &BuiltinWorld, target: &mut JsObject, core: &Arc<KernelCore>, bindings: &[(&'static str, *const (), u8)],
 ) {
-    let shape_forge = kernel.shape_forge().as_ref();
-    let string_forge = kernel.string_forge().as_ref();
+    let shape_forge = core.shape_forge().as_ref();
+    let string_forge = core.string_forge().as_ref();
     for (name, func, nargs) in bindings {
         // SAFETY: all entries in the binding table are NativeFn fn-item pointers cast to *const ().
         let fn_ptr = unsafe { oxide_types::object::NativeFnPtr::from_raw(*func) };
@@ -69,32 +69,32 @@ pub(crate) fn apply_binding_table(
     }
 }
 
-pub(crate) fn bind_global_value(kernel: &Arc<OxideKernel>, global: &mut JsObject, name: &str, value: JsValue) {
-    let si = kernel.string_forge().intern(name).0;
-    let shape = kernel.shape_forge().make_shape(global.shape_id(), si);
+pub(crate) fn bind_global_value(core: &Arc<KernelCore>, global: &mut JsObject, name: &str, value: JsValue) {
+    let si = core.string_forge().intern(name).0;
+    let shape = core.shape_forge().make_shape(global.shape_id(), si);
     global.set_shape_id(shape);
     global.ensure_hash_props().push(value);
     global.bump_generation();
 }
 
-pub fn init_kernel_builtins(kernel: &Arc<OxideKernel>) {
-    let global_ptr = kernel.global_object().as_ptr() as *mut oxide_types::object::JsObject;
+pub fn init_kernel_builtins(core: &Arc<KernelCore>, session: &KernelSession) {
+    let global_ptr = session.global_object().as_ptr() as *mut oxide_types::object::JsObject;
     let global = unsafe { &mut *global_ptr };
 
-    bind_object::bind_object(kernel, global);
-    bind_array::bind_array(kernel, global);
-    bind_error::bind_error(kernel, global);
-    bind_string::bind_string(kernel, global);
-    bind_number::bind_number(kernel, global);
-    bind_math::bind_math(kernel, global);
-    bind_json::bind_json(kernel, global);
-    bind_date::bind_date(kernel, global);
-    bind_set::bind_set(kernel, global);
-    bind_map::bind_map(kernel, global);
-    bind_boolean::bind_boolean(kernel, global);
-    bind_function::bind_function(kernel, global);
-    bind_regexp::bind_regexp(kernel, global);
-    bind_symbol::bind_symbol(kernel, global);
+    bind_object::bind_object(core, session, global);
+    bind_array::bind_array(core, session, global);
+    bind_error::bind_error(core, session, global);
+    bind_string::bind_string(core, session, global);
+    bind_number::bind_number(core, session, global);
+    bind_math::bind_math(core, session, global);
+    bind_json::bind_json(core, session, global);
+    bind_date::bind_date(core, session, global);
+    bind_set::bind_set(core, session, global);
+    bind_map::bind_map(core, session, global);
+    bind_boolean::bind_boolean(core, session, global);
+    bind_function::bind_function(core, session, global);
+    bind_regexp::bind_regexp(core, session, global);
+    bind_symbol::bind_symbol(core, session, global);
 
-    bind_global_value(kernel, global, "globalThis", JsValue::from_js_object(global_ptr));
+    bind_global_value(core, global, "globalThis", JsValue::from_js_object(global_ptr));
 }

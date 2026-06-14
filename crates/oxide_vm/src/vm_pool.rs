@@ -3,7 +3,7 @@
 use std::sync::{Arc, Condvar, Mutex};
 
 use crate::vm::Vm;
-use oxide_kernel::kernel::OxideKernel;
+use oxide_kernel::kernel::KernelCore;
 
 struct VmPoolInner {
     available: Vec<Vm>,
@@ -11,7 +11,7 @@ struct VmPoolInner {
 }
 
 pub struct VmPool {
-    kernel: Arc<OxideKernel>,
+    kernel_core: Arc<KernelCore>,
     inner: Mutex<VmPoolInner>,
     condvar: Condvar,
     #[allow(dead_code)]
@@ -27,9 +27,11 @@ pub struct VmGuard {
 }
 
 impl VmPool {
-    pub fn new(kernel: Arc<OxideKernel>, #[allow(dead_code)] min_size: usize, max_size: Option<usize>) -> Arc<Self> {
+    pub fn new(
+        kernel_core: Arc<KernelCore>, #[allow(dead_code)] min_size: usize, max_size: Option<usize>,
+    ) -> Arc<Self> {
         let pool = Arc::new(Self {
-            kernel,
+            kernel_core,
             inner: Mutex::new(VmPoolInner {
                 available: Vec::with_capacity(min_size),
                 total_count: 0,
@@ -42,7 +44,7 @@ impl VmPool {
         {
             let mut inner = pool.inner.lock().unwrap();
             for _ in 0..min_size {
-                let vm = Self::new_vm(&pool.kernel);
+                let vm = Self::new_vm(&pool.kernel_core);
                 inner.available.push(vm);
                 inner.total_count += 1;
             }
@@ -51,12 +53,12 @@ impl VmPool {
         pool
     }
 
-    fn new_vm(kernel: &Arc<OxideKernel>) -> Vm {
-        Vm::with_kernel(Arc::clone(kernel))
+    fn new_vm(core: &Arc<KernelCore>) -> Vm {
+        Vm::with_kernel_core(Arc::clone(core))
     }
 
     fn replace_vm(&self) -> Vm {
-        Self::new_vm(&self.kernel)
+        Self::new_vm(&self.kernel_core)
     }
 
     pub fn spawn(self: &Arc<Self>) -> VmGuard {
@@ -80,7 +82,7 @@ impl VmPool {
             if can_grow {
                 inner.total_count += 1;
                 drop(inner);
-                let vm = Self::new_vm(&self.kernel);
+                let vm = Self::new_vm(&self.kernel_core);
                 return VmGuard {
                     vm: Some(vm),
                     pool: Arc::clone(self),
@@ -110,7 +112,7 @@ impl VmGuard {
 
 impl Drop for VmGuard {
     fn drop(&mut self) {
-        let Some(vm) = self.vm.take() else {
+        let Some(mut vm) = self.vm.take() else {
             return;
         };
 
@@ -121,12 +123,11 @@ impl Drop for VmGuard {
             inner.available.push(new_vm);
         } else {
             for &idx in &self.interned_strings {
-                self.pool.kernel.string_forge().decref(idx);
+                self.pool.kernel_core.string_forge().decref(idx);
             }
 
-            let mut returned_vm = vm;
-            returned_vm.reset();
-            inner.available.push(returned_vm);
+            vm.full_reset();
+            inner.available.push(vm);
         }
 
         self.pool.condvar.notify_one();
@@ -138,8 +139,8 @@ mod tests {
     use super::*;
     use oxide_kernel::kernel::KernelConfig;
 
-    fn test_kernel() -> Arc<OxideKernel> {
-        Arc::new(OxideKernel::new(KernelConfig::minimal()))
+    fn test_kernel() -> Arc<KernelCore> {
+        KernelCore::new(KernelConfig::minimal())
     }
 
     #[test]

@@ -109,7 +109,7 @@ fn new_set_inner() -> *mut indexmap::IndexSet<SetKey> {
 }
 
 fn alloc_set(vm: &mut Vm) -> *mut JsObject {
-    let set_proto = vm.kernel().builtin_world().set_proto.as_ptr() as *mut JsObject;
+    let set_proto = vm.session().builtin_world().set_proto.as_ptr() as *mut JsObject;
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(set_proto));
     obj.set_set(true);
     // SAFETY: new_set_inner() returns a valid Box<IndexSet> pointer; stored as a JsValue

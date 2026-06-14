@@ -10,7 +10,7 @@ fn eval(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
 }
 
 fn to_str(vm: &Vm, val: JsValue) -> String {
-    vm.kernel().string_forge().lookup(val.as_string_index()).unwrap_or_default()
+    vm.kernel_core().string_forge().lookup(val.as_string_index()).unwrap_or_default()
 }
 
 #[test]

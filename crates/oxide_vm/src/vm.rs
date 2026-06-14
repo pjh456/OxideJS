@@ -9,7 +9,7 @@ use smallvec::SmallVec;
 pub use crate::bindings::init_kernel_builtins;
 use crate::coercion;
 use crate::native::{NativeFn, NativeResult};
-use oxide_kernel::kernel::OxideKernel;
+use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::error::{JsError, JsErrorKind};
 use oxide_types::mem::{Epoch, P};
@@ -62,16 +62,16 @@ macro_rules! throw_err {
 
 macro_rules! binary_arith {
     ($self:ident, $a:expr, $b:expr, $rd:expr, $op:tt) => {{
-        let l = coercion::to_number($self.regs[$a], $self.kernel.string_forge().as_ref());
-        let r = coercion::to_number($self.regs[$b], $self.kernel.string_forge().as_ref());
+        let l = coercion::to_number($self.regs[$a], $self.kernel_core.string_forge().as_ref());
+        let r = coercion::to_number($self.regs[$b], $self.kernel_core.string_forge().as_ref());
         $self.regs[$rd] = JsValue::float(l $op r);
     }}
 }
 
 macro_rules! compound_arith {
     ($self:ident, $rd:expr, $a:expr, $op:tt) => {{
-        let l = coercion::to_number($self.regs[$rd], $self.kernel.string_forge().as_ref());
-        let r = coercion::to_number($self.regs[$a], $self.kernel.string_forge().as_ref());
+        let l = coercion::to_number($self.regs[$rd], $self.kernel_core.string_forge().as_ref());
+        let r = coercion::to_number($self.regs[$a], $self.kernel_core.string_forge().as_ref());
         $self.regs[$rd] = JsValue::float(l $op r);
     }}
 }
@@ -96,6 +96,8 @@ pub struct CallFrame {
     pub is_derived_constructor: bool,
     pub continuation: FrameContinuation,
 }
+
+
 
 pub struct ForInIter<'bump> {
     pub keys: bumpalo::collections::Vec<'bump, JsValue>,
@@ -135,7 +137,8 @@ pub struct Vm {
     pub(crate) constants: Vec<JsValue>,
     pub(crate) frames: SmallVec<[CallFrame; 16]>,
     pub for_in_iters: Vec<*mut ForInIter<'static>>,
-    pub(crate) kernel: Arc<OxideKernel>,
+    pub(crate) kernel_core: Arc<KernelCore>,
+    pub(crate) session: KernelSession,
     pub(crate) interned_strings: Vec<u32>,
     pub epoch: Epoch,
     pub object_prototype: P<JsObject>,
@@ -216,12 +219,16 @@ impl Vm {
         (self.math_rng_state >> 33) as f64 / (1u64 << 31) as f64
     }
 
-    pub fn kernel(&self) -> &Arc<OxideKernel> {
-        &self.kernel
+    pub fn kernel_core(&self) -> &Arc<KernelCore> {
+        &self.kernel_core
+    }
+
+    pub fn session(&self) -> &KernelSession {
+        &self.session
     }
 
     pub(crate) fn is_object_prototype(&self, ptr: *const JsObject) -> bool {
-        let proto_ptr = self.kernel.builtin_world().object_proto.as_ptr();
+        let proto_ptr = self.session.builtin_world().object_proto.as_ptr();
         std::ptr::eq(ptr, proto_ptr)
     }
 
@@ -249,14 +256,14 @@ impl Vm {
         if !val.is_string() {
             return None;
         }
-        self.kernel.string_forge().lookup(val.as_string_index())
+        self.kernel_core.string_forge().lookup(val.as_string_index())
     }
 
     pub(crate) fn thrown_error_kind(&self, val: JsValue) -> &'static str {
         if !val.is_object() {
             return "Error";
         }
-        let name_si = self.kernel.string_forge().intern("name").0;
+        let name_si = self.kernel_core.string_forge().intern("name").0;
         let obj = unsafe { &*val.as_js_object_ptr() };
         let Some(name_val) = self.resolve_property(obj, name_si) else {
             return "Error";
@@ -280,16 +287,16 @@ impl Vm {
         if val.is_string() {
             return val.as_string_index();
         }
-        let key = coercion::to_string(self.kernel.string_forge().as_ref(), val);
-        self.kernel.string_forge().intern(&key).0
+        let key = coercion::to_string(self.kernel_core.string_forge().as_ref(), val);
+        self.kernel_core.string_forge().intern(&key).0
     }
 
     pub(crate) fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
-        let length_si = self.kernel.string_forge().intern("length").0;
+        let length_si = self.kernel_core.string_forge().intern("length").0;
         if obj.is_array() && prop_name_si == length_si {
             return Some(JsValue::int(obj.prop_count() as i32));
         }
-        if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+        if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             let val = obj.get_prop_at(pos);
             if !val.is_undefined() || obj.prop_vec_len() > pos as usize {
                 return Some(val);
@@ -298,7 +305,7 @@ impl Vm {
         let mut proto = obj.proto();
         while proto.is_object() {
             let proto_obj = unsafe { &*proto.as_js_object_ptr() };
-            if let Some(pos) = self.kernel.shape_forge().lookup_position(proto_obj.shape_id(), prop_name_si) {
+            if let Some(pos) = self.kernel_core.shape_forge().lookup_position(proto_obj.shape_id(), prop_name_si) {
                 let val = proto_obj.get_prop_at(pos);
                 if !val.is_undefined() || proto_obj.prop_vec_len() > pos as usize {
                     return Some(val);
@@ -310,11 +317,11 @@ impl Vm {
     }
 
     pub(crate) fn get_own_property_slot(&self, obj: &JsObject, prop_name_si: u32) -> Option<u32> {
-        let length_si = self.kernel.string_forge().intern("length").0;
+        let length_si = self.kernel_core.string_forge().intern("length").0;
         if obj.is_array() && prop_name_si == length_si {
             return None;
         }
-        self.kernel
+        self.kernel_core
             .shape_forge()
             .lookup_position(obj.shape_id(), prop_name_si)
             .and_then(|pos| {
@@ -339,7 +346,7 @@ impl Vm {
         }
 
         if let Some(native_fn) = callee_obj.native_fn() {
-            if self.native_call_depth >= self.kernel.config.max_call_depth {
+            if self.native_call_depth >= self.kernel_core.config.max_call_depth {
                 return Err("RangeError: Maximum call stack size exceeded".into());
             }
             let saved_regs = self.regs;
@@ -398,7 +405,7 @@ impl Vm {
                 self.sub_modules.len()
             ));
         }
-        if self.frames.len() >= self.kernel.config.max_call_depth {
+        if self.frames.len() >= self.kernel_core.config.max_call_depth {
             return Err("RangeError: Maximum call stack size exceeded".into());
         }
 
@@ -426,7 +433,7 @@ impl Vm {
         let function_name = self.sub_modules[sub_idx]
             .function_name
             .as_deref()
-            .map(|name| self.kernel.string_forge().intern(name).0)
+            .map(|name| self.kernel_core.string_forge().intern(name).0)
             .unwrap_or(0);
 
         self.frames.push(CallFrame {
@@ -446,9 +453,9 @@ impl Vm {
         self.bytecode = sub_bytecode;
         self.constants = converted_sub_constants;
         for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map.clone() {
-            let si = self.kernel.string_forge().intern(name.as_str()).0;
-            let global = self.kernel.global_object();
-            if let Some(pos) = self.kernel.shape_forge().lookup_position(global.shape_id(), si) {
+            let si = self.kernel_core.string_forge().intern(name.as_str()).0;
+            let global = self.session.global_object();
+            if let Some(pos) = self.kernel_core.shape_forge().lookup_position(global.shape_id(), si) {
                 self.regs[*reg as usize] = global.get_prop_at(pos);
             }
         }
@@ -462,7 +469,7 @@ impl Vm {
         let mut steps: u64 = 0;
         loop {
             steps += 1;
-            if let Some(max_steps) = self.kernel.config.max_steps {
+            if let Some(max_steps) = self.kernel_core.config.max_steps {
                 if steps > max_steps {
                     return Err(format!("VM step limit exceeded at pc={}", self.pc));
                 }
@@ -508,7 +515,7 @@ impl Vm {
                 }
 
                 OpCode::NEG => {
-                    let v = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
+                    let v = coercion::to_number(self.regs[a], self.kernel_core.string_forge().as_ref());
                     self.regs[rd] = JsValue::float(-v);
                 }
 
@@ -573,7 +580,7 @@ impl Vm {
                 }
 
                 OpCode::UNARY_PLUS => {
-                    let v = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
+                    let v = coercion::to_number(self.regs[a], self.kernel_core.string_forge().as_ref());
                     self.regs[rd] = JsValue::float(v);
                 }
 
@@ -583,7 +590,7 @@ impl Vm {
                 }
 
                 OpCode::JMP_IF_FALSE => {
-                    let cond = coercion::to_boolean(self.regs[rd], self.kernel.string_forge().as_ref());
+                    let cond = coercion::to_boolean(self.regs[rd], self.kernel_core.string_forge().as_ref());
                     if !cond {
                         let offset = opcode::offset16(instr) as isize;
                         self.pc = ((self.pc as isize) + offset - 1) as usize;
@@ -591,7 +598,7 @@ impl Vm {
                 }
 
                 OpCode::JMP_IF_TRUE => {
-                    let cond = coercion::to_boolean(self.regs[rd], self.kernel.string_forge().as_ref());
+                    let cond = coercion::to_boolean(self.regs[rd], self.kernel_core.string_forge().as_ref());
                     if cond {
                         let offset = opcode::offset16(instr) as isize;
                         self.pc = ((self.pc as isize) + offset - 1) as usize;
@@ -708,7 +715,7 @@ impl Vm {
                                 self.sub_modules.len()
                             ));
                         }
-                        if self.frames.len() >= self.kernel.config.max_call_depth {
+                        if self.frames.len() >= self.kernel_core.config.max_call_depth {
                             return Err("RangeError: Maximum call stack size exceeded".into());
                         }
 
@@ -737,7 +744,7 @@ impl Vm {
                             function_name: self.sub_modules[sub_idx]
                                 .function_name
                                 .as_deref()
-                                .map(|name| self.kernel.string_forge().intern(name).0)
+                                .map(|name| self.kernel_core.string_forge().intern(name).0)
                                 .unwrap_or(0),
                             caller_reg_limit,
                             saved_regs,
@@ -753,9 +760,9 @@ impl Vm {
                         self.bytecode = sub_bytecode;
                         self.constants = converted_sub_constants;
                         for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map {
-                            let si = self.kernel.string_forge().intern(name.as_str()).0;
-                            let global = self.kernel.global_object();
-                            if let Some(pos) = self.kernel.shape_forge().lookup_position(global.shape_id(), si) {
+                            let si = self.kernel_core.string_forge().intern(name.as_str()).0;
+                            let global = self.session.global_object();
+                            if let Some(pos) = self.kernel_core.shape_forge().lookup_position(global.shape_id(), si) {
                                 self.regs[*reg as usize] = global.get_prop_at(pos);
                             }
                         }
@@ -836,7 +843,7 @@ impl Vm {
                 }
 
                 OpCode::NEW_ARRAY => {
-                    let proto_ptr = self.kernel.builtin_world().array_proto.as_ptr() as *mut JsObject;
+                    let proto_ptr = self.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
                     let n = opcode::imm16(instr) as usize;
                     let bump = self.epoch.bump();
                     let obj = self.epoch.alloc(JsObject::new_array(
@@ -852,13 +859,13 @@ impl Vm {
                     let lhs = self.regs[rd];
                     let rhs = self.regs[a];
                     if lhs.is_string() || rhs.is_string() {
-                        let ls = coercion::to_string(self.kernel.string_forge().as_ref(), lhs);
-                        let rs = coercion::to_string(self.kernel.string_forge().as_ref(), rhs);
+                        let ls = coercion::to_string(self.kernel_core.string_forge().as_ref(), lhs);
+                        let rs = coercion::to_string(self.kernel_core.string_forge().as_ref(), rhs);
                         let concat = format!("{ls}{rs}");
                         self.regs[rd] = self.intern(&concat);
                     } else {
-                        let ln = coercion::to_number(lhs, self.kernel.string_forge().as_ref());
-                        let rn = coercion::to_number(rhs, self.kernel.string_forge().as_ref());
+                        let ln = coercion::to_number(lhs, self.kernel_core.string_forge().as_ref());
+                        let rn = coercion::to_number(rhs, self.kernel_core.string_forge().as_ref());
                         self.regs[rd] = JsValue::float(ln + rn);
                     }
                 }
@@ -880,8 +887,8 @@ impl Vm {
                 }
 
                 OpCode::COMPOUND_EXP => {
-                    let l = coercion::to_number(self.regs[rd], self.kernel.string_forge().as_ref());
-                    let r = coercion::to_number(self.regs[a], self.kernel.string_forge().as_ref());
+                    let l = coercion::to_number(self.regs[rd], self.kernel_core.string_forge().as_ref());
+                    let r = coercion::to_number(self.regs[a], self.kernel_core.string_forge().as_ref());
                     self.regs[rd] = JsValue::float(l.powf(r));
                 }
 
@@ -954,27 +961,27 @@ impl Vm {
                 }
 
                 OpCode::INC_PRE => {
-                    let n = coercion::to_number(self.regs[rd], self.kernel.string_forge().as_ref());
+                    let n = coercion::to_number(self.regs[rd], self.kernel_core.string_forge().as_ref());
                     let result = JsValue::float(n + 1.0);
                     self.regs[rd] = result;
                     self.regs[a] = result;
                 }
 
                 OpCode::INC_POST => {
-                    let n = coercion::to_number(self.regs[rd], self.kernel.string_forge().as_ref());
+                    let n = coercion::to_number(self.regs[rd], self.kernel_core.string_forge().as_ref());
                     self.regs[a] = JsValue::float(n);
                     self.regs[rd] = JsValue::float(n + 1.0);
                 }
 
                 OpCode::DEC_PRE => {
-                    let n = coercion::to_number(self.regs[rd], self.kernel.string_forge().as_ref());
+                    let n = coercion::to_number(self.regs[rd], self.kernel_core.string_forge().as_ref());
                     let result = JsValue::float(n - 1.0);
                     self.regs[rd] = result;
                     self.regs[a] = result;
                 }
 
                 OpCode::DEC_POST => {
-                    let n = coercion::to_number(self.regs[rd], self.kernel.string_forge().as_ref());
+                    let n = coercion::to_number(self.regs[rd], self.kernel_core.string_forge().as_ref());
                     self.regs[a] = JsValue::float(n);
                     self.regs[rd] = JsValue::float(n - 1.0);
                 }
@@ -1079,7 +1086,7 @@ mod tests {
         if !this_val.is_object() {
             return NativeResult::Ok(JsValue::undefined());
         }
-        let marker_si = vm.kernel.string_forge().intern("marker").0;
+        let marker_si = vm.kernel_core.string_forge().intern("marker").0;
         let obj = unsafe { &*this_val.as_js_object_ptr() };
         NativeResult::Ok(vm.resolve_property(obj, marker_si).unwrap_or(JsValue::undefined()))
     }
@@ -1090,14 +1097,14 @@ mod tests {
         if !this_val.is_object() {
             return NativeResult::Ok(JsValue::undefined());
         }
-        let marker_si = vm.kernel.string_forge().intern("marker").0;
+        let marker_si = vm.kernel_core.string_forge().intern("marker").0;
         let obj = unsafe { &mut *this_val.as_js_object_ptr() };
         vm.set_or_create_prop_value(obj, marker_si, value);
         NativeResult::Ok(JsValue::undefined())
     }
 
     fn native_function(vm: &mut Vm, f: crate::native::NativeFn) -> JsValue {
-        let proto = vm.kernel.builtin_world().function_proto.as_ptr() as *mut JsObject;
+        let proto = vm.session.builtin_world().function_proto.as_ptr() as *mut JsObject;
         let mut obj = JsObject::new_empty(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
         obj.set_function(true);
         // SAFETY: f is a NativeFn fn-item; valid to store as NativeFnPtr.
@@ -1106,15 +1113,15 @@ mod tests {
     }
 
     fn plain_object(vm: &mut Vm) -> JsValue {
-        let proto = vm.kernel.builtin_world().object_proto.as_ptr() as *mut JsObject;
+        let proto = vm.session.builtin_world().object_proto.as_ptr() as *mut JsObject;
         let obj = JsObject::new_empty(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
         JsValue::object(vm.epoch.alloc(obj) as *mut u8)
     }
 
     fn add_accessor(vm: &mut Vm, obj_val: JsValue, name: &str, get: JsValue, set: JsValue) {
-        let si = vm.kernel.string_forge().intern(name).0;
+        let si = vm.kernel_core.string_forge().intern(name).0;
         let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
-        let shape_id = vm.kernel.shape_forge().make_shape(obj.shape_id(), si);
+        let shape_id = vm.kernel_core.shape_forge().make_shape(obj.shape_id(), si);
         obj.set_shape_id(shape_id);
         let pos = obj.push_prop(JsValue::undefined());
         obj.set_accessor_meta(pos, get, set, PropAttributes::DEFAULT_DATA);
@@ -1122,7 +1129,7 @@ mod tests {
     }
 
     fn set_data(vm: &mut Vm, obj_val: JsValue, name: &str, val: JsValue) {
-        let si = vm.kernel.string_forge().intern(name).0;
+        let si = vm.kernel_core.string_forge().intern(name).0;
         let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
         vm.set_or_create_prop_value(obj, si, val);
     }
@@ -1268,7 +1275,7 @@ mod tests {
         let getter = native_function(&mut vm, native_return_7);
         add_accessor(&mut vm, obj_val, "x", getter, JsValue::undefined());
 
-        let x_si = vm.kernel.string_forge().intern("x").0;
+        let x_si = vm.kernel_core.string_forge().intern("x").0;
         let obj = unsafe { &*obj_val.as_js_object_ptr() };
         let value = vm.ordinary_get(obj, x_si, obj_val).expect("getter");
         assert_eq!(value, JsValue::int(7));
@@ -1281,11 +1288,11 @@ mod tests {
         let setter = native_function(&mut vm, native_set_marker);
         add_accessor(&mut vm, obj_val, "x", JsValue::undefined(), setter);
 
-        let x_si = vm.kernel.string_forge().intern("x").0;
+        let x_si = vm.kernel_core.string_forge().intern("x").0;
         let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
         vm.ordinary_set(obj, x_si, JsValue::int(9), obj_val).expect("setter");
 
-        let marker_si = vm.kernel.string_forge().intern("marker").0;
+        let marker_si = vm.kernel_core.string_forge().intern("marker").0;
         let obj = unsafe { &*obj_val.as_js_object_ptr() };
         assert_eq!(vm.resolve_property(obj, marker_si), Some(JsValue::int(9)));
     }
@@ -1302,7 +1309,7 @@ mod tests {
             (*child_val.as_js_object_ptr()).set_proto(proto_val).expect("proto");
         }
 
-        let x_si = vm.kernel.string_forge().intern("x").0;
+        let x_si = vm.kernel_core.string_forge().intern("x").0;
         let child = unsafe { &*child_val.as_js_object_ptr() };
         let value = vm.ordinary_get(child, x_si, child_val).expect("getter");
         assert_eq!(value, JsValue::int(42));
@@ -1319,11 +1326,11 @@ mod tests {
             (*child_val.as_js_object_ptr()).set_proto(proto_val).expect("proto");
         }
 
-        let x_si = vm.kernel.string_forge().intern("x").0;
+        let x_si = vm.kernel_core.string_forge().intern("x").0;
         let child = unsafe { &mut *child_val.as_js_object_ptr() };
         vm.ordinary_set(child, x_si, JsValue::int(12), child_val).expect("setter");
 
-        let marker_si = vm.kernel.string_forge().intern("marker").0;
+        let marker_si = vm.kernel_core.string_forge().intern("marker").0;
         let child = unsafe { &*child_val.as_js_object_ptr() };
         let proto = unsafe { &*proto_val.as_js_object_ptr() };
         assert_eq!(vm.resolve_property(child, marker_si), Some(JsValue::int(12)));
@@ -1343,11 +1350,11 @@ mod tests {
             (*child_val.as_js_object_ptr()).set_proto(proto_val).expect("proto");
         }
 
-        let x_si = vm.kernel.string_forge().intern("x").0;
+        let x_si = vm.kernel_core.string_forge().intern("x").0;
         let child = unsafe { &mut *child_val.as_js_object_ptr() };
         vm.ordinary_set(child, x_si, JsValue::int(15), child_val).expect("setter");
 
-        let marker_si = vm.kernel.string_forge().intern("marker").0;
+        let marker_si = vm.kernel_core.string_forge().intern("marker").0;
         let child = unsafe { &*child_val.as_js_object_ptr() };
         assert_eq!(vm.resolve_property(child, marker_si), Some(JsValue::int(15)));
     }
@@ -1358,7 +1365,7 @@ mod tests {
         let obj_val = plain_object(&mut vm);
         set_data(&mut vm, obj_val, "x", JsValue::int(1));
 
-        let x_si = vm.kernel.string_forge().intern("x").0;
+        let x_si = vm.kernel_core.string_forge().intern("x").0;
         let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
         assert!(!obj.has_prop_meta());
         assert_eq!(vm.ordinary_get(obj, x_si, obj_val).expect("get"), JsValue::int(1));

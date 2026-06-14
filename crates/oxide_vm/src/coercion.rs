@@ -294,11 +294,11 @@ pub fn to_object(val: JsValue, vm: &mut Vm) -> Result<JsValue, &'static str> {
         return Err("TypeError: Cannot convert null or undefined to object");
     }
     let (proto_ptr, type_tag) = if val.is_string() {
-        (vm.kernel().builtin_world().string_proto.as_ptr() as *mut JsObject, JsObject::OBJ_TYPE_STRING_OBJ)
+        (vm.session().builtin_world().string_proto.as_ptr() as *mut JsObject, JsObject::OBJ_TYPE_STRING_OBJ)
     } else if val.is_int() || val.is_double() {
-        (vm.kernel().builtin_world().number_proto.as_ptr() as *mut JsObject, JsObject::OBJ_TYPE_NUMBER_OBJ)
+        (vm.session().builtin_world().number_proto.as_ptr() as *mut JsObject, JsObject::OBJ_TYPE_NUMBER_OBJ)
     } else if val.is_bool() {
-        (vm.kernel().builtin_world().boolean_proto.as_ptr() as *mut JsObject, JsObject::OBJ_TYPE_BOOLEAN_OBJ)
+        (vm.session().builtin_world().boolean_proto.as_ptr() as *mut JsObject, JsObject::OBJ_TYPE_BOOLEAN_OBJ)
     } else {
         (&*vm.object_prototype as *const JsObject as *mut JsObject, JsObject::OBJ_TYPE_PLAIN)
     };

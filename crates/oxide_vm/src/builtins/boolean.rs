@@ -13,7 +13,7 @@ pub fn boolean_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
         } else if arg.is_bool() {
             arg.as_bool()
         } else if arg.is_string() {
-            let s = vm.kernel().string_forge().lookup(arg.as_string_index()).unwrap_or_default();
+            let s = vm.kernel_core().string_forge().lookup(arg.as_string_index()).unwrap_or_default();
             !s.is_empty()
         } else if arg.is_object() {
             true
@@ -28,7 +28,7 @@ pub fn boolean_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
         false
     };
 
-    let boolean_proto = vm.kernel().builtin_world().boolean_proto.as_ptr() as *mut JsObject;
+    let boolean_proto = vm.session().builtin_world().boolean_proto.as_ptr() as *mut JsObject;
     let is_ctor = if this_val.is_object() {
         let ptr = this_val.as_js_object_ptr();
         if ptr.is_null() {

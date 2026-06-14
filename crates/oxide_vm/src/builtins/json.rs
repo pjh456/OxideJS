@@ -22,7 +22,7 @@ pub fn json_parse(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let text = {
         let si = val.as_string_index();
-        vm.kernel().string_forge().lookup(si).unwrap_or_default()
+        vm.kernel_core().string_forge().lookup(si).unwrap_or_default()
     };
 
     let parsed: serde_json::Value = match serde_json::from_str(&text) {
@@ -46,7 +46,7 @@ fn value_to_jsvalue(vm: &mut Vm, val: &serde_json::Value) -> JsValue {
         }
         serde_json::Value::String(s) => vm.intern(s),
         serde_json::Value::Array(arr) => {
-            let array_proto = vm.kernel().builtin_world().array_proto.as_ptr() as *mut JsObject;
+            let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
             let n = arr.len();
             let array_obj = vm.epoch().alloc(JsObject::new_array(
                 EMPTY_SHAPE_ID,
@@ -63,12 +63,12 @@ fn value_to_jsvalue(vm: &mut Vm, val: &serde_json::Value) -> JsValue {
             JsValue::from_js_object(array_obj)
         }
         serde_json::Value::Object(map) => {
-            let object_proto = vm.kernel().builtin_world().object_proto.as_ptr() as *mut JsObject;
+            let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
             let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto));
             for (key, val) in map {
-                let si = vm.kernel().string_forge().intern(key).0;
+                let si = vm.kernel_core().string_forge().intern(key).0;
                 let jsv = value_to_jsvalue(vm, val);
-                let new_shape = vm.kernel().shape_forge().make_shape(obj.shape_id(), si);
+                let new_shape = vm.kernel_core().shape_forge().make_shape(obj.shape_id(), si);
                 obj.set_shape_id(new_shape);
                 obj.ensure_hash_props().push(jsv);
             }
@@ -114,7 +114,7 @@ fn jsvalue_to_json(vm: &Vm, val: JsValue, visited: &mut HashSet<*const u8>, out:
         }
     } else if val.is_string() {
         let si = val.as_string_index();
-        let s = vm.kernel().string_forge().lookup(si).unwrap_or_default();
+        let s = vm.kernel_core().string_forge().lookup(si).unwrap_or_default();
         stringify_string(&s, out);
     } else if val.is_object() {
         let obj_ptr = val.as_js_object_ptr();
@@ -184,7 +184,7 @@ fn stringify_object(vm: &Vm, obj: &JsObject, visited: &mut HashSet<*const u8>, o
             out.push(',');
         }
         first = false;
-        let name = vm.kernel().string_forge().lookup(si).unwrap_or_default();
+        let name = vm.kernel_core().string_forge().lookup(si).unwrap_or_default();
         stringify_string(&name, out);
         out.push(':');
         jsvalue_to_json(vm, val, visited, out)?;

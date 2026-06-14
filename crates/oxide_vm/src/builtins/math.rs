@@ -5,7 +5,7 @@ use crate::native::NativeResult;
 use crate::vm::Vm;
 
 fn num(vm: &Vm, reg: u8) -> f64 {
-    coercion::to_number(vm.reg(reg), vm.kernel().string_forge().as_ref())
+    coercion::to_number(vm.reg(reg), vm.kernel_core().string_forge().as_ref())
 }
 
 fn arg1(vm: &Vm, args: &[u8]) -> f64 {

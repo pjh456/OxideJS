@@ -41,7 +41,7 @@ impl Vm {
             JsValue::from_js_object(proto_ptr),
         ));
 
-        let proto_si = self.kernel.string_forge().intern("prototype").0;
+        let proto_si = self.kernel_core.string_forge().intern("prototype").0;
         if let Some(proto_val) = self.resolve_property(ctor_obj, proto_si) {
             if proto_val.is_object() {
                 let new_obj_mut = unsafe { &mut *new_obj };
@@ -87,7 +87,7 @@ impl Vm {
                 ));
             }
 
-            if self.frames.len() >= self.kernel.config.max_call_depth {
+            if self.frames.len() >= self.kernel_core.config.max_call_depth {
                 return Err("RangeError: Maximum call stack size exceeded".into());
             }
 
@@ -122,7 +122,7 @@ impl Vm {
                 function_name: self.sub_modules[sub_idx]
                     .function_name
                     .as_deref()
-                    .map(|name| self.kernel.string_forge().intern(name).0)
+                    .map(|name| self.kernel_core.string_forge().intern(name).0)
                     .unwrap_or(0),
                 caller_reg_limit,
                 saved_regs,
@@ -139,9 +139,9 @@ impl Vm {
             self.constants = converted_sub_constants;
 
             for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map {
-                let si = self.kernel.string_forge().intern(name.as_str()).0;
-                let global = self.kernel.global_object();
-                if let Some(pos) = self.kernel.shape_forge().lookup_position(global.shape_id(), si) {
+                let si = self.kernel_core.string_forge().intern(name.as_str()).0;
+                let global = self.session.global_object();
+                if let Some(pos) = self.kernel_core.shape_forge().lookup_position(global.shape_id(), si) {
                     self.regs[*reg as usize] = global.get_prop_at(pos);
                 }
             }
@@ -172,7 +172,7 @@ impl Vm {
                 let reg = (seg & 0x7F) as u8;
                 let val = self.regs[reg as usize];
                 let s = if val.is_string() {
-                    self.kernel().string_forge().lookup(val.as_string_index()).unwrap_or_default()
+                    self.kernel_core.string_forge().lookup(val.as_string_index()).unwrap_or_default()
                 } else {
                     format!("{}", val)
                 };
@@ -182,13 +182,13 @@ impl Vm {
                 if const_idx < self.constants.len() {
                     let val = self.constants[const_idx];
                     if val.is_string() {
-                        let s = self.kernel().string_forge().lookup(val.as_string_index()).unwrap_or_default();
+                        let s = self.kernel_core.string_forge().lookup(val.as_string_index()).unwrap_or_default();
                         result.push_str(&s);
                     }
                 }
             }
         }
-        let si = self.kernel.string_forge().intern(&result).0;
+        let si = self.kernel_core.string_forge().intern(&result).0;
         self.regs[rd] = JsValue::string(si, 0);
     }
 
@@ -205,7 +205,7 @@ impl Vm {
         }
 
         let rhs_obj = unsafe { &*rhs_val.as_js_object_ptr() };
-        let proto_si = self.kernel.string_forge().intern("prototype").0;
+        let proto_si = self.kernel_core.string_forge().intern("prototype").0;
         let ctor_proto = self.resolve_property(rhs_obj, proto_si);
 
         let ctor_proto_ptr = match ctor_proto {
@@ -265,17 +265,17 @@ impl Vm {
                 if id == oxide_kernel::shape_forge::EMPTY_SHAPE_ID {
                     break;
                 }
-                if let Some(shape) = self.kernel.shape_forge().get_shape(id) {
+                if let Some(shape) = self.kernel_core.shape_forge().get_shape(id) {
                     if shape.property_name != u32::MAX && seen.insert(shape.property_name) {
                         let enumerable = self
-                            .kernel
+                            .kernel_core
                             .shape_forge()
                             .lookup_position(cur.shape_id(), shape.property_name)
                             .and_then(|pos| cur.prop_meta_at(pos))
                             .map(|meta| meta.attributes.enumerable())
                             .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable());
                         if enumerable {
-                            let hash = self.kernel.string_forge().get_hash(shape.property_name).unwrap_or(0);
+                            let hash = self.kernel_core.string_forge().get_hash(shape.property_name).unwrap_or(0);
                             keys_vec.push(JsValue::string(shape.property_name, hash));
                         }
                     }

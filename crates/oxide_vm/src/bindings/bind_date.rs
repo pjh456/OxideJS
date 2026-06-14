@@ -1,22 +1,22 @@
 use std::sync::Arc;
 
 use crate::bindings::{apply_binding_table, bind_global_value, configure_native_constructor};
-use oxide_kernel::kernel::OxideKernel;
+use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-pub fn bind_date(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
-    let ctor_ptr = kernel.builtin_world().date_constructor.as_ptr() as *mut JsObject;
+pub fn bind_date(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
+    let ctor_ptr = session.builtin_world().date_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };
-    let proto_ptr = kernel.builtin_world().date_proto.as_ptr() as *mut JsObject;
+    let proto_ptr = session.builtin_world().date_proto.as_ptr() as *mut JsObject;
     let proto = unsafe { &mut *proto_ptr };
 
     configure_native_constructor(ctor, crate::builtins::date::date_constructor as *const (), 7);
 
     apply_binding_table(
-        kernel.builtin_world(),
+        session.builtin_world(),
         ctor,
-        kernel,
+        core,
         &[
             ("now", crate::builtins::date::date_now as *const (), 0),
             ("parse", crate::builtins::date::date_parse as *const (), 1),
@@ -25,9 +25,9 @@ pub fn bind_date(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
     );
 
     apply_binding_table(
-        kernel.builtin_world(),
+        session.builtin_world(),
         proto,
-        kernel,
+        core,
         &[
             ("getTime", crate::builtins::date::date_get_time as *const (), 0),
             ("getFullYear", crate::builtins::date::date_get_full_year as *const (), 0),
@@ -65,5 +65,5 @@ pub fn bind_date(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
         ],
     );
 
-    bind_global_value(kernel, global, "Date", JsValue::from_js_object(ctor_ptr));
+    bind_global_value(core, global, "Date", JsValue::from_js_object(ctor_ptr));
 }

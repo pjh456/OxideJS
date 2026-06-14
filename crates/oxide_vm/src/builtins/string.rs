@@ -8,7 +8,7 @@ use crate::vm::Vm;
 use memchr::memchr;
 
 fn this_string(vm: &Vm, args: &[u8]) -> String {
-    coercion::to_string(vm.kernel().string_forge().as_ref(), vm.reg(args[0]))
+    coercion::to_string(vm.kernel_core().string_forge().as_ref(), vm.reg(args[0]))
 }
 
 pub fn string_value_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
@@ -32,7 +32,7 @@ pub fn string_value_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 fn make_string_array(vm: &mut Vm, parts: &[String]) -> JsValue {
-    let proto = vm.kernel().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let n = parts.len();
     let arr =
         vm.epoch()
@@ -48,7 +48,7 @@ fn make_string_array(vm: &mut Vm, parts: &[String]) -> JsValue {
 }
 
 fn as_string(vm: &Vm, val: JsValue) -> String {
-    coercion::to_string(vm.kernel().string_forge().as_ref(), val)
+    coercion::to_string(vm.kernel_core().string_forge().as_ref(), val)
 }
 
 fn char_len(s: &str) -> usize {
@@ -89,7 +89,7 @@ fn is_regexp_obj(val: JsValue, vm: &Vm) -> bool {
     if proto_ptr.is_null() {
         return false;
     }
-    let rp = vm.kernel().builtin_world().regexp_proto.as_ptr() as *mut JsObject;
+    let rp = vm.session().builtin_world().regexp_proto.as_ptr() as *mut JsObject;
     std::ptr::eq(proto_ptr, rp)
 }
 
@@ -101,7 +101,7 @@ pub fn string_index_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let search = as_string(vm, vm.reg(args[1]));
     let pos = if args.len() > 2 {
-        (coercion::to_number(vm.reg(args[2]), vm.kernel().string_forge().as_ref()) as usize).min(n)
+        (coercion::to_number(vm.reg(args[2]), vm.kernel_core().string_forge().as_ref()) as usize).min(n)
     } else {
         0
     };
@@ -132,7 +132,7 @@ pub fn string_includes(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let search = as_string(vm, vm.reg(args[1]));
     let pos = if args.len() > 2 {
-        (coercion::to_number(vm.reg(args[2]), vm.kernel().string_forge().as_ref()) as usize).min(n)
+        (coercion::to_number(vm.reg(args[2]), vm.kernel_core().string_forge().as_ref()) as usize).min(n)
     } else {
         0
     };
@@ -157,7 +157,7 @@ pub fn string_char_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
         }
         return NativeResult::Ok(vm.intern(&take_chars(&s, 1)));
     }
-    let idx = coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref()) as i32;
+    let idx = coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref()) as i32;
     if idx < 0 || idx as usize >= char_len(&s) {
         return NativeResult::Ok(vm.intern(""));
     }
@@ -173,7 +173,7 @@ pub fn string_char_code_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
         }
         return NativeResult::Ok(JsValue::int(s.chars().next().unwrap() as i32));
     }
-    let idx = coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref()) as i32;
+    let idx = coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref()) as i32;
     if idx < 0 || idx as usize >= char_len(&s) {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
@@ -182,7 +182,7 @@ pub fn string_char_code_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
 pub fn string_concat(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let mut result = this_string(vm, args);
-    let sf = vm.kernel().string_forge().as_ref();
+    let sf = vm.kernel_core().string_forge().as_ref();
     for &arg_reg in args.iter().skip(1) {
         result.push_str(&coercion::to_string(sf, vm.reg(arg_reg)));
     }
@@ -193,7 +193,7 @@ pub fn string_slice(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let n = char_len(&s) as i32;
     let start = if args.len() > 1 {
-        let v = coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref()) as i32;
+        let v = coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref()) as i32;
         if v < 0 {
             (n + v).max(0)
         } else {
@@ -203,7 +203,7 @@ pub fn string_slice(vm: &mut Vm, args: &[u8]) -> NativeResult {
         0
     };
     let end = if args.len() > 2 {
-        let v = coercion::to_number(vm.reg(args[2]), vm.kernel().string_forge().as_ref()) as i32;
+        let v = coercion::to_number(vm.reg(args[2]), vm.kernel_core().string_forge().as_ref()) as i32;
         if v < 0 {
             (n + v).max(0)
         } else {
@@ -222,14 +222,14 @@ pub fn string_substring(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let n = char_len(&s) as i32;
     let mut start = if args.len() > 1 {
-        (coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref()) as i32)
+        (coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref()) as i32)
             .max(0)
             .min(n)
     } else {
         0
     };
     let mut end = if args.len() > 2 {
-        (coercion::to_number(vm.reg(args[2]), vm.kernel().string_forge().as_ref()) as i32)
+        (coercion::to_number(vm.reg(args[2]), vm.kernel_core().string_forge().as_ref()) as i32)
             .max(0)
             .min(n)
     } else {
@@ -260,7 +260,7 @@ pub fn string_trim(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn string_repeat(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let n = if args.len() > 1 {
-        (coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref()) as usize).min(10000)
+        (coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref()) as usize).min(10000)
     } else {
         1
     };
@@ -271,7 +271,7 @@ pub fn string_pad_start(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let s_len = char_len(&s);
     let target = if args.len() > 1 {
-        coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref()) as usize
+        coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref()) as usize
     } else {
         s_len
     };
@@ -291,7 +291,7 @@ pub fn string_pad_end(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let s_len = char_len(&s);
     let target = if args.len() > 1 {
-        coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref()) as usize
+        coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref()) as usize
     } else {
         s_len
     };
@@ -315,7 +315,7 @@ pub fn string_starts_with(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let search = as_string(vm, vm.reg(args[1]));
     let pos = if args.len() > 2 {
-        (coercion::to_number(vm.reg(args[2]), vm.kernel().string_forge().as_ref()) as usize).min(n)
+        (coercion::to_number(vm.reg(args[2]), vm.kernel_core().string_forge().as_ref()) as usize).min(n)
     } else {
         0
     };
@@ -330,7 +330,7 @@ pub fn string_ends_with(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let search = as_string(vm, vm.reg(args[1]));
     let end_pos = if args.len() > 2 {
-        (coercion::to_number(vm.reg(args[2]), vm.kernel().string_forge().as_ref()) as usize).min(n)
+        (coercion::to_number(vm.reg(args[2]), vm.kernel_core().string_forge().as_ref()) as usize).min(n)
     } else {
         n
     };
@@ -345,7 +345,7 @@ pub fn string_split(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let sep_val = vm.reg(args[1]);
     let limit = if args.len() > 2 {
-        coercion::to_number(vm.reg(args[2]), vm.kernel().string_forge().as_ref()) as usize
+        coercion::to_number(vm.reg(args[2]), vm.kernel_core().string_forge().as_ref()) as usize
     } else {
         usize::MAX
     };
@@ -471,7 +471,7 @@ pub fn string_trim_end(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn string_code_point_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let pos = if args.len() > 1 {
-        coercion::to_number(vm.reg(args[1]), vm.kernel().string_forge().as_ref()) as usize
+        coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref()) as usize
     } else {
         0
     };

@@ -2,21 +2,21 @@ use std::sync::Arc;
 
 use crate::bind_constructor_hash;
 use crate::bindings::{apply_binding_table, configure_native_constructor};
-use oxide_kernel::kernel::OxideKernel;
+use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 
-pub fn bind_map(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
-    let ctor_ptr = kernel.builtin_world().map_constructor.as_ptr() as *mut JsObject;
+pub fn bind_map(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
+    let ctor_ptr = session.builtin_world().map_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };
-    let proto_ptr = kernel.builtin_world().map_proto.as_ptr() as *mut JsObject;
+    let proto_ptr = session.builtin_world().map_proto.as_ptr() as *mut JsObject;
 
     configure_native_constructor(ctor, crate::builtins::map::map_constructor as *const (), 1);
     let proto = unsafe { &mut *proto_ptr };
 
     apply_binding_table(
-        kernel.builtin_world(),
+        session.builtin_world(),
         proto,
-        kernel,
+        core,
         &[
             ("set", crate::builtins::map::map_set as *const (), 2),
             ("get", crate::builtins::map::map_get as *const (), 1),
@@ -27,5 +27,5 @@ pub fn bind_map(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
         ],
     );
 
-    bind_constructor_hash!(kernel, global, "Map", ctor_ptr, crate::builtins::map::map_constructor, 1);
+    bind_constructor_hash!(core, global, "Map", ctor_ptr, crate::builtins::map::map_constructor, 1);
 }

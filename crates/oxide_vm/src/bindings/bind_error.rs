@@ -1,17 +1,18 @@
 use std::sync::Arc;
 
 use oxide_kernel::builtin::ErrorMethods;
-use oxide_kernel::kernel::OxideKernel;
+use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr};
 use oxide_types::value::JsValue;
 
 fn bind_error_subtype_constructor(
-    kernel: &Arc<OxideKernel>, global: &mut JsObject, name: &str, proto_ptr: *mut JsObject, ctor_fn: *const (),
+    core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, name: &str, proto_ptr: *mut JsObject,
+    ctor_fn: *const (),
 ) {
-    let sf = kernel.string_forge().as_ref();
-    let sh = kernel.shape_forge().as_ref();
-    let function_proto_ptr = kernel.builtin_world().function_proto.as_ptr() as *mut JsObject;
+    let sf = core.string_forge().as_ref();
+    let sh = core.shape_forge().as_ref();
+    let function_proto_ptr = session.builtin_world().function_proto.as_ptr() as *mut JsObject;
 
     let mut ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(function_proto_ptr)));
     ctor.set_function(true);
@@ -42,7 +43,7 @@ fn bind_error_subtype_constructor(
     global.bump_generation();
 }
 
-pub fn bind_error(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
+pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let error_methods = ErrorMethods {
         error: crate::builtins::error::error_constructor as *const (),
         type_error: crate::builtins::error::type_error_constructor as *const (),
@@ -54,64 +55,70 @@ pub fn bind_error(kernel: &Arc<OxideKernel>, global: &mut JsObject) {
         to_string: crate::builtins::error::error_to_string as *const (),
         stack: crate::builtins::error::error_stack_getter as *const (),
     };
-    kernel.builtin_world().bind_error_methods(
+    session.builtin_world().bind_error_methods(
         &error_methods,
-        kernel.string_forge().as_ref(),
-        kernel.shape_forge().as_ref(),
+        core.string_forge().as_ref(),
+        core.shape_forge().as_ref(),
     );
 
-    let si_err = kernel.string_forge().intern("Error").0;
-    let err_shape = kernel.shape_forge().make_shape(global.shape_id(), si_err);
-    let err_val = JsValue::from_js_object(kernel.builtin_world().error_constructor.as_ptr() as *mut JsObject);
+    let si_err = core.string_forge().intern("Error").0;
+    let err_shape = core.shape_forge().make_shape(global.shape_id(), si_err);
+    let err_val = JsValue::from_js_object(session.builtin_world().error_constructor.as_ptr() as *mut JsObject);
     global.set_shape_id(err_shape);
     global.ensure_hash_props().push(err_val);
     global.bump_generation();
 
     bind_error_subtype_constructor(
-        kernel,
+        core,
+        session,
         global,
         "TypeError",
-        kernel.builtin_world().type_error_proto.as_ptr() as *mut JsObject,
+        session.builtin_world().type_error_proto.as_ptr() as *mut JsObject,
         crate::builtins::error::type_error_constructor as *const (),
     );
     bind_error_subtype_constructor(
-        kernel,
+        core,
+        session,
         global,
         "ReferenceError",
-        kernel.builtin_world().reference_error_proto.as_ptr() as *mut JsObject,
+        session.builtin_world().reference_error_proto.as_ptr() as *mut JsObject,
         crate::builtins::error::reference_error_constructor as *const (),
     );
     bind_error_subtype_constructor(
-        kernel,
+        core,
+        session,
         global,
         "RangeError",
-        kernel.builtin_world().range_error_proto.as_ptr() as *mut JsObject,
+        session.builtin_world().range_error_proto.as_ptr() as *mut JsObject,
         crate::builtins::error::range_error_constructor as *const (),
     );
     bind_error_subtype_constructor(
-        kernel,
+        core,
+        session,
         global,
         "SyntaxError",
-        kernel.builtin_world().syntax_error_proto.as_ptr() as *mut JsObject,
+        session.builtin_world().syntax_error_proto.as_ptr() as *mut JsObject,
         crate::builtins::error::syntax_error_constructor as *const (),
     );
     bind_error_subtype_constructor(
-        kernel,
+        core,
+        session,
         global,
         "URIError",
-        kernel.builtin_world().uri_error_proto.as_ptr() as *mut JsObject,
+        session.builtin_world().uri_error_proto.as_ptr() as *mut JsObject,
         crate::builtins::error::uri_error_constructor as *const (),
     );
     bind_error_subtype_constructor(
-        kernel,
+        core,
+        session,
         global,
         "EvalError",
-        kernel.builtin_world().eval_error_proto.as_ptr() as *mut JsObject,
+        session.builtin_world().eval_error_proto.as_ptr() as *mut JsObject,
         crate::builtins::error::eval_error_constructor as *const (),
     );
 
     {
-        let err_ctor_ptr = kernel.builtin_world().error_constructor.as_ptr() as *mut JsObject;
+        let err_ctor_ptr = session.builtin_world().error_constructor.as_ptr() as *mut JsObject;
         let err_ctor = unsafe { &mut *err_ctor_ptr };
         // SAFETY: error_constructor is a NativeFn fn-item.
         err_ctor.set_native_fn(Some(unsafe {

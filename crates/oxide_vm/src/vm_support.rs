@@ -6,7 +6,7 @@ use oxide_compiler::compiler::Constant;
 
 use crate::bindings;
 use crate::vm::{native_fn_ptr_to_fn, Vm};
-use oxide_kernel::kernel::{KernelConfig, OxideKernel};
+use oxide_kernel::kernel::{KernelConfig, KernelCore, KernelSession};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::error::JsError;
 use oxide_types::mem::{Epoch, P};
@@ -15,9 +15,10 @@ use oxide_types::value::JsValue;
 
 impl Vm {
     pub fn new() -> Self {
-        let kernel = Arc::new(OxideKernel::new(KernelConfig::minimal()));
-        bindings::init_kernel_builtins(&kernel);
-        let obj_proto = P::clone(&kernel.builtin_world().object_proto);
+        let core = KernelCore::new(KernelConfig::minimal());
+        let session = KernelSession::new(&core);
+        bindings::init_kernel_builtins(&core, &session);
+        let obj_proto = P::clone(&session.builtin_world().object_proto);
         Self {
             regs: [JsValue::undefined(); 256],
             pc: 0,
@@ -25,7 +26,8 @@ impl Vm {
             constants: Vec::new(),
             frames: smallvec::SmallVec::new(),
             for_in_iters: Vec::new(),
-            kernel,
+            kernel_core: core,
+            session,
             interned_strings: Vec::new(),
             epoch: Epoch::new(),
             object_prototype: obj_proto,
@@ -48,8 +50,10 @@ impl Vm {
         }
     }
 
-    pub fn with_kernel(kernel: Arc<OxideKernel>) -> Self {
-        let obj_proto = P::clone(&kernel.builtin_world().object_proto);
+    pub fn with_kernel_core(core: Arc<KernelCore>) -> Self {
+        let session = KernelSession::new(&core);
+        bindings::init_kernel_builtins(&core, &session);
+        let obj_proto = P::clone(&session.builtin_world().object_proto);
         Self {
             regs: [JsValue::undefined(); 256],
             pc: 0,
@@ -57,7 +61,8 @@ impl Vm {
             constants: Vec::new(),
             frames: smallvec::SmallVec::new(),
             for_in_iters: Vec::new(),
-            kernel,
+            kernel_core: core,
+            session,
             interned_strings: Vec::new(),
             epoch: Epoch::new(),
             object_prototype: obj_proto,
@@ -78,6 +83,20 @@ impl Vm {
             native_call_depth: 0,
             accessor_frame_target_reg: None,
         }
+    }
+
+    pub fn full_reset(&mut self) {
+        let new_session = KernelSession::new(&self.kernel_core);
+        bindings::init_kernel_builtins(&self.kernel_core, &new_session);
+        self.object_prototype = P::clone(&new_session.builtin_world().object_proto);
+        self.session = new_session;
+        self.clear_execution_state();
+        self.bytecode.clear();
+        self.constants.clear();
+        self.epoch.reset();
+        self.interned_strings.clear();
+        self.root_reg_limit = 0;
+        self.active_reg_limit = 0;
     }
 
     pub(crate) fn clear_execution_state(&mut self) {
@@ -111,7 +130,7 @@ impl Vm {
     }
 
     pub fn intern(&mut self, s: &str) -> JsValue {
-        let (idx, hash) = self.kernel.string_forge().intern(s);
+        let (idx, hash) = self.kernel_core.string_forge().intern(s);
         self.interned_strings.push(idx);
         JsValue::string(idx, hash)
     }
@@ -123,7 +142,7 @@ impl Vm {
         &mut self, sub_idx: u32, is_arrow: bool, is_class_constructor: bool, is_derived_constructor: bool,
         needs_home_object: bool,
     ) -> JsValue {
-        let func_proto_ptr = self.kernel.builtin_world().function_proto.as_ptr() as *mut JsObject;
+        let func_proto_ptr = self.session.builtin_world().function_proto.as_ptr() as *mut JsObject;
         let proto_val = JsValue::from_js_object(func_proto_ptr);
         let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto_val);
         obj.set_function(true);
@@ -139,23 +158,23 @@ impl Vm {
         let func_val = JsValue::object(obj_ptr as *mut u8);
 
         if !is_arrow {
-            let object_proto_ptr = self.kernel.builtin_world().object_proto.as_ptr() as *mut JsObject;
+            let object_proto_ptr = self.session.builtin_world().object_proto.as_ptr() as *mut JsObject;
             let prototype_obj = self
                 .epoch
                 .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto_ptr)));
             let prototype_val = JsValue::from_js_object(prototype_obj);
 
-            let constructor_si = self.kernel.string_forge().intern("constructor").0;
-            let constructor_shape = self.kernel.shape_forge().make_shape(EMPTY_SHAPE_ID, constructor_si);
+            let constructor_si = self.kernel_core.string_forge().intern("constructor").0;
+            let constructor_shape = self.kernel_core.shape_forge().make_shape(EMPTY_SHAPE_ID, constructor_si);
             let prototype = unsafe { &mut *prototype_obj };
             prototype.set_shape_id(constructor_shape);
             let constructor_pos = prototype.push_prop(func_val);
             prototype.set_data_meta(constructor_pos, PropAttributes::new(true, false, true));
             prototype.bump_generation();
 
-            let prototype_si = self.kernel.string_forge().intern("prototype").0;
+            let prototype_si = self.kernel_core.string_forge().intern("prototype").0;
             let func = unsafe { &mut *obj_ptr };
-            let prototype_shape = self.kernel.shape_forge().make_shape(func.shape_id(), prototype_si);
+            let prototype_shape = self.kernel_core.shape_forge().make_shape(func.shape_id(), prototype_si);
             func.set_shape_id(prototype_shape);
             func.ensure_hash_props().push(prototype_val);
             func.bump_generation();
@@ -170,8 +189,8 @@ impl Vm {
         }
         if val.is_object() {
             let obj = unsafe { &*val.as_js_object_ptr() };
-            let name_si = self.kernel.string_forge().intern("name").0;
-            let message_si = self.kernel.string_forge().intern("message").0;
+            let name_si = self.kernel_core.string_forge().intern("name").0;
+            let message_si = self.kernel_core.string_forge().intern("message").0;
             let name = self
                 .resolve_property(obj, name_si)
                 .and_then(|v| self.lookup_str(v))
@@ -216,12 +235,12 @@ impl Vm {
                 ))
             }
             Constant::RegExp(pattern, flags) => {
-                let pat_si = self.kernel.string_forge().intern(pattern).0;
-                let flags_si = self.kernel.string_forge().intern(flags).0;
+                let pat_si = self.kernel_core.string_forge().intern(pattern).0;
+                let flags_si = self.kernel_core.string_forge().intern(flags).0;
                 let pat_val = JsValue::string(pat_si, 0);
                 let flags_val = JsValue::string(flags_si, 0);
 
-                let ctor_ptr = self.kernel.builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
+                let ctor_ptr = self.session.builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
                 let ctor = unsafe { &*ctor_ptr };
                 let Some(native_fn) = ctor.native_fn() else {
                     return Err(JsError::syntax_error("RegExp constructor unavailable"));

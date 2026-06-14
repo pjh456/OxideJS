@@ -19,7 +19,7 @@ impl Vm {
     fn ordinary_get_inner(
         &mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue, target_reg: Option<u8>,
     ) -> Result<JsValue, String> {
-        let length_si = self.kernel.string_forge().intern("length").0;
+        let length_si = self.kernel_core.string_forge().intern("length").0;
         if obj.is_array() && prop_name_si == length_si {
             return Ok(JsValue::int(obj.prop_count() as i32));
         }
@@ -185,7 +185,7 @@ impl Vm {
         let val =
             if cached_shape_id != 0 && cached_shape_id == obj.shape_id() && cached_slot < obj.prop_vec_len() as u32 {
                 obj.get_prop_at(cached_slot)
-            } else if let Some(template) = self.kernel.prop_forge().get_template(obj.shape_id()) {
+            } else if let Some(template) = self.kernel_core.prop_forge().get_template(obj.shape_id()) {
                 if template.prop_name != prop_name_si {
                     self.ordinary_get(obj, prop_name_si, receiver)?
                 } else if template.position < obj.prop_vec_len() as u32 {
@@ -196,7 +196,7 @@ impl Vm {
                 }
             } else {
                 let resolved = self.ordinary_get(obj, prop_name_si, receiver)?;
-                if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+                if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
                     if !obj.is_accessor_meta(pos) {
                         self.write_ic_back(obj.shape_id(), pos);
                     }
@@ -209,7 +209,7 @@ impl Vm {
     pub(crate) fn set_member_prop(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue,
     ) -> Result<(), String> {
-        if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+        if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             if obj.has_prop_meta() {
                 self.ordinary_set(obj, prop_name_si, val, receiver)?;
                 return Ok(());
@@ -223,10 +223,10 @@ impl Vm {
     }
 
     pub(crate) fn set_or_create_prop_value(&mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue) {
-        if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+        if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             obj.set_prop_at(pos, val);
         } else {
-            let new_shape_id = self.kernel.shape_forge().make_shape(obj.shape_id(), prop_name_si);
+            let new_shape_id = self.kernel_core.shape_forge().make_shape(obj.shape_id(), prop_name_si);
             obj.set_shape_id(new_shape_id);
             obj.push_prop(val);
             obj.bump_generation();
@@ -236,10 +236,10 @@ impl Vm {
     pub(crate) fn define_data_property(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, attributes: PropAttributes,
     ) -> Result<(), String> {
-        let pos = if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+        let pos = if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             pos
         } else {
-            let new_shape_id = self.kernel.shape_forge().make_shape(obj.shape_id(), prop_name_si);
+            let new_shape_id = self.kernel_core.shape_forge().make_shape(obj.shape_id(), prop_name_si);
             obj.set_shape_id(new_shape_id);
             obj.push_prop(JsValue::undefined())
         };
@@ -270,10 +270,10 @@ impl Vm {
     pub(crate) fn define_accessor_property(
         &mut self, obj: &mut JsObject, prop_name_si: u32, get: JsValue, set: JsValue, attributes: PropAttributes,
     ) -> Result<(), String> {
-        let pos = if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+        let pos = if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             pos
         } else {
-            let new_shape_id = self.kernel.shape_forge().make_shape(obj.shape_id(), prop_name_si);
+            let new_shape_id = self.kernel_core.shape_forge().make_shape(obj.shape_id(), prop_name_si);
             obj.set_shape_id(new_shape_id);
             obj.push_prop(JsValue::undefined())
         };

@@ -47,7 +47,7 @@ impl Vm {
         let obj_ptr = val.as_object_ptr() as *mut JsObject;
         if obj_ptr.is_null() {
             if val.is_string() {
-                let proto_ptr = self.kernel.builtin_world().string_proto.as_ptr() as *mut JsObject;
+                let proto_ptr = self.session.builtin_world().string_proto.as_ptr() as *mut JsObject;
                 let proto = unsafe { &*proto_ptr };
                 let prop_name_si = self.property_key_si(self.regs[b]);
                 let resolved = self.ordinary_get(proto, prop_name_si, val)?;
@@ -58,7 +58,7 @@ impl Vm {
                 }
             }
             if val.is_int() || val.is_double() {
-                let proto_ptr = self.kernel.builtin_world().number_proto.as_ptr() as *mut JsObject;
+                let proto_ptr = self.session.builtin_world().number_proto.as_ptr() as *mut JsObject;
                 let proto = unsafe { &*proto_ptr };
                 let prop_name_si = self.property_key_si(self.regs[b]);
                 let resolved = self.ordinary_get(proto, prop_name_si, val)?;
@@ -96,7 +96,7 @@ impl Vm {
         if let Some(value) = ic_get_hit(obj, cached_shape_id, cached_slot) {
             self.regs[a] = value;
             ic_trace!("IC_GET hit shape={} slot={}", cached_shape_id, cached_slot);
-        } else if let Some(template) = self.kernel.prop_forge().get_template(obj.shape_id()) {
+        } else if let Some(template) = self.kernel_core.prop_forge().get_template(obj.shape_id()) {
             prop_cache_miss();
             if template.prop_name == prop_name_si {
                 if template.position < obj.prop_vec_len() as u32 {
@@ -120,7 +120,7 @@ impl Vm {
             prop_cache_miss();
             ic_debug!("IC_GET miss shape={} prop={}", obj.shape_id(), prop_name_si);
             let resolved = self.ordinary_get(obj, prop_name_si, val)?;
-            if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+            if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
                 self.write_ic_back(obj.shape_id(), pos);
             }
             self.regs[a] = resolved;
@@ -135,7 +135,7 @@ impl Vm {
         };
 
         let prop_name_si = self.property_key_si(self.regs[b]);
-        if self.kernel.string_forge().lookup(prop_name_si).as_deref() == Some("__proto__") {
+        if self.kernel_core.string_forge().lookup(prop_name_si).as_deref() == Some("__proto__") {
             let obj = unsafe { &mut *obj_ptr };
             if self.is_object_prototype(obj_ptr) && !self.regs[a].is_null() {
                 self.raise_type_error("Object.prototype.__proto__ is immutable")?;
@@ -163,7 +163,7 @@ impl Vm {
 
         if ic_set_hit(obj, cached_shape_id, cached_slot, value) {
             ic_trace!("IC_SET hit shape={} slot={}", cached_shape_id, cached_slot);
-        } else if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+        } else if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             prop_cache_miss();
             obj.set_prop_at(pos, value);
             self.write_ic_back(obj.shape_id(), pos);
@@ -173,10 +173,10 @@ impl Vm {
             let old_shape = obj.shape_id();
             self.ordinary_set_dispatch(obj, prop_name_si, value, receiver)?;
             if old_shape != obj.shape_id() {
-                if let Some(pos) = self.kernel.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+                if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
                     self.write_ic_back(obj.shape_id(), pos);
                     ic_debug!("IC_SET write-back shape={} slot={}", obj.shape_id(), pos);
-                    self.kernel.prop_forge().upsert(
+                    self.kernel_core.prop_forge().upsert(
                         obj.shape_id(),
                         PropTemplate {
                             shape_id: obj.shape_id(),
@@ -211,7 +211,7 @@ impl Vm {
         };
         let obj = unsafe { &mut *obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[b]);
-        if self.kernel.string_forge().lookup(prop_name_si).as_deref() == Some("__proto__") {
+        if self.kernel_core.string_forge().lookup(prop_name_si).as_deref() == Some("__proto__") {
             if self.is_object_prototype(obj_ptr) && !self.regs[a].is_null() {
                 self.raise_type_error("Object.prototype.__proto__ is immutable")?;
                 return Ok(());
@@ -242,7 +242,7 @@ impl Vm {
         };
         let obj = unsafe { &mut *obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[a]);
-        if self.kernel.string_forge().lookup(prop_name_si).as_deref() == Some("__proto__") {
+        if self.kernel_core.string_forge().lookup(prop_name_si).as_deref() == Some("__proto__") {
             if self.is_object_prototype(obj_ptr) && !self.regs[b].is_null() {
                 self.raise_type_error("Object.prototype.__proto__ is immutable")?;
                 return Ok(());
