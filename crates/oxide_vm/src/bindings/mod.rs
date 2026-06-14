@@ -4,6 +4,7 @@ pub mod bind_date;
 pub mod bind_error;
 pub mod bind_function;
 pub mod bind_global;
+pub mod bind_iterator;
 pub mod bind_json;
 pub mod bind_map;
 pub mod bind_math;
@@ -97,6 +98,7 @@ pub fn init_kernel_builtins(core: &Arc<KernelCore>, session: &mut KernelSession)
     bind_function::bind_function(core, session, global);
     bind_regexp::bind_regexp(core, session, global);
     bind_symbol::bind_symbol(core, session, global);
+    bind_iterator::bind_iterator(core, session, global);
     bind_global::bind_global(core, session, global);
     bind_stubs::bind_stubs(core, session, global);
 
