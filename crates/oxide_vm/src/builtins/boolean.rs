@@ -13,7 +13,11 @@ pub fn boolean_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
         } else if arg.is_bool() {
             arg.as_bool()
         } else if arg.is_string() {
-            let s = vm.kernel_core().string_forge().lookup(arg.as_string_index()).unwrap_or_default();
+            let s = vm
+                .kernel_core()
+                .string_forge()
+                .lookup(arg.as_string_index())
+                .unwrap_or_default();
             !s.is_empty()
         } else if arg.is_object() {
             true

@@ -37,7 +37,10 @@ fn eval_val(source: &str) -> (Vm, Result<JsValue, String>) {
 
 fn to_str(vm: &Vm, val: JsValue) -> String {
     if val.is_string() {
-        vm.kernel_core().string_forge().lookup(val.as_string_index()).unwrap_or_default()
+        vm.kernel_core()
+            .string_forge()
+            .lookup(val.as_string_index())
+            .unwrap_or_default()
     } else {
         format!("{}", val)
     }

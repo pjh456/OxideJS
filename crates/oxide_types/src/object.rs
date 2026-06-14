@@ -189,11 +189,26 @@ impl JsObject {
     pub const OBJ_TYPE_NUMBER_OBJ: u8 = 4;
     pub const OBJ_TYPE_STRING_OBJ: u8 = 5;
 
-    #[inline] pub fn is_date_obj(&self) -> bool { self.type_tag == Self::OBJ_TYPE_DATE }
-    #[inline] pub fn is_regexp_obj(&self) -> bool { self.type_tag == Self::OBJ_TYPE_REGEXP }
-    #[inline] pub fn is_boolean_obj(&self) -> bool { self.type_tag == Self::OBJ_TYPE_BOOLEAN_OBJ }
-    #[inline] pub fn is_number_obj(&self) -> bool { self.type_tag == Self::OBJ_TYPE_NUMBER_OBJ }
-    #[inline] pub fn is_string_obj(&self) -> bool { self.type_tag == Self::OBJ_TYPE_STRING_OBJ }
+    #[inline]
+    pub fn is_date_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_DATE
+    }
+    #[inline]
+    pub fn is_regexp_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_REGEXP
+    }
+    #[inline]
+    pub fn is_boolean_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_BOOLEAN_OBJ
+    }
+    #[inline]
+    pub fn is_number_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_NUMBER_OBJ
+    }
+    #[inline]
+    pub fn is_string_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_STRING_OBJ
+    }
 
     pub fn new_empty(shape_id: ShapeId, proto: JsValue) -> Self {
         Self {

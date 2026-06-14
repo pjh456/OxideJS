@@ -10,7 +10,11 @@ use crate::vm::Vm;
 
 fn get_timestamp(obj: &JsObject) -> f64 {
     let v = obj.get_prop_at(0);
-    if v.is_double() { v.as_double() } else { f64::NAN }
+    if v.is_double() {
+        v.as_double()
+    } else {
+        f64::NAN
+    }
 }
 
 fn set_timestamp(obj: &mut JsObject, ms: f64) {
@@ -137,7 +141,11 @@ pub fn date_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     } else {
         let val = vm.reg(args[1]);
         if val.is_string() {
-            let s = vm.kernel_core().string_forge().lookup(val.as_string_index()).unwrap_or_default();
+            let s = vm
+                .kernel_core()
+                .string_forge()
+                .lookup(val.as_string_index())
+                .unwrap_or_default();
             let formats = ["%Y-%m-%dT%H:%M:%S%.fZ", "%Y-%m-%dT%H:%M:%S%.f"];
             let mut ts = f64::NAN;
             for fmt in &formats {
@@ -209,7 +217,11 @@ pub fn date_parse(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if !val.is_string() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-    let s = vm.kernel_core().string_forge().lookup(val.as_string_index()).unwrap_or_default();
+    let s = vm
+        .kernel_core()
+        .string_forge()
+        .lookup(val.as_string_index())
+        .unwrap_or_default();
     let formats = ["%Y-%m-%dT%H:%M:%S%.fZ", "%Y-%m-%dT%H:%M:%S%.f"];
     let mut ts = f64::NAN;
     for fmt in &formats {

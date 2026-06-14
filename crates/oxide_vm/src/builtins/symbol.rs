@@ -18,7 +18,10 @@ pub fn symbol_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
                     let sp = vm.session().builtin_world().symbol_proto.as_ptr() as *mut JsObject;
                     if std::ptr::eq(proto_ptr, sp) {
                         return NativeResult::Err(JsValue::string(
-                            vm.kernel_core().string_forge().intern("TypeError: Symbol is not a constructor").0,
+                            vm.kernel_core()
+                                .string_forge()
+                                .intern("TypeError: Symbol is not a constructor")
+                                .0,
                             0,
                         ));
                     }

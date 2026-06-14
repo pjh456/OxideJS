@@ -23,7 +23,10 @@ fn get_regexp_ptr(vm: &Vm, args: &[u8]) -> Result<*mut JsObject, JsValue> {
     }
     if !unsafe { &*ptr }.is_regexp_obj() {
         return Err(JsValue::string(
-            vm.kernel_core().string_forge().intern("TypeError: RegExp.prototype method called on non-RegExp object").0,
+            vm.kernel_core()
+                .string_forge()
+                .intern("TypeError: RegExp.prototype method called on non-RegExp object")
+                .0,
             0,
         ));
     }
