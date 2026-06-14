@@ -1,6 +1,7 @@
 pub mod bind_array;
 pub mod bind_array_buffer;
 pub mod bind_boolean;
+pub mod bind_data_view;
 pub mod bind_date;
 pub mod bind_error;
 pub mod bind_function;
@@ -89,6 +90,7 @@ pub fn init_kernel_builtins(core: &Arc<KernelCore>, session: &mut KernelSession)
     bind_object::bind_object(core, session, global);
     bind_array::bind_array(core, session, global);
     bind_array_buffer::bind_array_buffer(core, session, global);
+    bind_data_view::bind_data_view(core, session, global);
     bind_error::bind_error(core, session, global);
     bind_string::bind_string(core, session, global);
     bind_number::bind_number(core, session, global);
