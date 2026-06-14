@@ -302,6 +302,39 @@ impl CompileCtx {
             "parseFloat",
             "isNaN",
             "isFinite",
+            // Out-of-scope constructors: bound as TypeError-throwing stubs
+            "Proxy",
+            "WeakMap",
+            "WeakSet",
+            "WeakRef",
+            "FinalizationRegistry",
+            "Atomics",
+            "SharedArrayBuffer",
+            "ArrayBuffer",
+            "DataView",
+            "Iterator",
+            "BigInt",
+            // TypedArray family stubs
+            "Int8Array",
+            "Uint8Array",
+            "Uint8ClampedArray",
+            "Int16Array",
+            "Uint16Array",
+            "Int32Array",
+            "Uint32Array",
+            "Float32Array",
+            "Float64Array",
+            "BigInt64Array",
+            "BigUint64Array",
+            // Reflect namespace object
+            "Reflect",
+            // URI utility functions
+            "escape",
+            "unescape",
+            "encodeURI",
+            "decodeURI",
+            "encodeURIComponent",
+            "decodeURIComponent",
         ];
         for name in &builtins {
             let reg = self.alloc_reg();
