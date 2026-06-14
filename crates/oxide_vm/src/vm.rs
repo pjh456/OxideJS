@@ -97,8 +97,6 @@ pub struct CallFrame {
     pub continuation: FrameContinuation,
 }
 
-
-
 pub struct ForInIter<'bump> {
     pub keys: bumpalo::collections::Vec<'bump, JsValue>,
     pub index: usize,
@@ -305,7 +303,11 @@ impl Vm {
         let mut proto = obj.proto();
         while proto.is_object() {
             let proto_obj = unsafe { &*proto.as_js_object_ptr() };
-            if let Some(pos) = self.kernel_core.shape_forge().lookup_position(proto_obj.shape_id(), prop_name_si) {
+            if let Some(pos) = self
+                .kernel_core
+                .shape_forge()
+                .lookup_position(proto_obj.shape_id(), prop_name_si)
+            {
                 let val = proto_obj.get_prop_at(pos);
                 if !val.is_undefined() || proto_obj.prop_vec_len() > pos as usize {
                     return Some(val);

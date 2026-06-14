@@ -172,7 +172,10 @@ impl Vm {
                 let reg = (seg & 0x7F) as u8;
                 let val = self.regs[reg as usize];
                 let s = if val.is_string() {
-                    self.kernel_core.string_forge().lookup(val.as_string_index()).unwrap_or_default()
+                    self.kernel_core
+                        .string_forge()
+                        .lookup(val.as_string_index())
+                        .unwrap_or_default()
                 } else {
                     format!("{}", val)
                 };
@@ -182,7 +185,11 @@ impl Vm {
                 if const_idx < self.constants.len() {
                     let val = self.constants[const_idx];
                     if val.is_string() {
-                        let s = self.kernel_core.string_forge().lookup(val.as_string_index()).unwrap_or_default();
+                        let s = self
+                            .kernel_core
+                            .string_forge()
+                            .lookup(val.as_string_index())
+                            .unwrap_or_default();
                         result.push_str(&s);
                     }
                 }

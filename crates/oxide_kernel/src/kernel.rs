@@ -93,7 +93,13 @@ impl KernelCore {
         let shape_forge = Arc::new(ShapeForge::new());
         let code_forge = Arc::new(CodeForge::new());
         let prop_forge = Arc::new(PropForge::new());
-        Arc::new(Self { config, string_forge, shape_forge, code_forge, prop_forge })
+        Arc::new(Self {
+            config,
+            string_forge,
+            shape_forge,
+            code_forge,
+            prop_forge,
+        })
     }
 
     pub fn string_forge(&self) -> &Arc<StringForge> {
@@ -148,7 +154,10 @@ impl KernelSession {
         global_obj.set_shape_id(inf_shape);
         global_obj.ensure_hash_props().push(JsValue::float(f64::INFINITY));
 
-        Self { builtin_world, global_object: P::new(global_obj) }
+        Self {
+            builtin_world,
+            global_object: P::new(global_obj),
+        }
     }
 
     pub fn builtin_world(&self) -> &Arc<BuiltinWorld> {
@@ -159,7 +168,6 @@ impl KernelSession {
         &self.global_object
     }
 }
-
 
 #[cfg(test)]
 mod tests {

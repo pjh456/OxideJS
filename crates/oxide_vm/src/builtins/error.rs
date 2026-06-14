@@ -178,7 +178,11 @@ mod tests {
         });
 
         let stack = error_stack_getter(&mut vm, &[0]).unwrap();
-        let stack_str = vm.kernel_core().string_forge().lookup(stack.as_string_index()).unwrap_or_default();
+        let stack_str = vm
+            .kernel_core()
+            .string_forge()
+            .lookup(stack.as_string_index())
+            .unwrap_or_default();
         assert!(stack_str.contains("foo"), "expected function name in stack: {stack_str}");
     }
 }
