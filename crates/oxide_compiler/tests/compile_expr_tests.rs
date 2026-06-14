@@ -444,3 +444,20 @@ fn compile_class_expression_default_constructor() {
         "expected at least one class constructor submodule"
     );
 }
+
+#[test]
+fn compile_large_pure_expression_reuses_temp_registers() {
+    let expr = std::iter::repeat("1").take(120).collect::<Vec<_>>().join(" + ");
+    let module = compile_source(&expr);
+    assert!(
+        module.n_registers < 16,
+        "pure expression should reuse temp registers, got {}",
+        module.n_registers
+    );
+}
+
+#[test]
+fn compile_builtin_globals_are_registered_lazily() {
+    let module = compile_source("Object; Array; Math; JSON");
+    assert_eq!(module.builtin_reg_map.len(), 4, "only referenced builtins should allocate registers");
+}

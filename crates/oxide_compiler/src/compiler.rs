@@ -17,16 +17,83 @@ pub(crate) fn is_int_literal(value: f64) -> bool {
 }
 
 pub(crate) fn is_side_effect_free(expr: &Expression) -> bool {
-    matches!(
-        expr,
+    match expr {
         Expression::NumericLiteral(_)
-            | Expression::StringLiteral(_)
-            | Expression::BooleanLiteral(_)
-            | Expression::NullLiteral(_)
-            | Expression::Identifier(_)
-            | Expression::RegExpLiteral(_)
-    )
+        | Expression::StringLiteral(_)
+        | Expression::BooleanLiteral(_)
+        | Expression::NullLiteral(_)
+        | Expression::Identifier(_)
+        | Expression::RegExpLiteral(_)
+        | Expression::ThisExpression(_) => true,
+        Expression::ParenthesizedExpression(p) => is_side_effect_free(&p.expression),
+        Expression::BinaryExpression(bin) => is_side_effect_free(&bin.left) && is_side_effect_free(&bin.right),
+        Expression::UnaryExpression(un) => {
+            !matches!(un.operator, UnaryOperator::Delete) && is_side_effect_free(&un.argument)
+        }
+        _ => false,
+    }
 }
+
+const BUILTIN_GLOBALS: &[&str] = &[
+    "NaN",
+    "undefined",
+    "Infinity",
+    "globalThis",
+    "Object",
+    "Array",
+    "String",
+    "Number",
+    "Boolean",
+    "Function",
+    "Error",
+    "TypeError",
+    "ReferenceError",
+    "RangeError",
+    "SyntaxError",
+    "URIError",
+    "EvalError",
+    "Math",
+    "JSON",
+    "Promise",
+    "Date",
+    "Set",
+    "Map",
+    "RegExp",
+    "Symbol",
+    "parseInt",
+    "parseFloat",
+    "isNaN",
+    "isFinite",
+    "Proxy",
+    "WeakMap",
+    "WeakSet",
+    "WeakRef",
+    "FinalizationRegistry",
+    "Atomics",
+    "SharedArrayBuffer",
+    "ArrayBuffer",
+    "DataView",
+    "Iterator",
+    "BigInt",
+    "Int8Array",
+    "Uint8Array",
+    "Uint8ClampedArray",
+    "Int16Array",
+    "Uint16Array",
+    "Int32Array",
+    "Uint32Array",
+    "Float32Array",
+    "Float64Array",
+    "BigInt64Array",
+    "BigUint64Array",
+    "Reflect",
+    "escape",
+    "unescape",
+    "encodeURI",
+    "decodeURI",
+    "encodeURIComponent",
+    "decodeURIComponent",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
@@ -122,9 +189,9 @@ impl CompileCtx {
             bytecode: Vec::new(),
             constants: Vec::new(),
             constant_map: HashMap::new(),
-            next_reg: 0,
-            max_regs: 0,
-            reserved_reg_start: 0,
+            next_reg: 1,
+            max_regs: 1,
+            reserved_reg_start: 1,
             symbols: SymbolTable::new(),
             label_map: HashMap::new(),
             loop_stack: Vec::new(),
@@ -167,7 +234,7 @@ impl CompileCtx {
     }
 
     pub(crate) fn reset_regs(&mut self) {
-        self.next_reg = (self.builtin_reg_map.len() as u8).max(self.reserved_reg_start);
+        self.next_reg = self.builtin_reg_floor().max(self.reserved_reg_start);
         self.projected_pc = 0;
         self.label_counter = 0;
     }
@@ -243,7 +310,23 @@ impl CompileCtx {
         self.symbols.lookup(name)
     }
 
+    pub(crate) fn lookup_or_builtin(&mut self, name: &str) -> Result<u8, String> {
+        match self.symbols.lookup(name) {
+            Ok(reg) => Ok(reg),
+            Err(err) if Self::is_known_builtin(name) && err.contains("is not defined") => {
+                let reg = self.alloc_reg();
+                self.symbols.pre_register_global(name, reg);
+                self.builtin_reg_map.push((name.to_string(), reg));
+                Ok(reg)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
     pub(crate) fn lookup_or_global(&mut self, name: &str) -> u8 {
+        if let Some(reg) = self.symbols.lookup_any(name) {
+            return reg;
+        }
         let reg = self.alloc_reg();
         self.symbols.lookup_or_global(name, reg)
     }
@@ -290,76 +373,22 @@ impl CompileCtx {
         self.builtin_reg_map.iter().any(|(n, _)| n == name)
     }
 
+    pub(crate) fn is_known_builtin(name: &str) -> bool {
+        BUILTIN_GLOBALS.contains(&name)
+    }
+
+    fn builtin_reg_floor(&self) -> u8 {
+        self.builtin_reg_map
+            .iter()
+            .map(|(_, reg)| reg.saturating_add(1))
+            .max()
+            .unwrap_or(0)
+    }
+
     pub(crate) fn pre_register_builtins(&mut self) {
-        let builtins = [
-            "NaN",
-            "undefined",
-            "Infinity",
-            "globalThis",
-            "Object",
-            "Array",
-            "String",
-            "Number",
-            "Boolean",
-            "Function",
-            "Error",
-            "TypeError",
-            "ReferenceError",
-            "RangeError",
-            "SyntaxError",
-            "URIError",
-            "EvalError",
-            "Math",
-            "JSON",
-            "Promise",
-            "Date",
-            "Set",
-            "Map",
-            "RegExp",
-            "Symbol",
-            "parseInt",
-            "parseFloat",
-            "isNaN",
-            "isFinite",
-            // Out-of-scope constructors: bound as TypeError-throwing stubs
-            "Proxy",
-            "WeakMap",
-            "WeakSet",
-            "WeakRef",
-            "FinalizationRegistry",
-            "Atomics",
-            "SharedArrayBuffer",
-            "ArrayBuffer",
-            "DataView",
-            "Iterator",
-            "BigInt",
-            // TypedArray family stubs
-            "Int8Array",
-            "Uint8Array",
-            "Uint8ClampedArray",
-            "Int16Array",
-            "Uint16Array",
-            "Int32Array",
-            "Uint32Array",
-            "Float32Array",
-            "Float64Array",
-            "BigInt64Array",
-            "BigUint64Array",
-            // Reflect namespace object
-            "Reflect",
-            // URI utility functions
-            "escape",
-            "unescape",
-            "encodeURI",
-            "decodeURI",
-            "encodeURIComponent",
-            "decodeURIComponent",
-        ];
-        for name in &builtins {
-            let reg = self.alloc_reg();
-            self.symbols.pre_register_global(name, reg);
-            self.builtin_reg_map.push((name.to_string(), reg));
-        }
+        // Builtin globals are resolved lazily by lookup_or_builtin(). Keeping this
+        // hook preserves the compile pipeline without reserving ~60 registers in
+        // every module.
     }
 }
 
@@ -456,7 +485,7 @@ impl Compiler {
 
         // Inherit parent's global scope entries so previously-declared function names
         // are visible from within the body.
-        let mut inherited_reg_start = ctx.builtin_reg_map.len() as u8;
+        let mut inherited_reg_start = 1u8.max(ctx.builtin_reg_floor());
         for (name, binding) in &parent_ctx.symbols.scopes[0].bindings {
             ctx.symbols.scopes[0].bindings.insert(
                 name.clone(),
@@ -479,7 +508,7 @@ impl Compiler {
             );
             inherited_reg_start = inherited_reg_start.max(reg.saturating_add(1));
         }
-        ctx.reserved_reg_start = inherited_reg_start;
+        ctx.reserved_reg_start = inherited_reg_start.max(1);
 
         // Align next_reg with builtin count so both count and emit passes start at the
         // same register offset (params go after builtin slots).
@@ -502,6 +531,7 @@ impl Compiler {
             self.count_statement(stmt, &mut ctx);
         }
         ctx.max_regs = ctx.max_regs.max(1);
+        ctx.reg_overflow = false;
         ctx.reset_regs();
 
         // Emit pass - reallocate params (same order = same regs after reset)
@@ -584,6 +614,7 @@ impl Compiler {
             self.count_statement(stmt, &mut ctx);
         }
         ctx.max_regs = ctx.max_regs.max(1);
+        ctx.reg_overflow = false;
         ctx.reset_regs();
 
         // First sub-pass: emit FunctionDeclarations (hoisting)

@@ -147,7 +147,7 @@ impl Compiler {
         match key {
             PropertyKey::Identifier(ident) => {
                 let name = ident.name.as_str();
-                let var_reg = ctx.lookup(name)?;
+                let var_reg = ctx.lookup_or_builtin(name)?;
                 let key_reg = ctx.alloc_reg();
                 ctx.emit(opcode::encode(OpCode::LOAD_VAR, key_reg, var_reg, 0));
                 Ok(key_reg)
@@ -1097,6 +1097,7 @@ impl Compiler {
                 Ok(r)
             }
             Expression::BinaryExpression(bin) => {
+                let checkpoint = ctx.reg_checkpoint();
                 let left = self.emit_expression(&bin.left, ctx)?;
                 let right = self.emit_expression(&bin.right, ctx)?;
                 let op = match bin.operator {
@@ -1123,42 +1124,38 @@ impl Compiler {
                     BinaryOperator::StrictInequality => OpCode::STRICT_NEQ,
                     _ => return Err(format!("unsupported binary operator: {:?}", bin.operator)),
                 };
-                let r = ctx.alloc_reg();
-                ctx.emit(opcode::encode(op, r, left, right));
-                Ok(r)
+                ctx.emit(opcode::encode(op, left, left, right));
+                if is_side_effect_free(&bin.left) && is_side_effect_free(&bin.right) {
+                    ctx.restore_reg_checkpoint(checkpoint.saturating_add(1).max(left.saturating_add(1)));
+                }
+                Ok(left)
             }
             Expression::UnaryExpression(un) => {
                 let arg = self.emit_expression(&un.argument, ctx)?;
                 match un.operator {
                     UnaryOperator::UnaryNegation => {
-                        let r = ctx.alloc_reg();
-                        ctx.emit(opcode::encode(OpCode::NEG, r, arg, 0));
-                        Ok(r)
+                        ctx.emit(opcode::encode(OpCode::NEG, arg, arg, 0));
+                        Ok(arg)
                     }
                     UnaryOperator::Typeof => {
-                        let r = ctx.alloc_reg();
-                        ctx.emit(opcode::encode(OpCode::TYPEOF, r, arg, 0));
-                        Ok(r)
+                        ctx.emit(opcode::encode(OpCode::TYPEOF, arg, arg, 0));
+                        Ok(arg)
                     }
                     UnaryOperator::Void => {
-                        let r = ctx.alloc_reg();
-                        ctx.emit(opcode::encode(OpCode::VOID, r, arg, 0));
-                        Ok(r)
+                        ctx.emit(opcode::encode(OpCode::VOID, arg, arg, 0));
+                        Ok(arg)
                     }
                     UnaryOperator::LogicalNot => {
-                        let r = ctx.alloc_reg();
-                        ctx.emit(opcode::encode(OpCode::NOT, r, arg, 0));
-                        Ok(r)
+                        ctx.emit(opcode::encode(OpCode::NOT, arg, arg, 0));
+                        Ok(arg)
                     }
                     UnaryOperator::BitwiseNot => {
-                        let r = ctx.alloc_reg();
-                        ctx.emit(opcode::encode(OpCode::BIT_NOT, r, arg, 0));
-                        Ok(r)
+                        ctx.emit(opcode::encode(OpCode::BIT_NOT, arg, arg, 0));
+                        Ok(arg)
                     }
                     UnaryOperator::UnaryPlus => {
-                        let r = ctx.alloc_reg();
-                        ctx.emit(opcode::encode(OpCode::UNARY_PLUS, r, arg, 0));
-                        Ok(r)
+                        ctx.emit(opcode::encode(OpCode::UNARY_PLUS, arg, arg, 0));
+                        Ok(arg)
                     }
                     UnaryOperator::Delete => match &un.argument {
                         Expression::Identifier(_) => {
@@ -1168,17 +1165,15 @@ impl Compiler {
                             let obj_reg = self.emit_expression(&member.object, ctx)?;
                             let prop_name = member.property.name.as_str();
                             let const_idx = ctx.add_constant(Constant::String(prop_name.to_string()));
-                            let r = ctx.alloc_reg();
-                            ctx.emit(opcode::encode(OpCode::DELETE_PROP_STATIC, r, obj_reg, 0));
+                            ctx.emit(opcode::encode(OpCode::DELETE_PROP_STATIC, obj_reg, obj_reg, 0));
                             ctx.emit(const_idx as u32);
-                            Ok(r)
+                            Ok(obj_reg)
                         }
                         Expression::ComputedMemberExpression(member) => {
                             let obj_reg = self.emit_expression(&member.object, ctx)?;
                             let key_reg = self.emit_expression(&member.expression, ctx)?;
-                            let r = ctx.alloc_reg();
-                            ctx.emit(opcode::encode(OpCode::DELETE_PROP_DYNAMIC, r, obj_reg, key_reg));
-                            Ok(r)
+                            ctx.emit(opcode::encode(OpCode::DELETE_PROP_DYNAMIC, obj_reg, obj_reg, key_reg));
+                            Ok(obj_reg)
                         }
                         _ => Err("invalid delete target".into()),
                     },
@@ -1298,6 +1293,7 @@ impl Compiler {
             Expression::ObjectExpression(obj) => {
                 let obj_reg = ctx.alloc_reg();
                 ctx.emit(opcode::encode(OpCode::NEW_OBJECT, obj_reg, 0, 0));
+                let prop_checkpoint = ctx.reg_checkpoint();
                 for prop in &obj.properties {
                     let oxide_parser::ObjectPropertyKind::ObjectProperty(p) = prop else {
                         return Err("spread properties not yet supported".into());
@@ -1321,6 +1317,7 @@ impl Compiler {
                         let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
                         ctx.emit(opcode::encode(OpCode::DEFINE_ACCESSOR, obj_reg, get_reg, set_reg));
                         ctx.emit(idx as u32);
+                        ctx.restore_reg_checkpoint(prop_checkpoint);
                     } else {
                         let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
                         let key_reg = ctx.alloc_reg();
@@ -1334,6 +1331,7 @@ impl Compiler {
                             }
                         }
                         ctx.emit(opcode::encode(OpCode::SET_PROP, obj_reg, val_reg, key_reg));
+                        ctx.restore_reg_checkpoint(prop_checkpoint);
                     }
                 }
                 Ok(obj_reg)
@@ -1342,6 +1340,7 @@ impl Compiler {
                 let arr_reg = ctx.alloc_reg();
                 let n = arr.elements.len() as u16;
                 ctx.emit(opcode::encode(OpCode::NEW_ARRAY, arr_reg, (n & 0xFF) as u8, ((n >> 8) & 0xFF) as u8));
+                let elem_checkpoint = ctx.reg_checkpoint();
                 for (i, elem) in arr.elements.iter().enumerate() {
                     let Some(e) = elem.as_expression() else {
                         return Err("spread not supported".into());
@@ -1351,6 +1350,7 @@ impl Compiler {
                     let idx = ctx.add_constant(Constant::Int(i as i32));
                     ctx.emit_load_const(idx_reg, idx);
                     ctx.emit(opcode::encode(OpCode::SET_ELEM, arr_reg, idx_reg, val_reg));
+                    ctx.restore_reg_checkpoint(elem_checkpoint);
                 }
                 Ok(arr_reg)
             }
@@ -1509,7 +1509,7 @@ impl Compiler {
                 _ => Err("member update not yet supported".into()),
             },
             Expression::Identifier(ident) => {
-                let var_reg = ctx.lookup(ident.name.as_str())?;
+                let var_reg = ctx.lookup_or_builtin(ident.name.as_str())?;
                 let r = ctx.alloc_reg();
                 ctx.emit(opcode::encode(OpCode::LOAD_VAR, r, var_reg, 0));
                 Ok(r)

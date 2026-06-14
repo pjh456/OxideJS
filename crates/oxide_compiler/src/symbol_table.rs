@@ -101,6 +101,13 @@ impl SymbolTable {
         Err(format!("Identifier '{name}' is not defined"))
     }
 
+    pub fn lookup_any(&self, name: &str) -> Option<u8> {
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.bindings.get(name).map(|binding| binding.reg))
+    }
+
     pub fn lookup_or_global(&mut self, name: &str, reg_for_new: u8) -> u8 {
         for scope in self.scopes.iter().rev() {
             if let Some(b) = scope.bindings.get(name) {
