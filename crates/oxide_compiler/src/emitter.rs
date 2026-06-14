@@ -1792,17 +1792,6 @@ impl Compiler {
                 let first_arg_reg = if arg_regs.is_empty() { 0u8 } else { arg_regs[0] };
                 let op = match &call.callee {
                     Expression::Identifier(ident) if ctx.is_builtin(ident.name.as_str()) => OpCode::CALL_NATIVE,
-                    Expression::StaticMemberExpression(m) => {
-                        if let Expression::Identifier(ident) = &m.object {
-                            if ctx.is_builtin(ident.name.as_str()) {
-                                OpCode::CALL_NATIVE
-                            } else {
-                                OpCode::CALL
-                            }
-                        } else {
-                            OpCode::CALL
-                        }
-                    }
                     _ => OpCode::CALL,
                 };
                 ctx.emit(opcode::encode(op, callee_reg, this_reg, first_arg_reg));

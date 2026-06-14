@@ -27,6 +27,28 @@ fn object_keys_has_own_property() {
 }
 
 #[test]
+fn object_member_native_call_uses_regular_call_path() {
+    let (_vm, result) = eval("Object.keys({a:1}).length").unwrap();
+    assert_eq!(result.as_int(), 1);
+}
+
+#[test]
+fn object_member_call_allows_user_overwrite() {
+    let (_vm, result) = eval("Object.keys = function() { return 9; }; Object.keys()").unwrap();
+    assert_eq!(result.as_int(), 9);
+}
+
+#[test]
+fn missing_object_member_call_is_not_call_native_target_error() {
+    let err = match eval("Object.noSuchMethod()") {
+        Ok(_) => panic!("missing member call should fail"),
+        Err(err) => err,
+    };
+    assert!(err.contains("CALL target is not callable"), "unexpected error: {err}");
+    assert!(!err.contains("CALL_NATIVE target"), "unexpected CALL_NATIVE path: {err}");
+}
+
+#[test]
 fn object_create_null_proto() {
     let (_vm, _result) = eval("Object.create(null)").unwrap();
 }
