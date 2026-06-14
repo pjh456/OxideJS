@@ -151,7 +151,9 @@ impl PropIndex for i32 {
 ///     [29]     is_array
 ///     [30]     is_extensible
 ///     [31]     is_function
-///   native_arg_count: u8 (1 byte + 3 pad)
+///   native_arg_count: u8 (1 byte)
+///   type_tag: u8 — OBJ_TYPE_* constant identifying wrapper/exotic object kind (1 byte)
+///   _pad: [u8; 2]
 ///   hash_props: *mut u8 (8 bytes, points to Box<Vec<JsValue>>)
 ///   prop_meta: *mut u8 (8 bytes, points to Box<Vec<Option<PropMetaEntry>>>)
 ///   proto: JsValue (8 bytes)
@@ -165,7 +167,8 @@ impl PropIndex for i32 {
 pub struct JsObject {
     header: u32,
     native_arg_count: u8,
-    _pad: [u8; 3],
+    pub type_tag: u8,
+    _pad: [u8; 2],
     hash_props: *mut u8,
     prop_meta: *mut u8,
     proto: JsValue,
@@ -179,11 +182,25 @@ pub struct JsObject {
 }
 
 impl JsObject {
+    pub const OBJ_TYPE_PLAIN: u8 = 0;
+    pub const OBJ_TYPE_DATE: u8 = 1;
+    pub const OBJ_TYPE_REGEXP: u8 = 2;
+    pub const OBJ_TYPE_BOOLEAN_OBJ: u8 = 3;
+    pub const OBJ_TYPE_NUMBER_OBJ: u8 = 4;
+    pub const OBJ_TYPE_STRING_OBJ: u8 = 5;
+
+    #[inline] pub fn is_date_obj(&self) -> bool { self.type_tag == Self::OBJ_TYPE_DATE }
+    #[inline] pub fn is_regexp_obj(&self) -> bool { self.type_tag == Self::OBJ_TYPE_REGEXP }
+    #[inline] pub fn is_boolean_obj(&self) -> bool { self.type_tag == Self::OBJ_TYPE_BOOLEAN_OBJ }
+    #[inline] pub fn is_number_obj(&self) -> bool { self.type_tag == Self::OBJ_TYPE_NUMBER_OBJ }
+    #[inline] pub fn is_string_obj(&self) -> bool { self.type_tag == Self::OBJ_TYPE_STRING_OBJ }
+
     pub fn new_empty(shape_id: ShapeId, proto: JsValue) -> Self {
         Self {
             header: (shape_id & 0x00FF_FFFF) | (1 << 30),
             native_arg_count: 0,
-            _pad: [0; 3],
+            type_tag: 0,
+            _pad: [0; 2],
             hash_props: std::ptr::null_mut(),
             prop_meta: std::ptr::null_mut(),
             proto,
@@ -201,7 +218,8 @@ impl JsObject {
         let mut obj = Self {
             header: (shape_id & 0x00FF_FFFF) | (1 << 30) | (1 << 29),
             native_arg_count: 0,
-            _pad: [0; 3],
+            type_tag: 0,
+            _pad: [0; 2],
             hash_props: std::ptr::null_mut(),
             prop_meta: std::ptr::null_mut(),
             proto,

@@ -21,6 +21,12 @@ fn get_regexp_ptr(vm: &Vm, args: &[u8]) -> Result<*mut JsObject, JsValue> {
     if ptr.is_null() {
         return Err(JsValue::string(vm.kernel().string_forge().intern("TypeError: null object").0, 0));
     }
+    if !unsafe { &*ptr }.is_regexp_obj() {
+        return Err(JsValue::string(
+            vm.kernel().string_forge().intern("TypeError: RegExp.prototype method called on non-RegExp object").0,
+            0,
+        ));
+    }
     Ok(ptr)
 }
 
@@ -112,6 +118,7 @@ pub fn regexp_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     set_prop(&mut obj, "dotAll", JsValue::bool(false), vm);
     set_prop(&mut obj, "sticky", JsValue::bool(false), vm);
     set_prop(&mut obj, "unicode", JsValue::bool(false), vm);
+    obj.type_tag = JsObject::OBJ_TYPE_REGEXP;
 
     let obj_ptr = vm.epoch().alloc(obj);
     NativeResult::Ok(JsValue::from_js_object(obj_ptr))

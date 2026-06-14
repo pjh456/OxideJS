@@ -9,27 +9,16 @@ use crate::native::NativeResult;
 use crate::vm::Vm;
 
 fn get_timestamp(obj: &JsObject) -> f64 {
-    obj.get_prop_at(0).as_double()
+    let v = obj.get_prop_at(0);
+    if v.is_double() { v.as_double() } else { f64::NAN }
 }
 
 fn set_timestamp(obj: &mut JsObject, ms: f64) {
     obj.set_prop_at(0, JsValue::float(ms));
 }
 
-fn is_date(vm: &Vm, obj: &JsObject) -> bool {
-    let date_proto = vm.kernel().builtin_world().date_proto.as_ptr() as *mut JsObject;
-    if date_proto.is_null() {
-        return false;
-    }
-    let proto_ptr = obj.proto().as_js_object_ptr();
-    if proto_ptr.is_null() {
-        return false;
-    }
-    std::ptr::eq(proto_ptr, date_proto)
-}
-
 fn ensure_date(vm: &mut Vm, obj: &JsObject) -> Result<(), JsValue> {
-    if !is_date(vm, obj) {
+    if !obj.is_date_obj() {
         return Err(crate::builtins::error::create_type_error(vm, "called on incompatible receiver"));
     }
     Ok(())
@@ -176,7 +165,7 @@ pub fn date_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
             if ptr.is_null() {
                 false
             } else {
-                is_date(vm, unsafe { &*ptr })
+                unsafe { &*ptr }.is_date_obj()
             }
         } {
             let obj = unsafe { &*val.as_js_object_ptr() };
@@ -201,6 +190,7 @@ pub fn date_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
         EMPTY_SHAPE_ID,
         JsValue::from_js_object(vm.kernel().builtin_world().date_proto.as_ptr() as *mut JsObject),
     );
+    obj.type_tag = JsObject::OBJ_TYPE_DATE;
     obj.set_prop_at(0, JsValue::float(timestamp));
 
     let ptr = vm.epoch().alloc(obj);

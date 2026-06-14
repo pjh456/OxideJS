@@ -11,35 +11,24 @@ fn this_string(vm: &Vm, args: &[u8]) -> String {
     coercion::to_string(vm.kernel().string_forge().as_ref(), vm.reg(args[0]))
 }
 
-fn boxed_primitive_value(this_val: JsValue) -> Option<JsValue> {
-    if !this_val.is_object() {
-        return None;
-    }
-    let ptr = this_val.as_js_object_ptr();
-    if ptr.is_null() {
-        return None;
-    }
-    let obj = unsafe { &*ptr };
-    let val = obj.get_prop_at(0);
-    if val.is_undefined() && obj.prop_count() == 0 {
-        None
-    } else {
-        Some(val)
-    }
-}
-
 pub fn string_value_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(args[0]);
     if this_val.is_string() {
         return NativeResult::Ok(this_val);
     }
-    match boxed_primitive_value(this_val) {
-        Some(v) => NativeResult::Ok(v),
-        None => NativeResult::Err(crate::builtins::error::create_type_error(
-            vm,
-            "String.prototype.valueOf called on non-String object",
-        )),
+    if this_val.is_object() {
+        let ptr = this_val.as_js_object_ptr();
+        if !ptr.is_null() {
+            let obj = unsafe { &*ptr };
+            if obj.is_string_obj() {
+                return NativeResult::Ok(obj.get_prop_at(0));
+            }
+        }
     }
+    NativeResult::Err(crate::builtins::error::create_type_error(
+        vm,
+        "String.prototype.valueOf called on non-String object",
+    ))
 }
 
 fn make_string_array(vm: &mut Vm, parts: &[String]) -> JsValue {
