@@ -151,3 +151,22 @@ fn regression_delete_dynamic_property_throws_type_error() {
         "vm error: uncaught TypeError: property deletion not supported"
     );
 }
+
+#[test]
+fn regression_large_expression_no_register_overflow() {
+    let expr = std::iter::repeat("1").take(120).collect::<Vec<_>>().join(" + ");
+    let source = format!("function f() {{ return {expr}; }} f()");
+    assert_eq!(eval(&source), "120");
+}
+
+#[test]
+fn regression_many_declarations_keep_stable_registers() {
+    let decls = (0..120).map(|i| format!("var v{i} = {i};")).collect::<Vec<_>>().join("");
+    let source = format!("{decls} v0 + v57 + v119");
+    assert_eq!(eval(&source), "176");
+}
+
+#[test]
+fn regression_method_call_receiver_survives_register_reuse() {
+    assert_eq!(eval("var o = { x: 41, f: function() { return this.x + 1; } }; o.f()"), "42");
+}

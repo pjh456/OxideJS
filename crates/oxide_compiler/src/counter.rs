@@ -446,10 +446,13 @@ impl Compiler {
     pub(crate) fn count_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
         match expr {
             Expression::BinaryExpression(bin) => {
+                let checkpoint = ctx.reg_checkpoint();
                 self.count_expression(&bin.left, ctx);
                 self.count_expression(&bin.right, ctx);
-                ctx.alloc_reg();
                 ctx.projected_pc += 1; // ADD/SUB/MUL/DIV/etc.
+                if is_side_effect_free(&bin.left) && is_side_effect_free(&bin.right) {
+                    ctx.restore_reg_checkpoint(checkpoint.saturating_add(1));
+                }
             }
             Expression::UnaryExpression(un) => {
                 match un.operator {
@@ -460,13 +463,11 @@ impl Compiler {
                             }
                             Expression::StaticMemberExpression(member) => {
                                 self.count_expression(&member.object, ctx);
-                                ctx.alloc_reg();
                                 ctx.projected_pc += 2; // DELETE_PROP_STATIC + ext word
                             }
                             Expression::ComputedMemberExpression(member) => {
                                 self.count_expression(&member.object, ctx);
                                 self.count_expression(&member.expression, ctx);
-                                ctx.alloc_reg();
                                 ctx.projected_pc += 1; // DELETE_PROP_DYNAMIC
                             }
                             _ => {}
@@ -474,7 +475,6 @@ impl Compiler {
                     }
                     _ => {
                         self.count_expression(&un.argument, ctx);
-                        ctx.alloc_reg();
                         ctx.projected_pc += 1; // NEG/TYPEOF/VOID/NOT
                     }
                 }
@@ -602,6 +602,7 @@ impl Compiler {
             Expression::ObjectExpression(obj) => {
                 ctx.alloc_reg();
                 ctx.projected_pc += 1; // NEW_OBJECT
+                let prop_checkpoint = ctx.reg_checkpoint();
                 for prop in &obj.properties {
                     if let oxide_parser::ObjectPropertyKind::ObjectProperty(p) = prop {
                         if matches!(p.kind, oxide_parser::PropertyKind::Get | oxide_parser::PropertyKind::Set) {
@@ -614,6 +615,7 @@ impl Compiler {
                             self.count_expression(&p.value, ctx);
                             ctx.projected_pc += 1; // SET_PROP
                         }
+                        ctx.restore_reg_checkpoint(prop_checkpoint);
                     }
                 }
             }
@@ -713,12 +715,14 @@ impl Compiler {
             Expression::ArrayExpression(arr) => {
                 ctx.alloc_reg();
                 ctx.projected_pc += 1; // NEW_ARRAY
+                let elem_checkpoint = ctx.reg_checkpoint();
                 for elem in &arr.elements {
                     if let Some(e) = elem.as_expression() {
                         self.count_expression(e, ctx);
                         ctx.alloc_reg();
                         ctx.projected_pc += 1; // LOAD_CONST index
                         ctx.projected_pc += 1; // SET_ELEM
+                        ctx.restore_reg_checkpoint(elem_checkpoint);
                     }
                 }
             }
@@ -750,6 +754,13 @@ impl Compiler {
             Expression::ThisExpression(_) => {
                 ctx.alloc_reg();
                 ctx.projected_pc += 1; // LOAD_VAR from reg 254
+            }
+            Expression::Identifier(ident) => {
+                if CompileCtx::is_known_builtin(ident.name.as_str()) {
+                    let _ = ctx.lookup_or_builtin(ident.name.as_str());
+                }
+                ctx.alloc_reg();
+                ctx.projected_pc += 1; // LOAD_VAR
             }
             Expression::UpdateExpression(update) => match &update.argument {
                 SimpleAssignmentTarget::AssignmentTargetIdentifier(_) => {
