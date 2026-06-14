@@ -61,6 +61,11 @@ pub fn create_syntax_error(vm: &mut Vm, msg: &str) -> JsValue {
     create_error_object(vm, proto_ptr, "SyntaxError", msg)
 }
 
+pub fn create_uri_error(vm: &mut Vm, msg: &str) -> JsValue {
+    let proto_ptr = P::as_ptr(&vm.session().builtin_world().uri_error_proto) as *mut JsObject;
+    create_error_object(vm, proto_ptr, "URIError", msg)
+}
+
 fn get_msg(vm: &mut Vm, args: &[u8]) -> String {
     if args.len() > 1 {
         coercion::to_string(vm.kernel_core().string_forge().as_ref(), vm.reg(args[1]))

@@ -13,6 +13,10 @@ pub fn bind_global(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         &[
             ("escape", crate::builtins::global::js_escape as *const (), 1),
             ("unescape", crate::builtins::global::js_unescape as *const (), 1),
+            ("encodeURI", crate::builtins::global::encode_uri as *const (), 1),
+            ("decodeURI", crate::builtins::global::decode_uri as *const (), 1),
+            ("encodeURIComponent", crate::builtins::global::encode_uri_component as *const (), 1),
+            ("decodeURIComponent", crate::builtins::global::decode_uri_component as *const (), 1),
         ],
     );
 }
