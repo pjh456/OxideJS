@@ -725,7 +725,7 @@ fn run_tests() -> bool {
         .filter(|&n| n > 0)
         .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4))
         .min(total.max(1));
-    let _trace_paths = std::env::var_os("OXIDE_TEST262_TRACE").is_some();
+    let log_running_tests = std::env::var_os("OXIDE_TEST262_RUNNING_LOG").is_some();
 
     eprintln!("running on {workers} worker thread(s)");
 
@@ -771,12 +771,13 @@ fn run_tests() -> bool {
                                 break;
                             }
                             let path_str = paths_ref[i].display().to_string();
-                            // Always record the current test path so a hard crash leaves
-                            // it visible: the panic hook prints it for Rust panics, and
-                            // the unconditional eprintln! below is the last stderr line
-                            // for OS-level crashes (ACCESS_VIOLATION, stack overflow).
+                            // Always record the current test path so the panic hook can
+                            // identify Rust panics. Set OXIDE_TEST262_RUNNING_LOG=1 when
+                            // diagnosing OS-level crashes that need the last stderr line.
                             CURRENT_TEST_PATH.with(|p| *p.borrow_mut() = path_str.clone());
-                            eprintln!("  [{tid:?}] running: {path_str}");
+                            if log_running_tests {
+                                eprintln!("  [{tid:?}] running: {path_str}");
+                            }
 
                             let result = process_path(
                                 &paths_ref[i],
