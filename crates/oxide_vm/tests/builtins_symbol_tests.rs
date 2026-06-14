@@ -123,3 +123,38 @@ fn symbol_iterator_exists() {
     let result = eval(&mut vm, "typeof Symbol.iterator").unwrap();
     assert_eq!(to_str(&vm, result), "object");
 }
+
+#[test]
+fn symbol_for_reuses_registered_symbol() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var s1 = Symbol.for('shared'); var s2 = Symbol.for('shared'); s1 === s2").unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn symbol_for_is_distinct_from_symbol_constructor() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var s1 = Symbol.for('shared'); var s2 = Symbol('shared'); s1 === s2").unwrap();
+    assert!(!result.as_bool());
+}
+
+#[test]
+fn symbol_key_for_returns_registered_key() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Symbol.keyFor(Symbol.for('shared'))").unwrap();
+    assert_eq!(to_str(&vm, result), "shared");
+}
+
+#[test]
+fn symbol_key_for_unregistered_symbol_returns_undefined() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Symbol.keyFor(Symbol('shared'))").unwrap();
+    assert!(result.is_undefined());
+}
+
+#[test]
+fn symbol_key_for_non_symbol_throws_type_error() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "try { Symbol.keyFor(42) } catch (e) { e instanceof TypeError }").unwrap();
+    assert!(result.as_bool());
+}

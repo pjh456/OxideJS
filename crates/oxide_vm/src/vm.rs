@@ -1,5 +1,6 @@
 #![allow(clippy::arc_with_non_send_sync)]
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use oxide_compiler::module::CompiledModule;
@@ -151,6 +152,7 @@ pub struct Vm {
     pub(crate) pending_error_kind: Option<&'static str>,
     pub(crate) symbol_counter: u32,
     pub(crate) symbol_descriptions: Vec<String>,
+    pub(crate) symbol_registry: HashMap<String, u32>,
     #[allow(dead_code)]
     pub(crate) for_of_iters: Vec<*mut u8>,
     pub(crate) root_reg_limit: u8,
@@ -1182,6 +1184,20 @@ mod tests {
         assert!(vm.pending_error_kind.is_none());
         assert!(vm.bytecode.is_empty());
         assert!(vm.constants.is_empty());
+    }
+
+    #[test]
+    fn full_reset_clears_symbol_state() {
+        let mut vm = Vm::new();
+        vm.symbol_counter = 1;
+        vm.symbol_descriptions.push("shared".to_string());
+        vm.symbol_registry.insert("shared".to_string(), 0);
+
+        vm.full_reset();
+
+        assert_eq!(vm.symbol_counter, 0);
+        assert!(vm.symbol_descriptions.is_empty());
+        assert!(vm.symbol_registry.is_empty());
     }
 
     #[test]
