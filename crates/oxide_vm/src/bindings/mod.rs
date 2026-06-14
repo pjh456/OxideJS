@@ -10,6 +10,7 @@ pub mod bind_map;
 pub mod bind_math;
 pub mod bind_number;
 pub mod bind_object;
+pub mod bind_reflect;
 pub mod bind_regexp;
 pub mod bind_set;
 pub mod bind_string;
@@ -99,6 +100,7 @@ pub fn init_kernel_builtins(core: &Arc<KernelCore>, session: &mut KernelSession)
     bind_regexp::bind_regexp(core, session, global);
     bind_symbol::bind_symbol(core, session, global);
     bind_iterator::bind_iterator(core, session, global);
+    bind_reflect::bind_reflect(core, session, global);
     bind_global::bind_global(core, session, global);
     bind_stubs::bind_stubs(core, session, global);
 

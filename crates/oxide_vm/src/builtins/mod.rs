@@ -10,6 +10,7 @@ pub mod map;
 pub mod math;
 pub mod number;
 pub mod object;
+pub mod reflect;
 pub mod regexp;
 pub mod set;
 pub mod string;
