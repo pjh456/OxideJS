@@ -200,6 +200,7 @@ pub struct BuiltinWorld {
     pub sym_search: P<JsObject>,
     pub sym_split: P<JsObject>,
     pub sym_iterator: P<JsObject>,
+    pub stub_objects: Vec<P<JsObject>>,
 }
 
 fn intern_label(string_forge: &StringForge, label: &str) -> u32 {
@@ -290,6 +291,7 @@ impl BuiltinWorld {
         let sym_search = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let sym_split = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let sym_iterator = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let stub_objects = Vec::new();
 
         /// Overwrite placeholder slots (set up by make_pair) with real values.
         /// ctor.vec[0] = constructor.prototype -> proto
@@ -380,6 +382,7 @@ impl BuiltinWorld {
             sym_search,
             sym_split,
             sym_iterator,
+            stub_objects,
         }
     }
 

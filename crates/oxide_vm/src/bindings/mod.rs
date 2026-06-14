@@ -3,6 +3,7 @@ pub mod bind_boolean;
 pub mod bind_date;
 pub mod bind_error;
 pub mod bind_function;
+pub mod bind_global;
 pub mod bind_json;
 pub mod bind_map;
 pub mod bind_math;
@@ -11,6 +12,7 @@ pub mod bind_object;
 pub mod bind_regexp;
 pub mod bind_set;
 pub mod bind_string;
+pub mod bind_stubs;
 pub mod bind_symbol;
 
 use std::sync::Arc;
@@ -77,7 +79,7 @@ pub(crate) fn bind_global_value(core: &Arc<KernelCore>, global: &mut JsObject, n
     global.bump_generation();
 }
 
-pub fn init_kernel_builtins(core: &Arc<KernelCore>, session: &KernelSession) {
+pub fn init_kernel_builtins(core: &Arc<KernelCore>, session: &mut KernelSession) {
     let global_ptr = session.global_object().as_ptr() as *mut oxide_types::object::JsObject;
     let global = unsafe { &mut *global_ptr };
 
@@ -95,6 +97,8 @@ pub fn init_kernel_builtins(core: &Arc<KernelCore>, session: &KernelSession) {
     bind_function::bind_function(core, session, global);
     bind_regexp::bind_regexp(core, session, global);
     bind_symbol::bind_symbol(core, session, global);
+    bind_global::bind_global(core, session, global);
+    bind_stubs::bind_stubs(core, session, global);
 
     bind_global_value(core, global, "globalThis", JsValue::from_js_object(global_ptr));
 }
