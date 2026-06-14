@@ -15,11 +15,14 @@ pub fn iterator_constructor(vm: &mut Vm, _args: &[u8]) -> NativeResult {
 
 pub fn iterator_from(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let iterable = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let inner = match get_iterator(vm, iterable) {
-        Ok(inner) => inner,
-        Err(err) => return err,
-    };
+    match make_iterator_for_value(vm, iterable) {
+        Ok(iterator) => NativeResult::Ok(iterator),
+        Err(err) => NativeResult::Err(err),
+    }
+}
 
+pub(crate) fn make_iterator_for_value(vm: &mut Vm, value: JsValue) -> Result<JsValue, JsValue> {
+    let inner = get_iterator(vm, value)?;
     let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
     let wrapper = vm
         .epoch()
@@ -35,7 +38,7 @@ pub fn iterator_from(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let next_fn = make_native_function(vm, "next", iterator_wrapper_next as *const (), 0);
     vm.set_or_create_prop_value(wrapper_obj, next_si, next_fn);
 
-    NativeResult::Ok(JsValue::from_js_object(wrapper))
+    Ok(JsValue::from_js_object(wrapper))
 }
 
 pub fn iterator_wrapper_next(vm: &mut Vm, args: &[u8]) -> NativeResult {
@@ -80,7 +83,7 @@ pub fn iterator_wrapper_next(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Err(crate::builtins::error::create_type_error(vm, "value is not iterable"))
 }
 
-fn get_iterator(vm: &mut Vm, value: JsValue) -> Result<JsValue, NativeResult> {
+fn get_iterator(vm: &mut Vm, value: JsValue) -> Result<JsValue, JsValue> {
     if value.is_string() || is_array_value(value) {
         return Ok(value);
     }
@@ -95,7 +98,7 @@ fn get_iterator(vm: &mut Vm, value: JsValue) -> Result<JsValue, NativeResult> {
         }
     }
 
-    Err(NativeResult::Err(crate::builtins::error::create_type_error(vm, "value is not iterable")))
+    Err(crate::builtins::error::create_type_error(vm, "value is not iterable"))
 }
 
 fn next_array_like(vm: &mut Vm, wrapper: &mut JsObject, inner: JsValue, index_si: u32) -> Option<JsValue> {

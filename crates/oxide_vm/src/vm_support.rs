@@ -44,6 +44,7 @@ impl Vm {
             symbol_descriptions: Vec::new(),
             symbol_registry: std::collections::HashMap::new(),
             for_of_iters: Vec::new(),
+            last_for_of_result: JsValue::undefined(),
             root_reg_limit: 0,
             active_reg_limit: 0,
             native_call_depth: 0,
@@ -80,6 +81,7 @@ impl Vm {
             symbol_descriptions: Vec::new(),
             symbol_registry: std::collections::HashMap::new(),
             for_of_iters: Vec::new(),
+            last_for_of_result: JsValue::undefined(),
             root_reg_limit: 0,
             active_reg_limit: 0,
             native_call_depth: 0,
@@ -115,6 +117,7 @@ impl Vm {
         self.frames.clear();
         self.for_in_iters.clear();
         self.for_of_iters.clear();
+        self.last_for_of_result = JsValue::undefined();
         self.saved_bytecode_stack.clear();
         self.saved_constants_stack.clear();
         self.try_stack.clear();

@@ -1,15 +1,305 @@
 use crate::compiler::Label;
 use crate::opcode::{self, OpCode};
 use oxide_parser::{
-    AssignmentOperator, Class, ClassElement, Expression, ForStatementInit, ForStatementLeft, MethodDefinitionKind,
+    AssignmentOperator, AssignmentTarget, AssignmentTargetMaybeDefault, AssignmentTargetProperty, BindingPattern,
+    Class, ClassElement, Expression, ForStatementInit, ForStatementLeft, MethodDefinitionKind, ObjectAssignmentTarget,
     PropertyKey, PropertyKind, SimpleAssignmentTarget, Statement, UnaryOperator, UpdateOperator,
     VariableDeclarationKind,
 };
 
-use crate::compiler::{is_int_literal, is_side_effect_free, BinaryOperator, CompileCtx, Compiler, FunctionBodyContext};
+use crate::compiler::{
+    is_int_literal, is_side_effect_free, BinaryOperator, CompileCtx, Compiler, FunctionBodyContext, ParamSpec,
+};
 use crate::module::Constant;
 
 impl Compiler {
+    fn static_property_name(&self, key: &PropertyKey) -> Result<String, String> {
+        match key {
+            PropertyKey::StaticIdentifier(ident) => Ok(ident.name.as_str().to_string()),
+            PropertyKey::Identifier(ident) => Ok(ident.name.as_str().to_string()),
+            PropertyKey::StringLiteral(s) => Ok(s.value.to_string()),
+            PropertyKey::NumericLiteral(n) => Ok(n.value.to_string()),
+            _ => Err("computed destructuring keys not yet supported".into()),
+        }
+    }
+
+    fn emit_default_if_undefined(
+        &self, val_reg: u8, default_expr: &Expression, ctx: &mut CompileCtx,
+    ) -> Result<u8, String> {
+        let undef_reg = self.emit_undefined(ctx);
+        let eq_reg = ctx.alloc_reg();
+        ctx.emit(opcode::encode(OpCode::STRICT_EQ, eq_reg, val_reg, undef_reg));
+        let jump_pos = ctx.bytecode.len();
+        ctx.emit(opcode::encode_jmp_if_false(eq_reg, 0));
+        let default_reg = self.emit_expression(default_expr, ctx)?;
+        ctx.emit(opcode::encode(OpCode::LOAD_VAR, val_reg, default_reg, 0));
+        let after = ctx.bytecode.len();
+        let offset = after as isize - jump_pos as isize;
+        ctx.bytecode[jump_pos] = opcode::encode_jmp_if_false(eq_reg, offset as i16);
+        Ok(val_reg)
+    }
+
+    fn emit_bind_target(
+        &self, name: &str, src_reg: u8, kind: VariableDeclarationKind, is_const: bool, ctx: &mut CompileCtx,
+    ) -> Result<(), String> {
+        let var_reg = ctx.alloc_reg();
+        ctx.declare(name, var_reg, kind, is_const)?;
+        ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, src_reg, if is_const { 1 } else { 0 }));
+        ctx.init_var(name);
+        Ok(())
+    }
+
+    fn emit_assign_target(&self, target: &AssignmentTarget, src_reg: u8, ctx: &mut CompileCtx) -> Result<(), String> {
+        match target {
+            AssignmentTarget::AssignmentTargetIdentifier(id) => {
+                let name = id.name.as_str();
+                let var_reg = ctx.lookup_or_global(name);
+                ctx.emit(opcode::encode(
+                    OpCode::STORE_VAR,
+                    var_reg,
+                    src_reg,
+                    if ctx.lookup_const_flag(name) { 1 } else { 0 },
+                ));
+                Ok(())
+            }
+            AssignmentTarget::ArrayAssignmentTarget(ap) => self.emit_array_assignment(ap, src_reg, ctx),
+            AssignmentTarget::ObjectAssignmentTarget(op) => self.emit_object_assignment(op, src_reg, ctx),
+            _ => Err("assignment target not supported".into()),
+        }
+    }
+
+    pub(crate) fn emit_binding_pattern(
+        &self, pattern: &BindingPattern, src_reg: u8, kind: VariableDeclarationKind, is_const: bool,
+        ctx: &mut CompileCtx,
+    ) -> Result<(), String> {
+        match pattern {
+            BindingPattern::BindingIdentifier(bi) => {
+                self.emit_bind_target(bi.name.as_str(), src_reg, kind, is_const, ctx)
+            }
+            BindingPattern::ArrayPattern(ap) => self.emit_array_binding(ap, src_reg, kind, is_const, ctx),
+            BindingPattern::ObjectPattern(op) => self.emit_object_binding(op, src_reg, kind, is_const, ctx),
+            BindingPattern::AssignmentPattern(ap) => {
+                let val_reg = self.emit_default_if_undefined(src_reg, &ap.right, ctx)?;
+                self.emit_binding_pattern(&ap.left, val_reg, kind, is_const, ctx)
+            }
+        }
+    }
+
+    fn emit_array_binding(
+        &self, ap: &oxide_parser::ArrayPattern, src_reg: u8, kind: VariableDeclarationKind, is_const: bool,
+        ctx: &mut CompileCtx,
+    ) -> Result<(), String> {
+        ctx.emit(opcode::encode(OpCode::FOR_OF_INIT, 0, src_reg, 0));
+        for elem in &ap.elements {
+            let has_reg = ctx.alloc_reg();
+            ctx.emit(opcode::encode(OpCode::FOR_OF_DONE, has_reg, 0, 0));
+            let val_reg = ctx.alloc_reg();
+            ctx.emit(opcode::encode(OpCode::FOR_OF_NEXT, val_reg, 0, 0));
+            if let Some(pattern) = elem {
+                self.emit_binding_pattern(pattern, val_reg, kind, is_const, ctx)?;
+            }
+        }
+        if let Some(rest) = &ap.rest {
+            let rest_reg = self.emit_collect_rest_array(ctx)?;
+            self.emit_binding_pattern(&rest.argument, rest_reg, kind, is_const, ctx)?;
+        }
+        ctx.emit(opcode::encode(OpCode::FOR_OF_CLOSE, 0, 0, 0));
+        Ok(())
+    }
+
+    fn emit_collect_rest_array(&self, ctx: &mut CompileCtx) -> Result<u8, String> {
+        let rest_reg = ctx.alloc_reg();
+        ctx.emit(opcode::encode(OpCode::NEW_ARRAY, rest_reg, 0, 0));
+        let idx_reg = ctx.alloc_reg();
+        let zero_idx = ctx.add_constant(Constant::Int(0));
+        ctx.emit_load_const(idx_reg, zero_idx);
+        let loop_start = ctx.bytecode.len();
+        let has_reg = ctx.alloc_reg();
+        ctx.emit(opcode::encode(OpCode::FOR_OF_DONE, has_reg, 0, 0));
+        let end_jmp = ctx.bytecode.len();
+        ctx.emit(opcode::encode_jmp_if_false(has_reg, 0));
+        let val_reg = ctx.alloc_reg();
+        ctx.emit(opcode::encode(OpCode::FOR_OF_NEXT, val_reg, 0, 0));
+        ctx.emit(opcode::encode(OpCode::SET_ELEM, rest_reg, idx_reg, val_reg));
+        let tmp_reg = ctx.alloc_reg();
+        ctx.emit(opcode::encode(OpCode::INC_PRE, idx_reg, tmp_reg, tmp_reg));
+        let back = loop_start as isize - ctx.bytecode.len() as isize;
+        ctx.emit(opcode::encode_jmp(back as i16));
+        let after = ctx.bytecode.len();
+        ctx.bytecode[end_jmp] = opcode::encode_jmp_if_false(has_reg, (after as isize - end_jmp as isize) as i16);
+        Ok(rest_reg)
+    }
+
+    fn emit_object_property_read(&self, src_reg: u8, key: &str, ctx: &mut CompileCtx) -> u8 {
+        let prop_reg = ctx.alloc_reg();
+        ctx.emit(opcode::encode(OpCode::LOAD_VAR, prop_reg, src_reg, 0));
+        let key_idx = ctx.add_constant(Constant::String(key.to_string()));
+        let key_reg = ctx.alloc_reg();
+        ctx.emit_load_const(key_reg, key_idx);
+        ctx.emit(opcode::encode(OpCode::IC_GET_PROP, 0, prop_reg, key_reg));
+        ctx.emit(0);
+        ctx.emit(0);
+        ctx.emit(0);
+        prop_reg
+    }
+
+    fn emit_property_key_expression(&self, key: &PropertyKey, ctx: &mut CompileCtx) -> Result<u8, String> {
+        match key {
+            PropertyKey::Identifier(ident) => {
+                let name = ident.name.as_str();
+                let var_reg = ctx.lookup(name)?;
+                let key_reg = ctx.alloc_reg();
+                ctx.emit(opcode::encode(OpCode::LOAD_VAR, key_reg, var_reg, 0));
+                Ok(key_reg)
+            }
+            PropertyKey::StringLiteral(s) => {
+                let key_idx = ctx.add_constant(Constant::String(s.value.to_string()));
+                let key_reg = ctx.alloc_reg();
+                ctx.emit_load_const(key_reg, key_idx);
+                Ok(key_reg)
+            }
+            PropertyKey::NumericLiteral(n) => {
+                let key_idx = ctx.add_constant(Constant::Number(n.value));
+                let key_reg = ctx.alloc_reg();
+                ctx.emit_load_const(key_reg, key_idx);
+                Ok(key_reg)
+            }
+            PropertyKey::StaticIdentifier(ident) => {
+                let key_idx = ctx.add_constant(Constant::String(ident.name.as_str().to_string()));
+                let key_reg = ctx.alloc_reg();
+                ctx.emit_load_const(key_reg, key_idx);
+                Ok(key_reg)
+            }
+            _ => Err("computed destructuring key expression not supported".into()),
+        }
+    }
+
+    fn emit_object_property_read_key(
+        &self, src_reg: u8, key: &PropertyKey, computed: bool, ctx: &mut CompileCtx,
+    ) -> Result<(u8, Option<String>), String> {
+        if !computed {
+            let key_name = self.static_property_name(key)?;
+            let prop_reg = self.emit_object_property_read(src_reg, &key_name, ctx);
+            return Ok((prop_reg, Some(key_name)));
+        }
+        let prop_reg = ctx.alloc_reg();
+        ctx.emit(opcode::encode(OpCode::LOAD_VAR, prop_reg, src_reg, 0));
+        let key_reg = self.emit_property_key_expression(key, ctx)?;
+        let val_reg = ctx.alloc_reg();
+        ctx.emit(opcode::encode(OpCode::GET_PROP_DYNAMIC, prop_reg, key_reg, val_reg));
+        Ok((val_reg, None))
+    }
+
+    fn emit_object_binding(
+        &self, op: &oxide_parser::ObjectPattern, src_reg: u8, kind: VariableDeclarationKind, is_const: bool,
+        ctx: &mut CompileCtx,
+    ) -> Result<(), String> {
+        let mut excluded = Vec::new();
+        for prop in &op.properties {
+            let (prop_reg, static_key) = self.emit_object_property_read_key(src_reg, &prop.key, prop.computed, ctx)?;
+            if let Some(key) = static_key {
+                excluded.push(key);
+            }
+            self.emit_binding_pattern(&prop.value, prop_reg, kind, is_const, ctx)?;
+        }
+        if let Some(rest) = &op.rest {
+            let rest_reg = ctx.alloc_reg();
+            let excluded_idx = ctx.add_constant(Constant::String(excluded.join("\0")));
+            ctx.emit(opcode::encode(OpCode::REST_OBJECT, rest_reg, src_reg, 0));
+            ctx.emit(excluded_idx as u32);
+            self.emit_binding_pattern(&rest.argument, rest_reg, kind, is_const, ctx)?;
+        }
+        Ok(())
+    }
+
+    fn emit_assignment_maybe_default(
+        &self, target: &AssignmentTargetMaybeDefault, src_reg: u8, ctx: &mut CompileCtx,
+    ) -> Result<(), String> {
+        match target {
+            AssignmentTargetMaybeDefault::AssignmentTargetWithDefault(default) => {
+                let val_reg = self.emit_default_if_undefined(src_reg, &default.init, ctx)?;
+                self.emit_assign_target(&default.binding, val_reg, ctx)
+            }
+            AssignmentTargetMaybeDefault::ArrayAssignmentTarget(ap) => self.emit_array_assignment(ap, src_reg, ctx),
+            AssignmentTargetMaybeDefault::ObjectAssignmentTarget(op) => self.emit_object_assignment(op, src_reg, ctx),
+            AssignmentTargetMaybeDefault::AssignmentTargetIdentifier(id) => {
+                let name = id.name.as_str();
+                let var_reg = ctx.lookup_or_global(name);
+                ctx.emit(opcode::encode(
+                    OpCode::STORE_VAR,
+                    var_reg,
+                    src_reg,
+                    if ctx.lookup_const_flag(name) { 1 } else { 0 },
+                ));
+                Ok(())
+            }
+            _ => Err("assignment target not supported".into()),
+        }
+    }
+
+    fn emit_array_assignment(
+        &self, ap: &oxide_parser::ArrayAssignmentTarget, src_reg: u8, ctx: &mut CompileCtx,
+    ) -> Result<(), String> {
+        ctx.emit(opcode::encode(OpCode::FOR_OF_INIT, 0, src_reg, 0));
+        for elem in &ap.elements {
+            let has_reg = ctx.alloc_reg();
+            ctx.emit(opcode::encode(OpCode::FOR_OF_DONE, has_reg, 0, 0));
+            let val_reg = ctx.alloc_reg();
+            ctx.emit(opcode::encode(OpCode::FOR_OF_NEXT, val_reg, 0, 0));
+            if let Some(target) = elem {
+                self.emit_assignment_maybe_default(target, val_reg, ctx)?;
+            }
+        }
+        if let Some(rest) = &ap.rest {
+            let rest_reg = self.emit_collect_rest_array(ctx)?;
+            self.emit_assign_target(&rest.target, rest_reg, ctx)?;
+        }
+        ctx.emit(opcode::encode(OpCode::FOR_OF_CLOSE, 0, 0, 0));
+        Ok(())
+    }
+
+    fn emit_object_assignment(
+        &self, op: &ObjectAssignmentTarget, src_reg: u8, ctx: &mut CompileCtx,
+    ) -> Result<(), String> {
+        let mut excluded = Vec::new();
+        for prop in &op.properties {
+            match prop {
+                AssignmentTargetProperty::AssignmentTargetPropertyIdentifier(id) => {
+                    let key = id.binding.name.as_str().to_string();
+                    excluded.push(key.clone());
+                    let mut prop_reg = self.emit_object_property_read(src_reg, &key, ctx);
+                    if let Some(default_expr) = &id.init {
+                        prop_reg = self.emit_default_if_undefined(prop_reg, default_expr, ctx)?;
+                    }
+                    let name = id.binding.name.as_str();
+                    let var_reg = ctx.lookup_or_global(name);
+                    ctx.emit(opcode::encode(
+                        OpCode::STORE_VAR,
+                        var_reg,
+                        prop_reg,
+                        if ctx.lookup_const_flag(name) { 1 } else { 0 },
+                    ));
+                }
+                AssignmentTargetProperty::AssignmentTargetPropertyProperty(prop) => {
+                    let (prop_reg, static_key) =
+                        self.emit_object_property_read_key(src_reg, &prop.name, prop.computed, ctx)?;
+                    if let Some(key) = static_key {
+                        excluded.push(key);
+                    }
+                    self.emit_assignment_maybe_default(&prop.binding, prop_reg, ctx)?;
+                }
+            }
+        }
+        if let Some(rest) = &op.rest {
+            let rest_reg = ctx.alloc_reg();
+            let excluded_idx = ctx.add_constant(Constant::String(excluded.join("\0")));
+            ctx.emit(opcode::encode(OpCode::REST_OBJECT, rest_reg, src_reg, 0));
+            ctx.emit(excluded_idx as u32);
+            self.emit_assign_target(&rest.target, rest_reg, ctx)?;
+        }
+        Ok(())
+    }
+
     fn class_property_name(&self, key: &PropertyKey) -> Result<String, String> {
         match key {
             PropertyKey::StaticIdentifier(ident) => Ok(ident.name.as_str().to_string()),
@@ -266,35 +556,34 @@ impl Compiler {
             Statement::VariableDeclaration(decl) => {
                 let mut r = None;
                 for d in &decl.declarations {
-                    let name = match &d.id {
-                        oxide_parser::BindingPattern::BindingIdentifier(bi) => bi.name.as_str(),
-                        _ => return Err("destructuring not supported".into()),
-                    };
                     let is_const = matches!(decl.kind, VariableDeclarationKind::Const);
                     if is_const && d.init.is_none() {
                         return Err("const declaration must have an initializer".into());
                     }
-                    let var_reg = ctx.alloc_reg();
-                    ctx.declare(name, var_reg, decl.kind, is_const)?;
                     if let Some(init) = &d.init {
                         let val_reg = self.emit_expression(init, ctx)?;
-                        let const_flag = if is_const { 1 } else { 0 };
-                        ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, const_flag));
-                        ctx.init_var(name);
+                        self.emit_binding_pattern(&d.id, val_reg, decl.kind, is_const, ctx)?;
                         // Name inference (D-04): if the initializer is an arrow function,
                         // set the compiled sub_module's function_name.
-                        if matches!(*init, Expression::ArrowFunctionExpression(_)) {
-                            if let Some(sub_mod) = ctx.sub_modules.last_mut() {
-                                sub_mod.function_name = Some(name.to_string());
+                        if let BindingPattern::BindingIdentifier(bi) = &d.id {
+                            if matches!(*init, Expression::ArrowFunctionExpression(_)) {
+                                if let Some(sub_mod) = ctx.sub_modules.last_mut() {
+                                    sub_mod.function_name = Some(bi.name.to_string());
+                                }
                             }
                         }
                         r = Some(val_reg);
                     } else {
+                        let BindingPattern::BindingIdentifier(bi) = &d.id else {
+                            return Err("destructuring declaration requires an initializer".into());
+                        };
                         let idx = ctx.add_constant(Constant::Undefined);
                         let tmp = ctx.alloc_reg();
                         ctx.emit_load_const(tmp, idx);
+                        let var_reg = ctx.alloc_reg();
+                        ctx.declare(bi.name.as_str(), var_reg, decl.kind, is_const)?;
                         ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, tmp, 0));
-                        ctx.init_var(name);
+                        ctx.init_var(bi.name.as_str());
                         r = Some(var_reg);
                     }
                 }
@@ -415,16 +704,13 @@ impl Compiler {
                         self.emit_expression(expr, ctx)?;
                     } else if let ForStatementInit::VariableDeclaration(decl) = init {
                         for d in &decl.declarations {
-                            let name = match &d.id {
-                                oxide_parser::BindingPattern::BindingIdentifier(bi) => bi.name.as_str(),
-                                _ => return Err("destructuring not supported".into()),
-                            };
-                            let var_reg = ctx.alloc_reg();
-                            ctx.declare(name, var_reg, decl.kind, matches!(decl.kind, VariableDeclarationKind::Const))?;
+                            let is_const = matches!(decl.kind, VariableDeclarationKind::Const);
                             if let Some(init_expr) = &d.init {
                                 let val_reg = self.emit_expression(init_expr, ctx)?;
-                                ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, 0));
-                                ctx.init_var(name);
+                                self.emit_binding_pattern(&d.id, val_reg, decl.kind, is_const, ctx)?;
+                            } else if let BindingPattern::BindingIdentifier(bi) = &d.id {
+                                let var_reg = ctx.alloc_reg();
+                                ctx.declare(bi.name.as_str(), var_reg, decl.kind, is_const)?;
                             }
                         }
                     }
@@ -504,6 +790,51 @@ impl Compiler {
                 ctx.pop_loop();
                 Ok(None)
             }
+            Statement::ForOfStatement(fo) => {
+                let id = ctx.next_label_id();
+                let start_label = Label::ForOfStart(id);
+                let end_label = Label::ForOfEnd(id);
+
+                let iter_src_reg = self.emit_expression(&fo.right, ctx)?;
+                ctx.emit(opcode::encode(OpCode::FOR_OF_INIT, 0, iter_src_reg, 0));
+                ctx.push_loop(end_label, start_label);
+
+                let has_reg = ctx.alloc_reg();
+                ctx.emit(opcode::encode(OpCode::FOR_OF_DONE, has_reg, 0, 0));
+                let end_pos = ctx.resolve_label(end_label)?;
+                let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
+                ctx.emit(opcode::encode_jmp_if_false(has_reg, offset as i16));
+
+                let val_reg = ctx.alloc_reg();
+                ctx.emit(opcode::encode(OpCode::FOR_OF_NEXT, val_reg, 0, 0));
+                match &fo.left {
+                    ForStatementLeft::VariableDeclaration(decl) => {
+                        for d in &decl.declarations {
+                            self.emit_binding_pattern(&d.id, val_reg, decl.kind, false, ctx)?;
+                        }
+                    }
+                    ForStatementLeft::AssignmentTargetIdentifier(id_ref) => {
+                        let name = id_ref.name.as_str();
+                        let var_reg = ctx.lookup_or_global(name);
+                        ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, 0));
+                    }
+                    ForStatementLeft::ArrayAssignmentTarget(ap) => {
+                        self.emit_array_assignment(ap, val_reg, ctx)?;
+                    }
+                    ForStatementLeft::ObjectAssignmentTarget(op) => {
+                        self.emit_object_assignment(op, val_reg, ctx)?;
+                    }
+                    _ => return Err("unsupported for-of left-hand side".into()),
+                }
+
+                self.emit_statement(&fo.body, ctx)?;
+                let start_pos = ctx.resolve_label(start_label)?;
+                let offset = (start_pos as isize) - (ctx.bytecode.len() as isize);
+                ctx.emit(opcode::encode_jmp(offset as i16));
+                ctx.emit(opcode::encode(OpCode::FOR_OF_CLOSE, 0, 0, 0));
+                ctx.pop_loop();
+                Ok(None)
+            }
             Statement::SwitchStatement(sw) => {
                 let id = ctx.next_label_id();
                 let end_label = Label::SwitchEnd(id);
@@ -572,9 +903,17 @@ impl Compiler {
 
                 // Extract params
                 let mut param_names = Vec::new();
-                for param in &fd.params.items {
-                    if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &param.pattern {
-                        param_names.push(bi.name.to_string());
+                for (idx, param) in fd.params.items.iter().enumerate() {
+                    match &param.pattern {
+                        oxide_parser::BindingPattern::BindingIdentifier(bi) => {
+                            param_names.push(ParamSpec::Identifier(bi.name.to_string()));
+                        }
+                        pattern => {
+                            param_names.push(ParamSpec::Pattern {
+                                synthetic_name: format!("@@param_{idx}"),
+                                pattern,
+                            });
+                        }
                     }
                 }
 
@@ -1105,6 +1444,17 @@ impl Compiler {
                         ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, const_flag));
                         Ok(val_reg)
                     }
+                } else if matches!(
+                    &assign.left,
+                    oxide_parser::AssignmentTarget::ArrayAssignmentTarget(_)
+                        | oxide_parser::AssignmentTarget::ObjectAssignmentTarget(_)
+                ) {
+                    if assign.operator != AssignmentOperator::Assign {
+                        return Err("compound destructuring assignment not supported".into());
+                    }
+                    let val_reg = self.emit_expression(&assign.right, ctx)?;
+                    self.emit_assign_target(&assign.left, val_reg, ctx)?;
+                    Ok(val_reg)
                 } else {
                     Err("assignment target not supported".into())
                 }
@@ -1295,9 +1645,17 @@ impl Compiler {
 
                 // Extract param names (same pattern as FunctionExpression)
                 let mut param_names = Vec::new();
-                for param in &arrow.params.items {
-                    if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &param.pattern {
-                        param_names.push(bi.name.to_string());
+                for (idx, param) in arrow.params.items.iter().enumerate() {
+                    match &param.pattern {
+                        oxide_parser::BindingPattern::BindingIdentifier(bi) => {
+                            param_names.push(ParamSpec::Identifier(bi.name.to_string()));
+                        }
+                        pattern => {
+                            param_names.push(ParamSpec::Pattern {
+                                synthetic_name: format!("@@param_{idx}"),
+                                pattern,
+                            });
+                        }
                     }
                 }
 
@@ -1321,9 +1679,17 @@ impl Compiler {
             Expression::FunctionExpression(fe) => {
                 // FunctionExpression: compile body, emit LOAD_CONST(BytecodeFunc)
                 let mut param_names = Vec::new();
-                for param in &fe.params.items {
-                    if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &param.pattern {
-                        param_names.push(bi.name.to_string());
+                for (idx, param) in fe.params.items.iter().enumerate() {
+                    match &param.pattern {
+                        oxide_parser::BindingPattern::BindingIdentifier(bi) => {
+                            param_names.push(ParamSpec::Identifier(bi.name.to_string()));
+                        }
+                        pattern => {
+                            param_names.push(ParamSpec::Pattern {
+                                synthetic_name: format!("@@param_{idx}"),
+                                pattern,
+                            });
+                        }
                     }
                 }
 

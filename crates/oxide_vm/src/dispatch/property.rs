@@ -258,7 +258,13 @@ impl Vm {
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "SET_ELEM on non-object")? else {
             return Ok(());
         };
-        let idx = self.regs[a].as_int().max(0) as u32;
+        let idx = if self.regs[a].is_int() {
+            self.regs[a].as_int().max(0) as u32
+        } else if self.regs[a].is_double() {
+            self.regs[a].as_double().max(0.0) as u32
+        } else {
+            0
+        };
         let obj = unsafe { &mut *obj_ptr };
         obj.set_prop_at(idx, self.regs[b]);
         Ok(())
