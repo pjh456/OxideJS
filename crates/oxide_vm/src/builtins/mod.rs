@@ -4,6 +4,7 @@ pub mod date;
 pub mod error;
 pub mod function;
 pub mod global;
+pub mod iterator;
 pub mod json;
 pub mod map;
 pub mod math;
