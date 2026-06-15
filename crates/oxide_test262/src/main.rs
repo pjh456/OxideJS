@@ -7,7 +7,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 use walkdir::WalkDir;
 
@@ -194,6 +194,8 @@ impl HarnessSources {
     }
 }
 
+static HARNESS: OnceLock<HarnessSources> = OnceLock::new();
+
 fn is_blacklisted_harness(name: &str) -> bool {
     matches!(
         name,
@@ -264,15 +266,18 @@ fn build_harness_source(meta: &TestMeta, harness: &HarnessSources) -> Result<Str
 }
 
 fn get_harness_prefix(
-    meta: &TestMeta, harness: &HarnessSources, cache: &mut HarnessPrefixCache,
+    meta: &TestMeta, harness: &HarnessSources, cache: &Arc<RwLock<HarnessPrefixCache>>,
 ) -> Result<String, String> {
     let key = harness_key(meta);
-    if let Some(prefix) = cache.get(&key) {
-        return Ok(prefix.clone());
+    {
+        let guard = cache.read().unwrap();
+        if let Some(prefix) = guard.get(&key) {
+            return Ok(prefix.clone());
+        }
     }
 
     let source = build_harness_source(meta, harness)?;
-    cache.insert(key, source.clone());
+    cache.write().unwrap().insert(key, source.clone());
     Ok(source)
 }
 
@@ -386,7 +391,7 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
 
 fn run_test(
     path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<KernelCore>, harness: &HarnessSources,
-    harness_cache: &mut HarnessPrefixCache, no_skip: bool,
+    harness_cache: &Arc<RwLock<HarnessPrefixCache>>, no_skip: bool,
 ) -> TestResult {
     let start = std::time::Instant::now();
 
@@ -405,7 +410,7 @@ fn run_test(
 
 fn run_test_inner(
     path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<KernelCore>, harness: &HarnessSources,
-    harness_cache: &mut HarnessPrefixCache, no_skip: bool,
+    harness_cache: &Arc<RwLock<HarnessPrefixCache>>, no_skip: bool,
 ) -> TestResult {
     let start = std::time::Instant::now();
 
@@ -527,7 +532,7 @@ fn discover_tests(test262_root: &Path) -> Vec<PathBuf> {
 /// `harness_cache`) never crosses a thread boundary.
 fn process_path(
     path: &Path, filter: &Option<String>, no_skip: bool, kernel: &Arc<KernelCore>, harness_sources: &HarnessSources,
-    harness_cache: &mut HarnessPrefixCache,
+    harness_cache: &Arc<RwLock<HarnessPrefixCache>>,
 ) -> TestResult {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -589,6 +594,8 @@ fn build_runner_kernel() -> Arc<KernelCore> {
     // Keep test262 recursion tests from reaching Rust's native stack before the
     // VM converts deep JS calls into a catchable RangeError.
     kernel_config.max_call_depth = 256;
+    kernel_config.min_pool_size = 1;
+    kernel_config.max_pool_size = Some(1);
     KernelCore::new(kernel_config)
 }
 
@@ -745,6 +752,7 @@ fn run_tests() -> bool {
     let filter = &filter;
     let no_skip = config.no_skip;
     let paths_ref = &paths;
+    let harness_cache = Arc::new(RwLock::new(HarnessPrefixCache::new()));
 
     // Each worker returns its partial stats plus (index, result) pairs so the
     // final results vector can be restored to discovery order for stable output.
@@ -753,14 +761,14 @@ fn run_tests() -> bool {
             .map(|_| {
                 let cursor = &cursor;
                 let progress = &progress;
+                let harness_cache = Arc::clone(&harness_cache);
                 // Match main()'s 16MB stack: the VM recurses on deeply nested
                 // test programs and would overflow the default worker stack.
                 std::thread::Builder::new()
                     .stack_size(16 * 1024 * 1024)
                     .spawn_scoped(scope, move || {
                         let kernel = build_runner_kernel();
-                        let harness_sources = HarnessSources::new();
-                        let mut harness_cache = HarnessPrefixCache::new();
+                        let harness_sources = HARNESS.get_or_init(HarnessSources::new);
                         let mut stats = RunStats::default();
                         let mut out: Vec<(usize, TestResult)> = Vec::new();
 
@@ -779,14 +787,8 @@ fn run_tests() -> bool {
                                 eprintln!("  [{tid:?}] running: {path_str}");
                             }
 
-                            let result = process_path(
-                                &paths_ref[i],
-                                filter,
-                                no_skip,
-                                &kernel,
-                                &harness_sources,
-                                &mut harness_cache,
-                            );
+                            let result =
+                                process_path(&paths_ref[i], filter, no_skip, &kernel, harness_sources, &harness_cache);
                             stats.record(&result);
                             out.push((i, result));
 
