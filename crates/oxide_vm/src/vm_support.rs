@@ -90,10 +90,29 @@ impl Vm {
     }
 
     pub fn full_reset(&mut self) {
-        let mut new_session = KernelSession::new(&self.kernel_core);
-        bindings::init_kernel_builtins(&self.kernel_core, &mut new_session);
-        self.object_prototype = P::clone(&new_session.builtin_world().object_proto);
-        self.session = new_session;
+        let dirty = self.session.selective_reset(&self.kernel_core);
+        if dirty.any_builtin_dirty() {
+            bindings::rebind_dirty_builtins(&self.kernel_core, &mut self.session, &dirty);
+        }
+        if dirty.global {
+            let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;
+            let global = unsafe { &mut *global_ptr };
+            bindings::bind_global_builtin_slots(&self.kernel_core, &self.session, global);
+        }
+        self.session.record_snapshot();
+        self.object_prototype = P::clone(&self.session.builtin_world().object_proto);
+        self.clear_full_reset_state();
+    }
+
+    #[doc(hidden)]
+    pub fn full_reset_legacy_for_bench(&mut self) {
+        self.session = KernelSession::new(&self.kernel_core);
+        bindings::init_kernel_builtins(&self.kernel_core, &mut self.session);
+        self.object_prototype = P::clone(&self.session.builtin_world().object_proto);
+        self.clear_full_reset_state();
+    }
+
+    fn clear_full_reset_state(&mut self) {
         self.clear_execution_state();
         self.bytecode.clear();
         self.constants.clear();
@@ -276,5 +295,128 @@ impl Vm {
             values.push(self.convert_constant(constant)?);
         }
         Ok(values)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn global_prop(vm: &Vm, name: &str) -> JsValue {
+        global_prop_opt(vm, name).expect("global slot should exist")
+    }
+
+    fn global_prop_opt(vm: &Vm, name: &str) -> Option<JsValue> {
+        let global = vm.session.global_object();
+        let si = vm.kernel_core.string_forge().intern(name).0;
+        vm.kernel_core
+            .shape_forge()
+            .lookup_position(global.shape_id(), si)
+            .map(|pos| global.get_prop_at(pos))
+    }
+
+    fn run_source(vm: &mut Vm, source: &str) -> JsValue {
+        let allocator = oxide_parser::Allocator::default();
+        let program = oxide_parser::parse(&allocator, source).expect("parse failed");
+        let module = oxide_compiler::compiler::Compiler::new()
+            .compile(&program)
+            .expect("compile failed");
+        vm.run(&module).expect("vm run failed")
+    }
+
+    #[test]
+    fn full_reset_clean_keeps_session_objects() {
+        let mut vm = Vm::new();
+        let world_ptr = Arc::as_ptr(&vm.session.builtin_world);
+        let global_ptr = vm.session.global_object.as_ptr();
+        let object_proto_ptr = vm.session.builtin_world().object_proto.as_ptr();
+
+        vm.full_reset();
+
+        assert!(std::ptr::eq(world_ptr, Arc::as_ptr(&vm.session.builtin_world)));
+        assert!(std::ptr::eq(global_ptr, vm.session.global_object.as_ptr()));
+        assert!(std::ptr::eq(object_proto_ptr, vm.session.builtin_world().object_proto.as_ptr()));
+        assert!(!vm.session.is_dirty_since_snapshot());
+    }
+
+    #[test]
+    fn full_reset_global_dirty_rebuilds_global_and_restores_slots() {
+        let mut vm = Vm::new();
+        let world_ptr = Arc::as_ptr(&vm.session.builtin_world);
+        let global_ptr = vm.session.global_object.as_ptr();
+        let global = unsafe { &mut *(vm.session.global_object.as_ptr() as *mut JsObject) };
+        bindings::bind_global_value(&vm.kernel_core, global, "userGlobal", JsValue::int(99));
+        unsafe { &mut *(vm.session.global_object.as_ptr() as *mut JsObject) }.bump_generation();
+
+        vm.full_reset();
+
+        assert!(std::ptr::eq(world_ptr, Arc::as_ptr(&vm.session.builtin_world)));
+        assert!(!std::ptr::eq(global_ptr, vm.session.global_object.as_ptr()));
+        assert!(global_prop_opt(&vm, "userGlobal").is_none());
+        assert!(std::ptr::eq(
+            global_prop(&vm, "Array").as_js_object_ptr(),
+            vm.session.builtin_world().array_constructor.as_ptr() as *mut JsObject
+        ));
+        assert!(std::ptr::eq(
+            global_prop(&vm, "globalThis").as_js_object_ptr(),
+            vm.session.global_object.as_ptr() as *mut JsObject
+        ));
+        assert!(!vm.session.is_dirty_since_snapshot());
+    }
+
+    #[test]
+    fn full_reset_dirty_builtin_rebinds_global_slot() {
+        let mut vm = Vm::new();
+        let old_object_proto = vm.session.builtin_world().object_proto.as_ptr();
+        let old_array_proto = vm.session.builtin_world().array_proto.as_ptr();
+        unsafe { &mut *(old_array_proto as *mut JsObject) }.bump_generation();
+
+        vm.full_reset();
+
+        assert!(std::ptr::eq(old_object_proto, vm.session.builtin_world().object_proto.as_ptr()));
+        assert!(!std::ptr::eq(old_array_proto, vm.session.builtin_world().array_proto.as_ptr()));
+        assert!(std::ptr::eq(
+            global_prop(&vm, "Array").as_js_object_ptr(),
+            vm.session.builtin_world().array_constructor.as_ptr() as *mut JsObject
+        ));
+        let constructor_si = vm.kernel_core.string_forge().intern("constructor").0;
+        let array_proto = &*vm.session.builtin_world().array_proto;
+        let constructor = vm
+            .resolve_property(array_proto, constructor_si)
+            .expect("Array.prototype.constructor");
+        assert!(std::ptr::eq(
+            constructor.as_js_object_ptr(),
+            vm.session.builtin_world().array_constructor.as_ptr() as *mut JsObject
+        ));
+        assert!(!vm.session.is_dirty_since_snapshot());
+    }
+
+    #[test]
+    fn full_reset_dirty_function_keeps_call_working() {
+        let mut vm = Vm::new();
+        let function_proto = vm.session.builtin_world().function_proto.as_ptr();
+        unsafe { &mut *(function_proto as *mut JsObject) }.bump_generation();
+
+        vm.full_reset();
+
+        let result = run_source(&mut vm, "Array.prototype.push.call([1], 2)");
+        assert_eq!(result, JsValue::int(2));
+        assert!(!vm.session.is_dirty_since_snapshot());
+    }
+
+    #[test]
+    fn full_reset_refreshes_object_prototype_after_object_dirty() {
+        let mut vm = Vm::new();
+        let old_object_proto = vm.session.builtin_world().object_proto.as_ptr();
+        unsafe { &mut *(old_object_proto as *mut JsObject) }.bump_generation();
+
+        vm.full_reset();
+
+        assert!(!std::ptr::eq(old_object_proto, vm.session.builtin_world().object_proto.as_ptr()));
+        assert!(std::ptr::eq(
+            vm.object_prototype.as_ptr(),
+            vm.session.builtin_world().object_proto.as_ptr()
+        ));
+        assert!(!vm.session.is_dirty_since_snapshot());
     }
 }
