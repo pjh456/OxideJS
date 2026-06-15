@@ -2,6 +2,7 @@ use oxide_types::mem::P;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
+use crate::kernel::BuiltinDirtySet;
 use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use crate::string_forge::StringForge;
 
@@ -263,84 +264,253 @@ fn make_pair(
     (P::new(proto), P::new(ctor))
 }
 
+#[derive(Clone, Copy)]
+struct BuiltinLabels {
+    prototype: u32,
+    constructor: u32,
+    name: u32,
+}
+
+fn builtin_labels(string_forge: &StringForge) -> BuiltinLabels {
+    let labels = BuiltinLabels {
+        prototype: intern_label(string_forge, "prototype"),
+        constructor: intern_label(string_forge, "constructor"),
+        name: intern_label(string_forge, "name"),
+    };
+    intern_label(string_forge, "length");
+    intern_label(string_forge, "toString");
+    intern_label(string_forge, "valueOf");
+    labels
+}
+
+fn make_named_pair(
+    string_forge: &StringForge, shape_forge: &ShapeForge, labels: BuiltinLabels, name: &str,
+) -> (P<JsObject>, P<JsObject>) {
+    make_pair(string_forge, shape_forge, name, labels.prototype, labels.constructor, labels.name)
+}
+
+fn make_error_subtypes(error_proto: &P<JsObject>) -> ErrorSubtypeProtos {
+    let error_proto_val = JsValue::from_js_object(error_proto.as_ptr() as *mut JsObject);
+    ErrorSubtypeProtos {
+        type_error_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val)),
+        reference_error_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val)),
+        range_error_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val)),
+        syntax_error_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val)),
+        uri_error_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val)),
+        eval_error_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val)),
+    }
+}
+
+struct ErrorSubtypeProtos {
+    type_error_proto: P<JsObject>,
+    reference_error_proto: P<JsObject>,
+    range_error_proto: P<JsObject>,
+    syntax_error_proto: P<JsObject>,
+    uri_error_proto: P<JsObject>,
+    eval_error_proto: P<JsObject>,
+}
+
+struct TypedArrayFamily {
+    typed_array_proto: P<JsObject>,
+    int8array_constructor: P<JsObject>,
+    int8array_proto: P<JsObject>,
+    uint8array_constructor: P<JsObject>,
+    uint8array_proto: P<JsObject>,
+    uint8clampedarray_constructor: P<JsObject>,
+    uint8clampedarray_proto: P<JsObject>,
+    int16array_constructor: P<JsObject>,
+    int16array_proto: P<JsObject>,
+    uint16array_constructor: P<JsObject>,
+    uint16array_proto: P<JsObject>,
+    int32array_constructor: P<JsObject>,
+    int32array_proto: P<JsObject>,
+    uint32array_constructor: P<JsObject>,
+    uint32array_proto: P<JsObject>,
+    float32array_constructor: P<JsObject>,
+    float32array_proto: P<JsObject>,
+    float64array_constructor: P<JsObject>,
+    float64array_proto: P<JsObject>,
+    bigint64array_constructor: P<JsObject>,
+    bigint64array_proto: P<JsObject>,
+    biguint64array_constructor: P<JsObject>,
+    biguint64array_proto: P<JsObject>,
+}
+
+fn make_typed_array_family(
+    string_forge: &StringForge, shape_forge: &ShapeForge, labels: BuiltinLabels, object_proto: &P<JsObject>,
+) -> TypedArrayFamily {
+    let obj_proto_val = JsValue::from_js_object(object_proto.as_ptr() as *mut JsObject);
+    let typed_array_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, obj_proto_val));
+    let (int8array_proto, int8array_constructor) = make_named_pair(string_forge, shape_forge, labels, "Int8Array");
+    let (uint8array_proto, uint8array_constructor) = make_named_pair(string_forge, shape_forge, labels, "Uint8Array");
+    let (uint8clampedarray_proto, uint8clampedarray_constructor) =
+        make_named_pair(string_forge, shape_forge, labels, "Uint8ClampedArray");
+    let (int16array_proto, int16array_constructor) = make_named_pair(string_forge, shape_forge, labels, "Int16Array");
+    let (uint16array_proto, uint16array_constructor) =
+        make_named_pair(string_forge, shape_forge, labels, "Uint16Array");
+    let (int32array_proto, int32array_constructor) = make_named_pair(string_forge, shape_forge, labels, "Int32Array");
+    let (uint32array_proto, uint32array_constructor) =
+        make_named_pair(string_forge, shape_forge, labels, "Uint32Array");
+    let (float32array_proto, float32array_constructor) =
+        make_named_pair(string_forge, shape_forge, labels, "Float32Array");
+    let (float64array_proto, float64array_constructor) =
+        make_named_pair(string_forge, shape_forge, labels, "Float64Array");
+    let (bigint64array_proto, bigint64array_constructor) =
+        make_named_pair(string_forge, shape_forge, labels, "BigInt64Array");
+    let (biguint64array_proto, biguint64array_constructor) =
+        make_named_pair(string_forge, shape_forge, labels, "BigUint64Array");
+
+    TypedArrayFamily {
+        typed_array_proto,
+        int8array_constructor,
+        int8array_proto,
+        uint8array_constructor,
+        uint8array_proto,
+        uint8clampedarray_constructor,
+        uint8clampedarray_proto,
+        int16array_constructor,
+        int16array_proto,
+        uint16array_constructor,
+        uint16array_proto,
+        int32array_constructor,
+        int32array_proto,
+        uint32array_constructor,
+        uint32array_proto,
+        float32array_constructor,
+        float32array_proto,
+        float64array_constructor,
+        float64array_proto,
+        bigint64array_constructor,
+        bigint64array_proto,
+        biguint64array_constructor,
+        biguint64array_proto,
+    }
+}
+
+/// Overwrite placeholder slots (set up by make_pair) with real values.
+/// ctor.vec[0] = constructor.prototype -> proto
+/// proto.vec[0] = proto.constructor -> ctor
+fn wire_ctor_proto(ctor: &P<JsObject>, proto: &P<JsObject>) {
+    let ctor_ptr = ctor.as_ptr() as *mut JsObject;
+    let ctor = unsafe { &mut *ctor_ptr };
+    let vec = ctor.ensure_hash_props();
+    if !vec.is_empty() {
+        vec[0] = JsValue::from_js_object(proto.as_ptr() as *mut JsObject);
+    }
+    let proto_ptr = proto.as_ptr() as *mut JsObject;
+    let proto = unsafe { &mut *proto_ptr };
+    let pvec = proto.ensure_hash_props();
+    if !pvec.is_empty() {
+        pvec[0] = JsValue::from_js_object(ctor_ptr);
+    }
+}
+
+fn set_proto_if_changed(obj: &P<JsObject>, proto: JsValue) {
+    let ptr = obj.as_ptr() as *mut JsObject;
+    let obj = unsafe { &mut *ptr };
+    if obj.proto() != proto {
+        obj.set_proto(proto).ok();
+    }
+}
+
+fn wire_builtin_world_links(world: &BuiltinWorld) {
+    wire_ctor_proto(&world.object_constructor, &world.object_proto);
+    wire_ctor_proto(&world.array_constructor, &world.array_proto);
+    wire_ctor_proto(&world.function_constructor, &world.function_proto);
+    wire_ctor_proto(&world.string_constructor, &world.string_proto);
+    wire_ctor_proto(&world.number_constructor, &world.number_proto);
+    wire_ctor_proto(&world.boolean_constructor, &world.boolean_proto);
+    wire_ctor_proto(&world.error_constructor, &world.error_proto);
+    wire_ctor_proto(&world.symbol_constructor, &world.symbol_proto);
+    wire_ctor_proto(&world.date_constructor, &world.date_proto);
+    wire_ctor_proto(&world.set_constructor, &world.set_proto);
+    wire_ctor_proto(&world.map_constructor, &world.map_proto);
+    wire_ctor_proto(&world.regexp_constructor, &world.regexp_proto);
+    wire_ctor_proto(&world.array_buffer_constructor, &world.array_buffer_proto);
+    wire_ctor_proto(&world.data_view_constructor, &world.data_view_proto);
+    wire_ctor_proto(&world.int8array_constructor, &world.int8array_proto);
+    wire_ctor_proto(&world.uint8array_constructor, &world.uint8array_proto);
+    wire_ctor_proto(&world.uint8clampedarray_constructor, &world.uint8clampedarray_proto);
+    wire_ctor_proto(&world.int16array_constructor, &world.int16array_proto);
+    wire_ctor_proto(&world.uint16array_constructor, &world.uint16array_proto);
+    wire_ctor_proto(&world.int32array_constructor, &world.int32array_proto);
+    wire_ctor_proto(&world.uint32array_constructor, &world.uint32array_proto);
+    wire_ctor_proto(&world.float32array_constructor, &world.float32array_proto);
+    wire_ctor_proto(&world.float64array_constructor, &world.float64array_proto);
+    wire_ctor_proto(&world.bigint64array_constructor, &world.bigint64array_proto);
+    wire_ctor_proto(&world.biguint64array_constructor, &world.biguint64array_proto);
+
+    let obj_proto_val = JsValue::from_js_object(world.object_proto.as_ptr() as *mut JsObject);
+    let non_object_protos: [&P<JsObject>; 14] = [
+        &world.array_proto,
+        &world.function_proto,
+        &world.string_proto,
+        &world.number_proto,
+        &world.boolean_proto,
+        &world.error_proto,
+        &world.symbol_proto,
+        &world.date_proto,
+        &world.set_proto,
+        &world.map_proto,
+        &world.regexp_proto,
+        &world.array_buffer_proto,
+        &world.data_view_proto,
+        &world.typed_array_proto,
+    ];
+    for proto in &non_object_protos {
+        set_proto_if_changed(proto, obj_proto_val);
+    }
+
+    let typed_array_proto_val = JsValue::from_js_object(world.typed_array_proto.as_ptr() as *mut JsObject);
+    let typed_array_protos: [&P<JsObject>; 11] = [
+        &world.int8array_proto,
+        &world.uint8array_proto,
+        &world.uint8clampedarray_proto,
+        &world.int16array_proto,
+        &world.uint16array_proto,
+        &world.int32array_proto,
+        &world.uint32array_proto,
+        &world.float32array_proto,
+        &world.float64array_proto,
+        &world.bigint64array_proto,
+        &world.biguint64array_proto,
+    ];
+    for proto in &typed_array_protos {
+        set_proto_if_changed(proto, typed_array_proto_val);
+    }
+}
+
 impl BuiltinWorld {
     fn fn_proto_val(&self) -> JsValue {
         JsValue::from_js_object(self.function_proto.as_ptr() as *mut JsObject)
     }
 
     pub fn new(string_forge: &StringForge, shape_forge: &ShapeForge) -> Self {
-        let si_prototype = intern_label(string_forge, "prototype");
-        let si_constructor = intern_label(string_forge, "constructor");
-        let si_name = intern_label(string_forge, "name");
-        intern_label(string_forge, "length");
-        intern_label(string_forge, "toString");
-        intern_label(string_forge, "valueOf");
+        let labels = builtin_labels(string_forge);
 
-        let (object_proto, object_constructor) =
-            make_pair(string_forge, shape_forge, "Object", si_prototype, si_constructor, si_name);
-        let (array_proto, array_constructor) =
-            make_pair(string_forge, shape_forge, "Array", si_prototype, si_constructor, si_name);
-        let (function_proto, function_constructor) =
-            make_pair(string_forge, shape_forge, "Function", si_prototype, si_constructor, si_name);
-        let (string_proto, string_constructor) =
-            make_pair(string_forge, shape_forge, "String", si_prototype, si_constructor, si_name);
-        let (number_proto, number_constructor) =
-            make_pair(string_forge, shape_forge, "Number", si_prototype, si_constructor, si_name);
-        let (boolean_proto, boolean_constructor) =
-            make_pair(string_forge, shape_forge, "Boolean", si_prototype, si_constructor, si_name);
-        let (error_proto, error_constructor) =
-            make_pair(string_forge, shape_forge, "Error", si_prototype, si_constructor, si_name);
-        let (symbol_proto, symbol_constructor) =
-            make_pair(string_forge, shape_forge, "Symbol", si_prototype, si_constructor, si_name);
+        let (object_proto, object_constructor) = make_named_pair(string_forge, shape_forge, labels, "Object");
+        let (array_proto, array_constructor) = make_named_pair(string_forge, shape_forge, labels, "Array");
+        let (function_proto, function_constructor) = make_named_pair(string_forge, shape_forge, labels, "Function");
+        let (string_proto, string_constructor) = make_named_pair(string_forge, shape_forge, labels, "String");
+        let (number_proto, number_constructor) = make_named_pair(string_forge, shape_forge, labels, "Number");
+        let (boolean_proto, boolean_constructor) = make_named_pair(string_forge, shape_forge, labels, "Boolean");
+        let (error_proto, error_constructor) = make_named_pair(string_forge, shape_forge, labels, "Error");
+        let (symbol_proto, symbol_constructor) = make_named_pair(string_forge, shape_forge, labels, "Symbol");
 
-        let error_proto_val = JsValue::from_js_object(error_proto.as_ptr() as *mut JsObject);
-        let type_error_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val));
-        let reference_error_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val));
-        let range_error_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val));
-        let syntax_error_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val));
-        let uri_error_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val));
-        let eval_error_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val));
+        let error_subtypes = make_error_subtypes(&error_proto);
 
         let math_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
 
         let json_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
 
-        let (date_proto, date_constructor) =
-            make_pair(string_forge, shape_forge, "Date", si_prototype, si_constructor, si_name);
-        let (set_proto, set_constructor) =
-            make_pair(string_forge, shape_forge, "Set", si_prototype, si_constructor, si_name);
-        let (map_proto, map_constructor) =
-            make_pair(string_forge, shape_forge, "Map", si_prototype, si_constructor, si_name);
-        let (regexp_proto, regexp_constructor) =
-            make_pair(string_forge, shape_forge, "RegExp", si_prototype, si_constructor, si_name);
+        let (date_proto, date_constructor) = make_named_pair(string_forge, shape_forge, labels, "Date");
+        let (set_proto, set_constructor) = make_named_pair(string_forge, shape_forge, labels, "Set");
+        let (map_proto, map_constructor) = make_named_pair(string_forge, shape_forge, labels, "Map");
+        let (regexp_proto, regexp_constructor) = make_named_pair(string_forge, shape_forge, labels, "RegExp");
         let (array_buffer_proto, array_buffer_constructor) =
-            make_pair(string_forge, shape_forge, "ArrayBuffer", si_prototype, si_constructor, si_name);
-        let (data_view_proto, data_view_constructor) =
-            make_pair(string_forge, shape_forge, "DataView", si_prototype, si_constructor, si_name);
-        let obj_proto_val = JsValue::from_js_object(object_proto.as_ptr() as *mut JsObject);
-        let typed_array_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, obj_proto_val));
-        let (int8array_proto, int8array_constructor) =
-            make_pair(string_forge, shape_forge, "Int8Array", si_prototype, si_constructor, si_name);
-        let (uint8array_proto, uint8array_constructor) =
-            make_pair(string_forge, shape_forge, "Uint8Array", si_prototype, si_constructor, si_name);
-        let (uint8clampedarray_proto, uint8clampedarray_constructor) =
-            make_pair(string_forge, shape_forge, "Uint8ClampedArray", si_prototype, si_constructor, si_name);
-        let (int16array_proto, int16array_constructor) =
-            make_pair(string_forge, shape_forge, "Int16Array", si_prototype, si_constructor, si_name);
-        let (uint16array_proto, uint16array_constructor) =
-            make_pair(string_forge, shape_forge, "Uint16Array", si_prototype, si_constructor, si_name);
-        let (int32array_proto, int32array_constructor) =
-            make_pair(string_forge, shape_forge, "Int32Array", si_prototype, si_constructor, si_name);
-        let (uint32array_proto, uint32array_constructor) =
-            make_pair(string_forge, shape_forge, "Uint32Array", si_prototype, si_constructor, si_name);
-        let (float32array_proto, float32array_constructor) =
-            make_pair(string_forge, shape_forge, "Float32Array", si_prototype, si_constructor, si_name);
-        let (float64array_proto, float64array_constructor) =
-            make_pair(string_forge, shape_forge, "Float64Array", si_prototype, si_constructor, si_name);
-        let (bigint64array_proto, bigint64array_constructor) =
-            make_pair(string_forge, shape_forge, "BigInt64Array", si_prototype, si_constructor, si_name);
-        let (biguint64array_proto, biguint64array_constructor) =
-            make_pair(string_forge, shape_forge, "BigUint64Array", si_prototype, si_constructor, si_name);
+            make_named_pair(string_forge, shape_forge, labels, "ArrayBuffer");
+        let (data_view_proto, data_view_constructor) = make_named_pair(string_forge, shape_forge, labels, "DataView");
+        let typed_arrays = make_typed_array_family(string_forge, shape_forge, labels, &object_proto);
 
         let sym_match = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let sym_replace = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
@@ -349,91 +519,7 @@ impl BuiltinWorld {
         let sym_iterator = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let stub_objects = Vec::new();
 
-        /// Overwrite placeholder slots (set up by make_pair) with real values.
-        /// ctor.vec[0] = constructor.prototype -> proto
-        /// proto.vec[0] = proto.constructor -> ctor
-        fn wire_ctor_proto(ctor: &P<JsObject>, proto: &P<JsObject>) {
-            let ctor_ptr = ctor.as_ptr() as *mut JsObject;
-            let ctor = unsafe { &mut *ctor_ptr };
-            let vec = ctor.ensure_hash_props();
-            if !vec.is_empty() {
-                vec[0] = JsValue::from_js_object(proto.as_ptr() as *mut JsObject);
-            }
-            let proto_ptr = proto.as_ptr() as *mut JsObject;
-            let proto = unsafe { &mut *proto_ptr };
-            let pvec = proto.ensure_hash_props();
-            if !pvec.is_empty() {
-                pvec[0] = JsValue::from_js_object(ctor_ptr);
-            }
-        }
-
-        wire_ctor_proto(&object_constructor, &object_proto);
-        wire_ctor_proto(&array_constructor, &array_proto);
-        wire_ctor_proto(&function_constructor, &function_proto);
-        wire_ctor_proto(&string_constructor, &string_proto);
-        wire_ctor_proto(&number_constructor, &number_proto);
-        wire_ctor_proto(&boolean_constructor, &boolean_proto);
-        wire_ctor_proto(&error_constructor, &error_proto);
-        wire_ctor_proto(&symbol_constructor, &symbol_proto);
-        wire_ctor_proto(&date_constructor, &date_proto);
-        wire_ctor_proto(&set_constructor, &set_proto);
-        wire_ctor_proto(&map_constructor, &map_proto);
-        wire_ctor_proto(&array_buffer_constructor, &array_buffer_proto);
-        wire_ctor_proto(&data_view_constructor, &data_view_proto);
-        wire_ctor_proto(&int8array_constructor, &int8array_proto);
-        wire_ctor_proto(&uint8array_constructor, &uint8array_proto);
-        wire_ctor_proto(&uint8clampedarray_constructor, &uint8clampedarray_proto);
-        wire_ctor_proto(&int16array_constructor, &int16array_proto);
-        wire_ctor_proto(&uint16array_constructor, &uint16array_proto);
-        wire_ctor_proto(&int32array_constructor, &int32array_proto);
-        wire_ctor_proto(&uint32array_constructor, &uint32array_proto);
-        wire_ctor_proto(&float32array_constructor, &float32array_proto);
-        wire_ctor_proto(&float64array_constructor, &float64array_proto);
-        wire_ctor_proto(&bigint64array_constructor, &bigint64array_proto);
-        wire_ctor_proto(&biguint64array_constructor, &biguint64array_proto);
-
-        // Wire prototype chains: all constructor prototypes inherit from Object.prototype.
-        let non_object_protos: [&P<JsObject>; 14] = [
-            &array_proto,
-            &function_proto,
-            &string_proto,
-            &number_proto,
-            &boolean_proto,
-            &error_proto,
-            &symbol_proto,
-            &date_proto,
-            &set_proto,
-            &map_proto,
-            &regexp_proto,
-            &array_buffer_proto,
-            &data_view_proto,
-            &typed_array_proto,
-        ];
-        for proto in &non_object_protos {
-            let p = proto.as_ptr() as *mut JsObject;
-            unsafe { &mut *p }.set_proto(obj_proto_val).ok();
-        }
-        let typed_array_proto_val = JsValue::from_js_object(typed_array_proto.as_ptr() as *mut JsObject);
-        let typed_array_protos: [&P<JsObject>; 11] = [
-            &int8array_proto,
-            &uint8array_proto,
-            &uint8clampedarray_proto,
-            &int16array_proto,
-            &uint16array_proto,
-            &int32array_proto,
-            &uint32array_proto,
-            &float32array_proto,
-            &float64array_proto,
-            &bigint64array_proto,
-            &biguint64array_proto,
-        ];
-        for proto in &typed_array_protos {
-            let p = proto.as_ptr() as *mut JsObject;
-            unsafe { &mut *p }.set_proto(typed_array_proto_val).ok();
-        }
-        wire_ctor_proto(&regexp_constructor, &regexp_proto);
-
-        Self {
+        let world = Self {
             object_proto,
             array_proto,
             function_proto,
@@ -450,12 +536,12 @@ impl BuiltinWorld {
             boolean_constructor,
             error_constructor,
             symbol_constructor,
-            type_error_proto,
-            reference_error_proto,
-            range_error_proto,
-            syntax_error_proto,
-            uri_error_proto,
-            eval_error_proto,
+            type_error_proto: error_subtypes.type_error_proto,
+            reference_error_proto: error_subtypes.reference_error_proto,
+            range_error_proto: error_subtypes.range_error_proto,
+            syntax_error_proto: error_subtypes.syntax_error_proto,
+            uri_error_proto: error_subtypes.uri_error_proto,
+            eval_error_proto: error_subtypes.eval_error_proto,
             math_object,
             json_object,
             date_constructor,
@@ -470,36 +556,257 @@ impl BuiltinWorld {
             array_buffer_proto,
             data_view_constructor,
             data_view_proto,
-            typed_array_proto,
-            int8array_constructor,
-            int8array_proto,
-            uint8array_constructor,
-            uint8array_proto,
-            uint8clampedarray_constructor,
-            uint8clampedarray_proto,
-            int16array_constructor,
-            int16array_proto,
-            uint16array_constructor,
-            uint16array_proto,
-            int32array_constructor,
-            int32array_proto,
-            uint32array_constructor,
-            uint32array_proto,
-            float32array_constructor,
-            float32array_proto,
-            float64array_constructor,
-            float64array_proto,
-            bigint64array_constructor,
-            bigint64array_proto,
-            biguint64array_constructor,
-            biguint64array_proto,
+            typed_array_proto: typed_arrays.typed_array_proto,
+            int8array_constructor: typed_arrays.int8array_constructor,
+            int8array_proto: typed_arrays.int8array_proto,
+            uint8array_constructor: typed_arrays.uint8array_constructor,
+            uint8array_proto: typed_arrays.uint8array_proto,
+            uint8clampedarray_constructor: typed_arrays.uint8clampedarray_constructor,
+            uint8clampedarray_proto: typed_arrays.uint8clampedarray_proto,
+            int16array_constructor: typed_arrays.int16array_constructor,
+            int16array_proto: typed_arrays.int16array_proto,
+            uint16array_constructor: typed_arrays.uint16array_constructor,
+            uint16array_proto: typed_arrays.uint16array_proto,
+            int32array_constructor: typed_arrays.int32array_constructor,
+            int32array_proto: typed_arrays.int32array_proto,
+            uint32array_constructor: typed_arrays.uint32array_constructor,
+            uint32array_proto: typed_arrays.uint32array_proto,
+            float32array_constructor: typed_arrays.float32array_constructor,
+            float32array_proto: typed_arrays.float32array_proto,
+            float64array_constructor: typed_arrays.float64array_constructor,
+            float64array_proto: typed_arrays.float64array_proto,
+            bigint64array_constructor: typed_arrays.bigint64array_constructor,
+            bigint64array_proto: typed_arrays.bigint64array_proto,
+            biguint64array_constructor: typed_arrays.biguint64array_constructor,
+            biguint64array_proto: typed_arrays.biguint64array_proto,
             sym_match,
             sym_replace,
             sym_search,
             sym_split,
             sym_iterator,
             stub_objects,
-        }
+        };
+        wire_builtin_world_links(&world);
+        world
+    }
+
+    pub fn rebuild_with_dirty(
+        current: &BuiltinWorld, string_forge: &StringForge, shape_forge: &ShapeForge, dirty: &BuiltinDirtySet,
+    ) -> BuiltinWorld {
+        let labels = builtin_labels(string_forge);
+
+        let (object_proto, object_constructor) = if dirty.object {
+            make_named_pair(string_forge, shape_forge, labels, "Object")
+        } else {
+            (current.object_proto.clone(), current.object_constructor.clone())
+        };
+        let (array_proto, array_constructor) = if dirty.array {
+            make_named_pair(string_forge, shape_forge, labels, "Array")
+        } else {
+            (current.array_proto.clone(), current.array_constructor.clone())
+        };
+        let (function_proto, function_constructor) = if dirty.function {
+            make_named_pair(string_forge, shape_forge, labels, "Function")
+        } else {
+            (current.function_proto.clone(), current.function_constructor.clone())
+        };
+        let (string_proto, string_constructor) = if dirty.string {
+            make_named_pair(string_forge, shape_forge, labels, "String")
+        } else {
+            (current.string_proto.clone(), current.string_constructor.clone())
+        };
+        let (number_proto, number_constructor) = if dirty.number {
+            make_named_pair(string_forge, shape_forge, labels, "Number")
+        } else {
+            (current.number_proto.clone(), current.number_constructor.clone())
+        };
+        let (boolean_proto, boolean_constructor) = if dirty.boolean {
+            make_named_pair(string_forge, shape_forge, labels, "Boolean")
+        } else {
+            (current.boolean_proto.clone(), current.boolean_constructor.clone())
+        };
+        let (error_proto, error_constructor, error_subtypes) = if dirty.error_family {
+            let (error_proto, error_constructor) = make_named_pair(string_forge, shape_forge, labels, "Error");
+            let error_subtypes = make_error_subtypes(&error_proto);
+            (error_proto, error_constructor, error_subtypes)
+        } else {
+            (
+                current.error_proto.clone(),
+                current.error_constructor.clone(),
+                ErrorSubtypeProtos {
+                    type_error_proto: current.type_error_proto.clone(),
+                    reference_error_proto: current.reference_error_proto.clone(),
+                    range_error_proto: current.range_error_proto.clone(),
+                    syntax_error_proto: current.syntax_error_proto.clone(),
+                    uri_error_proto: current.uri_error_proto.clone(),
+                    eval_error_proto: current.eval_error_proto.clone(),
+                },
+            )
+        };
+        let (symbol_proto, symbol_constructor, sym_match, sym_replace, sym_search, sym_split, sym_iterator) =
+            if dirty.symbol_family {
+                let (symbol_proto, symbol_constructor) = make_named_pair(string_forge, shape_forge, labels, "Symbol");
+                (
+                    symbol_proto,
+                    symbol_constructor,
+                    P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                    P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                    P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                    P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                    P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                )
+            } else {
+                (
+                    current.symbol_proto.clone(),
+                    current.symbol_constructor.clone(),
+                    current.sym_match.clone(),
+                    current.sym_replace.clone(),
+                    current.sym_search.clone(),
+                    current.sym_split.clone(),
+                    current.sym_iterator.clone(),
+                )
+            };
+
+        let math_object = if dirty.math {
+            P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()))
+        } else {
+            current.math_object.clone()
+        };
+        let json_object = if dirty.json {
+            P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()))
+        } else {
+            current.json_object.clone()
+        };
+        let (date_proto, date_constructor) = if dirty.date {
+            make_named_pair(string_forge, shape_forge, labels, "Date")
+        } else {
+            (current.date_proto.clone(), current.date_constructor.clone())
+        };
+        let (set_proto, set_constructor) = if dirty.set {
+            make_named_pair(string_forge, shape_forge, labels, "Set")
+        } else {
+            (current.set_proto.clone(), current.set_constructor.clone())
+        };
+        let (map_proto, map_constructor) = if dirty.map {
+            make_named_pair(string_forge, shape_forge, labels, "Map")
+        } else {
+            (current.map_proto.clone(), current.map_constructor.clone())
+        };
+        let (regexp_proto, regexp_constructor) = if dirty.regexp {
+            make_named_pair(string_forge, shape_forge, labels, "RegExp")
+        } else {
+            (current.regexp_proto.clone(), current.regexp_constructor.clone())
+        };
+        let (array_buffer_proto, array_buffer_constructor) = if dirty.array_buffer {
+            make_named_pair(string_forge, shape_forge, labels, "ArrayBuffer")
+        } else {
+            (current.array_buffer_proto.clone(), current.array_buffer_constructor.clone())
+        };
+        let (data_view_proto, data_view_constructor) = if dirty.data_view {
+            make_named_pair(string_forge, shape_forge, labels, "DataView")
+        } else {
+            (current.data_view_proto.clone(), current.data_view_constructor.clone())
+        };
+        let typed_arrays = if dirty.typed_array_family {
+            make_typed_array_family(string_forge, shape_forge, labels, &object_proto)
+        } else {
+            TypedArrayFamily {
+                typed_array_proto: current.typed_array_proto.clone(),
+                int8array_constructor: current.int8array_constructor.clone(),
+                int8array_proto: current.int8array_proto.clone(),
+                uint8array_constructor: current.uint8array_constructor.clone(),
+                uint8array_proto: current.uint8array_proto.clone(),
+                uint8clampedarray_constructor: current.uint8clampedarray_constructor.clone(),
+                uint8clampedarray_proto: current.uint8clampedarray_proto.clone(),
+                int16array_constructor: current.int16array_constructor.clone(),
+                int16array_proto: current.int16array_proto.clone(),
+                uint16array_constructor: current.uint16array_constructor.clone(),
+                uint16array_proto: current.uint16array_proto.clone(),
+                int32array_constructor: current.int32array_constructor.clone(),
+                int32array_proto: current.int32array_proto.clone(),
+                uint32array_constructor: current.uint32array_constructor.clone(),
+                uint32array_proto: current.uint32array_proto.clone(),
+                float32array_constructor: current.float32array_constructor.clone(),
+                float32array_proto: current.float32array_proto.clone(),
+                float64array_constructor: current.float64array_constructor.clone(),
+                float64array_proto: current.float64array_proto.clone(),
+                bigint64array_constructor: current.bigint64array_constructor.clone(),
+                bigint64array_proto: current.bigint64array_proto.clone(),
+                biguint64array_constructor: current.biguint64array_constructor.clone(),
+                biguint64array_proto: current.biguint64array_proto.clone(),
+            }
+        };
+        let stub_objects = if dirty.stubs { Vec::new() } else { current.stub_objects.clone() };
+
+        let world = BuiltinWorld {
+            object_proto,
+            array_proto,
+            function_proto,
+            string_proto,
+            number_proto,
+            boolean_proto,
+            error_proto,
+            symbol_proto,
+            object_constructor,
+            array_constructor,
+            function_constructor,
+            string_constructor,
+            number_constructor,
+            boolean_constructor,
+            error_constructor,
+            symbol_constructor,
+            type_error_proto: error_subtypes.type_error_proto,
+            reference_error_proto: error_subtypes.reference_error_proto,
+            range_error_proto: error_subtypes.range_error_proto,
+            syntax_error_proto: error_subtypes.syntax_error_proto,
+            uri_error_proto: error_subtypes.uri_error_proto,
+            eval_error_proto: error_subtypes.eval_error_proto,
+            math_object,
+            json_object,
+            date_constructor,
+            date_proto,
+            set_constructor,
+            set_proto,
+            map_constructor,
+            map_proto,
+            regexp_constructor,
+            regexp_proto,
+            array_buffer_constructor,
+            array_buffer_proto,
+            data_view_constructor,
+            data_view_proto,
+            typed_array_proto: typed_arrays.typed_array_proto,
+            int8array_constructor: typed_arrays.int8array_constructor,
+            int8array_proto: typed_arrays.int8array_proto,
+            uint8array_constructor: typed_arrays.uint8array_constructor,
+            uint8array_proto: typed_arrays.uint8array_proto,
+            uint8clampedarray_constructor: typed_arrays.uint8clampedarray_constructor,
+            uint8clampedarray_proto: typed_arrays.uint8clampedarray_proto,
+            int16array_constructor: typed_arrays.int16array_constructor,
+            int16array_proto: typed_arrays.int16array_proto,
+            uint16array_constructor: typed_arrays.uint16array_constructor,
+            uint16array_proto: typed_arrays.uint16array_proto,
+            int32array_constructor: typed_arrays.int32array_constructor,
+            int32array_proto: typed_arrays.int32array_proto,
+            uint32array_constructor: typed_arrays.uint32array_constructor,
+            uint32array_proto: typed_arrays.uint32array_proto,
+            float32array_constructor: typed_arrays.float32array_constructor,
+            float32array_proto: typed_arrays.float32array_proto,
+            float64array_constructor: typed_arrays.float64array_constructor,
+            float64array_proto: typed_arrays.float64array_proto,
+            bigint64array_constructor: typed_arrays.bigint64array_constructor,
+            bigint64array_proto: typed_arrays.bigint64array_proto,
+            biguint64array_constructor: typed_arrays.biguint64array_constructor,
+            biguint64array_proto: typed_arrays.biguint64array_proto,
+            sym_match,
+            sym_replace,
+            sym_search,
+            sym_split,
+            sym_iterator,
+            stub_objects,
+        };
+        wire_builtin_world_links(&world);
+        world
     }
 
     pub fn bind_object_methods(&self, methods: &ObjectMethods, string_forge: &StringForge, shape_forge: &ShapeForge) {
@@ -843,5 +1150,51 @@ mod tests {
             "constructor should have prototype + name shape"
         );
         assert!(w.object_proto.shape_id() > EMPTY_SHAPE_ID, "prototype should have constructor shape");
+    }
+
+    #[test]
+    fn builtin_rebuild_with_dirty_reuses_clean_fields() {
+        let sf = StringForge::new();
+        let sh = ShapeForge::new();
+        let w = BuiltinWorld::new(&sf, &sh);
+        let rebuilt = BuiltinWorld::rebuild_with_dirty(&w, &sf, &sh, &crate::kernel::BuiltinDirtySet::default());
+
+        assert!(std::ptr::eq(w.object_proto.as_ptr(), rebuilt.object_proto.as_ptr()));
+        assert!(std::ptr::eq(w.array_proto.as_ptr(), rebuilt.array_proto.as_ptr()));
+        assert!(std::ptr::eq(w.function_proto.as_ptr(), rebuilt.function_proto.as_ptr()));
+    }
+
+    #[test]
+    fn builtin_rebuild_with_dirty_replaces_only_dirty_group() {
+        let sf = StringForge::new();
+        let sh = ShapeForge::new();
+        let w = BuiltinWorld::new(&sf, &sh);
+        let dirty = crate::kernel::BuiltinDirtySet {
+            array: true,
+            ..Default::default()
+        };
+        let rebuilt = BuiltinWorld::rebuild_with_dirty(&w, &sf, &sh, &dirty);
+
+        assert!(!std::ptr::eq(w.array_proto.as_ptr(), rebuilt.array_proto.as_ptr()));
+        assert!(!std::ptr::eq(w.array_constructor.as_ptr(), rebuilt.array_constructor.as_ptr()));
+        assert!(std::ptr::eq(w.object_proto.as_ptr(), rebuilt.object_proto.as_ptr()));
+        assert!(std::ptr::eq(w.function_proto.as_ptr(), rebuilt.function_proto.as_ptr()));
+    }
+
+    #[test]
+    fn builtin_rebuild_with_dirty_repairs_ctor_proto_links() {
+        let sf = StringForge::new();
+        let sh = ShapeForge::new();
+        let w = BuiltinWorld::new(&sf, &sh);
+        let dirty = crate::kernel::BuiltinDirtySet {
+            array: true,
+            ..Default::default()
+        };
+        let rebuilt = BuiltinWorld::rebuild_with_dirty(&w, &sf, &sh, &dirty);
+
+        let ctor_proto = rebuilt.array_constructor.get_prop_at(0).as_js_object_ptr();
+        let proto_ctor = rebuilt.array_proto.get_prop_at(0).as_js_object_ptr();
+        assert!(std::ptr::eq(ctor_proto, rebuilt.array_proto.as_ptr() as *mut JsObject));
+        assert!(std::ptr::eq(proto_ctor, rebuilt.array_constructor.as_ptr() as *mut JsObject));
     }
 }
