@@ -128,6 +128,211 @@ impl KernelCore {
 pub struct KernelSession {
     pub builtin_world: Arc<BuiltinWorld>,
     pub global_object: P<JsObject>,
+    pub builtin_snapshot: BuiltinSnapshot,
+}
+
+/// Generation snapshot for reset dirty checks.
+///
+/// Maintenance: every new `BuiltinWorld` object field must be added here and to
+/// `KernelSession::dirty_since_snapshot()` so selective reset can rebuild the
+/// correct builtin family.
+#[derive(Clone, Debug)]
+pub struct BuiltinSnapshot {
+    pub object_proto_generation: u32,
+    pub array_proto_generation: u32,
+    pub function_proto_generation: u32,
+    pub string_proto_generation: u32,
+    pub number_proto_generation: u32,
+    pub boolean_proto_generation: u32,
+    pub error_proto_generation: u32,
+    pub symbol_proto_generation: u32,
+    pub object_constructor_generation: u32,
+    pub array_constructor_generation: u32,
+    pub function_constructor_generation: u32,
+    pub string_constructor_generation: u32,
+    pub number_constructor_generation: u32,
+    pub boolean_constructor_generation: u32,
+    pub error_constructor_generation: u32,
+    pub symbol_constructor_generation: u32,
+    pub type_error_proto_generation: u32,
+    pub reference_error_proto_generation: u32,
+    pub range_error_proto_generation: u32,
+    pub syntax_error_proto_generation: u32,
+    pub uri_error_proto_generation: u32,
+    pub eval_error_proto_generation: u32,
+    pub math_object_generation: u32,
+    pub json_object_generation: u32,
+    pub date_constructor_generation: u32,
+    pub date_proto_generation: u32,
+    pub set_constructor_generation: u32,
+    pub set_proto_generation: u32,
+    pub map_constructor_generation: u32,
+    pub map_proto_generation: u32,
+    pub regexp_constructor_generation: u32,
+    pub regexp_proto_generation: u32,
+    pub array_buffer_constructor_generation: u32,
+    pub array_buffer_proto_generation: u32,
+    pub data_view_constructor_generation: u32,
+    pub data_view_proto_generation: u32,
+    pub typed_array_proto_generation: u32,
+    pub int8array_constructor_generation: u32,
+    pub int8array_proto_generation: u32,
+    pub uint8array_constructor_generation: u32,
+    pub uint8array_proto_generation: u32,
+    pub uint8clampedarray_constructor_generation: u32,
+    pub uint8clampedarray_proto_generation: u32,
+    pub int16array_constructor_generation: u32,
+    pub int16array_proto_generation: u32,
+    pub uint16array_constructor_generation: u32,
+    pub uint16array_proto_generation: u32,
+    pub int32array_constructor_generation: u32,
+    pub int32array_proto_generation: u32,
+    pub uint32array_constructor_generation: u32,
+    pub uint32array_proto_generation: u32,
+    pub float32array_constructor_generation: u32,
+    pub float32array_proto_generation: u32,
+    pub float64array_constructor_generation: u32,
+    pub float64array_proto_generation: u32,
+    pub bigint64array_constructor_generation: u32,
+    pub bigint64array_proto_generation: u32,
+    pub biguint64array_constructor_generation: u32,
+    pub biguint64array_proto_generation: u32,
+    pub sym_match_generation: u32,
+    pub sym_replace_generation: u32,
+    pub sym_search_generation: u32,
+    pub sym_split_generation: u32,
+    pub sym_iterator_generation: u32,
+    pub global_object_generation: u32,
+    pub stub_objects_len: usize,
+    pub stub_object_generations: Vec<u32>,
+}
+
+impl BuiltinSnapshot {
+    fn gen(obj: &P<JsObject>) -> u32 {
+        obj.generation()
+    }
+
+    pub fn new(world: &BuiltinWorld, global_object: &P<JsObject>) -> Self {
+        Self {
+            object_proto_generation: Self::gen(&world.object_proto),
+            array_proto_generation: Self::gen(&world.array_proto),
+            function_proto_generation: Self::gen(&world.function_proto),
+            string_proto_generation: Self::gen(&world.string_proto),
+            number_proto_generation: Self::gen(&world.number_proto),
+            boolean_proto_generation: Self::gen(&world.boolean_proto),
+            error_proto_generation: Self::gen(&world.error_proto),
+            symbol_proto_generation: Self::gen(&world.symbol_proto),
+            object_constructor_generation: Self::gen(&world.object_constructor),
+            array_constructor_generation: Self::gen(&world.array_constructor),
+            function_constructor_generation: Self::gen(&world.function_constructor),
+            string_constructor_generation: Self::gen(&world.string_constructor),
+            number_constructor_generation: Self::gen(&world.number_constructor),
+            boolean_constructor_generation: Self::gen(&world.boolean_constructor),
+            error_constructor_generation: Self::gen(&world.error_constructor),
+            symbol_constructor_generation: Self::gen(&world.symbol_constructor),
+            type_error_proto_generation: Self::gen(&world.type_error_proto),
+            reference_error_proto_generation: Self::gen(&world.reference_error_proto),
+            range_error_proto_generation: Self::gen(&world.range_error_proto),
+            syntax_error_proto_generation: Self::gen(&world.syntax_error_proto),
+            uri_error_proto_generation: Self::gen(&world.uri_error_proto),
+            eval_error_proto_generation: Self::gen(&world.eval_error_proto),
+            math_object_generation: Self::gen(&world.math_object),
+            json_object_generation: Self::gen(&world.json_object),
+            date_constructor_generation: Self::gen(&world.date_constructor),
+            date_proto_generation: Self::gen(&world.date_proto),
+            set_constructor_generation: Self::gen(&world.set_constructor),
+            set_proto_generation: Self::gen(&world.set_proto),
+            map_constructor_generation: Self::gen(&world.map_constructor),
+            map_proto_generation: Self::gen(&world.map_proto),
+            regexp_constructor_generation: Self::gen(&world.regexp_constructor),
+            regexp_proto_generation: Self::gen(&world.regexp_proto),
+            array_buffer_constructor_generation: Self::gen(&world.array_buffer_constructor),
+            array_buffer_proto_generation: Self::gen(&world.array_buffer_proto),
+            data_view_constructor_generation: Self::gen(&world.data_view_constructor),
+            data_view_proto_generation: Self::gen(&world.data_view_proto),
+            typed_array_proto_generation: Self::gen(&world.typed_array_proto),
+            int8array_constructor_generation: Self::gen(&world.int8array_constructor),
+            int8array_proto_generation: Self::gen(&world.int8array_proto),
+            uint8array_constructor_generation: Self::gen(&world.uint8array_constructor),
+            uint8array_proto_generation: Self::gen(&world.uint8array_proto),
+            uint8clampedarray_constructor_generation: Self::gen(&world.uint8clampedarray_constructor),
+            uint8clampedarray_proto_generation: Self::gen(&world.uint8clampedarray_proto),
+            int16array_constructor_generation: Self::gen(&world.int16array_constructor),
+            int16array_proto_generation: Self::gen(&world.int16array_proto),
+            uint16array_constructor_generation: Self::gen(&world.uint16array_constructor),
+            uint16array_proto_generation: Self::gen(&world.uint16array_proto),
+            int32array_constructor_generation: Self::gen(&world.int32array_constructor),
+            int32array_proto_generation: Self::gen(&world.int32array_proto),
+            uint32array_constructor_generation: Self::gen(&world.uint32array_constructor),
+            uint32array_proto_generation: Self::gen(&world.uint32array_proto),
+            float32array_constructor_generation: Self::gen(&world.float32array_constructor),
+            float32array_proto_generation: Self::gen(&world.float32array_proto),
+            float64array_constructor_generation: Self::gen(&world.float64array_constructor),
+            float64array_proto_generation: Self::gen(&world.float64array_proto),
+            bigint64array_constructor_generation: Self::gen(&world.bigint64array_constructor),
+            bigint64array_proto_generation: Self::gen(&world.bigint64array_proto),
+            biguint64array_constructor_generation: Self::gen(&world.biguint64array_constructor),
+            biguint64array_proto_generation: Self::gen(&world.biguint64array_proto),
+            sym_match_generation: Self::gen(&world.sym_match),
+            sym_replace_generation: Self::gen(&world.sym_replace),
+            sym_search_generation: Self::gen(&world.sym_search),
+            sym_split_generation: Self::gen(&world.sym_split),
+            sym_iterator_generation: Self::gen(&world.sym_iterator),
+            global_object_generation: Self::gen(global_object),
+            stub_objects_len: world.stub_objects.len(),
+            stub_object_generations: world.stub_objects.iter().map(Self::gen).collect(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BuiltinDirtySet {
+    pub object: bool,
+    pub array: bool,
+    pub function: bool,
+    pub string: bool,
+    pub number: bool,
+    pub boolean: bool,
+    pub error_family: bool,
+    pub symbol_family: bool,
+    pub math: bool,
+    pub json: bool,
+    pub date: bool,
+    pub set: bool,
+    pub map: bool,
+    pub regexp: bool,
+    pub array_buffer: bool,
+    pub data_view: bool,
+    pub typed_array_family: bool,
+    pub stubs: bool,
+    pub global: bool,
+}
+
+impl BuiltinDirtySet {
+    pub fn any_builtin_dirty(&self) -> bool {
+        self.object
+            || self.array
+            || self.function
+            || self.string
+            || self.number
+            || self.boolean
+            || self.error_family
+            || self.symbol_family
+            || self.math
+            || self.json
+            || self.date
+            || self.set
+            || self.map
+            || self.regexp
+            || self.array_buffer
+            || self.data_view
+            || self.typed_array_family
+            || self.stubs
+    }
+
+    pub fn any(&self) -> bool {
+        self.any_builtin_dirty() || self.global
+    }
 }
 
 impl KernelSession {
@@ -154,9 +359,13 @@ impl KernelSession {
         global_obj.set_shape_id(inf_shape);
         global_obj.ensure_hash_props().push(JsValue::float(f64::INFINITY));
 
+        let global_object = P::new(global_obj);
+        let builtin_snapshot = BuiltinSnapshot::new(&builtin_world, &global_object);
+
         Self {
             builtin_world,
-            global_object: P::new(global_obj),
+            global_object,
+            builtin_snapshot,
         }
     }
 
@@ -166,6 +375,99 @@ impl KernelSession {
 
     pub fn global_object(&self) -> &P<JsObject> {
         &self.global_object
+    }
+
+    pub fn record_snapshot(&mut self) {
+        self.builtin_snapshot = BuiltinSnapshot::new(&self.builtin_world, &self.global_object);
+    }
+
+    pub fn dirty_since_snapshot(&self) -> BuiltinDirtySet {
+        let world = self.builtin_world.as_ref();
+        let snapshot = &self.builtin_snapshot;
+        let stub_generations_dirty = world
+            .stub_objects
+            .iter()
+            .zip(snapshot.stub_object_generations.iter())
+            .any(|(obj, generation)| BuiltinSnapshot::gen(obj) != *generation);
+
+        BuiltinDirtySet {
+            object: BuiltinSnapshot::gen(&world.object_proto) != snapshot.object_proto_generation
+                || BuiltinSnapshot::gen(&world.object_constructor) != snapshot.object_constructor_generation,
+            array: BuiltinSnapshot::gen(&world.array_proto) != snapshot.array_proto_generation
+                || BuiltinSnapshot::gen(&world.array_constructor) != snapshot.array_constructor_generation,
+            function: BuiltinSnapshot::gen(&world.function_proto) != snapshot.function_proto_generation
+                || BuiltinSnapshot::gen(&world.function_constructor) != snapshot.function_constructor_generation,
+            string: BuiltinSnapshot::gen(&world.string_proto) != snapshot.string_proto_generation
+                || BuiltinSnapshot::gen(&world.string_constructor) != snapshot.string_constructor_generation,
+            number: BuiltinSnapshot::gen(&world.number_proto) != snapshot.number_proto_generation
+                || BuiltinSnapshot::gen(&world.number_constructor) != snapshot.number_constructor_generation,
+            boolean: BuiltinSnapshot::gen(&world.boolean_proto) != snapshot.boolean_proto_generation
+                || BuiltinSnapshot::gen(&world.boolean_constructor) != snapshot.boolean_constructor_generation,
+            error_family: BuiltinSnapshot::gen(&world.error_proto) != snapshot.error_proto_generation
+                || BuiltinSnapshot::gen(&world.error_constructor) != snapshot.error_constructor_generation
+                || BuiltinSnapshot::gen(&world.type_error_proto) != snapshot.type_error_proto_generation
+                || BuiltinSnapshot::gen(&world.reference_error_proto) != snapshot.reference_error_proto_generation
+                || BuiltinSnapshot::gen(&world.range_error_proto) != snapshot.range_error_proto_generation
+                || BuiltinSnapshot::gen(&world.syntax_error_proto) != snapshot.syntax_error_proto_generation
+                || BuiltinSnapshot::gen(&world.uri_error_proto) != snapshot.uri_error_proto_generation
+                || BuiltinSnapshot::gen(&world.eval_error_proto) != snapshot.eval_error_proto_generation,
+            symbol_family: BuiltinSnapshot::gen(&world.symbol_proto) != snapshot.symbol_proto_generation
+                || BuiltinSnapshot::gen(&world.symbol_constructor) != snapshot.symbol_constructor_generation
+                || BuiltinSnapshot::gen(&world.sym_match) != snapshot.sym_match_generation
+                || BuiltinSnapshot::gen(&world.sym_replace) != snapshot.sym_replace_generation
+                || BuiltinSnapshot::gen(&world.sym_search) != snapshot.sym_search_generation
+                || BuiltinSnapshot::gen(&world.sym_split) != snapshot.sym_split_generation
+                || BuiltinSnapshot::gen(&world.sym_iterator) != snapshot.sym_iterator_generation,
+            math: BuiltinSnapshot::gen(&world.math_object) != snapshot.math_object_generation,
+            json: BuiltinSnapshot::gen(&world.json_object) != snapshot.json_object_generation,
+            date: BuiltinSnapshot::gen(&world.date_constructor) != snapshot.date_constructor_generation
+                || BuiltinSnapshot::gen(&world.date_proto) != snapshot.date_proto_generation,
+            set: BuiltinSnapshot::gen(&world.set_constructor) != snapshot.set_constructor_generation
+                || BuiltinSnapshot::gen(&world.set_proto) != snapshot.set_proto_generation,
+            map: BuiltinSnapshot::gen(&world.map_constructor) != snapshot.map_constructor_generation
+                || BuiltinSnapshot::gen(&world.map_proto) != snapshot.map_proto_generation,
+            regexp: BuiltinSnapshot::gen(&world.regexp_constructor) != snapshot.regexp_constructor_generation
+                || BuiltinSnapshot::gen(&world.regexp_proto) != snapshot.regexp_proto_generation,
+            array_buffer: BuiltinSnapshot::gen(&world.array_buffer_constructor)
+                != snapshot.array_buffer_constructor_generation
+                || BuiltinSnapshot::gen(&world.array_buffer_proto) != snapshot.array_buffer_proto_generation,
+            data_view: BuiltinSnapshot::gen(&world.data_view_constructor) != snapshot.data_view_constructor_generation
+                || BuiltinSnapshot::gen(&world.data_view_proto) != snapshot.data_view_proto_generation,
+            typed_array_family: BuiltinSnapshot::gen(&world.typed_array_proto) != snapshot.typed_array_proto_generation
+                || BuiltinSnapshot::gen(&world.int8array_constructor) != snapshot.int8array_constructor_generation
+                || BuiltinSnapshot::gen(&world.int8array_proto) != snapshot.int8array_proto_generation
+                || BuiltinSnapshot::gen(&world.uint8array_constructor) != snapshot.uint8array_constructor_generation
+                || BuiltinSnapshot::gen(&world.uint8array_proto) != snapshot.uint8array_proto_generation
+                || BuiltinSnapshot::gen(&world.uint8clampedarray_constructor)
+                    != snapshot.uint8clampedarray_constructor_generation
+                || BuiltinSnapshot::gen(&world.uint8clampedarray_proto) != snapshot.uint8clampedarray_proto_generation
+                || BuiltinSnapshot::gen(&world.int16array_constructor) != snapshot.int16array_constructor_generation
+                || BuiltinSnapshot::gen(&world.int16array_proto) != snapshot.int16array_proto_generation
+                || BuiltinSnapshot::gen(&world.uint16array_constructor) != snapshot.uint16array_constructor_generation
+                || BuiltinSnapshot::gen(&world.uint16array_proto) != snapshot.uint16array_proto_generation
+                || BuiltinSnapshot::gen(&world.int32array_constructor) != snapshot.int32array_constructor_generation
+                || BuiltinSnapshot::gen(&world.int32array_proto) != snapshot.int32array_proto_generation
+                || BuiltinSnapshot::gen(&world.uint32array_constructor) != snapshot.uint32array_constructor_generation
+                || BuiltinSnapshot::gen(&world.uint32array_proto) != snapshot.uint32array_proto_generation
+                || BuiltinSnapshot::gen(&world.float32array_constructor)
+                    != snapshot.float32array_constructor_generation
+                || BuiltinSnapshot::gen(&world.float32array_proto) != snapshot.float32array_proto_generation
+                || BuiltinSnapshot::gen(&world.float64array_constructor)
+                    != snapshot.float64array_constructor_generation
+                || BuiltinSnapshot::gen(&world.float64array_proto) != snapshot.float64array_proto_generation
+                || BuiltinSnapshot::gen(&world.bigint64array_constructor)
+                    != snapshot.bigint64array_constructor_generation
+                || BuiltinSnapshot::gen(&world.bigint64array_proto) != snapshot.bigint64array_proto_generation
+                || BuiltinSnapshot::gen(&world.biguint64array_constructor)
+                    != snapshot.biguint64array_constructor_generation
+                || BuiltinSnapshot::gen(&world.biguint64array_proto) != snapshot.biguint64array_proto_generation,
+            stubs: world.stub_objects.len() != snapshot.stub_objects_len || stub_generations_dirty,
+            global: BuiltinSnapshot::gen(&self.global_object) != snapshot.global_object_generation,
+        }
+    }
+
+    pub fn is_dirty_since_snapshot(&self) -> bool {
+        self.dirty_since_snapshot().any()
     }
 }
 
@@ -224,5 +526,65 @@ mod tests {
         let _s2 = KernelSession::new(&core);
         let (i2, _) = core.string_forge().intern("hello");
         assert_eq!(i1, i2);
+    }
+
+    #[test]
+    fn snapshot_fresh_session_is_clean() {
+        let core = KernelCore::new(KernelConfig::minimal());
+        let session = KernelSession::new(&core);
+        let dirty = session.dirty_since_snapshot();
+
+        assert!(!dirty.any());
+        assert!(!dirty.any_builtin_dirty());
+        assert!(!session.is_dirty_since_snapshot());
+    }
+
+    #[test]
+    fn snapshot_detects_array_dirty() {
+        let core = KernelCore::new(KernelConfig::minimal());
+        let session = KernelSession::new(&core);
+
+        unsafe { &mut *(session.builtin_world.array_proto.as_ptr() as *mut JsObject) }.bump_generation();
+        let dirty = session.dirty_since_snapshot();
+
+        assert!(dirty.array);
+        assert!(dirty.any_builtin_dirty());
+        assert!(session.is_dirty_since_snapshot());
+        assert!(!dirty.global);
+        assert!(!dirty.object);
+    }
+
+    #[test]
+    fn snapshot_detects_global_dirty() {
+        let core = KernelCore::new(KernelConfig::minimal());
+        let session = KernelSession::new(&core);
+
+        unsafe { &mut *(session.global_object.as_ptr() as *mut JsObject) }.bump_generation();
+        let dirty = session.dirty_since_snapshot();
+
+        assert!(dirty.global);
+        assert!(dirty.any());
+        assert!(!dirty.any_builtin_dirty());
+    }
+
+    #[test]
+    fn snapshot_detects_stub_dirty() {
+        let core = KernelCore::new(KernelConfig::minimal());
+        let mut session = KernelSession::new(&core);
+        Arc::get_mut(&mut session.builtin_world)
+            .expect("fresh session owns its builtin world")
+            .stub_objects
+            .push(P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())));
+        session.record_snapshot();
+
+        Arc::get_mut(&mut session.builtin_world)
+            .expect("fresh session owns its builtin world")
+            .stub_objects
+            .push(P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())));
+
+        let dirty = session.dirty_since_snapshot();
+        assert!(dirty.stubs);
+        assert!(dirty.any_builtin_dirty());
+        assert!(!dirty.global);
     }
 }
