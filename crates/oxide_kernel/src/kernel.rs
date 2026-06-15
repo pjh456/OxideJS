@@ -336,11 +336,7 @@ impl BuiltinDirtySet {
 }
 
 impl KernelSession {
-    /// Build a fresh session from a KernelCore. All string/shape intern calls hit
-    /// cache on second and subsequent calls — net cost is < 0.5 ms.
-    pub fn new(core: &KernelCore) -> Self {
-        let builtin_world = Arc::new(BuiltinWorld::new(&core.string_forge, &core.shape_forge));
-
+    fn new_global_object(core: &KernelCore) -> P<JsObject> {
         let mut global_obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
 
         let si_nan = core.string_forge.intern("NaN").0;
@@ -359,7 +355,14 @@ impl KernelSession {
         global_obj.set_shape_id(inf_shape);
         global_obj.ensure_hash_props().push(JsValue::float(f64::INFINITY));
 
-        let global_object = P::new(global_obj);
+        P::new(global_obj)
+    }
+
+    /// Build a fresh session from a KernelCore. All string/shape intern calls hit
+    /// cache on second and subsequent calls — net cost is < 0.5 ms.
+    pub fn new(core: &KernelCore) -> Self {
+        let builtin_world = Arc::new(BuiltinWorld::new(&core.string_forge, &core.shape_forge));
+        let global_object = Self::new_global_object(core);
         let builtin_snapshot = BuiltinSnapshot::new(&builtin_world, &global_object);
 
         Self {
@@ -468,6 +471,22 @@ impl KernelSession {
 
     pub fn is_dirty_since_snapshot(&self) -> bool {
         self.dirty_since_snapshot().any()
+    }
+
+    pub fn selective_reset(&mut self, core: &Arc<KernelCore>) -> BuiltinDirtySet {
+        let dirty = self.dirty_since_snapshot();
+        if dirty.global {
+            self.global_object = Self::new_global_object(core);
+        }
+        if dirty.any_builtin_dirty() {
+            self.builtin_world = Arc::new(BuiltinWorld::rebuild_with_dirty(
+                &self.builtin_world,
+                core.string_forge.as_ref(),
+                core.shape_forge.as_ref(),
+                &dirty,
+            ));
+        }
+        dirty
     }
 }
 
@@ -586,5 +605,53 @@ mod tests {
         assert!(dirty.stubs);
         assert!(dirty.any_builtin_dirty());
         assert!(!dirty.global);
+    }
+
+    #[test]
+    fn selective_reset_clean_keeps_builtin_world() {
+        let core = KernelCore::new(KernelConfig::minimal());
+        let mut session = KernelSession::new(&core);
+        let world_ptr = Arc::as_ptr(&session.builtin_world);
+
+        let dirty = session.selective_reset(&core);
+
+        assert!(!dirty.any());
+        assert!(std::ptr::eq(world_ptr, Arc::as_ptr(&session.builtin_world)));
+    }
+
+    #[test]
+    fn selective_reset_rebuilds_global_only_when_global_dirty() {
+        let core = KernelCore::new(KernelConfig::minimal());
+        let mut session = KernelSession::new(&core);
+        let world_ptr = Arc::as_ptr(&session.builtin_world);
+        let global_ptr = session.global_object.as_ptr();
+
+        unsafe { &mut *(session.global_object.as_ptr() as *mut JsObject) }.bump_generation();
+        let dirty = session.selective_reset(&core);
+
+        assert!(dirty.global);
+        assert!(!dirty.any_builtin_dirty());
+        assert!(std::ptr::eq(world_ptr, Arc::as_ptr(&session.builtin_world)));
+        assert!(!std::ptr::eq(global_ptr, session.global_object.as_ptr()));
+    }
+
+    #[test]
+    fn selective_reset_rebuilds_dirty_builtin_group() {
+        let core = KernelCore::new(KernelConfig::minimal());
+        let mut session = KernelSession::new(&core);
+        let object_proto = session.builtin_world.object_proto.as_ptr();
+        let array_proto = session.builtin_world.array_proto.as_ptr();
+        let world_ptr = Arc::as_ptr(&session.builtin_world);
+
+        unsafe { &mut *(session.builtin_world.array_proto.as_ptr() as *mut JsObject) }.bump_generation();
+        let dirty = session.selective_reset(&core);
+
+        assert!(dirty.array);
+        assert!(!std::ptr::eq(world_ptr, Arc::as_ptr(&session.builtin_world)));
+        assert!(std::ptr::eq(object_proto, session.builtin_world.object_proto.as_ptr()));
+        assert!(!std::ptr::eq(array_proto, session.builtin_world.array_proto.as_ptr()));
+
+        let ctor_proto = session.builtin_world.array_constructor.get_prop_at(0).as_js_object_ptr();
+        assert!(std::ptr::eq(ctor_proto, session.builtin_world.array_proto.as_ptr() as *mut JsObject));
     }
 }
