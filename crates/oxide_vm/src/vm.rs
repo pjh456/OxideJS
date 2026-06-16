@@ -10,6 +10,7 @@ use smallvec::SmallVec;
 pub use crate::bindings::init_kernel_builtins;
 use crate::coercion;
 use crate::native::{NativeFn, NativeResult};
+use crate::session_gc::SessionGc;
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::error::{JsError, JsErrorKind};
@@ -143,6 +144,9 @@ pub struct Vm {
     pub(crate) interned_strings: Vec<u32>,
     pub epoch: Epoch,
     pub(crate) session_epoch: bumpalo::Bump,
+    pub(crate) session_gc: SessionGc,
+    pub(crate) session_object_ptrs: Vec<*mut JsObject>,
+    pub(crate) session_bytes_allocated: usize,
     pub object_prototype: P<JsObject>,
     pub math_rng_state: u64,
     pub(crate) sub_modules: Vec<CompiledModule>,
@@ -168,6 +172,55 @@ pub struct Vm {
 }
 
 impl Vm {
+    pub(crate) fn is_session_ptr(&self, obj_ptr: *mut JsObject) -> bool {
+        if obj_ptr.is_null() {
+            return false;
+        }
+        // SAFETY: obj_ptr is non-null and points to a `JsObject` owned by this session.
+        unsafe { (*obj_ptr).is_session_epoch() }
+    }
+
+    pub(crate) fn gc_roots(&self) -> Vec<JsValue> {
+        let mut roots = Vec::new();
+        roots.extend_from_slice(&self.regs);
+
+        for frame in &self.frames {
+            roots.extend(frame.saved_regs.iter().copied());
+            roots.push(frame.saved_this);
+            roots.push(frame.saved_new_target);
+            roots.push(frame.callee);
+            roots.push(frame.constructed_this.unwrap_or(JsValue::undefined()));
+        }
+
+        roots.push(JsValue::from_js_object(self.session.global_object().as_ptr() as *mut JsObject));
+        roots.push(self.exception_value.unwrap_or(JsValue::undefined()));
+        roots.push(self.pending_exception.unwrap_or(JsValue::undefined()));
+        roots.extend(self.for_of_iters.iter().copied());
+        roots.push(self.last_for_of_result);
+        roots.extend(self.constants.iter().copied());
+        for sub_module in &self.sub_module_constants {
+            roots.extend(sub_module.iter().copied());
+        }
+
+        roots
+    }
+
+    pub fn gc_clear_marks(&mut self) {
+        let mut session_gc = std::mem::take(&mut self.session_gc);
+        session_gc.clear_all_marks(self);
+        self.session_gc = session_gc;
+    }
+
+    pub(crate) fn maybe_collect_session_gc(&mut self) {
+        let mut session_gc = std::mem::take(&mut self.session_gc);
+        session_gc.maybe_collect(self);
+        self.session_gc = session_gc;
+    }
+
+    pub fn session_gc_stats(&self) -> &SessionGc {
+        &self.session_gc
+    }
+
     pub(crate) fn checked_object_ptr(
         &mut self, val: JsValue, error_msg: &str,
     ) -> Result<Option<*mut JsObject>, String> {

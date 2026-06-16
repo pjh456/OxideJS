@@ -219,6 +219,8 @@ impl JsObject {
     pub const OBJ_TYPE_ARRAY_BUFFER: u8 = 6;
     pub const OBJ_TYPE_DATA_VIEW: u8 = 7;
     pub const OBJ_TYPE_TYPED_ARRAY: u8 = 8;
+    pub const SESSION_EPOCH_BIT: u8 = 0x01;
+    pub const GC_MARK_BIT: u8 = 0x02;
 
     #[inline]
     pub fn is_date_obj(&self) -> bool {
@@ -298,12 +300,30 @@ impl JsObject {
 
     #[inline]
     pub fn is_session_epoch(&self) -> bool {
-        self.is_session_epoch != 0
+        self.is_session_epoch & Self::SESSION_EPOCH_BIT != 0
     }
 
     #[inline]
     pub fn set_session_epoch(&mut self, value: bool) {
-        self.is_session_epoch = value as u8;
+        if value {
+            self.is_session_epoch |= Self::SESSION_EPOCH_BIT;
+        } else {
+            self.is_session_epoch &= !Self::SESSION_EPOCH_BIT;
+        }
+    }
+
+    #[inline]
+    pub fn is_gc_marked(&self) -> bool {
+        self.is_session_epoch & Self::GC_MARK_BIT != 0
+    }
+
+    #[inline]
+    pub fn set_gc_mark(&mut self, marked: bool) {
+        if marked {
+            self.is_session_epoch |= Self::GC_MARK_BIT;
+        } else {
+            self.is_session_epoch &= !Self::GC_MARK_BIT;
+        }
     }
 
     pub fn clone_for_session_epoch(&self) -> Self {
@@ -320,7 +340,7 @@ impl JsObject {
             header: self.header,
             native_arg_count: self.native_arg_count,
             type_tag: self.type_tag,
-            is_session_epoch: 1,
+            is_session_epoch: Self::SESSION_EPOCH_BIT,
             _pad: self._pad,
             hash_props,
             prop_meta,
@@ -333,6 +353,14 @@ impl JsObject {
             captured_this: self.captured_this,
             home_object: self.home_object,
         }
+    }
+
+    pub fn hash_props_raw(&self) -> *mut u8 {
+        self.hash_props
+    }
+
+    pub fn prop_meta_raw(&self) -> *mut u8 {
+        self.prop_meta
     }
 
     pub fn rewrite_object_values<F>(&mut self, mut rewrite: F)
@@ -778,6 +806,22 @@ mod tests {
         assert!(obj.is_session_epoch());
         obj.set_session_epoch(false);
         assert!(!obj.is_session_epoch());
+    }
+
+    #[test]
+    fn session_epoch_marker_preserves_gc_mark_bit() {
+        let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
+        assert!(!obj.is_gc_marked());
+        obj.set_gc_mark(true);
+        assert!(obj.is_gc_marked());
+        assert!(!obj.is_session_epoch());
+
+        obj.set_session_epoch(true);
+        assert!(obj.is_session_epoch());
+        assert!(obj.is_gc_marked());
+
+        obj.set_gc_mark(false);
+        assert!(!obj.is_gc_marked());
     }
 
     #[test]

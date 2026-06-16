@@ -36,6 +36,8 @@ impl Vm {
         let clone = src_ref.clone_for_session_epoch();
         let dst = self.session_epoch.alloc(clone) as *mut JsObject;
         forwarding.insert(src, dst);
+        self.session_object_ptrs.push(dst);
+        self.session_bytes_allocated += std::mem::size_of::<JsObject>();
 
         let dst_ref = unsafe { &mut *dst };
         dst_ref.rewrite_object_values(|value| self.promote_value_if_epoch_object(value, forwarding));

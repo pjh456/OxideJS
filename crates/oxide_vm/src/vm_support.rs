@@ -31,6 +31,9 @@ impl Vm {
             interned_strings: Vec::new(),
             epoch: Epoch::new(),
             session_epoch: bumpalo::Bump::new(),
+            session_gc: crate::session_gc::SessionGc::new(),
+            session_object_ptrs: Vec::new(),
+            session_bytes_allocated: 0,
             object_prototype: obj_proto,
             math_rng_state: 0,
             sub_modules: Vec::new(),
@@ -69,6 +72,9 @@ impl Vm {
             interned_strings: Vec::new(),
             epoch: Epoch::new(),
             session_epoch: bumpalo::Bump::new(),
+            session_gc: crate::session_gc::SessionGc::new(),
+            session_object_ptrs: Vec::new(),
+            session_bytes_allocated: 0,
             object_prototype: obj_proto,
             math_rng_state: 0,
             sub_modules: Vec::new(),
@@ -120,6 +126,9 @@ impl Vm {
         self.constants.clear();
         self.epoch.reset();
         self.session_epoch.reset();
+        self.session_object_ptrs.clear();
+        self.session_bytes_allocated = 0;
+        self.session_gc = crate::session_gc::SessionGc::new();
         self.interned_strings.clear();
         self.symbol_counter = 0;
         self.symbol_descriptions.clear();
@@ -151,6 +160,7 @@ impl Vm {
 
     pub fn reset(&mut self) {
         self.clear_execution_state();
+        self.maybe_collect_session_gc();
         self.bytecode.clear();
         self.constants.clear();
         self.epoch.reset();
