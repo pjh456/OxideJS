@@ -127,14 +127,13 @@ pub fn array_is_array(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
 pub fn array_push(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let arr_ptr = array_ptr!(vm, args);
-    let arr = unsafe { &mut *arr_ptr };
-    let mut len = arr.prop_count();
+    let mut len = unsafe { &*arr_ptr }.prop_count();
     for &arg_reg in args.iter().skip(1) {
-        let val = vm.reg(arg_reg);
-        arr.set_prop_at(len, val);
+        let val = vm.promote_if_needed_for_write_ptr(arr_ptr, vm.reg(arg_reg));
+        unsafe { &mut *arr_ptr }.set_prop_at(len, val);
         len += 1;
     }
-    arr.set_prop_count(len);
+    unsafe { &mut *arr_ptr }.set_prop_count(len);
     NativeResult::Ok(JsValue::int(len as i32))
 }
 

@@ -114,6 +114,7 @@ impl Vm {
     fn ordinary_set_inner(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, use_frame_push: bool,
     ) -> Result<(), String> {
+        let val = self.promote_if_needed_for_write_ptr(obj as *mut JsObject, val);
         if let Some(pos) = self.get_own_property_slot(obj, prop_name_si) {
             if let Some(meta) = obj.prop_meta_at(pos) {
                 if meta.is_accessor {
@@ -216,6 +217,7 @@ impl Vm {
     pub(crate) fn set_member_prop(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue,
     ) -> Result<(), String> {
+        let val = self.promote_if_needed_for_write_ptr(obj as *mut JsObject, val);
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             if obj.has_prop_meta() {
                 self.ordinary_set(obj, prop_name_si, val, receiver)?;
@@ -230,6 +232,7 @@ impl Vm {
     }
 
     pub(crate) fn set_or_create_prop_value(&mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue) {
+        let val = self.promote_if_needed_for_write_ptr(obj as *mut JsObject, val);
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             obj.set_prop_at(pos, val);
         } else {
@@ -243,6 +246,7 @@ impl Vm {
     pub(crate) fn define_data_property(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, attributes: PropAttributes,
     ) -> Result<(), String> {
+        let val = self.promote_if_needed_for_write_ptr(obj as *mut JsObject, val);
         let pos = if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             pos
         } else {
@@ -277,6 +281,9 @@ impl Vm {
     pub(crate) fn define_accessor_property(
         &mut self, obj: &mut JsObject, prop_name_si: u32, get: JsValue, set: JsValue, attributes: PropAttributes,
     ) -> Result<(), String> {
+        let target_ptr = obj as *mut JsObject;
+        let get = self.promote_if_needed_for_write_ptr(target_ptr, get);
+        let set = self.promote_if_needed_for_write_ptr(target_ptr, set);
         let pos = if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             pos
         } else {

@@ -119,6 +119,26 @@ impl Epoch {
         self.bump.alloc_with(f)
     }
 
+    /// Return true when `ptr` lies inside one of the currently allocated bump chunks.
+    ///
+    /// This only compares addresses and does not dereference `ptr`.
+    #[inline]
+    pub fn is_epoch_ptr(&self, ptr: *const u8) -> bool {
+        let addr = ptr as usize;
+        if addr == 0 {
+            return false;
+        }
+        // SAFETY: this helper performs no allocations while walking the raw chunk
+        // iterator, so bumpalo's chunk list cannot change during iteration.
+        unsafe {
+            self.bump.iter_allocated_chunks_raw().any(|(base, len)| {
+                let start = base as usize;
+                let end = start.saturating_add(len);
+                addr >= start && addr < end
+            })
+        }
+    }
+
     /// O(1) mass deallocation. All previous allocations become invalid.
     /// Increments epoch ID to invalidate stale pointers (debug_assert guard).
     pub fn reset(&mut self) {
@@ -136,5 +156,34 @@ impl Epoch {
 impl Default for Epoch {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::object::JsObject;
+    use crate::shape::EMPTY_SHAPE_ID;
+    use crate::value::JsValue;
+
+    #[test]
+    fn is_epoch_ptr_returns_true_for_epoch_object() {
+        let epoch = Epoch::new();
+        let obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
+        let ptr = epoch.alloc(obj);
+
+        assert!(epoch.is_epoch_ptr(ptr.cast::<u8>()));
+    }
+
+    #[test]
+    fn is_epoch_ptr_returns_false_for_heap_and_stack_pointers() {
+        let epoch = Epoch::new();
+        let heap = PersistentHeap::new();
+        let persistent = heap.promote(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let stack_value = 7i32;
+
+        assert!(!epoch.is_epoch_ptr(persistent.as_ptr().cast::<u8>()));
+        assert!(!epoch.is_epoch_ptr((&stack_value as *const i32).cast::<u8>()));
+        assert!(!epoch.is_epoch_ptr(std::ptr::null()));
     }
 }

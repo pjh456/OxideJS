@@ -179,7 +179,8 @@ impl PropIndex for i32 {
 ///     [31]     is_function
 ///   native_arg_count: u8 (1 byte)
 ///   type_tag: u8 — OBJ_TYPE_* constant identifying wrapper/exotic object kind (1 byte)
-///   _pad: [u8; 2]
+///   is_session_epoch: u8 (1 byte)
+///   _pad: u8
 ///   hash_props: *mut u8 (8 bytes, points to Box<Vec<JsValue>>)
 ///   prop_meta: *mut u8 (8 bytes, points to Box<Vec<Option<PropMetaEntry>>>)
 ///   proto: JsValue (8 bytes)
@@ -194,7 +195,8 @@ pub struct JsObject {
     header: u32,
     native_arg_count: u8,
     pub type_tag: u8,
-    _pad: [u8; 2],
+    is_session_epoch: u8,
+    _pad: u8,
     hash_props: *mut u8,
     prop_meta: *mut u8,
     proto: JsValue,
@@ -256,7 +258,8 @@ impl JsObject {
             header: (shape_id & 0x00FF_FFFF) | (1 << 30),
             native_arg_count: 0,
             type_tag: 0,
-            _pad: [0; 2],
+            is_session_epoch: 0,
+            _pad: 0,
             hash_props: std::ptr::null_mut(),
             prop_meta: std::ptr::null_mut(),
             proto,
@@ -275,7 +278,8 @@ impl JsObject {
             header: (shape_id & 0x00FF_FFFF) | (1 << 30) | (1 << 29),
             native_arg_count: 0,
             type_tag: 0,
-            _pad: [0; 2],
+            is_session_epoch: 0,
+            _pad: 0,
             hash_props: std::ptr::null_mut(),
             prop_meta: std::ptr::null_mut(),
             proto,
@@ -290,6 +294,77 @@ impl JsObject {
         let vec = Box::new(vec![JsValue::undefined(); n_elements]);
         obj.hash_props = Box::into_raw(vec) as *mut u8;
         obj
+    }
+
+    #[inline]
+    pub fn is_session_epoch(&self) -> bool {
+        self.is_session_epoch != 0
+    }
+
+    #[inline]
+    pub fn set_session_epoch(&mut self, value: bool) {
+        self.is_session_epoch = value as u8;
+    }
+
+    pub fn clone_for_session_epoch(&self) -> Self {
+        let hash_props = self
+            .hash_props_vec()
+            .map(|props| Box::into_raw(Box::new(props.clone())) as *mut u8)
+            .unwrap_or(std::ptr::null_mut());
+        let prop_meta = self
+            .prop_meta_vec()
+            .map(|meta| Box::into_raw(Box::new(meta.clone())) as *mut u8)
+            .unwrap_or(std::ptr::null_mut());
+
+        Self {
+            header: self.header,
+            native_arg_count: self.native_arg_count,
+            type_tag: self.type_tag,
+            is_session_epoch: 1,
+            _pad: self._pad,
+            hash_props,
+            prop_meta,
+            proto: self.proto,
+            generation: self.generation,
+            _pad2: self._pad2,
+            native_fn: self.native_fn,
+            sub_module_index: self.sub_module_index,
+            _pad3: self._pad3,
+            captured_this: self.captured_this,
+            home_object: self.home_object,
+        }
+    }
+
+    pub fn rewrite_object_values<F>(&mut self, mut rewrite: F)
+    where
+        F: FnMut(JsValue) -> JsValue,
+    {
+        if let Some(props) = self.hash_props_vec_mut() {
+            for value in props {
+                if value.is_object() {
+                    *value = rewrite(*value);
+                }
+            }
+        }
+        if let Some(meta) = self.prop_meta_vec_mut() {
+            for entry in meta.iter_mut().flatten() {
+                if entry.get.is_object() {
+                    entry.get = rewrite(entry.get);
+                }
+                if entry.set.is_object() {
+                    entry.set = rewrite(entry.set);
+                }
+            }
+        }
+        if self.proto.is_object() {
+            self.proto = rewrite(self.proto);
+        }
+        if self.captured_this.is_object() {
+            self.captured_this = rewrite(self.captured_this);
+        }
+        if self.home_object.is_object() {
+            self.home_object = rewrite(self.home_object);
+        }
     }
 
     pub fn shape_id(&self) -> ShapeId {
@@ -473,6 +548,15 @@ impl JsObject {
         } else {
             // SAFETY: hash_props was set from Box<Vec<JsValue>> in ensure_hash_props/new_array.
             unsafe { Some(&*(self.hash_props as *const Vec<JsValue>)) }
+        }
+    }
+
+    fn hash_props_vec_mut(&mut self) -> Option<&mut Vec<JsValue>> {
+        if self.hash_props.is_null() {
+            None
+        } else {
+            // SAFETY: hash_props was set from Box<Vec<JsValue>> in ensure_hash_props/new_array.
+            unsafe { Some(&mut *(self.hash_props as *mut Vec<JsValue>)) }
         }
     }
 
@@ -680,9 +764,56 @@ mod tests {
         assert!(obj.is_extensible());
         assert!(!obj.is_array());
         assert!(!obj.is_function());
+        assert!(!obj.is_session_epoch());
         assert_eq!(obj.generation(), 1);
         assert!(obj.hash_props_vec().is_none());
         assert!(!obj.has_prop_meta());
+    }
+
+    #[test]
+    fn session_epoch_marker_roundtrip() {
+        let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
+        assert!(!obj.is_session_epoch());
+        obj.set_session_epoch(true);
+        assert!(obj.is_session_epoch());
+        obj.set_session_epoch(false);
+        assert!(!obj.is_session_epoch());
+    }
+
+    #[test]
+    fn session_epoch_marker_keeps_object_size_bound() {
+        let sz = std::mem::size_of::<JsObject>();
+        assert!(sz <= 256, "JsObject grew unexpectedly: {sz}B");
+    }
+
+    #[test]
+    fn clone_for_session_epoch_marks_clone_and_does_not_alias_hash_props() {
+        let mut source = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
+        source.set_prop_at(0, JsValue::int(1));
+
+        let mut clone = source.clone_for_session_epoch();
+        assert!(clone.is_session_epoch());
+        clone.set_prop_at(0, JsValue::int(2));
+
+        assert_eq!(source.get_prop_at(0), JsValue::int(1));
+        assert_eq!(clone.get_prop_at(0), JsValue::int(2));
+    }
+
+    #[test]
+    fn clone_for_session_epoch_does_not_alias_prop_meta() {
+        let mut source = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
+        source.set_prop_at(0, JsValue::undefined());
+        source.set_accessor_meta(0, JsValue::int(10), JsValue::int(11), PropAttributes::DEFAULT_DATA);
+
+        let mut clone = source.clone_for_session_epoch();
+        clone.set_accessor_meta(0, JsValue::int(20), JsValue::int(21), PropAttributes::DEFAULT_DATA);
+
+        let source_meta = source.prop_meta_at(0).expect("source meta");
+        let clone_meta = clone.prop_meta_at(0).expect("clone meta");
+        assert_eq!(source_meta.get, JsValue::int(10));
+        assert_eq!(source_meta.set, JsValue::int(11));
+        assert_eq!(clone_meta.get, JsValue::int(20));
+        assert_eq!(clone_meta.set, JsValue::int(21));
     }
 
     #[test]
