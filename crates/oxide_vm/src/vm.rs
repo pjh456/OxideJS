@@ -142,6 +142,7 @@ pub struct Vm {
     pub(crate) session: KernelSession,
     pub(crate) interned_strings: Vec<u32>,
     pub epoch: Epoch,
+    pub(crate) session_epoch: bumpalo::Bump,
     pub object_prototype: P<JsObject>,
     pub math_rng_state: u64,
     pub(crate) sub_modules: Vec<CompiledModule>,
@@ -835,6 +836,7 @@ impl Vm {
                     if !func_val.is_object() || !home_val.is_object() {
                         throw_err!(self, TypeError, "SET_HOME_OBJECT expects function and object");
                     }
+                    let home_val = self.promote_if_needed_for_write_ptr(func_val.as_js_object_ptr(), home_val);
                     let func_obj = unsafe { &mut *func_val.as_js_object_ptr() };
                     if !func_obj.is_function() {
                         throw_err!(self, TypeError, "SET_HOME_OBJECT target is not a function");

@@ -136,24 +136,25 @@ impl Vm {
 
         let prop_name_si = self.property_key_si(self.regs[b]);
         if self.kernel_core.string_forge().lookup(prop_name_si).as_deref() == Some("__proto__") {
-            let obj = unsafe { &mut *obj_ptr };
-            if self.is_object_prototype(obj_ptr) && !self.regs[a].is_null() {
+            let proto_value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
+            if self.is_object_prototype(obj_ptr) && !proto_value.is_null() {
                 self.raise_type_error("Object.prototype.__proto__ is immutable")?;
                 self.pc += 3;
                 return Ok(());
             }
-            obj.set_proto(self.regs[a]).map_err(|e| e.to_string())?;
+            let obj = unsafe { &mut *obj_ptr };
+            obj.set_proto(proto_value).map_err(|e| e.to_string())?;
             self.pc += 3;
             return Ok(());
         }
 
-        let obj = unsafe { &mut *obj_ptr };
         let ext0 = self.bytecode[self.pc];
         let ext1 = self.bytecode[self.pc + 1];
         let _ext2 = self.bytecode[self.pc + 2];
         self.pc += 3;
-        let value = self.regs[a];
+        let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
         let receiver = self.regs[rd];
+        let obj = unsafe { &mut *obj_ptr };
         if obj.has_prop_meta() {
             self.ordinary_set_dispatch(obj, prop_name_si, value, receiver)?;
             return Ok(());
@@ -209,17 +210,20 @@ impl Vm {
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "SET_PROP on non-object")? else {
             return Ok(());
         };
-        let obj = unsafe { &mut *obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[b]);
         if self.kernel_core.string_forge().lookup(prop_name_si).as_deref() == Some("__proto__") {
-            if self.is_object_prototype(obj_ptr) && !self.regs[a].is_null() {
+            let proto_value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
+            if self.is_object_prototype(obj_ptr) && !proto_value.is_null() {
                 self.raise_type_error("Object.prototype.__proto__ is immutable")?;
                 return Ok(());
             }
-            obj.set_proto(self.regs[a]).map_err(|e| e.to_string())?;
+            let obj = unsafe { &mut *obj_ptr };
+            obj.set_proto(proto_value).map_err(|e| e.to_string())?;
             return Ok(());
         }
-        self.ordinary_set_dispatch(obj, prop_name_si, self.regs[a], self.regs[rd])?;
+        let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
+        let obj = unsafe { &mut *obj_ptr };
+        self.ordinary_set_dispatch(obj, prop_name_si, value, self.regs[rd])?;
         Ok(())
     }
 
@@ -240,17 +244,20 @@ impl Vm {
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "SET_PROP_DYNAMIC on non-object")? else {
             return Ok(());
         };
-        let obj = unsafe { &mut *obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[a]);
         if self.kernel_core.string_forge().lookup(prop_name_si).as_deref() == Some("__proto__") {
-            if self.is_object_prototype(obj_ptr) && !self.regs[b].is_null() {
+            let proto_value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[b]);
+            if self.is_object_prototype(obj_ptr) && !proto_value.is_null() {
                 self.raise_type_error("Object.prototype.__proto__ is immutable")?;
                 return Ok(());
             }
-            obj.set_proto(self.regs[b]).map_err(|e| e.to_string())?;
+            let obj = unsafe { &mut *obj_ptr };
+            obj.set_proto(proto_value).map_err(|e| e.to_string())?;
             return Ok(());
         }
-        self.ordinary_set_dispatch(obj, prop_name_si, self.regs[b], self.regs[rd])?;
+        let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[b]);
+        let obj = unsafe { &mut *obj_ptr };
+        self.ordinary_set_dispatch(obj, prop_name_si, value, self.regs[rd])?;
         Ok(())
     }
 
@@ -265,8 +272,9 @@ impl Vm {
         } else {
             0
         };
+        let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[b]);
         let obj = unsafe { &mut *obj_ptr };
-        obj.set_prop_at(idx, self.regs[b]);
+        obj.set_prop_at(idx, value);
         Ok(())
     }
 }

@@ -30,6 +30,7 @@ impl Vm {
             session,
             interned_strings: Vec::new(),
             epoch: Epoch::new(),
+            session_epoch: bumpalo::Bump::new(),
             object_prototype: obj_proto,
             math_rng_state: 0,
             sub_modules: Vec::new(),
@@ -67,6 +68,7 @@ impl Vm {
             session,
             interned_strings: Vec::new(),
             epoch: Epoch::new(),
+            session_epoch: bumpalo::Bump::new(),
             object_prototype: obj_proto,
             math_rng_state: 0,
             sub_modules: Vec::new(),
@@ -117,6 +119,7 @@ impl Vm {
         self.bytecode.clear();
         self.constants.clear();
         self.epoch.reset();
+        self.session_epoch.reset();
         self.interned_strings.clear();
         self.symbol_counter = 0;
         self.symbol_descriptions.clear();
@@ -402,6 +405,25 @@ mod tests {
         let result = run_source(&mut vm, "Array.prototype.push.call([1], 2)");
         assert_eq!(result, JsValue::int(2));
         assert!(!vm.session.is_dirty_since_snapshot());
+    }
+
+    #[test]
+    fn session_epoch_survives_reset() {
+        let mut vm = Vm::new();
+        let session_ptr = vm.session_epoch.alloc(123i32) as *mut i32;
+
+        vm.reset();
+
+        assert!(unsafe { *session_ptr } == 123);
+    }
+
+    #[test]
+    fn session_epoch_reset_is_only_in_full_reset_state_clear() {
+        let src = include_str!("vm_support.rs");
+        let production = src.split("#[cfg(test)]").next().expect("production source");
+        assert_eq!(production.matches("self.session_epoch.reset()").count(), 1);
+        assert!(production.contains("fn clear_full_reset_state(&mut self)"));
+        assert!(production.contains("self.session_epoch.reset();"));
     }
 
     #[test]
