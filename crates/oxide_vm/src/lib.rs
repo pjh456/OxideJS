@@ -6,6 +6,7 @@ pub mod coercion;
 mod dispatch;
 pub mod native;
 mod session_arena;
+pub mod session_gc;
 pub mod vm;
 mod vm_dispatch_ctrl;
 mod vm_dispatch_misc;

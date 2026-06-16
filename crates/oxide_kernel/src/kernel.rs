@@ -20,6 +20,7 @@ pub struct KernelConfig {
     pub max_dead_strings: Option<usize>,
     pub max_steps: Option<u64>,
     pub max_call_depth: usize,
+    pub session_gc_threshold: usize,
     pub log_levels: [LogLevel; SUBSYSTEM_COUNT],
     pub warmup_builtin_shapes: bool,
     pub warmup_builtin_code: bool,
@@ -34,6 +35,7 @@ impl KernelConfig {
             max_dead_strings: Some(10_000),
             max_steps: None,
             max_call_depth: 1024,
+            session_gc_threshold: 8_388_608,
             log_levels: [LogLevel::Off; SUBSYSTEM_COUNT],
             warmup_builtin_shapes: true,
             warmup_builtin_code: false,
@@ -48,6 +50,7 @@ impl KernelConfig {
             max_dead_strings: Some(10_000),
             max_steps: None,
             max_call_depth: 1024,
+            session_gc_threshold: 8_388_608,
             log_levels: [LogLevel::Off; SUBSYSTEM_COUNT],
             warmup_builtin_shapes: true,
             warmup_builtin_code: true,
@@ -62,11 +65,25 @@ impl KernelConfig {
             max_dead_strings: Some(5_000),
             max_steps: None,
             max_call_depth: 1024,
+            session_gc_threshold: 8_388_608,
             log_levels: [LogLevel::Off; SUBSYSTEM_COUNT],
             warmup_builtin_shapes: true,
             warmup_builtin_code: true,
             warmup_builtin_ic: true,
         }
+    }
+
+    pub fn session_gc_threshold(&self) -> usize {
+        self.session_gc_threshold
+    }
+
+    pub fn set_session_gc_threshold(&mut self, bytes: usize) {
+        self.session_gc_threshold = bytes;
+    }
+
+    pub fn with_session_gc_threshold(mut self, bytes: usize) -> Self {
+        self.session_gc_threshold = bytes;
+        self
     }
 }
 
@@ -120,6 +137,14 @@ impl KernelCore {
 
     pub fn config(&self) -> &KernelConfig {
         &self.config
+    }
+
+    pub fn session_gc_threshold(&self) -> usize {
+        self.config.session_gc_threshold
+    }
+
+    pub fn set_session_gc_threshold(&mut self, bytes: usize) {
+        self.config.session_gc_threshold = bytes;
     }
 }
 
