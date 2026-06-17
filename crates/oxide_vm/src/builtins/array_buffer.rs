@@ -6,7 +6,7 @@ use crate::coercion;
 use crate::native::NativeResult;
 use crate::vm::Vm;
 
-const MAX_ARRAY_BUFFER_LENGTH: usize = 1 << 30;
+pub(crate) const MAX_ARRAY_BUFFER_LENGTH: usize = 1 << 30;
 
 macro_rules! native_try {
     ($expr:expr) => {
