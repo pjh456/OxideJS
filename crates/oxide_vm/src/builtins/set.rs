@@ -7,8 +7,6 @@ use oxide_types::value::JsValue;
 use crate::native::NativeResult;
 use crate::vm::Vm;
 
-const SET_PROP_INDEX: u8 = 0;
-
 macro_rules! native_try {
     ($expr:expr) => {
         match $expr {
@@ -59,7 +57,9 @@ impl Hash for SetKey {
     }
 }
 
-/// Retrieve the `IndexSet` pointer stored at `SET_PROP_INDEX` of a Set object.
+type SetInner = indexmap::IndexSet<SetKey>;
+
+/// Retrieve the `IndexSet` pointer stored in a Set object's native-data slot.
 ///
 /// # Safety contract maintained by callers
 ///
@@ -68,7 +68,7 @@ impl Hash for SetKey {
 /// native builtin is executing. The `Box<IndexSet>` is allocated in `new_set_inner()`
 /// and is never freed during the Set's lifetime. Only one live `*mut` alias exists per
 /// Set object at a time because native calls are single-threaded.
-fn get_set_inner(vm: &mut Vm, this_val: JsValue) -> Result<*mut indexmap::IndexSet<SetKey>, JsValue> {
+fn get_set_inner(vm: &mut Vm, this_val: JsValue) -> Result<*mut SetInner, JsValue> {
     if !this_val.is_object() {
         return Err(crate::builtins::error::create_type_error(vm, "called on non-Set object"));
     }
@@ -85,38 +85,98 @@ fn get_set_inner(vm: &mut Vm, this_val: JsValue) -> Result<*mut indexmap::IndexS
             "Set.prototype.add called on incompatible receiver",
         ));
     }
-    let inner_val = set_obj.get_prop_at(SET_PROP_INDEX);
-    if !inner_val.is_object() {
-        return Err(crate::builtins::error::create_type_error(vm, "Set internal state invalid"));
-    }
-    // SAFETY: inner_val holds the raw pointer written by `alloc_set` as
-    // `JsValue::object(Box::into_raw(Box::new(IndexSet::new())) as *mut u8)`.
-    // The pointer is a valid, heap-allocated `Box<IndexSet<SetKey>>` and is never freed
-    // during the Set object's lifetime (see module safety contract above).
+    // SAFETY: native_data holds the raw pointer written by `alloc_set`.
+    // The pointer is a valid, heap-allocated `Box<IndexSet<SetKey>>`.
     // Alignment: IndexSet requires at most 8-byte alignment; the global allocator satisfies this.
-    let inner_ptr = inner_val.as_js_object_ptr() as *mut indexmap::IndexSet<SetKey>;
+    let inner_ptr = set_obj.native_data() as *mut SetInner;
     if inner_ptr.is_null() {
         return Err(crate::builtins::error::create_type_error(vm, "Set internal state invalid"));
     }
     Ok(inner_ptr)
 }
 
-/// Allocate a new `IndexSet` on the global heap.
-/// The caller is responsible for storing the pointer in the Set `JsObject` at `SET_PROP_INDEX`
-/// via `JsValue::object(ptr as *mut u8)` and ensuring it is never double-freed.
-fn new_set_inner() -> *mut indexmap::IndexSet<SetKey> {
-    Box::into_raw(Box::new(indexmap::IndexSet::new()))
+fn new_set_inner() -> *mut SetInner {
+    Box::into_raw(Box::new(SetInner::new()))
 }
 
 fn alloc_set(vm: &mut Vm) -> *mut JsObject {
     let set_proto = vm.session().builtin_world().set_proto.as_ptr() as *mut JsObject;
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(set_proto));
     obj.set_set(true);
-    // SAFETY: new_set_inner() returns a valid Box<IndexSet> pointer; stored as a JsValue
-    // object tag so get_set_inner() can retrieve and cast it back (same provenance).
     let inner = new_set_inner();
-    obj.set_prop_at(SET_PROP_INDEX, JsValue::object(inner as *mut u8));
+    obj.set_native_data(inner as *mut u8);
     vm.epoch().alloc(obj)
+}
+
+pub(crate) fn set_native_edges(obj: &JsObject) -> Vec<JsValue> {
+    if !obj.is_set() {
+        return Vec::new();
+    }
+    let inner = obj.native_data() as *const SetInner;
+    if inner.is_null() {
+        return Vec::new();
+    }
+    unsafe { (*inner).iter().map(|key| key.0).filter(|value| value.is_object()).collect() }
+}
+
+pub(crate) fn clone_set_native_with_rewrite<F>(src: &JsObject, dst: &mut JsObject, mut rewrite: F)
+where
+    F: FnMut(JsValue) -> JsValue,
+{
+    if !src.is_set() {
+        return;
+    }
+    let inner = src.native_data() as *const SetInner;
+    if inner.is_null() {
+        dst.set_native_data(std::ptr::null_mut());
+        return;
+    }
+    let mut cloned = SetInner::new();
+    unsafe {
+        for key in (*inner).iter() {
+            let new_key = if key.0.is_object() { SetKey(rewrite(key.0)) } else { *key };
+            cloned.insert(new_key);
+        }
+    }
+    dst.set_native_data(Box::into_raw(Box::new(cloned)) as *mut u8);
+}
+
+pub(crate) fn rewrite_set_native<F>(obj: &mut JsObject, mut rewrite: F)
+where
+    F: FnMut(JsValue) -> JsValue,
+{
+    if !obj.is_set() {
+        return;
+    }
+    let inner = obj.native_data() as *mut SetInner;
+    if inner.is_null() {
+        return;
+    }
+    unsafe {
+        let mut rewritten = SetInner::with_capacity((*inner).len());
+        for key in (*inner).iter() {
+            let new_key = if key.0.is_object() { SetKey(rewrite(key.0)) } else { *key };
+            rewritten.insert(new_key);
+        }
+        *inner = rewritten;
+    }
+}
+
+pub(crate) fn drop_set_native(obj: &mut JsObject) -> u64 {
+    if !obj.is_set() {
+        return 0;
+    }
+    let inner = obj.native_data() as *mut SetInner;
+    if inner.is_null() {
+        return 0;
+    }
+    unsafe {
+        let boxed = Box::from_raw(inner);
+        let bytes = std::mem::size_of::<SetInner>() + boxed.capacity() * std::mem::size_of::<SetKey>();
+        drop(boxed);
+        obj.set_native_data(std::ptr::null_mut());
+        bytes as u64
+    }
 }
 
 pub fn set_constructor(vm: &mut Vm, _args: &[u8]) -> NativeResult {

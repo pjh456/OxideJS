@@ -16,6 +16,12 @@ fn parse_to_hash(source: &str) -> u64 {
     oxide_compiler::compiler::structural_hash(&program)
 }
 
+fn parse_to_compiled_hash(source: &str) -> u64 {
+    let allocator = Allocator::default();
+    let program = oxide_parser::parse(&allocator, source).expect("parse failed");
+    oxide_compiler::compiler::compiled_module_hash(&program)
+}
+
 #[test]
 fn structural_hash_hit() {
     let forge = CodeForge::new();
@@ -41,6 +47,20 @@ fn structural_hash_identifier_renaming_remains_normalized() {
     let hash_a = parse_to_hash("var left = 1; left + left");
     let hash_b = parse_to_hash("var right = 1; right + right");
     assert_eq!(hash_a, hash_b);
+}
+
+#[test]
+fn compiled_module_hash_distinguishes_same_shape_different_identifier_loads() {
+    let hash_a = parse_to_compiled_hash("var x = 1; var y = 2; x");
+    let hash_b = parse_to_compiled_hash("var x = 1; var y = 2; y");
+    assert_ne!(hash_a, hash_b);
+}
+
+#[test]
+fn compiled_module_hash_distinguishes_assignment_targets() {
+    let hash_a = parse_to_compiled_hash("var x = 1; x = 2; x");
+    let hash_b = parse_to_compiled_hash("var x = 1; y = 2; x");
+    assert_ne!(hash_a, hash_b);
 }
 
 #[test]

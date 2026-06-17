@@ -183,6 +183,7 @@ impl PropIndex for i32 {
 ///   _pad: u8
 ///   hash_props: *mut u8 (8 bytes, points to Box<Vec<JsValue>>)
 ///   prop_meta: *mut u8 (8 bytes, points to Box<Vec<Option<PropMetaEntry>>>)
+///   native_data: *mut u8 (8 bytes, opaque VM-owned native/exotic payload)
 ///   proto: JsValue (8 bytes)
 ///   generation: u32 (4 bytes + 4 pad)
 ///   native_fn: Option<NativeFnPtr> (16 bytes — Option<NonNull> optimization NOT available for
@@ -199,6 +200,7 @@ pub struct JsObject {
     _pad: u8,
     hash_props: *mut u8,
     prop_meta: *mut u8,
+    native_data: *mut u8,
     proto: JsValue,
     generation: u32,
     _pad2: [u8; 4],
@@ -264,6 +266,7 @@ impl JsObject {
             _pad: 0,
             hash_props: std::ptr::null_mut(),
             prop_meta: std::ptr::null_mut(),
+            native_data: std::ptr::null_mut(),
             proto,
             generation: 1,
             _pad2: [0; 4],
@@ -284,6 +287,7 @@ impl JsObject {
             _pad: 0,
             hash_props: std::ptr::null_mut(),
             prop_meta: std::ptr::null_mut(),
+            native_data: std::ptr::null_mut(),
             proto,
             generation: 1,
             _pad2: [0; 4],
@@ -344,6 +348,7 @@ impl JsObject {
             _pad: self._pad,
             hash_props,
             prop_meta,
+            native_data: self.native_data,
             proto: self.proto,
             generation: self.generation,
             _pad2: self._pad2,
@@ -361,6 +366,14 @@ impl JsObject {
 
     pub fn prop_meta_raw(&self) -> *mut u8 {
         self.prop_meta
+    }
+
+    pub fn native_data(&self) -> *mut u8 {
+        self.native_data
+    }
+
+    pub fn set_native_data(&mut self, ptr: *mut u8) {
+        self.native_data = ptr;
     }
 
     pub fn rewrite_object_values<F>(&mut self, mut rewrite: F)

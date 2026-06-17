@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
+use crate::builtins::{map, set};
 use crate::vm::Vm;
 
 impl Vm {
@@ -41,6 +42,15 @@ impl Vm {
 
         let dst_ref = unsafe { &mut *dst };
         dst_ref.rewrite_object_values(|value| self.promote_value_if_epoch_object(value, forwarding));
+        if src_ref.is_map() {
+            map::clone_map_native_with_rewrite(src_ref, dst_ref, |value| {
+                self.promote_value_if_epoch_object(value, forwarding)
+            });
+        } else if src_ref.is_set() {
+            set::clone_set_native_with_rewrite(src_ref, dst_ref, |value| {
+                self.promote_value_if_epoch_object(value, forwarding)
+            });
+        }
         dst
     }
 

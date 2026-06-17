@@ -4,7 +4,7 @@ use crate::module::CompiledModule;
 use crate::opcode::{self, OpCode};
 use crate::symbol_table::{Binding, SymbolTable};
 
-pub use crate::hash::structural_hash;
+pub use crate::hash::{compiled_module_hash, structural_hash};
 pub use crate::module::Constant;
 use crate::symbol_table::ScopeKind;
 pub use oxide_parser::VariableDeclarationKind;

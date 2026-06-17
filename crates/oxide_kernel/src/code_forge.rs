@@ -7,7 +7,7 @@ use oxide_compiler::module::CompiledModule;
 
 use crate::{kernel_debug, kernel_info};
 
-pub use oxide_compiler::compiler::structural_hash;
+pub use oxide_compiler::compiler::{compiled_module_hash, structural_hash};
 
 /// Shared compiled-module cache.
 ///
@@ -29,16 +29,16 @@ impl CodeForge {
     pub fn get_or_compile(
         &self, program: &oxide_parser::Program, compiler: &Compiler,
     ) -> Result<Arc<CompiledModule>, String> {
-        let hash = structural_hash(program);
+        let hash = compiled_module_hash(program);
 
         if let Some(module) = self.map.get(&hash) {
-            kernel_info!("CodeForge hit hash={:#x}", hash);
+            kernel_info!("CodeForge hit compiled_hash={:#x}", hash);
             return Ok(Arc::clone(&module));
         }
 
         let module = compiler.compile(program)?;
         let module = Arc::new(module);
-        kernel_debug!("CodeForge miss hash={:#x}", hash);
+        kernel_debug!("CodeForge miss compiled_hash={:#x}", hash);
 
         Ok(Arc::clone(self.map.entry(hash).or_insert(module).value()))
     }
@@ -71,6 +71,17 @@ mod tests {
         let p1 = oxide_parser::parse(&a1, "var x = 1; var y = 2;").expect("parse failed");
         let p2 = oxide_parser::parse(&a2, "var a = 1; var b = 2;").expect("parse failed");
         assert_eq!(structural_hash(&p1), structural_hash(&p2));
+    }
+
+    #[test]
+    fn test_compiled_module_hash_distinguishes_identifier_loads() {
+        let a1 = Allocator::default();
+        let a2 = Allocator::default();
+        let p1 = oxide_parser::parse(&a1, "var x = 1; var y = 2; x").expect("parse failed");
+        let p2 = oxide_parser::parse(&a2, "var x = 1; var y = 2; y").expect("parse failed");
+
+        assert_eq!(structural_hash(&p1), structural_hash(&p2));
+        assert_ne!(compiled_module_hash(&p1), compiled_module_hash(&p2));
     }
 
     #[test]
@@ -108,6 +119,23 @@ mod tests {
         let m1 = forge.get_or_compile(&p1, &compiler).expect("compile p1");
         let m2 = forge.get_or_compile(&p2, &compiler).expect("compile p2");
 
+        assert_ne!(m1.bytecode, m2.bytecode);
+    }
+
+    #[test]
+    fn test_cache_miss_same_shape_different_binding_program() {
+        let forge = CodeForge::new();
+        let compiler = Compiler::new();
+
+        let a1 = Allocator::default();
+        let p1 = oxide_parser::parse(&a1, "var x = 1; var y = 2; x").expect("parse failed");
+        let a2 = Allocator::default();
+        let p2 = oxide_parser::parse(&a2, "var x = 1; var y = 2; y").expect("parse failed");
+
+        let m1 = forge.get_or_compile(&p1, &compiler).expect("compile p1");
+        let m2 = forge.get_or_compile(&p2, &compiler).expect("compile p2");
+
+        assert!(!Arc::ptr_eq(&m1, &m2));
         assert_ne!(m1.bytecode, m2.bytecode);
     }
 }

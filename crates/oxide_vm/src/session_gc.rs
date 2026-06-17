@@ -5,6 +5,7 @@ use std::time::Instant;
 use oxide_types::object::{JsObject, PropMetaEntry};
 use oxide_types::value::JsValue;
 
+use crate::builtins::{map, set};
 use crate::vm::Vm;
 
 pub struct SessionGc {
@@ -79,6 +80,12 @@ impl SessionGc {
         }
         if obj.home_object().is_object() {
             edges.push(obj.home_object());
+        }
+        if obj.is_map() {
+            edges.extend(map::map_native_edges(obj));
+        }
+        if obj.is_set() {
+            edges.extend(set::set_native_edges(obj));
         }
         edges
     }
@@ -161,6 +168,9 @@ impl SessionGc {
                 std::mem::drop(vec);
             }
 
+            freed_bytes += map::drop_map_native(obj);
+            freed_bytes += set::drop_set_native(obj);
+
             freed_bytes
         }
     }
@@ -186,8 +196,15 @@ impl SessionGc {
             let is_live = unsafe { (*old_ptr).is_gc_marked() };
             if is_live {
                 survivors += 1;
-                let clone = unsafe { &*old_ptr }.clone_for_session_epoch();
+                let old_ref = unsafe { &*old_ptr };
+                let clone = old_ref.clone_for_session_epoch();
                 let new_ptr = new_arena.alloc(clone) as *mut JsObject;
+                let new_ref = unsafe { &mut *new_ptr };
+                if old_ref.is_map() {
+                    map::clone_map_native_with_rewrite(old_ref, new_ref, |value| value);
+                } else if old_ref.is_set() {
+                    set::clone_set_native_with_rewrite(old_ref, new_ref, |value| value);
+                }
                 forwarding.insert(old_ptr, new_ptr);
                 freed_bytes += Self::drop_session_object_heap_data(old_ptr);
             } else {
@@ -208,6 +225,11 @@ impl SessionGc {
                 }
                 value
             });
+            if obj.is_map() {
+                map::rewrite_map_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
+            } else if obj.is_set() {
+                set::rewrite_set_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
+            }
         }
 
         rewrite_vm_roots(vm, &forwarding);
@@ -353,6 +375,8 @@ mod tests {
     use oxide_types::object::JsObject;
 
     use super::*;
+    use crate::builtins::{map, set};
+    use crate::native::NativeResult;
     use crate::vm::{CallFrame, FrameContinuation};
 
     fn plain_object(vm: &mut Vm) -> *mut JsObject {
@@ -480,6 +504,14 @@ mod tests {
         Vm::with_kernel_core(core)
     }
 
+    fn native_ok(result: NativeResult) -> JsValue {
+        match result {
+            NativeResult::Ok(value) => value,
+            NativeResult::Err(err) => panic!("native error: {err}"),
+            NativeResult::TailCall { .. } => panic!("unexpected native bytecode call"),
+        }
+    }
+
     #[test]
     fn reset_maybe_collect_collects_after_threshold() {
         let mut vm = vm_with_low_threshold();
@@ -535,5 +567,68 @@ mod tests {
         assert!(new_value.is_object());
         assert!(!std::ptr::eq(new_value.as_js_object_ptr(), old_ptr));
         assert_eq!(unsafe { (*new_value.as_js_object_ptr()).get_prop_at(0) }, JsValue::int(42));
+    }
+
+    #[test]
+    fn map_native_storage_is_not_a_normal_object_edge() {
+        let mut vm = Vm::new();
+        let map_value = native_ok(map::map_constructor(&mut vm, &[]));
+        let map_obj = unsafe { &*map_value.as_js_object_ptr() };
+        let native_ptr = map_obj.native_data() as *mut JsObject;
+
+        assert!(map_obj.hash_props_vec().is_none());
+        assert!(!map_obj.native_data().is_null());
+        assert!(!SessionGc::new()
+            .object_edges(map_obj)
+            .iter()
+            .any(|edge| std::ptr::eq(edge.as_js_object_ptr(), native_ptr)));
+    }
+
+    #[test]
+    fn session_gc_traces_map_object_key_and_value() {
+        let mut vm = vm_with_low_threshold();
+        let map_value = native_ok(map::map_constructor(&mut vm, &[]));
+        let key = JsValue::from_js_object(plain_object(&mut vm));
+        let value = JsValue::from_js_object(plain_object(&mut vm));
+        vm.regs[0] = map_value;
+        vm.regs[1] = key;
+        vm.regs[2] = value;
+        native_ok(map::map_set(&mut vm, &[0, 1, 2]));
+
+        let map_session = vm.promote_object(map_value.as_js_object_ptr());
+        vm.regs.fill(JsValue::undefined());
+        vm.regs[0] = JsValue::from_js_object(map_session);
+        let mut gc = std::mem::replace(&mut vm.session_gc, SessionGc::new());
+        gc.collect(&mut vm);
+        vm.session_gc = gc;
+
+        let live_map = unsafe { &*vm.regs[0].as_js_object_ptr() };
+        let edges = map::map_native_edges(live_map);
+        assert_eq!(edges.len(), 2);
+        assert!(edges.iter().all(|value| vm.is_session_ptr(value.as_js_object_ptr())));
+        assert_eq!(vm.session_object_ptrs.len(), 3);
+    }
+
+    #[test]
+    fn session_gc_traces_set_object_key() {
+        let mut vm = vm_with_low_threshold();
+        let set_value = native_ok(set::set_constructor(&mut vm, &[]));
+        let key = JsValue::from_js_object(plain_object(&mut vm));
+        vm.regs[0] = set_value;
+        vm.regs[1] = key;
+        native_ok(set::set_add(&mut vm, &[0, 1]));
+
+        let set_session = vm.promote_object(set_value.as_js_object_ptr());
+        vm.regs.fill(JsValue::undefined());
+        vm.regs[0] = JsValue::from_js_object(set_session);
+        let mut gc = std::mem::replace(&mut vm.session_gc, SessionGc::new());
+        gc.collect(&mut vm);
+        vm.session_gc = gc;
+
+        let live_set = unsafe { &*vm.regs[0].as_js_object_ptr() };
+        let edges = set::set_native_edges(live_set);
+        assert_eq!(edges.len(), 1);
+        assert!(vm.is_session_ptr(edges[0].as_js_object_ptr()));
+        assert_eq!(vm.session_object_ptrs.len(), 2);
     }
 }
