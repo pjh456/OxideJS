@@ -117,26 +117,6 @@ impl Compiler {
             ctx.projected_pc += 5; // LOAD_CONST + GET_PROP + LOAD_CONST + two SET_PROP
         }
 
-        for element in &class.body.body {
-            let ClassElement::MethodDefinition(method) = element else {
-                continue;
-            };
-            let method = method.as_ref();
-            match method.kind {
-                MethodDefinitionKind::Constructor => {}
-                MethodDefinitionKind::Method => {
-                    ctx.alloc_reg(); // method_reg
-                    ctx.alloc_reg(); // key_reg
-                    ctx.projected_pc += 4; // LOAD_CONST method + SET_HOME_OBJECT + LOAD_CONST key + SET_PROP
-                }
-                MethodDefinitionKind::Get | MethodDefinitionKind::Set => {
-                    ctx.alloc_reg(); // method_reg
-                    ctx.alloc_reg(); // undefined getter/setter placeholder
-                    ctx.projected_pc += 5; // LOAD_CONST method + SET_HOME_OBJECT + LOAD_CONST undefined + DEFINE_ACCESSOR + ext
-                }
-            }
-        }
-
         ctx.alloc_reg(); // constructor key
         ctx.projected_pc += 1; // LOAD_CONST "constructor"
         ctx.projected_pc += 1; // SET_PROP proto.constructor = ctor
@@ -144,6 +124,51 @@ impl Compiler {
         ctx.alloc_reg(); // prototype key
         ctx.projected_pc += 1; // LOAD_CONST "prototype"
         ctx.projected_pc += 1; // SET_PROP ctor.prototype = proto
+
+        for element in &class.body.body {
+            match element {
+                ClassElement::MethodDefinition(method) => {
+                    let method = method.as_ref();
+                    if matches!(method.kind, MethodDefinitionKind::Constructor) {
+                        continue;
+                    }
+                    ctx.alloc_reg(); // key_reg
+                    ctx.projected_pc += 1;
+                    ctx.alloc_reg(); // method_reg
+                    ctx.projected_pc += 2; // LOAD_CONST method + SET_HOME_OBJECT
+                    match method.kind {
+                        MethodDefinitionKind::Method => {
+                            ctx.projected_pc += 1; // SET_PROP
+                        }
+                        MethodDefinitionKind::Get | MethodDefinitionKind::Set => {
+                            ctx.alloc_reg(); // undefined placeholder
+                            ctx.projected_pc += 3; // LOAD_CONST undefined + DEFINE_ACCESSOR + ext
+                        }
+                        MethodDefinitionKind::Constructor => {}
+                    }
+                }
+                ClassElement::PropertyDefinition(prop) => {
+                    let prop = prop.as_ref();
+                    if prop.r#static {
+                        ctx.alloc_reg(); // key_reg
+                        ctx.projected_pc += 1;
+                        if let Some(value) = &prop.value {
+                            self.count_expression(value, ctx);
+                        } else {
+                            ctx.alloc_reg();
+                            ctx.projected_pc += 1;
+                        }
+                        ctx.projected_pc += 1; // SET_PROP
+                    }
+                }
+                ClassElement::StaticBlock(block) => {
+                    for stmt in &block.body {
+                        self.count_statement(stmt, ctx);
+                    }
+                }
+                ClassElement::AccessorProperty(_) | ClassElement::TSIndexSignature(_) => {}
+            }
+        }
     }
 
     pub(crate) fn count_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) {

@@ -13,6 +13,60 @@ use crate::compiler::{
 use crate::module::Constant;
 
 impl Compiler {
+    fn emit_class_key_reg(&self, key: &PropertyKey, computed: bool, ctx: &mut CompileCtx) -> Result<u8, String> {
+        if !computed {
+            let name = self.class_property_name(key)?;
+            let idx = ctx.add_constant(Constant::String(name));
+            let reg = ctx.alloc_reg();
+            ctx.emit_load_const(reg, idx);
+            return Ok(reg);
+        }
+
+        if matches!(key, PropertyKey::PrivateIdentifier(_)) {
+            return Err("private class elements not yet supported".into());
+        }
+        self.emit_expression(key.to_expression(), ctx)
+    }
+
+    fn count_class_key(&self, key: &PropertyKey, computed: bool, ctx: &mut CompileCtx) {
+        if computed {
+            self.count_expression(key.to_expression(), ctx);
+        } else {
+            ctx.alloc_reg();
+            ctx.projected_pc += 1;
+        }
+    }
+
+    fn emit_public_field_init(
+        &self, target_reg: u8, key: &PropertyKey, computed: bool, value: Option<&Expression>, ctx: &mut CompileCtx,
+    ) -> Result<(), String> {
+        let key_reg = self.emit_class_key_reg(key, computed, ctx)?;
+        let value_reg = if let Some(expr) = value {
+            self.emit_expression(expr, ctx)?
+        } else {
+            self.emit_undefined(ctx)
+        };
+        if computed {
+            ctx.emit(opcode::encode(OpCode::SET_PROP_DYNAMIC, target_reg, key_reg, value_reg));
+        } else {
+            ctx.emit(opcode::encode(OpCode::SET_PROP, target_reg, value_reg, key_reg));
+        }
+        Ok(())
+    }
+
+    fn count_public_field_init(
+        &self, key: &PropertyKey, computed: bool, value: Option<&Expression>, ctx: &mut CompileCtx,
+    ) {
+        self.count_class_key(key, computed, ctx);
+        if let Some(expr) = value {
+            self.count_expression(expr, ctx);
+        } else {
+            ctx.alloc_reg();
+            ctx.projected_pc += 1;
+        }
+        ctx.projected_pc += 1;
+    }
+
     fn static_property_name(&self, key: &PropertyKey) -> Result<String, String> {
         match key {
             PropertyKey::StaticIdentifier(ident) => Ok(ident.name.as_str().to_string()),
@@ -303,7 +357,9 @@ impl Compiler {
     fn class_property_name(&self, key: &PropertyKey) -> Result<String, String> {
         match key {
             PropertyKey::StaticIdentifier(ident) => Ok(ident.name.as_str().to_string()),
+            PropertyKey::Identifier(ident) => Ok(ident.name.as_str().to_string()),
             PropertyKey::StringLiteral(s) => Ok(s.value.to_string()),
+            PropertyKey::NumericLiteral(n) => Ok(n.value.to_string()),
             PropertyKey::PrivateIdentifier(_) => Err("private class elements not yet supported".into()),
             _ => Err("unsupported class property key type".into()),
         }
@@ -311,44 +367,34 @@ impl Compiler {
 
     fn emit_class(&self, class: &Class, ctx: &mut CompileCtx) -> Result<u8, String> {
         let mut constructor_method = None;
-        let mut instance_methods = Vec::new();
-        let mut static_methods = Vec::new();
-        let mut instance_accessors = Vec::new();
-        let mut static_accessors = Vec::new();
+        let mut instance_fields = Vec::new();
         let is_derived = class.super_class.is_some();
 
         for element in &class.body.body {
-            let ClassElement::MethodDefinition(method) = element else {
-                return Err("class fields/accessors/static blocks not yet supported".into());
-            };
-            let method = method.as_ref();
-            if method.computed {
-                return Err("computed class methods not yet supported".into());
-            }
-
-            match method.kind {
-                MethodDefinitionKind::Constructor => {
-                    if constructor_method.is_some() {
-                        return Err("duplicate class constructor".into());
+            match element {
+                ClassElement::MethodDefinition(method) => {
+                    let method = method.as_ref();
+                    if matches!(method.key, PropertyKey::PrivateIdentifier(_)) {
+                        return Err("private class elements not yet supported".into());
                     }
-                    constructor_method = Some(method);
-                }
-                MethodDefinitionKind::Method => {
-                    let name = self.class_property_name(&method.key)?;
-                    if method.r#static {
-                        static_methods.push((method, name));
-                    } else {
-                        instance_methods.push((method, name));
+                    if method.kind == MethodDefinitionKind::Constructor {
+                        if constructor_method.is_some() {
+                            return Err("duplicate class constructor".into());
+                        }
+                        constructor_method = Some(method);
                     }
                 }
-                MethodDefinitionKind::Get | MethodDefinitionKind::Set => {
-                    let name = self.class_property_name(&method.key)?;
-                    if method.r#static {
-                        static_accessors.push((method, name));
-                    } else {
-                        instance_accessors.push((method, name));
+                ClassElement::PropertyDefinition(prop) => {
+                    let prop = prop.as_ref();
+                    if matches!(prop.key, PropertyKey::PrivateIdentifier(_)) {
+                        return Err("private class elements not yet supported".into());
+                    }
+                    if !prop.r#static {
+                        instance_fields.push(prop);
                     }
                 }
+                ClassElement::AccessorProperty(_) => return Err("class accessor properties not yet supported".into()),
+                ClassElement::StaticBlock(_) | ClassElement::TSIndexSignature(_) => {}
             }
         }
 
@@ -367,22 +413,58 @@ impl Compiler {
 
         let mut ctor_module = if let Some(method) = constructor_method {
             let (param_names, body_stmts) = self.extract_function_parts(method.value.as_ref())?;
-            self.compile_function_body_with_bindings(
+            self.compile_function_body_with_field_hooks(
                 &param_names,
                 body_stmts,
                 ctx,
                 false,
                 &self_binding,
                 FunctionBodyContext::ClassElement,
+                Some(|compiler: &Compiler, field_ctx: &mut CompileCtx| {
+                    for field in &instance_fields {
+                        compiler.count_public_field_init(&field.key, field.computed, field.value.as_ref(), field_ctx);
+                    }
+                }),
+                Some(|compiler: &Compiler, field_ctx: &mut CompileCtx| -> Result<(), String> {
+                    for field in &instance_fields {
+                        compiler.emit_public_field_init(
+                            254,
+                            &field.key,
+                            field.computed,
+                            field.value.as_ref(),
+                            field_ctx,
+                        )?;
+                    }
+                    Ok(())
+                }),
+                is_derived,
             )?
         } else {
-            let mut module = self.compile_function_body_with_bindings(
+            let mut module = self.compile_function_body_with_field_hooks(
                 &[],
                 &[],
                 ctx,
                 false,
                 &self_binding,
                 FunctionBodyContext::ClassElement,
+                Some(|compiler: &Compiler, field_ctx: &mut CompileCtx| {
+                    for field in &instance_fields {
+                        compiler.count_public_field_init(&field.key, field.computed, field.value.as_ref(), field_ctx);
+                    }
+                }),
+                Some(|compiler: &Compiler, field_ctx: &mut CompileCtx| -> Result<(), String> {
+                    for field in &instance_fields {
+                        compiler.emit_public_field_init(
+                            254,
+                            &field.key,
+                            field.computed,
+                            field.value.as_ref(),
+                            field_ctx,
+                        )?;
+                    }
+                    Ok(())
+                }),
+                is_derived,
             )?;
             if is_derived {
                 module.bytecode.clear();
@@ -390,6 +472,13 @@ impl Compiler {
                 module.n_registers = 1;
                 module.bytecode.push(opcode::encode(OpCode::SUPER_CALL, 0, 0, 0));
                 module.bytecode.push(0);
+                let mut field_ctx = CompileCtx::new();
+                for field in &instance_fields {
+                    self.emit_public_field_init(254, &field.key, field.computed, field.value.as_ref(), &mut field_ctx)?;
+                }
+                module.bytecode.extend(field_ctx.bytecode);
+                module.constants = field_ctx.constants;
+                module.n_registers = field_ctx.max_regs.max(1);
                 module.bytecode.push(opcode::encode(OpCode::RETURN, 0, 0, 0));
             }
             module
@@ -418,88 +507,6 @@ impl Compiler {
             ctx.emit(opcode::encode(OpCode::SET_PROP, ctor_reg, super_reg, proto_link_key_reg));
         }
 
-        for (method, method_name) in instance_methods {
-            let (param_names, body_stmts) = self.extract_function_parts(method.value.as_ref())?;
-            let saved_method = ctx.in_instance_method;
-            ctx.in_instance_method = true;
-            let mut method_module = self.compile_function_body_with_bindings(
-                &param_names,
-                body_stmts,
-                ctx,
-                false,
-                &self_binding,
-                FunctionBodyContext::ClassElement,
-            )?;
-            ctx.in_instance_method = saved_method;
-            method_module.function_name = Some(method_name.clone());
-            method_module.needs_home_object = true;
-            ctx.sub_modules.push(method_module);
-
-            let method_idx = ctx.add_constant(Constant::BytecodeFunc(ctx.sub_modules.len() as u32));
-            let method_reg = ctx.alloc_reg();
-            ctx.emit_load_const(method_reg, method_idx);
-            ctx.emit(opcode::encode(OpCode::SET_HOME_OBJECT, method_reg, proto_reg, 0));
-
-            let key_idx = ctx.add_constant(Constant::String(method_name));
-            let key_reg = ctx.alloc_reg();
-            ctx.emit_load_const(key_reg, key_idx);
-            ctx.emit(opcode::encode(OpCode::SET_PROP, proto_reg, method_reg, key_reg));
-        }
-
-        for (method, method_name) in instance_accessors {
-            let accessor_reg = self.emit_class_method_function(method, &method_name, proto_reg, ctx, &self_binding)?;
-            let undef_reg = self.emit_undefined(ctx);
-            let (get_reg, set_reg) = match method.kind {
-                MethodDefinitionKind::Get => (accessor_reg, undef_reg),
-                MethodDefinitionKind::Set => (undef_reg, accessor_reg),
-                _ => unreachable!(),
-            };
-            let key_idx = ctx.add_constant(Constant::String(method_name));
-            ctx.emit(opcode::encode(OpCode::DEFINE_ACCESSOR, proto_reg, get_reg, set_reg));
-            ctx.emit(key_idx as u32);
-        }
-
-        for (method, method_name) in static_methods {
-            let (param_names, body_stmts) = self.extract_function_parts(method.value.as_ref())?;
-            let saved_static = ctx.in_static_method;
-            ctx.in_static_method = true;
-            let mut method_module = self.compile_function_body_with_bindings(
-                &param_names,
-                body_stmts,
-                ctx,
-                false,
-                &self_binding,
-                FunctionBodyContext::ClassElement,
-            )?;
-            ctx.in_static_method = saved_static;
-            method_module.function_name = Some(method_name.clone());
-            method_module.needs_home_object = true;
-            ctx.sub_modules.push(method_module);
-
-            let method_idx = ctx.add_constant(Constant::BytecodeFunc(ctx.sub_modules.len() as u32));
-            let method_reg = ctx.alloc_reg();
-            ctx.emit_load_const(method_reg, method_idx);
-            ctx.emit(opcode::encode(OpCode::SET_HOME_OBJECT, method_reg, ctor_reg, 0));
-
-            let key_idx = ctx.add_constant(Constant::String(method_name));
-            let key_reg = ctx.alloc_reg();
-            ctx.emit_load_const(key_reg, key_idx);
-            ctx.emit(opcode::encode(OpCode::SET_PROP, ctor_reg, method_reg, key_reg));
-        }
-
-        for (method, method_name) in static_accessors {
-            let accessor_reg = self.emit_class_method_function(method, &method_name, ctor_reg, ctx, &self_binding)?;
-            let undef_reg = self.emit_undefined(ctx);
-            let (get_reg, set_reg) = match method.kind {
-                MethodDefinitionKind::Get => (accessor_reg, undef_reg),
-                MethodDefinitionKind::Set => (undef_reg, accessor_reg),
-                _ => unreachable!(),
-            };
-            let key_idx = ctx.add_constant(Constant::String(method_name));
-            ctx.emit(opcode::encode(OpCode::DEFINE_ACCESSOR, ctor_reg, get_reg, set_reg));
-            ctx.emit(key_idx as u32);
-        }
-
         let ctor_key_idx = ctx.add_constant(Constant::String("constructor".to_string()));
         let ctor_key_reg = ctx.alloc_reg();
         ctx.emit_load_const(ctor_key_reg, ctor_key_idx);
@@ -509,6 +516,71 @@ impl Compiler {
         let proto_key_reg = ctx.alloc_reg();
         ctx.emit_load_const(proto_key_reg, proto_key_idx);
         ctx.emit(opcode::encode(OpCode::SET_PROP, ctor_reg, proto_reg, proto_key_reg));
+
+        for element in &class.body.body {
+            match element {
+                ClassElement::MethodDefinition(method) => {
+                    let method = method.as_ref();
+                    if method.kind == MethodDefinitionKind::Constructor {
+                        continue;
+                    }
+                    let home_reg = if method.r#static { ctor_reg } else { proto_reg };
+                    let key_reg = self.emit_class_key_reg(&method.key, method.computed, ctx)?;
+                    let method_name = if method.computed {
+                        "<computed>".to_string()
+                    } else {
+                        self.class_property_name(&method.key)?
+                    };
+                    let accessor_reg =
+                        self.emit_class_method_function(method, &method_name, home_reg, ctx, &self_binding)?;
+                    match method.kind {
+                        MethodDefinitionKind::Method => {
+                            if method.computed {
+                                ctx.emit(opcode::encode(OpCode::SET_PROP_DYNAMIC, home_reg, key_reg, accessor_reg));
+                            } else {
+                                ctx.emit(opcode::encode(OpCode::SET_PROP, home_reg, accessor_reg, key_reg));
+                            }
+                        }
+                        MethodDefinitionKind::Get | MethodDefinitionKind::Set => {
+                            if method.computed {
+                                return Err("computed class accessors not yet supported".into());
+                            }
+                            let undef_reg = self.emit_undefined(ctx);
+                            let (get_reg, set_reg) = match method.kind {
+                                MethodDefinitionKind::Get => (accessor_reg, undef_reg),
+                                MethodDefinitionKind::Set => (undef_reg, accessor_reg),
+                                _ => unreachable!(),
+                            };
+                            let key_name = self.class_property_name(&method.key)?;
+                            let key_idx = ctx.add_constant(Constant::String(key_name));
+                            ctx.emit(opcode::encode(OpCode::DEFINE_ACCESSOR, home_reg, get_reg, set_reg));
+                            ctx.emit(key_idx as u32);
+                        }
+                        MethodDefinitionKind::Constructor => unreachable!(),
+                    }
+                }
+                ClassElement::PropertyDefinition(prop) => {
+                    let prop = prop.as_ref();
+                    if prop.r#static {
+                        let saved_static_this = ctx.static_block_this_reg;
+                        ctx.static_block_this_reg = Some(ctor_reg);
+                        self.emit_public_field_init(ctor_reg, &prop.key, prop.computed, prop.value.as_ref(), ctx)?;
+                        ctx.static_block_this_reg = saved_static_this;
+                    }
+                }
+                ClassElement::StaticBlock(block) => {
+                    let saved_static_this = ctx.static_block_this_reg;
+                    ctx.static_block_this_reg = Some(ctor_reg);
+                    ctx.push_scope();
+                    for stmt in &block.body {
+                        self.emit_statement(stmt, ctx)?;
+                    }
+                    ctx.pop_scope();
+                    ctx.static_block_this_reg = saved_static_this;
+                }
+                ClassElement::AccessorProperty(_) | ClassElement::TSIndexSignature(_) => {}
+            }
+        }
 
         Ok(ctor_reg)
     }
@@ -1739,6 +1811,12 @@ impl Compiler {
                     let result_reg = ctx.alloc_reg();
                     ctx.emit(opcode::encode(OpCode::SUPER_CALL, result_reg, first_arg_reg, 0));
                     ctx.emit(arg_regs.len() as u32);
+                    if !ctx.after_super_inserted {
+                        if let Some(field_code) = ctx.after_super_insert.clone() {
+                            ctx.bytecode.extend(field_code);
+                            ctx.after_super_inserted = true;
+                        }
+                    }
                     return Ok(result_reg);
                 }
                 let (callee_reg, this_reg) = match &call.callee {
@@ -1804,7 +1882,8 @@ impl Compiler {
             }
             Expression::ThisExpression(_) => {
                 let r = ctx.alloc_reg();
-                ctx.emit(opcode::encode(OpCode::LOAD_VAR, r, 254, 0));
+                let src = ctx.static_block_this_reg.unwrap_or(254);
+                ctx.emit(opcode::encode(OpCode::LOAD_VAR, r, src, 0));
                 Ok(r)
             }
             Expression::RegExpLiteral(lit) => {

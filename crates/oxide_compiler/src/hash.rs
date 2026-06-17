@@ -168,13 +168,21 @@ fn hash_property_key(key: &PropertyKey, h: &mut rustc_hash::FxHasher) {
         PropertyKey::StaticIdentifier(ident) => {
             ident.name.as_str().hash(h);
         }
+        PropertyKey::Identifier(ident) => {
+            ident.name.as_str().hash(h);
+        }
         PropertyKey::StringLiteral(s) => {
             s.value.hash(h);
+        }
+        PropertyKey::NumericLiteral(n) => {
+            n.value.to_bits().hash(h);
         }
         PropertyKey::PrivateIdentifier(pi) => {
             pi.name.as_str().hash(h);
         }
-        _ => {}
+        _ => {
+            hash_expression(key.to_expression(), h);
+        }
     });
 }
 
@@ -185,11 +193,27 @@ fn hash_class_element(element: &ClassElement, h: &mut rustc_hash::FxHasher) {
             method.computed.hash(h);
             std::mem::discriminant(&method.kind).hash(h);
             hash_property_key(&method.key, h);
+            if method.computed {
+                hash_property_key(&method.key, h);
+            }
             (method.value.params.items.len() as u32).hash(h);
             if let Some(body) = &method.value.body {
                 for stmt in &body.statements {
                     hash_statement(stmt, h);
                 }
+            }
+        }
+        ClassElement::PropertyDefinition(prop) => {
+            prop.r#static.hash(h);
+            prop.computed.hash(h);
+            hash_property_key(&prop.key, h);
+            if let Some(value) = &prop.value {
+                hash_expression(value, h);
+            }
+        }
+        ClassElement::StaticBlock(block) => {
+            for stmt in &block.body {
+                hash_statement(stmt, h);
             }
         }
         _ => {}

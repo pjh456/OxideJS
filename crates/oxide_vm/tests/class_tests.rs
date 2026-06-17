@@ -170,3 +170,76 @@ fn inherited_static_method_is_found_on_constructor_chain() {
     let result = eval(&mut vm, "class A { static m(){ return 4 } } class B extends A {} B.m()").unwrap();
     assert_eq!(result.as_int(), 4);
 }
+
+#[test]
+fn public_class_field_initializer_sets_own_property() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "class C { x = 1; } new C().x").unwrap();
+    assert_eq!(result.as_int(), 1);
+}
+
+#[test]
+fn public_class_field_without_initializer_is_undefined() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "class C { x; } typeof new C().x").unwrap();
+    let ty = vm.lookup_str(result).expect("typeof result should be string");
+    assert_eq!(ty, "undefined");
+}
+
+#[test]
+fn public_class_fields_run_before_base_constructor_body() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "class C { x = this.y; constructor(){ this.y = 2; } } typeof new C().x").unwrap();
+    let ty = vm.lookup_str(result).expect("typeof result should be string");
+    assert_eq!(ty, "undefined");
+}
+
+#[test]
+fn public_class_fields_run_after_super_in_derived_constructor() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class B { constructor(){ this.b = 1; } } class D extends B { x = this.b; } new D().x",
+    )
+    .unwrap();
+    assert_eq!(result.as_int(), 1);
+}
+
+#[test]
+fn static_class_field_sets_constructor_property() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "class C { static x = 1; } C.x").unwrap();
+    assert_eq!(result.as_int(), 1);
+}
+
+#[test]
+fn static_class_block_binds_this_to_constructor() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class C { static x = 1; static { this.y = this.x + 1; } static z = this.y + 1; } C.z",
+    )
+    .unwrap();
+    assert_num(result, 3.0);
+}
+
+#[test]
+fn computed_public_class_method_key_is_supported() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var k = 'm'; class C { [k](){ return 3; } } new C().m()").unwrap();
+    assert_eq!(result.as_int(), 3);
+}
+
+#[test]
+fn computed_public_class_field_key_is_supported() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var k = 'x'; class C { [k] = 5; } new C().x").unwrap();
+    assert_eq!(result.as_int(), 5);
+}
+
+#[test]
+fn computed_static_class_field_key_is_supported() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var k = 'x'; class C { static [k] = 7; } C.x").unwrap();
+    assert_eq!(result.as_int(), 7);
+}

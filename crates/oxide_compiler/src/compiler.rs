@@ -143,6 +143,9 @@ pub(crate) struct CompileCtx {
     pub(crate) in_derived_constructor: bool,
     pub(crate) in_instance_method: bool,
     pub(crate) in_static_method: bool,
+    pub(crate) static_block_this_reg: Option<u8>,
+    pub(crate) after_super_insert: Option<Vec<opcode::Instr>>,
+    pub(crate) after_super_inserted: bool,
     /// Set when alloc_reg() overflows into the reserved this/new.target range (≥254).
     /// Checked after each emit phase to produce a compile error rather than silent corruption.
     pub(crate) reg_overflow: bool,
@@ -204,6 +207,9 @@ impl CompileCtx {
             in_derived_constructor: false,
             in_instance_method: false,
             in_static_method: false,
+            static_block_this_reg: None,
+            after_super_insert: None,
+            after_super_inserted: false,
             reg_overflow: false,
         }
     }
@@ -463,6 +469,29 @@ impl Compiler {
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, extra_bindings: &[(&str, u8)], body_context: FunctionBodyContext,
     ) -> Result<CompiledModule, String> {
+        self.compile_function_body_with_field_hooks(
+            param_specs,
+            body_stmts,
+            parent_ctx,
+            is_expression_body,
+            extra_bindings,
+            body_context,
+            None::<fn(&Compiler, &mut CompileCtx)>,
+            None::<fn(&Compiler, &mut CompileCtx) -> Result<(), String>>,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn compile_function_body_with_field_hooks<'a, C, E>(
+        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
+        is_expression_body: bool, extra_bindings: &[(&str, u8)], body_context: FunctionBodyContext,
+        mut count_fields: Option<C>, mut emit_fields: Option<E>, fields_after_super: bool,
+    ) -> Result<CompiledModule, String>
+    where
+        C: FnMut(&Compiler, &mut CompileCtx),
+        E: FnMut(&Compiler, &mut CompileCtx) -> Result<(), String>,
+    {
         let mut ctx = CompileCtx::new();
 
         // Inherit parent's builtin_reg_map so builtin identifiers (Math, Object, etc.)
@@ -527,8 +556,18 @@ impl Compiler {
         }
 
         // Count pass
+        if !fields_after_super {
+            if let Some(count) = count_fields.as_mut() {
+                count(self, &mut ctx);
+            }
+        }
         for stmt in body_stmts {
             self.count_statement(stmt, &mut ctx);
+        }
+        if fields_after_super {
+            if let Some(count) = count_fields.as_mut() {
+                count(self, &mut ctx);
+            }
         }
         ctx.max_regs = ctx.max_regs.max(1);
         ctx.reg_overflow = false;
@@ -545,6 +584,18 @@ impl Compiler {
             if let ParamSpec::Pattern { synthetic_name, pattern } = spec {
                 let src_reg = ctx.lookup(synthetic_name)?;
                 self.emit_binding_pattern(pattern, src_reg, VariableDeclarationKind::Var, false, &mut ctx)?;
+            }
+        }
+
+        if let Some(emit) = emit_fields.as_mut() {
+            if fields_after_super {
+                let start = ctx.bytecode.len();
+                emit(self, &mut ctx)?;
+                let field_code = ctx.bytecode.split_off(start);
+                ctx.after_super_insert = Some(field_code);
+                ctx.after_super_inserted = false;
+            } else {
+                emit(self, &mut ctx)?;
             }
         }
 
