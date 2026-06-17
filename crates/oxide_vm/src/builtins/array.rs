@@ -3,8 +3,8 @@ use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
 use crate::coercion;
-use crate::native::{NativeFn, NativeResult};
-use crate::vm::{native_fn_ptr_to_fn, Vm};
+use crate::native::NativeResult;
+use crate::vm::Vm;
 
 macro_rules! array_ptr {
     ($vm:expr, $args:expr) => {{
@@ -46,31 +46,44 @@ fn create_new_array(vm: &mut Vm, n: usize) -> *mut JsObject {
 
 fn invoke_native_callback(vm: &mut Vm, callback_val: JsValue, this_val: JsValue, cb_args: &[JsValue]) -> NativeResult {
     if !callback_val.is_object() {
-        return NativeResult::Err(JsValue::undefined());
+        return NativeResult::Err(crate::builtins::error::create_type_error(vm, "callback is not a function"));
     }
     let cb_ptr = callback_val.as_js_object_ptr();
     if cb_ptr.is_null() {
-        return NativeResult::Err(JsValue::undefined());
+        return NativeResult::Err(crate::builtins::error::create_type_error(vm, "callback is not a function"));
     }
     let cb = unsafe { &*cb_ptr };
-    if !cb.is_function() || cb.native_fn().is_none() {
-        return NativeResult::Err(JsValue::undefined());
+    if !cb.is_function() {
+        return NativeResult::Err(crate::builtins::error::create_type_error(vm, "callback is not a function"));
     }
-    // SAFETY: native_fn was set via set_native_fn with a valid NativeFn pointer;
-    // native_fn_ptr_to_fn is the single coercion point for NativeFnPtr → NativeFn.
-    let func: NativeFn = unsafe { native_fn_ptr_to_fn(cb.native_fn().unwrap()) };
-
-    let base = 240u8;
-    let n = cb_args.len().min(15);
-    let mut args_buf = [0u8; 17];
-    vm.set_reg(base, this_val);
-    args_buf[0] = base;
-    for i in 0..n {
-        vm.set_reg(base + 1 + i as u8, cb_args[i]);
-        args_buf[i + 1] = base + 1 + i as u8;
+    match vm.call_function_sync(callback_val, this_val, cb_args) {
+        Ok(value) => NativeResult::Ok(value),
+        Err(err) => NativeResult::Err(callback_error_from_text(vm, &err)),
     }
+}
 
-    func(vm, &args_buf[..n + 1])
+fn callback_error_from_text(vm: &mut Vm, err: &str) -> JsValue {
+    let err = err.strip_prefix("uncaught ").unwrap_or(err);
+    if let Some(msg) = err.strip_prefix("TypeError: ") {
+        return crate::builtins::error::create_type_error(vm, msg);
+    }
+    if let Some(msg) = err.strip_prefix("ReferenceError: ") {
+        return crate::builtins::error::create_reference_error(vm, msg);
+    }
+    if let Some(msg) = err.strip_prefix("RangeError: ") {
+        return crate::builtins::error::create_range_error(vm, msg);
+    }
+    if let Some(msg) = err.strip_prefix("SyntaxError: ") {
+        return crate::builtins::error::create_syntax_error(vm, msg);
+    }
+    if let Some(msg) = err.strip_prefix("Error: ") {
+        return crate::builtins::error::create_error(vm, msg);
+    }
+    crate::builtins::error::create_error(vm, err)
+}
+
+fn unexpected_tail_call_error(vm: &mut Vm) -> NativeResult {
+    NativeResult::Err(crate::builtins::error::create_type_error(vm, "unexpected tail call in array callback"))
 }
 
 pub fn array_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
@@ -410,7 +423,11 @@ pub fn array_for_each(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     for i in 0..n {
         let elem = unsafe { (*arr_ptr).get_prop_at(i) };
-        let _ = invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i as i32), vm.reg(args[0])]);
+        match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i as i32), vm.reg(args[0])]) {
+            NativeResult::Ok(_) => {}
+            NativeResult::Err(err) => return NativeResult::Err(err),
+            NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
+        }
     }
     NativeResult::Ok(JsValue::undefined())
 }
@@ -432,7 +449,8 @@ pub fn array_map(vm: &mut Vm, args: &[u8]) -> NativeResult {
             NativeResult::Ok(mapped) => unsafe {
                 (*new_arr).set_prop_at(i, mapped);
             },
-            NativeResult::Err(_) | NativeResult::TailCall { .. } => return NativeResult::Err(JsValue::undefined()),
+            NativeResult::Err(err) => return NativeResult::Err(err),
+            NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
         }
     }
     unsafe {
@@ -461,7 +479,8 @@ pub fn array_filter(vm: &mut Vm, args: &[u8]) -> NativeResult {
                     kept.push(elem);
                 }
             }
-            NativeResult::Err(_) | NativeResult::TailCall { .. } => return NativeResult::Err(JsValue::undefined()),
+            NativeResult::Err(err) => return NativeResult::Err(err),
+            NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
         }
     }
     let new_arr = create_new_array(vm, kept.len());
@@ -506,7 +525,8 @@ pub fn array_reduce(vm: &mut Vm, args: &[u8]) -> NativeResult {
             &[accumulator, elem, JsValue::int(i as i32), vm.reg(args[0])],
         ) {
             NativeResult::Ok(result) => accumulator = result,
-            NativeResult::Err(_) | NativeResult::TailCall { .. } => return NativeResult::Err(JsValue::undefined()),
+            NativeResult::Err(err) => return NativeResult::Err(err),
+            NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
         }
     }
     NativeResult::Ok(accumulator)
@@ -531,7 +551,8 @@ pub fn array_find(vm: &mut Vm, args: &[u8]) -> NativeResult {
                     return NativeResult::Ok(elem);
                 }
             }
-            NativeResult::Err(_) | NativeResult::TailCall { .. } => return NativeResult::Err(JsValue::undefined()),
+            NativeResult::Err(err) => return NativeResult::Err(err),
+            NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
         }
     }
     NativeResult::Ok(JsValue::undefined())
@@ -556,7 +577,8 @@ pub fn array_some(vm: &mut Vm, args: &[u8]) -> NativeResult {
                     return NativeResult::Ok(JsValue::bool(true));
                 }
             }
-            NativeResult::Err(_) | NativeResult::TailCall { .. } => return NativeResult::Err(JsValue::undefined()),
+            NativeResult::Err(err) => return NativeResult::Err(err),
+            NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
         }
     }
     NativeResult::Ok(JsValue::bool(false))
@@ -581,7 +603,8 @@ pub fn array_every(vm: &mut Vm, args: &[u8]) -> NativeResult {
                     return NativeResult::Ok(JsValue::bool(false));
                 }
             }
-            NativeResult::Err(_) | NativeResult::TailCall { .. } => return NativeResult::Err(JsValue::undefined()),
+            NativeResult::Err(err) => return NativeResult::Err(err),
+            NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
         }
     }
     NativeResult::Ok(JsValue::bool(true))
@@ -617,7 +640,8 @@ pub fn array_flat_map(vm: &mut Vm, args: &[u8]) -> NativeResult {
                 }
                 flat.push(result);
             }
-            NativeResult::Err(_) | NativeResult::TailCall { .. } => return NativeResult::Err(JsValue::undefined()),
+            NativeResult::Err(err) => return NativeResult::Err(err),
+            NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
         }
     }
     let new_arr = create_new_array(vm, flat.len());
@@ -765,7 +789,8 @@ pub fn array_find_index(vm: &mut Vm, args: &[u8]) -> NativeResult {
                     return NativeResult::Ok(JsValue::int(i as i32));
                 }
             }
-            NativeResult::Err(_) | NativeResult::TailCall { .. } => return NativeResult::Err(JsValue::undefined()),
+            NativeResult::Err(err) => return NativeResult::Err(err),
+            NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
         }
     }
     NativeResult::Ok(JsValue::int(-1))
@@ -789,7 +814,8 @@ pub fn array_find_last(vm: &mut Vm, args: &[u8]) -> NativeResult {
                     return NativeResult::Ok(elem);
                 }
             }
-            NativeResult::Err(_) | NativeResult::TailCall { .. } => return NativeResult::Err(JsValue::undefined()),
+            NativeResult::Err(err) => return NativeResult::Err(err),
+            NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
         }
     }
     NativeResult::Ok(JsValue::undefined())
@@ -818,26 +844,73 @@ pub fn array_reduce_right(vm: &mut Vm, args: &[u8]) -> NativeResult {
             &[acc, elem, JsValue::int(i), vm.reg(args[0])],
         ) {
             NativeResult::Ok(r) => acc = r,
-            NativeResult::Err(_) | NativeResult::TailCall { .. } => return NativeResult::Err(JsValue::undefined()),
+            NativeResult::Err(err) => return NativeResult::Err(err),
+            NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
         }
     }
     NativeResult::Ok(acc)
 }
 
-pub fn array_sort(vm: &mut Vm, _args: &[u8]) -> NativeResult {
-    let arr_ptr = array_ptr!(vm, _args);
-    let arr = unsafe { &mut *arr_ptr };
-    let len = arr.prop_count() as usize;
-    let mut vals: Vec<JsValue> = (0..len).map(|i| arr.get_prop_at(i)).collect();
+pub fn array_sort(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let arr_ptr = array_ptr!(vm, args);
+    let len = unsafe { (*arr_ptr).prop_count() as usize };
+    let mut vals: Vec<JsValue> = (0..len).map(|i| unsafe { (*arr_ptr).get_prop_at(i) }).collect();
+    let comparator = if args.len() > 1 {
+        let candidate = vm.reg(args[1]);
+        if candidate.is_object() {
+            let ptr = candidate.as_js_object_ptr();
+            if !ptr.is_null() && unsafe { &*ptr }.is_function() {
+                Some(candidate)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let mut sort_error = None;
     vals.sort_by(|a, b| {
-        let sa = coercion::to_string(vm.kernel_core().string_forge().as_ref(), *a);
-        let sb = coercion::to_string(vm.kernel_core().string_forge().as_ref(), *b);
-        sa.cmp(&sb)
+        if sort_error.is_some() {
+            return std::cmp::Ordering::Equal;
+        }
+        if let Some(callback) = comparator {
+            match invoke_native_callback(vm, callback, JsValue::undefined(), &[*a, *b]) {
+                NativeResult::Ok(result) => {
+                    let n = coercion::to_number(result, vm.kernel_core().string_forge().as_ref());
+                    if n.is_nan() || n == 0.0 {
+                        std::cmp::Ordering::Equal
+                    } else if n < 0.0 {
+                        std::cmp::Ordering::Less
+                    } else {
+                        std::cmp::Ordering::Greater
+                    }
+                }
+                NativeResult::Err(err) => {
+                    sort_error = Some(err);
+                    std::cmp::Ordering::Equal
+                }
+                NativeResult::TailCall { .. } => {
+                    sort_error =
+                        Some(crate::builtins::error::create_type_error(vm, "unexpected tail call in array callback"));
+                    std::cmp::Ordering::Equal
+                }
+            }
+        } else {
+            let sa = coercion::to_string(vm.kernel_core().string_forge().as_ref(), *a);
+            let sb = coercion::to_string(vm.kernel_core().string_forge().as_ref(), *b);
+            sa.cmp(&sb)
+        }
     });
+    if let Some(err) = sort_error {
+        return NativeResult::Err(err);
+    }
+    let arr = unsafe { &mut *arr_ptr };
     for (i, &v) in vals.iter().enumerate() {
         arr.set_prop_at(i, v);
     }
-    NativeResult::Ok(vm.reg(_args[0]))
+    NativeResult::Ok(vm.reg(args[0]))
 }
 
 pub fn array_values(vm: &mut Vm, args: &[u8]) -> NativeResult {

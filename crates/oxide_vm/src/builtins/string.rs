@@ -11,6 +11,19 @@ fn this_string(vm: &Vm, args: &[u8]) -> String {
     coercion::to_string(vm.kernel_core().string_forge().as_ref(), vm.reg(args[0]))
 }
 
+pub fn string_from_char_code(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let mut out = String::new();
+    for &arg_reg in args.iter().skip(1) {
+        let code = coercion::to_uint32(vm.reg(arg_reg), vm.kernel_core().string_forge().as_ref()) & 0xFFFF;
+        if let Some(ch) = char::from_u32(code) {
+            out.push(ch);
+        } else {
+            out.push('\u{FFFD}');
+        }
+    }
+    NativeResult::Ok(vm.intern(&out))
+}
+
 pub fn string_value_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(args[0]);
     if this_val.is_string() {

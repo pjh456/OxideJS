@@ -12,6 +12,18 @@ fn eval(source: &str) -> Result<(Vm, JsValue), String> {
     Ok((vm, result))
 }
 
+fn to_str(vm: &Vm, val: JsValue) -> String {
+    vm.kernel_core()
+        .string_forge()
+        .lookup(val.as_string_index())
+        .unwrap_or_default()
+}
+
+fn assert_num_eq(val: JsValue, expected: f64) {
+    let actual = if val.is_int() { val.as_int() as f64 } else { val.as_double() };
+    assert_eq!(actual, expected);
+}
+
 #[test]
 fn array_push_adds_element() {
     let (_vm, result) = eval("var a = [1,2]; a.push(3); a").unwrap();
@@ -244,6 +256,66 @@ fn array_sort_default() {
     let (_vm, result) = eval("[3,1,2].sort()").unwrap();
     let obj = unsafe { &*result.as_js_object_ptr() };
     assert_eq!(obj.prop_count(), 3);
+}
+
+#[test]
+fn array_map_filter_reduce_accept_bytecode_callbacks() {
+    let (vm, result) = eval("[1,2,3].map(function(x){return x+1}).join(',')").unwrap();
+    assert_eq!(to_str(&vm, result), "2,3,4");
+
+    let (vm, result) = eval("[1,2,3].map(x => x * 2).join(',')").unwrap();
+    assert_eq!(to_str(&vm, result), "2,4,6");
+
+    let (vm, result) = eval("[1,2,3,4].filter(x => x % 2 === 0).join(',')").unwrap();
+    assert_eq!(to_str(&vm, result), "2,4");
+
+    let (_vm, result) = eval("[1,2,3].reduce((a,b)=>a+b,0)").unwrap();
+    assert_num_eq(result, 6.0);
+}
+
+#[test]
+fn array_iteration_predicates_accept_bytecode_callbacks() {
+    let (_vm, result) = eval("[1,2,3].forEach(function(x){return x+1})").unwrap();
+    assert!(result.is_undefined());
+
+    let (_vm, result) = eval("[1,2,3].find(x => x > 1)").unwrap();
+    assert_num_eq(result, 2.0);
+
+    let (_vm, result) = eval("[1,2,3].some(x => x === 2)").unwrap();
+    assert_eq!(result, JsValue::bool(true));
+
+    let (_vm, result) = eval("[1,2,3].every(function(x){return x > 0})").unwrap();
+    assert_eq!(result, JsValue::bool(true));
+}
+
+#[test]
+fn array_callback_exceptions_propagate() {
+    let (vm, result) = eval("try{[1].forEach(()=>{throw new TypeError('boom')})}catch(e){e.message}").unwrap();
+    assert_eq!(to_str(&vm, result), "boom");
+
+    let (vm, result) = eval("try{[1].map(()=>{throw new Error('x')})}catch(e){e.message}").unwrap();
+    assert_eq!(to_str(&vm, result), "x");
+
+    let (vm, result) = eval("try{[1].filter(()=>{throw new Error('f')})}catch(e){e.message}").unwrap();
+    assert_eq!(to_str(&vm, result), "f");
+}
+
+#[test]
+fn array_sort_uses_user_comparator() {
+    let (vm, result) = eval("[3,1,2].sort((a,b)=>a-b).join(',')").unwrap();
+    assert_eq!(to_str(&vm, result), "1,2,3");
+
+    let (vm, result) = eval("[3,1,2].sort((a,b)=>b-a).join(',')").unwrap();
+    assert_eq!(to_str(&vm, result), "3,2,1");
+
+    let (vm, result) = eval("[10,9,1].sort().join(',')").unwrap();
+    assert_eq!(to_str(&vm, result), "1,10,9");
+}
+
+#[test]
+fn array_sort_propagates_comparator_exception() {
+    let (vm, result) = eval("try{[1,2,3].sort(()=>{throw new Error('cmp')})}catch(e){e.message}").unwrap();
+    assert_eq!(to_str(&vm, result), "cmp");
 }
 
 #[test]
