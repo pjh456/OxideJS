@@ -2,7 +2,7 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes, TypedArrayKind};
 use oxide_types::value::JsValue;
 
-use crate::builtins::array_buffer::{array_buffer_data_ptr, new_array_buffer};
+use crate::builtins::array_buffer::{array_buffer_data_ptr, new_array_buffer, MAX_ARRAY_BUFFER_LENGTH};
 use crate::coercion;
 use crate::native::NativeResult;
 use crate::vm::Vm;
@@ -224,6 +224,9 @@ fn typed_array_new(vm: &mut Vm, args: &[u8], kind: TypedArrayKind) -> NativeResu
         let Some(byte_len) = len.checked_mul(bpe) else {
             return NativeResult::Err(range_error(vm, "invalid TypedArray length"));
         };
+        if byte_len > MAX_ARRAY_BUFFER_LENGTH {
+            return NativeResult::Err(range_error(vm, "invalid TypedArray length"));
+        }
         let buffer = JsValue::from_js_object(new_array_buffer(vm, vec![0; byte_len]));
         (buffer, 0, len)
     } else if first.is_object() {
