@@ -1,6 +1,7 @@
 use crate::native::{NativeFn, NativeResult};
 use crate::vm::{native_fn_ptr_to_fn, CallFrame, ForInIter, FrameContinuation, Vm};
 use oxide_types::object::{JsObject, PropAttributes};
+use oxide_types::private_key::is_private_name_key;
 use oxide_types::value::JsValue;
 
 impl Vm {
@@ -273,7 +274,10 @@ impl Vm {
                     break;
                 }
                 if let Some(shape) = self.kernel_core.shape_forge().get_shape(id) {
-                    if shape.property_name != u32::MAX && seen.insert(shape.property_name) {
+                    if shape.property_name != u32::MAX
+                        && !is_private_name_key(shape.property_name)
+                        && seen.insert(shape.property_name)
+                    {
                         let enumerable = self
                             .kernel_core
                             .shape_forge()
@@ -434,7 +438,7 @@ impl Vm {
             let Some(shape) = self.kernel_core.shape_forge().get_shape(shape_id) else {
                 break;
             };
-            if shape.property_name != u32::MAX {
+            if shape.property_name != u32::MAX && !is_private_name_key(shape.property_name) {
                 if let Some(name) = self.kernel_core.string_forge().lookup(shape.property_name) {
                     if !excluded.contains(name.as_str()) {
                         if let Some(pos) = self

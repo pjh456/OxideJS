@@ -2,6 +2,7 @@ use oxide_compiler::opcode::OpCode;
 use oxide_kernel::prop_forge::PropTemplate;
 use oxide_kernel::{ic_debug, ic_trace};
 use oxide_types::object::JsObject;
+use oxide_types::private_key::make_private_name_id;
 use oxide_types::value::JsValue;
 
 use crate::vm::Vm;
@@ -38,8 +39,99 @@ impl Vm {
             OpCode::GET_PROP_DYNAMIC => self.dispatch_get_prop_dynamic(rd, a, b),
             OpCode::SET_PROP_DYNAMIC => self.dispatch_set_prop_dynamic(rd, a, b),
             OpCode::SET_ELEM => self.dispatch_set_elem(rd, a, b),
+            OpCode::GET_PRIVATE => self.dispatch_get_private(rd, a, b),
+            OpCode::SET_PRIVATE => self.dispatch_set_private(rd, a, b),
+            OpCode::INIT_PRIVATE => self.dispatch_init_private(rd, a, b),
+            OpCode::PRIVATE_BRAND_IN => self.dispatch_private_brand_in(rd, a, b),
             _ => unreachable!("non-property opcode passed to dispatch_property_op"),
         }
+    }
+
+    fn private_key_from_reg(&self, reg: usize) -> u32 {
+        let value = self.regs[reg];
+        let local_id = if value.is_int() {
+            value.as_int().max(0) as u32
+        } else if value.is_double() {
+            value.as_double().max(0.0) as u32
+        } else {
+            0
+        };
+        make_private_name_id(local_id)
+    }
+
+    fn private_slot(&self, obj: &JsObject, private_key: u32) -> Option<u32> {
+        self.kernel_core.shape_forge().lookup_position(obj.shape_id(), private_key)
+    }
+
+    fn resolve_private_value(&self, obj: &JsObject, private_key: u32) -> Option<JsValue> {
+        if let Some(pos) = self.private_slot(obj, private_key) {
+            return Some(obj.get_prop_at(pos));
+        }
+        let mut proto = obj.proto();
+        while proto.is_object() {
+            let proto_obj = unsafe { &*proto.as_js_object_ptr() };
+            if let Some(pos) = self.private_slot(proto_obj, private_key) {
+                return Some(proto_obj.get_prop_at(pos));
+            }
+            proto = proto_obj.proto();
+        }
+        None
+    }
+
+    fn dispatch_get_private(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        let Some(obj_ptr) = self.checked_object_ptr(self.regs[a], "private field access on non-object")? else {
+            return Ok(());
+        };
+        let obj = unsafe { &*obj_ptr };
+        let private_key = self.private_key_from_reg(b);
+        let Some(value) = self.resolve_private_value(obj, private_key) else {
+            return self.raise_type_error("private field brand check failed");
+        };
+        self.regs[rd] = value;
+        Ok(())
+    }
+
+    fn dispatch_set_private(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "private field assignment on non-object")? else {
+            return Ok(());
+        };
+        let private_key = self.private_key_from_reg(b);
+        let obj = unsafe { &mut *obj_ptr };
+        let Some(pos) = self.private_slot(obj, private_key) else {
+            return self.raise_type_error("private field brand check failed");
+        };
+        let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
+        let obj = unsafe { &mut *obj_ptr };
+        obj.set_prop_at(pos, value);
+        Ok(())
+    }
+
+    fn dispatch_init_private(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "private field initialization on non-object")?
+        else {
+            return Ok(());
+        };
+        let private_key = self.private_key_from_reg(b);
+        let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
+        let obj = unsafe { &mut *obj_ptr };
+        if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), private_key) {
+            obj.set_prop_at(pos, value);
+        } else {
+            self.set_or_create_prop_value(obj, private_key, value);
+        }
+        Ok(())
+    }
+
+    fn dispatch_private_brand_in(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        let obj_val = self.regs[a];
+        if !obj_val.is_object() {
+            self.regs[rd] = JsValue::bool(false);
+            return Ok(());
+        }
+        let obj = unsafe { &*obj_val.as_js_object_ptr() };
+        let private_key = self.private_key_from_reg(b);
+        self.regs[rd] = JsValue::bool(self.resolve_private_value(obj, private_key).is_some());
+        Ok(())
     }
 
     fn dispatch_ic_get_prop(&mut self, a: usize, b: usize) -> Result<(), String> {

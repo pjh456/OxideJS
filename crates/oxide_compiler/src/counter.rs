@@ -132,6 +132,14 @@ impl Compiler {
                     if matches!(method.kind, MethodDefinitionKind::Constructor) {
                         continue;
                     }
+                    if matches!(method.key, oxide_parser::PropertyKey::PrivateIdentifier(_)) {
+                        if method.r#static {
+                            ctx.alloc_reg();
+                            ctx.alloc_reg();
+                            ctx.projected_pc += 3;
+                        }
+                        continue;
+                    }
                     ctx.alloc_reg(); // key_reg
                     ctx.projected_pc += 1;
                     ctx.alloc_reg(); // method_reg
@@ -479,6 +487,12 @@ impl Compiler {
                     ctx.restore_reg_checkpoint(checkpoint.saturating_add(1));
                 }
             }
+            Expression::PrivateInExpression(pin) => {
+                self.count_expression(&pin.right, ctx);
+                ctx.alloc_reg();
+                ctx.alloc_reg();
+                ctx.projected_pc += 2;
+            }
             Expression::UnaryExpression(un) => {
                 match un.operator {
                     UnaryOperator::Delete => {
@@ -516,6 +530,12 @@ impl Compiler {
                     return;
                 }
                 match &call.callee {
+                    Expression::PrivateFieldExpression(member) => {
+                        self.count_expression(&member.object, ctx);
+                        ctx.alloc_reg();
+                        ctx.alloc_reg();
+                        ctx.projected_pc += 2;
+                    }
                     Expression::StaticMemberExpression(member) => {
                         if matches!(&member.object, Expression::Super(_)) {
                             ctx.alloc_reg(); // this register
@@ -566,6 +586,11 @@ impl Compiler {
                     self.count_expression(&assign.right, ctx);
                     ctx.alloc_reg();
                     ctx.projected_pc += 1; // SET_PROP_DYNAMIC
+                } else if let oxide_parser::AssignmentTarget::PrivateFieldExpression(member) = &assign.left {
+                    self.count_expression(&member.object, ctx);
+                    self.count_expression(&assign.right, ctx);
+                    ctx.alloc_reg();
+                    ctx.projected_pc += 2; // LOAD_CONST private id + SET_PRIVATE
                 } else if let oxide_parser::AssignmentTarget::ArrayAssignmentTarget(ap) = &assign.left {
                     self.count_expression(&assign.right, ctx);
                     self.count_array_assignment(ap, ctx);
@@ -772,6 +797,12 @@ impl Compiler {
                 self.count_expression(&member.expression, ctx);
                 ctx.alloc_reg();
                 ctx.projected_pc += 1; // GET_PROP_DYNAMIC
+            }
+            Expression::PrivateFieldExpression(member) => {
+                self.count_expression(&member.object, ctx);
+                ctx.alloc_reg();
+                ctx.alloc_reg();
+                ctx.projected_pc += 2;
             }
             Expression::ParenthesizedExpression(p) => {
                 self.count_expression(&p.expression, ctx);

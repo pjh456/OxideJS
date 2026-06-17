@@ -123,6 +123,10 @@ pub enum OpCode {
     // ── Parallel — placeholders (0x70-0x7F) ──
     FORK = 0x70,
     JOIN = 0x71,
+    GET_PRIVATE = 0x72,
+    SET_PRIVATE = 0x73,
+    INIT_PRIVATE = 0x74,
+    PRIVATE_BRAND_IN = 0x75,
 
     // -- Bitwise (0x80-0x8F) --
     BIT_AND = 0x80,
@@ -269,6 +273,10 @@ impl TryFrom<u8> for OpCode {
             0x66 => Ok(OpCode::PROFILE_CALL),
             0x70 => Ok(OpCode::FORK),
             0x71 => Ok(OpCode::JOIN),
+            0x72 => Ok(OpCode::GET_PRIVATE),
+            0x73 => Ok(OpCode::SET_PRIVATE),
+            0x74 => Ok(OpCode::INIT_PRIVATE),
+            0x75 => Ok(OpCode::PRIVATE_BRAND_IN),
             0x80 => Ok(OpCode::BIT_AND),
             0x81 => Ok(OpCode::BIT_OR),
             0x82 => Ok(OpCode::BIT_XOR),
@@ -382,6 +390,10 @@ impl fmt::Display for OpCode {
             OpCode::PROFILE_CALL => "PROFILE_CALL",
             OpCode::FORK => "FORK",
             OpCode::JOIN => "JOIN",
+            OpCode::GET_PRIVATE => "GET_PRIVATE",
+            OpCode::SET_PRIVATE => "SET_PRIVATE",
+            OpCode::INIT_PRIVATE => "INIT_PRIVATE",
+            OpCode::PRIVATE_BRAND_IN => "PRIVATE_BRAND_IN",
             OpCode::BIT_AND => "BIT_AND",
             OpCode::BIT_OR => "BIT_OR",
             OpCode::BIT_XOR => "BIT_XOR",

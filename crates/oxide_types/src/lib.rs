@@ -3,6 +3,7 @@
 pub mod error;
 pub mod mem;
 pub mod object;
+pub mod private_key;
 pub mod shape;
 pub mod value;
 
