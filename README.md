@@ -1,15 +1,15 @@
-<p align="center">
+<div align="center">
   <img src="docs/assets/oxidejs-logo.svg" width="250" alt="OxideJS Logo" />
-</p>
 
-<h1 align="center">OxideJS：面向 AI Agent 的轻量级 JavaScript 执行引擎</h1>
+  <h1>OxideJS：面向 AI Agent 的轻量级 JavaScript 执行引擎</h1>
 
-<p align="center">
-  <img alt="Rust" src="https://img.shields.io/badge/Rust-1.80%2B-orange?style=for-the-badge&logo=rust" />
-  <img alt="Platform" src="https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-blue?style=for-the-badge" />
-  <img alt="Engine" src="https://img.shields.io/badge/JS%20Engine-Non--Wrapper-success?style=for-the-badge" />
-  <img alt="test262" src="https://img.shields.io/badge/test262-Integrated-purple?style=for-the-badge" />
-</p>
+  <p>
+    <img alt="Rust" src="https://img.shields.io/badge/Rust-1.80%2B-orange?style=for-the-badge&logo=rust" />
+    <img alt="Platform" src="https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-blue?style=for-the-badge" />
+    <img alt="Engine" src="https://img.shields.io/badge/JS%20Engine-Non--Wrapper-success?style=for-the-badge" />
+    <img alt="test262" src="https://img.shields.io/badge/test262-Integrated-purple?style=for-the-badge" />
+  </p>
+</div>
 
 ## 1. 项目简介
 
