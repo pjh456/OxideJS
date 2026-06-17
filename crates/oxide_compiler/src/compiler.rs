@@ -144,6 +144,8 @@ pub(crate) struct CompileCtx {
     pub(crate) in_instance_method: bool,
     pub(crate) in_static_method: bool,
     pub(crate) static_block_this_reg: Option<u8>,
+    pub(crate) private_name_map: Vec<(String, u32)>,
+    pub(crate) next_private_name_id: u32,
     pub(crate) after_super_insert: Option<Vec<opcode::Instr>>,
     pub(crate) after_super_inserted: bool,
     /// Set when alloc_reg() overflows into the reserved this/new.target range (≥254).
@@ -208,6 +210,8 @@ impl CompileCtx {
             in_instance_method: false,
             in_static_method: false,
             static_block_this_reg: None,
+            private_name_map: Vec::new(),
+            next_private_name_id: 1,
             after_super_insert: None,
             after_super_inserted: false,
             reg_overflow: false,
@@ -497,6 +501,8 @@ impl Compiler {
         // Inherit parent's builtin_reg_map so builtin identifiers (Math, Object, etc.)
         // resolve to the correct pre-allocated registers in the sub-module's register file.
         ctx.builtin_reg_map = parent_ctx.builtin_reg_map.clone();
+        ctx.private_name_map = parent_ctx.private_name_map.clone();
+        ctx.next_private_name_id = parent_ctx.next_private_name_id;
 
         // Propagate enclosing_this_reg so nested arrow functions capture the correct `this`.
         ctx.enclosing_this_reg = parent_ctx.enclosing_this_reg;

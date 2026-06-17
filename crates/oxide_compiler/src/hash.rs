@@ -250,6 +250,10 @@ fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher) {
             hash_expression(&cond.consequent, h);
             hash_expression(&cond.alternate, h);
         }
+        Expression::PrivateInExpression(pin) => {
+            pin.left.name.as_str().hash(h);
+            hash_expression(&pin.right, h);
+        }
         Expression::Identifier(_) => {}
         Expression::NumericLiteral(num) => {
             num.value.to_bits().hash(h);
@@ -262,6 +266,9 @@ fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher) {
         }
         Expression::AssignmentExpression(assign) => {
             std::mem::discriminant(&assign.operator).hash(h);
+            if let Some(target) = assign.left.as_simple_assignment_target() {
+                hash_simple_assignment_target(target, h);
+            }
             hash_expression(&assign.right, h);
         }
         Expression::UpdateExpression(update) => {
@@ -323,6 +330,10 @@ fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher) {
                 }
             }
         }
+        Expression::PrivateFieldExpression(member) => {
+            hash_expression(&member.object, h);
+            member.field.name.as_str().hash(h);
+        }
         Expression::Super(_) => {}
         Expression::RegExpLiteral(lit) => {
             if let Some(raw) = &lit.raw {
@@ -355,6 +366,10 @@ fn hash_simple_assignment_target(target: &SimpleAssignmentTarget, h: &mut rustc_
         SimpleAssignmentTarget::ComputedMemberExpression(member) => {
             hash_expression(&member.object, h);
             hash_expression(&member.expression, h);
+        }
+        SimpleAssignmentTarget::PrivateFieldExpression(member) => {
+            hash_expression(&member.object, h);
+            member.field.name.as_str().hash(h);
         }
         _ => {}
     });

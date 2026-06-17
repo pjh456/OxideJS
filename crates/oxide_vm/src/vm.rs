@@ -913,7 +913,11 @@ impl Vm {
                 | OpCode::SET_PROP
                 | OpCode::GET_PROP_DYNAMIC
                 | OpCode::SET_PROP_DYNAMIC
-                | OpCode::SET_ELEM => {
+                | OpCode::SET_ELEM
+                | OpCode::GET_PRIVATE
+                | OpCode::SET_PRIVATE
+                | OpCode::INIT_PRIVATE
+                | OpCode::PRIVATE_BRAND_IN => {
                     self.dispatch_property_op(op, rd, a, b)?;
                 }
 

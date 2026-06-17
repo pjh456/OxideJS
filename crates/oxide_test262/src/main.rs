@@ -367,13 +367,7 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
         "well-formed-json-stringify",
         "optional-chaining",
         "symbols-as-weakmap-keys",
-        "class-fields-public",
-        "class-fields-private",
-        "class-static-block",
-        "class-methods-private",
         "class-accessors-private",
-        "class-fields-public-static",
-        "class-fields-private-static",
     ];
 
     for feat in &meta.features {
@@ -560,10 +554,7 @@ fn process_path(
         if path_str.contains("built-ins/Promise/") {
             return TestResult::skip(path.to_path_buf(), "Promise tests excluded".into());
         }
-        if path_str.contains("/private-")
-            || path_str.contains("/class-fields/")
-            || path_str.contains("/class-static-block/")
-            || path_str.contains("/dstr/")
+        if path_str.contains("/dstr/")
             || path_str.contains("/eval/")
             || path_str.contains("/function-ctor/")
             || path_str.contains("/realm/")

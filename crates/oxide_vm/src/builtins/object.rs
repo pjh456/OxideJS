@@ -1,6 +1,7 @@
 use oxide_kernel::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use oxide_kernel::string_forge::StringForge;
 use oxide_types::object::{JsObject, PropAttributes};
+use oxide_types::private_key::is_private_name_key;
 use oxide_types::value::JsValue;
 
 use crate::coercion;
@@ -19,7 +20,7 @@ pub(crate) fn walk_own_keys(vm: &Vm, obj: &JsObject) -> Vec<(u32, u32)> {
         }
         if let Some(shape) = vm.kernel_core().shape_forge().get_shape(id) {
             cursor = shape.parent;
-            if shape.property_name != u32::MAX {
+            if shape.property_name != u32::MAX && !is_private_name_key(shape.property_name) {
                 shape_ids.push(id);
             }
         } else {
@@ -28,7 +29,7 @@ pub(crate) fn walk_own_keys(vm: &Vm, obj: &JsObject) -> Vec<(u32, u32)> {
     }
     for id in shape_ids.iter().rev() {
         if let Some(shape) = vm.kernel_core().shape_forge().get_shape(*id) {
-            if shape.property_name != 0 {
+            if shape.property_name != 0 && !is_private_name_key(shape.property_name) {
                 keys.push((shape.property_name, pos));
             }
         }

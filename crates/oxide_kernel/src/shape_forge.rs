@@ -297,4 +297,14 @@ mod tests {
         assert!(forge.has_property(s2, 1_000_310));
         assert!(!forge.has_property(s2, 99));
     }
+
+    #[test]
+    fn private_band_keys_are_shape_properties() {
+        let forge = ShapeForge::new();
+        let private_key = oxide_types::private_key::make_private_name_id(12);
+        let shape = forge.make_shape(EMPTY_SHAPE_ID, private_key);
+        assert!(oxide_types::private_key::is_private_name_key(private_key));
+        assert!(forge.has_property(shape, private_key));
+        assert_eq!(forge.lookup_position(shape, private_key), Some(0));
+    }
 }

@@ -243,3 +243,101 @@ fn computed_static_class_field_key_is_supported() {
     let result = eval(&mut vm, "var k = 'x'; class C { static [k] = 7; } C.x").unwrap();
     assert_eq!(result.as_int(), 7);
 }
+
+#[test]
+fn private_class_field_read_returns_value() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "class C { #x = 1; get(){ return this.#x; } } new C().get()").unwrap();
+    assert_eq!(result.as_int(), 1);
+}
+
+#[test]
+fn private_class_field_write_round_trips() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class C { #x; set(v){ this.#x = v; } get(){ return this.#x; } } var c = new C(); c.set(4); c.get()",
+    )
+    .unwrap();
+    assert_eq!(result.as_int(), 4);
+}
+
+#[test]
+fn private_class_method_call_uses_receiver() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "class C { #m(){ return 4; } get(){ return this.#m(); } } new C().get()").unwrap();
+    assert_eq!(result.as_int(), 4);
+}
+
+#[test]
+fn private_class_brand_in_checks_presence() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class C { #x = 1; has(o){ return #x in o; } } var c = new C(); c.has(c) && !c.has({})",
+    )
+    .unwrap();
+    assert!(result.is_bool() && result.as_bool());
+}
+
+#[test]
+fn private_class_missing_brand_throws_type_error() {
+    let mut vm = Vm::new();
+    let err = eval(&mut vm, "class C { #x = 1; get(o){ return o.#x; } } new C().get({})").unwrap_err();
+    assert!(err.contains("TypeError"), "expected TypeError, got: {err}");
+}
+
+#[test]
+fn private_static_field_and_method_work_on_constructor() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class C { static #x = 2; static #m(){ return this.#x + 3; } static get(){ return this.#m(); } } C.get()",
+    )
+    .unwrap();
+    assert_num(result, 5.0);
+}
+
+#[test]
+fn derived_private_field_initializes_after_super() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class B { constructor(){ this.b = 3; } } class D extends B { #x = this.b; get(){ return this.#x; } } new D().get()",
+    )
+    .unwrap();
+    assert_eq!(result.as_int(), 3);
+}
+
+#[test]
+fn private_class_fields_are_hidden_from_reflection_and_string_access() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class C { #x = 1; y = 2; keys(){ return Object.keys(this).length + Object.getOwnPropertyNames(this).length + (this['#x'] === undefined ? 10 : 0); } } new C().keys()",
+    )
+    .unwrap();
+    assert_num(result, 12.0);
+}
+
+#[test]
+fn private_class_fields_are_hidden_from_for_in() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class C { #x = 1; } var o = new C(); var n = 0; for (var k in o) { n = n + 1; } n",
+    )
+    .unwrap();
+    assert_num(result, 1.0);
+}
+
+#[test]
+fn private_class_same_name_different_classes_do_not_share_brand() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class A { #x = 1; has(o){ return #x in o; } } class B { #x = 2; } var a = new A(); a.has(a) && !a.has(new B())",
+    )
+    .unwrap();
+    assert!(result.is_bool() && result.as_bool());
+}
