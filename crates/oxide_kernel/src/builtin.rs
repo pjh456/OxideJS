@@ -109,6 +109,7 @@ pub struct ErrorMethods {
 }
 
 pub struct StringMethods {
+    pub from_char_code: *const (),
     pub index_of: *const (),
     pub includes: *const (),
     pub char_at: *const (),
@@ -938,6 +939,10 @@ impl BuiltinWorld {
     }
 
     pub fn bind_string_methods(&self, methods: &StringMethods, string_forge: &StringForge, shape_forge: &ShapeForge) {
+        let ctor_ptr = P::as_ptr(&self.string_constructor) as *mut JsObject;
+        let ctor = unsafe { &mut *ctor_ptr };
+        bind_methods!(self, ctor, string_forge, shape_forge, ("fromCharCode", methods.from_char_code, 1),);
+
         let proto_ptr = P::as_ptr(&self.string_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
         bind_methods!(

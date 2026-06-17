@@ -7,6 +7,7 @@ use oxide_types::value::JsValue;
 
 pub fn bind_string(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let string_methods = StringMethods {
+        from_char_code: crate::builtins::string::string_from_char_code as *const (),
         index_of: crate::builtins::string::string_index_of as *const (),
         includes: crate::builtins::string::string_includes as *const (),
         char_at: crate::builtins::string::string_char_at as *const (),
