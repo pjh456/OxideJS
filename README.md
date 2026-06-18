@@ -197,3 +197,7 @@ Benchmark 工作围绕可复现脚本和可比较 baseline 展开。
 - JerryScript
 
 [TODO] 完工时放与其他 baseline 的对比表格
+
+## 9. License
+
+本项目采用 MIT License 开源协议。协议全文见项目根目录的 [LICENSE](LICENSE) 文件。
