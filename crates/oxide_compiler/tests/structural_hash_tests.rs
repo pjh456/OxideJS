@@ -137,3 +137,34 @@ fn class_method_getter_static_setter_shapes_differ() {
     assert_ne!(method, static_setter, "method and static setter must hash differently");
     assert_ne!(getter, static_setter, "getter and static setter must hash differently");
 }
+
+#[test]
+fn structural_hash_distinguishes_nullish_operator() {
+    let nullish = parse_to_hash("a ?? b");
+    let and = parse_to_hash("a && b");
+    let or = parse_to_hash("a || b");
+
+    assert_ne!(nullish, and);
+    assert_ne!(nullish, or);
+    assert_ne!(and, or);
+}
+
+#[test]
+fn structural_hash_distinguishes_optional_chain_shape() {
+    let optional_b = parse_to_hash("a?.b");
+    let optional_c = parse_to_hash("a?.c");
+    let plain_b = parse_to_hash("a.b");
+
+    assert_ne!(optional_b, optional_c);
+    assert_ne!(optional_b, plain_b);
+    assert_ne!(optional_c, plain_b);
+}
+
+#[test]
+fn compiled_module_rejects_optional_chain_assignment_target() {
+    let allocator = Allocator::default();
+    match oxide_parser::parse(&allocator, "a?.b = 1") {
+        Ok(program) => assert!(Compiler::new().compile(&program).is_err()),
+        Err(_) => {}
+    }
+}

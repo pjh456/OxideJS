@@ -1,11 +1,146 @@
 use oxide_parser::{
-    AssignmentOperator, ClassElement, Expression, ForStatementInit, MethodDefinitionKind, SimpleAssignmentTarget,
-    Statement, UnaryOperator, VariableDeclarationKind,
+    AssignmentOperator, ChainElement, ClassElement, Expression, ForStatementInit, LogicalOperator,
+    MethodDefinitionKind, SimpleAssignmentTarget, Statement, UnaryOperator, VariableDeclarationKind,
 };
 
 use crate::compiler::{is_side_effect_free, CompileCtx, Compiler, Label};
 
 impl Compiler {
+    fn count_optional_guard(&self, ctx: &mut CompileCtx) {
+        ctx.alloc_reg();
+        ctx.projected_pc += 2; // LOAD_VAR dup + JMP_IF_NULLISH
+    }
+
+    fn count_static_member_get_preserve_base(
+        &self, member: &oxide_parser::StaticMemberExpression, short_chain: bool, ctx: &mut CompileCtx,
+    ) {
+        self.count_chainable_expression(&member.object, short_chain, ctx);
+        if short_chain && member.optional {
+            self.count_optional_guard(ctx);
+        }
+        ctx.alloc_reg();
+        ctx.projected_pc += 1; // LOAD_CONST key
+        ctx.alloc_reg();
+        ctx.projected_pc += 5; // LOAD_VAR copy + IC_GET_PROP + 3 ext words
+    }
+
+    fn count_computed_member_get_preserve_base(
+        &self, member: &oxide_parser::ComputedMemberExpression, short_chain: bool, ctx: &mut CompileCtx,
+    ) {
+        self.count_chainable_expression(&member.object, short_chain, ctx);
+        if short_chain && member.optional {
+            self.count_optional_guard(ctx);
+        }
+        self.count_expression(&member.expression, ctx);
+        ctx.alloc_reg();
+        ctx.projected_pc += 1; // GET_PROP_DYNAMIC
+    }
+
+    fn count_chain_call(&self, call: &oxide_parser::CallExpression, short_chain: bool, ctx: &mut CompileCtx) {
+        match &call.callee {
+            Expression::StaticMemberExpression(member) => {
+                self.count_static_member_get_preserve_base(member, short_chain, ctx)
+            }
+            Expression::ComputedMemberExpression(member) => {
+                self.count_computed_member_get_preserve_base(member, short_chain, ctx);
+            }
+            Expression::PrivateFieldExpression(member) => {
+                self.count_chainable_expression(&member.object, short_chain, ctx);
+                if short_chain && member.optional {
+                    self.count_optional_guard(ctx);
+                }
+                ctx.alloc_reg();
+                ctx.alloc_reg();
+                ctx.projected_pc += 2;
+            }
+            _ => {
+                self.count_chainable_expression(&call.callee, short_chain, ctx);
+                if short_chain && call.optional {
+                    self.count_optional_guard(ctx);
+                }
+                ctx.alloc_reg();
+                ctx.projected_pc += 1; // LOAD_CONST undefined this
+            }
+        }
+        if short_chain
+            && call.optional
+            && matches!(
+                &call.callee,
+                Expression::StaticMemberExpression(_)
+                    | Expression::ComputedMemberExpression(_)
+                    | Expression::PrivateFieldExpression(_)
+            )
+        {
+            self.count_optional_guard(ctx);
+        }
+        for arg in &call.arguments {
+            if let Some(expr) = arg.as_expression() {
+                self.count_expression(expr, ctx);
+            }
+        }
+        ctx.projected_pc += 2; // CALL + arg_count ext word
+        ctx.alloc_reg();
+        ctx.projected_pc += 1; // LOAD_VAR result <- regs[0]
+    }
+
+    fn count_chainable_expression(&self, expr: &Expression, short_chain: bool, ctx: &mut CompileCtx) {
+        match expr {
+            Expression::StaticMemberExpression(member) => {
+                self.count_static_member_get_preserve_base(member, short_chain, ctx)
+            }
+            Expression::ComputedMemberExpression(member) => {
+                self.count_computed_member_get_preserve_base(member, short_chain, ctx)
+            }
+            Expression::PrivateFieldExpression(member) => {
+                self.count_chainable_expression(&member.object, short_chain, ctx);
+                if short_chain && member.optional {
+                    self.count_optional_guard(ctx);
+                }
+                ctx.alloc_reg();
+                ctx.alloc_reg();
+                ctx.projected_pc += 2;
+            }
+            Expression::CallExpression(call) => self.count_chain_call(call, short_chain, ctx),
+            Expression::ChainExpression(chain) => self.count_chain_element(&chain.expression, short_chain, ctx),
+            _ => self.count_expression(expr, ctx),
+        }
+    }
+
+    fn count_chain_element(&self, element: &ChainElement, short_chain: bool, ctx: &mut CompileCtx) {
+        match element {
+            ChainElement::StaticMemberExpression(member) => {
+                self.count_static_member_get_preserve_base(member, short_chain, ctx)
+            }
+            ChainElement::ComputedMemberExpression(member) => {
+                self.count_computed_member_get_preserve_base(member, short_chain, ctx)
+            }
+            ChainElement::PrivateFieldExpression(member) => {
+                self.count_chainable_expression(&member.object, short_chain, ctx);
+                if short_chain && member.optional {
+                    self.count_optional_guard(ctx);
+                }
+                ctx.alloc_reg();
+                ctx.alloc_reg();
+                ctx.projected_pc += 2;
+            }
+            ChainElement::CallExpression(call) => self.count_chain_call(call, short_chain, ctx),
+            ChainElement::TSNonNullExpression(_) => {}
+        }
+    }
+
+    fn count_logical_assign_test(&self, op: LogicalOperator, id: u32, ctx: &mut CompileCtx) {
+        match op {
+            LogicalOperator::And | LogicalOperator::Or => {
+                ctx.projected_pc += 1;
+            }
+            LogicalOperator::Coalesce => {
+                ctx.projected_pc += 1; // JMP_IF_NULLISH to store body
+                ctx.projected_pc += 1; // JMP to end on non-nullish
+                ctx.label_map.insert(Label::TernaryElse(id), ctx.projected_pc);
+            }
+        }
+    }
+
     fn count_binding_pattern(&self, pattern: &oxide_parser::BindingPattern, ctx: &mut CompileCtx) {
         match pattern {
             oxide_parser::BindingPattern::BindingIdentifier(_) => {
@@ -509,6 +644,28 @@ impl Compiler {
                                 self.count_expression(&member.expression, ctx);
                                 ctx.projected_pc += 1; // DELETE_PROP_DYNAMIC
                             }
+                            Expression::ChainExpression(chain) => {
+                                match &chain.expression {
+                                    ChainElement::StaticMemberExpression(member) => {
+                                        self.count_expression(&member.object, ctx);
+                                        if member.optional {
+                                            self.count_optional_guard(ctx);
+                                        }
+                                        ctx.projected_pc += 2; // DELETE_PROP_STATIC + ext word
+                                    }
+                                    ChainElement::ComputedMemberExpression(member) => {
+                                        self.count_expression(&member.object, ctx);
+                                        if member.optional {
+                                            self.count_optional_guard(ctx);
+                                        }
+                                        self.count_expression(&member.expression, ctx);
+                                        ctx.projected_pc += 1; // DELETE_PROP_DYNAMIC
+                                    }
+                                    _ => {}
+                                }
+                                ctx.projected_pc += 1; // JMP over nullish true writer
+                                ctx.projected_pc += 1; // LOAD_CONST true
+                            }
                             _ => {}
                         }
                     }
@@ -570,6 +727,20 @@ impl Compiler {
             }
             Expression::AssignmentExpression(assign) => {
                 if let oxide_parser::AssignmentTarget::StaticMemberExpression(member) = &assign.left {
+                    if let Some(logical_op) = assign.operator.to_logical_operator() {
+                        let id = ctx.next_label_id();
+                        self.count_expression(&member.object, ctx);
+                        ctx.alloc_reg();
+                        ctx.projected_pc += 1; // LOAD_CONST key
+                        ctx.alloc_reg();
+                        ctx.projected_pc += 5; // LOAD_VAR + IC_GET_PROP + 3 ext
+                        self.count_logical_assign_test(logical_op, id, ctx);
+                        self.count_expression(&assign.right, ctx);
+                        ctx.projected_pc += 4; // IC_SET_PROP + 3 ext
+                        ctx.projected_pc += 1; // LOAD_VAR result <- rhs
+                        ctx.label_map.insert(Label::TernaryEnd(id), ctx.projected_pc);
+                        return;
+                    }
                     self.count_expression(&member.object, ctx);
                     self.count_expression(&assign.right, ctx);
                     if assign.operator != AssignmentOperator::Assign {
@@ -581,6 +752,19 @@ impl Compiler {
                     ctx.projected_pc += 1; // IC_SET_PROP or COMPOUND_MEMBER_*
                     ctx.projected_pc += 3; // 3 IC ext words
                 } else if let oxide_parser::AssignmentTarget::ComputedMemberExpression(member) = &assign.left {
+                    if let Some(logical_op) = assign.operator.to_logical_operator() {
+                        let id = ctx.next_label_id();
+                        self.count_expression(&member.object, ctx);
+                        self.count_expression(&member.expression, ctx);
+                        ctx.alloc_reg();
+                        ctx.projected_pc += 1; // GET_PROP_DYNAMIC
+                        self.count_logical_assign_test(logical_op, id, ctx);
+                        self.count_expression(&assign.right, ctx);
+                        ctx.projected_pc += 1; // SET_PROP_DYNAMIC
+                        ctx.projected_pc += 1; // LOAD_VAR result <- rhs
+                        ctx.label_map.insert(Label::TernaryEnd(id), ctx.projected_pc);
+                        return;
+                    }
                     self.count_expression(&member.object, ctx);
                     self.count_expression(&member.expression, ctx);
                     self.count_expression(&assign.right, ctx);
@@ -591,6 +775,25 @@ impl Compiler {
                     self.count_expression(&assign.right, ctx);
                     ctx.alloc_reg();
                     ctx.projected_pc += 2; // LOAD_CONST private id + SET_PRIVATE
+                } else if let oxide_parser::AssignmentTarget::AssignmentTargetIdentifier(_) = &assign.left {
+                    if let Some(logical_op) = assign.operator.to_logical_operator() {
+                        let id = ctx.next_label_id();
+                        ctx.alloc_reg();
+                        ctx.projected_pc += 1; // LOAD_VAR result <- current var
+                        self.count_logical_assign_test(logical_op, id, ctx);
+                        self.count_expression(&assign.right, ctx);
+                        ctx.projected_pc += 1; // STORE_VAR
+                        ctx.projected_pc += 1; // LOAD_VAR result <- rhs
+                        ctx.label_map.insert(Label::TernaryEnd(id), ctx.projected_pc);
+                    } else {
+                        self.count_expression(&assign.right, ctx);
+                        if assign.operator != AssignmentOperator::Assign {
+                            ctx.projected_pc += 1; // COMPOUND_* on var
+                        } else {
+                            ctx.alloc_reg();
+                            ctx.projected_pc += 1; // STORE_VAR
+                        }
+                    }
                 } else if let oxide_parser::AssignmentTarget::ArrayAssignmentTarget(ap) = &assign.left {
                     self.count_expression(&assign.right, ctx);
                     self.count_array_assignment(ap, ctx);
@@ -638,7 +841,11 @@ impl Compiler {
                     let id = ctx.next_label_id();
                     ctx.alloc_reg(); // dup register
                     ctx.projected_pc += 1; // LOAD_VAR (DUP)
-                    ctx.projected_pc += 1; // JMP_IF_FALSE or JMP_IF_TRUE
+                    ctx.projected_pc += 1; // JMP_IF_FALSE, JMP_IF_TRUE, or JMP_IF_NULLISH
+                    if matches!(log.operator, LogicalOperator::Coalesce) {
+                        ctx.projected_pc += 1; // JMP over RHS on non-nullish
+                        ctx.label_map.insert(Label::TernaryElse(id), ctx.projected_pc);
+                    }
                     self.count_expression(&log.right, ctx);
                     ctx.projected_pc += 1; // LOAD_VAR (overwrite)
                     let skip_label = match log.operator {
@@ -648,6 +855,16 @@ impl Compiler {
                     };
                     ctx.label_map.insert(skip_label, ctx.projected_pc);
                 }
+            }
+            Expression::ChainExpression(chain) => {
+                let id = ctx.next_label_id();
+                self.count_chain_element(&chain.expression, true, ctx);
+                ctx.alloc_reg();
+                ctx.projected_pc += 1; // LOAD_VAR result <- chain value
+                ctx.projected_pc += 1; // JMP over short-circuit writer
+                ctx.label_map.insert(Label::TernaryElse(id), ctx.projected_pc);
+                ctx.projected_pc += 1; // LOAD_CONST undefined
+                ctx.label_map.insert(Label::TernaryEnd(id), ctx.projected_pc);
             }
             Expression::ObjectExpression(obj) => {
                 ctx.alloc_reg();

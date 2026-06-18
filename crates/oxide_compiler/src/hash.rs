@@ -1,5 +1,5 @@
 use oxide_parser::{
-    BindingPattern, ClassElement, Expression, ForStatementInit, ObjectPropertyKind, PropertyKey,
+    BindingPattern, ChainElement, ClassElement, Expression, ForStatementInit, ObjectPropertyKind, PropertyKey,
     SimpleAssignmentTarget, Statement,
 };
 use std::hash::Hash;
@@ -387,6 +387,20 @@ fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher, include_bind
         Expression::PrivateFieldExpression(member) => {
             hash_expression(&member.object, h, include_binding_names);
             member.field.name.as_str().hash(h);
+            member.optional.hash(h);
+        }
+        Expression::StaticMemberExpression(member) => {
+            hash_expression(&member.object, h, include_binding_names);
+            member.property.name.as_str().hash(h);
+            member.optional.hash(h);
+        }
+        Expression::ComputedMemberExpression(member) => {
+            hash_expression(&member.object, h, include_binding_names);
+            hash_expression(&member.expression, h, include_binding_names);
+            member.optional.hash(h);
+        }
+        Expression::ChainExpression(chain) => {
+            hash_chain_element(&chain.expression, h, include_binding_names);
         }
         Expression::Super(_) => {}
         Expression::RegExpLiteral(lit) => {
@@ -396,6 +410,40 @@ fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher, include_bind
         }
         _ => {}
     });
+}
+
+fn hash_chain_element(element: &ChainElement, h: &mut rustc_hash::FxHasher, include_binding_names: bool) {
+    std::mem::discriminant(element).hash(h);
+    match element {
+        ChainElement::StaticMemberExpression(member) => {
+            hash_expression(&member.object, h, include_binding_names);
+            member.property.name.as_str().hash(h);
+            member.optional.hash(h);
+        }
+        ChainElement::ComputedMemberExpression(member) => {
+            hash_expression(&member.object, h, include_binding_names);
+            hash_expression(&member.expression, h, include_binding_names);
+            member.optional.hash(h);
+        }
+        ChainElement::PrivateFieldExpression(member) => {
+            hash_expression(&member.object, h, include_binding_names);
+            member.field.name.as_str().hash(h);
+            member.optional.hash(h);
+        }
+        ChainElement::CallExpression(call) => {
+            hash_expression(&call.callee, h, include_binding_names);
+            call.optional.hash(h);
+            (call.arguments.len() as u32).hash(h);
+            for arg in &call.arguments {
+                if let Some(expr) = arg.as_expression() {
+                    hash_expression(expr, h, include_binding_names);
+                }
+            }
+        }
+        ChainElement::TSNonNullExpression(expr) => {
+            hash_expression(&expr.expression, h, include_binding_names);
+        }
+    }
 }
 
 fn hash_object_property_kind(prop: &ObjectPropertyKind, h: &mut rustc_hash::FxHasher, include_binding_names: bool) {

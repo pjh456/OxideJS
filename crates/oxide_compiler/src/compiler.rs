@@ -17,21 +17,28 @@ pub(crate) fn is_int_literal(value: f64) -> bool {
 }
 
 pub(crate) fn is_side_effect_free(expr: &Expression) -> bool {
-    match expr {
-        Expression::NumericLiteral(_)
-        | Expression::StringLiteral(_)
-        | Expression::BooleanLiteral(_)
-        | Expression::NullLiteral(_)
-        | Expression::Identifier(_)
-        | Expression::RegExpLiteral(_)
-        | Expression::ThisExpression(_) => true,
-        Expression::ParenthesizedExpression(p) => is_side_effect_free(&p.expression),
-        Expression::BinaryExpression(bin) => is_side_effect_free(&bin.left) && is_side_effect_free(&bin.right),
-        Expression::UnaryExpression(un) => {
-            !matches!(un.operator, UnaryOperator::Delete) && is_side_effect_free(&un.argument)
+    let mut stack = vec![expr];
+    while let Some(expr) = stack.pop() {
+        match expr {
+            Expression::NumericLiteral(_)
+            | Expression::StringLiteral(_)
+            | Expression::BooleanLiteral(_)
+            | Expression::NullLiteral(_)
+            | Expression::Identifier(_)
+            | Expression::RegExpLiteral(_)
+            | Expression::ThisExpression(_) => {}
+            Expression::ParenthesizedExpression(p) => stack.push(&p.expression),
+            Expression::BinaryExpression(bin) => {
+                stack.push(&bin.left);
+                stack.push(&bin.right);
+            }
+            Expression::UnaryExpression(un) if !matches!(un.operator, UnaryOperator::Delete) => {
+                stack.push(&un.argument);
+            }
+            _ => return false,
         }
-        _ => false,
     }
+    true
 }
 
 const BUILTIN_GLOBALS: &[&str] = &[
