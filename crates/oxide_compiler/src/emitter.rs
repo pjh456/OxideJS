@@ -2,9 +2,9 @@ use crate::compiler::Label;
 use crate::opcode::{self, OpCode};
 use oxide_parser::{
     AssignmentOperator, AssignmentTarget, AssignmentTargetMaybeDefault, AssignmentTargetProperty, BindingPattern,
-    Class, ClassElement, Expression, ForStatementInit, ForStatementLeft, MethodDefinitionKind, ObjectAssignmentTarget,
-    PropertyKey, PropertyKind, SimpleAssignmentTarget, Statement, UnaryOperator, UpdateOperator,
-    VariableDeclarationKind,
+    ChainElement, Class, ClassElement, Expression, ForStatementInit, ForStatementLeft, LogicalOperator,
+    MethodDefinitionKind, ObjectAssignmentTarget, PropertyKey, PropertyKind, SimpleAssignmentTarget, Statement,
+    UnaryOperator, UpdateOperator, VariableDeclarationKind,
 };
 
 use crate::compiler::{
@@ -13,6 +13,201 @@ use crate::compiler::{
 use crate::module::Constant;
 
 impl Compiler {
+    fn emit_optional_guard(&self, reg: u8, short_label: Label, ctx: &mut CompileCtx) -> Result<(), String> {
+        let short_pos = ctx.resolve_label(short_label)?;
+        let dup_reg = ctx.alloc_reg();
+        ctx.emit(opcode::encode(OpCode::LOAD_VAR, dup_reg, reg, 0));
+        let offset = (short_pos as isize) - (ctx.bytecode.len() as isize);
+        ctx.emit(opcode::encode_jmp_if_nullish(dup_reg, offset as i16));
+        Ok(())
+    }
+
+    fn emit_static_member_get_preserve_base(
+        &self, member: &oxide_parser::StaticMemberExpression, short_label: Option<Label>, ctx: &mut CompileCtx,
+    ) -> Result<(u8, u8), String> {
+        let obj_reg = self.emit_chainable_expression(&member.object, short_label, ctx)?;
+        if member.optional {
+            if let Some(label) = short_label {
+                self.emit_optional_guard(obj_reg, label, ctx)?;
+            }
+        }
+        let idx = ctx.add_constant(Constant::String(member.property.name.as_str().to_string()));
+        let key_reg = ctx.alloc_reg();
+        ctx.emit_load_const(key_reg, idx);
+        let value_reg = ctx.alloc_reg();
+        ctx.emit(opcode::encode(OpCode::LOAD_VAR, value_reg, obj_reg, 0));
+        ctx.emit(opcode::encode(OpCode::IC_GET_PROP, 0, value_reg, key_reg));
+        ctx.emit(0);
+        ctx.emit(0);
+        ctx.emit(0);
+        Ok((value_reg, obj_reg))
+    }
+
+    fn emit_computed_member_get_preserve_base(
+        &self, member: &oxide_parser::ComputedMemberExpression, short_label: Option<Label>, ctx: &mut CompileCtx,
+    ) -> Result<(u8, u8), String> {
+        let obj_reg = self.emit_chainable_expression(&member.object, short_label, ctx)?;
+        if member.optional {
+            if let Some(label) = short_label {
+                self.emit_optional_guard(obj_reg, label, ctx)?;
+            }
+        }
+        let key_reg = self.emit_expression(&member.expression, ctx)?;
+        let value_reg = ctx.alloc_reg();
+        ctx.emit(opcode::encode(OpCode::GET_PROP_DYNAMIC, obj_reg, key_reg, value_reg));
+        Ok((value_reg, obj_reg))
+    }
+
+    fn emit_chain_call(
+        &self, call: &oxide_parser::CallExpression, short_label: Option<Label>, ctx: &mut CompileCtx,
+    ) -> Result<u8, String> {
+        let (callee_reg, this_reg) = match &call.callee {
+            Expression::StaticMemberExpression(member) => {
+                self.emit_static_member_get_preserve_base(member, short_label, ctx)?
+            }
+            Expression::ComputedMemberExpression(member) => {
+                self.emit_computed_member_get_preserve_base(member, short_label, ctx)?
+            }
+            Expression::PrivateFieldExpression(member) => {
+                let obj_reg = self.emit_chainable_expression(&member.object, short_label, ctx)?;
+                if member.optional {
+                    if let Some(label) = short_label {
+                        self.emit_optional_guard(obj_reg, label, ctx)?;
+                    }
+                }
+                let key_reg = self.emit_private_id_reg(member.field.name.as_str(), ctx)?;
+                let callee_reg = ctx.alloc_reg();
+                ctx.emit(opcode::encode(OpCode::GET_PRIVATE, callee_reg, obj_reg, key_reg));
+                (callee_reg, obj_reg)
+            }
+            _ => {
+                let callee_reg = self.emit_chainable_expression(&call.callee, short_label, ctx)?;
+                if call.optional {
+                    if let Some(label) = short_label {
+                        self.emit_optional_guard(callee_reg, label, ctx)?;
+                    }
+                }
+                let this_idx = ctx.add_constant(Constant::Undefined);
+                let this_reg = ctx.alloc_reg();
+                ctx.emit_load_const(this_reg, this_idx);
+                (callee_reg, this_reg)
+            }
+        };
+        if call.optional
+            && matches!(
+                &call.callee,
+                Expression::StaticMemberExpression(_)
+                    | Expression::ComputedMemberExpression(_)
+                    | Expression::PrivateFieldExpression(_)
+            )
+        {
+            if let Some(label) = short_label {
+                self.emit_optional_guard(callee_reg, label, ctx)?;
+            }
+        }
+        let mut arg_regs = Vec::new();
+        for arg in &call.arguments {
+            if let Some(expr) = arg.as_expression() {
+                arg_regs.push(self.emit_expression(expr, ctx)?);
+            }
+        }
+        let first_arg_reg = if arg_regs.is_empty() { 0u8 } else { arg_regs[0] };
+        let op = match &call.callee {
+            Expression::Identifier(ident) if ctx.is_builtin(ident.name.as_str()) => OpCode::CALL_NATIVE,
+            _ => OpCode::CALL,
+        };
+        ctx.emit(opcode::encode(op, callee_reg, this_reg, first_arg_reg));
+        ctx.emit(arg_regs.len() as u32);
+        let result_reg = ctx.alloc_reg();
+        ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, 0, 0));
+        Ok(result_reg)
+    }
+
+    fn emit_chainable_expression(
+        &self, expr: &Expression, short_label: Option<Label>, ctx: &mut CompileCtx,
+    ) -> Result<u8, String> {
+        match expr {
+            Expression::StaticMemberExpression(member) => {
+                let (value_reg, _) = self.emit_static_member_get_preserve_base(member, short_label, ctx)?;
+                Ok(value_reg)
+            }
+            Expression::ComputedMemberExpression(member) => {
+                let (value_reg, _) = self.emit_computed_member_get_preserve_base(member, short_label, ctx)?;
+                Ok(value_reg)
+            }
+            Expression::PrivateFieldExpression(member) => {
+                let obj_reg = self.emit_chainable_expression(&member.object, short_label, ctx)?;
+                if member.optional {
+                    if let Some(label) = short_label {
+                        self.emit_optional_guard(obj_reg, label, ctx)?;
+                    }
+                }
+                let key_reg = self.emit_private_id_reg(member.field.name.as_str(), ctx)?;
+                let value_reg = ctx.alloc_reg();
+                ctx.emit(opcode::encode(OpCode::GET_PRIVATE, value_reg, obj_reg, key_reg));
+                Ok(value_reg)
+            }
+            Expression::CallExpression(call) => self.emit_chain_call(call, short_label, ctx),
+            Expression::ChainExpression(chain) => self.emit_chain_element(&chain.expression, short_label, ctx),
+            _ => self.emit_expression(expr, ctx),
+        }
+    }
+
+    fn emit_chain_element(
+        &self, element: &ChainElement, short_label: Option<Label>, ctx: &mut CompileCtx,
+    ) -> Result<u8, String> {
+        match element {
+            ChainElement::StaticMemberExpression(member) => {
+                let (value_reg, _) = self.emit_static_member_get_preserve_base(member, short_label, ctx)?;
+                Ok(value_reg)
+            }
+            ChainElement::ComputedMemberExpression(member) => {
+                let (value_reg, _) = self.emit_computed_member_get_preserve_base(member, short_label, ctx)?;
+                Ok(value_reg)
+            }
+            ChainElement::PrivateFieldExpression(member) => {
+                let obj_reg = self.emit_chainable_expression(&member.object, short_label, ctx)?;
+                if member.optional {
+                    if let Some(label) = short_label {
+                        self.emit_optional_guard(obj_reg, label, ctx)?;
+                    }
+                }
+                let key_reg = self.emit_private_id_reg(member.field.name.as_str(), ctx)?;
+                let value_reg = ctx.alloc_reg();
+                ctx.emit(opcode::encode(OpCode::GET_PRIVATE, value_reg, obj_reg, key_reg));
+                Ok(value_reg)
+            }
+            ChainElement::CallExpression(call) => self.emit_chain_call(call, short_label, ctx),
+            ChainElement::TSNonNullExpression(_) => Err("TS non-null expressions are not supported in JS mode".into()),
+        }
+    }
+
+    fn emit_logical_assign_test(
+        &self, op: LogicalOperator, test_reg: u8, store_label: Label, end_label: Label, ctx: &mut CompileCtx,
+    ) -> Result<(), String> {
+        match op {
+            LogicalOperator::And => {
+                let end_pos = ctx.resolve_label(end_label)?;
+                let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
+                ctx.emit(opcode::encode_jmp_if_false(test_reg, offset as i16));
+            }
+            LogicalOperator::Or => {
+                let end_pos = ctx.resolve_label(end_label)?;
+                let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
+                ctx.emit(opcode::encode_jmp_if_true(test_reg, offset as i16));
+            }
+            LogicalOperator::Coalesce => {
+                let store_pos = ctx.resolve_label(store_label)?;
+                let offset = (store_pos as isize) - (ctx.bytecode.len() as isize);
+                ctx.emit(opcode::encode_jmp_if_nullish(test_reg, offset as i16));
+                let end_pos = ctx.resolve_label(end_label)?;
+                let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
+                ctx.emit(opcode::encode_jmp(offset as i16));
+            }
+        }
+        Ok(())
+    }
+
     fn private_name_id(&self, name: &str, ctx: &CompileCtx) -> Result<u32, String> {
         ctx.private_name_map
             .iter()
@@ -1335,6 +1530,77 @@ impl Compiler {
                 Ok(left)
             }
             Expression::UnaryExpression(un) => {
+                if matches!(un.operator, UnaryOperator::Delete) {
+                    return match &un.argument {
+                        Expression::Identifier(_) => {
+                            Err("SyntaxError: delete of an unqualified identifier in strict mode".into())
+                        }
+                        Expression::StaticMemberExpression(member) => {
+                            let obj_reg = self.emit_expression(&member.object, ctx)?;
+                            let prop_name = member.property.name.as_str();
+                            let const_idx = ctx.add_constant(Constant::String(prop_name.to_string()));
+                            ctx.emit(opcode::encode(OpCode::DELETE_PROP_STATIC, obj_reg, obj_reg, 0));
+                            ctx.emit(const_idx as u32);
+                            Ok(obj_reg)
+                        }
+                        Expression::ComputedMemberExpression(member) => {
+                            let obj_reg = self.emit_expression(&member.object, ctx)?;
+                            let key_reg = self.emit_expression(&member.expression, ctx)?;
+                            ctx.emit(opcode::encode(OpCode::DELETE_PROP_DYNAMIC, obj_reg, obj_reg, key_reg));
+                            Ok(obj_reg)
+                        }
+                        Expression::ChainExpression(chain) => {
+                            let mut nullish_jumps = Vec::new();
+                            let result_reg = match &chain.expression {
+                                ChainElement::StaticMemberExpression(member) => {
+                                    let obj_reg = self.emit_expression(&member.object, ctx)?;
+                                    if member.optional {
+                                        let dup_reg = ctx.alloc_reg();
+                                        ctx.emit(opcode::encode(OpCode::LOAD_VAR, dup_reg, obj_reg, 0));
+                                        let jump_pos = ctx.bytecode.len();
+                                        ctx.emit(opcode::encode_jmp_if_nullish(dup_reg, 0));
+                                        nullish_jumps.push(jump_pos);
+                                    }
+                                    let prop_name = member.property.name.as_str();
+                                    let const_idx = ctx.add_constant(Constant::String(prop_name.to_string()));
+                                    ctx.emit(opcode::encode(OpCode::DELETE_PROP_STATIC, obj_reg, obj_reg, 0));
+                                    ctx.emit(const_idx as u32);
+                                    obj_reg
+                                }
+                                ChainElement::ComputedMemberExpression(member) => {
+                                    let obj_reg = self.emit_expression(&member.object, ctx)?;
+                                    if member.optional {
+                                        let dup_reg = ctx.alloc_reg();
+                                        ctx.emit(opcode::encode(OpCode::LOAD_VAR, dup_reg, obj_reg, 0));
+                                        let jump_pos = ctx.bytecode.len();
+                                        ctx.emit(opcode::encode_jmp_if_nullish(dup_reg, 0));
+                                        nullish_jumps.push(jump_pos);
+                                    }
+                                    let key_reg = self.emit_expression(&member.expression, ctx)?;
+                                    ctx.emit(opcode::encode(OpCode::DELETE_PROP_DYNAMIC, obj_reg, obj_reg, key_reg));
+                                    obj_reg
+                                }
+                                _ => return Err("invalid delete target".into()),
+                            };
+                            let end_jump_pos = ctx.bytecode.len();
+                            ctx.emit(opcode::encode_jmp(0));
+                            let short_pos = ctx.bytecode.len();
+                            for jump_pos in nullish_jumps {
+                                let offset = (short_pos as isize) - (jump_pos as isize);
+                                let instr = ctx.bytecode[jump_pos];
+                                let rd = opcode::rd(instr);
+                                ctx.bytecode[jump_pos] = opcode::encode_jmp_if_nullish(rd, offset as i16);
+                            }
+                            let true_idx = ctx.add_constant(Constant::Boolean(true));
+                            ctx.emit_load_const(result_reg, true_idx);
+                            let end_pos = ctx.bytecode.len();
+                            let offset = (end_pos as isize) - (end_jump_pos as isize);
+                            ctx.bytecode[end_jump_pos] = opcode::encode_jmp(offset as i16);
+                            Ok(result_reg)
+                        }
+                        _ => Err("invalid delete target".into()),
+                    };
+                }
                 let arg = self.emit_expression(&un.argument, ctx)?;
                 match un.operator {
                     UnaryOperator::UnaryNegation => {
@@ -1361,26 +1627,7 @@ impl Compiler {
                         ctx.emit(opcode::encode(OpCode::UNARY_PLUS, arg, arg, 0));
                         Ok(arg)
                     }
-                    UnaryOperator::Delete => match &un.argument {
-                        Expression::Identifier(_) => {
-                            Err("SyntaxError: delete of an unqualified identifier in strict mode".into())
-                        }
-                        Expression::StaticMemberExpression(member) => {
-                            let obj_reg = self.emit_expression(&member.object, ctx)?;
-                            let prop_name = member.property.name.as_str();
-                            let const_idx = ctx.add_constant(Constant::String(prop_name.to_string()));
-                            ctx.emit(opcode::encode(OpCode::DELETE_PROP_STATIC, obj_reg, obj_reg, 0));
-                            ctx.emit(const_idx as u32);
-                            Ok(obj_reg)
-                        }
-                        Expression::ComputedMemberExpression(member) => {
-                            let obj_reg = self.emit_expression(&member.object, ctx)?;
-                            let key_reg = self.emit_expression(&member.expression, ctx)?;
-                            ctx.emit(opcode::encode(OpCode::DELETE_PROP_DYNAMIC, obj_reg, obj_reg, key_reg));
-                            Ok(obj_reg)
-                        }
-                        _ => Err("invalid delete target".into()),
-                    },
+                    UnaryOperator::Delete => unreachable!("delete handled before argument emit"),
                 }
             }
             Expression::ConditionalExpression(cond) => {
@@ -1417,20 +1664,33 @@ impl Compiler {
                     let op = match log.operator {
                         LogicalOperator::And => OpCode::AND,
                         LogicalOperator::Or => OpCode::OR,
-                        LogicalOperator::Coalesce => {
-                            return Err("nullish coalescing not supported".into());
-                        }
+                        LogicalOperator::Coalesce => OpCode::NULLISH,
                     };
                     ctx.emit(opcode::encode(op, r, left_reg, right_reg));
                     Ok(r)
                 } else {
                     let id = ctx.next_label_id();
+                    if matches!(log.operator, LogicalOperator::Coalesce) {
+                        let dup_reg = ctx.alloc_reg();
+                        ctx.emit(opcode::encode(OpCode::LOAD_VAR, dup_reg, left_reg, 0));
+                        let nullish_jump_pos = ctx.bytecode.len();
+                        ctx.emit(opcode::encode_jmp_if_nullish(dup_reg, 0));
+                        let end_jump_pos = ctx.bytecode.len();
+                        ctx.emit(opcode::encode_jmp(0));
+                        let rhs_pos = ctx.bytecode.len();
+                        let right_reg = self.emit_expression(&log.right, ctx)?;
+                        ctx.emit(opcode::encode(OpCode::LOAD_VAR, dup_reg, right_reg, 0));
+                        let end_pos = ctx.bytecode.len();
+                        let offset = (rhs_pos as isize) - (nullish_jump_pos as isize);
+                        ctx.bytecode[nullish_jump_pos] = opcode::encode_jmp_if_nullish(dup_reg, offset as i16);
+                        let offset = (end_pos as isize) - (end_jump_pos as isize);
+                        ctx.bytecode[end_jump_pos] = opcode::encode_jmp(offset as i16);
+                        return Ok(dup_reg);
+                    }
                     let skip_label = match log.operator {
                         LogicalOperator::And => Label::TernaryEnd(id),
                         LogicalOperator::Or => Label::TernaryElse(id),
-                        LogicalOperator::Coalesce => {
-                            return Err("nullish coalescing not supported".into());
-                        }
+                        LogicalOperator::Coalesce => unreachable!(),
                     };
                     let skip_pos = ctx.resolve_label(skip_label)?;
 
@@ -1445,9 +1705,7 @@ impl Compiler {
                         LogicalOperator::Or => {
                             ctx.emit(opcode::encode_jmp_if_true(dup_reg, offset as i16));
                         }
-                        LogicalOperator::Coalesce => {
-                            return Err("nullish coalescing not supported".into());
-                        }
+                        LogicalOperator::Coalesce => unreachable!(),
                     }
 
                     let right_reg = self.emit_expression(&log.right, ctx)?;
@@ -1500,6 +1758,20 @@ impl Compiler {
                 let r = ctx.alloc_reg();
                 ctx.emit(opcode::encode(OpCode::GET_PRIVATE, r, obj_reg, key_reg));
                 Ok(r)
+            }
+            Expression::ChainExpression(chain) => {
+                let id = ctx.next_label_id();
+                let short_label = Label::TernaryElse(id);
+                let end_label = Label::TernaryEnd(id);
+                let value_reg = self.emit_chain_element(&chain.expression, Some(short_label), ctx)?;
+                let result_reg = ctx.alloc_reg();
+                ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, value_reg, 0));
+                let end_pos = ctx.resolve_label(end_label)?;
+                let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
+                ctx.emit(opcode::encode_jmp(offset as i16));
+                let undefined_idx = ctx.add_constant(Constant::Undefined);
+                ctx.emit_load_const(result_reg, undefined_idx);
+                Ok(result_reg)
             }
             Expression::ObjectExpression(obj) => {
                 let obj_reg = ctx.alloc_reg();
@@ -1567,6 +1839,30 @@ impl Compiler {
             }
             Expression::AssignmentExpression(assign) => {
                 if let oxide_parser::AssignmentTarget::StaticMemberExpression(member) = &assign.left {
+                    if let Some(logical_op) = assign.operator.to_logical_operator() {
+                        let id = ctx.next_label_id();
+                        let store_label = Label::TernaryElse(id);
+                        let end_label = Label::TernaryEnd(id);
+                        let obj_reg = self.emit_expression(&member.object, ctx)?;
+                        let prop_name = member.property.name.as_str();
+                        let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
+                        let key_reg = ctx.alloc_reg();
+                        ctx.emit_load_const(key_reg, idx);
+                        let result_reg = ctx.alloc_reg();
+                        ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, obj_reg, 0));
+                        ctx.emit(opcode::encode(OpCode::IC_GET_PROP, 0, result_reg, key_reg));
+                        ctx.emit(0);
+                        ctx.emit(0);
+                        ctx.emit(0);
+                        self.emit_logical_assign_test(logical_op, result_reg, store_label, end_label, ctx)?;
+                        let val_reg = self.emit_expression(&assign.right, ctx)?;
+                        ctx.emit(opcode::encode(OpCode::IC_SET_PROP, obj_reg, val_reg, key_reg));
+                        ctx.emit(0);
+                        ctx.emit(0);
+                        ctx.emit(0);
+                        ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, val_reg, 0));
+                        return Ok(result_reg);
+                    }
                     let obj_reg = self.emit_expression(&member.object, ctx)?;
                     let val_reg = self.emit_expression(&assign.right, ctx)?;
                     let prop_name = member.property.name.as_str();
@@ -1598,6 +1894,20 @@ impl Compiler {
                         Ok(val_reg)
                     }
                 } else if let oxide_parser::AssignmentTarget::ComputedMemberExpression(member) = &assign.left {
+                    if let Some(logical_op) = assign.operator.to_logical_operator() {
+                        let id = ctx.next_label_id();
+                        let store_label = Label::TernaryElse(id);
+                        let end_label = Label::TernaryEnd(id);
+                        let obj_reg = self.emit_expression(&member.object, ctx)?;
+                        let key_reg = self.emit_expression(&member.expression, ctx)?;
+                        let result_reg = ctx.alloc_reg();
+                        ctx.emit(opcode::encode(OpCode::GET_PROP_DYNAMIC, obj_reg, key_reg, result_reg));
+                        self.emit_logical_assign_test(logical_op, result_reg, store_label, end_label, ctx)?;
+                        let val_reg = self.emit_expression(&assign.right, ctx)?;
+                        ctx.emit(opcode::encode(OpCode::SET_PROP_DYNAMIC, obj_reg, key_reg, val_reg));
+                        ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, val_reg, 0));
+                        return Ok(result_reg);
+                    }
                     let obj_reg = self.emit_expression(&member.object, ctx)?;
                     let key_reg = self.emit_expression(&member.expression, ctx)?;
                     let val_reg = self.emit_expression(&assign.right, ctx)?;
@@ -1614,7 +1924,22 @@ impl Compiler {
                     Ok(val_reg)
                 } else if let oxide_parser::AssignmentTarget::AssignmentTargetIdentifier(id_ref) = &assign.left {
                     if assign.operator != AssignmentOperator::Assign {
-                        if assign.operator == AssignmentOperator::Addition
+                        if let Some(logical_op) = assign.operator.to_logical_operator() {
+                            let id = ctx.next_label_id();
+                            let store_label = Label::TernaryElse(id);
+                            let end_label = Label::TernaryEnd(id);
+                            let name = id_ref.name.as_str();
+                            let var_reg = ctx.lookup_or_global(name);
+                            let result_reg = ctx.alloc_reg();
+                            ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, var_reg, 0));
+                            self.emit_logical_assign_test(logical_op, result_reg, store_label, end_label, ctx)?;
+                            let val_reg = self.emit_expression(&assign.right, ctx)?;
+                            let is_const = ctx.lookup_const_flag(name);
+                            let const_flag = if is_const { 1 } else { 0 };
+                            ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, const_flag));
+                            ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, val_reg, 0));
+                            Ok(result_reg)
+                        } else if assign.operator == AssignmentOperator::Addition
                             || assign.operator == AssignmentOperator::Subtraction
                             || assign.operator == AssignmentOperator::Multiplication
                             || assign.operator == AssignmentOperator::Division

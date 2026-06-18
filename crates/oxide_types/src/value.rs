@@ -148,6 +148,10 @@ impl JsValue {
         is_nan_boxed(self.0) && get_tag(self.0) == TAG_UNDEFINED
     }
 
+    pub fn is_nullish(&self) -> bool {
+        self.is_null() || self.is_undefined()
+    }
+
     pub fn is_object(&self) -> bool {
         is_nan_boxed(self.0) && get_tag(self.0) == TAG_OBJECT
     }
@@ -384,6 +388,15 @@ mod tests {
     #[test]
     fn undefined_identity() {
         assert_eq!(JsValue::undefined(), JsValue::undefined());
+    }
+
+    #[test]
+    fn nullish_matches_only_null_and_undefined() {
+        assert!(JsValue::null().is_nullish());
+        assert!(JsValue::undefined().is_nullish());
+        assert!(!JsValue::int(0).is_nullish());
+        assert!(!JsValue::bool(false).is_nullish());
+        assert!(!JsValue::float(f64::NAN).is_nullish());
     }
 
     #[test]

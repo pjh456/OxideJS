@@ -365,7 +365,6 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
         "cross-realm",
         "new.target",
         "well-formed-json-stringify",
-        "optional-chaining",
         "symbols-as-weakmap-keys",
         "class-accessors-private",
     ];

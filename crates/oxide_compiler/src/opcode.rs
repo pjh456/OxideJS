@@ -142,6 +142,8 @@ pub enum OpCode {
     COMPOUND_SHL = 0x8B,
     COMPOUND_SHR = 0x8C,
     COMPOUND_USHR = 0x8D,
+    NULLISH = 0x8E,
+    JMP_IF_NULLISH = 0x8F,
 
     // ── Misc (0xF0-0xFF) ──
     NOP = 0xF0,
@@ -290,6 +292,8 @@ impl TryFrom<u8> for OpCode {
             0x8B => Ok(OpCode::COMPOUND_SHL),
             0x8C => Ok(OpCode::COMPOUND_SHR),
             0x8D => Ok(OpCode::COMPOUND_USHR),
+            0x8E => Ok(OpCode::NULLISH),
+            0x8F => Ok(OpCode::JMP_IF_NULLISH),
             0xF0 => Ok(OpCode::NOP),
             0xF1 => Ok(OpCode::HALT),
             0xF2 => Ok(OpCode::TYPEOF),
@@ -407,6 +411,8 @@ impl fmt::Display for OpCode {
             OpCode::COMPOUND_SHL => "COMPOUND_SHL",
             OpCode::COMPOUND_SHR => "COMPOUND_SHR",
             OpCode::COMPOUND_USHR => "COMPOUND_USHR",
+            OpCode::NULLISH => "NULLISH",
+            OpCode::JMP_IF_NULLISH => "JMP_IF_NULLISH",
             OpCode::NOP => "NOP",
             OpCode::HALT => "HALT",
             OpCode::TYPEOF => "TYPEOF",
@@ -468,6 +474,12 @@ pub fn encode_jmp_if_true(rd: u8, offset: i16) -> Instr {
     let lo = (offset as u16 & 0xFF) as u8;
     let hi = ((offset as u16 >> 8) & 0xFF) as u8;
     encode(OpCode::JMP_IF_TRUE, rd, lo, hi)
+}
+
+pub fn encode_jmp_if_nullish(rd: u8, offset: i16) -> Instr {
+    let lo = (offset as u16 & 0xFF) as u8;
+    let hi = ((offset as u16 >> 8) & 0xFF) as u8;
+    encode(OpCode::JMP_IF_NULLISH, rd, lo, hi)
 }
 
 pub fn encode_try_begin(offset: i16) -> Instr {

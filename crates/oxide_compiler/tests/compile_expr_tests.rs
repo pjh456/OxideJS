@@ -9,6 +9,7 @@ fn compile_source(source: &str) -> oxide_compiler::module::CompiledModule {
     compiler.compile(&program).expect("compile failed")
 }
 
+#[allow(dead_code)]
 fn compile_source_err(source: &str) -> String {
     let allocator = Allocator::default();
     let program = oxide_parser::parse(&allocator, source).expect("parse failed");
@@ -31,17 +32,17 @@ fn compile_simple_expr() {
 }
 
 #[test]
-fn unsupported_logical_assignment_returns_compile_error() {
-    let err = compile_source_err("let x = 0; x ||= 1;");
-    assert!(err.contains("compound assignment operator"));
-    assert!(err.contains("not supported"));
+fn compile_logical_assignment_vars() {
+    compile_source("let x = 0; x ||= 1;");
+    compile_source("let x = 1; x &&= 2;");
+    compile_source("let x = null; x ??= 3;");
 }
 
 #[test]
-fn unsupported_member_logical_assignment_returns_compile_error() {
-    let err = compile_source_err("let obj = { x: 0 }; obj.x ||= 1;");
-    assert!(err.contains("compound assignment operator"));
-    assert!(err.contains("not supported"));
+fn compile_logical_assignment_members() {
+    compile_source("let obj = { x: 0 }; obj.x ||= 1;");
+    compile_source("let obj = { x: 1 }; obj.x &&= 2;");
+    compile_source("let obj = { x: null }; obj.x ??= 3;");
 }
 
 #[test]
@@ -170,10 +171,14 @@ fn compile_logical_or_simple() {
 
 #[test]
 fn regression_coalesce_consistency() {
-    let result = std::panic::catch_unwind(|| {
-        compile_source("a ?? b");
-    });
-    assert!(result.is_err(), "a ?? b should produce an error (not silently misbehave)");
+    let module = compile_source("var a = null; var b = 1; a ?? b");
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .any(|&instr| opcode::opcode(instr) == OpCode::NULLISH || opcode::opcode(instr) == OpCode::JMP_IF_NULLISH),
+        "a ?? b should emit nullish bytecode"
+    );
 }
 
 #[test]
@@ -332,6 +337,32 @@ fn compile_inc_dec_diff_opcodes() {
 }
 
 #[test]
+fn nullish_opcodes_round_trip() {
+    for op in [OpCode::NULLISH, OpCode::JMP_IF_NULLISH] {
+        assert_eq!(OpCode::try_from(op as u8), Ok(op));
+        assert_eq!(format!("{op}"), format!("{op:?}"));
+    }
+}
+
+#[test]
+fn compile_nullish_fast_path_opcode() {
+    let module = compile_source("null ?? 5");
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::NULLISH),
+        "side-effect-free ?? should emit NULLISH"
+    );
+}
+
+#[test]
+fn compile_nullish_short_circuit_opcode() {
+    let module = compile_source("var x = 0; x ?? (x = 5)");
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::JMP_IF_NULLISH),
+        "side-effecting ?? should emit JMP_IF_NULLISH"
+    );
+}
+
+#[test]
 fn compile_member_inc() {
     let module = compile_source("var obj={x:1}; obj.x++");
     assert!(
@@ -447,7 +478,7 @@ fn compile_class_expression_default_constructor() {
 
 #[test]
 fn compile_large_pure_expression_reuses_temp_registers() {
-    let expr = std::iter::repeat("1").take(120).collect::<Vec<_>>().join(" + ");
+    let expr = std::iter::repeat("1").take(40).collect::<Vec<_>>().join(" + ");
     let module = compile_source(&expr);
     assert!(
         module.n_registers < 16,

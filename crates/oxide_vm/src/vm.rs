@@ -687,6 +687,13 @@ impl Vm {
                     }
                 }
 
+                OpCode::JMP_IF_NULLISH => {
+                    if self.regs[rd].is_nullish() {
+                        let offset = opcode::offset16(instr) as isize;
+                        self.pc = ((self.pc as isize) + offset - 1) as usize;
+                    }
+                }
+
                 OpCode::LOAD_VAR => {
                     if a == 254
                         && self.frames.last().map(|frame| frame.is_derived_constructor).unwrap_or(false)
@@ -1016,15 +1023,30 @@ impl Vm {
                 }
 
                 OpCode::DELETE_PROP_STATIC => {
-                    let _ = self.bytecode[self.pc];
+                    let prop_idx = self.bytecode[self.pc] as usize;
                     self.pc += 1;
-                    throw_err!(self, TypeError, "property deletion not supported");
+                    let key_val = self.constants.get(prop_idx).copied().unwrap_or_else(JsValue::undefined);
+                    let prop_name_si = self.property_key_si(key_val);
+                    let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "delete on non-object")? else {
+                        continue;
+                    };
+                    let obj = unsafe { &mut *obj_ptr };
+                    if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+                        obj.set_prop_at(pos, JsValue::undefined());
+                    }
+                    self.regs[rd] = JsValue::bool(true);
                 }
 
                 OpCode::DELETE_PROP_DYNAMIC => {
-                    let _ = self.regs[a];
-                    let _ = self.regs[b];
-                    throw_err!(self, TypeError, "property deletion not supported");
+                    let prop_name_si = self.property_key_si(self.regs[b]);
+                    let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "delete on non-object")? else {
+                        continue;
+                    };
+                    let obj = unsafe { &mut *obj_ptr };
+                    if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+                        obj.set_prop_at(pos, JsValue::undefined());
+                    }
+                    self.regs[rd] = JsValue::bool(true);
                 }
 
                 OpCode::INSTANCEOF => {
@@ -1045,6 +1067,10 @@ impl Vm {
 
                 OpCode::OR => {
                     self.dispatch_or(rd, a, b);
+                }
+
+                OpCode::NULLISH => {
+                    self.dispatch_nullish(rd, a, b);
                 }
 
                 OpCode::INC_PRE => {
