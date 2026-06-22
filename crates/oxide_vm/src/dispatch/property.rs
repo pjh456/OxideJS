@@ -5,7 +5,7 @@ use oxide_types::object::JsObject;
 use oxide_types::private_key::make_private_name_id;
 use oxide_types::value::JsValue;
 
-use crate::vm::Vm;
+use crate::vm::{Vm, MAX_PROTO_CHAIN_DEPTH};
 
 #[inline(always)]
 fn ic_get_hit(obj: &JsObject, shape_id: u32, slot_index: u32) -> Option<JsValue> {
@@ -98,7 +98,9 @@ impl Vm {
             return Some(obj.get_prop_at(pos));
         }
         let mut proto = obj.proto();
-        while proto.is_object() {
+        let mut depth = 0usize;
+        while proto.is_object() && depth < MAX_PROTO_CHAIN_DEPTH {
+            depth += 1;
             let proto_obj = unsafe { &*proto.as_js_object_ptr() };
             if let Some(pos) = self.private_slot(proto_obj, private_key) {
                 return Some(proto_obj.get_prop_at(pos));

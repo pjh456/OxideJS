@@ -32,6 +32,14 @@ fn compile_simple_expr() {
 }
 
 #[test]
+fn test_constant_pool_overflow_range_error() {
+    let expr = (0..70_000).map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+    let source = format!("var a=[{expr}]; a");
+    let err = compile_source_err(&source);
+    assert!(err.contains("too many constants"), "unexpected error: {err}");
+}
+
+#[test]
 fn compile_logical_assignment_vars() {
     compile_source("let x = 0; x ||= 1;");
     compile_source("let x = 1; x &&= 2;");

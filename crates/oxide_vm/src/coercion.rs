@@ -312,7 +312,7 @@ pub fn to_object(val: JsValue, vm: &mut Vm) -> Result<JsValue, &'static str> {
         (&*vm.object_prototype as *const JsObject as *mut JsObject, JsObject::OBJ_TYPE_PLAIN)
     };
     let proto_val = JsValue::from_js_object(proto_ptr);
-    let obj = vm.epoch.alloc(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
+    let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
     let obj_val = JsValue::from_js_object(obj);
     let obj_ref = unsafe { &mut *obj };
     obj_ref.type_tag = type_tag;

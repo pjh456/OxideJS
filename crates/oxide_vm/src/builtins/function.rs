@@ -91,7 +91,7 @@ pub fn function_bind(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let bound_this = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
 
-    let wrapper = vm.epoch().alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+    let wrapper = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
     unsafe {
         (*wrapper).set_function(true);
         // SAFETY: bind_dispatcher is a NativeFn fn-item; valid to store as NativeFnPtr.

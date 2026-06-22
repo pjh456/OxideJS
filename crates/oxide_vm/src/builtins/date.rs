@@ -201,7 +201,7 @@ pub fn date_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     obj.type_tag = JsObject::OBJ_TYPE_DATE;
     obj.set_prop_at(0, JsValue::float(timestamp));
 
-    let ptr = vm.epoch().alloc(obj);
+    let ptr = vm.alloc_object(obj);
     NativeResult::Ok(JsValue::from_js_object(ptr))
 }
 

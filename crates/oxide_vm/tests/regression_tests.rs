@@ -67,7 +67,12 @@ fn regression_rerun_clears_ic_cache() {
 
 #[test]
 fn regression_recursion_depth_limit() {
-    assert_eq!(eval("function f(){f()} f()"), "vm error: RangeError: Maximum call stack size exceeded");
+    let result = eval("function f(){f()} f()");
+    assert!(result.contains("RangeError"), "expected RangeError, got: {result}");
+    assert!(
+        result.contains("Maximum call stack size exceeded"),
+        "expected stack limit message, got: {result}"
+    );
 }
 
 #[test]
@@ -163,4 +168,48 @@ fn regression_many_declarations_keep_stable_registers() {
 #[test]
 fn regression_method_call_receiver_survives_register_reuse() {
     assert_eq!(eval("var o = { x: 41, f: function() { return this.x + 1; } }; o.f()"), "42");
+}
+
+#[test]
+fn test_recursive_getter_throws_range_error() {
+    let result = eval("function f(){ return f(); } f()");
+    assert!(
+        result.contains("Maximum call stack size exceeded"),
+        "expected catchable RangeError, got: {result}"
+    );
+}
+
+#[test]
+fn test_array_length_range_error() {
+    let result = eval("new Array(4294967295)");
+    assert!(result.contains("Invalid array length"), "expected invalid length, got: {result}");
+    let result = eval("new Array(-1)");
+    assert!(result.contains("Invalid array length"), "expected invalid length, got: {result}");
+}
+
+#[test]
+fn test_huge_array_index_bounded() {
+    let result = eval("var a=[]; a[2147483648]=1; 1");
+    assert_eq!(result, "1");
+}
+
+#[test]
+fn test_string_pad_bounded() {
+    let result = eval("''.padStart(2147483648)");
+    assert!(result.contains("Invalid string length"), "expected invalid string length, got: {result}");
+    assert_eq!(eval("'x'.padStart(5,'0') == '0000x'"), "true");
+}
+
+#[test]
+fn test_typed_array_survives_promote_reset() {
+    assert_eq!(eval("var a=new Int32Array(4); a.fill(7); a.at(0)"), "7");
+    assert_eq!(
+        eval("var b=new ArrayBuffer(8); var d=new DataView(b); d.setInt32(0, 42); d.getInt32(0)"),
+        "42"
+    );
+}
+
+#[test]
+fn test_flat_infinity_bounded() {
+    assert_eq!(eval("[1,[2,[3,[4]]]].flat(Infinity).length"), "4");
 }

@@ -1,5 +1,5 @@
 use crate::coercion;
-use crate::vm::{FrameContinuation, Vm};
+use crate::vm::{FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
 use oxide_types::object::{JsObject, PropAttributes, PropMetaEntry};
 use oxide_types::value::JsValue;
 
@@ -20,39 +20,44 @@ impl Vm {
         &mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue, target_reg: Option<u8>,
     ) -> Result<JsValue, String> {
         let length_si = self.kernel_core.string_forge().intern("length").0;
-        if obj.is_array() && prop_name_si == length_si {
-            return Ok(JsValue::int(obj.prop_count() as i32));
-        }
-        if obj.is_array() {
-            if let Some(index) = self.array_index_from_property_key(prop_name_si) {
-                if index < obj.prop_vec_len() as u32 {
-                    return Ok(obj.get_prop_at(index));
+        let mut current = Some(obj);
+        let mut depth = 0usize;
+        while let Some(obj) = current {
+            if obj.is_array() && prop_name_si == length_si {
+                return Ok(JsValue::int(obj.prop_count() as i32));
+            }
+            if obj.is_array() {
+                if let Some(index) = self.array_index_from_property_key(prop_name_si) {
+                    if index < obj.prop_vec_len() as u32 {
+                        return Ok(obj.get_prop_at(index));
+                    }
                 }
             }
-        }
-        if let Some(pos) = self.get_own_property_slot(obj, prop_name_si) {
-            if let Some(meta) = obj.prop_meta_at(pos) {
-                if meta.is_accessor {
-                    return if meta.get.is_undefined() {
-                        Ok(JsValue::undefined())
-                    } else if let Some(tr) = target_reg {
-                        let getter = meta.get;
-                        let pushed = self.push_bytecode_getter_frame(getter, receiver, tr)?;
-                        if pushed {
-                            return Ok(JsValue::undefined());
-                        }
-                        Ok(self.regs[tr as usize])
-                    } else {
-                        self.call_function_sync(meta.get, receiver, &[])
-                    };
+            if let Some(pos) = self.get_own_property_slot(obj, prop_name_si) {
+                if let Some(meta) = obj.prop_meta_at(pos) {
+                    if meta.is_accessor {
+                        return if meta.get.is_undefined() {
+                            Ok(JsValue::undefined())
+                        } else if let Some(tr) = target_reg {
+                            let getter = meta.get;
+                            let pushed = self.push_bytecode_getter_frame(getter, receiver, tr)?;
+                            if pushed {
+                                return Ok(JsValue::undefined());
+                            }
+                            Ok(self.regs[tr as usize])
+                        } else {
+                            self.call_function_sync(meta.get, receiver, &[])
+                        };
+                    }
                 }
+                return Ok(obj.get_prop_at(pos));
             }
-            return Ok(obj.get_prop_at(pos));
-        }
-        let proto = obj.proto();
-        if proto.is_object() {
-            let proto_obj = unsafe { &*proto.as_js_object_ptr() };
-            return self.ordinary_get_inner(proto_obj, prop_name_si, receiver, target_reg);
+            if depth >= MAX_PROTO_CHAIN_DEPTH {
+                break;
+            }
+            depth += 1;
+            let proto = obj.proto();
+            current = proto.is_object().then(|| unsafe { &*proto.as_js_object_ptr() });
         }
         Ok(JsValue::undefined())
     }
@@ -89,7 +94,9 @@ impl Vm {
 
     fn inherited_property_meta(&self, obj: &JsObject, prop_name_si: u32) -> Option<PropMetaEntry> {
         let mut proto = obj.proto();
-        while proto.is_object() {
+        let mut depth = 0usize;
+        while proto.is_object() && depth < MAX_PROTO_CHAIN_DEPTH {
+            depth += 1;
             let proto_obj = unsafe { &*proto.as_js_object_ptr() };
             if let Some(pos) = self.get_own_property_slot(proto_obj, prop_name_si) {
                 return proto_obj.prop_meta_at(pos);

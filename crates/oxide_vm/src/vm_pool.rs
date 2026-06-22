@@ -1,6 +1,7 @@
 #![allow(clippy::arc_with_non_send_sync)]
 
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use crate::vm::Vm;
 use oxide_kernel::kernel::KernelCore;
@@ -91,7 +92,19 @@ impl VmPool {
                 };
             }
 
-            inner = self.condvar.wait(inner).unwrap();
+            let (guard, wait) = self.condvar.wait_timeout(inner, Duration::from_secs(5)).unwrap();
+            inner = guard;
+            if wait.timed_out() {
+                inner.total_count += 1;
+                drop(inner);
+                let vm = Self::new_vm(&self.kernel_core);
+                return VmGuard {
+                    vm: Some(vm),
+                    pool: Arc::clone(self),
+                    dirty: false,
+                    interned_strings: Vec::new(),
+                };
+            }
         }
     }
 }

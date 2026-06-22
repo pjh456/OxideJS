@@ -18,7 +18,8 @@ impl Compiler {
         let dup_reg = ctx.alloc_reg();
         ctx.emit(opcode::encode(OpCode::LOAD_VAR, dup_reg, reg, 0));
         let offset = (short_pos as isize) - (ctx.bytecode.len() as isize);
-        ctx.emit(opcode::encode_jmp_if_nullish(dup_reg, offset as i16));
+        let offset = ctx.checked_jump_offset(offset);
+        ctx.emit(opcode::encode_jmp_if_nullish(dup_reg, offset));
         Ok(())
     }
 
@@ -189,20 +190,24 @@ impl Compiler {
             LogicalOperator::And => {
                 let end_pos = ctx.resolve_label(end_label)?;
                 let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
-                ctx.emit(opcode::encode_jmp_if_false(test_reg, offset as i16));
+                let offset = ctx.checked_jump_offset(offset);
+                ctx.emit(opcode::encode_jmp_if_false(test_reg, offset));
             }
             LogicalOperator::Or => {
                 let end_pos = ctx.resolve_label(end_label)?;
                 let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
-                ctx.emit(opcode::encode_jmp_if_true(test_reg, offset as i16));
+                let offset = ctx.checked_jump_offset(offset);
+                ctx.emit(opcode::encode_jmp_if_true(test_reg, offset));
             }
             LogicalOperator::Coalesce => {
                 let store_pos = ctx.resolve_label(store_label)?;
                 let offset = (store_pos as isize) - (ctx.bytecode.len() as isize);
-                ctx.emit(opcode::encode_jmp_if_nullish(test_reg, offset as i16));
+                let offset = ctx.checked_jump_offset(offset);
+                ctx.emit(opcode::encode_jmp_if_nullish(test_reg, offset));
                 let end_pos = ctx.resolve_label(end_label)?;
                 let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
-                ctx.emit(opcode::encode_jmp(offset as i16));
+                let offset = ctx.checked_jump_offset(offset);
+                ctx.emit(opcode::encode_jmp(offset));
             }
         }
         Ok(())
@@ -337,7 +342,8 @@ impl Compiler {
         ctx.emit(opcode::encode(OpCode::LOAD_VAR, val_reg, default_reg, 0));
         let after = ctx.bytecode.len();
         let offset = after as isize - jump_pos as isize;
-        ctx.bytecode[jump_pos] = opcode::encode_jmp_if_false(eq_reg, offset as i16);
+        let offset = ctx.checked_jump_offset(offset);
+        ctx.bytecode[jump_pos] = opcode::encode_jmp_if_false(eq_reg, offset);
         Ok(val_reg)
     }
 
@@ -426,9 +432,12 @@ impl Compiler {
         let tmp_reg = ctx.alloc_reg();
         ctx.emit(opcode::encode(OpCode::INC_PRE, idx_reg, tmp_reg, tmp_reg));
         let back = loop_start as isize - ctx.bytecode.len() as isize;
-        ctx.emit(opcode::encode_jmp(back as i16));
+        let back = ctx.checked_jump_offset(back);
+        ctx.emit(opcode::encode_jmp(back));
         let after = ctx.bytecode.len();
-        ctx.bytecode[end_jmp] = opcode::encode_jmp_if_false(has_reg, (after as isize - end_jmp as isize) as i16);
+        let end_offset = after as isize - end_jmp as isize;
+        let end_offset = ctx.checked_jump_offset(end_offset);
+        ctx.bytecode[end_jmp] = opcode::encode_jmp_if_false(has_reg, end_offset);
         Ok(rest_reg)
     }
 
@@ -1013,7 +1022,8 @@ impl Compiler {
 
                 let else_pos = ctx.resolve_label(else_label)?;
                 let offset = (else_pos as isize) - (ctx.bytecode.len() as isize);
-                ctx.emit(opcode::encode_jmp_if_false(test_reg, offset as i16));
+                let offset = ctx.checked_jump_offset(offset);
+                ctx.emit(opcode::encode_jmp_if_false(test_reg, offset));
 
                 let cons_reg = self.emit_statement(&ifs.consequent, ctx)?;
                 let result_reg = ctx.alloc_reg();
@@ -1028,7 +1038,8 @@ impl Compiler {
                 if has_alt {
                     let end_pos = ctx.resolve_label(end_label)?;
                     let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
-                    ctx.emit(opcode::encode_jmp(offset as i16));
+                    let offset = ctx.checked_jump_offset(offset);
+                    ctx.emit(opcode::encode_jmp(offset));
                 }
 
                 if let Some(alt) = &ifs.alternate {
@@ -1054,13 +1065,15 @@ impl Compiler {
 
                 let end_pos = ctx.resolve_label(end_label)?;
                 let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
-                ctx.emit(opcode::encode_jmp_if_false(test_reg, offset as i16));
+                let offset = ctx.checked_jump_offset(offset);
+                ctx.emit(opcode::encode_jmp_if_false(test_reg, offset));
 
                 self.emit_statement(&wh.body, ctx)?;
 
                 let start_pos = ctx.resolve_label(start_label)?;
                 let offset = (start_pos as isize) - (ctx.bytecode.len() as isize);
-                ctx.emit(opcode::encode_jmp(offset as i16));
+                let offset = ctx.checked_jump_offset(offset);
+                ctx.emit(opcode::encode_jmp(offset));
 
                 ctx.pop_loop();
                 Ok(None)
@@ -1078,7 +1091,8 @@ impl Compiler {
 
                 let start_pos = ctx.resolve_label(start_label)?;
                 let offset = (start_pos as isize) - (ctx.bytecode.len() as isize);
-                ctx.emit(opcode::encode_jmp_if_true(test_reg, offset as i16));
+                let offset = ctx.checked_jump_offset(offset);
+                ctx.emit(opcode::encode_jmp_if_true(test_reg, offset));
 
                 ctx.pop_loop();
                 Ok(None)
@@ -1112,7 +1126,8 @@ impl Compiler {
                     let test_reg = self.emit_expression(test, ctx)?;
                     let end_pos = ctx.resolve_label(end_label)?;
                     let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
-                    ctx.emit(opcode::encode_jmp_if_false(test_reg, offset as i16));
+                    let offset = ctx.checked_jump_offset(offset);
+                    ctx.emit(opcode::encode_jmp_if_false(test_reg, offset));
                 }
 
                 self.emit_statement(&fr.body, ctx)?;
@@ -1123,7 +1138,8 @@ impl Compiler {
 
                 let start_pos = ctx.resolve_label(start_label)?;
                 let offset = (start_pos as isize) - (ctx.bytecode.len() as isize);
-                ctx.emit(opcode::encode_jmp(offset as i16));
+                let offset = ctx.checked_jump_offset(offset);
+                ctx.emit(opcode::encode_jmp(offset));
 
                 ctx.pop_loop();
 
@@ -1145,7 +1161,8 @@ impl Compiler {
                 let end_pos = ctx.resolve_label(end_label)?;
                 let cleanup_jmp_offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
                 ctx.emit(opcode::encode_jmp_if_false(done_reg, 2));
-                ctx.emit(opcode::encode_jmp(cleanup_jmp_offset as i16));
+                let cleanup_jmp_offset = ctx.checked_jump_offset(cleanup_jmp_offset);
+                ctx.emit(opcode::encode_jmp(cleanup_jmp_offset));
 
                 let key_reg = ctx.alloc_reg();
                 ctx.emit(opcode::encode(OpCode::FOR_IN_NEXT, key_reg, 0, 0));
@@ -1175,7 +1192,8 @@ impl Compiler {
 
                 let start_pos = ctx.resolve_label(start_label)?;
                 let offset = (start_pos as isize) - (ctx.bytecode.len() as isize);
-                ctx.emit(opcode::encode_jmp(offset as i16));
+                let offset = ctx.checked_jump_offset(offset);
+                ctx.emit(opcode::encode_jmp(offset));
 
                 ctx.emit(opcode::encode(OpCode::FOR_IN_CLEANUP, 0, 0, 0));
 
@@ -1195,7 +1213,8 @@ impl Compiler {
                 ctx.emit(opcode::encode(OpCode::FOR_OF_DONE, has_reg, 0, 0));
                 let end_pos = ctx.resolve_label(end_label)?;
                 let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
-                ctx.emit(opcode::encode_jmp_if_false(has_reg, offset as i16));
+                let offset = ctx.checked_jump_offset(offset);
+                ctx.emit(opcode::encode_jmp_if_false(has_reg, offset));
 
                 let val_reg = ctx.alloc_reg();
                 ctx.emit(opcode::encode(OpCode::FOR_OF_NEXT, val_reg, 0, 0));
@@ -1222,7 +1241,8 @@ impl Compiler {
                 self.emit_statement(&fo.body, ctx)?;
                 let start_pos = ctx.resolve_label(start_label)?;
                 let offset = (start_pos as isize) - (ctx.bytecode.len() as isize);
-                ctx.emit(opcode::encode_jmp(offset as i16));
+                let offset = ctx.checked_jump_offset(offset);
+                ctx.emit(opcode::encode_jmp(offset));
                 ctx.emit(opcode::encode(OpCode::FOR_OF_CLOSE, 0, 0, 0));
                 ctx.pop_loop();
                 Ok(None)
@@ -1245,7 +1265,8 @@ impl Compiler {
                         let case_label = Label::SwitchCase(id, case_idx as u32);
                         let body_pos = ctx.resolve_label(case_label)?;
                         let offset = (body_pos as isize) - (ctx.bytecode.len() as isize);
-                        ctx.emit(opcode::encode_jmp_if_true(eq_reg, offset as i16));
+                        let offset = ctx.checked_jump_offset(offset);
+                        ctx.emit(opcode::encode_jmp_if_true(eq_reg, offset));
                         ctx.restore_reg_checkpoint(compare_reg_checkpoint);
                     }
                 }
@@ -1254,7 +1275,8 @@ impl Compiler {
                 if !has_default {
                     let end_pos = ctx.resolve_label(end_label)?;
                     let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
-                    ctx.emit(opcode::encode_jmp(offset as i16));
+                    let offset = ctx.checked_jump_offset(offset);
+                    ctx.emit(opcode::encode_jmp(offset));
                 }
 
                 for case in cases.iter() {
@@ -1275,14 +1297,16 @@ impl Compiler {
                 };
                 let break_pos = ctx.resolve_label(break_label)?;
                 let offset = (break_pos as isize) - (ctx.bytecode.len() as isize);
-                ctx.emit(opcode::encode_jmp(offset as i16));
+                let offset = ctx.checked_jump_offset(offset);
+                ctx.emit(opcode::encode_jmp(offset));
                 Ok(None)
             }
             Statement::ContinueStatement(_) => {
                 let (_, continue_label) = ctx.current_loop().ok_or("continue outside loop".to_string())?;
                 let continue_pos = ctx.resolve_label(*continue_label)?;
                 let offset = (continue_pos as isize) - (ctx.bytecode.len() as isize);
-                ctx.emit(opcode::encode_jmp(offset as i16));
+                let offset = ctx.checked_jump_offset(offset);
+                ctx.emit(opcode::encode_jmp(offset));
                 Ok(None)
             }
             Statement::FunctionDeclaration(fd) => {
@@ -1395,7 +1419,8 @@ impl Compiler {
 
                 if let Some(try_begin_pc) = try_begin_pos {
                     let offset = catch_label_pc as isize - (try_begin_pc as isize);
-                    ctx.bytecode[try_begin_pc] = opcode::encode_try_begin(offset as i16);
+                    let offset = ctx.checked_jump_offset(offset);
+                    ctx.bytecode[try_begin_pc] = opcode::encode_try_begin(offset);
                 }
 
                 if let Some(catch) = &ts.handler {
@@ -1423,12 +1448,14 @@ impl Compiler {
                     ctx.label_map.insert(finally_label, finally_label_pc);
                     if let Some(fb_pos) = try_finally_begin_pos {
                         let offset = finally_label_pc as isize - (fb_pos as isize);
-                        ctx.bytecode[fb_pos] = opcode::encode_try_finally_begin(offset as i16);
+                        let offset = ctx.checked_jump_offset(offset);
+                        ctx.bytecode[fb_pos] = opcode::encode_try_finally_begin(offset);
                     }
 
                     if let Some(jmp_pos) = jmp_skip_pos {
                         let offset = finally_label_pc as isize - (jmp_pos as isize);
-                        ctx.bytecode[jmp_pos] = opcode::encode_jmp(offset as i16);
+                        let offset = ctx.checked_jump_offset(offset);
+                        ctx.bytecode[jmp_pos] = opcode::encode_jmp(offset);
                     }
 
                     let mut last_finally_result: Option<u8> = None;
@@ -1446,7 +1473,8 @@ impl Compiler {
                     ctx.emit(opcode::encode(OpCode::TRY_FINALLY_END, 0, 0, 0));
                 } else if let Some(jmp_pos) = jmp_skip_pos {
                     let offset = ctx.bytecode.len() as isize - (jmp_pos as isize);
-                    ctx.bytecode[jmp_pos] = opcode::encode_jmp(offset as i16);
+                    let offset = ctx.checked_jump_offset(offset);
+                    ctx.bytecode[jmp_pos] = opcode::encode_jmp(offset);
                 }
 
                 let try_end_pc = ctx.bytecode.len();
@@ -1589,13 +1617,15 @@ impl Compiler {
                                 let offset = (short_pos as isize) - (jump_pos as isize);
                                 let instr = ctx.bytecode[jump_pos];
                                 let rd = opcode::rd(instr);
-                                ctx.bytecode[jump_pos] = opcode::encode_jmp_if_nullish(rd, offset as i16);
+                                let offset = ctx.checked_jump_offset(offset);
+                                ctx.bytecode[jump_pos] = opcode::encode_jmp_if_nullish(rd, offset);
                             }
                             let true_idx = ctx.add_constant(Constant::Boolean(true));
                             ctx.emit_load_const(result_reg, true_idx);
                             let end_pos = ctx.bytecode.len();
                             let offset = (end_pos as isize) - (end_jump_pos as isize);
-                            ctx.bytecode[end_jump_pos] = opcode::encode_jmp(offset as i16);
+                            let offset = ctx.checked_jump_offset(offset);
+                            ctx.bytecode[end_jump_pos] = opcode::encode_jmp(offset);
                             Ok(result_reg)
                         }
                         _ => Err("invalid delete target".into()),
@@ -1640,14 +1670,16 @@ impl Compiler {
                 let end_pos = ctx.resolve_label(end_label)?;
 
                 let offset = (else_pos as isize) - (ctx.bytecode.len() as isize);
-                ctx.emit(opcode::encode_jmp_if_false(test_reg, offset as i16));
+                let offset = ctx.checked_jump_offset(offset);
+                ctx.emit(opcode::encode_jmp_if_false(test_reg, offset));
 
                 let cons_reg = self.emit_expression(&cond.consequent, ctx)?;
                 let result_reg = ctx.alloc_reg();
                 ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, cons_reg, 0));
 
                 let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
-                ctx.emit(opcode::encode_jmp(offset as i16));
+                let offset = ctx.checked_jump_offset(offset);
+                ctx.emit(opcode::encode_jmp(offset));
 
                 let alt_reg = self.emit_expression(&cond.alternate, ctx)?;
                 ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, alt_reg, 0));
@@ -1682,9 +1714,11 @@ impl Compiler {
                         ctx.emit(opcode::encode(OpCode::LOAD_VAR, dup_reg, right_reg, 0));
                         let end_pos = ctx.bytecode.len();
                         let offset = (rhs_pos as isize) - (nullish_jump_pos as isize);
-                        ctx.bytecode[nullish_jump_pos] = opcode::encode_jmp_if_nullish(dup_reg, offset as i16);
+                        let offset = ctx.checked_jump_offset(offset);
+                        ctx.bytecode[nullish_jump_pos] = opcode::encode_jmp_if_nullish(dup_reg, offset);
                         let offset = (end_pos as isize) - (end_jump_pos as isize);
-                        ctx.bytecode[end_jump_pos] = opcode::encode_jmp(offset as i16);
+                        let offset = ctx.checked_jump_offset(offset);
+                        ctx.bytecode[end_jump_pos] = opcode::encode_jmp(offset);
                         return Ok(dup_reg);
                     }
                     let skip_label = match log.operator {
@@ -1700,10 +1734,12 @@ impl Compiler {
                     let offset = (skip_pos as isize) - (ctx.bytecode.len() as isize);
                     match log.operator {
                         LogicalOperator::And => {
-                            ctx.emit(opcode::encode_jmp_if_false(dup_reg, offset as i16));
+                            let offset = ctx.checked_jump_offset(offset);
+                            ctx.emit(opcode::encode_jmp_if_false(dup_reg, offset));
                         }
                         LogicalOperator::Or => {
-                            ctx.emit(opcode::encode_jmp_if_true(dup_reg, offset as i16));
+                            let offset = ctx.checked_jump_offset(offset);
+                            ctx.emit(opcode::encode_jmp_if_true(dup_reg, offset));
                         }
                         LogicalOperator::Coalesce => unreachable!(),
                     }
@@ -1768,7 +1804,8 @@ impl Compiler {
                 ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, value_reg, 0));
                 let end_pos = ctx.resolve_label(end_label)?;
                 let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
-                ctx.emit(opcode::encode_jmp(offset as i16));
+                let offset = ctx.checked_jump_offset(offset);
+                ctx.emit(opcode::encode_jmp(offset));
                 let undefined_idx = ctx.add_constant(Constant::Undefined);
                 ctx.emit_load_const(result_reg, undefined_idx);
                 Ok(result_reg)

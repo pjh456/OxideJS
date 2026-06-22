@@ -1,5 +1,5 @@
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_types::object::JsObject;
+use oxide_types::object::{JsObject, MAX_DENSE_PROPS};
 use oxide_types::value::JsValue;
 
 use crate::coercion;
@@ -40,8 +40,20 @@ fn get_this_array_ref(val: JsValue) -> Result<*mut JsObject, JsValue> {
 
 fn create_new_array(vm: &mut Vm, n: usize) -> *mut JsObject {
     let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
-    vm.epoch()
-        .alloc(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto), n, vm.epoch().bump()))
+    vm.alloc_object(JsObject::new_array(
+        EMPTY_SHAPE_ID,
+        JsValue::from_js_object(proto),
+        n.min(MAX_DENSE_PROPS),
+        vm.epoch().bump(),
+    ))
+}
+
+fn array_length_arg(vm: &mut Vm, value: JsValue) -> Result<usize, JsValue> {
+    let n = coercion::to_number(value, vm.kernel_core().string_forge().as_ref());
+    if !n.is_finite() || n < 0.0 || n.fract() != 0.0 || n > MAX_DENSE_PROPS as f64 {
+        return Err(crate::builtins::error::create_range_error(vm, "Invalid array length"));
+    }
+    Ok(n as usize)
 }
 
 fn invoke_native_callback(vm: &mut Vm, callback_val: JsValue, this_val: JsValue, cb_args: &[JsValue]) -> NativeResult {
@@ -92,26 +104,18 @@ pub fn array_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
     if args.len() == 2 {
         let val = vm.reg(args[1]);
-        if val.is_int() {
-            let n = val.as_int().max(0) as usize;
-            let arr = vm
-                .epoch()
-                .alloc(JsObject::new_array(EMPTY_SHAPE_ID, proto_val, n, vm.epoch().bump()));
-            return NativeResult::Ok(JsValue::from_js_object(arr));
-        }
-        if val.is_double() {
-            let n = val.as_double() as usize;
-            let arr = vm
-                .epoch()
-                .alloc(JsObject::new_array(EMPTY_SHAPE_ID, proto_val, n, vm.epoch().bump()));
+        if val.is_int() || val.is_double() {
+            let n = match array_length_arg(vm, val) {
+                Ok(n) => n,
+                Err(err) => return NativeResult::Err(err),
+            };
+            let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, proto_val, n, vm.epoch().bump()));
             return NativeResult::Ok(JsValue::from_js_object(arr));
         }
     }
 
     let n_elems = if args.len() > 1 { args.len() - 1 } else { 0 };
-    let arr = vm
-        .epoch()
-        .alloc(JsObject::new_array(EMPTY_SHAPE_ID, proto_val, n_elems, vm.epoch().bump()));
+    let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, proto_val, n_elems, vm.epoch().bump()));
     for i in 0..n_elems {
         unsafe {
             (*arr).set_prop_at(i, vm.reg(args[1 + i]));
@@ -373,22 +377,34 @@ pub fn array_flat(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let arr = unsafe { &*arr_ptr };
     let n = arr.prop_count() as usize;
     let depth = if args.len() > 1 {
-        (coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref()) as i32).max(1) as usize
+        let n = coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref());
+        if !n.is_finite() {
+            vm.kernel_core.config.max_call_depth
+        } else {
+            (n as i32).max(1) as usize
+        }
     } else {
         1
-    };
+    }
+    .min(vm.kernel_core.config.max_call_depth);
 
-    fn flatten(items: &[JsValue], remaining_depth: usize) -> Vec<JsValue> {
+    fn flatten(items: &[JsValue], remaining_depth: usize, seen: &mut Vec<*mut JsObject>) -> Vec<JsValue> {
         let mut out = Vec::new();
         for &v in items {
             if remaining_depth > 0 && v.is_object() {
                 let ptr = v.as_js_object_ptr();
                 if !ptr.is_null() {
+                    if seen.iter().any(|seen_ptr| std::ptr::eq(*seen_ptr, ptr)) {
+                        out.push(v);
+                        continue;
+                    }
                     let o = unsafe { &*ptr };
                     if o.is_array() {
+                        seen.push(ptr);
                         let on = o.prop_count() as usize;
                         let sub: Vec<JsValue> = (0..on).map(|i| o.get_prop_at(i)).collect();
-                        let flat = flatten(&sub, remaining_depth - 1);
+                        let flat = flatten(&sub, remaining_depth - 1, seen);
+                        seen.pop();
                         out.extend(flat);
                         continue;
                     }
@@ -400,7 +416,8 @@ pub fn array_flat(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
 
     let all: Vec<JsValue> = (0..n).map(|i| arr.get_prop_at(i)).collect();
-    let flat = flatten(&all, depth);
+    let mut seen = vec![arr_ptr];
+    let flat = flatten(&all, depth, &mut seen);
     let new_arr = create_new_array(vm, flat.len());
     unsafe {
         for (i, val) in flat.iter().enumerate() {

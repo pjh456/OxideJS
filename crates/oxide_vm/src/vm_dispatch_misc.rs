@@ -1,5 +1,5 @@
 use crate::native::{NativeFn, NativeResult};
-use crate::vm::{native_fn_ptr_to_fn, CallFrame, ForInIter, FrameContinuation, Vm};
+use crate::vm::{native_fn_ptr_to_fn, CallFrame, ForInIter, FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::is_private_name_key;
 use oxide_types::value::JsValue;
@@ -37,7 +37,7 @@ impl Vm {
         let arg_count = (ext & 0xFF) as usize;
 
         let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
-        let new_obj = self.epoch.alloc(JsObject::new_empty(
+        let new_obj = self.alloc_object(JsObject::new_empty(
             oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
             JsValue::from_js_object(proto_ptr),
         ));
@@ -225,11 +225,17 @@ impl Vm {
         };
 
         let mut proto = unsafe { &*lhs_val.as_js_object_ptr() }.proto();
+        let mut depth = 0usize;
         loop {
             if !proto.is_object() {
                 self.regs[rd] = JsValue::bool(false);
                 break;
             }
+            if depth >= MAX_PROTO_CHAIN_DEPTH {
+                self.regs[rd] = JsValue::bool(false);
+                break;
+            }
+            depth += 1;
             let proto_ptr = proto.as_js_object_ptr();
             if proto_ptr == ctor_proto_ptr {
                 self.regs[rd] = JsValue::bool(true);
@@ -262,11 +268,16 @@ impl Vm {
         let mut keys_vec = bumpalo::collections::Vec::new_in(self.epoch.bump());
         let mut seen = std::collections::HashSet::new();
         let mut current = obj_val;
+        let mut depth = 0usize;
 
         loop {
             if !current.is_object() {
                 break;
             }
+            if depth >= MAX_PROTO_CHAIN_DEPTH {
+                break;
+            }
+            depth += 1;
             let cur = unsafe { &*current.as_js_object_ptr() };
             let mut cursor = Some(cur.shape_id());
             while let Some(id) = cursor {
@@ -425,7 +436,7 @@ impl Vm {
         let excluded: std::collections::HashSet<&str> = excluded.split('\0').filter(|s| !s.is_empty()).collect();
 
         let proto_ptr = self.session.builtin_world().object_proto.as_ptr() as *mut JsObject;
-        let rest_ptr = self.epoch.alloc(JsObject::new_empty(
+        let rest_ptr = self.alloc_object(JsObject::new_empty(
             oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
             JsValue::from_js_object(proto_ptr),
         ));

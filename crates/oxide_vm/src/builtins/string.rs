@@ -288,6 +288,9 @@ pub fn string_pad_start(vm: &mut Vm, args: &[u8]) -> NativeResult {
     } else {
         s_len
     };
+    if target > 10000 {
+        return NativeResult::Err(crate::builtins::error::create_range_error(vm, "Invalid string length"));
+    }
     let pad = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { " ".to_string() };
     if s_len >= target || pad.is_empty() {
         return NativeResult::Ok(vm.intern(&s));
@@ -308,6 +311,9 @@ pub fn string_pad_end(vm: &mut Vm, args: &[u8]) -> NativeResult {
     } else {
         s_len
     };
+    if target > 10000 {
+        return NativeResult::Err(crate::builtins::error::create_range_error(vm, "Invalid string length"));
+    }
     let pad = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { " ".to_string() };
     if s_len >= target || pad.is_empty() {
         return NativeResult::Ok(vm.intern(&s));

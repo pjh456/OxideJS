@@ -48,7 +48,7 @@ fn value_to_jsvalue(vm: &mut Vm, val: &serde_json::Value) -> JsValue {
         serde_json::Value::Array(arr) => {
             let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
             let n = arr.len();
-            let array_obj = vm.epoch().alloc(JsObject::new_array(
+            let array_obj = vm.alloc_object(JsObject::new_array(
                 EMPTY_SHAPE_ID,
                 JsValue::from_js_object(array_proto),
                 n,
@@ -72,7 +72,7 @@ fn value_to_jsvalue(vm: &mut Vm, val: &serde_json::Value) -> JsValue {
                 obj.set_shape_id(new_shape);
                 obj.ensure_hash_props().push(jsv);
             }
-            let obj_ptr = vm.epoch().alloc(obj);
+            let obj_ptr = vm.alloc_object(obj);
             JsValue::from_js_object(obj_ptr)
         }
     }

@@ -783,6 +783,9 @@ fn run_tests() -> bool {
                             out.push((i, result));
 
                             let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
+                            if done % 500 == 0 {
+                                kernel.sweep_runner_forges();
+                            }
                             if done % 500 == 0 || done == total {
                                 eprintln!("  progress: {done}/{total} ({}%)", done * 100 / total);
                             }

@@ -21,8 +21,14 @@ impl Vm {
             ));
         }
         if self.frames.len() >= self.kernel_core.config.max_call_depth {
-            return Err("RangeError: Maximum call stack size exceeded".into());
+            self.raise_error_kind("RangeError", "Maximum call stack size exceeded")?;
+            return Ok(JsValue::undefined());
         }
+        if self.native_call_depth >= self.kernel_core.config.max_call_depth {
+            self.raise_error_kind("RangeError", "Maximum call stack size exceeded")?;
+            return Ok(JsValue::undefined());
+        }
+        self.native_call_depth += 1;
 
         let sub = self.sub_modules[sub_idx].clone();
         let converted_constants = self.convert_constants(&sub.constants).map_err(String::from)?;
@@ -67,6 +73,7 @@ impl Vm {
         let _ = callee;
 
         let result = self.dispatch();
+        self.native_call_depth -= 1;
 
         self.regs = *saved.regs;
         self.pc = saved.pc;

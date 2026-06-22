@@ -158,6 +158,8 @@ pub(crate) struct CompileCtx {
     /// Set when alloc_reg() overflows into the reserved this/new.target range (≥254).
     /// Checked after each emit phase to produce a compile error rather than silent corruption.
     pub(crate) reg_overflow: bool,
+    pub(crate) const_overflow: bool,
+    pub(crate) jump_overflow: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -222,6 +224,8 @@ impl CompileCtx {
             after_super_insert: None,
             after_super_inserted: false,
             reg_overflow: false,
+            const_overflow: false,
+            jump_overflow: false,
         }
     }
 
@@ -280,6 +284,10 @@ impl CompileCtx {
                 return idx;
             }
 
+            if self.constants.len() >= u16::MAX as usize {
+                self.const_overflow = true;
+                return u16::MAX;
+            }
             let idx = self.constants.len() as u16;
             self.constants.push(c);
             self.constant_map.insert(key, idx);
@@ -287,8 +295,21 @@ impl CompileCtx {
         }
 
         let idx = self.constants.len();
+        if idx >= u16::MAX as usize {
+            self.const_overflow = true;
+            return u16::MAX;
+        }
         self.constants.push(c);
         idx as u16
+    }
+
+    pub(crate) fn checked_jump_offset(&mut self, offset: isize) -> i16 {
+        if offset < i16::MIN as isize || offset > i16::MAX as isize {
+            self.jump_overflow = true;
+            0
+        } else {
+            offset as i16
+        }
     }
 
     pub(crate) fn resolve_label(&self, label: Label) -> Result<usize, String> {
@@ -652,6 +673,12 @@ impl Compiler {
         if ctx.reg_overflow {
             return Err("RangeError: function body uses too many registers (max 253)".into());
         }
+        if ctx.const_overflow {
+            return Err("RangeError: too many constants".into());
+        }
+        if ctx.jump_overflow {
+            return Err("RangeError: jump offset out of range".into());
+        }
 
         Ok(CompiledModule {
             bytecode: ctx.bytecode,
@@ -717,6 +744,12 @@ impl Compiler {
         if ctx.reg_overflow {
             return Err("RangeError: function body uses too many registers (max 253)".into());
         }
+        if ctx.const_overflow {
+            return Err("RangeError: too many constants".into());
+        }
+        if ctx.jump_overflow {
+            return Err("RangeError: jump offset out of range".into());
+        }
 
         Ok(CompiledModule {
             bytecode: ctx.bytecode,
@@ -739,5 +772,18 @@ impl Compiler {
 impl Default for Compiler {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CompileCtx;
+
+    #[test]
+    fn test_jump_offset_overflow_range_error() {
+        let mut ctx = CompileCtx::new();
+        let offset = ctx.checked_jump_offset(i16::MAX as isize + 1);
+        assert_eq!(offset, 0);
+        assert!(ctx.jump_overflow);
     }
 }

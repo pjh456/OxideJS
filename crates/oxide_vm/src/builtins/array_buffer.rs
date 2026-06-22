@@ -66,7 +66,25 @@ pub(crate) fn new_array_buffer(vm: &mut Vm, data: Vec<u8>) -> *mut JsObject {
         JsValue::int(len as i32),
         PropAttributes::new(false, false, false),
     );
-    vm.epoch().alloc(obj)
+    vm.alloc_object(obj)
+}
+
+pub(crate) fn drop_array_buffer_native(obj: &mut JsObject) -> u64 {
+    if !obj.is_array_buffer_obj() {
+        return 0;
+    }
+    let Some(ptr) = obj.native_fn() else {
+        return 0;
+    };
+    let data_ptr = ptr.as_ptr() as *mut Vec<u8>;
+    if data_ptr.is_null() {
+        return 0;
+    }
+    // SAFETY: ArrayBuffer stores `Box<Vec<u8>>` in native_fn.
+    let data = unsafe { Box::from_raw(data_ptr) };
+    let bytes = std::mem::size_of::<Vec<u8>>() + data.capacity();
+    obj.set_native_fn(None);
+    bytes as u64
 }
 
 pub(crate) fn array_buffer_data_ptr(vm: &mut Vm, this_val: JsValue) -> Result<*mut Vec<u8>, JsValue> {
