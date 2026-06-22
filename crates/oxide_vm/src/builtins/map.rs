@@ -65,7 +65,7 @@ fn alloc_map(vm: &mut Vm) -> *mut JsObject {
     obj.set_map(true);
     let inner = new_map_inner();
     obj.set_native_data(inner as *mut u8);
-    vm.epoch().alloc(obj)
+    vm.alloc_object(obj)
 }
 
 pub(crate) fn map_native_edges(obj: &JsObject) -> Vec<JsValue> {

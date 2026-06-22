@@ -32,6 +32,7 @@ impl Vm {
             epoch: Epoch::new(),
             session_epoch: bumpalo::Bump::new(),
             session_gc: crate::session_gc::SessionGc::new(),
+            epoch_object_ptrs: Vec::new(),
             session_object_ptrs: Vec::new(),
             session_bytes_allocated: 0,
             object_prototype: obj_proto,
@@ -73,6 +74,7 @@ impl Vm {
             epoch: Epoch::new(),
             session_epoch: bumpalo::Bump::new(),
             session_gc: crate::session_gc::SessionGc::new(),
+            epoch_object_ptrs: Vec::new(),
             session_object_ptrs: Vec::new(),
             session_bytes_allocated: 0,
             object_prototype: obj_proto,
@@ -124,7 +126,9 @@ impl Vm {
         self.clear_execution_state();
         self.bytecode.clear();
         self.constants.clear();
+        self.free_epoch_object_heap_data();
         self.epoch.reset();
+        self.epoch_object_ptrs.clear();
         self.session_epoch.reset();
         self.session_object_ptrs.clear();
         self.session_bytes_allocated = 0;
@@ -135,6 +139,17 @@ impl Vm {
         self.symbol_registry.clear();
         self.root_reg_limit = 0;
         self.active_reg_limit = 0;
+    }
+
+    fn free_epoch_object_heap_data(&mut self) {
+        let mut freed = 0u64;
+        for ptr in self.epoch_object_ptrs.drain(..) {
+            freed += crate::session_gc::SessionGc::drop_object_heap_data(ptr, false);
+        }
+        if freed > 0 {
+            self.session_gc.total_bytes_freed = self.session_gc.total_bytes_freed.saturating_add(freed);
+            self.session_gc.last_collection_bytes_freed = freed;
+        }
     }
 
     pub(crate) fn clear_execution_state(&mut self) {
@@ -163,7 +178,9 @@ impl Vm {
         self.maybe_collect_session_gc();
         self.bytecode.clear();
         self.constants.clear();
+        self.free_epoch_object_heap_data();
         self.epoch.reset();
+        self.epoch_object_ptrs.clear();
         self.interned_strings.clear();
         self.root_reg_limit = 0;
         self.active_reg_limit = 0;
@@ -194,7 +211,7 @@ impl Vm {
             obj.set_arrow(true);
             obj.set_captured_this(self.regs[254]);
         }
-        let obj_ptr = self.epoch.alloc(obj);
+        let obj_ptr = self.alloc_object(obj);
         let func_val = JsValue::object(obj_ptr as *mut u8);
 
         if !is_arrow {
@@ -202,6 +219,7 @@ impl Vm {
             let prototype_obj = self
                 .epoch
                 .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto_ptr)));
+            self.epoch_object_ptrs.push(prototype_obj);
             let prototype_val = JsValue::from_js_object(prototype_obj);
 
             let constructor_si = self.kernel_core.string_forge().intern("constructor").0;

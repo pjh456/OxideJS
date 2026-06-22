@@ -43,6 +43,18 @@ impl PropForge {
             }
         }
     }
+
+    pub fn clear(&self) {
+        self.templates.clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.templates.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.templates.is_empty()
+    }
 }
 
 impl Default for PropForge {

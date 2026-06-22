@@ -5,7 +5,7 @@ use std::time::Instant;
 use oxide_types::object::{JsObject, PropMetaEntry};
 use oxide_types::value::JsValue;
 
-use crate::builtins::{map, set};
+use crate::builtins::{array_buffer, data_view, map, regexp, set, typed_array};
 use crate::vm::Vm;
 
 pub struct SessionGc {
@@ -87,6 +87,12 @@ impl SessionGc {
         if obj.is_set() {
             edges.extend(set::set_native_edges(obj));
         }
+        if obj.is_typed_array_obj() {
+            edges.extend(typed_array::typed_array_native_edges(obj));
+        }
+        if obj.is_data_view_obj() {
+            edges.extend(data_view::data_view_native_edges(obj));
+        }
         edges
     }
 
@@ -141,7 +147,7 @@ impl SessionGc {
         }
     }
 
-    fn drop_session_object_heap_data(obj_ptr: *mut JsObject) -> u64 {
+    pub(crate) fn drop_object_heap_data(obj_ptr: *mut JsObject, require_session: bool) -> u64 {
         if obj_ptr.is_null() {
             return 0;
         }
@@ -150,7 +156,9 @@ impl SessionGc {
         // `JsObject::ensure_hash_props`/`ensure_prop_meta` and then drop them once here.
         unsafe {
             let obj = &mut *obj_ptr;
-            debug_assert!(obj.is_session_epoch());
+            if require_session {
+                debug_assert!(obj.is_session_epoch());
+            }
             let mut freed_bytes = 0u64;
 
             let hash_ptr = obj.hash_props_raw() as *mut Vec<JsValue>;
@@ -170,9 +178,17 @@ impl SessionGc {
 
             freed_bytes += map::drop_map_native(obj);
             freed_bytes += set::drop_set_native(obj);
+            freed_bytes += array_buffer::drop_array_buffer_native(obj);
+            freed_bytes += regexp::drop_regexp_native(obj);
+            freed_bytes += typed_array::drop_typed_array_native(obj);
+            freed_bytes += data_view::drop_data_view_native(obj);
 
             freed_bytes
         }
+    }
+
+    fn drop_session_object_heap_data(obj_ptr: *mut JsObject) -> u64 {
+        Self::drop_object_heap_data(obj_ptr, true)
     }
 
     fn drop_dead_session_object(obj_ptr: *mut JsObject) -> u64 {
@@ -204,6 +220,10 @@ impl SessionGc {
                     map::clone_map_native_with_rewrite(old_ref, new_ref, |value| value);
                 } else if old_ref.is_set() {
                     set::clone_set_native_with_rewrite(old_ref, new_ref, |value| value);
+                } else if old_ref.is_typed_array_obj() {
+                    typed_array::clone_typed_array_native_with_rewrite(old_ref, new_ref, |value| value);
+                } else if old_ref.is_data_view_obj() {
+                    data_view::clone_data_view_native_with_rewrite(old_ref, new_ref, |value| value);
                 }
                 forwarding.insert(old_ptr, new_ptr);
                 freed_bytes += Self::drop_session_object_heap_data(old_ptr);
@@ -229,6 +249,10 @@ impl SessionGc {
                 map::rewrite_map_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
             } else if obj.is_set() {
                 set::rewrite_set_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
+            } else if obj.is_typed_array_obj() {
+                typed_array::rewrite_typed_array_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
+            } else if obj.is_data_view_obj() {
+                data_view::rewrite_data_view_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
             }
         }
 

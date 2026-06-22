@@ -221,7 +221,7 @@ fn own_field(vm: &Vm, obj: &JsObject, prop_si: u32) -> Option<JsValue> {
 
 fn make_string_array(vm: &mut Vm, parts: &[String]) -> JsValue {
     let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
-    let arr = vm.epoch().alloc(JsObject::new_array(
+    let arr = vm.alloc_object(JsObject::new_array(
         EMPTY_SHAPE_ID,
         JsValue::from_js_object(proto),
         parts.len(),

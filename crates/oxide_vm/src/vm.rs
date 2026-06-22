@@ -18,6 +18,8 @@ use oxide_types::mem::{Epoch, P};
 use oxide_types::object::{JsObject, NativeFnPtr};
 use oxide_types::value::JsValue;
 
+pub(crate) const MAX_PROTO_CHAIN_DEPTH: usize = 1024;
+
 /// Convert a `NativeFnPtr` to a callable `NativeFn`.
 ///
 /// # Safety
@@ -145,6 +147,7 @@ pub struct Vm {
     pub epoch: Epoch,
     pub(crate) session_epoch: bumpalo::Bump,
     pub(crate) session_gc: SessionGc,
+    pub(crate) epoch_object_ptrs: Vec<*mut JsObject>,
     pub(crate) session_object_ptrs: Vec<*mut JsObject>,
     pub(crate) session_bytes_allocated: usize,
     pub object_prototype: P<JsObject>,
@@ -178,6 +181,12 @@ impl Vm {
         }
         // SAFETY: obj_ptr is non-null and points to a `JsObject` owned by this session.
         unsafe { (*obj_ptr).is_session_epoch() }
+    }
+
+    pub(crate) fn alloc_object(&mut self, obj: JsObject) -> *mut JsObject {
+        let ptr = self.epoch.alloc(obj);
+        self.epoch_object_ptrs.push(ptr);
+        ptr
     }
 
     pub(crate) fn gc_roots(&self) -> Vec<JsValue> {
@@ -374,7 +383,9 @@ impl Vm {
             }
         }
         let mut proto = obj.proto();
-        while proto.is_object() {
+        let mut depth = 0usize;
+        while proto.is_object() && depth < MAX_PROTO_CHAIN_DEPTH {
+            depth += 1;
             let proto_obj = unsafe { &*proto.as_js_object_ptr() };
             if let Some(pos) = self
                 .kernel_core
@@ -429,7 +440,8 @@ impl Vm {
 
         if let Some(native_fn) = callee_obj.native_fn() {
             if self.native_call_depth >= self.kernel_core.config.max_call_depth {
-                return Err("RangeError: Maximum call stack size exceeded".into());
+                self.raise_error_kind("RangeError", "Maximum call stack size exceeded")?;
+                return Ok(JsValue::undefined());
             }
             let saved_regs = self.regs;
             let saved_this = self.regs[254];
@@ -488,7 +500,7 @@ impl Vm {
             ));
         }
         if self.frames.len() >= self.kernel_core.config.max_call_depth {
-            return Err("RangeError: Maximum call stack size exceeded".into());
+            return self.raise_error_kind("RangeError", "Maximum call stack size exceeded");
         }
 
         let sub_bytecode = self.sub_modules[sub_idx].bytecode.clone();
@@ -940,7 +952,7 @@ impl Vm {
                     let proto_ptr = self.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
                     let n = opcode::imm16(instr) as usize;
                     let bump = self.epoch.bump();
-                    let obj = self.epoch.alloc(JsObject::new_array(
+                    let obj = self.alloc_object(JsObject::new_array(
                         EMPTY_SHAPE_ID,
                         JsValue::from_js_object(proto_ptr),
                         n,
@@ -1226,13 +1238,13 @@ mod tests {
         obj.set_function(true);
         // SAFETY: f is a NativeFn fn-item; valid to store as NativeFnPtr.
         obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(f as *const ()) }));
-        JsValue::object(vm.epoch.alloc(obj) as *mut u8)
+        JsValue::object(vm.alloc_object(obj) as *mut u8)
     }
 
     fn plain_object(vm: &mut Vm) -> JsValue {
         let proto = vm.session.builtin_world().object_proto.as_ptr() as *mut JsObject;
         let obj = JsObject::new_empty(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
-        JsValue::object(vm.epoch.alloc(obj) as *mut u8)
+        JsValue::object(vm.alloc_object(obj) as *mut u8)
     }
 
     fn add_accessor(vm: &mut Vm, obj_val: JsValue, name: &str, get: JsValue, set: JsValue) {

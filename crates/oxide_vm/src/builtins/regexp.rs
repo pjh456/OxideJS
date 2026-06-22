@@ -103,7 +103,7 @@ pub fn regexp_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
             // SAFETY: re_ptr is a Box<regex::Regex> pointer stored by the constructor via
             // NativeFnPtr::from_raw(re_ptr as *const ()). RegExp objects repurpose the native_fn
             // field to hold the compiled Regex — not a NativeFn pointer. Valid for the object's
-            // lifetime because the Box is never freed (intentional leak tied to epoch).
+            // lifetime; VM reset drops the Box through `drop_regexp_native`.
             obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(re_ptr as *const ()) }));
         }
         Err(e) => {
@@ -123,8 +123,24 @@ pub fn regexp_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     set_prop(&mut obj, "unicode", JsValue::bool(false), vm);
     obj.type_tag = JsObject::OBJ_TYPE_REGEXP;
 
-    let obj_ptr = vm.epoch().alloc(obj);
+    let obj_ptr = vm.alloc_object(obj);
     NativeResult::Ok(JsValue::from_js_object(obj_ptr))
+}
+
+pub(crate) fn drop_regexp_native(obj: &mut JsObject) -> u64 {
+    if !obj.is_regexp_obj() {
+        return 0;
+    }
+    let Some(ptr) = obj.native_fn() else {
+        return 0;
+    };
+    let regex_ptr = ptr.as_ptr() as *mut regex::Regex;
+    if regex_ptr.is_null() {
+        return 0;
+    }
+    unsafe { drop(Box::from_raw(regex_ptr)) };
+    obj.set_native_fn(None);
+    std::mem::size_of::<regex::Regex>() as u64
 }
 
 pub fn regexp_test(vm: &mut Vm, args: &[u8]) -> NativeResult {
@@ -231,7 +247,7 @@ pub fn regexp_exec(vm: &mut Vm, args: &[u8]) -> NativeResult {
             set_prop_at(re_ptr, 0, JsValue::int(m.end() as i32));
         }
 
-        let obj_ptr = vm.epoch().alloc(match_obj);
+        let obj_ptr = vm.alloc_object(match_obj);
         NativeResult::Ok(JsValue::from_js_object(obj_ptr))
     } else {
         if is_global {
