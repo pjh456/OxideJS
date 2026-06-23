@@ -2,7 +2,7 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes, TypedArrayKind};
 use oxide_types::value::JsValue;
 
-use crate::builtins::array_buffer::{array_buffer_data_ptr, new_array_buffer};
+use crate::builtins::array_buffer::{array_buffer_data_ptr, new_array_buffer, MAX_ARRAY_BUFFER_LENGTH};
 use crate::coercion;
 use crate::native::NativeResult;
 use crate::vm::Vm;
@@ -117,7 +117,72 @@ fn create_typed_array(
         JsValue::int(length as i32),
         PropAttributes::new(false, false, false),
     );
-    vm.epoch().alloc(obj)
+    vm.alloc_object(obj)
+}
+
+fn typed_array_data_ptr(obj: &JsObject) -> Option<*mut TypedArrayData> {
+    if !obj.is_typed_array_obj() {
+        return None;
+    }
+    obj.native_fn().map(|ptr| ptr.as_ptr() as *mut TypedArrayData)
+}
+
+pub(crate) fn typed_array_native_edges(obj: &JsObject) -> Vec<JsValue> {
+    let Some(ptr) = typed_array_data_ptr(obj) else {
+        return Vec::new();
+    };
+    if ptr.is_null() {
+        return Vec::new();
+    }
+    let data = unsafe { *ptr };
+    if data.buffer.is_object() {
+        vec![data.buffer]
+    } else {
+        Vec::new()
+    }
+}
+
+pub(crate) fn clone_typed_array_native_with_rewrite<F>(old_obj: &JsObject, new_obj: &mut JsObject, mut rewrite: F)
+where
+    F: FnMut(JsValue) -> JsValue,
+{
+    let Some(ptr) = typed_array_data_ptr(old_obj) else {
+        return;
+    };
+    if ptr.is_null() {
+        return;
+    }
+    let mut data = unsafe { *ptr };
+    data.buffer = rewrite(data.buffer);
+    let cloned = Box::into_raw(Box::new(data));
+    new_obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(cloned as *const ()) }));
+}
+
+pub(crate) fn rewrite_typed_array_native<F>(obj: &mut JsObject, mut rewrite: F)
+where
+    F: FnMut(JsValue) -> JsValue,
+{
+    let Some(ptr) = typed_array_data_ptr(obj) else {
+        return;
+    };
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        (*ptr).buffer = rewrite((*ptr).buffer);
+    }
+}
+
+pub(crate) fn drop_typed_array_native(obj: &mut JsObject) -> u64 {
+    let Some(ptr) = typed_array_data_ptr(obj) else {
+        return 0;
+    };
+    if ptr.is_null() {
+        return 0;
+    }
+    unsafe { drop(Box::from_raw(ptr)) };
+    obj.set_native_fn(None);
+    std::mem::size_of::<TypedArrayData>() as u64
 }
 
 pub(crate) fn get_typed_array_data(vm: &mut Vm, this_val: JsValue) -> Result<TypedArrayData, JsValue> {
@@ -224,6 +289,9 @@ fn typed_array_new(vm: &mut Vm, args: &[u8], kind: TypedArrayKind) -> NativeResu
         let Some(byte_len) = len.checked_mul(bpe) else {
             return NativeResult::Err(range_error(vm, "invalid TypedArray length"));
         };
+        if byte_len > MAX_ARRAY_BUFFER_LENGTH {
+            return NativeResult::Err(range_error(vm, "invalid TypedArray length"));
+        }
         let buffer = JsValue::from_js_object(new_array_buffer(vm, vec![0; byte_len]));
         (buffer, 0, len)
     } else if first.is_object() {

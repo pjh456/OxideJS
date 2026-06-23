@@ -11,6 +11,19 @@ fn this_string(vm: &Vm, args: &[u8]) -> String {
     coercion::to_string(vm.kernel_core().string_forge().as_ref(), vm.reg(args[0]))
 }
 
+pub fn string_from_char_code(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let mut out = String::new();
+    for &arg_reg in args.iter().skip(1) {
+        let code = coercion::to_uint32(vm.reg(arg_reg), vm.kernel_core().string_forge().as_ref()) & 0xFFFF;
+        if let Some(ch) = char::from_u32(code) {
+            out.push(ch);
+        } else {
+            out.push('\u{FFFD}');
+        }
+    }
+    NativeResult::Ok(vm.intern(&out))
+}
+
 pub fn string_value_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(args[0]);
     if this_val.is_string() {
@@ -28,6 +41,58 @@ pub fn string_value_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Err(crate::builtins::error::create_type_error(
         vm,
         "String.prototype.valueOf called on non-String object",
+    ))
+}
+
+pub fn string_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let s = if args.len() > 1 {
+        coercion::to_string(vm.kernel_core().string_forge().as_ref(), vm.reg(args[1]))
+    } else {
+        String::new()
+    };
+    let str_val = vm.intern(&s);
+
+    let string_proto = vm.session().builtin_world().string_proto.as_ptr() as *mut JsObject;
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let is_ctor = if this_val.is_object() {
+        let ptr = this_val.as_js_object_ptr();
+        if ptr.is_null() {
+            false
+        } else {
+            let proto_ptr = unsafe { (*ptr).proto().as_js_object_ptr() };
+            !proto_ptr.is_null() && std::ptr::eq(proto_ptr, string_proto)
+        }
+    } else {
+        false
+    };
+
+    if !is_ctor {
+        return NativeResult::Ok(str_val);
+    }
+
+    let obj = unsafe { &mut *this_val.as_js_object_ptr() };
+    obj.type_tag = JsObject::OBJ_TYPE_STRING_OBJ;
+    obj.push_prop(str_val);
+    NativeResult::Ok(this_val)
+}
+
+pub fn string_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(args[0]);
+    if this_val.is_string() {
+        return NativeResult::Ok(this_val);
+    }
+    if this_val.is_object() {
+        let ptr = this_val.as_js_object_ptr();
+        if !ptr.is_null() {
+            let obj = unsafe { &*ptr };
+            if obj.is_string_obj() {
+                return NativeResult::Ok(obj.get_prop_at(0));
+            }
+        }
+    }
+    NativeResult::Err(crate::builtins::error::create_type_error(
+        vm,
+        "String.prototype.toString called on non-String object",
     ))
 }
 
@@ -275,6 +340,9 @@ pub fn string_pad_start(vm: &mut Vm, args: &[u8]) -> NativeResult {
     } else {
         s_len
     };
+    if target > 10000 {
+        return NativeResult::Err(crate::builtins::error::create_range_error(vm, "Invalid string length"));
+    }
     let pad = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { " ".to_string() };
     if s_len >= target || pad.is_empty() {
         return NativeResult::Ok(vm.intern(&s));
@@ -295,6 +363,9 @@ pub fn string_pad_end(vm: &mut Vm, args: &[u8]) -> NativeResult {
     } else {
         s_len
     };
+    if target > 10000 {
+        return NativeResult::Err(crate::builtins::error::create_range_error(vm, "Invalid string length"));
+    }
     let pad = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { " ".to_string() };
     if s_len >= target || pad.is_empty() {
         return NativeResult::Ok(vm.intern(&s));

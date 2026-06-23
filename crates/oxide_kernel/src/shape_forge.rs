@@ -114,6 +114,23 @@ impl ShapeForge {
         shapes.get((id - 1) as usize).and_then(|s| s.clone())
     }
 
+    pub fn len(&self) -> usize {
+        self.shapes.read().unwrap().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn clear_transient(&self) {
+        let mut shapes = self.shapes.write().unwrap();
+        if shapes.len() > 1 {
+            shapes.truncate(1);
+        }
+        self.transitions.clear();
+        self.next_id.store(2, Ordering::Relaxed);
+    }
+
     pub fn lookup_position(&self, shape_id: ShapeId, prop_name: StringIndex) -> Option<u32> {
         let shapes = self.shapes.read().unwrap();
         let total_depth = Self::compute_depth(shape_id, &shapes);

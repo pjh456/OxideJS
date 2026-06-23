@@ -39,7 +39,7 @@ pub(crate) fn walk_own_keys(vm: &Vm, obj: &JsObject) -> Vec<(u32, u32)> {
 }
 
 pub fn object_constructor(vm: &mut Vm, _args: &[u8]) -> NativeResult {
-    let obj = vm.epoch().alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+    let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
     NativeResult::Ok(JsValue::from_js_object(obj))
 }
 
@@ -68,7 +68,7 @@ pub fn object_keys(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
     let n = key_names.len();
     let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
-    let arr = vm.epoch().alloc(JsObject::new_array(
+    let arr = vm.alloc_object(JsObject::new_array(
         EMPTY_SHAPE_ID,
         JsValue::from_js_object(array_proto),
         n,
@@ -94,7 +94,7 @@ pub fn object_create(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if !proto_val.is_null() && !proto_val.is_object() {
         return NativeResult::Ok(JsValue::undefined());
     }
-    let obj = vm.epoch().alloc(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
+    let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
     NativeResult::Ok(JsValue::from_js_object(obj))
 }
 
@@ -105,7 +105,7 @@ pub fn object_assign(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let target_val = vm.reg(args[1]);
     let target_val = match coercion::to_object(target_val, vm) {
         Ok(val) => val,
-        Err(msg) => return NativeResult::Err(crate::builtins::error::create_type_error(vm, msg)),
+        Err(msg) => return NativeResult::Err(crate::builtins::error::create_type_error(vm, &msg)),
     };
     let target_ptr = target_val.as_js_object_ptr();
     if target_ptr.is_null() {
@@ -412,7 +412,7 @@ pub fn object_get_own_property_names(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
     let n = key_names.len();
     let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
-    let arr = vm.epoch().alloc(JsObject::new_array(
+    let arr = vm.alloc_object(JsObject::new_array(
         EMPTY_SHAPE_ID,
         JsValue::from_js_object(array_proto),
         n,
@@ -450,7 +450,7 @@ pub fn object_from_entries(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if !entries.is_object() {
         return NativeResult::Ok(JsValue::null());
     }
-    let obj_ptr = vm.epoch().alloc(JsObject::new_empty(
+    let obj_ptr = vm.alloc_object(JsObject::new_empty(
         EMPTY_SHAPE_ID,
         JsValue::from_js_object(vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject),
     ));
@@ -517,7 +517,7 @@ pub fn object_entries(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let keys = walk_own_keys(vm, obj);
     let n = keys.len();
     let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
-    let arr = vm.epoch().alloc(JsObject::new_array(
+    let arr = vm.alloc_object(JsObject::new_array(
         EMPTY_SHAPE_ID,
         JsValue::from_js_object(array_proto),
         n,
@@ -527,7 +527,7 @@ pub fn object_entries(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let key_str = vm.kernel_core().string_forge().lookup(*si).unwrap_or_default();
         let key_val = vm.intern(&key_str);
         let val = obj.get_prop_at(*offset);
-        let pair = vm.epoch().alloc(JsObject::new_array(
+        let pair = vm.alloc_object(JsObject::new_array(
             EMPTY_SHAPE_ID,
             JsValue::from_js_object(array_proto),
             2,
@@ -552,7 +552,7 @@ pub fn object_values(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let keys = walk_own_keys(vm, obj);
     let n = keys.len();
     let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
-    let arr = vm.epoch().alloc(JsObject::new_array(
+    let arr = vm.alloc_object(JsObject::new_array(
         EMPTY_SHAPE_ID,
         JsValue::from_js_object(array_proto),
         n,

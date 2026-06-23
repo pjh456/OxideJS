@@ -1,11 +1,11 @@
-use oxide_compiler::opcode::OpCode;
+use oxide_bytecode::opcode::OpCode;
 use oxide_kernel::prop_forge::PropTemplate;
 use oxide_kernel::{ic_debug, ic_trace};
 use oxide_types::object::JsObject;
 use oxide_types::private_key::make_private_name_id;
 use oxide_types::value::JsValue;
 
-use crate::vm::Vm;
+use crate::vm::{Vm, MAX_PROTO_CHAIN_DEPTH};
 
 #[inline(always)]
 fn ic_get_hit(obj: &JsObject, shape_id: u32, slot_index: u32) -> Option<JsValue> {
@@ -59,6 +59,36 @@ impl Vm {
         make_private_name_id(local_id)
     }
 
+    fn primitive_property_get(&mut self, val: JsValue, prop_name_si: u32) -> Result<Option<JsValue>, String> {
+        if val.is_string() {
+            let length_si = self.kernel_core.string_forge().intern("length").0;
+            if prop_name_si == length_si {
+                let len = self
+                    .kernel_core
+                    .string_forge()
+                    .lookup(val.as_string_index())
+                    .unwrap_or_default()
+                    .encode_utf16()
+                    .count();
+                return Ok(Some(JsValue::int(len as i32)));
+            }
+            let proto_ptr = self.session.builtin_world().string_proto.as_ptr() as *mut JsObject;
+            let proto = unsafe { &*proto_ptr };
+            return self.ordinary_get(proto, prop_name_si, val).map(Some);
+        }
+        if val.is_int() || val.is_double() {
+            let proto_ptr = self.session.builtin_world().number_proto.as_ptr() as *mut JsObject;
+            let proto = unsafe { &*proto_ptr };
+            return self.ordinary_get(proto, prop_name_si, val).map(Some);
+        }
+        if val.is_bool() {
+            let proto_ptr = self.session.builtin_world().boolean_proto.as_ptr() as *mut JsObject;
+            let proto = unsafe { &*proto_ptr };
+            return self.ordinary_get(proto, prop_name_si, val).map(Some);
+        }
+        Ok(None)
+    }
+
     fn private_slot(&self, obj: &JsObject, private_key: u32) -> Option<u32> {
         self.kernel_core.shape_forge().lookup_position(obj.shape_id(), private_key)
     }
@@ -68,7 +98,9 @@ impl Vm {
             return Some(obj.get_prop_at(pos));
         }
         let mut proto = obj.proto();
-        while proto.is_object() {
+        let mut depth = 0usize;
+        while proto.is_object() && depth < MAX_PROTO_CHAIN_DEPTH {
+            depth += 1;
             let proto_obj = unsafe { &*proto.as_js_object_ptr() };
             if let Some(pos) = self.private_slot(proto_obj, private_key) {
                 return Some(proto_obj.get_prop_at(pos));
@@ -138,27 +170,11 @@ impl Vm {
         let val = self.regs[a];
         let obj_ptr = val.as_object_ptr() as *mut JsObject;
         if obj_ptr.is_null() {
-            if val.is_string() {
-                let proto_ptr = self.session.builtin_world().string_proto.as_ptr() as *mut JsObject;
-                let proto = unsafe { &*proto_ptr };
-                let prop_name_si = self.property_key_si(self.regs[b]);
-                let resolved = self.ordinary_get(proto, prop_name_si, val)?;
-                if !resolved.is_undefined() {
-                    self.regs[a] = resolved;
-                    self.pc += 3;
-                    return Ok(());
-                }
-            }
-            if val.is_int() || val.is_double() {
-                let proto_ptr = self.session.builtin_world().number_proto.as_ptr() as *mut JsObject;
-                let proto = unsafe { &*proto_ptr };
-                let prop_name_si = self.property_key_si(self.regs[b]);
-                let resolved = self.ordinary_get(proto, prop_name_si, val)?;
-                if !resolved.is_undefined() {
-                    self.regs[a] = resolved;
-                    self.pc += 3;
-                    return Ok(());
-                }
+            let prop_name_si = self.property_key_si(self.regs[b]);
+            if let Some(resolved) = self.primitive_property_get(val, prop_name_si)? {
+                self.regs[a] = resolved;
+                self.pc += 3;
+                return Ok(());
             }
             self.raise_type_error("IC_GET_PROP on non-object")?;
             return Ok(());
@@ -222,7 +238,7 @@ impl Vm {
     }
 
     fn dispatch_ic_set_prop(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
-        let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "IC_SET_PROP on non-object")? else {
+        let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "Cannot create property on non-object")? else {
             return Ok(());
         };
 
@@ -286,11 +302,15 @@ impl Vm {
     }
 
     fn dispatch_get_prop(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        let prop_name_si = self.property_key_si(self.regs[b]);
+        if let Some(value) = self.primitive_property_get(self.regs[rd], prop_name_si)? {
+            self.regs[a] = value;
+            return Ok(());
+        }
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "GET_PROP on non-object")? else {
             return Ok(());
         };
         let obj = unsafe { &*obj_ptr };
-        let prop_name_si = self.property_key_si(self.regs[b]);
         let val = self.ordinary_get_with_target(obj, prop_name_si, self.regs[rd], a as u8)?;
         if self.accessor_frame_target_reg.take().is_none() {
             self.regs[a] = val;
@@ -299,7 +319,7 @@ impl Vm {
     }
 
     fn dispatch_set_prop(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
-        let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "SET_PROP on non-object")? else {
+        let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "Cannot create property on non-object")? else {
             return Ok(());
         };
         let prop_name_si = self.property_key_si(self.regs[b]);
@@ -320,11 +340,15 @@ impl Vm {
     }
 
     fn dispatch_get_prop_dynamic(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        let prop_name_si = self.property_key_si(self.regs[a]);
+        if let Some(value) = self.primitive_property_get(self.regs[rd], prop_name_si)? {
+            self.regs[b] = value;
+            return Ok(());
+        }
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "GET_PROP_DYNAMIC on non-object")? else {
             return Ok(());
         };
         let obj = unsafe { &*obj_ptr };
-        let prop_name_si = self.property_key_si(self.regs[a]);
         let val = self.ordinary_get_with_target(obj, prop_name_si, self.regs[rd], b as u8)?;
         if self.accessor_frame_target_reg.take().is_none() {
             self.regs[b] = val;
@@ -333,7 +357,7 @@ impl Vm {
     }
 
     fn dispatch_set_prop_dynamic(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
-        let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "SET_PROP_DYNAMIC on non-object")? else {
+        let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "Cannot create property on non-object")? else {
             return Ok(());
         };
         let prop_name_si = self.property_key_si(self.regs[a]);
@@ -354,7 +378,7 @@ impl Vm {
     }
 
     fn dispatch_set_elem(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
-        let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "SET_ELEM on non-object")? else {
+        let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "Cannot create property on non-object")? else {
             return Ok(());
         };
         let idx = if self.regs[a].is_int() {

@@ -6,9 +6,10 @@ use oxide_vm::vm::Vm;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use walkdir::WalkDir;
 
 // Thread-local that records the path currently being executed.
@@ -147,6 +148,7 @@ struct RunConfig {
     test262_root: Option<PathBuf>,
     filter: Option<String>,
     no_skip: bool,
+    supervise: bool,
 }
 
 struct HarnessSources {
@@ -289,6 +291,7 @@ impl RunConfig {
         for arg in args.iter().skip(1) {
             match arg.as_str() {
                 "--no-skip" => config.no_skip = true,
+                "--supervise" => config.supervise = true,
                 "--help" | "-h" => return Err(Self::usage()),
                 _ if arg.starts_with("--") => return Err(format!("unknown option: {arg}\n\n{}", Self::usage())),
                 _ => positional.push(arg.clone()),
@@ -309,9 +312,17 @@ impl RunConfig {
     }
 
     fn usage() -> String {
-        "usage: test262-runner [--no-skip] [test262-root] [path-filter]\n\
+        "usage: test262-runner [--no-skip] [--supervise] [test262-root] [path-filter]\n\
          \n\
-         --no-skip  Run capability-excluded tests and count unsupported compile/runtime results as failures."
+         --no-skip    Run capability-excluded tests and count unsupported compile/runtime results as failures.\n\
+         --supervise  Run the suite as single-worker child-process windows with a hard per-test timeout and\n\
+         \x20            automatic resume past any hanging/crashing test. A hang or crash is reported by path.\n\
+         \n\
+         supervised-mode env tunables:\n\
+         \x20  OXIDE_TEST262_TIMEOUT_SECS        per-test wall-clock timeout (default 10)\n\
+         \x20  OXIDE_TEST262_WINDOW              tests per window (default 5000)\n\
+         \x20  OXIDE_TEST262_SUPERVISORS         concurrent windows (default = available parallelism)\n\
+         \x20  OXIDE_TEST262_STARTUP_GRACE_SECS  grace for a child's first heartbeat (default 60)"
             .into()
     }
 }
@@ -365,7 +376,6 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
         "cross-realm",
         "new.target",
         "well-formed-json-stringify",
-        "optional-chaining",
         "symbols-as-weakmap-keys",
         "class-accessors-private",
     ];
@@ -512,12 +522,395 @@ fn run_test_inner(
 }
 
 fn discover_tests(test262_root: &Path) -> Vec<PathBuf> {
-    WalkDir::new(test262_root)
+    let mut paths: Vec<PathBuf> = WalkDir::new(test262_root)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().is_some_and(|ext| ext == "js"))
         .map(|e| e.path().to_path_buf())
-        .collect()
+        .collect();
+    paths.sort();
+    paths
+}
+
+fn parse_summary_count(stdout: &str, label: &str) -> Option<usize> {
+    stdout.lines().find_map(|line| {
+        let trimmed = line.trim_start();
+        let rest = trimmed.strip_prefix(label)?;
+        let value = rest.trim().split(' ').next()?;
+        value.parse::<usize>().ok()
+    })
+}
+
+fn run_chunked(args: &[String], skip_until: usize, end_index: usize, chunk_size: usize) -> bool {
+    let exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("failed to resolve current executable for chunked mode: {err}");
+            return false;
+        }
+    };
+
+    let mut aggregate_pass = 0usize;
+    let mut aggregate_fail = 0usize;
+    let mut aggregate_skip = 0usize;
+    let mut chunk_start = skip_until;
+    let mut chunk_id = 1usize;
+
+    while chunk_start < end_index {
+        let chunk_len = (end_index - chunk_start).min(chunk_size);
+        eprintln!("chunk {chunk_id}: tests [{chunk_start}, {})", chunk_start + chunk_len);
+
+        let output = match Command::new(&exe)
+            .args(args.iter().skip(1))
+            .env("OXIDE_SKIP_UNTIL", chunk_start.to_string())
+            .env("OXIDE_MAX_TESTS", chunk_len.to_string())
+            .env("OXIDE_TEST262_CHILD_CHUNK", "1")
+            .env("OXIDE_TEST262_ALLOW_FAIL_EXIT", "1")
+            .output()
+        {
+            Ok(output) => output,
+            Err(err) => {
+                eprintln!("failed to run chunk {chunk_id}: {err}");
+                return false;
+            }
+        };
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        print!("{stdout}");
+        eprint!("{stderr}");
+
+        if !output.status.success() {
+            eprintln!("chunk {chunk_id} crashed or aborted");
+            return false;
+        }
+
+        aggregate_pass += parse_summary_count(&stdout, "pass   :").unwrap_or(0);
+        aggregate_fail += parse_summary_count(&stdout, "fail   :").unwrap_or(0);
+        aggregate_skip += parse_summary_count(&stdout, "skip   :").unwrap_or(0);
+
+        chunk_start += chunk_len;
+        chunk_id += 1;
+    }
+
+    let aggregate_total = aggregate_pass + aggregate_fail + aggregate_skip;
+    println!();
+    println!("═══════════════════════════════════════");
+    println!("  test262 chunked aggregate");
+    println!("═══════════════════════════════════════");
+    println!("  total  : {}", aggregate_total);
+    println!("  pass   : {}", aggregate_pass);
+    println!("  fail   : {}", aggregate_fail);
+    println!("  skip   : {}", aggregate_skip);
+    println!("═══════════════════════════════════════");
+
+    aggregate_fail == 0
+}
+
+/// One heartbeat record written by a supervised child and polled by the parent.
+/// `index` is the global test index the child is about to run (`START`) or the
+/// window end it finished (`DONE`); the tallies always cover tests completed
+/// *before* `index`, so the in-flight test is never counted yet.
+struct Heartbeat {
+    phase: String,
+    index: usize,
+    pass: usize,
+    fail: usize,
+    skip: usize,
+}
+
+/// Overwrite the heartbeat file with a single line. Errors are ignored: a missed
+/// heartbeat just delays stall detection by one poll interval. Assumes a single
+/// worker (the supervisor always forces `OXIDE_TEST262_WORKERS=1`); with more
+/// than one worker the running index is ambiguous and the file races.
+fn write_heartbeat(path: &Path, phase: &str, index: usize, pass: usize, fail: usize, skip: usize) {
+    let _ = std::fs::write(path, format!("{phase} {index} {pass} {fail} {skip}\n"));
+}
+
+/// Read the latest heartbeat. Returns `None` on any missing/partial/malformed
+/// content so the poll loop can simply retry on the next tick.
+fn read_heartbeat(path: &Path) -> Option<Heartbeat> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let line = content.lines().next()?;
+    let mut parts = line.split_whitespace();
+    let phase = parts.next()?.to_string();
+    let index = parts.next()?.parse().ok()?;
+    let pass = parts.next()?.parse().ok()?;
+    let fail = parts.next()?.parse().ok()?;
+    let skip = parts.next()?.parse().ok()?;
+    Some(Heartbeat { phase, index, pass, fail, skip })
+}
+
+/// Run one window `[wstart, wend)` to completion under supervision, returning
+/// `(pass, fail, skip)` aggregated across however many child restarts it took.
+///
+/// A single-worker child runs the normal in-process path (warm kernel + harness
+/// prefix cache) and emits a heartbeat before each test. If the running index
+/// stalls past `timeout`, the child is killed, the culprit is reported by path,
+/// and a fresh child resumes from `culprit + 1`. A child that crashes mid-test
+/// is recovered through the same path. Timeouts/crashes count as skip by default
+/// and fail under `--no-skip`.
+#[allow(clippy::too_many_arguments)]
+fn supervise_window(
+    exe: &Path, args: &[String], no_skip: bool, wstart: usize, wend: usize, timeout: Duration, startup_grace: Duration,
+    paths: &[PathBuf], window_id: usize,
+) -> (usize, usize, usize) {
+    let (mut pass, mut fail, mut skip) = (0usize, 0usize, 0usize);
+    let mut cur = wstart;
+    let hb_path = std::env::temp_dir().join(format!("oxide_t262_hb_{}_{}.txt", std::process::id(), window_id));
+
+    let describe = |idx: usize| -> String {
+        paths
+            .get(idx)
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| format!("#{idx}"))
+    };
+
+    while cur < wend {
+        let _ = std::fs::remove_file(&hb_path);
+        let max_tests = wend - cur;
+
+        let mut child = match Command::new(exe)
+            .args(args.iter().skip(1))
+            .env("OXIDE_SKIP_UNTIL", cur.to_string())
+            .env("OXIDE_MAX_TESTS", max_tests.to_string())
+            .env("OXIDE_TEST262_WORKERS", "1")
+            .env("OXIDE_TEST262_HEARTBEAT", &hb_path)
+            .env("OXIDE_TEST262_CHILD_CHUNK", "1")
+            .env("OXIDE_TEST262_ALLOW_FAIL_EXIT", "1")
+            .env_remove("OXIDE_TEST262_CHUNK_SIZE")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(err) => {
+                eprintln!("  window {window_id}: failed to spawn child at index {cur}: {err}");
+                if no_skip {
+                    fail += 1;
+                } else {
+                    skip += 1;
+                }
+                cur += 1;
+                continue;
+            }
+        };
+
+        let spawn_time = Instant::now();
+        let mut last_index: Option<usize> = None;
+        let mut last_change = Instant::now();
+
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    match read_heartbeat(&hb_path) {
+                        Some(hb) if hb.phase == "DONE" => {
+                            pass += hb.pass;
+                            fail += hb.fail;
+                            skip += hb.skip;
+                            cur = wend;
+                        }
+                        Some(hb) => {
+                            pass += hb.pass;
+                            fail += hb.fail;
+                            skip += hb.skip;
+                            eprintln!(
+                                "  [warn] window {window_id}: child exited ({status}) mid-test #{}: {}",
+                                hb.index,
+                                describe(hb.index)
+                            );
+                            if no_skip {
+                                fail += 1;
+                            } else {
+                                skip += 1;
+                            }
+                            cur = hb.index + 1;
+                        }
+                        None => {
+                            eprintln!(
+                                "  [warn] window {window_id}: child exited ({status}) with no heartbeat at index {cur}; skipping one"
+                            );
+                            if no_skip {
+                                fail += 1;
+                            } else {
+                                skip += 1;
+                            }
+                            cur += 1;
+                        }
+                    }
+                    break;
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    eprintln!("  window {window_id}: try_wait error: {err}");
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    cur += 1;
+                    break;
+                }
+            }
+
+            if let Some(hb) = read_heartbeat(&hb_path) {
+                if Some(hb.index) != last_index {
+                    last_index = Some(hb.index);
+                    last_change = Instant::now();
+                }
+            }
+
+            let (deadline, elapsed) = if last_index.is_some() {
+                (timeout, last_change.elapsed())
+            } else {
+                (startup_grace, spawn_time.elapsed())
+            };
+
+            if elapsed > deadline {
+                let hb = read_heartbeat(&hb_path);
+                let culprit = hb.as_ref().map(|h| h.index).unwrap_or(cur);
+                if let Some(h) = &hb {
+                    pass += h.pass;
+                    fail += h.fail;
+                    skip += h.skip;
+                }
+                eprintln!(
+                    "  [timeout] window {window_id}: TIMEOUT ({}s) on test #{culprit}: {}",
+                    deadline.as_secs(),
+                    describe(culprit)
+                );
+                let _ = child.kill();
+                let _ = child.wait();
+                if no_skip {
+                    fail += 1;
+                } else {
+                    skip += 1;
+                }
+                cur = culprit + 1;
+                break;
+            }
+
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    let _ = std::fs::remove_file(&hb_path);
+    (pass, fail, skip)
+}
+
+/// Orchestrate a supervised full run: split `[skip_until, end_index)` into
+/// windows and run up to `supervisors` of them concurrently. The supervisor
+/// threads only spawn/poll/kill child processes and touch files — they never
+/// hold a `KernelCore`, so sharing `paths`/`args` by reference is safe.
+fn run_supervised(args: &[String], skip_until: usize, end_index: usize, no_skip: bool, paths: &[PathBuf]) -> bool {
+    let exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("failed to resolve current executable for supervised mode: {err}");
+            return false;
+        }
+    };
+
+    let window = std::env::var("OXIDE_TEST262_WINDOW")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(5000);
+    let timeout = Duration::from_secs(
+        std::env::var("OXIDE_TEST262_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(10),
+    );
+    let startup_grace = Duration::from_secs(
+        std::env::var("OXIDE_TEST262_STARTUP_GRACE_SECS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(60),
+    );
+
+    let mut windows: Vec<(usize, usize, usize)> = Vec::new();
+    let mut start = skip_until;
+    let mut id = 0usize;
+    while start < end_index {
+        let end = (start + window).min(end_index);
+        windows.push((id, start, end));
+        start = end;
+        id += 1;
+    }
+
+    let supervisors = std::env::var("OXIDE_TEST262_SUPERVISORS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4))
+        .min(windows.len().max(1));
+
+    eprintln!(
+        "supervised mode: {} window(s) of up to {window} test(s), {supervisors} supervisor(s), per-test timeout {}s",
+        windows.len(),
+        timeout.as_secs()
+    );
+
+    let next = AtomicUsize::new(0);
+    let next = &next;
+    let windows = &windows;
+    let exe = &exe;
+
+    let partials: Vec<(usize, usize, usize)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..supervisors)
+            .map(|_| {
+                scope.spawn(move || {
+                    let (mut pass, mut fail, mut skip) = (0usize, 0usize, 0usize);
+                    loop {
+                        let wi = next.fetch_add(1, Ordering::Relaxed);
+                        if wi >= windows.len() {
+                            break;
+                        }
+                        let (window_id, wstart, wend) = windows[wi];
+                        let (p, f, s) = supervise_window(
+                            exe,
+                            args,
+                            no_skip,
+                            wstart,
+                            wend,
+                            timeout,
+                            startup_grace,
+                            paths,
+                            window_id,
+                        );
+                        pass += p;
+                        fail += f;
+                        skip += s;
+                    }
+                    (pass, fail, skip)
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("supervisor thread panicked"))
+            .collect()
+    });
+
+    let (mut pass, mut fail, mut skip) = (0usize, 0usize, 0usize);
+    for (p, f, s) in partials {
+        pass += p;
+        fail += f;
+        skip += s;
+    }
+
+    let total = pass + fail + skip;
+    println!();
+    println!("═══════════════════════════════════════");
+    println!("  test262 supervised aggregate");
+    println!("═══════════════════════════════════════");
+    println!("  total  : {total}");
+    println!("  pass   : {pass}");
+    println!("  fail   : {fail}");
+    println!("  skip   : {skip}  (timeouts/crashes here by default; --no-skip counts them as fail)");
+    println!("═══════════════════════════════════════");
+
+    fail == 0
 }
 
 /// Per-test pipeline shared by the serial and parallel execution paths:
@@ -717,13 +1110,19 @@ fn run_tests() -> bool {
     // own kernel + harness-source registry + prefix cache. Only `PathBuf` and
     // `TestResult` (both `Send`) cross thread boundaries. Workers pull test
     // indices from a shared atomic cursor for dynamic load balancing.
+    let default_workers = if config.no_skip {
+        4
+    } else {
+        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
+    };
     let workers = std::env::var("OXIDE_TEST262_WORKERS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|&n| n > 0)
-        .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4))
+        .unwrap_or(default_workers)
         .min(total.max(1));
     let log_running_tests = std::env::var_os("OXIDE_TEST262_RUNNING_LOG").is_some();
+    let heartbeat_path: Option<PathBuf> = std::env::var_os("OXIDE_TEST262_HEARTBEAT").map(PathBuf::from);
 
     eprintln!("running on {workers} worker thread(s)");
 
@@ -738,16 +1137,42 @@ fn run_tests() -> bool {
         .and_then(|n| skip_until.checked_add(n))
         .map(|n| n.min(total))
         .unwrap_or(total);
+    let kernel_batch = std::env::var("OXIDE_TEST262_KERNEL_BATCH")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(if config.no_skip { 1000 } else { 5000 });
+    let chunk_size = std::env::var("OXIDE_TEST262_CHUNK_SIZE")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n > 0);
+    let is_chunk_child = std::env::var_os("OXIDE_TEST262_CHILD_CHUNK").is_some();
+    let allow_fail_exit = std::env::var_os("OXIDE_TEST262_ALLOW_FAIL_EXIT").is_some();
+
+    if config.supervise && !is_chunk_child && filter.is_none() {
+        eprintln!("supervised mode enabled: child-window execution with per-test timeout + auto-resume");
+        return run_supervised(&args, skip_until, end_index, config.no_skip, &paths);
+    }
+
+    if let Some(chunk_size) = chunk_size {
+        if !is_chunk_child && filter.is_none() {
+            eprintln!("chunked mode enabled: {chunk_size} test(s) per child process");
+            return run_chunked(&args, skip_until, end_index, chunk_size);
+        }
+    }
+    eprintln!("kernel reset batch: {kernel_batch} test(s)");
     let cursor = AtomicUsize::new(skip_until);
     let progress = AtomicUsize::new(skip_until);
     let filter = &filter;
     let no_skip = config.no_skip;
     let paths_ref = &paths;
+    let heartbeat_ref = &heartbeat_path;
     let harness_cache = Arc::new(RwLock::new(HarnessPrefixCache::new()));
 
-    // Each worker returns its partial stats plus (index, result) pairs so the
-    // final results vector can be restored to discovery order for stable output.
-    let partials: Vec<(RunStats, Vec<(usize, TestResult)>)> = std::thread::scope(|scope| {
+    // Keep memory flat: workers return only aggregate stats. Retaining tens of
+    // thousands of `TestResult`s makes `--no-skip` runs accumulate path/error
+    // strings until the process OOMs near the end of the suite.
+    let partials: Vec<RunStats> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..workers)
             .map(|_| {
                 let cursor = &cursor;
@@ -758,10 +1183,10 @@ fn run_tests() -> bool {
                 std::thread::Builder::new()
                     .stack_size(16 * 1024 * 1024)
                     .spawn_scoped(scope, move || {
-                        let kernel = build_runner_kernel();
+                        let mut kernel = build_runner_kernel();
                         let harness_sources = HARNESS.get_or_init(HarnessSources::new);
                         let mut stats = RunStats::default();
-                        let mut out: Vec<(usize, TestResult)> = Vec::new();
+                        let mut tests_since_kernel_reset = 0usize;
 
                         let tid = std::thread::current().id();
                         loop {
@@ -777,19 +1202,29 @@ fn run_tests() -> bool {
                             if log_running_tests {
                                 eprintln!("  [{tid:?}] running: {path_str}");
                             }
+                            if let Some(hb) = heartbeat_ref {
+                                write_heartbeat(hb, "START", i, stats.pass, stats.fail, stats.skip);
+                            }
 
                             let result =
                                 process_path(&paths_ref[i], filter, no_skip, &kernel, harness_sources, &harness_cache);
                             stats.record(&result);
-                            out.push((i, result));
+                            tests_since_kernel_reset += 1;
 
                             let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
+                            if done % 500 == 0 {
+                                kernel.sweep_runner_forges();
+                            }
+                            if tests_since_kernel_reset >= kernel_batch {
+                                kernel = build_runner_kernel();
+                                tests_since_kernel_reset = 0;
+                            }
                             if done % 500 == 0 || done == total {
                                 eprintln!("  progress: {done}/{total} ({}%)", done * 100 / total);
                             }
                         }
 
-                        (stats, out)
+                        stats
                     })
                     .expect("failed to spawn test262 worker thread")
             })
@@ -801,26 +1236,27 @@ fn run_tests() -> bool {
             .collect()
     });
 
-    // Reduce partial stats and restore discovery order for deterministic output.
+    // Reduce partial stats without materializing every test result in memory.
     let mut stats = RunStats::default();
-    let mut indexed: Vec<(usize, TestResult)> = Vec::with_capacity(total);
-    for (partial_stats, partial_results) in partials {
+    for partial_stats in partials {
         stats.merge(partial_stats);
-        indexed.extend(partial_results);
     }
-    indexed.sort_by_key(|(i, _)| *i);
-    let results: Vec<TestResult> = indexed.into_iter().map(|(_, r)| r).collect();
+
+    if let Some(hb) = &heartbeat_path {
+        write_heartbeat(hb, "DONE", end_index, stats.pass, stats.fail, stats.skip);
+    }
 
     eprintln!();
 
     let ran = stats.pass + stats.fail;
+    let executed_total = end_index.saturating_sub(skip_until);
 
     println!();
     println!("═══════════════════════════════════════");
     println!("  test262 results");
     println!("═══════════════════════════════════════");
-    println!("  total  : {}", results.len());
-    let total = results.len() as f64;
+    println!("  total  : {}", executed_total);
+    let total = executed_total as f64;
     println!("  pass   : {} ({:.1}%)", stats.pass, stats.pass as f64 / total * 100.0);
     println!("  fail   : {} ({:.1}%)", stats.fail, stats.fail as f64 / total * 100.0);
     println!("  skip   : {} ({:.1}%)", stats.skip, stats.skip as f64 / total * 100.0);
@@ -840,7 +1276,7 @@ fn run_tests() -> bool {
     }
     println!("═══════════════════════════════════════");
 
-    if stats.fail > 0 {
+    if stats.fail > 0 && !allow_fail_exit {
         return false;
     }
     true

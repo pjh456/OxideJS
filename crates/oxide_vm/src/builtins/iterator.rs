@@ -156,7 +156,7 @@ fn make_native_function(vm: &mut Vm, name: &str, native_fn: *const (), arg_count
     // SAFETY: native_fn is provided from a NativeFn fn item.
     func.set_native_fn(Some(unsafe { oxide_types::object::NativeFnPtr::from_raw(native_fn) }));
     func.set_native_arg_count(arg_count);
-    let func = vm.epoch().alloc(func);
+    let func = vm.alloc_object(func);
     let name_si = vm.kernel_core().string_forge().intern("name").0;
     let value = vm.intern(name);
     let func_ref = unsafe { &mut *func };

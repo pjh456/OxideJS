@@ -64,6 +64,20 @@ fn for_of_destructuring_left_side() {
 }
 
 #[test]
+fn for_of_object_destructuring_assignment_target_runs_once() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var x = null; var count = 0; for ({ x } of [{ x: 3 }]) { count += x; } count").unwrap();
+    assert_num(result, 3.0);
+}
+
+#[test]
+fn for_of_object_destructuring_lexical_binding_runs_once() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "let count = 0; for (let { x: [y], } of [{ x: [45] }]) { count += y; } count").unwrap();
+    assert_num(result, 45.0);
+}
+
+#[test]
 fn function_and_method_parameter_destructuring() {
     let mut vm = Vm::new();
     let result = eval(

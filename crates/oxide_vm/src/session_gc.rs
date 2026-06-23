@@ -5,7 +5,7 @@ use std::time::Instant;
 use oxide_types::object::{JsObject, PropMetaEntry};
 use oxide_types::value::JsValue;
 
-use crate::builtins::{map, set};
+use crate::builtins::{array_buffer, data_view, map, regexp, set, typed_array};
 use crate::vm::Vm;
 
 pub struct SessionGc {
@@ -87,6 +87,12 @@ impl SessionGc {
         if obj.is_set() {
             edges.extend(set::set_native_edges(obj));
         }
+        if obj.is_typed_array_obj() {
+            edges.extend(typed_array::typed_array_native_edges(obj));
+        }
+        if obj.is_data_view_obj() {
+            edges.extend(data_view::data_view_native_edges(obj));
+        }
         edges
     }
 
@@ -141,7 +147,7 @@ impl SessionGc {
         }
     }
 
-    fn drop_session_object_heap_data(obj_ptr: *mut JsObject) -> u64 {
+    pub(crate) fn drop_object_heap_data(obj_ptr: *mut JsObject, require_session: bool) -> u64 {
         if obj_ptr.is_null() {
             return 0;
         }
@@ -150,7 +156,9 @@ impl SessionGc {
         // `JsObject::ensure_hash_props`/`ensure_prop_meta` and then drop them once here.
         unsafe {
             let obj = &mut *obj_ptr;
-            debug_assert!(obj.is_session_epoch());
+            if require_session {
+                debug_assert!(obj.is_session_epoch());
+            }
             let mut freed_bytes = 0u64;
 
             let hash_ptr = obj.hash_props_raw() as *mut Vec<JsValue>;
@@ -170,9 +178,17 @@ impl SessionGc {
 
             freed_bytes += map::drop_map_native(obj);
             freed_bytes += set::drop_set_native(obj);
+            freed_bytes += array_buffer::drop_array_buffer_native(obj);
+            freed_bytes += regexp::drop_regexp_native(obj);
+            freed_bytes += typed_array::drop_typed_array_native(obj);
+            freed_bytes += data_view::drop_data_view_native(obj);
 
             freed_bytes
         }
+    }
+
+    fn drop_session_object_heap_data(obj_ptr: *mut JsObject) -> u64 {
+        Self::drop_object_heap_data(obj_ptr, true)
     }
 
     fn drop_dead_session_object(obj_ptr: *mut JsObject) -> u64 {
@@ -204,6 +220,12 @@ impl SessionGc {
                     map::clone_map_native_with_rewrite(old_ref, new_ref, |value| value);
                 } else if old_ref.is_set() {
                     set::clone_set_native_with_rewrite(old_ref, new_ref, |value| value);
+                } else if old_ref.is_array_buffer_obj() {
+                    array_buffer::clone_array_buffer_native(old_ref, new_ref);
+                } else if old_ref.is_typed_array_obj() {
+                    typed_array::clone_typed_array_native_with_rewrite(old_ref, new_ref, |value| value);
+                } else if old_ref.is_data_view_obj() {
+                    data_view::clone_data_view_native_with_rewrite(old_ref, new_ref, |value| value);
                 }
                 forwarding.insert(old_ptr, new_ptr);
                 freed_bytes += Self::drop_session_object_heap_data(old_ptr);
@@ -229,6 +251,10 @@ impl SessionGc {
                 map::rewrite_map_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
             } else if obj.is_set() {
                 set::rewrite_set_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
+            } else if obj.is_typed_array_obj() {
+                typed_array::rewrite_typed_array_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
+            } else if obj.is_data_view_obj() {
+                data_view::rewrite_data_view_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
             }
         }
 
@@ -375,7 +401,7 @@ mod tests {
     use oxide_types::object::JsObject;
 
     use super::*;
-    use crate::builtins::{map, set};
+    use crate::builtins::{array_buffer, data_view, map, set, typed_array};
     use crate::native::NativeResult;
     use crate::vm::{CallFrame, FrameContinuation};
 
@@ -630,5 +656,98 @@ mod tests {
         assert_eq!(edges.len(), 1);
         assert!(vm.is_session_ptr(edges[0].as_js_object_ptr()));
         assert_eq!(vm.session_object_ptrs.len(), 2);
+    }
+
+    #[test]
+    fn session_gc_keeps_shared_array_buffer_alive_through_view_native_edges() {
+        let mut vm = vm_with_low_threshold();
+        let root = plain_object(&mut vm);
+
+        vm.regs[1] = JsValue::int(8);
+        let buffer = native_ok(array_buffer::array_buffer_constructor(&mut vm, &[0, 1]));
+
+        vm.regs[1] = buffer;
+        let typed = native_ok(typed_array::int32array_constructor(&mut vm, &[0, 1]));
+
+        vm.regs[1] = buffer;
+        let view = native_ok(data_view::data_view_constructor(&mut vm, &[0, 1]));
+
+        vm.regs[0] = view;
+        vm.regs[1] = JsValue::int(0);
+        vm.regs[2] = JsValue::int(42);
+        vm.regs[3] = JsValue::bool(true);
+        native_ok(data_view::data_view_set_int32(&mut vm, &[0, 1, 2, 3]));
+
+        unsafe {
+            (*root).set_prop_at(0, typed);
+            (*root).set_prop_at(1, view);
+        }
+
+        let root_session = vm.promote_object(root);
+        vm.regs.fill(JsValue::undefined());
+        vm.regs[0] = JsValue::from_js_object(root_session);
+        let mut gc = std::mem::replace(&mut vm.session_gc, SessionGc::new());
+        gc.collect(&mut vm);
+        vm.session_gc = gc;
+
+        let live_root = unsafe { &*vm.regs[0].as_js_object_ptr() };
+        let live_typed = live_root.get_prop_at(0);
+        let live_view = live_root.get_prop_at(1);
+        let typed_obj = unsafe { &*live_typed.as_js_object_ptr() };
+        let view_obj = unsafe { &*live_view.as_js_object_ptr() };
+        let typed_edges = typed_array::typed_array_native_edges(typed_obj);
+        let view_edges = data_view::data_view_native_edges(view_obj);
+
+        assert_eq!(typed_edges.len(), 1);
+        assert_eq!(view_edges.len(), 1);
+        assert!(vm.is_session_ptr(typed_edges[0].as_js_object_ptr()));
+        assert!(vm.is_session_ptr(view_edges[0].as_js_object_ptr()));
+        assert!(std::ptr::eq(typed_edges[0].as_js_object_ptr(), view_edges[0].as_js_object_ptr()));
+
+        vm.regs[0] = live_typed;
+        vm.regs[1] = JsValue::int(0);
+        assert_eq!(native_ok(typed_array::typed_array_at(&mut vm, &[0, 1])), JsValue::int(42));
+
+        vm.regs[0] = live_view;
+        vm.regs[1] = JsValue::int(4);
+        vm.regs[2] = JsValue::int(7);
+        vm.regs[3] = JsValue::bool(true);
+        native_ok(data_view::data_view_set_int32(&mut vm, &[0, 1, 2, 3]));
+
+        vm.regs[0] = live_typed;
+        vm.regs[1] = JsValue::int(1);
+        assert_eq!(native_ok(typed_array::typed_array_at(&mut vm, &[0, 1])), JsValue::int(7));
+    }
+
+    #[test]
+    fn session_gc_rewrites_buffer_retained_only_by_data_view_native_edge() {
+        let mut vm = vm_with_low_threshold();
+        vm.regs[1] = JsValue::int(8);
+        let buffer = native_ok(array_buffer::array_buffer_constructor(&mut vm, &[0, 1]));
+        vm.regs[1] = buffer;
+        let view = native_ok(data_view::data_view_constructor(&mut vm, &[0, 1]));
+
+        vm.regs[0] = view;
+        vm.regs[1] = JsValue::int(0);
+        vm.regs[2] = JsValue::int(9);
+        native_ok(data_view::data_view_set_int32(&mut vm, &[0, 1, 2]));
+
+        let view_session = vm.promote_object(view.as_js_object_ptr());
+        vm.regs.fill(JsValue::undefined());
+        vm.regs[0] = JsValue::from_js_object(view_session);
+        let mut gc = std::mem::replace(&mut vm.session_gc, SessionGc::new());
+        gc.collect(&mut vm);
+        vm.session_gc = gc;
+
+        let live_view = vm.regs[0];
+        let live_view_obj = unsafe { &*live_view.as_js_object_ptr() };
+        let edges = data_view::data_view_native_edges(live_view_obj);
+        assert_eq!(edges.len(), 1);
+        assert!(vm.is_session_ptr(edges[0].as_js_object_ptr()));
+        assert_eq!(vm.session_object_ptrs.len(), 2);
+
+        vm.regs[0] = live_view;
+        vm.regs[1] = JsValue::int(0);
+        assert_eq!(native_ok(data_view::data_view_get_int32(&mut vm, &[0, 1])), JsValue::int(9));
     }
 }

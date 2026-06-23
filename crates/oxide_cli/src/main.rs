@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use ansi_term::Colour::Red;
 use clap::{Parser, Subcommand};
-use oxide_compiler::compiler::Compiler;
+use oxide_compiler::compiler::{compiled_module_hash, Compiler};
 use oxide_kernel::kernel::{KernelConfig, KernelCore};
 use oxide_kernel::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use oxide_kernel::string_forge::StringForge;
@@ -91,7 +91,8 @@ fn eval(code: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>) -> ExitCode {
     };
 
     let compiler = Compiler::new();
-    let module = match kernel.code_forge().get_or_compile(&program, &compiler) {
+    let hash = compiled_module_hash(&program);
+    let module = match kernel.code_forge().get_or_insert_with(hash, || compiler.compile(&program)) {
         Ok(m) => m,
         Err(err) => {
             eprintln!("{}", Red.paint(err));

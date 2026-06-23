@@ -126,6 +126,14 @@ impl StringForge {
         inner.map = new_map;
         inner.entries = new_entries;
     }
+
+    pub fn len(&self) -> usize {
+        self.inner.read().unwrap().entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl Default for StringForge {

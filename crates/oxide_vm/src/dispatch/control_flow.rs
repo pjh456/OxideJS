@@ -24,6 +24,12 @@ impl Vm {
     }
 
     #[inline(always)]
+    pub(crate) fn dispatch_nullish(&mut self, rd: usize, a: usize, b: usize) {
+        let val = self.regs[a];
+        self.regs[rd] = if val.is_nullish() { self.regs[b] } else { val };
+    }
+
+    #[inline(always)]
     pub(crate) fn dispatch_not(&mut self, rd: usize, a: usize) {
         let b = !coercion::to_boolean(self.regs[a], self.kernel_core.string_forge().as_ref());
         self.regs[rd] = JsValue::bool(b);

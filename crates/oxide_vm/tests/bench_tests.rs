@@ -1,5 +1,5 @@
+use oxide_bytecode::module::CompiledModule;
 use oxide_compiler::compiler::Compiler;
-use oxide_compiler::module::CompiledModule;
 use oxide_parser::Allocator;
 use oxide_vm::vm::Vm;
 

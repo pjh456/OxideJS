@@ -1,8 +1,9 @@
+use oxide_bytecode::module::{CompiledModule, Constant};
+use oxide_bytecode::opcode::{self, OpCode};
 use oxide_compiler::compiler::Compiler;
-use oxide_compiler::opcode::{self, OpCode};
 use oxide_parser::Allocator;
 
-fn compile_source(source: &str) -> oxide_compiler::module::CompiledModule {
+fn compile_source(source: &str) -> CompiledModule {
     let allocator = Allocator::default();
     let program = oxide_parser::parse(&allocator, source).expect("parse failed");
     let compiler = Compiler::new();
@@ -13,7 +14,7 @@ fn compile_source(source: &str) -> oxide_compiler::module::CompiledModule {
 fn symbol_table_declare_and_lookup() {
     let module = compile_source("var x = 42;");
     assert!(!module.bytecode.is_empty());
-    assert_eq!(module.constants[0], oxide_compiler::compiler::Constant::Int(42));
+    assert_eq!(module.constants[0], Constant::Int(42));
 }
 
 #[test]

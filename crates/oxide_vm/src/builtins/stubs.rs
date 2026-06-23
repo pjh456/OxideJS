@@ -1,12 +1,8 @@
-use oxide_types::value::JsValue;
-
 use crate::native::NativeResult;
 use crate::vm::Vm;
 
 fn stub_error(vm: &mut Vm, name: &str) -> NativeResult {
-    let msg = format!("TypeError: {} is not implemented", name);
-    let si = vm.kernel_core().string_forge().intern(&msg).0;
-    NativeResult::Err(JsValue::string(si, 0))
+    NativeResult::Err(crate::builtins::error::create_type_error(vm, &format!("{name} is not implemented")))
 }
 
 // Architecturally deferred — see 13.5-CONTEXT.md for rationale

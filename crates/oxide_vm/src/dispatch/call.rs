@@ -21,7 +21,7 @@ impl Vm {
         &mut self, obj: &JsObject, callee: JsValue, this_reg: u8, first_arg_reg: u8, arg_count: usize,
     ) -> Result<(), String> {
         if self.native_call_depth >= self.kernel_core.config.max_call_depth {
-            return Err("RangeError: Maximum call stack size exceeded".into());
+            return self.raise_error_kind("RangeError", "Maximum call stack size exceeded");
         }
         let (args_buf, len) = Self::build_native_args(first_arg_reg, arg_count, this_reg);
         let args_slice = &args_buf[..len];
