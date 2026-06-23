@@ -1,0 +1,11 @@
+[package]
+name = "oxide_code_cache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OxideJS - Compiler-independent compiled module cache"
+
+[dependencies]
+oxide_bytecode = { path = "../oxide_bytecode" }
+dashmap.workspace = true

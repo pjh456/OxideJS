@@ -6,7 +6,7 @@ use crate::coercion;
 use crate::native::NativeResult;
 use crate::vm::Vm;
 
-const MAX_ARRAY_BUFFER_LENGTH: usize = 1 << 30;
+pub(crate) const MAX_ARRAY_BUFFER_LENGTH: usize = 1 << 30;
 
 macro_rules! native_try {
     ($expr:expr) => {
@@ -66,7 +66,40 @@ pub(crate) fn new_array_buffer(vm: &mut Vm, data: Vec<u8>) -> *mut JsObject {
         JsValue::int(len as i32),
         PropAttributes::new(false, false, false),
     );
-    vm.epoch().alloc(obj)
+    vm.alloc_object(obj)
+}
+
+fn array_buffer_vec_ptr(obj: &JsObject) -> Option<*mut Vec<u8>> {
+    if !obj.is_array_buffer_obj() {
+        return None;
+    }
+    obj.native_fn().map(|ptr| ptr.as_ptr() as *mut Vec<u8>)
+}
+
+pub(crate) fn clone_array_buffer_native(old_obj: &JsObject, new_obj: &mut JsObject) {
+    let Some(ptr) = array_buffer_vec_ptr(old_obj) else {
+        return;
+    };
+    if ptr.is_null() {
+        return;
+    }
+    let cloned = unsafe { (&*ptr).clone() };
+    let cloned_ptr = Box::into_raw(Box::new(cloned));
+    new_obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(cloned_ptr as *const ()) }));
+}
+
+pub(crate) fn drop_array_buffer_native(obj: &mut JsObject) -> u64 {
+    let Some(data_ptr) = array_buffer_vec_ptr(obj) else {
+        return 0;
+    };
+    if data_ptr.is_null() {
+        return 0;
+    }
+    // SAFETY: ArrayBuffer stores `Box<Vec<u8>>` in native_fn.
+    let data = unsafe { Box::from_raw(data_ptr) };
+    let bytes = std::mem::size_of::<Vec<u8>>() + data.capacity();
+    obj.set_native_fn(None);
+    bytes as u64
 }
 
 pub(crate) fn array_buffer_data_ptr(vm: &mut Vm, this_val: JsValue) -> Result<*mut Vec<u8>, JsValue> {

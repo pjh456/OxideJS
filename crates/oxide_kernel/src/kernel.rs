@@ -146,6 +146,18 @@ impl KernelCore {
     pub fn set_session_gc_threshold(&mut self, bytes: usize) {
         self.config.session_gc_threshold = bytes;
     }
+
+    pub fn sweep_runner_forges(&self) {
+        self.string_forge.maybe_sweep(self.config.max_dead_strings.or(Some(1)));
+        // test262 creates a fresh VM/session per test. At this boundary no JS object
+        // from prior tests may retain transient shapes/templates.
+        if self.shape_forge.len() > 50_000 {
+            self.shape_forge.clear_transient();
+            self.prop_forge.clear();
+        } else if self.prop_forge.len() > 50_000 {
+            self.prop_forge.clear();
+        }
+    }
 }
 
 /// Per-session mutable state: builtin prototype objects and the global object.

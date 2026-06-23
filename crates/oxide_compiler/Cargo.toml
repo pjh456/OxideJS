@@ -7,10 +7,11 @@ rust-version.workspace = true
 description = "OxideJS - AST to bytecode compiler"
 
 [dependencies]
+oxide_bytecode = { path = "../oxide_bytecode" }
 oxide_parser = { path = "../oxide_parser" }
 serde.workspace = true
 serde_json.workspace = true
 rustc-hash.workspace = true
 
 [dev-dependencies]
-oxide_kernel = { path = "../oxide_kernel" }
+oxide_code_cache = { path = "../oxide_code_cache" }

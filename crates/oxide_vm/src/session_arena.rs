@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-use crate::builtins::{map, set};
+use crate::builtins::{data_view, map, set, typed_array};
 use crate::vm::Vm;
 
 impl Vm {
@@ -48,6 +48,14 @@ impl Vm {
             });
         } else if src_ref.is_set() {
             set::clone_set_native_with_rewrite(src_ref, dst_ref, |value| {
+                self.promote_value_if_epoch_object(value, forwarding)
+            });
+        } else if src_ref.is_typed_array_obj() {
+            typed_array::clone_typed_array_native_with_rewrite(src_ref, dst_ref, |value| {
+                self.promote_value_if_epoch_object(value, forwarding)
+            });
+        } else if src_ref.is_data_view_obj() {
+            data_view::clone_data_view_native_with_rewrite(src_ref, dst_ref, |value| {
                 self.promote_value_if_epoch_object(value, forwarding)
             });
         }

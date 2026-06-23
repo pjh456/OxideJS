@@ -10,6 +10,37 @@ pub fn number_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     } else {
         0.0
     };
+    let number_proto = vm.session().builtin_world().number_proto.as_ptr() as *mut oxide_types::object::JsObject;
+    let is_ctor = if let Some(this_reg) = args.first().copied() {
+        let this_val = vm.reg(this_reg);
+        if this_val.is_object() {
+            let ptr = this_val.as_js_object_ptr();
+            if ptr.is_null() {
+                false
+            } else {
+                let proto_ptr = unsafe { (*ptr).proto().as_js_object_ptr() };
+                !proto_ptr.is_null() && std::ptr::eq(proto_ptr, number_proto)
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if is_ctor {
+        let this_val = vm.reg(args[0]);
+        let obj = unsafe { &mut *this_val.as_js_object_ptr() };
+        obj.type_tag = oxide_types::object::JsObject::OBJ_TYPE_NUMBER_OBJ;
+        let boxed = if n.fract() == 0.0 && n.is_finite() && n >= i32::MIN as f64 && n <= i32::MAX as f64 {
+            JsValue::int(n as i32)
+        } else {
+            JsValue::float(n)
+        };
+        obj.set_prop_at(0, boxed);
+        return NativeResult::Ok(this_val);
+    }
+
     if n.fract() == 0.0 && n.is_finite() && n >= i32::MIN as f64 && n <= i32::MAX as f64 {
         NativeResult::Ok(JsValue::int(n as i32))
     } else {
@@ -222,5 +253,17 @@ pub fn number_value_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if this_val.is_int() || this_val.is_double() {
         return NativeResult::Ok(this_val);
     }
-    NativeResult::Ok(JsValue::float(f64::NAN))
+    if this_val.is_object() {
+        let ptr = this_val.as_js_object_ptr();
+        if !ptr.is_null() {
+            let obj = unsafe { &*ptr };
+            if obj.is_number_obj() {
+                return NativeResult::Ok(obj.get_prop_at(0));
+            }
+        }
+    }
+    NativeResult::Err(crate::builtins::error::create_type_error(
+        vm,
+        "Number.prototype.valueOf called on incompatible receiver",
+    ))
 }

@@ -16,11 +16,23 @@ fn to_str(vm: &Vm, val: JsValue) -> String {
         .unwrap_or_default()
 }
 
+fn assert_num_eq(val: JsValue, expected: f64) {
+    let actual = if val.is_int() { val.as_int() as f64 } else { val.as_double() };
+    assert_eq!(actual, expected);
+}
+
 #[test]
 fn string_index_of_found() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "'hello'.indexOf('e')").unwrap();
     assert_eq!(result.as_int(), 1);
+}
+
+#[test]
+fn string_from_char_code_static() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "String.fromCharCode(65,66,67)").unwrap();
+    assert_eq!(to_str(&vm, result), "ABC");
 }
 
 #[test]
@@ -81,6 +93,26 @@ fn string_substring() {
 
 #[test]
 fn string_to_upper_case() {
+    let mut vm = Vm::new();
+    let s = eval(&mut vm, "'hello'.toUpperCase()").unwrap();
+    assert_eq!(to_str(&vm, s), "HELLO");
+}
+
+#[test]
+fn string_primitive_length_autoboxes() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "'abc'.length").unwrap();
+    assert_num_eq(result, 3.0);
+
+    let result = eval(&mut vm, "''.length").unwrap();
+    assert_num_eq(result, 0.0);
+
+    let result = eval(&mut vm, "'abc'.length + 'de'.length").unwrap();
+    assert_num_eq(result, 5.0);
+}
+
+#[test]
+fn string_length_does_not_break_methods() {
     let mut vm = Vm::new();
     let s = eval(&mut vm, "'hello'.toUpperCase()").unwrap();
     assert_eq!(to_str(&vm, s), "HELLO");
@@ -207,4 +239,34 @@ fn string_replace_all() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "'aba'.replaceAll('a', 'c')").unwrap();
     assert_eq!(to_str(&vm, result), "cbc");
+}
+
+#[test]
+fn boxed_string_valueof_and_tostring() {
+    let mut vm = Vm::new();
+    let v = eval(&mut vm, "new String('abc').valueOf()").unwrap();
+    assert!(v.is_string());
+    assert_eq!(to_str(&vm, v), "abc");
+
+    let t = eval(&mut vm, "new String('abc').toString()").unwrap();
+    assert!(t.is_string());
+    assert_eq!(to_str(&vm, t), "abc");
+}
+
+#[test]
+fn boxed_string_is_object_and_empty_default() {
+    let mut vm = Vm::new();
+    let ty = eval(&mut vm, "typeof new String('x')").unwrap();
+    assert_eq!(to_str(&vm, ty), "object");
+
+    let empty = eval(&mut vm, "new String().valueOf()").unwrap();
+    assert_eq!(to_str(&vm, empty), "");
+}
+
+#[test]
+fn string_call_conversion_stays_primitive() {
+    let mut vm = Vm::new();
+    let v = eval(&mut vm, "String(123)").unwrap();
+    assert!(v.is_string());
+    assert_eq!(to_str(&vm, v), "123");
 }

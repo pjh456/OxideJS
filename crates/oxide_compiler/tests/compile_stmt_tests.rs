@@ -1,8 +1,9 @@
+use oxide_bytecode::module::{CompiledModule, Constant};
+use oxide_bytecode::opcode::{self, OpCode};
 use oxide_compiler::compiler::Compiler;
-use oxide_compiler::opcode::{self, OpCode};
 use oxide_parser::Allocator;
 
-fn compile_source(source: &str) -> oxide_compiler::module::CompiledModule {
+fn compile_source(source: &str) -> CompiledModule {
     let allocator = Allocator::default();
     let program = oxide_parser::parse(&allocator, source).expect("parse failed");
     let compiler = Compiler::new();
@@ -13,7 +14,7 @@ fn compile_source(source: &str) -> oxide_compiler::module::CompiledModule {
 fn compile_var_declaration() {
     let module = compile_source("var x = 42;");
     assert!(!module.bytecode.is_empty());
-    assert_eq!(module.constants[0], oxide_compiler::compiler::Constant::Int(42));
+    assert_eq!(module.constants[0], Constant::Int(42));
 }
 
 #[test]
@@ -294,5 +295,20 @@ fn compile_class_static_setter_emits_define_accessor() {
     assert!(
         module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::DEFINE_ACCESSOR),
         "static class setter should emit DEFINE_ACCESSOR"
+    );
+}
+
+#[test]
+fn compile_labeled_loop_emits_body() {
+    let module = compile_source("outer: while (true) { break outer; }");
+    assert!(!module.bytecode.is_empty(), "labeled loop should produce bytecode");
+}
+
+#[test]
+fn compile_empty_statements_are_skipped() {
+    let module = compile_source("; ; var x = 1;");
+    assert!(
+        module.constants.iter().any(|c| matches!(c, Constant::Int(1))),
+        "var after empty statements should still compile"
     );
 }

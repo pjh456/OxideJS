@@ -1,5 +1,5 @@
-use oxide_compiler::module::CompiledModule;
-use oxide_compiler::opcode;
+use oxide_bytecode::module::CompiledModule;
+use oxide_bytecode::opcode;
 
 use crate::vm::{CallFrame, InlineSyncState, Vm};
 use oxide_types::object::JsObject;
@@ -10,7 +10,7 @@ impl Vm {
         &mut self, callee: JsValue, callee_obj: &JsObject, receiver: JsValue, args: &[JsValue],
     ) -> Result<JsValue, String> {
         if callee_obj.sub_module_index() == 0 {
-            return Err("TypeError: accessor is not callable".into());
+            return Err(self.error_message_text("TypeError", "accessor is not callable"));
         }
         let sub_idx = callee_obj.sub_module_index() as usize - 1;
         if sub_idx >= self.sub_modules.len() {
@@ -21,8 +21,14 @@ impl Vm {
             ));
         }
         if self.frames.len() >= self.kernel_core.config.max_call_depth {
-            return Err("RangeError: Maximum call stack size exceeded".into());
+            self.raise_error_kind("RangeError", "Maximum call stack size exceeded")?;
+            return Ok(JsValue::undefined());
         }
+        if self.native_call_depth >= self.kernel_core.config.max_call_depth {
+            self.raise_error_kind("RangeError", "Maximum call stack size exceeded")?;
+            return Ok(JsValue::undefined());
+        }
+        self.native_call_depth += 1;
 
         let sub = self.sub_modules[sub_idx].clone();
         let converted_constants = self.convert_constants(&sub.constants).map_err(String::from)?;
@@ -67,6 +73,7 @@ impl Vm {
         let _ = callee;
 
         let result = self.dispatch();
+        self.native_call_depth -= 1;
 
         self.regs = *saved.regs;
         self.pc = saved.pc;

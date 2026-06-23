@@ -129,3 +129,10 @@ fn date_to_utc_string_not_empty() {
     let r = eval(&mut vm, "new Date(0).toUTCString()").unwrap();
     assert!(r.is_string());
 }
+
+#[test]
+fn date_objects_use_bounded_numeric_coercion() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "+new Date(0)").unwrap();
+    assert_eq!(r.as_double(), 0.0);
+}

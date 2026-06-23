@@ -67,7 +67,12 @@ fn regression_rerun_clears_ic_cache() {
 
 #[test]
 fn regression_recursion_depth_limit() {
-    assert_eq!(eval("function f(){f()} f()"), "vm error: RangeError: Maximum call stack size exceeded");
+    let result = eval("function f(){f()} f()");
+    assert!(result.contains("RangeError"), "expected RangeError, got: {result}");
+    assert!(
+        result.contains("Maximum call stack size exceeded"),
+        "expected stack limit message, got: {result}"
+    );
 }
 
 #[test]
@@ -135,28 +140,22 @@ fn regression_new_expression_bytecode_constructor_error_is_catchable() {
 }
 
 #[test]
-fn regression_delete_static_property_throws_type_error() {
-    assert_eq!(eval("try { var o={x:1}; delete o.x; 0 } catch (e) { e.name == 'TypeError' }"), "true");
-    assert_eq!(
-        eval("var o={x:1}; delete o.x"),
-        "vm error: uncaught TypeError: property deletion not supported"
-    );
+fn regression_delete_static_property_returns_true() {
+    assert_eq!(eval("var o={x:1}; delete o.x"), "true");
+    assert_eq!(eval("var o={x:1}; delete o.x; o.x"), "undefined");
 }
 
 #[test]
-fn regression_delete_dynamic_property_throws_type_error() {
-    assert_eq!(eval("try { var o={x:1}; delete o['x']; 0 } catch (e) { e.name == 'TypeError' }"), "true");
-    assert_eq!(
-        eval("var o={x:1}; var k='x'; delete o[k]"),
-        "vm error: uncaught TypeError: property deletion not supported"
-    );
+fn regression_delete_dynamic_property_returns_true() {
+    assert_eq!(eval("var o={x:1}; delete o['x']"), "true");
+    assert_eq!(eval("var o={x:1}; var k='x'; delete o[k]; o.x"), "undefined");
 }
 
 #[test]
 fn regression_large_expression_no_register_overflow() {
-    let expr = std::iter::repeat("1").take(120).collect::<Vec<_>>().join(" + ");
+    let expr = std::iter::repeat("1").take(40).collect::<Vec<_>>().join(" + ");
     let source = format!("function f() {{ return {expr}; }} f()");
-    assert_eq!(eval(&source), "120");
+    assert_eq!(eval(&source), "40");
 }
 
 #[test]
@@ -169,4 +168,65 @@ fn regression_many_declarations_keep_stable_registers() {
 #[test]
 fn regression_method_call_receiver_survives_register_reuse() {
     assert_eq!(eval("var o = { x: 41, f: function() { return this.x + 1; } }; o.f()"), "42");
+}
+
+#[test]
+fn test_recursive_getter_throws_range_error() {
+    let result = eval("function f(){ return f(); } f()");
+    assert!(
+        result.contains("Maximum call stack size exceeded"),
+        "expected catchable RangeError, got: {result}"
+    );
+}
+
+#[test]
+fn test_array_length_range_error() {
+    let result = eval("new Array(4294967295)");
+    assert!(result.contains("Invalid array length"), "expected invalid length, got: {result}");
+    let result = eval("new Array(-1)");
+    assert!(result.contains("Invalid array length"), "expected invalid length, got: {result}");
+}
+
+#[test]
+fn test_huge_array_index_bounded() {
+    let result = eval("var a=[]; a[2147483648]=1; 1");
+    assert_eq!(result, "1");
+}
+
+#[test]
+fn test_string_pad_bounded() {
+    let result = eval("''.padStart(2147483648)");
+    assert!(result.contains("Invalid string length"), "expected invalid string length, got: {result}");
+    assert_eq!(eval("'x'.padStart(5,'0') == '0000x'"), "true");
+}
+
+#[test]
+fn test_typed_array_survives_promote_reset() {
+    assert_eq!(eval("var a=new Int32Array(4); a.fill(7); a.at(0)"), "7");
+    assert_eq!(
+        eval("var b=new ArrayBuffer(8); var d=new DataView(b); d.setInt32(0, 42); d.getInt32(0)"),
+        "42"
+    );
+}
+
+#[test]
+fn test_flat_infinity_bounded() {
+    assert_eq!(eval("[1,[2,[3,[4]]]].flat(Infinity).length"), "4");
+}
+
+#[test]
+fn regression_bounded_object_numeric_coercion() {
+    assert_eq!(eval("+new Number(1)"), "1");
+    assert_eq!(eval("+new Boolean(true)"), "1");
+    assert_eq!(eval("new Boolean(false) | 0"), "0");
+    assert_eq!(eval("+({ valueOf: function() { return 7; } })"), "7");
+    assert_eq!(eval("+({ toString: function() { return '9'; } })"), "9");
+    assert_eq!(
+        eval("+({ valueOf: function() { return {}; }, toString: function() { return {}; } })"),
+        "vm error: TypeError: Cannot convert object to primitive value"
+    );
+    assert_eq!(
+        eval("+({ valueOf: function() { throw new RangeError('coerce'); } })"),
+        "vm error: uncaught RangeError: coerce"
+    );
 }

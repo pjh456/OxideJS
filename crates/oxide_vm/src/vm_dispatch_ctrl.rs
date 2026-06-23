@@ -1,5 +1,5 @@
 use crate::vm::{FrameContinuation, TryHandler, Vm};
-use oxide_compiler::opcode;
+use oxide_bytecode::opcode;
 use oxide_types::object::PropAttributes;
 use oxide_types::value::JsValue;
 

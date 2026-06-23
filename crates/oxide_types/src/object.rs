@@ -40,6 +40,7 @@ unsafe impl Send for NativeFnPtr {}
 unsafe impl Sync for NativeFnPtr {}
 
 pub type ShapeId = u32;
+pub const MAX_DENSE_PROPS: usize = 1_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypedArrayKind {
@@ -297,7 +298,7 @@ impl JsObject {
             captured_this: JsValue::undefined(),
             home_object: JsValue::undefined(),
         };
-        let vec = Box::new(vec![JsValue::undefined(); n_elements]);
+        let vec = Box::new(vec![JsValue::undefined(); n_elements.min(MAX_DENSE_PROPS)]);
         obj.hash_props = Box::into_raw(vec) as *mut u8;
         obj
     }
@@ -615,6 +616,9 @@ impl JsObject {
     /// Set property value at position index. Vec auto-grows if needed.
     pub fn set_prop_at(&mut self, position: impl PropIndex, val: JsValue) {
         let pos = position.to_u32() as usize;
+        if pos > MAX_DENSE_PROPS {
+            return;
+        }
         {
             let vec = self.ensure_hash_props();
             if pos < vec.len() {

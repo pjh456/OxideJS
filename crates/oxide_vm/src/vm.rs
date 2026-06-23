@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use oxide_compiler::module::CompiledModule;
-use oxide_compiler::opcode::{self, OpCode};
+use oxide_bytecode::module::CompiledModule;
+use oxide_bytecode::opcode::{self, OpCode};
 use smallvec::SmallVec;
 
 pub use crate::bindings::init_kernel_builtins;
@@ -17,6 +17,8 @@ use oxide_types::error::{JsError, JsErrorKind};
 use oxide_types::mem::{Epoch, P};
 use oxide_types::object::{JsObject, NativeFnPtr};
 use oxide_types::value::JsValue;
+
+pub(crate) const MAX_PROTO_CHAIN_DEPTH: usize = 1024;
 
 /// Convert a `NativeFnPtr` to a callable `NativeFn`.
 ///
@@ -52,6 +54,14 @@ fn js_error_kind_name(kind: JsErrorKind) -> &'static str {
     }
 }
 
+pub(crate) fn format_error_message(kind: &str, msg: &str) -> String {
+    if msg.is_empty() || msg == kind || msg.starts_with(&format!("{kind}:")) {
+        msg.to_string()
+    } else {
+        format!("{kind}: {msg}")
+    }
+}
+
 #[allow(unused_macros)]
 macro_rules! throw_err {
     ($self:ident, $kind:ident, $msg:expr) => {{
@@ -64,16 +74,16 @@ macro_rules! throw_err {
 
 macro_rules! binary_arith {
     ($self:ident, $a:expr, $b:expr, $rd:expr, $op:tt) => {{
-        let l = coercion::to_number($self.regs[$a], $self.kernel_core.string_forge().as_ref());
-        let r = coercion::to_number($self.regs[$b], $self.kernel_core.string_forge().as_ref());
+        let l = $self.coerce_number_bounded($self.regs[$a])?;
+        let r = $self.coerce_number_bounded($self.regs[$b])?;
         $self.regs[$rd] = JsValue::float(l $op r);
     }}
 }
 
 macro_rules! compound_arith {
     ($self:ident, $rd:expr, $a:expr, $op:tt) => {{
-        let l = coercion::to_number($self.regs[$rd], $self.kernel_core.string_forge().as_ref());
-        let r = coercion::to_number($self.regs[$a], $self.kernel_core.string_forge().as_ref());
+        let l = $self.coerce_number_bounded($self.regs[$rd])?;
+        let r = $self.coerce_number_bounded($self.regs[$a])?;
         $self.regs[$rd] = JsValue::float(l $op r);
     }}
 }
@@ -145,6 +155,7 @@ pub struct Vm {
     pub epoch: Epoch,
     pub(crate) session_epoch: bumpalo::Bump,
     pub(crate) session_gc: SessionGc,
+    pub(crate) epoch_object_ptrs: Vec<*mut JsObject>,
     pub(crate) session_object_ptrs: Vec<*mut JsObject>,
     pub(crate) session_bytes_allocated: usize,
     pub object_prototype: P<JsObject>,
@@ -172,12 +183,108 @@ pub struct Vm {
 }
 
 impl Vm {
+    const SYNC_NATIVE_ARG_BASE: usize = 0;
+    const SYNC_NATIVE_ARG_LIMIT: usize = 253;
+
+    pub(crate) fn coerce_primitive_bounded(&mut self, value: JsValue, prefer_string: bool) -> Result<JsValue, String> {
+        if !value.is_object() {
+            return Ok(value);
+        }
+
+        let obj_ptr = value.as_js_object_ptr();
+        if obj_ptr.is_null() {
+            return Ok(value);
+        }
+
+        let method_names = if prefer_string { ["toString", "valueOf"] } else { ["valueOf", "toString"] };
+
+        for method_name in method_names {
+            let method_si = self.kernel_core.string_forge().intern(method_name).0;
+            let method = {
+                let obj = unsafe { &*obj_ptr };
+                self.ordinary_get(obj, method_si, value)?
+            };
+            if method.is_undefined() || method.is_null() {
+                continue;
+            }
+            if !method.is_object() {
+                return Err(format!("TypeError: {method_name} is not callable"));
+            }
+            let method_ptr = method.as_js_object_ptr();
+            if method_ptr.is_null() || !unsafe { &*method_ptr }.is_function() {
+                return Err(format!("TypeError: {method_name} is not callable"));
+            }
+
+            let result = self.call_function_sync(method, value, &[])?;
+            if !result.is_object() {
+                return Ok(result);
+            }
+        }
+
+        Err(self.error_message_text("TypeError", "Cannot convert object to primitive value"))
+    }
+
+    pub(crate) fn coerce_number_bounded(&mut self, value: JsValue) -> Result<f64, String> {
+        let primitive = self.coerce_primitive_bounded(value, false)?;
+        Ok(coercion::to_number(primitive, self.kernel_core.string_forge().as_ref()))
+    }
+
+    pub(crate) fn coerce_int32_bounded(&mut self, value: JsValue) -> Result<i32, String> {
+        let n = self.coerce_number_bounded(value)?;
+        if n == 0.0 || !n.is_finite() {
+            return Ok(0);
+        }
+        let int = n.trunc().rem_euclid(4_294_967_296.0) as u32;
+        if int > i32::MAX as u32 {
+            Ok((int as i64 - 4_294_967_296i64) as i32)
+        } else {
+            Ok(int as i32)
+        }
+    }
+
+    pub(crate) fn coerce_uint32_bounded(&mut self, value: JsValue) -> Result<u32, String> {
+        let n = self.coerce_number_bounded(value)?;
+        if n == 0.0 || !n.is_finite() {
+            return Ok(0);
+        }
+        Ok(n.trunc().rem_euclid(4_294_967_296.0) as u32)
+    }
+
+    fn pack_sync_native_call_args(
+        &mut self, receiver: JsValue, callee: JsValue, args: &[JsValue],
+    ) -> Result<Vec<u8>, String> {
+        if args.len() > Self::SYNC_NATIVE_ARG_LIMIT {
+            return Err(format!(
+                "RangeError: synchronous native call supports at most {} arguments",
+                Self::SYNC_NATIVE_ARG_LIMIT
+            ));
+        }
+
+        self.regs[253] = receiver;
+        self.regs[254] = callee;
+
+        let mut arg_regs = Vec::with_capacity(args.len() + 1);
+        arg_regs.push(253);
+        for (idx, arg) in args.iter().enumerate() {
+            let reg = (Self::SYNC_NATIVE_ARG_BASE + idx) as u8;
+            self.regs[reg as usize] = *arg;
+            arg_regs.push(reg);
+        }
+        Ok(arg_regs)
+    }
+
     pub(crate) fn is_session_ptr(&self, obj_ptr: *mut JsObject) -> bool {
         if obj_ptr.is_null() {
             return false;
         }
         // SAFETY: obj_ptr is non-null and points to a `JsObject` owned by this session.
         unsafe { (*obj_ptr).is_session_epoch() }
+    }
+
+    pub(crate) fn alloc_object(&mut self, obj: JsObject) -> *mut JsObject {
+        let ptr = self.epoch.alloc(obj);
+        self.epoch_object_ptrs.push(ptr);
+        ptr
     }
 
     pub(crate) fn gc_roots(&self) -> Vec<JsValue> {
@@ -243,12 +350,7 @@ impl Vm {
 
     pub(crate) fn raise_js_error(&mut self, err: JsError) -> Result<(), String> {
         let kind = js_error_kind_name(err.kind);
-        let error = match kind {
-            "TypeError" => crate::builtins::error::create_type_error(self, &err.message),
-            "ReferenceError" => crate::builtins::error::create_reference_error(self, &err.message),
-            "SyntaxError" => crate::builtins::error::create_syntax_error(self, &err.message),
-            _ => crate::builtins::error::create_error(self, &err.message),
-        };
+        let error = crate::builtins::error::create_kind_error(self, kind, &err.message);
         self.exception_value = Some(error);
         self.pending_error_kind = Some(kind);
         self.unwind()
@@ -256,6 +358,10 @@ impl Vm {
 
     pub(crate) fn raise_type_error(&mut self, msg: &str) -> Result<(), String> {
         self.raise_error_kind("TypeError", msg)
+    }
+
+    pub(crate) fn error_message_text(&self, kind: &str, msg: &str) -> String {
+        format_error_message(kind, msg)
     }
 
     pub fn step_rng(&mut self) {
@@ -374,7 +480,9 @@ impl Vm {
             }
         }
         let mut proto = obj.proto();
-        while proto.is_object() {
+        let mut depth = 0usize;
+        while proto.is_object() && depth < MAX_PROTO_CHAIN_DEPTH {
+            depth += 1;
             let proto_obj = unsafe { &*proto.as_js_object_ptr() };
             if let Some(pos) = self
                 .kernel_core
@@ -420,39 +528,27 @@ impl Vm {
         &mut self, callee: JsValue, receiver: JsValue, args: &[JsValue],
     ) -> Result<JsValue, String> {
         if !callee.is_object() {
-            return Err("TypeError: accessor is not callable".into());
+            return Err(self.error_message_text("TypeError", "accessor is not callable"));
         }
         let callee_obj = unsafe { &*callee.as_js_object_ptr() };
         if !callee_obj.is_function() {
-            return Err("TypeError: accessor is not callable".into());
+            return Err(self.error_message_text("TypeError", "accessor is not callable"));
         }
 
         if let Some(native_fn) = callee_obj.native_fn() {
             if self.native_call_depth >= self.kernel_core.config.max_call_depth {
-                return Err("RangeError: Maximum call stack size exceeded".into());
+                self.raise_error_kind("RangeError", "Maximum call stack size exceeded")?;
+                return Ok(JsValue::undefined());
             }
             let saved_regs = self.regs;
-            let saved_this = self.regs[254];
-            let saved_callee = self.regs[253];
-            self.regs[253] = receiver;
-            self.regs[254] = callee;
-            for (idx, arg) in args.iter().enumerate() {
-                self.regs[240 + idx] = *arg;
-            }
-            let mut arg_regs = [0u8; 17];
-            arg_regs[0] = 253;
-            for idx in 0..args.len().min(16) {
-                arg_regs[idx + 1] = 240 + idx as u8;
-            }
+            let arg_regs = self.pack_sync_native_call_args(receiver, callee, args)?;
             // SAFETY: native_fn was set via set_native_fn with a valid NativeFn pointer;
             // native_fn_ptr_to_fn is the single coercion point for NativeFnPtr → NativeFn.
             let func: NativeFn = unsafe { native_fn_ptr_to_fn(native_fn) };
             self.native_call_depth += 1;
-            let result = func(self, &arg_regs[..args.len().min(16) + 1]);
+            let result = func(self, &arg_regs);
             self.native_call_depth -= 1;
             self.regs = saved_regs;
-            self.regs[254] = saved_this;
-            self.regs[253] = saved_callee;
             return match result {
                 NativeResult::Ok(val) => Ok(val),
                 NativeResult::Err(err) => Err(self.error_text(err)),
@@ -473,11 +569,11 @@ impl Vm {
         constructed_this: Option<JsValue>, new_target: JsValue, continuation: FrameContinuation,
     ) -> Result<(), String> {
         if !callee.is_object() {
-            return Err("TypeError: CALL target is not callable".into());
+            return Err(self.error_message_text("TypeError", "CALL target is not callable"));
         }
         let obj = unsafe { &*callee.as_js_object_ptr() };
         if !obj.is_function() || obj.sub_module_index() == 0 {
-            return Err("TypeError: CALL target is not callable".into());
+            return Err(self.error_message_text("TypeError", "CALL target is not callable"));
         }
         let sub_idx = obj.sub_module_index() as usize - 1;
         if sub_idx >= self.sub_modules.len() {
@@ -488,7 +584,7 @@ impl Vm {
             ));
         }
         if self.frames.len() >= self.kernel_core.config.max_call_depth {
-            return Err("RangeError: Maximum call stack size exceeded".into());
+            return self.raise_error_kind("RangeError", "Maximum call stack size exceeded");
         }
 
         let sub_bytecode = self.sub_modules[sub_idx].bytecode.clone();
@@ -577,7 +673,7 @@ impl Vm {
                 }
 
                 OpCode::ADD => {
-                    self.dispatch_add(rd, a, b);
+                    self.dispatch_add(rd, a, b)?;
                 }
 
                 OpCode::SUB => {
@@ -597,36 +693,36 @@ impl Vm {
                 }
 
                 OpCode::NEG => {
-                    let v = coercion::to_number(self.regs[a], self.kernel_core.string_forge().as_ref());
+                    let v = self.coerce_number_bounded(self.regs[a])?;
                     self.regs[rd] = JsValue::float(-v);
                 }
 
                 OpCode::BIT_AND => {
-                    self.dispatch_bit_and(rd, a, b);
+                    self.dispatch_bit_and(rd, a, b)?;
                 }
 
                 OpCode::BIT_OR => {
-                    self.dispatch_bit_or(rd, a, b);
+                    self.dispatch_bit_or(rd, a, b)?;
                 }
 
                 OpCode::BIT_XOR => {
-                    self.dispatch_bit_xor(rd, a, b);
+                    self.dispatch_bit_xor(rd, a, b)?;
                 }
 
                 OpCode::SHL => {
-                    self.dispatch_shl(rd, a, b);
+                    self.dispatch_shl(rd, a, b)?;
                 }
 
                 OpCode::SHR => {
-                    self.dispatch_shr(rd, a, b);
+                    self.dispatch_shr(rd, a, b)?;
                 }
 
                 OpCode::USHR => {
-                    self.dispatch_ushr(rd, a, b);
+                    self.dispatch_ushr(rd, a, b)?;
                 }
 
                 OpCode::BIT_NOT => {
-                    self.dispatch_bit_not(rd, a);
+                    self.dispatch_bit_not(rd, a)?;
                 }
 
                 OpCode::EQ => {
@@ -662,7 +758,7 @@ impl Vm {
                 }
 
                 OpCode::UNARY_PLUS => {
-                    let v = coercion::to_number(self.regs[a], self.kernel_core.string_forge().as_ref());
+                    let v = self.coerce_number_bounded(self.regs[a])?;
                     self.regs[rd] = JsValue::float(v);
                 }
 
@@ -682,6 +778,13 @@ impl Vm {
                 OpCode::JMP_IF_TRUE => {
                     let cond = coercion::to_boolean(self.regs[rd], self.kernel_core.string_forge().as_ref());
                     if cond {
+                        let offset = opcode::offset16(instr) as isize;
+                        self.pc = ((self.pc as isize) + offset - 1) as usize;
+                    }
+                }
+
+                OpCode::JMP_IF_NULLISH => {
+                    if self.regs[rd].is_nullish() {
                         let offset = opcode::offset16(instr) as isize;
                         self.pc = ((self.pc as isize) + offset - 1) as usize;
                     }
@@ -770,7 +873,7 @@ impl Vm {
                             }
                             NativeResult::Err(err_val) => {
                                 self.exception_value = Some(err_val);
-                                self.pending_error_kind = Some("Error");
+                                self.pending_error_kind = Some(self.thrown_error_kind(err_val));
                                 match self.unwind() {
                                     Ok(()) => continue,
                                     Err(e) => return Err(e),
@@ -798,7 +901,7 @@ impl Vm {
                             ));
                         }
                         if self.frames.len() >= self.kernel_core.config.max_call_depth {
-                            return Err("RangeError: Maximum call stack size exceeded".into());
+                            return Err(self.error_message_text("RangeError", "Maximum call stack size exceeded"));
                         }
 
                         let sub_bytecode = self.sub_modules[sub_idx].bytecode.clone();
@@ -933,7 +1036,7 @@ impl Vm {
                     let proto_ptr = self.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
                     let n = opcode::imm16(instr) as usize;
                     let bump = self.epoch.bump();
-                    let obj = self.epoch.alloc(JsObject::new_array(
+                    let obj = self.alloc_object(JsObject::new_array(
                         EMPTY_SHAPE_ID,
                         JsValue::from_js_object(proto_ptr),
                         n,
@@ -943,8 +1046,8 @@ impl Vm {
                 }
 
                 OpCode::COMPOUND_ADD => {
-                    let lhs = self.regs[rd];
-                    let rhs = self.regs[a];
+                    let lhs = self.coerce_primitive_bounded(self.regs[rd], false)?;
+                    let rhs = self.coerce_primitive_bounded(self.regs[a], false)?;
                     if lhs.is_string() || rhs.is_string() {
                         let ls = coercion::to_string(self.kernel_core.string_forge().as_ref(), lhs);
                         let rs = coercion::to_string(self.kernel_core.string_forge().as_ref(), rhs);
@@ -974,33 +1077,33 @@ impl Vm {
                 }
 
                 OpCode::COMPOUND_EXP => {
-                    let l = coercion::to_number(self.regs[rd], self.kernel_core.string_forge().as_ref());
-                    let r = coercion::to_number(self.regs[a], self.kernel_core.string_forge().as_ref());
+                    let l = self.coerce_number_bounded(self.regs[rd])?;
+                    let r = self.coerce_number_bounded(self.regs[a])?;
                     self.regs[rd] = JsValue::float(l.powf(r));
                 }
 
                 OpCode::COMPOUND_AND => {
-                    self.dispatch_compound_bit_and(rd, a);
+                    self.dispatch_compound_bit_and(rd, a)?;
                 }
 
                 OpCode::COMPOUND_OR => {
-                    self.dispatch_compound_bit_or(rd, a);
+                    self.dispatch_compound_bit_or(rd, a)?;
                 }
 
                 OpCode::COMPOUND_XOR => {
-                    self.dispatch_compound_bit_xor(rd, a);
+                    self.dispatch_compound_bit_xor(rd, a)?;
                 }
 
                 OpCode::COMPOUND_SHL => {
-                    self.dispatch_compound_shl(rd, a);
+                    self.dispatch_compound_shl(rd, a)?;
                 }
 
                 OpCode::COMPOUND_SHR => {
-                    self.dispatch_compound_shr(rd, a);
+                    self.dispatch_compound_shr(rd, a)?;
                 }
 
                 OpCode::COMPOUND_USHR => {
-                    self.dispatch_compound_ushr(rd, a);
+                    self.dispatch_compound_ushr(rd, a)?;
                 }
 
                 OpCode::TYPEOF => {
@@ -1016,15 +1119,30 @@ impl Vm {
                 }
 
                 OpCode::DELETE_PROP_STATIC => {
-                    let _ = self.bytecode[self.pc];
+                    let prop_idx = self.bytecode[self.pc] as usize;
                     self.pc += 1;
-                    throw_err!(self, TypeError, "property deletion not supported");
+                    let key_val = self.constants.get(prop_idx).copied().unwrap_or_else(JsValue::undefined);
+                    let prop_name_si = self.property_key_si(key_val);
+                    let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "delete on non-object")? else {
+                        continue;
+                    };
+                    let obj = unsafe { &mut *obj_ptr };
+                    if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+                        obj.set_prop_at(pos, JsValue::undefined());
+                    }
+                    self.regs[rd] = JsValue::bool(true);
                 }
 
                 OpCode::DELETE_PROP_DYNAMIC => {
-                    let _ = self.regs[a];
-                    let _ = self.regs[b];
-                    throw_err!(self, TypeError, "property deletion not supported");
+                    let prop_name_si = self.property_key_si(self.regs[b]);
+                    let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "delete on non-object")? else {
+                        continue;
+                    };
+                    let obj = unsafe { &mut *obj_ptr };
+                    if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+                        obj.set_prop_at(pos, JsValue::undefined());
+                    }
+                    self.regs[rd] = JsValue::bool(true);
                 }
 
                 OpCode::INSTANCEOF => {
@@ -1047,28 +1165,32 @@ impl Vm {
                     self.dispatch_or(rd, a, b);
                 }
 
+                OpCode::NULLISH => {
+                    self.dispatch_nullish(rd, a, b);
+                }
+
                 OpCode::INC_PRE => {
-                    let n = coercion::to_number(self.regs[rd], self.kernel_core.string_forge().as_ref());
+                    let n = self.coerce_number_bounded(self.regs[rd])?;
                     let result = JsValue::float(n + 1.0);
                     self.regs[rd] = result;
                     self.regs[a] = result;
                 }
 
                 OpCode::INC_POST => {
-                    let n = coercion::to_number(self.regs[rd], self.kernel_core.string_forge().as_ref());
+                    let n = self.coerce_number_bounded(self.regs[rd])?;
                     self.regs[a] = JsValue::float(n);
                     self.regs[rd] = JsValue::float(n + 1.0);
                 }
 
                 OpCode::DEC_PRE => {
-                    let n = coercion::to_number(self.regs[rd], self.kernel_core.string_forge().as_ref());
+                    let n = self.coerce_number_bounded(self.regs[rd])?;
                     let result = JsValue::float(n - 1.0);
                     self.regs[rd] = result;
                     self.regs[a] = result;
                 }
 
                 OpCode::DEC_POST => {
-                    let n = coercion::to_number(self.regs[rd], self.kernel_core.string_forge().as_ref());
+                    let n = self.coerce_number_bounded(self.regs[rd])?;
                     self.regs[a] = JsValue::float(n);
                     self.regs[rd] = JsValue::float(n - 1.0);
                 }
@@ -1164,7 +1286,7 @@ impl Default for Vm {
 mod tests {
     use super::{opcode, JsValue, TryHandler, Vm};
     use crate::native::NativeResult;
-    use oxide_compiler::module::{CompiledModule, Constant};
+    use oxide_bytecode::module::{CompiledModule, Constant};
     use oxide_types::object::NativeFnPtr;
     use oxide_types::object::{JsObject, PropAttributes};
 
@@ -1194,19 +1316,28 @@ mod tests {
         NativeResult::Ok(JsValue::undefined())
     }
 
+    fn native_return_last_arg(vm: &mut Vm, args: &[u8]) -> NativeResult {
+        let reg = *args.last().expect("receiver + args");
+        NativeResult::Ok(vm.reg(reg))
+    }
+
+    fn native_return_arg_count(_vm: &mut Vm, args: &[u8]) -> NativeResult {
+        NativeResult::Ok(JsValue::int(args.len().saturating_sub(1) as i32))
+    }
+
     fn native_function(vm: &mut Vm, f: crate::native::NativeFn) -> JsValue {
         let proto = vm.session.builtin_world().function_proto.as_ptr() as *mut JsObject;
         let mut obj = JsObject::new_empty(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
         obj.set_function(true);
         // SAFETY: f is a NativeFn fn-item; valid to store as NativeFnPtr.
         obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(f as *const ()) }));
-        JsValue::object(vm.epoch.alloc(obj) as *mut u8)
+        JsValue::object(vm.alloc_object(obj) as *mut u8)
     }
 
     fn plain_object(vm: &mut Vm) -> JsValue {
         let proto = vm.session.builtin_world().object_proto.as_ptr() as *mut JsObject;
         let obj = JsObject::new_empty(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
-        JsValue::object(vm.epoch.alloc(obj) as *mut u8)
+        JsValue::object(vm.alloc_object(obj) as *mut u8)
     }
 
     fn add_accessor(vm: &mut Vm, obj_val: JsValue, name: &str, get: JsValue, set: JsValue) {
@@ -1475,5 +1606,52 @@ mod tests {
         assert_eq!(vm.ordinary_get(obj, x_si, obj_val).expect("get"), JsValue::int(1));
         vm.ordinary_set(obj, x_si, JsValue::int(2), obj_val).expect("set");
         assert_eq!(vm.ordinary_get(obj, x_si, obj_val).expect("get"), JsValue::int(2));
+    }
+
+    #[test]
+    fn call_function_sync_passes_high_arity_native_args_without_truncation() {
+        let mut vm = Vm::new();
+        let callee = native_function(&mut vm, native_return_last_arg);
+        let args: Vec<JsValue> = (0..20).map(JsValue::int).collect();
+
+        let result = vm
+            .call_function_sync(callee, JsValue::undefined(), &args)
+            .expect("high-arity sync call should succeed");
+
+        assert_eq!(result, JsValue::int(19));
+    }
+
+    #[test]
+    fn call_function_sync_reports_actual_native_arg_count() {
+        let mut vm = Vm::new();
+        let callee = native_function(&mut vm, native_return_arg_count);
+        let args: Vec<JsValue> = (0..32).map(JsValue::int).collect();
+
+        let result = vm
+            .call_function_sync(callee, JsValue::undefined(), &args)
+            .expect("arg count should be preserved");
+
+        assert_eq!(result, JsValue::int(32));
+    }
+
+    #[test]
+    fn call_function_sync_rejects_unrepresentable_native_arity_without_register_corruption() {
+        let mut vm = Vm::new();
+        let callee = native_function(&mut vm, native_return_arg_count);
+        vm.set_reg(1, JsValue::int(7));
+        vm.set_reg(253, JsValue::int(11));
+        vm.set_reg(254, JsValue::int(12));
+        vm.set_reg(255, JsValue::int(13));
+
+        let args = vec![JsValue::undefined(); Vm::SYNC_NATIVE_ARG_LIMIT + 1];
+        let err = vm
+            .call_function_sync(callee, JsValue::undefined(), &args)
+            .expect_err("too many args should fail cleanly");
+
+        assert!(err.contains("at most 253 arguments"), "unexpected error: {err}");
+        assert_eq!(vm.reg(1), JsValue::int(7));
+        assert_eq!(vm.reg(253), JsValue::int(11));
+        assert_eq!(vm.reg(254), JsValue::int(12));
+        assert_eq!(vm.reg(255), JsValue::int(13));
     }
 }

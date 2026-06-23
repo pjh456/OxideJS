@@ -105,3 +105,17 @@ fn test_to_int32_and_to_uint32() {
     assert_eq!(coercion::to_int32(JsValue::float(f64::INFINITY), sf), 0);
     assert_eq!(coercion::to_uint32(JsValue::int(-1), sf), 4_294_967_295);
 }
+
+#[test]
+fn primitive_property_write_throws_clean_type_error() {
+    for source in ["'abc'.x = 1", "(5).foo = 1", "true.foo = 1"] {
+        let err = eval(source);
+        assert!(err.contains("TypeError"), "expected TypeError for {source}, got {err}");
+        assert!(
+            !err.contains("IC_SET_PROP on non-object")
+                && !err.contains("SET_PROP on non-object")
+                && !err.contains("SET_PROP_DYNAMIC on non-object"),
+            "unexpected internal opcode message for {source}: {err}"
+        );
+    }
+}

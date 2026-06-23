@@ -57,6 +57,9 @@ pub fn boolean_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
 pub fn boolean_prototype_value_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    if this_val.is_bool() {
+        return NativeResult::Ok(this_val);
+    }
     if !this_val.is_object() {
         return NativeResult::Err(crate::builtins::error::create_type_error(
             vm,
@@ -76,6 +79,13 @@ pub fn boolean_prototype_value_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
 pub fn boolean_prototype_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    if this_val.is_bool() {
+        return if this_val.as_bool() {
+            NativeResult::Ok(vm.intern("true"))
+        } else {
+            NativeResult::Ok(vm.intern("false"))
+        };
+    }
     if !this_val.is_object() {
         return NativeResult::Err(crate::builtins::error::create_type_error(
             vm,

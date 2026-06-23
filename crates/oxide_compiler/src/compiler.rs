@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
-use crate::module::CompiledModule;
-use crate::opcode::{self, OpCode};
 use crate::symbol_table::{Binding, SymbolTable};
+use oxide_bytecode::module::CompiledModule;
+use oxide_bytecode::opcode::{self, OpCode};
 
 pub use crate::hash::{compiled_module_hash, structural_hash};
-pub use crate::module::Constant;
 use crate::symbol_table::ScopeKind;
+pub use oxide_bytecode::module::Constant;
 pub use oxide_parser::VariableDeclarationKind;
 pub use oxide_parser::{AssignmentOperator, BinaryOperator, Expression, Statement, UnaryOperator};
 
@@ -17,21 +17,28 @@ pub(crate) fn is_int_literal(value: f64) -> bool {
 }
 
 pub(crate) fn is_side_effect_free(expr: &Expression) -> bool {
-    match expr {
-        Expression::NumericLiteral(_)
-        | Expression::StringLiteral(_)
-        | Expression::BooleanLiteral(_)
-        | Expression::NullLiteral(_)
-        | Expression::Identifier(_)
-        | Expression::RegExpLiteral(_)
-        | Expression::ThisExpression(_) => true,
-        Expression::ParenthesizedExpression(p) => is_side_effect_free(&p.expression),
-        Expression::BinaryExpression(bin) => is_side_effect_free(&bin.left) && is_side_effect_free(&bin.right),
-        Expression::UnaryExpression(un) => {
-            !matches!(un.operator, UnaryOperator::Delete) && is_side_effect_free(&un.argument)
+    let mut stack = vec![expr];
+    while let Some(expr) = stack.pop() {
+        match expr {
+            Expression::NumericLiteral(_)
+            | Expression::StringLiteral(_)
+            | Expression::BooleanLiteral(_)
+            | Expression::NullLiteral(_)
+            | Expression::Identifier(_)
+            | Expression::RegExpLiteral(_)
+            | Expression::ThisExpression(_) => {}
+            Expression::ParenthesizedExpression(p) => stack.push(&p.expression),
+            Expression::BinaryExpression(bin) => {
+                stack.push(&bin.left);
+                stack.push(&bin.right);
+            }
+            Expression::UnaryExpression(un) if !matches!(un.operator, UnaryOperator::Delete) => {
+                stack.push(&un.argument);
+            }
+            _ => return false,
         }
-        _ => false,
     }
+    true
 }
 
 const BUILTIN_GLOBALS: &[&str] = &[
@@ -118,6 +125,17 @@ pub(crate) enum Label {
     CatchBody(u32),
     FinallyBody(u32),
     TryEnd(u32),
+    LabeledEnd(u32),
+}
+
+/// A labeled-statement scope active during emission. `break label` targets
+/// `break_label`; `continue label` targets `continue_label` (only set when the
+/// labeled statement directly wraps an iteration statement).
+#[derive(Debug, Clone)]
+pub(crate) struct LabelScope {
+    pub(crate) name: String,
+    pub(crate) break_label: Label,
+    pub(crate) continue_label: Option<Label>,
 }
 
 pub(crate) struct CompileCtx {
@@ -132,6 +150,10 @@ pub(crate) struct CompileCtx {
     pub(crate) loop_stack: Vec<(Label, Label)>,
     #[allow(dead_code)]
     pub(crate) switch_stack: Vec<Label>,
+    /// Active labeled-statement scopes (resolves `break label` / `continue label`).
+    pub(crate) label_scopes: Vec<LabelScope>,
+    /// Label names awaiting binding to the next emitted loop's continue target.
+    pub(crate) pending_loop_labels: Vec<String>,
     pub(crate) label_counter: u32,
     pub(crate) projected_pc: usize,
     pub(crate) builtin_reg_map: Vec<(String, u8)>,
@@ -151,6 +173,8 @@ pub(crate) struct CompileCtx {
     /// Set when alloc_reg() overflows into the reserved this/new.target range (≥254).
     /// Checked after each emit phase to produce a compile error rather than silent corruption.
     pub(crate) reg_overflow: bool,
+    pub(crate) const_overflow: bool,
+    pub(crate) jump_overflow: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -201,6 +225,8 @@ impl CompileCtx {
             label_map: HashMap::new(),
             loop_stack: Vec::new(),
             switch_stack: Vec::new(),
+            label_scopes: Vec::new(),
+            pending_loop_labels: Vec::new(),
             label_counter: 0,
             projected_pc: 0,
             builtin_reg_map: Vec::new(),
@@ -215,6 +241,8 @@ impl CompileCtx {
             after_super_insert: None,
             after_super_inserted: false,
             reg_overflow: false,
+            const_overflow: false,
+            jump_overflow: false,
         }
     }
 
@@ -224,6 +252,67 @@ impl CompileCtx {
 
     pub(crate) fn emit_load_const(&mut self, reg: u8, idx: u16) {
         self.emit(opcode::encode(OpCode::LOAD_CONST, reg, (idx & 0xFF) as u8, ((idx >> 8) & 0xFF) as u8));
+    }
+
+    pub(crate) fn count_word(&mut self) {
+        self.projected_pc += 1;
+    }
+
+    pub(crate) fn count_words(&mut self, words: usize) {
+        self.projected_pc += words;
+    }
+
+    pub(crate) fn count_instr(&mut self) {
+        self.count_word();
+    }
+
+    pub(crate) fn count_instr_with_ext(&mut self, ext_words: usize) {
+        self.count_words(1 + ext_words);
+    }
+
+    pub(crate) fn count_load_const(&mut self) {
+        self.alloc_reg();
+        self.count_instr();
+    }
+
+    pub(crate) fn count_load_var(&mut self) {
+        self.alloc_reg();
+        self.count_instr();
+    }
+
+    pub(crate) fn count_ic_instr_with_ext(&mut self) {
+        self.count_instr_with_ext(3);
+    }
+
+    pub(crate) fn count_ic_set_with_ext(&mut self) {
+        self.count_ic_instr_with_ext();
+    }
+
+    pub(crate) fn count_call_instr_with_arg_ext(&mut self) {
+        self.count_instr_with_ext(1);
+    }
+
+    pub(crate) fn count_delete_static(&mut self) {
+        self.count_instr_with_ext(1);
+    }
+
+    pub(crate) fn count_define_accessor(&mut self) {
+        self.count_instr_with_ext(1);
+    }
+
+    pub(crate) fn count_private_access(&mut self) {
+        self.count_load_const();
+        self.alloc_reg();
+        self.count_instr();
+    }
+
+    pub(crate) fn count_template_str(&mut self, segment_count: usize) {
+        self.alloc_reg();
+        self.count_instr_with_ext(1 + segment_count);
+    }
+
+    pub(crate) fn count_jump(&mut self) {
+        self.count_instr();
     }
 
     pub(crate) fn alloc_reg(&mut self) -> u8 {
@@ -273,6 +362,10 @@ impl CompileCtx {
                 return idx;
             }
 
+            if self.constants.len() >= u16::MAX as usize {
+                self.const_overflow = true;
+                return u16::MAX;
+            }
             let idx = self.constants.len() as u16;
             self.constants.push(c);
             self.constant_map.insert(key, idx);
@@ -280,8 +373,21 @@ impl CompileCtx {
         }
 
         let idx = self.constants.len();
+        if idx >= u16::MAX as usize {
+            self.const_overflow = true;
+            return u16::MAX;
+        }
         self.constants.push(c);
         idx as u16
+    }
+
+    pub(crate) fn checked_jump_offset(&mut self, offset: isize) -> i16 {
+        if offset < i16::MIN as isize || offset > i16::MAX as isize {
+            self.jump_overflow = true;
+            0
+        } else {
+            offset as i16
+        }
     }
 
     pub(crate) fn resolve_label(&self, label: Label) -> Result<usize, String> {
@@ -377,6 +483,60 @@ impl CompileCtx {
 
     pub(crate) fn current_switch(&self) -> Option<&Label> {
         self.switch_stack.last()
+    }
+
+    pub(crate) fn push_label_scope(
+        &mut self, name: &str, break_label: Label, continue_label: Option<Label>,
+    ) -> Result<(), String> {
+        if self.label_scopes.iter().any(|s| s.name == name) {
+            return Err(format!("SyntaxError: Label '{name}' has already been declared"));
+        }
+        self.label_scopes.push(LabelScope {
+            name: name.to_string(),
+            break_label,
+            continue_label,
+        });
+        Ok(())
+    }
+
+    pub(crate) fn pop_label_scope(&mut self) {
+        self.label_scopes.pop();
+    }
+
+    pub(crate) fn find_label(&self, name: &str) -> Option<&LabelScope> {
+        self.label_scopes.iter().rev().find(|s| s.name == name)
+    }
+
+    /// Queue a label name to be bound to the continue target of the next loop
+    /// emitted as the labeled statement's body. Rejects duplicates in the active
+    /// or pending sets.
+    pub(crate) fn queue_loop_label(&mut self, name: &str) -> Result<(), String> {
+        if self.label_scopes.iter().any(|s| s.name == name) || self.pending_loop_labels.iter().any(|n| n == name) {
+            return Err(format!("SyntaxError: Label '{name}' has already been declared"));
+        }
+        self.pending_loop_labels.push(name.to_string());
+        Ok(())
+    }
+
+    /// Drain queued loop labels into active scopes bound to this loop's break and
+    /// continue targets. Returns how many scopes were pushed (to pop after).
+    pub(crate) fn take_pending_loop_labels(&mut self, break_label: Label, continue_label: Label) -> usize {
+        let names = std::mem::take(&mut self.pending_loop_labels);
+        let count = names.len();
+        for name in names {
+            self.label_scopes.push(LabelScope {
+                name,
+                break_label,
+                continue_label: Some(continue_label),
+            });
+        }
+        count
+    }
+
+    pub(crate) fn pop_label_scopes(&mut self, n: usize) {
+        for _ in 0..n {
+            self.label_scopes.pop();
+        }
     }
 
     pub(crate) fn is_builtin(&self, name: &str) -> bool {
@@ -645,6 +805,12 @@ impl Compiler {
         if ctx.reg_overflow {
             return Err("RangeError: function body uses too many registers (max 253)".into());
         }
+        if ctx.const_overflow {
+            return Err("RangeError: too many constants".into());
+        }
+        if ctx.jump_overflow {
+            return Err("RangeError: jump offset out of range".into());
+        }
 
         Ok(CompiledModule {
             bytecode: ctx.bytecode,
@@ -710,6 +876,12 @@ impl Compiler {
         if ctx.reg_overflow {
             return Err("RangeError: function body uses too many registers (max 253)".into());
         }
+        if ctx.const_overflow {
+            return Err("RangeError: too many constants".into());
+        }
+        if ctx.jump_overflow {
+            return Err("RangeError: jump offset out of range".into());
+        }
 
         Ok(CompiledModule {
             bytecode: ctx.bytecode,
@@ -732,5 +904,18 @@ impl Compiler {
 impl Default for Compiler {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CompileCtx;
+
+    #[test]
+    fn test_jump_offset_overflow_range_error() {
+        let mut ctx = CompileCtx::new();
+        let offset = ctx.checked_jump_offset(i16::MAX as isize + 1);
+        assert_eq!(offset, 0);
+        assert!(ctx.jump_overflow);
     }
 }

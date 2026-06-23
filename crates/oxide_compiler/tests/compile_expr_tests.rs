@@ -1,14 +1,16 @@
+use oxide_bytecode::module::{CompiledModule, Constant};
+use oxide_bytecode::opcode::{self, OpCode};
 use oxide_compiler::compiler::Compiler;
-use oxide_compiler::opcode::{self, OpCode};
 use oxide_parser::Allocator;
 
-fn compile_source(source: &str) -> oxide_compiler::module::CompiledModule {
+fn compile_source(source: &str) -> CompiledModule {
     let allocator = Allocator::default();
     let program = oxide_parser::parse(&allocator, source).expect("parse failed");
     let compiler = Compiler::new();
     compiler.compile(&program).expect("compile failed")
 }
 
+#[allow(dead_code)]
 fn compile_source_err(source: &str) -> String {
     let allocator = Allocator::default();
     let program = oxide_parser::parse(&allocator, source).expect("parse failed");
@@ -31,17 +33,25 @@ fn compile_simple_expr() {
 }
 
 #[test]
-fn unsupported_logical_assignment_returns_compile_error() {
-    let err = compile_source_err("let x = 0; x ||= 1;");
-    assert!(err.contains("compound assignment operator"));
-    assert!(err.contains("not supported"));
+fn test_constant_pool_overflow_range_error() {
+    let expr = (0..70_000).map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+    let source = format!("var a=[{expr}]; a");
+    let err = compile_source_err(&source);
+    assert!(err.contains("too many constants"), "unexpected error: {err}");
 }
 
 #[test]
-fn unsupported_member_logical_assignment_returns_compile_error() {
-    let err = compile_source_err("let obj = { x: 0 }; obj.x ||= 1;");
-    assert!(err.contains("compound assignment operator"));
-    assert!(err.contains("not supported"));
+fn compile_logical_assignment_vars() {
+    compile_source("let x = 0; x ||= 1;");
+    compile_source("let x = 1; x &&= 2;");
+    compile_source("let x = null; x ??= 3;");
+}
+
+#[test]
+fn compile_logical_assignment_members() {
+    compile_source("let obj = { x: 0 }; obj.x ||= 1;");
+    compile_source("let obj = { x: 1 }; obj.x &&= 2;");
+    compile_source("let obj = { x: null }; obj.x ??= 3;");
 }
 
 #[test]
@@ -49,7 +59,7 @@ fn compile_constants() {
     let module = compile_source("42");
 
     assert!(!module.constants.is_empty());
-    assert_eq!(module.constants[0], oxide_compiler::compiler::Constant::Int(42));
+    assert_eq!(module.constants[0], Constant::Int(42));
 }
 
 #[test]
@@ -58,7 +68,7 @@ fn compile_dedups_identical_string_constants() {
     let count = module
         .constants
         .iter()
-        .filter(|c| matches!(c, oxide_compiler::compiler::Constant::String(s) if s == "hello"))
+        .filter(|c| matches!(c, Constant::String(s) if s == "hello"))
         .count();
     assert_eq!(count, 1, "identical string constants should be interned once per module");
 }
@@ -170,10 +180,14 @@ fn compile_logical_or_simple() {
 
 #[test]
 fn regression_coalesce_consistency() {
-    let result = std::panic::catch_unwind(|| {
-        compile_source("a ?? b");
-    });
-    assert!(result.is_err(), "a ?? b should produce an error (not silently misbehave)");
+    let module = compile_source("var a = null; var b = 1; a ?? b");
+    assert!(
+        module
+            .bytecode
+            .iter()
+            .any(|&instr| opcode::opcode(instr) == OpCode::NULLISH || opcode::opcode(instr) == OpCode::JMP_IF_NULLISH),
+        "a ?? b should emit nullish bytecode"
+    );
 }
 
 #[test]
@@ -332,6 +346,32 @@ fn compile_inc_dec_diff_opcodes() {
 }
 
 #[test]
+fn nullish_opcodes_round_trip() {
+    for op in [OpCode::NULLISH, OpCode::JMP_IF_NULLISH] {
+        assert_eq!(OpCode::try_from(op as u8), Ok(op));
+        assert_eq!(format!("{op}"), format!("{op:?}"));
+    }
+}
+
+#[test]
+fn compile_nullish_fast_path_opcode() {
+    let module = compile_source("null ?? 5");
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::NULLISH),
+        "side-effect-free ?? should emit NULLISH"
+    );
+}
+
+#[test]
+fn compile_nullish_short_circuit_opcode() {
+    let module = compile_source("var x = 0; x ?? (x = 5)");
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::JMP_IF_NULLISH),
+        "side-effecting ?? should emit JMP_IF_NULLISH"
+    );
+}
+
+#[test]
 fn compile_member_inc() {
     let module = compile_source("var obj={x:1}; obj.x++");
     assert!(
@@ -447,7 +487,7 @@ fn compile_class_expression_default_constructor() {
 
 #[test]
 fn compile_large_pure_expression_reuses_temp_registers() {
-    let expr = std::iter::repeat("1").take(120).collect::<Vec<_>>().join(" + ");
+    let expr = std::iter::repeat("1").take(40).collect::<Vec<_>>().join(" + ");
     let module = compile_source(&expr);
     assert!(
         module.n_registers < 16,

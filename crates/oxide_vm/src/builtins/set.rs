@@ -105,7 +105,7 @@ fn alloc_set(vm: &mut Vm) -> *mut JsObject {
     obj.set_set(true);
     let inner = new_set_inner();
     obj.set_native_data(inner as *mut u8);
-    vm.epoch().alloc(obj)
+    vm.alloc_object(obj)
 }
 
 pub(crate) fn set_native_edges(obj: &JsObject) -> Vec<JsValue> {

@@ -106,3 +106,46 @@ fn boolean_new_to_string() {
     let r = eval(&mut vm, "new Boolean(false).toString()").unwrap();
     assert_eq!(str_val(&vm, r), "false");
 }
+
+#[test]
+fn boolean_primitive_to_string_autoboxes() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "true.toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "true");
+
+    let r = eval(&mut vm, "false.toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "false");
+}
+
+#[test]
+fn boolean_primitive_value_of_autoboxes() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "false.valueOf()").unwrap();
+    assert_eq!(r, JsValue::bool(false));
+
+    let r = eval(&mut vm, "(true).constructor === Boolean").unwrap();
+    assert_eq!(r, JsValue::bool(true));
+}
+
+#[test]
+fn boolean_boxes_participate_in_numeric_coercion() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "+new Boolean(true)").unwrap();
+    assert_eq!(r.as_double(), 1.0);
+
+    let r = eval(&mut vm, "new Boolean(false) | 0").unwrap();
+    assert_eq!(r.as_int(), 0);
+}
+
+#[test]
+fn boxed_boolean_valueof_tostring_and_object_e2e() {
+    let mut vm = Vm::new();
+    assert!(!eval(&mut vm, "new Boolean(false).valueOf()").unwrap().as_bool());
+    assert!(eval(&mut vm, "new Boolean(1).valueOf()").unwrap().as_bool());
+
+    let t = eval(&mut vm, "new Boolean(false).toString()").unwrap();
+    assert_eq!(str_val(&vm, t), "false");
+
+    let ty = eval(&mut vm, "typeof new Boolean(true)").unwrap();
+    assert_eq!(str_val(&vm, ty), "object");
+}
