@@ -6,6 +6,7 @@ use oxide_vm::vm::Vm;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
@@ -511,12 +512,89 @@ fn run_test_inner(
 }
 
 fn discover_tests(test262_root: &Path) -> Vec<PathBuf> {
-    WalkDir::new(test262_root)
+    let mut paths: Vec<PathBuf> = WalkDir::new(test262_root)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().is_some_and(|ext| ext == "js"))
         .map(|e| e.path().to_path_buf())
-        .collect()
+        .collect();
+    paths.sort();
+    paths
+}
+
+fn parse_summary_count(stdout: &str, label: &str) -> Option<usize> {
+    stdout.lines().find_map(|line| {
+        let trimmed = line.trim_start();
+        let rest = trimmed.strip_prefix(label)?;
+        let value = rest.trim().split(' ').next()?;
+        value.parse::<usize>().ok()
+    })
+}
+
+fn run_chunked(args: &[String], skip_until: usize, end_index: usize, chunk_size: usize) -> bool {
+    let exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("failed to resolve current executable for chunked mode: {err}");
+            return false;
+        }
+    };
+
+    let mut aggregate_pass = 0usize;
+    let mut aggregate_fail = 0usize;
+    let mut aggregate_skip = 0usize;
+    let mut chunk_start = skip_until;
+    let mut chunk_id = 1usize;
+
+    while chunk_start < end_index {
+        let chunk_len = (end_index - chunk_start).min(chunk_size);
+        eprintln!("chunk {chunk_id}: tests [{chunk_start}, {})", chunk_start + chunk_len);
+
+        let output = match Command::new(&exe)
+            .args(args.iter().skip(1))
+            .env("OXIDE_SKIP_UNTIL", chunk_start.to_string())
+            .env("OXIDE_MAX_TESTS", chunk_len.to_string())
+            .env("OXIDE_TEST262_CHILD_CHUNK", "1")
+            .env("OXIDE_TEST262_ALLOW_FAIL_EXIT", "1")
+            .output()
+        {
+            Ok(output) => output,
+            Err(err) => {
+                eprintln!("failed to run chunk {chunk_id}: {err}");
+                return false;
+            }
+        };
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        print!("{stdout}");
+        eprint!("{stderr}");
+
+        if !output.status.success() {
+            eprintln!("chunk {chunk_id} crashed or aborted");
+            return false;
+        }
+
+        aggregate_pass += parse_summary_count(&stdout, "pass   :").unwrap_or(0);
+        aggregate_fail += parse_summary_count(&stdout, "fail   :").unwrap_or(0);
+        aggregate_skip += parse_summary_count(&stdout, "skip   :").unwrap_or(0);
+
+        chunk_start += chunk_len;
+        chunk_id += 1;
+    }
+
+    let aggregate_total = aggregate_pass + aggregate_fail + aggregate_skip;
+    println!();
+    println!("═══════════════════════════════════════");
+    println!("  test262 chunked aggregate");
+    println!("═══════════════════════════════════════");
+    println!("  total  : {}", aggregate_total);
+    println!("  pass   : {}", aggregate_pass);
+    println!("  fail   : {}", aggregate_fail);
+    println!("  skip   : {}", aggregate_skip);
+    println!("═══════════════════════════════════════");
+
+    aggregate_fail == 0
 }
 
 /// Per-test pipeline shared by the serial and parallel execution paths:
@@ -716,11 +794,16 @@ fn run_tests() -> bool {
     // own kernel + harness-source registry + prefix cache. Only `PathBuf` and
     // `TestResult` (both `Send`) cross thread boundaries. Workers pull test
     // indices from a shared atomic cursor for dynamic load balancing.
+    let default_workers = if config.no_skip {
+        4
+    } else {
+        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
+    };
     let workers = std::env::var("OXIDE_TEST262_WORKERS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|&n| n > 0)
-        .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4))
+        .unwrap_or(default_workers)
         .min(total.max(1));
     let log_running_tests = std::env::var_os("OXIDE_TEST262_RUNNING_LOG").is_some();
 
@@ -737,6 +820,25 @@ fn run_tests() -> bool {
         .and_then(|n| skip_until.checked_add(n))
         .map(|n| n.min(total))
         .unwrap_or(total);
+    let kernel_batch = std::env::var("OXIDE_TEST262_KERNEL_BATCH")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(if config.no_skip { 1000 } else { 5000 });
+    let chunk_size = std::env::var("OXIDE_TEST262_CHUNK_SIZE")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n > 0);
+    let is_chunk_child = std::env::var_os("OXIDE_TEST262_CHILD_CHUNK").is_some();
+    let allow_fail_exit = std::env::var_os("OXIDE_TEST262_ALLOW_FAIL_EXIT").is_some();
+
+    if let Some(chunk_size) = chunk_size {
+        if !is_chunk_child && filter.is_none() {
+            eprintln!("chunked mode enabled: {chunk_size} test(s) per child process");
+            return run_chunked(&args, skip_until, end_index, chunk_size);
+        }
+    }
+    eprintln!("kernel reset batch: {kernel_batch} test(s)");
     let cursor = AtomicUsize::new(skip_until);
     let progress = AtomicUsize::new(skip_until);
     let filter = &filter;
@@ -744,9 +846,10 @@ fn run_tests() -> bool {
     let paths_ref = &paths;
     let harness_cache = Arc::new(RwLock::new(HarnessPrefixCache::new()));
 
-    // Each worker returns its partial stats plus (index, result) pairs so the
-    // final results vector can be restored to discovery order for stable output.
-    let partials: Vec<(RunStats, Vec<(usize, TestResult)>)> = std::thread::scope(|scope| {
+    // Keep memory flat: workers return only aggregate stats. Retaining tens of
+    // thousands of `TestResult`s makes `--no-skip` runs accumulate path/error
+    // strings until the process OOMs near the end of the suite.
+    let partials: Vec<RunStats> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..workers)
             .map(|_| {
                 let cursor = &cursor;
@@ -757,10 +860,10 @@ fn run_tests() -> bool {
                 std::thread::Builder::new()
                     .stack_size(16 * 1024 * 1024)
                     .spawn_scoped(scope, move || {
-                        let kernel = build_runner_kernel();
+                        let mut kernel = build_runner_kernel();
                         let harness_sources = HARNESS.get_or_init(HarnessSources::new);
                         let mut stats = RunStats::default();
-                        let mut out: Vec<(usize, TestResult)> = Vec::new();
+                        let mut tests_since_kernel_reset = 0usize;
 
                         let tid = std::thread::current().id();
                         loop {
@@ -780,18 +883,22 @@ fn run_tests() -> bool {
                             let result =
                                 process_path(&paths_ref[i], filter, no_skip, &kernel, harness_sources, &harness_cache);
                             stats.record(&result);
-                            out.push((i, result));
+                            tests_since_kernel_reset += 1;
 
                             let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
                             if done % 500 == 0 {
                                 kernel.sweep_runner_forges();
+                            }
+                            if tests_since_kernel_reset >= kernel_batch {
+                                kernel = build_runner_kernel();
+                                tests_since_kernel_reset = 0;
                             }
                             if done % 500 == 0 || done == total {
                                 eprintln!("  progress: {done}/{total} ({}%)", done * 100 / total);
                             }
                         }
 
-                        (stats, out)
+                        stats
                     })
                     .expect("failed to spawn test262 worker thread")
             })
@@ -803,26 +910,23 @@ fn run_tests() -> bool {
             .collect()
     });
 
-    // Reduce partial stats and restore discovery order for deterministic output.
+    // Reduce partial stats without materializing every test result in memory.
     let mut stats = RunStats::default();
-    let mut indexed: Vec<(usize, TestResult)> = Vec::with_capacity(total);
-    for (partial_stats, partial_results) in partials {
+    for partial_stats in partials {
         stats.merge(partial_stats);
-        indexed.extend(partial_results);
     }
-    indexed.sort_by_key(|(i, _)| *i);
-    let results: Vec<TestResult> = indexed.into_iter().map(|(_, r)| r).collect();
 
     eprintln!();
 
     let ran = stats.pass + stats.fail;
+    let executed_total = end_index.saturating_sub(skip_until);
 
     println!();
     println!("═══════════════════════════════════════");
     println!("  test262 results");
     println!("═══════════════════════════════════════");
-    println!("  total  : {}", results.len());
-    let total = results.len() as f64;
+    println!("  total  : {}", executed_total);
+    let total = executed_total as f64;
     println!("  pass   : {} ({:.1}%)", stats.pass, stats.pass as f64 / total * 100.0);
     println!("  fail   : {} ({:.1}%)", stats.fail, stats.fail as f64 / total * 100.0);
     println!("  skip   : {} ({:.1}%)", stats.skip, stats.skip as f64 / total * 100.0);
@@ -842,7 +946,7 @@ fn run_tests() -> bool {
     }
     println!("═══════════════════════════════════════");
 
-    if stats.fail > 0 {
+    if stats.fail > 0 && !allow_fail_exit {
         return false;
     }
     true

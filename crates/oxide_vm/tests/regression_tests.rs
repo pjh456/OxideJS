@@ -213,3 +213,20 @@ fn test_typed_array_survives_promote_reset() {
 fn test_flat_infinity_bounded() {
     assert_eq!(eval("[1,[2,[3,[4]]]].flat(Infinity).length"), "4");
 }
+
+#[test]
+fn regression_bounded_object_numeric_coercion() {
+    assert_eq!(eval("+new Number(1)"), "1");
+    assert_eq!(eval("+new Boolean(true)"), "1");
+    assert_eq!(eval("new Boolean(false) | 0"), "0");
+    assert_eq!(eval("+({ valueOf: function() { return 7; } })"), "7");
+    assert_eq!(eval("+({ toString: function() { return '9'; } })"), "9");
+    assert_eq!(
+        eval("+({ valueOf: function() { return {}; }, toString: function() { return {}; } })"),
+        "vm error: TypeError: Cannot convert object to primitive value"
+    );
+    assert_eq!(
+        eval("+({ valueOf: function() { throw new RangeError('coerce'); } })"),
+        "vm error: uncaught RangeError: coerce"
+    );
+}
