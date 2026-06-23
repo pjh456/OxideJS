@@ -1,9 +1,9 @@
+use oxide_code_cache::CodeForge;
 use oxide_compiler::compiler::Compiler;
-use oxide_kernel::code_forge::CodeForge;
 use oxide_parser::Allocator;
 
 #[allow(dead_code)]
-fn compile_source(source: &str) -> oxide_compiler::module::CompiledModule {
+fn compile_source(source: &str) -> oxide_bytecode::module::CompiledModule {
     let allocator = Allocator::default();
     let program = oxide_parser::parse(&allocator, source).expect("parse failed");
     let compiler = Compiler::new();
@@ -29,8 +29,13 @@ fn structural_hash_hit() {
     let allocator = Allocator::default();
     let program = oxide_parser::parse(&allocator, "1 + 2").expect("parse failed");
 
-    let m1 = forge.get_or_compile(&program, &compiler).expect("first compile");
-    let m2 = forge.get_or_compile(&program, &compiler).expect("second compile");
+    let hash = oxide_compiler::compiler::compiled_module_hash(&program);
+    let m1 = forge
+        .get_or_insert_with(hash, || compiler.compile(&program))
+        .expect("first compile");
+    let m2 = forge
+        .get_or_insert_with(hash, || compiler.compile(&program))
+        .expect("second compile");
 
     assert_eq!((m1.bytecode.len(), m1.n_registers), (m2.bytecode.len(), m2.n_registers));
 }

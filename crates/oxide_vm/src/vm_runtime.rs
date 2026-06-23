@@ -1,5 +1,5 @@
-use oxide_compiler::module::CompiledModule;
-use oxide_compiler::opcode;
+use oxide_bytecode::module::CompiledModule;
+use oxide_bytecode::opcode;
 
 use crate::vm::{CallFrame, InlineSyncState, Vm};
 use oxide_types::object::JsObject;

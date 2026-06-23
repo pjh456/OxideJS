@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "crates/oxide_parser",
+    "crates/oxide_bytecode",
+    "crates/oxide_code_cache",
     "crates/oxide_compiler",
     "crates/oxide_types",
     "crates/oxide_vm",

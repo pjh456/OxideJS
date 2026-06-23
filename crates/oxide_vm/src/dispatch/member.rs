@@ -1,4 +1,4 @@
-use oxide_compiler::opcode::OpCode;
+use oxide_bytecode::opcode::OpCode;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 

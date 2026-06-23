@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use oxide_compiler::module::CompiledModule;
-use oxide_compiler::opcode::{self, OpCode};
+use oxide_bytecode::module::CompiledModule;
+use oxide_bytecode::opcode::{self, OpCode};
 use smallvec::SmallVec;
 
 pub use crate::bindings::init_kernel_builtins;
@@ -1286,7 +1286,7 @@ impl Default for Vm {
 mod tests {
     use super::{opcode, JsValue, TryHandler, Vm};
     use crate::native::NativeResult;
-    use oxide_compiler::module::{CompiledModule, Constant};
+    use oxide_bytecode::module::{CompiledModule, Constant};
     use oxide_types::object::NativeFnPtr;
     use oxide_types::object::{JsObject, PropAttributes};
 

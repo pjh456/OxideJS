@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
-use crate::module::CompiledModule;
-use crate::opcode::{self, OpCode};
 use crate::symbol_table::{Binding, SymbolTable};
+use oxide_bytecode::module::CompiledModule;
+use oxide_bytecode::opcode::{self, OpCode};
 
 pub use crate::hash::{compiled_module_hash, structural_hash};
-pub use crate::module::Constant;
 use crate::symbol_table::ScopeKind;
+pub use oxide_bytecode::module::Constant;
 pub use oxide_parser::VariableDeclarationKind;
 pub use oxide_parser::{AssignmentOperator, BinaryOperator, Expression, Statement, UnaryOperator};
 
