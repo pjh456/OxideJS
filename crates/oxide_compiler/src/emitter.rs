@@ -1,5 +1,6 @@
 use crate::compiler::Label;
-use crate::opcode::{self, OpCode};
+use oxide_bytecode::module::Constant;
+use oxide_bytecode::opcode::{self, OpCode};
 use oxide_parser::{
     AssignmentOperator, AssignmentTarget, AssignmentTargetMaybeDefault, AssignmentTargetProperty, BindingPattern,
     ChainElement, Class, ClassElement, Expression, ForStatementInit, ForStatementLeft, LogicalOperator,
@@ -10,8 +11,6 @@ use oxide_parser::{
 use crate::compiler::{
     is_int_literal, is_side_effect_free, BinaryOperator, CompileCtx, Compiler, FunctionBodyContext, ParamSpec,
 };
-use crate::module::Constant;
-
 impl Compiler {
     fn emit_optional_guard(&self, reg: u8, short_label: Label, ctx: &mut CompileCtx) -> Result<(), String> {
         let short_pos = ctx.resolve_label(short_label)?;

@@ -7,7 +7,7 @@ rust-version.workspace = true
 description = "OxideJS - Register-based VM with epoch arena memory"
 
 [dependencies]
-oxide_compiler = { path = "../oxide_compiler" }
+oxide_bytecode = { path = "../oxide_bytecode" }
 oxide_kernel = { path = "../oxide_kernel" }
 oxide_types = { path = "../oxide_types" }
 bumpalo.workspace = true
@@ -23,5 +23,6 @@ unicode-normalization.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+oxide_compiler = { path = "../oxide_compiler" }
 proptest.workspace = true
 oxide_parser = { path = "../oxide_parser" }

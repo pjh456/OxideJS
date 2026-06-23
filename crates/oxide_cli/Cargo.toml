@@ -11,6 +11,8 @@ name = "oxide"
 path = "src/main.rs"
 
 [dependencies]
+oxide_bytecode = { path = "../oxide_bytecode" }
+oxide_code_cache = { path = "../oxide_code_cache" }
 oxide_parser = { path = "../oxide_parser" }
 oxide_types = { path = "../oxide_types" }
 oxide_compiler = { path = "../oxide_compiler" }

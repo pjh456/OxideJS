@@ -890,12 +890,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxide_bytecode"
+version = "0.1.0"
+
+[[package]]
 name = "oxide_cli"
 version = "0.1.0"
 dependencies = [
  "ansi_term",
  "clap",
  "oxide_api",
+ "oxide_bytecode",
+ "oxide_code_cache",
  "oxide_compiler",
  "oxide_kernel",
  "oxide_parser",
@@ -905,10 +911,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxide_code_cache"
+version = "0.1.0"
+dependencies = [
+ "dashmap",
+ "oxide_bytecode",
+]
+
+[[package]]
 name = "oxide_compiler"
 version = "0.1.0"
 dependencies = [
- "oxide_kernel",
+ "oxide_bytecode",
+ "oxide_code_cache",
  "oxide_parser",
  "rustc-hash",
  "serde",
@@ -922,7 +937,8 @@ dependencies = [
  "bumpalo",
  "dashmap",
  "hashbrown 0.14.5",
- "oxide_compiler",
+ "oxide_bytecode",
+ "oxide_code_cache",
  "oxide_parser",
  "oxide_types",
  "rustc-hash",
@@ -946,6 +962,7 @@ dependencies = [
 name = "oxide_test262"
 version = "0.1.0"
 dependencies = [
+ "oxide_bytecode",
  "oxide_compiler",
  "oxide_kernel",
  "oxide_parser",
@@ -974,6 +991,7 @@ dependencies = [
  "fast-float",
  "indexmap",
  "memchr",
+ "oxide_bytecode",
  "oxide_compiler",
  "oxide_kernel",
  "oxide_parser",

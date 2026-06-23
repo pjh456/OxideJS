@@ -11,6 +11,7 @@ name = "test262-runner"
 path = "src/main.rs"
 
 [dependencies]
+oxide_bytecode = { path = "../oxide_bytecode" }
 oxide_compiler = { path = "../oxide_compiler" }
 oxide_vm = { path = "../oxide_vm" }
 oxide_parser = { path = "../oxide_parser" }

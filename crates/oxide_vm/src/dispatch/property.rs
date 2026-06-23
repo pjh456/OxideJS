@@ -1,4 +1,4 @@
-use oxide_compiler::opcode::OpCode;
+use oxide_bytecode::opcode::OpCode;
 use oxide_kernel::prop_forge::PropTemplate;
 use oxide_kernel::{ic_debug, ic_trace};
 use oxide_types::object::JsObject;

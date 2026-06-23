@@ -7,7 +7,8 @@ rust-version.workspace = true
 description = "OxideJS - Shared kernel (CodeForge, ShapeForge, PropForge, StringForge, BuiltinWorld)"
 
 [dependencies]
-oxide_compiler = { path = "../oxide_compiler" }
+oxide_bytecode = { path = "../oxide_bytecode" }
+oxide_code_cache = { path = "../oxide_code_cache" }
 oxide_parser = { path = "../oxide_parser" }
 oxide_types = { path = "../oxide_types" }
 dashmap.workspace = true

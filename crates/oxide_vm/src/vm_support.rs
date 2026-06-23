@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use oxide_compiler::compiler::Constant;
+use oxide_bytecode::module::Constant;
 
 use crate::bindings;
 use crate::vm::{native_fn_ptr_to_fn, Vm};

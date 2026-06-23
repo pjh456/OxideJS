@@ -1,8 +1,9 @@
+use oxide_bytecode::module::{CompiledModule, Constant};
+use oxide_bytecode::opcode::{self, OpCode};
 use oxide_compiler::compiler::Compiler;
-use oxide_compiler::opcode::{self, OpCode};
 use oxide_parser::Allocator;
 
-fn compile_source(source: &str) -> oxide_compiler::module::CompiledModule {
+fn compile_source(source: &str) -> CompiledModule {
     let allocator = Allocator::default();
     let program = oxide_parser::parse(&allocator, source).expect("parse failed");
     let compiler = Compiler::new();
@@ -58,7 +59,7 @@ fn compile_constants() {
     let module = compile_source("42");
 
     assert!(!module.constants.is_empty());
-    assert_eq!(module.constants[0], oxide_compiler::compiler::Constant::Int(42));
+    assert_eq!(module.constants[0], Constant::Int(42));
 }
 
 #[test]
@@ -67,7 +68,7 @@ fn compile_dedups_identical_string_constants() {
     let count = module
         .constants
         .iter()
-        .filter(|c| matches!(c, oxide_compiler::compiler::Constant::String(s) if s == "hello"))
+        .filter(|c| matches!(c, Constant::String(s) if s == "hello"))
         .count();
     assert_eq!(count, 1, "identical string constants should be interned once per module");
 }

@@ -7,7 +7,7 @@ fn parse_to_hash(source: &str) -> u64 {
     oxide_compiler::compiler::structural_hash(&program)
 }
 
-fn compile_source(source: &str) -> oxide_compiler::module::CompiledModule {
+fn compile_source(source: &str) -> oxide_bytecode::module::CompiledModule {
     let allocator = Allocator::default();
     let program = oxide_parser::parse(&allocator, source).expect("parse failed");
     let compiler = Compiler::new();
