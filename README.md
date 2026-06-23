@@ -5,7 +5,7 @@
 
   <p>
     <img alt="Rust" src="https://img.shields.io/badge/Rust-1.80%2B-orange?style=for-the-badge&logo=rust" />
-    <img alt="Platform" src="https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-blue?style=for-the-badge" />
+    <img alt="Platform" src="https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows%20And%20More-blue?style=for-the-badge" />
     <img alt="Engine" src="https://img.shields.io/badge/JS%20Engine-Non--Wrapper-success?style=for-the-badge" />
     <img alt="test262" src="https://img.shields.io/badge/test262-Integrated-purple?style=for-the-badge" />
   </p>
@@ -13,11 +13,9 @@
 
 ## 1. 项目简介
 
-OxideJS 是一个使用 Rust 编写的轻量级 JavaScript 执行引擎，面向短时、高频、即时执行的脚本运行场景，例如 Agent 工具调用、脚本沙箱、数据转换流水线和嵌入式运行时。
+OxideJS 是一个基于 Rust 的轻量级 JavaScript 执行引擎，擅长短时、高频、即时执行的脚本运行场景，主要面向 Agent 工具调用、脚本沙箱、数据转换流水线和嵌入式运行时。
 
-OxideJS 不是 V8、QuickJS、JavaScriptCore 或其他现有引擎的封装。项目实现了自己的编译流水线、字节码格式、虚拟机、值表示、对象模型和运行时核心。
-
-当前项目聚焦于实用 ECMAScript 子集，并通过 [test262](https://github.com/tc39/test262) 持续验证兼容性。长期目标是提供一个小型、可检查、跨平台、启动成本可预测、benchmark 可复现的 JavaScript runtime。
+当前项目聚焦于实用 ECMAScript 子集，并通过 [test262](https://github.com/tc39/test262) 持续验证兼容性。我们的最终目标是提供一个小型、可检查、跨平台、启动成本可预测、benchmark 可复现的 JavaScript runtime。
 
 ## 2. 特性概览
 
@@ -198,6 +196,12 @@ Benchmark 工作围绕可复现脚本和可比较 baseline 展开。
 
 [TODO] 完工时放与其他 baseline 的对比表格
 
-## 9. License
+## 9. 主要使用的开源项目
 
-本项目采用 MIT License 开源协议。协议全文见项目根目录的 [LICENSE](LICENSE) 文件。
+- [oxc](https://github.com/oxc-project/oxc) — JavaScript 源码解析，因为这不是我们的工作中心，所以没有自己构建该系统
+- [bumpalo](https://github.com/fitzgen/bumpalo) — Bump allocator，构成 `Epoch` arena 内存系统的底层分配器
+- [dashmap](https://github.com/xacrimon/dashmap) — 并发 HashMap，用于 `CodeForge`、`ShapeForge`、`PropForge` 跨 VM 缓存共享
+
+## 10. License
+
+本项目采用 MIT License 开源协议。详见 [LICENSE](LICENSE)。
