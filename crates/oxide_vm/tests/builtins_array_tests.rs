@@ -319,6 +319,33 @@ fn array_sort_propagates_comparator_exception() {
 }
 
 #[test]
+fn array_callback_type_errors_are_not_sentinels() {
+    let (vm, result) = eval("try { [1].map(null) } catch (e) { e.name }").unwrap();
+    assert_eq!(to_str(&vm, result), "TypeError");
+
+    let (vm, result) = eval("try { [1].filter(undefined) } catch (e) { e.name }").unwrap();
+    assert_eq!(to_str(&vm, result), "TypeError");
+
+    let (vm, result) = eval("try { [1].findIndex(0) } catch (e) { e.name }").unwrap();
+    assert_eq!(to_str(&vm, result), "TypeError");
+}
+
+#[test]
+fn array_reduce_and_sort_invalid_usage_throw_type_error() {
+    let (vm, result) = eval("try { [].reduce(function(a, b) { return a + b; }) } catch (e) { e.name }").unwrap();
+    assert_eq!(to_str(&vm, result), "TypeError");
+
+    let (vm, result) = eval("try { [].reduceRight(function(a, b) { return a + b; }) } catch (e) { e.name }").unwrap();
+    assert_eq!(to_str(&vm, result), "TypeError");
+
+    let (vm, result) = eval("try { [1].sort(null) } catch (e) { e.name }").unwrap();
+    assert_eq!(to_str(&vm, result), "TypeError");
+
+    let (vm, result) = eval("[2,1].sort(undefined).join(',')").unwrap();
+    assert_eq!(to_str(&vm, result), "1,2");
+}
+
+#[test]
 fn array_copy_within_copies() {
     let (_vm, result) = eval("[1,2,3,4,5].copyWithin(0,3)").unwrap();
     assert!(result.is_object());

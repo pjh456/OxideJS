@@ -66,16 +66,16 @@ macro_rules! throw_err {
 
 macro_rules! binary_arith {
     ($self:ident, $a:expr, $b:expr, $rd:expr, $op:tt) => {{
-        let l = coercion::to_number($self.regs[$a], $self.kernel_core.string_forge().as_ref());
-        let r = coercion::to_number($self.regs[$b], $self.kernel_core.string_forge().as_ref());
+        let l = $self.coerce_number_bounded($self.regs[$a])?;
+        let r = $self.coerce_number_bounded($self.regs[$b])?;
         $self.regs[$rd] = JsValue::float(l $op r);
     }}
 }
 
 macro_rules! compound_arith {
     ($self:ident, $rd:expr, $a:expr, $op:tt) => {{
-        let l = coercion::to_number($self.regs[$rd], $self.kernel_core.string_forge().as_ref());
-        let r = coercion::to_number($self.regs[$a], $self.kernel_core.string_forge().as_ref());
+        let l = $self.coerce_number_bounded($self.regs[$rd])?;
+        let r = $self.coerce_number_bounded($self.regs[$a])?;
         $self.regs[$rd] = JsValue::float(l $op r);
     }}
 }
@@ -175,6 +175,96 @@ pub struct Vm {
 }
 
 impl Vm {
+    const SYNC_NATIVE_ARG_BASE: usize = 0;
+    const SYNC_NATIVE_ARG_LIMIT: usize = 253;
+
+    pub(crate) fn coerce_primitive_bounded(&mut self, value: JsValue, prefer_string: bool) -> Result<JsValue, String> {
+        if !value.is_object() {
+            return Ok(value);
+        }
+
+        let obj_ptr = value.as_js_object_ptr();
+        if obj_ptr.is_null() {
+            return Ok(value);
+        }
+
+        let method_names = if prefer_string { ["toString", "valueOf"] } else { ["valueOf", "toString"] };
+
+        for method_name in method_names {
+            let method_si = self.kernel_core.string_forge().intern(method_name).0;
+            let method = {
+                let obj = unsafe { &*obj_ptr };
+                self.ordinary_get(obj, method_si, value)?
+            };
+            if method.is_undefined() || method.is_null() {
+                continue;
+            }
+            if !method.is_object() {
+                return Err(format!("TypeError: {method_name} is not callable"));
+            }
+            let method_ptr = method.as_js_object_ptr();
+            if method_ptr.is_null() || !unsafe { &*method_ptr }.is_function() {
+                return Err(format!("TypeError: {method_name} is not callable"));
+            }
+
+            let result = self.call_function_sync(method, value, &[])?;
+            if !result.is_object() {
+                return Ok(result);
+            }
+        }
+
+        Err("TypeError: Cannot convert object to primitive value".into())
+    }
+
+    pub(crate) fn coerce_number_bounded(&mut self, value: JsValue) -> Result<f64, String> {
+        let primitive = self.coerce_primitive_bounded(value, false)?;
+        Ok(coercion::to_number(primitive, self.kernel_core.string_forge().as_ref()))
+    }
+
+    pub(crate) fn coerce_int32_bounded(&mut self, value: JsValue) -> Result<i32, String> {
+        let n = self.coerce_number_bounded(value)?;
+        if n == 0.0 || !n.is_finite() {
+            return Ok(0);
+        }
+        let int = n.trunc().rem_euclid(4_294_967_296.0) as u32;
+        if int > i32::MAX as u32 {
+            Ok((int as i64 - 4_294_967_296i64) as i32)
+        } else {
+            Ok(int as i32)
+        }
+    }
+
+    pub(crate) fn coerce_uint32_bounded(&mut self, value: JsValue) -> Result<u32, String> {
+        let n = self.coerce_number_bounded(value)?;
+        if n == 0.0 || !n.is_finite() {
+            return Ok(0);
+        }
+        Ok(n.trunc().rem_euclid(4_294_967_296.0) as u32)
+    }
+
+    fn pack_sync_native_call_args(
+        &mut self, receiver: JsValue, callee: JsValue, args: &[JsValue],
+    ) -> Result<Vec<u8>, String> {
+        if args.len() > Self::SYNC_NATIVE_ARG_LIMIT {
+            return Err(format!(
+                "RangeError: synchronous native call supports at most {} arguments",
+                Self::SYNC_NATIVE_ARG_LIMIT
+            ));
+        }
+
+        self.regs[253] = receiver;
+        self.regs[254] = callee;
+
+        let mut arg_regs = Vec::with_capacity(args.len() + 1);
+        arg_regs.push(253);
+        for (idx, arg) in args.iter().enumerate() {
+            let reg = (Self::SYNC_NATIVE_ARG_BASE + idx) as u8;
+            self.regs[reg as usize] = *arg;
+            arg_regs.push(reg);
+        }
+        Ok(arg_regs)
+    }
+
     pub(crate) fn is_session_ptr(&self, obj_ptr: *mut JsObject) -> bool {
         if obj_ptr.is_null() {
             return false;
@@ -444,27 +534,14 @@ impl Vm {
                 return Ok(JsValue::undefined());
             }
             let saved_regs = self.regs;
-            let saved_this = self.regs[254];
-            let saved_callee = self.regs[253];
-            self.regs[253] = receiver;
-            self.regs[254] = callee;
-            for (idx, arg) in args.iter().enumerate() {
-                self.regs[240 + idx] = *arg;
-            }
-            let mut arg_regs = [0u8; 17];
-            arg_regs[0] = 253;
-            for idx in 0..args.len().min(16) {
-                arg_regs[idx + 1] = 240 + idx as u8;
-            }
+            let arg_regs = self.pack_sync_native_call_args(receiver, callee, args)?;
             // SAFETY: native_fn was set via set_native_fn with a valid NativeFn pointer;
             // native_fn_ptr_to_fn is the single coercion point for NativeFnPtr → NativeFn.
             let func: NativeFn = unsafe { native_fn_ptr_to_fn(native_fn) };
             self.native_call_depth += 1;
-            let result = func(self, &arg_regs[..args.len().min(16) + 1]);
+            let result = func(self, &arg_regs);
             self.native_call_depth -= 1;
             self.regs = saved_regs;
-            self.regs[254] = saved_this;
-            self.regs[253] = saved_callee;
             return match result {
                 NativeResult::Ok(val) => Ok(val),
                 NativeResult::Err(err) => Err(self.error_text(err)),
@@ -589,7 +666,7 @@ impl Vm {
                 }
 
                 OpCode::ADD => {
-                    self.dispatch_add(rd, a, b);
+                    self.dispatch_add(rd, a, b)?;
                 }
 
                 OpCode::SUB => {
@@ -609,36 +686,36 @@ impl Vm {
                 }
 
                 OpCode::NEG => {
-                    let v = coercion::to_number(self.regs[a], self.kernel_core.string_forge().as_ref());
+                    let v = self.coerce_number_bounded(self.regs[a])?;
                     self.regs[rd] = JsValue::float(-v);
                 }
 
                 OpCode::BIT_AND => {
-                    self.dispatch_bit_and(rd, a, b);
+                    self.dispatch_bit_and(rd, a, b)?;
                 }
 
                 OpCode::BIT_OR => {
-                    self.dispatch_bit_or(rd, a, b);
+                    self.dispatch_bit_or(rd, a, b)?;
                 }
 
                 OpCode::BIT_XOR => {
-                    self.dispatch_bit_xor(rd, a, b);
+                    self.dispatch_bit_xor(rd, a, b)?;
                 }
 
                 OpCode::SHL => {
-                    self.dispatch_shl(rd, a, b);
+                    self.dispatch_shl(rd, a, b)?;
                 }
 
                 OpCode::SHR => {
-                    self.dispatch_shr(rd, a, b);
+                    self.dispatch_shr(rd, a, b)?;
                 }
 
                 OpCode::USHR => {
-                    self.dispatch_ushr(rd, a, b);
+                    self.dispatch_ushr(rd, a, b)?;
                 }
 
                 OpCode::BIT_NOT => {
-                    self.dispatch_bit_not(rd, a);
+                    self.dispatch_bit_not(rd, a)?;
                 }
 
                 OpCode::EQ => {
@@ -674,7 +751,7 @@ impl Vm {
                 }
 
                 OpCode::UNARY_PLUS => {
-                    let v = coercion::to_number(self.regs[a], self.kernel_core.string_forge().as_ref());
+                    let v = self.coerce_number_bounded(self.regs[a])?;
                     self.regs[rd] = JsValue::float(v);
                 }
 
@@ -962,8 +1039,8 @@ impl Vm {
                 }
 
                 OpCode::COMPOUND_ADD => {
-                    let lhs = self.regs[rd];
-                    let rhs = self.regs[a];
+                    let lhs = self.coerce_primitive_bounded(self.regs[rd], false)?;
+                    let rhs = self.coerce_primitive_bounded(self.regs[a], false)?;
                     if lhs.is_string() || rhs.is_string() {
                         let ls = coercion::to_string(self.kernel_core.string_forge().as_ref(), lhs);
                         let rs = coercion::to_string(self.kernel_core.string_forge().as_ref(), rhs);
@@ -993,33 +1070,33 @@ impl Vm {
                 }
 
                 OpCode::COMPOUND_EXP => {
-                    let l = coercion::to_number(self.regs[rd], self.kernel_core.string_forge().as_ref());
-                    let r = coercion::to_number(self.regs[a], self.kernel_core.string_forge().as_ref());
+                    let l = self.coerce_number_bounded(self.regs[rd])?;
+                    let r = self.coerce_number_bounded(self.regs[a])?;
                     self.regs[rd] = JsValue::float(l.powf(r));
                 }
 
                 OpCode::COMPOUND_AND => {
-                    self.dispatch_compound_bit_and(rd, a);
+                    self.dispatch_compound_bit_and(rd, a)?;
                 }
 
                 OpCode::COMPOUND_OR => {
-                    self.dispatch_compound_bit_or(rd, a);
+                    self.dispatch_compound_bit_or(rd, a)?;
                 }
 
                 OpCode::COMPOUND_XOR => {
-                    self.dispatch_compound_bit_xor(rd, a);
+                    self.dispatch_compound_bit_xor(rd, a)?;
                 }
 
                 OpCode::COMPOUND_SHL => {
-                    self.dispatch_compound_shl(rd, a);
+                    self.dispatch_compound_shl(rd, a)?;
                 }
 
                 OpCode::COMPOUND_SHR => {
-                    self.dispatch_compound_shr(rd, a);
+                    self.dispatch_compound_shr(rd, a)?;
                 }
 
                 OpCode::COMPOUND_USHR => {
-                    self.dispatch_compound_ushr(rd, a);
+                    self.dispatch_compound_ushr(rd, a)?;
                 }
 
                 OpCode::TYPEOF => {
@@ -1086,27 +1163,27 @@ impl Vm {
                 }
 
                 OpCode::INC_PRE => {
-                    let n = coercion::to_number(self.regs[rd], self.kernel_core.string_forge().as_ref());
+                    let n = self.coerce_number_bounded(self.regs[rd])?;
                     let result = JsValue::float(n + 1.0);
                     self.regs[rd] = result;
                     self.regs[a] = result;
                 }
 
                 OpCode::INC_POST => {
-                    let n = coercion::to_number(self.regs[rd], self.kernel_core.string_forge().as_ref());
+                    let n = self.coerce_number_bounded(self.regs[rd])?;
                     self.regs[a] = JsValue::float(n);
                     self.regs[rd] = JsValue::float(n + 1.0);
                 }
 
                 OpCode::DEC_PRE => {
-                    let n = coercion::to_number(self.regs[rd], self.kernel_core.string_forge().as_ref());
+                    let n = self.coerce_number_bounded(self.regs[rd])?;
                     let result = JsValue::float(n - 1.0);
                     self.regs[rd] = result;
                     self.regs[a] = result;
                 }
 
                 OpCode::DEC_POST => {
-                    let n = coercion::to_number(self.regs[rd], self.kernel_core.string_forge().as_ref());
+                    let n = self.coerce_number_bounded(self.regs[rd])?;
                     self.regs[a] = JsValue::float(n);
                     self.regs[rd] = JsValue::float(n - 1.0);
                 }
@@ -1230,6 +1307,15 @@ mod tests {
         let obj = unsafe { &mut *this_val.as_js_object_ptr() };
         vm.set_or_create_prop_value(obj, marker_si, value);
         NativeResult::Ok(JsValue::undefined())
+    }
+
+    fn native_return_last_arg(vm: &mut Vm, args: &[u8]) -> NativeResult {
+        let reg = *args.last().expect("receiver + args");
+        NativeResult::Ok(vm.reg(reg))
+    }
+
+    fn native_return_arg_count(_vm: &mut Vm, args: &[u8]) -> NativeResult {
+        NativeResult::Ok(JsValue::int(args.len().saturating_sub(1) as i32))
     }
 
     fn native_function(vm: &mut Vm, f: crate::native::NativeFn) -> JsValue {
@@ -1513,5 +1599,52 @@ mod tests {
         assert_eq!(vm.ordinary_get(obj, x_si, obj_val).expect("get"), JsValue::int(1));
         vm.ordinary_set(obj, x_si, JsValue::int(2), obj_val).expect("set");
         assert_eq!(vm.ordinary_get(obj, x_si, obj_val).expect("get"), JsValue::int(2));
+    }
+
+    #[test]
+    fn call_function_sync_passes_high_arity_native_args_without_truncation() {
+        let mut vm = Vm::new();
+        let callee = native_function(&mut vm, native_return_last_arg);
+        let args: Vec<JsValue> = (0..20).map(JsValue::int).collect();
+
+        let result = vm
+            .call_function_sync(callee, JsValue::undefined(), &args)
+            .expect("high-arity sync call should succeed");
+
+        assert_eq!(result, JsValue::int(19));
+    }
+
+    #[test]
+    fn call_function_sync_reports_actual_native_arg_count() {
+        let mut vm = Vm::new();
+        let callee = native_function(&mut vm, native_return_arg_count);
+        let args: Vec<JsValue> = (0..32).map(JsValue::int).collect();
+
+        let result = vm
+            .call_function_sync(callee, JsValue::undefined(), &args)
+            .expect("arg count should be preserved");
+
+        assert_eq!(result, JsValue::int(32));
+    }
+
+    #[test]
+    fn call_function_sync_rejects_unrepresentable_native_arity_without_register_corruption() {
+        let mut vm = Vm::new();
+        let callee = native_function(&mut vm, native_return_arg_count);
+        vm.set_reg(1, JsValue::int(7));
+        vm.set_reg(253, JsValue::int(11));
+        vm.set_reg(254, JsValue::int(12));
+        vm.set_reg(255, JsValue::int(13));
+
+        let args = vec![JsValue::undefined(); Vm::SYNC_NATIVE_ARG_LIMIT + 1];
+        let err = vm
+            .call_function_sync(callee, JsValue::undefined(), &args)
+            .expect_err("too many args should fail cleanly");
+
+        assert!(err.contains("at most 253 arguments"), "unexpected error: {err}");
+        assert_eq!(vm.reg(1), JsValue::int(7));
+        assert_eq!(vm.reg(253), JsValue::int(11));
+        assert_eq!(vm.reg(254), JsValue::int(12));
+        assert_eq!(vm.reg(255), JsValue::int(13));
     }
 }

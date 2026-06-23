@@ -126,3 +126,13 @@ fn boolean_primitive_value_of_autoboxes() {
     let r = eval(&mut vm, "(true).constructor === Boolean").unwrap();
     assert_eq!(r, JsValue::bool(true));
 }
+
+#[test]
+fn boolean_boxes_participate_in_numeric_coercion() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "+new Boolean(true)").unwrap();
+    assert_eq!(r.as_double(), 1.0);
+
+    let r = eval(&mut vm, "new Boolean(false) | 0").unwrap();
+    assert_eq!(r.as_int(), 0);
+}

@@ -8,7 +8,7 @@ use crate::vm::Vm;
 
 macro_rules! array_ptr {
     ($vm:expr, $args:expr) => {{
-        match get_this_array_ref($vm.reg($args[0])) {
+        match get_this_array_ref($vm, $vm.reg($args[0])) {
             Ok(ptr) => ptr,
             Err(err) => return NativeResult::Err(err),
         }
@@ -23,19 +23,34 @@ macro_rules! array_ptr_len {
     }};
 }
 
-fn get_this_array_ref(val: JsValue) -> Result<*mut JsObject, JsValue> {
+fn array_type_error(vm: &mut Vm, msg: &str) -> JsValue {
+    crate::builtins::error::create_type_error(vm, msg)
+}
+
+fn get_this_array_ref(vm: &mut Vm, val: JsValue) -> Result<*mut JsObject, JsValue> {
     if !val.is_object() {
-        return Err(JsValue::undefined());
+        return Err(array_type_error(vm, "Array method called on incompatible receiver"));
     }
     let ptr = val.as_js_object_ptr();
     if ptr.is_null() {
-        return Err(JsValue::undefined());
+        return Err(array_type_error(vm, "Array method called on incompatible receiver"));
     }
     let obj = unsafe { &*ptr };
     if !obj.is_array() {
-        return Err(JsValue::undefined());
+        return Err(array_type_error(vm, "Array method called on incompatible receiver"));
     }
     Ok(ptr)
+}
+
+fn require_callback(vm: &mut Vm, callback_val: JsValue) -> Result<JsValue, JsValue> {
+    if !callback_val.is_object() {
+        return Err(array_type_error(vm, "callback is not a function"));
+    }
+    let ptr = callback_val.as_js_object_ptr();
+    if ptr.is_null() || !unsafe { &*ptr }.is_function() {
+        return Err(array_type_error(vm, "callback is not a function"));
+    }
+    Ok(callback_val)
 }
 
 fn create_new_array(vm: &mut Vm, n: usize) -> *mut JsObject {
@@ -431,12 +446,12 @@ pub fn array_flat(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn array_for_each(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
-        return NativeResult::Err(JsValue::undefined());
+        return NativeResult::Err(array_type_error(vm, "callback is not a function"));
     }
-    let callback_val = vm.reg(args[1]);
-    if !callback_val.is_object() {
-        return NativeResult::Err(JsValue::undefined());
-    }
+    let callback_val = match require_callback(vm, vm.reg(args[1])) {
+        Ok(callback) => callback,
+        Err(err) => return NativeResult::Err(err),
+    };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     for i in 0..n {
         let elem = unsafe { (*arr_ptr).get_prop_at(i) };
@@ -452,12 +467,12 @@ pub fn array_for_each(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn array_map(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
-        return NativeResult::Err(JsValue::undefined());
+        return NativeResult::Err(array_type_error(vm, "callback is not a function"));
     }
-    let callback_val = vm.reg(args[1]);
-    if !callback_val.is_object() {
-        return NativeResult::Err(JsValue::undefined());
-    }
+    let callback_val = match require_callback(vm, vm.reg(args[1])) {
+        Ok(callback) => callback,
+        Err(err) => return NativeResult::Err(err),
+    };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     let new_arr = create_new_array(vm, n);
     for i in 0..n {
@@ -479,12 +494,12 @@ pub fn array_map(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn array_filter(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
-        return NativeResult::Err(JsValue::undefined());
+        return NativeResult::Err(array_type_error(vm, "callback is not a function"));
     }
-    let callback_val = vm.reg(args[1]);
-    if !callback_val.is_object() {
-        return NativeResult::Err(JsValue::undefined());
-    }
+    let callback_val = match require_callback(vm, vm.reg(args[1])) {
+        Ok(callback) => callback,
+        Err(err) => return NativeResult::Err(err),
+    };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     let mut kept: Vec<JsValue> = Vec::new();
     for i in 0..n {
@@ -513,15 +528,15 @@ pub fn array_filter(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn array_reduce(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if n == 0 && args.len() < 3 {
-        return NativeResult::Err(JsValue::undefined());
+        return NativeResult::Err(array_type_error(vm, "Reduce of empty array with no initial value"));
     }
     if args.len() < 2 {
-        return NativeResult::Err(JsValue::undefined());
+        return NativeResult::Err(array_type_error(vm, "callback is not a function"));
     }
-    let callback_val = vm.reg(args[1]);
-    if !callback_val.is_object() {
-        return NativeResult::Err(JsValue::undefined());
-    }
+    let callback_val = match require_callback(vm, vm.reg(args[1])) {
+        Ok(callback) => callback,
+        Err(err) => return NativeResult::Err(err),
+    };
     let has_initial = args.len() > 2;
     let mut accumulator;
     let start_idx;
@@ -552,12 +567,12 @@ pub fn array_reduce(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn array_find(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
-        return NativeResult::Ok(JsValue::undefined());
+        return NativeResult::Err(array_type_error(vm, "callback is not a function"));
     }
-    let callback_val = vm.reg(args[1]);
-    if !callback_val.is_object() {
-        return NativeResult::Ok(JsValue::undefined());
-    }
+    let callback_val = match require_callback(vm, vm.reg(args[1])) {
+        Ok(callback) => callback,
+        Err(err) => return NativeResult::Err(err),
+    };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     for i in 0..n {
         let elem = unsafe { (*arr_ptr).get_prop_at(i) };
@@ -578,12 +593,12 @@ pub fn array_find(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn array_some(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
-        return NativeResult::Ok(JsValue::bool(false));
+        return NativeResult::Err(array_type_error(vm, "callback is not a function"));
     }
-    let callback_val = vm.reg(args[1]);
-    if !callback_val.is_object() {
-        return NativeResult::Ok(JsValue::bool(false));
-    }
+    let callback_val = match require_callback(vm, vm.reg(args[1])) {
+        Ok(callback) => callback,
+        Err(err) => return NativeResult::Err(err),
+    };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     for i in 0..n {
         let elem = unsafe { (*arr_ptr).get_prop_at(i) };
@@ -604,12 +619,12 @@ pub fn array_some(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn array_every(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
-        return NativeResult::Ok(JsValue::bool(false));
+        return NativeResult::Err(array_type_error(vm, "callback is not a function"));
     }
-    let callback_val = vm.reg(args[1]);
-    if !callback_val.is_object() {
-        return NativeResult::Ok(JsValue::bool(false));
-    }
+    let callback_val = match require_callback(vm, vm.reg(args[1])) {
+        Ok(callback) => callback,
+        Err(err) => return NativeResult::Err(err),
+    };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     for i in 0..n {
         let elem = unsafe { (*arr_ptr).get_prop_at(i) };
@@ -630,12 +645,12 @@ pub fn array_every(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn array_flat_map(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
-        return NativeResult::Err(JsValue::undefined());
+        return NativeResult::Err(array_type_error(vm, "callback is not a function"));
     }
-    let callback_val = vm.reg(args[1]);
-    if !callback_val.is_object() {
-        return NativeResult::Err(JsValue::undefined());
-    }
+    let callback_val = match require_callback(vm, vm.reg(args[1])) {
+        Ok(callback) => callback,
+        Err(err) => return NativeResult::Err(err),
+    };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     let mut flat: Vec<JsValue> = Vec::new();
     for i in 0..n {
@@ -794,9 +809,12 @@ pub fn array_last_index_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn array_find_index(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
-        return NativeResult::Ok(JsValue::int(-1));
+        return NativeResult::Err(array_type_error(vm, "callback is not a function"));
     }
-    let callback_val = vm.reg(args[1]);
+    let callback_val = match require_callback(vm, vm.reg(args[1])) {
+        Ok(callback) => callback,
+        Err(err) => return NativeResult::Err(err),
+    };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     for i in 0..n {
         let elem = unsafe { (*arr_ptr).get_prop_at(i) };
@@ -819,9 +837,12 @@ pub fn array_find_last(vm: &mut Vm, args: &[u8]) -> NativeResult {
         (arr_ptr, len as i32)
     };
     if args.len() < 2 {
-        return NativeResult::Ok(JsValue::undefined());
+        return NativeResult::Err(array_type_error(vm, "callback is not a function"));
     }
-    let callback_val = vm.reg(args[1]);
+    let callback_val = match require_callback(vm, vm.reg(args[1])) {
+        Ok(callback) => callback,
+        Err(err) => return NativeResult::Err(err),
+    };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     for i in (0..n).rev() {
         let elem = unsafe { (*arr_ptr).get_prop_at(i) };
@@ -841,14 +862,17 @@ pub fn array_find_last(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn array_reduce_right(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
-        return NativeResult::Err(JsValue::undefined());
+        return NativeResult::Err(array_type_error(vm, "callback is not a function"));
     }
-    let callback_val = vm.reg(args[1]);
+    let callback_val = match require_callback(vm, vm.reg(args[1])) {
+        Ok(callback) => callback,
+        Err(err) => return NativeResult::Err(err),
+    };
     let (mut acc, start_idx): (JsValue, i32) = if args.len() > 2 {
         (vm.reg(args[2]), n as i32 - 1)
     } else {
         if n == 0 {
-            return NativeResult::Err(JsValue::undefined());
+            return NativeResult::Err(array_type_error(vm, "Reduce of empty array with no initial value"));
         }
         (unsafe { (*arr_ptr).get_prop_at(n - 1) }, n as i32 - 2)
     };
@@ -874,15 +898,13 @@ pub fn array_sort(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let mut vals: Vec<JsValue> = (0..len).map(|i| unsafe { (*arr_ptr).get_prop_at(i) }).collect();
     let comparator = if args.len() > 1 {
         let candidate = vm.reg(args[1]);
-        if candidate.is_object() {
-            let ptr = candidate.as_js_object_ptr();
-            if !ptr.is_null() && unsafe { &*ptr }.is_function() {
-                Some(candidate)
-            } else {
-                None
-            }
-        } else {
+        if candidate.is_undefined() {
             None
+        } else {
+            match require_callback(vm, candidate) {
+                Ok(callback) => Some(callback),
+                Err(err) => return NativeResult::Err(err),
+            }
         }
     } else {
         None

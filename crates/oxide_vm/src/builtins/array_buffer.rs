@@ -69,14 +69,29 @@ pub(crate) fn new_array_buffer(vm: &mut Vm, data: Vec<u8>) -> *mut JsObject {
     vm.alloc_object(obj)
 }
 
-pub(crate) fn drop_array_buffer_native(obj: &mut JsObject) -> u64 {
+fn array_buffer_vec_ptr(obj: &JsObject) -> Option<*mut Vec<u8>> {
     if !obj.is_array_buffer_obj() {
-        return 0;
+        return None;
     }
-    let Some(ptr) = obj.native_fn() else {
+    obj.native_fn().map(|ptr| ptr.as_ptr() as *mut Vec<u8>)
+}
+
+pub(crate) fn clone_array_buffer_native(old_obj: &JsObject, new_obj: &mut JsObject) {
+    let Some(ptr) = array_buffer_vec_ptr(old_obj) else {
+        return;
+    };
+    if ptr.is_null() {
+        return;
+    }
+    let cloned = unsafe { (&*ptr).clone() };
+    let cloned_ptr = Box::into_raw(Box::new(cloned));
+    new_obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(cloned_ptr as *const ()) }));
+}
+
+pub(crate) fn drop_array_buffer_native(obj: &mut JsObject) -> u64 {
+    let Some(data_ptr) = array_buffer_vec_ptr(obj) else {
         return 0;
     };
-    let data_ptr = ptr.as_ptr() as *mut Vec<u8>;
     if data_ptr.is_null() {
         return 0;
     }
