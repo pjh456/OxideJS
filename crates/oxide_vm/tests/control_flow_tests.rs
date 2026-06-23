@@ -236,3 +236,72 @@ fn eval_large_adjacent_switches_do_not_collide_labels() {
     source.push_str("}switch(0){case 0:r=r+1;break;}r");
     assert_eq!(eval(&source), "2");
 }
+
+#[test]
+fn eval_sequence_expression_returns_last() {
+    assert_eq!(eval("var x = 0; (x = 1, x = x + 2, x)"), "3");
+    assert_eq!(eval("(1, 2, 3)"), "3");
+}
+
+#[test]
+fn eval_sequence_expression_in_for_clauses() {
+    assert_eq!(eval("for (var i = (0, 1); i < 3; i = (i + 1, i + 1)) {} i"), "3");
+}
+
+#[test]
+fn eval_empty_statement_is_noop() {
+    assert_eq!(eval("while (false); 1"), "1");
+    assert_eq!(eval("; ; var x = 1; x"), "1");
+}
+
+#[test]
+fn eval_labeled_break_exits_loop() {
+    assert_eq!(eval("outer: while (true) { break outer; } 7"), "7");
+}
+
+#[test]
+fn eval_labeled_break_exits_block() {
+    assert_eq!(eval("label: { break label; } 5"), "5");
+}
+
+#[test]
+fn eval_labeled_continue_loop() {
+    assert_eq!(eval("var i = 0; outer: while (i < 3) { i = i + 1; continue outer; } i"), "3");
+}
+
+#[test]
+fn eval_labeled_continue_outer_from_inner_loop() {
+    assert_eq!(
+        eval("var c = 0; outer: for (var i = 0; i < 3; i++) { for (var j = 0; j < 3; j++) { if (j == 1) continue outer; c = c + 1; } } c"),
+        "3"
+    );
+}
+
+#[test]
+fn eval_labeled_break_outer_from_inner_loop() {
+    assert_eq!(
+        eval("var c = 0; outer: for (var i = 0; i < 3; i++) { for (var j = 0; j < 3; j++) { if (i == 1 && j == 1) break outer; c = c + 1; } } c"),
+        "4"
+    );
+}
+
+#[test]
+fn eval_duplicate_label_is_compile_error() {
+    let r = eval("a: a: while (false) {}");
+    assert!(r.contains("compile error") && r.contains("already been declared"), "got: {r}");
+}
+
+#[test]
+fn eval_continue_to_non_loop_label_is_compile_error() {
+    let r = eval("label: { continue label; }");
+    assert!(
+        r.contains("compile error") && r.contains("does not denote an iteration statement"),
+        "got: {r}"
+    );
+}
+
+#[test]
+fn eval_break_to_undefined_label_is_compile_error() {
+    let r = eval("foo: while (false) {} break bar;");
+    assert!(r.contains("compile error") && r.contains("Undefined label"), "got: {r}");
+}

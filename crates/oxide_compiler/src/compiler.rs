@@ -125,6 +125,17 @@ pub(crate) enum Label {
     CatchBody(u32),
     FinallyBody(u32),
     TryEnd(u32),
+    LabeledEnd(u32),
+}
+
+/// A labeled-statement scope active during emission. `break label` targets
+/// `break_label`; `continue label` targets `continue_label` (only set when the
+/// labeled statement directly wraps an iteration statement).
+#[derive(Debug, Clone)]
+pub(crate) struct LabelScope {
+    pub(crate) name: String,
+    pub(crate) break_label: Label,
+    pub(crate) continue_label: Option<Label>,
 }
 
 pub(crate) struct CompileCtx {
@@ -139,6 +150,10 @@ pub(crate) struct CompileCtx {
     pub(crate) loop_stack: Vec<(Label, Label)>,
     #[allow(dead_code)]
     pub(crate) switch_stack: Vec<Label>,
+    /// Active labeled-statement scopes (resolves `break label` / `continue label`).
+    pub(crate) label_scopes: Vec<LabelScope>,
+    /// Label names awaiting binding to the next emitted loop's continue target.
+    pub(crate) pending_loop_labels: Vec<String>,
     pub(crate) label_counter: u32,
     pub(crate) projected_pc: usize,
     pub(crate) builtin_reg_map: Vec<(String, u8)>,
@@ -210,6 +225,8 @@ impl CompileCtx {
             label_map: HashMap::new(),
             loop_stack: Vec::new(),
             switch_stack: Vec::new(),
+            label_scopes: Vec::new(),
+            pending_loop_labels: Vec::new(),
             label_counter: 0,
             projected_pc: 0,
             builtin_reg_map: Vec::new(),
@@ -466,6 +483,60 @@ impl CompileCtx {
 
     pub(crate) fn current_switch(&self) -> Option<&Label> {
         self.switch_stack.last()
+    }
+
+    pub(crate) fn push_label_scope(
+        &mut self, name: &str, break_label: Label, continue_label: Option<Label>,
+    ) -> Result<(), String> {
+        if self.label_scopes.iter().any(|s| s.name == name) {
+            return Err(format!("SyntaxError: Label '{name}' has already been declared"));
+        }
+        self.label_scopes.push(LabelScope {
+            name: name.to_string(),
+            break_label,
+            continue_label,
+        });
+        Ok(())
+    }
+
+    pub(crate) fn pop_label_scope(&mut self) {
+        self.label_scopes.pop();
+    }
+
+    pub(crate) fn find_label(&self, name: &str) -> Option<&LabelScope> {
+        self.label_scopes.iter().rev().find(|s| s.name == name)
+    }
+
+    /// Queue a label name to be bound to the continue target of the next loop
+    /// emitted as the labeled statement's body. Rejects duplicates in the active
+    /// or pending sets.
+    pub(crate) fn queue_loop_label(&mut self, name: &str) -> Result<(), String> {
+        if self.label_scopes.iter().any(|s| s.name == name) || self.pending_loop_labels.iter().any(|n| n == name) {
+            return Err(format!("SyntaxError: Label '{name}' has already been declared"));
+        }
+        self.pending_loop_labels.push(name.to_string());
+        Ok(())
+    }
+
+    /// Drain queued loop labels into active scopes bound to this loop's break and
+    /// continue targets. Returns how many scopes were pushed (to pop after).
+    pub(crate) fn take_pending_loop_labels(&mut self, break_label: Label, continue_label: Label) -> usize {
+        let names = std::mem::take(&mut self.pending_loop_labels);
+        let count = names.len();
+        for name in names {
+            self.label_scopes.push(LabelScope {
+                name,
+                break_label,
+                continue_label: Some(continue_label),
+            });
+        }
+        count
+    }
+
+    pub(crate) fn pop_label_scopes(&mut self, n: usize) {
+        for _ in 0..n {
+            self.label_scopes.pop();
+        }
     }
 
     pub(crate) fn is_builtin(&self, name: &str) -> bool {

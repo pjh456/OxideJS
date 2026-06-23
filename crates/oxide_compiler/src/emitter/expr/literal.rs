@@ -82,6 +82,19 @@ impl Compiler {
         }
     }
 
+    pub(in crate::emitter) fn emit_sequence_expression(
+        &self, seq: &oxide_parser::SequenceExpression, ctx: &mut CompileCtx,
+    ) -> Result<u8, String> {
+        // Comma operator: evaluate each expression in order, value is the last.
+        // Emits exactly one expression per element (no extra instruction), so the
+        // projected-PC count in count_sequence_expression stays aligned.
+        let mut last = 0u8;
+        for e in &seq.expressions {
+            last = self.emit_expression(e, ctx)?;
+        }
+        Ok(last)
+    }
+
     pub(in crate::emitter) fn emit_unsupported_expression(
         &self, expr: &Expression, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {

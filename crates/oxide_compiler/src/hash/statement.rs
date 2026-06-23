@@ -32,8 +32,20 @@ pub(super) fn hash_statement(stmt: &Statement, h: &mut rustc_hash::FxHasher, inc
                 hash_statement(s, h, include_binding_names);
             }
         }
-        Statement::BreakStatement(_) => {}
-        Statement::ContinueStatement(_) => {}
+        Statement::BreakStatement(b) => {
+            if let Some(label) = &b.label {
+                label.name.as_str().hash(h);
+            }
+        }
+        Statement::ContinueStatement(c) => {
+            if let Some(label) = &c.label {
+                label.name.as_str().hash(h);
+            }
+        }
+        Statement::LabeledStatement(ls) => {
+            ls.label.name.as_str().hash(h);
+            hash_statement(&ls.body, h, include_binding_names);
+        }
         Statement::DoWhileStatement(dw) => {
             hash_statement(&dw.body, h, include_binding_names);
             expression::hash_expression(&dw.test, h, include_binding_names);

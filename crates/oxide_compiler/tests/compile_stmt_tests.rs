@@ -297,3 +297,18 @@ fn compile_class_static_setter_emits_define_accessor() {
         "static class setter should emit DEFINE_ACCESSOR"
     );
 }
+
+#[test]
+fn compile_labeled_loop_emits_body() {
+    let module = compile_source("outer: while (true) { break outer; }");
+    assert!(!module.bytecode.is_empty(), "labeled loop should produce bytecode");
+}
+
+#[test]
+fn compile_empty_statements_are_skipped() {
+    let module = compile_source("; ; var x = 1;");
+    assert!(
+        module.constants.iter().any(|c| matches!(c, Constant::Int(1))),
+        "var after empty statements should still compile"
+    );
+}

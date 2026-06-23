@@ -967,12 +967,14 @@ impl Compiler {
             Statement::ForInStatement(_) => self.emit_for_in_statement(stmt, ctx),
             Statement::ForOfStatement(_) => self.emit_for_of_statement(stmt, ctx),
             Statement::SwitchStatement(_) => self.emit_switch_statement(stmt, ctx),
-            Statement::BreakStatement(_) => self.emit_break_statement(ctx),
-            Statement::ContinueStatement(_) => self.emit_continue_statement(ctx),
+            Statement::BreakStatement(b) => self.emit_break_statement(b, ctx),
+            Statement::ContinueStatement(c) => self.emit_continue_statement(c, ctx),
             Statement::FunctionDeclaration(_) => self.emit_function_declaration_statement(stmt, ctx),
             Statement::ClassDeclaration(_) => self.emit_class_declaration_statement(stmt, ctx),
             Statement::ThrowStatement(_) => self.emit_throw_statement(stmt, ctx),
             Statement::TryStatement(_) => self.emit_try_statement(stmt, ctx),
+            Statement::LabeledStatement(ls) => self.emit_labeled_statement(ls, ctx),
+            Statement::EmptyStatement(_) => Ok(None),
             _ => Ok(None),
         }
     }
@@ -1006,6 +1008,7 @@ impl Compiler {
             Expression::CallExpression(call) => self.emit_call_expression(call, ctx),
             Expression::ThisExpression(_) => self.emit_this_expression(ctx),
             Expression::RegExpLiteral(lit) => self.emit_reg_exp_literal_expression(lit, ctx),
+            Expression::SequenceExpression(seq) => self.emit_sequence_expression(seq, ctx),
             _ => self.emit_unsupported_expression(expr, ctx),
         }
     }

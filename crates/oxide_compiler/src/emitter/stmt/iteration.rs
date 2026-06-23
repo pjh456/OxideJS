@@ -12,6 +12,7 @@ impl Compiler {
         let end_label = Label::WhileEnd(id);
 
         ctx.push_loop(end_label, start_label);
+        let n_labeled = ctx.take_pending_loop_labels(end_label, start_label);
 
         let test_reg = self.emit_expression(&wh.test, ctx)?;
         let end_pos = ctx.resolve_label(end_label)?;
@@ -26,6 +27,7 @@ impl Compiler {
         let offset = ctx.checked_jump_offset(offset);
         ctx.emit(opcode::encode_jmp(offset));
 
+        ctx.pop_label_scopes(n_labeled);
         ctx.pop_loop();
         Ok(None)
     }
@@ -41,6 +43,7 @@ impl Compiler {
         let end_label = Label::DoWhileEnd(id);
 
         ctx.push_loop(end_label, start_label);
+        let n_labeled = ctx.take_pending_loop_labels(end_label, start_label);
         self.emit_statement(&dw.body, ctx)?;
         let test_reg = self.emit_expression(&dw.test, ctx)?;
 
@@ -49,6 +52,7 @@ impl Compiler {
         let offset = ctx.checked_jump_offset(offset);
         ctx.emit(opcode::encode_jmp_if_true(test_reg, offset));
 
+        ctx.pop_label_scopes(n_labeled);
         ctx.pop_loop();
         Ok(None)
     }
@@ -65,6 +69,7 @@ impl Compiler {
         let end_label = Label::ForEnd(id);
 
         ctx.push_loop(end_label, update_label);
+        let n_labeled = ctx.take_pending_loop_labels(end_label, update_label);
 
         if let Some(init) = &fr.init {
             if let Some(expr) = init.as_expression() {
@@ -102,6 +107,7 @@ impl Compiler {
         let offset = ctx.checked_jump_offset(offset);
         ctx.emit(opcode::encode_jmp(offset));
 
+        ctx.pop_label_scopes(n_labeled);
         ctx.pop_loop();
 
         Ok(None)
@@ -121,6 +127,7 @@ impl Compiler {
         ctx.emit(opcode::encode(OpCode::FOR_IN_INIT, 0, obj_reg, 0));
 
         ctx.push_loop(end_label, start_label);
+        let n_labeled = ctx.take_pending_loop_labels(end_label, start_label);
 
         let done_reg = ctx.alloc_reg();
         ctx.emit(opcode::encode(OpCode::FOR_IN_DONE, done_reg, 0, 0));
@@ -164,6 +171,7 @@ impl Compiler {
 
         ctx.emit(opcode::encode(OpCode::FOR_IN_CLEANUP, 0, 0, 0));
 
+        ctx.pop_label_scopes(n_labeled);
         ctx.pop_loop();
         Ok(None)
     }
@@ -181,6 +189,7 @@ impl Compiler {
         let iter_src_reg = self.emit_expression(&fo.right, ctx)?;
         ctx.emit(opcode::encode(OpCode::FOR_OF_INIT, 0, iter_src_reg, 0));
         ctx.push_loop(end_label, start_label);
+        let n_labeled = ctx.take_pending_loop_labels(end_label, start_label);
 
         let has_reg = ctx.alloc_reg();
         ctx.emit(opcode::encode(OpCode::FOR_OF_DONE, has_reg, 0, 0));
@@ -217,6 +226,7 @@ impl Compiler {
         let offset = ctx.checked_jump_offset(offset);
         ctx.emit(opcode::encode_jmp(offset));
         ctx.emit(opcode::encode(OpCode::FOR_OF_CLOSE, 0, 0, 0));
+        ctx.pop_label_scopes(n_labeled);
         ctx.pop_loop();
         Ok(None)
     }
