@@ -54,6 +54,14 @@ fn js_error_kind_name(kind: JsErrorKind) -> &'static str {
     }
 }
 
+pub(crate) fn format_error_message(kind: &str, msg: &str) -> String {
+    if msg.is_empty() || msg == kind || msg.starts_with(&format!("{kind}:")) {
+        msg.to_string()
+    } else {
+        format!("{kind}: {msg}")
+    }
+}
+
 #[allow(unused_macros)]
 macro_rules! throw_err {
     ($self:ident, $kind:ident, $msg:expr) => {{
@@ -213,7 +221,7 @@ impl Vm {
             }
         }
 
-        Err("TypeError: Cannot convert object to primitive value".into())
+        Err(self.error_message_text("TypeError", "Cannot convert object to primitive value"))
     }
 
     pub(crate) fn coerce_number_bounded(&mut self, value: JsValue) -> Result<f64, String> {
@@ -342,12 +350,7 @@ impl Vm {
 
     pub(crate) fn raise_js_error(&mut self, err: JsError) -> Result<(), String> {
         let kind = js_error_kind_name(err.kind);
-        let error = match kind {
-            "TypeError" => crate::builtins::error::create_type_error(self, &err.message),
-            "ReferenceError" => crate::builtins::error::create_reference_error(self, &err.message),
-            "SyntaxError" => crate::builtins::error::create_syntax_error(self, &err.message),
-            _ => crate::builtins::error::create_error(self, &err.message),
-        };
+        let error = crate::builtins::error::create_kind_error(self, kind, &err.message);
         self.exception_value = Some(error);
         self.pending_error_kind = Some(kind);
         self.unwind()
@@ -355,6 +358,10 @@ impl Vm {
 
     pub(crate) fn raise_type_error(&mut self, msg: &str) -> Result<(), String> {
         self.raise_error_kind("TypeError", msg)
+    }
+
+    pub(crate) fn error_message_text(&self, kind: &str, msg: &str) -> String {
+        format_error_message(kind, msg)
     }
 
     pub fn step_rng(&mut self) {
@@ -521,11 +528,11 @@ impl Vm {
         &mut self, callee: JsValue, receiver: JsValue, args: &[JsValue],
     ) -> Result<JsValue, String> {
         if !callee.is_object() {
-            return Err("TypeError: accessor is not callable".into());
+            return Err(self.error_message_text("TypeError", "accessor is not callable"));
         }
         let callee_obj = unsafe { &*callee.as_js_object_ptr() };
         if !callee_obj.is_function() {
-            return Err("TypeError: accessor is not callable".into());
+            return Err(self.error_message_text("TypeError", "accessor is not callable"));
         }
 
         if let Some(native_fn) = callee_obj.native_fn() {
@@ -562,11 +569,11 @@ impl Vm {
         constructed_this: Option<JsValue>, new_target: JsValue, continuation: FrameContinuation,
     ) -> Result<(), String> {
         if !callee.is_object() {
-            return Err("TypeError: CALL target is not callable".into());
+            return Err(self.error_message_text("TypeError", "CALL target is not callable"));
         }
         let obj = unsafe { &*callee.as_js_object_ptr() };
         if !obj.is_function() || obj.sub_module_index() == 0 {
-            return Err("TypeError: CALL target is not callable".into());
+            return Err(self.error_message_text("TypeError", "CALL target is not callable"));
         }
         let sub_idx = obj.sub_module_index() as usize - 1;
         if sub_idx >= self.sub_modules.len() {
@@ -866,7 +873,7 @@ impl Vm {
                             }
                             NativeResult::Err(err_val) => {
                                 self.exception_value = Some(err_val);
-                                self.pending_error_kind = Some("Error");
+                                self.pending_error_kind = Some(self.thrown_error_kind(err_val));
                                 match self.unwind() {
                                     Ok(()) => continue,
                                     Err(e) => return Err(e),
@@ -894,7 +901,7 @@ impl Vm {
                             ));
                         }
                         if self.frames.len() >= self.kernel_core.config.max_call_depth {
-                            return Err("RangeError: Maximum call stack size exceeded".into());
+                            return Err(self.error_message_text("RangeError", "Maximum call stack size exceeded"));
                         }
 
                         let sub_bytecode = self.sub_modules[sub_idx].bytecode.clone();

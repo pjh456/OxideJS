@@ -66,11 +66,11 @@ impl Vm {
         &mut self, getter: JsValue, receiver: JsValue, target_reg: u8,
     ) -> Result<bool, String> {
         if !getter.is_object() {
-            return Err("TypeError: getter is not callable".into());
+            return Err(self.error_message_text("TypeError", "getter is not callable"));
         }
         let getter_obj = unsafe { &*getter.as_js_object_ptr() };
         if !getter_obj.is_function() {
-            return Err("TypeError: getter is not callable".into());
+            return Err(self.error_message_text("TypeError", "getter is not callable"));
         }
 
         if getter_obj.native_fn().is_some() {

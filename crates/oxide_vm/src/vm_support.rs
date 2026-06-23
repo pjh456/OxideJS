@@ -257,7 +257,7 @@ impl Vm {
                 .resolve_property(obj, message_si)
                 .and_then(|v| self.lookup_str(v))
                 .unwrap_or_default();
-            return if message.is_empty() { name } else { format!("{name}: {message}") };
+            return crate::vm::format_error_message(&name, &message);
         }
         format!("{val}")
     }

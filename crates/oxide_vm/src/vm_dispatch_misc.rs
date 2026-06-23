@@ -71,7 +71,7 @@ impl Vm {
                 }
                 NativeResult::Err(err_val) => {
                     self.exception_value = Some(err_val);
-                    self.pending_error_kind = Some("Error");
+                    self.pending_error_kind = Some(self.thrown_error_kind(err_val));
                     self.unwind().map(|_| true)
                 }
                 NativeResult::TailCall { .. } => {
@@ -89,7 +89,7 @@ impl Vm {
             }
 
             if self.frames.len() >= self.kernel_core.config.max_call_depth {
-                return Err("RangeError: Maximum call stack size exceeded".into());
+                return Err(self.error_message_text("RangeError", "Maximum call stack size exceeded"));
             }
 
             let new_obj_val = JsValue::object(new_obj as *mut u8);
@@ -154,7 +154,7 @@ impl Vm {
             let error =
                 crate::builtins::error::create_error(self, "NEW_EXPRESSION: bytecode constructors not yet supported");
             self.exception_value = Some(error);
-            self.pending_error_kind = Some("Error");
+            self.pending_error_kind = Some(self.thrown_error_kind(error));
             self.unwind().map(|_| true)
         }
     }

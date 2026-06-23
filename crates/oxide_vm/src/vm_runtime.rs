@@ -10,7 +10,7 @@ impl Vm {
         &mut self, callee: JsValue, callee_obj: &JsObject, receiver: JsValue, args: &[JsValue],
     ) -> Result<JsValue, String> {
         if callee_obj.sub_module_index() == 0 {
-            return Err("TypeError: accessor is not callable".into());
+            return Err(self.error_message_text("TypeError", "accessor is not callable"));
         }
         let sub_idx = callee_obj.sub_module_index() as usize - 1;
         if sub_idx >= self.sub_modules.len() {
