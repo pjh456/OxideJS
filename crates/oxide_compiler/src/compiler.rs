@@ -237,6 +237,67 @@ impl CompileCtx {
         self.emit(opcode::encode(OpCode::LOAD_CONST, reg, (idx & 0xFF) as u8, ((idx >> 8) & 0xFF) as u8));
     }
 
+    pub(crate) fn count_word(&mut self) {
+        self.projected_pc += 1;
+    }
+
+    pub(crate) fn count_words(&mut self, words: usize) {
+        self.projected_pc += words;
+    }
+
+    pub(crate) fn count_instr(&mut self) {
+        self.count_word();
+    }
+
+    pub(crate) fn count_instr_with_ext(&mut self, ext_words: usize) {
+        self.count_words(1 + ext_words);
+    }
+
+    pub(crate) fn count_load_const(&mut self) {
+        self.alloc_reg();
+        self.count_instr();
+    }
+
+    pub(crate) fn count_load_var(&mut self) {
+        self.alloc_reg();
+        self.count_instr();
+    }
+
+    pub(crate) fn count_ic_instr_with_ext(&mut self) {
+        self.count_instr_with_ext(3);
+    }
+
+    pub(crate) fn count_ic_set_with_ext(&mut self) {
+        self.count_ic_instr_with_ext();
+    }
+
+    pub(crate) fn count_call_instr_with_arg_ext(&mut self) {
+        self.count_instr_with_ext(1);
+    }
+
+    pub(crate) fn count_delete_static(&mut self) {
+        self.count_instr_with_ext(1);
+    }
+
+    pub(crate) fn count_define_accessor(&mut self) {
+        self.count_instr_with_ext(1);
+    }
+
+    pub(crate) fn count_private_access(&mut self) {
+        self.count_load_const();
+        self.alloc_reg();
+        self.count_instr();
+    }
+
+    pub(crate) fn count_template_str(&mut self, segment_count: usize) {
+        self.alloc_reg();
+        self.count_instr_with_ext(1 + segment_count);
+    }
+
+    pub(crate) fn count_jump(&mut self) {
+        self.count_instr();
+    }
+
     pub(crate) fn alloc_reg(&mut self) -> u8 {
         let r = self.next_reg;
         // Registers 254 (this) and 255 (new.target) are reserved by the VM.

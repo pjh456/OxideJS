@@ -6,9 +6,44 @@ use oxide_parser::{
 use crate::compiler::{is_side_effect_free, CompileCtx, Compiler, Label};
 
 impl Compiler {
+    fn count_object_property_read_static(&self, ctx: &mut CompileCtx) {
+        ctx.count_load_var(); // prop/object temp
+        ctx.count_load_const(); // key reg
+        ctx.count_ic_instr_with_ext(); // IC_GET_PROP + 3 ext words
+    }
+
+    fn count_object_property_read_key(&self, key: &oxide_parser::PropertyKey, computed: bool, ctx: &mut CompileCtx) {
+        if !computed {
+            self.count_object_property_read_static(ctx);
+            let _ = key;
+            return;
+        }
+
+        ctx.count_load_var(); // prop/object temp
+        match key {
+            oxide_parser::PropertyKey::Identifier(ident) => {
+                let name = ident.name.as_str();
+                let _ = ctx.lookup_or_builtin(name);
+                ctx.count_load_var(); // key
+            }
+            oxide_parser::PropertyKey::StringLiteral(_) => {
+                ctx.count_load_const(); // key
+            }
+            oxide_parser::PropertyKey::NumericLiteral(_) => {
+                ctx.count_load_const(); // key
+            }
+            oxide_parser::PropertyKey::StaticIdentifier(_) => {
+                ctx.count_load_const(); // key
+            }
+            _ => {}
+        }
+        ctx.alloc_reg(); // result reg
+        ctx.count_instr(); // GET_PROP_DYNAMIC
+    }
+
     fn count_optional_guard(&self, ctx: &mut CompileCtx) {
-        ctx.alloc_reg();
-        ctx.projected_pc += 2; // LOAD_VAR dup + JMP_IF_NULLISH
+        ctx.count_load_var(); // dup
+        ctx.count_jump(); // JMP_IF_NULLISH
     }
 
     fn count_static_member_get_preserve_base(
@@ -18,10 +53,9 @@ impl Compiler {
         if short_chain && member.optional {
             self.count_optional_guard(ctx);
         }
-        ctx.alloc_reg();
-        ctx.projected_pc += 1; // LOAD_CONST key
-        ctx.alloc_reg();
-        ctx.projected_pc += 5; // LOAD_VAR copy + IC_GET_PROP + 3 ext words
+        ctx.count_load_const(); // key
+        ctx.count_load_var(); // receiver copy
+        ctx.count_ic_instr_with_ext(); // IC_GET_PROP + 3 ext words
     }
 
     fn count_computed_member_get_preserve_base(
@@ -33,7 +67,7 @@ impl Compiler {
         }
         self.count_expression(&member.expression, ctx);
         ctx.alloc_reg();
-        ctx.projected_pc += 1; // GET_PROP_DYNAMIC
+        ctx.count_instr(); // GET_PROP_DYNAMIC
     }
 
     fn count_chain_call(&self, call: &oxide_parser::CallExpression, short_chain: bool, ctx: &mut CompileCtx) {
@@ -49,9 +83,7 @@ impl Compiler {
                 if short_chain && member.optional {
                     self.count_optional_guard(ctx);
                 }
-                ctx.alloc_reg();
-                ctx.alloc_reg();
-                ctx.projected_pc += 2;
+                ctx.count_private_access();
             }
             _ => {
                 self.count_chainable_expression(&call.callee, short_chain, ctx);
@@ -78,9 +110,8 @@ impl Compiler {
                 self.count_expression(expr, ctx);
             }
         }
-        ctx.projected_pc += 2; // CALL + arg_count ext word
-        ctx.alloc_reg();
-        ctx.projected_pc += 1; // LOAD_VAR result <- regs[0]
+        ctx.count_call_instr_with_arg_ext(); // CALL + arg_count ext word
+        ctx.count_load_var(); // result <- regs[0]
     }
 
     fn count_chainable_expression(&self, expr: &Expression, short_chain: bool, ctx: &mut CompileCtx) {
@@ -96,9 +127,7 @@ impl Compiler {
                 if short_chain && member.optional {
                     self.count_optional_guard(ctx);
                 }
-                ctx.alloc_reg();
-                ctx.alloc_reg();
-                ctx.projected_pc += 2;
+                ctx.count_private_access();
             }
             Expression::CallExpression(call) => self.count_chain_call(call, short_chain, ctx),
             Expression::ChainExpression(chain) => self.count_chain_element(&chain.expression, short_chain, ctx),
@@ -119,9 +148,7 @@ impl Compiler {
                 if short_chain && member.optional {
                     self.count_optional_guard(ctx);
                 }
-                ctx.alloc_reg();
-                ctx.alloc_reg();
-                ctx.projected_pc += 2;
+                ctx.count_private_access();
             }
             ChainElement::CallExpression(call) => self.count_chain_call(call, short_chain, ctx),
             ChainElement::TSNonNullExpression(_) => {}
@@ -148,12 +175,12 @@ impl Compiler {
                 ctx.projected_pc += 1;
             }
             oxide_parser::BindingPattern::ArrayPattern(ap) => {
-                ctx.projected_pc += 1; // FOR_OF_INIT
+                ctx.count_instr(); // FOR_OF_INIT
                 for elem in &ap.elements {
                     ctx.alloc_reg();
-                    ctx.projected_pc += 1; // FOR_OF_DONE
+                    ctx.count_instr(); // FOR_OF_DONE
                     ctx.alloc_reg();
-                    ctx.projected_pc += 1; // FOR_OF_NEXT
+                    ctx.count_instr(); // FOR_OF_NEXT
                     if let Some(inner) = elem {
                         self.count_binding_pattern(inner, ctx);
                     }
@@ -162,27 +189,25 @@ impl Compiler {
                     self.count_rest_array(ctx);
                     self.count_binding_pattern(&rest.argument, ctx);
                 }
-                ctx.projected_pc += 1; // FOR_OF_CLOSE
+                ctx.count_instr(); // FOR_OF_CLOSE
             }
             oxide_parser::BindingPattern::ObjectPattern(op) => {
                 for prop in &op.properties {
-                    ctx.alloc_reg();
-                    ctx.projected_pc += 5; // LOAD_VAR + LOAD_CONST + IC_GET_PROP + 3 ext
-                    ctx.alloc_reg();
+                    self.count_object_property_read_key(&prop.key, prop.computed, ctx);
                     self.count_binding_pattern(&prop.value, ctx);
                 }
                 if let Some(rest) = &op.rest {
                     ctx.alloc_reg();
-                    ctx.projected_pc += 2; // REST_OBJECT + ext
+                    ctx.count_instr_with_ext(1); // REST_OBJECT + excluded-keys ext
                     self.count_binding_pattern(&rest.argument, ctx);
                 }
             }
             oxide_parser::BindingPattern::AssignmentPattern(ap) => {
-                ctx.alloc_reg();
-                ctx.projected_pc += 2; // LOAD_CONST undefined + STRICT_EQ
-                ctx.projected_pc += 1; // JMP_IF_FALSE
+                ctx.count_load_const(); // undefined
+                ctx.count_instr(); // STRICT_EQ
+                ctx.count_jump(); // JMP_IF_FALSE
                 self.count_expression(&ap.right, ctx);
-                ctx.projected_pc += 1; // LOAD_VAR default
+                ctx.count_instr(); // LOAD_VAR default
                 self.count_binding_pattern(&ap.left, ctx);
             }
         }
@@ -190,50 +215,103 @@ impl Compiler {
 
     fn count_rest_array(&self, ctx: &mut CompileCtx) {
         ctx.alloc_reg(); // rest
-        ctx.projected_pc += 1; // NEW_ARRAY
-        ctx.alloc_reg(); // idx
-        ctx.projected_pc += 1; // LOAD_CONST 0
+        ctx.count_instr(); // NEW_ARRAY
+        ctx.count_load_const(); // idx = 0
         ctx.alloc_reg(); // has
-        ctx.projected_pc += 2; // FOR_OF_DONE + JMP_IF_FALSE
+        ctx.count_instr(); // FOR_OF_DONE
+        ctx.count_jump(); // JMP_IF_FALSE
         ctx.alloc_reg(); // val
-        ctx.projected_pc += 1; // FOR_OF_NEXT
-        ctx.projected_pc += 1; // SET_ELEM
+        ctx.count_instr(); // FOR_OF_NEXT
+        ctx.count_instr(); // SET_ELEM
         ctx.alloc_reg(); // inc tmp
-        ctx.projected_pc += 2; // INC_PRE + JMP
+        ctx.count_instr(); // INC_PRE
+        ctx.count_jump(); // JMP
     }
 
     fn count_array_assignment(&self, ap: &oxide_parser::ArrayAssignmentTarget, ctx: &mut CompileCtx) {
-        ctx.projected_pc += 1; // FOR_OF_INIT
+        ctx.count_instr(); // FOR_OF_INIT
         for elem in &ap.elements {
             ctx.alloc_reg();
-            ctx.projected_pc += 1; // FOR_OF_DONE
+            ctx.count_instr(); // FOR_OF_DONE
             ctx.alloc_reg();
-            ctx.projected_pc += 1; // FOR_OF_NEXT
+            ctx.count_instr(); // FOR_OF_NEXT
             if elem.is_some() {
                 ctx.alloc_reg();
-                ctx.projected_pc += 1;
+                ctx.count_instr(); // STORE_VAR
             }
         }
         if ap.rest.is_some() {
             self.count_rest_array(ctx);
             ctx.alloc_reg();
-            ctx.projected_pc += 1;
+            ctx.count_instr(); // STORE_VAR
         }
-        ctx.projected_pc += 1; // FOR_OF_CLOSE
+        ctx.count_instr(); // FOR_OF_CLOSE
     }
 
     fn count_object_assignment(&self, op: &oxide_parser::ObjectAssignmentTarget, ctx: &mut CompileCtx) {
-        for _ in &op.properties {
-            ctx.alloc_reg();
-            ctx.projected_pc += 5; // LOAD_VAR + LOAD_CONST + IC_GET_PROP + 3 ext
-            ctx.alloc_reg();
-            ctx.projected_pc += 1;
+        for prop in &op.properties {
+            match prop {
+                oxide_parser::AssignmentTargetProperty::AssignmentTargetPropertyIdentifier(id) => {
+                    self.count_object_property_read_static(ctx);
+                    if let Some(default_expr) = &id.init {
+                        ctx.count_load_const(); // undefined
+                        ctx.count_instr(); // STRICT_EQ
+                        ctx.count_jump(); // JMP_IF_FALSE
+                        self.count_expression(default_expr, ctx);
+                        ctx.count_instr(); // LOAD_VAR default
+                    }
+                    ctx.alloc_reg();
+                    ctx.count_instr(); // STORE_VAR
+                }
+                oxide_parser::AssignmentTargetProperty::AssignmentTargetPropertyProperty(prop) => {
+                    self.count_object_property_read_key(&prop.name, prop.computed, ctx);
+                    self.count_assignment_maybe_default(&prop.binding, ctx);
+                }
+            }
         }
         if op.rest.is_some() {
             ctx.alloc_reg();
-            ctx.projected_pc += 2; // REST_OBJECT + ext
+            ctx.count_instr_with_ext(1); // REST_OBJECT + excluded-keys ext
             ctx.alloc_reg();
-            ctx.projected_pc += 1;
+            ctx.count_instr(); // STORE_VAR
+        }
+    }
+
+    fn count_assignment_maybe_default(
+        &self, target: &oxide_parser::AssignmentTargetMaybeDefault, ctx: &mut CompileCtx,
+    ) {
+        match target {
+            oxide_parser::AssignmentTargetMaybeDefault::AssignmentTargetWithDefault(default) => {
+                ctx.count_load_const(); // undefined
+                ctx.count_instr(); // STRICT_EQ
+                ctx.count_jump(); // JMP_IF_FALSE
+                self.count_expression(&default.init, ctx);
+                ctx.count_instr(); // LOAD_VAR default
+                self.count_assign_target(&default.binding, ctx);
+            }
+            oxide_parser::AssignmentTargetMaybeDefault::ArrayAssignmentTarget(ap) => {
+                self.count_array_assignment(ap, ctx)
+            }
+            oxide_parser::AssignmentTargetMaybeDefault::ObjectAssignmentTarget(op) => {
+                self.count_object_assignment(op, ctx)
+            }
+            oxide_parser::AssignmentTargetMaybeDefault::AssignmentTargetIdentifier(_) => {
+                ctx.alloc_reg();
+                ctx.count_instr(); // STORE_VAR
+            }
+            _ => {}
+        }
+    }
+
+    fn count_assign_target(&self, target: &oxide_parser::AssignmentTarget, ctx: &mut CompileCtx) {
+        match target {
+            oxide_parser::AssignmentTarget::AssignmentTargetIdentifier(_) => {
+                ctx.alloc_reg();
+                ctx.count_instr(); // STORE_VAR
+            }
+            oxide_parser::AssignmentTarget::ArrayAssignmentTarget(ap) => self.count_array_assignment(ap, ctx),
+            oxide_parser::AssignmentTarget::ObjectAssignmentTarget(op) => self.count_object_assignment(op, ctx),
+            _ => {}
         }
     }
 
@@ -243,22 +321,25 @@ impl Compiler {
         if let Some(super_class) = &class.super_class {
             self.count_expression(super_class, ctx);
         }
-        ctx.projected_pc += 2; // LOAD_CONST ctor + NEW_OBJECT proto
+        ctx.count_instr(); // LOAD_CONST ctor
+        ctx.count_instr(); // NEW_OBJECT proto
 
         if class.super_class.is_some() {
             ctx.alloc_reg(); // parent prototype key
+            ctx.count_instr(); // LOAD_CONST
             ctx.alloc_reg(); // parent prototype value
+            ctx.count_instr(); // GET_PROP
             ctx.alloc_reg(); // __proto__ key
-            ctx.projected_pc += 5; // LOAD_CONST + GET_PROP + LOAD_CONST + two SET_PROP
+            ctx.count_instr(); // LOAD_CONST
+            ctx.count_instr(); // SET_PROP proto.__proto__
+            ctx.count_instr(); // SET_PROP ctor.__proto__
         }
 
-        ctx.alloc_reg(); // constructor key
-        ctx.projected_pc += 1; // LOAD_CONST "constructor"
-        ctx.projected_pc += 1; // SET_PROP proto.constructor = ctor
+        ctx.count_load_const(); // constructor key
+        ctx.count_instr(); // SET_PROP proto.constructor = ctor
 
-        ctx.alloc_reg(); // prototype key
-        ctx.projected_pc += 1; // LOAD_CONST "prototype"
-        ctx.projected_pc += 1; // SET_PROP ctor.prototype = proto
+        ctx.count_load_const(); // prototype key
+        ctx.count_instr(); // SET_PROP ctor.prototype = proto
 
         for element in &class.body.body {
             match element {
@@ -269,23 +350,22 @@ impl Compiler {
                     }
                     if matches!(method.key, oxide_parser::PropertyKey::PrivateIdentifier(_)) {
                         if method.r#static {
-                            ctx.alloc_reg();
-                            ctx.alloc_reg();
-                            ctx.projected_pc += 3;
+                            ctx.count_load_const(); // private id
+                            ctx.count_load_const(); // method
+                            ctx.count_instr(); // INIT_PRIVATE
                         }
                         continue;
                     }
-                    ctx.alloc_reg(); // key_reg
-                    ctx.projected_pc += 1;
-                    ctx.alloc_reg(); // method_reg
-                    ctx.projected_pc += 2; // LOAD_CONST method + SET_HOME_OBJECT
+                    ctx.count_load_const(); // key_reg
+                    ctx.count_load_const(); // method_reg
+                    ctx.count_instr(); // SET_HOME_OBJECT
                     match method.kind {
                         MethodDefinitionKind::Method => {
-                            ctx.projected_pc += 1; // SET_PROP
+                            ctx.count_instr(); // SET_PROP
                         }
                         MethodDefinitionKind::Get | MethodDefinitionKind::Set => {
-                            ctx.alloc_reg(); // undefined placeholder
-                            ctx.projected_pc += 3; // LOAD_CONST undefined + DEFINE_ACCESSOR + ext
+                            ctx.count_load_const(); // undefined placeholder
+                            ctx.count_define_accessor(); // DEFINE_ACCESSOR + ext
                         }
                         MethodDefinitionKind::Constructor => {}
                     }
@@ -293,15 +373,13 @@ impl Compiler {
                 ClassElement::PropertyDefinition(prop) => {
                     let prop = prop.as_ref();
                     if prop.r#static {
-                        ctx.alloc_reg(); // key_reg
-                        ctx.projected_pc += 1;
+                        ctx.count_load_const(); // key_reg
                         if let Some(value) = &prop.value {
                             self.count_expression(value, ctx);
                         } else {
-                            ctx.alloc_reg();
-                            ctx.projected_pc += 1;
+                            ctx.count_load_const();
                         }
-                        ctx.projected_pc += 1; // SET_PROP
+                        ctx.count_instr(); // SET_PROP
                     }
                 }
                 ClassElement::StaticBlock(block) => {
@@ -326,7 +404,7 @@ impl Compiler {
                         self.count_binding_pattern(&d.id, ctx);
                     } else {
                         ctx.alloc_reg();
-                        ctx.projected_pc += 2; // LOAD_CONST(undefined) + STORE_VAR
+                        ctx.count_words(2); // LOAD_CONST(undefined) + STORE_VAR
                     }
                 }
             }
@@ -395,7 +473,7 @@ impl Compiler {
                                 self.count_binding_pattern(&d.id, ctx);
                             } else {
                                 ctx.alloc_reg();
-                                ctx.projected_pc += 2; // LOAD_CONST(undefined) + STORE_VAR
+                                ctx.count_words(2); // LOAD_CONST(undefined) + STORE_VAR
                             }
                         }
                     }
@@ -419,31 +497,33 @@ impl Compiler {
                 let end_label = Label::ForInEnd(id);
 
                 self.count_expression(&fi.right, ctx);
-                ctx.projected_pc += 1; // FOR_IN_INIT
+                ctx.count_instr(); // FOR_IN_INIT
 
                 ctx.label_map.insert(start_label, ctx.projected_pc);
-                ctx.projected_pc += 3; // FOR_IN_DONE + JMP_IF_FALSE + JMP cleanup
+                ctx.count_instr(); // FOR_IN_DONE
+                ctx.count_jump(); // JMP_IF_FALSE
+                ctx.count_jump(); // JMP cleanup
 
-                ctx.projected_pc += 1; // FOR_IN_NEXT
+                ctx.count_instr(); // FOR_IN_NEXT
                 match &fi.left {
                     oxide_parser::ForStatementLeft::VariableDeclaration(decl) => {
                         for _d in &decl.declarations {
                             ctx.alloc_reg();
-                            ctx.projected_pc += 1; // STORE_VAR (value from FOR_IN_NEXT)
+                            ctx.count_instr(); // STORE_VAR
                         }
                     }
                     oxide_parser::ForStatementLeft::AssignmentTargetIdentifier(_) => {
                         ctx.alloc_reg(); // key register
-                        ctx.projected_pc += 1; // STORE_VAR
+                        ctx.count_instr(); // STORE_VAR
                     }
                     _ => {}
                 }
 
                 self.count_statement(&fi.body, ctx);
-                ctx.projected_pc += 1; // JMP back to start
+                ctx.count_jump(); // JMP back to start
 
                 ctx.label_map.insert(end_label, ctx.projected_pc);
-                ctx.projected_pc += 1; // FOR_IN_CLEANUP
+                ctx.count_instr(); // FOR_IN_CLEANUP
             }
             Statement::ForOfStatement(fo) => {
                 let id = ctx.next_label_id();
@@ -451,12 +531,13 @@ impl Compiler {
                 let end_label = Label::ForOfEnd(id);
 
                 self.count_expression(&fo.right, ctx);
-                ctx.projected_pc += 1; // FOR_OF_INIT
+                ctx.count_instr(); // FOR_OF_INIT
                 ctx.label_map.insert(start_label, ctx.projected_pc);
                 ctx.alloc_reg(); // has_reg
-                ctx.projected_pc += 2; // FOR_OF_DONE + JMP_IF_FALSE
+                ctx.count_instr(); // FOR_OF_DONE
+                ctx.count_jump(); // JMP_IF_FALSE
                 ctx.alloc_reg(); // val_reg
-                ctx.projected_pc += 1; // FOR_OF_NEXT
+                ctx.count_instr(); // FOR_OF_NEXT
                 match &fo.left {
                     oxide_parser::ForStatementLeft::VariableDeclaration(decl) => {
                         for d in &decl.declarations {
@@ -465,7 +546,7 @@ impl Compiler {
                     }
                     oxide_parser::ForStatementLeft::AssignmentTargetIdentifier(_) => {
                         ctx.alloc_reg();
-                        ctx.projected_pc += 1;
+                        ctx.count_instr(); // STORE_VAR
                     }
                     oxide_parser::ForStatementLeft::ArrayAssignmentTarget(ap) => {
                         self.count_array_assignment(ap, ctx);
@@ -476,9 +557,9 @@ impl Compiler {
                     _ => {}
                 }
                 self.count_statement(&fo.body, ctx);
-                ctx.projected_pc += 1; // JMP back
+                ctx.count_jump(); // JMP back
                 ctx.label_map.insert(end_label, ctx.projected_pc);
-                ctx.projected_pc += 1; // FOR_OF_CLOSE
+                ctx.count_instr(); // FOR_OF_CLOSE
             }
             Statement::SwitchStatement(sw) => {
                 let id = ctx.next_label_id();
@@ -539,7 +620,7 @@ impl Compiler {
 
                 // Body is compiled in the emit pass only.
                 // FD emits LOAD_CONST(BytecodeFunc) + STORE_VAR
-                ctx.projected_pc += 2;
+                ctx.count_words(2);
             }
             Statement::ClassDeclaration(class) => {
                 ctx.alloc_reg(); // class binding reg
@@ -624,9 +705,7 @@ impl Compiler {
             }
             Expression::PrivateInExpression(pin) => {
                 self.count_expression(&pin.right, ctx);
-                ctx.alloc_reg();
-                ctx.alloc_reg();
-                ctx.projected_pc += 2;
+                ctx.count_private_access();
             }
             Expression::UnaryExpression(un) => {
                 match un.operator {
@@ -637,7 +716,7 @@ impl Compiler {
                             }
                             Expression::StaticMemberExpression(member) => {
                                 self.count_expression(&member.object, ctx);
-                                ctx.projected_pc += 2; // DELETE_PROP_STATIC + ext word
+                                ctx.count_delete_static();
                             }
                             Expression::ComputedMemberExpression(member) => {
                                 self.count_expression(&member.object, ctx);
@@ -651,7 +730,7 @@ impl Compiler {
                                         if member.optional {
                                             self.count_optional_guard(ctx);
                                         }
-                                        ctx.projected_pc += 2; // DELETE_PROP_STATIC + ext word
+                                        ctx.count_delete_static();
                                     }
                                     ChainElement::ComputedMemberExpression(member) => {
                                         self.count_expression(&member.object, ctx);
@@ -683,30 +762,25 @@ impl Compiler {
                         }
                     }
                     ctx.alloc_reg();
-                    ctx.projected_pc += 2; // SUPER_CALL + arg_count ext word
+                    ctx.count_call_instr_with_arg_ext(); // SUPER_CALL + arg_count ext word
                     return;
                 }
                 match &call.callee {
                     Expression::PrivateFieldExpression(member) => {
                         self.count_expression(&member.object, ctx);
-                        ctx.alloc_reg();
-                        ctx.alloc_reg();
-                        ctx.projected_pc += 2;
+                        ctx.count_private_access();
                     }
                     Expression::StaticMemberExpression(member) => {
                         if matches!(&member.object, Expression::Super(_)) {
-                            ctx.alloc_reg(); // this register
-                            ctx.projected_pc += 1; // LOAD_VAR this
-                            ctx.alloc_reg(); // key
-                            ctx.projected_pc += 1; // LOAD_CONST key
+                            ctx.count_load_var(); // this register
+                            ctx.count_load_const(); // key
                             ctx.alloc_reg(); // callee
-                            ctx.projected_pc += 1; // SUPER_GET_PROP
+                            ctx.count_instr(); // SUPER_GET_PROP
                         } else {
                             self.count_expression(&member.object, ctx);
-                            ctx.alloc_reg();
-                            ctx.projected_pc += 1;
-                            ctx.alloc_reg();
-                            ctx.projected_pc += 5; // LOAD_VAR + IC_GET_PROP + 3 ext words
+                            ctx.count_load_const(); // key
+                            ctx.count_load_var(); // callee object copy
+                            ctx.count_ic_instr_with_ext(); // IC_GET_PROP + 3 ext words
                         }
                     }
                     _ => {
@@ -720,23 +794,20 @@ impl Compiler {
                         self.count_expression(expr, ctx);
                     }
                 }
-                // CALL and CALL_NATIVE both carry 1 ext word for arg_count.
-                ctx.projected_pc += 2;
-                ctx.alloc_reg(); // result register
-                ctx.projected_pc += 1; // LOAD_VAR result <- regs[0]
+                ctx.count_call_instr_with_arg_ext(); // CALL/CALL_NATIVE + arg_count ext word
+                ctx.count_load_var(); // result <- regs[0]
             }
             Expression::AssignmentExpression(assign) => {
                 if let oxide_parser::AssignmentTarget::StaticMemberExpression(member) = &assign.left {
                     if let Some(logical_op) = assign.operator.to_logical_operator() {
                         let id = ctx.next_label_id();
                         self.count_expression(&member.object, ctx);
-                        ctx.alloc_reg();
-                        ctx.projected_pc += 1; // LOAD_CONST key
-                        ctx.alloc_reg();
-                        ctx.projected_pc += 5; // LOAD_VAR + IC_GET_PROP + 3 ext
+                        ctx.count_load_const(); // key
+                        ctx.count_load_var(); // current value copy
+                        ctx.count_ic_instr_with_ext(); // IC_GET_PROP + 3 ext
                         self.count_logical_assign_test(logical_op, id, ctx);
                         self.count_expression(&assign.right, ctx);
-                        ctx.projected_pc += 4; // IC_SET_PROP + 3 ext
+                        ctx.count_ic_set_with_ext(); // IC_SET_PROP + 3 ext
                         ctx.projected_pc += 1; // LOAD_VAR result <- rhs
                         ctx.label_map.insert(Label::TernaryEnd(id), ctx.projected_pc);
                         return;
@@ -747,10 +818,8 @@ impl Compiler {
                         ctx.alloc_reg();
                         ctx.projected_pc += 1;
                     }
-                    ctx.alloc_reg();
-                    ctx.projected_pc += 1; // LOAD_CONST key
-                    ctx.projected_pc += 1; // IC_SET_PROP or COMPOUND_MEMBER_*
-                    ctx.projected_pc += 3; // 3 IC ext words
+                    ctx.count_load_const(); // key
+                    ctx.count_ic_set_with_ext(); // IC_SET_PROP or COMPOUND_MEMBER_* + 3 ext words
                 } else if let oxide_parser::AssignmentTarget::ComputedMemberExpression(member) = &assign.left {
                     if let Some(logical_op) = assign.operator.to_logical_operator() {
                         let id = ctx.next_label_id();
@@ -773,8 +842,8 @@ impl Compiler {
                 } else if let oxide_parser::AssignmentTarget::PrivateFieldExpression(member) = &assign.left {
                     self.count_expression(&member.object, ctx);
                     self.count_expression(&assign.right, ctx);
-                    ctx.alloc_reg();
-                    ctx.projected_pc += 2; // LOAD_CONST private id + SET_PRIVATE
+                    ctx.count_load_const(); // private id
+                    ctx.count_instr(); // SET_PRIVATE
                 } else if let oxide_parser::AssignmentTarget::AssignmentTargetIdentifier(_) = &assign.left {
                     if let Some(logical_op) = assign.operator.to_logical_operator() {
                         let id = ctx.next_label_id();
@@ -874,8 +943,8 @@ impl Compiler {
                     if let oxide_parser::ObjectPropertyKind::ObjectProperty(p) = prop {
                         if matches!(p.kind, oxide_parser::PropertyKind::Get | oxide_parser::PropertyKind::Set) {
                             self.count_expression(&p.value, ctx);
-                            ctx.alloc_reg(); // undefined getter/setter placeholder
-                            ctx.projected_pc += 3; // LOAD_CONST undefined + DEFINE_ACCESSOR + ext
+                            ctx.count_load_const(); // undefined getter/setter placeholder
+                            ctx.count_define_accessor(); // DEFINE_ACCESSOR + ext
                         } else {
                             ctx.alloc_reg();
                             ctx.projected_pc += 1; // LOAD_CONST key
@@ -892,10 +961,8 @@ impl Compiler {
                 for expr in &tl.expressions {
                     self.count_expression(expr, ctx);
                 }
-                ctx.alloc_reg(); // result reg
                 let segment_count = tl.quasis.len() + tl.expressions.len();
-                // TEMPLATE_STR opcode + ext words (1 header + ceil(segments/1) per u32)
-                ctx.projected_pc += 1 + 1 + segment_count;
+                ctx.count_template_str(segment_count);
             }
             Expression::TaggedTemplateExpression(tt) => {
                 // Tagged template: tag expr + quasis as LOAD_CONST + expression args + CALL
@@ -905,26 +972,22 @@ impl Compiler {
                 // Each quasi: LOAD_CONST string + LOAD_CONST index + SET_ELEM
                 // for both cooked and raw arrays
                 for _ in 0..quasi_count {
-                    ctx.alloc_reg(); // str_reg
-                    ctx.projected_pc += 1; // LOAD_CONST string
-                    ctx.alloc_reg(); // idx_reg
-                    ctx.projected_pc += 1; // LOAD_CONST index
-                    ctx.projected_pc += 1; // SET_ELEM (cooked)
+                    ctx.count_load_const(); // string
+                    ctx.count_load_const(); // index
+                    ctx.count_instr(); // SET_ELEM (cooked)
                 }
                 // Cooked array: alloc + NEW_ARRAY
                 ctx.alloc_reg(); // cooked_temp
-                ctx.projected_pc += 1; // NEW_ARRAY
+                ctx.count_instr(); // NEW_ARRAY
 
                 for _ in 0..quasi_count {
-                    ctx.alloc_reg(); // str_reg
-                    ctx.projected_pc += 1; // LOAD_CONST string
-                    ctx.alloc_reg(); // idx_reg
-                    ctx.projected_pc += 1; // LOAD_CONST index
-                    ctx.projected_pc += 1; // SET_ELEM (raw)
+                    ctx.count_load_const(); // string
+                    ctx.count_load_const(); // index
+                    ctx.count_instr(); // SET_ELEM (raw)
                 }
                 // Raw array: alloc + NEW_ARRAY
                 ctx.alloc_reg(); // raw_temp
-                ctx.projected_pc += 1; // NEW_ARRAY
+                ctx.count_instr(); // NEW_ARRAY
 
                 // Count expression arguments
                 for expr in &tt.quasi.expressions {
@@ -936,21 +999,19 @@ impl Compiler {
                 ctx.alloc_reg(); // raw_slot
                 for _ in &tt.quasi.expressions {
                     ctx.alloc_reg(); // expr_slot
-                    ctx.projected_pc += 1; // LOAD_VAR
+                    ctx.count_instr(); // LOAD_VAR
                 }
                 // LOAD_VAR for cooked and raw
-                ctx.projected_pc += 2;
+                ctx.count_words(2);
 
                 // undefined this arg
-                ctx.alloc_reg();
-                ctx.projected_pc += 1; // LOAD_CONST
+                ctx.count_load_const();
 
                 // CALL + ext word
-                ctx.projected_pc += 2;
+                ctx.count_call_instr_with_arg_ext();
 
                 // Result reg + LOAD_VAR
-                ctx.alloc_reg();
-                ctx.projected_pc += 1; // LOAD_VAR
+                ctx.count_load_var();
             }
             Expression::ArrowFunctionExpression(_arrow) => {
                 // Arrow functions: alloc 1 register for the function value.
@@ -977,7 +1038,7 @@ impl Compiler {
                     }
                 }
                 ctx.alloc_reg(); // result register
-                ctx.projected_pc += 2; // NEW_EXPRESSION + ext word
+                ctx.count_instr_with_ext(1); // NEW_EXPRESSION + arg_count ext word
             }
             Expression::ArrayExpression(arr) => {
                 ctx.alloc_reg();
@@ -995,19 +1056,15 @@ impl Compiler {
             }
             Expression::StaticMemberExpression(member) => {
                 if matches!(&member.object, Expression::Super(_)) {
-                    ctx.alloc_reg(); // key
-                    ctx.projected_pc += 1; // LOAD_CONST key
-                    ctx.alloc_reg(); // this
-                    ctx.projected_pc += 1; // LOAD_VAR this
+                    ctx.count_load_const(); // key
+                    ctx.count_load_var(); // this
                     ctx.alloc_reg(); // result
-                    ctx.projected_pc += 1; // SUPER_GET_PROP
+                    ctx.count_instr(); // SUPER_GET_PROP
                     return;
                 }
                 self.count_expression(&member.object, ctx);
-                ctx.alloc_reg();
-                ctx.projected_pc += 1; // LOAD_CONST key
-                ctx.projected_pc += 1; // IC_GET_PROP
-                ctx.projected_pc += 3; // 3 IC ext words
+                ctx.count_load_const(); // key
+                ctx.count_ic_instr_with_ext(); // IC_GET_PROP + 3 ext words
             }
             Expression::ComputedMemberExpression(member) => {
                 self.count_expression(&member.object, ctx);
@@ -1017,9 +1074,7 @@ impl Compiler {
             }
             Expression::PrivateFieldExpression(member) => {
                 self.count_expression(&member.object, ctx);
-                ctx.alloc_reg();
-                ctx.alloc_reg();
-                ctx.projected_pc += 2;
+                ctx.count_private_access();
             }
             Expression::ParenthesizedExpression(p) => {
                 self.count_expression(&p.expression, ctx);
@@ -1042,11 +1097,9 @@ impl Compiler {
                 }
                 SimpleAssignmentTarget::StaticMemberExpression(member) => {
                     self.count_expression(&member.object, ctx);
+                    ctx.count_load_const(); // key
                     ctx.alloc_reg();
-                    ctx.projected_pc += 1;
-                    ctx.alloc_reg();
-                    ctx.projected_pc += 1; // MEMBER_INC/MEMBER_DEC opcode
-                    ctx.projected_pc += 3; // 3 IC ext words
+                    ctx.count_ic_instr_with_ext(); // MEMBER_INC/MEMBER_DEC + 3 ext words
                 }
                 SimpleAssignmentTarget::ComputedMemberExpression(member) => {
                     self.count_expression(&member.object, ctx);
