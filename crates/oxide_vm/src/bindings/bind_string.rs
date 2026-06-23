@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::bindings::{apply_binding_table, configure_native_constructor};
 use oxide_kernel::builtin::StringMethods;
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
@@ -39,6 +40,19 @@ pub fn bind_string(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         &string_methods,
         core.string_forge().as_ref(),
         core.shape_forge().as_ref(),
+    );
+
+    let ctor_ptr = session.builtin_world().string_constructor.as_ptr() as *mut JsObject;
+    let ctor = unsafe { &mut *ctor_ptr };
+    configure_native_constructor(ctor, crate::builtins::string::string_constructor as *const (), 1);
+
+    let proto_ptr = session.builtin_world().string_proto.as_ptr() as *mut JsObject;
+    let proto = unsafe { &mut *proto_ptr };
+    apply_binding_table(
+        session.builtin_world(),
+        proto,
+        core,
+        &[("toString", crate::builtins::string::string_to_string as *const (), 0)],
     );
 
     let si_str = core.string_forge().intern("String").0;

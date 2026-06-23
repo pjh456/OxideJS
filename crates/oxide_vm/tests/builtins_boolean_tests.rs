@@ -136,3 +136,16 @@ fn boolean_boxes_participate_in_numeric_coercion() {
     let r = eval(&mut vm, "new Boolean(false) | 0").unwrap();
     assert_eq!(r.as_int(), 0);
 }
+
+#[test]
+fn boxed_boolean_valueof_tostring_and_object_e2e() {
+    let mut vm = Vm::new();
+    assert!(!eval(&mut vm, "new Boolean(false).valueOf()").unwrap().as_bool());
+    assert!(eval(&mut vm, "new Boolean(1).valueOf()").unwrap().as_bool());
+
+    let t = eval(&mut vm, "new Boolean(false).toString()").unwrap();
+    assert_eq!(str_val(&vm, t), "false");
+
+    let ty = eval(&mut vm, "typeof new Boolean(true)").unwrap();
+    assert_eq!(str_val(&vm, ty), "object");
+}
