@@ -44,6 +44,58 @@ pub fn string_value_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
     ))
 }
 
+pub fn string_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let s = if args.len() > 1 {
+        coercion::to_string(vm.kernel_core().string_forge().as_ref(), vm.reg(args[1]))
+    } else {
+        String::new()
+    };
+    let str_val = vm.intern(&s);
+
+    let string_proto = vm.session().builtin_world().string_proto.as_ptr() as *mut JsObject;
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let is_ctor = if this_val.is_object() {
+        let ptr = this_val.as_js_object_ptr();
+        if ptr.is_null() {
+            false
+        } else {
+            let proto_ptr = unsafe { (*ptr).proto().as_js_object_ptr() };
+            !proto_ptr.is_null() && std::ptr::eq(proto_ptr, string_proto)
+        }
+    } else {
+        false
+    };
+
+    if !is_ctor {
+        return NativeResult::Ok(str_val);
+    }
+
+    let obj = unsafe { &mut *this_val.as_js_object_ptr() };
+    obj.type_tag = JsObject::OBJ_TYPE_STRING_OBJ;
+    obj.push_prop(str_val);
+    NativeResult::Ok(this_val)
+}
+
+pub fn string_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(args[0]);
+    if this_val.is_string() {
+        return NativeResult::Ok(this_val);
+    }
+    if this_val.is_object() {
+        let ptr = this_val.as_js_object_ptr();
+        if !ptr.is_null() {
+            let obj = unsafe { &*ptr };
+            if obj.is_string_obj() {
+                return NativeResult::Ok(obj.get_prop_at(0));
+            }
+        }
+    }
+    NativeResult::Err(crate::builtins::error::create_type_error(
+        vm,
+        "String.prototype.toString called on non-String object",
+    ))
+}
+
 fn make_string_array(vm: &mut Vm, parts: &[String]) -> JsValue {
     let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let n = parts.len();

@@ -135,3 +135,28 @@ fn number_static_constants_remain_bound() {
     assert_eq!(eval(&mut vm, "Number.MAX_SAFE_INTEGER").unwrap().as_double(), 9007199254740991f64);
     assert!(eval(&mut vm, "Number.POSITIVE_INFINITY > 0").unwrap().as_bool());
 }
+
+#[test]
+fn boxed_number_valueof_preserves_int_and_float() {
+    let mut vm = Vm::new();
+    let i = eval(&mut vm, "new Number(5).valueOf()").unwrap();
+    assert!(i.is_int());
+    assert_eq!(i.as_int(), 5);
+
+    let f = eval(&mut vm, "new Number(1.5).valueOf()").unwrap();
+    assert!(f.is_double());
+    assert_eq!(f.as_double(), 1.5);
+
+    let s = eval(&mut vm, "new Number('7').valueOf()").unwrap();
+    assert_eq!(s.as_int(), 7);
+}
+
+#[test]
+fn boxed_number_is_object_and_call_stays_primitive() {
+    let mut vm = Vm::new();
+    let ty = eval(&mut vm, "typeof new Number(5)").unwrap();
+    assert_eq!(vm.kernel_core().string_forge().lookup(ty.as_string_index()).unwrap(), "object");
+
+    let n = eval(&mut vm, "Number('7')").unwrap();
+    assert_eq!(n.as_int(), 7);
+}

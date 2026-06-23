@@ -240,3 +240,33 @@ fn string_replace_all() {
     let result = eval(&mut vm, "'aba'.replaceAll('a', 'c')").unwrap();
     assert_eq!(to_str(&vm, result), "cbc");
 }
+
+#[test]
+fn boxed_string_valueof_and_tostring() {
+    let mut vm = Vm::new();
+    let v = eval(&mut vm, "new String('abc').valueOf()").unwrap();
+    assert!(v.is_string());
+    assert_eq!(to_str(&vm, v), "abc");
+
+    let t = eval(&mut vm, "new String('abc').toString()").unwrap();
+    assert!(t.is_string());
+    assert_eq!(to_str(&vm, t), "abc");
+}
+
+#[test]
+fn boxed_string_is_object_and_empty_default() {
+    let mut vm = Vm::new();
+    let ty = eval(&mut vm, "typeof new String('x')").unwrap();
+    assert_eq!(to_str(&vm, ty), "object");
+
+    let empty = eval(&mut vm, "new String().valueOf()").unwrap();
+    assert_eq!(to_str(&vm, empty), "");
+}
+
+#[test]
+fn string_call_conversion_stays_primitive() {
+    let mut vm = Vm::new();
+    let v = eval(&mut vm, "String(123)").unwrap();
+    assert!(v.is_string());
+    assert_eq!(to_str(&vm, v), "123");
+}
