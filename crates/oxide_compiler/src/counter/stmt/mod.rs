@@ -28,6 +28,7 @@ impl Compiler {
             Statement::ClassDeclaration(class) => self.count_class_declaration(class, ctx),
             Statement::ThrowStatement(ts) => self.count_throw_statement(ts, ctx),
             Statement::TryStatement(ts) => self.count_try_statement(ts, ctx),
+            Statement::LabeledStatement(ls) => self.count_labeled_statement(ls, ctx),
             _ => {}
         }
     }

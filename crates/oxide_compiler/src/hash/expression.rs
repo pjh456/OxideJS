@@ -34,6 +34,12 @@ pub(super) fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher, i
             pin.left.name.as_str().hash(h);
             hash_expression(&pin.right, h, include_binding_names);
         }
+        Expression::SequenceExpression(seq) => {
+            (seq.expressions.len() as u32).hash(h);
+            for e in &seq.expressions {
+                hash_expression(e, h, include_binding_names);
+            }
+        }
         Expression::Identifier(ident) => {
             if include_binding_names {
                 ident.name.as_str().hash(h);
