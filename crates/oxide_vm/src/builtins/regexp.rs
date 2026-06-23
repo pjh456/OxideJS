@@ -6,28 +6,22 @@ use crate::coercion;
 use crate::native::NativeResult;
 use crate::vm::Vm;
 
-fn get_regexp_ptr(vm: &Vm, args: &[u8]) -> Result<*mut JsObject, JsValue> {
+fn get_regexp_ptr(vm: &mut Vm, args: &[u8]) -> Result<*mut JsObject, JsValue> {
     let this_val = vm.reg(args[0]);
     if !this_val.is_object() {
-        return Err(JsValue::string(
-            vm.kernel_core()
-                .string_forge()
-                .intern("TypeError: RegExp.prototype method called on non-object")
-                .0,
-            0,
+        return Err(crate::builtins::error::create_type_error(
+            vm,
+            "RegExp.prototype method called on non-object",
         ));
     }
     let ptr = this_val.as_js_object_ptr();
     if ptr.is_null() {
-        return Err(JsValue::string(vm.kernel_core().string_forge().intern("TypeError: null object").0, 0));
+        return Err(crate::builtins::error::create_type_error(vm, "null object"));
     }
     if !unsafe { &*ptr }.is_regexp_obj() {
-        return Err(JsValue::string(
-            vm.kernel_core()
-                .string_forge()
-                .intern("TypeError: RegExp.prototype method called on non-RegExp object")
-                .0,
-            0,
+        return Err(crate::builtins::error::create_type_error(
+            vm,
+            "RegExp.prototype method called on non-RegExp object",
         ));
     }
     Ok(ptr)
@@ -107,8 +101,10 @@ pub fn regexp_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
             obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(re_ptr as *const ()) }));
         }
         Err(e) => {
-            let msg = format!("SyntaxError: Invalid regular expression: {}", e);
-            return NativeResult::Err(JsValue::string(vm.kernel_core().string_forge().intern(&msg).0, 0));
+            return NativeResult::Err(crate::builtins::error::create_syntax_error(
+                vm,
+                &format!("Invalid regular expression: {e}"),
+            ));
         }
     }
 
@@ -152,10 +148,7 @@ pub fn regexp_test(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
     let fn_ptr = match re.native_fn() {
         None => {
-            return NativeResult::Err(JsValue::string(
-                vm.kernel_core().string_forge().intern("TypeError: invalid RegExp").0,
-                0,
-            ));
+            return NativeResult::Err(crate::builtins::error::create_type_error(vm, "invalid RegExp"));
         }
         Some(p) => p,
     };
@@ -187,10 +180,7 @@ pub fn regexp_exec(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let re = unsafe { &*re_ptr };
         match re.native_fn() {
             None => {
-                return NativeResult::Err(JsValue::string(
-                    vm.kernel_core().string_forge().intern("TypeError: invalid RegExp").0,
-                    0,
-                ));
+                return NativeResult::Err(crate::builtins::error::create_type_error(vm, "invalid RegExp"));
             }
             Some(p) => p,
         }

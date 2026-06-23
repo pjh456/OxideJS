@@ -286,12 +286,12 @@ pub fn strict_equality(lhs: JsValue, rhs: JsValue) -> bool {
     same_value(lhs, rhs)
 }
 
-pub fn to_object(val: JsValue, vm: &mut Vm) -> Result<JsValue, &'static str> {
+pub fn to_object(val: JsValue, vm: &mut Vm) -> Result<JsValue, String> {
     if val.is_object() {
         return Ok(val);
     }
     if val.is_null() || val.is_undefined() {
-        return Err("TypeError: Cannot convert null or undefined to object");
+        return Err(vm.error_message_text("TypeError", "Cannot convert null or undefined to object"));
     }
     let (proto_ptr, type_tag) = if val.is_string() {
         (

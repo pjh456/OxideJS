@@ -105,7 +105,7 @@ pub fn object_assign(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let target_val = vm.reg(args[1]);
     let target_val = match coercion::to_object(target_val, vm) {
         Ok(val) => val,
-        Err(msg) => return NativeResult::Err(crate::builtins::error::create_type_error(vm, msg)),
+        Err(msg) => return NativeResult::Err(crate::builtins::error::create_type_error(vm, &msg)),
     };
     let target_ptr = target_val.as_js_object_ptr();
     if target_ptr.is_null() {

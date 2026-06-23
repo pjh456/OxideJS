@@ -17,12 +17,9 @@ pub fn symbol_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
                 if !proto_ptr.is_null() {
                     let sp = vm.session().builtin_world().symbol_proto.as_ptr() as *mut JsObject;
                     if std::ptr::eq(proto_ptr, sp) {
-                        return NativeResult::Err(JsValue::string(
-                            vm.kernel_core()
-                                .string_forge()
-                                .intern("TypeError: Symbol is not a constructor")
-                                .0,
-                            0,
+                        return NativeResult::Err(crate::builtins::error::create_type_error(
+                            vm,
+                            "Symbol is not a constructor",
                         ));
                     }
                 }
@@ -45,12 +42,9 @@ pub fn symbol_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn symbol_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(args[0]);
     if !this_val.is_symbol() {
-        return NativeResult::Err(JsValue::string(
-            vm.kernel_core()
-                .string_forge()
-                .intern("TypeError: Symbol.prototype.toString requires a Symbol")
-                .0,
-            0,
+        return NativeResult::Err(crate::builtins::error::create_type_error(
+            vm,
+            "Symbol.prototype.toString requires a Symbol",
         ));
     }
 

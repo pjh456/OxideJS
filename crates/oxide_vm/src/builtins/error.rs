@@ -36,34 +36,41 @@ fn create_error_object(vm: &mut Vm, error_proto_ptr: *mut JsObject, name: &str, 
     JsValue::from_js_object(obj)
 }
 
+pub fn create_kind_error(vm: &mut Vm, kind: &str, msg: &str) -> JsValue {
+    let proto_ptr = match kind {
+        "TypeError" => P::as_ptr(&vm.session().builtin_world().type_error_proto) as *mut JsObject,
+        "RangeError" => P::as_ptr(&vm.session().builtin_world().range_error_proto) as *mut JsObject,
+        "ReferenceError" => P::as_ptr(&vm.session().builtin_world().reference_error_proto) as *mut JsObject,
+        "SyntaxError" => P::as_ptr(&vm.session().builtin_world().syntax_error_proto) as *mut JsObject,
+        "URIError" => P::as_ptr(&vm.session().builtin_world().uri_error_proto) as *mut JsObject,
+        "EvalError" => P::as_ptr(&vm.session().builtin_world().eval_error_proto) as *mut JsObject,
+        _ => P::as_ptr(&vm.session().builtin_world().error_proto) as *mut JsObject,
+    };
+    create_error_object(vm, proto_ptr, kind, msg)
+}
+
 pub fn create_type_error(vm: &mut Vm, msg: &str) -> JsValue {
-    let proto_ptr = P::as_ptr(&vm.session().builtin_world().type_error_proto) as *mut JsObject;
-    create_error_object(vm, proto_ptr, "TypeError", msg)
+    create_kind_error(vm, "TypeError", msg)
 }
 
 pub fn create_error(vm: &mut Vm, msg: &str) -> JsValue {
-    let proto_ptr = P::as_ptr(&vm.session().builtin_world().error_proto) as *mut JsObject;
-    create_error_object(vm, proto_ptr, "Error", msg)
+    create_kind_error(vm, "Error", msg)
 }
 
 pub fn create_reference_error(vm: &mut Vm, msg: &str) -> JsValue {
-    let proto_ptr = P::as_ptr(&vm.session().builtin_world().reference_error_proto) as *mut JsObject;
-    create_error_object(vm, proto_ptr, "ReferenceError", msg)
+    create_kind_error(vm, "ReferenceError", msg)
 }
 
 pub fn create_range_error(vm: &mut Vm, msg: &str) -> JsValue {
-    let proto_ptr = P::as_ptr(&vm.session().builtin_world().range_error_proto) as *mut JsObject;
-    create_error_object(vm, proto_ptr, "RangeError", msg)
+    create_kind_error(vm, "RangeError", msg)
 }
 
 pub fn create_syntax_error(vm: &mut Vm, msg: &str) -> JsValue {
-    let proto_ptr = P::as_ptr(&vm.session().builtin_world().syntax_error_proto) as *mut JsObject;
-    create_error_object(vm, proto_ptr, "SyntaxError", msg)
+    create_kind_error(vm, "SyntaxError", msg)
 }
 
 pub fn create_uri_error(vm: &mut Vm, msg: &str) -> JsValue {
-    let proto_ptr = P::as_ptr(&vm.session().builtin_world().uri_error_proto) as *mut JsObject;
-    create_error_object(vm, proto_ptr, "URIError", msg)
+    create_kind_error(vm, "URIError", msg)
 }
 
 fn get_msg(vm: &mut Vm, args: &[u8]) -> String {
@@ -137,7 +144,7 @@ pub fn error_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
     } else {
         ("Error".to_string(), String::new())
     };
-    let result = if msg.is_empty() { name } else { format!("{}: {}", name, msg) };
+    let result = crate::vm::format_error_message(&name, &msg);
     let si = vm.kernel_core().string_forge().intern(&result).0;
     NativeResult::Ok(JsValue::string(si, 0))
 }
