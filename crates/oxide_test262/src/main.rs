@@ -149,6 +149,8 @@ struct RunConfig {
     filter: Option<String>,
     no_skip: bool,
     supervise: bool,
+    leak_check: bool,
+    leak_check_interval: usize,
 }
 
 struct HarnessSources {
@@ -284,15 +286,31 @@ fn get_harness_prefix(
 }
 
 impl RunConfig {
+    fn new() -> Self {
+        Self {
+            test262_root: None,
+            filter: None,
+            no_skip: false,
+            supervise: false,
+            leak_check: false,
+            leak_check_interval: 1000,
+        }
+    }
+
     fn parse(args: &[String]) -> Result<Self, String> {
-        let mut config = Self::default();
+        let mut config = Self::new();
         let mut positional = Vec::new();
 
         for arg in args.iter().skip(1) {
             match arg.as_str() {
                 "--no-skip" => config.no_skip = true,
                 "--supervise" => config.supervise = true,
+                "--leak-check" => config.leak_check = true,
                 "--help" | "-h" => return Err(Self::usage()),
+                _ if arg.starts_with("--leak-check-interval=") => {
+                    config.leak_check_interval =
+                        arg.strip_prefix("--leak-check-interval=").unwrap().parse().unwrap_or(1000);
+                }
                 _ if arg.starts_with("--") => return Err(format!("unknown option: {arg}\n\n{}", Self::usage())),
                 _ => positional.push(arg.clone()),
             }
@@ -312,11 +330,13 @@ impl RunConfig {
     }
 
     fn usage() -> String {
-        "usage: test262-runner [--no-skip] [--supervise] [test262-root] [path-filter]\n\
+        "usage: test262-runner [--no-skip] [--supervise] [--leak-check] [--leak-check-interval=N] [test262-root] [path-filter]\n\
          \n\
          --no-skip    Run capability-excluded tests and count unsupported compile/runtime results as failures.\n\
          --supervise  Run the suite as single-worker child-process windows with a hard per-test timeout and\n\
          \x20            automatic resume past any hanging/crashing test. A hang or crash is reported by path.\n\
+         --leak-check Monitor session_object_ptrs, session_bytes, code_forge.len(), symbol_registry.len() every\n\
+         \x20            --leak-check-interval tests (default 1000). Flags sustained linear growth (R^2>0.9).\n\
          \n\
          supervised-mode env tunables:\n\
          \x20  OXIDE_TEST262_TIMEOUT_SECS        per-test wall-clock timeout (default 10)\n\

@@ -180,6 +180,9 @@ pub struct Vm {
     /// The dispatch loop checks this flag and skips writing `regs[target_reg]` from the
     /// call result — the value will be delivered by the RETURN handler instead.
     pub(crate) accessor_frame_target_reg: Option<u8>,
+    pub(crate) ic_hits: std::cell::Cell<u64>,
+    pub(crate) ic_misses: std::cell::Cell<u64>,
+    pub(crate) instruction_count: u64,
 }
 
 impl Vm {
@@ -326,6 +329,43 @@ impl Vm {
 
     pub fn session_gc_stats(&self) -> &SessionGc {
         &self.session_gc
+    }
+
+    pub fn session_object_count(&self) -> usize {
+        self.session_object_ptrs.len()
+    }
+
+    pub fn session_bytes_allocated(&self) -> usize {
+        self.session_bytes_allocated
+    }
+
+    pub fn epoch_object_count(&self) -> usize {
+        self.epoch_object_ptrs.len()
+    }
+
+    pub fn ic_hit_rate(&self) -> f64 {
+        let total = self.ic_hits.get() + self.ic_misses.get();
+        if total == 0 {
+            0.0
+        } else {
+            self.ic_hits.get() as f64 / total as f64
+        }
+    }
+
+    pub fn instruction_count(&self) -> u64 {
+        self.instruction_count
+    }
+
+    pub fn symbol_registry_len(&self) -> usize {
+        self.symbol_registry.len()
+    }
+
+    pub fn ic_hit_count(&self) -> u64 {
+        self.ic_hits.get()
+    }
+
+    pub fn ic_miss_count(&self) -> u64 {
+        self.ic_misses.get()
     }
 
     pub(crate) fn checked_object_ptr(
@@ -649,10 +689,12 @@ impl Vm {
             steps += 1;
             if let Some(max_steps) = self.kernel_core.config.max_steps {
                 if steps > max_steps {
+                    self.instruction_count = steps;
                     return Err(format!("VM step limit exceeded at pc={}", self.pc));
                 }
             }
             if self.pc >= self.bytecode.len() {
+                self.instruction_count = steps;
                 return Err("program counter out of bounds".into());
             }
 
@@ -666,7 +708,10 @@ impl Vm {
             match op {
                 OpCode::NOP => {}
 
-                OpCode::HALT => return Ok(self.regs[0]),
+                OpCode::HALT => {
+                    self.instruction_count = steps;
+                    return Ok(self.regs[0]);
+                }
 
                 OpCode::LOAD_CONST => {
                     self.dispatch_load_const(rd, instr)?;
