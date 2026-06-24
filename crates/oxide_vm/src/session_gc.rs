@@ -2,6 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::mem::size_of;
 use std::time::Instant;
 
+use oxide_kernel::vm_debug;
 use oxide_types::object::{JsObject, PropMetaEntry};
 use oxide_types::value::JsValue;
 
@@ -258,9 +259,15 @@ impl SessionGc {
         let total_ptrs = survivors + dead;
         if total_ptrs > 0 {
             if dead == 0 {
-                eprintln!("[GC] sweep phase -> no objects collected ({} live, {} dead)", survivors, dead);
+                vm_debug!("[GC] sweep phase -> no objects collected ({} live, {} dead)", survivors, dead);
             } else {
-                eprintln!("[GC] sweep phase: {total_ptrs} scanned, {survivors} live, {dead} dead, {freed_bytes} bytes");
+                vm_debug!(
+                    "[GC] sweep phase: {} scanned, {} live, {} dead, {} bytes",
+                    total_ptrs,
+                    survivors,
+                    dead,
+                    freed_bytes
+                );
             }
         }
 
@@ -293,7 +300,7 @@ impl SessionGc {
         self.min_collection_duration_us = self.min_collection_duration_us.min(self.last_collection_duration_us);
 
         if freed_bytes > 0 || self.total_collections % 100 == 0 {
-            eprintln!("{}", self.stats_summary());
+            vm_debug!("{}", self.stats_summary());
         }
     }
 
