@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use oxide_bytecode::module::CompiledModule;
 use oxide_bytecode::opcode;
 
@@ -30,7 +32,8 @@ impl Vm {
         }
         self.native_call_depth += 1;
 
-        let sub = self.sub_modules[sub_idx].clone();
+        let subs = Arc::clone(&self.sub_modules);
+        let sub = &subs[sub_idx];
         let converted_constants = self.convert_constants(&sub.constants).map_err(String::from)?;
 
         let saved = Box::new(InlineSyncState {
@@ -55,7 +58,7 @@ impl Vm {
 
         self.regs = [JsValue::undefined(); 256];
         self.pc = 0;
-        self.bytecode = sub.bytecode;
+        self.bytecode = sub.bytecode.clone();
         self.constants = converted_constants;
         self.active_reg_limit = sub.n_registers.max(1);
         self.root_reg_limit = self.active_reg_limit;
@@ -140,7 +143,7 @@ impl Vm {
 
     pub fn run(&mut self, module: &CompiledModule) -> Result<JsValue, String> {
         self.clear_execution_state();
-        self.sub_modules = module.sub_modules.clone();
+        self.sub_modules = Arc::new(module.sub_modules.clone());
         self.constants = self.convert_constants(&module.constants).map_err(String::from)?;
         self.sub_module_constants = vec![Vec::new(); self.sub_modules.len()];
         self.bytecode = module.bytecode.clone();
