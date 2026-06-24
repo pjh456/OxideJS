@@ -295,29 +295,51 @@ impl Vm {
         ptr
     }
 
-    pub(crate) fn gc_roots(&self) -> Vec<JsValue> {
-        let mut roots = Vec::new();
-        roots.extend_from_slice(&self.regs);
-
+    pub(crate) fn for_each_root(&self, mut f: impl FnMut(JsValue)) {
+        for value in &self.regs {
+            if value.is_object() || value.is_string() {
+                f(*value);
+            }
+        }
         for frame in &self.frames {
-            roots.extend(frame.saved_regs.iter().copied());
-            roots.push(frame.saved_this);
-            roots.push(frame.saved_new_target);
-            roots.push(frame.callee);
-            roots.push(frame.constructed_this.unwrap_or(JsValue::undefined()));
+            for &v in &frame.saved_regs {
+                f(v);
+            }
+            f(frame.saved_this);
+            f(frame.saved_new_target);
+            f(frame.callee);
+            f(frame.constructed_this.unwrap_or(JsValue::undefined()));
         }
-
-        roots.push(JsValue::from_js_object(self.session.global_object().as_ptr() as *mut JsObject));
-        roots.push(self.exception_value.unwrap_or(JsValue::undefined()));
-        roots.push(self.pending_exception.unwrap_or(JsValue::undefined()));
-        roots.extend(self.for_of_iters.iter().copied());
-        roots.push(self.last_for_of_result);
-        roots.extend(self.constants.iter().copied());
+        f(JsValue::from_js_object(self.session.global_object().as_ptr() as *mut JsObject));
+        f(self.exception_value.unwrap_or(JsValue::undefined()));
+        f(self.pending_exception.unwrap_or(JsValue::undefined()));
+        for &v in &self.for_of_iters {
+            f(v);
+        }
+        f(self.last_for_of_result);
+        for &v in &self.constants {
+            f(v);
+        }
         for sub_module in &self.sub_module_constants {
-            roots.extend(sub_module.iter().copied());
+            for &v in sub_module {
+                f(v);
+            }
         }
-
-        roots
+        for saved_constants in &self.saved_constants_stack {
+            for &v in saved_constants {
+                f(v);
+            }
+        }
+        for iter in &self.for_in_iters {
+            if iter.is_null() {
+                continue;
+            }
+            unsafe {
+                for &v in (*(*iter)).keys.iter() {
+                    f(v);
+                }
+            }
+        }
     }
 
     pub(crate) fn maybe_collect_session_gc(&mut self) {

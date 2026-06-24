@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::mem::size_of;
 use std::time::Instant;
 
@@ -23,6 +23,7 @@ pub struct SessionGc {
     pub last_collection_duration_us: u64,
     pub max_collection_duration_us: u64,
     pub min_collection_duration_us: u64,
+    pub(crate) mark_stack: Vec<*mut JsObject>,
 }
 
 impl SessionGc {
@@ -32,11 +33,6 @@ impl SessionGc {
 }
 
 impl SessionGc {
-    #[inline]
-    pub(crate) fn is_session_ptr(&self, vm: &Vm, obj_ptr: *mut JsObject) -> bool {
-        vm.is_session_ptr(obj_ptr)
-    }
-
     pub(crate) fn clear_all_marks(&mut self, vm: &mut Vm) {
         for &ptr in &vm.session_object_ptrs {
             if ptr.is_null() {
@@ -48,7 +44,7 @@ impl SessionGc {
         }
     }
 
-    fn object_edges(&self, obj: &JsObject) -> Vec<JsValue> {
+    fn object_edges(obj: &JsObject) -> Vec<JsValue> {
         let mut edges = Vec::new();
         if let Some(props) = obj.hash_props_vec() {
             edges.extend(props.iter().copied().filter(|val| val.is_object()));
@@ -87,32 +83,36 @@ impl SessionGc {
         edges
     }
 
-    pub(crate) fn mark(&mut self, vm: &Vm, roots: &[JsValue]) {
-        let mut queue = VecDeque::<*mut JsObject>::new();
+    pub(crate) fn mark(&mut self, vm: &Vm) {
+        let mut seeds = Vec::new();
+        vm.for_each_root(|root| {
+            if root.is_object() {
+                seeds.push(root.as_js_object_ptr());
+            }
+        });
 
-        for root in roots {
-            if !root.is_object() {
+        let stack = &mut self.mark_stack;
+        stack.clear();
+        for ptr in seeds {
+            if ptr.is_null() {
                 continue;
             }
-            let ptr = root.as_js_object_ptr();
-            if self.is_session_ptr(vm, ptr) {
-                queue.push_back(ptr);
+            if vm.is_session_ptr(ptr) {
+                stack.push(ptr);
                 continue;
             }
-            if !ptr.is_null() {
-                // SAFETY: object roots are produced by VM-owned fields and builtin objects.
-                for edge in self.object_edges(unsafe { &*ptr }) {
-                    if edge.is_object() {
-                        let edge_ptr = edge.as_js_object_ptr();
-                        if self.is_session_ptr(vm, edge_ptr) {
-                            queue.push_back(edge_ptr);
-                        }
+            // SAFETY: object roots are produced by VM-owned fields and builtin objects.
+            for edge in Self::object_edges(unsafe { &*ptr }) {
+                if edge.is_object() {
+                    let edge_ptr = edge.as_js_object_ptr();
+                    if vm.is_session_ptr(edge_ptr) {
+                        stack.push(edge_ptr);
                     }
                 }
             }
         }
 
-        while let Some(ptr) = queue.pop_front() {
+        while let Some(ptr) = stack.pop() {
             if ptr.is_null() {
                 continue;
             }
@@ -124,14 +124,14 @@ impl SessionGc {
                     continue;
                 }
                 obj.set_gc_mark(true);
-                let edges = self.object_edges(obj);
+                let edges = Self::object_edges(obj);
                 for edge in edges {
                     if !edge.is_object() {
                         continue;
                     }
                     let child_ptr = edge.as_js_object_ptr();
-                    if self.is_session_ptr(vm, child_ptr) {
-                        queue.push_back(child_ptr);
+                    if vm.is_session_ptr(child_ptr) {
+                        stack.push(child_ptr);
                     }
                 }
             }
@@ -293,7 +293,7 @@ impl SessionGc {
     pub(crate) fn collect(&mut self, vm: &mut Vm) {
         let start = Instant::now();
 
-        self.mark(vm, &vm.gc_roots());
+        self.mark(vm);
         let freed_bytes = self.sweep(vm);
 
         let elapsed = start.elapsed();
@@ -341,6 +341,7 @@ impl Default for SessionGc {
             last_collection_duration_us: 0,
             max_collection_duration_us: 0,
             min_collection_duration_us: u64::MAX,
+            mark_stack: Vec::new(),
         }
     }
 }
@@ -473,7 +474,8 @@ mod tests {
         vm.constants.push(JsValue::from_js_object(frame_session));
         vm.sub_module_constants = vec![vec![JsValue::from_js_object(child_session)]];
 
-        let roots = vm.gc_roots();
+        let mut roots = Vec::new();
+        vm.for_each_root(|v| roots.push(v));
         assert!(has_ptr(&roots, root_session));
         assert!(has_ptr(&roots, frame_session));
         assert!(has_ptr(&roots, this_session));
@@ -500,9 +502,8 @@ mod tests {
         let unreachable_session = vm.promote_object(unreachable);
 
         vm.regs[0] = JsValue::from_js_object(root_session);
-        let roots = vm.gc_roots();
         let mut gc = std::mem::take(&mut vm.session_gc);
-        gc.mark(&vm, &roots);
+        gc.mark(&vm);
         vm.session_gc = gc;
 
         assert!(unsafe { (*root_session).is_gc_marked() });
@@ -525,9 +526,8 @@ mod tests {
         let root_session = vm.promote_object(root);
         vm.regs[0] = JsValue::from_js_object(root_session);
         let dead_session = vm.promote_object(dead);
-        let roots = vm.gc_roots();
         let mut gc = std::mem::take(&mut vm.session_gc);
-        gc.mark(&vm, &roots);
+        gc.mark(&vm);
         let _ = gc.sweep(&mut vm);
         vm.session_gc = gc;
 
@@ -548,9 +548,8 @@ mod tests {
         let root_session = vm.promote_object(root);
         vm.regs[0] = JsValue::from_js_object(root_session);
         let _ = vm.promote_object(child);
-        let roots = vm.gc_roots();
         let mut gc = std::mem::take(&mut vm.session_gc);
-        gc.mark(&vm, &roots);
+        gc.mark(&vm);
         let _ = gc.sweep(&mut vm);
         vm.session_gc = gc;
 
@@ -640,8 +639,7 @@ mod tests {
 
         assert!(map_obj.hash_props_vec().is_none());
         assert!(!map_obj.native_data().is_null());
-        assert!(!SessionGc::new()
-            .object_edges(map_obj)
+        assert!(!SessionGc::object_edges(map_obj)
             .iter()
             .any(|edge| std::ptr::eq(edge.as_js_object_ptr(), native_ptr)));
     }
