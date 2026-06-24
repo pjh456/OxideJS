@@ -1,4 +1,5 @@
 #![allow(clippy::arc_with_non_send_sync)]
+#![allow(dead_code)]
 
 use std::fs;
 use std::process::ExitCode;
@@ -14,6 +15,8 @@ use oxide_parser::Allocator;
 use oxide_types::object::JsObject;
 use oxide_vm::vm_pool::VmPool;
 use oxide_vm::JsValue;
+
+mod bench;
 
 #[derive(Parser)]
 #[command(name = "oxide", version, about = "OxideJS - Rust JavaScript engine")]
@@ -42,7 +45,20 @@ enum Commands {
         file: Option<String>,
     },
     Bench {
-        suite: Option<String>,
+        #[arg(default_value = "js")]
+        mode: Option<String>,
+        #[arg(short, long)]
+        filter: Option<String>,
+        #[arg(long, default_value = "2")]
+        warmup: u32,
+        #[arg(long, default_value = "10")]
+        iterations: u32,
+        #[arg(long)]
+        process: bool,
+        #[arg(long)]
+        update_baseline: bool,
+        #[arg(long, default_value = "1000")]
+        leak_check_interval: usize,
     },
     Test {
         suite: Option<String>,
@@ -64,7 +80,28 @@ fn main() -> ExitCode {
             run(&file, &kernel, &pool)
         }
         Some(Commands::Compile { expr, file }) => compile(expr, file),
-        Some(Commands::Bench { .. }) => not_implemented("bench"),
+        Some(Commands::Bench {
+            mode,
+            filter,
+            warmup,
+            iterations,
+            process,
+            update_baseline,
+            leak_check_interval,
+        }) => {
+            let kernel = make_kernel();
+            let pool = make_pool(&kernel);
+            let config = bench::BenchConfig {
+                mode: mode.unwrap_or_else(|| "js".to_string()),
+                filter,
+                warmup,
+                iterations,
+                process,
+                update_baseline,
+                leak_check_interval,
+            };
+            bench::run_benchmarks(config, kernel, pool)
+        }
         Some(Commands::Test { .. }) => not_implemented("test"),
         None => repl(),
     }

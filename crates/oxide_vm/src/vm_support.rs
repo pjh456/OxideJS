@@ -54,6 +54,9 @@ impl Vm {
             active_reg_limit: 0,
             native_call_depth: 0,
             accessor_frame_target_reg: None,
+            ic_hits: std::cell::Cell::new(0),
+            ic_misses: std::cell::Cell::new(0),
+            instruction_count: 0,
         }
     }
 
@@ -96,6 +99,9 @@ impl Vm {
             active_reg_limit: 0,
             native_call_depth: 0,
             accessor_frame_target_reg: None,
+            ic_hits: std::cell::Cell::new(0),
+            ic_misses: std::cell::Cell::new(0),
+            instruction_count: 0,
         }
     }
 

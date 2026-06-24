@@ -38,12 +38,12 @@ fn run_file() {
 }
 
 #[test]
-fn bench_not_implemented() {
+fn bench_help() {
     let output = Command::new("cargo")
-        .args(["run", "--", "bench"])
+        .args(["run", "--", "bench", "--help"])
         .output()
-        .expect("failed to run oxide bench");
+        .expect("failed to run oxide bench --help");
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("not yet implemented"), "bench should print not-implemented message");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--iterations"), "bench --help should list --iterations flag");
 }

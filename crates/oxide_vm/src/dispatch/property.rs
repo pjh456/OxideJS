@@ -203,8 +203,10 @@ impl Vm {
 
         if let Some(value) = ic_get_hit(obj, cached_shape_id, cached_slot) {
             self.regs[a] = value;
+            self.ic_hits.set(self.ic_hits.get() + 1);
             ic_trace!("IC_GET hit shape={} slot={}", cached_shape_id, cached_slot);
         } else if let Some(template) = self.kernel_core.prop_forge().get_template(obj.shape_id()) {
+            self.ic_misses.set(self.ic_misses.get() + 1);
             prop_cache_miss();
             if template.prop_name == prop_name_si {
                 if template.position < obj.prop_vec_len() as u32 {
@@ -271,13 +273,16 @@ impl Vm {
         let cached_slot = ext1;
 
         if ic_set_hit(obj, cached_shape_id, cached_slot, value) {
+            self.ic_hits.set(self.ic_hits.get() + 1);
             ic_trace!("IC_SET hit shape={} slot={}", cached_shape_id, cached_slot);
         } else if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+            self.ic_misses.set(self.ic_misses.get() + 1);
             prop_cache_miss();
             obj.set_prop_at(pos, value);
             self.write_ic_back(obj.shape_id(), pos);
             ic_debug!("IC_SET write-back shape={} slot={}", obj.shape_id(), pos);
         } else {
+            self.ic_misses.set(self.ic_misses.get() + 1);
             prop_cache_miss();
             let old_shape = obj.shape_id();
             self.ordinary_set_dispatch(obj, prop_name_si, value, receiver)?;

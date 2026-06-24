@@ -26,3 +26,24 @@ tracing.workspace = true
 oxide_compiler = { path = "../oxide_compiler" }
 proptest.workspace = true
 oxide_parser = { path = "../oxide_parser" }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "dispatch"
+harness = false
+
+[[bench]]
+name = "property"
+harness = false
+
+[[bench]]
+name = "coercion"
+harness = false
+
+[[bench]]
+name = "gc_mark_sweep"
+harness = false
+
+[[bench]]
+name = "call"
+harness = false
