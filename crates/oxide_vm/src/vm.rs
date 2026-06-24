@@ -166,7 +166,7 @@ pub struct Vm {
     pub(crate) session_bytes_allocated: usize,
     pub object_prototype: P<JsObject>,
     pub math_rng_state: u64,
-    pub(crate) sub_modules: Vec<CompiledModule>,
+    pub(crate) sub_modules: Arc<Vec<CompiledModule>>,
     pub(crate) sub_module_constants: Vec<Vec<JsValue>>,
     pub(crate) saved_bytecode_stack: Vec<Vec<opcode::Instr>>,
     pub(crate) saved_constants_stack: Vec<Vec<JsValue>>,
