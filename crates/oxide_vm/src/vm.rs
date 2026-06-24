@@ -15,7 +15,7 @@ use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::error::{JsError, JsErrorKind};
 use oxide_types::mem::{Epoch, P};
-use oxide_types::object::{JsObject, NativeFnPtr};
+use oxide_types::object::{JsObject, JsString, NativeFnPtr};
 use oxide_types::value::JsValue;
 
 pub(crate) const MAX_PROTO_CHAIN_DEPTH: usize = 1024;
@@ -151,7 +151,7 @@ pub struct Vm {
     pub for_in_iters: Vec<*mut ForInIter<'static>>,
     pub(crate) kernel_core: Arc<KernelCore>,
     pub(crate) session: KernelSession,
-    pub(crate) interned_strings: Vec<u32>,
+    pub(crate) session_string_ptrs: Vec<*mut JsString>,
     pub epoch: Epoch,
     pub(crate) session_epoch: bumpalo::Bump,
     pub(crate) session_gc: SessionGc,
@@ -207,7 +207,7 @@ impl Vm {
         let method_names = if prefer_string { ["toString", "valueOf"] } else { ["valueOf", "toString"] };
 
         for method_name in method_names {
-            let method_si = self.kernel_core.string_forge().intern(method_name).0;
+            let method_si = self.kernel_core.perm_interner().intern(method_name).0;
             let method = {
                 let obj = unsafe { &*obj_ptr };
                 self.ordinary_get(obj, method_si, value)?
@@ -234,7 +234,7 @@ impl Vm {
 
     pub(crate) fn coerce_number_bounded(&mut self, value: JsValue) -> Result<f64, String> {
         let primitive = self.coerce_primitive_bounded(value, false)?;
-        Ok(coercion::to_number(primitive, self.kernel_core.string_forge().as_ref()))
+        Ok(coercion::to_number(primitive))
     }
 
     pub(crate) fn coerce_int32_bounded(&mut self, value: JsValue) -> Result<i32, String> {
@@ -471,14 +471,15 @@ impl Vm {
         if !val.is_string() {
             return None;
         }
-        self.kernel_core.string_forge().lookup(val.as_string_index())
+        // SAFETY: val is a string value; its JsString pointer is alive for its lifetime.
+        Some(unsafe { (*val.as_string_ptr()).data.clone() })
     }
 
     pub(crate) fn thrown_error_kind(&self, val: JsValue) -> &'static str {
         if !val.is_object() {
             return "Error";
         }
-        let name_si = self.kernel_core.string_forge().intern("name").0;
+        let name_si = self.kernel_core.perm_interner().intern("name").0;
         let obj = unsafe { &*val.as_js_object_ptr() };
         let Some(name_val) = self.resolve_property(obj, name_si) else {
             return "Error";
@@ -500,14 +501,16 @@ impl Vm {
 
     pub(crate) fn property_key_si(&mut self, val: JsValue) -> u32 {
         if val.is_string() {
-            return val.as_string_index();
+            // SAFETY: val is a string value; bridge its content to a permanent key id.
+            let s = unsafe { &(*val.as_string_ptr()).data };
+            return self.kernel_core.perm_interner().intern(s).0;
         }
-        let key = coercion::to_string(self.kernel_core.string_forge().as_ref(), val);
-        self.kernel_core.string_forge().intern(&key).0
+        let key = coercion::to_string(val);
+        self.kernel_core.perm_interner().intern(&key).0
     }
 
     pub(crate) fn array_index_from_property_key(&self, prop_name_si: u32) -> Option<u32> {
-        let key = self.kernel_core.string_forge().lookup(prop_name_si)?;
+        let key = self.kernel_core.perm_interner().lookup(prop_name_si)?;
         if key.is_empty() || (key.len() > 1 && key.starts_with('0')) {
             return None;
         }
@@ -515,7 +518,7 @@ impl Vm {
     }
 
     pub(crate) fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
-        let length_si = self.kernel_core.string_forge().intern("length").0;
+        let length_si = self.kernel_core.perm_interner().intern("length").0;
         if obj.is_array() && prop_name_si == length_si {
             return Some(JsValue::int(obj.prop_count() as i32));
         }
@@ -553,7 +556,7 @@ impl Vm {
     }
 
     pub(crate) fn get_own_property_slot(&self, obj: &JsObject, prop_name_si: u32) -> Option<u32> {
-        let length_si = self.kernel_core.string_forge().intern("length").0;
+        let length_si = self.kernel_core.perm_interner().intern("length").0;
         if obj.is_array() && prop_name_si == length_si {
             return None;
         }
@@ -664,7 +667,7 @@ impl Vm {
         let function_name = self.sub_modules[sub_idx]
             .function_name
             .as_deref()
-            .map(|name| self.kernel_core.string_forge().intern(name).0)
+            .map(|name| self.kernel_core.perm_interner().intern(name).0)
             .unwrap_or(0);
 
         self.frames.push(CallFrame {
@@ -684,7 +687,7 @@ impl Vm {
         self.bytecode = sub_bytecode;
         self.constants = converted_sub_constants;
         for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map.clone() {
-            let si = self.kernel_core.string_forge().intern(name.as_str()).0;
+            let si = self.kernel_core.perm_interner().intern(name.as_str()).0;
             let global = self.session.global_object();
             if let Some(pos) = self.kernel_core.shape_forge().lookup_position(global.shape_id(), si) {
                 self.regs[*reg as usize] = global.get_prop_at(pos);
@@ -826,7 +829,7 @@ impl Vm {
                 }
 
                 OpCode::JMP_IF_FALSE => {
-                    let cond = coercion::to_boolean(self.regs[rd], self.kernel_core.string_forge().as_ref());
+                    let cond = coercion::to_boolean(self.regs[rd]);
                     if !cond {
                         let offset = opcode::offset16(instr) as isize;
                         self.pc = ((self.pc as isize) + offset - 1) as usize;
@@ -834,7 +837,7 @@ impl Vm {
                 }
 
                 OpCode::JMP_IF_TRUE => {
-                    let cond = coercion::to_boolean(self.regs[rd], self.kernel_core.string_forge().as_ref());
+                    let cond = coercion::to_boolean(self.regs[rd]);
                     if cond {
                         let offset = opcode::offset16(instr) as isize;
                         self.pc = ((self.pc as isize) + offset - 1) as usize;
@@ -987,7 +990,7 @@ impl Vm {
                             function_name: self.sub_modules[sub_idx]
                                 .function_name
                                 .as_deref()
-                                .map(|name| self.kernel_core.string_forge().intern(name).0)
+                                .map(|name| self.kernel_core.perm_interner().intern(name).0)
                                 .unwrap_or(0),
                             caller_reg_limit,
                             saved_regs,
@@ -1003,7 +1006,7 @@ impl Vm {
                         self.bytecode = sub_bytecode;
                         self.constants = converted_sub_constants;
                         for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map {
-                            let si = self.kernel_core.string_forge().intern(name.as_str()).0;
+                            let si = self.kernel_core.perm_interner().intern(name.as_str()).0;
                             let global = self.session.global_object();
                             if let Some(pos) = self.kernel_core.shape_forge().lookup_position(global.shape_id(), si) {
                                 self.regs[*reg as usize] = global.get_prop_at(pos);
@@ -1107,13 +1110,13 @@ impl Vm {
                     let lhs = self.coerce_primitive_bounded(self.regs[rd], false)?;
                     let rhs = self.coerce_primitive_bounded(self.regs[a], false)?;
                     if lhs.is_string() || rhs.is_string() {
-                        let ls = coercion::to_string(self.kernel_core.string_forge().as_ref(), lhs);
-                        let rs = coercion::to_string(self.kernel_core.string_forge().as_ref(), rhs);
+                        let ls = coercion::to_string(lhs);
+                        let rs = coercion::to_string(rhs);
                         let concat = format!("{ls}{rs}");
-                        self.regs[rd] = self.intern(&concat);
+                        self.regs[rd] = self.new_string(&concat);
                     } else {
-                        let ln = coercion::to_number(lhs, self.kernel_core.string_forge().as_ref());
-                        let rn = coercion::to_number(rhs, self.kernel_core.string_forge().as_ref());
+                        let ln = coercion::to_number(lhs);
+                        let rn = coercion::to_number(rhs);
                         self.regs[rd] = JsValue::float(ln + rn);
                     }
                 }
@@ -1357,7 +1360,7 @@ mod tests {
         if !this_val.is_object() {
             return NativeResult::Ok(JsValue::undefined());
         }
-        let marker_si = vm.kernel_core.string_forge().intern("marker").0;
+        let marker_si = vm.kernel_core.perm_interner().intern("marker").0;
         let obj = unsafe { &*this_val.as_js_object_ptr() };
         NativeResult::Ok(vm.resolve_property(obj, marker_si).unwrap_or(JsValue::undefined()))
     }
@@ -1368,7 +1371,7 @@ mod tests {
         if !this_val.is_object() {
             return NativeResult::Ok(JsValue::undefined());
         }
-        let marker_si = vm.kernel_core.string_forge().intern("marker").0;
+        let marker_si = vm.kernel_core.perm_interner().intern("marker").0;
         let obj = unsafe { &mut *this_val.as_js_object_ptr() };
         vm.set_or_create_prop_value(obj, marker_si, value);
         NativeResult::Ok(JsValue::undefined())
@@ -1399,7 +1402,7 @@ mod tests {
     }
 
     fn add_accessor(vm: &mut Vm, obj_val: JsValue, name: &str, get: JsValue, set: JsValue) {
-        let si = vm.kernel_core.string_forge().intern(name).0;
+        let si = vm.kernel_core.perm_interner().intern(name).0;
         let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
         let shape_id = vm.kernel_core.shape_forge().make_shape(obj.shape_id(), si);
         obj.set_shape_id(shape_id);
@@ -1409,7 +1412,7 @@ mod tests {
     }
 
     fn set_data(vm: &mut Vm, obj_val: JsValue, name: &str, val: JsValue) {
-        let si = vm.kernel_core.string_forge().intern(name).0;
+        let si = vm.kernel_core.perm_interner().intern(name).0;
         let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
         vm.set_or_create_prop_value(obj, si, val);
     }
@@ -1568,7 +1571,7 @@ mod tests {
         let getter = native_function(&mut vm, native_return_7);
         add_accessor(&mut vm, obj_val, "x", getter, JsValue::undefined());
 
-        let x_si = vm.kernel_core.string_forge().intern("x").0;
+        let x_si = vm.kernel_core.perm_interner().intern("x").0;
         let obj = unsafe { &*obj_val.as_js_object_ptr() };
         let value = vm.ordinary_get(obj, x_si, obj_val).expect("getter");
         assert_eq!(value, JsValue::int(7));
@@ -1581,11 +1584,11 @@ mod tests {
         let setter = native_function(&mut vm, native_set_marker);
         add_accessor(&mut vm, obj_val, "x", JsValue::undefined(), setter);
 
-        let x_si = vm.kernel_core.string_forge().intern("x").0;
+        let x_si = vm.kernel_core.perm_interner().intern("x").0;
         let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
         vm.ordinary_set(obj, x_si, JsValue::int(9), obj_val).expect("setter");
 
-        let marker_si = vm.kernel_core.string_forge().intern("marker").0;
+        let marker_si = vm.kernel_core.perm_interner().intern("marker").0;
         let obj = unsafe { &*obj_val.as_js_object_ptr() };
         assert_eq!(vm.resolve_property(obj, marker_si), Some(JsValue::int(9)));
     }
@@ -1602,7 +1605,7 @@ mod tests {
             (*child_val.as_js_object_ptr()).set_proto(proto_val).expect("proto");
         }
 
-        let x_si = vm.kernel_core.string_forge().intern("x").0;
+        let x_si = vm.kernel_core.perm_interner().intern("x").0;
         let child = unsafe { &*child_val.as_js_object_ptr() };
         let value = vm.ordinary_get(child, x_si, child_val).expect("getter");
         assert_eq!(value, JsValue::int(42));
@@ -1619,11 +1622,11 @@ mod tests {
             (*child_val.as_js_object_ptr()).set_proto(proto_val).expect("proto");
         }
 
-        let x_si = vm.kernel_core.string_forge().intern("x").0;
+        let x_si = vm.kernel_core.perm_interner().intern("x").0;
         let child = unsafe { &mut *child_val.as_js_object_ptr() };
         vm.ordinary_set(child, x_si, JsValue::int(12), child_val).expect("setter");
 
-        let marker_si = vm.kernel_core.string_forge().intern("marker").0;
+        let marker_si = vm.kernel_core.perm_interner().intern("marker").0;
         let child = unsafe { &*child_val.as_js_object_ptr() };
         let proto = unsafe { &*proto_val.as_js_object_ptr() };
         assert_eq!(vm.resolve_property(child, marker_si), Some(JsValue::int(12)));
@@ -1643,11 +1646,11 @@ mod tests {
             (*child_val.as_js_object_ptr()).set_proto(proto_val).expect("proto");
         }
 
-        let x_si = vm.kernel_core.string_forge().intern("x").0;
+        let x_si = vm.kernel_core.perm_interner().intern("x").0;
         let child = unsafe { &mut *child_val.as_js_object_ptr() };
         vm.ordinary_set(child, x_si, JsValue::int(15), child_val).expect("setter");
 
-        let marker_si = vm.kernel_core.string_forge().intern("marker").0;
+        let marker_si = vm.kernel_core.perm_interner().intern("marker").0;
         let child = unsafe { &*child_val.as_js_object_ptr() };
         assert_eq!(vm.resolve_property(child, marker_si), Some(JsValue::int(15)));
     }
@@ -1658,7 +1661,7 @@ mod tests {
         let obj_val = plain_object(&mut vm);
         set_data(&mut vm, obj_val, "x", JsValue::int(1));
 
-        let x_si = vm.kernel_core.string_forge().intern("x").0;
+        let x_si = vm.kernel_core.perm_interner().intern("x").0;
         let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
         assert!(!obj.has_prop_meta());
         assert_eq!(vm.ordinary_get(obj, x_si, obj_val).expect("get"), JsValue::int(1));

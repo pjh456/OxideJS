@@ -43,7 +43,7 @@ fn parse_flags(flags: &str) -> (bool, bool, bool) {
 }
 
 fn set_prop(obj: &mut JsObject, name: &str, val: JsValue, vm: &Vm) {
-    let si = vm.kernel_core().string_forge().intern(name).0;
+    let si = vm.kernel_core().perm_interner().intern(name).0;
     let shape_id = vm.kernel_core().shape_forge().make_shape(obj.shape_id(), si);
     obj.set_shape_id(shape_id);
     obj.ensure_hash_props().push(val);
@@ -71,11 +71,11 @@ pub fn regexp_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let (pattern, flags) = if args.len() < 2 {
         (String::new(), String::new())
     } else if args.len() < 3 {
-        let pat = coercion::to_string(vm.kernel_core().string_forge().as_ref(), vm.reg(args[1]));
+        let pat = coercion::to_string(vm.reg(args[1]));
         (pat, String::new())
     } else {
-        let pat = coercion::to_string(vm.kernel_core().string_forge().as_ref(), vm.reg(args[1]));
-        let fl = coercion::to_string(vm.kernel_core().string_forge().as_ref(), vm.reg(args[2]));
+        let pat = coercion::to_string(vm.reg(args[1]));
+        let fl = coercion::to_string(vm.reg(args[2]));
         (pat, fl)
     };
 
@@ -109,8 +109,8 @@ pub fn regexp_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
 
     set_prop(&mut obj, "lastIndex", JsValue::int(0), vm);
-    set_prop(&mut obj, "source", vm.intern(&pattern), vm);
-    set_prop(&mut obj, "flags", vm.intern(&flags), vm);
+    set_prop(&mut obj, "source", vm.new_string(&pattern), vm);
+    set_prop(&mut obj, "flags", vm.new_string(&flags), vm);
     set_prop(&mut obj, "global", JsValue::bool(global), vm);
     set_prop(&mut obj, "ignoreCase", JsValue::bool(ignore_case), vm);
     set_prop(&mut obj, "multiline", JsValue::bool(multi_line), vm);
@@ -155,11 +155,8 @@ pub fn regexp_test(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
     // SAFETY: fn_ptr holds a Box<regex::Regex> pointer stored by regexp_constructor.
     let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
-    let haystack = coercion::to_string(
-        vm.kernel_core().string_forge().as_ref(),
-        vm.reg(if args.len() > 1 { args[1] } else { args[0] }),
-    );
-    let last_index = coercion::to_number(get_prop(re, 0), vm.kernel_core().string_forge().as_ref()) as usize;
+    let haystack = coercion::to_string(vm.reg(if args.len() > 1 { args[1] } else { args[0] }));
+    let last_index = coercion::to_number(get_prop(re, 0)) as usize;
     let is_global = get_prop(re, 3).as_bool();
 
     if is_global {
@@ -188,14 +185,11 @@ pub fn regexp_exec(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
     // SAFETY: fn_ptr holds a Box<regex::Regex> pointer stored by regexp_constructor.
     let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
-    let haystack = coercion::to_string(
-        vm.kernel_core().string_forge().as_ref(),
-        vm.reg(if args.len() > 1 { args[1] } else { args[0] }),
-    );
+    let haystack = coercion::to_string(vm.reg(if args.len() > 1 { args[1] } else { args[0] }));
 
     let (last_index, is_global) = {
         let re = unsafe { &*re_ptr };
-        let li = coercion::to_number(get_prop(re, 0), vm.kernel_core().string_forge().as_ref()) as usize;
+        let li = coercion::to_number(get_prop(re, 0)) as usize;
         let g = get_prop(re, 3).as_bool();
         (li, g)
     };
@@ -216,20 +210,20 @@ pub fn regexp_exec(vm: &mut Vm, args: &[u8]) -> NativeResult {
         );
 
         let full_match = &haystack[m.start()..m.end()];
-        let full_si = vm.kernel_core().string_forge().intern(full_match).0;
-        match_obj.ensure_hash_props().push(JsValue::string(full_si, 0));
+        let full_val = vm.new_string(full_match);
+        match_obj.ensure_hash_props().push(full_val);
 
         let captures = regex.captures(&haystack[m.start()..m.end()]);
         if let Some(caps) = &captures {
             for i in 1..caps.len() {
                 let cap_str = caps.get(i).map(|cm| cm.as_str()).unwrap_or("");
-                let si = vm.kernel_core().string_forge().intern(cap_str).0;
-                match_obj.ensure_hash_props().push(JsValue::string(si, 0));
+                let cap_val = vm.new_string(cap_str);
+                match_obj.ensure_hash_props().push(cap_val);
             }
         }
 
         set_prop(&mut match_obj, "index", JsValue::int(m.start() as i32), vm);
-        let haystack_val = vm.intern(&haystack);
+        let haystack_val = vm.new_string(&haystack);
         set_prop(&mut match_obj, "input", haystack_val, vm);
         set_prop(&mut match_obj, "groups", JsValue::undefined(), vm);
 
@@ -262,6 +256,5 @@ pub fn regexp_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
         vm.lookup_str(val).unwrap_or_default()
     };
     let result = format!("/{}/{}", source, flags);
-    let si = vm.kernel_core().string_forge().intern(&result).0;
-    NativeResult::Ok(JsValue::string(si, 0))
+    NativeResult::Ok(vm.new_string(&result))
 }

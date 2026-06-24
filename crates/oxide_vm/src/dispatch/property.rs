@@ -61,15 +61,10 @@ impl Vm {
 
     fn primitive_property_get(&mut self, val: JsValue, prop_name_si: u32) -> Result<Option<JsValue>, String> {
         if val.is_string() {
-            let length_si = self.kernel_core.string_forge().intern("length").0;
+            let length_si = self.kernel_core.perm_interner().intern("length").0;
             if prop_name_si == length_si {
-                let len = self
-                    .kernel_core
-                    .string_forge()
-                    .lookup(val.as_string_index())
-                    .unwrap_or_default()
-                    .encode_utf16()
-                    .count();
+                // SAFETY: val is a string value.
+                let len = unsafe { (*val.as_string_ptr()).data.encode_utf16().count() };
                 return Ok(Some(JsValue::int(len as i32)));
             }
             let proto_ptr = self.session.builtin_world().string_proto.as_ptr() as *mut JsObject;
@@ -245,7 +240,7 @@ impl Vm {
         };
 
         let prop_name_si = self.property_key_si(self.regs[b]);
-        if self.kernel_core.string_forge().lookup(prop_name_si).as_deref() == Some("__proto__") {
+        if self.kernel_core.perm_interner().lookup(prop_name_si) == Some("__proto__") {
             let proto_value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
             if self.is_object_prototype(obj_ptr) && !proto_value.is_null() {
                 self.raise_type_error("Object.prototype.__proto__ is immutable")?;
@@ -328,7 +323,7 @@ impl Vm {
             return Ok(());
         };
         let prop_name_si = self.property_key_si(self.regs[b]);
-        if self.kernel_core.string_forge().lookup(prop_name_si).as_deref() == Some("__proto__") {
+        if self.kernel_core.perm_interner().lookup(prop_name_si) == Some("__proto__") {
             let proto_value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
             if self.is_object_prototype(obj_ptr) && !proto_value.is_null() {
                 self.raise_type_error("Object.prototype.__proto__ is immutable")?;
@@ -366,7 +361,7 @@ impl Vm {
             return Ok(());
         };
         let prop_name_si = self.property_key_si(self.regs[a]);
-        if self.kernel_core.string_forge().lookup(prop_name_si).as_deref() == Some("__proto__") {
+        if self.kernel_core.perm_interner().lookup(prop_name_si) == Some("__proto__") {
             let proto_value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[b]);
             if self.is_object_prototype(obj_ptr) && !proto_value.is_null() {
                 self.raise_type_error("Object.prototype.__proto__ is immutable")?;

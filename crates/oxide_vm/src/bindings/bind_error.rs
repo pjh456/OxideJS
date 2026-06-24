@@ -10,7 +10,7 @@ fn bind_error_subtype_constructor(
     core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, name: &str, proto_ptr: *mut JsObject,
     ctor_fn: *const (),
 ) {
-    let sf = core.string_forge().as_ref();
+    let sf = core.perm_interner().as_ref();
     let sh = core.shape_forge().as_ref();
     let function_proto_ptr = session.builtin_world().function_proto.as_ptr() as *mut JsObject;
 
@@ -28,7 +28,7 @@ fn bind_error_subtype_constructor(
     let ctor_shape2 = sh.make_shape(ctor_shape1, si_name);
     ctor.set_shape_id(ctor_shape2);
     ctor.ensure_hash_props().push(JsValue::from_js_object(proto_ptr));
-    ctor.ensure_hash_props().push(JsValue::string(name_si, 0));
+    ctor.ensure_hash_props().push(JsValue::perm_string(sf.string_ptr(name_si)));
 
     let ctor_ptr = Box::into_raw(ctor);
 
@@ -57,11 +57,11 @@ pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
     };
     session.builtin_world().bind_error_methods(
         &error_methods,
-        core.string_forge().as_ref(),
+        core.perm_interner().as_ref(),
         core.shape_forge().as_ref(),
     );
 
-    let si_err = core.string_forge().intern("Error").0;
+    let si_err = core.perm_interner().intern("Error").0;
     let err_shape = core.shape_forge().make_shape(global.shape_id(), si_err);
     let err_val = JsValue::from_js_object(session.builtin_world().error_constructor.as_ptr() as *mut JsObject);
     global.set_shape_id(err_shape);

@@ -13,12 +13,8 @@ pub fn boolean_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
         } else if arg.is_bool() {
             arg.as_bool()
         } else if arg.is_string() {
-            let s = vm
-                .kernel_core()
-                .string_forge()
-                .lookup(arg.as_string_index())
-                .unwrap_or_default();
-            !s.is_empty()
+            // SAFETY: arg is a string value.
+            !unsafe { (*arg.as_string_ptr()).is_empty() }
         } else if arg.is_object() {
             true
         } else if arg.is_int() {
@@ -81,9 +77,9 @@ pub fn boolean_prototype_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if this_val.is_bool() {
         return if this_val.as_bool() {
-            NativeResult::Ok(vm.intern("true"))
+            NativeResult::Ok(vm.new_string("true"))
         } else {
-            NativeResult::Ok(vm.intern("false"))
+            NativeResult::Ok(vm.new_string("false"))
         };
     }
     if !this_val.is_object() {
@@ -106,8 +102,8 @@ pub fn boolean_prototype_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
         !val.is_null() && !val.is_undefined()
     };
     if is_true {
-        NativeResult::Ok(vm.intern("true"))
+        NativeResult::Ok(vm.new_string("true"))
     } else {
-        NativeResult::Ok(vm.intern("false"))
+        NativeResult::Ok(vm.new_string("false"))
     }
 }

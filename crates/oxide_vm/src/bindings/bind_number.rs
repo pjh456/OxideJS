@@ -50,7 +50,7 @@ pub fn bind_number(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         ("POSITIVE_INFINITY", JsValue::float(f64::INFINITY)),
     ] {
         ctor.ensure_hash_props().push(value);
-        let prop_si = core.string_forge().intern(name).0;
+        let prop_si = core.perm_interner().intern(name).0;
         let next_shape = core.shape_forge().make_shape(ctor.shape_id(), prop_si);
         ctor.set_shape_id(next_shape);
     }

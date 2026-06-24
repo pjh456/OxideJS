@@ -10,7 +10,7 @@ pub fn bind_math(core: &Arc<KernelCore>, session: &KernelSession, global: &mut J
     let math = unsafe { &mut *math_ptr };
 
     let bw = session.builtin_world();
-    let sf = core.string_forge().as_ref();
+    let sf = core.perm_interner().as_ref();
     let sh = core.shape_forge().as_ref();
 
     bind_methods!(
@@ -65,13 +65,13 @@ pub fn bind_math(core: &Arc<KernelCore>, session: &KernelSession, global: &mut J
         ("SQRT1_2", std::f64::consts::FRAC_1_SQRT_2),
         ("SQRT2", std::f64::consts::SQRT_2),
     ] {
-        let si = core.string_forge().as_ref().intern(name).0;
+        let si = core.perm_interner().as_ref().intern(name).0;
         let sh_c = core.shape_forge().as_ref().make_shape(math.shape_id(), si);
         math.set_shape_id(sh_c);
         math.ensure_hash_props().push(JsValue::float(val));
     }
 
-    let si_m = core.string_forge().intern("Math").0;
+    let si_m = core.perm_interner().intern("Math").0;
     let m_shape = core.shape_forge().make_shape(global.shape_id(), si_m);
     let m_val = JsValue::from_js_object(session.builtin_world().math_object.as_ptr() as *mut JsObject);
     global.set_shape_id(m_shape);

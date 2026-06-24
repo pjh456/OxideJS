@@ -35,7 +35,7 @@ macro_rules! bind_constructor {
         bind_constructor!($core, $global, $name, $ctor_ptr, $ctor_fn, $nargs, hash: false)
     }};
     ($core:expr, $global:expr, $name:literal, $ctor_ptr:expr, $ctor_fn:path, $nargs:literal, hash: $hash:literal) => {{
-        let si = $core.string_forge().intern($name).0;
+        let si = $core.perm_interner().intern($name).0;
         let shape = $core.shape_forge().make_shape($global.shape_id(), si);
         let val = $crate::JsValue::from_js_object($ctor_ptr);
         $global.set_shape_id(shape);
@@ -67,7 +67,7 @@ pub(crate) fn apply_binding_table(
     world: &BuiltinWorld, target: &mut JsObject, core: &Arc<KernelCore>, bindings: &[(&'static str, *const (), u8)],
 ) {
     let shape_forge = core.shape_forge().as_ref();
-    let string_forge = core.string_forge().as_ref();
+    let string_forge = core.perm_interner().as_ref();
     for (name, func, nargs) in bindings {
         // SAFETY: all entries in the binding table are NativeFn fn-item pointers cast to *const ().
         let fn_ptr = unsafe { oxide_types::object::NativeFnPtr::from_raw(*func) };
@@ -76,7 +76,7 @@ pub(crate) fn apply_binding_table(
 }
 
 pub(crate) fn bind_global_value(core: &Arc<KernelCore>, global: &mut JsObject, name: &str, value: JsValue) {
-    let si = core.string_forge().intern(name).0;
+    let si = core.perm_interner().intern(name).0;
     let shape = core.shape_forge().make_shape(global.shape_id(), si);
     global.set_shape_id(shape);
     global.ensure_hash_props().push(value);
@@ -91,7 +91,7 @@ fn bind_error_subtype_global(
     core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, name: &str, proto: &P<JsObject>,
     ctor_fn: *const (),
 ) {
-    let constructor_si = core.string_forge().intern("constructor").0;
+    let constructor_si = core.perm_interner().intern("constructor").0;
     if let Some(pos) = core.shape_forge().lookup_position(proto.shape_id(), constructor_si) {
         let existing_ctor = proto.get_prop_at(pos);
         if existing_ctor.is_object() {
@@ -105,7 +105,7 @@ fn bind_error_subtype_global(
     ctor.set_function(true);
     configure_native_constructor(&mut ctor, ctor_fn, 1);
 
-    let sf = core.string_forge().as_ref();
+    let sf = core.perm_interner().as_ref();
     let sh = core.shape_forge().as_ref();
     let si_prototype = sf.intern("prototype").0;
     let si_name = sf.intern("name").0;
@@ -115,7 +115,7 @@ fn bind_error_subtype_global(
     ctor.set_shape_id(ctor_shape2);
     ctor.ensure_hash_props()
         .push(JsValue::from_js_object(proto.as_ptr() as *mut JsObject));
-    ctor.ensure_hash_props().push(JsValue::string(name_si, 0));
+    ctor.ensure_hash_props().push(JsValue::perm_string(sf.string_ptr(name_si)));
 
     let ctor_ptr = Box::into_raw(ctor);
     bind_existing_global(core, global, name, JsValue::from_js_object(ctor_ptr));

@@ -42,7 +42,7 @@ pub fn bind_array(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
 
     session.builtin_world().bind_array_methods(
         &_array_methods,
-        core.string_forge().as_ref(),
+        core.perm_interner().as_ref(),
         core.shape_forge().as_ref(),
     );
 

@@ -61,7 +61,7 @@ pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
 }
 
 fn bind_well_known_symbol(core: &Arc<KernelCore>, ctor: &mut JsObject, name: &str, val: JsValue) {
-    let si = core.string_forge().intern(name).0;
+    let si = core.perm_interner().intern(name).0;
     let shape_id = core.shape_forge().make_shape(ctor.shape_id(), si);
     ctor.set_shape_id(shape_id);
     ctor.ensure_hash_props().push(val);

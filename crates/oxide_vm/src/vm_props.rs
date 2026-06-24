@@ -19,7 +19,7 @@ impl Vm {
     fn ordinary_get_inner(
         &mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue, target_reg: Option<u8>,
     ) -> Result<JsValue, String> {
-        let length_si = self.kernel_core.string_forge().intern("length").0;
+        let length_si = self.kernel_core.perm_interner().intern("length").0;
         let mut current = Some(obj);
         let mut depth = 0usize;
         while let Some(obj) = current {

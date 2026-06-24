@@ -14,12 +14,12 @@ fn create_error_object(vm: &mut Vm, error_proto_ptr: *mut JsObject, name: &str, 
         .epoch()
         .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(error_proto_ptr)));
 
-    let sf = Arc::clone(vm.kernel_core().string_forge());
+    let sf = Arc::clone(vm.kernel_core().perm_interner());
     let sh = Arc::clone(vm.kernel_core().shape_forge());
 
     let si_message = sf.intern("message").0;
     let sh_message = sh.make_shape(EMPTY_SHAPE_ID, si_message);
-    let msg_val = vm.intern(message);
+    let msg_val = vm.new_string(message);
     unsafe {
         (*obj).set_shape_id(sh_message);
         (*obj).push_prop(msg_val);
@@ -27,7 +27,7 @@ fn create_error_object(vm: &mut Vm, error_proto_ptr: *mut JsObject, name: &str, 
 
     let si_name = sf.intern("name").0;
     let sh_name = sh.make_shape(sh_message, si_name);
-    let name_val = vm.intern(name);
+    let name_val = vm.new_string(name);
     unsafe {
         (*obj).set_shape_id(sh_name);
         (*obj).push_prop(name_val);
@@ -75,7 +75,7 @@ pub fn create_uri_error(vm: &mut Vm, msg: &str) -> JsValue {
 
 fn get_msg(vm: &mut Vm, args: &[u8]) -> String {
     if args.len() > 1 {
-        coercion::to_string(vm.kernel_core().string_forge().as_ref(), vm.reg(args[1]))
+        coercion::to_string(vm.reg(args[1]))
     } else {
         String::new()
     }
@@ -145,8 +145,7 @@ pub fn error_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
         ("Error".to_string(), String::new())
     };
     let result = crate::vm::format_error_message(&name, &msg);
-    let si = vm.kernel_core().string_forge().intern(&result).0;
-    NativeResult::Ok(JsValue::string(si, 0))
+    NativeResult::Ok(vm.new_string(&result))
 }
 
 pub fn error_stack_getter(vm: &mut Vm, _args: &[u8]) -> NativeResult {
@@ -154,15 +153,14 @@ pub fn error_stack_getter(vm: &mut Vm, _args: &[u8]) -> NativeResult {
     for frame in vm.frames.iter().rev() {
         let func_name = vm
             .kernel_core()
-            .string_forge()
+            .perm_interner()
             .lookup(frame.function_name)
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .unwrap_or("<anonymous>");
         lines.push(format!("    at {} (native)", func_name));
     }
     lines.push("    at <anonymous> (native)".to_string());
     let result = lines.join("\n");
-    let si = vm.kernel_core().string_forge().intern(&result).0;
-    NativeResult::Ok(JsValue::string(si, 0))
+    NativeResult::Ok(vm.new_string(&result))
 }
 
 #[cfg(test)]
@@ -174,7 +172,7 @@ mod tests {
     #[test]
     fn error_stack_uses_call_frame_function_name() {
         let mut vm = Vm::new();
-        let name_si = vm.kernel_core().string_forge().intern("foo").0;
+        let name_si = vm.kernel_core().perm_interner().intern("foo").0;
         vm.frames.push(CallFrame {
             return_addr: 0,
             function_name: name_si,
@@ -190,11 +188,7 @@ mod tests {
         });
 
         let stack = error_stack_getter(&mut vm, &[0]).unwrap();
-        let stack_str = vm
-            .kernel_core()
-            .string_forge()
-            .lookup(stack.as_string_index())
-            .unwrap_or_default();
+        let stack_str = vm.lookup_str(stack).unwrap_or_default();
         assert!(stack_str.contains("foo"), "expected function name in stack: {stack_str}");
     }
 }

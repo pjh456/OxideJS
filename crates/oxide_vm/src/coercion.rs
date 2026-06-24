@@ -1,10 +1,32 @@
 use crate::vm::Vm;
-use oxide_kernel::string_forge::StringForge;
 use oxide_types::object::JsObject;
 use oxide_types::shape::EMPTY_SHAPE_ID;
 use oxide_types::value::JsValue;
 
-pub fn to_number(val: JsValue, string_forge: &StringForge) -> f64 {
+/// Borrow a string value's content. Caller must hold a valid string `JsValue`.
+///
+/// # Safety
+/// `val` must be a string `JsValue` whose `JsString` pointer is alive (session or
+/// permanent string) — the same contract as object-pointer derefs in the VM.
+#[inline]
+unsafe fn string_data(val: JsValue) -> &'static str {
+    (*val.as_string_ptr()).as_str()
+}
+
+/// Content equality of two string values: pointer identity → hash+len reject →
+/// byte compare. Replaces the old interner-index compare.
+#[inline]
+fn string_value_eq(a: JsValue, b: JsValue) -> bool {
+    if a.as_string_ptr() == b.as_string_ptr() {
+        return true;
+    }
+    // SAFETY: both are string JsValues; their JsString pointers are valid.
+    let sa = unsafe { &*a.as_string_ptr() };
+    let sb = unsafe { &*b.as_string_ptr() };
+    sa.hash == sb.hash && sa.data == sb.data
+}
+
+pub fn to_number(val: JsValue) -> f64 {
     if val.is_int() {
         return val.as_int() as f64;
     }
@@ -21,7 +43,8 @@ pub fn to_number(val: JsValue, string_forge: &StringForge) -> f64 {
         return f64::NAN;
     }
     if val.is_string() {
-        let s = string_forge.lookup(val.as_string_index()).unwrap_or_default();
+        // SAFETY: val is a string value.
+        let s = unsafe { string_data(val) };
         return s.parse::<f64>().unwrap_or(f64::NAN);
     }
     if val.is_object() {
@@ -30,16 +53,16 @@ pub fn to_number(val: JsValue, string_forge: &StringForge) -> f64 {
     f64::NAN
 }
 
-pub fn to_uint32(val: JsValue, string_forge: &StringForge) -> u32 {
-    let n = to_number(val, string_forge);
+pub fn to_uint32(val: JsValue) -> u32 {
+    let n = to_number(val);
     if n == 0.0 || !n.is_finite() {
         return 0;
     }
     n.trunc().rem_euclid(4_294_967_296.0) as u32
 }
 
-pub fn to_int32(val: JsValue, string_forge: &StringForge) -> i32 {
-    let int = to_uint32(val, string_forge);
+pub fn to_int32(val: JsValue) -> i32 {
+    let int = to_uint32(val);
     if int > i32::MAX as u32 {
         (int as i64 - 4_294_967_296i64) as i32
     } else {
@@ -47,7 +70,7 @@ pub fn to_int32(val: JsValue, string_forge: &StringForge) -> i32 {
     }
 }
 
-pub fn to_string(string_forge: &StringForge, val: JsValue) -> String {
+pub fn to_string(val: JsValue) -> String {
     if val.is_int() {
         return val.as_int().to_string();
     }
@@ -79,7 +102,8 @@ pub fn to_string(string_forge: &StringForge, val: JsValue) -> String {
         return "undefined".to_string();
     }
     if val.is_string() {
-        return string_forge.lookup(val.as_string_index()).unwrap_or_default();
+        // SAFETY: val is a string value.
+        return unsafe { string_data(val) }.to_string();
     }
     if val.is_object() {
         return "[object]".to_string();
@@ -87,7 +111,7 @@ pub fn to_string(string_forge: &StringForge, val: JsValue) -> String {
     String::new()
 }
 
-pub fn to_boolean(val: JsValue, string_forge: &StringForge) -> bool {
+pub fn to_boolean(val: JsValue) -> bool {
     if val.is_undefined() || val.is_null() {
         return false;
     }
@@ -102,8 +126,8 @@ pub fn to_boolean(val: JsValue, string_forge: &StringForge) -> bool {
         return !(d == 0.0 || d == -0.0 || d.is_nan());
     }
     if val.is_string() {
-        let s = string_forge.lookup(val.as_string_index()).unwrap_or_default();
-        return !s.is_empty();
+        // SAFETY: val is a string value.
+        return !unsafe { (*val.as_string_ptr()).is_empty() };
     }
     if val.is_object() {
         return true;
@@ -114,7 +138,7 @@ pub fn to_boolean(val: JsValue, string_forge: &StringForge) -> bool {
     false
 }
 
-pub fn abstract_eq(lhs: JsValue, rhs: JsValue, string_forge: &StringForge) -> bool {
+pub fn abstract_eq(lhs: JsValue, rhs: JsValue) -> bool {
     if lhs.is_null() && rhs.is_undefined() {
         return true;
     }
@@ -122,7 +146,7 @@ pub fn abstract_eq(lhs: JsValue, rhs: JsValue, string_forge: &StringForge) -> bo
         return true;
     }
     if lhs.is_string() && rhs.is_string() {
-        return lhs == rhs;
+        return string_value_eq(lhs, rhs);
     }
     if lhs.is_int() && rhs.is_int() {
         return lhs.as_int() == rhs.as_int();
@@ -140,16 +164,16 @@ pub fn abstract_eq(lhs: JsValue, rhs: JsValue, string_forge: &StringForge) -> bo
         return true;
     }
     if (lhs.is_int() || lhs.is_double()) && (rhs.is_int() || rhs.is_double()) {
-        return strict_double_eq(to_number(lhs, string_forge), to_number(rhs, string_forge));
+        return strict_double_eq(to_number(lhs), to_number(rhs));
     }
     if (lhs.is_int() || lhs.is_double()) && rhs.is_bool() {
-        return to_number(lhs, string_forge) == to_number(rhs, string_forge);
+        return to_number(lhs) == to_number(rhs);
     }
     if lhs.is_bool() && (rhs.is_int() || rhs.is_double()) {
-        return to_number(lhs, string_forge) == to_number(rhs, string_forge);
+        return to_number(lhs) == to_number(rhs);
     }
     if lhs.is_bool() || rhs.is_bool() {
-        return to_number(lhs, string_forge) == to_number(rhs, string_forge);
+        return to_number(lhs) == to_number(rhs);
     }
     if lhs.is_null() || rhs.is_null() {
         return false;
@@ -177,7 +201,7 @@ pub fn strict_eq(lhs: JsValue, rhs: JsValue) -> bool {
         return true;
     }
     if lhs.is_string() && rhs.is_string() {
-        return lhs == rhs;
+        return string_value_eq(lhs, rhs);
     }
     if lhs.is_object() && rhs.is_object() {
         return lhs.as_ptr() == rhs.as_ptr();
@@ -195,14 +219,15 @@ fn strict_double_eq(a: f64, b: f64) -> bool {
     a == b
 }
 
-pub fn relational_compare(string_forge: &StringForge, lhs: JsValue, rhs: JsValue) -> Option<bool> {
+pub fn relational_compare(lhs: JsValue, rhs: JsValue) -> Option<bool> {
     if lhs.is_string() && rhs.is_string() {
-        let ls = string_forge.lookup(lhs.as_string_index()).unwrap_or_default();
-        let rs = string_forge.lookup(rhs.as_string_index()).unwrap_or_default();
+        // SAFETY: both are string values.
+        let ls = unsafe { string_data(lhs) };
+        let rs = unsafe { string_data(rhs) };
         return Some(ls < rs);
     }
-    let l = to_number(lhs, string_forge);
-    let r = to_number(rhs, string_forge);
+    let l = to_number(lhs);
+    let r = to_number(rhs);
     if l.is_nan() || r.is_nan() {
         return None;
     }
@@ -264,7 +289,7 @@ pub fn same_value(lhs: JsValue, rhs: JsValue) -> bool {
         return true;
     }
     if lhs.is_string() && rhs.is_string() {
-        return lhs == rhs;
+        return string_value_eq(lhs, rhs);
     }
     if lhs.is_object() && rhs.is_object() {
         return lhs.as_ptr() == rhs.as_ptr();

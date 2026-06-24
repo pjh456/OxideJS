@@ -87,12 +87,12 @@ fn unescape_string(input: &str) -> String {
 
 pub fn js_escape(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let input = super::string_arg(vm, args);
-    NativeResult::Ok(vm.intern(&escape_string(&input)))
+    NativeResult::Ok(vm.new_string(&escape_string(&input)))
 }
 
 pub fn js_unescape(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let input = super::string_arg(vm, args);
-    NativeResult::Ok(vm.intern(&unescape_string(&input)))
+    NativeResult::Ok(vm.new_string(&unescape_string(&input)))
 }
 
 #[cfg(test)]

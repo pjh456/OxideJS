@@ -11,10 +11,7 @@ fn eval(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
 }
 
 fn str_val(vm: &Vm, val: JsValue) -> String {
-    vm.kernel_core()
-        .string_forge()
-        .lookup(val.as_string_index())
-        .unwrap_or_default()
+    vm.lookup_str(val).unwrap_or_default()
 }
 
 // -- direct native fn tests --

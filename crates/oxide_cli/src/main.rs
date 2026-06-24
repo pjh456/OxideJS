@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand};
 use oxide_compiler::compiler::{compiled_module_hash, Compiler};
 use oxide_kernel::kernel::{KernelConfig, KernelCore};
 use oxide_kernel::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
-use oxide_kernel::string_forge::StringForge;
+use oxide_kernel::string_forge::PermInterner;
 use oxide_parser::Allocator;
 use oxide_types::object::JsObject;
 use oxide_vm::vm_pool::VmPool;
@@ -140,7 +140,7 @@ fn eval(code: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>) -> ExitCode {
     let mut guard = pool.spawn();
     match guard.vm_mut().run(&module) {
         Ok(result) => {
-            format_result(kernel.string_forge().as_ref(), kernel.shape_forge().as_ref(), result);
+            format_result(kernel.perm_interner().as_ref(), kernel.shape_forge().as_ref(), result);
             ExitCode::SUCCESS
         }
         Err(err) => {
@@ -150,17 +150,15 @@ fn eval(code: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>) -> ExitCode {
     }
 }
 
-fn format_result(string_forge: &StringForge, shape_forge: &ShapeForge, val: JsValue) {
+fn format_result(string_forge: &PermInterner, shape_forge: &ShapeForge, val: JsValue) {
     println!("{}", format_js_value(string_forge, shape_forge, val));
 }
 
-fn format_js_value(string_forge: &StringForge, shape_forge: &ShapeForge, val: JsValue) -> String {
+fn format_js_value(string_forge: &PermInterner, shape_forge: &ShapeForge, val: JsValue) -> String {
     if val.is_string() {
-        if let Some(s) = string_forge.lookup(val.as_string_index()) {
-            format!("\"{s}\"")
-        } else {
-            format!("{val}")
-        }
+        // SAFETY: val is a string value.
+        let s = unsafe { (*val.as_string_ptr()).data.clone() };
+        format!("\"{s}\"")
     } else if val.is_object() {
         let obj = unsafe { &*val.as_js_object_ptr() };
         if obj.is_function() {
@@ -177,7 +175,7 @@ fn format_js_value(string_forge: &StringForge, shape_forge: &ShapeForge, val: Js
     }
 }
 
-fn format_object(string_forge: &StringForge, shape_forge: &ShapeForge, obj: &JsObject) -> String {
+fn format_object(string_forge: &PermInterner, shape_forge: &ShapeForge, obj: &JsObject) -> String {
     let mut entries = Vec::new();
     let shape_id = obj.shape_id();
     let mut shape_ids = Vec::new();
@@ -214,7 +212,7 @@ fn format_object(string_forge: &StringForge, shape_forge: &ShapeForge, obj: &JsO
     format!("{{{}}}", entries.join(", "))
 }
 
-fn format_array(string_forge: &StringForge, shape_forge: &ShapeForge, obj: &JsObject) -> String {
+fn format_array(string_forge: &PermInterner, shape_forge: &ShapeForge, obj: &JsObject) -> String {
     let len = obj.prop_vec_len();
     let mut items = Vec::new();
     for i in 0..len {

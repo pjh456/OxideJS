@@ -12,7 +12,7 @@ use crate::code_forge::CodeForge;
 use crate::logging::{init_logging, LogLevel, SUBSYSTEM_COUNT};
 use crate::prop_forge::PropForge;
 use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
-use crate::string_forge::StringForge;
+use crate::string_forge::PermInterner;
 
 #[derive(Clone)]
 pub struct KernelConfig {
@@ -105,7 +105,7 @@ impl Default for KernelConfig {
 /// Never rebuilt after construction — forge tables are append-only.
 pub struct KernelCore {
     pub config: KernelConfig,
-    pub string_forge: Arc<StringForge>,
+    pub perm_interner: Arc<PermInterner>,
     pub shape_forge: Arc<ShapeForge>,
     pub code_forge: Arc<CodeForge>,
     pub prop_forge: Arc<PropForge>,
@@ -114,7 +114,7 @@ pub struct KernelCore {
 impl KernelCore {
     pub fn new(config: KernelConfig) -> Arc<Self> {
         init_logging(&config.log_levels);
-        let string_forge = Arc::new(StringForge::new());
+        let perm_interner = Arc::new(PermInterner::new());
         let shape_forge = Arc::new(ShapeForge::new());
         let code_forge = Arc::new(CodeForge::new(
             NonZeroUsize::new(config.max_cached_modules).expect("max_cached_modules must be greater than zero"),
@@ -122,15 +122,15 @@ impl KernelCore {
         let prop_forge = Arc::new(PropForge::new());
         Arc::new(Self {
             config,
-            string_forge,
+            perm_interner,
             shape_forge,
             code_forge,
             prop_forge,
         })
     }
 
-    pub fn string_forge(&self) -> &Arc<StringForge> {
-        &self.string_forge
+    pub fn perm_interner(&self) -> &Arc<PermInterner> {
+        &self.perm_interner
     }
 
     pub fn shape_forge(&self) -> &Arc<ShapeForge> {
@@ -166,7 +166,8 @@ impl KernelCore {
     }
 
     pub fn sweep_runner_forges(&self) {
-        self.string_forge.maybe_sweep(self.config.max_dead_strings.or(Some(1)));
+        // The key interner is append-only (no per-run sweep); only the transient
+        // shape/prop tables need bounding at the test262 per-test boundary.
         // test262 creates a fresh VM/session per test. At this boundary no JS object
         // from prior tests may retain transient shapes/templates.
         if self.shape_forge.len() > 50_000 {
@@ -394,9 +395,9 @@ impl KernelSession {
     fn new_global_object(core: &KernelCore) -> P<JsObject> {
         let mut global_obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
 
-        let si_nan = core.string_forge.intern("NaN").0;
-        let si_undef = core.string_forge.intern("undefined").0;
-        let si_infinity = core.string_forge.intern("Infinity").0;
+        let si_nan = core.perm_interner.intern("NaN").0;
+        let si_undef = core.perm_interner.intern("undefined").0;
+        let si_infinity = core.perm_interner.intern("Infinity").0;
 
         let nan_shape = core.shape_forge.make_shape(EMPTY_SHAPE_ID, si_nan);
         global_obj.set_shape_id(nan_shape);
@@ -416,7 +417,7 @@ impl KernelSession {
     /// Build a fresh session from a KernelCore. All string/shape intern calls hit
     /// cache on second and subsequent calls — net cost is < 0.5 ms.
     pub fn new(core: &KernelCore) -> Self {
-        let builtin_world = Arc::new(BuiltinWorld::new(&core.string_forge, &core.shape_forge));
+        let builtin_world = Arc::new(BuiltinWorld::new(&core.perm_interner, &core.shape_forge));
         let global_object = Self::new_global_object(core);
         let builtin_snapshot = BuiltinSnapshot::new(&builtin_world, &global_object);
 
@@ -536,7 +537,7 @@ impl KernelSession {
         if dirty.any_builtin_dirty() {
             self.builtin_world = Arc::new(BuiltinWorld::rebuild_with_dirty(
                 &self.builtin_world,
-                core.string_forge.as_ref(),
+                core.perm_interner.as_ref(),
                 core.shape_forge.as_ref(),
                 &dirty,
             ));
@@ -553,8 +554,8 @@ mod tests {
     #[test]
     fn test_kernel_new() {
         let core = KernelCore::new(KernelConfig::minimal());
-        let (i1, _) = core.string_forge().intern("test");
-        let (i2, _) = core.string_forge().intern("test");
+        let (i1, _) = core.perm_interner().intern("test");
+        let (i2, _) = core.perm_interner().intern("test");
         assert_eq!(i1, i2);
     }
 
@@ -575,8 +576,8 @@ mod tests {
     #[test]
     fn test_kernel_string_forge() {
         let core = KernelCore::new(KernelConfig::minimal());
-        let (i1, _) = core.string_forge().intern("hello");
-        let (i2, _) = core.string_forge().intern("hello");
+        let (i1, _) = core.perm_interner().intern("hello");
+        let (i2, _) = core.perm_interner().intern("hello");
         assert_eq!(i1, i2);
     }
 
@@ -596,9 +597,9 @@ mod tests {
     #[test]
     fn test_session_rebuild_shares_forges() {
         let core = KernelCore::new(KernelConfig::minimal());
-        let (i1, _) = core.string_forge().intern("hello");
+        let (i1, _) = core.perm_interner().intern("hello");
         let _s2 = KernelSession::new(&core);
-        let (i2, _) = core.string_forge().intern("hello");
+        let (i2, _) = core.perm_interner().intern("hello");
         assert_eq!(i1, i2);
     }
 

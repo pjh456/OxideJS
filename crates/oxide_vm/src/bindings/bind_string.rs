@@ -38,7 +38,7 @@ pub fn bind_string(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
     };
     session.builtin_world().bind_string_methods(
         &string_methods,
-        core.string_forge().as_ref(),
+        core.perm_interner().as_ref(),
         core.shape_forge().as_ref(),
     );
 
@@ -55,7 +55,7 @@ pub fn bind_string(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         &[("toString", crate::builtins::string::string_to_string as *const (), 0)],
     );
 
-    let si_str = core.string_forge().intern("String").0;
+    let si_str = core.perm_interner().intern("String").0;
     let str_shape = core.shape_forge().make_shape(global.shape_id(), si_str);
     let str_val = JsValue::from_js_object(session.builtin_world().string_constructor.as_ptr() as *mut JsObject);
     global.set_shape_id(str_shape);

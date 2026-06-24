@@ -609,7 +609,7 @@ mod tests {
             (*obj).set_prop_at(0, JsValue::int(42));
         }
         let old_ptr = vm.promote_object(obj);
-        let key = vm.kernel_core.string_forge().intern("gcRoot").0;
+        let key = vm.kernel_core.perm_interner().intern("gcRoot").0;
         let global_ptr = vm.session.global_object().as_ptr() as *mut JsObject;
         unsafe {
             let global = &mut *global_ptr;
