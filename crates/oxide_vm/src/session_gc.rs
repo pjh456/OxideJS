@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 use std::time::Instant;
 
 use oxide_kernel::vm_debug;
-use oxide_types::object::{JsObject, PropMetaEntry};
+use oxide_types::object::{JsObject, JsString, PropMetaEntry};
 use oxide_types::value::JsValue;
 use rustc_hash::FxBuildHasher;
 
@@ -24,6 +24,7 @@ pub struct SessionGc {
     pub max_collection_duration_us: u64,
     pub min_collection_duration_us: u64,
     pub(crate) mark_stack: Vec<*mut JsObject>,
+    pub(crate) live_strings: HashSet<*mut JsString, FxBuildHasher>,
 }
 
 impl SessionGc {
@@ -83,16 +84,64 @@ impl SessionGc {
         edges
     }
 
+    /// Record session-string values held directly by `obj` into `live`. JsStrings hold no GC
+    /// references, so "reaching" a string IS marking it — there is no string DFS stack. Permanent
+    /// strings are also recorded here harmlessly; the sweep only iterates `session_string_ptrs`, so
+    /// non-session pointers in `live` are simply never consulted.
+    fn record_object_string_edges(live: &mut HashSet<*mut JsString, FxBuildHasher>, obj: &JsObject) {
+        if let Some(props) = obj.hash_props_vec() {
+            for value in props.iter() {
+                if value.is_string() {
+                    live.insert(value.as_string_ptr_mut());
+                }
+            }
+        }
+        if obj.captured_this().is_string() {
+            live.insert(obj.captured_this().as_string_ptr_mut());
+        }
+        if obj.home_object().is_string() {
+            live.insert(obj.home_object().as_string_ptr_mut());
+        }
+        if obj.is_map() {
+            for value in map::map_native_edges(obj) {
+                if value.is_string() {
+                    live.insert(value.as_string_ptr_mut());
+                }
+            }
+        }
+        if obj.is_set() {
+            for value in set::set_native_edges(obj) {
+                if value.is_string() {
+                    live.insert(value.as_string_ptr_mut());
+                }
+            }
+        }
+    }
+
     pub(crate) fn mark(&mut self, vm: &Vm) {
         let mut seeds = Vec::new();
+        let mut string_seeds: Vec<*mut JsString> = Vec::new();
         vm.for_each_root(|root| {
             if root.is_object() {
                 seeds.push(root.as_js_object_ptr());
+            } else if root.is_string() {
+                string_seeds.push(root.as_string_ptr_mut());
             }
         });
 
-        let stack = &mut self.mark_stack;
+        let Self {
+            mark_stack: stack,
+            live_strings,
+            ..
+        } = self;
         stack.clear();
+        live_strings.clear();
+        for ptr in string_seeds {
+            if !ptr.is_null() {
+                live_strings.insert(ptr);
+            }
+        }
+
         for ptr in seeds {
             if ptr.is_null() {
                 continue;
@@ -102,7 +151,9 @@ impl SessionGc {
                 continue;
             }
             // SAFETY: object roots are produced by VM-owned fields and builtin objects.
-            for edge in Self::object_edges(unsafe { &*ptr }) {
+            let obj = unsafe { &*ptr };
+            Self::record_object_string_edges(live_strings, obj);
+            for edge in Self::object_edges(obj) {
                 if edge.is_object() {
                     let edge_ptr = edge.as_js_object_ptr();
                     if vm.is_session_ptr(edge_ptr) {
@@ -124,6 +175,7 @@ impl SessionGc {
                     continue;
                 }
                 obj.set_gc_mark(true);
+                Self::record_object_string_edges(live_strings, obj);
                 let edges = Self::object_edges(obj);
                 for edge in edges {
                     if !edge.is_object() {
@@ -184,6 +236,18 @@ impl SessionGc {
 
     fn drop_dead_session_object(obj_ptr: *mut JsObject) -> u64 {
         Self::drop_session_object_heap_data(obj_ptr) + size_of::<JsObject>() as u64
+    }
+
+    /// Drop a dead session `JsString` (allocated by `Vm::new_string` via `Box::into_raw`),
+    /// returning the bytes freed. Mirrors `Vm::free_session_string_heap_data`'s drop, but applied
+    /// selectively to a single dead pointer.
+    ///
+    /// SAFETY: `ptr` must be a non-null pointer produced by `Box::into_raw(Box::new(JsString))` in
+    /// `Vm::new_string`, still present in `session_string_ptrs`, and dropped exactly once.
+    unsafe fn drop_dead_session_string(ptr: *mut JsString) -> u64 {
+        let bytes = (size_of::<JsString>() + (*ptr).len()) as u64;
+        drop(Box::from_raw(ptr));
+        bytes
     }
 
     pub(crate) fn sweep(&mut self, vm: &mut Vm) -> u64 {
@@ -285,8 +349,40 @@ impl SessionGc {
         freed_bytes
     }
 
+    /// Sweep session `JsString`s: keep the pointers recorded live during `mark()`, drop the rest
+    /// via `Box::from_raw`. Live strings are NOT moved — Box addresses are stable — so no forwarding
+    /// map and no root-pointer rewriting are needed. Run after the object sweep (which resets
+    /// `session_bytes_allocated` to object-only), re-adding surviving string bytes. Returns the
+    /// bytes freed.
+    pub(crate) fn sweep_session_strings(&mut self, vm: &mut Vm) -> u64 {
+        let old = std::mem::take(&mut vm.session_string_ptrs);
+        let mut freed = 0u64;
+        let mut live_bytes = 0usize;
+        let mut live = Vec::with_capacity(old.len());
+        for ptr in old {
+            if ptr.is_null() {
+                continue;
+            }
+            if self.live_strings.contains(&ptr) {
+                // Survivor — address unchanged, no rewrite needed.
+                // SAFETY: ptr is a live session-string box still owned by the VM.
+                live_bytes += unsafe { size_of::<JsString>() + (*ptr).len() };
+                live.push(ptr);
+            } else {
+                // SAFETY: ptr is in session_string_ptrs but not reachable; drop exactly once.
+                freed += unsafe { Self::drop_dead_session_string(ptr) };
+            }
+        }
+        vm.session_string_ptrs = live;
+        vm.session_bytes_allocated = vm.session_bytes_allocated.saturating_add(live_bytes);
+
+        self.total_bytes_freed = self.total_bytes_freed.saturating_add(freed);
+        self.last_collection_bytes_freed = self.last_collection_bytes_freed.saturating_add(freed);
+        freed
+    }
+
     pub(crate) fn should_collect(&self, vm: &Vm) -> bool {
-        !vm.session_object_ptrs.is_empty()
+        (!vm.session_object_ptrs.is_empty() || !vm.session_string_ptrs.is_empty())
             && vm.session_bytes_allocated >= vm.kernel_core().config().session_gc_threshold
     }
 
@@ -294,7 +390,8 @@ impl SessionGc {
         let start = Instant::now();
 
         self.mark(vm);
-        let freed_bytes = self.sweep(vm);
+        let mut freed_bytes = self.sweep(vm);
+        freed_bytes += self.sweep_session_strings(vm);
 
         let elapsed = start.elapsed();
         self.total_collections += 1;
@@ -342,6 +439,7 @@ impl Default for SessionGc {
             max_collection_duration_us: 0,
             min_collection_duration_us: u64::MAX,
             mark_stack: Vec::new(),
+            live_strings: HashSet::default(),
         }
     }
 }
@@ -783,5 +881,92 @@ mod tests {
         vm.regs[0] = live_view;
         vm.regs[1] = JsValue::int(0);
         assert_eq!(native_ok(data_view::data_view_get_int32(&mut vm, &[0, 1])), JsValue::int(9));
+    }
+
+    fn collect(vm: &mut Vm) {
+        let mut gc = std::mem::take(&mut vm.session_gc);
+        gc.collect(vm);
+        vm.session_gc = gc;
+    }
+
+    #[test]
+    fn session_string_collected_when_dead() {
+        let mut vm = Vm::new();
+        let dead = vm.new_string("dead-string");
+        let dead_ptr = dead.as_string_ptr_mut();
+        assert!(vm.session_string_ptrs.contains(&dead_ptr));
+
+        // No root references `dead` (it lives only on the Rust stack as a value wrapper).
+        collect(&mut vm);
+
+        assert!(!vm.session_string_ptrs.contains(&dead_ptr));
+    }
+
+    #[test]
+    fn session_string_survives_when_in_register() {
+        let mut vm = Vm::new();
+        let live = vm.new_string("live-in-reg");
+        let live_ptr = live.as_string_ptr_mut();
+        vm.regs[0] = live;
+
+        collect(&mut vm);
+
+        assert!(vm.session_string_ptrs.contains(&live_ptr));
+        // Live strings are never moved — the register still points at the same box.
+        assert_eq!(vm.regs[0].as_string_ptr_mut(), live_ptr);
+        assert_eq!(unsafe { (*live_ptr).as_str() }, "live-in-reg");
+    }
+
+    #[test]
+    fn session_string_survives_via_object_property() {
+        let mut vm = Vm::new();
+        let obj = plain_object(&mut vm);
+        let s = vm.new_string("prop-string");
+        let s_ptr = s.as_string_ptr_mut();
+        unsafe {
+            (*obj).set_prop_at(0, s);
+        }
+        let obj_session = vm.promote_object(obj);
+
+        // The string is reachable ONLY through the live object's property, not via any register.
+        vm.regs.fill(JsValue::undefined());
+        vm.regs[0] = JsValue::from_js_object(obj_session);
+
+        collect(&mut vm);
+
+        assert!(vm.session_string_ptrs.contains(&s_ptr));
+        assert_eq!(unsafe { (*s_ptr).as_str() }, "prop-string");
+    }
+
+    #[test]
+    fn permanent_string_untouched_by_sweep() {
+        let mut vm = Vm::new();
+        let perm = vm.perm_string("perm");
+        let perm_ptr = perm.as_string_ptr_mut();
+        // Permanent strings live in PermInterner, never in the session set.
+        assert!(!vm.session_string_ptrs.contains(&perm_ptr));
+        vm.regs[0] = perm;
+
+        collect(&mut vm);
+
+        // Never dropped by the session sweep (still readable, still absent from session set).
+        assert!(!vm.session_string_ptrs.contains(&perm_ptr));
+        assert_eq!(unsafe { (*perm_ptr).as_str() }, "perm");
+    }
+
+    #[test]
+    fn string_sweep_byte_accounting() {
+        let mut vm = Vm::new();
+        let dead = vm.new_string("0123456789");
+        let _ = dead.as_string_ptr_mut();
+        let expected = (size_of::<JsString>() + "0123456789".len()) as u64;
+
+        let mut gc = std::mem::take(&mut vm.session_gc);
+        let before = gc.total_bytes_freed;
+        gc.collect(&mut vm);
+        let after = gc.total_bytes_freed;
+        vm.session_gc = gc;
+
+        assert!(after >= before + expected);
     }
 }
