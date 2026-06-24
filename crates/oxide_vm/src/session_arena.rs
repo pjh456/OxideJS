@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
+use rustc_hash::FxBuildHasher;
 
 use crate::builtins::{data_view, map, set, typed_array};
 use crate::vm::Vm;
@@ -16,12 +17,15 @@ impl Vm {
     }
 
     pub(crate) fn promote_object(&mut self, src: *mut JsObject) -> *mut JsObject {
-        let mut forwarding = HashMap::new();
-        self.promote_object_inner(src, &mut forwarding)
+        let mut forwarding = std::mem::take(&mut self.forwarding);
+        let result = self.promote_object_inner(src, &mut forwarding);
+        forwarding.clear();
+        self.forwarding = forwarding;
+        result
     }
 
     pub(crate) fn promote_object_inner(
-        &mut self, src: *mut JsObject, forwarding: &mut HashMap<*mut JsObject, *mut JsObject>,
+        &mut self, src: *mut JsObject, forwarding: &mut HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>,
     ) -> *mut JsObject {
         if src.is_null() {
             return src;
@@ -63,7 +67,7 @@ impl Vm {
     }
 
     pub(crate) fn promote_value_if_epoch_object(
-        &mut self, value: JsValue, forwarding: &mut HashMap<*mut JsObject, *mut JsObject>,
+        &mut self, value: JsValue, forwarding: &mut HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>,
     ) -> JsValue {
         if !value.is_object() {
             return value;
@@ -229,5 +233,21 @@ mod tests {
 
         assert!(!is_epoch_object(&vm, meta.get));
         assert!(!is_epoch_object(&vm, meta.set));
+    }
+
+    #[test]
+    fn promote_clears_forwarding_map() {
+        let mut vm = Vm::new();
+        let first = plain_object(&mut vm);
+        let promoted = vm.promote_object(first);
+        assert!(!promoted.is_null());
+        // The shared forwarding map must be cleared after each promote so a
+        // later promote (or GC sweep) never observes stale old->new mappings.
+        assert!(vm.forwarding.is_empty());
+
+        let second = plain_object(&mut vm);
+        let promoted2 = vm.promote_object(second);
+        assert!(!promoted2.is_null());
+        assert!(vm.forwarding.is_empty());
     }
 }
