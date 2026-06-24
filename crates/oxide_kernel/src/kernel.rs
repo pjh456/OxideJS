@@ -80,11 +80,6 @@ impl KernelConfig {
     pub fn set_session_gc_threshold(&mut self, bytes: usize) {
         self.session_gc_threshold = bytes;
     }
-
-    pub fn with_session_gc_threshold(mut self, bytes: usize) -> Self {
-        self.session_gc_threshold = bytes;
-        self
-    }
 }
 
 impl Default for KernelConfig {

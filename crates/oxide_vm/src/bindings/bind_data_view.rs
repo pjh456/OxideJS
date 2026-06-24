@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::bind_constructor_hash;
+use crate::bind_constructor;
 use crate::bindings::{apply_binding_table, configure_native_constructor};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
@@ -42,5 +42,5 @@ pub fn bind_data_view(core: &Arc<KernelCore>, session: &KernelSession, global: &
         ],
     );
 
-    bind_constructor_hash!(core, global, "DataView", ctor_ptr, crate::builtins::data_view::data_view_constructor, 3);
+    bind_constructor!(core, global, "DataView", ctor_ptr, crate::builtins::data_view::data_view_constructor, 3, hash: true);
 }

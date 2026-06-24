@@ -153,18 +153,6 @@ pub enum OpCode {
 }
 
 impl OpCode {
-    pub fn is_implemented(&self) -> bool {
-        !matches!(
-            self,
-            OpCode::PROFILE_TYPE
-                | OpCode::PROFILE_SHAPE
-                | OpCode::PROFILE_BRANCH
-                | OpCode::PROFILE_CALL
-                | OpCode::FORK
-                | OpCode::JOIN
-        )
-    }
-
     pub fn has_ic_ext_words(&self) -> bool {
         matches!(
             self,

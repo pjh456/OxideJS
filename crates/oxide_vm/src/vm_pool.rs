@@ -15,8 +15,6 @@ pub struct VmPool {
     kernel_core: Arc<KernelCore>,
     inner: Mutex<VmPoolInner>,
     condvar: Condvar,
-    #[allow(dead_code)]
-    min_size: usize,
     max_size: Option<usize>,
 }
 
@@ -28,30 +26,16 @@ pub struct VmGuard {
 }
 
 impl VmPool {
-    pub fn new(
-        kernel_core: Arc<KernelCore>, #[allow(dead_code)] min_size: usize, max_size: Option<usize>,
-    ) -> Arc<Self> {
-        let pool = Arc::new(Self {
+    pub fn new(kernel_core: Arc<KernelCore>, _min_size: usize, max_size: Option<usize>) -> Arc<Self> {
+        Arc::new(Self {
             kernel_core,
             inner: Mutex::new(VmPoolInner {
-                available: Vec::with_capacity(min_size),
+                available: Vec::new(),
                 total_count: 0,
             }),
             condvar: Condvar::new(),
-            min_size,
             max_size,
-        });
-
-        {
-            let mut inner = pool.inner.lock().unwrap();
-            for _ in 0..min_size {
-                let vm = Self::new_vm(&pool.kernel_core);
-                inner.available.push(vm);
-                inner.total_count += 1;
-            }
-        }
-
-        pool
+        })
     }
 
     fn new_vm(core: &Arc<KernelCore>) -> Vm {
@@ -116,10 +100,6 @@ impl VmGuard {
 
     pub fn vm_mut(&mut self) -> &mut Vm {
         self.vm.as_mut().expect("VmGuard has no VM")
-    }
-
-    pub fn mark_dirty(&mut self) {
-        self.dirty = true;
     }
 }
 

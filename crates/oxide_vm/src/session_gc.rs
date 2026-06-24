@@ -25,22 +25,11 @@ pub struct SessionGc {
 
 impl SessionGc {
     pub fn new() -> Self {
-        Self {
-            total_collections: 0,
-            total_bytes_freed: 0,
-            total_objects_scanned: 0,
-            total_objects_live: 0,
-            total_objects_dead: 0,
-            last_collection_objects_scanned: 0,
-            last_collection_objects_live: 0,
-            last_collection_objects_dead: 0,
-            last_collection_bytes_freed: 0,
-            last_collection_duration_us: 0,
-            max_collection_duration_us: 0,
-            min_collection_duration_us: u64::MAX,
-        }
+        Self::default()
     }
+}
 
+impl SessionGc {
     #[inline]
     pub(crate) fn is_session_ptr(&self, vm: &Vm, obj_ptr: *mut JsObject) -> bool {
         vm.is_session_ptr(obj_ptr)
@@ -329,7 +318,20 @@ impl SessionGc {
 
 impl Default for SessionGc {
     fn default() -> Self {
-        Self::new()
+        Self {
+            total_collections: 0,
+            total_bytes_freed: 0,
+            total_objects_scanned: 0,
+            total_objects_live: 0,
+            total_objects_dead: 0,
+            last_collection_objects_scanned: 0,
+            last_collection_objects_live: 0,
+            last_collection_objects_dead: 0,
+            last_collection_bytes_freed: 0,
+            last_collection_duration_us: 0,
+            max_collection_duration_us: 0,
+            min_collection_duration_us: u64::MAX,
+        }
     }
 }
 
@@ -487,7 +489,7 @@ mod tests {
 
         vm.regs[0] = JsValue::from_js_object(root_session);
         let roots = vm.gc_roots();
-        let mut gc = std::mem::replace(&mut vm.session_gc, SessionGc::new());
+        let mut gc = std::mem::take(&mut vm.session_gc);
         gc.mark(&vm, &roots);
         vm.session_gc = gc;
 
@@ -512,7 +514,7 @@ mod tests {
         vm.regs[0] = JsValue::from_js_object(root_session);
         let dead_session = vm.promote_object(dead);
         let roots = vm.gc_roots();
-        let mut gc = std::mem::replace(&mut vm.session_gc, SessionGc::new());
+        let mut gc = std::mem::take(&mut vm.session_gc);
         gc.mark(&vm, &roots);
         let _ = gc.sweep(&mut vm);
         vm.session_gc = gc;
@@ -624,7 +626,7 @@ mod tests {
         let map_session = vm.promote_object(map_value.as_js_object_ptr());
         vm.regs.fill(JsValue::undefined());
         vm.regs[0] = JsValue::from_js_object(map_session);
-        let mut gc = std::mem::replace(&mut vm.session_gc, SessionGc::new());
+        let mut gc = std::mem::take(&mut vm.session_gc);
         gc.collect(&mut vm);
         vm.session_gc = gc;
 
@@ -647,7 +649,7 @@ mod tests {
         let set_session = vm.promote_object(set_value.as_js_object_ptr());
         vm.regs.fill(JsValue::undefined());
         vm.regs[0] = JsValue::from_js_object(set_session);
-        let mut gc = std::mem::replace(&mut vm.session_gc, SessionGc::new());
+        let mut gc = std::mem::take(&mut vm.session_gc);
         gc.collect(&mut vm);
         vm.session_gc = gc;
 
@@ -686,7 +688,7 @@ mod tests {
         let root_session = vm.promote_object(root);
         vm.regs.fill(JsValue::undefined());
         vm.regs[0] = JsValue::from_js_object(root_session);
-        let mut gc = std::mem::replace(&mut vm.session_gc, SessionGc::new());
+        let mut gc = std::mem::take(&mut vm.session_gc);
         gc.collect(&mut vm);
         vm.session_gc = gc;
 
@@ -735,7 +737,7 @@ mod tests {
         let view_session = vm.promote_object(view.as_js_object_ptr());
         vm.regs.fill(JsValue::undefined());
         vm.regs[0] = JsValue::from_js_object(view_session);
-        let mut gc = std::mem::replace(&mut vm.session_gc, SessionGc::new());
+        let mut gc = std::mem::take(&mut vm.session_gc);
         gc.collect(&mut vm);
         vm.session_gc = gc;
 

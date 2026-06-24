@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::bind_constructor_hash;
+use crate::bind_constructor;
 use crate::bindings::{apply_binding_table, configure_native_constructor};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
@@ -23,5 +23,5 @@ pub fn bind_boolean(core: &Arc<KernelCore>, session: &KernelSession, global: &mu
         ],
     );
 
-    bind_constructor_hash!(core, global, "Boolean", ctor_ptr, crate::builtins::boolean::boolean_constructor, 1);
+    bind_constructor!(core, global, "Boolean", ctor_ptr, crate::builtins::boolean::boolean_constructor, 1, hash: true);
 }

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::bind_constructor_hash;
+use crate::bind_constructor;
 use crate::bindings::{apply_binding_table, configure_native_constructor};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
@@ -9,7 +9,7 @@ macro_rules! bind_typed_array_constructor {
     ($core:expr, $global:expr, $name:literal, $ctor_ptr:expr, $ctor_fn:path) => {{
         let ctor = unsafe { &mut *$ctor_ptr };
         configure_native_constructor(ctor, $ctor_fn as *const (), 1);
-        bind_constructor_hash!($core, $global, $name, $ctor_ptr, $ctor_fn, 1);
+        bind_constructor!($core, $global, $name, $ctor_ptr, $ctor_fn, 1, hash: true);
     }};
 }
 

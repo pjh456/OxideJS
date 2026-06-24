@@ -4,10 +4,6 @@ use oxide_types::object::JsObject;
 use oxide_types::shape::EMPTY_SHAPE_ID;
 use oxide_types::value::JsValue;
 
-pub fn to_primitive(val: JsValue) -> JsValue {
-    val
-}
-
 pub fn to_number(val: JsValue, string_forge: &StringForge) -> f64 {
     if val.is_int() {
         return val.as_int() as f64;
