@@ -42,7 +42,7 @@ impl Vm {
             JsValue::from_js_object(proto_ptr),
         ));
 
-        let proto_si = self.kernel_core.string_forge().intern("prototype").0;
+        let proto_si = self.kernel_core.perm_interner().intern("prototype").0;
         if let Some(proto_val) = self.resolve_property(ctor_obj, proto_si) {
             if proto_val.is_object() {
                 let new_obj_mut = unsafe { &mut *new_obj };
@@ -123,7 +123,7 @@ impl Vm {
                 function_name: self.sub_modules[sub_idx]
                     .function_name
                     .as_deref()
-                    .map(|name| self.kernel_core.string_forge().intern(name).0)
+                    .map(|name| self.kernel_core.perm_interner().intern(name).0)
                     .unwrap_or(0),
                 caller_reg_limit,
                 saved_regs,
@@ -140,7 +140,7 @@ impl Vm {
             self.constants = converted_sub_constants;
 
             for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map {
-                let si = self.kernel_core.string_forge().intern(name.as_str()).0;
+                let si = self.kernel_core.perm_interner().intern(name.as_str()).0;
                 let global = self.session.global_object();
                 if let Some(pos) = self.kernel_core.shape_forge().lookup_position(global.shape_id(), si) {
                     self.regs[*reg as usize] = global.get_prop_at(pos);
@@ -173,10 +173,8 @@ impl Vm {
                 let reg = (seg & 0x7F) as u8;
                 let val = self.regs[reg as usize];
                 let s = if val.is_string() {
-                    self.kernel_core
-                        .string_forge()
-                        .lookup(val.as_string_index())
-                        .unwrap_or_default()
+                    // SAFETY: val is a string value.
+                    unsafe { (*val.as_string_ptr()).data.clone() }
                 } else {
                     format!("{}", val)
                 };
@@ -186,18 +184,14 @@ impl Vm {
                 if const_idx < self.constants.len() {
                     let val = self.constants[const_idx];
                     if val.is_string() {
-                        let s = self
-                            .kernel_core
-                            .string_forge()
-                            .lookup(val.as_string_index())
-                            .unwrap_or_default();
+                        // SAFETY: val is a string value.
+                        let s = unsafe { (*val.as_string_ptr()).data.clone() };
                         result.push_str(&s);
                     }
                 }
             }
         }
-        let si = self.kernel_core.string_forge().intern(&result).0;
-        self.regs[rd] = JsValue::string(si, 0);
+        self.regs[rd] = self.new_string(&result);
     }
 
     pub(crate) fn dispatch_instanceof(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
@@ -213,7 +207,7 @@ impl Vm {
         }
 
         let rhs_obj = unsafe { &*rhs_val.as_js_object_ptr() };
-        let proto_si = self.kernel_core.string_forge().intern("prototype").0;
+        let proto_si = self.kernel_core.perm_interner().intern("prototype").0;
         let ctor_proto = self.resolve_property(rhs_obj, proto_si);
 
         let ctor_proto_ptr = match ctor_proto {
@@ -297,8 +291,9 @@ impl Vm {
                             .map(|meta| meta.attributes.enumerable())
                             .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable());
                         if enumerable {
-                            let hash = self.kernel_core.string_forge().get_hash(shape.property_name).unwrap_or(0);
-                            keys_vec.push(JsValue::string(shape.property_name, hash));
+                            keys_vec.push(JsValue::perm_string(
+                                self.kernel_core.perm_interner().string_ptr(shape.property_name),
+                            ));
                         }
                     }
                     cursor = shape.parent;
@@ -368,7 +363,7 @@ impl Vm {
         }
 
         let iter_obj = unsafe { &*iterator.as_js_object_ptr() };
-        let next_si = self.kernel_core.string_forge().intern("next").0;
+        let next_si = self.kernel_core.perm_interner().intern("next").0;
         let next_fn = self.ordinary_get(iter_obj, next_si, iterator)?;
         let result = self.call_function_sync(next_fn, iterator, &[])?;
         if !result.is_object() {
@@ -376,9 +371,9 @@ impl Vm {
         }
 
         let result_obj = unsafe { &*result.as_js_object_ptr() };
-        let done_si = self.kernel_core.string_forge().intern("done").0;
+        let done_si = self.kernel_core.perm_interner().intern("done").0;
         let done_val = self.ordinary_get(result_obj, done_si, result)?;
-        let done = crate::coercion::to_boolean(done_val, self.kernel_core.string_forge().as_ref());
+        let done = crate::coercion::to_boolean(done_val);
         self.last_for_of_result = result;
         self.regs[rd] = JsValue::bool(!done);
         Ok(())
@@ -391,7 +386,7 @@ impl Vm {
             return Ok(());
         }
         let result_obj = unsafe { &*result.as_js_object_ptr() };
-        let value_si = self.kernel_core.string_forge().intern("value").0;
+        let value_si = self.kernel_core.perm_interner().intern("value").0;
         self.regs[rd] = self.ordinary_get(result_obj, value_si, result)?;
         Ok(())
     }
@@ -404,7 +399,7 @@ impl Vm {
             return Ok(());
         }
         let iter_obj = unsafe { &*iterator.as_js_object_ptr() };
-        let return_si = self.kernel_core.string_forge().intern("return").0;
+        let return_si = self.kernel_core.perm_interner().intern("return").0;
         let return_fn = self.ordinary_get(iter_obj, return_si, iterator)?;
         if return_fn.is_object() {
             let return_obj = unsafe { &*return_fn.as_js_object_ptr() };
@@ -427,7 +422,8 @@ impl Vm {
             .get(excluded_idx)
             .and_then(|v| {
                 if v.is_string() {
-                    self.kernel_core.string_forge().lookup(v.as_string_index())
+                    // SAFETY: v is a string constant value.
+                    Some(unsafe { (*v.as_string_ptr()).data.clone() })
                 } else {
                     None
                 }
@@ -450,8 +446,8 @@ impl Vm {
                 break;
             };
             if shape.property_name != u32::MAX && !is_private_name_key(shape.property_name) {
-                if let Some(name) = self.kernel_core.string_forge().lookup(shape.property_name) {
-                    if !excluded.contains(name.as_str()) {
+                if let Some(name) = self.kernel_core.perm_interner().lookup(shape.property_name) {
+                    if !excluded.contains(name) {
                         if let Some(pos) = self
                             .kernel_core
                             .shape_forge()

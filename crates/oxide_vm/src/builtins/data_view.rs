@@ -24,7 +24,7 @@ macro_rules! native_try {
 }
 
 fn to_index(vm: &mut Vm, value: JsValue, msg: &str) -> Result<usize, JsValue> {
-    let n = coercion::to_number(value, vm.kernel_core().string_forge().as_ref());
+    let n = coercion::to_number(value);
     if n.is_nan() {
         return Ok(0);
     }
@@ -35,19 +35,15 @@ fn to_index(vm: &mut Vm, value: JsValue, msg: &str) -> Result<usize, JsValue> {
 }
 
 fn is_little_endian(vm: &mut Vm, args: &[u8], idx: usize) -> bool {
-    args.get(idx)
-        .map(|reg| coercion::to_boolean(vm.reg(*reg), vm.kernel_core().string_forge().as_ref()))
-        .unwrap_or(false)
+    args.get(idx).map(|reg| coercion::to_boolean(vm.reg(*reg))).unwrap_or(false)
 }
 
 fn numeric_arg(vm: &mut Vm, args: &[u8], idx: usize) -> f64 {
-    args.get(idx)
-        .map(|reg| coercion::to_number(vm.reg(*reg), vm.kernel_core().string_forge().as_ref()))
-        .unwrap_or(0.0)
+    args.get(idx).map(|reg| coercion::to_number(vm.reg(*reg))).unwrap_or(0.0)
 }
 
 fn set_named_prop(vm: &mut Vm, obj: &mut JsObject, name: &str, value: JsValue, attributes: PropAttributes) {
-    let si = vm.kernel_core().string_forge().intern(name).0;
+    let si = vm.kernel_core().perm_interner().intern(name).0;
     let _ = vm.define_data_property(obj, si, value, attributes);
 }
 
@@ -438,5 +434,5 @@ pub fn data_view_set_big_uint64(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn data_view_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     native_try!(get_data_view_data(vm, this_val));
-    NativeResult::Ok(vm.intern("[object DataView]"))
+    NativeResult::Ok(vm.new_string("[object DataView]"))
 }

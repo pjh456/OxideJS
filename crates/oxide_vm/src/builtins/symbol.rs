@@ -28,7 +28,7 @@ pub fn symbol_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
 
     let description = if args.len() > 1 {
-        coercion::to_string(vm.kernel_core().string_forge().as_ref(), vm.reg(args[1]))
+        coercion::to_string(vm.reg(args[1]))
     } else {
         String::new()
     };
@@ -51,13 +51,12 @@ pub fn symbol_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let idx = this_val.as_symbol_index();
     let desc = vm.symbol_descriptions.get(idx as usize).cloned().unwrap_or_default();
     let result = format!("Symbol({})", desc);
-    let si = vm.kernel_core().string_forge().intern(&result).0;
-    NativeResult::Ok(JsValue::string(si, 0))
+    NativeResult::Ok(vm.new_string(&result))
 }
 
 pub fn symbol_for(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let key = if args.len() > 1 {
-        coercion::to_string(vm.kernel_core().string_forge().as_ref(), vm.reg(args[1]))
+        coercion::to_string(vm.reg(args[1]))
     } else {
         "undefined".to_string()
     };
@@ -79,12 +78,13 @@ pub fn symbol_key_for(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
 
     let idx = sym.as_symbol_index();
-    for (key, &registered_idx) in &vm.symbol_registry {
-        if registered_idx == idx {
-            let si = vm.kernel_core().string_forge().intern(key).0;
-            return NativeResult::Ok(JsValue::string(si, 0));
-        }
+    let found = vm
+        .symbol_registry
+        .iter()
+        .find(|(_, &registered_idx)| registered_idx == idx)
+        .map(|(key, _)| key.clone());
+    match found {
+        Some(key) => NativeResult::Ok(vm.new_string(&key)),
+        None => NativeResult::Ok(JsValue::undefined()),
     }
-
-    NativeResult::Ok(JsValue::undefined())
 }

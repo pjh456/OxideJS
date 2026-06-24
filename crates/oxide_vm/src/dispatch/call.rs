@@ -45,10 +45,8 @@ impl Vm {
                     (err_val, self.thrown_error_kind(err_val))
                 } else {
                     let msg = if err_val.is_string() {
-                        self.kernel_core
-                            .string_forge()
-                            .lookup(err_val.as_string_index())
-                            .unwrap_or_else(|| format!("{err_val}"))
+                        // SAFETY: err_val is a string value.
+                        unsafe { (*err_val.as_string_ptr()).data.clone() }
                     } else {
                         format!("{err_val}")
                     };

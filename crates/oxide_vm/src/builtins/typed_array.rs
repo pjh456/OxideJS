@@ -33,7 +33,7 @@ fn range_error(vm: &mut Vm, msg: &str) -> JsValue {
 }
 
 fn to_index(vm: &mut Vm, value: JsValue, msg: &str) -> Result<usize, JsValue> {
-    let n = coercion::to_number(value, vm.kernel_core().string_forge().as_ref());
+    let n = coercion::to_number(value);
     if n.is_nan() {
         return Ok(0);
     }
@@ -43,8 +43,8 @@ fn to_index(vm: &mut Vm, value: JsValue, msg: &str) -> Result<usize, JsValue> {
     Ok(n.trunc() as usize)
 }
 
-fn normalize_index(vm: &mut Vm, value: JsValue, len: usize) -> usize {
-    let n = coercion::to_number(value, vm.kernel_core().string_forge().as_ref());
+fn normalize_index(_vm: &mut Vm, value: JsValue, len: usize) -> usize {
+    let n = coercion::to_number(value);
     if n.is_nan() {
         return 0;
     }
@@ -57,7 +57,7 @@ fn normalize_index(vm: &mut Vm, value: JsValue, len: usize) -> usize {
 }
 
 fn set_named_prop(vm: &mut Vm, obj: &mut JsObject, name: &str, value: JsValue, attributes: PropAttributes) {
-    let si = vm.kernel_core().string_forge().intern(name).0;
+    let si = vm.kernel_core().perm_interner().intern(name).0;
     let _ = vm.define_data_property(obj, si, value, attributes);
 }
 
@@ -236,8 +236,8 @@ fn read_element(kind: TypedArrayKind, bytes: &[u8], offset: usize) -> JsValue {
     }
 }
 
-fn numeric_value(vm: &mut Vm, value: JsValue) -> f64 {
-    coercion::to_number(value, vm.kernel_core().string_forge().as_ref())
+fn numeric_value(_vm: &mut Vm, value: JsValue) -> f64 {
+    coercion::to_number(value)
 }
 
 fn write_element(kind: TypedArrayKind, bytes: &mut [u8], offset: usize, value: f64) {
@@ -477,5 +477,5 @@ pub fn typed_array_set(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn typed_array_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     native_try!(get_typed_array_data(vm, this_val));
-    NativeResult::Ok(vm.intern("[object TypedArray]"))
+    NativeResult::Ok(vm.new_string("[object TypedArray]"))
 }

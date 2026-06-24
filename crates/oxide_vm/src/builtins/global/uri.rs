@@ -88,18 +88,18 @@ fn uri_error(vm: &mut Vm) -> NativeResult {
 
 pub fn encode_uri(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let input = super::string_arg(vm, args);
-    NativeResult::Ok(vm.intern(&encode_uri_string(&input, URI_SAFE)))
+    NativeResult::Ok(vm.new_string(&encode_uri_string(&input, URI_SAFE)))
 }
 
 pub fn encode_uri_component(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let input = super::string_arg(vm, args);
-    NativeResult::Ok(vm.intern(&encode_uri_string(&input, URI_UNESCAPED)))
+    NativeResult::Ok(vm.new_string(&encode_uri_string(&input, URI_UNESCAPED)))
 }
 
 pub fn decode_uri(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let input = super::string_arg(vm, args);
     match decode_uri_string(&input, true) {
-        Ok(decoded) => NativeResult::Ok(vm.intern(&decoded)),
+        Ok(decoded) => NativeResult::Ok(vm.new_string(&decoded)),
         Err(()) => uri_error(vm),
     }
 }
@@ -107,7 +107,7 @@ pub fn decode_uri(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn decode_uri_component(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let input = super::string_arg(vm, args);
     match decode_uri_string(&input, false) {
-        Ok(decoded) => NativeResult::Ok(vm.intern(&decoded)),
+        Ok(decoded) => NativeResult::Ok(vm.new_string(&decoded)),
         Err(()) => uri_error(vm),
     }
 }

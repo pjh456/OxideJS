@@ -34,11 +34,7 @@ fn function_bind_creates_wrapper() {
 fn function_constructor_is_global() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "typeof Function").unwrap();
-    let rendered = vm
-        .kernel_core()
-        .string_forge()
-        .lookup(result.as_string_index())
-        .unwrap_or_default();
+    let rendered = vm.lookup_str(result).unwrap_or_default();
     assert_eq!(rendered, "function");
 }
 
@@ -86,11 +82,7 @@ fn function_to_string_includes_function() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "Math.max.toString()").unwrap();
     assert!(result.is_string());
-    let rendered = vm
-        .kernel_core()
-        .string_forge()
-        .lookup(result.as_string_index())
-        .unwrap_or_default();
+    let rendered = vm.lookup_str(result).unwrap_or_default();
     assert_eq!(rendered, "function max() { [native code] }");
 }
 

@@ -37,6 +37,6 @@ impl Vm {
         } else {
             "undefined"
         };
-        self.regs[rd] = self.intern(result);
+        self.regs[rd] = self.new_string(result);
     }
 }

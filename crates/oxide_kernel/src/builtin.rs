@@ -4,7 +4,7 @@ use oxide_types::value::JsValue;
 
 use crate::kernel::BuiltinDirtySet;
 use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
-use crate::string_forge::StringForge;
+use crate::string_forge::PermInterner;
 
 #[macro_export]
 macro_rules! bind_method {
@@ -219,12 +219,12 @@ pub struct BuiltinWorld {
     pub stub_objects: Vec<P<JsObject>>,
 }
 
-fn intern_label(string_forge: &StringForge, label: &str) -> u32 {
+fn intern_label(string_forge: &PermInterner, label: &str) -> u32 {
     string_forge.intern(label).0
 }
 
 fn make_pair(
-    string_forge: &StringForge, shape_forge: &ShapeForge, name: &str, si_prototype: u32, si_constructor: u32,
+    string_forge: &PermInterner, shape_forge: &ShapeForge, name: &str, si_prototype: u32, si_constructor: u32,
     si_name: u32,
 ) -> (P<JsObject>, P<JsObject>) {
     intern_label(string_forge, name);
@@ -258,7 +258,7 @@ struct BuiltinLabels {
     name: u32,
 }
 
-fn builtin_labels(string_forge: &StringForge) -> BuiltinLabels {
+fn builtin_labels(string_forge: &PermInterner) -> BuiltinLabels {
     let labels = BuiltinLabels {
         prototype: intern_label(string_forge, "prototype"),
         constructor: intern_label(string_forge, "constructor"),
@@ -271,7 +271,7 @@ fn builtin_labels(string_forge: &StringForge) -> BuiltinLabels {
 }
 
 fn make_named_pair(
-    string_forge: &StringForge, shape_forge: &ShapeForge, labels: BuiltinLabels, name: &str,
+    string_forge: &PermInterner, shape_forge: &ShapeForge, labels: BuiltinLabels, name: &str,
 ) -> (P<JsObject>, P<JsObject>) {
     make_pair(string_forge, shape_forge, name, labels.prototype, labels.constructor, labels.name)
 }
@@ -324,7 +324,7 @@ struct TypedArrayFamily {
 }
 
 fn make_typed_array_family(
-    string_forge: &StringForge, shape_forge: &ShapeForge, labels: BuiltinLabels, object_proto: &P<JsObject>,
+    string_forge: &PermInterner, shape_forge: &ShapeForge, labels: BuiltinLabels, object_proto: &P<JsObject>,
 ) -> TypedArrayFamily {
     let obj_proto_val = JsValue::from_js_object(object_proto.as_ptr() as *mut JsObject);
     let typed_array_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, obj_proto_val));
@@ -472,7 +472,7 @@ impl BuiltinWorld {
         JsValue::from_js_object(self.function_proto.as_ptr() as *mut JsObject)
     }
 
-    pub fn new(string_forge: &StringForge, shape_forge: &ShapeForge) -> Self {
+    pub fn new(string_forge: &PermInterner, shape_forge: &ShapeForge) -> Self {
         let labels = builtin_labels(string_forge);
 
         let (object_proto, object_constructor) = make_named_pair(string_forge, shape_forge, labels, "Object");
@@ -578,7 +578,7 @@ impl BuiltinWorld {
     }
 
     pub fn rebuild_with_dirty(
-        current: &BuiltinWorld, string_forge: &StringForge, shape_forge: &ShapeForge, dirty: &BuiltinDirtySet,
+        current: &BuiltinWorld, string_forge: &PermInterner, shape_forge: &ShapeForge, dirty: &BuiltinDirtySet,
     ) -> BuiltinWorld {
         let labels = builtin_labels(string_forge);
 
@@ -796,7 +796,7 @@ impl BuiltinWorld {
         world
     }
 
-    pub fn bind_object_methods(&self, methods: &ObjectMethods, string_forge: &StringForge, shape_forge: &ShapeForge) {
+    pub fn bind_object_methods(&self, methods: &ObjectMethods, string_forge: &PermInterner, shape_forge: &ShapeForge) {
         let ctor_ptr = P::as_ptr(&self.object_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
         bind_methods!(
@@ -843,7 +843,7 @@ impl BuiltinWorld {
         }
     }
 
-    pub fn bind_array_methods(&self, methods: &ArrayMethods, string_forge: &StringForge, shape_forge: &ShapeForge) {
+    pub fn bind_array_methods(&self, methods: &ArrayMethods, string_forge: &PermInterner, shape_forge: &ShapeForge) {
         let ctor_ptr = P::as_ptr(&self.array_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
         bind_methods!(self, ctor, string_forge, shape_forge, ("isArray", methods.is_array, 1),);
@@ -895,7 +895,7 @@ impl BuiltinWorld {
         debug_assert!(shape_forge.lookup_position(proto.shape_id(), si).is_some());
     }
 
-    pub fn bind_error_methods(&self, methods: &ErrorMethods, string_forge: &StringForge, shape_forge: &ShapeForge) {
+    pub fn bind_error_methods(&self, methods: &ErrorMethods, string_forge: &PermInterner, shape_forge: &ShapeForge) {
         let ctor_ptr = P::as_ptr(&self.error_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
         bind_methods!(
@@ -924,7 +924,7 @@ impl BuiltinWorld {
         );
     }
 
-    pub fn bind_string_methods(&self, methods: &StringMethods, string_forge: &StringForge, shape_forge: &ShapeForge) {
+    pub fn bind_string_methods(&self, methods: &StringMethods, string_forge: &PermInterner, shape_forge: &ShapeForge) {
         let ctor_ptr = P::as_ptr(&self.string_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
         bind_methods!(self, ctor, string_forge, shape_forge, ("fromCharCode", methods.from_char_code, 1),);
@@ -966,7 +966,7 @@ impl BuiltinWorld {
     }
 
     pub fn bind_function_methods(
-        &self, methods: &FunctionMethods, string_forge: &StringForge, shape_forge: &ShapeForge,
+        &self, methods: &FunctionMethods, string_forge: &PermInterner, shape_forge: &ShapeForge,
     ) {
         let proto_ptr = P::as_ptr(&self.function_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
@@ -984,7 +984,7 @@ impl BuiltinWorld {
     }
 
     pub fn bind_method(
-        &self, proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &StringForge, method_name: &str,
+        &self, proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &PermInterner, method_name: &str,
         native_fn_ptr: NativeFnPtr, arg_count: u8,
     ) -> Result<(), String> {
         Self::bind_method_static(
@@ -999,7 +999,7 @@ impl BuiltinWorld {
     }
 
     pub fn bind_method_static(
-        proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &StringForge, method_name: &str,
+        proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &PermInterner, method_name: &str,
         native_fn_ptr: NativeFnPtr, arg_count: u8, wrapper_proto: JsValue,
     ) -> Result<(), String> {
         let si = string_forge.intern(method_name).0;
@@ -1022,7 +1022,7 @@ impl BuiltinWorld {
         wrapper.set_shape_id(name_shape);
         wrapper
             .ensure_hash_props()
-            .push(JsValue::string(string_forge.intern(method_name).0, 0));
+            .push(JsValue::perm_string(string_forge.string_ptr(si)));
         let wrapper_val = JsValue::from_js_object(Box::into_raw(wrapper));
         let new_shape = shape_forge.make_shape(proto.shape_id(), si);
         proto.set_shape_id(new_shape);
@@ -1036,10 +1036,10 @@ impl BuiltinWorld {
 mod tests {
     use super::*;
     use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
-    use crate::string_forge::StringForge;
+    use crate::string_forge::PermInterner;
 
     fn make_world() -> BuiltinWorld {
-        let sf = StringForge::new();
+        let sf = PermInterner::new();
         let sh = ShapeForge::new();
         BuiltinWorld::new(&sf, &sh)
     }
@@ -1115,7 +1115,7 @@ mod tests {
 
     #[test]
     fn builtin_rebuild_with_dirty_reuses_clean_fields() {
-        let sf = StringForge::new();
+        let sf = PermInterner::new();
         let sh = ShapeForge::new();
         let w = BuiltinWorld::new(&sf, &sh);
         let rebuilt = BuiltinWorld::rebuild_with_dirty(&w, &sf, &sh, &crate::kernel::BuiltinDirtySet::default());
@@ -1127,7 +1127,7 @@ mod tests {
 
     #[test]
     fn builtin_rebuild_with_dirty_replaces_only_dirty_group() {
-        let sf = StringForge::new();
+        let sf = PermInterner::new();
         let sh = ShapeForge::new();
         let w = BuiltinWorld::new(&sf, &sh);
         let dirty = crate::kernel::BuiltinDirtySet {
@@ -1144,7 +1144,7 @@ mod tests {
 
     #[test]
     fn builtin_rebuild_with_dirty_repairs_ctor_proto_links() {
-        let sf = StringForge::new();
+        let sf = PermInterner::new();
         let sh = ShapeForge::new();
         let w = BuiltinWorld::new(&sf, &sh);
         let dirty = crate::kernel::BuiltinDirtySet {

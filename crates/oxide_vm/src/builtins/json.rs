@@ -21,8 +21,8 @@ pub fn json_parse(vm: &mut Vm, args: &[u8]) -> NativeResult {
         ));
     }
     let text = {
-        let si = val.as_string_index();
-        vm.kernel_core().string_forge().lookup(si).unwrap_or_default()
+        // SAFETY: val is a string value.
+        unsafe { (*val.as_string_ptr()).data.clone() }
     };
 
     let parsed: serde_json::Value = match serde_json::from_str(&text) {
@@ -44,7 +44,7 @@ fn value_to_jsvalue(vm: &mut Vm, val: &serde_json::Value) -> JsValue {
                 JsValue::float(0.0)
             }
         }
-        serde_json::Value::String(s) => vm.intern(s),
+        serde_json::Value::String(s) => vm.new_string(s),
         serde_json::Value::Array(arr) => {
             let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
             let n = arr.len();
@@ -66,7 +66,7 @@ fn value_to_jsvalue(vm: &mut Vm, val: &serde_json::Value) -> JsValue {
             let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
             let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto));
             for (key, val) in map {
-                let si = vm.kernel_core().string_forge().intern(key).0;
+                let si = vm.kernel_core().perm_interner().intern(key).0;
                 let jsv = value_to_jsvalue(vm, val);
                 let new_shape = vm.kernel_core().shape_forge().make_shape(obj.shape_id(), si);
                 obj.set_shape_id(new_shape);
@@ -91,7 +91,7 @@ pub fn json_stringify(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if jsvalue_to_json(vm, value, &mut visited, &mut output).is_err() {
         return NativeResult::Err(crate::builtins::error::create_type_error(vm, "cyclic object value"));
     };
-    NativeResult::Ok(vm.intern(&output))
+    NativeResult::Ok(vm.new_string(&output))
 }
 
 fn jsvalue_to_json(vm: &Vm, val: JsValue, visited: &mut HashSet<*const u8>, out: &mut String) -> Result<(), ()> {
@@ -113,8 +113,8 @@ fn jsvalue_to_json(vm: &Vm, val: JsValue, visited: &mut HashSet<*const u8>, out:
             out.push_str(buf.format(n));
         }
     } else if val.is_string() {
-        let si = val.as_string_index();
-        let s = vm.kernel_core().string_forge().lookup(si).unwrap_or_default();
+        // SAFETY: val is a string value.
+        let s = unsafe { (*val.as_string_ptr()).data.clone() };
         stringify_string(&s, out);
     } else if val.is_object() {
         let obj_ptr = val.as_js_object_ptr();
@@ -184,8 +184,8 @@ fn stringify_object(vm: &Vm, obj: &JsObject, visited: &mut HashSet<*const u8>, o
             out.push(',');
         }
         first = false;
-        let name = vm.kernel_core().string_forge().lookup(si).unwrap_or_default();
-        stringify_string(&name, out);
+        let name = vm.kernel_core().perm_interner().lookup(si).unwrap_or_default();
+        stringify_string(name, out);
         out.push(':');
         jsvalue_to_json(vm, val, visited, out)?;
     }

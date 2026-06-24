@@ -22,7 +22,6 @@ pub struct VmGuard {
     vm: Option<Vm>,
     pool: Arc<VmPool>,
     dirty: bool,
-    interned_strings: Vec<u32>,
 }
 
 impl VmPool {
@@ -55,7 +54,6 @@ impl VmPool {
                     vm: Some(vm),
                     pool: Arc::clone(self),
                     dirty: false,
-                    interned_strings: Vec::new(),
                 };
             }
 
@@ -72,7 +70,6 @@ impl VmPool {
                     vm: Some(vm),
                     pool: Arc::clone(self),
                     dirty: false,
-                    interned_strings: Vec::new(),
                 };
             }
 
@@ -86,7 +83,6 @@ impl VmPool {
                     vm: Some(vm),
                     pool: Arc::clone(self),
                     dirty: false,
-                    interned_strings: Vec::new(),
                 };
             }
         }
@@ -115,10 +111,6 @@ impl Drop for VmGuard {
             let new_vm = self.pool.replace_vm();
             inner.available.push(new_vm);
         } else {
-            for &idx in &self.interned_strings {
-                self.pool.kernel_core.string_forge().decref(idx);
-            }
-
             vm.full_reset();
             inner.available.push(vm);
         }

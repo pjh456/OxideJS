@@ -28,9 +28,9 @@ pub(crate) fn make_iterator_for_value(vm: &mut Vm, value: JsValue) -> Result<JsV
         .epoch()
         .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
 
-    let inner_si = vm.kernel_core().string_forge().intern(INNER_PROP).0;
-    let index_si = vm.kernel_core().string_forge().intern(INDEX_PROP).0;
-    let next_si = vm.kernel_core().string_forge().intern("next").0;
+    let inner_si = vm.kernel_core().perm_interner().intern(INNER_PROP).0;
+    let index_si = vm.kernel_core().perm_interner().intern(INDEX_PROP).0;
+    let next_si = vm.kernel_core().perm_interner().intern("next").0;
     let wrapper_obj = unsafe { &mut *wrapper };
     vm.set_or_create_prop_value(wrapper_obj, inner_si, inner);
     vm.set_or_create_prop_value(wrapper_obj, index_si, JsValue::int(0));
@@ -51,8 +51,8 @@ pub fn iterator_wrapper_next(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
 
     let wrapper = unsafe { &mut *this_val.as_js_object_ptr() };
-    let inner_si = vm.kernel_core().string_forge().intern(INNER_PROP).0;
-    let index_si = vm.kernel_core().string_forge().intern(INDEX_PROP).0;
+    let inner_si = vm.kernel_core().perm_interner().intern(INNER_PROP).0;
+    let index_si = vm.kernel_core().perm_interner().intern(INDEX_PROP).0;
     let inner = match vm.ordinary_get(wrapper, inner_si, this_val) {
         Ok(inner) if !inner.is_undefined() => inner,
         _ => {
@@ -69,7 +69,7 @@ pub fn iterator_wrapper_next(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
     if inner.is_object() {
         let inner_obj = unsafe { &*inner.as_js_object_ptr() };
-        let next_si = vm.kernel_core().string_forge().intern("next").0;
+        let next_si = vm.kernel_core().perm_interner().intern("next").0;
         let next = match vm.ordinary_get(inner_obj, next_si, inner) {
             Ok(next) => next,
             Err(err) => return NativeResult::Err(crate::builtins::error::create_type_error(vm, &err)),
@@ -90,7 +90,7 @@ fn get_iterator(vm: &mut Vm, value: JsValue) -> Result<JsValue, JsValue> {
 
     if value.is_object() {
         let obj = unsafe { &*value.as_js_object_ptr() };
-        let next_si = vm.kernel_core().string_forge().intern("next").0;
+        let next_si = vm.kernel_core().perm_interner().intern("next").0;
         if let Ok(next) = vm.ordinary_get(obj, next_si, value) {
             if is_callable(next) {
                 return Ok(value);
@@ -115,11 +115,11 @@ fn next_array_like(vm: &mut Vm, wrapper: &mut JsObject, inner: JsValue, index_si
 
     if inner.is_string() {
         let index = current_index(vm, wrapper, index_si);
-        let source = coercion::to_string(vm.kernel_core().string_forge().as_ref(), inner);
+        let source = coercion::to_string(inner);
         let mut chars = source.chars();
         if let Some(ch) = chars.nth(index) {
             vm.set_or_create_prop_value(wrapper, index_si, JsValue::int((index + 1) as i32));
-            let value = vm.intern(&ch.to_string());
+            let value = vm.new_string(&ch.to_string());
             return Some(make_iter_result(vm, value, false));
         }
         return Some(make_iter_result(vm, JsValue::undefined(), true));
@@ -141,8 +141,8 @@ fn make_iter_result(vm: &mut Vm, value: JsValue, done: bool) -> JsValue {
     let obj = vm
         .epoch()
         .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
-    let value_si = vm.kernel_core().string_forge().intern("value").0;
-    let done_si = vm.kernel_core().string_forge().intern("done").0;
+    let value_si = vm.kernel_core().perm_interner().intern("value").0;
+    let done_si = vm.kernel_core().perm_interner().intern("done").0;
     let obj_ref = unsafe { &mut *obj };
     vm.set_or_create_prop_value(obj_ref, value_si, value);
     vm.set_or_create_prop_value(obj_ref, done_si, JsValue::bool(done));
@@ -157,8 +157,8 @@ fn make_native_function(vm: &mut Vm, name: &str, native_fn: *const (), arg_count
     func.set_native_fn(Some(unsafe { oxide_types::object::NativeFnPtr::from_raw(native_fn) }));
     func.set_native_arg_count(arg_count);
     let func = vm.alloc_object(func);
-    let name_si = vm.kernel_core().string_forge().intern("name").0;
-    let value = vm.intern(name);
+    let name_si = vm.kernel_core().perm_interner().intern("name").0;
+    let value = vm.new_string(name);
     let func_ref = unsafe { &mut *func };
     vm.set_or_create_prop_value(func_ref, name_si, value);
     JsValue::from_js_object(func)

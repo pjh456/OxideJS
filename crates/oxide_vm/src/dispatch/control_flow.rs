@@ -6,7 +6,7 @@ impl Vm {
     #[inline(always)]
     pub(crate) fn dispatch_and(&mut self, rd: usize, a: usize, b: usize) {
         let val = self.regs[a];
-        if coercion::to_boolean(val, self.kernel_core.string_forge().as_ref()) {
+        if coercion::to_boolean(val) {
             self.regs[rd] = self.regs[b];
         } else {
             self.regs[rd] = val;
@@ -16,7 +16,7 @@ impl Vm {
     #[inline(always)]
     pub(crate) fn dispatch_or(&mut self, rd: usize, a: usize, b: usize) {
         let val = self.regs[a];
-        if coercion::to_boolean(val, self.kernel_core.string_forge().as_ref()) {
+        if coercion::to_boolean(val) {
             self.regs[rd] = val;
         } else {
             self.regs[rd] = self.regs[b];
@@ -31,7 +31,7 @@ impl Vm {
 
     #[inline(always)]
     pub(crate) fn dispatch_not(&mut self, rd: usize, a: usize) {
-        let b = !coercion::to_boolean(self.regs[a], self.kernel_core.string_forge().as_ref());
+        let b = !coercion::to_boolean(self.regs[a]);
         self.regs[rd] = JsValue::bool(b);
     }
 }

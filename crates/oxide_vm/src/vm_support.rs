@@ -10,7 +10,7 @@ use oxide_kernel::kernel::{KernelConfig, KernelCore, KernelSession};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::error::JsError;
 use oxide_types::mem::{Epoch, P};
-use oxide_types::object::{JsObject, PropAttributes};
+use oxide_types::object::{JsObject, JsString, PropAttributes};
 use oxide_types::value::JsValue;
 
 impl Vm {
@@ -28,7 +28,7 @@ impl Vm {
             for_in_iters: Vec::new(),
             kernel_core: core,
             session,
-            interned_strings: Vec::new(),
+            session_string_ptrs: Vec::new(),
             epoch: Epoch::new(),
             session_epoch: bumpalo::Bump::new(),
             session_gc: crate::session_gc::SessionGc::new(),
@@ -74,7 +74,7 @@ impl Vm {
             for_in_iters: Vec::new(),
             kernel_core: core,
             session,
-            interned_strings: Vec::new(),
+            session_string_ptrs: Vec::new(),
             epoch: Epoch::new(),
             session_epoch: bumpalo::Bump::new(),
             session_gc: crate::session_gc::SessionGc::new(),
@@ -141,7 +141,7 @@ impl Vm {
         self.session_object_ptrs.clear();
         self.session_bytes_allocated = 0;
         self.session_gc = crate::session_gc::SessionGc::new();
-        self.interned_strings.clear();
+        self.free_session_string_heap_data();
         self.symbol_counter = 0;
         self.symbol_descriptions.clear();
         self.symbol_registry.clear();
@@ -189,15 +189,44 @@ impl Vm {
         self.free_epoch_object_heap_data();
         self.epoch.reset();
         self.epoch_object_ptrs.clear();
-        self.interned_strings.clear();
         self.root_reg_limit = 0;
         self.active_reg_limit = 0;
     }
 
-    pub fn intern(&mut self, s: &str) -> JsValue {
-        let (idx, hash) = self.kernel_core.string_forge().intern(s);
-        self.interned_strings.push(idx);
-        JsValue::string(idx, hash)
+    pub fn new_string(&mut self, s: &str) -> JsValue {
+        let ptr = Box::into_raw(Box::new(JsString::new(s.to_string())));
+        self.session_string_ptrs.push(ptr);
+        self.session_bytes_allocated += std::mem::size_of::<JsString>() + s.len();
+        JsValue::string(ptr)
+    }
+
+    pub fn intern_key(&self, s: &str) -> u32 {
+        self.kernel_core.perm_interner().intern(s).0
+    }
+
+    /// Intern a compile-time string literal as a permanent, process-lifetime
+    /// `JsString` value shared across sessions. Source literals and RegExp
+    /// source/flags recur (templated/repetitive code) and are immutable, so
+    /// sharing them via `PermInterner` restores cross-session string reuse —
+    /// without interning transient computed values, which stay session-heap
+    /// (`new_string`) so they remain collectable.
+    pub fn perm_string(&self, s: &str) -> JsValue {
+        let id = self.kernel_core.perm_interner().intern(s).0;
+        JsValue::perm_string(self.kernel_core.perm_interner().string_ptr(id))
+    }
+
+    /// Drop all session-heap `JsString` values. Called only on full isolation reset
+    /// (`full_reset` / `clear_full_reset_state`), where no surviving session object
+    /// can reference them. The lighter `reset()` deliberately keeps them alive,
+    /// mirroring session-object survival across evals.
+    fn free_session_string_heap_data(&mut self) {
+        for ptr in self.session_string_ptrs.drain(..) {
+            // SAFETY: each ptr came from Box::into_raw(Box::new(JsString)) in new_string
+            // and is dropped exactly once here.
+            unsafe {
+                drop(Box::from_raw(ptr));
+            }
+        }
     }
 
     /// Create a function JsObject for a BytecodeFunc constant.
@@ -230,7 +259,7 @@ impl Vm {
             self.epoch_object_ptrs.push(prototype_obj);
             let prototype_val = JsValue::from_js_object(prototype_obj);
 
-            let constructor_si = self.kernel_core.string_forge().intern("constructor").0;
+            let constructor_si = self.kernel_core.perm_interner().intern("constructor").0;
             let constructor_shape = self.kernel_core.shape_forge().make_shape(EMPTY_SHAPE_ID, constructor_si);
             let prototype = unsafe { &mut *prototype_obj };
             prototype.set_shape_id(constructor_shape);
@@ -238,7 +267,7 @@ impl Vm {
             prototype.set_data_meta(constructor_pos, PropAttributes::new(true, false, true));
             prototype.bump_generation();
 
-            let prototype_si = self.kernel_core.string_forge().intern("prototype").0;
+            let prototype_si = self.kernel_core.perm_interner().intern("prototype").0;
             let func = unsafe { &mut *obj_ptr };
             let prototype_shape = self.kernel_core.shape_forge().make_shape(func.shape_id(), prototype_si);
             func.set_shape_id(prototype_shape);
@@ -255,8 +284,8 @@ impl Vm {
         }
         if val.is_object() {
             let obj = unsafe { &*val.as_js_object_ptr() };
-            let name_si = self.kernel_core.string_forge().intern("name").0;
-            let message_si = self.kernel_core.string_forge().intern("message").0;
+            let name_si = self.kernel_core.perm_interner().intern("name").0;
+            let message_si = self.kernel_core.perm_interner().intern("message").0;
             let name = self
                 .resolve_property(obj, name_si)
                 .and_then(|v| self.lookup_str(v))
@@ -274,7 +303,7 @@ impl Vm {
         match constant {
             Constant::Number(v) => Ok(JsValue::float(*v)),
             Constant::Int(v) => Ok(JsValue::int(*v)),
-            Constant::String(s) => Ok(self.intern(s)),
+            Constant::String(s) => Ok(self.perm_string(s)),
             Constant::Boolean(b) => Ok(JsValue::bool(*b)),
             Constant::Null => Ok(JsValue::null()),
             Constant::Undefined => Ok(JsValue::undefined()),
@@ -301,10 +330,8 @@ impl Vm {
                 ))
             }
             Constant::RegExp(pattern, flags) => {
-                let pat_si = self.kernel_core.string_forge().intern(pattern).0;
-                let flags_si = self.kernel_core.string_forge().intern(flags).0;
-                let pat_val = JsValue::string(pat_si, 0);
-                let flags_val = JsValue::string(flags_si, 0);
+                let pat_val = self.perm_string(pattern);
+                let flags_val = self.perm_string(flags);
 
                 let ctor_ptr = self.session.builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
                 let ctor = unsafe { &*ctor_ptr };
@@ -347,7 +374,7 @@ mod tests {
 
     fn global_prop_opt(vm: &Vm, name: &str) -> Option<JsValue> {
         let global = vm.session.global_object();
-        let si = vm.kernel_core.string_forge().intern(name).0;
+        let si = vm.kernel_core.perm_interner().intern(name).0;
         vm.kernel_core
             .shape_forge()
             .lookup_position(global.shape_id(), si)
@@ -418,7 +445,7 @@ mod tests {
             global_prop(&vm, "Array").as_js_object_ptr(),
             vm.session.builtin_world().array_constructor.as_ptr() as *mut JsObject
         ));
-        let constructor_si = vm.kernel_core.string_forge().intern("constructor").0;
+        let constructor_si = vm.kernel_core.perm_interner().intern("constructor").0;
         let array_proto = &*vm.session.builtin_world().array_proto;
         let constructor = vm
             .resolve_property(array_proto, constructor_si)

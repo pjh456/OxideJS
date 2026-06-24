@@ -9,7 +9,7 @@ pub use uri::{decode_uri, decode_uri_component, encode_uri, encode_uri_component
 
 fn string_arg(vm: &mut Vm, args: &[u8]) -> String {
     if args.len() > 1 {
-        coercion::to_string(vm.kernel_core().string_forge().as_ref(), vm.reg(args[1]))
+        coercion::to_string(vm.reg(args[1]))
     } else {
         "undefined".to_string()
     }

@@ -16,7 +16,7 @@ pub fn bind_function(core: &Arc<KernelCore>, session: &KernelSession, global: &m
     };
     session.builtin_world().bind_function_methods(
         &function_methods,
-        core.string_forge().as_ref(),
+        core.perm_interner().as_ref(),
         core.shape_forge().as_ref(),
     );
 

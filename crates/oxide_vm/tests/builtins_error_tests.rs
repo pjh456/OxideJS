@@ -25,7 +25,7 @@ fn error_constructor_creates_object() {
 #[test]
 fn error_has_message() {
     let mut vm = make_vm();
-    let msg = vm.intern("test message");
+    let msg = vm.new_string("test message");
     vm.set_reg(1, msg);
     let result = error::error_constructor(&mut vm, &[0u8, 1u8]).unwrap();
     assert!(result.is_object());

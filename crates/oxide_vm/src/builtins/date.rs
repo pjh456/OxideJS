@@ -104,33 +104,13 @@ pub fn date_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let timestamp = if args.len() < 2 {
         Utc::now().timestamp_millis() as f64
     } else if args.len() > 2 {
-        let y = coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref()) as i32;
-        let m = coercion::to_number(vm.reg(args[2]), vm.kernel_core().string_forge().as_ref()) as u32;
-        let d = if args.len() > 3 {
-            coercion::to_number(vm.reg(args[3]), vm.kernel_core().string_forge().as_ref()) as u32
-        } else {
-            1
-        };
-        let h = if args.len() > 4 {
-            coercion::to_number(vm.reg(args[4]), vm.kernel_core().string_forge().as_ref()) as u32
-        } else {
-            0
-        };
-        let min = if args.len() > 5 {
-            coercion::to_number(vm.reg(args[5]), vm.kernel_core().string_forge().as_ref()) as u32
-        } else {
-            0
-        };
-        let sec = if args.len() > 6 {
-            coercion::to_number(vm.reg(args[6]), vm.kernel_core().string_forge().as_ref()) as u32
-        } else {
-            0
-        };
-        let ms = if args.len() > 7 {
-            coercion::to_number(vm.reg(args[7]), vm.kernel_core().string_forge().as_ref()) as u32
-        } else {
-            0
-        };
+        let y = coercion::to_number(vm.reg(args[1])) as i32;
+        let m = coercion::to_number(vm.reg(args[2])) as u32;
+        let d = if args.len() > 3 { coercion::to_number(vm.reg(args[3])) as u32 } else { 1 };
+        let h = if args.len() > 4 { coercion::to_number(vm.reg(args[4])) as u32 } else { 0 };
+        let min = if args.len() > 5 { coercion::to_number(vm.reg(args[5])) as u32 } else { 0 };
+        let sec = if args.len() > 6 { coercion::to_number(vm.reg(args[6])) as u32 } else { 0 };
+        let ms = if args.len() > 7 { coercion::to_number(vm.reg(args[7])) as u32 } else { 0 };
         NaiveDate::from_ymd_opt(y, m + 1, d)
             .and_then(|nd| {
                 nd.and_hms_milli_opt(h, min, sec, ms)
@@ -141,11 +121,8 @@ pub fn date_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     } else {
         let val = vm.reg(args[1]);
         if val.is_string() {
-            let s = vm
-                .kernel_core()
-                .string_forge()
-                .lookup(val.as_string_index())
-                .unwrap_or_default();
+            // SAFETY: val is a string value.
+            let s = unsafe { (*val.as_string_ptr()).data.clone() };
             let formats = ["%Y-%m-%dT%H:%M:%S%.fZ", "%Y-%m-%dT%H:%M:%S%.f"];
             let mut ts = f64::NAN;
             for fmt in &formats {
@@ -191,7 +168,7 @@ pub fn date_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
         } else {
             "Invalid Date".to_string()
         };
-        return NativeResult::Ok(vm.intern(&s));
+        return NativeResult::Ok(vm.new_string(&s));
     }
 
     let mut obj = JsObject::new_empty(
@@ -217,11 +194,8 @@ pub fn date_parse(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if !val.is_string() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-    let s = vm
-        .kernel_core()
-        .string_forge()
-        .lookup(val.as_string_index())
-        .unwrap_or_default();
+    // SAFETY: val is a string value.
+    let s = unsafe { (*val.as_string_ptr()).data.clone() };
     let formats = ["%Y-%m-%dT%H:%M:%S%.fZ", "%Y-%m-%dT%H:%M:%S%.f"];
     let mut ts = f64::NAN;
     for fmt in &formats {
@@ -315,7 +289,7 @@ fn local_offset_minutes() -> i32 {
 
 fn get_opt_arg(vm: &Vm, args: &[u8], idx: usize, default: u32) -> u32 {
     if args.len() > idx {
-        coercion::to_number(vm.reg(args[idx]), vm.kernel_core().string_forge().as_ref()) as u32
+        coercion::to_number(vm.reg(args[idx])) as u32
     } else {
         default
     }
@@ -323,18 +297,14 @@ fn get_opt_arg(vm: &Vm, args: &[u8], idx: usize, default: u32) -> u32 {
 
 pub fn date_set_time(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
-    let val = if args.len() > 1 {
-        coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref())
-    } else {
-        f64::NAN
-    };
+    let val = if args.len() > 1 { coercion::to_number(vm.reg(args[1])) } else { f64::NAN };
     set_timestamp(obj, val);
     NativeResult::Ok(JsValue::float(val))
 }
 
 pub fn date_set_full_year(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = coercion::to_number(val, vm.kernel_core().string_forge().as_ref());
+    let v = coercion::to_number(val);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
@@ -357,7 +327,7 @@ pub fn date_set_full_year(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 pub fn date_set_month(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = coercion::to_number(val, vm.kernel_core().string_forge().as_ref());
+    let v = coercion::to_number(val);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
@@ -375,7 +345,7 @@ pub fn date_set_month(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 pub fn date_set_date(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = coercion::to_number(val, vm.kernel_core().string_forge().as_ref());
+    let v = coercion::to_number(val);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
@@ -392,7 +362,7 @@ pub fn date_set_date(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 pub fn date_set_hours(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = coercion::to_number(val, vm.kernel_core().string_forge().as_ref());
+    let v = coercion::to_number(val);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
@@ -417,7 +387,7 @@ pub fn date_set_hours(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 pub fn date_set_minutes(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = coercion::to_number(val, vm.kernel_core().string_forge().as_ref());
+    let v = coercion::to_number(val);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
@@ -440,7 +410,7 @@ pub fn date_set_minutes(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 pub fn date_set_seconds(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = coercion::to_number(val, vm.kernel_core().string_forge().as_ref());
+    let v = coercion::to_number(val);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
@@ -461,7 +431,7 @@ pub fn date_set_seconds(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 pub fn date_set_milliseconds(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = coercion::to_number(val, vm.kernel_core().string_forge().as_ref());
+    let v = coercion::to_number(val);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
@@ -481,13 +451,13 @@ fn date_to_string_inner(vm: &mut Vm, args: &[u8], format_str: &str, invalid: &st
     let obj = unsafe { &*native_try!(date_this(vm, args)) };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
-        return NativeResult::Ok(vm.intern(invalid));
+        return NativeResult::Ok(vm.new_string(invalid));
     }
     let s = match dt_from_ms(ms) {
         Some(dt) => dt.format(format_str).to_string(),
         None => invalid.to_string(),
     };
-    NativeResult::Ok(vm.intern(&s))
+    NativeResult::Ok(vm.new_string(&s))
 }
 
 pub fn date_to_iso_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
@@ -504,7 +474,7 @@ pub fn date_to_json(vm: &mut Vm, args: &[u8]) -> NativeResult {
         Some(dt) => dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
         None => return NativeResult::Ok(JsValue::null()),
     };
-    NativeResult::Ok(vm.intern(&s))
+    NativeResult::Ok(vm.new_string(&s))
 }
 
 pub fn date_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {

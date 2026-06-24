@@ -32,7 +32,7 @@ pub fn bind_object(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
     };
     session
         .builtin_world()
-        .bind_object_methods(&methods, core.string_forge().as_ref(), core.shape_forge().as_ref());
+        .bind_object_methods(&methods, core.perm_interner().as_ref(), core.shape_forge().as_ref());
 
     let ctor_ptr = session.builtin_world().object_constructor.as_ptr() as *mut JsObject;
     bind_constructor!(core, global, "Object", ctor_ptr, crate::builtins::object::object_constructor, 1);

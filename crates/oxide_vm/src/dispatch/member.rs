@@ -110,12 +110,12 @@ impl Vm {
         let prop_val = self.coerce_primitive_bounded(prop_raw, false)?;
         let rhs = self.coerce_primitive_bounded(self.regs[a], false)?;
         let new_val = if prop_val.is_string() || rhs.is_string() {
-            let ls = coercion::to_string(self.kernel_core.string_forge().as_ref(), prop_val);
-            let rs = coercion::to_string(self.kernel_core.string_forge().as_ref(), rhs);
-            self.intern(&format!("{ls}{rs}"))
+            let ls = coercion::to_string(prop_val);
+            let rs = coercion::to_string(rhs);
+            self.new_string(&format!("{ls}{rs}"))
         } else {
-            let ln = coercion::to_number(prop_val, self.kernel_core.string_forge().as_ref());
-            let rn = coercion::to_number(rhs, self.kernel_core.string_forge().as_ref());
+            let ln = coercion::to_number(prop_val);
+            let rn = coercion::to_number(rhs);
             JsValue::float(ln + rn)
         };
         let obj = unsafe { &mut *obj_ptr };

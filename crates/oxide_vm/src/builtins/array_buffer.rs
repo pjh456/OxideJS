@@ -22,7 +22,7 @@ fn type_error(vm: &mut Vm, msg: &str) -> NativeResult {
 }
 
 fn to_index(vm: &mut Vm, value: JsValue) -> Result<usize, JsValue> {
-    let n = coercion::to_number(value, vm.kernel_core().string_forge().as_ref());
+    let n = coercion::to_number(value);
     if n.is_nan() {
         return Ok(0);
     }
@@ -32,8 +32,8 @@ fn to_index(vm: &mut Vm, value: JsValue) -> Result<usize, JsValue> {
     Ok(n.trunc() as usize)
 }
 
-fn normalize_index(vm: &mut Vm, value: JsValue, len: usize) -> usize {
-    let n = coercion::to_number(value, vm.kernel_core().string_forge().as_ref());
+fn normalize_index(_vm: &mut Vm, value: JsValue, len: usize) -> usize {
+    let n = coercion::to_number(value);
     if n.is_nan() {
         return 0;
     }
@@ -46,7 +46,7 @@ fn normalize_index(vm: &mut Vm, value: JsValue, len: usize) -> usize {
 }
 
 fn set_named_prop(vm: &mut Vm, obj: &mut JsObject, name: &str, value: JsValue, attributes: PropAttributes) {
-    let si = vm.kernel_core().string_forge().intern(name).0;
+    let si = vm.kernel_core().perm_interner().intern(name).0;
     let _ = vm.define_data_property(obj, si, value, attributes);
 }
 
@@ -177,5 +177,5 @@ pub fn array_buffer_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if array_buffer_data_ptr(vm, this_val).is_err() {
         return type_error(vm, "ArrayBuffer.prototype.toString called on incompatible receiver");
     }
-    NativeResult::Ok(vm.intern("[object ArrayBuffer]"))
+    NativeResult::Ok(vm.new_string("[object ArrayBuffer]"))
 }

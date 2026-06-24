@@ -64,7 +64,7 @@ fn create_new_array(vm: &mut Vm, n: usize) -> *mut JsObject {
 }
 
 fn array_length_arg(vm: &mut Vm, value: JsValue) -> Result<usize, JsValue> {
-    let n = coercion::to_number(value, vm.kernel_core().string_forge().as_ref());
+    let n = coercion::to_number(value);
     if !n.is_finite() || n < 0.0 || n.fract() != 0.0 || n > MAX_DENSE_PROPS as f64 {
         return Err(crate::builtins::error::create_range_error(vm, "Invalid array length"));
     }
@@ -186,12 +186,12 @@ pub fn array_slice(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let arr = unsafe { &*arr_ptr };
     let n = arr.prop_count() as usize;
     let start = if args.len() > 1 {
-        (coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref()) as i32) as usize
+        (coercion::to_number(vm.reg(args[1])) as i32) as usize
     } else {
         0
     };
     let end = if args.len() > 2 {
-        (coercion::to_number(vm.reg(args[2]), vm.kernel_core().string_forge().as_ref()) as i32) as usize
+        (coercion::to_number(vm.reg(args[2])) as i32) as usize
     } else {
         n
     };
@@ -215,7 +215,7 @@ pub fn array_splice(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let n = arr.prop_count() as usize;
 
     let start = if args.len() > 1 {
-        let v = coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref());
+        let v = coercion::to_number(vm.reg(args[1]));
         let s = v as i32;
         if s < 0 {
             (n as i32 + s).max(0) as usize
@@ -227,7 +227,7 @@ pub fn array_splice(vm: &mut Vm, args: &[u8]) -> NativeResult {
     };
 
     let delete_count = if args.len() > 2 {
-        let v = coercion::to_number(vm.reg(args[2]), vm.kernel_core().string_forge().as_ref());
+        let v = coercion::to_number(vm.reg(args[2]));
         (v as usize).min(n - start)
     } else {
         n - start
@@ -311,23 +311,22 @@ pub fn array_join(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let arr = unsafe { &*arr_ptr };
     let n = arr.prop_count() as usize;
     let sep = if args.len() > 1 {
-        coercion::to_string(vm.kernel_core().string_forge().as_ref(), vm.reg(args[1]))
+        coercion::to_string(vm.reg(args[1]))
     } else {
         ",".to_string()
     };
-    let sf = vm.kernel_core().string_forge().as_ref();
     let parts: Vec<String> = (0..n)
         .map(|i| {
             let v = arr.get_prop_at(i);
             if v.is_undefined() || v.is_null() {
                 String::new()
             } else {
-                coercion::to_string(sf, v)
+                coercion::to_string(v)
             }
         })
         .collect();
     let joined = parts.join(&sep);
-    let result_val = vm.intern(&joined);
+    let result_val = vm.new_string(&joined);
     NativeResult::Ok(result_val)
 }
 
@@ -392,7 +391,7 @@ pub fn array_flat(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let arr = unsafe { &*arr_ptr };
     let n = arr.prop_count() as usize;
     let depth = if args.len() > 1 {
-        let n = coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref());
+        let n = coercion::to_number(vm.reg(args[1]));
         if !n.is_finite() {
             vm.kernel_core.config.max_call_depth
         } else {
@@ -506,8 +505,7 @@ pub fn array_filter(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let elem = unsafe { (*arr_ptr).get_prop_at(i) };
         match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i as i32), vm.reg(args[0])]) {
             NativeResult::Ok(result_val) => {
-                let sf = vm.kernel_core().string_forge().as_ref();
-                if coercion::to_boolean(result_val, sf) {
+                if coercion::to_boolean(result_val) {
                     kept.push(elem);
                 }
             }
@@ -578,8 +576,7 @@ pub fn array_find(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let elem = unsafe { (*arr_ptr).get_prop_at(i) };
         match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i as i32), vm.reg(args[0])]) {
             NativeResult::Ok(result_val) => {
-                let sf = vm.kernel_core().string_forge().as_ref();
-                if coercion::to_boolean(result_val, sf) {
+                if coercion::to_boolean(result_val) {
                     return NativeResult::Ok(elem);
                 }
             }
@@ -604,8 +601,7 @@ pub fn array_some(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let elem = unsafe { (*arr_ptr).get_prop_at(i) };
         match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i as i32), vm.reg(args[0])]) {
             NativeResult::Ok(result_val) => {
-                let sf = vm.kernel_core().string_forge().as_ref();
-                if coercion::to_boolean(result_val, sf) {
+                if coercion::to_boolean(result_val) {
                     return NativeResult::Ok(JsValue::bool(true));
                 }
             }
@@ -630,8 +626,7 @@ pub fn array_every(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let elem = unsafe { (*arr_ptr).get_prop_at(i) };
         match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i as i32), vm.reg(args[0])]) {
             NativeResult::Ok(result_val) => {
-                let sf = vm.kernel_core().string_forge().as_ref();
-                if !coercion::to_boolean(result_val, sf) {
+                if !coercion::to_boolean(result_val) {
                     return NativeResult::Ok(JsValue::bool(false));
                 }
             }
@@ -725,12 +720,12 @@ pub fn array_fill(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let len = arr.prop_count() as usize;
     let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let start = if args.len() > 2 {
-        (coercion::to_number(vm.reg(args[2]), vm.kernel_core().string_forge().as_ref()) as i32).max(0) as usize
+        (coercion::to_number(vm.reg(args[2])) as i32).max(0) as usize
     } else {
         0
     };
     let end = if args.len() > 3 {
-        let e = coercion::to_number(vm.reg(args[3]), vm.kernel_core().string_forge().as_ref()) as i32;
+        let e = coercion::to_number(vm.reg(args[3])) as i32;
         (e as usize).min(len)
     } else {
         len
@@ -749,17 +744,17 @@ pub fn array_copy_within(vm: &mut Vm, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(vm.reg(args[0]));
     }
     let target = if args.len() > 1 {
-        (coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref()) as i32) as usize
+        (coercion::to_number(vm.reg(args[1])) as i32) as usize
     } else {
         0
     };
     let start = if args.len() > 2 {
-        (coercion::to_number(vm.reg(args[2]), vm.kernel_core().string_forge().as_ref()) as i32) as usize
+        (coercion::to_number(vm.reg(args[2])) as i32) as usize
     } else {
         0
     };
     let end = if args.len() > 3 {
-        (coercion::to_number(vm.reg(args[3]), vm.kernel_core().string_forge().as_ref()) as i32 as usize).min(len)
+        (coercion::to_number(vm.reg(args[3])) as i32 as usize).min(len)
     } else {
         len
     };
@@ -779,11 +774,7 @@ pub fn array_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
     let len = arr.prop_count() as i32;
-    let mut index = if args.len() > 1 {
-        coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref()) as i32
-    } else {
-        0
-    };
+    let mut index = if args.len() > 1 { coercion::to_number(vm.reg(args[1])) as i32 } else { 0 };
     if index < 0 {
         index += len;
     }
@@ -820,7 +811,7 @@ pub fn array_find_index(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let elem = unsafe { (*arr_ptr).get_prop_at(i) };
         match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i as i32), vm.reg(args[0])]) {
             NativeResult::Ok(r) => {
-                if coercion::to_boolean(r, vm.kernel_core().string_forge().as_ref()) {
+                if coercion::to_boolean(r) {
                     return NativeResult::Ok(JsValue::int(i as i32));
                 }
             }
@@ -848,7 +839,7 @@ pub fn array_find_last(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let elem = unsafe { (*arr_ptr).get_prop_at(i) };
         match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i), vm.reg(args[0])]) {
             NativeResult::Ok(r) => {
-                if coercion::to_boolean(r, vm.kernel_core().string_forge().as_ref()) {
+                if coercion::to_boolean(r) {
                     return NativeResult::Ok(elem);
                 }
             }
@@ -917,7 +908,7 @@ pub fn array_sort(vm: &mut Vm, args: &[u8]) -> NativeResult {
         if let Some(callback) = comparator {
             match invoke_native_callback(vm, callback, JsValue::undefined(), &[*a, *b]) {
                 NativeResult::Ok(result) => {
-                    let n = coercion::to_number(result, vm.kernel_core().string_forge().as_ref());
+                    let n = coercion::to_number(result);
                     if n.is_nan() || n == 0.0 {
                         std::cmp::Ordering::Equal
                     } else if n < 0.0 {
@@ -937,8 +928,8 @@ pub fn array_sort(vm: &mut Vm, args: &[u8]) -> NativeResult {
                 }
             }
         } else {
-            let sa = coercion::to_string(vm.kernel_core().string_forge().as_ref(), *a);
-            let sb = coercion::to_string(vm.kernel_core().string_forge().as_ref(), *b);
+            let sa = coercion::to_string(*a);
+            let sb = coercion::to_string(*b);
             sa.cmp(&sb)
         }
     });

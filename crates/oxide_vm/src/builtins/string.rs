@@ -8,20 +8,20 @@ use crate::vm::Vm;
 use memchr::memchr;
 
 fn this_string(vm: &Vm, args: &[u8]) -> String {
-    coercion::to_string(vm.kernel_core().string_forge().as_ref(), vm.reg(args[0]))
+    coercion::to_string(vm.reg(args[0]))
 }
 
 pub fn string_from_char_code(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let mut out = String::new();
     for &arg_reg in args.iter().skip(1) {
-        let code = coercion::to_uint32(vm.reg(arg_reg), vm.kernel_core().string_forge().as_ref()) & 0xFFFF;
+        let code = coercion::to_uint32(vm.reg(arg_reg)) & 0xFFFF;
         if let Some(ch) = char::from_u32(code) {
             out.push(ch);
         } else {
             out.push('\u{FFFD}');
         }
     }
-    NativeResult::Ok(vm.intern(&out))
+    NativeResult::Ok(vm.new_string(&out))
 }
 
 pub fn string_value_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
@@ -46,11 +46,11 @@ pub fn string_value_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
 pub fn string_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let s = if args.len() > 1 {
-        coercion::to_string(vm.kernel_core().string_forge().as_ref(), vm.reg(args[1]))
+        coercion::to_string(vm.reg(args[1]))
     } else {
         String::new()
     };
-    let str_val = vm.intern(&s);
+    let str_val = vm.new_string(&s);
 
     let string_proto = vm.session().builtin_world().string_proto.as_ptr() as *mut JsObject;
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
@@ -104,7 +104,7 @@ fn make_string_array(vm: &mut Vm, parts: &[String]) -> JsValue {
             .alloc(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto), n, vm.epoch().bump()));
     unsafe {
         for (i, s) in parts.iter().enumerate() {
-            let sv = vm.intern(s);
+            let sv = vm.new_string(s);
             (*arr).set_prop_at(i, sv);
         }
         (*arr).set_prop_count(n);
@@ -112,8 +112,8 @@ fn make_string_array(vm: &mut Vm, parts: &[String]) -> JsValue {
     JsValue::from_js_object(arr)
 }
 
-fn as_string(vm: &Vm, val: JsValue) -> String {
-    coercion::to_string(vm.kernel_core().string_forge().as_ref(), val)
+fn as_string(_vm: &Vm, val: JsValue) -> String {
+    coercion::to_string(val)
 }
 
 fn char_len(s: &str) -> usize {
@@ -166,7 +166,7 @@ pub fn string_index_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let search = as_string(vm, vm.reg(args[1]));
     let pos = if args.len() > 2 {
-        (coercion::to_number(vm.reg(args[2]), vm.kernel_core().string_forge().as_ref()) as usize).min(n)
+        (coercion::to_number(vm.reg(args[2])) as usize).min(n)
     } else {
         0
     };
@@ -197,7 +197,7 @@ pub fn string_includes(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let search = as_string(vm, vm.reg(args[1]));
     let pos = if args.len() > 2 {
-        (coercion::to_number(vm.reg(args[2]), vm.kernel_core().string_forge().as_ref()) as usize).min(n)
+        (coercion::to_number(vm.reg(args[2])) as usize).min(n)
     } else {
         0
     };
@@ -218,16 +218,16 @@ pub fn string_char_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     if args.len() < 2 {
         if s.is_empty() {
-            return NativeResult::Ok(vm.intern(""));
+            return NativeResult::Ok(vm.new_string(""));
         }
-        return NativeResult::Ok(vm.intern(&take_chars(&s, 1)));
+        return NativeResult::Ok(vm.new_string(&take_chars(&s, 1)));
     }
-    let idx = coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref()) as i32;
+    let idx = coercion::to_number(vm.reg(args[1])) as i32;
     if idx < 0 || idx as usize >= char_len(&s) {
-        return NativeResult::Ok(vm.intern(""));
+        return NativeResult::Ok(vm.new_string(""));
     }
     let ch = s.chars().nth(idx as usize).map(|c| c.to_string()).unwrap_or_default();
-    NativeResult::Ok(vm.intern(&ch))
+    NativeResult::Ok(vm.new_string(&ch))
 }
 
 pub fn string_char_code_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
@@ -238,7 +238,7 @@ pub fn string_char_code_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
         }
         return NativeResult::Ok(JsValue::int(s.chars().next().unwrap() as i32));
     }
-    let idx = coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref()) as i32;
+    let idx = coercion::to_number(vm.reg(args[1])) as i32;
     if idx < 0 || idx as usize >= char_len(&s) {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
@@ -247,18 +247,17 @@ pub fn string_char_code_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
 pub fn string_concat(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let mut result = this_string(vm, args);
-    let sf = vm.kernel_core().string_forge().as_ref();
     for &arg_reg in args.iter().skip(1) {
-        result.push_str(&coercion::to_string(sf, vm.reg(arg_reg)));
+        result.push_str(&coercion::to_string(vm.reg(arg_reg)));
     }
-    NativeResult::Ok(vm.intern(&result))
+    NativeResult::Ok(vm.new_string(&result))
 }
 
 pub fn string_slice(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let n = char_len(&s) as i32;
     let start = if args.len() > 1 {
-        let v = coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref()) as i32;
+        let v = coercion::to_number(vm.reg(args[1])) as i32;
         if v < 0 {
             (n + v).max(0)
         } else {
@@ -268,7 +267,7 @@ pub fn string_slice(vm: &mut Vm, args: &[u8]) -> NativeResult {
         0
     };
     let end = if args.len() > 2 {
-        let v = coercion::to_number(vm.reg(args[2]), vm.kernel_core().string_forge().as_ref()) as i32;
+        let v = coercion::to_number(vm.reg(args[2])) as i32;
         if v < 0 {
             (n + v).max(0)
         } else {
@@ -280,23 +279,19 @@ pub fn string_slice(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let start = start as usize;
     let end = end as usize;
     let result = if start < end { char_slice(&s, start, end) } else { "" };
-    NativeResult::Ok(vm.intern(result))
+    NativeResult::Ok(vm.new_string(result))
 }
 
 pub fn string_substring(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let n = char_len(&s) as i32;
     let mut start = if args.len() > 1 {
-        (coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref()) as i32)
-            .max(0)
-            .min(n)
+        (coercion::to_number(vm.reg(args[1])) as i32).max(0).min(n)
     } else {
         0
     };
     let mut end = if args.len() > 2 {
-        (coercion::to_number(vm.reg(args[2]), vm.kernel_core().string_forge().as_ref()) as i32)
-            .max(0)
-            .min(n)
+        (coercion::to_number(vm.reg(args[2])) as i32).max(0).min(n)
     } else {
         n
     };
@@ -304,39 +299,39 @@ pub fn string_substring(vm: &mut Vm, args: &[u8]) -> NativeResult {
         std::mem::swap(&mut start, &mut end);
     }
     let result = char_slice(&s, start as usize, end as usize);
-    NativeResult::Ok(vm.intern(result))
+    NativeResult::Ok(vm.new_string(result))
 }
 
 pub fn string_to_upper_case(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
-    NativeResult::Ok(vm.intern(&s.to_uppercase()))
+    NativeResult::Ok(vm.new_string(&s.to_uppercase()))
 }
 
 pub fn string_to_lower_case(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
-    NativeResult::Ok(vm.intern(&s.to_lowercase()))
+    NativeResult::Ok(vm.new_string(&s.to_lowercase()))
 }
 
 pub fn string_trim(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
-    NativeResult::Ok(vm.intern(s.trim()))
+    NativeResult::Ok(vm.new_string(s.trim()))
 }
 
 pub fn string_repeat(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let n = if args.len() > 1 {
-        (coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref()) as usize).min(10000)
+        (coercion::to_number(vm.reg(args[1])) as usize).min(10000)
     } else {
         1
     };
-    NativeResult::Ok(vm.intern(&s.repeat(n)))
+    NativeResult::Ok(vm.new_string(&s.repeat(n)))
 }
 
 pub fn string_pad_start(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let s_len = char_len(&s);
     let target = if args.len() > 1 {
-        coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref()) as usize
+        coercion::to_number(vm.reg(args[1])) as usize
     } else {
         s_len
     };
@@ -345,21 +340,21 @@ pub fn string_pad_start(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let pad = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { " ".to_string() };
     if s_len >= target || pad.is_empty() {
-        return NativeResult::Ok(vm.intern(&s));
+        return NativeResult::Ok(vm.new_string(&s));
     }
     let needed = target - s_len;
     let pad_len = char_len(&pad).max(1);
     let reps = needed.div_ceil(pad_len);
     let mut out = take_chars(&pad.repeat(reps), needed);
     out.push_str(&s);
-    NativeResult::Ok(vm.intern(&out))
+    NativeResult::Ok(vm.new_string(&out))
 }
 
 pub fn string_pad_end(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let s_len = char_len(&s);
     let target = if args.len() > 1 {
-        coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref()) as usize
+        coercion::to_number(vm.reg(args[1])) as usize
     } else {
         s_len
     };
@@ -368,14 +363,14 @@ pub fn string_pad_end(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let pad = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { " ".to_string() };
     if s_len >= target || pad.is_empty() {
-        return NativeResult::Ok(vm.intern(&s));
+        return NativeResult::Ok(vm.new_string(&s));
     }
     let needed = target - s_len;
     let pad_len = char_len(&pad).max(1);
     let reps = needed.div_ceil(pad_len);
     let mut out = s;
     out.push_str(&take_chars(&pad.repeat(reps), needed));
-    NativeResult::Ok(vm.intern(&out))
+    NativeResult::Ok(vm.new_string(&out))
 }
 
 pub fn string_starts_with(vm: &mut Vm, args: &[u8]) -> NativeResult {
@@ -386,7 +381,7 @@ pub fn string_starts_with(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let search = as_string(vm, vm.reg(args[1]));
     let pos = if args.len() > 2 {
-        (coercion::to_number(vm.reg(args[2]), vm.kernel_core().string_forge().as_ref()) as usize).min(n)
+        (coercion::to_number(vm.reg(args[2])) as usize).min(n)
     } else {
         0
     };
@@ -401,7 +396,7 @@ pub fn string_ends_with(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let search = as_string(vm, vm.reg(args[1]));
     let end_pos = if args.len() > 2 {
-        (coercion::to_number(vm.reg(args[2]), vm.kernel_core().string_forge().as_ref()) as usize).min(n)
+        (coercion::to_number(vm.reg(args[2])) as usize).min(n)
     } else {
         n
     };
@@ -416,7 +411,7 @@ pub fn string_split(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let sep_val = vm.reg(args[1]);
     let limit = if args.len() > 2 {
-        coercion::to_number(vm.reg(args[2]), vm.kernel_core().string_forge().as_ref()) as usize
+        coercion::to_number(vm.reg(args[2])) as usize
     } else {
         usize::MAX
     };
@@ -450,7 +445,7 @@ pub fn string_split(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn string_replace(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     if args.len() < 2 {
-        return NativeResult::Ok(vm.intern(&s));
+        return NativeResult::Ok(vm.new_string(&s));
     }
     let pattern_val = vm.reg(args[1]);
     let replacement = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { String::new() };
@@ -460,17 +455,17 @@ pub fn string_replace(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let re = unsafe { &*re_ptr };
         let fn_ptr = match re.native_fn() {
             Some(p) => p,
-            None => return NativeResult::Ok(vm.intern(&s)),
+            None => return NativeResult::Ok(vm.new_string(&s)),
         };
         // SAFETY: fn_ptr holds a Box<regex::Regex> pointer stored by regexp_constructor.
         let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
         let result = regex.replace_all(&s, replacement.as_str()).to_string();
-        return NativeResult::Ok(vm.intern(&result));
+        return NativeResult::Ok(vm.new_string(&result));
     }
 
     let pattern = as_string(vm, pattern_val);
     let result = s.replacen(&pattern, &replacement, 1);
-    NativeResult::Ok(vm.intern(&result))
+    NativeResult::Ok(vm.new_string(&result))
 }
 
 pub fn string_match_fn(vm: &mut Vm, args: &[u8]) -> NativeResult {
@@ -531,21 +526,17 @@ pub fn string_search(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
 pub fn string_trim_start(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
-    NativeResult::Ok(vm.intern(s.trim_start()))
+    NativeResult::Ok(vm.new_string(s.trim_start()))
 }
 
 pub fn string_trim_end(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
-    NativeResult::Ok(vm.intern(s.trim_end()))
+    NativeResult::Ok(vm.new_string(s.trim_end()))
 }
 
 pub fn string_code_point_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
-    let pos = if args.len() > 1 {
-        coercion::to_number(vm.reg(args[1]), vm.kernel_core().string_forge().as_ref()) as usize
-    } else {
-        0
-    };
+    let pos = if args.len() > 1 { coercion::to_number(vm.reg(args[1])) as usize } else { 0 };
     let chars: Vec<char> = s.chars().collect();
     if pos >= chars.len() {
         return NativeResult::Ok(JsValue::undefined());
@@ -571,7 +562,7 @@ pub fn string_normalize(vm: &mut Vm, args: &[u8]) -> NativeResult {
         "NFKD" => s.nfkd().collect(),
         _ => s.nfc().collect(),
     };
-    NativeResult::Ok(vm.intern(&result))
+    NativeResult::Ok(vm.new_string(&result))
 }
 
 pub fn string_match_all(vm: &mut Vm, args: &[u8]) -> NativeResult {
@@ -598,7 +589,7 @@ pub fn string_match_all(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub fn string_replace_all(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     if args.len() < 2 {
-        return NativeResult::Ok(vm.intern(&s));
+        return NativeResult::Ok(vm.new_string(&s));
     }
     let pattern_val = vm.reg(args[1]);
     let replacement = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { String::new() };
@@ -607,14 +598,14 @@ pub fn string_replace_all(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let re = unsafe { &*re_ptr };
         let fn_ptr = match re.native_fn() {
             Some(p) => p,
-            None => return NativeResult::Ok(vm.intern(&s)),
+            None => return NativeResult::Ok(vm.new_string(&s)),
         };
         // SAFETY: fn_ptr holds a Box<regex::Regex> pointer stored by regexp_constructor.
         let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
         let result = regex.replace_all(&s, replacement.as_str()).to_string();
-        return NativeResult::Ok(vm.intern(&result));
+        return NativeResult::Ok(vm.new_string(&result));
     }
     let pattern = as_string(vm, pattern_val);
     let result = s.replace(&pattern, &replacement);
-    NativeResult::Ok(vm.intern(&result))
+    NativeResult::Ok(vm.new_string(&result))
 }
