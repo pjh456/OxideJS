@@ -99,7 +99,8 @@ impl Vm {
             let sub_constants = self.sub_modules[sub_idx].constants.clone();
             let sub_param_base = self.sub_modules[sub_idx].param_base as usize;
             let caller_reg_limit = self.active_reg_limit.max(1);
-            let saved_regs = self.regs[..caller_reg_limit as usize].to_vec().into_boxed_slice();
+            let saved_reg_offset = self.save_stack.len() as u32;
+            self.save_stack.extend_from_slice(&self.regs[..caller_reg_limit as usize]);
             let saved_this = self.regs[254];
             let saved_new_target = self.regs[255];
 
@@ -126,7 +127,7 @@ impl Vm {
                     .map(|name| self.kernel_core.perm_interner().intern(name).0)
                     .unwrap_or(0),
                 caller_reg_limit,
-                saved_regs,
+                saved_reg_offset,
                 saved_this,
                 saved_new_target,
                 callee: constructor,

@@ -177,7 +177,7 @@ mod tests {
             return_addr: 0,
             function_name: name_si,
             caller_reg_limit: 1,
-            saved_regs: vec![JsValue::undefined()].into_boxed_slice(),
+            saved_reg_offset: 0,
             saved_this: JsValue::undefined(),
             saved_new_target: JsValue::undefined(),
             callee: JsValue::undefined(),
