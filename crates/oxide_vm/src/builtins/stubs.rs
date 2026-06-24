@@ -5,7 +5,7 @@ fn stub_error(vm: &mut Vm, name: &str) -> NativeResult {
     NativeResult::Err(crate::builtins::error::create_type_error(vm, &format!("{name} is not implemented")))
 }
 
-// Architecturally deferred — see 13.5-CONTEXT.md for rationale
+// Architecturally deferred — these features are excluded from the supported language subset by design.
 pub fn proxy_stub(vm: &mut Vm, _args: &[u8]) -> NativeResult {
     stub_error(vm, "Proxy")
 }

@@ -76,7 +76,7 @@ fn compile_arrow_name_inference() {
         .sub_modules
         .iter()
         .any(|m| m.is_arrow && m.function_name.as_deref() == Some("myArrow"));
-    assert!(named, "arrow function should have function_name='myArrow' from D-04 inference");
+    assert!(named, "arrow function should have function_name='myArrow' from name inference");
 }
 
 #[test]
