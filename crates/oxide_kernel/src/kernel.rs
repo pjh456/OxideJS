@@ -1,5 +1,6 @@
 #![allow(clippy::arc_with_non_send_sync)]
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use oxide_types::mem::P;
@@ -21,6 +22,7 @@ pub struct KernelConfig {
     pub max_steps: Option<u64>,
     pub max_call_depth: usize,
     pub session_gc_threshold: usize,
+    pub max_cached_modules: usize,
     pub log_levels: [LogLevel; SUBSYSTEM_COUNT],
     pub warmup_builtin_shapes: bool,
     pub warmup_builtin_code: bool,
@@ -36,6 +38,7 @@ impl KernelConfig {
             max_steps: None,
             max_call_depth: 1024,
             session_gc_threshold: 8_388_608,
+            max_cached_modules: 512,
             log_levels: [LogLevel::Off; SUBSYSTEM_COUNT],
             warmup_builtin_shapes: true,
             warmup_builtin_code: false,
@@ -51,6 +54,7 @@ impl KernelConfig {
             max_steps: None,
             max_call_depth: 1024,
             session_gc_threshold: 8_388_608,
+            max_cached_modules: 512,
             log_levels: [LogLevel::Off; SUBSYSTEM_COUNT],
             warmup_builtin_shapes: true,
             warmup_builtin_code: true,
@@ -66,6 +70,7 @@ impl KernelConfig {
             max_steps: None,
             max_call_depth: 1024,
             session_gc_threshold: 8_388_608,
+            max_cached_modules: 512,
             log_levels: [LogLevel::Off; SUBSYSTEM_COUNT],
             warmup_builtin_shapes: true,
             warmup_builtin_code: true,
@@ -79,6 +84,14 @@ impl KernelConfig {
 
     pub fn set_session_gc_threshold(&mut self, bytes: usize) {
         self.session_gc_threshold = bytes;
+    }
+
+    pub fn max_cached_modules(&self) -> usize {
+        self.max_cached_modules
+    }
+
+    pub fn set_max_cached_modules(&mut self, cap: usize) {
+        self.max_cached_modules = cap;
     }
 }
 
@@ -103,7 +116,9 @@ impl KernelCore {
         init_logging(&config.log_levels);
         let string_forge = Arc::new(StringForge::new());
         let shape_forge = Arc::new(ShapeForge::new());
-        let code_forge = Arc::new(CodeForge::new());
+        let code_forge = Arc::new(CodeForge::new(
+            NonZeroUsize::new(config.max_cached_modules).expect("max_cached_modules must be greater than zero"),
+        ));
         let prop_forge = Arc::new(PropForge::new());
         Arc::new(Self {
             config,
@@ -140,6 +155,14 @@ impl KernelCore {
 
     pub fn set_session_gc_threshold(&mut self, bytes: usize) {
         self.config.session_gc_threshold = bytes;
+    }
+
+    pub fn max_cached_modules(&self) -> usize {
+        self.config.max_cached_modules
+    }
+
+    pub fn set_max_cached_modules(&mut self, cap: usize) {
+        self.config.max_cached_modules = cap;
     }
 
     pub fn sweep_runner_forges(&self) {
