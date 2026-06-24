@@ -670,7 +670,7 @@ fn read_heartbeat(path: &Path) -> Option<Heartbeat> {
 /// and a fresh child resumes from `culprit + 1`. A child that crashes mid-test
 /// is recovered through the same path. Timeouts/crashes count as skip by default
 /// and fail under `--no-skip`.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn supervise_window(
     exe: &Path, args: &[String], no_skip: bool, wstart: usize, wend: usize, timeout: Duration, startup_grace: Duration,
     paths: &[PathBuf], window_id: usize,

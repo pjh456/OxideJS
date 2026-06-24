@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::bind_constructor_hash;
+use crate::bind_constructor;
 use crate::bindings::{apply_binding_table, configure_native_constructor};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
@@ -27,5 +27,5 @@ pub fn bind_map(core: &Arc<KernelCore>, session: &KernelSession, global: &mut Js
         ],
     );
 
-    bind_constructor_hash!(core, global, "Map", ctor_ptr, crate::builtins::map::map_constructor, 1);
+    bind_constructor!(core, global, "Map", ctor_ptr, crate::builtins::map::map_constructor, 1, hash: true);
 }

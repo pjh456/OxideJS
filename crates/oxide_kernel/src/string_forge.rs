@@ -14,8 +14,8 @@ pub fn hash16(s: &str) -> u16 {
 }
 
 pub struct StringEntry {
-    pub data: String,
-    pub ref_count: AtomicU32,
+    pub(crate) data: String,
+    pub(crate) ref_count: AtomicU32,
     pub hash: u16,
 }
 

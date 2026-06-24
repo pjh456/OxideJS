@@ -5,7 +5,7 @@ use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-use crate::bind_constructor_hash;
+use crate::bind_constructor;
 
 pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let ctor_ptr = session.builtin_world().symbol_constructor.as_ptr() as *mut JsObject;
@@ -57,7 +57,7 @@ pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         bind_well_known_symbol(core, ctor, name, val);
     }
 
-    bind_constructor_hash!(core, global, "Symbol", ctor_ptr, crate::builtins::symbol::symbol_constructor, 1);
+    bind_constructor!(core, global, "Symbol", ctor_ptr, crate::builtins::symbol::symbol_constructor, 1, hash: true);
 }
 
 fn bind_well_known_symbol(core: &Arc<KernelCore>, ctor: &mut JsObject, name: &str, val: JsValue) {

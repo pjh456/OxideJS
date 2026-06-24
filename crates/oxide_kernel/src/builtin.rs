@@ -144,20 +144,6 @@ pub struct RegExpMethods {
     pub to_string: *const (),
 }
 
-pub struct NumberMethods {
-    pub is_nan: *const (),
-    pub is_finite: *const (),
-    pub parse_int: *const (),
-    pub parse_float: *const (),
-    pub to_string: *const (),
-    pub to_fixed: *const (),
-    pub is_integer: *const (),
-    pub is_safe_integer: *const (),
-    pub to_exponential: *const (),
-    pub to_precision: *const (),
-    pub value_of: *const (),
-}
-
 pub struct FunctionMethods {
     pub call: *const (),
     pub apply: *const (),
@@ -975,36 +961,6 @@ impl BuiltinWorld {
             ("normalize", methods.normalize, 0),
             ("matchAll", methods.match_all, 1),
             ("replaceAll", methods.replace_all, 2),
-            ("valueOf", methods.value_of, 0),
-        );
-    }
-
-    pub fn bind_number_methods(&self, methods: &NumberMethods, string_forge: &StringForge, shape_forge: &ShapeForge) {
-        let ctor_ptr = P::as_ptr(&self.number_constructor) as *mut JsObject;
-        let ctor = unsafe { &mut *ctor_ptr };
-        let proto_ptr = P::as_ptr(&self.number_proto) as *mut JsObject;
-        let proto = unsafe { &mut *proto_ptr };
-        bind_methods!(
-            self,
-            ctor,
-            string_forge,
-            shape_forge,
-            ("isNaN", methods.is_nan, 1),
-            ("isFinite", methods.is_finite, 1),
-            ("parseInt", methods.parse_int, 1),
-            ("parseFloat", methods.parse_float, 1),
-            ("isInteger", methods.is_integer, 1),
-            ("isSafeInteger", methods.is_safe_integer, 1),
-        );
-        bind_methods!(
-            self,
-            proto,
-            string_forge,
-            shape_forge,
-            ("toString", methods.to_string, 0),
-            ("toFixed", methods.to_fixed, 0),
-            ("toExponential", methods.to_exponential, 0),
-            ("toPrecision", methods.to_precision, 0),
             ("valueOf", methods.value_of, 0),
         );
     }

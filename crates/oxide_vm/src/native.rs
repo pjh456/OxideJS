@@ -15,14 +15,6 @@ impl NativeResult {
         Self::Err(val)
     }
 
-    pub fn into_result(self) -> Result<JsValue, JsValue> {
-        match self {
-            Self::Ok(val) => Ok(val),
-            Self::Err(err) => Err(err),
-            Self::TailCall { .. } => panic!("TailCall cannot be converted to Result"),
-        }
-    }
-
     pub fn unwrap(self) -> JsValue {
         match self {
             Self::Ok(val) => val,

@@ -157,11 +157,6 @@ impl Vm {
         self.dispatch()
     }
 
-    #[allow(dead_code)]
-    pub fn call_bytecode_func(&mut self, _callback_obj: &JsObject, _args_regs: &[u8]) -> Result<JsValue, String> {
-        Err("bytecode function calls not yet supported".into())
-    }
-
     pub(crate) fn unwind(&mut self) -> Result<(), String> {
         while let Some(handler) = self.try_stack.pop() {
             while self.frames.len() > handler.frame_depth {

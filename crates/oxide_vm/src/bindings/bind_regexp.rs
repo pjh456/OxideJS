@@ -4,7 +4,7 @@ use crate::bindings::{apply_binding_table, configure_native_constructor};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 
-use crate::bind_constructor_hash;
+use crate::bind_constructor;
 
 pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let ctor_ptr = session.builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
@@ -25,5 +25,5 @@ pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         ],
     );
 
-    bind_constructor_hash!(core, global, "RegExp", ctor_ptr, crate::builtins::regexp::regexp_constructor, 2);
+    bind_constructor!(core, global, "RegExp", ctor_ptr, crate::builtins::regexp::regexp_constructor, 2, hash: true);
 }

@@ -315,12 +315,6 @@ impl Vm {
         roots
     }
 
-    pub fn gc_clear_marks(&mut self) {
-        let mut session_gc = std::mem::take(&mut self.session_gc);
-        session_gc.clear_all_marks(self);
-        self.session_gc = session_gc;
-    }
-
     pub(crate) fn maybe_collect_session_gc(&mut self) {
         let mut session_gc = std::mem::take(&mut self.session_gc);
         session_gc.maybe_collect(self);
@@ -440,14 +434,6 @@ impl Vm {
 
     pub fn set_reg(&mut self, idx: u8, val: JsValue) {
         self.regs[idx as usize] = val;
-    }
-
-    pub fn regs_mut(&mut self) -> &mut [JsValue; 256] {
-        &mut self.regs
-    }
-
-    pub fn epoch_mut(&mut self) -> &mut Epoch {
-        &mut self.epoch
     }
 
     pub fn epoch(&self) -> &Epoch {
@@ -603,7 +589,7 @@ impl Vm {
         self.call_bytecode_function_inline(callee, callee_obj, receiver, args)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn push_bytecode_frame(
         &mut self, callee: JsValue, this_value: JsValue, args: &[JsValue], construct_result_reg: Option<u8>,
         constructed_this: Option<JsValue>, new_target: JsValue, continuation: FrameContinuation,

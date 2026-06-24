@@ -108,7 +108,7 @@ impl Vm {
     pub fn full_reset(&mut self) {
         let dirty = self.session.selective_reset(&self.kernel_core);
         if dirty.any_builtin_dirty() {
-            bindings::rebind_dirty_builtins(&self.kernel_core, &mut self.session, &dirty);
+            bindings::rebind_dirty_builtins(&self.kernel_core, &mut self.session, Some(&dirty));
         }
         if dirty.global {
             let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;

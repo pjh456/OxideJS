@@ -4,7 +4,7 @@ use oxide_kernel::builtin::ArrayMethods;
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 
-use crate::bind_constructor_hash;
+use crate::bind_constructor;
 
 pub fn bind_array(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let _array_methods = ArrayMethods {
@@ -47,5 +47,5 @@ pub fn bind_array(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
     );
 
     let ctor_ptr = session.builtin_world().array_constructor.as_ptr() as *mut JsObject;
-    bind_constructor_hash!(core, global, "Array", ctor_ptr, crate::builtins::array::array_constructor, 1);
+    bind_constructor!(core, global, "Array", ctor_ptr, crate::builtins::array::array_constructor, 1, hash: true);
 }

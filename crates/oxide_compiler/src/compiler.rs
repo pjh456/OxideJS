@@ -646,7 +646,7 @@ impl Compiler {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn compile_function_body_with_field_hooks<'a, C, E>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, extra_bindings: &[(&str, u8)], body_context: FunctionBodyContext,

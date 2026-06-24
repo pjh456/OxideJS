@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::bind_constructor_hash;
+use crate::bind_constructor;
 use crate::bindings::{apply_binding_table, configure_native_constructor};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
@@ -31,12 +31,13 @@ pub fn bind_array_buffer(core: &Arc<KernelCore>, session: &KernelSession, global
         ],
     );
 
-    bind_constructor_hash!(
+    bind_constructor!(
         core,
         global,
         "ArrayBuffer",
         ctor_ptr,
         crate::builtins::array_buffer::array_buffer_constructor,
-        1
+        1,
+        hash: true
     );
 }

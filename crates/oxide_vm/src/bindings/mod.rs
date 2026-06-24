@@ -32,29 +32,20 @@ use oxide_types::value::JsValue;
 #[macro_export]
 macro_rules! bind_constructor {
     ($core:expr, $global:expr, $name:literal, $ctor_ptr:expr, $ctor_fn:path, $nargs:literal) => {{
-        let si = $core.string_forge().intern($name).0;
-        let shape = $core.shape_forge().make_shape($global.shape_id(), si);
-        let val = $crate::JsValue::from_js_object($ctor_ptr);
-        $global.set_shape_id(shape);
-        $global.push_prop(val);
-        let ctor = unsafe { &mut *$ctor_ptr };
-        // SAFETY: $ctor_fn is a fn-item expression; casting to *const () preserves validity.
-        ctor.set_native_fn(Some(unsafe { oxide_types::object::NativeFnPtr::from_raw($ctor_fn as *const ()) }));
-        ctor.set_native_arg_count($nargs);
+        bind_constructor!($core, $global, $name, $ctor_ptr, $ctor_fn, $nargs, hash: false)
     }};
-}
-
-#[macro_export]
-macro_rules! bind_constructor_hash {
-    ($core:expr, $global:expr, $name:literal, $ctor_ptr:expr, $ctor_fn:path, $nargs:literal) => {{
+    ($core:expr, $global:expr, $name:literal, $ctor_ptr:expr, $ctor_fn:path, $nargs:literal, hash: $hash:literal) => {{
         let si = $core.string_forge().intern($name).0;
         let shape = $core.shape_forge().make_shape($global.shape_id(), si);
         let val = $crate::JsValue::from_js_object($ctor_ptr);
         $global.set_shape_id(shape);
-        $global.ensure_hash_props().push(val);
-        $global.bump_generation();
+        if $hash {
+            $global.ensure_hash_props().push(val);
+            $global.bump_generation();
+        } else {
+            $global.push_prop(val);
+        }
         let ctor = unsafe { &mut *$ctor_ptr };
-        // SAFETY: $ctor_fn is a fn-item expression; casting to *const () preserves validity.
         ctor.set_native_fn(Some(unsafe { oxide_types::object::NativeFnPtr::from_raw($ctor_fn as *const ()) }));
         ctor.set_native_arg_count($nargs);
     }};
@@ -383,92 +374,73 @@ pub fn bind_global_builtin_slots(core: &Arc<KernelCore>, session: &KernelSession
 
 /// Maintenance: when adding a `BuiltinDirtySet` group, update this rebind map,
 /// `BuiltinSnapshot`, and `BuiltinWorld::rebuild_with_dirty()` together.
-pub fn rebind_dirty_builtins(core: &Arc<KernelCore>, session: &mut KernelSession, dirty: &BuiltinDirtySet) {
+pub fn rebind_dirty_builtins(core: &Arc<KernelCore>, session: &mut KernelSession, dirty: Option<&BuiltinDirtySet>) {
     let global_ptr = session.global_object().as_ptr() as *mut JsObject;
     let global = unsafe { &mut *global_ptr };
 
-    if dirty.object {
+    if dirty.map_or(true, |d| d.object) {
         bind_object::bind_object(core, session, global);
     }
-    if dirty.array {
+    if dirty.map_or(true, |d| d.array) {
         bind_array::bind_array(core, session, global);
     }
-    if dirty.array_buffer {
+    if dirty.map_or(true, |d| d.array_buffer) {
         bind_array_buffer::bind_array_buffer(core, session, global);
     }
-    if dirty.data_view {
+    if dirty.map_or(true, |d| d.data_view) {
         bind_data_view::bind_data_view(core, session, global);
     }
-    if dirty.typed_array_family {
+    if dirty.map_or(true, |d| d.typed_array_family) {
         bind_typed_array::bind_typed_array(core, session, global);
     }
-    if dirty.error_family {
+    if dirty.map_or(true, |d| d.error_family) {
         bind_error::bind_error(core, session, global);
     }
-    if dirty.string {
+    if dirty.map_or(true, |d| d.string) {
         bind_string::bind_string(core, session, global);
     }
-    if dirty.number {
+    if dirty.map_or(true, |d| d.number) {
         bind_number::bind_number(core, session, global);
     }
-    if dirty.math {
+    if dirty.map_or(true, |d| d.math) {
         bind_math::bind_math(core, session, global);
     }
-    if dirty.json {
+    if dirty.map_or(true, |d| d.json) {
         bind_json::bind_json(core, session, global);
     }
-    if dirty.date {
+    if dirty.map_or(true, |d| d.date) {
         bind_date::bind_date(core, session, global);
     }
-    if dirty.set {
+    if dirty.map_or(true, |d| d.set) {
         bind_set::bind_set(core, session, global);
     }
-    if dirty.map {
+    if dirty.map_or(true, |d| d.map) {
         bind_map::bind_map(core, session, global);
     }
-    if dirty.boolean {
+    if dirty.map_or(true, |d| d.boolean) {
         bind_boolean::bind_boolean(core, session, global);
     }
-    if dirty.function {
+    if dirty.map_or(true, |d| d.function) {
         bind_function::bind_function(core, session, global);
     }
-    if dirty.regexp {
+    if dirty.map_or(true, |d| d.regexp) {
         bind_regexp::bind_regexp(core, session, global);
     }
-    if dirty.symbol_family {
+    if dirty.map_or(true, |d| d.symbol_family) {
         bind_symbol::bind_symbol(core, session, global);
     }
-    if dirty.stubs {
+    if dirty.map_or(true, |d| d.stubs) {
         bind_stubs::bind_stubs(core, session, global);
     }
 }
 
 pub fn init_kernel_builtins(core: &Arc<KernelCore>, session: &mut KernelSession) {
+    rebind_dirty_builtins(core, session, None);
     let global_ptr = session.global_object().as_ptr() as *mut oxide_types::object::JsObject;
     let global = unsafe { &mut *global_ptr };
-
-    bind_object::bind_object(core, session, global);
-    bind_array::bind_array(core, session, global);
-    bind_array_buffer::bind_array_buffer(core, session, global);
-    bind_data_view::bind_data_view(core, session, global);
-    bind_typed_array::bind_typed_array(core, session, global);
-    bind_error::bind_error(core, session, global);
-    bind_string::bind_string(core, session, global);
-    bind_number::bind_number(core, session, global);
-    bind_math::bind_math(core, session, global);
-    bind_json::bind_json(core, session, global);
-    bind_date::bind_date(core, session, global);
-    bind_set::bind_set(core, session, global);
-    bind_map::bind_map(core, session, global);
-    bind_boolean::bind_boolean(core, session, global);
-    bind_function::bind_function(core, session, global);
-    bind_regexp::bind_regexp(core, session, global);
-    bind_symbol::bind_symbol(core, session, global);
     bind_iterator::bind_iterator(core, session, global);
     bind_reflect::bind_reflect(core, session, global);
     bind_global::bind_global(core, session, global);
-    bind_stubs::bind_stubs(core, session, global);
-
     bind_global_value(core, global, "globalThis", JsValue::from_js_object(global_ptr));
     session.record_snapshot();
 }

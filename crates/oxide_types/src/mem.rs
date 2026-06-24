@@ -15,15 +15,13 @@ impl<T> P<T> {
         Self(Arc::new(value))
     }
 
-    pub fn from_arena(value: &T) -> Self
-    where
-        T: Clone,
-    {
-        Self(Arc::new(value.clone()))
-    }
-
     pub fn as_ptr(&self) -> *const T {
         Arc::as_ptr(&self.0)
+    }
+
+    #[inline(always)]
+    pub fn as_mut_ptr(&self) -> *mut T {
+        self.as_ptr() as *mut T
     }
 }
 

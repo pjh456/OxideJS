@@ -648,17 +648,6 @@ impl JsObject {
         pos as u32
     }
 
-    /// Get a pointer to the JsValue at position.
-    /// Returns None if hash_props not allocated or position out of bounds.
-    pub fn prop_ptr_at(&self, position: impl PropIndex) -> Option<*const JsValue> {
-        if self.hash_props.is_null() {
-            return None;
-        }
-        // SAFETY: hash_props was set from Box<Vec<JsValue>> in ensure_hash_props/new_array.
-        let vec = unsafe { &*(self.hash_props as *const Vec<JsValue>) };
-        vec.get(position.to_u32() as usize).map(|v| v as *const JsValue)
-    }
-
     /// Get the length of hash_props vec (returns 0 if not allocated).
     pub fn prop_vec_len(&self) -> usize {
         if self.hash_props.is_null() {
