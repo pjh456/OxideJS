@@ -50,6 +50,7 @@ impl Vm {
             last_for_of_result: self.last_for_of_result,
             saved_bytecode_stack: std::mem::take(&mut self.saved_bytecode_stack),
             saved_constants_stack: std::mem::take(&mut self.saved_constants_stack),
+            save_stack: std::mem::take(&mut self.save_stack),
         });
 
         self.regs = [JsValue::undefined(); 256];
@@ -91,6 +92,7 @@ impl Vm {
         self.last_for_of_result = saved.last_for_of_result;
         self.saved_bytecode_stack = saved.saved_bytecode_stack;
         self.saved_constants_stack = saved.saved_constants_stack;
+        self.save_stack = saved.save_stack;
 
         result
     }
@@ -102,8 +104,10 @@ impl Vm {
         if let Some(saved_consts) = self.saved_constants_stack.pop() {
             self.constants = saved_consts;
         }
-        let restore_len = frame.saved_regs.len();
-        self.regs[..restore_len].copy_from_slice(&frame.saved_regs);
+        let offset = frame.saved_reg_offset as usize;
+        let len = frame.caller_reg_limit as usize;
+        self.regs[..len].copy_from_slice(&self.save_stack[offset..offset + len]);
+        self.save_stack.truncate(offset);
         self.regs[254] = frame.saved_this;
         self.regs[255] = frame.saved_new_target;
         self.active_reg_limit = frame.caller_reg_limit;

@@ -42,6 +42,7 @@ impl Vm {
             sub_module_constants: Vec::new(),
             saved_bytecode_stack: Vec::new(),
             saved_constants_stack: Vec::new(),
+            save_stack: Vec::new(),
             try_stack: Vec::new(),
             exception_value: None,
             pending_exception: None,
@@ -88,6 +89,7 @@ impl Vm {
             sub_module_constants: Vec::new(),
             saved_bytecode_stack: Vec::new(),
             saved_constants_stack: Vec::new(),
+            save_stack: Vec::new(),
             try_stack: Vec::new(),
             exception_value: None,
             pending_exception: None,
@@ -174,6 +176,7 @@ impl Vm {
         self.last_for_of_result = JsValue::undefined();
         self.saved_bytecode_stack.clear();
         self.saved_constants_stack.clear();
+        self.save_stack.clear();
         self.try_stack.clear();
         self.exception_value = None;
         self.pending_exception = None;

@@ -99,7 +99,7 @@ pub struct CallFrame {
     pub return_addr: usize,
     pub function_name: u32,
     pub caller_reg_limit: u8,
-    pub saved_regs: Box<[JsValue]>,
+    pub saved_reg_offset: u32,
     pub saved_this: JsValue,
     pub saved_new_target: JsValue,
     pub callee: JsValue,
@@ -140,6 +140,7 @@ pub(crate) struct InlineSyncState {
     pub(crate) last_for_of_result: JsValue,
     pub(crate) saved_bytecode_stack: Vec<Vec<opcode::Instr>>,
     pub(crate) saved_constants_stack: Vec<Vec<JsValue>>,
+    pub(crate) save_stack: Vec<JsValue>,
 }
 
 pub struct Vm {
@@ -169,6 +170,10 @@ pub struct Vm {
     pub(crate) sub_module_constants: Vec<Vec<JsValue>>,
     pub(crate) saved_bytecode_stack: Vec<Vec<opcode::Instr>>,
     pub(crate) saved_constants_stack: Vec<Vec<JsValue>>,
+    /// Shared register save-stack. Each active `CallFrame` saved its caller's live
+    /// registers (`regs[..caller_reg_limit]`) here at `saved_reg_offset`; restore copies
+    /// them back and truncates. Capacity is retained across calls — zero per-call heap alloc.
+    pub(crate) save_stack: Vec<JsValue>,
     pub(crate) try_stack: Vec<TryHandler>,
     pub(crate) exception_value: Option<JsValue>,
     pub(crate) pending_exception: Option<JsValue>,
@@ -302,13 +307,13 @@ impl Vm {
             }
         }
         for frame in &self.frames {
-            for &v in &frame.saved_regs {
-                f(v);
-            }
             f(frame.saved_this);
             f(frame.saved_new_target);
             f(frame.callee);
             f(frame.constructed_this.unwrap_or(JsValue::undefined()));
+        }
+        for &v in &self.save_stack {
+            f(v);
         }
         f(JsValue::from_js_object(self.session.global_object().as_ptr() as *mut JsObject));
         f(self.exception_value.unwrap_or(JsValue::undefined()));
@@ -650,7 +655,8 @@ impl Vm {
         let sub_param_base = self.sub_modules[sub_idx].param_base as usize;
         let sub_is_arrow = self.sub_modules[sub_idx].is_arrow;
         let caller_reg_limit = self.active_reg_limit.max(1);
-        let saved_regs = self.regs[..caller_reg_limit as usize].to_vec().into_boxed_slice();
+        let saved_reg_offset = self.save_stack.len() as u32;
+        self.save_stack.extend_from_slice(&self.regs[..caller_reg_limit as usize]);
         let saved_this = self.regs[254];
         let saved_new_target = self.regs[255];
 
@@ -674,7 +680,7 @@ impl Vm {
             return_addr: self.pc,
             function_name,
             caller_reg_limit,
-            saved_regs,
+            saved_reg_offset,
             saved_this,
             saved_new_target,
             callee,
@@ -971,7 +977,8 @@ impl Vm {
                         let sub_constants = self.sub_modules[sub_idx].constants.clone();
                         let sub_param_base = self.sub_modules[sub_idx].param_base as usize;
                         let caller_reg_limit = self.active_reg_limit.max(1);
-                        let saved_regs = self.regs[..caller_reg_limit as usize].to_vec().into_boxed_slice();
+                        let saved_reg_offset = self.save_stack.len() as u32;
+                        self.save_stack.extend_from_slice(&self.regs[..caller_reg_limit as usize]);
                         let saved_this = self.regs[254];
                         let saved_new_target = self.regs[255];
 
@@ -993,7 +1000,7 @@ impl Vm {
                                 .map(|name| self.kernel_core.perm_interner().intern(name).0)
                                 .unwrap_or(0),
                             caller_reg_limit,
-                            saved_regs,
+                            saved_reg_offset,
                             saved_this,
                             saved_new_target,
                             callee: super_ctor,
@@ -1426,7 +1433,7 @@ mod tests {
             return_addr: 1,
             function_name: 0,
             caller_reg_limit: 2,
-            saved_regs: vec![JsValue::undefined()].into_boxed_slice(),
+            saved_reg_offset: 0,
             saved_this: JsValue::undefined(),
             saved_new_target: JsValue::undefined(),
             callee: JsValue::undefined(),
@@ -1435,6 +1442,7 @@ mod tests {
             is_derived_constructor: false,
             continuation: super::FrameContinuation::None,
         });
+        vm.save_stack.push(JsValue::undefined());
         vm.for_in_iters.push(std::ptr::dangling_mut::<super::ForInIter<'static>>());
         vm.for_of_iters.push(JsValue::undefined());
         vm.saved_bytecode_stack
@@ -1453,6 +1461,7 @@ mod tests {
 
         assert_eq!(vm.pc, 0);
         assert!(vm.frames.is_empty());
+        assert!(vm.save_stack.is_empty());
         assert!(vm.for_in_iters.is_empty());
         assert!(vm.for_of_iters.is_empty());
         assert!(vm.saved_bytecode_stack.is_empty());

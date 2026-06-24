@@ -460,10 +460,10 @@ fn rewrite_vm_roots(vm: &mut Vm, forwarding: &HashMap<*mut JsObject, *mut JsObje
     for value in &mut vm.regs {
         *value = rewrite_forwarded_value(*value, forwarding);
     }
+    for value in &mut vm.save_stack {
+        *value = rewrite_forwarded_value(*value, forwarding);
+    }
     for frame in &mut vm.frames {
-        for value in frame.saved_regs.iter_mut() {
-            *value = rewrite_forwarded_value(*value, forwarding);
-        }
         frame.saved_this = rewrite_forwarded_value(frame.saved_this, forwarding);
         frame.saved_new_target = rewrite_forwarded_value(frame.saved_new_target, forwarding);
         frame.callee = rewrite_forwarded_value(frame.callee, forwarding);
@@ -553,8 +553,8 @@ mod tests {
         vm.frames.push(CallFrame {
             return_addr: 0,
             function_name: 0,
-            caller_reg_limit: 0,
-            saved_regs: vec![JsValue::from_js_object(frame_session)].into_boxed_slice(),
+            caller_reg_limit: 1,
+            saved_reg_offset: 0,
             saved_this: JsValue::from_js_object(this_session),
             saved_new_target: JsValue::from_js_object(child_session),
             callee: JsValue::from_js_object(child_session),
@@ -563,6 +563,7 @@ mod tests {
             is_derived_constructor: false,
             continuation: FrameContinuation::None,
         });
+        vm.save_stack.push(JsValue::from_js_object(frame_session));
 
         vm.regs[1] = JsValue::from_js_object(child_session);
         vm.exception_value = Some(JsValue::from_js_object(root_session));
