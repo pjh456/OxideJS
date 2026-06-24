@@ -38,7 +38,7 @@ impl Compiler {
                     let key_reg = ctx.alloc_reg();
                     ctx.emit_load_const(key_reg, idx);
                     let val_reg = self.emit_expression(&p.value, ctx)?;
-                    // Name inference (D-04): if property value is an arrow function,
+                    // Name inference: if property value is an arrow function,
                     // set the compiled sub_module's function_name to the property key.
                     if matches!(&p.value, Expression::ArrowFunctionExpression(_)) {
                         if let Some(sub_mod) = ctx.sub_modules.last_mut() {

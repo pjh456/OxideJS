@@ -53,9 +53,9 @@ impl<T: fmt::Display> fmt::Display for P<T> {
 
 /// Persistent heap for cross-epoch object storage.
 ///
-/// Phase 3 provides a minimal API: `promote(value)` moves `value` to the
-/// global heap under `Arc` and returns `P<T>`. Phase 7 (OxideKernel) expands
-/// with typed storage for shapes, code, IC templates, and strings.
+/// Provides a minimal API: `promote(value)` moves `value` to the
+/// global heap under `Arc` and returns `P<T>`. Typed storage for shapes,
+/// code, IC templates, and strings lives in the OxideKernel.
 pub struct PersistentHeap;
 
 impl PersistentHeap {

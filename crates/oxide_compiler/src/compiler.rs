@@ -159,7 +159,7 @@ pub(crate) struct CompileCtx {
     pub(crate) builtin_reg_map: Vec<(String, u8)>,
     pub(crate) sub_modules: Vec<CompiledModule>,
     /// Register holding `this` in the enclosing function context.
-    /// Used by arrow functions to capture lexical `this` (D-01).
+    /// Used by arrow functions to capture lexical `this`.
     /// Initialized to 254 (conventional this register) at the top level.
     pub(crate) enclosing_this_reg: u8,
     pub(crate) in_derived_constructor: bool,

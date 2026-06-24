@@ -4,7 +4,7 @@ impl Compiler {
     pub(in crate::emitter) fn emit_arrow_function_expression(
         &self, arrow: &oxide_parser::ArrowFunctionExpression, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {
-        // Rest params not yet supported (D-06 placeholder)
+        // Rest params not yet supported
         if let Some(_rest) = &arrow.params.rest {
             return Err("rest params in arrow functions not yet supported".into());
         }

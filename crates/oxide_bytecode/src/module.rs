@@ -22,13 +22,13 @@ pub struct CompiledModule {
     pub param_base: u8,
     pub builtin_reg_map: Vec<(String, u8)>,
     pub sub_modules: Vec<CompiledModule>,
-    /// True when this module is an arrow function body (D-01).
+    /// True when this module is an arrow function body.
     /// Arrow functions capture lexical `this` from the enclosing scope.
     pub is_arrow: bool,
     /// Index into `constants` holding the captured `this` JsValue.
     /// 0 means "not captured - use standard this binding".
     pub captured_this_const_idx: u16,
-    /// Function name inferred from assignment context (D-04).
+    /// Function name inferred from assignment context.
     /// Set at the VariableDeclaration / ObjectProperty assignment site.
     pub function_name: Option<String>,
     /// True when this bytecode function is a class constructor.
