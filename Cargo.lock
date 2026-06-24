@@ -1125,6 +1125,7 @@ dependencies = [
  "oxide_types",
  "proptest",
  "regex",
+ "rustc-hash",
  "ryu",
  "serde_json",
  "smallvec",

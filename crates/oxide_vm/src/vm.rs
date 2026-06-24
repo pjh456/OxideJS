@@ -155,6 +155,11 @@ pub struct Vm {
     pub epoch: Epoch,
     pub(crate) session_epoch: bumpalo::Bump,
     pub(crate) session_gc: SessionGc,
+    /// Long-lived forwarding map reused by GC sweep and promote.
+    /// `mem::take`'d out for use, `clear()`'d and put back — capacity retained
+    /// across collections, so no per-event `HashMap` allocation. `FxBuildHasher`
+    /// because the keys are raw pointers (collision resistance is irrelevant).
+    pub(crate) forwarding: HashMap<*mut JsObject, *mut JsObject, rustc_hash::FxBuildHasher>,
     pub(crate) epoch_object_ptrs: Vec<*mut JsObject>,
     pub(crate) session_object_ptrs: Vec<*mut JsObject>,
     pub(crate) session_bytes_allocated: usize,

@@ -5,6 +5,7 @@ use std::time::Instant;
 use oxide_kernel::vm_debug;
 use oxide_types::object::{JsObject, PropMetaEntry};
 use oxide_types::value::JsValue;
+use rustc_hash::FxBuildHasher;
 
 use crate::builtins::{array_buffer, data_view, map, regexp, set, typed_array};
 use crate::vm::Vm;
@@ -187,7 +188,7 @@ impl SessionGc {
 
     pub(crate) fn sweep(&mut self, vm: &mut Vm) -> u64 {
         let old_ptrs = std::mem::take(&mut vm.session_object_ptrs);
-        let mut forwarding: HashMap<*mut JsObject, *mut JsObject> = HashMap::new();
+        let mut forwarding = std::mem::take(&mut vm.forwarding);
         let new_arena = bumpalo::Bump::new();
         let mut survivors = 0u64;
         let mut dead = 0u64;
@@ -251,6 +252,8 @@ impl SessionGc {
         rewrite_vm_roots(vm, &forwarding);
 
         vm.session_object_ptrs = forwarding.values().copied().collect();
+        forwarding.clear();
+        vm.forwarding = forwarding;
         vm.session_epoch = new_arena;
         vm.session_bytes_allocated = vm.session_object_ptrs.len() * size_of::<JsObject>();
 
@@ -342,7 +345,9 @@ impl Default for SessionGc {
     }
 }
 
-fn rewrite_forwarded_value(value: JsValue, forwarding: &HashMap<*mut JsObject, *mut JsObject>) -> JsValue {
+fn rewrite_forwarded_value(
+    value: JsValue, forwarding: &HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>,
+) -> JsValue {
     if !value.is_object() {
         return value;
     }
@@ -352,7 +357,7 @@ fn rewrite_forwarded_value(value: JsValue, forwarding: &HashMap<*mut JsObject, *
         .unwrap_or(value)
 }
 
-fn rewrite_vm_roots(vm: &mut Vm, forwarding: &HashMap<*mut JsObject, *mut JsObject>) {
+fn rewrite_vm_roots(vm: &mut Vm, forwarding: &HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>) {
     for value in &mut vm.regs {
         *value = rewrite_forwarded_value(*value, forwarding);
     }
@@ -530,6 +535,28 @@ mod tests {
         assert!(!vm.session_object_ptrs.contains(&root_session));
         assert!(!vm.session_object_ptrs.contains(&dead_session));
         assert!(!vm.session_object_ptrs.iter().any(|ptr| unsafe { (*(*ptr)).is_gc_marked() }));
+    }
+
+    #[test]
+    fn forwarding_is_cleared_after_sweep() {
+        let mut vm = Vm::new();
+        let root = plain_object(&mut vm);
+        let child = plain_object(&mut vm);
+        unsafe {
+            (*root).set_prop_at(0, JsValue::from_js_object(child));
+        }
+        let root_session = vm.promote_object(root);
+        vm.regs[0] = JsValue::from_js_object(root_session);
+        let _ = vm.promote_object(child);
+        let roots = vm.gc_roots();
+        let mut gc = std::mem::take(&mut vm.session_gc);
+        gc.mark(&vm, &roots);
+        let _ = gc.sweep(&mut vm);
+        vm.session_gc = gc;
+
+        // The reused forwarding map MUST be cleared after sweep, otherwise
+        // promote would observe stale old->new entries pointing into the freed arena.
+        assert!(vm.forwarding.is_empty());
     }
 
     fn vm_with_low_threshold() -> Vm {
