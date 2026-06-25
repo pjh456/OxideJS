@@ -5,8 +5,8 @@ use oxide_types::private_key::is_private_name_key;
 use oxide_types::value::JsValue;
 
 use crate::coercion;
-use crate::native::NativeResult;
 use crate::vm::Vm;
+use oxide_runtime_api::NativeResult;
 
 pub(crate) fn walk_own_keys(vm: &Vm, obj: &JsObject) -> Vec<(u32, u32)> {
     let mut keys: Vec<(u32, u32)> = Vec::new();

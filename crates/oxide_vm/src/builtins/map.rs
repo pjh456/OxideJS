@@ -3,8 +3,8 @@ use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
 use crate::builtins::set::SetKey;
-use crate::native::NativeResult;
 use crate::vm::Vm;
+use oxide_runtime_api::NativeResult;
 
 macro_rules! native_try {
     ($expr:expr) => {

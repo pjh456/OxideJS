@@ -3,8 +3,8 @@ use oxide_types::object::{JsObject, MAX_DENSE_PROPS};
 use oxide_types::value::JsValue;
 
 use crate::coercion;
-use crate::native::NativeResult;
 use crate::vm::Vm;
+use oxide_runtime_api::NativeResult;
 
 macro_rules! array_ptr {
     ($vm:expr, $args:expr) => {{

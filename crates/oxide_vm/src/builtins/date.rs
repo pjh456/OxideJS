@@ -5,8 +5,8 @@ use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
 use crate::coercion;
-use crate::native::NativeResult;
 use crate::vm::Vm;
+use oxide_runtime_api::NativeResult;
 
 fn get_timestamp(obj: &JsObject) -> f64 {
     let v = obj.get_prop_at(0);

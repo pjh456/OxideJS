@@ -1,5 +1,5 @@
-use crate::native::NativeResult;
 use crate::vm::Vm;
+use oxide_runtime_api::NativeResult;
 
 const URI_UNESCAPED: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()";
 const URI_RESERVED: &str = ";/?:@&=+$,#";

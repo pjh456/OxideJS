@@ -3,8 +3,8 @@ use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
 use crate::coercion;
-use crate::native::NativeResult;
 use crate::vm::Vm;
+use oxide_runtime_api::NativeResult;
 
 const INNER_PROP: &str = "__inner__";
 const INDEX_PROP: &str = "__index__";

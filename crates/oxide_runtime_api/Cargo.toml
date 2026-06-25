@@ -1,0 +1,11 @@
+[package]
+name = "oxide_runtime_api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OxideJS - VmHost trait: the abstract Vm interface builtins are written against"
+
+[dependencies]
+oxide_types = { path = "../oxide_types" }
+oxide_kernel = { path = "../oxide_kernel" }

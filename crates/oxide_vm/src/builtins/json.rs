@@ -6,8 +6,8 @@ use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
 use crate::builtins::object::walk_own_keys;
-use crate::native::NativeResult;
 use crate::vm::Vm;
+use oxide_runtime_api::NativeResult;
 
 pub fn json_parse(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if args.len() < 2 {

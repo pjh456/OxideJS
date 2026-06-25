@@ -503,8 +503,8 @@ mod tests {
 
     use super::*;
     use crate::builtins::{array_buffer, data_view, map, set, typed_array};
-    use crate::native::NativeResult;
     use crate::vm::{CallFrame, FrameContinuation};
+    use oxide_runtime_api::NativeResult;
 
     fn plain_object(vm: &mut Vm) -> *mut JsObject {
         let proto_ptr = vm.session.builtin_world().object_proto.as_ptr() as *mut JsObject;

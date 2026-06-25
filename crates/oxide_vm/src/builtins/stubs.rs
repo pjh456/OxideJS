@@ -1,5 +1,5 @@
-use crate::native::NativeResult;
 use crate::vm::Vm;
+use oxide_runtime_api::NativeResult;
 
 fn stub_error(vm: &mut Vm, name: &str) -> NativeResult {
     NativeResult::Err(crate::builtins::error::create_type_error(vm, &format!("{name} is not implemented")))

@@ -9,10 +9,11 @@ use smallvec::SmallVec;
 
 pub use crate::bindings::init_kernel_builtins;
 use crate::coercion;
-use crate::native::{NativeFn, NativeResult};
+use crate::native::NativeFn;
 use crate::session_gc::SessionGc;
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
+use oxide_runtime_api::NativeResult;
 use oxide_types::error::{JsError, JsErrorKind};
 use oxide_types::mem::{Epoch, P};
 use oxide_types::object::{JsObject, JsString, NativeFnPtr};
@@ -785,11 +786,11 @@ impl Vm {
                     self.regs[2] = flags_val;
                     let func = unsafe { crate::vm::native_fn_ptr_to_fn(native_fn) };
                     let result = match func(self, &[0, 1, 2]) {
-                        crate::native::NativeResult::Ok(v) => v,
-                        crate::native::NativeResult::Err(e) => {
+                        oxide_runtime_api::NativeResult::Ok(v) => v,
+                        oxide_runtime_api::NativeResult::Err(e) => {
                             return Err(self.error_message_text("TypeError", &self.error_text(e)));
                         }
-                        crate::native::NativeResult::TailCall { .. } => {
+                        oxide_runtime_api::NativeResult::TailCall { .. } => {
                             return Err(self.error_message_text("TypeError", "unexpected tail call"));
                         }
                     };
@@ -1412,8 +1413,8 @@ impl Default for Vm {
 #[cfg(test)]
 mod tests {
     use super::{opcode, JsValue, TryHandler, Vm};
-    use crate::native::NativeResult;
     use oxide_bytecode::module::CompiledModule;
+    use oxide_runtime_api::NativeResult;
     use oxide_types::object::NativeFnPtr;
     use oxide_types::object::{JsObject, PropAttributes};
 
