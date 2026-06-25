@@ -1,7 +1,7 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::counter) fn count_call_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
+    fn count_call_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
         let Expression::CallExpression(call) = expr else {
             return;
         };
@@ -50,7 +50,7 @@ impl Compiler {
         ctx.count_load_var(); // result <- regs[0]
     }
 
-    pub(in crate::counter) fn count_new_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
+    fn count_new_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
         let Expression::NewExpression(ne) = expr else {
             return;
         };
@@ -62,5 +62,13 @@ impl Compiler {
         }
         ctx.alloc_reg(); // result register
         ctx.count_instr_with_ext(1); // NEW_EXPRESSION + arg_count ext word
+    }
+
+    pub(in crate::counter) fn count_call_domain(&self, expr: &Expression, ctx: &mut CompileCtx) {
+        match expr {
+            Expression::CallExpression(_) => self.count_call_expression(expr, ctx),
+            Expression::NewExpression(_) => self.count_new_expression(expr, ctx),
+            _ => {}
+        }
     }
 }

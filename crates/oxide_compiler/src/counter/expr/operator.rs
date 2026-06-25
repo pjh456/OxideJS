@@ -1,7 +1,7 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::counter) fn count_binary_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
+    fn count_binary_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
         let Expression::BinaryExpression(bin) = expr else {
             return;
         };
@@ -14,7 +14,7 @@ impl Compiler {
         }
     }
 
-    pub(in crate::counter) fn count_private_in_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
+    fn count_private_in_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
         let Expression::PrivateInExpression(pin) = expr else {
             return;
         };
@@ -22,7 +22,7 @@ impl Compiler {
         ctx.count_private_access();
     }
 
-    pub(in crate::counter) fn count_unary_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
+    fn count_unary_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
         let Expression::UnaryExpression(un) = expr else {
             return;
         };
@@ -79,7 +79,7 @@ impl Compiler {
         ctx.projected_pc += 1; // LOAD_CONST true
     }
 
-    pub(in crate::counter) fn count_update_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
+    fn count_update_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
         let Expression::UpdateExpression(update) = expr else {
             return;
         };
@@ -104,6 +104,16 @@ impl Compiler {
                 ctx.alloc_reg();
                 ctx.projected_pc += 1;
             }
+        }
+    }
+
+    pub(in crate::counter) fn count_operator(&self, expr: &Expression, ctx: &mut CompileCtx) {
+        match expr {
+            Expression::BinaryExpression(_) => self.count_binary_expression(expr, ctx),
+            Expression::PrivateInExpression(_) => self.count_private_in_expression(expr, ctx),
+            Expression::UnaryExpression(_) => self.count_unary_expression(expr, ctx),
+            Expression::UpdateExpression(_) => self.count_update_expression(expr, ctx),
+            _ => {}
         }
     }
 }

@@ -1,9 +1,7 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::emitter) fn emit_if_statement(
-        &self, stmt: &Statement, ctx: &mut CompileCtx,
-    ) -> Result<Option<u8>, String> {
+    fn emit_if_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
         let Statement::IfStatement(ifs) = stmt else {
             return Ok(None);
         };
@@ -45,5 +43,14 @@ impl Compiler {
         }
 
         Ok(Some(result_reg))
+    }
+
+    pub(in crate::emitter) fn emit_control_domain(
+        &self, stmt: &Statement, ctx: &mut CompileCtx,
+    ) -> Result<Option<u8>, String> {
+        match stmt {
+            Statement::IfStatement(_) => self.emit_if_statement(stmt, ctx),
+            _ => Ok(None),
+        }
     }
 }

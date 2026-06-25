@@ -1,9 +1,7 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::emitter) fn emit_block_statement(
-        &self, stmt: &Statement, ctx: &mut CompileCtx,
-    ) -> Result<Option<u8>, String> {
+    fn emit_block_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
         let Statement::BlockStatement(block) = stmt else {
             return Ok(None);
         };
@@ -16,5 +14,14 @@ impl Compiler {
         }
         ctx.pop_scope();
         Ok(r)
+    }
+
+    pub(in crate::emitter) fn emit_block_domain(
+        &self, stmt: &Statement, ctx: &mut CompileCtx,
+    ) -> Result<Option<u8>, String> {
+        match stmt {
+            Statement::BlockStatement(_) => self.emit_block_statement(stmt, ctx),
+            _ => Ok(None),
+        }
     }
 }

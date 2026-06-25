@@ -955,25 +955,24 @@ impl Compiler {
 
     pub(crate) fn emit_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
         match stmt {
-            Statement::ExpressionStatement(_) => self.emit_expression_statement(stmt, ctx),
-            Statement::VariableDeclaration(_) => self.emit_variable_declaration_statement(stmt, ctx),
-            Statement::ReturnStatement(_) => self.emit_return_statement(stmt, ctx),
-            Statement::BlockStatement(_) => self.emit_block_statement(stmt, ctx),
-            Statement::IfStatement(_) => self.emit_if_statement(stmt, ctx),
-            Statement::WhileStatement(_) => self.emit_while_statement(stmt, ctx),
-            Statement::DoWhileStatement(_) => self.emit_do_while_statement(stmt, ctx),
-            Statement::ForStatement(_) => self.emit_for_statement(stmt, ctx),
-            Statement::ForInStatement(_) => self.emit_for_in_statement(stmt, ctx),
-            Statement::ForOfStatement(_) => self.emit_for_of_statement(stmt, ctx),
-            Statement::SwitchStatement(_) => self.emit_switch_statement(stmt, ctx),
+            Statement::ExpressionStatement(_) | Statement::ReturnStatement(_) | Statement::EmptyStatement(_) => {
+                self.emit_basic_domain(stmt, ctx)
+            }
+            Statement::BlockStatement(_) => self.emit_block_domain(stmt, ctx),
+            Statement::VariableDeclaration(_) | Statement::FunctionDeclaration(_) | Statement::ClassDeclaration(_) => {
+                self.emit_declaration_domain(stmt, ctx)
+            }
+            Statement::IfStatement(_) => self.emit_control_domain(stmt, ctx),
+            Statement::WhileStatement(_)
+            | Statement::DoWhileStatement(_)
+            | Statement::ForStatement(_)
+            | Statement::ForInStatement(_)
+            | Statement::ForOfStatement(_) => self.emit_iteration_domain(stmt, ctx),
+            Statement::SwitchStatement(_) => self.emit_switch_domain(stmt, ctx),
+            Statement::ThrowStatement(_) | Statement::TryStatement(_) => self.emit_exception_domain(stmt, ctx),
             Statement::BreakStatement(b) => self.emit_break_statement(b, ctx),
             Statement::ContinueStatement(c) => self.emit_continue_statement(c, ctx),
-            Statement::FunctionDeclaration(_) => self.emit_function_declaration_statement(stmt, ctx),
-            Statement::ClassDeclaration(_) => self.emit_class_declaration_statement(stmt, ctx),
-            Statement::ThrowStatement(_) => self.emit_throw_statement(stmt, ctx),
-            Statement::TryStatement(_) => self.emit_try_statement(stmt, ctx),
             Statement::LabeledStatement(ls) => self.emit_labeled_statement(ls, ctx),
-            Statement::EmptyStatement(_) => Ok(None),
             _ => Ok(None),
         }
     }
@@ -984,30 +983,30 @@ impl Compiler {
             | Expression::BooleanLiteral(_)
             | Expression::NullLiteral(_)
             | Expression::RegExpLiteral(_) => self.emit_literal(expr, ctx),
-            Expression::PrivateInExpression(pin) => self.emit_private_in_expression(pin, ctx),
-            Expression::BinaryExpression(bin) => self.emit_binary_expression(bin, ctx),
-            Expression::UnaryExpression(un) => self.emit_unary_expression(un, ctx),
-            Expression::ConditionalExpression(cond) => self.emit_conditional_expression(cond, ctx),
-            Expression::LogicalExpression(log) => self.emit_logical_expression(log, ctx),
-            Expression::StaticMemberExpression(member) => self.emit_static_member_expression(member, ctx),
-            Expression::ComputedMemberExpression(member) => self.emit_computed_member_expression(member, ctx),
-            Expression::PrivateFieldExpression(member) => self.emit_private_field_expression(member, ctx),
-            Expression::ChainExpression(chain) => self.emit_chain_expression(chain, ctx),
-            Expression::ObjectExpression(obj) => self.emit_object_expression(obj, ctx),
-            Expression::ArrayExpression(arr) => self.emit_array_expression(arr, ctx),
+            Expression::BinaryExpression(_)
+            | Expression::PrivateInExpression(_)
+            | Expression::UnaryExpression(_)
+            | Expression::ConditionalExpression(_)
+            | Expression::LogicalExpression(_)
+            | Expression::UpdateExpression(_) => self.emit_operator(expr, ctx),
+            Expression::StaticMemberExpression(_)
+            | Expression::ComputedMemberExpression(_)
+            | Expression::PrivateFieldExpression(_)
+            | Expression::ChainExpression(_) => self.emit_member_domain(expr, ctx),
+            Expression::ObjectExpression(_) | Expression::ArrayExpression(_) => self.emit_object_domain(expr, ctx),
             Expression::AssignmentExpression(assign) => self.emit_assignment_expression(assign, ctx),
-            Expression::UpdateExpression(update) => self.emit_update_expression(update, ctx),
+            Expression::TemplateLiteral(_) | Expression::TaggedTemplateExpression(_) => {
+                self.emit_template_domain(expr, ctx)
+            }
+            Expression::ArrowFunctionExpression(_)
+            | Expression::FunctionExpression(_)
+            | Expression::ClassExpression(_)
+            | Expression::NewExpression(_) => self.emit_function_domain(expr, ctx),
             Expression::Identifier(ident) => self.emit_identifier_expression(ident, ctx),
-            Expression::TemplateLiteral(tl) => self.emit_template_literal_expression(tl, ctx),
-            Expression::TaggedTemplateExpression(tt) => self.emit_tagged_template_expression(tt, ctx),
-            Expression::ArrowFunctionExpression(arrow) => self.emit_arrow_function_expression(arrow, ctx),
-            Expression::FunctionExpression(fe) => self.emit_function_expression(fe, ctx),
-            Expression::ClassExpression(class) => self.emit_class_expression(class, ctx),
-            Expression::NewExpression(ne) => self.emit_new_expression(ne, ctx),
-            Expression::ParenthesizedExpression(p) => self.emit_parenthesized_expression(p, ctx),
-            Expression::CallExpression(call) => self.emit_call_expression(call, ctx),
+            Expression::CallExpression(_) => self.emit_call_domain(expr, ctx),
             Expression::ThisExpression(_) => self.emit_this_expression(ctx),
             Expression::SequenceExpression(seq) => self.emit_sequence_expression(seq, ctx),
+            Expression::ParenthesizedExpression(p) => self.emit_parenthesized_expression(p, ctx),
             _ => self.emit_unsupported_expression(expr, ctx),
         }
     }

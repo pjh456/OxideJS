@@ -1,7 +1,7 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::counter) fn count_conditional_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
+    fn count_conditional_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
         let Expression::ConditionalExpression(cond) = expr else {
             return;
         };
@@ -21,7 +21,7 @@ impl Compiler {
         ctx.labels.label_map.insert(end_label, ctx.projected_pc);
     }
 
-    pub(in crate::counter) fn count_sequence_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
+    fn count_sequence_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
         let Expression::SequenceExpression(seq) = expr else {
             return;
         };
@@ -30,7 +30,7 @@ impl Compiler {
         }
     }
 
-    pub(in crate::counter) fn count_logical_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
+    fn count_logical_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
         let Expression::LogicalExpression(log) = expr else {
             return;
         };
@@ -59,6 +59,15 @@ impl Compiler {
                 LogicalOperator::Coalesce => Label::TernaryEnd(id),
             };
             ctx.labels.label_map.insert(skip_label, ctx.projected_pc);
+        }
+    }
+
+    pub(in crate::counter) fn count_conditional_chain(&self, expr: &Expression, ctx: &mut CompileCtx) {
+        match expr {
+            Expression::ConditionalExpression(_) => self.count_conditional_expression(expr, ctx),
+            Expression::SequenceExpression(_) => self.count_sequence_expression(expr, ctx),
+            Expression::LogicalExpression(_) => self.count_logical_expression(expr, ctx),
+            _ => {}
         }
     }
 }

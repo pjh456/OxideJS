@@ -1,9 +1,7 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::emitter) fn emit_throw_statement(
-        &self, stmt: &Statement, ctx: &mut CompileCtx,
-    ) -> Result<Option<u8>, String> {
+    fn emit_throw_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
         let Statement::ThrowStatement(ts) = stmt else {
             return Ok(None);
         };
@@ -12,9 +10,7 @@ impl Compiler {
         Ok(None)
     }
 
-    pub(in crate::emitter) fn emit_try_statement(
-        &self, stmt: &Statement, ctx: &mut CompileCtx,
-    ) -> Result<Option<u8>, String> {
+    fn emit_try_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
         let Statement::TryStatement(ts) = stmt else {
             return Ok(None);
         };
@@ -121,5 +117,15 @@ impl Compiler {
         ctx.labels.label_map.insert(try_end_label, try_end_pc);
 
         Ok(Some(result_reg))
+    }
+
+    pub(in crate::emitter) fn emit_exception_domain(
+        &self, stmt: &Statement, ctx: &mut CompileCtx,
+    ) -> Result<Option<u8>, String> {
+        match stmt {
+            Statement::ThrowStatement(_) => self.emit_throw_statement(stmt, ctx),
+            Statement::TryStatement(_) => self.emit_try_statement(stmt, ctx),
+            _ => Ok(None),
+        }
     }
 }
