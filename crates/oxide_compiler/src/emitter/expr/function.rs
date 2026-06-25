@@ -37,9 +37,8 @@ impl Compiler {
         // 1-indexed: 0 = no sub_module (sentinel)
         let sub_idx = ctx.sub_modules.len() as u32;
 
-        let const_idx = ctx.add_constant(Constant::BytecodeFunc(sub_idx));
         let r = ctx.alloc_reg();
-        ctx.emit_load_const(r, const_idx);
+        ctx.emit_create_closure(r, sub_idx);
         Ok(r)
     }
 
@@ -72,9 +71,8 @@ impl Compiler {
         // 1-indexed: 0 = no sub_module (sentinel)
         let sub_idx = ctx.sub_modules.len() as u32;
 
-        let const_idx = ctx.add_constant(Constant::BytecodeFunc(sub_idx));
         let r = ctx.alloc_reg();
-        ctx.emit_load_const(r, const_idx);
+        ctx.emit_create_closure(r, sub_idx);
         Ok(r)
     }
 

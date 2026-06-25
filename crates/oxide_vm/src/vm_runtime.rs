@@ -158,8 +158,7 @@ impl Vm {
             }
         }
 
-        let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;
-        self.regs[254] = JsValue::from_js_object(global_ptr);
+        self.regs[254] = JsValue::undefined();
 
         self.dispatch()
     }

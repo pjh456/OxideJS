@@ -235,7 +235,7 @@ impl Vm {
     /// Create a function JsObject for a BytecodeFunc constant.
     /// When `is_arrow` is true, captures the current `this` (regs[254])
     /// for lexical this binding at call time.
-    fn create_function_object(
+    pub(crate) fn create_function_object(
         &mut self, sub_idx: u32, is_arrow: bool, is_class_constructor: bool, is_derived_constructor: bool,
         needs_home_object: bool,
     ) -> JsValue {

@@ -811,8 +811,7 @@ impl Compiler {
         ctor_module.function_name = ctor_name.clone();
         ctx.sub_modules.push(ctor_module);
 
-        let ctor_idx = ctx.add_constant(Constant::BytecodeFunc(ctx.sub_modules.len() as u32));
-        ctx.emit_load_const(ctor_reg, ctor_idx);
+        ctx.emit_create_closure(ctor_reg, ctx.sub_modules.len() as u32);
         ctx.emit(opcode::encode(OpCode::NEW_OBJECT, proto_reg, 0, 0));
 
         if let Some(super_reg) = super_reg {
@@ -947,9 +946,8 @@ impl Compiler {
         method_module.needs_home_object = true;
         ctx.sub_modules.push(method_module);
 
-        let method_idx = ctx.add_constant(Constant::BytecodeFunc(ctx.sub_modules.len() as u32));
         let method_reg = ctx.alloc_reg();
-        ctx.emit_load_const(method_reg, method_idx);
+        ctx.emit_create_closure(method_reg, ctx.sub_modules.len() as u32);
         ctx.emit(opcode::encode(OpCode::SET_HOME_OBJECT, method_reg, home_reg, 0));
         Ok(method_reg)
     }

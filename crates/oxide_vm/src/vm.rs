@@ -739,6 +739,20 @@ impl Vm {
                     self.dispatch_load_const(rd, instr)?;
                 }
 
+                OpCode::CREATE_CLOSURE => {
+                    let sub_idx = opcode::imm16(instr) as u32;
+                    debug_assert!(sub_idx > 0 && (sub_idx as usize) <= self.sub_modules.len());
+                    let sub = &self.sub_modules[sub_idx as usize - 1];
+                    let result = self.create_function_object(
+                        sub_idx,
+                        sub.is_arrow,
+                        sub.is_class_constructor,
+                        sub.is_derived_constructor,
+                        sub.needs_home_object,
+                    );
+                    self.regs[rd] = result;
+                }
+
                 OpCode::ADD => {
                     self.dispatch_add(rd, a, b)?;
                 }
