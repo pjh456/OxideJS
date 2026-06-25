@@ -14,11 +14,11 @@ impl Compiler {
         if stmt.alternate.is_some() {
             ctx.projected_pc += 1; // JMP (skip else)
         }
-        ctx.label_map.insert(else_label, ctx.projected_pc);
+        ctx.labels.label_map.insert(else_label, ctx.projected_pc);
         if let Some(alt_stmt) = &stmt.alternate {
             self.count_statement(alt_stmt, ctx);
             ctx.projected_pc += 1; // LOAD_VAR result <- alternate
         }
-        ctx.label_map.insert(end_label, ctx.projected_pc);
+        ctx.labels.label_map.insert(end_label, ctx.projected_pc);
     }
 }

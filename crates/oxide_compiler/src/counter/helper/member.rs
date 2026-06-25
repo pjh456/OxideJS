@@ -166,7 +166,7 @@ impl Compiler {
             LogicalOperator::Coalesce => {
                 ctx.projected_pc += 1; // JMP_IF_NULLISH to store body
                 ctx.projected_pc += 1; // JMP to end on non-nullish
-                ctx.label_map.insert(Label::TernaryElse(id), ctx.projected_pc);
+                ctx.labels.label_map.insert(Label::TernaryElse(id), ctx.projected_pc);
             }
         }
     }

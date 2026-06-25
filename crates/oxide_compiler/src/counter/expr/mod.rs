@@ -38,7 +38,11 @@ impl Compiler {
             Expression::ThisExpression(_) => self.count_this_expression(ctx),
             Expression::Identifier(_) => self.count_identifier_expression(expr, ctx),
             Expression::UpdateExpression(_) => self.count_update_expression(expr, ctx),
-            Expression::RegExpLiteral(_) => self.count_regexp_literal(ctx),
+            Expression::NumericLiteral(_)
+            | Expression::StringLiteral(_)
+            | Expression::BooleanLiteral(_)
+            | Expression::NullLiteral(_)
+            | Expression::RegExpLiteral(_) => self.count_literal(expr, ctx),
             _ => self.count_default_expression(ctx),
         }
     }
