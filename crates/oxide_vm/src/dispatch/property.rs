@@ -5,26 +5,8 @@ use oxide_types::object::JsObject;
 use oxide_types::private_key::make_private_name_id;
 use oxide_types::value::JsValue;
 
+use crate::ic_helper::{self, ic_get_hit, ic_set_hit};
 use crate::vm::{Vm, MAX_PROTO_CHAIN_DEPTH};
-
-#[inline(always)]
-fn ic_get_hit(obj: &JsObject, shape_id: u32, slot_index: u32) -> Option<JsValue> {
-    if shape_id != 0 && obj.shape_id() == shape_id && slot_index < obj.prop_vec_len() as u32 {
-        Some(obj.get_prop_at(slot_index))
-    } else {
-        None
-    }
-}
-
-#[inline(always)]
-fn ic_set_hit(obj: &mut JsObject, shape_id: u32, slot_index: u32, value: JsValue) -> bool {
-    if shape_id != 0 && obj.shape_id() == shape_id && slot_index < obj.prop_vec_len() as u32 {
-        obj.set_prop_at(slot_index, value);
-        true
-    } else {
-        false
-    }
-}
 
 #[cold]
 fn prop_cache_miss() {}
@@ -182,10 +164,7 @@ impl Vm {
 
         let obj = unsafe { &*obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[b]);
-        let ext0 = self.bytecode[self.pc];
-        let ext1 = self.bytecode[self.pc + 1];
-        let _ext2 = self.bytecode[self.pc + 2];
-        self.pc += 3;
+        let (cached_shape_id, cached_slot) = ic_helper::read_ic_entry(&self.bytecode, &mut self.pc);
         if obj.has_prop_meta() {
             let val = self.ordinary_get_with_target(obj, prop_name_si, val, a as u8)?;
             if self.accessor_frame_target_reg.take().is_none() {
@@ -193,19 +172,17 @@ impl Vm {
             }
             return Ok(());
         }
-        let cached_shape_id = ext0 & 0x00FF_FFFF;
-        let cached_slot = ext1;
 
         if let Some(value) = ic_get_hit(obj, cached_shape_id, cached_slot) {
             self.regs[a] = value;
-            self.profiling.ic_hits.set(self.profiling.ic_hits.get() + 1);
+            self.profiling.record_ic_hit();
             ic_trace!("IC_GET hit shape={} slot={}", cached_shape_id, cached_slot);
         } else if let Some(template) = self.kernel_core.prop_forge().get_template(obj.shape_id()) {
-            self.profiling.ic_misses.set(self.profiling.ic_misses.get() + 1);
+            self.profiling.record_ic_miss();
             prop_cache_miss();
             if template.prop_name == prop_name_si {
                 if template.position < obj.prop_vec_len() as u32 {
-                    crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), template.position);
+                    ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), template.position);
                     ic_debug!(
                         "IC_GET propforge hit shape={} prop={} slot={}",
                         obj.shape_id(),
@@ -226,7 +203,7 @@ impl Vm {
             ic_debug!("IC_GET miss shape={} prop={}", obj.shape_id(), prop_name_si);
             let resolved = self.ordinary_get(obj, prop_name_si, val)?;
             if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
-                crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos);
+                ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos);
             }
             self.regs[a] = resolved;
         }
@@ -253,10 +230,7 @@ impl Vm {
             return Ok(());
         }
 
-        let ext0 = self.bytecode[self.pc];
-        let ext1 = self.bytecode[self.pc + 1];
-        let _ext2 = self.bytecode[self.pc + 2];
-        self.pc += 3;
+        let (cached_shape_id, cached_slot) = ic_helper::read_ic_entry(&self.bytecode, &mut self.pc);
         let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
         let receiver = self.regs[rd];
         let obj = unsafe { &mut *obj_ptr };
@@ -264,26 +238,24 @@ impl Vm {
             self.ordinary_set_dispatch(obj, prop_name_si, value, receiver)?;
             return Ok(());
         }
-        let cached_shape_id = ext0 & 0x00FF_FFFF;
-        let cached_slot = ext1;
 
         if ic_set_hit(obj, cached_shape_id, cached_slot, value) {
-            self.profiling.ic_hits.set(self.profiling.ic_hits.get() + 1);
+            self.profiling.record_ic_hit();
             ic_trace!("IC_SET hit shape={} slot={}", cached_shape_id, cached_slot);
         } else if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
-            self.profiling.ic_misses.set(self.profiling.ic_misses.get() + 1);
+            self.profiling.record_ic_miss();
             prop_cache_miss();
             obj.set_prop_at(pos, value);
-            crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos);
+            ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos);
             ic_debug!("IC_SET write-back shape={} slot={}", obj.shape_id(), pos);
         } else {
-            self.profiling.ic_misses.set(self.profiling.ic_misses.get() + 1);
+            self.profiling.record_ic_miss();
             prop_cache_miss();
             let old_shape = obj.shape_id();
             self.ordinary_set_dispatch(obj, prop_name_si, value, receiver)?;
             if old_shape != obj.shape_id() {
                 if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
-                    crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos);
+                    ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos);
                     ic_debug!("IC_SET write-back shape={} slot={}", obj.shape_id(), pos);
                     self.kernel_core.prop_forge().upsert(
                         obj.shape_id(),

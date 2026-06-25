@@ -309,12 +309,12 @@ impl Vm {
         }
 
         let iter = self.epoch.alloc(ForInIter { keys: keys_vec, index: 0 });
-        self.iters.for_in_iters.push(iter.cast::<ForInIter<'static>>());
+        self.iters.push_for_in(iter.cast::<ForInIter<'static>>());
         Ok(())
     }
 
     pub(crate) fn dispatch_for_in_next(&mut self, rd: usize) -> Result<(), String> {
-        let iter_ptr = self.iters.for_in_iters.last().copied().unwrap_or(std::ptr::null_mut());
+        let iter_ptr = self.iters.last_for_in();
         if iter_ptr.is_null() {
             return Err("FOR_IN_NEXT without active iterator".into());
         }
@@ -329,7 +329,7 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_for_in_done(&mut self, rd: usize) {
-        let iter_ptr = self.iters.for_in_iters.last().copied().unwrap_or(std::ptr::null_mut());
+        let iter_ptr = self.iters.last_for_in();
         if iter_ptr.is_null() {
             self.regs[rd] = JsValue::bool(true);
         } else {
@@ -339,15 +339,15 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_for_in_cleanup(&mut self) {
-        self.iters.for_in_iters.pop();
+        self.iters.pop_for_in();
     }
 
     pub(crate) fn dispatch_for_of_init(&mut self, a: usize) -> Result<(), String> {
         let iterable = self.regs[a];
         match crate::builtins::iterator::make_iterator_for_value(self, iterable) {
             Ok(iterator) => {
-                self.iters.for_of_iters.push(iterator);
-                self.iters.last_for_of_result = JsValue::undefined();
+                self.iters.push_for_of(iterator);
+                self.iters.clear_last_for_of_result();
                 Ok(())
             }
             Err(err) => {
@@ -359,7 +359,7 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_for_of_done(&mut self, rd: usize) -> Result<(), String> {
-        let Some(iterator) = self.iters.for_of_iters.last().copied() else {
+        let Some(iterator) = self.iters.last_for_of() else {
             return Err("FOR_OF_DONE without active iterator".into());
         };
         if !iterator.is_object() {
@@ -378,13 +378,13 @@ impl Vm {
         let done_si = self.kernel_core.perm_interner().intern("done").0;
         let done_val = self.ordinary_get(result_obj, done_si, result)?;
         let done = crate::coercion::to_boolean(done_val);
-        self.iters.last_for_of_result = result;
+        self.iters.set_last_for_of_result(result);
         self.regs[rd] = JsValue::bool(!done);
         Ok(())
     }
 
     pub(crate) fn dispatch_for_of_next(&mut self, rd: usize) -> Result<(), String> {
-        let result = self.iters.last_for_of_result;
+        let result = self.iters.last_for_of_result();
         if !result.is_object() {
             self.regs[rd] = JsValue::undefined();
             return Ok(());
@@ -396,7 +396,7 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_for_of_close(&mut self) -> Result<(), String> {
-        let Some(iterator) = self.iters.for_of_iters.pop() else {
+        let Some(iterator) = self.iters.pop_for_of() else {
             return Ok(());
         };
         if !iterator.is_object() {

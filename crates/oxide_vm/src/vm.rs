@@ -281,7 +281,7 @@ impl Vm {
 
     pub(crate) fn alloc_object(&mut self, obj: JsObject) -> *mut JsObject {
         let ptr = self.epoch.alloc(obj);
-        self.gc_state.epoch_object_ptrs.push(ptr);
+        self.gc_state.track_epoch_object(ptr);
         ptr
     }
 
@@ -367,12 +367,7 @@ impl Vm {
     }
 
     pub fn ic_hit_rate(&self) -> f64 {
-        let total = self.profiling.ic_hits.get() + self.profiling.ic_misses.get();
-        if total == 0 {
-            0.0
-        } else {
-            self.profiling.ic_hits.get() as f64 / total as f64
-        }
+        self.profiling.ic_hit_rate()
     }
 
     pub fn instruction_count(&self) -> u64 {
@@ -380,7 +375,7 @@ impl Vm {
     }
 
     pub fn symbol_registry_len(&self) -> usize {
-        self.symbols.symbol_registry.len()
+        self.symbols.registry_len()
     }
 
     pub fn ic_hit_count(&self) -> u64 {
@@ -707,7 +702,7 @@ impl Vm {
             steps += 1;
             if let Some(max_steps) = self.kernel_core.config.max_steps {
                 if steps > max_steps {
-                    self.profiling.instruction_count = steps;
+                    self.profiling.set_instruction_count(steps);
                     return Err(format!("VM step limit exceeded at pc={}", self.pc));
                 }
             }
@@ -727,7 +722,7 @@ impl Vm {
                 OpCode::NOP => {}
 
                 OpCode::HALT => {
-                    self.profiling.instruction_count = steps;
+                    self.profiling.set_instruction_count(steps);
                     return Ok(self.regs[0]);
                 }
 
@@ -1257,9 +1252,7 @@ mod tests {
     #[test]
     fn full_reset_clears_symbol_state() {
         let mut vm = Vm::new();
-        vm.symbols.symbol_counter = 1;
-        vm.symbols.symbol_descriptions.push("shared".to_string());
-        vm.symbols.symbol_registry.insert("shared".to_string(), 0);
+        vm.symbols.intern("shared".to_string());
 
         vm.full_reset();
 

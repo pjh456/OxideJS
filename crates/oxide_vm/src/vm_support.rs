@@ -161,9 +161,7 @@ impl Vm {
         self.gc_state.session_bytes_allocated = 0;
         self.gc_state.session_gc = crate::session_gc::SessionGc::new();
         self.free_session_string_heap_data();
-        self.symbols.symbol_counter = 0;
-        self.symbols.symbol_descriptions.clear();
-        self.symbols.symbol_registry.clear();
+        self.symbols.reset();
         self.root_reg_limit = 0;
         self.active_reg_limit = 0;
     }
@@ -189,9 +187,7 @@ impl Vm {
         self.regs = [JsValue::undefined(); 256];
         self.pc = 0;
         self.frames.clear();
-        self.iters.for_in_iters.clear();
-        self.iters.for_of_iters.clear();
-        self.iters.last_for_of_result = JsValue::undefined();
+        self.iters.reset();
         self.saved_bytecode_stack.clear();
         self.saved_immutables_stack.clear();
         self.save_stack.clear();
@@ -278,7 +274,7 @@ impl Vm {
             let prototype_obj = self
                 .epoch
                 .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto_ptr)));
-            self.gc_state.epoch_object_ptrs.push(prototype_obj);
+            self.gc_state.track_epoch_object(prototype_obj);
             let prototype_val = JsValue::from_js_object(prototype_obj);
 
             let constructor_si = self.kernel_core.perm_interner().intern("constructor").0;
