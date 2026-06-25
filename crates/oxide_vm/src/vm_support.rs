@@ -6,6 +6,7 @@ use oxide_bytecode::module::Constant;
 
 use crate::bindings;
 use crate::vm::Vm;
+use crate::vm_state::{GcState, IterState, ProfilingState, SymbolState};
 use oxide_kernel::kernel::{KernelConfig, KernelCore, KernelSession};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::mem::{Epoch, P};
@@ -25,17 +26,9 @@ impl Vm {
             immutables_cache: Vec::new(),
             active_immutables: std::ptr::slice_from_raw_parts(std::ptr::null(), 0),
             frames: smallvec::SmallVec::new(),
-            for_in_iters: Vec::new(),
             kernel_core: core,
             session,
-            session_string_ptrs: Vec::new(),
             epoch: Epoch::new(),
-            session_epoch: bumpalo::Bump::new(),
-            session_gc: crate::session_gc::SessionGc::new(),
-            forwarding: std::collections::HashMap::with_hasher(rustc_hash::FxBuildHasher),
-            epoch_object_ptrs: Vec::new(),
-            session_object_ptrs: Vec::new(),
-            session_bytes_allocated: 0,
             object_prototype: obj_proto,
             math_rng_state: 0,
             sub_modules: Arc::new(Vec::new()),
@@ -46,18 +39,34 @@ impl Vm {
             exception_value: None,
             pending_exception: None,
             pending_error_kind: None,
-            symbol_counter: 0,
-            symbol_descriptions: Vec::new(),
-            symbol_registry: std::collections::HashMap::new(),
-            for_of_iters: Vec::new(),
-            last_for_of_result: JsValue::undefined(),
             root_reg_limit: 0,
             active_reg_limit: 0,
             native_call_depth: 0,
             accessor_frame_target_reg: None,
-            ic_hits: std::cell::Cell::new(0),
-            ic_misses: std::cell::Cell::new(0),
-            instruction_count: 0,
+            gc_state: GcState {
+                session_epoch: bumpalo::Bump::new(),
+                session_gc: crate::session_gc::SessionGc::new(),
+                epoch_object_ptrs: Vec::new(),
+                session_object_ptrs: Vec::new(),
+                session_string_ptrs: Vec::new(),
+                session_bytes_allocated: 0,
+                forwarding: std::collections::HashMap::with_hasher(rustc_hash::FxBuildHasher),
+            },
+            symbols: SymbolState {
+                symbol_counter: 0,
+                symbol_descriptions: Vec::new(),
+                symbol_registry: std::collections::HashMap::new(),
+            },
+            iters: IterState {
+                for_in_iters: Vec::new(),
+                for_of_iters: Vec::new(),
+                last_for_of_result: JsValue::undefined(),
+            },
+            profiling: ProfilingState {
+                ic_hits: std::cell::Cell::new(0),
+                ic_misses: std::cell::Cell::new(0),
+                instruction_count: 0,
+            },
         }
     }
 
@@ -72,17 +81,9 @@ impl Vm {
             immutables_cache: Vec::new(),
             active_immutables: std::ptr::slice_from_raw_parts(std::ptr::null(), 0),
             frames: smallvec::SmallVec::new(),
-            for_in_iters: Vec::new(),
             kernel_core: core,
             session,
-            session_string_ptrs: Vec::new(),
             epoch: Epoch::new(),
-            session_epoch: bumpalo::Bump::new(),
-            session_gc: crate::session_gc::SessionGc::new(),
-            forwarding: std::collections::HashMap::with_hasher(rustc_hash::FxBuildHasher),
-            epoch_object_ptrs: Vec::new(),
-            session_object_ptrs: Vec::new(),
-            session_bytes_allocated: 0,
             object_prototype: obj_proto,
             math_rng_state: 0,
             sub_modules: Arc::new(Vec::new()),
@@ -93,18 +94,34 @@ impl Vm {
             exception_value: None,
             pending_exception: None,
             pending_error_kind: None,
-            symbol_counter: 0,
-            symbol_descriptions: Vec::new(),
-            symbol_registry: std::collections::HashMap::new(),
-            for_of_iters: Vec::new(),
-            last_for_of_result: JsValue::undefined(),
             root_reg_limit: 0,
             active_reg_limit: 0,
             native_call_depth: 0,
             accessor_frame_target_reg: None,
-            ic_hits: std::cell::Cell::new(0),
-            ic_misses: std::cell::Cell::new(0),
-            instruction_count: 0,
+            gc_state: GcState {
+                session_epoch: bumpalo::Bump::new(),
+                session_gc: crate::session_gc::SessionGc::new(),
+                epoch_object_ptrs: Vec::new(),
+                session_object_ptrs: Vec::new(),
+                session_string_ptrs: Vec::new(),
+                session_bytes_allocated: 0,
+                forwarding: std::collections::HashMap::with_hasher(rustc_hash::FxBuildHasher),
+            },
+            symbols: SymbolState {
+                symbol_counter: 0,
+                symbol_descriptions: Vec::new(),
+                symbol_registry: std::collections::HashMap::new(),
+            },
+            iters: IterState {
+                for_in_iters: Vec::new(),
+                for_of_iters: Vec::new(),
+                last_for_of_result: JsValue::undefined(),
+            },
+            profiling: ProfilingState {
+                ic_hits: std::cell::Cell::new(0),
+                ic_misses: std::cell::Cell::new(0),
+                instruction_count: 0,
+            },
         }
     }
 
@@ -138,27 +155,28 @@ impl Vm {
         self.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
         self.free_epoch_object_heap_data();
         self.epoch.reset();
-        self.epoch_object_ptrs.clear();
-        self.session_epoch.reset();
-        self.session_object_ptrs.clear();
-        self.session_bytes_allocated = 0;
-        self.session_gc = crate::session_gc::SessionGc::new();
+        self.gc_state.epoch_object_ptrs.clear();
+        self.gc_state.session_epoch.reset();
+        self.gc_state.session_object_ptrs.clear();
+        self.gc_state.session_bytes_allocated = 0;
+        self.gc_state.session_gc = crate::session_gc::SessionGc::new();
         self.free_session_string_heap_data();
-        self.symbol_counter = 0;
-        self.symbol_descriptions.clear();
-        self.symbol_registry.clear();
+        self.symbols.symbol_counter = 0;
+        self.symbols.symbol_descriptions.clear();
+        self.symbols.symbol_registry.clear();
         self.root_reg_limit = 0;
         self.active_reg_limit = 0;
     }
 
     fn free_epoch_object_heap_data(&mut self) {
         let mut freed = 0u64;
-        for ptr in self.epoch_object_ptrs.drain(..) {
+        for ptr in self.gc_state.epoch_object_ptrs.drain(..) {
             freed += crate::session_gc::SessionGc::drop_object_heap_data(ptr, false);
         }
         if freed > 0 {
-            self.session_gc.total_bytes_freed = self.session_gc.total_bytes_freed.saturating_add(freed);
-            self.session_gc.last_collection_bytes_freed = freed;
+            self.gc_state.session_gc.total_bytes_freed =
+                self.gc_state.session_gc.total_bytes_freed.saturating_add(freed);
+            self.gc_state.session_gc.last_collection_bytes_freed = freed;
         }
     }
 
@@ -171,9 +189,9 @@ impl Vm {
         self.regs = [JsValue::undefined(); 256];
         self.pc = 0;
         self.frames.clear();
-        self.for_in_iters.clear();
-        self.for_of_iters.clear();
-        self.last_for_of_result = JsValue::undefined();
+        self.iters.for_in_iters.clear();
+        self.iters.for_of_iters.clear();
+        self.iters.last_for_of_result = JsValue::undefined();
         self.saved_bytecode_stack.clear();
         self.saved_immutables_stack.clear();
         self.save_stack.clear();
@@ -192,15 +210,15 @@ impl Vm {
         self.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
         self.free_epoch_object_heap_data();
         self.epoch.reset();
-        self.epoch_object_ptrs.clear();
+        self.gc_state.epoch_object_ptrs.clear();
         self.root_reg_limit = 0;
         self.active_reg_limit = 0;
     }
 
     pub fn new_string(&mut self, s: &str) -> JsValue {
         let ptr = Box::into_raw(Box::new(JsString::new(s.to_string())));
-        self.session_string_ptrs.push(ptr);
-        self.session_bytes_allocated += std::mem::size_of::<JsString>() + s.len();
+        self.gc_state.session_string_ptrs.push(ptr);
+        self.gc_state.session_bytes_allocated += std::mem::size_of::<JsString>() + s.len();
         JsValue::string(ptr)
     }
 
@@ -224,7 +242,7 @@ impl Vm {
     /// can reference them. The lighter `reset()` deliberately keeps them alive,
     /// mirroring session-object survival across evals.
     fn free_session_string_heap_data(&mut self) {
-        for ptr in self.session_string_ptrs.drain(..) {
+        for ptr in self.gc_state.session_string_ptrs.drain(..) {
             // SAFETY: each ptr came from Box::into_raw(Box::new(JsString)) in new_string
             // and is dropped exactly once here.
             unsafe {
@@ -260,7 +278,7 @@ impl Vm {
             let prototype_obj = self
                 .epoch
                 .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto_ptr)));
-            self.epoch_object_ptrs.push(prototype_obj);
+            self.gc_state.epoch_object_ptrs.push(prototype_obj);
             let prototype_val = JsValue::from_js_object(prototype_obj);
 
             let constructor_si = self.kernel_core.perm_interner().intern("constructor").0;
@@ -431,7 +449,7 @@ mod tests {
     #[test]
     fn session_epoch_survives_reset() {
         let mut vm = Vm::new();
-        let session_ptr = vm.session_epoch.alloc(123i32) as *mut i32;
+        let session_ptr = vm.gc_state.session_epoch.alloc(123i32) as *mut i32;
 
         vm.reset();
 
@@ -454,9 +472,9 @@ mod tests {
     fn session_epoch_reset_is_only_in_full_reset_state_clear() {
         let src = include_str!("vm_support.rs");
         let production = src.split("#[cfg(test)]").next().expect("production source");
-        assert_eq!(production.matches("self.session_epoch.reset()").count(), 1);
+        assert_eq!(production.matches("self.gc_state.session_epoch.reset()").count(), 1);
         assert!(production.contains("fn clear_full_reset_state(&mut self)"));
-        assert!(production.contains("self.session_epoch.reset();"));
+        assert!(production.contains("self.gc_state.session_epoch.reset();"));
     }
 
     #[test]

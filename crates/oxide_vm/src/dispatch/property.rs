@@ -198,14 +198,14 @@ impl Vm {
 
         if let Some(value) = ic_get_hit(obj, cached_shape_id, cached_slot) {
             self.regs[a] = value;
-            self.ic_hits.set(self.ic_hits.get() + 1);
+            self.profiling.ic_hits.set(self.profiling.ic_hits.get() + 1);
             ic_trace!("IC_GET hit shape={} slot={}", cached_shape_id, cached_slot);
         } else if let Some(template) = self.kernel_core.prop_forge().get_template(obj.shape_id()) {
-            self.ic_misses.set(self.ic_misses.get() + 1);
+            self.profiling.ic_misses.set(self.profiling.ic_misses.get() + 1);
             prop_cache_miss();
             if template.prop_name == prop_name_si {
                 if template.position < obj.prop_vec_len() as u32 {
-                    self.write_ic_back(obj.shape_id(), template.position);
+                    crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), template.position);
                     ic_debug!(
                         "IC_GET propforge hit shape={} prop={} slot={}",
                         obj.shape_id(),
@@ -226,7 +226,7 @@ impl Vm {
             ic_debug!("IC_GET miss shape={} prop={}", obj.shape_id(), prop_name_si);
             let resolved = self.ordinary_get(obj, prop_name_si, val)?;
             if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
-                self.write_ic_back(obj.shape_id(), pos);
+                crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos);
             }
             self.regs[a] = resolved;
         }
@@ -268,22 +268,22 @@ impl Vm {
         let cached_slot = ext1;
 
         if ic_set_hit(obj, cached_shape_id, cached_slot, value) {
-            self.ic_hits.set(self.ic_hits.get() + 1);
+            self.profiling.ic_hits.set(self.profiling.ic_hits.get() + 1);
             ic_trace!("IC_SET hit shape={} slot={}", cached_shape_id, cached_slot);
         } else if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
-            self.ic_misses.set(self.ic_misses.get() + 1);
+            self.profiling.ic_misses.set(self.profiling.ic_misses.get() + 1);
             prop_cache_miss();
             obj.set_prop_at(pos, value);
-            self.write_ic_back(obj.shape_id(), pos);
+            crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos);
             ic_debug!("IC_SET write-back shape={} slot={}", obj.shape_id(), pos);
         } else {
-            self.ic_misses.set(self.ic_misses.get() + 1);
+            self.profiling.ic_misses.set(self.profiling.ic_misses.get() + 1);
             prop_cache_miss();
             let old_shape = obj.shape_id();
             self.ordinary_set_dispatch(obj, prop_name_si, value, receiver)?;
             if old_shape != obj.shape_id() {
                 if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
-                    self.write_ic_back(obj.shape_id(), pos);
+                    crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos);
                     ic_debug!("IC_SET write-back shape={} slot={}", obj.shape_id(), pos);
                     self.kernel_core.prop_forge().upsert(
                         obj.shape_id(),
@@ -392,5 +392,36 @@ impl Vm {
         let obj = unsafe { &mut *obj_ptr };
         obj.set_prop_at(idx, value);
         Ok(())
+    }
+}
+
+impl Vm {
+    pub(crate) fn dispatch_delete_prop_static(&mut self, rd: usize) -> Result<bool, String> {
+        let prop_idx = self.bytecode[self.pc] as usize;
+        self.pc += 1;
+        let key_val = self.immutables().get(prop_idx).copied().unwrap_or_else(JsValue::undefined);
+        let prop_name_si = self.property_key_si(key_val);
+        let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "delete on non-object")? else {
+            return Ok(true);
+        };
+        let obj = unsafe { &mut *obj_ptr };
+        if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+            obj.set_prop_at(pos, JsValue::undefined());
+        }
+        self.regs[rd] = JsValue::bool(true);
+        Ok(false)
+    }
+
+    pub(crate) fn dispatch_delete_prop_dynamic(&mut self, rd: usize, b: usize) -> Result<bool, String> {
+        let prop_name_si = self.property_key_si(self.regs[b]);
+        let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "delete on non-object")? else {
+            return Ok(true);
+        };
+        let obj = unsafe { &mut *obj_ptr };
+        if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+            obj.set_prop_at(pos, JsValue::undefined());
+        }
+        self.regs[rd] = JsValue::bool(true);
+        Ok(false)
     }
 }

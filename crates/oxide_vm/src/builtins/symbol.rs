@@ -33,9 +33,9 @@ pub fn symbol_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
         String::new()
     };
 
-    vm.symbol_counter = vm.symbol_counter.wrapping_add(1);
-    let idx = vm.symbol_descriptions.len() as u32;
-    vm.symbol_descriptions.push(description);
+    vm.symbols.symbol_counter = vm.symbols.symbol_counter.wrapping_add(1);
+    let idx = vm.symbols.symbol_descriptions.len() as u32;
+    vm.symbols.symbol_descriptions.push(description);
     NativeResult::Ok(JsValue::symbol(idx))
 }
 
@@ -49,7 +49,7 @@ pub fn symbol_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
 
     let idx = this_val.as_symbol_index();
-    let desc = vm.symbol_descriptions.get(idx as usize).cloned().unwrap_or_default();
+    let desc = vm.symbols.symbol_descriptions.get(idx as usize).cloned().unwrap_or_default();
     let result = format!("Symbol({})", desc);
     NativeResult::Ok(vm.new_string(&result))
 }
@@ -61,13 +61,13 @@ pub fn symbol_for(vm: &mut Vm, args: &[u8]) -> NativeResult {
         "undefined".to_string()
     };
 
-    if let Some(&idx) = vm.symbol_registry.get(&key) {
+    if let Some(&idx) = vm.symbols.symbol_registry.get(&key) {
         return NativeResult::Ok(JsValue::symbol(idx));
     }
 
-    let idx = vm.symbol_descriptions.len() as u32;
-    vm.symbol_descriptions.push(key.clone());
-    vm.symbol_registry.insert(key, idx);
+    let idx = vm.symbols.symbol_descriptions.len() as u32;
+    vm.symbols.symbol_descriptions.push(key.clone());
+    vm.symbols.symbol_registry.insert(key, idx);
     NativeResult::Ok(JsValue::symbol(idx))
 }
 
@@ -79,6 +79,7 @@ pub fn symbol_key_for(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
     let idx = sym.as_symbol_index();
     let found = vm
+        .symbols
         .symbol_registry
         .iter()
         .find(|(_, &registered_idx)| registered_idx == idx)
