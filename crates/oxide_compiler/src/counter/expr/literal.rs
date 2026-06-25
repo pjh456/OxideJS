@@ -28,7 +28,7 @@ impl Compiler {
         ctx.projected_pc += 1; // LOAD_VAR
     }
 
-    pub(in crate::counter) fn count_regexp_literal(&self, ctx: &mut CompileCtx) {
+    fn count_regexp_literal(&self, ctx: &mut CompileCtx) {
         ctx.alloc_reg(); // pattern reg (LOAD_CONST)
         ctx.projected_pc += 1;
         ctx.alloc_reg(); // flags reg (LOAD_CONST)

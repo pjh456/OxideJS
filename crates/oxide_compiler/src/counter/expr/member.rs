@@ -1,7 +1,7 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::counter) fn count_static_member_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
+    fn count_static_member_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
         let Expression::StaticMemberExpression(member) = expr else {
             return;
         };
@@ -17,7 +17,7 @@ impl Compiler {
         ctx.count_ic_instr_with_ext(); // IC_GET_PROP + 3 ext words
     }
 
-    pub(in crate::counter) fn count_computed_member_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
+    fn count_computed_member_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
         let Expression::ComputedMemberExpression(member) = expr else {
             return;
         };
@@ -27,7 +27,7 @@ impl Compiler {
         ctx.projected_pc += 1; // GET_PROP_DYNAMIC
     }
 
-    pub(in crate::counter) fn count_private_field_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
+    fn count_private_field_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
         let Expression::PrivateFieldExpression(member) = expr else {
             return;
         };
@@ -40,5 +40,14 @@ impl Compiler {
             return;
         };
         self.count_expression(&p.expression, ctx);
+    }
+
+    pub(in crate::counter) fn count_member_domain(&self, expr: &Expression, ctx: &mut CompileCtx) {
+        match expr {
+            Expression::StaticMemberExpression(_) => self.count_static_member_expression(expr, ctx),
+            Expression::ComputedMemberExpression(_) => self.count_computed_member_expression(expr, ctx),
+            Expression::PrivateFieldExpression(_) => self.count_private_field_expression(expr, ctx),
+            _ => {}
+        }
     }
 }

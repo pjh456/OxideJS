@@ -15,7 +15,7 @@ impl Compiler {
         }
     }
 
-    pub(in crate::emitter) fn emit_numeric_literal_expression(
+    fn emit_numeric_literal_expression(
         &self, n: &oxide_parser::NumericLiteral, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {
         let idx = if is_int_literal(n.value) {
@@ -28,7 +28,7 @@ impl Compiler {
         Ok(r)
     }
 
-    pub(in crate::emitter) fn emit_string_literal_expression(
+    fn emit_string_literal_expression(
         &self, s: &oxide_parser::StringLiteral, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {
         let idx = ctx.add_constant(Constant::String(s.value.to_string()));
@@ -37,7 +37,7 @@ impl Compiler {
         Ok(r)
     }
 
-    pub(in crate::emitter) fn emit_boolean_literal_expression(
+    fn emit_boolean_literal_expression(
         &self, b: &oxide_parser::BooleanLiteral, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {
         let idx = ctx.add_constant(Constant::Boolean(b.value));
@@ -46,7 +46,7 @@ impl Compiler {
         Ok(r)
     }
 
-    pub(in crate::emitter) fn emit_null_literal_expression(&self, ctx: &mut CompileCtx) -> Result<u8, String> {
+    fn emit_null_literal_expression(&self, ctx: &mut CompileCtx) -> Result<u8, String> {
         let idx = ctx.add_constant(Constant::Null);
         let r = ctx.alloc_reg();
         ctx.emit_load_const(r, idx);
@@ -75,7 +75,7 @@ impl Compiler {
         Ok(r)
     }
 
-    pub(in crate::emitter) fn emit_reg_exp_literal_expression(
+    fn emit_reg_exp_literal_expression(
         &self, lit: &oxide_parser::RegExpLiteral, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {
         if let Some(raw) = &lit.raw {

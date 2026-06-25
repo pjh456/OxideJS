@@ -1,7 +1,7 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::emitter) fn emit_variable_declaration_statement(
+    fn emit_variable_declaration_statement(
         &self, stmt: &Statement, ctx: &mut CompileCtx,
     ) -> Result<Option<u8>, String> {
         let Statement::VariableDeclaration(decl) = stmt else {
@@ -41,7 +41,7 @@ impl Compiler {
         Ok(r)
     }
 
-    pub(in crate::emitter) fn emit_function_declaration_statement(
+    fn emit_function_declaration_statement(
         &self, stmt: &Statement, ctx: &mut CompileCtx,
     ) -> Result<Option<u8>, String> {
         let Statement::FunctionDeclaration(fd) = stmt else {
@@ -83,9 +83,7 @@ impl Compiler {
         Ok(None)
     }
 
-    pub(in crate::emitter) fn emit_class_declaration_statement(
-        &self, stmt: &Statement, ctx: &mut CompileCtx,
-    ) -> Result<Option<u8>, String> {
+    fn emit_class_declaration_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
         let Statement::ClassDeclaration(class) = stmt else {
             return Ok(None);
         };
@@ -100,5 +98,16 @@ impl Compiler {
         let ctor_reg = self.emit_class(class, ctx)?;
         ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, ctor_reg, 0));
         Ok(None)
+    }
+
+    pub(in crate::emitter) fn emit_declaration_domain(
+        &self, stmt: &Statement, ctx: &mut CompileCtx,
+    ) -> Result<Option<u8>, String> {
+        match stmt {
+            Statement::VariableDeclaration(_) => self.emit_variable_declaration_statement(stmt, ctx),
+            Statement::FunctionDeclaration(_) => self.emit_function_declaration_statement(stmt, ctx),
+            Statement::ClassDeclaration(_) => self.emit_class_declaration_statement(stmt, ctx),
+            _ => Ok(None),
+        }
     }
 }

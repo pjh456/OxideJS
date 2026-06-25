@@ -1,18 +1,14 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::emitter) fn emit_expression_statement(
-        &self, stmt: &Statement, ctx: &mut CompileCtx,
-    ) -> Result<Option<u8>, String> {
+    fn emit_expression_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
         let Statement::ExpressionStatement(es) = stmt else {
             return Ok(None);
         };
         Ok(Some(self.emit_expression(&es.expression, ctx)?))
     }
 
-    pub(in crate::emitter) fn emit_return_statement(
-        &self, stmt: &Statement, ctx: &mut CompileCtx,
-    ) -> Result<Option<u8>, String> {
+    fn emit_return_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
         let Statement::ReturnStatement(ret) = stmt else {
             return Ok(None);
         };
@@ -92,7 +88,7 @@ impl Compiler {
         Ok(None)
     }
 
-    pub(in crate::emitter) fn is_iteration_statement(stmt: &Statement) -> bool {
+    fn is_iteration_statement(stmt: &Statement) -> bool {
         matches!(
             stmt,
             Statement::WhileStatement(_)
@@ -101,5 +97,16 @@ impl Compiler {
                 | Statement::ForInStatement(_)
                 | Statement::ForOfStatement(_)
         )
+    }
+
+    pub(in crate::emitter) fn emit_basic_domain(
+        &self, stmt: &Statement, ctx: &mut CompileCtx,
+    ) -> Result<Option<u8>, String> {
+        match stmt {
+            Statement::ExpressionStatement(_) => self.emit_expression_statement(stmt, ctx),
+            Statement::ReturnStatement(_) => self.emit_return_statement(stmt, ctx),
+            Statement::EmptyStatement(_) => Ok(None),
+            _ => Ok(None),
+        }
     }
 }

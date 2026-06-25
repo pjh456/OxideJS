@@ -1,7 +1,7 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::counter) fn count_assignment_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
+    fn count_assignment_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
         let Expression::AssignmentExpression(assign) = expr else {
             return;
         };
@@ -102,5 +102,9 @@ impl Compiler {
         ctx.projected_pc += 1; // STORE_VAR
         ctx.projected_pc += 1; // LOAD_VAR result <- rhs
         ctx.labels.label_map.insert(Label::TernaryEnd(id), ctx.projected_pc);
+    }
+
+    pub(in crate::counter) fn count_assignment(&self, expr: &Expression, ctx: &mut CompileCtx) {
+        self.count_assignment_expression(expr, ctx);
     }
 }

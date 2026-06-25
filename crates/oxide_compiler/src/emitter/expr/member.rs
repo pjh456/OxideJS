@@ -1,7 +1,7 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::emitter) fn emit_static_member_expression(
+    fn emit_static_member_expression(
         &self, member: &oxide_parser::StaticMemberExpression, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {
         if matches!(&member.object, Expression::Super(_)) {
@@ -35,7 +35,7 @@ impl Compiler {
         Ok(obj_reg)
     }
 
-    pub(in crate::emitter) fn emit_computed_member_expression(
+    fn emit_computed_member_expression(
         &self, member: &oxide_parser::ComputedMemberExpression, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {
         let obj_reg = self.emit_expression(&member.object, ctx)?;
@@ -45,7 +45,7 @@ impl Compiler {
         Ok(r)
     }
 
-    pub(in crate::emitter) fn emit_private_field_expression(
+    fn emit_private_field_expression(
         &self, member: &oxide_parser::PrivateFieldExpression, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {
         let obj_reg = self.emit_expression(&member.object, ctx)?;
@@ -55,9 +55,7 @@ impl Compiler {
         Ok(r)
     }
 
-    pub(in crate::emitter) fn emit_chain_expression(
-        &self, chain: &oxide_parser::ChainExpression, ctx: &mut CompileCtx,
-    ) -> Result<u8, String> {
+    fn emit_chain_expression(&self, chain: &oxide_parser::ChainExpression, ctx: &mut CompileCtx) -> Result<u8, String> {
         let id = ctx.next_label_id();
         let short_label = Label::TernaryElse(id);
         let end_label = Label::TernaryEnd(id);
@@ -71,5 +69,15 @@ impl Compiler {
         let undefined_idx = ctx.add_constant(Constant::Undefined);
         ctx.emit_load_const(result_reg, undefined_idx);
         Ok(result_reg)
+    }
+
+    pub(in crate::emitter) fn emit_member_domain(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u8, String> {
+        match expr {
+            Expression::StaticMemberExpression(member) => self.emit_static_member_expression(member, ctx),
+            Expression::ComputedMemberExpression(member) => self.emit_computed_member_expression(member, ctx),
+            Expression::PrivateFieldExpression(member) => self.emit_private_field_expression(member, ctx),
+            Expression::ChainExpression(chain) => self.emit_chain_expression(chain, ctx),
+            _ => self.emit_unsupported_expression(expr, ctx),
+        }
     }
 }
