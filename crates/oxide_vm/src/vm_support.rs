@@ -5,10 +5,9 @@ use std::sync::Arc;
 use oxide_bytecode::module::Constant;
 
 use crate::bindings;
-use crate::vm::{native_fn_ptr_to_fn, Vm};
+use crate::vm::Vm;
 use oxide_kernel::kernel::{KernelConfig, KernelCore, KernelSession};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_types::error::JsError;
 use oxide_types::mem::{Epoch, P};
 use oxide_types::object::{JsObject, JsString, PropAttributes};
 use oxide_types::value::JsValue;
@@ -23,7 +22,8 @@ impl Vm {
             regs: [JsValue::undefined(); 256],
             pc: 0,
             bytecode: Vec::new(),
-            constants: Vec::new(),
+            immutables_cache: Vec::new(),
+            active_immutables: std::ptr::slice_from_raw_parts(std::ptr::null(), 0),
             frames: smallvec::SmallVec::new(),
             for_in_iters: Vec::new(),
             kernel_core: core,
@@ -39,9 +39,8 @@ impl Vm {
             object_prototype: obj_proto,
             math_rng_state: 0,
             sub_modules: Arc::new(Vec::new()),
-            sub_module_constants: Vec::new(),
             saved_bytecode_stack: Vec::new(),
-            saved_constants_stack: Vec::new(),
+            saved_immutables_stack: Vec::new(),
             save_stack: Vec::new(),
             try_stack: Vec::new(),
             exception_value: None,
@@ -70,7 +69,8 @@ impl Vm {
             regs: [JsValue::undefined(); 256],
             pc: 0,
             bytecode: Vec::new(),
-            constants: Vec::new(),
+            immutables_cache: Vec::new(),
+            active_immutables: std::ptr::slice_from_raw_parts(std::ptr::null(), 0),
             frames: smallvec::SmallVec::new(),
             for_in_iters: Vec::new(),
             kernel_core: core,
@@ -86,9 +86,8 @@ impl Vm {
             object_prototype: obj_proto,
             math_rng_state: 0,
             sub_modules: Arc::new(Vec::new()),
-            sub_module_constants: Vec::new(),
             saved_bytecode_stack: Vec::new(),
-            saved_constants_stack: Vec::new(),
+            saved_immutables_stack: Vec::new(),
             save_stack: Vec::new(),
             try_stack: Vec::new(),
             exception_value: None,
@@ -135,7 +134,8 @@ impl Vm {
     fn clear_full_reset_state(&mut self) {
         self.clear_execution_state();
         self.bytecode.clear();
-        self.constants.clear();
+        self.immutables_cache.clear();
+        self.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
         self.free_epoch_object_heap_data();
         self.epoch.reset();
         self.epoch_object_ptrs.clear();
@@ -175,7 +175,7 @@ impl Vm {
         self.for_of_iters.clear();
         self.last_for_of_result = JsValue::undefined();
         self.saved_bytecode_stack.clear();
-        self.saved_constants_stack.clear();
+        self.saved_immutables_stack.clear();
         self.save_stack.clear();
         self.try_stack.clear();
         self.exception_value = None;
@@ -188,7 +188,8 @@ impl Vm {
         self.clear_execution_state();
         self.maybe_collect_session_gc();
         self.bytecode.clear();
-        self.constants.clear();
+        self.immutables_cache.clear();
+        self.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
         self.free_epoch_object_heap_data();
         self.epoch.reset();
         self.epoch_object_ptrs.clear();
@@ -302,68 +303,22 @@ impl Vm {
         format!("{val}")
     }
 
-    fn convert_constant(&mut self, constant: &Constant) -> Result<JsValue, JsError> {
+    fn convert_constant(&self, constant: &Constant) -> JsValue {
         match constant {
-            Constant::Number(v) => Ok(JsValue::float(*v)),
-            Constant::Int(v) => Ok(JsValue::int(*v)),
-            Constant::String(s) => Ok(self.perm_string(s)),
-            Constant::Boolean(b) => Ok(JsValue::bool(*b)),
-            Constant::Null => Ok(JsValue::null()),
-            Constant::Undefined => Ok(JsValue::undefined()),
-            Constant::BytecodeFunc(idx) => {
-                let sub_idx = *idx as usize;
-                let (is_arrow, is_class_constructor, is_derived_constructor, needs_home_object) =
-                    if sub_idx > 0 && sub_idx <= self.sub_modules.len() {
-                        let sub_module = &self.sub_modules[sub_idx - 1];
-                        (
-                            sub_module.is_arrow,
-                            sub_module.is_class_constructor,
-                            sub_module.is_derived_constructor,
-                            sub_module.needs_home_object,
-                        )
-                    } else {
-                        (false, false, false, false)
-                    };
-                Ok(self.create_function_object(
-                    *idx,
-                    is_arrow,
-                    is_class_constructor,
-                    is_derived_constructor,
-                    needs_home_object,
-                ))
-            }
-            Constant::RegExp(pattern, flags) => {
-                let pat_val = self.perm_string(pattern);
-                let flags_val = self.perm_string(flags);
-
-                let ctor_ptr = self.session.builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
-                let ctor = unsafe { &*ctor_ptr };
-                let Some(native_fn) = ctor.native_fn() else {
-                    return Err(JsError::syntax_error("RegExp constructor unavailable"));
-                };
-
-                let saved_0 = self.regs[0];
-                let saved_1 = self.regs[1];
-                let saved_2 = self.regs[2];
-                self.regs[0] = JsValue::undefined();
-                self.regs[1] = pat_val;
-                self.regs[2] = flags_val;
-                let func = unsafe { native_fn_ptr_to_fn(native_fn) };
-                let result = func(self, &[0, 1, 2]);
-                self.regs[0] = saved_0;
-                self.regs[1] = saved_1;
-                self.regs[2] = saved_2;
-                result.map_err(|err| JsError::syntax_error(self.error_text(err)))
-            }
+            Constant::Number(v) => JsValue::float(*v),
+            Constant::Int(v) => JsValue::int(*v),
+            Constant::String(s) => self.perm_string(s),
+            Constant::Boolean(b) => JsValue::bool(*b),
+            Constant::Null => JsValue::null(),
+            Constant::Undefined => JsValue::undefined(),
         }
     }
 
-    pub(crate) fn convert_constants(&mut self, constants: &[Constant]) -> Result<Vec<JsValue>, JsError> {
-        let mut values = Vec::with_capacity(constants.len());
-        for constant in constants {
-            values.push(self.convert_constant(constant)?);
-        }
-        Ok(values)
+    /// Convert a module's immutable constant pool to `JsValue`s. Infallible — the pool holds only
+    /// scalars + permanent-interner string values after CreateClosure/CreateRegExp pulled functions
+    /// and regexes out of the pool. `&self` so it can run inside `OnceLock::get_or_init`.
+    pub(crate) fn convert_immutables(&self, constants: &[Constant]) -> Vec<JsValue> {
+        constants.iter().map(|c| self.convert_constant(c)).collect()
     }
 }
 
@@ -481,6 +436,18 @@ mod tests {
         vm.reset();
 
         assert!(unsafe { *session_ptr } == 123);
+    }
+
+    #[test]
+    fn immutables_cache_filled_once_per_module() {
+        let mut vm = Vm::new();
+        // `f` recurses (same sub-module entered 4x). Its immutables convert once via OnceLock.
+        let result = run_source(&mut vm, "function f(n){ if(n<=0){ return 'done'; } return f(n-1); } f(3)");
+        assert!(result.is_string());
+        assert_eq!(vm.lookup_str(result).as_deref(), Some("done"));
+        // Cache = top module + 1 sub-module (f); the sub-module slot was initialized by the calls.
+        assert_eq!(vm.immutables_cache.len(), 2);
+        assert!(vm.immutables_cache[1].get().is_some(), "f's immutables should be cached after its calls");
     }
 
     #[test]

@@ -475,19 +475,7 @@ fn rewrite_vm_roots(vm: &mut Vm, forwarding: &HashMap<*mut JsObject, *mut JsObje
         *value = rewrite_forwarded_value(*value, forwarding);
     }
     vm.last_for_of_result = rewrite_forwarded_value(vm.last_for_of_result, forwarding);
-    for value in &mut vm.constants {
-        *value = rewrite_forwarded_value(*value, forwarding);
-    }
-    for values in &mut vm.sub_module_constants {
-        for value in values {
-            *value = rewrite_forwarded_value(*value, forwarding);
-        }
-    }
-    for values in &mut vm.saved_constants_stack {
-        for value in values {
-            *value = rewrite_forwarded_value(*value, forwarding);
-        }
-    }
+    // Converted immutables are non-session (scalars + perm-strings) — not rewritten.
     for iter in &mut vm.for_in_iters {
         if iter.is_null() {
             continue;
@@ -570,8 +558,6 @@ mod tests {
         vm.pending_exception = Some(JsValue::from_js_object(child_session));
         vm.for_of_iters.push(JsValue::from_js_object(child_session));
         vm.last_for_of_result = JsValue::from_js_object(root_session);
-        vm.constants.push(JsValue::from_js_object(frame_session));
-        vm.sub_module_constants = vec![vec![JsValue::from_js_object(child_session)]];
 
         let mut roots = Vec::new();
         vm.for_each_root(|v| roots.push(v));
@@ -580,7 +566,7 @@ mod tests {
         assert!(has_ptr(&roots, this_session));
         assert!(has_ptr(&roots, child_session));
         assert!(has_ptr(&roots, vm.session.global_object().as_ptr() as *mut JsObject));
-        assert!(roots.len() >= 1);
+        assert!(!roots.is_empty());
         assert!(roots.contains(&JsValue::from_js_object(root_session)));
         assert_eq!(vm.exception_value, Some(JsValue::from_js_object(root_session)));
     }

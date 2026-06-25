@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use oxide_bytecode::module::CompiledModule;
 use oxide_bytecode::opcode;
@@ -34,13 +34,12 @@ impl Vm {
 
         let subs = Arc::clone(&self.sub_modules);
         let sub = &subs[sub_idx];
-        let converted_constants = self.convert_constants(&sub.constants).map_err(String::from)?;
 
         let saved = Box::new(InlineSyncState {
             regs: Box::new(self.regs),
             pc: self.pc,
             bytecode: std::mem::take(&mut self.bytecode),
-            constants: std::mem::take(&mut self.constants),
+            active_immutables: self.active_immutables,
             active_reg_limit: self.active_reg_limit,
             root_reg_limit: self.root_reg_limit,
             try_stack: std::mem::take(&mut self.try_stack),
@@ -52,14 +51,14 @@ impl Vm {
             for_of_iters: std::mem::take(&mut self.for_of_iters),
             last_for_of_result: self.last_for_of_result,
             saved_bytecode_stack: std::mem::take(&mut self.saved_bytecode_stack),
-            saved_constants_stack: std::mem::take(&mut self.saved_constants_stack),
+            saved_immutables_stack: std::mem::take(&mut self.saved_immutables_stack),
             save_stack: std::mem::take(&mut self.save_stack),
         });
 
         self.regs = [JsValue::undefined(); 256];
         self.pc = 0;
         self.bytecode = sub.bytecode.clone();
-        self.constants = converted_constants;
+        self.activate_immutables(sub_idx + 1, &sub.constants);
         self.active_reg_limit = sub.n_registers.max(1);
         self.root_reg_limit = self.active_reg_limit;
         for i in 0..sub.n_args as usize {
@@ -82,7 +81,7 @@ impl Vm {
         self.regs = *saved.regs;
         self.pc = saved.pc;
         self.bytecode = saved.bytecode;
-        self.constants = saved.constants;
+        self.active_immutables = saved.active_immutables;
         self.active_reg_limit = saved.active_reg_limit;
         self.root_reg_limit = saved.root_reg_limit;
         self.try_stack = saved.try_stack;
@@ -94,7 +93,7 @@ impl Vm {
         self.for_of_iters = saved.for_of_iters;
         self.last_for_of_result = saved.last_for_of_result;
         self.saved_bytecode_stack = saved.saved_bytecode_stack;
-        self.saved_constants_stack = saved.saved_constants_stack;
+        self.saved_immutables_stack = saved.saved_immutables_stack;
         self.save_stack = saved.save_stack;
 
         result
@@ -104,8 +103,8 @@ impl Vm {
         if let Some(saved_bc) = self.saved_bytecode_stack.pop() {
             self.bytecode = saved_bc;
         }
-        if let Some(saved_consts) = self.saved_constants_stack.pop() {
-            self.constants = saved_consts;
+        if let Some(saved_imm) = self.saved_immutables_stack.pop() {
+            self.active_immutables = saved_imm;
         }
         let offset = frame.saved_reg_offset as usize;
         let len = frame.caller_reg_limit as usize;
@@ -144,9 +143,10 @@ impl Vm {
     pub fn run(&mut self, module: &CompiledModule) -> Result<JsValue, String> {
         self.clear_execution_state();
         self.sub_modules = Arc::new(module.sub_modules.clone());
-        self.constants = self.convert_constants(&module.constants).map_err(String::from)?;
-        self.sub_module_constants = vec![Vec::new(); self.sub_modules.len()];
+        // Per-run convert-once cache: slot 0 = top module, slot sub_idx+1 = sub_modules[sub_idx].
+        self.immutables_cache = (0..=self.sub_modules.len()).map(|_| OnceLock::new()).collect();
         self.bytecode = module.bytecode.clone();
+        self.activate_immutables(0, &module.constants);
         self.root_reg_limit = module.n_registers.max(1);
         self.active_reg_limit = self.root_reg_limit;
 

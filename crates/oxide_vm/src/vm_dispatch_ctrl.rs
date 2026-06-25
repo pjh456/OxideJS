@@ -84,14 +84,15 @@ impl Vm {
     pub(crate) fn dispatch_define_accessor(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
         let prop_idx = self.bytecode[self.pc] as usize;
         self.pc += 1;
-        if prop_idx >= self.constants.len() {
+        if prop_idx >= self.immutables().len() {
             return self.raise_type_error("DEFINE_ACCESSOR constant index out of bounds");
         }
         let obj_val = self.regs[rd];
         if !obj_val.is_object() {
             return self.raise_type_error("DEFINE_ACCESSOR target is not object");
         }
-        let prop_name_si = self.property_key_si(self.constants[prop_idx]);
+        let key_val = self.immutables()[prop_idx];
+        let prop_name_si = self.property_key_si(key_val);
         let getter = self.regs[a];
         let setter = self.regs[b];
         let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
