@@ -209,7 +209,6 @@ enum ConstantKey {
     Boolean(bool),
     Null,
     Undefined,
-    BytecodeFunc(u32),
 }
 
 impl CompileCtx {
@@ -576,8 +575,6 @@ impl ConstantKey {
             Constant::Boolean(v) => Some(Self::Boolean(*v)),
             Constant::Null => Some(Self::Null),
             Constant::Undefined => Some(Self::Undefined),
-            Constant::BytecodeFunc(v) => Some(Self::BytecodeFunc(*v)),
-            Constant::RegExp(_, _) => None,
         }
     }
 }

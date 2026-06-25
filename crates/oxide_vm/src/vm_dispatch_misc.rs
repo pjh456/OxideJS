@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::native::{NativeFn, NativeResult};
 use crate::vm::{native_fn_ptr_to_fn, CallFrame, ForInIter, FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
 use oxide_types::object::{JsObject, PropAttributes};
@@ -96,7 +98,6 @@ impl Vm {
             let sub_bytecode = self.sub_modules[sub_idx].bytecode.clone();
             let sub_n_args = self.sub_modules[sub_idx].n_args as usize;
             let sub_n_registers = self.sub_modules[sub_idx].n_registers;
-            let sub_constants = self.sub_modules[sub_idx].constants.clone();
             let sub_param_base = self.sub_modules[sub_idx].param_base as usize;
             let caller_reg_limit = self.active_reg_limit.max(1);
             let saved_reg_offset = self.save_stack.len() as u32;
@@ -115,9 +116,8 @@ impl Vm {
             };
             self.regs[255] = constructor;
 
-            let converted_sub_constants = self.convert_constants(&sub_constants)?;
             self.saved_bytecode_stack.push(std::mem::take(&mut self.bytecode));
-            self.saved_constants_stack.push(std::mem::take(&mut self.constants));
+            self.saved_immutables_stack.push(self.active_immutables);
 
             self.frames.push(CallFrame {
                 return_addr: self.pc,
@@ -138,7 +138,8 @@ impl Vm {
             });
 
             self.bytecode = sub_bytecode;
-            self.constants = converted_sub_constants;
+            let subs = Arc::clone(&self.sub_modules);
+            self.activate_immutables(sub_idx + 1, &subs[sub_idx].constants);
 
             for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map {
                 let si = self.kernel_core.perm_interner().intern(name.as_str()).0;
@@ -182,8 +183,9 @@ impl Vm {
                 result.push_str(&s);
             } else {
                 let const_idx = (seg & 0x7FFF_FFFF) as usize;
-                if const_idx < self.constants.len() {
-                    let val = self.constants[const_idx];
+                let imm = self.immutables();
+                if const_idx < imm.len() {
+                    let val = imm[const_idx];
                     if val.is_string() {
                         // SAFETY: val is a string value.
                         let s = unsafe { (*val.as_string_ptr()).data.clone() };
@@ -419,7 +421,7 @@ impl Vm {
         let excluded_idx = self.bytecode[self.pc] as usize;
         self.pc += 1;
         let excluded = self
-            .constants
+            .immutables()
             .get(excluded_idx)
             .and_then(|v| {
                 if v.is_string() {

@@ -10,8 +10,6 @@ pub enum Constant {
     Boolean(bool),
     Null,
     Undefined,
-    BytecodeFunc(u32),
-    RegExp(String, String),
 }
 
 pub struct CompiledModule {
@@ -92,10 +90,7 @@ impl fmt::Display for CompiledModule {
         writeln!(f, "; n_registers = {}", self.n_registers)?;
         writeln!(f, "; constants:")?;
         for (i, c) in self.constants.iter().enumerate() {
-            match c {
-                Constant::BytecodeFunc(idx) => writeln!(f, ";   [{i}] = BytecodeFunc(sub_module[{idx}])")?,
-                other => writeln!(f, ";   [{i}] = {other:?}")?,
-            }
+            writeln!(f, ";   [{i}] = {c:?}")?;
         }
         writeln!(f)?;
         for (offset, &instr) in self.bytecode.iter().enumerate() {

@@ -1,9 +1,9 @@
 #![allow(clippy::arc_with_non_send_sync)]
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
-use oxide_bytecode::module::CompiledModule;
+use oxide_bytecode::module::{CompiledModule, Constant};
 use oxide_bytecode::opcode::{self, OpCode};
 use smallvec::SmallVec;
 
@@ -127,7 +127,7 @@ pub(crate) struct InlineSyncState {
     pub(crate) regs: Box<[JsValue; 256]>,
     pub(crate) pc: usize,
     pub(crate) bytecode: Vec<opcode::Instr>,
-    pub(crate) constants: Vec<JsValue>,
+    pub(crate) active_immutables: *const [JsValue],
     pub(crate) active_reg_limit: u8,
     pub(crate) root_reg_limit: u8,
     pub(crate) try_stack: Vec<TryHandler>,
@@ -139,7 +139,7 @@ pub(crate) struct InlineSyncState {
     pub(crate) for_of_iters: Vec<JsValue>,
     pub(crate) last_for_of_result: JsValue,
     pub(crate) saved_bytecode_stack: Vec<Vec<opcode::Instr>>,
-    pub(crate) saved_constants_stack: Vec<Vec<JsValue>>,
+    pub(crate) saved_immutables_stack: Vec<*const [JsValue]>,
     pub(crate) save_stack: Vec<JsValue>,
 }
 
@@ -147,7 +147,13 @@ pub struct Vm {
     pub(crate) regs: [JsValue; 256],
     pub(crate) pc: usize,
     pub(crate) bytecode: Vec<opcode::Instr>,
-    pub(crate) constants: Vec<JsValue>,
+    /// Per-run convert-once immutables cache. Index 0 = top module, sub_idx+1 = sub_modules[sub_idx].
+    /// Each `OnceLock` holds that module's constants converted to `JsValue`s exactly once this run.
+    /// Rebuilt every `run()`. Immutables are scalars + perm-strings — read-only, never GC roots.
+    pub(crate) immutables_cache: Vec<OnceLock<Vec<JsValue>>>,
+    /// Read-only view into the currently-active module's converted immutables (inside immutables_cache).
+    /// A fat `*const` because the cache Vec is VM-owned and run-stable (OnceLock filled once).
+    pub(crate) active_immutables: *const [JsValue],
     pub(crate) frames: SmallVec<[CallFrame; 16]>,
     pub for_in_iters: Vec<*mut ForInIter<'static>>,
     pub(crate) kernel_core: Arc<KernelCore>,
@@ -167,9 +173,8 @@ pub struct Vm {
     pub object_prototype: P<JsObject>,
     pub math_rng_state: u64,
     pub(crate) sub_modules: Arc<Vec<CompiledModule>>,
-    pub(crate) sub_module_constants: Vec<Vec<JsValue>>,
     pub(crate) saved_bytecode_stack: Vec<Vec<opcode::Instr>>,
-    pub(crate) saved_constants_stack: Vec<Vec<JsValue>>,
+    pub(crate) saved_immutables_stack: Vec<*const [JsValue]>,
     /// Shared register save-stack. Each active `CallFrame` saved its caller's live
     /// registers (`regs[..caller_reg_limit]`) here at `saved_reg_offset`; restore copies
     /// them back and truncates. Capacity is retained across calls — zero per-call heap alloc.
@@ -300,6 +305,30 @@ impl Vm {
         ptr
     }
 
+    /// Read-only view into the active module's converted immutables. Empty before any `run()`.
+    #[inline(always)]
+    pub(crate) fn immutables(&self) -> &[JsValue] {
+        if self.active_immutables.is_null() {
+            &[]
+        } else {
+            // SAFETY: active_immutables points into a OnceLock<Vec<JsValue>> inside immutables_cache,
+            // which the VM owns; the Vec is filled once and never reallocated for the run's lifetime.
+            unsafe { &*self.active_immutables }
+        }
+    }
+
+    /// Activate module `cache_idx`'s immutables (0 = top, sub_idx+1 = sub_modules[sub_idx]),
+    /// converting them once into `immutables_cache[cache_idx]` and pointing `active_immutables` at
+    /// the cached Vec. `constants` is passed by the caller (it already holds `&module.constants`).
+    pub(crate) fn activate_immutables(&mut self, cache_idx: usize, constants: &[Constant]) {
+        // Raw-ptr the cache slot so `get_or_init` (which borrows immutables_cache) and the &self
+        // convert_immutables closure don't conflict with the subsequent self.active_immutables write.
+        // Sound: immutables_cache is VM-owned, read-only, and run-stable.
+        let slot: *const OnceLock<Vec<JsValue>> = &self.immutables_cache[cache_idx];
+        let vec = unsafe { &*slot }.get_or_init(|| self.convert_immutables(constants));
+        self.active_immutables = vec.as_slice() as *const [JsValue];
+    }
+
     pub(crate) fn for_each_root(&self, mut f: impl FnMut(JsValue)) {
         for value in &self.regs {
             if value.is_object() || value.is_string() {
@@ -322,19 +351,7 @@ impl Vm {
             f(v);
         }
         f(self.last_for_of_result);
-        for &v in &self.constants {
-            f(v);
-        }
-        for sub_module in &self.sub_module_constants {
-            for &v in sub_module {
-                f(v);
-            }
-        }
-        for saved_constants in &self.saved_constants_stack {
-            for &v in saved_constants {
-                f(v);
-            }
-        }
+        // Converted immutables (scalars + perm-strings) are NOT session GC roots — not scanned.
         for iter in &self.for_in_iters {
             if iter.is_null() {
                 continue;
@@ -651,7 +668,6 @@ impl Vm {
         let sub_bytecode = self.sub_modules[sub_idx].bytecode.clone();
         let sub_n_args = self.sub_modules[sub_idx].n_args as usize;
         let sub_n_registers = self.sub_modules[sub_idx].n_registers;
-        let sub_constants = self.sub_modules[sub_idx].constants.clone();
         let sub_param_base = self.sub_modules[sub_idx].param_base as usize;
         let sub_is_arrow = self.sub_modules[sub_idx].is_arrow;
         let caller_reg_limit = self.active_reg_limit.max(1);
@@ -666,9 +682,8 @@ impl Vm {
         self.regs[254] = if sub_is_arrow { obj.captured_this() } else { this_value };
         self.regs[255] = new_target;
 
-        let converted_sub_constants = self.convert_constants(&sub_constants).map_err(String::from)?;
         self.saved_bytecode_stack.push(std::mem::take(&mut self.bytecode));
-        self.saved_constants_stack.push(std::mem::take(&mut self.constants));
+        self.saved_immutables_stack.push(self.active_immutables);
 
         let function_name = self.sub_modules[sub_idx]
             .function_name
@@ -691,7 +706,8 @@ impl Vm {
         });
 
         self.bytecode = sub_bytecode;
-        self.constants = converted_sub_constants;
+        let subs = Arc::clone(&self.sub_modules);
+        self.activate_immutables(sub_idx + 1, &subs[sub_idx].constants);
         for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map.clone() {
             let si = self.kernel_core.perm_interner().intern(name.as_str()).0;
             let global = self.session.global_object();
@@ -755,8 +771,7 @@ impl Vm {
                 OpCode::CREATE_REGEXP => {
                     let pat_val = self.regs[a];
                     let flags_val = self.regs[b];
-                    let ctor_ptr =
-                        self.session.builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
+                    let ctor_ptr = self.session.builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
                     let ctor = unsafe { &*ctor_ptr };
                     let Some(native_fn) = ctor.native_fn() else {
                         self.raise_error_kind("TypeError", "RegExp constructor unavailable")?;
@@ -1019,7 +1034,6 @@ impl Vm {
                         let sub_bytecode = self.sub_modules[sub_idx].bytecode.clone();
                         let sub_n_args = self.sub_modules[sub_idx].n_args as usize;
                         let sub_n_registers = self.sub_modules[sub_idx].n_registers;
-                        let sub_constants = self.sub_modules[sub_idx].constants.clone();
                         let sub_param_base = self.sub_modules[sub_idx].param_base as usize;
                         let caller_reg_limit = self.active_reg_limit.max(1);
                         let saved_reg_offset = self.save_stack.len() as u32;
@@ -1034,9 +1048,8 @@ impl Vm {
                         self.regs[254] = derived_this;
                         self.regs[255] = new_target;
 
-                        let converted_sub_constants = self.convert_constants(&sub_constants)?;
                         self.saved_bytecode_stack.push(std::mem::take(&mut self.bytecode));
-                        self.saved_constants_stack.push(std::mem::take(&mut self.constants));
+                        self.saved_immutables_stack.push(self.active_immutables);
                         self.frames.push(CallFrame {
                             return_addr: self.pc,
                             function_name: self.sub_modules[sub_idx]
@@ -1056,7 +1069,8 @@ impl Vm {
                         });
 
                         self.bytecode = sub_bytecode;
-                        self.constants = converted_sub_constants;
+                        let subs = Arc::clone(&self.sub_modules);
+                        self.activate_immutables(sub_idx + 1, &subs[sub_idx].constants);
                         for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map {
                             let si = self.kernel_core.perm_interner().intern(name.as_str()).0;
                             let global = self.session.global_object();
@@ -1234,7 +1248,7 @@ impl Vm {
                 OpCode::DELETE_PROP_STATIC => {
                     let prop_idx = self.bytecode[self.pc] as usize;
                     self.pc += 1;
-                    let key_val = self.constants.get(prop_idx).copied().unwrap_or_else(JsValue::undefined);
+                    let key_val = self.immutables().get(prop_idx).copied().unwrap_or_else(JsValue::undefined);
                     let prop_name_si = self.property_key_si(key_val);
                     let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "delete on non-object")? else {
                         continue;
@@ -1399,7 +1413,7 @@ impl Default for Vm {
 mod tests {
     use super::{opcode, JsValue, TryHandler, Vm};
     use crate::native::NativeResult;
-    use oxide_bytecode::module::{CompiledModule, Constant};
+    use oxide_bytecode::module::CompiledModule;
     use oxide_types::object::NativeFnPtr;
     use oxide_types::object::{JsObject, PropAttributes};
 
@@ -1492,7 +1506,8 @@ mod tests {
         vm.for_of_iters.push(JsValue::undefined());
         vm.saved_bytecode_stack
             .push(vec![opcode::encode(opcode::OpCode::HALT, 0, 0, 0)]);
-        vm.saved_constants_stack.push(vec![JsValue::int(1)]);
+        vm.saved_immutables_stack
+            .push(std::ptr::slice_from_raw_parts(std::ptr::null(), 0));
         vm.try_stack.push(TryHandler {
             catch_pc: Some(1),
             finally_pc: None,
@@ -1510,13 +1525,13 @@ mod tests {
         assert!(vm.for_in_iters.is_empty());
         assert!(vm.for_of_iters.is_empty());
         assert!(vm.saved_bytecode_stack.is_empty());
-        assert!(vm.saved_constants_stack.is_empty());
+        assert!(vm.saved_immutables_stack.is_empty());
         assert!(vm.try_stack.is_empty());
         assert!(vm.exception_value.is_none());
         assert!(vm.pending_exception.is_none());
         assert!(vm.pending_error_kind.is_none());
         assert!(vm.bytecode.is_empty());
-        assert!(vm.constants.is_empty());
+        assert!(vm.immutables().is_empty());
     }
 
     #[test]
@@ -1549,47 +1564,6 @@ mod tests {
         vm.run(&module).expect("FOR_OF_CLOSE should tolerate non-object sentinel");
 
         assert!(vm.for_of_iters.is_empty());
-    }
-
-    #[test]
-    fn invalid_regexp_constant_fails_explicitly() {
-        let module = CompiledModule {
-            constants: vec![Constant::RegExp("[".into(), "".into())],
-            bytecode: vec![opcode::encode(opcode::OpCode::HALT, 0, 0, 0)],
-            n_registers: 1,
-            ..CompiledModule::new()
-        };
-        let mut vm = Vm::new();
-        let err = vm.run(&module).expect_err("invalid RegExp constant should fail explicitly");
-        assert!(err.contains("SyntaxError: Invalid regular expression"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn invalid_regexp_constant_in_submodule_fails_explicitly() {
-        let submodule = CompiledModule {
-            constants: vec![Constant::RegExp("[".into(), "".into())],
-            bytecode: vec![opcode::encode(opcode::OpCode::RETURN, 0, 0, 0)],
-            n_registers: 1,
-            ..CompiledModule::new()
-        };
-        let module = CompiledModule {
-            constants: vec![Constant::BytecodeFunc(1), Constant::Undefined],
-            bytecode: vec![
-                opcode::encode(opcode::OpCode::LOAD_CONST, 0, 0, 0),
-                opcode::encode(opcode::OpCode::LOAD_CONST, 1, 1, 0),
-                opcode::encode(opcode::OpCode::CALL, 0, 1, 0),
-                0,
-                opcode::encode(opcode::OpCode::HALT, 0, 0, 0),
-            ],
-            n_registers: 2,
-            sub_modules: vec![submodule],
-            ..CompiledModule::new()
-        };
-        let mut vm = Vm::new();
-        let err = vm
-            .run(&module)
-            .expect_err("invalid submodule RegExp constant should fail explicitly");
-        assert!(err.contains("SyntaxError: Invalid regular expression"), "unexpected error: {err}");
     }
 
     #[test]

@@ -4,8 +4,9 @@ impl Vm {
     #[inline(always)]
     pub(crate) fn dispatch_load_const(&mut self, rd: usize, instr: u32) -> Result<(), String> {
         let idx = (instr >> 16) as usize;
-        if idx < self.constants.len() {
-            self.regs[rd] = self.constants[idx];
+        let imm = self.immutables();
+        if idx < imm.len() {
+            self.regs[rd] = imm[idx];
             Ok(())
         } else {
             Err(format!("constant index {idx} out of bounds"))
