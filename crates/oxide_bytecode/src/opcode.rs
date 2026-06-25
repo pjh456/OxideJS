@@ -91,6 +91,7 @@ pub enum OpCode {
     SET_HOME_OBJECT = 0x47,
     DEFINE_ACCESSOR = 0x48,
     CREATE_CLOSURE = 0x4A,
+    CREATE_REGEXP = 0x4B,
 
     // ── Object Property (0x50-0x5F) ──
     IC_GET_PROP = 0x50,
@@ -240,6 +241,7 @@ impl TryFrom<u8> for OpCode {
             0x47 => Ok(OpCode::SET_HOME_OBJECT),
             0x48 => Ok(OpCode::DEFINE_ACCESSOR),
             0x4A => Ok(OpCode::CREATE_CLOSURE),
+            0x4B => Ok(OpCode::CREATE_REGEXP),
             0x50 => Ok(OpCode::IC_GET_PROP),
             0x51 => Ok(OpCode::IC_SET_PROP),
             0x52 => Ok(OpCode::GET_PROP),
@@ -360,6 +362,7 @@ impl fmt::Display for OpCode {
             OpCode::SET_HOME_OBJECT => "SET_HOME_OBJECT",
             OpCode::DEFINE_ACCESSOR => "DEFINE_ACCESSOR",
             OpCode::CREATE_CLOSURE => "CREATE_CLOSURE",
+            OpCode::CREATE_REGEXP => "CREATE_REGEXP",
             OpCode::IC_GET_PROP => "IC_GET_PROP",
             OpCode::IC_SET_PROP => "IC_SET_PROP",
             OpCode::GET_PROP => "GET_PROP",

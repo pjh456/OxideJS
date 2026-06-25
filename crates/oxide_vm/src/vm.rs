@@ -752,6 +752,37 @@ impl Vm {
                     );
                     self.regs[rd] = result;
                 }
+                OpCode::CREATE_REGEXP => {
+                    let pat_val = self.regs[a];
+                    let flags_val = self.regs[b];
+                    let ctor_ptr =
+                        self.session.builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
+                    let ctor = unsafe { &*ctor_ptr };
+                    let Some(native_fn) = ctor.native_fn() else {
+                        self.raise_error_kind("TypeError", "RegExp constructor unavailable")?;
+                        return Ok(JsValue::undefined());
+                    };
+                    let saved_0 = self.regs[0];
+                    let saved_1 = self.regs[1];
+                    let saved_2 = self.regs[2];
+                    self.regs[0] = JsValue::undefined();
+                    self.regs[1] = pat_val;
+                    self.regs[2] = flags_val;
+                    let func = unsafe { crate::vm::native_fn_ptr_to_fn(native_fn) };
+                    let result = match func(self, &[0, 1, 2]) {
+                        crate::native::NativeResult::Ok(v) => v,
+                        crate::native::NativeResult::Err(e) => {
+                            return Err(self.error_message_text("TypeError", &self.error_text(e)));
+                        }
+                        crate::native::NativeResult::TailCall { .. } => {
+                            return Err(self.error_message_text("TypeError", "unexpected tail call"));
+                        }
+                    };
+                    self.regs[0] = saved_0;
+                    self.regs[1] = saved_1;
+                    self.regs[2] = saved_2;
+                    self.regs[rd] = result;
+                }
 
                 OpCode::ADD => {
                     self.dispatch_add(rd, a, b)?;
