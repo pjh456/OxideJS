@@ -2,18 +2,16 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-use crate::coercion;
-use crate::vm::Vm;
-use oxide_runtime_api::NativeResult;
+use oxide_runtime_api::{NativeResult, VmHost};
 
 const INNER_PROP: &str = "__inner__";
 const INDEX_PROP: &str = "__index__";
 
-pub fn iterator_constructor(vm: &mut Vm, _args: &[u8]) -> NativeResult {
-    NativeResult::Err(crate::builtins::error::create_type_error(vm, "Iterator is not a constructor"))
+pub fn iterator_constructor<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
+    NativeResult::Err(crate::error::create_type_error(vm, "Iterator is not a constructor"))
 }
 
-pub fn iterator_from(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn iterator_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let iterable = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     match make_iterator_for_value(vm, iterable) {
         Ok(iterator) => NativeResult::Ok(iterator),
@@ -21,7 +19,7 @@ pub fn iterator_from(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
 }
 
-pub(crate) fn make_iterator_for_value(vm: &mut Vm, value: JsValue) -> Result<JsValue, JsValue> {
+pub fn make_iterator_for_value<H: VmHost>(vm: &mut H, value: JsValue) -> Result<JsValue, JsValue> {
     let inner = get_iterator(vm, value)?;
     let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
     let wrapper = vm
@@ -35,19 +33,16 @@ pub(crate) fn make_iterator_for_value(vm: &mut Vm, value: JsValue) -> Result<JsV
     vm.set_or_create_prop_value(wrapper_obj, inner_si, inner);
     vm.set_or_create_prop_value(wrapper_obj, index_si, JsValue::int(0));
 
-    let next_fn = make_native_function(vm, "next", iterator_wrapper_next as *const (), 0);
+    let next_fn = make_native_function(vm, "next", iterator_wrapper_next::<H> as *const (), 0);
     vm.set_or_create_prop_value(wrapper_obj, next_si, next_fn);
 
     Ok(JsValue::from_js_object(wrapper))
 }
 
-pub fn iterator_wrapper_next(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn iterator_wrapper_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if !this_val.is_object() {
-        return NativeResult::Err(crate::builtins::error::create_type_error(
-            vm,
-            "Iterator wrapper next called on non-object",
-        ));
+        return NativeResult::Err(crate::error::create_type_error(vm, "Iterator wrapper next called on non-object"));
     }
 
     let wrapper = unsafe { &mut *this_val.as_js_object_ptr() };
@@ -55,12 +50,7 @@ pub fn iterator_wrapper_next(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let index_si = vm.kernel_core().perm_interner().intern(INDEX_PROP).0;
     let inner = match vm.ordinary_get(wrapper, inner_si, this_val) {
         Ok(inner) if !inner.is_undefined() => inner,
-        _ => {
-            return NativeResult::Err(crate::builtins::error::create_type_error(
-                vm,
-                "Iterator wrapper has no inner iterator",
-            ))
-        }
+        _ => return NativeResult::Err(crate::error::create_type_error(vm, "Iterator wrapper has no inner iterator")),
     };
 
     if let Some(result) = next_array_like(vm, wrapper, inner, index_si) {
@@ -72,18 +62,18 @@ pub fn iterator_wrapper_next(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let next_si = vm.kernel_core().perm_interner().intern("next").0;
         let next = match vm.ordinary_get(inner_obj, next_si, inner) {
             Ok(next) => next,
-            Err(err) => return NativeResult::Err(crate::builtins::error::create_type_error(vm, &err)),
+            Err(err) => return NativeResult::Err(crate::error::create_type_error(vm, &err)),
         };
         return match vm.call_function_sync(next, inner, &[]) {
             Ok(result) => NativeResult::Ok(result),
-            Err(err) => NativeResult::Err(crate::builtins::error::create_type_error(vm, &err)),
+            Err(err) => NativeResult::Err(crate::error::create_type_error(vm, &err)),
         };
     }
 
-    NativeResult::Err(crate::builtins::error::create_type_error(vm, "value is not iterable"))
+    NativeResult::Err(crate::error::create_type_error(vm, "value is not iterable"))
 }
 
-fn get_iterator(vm: &mut Vm, value: JsValue) -> Result<JsValue, JsValue> {
+fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<JsValue, JsValue> {
     if value.is_string() || is_array_value(value) {
         return Ok(value);
     }
@@ -98,10 +88,10 @@ fn get_iterator(vm: &mut Vm, value: JsValue) -> Result<JsValue, JsValue> {
         }
     }
 
-    Err(crate::builtins::error::create_type_error(vm, "value is not iterable"))
+    Err(crate::error::create_type_error(vm, "value is not iterable"))
 }
 
-fn next_array_like(vm: &mut Vm, wrapper: &mut JsObject, inner: JsValue, index_si: u32) -> Option<JsValue> {
+fn next_array_like<H: VmHost>(vm: &mut H, wrapper: &mut JsObject, inner: JsValue, index_si: u32) -> Option<JsValue> {
     if is_array_value(inner) {
         let index = current_index(vm, wrapper, index_si);
         let arr = unsafe { &*inner.as_js_object_ptr() };
@@ -115,7 +105,7 @@ fn next_array_like(vm: &mut Vm, wrapper: &mut JsObject, inner: JsValue, index_si
 
     if inner.is_string() {
         let index = current_index(vm, wrapper, index_si);
-        let source = coercion::to_string(inner);
+        let source = oxide_runtime_api::to_string(inner);
         let mut chars = source.chars();
         if let Some(ch) = chars.nth(index) {
             vm.set_or_create_prop_value(wrapper, index_si, JsValue::int((index + 1) as i32));
@@ -128,7 +118,7 @@ fn next_array_like(vm: &mut Vm, wrapper: &mut JsObject, inner: JsValue, index_si
     None
 }
 
-fn current_index(vm: &mut Vm, wrapper: &JsObject, index_si: u32) -> usize {
+fn current_index<H: VmHost>(vm: &mut H, wrapper: &JsObject, index_si: u32) -> usize {
     match vm.ordinary_get(wrapper, index_si, JsValue::undefined()) {
         Ok(value) if value.is_int() => value.as_int().max(0) as usize,
         Ok(value) if value.is_double() => value.as_double().max(0.0) as usize,
@@ -136,7 +126,7 @@ fn current_index(vm: &mut Vm, wrapper: &JsObject, index_si: u32) -> usize {
     }
 }
 
-fn make_iter_result(vm: &mut Vm, value: JsValue, done: bool) -> JsValue {
+fn make_iter_result<H: VmHost>(vm: &mut H, value: JsValue, done: bool) -> JsValue {
     let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
     let obj = vm
         .epoch()
@@ -149,7 +139,7 @@ fn make_iter_result(vm: &mut Vm, value: JsValue, done: bool) -> JsValue {
     JsValue::from_js_object(obj)
 }
 
-fn make_native_function(vm: &mut Vm, name: &str, native_fn: *const (), arg_count: u8) -> JsValue {
+fn make_native_function<H: VmHost>(vm: &mut H, name: &str, native_fn: *const (), arg_count: u8) -> JsValue {
     let function_proto = vm.session().builtin_world().function_proto.as_ptr() as *mut JsObject;
     let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(function_proto));
     func.set_function(true);

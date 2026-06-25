@@ -54,7 +54,7 @@ impl Vm {
                         format!("{err_val}")
                     };
                     builtins_debug!("native_call err={}", msg);
-                    (crate::builtins::error::create_error(self, &msg), "Error")
+                    (oxide_builtins::error::create_error(self, &msg), "Error")
                 };
                 self.exception_value = Some(error);
                 self.pending_error_kind = Some(kind);

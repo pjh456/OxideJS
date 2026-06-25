@@ -1,6 +1,6 @@
-use crate::coercion;
 use crate::vm::Vm;
 use oxide_bytecode::opcode::{self, Instr};
+use oxide_runtime_api as coercion;
 use oxide_types::value::JsValue;
 
 impl Vm {

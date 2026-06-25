@@ -5,20 +5,17 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-use crate::builtins::object::walk_own_keys;
-use crate::vm::Vm;
-use oxide_runtime_api::NativeResult;
+use crate::object::walk_own_keys;
 
-pub fn json_parse(vm: &mut Vm, args: &[u8]) -> NativeResult {
+use oxide_runtime_api::{NativeResult, VmHost};
+
+pub fn json_parse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
-        return NativeResult::Err(crate::builtins::error::create_syntax_error(vm, "JSON.parse requires 1 argument"));
+        return NativeResult::Err(crate::error::create_syntax_error(vm, "JSON.parse requires 1 argument"));
     }
     let val = vm.reg(args[1]);
     if !val.is_string() {
-        return NativeResult::Err(crate::builtins::error::create_syntax_error(
-            vm,
-            "JSON.parse: argument is not a string",
-        ));
+        return NativeResult::Err(crate::error::create_syntax_error(vm, "JSON.parse: argument is not a string"));
     }
     let text = {
         // SAFETY: val is a string value.
@@ -27,13 +24,13 @@ pub fn json_parse(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
     let parsed: serde_json::Value = match serde_json::from_str(&text) {
         Ok(v) => v,
-        Err(e) => return NativeResult::Err(crate::builtins::error::create_syntax_error(vm, &format!("{}", e))),
+        Err(e) => return NativeResult::Err(crate::error::create_syntax_error(vm, &format!("{}", e))),
     };
 
     NativeResult::Ok(value_to_jsvalue(vm, &parsed))
 }
 
-fn value_to_jsvalue(vm: &mut Vm, val: &serde_json::Value) -> JsValue {
+fn value_to_jsvalue<H: VmHost>(vm: &mut H, val: &serde_json::Value) -> JsValue {
     match val {
         serde_json::Value::Null => JsValue::null(),
         serde_json::Value::Bool(b) => JsValue::bool(*b),
@@ -78,7 +75,7 @@ fn value_to_jsvalue(vm: &mut Vm, val: &serde_json::Value) -> JsValue {
     }
 }
 
-pub fn json_stringify(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn json_stringify<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::undefined());
     }
@@ -89,12 +86,14 @@ pub fn json_stringify(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let mut visited = HashSet::new();
     let mut output = String::new();
     if jsvalue_to_json(vm, value, &mut visited, &mut output).is_err() {
-        return NativeResult::Err(crate::builtins::error::create_type_error(vm, "cyclic object value"));
+        return NativeResult::Err(crate::error::create_type_error(vm, "cyclic object value"));
     };
     NativeResult::Ok(vm.new_string(&output))
 }
 
-fn jsvalue_to_json(vm: &Vm, val: JsValue, visited: &mut HashSet<*const u8>, out: &mut String) -> Result<(), ()> {
+fn jsvalue_to_json<H: VmHost>(
+    vm: &H, val: JsValue, visited: &mut HashSet<*const u8>, out: &mut String,
+) -> Result<(), ()> {
     if val.is_null() {
         out.push_str("null");
     } else if val.is_undefined() {
@@ -163,7 +162,9 @@ fn stringify_string(s: &str, out: &mut String) {
     out.push('"');
 }
 
-fn stringify_object(vm: &Vm, obj: &JsObject, visited: &mut HashSet<*const u8>, out: &mut String) -> Result<(), ()> {
+fn stringify_object<H: VmHost>(
+    vm: &H, obj: &JsObject, visited: &mut HashSet<*const u8>, out: &mut String,
+) -> Result<(), ()> {
     out.push('{');
     let keys = walk_own_keys(vm, obj);
     let mut first = true;
@@ -193,7 +194,9 @@ fn stringify_object(vm: &Vm, obj: &JsObject, visited: &mut HashSet<*const u8>, o
     Ok(())
 }
 
-fn stringify_array(vm: &Vm, obj: &JsObject, visited: &mut HashSet<*const u8>, out: &mut String) -> Result<(), ()> {
+fn stringify_array<H: VmHost>(
+    vm: &H, obj: &JsObject, visited: &mut HashSet<*const u8>, out: &mut String,
+) -> Result<(), ()> {
     out.push('[');
     let len = obj.prop_vec_len();
     for i in 0..len {

@@ -1,7 +1,7 @@
+use oxide_builtins::boolean::{boolean_constructor, boolean_prototype_to_string, boolean_prototype_value_of};
 use oxide_compiler::compiler::Compiler;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
-use oxide_vm::builtins::boolean::{boolean_constructor, boolean_prototype_to_string, boolean_prototype_value_of};
 use oxide_vm::vm::Vm;
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;

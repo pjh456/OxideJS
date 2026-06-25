@@ -4,8 +4,7 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-use crate::vm::Vm;
-use oxide_runtime_api::NativeResult;
+use oxide_runtime_api::{NativeResult, VmHost};
 
 macro_rules! native_try {
     ($expr:expr) => {
@@ -68,29 +67,26 @@ type SetInner = indexmap::IndexSet<SetKey>;
 /// native builtin is executing. The `Box<IndexSet>` is allocated in `new_set_inner()`
 /// and is never freed during the Set's lifetime. Only one live `*mut` alias exists per
 /// Set object at a time because native calls are single-threaded.
-fn get_set_inner(vm: &mut Vm, this_val: JsValue) -> Result<*mut SetInner, JsValue> {
+fn get_set_inner<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<*mut SetInner, JsValue> {
     if !this_val.is_object() {
-        return Err(crate::builtins::error::create_type_error(vm, "called on non-Set object"));
+        return Err(crate::error::create_type_error(vm, "called on non-Set object"));
     }
     let set_ptr = this_val.as_js_object_ptr();
     if set_ptr.is_null() {
-        return Err(crate::builtins::error::create_type_error(vm, "Set internal state invalid"));
+        return Err(crate::error::create_type_error(vm, "Set internal state invalid"));
     }
     // SAFETY: set_ptr is a non-null, aligned pointer to a JsObject bump-allocated in the
     // current Epoch. Remains valid for the duration of this call.
     let set_obj = unsafe { &*set_ptr };
     if !set_obj.is_set() {
-        return Err(crate::builtins::error::create_type_error(
-            vm,
-            "Set.prototype.add called on incompatible receiver",
-        ));
+        return Err(crate::error::create_type_error(vm, "Set.prototype.add called on incompatible receiver"));
     }
     // SAFETY: native_data holds the raw pointer written by `alloc_set`.
     // The pointer is a valid, heap-allocated `Box<IndexSet<SetKey>>`.
     // Alignment: IndexSet requires at most 8-byte alignment; the global allocator satisfies this.
     let inner_ptr = set_obj.native_data() as *mut SetInner;
     if inner_ptr.is_null() {
-        return Err(crate::builtins::error::create_type_error(vm, "Set internal state invalid"));
+        return Err(crate::error::create_type_error(vm, "Set internal state invalid"));
     }
     Ok(inner_ptr)
 }
@@ -99,7 +95,7 @@ fn new_set_inner() -> *mut SetInner {
     Box::into_raw(Box::new(SetInner::new()))
 }
 
-fn alloc_set(vm: &mut Vm) -> *mut JsObject {
+fn alloc_set<H: VmHost>(vm: &mut H) -> *mut JsObject {
     let set_proto = vm.session().builtin_world().set_proto.as_ptr() as *mut JsObject;
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(set_proto));
     obj.set_set(true);
@@ -108,7 +104,7 @@ fn alloc_set(vm: &mut Vm) -> *mut JsObject {
     vm.alloc_object(obj)
 }
 
-pub(crate) fn set_native_edges(obj: &JsObject) -> Vec<JsValue> {
+pub fn set_native_edges(obj: &JsObject) -> Vec<JsValue> {
     if !obj.is_set() {
         return Vec::new();
     }
@@ -116,10 +112,16 @@ pub(crate) fn set_native_edges(obj: &JsObject) -> Vec<JsValue> {
     if inner.is_null() {
         return Vec::new();
     }
-    unsafe { (*inner).iter().map(|key| key.0).filter(|value| value.is_object()).collect() }
+    unsafe {
+        (*inner)
+            .iter()
+            .map(|key| key.0)
+            .filter(|value: &JsValue| value.is_object())
+            .collect()
+    }
 }
 
-pub(crate) fn clone_set_native_with_rewrite<F>(src: &JsObject, dst: &mut JsObject, mut rewrite: F)
+pub fn clone_set_native_with_rewrite<F>(src: &JsObject, dst: &mut JsObject, mut rewrite: F)
 where
     F: FnMut(JsValue) -> JsValue,
 {
@@ -141,7 +143,7 @@ where
     dst.set_native_data(Box::into_raw(Box::new(cloned)) as *mut u8);
 }
 
-pub(crate) fn rewrite_set_native<F>(obj: &mut JsObject, mut rewrite: F)
+pub fn rewrite_set_native<F>(obj: &mut JsObject, mut rewrite: F)
 where
     F: FnMut(JsValue) -> JsValue,
 {
@@ -162,7 +164,7 @@ where
     }
 }
 
-pub(crate) fn drop_set_native(obj: &mut JsObject) -> u64 {
+pub fn drop_set_native(obj: &mut JsObject) -> u64 {
     if !obj.is_set() {
         return 0;
     }
@@ -171,7 +173,7 @@ pub(crate) fn drop_set_native(obj: &mut JsObject) -> u64 {
         return 0;
     }
     unsafe {
-        let boxed = Box::from_raw(inner);
+        let boxed: Box<SetInner> = Box::from_raw(inner);
         let bytes = std::mem::size_of::<SetInner>() + boxed.capacity() * std::mem::size_of::<SetKey>();
         drop(boxed);
         obj.set_native_data(std::ptr::null_mut());
@@ -179,12 +181,12 @@ pub(crate) fn drop_set_native(obj: &mut JsObject) -> u64 {
     }
 }
 
-pub fn set_constructor(vm: &mut Vm, _args: &[u8]) -> NativeResult {
+pub fn set_constructor<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     let set_obj = alloc_set(vm);
     NativeResult::Ok(JsValue::from_js_object(set_obj))
 }
 
-pub fn set_add(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn set_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let inner = native_try!(get_set_inner(vm, this_val));
     let val = vm.reg(if args.len() > 1 { args[1] } else { 0 });
@@ -194,7 +196,7 @@ pub fn set_add(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(this_val)
 }
 
-pub fn set_has(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn set_has<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let inner = native_try!(get_set_inner(vm, this_val));
     let val = vm.reg(if args.len() > 1 { args[1] } else { 0 });
@@ -202,7 +204,7 @@ pub fn set_has(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(found))
 }
 
-pub fn set_delete(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn set_delete<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let inner = native_try!(get_set_inner(vm, this_val));
     let val = vm.reg(if args.len() > 1 { args[1] } else { 0 });
@@ -210,7 +212,7 @@ pub fn set_delete(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(removed))
 }
 
-pub fn set_clear(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn set_clear<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let inner = native_try!(get_set_inner(vm, this_val));
     unsafe {
@@ -219,7 +221,7 @@ pub fn set_clear(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::undefined())
 }
 
-pub fn set_size(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn set_size<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let inner = native_try!(get_set_inner(vm, this_val));
     NativeResult::Ok(JsValue::float(unsafe { (*inner).len() } as f64))

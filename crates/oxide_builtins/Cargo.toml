@@ -1,0 +1,20 @@
+[package]
+name = "oxide_builtins"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OxideJS - Generic builtin JS functions parameterized over VmHost"
+
+[dependencies]
+oxide_runtime_api = { path = "../oxide_runtime_api" }
+oxide_types = { path = "../oxide_types" }
+oxide_kernel = { path = "../oxide_kernel" }
+fast-float.workspace = true
+ryu.workspace = true
+memchr.workspace = true
+regex.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+unicode-normalization.workspace = true
+indexmap.workspace = true

@@ -10,6 +10,7 @@ description = "OxideJS - Register-based VM with epoch arena memory"
 oxide_bytecode = { path = "../oxide_bytecode" }
 oxide_kernel = { path = "../oxide_kernel" }
 oxide_runtime_api = { path = "../oxide_runtime_api" }
+oxide_builtins = { path = "../oxide_builtins" }
 oxide_types = { path = "../oxide_types" }
 bumpalo.workspace = true
 fast-float.workspace = true

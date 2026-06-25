@@ -2,10 +2,9 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes, TypedArrayKind};
 use oxide_types::value::JsValue;
 
-use crate::builtins::array_buffer::{array_buffer_data_ptr, new_array_buffer, MAX_ARRAY_BUFFER_LENGTH};
-use crate::coercion;
-use crate::vm::Vm;
-use oxide_runtime_api::NativeResult;
+use crate::array_buffer::{array_buffer_data_ptr, new_array_buffer, MAX_ARRAY_BUFFER_LENGTH};
+
+use oxide_runtime_api::{NativeResult, VmHost};
 
 #[derive(Clone, Copy)]
 pub(crate) struct TypedArrayData {
@@ -24,16 +23,16 @@ macro_rules! native_try {
     };
 }
 
-fn type_error(vm: &mut Vm, msg: &str) -> JsValue {
-    crate::builtins::error::create_type_error(vm, msg)
+fn type_error<H: VmHost>(vm: &mut H, msg: &str) -> JsValue {
+    crate::error::create_type_error(vm, msg)
 }
 
-fn range_error(vm: &mut Vm, msg: &str) -> JsValue {
-    crate::builtins::error::create_range_error(vm, msg)
+fn range_error<H: VmHost>(vm: &mut H, msg: &str) -> JsValue {
+    crate::error::create_range_error(vm, msg)
 }
 
-fn to_index(vm: &mut Vm, value: JsValue, msg: &str) -> Result<usize, JsValue> {
-    let n = coercion::to_number(value);
+fn to_index<H: VmHost>(vm: &mut H, value: JsValue, msg: &str) -> Result<usize, JsValue> {
+    let n = oxide_runtime_api::to_number(value);
     if n.is_nan() {
         return Ok(0);
     }
@@ -43,8 +42,8 @@ fn to_index(vm: &mut Vm, value: JsValue, msg: &str) -> Result<usize, JsValue> {
     Ok(n.trunc() as usize)
 }
 
-fn normalize_index(_vm: &mut Vm, value: JsValue, len: usize) -> usize {
-    let n = coercion::to_number(value);
+fn normalize_index<H: VmHost>(_vm: &mut H, value: JsValue, len: usize) -> usize {
+    let n = oxide_runtime_api::to_number(value);
     if n.is_nan() {
         return 0;
     }
@@ -56,12 +55,12 @@ fn normalize_index(_vm: &mut Vm, value: JsValue, len: usize) -> usize {
     }
 }
 
-fn set_named_prop(vm: &mut Vm, obj: &mut JsObject, name: &str, value: JsValue, attributes: PropAttributes) {
+fn set_named_prop<H: VmHost>(vm: &mut H, obj: &mut JsObject, name: &str, value: JsValue, attributes: PropAttributes) {
     let si = vm.kernel_core().perm_interner().intern(name).0;
     let _ = vm.define_data_property(obj, si, value, attributes);
 }
 
-fn typed_array_proto_ptr(vm: &mut Vm, kind: TypedArrayKind) -> *mut JsObject {
+fn typed_array_proto_ptr<H: VmHost>(vm: &mut H, kind: TypedArrayKind) -> *mut JsObject {
     let world = vm.session().builtin_world();
     match kind {
         TypedArrayKind::Int8 => world.int8array_proto.as_ptr() as *mut JsObject,
@@ -78,8 +77,8 @@ fn typed_array_proto_ptr(vm: &mut Vm, kind: TypedArrayKind) -> *mut JsObject {
     }
 }
 
-fn create_typed_array(
-    vm: &mut Vm, kind: TypedArrayKind, buffer: JsValue, byte_offset: usize, length: usize,
+fn create_typed_array<H: VmHost>(
+    vm: &mut H, kind: TypedArrayKind, buffer: JsValue, byte_offset: usize, length: usize,
 ) -> *mut JsObject {
     let proto = typed_array_proto_ptr(vm, kind);
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
@@ -127,7 +126,7 @@ fn typed_array_data_ptr(obj: &JsObject) -> Option<*mut TypedArrayData> {
     obj.native_fn().map(|ptr| ptr.as_ptr() as *mut TypedArrayData)
 }
 
-pub(crate) fn typed_array_native_edges(obj: &JsObject) -> Vec<JsValue> {
+pub fn typed_array_native_edges(obj: &JsObject) -> Vec<JsValue> {
     let Some(ptr) = typed_array_data_ptr(obj) else {
         return Vec::new();
     };
@@ -142,7 +141,7 @@ pub(crate) fn typed_array_native_edges(obj: &JsObject) -> Vec<JsValue> {
     }
 }
 
-pub(crate) fn clone_typed_array_native_with_rewrite<F>(old_obj: &JsObject, new_obj: &mut JsObject, mut rewrite: F)
+pub fn clone_typed_array_native_with_rewrite<F>(old_obj: &JsObject, new_obj: &mut JsObject, mut rewrite: F)
 where
     F: FnMut(JsValue) -> JsValue,
 {
@@ -158,7 +157,7 @@ where
     new_obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(cloned as *const ()) }));
 }
 
-pub(crate) fn rewrite_typed_array_native<F>(obj: &mut JsObject, mut rewrite: F)
+pub fn rewrite_typed_array_native<F>(obj: &mut JsObject, mut rewrite: F)
 where
     F: FnMut(JsValue) -> JsValue,
 {
@@ -173,7 +172,7 @@ where
     }
 }
 
-pub(crate) fn drop_typed_array_native(obj: &mut JsObject) -> u64 {
+pub fn drop_typed_array_native(obj: &mut JsObject) -> u64 {
     let Some(ptr) = typed_array_data_ptr(obj) else {
         return 0;
     };
@@ -185,7 +184,7 @@ pub(crate) fn drop_typed_array_native(obj: &mut JsObject) -> u64 {
     std::mem::size_of::<TypedArrayData>() as u64
 }
 
-pub(crate) fn get_typed_array_data(vm: &mut Vm, this_val: JsValue) -> Result<TypedArrayData, JsValue> {
+pub(crate) fn get_typed_array_data<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<TypedArrayData, JsValue> {
     if !this_val.is_object() {
         return Err(type_error(vm, "TypedArray method called on incompatible receiver"));
     }
@@ -236,8 +235,8 @@ fn read_element(kind: TypedArrayKind, bytes: &[u8], offset: usize) -> JsValue {
     }
 }
 
-fn numeric_value(_vm: &mut Vm, value: JsValue) -> f64 {
-    coercion::to_number(value)
+fn numeric_value<H: VmHost>(_vm: &mut H, value: JsValue) -> f64 {
+    oxide_runtime_api::to_number(value)
 }
 
 fn write_element(kind: TypedArrayKind, bytes: &mut [u8], offset: usize, value: f64) {
@@ -256,7 +255,7 @@ fn write_element(kind: TypedArrayKind, bytes: &mut [u8], offset: usize, value: f
     }
 }
 
-fn collect_array_like(vm: &mut Vm, value: JsValue) -> Result<Vec<JsValue>, JsValue> {
+fn collect_array_like<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Vec<JsValue>, JsValue> {
     if !value.is_object() {
         return Err(type_error(vm, "TypedArray source must be array-like"));
     }
@@ -280,7 +279,7 @@ fn collect_array_like(vm: &mut Vm, value: JsValue) -> Result<Vec<JsValue>, JsVal
     Err(type_error(vm, "TypedArray source must be Array, ArrayBuffer, or TypedArray"))
 }
 
-fn typed_array_new(vm: &mut Vm, args: &[u8], kind: TypedArrayKind) -> NativeResult {
+fn typed_array_new<H: VmHost>(vm: &mut H, args: &[u8], kind: TypedArrayKind) -> NativeResult {
     let first = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::int(0) };
     let bpe = kind.bytes_per_element();
 
@@ -342,7 +341,7 @@ fn typed_array_new(vm: &mut Vm, args: &[u8], kind: TypedArrayKind) -> NativeResu
 
 macro_rules! typed_array_ctor {
     ($name:ident, $kind:ident) => {
-        pub fn $name(vm: &mut Vm, args: &[u8]) -> NativeResult {
+        pub fn $name<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             typed_array_new(vm, args, TypedArrayKind::$kind)
         }
     };
@@ -360,7 +359,7 @@ typed_array_ctor!(float64array_constructor, Float64);
 typed_array_ctor!(bigint64array_constructor, BigInt64);
 typed_array_ctor!(biguint64array_constructor, BigUint64);
 
-pub fn typed_array_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn typed_array_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
     let raw_index = if args.len() > 1 {
@@ -377,7 +376,7 @@ pub fn typed_array_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(read_element(view.kind, buffer, absolute_byte_offset(view, idx as usize)))
 }
 
-pub fn typed_array_fill(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn typed_array_fill<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
     let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
@@ -400,7 +399,7 @@ pub fn typed_array_fill(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(this_val)
 }
 
-pub fn typed_array_slice(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn typed_array_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
     let start = if args.len() > 1 {
@@ -425,7 +424,7 @@ pub fn typed_array_slice(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(create_typed_array(vm, view.kind, buffer, 0, count)))
 }
 
-pub fn typed_array_subarray(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn typed_array_subarray<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
     let start = if args.len() > 1 {
@@ -449,7 +448,7 @@ pub fn typed_array_subarray(vm: &mut Vm, args: &[u8]) -> NativeResult {
     )))
 }
 
-pub fn typed_array_set(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn typed_array_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
     if args.len() < 2 {
@@ -474,7 +473,7 @@ pub fn typed_array_set(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::undefined())
 }
 
-pub fn typed_array_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn typed_array_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     native_try!(get_typed_array_data(vm, this_val));
     NativeResult::Ok(vm.new_string("[object TypedArray]"))

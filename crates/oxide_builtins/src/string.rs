@@ -2,19 +2,17 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-use crate::coercion;
-use crate::vm::Vm;
 use memchr::memchr;
-use oxide_runtime_api::NativeResult;
+use oxide_runtime_api::{NativeResult, VmHost};
 
-fn this_string(vm: &Vm, args: &[u8]) -> String {
-    coercion::to_string(vm.reg(args[0]))
+fn this_string<H: VmHost>(vm: &H, args: &[u8]) -> String {
+    oxide_runtime_api::to_string(vm.reg(args[0]))
 }
 
-pub fn string_from_char_code(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_from_char_code<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let mut out = String::new();
     for &arg_reg in args.iter().skip(1) {
-        let code = coercion::to_uint32(vm.reg(arg_reg)) & 0xFFFF;
+        let code = oxide_runtime_api::to_uint32(vm.reg(arg_reg)) & 0xFFFF;
         if let Some(ch) = char::from_u32(code) {
             out.push(ch);
         } else {
@@ -24,7 +22,7 @@ pub fn string_from_char_code(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(&out))
 }
 
-pub fn string_value_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(args[0]);
     if this_val.is_string() {
         return NativeResult::Ok(this_val);
@@ -38,15 +36,15 @@ pub fn string_value_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
             }
         }
     }
-    NativeResult::Err(crate::builtins::error::create_type_error(
+    NativeResult::Err(crate::error::create_type_error(
         vm,
         "String.prototype.valueOf called on non-String object",
     ))
 }
 
-pub fn string_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = if args.len() > 1 {
-        coercion::to_string(vm.reg(args[1]))
+        oxide_runtime_api::to_string(vm.reg(args[1]))
     } else {
         String::new()
     };
@@ -76,7 +74,7 @@ pub fn string_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(this_val)
 }
 
-pub fn string_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(args[0]);
     if this_val.is_string() {
         return NativeResult::Ok(this_val);
@@ -90,13 +88,13 @@ pub fn string_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
             }
         }
     }
-    NativeResult::Err(crate::builtins::error::create_type_error(
+    NativeResult::Err(crate::error::create_type_error(
         vm,
         "String.prototype.toString called on non-String object",
     ))
 }
 
-fn make_string_array(vm: &mut Vm, parts: &[String]) -> JsValue {
+fn make_string_array<H: VmHost>(vm: &mut H, parts: &[String]) -> JsValue {
     let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let n = parts.len();
     let arr =
@@ -112,8 +110,8 @@ fn make_string_array(vm: &mut Vm, parts: &[String]) -> JsValue {
     JsValue::from_js_object(arr)
 }
 
-fn as_string(_vm: &Vm, val: JsValue) -> String {
-    coercion::to_string(val)
+fn as_string<H: VmHost>(_vm: &H, val: JsValue) -> String {
+    oxide_runtime_api::to_string(val)
 }
 
 fn char_len(s: &str) -> usize {
@@ -137,7 +135,7 @@ fn take_chars(s: &str, count: usize) -> String {
     s.chars().take(count).collect()
 }
 
-fn is_regexp_obj(val: JsValue, vm: &Vm) -> bool {
+fn is_regexp_obj<H: VmHost>(val: JsValue, vm: &H) -> bool {
     if !val.is_object() {
         return false;
     }
@@ -158,7 +156,7 @@ fn is_regexp_obj(val: JsValue, vm: &Vm) -> bool {
     std::ptr::eq(proto_ptr, rp)
 }
 
-pub fn string_index_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let n = char_len(&s);
     if args.len() < 2 {
@@ -166,7 +164,7 @@ pub fn string_index_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let search = as_string(vm, vm.reg(args[1]));
     let pos = if args.len() > 2 {
-        (coercion::to_number(vm.reg(args[2])) as usize).min(n)
+        (oxide_runtime_api::to_number(vm.reg(args[2])) as usize).min(n)
     } else {
         0
     };
@@ -189,7 +187,7 @@ pub fn string_index_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::int(-1))
 }
 
-pub fn string_includes(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let n = char_len(&s);
     if args.len() < 2 {
@@ -197,7 +195,7 @@ pub fn string_includes(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let search = as_string(vm, vm.reg(args[1]));
     let pos = if args.len() > 2 {
-        (coercion::to_number(vm.reg(args[2])) as usize).min(n)
+        (oxide_runtime_api::to_number(vm.reg(args[2])) as usize).min(n)
     } else {
         0
     };
@@ -214,7 +212,7 @@ pub fn string_includes(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
 }
 
-pub fn string_char_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_char_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     if args.len() < 2 {
         if s.is_empty() {
@@ -222,7 +220,7 @@ pub fn string_char_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
         }
         return NativeResult::Ok(vm.new_string(&take_chars(&s, 1)));
     }
-    let idx = coercion::to_number(vm.reg(args[1])) as i32;
+    let idx = oxide_runtime_api::to_number(vm.reg(args[1])) as i32;
     if idx < 0 || idx as usize >= char_len(&s) {
         return NativeResult::Ok(vm.new_string(""));
     }
@@ -230,7 +228,7 @@ pub fn string_char_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(&ch))
 }
 
-pub fn string_char_code_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_char_code_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     if args.len() < 2 {
         if s.is_empty() {
@@ -238,26 +236,26 @@ pub fn string_char_code_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
         }
         return NativeResult::Ok(JsValue::int(s.chars().next().unwrap() as i32));
     }
-    let idx = coercion::to_number(vm.reg(args[1])) as i32;
+    let idx = oxide_runtime_api::to_number(vm.reg(args[1])) as i32;
     if idx < 0 || idx as usize >= char_len(&s) {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
     NativeResult::Ok(JsValue::int(s.chars().nth(idx as usize).unwrap() as i32))
 }
 
-pub fn string_concat(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let mut result = this_string(vm, args);
     for &arg_reg in args.iter().skip(1) {
-        result.push_str(&coercion::to_string(vm.reg(arg_reg)));
+        result.push_str(&oxide_runtime_api::to_string(vm.reg(arg_reg)));
     }
     NativeResult::Ok(vm.new_string(&result))
 }
 
-pub fn string_slice(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let n = char_len(&s) as i32;
     let start = if args.len() > 1 {
-        let v = coercion::to_number(vm.reg(args[1])) as i32;
+        let v = oxide_runtime_api::to_number(vm.reg(args[1])) as i32;
         if v < 0 {
             (n + v).max(0)
         } else {
@@ -267,7 +265,7 @@ pub fn string_slice(vm: &mut Vm, args: &[u8]) -> NativeResult {
         0
     };
     let end = if args.len() > 2 {
-        let v = coercion::to_number(vm.reg(args[2])) as i32;
+        let v = oxide_runtime_api::to_number(vm.reg(args[2])) as i32;
         if v < 0 {
             (n + v).max(0)
         } else {
@@ -282,16 +280,16 @@ pub fn string_slice(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(result))
 }
 
-pub fn string_substring(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_substring<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let n = char_len(&s) as i32;
     let mut start = if args.len() > 1 {
-        (coercion::to_number(vm.reg(args[1])) as i32).max(0).min(n)
+        (oxide_runtime_api::to_number(vm.reg(args[1])) as i32).max(0).min(n)
     } else {
         0
     };
     let mut end = if args.len() > 2 {
-        (coercion::to_number(vm.reg(args[2])) as i32).max(0).min(n)
+        (oxide_runtime_api::to_number(vm.reg(args[2])) as i32).max(0).min(n)
     } else {
         n
     };
@@ -302,41 +300,41 @@ pub fn string_substring(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(result))
 }
 
-pub fn string_to_upper_case(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_to_upper_case<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     NativeResult::Ok(vm.new_string(&s.to_uppercase()))
 }
 
-pub fn string_to_lower_case(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_to_lower_case<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     NativeResult::Ok(vm.new_string(&s.to_lowercase()))
 }
 
-pub fn string_trim(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_trim<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     NativeResult::Ok(vm.new_string(s.trim()))
 }
 
-pub fn string_repeat(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_repeat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let n = if args.len() > 1 {
-        (coercion::to_number(vm.reg(args[1])) as usize).min(10000)
+        (oxide_runtime_api::to_number(vm.reg(args[1])) as usize).min(10000)
     } else {
         1
     };
     NativeResult::Ok(vm.new_string(&s.repeat(n)))
 }
 
-pub fn string_pad_start(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_pad_start<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let s_len = char_len(&s);
     let target = if args.len() > 1 {
-        coercion::to_number(vm.reg(args[1])) as usize
+        oxide_runtime_api::to_number(vm.reg(args[1])) as usize
     } else {
         s_len
     };
     if target > 10000 {
-        return NativeResult::Err(crate::builtins::error::create_range_error(vm, "Invalid string length"));
+        return NativeResult::Err(crate::error::create_range_error(vm, "Invalid string length"));
     }
     let pad = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { " ".to_string() };
     if s_len >= target || pad.is_empty() {
@@ -350,16 +348,16 @@ pub fn string_pad_start(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(&out))
 }
 
-pub fn string_pad_end(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_pad_end<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let s_len = char_len(&s);
     let target = if args.len() > 1 {
-        coercion::to_number(vm.reg(args[1])) as usize
+        oxide_runtime_api::to_number(vm.reg(args[1])) as usize
     } else {
         s_len
     };
     if target > 10000 {
-        return NativeResult::Err(crate::builtins::error::create_range_error(vm, "Invalid string length"));
+        return NativeResult::Err(crate::error::create_range_error(vm, "Invalid string length"));
     }
     let pad = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { " ".to_string() };
     if s_len >= target || pad.is_empty() {
@@ -373,7 +371,7 @@ pub fn string_pad_end(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(&out))
 }
 
-pub fn string_starts_with(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_starts_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let n = char_len(&s);
     if args.len() < 2 {
@@ -381,14 +379,14 @@ pub fn string_starts_with(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let search = as_string(vm, vm.reg(args[1]));
     let pos = if args.len() > 2 {
-        (coercion::to_number(vm.reg(args[2])) as usize).min(n)
+        (oxide_runtime_api::to_number(vm.reg(args[2])) as usize).min(n)
     } else {
         0
     };
     NativeResult::Ok(JsValue::bool(s[byte_index_at_char(&s, pos)..].starts_with(&search)))
 }
 
-pub fn string_ends_with(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_ends_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let n = char_len(&s);
     if args.len() < 2 {
@@ -396,14 +394,14 @@ pub fn string_ends_with(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let search = as_string(vm, vm.reg(args[1]));
     let end_pos = if args.len() > 2 {
-        (coercion::to_number(vm.reg(args[2])) as usize).min(n)
+        (oxide_runtime_api::to_number(vm.reg(args[2])) as usize).min(n)
     } else {
         n
     };
     NativeResult::Ok(JsValue::bool(s[..byte_index_at_char(&s, end_pos)].ends_with(&search)))
 }
 
-pub fn string_split(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     if args.len() < 2 {
         let parts = vec![s.clone()];
@@ -411,7 +409,7 @@ pub fn string_split(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let sep_val = vm.reg(args[1]);
     let limit = if args.len() > 2 {
-        coercion::to_number(vm.reg(args[2])) as usize
+        oxide_runtime_api::to_number(vm.reg(args[2])) as usize
     } else {
         usize::MAX
     };
@@ -442,7 +440,7 @@ pub fn string_split(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(make_string_array(vm, &parts))
 }
 
-pub fn string_replace(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     if args.len() < 2 {
         return NativeResult::Ok(vm.new_string(&s));
@@ -468,7 +466,7 @@ pub fn string_replace(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(&result))
 }
 
-pub fn string_match_fn(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_match_fn<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::undefined());
@@ -495,7 +493,7 @@ pub fn string_match_fn(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::undefined())
 }
 
-pub fn string_search(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_search<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::int(-1));
@@ -524,19 +522,23 @@ pub fn string_search(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::int(-1))
 }
 
-pub fn string_trim_start(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_trim_start<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     NativeResult::Ok(vm.new_string(s.trim_start()))
 }
 
-pub fn string_trim_end(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_trim_end<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     NativeResult::Ok(vm.new_string(s.trim_end()))
 }
 
-pub fn string_code_point_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_code_point_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
-    let pos = if args.len() > 1 { coercion::to_number(vm.reg(args[1])) as usize } else { 0 };
+    let pos = if args.len() > 1 {
+        oxide_runtime_api::to_number(vm.reg(args[1])) as usize
+    } else {
+        0
+    };
     let chars: Vec<char> = s.chars().collect();
     if pos >= chars.len() {
         return NativeResult::Ok(JsValue::undefined());
@@ -552,7 +554,7 @@ pub fn string_code_point_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::int(c as i32))
 }
 
-pub fn string_normalize(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_normalize<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     use unicode_normalization::UnicodeNormalization;
     let s = this_string(vm, args);
     let form = if args.len() > 1 { as_string(vm, vm.reg(args[1])) } else { "NFC".to_string() };
@@ -565,7 +567,7 @@ pub fn string_normalize(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(&result))
 }
 
-pub fn string_match_all(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     if args.len() < 2 {
         return NativeResult::Err(JsValue::undefined());
@@ -586,7 +588,7 @@ pub fn string_match_all(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::undefined())
 }
 
-pub fn string_replace_all(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn string_replace_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     if args.len() < 2 {
         return NativeResult::Ok(vm.new_string(&s));

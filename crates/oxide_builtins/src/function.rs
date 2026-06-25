@@ -2,10 +2,9 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr};
 use oxide_types::value::JsValue;
 
-use crate::vm::Vm;
-use oxide_runtime_api::NativeResult;
+use oxide_runtime_api::{NativeResult, VmHost};
 
-fn invoke_target(vm: &mut Vm, target_val: JsValue, this_val: JsValue, arg_regs: &[u8]) -> NativeResult {
+fn invoke_target<H: VmHost>(vm: &mut H, target_val: JsValue, this_val: JsValue, arg_regs: &[u8]) -> NativeResult {
     let args: Vec<JsValue> = arg_regs.iter().map(|&r| vm.reg(r)).collect();
     NativeResult::TailCall {
         callee: target_val,
@@ -14,7 +13,7 @@ fn invoke_target(vm: &mut Vm, target_val: JsValue, this_val: JsValue, arg_regs: 
     }
 }
 
-fn bind_dispatcher(vm: &mut Vm, args: &[u8]) -> NativeResult {
+fn bind_dispatcher<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let wrapper_val = vm.reg(254);
     let wrapper = unsafe { &*wrapper_val.as_js_object_ptr() };
     let bound_target = wrapper
@@ -31,7 +30,7 @@ fn bind_dispatcher(vm: &mut Vm, args: &[u8]) -> NativeResult {
     invoke_target(vm, bound_target, bound_this, &arg_regs)
 }
 
-pub fn function_call(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn function_call<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Err(JsValue::undefined());
     }
@@ -41,7 +40,7 @@ pub fn function_call(vm: &mut Vm, args: &[u8]) -> NativeResult {
     invoke_target(vm, target_val, this_val, &arg_regs)
 }
 
-pub fn function_apply(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn function_apply<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Err(JsValue::undefined());
     }
@@ -81,7 +80,7 @@ pub fn function_apply(vm: &mut Vm, args: &[u8]) -> NativeResult {
     invoke_target(vm, target_val, this_val, &arg_regs)
 }
 
-pub fn function_bind(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn function_bind<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Err(JsValue::undefined());
     }
@@ -95,7 +94,7 @@ pub fn function_bind(vm: &mut Vm, args: &[u8]) -> NativeResult {
     unsafe {
         (*wrapper).set_function(true);
         // SAFETY: bind_dispatcher is a NativeFn fn-item; valid to store as NativeFnPtr.
-        (*wrapper).set_native_fn(Some(NativeFnPtr::from_raw(bind_dispatcher as *const ())));
+        (*wrapper).set_native_fn(Some(NativeFnPtr::from_raw(bind_dispatcher::<H> as *const ())));
         (*wrapper).set_native_arg_count(0);
         (*wrapper).ensure_hash_props().push(target_val);
         (*wrapper).ensure_hash_props().push(bound_this);
@@ -104,10 +103,10 @@ pub fn function_bind(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(wrapper))
 }
 
-pub fn function_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn function_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if !this_val.is_object() {
-        return NativeResult::Err(crate::builtins::error::create_type_error(
+        return NativeResult::Err(crate::error::create_type_error(
             vm,
             "Function.prototype.toString called on non-function",
         ));
@@ -115,7 +114,7 @@ pub fn function_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
     let func = unsafe { &*this_val.as_js_object_ptr() };
     if !func.is_function() {
-        return NativeResult::Err(crate::builtins::error::create_type_error(
+        return NativeResult::Err(crate::error::create_type_error(
             vm,
             "Function.prototype.toString called on non-function",
         ));
@@ -127,8 +126,8 @@ pub fn function_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
         .and_then(|v| vm.lookup_str(v))
         .unwrap_or_else(|| {
             let sub_idx = func.sub_module_index();
-            if sub_idx > 0 && (sub_idx as usize) <= vm.sub_modules.len() {
-                vm.sub_modules[sub_idx as usize - 1].function_name.clone().unwrap_or_default()
+            if sub_idx > 0 {
+                vm.sub_module_function_name((sub_idx - 1) as u16)
             } else {
                 String::new()
             }

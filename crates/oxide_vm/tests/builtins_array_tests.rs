@@ -1,6 +1,6 @@
+use oxide_builtins::array::{array_constructor, array_push};
 use oxide_compiler::compiler::Compiler;
 use oxide_types::value::JsValue;
-use oxide_vm::builtins::array::{array_constructor, array_push};
 use oxide_vm::vm::Vm;
 
 fn eval(source: &str) -> Result<(Vm, JsValue), String> {

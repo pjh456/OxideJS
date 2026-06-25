@@ -12,17 +12,21 @@ pub fn bind_number(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
     let proto_ptr = session.builtin_world().number_proto.as_ptr() as *mut JsObject;
     let proto = unsafe { &mut *proto_ptr };
 
-    configure_native_constructor(ctor, crate::builtins::number::number_constructor as *const (), 1);
+    configure_native_constructor(ctor, oxide_builtins::number::number_constructor::<crate::vm::Vm> as *const (), 1);
 
     apply_binding_table(
         session.builtin_world(),
         ctor,
         core,
         &[
-            ("isNaN", crate::builtins::number::number_is_nan as *const (), 1),
-            ("isFinite", crate::builtins::number::number_is_finite as *const (), 1),
-            ("isInteger", crate::builtins::number::number_is_integer as *const (), 1),
-            ("isSafeInteger", crate::builtins::number::number_is_safe_integer as *const (), 1),
+            ("isNaN", oxide_builtins::number::number_is_nan::<crate::vm::Vm> as *const (), 1),
+            ("isFinite", oxide_builtins::number::number_is_finite::<crate::vm::Vm> as *const (), 1),
+            ("isInteger", oxide_builtins::number::number_is_integer::<crate::vm::Vm> as *const (), 1),
+            (
+                "isSafeInteger",
+                oxide_builtins::number::number_is_safe_integer::<crate::vm::Vm> as *const (),
+                1,
+            ),
         ],
     );
 
@@ -31,11 +35,19 @@ pub fn bind_number(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         proto,
         core,
         &[
-            ("toString", crate::builtins::number::number_to_string as *const (), 0),
-            ("toFixed", crate::builtins::number::number_to_fixed as *const (), 0),
-            ("toExponential", crate::builtins::number::number_to_exponential as *const (), 0),
-            ("toPrecision", crate::builtins::number::number_to_precision as *const (), 0),
-            ("valueOf", crate::builtins::number::number_value_of as *const (), 0),
+            ("toString", oxide_builtins::number::number_to_string::<crate::vm::Vm> as *const (), 0),
+            ("toFixed", oxide_builtins::number::number_to_fixed::<crate::vm::Vm> as *const (), 0),
+            (
+                "toExponential",
+                oxide_builtins::number::number_to_exponential::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "toPrecision",
+                oxide_builtins::number::number_to_precision::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            ("valueOf", oxide_builtins::number::number_value_of::<crate::vm::Vm> as *const (), 0),
         ],
     );
 
@@ -55,15 +67,15 @@ pub fn bind_number(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         ctor.set_shape_id(next_shape);
     }
 
-    bind_constructor!(core, global, "Number", ctor_ptr, crate::builtins::number::number_constructor, 1, hash: true);
+    bind_constructor!(core, global, "Number", ctor_ptr, oxide_builtins::number::number_constructor::<crate::vm::Vm>, 1, hash: true);
 
     apply_binding_table(
         session.builtin_world(),
         global,
         core,
         &[
-            ("parseInt", crate::builtins::number::number_parse_int as *const (), 1),
-            ("parseFloat", crate::builtins::number::number_parse_float as *const (), 1),
+            ("parseInt", oxide_builtins::number::number_parse_int::<crate::vm::Vm> as *const (), 1),
+            ("parseFloat", oxide_builtins::number::number_parse_float::<crate::vm::Vm> as *const (), 1),
         ],
     );
 }

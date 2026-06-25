@@ -8,32 +8,41 @@ use crate::bind_constructor;
 
 pub fn bind_object(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let methods = ObjectMethods {
-        keys: crate::builtins::object::object_keys as *const (),
-        create: crate::builtins::object::object_create as *const (),
-        assign: crate::builtins::object::object_assign as *const (),
-        is: crate::builtins::object::object_is as *const (),
-        define_property: crate::builtins::object::object_define_property as *const (),
-        get_own_property_descriptor: crate::builtins::object::object_get_own_property_descriptor as *const (),
-        freeze: crate::builtins::object::object_freeze as *const (),
-        seal: crate::builtins::object::object_seal as *const (),
-        prevent_extensions: crate::builtins::object::object_prevent_extensions as *const (),
-        is_frozen: crate::builtins::object::object_is_frozen as *const (),
-        is_sealed: crate::builtins::object::object_is_sealed as *const (),
-        is_extensible: crate::builtins::object::object_is_extensible as *const (),
-        get_own_property_names: crate::builtins::object::object_get_own_property_names as *const (),
-        define_properties: crate::builtins::object::object_define_properties as *const (),
-        from_entries: crate::builtins::object::object_from_entries as *const (),
-        get_prototype_of: crate::builtins::object::object_get_prototype_of as *const (),
-        has_own: crate::builtins::object::object_has_own as *const (),
-        entries: crate::builtins::object::object_entries as *const (),
-        values: crate::builtins::object::object_values as *const (),
-        has_own_property: crate::builtins::object::object_proto_has_own_property as *const (),
-        property_is_enumerable: crate::builtins::object::object_proto_property_is_enumerable as *const (),
+        keys: oxide_builtins::object::object_keys::<crate::vm::Vm> as *const (),
+        create: oxide_builtins::object::object_create::<crate::vm::Vm> as *const (),
+        assign: oxide_builtins::object::object_assign::<crate::vm::Vm> as *const (),
+        is: oxide_builtins::object::object_is::<crate::vm::Vm> as *const (),
+        define_property: oxide_builtins::object::object_define_property::<crate::vm::Vm> as *const (),
+        get_own_property_descriptor: oxide_builtins::object::object_get_own_property_descriptor::<crate::vm::Vm>
+            as *const (),
+        freeze: oxide_builtins::object::object_freeze::<crate::vm::Vm> as *const (),
+        seal: oxide_builtins::object::object_seal::<crate::vm::Vm> as *const (),
+        prevent_extensions: oxide_builtins::object::object_prevent_extensions::<crate::vm::Vm> as *const (),
+        is_frozen: oxide_builtins::object::object_is_frozen::<crate::vm::Vm> as *const (),
+        is_sealed: oxide_builtins::object::object_is_sealed::<crate::vm::Vm> as *const (),
+        is_extensible: oxide_builtins::object::object_is_extensible::<crate::vm::Vm> as *const (),
+        get_own_property_names: oxide_builtins::object::object_get_own_property_names::<crate::vm::Vm> as *const (),
+        define_properties: oxide_builtins::object::object_define_properties::<crate::vm::Vm> as *const (),
+        from_entries: oxide_builtins::object::object_from_entries::<crate::vm::Vm> as *const (),
+        get_prototype_of: oxide_builtins::object::object_get_prototype_of::<crate::vm::Vm> as *const (),
+        has_own: oxide_builtins::object::object_has_own::<crate::vm::Vm> as *const (),
+        entries: oxide_builtins::object::object_entries::<crate::vm::Vm> as *const (),
+        values: oxide_builtins::object::object_values::<crate::vm::Vm> as *const (),
+        has_own_property: oxide_builtins::object::object_proto_has_own_property::<crate::vm::Vm> as *const (),
+        property_is_enumerable: oxide_builtins::object::object_proto_property_is_enumerable::<crate::vm::Vm>
+            as *const (),
     };
     session
         .builtin_world()
         .bind_object_methods(&methods, core.perm_interner().as_ref(), core.shape_forge().as_ref());
 
     let ctor_ptr = session.builtin_world().object_constructor.as_ptr() as *mut JsObject;
-    bind_constructor!(core, global, "Object", ctor_ptr, crate::builtins::object::object_constructor, 1);
+    bind_constructor!(
+        core,
+        global,
+        "Object",
+        ctor_ptr,
+        oxide_builtins::object::object_constructor::<crate::vm::Vm>,
+        1
+    );
 }

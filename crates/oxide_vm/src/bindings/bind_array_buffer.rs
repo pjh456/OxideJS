@@ -11,13 +11,21 @@ pub fn bind_array_buffer(core: &Arc<KernelCore>, session: &KernelSession, global
     let proto_ptr = session.builtin_world().array_buffer_proto.as_ptr() as *mut JsObject;
     let proto = unsafe { &mut *proto_ptr };
 
-    configure_native_constructor(ctor, crate::builtins::array_buffer::array_buffer_constructor as *const (), 1);
+    configure_native_constructor(
+        ctor,
+        oxide_builtins::array_buffer::array_buffer_constructor::<crate::vm::Vm> as *const (),
+        1,
+    );
 
     apply_binding_table(
         session.builtin_world(),
         ctor,
         core,
-        &[("isView", crate::builtins::array_buffer::array_buffer_is_view as *const (), 1)],
+        &[(
+            "isView",
+            oxide_builtins::array_buffer::array_buffer_is_view::<crate::vm::Vm> as *const (),
+            1,
+        )],
     );
 
     apply_binding_table(
@@ -25,9 +33,17 @@ pub fn bind_array_buffer(core: &Arc<KernelCore>, session: &KernelSession, global
         proto,
         core,
         &[
-            ("byteLength", crate::builtins::array_buffer::array_buffer_byte_length as *const (), 0),
-            ("slice", crate::builtins::array_buffer::array_buffer_slice as *const (), 2),
-            ("toString", crate::builtins::array_buffer::array_buffer_to_string as *const (), 0),
+            (
+                "byteLength",
+                oxide_builtins::array_buffer::array_buffer_byte_length::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            ("slice", oxide_builtins::array_buffer::array_buffer_slice::<crate::vm::Vm> as *const (), 2),
+            (
+                "toString",
+                oxide_builtins::array_buffer::array_buffer_to_string::<crate::vm::Vm> as *const (),
+                0,
+            ),
         ],
     );
 
@@ -36,7 +52,7 @@ pub fn bind_array_buffer(core: &Arc<KernelCore>, session: &KernelSession, global
         global,
         "ArrayBuffer",
         ctor_ptr,
-        crate::builtins::array_buffer::array_buffer_constructor,
+        oxide_builtins::array_buffer::array_buffer_constructor::<crate::vm::Vm>,
         1,
         hash: true
     );

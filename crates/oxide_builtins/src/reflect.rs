@@ -2,12 +2,11 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, PropAttributes, PropMetaEntry};
 use oxide_types::value::JsValue;
 
-use crate::builtins::object::walk_own_keys;
-use crate::coercion;
-use crate::vm::Vm;
-use oxide_runtime_api::NativeResult;
+use crate::object::walk_own_keys;
 
-pub fn reflect_apply(vm: &mut Vm, args: &[u8]) -> NativeResult {
+use oxide_runtime_api::{NativeResult, VmHost};
+
+pub fn reflect_apply<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target = arg(vm, args, 1);
     let this_arg = arg(vm, args, 2);
     let arg_list = arg(vm, args, 3);
@@ -23,11 +22,11 @@ pub fn reflect_apply(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
 }
 
-pub fn reflect_construct(vm: &mut Vm, _args: &[u8]) -> NativeResult {
+pub fn reflect_construct<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     type_error(vm, "Reflect.construct not yet supported")
 }
 
-pub fn reflect_define_property(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn reflect_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
         return type_error(vm, "Reflect.defineProperty target is not an object");
@@ -50,8 +49,12 @@ pub fn reflect_define_property(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let get_field = own_field(vm, desc, get_si);
     let set_field = own_field(vm, desc, set_si);
     let writable_field = own_field(vm, desc, writable_si);
-    let enumerable = own_field(vm, desc, enumerable_si).map(coercion::to_boolean).unwrap_or(false);
-    let configurable = own_field(vm, desc, configurable_si).map(coercion::to_boolean).unwrap_or(false);
+    let enumerable = own_field(vm, desc, enumerable_si)
+        .map(oxide_runtime_api::to_boolean)
+        .unwrap_or(false);
+    let configurable = own_field(vm, desc, configurable_si)
+        .map(oxide_runtime_api::to_boolean)
+        .unwrap_or(false);
 
     let has_data = value_field.is_some() || writable_field.is_some();
     let has_accessor = get_field.is_some() || set_field.is_some();
@@ -69,13 +72,13 @@ pub fn reflect_define_property(vm: &mut Vm, args: &[u8]) -> NativeResult {
         vm.define_accessor_property(target, key_si, get, set, PropAttributes::new(false, enumerable, configurable))
     } else {
         let value = value_field.unwrap_or(JsValue::undefined());
-        let writable = writable_field.map(coercion::to_boolean).unwrap_or(false);
+        let writable = writable_field.map(oxide_runtime_api::to_boolean).unwrap_or(false);
         vm.define_data_property(target, key_si, value, PropAttributes::new(writable, enumerable, configurable))
     };
     NativeResult::Ok(JsValue::bool(result.is_ok()))
 }
 
-pub fn reflect_delete_property(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn reflect_delete_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
         return type_error(vm, "Reflect.deleteProperty target is not an object");
@@ -85,7 +88,7 @@ pub fn reflect_delete_property(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(delete_own_property(vm, target, key_si)))
 }
 
-pub fn reflect_get(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn reflect_get<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
         return type_error(vm, "Reflect.get target is not an object");
@@ -98,15 +101,15 @@ pub fn reflect_get(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
 }
 
-pub fn reflect_get_own_property_descriptor(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn reflect_get_own_property_descriptor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(_) = object_ptr(target_val) else {
         return type_error(vm, "Reflect.getOwnPropertyDescriptor target is not an object");
     };
-    crate::builtins::object::object_get_own_property_descriptor(vm, args)
+    crate::object::object_get_own_property_descriptor(vm, args)
 }
 
-pub fn reflect_get_prototype_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn reflect_get_prototype_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
         return type_error(vm, "Reflect.getPrototypeOf target is not an object");
@@ -114,7 +117,7 @@ pub fn reflect_get_prototype_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(unsafe { &*target_ptr }.proto())
 }
 
-pub fn reflect_has(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn reflect_has<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
         return type_error(vm, "Reflect.has target is not an object");
@@ -123,7 +126,7 @@ pub fn reflect_has(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(vm.resolve_property(unsafe { &*target_ptr }, key_si).is_some()))
 }
 
-pub fn reflect_is_extensible(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn reflect_is_extensible<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
         return type_error(vm, "Reflect.isExtensible target is not an object");
@@ -131,7 +134,7 @@ pub fn reflect_is_extensible(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(unsafe { &*target_ptr }.is_extensible()))
 }
 
-pub fn reflect_own_keys(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn reflect_own_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
         return type_error(vm, "Reflect.ownKeys target is not an object");
@@ -144,7 +147,7 @@ pub fn reflect_own_keys(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(make_string_array(vm, &key_names))
 }
 
-pub fn reflect_prevent_extensions(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn reflect_prevent_extensions<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
         return type_error(vm, "Reflect.preventExtensions target is not an object");
@@ -153,7 +156,7 @@ pub fn reflect_prevent_extensions(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(true))
 }
 
-pub fn reflect_set(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn reflect_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
         return type_error(vm, "Reflect.set target is not an object");
@@ -168,7 +171,7 @@ pub fn reflect_set(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(vm.ordinary_set(target, key_si, value, receiver).is_ok()))
 }
 
-pub fn reflect_set_prototype_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn reflect_set_prototype_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
         return type_error(vm, "Reflect.setPrototypeOf target is not an object");
@@ -180,7 +183,7 @@ pub fn reflect_set_prototype_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(unsafe { &mut *target_ptr }.set_proto(proto).is_ok()))
 }
 
-fn arg(vm: &Vm, args: &[u8], idx: usize) -> JsValue {
+fn arg<H: VmHost>(vm: &H, args: &[u8], idx: usize) -> JsValue {
     args.get(idx).map(|reg| vm.reg(*reg)).unwrap_or_else(JsValue::undefined)
 }
 
@@ -196,8 +199,8 @@ fn is_callable(value: JsValue) -> bool {
     object_ptr(value).is_some_and(|ptr| unsafe { &*ptr }.is_function())
 }
 
-fn type_error(vm: &mut Vm, message: &str) -> NativeResult {
-    NativeResult::Err(crate::builtins::error::create_type_error(vm, message))
+fn type_error<H: VmHost>(vm: &mut H, message: &str) -> NativeResult {
+    NativeResult::Err(crate::error::create_type_error(vm, message))
 }
 
 fn array_like_elements(value: JsValue) -> Option<Vec<JsValue>> {
@@ -206,14 +209,14 @@ fn array_like_elements(value: JsValue) -> Option<Vec<JsValue>> {
     Some((0..obj.prop_count() as usize).map(|idx| obj.get_prop_at(idx)).collect())
 }
 
-fn own_field(vm: &Vm, obj: &JsObject, prop_si: u32) -> Option<JsValue> {
+fn own_field<H: VmHost>(vm: &H, obj: &JsObject, prop_si: u32) -> Option<JsValue> {
     vm.kernel_core()
         .shape_forge()
         .lookup_position(obj.shape_id(), prop_si)
         .and_then(|pos| (obj.prop_vec_len() > pos as usize).then(|| obj.get_prop_at(pos)))
 }
 
-fn make_string_array(vm: &mut Vm, parts: &[String]) -> JsValue {
+fn make_string_array<H: VmHost>(vm: &mut H, parts: &[String]) -> JsValue {
     let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let arr = vm.alloc_object(JsObject::new_array(
         EMPTY_SHAPE_ID,
@@ -229,7 +232,7 @@ fn make_string_array(vm: &mut Vm, parts: &[String]) -> JsValue {
     JsValue::from_js_object(arr)
 }
 
-fn delete_own_property(vm: &mut Vm, obj: &mut JsObject, key_si: u32) -> bool {
+fn delete_own_property<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u32) -> bool {
     let keys = walk_own_keys(vm, obj);
     let Some((_, delete_pos)) = keys.iter().find(|(si, _)| *si == key_si).copied() else {
         return true;

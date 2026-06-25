@@ -4,9 +4,7 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-use crate::coercion;
-use crate::vm::Vm;
-use oxide_runtime_api::NativeResult;
+use oxide_runtime_api::{NativeResult, VmHost};
 
 fn get_timestamp(obj: &JsObject) -> f64 {
     let v = obj.get_prop_at(0);
@@ -21,9 +19,9 @@ fn set_timestamp(obj: &mut JsObject, ms: f64) {
     obj.set_prop_at(0, JsValue::float(ms));
 }
 
-fn ensure_date(vm: &mut Vm, obj: &JsObject) -> Result<(), JsValue> {
+fn ensure_date<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<(), JsValue> {
     if !obj.is_date_obj() {
-        return Err(crate::builtins::error::create_type_error(vm, "called on incompatible receiver"));
+        return Err(crate::error::create_type_error(vm, "called on incompatible receiver"));
     }
     Ok(())
 }
@@ -37,28 +35,28 @@ macro_rules! native_try {
     };
 }
 
-fn date_this_mut(vm: &mut Vm, args: &[u8]) -> Result<*mut JsObject, JsValue> {
+fn date_this_mut<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<*mut JsObject, JsValue> {
     let raw = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if !raw.is_object() {
-        return Err(crate::builtins::error::create_type_error(vm, "called on incompatible receiver"));
+        return Err(crate::error::create_type_error(vm, "called on incompatible receiver"));
     }
     let obj_ptr = raw.as_js_object_ptr();
     if obj_ptr.is_null() {
-        return Err(crate::builtins::error::create_type_error(vm, "called on incompatible receiver"));
+        return Err(crate::error::create_type_error(vm, "called on incompatible receiver"));
     }
     let obj = unsafe { &*obj_ptr };
     ensure_date(vm, obj)?;
     Ok(obj_ptr)
 }
 
-fn date_this(vm: &mut Vm, args: &[u8]) -> Result<*const JsObject, JsValue> {
+fn date_this<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<*const JsObject, JsValue> {
     let raw = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if !raw.is_object() {
-        return Err(crate::builtins::error::create_type_error(vm, "called on incompatible receiver"));
+        return Err(crate::error::create_type_error(vm, "called on incompatible receiver"));
     }
     let obj_ptr = raw.as_js_object_ptr();
     if obj_ptr.is_null() {
-        return Err(crate::builtins::error::create_type_error(vm, "called on incompatible receiver"));
+        return Err(crate::error::create_type_error(vm, "called on incompatible receiver"));
     }
     let obj = unsafe { &*obj_ptr };
     ensure_date(vm, obj)?;
@@ -79,7 +77,7 @@ fn naive_from_ms(ms: f64) -> Option<NaiveDateTime> {
     dt_from_ms(ms).map(|dt| dt.naive_utc())
 }
 
-pub fn date_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let is_ctor_call = this_val.is_object() && {
         let ptr = this_val.as_js_object_ptr();
@@ -104,13 +102,33 @@ pub fn date_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let timestamp = if args.len() < 2 {
         Utc::now().timestamp_millis() as f64
     } else if args.len() > 2 {
-        let y = coercion::to_number(vm.reg(args[1])) as i32;
-        let m = coercion::to_number(vm.reg(args[2])) as u32;
-        let d = if args.len() > 3 { coercion::to_number(vm.reg(args[3])) as u32 } else { 1 };
-        let h = if args.len() > 4 { coercion::to_number(vm.reg(args[4])) as u32 } else { 0 };
-        let min = if args.len() > 5 { coercion::to_number(vm.reg(args[5])) as u32 } else { 0 };
-        let sec = if args.len() > 6 { coercion::to_number(vm.reg(args[6])) as u32 } else { 0 };
-        let ms = if args.len() > 7 { coercion::to_number(vm.reg(args[7])) as u32 } else { 0 };
+        let y = oxide_runtime_api::to_number(vm.reg(args[1])) as i32;
+        let m = oxide_runtime_api::to_number(vm.reg(args[2])) as u32;
+        let d = if args.len() > 3 {
+            oxide_runtime_api::to_number(vm.reg(args[3])) as u32
+        } else {
+            1
+        };
+        let h = if args.len() > 4 {
+            oxide_runtime_api::to_number(vm.reg(args[4])) as u32
+        } else {
+            0
+        };
+        let min = if args.len() > 5 {
+            oxide_runtime_api::to_number(vm.reg(args[5])) as u32
+        } else {
+            0
+        };
+        let sec = if args.len() > 6 {
+            oxide_runtime_api::to_number(vm.reg(args[6])) as u32
+        } else {
+            0
+        };
+        let ms = if args.len() > 7 {
+            oxide_runtime_api::to_number(vm.reg(args[7])) as u32
+        } else {
+            0
+        };
         NaiveDate::from_ymd_opt(y, m + 1, d)
             .and_then(|nd| {
                 nd.and_hms_milli_opt(h, min, sec, ms)
@@ -182,11 +200,11 @@ pub fn date_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(ptr))
 }
 
-pub fn date_now(_vm: &mut Vm, _args: &[u8]) -> NativeResult {
+pub fn date_now<H: VmHost>(_vm: &mut H, _args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::float(Utc::now().timestamp_millis() as f64))
 }
 
-pub fn date_parse(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn date_parse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
@@ -214,13 +232,13 @@ pub fn date_parse(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::float(ts))
 }
 
-pub fn date_utc(_vm: &mut Vm, _args: &[u8]) -> NativeResult {
+pub fn date_utc<H: VmHost>(_vm: &mut H, _args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::float(f64::NAN))
 }
 
 macro_rules! make_getter {
     ($name:ident, $f:expr, $df:expr) => {
-        pub fn $name(vm: &mut Vm, args: &[u8]) -> NativeResult {
+        pub fn $name<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             let obj = unsafe { &*native_try!(date_this(vm, args)) };
             let ms = get_timestamp(obj);
             if !ms.is_finite() {
@@ -236,7 +254,7 @@ macro_rules! make_getter {
 
 macro_rules! make_utc_getter {
     ($name:ident, $f:expr, $df:expr) => {
-        pub fn $name(vm: &mut Vm, args: &[u8]) -> NativeResult {
+        pub fn $name<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             let obj = unsafe { &*native_try!(date_this(vm, args)) };
             let ms = get_timestamp(obj);
             if !ms.is_finite() {
@@ -277,7 +295,7 @@ make_utc_getter!(
     f64::NAN
 );
 
-pub fn date_get_timezone_offset(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn date_get_timezone_offset<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let _obj = unsafe { &*native_try!(date_this(vm, args)) };
     let offset_min = local_offset_minutes();
     NativeResult::Ok(JsValue::float(offset_min as f64))
@@ -287,24 +305,28 @@ fn local_offset_minutes() -> i32 {
     chrono::Local::now().offset().local_minus_utc() / 60
 }
 
-fn get_opt_arg(vm: &Vm, args: &[u8], idx: usize, default: u32) -> u32 {
+fn get_opt_arg<H: VmHost>(vm: &H, args: &[u8], idx: usize, default: u32) -> u32 {
     if args.len() > idx {
-        coercion::to_number(vm.reg(args[idx])) as u32
+        oxide_runtime_api::to_number(vm.reg(args[idx])) as u32
     } else {
         default
     }
 }
 
-pub fn date_set_time(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn date_set_time<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
-    let val = if args.len() > 1 { coercion::to_number(vm.reg(args[1])) } else { f64::NAN };
+    let val = if args.len() > 1 {
+        oxide_runtime_api::to_number(vm.reg(args[1]))
+    } else {
+        f64::NAN
+    };
     set_timestamp(obj, val);
     NativeResult::Ok(JsValue::float(val))
 }
 
-pub fn date_set_full_year(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn date_set_full_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = coercion::to_number(val);
+    let v = oxide_runtime_api::to_number(val);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
@@ -325,9 +347,9 @@ pub fn date_set_full_year(vm: &mut Vm, args: &[u8]) -> NativeResult {
     set_timestamp(obj, ts);
     NativeResult::Ok(JsValue::float(ts))
 }
-pub fn date_set_month(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn date_set_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = coercion::to_number(val);
+    let v = oxide_runtime_api::to_number(val);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
@@ -343,9 +365,9 @@ pub fn date_set_month(vm: &mut Vm, args: &[u8]) -> NativeResult {
     set_timestamp(obj, ts);
     NativeResult::Ok(JsValue::float(ts))
 }
-pub fn date_set_date(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn date_set_date<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = coercion::to_number(val);
+    let v = oxide_runtime_api::to_number(val);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
@@ -360,9 +382,9 @@ pub fn date_set_date(vm: &mut Vm, args: &[u8]) -> NativeResult {
     set_timestamp(obj, ts);
     NativeResult::Ok(JsValue::float(ts))
 }
-pub fn date_set_hours(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn date_set_hours<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = coercion::to_number(val);
+    let v = oxide_runtime_api::to_number(val);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
@@ -385,9 +407,9 @@ pub fn date_set_hours(vm: &mut Vm, args: &[u8]) -> NativeResult {
     set_timestamp(obj, ts);
     NativeResult::Ok(JsValue::float(ts))
 }
-pub fn date_set_minutes(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn date_set_minutes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = coercion::to_number(val);
+    let v = oxide_runtime_api::to_number(val);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
@@ -408,9 +430,9 @@ pub fn date_set_minutes(vm: &mut Vm, args: &[u8]) -> NativeResult {
     set_timestamp(obj, ts);
     NativeResult::Ok(JsValue::float(ts))
 }
-pub fn date_set_seconds(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn date_set_seconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = coercion::to_number(val);
+    let v = oxide_runtime_api::to_number(val);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
@@ -429,9 +451,9 @@ pub fn date_set_seconds(vm: &mut Vm, args: &[u8]) -> NativeResult {
     set_timestamp(obj, ts);
     NativeResult::Ok(JsValue::float(ts))
 }
-pub fn date_set_milliseconds(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn date_set_milliseconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = coercion::to_number(val);
+    let v = oxide_runtime_api::to_number(val);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
@@ -447,7 +469,7 @@ pub fn date_set_milliseconds(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::float(ts))
 }
 
-fn date_to_string_inner(vm: &mut Vm, args: &[u8], format_str: &str, invalid: &str) -> NativeResult {
+fn date_to_string_inner<H: VmHost>(vm: &mut H, args: &[u8], format_str: &str, invalid: &str) -> NativeResult {
     let obj = unsafe { &*native_try!(date_this(vm, args)) };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
@@ -460,11 +482,11 @@ fn date_to_string_inner(vm: &mut Vm, args: &[u8], format_str: &str, invalid: &st
     NativeResult::Ok(vm.new_string(&s))
 }
 
-pub fn date_to_iso_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn date_to_iso_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     date_to_string_inner(vm, args, "%Y-%m-%dT%H:%M:%S%.3fZ", "Invalid Date")
 }
 
-pub fn date_to_json(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn date_to_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &*native_try!(date_this(vm, args)) };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
@@ -477,23 +499,23 @@ pub fn date_to_json(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(&s))
 }
 
-pub fn date_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn date_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     date_to_string_inner(vm, args, "%a %b %d %Y %H:%M:%S %Z %z", "Invalid Date")
 }
 
-pub fn date_to_date_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn date_to_date_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     date_to_string_inner(vm, args, "%a %b %d %Y", "Invalid Date")
 }
 
-pub fn date_to_time_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn date_to_time_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     date_to_string_inner(vm, args, "%H:%M:%S %Z", "Invalid Date")
 }
 
-pub fn date_to_utc_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn date_to_utc_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     date_to_string_inner(vm, args, "%a, %d %b %Y %H:%M:%S GMT", "Invalid Date")
 }
 
-pub fn date_value_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn date_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &*native_try!(date_this(vm, args)) };
     let ms = get_timestamp(obj);
     NativeResult::Ok(JsValue::float(ms))

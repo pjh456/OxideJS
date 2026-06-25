@@ -2,27 +2,19 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr};
 use oxide_types::value::JsValue;
 
-use crate::coercion;
-use crate::vm::Vm;
-use oxide_runtime_api::NativeResult;
+use oxide_runtime_api::{NativeResult, VmHost};
 
-fn get_regexp_ptr(vm: &mut Vm, args: &[u8]) -> Result<*mut JsObject, JsValue> {
+fn get_regexp_ptr<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<*mut JsObject, JsValue> {
     let this_val = vm.reg(args[0]);
     if !this_val.is_object() {
-        return Err(crate::builtins::error::create_type_error(
-            vm,
-            "RegExp.prototype method called on non-object",
-        ));
+        return Err(crate::error::create_type_error(vm, "RegExp.prototype method called on non-object"));
     }
     let ptr = this_val.as_js_object_ptr();
     if ptr.is_null() {
-        return Err(crate::builtins::error::create_type_error(vm, "null object"));
+        return Err(crate::error::create_type_error(vm, "null object"));
     }
     if !unsafe { &*ptr }.is_regexp_obj() {
-        return Err(crate::builtins::error::create_type_error(
-            vm,
-            "RegExp.prototype method called on non-RegExp object",
-        ));
+        return Err(crate::error::create_type_error(vm, "RegExp.prototype method called on non-RegExp object"));
     }
     Ok(ptr)
 }
@@ -42,7 +34,7 @@ fn parse_flags(flags: &str) -> (bool, bool, bool) {
     (global, ignore_case, multi_line)
 }
 
-fn set_prop(obj: &mut JsObject, name: &str, val: JsValue, vm: &Vm) {
+fn set_prop<H: VmHost>(obj: &mut JsObject, name: &str, val: JsValue, vm: &H) {
     let si = vm.kernel_core().perm_interner().intern(name).0;
     let shape_id = vm.kernel_core().shape_forge().make_shape(obj.shape_id(), si);
     obj.set_shape_id(shape_id);
@@ -67,15 +59,15 @@ fn set_prop_at(obj: *mut JsObject, idx: usize, val: JsValue) {
     }
 }
 
-pub fn regexp_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn regexp_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (pattern, flags) = if args.len() < 2 {
         (String::new(), String::new())
     } else if args.len() < 3 {
-        let pat = coercion::to_string(vm.reg(args[1]));
+        let pat = oxide_runtime_api::to_string(vm.reg(args[1]));
         (pat, String::new())
     } else {
-        let pat = coercion::to_string(vm.reg(args[1]));
-        let fl = coercion::to_string(vm.reg(args[2]));
+        let pat = oxide_runtime_api::to_string(vm.reg(args[1]));
+        let fl = oxide_runtime_api::to_string(vm.reg(args[2]));
         (pat, fl)
     };
 
@@ -101,7 +93,7 @@ pub fn regexp_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
             obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(re_ptr as *const ()) }));
         }
         Err(e) => {
-            return NativeResult::Err(crate::builtins::error::create_syntax_error(
+            return NativeResult::Err(crate::error::create_syntax_error(
                 vm,
                 &format!("Invalid regular expression: {e}"),
             ));
@@ -123,7 +115,7 @@ pub fn regexp_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(obj_ptr))
 }
 
-pub(crate) fn drop_regexp_native(obj: &mut JsObject) -> u64 {
+pub fn drop_regexp_native(obj: &mut JsObject) -> u64 {
     if !obj.is_regexp_obj() {
         return 0;
     }
@@ -139,7 +131,7 @@ pub(crate) fn drop_regexp_native(obj: &mut JsObject) -> u64 {
     std::mem::size_of::<regex::Regex>() as u64
 }
 
-pub fn regexp_test(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn regexp_test<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let re_ptr = match get_regexp_ptr(vm, args) {
         Ok(ptr) => ptr,
         Err(err) => return NativeResult::Err(err),
@@ -148,15 +140,15 @@ pub fn regexp_test(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
     let fn_ptr = match re.native_fn() {
         None => {
-            return NativeResult::Err(crate::builtins::error::create_type_error(vm, "invalid RegExp"));
+            return NativeResult::Err(crate::error::create_type_error(vm, "invalid RegExp"));
         }
         Some(p) => p,
     };
 
     // SAFETY: fn_ptr holds a Box<regex::Regex> pointer stored by regexp_constructor.
     let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
-    let haystack = coercion::to_string(vm.reg(if args.len() > 1 { args[1] } else { args[0] }));
-    let last_index = coercion::to_number(get_prop(re, 0)) as usize;
+    let haystack = oxide_runtime_api::to_string(vm.reg(if args.len() > 1 { args[1] } else { args[0] }));
+    let last_index = oxide_runtime_api::to_number(get_prop(re, 0)) as usize;
     let is_global = get_prop(re, 3).as_bool();
 
     if is_global {
@@ -167,7 +159,7 @@ pub fn regexp_test(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
 }
 
-pub fn regexp_exec(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn regexp_exec<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let re_ptr = match get_regexp_ptr(vm, args) {
         Ok(ptr) => ptr,
         Err(err) => return NativeResult::Err(err),
@@ -177,7 +169,7 @@ pub fn regexp_exec(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let re = unsafe { &*re_ptr };
         match re.native_fn() {
             None => {
-                return NativeResult::Err(crate::builtins::error::create_type_error(vm, "invalid RegExp"));
+                return NativeResult::Err(crate::error::create_type_error(vm, "invalid RegExp"));
             }
             Some(p) => p,
         }
@@ -185,11 +177,11 @@ pub fn regexp_exec(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
     // SAFETY: fn_ptr holds a Box<regex::Regex> pointer stored by regexp_constructor.
     let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
-    let haystack = coercion::to_string(vm.reg(if args.len() > 1 { args[1] } else { args[0] }));
+    let haystack = oxide_runtime_api::to_string(vm.reg(if args.len() > 1 { args[1] } else { args[0] }));
 
     let (last_index, is_global) = {
         let re = unsafe { &*re_ptr };
-        let li = coercion::to_number(get_prop(re, 0)) as usize;
+        let li = oxide_runtime_api::to_number(get_prop(re, 0)) as usize;
         let g = get_prop(re, 3).as_bool();
         (li, g)
     };
@@ -241,7 +233,7 @@ pub fn regexp_exec(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
 }
 
-pub fn regexp_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn regexp_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let re_ptr = match get_regexp_ptr(vm, args) {
         Ok(ptr) => ptr,
         Err(err) => return NativeResult::Err(err),

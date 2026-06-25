@@ -1,5 +1,4 @@
-use crate::vm::Vm;
-use oxide_runtime_api::NativeResult;
+use oxide_runtime_api::{NativeResult, VmHost};
 
 const URI_UNESCAPED: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()";
 const URI_RESERVED: &str = ";/?:@&=+$,#";
@@ -82,21 +81,21 @@ fn decode_uri_string(input: &str, preserve_reserved: bool) -> Result<String, ()>
     Ok(out)
 }
 
-fn uri_error(vm: &mut Vm) -> NativeResult {
-    NativeResult::Err(crate::builtins::error::create_uri_error(vm, URI_ERROR_MESSAGE))
+fn uri_error<H: VmHost>(vm: &mut H) -> NativeResult {
+    NativeResult::Err(crate::error::create_uri_error(vm, URI_ERROR_MESSAGE))
 }
 
-pub fn encode_uri(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn encode_uri<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let input = super::string_arg(vm, args);
     NativeResult::Ok(vm.new_string(&encode_uri_string(&input, URI_SAFE)))
 }
 
-pub fn encode_uri_component(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn encode_uri_component<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let input = super::string_arg(vm, args);
     NativeResult::Ok(vm.new_string(&encode_uri_string(&input, URI_UNESCAPED)))
 }
 
-pub fn decode_uri(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn decode_uri<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let input = super::string_arg(vm, args);
     match decode_uri_string(&input, true) {
         Ok(decoded) => NativeResult::Ok(vm.new_string(&decoded)),
@@ -104,7 +103,7 @@ pub fn decode_uri(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
 }
 
-pub fn decode_uri_component(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn decode_uri_component<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let input = super::string_arg(vm, args);
     match decode_uri_string(&input, false) {
         Ok(decoded) => NativeResult::Ok(vm.new_string(&decoded)),
