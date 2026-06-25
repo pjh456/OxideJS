@@ -77,8 +77,7 @@ impl Compiler {
 
         let var_reg = ctx.lookup(&name)?;
         ctx.reserve_reg(var_reg);
-        let const_idx = ctx.add_constant(Constant::BytecodeFunc(sub_idx));
-        ctx.emit_load_const(var_reg, const_idx);
+        ctx.emit_create_closure(var_reg, sub_idx);
         ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, var_reg, 0));
 
         Ok(None)

@@ -254,6 +254,11 @@ impl CompileCtx {
         self.emit(opcode::encode(OpCode::LOAD_CONST, reg, (idx & 0xFF) as u8, ((idx >> 8) & 0xFF) as u8));
     }
 
+    pub(crate) fn emit_create_closure(&mut self, reg: u8, sub_idx: u32) {
+        let idx = sub_idx as u16;
+        self.emit(opcode::encode(OpCode::CREATE_CLOSURE, reg, (idx & 0xFF) as u8, ((idx >> 8) & 0xFF) as u8));
+    }
+
     pub(crate) fn count_word(&mut self) {
         self.projected_pc += 1;
     }
