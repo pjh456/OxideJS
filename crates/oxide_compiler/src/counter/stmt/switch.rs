@@ -29,13 +29,13 @@ impl Compiler {
 
         for (case_idx, case) in cases.iter().enumerate() {
             let case_label = Label::SwitchCase(id, case_idx as u32);
-            ctx.label_map.insert(case_label, ctx.projected_pc);
+            ctx.labels.label_map.insert(case_label, ctx.projected_pc);
             for s in &case.consequent {
                 self.count_statement(s, ctx);
             }
         }
 
-        ctx.label_map.insert(end_label, ctx.projected_pc);
+        ctx.labels.label_map.insert(end_label, ctx.projected_pc);
         ctx.pop_switch();
     }
 }

@@ -39,7 +39,7 @@ impl Compiler {
             ctx.projected_pc += 1; // JMP
         }
 
-        ctx.label_map.insert(catch_label, ctx.projected_pc);
+        ctx.labels.label_map.insert(catch_label, ctx.projected_pc);
         if let Some(catch) = &stmt.handler {
             ctx.push_scope();
             if let Some(_param) = &catch.param {
@@ -55,7 +55,7 @@ impl Compiler {
 
         if let Some(finally) = &stmt.finalizer {
             let finally_label = Label::FinallyBody(id);
-            ctx.label_map.insert(finally_label, ctx.projected_pc);
+            ctx.labels.label_map.insert(finally_label, ctx.projected_pc);
             for fs in &finally.body {
                 self.count_statement(fs, ctx);
             }
@@ -63,6 +63,6 @@ impl Compiler {
             ctx.projected_pc += 1; // TRY_FINALLY_END
         }
 
-        ctx.label_map.insert(try_end_label, ctx.projected_pc);
+        ctx.labels.label_map.insert(try_end_label, ctx.projected_pc);
     }
 }

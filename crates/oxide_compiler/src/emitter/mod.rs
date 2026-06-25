@@ -217,7 +217,8 @@ impl Compiler {
     }
 
     fn private_name_id(&self, name: &str, ctx: &CompileCtx) -> Result<u32, String> {
-        ctx.private_name_map
+        ctx.scopes
+            .private_name_map
             .iter()
             .find_map(|(n, id)| (n == name).then_some(*id))
             .ok_or_else(|| format!("private name #{name} is not defined"))
@@ -640,8 +641,8 @@ impl Compiler {
                         if private_names.iter().any(|(existing, _)| existing == &name) {
                             return Err(format!("duplicate private name #{name}"));
                         }
-                        let id = ctx.next_private_name_id;
-                        ctx.next_private_name_id = ctx.next_private_name_id.saturating_add(1);
+                        let id = ctx.scopes.next_private_name_id;
+                        ctx.scopes.next_private_name_id = ctx.scopes.next_private_name_id.saturating_add(1);
                         private_names.push((name, id));
                     }
                     if method.kind == MethodDefinitionKind::Constructor {
@@ -658,8 +659,8 @@ impl Compiler {
                         if private_names.iter().any(|(existing, _)| existing == &name) {
                             return Err(format!("duplicate private name #{name}"));
                         }
-                        let id = ctx.next_private_name_id;
-                        ctx.next_private_name_id = ctx.next_private_name_id.saturating_add(1);
+                        let id = ctx.scopes.next_private_name_id;
+                        ctx.scopes.next_private_name_id = ctx.scopes.next_private_name_id.saturating_add(1);
                         private_names.push((name, id));
                     }
                     if !prop.r#static {
@@ -682,9 +683,9 @@ impl Compiler {
         };
 
         let saved_derived = ctx.in_derived_constructor;
-        let saved_private_names = ctx.private_name_map.clone();
+        let saved_private_names = ctx.scopes.private_name_map.clone();
         ctx.in_derived_constructor = is_derived;
-        ctx.private_name_map = private_names.clone();
+        ctx.scopes.private_name_map = private_names.clone();
 
         let mut ctor_module = if let Some(method) = constructor_method {
             let (param_names, body_stmts) = self.extract_function_parts(method.value.as_ref())?;
@@ -784,7 +785,7 @@ impl Compiler {
                 module.bytecode.push(opcode::encode(OpCode::SUPER_CALL, 0, 0, 0));
                 module.bytecode.push(0);
                 let mut field_ctx = CompileCtx::new();
-                field_ctx.private_name_map = private_names.clone();
+                field_ctx.scopes.private_name_map = private_names.clone();
                 for field in &instance_fields {
                     if let PropertyKey::PrivateIdentifier(private) = &field.key {
                         self.emit_private_field_init(254, private.name.as_str(), field.value.as_ref(), &mut field_ctx)?;
@@ -912,7 +913,7 @@ impl Compiler {
             }
         }
 
-        ctx.private_name_map = saved_private_names;
+        ctx.scopes.private_name_map = saved_private_names;
         Ok(ctor_reg)
     }
 
@@ -978,10 +979,11 @@ impl Compiler {
     }
     pub(crate) fn emit_expression(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u8, String> {
         match expr {
-            Expression::NumericLiteral(n) => self.emit_numeric_literal_expression(n, ctx),
-            Expression::StringLiteral(s) => self.emit_string_literal_expression(s, ctx),
-            Expression::BooleanLiteral(b) => self.emit_boolean_literal_expression(b, ctx),
-            Expression::NullLiteral(_) => self.emit_null_literal_expression(ctx),
+            Expression::NumericLiteral(_)
+            | Expression::StringLiteral(_)
+            | Expression::BooleanLiteral(_)
+            | Expression::NullLiteral(_)
+            | Expression::RegExpLiteral(_) => self.emit_literal(expr, ctx),
             Expression::PrivateInExpression(pin) => self.emit_private_in_expression(pin, ctx),
             Expression::BinaryExpression(bin) => self.emit_binary_expression(bin, ctx),
             Expression::UnaryExpression(un) => self.emit_unary_expression(un, ctx),
@@ -1005,7 +1007,6 @@ impl Compiler {
             Expression::ParenthesizedExpression(p) => self.emit_parenthesized_expression(p, ctx),
             Expression::CallExpression(call) => self.emit_call_expression(call, ctx),
             Expression::ThisExpression(_) => self.emit_this_expression(ctx),
-            Expression::RegExpLiteral(lit) => self.emit_reg_exp_literal_expression(lit, ctx),
             Expression::SequenceExpression(seq) => self.emit_sequence_expression(seq, ctx),
             _ => self.emit_unsupported_expression(expr, ctx),
         }

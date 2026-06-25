@@ -43,7 +43,7 @@ impl Compiler {
             // LabeledEnd target right after the body for `break label`.
             let id = ctx.next_label_id();
             self.count_statement(&stmt.body, ctx);
-            ctx.label_map.insert(Label::LabeledEnd(id), ctx.projected_pc);
+            ctx.labels.label_map.insert(Label::LabeledEnd(id), ctx.projected_pc);
         }
     }
 }

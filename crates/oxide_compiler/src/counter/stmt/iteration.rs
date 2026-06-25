@@ -8,12 +8,12 @@ impl Compiler {
         let start_label = Label::WhileStart(id);
         let end_label = Label::WhileEnd(id);
 
-        ctx.label_map.insert(start_label, ctx.projected_pc);
+        ctx.labels.label_map.insert(start_label, ctx.projected_pc);
         self.count_expression(&stmt.test, ctx);
         ctx.projected_pc += 1; // JMP_IF_FALSE
         self.count_statement(&stmt.body, ctx);
         ctx.projected_pc += 1; // JMP (backward)
-        ctx.label_map.insert(end_label, ctx.projected_pc);
+        ctx.labels.label_map.insert(end_label, ctx.projected_pc);
     }
 
     pub(in crate::counter) fn count_do_while_statement(
@@ -23,11 +23,11 @@ impl Compiler {
         let start_label = Label::DoWhileStart(id);
         let end_label = Label::DoWhileEnd(id);
 
-        ctx.label_map.insert(start_label, ctx.projected_pc);
+        ctx.labels.label_map.insert(start_label, ctx.projected_pc);
         self.count_statement(&stmt.body, ctx);
         self.count_expression(&stmt.test, ctx);
         ctx.projected_pc += 1; // JMP_IF_TRUE (backward)
-        ctx.label_map.insert(end_label, ctx.projected_pc);
+        ctx.labels.label_map.insert(end_label, ctx.projected_pc);
     }
 
     pub(in crate::counter) fn count_for_statement(&self, stmt: &oxide_parser::ForStatement<'_>, ctx: &mut CompileCtx) {
@@ -51,18 +51,18 @@ impl Compiler {
                 }
             }
         }
-        ctx.label_map.insert(start_label, ctx.projected_pc);
+        ctx.labels.label_map.insert(start_label, ctx.projected_pc);
         if let Some(test) = &stmt.test {
             self.count_expression(test, ctx);
             ctx.projected_pc += 1; // JMP_IF_FALSE
         }
         self.count_statement(&stmt.body, ctx);
-        ctx.label_map.insert(update_label, ctx.projected_pc);
+        ctx.labels.label_map.insert(update_label, ctx.projected_pc);
         if let Some(update) = &stmt.update {
             self.count_expression(update, ctx);
         }
         ctx.projected_pc += 1; // JMP (backward)
-        ctx.label_map.insert(end_label, ctx.projected_pc);
+        ctx.labels.label_map.insert(end_label, ctx.projected_pc);
     }
 
     pub(in crate::counter) fn count_for_in_statement(
@@ -75,7 +75,7 @@ impl Compiler {
         self.count_expression(&stmt.right, ctx);
         ctx.count_instr(); // FOR_IN_INIT
 
-        ctx.label_map.insert(start_label, ctx.projected_pc);
+        ctx.labels.label_map.insert(start_label, ctx.projected_pc);
         ctx.count_instr(); // FOR_IN_DONE
         ctx.count_jump(); // JMP_IF_FALSE
         ctx.count_jump(); // JMP cleanup
@@ -98,7 +98,7 @@ impl Compiler {
         self.count_statement(&stmt.body, ctx);
         ctx.count_jump(); // JMP back to start
 
-        ctx.label_map.insert(end_label, ctx.projected_pc);
+        ctx.labels.label_map.insert(end_label, ctx.projected_pc);
         ctx.count_instr(); // FOR_IN_CLEANUP
     }
 
@@ -111,7 +111,7 @@ impl Compiler {
 
         self.count_expression(&stmt.right, ctx);
         ctx.count_instr(); // FOR_OF_INIT
-        ctx.label_map.insert(start_label, ctx.projected_pc);
+        ctx.labels.label_map.insert(start_label, ctx.projected_pc);
         ctx.alloc_reg(); // has_reg
         ctx.count_instr(); // FOR_OF_DONE
         ctx.count_jump(); // JMP_IF_FALSE
@@ -137,7 +137,7 @@ impl Compiler {
         }
         self.count_statement(&stmt.body, ctx);
         ctx.count_jump(); // JMP back
-        ctx.label_map.insert(end_label, ctx.projected_pc);
+        ctx.labels.label_map.insert(end_label, ctx.projected_pc);
         ctx.count_instr(); // FOR_OF_CLOSE
     }
 }

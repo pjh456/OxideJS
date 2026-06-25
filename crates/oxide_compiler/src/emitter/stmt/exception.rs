@@ -60,7 +60,7 @@ impl Compiler {
         };
 
         let catch_label_pc = ctx.bytecode.len();
-        ctx.label_map.insert(catch_label, catch_label_pc);
+        ctx.labels.label_map.insert(catch_label, catch_label_pc);
 
         if let Some(try_begin_pc) = try_begin_pos {
             let offset = catch_label_pc as isize - (try_begin_pc as isize);
@@ -90,7 +90,7 @@ impl Compiler {
         if has_finally {
             let finally_label = Label::FinallyBody(id);
             let finally_label_pc = ctx.bytecode.len();
-            ctx.label_map.insert(finally_label, finally_label_pc);
+            ctx.labels.label_map.insert(finally_label, finally_label_pc);
             if let Some(fb_pos) = try_finally_begin_pos {
                 let offset = finally_label_pc as isize - (fb_pos as isize);
                 let offset = ctx.checked_jump_offset(offset);
@@ -118,7 +118,7 @@ impl Compiler {
         }
 
         let try_end_pc = ctx.bytecode.len();
-        ctx.label_map.insert(try_end_label, try_end_pc);
+        ctx.labels.label_map.insert(try_end_label, try_end_pc);
 
         Ok(Some(result_reg))
     }

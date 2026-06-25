@@ -1,6 +1,20 @@
 use super::*;
 
 impl Compiler {
+    /// Domain entry point: emit any literal expression. The central
+    /// `emit_expression` match delegates all literal variants here in one arm;
+    /// adding a new literal kind only touches this file plus that one arm.
+    pub(in crate::emitter) fn emit_literal(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u8, String> {
+        match expr {
+            Expression::NumericLiteral(n) => self.emit_numeric_literal_expression(n, ctx),
+            Expression::StringLiteral(s) => self.emit_string_literal_expression(s, ctx),
+            Expression::BooleanLiteral(b) => self.emit_boolean_literal_expression(b, ctx),
+            Expression::NullLiteral(_) => self.emit_null_literal_expression(ctx),
+            Expression::RegExpLiteral(lit) => self.emit_reg_exp_literal_expression(lit, ctx),
+            _ => self.emit_unsupported_expression(expr, ctx),
+        }
+    }
+
     pub(in crate::emitter) fn emit_numeric_literal_expression(
         &self, n: &oxide_parser::NumericLiteral, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {

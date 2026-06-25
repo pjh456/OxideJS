@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::emit_ctx::{LabelCtx, ScopeCtx};
 use crate::symbol_table::{Binding, SymbolTable};
 use oxide_bytecode::module::CompiledModule;
 use oxide_bytecode::opcode::{self, OpCode};
@@ -145,18 +146,9 @@ pub(crate) struct CompileCtx {
     next_reg: u8,
     pub(crate) max_regs: u8,
     reserved_reg_start: u8,
-    symbols: SymbolTable,
-    pub(crate) label_map: HashMap<Label, usize>,
-    pub(crate) loop_stack: Vec<(Label, Label)>,
-    #[allow(dead_code)]
-    pub(crate) switch_stack: Vec<Label>,
-    /// Active labeled-statement scopes (resolves `break label` / `continue label`).
-    pub(crate) label_scopes: Vec<LabelScope>,
-    /// Label names awaiting binding to the next emitted loop's continue target.
-    pub(crate) pending_loop_labels: Vec<String>,
-    pub(crate) label_counter: u32,
+    pub(crate) labels: LabelCtx,
+    pub(crate) scopes: ScopeCtx,
     pub(crate) projected_pc: usize,
-    pub(crate) builtin_reg_map: Vec<(String, u8)>,
     pub(crate) sub_modules: Vec<CompiledModule>,
     /// Register holding `this` in the enclosing function context.
     /// Used by arrow functions to capture lexical `this`.
@@ -166,8 +158,6 @@ pub(crate) struct CompileCtx {
     pub(crate) in_instance_method: bool,
     pub(crate) in_static_method: bool,
     pub(crate) static_block_this_reg: Option<u8>,
-    pub(crate) private_name_map: Vec<(String, u32)>,
-    pub(crate) next_private_name_id: u32,
     pub(crate) after_super_insert: Option<Vec<opcode::Instr>>,
     pub(crate) after_super_inserted: bool,
     /// Set when alloc_reg() overflows into the reserved this/new.target range (≥254).
@@ -220,23 +210,27 @@ impl CompileCtx {
             next_reg: 1,
             max_regs: 1,
             reserved_reg_start: 1,
-            symbols: SymbolTable::new(),
-            label_map: HashMap::new(),
-            loop_stack: Vec::new(),
-            switch_stack: Vec::new(),
-            label_scopes: Vec::new(),
-            pending_loop_labels: Vec::new(),
-            label_counter: 0,
+            labels: LabelCtx {
+                label_map: HashMap::new(),
+                loop_stack: Vec::new(),
+                switch_stack: Vec::new(),
+                label_scopes: Vec::new(),
+                pending_loop_labels: Vec::new(),
+                label_counter: 0,
+            },
+            scopes: ScopeCtx {
+                symbols: SymbolTable::new(),
+                builtin_reg_map: Vec::new(),
+                private_name_map: Vec::new(),
+                next_private_name_id: 1,
+            },
             projected_pc: 0,
-            builtin_reg_map: Vec::new(),
             sub_modules: Vec::new(),
             enclosing_this_reg: 254, // conventional this register at top level
             in_derived_constructor: false,
             in_instance_method: false,
             in_static_method: false,
             static_block_this_reg: None,
-            private_name_map: Vec::new(),
-            next_private_name_id: 1,
             after_super_insert: None,
             after_super_inserted: false,
             reg_overflow: false,
@@ -339,7 +333,7 @@ impl CompileCtx {
     pub(crate) fn reset_regs(&mut self) {
         self.next_reg = self.builtin_reg_floor().max(self.reserved_reg_start);
         self.projected_pc = 0;
-        self.label_counter = 0;
+        self.labels.label_counter = 0;
     }
 
     pub(crate) fn reg_checkpoint(&self) -> u8 {
@@ -395,48 +389,49 @@ impl CompileCtx {
     }
 
     pub(crate) fn resolve_label(&self, label: Label) -> Result<usize, String> {
-        self.label_map
+        self.labels
+            .label_map
             .get(&label)
             .copied()
             .ok_or_else(|| format!("Label {:?} not found in bytecode map", label))
     }
 
     pub(crate) fn push_scope(&mut self) {
-        self.symbols.push_scope();
+        self.scopes.symbols.push_scope();
     }
 
     pub(crate) fn pop_scope(&mut self) {
-        self.symbols.pop_scope();
+        self.scopes.symbols.pop_scope();
     }
 
     pub(crate) fn declare(
         &mut self, name: &str, reg: u8, kind: VariableDeclarationKind, is_const: bool,
     ) -> Result<(), String> {
-        self.symbols.declare(name, reg, kind, is_const)
+        self.scopes.symbols.declare(name, reg, kind, is_const)
     }
 
     pub(crate) fn declare_initialized(
         &mut self, name: &str, reg: u8, kind: VariableDeclarationKind, is_const: bool,
     ) -> Result<(), String> {
-        self.symbols.declare_initialized(name, reg, kind, is_const)
+        self.scopes.symbols.declare_initialized(name, reg, kind, is_const)
     }
 
     #[allow(dead_code)]
     pub(crate) fn push_scope_with_kind(&mut self, kind: ScopeKind) {
-        self.symbols.push_scope_with_kind(kind);
+        self.scopes.symbols.push_scope_with_kind(kind);
     }
 
     pub(crate) fn lookup(&self, name: &str) -> Result<u8, String> {
-        self.symbols.lookup(name)
+        self.scopes.symbols.lookup(name)
     }
 
     pub(crate) fn lookup_or_builtin(&mut self, name: &str) -> Result<u8, String> {
-        match self.symbols.lookup(name) {
+        match self.scopes.symbols.lookup(name) {
             Ok(reg) => Ok(reg),
             Err(err) if Self::is_known_builtin(name) && err.contains("is not defined") => {
                 let reg = self.alloc_reg();
-                self.symbols.pre_register_global(name, reg);
-                self.builtin_reg_map.push((name.to_string(), reg));
+                self.scopes.symbols.pre_register_global(name, reg);
+                self.scopes.builtin_reg_map.push((name.to_string(), reg));
                 Ok(reg)
             }
             Err(err) => Err(err),
@@ -444,58 +439,58 @@ impl CompileCtx {
     }
 
     pub(crate) fn lookup_or_global(&mut self, name: &str) -> u8 {
-        if let Some(reg) = self.symbols.lookup_any(name) {
+        if let Some(reg) = self.scopes.symbols.lookup_any(name) {
             return reg;
         }
         let reg = self.alloc_reg();
-        self.symbols.lookup_or_global(name, reg)
+        self.scopes.symbols.lookup_or_global(name, reg)
     }
 
     pub(crate) fn lookup_const_flag(&self, name: &str) -> bool {
-        self.symbols.lookup_is_const(name)
+        self.scopes.symbols.lookup_is_const(name)
     }
 
     pub(crate) fn init_var(&mut self, name: &str) {
-        self.symbols.init_var(name);
+        self.scopes.symbols.init_var(name);
     }
 
     pub(crate) fn next_label_id(&mut self) -> u32 {
-        let id = self.label_counter;
-        self.label_counter += 1;
+        let id = self.labels.label_counter;
+        self.labels.label_counter += 1;
         id
     }
 
     pub(crate) fn push_loop(&mut self, break_label: Label, continue_label: Label) {
-        self.loop_stack.push((break_label, continue_label));
+        self.labels.loop_stack.push((break_label, continue_label));
     }
 
     pub(crate) fn pop_loop(&mut self) {
-        self.loop_stack.pop();
+        self.labels.loop_stack.pop();
     }
 
     pub(crate) fn current_loop(&self) -> Option<&(Label, Label)> {
-        self.loop_stack.last()
+        self.labels.loop_stack.last()
     }
 
     pub(crate) fn push_switch(&mut self, break_label: Label) {
-        self.switch_stack.push(break_label);
+        self.labels.switch_stack.push(break_label);
     }
 
     pub(crate) fn pop_switch(&mut self) {
-        self.switch_stack.pop();
+        self.labels.switch_stack.pop();
     }
 
     pub(crate) fn current_switch(&self) -> Option<&Label> {
-        self.switch_stack.last()
+        self.labels.switch_stack.last()
     }
 
     pub(crate) fn push_label_scope(
         &mut self, name: &str, break_label: Label, continue_label: Option<Label>,
     ) -> Result<(), String> {
-        if self.label_scopes.iter().any(|s| s.name == name) {
+        if self.labels.label_scopes.iter().any(|s| s.name == name) {
             return Err(format!("SyntaxError: Label '{name}' has already been declared"));
         }
-        self.label_scopes.push(LabelScope {
+        self.labels.label_scopes.push(LabelScope {
             name: name.to_string(),
             break_label,
             continue_label,
@@ -504,31 +499,33 @@ impl CompileCtx {
     }
 
     pub(crate) fn pop_label_scope(&mut self) {
-        self.label_scopes.pop();
+        self.labels.label_scopes.pop();
     }
 
     pub(crate) fn find_label(&self, name: &str) -> Option<&LabelScope> {
-        self.label_scopes.iter().rev().find(|s| s.name == name)
+        self.labels.label_scopes.iter().rev().find(|s| s.name == name)
     }
 
     /// Queue a label name to be bound to the continue target of the next loop
     /// emitted as the labeled statement's body. Rejects duplicates in the active
     /// or pending sets.
     pub(crate) fn queue_loop_label(&mut self, name: &str) -> Result<(), String> {
-        if self.label_scopes.iter().any(|s| s.name == name) || self.pending_loop_labels.iter().any(|n| n == name) {
+        if self.labels.label_scopes.iter().any(|s| s.name == name)
+            || self.labels.pending_loop_labels.iter().any(|n| n == name)
+        {
             return Err(format!("SyntaxError: Label '{name}' has already been declared"));
         }
-        self.pending_loop_labels.push(name.to_string());
+        self.labels.pending_loop_labels.push(name.to_string());
         Ok(())
     }
 
     /// Drain queued loop labels into active scopes bound to this loop's break and
     /// continue targets. Returns how many scopes were pushed (to pop after).
     pub(crate) fn take_pending_loop_labels(&mut self, break_label: Label, continue_label: Label) -> usize {
-        let names = std::mem::take(&mut self.pending_loop_labels);
+        let names = std::mem::take(&mut self.labels.pending_loop_labels);
         let count = names.len();
         for name in names {
-            self.label_scopes.push(LabelScope {
+            self.labels.label_scopes.push(LabelScope {
                 name,
                 break_label,
                 continue_label: Some(continue_label),
@@ -539,12 +536,12 @@ impl CompileCtx {
 
     pub(crate) fn pop_label_scopes(&mut self, n: usize) {
         for _ in 0..n {
-            self.label_scopes.pop();
+            self.labels.label_scopes.pop();
         }
     }
 
     pub(crate) fn is_builtin(&self, name: &str) -> bool {
-        self.builtin_reg_map.iter().any(|(n, _)| n == name)
+        self.scopes.builtin_reg_map.iter().any(|(n, _)| n == name)
     }
 
     pub(crate) fn is_known_builtin(name: &str) -> bool {
@@ -552,7 +549,8 @@ impl CompileCtx {
     }
 
     fn builtin_reg_floor(&self) -> u8 {
-        self.builtin_reg_map
+        self.scopes
+            .builtin_reg_map
             .iter()
             .map(|(_, reg)| reg.saturating_add(1))
             .max()
@@ -662,9 +660,9 @@ impl Compiler {
 
         // Inherit parent's builtin_reg_map so builtin identifiers (Math, Object, etc.)
         // resolve to the correct pre-allocated registers in the sub-module's register file.
-        ctx.builtin_reg_map = parent_ctx.builtin_reg_map.clone();
-        ctx.private_name_map = parent_ctx.private_name_map.clone();
-        ctx.next_private_name_id = parent_ctx.next_private_name_id;
+        ctx.scopes.builtin_reg_map = parent_ctx.scopes.builtin_reg_map.clone();
+        ctx.scopes.private_name_map = parent_ctx.scopes.private_name_map.clone();
+        ctx.scopes.next_private_name_id = parent_ctx.scopes.next_private_name_id;
 
         // Propagate enclosing_this_reg so nested arrow functions capture the correct `this`.
         ctx.enclosing_this_reg = parent_ctx.enclosing_this_reg;
@@ -683,8 +681,8 @@ impl Compiler {
         // Inherit parent's global scope entries so previously-declared function names
         // are visible from within the body.
         let mut inherited_reg_start = 1u8.max(ctx.builtin_reg_floor());
-        for (name, binding) in &parent_ctx.symbols.scopes[0].bindings {
-            ctx.symbols.scopes[0].bindings.insert(
+        for (name, binding) in &parent_ctx.scopes.symbols.scopes[0].bindings {
+            ctx.scopes.symbols.scopes[0].bindings.insert(
                 name.clone(),
                 Binding {
                     reg: binding.reg,
@@ -695,7 +693,7 @@ impl Compiler {
             inherited_reg_start = inherited_reg_start.max(binding.reg.saturating_add(1));
         }
         for (name, reg) in extra_bindings {
-            ctx.symbols.scopes[0].bindings.insert(
+            ctx.scopes.symbols.scopes[0].bindings.insert(
                 (*name).to_string(),
                 Binding {
                     reg: *reg,
@@ -820,7 +818,7 @@ impl Compiler {
             n_registers: ctx.max_regs,
             n_args: param_specs.len() as u8,
             param_base,
-            builtin_reg_map: ctx.builtin_reg_map,
+            builtin_reg_map: ctx.scopes.builtin_reg_map,
             sub_modules: ctx.sub_modules,
             is_arrow: false,
             captured_this_const_idx: 0,
@@ -890,8 +888,8 @@ impl Compiler {
             constants: ctx.constants,
             n_registers: ctx.max_regs,
             n_args: 0,
-            param_base: ctx.builtin_reg_map.len() as u8,
-            builtin_reg_map: ctx.builtin_reg_map,
+            param_base: ctx.scopes.builtin_reg_map.len() as u8,
+            builtin_reg_map: ctx.scopes.builtin_reg_map,
             sub_modules: ctx.sub_modules,
             is_arrow: false,
             captured_this_const_idx: 0,
