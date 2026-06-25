@@ -2,9 +2,7 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
-use crate::coercion;
-use crate::vm::Vm;
-use oxide_runtime_api::NativeResult;
+use oxide_runtime_api::{NativeResult, VmHost};
 
 pub(crate) const MAX_ARRAY_BUFFER_LENGTH: usize = 1 << 30;
 
@@ -17,23 +15,23 @@ macro_rules! native_try {
     };
 }
 
-fn type_error(vm: &mut Vm, msg: &str) -> NativeResult {
-    NativeResult::Err(crate::builtins::error::create_type_error(vm, msg))
+fn type_error<H: VmHost>(vm: &mut H, msg: &str) -> NativeResult {
+    NativeResult::Err(crate::error::create_type_error(vm, msg))
 }
 
-fn to_index(vm: &mut Vm, value: JsValue) -> Result<usize, JsValue> {
-    let n = coercion::to_number(value);
+fn to_index<H: VmHost>(vm: &mut H, value: JsValue) -> Result<usize, JsValue> {
+    let n = oxide_runtime_api::to_number(value);
     if n.is_nan() {
         return Ok(0);
     }
     if !n.is_finite() || n < 0.0 || n > MAX_ARRAY_BUFFER_LENGTH as f64 {
-        return Err(crate::builtins::error::create_range_error(vm, "invalid ArrayBuffer length"));
+        return Err(crate::error::create_range_error(vm, "invalid ArrayBuffer length"));
     }
     Ok(n.trunc() as usize)
 }
 
-fn normalize_index(_vm: &mut Vm, value: JsValue, len: usize) -> usize {
-    let n = coercion::to_number(value);
+fn normalize_index<H: VmHost>(_vm: &mut H, value: JsValue, len: usize) -> usize {
+    let n = oxide_runtime_api::to_number(value);
     if n.is_nan() {
         return 0;
     }
@@ -45,12 +43,12 @@ fn normalize_index(_vm: &mut Vm, value: JsValue, len: usize) -> usize {
     }
 }
 
-fn set_named_prop(vm: &mut Vm, obj: &mut JsObject, name: &str, value: JsValue, attributes: PropAttributes) {
+fn set_named_prop<H: VmHost>(vm: &mut H, obj: &mut JsObject, name: &str, value: JsValue, attributes: PropAttributes) {
     let si = vm.kernel_core().perm_interner().intern(name).0;
     let _ = vm.define_data_property(obj, si, value, attributes);
 }
 
-pub(crate) fn new_array_buffer(vm: &mut Vm, data: Vec<u8>) -> *mut JsObject {
+pub(crate) fn new_array_buffer<H: VmHost>(vm: &mut H, data: Vec<u8>) -> *mut JsObject {
     let proto = vm.session().builtin_world().array_buffer_proto.as_ptr() as *mut JsObject;
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
     obj.type_tag = JsObject::OBJ_TYPE_ARRAY_BUFFER;
@@ -76,7 +74,7 @@ fn array_buffer_vec_ptr(obj: &JsObject) -> Option<*mut Vec<u8>> {
     obj.native_fn().map(|ptr| ptr.as_ptr() as *mut Vec<u8>)
 }
 
-pub(crate) fn clone_array_buffer_native(old_obj: &JsObject, new_obj: &mut JsObject) {
+pub fn clone_array_buffer_native(old_obj: &JsObject, new_obj: &mut JsObject) {
     let Some(ptr) = array_buffer_vec_ptr(old_obj) else {
         return;
     };
@@ -88,7 +86,7 @@ pub(crate) fn clone_array_buffer_native(old_obj: &JsObject, new_obj: &mut JsObje
     new_obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(cloned_ptr as *const ()) }));
 }
 
-pub(crate) fn drop_array_buffer_native(obj: &mut JsObject) -> u64 {
+pub fn drop_array_buffer_native(obj: &mut JsObject) -> u64 {
     let Some(data_ptr) = array_buffer_vec_ptr(obj) else {
         return 0;
     };
@@ -102,35 +100,29 @@ pub(crate) fn drop_array_buffer_native(obj: &mut JsObject) -> u64 {
     bytes as u64
 }
 
-pub(crate) fn array_buffer_data_ptr(vm: &mut Vm, this_val: JsValue) -> Result<*mut Vec<u8>, JsValue> {
+pub(crate) fn array_buffer_data_ptr<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<*mut Vec<u8>, JsValue> {
     if !this_val.is_object() {
-        return Err(crate::builtins::error::create_type_error(
-            vm,
-            "ArrayBuffer method called on incompatible receiver",
-        ));
+        return Err(crate::error::create_type_error(vm, "ArrayBuffer method called on incompatible receiver"));
     }
     let obj_ptr = this_val.as_js_object_ptr();
     if obj_ptr.is_null() {
-        return Err(crate::builtins::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+        return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
     }
     let obj = unsafe { &*obj_ptr };
     if !obj.is_array_buffer_obj() {
-        return Err(crate::builtins::error::create_type_error(
-            vm,
-            "ArrayBuffer method called on incompatible receiver",
-        ));
+        return Err(crate::error::create_type_error(vm, "ArrayBuffer method called on incompatible receiver"));
     }
     let Some(data_ptr) = obj.native_fn() else {
-        return Err(crate::builtins::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+        return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
     };
     let data_ptr = data_ptr.as_ptr() as *mut Vec<u8>;
     if data_ptr.is_null() {
-        return Err(crate::builtins::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+        return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
     }
     Ok(data_ptr)
 }
 
-pub fn array_buffer_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_buffer_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let length = if args.len() > 1 {
         match to_index(vm, vm.reg(args[1])) {
             Ok(length) => length,
@@ -142,13 +134,13 @@ pub fn array_buffer_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(new_array_buffer(vm, vec![0; length])))
 }
 
-pub fn array_buffer_byte_length(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_buffer_byte_length<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let data_ptr = native_try!(array_buffer_data_ptr(vm, this_val));
     NativeResult::Ok(JsValue::int(unsafe { (*data_ptr).len() } as i32))
 }
 
-pub fn array_buffer_slice(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_buffer_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let data_ptr = native_try!(array_buffer_data_ptr(vm, this_val));
     let data = unsafe { &*data_ptr };
@@ -159,7 +151,7 @@ pub fn array_buffer_slice(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(new_array_buffer(vm, data[start..end].to_vec())))
 }
 
-pub fn array_buffer_is_view(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_buffer_is_view<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     if !value.is_object() {
         return NativeResult::Ok(JsValue::bool(false));
@@ -172,7 +164,7 @@ pub fn array_buffer_is_view(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(obj.is_data_view_obj() || obj.is_typed_array_obj()))
 }
 
-pub fn array_buffer_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_buffer_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if array_buffer_data_ptr(vm, this_val).is_err() {
         return type_error(vm, "ArrayBuffer.prototype.toString called on incompatible receiver");

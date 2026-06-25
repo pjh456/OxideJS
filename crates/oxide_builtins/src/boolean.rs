@@ -1,10 +1,9 @@
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-use crate::vm::Vm;
-use oxide_runtime_api::NativeResult;
+use oxide_runtime_api::{NativeResult, VmHost};
 
-pub fn boolean_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn boolean_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let bool_val = if args.len() > 1 {
         let arg = vm.reg(args[1]);
@@ -51,20 +50,20 @@ pub fn boolean_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(this_val)
 }
 
-pub fn boolean_prototype_value_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn boolean_prototype_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if this_val.is_bool() {
         return NativeResult::Ok(this_val);
     }
     if !this_val.is_object() {
-        return NativeResult::Err(crate::builtins::error::create_type_error(
+        return NativeResult::Err(crate::error::create_type_error(
             vm,
             "Boolean.prototype.valueOf called on non-Boolean object",
         ));
     }
     let obj = unsafe { &*this_val.as_js_object_ptr() };
     if !obj.is_boolean_obj() {
-        return NativeResult::Err(crate::builtins::error::create_type_error(
+        return NativeResult::Err(crate::error::create_type_error(
             vm,
             "Boolean.prototype.valueOf called on non-Boolean object",
         ));
@@ -73,7 +72,7 @@ pub fn boolean_prototype_value_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(val)
 }
 
-pub fn boolean_prototype_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn boolean_prototype_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if this_val.is_bool() {
         return if this_val.as_bool() {
@@ -83,14 +82,14 @@ pub fn boolean_prototype_to_string(vm: &mut Vm, args: &[u8]) -> NativeResult {
         };
     }
     if !this_val.is_object() {
-        return NativeResult::Err(crate::builtins::error::create_type_error(
+        return NativeResult::Err(crate::error::create_type_error(
             vm,
             "Boolean.prototype.toString called on non-Boolean object",
         ));
     }
     let obj = unsafe { &*this_val.as_js_object_ptr() };
     if !obj.is_boolean_obj() {
-        return NativeResult::Err(crate::builtins::error::create_type_error(
+        return NativeResult::Err(crate::error::create_type_error(
             vm,
             "Boolean.prototype.toString called on non-Boolean object",
         ));

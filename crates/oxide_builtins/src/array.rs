@@ -2,9 +2,7 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, MAX_DENSE_PROPS};
 use oxide_types::value::JsValue;
 
-use crate::coercion;
-use crate::vm::Vm;
-use oxide_runtime_api::NativeResult;
+use oxide_runtime_api::{NativeResult, VmHost};
 
 macro_rules! array_ptr {
     ($vm:expr, $args:expr) => {{
@@ -23,11 +21,11 @@ macro_rules! array_ptr_len {
     }};
 }
 
-fn array_type_error(vm: &mut Vm, msg: &str) -> JsValue {
-    crate::builtins::error::create_type_error(vm, msg)
+fn array_type_error<H: VmHost>(vm: &mut H, msg: &str) -> JsValue {
+    crate::error::create_type_error(vm, msg)
 }
 
-fn get_this_array_ref(vm: &mut Vm, val: JsValue) -> Result<*mut JsObject, JsValue> {
+fn get_this_array_ref<H: VmHost>(vm: &mut H, val: JsValue) -> Result<*mut JsObject, JsValue> {
     if !val.is_object() {
         return Err(array_type_error(vm, "Array method called on incompatible receiver"));
     }
@@ -42,7 +40,7 @@ fn get_this_array_ref(vm: &mut Vm, val: JsValue) -> Result<*mut JsObject, JsValu
     Ok(ptr)
 }
 
-fn require_callback(vm: &mut Vm, callback_val: JsValue) -> Result<JsValue, JsValue> {
+fn require_callback<H: VmHost>(vm: &mut H, callback_val: JsValue) -> Result<JsValue, JsValue> {
     if !callback_val.is_object() {
         return Err(array_type_error(vm, "callback is not a function"));
     }
@@ -53,7 +51,7 @@ fn require_callback(vm: &mut Vm, callback_val: JsValue) -> Result<JsValue, JsVal
     Ok(callback_val)
 }
 
-fn create_new_array(vm: &mut Vm, n: usize) -> *mut JsObject {
+fn create_new_array<H: VmHost>(vm: &mut H, n: usize) -> *mut JsObject {
     let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     vm.alloc_object(JsObject::new_array(
         EMPTY_SHAPE_ID,
@@ -63,25 +61,27 @@ fn create_new_array(vm: &mut Vm, n: usize) -> *mut JsObject {
     ))
 }
 
-fn array_length_arg(vm: &mut Vm, value: JsValue) -> Result<usize, JsValue> {
-    let n = coercion::to_number(value);
+fn array_length_arg<H: VmHost>(vm: &mut H, value: JsValue) -> Result<usize, JsValue> {
+    let n = oxide_runtime_api::to_number(value);
     if !n.is_finite() || n < 0.0 || n.fract() != 0.0 || n > MAX_DENSE_PROPS as f64 {
-        return Err(crate::builtins::error::create_range_error(vm, "Invalid array length"));
+        return Err(crate::error::create_range_error(vm, "Invalid array length"));
     }
     Ok(n as usize)
 }
 
-fn invoke_native_callback(vm: &mut Vm, callback_val: JsValue, this_val: JsValue, cb_args: &[JsValue]) -> NativeResult {
+fn invoke_native_callback<H: VmHost>(
+    vm: &mut H, callback_val: JsValue, this_val: JsValue, cb_args: &[JsValue],
+) -> NativeResult {
     if !callback_val.is_object() {
-        return NativeResult::Err(crate::builtins::error::create_type_error(vm, "callback is not a function"));
+        return NativeResult::Err(crate::error::create_type_error(vm, "callback is not a function"));
     }
     let cb_ptr = callback_val.as_js_object_ptr();
     if cb_ptr.is_null() {
-        return NativeResult::Err(crate::builtins::error::create_type_error(vm, "callback is not a function"));
+        return NativeResult::Err(crate::error::create_type_error(vm, "callback is not a function"));
     }
     let cb = unsafe { &*cb_ptr };
     if !cb.is_function() {
-        return NativeResult::Err(crate::builtins::error::create_type_error(vm, "callback is not a function"));
+        return NativeResult::Err(crate::error::create_type_error(vm, "callback is not a function"));
     }
     match vm.call_function_sync(callback_val, this_val, cb_args) {
         Ok(value) => NativeResult::Ok(value),
@@ -89,31 +89,31 @@ fn invoke_native_callback(vm: &mut Vm, callback_val: JsValue, this_val: JsValue,
     }
 }
 
-fn callback_error_from_text(vm: &mut Vm, err: &str) -> JsValue {
+fn callback_error_from_text<H: VmHost>(vm: &mut H, err: &str) -> JsValue {
     let err = err.strip_prefix("uncaught ").unwrap_or(err);
     if let Some(msg) = err.strip_prefix("TypeError: ") {
-        return crate::builtins::error::create_type_error(vm, msg);
+        return crate::error::create_type_error(vm, msg);
     }
     if let Some(msg) = err.strip_prefix("ReferenceError: ") {
-        return crate::builtins::error::create_reference_error(vm, msg);
+        return crate::error::create_reference_error(vm, msg);
     }
     if let Some(msg) = err.strip_prefix("RangeError: ") {
-        return crate::builtins::error::create_range_error(vm, msg);
+        return crate::error::create_range_error(vm, msg);
     }
     if let Some(msg) = err.strip_prefix("SyntaxError: ") {
-        return crate::builtins::error::create_syntax_error(vm, msg);
+        return crate::error::create_syntax_error(vm, msg);
     }
     if let Some(msg) = err.strip_prefix("Error: ") {
-        return crate::builtins::error::create_error(vm, msg);
+        return crate::error::create_error(vm, msg);
     }
-    crate::builtins::error::create_error(vm, err)
+    crate::error::create_error(vm, err)
 }
 
-fn unexpected_tail_call_error(vm: &mut Vm) -> NativeResult {
-    NativeResult::Err(crate::builtins::error::create_type_error(vm, "unexpected tail call in array callback"))
+fn unexpected_tail_call_error<H: VmHost>(vm: &mut H) -> NativeResult {
+    NativeResult::Err(crate::error::create_type_error(vm, "unexpected tail call in array callback"))
 }
 
-pub fn array_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let proto_val = JsValue::from_js_object(proto);
 
@@ -142,7 +142,7 @@ pub fn array_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(arr))
 }
 
-pub fn array_is_array(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_is_array<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::bool(false));
     }
@@ -157,7 +157,7 @@ pub fn array_is_array(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(unsafe { &*ptr }.is_array()))
 }
 
-pub fn array_push(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_push<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let arr_ptr = array_ptr!(vm, args);
     let mut len = unsafe { &*arr_ptr }.prop_count();
     for &arg_reg in args.iter().skip(1) {
@@ -169,7 +169,7 @@ pub fn array_push(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::int(len as i32))
 }
 
-pub fn array_pop(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_pop<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &mut *arr_ptr };
     let len = arr.prop_count();
@@ -181,17 +181,17 @@ pub fn array_pop(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(last)
 }
 
-pub fn array_slice(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
     let n = arr.prop_count() as usize;
     let start = if args.len() > 1 {
-        (coercion::to_number(vm.reg(args[1])) as i32) as usize
+        (oxide_runtime_api::to_number(vm.reg(args[1])) as i32) as usize
     } else {
         0
     };
     let end = if args.len() > 2 {
-        (coercion::to_number(vm.reg(args[2])) as i32) as usize
+        (oxide_runtime_api::to_number(vm.reg(args[2])) as i32) as usize
     } else {
         n
     };
@@ -209,13 +209,13 @@ pub fn array_slice(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(new_arr))
 }
 
-pub fn array_splice(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_splice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &mut *arr_ptr };
     let n = arr.prop_count() as usize;
 
     let start = if args.len() > 1 {
-        let v = coercion::to_number(vm.reg(args[1]));
+        let v = oxide_runtime_api::to_number(vm.reg(args[1]));
         let s = v as i32;
         if s < 0 {
             (n as i32 + s).max(0) as usize
@@ -227,7 +227,7 @@ pub fn array_splice(vm: &mut Vm, args: &[u8]) -> NativeResult {
     };
 
     let delete_count = if args.len() > 2 {
-        let v = coercion::to_number(vm.reg(args[2]));
+        let v = oxide_runtime_api::to_number(vm.reg(args[2]));
         (v as usize).min(n - start)
     } else {
         n - start
@@ -271,7 +271,7 @@ pub fn array_splice(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(removed_arr))
 }
 
-pub fn array_concat(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
     let n = arr.prop_count() as usize;
@@ -306,12 +306,12 @@ pub fn array_concat(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(new_arr))
 }
 
-pub fn array_join(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_join<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
     let n = arr.prop_count() as usize;
     let sep = if args.len() > 1 {
-        coercion::to_string(vm.reg(args[1]))
+        oxide_runtime_api::to_string(vm.reg(args[1]))
     } else {
         ",".to_string()
     };
@@ -321,7 +321,7 @@ pub fn array_join(vm: &mut Vm, args: &[u8]) -> NativeResult {
             if v.is_undefined() || v.is_null() {
                 String::new()
             } else {
-                coercion::to_string(v)
+                oxide_runtime_api::to_string(v)
             }
         })
         .collect();
@@ -330,7 +330,7 @@ pub fn array_join(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(result_val)
 }
 
-pub fn array_index_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
     let n = arr.prop_count() as usize;
@@ -339,14 +339,14 @@ pub fn array_index_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let target = vm.reg(args[1]);
     for i in 0..n {
-        if coercion::strict_equality(arr.get_prop_at(i), target) {
+        if oxide_runtime_api::strict_equality(arr.get_prop_at(i), target) {
             return NativeResult::Ok(JsValue::int(i as i32));
         }
     }
     NativeResult::Ok(JsValue::int(-1))
 }
 
-pub fn array_includes(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
     let n = arr.prop_count() as usize;
@@ -363,14 +363,14 @@ pub fn array_includes(vm: &mut Vm, args: &[u8]) -> NativeResult {
                 return NativeResult::Ok(JsValue::bool(true));
             }
         }
-        if coercion::strict_equality(elem, target) {
+        if oxide_runtime_api::strict_equality(elem, target) {
             return NativeResult::Ok(JsValue::bool(true));
         }
     }
     NativeResult::Ok(JsValue::bool(false))
 }
 
-pub fn array_reverse(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_reverse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &mut *arr_ptr };
     let n = arr.prop_count() as usize;
@@ -386,21 +386,21 @@ pub fn array_reverse(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.reg(args[0]))
 }
 
-pub fn array_flat(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_flat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
     let n = arr.prop_count() as usize;
     let depth = if args.len() > 1 {
-        let n = coercion::to_number(vm.reg(args[1]));
+        let n = oxide_runtime_api::to_number(vm.reg(args[1]));
         if !n.is_finite() {
-            vm.kernel_core.config.max_call_depth
+            vm.kernel_core().config.max_call_depth
         } else {
             (n as i32).max(1) as usize
         }
     } else {
         1
     }
-    .min(vm.kernel_core.config.max_call_depth);
+    .min(vm.kernel_core().config.max_call_depth);
 
     fn flatten(items: &[JsValue], remaining_depth: usize, seen: &mut Vec<*mut JsObject>) -> Vec<JsValue> {
         let mut out = Vec::new();
@@ -442,7 +442,7 @@ pub fn array_flat(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(new_arr))
 }
 
-pub fn array_for_each(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_for_each<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
@@ -463,7 +463,7 @@ pub fn array_for_each(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::undefined())
 }
 
-pub fn array_map(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
@@ -490,7 +490,7 @@ pub fn array_map(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(new_arr))
 }
 
-pub fn array_filter(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_filter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
@@ -505,7 +505,7 @@ pub fn array_filter(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let elem = unsafe { (*arr_ptr).get_prop_at(i) };
         match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i as i32), vm.reg(args[0])]) {
             NativeResult::Ok(result_val) => {
-                if coercion::to_boolean(result_val) {
+                if oxide_runtime_api::to_boolean(result_val) {
                     kept.push(elem);
                 }
             }
@@ -523,7 +523,7 @@ pub fn array_filter(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(new_arr))
 }
 
-pub fn array_reduce(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_reduce<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if n == 0 && args.len() < 3 {
         return NativeResult::Err(array_type_error(vm, "Reduce of empty array with no initial value"));
@@ -562,7 +562,7 @@ pub fn array_reduce(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(accumulator)
 }
 
-pub fn array_find(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_find<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
@@ -576,7 +576,7 @@ pub fn array_find(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let elem = unsafe { (*arr_ptr).get_prop_at(i) };
         match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i as i32), vm.reg(args[0])]) {
             NativeResult::Ok(result_val) => {
-                if coercion::to_boolean(result_val) {
+                if oxide_runtime_api::to_boolean(result_val) {
                     return NativeResult::Ok(elem);
                 }
             }
@@ -587,7 +587,7 @@ pub fn array_find(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::undefined())
 }
 
-pub fn array_some(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_some<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
@@ -601,7 +601,7 @@ pub fn array_some(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let elem = unsafe { (*arr_ptr).get_prop_at(i) };
         match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i as i32), vm.reg(args[0])]) {
             NativeResult::Ok(result_val) => {
-                if coercion::to_boolean(result_val) {
+                if oxide_runtime_api::to_boolean(result_val) {
                     return NativeResult::Ok(JsValue::bool(true));
                 }
             }
@@ -612,7 +612,7 @@ pub fn array_some(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(false))
 }
 
-pub fn array_every(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_every<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
@@ -626,7 +626,7 @@ pub fn array_every(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let elem = unsafe { (*arr_ptr).get_prop_at(i) };
         match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i as i32), vm.reg(args[0])]) {
             NativeResult::Ok(result_val) => {
-                if !coercion::to_boolean(result_val) {
+                if !oxide_runtime_api::to_boolean(result_val) {
                     return NativeResult::Ok(JsValue::bool(false));
                 }
             }
@@ -637,7 +637,7 @@ pub fn array_every(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(true))
 }
 
-pub fn array_flat_map(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_flat_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
@@ -681,7 +681,7 @@ pub fn array_flat_map(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(new_arr))
 }
 
-pub fn array_shift(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_shift<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &mut *arr_ptr };
     let len = arr.prop_count();
@@ -697,7 +697,7 @@ pub fn array_shift(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(first)
 }
 
-pub fn array_unshift(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_unshift<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &mut *arr_ptr };
     let len = arr.prop_count();
@@ -714,18 +714,18 @@ pub fn array_unshift(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::int(new_len as i32))
 }
 
-pub fn array_fill(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_fill<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &mut *arr_ptr };
     let len = arr.prop_count() as usize;
     let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let start = if args.len() > 2 {
-        (coercion::to_number(vm.reg(args[2])) as i32).max(0) as usize
+        (oxide_runtime_api::to_number(vm.reg(args[2])) as i32).max(0) as usize
     } else {
         0
     };
     let end = if args.len() > 3 {
-        let e = coercion::to_number(vm.reg(args[3])) as i32;
+        let e = oxide_runtime_api::to_number(vm.reg(args[3])) as i32;
         (e as usize).min(len)
     } else {
         len
@@ -736,7 +736,7 @@ pub fn array_fill(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.reg(args[0]))
 }
 
-pub fn array_copy_within(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_copy_within<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &mut *arr_ptr };
     let len = arr.prop_count() as usize;
@@ -744,17 +744,17 @@ pub fn array_copy_within(vm: &mut Vm, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(vm.reg(args[0]));
     }
     let target = if args.len() > 1 {
-        (coercion::to_number(vm.reg(args[1])) as i32) as usize
+        (oxide_runtime_api::to_number(vm.reg(args[1])) as i32) as usize
     } else {
         0
     };
     let start = if args.len() > 2 {
-        (coercion::to_number(vm.reg(args[2])) as i32) as usize
+        (oxide_runtime_api::to_number(vm.reg(args[2])) as i32) as usize
     } else {
         0
     };
     let end = if args.len() > 3 {
-        (coercion::to_number(vm.reg(args[3])) as i32 as usize).min(len)
+        (oxide_runtime_api::to_number(vm.reg(args[3])) as i32 as usize).min(len)
     } else {
         len
     };
@@ -770,11 +770,15 @@ pub fn array_copy_within(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.reg(args[0]))
 }
 
-pub fn array_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
     let len = arr.prop_count() as i32;
-    let mut index = if args.len() > 1 { coercion::to_number(vm.reg(args[1])) as i32 } else { 0 };
+    let mut index = if args.len() > 1 {
+        oxide_runtime_api::to_number(vm.reg(args[1])) as i32
+    } else {
+        0
+    };
     if index < 0 {
         index += len;
     }
@@ -784,20 +788,20 @@ pub fn array_at(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(arr.get_prop_at(index))
 }
 
-pub fn array_last_index_of(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
     let len = arr.prop_count() as i32;
     let search = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     for i in (0..len).rev() {
-        if coercion::strict_equality(arr.get_prop_at(i), search) {
+        if oxide_runtime_api::strict_equality(arr.get_prop_at(i), search) {
             return NativeResult::Ok(JsValue::int(i));
         }
     }
     NativeResult::Ok(JsValue::int(-1))
 }
 
-pub fn array_find_index(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_find_index<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
@@ -811,7 +815,7 @@ pub fn array_find_index(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let elem = unsafe { (*arr_ptr).get_prop_at(i) };
         match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i as i32), vm.reg(args[0])]) {
             NativeResult::Ok(r) => {
-                if coercion::to_boolean(r) {
+                if oxide_runtime_api::to_boolean(r) {
                     return NativeResult::Ok(JsValue::int(i as i32));
                 }
             }
@@ -822,7 +826,7 @@ pub fn array_find_index(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::int(-1))
 }
 
-pub fn array_find_last(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_find_last<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (arr_ptr, n) = {
         let (arr_ptr, len) = array_ptr_len!(vm, args);
         (arr_ptr, len as i32)
@@ -839,7 +843,7 @@ pub fn array_find_last(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let elem = unsafe { (*arr_ptr).get_prop_at(i) };
         match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i), vm.reg(args[0])]) {
             NativeResult::Ok(r) => {
-                if coercion::to_boolean(r) {
+                if oxide_runtime_api::to_boolean(r) {
                     return NativeResult::Ok(elem);
                 }
             }
@@ -850,7 +854,7 @@ pub fn array_find_last(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::undefined())
 }
 
-pub fn array_reduce_right(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_reduce_right<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
@@ -883,7 +887,7 @@ pub fn array_reduce_right(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(acc)
 }
 
-pub fn array_sort(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_sort<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let arr_ptr = array_ptr!(vm, args);
     let len = unsafe { (*arr_ptr).prop_count() as usize };
     let mut vals: Vec<JsValue> = (0..len).map(|i| unsafe { (*arr_ptr).get_prop_at(i) }).collect();
@@ -908,7 +912,7 @@ pub fn array_sort(vm: &mut Vm, args: &[u8]) -> NativeResult {
         if let Some(callback) = comparator {
             match invoke_native_callback(vm, callback, JsValue::undefined(), &[*a, *b]) {
                 NativeResult::Ok(result) => {
-                    let n = coercion::to_number(result);
+                    let n = oxide_runtime_api::to_number(result);
                     if n.is_nan() || n == 0.0 {
                         std::cmp::Ordering::Equal
                     } else if n < 0.0 {
@@ -922,14 +926,13 @@ pub fn array_sort(vm: &mut Vm, args: &[u8]) -> NativeResult {
                     std::cmp::Ordering::Equal
                 }
                 NativeResult::TailCall { .. } => {
-                    sort_error =
-                        Some(crate::builtins::error::create_type_error(vm, "unexpected tail call in array callback"));
+                    sort_error = Some(crate::error::create_type_error(vm, "unexpected tail call in array callback"));
                     std::cmp::Ordering::Equal
                 }
             }
         } else {
-            let sa = coercion::to_string(*a);
-            let sb = coercion::to_string(*b);
+            let sa = oxide_runtime_api::to_string(*a);
+            let sb = oxide_runtime_api::to_string(*b);
             sa.cmp(&sb)
         }
     });
@@ -943,9 +946,9 @@ pub fn array_sort(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.reg(args[0]))
 }
 
-pub fn array_values(vm: &mut Vm, args: &[u8]) -> NativeResult {
+pub fn array_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(args[0]);
-    match crate::builtins::iterator::make_iterator_for_value(vm, this_val) {
+    match crate::iterator::make_iterator_for_value(vm, this_val) {
         Ok(iterator) => NativeResult::Ok(iterator),
         Err(err) => NativeResult::Err(err),
     }

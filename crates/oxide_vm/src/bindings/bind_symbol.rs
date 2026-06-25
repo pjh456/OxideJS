@@ -13,15 +13,15 @@ pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
     let proto_ptr = session.builtin_world().symbol_proto.as_ptr() as *mut JsObject;
     let proto = unsafe { &mut *proto_ptr };
 
-    configure_native_constructor(ctor, crate::builtins::symbol::symbol_constructor as *const (), 1);
+    configure_native_constructor(ctor, oxide_builtins::symbol::symbol_constructor::<crate::vm::Vm> as *const (), 1);
 
     apply_binding_table(
         session.builtin_world(),
         ctor,
         core,
         &[
-            ("for", crate::builtins::symbol::symbol_for as *const (), 1),
-            ("keyFor", crate::builtins::symbol::symbol_key_for as *const (), 1),
+            ("for", oxide_builtins::symbol::symbol_for::<crate::vm::Vm> as *const (), 1),
+            ("keyFor", oxide_builtins::symbol::symbol_key_for::<crate::vm::Vm> as *const (), 1),
         ],
     );
 
@@ -29,7 +29,7 @@ pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         session.builtin_world(),
         proto,
         core,
-        &[("toString", crate::builtins::symbol::symbol_to_string as *const (), 0)],
+        &[("toString", oxide_builtins::symbol::symbol_to_string::<crate::vm::Vm> as *const (), 0)],
     );
 
     for (name, val) in [
@@ -57,7 +57,7 @@ pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         bind_well_known_symbol(core, ctor, name, val);
     }
 
-    bind_constructor!(core, global, "Symbol", ctor_ptr, crate::builtins::symbol::symbol_constructor, 1, hash: true);
+    bind_constructor!(core, global, "Symbol", ctor_ptr, oxide_builtins::symbol::symbol_constructor::<crate::vm::Vm>, 1, hash: true);
 }
 
 fn bind_well_known_symbol(core: &Arc<KernelCore>, ctor: &mut JsObject, name: &str, val: JsValue) {

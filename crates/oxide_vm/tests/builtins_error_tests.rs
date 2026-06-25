@@ -1,6 +1,6 @@
+use oxide_builtins::error;
 use oxide_compiler::compiler::Compiler;
 use oxide_types::value::JsValue;
-use oxide_vm::builtins::error;
 use oxide_vm::vm::Vm;
 
 fn make_vm() -> Vm {

@@ -1,8 +1,6 @@
 #![doc = "OxideJS - Register-based VM with epoch arena memory"]
 
 pub mod bindings;
-pub mod builtins;
-pub mod coercion;
 mod dispatch;
 mod ic_helper;
 pub mod native;

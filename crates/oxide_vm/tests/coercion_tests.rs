@@ -1,7 +1,7 @@
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
+use oxide_runtime_api as coercion;
 use oxide_types::value::JsValue;
-use oxide_vm::coercion;
 use oxide_vm::vm::Vm;
 
 fn eval(source: &str) -> String {

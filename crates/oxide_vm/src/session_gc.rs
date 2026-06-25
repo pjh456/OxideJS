@@ -7,8 +7,8 @@ use oxide_types::object::{JsObject, JsString, PropMetaEntry};
 use oxide_types::value::JsValue;
 use rustc_hash::FxBuildHasher;
 
-use crate::builtins::{array_buffer, data_view, map, regexp, set, typed_array};
 use crate::vm::Vm;
+use oxide_builtins::{array_buffer, data_view, map, regexp, set, typed_array};
 
 pub struct SessionGc {
     pub total_collections: u64,
@@ -502,8 +502,8 @@ mod tests {
     use oxide_types::object::JsObject;
 
     use super::*;
-    use crate::builtins::{array_buffer, data_view, map, set, typed_array};
     use crate::vm::{CallFrame, FrameContinuation};
+    use oxide_builtins::{array_buffer, data_view, map, set, typed_array};
     use oxide_runtime_api::NativeResult;
 
     fn plain_object(vm: &mut Vm) -> *mut JsObject {

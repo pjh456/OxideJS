@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::native::NativeFn;
 use crate::vm::{native_fn_ptr_to_fn, CallFrame, ForInIter, FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
-use oxide_runtime_api::NativeResult;
+use oxide_runtime_api::{to_boolean, NativeResult};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::is_private_name_key;
 use oxide_types::value::JsValue;
@@ -155,7 +155,7 @@ impl Vm {
             Ok(true)
         } else {
             let error =
-                crate::builtins::error::create_error(self, "NEW_EXPRESSION: bytecode constructors not yet supported");
+                oxide_builtins::error::create_error(self, "NEW_EXPRESSION: bytecode constructors not yet supported");
             self.exception_value = Some(error);
             self.pending_error_kind = Some(self.thrown_error_kind(error));
             self.unwind().map(|_| true)
@@ -344,7 +344,7 @@ impl Vm {
 
     pub(crate) fn dispatch_for_of_init(&mut self, a: usize) -> Result<(), String> {
         let iterable = self.regs[a];
-        match crate::builtins::iterator::make_iterator_for_value(self, iterable) {
+        match oxide_builtins::iterator::make_iterator_for_value(self, iterable) {
             Ok(iterator) => {
                 self.iters.push_for_of(iterator);
                 self.iters.clear_last_for_of_result();
@@ -377,7 +377,7 @@ impl Vm {
         let result_obj = unsafe { &*result.as_js_object_ptr() };
         let done_si = self.kernel_core.perm_interner().intern("done").0;
         let done_val = self.ordinary_get(result_obj, done_si, result)?;
-        let done = crate::coercion::to_boolean(done_val);
+        let done = to_boolean(done_val);
         self.iters.set_last_for_of_result(result);
         self.regs[rd] = JsValue::bool(!done);
         Ok(())

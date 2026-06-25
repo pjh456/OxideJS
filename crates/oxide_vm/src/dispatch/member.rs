@@ -2,8 +2,8 @@ use oxide_bytecode::opcode::OpCode;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-use crate::coercion;
 use crate::vm::Vm;
+use oxide_runtime_api as coercion;
 
 impl Vm {
     pub(crate) fn dispatch_member_op(&mut self, op: OpCode, rd: usize, a: usize, b: usize) -> Result<(), String> {

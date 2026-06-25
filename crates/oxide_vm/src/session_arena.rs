@@ -4,8 +4,8 @@ use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 use rustc_hash::FxBuildHasher;
 
-use crate::builtins::{data_view, map, set, typed_array};
 use crate::vm::Vm;
+use oxide_builtins::{data_view, map, set, typed_array};
 
 impl Vm {
     pub(crate) fn is_session_escape_root_ptr(&self, target_ptr: *mut JsObject) -> bool {

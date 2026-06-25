@@ -1,5 +1,5 @@
-use crate::coercion;
 use crate::vm::{FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
+use oxide_runtime_api as coercion;
 use oxide_types::object::{JsObject, PropAttributes, PropMetaEntry};
 use oxide_types::value::JsValue;
 
