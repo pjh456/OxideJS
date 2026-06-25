@@ -1,7 +1,6 @@
 use std::sync::{Arc, OnceLock};
 
 use oxide_bytecode::module::CompiledModule;
-use oxide_bytecode::opcode;
 
 use crate::vm::{CallFrame, InlineSyncState, Vm};
 use oxide_types::object::JsObject;
@@ -47,9 +46,9 @@ impl Vm {
             exception_value: self.exception_value.take(),
             pending_exception: self.pending_exception.take(),
             pending_error_kind: self.pending_error_kind.take(),
-            for_in_iters: std::mem::take(&mut self.for_in_iters),
-            for_of_iters: std::mem::take(&mut self.for_of_iters),
-            last_for_of_result: self.last_for_of_result,
+            for_in_iters: std::mem::take(&mut self.iters.for_in_iters),
+            for_of_iters: std::mem::take(&mut self.iters.for_of_iters),
+            last_for_of_result: self.iters.last_for_of_result,
             saved_bytecode_stack: std::mem::take(&mut self.saved_bytecode_stack),
             saved_immutables_stack: std::mem::take(&mut self.saved_immutables_stack),
             save_stack: std::mem::take(&mut self.save_stack),
@@ -89,9 +88,9 @@ impl Vm {
         self.exception_value = saved.exception_value;
         self.pending_exception = saved.pending_exception;
         self.pending_error_kind = saved.pending_error_kind;
-        self.for_in_iters = saved.for_in_iters;
-        self.for_of_iters = saved.for_of_iters;
-        self.last_for_of_result = saved.last_for_of_result;
+        self.iters.for_in_iters = saved.for_in_iters;
+        self.iters.for_of_iters = saved.for_of_iters;
+        self.iters.last_for_of_result = saved.last_for_of_result;
         self.saved_bytecode_stack = saved.saved_bytecode_stack;
         self.saved_immutables_stack = saved.saved_immutables_stack;
         self.save_stack = saved.save_stack;
@@ -119,25 +118,8 @@ impl Vm {
     pub fn rerun(&mut self) -> Result<JsValue, String> {
         self.clear_execution_state();
         self.active_reg_limit = self.root_reg_limit;
-        self.clear_ic_caches();
+        crate::ic_helper::clear_ic_caches(&mut self.bytecode);
         self.dispatch()
-    }
-
-    fn clear_ic_caches(&mut self) {
-        let mut i = 0;
-        while i < self.bytecode.len() {
-            let op = opcode::opcode(self.bytecode[i]);
-            if op.has_ic_ext_words() {
-                if i + 3 < self.bytecode.len() {
-                    self.bytecode[i + 1] = 0;
-                    self.bytecode[i + 2] = 0;
-                    self.bytecode[i + 3] = 0;
-                }
-                i += 4;
-            } else {
-                i += 1;
-            }
-        }
     }
 
     pub fn run(&mut self, module: &CompiledModule) -> Result<JsValue, String> {

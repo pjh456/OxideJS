@@ -204,7 +204,7 @@ impl Vm {
                 if template.prop_name != prop_name_si {
                     self.ordinary_get(obj, prop_name_si, receiver)?
                 } else if template.position < obj.prop_vec_len() as u32 {
-                    self.write_ic_back(obj.shape_id(), template.position);
+                    crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), template.position);
                     obj.get_prop_at(template.position)
                 } else {
                     self.ordinary_get(obj, prop_name_si, receiver)?
@@ -213,7 +213,7 @@ impl Vm {
                 let resolved = self.ordinary_get(obj, prop_name_si, receiver)?;
                 if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
                     if !obj.is_accessor_meta(pos) {
-                        self.write_ic_back(obj.shape_id(), pos);
+                        crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos);
                     }
                 }
                 resolved
@@ -231,7 +231,7 @@ impl Vm {
                 return Ok(());
             }
             obj.set_prop_at(pos, val);
-            self.write_ic_back(obj.shape_id(), pos);
+            crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos);
         } else {
             self.ordinary_set(obj, prop_name_si, val, receiver)?;
         }
@@ -313,12 +313,5 @@ impl Vm {
         obj.set_accessor_meta(pos, get, set, attributes);
         obj.bump_generation();
         Ok(())
-    }
-
-    pub(crate) fn write_ic_back(&mut self, shape_id: u32, slot_index: u32) {
-        debug_assert!(self.pc >= 3, "IC write-back requires 3 extension words before pc");
-        self.bytecode[self.pc - 3] = shape_id & 0x00FF_FFFF;
-        self.bytecode[self.pc - 2] = slot_index;
-        self.bytecode[self.pc - 1] = 0;
     }
 }

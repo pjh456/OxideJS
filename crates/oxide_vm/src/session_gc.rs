@@ -35,7 +35,7 @@ impl SessionGc {
 
 impl SessionGc {
     pub(crate) fn clear_all_marks(&mut self, vm: &mut Vm) {
-        for &ptr in &vm.session_object_ptrs {
+        for &ptr in &vm.gc_state.session_object_ptrs {
             if ptr.is_null() {
                 continue;
             }
@@ -251,8 +251,8 @@ impl SessionGc {
     }
 
     pub(crate) fn sweep(&mut self, vm: &mut Vm) -> u64 {
-        let old_ptrs = std::mem::take(&mut vm.session_object_ptrs);
-        let mut forwarding = std::mem::take(&mut vm.forwarding);
+        let old_ptrs = std::mem::take(&mut vm.gc_state.session_object_ptrs);
+        let mut forwarding = std::mem::take(&mut vm.gc_state.forwarding);
         let new_arena = bumpalo::Bump::new();
         let mut survivors = 0u64;
         let mut dead = 0u64;
@@ -315,11 +315,11 @@ impl SessionGc {
 
         rewrite_vm_roots(vm, &forwarding);
 
-        vm.session_object_ptrs = forwarding.values().copied().collect();
+        vm.gc_state.session_object_ptrs = forwarding.values().copied().collect();
         forwarding.clear();
-        vm.forwarding = forwarding;
-        vm.session_epoch = new_arena;
-        vm.session_bytes_allocated = vm.session_object_ptrs.len() * size_of::<JsObject>();
+        vm.gc_state.forwarding = forwarding;
+        vm.gc_state.session_epoch = new_arena;
+        vm.gc_state.session_bytes_allocated = vm.gc_state.session_object_ptrs.len() * size_of::<JsObject>();
 
         self.clear_all_marks(vm);
 
@@ -355,7 +355,7 @@ impl SessionGc {
     /// `session_bytes_allocated` to object-only), re-adding surviving string bytes. Returns the
     /// bytes freed.
     pub(crate) fn sweep_session_strings(&mut self, vm: &mut Vm) -> u64 {
-        let old = std::mem::take(&mut vm.session_string_ptrs);
+        let old = std::mem::take(&mut vm.gc_state.session_string_ptrs);
         let mut freed = 0u64;
         let mut live_bytes = 0usize;
         let mut live = Vec::with_capacity(old.len());
@@ -373,8 +373,8 @@ impl SessionGc {
                 freed += unsafe { Self::drop_dead_session_string(ptr) };
             }
         }
-        vm.session_string_ptrs = live;
-        vm.session_bytes_allocated = vm.session_bytes_allocated.saturating_add(live_bytes);
+        vm.gc_state.session_string_ptrs = live;
+        vm.gc_state.session_bytes_allocated = vm.gc_state.session_bytes_allocated.saturating_add(live_bytes);
 
         self.total_bytes_freed = self.total_bytes_freed.saturating_add(freed);
         self.last_collection_bytes_freed = self.last_collection_bytes_freed.saturating_add(freed);
@@ -382,8 +382,8 @@ impl SessionGc {
     }
 
     pub(crate) fn should_collect(&self, vm: &Vm) -> bool {
-        (!vm.session_object_ptrs.is_empty() || !vm.session_string_ptrs.is_empty())
-            && vm.session_bytes_allocated >= vm.kernel_core().config().session_gc_threshold
+        (!vm.gc_state.session_object_ptrs.is_empty() || !vm.gc_state.session_string_ptrs.is_empty())
+            && vm.gc_state.session_bytes_allocated >= vm.kernel_core().config().session_gc_threshold
     }
 
     pub(crate) fn collect(&mut self, vm: &mut Vm) {
@@ -471,12 +471,12 @@ fn rewrite_vm_roots(vm: &mut Vm, forwarding: &HashMap<*mut JsObject, *mut JsObje
     }
     vm.exception_value = vm.exception_value.map(|value| rewrite_forwarded_value(value, forwarding));
     vm.pending_exception = vm.pending_exception.map(|value| rewrite_forwarded_value(value, forwarding));
-    for value in &mut vm.for_of_iters {
+    for value in &mut vm.iters.for_of_iters {
         *value = rewrite_forwarded_value(*value, forwarding);
     }
-    vm.last_for_of_result = rewrite_forwarded_value(vm.last_for_of_result, forwarding);
+    vm.iters.last_for_of_result = rewrite_forwarded_value(vm.iters.last_for_of_result, forwarding);
     // Converted immutables are non-session (scalars + perm-strings) — not rewritten.
-    for iter in &mut vm.for_in_iters {
+    for iter in &mut vm.iters.for_in_iters {
         if iter.is_null() {
             continue;
         }
@@ -556,8 +556,8 @@ mod tests {
         vm.regs[1] = JsValue::from_js_object(child_session);
         vm.exception_value = Some(JsValue::from_js_object(root_session));
         vm.pending_exception = Some(JsValue::from_js_object(child_session));
-        vm.for_of_iters.push(JsValue::from_js_object(child_session));
-        vm.last_for_of_result = JsValue::from_js_object(root_session);
+        vm.iters.for_of_iters.push(JsValue::from_js_object(child_session));
+        vm.iters.last_for_of_result = JsValue::from_js_object(root_session);
 
         let mut roots = Vec::new();
         vm.for_each_root(|v| roots.push(v));
@@ -587,9 +587,9 @@ mod tests {
         let unreachable_session = vm.promote_object(unreachable);
 
         vm.regs[0] = JsValue::from_js_object(root_session);
-        let mut gc = std::mem::take(&mut vm.session_gc);
+        let mut gc = std::mem::take(&mut vm.gc_state.session_gc);
         gc.mark(&vm);
-        vm.session_gc = gc;
+        vm.gc_state.session_gc = gc;
 
         assert!(unsafe { (*root_session).is_gc_marked() });
         assert!(unsafe { (*reachable_session).is_gc_marked() });
@@ -611,15 +611,19 @@ mod tests {
         let root_session = vm.promote_object(root);
         vm.regs[0] = JsValue::from_js_object(root_session);
         let dead_session = vm.promote_object(dead);
-        let mut gc = std::mem::take(&mut vm.session_gc);
+        let mut gc = std::mem::take(&mut vm.gc_state.session_gc);
         gc.mark(&vm);
         let _ = gc.sweep(&mut vm);
-        vm.session_gc = gc;
+        vm.gc_state.session_gc = gc;
 
-        assert_eq!(vm.session_object_ptrs.len(), 2);
-        assert!(!vm.session_object_ptrs.contains(&root_session));
-        assert!(!vm.session_object_ptrs.contains(&dead_session));
-        assert!(!vm.session_object_ptrs.iter().any(|ptr| unsafe { (*(*ptr)).is_gc_marked() }));
+        assert_eq!(vm.gc_state.session_object_ptrs.len(), 2);
+        assert!(!vm.gc_state.session_object_ptrs.contains(&root_session));
+        assert!(!vm.gc_state.session_object_ptrs.contains(&dead_session));
+        assert!(!vm
+            .gc_state
+            .session_object_ptrs
+            .iter()
+            .any(|ptr| unsafe { (*(*ptr)).is_gc_marked() }));
     }
 
     #[test]
@@ -633,14 +637,14 @@ mod tests {
         let root_session = vm.promote_object(root);
         vm.regs[0] = JsValue::from_js_object(root_session);
         let _ = vm.promote_object(child);
-        let mut gc = std::mem::take(&mut vm.session_gc);
+        let mut gc = std::mem::take(&mut vm.gc_state.session_gc);
         gc.mark(&vm);
         let _ = gc.sweep(&mut vm);
-        vm.session_gc = gc;
+        vm.gc_state.session_gc = gc;
 
         // The reused forwarding map MUST be cleared after sweep, otherwise
         // promote would observe stale old->new entries pointing into the freed arena.
-        assert!(vm.forwarding.is_empty());
+        assert!(vm.gc_state.forwarding.is_empty());
     }
 
     fn vm_with_low_threshold() -> Vm {
@@ -663,16 +667,16 @@ mod tests {
         let mut vm = vm_with_low_threshold();
         let obj = plain_object(&mut vm);
         vm.promote_object(obj);
-        assert!(!vm.session_object_ptrs.is_empty());
-        let tracked_before = vm.session_object_ptrs.len();
+        assert!(!vm.gc_state.session_object_ptrs.is_empty());
+        let tracked_before = vm.gc_state.session_object_ptrs.len();
 
         vm.regs[0] = JsValue::undefined();
         vm.regs[1] = JsValue::undefined();
         vm.reset();
 
-        assert!(vm.session_object_ptrs.len() <= tracked_before);
-        assert_eq!(vm.session_object_ptrs.len(), 0);
-        assert_eq!(vm.session_bytes_allocated, 0);
+        assert!(vm.gc_state.session_object_ptrs.len() <= tracked_before);
+        assert_eq!(vm.gc_state.session_object_ptrs.len(), 0);
+        assert_eq!(vm.gc_state.session_bytes_allocated, 0);
     }
 
     #[test]
@@ -682,7 +686,7 @@ mod tests {
         vm.promote_object(obj);
         vm.regs[0] = JsValue::undefined();
         vm.maybe_collect_session_gc();
-        let summary = vm.session_gc.stats_summary();
+        let summary = vm.gc_state.session_gc.stats_summary();
         assert!(summary.contains("[GC] collection"));
     }
 
@@ -743,15 +747,15 @@ mod tests {
         let map_session = vm.promote_object(map_value.as_js_object_ptr());
         vm.regs.fill(JsValue::undefined());
         vm.regs[0] = JsValue::from_js_object(map_session);
-        let mut gc = std::mem::take(&mut vm.session_gc);
+        let mut gc = std::mem::take(&mut vm.gc_state.session_gc);
         gc.collect(&mut vm);
-        vm.session_gc = gc;
+        vm.gc_state.session_gc = gc;
 
         let live_map = unsafe { &*vm.regs[0].as_js_object_ptr() };
         let edges = map::map_native_edges(live_map);
         assert_eq!(edges.len(), 2);
         assert!(edges.iter().all(|value| vm.is_session_ptr(value.as_js_object_ptr())));
-        assert_eq!(vm.session_object_ptrs.len(), 3);
+        assert_eq!(vm.gc_state.session_object_ptrs.len(), 3);
     }
 
     #[test]
@@ -766,15 +770,15 @@ mod tests {
         let set_session = vm.promote_object(set_value.as_js_object_ptr());
         vm.regs.fill(JsValue::undefined());
         vm.regs[0] = JsValue::from_js_object(set_session);
-        let mut gc = std::mem::take(&mut vm.session_gc);
+        let mut gc = std::mem::take(&mut vm.gc_state.session_gc);
         gc.collect(&mut vm);
-        vm.session_gc = gc;
+        vm.gc_state.session_gc = gc;
 
         let live_set = unsafe { &*vm.regs[0].as_js_object_ptr() };
         let edges = set::set_native_edges(live_set);
         assert_eq!(edges.len(), 1);
         assert!(vm.is_session_ptr(edges[0].as_js_object_ptr()));
-        assert_eq!(vm.session_object_ptrs.len(), 2);
+        assert_eq!(vm.gc_state.session_object_ptrs.len(), 2);
     }
 
     #[test]
@@ -805,9 +809,9 @@ mod tests {
         let root_session = vm.promote_object(root);
         vm.regs.fill(JsValue::undefined());
         vm.regs[0] = JsValue::from_js_object(root_session);
-        let mut gc = std::mem::take(&mut vm.session_gc);
+        let mut gc = std::mem::take(&mut vm.gc_state.session_gc);
         gc.collect(&mut vm);
-        vm.session_gc = gc;
+        vm.gc_state.session_gc = gc;
 
         let live_root = unsafe { &*vm.regs[0].as_js_object_ptr() };
         let live_typed = live_root.get_prop_at(0);
@@ -854,16 +858,16 @@ mod tests {
         let view_session = vm.promote_object(view.as_js_object_ptr());
         vm.regs.fill(JsValue::undefined());
         vm.regs[0] = JsValue::from_js_object(view_session);
-        let mut gc = std::mem::take(&mut vm.session_gc);
+        let mut gc = std::mem::take(&mut vm.gc_state.session_gc);
         gc.collect(&mut vm);
-        vm.session_gc = gc;
+        vm.gc_state.session_gc = gc;
 
         let live_view = vm.regs[0];
         let live_view_obj = unsafe { &*live_view.as_js_object_ptr() };
         let edges = data_view::data_view_native_edges(live_view_obj);
         assert_eq!(edges.len(), 1);
         assert!(vm.is_session_ptr(edges[0].as_js_object_ptr()));
-        assert_eq!(vm.session_object_ptrs.len(), 2);
+        assert_eq!(vm.gc_state.session_object_ptrs.len(), 2);
 
         vm.regs[0] = live_view;
         vm.regs[1] = JsValue::int(0);
@@ -871,9 +875,9 @@ mod tests {
     }
 
     fn collect(vm: &mut Vm) {
-        let mut gc = std::mem::take(&mut vm.session_gc);
+        let mut gc = std::mem::take(&mut vm.gc_state.session_gc);
         gc.collect(vm);
-        vm.session_gc = gc;
+        vm.gc_state.session_gc = gc;
     }
 
     #[test]
@@ -881,12 +885,12 @@ mod tests {
         let mut vm = Vm::new();
         let dead = vm.new_string("dead-string");
         let dead_ptr = dead.as_string_ptr_mut();
-        assert!(vm.session_string_ptrs.contains(&dead_ptr));
+        assert!(vm.gc_state.session_string_ptrs.contains(&dead_ptr));
 
         // No root references `dead` (it lives only on the Rust stack as a value wrapper).
         collect(&mut vm);
 
-        assert!(!vm.session_string_ptrs.contains(&dead_ptr));
+        assert!(!vm.gc_state.session_string_ptrs.contains(&dead_ptr));
     }
 
     #[test]
@@ -898,7 +902,7 @@ mod tests {
 
         collect(&mut vm);
 
-        assert!(vm.session_string_ptrs.contains(&live_ptr));
+        assert!(vm.gc_state.session_string_ptrs.contains(&live_ptr));
         // Live strings are never moved — the register still points at the same box.
         assert_eq!(vm.regs[0].as_string_ptr_mut(), live_ptr);
         assert_eq!(unsafe { (*live_ptr).as_str() }, "live-in-reg");
@@ -921,7 +925,7 @@ mod tests {
 
         collect(&mut vm);
 
-        assert!(vm.session_string_ptrs.contains(&s_ptr));
+        assert!(vm.gc_state.session_string_ptrs.contains(&s_ptr));
         assert_eq!(unsafe { (*s_ptr).as_str() }, "prop-string");
     }
 
@@ -931,13 +935,13 @@ mod tests {
         let perm = vm.perm_string("perm");
         let perm_ptr = perm.as_string_ptr_mut();
         // Permanent strings live in PermInterner, never in the session set.
-        assert!(!vm.session_string_ptrs.contains(&perm_ptr));
+        assert!(!vm.gc_state.session_string_ptrs.contains(&perm_ptr));
         vm.regs[0] = perm;
 
         collect(&mut vm);
 
         // Never dropped by the session sweep (still readable, still absent from session set).
-        assert!(!vm.session_string_ptrs.contains(&perm_ptr));
+        assert!(!vm.gc_state.session_string_ptrs.contains(&perm_ptr));
         assert_eq!(unsafe { (*perm_ptr).as_str() }, "perm");
     }
 
@@ -948,11 +952,11 @@ mod tests {
         let _ = dead.as_string_ptr_mut();
         let expected = (size_of::<JsString>() + "0123456789".len()) as u64;
 
-        let mut gc = std::mem::take(&mut vm.session_gc);
+        let mut gc = std::mem::take(&mut vm.gc_state.session_gc);
         let before = gc.total_bytes_freed;
         gc.collect(&mut vm);
         let after = gc.total_bytes_freed;
-        vm.session_gc = gc;
+        vm.gc_state.session_gc = gc;
 
         assert!(after >= before + expected);
     }

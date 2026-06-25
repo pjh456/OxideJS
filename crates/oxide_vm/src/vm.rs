@@ -1,6 +1,5 @@
 #![allow(clippy::arc_with_non_send_sync)]
 
-use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use oxide_bytecode::module::{CompiledModule, Constant};
@@ -11,12 +10,12 @@ pub use crate::bindings::init_kernel_builtins;
 use crate::coercion;
 use crate::native::NativeFn;
 use crate::session_gc::SessionGc;
+use crate::vm_state::{GcState, IterState, ProfilingState, SymbolState};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
-use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::NativeResult;
 use oxide_types::error::{JsError, JsErrorKind};
 use oxide_types::mem::{Epoch, P};
-use oxide_types::object::{JsObject, JsString, NativeFnPtr};
+use oxide_types::object::{JsObject, NativeFnPtr};
 use oxide_types::value::JsValue;
 
 pub(crate) const MAX_PROTO_CHAIN_DEPTH: usize = 1024;
@@ -77,14 +76,6 @@ macro_rules! binary_arith {
     ($self:ident, $a:expr, $b:expr, $rd:expr, $op:tt) => {{
         let l = $self.coerce_number_bounded($self.regs[$a])?;
         let r = $self.coerce_number_bounded($self.regs[$b])?;
-        $self.regs[$rd] = JsValue::float(l $op r);
-    }}
-}
-
-macro_rules! compound_arith {
-    ($self:ident, $rd:expr, $a:expr, $op:tt) => {{
-        let l = $self.coerce_number_bounded($self.regs[$rd])?;
-        let r = $self.coerce_number_bounded($self.regs[$a])?;
         $self.regs[$rd] = JsValue::float(l $op r);
     }}
 }
@@ -156,21 +147,9 @@ pub struct Vm {
     /// A fat `*const` because the cache Vec is VM-owned and run-stable (OnceLock filled once).
     pub(crate) active_immutables: *const [JsValue],
     pub(crate) frames: SmallVec<[CallFrame; 16]>,
-    pub for_in_iters: Vec<*mut ForInIter<'static>>,
     pub(crate) kernel_core: Arc<KernelCore>,
     pub(crate) session: KernelSession,
-    pub(crate) session_string_ptrs: Vec<*mut JsString>,
     pub epoch: Epoch,
-    pub(crate) session_epoch: bumpalo::Bump,
-    pub(crate) session_gc: SessionGc,
-    /// Long-lived forwarding map reused by GC sweep and promote.
-    /// `mem::take`'d out for use, `clear()`'d and put back — capacity retained
-    /// across collections, so no per-event `HashMap` allocation. `FxBuildHasher`
-    /// because the keys are raw pointers (collision resistance is irrelevant).
-    pub(crate) forwarding: HashMap<*mut JsObject, *mut JsObject, rustc_hash::FxBuildHasher>,
-    pub(crate) epoch_object_ptrs: Vec<*mut JsObject>,
-    pub(crate) session_object_ptrs: Vec<*mut JsObject>,
-    pub(crate) session_bytes_allocated: usize,
     pub object_prototype: P<JsObject>,
     pub math_rng_state: u64,
     pub(crate) sub_modules: Arc<Vec<CompiledModule>>,
@@ -184,11 +163,6 @@ pub struct Vm {
     pub(crate) exception_value: Option<JsValue>,
     pub(crate) pending_exception: Option<JsValue>,
     pub(crate) pending_error_kind: Option<&'static str>,
-    pub(crate) symbol_counter: u32,
-    pub(crate) symbol_descriptions: Vec<String>,
-    pub(crate) symbol_registry: HashMap<String, u32>,
-    pub(crate) for_of_iters: Vec<JsValue>,
-    pub(crate) last_for_of_result: JsValue,
     pub(crate) root_reg_limit: u8,
     pub(crate) active_reg_limit: u8,
     pub(crate) native_call_depth: usize,
@@ -196,9 +170,14 @@ pub struct Vm {
     /// The dispatch loop checks this flag and skips writing `regs[target_reg]` from the
     /// call result — the value will be delivered by the RETURN handler instead.
     pub(crate) accessor_frame_target_reg: Option<u8>,
-    pub(crate) ic_hits: std::cell::Cell<u64>,
-    pub(crate) ic_misses: std::cell::Cell<u64>,
-    pub(crate) instruction_count: u64,
+    /// Grouped session-arena / GC bookkeeping.
+    pub(crate) gc_state: GcState,
+    /// Grouped `Symbol` interning state.
+    pub(crate) symbols: SymbolState,
+    /// Grouped live `for-in` / `for-of` iterator state.
+    pub(crate) iters: IterState,
+    /// Grouped inline-cache and instruction counters.
+    pub(crate) profiling: ProfilingState,
 }
 
 impl Vm {
@@ -302,7 +281,7 @@ impl Vm {
 
     pub(crate) fn alloc_object(&mut self, obj: JsObject) -> *mut JsObject {
         let ptr = self.epoch.alloc(obj);
-        self.epoch_object_ptrs.push(ptr);
+        self.gc_state.epoch_object_ptrs.push(ptr);
         ptr
     }
 
@@ -348,12 +327,12 @@ impl Vm {
         f(JsValue::from_js_object(self.session.global_object().as_ptr() as *mut JsObject));
         f(self.exception_value.unwrap_or(JsValue::undefined()));
         f(self.pending_exception.unwrap_or(JsValue::undefined()));
-        for &v in &self.for_of_iters {
+        for &v in &self.iters.for_of_iters {
             f(v);
         }
-        f(self.last_for_of_result);
+        f(self.iters.last_for_of_result);
         // Converted immutables (scalars + perm-strings) are NOT session GC roots — not scanned.
-        for iter in &self.for_in_iters {
+        for iter in &self.iters.for_in_iters {
             if iter.is_null() {
                 continue;
             }
@@ -366,50 +345,50 @@ impl Vm {
     }
 
     pub(crate) fn maybe_collect_session_gc(&mut self) {
-        let mut session_gc = std::mem::take(&mut self.session_gc);
+        let mut session_gc = std::mem::take(&mut self.gc_state.session_gc);
         session_gc.maybe_collect(self);
-        self.session_gc = session_gc;
+        self.gc_state.session_gc = session_gc;
     }
 
     pub fn session_gc_stats(&self) -> &SessionGc {
-        &self.session_gc
+        &self.gc_state.session_gc
     }
 
     pub fn session_object_count(&self) -> usize {
-        self.session_object_ptrs.len()
+        self.gc_state.session_object_ptrs.len()
     }
 
     pub fn session_bytes_allocated(&self) -> usize {
-        self.session_bytes_allocated
+        self.gc_state.session_bytes_allocated
     }
 
     pub fn epoch_object_count(&self) -> usize {
-        self.epoch_object_ptrs.len()
+        self.gc_state.epoch_object_ptrs.len()
     }
 
     pub fn ic_hit_rate(&self) -> f64 {
-        let total = self.ic_hits.get() + self.ic_misses.get();
+        let total = self.profiling.ic_hits.get() + self.profiling.ic_misses.get();
         if total == 0 {
             0.0
         } else {
-            self.ic_hits.get() as f64 / total as f64
+            self.profiling.ic_hits.get() as f64 / total as f64
         }
     }
 
     pub fn instruction_count(&self) -> u64 {
-        self.instruction_count
+        self.profiling.instruction_count
     }
 
     pub fn symbol_registry_len(&self) -> usize {
-        self.symbol_registry.len()
+        self.symbols.symbol_registry.len()
     }
 
     pub fn ic_hit_count(&self) -> u64 {
-        self.ic_hits.get()
+        self.profiling.ic_hits.get()
     }
 
     pub fn ic_miss_count(&self) -> u64 {
-        self.ic_misses.get()
+        self.profiling.ic_misses.get()
     }
 
     pub(crate) fn checked_object_ptr(
@@ -728,12 +707,12 @@ impl Vm {
             steps += 1;
             if let Some(max_steps) = self.kernel_core.config.max_steps {
                 if steps > max_steps {
-                    self.instruction_count = steps;
+                    self.profiling.instruction_count = steps;
                     return Err(format!("VM step limit exceeded at pc={}", self.pc));
                 }
             }
             if self.pc >= self.bytecode.len() {
-                self.instruction_count = steps;
+                self.profiling.instruction_count = steps;
                 return Err("program counter out of bounds".into());
             }
 
@@ -748,7 +727,7 @@ impl Vm {
                 OpCode::NOP => {}
 
                 OpCode::HALT => {
-                    self.instruction_count = steps;
+                    self.profiling.instruction_count = steps;
                     return Ok(self.regs[0]);
                 }
 
@@ -757,48 +736,13 @@ impl Vm {
                 }
 
                 OpCode::CREATE_CLOSURE => {
-                    let sub_idx = opcode::imm16(instr) as u32;
-                    debug_assert!(sub_idx > 0 && (sub_idx as usize) <= self.sub_modules.len());
-                    let sub = &self.sub_modules[sub_idx as usize - 1];
-                    let result = self.create_function_object(
-                        sub_idx,
-                        sub.is_arrow,
-                        sub.is_class_constructor,
-                        sub.is_derived_constructor,
-                        sub.needs_home_object,
-                    );
-                    self.regs[rd] = result;
+                    self.dispatch_create_closure(rd, instr);
                 }
-                OpCode::CREATE_REGEXP => {
-                    let pat_val = self.regs[a];
-                    let flags_val = self.regs[b];
-                    let ctor_ptr = self.session.builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
-                    let ctor = unsafe { &*ctor_ptr };
-                    let Some(native_fn) = ctor.native_fn() else {
-                        self.raise_error_kind("TypeError", "RegExp constructor unavailable")?;
-                        return Ok(JsValue::undefined());
-                    };
-                    let saved_0 = self.regs[0];
-                    let saved_1 = self.regs[1];
-                    let saved_2 = self.regs[2];
-                    self.regs[0] = JsValue::undefined();
-                    self.regs[1] = pat_val;
-                    self.regs[2] = flags_val;
-                    let func = unsafe { crate::vm::native_fn_ptr_to_fn(native_fn) };
-                    let result = match func(self, &[0, 1, 2]) {
-                        oxide_runtime_api::NativeResult::Ok(v) => v,
-                        oxide_runtime_api::NativeResult::Err(e) => {
-                            return Err(self.error_message_text("TypeError", &self.error_text(e)));
-                        }
-                        oxide_runtime_api::NativeResult::TailCall { .. } => {
-                            return Err(self.error_message_text("TypeError", "unexpected tail call"));
-                        }
-                    };
-                    self.regs[0] = saved_0;
-                    self.regs[1] = saved_1;
-                    self.regs[2] = saved_2;
-                    self.regs[rd] = result;
-                }
+                OpCode::CREATE_REGEXP => match self.dispatch_create_regexp(rd, a, b) {
+                    Ok(Some(result)) => return Ok(result),
+                    Ok(None) => {}
+                    Err(e) => return Err(e),
+                },
 
                 OpCode::ADD => {
                     self.dispatch_add(rd, a, b)?;
@@ -821,8 +765,7 @@ impl Vm {
                 }
 
                 OpCode::NEG => {
-                    let v = self.coerce_number_bounded(self.regs[a])?;
-                    self.regs[rd] = JsValue::float(-v);
+                    self.dispatch_neg(rd, a)?;
                 }
 
                 OpCode::BIT_AND => {
@@ -886,57 +829,36 @@ impl Vm {
                 }
 
                 OpCode::UNARY_PLUS => {
-                    let v = self.coerce_number_bounded(self.regs[a])?;
-                    self.regs[rd] = JsValue::float(v);
+                    self.dispatch_unary_plus(rd, a)?;
                 }
 
                 OpCode::JMP => {
-                    let offset = opcode::offset16(instr) as isize;
-                    self.pc = ((self.pc as isize) + offset - 1) as usize;
+                    self.dispatch_jmp(instr);
                 }
 
                 OpCode::JMP_IF_FALSE => {
-                    let cond = coercion::to_boolean(self.regs[rd]);
-                    if !cond {
-                        let offset = opcode::offset16(instr) as isize;
-                        self.pc = ((self.pc as isize) + offset - 1) as usize;
-                    }
+                    self.dispatch_jmp_if_false(rd, instr);
                 }
 
                 OpCode::JMP_IF_TRUE => {
-                    let cond = coercion::to_boolean(self.regs[rd]);
-                    if cond {
-                        let offset = opcode::offset16(instr) as isize;
-                        self.pc = ((self.pc as isize) + offset - 1) as usize;
-                    }
+                    self.dispatch_jmp_if_true(rd, instr);
                 }
 
                 OpCode::JMP_IF_NULLISH => {
-                    if self.regs[rd].is_nullish() {
-                        let offset = opcode::offset16(instr) as isize;
-                        self.pc = ((self.pc as isize) + offset - 1) as usize;
-                    }
+                    self.dispatch_jmp_if_nullish(rd, instr);
                 }
 
-                OpCode::LOAD_VAR => {
-                    if a == 254
-                        && self.frames.last().map(|frame| frame.is_derived_constructor).unwrap_or(false)
-                        && self.regs[a].is_undefined()
-                    {
-                        throw_err!(self, ReferenceError, "must call super constructor before using 'this'");
-                    }
-                    self.regs[rd] = self.regs[a];
-                }
+                OpCode::LOAD_VAR => match self.dispatch_load_var(rd, a) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(e) => return Err(e),
+                },
 
-                OpCode::STORE_VAR => {
-                    if b != 0 {
-                        // const guard: check if already initialized
-                        if !self.regs[rd].is_undefined() {
-                            throw_err!(self, TypeError, "Assignment to constant variable");
-                        }
-                    }
-                    self.regs[rd] = self.regs[a];
-                }
+                OpCode::STORE_VAR => match self.dispatch_store_var(rd, a, b) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(e) => return Err(e),
+                },
 
                 OpCode::CALL => match self.dispatch_call(rd, a, b) {
                     Ok(true) => continue,
@@ -954,179 +876,25 @@ impl Vm {
                     Err(e) => return Err(e),
                 },
 
-                OpCode::SUPER_CALL => {
-                    let first_arg_reg = a as u8;
-                    let ext = self.bytecode[self.pc];
-                    self.pc += 1;
-                    let arg_count = (ext & 0xFF) as usize;
-
-                    let Some(frame) = self.frames.last() else {
-                        throw_err!(self, ReferenceError, "super() used outside class constructor");
-                    };
-                    if !frame.is_derived_constructor {
-                        throw_err!(self, ReferenceError, "super() used outside derived constructor");
-                    }
-                    if !self.regs[254].is_undefined() {
-                        throw_err!(self, ReferenceError, "super() called more than once");
-                    }
-                    let Some(derived_this) = frame.constructed_this else {
-                        throw_err!(self, ReferenceError, "super() without derived this");
-                    };
-
-                    let new_target = self.regs[255];
-                    if !new_target.is_object() {
-                        throw_err!(self, TypeError, "super() new.target is not an object");
-                    }
-                    let new_target_obj = unsafe { &*new_target.as_js_object_ptr() };
-                    let super_ctor = new_target_obj.proto();
-                    if !super_ctor.is_object() {
-                        throw_err!(self, TypeError, "super constructor is not an object");
-                    }
-                    let super_obj = unsafe { &*super_ctor.as_js_object_ptr() };
-                    if !super_obj.is_function() {
-                        throw_err!(self, TypeError, "super constructor is not a function");
-                    }
-
-                    if super_obj.native_fn().is_some() {
-                        self.regs[253] = derived_this;
-                        self.regs[254] = super_ctor; // bind_dispatcher reads regs[254] as the wrapper callee
-                        let (args_buf, len) = Self::build_native_args(first_arg_reg, arg_count, 253);
-                        // SAFETY: native_fn was set via set_native_fn with a valid NativeFn pointer;
-                        // native_fn_ptr_to_fn is the single coercion point for NativeFnPtr → NativeFn.
-                        let func: NativeFn = unsafe { native_fn_ptr_to_fn(super_obj.native_fn().unwrap()) };
-                        match func(self, &args_buf[..len]) {
-                            NativeResult::Ok(val) => {
-                                self.regs[254] = if val.is_object() { val } else { derived_this };
-                                self.regs[rd] = self.regs[254];
-                            }
-                            NativeResult::Err(err_val) => {
-                                self.exception_value = Some(err_val);
-                                self.pending_error_kind = Some(self.thrown_error_kind(err_val));
-                                match self.unwind() {
-                                    Ok(()) => continue,
-                                    Err(e) => return Err(e),
-                                }
-                            }
-                            NativeResult::TailCall { callee, this, args } => {
-                                // e.g. bound function: resolve the tail call, use its return
-                                // value as the constructed instance (or fall back to derived_this).
-                                match self.call_function_sync(callee, this, &args) {
-                                    Ok(val) => {
-                                        self.regs[254] = if val.is_object() { val } else { derived_this };
-                                        self.regs[rd] = self.regs[254];
-                                    }
-                                    Err(e) => return Err(e),
-                                }
-                            }
-                        }
-                    } else if super_obj.sub_module_index() > 0 {
-                        let sub_idx = super_obj.sub_module_index() as usize - 1;
-                        if sub_idx >= self.sub_modules.len() {
-                            return Err(format!(
-                                "SUPER_CALL: sub_module_index {} out of bounds (max {})",
-                                sub_idx,
-                                self.sub_modules.len()
-                            ));
-                        }
-                        if self.frames.len() >= self.kernel_core.config.max_call_depth {
-                            return Err(self.error_message_text("RangeError", "Maximum call stack size exceeded"));
-                        }
-
-                        let sub_bytecode = self.sub_modules[sub_idx].bytecode.clone();
-                        let sub_n_args = self.sub_modules[sub_idx].n_args as usize;
-                        let sub_n_registers = self.sub_modules[sub_idx].n_registers;
-                        let sub_param_base = self.sub_modules[sub_idx].param_base as usize;
-                        let caller_reg_limit = self.active_reg_limit.max(1);
-                        let saved_reg_offset = self.save_stack.len() as u32;
-                        self.save_stack.extend_from_slice(&self.regs[..caller_reg_limit as usize]);
-                        let saved_this = self.regs[254];
-                        let saved_new_target = self.regs[255];
-
-                        for i in 0..sub_n_args {
-                            let src_reg = first_arg_reg.wrapping_add(i as u8) as usize;
-                            self.regs[sub_param_base + i] = self.regs[src_reg];
-                        }
-                        self.regs[254] = derived_this;
-                        self.regs[255] = new_target;
-
-                        self.saved_bytecode_stack.push(std::mem::take(&mut self.bytecode));
-                        self.saved_immutables_stack.push(self.active_immutables);
-                        self.frames.push(CallFrame {
-                            return_addr: self.pc,
-                            function_name: self.sub_modules[sub_idx]
-                                .function_name
-                                .as_deref()
-                                .map(|name| self.kernel_core.perm_interner().intern(name).0)
-                                .unwrap_or(0),
-                            caller_reg_limit,
-                            saved_reg_offset,
-                            saved_this,
-                            saved_new_target,
-                            callee: super_ctor,
-                            construct_result_reg: Some(254),
-                            constructed_this: Some(derived_this),
-                            is_derived_constructor: super_obj.is_derived_constructor(),
-                            continuation: FrameContinuation::None,
-                        });
-
-                        self.bytecode = sub_bytecode;
-                        let subs = Arc::clone(&self.sub_modules);
-                        self.activate_immutables(sub_idx + 1, &subs[sub_idx].constants);
-                        for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map {
-                            let si = self.kernel_core.perm_interner().intern(name.as_str()).0;
-                            let global = self.session.global_object();
-                            if let Some(pos) = self.kernel_core.shape_forge().lookup_position(global.shape_id(), si) {
-                                self.regs[*reg as usize] = global.get_prop_at(pos);
-                            }
-                        }
-                        self.active_reg_limit = sub_n_registers.max(1);
-                        self.pc = 0;
-                        continue;
-                    } else {
-                        throw_err!(self, TypeError, "super constructor is not callable");
-                    }
-                }
+                OpCode::SUPER_CALL => match self.dispatch_super_call(rd, a) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(e) => return Err(e),
+                },
 
                 OpCode::SUPER_GET_PROP | OpCode::SUPER_STATIC_GET_PROP => {
-                    let key_val = self.regs[b];
-                    let prop_name_si = self.property_key_si(key_val);
-                    let Some(frame) = self.frames.last() else {
-                        throw_err!(self, ReferenceError, "super property used outside function");
-                    };
-                    if !frame.callee.is_object() {
-                        throw_err!(self, ReferenceError, "super property has no home object");
-                    }
-                    let callee_obj = unsafe { &*frame.callee.as_js_object_ptr() };
-                    let home_object = callee_obj.home_object();
-                    if !home_object.is_object() {
-                        throw_err!(self, ReferenceError, "super property has no home object");
-                    }
-                    let home_obj = unsafe { &*home_object.as_js_object_ptr() };
-                    let super_base = home_obj.proto();
-                    if !super_base.is_object() {
-                        self.regs[rd] = JsValue::undefined();
-                    } else {
-                        let super_obj = unsafe { &*super_base.as_js_object_ptr() };
-                        let val = self.ordinary_get_with_target(super_obj, prop_name_si, self.regs[a], rd as u8)?;
-                        if self.accessor_frame_target_reg.take().is_none() {
-                            self.regs[rd] = val;
-                        }
+                    match self.dispatch_super_get_prop(rd, a, b) {
+                        Ok(true) => continue,
+                        Ok(false) => {}
+                        Err(e) => return Err(e),
                     }
                 }
 
-                OpCode::SET_HOME_OBJECT => {
-                    let func_val = self.regs[rd];
-                    let home_val = self.regs[a];
-                    if !func_val.is_object() || !home_val.is_object() {
-                        throw_err!(self, TypeError, "SET_HOME_OBJECT expects function and object");
-                    }
-                    let home_val = self.promote_if_needed_for_write_ptr(func_val.as_js_object_ptr(), home_val);
-                    let func_obj = unsafe { &mut *func_val.as_js_object_ptr() };
-                    if !func_obj.is_function() {
-                        throw_err!(self, TypeError, "SET_HOME_OBJECT target is not a function");
-                    }
-                    func_obj.set_home_object(home_val);
-                }
+                OpCode::SET_HOME_OBJECT => match self.dispatch_set_home_object(rd, a) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(e) => return Err(e),
+                },
 
                 OpCode::DEFINE_ACCESSOR => {
                     self.dispatch_define_accessor(rd, a, b)?;
@@ -1153,61 +921,35 @@ impl Vm {
                 }
 
                 OpCode::NEW_OBJECT => {
-                    let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
-                    let obj = self
-                        .epoch
-                        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
-                    self.regs[rd] = JsValue::object(obj as *mut u8);
+                    self.dispatch_new_object(rd);
                 }
 
                 OpCode::NEW_ARRAY => {
-                    let proto_ptr = self.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
-                    let n = opcode::imm16(instr) as usize;
-                    let bump = self.epoch.bump();
-                    let obj = self.alloc_object(JsObject::new_array(
-                        EMPTY_SHAPE_ID,
-                        JsValue::from_js_object(proto_ptr),
-                        n,
-                        bump,
-                    ));
-                    self.regs[rd] = JsValue::object(obj as *mut u8);
+                    self.dispatch_new_array(rd, instr);
                 }
 
                 OpCode::COMPOUND_ADD => {
-                    let lhs = self.coerce_primitive_bounded(self.regs[rd], false)?;
-                    let rhs = self.coerce_primitive_bounded(self.regs[a], false)?;
-                    if lhs.is_string() || rhs.is_string() {
-                        let ls = coercion::to_string(lhs);
-                        let rs = coercion::to_string(rhs);
-                        let concat = format!("{ls}{rs}");
-                        self.regs[rd] = self.new_string(&concat);
-                    } else {
-                        let ln = coercion::to_number(lhs);
-                        let rn = coercion::to_number(rhs);
-                        self.regs[rd] = JsValue::float(ln + rn);
-                    }
+                    self.dispatch_compound_add(rd, a)?;
                 }
 
                 OpCode::COMPOUND_SUB => {
-                    compound_arith!(self, rd, a, -);
+                    self.dispatch_compound_sub(rd, a)?;
                 }
 
                 OpCode::COMPOUND_MUL => {
-                    compound_arith!(self, rd, a, *);
+                    self.dispatch_compound_mul(rd, a)?;
                 }
 
                 OpCode::COMPOUND_DIV => {
-                    compound_arith!(self, rd, a, /);
+                    self.dispatch_compound_div(rd, a)?;
                 }
 
                 OpCode::COMPOUND_MOD => {
-                    compound_arith!(self, rd, a, %);
+                    self.dispatch_compound_mod(rd, a)?;
                 }
 
                 OpCode::COMPOUND_EXP => {
-                    let l = self.coerce_number_bounded(self.regs[rd])?;
-                    let r = self.coerce_number_bounded(self.regs[a])?;
-                    self.regs[rd] = JsValue::float(l.powf(r));
+                    self.dispatch_compound_exp(rd, a)?;
                 }
 
                 OpCode::COMPOUND_AND => {
@@ -1239,39 +981,24 @@ impl Vm {
                 }
 
                 OpCode::VOID => {
-                    self.regs[rd] = JsValue::undefined();
+                    self.dispatch_void(rd);
                 }
 
                 OpCode::TEMPLATE_STR => {
                     self.dispatch_template_str(rd);
                 }
 
-                OpCode::DELETE_PROP_STATIC => {
-                    let prop_idx = self.bytecode[self.pc] as usize;
-                    self.pc += 1;
-                    let key_val = self.immutables().get(prop_idx).copied().unwrap_or_else(JsValue::undefined);
-                    let prop_name_si = self.property_key_si(key_val);
-                    let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "delete on non-object")? else {
-                        continue;
-                    };
-                    let obj = unsafe { &mut *obj_ptr };
-                    if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
-                        obj.set_prop_at(pos, JsValue::undefined());
-                    }
-                    self.regs[rd] = JsValue::bool(true);
-                }
+                OpCode::DELETE_PROP_STATIC => match self.dispatch_delete_prop_static(rd) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(e) => return Err(e),
+                },
 
-                OpCode::DELETE_PROP_DYNAMIC => {
-                    let prop_name_si = self.property_key_si(self.regs[b]);
-                    let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "delete on non-object")? else {
-                        continue;
-                    };
-                    let obj = unsafe { &mut *obj_ptr };
-                    if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
-                        obj.set_prop_at(pos, JsValue::undefined());
-                    }
-                    self.regs[rd] = JsValue::bool(true);
-                }
+                OpCode::DELETE_PROP_DYNAMIC => match self.dispatch_delete_prop_dynamic(rd, b) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(e) => return Err(e),
+                },
 
                 OpCode::INSTANCEOF => {
                     self.dispatch_instanceof(rd, a, b)?;
@@ -1298,29 +1025,19 @@ impl Vm {
                 }
 
                 OpCode::INC_PRE => {
-                    let n = self.coerce_number_bounded(self.regs[rd])?;
-                    let result = JsValue::float(n + 1.0);
-                    self.regs[rd] = result;
-                    self.regs[a] = result;
+                    self.dispatch_inc_pre(rd, a)?;
                 }
 
                 OpCode::INC_POST => {
-                    let n = self.coerce_number_bounded(self.regs[rd])?;
-                    self.regs[a] = JsValue::float(n);
-                    self.regs[rd] = JsValue::float(n + 1.0);
+                    self.dispatch_inc_post(rd, a)?;
                 }
 
                 OpCode::DEC_PRE => {
-                    let n = self.coerce_number_bounded(self.regs[rd])?;
-                    let result = JsValue::float(n - 1.0);
-                    self.regs[rd] = result;
-                    self.regs[a] = result;
+                    self.dispatch_dec_pre(rd, a)?;
                 }
 
                 OpCode::DEC_POST => {
-                    let n = self.coerce_number_bounded(self.regs[rd])?;
-                    self.regs[a] = JsValue::float(n);
-                    self.regs[rd] = JsValue::float(n - 1.0);
+                    self.dispatch_dec_post(rd, a)?;
                 }
 
                 OpCode::MEMBER_INC
@@ -1503,8 +1220,10 @@ mod tests {
             continuation: super::FrameContinuation::None,
         });
         vm.save_stack.push(JsValue::undefined());
-        vm.for_in_iters.push(std::ptr::dangling_mut::<super::ForInIter<'static>>());
-        vm.for_of_iters.push(JsValue::undefined());
+        vm.iters
+            .for_in_iters
+            .push(std::ptr::dangling_mut::<super::ForInIter<'static>>());
+        vm.iters.for_of_iters.push(JsValue::undefined());
         vm.saved_bytecode_stack
             .push(vec![opcode::encode(opcode::OpCode::HALT, 0, 0, 0)]);
         vm.saved_immutables_stack
@@ -1523,8 +1242,8 @@ mod tests {
         assert_eq!(vm.pc, 0);
         assert!(vm.frames.is_empty());
         assert!(vm.save_stack.is_empty());
-        assert!(vm.for_in_iters.is_empty());
-        assert!(vm.for_of_iters.is_empty());
+        assert!(vm.iters.for_in_iters.is_empty());
+        assert!(vm.iters.for_of_iters.is_empty());
         assert!(vm.saved_bytecode_stack.is_empty());
         assert!(vm.saved_immutables_stack.is_empty());
         assert!(vm.try_stack.is_empty());
@@ -1538,15 +1257,15 @@ mod tests {
     #[test]
     fn full_reset_clears_symbol_state() {
         let mut vm = Vm::new();
-        vm.symbol_counter = 1;
-        vm.symbol_descriptions.push("shared".to_string());
-        vm.symbol_registry.insert("shared".to_string(), 0);
+        vm.symbols.symbol_counter = 1;
+        vm.symbols.symbol_descriptions.push("shared".to_string());
+        vm.symbols.symbol_registry.insert("shared".to_string(), 0);
 
         vm.full_reset();
 
-        assert_eq!(vm.symbol_counter, 0);
-        assert!(vm.symbol_descriptions.is_empty());
-        assert!(vm.symbol_registry.is_empty());
+        assert_eq!(vm.symbols.symbol_counter, 0);
+        assert!(vm.symbols.symbol_descriptions.is_empty());
+        assert!(vm.symbols.symbol_registry.is_empty());
     }
 
     #[test]
@@ -1560,11 +1279,11 @@ mod tests {
             ..CompiledModule::new()
         };
         let mut vm = Vm::new();
-        vm.for_of_iters.push(JsValue::undefined());
+        vm.iters.for_of_iters.push(JsValue::undefined());
 
         vm.run(&module).expect("FOR_OF_CLOSE should tolerate non-object sentinel");
 
-        assert!(vm.for_of_iters.is_empty());
+        assert!(vm.iters.for_of_iters.is_empty());
     }
 
     #[test]
@@ -1572,7 +1291,7 @@ mod tests {
         let mut vm = Vm::new();
         vm.bytecode = vec![0, 0, 0];
         vm.pc = 3;
-        vm.write_ic_back(0x1234_5678, 7);
+        crate::ic_helper::write_ic_back(&mut vm.bytecode, vm.pc, 0x1234_5678, 7);
         assert_eq!(vm.bytecode[0], 0x0034_5678);
         assert_eq!(vm.bytecode[1], 7);
         assert_eq!(vm.bytecode[2], 0);

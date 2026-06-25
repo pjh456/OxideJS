@@ -17,10 +17,10 @@ impl Vm {
     }
 
     pub(crate) fn promote_object(&mut self, src: *mut JsObject) -> *mut JsObject {
-        let mut forwarding = std::mem::take(&mut self.forwarding);
+        let mut forwarding = std::mem::take(&mut self.gc_state.forwarding);
         let result = self.promote_object_inner(src, &mut forwarding);
         forwarding.clear();
-        self.forwarding = forwarding;
+        self.gc_state.forwarding = forwarding;
         result
     }
 
@@ -39,10 +39,10 @@ impl Vm {
         }
 
         let clone = src_ref.clone_for_session_epoch();
-        let dst = self.session_epoch.alloc(clone) as *mut JsObject;
+        let dst = self.gc_state.session_epoch.alloc(clone) as *mut JsObject;
         forwarding.insert(src, dst);
-        self.session_object_ptrs.push(dst);
-        self.session_bytes_allocated += std::mem::size_of::<JsObject>();
+        self.gc_state.session_object_ptrs.push(dst);
+        self.gc_state.session_bytes_allocated += std::mem::size_of::<JsObject>();
 
         let dst_ref = unsafe { &mut *dst };
         dst_ref.rewrite_object_values(|value| self.promote_value_if_epoch_object(value, forwarding));
@@ -243,11 +243,11 @@ mod tests {
         assert!(!promoted.is_null());
         // The shared forwarding map must be cleared after each promote so a
         // later promote (or GC sweep) never observes stale old->new mappings.
-        assert!(vm.forwarding.is_empty());
+        assert!(vm.gc_state.forwarding.is_empty());
 
         let second = plain_object(&mut vm);
         let promoted2 = vm.promote_object(second);
         assert!(!promoted2.is_null());
-        assert!(vm.forwarding.is_empty());
+        assert!(vm.gc_state.forwarding.is_empty());
     }
 }
