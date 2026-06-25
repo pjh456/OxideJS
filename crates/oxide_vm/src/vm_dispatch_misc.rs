@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
-use crate::native::{NativeFn, NativeResult};
+use crate::native::NativeFn;
 use crate::vm::{native_fn_ptr_to_fn, CallFrame, ForInIter, FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
+use oxide_runtime_api::NativeResult;
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::is_private_name_key;
 use oxide_types::value::JsValue;

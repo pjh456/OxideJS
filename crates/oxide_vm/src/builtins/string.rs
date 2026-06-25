@@ -3,9 +3,9 @@ use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
 use crate::coercion;
-use crate::native::NativeResult;
 use crate::vm::Vm;
 use memchr::memchr;
+use oxide_runtime_api::NativeResult;
 
 fn this_string(vm: &Vm, args: &[u8]) -> String {
     coercion::to_string(vm.reg(args[0]))

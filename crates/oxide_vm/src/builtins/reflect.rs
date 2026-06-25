@@ -4,8 +4,8 @@ use oxide_types::value::JsValue;
 
 use crate::builtins::object::walk_own_keys;
 use crate::coercion;
-use crate::native::NativeResult;
 use crate::vm::Vm;
+use oxide_runtime_api::NativeResult;
 
 pub fn reflect_apply(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let target = arg(vm, args, 1);

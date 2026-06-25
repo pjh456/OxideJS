@@ -2,8 +2,8 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr};
 use oxide_types::value::JsValue;
 
-use crate::native::NativeResult;
 use crate::vm::Vm;
+use oxide_runtime_api::NativeResult;
 
 fn invoke_target(vm: &mut Vm, target_val: JsValue, this_val: JsValue, arg_regs: &[u8]) -> NativeResult {
     let args: Vec<JsValue> = arg_regs.iter().map(|&r| vm.reg(r)).collect();

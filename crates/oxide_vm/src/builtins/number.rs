@@ -1,8 +1,8 @@
 use oxide_types::value::JsValue;
 
 use crate::coercion;
-use crate::native::NativeResult;
 use crate::vm::Vm;
+use oxide_runtime_api::NativeResult;
 
 pub fn number_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let n = if args.len() > 1 { coercion::to_number(vm.reg(args[1])) } else { 0.0 };

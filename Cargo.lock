@@ -1102,6 +1102,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxide_runtime_api"
+version = "0.1.0"
+dependencies = [
+ "oxide_kernel",
+ "oxide_types",
+]
+
+[[package]]
 name = "oxide_test262"
 version = "0.1.0"
 dependencies = [
@@ -1139,6 +1147,7 @@ dependencies = [
  "oxide_compiler",
  "oxide_kernel",
  "oxide_parser",
+ "oxide_runtime_api",
  "oxide_types",
  "proptest",
  "regex",

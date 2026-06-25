@@ -1,8 +1,8 @@
 use oxide_types::value::JsValue;
 
 use crate::coercion;
-use crate::native::NativeResult;
 use crate::vm::Vm;
+use oxide_runtime_api::NativeResult;
 
 fn num(vm: &Vm, reg: u8) -> f64 {
     coercion::to_number(vm.reg(reg))

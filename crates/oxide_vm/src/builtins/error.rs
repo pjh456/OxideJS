@@ -6,8 +6,8 @@ use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
 use crate::coercion;
-use crate::native::NativeResult;
 use crate::vm::Vm;
+use oxide_runtime_api::NativeResult;
 
 fn create_error_object(vm: &mut Vm, error_proto_ptr: *mut JsObject, name: &str, message: &str) -> JsValue {
     let obj = vm

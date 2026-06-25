@@ -4,8 +4,8 @@ use oxide_types::value::JsValue;
 
 use crate::builtins::array_buffer::{array_buffer_data_ptr, new_array_buffer, MAX_ARRAY_BUFFER_LENGTH};
 use crate::coercion;
-use crate::native::NativeResult;
 use crate::vm::Vm;
+use oxide_runtime_api::NativeResult;
 
 #[derive(Clone, Copy)]
 pub(crate) struct TypedArrayData {

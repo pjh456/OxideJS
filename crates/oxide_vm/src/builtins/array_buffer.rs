@@ -3,8 +3,8 @@ use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
 use crate::coercion;
-use crate::native::NativeResult;
 use crate::vm::Vm;
+use oxide_runtime_api::NativeResult;
 
 pub(crate) const MAX_ARRAY_BUFFER_LENGTH: usize = 1 << 30;
 

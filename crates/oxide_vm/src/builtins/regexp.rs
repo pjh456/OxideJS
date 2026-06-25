@@ -3,8 +3,8 @@ use oxide_types::object::{JsObject, NativeFnPtr};
 use oxide_types::value::JsValue;
 
 use crate::coercion;
-use crate::native::NativeResult;
 use crate::vm::Vm;
+use oxide_runtime_api::NativeResult;
 
 fn get_regexp_ptr(vm: &mut Vm, args: &[u8]) -> Result<*mut JsObject, JsValue> {
     let this_val = vm.reg(args[0]);
