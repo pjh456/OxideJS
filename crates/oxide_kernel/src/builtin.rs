@@ -2,7 +2,7 @@ use oxide_types::mem::P;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
-use crate::kernel::BuiltinDirtySet;
+use crate::kernel::{BuiltinDirtySet, BuiltinId};
 use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use crate::string_forge::PermInterner;
 
@@ -470,6 +470,75 @@ fn wire_builtin_world_links(world: &BuiltinWorld) {
 impl BuiltinWorld {
     fn fn_proto_val(&self) -> JsValue {
         JsValue::from_js_object(self.function_proto.as_ptr() as *mut JsObject)
+    }
+
+    pub fn get_by_id(&self, id: BuiltinId) -> &P<JsObject> {
+        match id {
+            BuiltinId::ObjectProto => &self.object_proto,
+            BuiltinId::ArrayProto => &self.array_proto,
+            BuiltinId::FunctionProto => &self.function_proto,
+            BuiltinId::StringProto => &self.string_proto,
+            BuiltinId::NumberProto => &self.number_proto,
+            BuiltinId::BooleanProto => &self.boolean_proto,
+            BuiltinId::ErrorProto => &self.error_proto,
+            BuiltinId::SymbolProto => &self.symbol_proto,
+            BuiltinId::ObjectConstructor => &self.object_constructor,
+            BuiltinId::ArrayConstructor => &self.array_constructor,
+            BuiltinId::FunctionConstructor => &self.function_constructor,
+            BuiltinId::StringConstructor => &self.string_constructor,
+            BuiltinId::NumberConstructor => &self.number_constructor,
+            BuiltinId::BooleanConstructor => &self.boolean_constructor,
+            BuiltinId::ErrorConstructor => &self.error_constructor,
+            BuiltinId::SymbolConstructor => &self.symbol_constructor,
+            BuiltinId::TypeErrorProto => &self.type_error_proto,
+            BuiltinId::ReferenceErrorProto => &self.reference_error_proto,
+            BuiltinId::RangeErrorProto => &self.range_error_proto,
+            BuiltinId::SyntaxErrorProto => &self.syntax_error_proto,
+            BuiltinId::UriErrorProto => &self.uri_error_proto,
+            BuiltinId::EvalErrorProto => &self.eval_error_proto,
+            BuiltinId::MathObject => &self.math_object,
+            BuiltinId::JsonObject => &self.json_object,
+            BuiltinId::DateConstructor => &self.date_constructor,
+            BuiltinId::DateProto => &self.date_proto,
+            BuiltinId::SetConstructor => &self.set_constructor,
+            BuiltinId::SetProto => &self.set_proto,
+            BuiltinId::MapConstructor => &self.map_constructor,
+            BuiltinId::MapProto => &self.map_proto,
+            BuiltinId::RegExpConstructor => &self.regexp_constructor,
+            BuiltinId::RegExpProto => &self.regexp_proto,
+            BuiltinId::ArrayBufferConstructor => &self.array_buffer_constructor,
+            BuiltinId::ArrayBufferProto => &self.array_buffer_proto,
+            BuiltinId::DataViewConstructor => &self.data_view_constructor,
+            BuiltinId::DataViewProto => &self.data_view_proto,
+            BuiltinId::TypedArrayProto => &self.typed_array_proto,
+            BuiltinId::Int8ArrayConstructor => &self.int8array_constructor,
+            BuiltinId::Int8ArrayProto => &self.int8array_proto,
+            BuiltinId::Uint8ArrayConstructor => &self.uint8array_constructor,
+            BuiltinId::Uint8ArrayProto => &self.uint8array_proto,
+            BuiltinId::Uint8ClampedArrayConstructor => &self.uint8clampedarray_constructor,
+            BuiltinId::Uint8ClampedArrayProto => &self.uint8clampedarray_proto,
+            BuiltinId::Int16ArrayConstructor => &self.int16array_constructor,
+            BuiltinId::Int16ArrayProto => &self.int16array_proto,
+            BuiltinId::Uint16ArrayConstructor => &self.uint16array_constructor,
+            BuiltinId::Uint16ArrayProto => &self.uint16array_proto,
+            BuiltinId::Int32ArrayConstructor => &self.int32array_constructor,
+            BuiltinId::Int32ArrayProto => &self.int32array_proto,
+            BuiltinId::Uint32ArrayConstructor => &self.uint32array_constructor,
+            BuiltinId::Uint32ArrayProto => &self.uint32array_proto,
+            BuiltinId::Float32ArrayConstructor => &self.float32array_constructor,
+            BuiltinId::Float32ArrayProto => &self.float32array_proto,
+            BuiltinId::Float64ArrayConstructor => &self.float64array_constructor,
+            BuiltinId::Float64ArrayProto => &self.float64array_proto,
+            BuiltinId::BigInt64ArrayConstructor => &self.bigint64array_constructor,
+            BuiltinId::BigInt64ArrayProto => &self.bigint64array_proto,
+            BuiltinId::BigUint64ArrayConstructor => &self.biguint64array_constructor,
+            BuiltinId::BigUint64ArrayProto => &self.biguint64array_proto,
+            BuiltinId::SymMatch => &self.sym_match,
+            BuiltinId::SymReplace => &self.sym_replace,
+            BuiltinId::SymSearch => &self.sym_search,
+            BuiltinId::SymSplit => &self.sym_split,
+            BuiltinId::SymIterator => &self.sym_iterator,
+        }
     }
 
     pub fn new(string_forge: &PermInterner, shape_forge: &ShapeForge) -> Self {
