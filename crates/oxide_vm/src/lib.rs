@@ -9,6 +9,7 @@ pub mod session_gc;
 pub mod vm;
 mod vm_dispatch_ctrl;
 mod vm_dispatch_misc;
+pub mod vm_log;
 pub mod vm_pool;
 mod vm_props;
 mod vm_runtime;

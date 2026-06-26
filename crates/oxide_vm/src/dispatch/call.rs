@@ -1,7 +1,7 @@
 use crate::native::NativeFn;
 use crate::vm::{native_fn_ptr_to_fn, CallFrame, FrameContinuation, Vm};
+use oxide_builtins::{builtins_debug, builtins_trace};
 use oxide_bytecode::opcode;
-use oxide_kernel::{builtins_debug, builtins_trace};
 use oxide_runtime_api::NativeResult;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;

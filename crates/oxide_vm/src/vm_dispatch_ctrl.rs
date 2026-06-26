@@ -23,13 +23,7 @@ impl Vm {
                     let ext = self.bytecode[self.pc];
                     self.pc += 1;
                     let arg_count = (ext & 0xFF) as usize;
-                    oxide_kernel::vm_debug!(
-                        "CALL rd={} this={} args={} depth={}",
-                        rd,
-                        this_reg,
-                        arg_count,
-                        self.frames.len()
-                    );
+                    crate::vm_debug!("CALL rd={} this={} args={} depth={}", rd, this_reg, arg_count, self.frames.len());
 
                     if obj.native_fn().is_some() {
                         self.dispatch_native_call(obj, callee, this_reg, first_arg_reg, arg_count)?;
@@ -77,7 +71,7 @@ impl Vm {
         let ext = self.bytecode[self.pc];
         self.pc += 1;
         let arg_count = (ext & 0xFF) as usize;
-        oxide_kernel::vm_debug!("CALL_NATIVE rd={} args={}", rd, arg_count);
+        crate::vm_debug!("CALL_NATIVE rd={} args={}", rd, arg_count);
         self.dispatch_native_call(obj, callee, this_reg, first_arg_reg, arg_count)
     }
 
@@ -115,7 +109,7 @@ impl Vm {
 
     pub(crate) fn dispatch_return(&mut self, rd: usize) -> Result<Option<JsValue>, String> {
         let result = self.regs[rd];
-        oxide_kernel::vm_debug!("RETURN depth={}", self.frames.len());
+        crate::vm_debug!("RETURN depth={}", self.frames.len());
         if let Some(frame) = self.frames.pop() {
             let construct_result_reg = frame.construct_result_reg;
             let constructed_this = frame.constructed_this;
@@ -144,7 +138,7 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_throw(&mut self, rd: usize) -> Result<bool, String> {
-        oxide_kernel::vm_debug!("THROW pc={}", self.pc);
+        crate::vm_debug!("THROW pc={}", self.pc);
         let exc_value = self.regs[rd];
         self.exception_value = Some(exc_value);
         self.pending_error_kind = Some(self.thrown_error_kind(exc_value));
@@ -152,7 +146,7 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_try_begin(&mut self, instr: u32) {
-        oxide_kernel::vm_trace!("TRY_BEGIN frame_depth={}", self.frames.len());
+        crate::vm_trace!("TRY_BEGIN frame_depth={}", self.frames.len());
         let offset = opcode::offset16(instr) as isize;
         let catch_pc = if offset == 0 {
             None

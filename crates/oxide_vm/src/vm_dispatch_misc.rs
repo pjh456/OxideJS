@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::native::NativeFn;
 use crate::vm::{native_fn_ptr_to_fn, CallFrame, ForInIter, FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
+use crate::vm_debug;
 use oxide_runtime_api::{to_boolean, NativeResult};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::is_private_name_key;
@@ -11,7 +12,7 @@ impl Vm {
     pub(crate) fn dispatch_new_expression(&mut self, rd: usize, a: usize, b: usize) -> Result<bool, String> {
         let constructor_reg = a;
         let first_arg_reg = b as u8;
-        oxide_kernel::vm_debug!("NEW_EXPRESSION rd={}", rd);
+        vm_debug!("NEW_EXPRESSION rd={}", rd);
 
         let constructor = self.regs[constructor_reg];
         if !constructor.is_object() {

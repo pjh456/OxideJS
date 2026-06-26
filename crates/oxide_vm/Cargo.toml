@@ -12,6 +12,7 @@ oxide_kernel = { path = "../oxide_kernel" }
 oxide_runtime_api = { path = "../oxide_runtime_api" }
 oxide_builtins = { path = "../oxide_builtins" }
 oxide_types = { path = "../oxide_types" }
+oxide_log = { path = "../oxide_log" }
 bumpalo.workspace = true
 fast-float.workspace = true
 ryu.workspace = true
@@ -22,7 +23,6 @@ chrono.workspace = true
 indexmap.workspace = true
 smallvec.workspace = true
 unicode-normalization.workspace = true
-tracing.workspace = true
 rustc-hash.workspace = true
 
 [dev-dependencies]

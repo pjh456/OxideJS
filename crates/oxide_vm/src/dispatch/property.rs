@@ -1,6 +1,6 @@
+use crate::{ic_debug, ic_trace};
 use oxide_bytecode::opcode::OpCode;
 use oxide_kernel::prop_forge::PropTemplate;
-use oxide_kernel::{ic_debug, ic_trace};
 use oxide_types::object::JsObject;
 use oxide_types::private_key::make_private_name_id;
 use oxide_types::value::JsValue;

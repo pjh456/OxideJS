@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 use std::time::Instant;
 
-use oxide_kernel::vm_debug;
+use crate::vm_debug;
 use oxide_types::object::{JsObject, JsString, PropMetaEntry};
 use oxide_types::value::JsValue;
 use rustc_hash::FxBuildHasher;
