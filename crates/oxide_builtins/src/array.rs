@@ -4,11 +4,17 @@ use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
+use crate::builtins_debug;
+use crate::builtins_error;
+
 macro_rules! array_ptr {
     ($vm:expr, $args:expr) => {{
         match get_this_array_ref($vm, $vm.reg($args[0])) {
             Ok(ptr) => ptr,
-            Err(err) => return NativeResult::Err(err),
+            Err(err) => {
+                builtins_error!("Array method: invalid receiver");
+                return NativeResult::Err(err);
+            }
         }
     }};
 }
@@ -158,6 +164,7 @@ pub fn array_is_array<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_push<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.push called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
     let mut len = unsafe { &*arr_ptr }.prop_count();
     for &arg_reg in args.iter().skip(1) {
@@ -170,6 +177,7 @@ pub fn array_push<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_pop<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.pop called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &mut *arr_ptr };
     let len = arr.prop_count();
@@ -182,6 +190,7 @@ pub fn array_pop<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.slice called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
     let n = arr.prop_count() as usize;
@@ -210,6 +219,7 @@ pub fn array_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_splice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.splice called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &mut *arr_ptr };
     let n = arr.prop_count() as usize;
@@ -272,6 +282,7 @@ pub fn array_splice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.concat called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
     let n = arr.prop_count() as usize;
@@ -307,6 +318,7 @@ pub fn array_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_join<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.join called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
     let n = arr.prop_count() as usize;
@@ -331,6 +343,7 @@ pub fn array_join<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.indexOf called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
     let n = arr.prop_count() as usize;
@@ -347,6 +360,7 @@ pub fn array_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.includes called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
     let n = arr.prop_count() as usize;
@@ -371,6 +385,7 @@ pub fn array_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_reverse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.reverse called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &mut *arr_ptr };
     let n = arr.prop_count() as usize;
@@ -387,6 +402,7 @@ pub fn array_reverse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_flat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.flat called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
     let n = arr.prop_count() as usize;
@@ -443,34 +459,50 @@ pub fn array_flat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_for_each<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.forEach called with {} args", args.len());
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
+        builtins_error!("Array.prototype.forEach: invalid receiver");
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
     }
     let callback_val = match require_callback(vm, vm.reg(args[1])) {
         Ok(callback) => callback,
-        Err(err) => return NativeResult::Err(err),
+        Err(err) => {
+            builtins_error!("Array.prototype.forEach: invalid receiver");
+            return NativeResult::Err(err);
+        }
     };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     for i in 0..n {
         let elem = unsafe { (*arr_ptr).get_prop_at(i) };
         match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i as i32), vm.reg(args[0])]) {
             NativeResult::Ok(_) => {}
-            NativeResult::Err(err) => return NativeResult::Err(err),
-            NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
+            NativeResult::Err(err) => {
+                builtins_error!("Array.prototype.forEach: invalid receiver");
+                return NativeResult::Err(err);
+            }
+            NativeResult::TailCall { .. } => {
+                builtins_error!("Array.prototype.forEach: invalid receiver");
+                return unexpected_tail_call_error(vm);
+            }
         }
     }
     NativeResult::Ok(JsValue::undefined())
 }
 
 pub fn array_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.map called with {} args", args.len());
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
+        builtins_error!("Array.prototype.map: invalid receiver");
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
     }
     let callback_val = match require_callback(vm, vm.reg(args[1])) {
         Ok(callback) => callback,
-        Err(err) => return NativeResult::Err(err),
+        Err(err) => {
+            builtins_error!("Array.prototype.map: invalid receiver");
+            return NativeResult::Err(err);
+        }
     };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     let new_arr = create_new_array(vm, n);
@@ -480,8 +512,14 @@ pub fn array_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             NativeResult::Ok(mapped) => unsafe {
                 (*new_arr).set_prop_at(i, mapped);
             },
-            NativeResult::Err(err) => return NativeResult::Err(err),
-            NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
+            NativeResult::Err(err) => {
+                builtins_error!("Array.prototype.map: invalid receiver");
+                return NativeResult::Err(err);
+            }
+            NativeResult::TailCall { .. } => {
+                builtins_error!("Array.prototype.map: invalid receiver");
+                return unexpected_tail_call_error(vm);
+            }
         }
     }
     unsafe {
@@ -491,13 +529,18 @@ pub fn array_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_filter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.filter called with {} args", args.len());
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
+        builtins_error!("Array.prototype.filter: invalid receiver");
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
     }
     let callback_val = match require_callback(vm, vm.reg(args[1])) {
         Ok(callback) => callback,
-        Err(err) => return NativeResult::Err(err),
+        Err(err) => {
+            builtins_error!("Array.prototype.filter: invalid receiver");
+            return NativeResult::Err(err);
+        }
     };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     let mut kept: Vec<JsValue> = Vec::new();
@@ -509,8 +552,14 @@ pub fn array_filter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                     kept.push(elem);
                 }
             }
-            NativeResult::Err(err) => return NativeResult::Err(err),
-            NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
+            NativeResult::Err(err) => {
+                builtins_error!("Array.prototype.filter: invalid receiver");
+                return NativeResult::Err(err);
+            }
+            NativeResult::TailCall { .. } => {
+                builtins_error!("Array.prototype.filter: invalid receiver");
+                return unexpected_tail_call_error(vm);
+            }
         }
     }
     let new_arr = create_new_array(vm, kept.len());
@@ -524,16 +573,22 @@ pub fn array_filter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_reduce<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.reduce called with {} args", args.len());
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if n == 0 && args.len() < 3 {
+        builtins_error!("Array.prototype.reduce: invalid receiver");
         return NativeResult::Err(array_type_error(vm, "Reduce of empty array with no initial value"));
     }
     if args.len() < 2 {
+        builtins_error!("Array.prototype.reduce: invalid receiver");
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
     }
     let callback_val = match require_callback(vm, vm.reg(args[1])) {
         Ok(callback) => callback,
-        Err(err) => return NativeResult::Err(err),
+        Err(err) => {
+            builtins_error!("Array.prototype.reduce: invalid receiver");
+            return NativeResult::Err(err);
+        }
     };
     let has_initial = args.len() > 2;
     let mut accumulator;
@@ -555,21 +610,32 @@ pub fn array_reduce<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             &[accumulator, elem, JsValue::int(i as i32), vm.reg(args[0])],
         ) {
             NativeResult::Ok(result) => accumulator = result,
-            NativeResult::Err(err) => return NativeResult::Err(err),
-            NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
+            NativeResult::Err(err) => {
+                builtins_error!("Array.prototype.reduce: invalid receiver");
+                return NativeResult::Err(err);
+            }
+            NativeResult::TailCall { .. } => {
+                builtins_error!("Array.prototype.reduce: invalid receiver");
+                return unexpected_tail_call_error(vm);
+            }
         }
     }
     NativeResult::Ok(accumulator)
 }
 
 pub fn array_find<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.find called with {} args", args.len());
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
+        builtins_error!("Array.prototype.find: invalid receiver");
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
     }
     let callback_val = match require_callback(vm, vm.reg(args[1])) {
         Ok(callback) => callback,
-        Err(err) => return NativeResult::Err(err),
+        Err(err) => {
+            builtins_error!("Array.prototype.find: invalid receiver");
+            return NativeResult::Err(err);
+        }
     };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     for i in 0..n {
@@ -580,21 +646,32 @@ pub fn array_find<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                     return NativeResult::Ok(elem);
                 }
             }
-            NativeResult::Err(err) => return NativeResult::Err(err),
-            NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
+            NativeResult::Err(err) => {
+                builtins_error!("Array.prototype.find: invalid receiver");
+                return NativeResult::Err(err);
+            }
+            NativeResult::TailCall { .. } => {
+                builtins_error!("Array.prototype.find: invalid receiver");
+                return unexpected_tail_call_error(vm);
+            }
         }
     }
     NativeResult::Ok(JsValue::undefined())
 }
 
 pub fn array_some<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.some called with {} args", args.len());
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
+        builtins_error!("Array.prototype.some: invalid receiver");
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
     }
     let callback_val = match require_callback(vm, vm.reg(args[1])) {
         Ok(callback) => callback,
-        Err(err) => return NativeResult::Err(err),
+        Err(err) => {
+            builtins_error!("Array.prototype.some: invalid receiver");
+            return NativeResult::Err(err);
+        }
     };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     for i in 0..n {
@@ -605,21 +682,32 @@ pub fn array_some<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                     return NativeResult::Ok(JsValue::bool(true));
                 }
             }
-            NativeResult::Err(err) => return NativeResult::Err(err),
-            NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
+            NativeResult::Err(err) => {
+                builtins_error!("Array.prototype.some: invalid receiver");
+                return NativeResult::Err(err);
+            }
+            NativeResult::TailCall { .. } => {
+                builtins_error!("Array.prototype.some: invalid receiver");
+                return unexpected_tail_call_error(vm);
+            }
         }
     }
     NativeResult::Ok(JsValue::bool(false))
 }
 
 pub fn array_every<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.every called with {} args", args.len());
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
+        builtins_error!("Array.prototype.every: invalid receiver");
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
     }
     let callback_val = match require_callback(vm, vm.reg(args[1])) {
         Ok(callback) => callback,
-        Err(err) => return NativeResult::Err(err),
+        Err(err) => {
+            builtins_error!("Array.prototype.every: invalid receiver");
+            return NativeResult::Err(err);
+        }
     };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     for i in 0..n {
@@ -630,21 +718,32 @@ pub fn array_every<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                     return NativeResult::Ok(JsValue::bool(false));
                 }
             }
-            NativeResult::Err(err) => return NativeResult::Err(err),
-            NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
+            NativeResult::Err(err) => {
+                builtins_error!("Array.prototype.every: invalid receiver");
+                return NativeResult::Err(err);
+            }
+            NativeResult::TailCall { .. } => {
+                builtins_error!("Array.prototype.every: invalid receiver");
+                return unexpected_tail_call_error(vm);
+            }
         }
     }
     NativeResult::Ok(JsValue::bool(true))
 }
 
 pub fn array_flat_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.flatMap called with {} args", args.len());
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
+        builtins_error!("Array.prototype.flatMap: invalid receiver");
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
     }
     let callback_val = match require_callback(vm, vm.reg(args[1])) {
         Ok(callback) => callback,
-        Err(err) => return NativeResult::Err(err),
+        Err(err) => {
+            builtins_error!("Array.prototype.flatMap: invalid receiver");
+            return NativeResult::Err(err);
+        }
     };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     let mut flat: Vec<JsValue> = Vec::new();
@@ -667,8 +766,14 @@ pub fn array_flat_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                 }
                 flat.push(result);
             }
-            NativeResult::Err(err) => return NativeResult::Err(err),
-            NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
+            NativeResult::Err(err) => {
+                builtins_error!("Array.prototype.flatMap: invalid receiver");
+                return NativeResult::Err(err);
+            }
+            NativeResult::TailCall { .. } => {
+                builtins_error!("Array.prototype.flatMap: invalid receiver");
+                return unexpected_tail_call_error(vm);
+            }
         }
     }
     let new_arr = create_new_array(vm, flat.len());
@@ -682,6 +787,7 @@ pub fn array_flat_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_shift<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.shift called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &mut *arr_ptr };
     let len = arr.prop_count();
@@ -698,6 +804,7 @@ pub fn array_shift<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_unshift<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.unshift called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &mut *arr_ptr };
     let len = arr.prop_count();
@@ -715,6 +822,7 @@ pub fn array_unshift<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_fill<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.fill called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &mut *arr_ptr };
     let len = arr.prop_count() as usize;
@@ -737,6 +845,7 @@ pub fn array_fill<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_copy_within<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.copyWithin called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &mut *arr_ptr };
     let len = arr.prop_count() as usize;
@@ -771,6 +880,7 @@ pub fn array_copy_within<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.at called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
     let len = arr.prop_count() as i32;
@@ -789,6 +899,7 @@ pub fn array_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.lastIndexOf called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
     let len = arr.prop_count() as i32;
@@ -802,13 +913,18 @@ pub fn array_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_find_index<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.findIndex called with {} args", args.len());
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
+        builtins_error!("Array.prototype.findIndex: invalid receiver");
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
     }
     let callback_val = match require_callback(vm, vm.reg(args[1])) {
         Ok(callback) => callback,
-        Err(err) => return NativeResult::Err(err),
+        Err(err) => {
+            builtins_error!("Array.prototype.findIndex: invalid receiver");
+            return NativeResult::Err(err);
+        }
     };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     for i in 0..n {
@@ -819,24 +935,35 @@ pub fn array_find_index<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                     return NativeResult::Ok(JsValue::int(i as i32));
                 }
             }
-            NativeResult::Err(err) => return NativeResult::Err(err),
-            NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
+            NativeResult::Err(err) => {
+                builtins_error!("Array.prototype.findIndex: invalid receiver");
+                return NativeResult::Err(err);
+            }
+            NativeResult::TailCall { .. } => {
+                builtins_error!("Array.prototype.findIndex: invalid receiver");
+                return unexpected_tail_call_error(vm);
+            }
         }
     }
     NativeResult::Ok(JsValue::int(-1))
 }
 
 pub fn array_find_last<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.findLast called with {} args", args.len());
     let (arr_ptr, n) = {
         let (arr_ptr, len) = array_ptr_len!(vm, args);
         (arr_ptr, len as i32)
     };
     if args.len() < 2 {
+        builtins_error!("Array.prototype.findLast: invalid receiver");
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
     }
     let callback_val = match require_callback(vm, vm.reg(args[1])) {
         Ok(callback) => callback,
-        Err(err) => return NativeResult::Err(err),
+        Err(err) => {
+            builtins_error!("Array.prototype.findLast: invalid receiver");
+            return NativeResult::Err(err);
+        }
     };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     for i in (0..n).rev() {
@@ -847,26 +974,38 @@ pub fn array_find_last<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                     return NativeResult::Ok(elem);
                 }
             }
-            NativeResult::Err(err) => return NativeResult::Err(err),
-            NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
+            NativeResult::Err(err) => {
+                builtins_error!("Array.prototype.findLast: invalid receiver");
+                return NativeResult::Err(err);
+            }
+            NativeResult::TailCall { .. } => {
+                builtins_error!("Array.prototype.findLast: invalid receiver");
+                return unexpected_tail_call_error(vm);
+            }
         }
     }
     NativeResult::Ok(JsValue::undefined())
 }
 
 pub fn array_reduce_right<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.reduceRight called with {} args", args.len());
     let (arr_ptr, n) = array_ptr_len!(vm, args);
     if args.len() < 2 {
+        builtins_error!("Array.prototype.reduceRight: invalid receiver");
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
     }
     let callback_val = match require_callback(vm, vm.reg(args[1])) {
         Ok(callback) => callback,
-        Err(err) => return NativeResult::Err(err),
+        Err(err) => {
+            builtins_error!("Array.prototype.reduceRight: invalid receiver");
+            return NativeResult::Err(err);
+        }
     };
     let (mut acc, start_idx): (JsValue, i32) = if args.len() > 2 {
         (vm.reg(args[2]), n as i32 - 1)
     } else {
         if n == 0 {
+            builtins_error!("Array.prototype.reduceRight: invalid receiver");
             return NativeResult::Err(array_type_error(vm, "Reduce of empty array with no initial value"));
         }
         (unsafe { (*arr_ptr).get_prop_at(n - 1) }, n as i32 - 2)
@@ -880,14 +1019,21 @@ pub fn array_reduce_right<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             &[acc, elem, JsValue::int(i), vm.reg(args[0])],
         ) {
             NativeResult::Ok(r) => acc = r,
-            NativeResult::Err(err) => return NativeResult::Err(err),
-            NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
+            NativeResult::Err(err) => {
+                builtins_error!("Array.prototype.reduceRight: invalid receiver");
+                return NativeResult::Err(err);
+            }
+            NativeResult::TailCall { .. } => {
+                builtins_error!("Array.prototype.reduceRight: invalid receiver");
+                return unexpected_tail_call_error(vm);
+            }
         }
     }
     NativeResult::Ok(acc)
 }
 
 pub fn array_sort<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.sort called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
     let len = unsafe { (*arr_ptr).prop_count() as usize };
     let mut vals: Vec<JsValue> = (0..len).map(|i| unsafe { (*arr_ptr).get_prop_at(i) }).collect();
@@ -898,7 +1044,10 @@ pub fn array_sort<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         } else {
             match require_callback(vm, candidate) {
                 Ok(callback) => Some(callback),
-                Err(err) => return NativeResult::Err(err),
+                Err(err) => {
+                    builtins_error!("Array.prototype.sort: invalid receiver");
+                    return NativeResult::Err(err);
+                }
             }
         }
     } else {
@@ -937,6 +1086,7 @@ pub fn array_sort<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
     });
     if let Some(err) = sort_error {
+        builtins_error!("Array.prototype.sort: invalid receiver");
         return NativeResult::Err(err);
     }
     let arr = unsafe { &mut *arr_ptr };
@@ -947,9 +1097,13 @@ pub fn array_sort<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn array_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Array.prototype.values called with {} args", args.len());
     let this_val = vm.reg(args[0]);
     match crate::iterator::make_iterator_for_value(vm, this_val) {
         Ok(iterator) => NativeResult::Ok(iterator),
-        Err(err) => NativeResult::Err(err),
+        Err(err) => {
+            builtins_error!("Array.prototype.values: invalid receiver");
+            NativeResult::Err(err)
+        }
     }
 }

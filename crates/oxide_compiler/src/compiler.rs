@@ -830,12 +830,14 @@ impl Compiler {
     }
 
     pub fn compile(&self, program: &oxide_parser::Program) -> Result<CompiledModule, String> {
+        crate::compiler_debug!("compile: starting...");
         let mut ctx = CompileCtx::new();
         ctx.pre_register_builtins();
 
         for stmt in &program.body {
             self.count_statement(stmt, &mut ctx);
         }
+        crate::compiler_debug!("counter: {} instructions estimated", ctx.projected_pc);
         ctx.max_regs = ctx.max_regs.max(1);
         ctx.reg_overflow = false;
         ctx.reset_regs();
@@ -859,6 +861,7 @@ impl Compiler {
                 None => last_result = None,
             }
         }
+        crate::compiler_debug!("emitter: {} bytes emitted", ctx.bytecode.len());
 
         if let Some(r) = last_result {
             ctx.emit(opcode::encode(OpCode::LOAD_VAR, 0, r, 0));
@@ -882,6 +885,8 @@ impl Compiler {
         if ctx.jump_overflow {
             return Err("RangeError: jump offset out of range".into());
         }
+
+        crate::compiler_debug!("compile: done, {} instructions, {} constants", ctx.bytecode.len(), ctx.constants.len());
 
         Ok(CompiledModule {
             bytecode: ctx.bytecode,
