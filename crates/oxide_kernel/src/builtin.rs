@@ -3,6 +3,7 @@ use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
 use crate::kernel::{BuiltinDirtySet, BuiltinId};
+use crate::kernel_info;
 use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use crate::string_forge::PermInterner;
 
@@ -643,6 +644,7 @@ impl BuiltinWorld {
             stub_objects,
         };
         wire_builtin_world_links(&world);
+        kernel_info!("BuiltinWorld initialized");
         world
     }
 

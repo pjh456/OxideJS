@@ -82,9 +82,13 @@ impl PermInterner {
         let id = entries.len() as u32;
         let leaked: &'static str = Box::leak(s.to_string().into_boxed_str());
         entries.push(PermEntry { data: leaked, hash });
+        let entry_count = entries.len();
         drop(entries);
         self.hash_map.entry(hash).or_default().push(id);
         kernel_debug!("PermInterner intern new id={} len={}", id, s.len());
+        if entry_count % 1000 == 0 {
+            kernel_debug!("PermInterner stats: {} strings", entry_count);
+        }
         (id, hash)
     }
 

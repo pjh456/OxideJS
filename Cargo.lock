@@ -1098,6 +1098,7 @@ version = "0.1.0"
 dependencies = [
  "lru",
  "oxide_bytecode",
+ "oxide_log",
 ]
 
 [[package]]
