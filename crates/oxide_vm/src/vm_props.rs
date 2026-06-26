@@ -1,5 +1,6 @@
-use crate::coercion;
 use crate::vm::{FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
+use crate::{ic_trace, vm_trace};
+use oxide_runtime_api as coercion;
 use oxide_types::object::{JsObject, PropAttributes, PropMetaEntry};
 use oxide_types::value::JsValue;
 
@@ -19,7 +20,8 @@ impl Vm {
     fn ordinary_get_inner(
         &mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue, target_reg: Option<u8>,
     ) -> Result<JsValue, String> {
-        let length_si = self.kernel_core.string_forge().intern("length").0;
+        vm_trace!("ordinary_get_inner: shape={} prop_si={}", obj.shape_id(), prop_name_si);
+        let length_si = self.kernel_core.perm_interner().intern("length").0;
         let mut current = Some(obj);
         let mut depth = 0usize;
         while let Some(obj) = current {
@@ -58,6 +60,9 @@ impl Vm {
             depth += 1;
             let proto = obj.proto();
             current = proto.is_object().then(|| unsafe { &*proto.as_js_object_ptr() });
+            if let Some(proto_obj) = current {
+                vm_trace!("ordinary_get proto step: depth={} shape={}", depth, proto_obj.shape_id());
+            }
         }
         Ok(JsValue::undefined())
     }
@@ -65,6 +70,11 @@ impl Vm {
     fn push_bytecode_getter_frame(
         &mut self, getter: JsValue, receiver: JsValue, target_reg: u8,
     ) -> Result<bool, String> {
+        vm_trace!(
+            "push_bytecode_getter_frame: target_reg={} native={}",
+            target_reg,
+            getter.is_object() && unsafe { &*getter.as_js_object_ptr() }.native_fn().is_some()
+        );
         if !getter.is_object() {
             return Err(self.error_message_text("TypeError", "getter is not callable"));
         }
@@ -93,6 +103,7 @@ impl Vm {
     }
 
     fn inherited_property_meta(&self, obj: &JsObject, prop_name_si: u32) -> Option<PropMetaEntry> {
+        vm_trace!("inherited_property_meta: shape={} prop_si={}", obj.shape_id(), prop_name_si);
         let mut proto = obj.proto();
         let mut depth = 0usize;
         while proto.is_object() && depth < MAX_PROTO_CHAIN_DEPTH {
@@ -121,6 +132,12 @@ impl Vm {
     fn ordinary_set_inner(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, use_frame_push: bool,
     ) -> Result<(), String> {
+        vm_trace!(
+            "ordinary_set_inner: shape={} prop_si={} frame_push={}",
+            obj.shape_id(),
+            prop_name_si,
+            use_frame_push
+        );
         let val = self.promote_if_needed_for_write_ptr(obj as *mut JsObject, val);
         if let Some(pos) = self.get_own_property_slot(obj, prop_name_si) {
             if let Some(meta) = obj.prop_meta_at(pos) {
@@ -157,6 +174,7 @@ impl Vm {
     fn call_or_push_setter(
         &mut self, setter: JsValue, receiver: JsValue, val: JsValue, use_frame_push: bool,
     ) -> Result<(), String> {
+        vm_trace!("call_or_push_setter: frame_push={}", use_frame_push);
         if !use_frame_push {
             self.call_function_sync(setter, receiver, &[val])?;
             return Ok(());
@@ -187,6 +205,7 @@ impl Vm {
     pub(crate) fn read_member_prop(
         &mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue,
     ) -> Result<JsValue, String> {
+        vm_trace!("read_member_prop: shape_id={} prop_name_si={}", obj.shape_id(), prop_name_si);
         let ext0 = self.bytecode[self.pc];
         let ext1 = self.bytecode[self.pc + 1];
         let _ext2 = self.bytecode[self.pc + 2];
@@ -204,7 +223,7 @@ impl Vm {
                 if template.prop_name != prop_name_si {
                     self.ordinary_get(obj, prop_name_si, receiver)?
                 } else if template.position < obj.prop_vec_len() as u32 {
-                    self.write_ic_back(obj.shape_id(), template.position);
+                    crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), template.position);
                     obj.get_prop_at(template.position)
                 } else {
                     self.ordinary_get(obj, prop_name_si, receiver)?
@@ -213,7 +232,7 @@ impl Vm {
                 let resolved = self.ordinary_get(obj, prop_name_si, receiver)?;
                 if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
                     if !obj.is_accessor_meta(pos) {
-                        self.write_ic_back(obj.shape_id(), pos);
+                        crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos);
                     }
                 }
                 resolved
@@ -224,6 +243,7 @@ impl Vm {
     pub(crate) fn set_member_prop(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue,
     ) -> Result<(), String> {
+        ic_trace!("set_member_prop: shape_id={} prop_name_si={}", obj.shape_id(), prop_name_si);
         let val = self.promote_if_needed_for_write_ptr(obj as *mut JsObject, val);
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             if obj.has_prop_meta() {
@@ -231,7 +251,7 @@ impl Vm {
                 return Ok(());
             }
             obj.set_prop_at(pos, val);
-            self.write_ic_back(obj.shape_id(), pos);
+            crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos);
         } else {
             self.ordinary_set(obj, prop_name_si, val, receiver)?;
         }
@@ -239,6 +259,7 @@ impl Vm {
     }
 
     pub(crate) fn set_or_create_prop_value(&mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue) {
+        vm_trace!("set_or_create_prop_value: shape_id={} prop_name_si={}", obj.shape_id(), prop_name_si);
         let val = self.promote_if_needed_for_write_ptr(obj as *mut JsObject, val);
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             obj.set_prop_at(pos, val);
@@ -253,6 +274,7 @@ impl Vm {
     pub(crate) fn define_data_property(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, attributes: PropAttributes,
     ) -> Result<(), String> {
+        vm_trace!("define_data_property: shape={} prop_si={}", obj.shape_id(), prop_name_si);
         let val = self.promote_if_needed_for_write_ptr(obj as *mut JsObject, val);
         let pos = if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             pos
@@ -288,6 +310,7 @@ impl Vm {
     pub(crate) fn define_accessor_property(
         &mut self, obj: &mut JsObject, prop_name_si: u32, get: JsValue, set: JsValue, attributes: PropAttributes,
     ) -> Result<(), String> {
+        vm_trace!("define_accessor_property: shape={} prop_si={}", obj.shape_id(), prop_name_si);
         let target_ptr = obj as *mut JsObject;
         let get = self.promote_if_needed_for_write_ptr(target_ptr, get);
         let set = self.promote_if_needed_for_write_ptr(target_ptr, set);
@@ -313,12 +336,5 @@ impl Vm {
         obj.set_accessor_meta(pos, get, set, attributes);
         obj.bump_generation();
         Ok(())
-    }
-
-    pub(crate) fn write_ic_back(&mut self, shape_id: u32, slot_index: u32) {
-        debug_assert!(self.pc >= 3, "IC write-back requires 3 extension words before pc");
-        self.bytecode[self.pc - 3] = shape_id & 0x00FF_FFFF;
-        self.bytecode[self.pc - 2] = slot_index;
-        self.bytecode[self.pc - 1] = 0;
     }
 }

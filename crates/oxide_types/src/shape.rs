@@ -163,10 +163,6 @@ pub fn shape_prop_count(shape_id: ShapeId) -> u32 {
     store().lock().unwrap().shape_prop_count(shape_id)
 }
 
-pub fn init_shape_store() {
-    let _ = store();
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

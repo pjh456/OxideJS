@@ -1,9 +1,7 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::counter) fn count_switch_statement(
-        &self, stmt: &oxide_parser::SwitchStatement<'_>, ctx: &mut CompileCtx,
-    ) {
+    fn count_switch_statement(&self, stmt: &oxide_parser::SwitchStatement<'_>, ctx: &mut CompileCtx) {
         let id = ctx.next_label_id();
         let end_label = Label::SwitchEnd(id);
         ctx.push_switch(end_label);
@@ -29,13 +27,19 @@ impl Compiler {
 
         for (case_idx, case) in cases.iter().enumerate() {
             let case_label = Label::SwitchCase(id, case_idx as u32);
-            ctx.label_map.insert(case_label, ctx.projected_pc);
+            ctx.labels.label_map.insert(case_label, ctx.projected_pc);
             for s in &case.consequent {
                 self.count_statement(s, ctx);
             }
         }
 
-        ctx.label_map.insert(end_label, ctx.projected_pc);
+        ctx.labels.label_map.insert(end_label, ctx.projected_pc);
         ctx.pop_switch();
+    }
+
+    pub(in crate::counter) fn count_switch_domain(&self, stmt: &Statement, ctx: &mut CompileCtx) {
+        if let Statement::SwitchStatement(sw) = stmt {
+            self.count_switch_statement(sw, ctx);
+        }
     }
 }

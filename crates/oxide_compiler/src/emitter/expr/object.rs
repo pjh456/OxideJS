@@ -1,9 +1,7 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::emitter) fn emit_object_expression(
-        &self, obj: &oxide_parser::ObjectExpression, ctx: &mut CompileCtx,
-    ) -> Result<u8, String> {
+    fn emit_object_expression(&self, obj: &oxide_parser::ObjectExpression, ctx: &mut CompileCtx) -> Result<u8, String> {
         let obj_reg = ctx.alloc_reg();
         ctx.emit(opcode::encode(OpCode::NEW_OBJECT, obj_reg, 0, 0));
         let prop_checkpoint = ctx.reg_checkpoint();
@@ -38,7 +36,7 @@ impl Compiler {
                     let key_reg = ctx.alloc_reg();
                     ctx.emit_load_const(key_reg, idx);
                     let val_reg = self.emit_expression(&p.value, ctx)?;
-                    // Name inference (D-04): if property value is an arrow function,
+                    // Name inference: if property value is an arrow function,
                     // set the compiled sub_module's function_name to the property key.
                     if matches!(&p.value, Expression::ArrowFunctionExpression(_)) {
                         if let Some(sub_mod) = ctx.sub_modules.last_mut() {
@@ -53,9 +51,7 @@ impl Compiler {
         Ok(obj_reg)
     }
 
-    pub(in crate::emitter) fn emit_array_expression(
-        &self, arr: &oxide_parser::ArrayExpression, ctx: &mut CompileCtx,
-    ) -> Result<u8, String> {
+    fn emit_array_expression(&self, arr: &oxide_parser::ArrayExpression, ctx: &mut CompileCtx) -> Result<u8, String> {
         let arr_reg = ctx.alloc_reg();
         let n = arr.elements.len() as u16;
         ctx.emit(opcode::encode(OpCode::NEW_ARRAY, arr_reg, (n & 0xFF) as u8, ((n >> 8) & 0xFF) as u8));
@@ -72,5 +68,13 @@ impl Compiler {
             ctx.restore_reg_checkpoint(elem_checkpoint);
         }
         Ok(arr_reg)
+    }
+
+    pub(in crate::emitter) fn emit_object_domain(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u8, String> {
+        match expr {
+            Expression::ObjectExpression(obj) => self.emit_object_expression(obj, ctx),
+            Expression::ArrayExpression(arr) => self.emit_array_expression(arr, ctx),
+            _ => self.emit_unsupported_expression(expr, ctx),
+        }
     }
 }

@@ -1,36 +1,19 @@
+use crate::{ic_debug, ic_trace, vm_trace};
 use oxide_bytecode::opcode::OpCode;
 use oxide_kernel::prop_forge::PropTemplate;
-use oxide_kernel::{ic_debug, ic_trace};
 use oxide_types::object::JsObject;
 use oxide_types::private_key::make_private_name_id;
 use oxide_types::value::JsValue;
 
+use crate::ic_helper::{self, ic_get_hit, ic_set_hit};
 use crate::vm::{Vm, MAX_PROTO_CHAIN_DEPTH};
-
-#[inline(always)]
-fn ic_get_hit(obj: &JsObject, shape_id: u32, slot_index: u32) -> Option<JsValue> {
-    if shape_id != 0 && obj.shape_id() == shape_id && slot_index < obj.prop_vec_len() as u32 {
-        Some(obj.get_prop_at(slot_index))
-    } else {
-        None
-    }
-}
-
-#[inline(always)]
-fn ic_set_hit(obj: &mut JsObject, shape_id: u32, slot_index: u32, value: JsValue) -> bool {
-    if shape_id != 0 && obj.shape_id() == shape_id && slot_index < obj.prop_vec_len() as u32 {
-        obj.set_prop_at(slot_index, value);
-        true
-    } else {
-        false
-    }
-}
 
 #[cold]
 fn prop_cache_miss() {}
 
 impl Vm {
     pub(crate) fn dispatch_property_op(&mut self, op: OpCode, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("PROPERTY_OP {:?} rd={} a={} b={}", op, rd, a, b);
         match op {
             OpCode::IC_GET_PROP => self.dispatch_ic_get_prop(a, b),
             OpCode::IC_SET_PROP => self.dispatch_ic_set_prop(rd, a, b),
@@ -61,15 +44,10 @@ impl Vm {
 
     fn primitive_property_get(&mut self, val: JsValue, prop_name_si: u32) -> Result<Option<JsValue>, String> {
         if val.is_string() {
-            let length_si = self.kernel_core.string_forge().intern("length").0;
+            let length_si = self.kernel_core.perm_interner().intern("length").0;
             if prop_name_si == length_si {
-                let len = self
-                    .kernel_core
-                    .string_forge()
-                    .lookup(val.as_string_index())
-                    .unwrap_or_default()
-                    .encode_utf16()
-                    .count();
+                // SAFETY: val is a string value.
+                let len = unsafe { (*val.as_string_ptr()).data.encode_utf16().count() };
                 return Ok(Some(JsValue::int(len as i32)));
             }
             let proto_ptr = self.session.builtin_world().string_proto.as_ptr() as *mut JsObject;
@@ -111,6 +89,7 @@ impl Vm {
     }
 
     fn dispatch_get_private(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("GET_PRIVATE rd={} a={} b={}", rd, a, b);
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[a], "private field access on non-object")? else {
             return Ok(());
         };
@@ -124,6 +103,7 @@ impl Vm {
     }
 
     fn dispatch_set_private(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("SET_PRIVATE rd={} a={} b={}", rd, a, b);
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "private field assignment on non-object")? else {
             return Ok(());
         };
@@ -139,6 +119,7 @@ impl Vm {
     }
 
     fn dispatch_init_private(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("INIT_PRIVATE rd={} a={} b={}", rd, a, b);
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "private field initialization on non-object")?
         else {
             return Ok(());
@@ -155,6 +136,7 @@ impl Vm {
     }
 
     fn dispatch_private_brand_in(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("PRIVATE_BRAND_IN rd={} a={} b={}", rd, a, b);
         let obj_val = self.regs[a];
         if !obj_val.is_object() {
             self.regs[rd] = JsValue::bool(false);
@@ -187,10 +169,7 @@ impl Vm {
 
         let obj = unsafe { &*obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[b]);
-        let ext0 = self.bytecode[self.pc];
-        let ext1 = self.bytecode[self.pc + 1];
-        let _ext2 = self.bytecode[self.pc + 2];
-        self.pc += 3;
+        let (cached_shape_id, cached_slot) = ic_helper::read_ic_entry(&self.bytecode, &mut self.pc);
         if obj.has_prop_meta() {
             let val = self.ordinary_get_with_target(obj, prop_name_si, val, a as u8)?;
             if self.accessor_frame_target_reg.take().is_none() {
@@ -198,17 +177,17 @@ impl Vm {
             }
             return Ok(());
         }
-        let cached_shape_id = ext0 & 0x00FF_FFFF;
-        let cached_slot = ext1;
 
         if let Some(value) = ic_get_hit(obj, cached_shape_id, cached_slot) {
             self.regs[a] = value;
+            self.profiling.record_ic_hit();
             ic_trace!("IC_GET hit shape={} slot={}", cached_shape_id, cached_slot);
         } else if let Some(template) = self.kernel_core.prop_forge().get_template(obj.shape_id()) {
+            self.profiling.record_ic_miss();
             prop_cache_miss();
             if template.prop_name == prop_name_si {
                 if template.position < obj.prop_vec_len() as u32 {
-                    self.write_ic_back(obj.shape_id(), template.position);
+                    ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), template.position);
                     ic_debug!(
                         "IC_GET propforge hit shape={} prop={} slot={}",
                         obj.shape_id(),
@@ -229,7 +208,7 @@ impl Vm {
             ic_debug!("IC_GET miss shape={} prop={}", obj.shape_id(), prop_name_si);
             let resolved = self.ordinary_get(obj, prop_name_si, val)?;
             if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
-                self.write_ic_back(obj.shape_id(), pos);
+                ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos);
             }
             self.regs[a] = resolved;
         }
@@ -243,7 +222,7 @@ impl Vm {
         };
 
         let prop_name_si = self.property_key_si(self.regs[b]);
-        if self.kernel_core.string_forge().lookup(prop_name_si).as_deref() == Some("__proto__") {
+        if self.kernel_core.perm_interner().lookup(prop_name_si) == Some("__proto__") {
             let proto_value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
             if self.is_object_prototype(obj_ptr) && !proto_value.is_null() {
                 self.raise_type_error("Object.prototype.__proto__ is immutable")?;
@@ -256,10 +235,7 @@ impl Vm {
             return Ok(());
         }
 
-        let ext0 = self.bytecode[self.pc];
-        let ext1 = self.bytecode[self.pc + 1];
-        let _ext2 = self.bytecode[self.pc + 2];
-        self.pc += 3;
+        let (cached_shape_id, cached_slot) = ic_helper::read_ic_entry(&self.bytecode, &mut self.pc);
         let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
         let receiver = self.regs[rd];
         let obj = unsafe { &mut *obj_ptr };
@@ -267,23 +243,24 @@ impl Vm {
             self.ordinary_set_dispatch(obj, prop_name_si, value, receiver)?;
             return Ok(());
         }
-        let cached_shape_id = ext0 & 0x00FF_FFFF;
-        let cached_slot = ext1;
 
         if ic_set_hit(obj, cached_shape_id, cached_slot, value) {
+            self.profiling.record_ic_hit();
             ic_trace!("IC_SET hit shape={} slot={}", cached_shape_id, cached_slot);
         } else if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+            self.profiling.record_ic_miss();
             prop_cache_miss();
             obj.set_prop_at(pos, value);
-            self.write_ic_back(obj.shape_id(), pos);
+            ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos);
             ic_debug!("IC_SET write-back shape={} slot={}", obj.shape_id(), pos);
         } else {
+            self.profiling.record_ic_miss();
             prop_cache_miss();
             let old_shape = obj.shape_id();
             self.ordinary_set_dispatch(obj, prop_name_si, value, receiver)?;
             if old_shape != obj.shape_id() {
                 if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
-                    self.write_ic_back(obj.shape_id(), pos);
+                    ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos);
                     ic_debug!("IC_SET write-back shape={} slot={}", obj.shape_id(), pos);
                     self.kernel_core.prop_forge().upsert(
                         obj.shape_id(),
@@ -302,6 +279,7 @@ impl Vm {
     }
 
     fn dispatch_get_prop(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("GET_PROP rd={} a={} b={}", rd, a, b);
         let prop_name_si = self.property_key_si(self.regs[b]);
         if let Some(value) = self.primitive_property_get(self.regs[rd], prop_name_si)? {
             self.regs[a] = value;
@@ -319,11 +297,12 @@ impl Vm {
     }
 
     fn dispatch_set_prop(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("SET_PROP rd={} a={} b={}", rd, a, b);
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "Cannot create property on non-object")? else {
             return Ok(());
         };
         let prop_name_si = self.property_key_si(self.regs[b]);
-        if self.kernel_core.string_forge().lookup(prop_name_si).as_deref() == Some("__proto__") {
+        if self.kernel_core.perm_interner().lookup(prop_name_si) == Some("__proto__") {
             let proto_value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
             if self.is_object_prototype(obj_ptr) && !proto_value.is_null() {
                 self.raise_type_error("Object.prototype.__proto__ is immutable")?;
@@ -340,6 +319,7 @@ impl Vm {
     }
 
     fn dispatch_get_prop_dynamic(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("GET_PROP_DYNAMIC rd={} a={} b={}", rd, a, b);
         let prop_name_si = self.property_key_si(self.regs[a]);
         if let Some(value) = self.primitive_property_get(self.regs[rd], prop_name_si)? {
             self.regs[b] = value;
@@ -357,11 +337,12 @@ impl Vm {
     }
 
     fn dispatch_set_prop_dynamic(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("SET_PROP_DYNAMIC rd={} a={} b={}", rd, a, b);
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "Cannot create property on non-object")? else {
             return Ok(());
         };
         let prop_name_si = self.property_key_si(self.regs[a]);
-        if self.kernel_core.string_forge().lookup(prop_name_si).as_deref() == Some("__proto__") {
+        if self.kernel_core.perm_interner().lookup(prop_name_si) == Some("__proto__") {
             let proto_value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[b]);
             if self.is_object_prototype(obj_ptr) && !proto_value.is_null() {
                 self.raise_type_error("Object.prototype.__proto__ is immutable")?;
@@ -378,6 +359,7 @@ impl Vm {
     }
 
     fn dispatch_set_elem(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("SET_ELEM rd={} a={} b={}", rd, a, b);
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "Cannot create property on non-object")? else {
             return Ok(());
         };
@@ -392,5 +374,38 @@ impl Vm {
         let obj = unsafe { &mut *obj_ptr };
         obj.set_prop_at(idx, value);
         Ok(())
+    }
+}
+
+impl Vm {
+    pub(crate) fn dispatch_delete_prop_static(&mut self, rd: usize) -> Result<bool, String> {
+        vm_trace!("DELETE_PROP_STATIC rd={}", rd);
+        let prop_idx = self.bytecode[self.pc] as usize;
+        self.pc += 1;
+        let key_val = self.immutables().get(prop_idx).copied().unwrap_or_else(JsValue::undefined);
+        let prop_name_si = self.property_key_si(key_val);
+        let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "delete on non-object")? else {
+            return Ok(true);
+        };
+        let obj = unsafe { &mut *obj_ptr };
+        if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+            obj.set_prop_at(pos, JsValue::undefined());
+        }
+        self.regs[rd] = JsValue::bool(true);
+        Ok(false)
+    }
+
+    pub(crate) fn dispatch_delete_prop_dynamic(&mut self, rd: usize, b: usize) -> Result<bool, String> {
+        vm_trace!("DELETE_PROP_DYNAMIC rd={}", rd);
+        let prop_name_si = self.property_key_si(self.regs[b]);
+        let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "delete on non-object")? else {
+            return Ok(true);
+        };
+        let obj = unsafe { &mut *obj_ptr };
+        if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+            obj.set_prop_at(pos, JsValue::undefined());
+        }
+        self.regs[rd] = JsValue::bool(true);
+        Ok(false)
     }
 }

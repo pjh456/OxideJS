@@ -1,7 +1,21 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::emitter) fn emit_numeric_literal_expression(
+    /// Domain entry point: emit any literal expression. The central
+    /// `emit_expression` match delegates all literal variants here in one arm;
+    /// adding a new literal kind only touches this file plus that one arm.
+    pub(in crate::emitter) fn emit_literal(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u8, String> {
+        match expr {
+            Expression::NumericLiteral(n) => self.emit_numeric_literal_expression(n, ctx),
+            Expression::StringLiteral(s) => self.emit_string_literal_expression(s, ctx),
+            Expression::BooleanLiteral(b) => self.emit_boolean_literal_expression(b, ctx),
+            Expression::NullLiteral(_) => self.emit_null_literal_expression(ctx),
+            Expression::RegExpLiteral(lit) => self.emit_reg_exp_literal_expression(lit, ctx),
+            _ => self.emit_unsupported_expression(expr, ctx),
+        }
+    }
+
+    fn emit_numeric_literal_expression(
         &self, n: &oxide_parser::NumericLiteral, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {
         let idx = if is_int_literal(n.value) {
@@ -14,7 +28,7 @@ impl Compiler {
         Ok(r)
     }
 
-    pub(in crate::emitter) fn emit_string_literal_expression(
+    fn emit_string_literal_expression(
         &self, s: &oxide_parser::StringLiteral, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {
         let idx = ctx.add_constant(Constant::String(s.value.to_string()));
@@ -23,7 +37,7 @@ impl Compiler {
         Ok(r)
     }
 
-    pub(in crate::emitter) fn emit_boolean_literal_expression(
+    fn emit_boolean_literal_expression(
         &self, b: &oxide_parser::BooleanLiteral, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {
         let idx = ctx.add_constant(Constant::Boolean(b.value));
@@ -32,7 +46,7 @@ impl Compiler {
         Ok(r)
     }
 
-    pub(in crate::emitter) fn emit_null_literal_expression(&self, ctx: &mut CompileCtx) -> Result<u8, String> {
+    fn emit_null_literal_expression(&self, ctx: &mut CompileCtx) -> Result<u8, String> {
         let idx = ctx.add_constant(Constant::Null);
         let r = ctx.alloc_reg();
         ctx.emit_load_const(r, idx);
@@ -61,18 +75,23 @@ impl Compiler {
         Ok(r)
     }
 
-    pub(in crate::emitter) fn emit_reg_exp_literal_expression(
+    fn emit_reg_exp_literal_expression(
         &self, lit: &oxide_parser::RegExpLiteral, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {
         if let Some(raw) = &lit.raw {
             let raw_str = raw.to_string();
             if raw_str.len() >= 2 && raw_str.starts_with('/') {
                 let last_slash = raw_str.rfind('/').unwrap_or(raw_str.len() - 1);
-                let pattern = &raw_str[1..last_slash];
-                let flags = &raw_str[last_slash + 1..];
-                let ci = ctx.add_constant(Constant::RegExp(pattern.to_string(), flags.to_string()));
+                let pattern = raw_str[1..last_slash].to_string();
+                let flags = raw_str[last_slash + 1..].to_string();
+                let pat_ci = ctx.add_constant(Constant::String(pattern));
+                let pat_reg = ctx.alloc_reg();
+                ctx.emit_load_const(pat_reg, pat_ci);
+                let flags_ci = ctx.add_constant(Constant::String(flags));
+                let flags_reg = ctx.alloc_reg();
+                ctx.emit_load_const(flags_reg, flags_ci);
                 let r = ctx.alloc_reg();
-                ctx.emit_load_const(r, ci);
+                ctx.emit(opcode::encode(OpCode::CREATE_REGEXP, r, pat_reg, flags_reg));
                 Ok(r)
             } else {
                 Err(format!("unsupported regexp literal: {:?}", lit))

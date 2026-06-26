@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::bind_constructor_hash;
+use crate::bind_constructor;
 use crate::bindings::{apply_binding_table, configure_native_constructor};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
@@ -10,7 +10,7 @@ pub fn bind_set(core: &Arc<KernelCore>, session: &KernelSession, global: &mut Js
     let ctor = unsafe { &mut *ctor_ptr };
     let proto_ptr = session.builtin_world().set_proto.as_ptr() as *mut JsObject;
 
-    configure_native_constructor(ctor, crate::builtins::set::set_constructor as *const (), 1);
+    configure_native_constructor(ctor, oxide_builtins::set::set_constructor::<crate::vm::Vm> as *const (), 1);
     let proto = unsafe { &mut *proto_ptr };
 
     apply_binding_table(
@@ -18,13 +18,13 @@ pub fn bind_set(core: &Arc<KernelCore>, session: &KernelSession, global: &mut Js
         proto,
         core,
         &[
-            ("add", crate::builtins::set::set_add as *const (), 1),
-            ("has", crate::builtins::set::set_has as *const (), 1),
-            ("delete", crate::builtins::set::set_delete as *const (), 1),
-            ("clear", crate::builtins::set::set_clear as *const (), 0),
-            ("size", crate::builtins::set::set_size as *const (), 0),
+            ("add", oxide_builtins::set::set_add::<crate::vm::Vm> as *const (), 1),
+            ("has", oxide_builtins::set::set_has::<crate::vm::Vm> as *const (), 1),
+            ("delete", oxide_builtins::set::set_delete::<crate::vm::Vm> as *const (), 1),
+            ("clear", oxide_builtins::set::set_clear::<crate::vm::Vm> as *const (), 0),
+            ("size", oxide_builtins::set::set_size::<crate::vm::Vm> as *const (), 0),
         ],
     );
 
-    bind_constructor_hash!(core, global, "Set", ctor_ptr, crate::builtins::set::set_constructor, 1);
+    bind_constructor!(core, global, "Set", ctor_ptr, oxide_builtins::set::set_constructor::<crate::vm::Vm>, 1, hash: true);
 }

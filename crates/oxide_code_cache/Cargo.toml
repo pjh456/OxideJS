@@ -8,4 +8,5 @@ description = "OxideJS - Compiler-independent compiled module cache"
 
 [dependencies]
 oxide_bytecode = { path = "../oxide_bytecode" }
-dashmap.workspace = true
+oxide_log = { path = "../oxide_log" }
+lru.workspace = true

@@ -1,9 +1,7 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::emitter) fn emit_while_statement(
-        &self, stmt: &Statement, ctx: &mut CompileCtx,
-    ) -> Result<Option<u8>, String> {
+    fn emit_while_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
         let Statement::WhileStatement(wh) = stmt else {
             return Ok(None);
         };
@@ -32,9 +30,7 @@ impl Compiler {
         Ok(None)
     }
 
-    pub(in crate::emitter) fn emit_do_while_statement(
-        &self, stmt: &Statement, ctx: &mut CompileCtx,
-    ) -> Result<Option<u8>, String> {
+    fn emit_do_while_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
         let Statement::DoWhileStatement(dw) = stmt else {
             return Ok(None);
         };
@@ -57,9 +53,7 @@ impl Compiler {
         Ok(None)
     }
 
-    pub(in crate::emitter) fn emit_for_statement(
-        &self, stmt: &Statement, ctx: &mut CompileCtx,
-    ) -> Result<Option<u8>, String> {
+    fn emit_for_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
         let Statement::ForStatement(fr) = stmt else {
             return Ok(None);
         };
@@ -113,9 +107,7 @@ impl Compiler {
         Ok(None)
     }
 
-    pub(in crate::emitter) fn emit_for_in_statement(
-        &self, stmt: &Statement, ctx: &mut CompileCtx,
-    ) -> Result<Option<u8>, String> {
+    fn emit_for_in_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
         let Statement::ForInStatement(fi) = stmt else {
             return Ok(None);
         };
@@ -176,9 +168,7 @@ impl Compiler {
         Ok(None)
     }
 
-    pub(in crate::emitter) fn emit_for_of_statement(
-        &self, stmt: &Statement, ctx: &mut CompileCtx,
-    ) -> Result<Option<u8>, String> {
+    fn emit_for_of_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
         let Statement::ForOfStatement(fo) = stmt else {
             return Ok(None);
         };
@@ -229,5 +219,18 @@ impl Compiler {
         ctx.pop_label_scopes(n_labeled);
         ctx.pop_loop();
         Ok(None)
+    }
+
+    pub(in crate::emitter) fn emit_iteration_domain(
+        &self, stmt: &Statement, ctx: &mut CompileCtx,
+    ) -> Result<Option<u8>, String> {
+        match stmt {
+            Statement::WhileStatement(_) => self.emit_while_statement(stmt, ctx),
+            Statement::DoWhileStatement(_) => self.emit_do_while_statement(stmt, ctx),
+            Statement::ForStatement(_) => self.emit_for_statement(stmt, ctx),
+            Statement::ForInStatement(_) => self.emit_for_in_statement(stmt, ctx),
+            Statement::ForOfStatement(_) => self.emit_for_of_statement(stmt, ctx),
+            _ => Ok(None),
+        }
     }
 }

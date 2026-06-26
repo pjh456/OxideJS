@@ -1,7 +1,7 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::emitter) fn emit_template_literal_expression(
+    fn emit_template_literal_expression(
         &self, tl: &oxide_parser::TemplateLiteral, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {
         let r = ctx.alloc_reg();
@@ -52,7 +52,7 @@ impl Compiler {
         Ok(r)
     }
 
-    pub(in crate::emitter) fn emit_tagged_template_expression(
+    fn emit_tagged_template_expression(
         &self, tt: &oxide_parser::TaggedTemplateExpression, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {
         let quasis = &tt.quasi.quasis;
@@ -124,5 +124,15 @@ impl Compiler {
         let result_reg = ctx.alloc_reg();
         ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, 0, 0));
         Ok(result_reg)
+    }
+
+    pub(in crate::emitter) fn emit_template_domain(
+        &self, expr: &Expression, ctx: &mut CompileCtx,
+    ) -> Result<u8, String> {
+        match expr {
+            Expression::TemplateLiteral(tl) => self.emit_template_literal_expression(tl, ctx),
+            Expression::TaggedTemplateExpression(tt) => self.emit_tagged_template_expression(tt, ctx),
+            _ => self.emit_unsupported_expression(expr, ctx),
+        }
     }
 }

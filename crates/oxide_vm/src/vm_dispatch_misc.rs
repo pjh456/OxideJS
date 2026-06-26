@@ -1,5 +1,9 @@
-use crate::native::{NativeFn, NativeResult};
+use std::sync::Arc;
+
+use crate::native::NativeFn;
 use crate::vm::{native_fn_ptr_to_fn, CallFrame, ForInIter, FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
+use crate::vm_trace;
+use oxide_runtime_api::{to_boolean, NativeResult};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::is_private_name_key;
 use oxide_types::value::JsValue;
@@ -8,7 +12,7 @@ impl Vm {
     pub(crate) fn dispatch_new_expression(&mut self, rd: usize, a: usize, b: usize) -> Result<bool, String> {
         let constructor_reg = a;
         let first_arg_reg = b as u8;
-        oxide_kernel::vm_debug!("NEW_EXPRESSION rd={}", rd);
+        vm_trace!("NEW_EXPRESSION rd={}", rd);
 
         let constructor = self.regs[constructor_reg];
         if !constructor.is_object() {
@@ -42,7 +46,7 @@ impl Vm {
             JsValue::from_js_object(proto_ptr),
         ));
 
-        let proto_si = self.kernel_core.string_forge().intern("prototype").0;
+        let proto_si = self.kernel_core.perm_interner().intern("prototype").0;
         if let Some(proto_val) = self.resolve_property(ctor_obj, proto_si) {
             if proto_val.is_object() {
                 let new_obj_mut = unsafe { &mut *new_obj };
@@ -96,10 +100,10 @@ impl Vm {
             let sub_bytecode = self.sub_modules[sub_idx].bytecode.clone();
             let sub_n_args = self.sub_modules[sub_idx].n_args as usize;
             let sub_n_registers = self.sub_modules[sub_idx].n_registers;
-            let sub_constants = self.sub_modules[sub_idx].constants.clone();
             let sub_param_base = self.sub_modules[sub_idx].param_base as usize;
             let caller_reg_limit = self.active_reg_limit.max(1);
-            let saved_regs = self.regs[..caller_reg_limit as usize].to_vec().into_boxed_slice();
+            let saved_reg_offset = self.save_stack.len() as u32;
+            self.save_stack.extend_from_slice(&self.regs[..caller_reg_limit as usize]);
             let saved_this = self.regs[254];
             let saved_new_target = self.regs[255];
 
@@ -114,19 +118,18 @@ impl Vm {
             };
             self.regs[255] = constructor;
 
-            let converted_sub_constants = self.convert_constants(&sub_constants)?;
             self.saved_bytecode_stack.push(std::mem::take(&mut self.bytecode));
-            self.saved_constants_stack.push(std::mem::take(&mut self.constants));
+            self.saved_immutables_stack.push(self.active_immutables);
 
             self.frames.push(CallFrame {
                 return_addr: self.pc,
                 function_name: self.sub_modules[sub_idx]
                     .function_name
                     .as_deref()
-                    .map(|name| self.kernel_core.string_forge().intern(name).0)
+                    .map(|name| self.kernel_core.perm_interner().intern(name).0)
                     .unwrap_or(0),
                 caller_reg_limit,
-                saved_regs,
+                saved_reg_offset,
                 saved_this,
                 saved_new_target,
                 callee: constructor,
@@ -137,10 +140,11 @@ impl Vm {
             });
 
             self.bytecode = sub_bytecode;
-            self.constants = converted_sub_constants;
+            let subs = Arc::clone(&self.sub_modules);
+            self.activate_immutables(sub_idx + 1, &subs[sub_idx].constants);
 
             for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map {
-                let si = self.kernel_core.string_forge().intern(name.as_str()).0;
+                let si = self.kernel_core.perm_interner().intern(name.as_str()).0;
                 let global = self.session.global_object();
                 if let Some(pos) = self.kernel_core.shape_forge().lookup_position(global.shape_id(), si) {
                     self.regs[*reg as usize] = global.get_prop_at(pos);
@@ -152,7 +156,7 @@ impl Vm {
             Ok(true)
         } else {
             let error =
-                crate::builtins::error::create_error(self, "NEW_EXPRESSION: bytecode constructors not yet supported");
+                oxide_builtins::error::create_error(self, "NEW_EXPRESSION: bytecode constructors not yet supported");
             self.exception_value = Some(error);
             self.pending_error_kind = Some(self.thrown_error_kind(error));
             self.unwind().map(|_| true)
@@ -160,6 +164,7 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_template_str(&mut self, rd: usize) {
+        vm_trace!("TEMPLATE_STR rd={}", rd);
         let header = self.bytecode[self.pc];
         self.pc += 1;
         let segment_count = (header >> 16) as usize;
@@ -173,34 +178,30 @@ impl Vm {
                 let reg = (seg & 0x7F) as u8;
                 let val = self.regs[reg as usize];
                 let s = if val.is_string() {
-                    self.kernel_core
-                        .string_forge()
-                        .lookup(val.as_string_index())
-                        .unwrap_or_default()
+                    // SAFETY: val is a string value.
+                    unsafe { (*val.as_string_ptr()).data.clone() }
                 } else {
                     format!("{}", val)
                 };
                 result.push_str(&s);
             } else {
                 let const_idx = (seg & 0x7FFF_FFFF) as usize;
-                if const_idx < self.constants.len() {
-                    let val = self.constants[const_idx];
+                let imm = self.immutables();
+                if const_idx < imm.len() {
+                    let val = imm[const_idx];
                     if val.is_string() {
-                        let s = self
-                            .kernel_core
-                            .string_forge()
-                            .lookup(val.as_string_index())
-                            .unwrap_or_default();
+                        // SAFETY: val is a string value.
+                        let s = unsafe { (*val.as_string_ptr()).data.clone() };
                         result.push_str(&s);
                     }
                 }
             }
         }
-        let si = self.kernel_core.string_forge().intern(&result).0;
-        self.regs[rd] = JsValue::string(si, 0);
+        self.regs[rd] = self.new_string(&result);
     }
 
     pub(crate) fn dispatch_instanceof(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("INSTANCEOF rd={}", rd);
         let lhs_val = self.regs[a];
         let rhs_val = self.regs[b];
 
@@ -213,7 +214,7 @@ impl Vm {
         }
 
         let rhs_obj = unsafe { &*rhs_val.as_js_object_ptr() };
-        let proto_si = self.kernel_core.string_forge().intern("prototype").0;
+        let proto_si = self.kernel_core.perm_interner().intern("prototype").0;
         let ctor_proto = self.resolve_property(rhs_obj, proto_si);
 
         let ctor_proto_ptr = match ctor_proto {
@@ -247,6 +248,7 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_in(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("IN rd={}", rd);
         let key_val = self.regs[a];
         let obj_ptr = self.regs[b].as_object_ptr() as *mut JsObject;
         if obj_ptr.is_null() {
@@ -260,6 +262,7 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_for_in_init(&mut self, a: usize) -> Result<(), String> {
+        vm_trace!("FOR_IN_INIT r{}={:?}", a, self.regs[a]);
         let obj_val = self.regs[a];
         if !obj_val.is_object() {
             return self.raise_type_error("for-in right-hand side is not an object");
@@ -297,8 +300,9 @@ impl Vm {
                             .map(|meta| meta.attributes.enumerable())
                             .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable());
                         if enumerable {
-                            let hash = self.kernel_core.string_forge().get_hash(shape.property_name).unwrap_or(0);
-                            keys_vec.push(JsValue::string(shape.property_name, hash));
+                            keys_vec.push(JsValue::perm_string(
+                                self.kernel_core.perm_interner().string_ptr(shape.property_name),
+                            ));
                         }
                     }
                     cursor = shape.parent;
@@ -310,12 +314,13 @@ impl Vm {
         }
 
         let iter = self.epoch.alloc(ForInIter { keys: keys_vec, index: 0 });
-        self.for_in_iters.push(iter.cast::<ForInIter<'static>>());
+        self.iters.push_for_in(iter.cast::<ForInIter<'static>>());
         Ok(())
     }
 
     pub(crate) fn dispatch_for_in_next(&mut self, rd: usize) -> Result<(), String> {
-        let iter_ptr = self.for_in_iters.last().copied().unwrap_or(std::ptr::null_mut());
+        vm_trace!("FOR_IN_NEXT rd={}", rd);
+        let iter_ptr = self.iters.last_for_in();
         if iter_ptr.is_null() {
             return Err("FOR_IN_NEXT without active iterator".into());
         }
@@ -330,7 +335,8 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_for_in_done(&mut self, rd: usize) {
-        let iter_ptr = self.for_in_iters.last().copied().unwrap_or(std::ptr::null_mut());
+        vm_trace!("FOR_IN_DONE rd={}", rd);
+        let iter_ptr = self.iters.last_for_in();
         if iter_ptr.is_null() {
             self.regs[rd] = JsValue::bool(true);
         } else {
@@ -340,15 +346,17 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_for_in_cleanup(&mut self) {
-        self.for_in_iters.pop();
+        vm_trace!("FOR_IN_CLEANUP");
+        self.iters.pop_for_in();
     }
 
     pub(crate) fn dispatch_for_of_init(&mut self, a: usize) -> Result<(), String> {
+        vm_trace!("FOR_OF_INIT r{}={:?}", a, self.regs[a]);
         let iterable = self.regs[a];
-        match crate::builtins::iterator::make_iterator_for_value(self, iterable) {
+        match oxide_builtins::iterator::make_iterator_for_value(self, iterable) {
             Ok(iterator) => {
-                self.for_of_iters.push(iterator);
-                self.last_for_of_result = JsValue::undefined();
+                self.iters.push_for_of(iterator);
+                self.iters.clear_last_for_of_result();
                 Ok(())
             }
             Err(err) => {
@@ -360,7 +368,8 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_for_of_done(&mut self, rd: usize) -> Result<(), String> {
-        let Some(iterator) = self.for_of_iters.last().copied() else {
+        vm_trace!("FOR_OF_DONE rd={}", rd);
+        let Some(iterator) = self.iters.last_for_of() else {
             return Err("FOR_OF_DONE without active iterator".into());
         };
         if !iterator.is_object() {
@@ -368,7 +377,7 @@ impl Vm {
         }
 
         let iter_obj = unsafe { &*iterator.as_js_object_ptr() };
-        let next_si = self.kernel_core.string_forge().intern("next").0;
+        let next_si = self.kernel_core.perm_interner().intern("next").0;
         let next_fn = self.ordinary_get(iter_obj, next_si, iterator)?;
         let result = self.call_function_sync(next_fn, iterator, &[])?;
         if !result.is_object() {
@@ -376,35 +385,37 @@ impl Vm {
         }
 
         let result_obj = unsafe { &*result.as_js_object_ptr() };
-        let done_si = self.kernel_core.string_forge().intern("done").0;
+        let done_si = self.kernel_core.perm_interner().intern("done").0;
         let done_val = self.ordinary_get(result_obj, done_si, result)?;
-        let done = crate::coercion::to_boolean(done_val, self.kernel_core.string_forge().as_ref());
-        self.last_for_of_result = result;
+        let done = to_boolean(done_val);
+        self.iters.set_last_for_of_result(result);
         self.regs[rd] = JsValue::bool(!done);
         Ok(())
     }
 
     pub(crate) fn dispatch_for_of_next(&mut self, rd: usize) -> Result<(), String> {
-        let result = self.last_for_of_result;
+        vm_trace!("FOR_OF_NEXT rd={}", rd);
+        let result = self.iters.last_for_of_result();
         if !result.is_object() {
             self.regs[rd] = JsValue::undefined();
             return Ok(());
         }
         let result_obj = unsafe { &*result.as_js_object_ptr() };
-        let value_si = self.kernel_core.string_forge().intern("value").0;
+        let value_si = self.kernel_core.perm_interner().intern("value").0;
         self.regs[rd] = self.ordinary_get(result_obj, value_si, result)?;
         Ok(())
     }
 
     pub(crate) fn dispatch_for_of_close(&mut self) -> Result<(), String> {
-        let Some(iterator) = self.for_of_iters.pop() else {
+        vm_trace!("FOR_OF_CLOSE");
+        let Some(iterator) = self.iters.pop_for_of() else {
             return Ok(());
         };
         if !iterator.is_object() {
             return Ok(());
         }
         let iter_obj = unsafe { &*iterator.as_js_object_ptr() };
-        let return_si = self.kernel_core.string_forge().intern("return").0;
+        let return_si = self.kernel_core.perm_interner().intern("return").0;
         let return_fn = self.ordinary_get(iter_obj, return_si, iterator)?;
         if return_fn.is_object() {
             let return_obj = unsafe { &*return_fn.as_js_object_ptr() };
@@ -416,6 +427,7 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_rest_object(&mut self, rd: usize, a: usize) -> Result<(), String> {
+        vm_trace!("REST_OBJECT rd={}", rd);
         let src = self.regs[a];
         if !src.is_object() {
             return self.raise_type_error("Cannot destructure property of null/undefined");
@@ -423,11 +435,12 @@ impl Vm {
         let excluded_idx = self.bytecode[self.pc] as usize;
         self.pc += 1;
         let excluded = self
-            .constants
+            .immutables()
             .get(excluded_idx)
             .and_then(|v| {
                 if v.is_string() {
-                    self.kernel_core.string_forge().lookup(v.as_string_index())
+                    // SAFETY: v is a string constant value.
+                    Some(unsafe { (*v.as_string_ptr()).data.clone() })
                 } else {
                     None
                 }
@@ -450,8 +463,8 @@ impl Vm {
                 break;
             };
             if shape.property_name != u32::MAX && !is_private_name_key(shape.property_name) {
-                if let Some(name) = self.kernel_core.string_forge().lookup(shape.property_name) {
-                    if !excluded.contains(name.as_str()) {
+                if let Some(name) = self.kernel_core.perm_interner().lookup(shape.property_name) {
+                    if !excluded.contains(name) {
                         if let Some(pos) = self
                             .kernel_core
                             .shape_forge()

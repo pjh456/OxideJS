@@ -1,7 +1,7 @@
+use oxide_builtins::boolean::{boolean_constructor, boolean_prototype_to_string, boolean_prototype_value_of};
 use oxide_compiler::compiler::Compiler;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
-use oxide_vm::builtins::boolean::{boolean_constructor, boolean_prototype_to_string, boolean_prototype_value_of};
 use oxide_vm::vm::Vm;
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
@@ -14,10 +14,7 @@ fn eval(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
 }
 
 fn str_val(vm: &Vm, val: JsValue) -> String {
-    vm.kernel_core()
-        .string_forge()
-        .lookup(val.as_string_index())
-        .unwrap_or_default()
+    vm.lookup_str(val).unwrap_or_default()
 }
 
 // -- direct native fn tests --
@@ -47,7 +44,7 @@ fn tboolean_call_true_false() {
 #[test]
 fn tboolean_call_empty_string() {
     let mut vm = Vm::new();
-    let empty = vm.intern("");
+    let empty = vm.new_string("");
     assert!(!bool_ctor_call(&mut vm, empty).as_bool());
 }
 

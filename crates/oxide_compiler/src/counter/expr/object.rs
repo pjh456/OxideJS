@@ -1,7 +1,7 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::counter) fn count_object_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
+    fn count_object_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
         let Expression::ObjectExpression(obj) = expr else {
             return;
         };
@@ -25,7 +25,7 @@ impl Compiler {
         }
     }
 
-    pub(in crate::counter) fn count_array_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
+    fn count_array_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
         let Expression::ArrayExpression(arr) = expr else {
             return;
         };
@@ -40,6 +40,14 @@ impl Compiler {
                 ctx.projected_pc += 1; // SET_ELEM
                 ctx.restore_reg_checkpoint(elem_checkpoint);
             }
+        }
+    }
+
+    pub(in crate::counter) fn count_object_domain(&self, expr: &Expression, ctx: &mut CompileCtx) {
+        match expr {
+            Expression::ObjectExpression(_) => self.count_object_expression(expr, ctx),
+            Expression::ArrayExpression(_) => self.count_array_expression(expr, ctx),
+            _ => {}
         }
     }
 }

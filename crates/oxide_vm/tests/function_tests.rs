@@ -204,10 +204,6 @@ fn function_default_prototype_accepts_member_assignment() {
         "function Test262Error(message) { this.message = message || ''; } Test262Error.prototype.toString = function () { return this.message; }; new Test262Error('ok').toString()",
     )
     .unwrap();
-    let rendered = vm
-        .kernel_core()
-        .string_forge()
-        .lookup(result.as_string_index())
-        .unwrap_or_default();
+    let rendered = vm.lookup_str(result).unwrap_or_default();
     assert_eq!(rendered, "ok");
 }

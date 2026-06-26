@@ -5,12 +5,13 @@ use std::sync::Arc;
 use oxide_bytecode::module::Constant;
 
 use crate::bindings;
-use crate::vm::{native_fn_ptr_to_fn, Vm};
+use crate::vm::Vm;
+use crate::vm_info;
+use crate::vm_state::{GcState, IterState, ProfilingState, SymbolState};
 use oxide_kernel::kernel::{KernelConfig, KernelCore, KernelSession};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_types::error::JsError;
 use oxide_types::mem::{Epoch, P};
-use oxide_types::object::{JsObject, PropAttributes};
+use oxide_types::object::{JsObject, JsString, PropAttributes};
 use oxide_types::value::JsValue;
 
 impl Vm {
@@ -19,90 +20,120 @@ impl Vm {
         let mut session = KernelSession::new(&core);
         bindings::init_kernel_builtins(&core, &mut session);
         let obj_proto = P::clone(&session.builtin_world().object_proto);
-        Self {
+        let vm = Self {
             regs: [JsValue::undefined(); 256],
             pc: 0,
             bytecode: Vec::new(),
-            constants: Vec::new(),
+            immutables_cache: Vec::new(),
+            active_immutables: std::ptr::slice_from_raw_parts(std::ptr::null(), 0),
             frames: smallvec::SmallVec::new(),
-            for_in_iters: Vec::new(),
             kernel_core: core,
             session,
-            interned_strings: Vec::new(),
             epoch: Epoch::new(),
-            session_epoch: bumpalo::Bump::new(),
-            session_gc: crate::session_gc::SessionGc::new(),
-            epoch_object_ptrs: Vec::new(),
-            session_object_ptrs: Vec::new(),
-            session_bytes_allocated: 0,
             object_prototype: obj_proto,
             math_rng_state: 0,
-            sub_modules: Vec::new(),
-            sub_module_constants: Vec::new(),
+            sub_modules: Arc::new(Vec::new()),
             saved_bytecode_stack: Vec::new(),
-            saved_constants_stack: Vec::new(),
+            saved_immutables_stack: Vec::new(),
+            save_stack: Vec::new(),
             try_stack: Vec::new(),
             exception_value: None,
             pending_exception: None,
             pending_error_kind: None,
-            symbol_counter: 0,
-            symbol_descriptions: Vec::new(),
-            symbol_registry: std::collections::HashMap::new(),
-            for_of_iters: Vec::new(),
-            last_for_of_result: JsValue::undefined(),
             root_reg_limit: 0,
             active_reg_limit: 0,
             native_call_depth: 0,
             accessor_frame_target_reg: None,
-        }
+            gc_state: GcState {
+                session_epoch: bumpalo::Bump::new(),
+                session_gc: crate::session_gc::SessionGc::new(),
+                epoch_object_ptrs: Vec::new(),
+                session_object_ptrs: Vec::new(),
+                session_string_ptrs: Vec::new(),
+                session_bytes_allocated: 0,
+                forwarding: std::collections::HashMap::with_hasher(rustc_hash::FxBuildHasher),
+            },
+            symbols: SymbolState {
+                symbol_counter: 0,
+                symbol_descriptions: Vec::new(),
+                symbol_registry: std::collections::HashMap::new(),
+            },
+            iters: IterState {
+                for_in_iters: Vec::new(),
+                for_of_iters: Vec::new(),
+                last_for_of_result: JsValue::undefined(),
+            },
+            profiling: ProfilingState {
+                ic_hits: std::cell::Cell::new(0),
+                ic_misses: std::cell::Cell::new(0),
+                instruction_count: 0,
+            },
+        };
+        vm_info!("Vm created");
+        vm
     }
 
     pub fn with_kernel_core(core: Arc<KernelCore>) -> Self {
         let mut session = KernelSession::new(&core);
         bindings::init_kernel_builtins(&core, &mut session);
         let obj_proto = P::clone(&session.builtin_world().object_proto);
-        Self {
+        let vm = Self {
             regs: [JsValue::undefined(); 256],
             pc: 0,
             bytecode: Vec::new(),
-            constants: Vec::new(),
+            immutables_cache: Vec::new(),
+            active_immutables: std::ptr::slice_from_raw_parts(std::ptr::null(), 0),
             frames: smallvec::SmallVec::new(),
-            for_in_iters: Vec::new(),
             kernel_core: core,
             session,
-            interned_strings: Vec::new(),
             epoch: Epoch::new(),
-            session_epoch: bumpalo::Bump::new(),
-            session_gc: crate::session_gc::SessionGc::new(),
-            epoch_object_ptrs: Vec::new(),
-            session_object_ptrs: Vec::new(),
-            session_bytes_allocated: 0,
             object_prototype: obj_proto,
             math_rng_state: 0,
-            sub_modules: Vec::new(),
-            sub_module_constants: Vec::new(),
+            sub_modules: Arc::new(Vec::new()),
             saved_bytecode_stack: Vec::new(),
-            saved_constants_stack: Vec::new(),
+            saved_immutables_stack: Vec::new(),
+            save_stack: Vec::new(),
             try_stack: Vec::new(),
             exception_value: None,
             pending_exception: None,
             pending_error_kind: None,
-            symbol_counter: 0,
-            symbol_descriptions: Vec::new(),
-            symbol_registry: std::collections::HashMap::new(),
-            for_of_iters: Vec::new(),
-            last_for_of_result: JsValue::undefined(),
             root_reg_limit: 0,
             active_reg_limit: 0,
             native_call_depth: 0,
             accessor_frame_target_reg: None,
-        }
+            gc_state: GcState {
+                session_epoch: bumpalo::Bump::new(),
+                session_gc: crate::session_gc::SessionGc::new(),
+                epoch_object_ptrs: Vec::new(),
+                session_object_ptrs: Vec::new(),
+                session_string_ptrs: Vec::new(),
+                session_bytes_allocated: 0,
+                forwarding: std::collections::HashMap::with_hasher(rustc_hash::FxBuildHasher),
+            },
+            symbols: SymbolState {
+                symbol_counter: 0,
+                symbol_descriptions: Vec::new(),
+                symbol_registry: std::collections::HashMap::new(),
+            },
+            iters: IterState {
+                for_in_iters: Vec::new(),
+                for_of_iters: Vec::new(),
+                last_for_of_result: JsValue::undefined(),
+            },
+            profiling: ProfilingState {
+                ic_hits: std::cell::Cell::new(0),
+                ic_misses: std::cell::Cell::new(0),
+                instruction_count: 0,
+            },
+        };
+        vm_info!("Vm created (pool)");
+        vm
     }
 
     pub fn full_reset(&mut self) {
         let dirty = self.session.selective_reset(&self.kernel_core);
         if dirty.any_builtin_dirty() {
-            bindings::rebind_dirty_builtins(&self.kernel_core, &mut self.session, &dirty);
+            bindings::rebind_dirty_builtins(&self.kernel_core, &mut self.session, Some(&dirty));
         }
         if dirty.global {
             let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;
@@ -112,6 +143,7 @@ impl Vm {
         self.session.record_snapshot();
         self.object_prototype = P::clone(&self.session.builtin_world().object_proto);
         self.clear_full_reset_state();
+        vm_info!("full_reset completed");
     }
 
     #[doc(hidden)]
@@ -125,30 +157,30 @@ impl Vm {
     fn clear_full_reset_state(&mut self) {
         self.clear_execution_state();
         self.bytecode.clear();
-        self.constants.clear();
+        self.immutables_cache.clear();
+        self.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
         self.free_epoch_object_heap_data();
         self.epoch.reset();
-        self.epoch_object_ptrs.clear();
-        self.session_epoch.reset();
-        self.session_object_ptrs.clear();
-        self.session_bytes_allocated = 0;
-        self.session_gc = crate::session_gc::SessionGc::new();
-        self.interned_strings.clear();
-        self.symbol_counter = 0;
-        self.symbol_descriptions.clear();
-        self.symbol_registry.clear();
+        self.gc_state.epoch_object_ptrs.clear();
+        self.gc_state.session_epoch.reset();
+        self.gc_state.session_object_ptrs.clear();
+        self.gc_state.session_bytes_allocated = 0;
+        self.gc_state.session_gc = crate::session_gc::SessionGc::new();
+        self.free_session_string_heap_data();
+        self.symbols.reset();
         self.root_reg_limit = 0;
         self.active_reg_limit = 0;
     }
 
     fn free_epoch_object_heap_data(&mut self) {
         let mut freed = 0u64;
-        for ptr in self.epoch_object_ptrs.drain(..) {
+        for ptr in self.gc_state.epoch_object_ptrs.drain(..) {
             freed += crate::session_gc::SessionGc::drop_object_heap_data(ptr, false);
         }
         if freed > 0 {
-            self.session_gc.total_bytes_freed = self.session_gc.total_bytes_freed.saturating_add(freed);
-            self.session_gc.last_collection_bytes_freed = freed;
+            self.gc_state.session_gc.total_bytes_freed =
+                self.gc_state.session_gc.total_bytes_freed.saturating_add(freed);
+            self.gc_state.session_gc.last_collection_bytes_freed = freed;
         }
     }
 
@@ -161,11 +193,10 @@ impl Vm {
         self.regs = [JsValue::undefined(); 256];
         self.pc = 0;
         self.frames.clear();
-        self.for_in_iters.clear();
-        self.for_of_iters.clear();
-        self.last_for_of_result = JsValue::undefined();
+        self.iters.reset();
         self.saved_bytecode_stack.clear();
-        self.saved_constants_stack.clear();
+        self.saved_immutables_stack.clear();
+        self.save_stack.clear();
         self.try_stack.clear();
         self.exception_value = None;
         self.pending_exception = None;
@@ -177,25 +208,55 @@ impl Vm {
         self.clear_execution_state();
         self.maybe_collect_session_gc();
         self.bytecode.clear();
-        self.constants.clear();
+        self.immutables_cache.clear();
+        self.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
         self.free_epoch_object_heap_data();
         self.epoch.reset();
-        self.epoch_object_ptrs.clear();
-        self.interned_strings.clear();
+        self.gc_state.epoch_object_ptrs.clear();
         self.root_reg_limit = 0;
         self.active_reg_limit = 0;
     }
 
-    pub fn intern(&mut self, s: &str) -> JsValue {
-        let (idx, hash) = self.kernel_core.string_forge().intern(s);
-        self.interned_strings.push(idx);
-        JsValue::string(idx, hash)
+    pub fn new_string(&mut self, s: &str) -> JsValue {
+        let ptr = Box::into_raw(Box::new(JsString::new(s.to_string())));
+        self.gc_state.session_string_ptrs.push(ptr);
+        self.gc_state.session_bytes_allocated += std::mem::size_of::<JsString>() + s.len();
+        JsValue::string(ptr)
+    }
+
+    pub fn intern_key(&self, s: &str) -> u32 {
+        self.kernel_core.perm_interner().intern(s).0
+    }
+
+    /// Intern a compile-time string literal as a permanent, process-lifetime
+    /// `JsString` value shared across sessions. Source literals and RegExp
+    /// source/flags recur (templated/repetitive code) and are immutable, so
+    /// sharing them via `PermInterner` restores cross-session string reuse —
+    /// without interning transient computed values, which stay session-heap
+    /// (`new_string`) so they remain collectable.
+    pub fn perm_string(&self, s: &str) -> JsValue {
+        let id = self.kernel_core.perm_interner().intern(s).0;
+        JsValue::perm_string(self.kernel_core.perm_interner().string_ptr(id))
+    }
+
+    /// Drop all session-heap `JsString` values. Called only on full isolation reset
+    /// (`full_reset` / `clear_full_reset_state`), where no surviving session object
+    /// can reference them. The lighter `reset()` deliberately keeps them alive,
+    /// mirroring session-object survival across evals.
+    fn free_session_string_heap_data(&mut self) {
+        for ptr in self.gc_state.session_string_ptrs.drain(..) {
+            // SAFETY: each ptr came from Box::into_raw(Box::new(JsString)) in new_string
+            // and is dropped exactly once here.
+            unsafe {
+                drop(Box::from_raw(ptr));
+            }
+        }
     }
 
     /// Create a function JsObject for a BytecodeFunc constant.
     /// When `is_arrow` is true, captures the current `this` (regs[254])
-    /// for lexical this binding at call time (D-01).
-    fn create_function_object(
+    /// for lexical this binding at call time.
+    pub(crate) fn create_function_object(
         &mut self, sub_idx: u32, is_arrow: bool, is_class_constructor: bool, is_derived_constructor: bool,
         needs_home_object: bool,
     ) -> JsValue {
@@ -219,10 +280,10 @@ impl Vm {
             let prototype_obj = self
                 .epoch
                 .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto_ptr)));
-            self.epoch_object_ptrs.push(prototype_obj);
+            self.gc_state.track_epoch_object(prototype_obj);
             let prototype_val = JsValue::from_js_object(prototype_obj);
 
-            let constructor_si = self.kernel_core.string_forge().intern("constructor").0;
+            let constructor_si = self.kernel_core.perm_interner().intern("constructor").0;
             let constructor_shape = self.kernel_core.shape_forge().make_shape(EMPTY_SHAPE_ID, constructor_si);
             let prototype = unsafe { &mut *prototype_obj };
             prototype.set_shape_id(constructor_shape);
@@ -230,7 +291,7 @@ impl Vm {
             prototype.set_data_meta(constructor_pos, PropAttributes::new(true, false, true));
             prototype.bump_generation();
 
-            let prototype_si = self.kernel_core.string_forge().intern("prototype").0;
+            let prototype_si = self.kernel_core.perm_interner().intern("prototype").0;
             let func = unsafe { &mut *obj_ptr };
             let prototype_shape = self.kernel_core.shape_forge().make_shape(func.shape_id(), prototype_si);
             func.set_shape_id(prototype_shape);
@@ -247,8 +308,8 @@ impl Vm {
         }
         if val.is_object() {
             let obj = unsafe { &*val.as_js_object_ptr() };
-            let name_si = self.kernel_core.string_forge().intern("name").0;
-            let message_si = self.kernel_core.string_forge().intern("message").0;
+            let name_si = self.kernel_core.perm_interner().intern("name").0;
+            let message_si = self.kernel_core.perm_interner().intern("message").0;
             let name = self
                 .resolve_property(obj, name_si)
                 .and_then(|v| self.lookup_str(v))
@@ -262,70 +323,22 @@ impl Vm {
         format!("{val}")
     }
 
-    fn convert_constant(&mut self, constant: &Constant) -> Result<JsValue, JsError> {
+    fn convert_constant(&self, constant: &Constant) -> JsValue {
         match constant {
-            Constant::Number(v) => Ok(JsValue::float(*v)),
-            Constant::Int(v) => Ok(JsValue::int(*v)),
-            Constant::String(s) => Ok(self.intern(s)),
-            Constant::Boolean(b) => Ok(JsValue::bool(*b)),
-            Constant::Null => Ok(JsValue::null()),
-            Constant::Undefined => Ok(JsValue::undefined()),
-            Constant::BytecodeFunc(idx) => {
-                let sub_idx = *idx as usize;
-                let (is_arrow, is_class_constructor, is_derived_constructor, needs_home_object) =
-                    if sub_idx > 0 && sub_idx <= self.sub_modules.len() {
-                        let sub_module = &self.sub_modules[sub_idx - 1];
-                        (
-                            sub_module.is_arrow,
-                            sub_module.is_class_constructor,
-                            sub_module.is_derived_constructor,
-                            sub_module.needs_home_object,
-                        )
-                    } else {
-                        (false, false, false, false)
-                    };
-                Ok(self.create_function_object(
-                    *idx,
-                    is_arrow,
-                    is_class_constructor,
-                    is_derived_constructor,
-                    needs_home_object,
-                ))
-            }
-            Constant::RegExp(pattern, flags) => {
-                let pat_si = self.kernel_core.string_forge().intern(pattern).0;
-                let flags_si = self.kernel_core.string_forge().intern(flags).0;
-                let pat_val = JsValue::string(pat_si, 0);
-                let flags_val = JsValue::string(flags_si, 0);
-
-                let ctor_ptr = self.session.builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
-                let ctor = unsafe { &*ctor_ptr };
-                let Some(native_fn) = ctor.native_fn() else {
-                    return Err(JsError::syntax_error("RegExp constructor unavailable"));
-                };
-
-                let saved_0 = self.regs[0];
-                let saved_1 = self.regs[1];
-                let saved_2 = self.regs[2];
-                self.regs[0] = JsValue::undefined();
-                self.regs[1] = pat_val;
-                self.regs[2] = flags_val;
-                let func = unsafe { native_fn_ptr_to_fn(native_fn) };
-                let result = func(self, &[0, 1, 2]);
-                self.regs[0] = saved_0;
-                self.regs[1] = saved_1;
-                self.regs[2] = saved_2;
-                result.map_err(|err| JsError::syntax_error(self.error_text(err)))
-            }
+            Constant::Number(v) => JsValue::float(*v),
+            Constant::Int(v) => JsValue::int(*v),
+            Constant::String(s) => self.perm_string(s),
+            Constant::Boolean(b) => JsValue::bool(*b),
+            Constant::Null => JsValue::null(),
+            Constant::Undefined => JsValue::undefined(),
         }
     }
 
-    pub(crate) fn convert_constants(&mut self, constants: &[Constant]) -> Result<Vec<JsValue>, JsError> {
-        let mut values = Vec::with_capacity(constants.len());
-        for constant in constants {
-            values.push(self.convert_constant(constant)?);
-        }
-        Ok(values)
+    /// Convert a module's immutable constant pool to `JsValue`s. Infallible — the pool holds only
+    /// scalars + permanent-interner string values after CreateClosure/CreateRegExp pulled functions
+    /// and regexes out of the pool. `&self` so it can run inside `OnceLock::get_or_init`.
+    pub(crate) fn convert_immutables(&self, constants: &[Constant]) -> Vec<JsValue> {
+        constants.iter().map(|c| self.convert_constant(c)).collect()
     }
 }
 
@@ -339,7 +352,7 @@ mod tests {
 
     fn global_prop_opt(vm: &Vm, name: &str) -> Option<JsValue> {
         let global = vm.session.global_object();
-        let si = vm.kernel_core.string_forge().intern(name).0;
+        let si = vm.kernel_core.perm_interner().intern(name).0;
         vm.kernel_core
             .shape_forge()
             .lookup_position(global.shape_id(), si)
@@ -410,7 +423,7 @@ mod tests {
             global_prop(&vm, "Array").as_js_object_ptr(),
             vm.session.builtin_world().array_constructor.as_ptr() as *mut JsObject
         ));
-        let constructor_si = vm.kernel_core.string_forge().intern("constructor").0;
+        let constructor_si = vm.kernel_core.perm_interner().intern("constructor").0;
         let array_proto = &*vm.session.builtin_world().array_proto;
         let constructor = vm
             .resolve_property(array_proto, constructor_si)
@@ -438,7 +451,7 @@ mod tests {
     #[test]
     fn session_epoch_survives_reset() {
         let mut vm = Vm::new();
-        let session_ptr = vm.session_epoch.alloc(123i32) as *mut i32;
+        let session_ptr = vm.gc_state.session_epoch.alloc(123i32) as *mut i32;
 
         vm.reset();
 
@@ -446,12 +459,24 @@ mod tests {
     }
 
     #[test]
+    fn immutables_cache_filled_once_per_module() {
+        let mut vm = Vm::new();
+        // `f` recurses (same sub-module entered 4x). Its immutables convert once via OnceLock.
+        let result = run_source(&mut vm, "function f(n){ if(n<=0){ return 'done'; } return f(n-1); } f(3)");
+        assert!(result.is_string());
+        assert_eq!(vm.lookup_str(result).as_deref(), Some("done"));
+        // Cache = top module + 1 sub-module (f); the sub-module slot was initialized by the calls.
+        assert_eq!(vm.immutables_cache.len(), 2);
+        assert!(vm.immutables_cache[1].get().is_some(), "f's immutables should be cached after its calls");
+    }
+
+    #[test]
     fn session_epoch_reset_is_only_in_full_reset_state_clear() {
         let src = include_str!("vm_support.rs");
         let production = src.split("#[cfg(test)]").next().expect("production source");
-        assert_eq!(production.matches("self.session_epoch.reset()").count(), 1);
+        assert_eq!(production.matches("self.gc_state.session_epoch.reset()").count(), 1);
         assert!(production.contains("fn clear_full_reset_state(&mut self)"));
-        assert!(production.contains("self.session_epoch.reset();"));
+        assert!(production.contains("self.gc_state.session_epoch.reset();"));
     }
 
     #[test]

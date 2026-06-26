@@ -11,7 +11,7 @@ fn run_source(vm: &mut Vm, source: &str) -> JsValue {
 }
 
 fn global_prop(vm: &Vm, name: &str) -> JsValue {
-    let si = vm.kernel_core().string_forge().intern(name).0;
+    let si = vm.kernel_core().perm_interner().intern(name).0;
     let global = vm.session().global_object();
     let pos = vm
         .kernel_core()

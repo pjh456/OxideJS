@@ -9,14 +9,14 @@ use super::bind_global_value;
 
 pub fn bind_function(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let function_methods = FunctionMethods {
-        call: crate::builtins::function::function_call as *const (),
-        apply: crate::builtins::function::function_apply as *const (),
-        bind: crate::builtins::function::function_bind as *const (),
-        to_string: crate::builtins::function::function_to_string as *const (),
+        call: oxide_builtins::function::function_call::<crate::vm::Vm> as *const (),
+        apply: oxide_builtins::function::function_apply::<crate::vm::Vm> as *const (),
+        bind: oxide_builtins::function::function_bind::<crate::vm::Vm> as *const (),
+        to_string: oxide_builtins::function::function_to_string::<crate::vm::Vm> as *const (),
     };
     session.builtin_world().bind_function_methods(
         &function_methods,
-        core.string_forge().as_ref(),
+        core.perm_interner().as_ref(),
         core.shape_forge().as_ref(),
     );
 

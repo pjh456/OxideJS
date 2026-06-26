@@ -2,9 +2,10 @@ use oxide_types::mem::P;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
-use crate::kernel::BuiltinDirtySet;
+use crate::kernel::{BuiltinDirtySet, BuiltinId};
+use crate::kernel_info;
 use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
-use crate::string_forge::StringForge;
+use crate::string_forge::PermInterner;
 
 #[macro_export]
 macro_rules! bind_method {
@@ -144,20 +145,6 @@ pub struct RegExpMethods {
     pub to_string: *const (),
 }
 
-pub struct NumberMethods {
-    pub is_nan: *const (),
-    pub is_finite: *const (),
-    pub parse_int: *const (),
-    pub parse_float: *const (),
-    pub to_string: *const (),
-    pub to_fixed: *const (),
-    pub is_integer: *const (),
-    pub is_safe_integer: *const (),
-    pub to_exponential: *const (),
-    pub to_precision: *const (),
-    pub value_of: *const (),
-}
-
 pub struct FunctionMethods {
     pub call: *const (),
     pub apply: *const (),
@@ -233,12 +220,12 @@ pub struct BuiltinWorld {
     pub stub_objects: Vec<P<JsObject>>,
 }
 
-fn intern_label(string_forge: &StringForge, label: &str) -> u32 {
+fn intern_label(string_forge: &PermInterner, label: &str) -> u32 {
     string_forge.intern(label).0
 }
 
 fn make_pair(
-    string_forge: &StringForge, shape_forge: &ShapeForge, name: &str, si_prototype: u32, si_constructor: u32,
+    string_forge: &PermInterner, shape_forge: &ShapeForge, name: &str, si_prototype: u32, si_constructor: u32,
     si_name: u32,
 ) -> (P<JsObject>, P<JsObject>) {
     intern_label(string_forge, name);
@@ -272,7 +259,7 @@ struct BuiltinLabels {
     name: u32,
 }
 
-fn builtin_labels(string_forge: &StringForge) -> BuiltinLabels {
+fn builtin_labels(string_forge: &PermInterner) -> BuiltinLabels {
     let labels = BuiltinLabels {
         prototype: intern_label(string_forge, "prototype"),
         constructor: intern_label(string_forge, "constructor"),
@@ -285,7 +272,7 @@ fn builtin_labels(string_forge: &StringForge) -> BuiltinLabels {
 }
 
 fn make_named_pair(
-    string_forge: &StringForge, shape_forge: &ShapeForge, labels: BuiltinLabels, name: &str,
+    string_forge: &PermInterner, shape_forge: &ShapeForge, labels: BuiltinLabels, name: &str,
 ) -> (P<JsObject>, P<JsObject>) {
     make_pair(string_forge, shape_forge, name, labels.prototype, labels.constructor, labels.name)
 }
@@ -338,7 +325,7 @@ struct TypedArrayFamily {
 }
 
 fn make_typed_array_family(
-    string_forge: &StringForge, shape_forge: &ShapeForge, labels: BuiltinLabels, object_proto: &P<JsObject>,
+    string_forge: &PermInterner, shape_forge: &ShapeForge, labels: BuiltinLabels, object_proto: &P<JsObject>,
 ) -> TypedArrayFamily {
     let obj_proto_val = JsValue::from_js_object(object_proto.as_ptr() as *mut JsObject);
     let typed_array_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, obj_proto_val));
@@ -486,7 +473,76 @@ impl BuiltinWorld {
         JsValue::from_js_object(self.function_proto.as_ptr() as *mut JsObject)
     }
 
-    pub fn new(string_forge: &StringForge, shape_forge: &ShapeForge) -> Self {
+    pub fn get_by_id(&self, id: BuiltinId) -> &P<JsObject> {
+        match id {
+            BuiltinId::ObjectProto => &self.object_proto,
+            BuiltinId::ArrayProto => &self.array_proto,
+            BuiltinId::FunctionProto => &self.function_proto,
+            BuiltinId::StringProto => &self.string_proto,
+            BuiltinId::NumberProto => &self.number_proto,
+            BuiltinId::BooleanProto => &self.boolean_proto,
+            BuiltinId::ErrorProto => &self.error_proto,
+            BuiltinId::SymbolProto => &self.symbol_proto,
+            BuiltinId::ObjectConstructor => &self.object_constructor,
+            BuiltinId::ArrayConstructor => &self.array_constructor,
+            BuiltinId::FunctionConstructor => &self.function_constructor,
+            BuiltinId::StringConstructor => &self.string_constructor,
+            BuiltinId::NumberConstructor => &self.number_constructor,
+            BuiltinId::BooleanConstructor => &self.boolean_constructor,
+            BuiltinId::ErrorConstructor => &self.error_constructor,
+            BuiltinId::SymbolConstructor => &self.symbol_constructor,
+            BuiltinId::TypeErrorProto => &self.type_error_proto,
+            BuiltinId::ReferenceErrorProto => &self.reference_error_proto,
+            BuiltinId::RangeErrorProto => &self.range_error_proto,
+            BuiltinId::SyntaxErrorProto => &self.syntax_error_proto,
+            BuiltinId::UriErrorProto => &self.uri_error_proto,
+            BuiltinId::EvalErrorProto => &self.eval_error_proto,
+            BuiltinId::MathObject => &self.math_object,
+            BuiltinId::JsonObject => &self.json_object,
+            BuiltinId::DateConstructor => &self.date_constructor,
+            BuiltinId::DateProto => &self.date_proto,
+            BuiltinId::SetConstructor => &self.set_constructor,
+            BuiltinId::SetProto => &self.set_proto,
+            BuiltinId::MapConstructor => &self.map_constructor,
+            BuiltinId::MapProto => &self.map_proto,
+            BuiltinId::RegExpConstructor => &self.regexp_constructor,
+            BuiltinId::RegExpProto => &self.regexp_proto,
+            BuiltinId::ArrayBufferConstructor => &self.array_buffer_constructor,
+            BuiltinId::ArrayBufferProto => &self.array_buffer_proto,
+            BuiltinId::DataViewConstructor => &self.data_view_constructor,
+            BuiltinId::DataViewProto => &self.data_view_proto,
+            BuiltinId::TypedArrayProto => &self.typed_array_proto,
+            BuiltinId::Int8ArrayConstructor => &self.int8array_constructor,
+            BuiltinId::Int8ArrayProto => &self.int8array_proto,
+            BuiltinId::Uint8ArrayConstructor => &self.uint8array_constructor,
+            BuiltinId::Uint8ArrayProto => &self.uint8array_proto,
+            BuiltinId::Uint8ClampedArrayConstructor => &self.uint8clampedarray_constructor,
+            BuiltinId::Uint8ClampedArrayProto => &self.uint8clampedarray_proto,
+            BuiltinId::Int16ArrayConstructor => &self.int16array_constructor,
+            BuiltinId::Int16ArrayProto => &self.int16array_proto,
+            BuiltinId::Uint16ArrayConstructor => &self.uint16array_constructor,
+            BuiltinId::Uint16ArrayProto => &self.uint16array_proto,
+            BuiltinId::Int32ArrayConstructor => &self.int32array_constructor,
+            BuiltinId::Int32ArrayProto => &self.int32array_proto,
+            BuiltinId::Uint32ArrayConstructor => &self.uint32array_constructor,
+            BuiltinId::Uint32ArrayProto => &self.uint32array_proto,
+            BuiltinId::Float32ArrayConstructor => &self.float32array_constructor,
+            BuiltinId::Float32ArrayProto => &self.float32array_proto,
+            BuiltinId::Float64ArrayConstructor => &self.float64array_constructor,
+            BuiltinId::Float64ArrayProto => &self.float64array_proto,
+            BuiltinId::BigInt64ArrayConstructor => &self.bigint64array_constructor,
+            BuiltinId::BigInt64ArrayProto => &self.bigint64array_proto,
+            BuiltinId::BigUint64ArrayConstructor => &self.biguint64array_constructor,
+            BuiltinId::BigUint64ArrayProto => &self.biguint64array_proto,
+            BuiltinId::SymMatch => &self.sym_match,
+            BuiltinId::SymReplace => &self.sym_replace,
+            BuiltinId::SymSearch => &self.sym_search,
+            BuiltinId::SymSplit => &self.sym_split,
+            BuiltinId::SymIterator => &self.sym_iterator,
+        }
+    }
+
+    pub fn new(string_forge: &PermInterner, shape_forge: &ShapeForge) -> Self {
         let labels = builtin_labels(string_forge);
 
         let (object_proto, object_constructor) = make_named_pair(string_forge, shape_forge, labels, "Object");
@@ -588,11 +644,12 @@ impl BuiltinWorld {
             stub_objects,
         };
         wire_builtin_world_links(&world);
+        kernel_info!("BuiltinWorld initialized");
         world
     }
 
     pub fn rebuild_with_dirty(
-        current: &BuiltinWorld, string_forge: &StringForge, shape_forge: &ShapeForge, dirty: &BuiltinDirtySet,
+        current: &BuiltinWorld, string_forge: &PermInterner, shape_forge: &ShapeForge, dirty: &BuiltinDirtySet,
     ) -> BuiltinWorld {
         let labels = builtin_labels(string_forge);
 
@@ -810,7 +867,7 @@ impl BuiltinWorld {
         world
     }
 
-    pub fn bind_object_methods(&self, methods: &ObjectMethods, string_forge: &StringForge, shape_forge: &ShapeForge) {
+    pub fn bind_object_methods(&self, methods: &ObjectMethods, string_forge: &PermInterner, shape_forge: &ShapeForge) {
         let ctor_ptr = P::as_ptr(&self.object_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
         bind_methods!(
@@ -857,7 +914,7 @@ impl BuiltinWorld {
         }
     }
 
-    pub fn bind_array_methods(&self, methods: &ArrayMethods, string_forge: &StringForge, shape_forge: &ShapeForge) {
+    pub fn bind_array_methods(&self, methods: &ArrayMethods, string_forge: &PermInterner, shape_forge: &ShapeForge) {
         let ctor_ptr = P::as_ptr(&self.array_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
         bind_methods!(self, ctor, string_forge, shape_forge, ("isArray", methods.is_array, 1),);
@@ -909,7 +966,7 @@ impl BuiltinWorld {
         debug_assert!(shape_forge.lookup_position(proto.shape_id(), si).is_some());
     }
 
-    pub fn bind_error_methods(&self, methods: &ErrorMethods, string_forge: &StringForge, shape_forge: &ShapeForge) {
+    pub fn bind_error_methods(&self, methods: &ErrorMethods, string_forge: &PermInterner, shape_forge: &ShapeForge) {
         let ctor_ptr = P::as_ptr(&self.error_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
         bind_methods!(
@@ -938,7 +995,7 @@ impl BuiltinWorld {
         );
     }
 
-    pub fn bind_string_methods(&self, methods: &StringMethods, string_forge: &StringForge, shape_forge: &ShapeForge) {
+    pub fn bind_string_methods(&self, methods: &StringMethods, string_forge: &PermInterner, shape_forge: &ShapeForge) {
         let ctor_ptr = P::as_ptr(&self.string_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
         bind_methods!(self, ctor, string_forge, shape_forge, ("fromCharCode", methods.from_char_code, 1),);
@@ -979,38 +1036,8 @@ impl BuiltinWorld {
         );
     }
 
-    pub fn bind_number_methods(&self, methods: &NumberMethods, string_forge: &StringForge, shape_forge: &ShapeForge) {
-        let ctor_ptr = P::as_ptr(&self.number_constructor) as *mut JsObject;
-        let ctor = unsafe { &mut *ctor_ptr };
-        let proto_ptr = P::as_ptr(&self.number_proto) as *mut JsObject;
-        let proto = unsafe { &mut *proto_ptr };
-        bind_methods!(
-            self,
-            ctor,
-            string_forge,
-            shape_forge,
-            ("isNaN", methods.is_nan, 1),
-            ("isFinite", methods.is_finite, 1),
-            ("parseInt", methods.parse_int, 1),
-            ("parseFloat", methods.parse_float, 1),
-            ("isInteger", methods.is_integer, 1),
-            ("isSafeInteger", methods.is_safe_integer, 1),
-        );
-        bind_methods!(
-            self,
-            proto,
-            string_forge,
-            shape_forge,
-            ("toString", methods.to_string, 0),
-            ("toFixed", methods.to_fixed, 0),
-            ("toExponential", methods.to_exponential, 0),
-            ("toPrecision", methods.to_precision, 0),
-            ("valueOf", methods.value_of, 0),
-        );
-    }
-
     pub fn bind_function_methods(
-        &self, methods: &FunctionMethods, string_forge: &StringForge, shape_forge: &ShapeForge,
+        &self, methods: &FunctionMethods, string_forge: &PermInterner, shape_forge: &ShapeForge,
     ) {
         let proto_ptr = P::as_ptr(&self.function_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
@@ -1028,7 +1055,7 @@ impl BuiltinWorld {
     }
 
     pub fn bind_method(
-        &self, proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &StringForge, method_name: &str,
+        &self, proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &PermInterner, method_name: &str,
         native_fn_ptr: NativeFnPtr, arg_count: u8,
     ) -> Result<(), String> {
         Self::bind_method_static(
@@ -1043,7 +1070,7 @@ impl BuiltinWorld {
     }
 
     pub fn bind_method_static(
-        proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &StringForge, method_name: &str,
+        proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &PermInterner, method_name: &str,
         native_fn_ptr: NativeFnPtr, arg_count: u8, wrapper_proto: JsValue,
     ) -> Result<(), String> {
         let si = string_forge.intern(method_name).0;
@@ -1066,7 +1093,7 @@ impl BuiltinWorld {
         wrapper.set_shape_id(name_shape);
         wrapper
             .ensure_hash_props()
-            .push(JsValue::string(string_forge.intern(method_name).0, 0));
+            .push(JsValue::perm_string(string_forge.string_ptr(si)));
         let wrapper_val = JsValue::from_js_object(Box::into_raw(wrapper));
         let new_shape = shape_forge.make_shape(proto.shape_id(), si);
         proto.set_shape_id(new_shape);
@@ -1080,10 +1107,10 @@ impl BuiltinWorld {
 mod tests {
     use super::*;
     use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
-    use crate::string_forge::StringForge;
+    use crate::string_forge::PermInterner;
 
     fn make_world() -> BuiltinWorld {
-        let sf = StringForge::new();
+        let sf = PermInterner::new();
         let sh = ShapeForge::new();
         BuiltinWorld::new(&sf, &sh)
     }
@@ -1159,7 +1186,7 @@ mod tests {
 
     #[test]
     fn builtin_rebuild_with_dirty_reuses_clean_fields() {
-        let sf = StringForge::new();
+        let sf = PermInterner::new();
         let sh = ShapeForge::new();
         let w = BuiltinWorld::new(&sf, &sh);
         let rebuilt = BuiltinWorld::rebuild_with_dirty(&w, &sf, &sh, &crate::kernel::BuiltinDirtySet::default());
@@ -1171,7 +1198,7 @@ mod tests {
 
     #[test]
     fn builtin_rebuild_with_dirty_replaces_only_dirty_group() {
-        let sf = StringForge::new();
+        let sf = PermInterner::new();
         let sh = ShapeForge::new();
         let w = BuiltinWorld::new(&sf, &sh);
         let dirty = crate::kernel::BuiltinDirtySet {
@@ -1188,7 +1215,7 @@ mod tests {
 
     #[test]
     fn builtin_rebuild_with_dirty_repairs_ctor_proto_links() {
-        let sf = StringForge::new();
+        let sf = PermInterner::new();
         let sh = ShapeForge::new();
         let w = BuiltinWorld::new(&sf, &sh);
         let dirty = crate::kernel::BuiltinDirtySet {

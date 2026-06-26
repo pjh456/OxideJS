@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::object::JsObject;
+use crate::object::{JsObject, JsString};
 
 /// Quiet NaN prefix — bits 63-51 = sign(1) + exponent(0x7FF) + quiet_bit(1)
 const QNAN_PREFIX: u64 = 0xFFF8_0000_0000_0000;
@@ -27,11 +27,6 @@ const PTR_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 
 /// 32-bit integer payload mask
 const INT_MASK: u64 = 0x0000_0000_FFFF_FFFF;
-
-/// String payload: [hash_prefix:16bit][table_index:32bit]
-const STRING_HASH_SHIFT: u64 = 32;
-const STRING_HASH_MASK: u64 = 0xFFFF_0000_0000;
-const STRING_INDEX_MASK: u64 = 0x0000_FFFF_FFFF;
 
 fn make_tag(tag: u64) -> u64 {
     QNAN_PREFIX | (tag << TAG_SHIFT)
@@ -71,12 +66,7 @@ impl PartialEq for JsValue {
             return self.as_ptr() == other.as_ptr();
         }
         if self.is_string() && other.is_string() {
-            let ha = self.as_string_hash();
-            let hb = other.as_string_hash();
-            if ha != hb {
-                return false;
-            }
-            return self.as_string_index() == other.as_string_index();
+            return self.as_string_ptr() == other.as_string_ptr();
         }
         if self.is_symbol() && other.is_symbol() {
             return self.as_symbol_index() == other.as_symbol_index();
@@ -122,10 +112,17 @@ impl JsValue {
         Self(make_tag(TAG_OBJECT) | addr)
     }
 
-    pub fn string(index: u32, hash: u16) -> Self {
-        let payload = ((hash as u64) << STRING_HASH_SHIFT) | (index as u64);
-        debug_assert!(payload & !(STRING_HASH_MASK | STRING_INDEX_MASK) == 0, "string payload overflow");
-        Self(make_tag(TAG_STRING) | payload)
+    pub fn string(ptr: *const JsString) -> Self {
+        let addr = ptr as u64;
+        debug_assert!(addr <= PTR_MASK, "string pointer must fit in 48 bits");
+        Self(make_tag(TAG_STRING) | addr)
+    }
+
+    /// Semantic alias for permanent (kernel-owned, never-collected) strings.
+    /// Encoding is identical to `string`; the perm-vs-session distinction is by
+    /// ownership (membership in the GC root set), not by the NaN-box bits.
+    pub fn perm_string(ptr: *const JsString) -> Self {
+        Self::string(ptr)
     }
 
     pub fn is_double(&self) -> bool {
@@ -214,14 +211,14 @@ impl JsValue {
         Self(make_tag(TAG_OBJECT) | addr)
     }
 
-    pub fn as_string_index(&self) -> u32 {
+    pub fn as_string_ptr(&self) -> *const JsString {
         debug_assert!(self.is_string(), "JsValue is not a string");
-        (self.0 & STRING_INDEX_MASK) as u32
+        (self.0 & PTR_MASK) as *const JsString
     }
 
-    pub fn as_string_hash(&self) -> u16 {
+    pub fn as_string_ptr_mut(&self) -> *mut JsString {
         debug_assert!(self.is_string(), "JsValue is not a string");
-        ((self.0 & STRING_HASH_MASK) >> STRING_HASH_SHIFT) as u16
+        (self.0 & PTR_MASK) as *mut JsString
     }
 
     pub fn symbol(index: u32) -> Self {
@@ -234,7 +231,7 @@ impl JsValue {
 
     pub fn as_symbol_index(&self) -> u32 {
         debug_assert!(self.is_symbol());
-        (self.0 & STRING_INDEX_MASK) as u32
+        (self.0 & INT_MASK) as u32
     }
 }
 
@@ -301,7 +298,7 @@ impl fmt::Debug for JsValue {
         } else if self.is_object() {
             write!(f, "JsValue(Object({:p}))", self.as_ptr())
         } else if self.is_string() {
-            write!(f, "JsValue(String(idx={}, hash={:#06x}))", self.as_string_index(), self.as_string_hash())
+            write!(f, "JsValue(String({:p}))", self.as_string_ptr())
         } else if self.is_symbol() {
             write!(f, "JsValue(Symbol(idx={}))", self.as_symbol_index())
         } else {
@@ -410,5 +407,30 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    #[test]
+    fn string_ptr_roundtrip() {
+        use crate::object::JsString;
+        let s = Box::new(JsString::new("test".to_string()));
+        let ptr: *const JsString = &*s;
+        let val = JsValue::string(ptr);
+        assert!(val.is_string());
+        assert_eq!(val.as_string_ptr(), ptr);
+        assert_eq!(unsafe { (*val.as_string_ptr()).as_str() }, "test");
+    }
+
+    #[test]
+    fn string_pointer_equality() {
+        use crate::object::JsString;
+        let a = Box::new(JsString::new("x".to_string()));
+        let b = Box::new(JsString::new("x".to_string()));
+        let va = JsValue::string(&*a);
+        let vb = JsValue::string(&*b);
+        // Distinct allocations with identical content are NOT == (pointer identity).
+        // Semantic content equality is handled in coercion, not PartialEq.
+        assert_ne!(va, vb);
+        assert_eq!(va, JsValue::string(&*a));
+        assert_eq!(unsafe { (*va.as_string_ptr()).as_str() }, unsafe { (*vb.as_string_ptr()).as_str() });
     }
 }

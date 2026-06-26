@@ -1,72 +1,81 @@
 use std::sync::Arc;
 
-use oxide_kernel::bind_methods;
-use oxide_kernel::builtin::NumberMethods;
+use crate::bind_constructor;
+use crate::bindings::{apply_binding_table, configure_native_constructor};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
-use oxide_types::object::{JsObject, NativeFnPtr};
+use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
 pub fn bind_number(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
-    let number_methods = NumberMethods {
-        is_nan: crate::builtins::number::number_is_nan as *const (),
-        is_finite: crate::builtins::number::number_is_finite as *const (),
-        parse_int: crate::builtins::number::number_parse_int as *const (),
-        parse_float: crate::builtins::number::number_parse_float as *const (),
-        to_string: crate::builtins::number::number_to_string as *const (),
-        to_fixed: crate::builtins::number::number_to_fixed as *const (),
-        is_integer: crate::builtins::number::number_is_integer as *const (),
-        is_safe_integer: crate::builtins::number::number_is_safe_integer as *const (),
-        to_exponential: crate::builtins::number::number_to_exponential as *const (),
-        to_precision: crate::builtins::number::number_to_precision as *const (),
-        value_of: crate::builtins::number::number_value_of as *const (),
-    };
-    session.builtin_world().bind_number_methods(
-        &number_methods,
-        core.string_forge().as_ref(),
-        core.shape_forge().as_ref(),
+    let ctor_ptr = session.builtin_world().number_constructor.as_ptr() as *mut JsObject;
+    let ctor = unsafe { &mut *ctor_ptr };
+    let proto_ptr = session.builtin_world().number_proto.as_ptr() as *mut JsObject;
+    let proto = unsafe { &mut *proto_ptr };
+
+    configure_native_constructor(ctor, oxide_builtins::number::number_constructor::<crate::vm::Vm> as *const (), 1);
+
+    apply_binding_table(
+        session.builtin_world(),
+        ctor,
+        core,
+        &[
+            ("isNaN", oxide_builtins::number::number_is_nan::<crate::vm::Vm> as *const (), 1),
+            ("isFinite", oxide_builtins::number::number_is_finite::<crate::vm::Vm> as *const (), 1),
+            ("isInteger", oxide_builtins::number::number_is_integer::<crate::vm::Vm> as *const (), 1),
+            (
+                "isSafeInteger",
+                oxide_builtins::number::number_is_safe_integer::<crate::vm::Vm> as *const (),
+                1,
+            ),
+        ],
     );
 
-    let si_num = core.string_forge().intern("Number").0;
-    let num_shape = core.shape_forge().make_shape(global.shape_id(), si_num);
-    let num_val = JsValue::from_js_object(session.builtin_world().number_constructor.as_ptr() as *mut JsObject);
-    global.set_shape_id(num_shape);
-    global.ensure_hash_props().push(num_val);
-    global.bump_generation();
+    apply_binding_table(
+        session.builtin_world(),
+        proto,
+        core,
+        &[
+            ("toString", oxide_builtins::number::number_to_string::<crate::vm::Vm> as *const (), 0),
+            ("toFixed", oxide_builtins::number::number_to_fixed::<crate::vm::Vm> as *const (), 0),
+            (
+                "toExponential",
+                oxide_builtins::number::number_to_exponential::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "toPrecision",
+                oxide_builtins::number::number_to_precision::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            ("valueOf", oxide_builtins::number::number_value_of::<crate::vm::Vm> as *const (), 0),
+        ],
+    );
 
-    {
-        let num_ctor_ptr = session.builtin_world().number_constructor.as_ptr() as *mut JsObject;
-        let num_ctor = unsafe { &mut *num_ctor_ptr };
-        // SAFETY: number_constructor is a NativeFn fn-item.
-        num_ctor.set_native_fn(Some(unsafe {
-            NativeFnPtr::from_raw(crate::builtins::number::number_constructor as *const ())
-        }));
-        num_ctor.set_native_arg_count(1);
-
-        for (name, value) in [
-            ("EPSILON", JsValue::float(2.220446049250313e-16)),
-            ("MAX_SAFE_INTEGER", JsValue::float(9007199254740991f64)),
-            ("MIN_SAFE_INTEGER", JsValue::float(-9007199254740991f64)),
-            ("MAX_VALUE", JsValue::float(1.7976931348623157e308)),
-            ("MIN_VALUE", JsValue::float(5e-324)),
-            ("NaN", JsValue::float(f64::NAN)),
-            ("NEGATIVE_INFINITY", JsValue::float(f64::NEG_INFINITY)),
-            ("POSITIVE_INFINITY", JsValue::float(f64::INFINITY)),
-        ] {
-            num_ctor.ensure_hash_props().push(value);
-            let prop_si = core.string_forge().intern(name).0;
-            let next_shape = core.shape_forge().make_shape(num_ctor.shape_id(), prop_si);
-            num_ctor.set_shape_id(next_shape);
-        }
+    for (name, value) in [
+        ("EPSILON", JsValue::float(2.220446049250313e-16)),
+        ("MAX_SAFE_INTEGER", JsValue::float(9007199254740991f64)),
+        ("MIN_SAFE_INTEGER", JsValue::float(-9007199254740991f64)),
+        ("MAX_VALUE", JsValue::float(1.7976931348623157e308)),
+        ("MIN_VALUE", JsValue::float(5e-324)),
+        ("NaN", JsValue::float(f64::NAN)),
+        ("NEGATIVE_INFINITY", JsValue::float(f64::NEG_INFINITY)),
+        ("POSITIVE_INFINITY", JsValue::float(f64::INFINITY)),
+    ] {
+        ctor.ensure_hash_props().push(value);
+        let prop_si = core.perm_interner().intern(name).0;
+        let next_shape = core.shape_forge().make_shape(ctor.shape_id(), prop_si);
+        ctor.set_shape_id(next_shape);
     }
 
-    let pi_fn = crate::builtins::number::number_parse_int as *const ();
-    let pf_fn = crate::builtins::number::number_parse_float as *const ();
-    bind_methods!(
+    bind_constructor!(core, global, "Number", ctor_ptr, oxide_builtins::number::number_constructor::<crate::vm::Vm>, 1, hash: true);
+
+    apply_binding_table(
         session.builtin_world(),
         global,
-        core.string_forge().as_ref(),
-        core.shape_forge().as_ref(),
-        ("parseInt", pi_fn, 1),
-        ("parseFloat", pf_fn, 1),
+        core,
+        &[
+            ("parseInt", oxide_builtins::number::number_parse_int::<crate::vm::Vm> as *const (), 1),
+            ("parseFloat", oxide_builtins::number::number_parse_float::<crate::vm::Vm> as *const (), 1),
+        ],
     );
 }

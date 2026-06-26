@@ -1,9 +1,7 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::emitter) fn emit_call_expression(
-        &self, call: &oxide_parser::CallExpression, ctx: &mut CompileCtx,
-    ) -> Result<u8, String> {
+    fn emit_call_expression(&self, call: &oxide_parser::CallExpression, ctx: &mut CompileCtx) -> Result<u8, String> {
         if matches!(&call.callee, Expression::Super(_)) {
             if !ctx.in_derived_constructor {
                 return Err("super() only supported in derived constructors".into());
@@ -93,5 +91,12 @@ impl Compiler {
         let result_reg = ctx.alloc_reg();
         ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, 0, 0));
         Ok(result_reg)
+    }
+
+    pub(in crate::emitter) fn emit_call_domain(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u8, String> {
+        match expr {
+            Expression::CallExpression(call) => self.emit_call_expression(call, ctx),
+            _ => self.emit_unsupported_expression(expr, ctx),
+        }
     }
 }

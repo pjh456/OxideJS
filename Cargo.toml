@@ -4,10 +4,13 @@ members = [
     "crates/oxide_parser",
     "crates/oxide_bytecode",
     "crates/oxide_code_cache",
+    "crates/oxide_log",
     "crates/oxide_compiler",
     "crates/oxide_types",
     "crates/oxide_vm",
     "crates/oxide_kernel",
+    "crates/oxide_runtime_api",
+    "crates/oxide_builtins",
     "crates/oxide_api",
     "crates/oxide_cli",
     "crates/oxide_test262",
@@ -42,11 +45,13 @@ ryu = "1"
 memchr = "2"
 regex = "1"
 indexmap = "2"
+lru = "0.18"
 smallvec = { version = "1", features = ["union"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 unicode-normalization = "0.1"
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tracing = { version = "0.1.44", features = ["max_level_trace", "release_max_level_info"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "registry"] }
+tracing-appender = "0.2.5"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }

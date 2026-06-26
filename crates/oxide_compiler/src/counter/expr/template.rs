@@ -1,7 +1,7 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::counter) fn count_template_literal(&self, expr: &Expression, ctx: &mut CompileCtx) {
+    fn count_template_literal(&self, expr: &Expression, ctx: &mut CompileCtx) {
         let Expression::TemplateLiteral(tl) = expr else {
             return;
         };
@@ -12,7 +12,7 @@ impl Compiler {
         ctx.count_template_str(segment_count);
     }
 
-    pub(in crate::counter) fn count_tagged_template_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
+    fn count_tagged_template_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
         let Expression::TaggedTemplateExpression(tt) = expr else {
             return;
         };
@@ -49,5 +49,13 @@ impl Compiler {
         ctx.count_load_const(); // undefined this arg
         ctx.count_call_instr_with_arg_ext();
         ctx.count_load_var(); // result <- regs[0]
+    }
+
+    pub(in crate::counter) fn count_template_domain(&self, expr: &Expression, ctx: &mut CompileCtx) {
+        match expr {
+            Expression::TemplateLiteral(_) => self.count_template_literal(expr, ctx),
+            Expression::TaggedTemplateExpression(_) => self.count_tagged_template_expression(expr, ctx),
+            _ => {}
+        }
     }
 }

@@ -11,12 +11,20 @@ pub fn bind_global(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         global,
         core,
         &[
-            ("escape", crate::builtins::global::js_escape as *const (), 1),
-            ("unescape", crate::builtins::global::js_unescape as *const (), 1),
-            ("encodeURI", crate::builtins::global::encode_uri as *const (), 1),
-            ("decodeURI", crate::builtins::global::decode_uri as *const (), 1),
-            ("encodeURIComponent", crate::builtins::global::encode_uri_component as *const (), 1),
-            ("decodeURIComponent", crate::builtins::global::decode_uri_component as *const (), 1),
+            ("escape", oxide_builtins::global::js_escape::<crate::vm::Vm> as *const (), 1),
+            ("unescape", oxide_builtins::global::js_unescape::<crate::vm::Vm> as *const (), 1),
+            ("encodeURI", oxide_builtins::global::encode_uri::<crate::vm::Vm> as *const (), 1),
+            ("decodeURI", oxide_builtins::global::decode_uri::<crate::vm::Vm> as *const (), 1),
+            (
+                "encodeURIComponent",
+                oxide_builtins::global::encode_uri_component::<crate::vm::Vm> as *const (),
+                1,
+            ),
+            (
+                "decodeURIComponent",
+                oxide_builtins::global::decode_uri_component::<crate::vm::Vm> as *const (),
+                1,
+            ),
         ],
     );
 }

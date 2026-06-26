@@ -1,3 +1,5 @@
+use std::num::NonZeroUsize;
+
 use oxide_code_cache::CodeForge;
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
@@ -24,7 +26,7 @@ fn parse_to_compiled_hash(source: &str) -> u64 {
 
 #[test]
 fn structural_hash_hit() {
-    let forge = CodeForge::new();
+    let forge = CodeForge::new(NonZeroUsize::new(512).unwrap());
     let compiler = Compiler::new();
     let allocator = Allocator::default();
     let program = oxide_parser::parse(&allocator, "1 + 2").expect("parse failed");
