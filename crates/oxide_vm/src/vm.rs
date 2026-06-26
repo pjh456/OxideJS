@@ -252,10 +252,7 @@ impl Vm {
         &mut self, receiver: JsValue, callee: JsValue, args: &[JsValue],
     ) -> Result<Vec<u8>, String> {
         if args.len() > Self::SYNC_NATIVE_ARG_LIMIT {
-            return Err(format!(
-                "RangeError: synchronous native call supports at most {} arguments",
-                Self::SYNC_NATIVE_ARG_LIMIT
-            ));
+            return Err("RangeError: Maximum call stack size exceeded".to_string());
         }
 
         self.regs[253] = receiver;
@@ -1450,7 +1447,7 @@ mod tests {
             .call_function_sync(callee, JsValue::undefined(), &args)
             .expect_err("too many args should fail cleanly");
 
-        assert!(err.contains("at most 253 arguments"), "unexpected error: {err}");
+        assert!(err.contains("Maximum call stack size exceeded"), "unexpected error: {err}");
         assert_eq!(vm.reg(1), JsValue::int(7));
         assert_eq!(vm.reg(253), JsValue::int(11));
         assert_eq!(vm.reg(254), JsValue::int(12));
