@@ -9,6 +9,7 @@ use oxide_types::value::JsValue;
 
 use crate::builtin::BuiltinWorld;
 use crate::code_forge::CodeForge;
+use crate::kernel_info;
 use crate::prop_forge::PropForge;
 use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use crate::string_forge::PermInterner;
@@ -124,13 +125,17 @@ impl KernelCore {
             NonZeroUsize::new(config.max_cached_modules).expect("max_cached_modules must be greater than zero"),
         ));
         let prop_forge = Arc::new(PropForge::new());
-        Arc::new(Self {
+        let max_cached = config.max_cached_modules;
+        let min_pool = config.min_pool_size;
+        let core = Arc::new(Self {
             config,
             perm_interner,
             shape_forge,
             code_forge,
             prop_forge,
-        })
+        });
+        kernel_info!("KernelCore initialized: max_cached_modules={}, min_pool={}", max_cached, min_pool);
+        core
     }
 
     pub fn perm_interner(&self) -> &Arc<PermInterner> {

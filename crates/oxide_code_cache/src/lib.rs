@@ -6,6 +6,8 @@ use std::sync::{Arc, Mutex};
 use lru::LruCache;
 use oxide_bytecode::CompiledModule;
 
+mod code_cache_log;
+
 /// Shared compiled-module cache keyed by a caller-provided safe module hash.
 ///
 /// The cache intentionally does not know how to parse or compile JavaScript.
@@ -26,12 +28,27 @@ impl CodeForge {
     }
 
     pub fn get(&self, hash: u64) -> Option<Arc<CompiledModule>> {
-        self.map.lock().unwrap().get(&hash).map(Arc::clone)
+        let result = self.map.lock().unwrap().get(&hash).map(Arc::clone);
+        if result.is_some() {
+            code_cache_debug!("CodeForge hit: hash={:#x}", hash);
+        }
+        result
     }
 
     pub fn insert(&self, hash: u64, module: CompiledModule) -> Arc<CompiledModule> {
         let module = Arc::new(module);
-        self.map.lock().unwrap().put(hash, Arc::clone(&module));
+        let mut cache = self.map.lock().unwrap();
+        let evicted_hash = if cache.len() == cache.cap().get() && !cache.contains(&hash) {
+            cache.peek_lru().map(|(k, _)| *k)
+        } else {
+            None
+        };
+        cache.put(hash, Arc::clone(&module));
+        drop(cache);
+        match evicted_hash {
+            Some(evicted_hash) => code_cache_debug!("CodeForge evict: hash={:#x}", evicted_hash),
+            None => code_cache_debug!("CodeForge insert: hash={:#x}", hash),
+        }
         module
     }
 
@@ -44,6 +61,7 @@ impl CodeForge {
             if let Some(module) = cache.get(&hash) {
                 let module = Arc::clone(module);
                 drop(cache);
+                code_cache_debug!("CodeForge hit: hash={:#x}", hash);
                 #[cfg(debug_assertions)]
                 {
                     let fresh = compile()?;
@@ -57,6 +75,7 @@ impl CodeForge {
         }
         let module = Arc::new(compile()?);
         self.map.lock().unwrap().put(hash, Arc::clone(&module));
+        code_cache_debug!("CodeForge miss: hash={:#x}", hash);
         Ok(module)
     }
 

@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock};
 
 use dashmap::DashMap;
 
-use crate::kernel_debug;
+use crate::{kernel_debug, kernel_trace};
 
 pub type ShapeId = u32;
 pub type StringIndex = u32;
@@ -82,6 +82,8 @@ impl ShapeForge {
 
     pub fn make_shape(&self, parent_id: ShapeId, prop_name: StringIndex) -> ShapeId {
         let key = Self::pack_key(parent_id, prop_name);
+
+        kernel_trace!("ShapeForge lookup: parent={} prop={}", parent_id, prop_name);
 
         if let Some(entry) = self.transitions.get(&key) {
             kernel_debug!("ShapeForge transition cached parent={} prop={} -> id={}", parent_id, prop_name, *entry);
