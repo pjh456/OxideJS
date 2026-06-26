@@ -10,6 +10,7 @@ description = "OxideJS - Generic builtin JS functions parameterized over VmHost"
 oxide_runtime_api = { path = "../oxide_runtime_api" }
 oxide_types = { path = "../oxide_types" }
 oxide_kernel = { path = "../oxide_kernel" }
+oxide_log = { path = "../oxide_log" }
 fast-float.workspace = true
 ryu.workspace = true
 memchr.workspace = true

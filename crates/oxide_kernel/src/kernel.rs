@@ -9,10 +9,11 @@ use oxide_types::value::JsValue;
 
 use crate::builtin::BuiltinWorld;
 use crate::code_forge::CodeForge;
-use crate::logging::{init_logging, LogLevel, SUBSYSTEM_COUNT};
 use crate::prop_forge::PropForge;
 use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use crate::string_forge::PermInterner;
+use oxide_log;
+use oxide_log::{Level, SUBSYSTEM_COUNT};
 
 #[derive(Clone)]
 pub struct KernelConfig {
@@ -23,7 +24,7 @@ pub struct KernelConfig {
     pub max_call_depth: usize,
     pub session_gc_threshold: usize,
     pub max_cached_modules: usize,
-    pub log_levels: [LogLevel; SUBSYSTEM_COUNT],
+    pub log_levels: [Level; SUBSYSTEM_COUNT],
     pub warmup_builtin_shapes: bool,
     pub warmup_builtin_code: bool,
     pub warmup_builtin_ic: bool,
@@ -39,7 +40,7 @@ impl KernelConfig {
             max_call_depth: 1024,
             session_gc_threshold: 8_388_608,
             max_cached_modules: 512,
-            log_levels: [LogLevel::Off; SUBSYSTEM_COUNT],
+            log_levels: [Level::Off; SUBSYSTEM_COUNT],
             warmup_builtin_shapes: true,
             warmup_builtin_code: false,
             warmup_builtin_ic: false,
@@ -55,7 +56,7 @@ impl KernelConfig {
             max_call_depth: 1024,
             session_gc_threshold: 8_388_608,
             max_cached_modules: 512,
-            log_levels: [LogLevel::Off; SUBSYSTEM_COUNT],
+            log_levels: [Level::Off; SUBSYSTEM_COUNT],
             warmup_builtin_shapes: true,
             warmup_builtin_code: true,
             warmup_builtin_ic: false,
@@ -71,7 +72,7 @@ impl KernelConfig {
             max_call_depth: 1024,
             session_gc_threshold: 8_388_608,
             max_cached_modules: 512,
-            log_levels: [LogLevel::Off; SUBSYSTEM_COUNT],
+            log_levels: [Level::Off; SUBSYSTEM_COUNT],
             warmup_builtin_shapes: true,
             warmup_builtin_code: true,
             warmup_builtin_ic: true,
@@ -113,7 +114,10 @@ pub struct KernelCore {
 
 impl KernelCore {
     pub fn new(config: KernelConfig) -> Arc<Self> {
-        init_logging(&config.log_levels);
+        oxide_log::init(&oxide_log::LogConfig {
+            output: oxide_log::Output::Stderr,
+            levels: config.log_levels,
+        });
         let perm_interner = Arc::new(PermInterner::new());
         let shape_forge = Arc::new(ShapeForge::new());
         let code_forge = Arc::new(CodeForge::new(
@@ -603,7 +607,7 @@ mod tests {
         assert_eq!(KernelConfig::minimal().max_steps, None);
         assert_eq!(KernelConfig::standard().max_steps, None);
         assert_eq!(KernelConfig::full().max_steps, None);
-        assert_eq!(KernelConfig::minimal().log_levels, [LogLevel::Off; SUBSYSTEM_COUNT]);
+        assert_eq!(KernelConfig::minimal().log_levels, [Level::Off; SUBSYSTEM_COUNT]);
         assert!(!KernelConfig::minimal().warmup_builtin_ic);
         assert!(KernelConfig::full().warmup_builtin_ic);
         assert_eq!(KernelConfig::full().max_pool_size, None);

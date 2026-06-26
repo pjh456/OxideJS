@@ -15,12 +15,7 @@ pub struct SubsystemFilter {
 impl SubsystemFilter {
     pub fn new() -> Self {
         Self {
-            levels: Arc::new([
-                AtomicU8::new(0),
-                AtomicU8::new(0),
-                AtomicU8::new(0),
-                AtomicU8::new(0),
-            ]),
+            levels: Arc::new([AtomicU8::new(0), AtomicU8::new(0), AtomicU8::new(0), AtomicU8::new(0)]),
         }
     }
 
@@ -63,11 +58,7 @@ impl Default for SubsystemFilter {
 }
 
 impl<S: Subscriber> Filter<S> for SubsystemFilter {
-    fn enabled(
-        &self,
-        meta: &tracing::Metadata<'_>,
-        _cx: &tracing_subscriber::layer::Context<'_, S>,
-    ) -> bool {
+    fn enabled(&self, meta: &tracing::Metadata<'_>, _cx: &tracing_subscriber::layer::Context<'_, S>) -> bool {
         self.is_enabled_for(meta.target(), meta.level())
     }
 }

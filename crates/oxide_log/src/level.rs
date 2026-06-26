@@ -10,7 +10,7 @@ pub enum Level {
 }
 
 impl Level {
-    pub fn as_tracing_level(self) -> tracing::Level {
+    pub const fn as_tracing_level(self) -> tracing::Level {
         match self {
             Level::Off | Level::Error => tracing::Level::ERROR,
             Level::Warn => tracing::Level::WARN,
