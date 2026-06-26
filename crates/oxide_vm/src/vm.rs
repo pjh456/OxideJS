@@ -206,11 +206,13 @@ impl Vm {
                 continue;
             }
             if !method.is_object() {
-                return Err(format!("TypeError: {method_name} is not callable"));
+                self.raise_error_kind("TypeError", &format!("{method_name} is not callable"))?;
+                return Ok(JsValue::undefined());
             }
             let method_ptr = method.as_js_object_ptr();
             if method_ptr.is_null() || !unsafe { &*method_ptr }.is_function() {
-                return Err(format!("TypeError: {method_name} is not callable"));
+                self.raise_error_kind("TypeError", &format!("{method_name} is not callable"))?;
+                return Ok(JsValue::undefined());
             }
 
             let result = self.call_function_sync(method, value, &[])?;
@@ -248,13 +250,7 @@ impl Vm {
         Ok(n.trunc().rem_euclid(4_294_967_296.0) as u32)
     }
 
-    fn pack_sync_native_call_args(
-        &mut self, receiver: JsValue, callee: JsValue, args: &[JsValue],
-    ) -> Result<Vec<u8>, String> {
-        if args.len() > Self::SYNC_NATIVE_ARG_LIMIT {
-            return Err("RangeError: Maximum call stack size exceeded".to_string());
-        }
-
+    fn pack_sync_native_call_args(&mut self, receiver: JsValue, callee: JsValue, args: &[JsValue]) -> Vec<u8> {
         self.regs[253] = receiver;
         self.regs[254] = callee;
 
@@ -265,7 +261,7 @@ impl Vm {
             self.regs[reg as usize] = *arg;
             arg_regs.push(reg);
         }
-        Ok(arg_regs)
+        arg_regs
     }
 
     pub(crate) fn is_session_ptr(&self, obj_ptr: *mut JsObject) -> bool {
@@ -590,8 +586,12 @@ impl Vm {
                 self.raise_error_kind("RangeError", "Maximum call stack size exceeded")?;
                 return Ok(JsValue::undefined());
             }
+            if args.len() > Self::SYNC_NATIVE_ARG_LIMIT {
+                self.raise_error_kind("RangeError", "Maximum call stack size exceeded")?;
+                return Ok(JsValue::undefined());
+            }
             let saved_regs = self.regs;
-            let arg_regs = self.pack_sync_native_call_args(receiver, callee, args)?;
+            let arg_regs = self.pack_sync_native_call_args(receiver, callee, args);
             // SAFETY: native_fn was set via set_native_fn with a valid NativeFn pointer;
             // native_fn_ptr_to_fn is the single coercion point for NativeFnPtr → NativeFn.
             let func: NativeFn = unsafe { native_fn_ptr_to_fn(native_fn) };
