@@ -5,11 +5,15 @@ use oxide_types::value::JsValue;
 use memchr::memchr;
 use oxide_runtime_api::{NativeResult, VmHost};
 
+use crate::builtins_debug;
+use crate::builtins_error;
+
 fn this_string<H: VmHost>(vm: &H, args: &[u8]) -> String {
     oxide_runtime_api::to_string(vm.reg(args[0]))
 }
 
 pub fn string_from_char_code<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.fromCharCode called with {} args", args.len());
     let mut out = String::new();
     for &arg_reg in args.iter().skip(1) {
         let code = oxide_runtime_api::to_uint32(vm.reg(arg_reg)) & 0xFFFF;
@@ -23,6 +27,7 @@ pub fn string_from_char_code<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
 }
 
 pub fn string_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.valueOf called with {} args", args.len());
     let this_val = vm.reg(args[0]);
     if this_val.is_string() {
         return NativeResult::Ok(this_val);
@@ -36,6 +41,7 @@ pub fn string_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             }
         }
     }
+    builtins_error!("String.prototype.valueOf: invalid receiver");
     NativeResult::Err(crate::error::create_type_error(
         vm,
         "String.prototype.valueOf called on non-String object",
@@ -157,6 +163,7 @@ fn is_regexp_obj<H: VmHost>(val: JsValue, vm: &H) -> bool {
 }
 
 pub fn string_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.indexOf called with {} args", args.len());
     let s = this_string(vm, args);
     let n = char_len(&s);
     if args.len() < 2 {
@@ -188,6 +195,7 @@ pub fn string_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn string_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.includes called with {} args", args.len());
     let s = this_string(vm, args);
     let n = char_len(&s);
     if args.len() < 2 {
@@ -213,6 +221,7 @@ pub fn string_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn string_char_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.charAt called with {} args", args.len());
     let s = this_string(vm, args);
     if args.len() < 2 {
         if s.is_empty() {
@@ -229,6 +238,7 @@ pub fn string_char_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn string_char_code_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.charCodeAt called with {} args", args.len());
     let s = this_string(vm, args);
     if args.len() < 2 {
         if s.is_empty() {
@@ -244,6 +254,7 @@ pub fn string_char_code_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn string_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.concat called with {} args", args.len());
     let mut result = this_string(vm, args);
     for &arg_reg in args.iter().skip(1) {
         result.push_str(&oxide_runtime_api::to_string(vm.reg(arg_reg)));
@@ -252,6 +263,7 @@ pub fn string_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn string_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.slice called with {} args", args.len());
     let s = this_string(vm, args);
     let n = char_len(&s) as i32;
     let start = if args.len() > 1 {
@@ -281,6 +293,7 @@ pub fn string_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn string_substring<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.substring called with {} args", args.len());
     let s = this_string(vm, args);
     let n = char_len(&s) as i32;
     let mut start = if args.len() > 1 {
@@ -301,21 +314,25 @@ pub fn string_substring<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn string_to_upper_case<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.toUpperCase called with {} args", args.len());
     let s = this_string(vm, args);
     NativeResult::Ok(vm.new_string(&s.to_uppercase()))
 }
 
 pub fn string_to_lower_case<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.toLowerCase called with {} args", args.len());
     let s = this_string(vm, args);
     NativeResult::Ok(vm.new_string(&s.to_lowercase()))
 }
 
 pub fn string_trim<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.trim called with {} args", args.len());
     let s = this_string(vm, args);
     NativeResult::Ok(vm.new_string(s.trim()))
 }
 
 pub fn string_repeat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.repeat called with {} args", args.len());
     let s = this_string(vm, args);
     let n = if args.len() > 1 {
         (oxide_runtime_api::to_number(vm.reg(args[1])) as usize).min(10000)
@@ -326,6 +343,7 @@ pub fn string_repeat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn string_pad_start<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.padStart called with {} args", args.len());
     let s = this_string(vm, args);
     let s_len = char_len(&s);
     let target = if args.len() > 1 {
@@ -334,6 +352,7 @@ pub fn string_pad_start<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         s_len
     };
     if target > 10000 {
+        builtins_error!("String.prototype.padStart: invalid receiver");
         return NativeResult::Err(crate::error::create_range_error(vm, "Invalid string length"));
     }
     let pad = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { " ".to_string() };
@@ -349,6 +368,7 @@ pub fn string_pad_start<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn string_pad_end<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.padEnd called with {} args", args.len());
     let s = this_string(vm, args);
     let s_len = char_len(&s);
     let target = if args.len() > 1 {
@@ -357,6 +377,7 @@ pub fn string_pad_end<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         s_len
     };
     if target > 10000 {
+        builtins_error!("String.prototype.padEnd: invalid receiver");
         return NativeResult::Err(crate::error::create_range_error(vm, "Invalid string length"));
     }
     let pad = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { " ".to_string() };
@@ -372,6 +393,7 @@ pub fn string_pad_end<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn string_starts_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.startsWith called with {} args", args.len());
     let s = this_string(vm, args);
     let n = char_len(&s);
     if args.len() < 2 {
@@ -387,6 +409,7 @@ pub fn string_starts_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn string_ends_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.endsWith called with {} args", args.len());
     let s = this_string(vm, args);
     let n = char_len(&s);
     if args.len() < 2 {
@@ -402,6 +425,7 @@ pub fn string_ends_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn string_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.split called with {} args", args.len());
     let s = this_string(vm, args);
     if args.len() < 2 {
         let parts = vec![s.clone()];
@@ -441,6 +465,7 @@ pub fn string_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn string_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.replace called with {} args", args.len());
     let s = this_string(vm, args);
     if args.len() < 2 {
         return NativeResult::Ok(vm.new_string(&s));
@@ -467,6 +492,7 @@ pub fn string_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn string_match_fn<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.match called with {} args", args.len());
     let s = this_string(vm, args);
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::undefined());
@@ -494,6 +520,7 @@ pub fn string_match_fn<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn string_search<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.search called with {} args", args.len());
     let s = this_string(vm, args);
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::int(-1));
@@ -523,16 +550,19 @@ pub fn string_search<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn string_trim_start<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.trimStart called with {} args", args.len());
     let s = this_string(vm, args);
     NativeResult::Ok(vm.new_string(s.trim_start()))
 }
 
 pub fn string_trim_end<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.trimEnd called with {} args", args.len());
     let s = this_string(vm, args);
     NativeResult::Ok(vm.new_string(s.trim_end()))
 }
 
 pub fn string_code_point_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.codePointAt called with {} args", args.len());
     let s = this_string(vm, args);
     let pos = if args.len() > 1 {
         oxide_runtime_api::to_number(vm.reg(args[1])) as usize
@@ -555,6 +585,7 @@ pub fn string_code_point_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
 }
 
 pub fn string_normalize<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.normalize called with {} args", args.len());
     use unicode_normalization::UnicodeNormalization;
     let s = this_string(vm, args);
     let form = if args.len() > 1 { as_string(vm, vm.reg(args[1])) } else { "NFC".to_string() };
@@ -568,8 +599,10 @@ pub fn string_normalize<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.matchAll called with {} args", args.len());
     let s = this_string(vm, args);
     if args.len() < 2 {
+        builtins_error!("String.prototype.matchAll: invalid receiver");
         return NativeResult::Err(JsValue::undefined());
     }
     let pattern_val = vm.reg(args[1]);
@@ -589,6 +622,7 @@ pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn string_replace_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.replaceAll called with {} args", args.len());
     let s = this_string(vm, args);
     if args.len() < 2 {
         return NativeResult::Ok(vm.new_string(&s));
