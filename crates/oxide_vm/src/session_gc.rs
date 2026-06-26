@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 use std::time::Instant;
 
-use crate::vm_debug;
+use crate::{vm_debug, vm_info};
 use oxide_types::object::{JsObject, JsString, PropMetaEntry};
 use oxide_types::value::JsValue;
 use rustc_hash::FxBuildHasher;
@@ -35,6 +35,7 @@ impl SessionGc {
 
 impl SessionGc {
     pub(crate) fn clear_all_marks(&mut self, vm: &mut Vm) {
+        vm_debug!("[GC] clear_all_marks: {} session objects", vm.gc_state.session_object_ptrs.len());
         for &ptr in &vm.gc_state.session_object_ptrs {
             if ptr.is_null() {
                 continue;
@@ -119,6 +120,7 @@ impl SessionGc {
     }
 
     pub(crate) fn mark(&mut self, vm: &Vm) {
+        vm_debug!("[GC] mark phase: {} roots", vm.gc_state.session_object_ptrs.len());
         let mut seeds = Vec::new();
         let mut string_seeds: Vec<*mut JsString> = Vec::new();
         vm.for_each_root(|root| {
@@ -355,6 +357,7 @@ impl SessionGc {
     /// `session_bytes_allocated` to object-only), re-adding surviving string bytes. Returns the
     /// bytes freed.
     pub(crate) fn sweep_session_strings(&mut self, vm: &mut Vm) -> u64 {
+        vm_debug!("[GC] sweep strings: {} string ptrs", vm.gc_state.session_string_ptrs.len());
         let old = std::mem::take(&mut vm.gc_state.session_string_ptrs);
         let mut freed = 0u64;
         let mut live_bytes = 0usize;
@@ -389,6 +392,8 @@ impl SessionGc {
     pub(crate) fn collect(&mut self, vm: &mut Vm) {
         let start = Instant::now();
 
+        vm_info!("[GC] cycle #{} start", self.total_collections + 1);
+
         self.mark(vm);
         let mut freed_bytes = self.sweep(vm);
         freed_bytes += self.sweep_session_strings(vm);
@@ -398,6 +403,16 @@ impl SessionGc {
         self.last_collection_duration_us = elapsed.as_micros() as u64;
         self.max_collection_duration_us = self.max_collection_duration_us.max(self.last_collection_duration_us);
         self.min_collection_duration_us = self.min_collection_duration_us.min(self.last_collection_duration_us);
+
+        vm_info!(
+            "[GC] cycle #{} end: {} scanned, {} live, {} dead, {:.1}ms, {} bytes freed",
+            self.total_collections,
+            self.last_collection_objects_scanned,
+            self.last_collection_objects_live,
+            self.last_collection_objects_dead,
+            elapsed.as_secs_f64() * 1000.0,
+            freed_bytes,
+        );
 
         if freed_bytes > 0 || self.total_collections % 100 == 0 {
             vm_debug!("{}", self.stats_summary());
@@ -457,6 +472,7 @@ fn rewrite_forwarded_value(
 }
 
 fn rewrite_vm_roots(vm: &mut Vm, forwarding: &HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>) {
+    vm_debug!("[GC] rewrite_vm_roots: {} forwarded objects", forwarding.len());
     for value in &mut vm.regs {
         *value = rewrite_forwarded_value(*value, forwarding);
     }

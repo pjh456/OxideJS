@@ -1,4 +1,4 @@
-use crate::{ic_debug, ic_trace};
+use crate::{ic_debug, ic_trace, vm_trace};
 use oxide_bytecode::opcode::OpCode;
 use oxide_kernel::prop_forge::PropTemplate;
 use oxide_types::object::JsObject;
@@ -13,6 +13,7 @@ fn prop_cache_miss() {}
 
 impl Vm {
     pub(crate) fn dispatch_property_op(&mut self, op: OpCode, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("PROPERTY_OP {:?} rd={} a={} b={}", op, rd, a, b);
         match op {
             OpCode::IC_GET_PROP => self.dispatch_ic_get_prop(a, b),
             OpCode::IC_SET_PROP => self.dispatch_ic_set_prop(rd, a, b),
@@ -88,6 +89,7 @@ impl Vm {
     }
 
     fn dispatch_get_private(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("GET_PRIVATE rd={} a={} b={}", rd, a, b);
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[a], "private field access on non-object")? else {
             return Ok(());
         };
@@ -101,6 +103,7 @@ impl Vm {
     }
 
     fn dispatch_set_private(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("SET_PRIVATE rd={} a={} b={}", rd, a, b);
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "private field assignment on non-object")? else {
             return Ok(());
         };
@@ -116,6 +119,7 @@ impl Vm {
     }
 
     fn dispatch_init_private(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("INIT_PRIVATE rd={} a={} b={}", rd, a, b);
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "private field initialization on non-object")?
         else {
             return Ok(());
@@ -132,6 +136,7 @@ impl Vm {
     }
 
     fn dispatch_private_brand_in(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("PRIVATE_BRAND_IN rd={} a={} b={}", rd, a, b);
         let obj_val = self.regs[a];
         if !obj_val.is_object() {
             self.regs[rd] = JsValue::bool(false);
@@ -274,6 +279,7 @@ impl Vm {
     }
 
     fn dispatch_get_prop(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("GET_PROP rd={} a={} b={}", rd, a, b);
         let prop_name_si = self.property_key_si(self.regs[b]);
         if let Some(value) = self.primitive_property_get(self.regs[rd], prop_name_si)? {
             self.regs[a] = value;
@@ -291,6 +297,7 @@ impl Vm {
     }
 
     fn dispatch_set_prop(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("SET_PROP rd={} a={} b={}", rd, a, b);
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "Cannot create property on non-object")? else {
             return Ok(());
         };
@@ -312,6 +319,7 @@ impl Vm {
     }
 
     fn dispatch_get_prop_dynamic(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("GET_PROP_DYNAMIC rd={} a={} b={}", rd, a, b);
         let prop_name_si = self.property_key_si(self.regs[a]);
         if let Some(value) = self.primitive_property_get(self.regs[rd], prop_name_si)? {
             self.regs[b] = value;
@@ -329,6 +337,7 @@ impl Vm {
     }
 
     fn dispatch_set_prop_dynamic(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("SET_PROP_DYNAMIC rd={} a={} b={}", rd, a, b);
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "Cannot create property on non-object")? else {
             return Ok(());
         };
@@ -350,6 +359,7 @@ impl Vm {
     }
 
     fn dispatch_set_elem(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("SET_ELEM rd={} a={} b={}", rd, a, b);
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "Cannot create property on non-object")? else {
             return Ok(());
         };
@@ -369,6 +379,7 @@ impl Vm {
 
 impl Vm {
     pub(crate) fn dispatch_delete_prop_static(&mut self, rd: usize) -> Result<bool, String> {
+        vm_trace!("DELETE_PROP_STATIC rd={}", rd);
         let prop_idx = self.bytecode[self.pc] as usize;
         self.pc += 1;
         let key_val = self.immutables().get(prop_idx).copied().unwrap_or_else(JsValue::undefined);
@@ -385,6 +396,7 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_delete_prop_dynamic(&mut self, rd: usize, b: usize) -> Result<bool, String> {
+        vm_trace!("DELETE_PROP_DYNAMIC rd={}", rd);
         let prop_name_si = self.property_key_si(self.regs[b]);
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "delete on non-object")? else {
             return Ok(true);

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::vm_debug;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 use rustc_hash::FxBuildHasher;
@@ -17,6 +18,7 @@ impl Vm {
     }
 
     pub(crate) fn promote_object(&mut self, src: *mut JsObject) -> *mut JsObject {
+        vm_debug!("promote_object: src={:p}", src);
         let mut forwarding = std::mem::take(&mut self.gc_state.forwarding);
         let result = self.promote_object_inner(src, &mut forwarding);
         forwarding.clear();
@@ -27,6 +29,7 @@ impl Vm {
     pub(crate) fn promote_object_inner(
         &mut self, src: *mut JsObject, forwarding: &mut HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>,
     ) -> *mut JsObject {
+        vm_debug!("promote_object_inner: src={:p}", src);
         if src.is_null() {
             return src;
         }

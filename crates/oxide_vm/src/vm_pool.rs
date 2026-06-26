@@ -4,6 +4,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use crate::vm::Vm;
+use crate::{vm_debug, vm_trace, vm_warn};
 use oxide_kernel::kernel::KernelCore;
 
 struct VmPoolInner {
@@ -50,6 +51,7 @@ impl VmPool {
             let mut inner = self.inner.lock().unwrap();
 
             if let Some(vm) = inner.available.pop() {
+                vm_trace!("pool: reused vm, {} available", inner.available.len());
                 return VmGuard {
                     vm: Some(vm),
                     pool: Arc::clone(self),
@@ -64,6 +66,7 @@ impl VmPool {
 
             if can_grow {
                 inner.total_count += 1;
+                vm_debug!("pool: growing to {} vms", inner.total_count);
                 drop(inner);
                 let vm = Self::new_vm(&self.kernel_core);
                 return VmGuard {
@@ -76,6 +79,7 @@ impl VmPool {
             let (guard, wait) = self.condvar.wait_timeout(inner, Duration::from_secs(5)).unwrap();
             inner = guard;
             if wait.timed_out() {
+                vm_warn!("pool: wait timeout, force-growing to {} vms", inner.total_count + 1);
                 inner.total_count += 1;
                 drop(inner);
                 let vm = Self::new_vm(&self.kernel_core);
@@ -108,11 +112,13 @@ impl Drop for VmGuard {
         let mut inner = self.pool.inner.lock().unwrap();
 
         if self.dirty {
+            vm_debug!("pool: discarding dirty vm");
             let new_vm = self.pool.replace_vm();
             inner.available.push(new_vm);
         } else {
             vm.full_reset();
             inner.available.push(vm);
+            vm_trace!("pool: recycled clean vm, {} available", inner.available.len());
         }
 
         self.pool.condvar.notify_one();

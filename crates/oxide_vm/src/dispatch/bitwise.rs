@@ -1,4 +1,5 @@
 use crate::vm::Vm;
+use crate::vm_trace;
 use oxide_types::value::JsValue;
 
 impl Vm {
@@ -13,6 +14,7 @@ impl Vm {
 
     #[inline(always)]
     pub(crate) fn dispatch_bit_and(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("BIT_AND rd={} r{},r{}", rd, a, b);
         self.regs[rd] =
             JsValue::int(self.coerce_int32_bounded(self.regs[a])? & self.coerce_int32_bounded(self.regs[b])?);
         Ok(())
@@ -20,6 +22,7 @@ impl Vm {
 
     #[inline(always)]
     pub(crate) fn dispatch_bit_or(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("BIT_OR rd={} r{},r{}", rd, a, b);
         self.regs[rd] =
             JsValue::int(self.coerce_int32_bounded(self.regs[a])? | self.coerce_int32_bounded(self.regs[b])?);
         Ok(())
@@ -27,6 +30,7 @@ impl Vm {
 
     #[inline(always)]
     pub(crate) fn dispatch_bit_xor(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("BIT_XOR rd={} r{},r{}", rd, a, b);
         self.regs[rd] =
             JsValue::int(self.coerce_int32_bounded(self.regs[a])? ^ self.coerce_int32_bounded(self.regs[b])?);
         Ok(())
@@ -34,6 +38,7 @@ impl Vm {
 
     #[inline(always)]
     pub(crate) fn dispatch_shl(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("SHL rd={} r{},r{}", rd, a, b);
         let lhs = self.coerce_int32_bounded(self.regs[a])?;
         let shift = self.coerce_uint32_bounded(self.regs[b])? & 0x1F;
         self.regs[rd] = JsValue::int(lhs.wrapping_shl(shift));
@@ -42,6 +47,7 @@ impl Vm {
 
     #[inline(always)]
     pub(crate) fn dispatch_shr(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("SHR rd={} r{},r{}", rd, a, b);
         let lhs = self.coerce_int32_bounded(self.regs[a])?;
         let shift = self.coerce_uint32_bounded(self.regs[b])? & 0x1F;
         self.regs[rd] = JsValue::int(lhs >> shift);
@@ -50,6 +56,7 @@ impl Vm {
 
     #[inline(always)]
     pub(crate) fn dispatch_ushr(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("USHR rd={} r{},r{}", rd, a, b);
         let lhs = self.coerce_uint32_bounded(self.regs[a])?;
         let shift = self.coerce_uint32_bounded(self.regs[b])? & 0x1F;
         self.write_ushr_result(rd, lhs >> shift);
@@ -58,12 +65,14 @@ impl Vm {
 
     #[inline(always)]
     pub(crate) fn dispatch_bit_not(&mut self, rd: usize, a: usize) -> Result<(), String> {
+        vm_trace!("BIT_NOT rd={} r{}", rd, a);
         self.regs[rd] = JsValue::int(!self.coerce_int32_bounded(self.regs[a])?);
         Ok(())
     }
 
     #[inline(always)]
     pub(crate) fn dispatch_compound_bit_and(&mut self, rd: usize, a: usize) -> Result<(), String> {
+        vm_trace!("COMPOUND_BIT_AND rd={} r{}", rd, a);
         self.regs[rd] =
             JsValue::int(self.coerce_int32_bounded(self.regs[rd])? & self.coerce_int32_bounded(self.regs[a])?);
         Ok(())
@@ -71,6 +80,7 @@ impl Vm {
 
     #[inline(always)]
     pub(crate) fn dispatch_compound_bit_or(&mut self, rd: usize, a: usize) -> Result<(), String> {
+        vm_trace!("COMPOUND_BIT_OR rd={} r{}", rd, a);
         self.regs[rd] =
             JsValue::int(self.coerce_int32_bounded(self.regs[rd])? | self.coerce_int32_bounded(self.regs[a])?);
         Ok(())
@@ -78,6 +88,7 @@ impl Vm {
 
     #[inline(always)]
     pub(crate) fn dispatch_compound_bit_xor(&mut self, rd: usize, a: usize) -> Result<(), String> {
+        vm_trace!("COMPOUND_BIT_XOR rd={} r{}", rd, a);
         self.regs[rd] =
             JsValue::int(self.coerce_int32_bounded(self.regs[rd])? ^ self.coerce_int32_bounded(self.regs[a])?);
         Ok(())
@@ -85,6 +96,7 @@ impl Vm {
 
     #[inline(always)]
     pub(crate) fn dispatch_compound_shl(&mut self, rd: usize, a: usize) -> Result<(), String> {
+        vm_trace!("COMPOUND_SHL rd={} r{}", rd, a);
         let lhs = self.coerce_int32_bounded(self.regs[rd])?;
         let shift = self.coerce_uint32_bounded(self.regs[a])? & 0x1F;
         self.regs[rd] = JsValue::int(lhs.wrapping_shl(shift));
@@ -93,6 +105,7 @@ impl Vm {
 
     #[inline(always)]
     pub(crate) fn dispatch_compound_shr(&mut self, rd: usize, a: usize) -> Result<(), String> {
+        vm_trace!("COMPOUND_SHR rd={} r{}", rd, a);
         let lhs = self.coerce_int32_bounded(self.regs[rd])?;
         let shift = self.coerce_uint32_bounded(self.regs[a])? & 0x1F;
         self.regs[rd] = JsValue::int(lhs >> shift);
@@ -101,6 +114,7 @@ impl Vm {
 
     #[inline(always)]
     pub(crate) fn dispatch_compound_ushr(&mut self, rd: usize, a: usize) -> Result<(), String> {
+        vm_trace!("COMPOUND_USHR rd={} r{}", rd, a);
         let lhs = self.coerce_uint32_bounded(self.regs[rd])?;
         let shift = self.coerce_uint32_bounded(self.regs[a])? & 0x1F;
         self.write_ushr_result(rd, lhs >> shift);

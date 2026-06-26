@@ -3,6 +3,7 @@ use std::sync::{Arc, OnceLock};
 use oxide_bytecode::module::CompiledModule;
 
 use crate::vm::{CallFrame, InlineSyncState, Vm};
+use crate::{vm_debug, vm_info, vm_trace, vm_warn};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
@@ -14,6 +15,12 @@ impl Vm {
             return Err(self.error_message_text("TypeError", "accessor is not callable"));
         }
         let sub_idx = callee_obj.sub_module_index() as usize - 1;
+        vm_debug!(
+            "call_bytecode_function_inline: sub_idx={}, args={}, depth={}",
+            sub_idx,
+            args.len(),
+            self.frames.len()
+        );
         if sub_idx >= self.sub_modules.len() {
             return Err(format!(
                 "accessor sub_module_index {} out of bounds (max {})",
@@ -34,6 +41,7 @@ impl Vm {
         let subs = Arc::clone(&self.sub_modules);
         let sub = &subs[sub_idx];
 
+        vm_trace!("call_bytecode: saving state pc={} depth={}", self.pc, self.frames.len());
         let saved = Box::new(InlineSyncState {
             regs: Box::new(self.regs),
             pc: self.pc,
@@ -74,9 +82,17 @@ impl Vm {
         }
         let _ = callee;
 
+        vm_trace!(
+            "call_bytecode: dispatching sub_idx={} n_regs={} n_args={} arrow={}",
+            sub_idx,
+            sub.n_registers,
+            sub.n_args,
+            sub.is_arrow
+        );
         let result = self.dispatch();
         self.native_call_depth -= 1;
 
+        vm_trace!("call_bytecode: restoring state pc={} result={:?}", saved.pc, result.as_ref().ok());
         self.regs = *saved.regs;
         self.pc = saved.pc;
         self.bytecode = saved.bytecode;
@@ -99,6 +115,11 @@ impl Vm {
     }
 
     pub(crate) fn restore_frame(&mut self, frame: CallFrame) {
+        vm_trace!(
+            "restore_frame: return_addr={} caller_reg_limit={}",
+            frame.return_addr,
+            frame.caller_reg_limit
+        );
         if let Some(saved_bc) = self.saved_bytecode_stack.pop() {
             self.bytecode = saved_bc;
         }
@@ -116,6 +137,7 @@ impl Vm {
     }
 
     pub fn rerun(&mut self) -> Result<JsValue, String> {
+        vm_info!("rerun: clearing IC caches");
         self.clear_execution_state();
         self.active_reg_limit = self.root_reg_limit;
         crate::ic_helper::clear_ic_caches(&mut self.bytecode);
@@ -123,6 +145,7 @@ impl Vm {
     }
 
     pub fn run(&mut self, module: &CompiledModule) -> Result<JsValue, String> {
+        vm_debug!("run: starting bytecode execution, {} instructions", module.bytecode.len());
         self.clear_execution_state();
         self.sub_modules = Arc::new(module.sub_modules.clone());
         // Per-run convert-once cache: slot 0 = top module, slot sub_idx+1 = sub_modules[sub_idx].
@@ -146,6 +169,7 @@ impl Vm {
     }
 
     pub(crate) fn unwind(&mut self) -> Result<(), String> {
+        vm_debug!("unwind: {} try handlers on stack", self.try_stack.len());
         while let Some(handler) = self.try_stack.pop() {
             while self.frames.len() > handler.frame_depth {
                 if let Some(frame) = self.frames.pop() {
@@ -153,6 +177,7 @@ impl Vm {
                 }
             }
             if let Some(finally_pc) = handler.finally_pc {
+                vm_trace!("unwind: entering finally at pc={}", finally_pc);
                 if self.pending_exception.is_none() {
                     self.pending_exception = self.exception_value.take();
                 }
@@ -161,6 +186,7 @@ impl Vm {
                 return Ok(());
             }
             if let Some(catch_pc) = handler.catch_pc {
+                vm_trace!("unwind: caught at pc={}", catch_pc);
                 let exc = self.exception_value.take().unwrap_or(JsValue::undefined());
                 self.regs[0] = exc;
                 self.pc = catch_pc;
@@ -178,6 +204,7 @@ impl Vm {
         } else {
             format!("uncaught {kind_str}: {exc_text}")
         };
+        vm_warn!("unwind: uncaught {}: {}", kind_str, exc_text);
         Err(msg)
     }
 }
