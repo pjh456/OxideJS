@@ -1,14 +1,12 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::counter) fn count_throw_statement(
-        &self, stmt: &oxide_parser::ThrowStatement<'_>, ctx: &mut CompileCtx,
-    ) {
+    fn count_throw_statement(&self, stmt: &oxide_parser::ThrowStatement<'_>, ctx: &mut CompileCtx) {
         self.count_expression(&stmt.argument, ctx);
         ctx.projected_pc += 1; // THROW
     }
 
-    pub(in crate::counter) fn count_try_statement(&self, stmt: &oxide_parser::TryStatement<'_>, ctx: &mut CompileCtx) {
+    fn count_try_statement(&self, stmt: &oxide_parser::TryStatement<'_>, ctx: &mut CompileCtx) {
         let id = ctx.next_label_id();
         let catch_label = Label::CatchBody(id);
         let try_end_label = Label::TryEnd(id);
@@ -39,7 +37,7 @@ impl Compiler {
             ctx.projected_pc += 1; // JMP
         }
 
-        ctx.label_map.insert(catch_label, ctx.projected_pc);
+        ctx.labels.label_map.insert(catch_label, ctx.projected_pc);
         if let Some(catch) = &stmt.handler {
             ctx.push_scope();
             if let Some(_param) = &catch.param {
@@ -55,7 +53,7 @@ impl Compiler {
 
         if let Some(finally) = &stmt.finalizer {
             let finally_label = Label::FinallyBody(id);
-            ctx.label_map.insert(finally_label, ctx.projected_pc);
+            ctx.labels.label_map.insert(finally_label, ctx.projected_pc);
             for fs in &finally.body {
                 self.count_statement(fs, ctx);
             }
@@ -63,6 +61,14 @@ impl Compiler {
             ctx.projected_pc += 1; // TRY_FINALLY_END
         }
 
-        ctx.label_map.insert(try_end_label, ctx.projected_pc);
+        ctx.labels.label_map.insert(try_end_label, ctx.projected_pc);
+    }
+
+    pub(in crate::counter) fn count_exception_domain(&self, stmt: &Statement, ctx: &mut CompileCtx) {
+        match stmt {
+            Statement::ThrowStatement(ts) => self.count_throw_statement(ts, ctx),
+            Statement::TryStatement(ts) => self.count_try_statement(ts, ctx),
+            _ => {}
+        }
     }
 }

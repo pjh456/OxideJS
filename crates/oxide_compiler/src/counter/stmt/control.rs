@@ -1,7 +1,7 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::counter) fn count_if_statement(&self, stmt: &oxide_parser::IfStatement<'_>, ctx: &mut CompileCtx) {
+    fn count_if_statement(&self, stmt: &oxide_parser::IfStatement<'_>, ctx: &mut CompileCtx) {
         let id = ctx.next_label_id();
         let else_label = Label::IfElse(id);
         let end_label = Label::IfEnd(id);
@@ -14,11 +14,17 @@ impl Compiler {
         if stmt.alternate.is_some() {
             ctx.projected_pc += 1; // JMP (skip else)
         }
-        ctx.label_map.insert(else_label, ctx.projected_pc);
+        ctx.labels.label_map.insert(else_label, ctx.projected_pc);
         if let Some(alt_stmt) = &stmt.alternate {
             self.count_statement(alt_stmt, ctx);
             ctx.projected_pc += 1; // LOAD_VAR result <- alternate
         }
-        ctx.label_map.insert(end_label, ctx.projected_pc);
+        ctx.labels.label_map.insert(end_label, ctx.projected_pc);
+    }
+
+    pub(in crate::counter) fn count_control_domain(&self, stmt: &Statement, ctx: &mut CompileCtx) {
+        if let Statement::IfStatement(ifs) = stmt {
+            self.count_if_statement(ifs, ctx);
+        }
     }
 }

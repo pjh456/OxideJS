@@ -2,37 +2,65 @@ use oxide_bytecode::opcode::OpCode;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-use crate::coercion;
 use crate::vm::Vm;
+use crate::vm_trace;
+use oxide_runtime_api as coercion;
 
 impl Vm {
     pub(crate) fn dispatch_member_op(&mut self, op: OpCode, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("MEMBER_OP {:?} rd={} a={} b={}", op, rd, a, b);
         match op {
             OpCode::MEMBER_INC => self.dispatch_member_inc(rd, a, b),
             OpCode::MEMBER_DEC => self.dispatch_member_dec(rd, a, b),
             OpCode::DYN_MEMBER_INC => self.dispatch_dyn_member_inc(rd, a, b),
             OpCode::DYN_MEMBER_DEC => self.dispatch_dyn_member_dec(rd, a, b),
             OpCode::COMPOUND_MEMBER_ADD => self.dispatch_compound_member_add(rd, a, b),
-            OpCode::COMPOUND_MEMBER_SUB => {
-                self.dispatch_compound_member_numeric(rd, a, b, "COMPOUND_MEMBER_SUB on non-object", |l, r| l - r)
-            }
-            OpCode::COMPOUND_MEMBER_MUL => {
-                self.dispatch_compound_member_numeric(rd, a, b, "COMPOUND_MEMBER_MUL on non-object", |l, r| l * r)
-            }
-            OpCode::COMPOUND_MEMBER_DIV => {
-                self.dispatch_compound_member_numeric(rd, a, b, "COMPOUND_MEMBER_DIV on non-object", |l, r| l / r)
-            }
-            OpCode::COMPOUND_MEMBER_MOD => {
-                self.dispatch_compound_member_numeric(rd, a, b, "COMPOUND_MEMBER_MOD on non-object", |l, r| l % r)
-            }
-            OpCode::COMPOUND_MEMBER_EXP => {
-                self.dispatch_compound_member_numeric(rd, a, b, "COMPOUND_MEMBER_EXP on non-object", |l, r| l.powf(r))
-            }
+            OpCode::COMPOUND_MEMBER_SUB => self.dispatch_compound_member_numeric(
+                "COMPOUND_MEMBER_SUB",
+                rd,
+                a,
+                b,
+                "COMPOUND_MEMBER_SUB on non-object",
+                |l, r| l - r,
+            ),
+            OpCode::COMPOUND_MEMBER_MUL => self.dispatch_compound_member_numeric(
+                "COMPOUND_MEMBER_MUL",
+                rd,
+                a,
+                b,
+                "COMPOUND_MEMBER_MUL on non-object",
+                |l, r| l * r,
+            ),
+            OpCode::COMPOUND_MEMBER_DIV => self.dispatch_compound_member_numeric(
+                "COMPOUND_MEMBER_DIV",
+                rd,
+                a,
+                b,
+                "COMPOUND_MEMBER_DIV on non-object",
+                |l, r| l / r,
+            ),
+            OpCode::COMPOUND_MEMBER_MOD => self.dispatch_compound_member_numeric(
+                "COMPOUND_MEMBER_MOD",
+                rd,
+                a,
+                b,
+                "COMPOUND_MEMBER_MOD on non-object",
+                |l, r| l % r,
+            ),
+            OpCode::COMPOUND_MEMBER_EXP => self.dispatch_compound_member_numeric(
+                "COMPOUND_MEMBER_EXP",
+                rd,
+                a,
+                b,
+                "COMPOUND_MEMBER_EXP on non-object",
+                |l, r| l.powf(r),
+            ),
             _ => unreachable!("non-member opcode passed to dispatch_member_op"),
         }
     }
 
     fn member_target(&mut self, rd: usize, b: usize, error_msg: &str) -> Result<(*mut JsObject, u32), String> {
+        vm_trace!("MEMBER_TARGET rd={} b={}", rd, b);
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], error_msg)? else {
             return Err(String::new());
         };
@@ -41,6 +69,7 @@ impl Vm {
     }
 
     fn dispatch_member_inc(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("MEMBER_INC rd={} a={} b={}", rd, a, b);
         let Ok((obj_ptr, prop_name_si)) = self.member_target(rd, b, "MEMBER_INC on non-object") else {
             return Ok(());
         };
@@ -55,6 +84,7 @@ impl Vm {
     }
 
     fn dispatch_member_dec(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("MEMBER_DEC rd={} a={} b={}", rd, a, b);
         let Ok((obj_ptr, prop_name_si)) = self.member_target(rd, b, "MEMBER_DEC on non-object") else {
             return Ok(());
         };
@@ -69,6 +99,7 @@ impl Vm {
     }
 
     fn dispatch_dyn_member_inc(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("DYN_MEMBER_INC rd={} a={} b={}", rd, a, b);
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "DYN_MEMBER_INC on non-object")? else {
             return Ok(());
         };
@@ -84,6 +115,7 @@ impl Vm {
     }
 
     fn dispatch_dyn_member_dec(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("DYN_MEMBER_DEC rd={} a={} b={}", rd, a, b);
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "DYN_MEMBER_DEC on non-object")? else {
             return Ok(());
         };
@@ -99,6 +131,7 @@ impl Vm {
     }
 
     fn dispatch_compound_member_add(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("COMPOUND_MEMBER_ADD rd={} a={} b={}", rd, a, b);
         let Ok((obj_ptr, prop_name_si)) = self.member_target(rd, b, "COMPOUND_MEMBER_ADD on non-object") else {
             return Ok(());
         };
@@ -110,12 +143,12 @@ impl Vm {
         let prop_val = self.coerce_primitive_bounded(prop_raw, false)?;
         let rhs = self.coerce_primitive_bounded(self.regs[a], false)?;
         let new_val = if prop_val.is_string() || rhs.is_string() {
-            let ls = coercion::to_string(self.kernel_core.string_forge().as_ref(), prop_val);
-            let rs = coercion::to_string(self.kernel_core.string_forge().as_ref(), rhs);
-            self.intern(&format!("{ls}{rs}"))
+            let ls = coercion::to_string(prop_val);
+            let rs = coercion::to_string(rhs);
+            self.new_string(&format!("{ls}{rs}"))
         } else {
-            let ln = coercion::to_number(prop_val, self.kernel_core.string_forge().as_ref());
-            let rn = coercion::to_number(rhs, self.kernel_core.string_forge().as_ref());
+            let ln = coercion::to_number(prop_val);
+            let rn = coercion::to_number(rhs);
             JsValue::float(ln + rn)
         };
         let obj = unsafe { &mut *obj_ptr };
@@ -125,11 +158,12 @@ impl Vm {
     }
 
     fn dispatch_compound_member_numeric<F>(
-        &mut self, rd: usize, a: usize, b: usize, error_msg: &str, op: F,
+        &mut self, op_name: &str, rd: usize, a: usize, b: usize, error_msg: &str, op: F,
     ) -> Result<(), String>
     where
         F: FnOnce(f64, f64) -> f64,
     {
+        vm_trace!("{} rd={} a={} b={}", op_name, rd, a, b);
         let Ok((obj_ptr, prop_name_si)) = self.member_target(rd, b, error_msg) else {
             return Ok(());
         };

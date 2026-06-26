@@ -1,7 +1,7 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::emitter) fn emit_private_in_expression(
+    fn emit_private_in_expression(
         &self, pin: &oxide_parser::PrivateInExpression, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {
         let obj_reg = self.emit_expression(&pin.right, ctx)?;
@@ -11,9 +11,7 @@ impl Compiler {
         Ok(result_reg)
     }
 
-    pub(in crate::emitter) fn emit_binary_expression(
-        &self, bin: &oxide_parser::BinaryExpression, ctx: &mut CompileCtx,
-    ) -> Result<u8, String> {
+    fn emit_binary_expression(&self, bin: &oxide_parser::BinaryExpression, ctx: &mut CompileCtx) -> Result<u8, String> {
         let checkpoint = ctx.reg_checkpoint();
         let left = self.emit_expression(&bin.left, ctx)?;
         let right = self.emit_expression(&bin.right, ctx)?;
@@ -48,9 +46,7 @@ impl Compiler {
         Ok(left)
     }
 
-    pub(in crate::emitter) fn emit_unary_expression(
-        &self, un: &oxide_parser::UnaryExpression, ctx: &mut CompileCtx,
-    ) -> Result<u8, String> {
+    fn emit_unary_expression(&self, un: &oxide_parser::UnaryExpression, ctx: &mut CompileCtx) -> Result<u8, String> {
         if matches!(un.operator, UnaryOperator::Delete) {
             return match &un.argument {
                 Expression::Identifier(_) => {
@@ -154,7 +150,7 @@ impl Compiler {
         }
     }
 
-    pub(in crate::emitter) fn emit_conditional_expression(
+    fn emit_conditional_expression(
         &self, cond: &oxide_parser::ConditionalExpression, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {
         let id = ctx.next_label_id();
@@ -183,7 +179,7 @@ impl Compiler {
         Ok(result_reg)
     }
 
-    pub(in crate::emitter) fn emit_logical_expression(
+    fn emit_logical_expression(
         &self, log: &oxide_parser::LogicalExpression, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {
         use oxide_parser::LogicalOperator;
@@ -251,7 +247,7 @@ impl Compiler {
         Ok(dup_reg)
     }
 
-    pub(in crate::emitter) fn emit_update_expression(
+    fn emit_update_expression(
         &self, update: &oxide_parser::UpdateExpression, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {
         match &update.argument {
@@ -302,6 +298,18 @@ impl Compiler {
                 Ok(val_reg)
             }
             _ => Err("member update not yet supported".into()),
+        }
+    }
+
+    pub(in crate::emitter) fn emit_operator(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u8, String> {
+        match expr {
+            Expression::BinaryExpression(bin) => self.emit_binary_expression(bin, ctx),
+            Expression::PrivateInExpression(pin) => self.emit_private_in_expression(pin, ctx),
+            Expression::UnaryExpression(un) => self.emit_unary_expression(un, ctx),
+            Expression::ConditionalExpression(cond) => self.emit_conditional_expression(cond, ctx),
+            Expression::LogicalExpression(log) => self.emit_logical_expression(log, ctx),
+            Expression::UpdateExpression(update) => self.emit_update_expression(update, ctx),
+            _ => self.emit_unsupported_expression(expr, ctx),
         }
     }
 }

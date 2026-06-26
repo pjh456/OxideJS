@@ -1,10 +1,10 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::emitter) fn emit_arrow_function_expression(
+    fn emit_arrow_function_expression(
         &self, arrow: &oxide_parser::ArrowFunctionExpression, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {
-        // Rest params not yet supported (D-06 placeholder)
+        // Rest params not yet supported
         if let Some(_rest) = &arrow.params.rest {
             return Err("rest params in arrow functions not yet supported".into());
         }
@@ -37,15 +37,12 @@ impl Compiler {
         // 1-indexed: 0 = no sub_module (sentinel)
         let sub_idx = ctx.sub_modules.len() as u32;
 
-        let const_idx = ctx.add_constant(Constant::BytecodeFunc(sub_idx));
         let r = ctx.alloc_reg();
-        ctx.emit_load_const(r, const_idx);
+        ctx.emit_create_closure(r, sub_idx);
         Ok(r)
     }
 
-    pub(in crate::emitter) fn emit_function_expression(
-        &self, fe: &oxide_parser::Function, ctx: &mut CompileCtx,
-    ) -> Result<u8, String> {
+    fn emit_function_expression(&self, fe: &oxide_parser::Function, ctx: &mut CompileCtx) -> Result<u8, String> {
         // FunctionExpression: compile body, emit LOAD_CONST(BytecodeFunc)
         let mut param_names = Vec::new();
         for (idx, param) in fe.params.items.iter().enumerate() {
@@ -72,19 +69,16 @@ impl Compiler {
         // 1-indexed: 0 = no sub_module (sentinel)
         let sub_idx = ctx.sub_modules.len() as u32;
 
-        let const_idx = ctx.add_constant(Constant::BytecodeFunc(sub_idx));
         let r = ctx.alloc_reg();
-        ctx.emit_load_const(r, const_idx);
+        ctx.emit_create_closure(r, sub_idx);
         Ok(r)
     }
 
-    pub(in crate::emitter) fn emit_class_expression(&self, class: &Class, ctx: &mut CompileCtx) -> Result<u8, String> {
+    fn emit_class_expression(&self, class: &Class, ctx: &mut CompileCtx) -> Result<u8, String> {
         self.emit_class(class, ctx)
     }
 
-    pub(in crate::emitter) fn emit_new_expression(
-        &self, ne: &oxide_parser::NewExpression, ctx: &mut CompileCtx,
-    ) -> Result<u8, String> {
+    fn emit_new_expression(&self, ne: &oxide_parser::NewExpression, ctx: &mut CompileCtx) -> Result<u8, String> {
         let constructor_reg = self.emit_expression(&ne.callee, ctx)?;
         let mut arg_regs = Vec::new();
         for arg in &ne.arguments {
@@ -97,5 +91,17 @@ impl Compiler {
         ctx.emit(opcode::encode(OpCode::NEW_EXPRESSION, r, constructor_reg, first_arg_reg));
         ctx.emit(arg_regs.len() as u32);
         Ok(r)
+    }
+
+    pub(in crate::emitter) fn emit_function_domain(
+        &self, expr: &Expression, ctx: &mut CompileCtx,
+    ) -> Result<u8, String> {
+        match expr {
+            Expression::ArrowFunctionExpression(arrow) => self.emit_arrow_function_expression(arrow, ctx),
+            Expression::FunctionExpression(fe) => self.emit_function_expression(fe, ctx),
+            Expression::ClassExpression(class) => self.emit_class_expression(class, ctx),
+            Expression::NewExpression(ne) => self.emit_new_expression(ne, ctx),
+            _ => self.emit_unsupported_expression(expr, ctx),
+        }
     }
 }

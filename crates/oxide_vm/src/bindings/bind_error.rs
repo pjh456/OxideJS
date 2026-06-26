@@ -10,7 +10,7 @@ fn bind_error_subtype_constructor(
     core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, name: &str, proto_ptr: *mut JsObject,
     ctor_fn: *const (),
 ) {
-    let sf = core.string_forge().as_ref();
+    let sf = core.perm_interner().as_ref();
     let sh = core.shape_forge().as_ref();
     let function_proto_ptr = session.builtin_world().function_proto.as_ptr() as *mut JsObject;
 
@@ -28,7 +28,7 @@ fn bind_error_subtype_constructor(
     let ctor_shape2 = sh.make_shape(ctor_shape1, si_name);
     ctor.set_shape_id(ctor_shape2);
     ctor.ensure_hash_props().push(JsValue::from_js_object(proto_ptr));
-    ctor.ensure_hash_props().push(JsValue::string(name_si, 0));
+    ctor.ensure_hash_props().push(JsValue::perm_string(sf.string_ptr(name_si)));
 
     let ctor_ptr = Box::into_raw(ctor);
 
@@ -45,23 +45,23 @@ fn bind_error_subtype_constructor(
 
 pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let error_methods = ErrorMethods {
-        error: crate::builtins::error::error_constructor as *const (),
-        type_error: crate::builtins::error::type_error_constructor as *const (),
-        reference_error: crate::builtins::error::reference_error_constructor as *const (),
-        range_error: crate::builtins::error::range_error_constructor as *const (),
-        syntax_error: crate::builtins::error::syntax_error_constructor as *const (),
-        uri_error: crate::builtins::error::uri_error_constructor as *const (),
-        eval_error: crate::builtins::error::eval_error_constructor as *const (),
-        to_string: crate::builtins::error::error_to_string as *const (),
-        stack: crate::builtins::error::error_stack_getter as *const (),
+        error: oxide_builtins::error::error_constructor::<crate::vm::Vm> as *const (),
+        type_error: oxide_builtins::error::type_error_constructor::<crate::vm::Vm> as *const (),
+        reference_error: oxide_builtins::error::reference_error_constructor::<crate::vm::Vm> as *const (),
+        range_error: oxide_builtins::error::range_error_constructor::<crate::vm::Vm> as *const (),
+        syntax_error: oxide_builtins::error::syntax_error_constructor::<crate::vm::Vm> as *const (),
+        uri_error: oxide_builtins::error::uri_error_constructor::<crate::vm::Vm> as *const (),
+        eval_error: oxide_builtins::error::eval_error_constructor::<crate::vm::Vm> as *const (),
+        to_string: oxide_builtins::error::error_to_string::<crate::vm::Vm> as *const (),
+        stack: oxide_builtins::error::error_stack_getter::<crate::vm::Vm> as *const (),
     };
     session.builtin_world().bind_error_methods(
         &error_methods,
-        core.string_forge().as_ref(),
+        core.perm_interner().as_ref(),
         core.shape_forge().as_ref(),
     );
 
-    let si_err = core.string_forge().intern("Error").0;
+    let si_err = core.perm_interner().intern("Error").0;
     let err_shape = core.shape_forge().make_shape(global.shape_id(), si_err);
     let err_val = JsValue::from_js_object(session.builtin_world().error_constructor.as_ptr() as *mut JsObject);
     global.set_shape_id(err_shape);
@@ -74,7 +74,7 @@ pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         global,
         "TypeError",
         session.builtin_world().type_error_proto.as_ptr() as *mut JsObject,
-        crate::builtins::error::type_error_constructor as *const (),
+        oxide_builtins::error::type_error_constructor::<crate::vm::Vm> as *const (),
     );
     bind_error_subtype_constructor(
         core,
@@ -82,7 +82,7 @@ pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         global,
         "ReferenceError",
         session.builtin_world().reference_error_proto.as_ptr() as *mut JsObject,
-        crate::builtins::error::reference_error_constructor as *const (),
+        oxide_builtins::error::reference_error_constructor::<crate::vm::Vm> as *const (),
     );
     bind_error_subtype_constructor(
         core,
@@ -90,7 +90,7 @@ pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         global,
         "RangeError",
         session.builtin_world().range_error_proto.as_ptr() as *mut JsObject,
-        crate::builtins::error::range_error_constructor as *const (),
+        oxide_builtins::error::range_error_constructor::<crate::vm::Vm> as *const (),
     );
     bind_error_subtype_constructor(
         core,
@@ -98,7 +98,7 @@ pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         global,
         "SyntaxError",
         session.builtin_world().syntax_error_proto.as_ptr() as *mut JsObject,
-        crate::builtins::error::syntax_error_constructor as *const (),
+        oxide_builtins::error::syntax_error_constructor::<crate::vm::Vm> as *const (),
     );
     bind_error_subtype_constructor(
         core,
@@ -106,7 +106,7 @@ pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         global,
         "URIError",
         session.builtin_world().uri_error_proto.as_ptr() as *mut JsObject,
-        crate::builtins::error::uri_error_constructor as *const (),
+        oxide_builtins::error::uri_error_constructor::<crate::vm::Vm> as *const (),
     );
     bind_error_subtype_constructor(
         core,
@@ -114,7 +114,7 @@ pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         global,
         "EvalError",
         session.builtin_world().eval_error_proto.as_ptr() as *mut JsObject,
-        crate::builtins::error::eval_error_constructor as *const (),
+        oxide_builtins::error::eval_error_constructor::<crate::vm::Vm> as *const (),
     );
 
     {
@@ -122,7 +122,7 @@ pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         let err_ctor = unsafe { &mut *err_ctor_ptr };
         // SAFETY: error_constructor is a NativeFn fn-item.
         err_ctor.set_native_fn(Some(unsafe {
-            NativeFnPtr::from_raw(crate::builtins::error::error_constructor as *const ())
+            NativeFnPtr::from_raw(oxide_builtins::error::error_constructor::<crate::vm::Vm> as *const ())
         }));
     }
 }

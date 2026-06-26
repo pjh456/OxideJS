@@ -14,8 +14,8 @@ pub fn bind_json(core: &Arc<KernelCore>, session: &KernelSession, global: &mut J
         json,
         core,
         &[
-            ("parse", crate::builtins::json::json_parse as *const (), 1),
-            ("stringify", crate::builtins::json::json_stringify as *const (), 1),
+            ("parse", oxide_builtins::json::json_parse::<crate::vm::Vm> as *const (), 1),
+            ("stringify", oxide_builtins::json::json_stringify::<crate::vm::Vm> as *const (), 1),
         ],
     );
 

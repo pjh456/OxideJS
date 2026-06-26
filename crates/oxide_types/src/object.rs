@@ -1,4 +1,41 @@
+use std::hash::{Hash, Hasher};
+
+use rustc_hash::FxHasher;
+
 use crate::value::JsValue;
+
+/// Heap-allocated JS string value.
+///
+/// String *values* are NaN-boxed as 48-bit pointers to a `JsString` (see
+/// `JsValue::string`), replacing the old interner `(index, hash16)` pair. `hash`
+/// is a full 64-bit FxHash computed once at construction and used as a fast
+/// inequality reject before content comparison.
+#[derive(Debug)]
+pub struct JsString {
+    pub data: String,
+    pub hash: u64,
+}
+
+impl JsString {
+    pub fn new(data: String) -> Self {
+        let mut h = FxHasher::default();
+        data.hash(&mut h);
+        let hash = h.finish();
+        Self { data, hash }
+    }
+
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.data.as_str()
+    }
+}
 
 /// Type-safe opaque wrapper around a native function pointer.
 ///
@@ -646,17 +683,6 @@ impl JsObject {
             meta.push(None);
         }
         pos as u32
-    }
-
-    /// Get a pointer to the JsValue at position.
-    /// Returns None if hash_props not allocated or position out of bounds.
-    pub fn prop_ptr_at(&self, position: impl PropIndex) -> Option<*const JsValue> {
-        if self.hash_props.is_null() {
-            return None;
-        }
-        // SAFETY: hash_props was set from Box<Vec<JsValue>> in ensure_hash_props/new_array.
-        let vec = unsafe { &*(self.hash_props as *const Vec<JsValue>) };
-        vec.get(position.to_u32() as usize).map(|v| v as *const JsValue)
     }
 
     /// Get the length of hash_props vec (returns 0 if not allocated).

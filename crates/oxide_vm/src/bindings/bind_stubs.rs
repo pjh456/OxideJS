@@ -9,14 +9,22 @@ use oxide_types::value::JsValue;
 use crate::bindings::{bind_global_value, configure_native_constructor};
 
 const STUBS: [(&str, *const (), u8); 8] = [
-    ("Proxy", crate::builtins::stubs::proxy_stub as *const (), 2),
-    ("BigInt", crate::builtins::stubs::bigint_stub as *const (), 1),
-    ("WeakMap", crate::builtins::stubs::weakmap_stub as *const (), 0),
-    ("WeakSet", crate::builtins::stubs::weakset_stub as *const (), 0),
-    ("WeakRef", crate::builtins::stubs::weakref_stub as *const (), 1),
-    ("FinalizationRegistry", crate::builtins::stubs::finalization_registry_stub as *const (), 1),
-    ("SharedArrayBuffer", crate::builtins::stubs::shared_array_buffer_stub as *const (), 1),
-    ("Atomics", crate::builtins::stubs::atomics_stub as *const (), 0),
+    ("Proxy", oxide_builtins::stubs::proxy_stub::<crate::vm::Vm> as *const (), 2),
+    ("BigInt", oxide_builtins::stubs::bigint_stub::<crate::vm::Vm> as *const (), 1),
+    ("WeakMap", oxide_builtins::stubs::weakmap_stub::<crate::vm::Vm> as *const (), 0),
+    ("WeakSet", oxide_builtins::stubs::weakset_stub::<crate::vm::Vm> as *const (), 0),
+    ("WeakRef", oxide_builtins::stubs::weakref_stub::<crate::vm::Vm> as *const (), 1),
+    (
+        "FinalizationRegistry",
+        oxide_builtins::stubs::finalization_registry_stub::<crate::vm::Vm> as *const (),
+        1,
+    ),
+    (
+        "SharedArrayBuffer",
+        oxide_builtins::stubs::shared_array_buffer_stub::<crate::vm::Vm> as *const (),
+        1,
+    ),
+    ("Atomics", oxide_builtins::stubs::atomics_stub::<crate::vm::Vm> as *const (), 0),
 ];
 
 pub fn bind_stubs(core: &Arc<KernelCore>, session: &mut KernelSession, global: &mut JsObject) {

@@ -1,6 +1,6 @@
+use oxide_builtins::set::{set_add, set_clear, set_constructor as new_set, set_delete, set_has, set_size};
 use oxide_compiler::compiler::Compiler;
 use oxide_types::value::JsValue;
-use oxide_vm::builtins::set::{set_add, set_clear, set_constructor as new_set, set_delete, set_has, set_size};
 use oxide_vm::vm::Vm;
 
 fn eval(vm: &mut Vm, source: &str) -> Result<JsValue, String> {

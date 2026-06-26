@@ -9,6 +9,7 @@ description = "OxideJS - AST to bytecode compiler"
 [dependencies]
 oxide_bytecode = { path = "../oxide_bytecode" }
 oxide_parser = { path = "../oxide_parser" }
+oxide_log = { path = "../oxide_log" }
 serde.workspace = true
 serde_json.workspace = true
 rustc-hash.workspace = true

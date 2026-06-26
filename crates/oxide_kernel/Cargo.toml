@@ -11,9 +11,8 @@ oxide_bytecode = { path = "../oxide_bytecode" }
 oxide_code_cache = { path = "../oxide_code_cache" }
 oxide_parser = { path = "../oxide_parser" }
 oxide_types = { path = "../oxide_types" }
-dashmap.workspace = true
-hashbrown.workspace = true
-rustc-hash.workspace = true
+oxide_log = { path = "../oxide_log" }
 bumpalo.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
+hashbrown.workspace = true
+dashmap.workspace = true
+rustc-hash.workspace = true

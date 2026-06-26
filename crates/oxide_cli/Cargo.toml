@@ -22,3 +22,5 @@ oxide_api = { path = "../oxide_api" }
 clap.workspace = true
 rustyline.workspace = true
 ansi_term.workspace = true
+serde_json.workspace = true
+serde = { workspace = true, features = ["derive"] }

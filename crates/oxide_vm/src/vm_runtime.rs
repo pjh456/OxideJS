@@ -1,7 +1,9 @@
+use std::sync::{Arc, OnceLock};
+
 use oxide_bytecode::module::CompiledModule;
-use oxide_bytecode::opcode;
 
 use crate::vm::{CallFrame, InlineSyncState, Vm};
+use crate::{vm_debug, vm_info, vm_trace, vm_warn};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
@@ -13,6 +15,12 @@ impl Vm {
             return Err(self.error_message_text("TypeError", "accessor is not callable"));
         }
         let sub_idx = callee_obj.sub_module_index() as usize - 1;
+        vm_debug!(
+            "call_bytecode_function_inline: sub_idx={}, args={}, depth={}",
+            sub_idx,
+            args.len(),
+            self.frames.len()
+        );
         if sub_idx >= self.sub_modules.len() {
             return Err(format!(
                 "accessor sub_module_index {} out of bounds (max {})",
@@ -30,14 +38,15 @@ impl Vm {
         }
         self.native_call_depth += 1;
 
-        let sub = self.sub_modules[sub_idx].clone();
-        let converted_constants = self.convert_constants(&sub.constants).map_err(String::from)?;
+        let subs = Arc::clone(&self.sub_modules);
+        let sub = &subs[sub_idx];
 
+        vm_trace!("call_bytecode: saving state pc={} depth={}", self.pc, self.frames.len());
         let saved = Box::new(InlineSyncState {
             regs: Box::new(self.regs),
             pc: self.pc,
             bytecode: std::mem::take(&mut self.bytecode),
-            constants: std::mem::take(&mut self.constants),
+            active_immutables: self.active_immutables,
             active_reg_limit: self.active_reg_limit,
             root_reg_limit: self.root_reg_limit,
             try_stack: std::mem::take(&mut self.try_stack),
@@ -45,17 +54,18 @@ impl Vm {
             exception_value: self.exception_value.take(),
             pending_exception: self.pending_exception.take(),
             pending_error_kind: self.pending_error_kind.take(),
-            for_in_iters: std::mem::take(&mut self.for_in_iters),
-            for_of_iters: std::mem::take(&mut self.for_of_iters),
-            last_for_of_result: self.last_for_of_result,
+            for_in_iters: std::mem::take(&mut self.iters.for_in_iters),
+            for_of_iters: std::mem::take(&mut self.iters.for_of_iters),
+            last_for_of_result: self.iters.last_for_of_result,
             saved_bytecode_stack: std::mem::take(&mut self.saved_bytecode_stack),
-            saved_constants_stack: std::mem::take(&mut self.saved_constants_stack),
+            saved_immutables_stack: std::mem::take(&mut self.saved_immutables_stack),
+            save_stack: std::mem::take(&mut self.save_stack),
         });
 
         self.regs = [JsValue::undefined(); 256];
         self.pc = 0;
-        self.bytecode = sub.bytecode;
-        self.constants = converted_constants;
+        self.bytecode = sub.bytecode.clone();
+        self.activate_immutables(sub_idx + 1, &sub.constants);
         self.active_reg_limit = sub.n_registers.max(1);
         self.root_reg_limit = self.active_reg_limit;
         for i in 0..sub.n_args as usize {
@@ -64,7 +74,7 @@ impl Vm {
         self.regs[254] = if sub.is_arrow { callee_obj.captured_this() } else { receiver };
         self.regs[255] = JsValue::undefined();
         for (name, reg) in &sub.builtin_reg_map {
-            let si = self.kernel_core.string_forge().intern(name.as_str()).0;
+            let si = self.kernel_core.perm_interner().intern(name.as_str()).0;
             let global = self.session.global_object();
             if let Some(pos) = self.kernel_core.shape_forge().lookup_position(global.shape_id(), si) {
                 self.regs[*reg as usize] = global.get_prop_at(pos);
@@ -72,13 +82,21 @@ impl Vm {
         }
         let _ = callee;
 
+        vm_trace!(
+            "call_bytecode: dispatching sub_idx={} n_regs={} n_args={} arrow={}",
+            sub_idx,
+            sub.n_registers,
+            sub.n_args,
+            sub.is_arrow
+        );
         let result = self.dispatch();
         self.native_call_depth -= 1;
 
+        vm_trace!("call_bytecode: restoring state pc={} result={:?}", saved.pc, result.as_ref().ok());
         self.regs = *saved.regs;
         self.pc = saved.pc;
         self.bytecode = saved.bytecode;
-        self.constants = saved.constants;
+        self.active_immutables = saved.active_immutables;
         self.active_reg_limit = saved.active_reg_limit;
         self.root_reg_limit = saved.root_reg_limit;
         self.try_stack = saved.try_stack;
@@ -86,24 +104,32 @@ impl Vm {
         self.exception_value = saved.exception_value;
         self.pending_exception = saved.pending_exception;
         self.pending_error_kind = saved.pending_error_kind;
-        self.for_in_iters = saved.for_in_iters;
-        self.for_of_iters = saved.for_of_iters;
-        self.last_for_of_result = saved.last_for_of_result;
+        self.iters.for_in_iters = saved.for_in_iters;
+        self.iters.for_of_iters = saved.for_of_iters;
+        self.iters.last_for_of_result = saved.last_for_of_result;
         self.saved_bytecode_stack = saved.saved_bytecode_stack;
-        self.saved_constants_stack = saved.saved_constants_stack;
+        self.saved_immutables_stack = saved.saved_immutables_stack;
+        self.save_stack = saved.save_stack;
 
         result
     }
 
     pub(crate) fn restore_frame(&mut self, frame: CallFrame) {
+        vm_trace!(
+            "restore_frame: return_addr={} caller_reg_limit={}",
+            frame.return_addr,
+            frame.caller_reg_limit
+        );
         if let Some(saved_bc) = self.saved_bytecode_stack.pop() {
             self.bytecode = saved_bc;
         }
-        if let Some(saved_consts) = self.saved_constants_stack.pop() {
-            self.constants = saved_consts;
+        if let Some(saved_imm) = self.saved_immutables_stack.pop() {
+            self.active_immutables = saved_imm;
         }
-        let restore_len = frame.saved_regs.len();
-        self.regs[..restore_len].copy_from_slice(&frame.saved_regs);
+        let offset = frame.saved_reg_offset as usize;
+        let len = frame.caller_reg_limit as usize;
+        self.regs[..len].copy_from_slice(&self.save_stack[offset..offset + len]);
+        self.save_stack.truncate(offset);
         self.regs[254] = frame.saved_this;
         self.regs[255] = frame.saved_new_target;
         self.active_reg_limit = frame.caller_reg_limit;
@@ -111,58 +137,39 @@ impl Vm {
     }
 
     pub fn rerun(&mut self) -> Result<JsValue, String> {
+        vm_info!("rerun: clearing IC caches");
         self.clear_execution_state();
         self.active_reg_limit = self.root_reg_limit;
-        self.clear_ic_caches();
+        crate::ic_helper::clear_ic_caches(&mut self.bytecode);
         self.dispatch()
     }
 
-    fn clear_ic_caches(&mut self) {
-        let mut i = 0;
-        while i < self.bytecode.len() {
-            let op = opcode::opcode(self.bytecode[i]);
-            if op.has_ic_ext_words() {
-                if i + 3 < self.bytecode.len() {
-                    self.bytecode[i + 1] = 0;
-                    self.bytecode[i + 2] = 0;
-                    self.bytecode[i + 3] = 0;
-                }
-                i += 4;
-            } else {
-                i += 1;
-            }
-        }
-    }
-
     pub fn run(&mut self, module: &CompiledModule) -> Result<JsValue, String> {
+        vm_debug!("run: starting bytecode execution, {} instructions", module.bytecode.len());
         self.clear_execution_state();
-        self.sub_modules = module.sub_modules.clone();
-        self.constants = self.convert_constants(&module.constants).map_err(String::from)?;
-        self.sub_module_constants = vec![Vec::new(); self.sub_modules.len()];
+        self.sub_modules = Arc::new(module.sub_modules.clone());
+        // Per-run convert-once cache: slot 0 = top module, slot sub_idx+1 = sub_modules[sub_idx].
+        self.immutables_cache = (0..=self.sub_modules.len()).map(|_| OnceLock::new()).collect();
         self.bytecode = module.bytecode.clone();
+        self.activate_immutables(0, &module.constants);
         self.root_reg_limit = module.n_registers.max(1);
         self.active_reg_limit = self.root_reg_limit;
 
         for (name, reg) in &module.builtin_reg_map {
-            let si = self.kernel_core.string_forge().intern(name.as_str()).0;
+            let si = self.kernel_core.perm_interner().intern(name.as_str()).0;
             let global = self.session.global_object();
             if let Some(pos) = self.kernel_core.shape_forge().lookup_position(global.shape_id(), si) {
                 self.regs[*reg as usize] = global.get_prop_at(pos);
             }
         }
 
-        let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;
-        self.regs[254] = JsValue::from_js_object(global_ptr);
+        self.regs[254] = JsValue::undefined();
 
         self.dispatch()
     }
 
-    #[allow(dead_code)]
-    pub fn call_bytecode_func(&mut self, _callback_obj: &JsObject, _args_regs: &[u8]) -> Result<JsValue, String> {
-        Err("bytecode function calls not yet supported".into())
-    }
-
     pub(crate) fn unwind(&mut self) -> Result<(), String> {
+        vm_debug!("unwind: {} try handlers on stack", self.try_stack.len());
         while let Some(handler) = self.try_stack.pop() {
             while self.frames.len() > handler.frame_depth {
                 if let Some(frame) = self.frames.pop() {
@@ -170,6 +177,7 @@ impl Vm {
                 }
             }
             if let Some(finally_pc) = handler.finally_pc {
+                vm_trace!("unwind: entering finally at pc={}", finally_pc);
                 if self.pending_exception.is_none() {
                     self.pending_exception = self.exception_value.take();
                 }
@@ -178,6 +186,7 @@ impl Vm {
                 return Ok(());
             }
             if let Some(catch_pc) = handler.catch_pc {
+                vm_trace!("unwind: caught at pc={}", catch_pc);
                 let exc = self.exception_value.take().unwrap_or(JsValue::undefined());
                 self.regs[0] = exc;
                 self.pc = catch_pc;
@@ -195,6 +204,7 @@ impl Vm {
         } else {
             format!("uncaught {kind_str}: {exc_text}")
         };
+        vm_warn!("unwind: uncaught {}: {}", kind_str, exc_text);
         Err(msg)
     }
 }

@@ -10,8 +10,8 @@ impl Compiler {
         ctx.alloc_reg();
         ctx.projected_pc += 1; // LOAD_VAR result <- chain value
         ctx.projected_pc += 1; // JMP over short-circuit writer
-        ctx.label_map.insert(Label::TernaryElse(id), ctx.projected_pc);
+        ctx.labels.label_map.insert(Label::TernaryElse(id), ctx.projected_pc);
         ctx.projected_pc += 1; // LOAD_CONST undefined
-        ctx.label_map.insert(Label::TernaryEnd(id), ctx.projected_pc);
+        ctx.labels.label_map.insert(Label::TernaryEnd(id), ctx.projected_pc);
     }
 }

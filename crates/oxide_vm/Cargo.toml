@@ -9,7 +9,10 @@ description = "OxideJS - Register-based VM with epoch arena memory"
 [dependencies]
 oxide_bytecode = { path = "../oxide_bytecode" }
 oxide_kernel = { path = "../oxide_kernel" }
+oxide_runtime_api = { path = "../oxide_runtime_api" }
+oxide_builtins = { path = "../oxide_builtins" }
 oxide_types = { path = "../oxide_types" }
+oxide_log = { path = "../oxide_log" }
 bumpalo.workspace = true
 fast-float.workspace = true
 ryu.workspace = true
@@ -20,9 +23,30 @@ chrono.workspace = true
 indexmap.workspace = true
 smallvec.workspace = true
 unicode-normalization.workspace = true
-tracing.workspace = true
+rustc-hash.workspace = true
 
 [dev-dependencies]
 oxide_compiler = { path = "../oxide_compiler" }
 proptest.workspace = true
 oxide_parser = { path = "../oxide_parser" }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "dispatch"
+harness = false
+
+[[bench]]
+name = "property"
+harness = false
+
+[[bench]]
+name = "coercion"
+harness = false
+
+[[bench]]
+name = "gc_mark_sweep"
+harness = false
+
+[[bench]]
+name = "call"
+harness = false

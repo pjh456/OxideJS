@@ -1,7 +1,7 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::counter) fn count_conditional_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
+    fn count_conditional_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
         let Expression::ConditionalExpression(cond) = expr else {
             return;
         };
@@ -15,13 +15,13 @@ impl Compiler {
         ctx.alloc_reg(); // result register
         ctx.projected_pc += 1; // LOAD_VAR result <- consequent
         ctx.projected_pc += 1; // JMP to end
-        ctx.label_map.insert(else_label, ctx.projected_pc);
+        ctx.labels.label_map.insert(else_label, ctx.projected_pc);
         self.count_expression(&cond.alternate, ctx);
         ctx.projected_pc += 1; // LOAD_VAR result <- alternate
-        ctx.label_map.insert(end_label, ctx.projected_pc);
+        ctx.labels.label_map.insert(end_label, ctx.projected_pc);
     }
 
-    pub(in crate::counter) fn count_sequence_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
+    fn count_sequence_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
         let Expression::SequenceExpression(seq) = expr else {
             return;
         };
@@ -30,7 +30,7 @@ impl Compiler {
         }
     }
 
-    pub(in crate::counter) fn count_logical_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
+    fn count_logical_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
         let Expression::LogicalExpression(log) = expr else {
             return;
         };
@@ -49,7 +49,7 @@ impl Compiler {
             ctx.projected_pc += 1; // JMP_IF_FALSE, JMP_IF_TRUE, or JMP_IF_NULLISH
             if matches!(log.operator, LogicalOperator::Coalesce) {
                 ctx.projected_pc += 1; // JMP over RHS on non-nullish
-                ctx.label_map.insert(Label::TernaryElse(id), ctx.projected_pc);
+                ctx.labels.label_map.insert(Label::TernaryElse(id), ctx.projected_pc);
             }
             self.count_expression(&log.right, ctx);
             ctx.projected_pc += 1; // LOAD_VAR (overwrite)
@@ -58,7 +58,16 @@ impl Compiler {
                 LogicalOperator::Or => Label::TernaryElse(id),
                 LogicalOperator::Coalesce => Label::TernaryEnd(id),
             };
-            ctx.label_map.insert(skip_label, ctx.projected_pc);
+            ctx.labels.label_map.insert(skip_label, ctx.projected_pc);
+        }
+    }
+
+    pub(in crate::counter) fn count_conditional_chain(&self, expr: &Expression, ctx: &mut CompileCtx) {
+        match expr {
+            Expression::ConditionalExpression(_) => self.count_conditional_expression(expr, ctx),
+            Expression::SequenceExpression(_) => self.count_sequence_expression(expr, ctx),
+            Expression::LogicalExpression(_) => self.count_logical_expression(expr, ctx),
+            _ => {}
         }
     }
 }

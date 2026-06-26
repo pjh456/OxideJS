@@ -1,6 +1,6 @@
+use oxide_builtins::map::{map_clear, map_constructor as new_map, map_delete, map_get, map_has, map_set, map_size};
 use oxide_compiler::compiler::Compiler;
 use oxide_types::value::JsValue;
-use oxide_vm::builtins::map::{map_clear, map_constructor as new_map, map_delete, map_get, map_has, map_set, map_size};
 use oxide_vm::vm::Vm;
 
 fn eval(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
@@ -11,10 +11,7 @@ fn eval(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
 }
 
 fn str_val(vm: &Vm, val: JsValue) -> String {
-    vm.kernel_core()
-        .string_forge()
-        .lookup(val.as_string_index())
-        .unwrap_or_default()
+    vm.lookup_str(val).unwrap_or_default()
 }
 
 // -- direct native fn tests --

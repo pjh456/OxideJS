@@ -11,13 +11,17 @@ pub fn bind_iterator(core: &Arc<KernelCore>, session: &KernelSession, global: &m
     let function_proto = session.builtin_world().function_proto.as_ptr() as *mut JsObject;
     let mut iterator = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(function_proto)));
     iterator.set_function(true);
-    configure_native_constructor(&mut iterator, crate::builtins::iterator::iterator_constructor as *const (), 0);
+    configure_native_constructor(
+        &mut iterator,
+        oxide_builtins::iterator::iterator_constructor::<crate::vm::Vm> as *const (),
+        0,
+    );
 
     apply_binding_table(
         session.builtin_world(),
         &mut iterator,
         core,
-        &[("from", crate::builtins::iterator::iterator_from as *const (), 1)],
+        &[("from", oxide_builtins::iterator::iterator_from::<crate::vm::Vm> as *const (), 1)],
     );
 
     bind_global_value(core, global, "Iterator", JsValue::from_js_object(Box::into_raw(iterator)));

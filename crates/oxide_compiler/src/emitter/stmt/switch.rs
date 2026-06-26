@@ -1,9 +1,7 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::emitter) fn emit_switch_statement(
-        &self, stmt: &Statement, ctx: &mut CompileCtx,
-    ) -> Result<Option<u8>, String> {
+    fn emit_switch_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
         let Statement::SwitchStatement(sw) = stmt else {
             return Ok(None);
         };
@@ -46,5 +44,14 @@ impl Compiler {
 
         ctx.pop_switch();
         Ok(None)
+    }
+
+    pub(in crate::emitter) fn emit_switch_domain(
+        &self, stmt: &Statement, ctx: &mut CompileCtx,
+    ) -> Result<Option<u8>, String> {
+        match stmt {
+            Statement::SwitchStatement(_) => self.emit_switch_statement(stmt, ctx),
+            _ => Ok(None),
+        }
     }
 }

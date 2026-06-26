@@ -1,170 +1,196 @@
 use std::fmt;
 
-/// OpCode for register-based bytecode VM.
+/// Generate the `OpCode` enum plus its `TryFrom<u8>` and `Display` impls from a
+/// single table. Each row is `VARIANT = 0xXX => "DISPLAY"` — the byte value is
+/// the enum discriminant, the `TryFrom` match arm, and the `Display` name come
+/// from the same row, so the three tables can never drift. A new opcode is one
+/// row.
 ///
-/// Organized in groups of 16 for readability. Implemented opcodes have
-/// emitter support in the compiler; placeholder opcodes are reserved
-/// for future phases (IC, profiling, parallelization).
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(non_camel_case_types)]
-pub enum OpCode {
+/// Grouping comments (`// -- Arithmetic --`) are stripped by the lexer before
+/// macro expansion, so they can be interleaved freely between rows.
+macro_rules! define_opcodes {
+    ( $( $name:ident = $val:literal => $disp:literal ),+ $(,)? ) => {
+        /// OpCode for register-based bytecode VM.
+        ///
+        /// Organized in groups of 16 for readability. Implemented opcodes have
+        /// emitter support in the compiler; placeholder opcodes are reserved
+        /// for future phases (IC, profiling, parallelization).
+        #[repr(u8)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        #[allow(non_camel_case_types)]
+        pub enum OpCode {
+            $( $name = $val, )+
+        }
+
+        impl TryFrom<u8> for OpCode {
+            type Error = ();
+
+            fn try_from(value: u8) -> Result<Self, Self::Error> {
+                match value {
+                    $( $val => Ok(OpCode::$name), )+
+                    _ => Err(()),
+                }
+            }
+        }
+
+        impl fmt::Display for OpCode {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                let name = match self {
+                    $( OpCode::$name => $disp, )+
+                };
+                write!(f, "{name}")
+            }
+        }
+    };
+}
+
+define_opcodes! {
     // ── Arithmetic (0x00-0x0F) ──
-    ADD = 0x00,
-    SUB = 0x01,
-    MUL = 0x02,
-    DIV = 0x03,
-    MOD = 0x04,
-    NEG = 0x05,
-    COMPOUND_ADD = 0x06,
-    COMPOUND_SUB = 0x07,
-    COMPOUND_MUL = 0x08,
-    COMPOUND_DIV = 0x09,
-    COMPOUND_MOD = 0x0A,
-    COMPOUND_EXP = 0x0B,
+    ADD = 0x00 => "ADD",
+    SUB = 0x01 => "SUB",
+    MUL = 0x02 => "MUL",
+    DIV = 0x03 => "DIV",
+    MOD = 0x04 => "MOD",
+    NEG = 0x05 => "NEG",
+    COMPOUND_ADD = 0x06 => "COMPOUND_ADD",
+    COMPOUND_SUB = 0x07 => "COMPOUND_SUB",
+    COMPOUND_MUL = 0x08 => "COMPOUND_MUL",
+    COMPOUND_DIV = 0x09 => "COMPOUND_DIV",
+    COMPOUND_MOD = 0x0A => "COMPOUND_MOD",
+    COMPOUND_EXP = 0x0B => "COMPOUND_EXP",
 
     // -- Comparison (0x10-0x1F) --
-    EQ = 0x10,
-    NEQ = 0x11,
-    LT = 0x12,
-    GT = 0x13,
-    LTE = 0x14,
-    GTE = 0x15,
-    IN = 0x16,
-    NOT = 0x17,
-    AND = 0x18,
-    OR = 0x19,
-    STRICT_EQ = 0x1A,
-    STRICT_NEQ = 0x1C,
-    UNARY_PLUS = 0x1D,
+    EQ = 0x10 => "EQ",
+    NEQ = 0x11 => "NEQ",
+    LT = 0x12 => "LT",
+    GT = 0x13 => "GT",
+    LTE = 0x14 => "LTE",
+    GTE = 0x15 => "GTE",
+    IN = 0x16 => "IN",
+    NOT = 0x17 => "NOT",
+    AND = 0x18 => "AND",
+    OR = 0x19 => "OR",
+    STRICT_EQ = 0x1A => "STRICT_EQ",
+    STRICT_NEQ = 0x1C => "STRICT_NEQ",
+    UNARY_PLUS = 0x1D => "UNARY_PLUS",
 
     // -- Control Flow (0x20-0x2F) --
-    JMP = 0x20,
-    JMP_IF_FALSE = 0x21,
-    JMP_IF_TRUE = 0x22,
-    FOR_OF_INIT = 0x23,
-    FOR_OF_NEXT = 0x24,
+    JMP = 0x20 => "JMP",
+    JMP_IF_FALSE = 0x21 => "JMP_IF_FALSE",
+    JMP_IF_TRUE = 0x22 => "JMP_IF_TRUE",
+    FOR_OF_INIT = 0x23 => "FOR_OF_INIT",
+    FOR_OF_NEXT = 0x24 => "FOR_OF_NEXT",
 
     // -- Update (0x25-0x28) --
-    INC_PRE = 0x25,
-    INC_POST = 0x26,
-    DEC_PRE = 0x27,
-    DEC_POST = 0x28,
+    INC_PRE = 0x25 => "INC_PRE",
+    INC_POST = 0x26 => "INC_POST",
+    DEC_PRE = 0x27 => "DEC_PRE",
+    DEC_POST = 0x28 => "DEC_POST",
 
-    FOR_IN_INIT = 0x29,
-    FOR_IN_NEXT = 0x2A,
-    FOR_IN_DONE = 0x2B,
-    SWITCH_TABLE = 0x2C,
-    FOR_IN_CLEANUP = 0x2D,
+    FOR_IN_INIT = 0x29 => "FOR_IN_INIT",
+    FOR_IN_NEXT = 0x2A => "FOR_IN_NEXT",
+    FOR_IN_DONE = 0x2B => "FOR_IN_DONE",
+    SWITCH_TABLE = 0x2C => "SWITCH_TABLE",
+    FOR_IN_CLEANUP = 0x2D => "FOR_IN_CLEANUP",
 
     // -- Exception (0x2E-0x2F, 0x33-0x35) --
-    THROW = 0x2E,
-    TRY_BEGIN = 0x2F,
-    TRY_END = 0x33,
-    TRY_FINALLY_BEGIN = 0x34,
-    TRY_FINALLY_END = 0x35,
-    FOR_OF_DONE = 0x36,
-    FOR_OF_CLOSE = 0x37,
+    THROW = 0x2E => "THROW",
+    TRY_BEGIN = 0x2F => "TRY_BEGIN",
+    TRY_END = 0x33 => "TRY_END",
+    TRY_FINALLY_BEGIN = 0x34 => "TRY_FINALLY_BEGIN",
+    TRY_FINALLY_END = 0x35 => "TRY_FINALLY_END",
+    FOR_OF_DONE = 0x36 => "FOR_OF_DONE",
+    FOR_OF_CLOSE = 0x37 => "FOR_OF_CLOSE",
 
     // -- Template Literal (0x38) --
-    TEMPLATE_STR = 0x38,
+    TEMPLATE_STR = 0x38 => "TEMPLATE_STR",
 
     // -- Small Language Features (0x39-0x3B) --
-    DELETE_PROP_STATIC = 0x39,
-    DELETE_PROP_DYNAMIC = 0x3A,
-    INSTANCEOF = 0x3B,
-    REST_OBJECT = 0x3E,
+    DELETE_PROP_STATIC = 0x39 => "DELETE_PROP_STATIC",
+    DELETE_PROP_DYNAMIC = 0x3A => "DELETE_PROP_DYNAMIC",
+    INSTANCEOF = 0x3B => "INSTANCEOF",
+    REST_OBJECT = 0x3E => "REST_OBJECT",
 
     // -- Variable (0x30-0x32) --
-    LOAD_VAR = 0x30,
-    STORE_VAR = 0x31,
-    LOAD_CONST = 0x32,
+    LOAD_VAR = 0x30 => "LOAD_VAR",
+    STORE_VAR = 0x31 => "STORE_VAR",
+    LOAD_CONST = 0x32 => "LOAD_CONST",
 
     // -- Call (0x40-0x4F) --
-    CALL = 0x40,
-    RETURN = 0x41,
-    CALL_NATIVE = 0x42,
-    NEW_EXPRESSION = 0x43,
-    SUPER_CALL = 0x44,
-    SUPER_GET_PROP = 0x45,
-    SUPER_STATIC_GET_PROP = 0x46,
-    SET_HOME_OBJECT = 0x47,
-    DEFINE_ACCESSOR = 0x48,
+    CALL = 0x40 => "CALL",
+    RETURN = 0x41 => "RETURN",
+    CALL_NATIVE = 0x42 => "CALL_NATIVE",
+    NEW_EXPRESSION = 0x43 => "NEW_EXPRESSION",
+    SUPER_CALL = 0x44 => "SUPER_CALL",
+    SUPER_GET_PROP = 0x45 => "SUPER_GET_PROP",
+    SUPER_STATIC_GET_PROP = 0x46 => "SUPER_STATIC_GET_PROP",
+    SET_HOME_OBJECT = 0x47 => "SET_HOME_OBJECT",
+    DEFINE_ACCESSOR = 0x48 => "DEFINE_ACCESSOR",
+    CREATE_CLOSURE = 0x4A => "CREATE_CLOSURE",
+    CREATE_REGEXP = 0x4B => "CREATE_REGEXP",
 
     // ── Object Property (0x50-0x5F) ──
-    IC_GET_PROP = 0x50,
-    IC_SET_PROP = 0x51,
-    GET_PROP = 0x52,
-    GET_PROP_DYNAMIC = 0x53,
-    SET_PROP = 0x54,
-    SET_PROP_DYNAMIC = 0x55,
-    NEW_OBJECT = 0x56,
-    NEW_ARRAY = 0x57,
-    SET_ELEM = 0x58,
+    IC_GET_PROP = 0x50 => "IC_GET_PROP",
+    IC_SET_PROP = 0x51 => "IC_SET_PROP",
+    GET_PROP = 0x52 => "GET_PROP",
+    GET_PROP_DYNAMIC = 0x53 => "GET_PROP_DYNAMIC",
+    SET_PROP = 0x54 => "SET_PROP",
+    SET_PROP_DYNAMIC = 0x55 => "SET_PROP_DYNAMIC",
+    NEW_OBJECT = 0x56 => "NEW_OBJECT",
+    NEW_ARRAY = 0x57 => "NEW_ARRAY",
+    SET_ELEM = 0x58 => "SET_ELEM",
 
     // -- Member Update (0x59-0x62) --
-    MEMBER_INC = 0x59,
-    MEMBER_DEC = 0x5A,
-    DYN_MEMBER_INC = 0x5B,
-    DYN_MEMBER_DEC = 0x5C,
-    COMPOUND_MEMBER_ADD = 0x5D,
-    COMPOUND_MEMBER_SUB = 0x5E,
-    COMPOUND_MEMBER_MUL = 0x5F,
-    COMPOUND_MEMBER_DIV = 0x60,
-    COMPOUND_MEMBER_MOD = 0x61,
-    COMPOUND_MEMBER_EXP = 0x62,
+    MEMBER_INC = 0x59 => "MEMBER_INC",
+    MEMBER_DEC = 0x5A => "MEMBER_DEC",
+    DYN_MEMBER_INC = 0x5B => "DYN_MEMBER_INC",
+    DYN_MEMBER_DEC = 0x5C => "DYN_MEMBER_DEC",
+    COMPOUND_MEMBER_ADD = 0x5D => "COMPOUND_MEMBER_ADD",
+    COMPOUND_MEMBER_SUB = 0x5E => "COMPOUND_MEMBER_SUB",
+    COMPOUND_MEMBER_MUL = 0x5F => "COMPOUND_MEMBER_MUL",
+    COMPOUND_MEMBER_DIV = 0x60 => "COMPOUND_MEMBER_DIV",
+    COMPOUND_MEMBER_MOD = 0x61 => "COMPOUND_MEMBER_MOD",
+    COMPOUND_MEMBER_EXP = 0x62 => "COMPOUND_MEMBER_EXP",
 
     // -- Profiling - placeholders (0x63-0x6F) --
-    PROFILE_TYPE = 0x63,
-    PROFILE_SHAPE = 0x64,
-    PROFILE_BRANCH = 0x65,
-    PROFILE_CALL = 0x66,
+    PROFILE_TYPE = 0x63 => "PROFILE_TYPE",
+    PROFILE_SHAPE = 0x64 => "PROFILE_SHAPE",
+    PROFILE_BRANCH = 0x65 => "PROFILE_BRANCH",
+    PROFILE_CALL = 0x66 => "PROFILE_CALL",
 
     // ── Parallel — placeholders (0x70-0x7F) ──
-    FORK = 0x70,
-    JOIN = 0x71,
-    GET_PRIVATE = 0x72,
-    SET_PRIVATE = 0x73,
-    INIT_PRIVATE = 0x74,
-    PRIVATE_BRAND_IN = 0x75,
+    FORK = 0x70 => "FORK",
+    JOIN = 0x71 => "JOIN",
+    GET_PRIVATE = 0x72 => "GET_PRIVATE",
+    SET_PRIVATE = 0x73 => "SET_PRIVATE",
+    INIT_PRIVATE = 0x74 => "INIT_PRIVATE",
+    PRIVATE_BRAND_IN = 0x75 => "PRIVATE_BRAND_IN",
 
     // -- Bitwise (0x80-0x8F) --
-    BIT_AND = 0x80,
-    BIT_OR = 0x81,
-    BIT_XOR = 0x82,
-    SHL = 0x83,
-    SHR = 0x84,
-    USHR = 0x85,
-    BIT_NOT = 0x86,
-    COMPOUND_AND = 0x88,
-    COMPOUND_OR = 0x89,
-    COMPOUND_XOR = 0x8A,
-    COMPOUND_SHL = 0x8B,
-    COMPOUND_SHR = 0x8C,
-    COMPOUND_USHR = 0x8D,
-    NULLISH = 0x8E,
-    JMP_IF_NULLISH = 0x8F,
+    BIT_AND = 0x80 => "BIT_AND",
+    BIT_OR = 0x81 => "BIT_OR",
+    BIT_XOR = 0x82 => "BIT_XOR",
+    SHL = 0x83 => "SHL",
+    SHR = 0x84 => "SHR",
+    USHR = 0x85 => "USHR",
+    BIT_NOT = 0x86 => "BIT_NOT",
+    COMPOUND_AND = 0x88 => "COMPOUND_AND",
+    COMPOUND_OR = 0x89 => "COMPOUND_OR",
+    COMPOUND_XOR = 0x8A => "COMPOUND_XOR",
+    COMPOUND_SHL = 0x8B => "COMPOUND_SHL",
+    COMPOUND_SHR = 0x8C => "COMPOUND_SHR",
+    COMPOUND_USHR = 0x8D => "COMPOUND_USHR",
+    NULLISH = 0x8E => "NULLISH",
+    JMP_IF_NULLISH = 0x8F => "JMP_IF_NULLISH",
 
     // ── Misc (0xF0-0xFF) ──
-    NOP = 0xF0,
-    HALT = 0xF1,
-    TYPEOF = 0xF2,
-    VOID = 0xF3,
+    NOP = 0xF0 => "NOP",
+    HALT = 0xF1 => "HALT",
+    TYPEOF = 0xF2 => "TYPEOF",
+    VOID = 0xF3 => "VOID",
 }
 
 impl OpCode {
-    pub fn is_implemented(&self) -> bool {
-        !matches!(
-            self,
-            OpCode::PROFILE_TYPE
-                | OpCode::PROFILE_SHAPE
-                | OpCode::PROFILE_BRANCH
-                | OpCode::PROFILE_CALL
-                | OpCode::FORK
-                | OpCode::JOIN
-        )
-    }
-
     pub fn has_ic_ext_words(&self) -> bool {
         matches!(
             self,
@@ -179,246 +205,6 @@ impl OpCode {
                 | OpCode::COMPOUND_MEMBER_MOD
                 | OpCode::COMPOUND_MEMBER_EXP
         )
-    }
-}
-
-impl TryFrom<u8> for OpCode {
-    type Error = ();
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0x00 => Ok(OpCode::ADD),
-            0x01 => Ok(OpCode::SUB),
-            0x02 => Ok(OpCode::MUL),
-            0x03 => Ok(OpCode::DIV),
-            0x04 => Ok(OpCode::MOD),
-            0x05 => Ok(OpCode::NEG),
-            0x06 => Ok(OpCode::COMPOUND_ADD),
-            0x07 => Ok(OpCode::COMPOUND_SUB),
-            0x08 => Ok(OpCode::COMPOUND_MUL),
-            0x09 => Ok(OpCode::COMPOUND_DIV),
-            0x0A => Ok(OpCode::COMPOUND_MOD),
-            0x0B => Ok(OpCode::COMPOUND_EXP),
-            0x10 => Ok(OpCode::EQ),
-            0x11 => Ok(OpCode::NEQ),
-            0x12 => Ok(OpCode::LT),
-            0x13 => Ok(OpCode::GT),
-            0x14 => Ok(OpCode::LTE),
-            0x15 => Ok(OpCode::GTE),
-            0x16 => Ok(OpCode::IN),
-            0x17 => Ok(OpCode::NOT),
-            0x18 => Ok(OpCode::AND),
-            0x19 => Ok(OpCode::OR),
-            0x1A => Ok(OpCode::STRICT_EQ),
-            0x1C => Ok(OpCode::STRICT_NEQ),
-            0x1D => Ok(OpCode::UNARY_PLUS),
-            0x20 => Ok(OpCode::JMP),
-            0x21 => Ok(OpCode::JMP_IF_FALSE),
-            0x22 => Ok(OpCode::JMP_IF_TRUE),
-            0x23 => Ok(OpCode::FOR_OF_INIT),
-            0x24 => Ok(OpCode::FOR_OF_NEXT),
-            0x25 => Ok(OpCode::INC_PRE),
-            0x26 => Ok(OpCode::INC_POST),
-            0x27 => Ok(OpCode::DEC_PRE),
-            0x28 => Ok(OpCode::DEC_POST),
-            0x29 => Ok(OpCode::FOR_IN_INIT),
-            0x2A => Ok(OpCode::FOR_IN_NEXT),
-            0x2B => Ok(OpCode::FOR_IN_DONE),
-            0x2C => Ok(OpCode::SWITCH_TABLE),
-            0x2D => Ok(OpCode::FOR_IN_CLEANUP),
-            0x2E => Ok(OpCode::THROW),
-            0x2F => Ok(OpCode::TRY_BEGIN),
-            0x30 => Ok(OpCode::LOAD_VAR),
-            0x31 => Ok(OpCode::STORE_VAR),
-            0x32 => Ok(OpCode::LOAD_CONST),
-            0x33 => Ok(OpCode::TRY_END),
-            0x34 => Ok(OpCode::TRY_FINALLY_BEGIN),
-            0x35 => Ok(OpCode::TRY_FINALLY_END),
-            0x36 => Ok(OpCode::FOR_OF_DONE),
-            0x37 => Ok(OpCode::FOR_OF_CLOSE),
-            0x38 => Ok(OpCode::TEMPLATE_STR),
-            0x39 => Ok(OpCode::DELETE_PROP_STATIC),
-            0x3A => Ok(OpCode::DELETE_PROP_DYNAMIC),
-            0x3B => Ok(OpCode::INSTANCEOF),
-            0x3E => Ok(OpCode::REST_OBJECT),
-            0x40 => Ok(OpCode::CALL),
-            0x41 => Ok(OpCode::RETURN),
-            0x42 => Ok(OpCode::CALL_NATIVE),
-            0x43 => Ok(OpCode::NEW_EXPRESSION),
-            0x44 => Ok(OpCode::SUPER_CALL),
-            0x45 => Ok(OpCode::SUPER_GET_PROP),
-            0x46 => Ok(OpCode::SUPER_STATIC_GET_PROP),
-            0x47 => Ok(OpCode::SET_HOME_OBJECT),
-            0x48 => Ok(OpCode::DEFINE_ACCESSOR),
-            0x50 => Ok(OpCode::IC_GET_PROP),
-            0x51 => Ok(OpCode::IC_SET_PROP),
-            0x52 => Ok(OpCode::GET_PROP),
-            0x53 => Ok(OpCode::GET_PROP_DYNAMIC),
-            0x54 => Ok(OpCode::SET_PROP),
-            0x55 => Ok(OpCode::SET_PROP_DYNAMIC),
-            0x56 => Ok(OpCode::NEW_OBJECT),
-            0x57 => Ok(OpCode::NEW_ARRAY),
-            0x58 => Ok(OpCode::SET_ELEM),
-            0x59 => Ok(OpCode::MEMBER_INC),
-            0x5A => Ok(OpCode::MEMBER_DEC),
-            0x5B => Ok(OpCode::DYN_MEMBER_INC),
-            0x5C => Ok(OpCode::DYN_MEMBER_DEC),
-            0x5D => Ok(OpCode::COMPOUND_MEMBER_ADD),
-            0x5E => Ok(OpCode::COMPOUND_MEMBER_SUB),
-            0x5F => Ok(OpCode::COMPOUND_MEMBER_MUL),
-            0x60 => Ok(OpCode::COMPOUND_MEMBER_DIV),
-            0x61 => Ok(OpCode::COMPOUND_MEMBER_MOD),
-            0x62 => Ok(OpCode::COMPOUND_MEMBER_EXP),
-            0x63 => Ok(OpCode::PROFILE_TYPE),
-            0x64 => Ok(OpCode::PROFILE_SHAPE),
-            0x65 => Ok(OpCode::PROFILE_BRANCH),
-            0x66 => Ok(OpCode::PROFILE_CALL),
-            0x70 => Ok(OpCode::FORK),
-            0x71 => Ok(OpCode::JOIN),
-            0x72 => Ok(OpCode::GET_PRIVATE),
-            0x73 => Ok(OpCode::SET_PRIVATE),
-            0x74 => Ok(OpCode::INIT_PRIVATE),
-            0x75 => Ok(OpCode::PRIVATE_BRAND_IN),
-            0x80 => Ok(OpCode::BIT_AND),
-            0x81 => Ok(OpCode::BIT_OR),
-            0x82 => Ok(OpCode::BIT_XOR),
-            0x83 => Ok(OpCode::SHL),
-            0x84 => Ok(OpCode::SHR),
-            0x85 => Ok(OpCode::USHR),
-            0x86 => Ok(OpCode::BIT_NOT),
-            0x88 => Ok(OpCode::COMPOUND_AND),
-            0x89 => Ok(OpCode::COMPOUND_OR),
-            0x8A => Ok(OpCode::COMPOUND_XOR),
-            0x8B => Ok(OpCode::COMPOUND_SHL),
-            0x8C => Ok(OpCode::COMPOUND_SHR),
-            0x8D => Ok(OpCode::COMPOUND_USHR),
-            0x8E => Ok(OpCode::NULLISH),
-            0x8F => Ok(OpCode::JMP_IF_NULLISH),
-            0xF0 => Ok(OpCode::NOP),
-            0xF1 => Ok(OpCode::HALT),
-            0xF2 => Ok(OpCode::TYPEOF),
-            0xF3 => Ok(OpCode::VOID),
-            _ => Err(()),
-        }
-    }
-}
-
-impl fmt::Display for OpCode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let name = match self {
-            OpCode::ADD => "ADD",
-            OpCode::SUB => "SUB",
-            OpCode::MUL => "MUL",
-            OpCode::DIV => "DIV",
-            OpCode::MOD => "MOD",
-            OpCode::NEG => "NEG",
-            OpCode::COMPOUND_ADD => "COMPOUND_ADD",
-            OpCode::COMPOUND_SUB => "COMPOUND_SUB",
-            OpCode::COMPOUND_MUL => "COMPOUND_MUL",
-            OpCode::COMPOUND_DIV => "COMPOUND_DIV",
-            OpCode::COMPOUND_MOD => "COMPOUND_MOD",
-            OpCode::COMPOUND_EXP => "COMPOUND_EXP",
-            OpCode::EQ => "EQ",
-            OpCode::NEQ => "NEQ",
-            OpCode::LT => "LT",
-            OpCode::GT => "GT",
-            OpCode::LTE => "LTE",
-            OpCode::GTE => "GTE",
-            OpCode::IN => "IN",
-            OpCode::NOT => "NOT",
-            OpCode::AND => "AND",
-            OpCode::OR => "OR",
-            OpCode::STRICT_EQ => "STRICT_EQ",
-            OpCode::STRICT_NEQ => "STRICT_NEQ",
-            OpCode::UNARY_PLUS => "UNARY_PLUS",
-            OpCode::JMP => "JMP",
-            OpCode::JMP_IF_FALSE => "JMP_IF_FALSE",
-            OpCode::JMP_IF_TRUE => "JMP_IF_TRUE",
-            OpCode::FOR_OF_INIT => "FOR_OF_INIT",
-            OpCode::FOR_OF_NEXT => "FOR_OF_NEXT",
-            OpCode::INC_PRE => "INC_PRE",
-            OpCode::INC_POST => "INC_POST",
-            OpCode::DEC_PRE => "DEC_PRE",
-            OpCode::DEC_POST => "DEC_POST",
-            OpCode::FOR_IN_INIT => "FOR_IN_INIT",
-            OpCode::FOR_IN_NEXT => "FOR_IN_NEXT",
-            OpCode::FOR_IN_DONE => "FOR_IN_DONE",
-            OpCode::SWITCH_TABLE => "SWITCH_TABLE",
-            OpCode::FOR_IN_CLEANUP => "FOR_IN_CLEANUP",
-            OpCode::THROW => "THROW",
-            OpCode::TRY_BEGIN => "TRY_BEGIN",
-            OpCode::TRY_END => "TRY_END",
-            OpCode::TRY_FINALLY_BEGIN => "TRY_FINALLY_BEGIN",
-            OpCode::TRY_FINALLY_END => "TRY_FINALLY_END",
-            OpCode::FOR_OF_DONE => "FOR_OF_DONE",
-            OpCode::FOR_OF_CLOSE => "FOR_OF_CLOSE",
-            OpCode::TEMPLATE_STR => "TEMPLATE_STR",
-            OpCode::DELETE_PROP_STATIC => "DELETE_PROP_STATIC",
-            OpCode::DELETE_PROP_DYNAMIC => "DELETE_PROP_DYNAMIC",
-            OpCode::INSTANCEOF => "INSTANCEOF",
-            OpCode::REST_OBJECT => "REST_OBJECT",
-            OpCode::LOAD_VAR => "LOAD_VAR",
-            OpCode::STORE_VAR => "STORE_VAR",
-            OpCode::LOAD_CONST => "LOAD_CONST",
-            OpCode::CALL => "CALL",
-            OpCode::RETURN => "RETURN",
-            OpCode::CALL_NATIVE => "CALL_NATIVE",
-            OpCode::NEW_EXPRESSION => "NEW_EXPRESSION",
-            OpCode::SUPER_CALL => "SUPER_CALL",
-            OpCode::SUPER_GET_PROP => "SUPER_GET_PROP",
-            OpCode::SUPER_STATIC_GET_PROP => "SUPER_STATIC_GET_PROP",
-            OpCode::SET_HOME_OBJECT => "SET_HOME_OBJECT",
-            OpCode::DEFINE_ACCESSOR => "DEFINE_ACCESSOR",
-            OpCode::IC_GET_PROP => "IC_GET_PROP",
-            OpCode::IC_SET_PROP => "IC_SET_PROP",
-            OpCode::GET_PROP => "GET_PROP",
-            OpCode::GET_PROP_DYNAMIC => "GET_PROP_DYNAMIC",
-            OpCode::SET_PROP => "SET_PROP",
-            OpCode::SET_PROP_DYNAMIC => "SET_PROP_DYNAMIC",
-            OpCode::NEW_OBJECT => "NEW_OBJECT",
-            OpCode::NEW_ARRAY => "NEW_ARRAY",
-            OpCode::SET_ELEM => "SET_ELEM",
-            OpCode::MEMBER_INC => "MEMBER_INC",
-            OpCode::MEMBER_DEC => "MEMBER_DEC",
-            OpCode::DYN_MEMBER_INC => "DYN_MEMBER_INC",
-            OpCode::DYN_MEMBER_DEC => "DYN_MEMBER_DEC",
-            OpCode::COMPOUND_MEMBER_ADD => "COMPOUND_MEMBER_ADD",
-            OpCode::COMPOUND_MEMBER_SUB => "COMPOUND_MEMBER_SUB",
-            OpCode::COMPOUND_MEMBER_MUL => "COMPOUND_MEMBER_MUL",
-            OpCode::COMPOUND_MEMBER_DIV => "COMPOUND_MEMBER_DIV",
-            OpCode::COMPOUND_MEMBER_MOD => "COMPOUND_MEMBER_MOD",
-            OpCode::COMPOUND_MEMBER_EXP => "COMPOUND_MEMBER_EXP",
-            OpCode::PROFILE_TYPE => "PROFILE_TYPE",
-            OpCode::PROFILE_SHAPE => "PROFILE_SHAPE",
-            OpCode::PROFILE_BRANCH => "PROFILE_BRANCH",
-            OpCode::PROFILE_CALL => "PROFILE_CALL",
-            OpCode::FORK => "FORK",
-            OpCode::JOIN => "JOIN",
-            OpCode::GET_PRIVATE => "GET_PRIVATE",
-            OpCode::SET_PRIVATE => "SET_PRIVATE",
-            OpCode::INIT_PRIVATE => "INIT_PRIVATE",
-            OpCode::PRIVATE_BRAND_IN => "PRIVATE_BRAND_IN",
-            OpCode::BIT_AND => "BIT_AND",
-            OpCode::BIT_OR => "BIT_OR",
-            OpCode::BIT_XOR => "BIT_XOR",
-            OpCode::SHL => "SHL",
-            OpCode::SHR => "SHR",
-            OpCode::USHR => "USHR",
-            OpCode::BIT_NOT => "BIT_NOT",
-            OpCode::COMPOUND_AND => "COMPOUND_AND",
-            OpCode::COMPOUND_OR => "COMPOUND_OR",
-            OpCode::COMPOUND_XOR => "COMPOUND_XOR",
-            OpCode::COMPOUND_SHL => "COMPOUND_SHL",
-            OpCode::COMPOUND_SHR => "COMPOUND_SHR",
-            OpCode::COMPOUND_USHR => "COMPOUND_USHR",
-            OpCode::NULLISH => "NULLISH",
-            OpCode::JMP_IF_NULLISH => "JMP_IF_NULLISH",
-            OpCode::NOP => "NOP",
-            OpCode::HALT => "HALT",
-            OpCode::TYPEOF => "TYPEOF",
-            OpCode::VOID => "VOID",
-        };
-        write!(f, "{name}")
     }
 }
 
@@ -492,4 +278,35 @@ pub fn encode_try_finally_begin(offset: i16) -> Instr {
     let lo = (offset as u16 & 0xFF) as u8;
     let hi = ((offset as u16 >> 8) & 0xFF) as u8;
     encode(OpCode::TRY_FINALLY_BEGIN, 0, lo, hi)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opcode_table_is_byte_identical() {
+        for byte in 0u8..=u8::MAX {
+            if let Ok(op) = OpCode::try_from(byte) {
+                assert_eq!(op as u8, byte, "discriminant mismatch for 0x{byte:02X}");
+                assert!(!op.to_string().is_empty(), "empty Display for 0x{byte:02X}");
+            }
+        }
+
+        assert_eq!(OpCode::ADD as u8, 0x00);
+        assert_eq!(OpCode::STRICT_EQ as u8, 0x1A);
+        assert_eq!(OpCode::JMP_IF_NULLISH as u8, 0x8F);
+        assert_eq!(OpCode::VOID as u8, 0xF3);
+        assert_eq!(OpCode::ADD.to_string(), "ADD");
+        assert_eq!(OpCode::COMPOUND_MEMBER_EXP.to_string(), "COMPOUND_MEMBER_EXP");
+
+        assert!(OpCode::try_from(0x1B).is_err());
+        assert!(OpCode::try_from(0xFF).is_err());
+
+        let ic_count = (0u8..=u8::MAX)
+            .filter_map(|b| OpCode::try_from(b).ok())
+            .filter(OpCode::has_ic_ext_words)
+            .count();
+        assert_eq!(ic_count, 10);
+    }
 }

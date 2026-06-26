@@ -4,6 +4,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use crate::vm::Vm;
+use crate::{vm_debug, vm_trace, vm_warn};
 use oxide_kernel::kernel::KernelCore;
 
 struct VmPoolInner {
@@ -15,8 +16,6 @@ pub struct VmPool {
     kernel_core: Arc<KernelCore>,
     inner: Mutex<VmPoolInner>,
     condvar: Condvar,
-    #[allow(dead_code)]
-    min_size: usize,
     max_size: Option<usize>,
 }
 
@@ -24,34 +23,19 @@ pub struct VmGuard {
     vm: Option<Vm>,
     pool: Arc<VmPool>,
     dirty: bool,
-    interned_strings: Vec<u32>,
 }
 
 impl VmPool {
-    pub fn new(
-        kernel_core: Arc<KernelCore>, #[allow(dead_code)] min_size: usize, max_size: Option<usize>,
-    ) -> Arc<Self> {
-        let pool = Arc::new(Self {
+    pub fn new(kernel_core: Arc<KernelCore>, _min_size: usize, max_size: Option<usize>) -> Arc<Self> {
+        Arc::new(Self {
             kernel_core,
             inner: Mutex::new(VmPoolInner {
-                available: Vec::with_capacity(min_size),
+                available: Vec::new(),
                 total_count: 0,
             }),
             condvar: Condvar::new(),
-            min_size,
             max_size,
-        });
-
-        {
-            let mut inner = pool.inner.lock().unwrap();
-            for _ in 0..min_size {
-                let vm = Self::new_vm(&pool.kernel_core);
-                inner.available.push(vm);
-                inner.total_count += 1;
-            }
-        }
-
-        pool
+        })
     }
 
     fn new_vm(core: &Arc<KernelCore>) -> Vm {
@@ -67,11 +51,11 @@ impl VmPool {
             let mut inner = self.inner.lock().unwrap();
 
             if let Some(vm) = inner.available.pop() {
+                vm_trace!("pool: reused vm, {} available", inner.available.len());
                 return VmGuard {
                     vm: Some(vm),
                     pool: Arc::clone(self),
                     dirty: false,
-                    interned_strings: Vec::new(),
                 };
             }
 
@@ -82,19 +66,20 @@ impl VmPool {
 
             if can_grow {
                 inner.total_count += 1;
+                vm_debug!("pool: growing to {} vms", inner.total_count);
                 drop(inner);
                 let vm = Self::new_vm(&self.kernel_core);
                 return VmGuard {
                     vm: Some(vm),
                     pool: Arc::clone(self),
                     dirty: false,
-                    interned_strings: Vec::new(),
                 };
             }
 
             let (guard, wait) = self.condvar.wait_timeout(inner, Duration::from_secs(5)).unwrap();
             inner = guard;
             if wait.timed_out() {
+                vm_warn!("pool: wait timeout, force-growing to {} vms", inner.total_count + 1);
                 inner.total_count += 1;
                 drop(inner);
                 let vm = Self::new_vm(&self.kernel_core);
@@ -102,7 +87,6 @@ impl VmPool {
                     vm: Some(vm),
                     pool: Arc::clone(self),
                     dirty: false,
-                    interned_strings: Vec::new(),
                 };
             }
         }
@@ -117,10 +101,6 @@ impl VmGuard {
     pub fn vm_mut(&mut self) -> &mut Vm {
         self.vm.as_mut().expect("VmGuard has no VM")
     }
-
-    pub fn mark_dirty(&mut self) {
-        self.dirty = true;
-    }
 }
 
 impl Drop for VmGuard {
@@ -132,15 +112,13 @@ impl Drop for VmGuard {
         let mut inner = self.pool.inner.lock().unwrap();
 
         if self.dirty {
+            vm_debug!("pool: discarding dirty vm");
             let new_vm = self.pool.replace_vm();
             inner.available.push(new_vm);
         } else {
-            for &idx in &self.interned_strings {
-                self.pool.kernel_core.string_forge().decref(idx);
-            }
-
             vm.full_reset();
             inner.available.push(vm);
+            vm_trace!("pool: recycled clean vm, {} available", inner.available.len());
         }
 
         self.pool.condvar.notify_one();

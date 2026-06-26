@@ -1,6 +1,6 @@
+use oxide_builtins::array::{array_constructor, array_push};
 use oxide_compiler::compiler::Compiler;
 use oxide_types::value::JsValue;
-use oxide_vm::builtins::array::{array_constructor, array_push};
 use oxide_vm::vm::Vm;
 
 fn eval(source: &str) -> Result<(Vm, JsValue), String> {
@@ -13,10 +13,7 @@ fn eval(source: &str) -> Result<(Vm, JsValue), String> {
 }
 
 fn to_str(vm: &Vm, val: JsValue) -> String {
-    vm.kernel_core()
-        .string_forge()
-        .lookup(val.as_string_index())
-        .unwrap_or_default()
+    vm.lookup_str(val).unwrap_or_default()
 }
 
 fn assert_num_eq(val: JsValue, expected: f64) {

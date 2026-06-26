@@ -1,7 +1,7 @@
 use super::*;
 
 impl Compiler {
-    pub(in crate::counter) fn count_assignment_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
+    fn count_assignment_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
         let Expression::AssignmentExpression(assign) = expr else {
             return;
         };
@@ -72,7 +72,7 @@ impl Compiler {
         self.count_expression(right, ctx);
         ctx.count_ic_set_with_ext(); // IC_SET_PROP + 3 ext
         ctx.projected_pc += 1; // LOAD_VAR result <- rhs
-        ctx.label_map.insert(Label::TernaryEnd(id), ctx.projected_pc);
+        ctx.labels.label_map.insert(Label::TernaryEnd(id), ctx.projected_pc);
     }
 
     fn count_computed_member_logical_assignment(
@@ -88,7 +88,7 @@ impl Compiler {
         self.count_expression(right, ctx);
         ctx.projected_pc += 1; // SET_PROP_DYNAMIC
         ctx.projected_pc += 1; // LOAD_VAR result <- rhs
-        ctx.label_map.insert(Label::TernaryEnd(id), ctx.projected_pc);
+        ctx.labels.label_map.insert(Label::TernaryEnd(id), ctx.projected_pc);
     }
 
     fn count_identifier_logical_assignment(
@@ -101,6 +101,10 @@ impl Compiler {
         self.count_expression(right, ctx);
         ctx.projected_pc += 1; // STORE_VAR
         ctx.projected_pc += 1; // LOAD_VAR result <- rhs
-        ctx.label_map.insert(Label::TernaryEnd(id), ctx.projected_pc);
+        ctx.labels.label_map.insert(Label::TernaryEnd(id), ctx.projected_pc);
+    }
+
+    pub(in crate::counter) fn count_assignment(&self, expr: &Expression, ctx: &mut CompileCtx) {
+        self.count_assignment_expression(expr, ctx);
     }
 }

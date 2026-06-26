@@ -9,10 +9,7 @@ fn eval(vm: &mut Vm, source: &str) -> Result<oxide_types::value::JsValue, String
 }
 
 fn str_val(vm: &Vm, val: oxide_types::value::JsValue) -> String {
-    vm.kernel_core()
-        .string_forge()
-        .lookup(val.as_string_index())
-        .unwrap_or_default()
+    vm.lookup_str(val).unwrap_or_default()
 }
 
 // -- static methods --

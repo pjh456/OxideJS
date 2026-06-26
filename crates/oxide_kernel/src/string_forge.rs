@@ -1,142 +1,141 @@
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::RwLock;
 
-use hashbrown::hash_map::DefaultHashBuilder as FxBuildHasher;
-use hashbrown::HashMap;
+use dashmap::DashMap;
+use oxide_types::object::JsString;
+use rustc_hash::FxHasher;
 
 use crate::{kernel_debug, kernel_trace};
 
-pub fn hash16(s: &str) -> u16 {
-    let mut h = rustc_hash::FxHasher::default();
+/// Full 64-bit content hash. Replaces the old 16-bit `hash16` so the interner's
+/// hash→candidate map has negligible collision risk.
+fn hash64(s: &str) -> u64 {
+    let mut h = FxHasher::default();
     s.hash(&mut h);
-    (h.finish() >> 48) as u16
+    h.finish()
 }
 
-pub struct StringEntry {
-    pub data: String,
-    pub ref_count: AtomicU32,
-    pub hash: u16,
+/// One interned key. `data` is a leaked `&'static str` — permanent keys are never
+/// freed (append-only by design), so the leak is the storage model, not a bug.
+#[derive(Clone, Copy)]
+struct PermEntry {
+    data: &'static str,
+    hash: u64,
 }
 
-struct StringForgeInner {
-    map: HashMap<String, u32, FxBuildHasher>,
-    entries: Vec<StringEntry>,
-}
-
-/// Global string interning pool shared by all VMs.
+/// Append-only, never-move, lock-free-read key interner shared by all VMs.
 ///
-/// Concurrency model:
-/// `StringForge` keeps a single `RwLock` around the interner state.
-/// - `lookup()` takes a shared read lock and scales across readers.
-/// - `intern()` uses a read-check then write-check pattern to keep hot-path hits cheap.
-/// - New string insertion is serialized, which matches the workload here: most strings
-///   are interned early and later accesses are dominated by reads.
-pub struct StringForge {
-    inner: RwLock<StringForgeInner>,
+/// Replaces the old ref-counted `StringForge` (and its buggy `maybe_sweep`
+/// renumber path). Keys (property names, method names) are interned once and
+/// addressed by a stable `u32` id that the shape/IC system keys on. Runtime
+/// string *values* are no longer interned here — they are heap `JsString`
+/// pointers (see `oxide_vm::Vm::new_string`).
+///
+/// Concurrency:
+/// - `hash_map` (`DashMap`) gives sharded, lock-free reads of the hash→candidates
+///   mapping on the hot intern path.
+/// - `entries` sits behind a short `RwLock`; reads copy out a `&'static str`
+///   (Copy) so the borrow outlives the guard.
+pub struct PermInterner {
+    hash_map: DashMap<u64, Vec<u32>>,
+    entries: RwLock<Vec<PermEntry>>,
+    /// Lazily materialized permanent `JsString` values, indexed by entry id.
+    /// Used when a permanent key must also exist as a JS string *value*
+    /// (e.g. method names exposed as property values at builtin init).
+    permanent_strings: RwLock<Vec<Option<Box<JsString>>>>,
 }
 
-impl StringForge {
+impl PermInterner {
     pub fn new() -> Self {
         Self {
-            inner: RwLock::new(StringForgeInner {
-                map: HashMap::with_hasher(FxBuildHasher::default()),
-                entries: Vec::new(),
-            }),
+            hash_map: DashMap::new(),
+            entries: RwLock::new(Vec::new()),
+            permanent_strings: RwLock::new(Vec::new()),
         }
     }
 
-    pub fn intern(&self, s: &str) -> (u32, u16) {
-        {
-            let inner = self.inner.read().unwrap();
-            if let Some(&idx) = inner.map.get(s) {
-                let entry = &inner.entries[idx as usize];
-                entry.ref_count.fetch_add(1, Ordering::Release);
-                kernel_trace!("StringForge intern hit idx={}", idx);
-                return (idx, entry.hash);
+    /// Intern a key. Returns its stable id and full 64-bit hash. Each unique
+    /// string is stored exactly once (single allocation, no double `to_string`).
+    pub fn intern(&self, s: &str) -> (u32, u64) {
+        let hash = hash64(s);
+
+        // Fast path: lock-free candidate read, short entries read-lock.
+        if let Some(candidates) = self.hash_map.get(&hash) {
+            let entries = self.entries.read().unwrap();
+            for &id in candidates.iter() {
+                if entries[id as usize].data == s {
+                    kernel_trace!("PermInterner intern hit id={}", id);
+                    return (id, hash);
+                }
             }
         }
 
-        let mut inner = self.inner.write().unwrap();
-        if let Some(&idx) = inner.map.get(s) {
-            let entry = &inner.entries[idx as usize];
-            entry.ref_count.fetch_add(1, Ordering::Release);
-            kernel_trace!("StringForge intern hit idx={}", idx);
-            return (idx, entry.hash);
-        }
-
-        let h = hash16(s);
-        let idx = inner.entries.len() as u32;
-        inner.map.insert(s.to_string(), idx);
-        inner.entries.push(StringEntry {
-            data: s.to_string(),
-            ref_count: AtomicU32::new(1),
-            hash: h,
-        });
-        kernel_debug!("StringForge intern new idx={} len={}", idx, s.len());
-        (idx, h)
-    }
-
-    pub fn lookup(&self, idx: u32) -> Option<String> {
-        let inner = self.inner.read().unwrap();
-        inner.entries.get(idx as usize).map(|e| e.data.clone())
-    }
-
-    pub fn get_hash(&self, idx: u32) -> Option<u16> {
-        let inner = self.inner.read().unwrap();
-        inner.entries.get(idx as usize).map(|e| e.hash)
-    }
-
-    pub fn decref(&self, idx: u32) {
-        let inner = self.inner.read().unwrap();
-        if let Some(entry) = inner.entries.get(idx as usize) {
-            entry.ref_count.fetch_sub(1, Ordering::Release);
-        }
-    }
-
-    pub fn maybe_sweep(&self, max_dead: Option<usize>) {
-        let threshold = match max_dead {
-            Some(t) => t,
-            None => return,
-        };
-
-        let mut inner = self.inner.write().unwrap();
-        let dead_count = inner
-            .entries
-            .iter()
-            .filter(|e| e.ref_count.load(Ordering::Acquire) == 0)
-            .count();
-
-        if dead_count < threshold {
-            return;
-        }
-
-        let mut new_map: HashMap<String, u32, FxBuildHasher> = HashMap::with_hasher(FxBuildHasher::default());
-        let mut new_entries = Vec::with_capacity(inner.entries.len() - dead_count);
-
-        for entry in inner.entries.drain(..) {
-            let rc = entry.ref_count.load(Ordering::Acquire);
-            if rc > 0 {
-                let new_idx = new_entries.len() as u32;
-                new_map.insert(entry.data.clone(), new_idx);
-                new_entries.push(entry);
+        // Slow path: append under write lock, re-checking for a racing insert.
+        let mut entries = self.entries.write().unwrap();
+        if let Some(candidates) = self.hash_map.get(&hash) {
+            for &id in candidates.iter() {
+                if entries[id as usize].data == s {
+                    return (id, hash);
+                }
             }
         }
-
-        inner.map = new_map;
-        inner.entries = new_entries;
+        let id = entries.len() as u32;
+        let leaked: &'static str = Box::leak(s.to_string().into_boxed_str());
+        entries.push(PermEntry { data: leaked, hash });
+        let entry_count = entries.len();
+        drop(entries);
+        self.hash_map.entry(hash).or_default().push(id);
+        kernel_debug!("PermInterner intern new id={} len={}", id, s.len());
+        if entry_count % 1000 == 0 {
+            kernel_debug!("PermInterner stats: {} strings", entry_count);
+        }
+        (id, hash)
     }
 
-    pub fn len(&self) -> usize {
-        self.inner.read().unwrap().entries.len()
+    /// Resolve a key id to its text with zero clone. The returned `&'static str`
+    /// is valid for the program lifetime (keys are never freed).
+    pub fn lookup(&self, id: u32) -> Option<&'static str> {
+        let entries = self.entries.read().unwrap();
+        entries.get(id as usize).map(|e| e.data)
+    }
+
+    /// Full 64-bit hash for a key id.
+    pub fn get_hash(&self, id: u32) -> Option<u64> {
+        let entries = self.entries.read().unwrap();
+        entries.get(id as usize).map(|e| e.hash)
+    }
+
+    /// Total number of unique keys interned.
+    pub fn entry_count(&self) -> u32 {
+        self.entries.read().unwrap().len() as u32
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.entry_count() == 0
+    }
+
+    /// Materialize (once) and return a stable pointer to a permanent `JsString`
+    /// for the given key id. The `JsString` lives for the program lifetime.
+    pub fn string_ptr(&self, id: u32) -> *const JsString {
+        {
+            let perm = self.permanent_strings.read().unwrap();
+            if let Some(Some(boxed)) = perm.get(id as usize) {
+                return boxed.as_ref() as *const JsString;
+            }
+        }
+        let text = self.lookup(id).unwrap_or("");
+        let mut perm = self.permanent_strings.write().unwrap();
+        if perm.len() <= id as usize {
+            perm.resize_with(id as usize + 1, || None);
+        }
+        if perm[id as usize].is_none() {
+            perm[id as usize] = Some(Box::new(JsString::new(text.to_string())));
+        }
+        perm[id as usize].as_ref().unwrap().as_ref() as *const JsString
     }
 }
 
-impl Default for StringForge {
+impl Default for PermInterner {
     fn default() -> Self {
         Self::new()
     }
@@ -147,67 +146,63 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_hash16_same() {
-        assert_eq!(hash16("hello"), hash16("hello"));
-    }
-
-    #[test]
-    fn test_hash16_different() {
-        assert_ne!(hash16("hello"), hash16("world"));
-    }
-
-    #[test]
-    fn test_intern_dedup() {
-        let string_forge = StringForge::new();
-        let (i1, h1) = string_forge.intern("abc");
-        let (i2, h2) = string_forge.intern("abc");
+    fn intern_dedup() {
+        let interner = PermInterner::new();
+        let (i1, h1) = interner.intern("abc");
+        let (i2, h2) = interner.intern("abc");
         assert_eq!(i1, i2);
         assert_eq!(h1, h2);
     }
 
     #[test]
-    fn test_intern_different() {
-        let string_forge = StringForge::new();
-        let (i1, _) = string_forge.intern("x");
-        let (i2, _) = string_forge.intern("y");
+    fn intern_different() {
+        let interner = PermInterner::new();
+        let (i1, _) = interner.intern("x");
+        let (i2, _) = interner.intern("y");
         assert_ne!(i1, i2);
     }
 
     #[test]
-    fn test_lookup_found() {
-        let string_forge = StringForge::new();
-        let (idx, _) = string_forge.intern("hello");
-        assert_eq!(string_forge.lookup(idx), Some("hello".to_string()));
+    fn lookup_zero_clone() {
+        let interner = PermInterner::new();
+        let (id, _) = interner.intern("hello");
+        assert_eq!(interner.lookup(id), Some("hello"));
     }
 
     #[test]
-    fn test_lookup_not_found() {
-        let string_forge = StringForge::new();
-        assert_eq!(string_forge.lookup(99999), None);
+    fn lookup_not_found() {
+        let interner = PermInterner::new();
+        assert_eq!(interner.lookup(99999), None);
     }
 
     #[test]
-    fn test_ref_count_and_decref() {
-        let string_forge = StringForge::new();
-        let (idx, _) = string_forge.intern("s");
-        assert_eq!(string_forge.lookup(idx), Some("s".to_string()));
-        string_forge.decref(idx);
-        assert_eq!(string_forge.lookup(idx), Some("s".to_string()));
+    fn entry_count_monotonic() {
+        let interner = PermInterner::new();
+        assert_eq!(interner.entry_count(), 0);
+        interner.intern("a");
+        interner.intern("b");
+        interner.intern("a");
+        assert_eq!(interner.entry_count(), 2);
     }
 
     #[test]
-    fn test_maybe_sweep_noop_when_none() {
-        let string_forge = StringForge::new();
-        string_forge.intern("live");
-        string_forge.maybe_sweep(None);
-        assert!(string_forge.lookup(0).is_some());
+    fn many_unique_no_collision() {
+        let interner = PermInterner::new();
+        for i in 0..10_000 {
+            let s = format!("key{i}");
+            let (id, _) = interner.intern(&s);
+            assert_eq!(interner.lookup(id), Some(&*Box::leak(s.into_boxed_str())));
+        }
+        assert_eq!(interner.entry_count(), 10_000);
     }
 
     #[test]
-    fn test_maybe_sweep_skip_below_threshold() {
-        let string_forge = StringForge::new();
-        string_forge.intern("live");
-        string_forge.maybe_sweep(Some(100));
-        assert_eq!(string_forge.lookup(0), Some("live".to_string()));
+    fn string_ptr_roundtrip() {
+        let interner = PermInterner::new();
+        let (id, _) = interner.intern("perm");
+        let ptr = interner.string_ptr(id);
+        assert_eq!(unsafe { (*ptr).as_str() }, "perm");
+        // Second call returns the same stable pointer (materialized once).
+        assert_eq!(interner.string_ptr(id), ptr);
     }
 }

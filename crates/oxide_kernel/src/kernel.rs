@@ -1,5 +1,6 @@
 #![allow(clippy::arc_with_non_send_sync)]
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use oxide_types::mem::P;
@@ -8,10 +9,12 @@ use oxide_types::value::JsValue;
 
 use crate::builtin::BuiltinWorld;
 use crate::code_forge::CodeForge;
-use crate::logging::{init_logging, LogLevel, SUBSYSTEM_COUNT};
+use crate::kernel_info;
 use crate::prop_forge::PropForge;
 use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
-use crate::string_forge::StringForge;
+use crate::string_forge::PermInterner;
+use oxide_log;
+use oxide_log::{Level, SUBSYSTEM_COUNT};
 
 #[derive(Clone)]
 pub struct KernelConfig {
@@ -21,7 +24,8 @@ pub struct KernelConfig {
     pub max_steps: Option<u64>,
     pub max_call_depth: usize,
     pub session_gc_threshold: usize,
-    pub log_levels: [LogLevel; SUBSYSTEM_COUNT],
+    pub max_cached_modules: usize,
+    pub log_levels: [Level; SUBSYSTEM_COUNT],
     pub warmup_builtin_shapes: bool,
     pub warmup_builtin_code: bool,
     pub warmup_builtin_ic: bool,
@@ -36,7 +40,8 @@ impl KernelConfig {
             max_steps: None,
             max_call_depth: 1024,
             session_gc_threshold: 8_388_608,
-            log_levels: [LogLevel::Off; SUBSYSTEM_COUNT],
+            max_cached_modules: 512,
+            log_levels: [Level::Off; SUBSYSTEM_COUNT],
             warmup_builtin_shapes: true,
             warmup_builtin_code: false,
             warmup_builtin_ic: false,
@@ -51,7 +56,8 @@ impl KernelConfig {
             max_steps: None,
             max_call_depth: 1024,
             session_gc_threshold: 8_388_608,
-            log_levels: [LogLevel::Off; SUBSYSTEM_COUNT],
+            max_cached_modules: 512,
+            log_levels: [Level::Off; SUBSYSTEM_COUNT],
             warmup_builtin_shapes: true,
             warmup_builtin_code: true,
             warmup_builtin_ic: false,
@@ -66,7 +72,8 @@ impl KernelConfig {
             max_steps: None,
             max_call_depth: 1024,
             session_gc_threshold: 8_388_608,
-            log_levels: [LogLevel::Off; SUBSYSTEM_COUNT],
+            max_cached_modules: 512,
+            log_levels: [Level::Off; SUBSYSTEM_COUNT],
             warmup_builtin_shapes: true,
             warmup_builtin_code: true,
             warmup_builtin_ic: true,
@@ -81,9 +88,12 @@ impl KernelConfig {
         self.session_gc_threshold = bytes;
     }
 
-    pub fn with_session_gc_threshold(mut self, bytes: usize) -> Self {
-        self.session_gc_threshold = bytes;
-        self
+    pub fn max_cached_modules(&self) -> usize {
+        self.max_cached_modules
+    }
+
+    pub fn set_max_cached_modules(&mut self, cap: usize) {
+        self.max_cached_modules = cap;
     }
 }
 
@@ -97,7 +107,7 @@ impl Default for KernelConfig {
 /// Never rebuilt after construction — forge tables are append-only.
 pub struct KernelCore {
     pub config: KernelConfig,
-    pub string_forge: Arc<StringForge>,
+    pub perm_interner: Arc<PermInterner>,
     pub shape_forge: Arc<ShapeForge>,
     pub code_forge: Arc<CodeForge>,
     pub prop_forge: Arc<PropForge>,
@@ -105,22 +115,31 @@ pub struct KernelCore {
 
 impl KernelCore {
     pub fn new(config: KernelConfig) -> Arc<Self> {
-        init_logging(&config.log_levels);
-        let string_forge = Arc::new(StringForge::new());
+        oxide_log::init(&oxide_log::LogConfig {
+            output: oxide_log::Output::Stderr,
+            levels: config.log_levels,
+        });
+        let perm_interner = Arc::new(PermInterner::new());
         let shape_forge = Arc::new(ShapeForge::new());
-        let code_forge = Arc::new(CodeForge::new());
+        let code_forge = Arc::new(CodeForge::new(
+            NonZeroUsize::new(config.max_cached_modules).expect("max_cached_modules must be greater than zero"),
+        ));
         let prop_forge = Arc::new(PropForge::new());
-        Arc::new(Self {
+        let max_cached = config.max_cached_modules;
+        let min_pool = config.min_pool_size;
+        let core = Arc::new(Self {
             config,
-            string_forge,
+            perm_interner,
             shape_forge,
             code_forge,
             prop_forge,
-        })
+        });
+        kernel_info!("KernelCore initialized: max_cached_modules={}, min_pool={}", max_cached, min_pool);
+        core
     }
 
-    pub fn string_forge(&self) -> &Arc<StringForge> {
-        &self.string_forge
+    pub fn perm_interner(&self) -> &Arc<PermInterner> {
+        &self.perm_interner
     }
 
     pub fn shape_forge(&self) -> &Arc<ShapeForge> {
@@ -147,8 +166,17 @@ impl KernelCore {
         self.config.session_gc_threshold = bytes;
     }
 
+    pub fn max_cached_modules(&self) -> usize {
+        self.config.max_cached_modules
+    }
+
+    pub fn set_max_cached_modules(&mut self, cap: usize) {
+        self.config.max_cached_modules = cap;
+    }
+
     pub fn sweep_runner_forges(&self) {
-        self.string_forge.maybe_sweep(self.config.max_dead_strings.or(Some(1)));
+        // The key interner is append-only (no per-run sweep); only the transient
+        // shape/prop tables need bounding at the test262 per-test boundary.
         // test262 creates a fresh VM/session per test. At this boundary no JS object
         // from prior tests may retain transient shapes/templates.
         if self.shape_forge.len() > 50_000 {
@@ -173,72 +201,149 @@ pub struct KernelSession {
 /// Maintenance: every new `BuiltinWorld` object field must be added here and to
 /// `KernelSession::dirty_since_snapshot()` so selective reset can rebuild the
 /// correct builtin family.
+pub const NUM_BUILTINS: usize = 64;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum BuiltinId {
+    ObjectProto = 0,
+    ArrayProto = 1,
+    FunctionProto = 2,
+    StringProto = 3,
+    NumberProto = 4,
+    BooleanProto = 5,
+    ErrorProto = 6,
+    SymbolProto = 7,
+    ObjectConstructor = 8,
+    ArrayConstructor = 9,
+    FunctionConstructor = 10,
+    StringConstructor = 11,
+    NumberConstructor = 12,
+    BooleanConstructor = 13,
+    ErrorConstructor = 14,
+    SymbolConstructor = 15,
+    TypeErrorProto = 16,
+    ReferenceErrorProto = 17,
+    RangeErrorProto = 18,
+    SyntaxErrorProto = 19,
+    UriErrorProto = 20,
+    EvalErrorProto = 21,
+    MathObject = 22,
+    JsonObject = 23,
+    DateConstructor = 24,
+    DateProto = 25,
+    SetConstructor = 26,
+    SetProto = 27,
+    MapConstructor = 28,
+    MapProto = 29,
+    RegExpConstructor = 30,
+    RegExpProto = 31,
+    ArrayBufferConstructor = 32,
+    ArrayBufferProto = 33,
+    DataViewConstructor = 34,
+    DataViewProto = 35,
+    TypedArrayProto = 36,
+    Int8ArrayConstructor = 37,
+    Int8ArrayProto = 38,
+    Uint8ArrayConstructor = 39,
+    Uint8ArrayProto = 40,
+    Uint8ClampedArrayConstructor = 41,
+    Uint8ClampedArrayProto = 42,
+    Int16ArrayConstructor = 43,
+    Int16ArrayProto = 44,
+    Uint16ArrayConstructor = 45,
+    Uint16ArrayProto = 46,
+    Int32ArrayConstructor = 47,
+    Int32ArrayProto = 48,
+    Uint32ArrayConstructor = 49,
+    Uint32ArrayProto = 50,
+    Float32ArrayConstructor = 51,
+    Float32ArrayProto = 52,
+    Float64ArrayConstructor = 53,
+    Float64ArrayProto = 54,
+    BigInt64ArrayConstructor = 55,
+    BigInt64ArrayProto = 56,
+    BigUint64ArrayConstructor = 57,
+    BigUint64ArrayProto = 58,
+    SymMatch = 59,
+    SymReplace = 60,
+    SymSearch = 61,
+    SymSplit = 62,
+    SymIterator = 63,
+}
+
+impl BuiltinId {
+    pub const ALL: [BuiltinId; NUM_BUILTINS] = [
+        BuiltinId::ObjectProto,
+        BuiltinId::ArrayProto,
+        BuiltinId::FunctionProto,
+        BuiltinId::StringProto,
+        BuiltinId::NumberProto,
+        BuiltinId::BooleanProto,
+        BuiltinId::ErrorProto,
+        BuiltinId::SymbolProto,
+        BuiltinId::ObjectConstructor,
+        BuiltinId::ArrayConstructor,
+        BuiltinId::FunctionConstructor,
+        BuiltinId::StringConstructor,
+        BuiltinId::NumberConstructor,
+        BuiltinId::BooleanConstructor,
+        BuiltinId::ErrorConstructor,
+        BuiltinId::SymbolConstructor,
+        BuiltinId::TypeErrorProto,
+        BuiltinId::ReferenceErrorProto,
+        BuiltinId::RangeErrorProto,
+        BuiltinId::SyntaxErrorProto,
+        BuiltinId::UriErrorProto,
+        BuiltinId::EvalErrorProto,
+        BuiltinId::MathObject,
+        BuiltinId::JsonObject,
+        BuiltinId::DateConstructor,
+        BuiltinId::DateProto,
+        BuiltinId::SetConstructor,
+        BuiltinId::SetProto,
+        BuiltinId::MapConstructor,
+        BuiltinId::MapProto,
+        BuiltinId::RegExpConstructor,
+        BuiltinId::RegExpProto,
+        BuiltinId::ArrayBufferConstructor,
+        BuiltinId::ArrayBufferProto,
+        BuiltinId::DataViewConstructor,
+        BuiltinId::DataViewProto,
+        BuiltinId::TypedArrayProto,
+        BuiltinId::Int8ArrayConstructor,
+        BuiltinId::Int8ArrayProto,
+        BuiltinId::Uint8ArrayConstructor,
+        BuiltinId::Uint8ArrayProto,
+        BuiltinId::Uint8ClampedArrayConstructor,
+        BuiltinId::Uint8ClampedArrayProto,
+        BuiltinId::Int16ArrayConstructor,
+        BuiltinId::Int16ArrayProto,
+        BuiltinId::Uint16ArrayConstructor,
+        BuiltinId::Uint16ArrayProto,
+        BuiltinId::Int32ArrayConstructor,
+        BuiltinId::Int32ArrayProto,
+        BuiltinId::Uint32ArrayConstructor,
+        BuiltinId::Uint32ArrayProto,
+        BuiltinId::Float32ArrayConstructor,
+        BuiltinId::Float32ArrayProto,
+        BuiltinId::Float64ArrayConstructor,
+        BuiltinId::Float64ArrayProto,
+        BuiltinId::BigInt64ArrayConstructor,
+        BuiltinId::BigInt64ArrayProto,
+        BuiltinId::BigUint64ArrayConstructor,
+        BuiltinId::BigUint64ArrayProto,
+        BuiltinId::SymMatch,
+        BuiltinId::SymReplace,
+        BuiltinId::SymSearch,
+        BuiltinId::SymSplit,
+        BuiltinId::SymIterator,
+    ];
+}
+
 #[derive(Clone, Debug)]
 pub struct BuiltinSnapshot {
-    pub object_proto_generation: u32,
-    pub array_proto_generation: u32,
-    pub function_proto_generation: u32,
-    pub string_proto_generation: u32,
-    pub number_proto_generation: u32,
-    pub boolean_proto_generation: u32,
-    pub error_proto_generation: u32,
-    pub symbol_proto_generation: u32,
-    pub object_constructor_generation: u32,
-    pub array_constructor_generation: u32,
-    pub function_constructor_generation: u32,
-    pub string_constructor_generation: u32,
-    pub number_constructor_generation: u32,
-    pub boolean_constructor_generation: u32,
-    pub error_constructor_generation: u32,
-    pub symbol_constructor_generation: u32,
-    pub type_error_proto_generation: u32,
-    pub reference_error_proto_generation: u32,
-    pub range_error_proto_generation: u32,
-    pub syntax_error_proto_generation: u32,
-    pub uri_error_proto_generation: u32,
-    pub eval_error_proto_generation: u32,
-    pub math_object_generation: u32,
-    pub json_object_generation: u32,
-    pub date_constructor_generation: u32,
-    pub date_proto_generation: u32,
-    pub set_constructor_generation: u32,
-    pub set_proto_generation: u32,
-    pub map_constructor_generation: u32,
-    pub map_proto_generation: u32,
-    pub regexp_constructor_generation: u32,
-    pub regexp_proto_generation: u32,
-    pub array_buffer_constructor_generation: u32,
-    pub array_buffer_proto_generation: u32,
-    pub data_view_constructor_generation: u32,
-    pub data_view_proto_generation: u32,
-    pub typed_array_proto_generation: u32,
-    pub int8array_constructor_generation: u32,
-    pub int8array_proto_generation: u32,
-    pub uint8array_constructor_generation: u32,
-    pub uint8array_proto_generation: u32,
-    pub uint8clampedarray_constructor_generation: u32,
-    pub uint8clampedarray_proto_generation: u32,
-    pub int16array_constructor_generation: u32,
-    pub int16array_proto_generation: u32,
-    pub uint16array_constructor_generation: u32,
-    pub uint16array_proto_generation: u32,
-    pub int32array_constructor_generation: u32,
-    pub int32array_proto_generation: u32,
-    pub uint32array_constructor_generation: u32,
-    pub uint32array_proto_generation: u32,
-    pub float32array_constructor_generation: u32,
-    pub float32array_proto_generation: u32,
-    pub float64array_constructor_generation: u32,
-    pub float64array_proto_generation: u32,
-    pub bigint64array_constructor_generation: u32,
-    pub bigint64array_proto_generation: u32,
-    pub biguint64array_constructor_generation: u32,
-    pub biguint64array_proto_generation: u32,
-    pub sym_match_generation: u32,
-    pub sym_replace_generation: u32,
-    pub sym_search_generation: u32,
-    pub sym_split_generation: u32,
-    pub sym_iterator_generation: u32,
+    pub generations: [u32; NUM_BUILTINS],
     pub global_object_generation: u32,
     pub stub_objects_len: usize,
     pub stub_object_generations: Vec<u32>,
@@ -250,71 +355,13 @@ impl BuiltinSnapshot {
     }
 
     pub fn new(world: &BuiltinWorld, global_object: &P<JsObject>) -> Self {
+        let mut generations = [0u32; NUM_BUILTINS];
+        for (i, id) in BuiltinId::ALL.iter().enumerate() {
+            generations[i] = Self::gen(world.get_by_id(*id));
+        }
+        debug_assert_eq!(generations.len(), NUM_BUILTINS);
         Self {
-            object_proto_generation: Self::gen(&world.object_proto),
-            array_proto_generation: Self::gen(&world.array_proto),
-            function_proto_generation: Self::gen(&world.function_proto),
-            string_proto_generation: Self::gen(&world.string_proto),
-            number_proto_generation: Self::gen(&world.number_proto),
-            boolean_proto_generation: Self::gen(&world.boolean_proto),
-            error_proto_generation: Self::gen(&world.error_proto),
-            symbol_proto_generation: Self::gen(&world.symbol_proto),
-            object_constructor_generation: Self::gen(&world.object_constructor),
-            array_constructor_generation: Self::gen(&world.array_constructor),
-            function_constructor_generation: Self::gen(&world.function_constructor),
-            string_constructor_generation: Self::gen(&world.string_constructor),
-            number_constructor_generation: Self::gen(&world.number_constructor),
-            boolean_constructor_generation: Self::gen(&world.boolean_constructor),
-            error_constructor_generation: Self::gen(&world.error_constructor),
-            symbol_constructor_generation: Self::gen(&world.symbol_constructor),
-            type_error_proto_generation: Self::gen(&world.type_error_proto),
-            reference_error_proto_generation: Self::gen(&world.reference_error_proto),
-            range_error_proto_generation: Self::gen(&world.range_error_proto),
-            syntax_error_proto_generation: Self::gen(&world.syntax_error_proto),
-            uri_error_proto_generation: Self::gen(&world.uri_error_proto),
-            eval_error_proto_generation: Self::gen(&world.eval_error_proto),
-            math_object_generation: Self::gen(&world.math_object),
-            json_object_generation: Self::gen(&world.json_object),
-            date_constructor_generation: Self::gen(&world.date_constructor),
-            date_proto_generation: Self::gen(&world.date_proto),
-            set_constructor_generation: Self::gen(&world.set_constructor),
-            set_proto_generation: Self::gen(&world.set_proto),
-            map_constructor_generation: Self::gen(&world.map_constructor),
-            map_proto_generation: Self::gen(&world.map_proto),
-            regexp_constructor_generation: Self::gen(&world.regexp_constructor),
-            regexp_proto_generation: Self::gen(&world.regexp_proto),
-            array_buffer_constructor_generation: Self::gen(&world.array_buffer_constructor),
-            array_buffer_proto_generation: Self::gen(&world.array_buffer_proto),
-            data_view_constructor_generation: Self::gen(&world.data_view_constructor),
-            data_view_proto_generation: Self::gen(&world.data_view_proto),
-            typed_array_proto_generation: Self::gen(&world.typed_array_proto),
-            int8array_constructor_generation: Self::gen(&world.int8array_constructor),
-            int8array_proto_generation: Self::gen(&world.int8array_proto),
-            uint8array_constructor_generation: Self::gen(&world.uint8array_constructor),
-            uint8array_proto_generation: Self::gen(&world.uint8array_proto),
-            uint8clampedarray_constructor_generation: Self::gen(&world.uint8clampedarray_constructor),
-            uint8clampedarray_proto_generation: Self::gen(&world.uint8clampedarray_proto),
-            int16array_constructor_generation: Self::gen(&world.int16array_constructor),
-            int16array_proto_generation: Self::gen(&world.int16array_proto),
-            uint16array_constructor_generation: Self::gen(&world.uint16array_constructor),
-            uint16array_proto_generation: Self::gen(&world.uint16array_proto),
-            int32array_constructor_generation: Self::gen(&world.int32array_constructor),
-            int32array_proto_generation: Self::gen(&world.int32array_proto),
-            uint32array_constructor_generation: Self::gen(&world.uint32array_constructor),
-            uint32array_proto_generation: Self::gen(&world.uint32array_proto),
-            float32array_constructor_generation: Self::gen(&world.float32array_constructor),
-            float32array_proto_generation: Self::gen(&world.float32array_proto),
-            float64array_constructor_generation: Self::gen(&world.float64array_constructor),
-            float64array_proto_generation: Self::gen(&world.float64array_proto),
-            bigint64array_constructor_generation: Self::gen(&world.bigint64array_constructor),
-            bigint64array_proto_generation: Self::gen(&world.bigint64array_proto),
-            biguint64array_constructor_generation: Self::gen(&world.biguint64array_constructor),
-            biguint64array_proto_generation: Self::gen(&world.biguint64array_proto),
-            sym_match_generation: Self::gen(&world.sym_match),
-            sym_replace_generation: Self::gen(&world.sym_replace),
-            sym_search_generation: Self::gen(&world.sym_search),
-            sym_split_generation: Self::gen(&world.sym_split),
-            sym_iterator_generation: Self::gen(&world.sym_iterator),
+            generations,
             global_object_generation: Self::gen(global_object),
             stub_objects_len: world.stub_objects.len(),
             stub_object_generations: world.stub_objects.iter().map(Self::gen).collect(),
@@ -376,9 +423,9 @@ impl KernelSession {
     fn new_global_object(core: &KernelCore) -> P<JsObject> {
         let mut global_obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
 
-        let si_nan = core.string_forge.intern("NaN").0;
-        let si_undef = core.string_forge.intern("undefined").0;
-        let si_infinity = core.string_forge.intern("Infinity").0;
+        let si_nan = core.perm_interner.intern("NaN").0;
+        let si_undef = core.perm_interner.intern("undefined").0;
+        let si_infinity = core.perm_interner.intern("Infinity").0;
 
         let nan_shape = core.shape_forge.make_shape(EMPTY_SHAPE_ID, si_nan);
         global_obj.set_shape_id(nan_shape);
@@ -398,7 +445,7 @@ impl KernelSession {
     /// Build a fresh session from a KernelCore. All string/shape intern calls hit
     /// cache on second and subsequent calls — net cost is < 0.5 ms.
     pub fn new(core: &KernelCore) -> Self {
-        let builtin_world = Arc::new(BuiltinWorld::new(&core.string_forge, &core.shape_forge));
+        let builtin_world = Arc::new(BuiltinWorld::new(&core.perm_interner, &core.shape_forge));
         let global_object = Self::new_global_object(core);
         let builtin_snapshot = BuiltinSnapshot::new(&builtin_world, &global_object);
 
@@ -429,78 +476,74 @@ impl KernelSession {
             .iter()
             .zip(snapshot.stub_object_generations.iter())
             .any(|(obj, generation)| BuiltinSnapshot::gen(obj) != *generation);
+        let gen = |id: BuiltinId| BuiltinSnapshot::gen(world.get_by_id(id));
+        let snap = |id: BuiltinId| snapshot.generations[id as usize];
 
         BuiltinDirtySet {
-            object: BuiltinSnapshot::gen(&world.object_proto) != snapshot.object_proto_generation
-                || BuiltinSnapshot::gen(&world.object_constructor) != snapshot.object_constructor_generation,
-            array: BuiltinSnapshot::gen(&world.array_proto) != snapshot.array_proto_generation
-                || BuiltinSnapshot::gen(&world.array_constructor) != snapshot.array_constructor_generation,
-            function: BuiltinSnapshot::gen(&world.function_proto) != snapshot.function_proto_generation
-                || BuiltinSnapshot::gen(&world.function_constructor) != snapshot.function_constructor_generation,
-            string: BuiltinSnapshot::gen(&world.string_proto) != snapshot.string_proto_generation
-                || BuiltinSnapshot::gen(&world.string_constructor) != snapshot.string_constructor_generation,
-            number: BuiltinSnapshot::gen(&world.number_proto) != snapshot.number_proto_generation
-                || BuiltinSnapshot::gen(&world.number_constructor) != snapshot.number_constructor_generation,
-            boolean: BuiltinSnapshot::gen(&world.boolean_proto) != snapshot.boolean_proto_generation
-                || BuiltinSnapshot::gen(&world.boolean_constructor) != snapshot.boolean_constructor_generation,
-            error_family: BuiltinSnapshot::gen(&world.error_proto) != snapshot.error_proto_generation
-                || BuiltinSnapshot::gen(&world.error_constructor) != snapshot.error_constructor_generation
-                || BuiltinSnapshot::gen(&world.type_error_proto) != snapshot.type_error_proto_generation
-                || BuiltinSnapshot::gen(&world.reference_error_proto) != snapshot.reference_error_proto_generation
-                || BuiltinSnapshot::gen(&world.range_error_proto) != snapshot.range_error_proto_generation
-                || BuiltinSnapshot::gen(&world.syntax_error_proto) != snapshot.syntax_error_proto_generation
-                || BuiltinSnapshot::gen(&world.uri_error_proto) != snapshot.uri_error_proto_generation
-                || BuiltinSnapshot::gen(&world.eval_error_proto) != snapshot.eval_error_proto_generation,
-            symbol_family: BuiltinSnapshot::gen(&world.symbol_proto) != snapshot.symbol_proto_generation
-                || BuiltinSnapshot::gen(&world.symbol_constructor) != snapshot.symbol_constructor_generation
-                || BuiltinSnapshot::gen(&world.sym_match) != snapshot.sym_match_generation
-                || BuiltinSnapshot::gen(&world.sym_replace) != snapshot.sym_replace_generation
-                || BuiltinSnapshot::gen(&world.sym_search) != snapshot.sym_search_generation
-                || BuiltinSnapshot::gen(&world.sym_split) != snapshot.sym_split_generation
-                || BuiltinSnapshot::gen(&world.sym_iterator) != snapshot.sym_iterator_generation,
-            math: BuiltinSnapshot::gen(&world.math_object) != snapshot.math_object_generation,
-            json: BuiltinSnapshot::gen(&world.json_object) != snapshot.json_object_generation,
-            date: BuiltinSnapshot::gen(&world.date_constructor) != snapshot.date_constructor_generation
-                || BuiltinSnapshot::gen(&world.date_proto) != snapshot.date_proto_generation,
-            set: BuiltinSnapshot::gen(&world.set_constructor) != snapshot.set_constructor_generation
-                || BuiltinSnapshot::gen(&world.set_proto) != snapshot.set_proto_generation,
-            map: BuiltinSnapshot::gen(&world.map_constructor) != snapshot.map_constructor_generation
-                || BuiltinSnapshot::gen(&world.map_proto) != snapshot.map_proto_generation,
-            regexp: BuiltinSnapshot::gen(&world.regexp_constructor) != snapshot.regexp_constructor_generation
-                || BuiltinSnapshot::gen(&world.regexp_proto) != snapshot.regexp_proto_generation,
-            array_buffer: BuiltinSnapshot::gen(&world.array_buffer_constructor)
-                != snapshot.array_buffer_constructor_generation
-                || BuiltinSnapshot::gen(&world.array_buffer_proto) != snapshot.array_buffer_proto_generation,
-            data_view: BuiltinSnapshot::gen(&world.data_view_constructor) != snapshot.data_view_constructor_generation
-                || BuiltinSnapshot::gen(&world.data_view_proto) != snapshot.data_view_proto_generation,
-            typed_array_family: BuiltinSnapshot::gen(&world.typed_array_proto) != snapshot.typed_array_proto_generation
-                || BuiltinSnapshot::gen(&world.int8array_constructor) != snapshot.int8array_constructor_generation
-                || BuiltinSnapshot::gen(&world.int8array_proto) != snapshot.int8array_proto_generation
-                || BuiltinSnapshot::gen(&world.uint8array_constructor) != snapshot.uint8array_constructor_generation
-                || BuiltinSnapshot::gen(&world.uint8array_proto) != snapshot.uint8array_proto_generation
-                || BuiltinSnapshot::gen(&world.uint8clampedarray_constructor)
-                    != snapshot.uint8clampedarray_constructor_generation
-                || BuiltinSnapshot::gen(&world.uint8clampedarray_proto) != snapshot.uint8clampedarray_proto_generation
-                || BuiltinSnapshot::gen(&world.int16array_constructor) != snapshot.int16array_constructor_generation
-                || BuiltinSnapshot::gen(&world.int16array_proto) != snapshot.int16array_proto_generation
-                || BuiltinSnapshot::gen(&world.uint16array_constructor) != snapshot.uint16array_constructor_generation
-                || BuiltinSnapshot::gen(&world.uint16array_proto) != snapshot.uint16array_proto_generation
-                || BuiltinSnapshot::gen(&world.int32array_constructor) != snapshot.int32array_constructor_generation
-                || BuiltinSnapshot::gen(&world.int32array_proto) != snapshot.int32array_proto_generation
-                || BuiltinSnapshot::gen(&world.uint32array_constructor) != snapshot.uint32array_constructor_generation
-                || BuiltinSnapshot::gen(&world.uint32array_proto) != snapshot.uint32array_proto_generation
-                || BuiltinSnapshot::gen(&world.float32array_constructor)
-                    != snapshot.float32array_constructor_generation
-                || BuiltinSnapshot::gen(&world.float32array_proto) != snapshot.float32array_proto_generation
-                || BuiltinSnapshot::gen(&world.float64array_constructor)
-                    != snapshot.float64array_constructor_generation
-                || BuiltinSnapshot::gen(&world.float64array_proto) != snapshot.float64array_proto_generation
-                || BuiltinSnapshot::gen(&world.bigint64array_constructor)
-                    != snapshot.bigint64array_constructor_generation
-                || BuiltinSnapshot::gen(&world.bigint64array_proto) != snapshot.bigint64array_proto_generation
-                || BuiltinSnapshot::gen(&world.biguint64array_constructor)
-                    != snapshot.biguint64array_constructor_generation
-                || BuiltinSnapshot::gen(&world.biguint64array_proto) != snapshot.biguint64array_proto_generation,
+            object: gen(BuiltinId::ObjectProto) != snap(BuiltinId::ObjectProto)
+                || gen(BuiltinId::ObjectConstructor) != snap(BuiltinId::ObjectConstructor),
+            array: gen(BuiltinId::ArrayProto) != snap(BuiltinId::ArrayProto)
+                || gen(BuiltinId::ArrayConstructor) != snap(BuiltinId::ArrayConstructor),
+            function: gen(BuiltinId::FunctionProto) != snap(BuiltinId::FunctionProto)
+                || gen(BuiltinId::FunctionConstructor) != snap(BuiltinId::FunctionConstructor),
+            string: gen(BuiltinId::StringProto) != snap(BuiltinId::StringProto)
+                || gen(BuiltinId::StringConstructor) != snap(BuiltinId::StringConstructor),
+            number: gen(BuiltinId::NumberProto) != snap(BuiltinId::NumberProto)
+                || gen(BuiltinId::NumberConstructor) != snap(BuiltinId::NumberConstructor),
+            boolean: gen(BuiltinId::BooleanProto) != snap(BuiltinId::BooleanProto)
+                || gen(BuiltinId::BooleanConstructor) != snap(BuiltinId::BooleanConstructor),
+            error_family: gen(BuiltinId::ErrorProto) != snap(BuiltinId::ErrorProto)
+                || gen(BuiltinId::ErrorConstructor) != snap(BuiltinId::ErrorConstructor)
+                || gen(BuiltinId::TypeErrorProto) != snap(BuiltinId::TypeErrorProto)
+                || gen(BuiltinId::ReferenceErrorProto) != snap(BuiltinId::ReferenceErrorProto)
+                || gen(BuiltinId::RangeErrorProto) != snap(BuiltinId::RangeErrorProto)
+                || gen(BuiltinId::SyntaxErrorProto) != snap(BuiltinId::SyntaxErrorProto)
+                || gen(BuiltinId::UriErrorProto) != snap(BuiltinId::UriErrorProto)
+                || gen(BuiltinId::EvalErrorProto) != snap(BuiltinId::EvalErrorProto),
+            symbol_family: gen(BuiltinId::SymbolProto) != snap(BuiltinId::SymbolProto)
+                || gen(BuiltinId::SymbolConstructor) != snap(BuiltinId::SymbolConstructor)
+                || gen(BuiltinId::SymMatch) != snap(BuiltinId::SymMatch)
+                || gen(BuiltinId::SymReplace) != snap(BuiltinId::SymReplace)
+                || gen(BuiltinId::SymSearch) != snap(BuiltinId::SymSearch)
+                || gen(BuiltinId::SymSplit) != snap(BuiltinId::SymSplit)
+                || gen(BuiltinId::SymIterator) != snap(BuiltinId::SymIterator),
+            math: gen(BuiltinId::MathObject) != snap(BuiltinId::MathObject),
+            json: gen(BuiltinId::JsonObject) != snap(BuiltinId::JsonObject),
+            date: gen(BuiltinId::DateConstructor) != snap(BuiltinId::DateConstructor)
+                || gen(BuiltinId::DateProto) != snap(BuiltinId::DateProto),
+            set: gen(BuiltinId::SetConstructor) != snap(BuiltinId::SetConstructor)
+                || gen(BuiltinId::SetProto) != snap(BuiltinId::SetProto),
+            map: gen(BuiltinId::MapConstructor) != snap(BuiltinId::MapConstructor)
+                || gen(BuiltinId::MapProto) != snap(BuiltinId::MapProto),
+            regexp: gen(BuiltinId::RegExpConstructor) != snap(BuiltinId::RegExpConstructor)
+                || gen(BuiltinId::RegExpProto) != snap(BuiltinId::RegExpProto),
+            array_buffer: gen(BuiltinId::ArrayBufferConstructor) != snap(BuiltinId::ArrayBufferConstructor)
+                || gen(BuiltinId::ArrayBufferProto) != snap(BuiltinId::ArrayBufferProto),
+            data_view: gen(BuiltinId::DataViewConstructor) != snap(BuiltinId::DataViewConstructor)
+                || gen(BuiltinId::DataViewProto) != snap(BuiltinId::DataViewProto),
+            typed_array_family: gen(BuiltinId::TypedArrayProto) != snap(BuiltinId::TypedArrayProto)
+                || gen(BuiltinId::Int8ArrayConstructor) != snap(BuiltinId::Int8ArrayConstructor)
+                || gen(BuiltinId::Int8ArrayProto) != snap(BuiltinId::Int8ArrayProto)
+                || gen(BuiltinId::Uint8ArrayConstructor) != snap(BuiltinId::Uint8ArrayConstructor)
+                || gen(BuiltinId::Uint8ArrayProto) != snap(BuiltinId::Uint8ArrayProto)
+                || gen(BuiltinId::Uint8ClampedArrayConstructor) != snap(BuiltinId::Uint8ClampedArrayConstructor)
+                || gen(BuiltinId::Uint8ClampedArrayProto) != snap(BuiltinId::Uint8ClampedArrayProto)
+                || gen(BuiltinId::Int16ArrayConstructor) != snap(BuiltinId::Int16ArrayConstructor)
+                || gen(BuiltinId::Int16ArrayProto) != snap(BuiltinId::Int16ArrayProto)
+                || gen(BuiltinId::Uint16ArrayConstructor) != snap(BuiltinId::Uint16ArrayConstructor)
+                || gen(BuiltinId::Uint16ArrayProto) != snap(BuiltinId::Uint16ArrayProto)
+                || gen(BuiltinId::Int32ArrayConstructor) != snap(BuiltinId::Int32ArrayConstructor)
+                || gen(BuiltinId::Int32ArrayProto) != snap(BuiltinId::Int32ArrayProto)
+                || gen(BuiltinId::Uint32ArrayConstructor) != snap(BuiltinId::Uint32ArrayConstructor)
+                || gen(BuiltinId::Uint32ArrayProto) != snap(BuiltinId::Uint32ArrayProto)
+                || gen(BuiltinId::Float32ArrayConstructor) != snap(BuiltinId::Float32ArrayConstructor)
+                || gen(BuiltinId::Float32ArrayProto) != snap(BuiltinId::Float32ArrayProto)
+                || gen(BuiltinId::Float64ArrayConstructor) != snap(BuiltinId::Float64ArrayConstructor)
+                || gen(BuiltinId::Float64ArrayProto) != snap(BuiltinId::Float64ArrayProto)
+                || gen(BuiltinId::BigInt64ArrayConstructor) != snap(BuiltinId::BigInt64ArrayConstructor)
+                || gen(BuiltinId::BigInt64ArrayProto) != snap(BuiltinId::BigInt64ArrayProto)
+                || gen(BuiltinId::BigUint64ArrayConstructor) != snap(BuiltinId::BigUint64ArrayConstructor)
+                || gen(BuiltinId::BigUint64ArrayProto) != snap(BuiltinId::BigUint64ArrayProto),
             stubs: world.stub_objects.len() != snapshot.stub_objects_len || stub_generations_dirty,
             global: BuiltinSnapshot::gen(&self.global_object) != snapshot.global_object_generation,
         }
@@ -518,7 +561,7 @@ impl KernelSession {
         if dirty.any_builtin_dirty() {
             self.builtin_world = Arc::new(BuiltinWorld::rebuild_with_dirty(
                 &self.builtin_world,
-                core.string_forge.as_ref(),
+                core.perm_interner.as_ref(),
                 core.shape_forge.as_ref(),
                 &dirty,
             ));
@@ -535,8 +578,8 @@ mod tests {
     #[test]
     fn test_kernel_new() {
         let core = KernelCore::new(KernelConfig::minimal());
-        let (i1, _) = core.string_forge().intern("test");
-        let (i2, _) = core.string_forge().intern("test");
+        let (i1, _) = core.perm_interner().intern("test");
+        let (i2, _) = core.perm_interner().intern("test");
         assert_eq!(i1, i2);
     }
 
@@ -557,8 +600,8 @@ mod tests {
     #[test]
     fn test_kernel_string_forge() {
         let core = KernelCore::new(KernelConfig::minimal());
-        let (i1, _) = core.string_forge().intern("hello");
-        let (i2, _) = core.string_forge().intern("hello");
+        let (i1, _) = core.perm_interner().intern("hello");
+        let (i2, _) = core.perm_interner().intern("hello");
         assert_eq!(i1, i2);
     }
 
@@ -569,7 +612,7 @@ mod tests {
         assert_eq!(KernelConfig::minimal().max_steps, None);
         assert_eq!(KernelConfig::standard().max_steps, None);
         assert_eq!(KernelConfig::full().max_steps, None);
-        assert_eq!(KernelConfig::minimal().log_levels, [LogLevel::Off; SUBSYSTEM_COUNT]);
+        assert_eq!(KernelConfig::minimal().log_levels, [Level::Off; SUBSYSTEM_COUNT]);
         assert!(!KernelConfig::minimal().warmup_builtin_ic);
         assert!(KernelConfig::full().warmup_builtin_ic);
         assert_eq!(KernelConfig::full().max_pool_size, None);
@@ -578,9 +621,9 @@ mod tests {
     #[test]
     fn test_session_rebuild_shares_forges() {
         let core = KernelCore::new(KernelConfig::minimal());
-        let (i1, _) = core.string_forge().intern("hello");
+        let (i1, _) = core.perm_interner().intern("hello");
         let _s2 = KernelSession::new(&core);
-        let (i2, _) = core.string_forge().intern("hello");
+        let (i2, _) = core.perm_interner().intern("hello");
         assert_eq!(i1, i2);
     }
 
