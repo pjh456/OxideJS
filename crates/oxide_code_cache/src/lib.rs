@@ -37,16 +37,22 @@ impl CodeForge {
 
     pub fn get_or_insert_with<F>(&self, hash: u64, compile: F) -> Result<Arc<CompiledModule>, String>
     where
-        F: FnOnce() -> Result<CompiledModule, String>,
+        F: Fn() -> Result<CompiledModule, String>,
     {
-        // Two-phase: look up under the lock, then release the lock BEFORE
-        // running the compile closure so a slow compilation never blocks other
-        // cache users. Re-acquire the lock only to insert the freshly built
-        // module.
         {
             let mut cache = self.map.lock().unwrap();
             if let Some(module) = cache.get(&hash) {
-                return Ok(Arc::clone(module));
+                let module = Arc::clone(module);
+                drop(cache);
+                #[cfg(debug_assertions)]
+                {
+                    let fresh = compile()?;
+                    debug_assert_eq!(
+                        module.bytecode, fresh.bytecode,
+                        "structural hash collision: cached bytecode differs from recompiled for hash {hash}",
+                    );
+                }
+                return Ok(module);
             }
         }
         let module = Arc::new(compile()?);
@@ -126,5 +132,37 @@ mod tests {
             forge.insert(hash, CompiledModule::new());
         }
         assert_eq!(forge.len(), 10);
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "structural hash collision"))]
+    fn cache_hit_debug_verifies_bytecode() {
+        let forge = forge(16);
+        let mut m1 = CompiledModule::new();
+        m1.bytecode = vec![1, 2, 3];
+        forge.insert(42, m1);
+        let _ = forge
+            .get_or_insert_with(42, || {
+                let mut m = CompiledModule::new();
+                m.bytecode = vec![4, 5, 6];
+                Ok(m)
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn cache_hit_returns_cached_not_recompiled() {
+        let forge = forge(16);
+        let mut m = CompiledModule::new();
+        m.bytecode = vec![1, 2, 3];
+        let cached = forge.insert(99, m);
+        let result = forge
+            .get_or_insert_with(99, || {
+                let mut m = CompiledModule::new();
+                m.bytecode = vec![1, 2, 3];
+                Ok(m)
+            })
+            .unwrap();
+        assert!(Arc::ptr_eq(&cached, &result));
     }
 }
