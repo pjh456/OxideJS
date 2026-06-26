@@ -1,4 +1,5 @@
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 
 use dashmap::DashMap;
@@ -29,6 +30,8 @@ pub struct ShapeForge {
     shapes: RwLock<Vec<Option<Arc<Shape>>>>,
     transitions: DashMap<u64, ShapeId>,
     next_id: AtomicU32,
+    overflow_map: RwLock<HashMap<u64, ShapeId>>,
+    overflow_active: AtomicBool,
 }
 
 impl ShapeForge {
@@ -37,6 +40,8 @@ impl ShapeForge {
             shapes: RwLock::new(Vec::with_capacity(256)),
             transitions: DashMap::with_capacity_and_shard_amount(256, 16),
             next_id: AtomicU32::new(2),
+            overflow_map: RwLock::new(HashMap::new()),
+            overflow_active: AtomicBool::new(false),
         };
         {
             let mut shapes = forge.shapes.write().unwrap();
@@ -83,7 +88,26 @@ impl ShapeForge {
             return *entry;
         }
 
+        if self.overflow_active.load(Ordering::Relaxed) {
+            if let Some(id) = self.overflow_map.read().unwrap().get(&key) {
+                kernel_debug!("ShapeForge overflow cached parent={} prop={} -> id={}", parent_id, prop_name, *id);
+                return *id;
+            }
+        }
+
         let new_id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        debug_assert!(new_id <= 0x00FF_FFFF, "shape_id {} exceeds 24-bit limit (16M)", new_id,);
+
+        if new_id > 0x00FF_FFFF {
+            self.overflow_active.store(true, Ordering::Relaxed);
+            let mut map = self.overflow_map.write().unwrap();
+            if let Some(id) = map.get(&key) {
+                return *id;
+            }
+            map.insert(key, new_id);
+            kernel_debug!("ShapeForge overflow parent={} prop={} -> id={}", parent_id, prop_name, new_id);
+            return new_id;
+        }
 
         let shape = Arc::new(Shape {
             id: new_id,
@@ -323,5 +347,50 @@ mod tests {
         assert!(oxide_types::private_key::is_private_name_key(private_key));
         assert!(forge.has_property(shape, private_key));
         assert_eq!(forge.lookup_position(shape, private_key), Some(0));
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "exceeds 24-bit"))]
+    fn overflow_debug_assert_fires() {
+        let forge = ShapeForge::new();
+        forge.next_id.store(0x0100_0000, Ordering::Relaxed);
+        let _ = forge.make_shape(EMPTY_SHAPE_ID, 1_000_400);
+    }
+
+    #[test]
+    fn overflow_fallback_works() {
+        let forge = ShapeForge::new();
+        let key = ShapeForge::pack_key(EMPTY_SHAPE_ID, 1_000_500);
+        forge.overflow_active.store(true, Ordering::Relaxed);
+        forge.overflow_map.write().unwrap().insert(key, 0xDEAD);
+        let id = forge.make_shape(EMPTY_SHAPE_ID, 1_000_500);
+        assert_eq!(id, 0xDEAD);
+    }
+
+    #[test]
+    fn overflow_concurrent_same_key() {
+        let forge = Arc::new(ShapeForge::new());
+        let key: StringIndex = 1_000_600;
+        forge.overflow_active.store(true, Ordering::Relaxed);
+        let barrier = Arc::new(Barrier::new(2));
+
+        let f1 = Arc::clone(&forge);
+        let b1 = Arc::clone(&barrier);
+        let h1 = std::thread::spawn(move || {
+            b1.wait();
+            f1.make_shape(EMPTY_SHAPE_ID, key)
+        });
+
+        let f2 = Arc::clone(&forge);
+        let b2 = Arc::clone(&barrier);
+        let h2 = std::thread::spawn(move || {
+            b2.wait();
+            f2.make_shape(EMPTY_SHAPE_ID, key)
+        });
+
+        let id1 = h1.join().unwrap();
+        let id2 = h2.join().unwrap();
+        assert_eq!(id1, id2);
+        assert!(id1 > 0);
     }
 }
