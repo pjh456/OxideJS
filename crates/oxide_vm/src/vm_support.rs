@@ -6,6 +6,7 @@ use oxide_bytecode::module::Constant;
 
 use crate::bindings;
 use crate::vm::Vm;
+use crate::vm_info;
 use crate::vm_state::{GcState, IterState, ProfilingState, SymbolState};
 use oxide_kernel::kernel::{KernelConfig, KernelCore, KernelSession};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
@@ -19,7 +20,7 @@ impl Vm {
         let mut session = KernelSession::new(&core);
         bindings::init_kernel_builtins(&core, &mut session);
         let obj_proto = P::clone(&session.builtin_world().object_proto);
-        Self {
+        let vm = Self {
             regs: [JsValue::undefined(); 256],
             pc: 0,
             bytecode: Vec::new(),
@@ -67,14 +68,16 @@ impl Vm {
                 ic_misses: std::cell::Cell::new(0),
                 instruction_count: 0,
             },
-        }
+        };
+        vm_info!("Vm created");
+        vm
     }
 
     pub fn with_kernel_core(core: Arc<KernelCore>) -> Self {
         let mut session = KernelSession::new(&core);
         bindings::init_kernel_builtins(&core, &mut session);
         let obj_proto = P::clone(&session.builtin_world().object_proto);
-        Self {
+        let vm = Self {
             regs: [JsValue::undefined(); 256],
             pc: 0,
             bytecode: Vec::new(),
@@ -122,7 +125,9 @@ impl Vm {
                 ic_misses: std::cell::Cell::new(0),
                 instruction_count: 0,
             },
-        }
+        };
+        vm_info!("Vm created (pool)");
+        vm
     }
 
     pub fn full_reset(&mut self) {
@@ -138,6 +143,7 @@ impl Vm {
         self.session.record_snapshot();
         self.object_prototype = P::clone(&self.session.builtin_world().object_proto);
         self.clear_full_reset_state();
+        vm_info!("full_reset completed");
     }
 
     #[doc(hidden)]

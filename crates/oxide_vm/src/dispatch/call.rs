@@ -1,5 +1,6 @@
 use crate::native::NativeFn;
 use crate::vm::{native_fn_ptr_to_fn, CallFrame, FrameContinuation, Vm};
+use crate::{vm_debug, vm_trace};
 use oxide_builtins::{builtins_debug, builtins_trace};
 use oxide_bytecode::opcode;
 use oxide_runtime_api::NativeResult;
@@ -79,6 +80,7 @@ impl Vm {
 impl Vm {
     pub(crate) fn dispatch_create_closure(&mut self, rd: usize, instr: u32) {
         let sub_idx = opcode::imm16(instr) as u32;
+        vm_trace!("CREATE_CLOSURE rd={} sub_idx={}", rd, sub_idx);
         debug_assert!(sub_idx > 0 && (sub_idx as usize) <= self.sub_modules.len());
         let sub = &self.sub_modules[sub_idx as usize - 1];
         let result = self.create_function_object(
@@ -92,6 +94,7 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_create_regexp(&mut self, rd: usize, a: usize, b: usize) -> Result<Option<JsValue>, String> {
+        vm_trace!("CREATE_REGEXP rd={}", rd);
         let pat_val = self.regs[a];
         let flags_val = self.regs[b];
         let ctor_ptr = self.session.builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
@@ -124,6 +127,7 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_super_call(&mut self, rd: usize, a: usize) -> Result<bool, String> {
+        vm_debug!("SUPER_CALL depth={}", self.frames.len());
         let first_arg_reg = a as u8;
         let ext = self.bytecode[self.pc];
         self.pc += 1;
@@ -266,6 +270,7 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_super_get_prop(&mut self, rd: usize, a: usize, b: usize) -> Result<bool, String> {
+        vm_trace!("SUPER_GET_PROP rd={} a={} b={}", rd, a, b);
         let key_val = self.regs[b];
         let prop_name_si = self.property_key_si(key_val);
         let Some(frame) = self.frames.last() else {
@@ -297,6 +302,7 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_set_home_object(&mut self, rd: usize, a: usize) -> Result<bool, String> {
+        vm_trace!("SET_HOME_OBJECT rd={} a={}", rd, a);
         let func_val = self.regs[rd];
         let home_val = self.regs[a];
         if !func_val.is_object() || !home_val.is_object() {

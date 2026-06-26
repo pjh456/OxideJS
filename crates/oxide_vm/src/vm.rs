@@ -10,6 +10,7 @@ pub use crate::bindings::init_kernel_builtins;
 use crate::native::NativeFn;
 use crate::session_gc::SessionGc;
 use crate::vm_state::{GcState, IterState, ProfilingState, SymbolState};
+use crate::{vm_debug, vm_error, vm_trace, vm_warn};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_runtime_api as coercion;
 use oxide_runtime_api::NativeResult;
@@ -401,6 +402,7 @@ impl Vm {
 
     pub(crate) fn raise_js_error(&mut self, err: JsError) -> Result<(), String> {
         let kind = js_error_kind_name(err.kind);
+        vm_debug!("raise_js_error: {} \"{}\"", kind, err.message);
         let error = oxide_builtins::error::create_kind_error(self, kind, &err.message);
         self.exception_value = Some(error);
         self.pending_error_kind = Some(kind);
@@ -421,6 +423,7 @@ impl Vm {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_nanos() as u64;
+            vm_debug!("step_rng: seeded");
         }
         self.math_rng_state = self
             .math_rng_state
@@ -508,6 +511,7 @@ impl Vm {
     }
 
     pub(crate) fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
+        vm_trace!("resolve_property: shape_id={} prop_name_si={}", obj.shape_id(), prop_name_si);
         let length_si = self.kernel_core.perm_interner().intern("length").0;
         if obj.is_array() && prop_name_si == length_si {
             return Some(JsValue::int(obj.prop_count() as i32));
@@ -573,6 +577,7 @@ impl Vm {
     pub(crate) fn call_function_sync(
         &mut self, callee: JsValue, receiver: JsValue, args: &[JsValue],
     ) -> Result<JsValue, String> {
+        vm_debug!("call_function_sync: args={} callee_is_object={}", args.len(), callee.is_object());
         if !callee.is_object() {
             return Err(self.error_message_text("TypeError", "accessor is not callable"));
         }
@@ -618,6 +623,12 @@ impl Vm {
         &mut self, callee: JsValue, this_value: JsValue, args: &[JsValue], construct_result_reg: Option<u8>,
         constructed_this: Option<JsValue>, new_target: JsValue, continuation: FrameContinuation,
     ) -> Result<(), String> {
+        vm_trace!(
+            "push_bytecode_frame: depth={}, args={}, continuation={:?}",
+            self.frames.len(),
+            args.len(),
+            continuation
+        );
         if !callee.is_object() {
             return Err(self.error_message_text("TypeError", "CALL target is not callable"));
         }
@@ -699,11 +710,13 @@ impl Vm {
             steps += 1;
             if let Some(max_steps) = self.kernel_core.config.max_steps {
                 if steps > max_steps {
+                    vm_warn!("dispatch: step limit {} exceeded at pc={}", max_steps, self.pc);
                     self.profiling.set_instruction_count(steps);
                     return Err(format!("VM step limit exceeded at pc={}", self.pc));
                 }
             }
             if self.pc >= self.bytecode.len() {
+                vm_error!("dispatch: program counter out of bounds pc={} len={}", self.pc, self.bytecode.len());
                 self.profiling.instruction_count = steps;
                 return Err("program counter out of bounds".into());
             }
@@ -719,6 +732,7 @@ impl Vm {
                 OpCode::NOP => {}
 
                 OpCode::HALT => {
+                    vm_trace!("HALT: regs[0]={:?}", self.regs[0]);
                     self.profiling.set_instruction_count(steps);
                     return Ok(self.regs[0]);
                 }

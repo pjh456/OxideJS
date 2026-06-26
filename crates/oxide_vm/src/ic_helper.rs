@@ -4,6 +4,7 @@
 //! update handlers route through here, so IC format changes (like the future
 //! side-table migration) require editing only this file.
 
+use crate::vm_trace;
 use oxide_bytecode::opcode::{self, Instr};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
@@ -23,6 +24,7 @@ pub(crate) fn read_ic_entry(bytecode: &[Instr], pc: &mut usize) -> (u32, u32) {
 /// after resolving a property, so the next execution of this site hits the cache.
 pub(crate) fn write_ic_back(bytecode: &mut [Instr], pc: usize, shape_id: u32, slot_index: u32) {
     debug_assert!(pc >= 3, "IC write-back requires 3 extension words before pc");
+    vm_trace!("write_ic_back: pc={} shape_id={} slot={}", pc, shape_id, slot_index);
     bytecode[pc - 3] = shape_id & 0x00FF_FFFF;
     bytecode[pc - 2] = slot_index;
     bytecode[pc - 1] = 0;

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::native::NativeFn;
 use crate::vm::{native_fn_ptr_to_fn, CallFrame, ForInIter, FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
-use crate::vm_debug;
+use crate::vm_trace;
 use oxide_runtime_api::{to_boolean, NativeResult};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::is_private_name_key;
@@ -12,7 +12,7 @@ impl Vm {
     pub(crate) fn dispatch_new_expression(&mut self, rd: usize, a: usize, b: usize) -> Result<bool, String> {
         let constructor_reg = a;
         let first_arg_reg = b as u8;
-        vm_debug!("NEW_EXPRESSION rd={}", rd);
+        vm_trace!("NEW_EXPRESSION rd={}", rd);
 
         let constructor = self.regs[constructor_reg];
         if !constructor.is_object() {
@@ -164,6 +164,7 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_template_str(&mut self, rd: usize) {
+        vm_trace!("TEMPLATE_STR rd={}", rd);
         let header = self.bytecode[self.pc];
         self.pc += 1;
         let segment_count = (header >> 16) as usize;
@@ -200,6 +201,7 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_instanceof(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("INSTANCEOF rd={}", rd);
         let lhs_val = self.regs[a];
         let rhs_val = self.regs[b];
 
@@ -246,6 +248,7 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_in(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("IN rd={}", rd);
         let key_val = self.regs[a];
         let obj_ptr = self.regs[b].as_object_ptr() as *mut JsObject;
         if obj_ptr.is_null() {
@@ -259,6 +262,7 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_for_in_init(&mut self, a: usize) -> Result<(), String> {
+        vm_trace!("FOR_IN_INIT r{}={:?}", a, self.regs[a]);
         let obj_val = self.regs[a];
         if !obj_val.is_object() {
             return self.raise_type_error("for-in right-hand side is not an object");
@@ -315,6 +319,7 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_for_in_next(&mut self, rd: usize) -> Result<(), String> {
+        vm_trace!("FOR_IN_NEXT rd={}", rd);
         let iter_ptr = self.iters.last_for_in();
         if iter_ptr.is_null() {
             return Err("FOR_IN_NEXT without active iterator".into());
@@ -330,6 +335,7 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_for_in_done(&mut self, rd: usize) {
+        vm_trace!("FOR_IN_DONE rd={}", rd);
         let iter_ptr = self.iters.last_for_in();
         if iter_ptr.is_null() {
             self.regs[rd] = JsValue::bool(true);
@@ -340,10 +346,12 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_for_in_cleanup(&mut self) {
+        vm_trace!("FOR_IN_CLEANUP");
         self.iters.pop_for_in();
     }
 
     pub(crate) fn dispatch_for_of_init(&mut self, a: usize) -> Result<(), String> {
+        vm_trace!("FOR_OF_INIT r{}={:?}", a, self.regs[a]);
         let iterable = self.regs[a];
         match oxide_builtins::iterator::make_iterator_for_value(self, iterable) {
             Ok(iterator) => {
@@ -360,6 +368,7 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_for_of_done(&mut self, rd: usize) -> Result<(), String> {
+        vm_trace!("FOR_OF_DONE rd={}", rd);
         let Some(iterator) = self.iters.last_for_of() else {
             return Err("FOR_OF_DONE without active iterator".into());
         };
@@ -385,6 +394,7 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_for_of_next(&mut self, rd: usize) -> Result<(), String> {
+        vm_trace!("FOR_OF_NEXT rd={}", rd);
         let result = self.iters.last_for_of_result();
         if !result.is_object() {
             self.regs[rd] = JsValue::undefined();
@@ -397,6 +407,7 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_for_of_close(&mut self) -> Result<(), String> {
+        vm_trace!("FOR_OF_CLOSE");
         let Some(iterator) = self.iters.pop_for_of() else {
             return Ok(());
         };
@@ -416,6 +427,7 @@ impl Vm {
     }
 
     pub(crate) fn dispatch_rest_object(&mut self, rd: usize, a: usize) -> Result<(), String> {
+        vm_trace!("REST_OBJECT rd={}", rd);
         let src = self.regs[a];
         if !src.is_object() {
             return self.raise_type_error("Cannot destructure property of null/undefined");
