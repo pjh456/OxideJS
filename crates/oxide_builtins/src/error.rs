@@ -6,31 +6,24 @@ use oxide_types::mem::P;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-fn create_error_object<H: VmHost>(host: &mut H, error_proto_ptr: *mut JsObject, name: &str, message: &str) -> JsValue {
-    let obj = host
-        .epoch()
-        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(error_proto_ptr)));
-
+fn set_own_message<H: VmHost>(host: &mut H, this: *mut JsObject, args: &[u8]) {
+    if args.len() <= 1 {
+        return;
+    }
+    let msg_val = host.reg(args[1]);
+    if msg_val.is_undefined() {
+        return;
+    }
+    let msg_str = to_string(msg_val);
     let sf = Arc::clone(host.kernel_core().perm_interner());
     let sh = Arc::clone(host.kernel_core().shape_forge());
-
-    let si_message = sf.intern("message").0;
-    let sh_message = sh.make_shape(EMPTY_SHAPE_ID, si_message);
-    let msg_val = host.new_string(message);
+    let si = sf.intern("message").0;
+    let new_shape = sh.make_shape(EMPTY_SHAPE_ID, si);
+    let perm_val = host.new_string(&msg_str);
     unsafe {
-        (*obj).set_shape_id(sh_message);
-        (*obj).push_prop(msg_val);
+        (*this).set_shape_id(new_shape);
+        (*this).push_prop(perm_val);
     }
-
-    let si_name = sf.intern("name").0;
-    let sh_name = sh.make_shape(sh_message, si_name);
-    let name_val = host.new_string(name);
-    unsafe {
-        (*obj).set_shape_id(sh_name);
-        (*obj).push_prop(name_val);
-    }
-
-    JsValue::from_js_object(obj)
 }
 
 pub fn create_kind_error<H: VmHost>(host: &mut H, kind: &str, msg: &str) -> JsValue {
@@ -43,7 +36,21 @@ pub fn create_kind_error<H: VmHost>(host: &mut H, kind: &str, msg: &str) -> JsVa
         "EvalError" => P::as_ptr(&host.session().builtin_world().eval_error_proto) as *mut JsObject,
         _ => P::as_ptr(&host.session().builtin_world().error_proto) as *mut JsObject,
     };
-    create_error_object(host, proto_ptr, kind, msg)
+    let obj = host
+        .epoch()
+        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
+    if !msg.is_empty() {
+        let sf = Arc::clone(host.kernel_core().perm_interner());
+        let sh = Arc::clone(host.kernel_core().shape_forge());
+        let si = sf.intern("message").0;
+        let new_shape = sh.make_shape(EMPTY_SHAPE_ID, si);
+        let msg_val = host.new_string(msg);
+        unsafe {
+            (*obj).set_shape_id(new_shape);
+            (*obj).push_prop(msg_val);
+        }
+    }
+    JsValue::from_js_object(obj)
 }
 
 pub fn create_type_error<H: VmHost>(host: &mut H, msg: &str) -> JsValue {
@@ -70,85 +77,99 @@ pub fn create_uri_error<H: VmHost>(host: &mut H, msg: &str) -> JsValue {
     create_kind_error(host, "URIError", msg)
 }
 
-fn get_msg<H: VmHost>(host: &mut H, args: &[u8]) -> String {
-    if args.len() > 1 {
-        to_string(host.reg(args[1]))
-    } else {
-        String::new()
-    }
+macro_rules! error_ctor {
+    ($name:ident, $proto_field:ident) => {
+        pub fn $name<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
+            let this_val = host.reg(255);
+            let this = if this_val.is_object() {
+                this_val.as_js_object_ptr()
+            } else {
+                let proto_ptr = P::as_ptr(&host.session().builtin_world().$proto_field) as *mut JsObject;
+                host.epoch()
+                    .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)))
+            };
+            set_own_message(host, this, args);
+            NativeResult::Ok(JsValue::from_js_object(this))
+        }
+    };
 }
 
-pub fn error_constructor<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
-    let msg = get_msg(host, args);
-    let proto_ptr = P::as_ptr(&host.session().builtin_world().error_proto) as *mut JsObject;
-    NativeResult::Ok(create_error_object(host, proto_ptr, "Error", &msg))
-}
-
-pub fn type_error_constructor<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
-    let msg = get_msg(host, args);
-    let proto_ptr = P::as_ptr(&host.session().builtin_world().type_error_proto) as *mut JsObject;
-    NativeResult::Ok(create_error_object(host, proto_ptr, "TypeError", &msg))
-}
-
-pub fn reference_error_constructor<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
-    let msg = get_msg(host, args);
-    let proto_ptr = P::as_ptr(&host.session().builtin_world().reference_error_proto) as *mut JsObject;
-    NativeResult::Ok(create_error_object(host, proto_ptr, "ReferenceError", &msg))
-}
-
-pub fn range_error_constructor<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
-    let msg = get_msg(host, args);
-    let proto_ptr = P::as_ptr(&host.session().builtin_world().range_error_proto) as *mut JsObject;
-    NativeResult::Ok(create_error_object(host, proto_ptr, "RangeError", &msg))
-}
-
-pub fn syntax_error_constructor<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
-    let msg = get_msg(host, args);
-    let proto_ptr = P::as_ptr(&host.session().builtin_world().syntax_error_proto) as *mut JsObject;
-    NativeResult::Ok(create_error_object(host, proto_ptr, "SyntaxError", &msg))
-}
-
-pub fn uri_error_constructor<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
-    let msg = get_msg(host, args);
-    let proto_ptr = P::as_ptr(&host.session().builtin_world().uri_error_proto) as *mut JsObject;
-    NativeResult::Ok(create_error_object(host, proto_ptr, "URIError", &msg))
-}
-
-pub fn eval_error_constructor<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
-    let msg = get_msg(host, args);
-    let proto_ptr = P::as_ptr(&host.session().builtin_world().eval_error_proto) as *mut JsObject;
-    NativeResult::Ok(create_error_object(host, proto_ptr, "EvalError", &msg))
-}
+error_ctor!(error_constructor, error_proto);
+error_ctor!(type_error_constructor, type_error_proto);
+error_ctor!(reference_error_constructor, reference_error_proto);
+error_ctor!(range_error_constructor, range_error_proto);
+error_ctor!(syntax_error_constructor, syntax_error_proto);
+error_ctor!(uri_error_constructor, uri_error_proto);
+error_ctor!(eval_error_constructor, eval_error_proto);
 
 pub fn error_to_string<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
     let this_val = host.reg(args[0]);
-    let (name, msg) = if this_val.is_object() {
-        let obj = unsafe { &*this_val.as_js_object_ptr() };
-        let name_val = obj
-            .hash_props_vec()
-            .and_then(|v| v.first())
-            .copied()
-            .unwrap_or(JsValue::undefined());
-        let msg_val = obj
-            .hash_props_vec()
-            .and_then(|v| v.get(1))
-            .copied()
-            .unwrap_or(JsValue::undefined());
-        (
-            host.lookup_str(name_val).unwrap_or_else(|| "Error".to_string()),
-            host.lookup_str(msg_val).unwrap_or_default(),
-        )
-    } else {
-        ("Error".to_string(), String::new())
+    if !this_val.is_object() {
+        let err = create_type_error(host, "Error.prototype.toString called on non-object");
+        return NativeResult::Err(err);
+    }
+    let obj = unsafe { &*this_val.as_js_object_ptr() };
+    let sf = Arc::clone(host.kernel_core().perm_interner());
+    let si_name = sf.intern("name").0;
+    let si_msg = sf.intern("message").0;
+
+    let name_str = match host.resolve_property(obj, si_name) {
+        Some(v) if !v.is_undefined() => match host.coerce_primitive_bounded(v, true) {
+            Ok(prim) => to_string(prim),
+            Err(_) => {
+                let err = create_type_error(host, "Cannot convert name to primitive value");
+                return NativeResult::Err(err);
+            }
+        },
+        _ => "Error".to_string(),
     };
-    let result = oxide_runtime_api::format_error_message(&name, &msg);
+
+    let msg_str = match host.resolve_property(obj, si_msg) {
+        Some(v) if !v.is_undefined() => match host.coerce_primitive_bounded(v, true) {
+            Ok(prim) => to_string(prim),
+            Err(_) => {
+                let err = create_type_error(host, "Cannot convert message to primitive value");
+                return NativeResult::Err(err);
+            }
+        },
+        _ => String::new(),
+    };
+
+    let result = if name_str.is_empty() {
+        msg_str
+    } else if msg_str.is_empty() {
+        name_str
+    } else {
+        format!("{}: {}", name_str, msg_str)
+    };
     NativeResult::Ok(host.new_string(&result))
 }
 
-pub fn error_stack_getter<H: VmHost>(host: &mut H, _args: &[u8]) -> NativeResult {
+pub fn error_stack_getter<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = host.reg(args[0]);
+    let (name_str, msg_str) = if this_val.is_object() {
+        let obj = unsafe { &*this_val.as_js_object_ptr() };
+        let sf = Arc::clone(host.kernel_core().perm_interner());
+        let si_name = sf.intern("name").0;
+        let si_msg = sf.intern("message").0;
+        let n = host
+            .resolve_property(obj, si_name)
+            .and_then(|v| host.lookup_str(v))
+            .unwrap_or_else(|| "Error".to_string());
+        let m = host
+            .resolve_property(obj, si_msg)
+            .and_then(|v| host.lookup_str(v))
+            .unwrap_or_default();
+        (n, m)
+    } else {
+        ("Error".to_string(), String::new())
+    };
+
+    let header = oxide_runtime_api::format_error_message(&name_str, &msg_str);
+    let mut result = header;
     let names = host.call_stack_function_names();
-    let mut lines: Vec<String> = names.iter().rev().map(|n| format!("    at {} (native)", n)).collect();
-    lines.push("    at <anonymous> (native)".to_string());
-    let result = lines.join("\n");
+    for n in &names {
+        result.push_str(&format!("\n    at {} (<unknown>:0:0)", n));
+    }
     NativeResult::Ok(host.new_string(&result))
 }
