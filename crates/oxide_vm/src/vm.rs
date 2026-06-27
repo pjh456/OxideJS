@@ -830,27 +830,27 @@ impl Vm {
                 }
 
                 OpCode::EQ => {
-                    self.dispatch_eq(rd, a, b);
+                    self.dispatch_eq(rd, a, b)?;
                 }
 
                 OpCode::NEQ => {
-                    self.dispatch_neq(rd, a, b);
+                    self.dispatch_neq(rd, a, b)?;
                 }
 
                 OpCode::LT => {
-                    self.dispatch_lt(rd, a, b);
+                    self.dispatch_lt(rd, a, b)?;
                 }
 
                 OpCode::GT => {
-                    self.dispatch_gt(rd, a, b);
+                    self.dispatch_gt(rd, a, b)?;
                 }
 
                 OpCode::LTE => {
-                    self.dispatch_lte(rd, a, b);
+                    self.dispatch_lte(rd, a, b)?;
                 }
 
                 OpCode::GTE => {
-                    self.dispatch_gte(rd, a, b);
+                    self.dispatch_gte(rd, a, b)?;
                 }
 
                 OpCode::STRICT_EQ => {
