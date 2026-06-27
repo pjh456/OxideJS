@@ -160,6 +160,10 @@ pub(crate) struct CompileCtx {
     pub(crate) static_block_this_reg: Option<u8>,
     pub(crate) after_super_insert: Option<Vec<opcode::Instr>>,
     pub(crate) after_super_inserted: bool,
+    /// Count-pass mirror of `after_super_insert`: the instruction count of a derived
+    /// constructor's instance-field code, added at the super() call site during body
+    /// counting so projected_pc matches where the emit pass splices the field bytecode.
+    pub(crate) after_super_count_words: Option<usize>,
     /// Set when alloc_reg() overflows into the reserved this/new.target range (≥254).
     /// Checked after each emit phase to produce a compile error rather than silent corruption.
     pub(crate) reg_overflow: bool,
@@ -233,6 +237,7 @@ impl CompileCtx {
             static_block_this_reg: None,
             after_super_insert: None,
             after_super_inserted: false,
+            after_super_count_words: None,
             reg_overflow: false,
             const_overflow: false,
             jump_overflow: false,
@@ -731,19 +736,24 @@ impl Compiler {
             }
         }
 
-        // Count pass
-        if !fields_after_super {
-            if let Some(count) = count_fields.as_mut() {
+        // Count pass. For derived constructors the emit pass allocates/counts the instance
+        // fields up front but splices the field bytecode into the body right after SUPER_CALL.
+        // Mirror that: count the fields (allocating the same registers/constants), capture
+        // their instruction count, undo the position here, and re-add it at the super() call
+        // site during body counting so labels after super() line up with the emit pass.
+        if let Some(count) = count_fields.as_mut() {
+            if fields_after_super {
+                let before = ctx.projected_pc;
+                count(self, &mut ctx);
+                let field_words = ctx.projected_pc - before;
+                ctx.projected_pc = before;
+                ctx.after_super_count_words = Some(field_words);
+            } else {
                 count(self, &mut ctx);
             }
         }
         for stmt in body_stmts {
             self.count_statement(stmt, &mut ctx);
-        }
-        if fields_after_super {
-            if let Some(count) = count_fields.as_mut() {
-                count(self, &mut ctx);
-            }
         }
         ctx.max_regs = ctx.max_regs.max(1);
         ctx.reg_overflow = false;
