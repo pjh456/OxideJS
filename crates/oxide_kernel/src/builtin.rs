@@ -137,6 +137,9 @@ pub struct StringMethods {
     pub match_all: *const (),
     pub replace_all: *const (),
     pub value_of: *const (),
+    pub substr: *const (),
+    pub at: *const (),
+    pub last_index_of: *const (),
 }
 
 pub struct RegExpMethods {
@@ -1048,6 +1051,9 @@ impl BuiltinWorld {
             ("matchAll", methods.match_all, 1),
             ("replaceAll", methods.replace_all, 2),
             ("valueOf", methods.value_of, 0),
+            ("substr", methods.substr, 2),
+            ("at", methods.at, 1),
+            ("lastIndexOf", methods.last_index_of, 1),
         );
     }
 

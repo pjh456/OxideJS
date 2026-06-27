@@ -35,6 +35,9 @@ pub fn bind_string(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         match_all: oxide_builtins::string::string_match_all::<crate::vm::Vm> as *const (),
         replace_all: oxide_builtins::string::string_replace_all::<crate::vm::Vm> as *const (),
         value_of: oxide_builtins::string::string_value_of::<crate::vm::Vm> as *const (),
+        substr: oxide_builtins::string::string_substr::<crate::vm::Vm> as *const (),
+        at: oxide_builtins::string::string_at::<crate::vm::Vm> as *const (),
+        last_index_of: oxide_builtins::string::string_last_index_of::<crate::vm::Vm> as *const (),
     };
     session.builtin_world().bind_string_methods(
         &string_methods,
