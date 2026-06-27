@@ -358,7 +358,7 @@ pub fn array_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let target = vm.reg(args[1]);
     for i in 0..n {
-        if oxide_runtime_api::strict_equality(arr.get_prop_at(i), target) {
+        if oxide_runtime_api::strict_eq(arr.get_prop_at(i), target) {
             return NativeResult::Ok(JsValue::int(i as i32));
         }
     }
@@ -831,19 +831,20 @@ pub fn array_fill<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.fill called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &mut *arr_ptr };
-    let len = arr.prop_count() as usize;
+    let len = arr.prop_count() as isize;
     let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let start = if args.len() > 2 {
-        (vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as i32).max(0) as usize
+    let rel_start = if args.len() > 2 {
+        oxide_runtime_api::to_integer_or_infinity(vm.reg(args[2])) as isize
     } else {
         0
     };
-    let end = if args.len() > 3 {
-        let e = vm.coerce_number_bounded(vm.reg(args[3])).unwrap_or(f64::NAN) as i32;
-        (e as usize).min(len)
+    let rel_end = if args.len() > 3 {
+        oxide_runtime_api::to_integer_or_infinity(vm.reg(args[3])) as isize
     } else {
         len
     };
+    let start = (if rel_start < 0 { (len + rel_start).max(0) } else { rel_start.min(len) }) as usize;
+    let end = (if rel_end < 0 { (len + rel_end).max(0) } else { rel_end.min(len) }) as usize;
     for i in start..end {
         arr.set_prop_at(i, value);
     }
@@ -854,28 +855,32 @@ pub fn array_copy_within<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.copyWithin called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &mut *arr_ptr };
-    let len = arr.prop_count() as usize;
+    let len = arr.prop_count() as isize;
     if len == 0 {
         return NativeResult::Ok(vm.reg(args[0]));
     }
-    let target = if args.len() > 1 {
-        (vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as i32) as usize
+    let rel_target = if args.len() > 1 {
+        oxide_runtime_api::to_integer_or_infinity(vm.reg(args[1])) as isize
     } else {
         0
     };
-    let start = if args.len() > 2 {
-        (vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as i32) as usize
+    let rel_start = if args.len() > 2 {
+        oxide_runtime_api::to_integer_or_infinity(vm.reg(args[2])) as isize
     } else {
         0
     };
-    let end = if args.len() > 3 {
-        (vm.coerce_number_bounded(vm.reg(args[3])).unwrap_or(f64::NAN) as i32 as usize).min(len)
+    let rel_end = if args.len() > 3 {
+        oxide_runtime_api::to_integer_or_infinity(vm.reg(args[3])) as isize
     } else {
         len
     };
+    let target = (if rel_target < 0 { (len + rel_target).max(0) } else { rel_target.min(len) }) as usize;
+    let start = (if rel_start < 0 { (len + rel_start).max(0) } else { rel_start.min(len) }) as usize;
+    let end = (if rel_end < 0 { (len + rel_end).max(0) } else { rel_end.min(len) }) as usize;
     let mut to = target;
+    let len_usize = len as usize;
     for from in start..end {
-        if to >= len {
+        if to >= len_usize {
             break;
         }
         let v = arr.get_prop_at(from);
@@ -911,7 +916,7 @@ pub fn array_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let len = arr.prop_count() as i32;
     let search = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     for i in (0..len).rev() {
-        if oxide_runtime_api::strict_equality(arr.get_prop_at(i), search) {
+        if oxide_runtime_api::strict_eq(arr.get_prop_at(i), search) {
             return NativeResult::Ok(JsValue::int(i));
         }
     }
