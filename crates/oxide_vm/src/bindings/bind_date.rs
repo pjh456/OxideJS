@@ -88,21 +88,9 @@ pub fn bind_date(core: &Arc<KernelCore>, session: &KernelSession, global: &mut J
                 oxide_builtins::date::date_set_utc_full_year::<crate::vm::Vm> as *const (),
                 3,
             ),
-            (
-                "setUTCMonth",
-                oxide_builtins::date::date_set_utc_month::<crate::vm::Vm> as *const (),
-                2,
-            ),
-            (
-                "setUTCDate",
-                oxide_builtins::date::date_set_utc_date::<crate::vm::Vm> as *const (),
-                1,
-            ),
-            (
-                "setUTCHours",
-                oxide_builtins::date::date_set_utc_hours::<crate::vm::Vm> as *const (),
-                4,
-            ),
+            ("setUTCMonth", oxide_builtins::date::date_set_utc_month::<crate::vm::Vm> as *const (), 2),
+            ("setUTCDate", oxide_builtins::date::date_set_utc_date::<crate::vm::Vm> as *const (), 1),
+            ("setUTCHours", oxide_builtins::date::date_set_utc_hours::<crate::vm::Vm> as *const (), 4),
             (
                 "setUTCMinutes",
                 oxide_builtins::date::date_set_utc_minutes::<crate::vm::Vm> as *const (),
@@ -126,11 +114,7 @@ pub fn bind_date(core: &Arc<KernelCore>, session: &KernelSession, global: &mut J
             ("toDateString", oxide_builtins::date::date_to_date_string::<crate::vm::Vm> as *const (), 0),
             ("toTimeString", oxide_builtins::date::date_to_time_string::<crate::vm::Vm> as *const (), 0),
             ("toUTCString", oxide_builtins::date::date_to_utc_string::<crate::vm::Vm> as *const (), 0),
-            (
-                "toGMTString",
-                oxide_builtins::date::date_to_gmt_string::<crate::vm::Vm> as *const (),
-                0,
-            ),
+            ("toGMTString", oxide_builtins::date::date_to_gmt_string::<crate::vm::Vm> as *const (), 0),
             (
                 "toLocaleDateString",
                 oxide_builtins::date::date_to_locale_date_string::<crate::vm::Vm> as *const (),

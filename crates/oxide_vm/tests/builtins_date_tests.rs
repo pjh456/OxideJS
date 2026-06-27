@@ -237,20 +237,40 @@ fn date_local_setters_preserve_utc_offset() {
 #[test]
 fn date_set_utc_full_year_works() {
     let mut vm = Vm::new();
-    let r = eval(&mut vm, "var d = new Date(2020, 0, 1, 0, 0, 0); d.setUTCFullYear(2025); d.getUTCFullYear()").unwrap();
+    let r = eval(
+        &mut vm,
+        "var d = new Date(2020, 0, 1, 0, 0, 0); d.setUTCFullYear(2025); d.getUTCFullYear()",
+    )
+    .unwrap();
     assert_eq!(r.as_double(), 2025.0);
 }
 
 #[test]
 fn date_set_utc_hours_optional_chain() {
     let mut vm = Vm::new();
-    let r = eval(&mut vm, "var d = new Date(2020, 0, 1, 0, 0, 0); d.setUTCHours(23, 59, 59, 999); d.getUTCHours()").unwrap();
+    let r = eval(
+        &mut vm,
+        "var d = new Date(2020, 0, 1, 0, 0, 0); d.setUTCHours(23, 59, 59, 999); d.getUTCHours()",
+    )
+    .unwrap();
     assert_eq!(r.as_double(), 23.0);
-    let r = eval(&mut vm, "var d = new Date(2020, 0, 1, 0, 0, 0); d.setUTCHours(23, 59, 59, 999); d.getUTCMinutes()").unwrap();
+    let r = eval(
+        &mut vm,
+        "var d = new Date(2020, 0, 1, 0, 0, 0); d.setUTCHours(23, 59, 59, 999); d.getUTCMinutes()",
+    )
+    .unwrap();
     assert_eq!(r.as_double(), 59.0);
-    let r = eval(&mut vm, "var d = new Date(2020, 0, 1, 0, 0, 0); d.setUTCHours(23, 59, 59, 999); d.getUTCSeconds()").unwrap();
+    let r = eval(
+        &mut vm,
+        "var d = new Date(2020, 0, 1, 0, 0, 0); d.setUTCHours(23, 59, 59, 999); d.getUTCSeconds()",
+    )
+    .unwrap();
     assert_eq!(r.as_double(), 59.0);
-    let r = eval(&mut vm, "var d = new Date(2020, 0, 1, 0, 0, 0); d.setUTCHours(23, 59, 59, 999); d.getUTCMilliseconds()").unwrap();
+    let r = eval(
+        &mut vm,
+        "var d = new Date(2020, 0, 1, 0, 0, 0); d.setUTCHours(23, 59, 59, 999); d.getUTCMilliseconds()",
+    )
+    .unwrap();
     assert_eq!(r.as_double(), 999.0);
 }
 

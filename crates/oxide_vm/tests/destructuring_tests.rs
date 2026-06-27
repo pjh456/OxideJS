@@ -87,3 +87,36 @@ fn function_and_method_parameter_destructuring() {
     .unwrap();
     assert_num(result, 10.0);
 }
+
+// Regression: a for-of whose assignment target has a NESTED rest pattern (the rest
+// element is itself a pattern, e.g. `[...[x]]`) used to loop forever / error, because the
+// counter undercounted the rest target's instructions vs the emitter, corrupting the loop's
+// jump offsets. (Object rest with a nested target is a syntax error per spec, so untested.)
+#[test]
+fn for_of_assignment_nested_rest_target_runs_once() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var x; var c=0; for([...[x]] of [[1,2,3]]){ c=c+1; } c").unwrap();
+    assert_num(result, 1.0);
+}
+
+#[test]
+fn for_of_assignment_nested_rest_empty_body_binds_inner() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var x; for([...[x]] of [[1,2,3]]){} x").unwrap();
+    assert_num(result, 1.0);
+}
+
+#[test]
+fn for_of_assignment_nested_rest_with_leading_element() {
+    let mut vm = Vm::new();
+    // outer iterates once; a=1, rest=[2,3,4], then [x,y] from rest -> x=2, y=3
+    let result = eval(&mut vm, "var a,x,y; for([a,...[x,y]] of [[1,2,3,4]]){} a*100+x*10+y").unwrap();
+    assert_num(result, 123.0);
+}
+
+#[test]
+fn standalone_nested_rest_assignment() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var x; [...[x]]=[1,2,3]; x").unwrap();
+    assert_num(result, 1.0);
+}
