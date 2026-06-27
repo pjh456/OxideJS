@@ -22,8 +22,8 @@ REPO_ROOT = SCRIPT_DIR.parent
 
 OXIDE_EXE       = REPO_ROOT / "target" / "release" / "oxide"
 OXIDE_TEST262   = REPO_ROOT / "target" / "release" / "test262-runner"
-QUICKJS_EXE     = REPO_ROOT / "baseline-quickjs" / "build" / "qjs"
-QUICKJS_TEST262 = REPO_ROOT / "baseline-quickjs" / "build" / "run-test262"
+QUICKJS_EXE     = REPO_ROOT / "baseline-quickjs" / "qjs"
+QUICKJS_TEST262 = REPO_ROOT / "baseline-quickjs" / "run-test262"
 TEST262_DIR     = REPO_ROOT / "tests" / "test262" / "test"
 STRESS_DIR      = REPO_ROOT / "tests" / "stress"
 RESULTS_DIR     = REPO_ROOT / "benchmark" / "results"
@@ -158,7 +158,7 @@ def bench_test262_qjs():
     if not TEST262_DIR.exists():
         return {}, {}
     t0 = time.perf_counter()
-    conf = str(REPO_ROOT / "baseline-quickjs" / "build" / "test262.conf")
+    conf = str(REPO_ROOT / "baseline-quickjs" / "test262.conf")
     rc, out, err, _ = run([str(QUICKJS_TEST262), "-c", conf, str(TEST262_DIR)], timeout=600)
     elapsed = time.perf_counter() - t0
     summary = {"pass": 0, "fail": 0, "skip": 0, "total": 0, "elapsed_sec": round(elapsed, 1)}
