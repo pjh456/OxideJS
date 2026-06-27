@@ -113,6 +113,8 @@ pub struct TryHandler {
     pub catch_pc: Option<usize>,
     pub finally_pc: Option<usize>,
     pub frame_depth: usize,
+    /// for_of_iters length at try entry — bounds which iterators IteratorClose on unwind.
+    pub for_of_depth: usize,
 }
 
 /// Heap-allocated snapshot used by `call_bytecode_function_inline`.
@@ -164,6 +166,10 @@ pub struct Vm {
     pub(crate) save_stack: Vec<JsValue>,
     pub(crate) try_stack: Vec<TryHandler>,
     pub(crate) exception_value: Option<JsValue>,
+    /// Side-channel carrying the JsValue thrown by a sync call whose error was flattened
+    /// to a String by `call_function_sync`/`unwind`, so for-of can re-throw the original
+    /// value. Plain field (NOT in InlineSyncState) so it survives the inline-call restore.
+    pub(crate) last_uncaught_value: Option<JsValue>,
     pub(crate) pending_exception: Option<JsValue>,
     pub(crate) pending_error_kind: Option<&'static str>,
     pub(crate) root_reg_limit: u8,
@@ -635,7 +641,10 @@ impl Vm {
             self.regs = saved_regs;
             return match result {
                 NativeResult::Ok(val) => Ok(val),
-                NativeResult::Err(err) => Err(self.error_text(err)),
+                NativeResult::Err(err) => {
+                    self.last_uncaught_value = Some(err);
+                    Err(self.error_text(err))
+                }
                 NativeResult::TailCall { callee, this, args } => self.call_function_sync(callee, this, &args),
             };
         }
@@ -1267,6 +1276,7 @@ mod tests {
             catch_pc: Some(1),
             finally_pc: None,
             frame_depth: 0,
+            for_of_depth: 0,
         });
         vm.exception_value = Some(JsValue::int(2));
         vm.pending_exception = Some(JsValue::int(3));
@@ -1519,6 +1529,9 @@ impl oxide_runtime_api::VmHost for Vm {
     }
     fn epoch(&self) -> &Epoch {
         self.epoch()
+    }
+    fn take_uncaught_value(&mut self) -> Option<JsValue> {
+        self.last_uncaught_value.take()
     }
     fn property_key_si(&mut self, val: JsValue) -> u32 {
         self.property_key_si(val)

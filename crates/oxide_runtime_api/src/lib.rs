@@ -101,6 +101,9 @@ pub trait VmHost {
 
     // Call infrastructure
     fn call_function_sync(&mut self, callee: JsValue, receiver: JsValue, args: &[JsValue]) -> Result<JsValue, String>;
+    /// Take the original thrown JsValue preserved across a String-flattening call boundary,
+    /// so an iterator wrapper can re-throw the original error instead of re-wrapping it.
+    fn take_uncaught_value(&mut self) -> Option<JsValue>;
 
     // Error handling
     fn checked_object_ptr(&mut self, val: JsValue, error_msg: &str) -> Result<Option<*mut JsObject>, String>;

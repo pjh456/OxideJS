@@ -402,17 +402,26 @@ impl Vm {
             return Err("FOR_OF_DONE iterator is not an object".into());
         }
 
+        self.last_uncaught_value = None;
         let iter_obj = unsafe { &*iterator.as_js_object_ptr() };
         let next_si = self.kernel_core.perm_interner().intern("next").0;
-        let next_fn = self.ordinary_get(iter_obj, next_si, iterator)?;
-        let result = self.call_function_sync(next_fn, iterator, &[])?;
+        let next_fn = match self.ordinary_get(iter_obj, next_si, iterator) {
+            Ok(v) => v,
+            Err(e) => return self.throw_for_of_error(e),
+        };
+        let result = match self.call_function_sync(next_fn, iterator, &[]) {
+            Ok(v) => v,
+            Err(e) => return self.throw_for_of_error(e),
+        };
         if !result.is_object() {
             return self.raise_type_error("iterator result is not an object");
         }
-
         let result_obj = unsafe { &*result.as_js_object_ptr() };
         let done_si = self.kernel_core.perm_interner().intern("done").0;
-        let done_val = self.ordinary_get(result_obj, done_si, result)?;
+        let done_val = match self.ordinary_get(result_obj, done_si, result) {
+            Ok(v) => v,
+            Err(e) => return self.throw_for_of_error(e),
+        };
         let done = to_boolean(done_val);
         self.iters.set_last_for_of_result(result);
         self.regs[rd] = JsValue::bool(!done);
@@ -421,6 +430,7 @@ impl Vm {
 
     pub(crate) fn dispatch_for_of_next(&mut self, rd: usize) -> Result<(), String> {
         vm_trace!("FOR_OF_NEXT rd={}", rd);
+        self.last_uncaught_value = None;
         let result = self.iters.last_for_of_result();
         if !result.is_object() {
             self.regs[rd] = JsValue::undefined();
@@ -428,8 +438,25 @@ impl Vm {
         }
         let result_obj = unsafe { &*result.as_js_object_ptr() };
         let value_si = self.kernel_core.perm_interner().intern("value").0;
-        self.regs[rd] = self.ordinary_get(result_obj, value_si, result)?;
+        self.regs[rd] = match self.ordinary_get(result_obj, value_si, result) {
+            Ok(v) => v,
+            Err(e) => return self.throw_for_of_error(e),
+        };
         Ok(())
+    }
+
+    /// next()/value access threw: route through unwind so a surrounding try/catch can catch
+    /// it, re-throwing the ORIGINAL value when available. Per ECMA-262 the iterator is NOT
+    /// closed via return() on a next()-throw — pop it so the unwinding IteratorClose pass skips it.
+    fn throw_for_of_error(&mut self, msg: String) -> Result<(), String> {
+        self.iters.pop_for_of();
+        let exc = match self.last_uncaught_value.take() {
+            Some(v) => v,
+            None => oxide_builtins::error::create_error(self, &msg),
+        };
+        self.exception_value = Some(exc);
+        self.pending_error_kind = Some(self.thrown_error_kind(exc));
+        self.unwind()
     }
 
     pub(crate) fn dispatch_for_of_close(&mut self) -> Result<(), String> {
@@ -437,19 +464,58 @@ impl Vm {
         let Some(iterator) = self.iters.pop_for_of() else {
             return Ok(());
         };
+        // Normal / break / return exit: no prior abrupt completion, so return()'s own throw propagates.
+        self.close_for_of_iterator(iterator, false)
+    }
+
+    /// Call `iterator.return()` (IteratorClose). When `suppress_return_error` is true the call
+    /// is being made because an enclosing abrupt completion is unwinding: return()'s own result
+    /// is discarded and the in-flight exception is preserved across the call. When false (normal
+    /// for-of exit) return()'s error propagates.
+    pub(crate) fn close_for_of_iterator(
+        &mut self, iterator: JsValue, suppress_return_error: bool,
+    ) -> Result<(), String> {
         if !iterator.is_object() {
             return Ok(());
         }
         let iter_obj = unsafe { &*iterator.as_js_object_ptr() };
         let return_si = self.kernel_core.perm_interner().intern("return").0;
-        let return_fn = self.ordinary_get(iter_obj, return_si, iterator)?;
+        let return_fn = match self.ordinary_get(iter_obj, return_si, iterator) {
+            Ok(v) => v,
+            Err(e) => {
+                if suppress_return_error {
+                    return Ok(());
+                }
+                return Err(e);
+            }
+        };
         if return_fn.is_object() {
             let return_obj = unsafe { &*return_fn.as_js_object_ptr() };
             if return_obj.is_function() {
-                let _ = self.call_function_sync(return_fn, iterator, &[])?;
+                if suppress_return_error {
+                    let saved_exc = self.exception_value;
+                    let saved_kind = self.pending_error_kind;
+                    let _ = self.call_function_sync(return_fn, iterator, &[]);
+                    self.exception_value = saved_exc;
+                    self.pending_error_kind = saved_kind;
+                } else {
+                    let _ = self.call_function_sync(return_fn, iterator, &[])?;
+                }
             }
         }
         Ok(())
+    }
+
+    /// IteratorClose every active for-of iterator above `depth`, used by `unwind()` to close
+    /// loops abandoned by a throw. Pops before closing so a re-entrant call can't re-close,
+    /// and so the next()-throw path (which already popped its own iterator) is skipped.
+    pub(crate) fn close_for_of_above(&mut self, depth: usize) {
+        while self.iters.for_of_iters.len() > depth {
+            let Some(iterator) = self.iters.pop_for_of() else {
+                break;
+            };
+            let _ = self.close_for_of_iterator(iterator, true);
+        }
     }
 
     pub(crate) fn dispatch_rest_object(&mut self, rd: usize, a: usize) -> Result<(), String> {

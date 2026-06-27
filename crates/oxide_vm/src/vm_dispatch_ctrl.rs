@@ -177,6 +177,7 @@ impl Vm {
             catch_pc,
             finally_pc: None,
             frame_depth: self.frames.len(),
+            for_of_depth: self.iters.for_of_iters.len(),
         });
     }
 
@@ -193,6 +194,7 @@ impl Vm {
             catch_pc: None,
             finally_pc: Some(finally_pc),
             frame_depth: self.frames.len(),
+            for_of_depth: self.iters.for_of_iters.len(),
         });
     }
 
