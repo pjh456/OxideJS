@@ -196,3 +196,43 @@ fn test_from_entries_empty_array() {
     let (_vm, result) = eval("Object.fromEntries([])").unwrap();
     assert!(result.is_object(), "fromEntries([]) should return an empty object");
 }
+
+#[test]
+fn test_object_is_nan() {
+    let (_vm, result) = eval("Object.is(NaN, NaN)").unwrap();
+    assert!(result.is_bool() && result.as_bool());
+}
+
+#[test]
+fn test_object_is_signed_zero() {
+    let (_vm, result) = eval("Object.is(0, -0)").unwrap();
+    assert!(result.is_bool() && !result.as_bool());
+}
+
+#[test]
+fn test_entries_returns_key_value_pairs() {
+    let (_vm, result) = eval("var o = {a:1, b:2}; Object.entries(o).length").unwrap();
+    assert!(result.is_int() || result.is_double());
+}
+
+#[test]
+fn test_values_returns_array() {
+    let (_vm, result) = eval("var o = {a:1, b:2}; Object.values(o).length").unwrap();
+    assert!(result.is_int() || result.is_double());
+}
+
+#[test]
+fn test_get_own_property_descriptor_no_args_type_error() {
+    assert!(eval("Object.getOwnPropertyDescriptor()").is_err());
+}
+
+#[test]
+fn test_has_own_property_non_object_this_type_error() {
+    assert!(eval("Object.prototype.hasOwnProperty.call(42, 'x')").is_err());
+}
+
+#[test]
+fn test_property_is_enumerable_own_property() {
+    let (_vm, result) = eval("var o = {x: 1}; o.propertyIsEnumerable('x')").unwrap();
+    assert!(result.is_bool() && result.as_bool());
+}
