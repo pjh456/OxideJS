@@ -115,40 +115,40 @@ pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         if y_val.is_nan() || m_val.is_nan() {
             f64::NAN
         } else {
-        let y = y_val.trunc() as i32;
-        let m = m_val.trunc() as u32;
-        let d = if args.len() > 3 {
-            oxide_runtime_api::to_number(vm.reg(args[3])).trunc() as u32
-        } else {
-            now.day()
-        };
-        let h = if args.len() > 4 {
-            oxide_runtime_api::to_number(vm.reg(args[4])).trunc() as u32
-        } else {
-            now.hour()
-        };
-        let min = if args.len() > 5 {
-            oxide_runtime_api::to_number(vm.reg(args[5])).trunc() as u32
-        } else {
-            now.minute()
-        };
-        let sec = if args.len() > 6 {
-            oxide_runtime_api::to_number(vm.reg(args[6])).trunc() as u32
-        } else {
-            now.second()
-        };
-        let ms = if args.len() > 7 {
-            oxide_runtime_api::to_number(vm.reg(args[7])).trunc() as u32
-        } else {
-            now.timestamp_subsec_millis()
-        };
-        NaiveDate::from_ymd_opt(y, m + 1, d)
-            .and_then(|nd| {
-                nd.and_hms_milli_opt(h, min, sec, ms)
-                    .and_then(|ndt| ndt.and_local_timezone(Local).earliest())
-            })
-            .map(|dt| dt.timestamp_millis() as f64)
-            .unwrap_or(f64::NAN)
+            let y = y_val.trunc() as i32;
+            let m = m_val.trunc() as u32;
+            let d = if args.len() > 3 {
+                oxide_runtime_api::to_number(vm.reg(args[3])).trunc() as u32
+            } else {
+                now.day()
+            };
+            let h = if args.len() > 4 {
+                oxide_runtime_api::to_number(vm.reg(args[4])).trunc() as u32
+            } else {
+                now.hour()
+            };
+            let min = if args.len() > 5 {
+                oxide_runtime_api::to_number(vm.reg(args[5])).trunc() as u32
+            } else {
+                now.minute()
+            };
+            let sec = if args.len() > 6 {
+                oxide_runtime_api::to_number(vm.reg(args[6])).trunc() as u32
+            } else {
+                now.second()
+            };
+            let ms = if args.len() > 7 {
+                oxide_runtime_api::to_number(vm.reg(args[7])).trunc() as u32
+            } else {
+                now.timestamp_subsec_millis()
+            };
+            NaiveDate::from_ymd_opt(y, m + 1, d)
+                .and_then(|nd| {
+                    nd.and_hms_milli_opt(h, min, sec, ms)
+                        .and_then(|ndt| ndt.and_local_timezone(Local).earliest())
+                })
+                .map(|dt| dt.timestamp_millis() as f64)
+                .unwrap_or(f64::NAN)
         }
     } else {
         let val = vm.reg(args[1]);
@@ -274,11 +274,31 @@ pub fn date_utc<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let y = y.trunc() as i32;
     let m = m.trunc() as u32;
-    let d = if args.len() > 3 { oxide_runtime_api::to_number(vm.reg(args[3])).trunc() as u32 } else { 1 };
-    let h = if args.len() > 4 { oxide_runtime_api::to_number(vm.reg(args[4])).trunc() as u32 } else { 0 };
-    let min = if args.len() > 5 { oxide_runtime_api::to_number(vm.reg(args[5])).trunc() as u32 } else { 0 };
-    let sec = if args.len() > 6 { oxide_runtime_api::to_number(vm.reg(args[6])).trunc() as u32 } else { 0 };
-    let ms = if args.len() > 7 { oxide_runtime_api::to_number(vm.reg(args[7])).trunc() as u32 } else { 0 };
+    let d = if args.len() > 3 {
+        oxide_runtime_api::to_number(vm.reg(args[3])).trunc() as u32
+    } else {
+        1
+    };
+    let h = if args.len() > 4 {
+        oxide_runtime_api::to_number(vm.reg(args[4])).trunc() as u32
+    } else {
+        0
+    };
+    let min = if args.len() > 5 {
+        oxide_runtime_api::to_number(vm.reg(args[5])).trunc() as u32
+    } else {
+        0
+    };
+    let sec = if args.len() > 6 {
+        oxide_runtime_api::to_number(vm.reg(args[6])).trunc() as u32
+    } else {
+        0
+    };
+    let ms = if args.len() > 7 {
+        oxide_runtime_api::to_number(vm.reg(args[7])).trunc() as u32
+    } else {
+        0
+    };
     let ts = NaiveDate::from_ymd_opt(y, m + 1, d)
         .and_then(|nd| nd.and_hms_milli_opt(h, min, sec, ms))
         .and_then(|ndt| ndt.and_local_timezone(Utc).earliest())
@@ -435,7 +455,10 @@ pub fn date_set_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
     let d = get_opt_arg(vm, args, 2, dt.day0());
-    let nd = dt.with_month0(v as u32).and_then(|x| x.with_day0(if args.len() > 2 { d - 1 } else { d })).unwrap_or(dt);
+    let nd = dt
+        .with_month0(v as u32)
+        .and_then(|x| x.with_day0(if args.len() > 2 { d - 1 } else { d }))
+        .unwrap_or(dt);
     let ts = nd.timestamp_millis() as f64;
     set_timestamp(obj, ts);
     NativeResult::Ok(JsValue::float(ts))
@@ -558,7 +581,9 @@ pub fn date_set_utc_full_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     let m = get_opt_arg(vm, args, 2, ndt.date().month0());
     let d = get_opt_arg(vm, args, 3, ndt.date().day0());
     let nd = NaiveDate::from_ymd_opt(y, m + 1, if args.len() > 3 { d } else { d + 1 })
-        .and_then(|date| date.and_hms_nano_opt(ndt.time().hour(), ndt.time().minute(), ndt.time().second(), ndt.time().nanosecond()))
+        .and_then(|date| {
+            date.and_hms_nano_opt(ndt.time().hour(), ndt.time().minute(), ndt.time().second(), ndt.time().nanosecond())
+        })
         .unwrap_or(ndt);
     let ts = nd.and_utc().timestamp_millis() as f64;
     set_timestamp(obj, ts);
@@ -578,7 +603,9 @@ pub fn date_set_utc_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let m = oxide_runtime_api::to_number(vm.reg(args[1])).trunc() as u32;
     let d = get_opt_arg(vm, args, 2, ndt.date().day0());
     let nd = NaiveDate::from_ymd_opt(ndt.date().year(), m + 1, if args.len() > 2 { d } else { d + 1 })
-        .and_then(|date| date.and_hms_nano_opt(ndt.time().hour(), ndt.time().minute(), ndt.time().second(), ndt.time().nanosecond()))
+        .and_then(|date| {
+            date.and_hms_nano_opt(ndt.time().hour(), ndt.time().minute(), ndt.time().second(), ndt.time().nanosecond())
+        })
         .unwrap_or(ndt);
     let ts = nd.and_utc().timestamp_millis() as f64;
     set_timestamp(obj, ts);
@@ -597,7 +624,9 @@ pub fn date_set_utc_date<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     let d = oxide_runtime_api::to_number(vm.reg(args[1])).trunc() as u32;
     let nd = NaiveDate::from_ymd_opt(ndt.date().year(), ndt.date().month(), d)
-        .and_then(|date| date.and_hms_nano_opt(ndt.time().hour(), ndt.time().minute(), ndt.time().second(), ndt.time().nanosecond()))
+        .and_then(|date| {
+            date.and_hms_nano_opt(ndt.time().hour(), ndt.time().minute(), ndt.time().second(), ndt.time().nanosecond())
+        })
         .unwrap_or(ndt);
     let ts = nd.and_utc().timestamp_millis() as f64;
     set_timestamp(obj, ts);
@@ -664,7 +693,10 @@ pub fn date_set_utc_seconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     };
     let sec = oxide_runtime_api::to_number(vm.reg(args[1])).trunc() as u32;
     let ms_arg = get_opt_arg(vm, args, 2, ndt.time().nanosecond() as u32 / 1_000_000);
-    let nd = ndt.with_second(sec).and_then(|x| x.with_nanosecond(ms_arg * 1_000_000)).unwrap_or(ndt);
+    let nd = ndt
+        .with_second(sec)
+        .and_then(|x| x.with_nanosecond(ms_arg * 1_000_000))
+        .unwrap_or(ndt);
     let ts = nd.and_utc().timestamp_millis() as f64;
     set_timestamp(obj, ts);
     NativeResult::Ok(JsValue::float(ts))
