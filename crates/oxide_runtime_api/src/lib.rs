@@ -254,50 +254,77 @@ pub fn to_boolean(val: JsValue) -> bool {
     false
 }
 
-pub fn abstract_eq(lhs: JsValue, rhs: JsValue) -> bool {
-    if lhs.is_null() && rhs.is_undefined() {
+/// Whether two values share the same ECMAScript language type. Number treats
+/// int- and double-tagged values as one type (both are Number).
+fn same_type(a: JsValue, b: JsValue) -> bool {
+    if a.is_string() && b.is_string() {
         return true;
     }
-    if lhs.is_undefined() && rhs.is_null() {
+    if (a.is_int() || a.is_double()) && (b.is_int() || b.is_double()) {
         return true;
     }
-    if lhs.is_string() && rhs.is_string() {
-        return string_value_eq(lhs, rhs);
-    }
-    if lhs.is_int() && rhs.is_int() {
-        return lhs.as_int() == rhs.as_int();
-    }
-    if lhs.is_double() && rhs.is_double() {
-        return strict_double_eq(lhs.as_double(), rhs.as_double());
-    }
-    if lhs.is_bool() && rhs.is_bool() {
-        return lhs.as_bool() == rhs.as_bool();
-    }
-    if lhs.is_null() && rhs.is_null() {
+    if a.is_bool() && b.is_bool() {
         return true;
     }
-    if lhs.is_undefined() && rhs.is_undefined() {
+    if a.is_null() && b.is_null() {
         return true;
     }
-    if (lhs.is_int() || lhs.is_double()) && (rhs.is_int() || rhs.is_double()) {
-        return strict_double_eq(to_number(lhs), to_number(rhs));
+    if a.is_undefined() && b.is_undefined() {
+        return true;
     }
-    if (lhs.is_int() || lhs.is_double()) && rhs.is_bool() {
-        return to_number(lhs) == to_number(rhs);
+    if a.is_object() && b.is_object() {
+        return true;
     }
-    if lhs.is_bool() && (rhs.is_int() || rhs.is_double()) {
-        return to_number(lhs) == to_number(rhs);
-    }
-    if lhs.is_bool() || rhs.is_bool() {
-        return to_number(lhs) == to_number(rhs);
-    }
-    if lhs.is_null() || rhs.is_null() {
-        return false;
-    }
-    if lhs.is_object() || rhs.is_object() {
-        return lhs.is_object() && rhs.is_object() && lhs.as_ptr() == rhs.as_ptr();
+    if a.is_symbol() && b.is_symbol() {
+        return true;
     }
     false
+}
+
+/// IsLooselyEqual(x, y) — ECMA-262 §7.2.15 (`==`).
+///
+/// BigInt steps are omitted (the engine prunes BigInt). Object operands are
+/// coerced via ToPrimitive, which may invoke user `valueOf` / `toString` /
+/// `@@toPrimitive`; hence the `VmHost` parameter and the `Result` (a thrown
+/// TypeError from those callbacks propagates as `Err`). Note: `Object == Symbol`
+/// does NOT trigger ToPrimitive (spec steps 11/12 cover only Number/String) and
+/// falls through to `false`.
+pub fn abstract_eq<H: VmHost>(lhs: JsValue, rhs: JsValue, host: &mut H) -> Result<bool, String> {
+    // Step 1: same type -> strict equality.
+    if same_type(lhs, rhs) {
+        return Ok(strict_equality(lhs, rhs));
+    }
+    // Steps 2-3: null <-> undefined.
+    if (lhs.is_null() && rhs.is_undefined()) || (lhs.is_undefined() && rhs.is_null()) {
+        return Ok(true);
+    }
+    // Steps 5-6: Number <-> String.
+    if (lhs.is_int() || lhs.is_double()) && rhs.is_string() {
+        return Ok(strict_double_eq(to_number(lhs), to_number(rhs)));
+    }
+    if lhs.is_string() && (rhs.is_int() || rhs.is_double()) {
+        return Ok(strict_double_eq(to_number(lhs), to_number(rhs)));
+    }
+    // Step 9: x is Boolean -> compare ToNumber(x).
+    if lhs.is_bool() {
+        return abstract_eq(JsValue::float(to_number(lhs)), rhs, host);
+    }
+    // Step 10: y is Boolean -> compare ToNumber(y).
+    if rhs.is_bool() {
+        return abstract_eq(lhs, JsValue::float(to_number(rhs)), host);
+    }
+    // Step 11: x is Number/String, y is Object -> ToPrimitive(y).
+    if (lhs.is_int() || lhs.is_double() || lhs.is_string()) && rhs.is_object() {
+        let prim = to_primitive(rhs, ToPrimitiveHint::Default, host)?;
+        return abstract_eq(lhs, prim, host);
+    }
+    // Step 12: x is Object, y is Number/String -> ToPrimitive(x).
+    if lhs.is_object() && (rhs.is_int() || rhs.is_double() || rhs.is_string()) {
+        let prim = to_primitive(lhs, ToPrimitiveHint::Default, host)?;
+        return abstract_eq(prim, rhs, host);
+    }
+    // Step 14: otherwise not equal.
+    Ok(false)
 }
 
 pub fn strict_eq(lhs: JsValue, rhs: JsValue) -> bool {

@@ -2,9 +2,10 @@ use std::sync::Arc;
 
 use oxide_kernel::builtin::ObjectMethods;
 use oxide_kernel::kernel::{KernelCore, KernelSession};
-use oxide_types::object::JsObject;
+use oxide_types::object::{JsObject, PropAttributes};
 
 use crate::bind_constructor;
+use crate::bindings::apply_binding_table;
 
 pub fn bind_object(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let methods = ObjectMethods {
@@ -35,6 +36,29 @@ pub fn bind_object(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
     session
         .builtin_world()
         .bind_object_methods(&methods, core.perm_interner().as_ref(), core.shape_forge().as_ref());
+
+    let object_proto_ptr = session.builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let object_proto = unsafe { &mut *object_proto_ptr };
+    apply_binding_table(
+        session.builtin_world(),
+        object_proto,
+        core,
+        &[
+            (
+                "toString",
+                oxide_builtins::object::object_proto_to_string::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            ("valueOf", oxide_builtins::object::object_proto_value_of::<crate::vm::Vm> as *const (), 0),
+        ],
+    );
+    // Built-in prototype methods are non-enumerable (otherwise they leak into for-in).
+    for name in ["toString", "valueOf"] {
+        let si = core.perm_interner().intern(name).0;
+        if let Some(pos) = core.shape_forge().lookup_position(object_proto.shape_id(), si) {
+            object_proto.set_data_meta(pos, PropAttributes::new(true, false, true));
+        }
+    }
 
     let ctor_ptr = session.builtin_world().object_constructor.as_ptr() as *mut JsObject;
     bind_constructor!(
