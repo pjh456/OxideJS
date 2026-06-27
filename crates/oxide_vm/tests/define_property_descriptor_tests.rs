@@ -96,7 +96,11 @@ fn get_own_property_descriptor_accessor_fields() {
 #[test]
 fn define_property_new_attributes_only_defaults_value_undefined() {
     let r = eval_str("var obj={}; Object.defineProperty(obj,'x',{enumerable:true}); obj.x").unwrap();
-    assert!(r.is_undefined(), "new prop with only enumerable should default value to undefined, got {:?}", r);
+    assert!(
+        r.is_undefined(),
+        "new prop with only enumerable should default value to undefined, got {:?}",
+        r
+    );
 }
 
 // -- Partial configurable on existing property preserves value --
