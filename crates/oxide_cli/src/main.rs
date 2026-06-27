@@ -8,11 +8,15 @@ use std::sync::Arc;
 use ansi_term::Colour::Red;
 use clap::{Parser, Subcommand};
 use oxide_compiler::compiler::{compiled_module_hash, Compiler};
+use oxide_compiler::compiler_error;
 use oxide_kernel::kernel::{KernelConfig, KernelCore};
 use oxide_kernel::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use oxide_kernel::string_forge::PermInterner;
+use oxide_kernel::{kernel_error, kernel_info};
+use oxide_log::{Level, SUBSYSTEM_COUNT};
 use oxide_parser::Allocator;
 use oxide_types::object::JsObject;
+use oxide_vm::vm_error;
 use oxide_vm::vm_pool::VmPool;
 use oxide_vm::JsValue;
 
@@ -70,12 +74,12 @@ fn main() -> ExitCode {
 
     match cli.command {
         Some(Commands::Eval { code }) => {
-            let kernel = make_kernel();
+            let kernel = make_kernel(cli.verbose, cli.quiet);
             let pool = make_pool(&kernel);
             eval(&code, &kernel, &pool)
         }
         Some(Commands::Run { file }) => {
-            let kernel = make_kernel();
+            let kernel = make_kernel(cli.verbose, cli.quiet);
             let pool = make_pool(&kernel);
             run(&file, &kernel, &pool)
         }
@@ -89,7 +93,7 @@ fn main() -> ExitCode {
             update_baseline,
             leak_check_interval,
         }) => {
-            let kernel = make_kernel();
+            let kernel = make_kernel(false, false);
             let pool = make_pool(&kernel);
             let config = bench::BenchConfig {
                 mode: mode.unwrap_or_else(|| "js".to_string()),
@@ -107,8 +111,16 @@ fn main() -> ExitCode {
     }
 }
 
-fn make_kernel() -> Arc<KernelCore> {
-    KernelCore::new(KernelConfig::standard())
+fn make_kernel(verbose: bool, quiet: bool) -> Arc<KernelCore> {
+    let mut config = KernelConfig::standard();
+    if verbose {
+        config.log_levels = [Level::Info; SUBSYSTEM_COUNT];
+    } else if quiet {
+        config.log_levels = [Level::Off; SUBSYSTEM_COUNT];
+    } else {
+        config.log_levels = [Level::Error; SUBSYSTEM_COUNT];
+    }
+    KernelCore::new(config)
 }
 
 fn make_pool(kernel: &Arc<KernelCore>) -> Arc<VmPool> {
@@ -121,6 +133,7 @@ fn eval(code: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>) -> ExitCode {
         Ok(p) => p,
         Err(errors) => {
             for err in &errors {
+                compiler_error!("parse error: {}", err);
                 eprintln!("{}", Red.paint(err.to_string()));
             }
             return ExitCode::FAILURE;
@@ -132,6 +145,7 @@ fn eval(code: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>) -> ExitCode {
     let module = match kernel.code_forge().get_or_insert_with(hash, || compiler.compile(&program)) {
         Ok(m) => m,
         Err(err) => {
+            compiler_error!("compile error: {}", err);
             eprintln!("{}", Red.paint(err));
             return ExitCode::FAILURE;
         }
@@ -144,6 +158,7 @@ fn eval(code: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(err) => {
+            vm_error!("runtime error: {}", err);
             eprintln!("{}", Red.paint(err));
             ExitCode::FAILURE
         }
@@ -226,6 +241,7 @@ fn run(file: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>) -> ExitCode {
     match fs::read_to_string(file) {
         Ok(source) => eval(&source, kernel, pool),
         Err(err) => {
+            kernel_error!("cannot read {}: {}", file, err);
             eprintln!("{}", Red.paint(format!("Cannot read {file}: {err}")));
             ExitCode::FAILURE
         }
@@ -239,11 +255,13 @@ fn compile(expr: Option<String>, file: Option<String>) -> ExitCode {
         match fs::read_to_string(&path) {
             Ok(s) => s,
             Err(err) => {
+                kernel_error!("cannot read {}: {}", path, err);
                 eprintln!("{}", Red.paint(format!("Cannot read {path}: {err}")));
                 return ExitCode::FAILURE;
             }
         }
     } else {
+        kernel_error!("compile requires -e '<code>' or a file path");
         eprintln!("{}", Red.paint("compile requires -e '<code>' or a file path"));
         return ExitCode::FAILURE;
     };
@@ -253,6 +271,7 @@ fn compile(expr: Option<String>, file: Option<String>) -> ExitCode {
         Ok(p) => p,
         Err(errors) => {
             for err in &errors {
+                compiler_error!("parse error: {}", err);
                 eprintln!("{}", Red.paint(err.to_string()));
             }
             return ExitCode::FAILURE;
@@ -266,6 +285,7 @@ fn compile(expr: Option<String>, file: Option<String>) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(err) => {
+            compiler_error!("compile error: {}", err);
             eprintln!("{}", Red.paint(err));
             ExitCode::FAILURE
         }
@@ -291,12 +311,13 @@ fn repl() -> ExitCode {
     let mut rl = match DefaultEditor::new() {
         Ok(editor) => editor,
         Err(err) => {
+            kernel_error!("failed to start REPL: {}", err);
             eprintln!("{}", Red.paint(format!("Failed to start REPL: {err}")));
             return ExitCode::FAILURE;
         }
     };
 
-    let kernel = make_kernel();
+    let kernel = make_kernel(false, false);
     let pool = make_pool(&kernel);
     let mut source = String::new();
     let mut input_buf = String::new();
@@ -347,6 +368,7 @@ fn repl() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             Err(err) => {
+                vm_error!("REPL error: {}", err);
                 eprintln!("{}", Red.paint(format!("REPL error: {err}")));
                 return ExitCode::FAILURE;
             }
@@ -355,6 +377,7 @@ fn repl() -> ExitCode {
 }
 fn not_implemented(command: &str) -> ExitCode {
     use ansi_term::Colour::Yellow;
+    kernel_info!("command not yet implemented: {}", command);
     eprintln!("{}", Yellow.paint(format!("'{command}' is not yet implemented")));
     ExitCode::SUCCESS
 }
