@@ -577,7 +577,13 @@ pub fn date_set_utc_full_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
         Some(n) => n,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let y = oxide_runtime_api::to_number(vm.reg(args[1])).trunc() as i32;
+    let year_arg = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let y_num = oxide_runtime_api::to_number(year_arg);
+    if y_num.is_nan() {
+        set_timestamp(obj, f64::NAN);
+        return NativeResult::Ok(JsValue::float(f64::NAN));
+    }
+    let y = y_num.trunc() as i32;
     let m = get_opt_arg(vm, args, 2, ndt.date().month0());
     let d = get_opt_arg(vm, args, 3, ndt.date().day0());
     let nd = NaiveDate::from_ymd_opt(y, m + 1, if args.len() > 3 { d } else { d + 1 })
@@ -600,7 +606,13 @@ pub fn date_set_utc_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Some(n) => n,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let m = oxide_runtime_api::to_number(vm.reg(args[1])).trunc() as u32;
+    let month_arg = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let m_num = oxide_runtime_api::to_number(month_arg);
+    if m_num.is_nan() {
+        set_timestamp(obj, f64::NAN);
+        return NativeResult::Ok(JsValue::float(f64::NAN));
+    }
+    let m = m_num.trunc() as u32;
     let d = get_opt_arg(vm, args, 2, ndt.date().day0());
     let nd = NaiveDate::from_ymd_opt(ndt.date().year(), m + 1, if args.len() > 2 { d } else { d + 1 })
         .and_then(|date| {
@@ -622,7 +634,13 @@ pub fn date_set_utc_date<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Some(n) => n,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let d = oxide_runtime_api::to_number(vm.reg(args[1])).trunc() as u32;
+    let date_arg = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let d_num = oxide_runtime_api::to_number(date_arg);
+    if d_num.is_nan() {
+        set_timestamp(obj, f64::NAN);
+        return NativeResult::Ok(JsValue::float(f64::NAN));
+    }
+    let d = d_num.trunc() as u32;
     let nd = NaiveDate::from_ymd_opt(ndt.date().year(), ndt.date().month(), d)
         .and_then(|date| {
             date.and_hms_nano_opt(ndt.time().hour(), ndt.time().minute(), ndt.time().second(), ndt.time().nanosecond())
@@ -643,7 +661,13 @@ pub fn date_set_utc_hours<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Some(n) => n,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let h = oxide_runtime_api::to_number(vm.reg(args[1])).trunc() as u32;
+    let hours_arg = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let h_num = oxide_runtime_api::to_number(hours_arg);
+    if h_num.is_nan() {
+        set_timestamp(obj, f64::NAN);
+        return NativeResult::Ok(JsValue::float(f64::NAN));
+    }
+    let h = h_num.trunc() as u32;
     let min = get_opt_arg(vm, args, 2, ndt.time().minute());
     let sec = get_opt_arg(vm, args, 3, ndt.time().second());
     let ms_arg = get_opt_arg(vm, args, 4, ndt.time().nanosecond() as u32 / 1_000_000);
@@ -668,7 +692,13 @@ pub fn date_set_utc_minutes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         Some(n) => n,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let min = oxide_runtime_api::to_number(vm.reg(args[1])).trunc() as u32;
+    let minutes_arg = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let min_num = oxide_runtime_api::to_number(minutes_arg);
+    if min_num.is_nan() {
+        set_timestamp(obj, f64::NAN);
+        return NativeResult::Ok(JsValue::float(f64::NAN));
+    }
+    let min = min_num.trunc() as u32;
     let sec = get_opt_arg(vm, args, 2, ndt.time().second());
     let ms_arg = get_opt_arg(vm, args, 3, ndt.time().nanosecond() as u32 / 1_000_000);
     let nd = ndt
@@ -691,7 +721,13 @@ pub fn date_set_utc_seconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         Some(n) => n,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let sec = oxide_runtime_api::to_number(vm.reg(args[1])).trunc() as u32;
+    let seconds_arg = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let sec_num = oxide_runtime_api::to_number(seconds_arg);
+    if sec_num.is_nan() {
+        set_timestamp(obj, f64::NAN);
+        return NativeResult::Ok(JsValue::float(f64::NAN));
+    }
+    let sec = sec_num.trunc() as u32;
     let ms_arg = get_opt_arg(vm, args, 2, ndt.time().nanosecond() as u32 / 1_000_000);
     let nd = ndt
         .with_second(sec)
@@ -712,7 +748,13 @@ pub fn date_set_utc_milliseconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRe
         Some(n) => n,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let ms_arg = oxide_runtime_api::to_number(vm.reg(args[1])).trunc() as u32;
+    let millis_arg = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let ms_num = oxide_runtime_api::to_number(millis_arg);
+    if ms_num.is_nan() {
+        set_timestamp(obj, f64::NAN);
+        return NativeResult::Ok(JsValue::float(f64::NAN));
+    }
+    let ms_arg = ms_num.trunc() as u32;
     let nd = ndt.with_nanosecond(ms_arg * 1_000_000).unwrap_or(ndt);
     let ts = nd.and_utc().timestamp_millis() as f64;
     set_timestamp(obj, ts);

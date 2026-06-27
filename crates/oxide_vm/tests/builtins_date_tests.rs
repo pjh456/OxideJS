@@ -382,3 +382,44 @@ fn date_set_year_four_digit_kept() {
     let r = eval(&mut vm, "var d = new Date(0); d.setYear(2020); d.getFullYear()").unwrap();
     assert_eq!(r.as_double() as i64, 2020);
 }
+
+// UTC setters called with no argument previously indexed a missing argument register
+// (panic / process abort). A missing primary argument now yields NaN and sets the date NaN.
+#[test]
+fn date_set_utc_setters_no_arg_return_nan() {
+    let mut vm = Vm::new();
+    for call in [
+        "d.setUTCFullYear()",
+        "d.setUTCMonth()",
+        "d.setUTCDate()",
+        "d.setUTCHours()",
+        "d.setUTCMinutes()",
+        "d.setUTCSeconds()",
+        "d.setUTCMilliseconds()",
+    ] {
+        let src = format!("var d = new Date(0); {call}");
+        let r = eval(&mut vm, &src).unwrap();
+        assert!(r.as_double().is_nan(), "{call} should return NaN, got {r:?}");
+    }
+}
+
+#[test]
+fn date_set_utc_no_arg_sets_value_nan() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "var d = new Date(0); d.setUTCMonth(); d.valueOf()").unwrap();
+    assert!(r.as_double().is_nan());
+}
+
+#[test]
+fn date_set_utc_full_year_valid_kept() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "var d = new Date(0); d.setUTCFullYear(2025); d.getUTCFullYear()").unwrap();
+    assert_eq!(r.as_double() as i64, 2025);
+}
+
+#[test]
+fn date_set_utc_hours_valid_kept() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "var d = new Date(0); d.setUTCHours(13); d.getUTCHours()").unwrap();
+    assert_eq!(r.as_double() as i64, 13);
+}
