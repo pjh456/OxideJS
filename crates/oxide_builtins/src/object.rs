@@ -459,6 +459,18 @@ pub fn object_has_own<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(vm.get_own_property_slot(obj, key_si).is_some()))
 }
 
+pub fn object_proto_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    // Object.prototype.valueOf returns the `this` object unchanged; OrdinaryToPrimitive
+    // then falls through to toString since the result is not primitive.
+    NativeResult::Ok(vm.reg(args[0]))
+}
+
+pub fn object_proto_to_string<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
+    // ponytail: minimal [[Class]] string — always "[object Object]". Type-specific
+    // tags ("[object Array]" etc.) and Symbol.toStringTag are a later refinement.
+    NativeResult::Ok(vm.new_string("[object Object]"))
+}
+
 pub fn object_proto_has_own_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::bool(false));
