@@ -13,6 +13,10 @@ impl Compiler {
             }
             ctx.alloc_reg();
             ctx.count_call_instr_with_arg_ext(); // SUPER_CALL + arg_count ext word
+                                                 // Mirror emit: derived-ctor instance fields are injected right after super().
+            if let Some(words) = ctx.after_super_count_words.take() {
+                ctx.projected_pc += words;
+            }
             return;
         }
 
