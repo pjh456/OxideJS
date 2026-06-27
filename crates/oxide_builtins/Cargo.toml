@@ -19,3 +19,8 @@ serde_json.workspace = true
 chrono.workspace = true
 unicode-normalization.workspace = true
 indexmap.workspace = true
+
+[dev-dependencies]
+oxide_vm = { path = "../oxide_vm" }
+oxide_compiler = { path = "../oxide_compiler" }
+oxide_parser = { path = "../oxide_parser" }
