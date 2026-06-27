@@ -208,6 +208,25 @@ impl Vm {
         if !rhs_val.is_object() {
             return self.raise_type_error("INSTANCEOF right-hand side is not callable");
         }
+
+        let has_instance_ptr = self.session.builtin_world().sym_has_instance.as_ptr() as *mut JsObject;
+        let has_instance_key = JsValue::from_js_object(has_instance_ptr);
+        let has_instance_si = self.property_key_si(has_instance_key);
+
+        let ctor_obj = unsafe { &*rhs_val.as_js_object_ptr() };
+        let has_instance_val = self.ordinary_get(ctor_obj, has_instance_si, rhs_val)?;
+        if !has_instance_val.is_undefined() && !has_instance_val.is_null() {
+            let fn_ptr = has_instance_val.as_js_object_ptr();
+            if !fn_ptr.is_null() {
+                let fn_obj = unsafe { &*fn_ptr };
+                if fn_obj.is_function() {
+                    let result = self.call_function_sync(has_instance_val, rhs_val, &[lhs_val])?;
+                    self.regs[rd] = JsValue::bool(to_boolean(result));
+                    return Ok(());
+                }
+            }
+        }
+
         if !lhs_val.is_object() {
             self.regs[rd] = JsValue::bool(false);
             return Ok(());
