@@ -288,7 +288,12 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     } else {
         if existing_pos.is_none() {
             if vm
-                .define_data_property(obj, si, JsValue::undefined(), PropAttributes::new(false, enumerable, configurable))
+                .define_data_property(
+                    obj,
+                    si,
+                    JsValue::undefined(),
+                    PropAttributes::new(false, enumerable, configurable),
+                )
                 .is_err()
             {
                 return NativeResult::Err(crate::error::create_type_error(vm, "Cannot define property"));
