@@ -448,3 +448,50 @@ pub fn to_object<H: VmHost>(val: JsValue, host: &mut H) -> Result<JsValue, Strin
     obj_ref.set_prop_count(1);
     Ok(obj_val)
 }
+
+/// Hint for the abstract ToPrimitive operation (ECMA-262 §7.1.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToPrimitiveHint {
+    Default,
+    String,
+    Number,
+}
+
+impl ToPrimitiveHint {
+    /// OrdinaryToPrimitive method-name ordering hint: `Default`/`Number` -> "number", `String` -> "string".
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ToPrimitiveHint::String => "string",
+            ToPrimitiveHint::Default | ToPrimitiveHint::Number => "number",
+        }
+    }
+}
+
+/// ToPrimitive(input, hint) per ECMA-262 §7.1.1.
+///
+/// Primitives pass through unchanged. Objects are coerced via the VM's
+/// `coerce_primitive_bounded`, which consults `obj[Symbol.toPrimitive]` first and
+/// otherwise runs OrdinaryToPrimitive (valueOf/toString in hint order). Keeping the
+/// object path in one place avoids duplicating OrdinaryToPrimitive here.
+pub fn to_primitive<H: VmHost>(val: JsValue, hint: ToPrimitiveHint, host: &mut H) -> Result<JsValue, String> {
+    if !val.is_object() {
+        return Ok(val);
+    }
+    host.coerce_primitive_bounded(val, hint == ToPrimitiveHint::String)
+}
+
+/// ToNumber(input) with full object coercion: objects go through ToPrimitive
+/// (number hint); Symbol values throw a TypeError per spec.
+pub fn to_number_full<H: VmHost>(val: JsValue, host: &mut H) -> Result<f64, String> {
+    let primitive = to_primitive(val, ToPrimitiveHint::Number, host)?;
+    if primitive.is_symbol() {
+        return Err(host.error_message_text("TypeError", "Cannot convert a Symbol value to a number"));
+    }
+    Ok(to_number(primitive))
+}
+
+/// ToString(input) with full object coercion: objects go through ToPrimitive (string hint).
+pub fn to_string_full<H: VmHost>(val: JsValue, host: &mut H) -> Result<String, String> {
+    let primitive = to_primitive(val, ToPrimitiveHint::String, host)?;
+    Ok(to_string(primitive))
+}
