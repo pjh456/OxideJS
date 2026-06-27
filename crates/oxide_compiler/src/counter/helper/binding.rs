@@ -77,10 +77,11 @@ impl Compiler {
                 ctx.count_instr(); // STORE_VAR
             }
         }
-        if ap.rest.is_some() {
+        if let Some(rest) = &ap.rest {
             self.count_rest_array(ctx);
-            ctx.alloc_reg();
-            ctx.count_instr(); // STORE_VAR
+            // Mirror the emitter (emit_array_assignment -> emit_assign_target): the rest
+            // target may itself be a nested pattern, not just an identifier.
+            self.count_assign_target(&rest.target, ctx);
         }
         ctx.count_instr(); // FOR_OF_CLOSE
     }
@@ -108,11 +109,12 @@ impl Compiler {
                 }
             }
         }
-        if op.rest.is_some() {
+        if let Some(rest) = &op.rest {
             ctx.alloc_reg();
             ctx.count_instr_with_ext(1); // REST_OBJECT + excluded-keys ext
-            ctx.alloc_reg();
-            ctx.count_instr(); // STORE_VAR
+                                         // Mirror the emitter (emit_object_assignment -> emit_assign_target): the rest
+                                         // target may itself be a nested pattern, not just an identifier.
+            self.count_assign_target(&rest.target, ctx);
         }
     }
 
