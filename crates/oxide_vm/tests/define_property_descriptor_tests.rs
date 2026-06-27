@@ -92,11 +92,11 @@ fn get_own_property_descriptor_accessor_fields() {
     );
 }
 
-// -- New property without value or accessor throws --
+// -- New property without value or accessor defaults to data descriptor (ES spec behavior) --
 #[test]
-fn define_property_new_without_value_throws() {
-    let result = eval_str("var obj={}; Object.defineProperty(obj,'x',{enumerable:true})");
-    assert_err_contains(result, "Cannot define new property without value or accessor");
+fn define_property_new_attributes_only_defaults_value_undefined() {
+    let r = eval_str("var obj={}; Object.defineProperty(obj,'x',{enumerable:true}); obj.x").unwrap();
+    assert!(r.is_undefined(), "new prop with only enumerable should default value to undefined, got {:?}", r);
 }
 
 // -- Partial configurable on existing property preserves value --
