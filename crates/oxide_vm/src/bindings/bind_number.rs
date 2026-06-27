@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::bind_constructor;
 use crate::bindings::{apply_binding_table, configure_native_constructor};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
-use oxide_types::object::JsObject;
+use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
 pub fn bind_number(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
@@ -27,6 +27,8 @@ pub fn bind_number(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
                 oxide_builtins::number::number_is_safe_integer::<crate::vm::Vm> as *const (),
                 1,
             ),
+            ("parseInt", oxide_builtins::number::number_parse_int::<crate::vm::Vm> as *const (), 1),
+            ("parseFloat", oxide_builtins::number::number_parse_float::<crate::vm::Vm> as *const (), 1),
         ],
     );
 
@@ -62,9 +64,11 @@ pub fn bind_number(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         ("POSITIVE_INFINITY", JsValue::float(f64::INFINITY)),
     ] {
         ctor.ensure_hash_props().push(value);
+        let pos = ctor.ensure_hash_props().len() - 1;
         let prop_si = core.perm_interner().intern(name).0;
         let next_shape = core.shape_forge().make_shape(ctor.shape_id(), prop_si);
         ctor.set_shape_id(next_shape);
+        ctor.set_data_meta(pos, PropAttributes::new(false, false, false));
     }
 
     bind_constructor!(core, global, "Number", ctor_ptr, oxide_builtins::number::number_constructor::<crate::vm::Vm>, 1, hash: true);

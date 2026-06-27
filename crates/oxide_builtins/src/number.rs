@@ -50,26 +50,15 @@ pub fn number_is_nan<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::bool(false));
     }
-    let val = vm.reg(args[1]);
-    if val.is_double() {
-        NativeResult::Ok(JsValue::bool(val.as_double().is_nan()))
-    } else {
-        NativeResult::Ok(JsValue::bool(false))
-    }
+    let n = oxide_runtime_api::to_number(vm.reg(args[1]));
+    NativeResult::Ok(JsValue::bool(n.is_nan()))
 }
 
 pub fn number_is_finite<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::bool(false));
     }
-    let val = vm.reg(args[1]);
-    if val.is_int() {
-        return NativeResult::Ok(JsValue::bool(true));
-    }
-    if val.is_double() {
-        return NativeResult::Ok(JsValue::bool(val.as_double().is_finite()));
-    }
-    let n = oxide_runtime_api::to_number(val);
+    let n = oxide_runtime_api::to_number(vm.reg(args[1]));
     NativeResult::Ok(JsValue::bool(n.is_finite()))
 }
 
@@ -184,64 +173,122 @@ pub fn number_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
 pub fn number_to_fixed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let n = vm.coerce_number_bounded(vm.reg(args[0])).unwrap_or(f64::NAN);
-    let digits = if args.len() > 1 {
-        vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as usize
+    if n.is_nan() {
+        return NativeResult::Ok(vm.new_string("NaN"));
+    }
+    if n.is_infinite() {
+        return NativeResult::Ok(vm.new_string(if n.is_sign_positive() { "Infinity" } else { "-Infinity" }));
+    }
+    let fraction_digits = if args.len() > 1 {
+        let raw = oxide_runtime_api::to_integer_or_infinity(vm.reg(args[1]));
+        if !(0.0..=100.0).contains(&raw) {
+            return NativeResult::Err(crate::error::create_range_error(
+                vm,
+                "toFixed() fractionDigits must be between 0 and 100",
+            ));
+        }
+        raw as usize
     } else {
         0usize
-    }
-    .min(20);
-
-    let formatted = format!("{:.digits$}", n);
+    };
+    let n_abs = if n == 0.0 && n.is_sign_negative() { 0.0 } else { n };
+    let formatted = format!("{:.precision$}", n_abs, precision = fraction_digits);
     NativeResult::Ok(vm.new_string(&formatted))
 }
 
 pub fn number_is_integer<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = vm.reg(if args.len() > 1 { args[1] } else { args[0] });
+    if !val.is_int() && !val.is_double() {
+        return NativeResult::Ok(JsValue::bool(false));
+    }
     let n = oxide_runtime_api::to_number(val);
     NativeResult::Ok(JsValue::bool(n.trunc() == n && n.is_finite()))
 }
 
 pub fn number_is_safe_integer<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = vm.reg(if args.len() > 1 { args[1] } else { args[0] });
+    if !val.is_int() && !val.is_double() {
+        return NativeResult::Ok(JsValue::bool(false));
+    }
     let n = oxide_runtime_api::to_number(val);
     let safe = n.trunc() == n && n.is_finite() && n >= -9007199254740991i64 as f64 && n <= 9007199254740991i64 as f64;
     NativeResult::Ok(JsValue::bool(safe))
 }
 
-pub fn number_to_exponential<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let n = vm.coerce_number_bounded(vm.reg(args[0])).unwrap_or(f64::NAN);
-    let digits = if args.len() > 1 {
-        vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as usize
-    } else {
-        0usize
+pub fn number_to_precision<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    if args.len() <= 1 {
+        return NativeResult::Err(crate::error::create_range_error(
+            vm,
+            "toPrecision() requires a precision argument between 1 and 100",
+        ));
     }
-    .min(100);
+    let n = vm.coerce_number_bounded(vm.reg(args[0])).unwrap_or(f64::NAN);
+    let raw = oxide_runtime_api::to_integer_or_infinity(vm.reg(args[1]));
+    if !(1.0..=100.0).contains(&raw) {
+        return NativeResult::Err(crate::error::create_range_error(
+            vm,
+            "toPrecision() precision must be between 1 and 100",
+        ));
+    }
+    let precision = raw as usize;
     if n.is_nan() {
         return NativeResult::Ok(vm.new_string("NaN"));
     }
     if n.is_infinite() {
         return NativeResult::Ok(vm.new_string(if n.is_sign_positive() { "Infinity" } else { "-Infinity" }));
     }
-    let formatted = format!("{:.digits$e}", n);
-    NativeResult::Ok(vm.new_string(&formatted))
+    let n_abs = if n == 0.0 && n.is_sign_negative() { 0.0 } else { n.abs() };
+    let is_neg = n.is_sign_negative() && !(n == 0.0);
+    let e = if n_abs == 0.0 { 0i32 } else { n_abs.log10().floor() as i32 };
+    let formatted = if e >= -6 && e < precision as i32 {
+        let dec = ((precision as i32 - e - 1).max(0)) as usize;
+        format!("{:.dec$}", n_abs, dec = dec)
+    } else {
+        format!("{:.dec$e}", n_abs, dec = precision - 1)
+    };
+    if is_neg {
+        NativeResult::Ok(vm.new_string(&format!("-{}", formatted)))
+    } else {
+        NativeResult::Ok(vm.new_string(&formatted))
+    }
 }
 
-pub fn number_to_precision<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+pub fn number_to_exponential<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let n = vm.coerce_number_bounded(vm.reg(args[0])).unwrap_or(f64::NAN);
-    let precision = if args.len() > 1 {
-        vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as usize
-    } else {
-        0usize
-    }
-    .min(21);
     if n.is_nan() {
         return NativeResult::Ok(vm.new_string("NaN"));
     }
     if n.is_infinite() {
         return NativeResult::Ok(vm.new_string(if n.is_sign_positive() { "Infinity" } else { "-Infinity" }));
     }
-    let formatted = format!("{:.precision$}", n);
-    NativeResult::Ok(vm.new_string(&formatted))
+    let n_abs = if n == 0.0 && n.is_sign_negative() { 0.0 } else { n.abs() };
+    let sign_prefix = if n.is_sign_negative() && !n.is_nan() && !(n == 0.0) { "-" } else { "" };
+    if args.len() <= 1 {
+        let formatted = format!("{:e}", n_abs);
+        let mut s = formatted;
+        if let Some(e_pos) = s.find('e') {
+            let mut mantissa = s[..e_pos].to_string();
+            while mantissa.ends_with('0') && mantissa.len() > 1 {
+                mantissa.pop();
+            }
+            mantissa = mantissa.trim_end_matches('.').to_string();
+            if mantissa.contains('.') {
+                s = format!("{}{}", mantissa, &s[e_pos..]);
+            }
+        }
+        let result = format!("{}{}", sign_prefix, s);
+        return NativeResult::Ok(vm.new_string(&result));
+    }
+    let raw = oxide_runtime_api::to_integer_or_infinity(vm.reg(args[1]));
+    if !(0.0..=100.0).contains(&raw) {
+        return NativeResult::Err(crate::error::create_range_error(
+            vm,
+            "toExponential() fractionDigits must be between 0 and 100",
+        ));
+    }
+    let fraction_digits = raw as usize;
+    let formatted = format!("{:.digits$e}", n_abs, digits = fraction_digits);
+    NativeResult::Ok(vm.new_string(&format!("{}{}", sign_prefix, formatted)))
 }
 
 pub fn number_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
