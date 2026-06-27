@@ -734,6 +734,14 @@ pub fn date_get_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn date_set_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
+    // A missing year argument coerces to NaN; per B.2.4.2 a NaN year sets the date value to
+    // NaN and returns NaN.
+    let arg = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let y_num = oxide_runtime_api::to_number(arg);
+    if y_num.is_nan() {
+        set_timestamp(obj, f64::NAN);
+        return NativeResult::Ok(JsValue::float(f64::NAN));
+    }
     if !ms.is_finite() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
@@ -741,7 +749,7 @@ pub fn date_set_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Some(d) => d,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let y = oxide_runtime_api::to_number(vm.reg(args[1])).trunc() as i32;
+    let y = y_num.trunc() as i32;
     let full_year = if (0..=99).contains(&y) { y + 1900 } else { y };
     let nd = dt.with_year(full_year).unwrap_or(dt);
     let ts = nd.timestamp_millis() as f64;
