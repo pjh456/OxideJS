@@ -102,30 +102,30 @@ pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let timestamp = if args.len() < 2 {
         Utc::now().timestamp_millis() as f64
     } else if args.len() > 2 {
-        let y = oxide_runtime_api::to_number(vm.reg(args[1])) as i32;
-        let m = oxide_runtime_api::to_number(vm.reg(args[2])) as u32;
+        let y = vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as i32;
+        let m = vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as u32;
         let d = if args.len() > 3 {
-            oxide_runtime_api::to_number(vm.reg(args[3])) as u32
+            vm.coerce_number_bounded(vm.reg(args[3])).unwrap_or(f64::NAN) as u32
         } else {
             1
         };
         let h = if args.len() > 4 {
-            oxide_runtime_api::to_number(vm.reg(args[4])) as u32
+            vm.coerce_number_bounded(vm.reg(args[4])).unwrap_or(f64::NAN) as u32
         } else {
             0
         };
         let min = if args.len() > 5 {
-            oxide_runtime_api::to_number(vm.reg(args[5])) as u32
+            vm.coerce_number_bounded(vm.reg(args[5])).unwrap_or(f64::NAN) as u32
         } else {
             0
         };
         let sec = if args.len() > 6 {
-            oxide_runtime_api::to_number(vm.reg(args[6])) as u32
+            vm.coerce_number_bounded(vm.reg(args[6])).unwrap_or(f64::NAN) as u32
         } else {
             0
         };
         let ms = if args.len() > 7 {
-            oxide_runtime_api::to_number(vm.reg(args[7])) as u32
+            vm.coerce_number_bounded(vm.reg(args[7])).unwrap_or(f64::NAN) as u32
         } else {
             0
         };
@@ -316,7 +316,7 @@ fn get_opt_arg<H: VmHost>(vm: &H, args: &[u8], idx: usize, default: u32) -> u32 
 pub fn date_set_time<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let val = if args.len() > 1 {
-        oxide_runtime_api::to_number(vm.reg(args[1]))
+        vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN)
     } else {
         f64::NAN
     };
@@ -326,7 +326,7 @@ pub fn date_set_time<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
 pub fn date_set_full_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = oxide_runtime_api::to_number(val);
+    let v = vm.coerce_number_bounded(val).unwrap_or(f64::NAN);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
@@ -349,7 +349,7 @@ pub fn date_set_full_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 pub fn date_set_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = oxide_runtime_api::to_number(val);
+    let v = vm.coerce_number_bounded(val).unwrap_or(f64::NAN);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
@@ -367,7 +367,7 @@ pub fn date_set_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 pub fn date_set_date<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = oxide_runtime_api::to_number(val);
+    let v = vm.coerce_number_bounded(val).unwrap_or(f64::NAN);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
@@ -384,7 +384,7 @@ pub fn date_set_date<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 pub fn date_set_hours<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = oxide_runtime_api::to_number(val);
+    let v = vm.coerce_number_bounded(val).unwrap_or(f64::NAN);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
@@ -409,7 +409,7 @@ pub fn date_set_hours<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 pub fn date_set_minutes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = oxide_runtime_api::to_number(val);
+    let v = vm.coerce_number_bounded(val).unwrap_or(f64::NAN);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
@@ -432,7 +432,7 @@ pub fn date_set_minutes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 pub fn date_set_seconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = oxide_runtime_api::to_number(val);
+    let v = vm.coerce_number_bounded(val).unwrap_or(f64::NAN);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {
@@ -453,7 +453,7 @@ pub fn date_set_seconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 pub fn date_set_milliseconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = oxide_runtime_api::to_number(val);
+    let v = vm.coerce_number_bounded(val).unwrap_or(f64::NAN);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
     if !ms.is_finite() {

@@ -3,7 +3,11 @@ use oxide_types::value::JsValue;
 use oxide_runtime_api::{NativeResult, VmHost};
 
 pub fn number_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let n = if args.len() > 1 { oxide_runtime_api::to_number(vm.reg(args[1])) } else { 0.0 };
+    let n = if args.len() > 1 {
+        vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN)
+    } else {
+        0.0
+    };
     let number_proto = vm.session().builtin_world().number_proto.as_ptr() as *mut oxide_types::object::JsObject;
     let is_ctor = if let Some(this_reg) = args.first().copied() {
         let this_val = vm.reg(this_reg);
@@ -81,7 +85,7 @@ pub fn number_parse_int<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 
     let radix = if args.len() > 2 {
-        let r = oxide_runtime_api::to_number(vm.reg(args[2])) as i32;
+        let r = vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as i32;
         if r == 0 {
             10
         } else {
@@ -128,9 +132,9 @@ pub fn number_parse_float<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn number_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let n = oxide_runtime_api::to_number(vm.reg(args[0]));
+    let n = vm.coerce_number_bounded(vm.reg(args[0])).unwrap_or(f64::NAN);
     let radix = if args.len() > 1 {
-        let r = oxide_runtime_api::to_number(vm.reg(args[1])) as u32;
+        let r = vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as u32;
         r.clamp(2, 36)
     } else {
         10u32
@@ -179,9 +183,9 @@ pub fn number_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn number_to_fixed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let n = oxide_runtime_api::to_number(vm.reg(args[0]));
+    let n = vm.coerce_number_bounded(vm.reg(args[0])).unwrap_or(f64::NAN);
     let digits = if args.len() > 1 {
-        oxide_runtime_api::to_number(vm.reg(args[1])) as usize
+        vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as usize
     } else {
         0usize
     }
@@ -205,9 +209,9 @@ pub fn number_is_safe_integer<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
 }
 
 pub fn number_to_exponential<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let n = oxide_runtime_api::to_number(vm.reg(args[0]));
+    let n = vm.coerce_number_bounded(vm.reg(args[0])).unwrap_or(f64::NAN);
     let digits = if args.len() > 1 {
-        oxide_runtime_api::to_number(vm.reg(args[1])) as usize
+        vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as usize
     } else {
         0usize
     }
@@ -223,9 +227,9 @@ pub fn number_to_exponential<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
 }
 
 pub fn number_to_precision<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let n = oxide_runtime_api::to_number(vm.reg(args[0]));
+    let n = vm.coerce_number_bounded(vm.reg(args[0])).unwrap_or(f64::NAN);
     let precision = if args.len() > 1 {
-        oxide_runtime_api::to_number(vm.reg(args[1])) as usize
+        vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as usize
     } else {
         0usize
     }
