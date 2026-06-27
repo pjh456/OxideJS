@@ -195,6 +195,33 @@ impl Vm {
             return Ok(value);
         }
 
+        // ECMA-262 §7.1.1 step 1: an exotic obj[Symbol.toPrimitive] takes precedence
+        // over OrdinaryToPrimitive. ponytail: symbol-object keys all collapse to
+        // to_string()="[object]" inside property_key_si (an engine-wide symbol-key
+        // limitation), so this resolves obj[@@toPrimitive] the same way the setter
+        // stores it; the real fix belongs to a dedicated symbol-key phase.
+        let sym_key = {
+            let sym_ptr = self.session.builtin_world().sym_to_primitive.as_ptr() as *mut JsObject;
+            JsValue::from_js_object(sym_ptr)
+        };
+        let sym_si = self.property_key_si(sym_key);
+        let exotic = {
+            let obj = unsafe { &*obj_ptr };
+            self.ordinary_get(obj, sym_si, value)?
+        };
+        if !exotic.is_undefined() && !exotic.is_null() {
+            let exotic_ptr = exotic.as_js_object_ptr();
+            if !exotic.is_object() || exotic_ptr.is_null() || !unsafe { &*exotic_ptr }.is_function() {
+                return Err(self.error_message_text("TypeError", "Symbol.toPrimitive is not a function"));
+            }
+            let hint_val = self.new_string(if prefer_string { "string" } else { "number" });
+            let result = self.call_function_sync(exotic, value, &[hint_val])?;
+            if result.is_object() {
+                return Err(self.error_message_text("TypeError", "Cannot convert object to primitive value"));
+            }
+            return Ok(result);
+        }
+
         let method_names = if prefer_string { ["toString", "valueOf"] } else { ["valueOf", "toString"] };
 
         for method_name in method_names {
