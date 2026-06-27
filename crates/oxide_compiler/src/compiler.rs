@@ -721,6 +721,16 @@ impl Compiler {
             ctx.declare_initialized(name, reg, VariableDeclarationKind::Var, false)?;
         }
 
+        // Count the parameter destructuring prologue so the count pass matches the emit pass
+        // below (which emits it via emit_binding_pattern). Without this the projected program
+        // counter undercounts, drifting every jump target inside a function that has a
+        // destructured or default parameter.
+        for spec in param_specs {
+            if let ParamSpec::Pattern { pattern, .. } = spec {
+                self.count_binding_pattern(pattern, &mut ctx);
+            }
+        }
+
         // Count pass
         if !fields_after_super {
             if let Some(count) = count_fields.as_mut() {

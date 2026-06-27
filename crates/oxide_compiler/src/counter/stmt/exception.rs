@@ -40,9 +40,14 @@ impl Compiler {
         ctx.labels.label_map.insert(catch_label, ctx.projected_pc);
         if let Some(catch) = &stmt.handler {
             ctx.push_scope();
-            if let Some(_param) = &catch.param {
+            if let Some(param) = &catch.param {
+                // Mirror the emitter: the catch register is always allocated, but STORE_VAR is
+                // emitted only for an identifier binding — a destructuring catch param emits no
+                // store (that binding form is not implemented yet).
                 ctx.alloc_reg();
-                ctx.projected_pc += 1; // STORE_VAR
+                if let oxide_parser::BindingPattern::BindingIdentifier(_) = &param.pattern {
+                    ctx.projected_pc += 1; // STORE_VAR
+                }
             }
             for cs in &catch.body.body {
                 self.count_statement(cs, ctx);

@@ -75,8 +75,17 @@ impl Compiler {
                         let val_reg = self.emit_expression(init_expr, ctx)?;
                         self.emit_binding_pattern(&d.id, val_reg, decl.kind, is_const, ctx)?;
                     } else if let BindingPattern::BindingIdentifier(bi) = &d.id {
+                        // `for (var i; ...)` initializes `i` to undefined, mirroring a
+                        // statement-level `var i;` — emit LOAD_CONST undefined + STORE_VAR.
+                        // The count pass already counts these two instructions; emitting
+                        // nothing here drifts every jump target after the for-init.
+                        let idx = ctx.add_constant(Constant::Undefined);
+                        let tmp = ctx.alloc_reg();
+                        ctx.emit_load_const(tmp, idx);
                         let var_reg = ctx.alloc_reg();
                         ctx.declare(bi.name.as_str(), var_reg, decl.kind, is_const)?;
+                        ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, tmp, 0));
+                        ctx.init_var(bi.name.as_str());
                     }
                 }
             }

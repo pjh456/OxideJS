@@ -1,9 +1,7 @@
 use super::super::*;
 
 impl Compiler {
-    pub(in crate::counter) fn count_binding_pattern(
-        &self, pattern: &oxide_parser::BindingPattern, ctx: &mut CompileCtx,
-    ) {
+    pub(crate) fn count_binding_pattern(&self, pattern: &oxide_parser::BindingPattern, ctx: &mut CompileCtx) {
         match pattern {
             oxide_parser::BindingPattern::BindingIdentifier(_) => {
                 ctx.alloc_reg();
@@ -72,9 +70,11 @@ impl Compiler {
             ctx.count_instr(); // FOR_OF_DONE
             ctx.alloc_reg();
             ctx.count_instr(); // FOR_OF_NEXT
-            if elem.is_some() {
-                ctx.alloc_reg();
-                ctx.count_instr(); // STORE_VAR
+            if let Some(elem) = elem {
+                // Mirror emit_array_assignment: an element may be a default (`[a = 1]`) or a
+                // nested pattern (`[[a], b]`), not just an identifier — recurse through the
+                // shared dispatch instead of hard-coding one STORE_VAR.
+                self.count_assignment_maybe_default(elem, ctx);
             }
         }
         if let Some(rest) = &ap.rest {
