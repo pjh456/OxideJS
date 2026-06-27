@@ -103,7 +103,9 @@ pub struct CallFrame {
 }
 
 pub struct ForInIter<'bump> {
-    pub keys: bumpalo::collections::Vec<'bump, JsValue>,
+    /// Each key paired with its string-intern id, so for-in can sort
+    /// integer-index keys ahead of string keys without re-interning.
+    pub keys: bumpalo::collections::Vec<'bump, (JsValue, u32)>,
     pub index: usize,
 }
 
@@ -358,8 +360,8 @@ impl Vm {
                 continue;
             }
             unsafe {
-                for &v in (*(*iter)).keys.iter() {
-                    f(v);
+                for (v, _si) in (*(*iter)).keys.iter() {
+                    f(*v);
                 }
             }
         }
