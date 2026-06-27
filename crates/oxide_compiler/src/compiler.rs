@@ -757,6 +757,10 @@ impl Compiler {
         }
         ctx.max_regs = ctx.max_regs.max(1);
         ctx.reg_overflow = false;
+        // Count-pass instruction total for this body, compared against the emit pass below
+        // to catch any counter/emitter drift (which would mis-target jumps). reset_regs zeroes
+        // projected_pc, so capture it first.
+        let counted_pc = ctx.projected_pc;
         ctx.reset_regs();
 
         // Emit pass - reallocate params (same order = same regs after reset)
@@ -793,6 +797,14 @@ impl Compiler {
                 last_result_reg = Some(reg);
             }
         }
+
+        debug_assert_eq!(
+            counted_pc,
+            ctx.bytecode.len(),
+            "counter/emitter instruction drift in function body (before implicit RETURN): counted {} vs emitted {}",
+            counted_pc,
+            ctx.bytecode.len()
+        );
 
         // Emit implicit RETURN: expression body returns the last expression,
         // statement body returns undefined.
@@ -860,6 +872,9 @@ impl Compiler {
         crate::compiler_debug!("counter: {} instructions estimated", ctx.projected_pc);
         ctx.max_regs = ctx.max_regs.max(1);
         ctx.reg_overflow = false;
+        // Count-pass instruction total, compared against the emit pass below to catch
+        // counter/emitter drift. reset_regs zeroes projected_pc, so capture it first.
+        let counted_pc = ctx.projected_pc;
         ctx.reset_regs();
 
         // First sub-pass: emit FunctionDeclarations (hoisting)
@@ -882,6 +897,14 @@ impl Compiler {
             }
         }
         crate::compiler_debug!("emitter: {} bytes emitted", ctx.bytecode.len());
+
+        debug_assert_eq!(
+            counted_pc,
+            ctx.bytecode.len(),
+            "counter/emitter instruction drift in top-level module (before result store + HALT): counted {} vs emitted {}",
+            counted_pc,
+            ctx.bytecode.len()
+        );
 
         if let Some(r) = last_result {
             ctx.emit(opcode::encode(OpCode::LOAD_VAR, 0, r, 0));
