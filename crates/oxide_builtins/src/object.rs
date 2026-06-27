@@ -140,8 +140,11 @@ pub fn object_assign<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 pub fn object_is<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let lhs = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let rhs = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    if args.len() < 3 {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.is called with insufficient arguments"));
+    }
+    let lhs = vm.reg(args[1]);
+    let rhs = vm.reg(args[2]);
     NativeResult::Ok(JsValue::bool(oxide_runtime_api::same_value(lhs, rhs)))
 }
 
@@ -230,7 +233,10 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
 
 pub fn object_get_own_property_descriptor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 3 {
-        return NativeResult::Err(JsValue::undefined());
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Object.getOwnPropertyDescriptor called on non-object",
+        ));
     }
     let obj_val = vm.reg(args[1]);
     if !obj_val.is_object() {
