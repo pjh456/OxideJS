@@ -121,11 +121,13 @@ pub trait VmHost {
     fn symbol_key_for_id(&self, idx: u32) -> Option<String>;
 }
 
-pub fn format_error_message(kind: &str, msg: &str) -> String {
-    if msg.is_empty() || msg == kind || msg.starts_with(&format!("{kind}:")) {
+pub fn format_error_message(name: &str, msg: &str) -> String {
+    if name.is_empty() {
         msg.to_string()
+    } else if msg.is_empty() {
+        name.to_string()
     } else {
-        format!("{kind}: {msg}")
+        format!("{name}: {msg}")
     }
 }
 

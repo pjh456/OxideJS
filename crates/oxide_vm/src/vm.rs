@@ -55,11 +55,13 @@ fn js_error_kind_name(kind: JsErrorKind) -> &'static str {
     }
 }
 
-pub(crate) fn format_error_message(kind: &str, msg: &str) -> String {
-    if msg.is_empty() || msg == kind || msg.starts_with(&format!("{kind}:")) {
+pub(crate) fn format_error_message(name: &str, msg: &str) -> String {
+    if name.is_empty() {
         msg.to_string()
+    } else if msg.is_empty() {
+        name.to_string()
     } else {
-        format!("{kind}: {msg}")
+        format!("{name}: {msg}")
     }
 }
 

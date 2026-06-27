@@ -1011,6 +1011,39 @@ impl BuiltinWorld {
             ("toString", methods.to_string, 0),
             ("stack", methods.stack, 0),
         );
+
+        let si_name = string_forge.intern("name").0;
+        let error_si = string_forge.intern("Error").0;
+        let error_name_val = JsValue::perm_string(string_forge.string_ptr(error_si));
+        let name_shape = shape_forge.make_shape(proto.shape_id(), si_name);
+        proto.set_shape_id(name_shape);
+        proto.ensure_hash_props().push(error_name_val);
+
+        let si_message = string_forge.intern("message").0;
+        let empty_si = string_forge.intern("").0;
+        let empty_val = JsValue::perm_string(string_forge.string_ptr(empty_si));
+        let msg_shape = shape_forge.make_shape(proto.shape_id(), si_message);
+        proto.set_shape_id(msg_shape);
+        proto.ensure_hash_props().push(empty_val);
+
+        self.set_subtype_proto_name(string_forge, shape_forge, &self.type_error_proto, "TypeError", si_name);
+        self.set_subtype_proto_name(string_forge, shape_forge, &self.reference_error_proto, "ReferenceError", si_name);
+        self.set_subtype_proto_name(string_forge, shape_forge, &self.range_error_proto, "RangeError", si_name);
+        self.set_subtype_proto_name(string_forge, shape_forge, &self.syntax_error_proto, "SyntaxError", si_name);
+        self.set_subtype_proto_name(string_forge, shape_forge, &self.uri_error_proto, "URIError", si_name);
+        self.set_subtype_proto_name(string_forge, shape_forge, &self.eval_error_proto, "EvalError", si_name);
+    }
+
+    fn set_subtype_proto_name(
+        &self, string_forge: &PermInterner, shape_forge: &ShapeForge, proto_p: &P<JsObject>, name: &str, si_name: u32,
+    ) {
+        let proto_ptr = P::as_ptr(proto_p) as *mut JsObject;
+        let proto = unsafe { &mut *proto_ptr };
+        let name_si = string_forge.intern(name).0;
+        let name_val = JsValue::perm_string(string_forge.string_ptr(name_si));
+        let name_shape = shape_forge.make_shape(proto.shape_id(), si_name);
+        proto.set_shape_id(name_shape);
+        proto.ensure_hash_props().push(name_val);
     }
 
     pub fn bind_string_methods(&self, methods: &StringMethods, string_forge: &PermInterner, shape_forge: &ShapeForge) {
