@@ -342,6 +342,12 @@ pub fn array_join<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(result_val)
 }
 
+pub fn array_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    // Array.prototype.toString() delegates to join with the default "," separator,
+    // ignoring its own arguments per spec.
+    array_join(vm, &[args[0]])
+}
+
 pub fn array_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.indexOf called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
