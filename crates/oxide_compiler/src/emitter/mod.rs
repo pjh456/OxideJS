@@ -247,7 +247,7 @@ impl Compiler {
         self.emit_expression(key.to_expression(), ctx)
     }
 
-    fn count_class_key(&self, key: &PropertyKey, computed: bool, ctx: &mut CompileCtx) {
+    pub(crate) fn count_class_key(&self, key: &PropertyKey, computed: bool, ctx: &mut CompileCtx) {
         if computed {
             self.count_expression(key.to_expression(), ctx);
         } else {

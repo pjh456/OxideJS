@@ -35,15 +35,19 @@ impl Compiler {
                         continue;
                     }
                     if matches!(method.key, oxide_parser::PropertyKey::PrivateIdentifier(_)) {
-                        if method.r#static {
-                            ctx.count_load_const(); // private id
-                            ctx.count_load_const(); // method
-                            ctx.count_instr(); // INIT_PRIVATE
-                        }
+                        // Mirror emit_private_method_init for static AND non-static private
+                        // methods: private-id LOAD_CONST + CREATE_CLOSURE + SET_HOME_OBJECT +
+                        // INIT_PRIVATE.
+                        ctx.count_load_const(); // private id reg
+                        ctx.count_load_const(); // method closure (CREATE_CLOSURE)
+                        ctx.count_instr(); // SET_HOME_OBJECT
+                        ctx.count_instr(); // INIT_PRIVATE
                         continue;
                     }
-                    ctx.count_load_const(); // key_reg
-                    ctx.count_load_const(); // method_reg
+                    // Computed method key emits the full key expression; a plain key is one
+                    // LOAD_CONST. Mirror emit_class_key_reg via the shared count_class_key.
+                    self.count_class_key(&method.key, method.computed, ctx);
+                    ctx.count_load_const(); // method closure (CREATE_CLOSURE)
                     ctx.count_instr(); // SET_HOME_OBJECT
                     match method.kind {
                         MethodDefinitionKind::Method => {
@@ -59,7 +63,9 @@ impl Compiler {
                 ClassElement::PropertyDefinition(prop) => {
                     let prop = prop.as_ref();
                     if prop.r#static {
-                        ctx.count_load_const(); // key_reg
+                        // Computed static field key emits the full key expression; mirror
+                        // emit_public_field_init via the shared count_class_key.
+                        self.count_class_key(&prop.key, prop.computed, ctx);
                         if let Some(value) = &prop.value {
                             self.count_expression(value, ctx);
                         } else {

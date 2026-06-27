@@ -389,6 +389,10 @@ impl Vm {
         };
         let obj = unsafe { &mut *obj_ptr };
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+            let configurable = obj.prop_meta_at(pos).map(|m| m.attributes.configurable()).unwrap_or(true);
+            if !configurable {
+                return self.raise_type_error("cannot delete non-configurable property").map(|()| false);
+            }
             obj.set_prop_at(pos, JsValue::undefined());
         }
         self.regs[rd] = JsValue::bool(true);
@@ -403,6 +407,10 @@ impl Vm {
         };
         let obj = unsafe { &mut *obj_ptr };
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+            let configurable = obj.prop_meta_at(pos).map(|m| m.attributes.configurable()).unwrap_or(true);
+            if !configurable {
+                return self.raise_type_error("cannot delete non-configurable property").map(|()| false);
+            }
             obj.set_prop_at(pos, JsValue::undefined());
         }
         self.regs[rd] = JsValue::bool(true);

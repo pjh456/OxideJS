@@ -13,10 +13,8 @@ impl Compiler {
             }
             self.count_expression(&member.object, ctx);
             self.count_expression(&assign.right, ctx);
-            if assign.operator != AssignmentOperator::Assign {
-                ctx.alloc_reg();
-                ctx.projected_pc += 1;
-            }
+            // Both plain (IC_SET_PROP) and compound (COMPOUND_MEMBER_*) emit one opcode + 3 ext
+            // words after the key load — no extra instruction for the compound case.
             ctx.count_load_const(); // key
             ctx.count_ic_set_with_ext(); // IC_SET_PROP or COMPOUND_MEMBER_* + 3 ext words
         } else if let oxide_parser::AssignmentTarget::ComputedMemberExpression(member) = &assign.left {

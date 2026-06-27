@@ -171,7 +171,7 @@ pub fn string_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let search = as_string(vm, vm.reg(args[1]));
     let pos = if args.len() > 2 {
-        (oxide_runtime_api::to_number(vm.reg(args[2])) as usize).min(n)
+        (vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as usize).min(n)
     } else {
         0
     };
@@ -203,7 +203,7 @@ pub fn string_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let search = as_string(vm, vm.reg(args[1]));
     let pos = if args.len() > 2 {
-        (oxide_runtime_api::to_number(vm.reg(args[2])) as usize).min(n)
+        (vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as usize).min(n)
     } else {
         0
     };
@@ -229,7 +229,7 @@ pub fn string_char_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
         return NativeResult::Ok(vm.new_string(&take_chars(&s, 1)));
     }
-    let idx = oxide_runtime_api::to_number(vm.reg(args[1])) as i32;
+    let idx = vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as i32;
     if idx < 0 || idx as usize >= char_len(&s) {
         return NativeResult::Ok(vm.new_string(""));
     }
@@ -246,7 +246,7 @@ pub fn string_char_code_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
         return NativeResult::Ok(JsValue::int(s.chars().next().unwrap() as i32));
     }
-    let idx = oxide_runtime_api::to_number(vm.reg(args[1])) as i32;
+    let idx = vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as i32;
     if idx < 0 || idx as usize >= char_len(&s) {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
@@ -267,7 +267,7 @@ pub fn string_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let n = char_len(&s) as i32;
     let start = if args.len() > 1 {
-        let v = oxide_runtime_api::to_number(vm.reg(args[1])) as i32;
+        let v = vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as i32;
         if v < 0 {
             (n + v).max(0)
         } else {
@@ -277,7 +277,7 @@ pub fn string_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         0
     };
     let end = if args.len() > 2 {
-        let v = oxide_runtime_api::to_number(vm.reg(args[2])) as i32;
+        let v = vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as i32;
         if v < 0 {
             (n + v).max(0)
         } else {
@@ -297,12 +297,22 @@ pub fn string_substring<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let n = char_len(&s) as i32;
     let mut start = if args.len() > 1 {
-        (oxide_runtime_api::to_number(vm.reg(args[1])) as i32).max(0).min(n)
+        let v = oxide_runtime_api::to_integer_or_infinity(vm.reg(args[1]));
+        if v.is_nan() || v < 0.0 {
+            0
+        } else {
+            (v as i32).min(n)
+        }
     } else {
         0
     };
     let mut end = if args.len() > 2 {
-        (oxide_runtime_api::to_number(vm.reg(args[2])) as i32).max(0).min(n)
+        let v = oxide_runtime_api::to_integer_or_infinity(vm.reg(args[2]));
+        if v.is_nan() || v < 0.0 {
+            0
+        } else {
+            (v as i32).min(n)
+        }
     } else {
         n
     };
@@ -311,6 +321,84 @@ pub fn string_substring<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let result = char_slice(&s, start as usize, end as usize);
     NativeResult::Ok(vm.new_string(result))
+}
+
+pub fn string_substr<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.substr called with {} args", args.len());
+    let s = this_string(vm, args);
+    let len = char_len(&s) as isize;
+    let start = if args.len() > 1 {
+        let n = oxide_runtime_api::to_integer_or_infinity(vm.reg(args[1])) as isize;
+        if n < 0 {
+            (len + n).max(0)
+        } else {
+            n.min(len)
+        }
+    } else {
+        0
+    } as usize;
+    let length = if args.len() > 2 {
+        (oxide_runtime_api::to_integer_or_infinity(vm.reg(args[2])) as isize).max(0) as usize
+    } else {
+        len as usize - start
+    };
+    let result = take_chars(&s[byte_index_at_char(&s, start)..], length.min(len as usize - start));
+    NativeResult::Ok(vm.new_string(&result))
+}
+
+pub fn string_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.at called with {} args", args.len());
+    let s = this_string(vm, args);
+    let len = char_len(&s) as i32;
+    let idx = if args.len() > 1 {
+        oxide_runtime_api::to_integer_or_infinity(vm.reg(args[1])) as i32
+    } else {
+        0
+    };
+    let idx = if idx < 0 { len + idx } else { idx };
+    if idx < 0 || idx >= len {
+        return NativeResult::Ok(JsValue::undefined());
+    }
+    let ch = s.chars().nth(idx as usize).unwrap().to_string();
+    NativeResult::Ok(vm.new_string(&ch))
+}
+
+pub fn string_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.lastIndexOf called with {} args", args.len());
+    let s = this_string(vm, args);
+    let n = char_len(&s);
+    if args.len() < 2 {
+        return NativeResult::Ok(JsValue::int(-1));
+    }
+    let search = as_string(vm, vm.reg(args[1]));
+    let pos = if args.len() > 2 {
+        let p = oxide_runtime_api::to_integer_or_infinity(vm.reg(args[2]));
+        if p.is_nan() {
+            n
+        } else {
+            (p as usize).min(n)
+        }
+    } else {
+        n
+    };
+
+    if search.is_empty() {
+        return NativeResult::Ok(JsValue::int(pos as i32));
+    }
+
+    let end_byte = byte_index_at_char(&s, (pos + 1).min(n));
+    let haystack = &s[..end_byte];
+
+    if search.len() == 1 {
+        if let Some(idx) = memchr::memrchr(search.as_bytes()[0], haystack.as_bytes()) {
+            let result = char_len(&s[..idx]);
+            return NativeResult::Ok(JsValue::int(result as i32));
+        }
+    } else if let Some(idx) = haystack.rfind(&search) {
+        let result = char_len(&s[..idx]);
+        return NativeResult::Ok(JsValue::int(result as i32));
+    }
+    NativeResult::Ok(JsValue::int(-1))
 }
 
 pub fn string_to_upper_case<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -335,7 +423,7 @@ pub fn string_repeat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.repeat called with {} args", args.len());
     let s = this_string(vm, args);
     let n = if args.len() > 1 {
-        (oxide_runtime_api::to_number(vm.reg(args[1])) as usize).min(10000)
+        (vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as usize).min(10000)
     } else {
         1
     };
@@ -347,7 +435,7 @@ pub fn string_pad_start<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let s_len = char_len(&s);
     let target = if args.len() > 1 {
-        oxide_runtime_api::to_number(vm.reg(args[1])) as usize
+        vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as usize
     } else {
         s_len
     };
@@ -372,7 +460,7 @@ pub fn string_pad_end<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let s_len = char_len(&s);
     let target = if args.len() > 1 {
-        oxide_runtime_api::to_number(vm.reg(args[1])) as usize
+        vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as usize
     } else {
         s_len
     };
@@ -401,7 +489,7 @@ pub fn string_starts_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let search = as_string(vm, vm.reg(args[1]));
     let pos = if args.len() > 2 {
-        (oxide_runtime_api::to_number(vm.reg(args[2])) as usize).min(n)
+        (vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as usize).min(n)
     } else {
         0
     };
@@ -417,7 +505,7 @@ pub fn string_ends_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let search = as_string(vm, vm.reg(args[1]));
     let end_pos = if args.len() > 2 {
-        (oxide_runtime_api::to_number(vm.reg(args[2])) as usize).min(n)
+        (vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as usize).min(n)
     } else {
         n
     };
@@ -433,7 +521,7 @@ pub fn string_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let sep_val = vm.reg(args[1]);
     let limit = if args.len() > 2 {
-        oxide_runtime_api::to_number(vm.reg(args[2])) as usize
+        oxide_runtime_api::to_integer_or_infinity(vm.reg(args[2])) as usize
     } else {
         usize::MAX
     };
@@ -448,10 +536,30 @@ pub fn string_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                 return NativeResult::Ok(make_string_array(vm, &parts));
             }
         };
-        // SAFETY: fn_ptr holds a Box<regex::Regex> pointer stored by regexp_constructor.
         let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
-        let raw: Vec<&str> = regex.split(&s).collect();
-        let parts: Vec<String> = raw.iter().map(|p| p.to_string()).take(limit).collect();
+        let mut parts: Vec<String> = Vec::new();
+        let mut last_end = 0;
+        for caps in regex.captures_iter(&s) {
+            if parts.len() >= limit {
+                break;
+            }
+            let full = caps.get(0).unwrap();
+            parts.push(s[last_end..full.start()].to_string());
+            if parts.len() >= limit {
+                break;
+            }
+            for i in 1..caps.len() {
+                if parts.len() >= limit {
+                    break;
+                }
+                let cap = caps.get(i).map(|m| m.as_str()).unwrap_or("");
+                parts.push(cap.to_string());
+            }
+            last_end = full.end();
+        }
+        if last_end <= s.len() && parts.len() < limit {
+            parts.push(s[last_end..].to_string());
+        }
         return NativeResult::Ok(make_string_array(vm, &parts));
     }
 
@@ -471,7 +579,6 @@ pub fn string_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(vm.new_string(&s));
     }
     let pattern_val = vm.reg(args[1]);
-    let replacement = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { String::new() };
 
     if is_regexp_obj(pattern_val, vm) {
         let re_ptr = pattern_val.as_js_object_ptr();
@@ -480,12 +587,53 @@ pub fn string_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             Some(p) => p,
             None => return NativeResult::Ok(vm.new_string(&s)),
         };
-        // SAFETY: fn_ptr holds a Box<regex::Regex> pointer stored by regexp_constructor.
         let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
-        let result = regex.replace_all(&s, replacement.as_str()).to_string();
+
+        if args.len() > 2 {
+            let replacer_val = vm.reg(args[2]);
+            if replacer_val.is_object() {
+                let o = unsafe { &*replacer_val.as_js_object_ptr() };
+                if o.is_function() {
+                    builtins_debug!("string_replace: function replacer path");
+                    if let Some(captures) = regex.captures(&s) {
+                        let full = captures.get(0).unwrap();
+                        let mut cb_args: Vec<JsValue> = Vec::with_capacity(captures.len() + 2);
+                        cb_args.push(vm.new_string(full.as_str()));
+                        for i in 1..captures.len() {
+                            cb_args.push(vm.new_string(captures.get(i).map(|m| m.as_str()).unwrap_or("")));
+                        }
+                        cb_args.push(JsValue::int(full.start() as i32));
+                        cb_args.push(vm.new_string(&s));
+                        match vm.call_function_sync(replacer_val, JsValue::undefined(), &cb_args) {
+                            Ok(result) => {
+                                let result_str = oxide_runtime_api::to_string(result);
+                                let output = format!("{}{}{}", &s[..full.start()], &result_str, &s[full.end()..]);
+                                return NativeResult::Ok(vm.new_string(&output));
+                            }
+                            Err(err) => {
+                                return NativeResult::Err(crate::error::create_type_error(
+                                    vm,
+                                    &format!("replace replacer: {}", err),
+                                ));
+                            }
+                        }
+                    }
+                    return NativeResult::Ok(vm.new_string(&s));
+                }
+            }
+        }
+
+        let replacement = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { String::new() };
+        let is_global = re.hash_props_vec().and_then(|v| v.get(3)).map(|v| v.as_bool()).unwrap_or(false);
+        let result = if is_global {
+            regex.replace_all(&s, replacement.as_str()).to_string()
+        } else {
+            regex.replacen(&s, 1, replacement.as_str()).to_string()
+        };
         return NativeResult::Ok(vm.new_string(&result));
     }
 
+    let replacement = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { String::new() };
     let pattern = as_string(vm, pattern_val);
     let result = s.replacen(&pattern, &replacement, 1);
     NativeResult::Ok(vm.new_string(&result))
@@ -495,7 +643,7 @@ pub fn string_match_fn<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.match called with {} args", args.len());
     let s = this_string(vm, args);
     if args.len() < 2 {
-        return NativeResult::Ok(JsValue::undefined());
+        return NativeResult::Ok(JsValue::null());
     }
     let pattern_val = vm.reg(args[1]);
 
@@ -504,19 +652,30 @@ pub fn string_match_fn<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let re = unsafe { &*re_ptr };
         let fn_ptr = match re.native_fn() {
             Some(p) => p,
-            None => return NativeResult::Ok(JsValue::undefined()),
+            None => return NativeResult::Ok(JsValue::null()),
         };
-        // SAFETY: fn_ptr holds a Box<regex::Regex> pointer stored by regexp_constructor.
         let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
-        let matches: Vec<String> = regex.find_iter(&s).map(|m| m.as_str().to_string()).collect();
-        return NativeResult::Ok(make_string_array(vm, &matches));
+        let is_global = re.hash_props_vec().and_then(|v| v.get(3)).map(|v| v.as_bool()).unwrap_or(false);
+        if is_global {
+            let matches: Vec<String> = regex.find_iter(&s).map(|m| m.as_str().to_string()).collect();
+            return NativeResult::Ok(make_string_array(vm, &matches));
+        }
+        if let Some(captures) = regex.captures(&s) {
+            let mut parts: Vec<String> = Vec::with_capacity(captures.len());
+            parts.push(captures.get(0).unwrap().as_str().to_string());
+            for i in 1..captures.len() {
+                parts.push(captures.get(i).map(|m| m.as_str()).unwrap_or("").to_string());
+            }
+            return NativeResult::Ok(make_string_array(vm, &parts));
+        }
+        return NativeResult::Ok(JsValue::null());
     }
 
     let pattern = as_string(vm, pattern_val);
     if let Some(pos) = s.find(&pattern) {
         return NativeResult::Ok(make_string_array(vm, &[s[pos..pos + pattern.len()].to_string()]));
     }
-    NativeResult::Ok(JsValue::undefined())
+    NativeResult::Ok(JsValue::null())
 }
 
 pub fn string_search<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -565,7 +724,7 @@ pub fn string_code_point_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     builtins_debug!("String.prototype.codePointAt called with {} args", args.len());
     let s = this_string(vm, args);
     let pos = if args.len() > 1 {
-        oxide_runtime_api::to_number(vm.reg(args[1])) as usize
+        vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as usize
     } else {
         0
     };
@@ -598,6 +757,10 @@ pub fn string_normalize<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(&result))
 }
 
+const MALL_INPUT: &str = "__mal_input__";
+const MALL_INDEX: &str = "__mal_index__";
+const MALL_RE: &str = "__mal_re__";
+
 pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.matchAll called with {} args", args.len());
     let s = this_string(vm, args);
@@ -606,19 +769,138 @@ pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Err(JsValue::undefined());
     }
     let pattern_val = vm.reg(args[1]);
-    if is_regexp_obj(pattern_val, vm) {
+
+    let re_obj = if is_regexp_obj(pattern_val, vm) {
         let re_ptr = pattern_val.as_js_object_ptr();
         let re = unsafe { &*re_ptr };
-        let fn_ptr = match re.native_fn() {
-            Some(p) => p,
-            None => return NativeResult::Ok(JsValue::undefined()),
+        let is_global = re.hash_props_vec().and_then(|v| v.get(3)).map(|v| v.as_bool()).unwrap_or(false);
+        if !is_global {
+            return NativeResult::Err(crate::error::create_type_error(
+                vm,
+                "String.prototype.matchAll: regex must have global flag",
+            ));
+        }
+        pattern_val
+    } else {
+        let pattern_str = as_string(vm, pattern_val);
+        let escaped = regex::escape(&pattern_str);
+        let rx_str = if escaped.is_empty() { String::from("(?:)") } else { format!("({})", escaped) };
+        let compiled = match regex::Regex::new(&rx_str) {
+            Ok(rx) => rx,
+            Err(e) => {
+                return NativeResult::Err(crate::error::create_syntax_error(vm, &format!("Invalid regex: {}", e)));
+            }
         };
-        // SAFETY: fn_ptr holds a Box<regex::Regex> pointer stored by regexp_constructor.
-        let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
-        let matches: Vec<String> = regex.find_iter(&s).map(|m| m.as_str().to_string()).collect();
-        return NativeResult::Ok(make_string_array(vm, &matches));
+        let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+        let mut stub = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto));
+        let boxed = Box::new(compiled);
+        let raw = Box::into_raw(boxed) as *const u8;
+        stub.set_native_fn(Some(unsafe { oxide_types::object::NativeFnPtr::from_raw(raw as *const ()) }));
+        let stub_ptr = vm.alloc_object(stub);
+        JsValue::from_js_object(stub_ptr)
+    };
+
+    // Build wrapper object
+    builder_wrapper(vm, &s, re_obj)
+}
+
+fn builder_wrapper<H: VmHost>(vm: &mut H, input: &str, re_obj: JsValue) -> NativeResult {
+    let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let wrapper = vm
+        .epoch()
+        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
+
+    let wrapper_obj = unsafe { &mut *wrapper };
+    let input_si = vm.kernel_core().perm_interner().intern(MALL_INPUT).0;
+    let index_si = vm.kernel_core().perm_interner().intern(MALL_INDEX).0;
+    let re_si = vm.kernel_core().perm_interner().intern(MALL_RE).0;
+    let next_si = vm.kernel_core().perm_interner().intern("next").0;
+
+    let input_val = vm.new_string(input);
+    vm.set_or_create_prop_value(wrapper_obj, input_si, input_val);
+    vm.set_or_create_prop_value(wrapper_obj, index_si, JsValue::int(0));
+    vm.set_or_create_prop_value(wrapper_obj, re_si, re_obj);
+
+    let next_fn = make_public_native_fn(vm, "next", string_match_all_next::<H> as *const (), 0);
+    vm.set_or_create_prop_value(wrapper_obj, next_si, next_fn);
+
+    NativeResult::Ok(JsValue::from_js_object(wrapper))
+}
+
+fn make_public_native_fn<H: VmHost>(vm: &mut H, name: &str, native_fn: *const (), arg_count: u8) -> JsValue {
+    let function_proto = vm.session().builtin_world().function_proto.as_ptr() as *mut JsObject;
+    let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(function_proto));
+    func.set_function(true);
+    func.set_native_fn(Some(unsafe { oxide_types::object::NativeFnPtr::from_raw(native_fn) }));
+    func.set_native_arg_count(arg_count);
+    let func = vm.alloc_object(func);
+    let name_si = vm.kernel_core().perm_interner().intern("name").0;
+    let value = vm.new_string(name);
+    let func_ref = unsafe { &mut *func };
+    vm.set_or_create_prop_value(func_ref, name_si, value);
+    JsValue::from_js_object(func)
+}
+
+pub fn string_match_all_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    if !this_val.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "matchAll next called on non-object"));
     }
-    NativeResult::Ok(JsValue::undefined())
+    let wrapper = unsafe { &mut *this_val.as_js_object_ptr() };
+    let input_si = vm.kernel_core().perm_interner().intern(MALL_INPUT).0;
+    let index_si = vm.kernel_core().perm_interner().intern(MALL_INDEX).0;
+    let re_si = vm.kernel_core().perm_interner().intern(MALL_RE).0;
+
+    let input_val = match vm.ordinary_get(wrapper, input_si, this_val) {
+        Ok(v) => v,
+        Err(_) => return make_match_done_result(vm, JsValue::undefined()),
+    };
+    let input_str = oxide_runtime_api::to_string(input_val);
+    let idx_val = match vm.ordinary_get(wrapper, index_si, this_val) {
+        Ok(v) => v,
+        Err(_) => return make_match_done_result(vm, JsValue::undefined()),
+    };
+    let mut idx = if idx_val.is_int() { idx_val.as_int().max(0) as usize } else { 0 };
+    let re_val = match vm.ordinary_get(wrapper, re_si, this_val) {
+        Ok(v) if v.is_object() => v,
+        _ => return make_match_done_result(vm, JsValue::undefined()),
+    };
+    let re_obj = unsafe { &*re_val.as_js_object_ptr() };
+    let fn_ptr = match re_obj.native_fn() {
+        Some(p) => p,
+        None => return make_match_done_result(vm, JsValue::undefined()),
+    };
+    let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
+
+    if let Some(m) = regex.find_at(&input_str, idx) {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(caps) = regex.captures_at(&input_str, idx) {
+            parts.push(caps.get(0).unwrap().as_str().to_string());
+            for i in 1..caps.len() {
+                parts.push(caps.get(i).map(|c| c.as_str()).unwrap_or("").to_string());
+            }
+        }
+        idx = m.end();
+        vm.set_or_create_prop_value(wrapper, index_si, JsValue::int(idx as i32));
+        let arr_val = make_string_array(vm, &parts);
+        make_match_done_result(vm, arr_val)
+    } else {
+        make_match_done_result(vm, JsValue::undefined())
+    }
+}
+
+fn make_match_done_result<H: VmHost>(vm: &mut H, value: JsValue) -> NativeResult {
+    let done = value.is_undefined();
+    let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let obj = vm
+        .epoch()
+        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
+    let value_si = vm.kernel_core().perm_interner().intern("value").0;
+    let done_si = vm.kernel_core().perm_interner().intern("done").0;
+    let obj_ref = unsafe { &mut *obj };
+    vm.set_or_create_prop_value(obj_ref, value_si, value);
+    vm.set_or_create_prop_value(obj_ref, done_si, JsValue::bool(done));
+    NativeResult::Ok(JsValue::from_js_object(obj))
 }
 
 pub fn string_replace_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {

@@ -120,12 +120,14 @@ fn regression_for_var_init() {
 
 #[test]
 fn regression_var_decl_counter_no_init() {
-    let result = std::panic::catch_unwind(|| {
-        compile_source("for (var i; i < 3; i = i + 1) {}");
-    });
+    // `for (var i; ...)` initializes `i` to undefined (var semantics, not TDZ), and the
+    // counter/emitter agree on the no-init declarator's instruction count, so it compiles
+    // to a well-formed loop header instead of panicking.
+    let module = compile_source("for (var i; i < 3; i = i + 1) {}");
+    assert!(!module.bytecode.is_empty(), "for(var) no-init should compile");
     assert!(
-        result.is_err(),
-        "for(var) without initializer should fail - accessing TDZ variable in test expression"
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::JMP_IF_FALSE),
+        "for(var) no-init should contain JMP_IF_FALSE"
     );
 }
 

@@ -15,7 +15,7 @@ macro_rules! native_try {
     };
 }
 
-type MapInner = indexmap::IndexMap<SetKey, JsValue>;
+pub(crate) type MapInner = indexmap::IndexMap<SetKey, JsValue>;
 
 /// Retrieve the `IndexMap` pointer stored in a Map object's native-data slot.
 ///
@@ -200,4 +200,34 @@ pub fn map_size<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let inner = native_try!(get_map_inner(vm, this_val));
     NativeResult::Ok(JsValue::float(unsafe { (*inner).len() } as f64))
+}
+
+pub fn map_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let _inner = native_try!(get_map_inner(vm, this_val));
+    NativeResult::Ok(crate::iterator::make_mode_iterator(
+        vm,
+        this_val,
+        crate::iterator::map_entries_iter_next::<H> as *const (),
+    ))
+}
+
+pub fn map_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let _inner = native_try!(get_map_inner(vm, this_val));
+    NativeResult::Ok(crate::iterator::make_mode_iterator(
+        vm,
+        this_val,
+        crate::iterator::map_values_iter_next::<H> as *const (),
+    ))
+}
+
+pub fn map_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let _inner = native_try!(get_map_inner(vm, this_val));
+    NativeResult::Ok(crate::iterator::make_mode_iterator(
+        vm,
+        this_val,
+        crate::iterator::map_keys_iter_next::<H> as *const (),
+    ))
 }

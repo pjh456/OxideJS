@@ -20,7 +20,7 @@ fn type_error<H: VmHost>(vm: &mut H, msg: &str) -> NativeResult {
 }
 
 fn to_index<H: VmHost>(vm: &mut H, value: JsValue) -> Result<usize, JsValue> {
-    let n = oxide_runtime_api::to_number(value);
+    let n = vm.coerce_number_bounded(value).unwrap_or(f64::NAN);
     if n.is_nan() {
         return Ok(0);
     }
@@ -30,8 +30,8 @@ fn to_index<H: VmHost>(vm: &mut H, value: JsValue) -> Result<usize, JsValue> {
     Ok(n.trunc() as usize)
 }
 
-fn normalize_index<H: VmHost>(_vm: &mut H, value: JsValue, len: usize) -> usize {
-    let n = oxide_runtime_api::to_number(value);
+fn normalize_index<H: VmHost>(vm: &mut H, value: JsValue, len: usize) -> usize {
+    let n = vm.coerce_number_bounded(value).unwrap_or(f64::NAN);
     if n.is_nan() {
         return 0;
     }

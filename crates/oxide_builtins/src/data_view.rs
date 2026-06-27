@@ -23,7 +23,7 @@ macro_rules! native_try {
 }
 
 fn to_index<H: VmHost>(vm: &mut H, value: JsValue, msg: &str) -> Result<usize, JsValue> {
-    let n = oxide_runtime_api::to_number(value);
+    let n = vm.coerce_number_bounded(value).unwrap_or(f64::NAN);
     if n.is_nan() {
         return Ok(0);
     }
@@ -41,7 +41,7 @@ fn is_little_endian<H: VmHost>(vm: &mut H, args: &[u8], idx: usize) -> bool {
 
 fn numeric_arg<H: VmHost>(vm: &mut H, args: &[u8], idx: usize) -> f64 {
     args.get(idx)
-        .map(|reg| oxide_runtime_api::to_number(vm.reg(*reg)))
+        .map(|reg| vm.coerce_number_bounded(vm.reg(*reg)).unwrap_or(f64::NAN))
         .unwrap_or(0.0)
 }
 

@@ -55,11 +55,13 @@ fn js_error_kind_name(kind: JsErrorKind) -> &'static str {
     }
 }
 
-pub(crate) fn format_error_message(kind: &str, msg: &str) -> String {
-    if msg.is_empty() || msg == kind || msg.starts_with(&format!("{kind}:")) {
+pub(crate) fn format_error_message(name: &str, msg: &str) -> String {
+    if name.is_empty() {
         msg.to_string()
+    } else if msg.is_empty() {
+        name.to_string()
     } else {
-        format!("{kind}: {msg}")
+        format!("{name}: {msg}")
     }
 }
 
@@ -103,7 +105,9 @@ pub struct CallFrame {
 }
 
 pub struct ForInIter<'bump> {
-    pub keys: bumpalo::collections::Vec<'bump, JsValue>,
+    /// Each key paired with its string-intern id, so for-in can sort
+    /// integer-index keys ahead of string keys without re-interning.
+    pub keys: bumpalo::collections::Vec<'bump, (JsValue, u32)>,
     pub index: usize,
 }
 
@@ -111,6 +115,8 @@ pub struct TryHandler {
     pub catch_pc: Option<usize>,
     pub finally_pc: Option<usize>,
     pub frame_depth: usize,
+    /// for_of_iters length at try entry — bounds which iterators IteratorClose on unwind.
+    pub for_of_depth: usize,
 }
 
 /// Heap-allocated snapshot used by `call_bytecode_function_inline`.
@@ -162,6 +168,10 @@ pub struct Vm {
     pub(crate) save_stack: Vec<JsValue>,
     pub(crate) try_stack: Vec<TryHandler>,
     pub(crate) exception_value: Option<JsValue>,
+    /// Side-channel carrying the JsValue thrown by a sync call whose error was flattened
+    /// to a String by `call_function_sync`/`unwind`, so for-of can re-throw the original
+    /// value. Plain field (NOT in InlineSyncState) so it survives the inline-call restore.
+    pub(crate) last_uncaught_value: Option<JsValue>,
     pub(crate) pending_exception: Option<JsValue>,
     pub(crate) pending_error_kind: Option<&'static str>,
     pub(crate) root_reg_limit: u8,
@@ -193,6 +203,33 @@ impl Vm {
         let obj_ptr = value.as_js_object_ptr();
         if obj_ptr.is_null() {
             return Ok(value);
+        }
+
+        // ECMA-262 §7.1.1 step 1: an exotic obj[Symbol.toPrimitive] takes precedence
+        // over OrdinaryToPrimitive. ponytail: symbol-object keys all collapse to
+        // to_string()="[object]" inside property_key_si (an engine-wide symbol-key
+        // limitation), so this resolves obj[@@toPrimitive] the same way the setter
+        // stores it; the real fix belongs to a dedicated symbol-key phase.
+        let sym_key = {
+            let sym_ptr = self.session.builtin_world().sym_to_primitive.as_ptr() as *mut JsObject;
+            JsValue::from_js_object(sym_ptr)
+        };
+        let sym_si = self.property_key_si(sym_key);
+        let exotic = {
+            let obj = unsafe { &*obj_ptr };
+            self.ordinary_get(obj, sym_si, value)?
+        };
+        if !exotic.is_undefined() && !exotic.is_null() {
+            let exotic_ptr = exotic.as_js_object_ptr();
+            if !exotic.is_object() || exotic_ptr.is_null() || !unsafe { &*exotic_ptr }.is_function() {
+                return Err(self.error_message_text("TypeError", "Symbol.toPrimitive is not a function"));
+            }
+            let hint_val = self.new_string(if prefer_string { "string" } else { "number" });
+            let result = self.call_function_sync(exotic, value, &[hint_val])?;
+            if result.is_object() {
+                return Err(self.error_message_text("TypeError", "Cannot convert object to primitive value"));
+            }
+            return Ok(result);
         }
 
         let method_names = if prefer_string { ["toString", "valueOf"] } else { ["valueOf", "toString"] };
@@ -331,8 +368,8 @@ impl Vm {
                 continue;
             }
             unsafe {
-                for &v in (*(*iter)).keys.iter() {
-                    f(v);
+                for (v, _si) in (*(*iter)).keys.iter() {
+                    f(*v);
                 }
             }
         }
@@ -606,7 +643,10 @@ impl Vm {
             self.regs = saved_regs;
             return match result {
                 NativeResult::Ok(val) => Ok(val),
-                NativeResult::Err(err) => Err(self.error_text(err)),
+                NativeResult::Err(err) => {
+                    self.last_uncaught_value = Some(err);
+                    Err(self.error_text(err))
+                }
                 NativeResult::TailCall { callee, this, args } => self.call_function_sync(callee, this, &args),
             };
         }
@@ -803,27 +843,27 @@ impl Vm {
                 }
 
                 OpCode::EQ => {
-                    self.dispatch_eq(rd, a, b);
+                    self.dispatch_eq(rd, a, b)?;
                 }
 
                 OpCode::NEQ => {
-                    self.dispatch_neq(rd, a, b);
+                    self.dispatch_neq(rd, a, b)?;
                 }
 
                 OpCode::LT => {
-                    self.dispatch_lt(rd, a, b);
+                    self.dispatch_lt(rd, a, b)?;
                 }
 
                 OpCode::GT => {
-                    self.dispatch_gt(rd, a, b);
+                    self.dispatch_gt(rd, a, b)?;
                 }
 
                 OpCode::LTE => {
-                    self.dispatch_lte(rd, a, b);
+                    self.dispatch_lte(rd, a, b)?;
                 }
 
                 OpCode::GTE => {
-                    self.dispatch_gte(rd, a, b);
+                    self.dispatch_gte(rd, a, b)?;
                 }
 
                 OpCode::STRICT_EQ => {
@@ -1238,6 +1278,7 @@ mod tests {
             catch_pc: Some(1),
             finally_pc: None,
             frame_depth: 0,
+            for_of_depth: 0,
         });
         vm.exception_value = Some(JsValue::int(2));
         vm.pending_exception = Some(JsValue::int(3));
@@ -1490,6 +1531,9 @@ impl oxide_runtime_api::VmHost for Vm {
     }
     fn epoch(&self) -> &Epoch {
         self.epoch()
+    }
+    fn take_uncaught_value(&mut self) -> Option<JsValue> {
+        self.last_uncaught_value.take()
     }
     fn property_key_si(&mut self, val: JsValue) -> u32 {
         self.property_key_si(val)

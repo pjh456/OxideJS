@@ -574,6 +574,30 @@ impl JsObject {
         }
     }
 
+    pub fn is_frozen(&self) -> bool {
+        (self._pad) & 1 != 0
+    }
+
+    pub fn set_frozen(&mut self, frozen: bool) {
+        if frozen {
+            self._pad |= 1 << 0;
+        } else {
+            self._pad &= !(1 << 0);
+        }
+    }
+
+    pub fn is_sealed(&self) -> bool {
+        (self._pad >> 1) & 1 != 0
+    }
+
+    pub fn set_sealed(&mut self, sealed: bool) {
+        if sealed {
+            self._pad |= 1 << 1;
+        } else {
+            self._pad &= !(1 << 1);
+        }
+    }
+
     pub fn is_set(&self) -> bool {
         (self.header >> 24) & 1 != 0
     }
