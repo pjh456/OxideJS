@@ -339,62 +339,132 @@ macro_rules! native_try {
 
 pub fn object_freeze<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
-        return NativeResult::Ok(JsValue::undefined());
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.freeze called on non-object"));
     }
     let val = vm.reg(args[1]);
     if !val.is_object() || val.as_js_object_ptr().is_null() {
         return NativeResult::Ok(val);
+    }
+    let obj_ptr = val.as_js_object_ptr();
+    unsafe {
+        (*obj_ptr).set_frozen(true);
+        (*obj_ptr).set_extensible(false);
     }
     NativeResult::Ok(val)
 }
 
 pub fn object_seal<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
-        return NativeResult::Ok(JsValue::undefined());
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.seal called on non-object"));
     }
     let val = vm.reg(args[1]);
     if !val.is_object() || val.as_js_object_ptr().is_null() {
         return NativeResult::Ok(val);
+    }
+    let obj_ptr = val.as_js_object_ptr();
+    unsafe {
+        (*obj_ptr).set_sealed(true);
+        (*obj_ptr).set_extensible(false);
     }
     NativeResult::Ok(val)
 }
 
 pub fn object_prevent_extensions<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
-        return NativeResult::Ok(JsValue::undefined());
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.preventExtensions called on non-object"));
     }
     let val = vm.reg(args[1]);
     if !val.is_object() || val.as_js_object_ptr().is_null() {
         return NativeResult::Ok(val);
+    }
+    let obj_ptr = val.as_js_object_ptr();
+    unsafe {
+        (*obj_ptr).set_extensible(false);
     }
     NativeResult::Ok(val)
 }
 
 pub fn object_is_frozen<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
-        return NativeResult::Ok(JsValue::bool(true));
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.isFrozen called on non-object"));
     }
     let val = vm.reg(args[1]);
-    if !val.is_object() || val.as_js_object_ptr().is_null() {
+    if !val.is_object() {
         return NativeResult::Ok(JsValue::bool(true));
     }
-    NativeResult::Ok(JsValue::bool(false))
+    let obj_ptr = val.as_js_object_ptr();
+    if obj_ptr.is_null() {
+        return NativeResult::Ok(JsValue::bool(true));
+    }
+    let obj = unsafe { &*obj_ptr };
+    if obj.is_frozen() {
+        return NativeResult::Ok(JsValue::bool(true));
+    }
+    if obj.is_extensible() {
+        return NativeResult::Ok(JsValue::bool(false));
+    }
+    let keys = walk_own_keys(vm, obj);
+    for (_si, offset) in keys {
+        if let Some(meta) = obj.prop_meta_at(offset) {
+            if meta.attributes.configurable() {
+                return NativeResult::Ok(JsValue::bool(false));
+            }
+            if !meta.is_accessor && meta.attributes.writable() {
+                return NativeResult::Ok(JsValue::bool(false));
+            }
+        } else {
+            return NativeResult::Ok(JsValue::bool(false));
+        }
+    }
+    NativeResult::Ok(JsValue::bool(true))
 }
 
 pub fn object_is_sealed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
-        return NativeResult::Ok(JsValue::bool(true));
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.isSealed called on non-object"));
     }
     let val = vm.reg(args[1]);
-    if !val.is_object() || val.as_js_object_ptr().is_null() {
+    if !val.is_object() {
         return NativeResult::Ok(JsValue::bool(true));
     }
-    NativeResult::Ok(JsValue::bool(false))
+    let obj_ptr = val.as_js_object_ptr();
+    if obj_ptr.is_null() {
+        return NativeResult::Ok(JsValue::bool(true));
+    }
+    let obj = unsafe { &*obj_ptr };
+    if obj.is_sealed() {
+        return NativeResult::Ok(JsValue::bool(true));
+    }
+    if obj.is_extensible() {
+        return NativeResult::Ok(JsValue::bool(false));
+    }
+    let keys = walk_own_keys(vm, obj);
+    for (_si, offset) in keys {
+        if let Some(meta) = obj.prop_meta_at(offset) {
+            if meta.attributes.configurable() {
+                return NativeResult::Ok(JsValue::bool(false));
+            }
+        } else {
+            return NativeResult::Ok(JsValue::bool(false));
+        }
+    }
+    NativeResult::Ok(JsValue::bool(true))
 }
 
 pub fn object_is_extensible<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    native_try!(require_obj_arg(vm, args, "isExtensible"));
-    NativeResult::Ok(JsValue::bool(true))
+    if args.len() < 2 {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.isExtensible called on non-object"));
+    }
+    let val = vm.reg(args[1]);
+    if !val.is_object() {
+        return NativeResult::Ok(JsValue::bool(false));
+    }
+    let obj_ptr = val.as_js_object_ptr();
+    if obj_ptr.is_null() {
+        return NativeResult::Ok(JsValue::bool(false));
+    }
+    let obj = unsafe { &*obj_ptr };
+    NativeResult::Ok(JsValue::bool(obj.is_extensible()))
 }
 
 pub fn object_get_own_property_names<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
