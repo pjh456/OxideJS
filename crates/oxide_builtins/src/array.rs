@@ -193,19 +193,19 @@ pub fn array_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.slice called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
     let arr = unsafe { &*arr_ptr };
-    let n = arr.prop_count() as usize;
-    let start = if args.len() > 1 {
-        (vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as i32) as usize
+    let n = arr.prop_count() as isize;
+    let rel_start = if args.len() > 1 {
+        oxide_runtime_api::to_integer_or_infinity(vm.reg(args[1])) as isize
     } else {
         0
     };
-    let end = if args.len() > 2 {
-        (vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as i32) as usize
+    let rel_end = if args.len() > 2 {
+        oxide_runtime_api::to_integer_or_infinity(vm.reg(args[2])) as isize
     } else {
         n
     };
-    let start = start.min(n);
-    let end = end.min(n);
+    let start = if rel_start < 0 { (n + rel_start).max(0) } else { rel_start.min(n) } as usize;
+    let end = if rel_end < 0 { (n + rel_end).max(0) } else { rel_end.min(n) } as usize;
     let count = end.saturating_sub(start);
 
     let new_arr = create_new_array(vm, count);
