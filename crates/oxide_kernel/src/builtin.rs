@@ -217,6 +217,7 @@ pub struct BuiltinWorld {
     pub sym_search: P<JsObject>,
     pub sym_split: P<JsObject>,
     pub sym_iterator: P<JsObject>,
+    pub sym_to_primitive: P<JsObject>,
     pub stub_objects: Vec<P<JsObject>>,
 }
 
@@ -539,6 +540,7 @@ impl BuiltinWorld {
             BuiltinId::SymSearch => &self.sym_search,
             BuiltinId::SymSplit => &self.sym_split,
             BuiltinId::SymIterator => &self.sym_iterator,
+            BuiltinId::SymToPrimitive => &self.sym_to_primitive,
         }
     }
 
@@ -574,6 +576,7 @@ impl BuiltinWorld {
         let sym_search = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let sym_split = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let sym_iterator = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let sym_to_primitive = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let stub_objects = Vec::new();
 
         let world = Self {
@@ -641,6 +644,7 @@ impl BuiltinWorld {
             sym_search,
             sym_split,
             sym_iterator,
+            sym_to_primitive,
             stub_objects,
         };
         wire_builtin_world_links(&world);
@@ -701,29 +705,39 @@ impl BuiltinWorld {
                 },
             )
         };
-        let (symbol_proto, symbol_constructor, sym_match, sym_replace, sym_search, sym_split, sym_iterator) =
-            if dirty.symbol_family {
-                let (symbol_proto, symbol_constructor) = make_named_pair(string_forge, shape_forge, labels, "Symbol");
-                (
-                    symbol_proto,
-                    symbol_constructor,
-                    P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-                    P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-                    P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-                    P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-                    P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-                )
-            } else {
-                (
-                    current.symbol_proto.clone(),
-                    current.symbol_constructor.clone(),
-                    current.sym_match.clone(),
-                    current.sym_replace.clone(),
-                    current.sym_search.clone(),
-                    current.sym_split.clone(),
-                    current.sym_iterator.clone(),
-                )
-            };
+        let (
+            symbol_proto,
+            symbol_constructor,
+            sym_match,
+            sym_replace,
+            sym_search,
+            sym_split,
+            sym_iterator,
+            sym_to_primitive,
+        ) = if dirty.symbol_family {
+            let (symbol_proto, symbol_constructor) = make_named_pair(string_forge, shape_forge, labels, "Symbol");
+            (
+                symbol_proto,
+                symbol_constructor,
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+            )
+        } else {
+            (
+                current.symbol_proto.clone(),
+                current.symbol_constructor.clone(),
+                current.sym_match.clone(),
+                current.sym_replace.clone(),
+                current.sym_search.clone(),
+                current.sym_split.clone(),
+                current.sym_iterator.clone(),
+                current.sym_to_primitive.clone(),
+            )
+        };
 
         let math_object = if dirty.math {
             P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()))
@@ -861,6 +875,7 @@ impl BuiltinWorld {
             sym_search,
             sym_split,
             sym_iterator,
+            sym_to_primitive,
             stub_objects,
         };
         wire_builtin_world_links(&world);
