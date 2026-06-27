@@ -287,10 +287,13 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
         }
     } else {
         if existing_pos.is_none() {
-            return NativeResult::Err(crate::error::create_type_error(
-                vm,
-                "Cannot define new property without value or accessor",
-            ));
+            if vm
+                .define_data_property(obj, si, JsValue::undefined(), PropAttributes::new(false, enumerable, configurable))
+                .is_err()
+            {
+                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot define property"));
+            }
+            return NativeResult::Ok(obj_val);
         }
         let is_accessor = existing_meta.map(|m| m.is_accessor).unwrap_or(false);
         let writable = existing_meta.map(|m| m.attributes.writable()).unwrap_or(true);
