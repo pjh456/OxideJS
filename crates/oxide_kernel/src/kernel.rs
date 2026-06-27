@@ -201,7 +201,7 @@ pub struct KernelSession {
 /// Maintenance: every new `BuiltinWorld` object field must be added here and to
 /// `KernelSession::dirty_since_snapshot()` so selective reset can rebuild the
 /// correct builtin family.
-pub const NUM_BUILTINS: usize = 65;
+pub const NUM_BUILTINS: usize = 66;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -271,6 +271,7 @@ pub enum BuiltinId {
     SymSplit = 62,
     SymIterator = 63,
     SymToPrimitive = 64,
+    SymHasInstance = 65,
 }
 
 impl BuiltinId {
@@ -340,6 +341,7 @@ impl BuiltinId {
         BuiltinId::SymSplit,
         BuiltinId::SymIterator,
         BuiltinId::SymToPrimitive,
+        BuiltinId::SymHasInstance,
     ];
 }
 
@@ -509,7 +511,8 @@ impl KernelSession {
                 || gen(BuiltinId::SymSearch) != snap(BuiltinId::SymSearch)
                 || gen(BuiltinId::SymSplit) != snap(BuiltinId::SymSplit)
                 || gen(BuiltinId::SymIterator) != snap(BuiltinId::SymIterator)
-                || gen(BuiltinId::SymToPrimitive) != snap(BuiltinId::SymToPrimitive),
+                || gen(BuiltinId::SymToPrimitive) != snap(BuiltinId::SymToPrimitive)
+                || gen(BuiltinId::SymHasInstance) != snap(BuiltinId::SymHasInstance),
             math: gen(BuiltinId::MathObject) != snap(BuiltinId::MathObject),
             json: gen(BuiltinId::JsonObject) != snap(BuiltinId::JsonObject),
             date: gen(BuiltinId::DateConstructor) != snap(BuiltinId::DateConstructor)

@@ -221,6 +221,7 @@ pub struct BuiltinWorld {
     pub sym_split: P<JsObject>,
     pub sym_iterator: P<JsObject>,
     pub sym_to_primitive: P<JsObject>,
+    pub sym_has_instance: P<JsObject>,
     pub stub_objects: Vec<P<JsObject>>,
 }
 
@@ -544,6 +545,7 @@ impl BuiltinWorld {
             BuiltinId::SymSplit => &self.sym_split,
             BuiltinId::SymIterator => &self.sym_iterator,
             BuiltinId::SymToPrimitive => &self.sym_to_primitive,
+            BuiltinId::SymHasInstance => &self.sym_has_instance,
         }
     }
 
@@ -580,6 +582,7 @@ impl BuiltinWorld {
         let sym_split = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let sym_iterator = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let sym_to_primitive = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let sym_has_instance = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let stub_objects = Vec::new();
 
         let world = Self {
@@ -648,6 +651,7 @@ impl BuiltinWorld {
             sym_split,
             sym_iterator,
             sym_to_primitive,
+            sym_has_instance,
             stub_objects,
         };
         wire_builtin_world_links(&world);
@@ -717,11 +721,13 @@ impl BuiltinWorld {
             sym_split,
             sym_iterator,
             sym_to_primitive,
+            sym_has_instance,
         ) = if dirty.symbol_family {
             let (symbol_proto, symbol_constructor) = make_named_pair(string_forge, shape_forge, labels, "Symbol");
             (
                 symbol_proto,
                 symbol_constructor,
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
                 P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
                 P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
                 P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
@@ -739,6 +745,7 @@ impl BuiltinWorld {
                 current.sym_split.clone(),
                 current.sym_iterator.clone(),
                 current.sym_to_primitive.clone(),
+                current.sym_has_instance.clone(),
             )
         };
 
@@ -879,6 +886,7 @@ impl BuiltinWorld {
             sym_split,
             sym_iterator,
             sym_to_primitive,
+            sym_has_instance,
             stub_objects,
         };
         wire_builtin_world_links(&world);
