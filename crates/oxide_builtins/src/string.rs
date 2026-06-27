@@ -171,7 +171,7 @@ pub fn string_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let search = as_string(vm, vm.reg(args[1]));
     let pos = if args.len() > 2 {
-        (oxide_runtime_api::to_number(vm.reg(args[2])) as usize).min(n)
+        (vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as usize).min(n)
     } else {
         0
     };
@@ -203,7 +203,7 @@ pub fn string_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let search = as_string(vm, vm.reg(args[1]));
     let pos = if args.len() > 2 {
-        (oxide_runtime_api::to_number(vm.reg(args[2])) as usize).min(n)
+        (vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as usize).min(n)
     } else {
         0
     };
@@ -229,7 +229,7 @@ pub fn string_char_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
         return NativeResult::Ok(vm.new_string(&take_chars(&s, 1)));
     }
-    let idx = oxide_runtime_api::to_number(vm.reg(args[1])) as i32;
+    let idx = vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as i32;
     if idx < 0 || idx as usize >= char_len(&s) {
         return NativeResult::Ok(vm.new_string(""));
     }
@@ -246,7 +246,7 @@ pub fn string_char_code_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
         return NativeResult::Ok(JsValue::int(s.chars().next().unwrap() as i32));
     }
-    let idx = oxide_runtime_api::to_number(vm.reg(args[1])) as i32;
+    let idx = vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as i32;
     if idx < 0 || idx as usize >= char_len(&s) {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
@@ -267,7 +267,7 @@ pub fn string_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let n = char_len(&s) as i32;
     let start = if args.len() > 1 {
-        let v = oxide_runtime_api::to_number(vm.reg(args[1])) as i32;
+        let v = vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as i32;
         if v < 0 {
             (n + v).max(0)
         } else {
@@ -277,7 +277,7 @@ pub fn string_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         0
     };
     let end = if args.len() > 2 {
-        let v = oxide_runtime_api::to_number(vm.reg(args[2])) as i32;
+        let v = vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as i32;
         if v < 0 {
             (n + v).max(0)
         } else {
@@ -297,12 +297,16 @@ pub fn string_substring<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let n = char_len(&s) as i32;
     let mut start = if args.len() > 1 {
-        (oxide_runtime_api::to_number(vm.reg(args[1])) as i32).max(0).min(n)
+        (vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as i32)
+            .max(0)
+            .min(n)
     } else {
         0
     };
     let mut end = if args.len() > 2 {
-        (oxide_runtime_api::to_number(vm.reg(args[2])) as i32).max(0).min(n)
+        (vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as i32)
+            .max(0)
+            .min(n)
     } else {
         n
     };
@@ -335,7 +339,7 @@ pub fn string_repeat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.repeat called with {} args", args.len());
     let s = this_string(vm, args);
     let n = if args.len() > 1 {
-        (oxide_runtime_api::to_number(vm.reg(args[1])) as usize).min(10000)
+        (vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as usize).min(10000)
     } else {
         1
     };
@@ -347,7 +351,7 @@ pub fn string_pad_start<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let s_len = char_len(&s);
     let target = if args.len() > 1 {
-        oxide_runtime_api::to_number(vm.reg(args[1])) as usize
+        vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as usize
     } else {
         s_len
     };
@@ -372,7 +376,7 @@ pub fn string_pad_end<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = this_string(vm, args);
     let s_len = char_len(&s);
     let target = if args.len() > 1 {
-        oxide_runtime_api::to_number(vm.reg(args[1])) as usize
+        vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as usize
     } else {
         s_len
     };
@@ -401,7 +405,7 @@ pub fn string_starts_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let search = as_string(vm, vm.reg(args[1]));
     let pos = if args.len() > 2 {
-        (oxide_runtime_api::to_number(vm.reg(args[2])) as usize).min(n)
+        (vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as usize).min(n)
     } else {
         0
     };
@@ -417,7 +421,7 @@ pub fn string_ends_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let search = as_string(vm, vm.reg(args[1]));
     let end_pos = if args.len() > 2 {
-        (oxide_runtime_api::to_number(vm.reg(args[2])) as usize).min(n)
+        (vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as usize).min(n)
     } else {
         n
     };
@@ -433,7 +437,7 @@ pub fn string_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let sep_val = vm.reg(args[1]);
     let limit = if args.len() > 2 {
-        oxide_runtime_api::to_number(vm.reg(args[2])) as usize
+        vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as usize
     } else {
         usize::MAX
     };
@@ -565,7 +569,7 @@ pub fn string_code_point_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     builtins_debug!("String.prototype.codePointAt called with {} args", args.len());
     let s = this_string(vm, args);
     let pos = if args.len() > 1 {
-        oxide_runtime_api::to_number(vm.reg(args[1])) as usize
+        vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as usize
     } else {
         0
     };

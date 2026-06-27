@@ -68,7 +68,7 @@ fn create_new_array<H: VmHost>(vm: &mut H, n: usize) -> *mut JsObject {
 }
 
 fn array_length_arg<H: VmHost>(vm: &mut H, value: JsValue) -> Result<usize, JsValue> {
-    let n = oxide_runtime_api::to_number(value);
+    let n = vm.coerce_number_bounded(value).unwrap_or(f64::NAN);
     if !n.is_finite() || n < 0.0 || n.fract() != 0.0 || n > MAX_DENSE_PROPS as f64 {
         return Err(crate::error::create_range_error(vm, "Invalid array length"));
     }
@@ -195,12 +195,12 @@ pub fn array_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let arr = unsafe { &*arr_ptr };
     let n = arr.prop_count() as usize;
     let start = if args.len() > 1 {
-        (oxide_runtime_api::to_number(vm.reg(args[1])) as i32) as usize
+        (vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as i32) as usize
     } else {
         0
     };
     let end = if args.len() > 2 {
-        (oxide_runtime_api::to_number(vm.reg(args[2])) as i32) as usize
+        (vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as i32) as usize
     } else {
         n
     };
@@ -225,7 +225,7 @@ pub fn array_splice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let n = arr.prop_count() as usize;
 
     let start = if args.len() > 1 {
-        let v = oxide_runtime_api::to_number(vm.reg(args[1]));
+        let v = vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN);
         let s = v as i32;
         if s < 0 {
             (n as i32 + s).max(0) as usize
@@ -237,7 +237,7 @@ pub fn array_splice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
 
     let delete_count = if args.len() > 2 {
-        let v = oxide_runtime_api::to_number(vm.reg(args[2]));
+        let v = vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN);
         (v as usize).min(n - start)
     } else {
         n - start
@@ -413,7 +413,7 @@ pub fn array_flat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let arr = unsafe { &*arr_ptr };
     let n = arr.prop_count() as usize;
     let depth = if args.len() > 1 {
-        let n = oxide_runtime_api::to_number(vm.reg(args[1]));
+        let n = vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN);
         if !n.is_finite() {
             vm.kernel_core().config.max_call_depth
         } else {
@@ -834,12 +834,12 @@ pub fn array_fill<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let len = arr.prop_count() as usize;
     let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let start = if args.len() > 2 {
-        (oxide_runtime_api::to_number(vm.reg(args[2])) as i32).max(0) as usize
+        (vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as i32).max(0) as usize
     } else {
         0
     };
     let end = if args.len() > 3 {
-        let e = oxide_runtime_api::to_number(vm.reg(args[3])) as i32;
+        let e = vm.coerce_number_bounded(vm.reg(args[3])).unwrap_or(f64::NAN) as i32;
         (e as usize).min(len)
     } else {
         len
@@ -859,17 +859,17 @@ pub fn array_copy_within<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(vm.reg(args[0]));
     }
     let target = if args.len() > 1 {
-        (oxide_runtime_api::to_number(vm.reg(args[1])) as i32) as usize
+        (vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as i32) as usize
     } else {
         0
     };
     let start = if args.len() > 2 {
-        (oxide_runtime_api::to_number(vm.reg(args[2])) as i32) as usize
+        (vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as i32) as usize
     } else {
         0
     };
     let end = if args.len() > 3 {
-        (oxide_runtime_api::to_number(vm.reg(args[3])) as i32 as usize).min(len)
+        (vm.coerce_number_bounded(vm.reg(args[3])).unwrap_or(f64::NAN) as i32 as usize).min(len)
     } else {
         len
     };
@@ -891,7 +891,7 @@ pub fn array_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let arr = unsafe { &*arr_ptr };
     let len = arr.prop_count() as i32;
     let mut index = if args.len() > 1 {
-        oxide_runtime_api::to_number(vm.reg(args[1])) as i32
+        vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as i32
     } else {
         0
     };
