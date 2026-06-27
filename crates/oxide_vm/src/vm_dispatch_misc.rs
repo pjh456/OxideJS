@@ -264,11 +264,21 @@ impl Vm {
     pub(crate) fn dispatch_for_in_init(&mut self, a: usize) -> Result<(), String> {
         vm_trace!("FOR_IN_INIT r{}={:?}", a, self.regs[a]);
         let obj_val = self.regs[a];
+        if obj_val.is_null() || obj_val.is_undefined() {
+            // null/undefined enumerate nothing — an empty for-in, not a TypeError.
+            let keys_vec: bumpalo::collections::Vec<(JsValue, u32)> =
+                bumpalo::collections::Vec::new_in(self.epoch.bump());
+            let iter = self.epoch.alloc(ForInIter { keys: keys_vec, index: 0 });
+            self.iters.push_for_in(iter.cast::<ForInIter<'static>>());
+            return Ok(());
+        }
         if !obj_val.is_object() {
+            // ToObject coercion for other primitives is not implemented yet — TypeError is correct until it lands.
             return self.raise_type_error("for-in right-hand side is not an object");
         }
 
-        let mut keys_vec = bumpalo::collections::Vec::new_in(self.epoch.bump());
+        let mut keys_vec: bumpalo::collections::Vec<(JsValue, u32)> =
+            bumpalo::collections::Vec::new_in(self.epoch.bump());
         let mut seen = std::collections::HashSet::new();
         let mut current = obj_val;
         let mut depth = 0usize;
@@ -282,6 +292,7 @@ impl Vm {
             }
             depth += 1;
             let cur = unsafe { &*current.as_js_object_ptr() };
+            let obj_start = keys_vec.len();
             let mut cursor = Some(cur.shape_id());
             while let Some(id) = cursor {
                 if id == oxide_kernel::shape_forge::EMPTY_SHAPE_ID {
@@ -300,8 +311,9 @@ impl Vm {
                             .map(|meta| meta.attributes.enumerable())
                             .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable());
                         if enumerable {
-                            keys_vec.push(JsValue::perm_string(
-                                self.kernel_core.perm_interner().string_ptr(shape.property_name),
+                            keys_vec.push((
+                                JsValue::perm_string(self.kernel_core.perm_interner().string_ptr(shape.property_name)),
+                                shape.property_name,
                             ));
                         }
                     }
@@ -310,8 +322,22 @@ impl Vm {
                     break;
                 }
             }
+            // The shape chain is walked leaf->root (reverse of insertion order);
+            // flip this object's slice back to insertion order before its proto.
+            keys_vec[obj_start..].reverse();
             current = cur.proto();
         }
+
+        // ES enumeration order: integer-index keys ascending, then the rest in
+        // insertion order. Stable sort preserves insertion order among non-index keys.
+        keys_vec.sort_by(|(_, a_si), (_, b_si)| {
+            match (self.array_index_from_property_key(*a_si), self.array_index_from_property_key(*b_si)) {
+                (Some(ai), Some(bi)) => ai.cmp(&bi),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        });
 
         let iter = self.epoch.alloc(ForInIter { keys: keys_vec, index: 0 });
         self.iters.push_for_in(iter.cast::<ForInIter<'static>>());
@@ -326,7 +352,7 @@ impl Vm {
         }
         let iter = unsafe { &mut *iter_ptr };
         if iter.index < iter.keys.len() {
-            self.regs[rd] = iter.keys[iter.index];
+            self.regs[rd] = iter.keys[iter.index].0;
             iter.index += 1;
         } else {
             self.regs[rd] = JsValue::undefined();
