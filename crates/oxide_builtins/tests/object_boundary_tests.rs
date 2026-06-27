@@ -142,4 +142,57 @@ fn test_is_extensible_non_object_returns_false() {
     assert!(result.is_bool() && !result.as_bool(), "non-object should not be extensible per ES spec");
 }
 
+#[test]
+fn test_is_extensible_no_args_type_error() {
+    assert!(eval("Object.isExtensible()").is_err());
+}
 
+#[test]
+fn test_get_prototype_of_null_throws_type_error() {
+    assert!(eval("Object.getPrototypeOf(null)").is_err());
+}
+
+#[test]
+fn test_get_prototype_of_undefined_throws_type_error() {
+    assert!(eval("Object.getPrototypeOf(undefined)").is_err());
+}
+
+#[test]
+fn test_get_prototype_of_plain_object() {
+    let (_vm, result) = eval("var o = {}; Object.getPrototypeOf(o)").unwrap();
+    assert!(result.is_object() || result.is_null());
+}
+
+#[test]
+fn test_has_own_own_property() {
+    let (_vm, result) = eval("var o = {a:1}; Object.hasOwn(o, 'a')").unwrap();
+    assert!(result.is_bool() && result.as_bool());
+}
+
+#[test]
+fn test_has_own_inherited_property() {
+    let (_vm, result) = eval("Object.hasOwn({}, 'toString')").unwrap();
+    assert!(result.is_bool() && !result.as_bool());
+}
+
+#[test]
+fn test_define_properties_no_args_type_error() {
+    assert!(eval("Object.defineProperties()").is_err());
+}
+
+#[test]
+fn test_define_properties_applies_multiple_props() {
+    let (_vm, result) = eval("var o = {}; Object.defineProperties(o, {a: {value: 1}, b: {value: 2}}); o.a").unwrap();
+    assert!(result.is_int() || result.is_double());
+}
+
+#[test]
+fn test_from_entries_no_args_type_error() {
+    assert!(eval("Object.fromEntries()").is_err());
+}
+
+#[test]
+fn test_from_entries_empty_array() {
+    let (_vm, result) = eval("Object.fromEntries([])").unwrap();
+    assert!(result.is_object(), "fromEntries([]) should return an empty object");
+}
