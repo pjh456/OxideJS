@@ -36,7 +36,38 @@ pub fn make_iterator_for_value<H: VmHost>(vm: &mut H, value: JsValue) -> Result<
     let next_fn = make_native_function(vm, "next", iterator_wrapper_next::<H> as *const (), 0);
     vm.set_or_create_prop_value(wrapper_obj, next_si, next_fn);
 
+    // Forward IteratorClose to the inner iterator so for-of abrupt completion can clean up.
+    let return_si = vm.kernel_core().perm_interner().intern("return").0;
+    let return_fn = make_native_function(vm, "return", iterator_wrapper_return::<H> as *const (), 0);
+    vm.set_or_create_prop_value(wrapper_obj, return_si, return_fn);
+
     Ok(JsValue::from_js_object(wrapper))
+}
+
+fn iterator_wrapper_return<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    if !this_val.is_object() {
+        return NativeResult::Ok(JsValue::undefined());
+    }
+    let wrapper = unsafe { &*this_val.as_js_object_ptr() };
+    let inner_si = vm.kernel_core().perm_interner().intern(INNER_PROP).0;
+    let inner = match vm.ordinary_get(wrapper, inner_si, this_val) {
+        Ok(inner) if inner.is_object() => inner,
+        _ => return NativeResult::Ok(JsValue::undefined()),
+    };
+    let inner_obj = unsafe { &*inner.as_js_object_ptr() };
+    let return_si = vm.kernel_core().perm_interner().intern("return").0;
+    let return_fn = match vm.ordinary_get(inner_obj, return_si, inner) {
+        Ok(f) if is_callable(f) => f,
+        _ => return NativeResult::Ok(JsValue::undefined()),
+    };
+    match vm.call_function_sync(return_fn, inner, &[]) {
+        Ok(result) => NativeResult::Ok(result),
+        Err(err) => match vm.take_uncaught_value() {
+            Some(original) => NativeResult::Err(original),
+            None => NativeResult::Err(crate::error::create_type_error(vm, &err)),
+        },
+    }
 }
 
 pub fn iterator_wrapper_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -66,7 +97,12 @@ pub fn iterator_wrapper_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         };
         return match vm.call_function_sync(next, inner, &[]) {
             Ok(result) => NativeResult::Ok(result),
-            Err(err) => NativeResult::Err(crate::error::create_type_error(vm, &err)),
+            // Forward the ORIGINAL thrown value (any type) instead of re-wrapping it as a
+            // TypeError, so a surrounding try/catch sees the real error.
+            Err(err) => match vm.take_uncaught_value() {
+                Some(original) => NativeResult::Err(original),
+                None => NativeResult::Err(crate::error::create_type_error(vm, &err)),
+            },
         };
     }
 
