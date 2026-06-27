@@ -442,6 +442,38 @@ pub fn same_value(lhs: JsValue, rhs: JsValue) -> bool {
     false
 }
 
+/// ToIntegerOrInfinity(argument) — ECMA-262 §7.1.4.
+pub fn to_integer_or_infinity(val: JsValue) -> f64 {
+    let n = to_number(val);
+    if n.is_nan() || n == 0.0 {
+        0.0
+    } else if n.is_infinite() {
+        n
+    } else {
+        n.trunc()
+    }
+}
+
+/// ToLength(argument) — ECMA-262 §7.1.20.
+pub fn to_length(val: JsValue) -> u64 {
+    let n = to_number(val);
+    let len = if n.is_nan() || n <= 0.0 { 0.0 } else { n.min(9_007_199_254_740_991.0) };
+    len.trunc() as u64
+}
+
+/// SameValueZero(x, y) — ECMA-262 §7.2.11.
+pub fn same_value_zero(lhs: JsValue, rhs: JsValue) -> bool {
+    if (lhs.is_double() || lhs.is_int()) && (rhs.is_double() || rhs.is_int()) {
+        let a = to_f64(lhs);
+        let b = to_f64(rhs);
+        if a.is_nan() && b.is_nan() {
+            return true;
+        }
+        return a == b;
+    }
+    same_value(lhs, rhs)
+}
+
 pub fn strict_equality(lhs: JsValue, rhs: JsValue) -> bool {
     if lhs.is_double() && rhs.is_double() {
         return strict_double_eq(lhs.as_double(), rhs.as_double());
