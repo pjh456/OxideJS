@@ -125,11 +125,10 @@ def bench_test262():
         print("  [SKIP] test262 不存在")
         return {}, {}
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    jl = RESULTS_DIR / "t262_oxide.jsonl"
 
     t0 = time.perf_counter()
     rc, out, err, _ = run(
-        [str(OXIDE_TEST262), "--no-skip", "--supervise", f"--results-file={jl}", str(TEST262_DIR)],
+        [str(OXIDE_TEST262), "--no-skip", "--supervise", str(TEST262_DIR)],
         timeout=7200
     )
     elapsed = time.perf_counter() - t0
@@ -137,10 +136,18 @@ def bench_test262():
     summary = {"pass": 0, "fail": 0, "skip": 0, "total": 0, "elapsed_sec": round(elapsed, 1)}
     for line in (out + err).split('\n'):
         for k in ("pass", "fail", "skip", "total"):
-            m = re.search(rf'{k}\s*:\s*(\d+)', line)
+            m = re.search(rf'{k}\s*:\s*(\d+)', line, re.IGNORECASE)
             if m: summary[k] = max(summary[k], int(m.group(1)))
 
-    detail = parse_jsonl(str(jl))
+    # 如果没解析到结果，打印 raw output 帮助排查
+    if summary["total"] == 0:
+        print(f"  ⚠  test262 输出异常! (rc={rc}, elapsed={elapsed:.0f}s)")
+        print(f"  stdout: {(out[-300:] if out else '(empty)')}")
+        print(f"  stderr: {(err[-300:] if err else '(empty)')}")
+        print(f"  二进制: {OXIDE_TEST262}")
+        print(f"  测试目录: {TEST262_DIR} (exists={TEST262_DIR.exists()})")
+
+    detail = {}
     ran = summary['pass'] + summary['fail']
     rate = summary['pass'] / ran * 100 if ran else 0
     print(f"  Pass: {summary['pass']}  Fail: {summary['fail']}  Skip: {summary['skip']}  Rate: {rate:.1f}%")
@@ -151,21 +158,38 @@ def bench_test262_qjs():
     print("  3b. Test262 QuickJS")
     print("=" * 60)
     if not QUICKJS_TEST262.exists():
-        print("  [SKIP] run-test262 不存在")
-        # QuickJS 已知数据
+        print(f"  [SKIP] run-test262 不存在: {QUICKJS_TEST262}")
         return {"pass": 42000, "fail": 1000, "skip": 41000, "total": 84021, "elapsed_sec": 100,
                 "note": "QuickJS 近似值 (~99% ES2020)"}, {}
     if not TEST262_DIR.exists():
+        print(f"  [SKIP] test262 不存在: {TEST262_DIR}")
         return {}, {}
+
+    conf = REPO_ROOT / "baseline-quickjs" / "test262.conf"
+    if not conf.exists():
+        print(f"  [SKIP] test262.conf 不存在: {conf}")
+        return {"pass": 42000, "fail": 1000, "skip": 41000, "total": 84021, "elapsed_sec": 100,
+                "note": "QuickJS 近似值 (缺 .conf)"}, {}
+
+    print(f"  运行中 (约 2-3 分钟)...")
     t0 = time.perf_counter()
-    conf = str(REPO_ROOT / "baseline-quickjs" / "test262.conf")
-    rc, out, err, _ = run([str(QUICKJS_TEST262), "-c", conf, str(TEST262_DIR)], timeout=600)
+    rc, out, err, _ = run([str(QUICKJS_TEST262), "-c", str(conf), str(TEST262_DIR)], timeout=600)
     elapsed = time.perf_counter() - t0
+
     summary = {"pass": 0, "fail": 0, "skip": 0, "total": 0, "elapsed_sec": round(elapsed, 1)}
     for line in (out + err).split('\n'):
         for k in ("pass", "fail", "skip", "total"):
             m = re.search(rf'{k}:\s*(\d+)', line, re.IGNORECASE)
             if m: summary[k] = max(summary[k], int(m.group(1)))
+
+    if summary["total"] == 0:
+        print(f"  ⚠  QuickJS test262 输出异常! (rc={rc}, elapsed={elapsed:.0f}s)")
+        print(f"  stdout: {(out[-300:] if out else '(empty)')}")
+        print(f"  stderr: {(err[-300:] if err else '(empty)')}")
+        return {"pass": 42000, "fail": 1000, "skip": 41000, "total": 84021, "elapsed_sec": 100,
+                "note": "QuickJS 近似值 (跑失败)"}, {}
+
+    print(f"  Pass: {summary['pass']}  Fail: {summary['fail']}  Skip: {summary['skip']}  ({elapsed:.0f}s)")
     return summary, {}
 
 def parse_jsonl(path):
@@ -204,7 +228,7 @@ def categorize(p):
 # ═══════════════════════════════════════════════════════════════════════
 def bench_startup():
     print("\n" + "=" * 60)
-    print("  4. 启动速度")
+    print("  4. 启动速度 + 资源用量")
     print("=" * 60)
     times = []
     with tempfile.NamedTemporaryFile(mode='w', suffix='.js', delete=False, encoding='utf-8') as f:
@@ -223,9 +247,7 @@ def bench_startup():
 # 5. 资源用量
 # ═══════════════════════════════════════════════════════════════════════
 def bench_resources():
-    print("\n" + "=" * 60)
-    print("  5. 资源用量")
-    print("=" * 60)
+    # (合并到启动速度检测中，不单独打印标题)
     peak_mem = 0.0; peak_cpu = 0.0
     try:
         import psutil
@@ -253,7 +275,7 @@ def bench_resources():
 # ═══════════════════════════════════════════════════════════════════════
 def bench_noise():
     print("\n" + "=" * 60)
-    print("  6. Stderr 噪音")
+    print("  5. Stderr 噪音")
     print("=" * 60)
     tests = [("正常代码", "var x=1; x+2"), ("语法错误", "var x=;"), ("运行时错误", "undefined.foo()")]
     for desc, js in tests:
@@ -393,16 +415,14 @@ def main():
 
     all_data = {}
 
-    all_data["startup"] = bench_startup()
-    all_data["resources"] = bench_resources()
     all_data["timing"] = bench_timing()
     all_data["stress"] = bench_stress()
-
     ox_s, ox_d = bench_test262()
     all_data["t262_oxide"] = ox_s
     qj_s, _ = bench_test262_qjs()
     all_data["t262_quickjs"] = qj_s
-
+    all_data["startup"] = bench_startup()
+    all_data["resources"] = bench_resources()
     bench_noise()
 
     # AI Agent 评分
