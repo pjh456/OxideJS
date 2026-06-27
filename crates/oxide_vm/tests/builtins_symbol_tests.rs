@@ -155,3 +155,53 @@ fn symbol_key_for_non_symbol_throws_type_error() {
     let result = eval(&mut vm, "try { Symbol.keyFor(42) } catch (e) { e instanceof TypeError }").unwrap();
     assert!(result.as_bool());
 }
+
+// --- Symbol.hasInstance ---
+
+#[test]
+fn symbol_has_instance_exists() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "typeof Symbol.hasInstance").unwrap();
+    assert_eq!(to_str(&vm, result), "object");
+}
+
+#[test]
+fn has_instance_overrides_instanceof() {
+    let mut vm = Vm::new();
+    let source = r#"
+        class C { static [Symbol.hasInstance](v) { return typeof v === 'string'; } }
+        'hello' instanceof C
+    "#;
+    let result = eval(&mut vm, source).unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn has_instance_non_callable_falls_through() {
+    let mut vm = Vm::new();
+    let source = r#"
+        class D {}
+        D[Symbol.hasInstance] = 42;
+        ({} instanceof D) === false
+    "#;
+    let result = eval(&mut vm, source).unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn has_instance_coerces_return_to_boolean() {
+    let mut vm = Vm::new();
+    let source = r#"
+        class C { static [Symbol.hasInstance](v) { return 'truthy'; } }
+        'anything' instanceof C
+    "#;
+    let result = eval(&mut vm, source).unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn has_instance_preserves_ordinary_has_instance() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "[] instanceof Array").unwrap();
+    assert!(result.as_bool());
+}

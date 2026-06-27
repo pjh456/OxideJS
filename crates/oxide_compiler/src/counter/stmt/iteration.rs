@@ -41,7 +41,8 @@ impl Compiler {
                         self.count_expression(init_expr, ctx);
                         self.count_binding_pattern(&d.id, ctx);
                     } else {
-                        ctx.alloc_reg();
+                        ctx.alloc_reg(); // tmp holding undefined
+                        ctx.alloc_reg(); // var register
                         ctx.count_words(2); // LOAD_CONST(undefined) + STORE_VAR
                     }
                 }

@@ -498,7 +498,7 @@ fn rewrite_vm_roots(vm: &mut Vm, forwarding: &HashMap<*mut JsObject, *mut JsObje
         }
         // SAFETY: for_in_iters stores live iterator pointers owned by the current VM epoch.
         unsafe {
-            for value in (*(*iter)).keys.iter_mut() {
+            for (value, _si) in (*(*iter)).keys.iter_mut() {
                 *value = rewrite_forwarded_value(*value, forwarding);
             }
         }

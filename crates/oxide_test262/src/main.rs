@@ -12,6 +12,9 @@ use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 use walkdir::WalkDir;
 
+mod test262_log;
+use oxide_log::{Level, LogConfig, Output, SUBSYSTEM_COUNT};
+
 // Thread-local that records the path currently being executed.
 // Written before every test; read by the panic hook to identify the crash file.
 std::thread_local! {
@@ -1063,8 +1066,10 @@ fn main() {
     std::panic::set_hook(Box::new(|info| {
         let path = CURRENT_TEST_PATH.with(|p| p.borrow().clone());
         if !path.is_empty() {
+            test262_error!("CRASH in test: {}", path);
             eprintln!("CRASH in test: {path}");
         }
+        test262_error!("panic: {}", info);
         eprintln!("panic: {info}");
     }));
 
@@ -1086,10 +1091,16 @@ fn run_tests() -> bool {
     let config = match RunConfig::parse(&args) {
         Ok(config) => config,
         Err(msg) => {
+            test262_error!("config error: {}", msg);
             eprintln!("{msg}");
             return false;
         }
     };
+
+    oxide_log::init(&LogConfig {
+        output: Output::Stderr,
+        levels: [Level::Info; SUBSYSTEM_COUNT],
+    });
 
     let test262_root = if let Some(root) = config.test262_root.clone() {
         root
@@ -1104,6 +1115,7 @@ fn run_tests() -> bool {
     };
 
     if !test262_root.exists() {
+        test262_error!("test262 not found at {}", test262_root.display());
         eprintln!(
             "test262 not found at: {}\n\
              Run: git submodule add https://github.com/tc39/test262.git tests/test262\n\
@@ -1116,11 +1128,14 @@ fn run_tests() -> bool {
 
     let filter = config.filter.clone().map(|f| f.replace('\\', "/"));
 
+    test262_info!("discovering tests in: {}", test262_root.display());
     eprintln!("discovering tests in: {}", test262_root.display());
     if config.no_skip {
+        test262_info!("no-skip mode enabled");
         eprintln!("no-skip mode: capability filters disabled; unsupported results count as failures");
     }
     let paths = discover_tests(&test262_root);
+    test262_info!("found {} test files", paths.len());
     eprintln!("found {} test files", paths.len());
 
     let total = paths.len();
@@ -1144,6 +1159,7 @@ fn run_tests() -> bool {
     let log_running_tests = std::env::var_os("OXIDE_TEST262_RUNNING_LOG").is_some();
     let heartbeat_path: Option<PathBuf> = std::env::var_os("OXIDE_TEST262_HEARTBEAT").map(PathBuf::from);
 
+    test262_info!("running on {} worker thread(s)", workers);
     eprintln!("running on {workers} worker thread(s)");
 
     let skip_until = std::env::var("OXIDE_SKIP_UNTIL")
@@ -1170,16 +1186,19 @@ fn run_tests() -> bool {
     let allow_fail_exit = std::env::var_os("OXIDE_TEST262_ALLOW_FAIL_EXIT").is_some();
 
     if config.supervise && !is_chunk_child && filter.is_none() {
+        test262_info!("supervised mode enabled");
         eprintln!("supervised mode enabled: child-window execution with per-test timeout + auto-resume");
         return run_supervised(&args, skip_until, end_index, config.no_skip, &paths);
     }
 
     if let Some(chunk_size) = chunk_size {
         if !is_chunk_child && filter.is_none() {
+            test262_info!("chunked mode enabled: {} test(s) per child", chunk_size);
             eprintln!("chunked mode enabled: {chunk_size} test(s) per child process");
             return run_chunked(&args, skip_until, end_index, chunk_size);
         }
     }
+    test262_info!("kernel reset batch: {} test(s)", kernel_batch);
     eprintln!("kernel reset batch: {kernel_batch} test(s)");
     let cursor = AtomicUsize::new(skip_until);
     let progress = AtomicUsize::new(skip_until);
@@ -1220,6 +1239,7 @@ fn run_tests() -> bool {
                             // diagnosing OS-level crashes that need the last stderr line.
                             CURRENT_TEST_PATH.with(|p| *p.borrow_mut() = path_str.clone());
                             if log_running_tests {
+                                test262_debug!("running: {}", path_str);
                                 eprintln!("  [{tid:?}] running: {path_str}");
                             }
                             if let Some(hb) = heartbeat_ref {
@@ -1240,6 +1260,7 @@ fn run_tests() -> bool {
                                 tests_since_kernel_reset = 0;
                             }
                             if done % 500 == 0 || done == total {
+                                test262_info!("progress: {}/{} ({}%)", done, total, done * 100 / total);
                                 eprintln!("  progress: {done}/{total} ({}%)", done * 100 / total);
                             }
                         }

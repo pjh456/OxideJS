@@ -53,6 +53,14 @@ pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             "iterator",
             JsValue::from_js_object(session.builtin_world().sym_iterator.as_ptr() as *mut JsObject),
         ),
+        (
+            "toPrimitive",
+            JsValue::from_js_object(session.builtin_world().sym_to_primitive.as_ptr() as *mut JsObject),
+        ),
+        (
+            "hasInstance",
+            JsValue::from_js_object(session.builtin_world().sym_has_instance.as_ptr() as *mut JsObject),
+        ),
     ] {
         bind_well_known_symbol(core, ctor, name, val);
     }

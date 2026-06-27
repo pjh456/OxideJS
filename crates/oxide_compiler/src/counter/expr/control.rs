@@ -42,21 +42,27 @@ impl Compiler {
             self.count_expression(&log.right, ctx);
             ctx.alloc_reg();
             ctx.projected_pc += 1; // AND/OR
+        } else if matches!(log.operator, LogicalOperator::Coalesce) {
+            // Mirror emit_logical_expression's Coalesce path: it patches raw bytecode
+            // positions and does NOT consume a label id. Consuming one here would shift
+            // every later construct's label id and break resolve_label at emit time.
+            ctx.alloc_reg(); // dup register
+            ctx.projected_pc += 1; // LOAD_VAR (DUP)
+            ctx.projected_pc += 1; // JMP_IF_NULLISH
+            ctx.projected_pc += 1; // JMP over RHS on non-nullish
+            self.count_expression(&log.right, ctx);
+            ctx.projected_pc += 1; // LOAD_VAR (overwrite)
         } else {
             let id = ctx.next_label_id();
             ctx.alloc_reg(); // dup register
             ctx.projected_pc += 1; // LOAD_VAR (DUP)
-            ctx.projected_pc += 1; // JMP_IF_FALSE, JMP_IF_TRUE, or JMP_IF_NULLISH
-            if matches!(log.operator, LogicalOperator::Coalesce) {
-                ctx.projected_pc += 1; // JMP over RHS on non-nullish
-                ctx.labels.label_map.insert(Label::TernaryElse(id), ctx.projected_pc);
-            }
+            ctx.projected_pc += 1; // JMP_IF_FALSE or JMP_IF_TRUE
             self.count_expression(&log.right, ctx);
             ctx.projected_pc += 1; // LOAD_VAR (overwrite)
             let skip_label = match log.operator {
                 LogicalOperator::And => Label::TernaryEnd(id),
                 LogicalOperator::Or => Label::TernaryElse(id),
-                LogicalOperator::Coalesce => Label::TernaryEnd(id),
+                LogicalOperator::Coalesce => unreachable!("coalesce handled above"),
             };
             ctx.labels.label_map.insert(skip_label, ctx.projected_pc);
         }

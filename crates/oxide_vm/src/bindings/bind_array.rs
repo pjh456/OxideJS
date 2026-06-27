@@ -2,9 +2,10 @@ use std::sync::Arc;
 
 use oxide_kernel::builtin::ArrayMethods;
 use oxide_kernel::kernel::{KernelCore, KernelSession};
-use oxide_types::object::JsObject;
+use oxide_types::object::{JsObject, PropAttributes};
 
 use crate::bind_constructor;
+use crate::bindings::apply_binding_table;
 
 pub fn bind_array(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let _array_methods = ArrayMethods {
@@ -45,6 +46,20 @@ pub fn bind_array(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         core.perm_interner().as_ref(),
         core.shape_forge().as_ref(),
     );
+
+    let array_proto_ptr = session.builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let array_proto = unsafe { &mut *array_proto_ptr };
+    apply_binding_table(
+        session.builtin_world(),
+        array_proto,
+        core,
+        &[("toString", oxide_builtins::array::array_to_string::<crate::vm::Vm> as *const (), 0)],
+    );
+    // Built-in prototype methods are non-enumerable (otherwise they leak into for-in).
+    let si = core.perm_interner().intern("toString").0;
+    if let Some(pos) = core.shape_forge().lookup_position(array_proto.shape_id(), si) {
+        array_proto.set_data_meta(pos, PropAttributes::new(true, false, true));
+    }
 
     let ctor_ptr = session.builtin_world().array_constructor.as_ptr() as *mut JsObject;
     bind_constructor!(core, global, "Array", ctor_ptr, oxide_builtins::array::array_constructor::<crate::vm::Vm>, 1, hash: true);

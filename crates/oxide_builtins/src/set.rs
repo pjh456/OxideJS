@@ -56,7 +56,7 @@ impl Hash for SetKey {
     }
 }
 
-type SetInner = indexmap::IndexSet<SetKey>;
+pub(crate) type SetInner = indexmap::IndexSet<SetKey>;
 
 /// Retrieve the `IndexSet` pointer stored in a Set object's native-data slot.
 ///
@@ -225,4 +225,35 @@ pub fn set_size<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let inner = native_try!(get_set_inner(vm, this_val));
     NativeResult::Ok(JsValue::float(unsafe { (*inner).len() } as f64))
+}
+
+pub fn set_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let _inner = native_try!(get_set_inner(vm, this_val));
+    NativeResult::Ok(crate::iterator::make_mode_iterator(
+        vm,
+        this_val,
+        crate::iterator::set_entries_iter_next::<H> as *const (),
+    ))
+}
+
+pub fn set_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let _inner = native_try!(get_set_inner(vm, this_val));
+    NativeResult::Ok(crate::iterator::make_mode_iterator(
+        vm,
+        this_val,
+        crate::iterator::set_values_iter_next::<H> as *const (),
+    ))
+}
+
+pub fn set_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let _inner = native_try!(get_set_inner(vm, this_val));
+    // Set keys() is an alias for values() — same per-element iterator.
+    NativeResult::Ok(crate::iterator::make_mode_iterator(
+        vm,
+        this_val,
+        crate::iterator::set_values_iter_next::<H> as *const (),
+    ))
 }

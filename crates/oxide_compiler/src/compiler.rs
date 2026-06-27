@@ -160,6 +160,10 @@ pub(crate) struct CompileCtx {
     pub(crate) static_block_this_reg: Option<u8>,
     pub(crate) after_super_insert: Option<Vec<opcode::Instr>>,
     pub(crate) after_super_inserted: bool,
+    /// Count-pass mirror of `after_super_insert`: the instruction count of a derived
+    /// constructor's instance-field code, added at the super() call site during body
+    /// counting so projected_pc matches where the emit pass splices the field bytecode.
+    pub(crate) after_super_count_words: Option<usize>,
     /// Set when alloc_reg() overflows into the reserved this/new.target range (≥254).
     /// Checked after each emit phase to produce a compile error rather than silent corruption.
     pub(crate) reg_overflow: bool,
@@ -233,6 +237,7 @@ impl CompileCtx {
             static_block_this_reg: None,
             after_super_insert: None,
             after_super_inserted: false,
+            after_super_count_words: None,
             reg_overflow: false,
             const_overflow: false,
             jump_overflow: false,
@@ -721,22 +726,41 @@ impl Compiler {
             ctx.declare_initialized(name, reg, VariableDeclarationKind::Var, false)?;
         }
 
-        // Count pass
-        if !fields_after_super {
-            if let Some(count) = count_fields.as_mut() {
+        // Count the parameter destructuring prologue so the count pass matches the emit pass
+        // below (which emits it via emit_binding_pattern). Without this the projected program
+        // counter undercounts, drifting every jump target inside a function that has a
+        // destructured or default parameter.
+        for spec in param_specs {
+            if let ParamSpec::Pattern { pattern, .. } = spec {
+                self.count_binding_pattern(pattern, &mut ctx);
+            }
+        }
+
+        // Count pass. For derived constructors the emit pass allocates/counts the instance
+        // fields up front but splices the field bytecode into the body right after SUPER_CALL.
+        // Mirror that: count the fields (allocating the same registers/constants), capture
+        // their instruction count, undo the position here, and re-add it at the super() call
+        // site during body counting so labels after super() line up with the emit pass.
+        if let Some(count) = count_fields.as_mut() {
+            if fields_after_super {
+                let before = ctx.projected_pc;
+                count(self, &mut ctx);
+                let field_words = ctx.projected_pc - before;
+                ctx.projected_pc = before;
+                ctx.after_super_count_words = Some(field_words);
+            } else {
                 count(self, &mut ctx);
             }
         }
         for stmt in body_stmts {
             self.count_statement(stmt, &mut ctx);
         }
-        if fields_after_super {
-            if let Some(count) = count_fields.as_mut() {
-                count(self, &mut ctx);
-            }
-        }
         ctx.max_regs = ctx.max_regs.max(1);
         ctx.reg_overflow = false;
+        // Count-pass instruction total for this body, compared against the emit pass below
+        // to catch any counter/emitter drift (which would mis-target jumps). reset_regs zeroes
+        // projected_pc, so capture it first.
+        let counted_pc = ctx.projected_pc;
         ctx.reset_regs();
 
         // Emit pass - reallocate params (same order = same regs after reset)
@@ -773,6 +797,14 @@ impl Compiler {
                 last_result_reg = Some(reg);
             }
         }
+
+        debug_assert_eq!(
+            counted_pc,
+            ctx.bytecode.len(),
+            "counter/emitter instruction drift in function body (before implicit RETURN): counted {} vs emitted {}",
+            counted_pc,
+            ctx.bytecode.len()
+        );
 
         // Emit implicit RETURN: expression body returns the last expression,
         // statement body returns undefined.
@@ -840,6 +872,9 @@ impl Compiler {
         crate::compiler_debug!("counter: {} instructions estimated", ctx.projected_pc);
         ctx.max_regs = ctx.max_regs.max(1);
         ctx.reg_overflow = false;
+        // Count-pass instruction total, compared against the emit pass below to catch
+        // counter/emitter drift. reset_regs zeroes projected_pc, so capture it first.
+        let counted_pc = ctx.projected_pc;
         ctx.reset_regs();
 
         // First sub-pass: emit FunctionDeclarations (hoisting)
@@ -862,6 +897,14 @@ impl Compiler {
             }
         }
         crate::compiler_debug!("emitter: {} bytes emitted", ctx.bytecode.len());
+
+        debug_assert_eq!(
+            counted_pc,
+            ctx.bytecode.len(),
+            "counter/emitter instruction drift in top-level module (before result store + HALT): counted {} vs emitted {}",
+            counted_pc,
+            ctx.bytecode.len()
+        );
 
         if let Some(r) = last_result {
             ctx.emit(opcode::encode(OpCode::LOAD_VAR, 0, r, 0));

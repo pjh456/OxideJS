@@ -137,6 +137,9 @@ pub struct StringMethods {
     pub match_all: *const (),
     pub replace_all: *const (),
     pub value_of: *const (),
+    pub substr: *const (),
+    pub at: *const (),
+    pub last_index_of: *const (),
 }
 
 pub struct RegExpMethods {
@@ -217,6 +220,8 @@ pub struct BuiltinWorld {
     pub sym_search: P<JsObject>,
     pub sym_split: P<JsObject>,
     pub sym_iterator: P<JsObject>,
+    pub sym_to_primitive: P<JsObject>,
+    pub sym_has_instance: P<JsObject>,
     pub stub_objects: Vec<P<JsObject>>,
 }
 
@@ -539,6 +544,8 @@ impl BuiltinWorld {
             BuiltinId::SymSearch => &self.sym_search,
             BuiltinId::SymSplit => &self.sym_split,
             BuiltinId::SymIterator => &self.sym_iterator,
+            BuiltinId::SymToPrimitive => &self.sym_to_primitive,
+            BuiltinId::SymHasInstance => &self.sym_has_instance,
         }
     }
 
@@ -574,6 +581,8 @@ impl BuiltinWorld {
         let sym_search = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let sym_split = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let sym_iterator = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let sym_to_primitive = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let sym_has_instance = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let stub_objects = Vec::new();
 
         let world = Self {
@@ -641,6 +650,8 @@ impl BuiltinWorld {
             sym_search,
             sym_split,
             sym_iterator,
+            sym_to_primitive,
+            sym_has_instance,
             stub_objects,
         };
         wire_builtin_world_links(&world);
@@ -701,29 +712,42 @@ impl BuiltinWorld {
                 },
             )
         };
-        let (symbol_proto, symbol_constructor, sym_match, sym_replace, sym_search, sym_split, sym_iterator) =
-            if dirty.symbol_family {
-                let (symbol_proto, symbol_constructor) = make_named_pair(string_forge, shape_forge, labels, "Symbol");
-                (
-                    symbol_proto,
-                    symbol_constructor,
-                    P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-                    P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-                    P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-                    P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-                    P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-                )
-            } else {
-                (
-                    current.symbol_proto.clone(),
-                    current.symbol_constructor.clone(),
-                    current.sym_match.clone(),
-                    current.sym_replace.clone(),
-                    current.sym_search.clone(),
-                    current.sym_split.clone(),
-                    current.sym_iterator.clone(),
-                )
-            };
+        let (
+            symbol_proto,
+            symbol_constructor,
+            sym_match,
+            sym_replace,
+            sym_search,
+            sym_split,
+            sym_iterator,
+            sym_to_primitive,
+            sym_has_instance,
+        ) = if dirty.symbol_family {
+            let (symbol_proto, symbol_constructor) = make_named_pair(string_forge, shape_forge, labels, "Symbol");
+            (
+                symbol_proto,
+                symbol_constructor,
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+            )
+        } else {
+            (
+                current.symbol_proto.clone(),
+                current.symbol_constructor.clone(),
+                current.sym_match.clone(),
+                current.sym_replace.clone(),
+                current.sym_search.clone(),
+                current.sym_split.clone(),
+                current.sym_iterator.clone(),
+                current.sym_to_primitive.clone(),
+                current.sym_has_instance.clone(),
+            )
+        };
 
         let math_object = if dirty.math {
             P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()))
@@ -861,6 +885,8 @@ impl BuiltinWorld {
             sym_search,
             sym_split,
             sym_iterator,
+            sym_to_primitive,
+            sym_has_instance,
             stub_objects,
         };
         wire_builtin_world_links(&world);
@@ -993,6 +1019,39 @@ impl BuiltinWorld {
             ("toString", methods.to_string, 0),
             ("stack", methods.stack, 0),
         );
+
+        let si_name = string_forge.intern("name").0;
+        let error_si = string_forge.intern("Error").0;
+        let error_name_val = JsValue::perm_string(string_forge.string_ptr(error_si));
+        let name_shape = shape_forge.make_shape(proto.shape_id(), si_name);
+        proto.set_shape_id(name_shape);
+        proto.ensure_hash_props().push(error_name_val);
+
+        let si_message = string_forge.intern("message").0;
+        let empty_si = string_forge.intern("").0;
+        let empty_val = JsValue::perm_string(string_forge.string_ptr(empty_si));
+        let msg_shape = shape_forge.make_shape(proto.shape_id(), si_message);
+        proto.set_shape_id(msg_shape);
+        proto.ensure_hash_props().push(empty_val);
+
+        self.set_subtype_proto_name(string_forge, shape_forge, &self.type_error_proto, "TypeError", si_name);
+        self.set_subtype_proto_name(string_forge, shape_forge, &self.reference_error_proto, "ReferenceError", si_name);
+        self.set_subtype_proto_name(string_forge, shape_forge, &self.range_error_proto, "RangeError", si_name);
+        self.set_subtype_proto_name(string_forge, shape_forge, &self.syntax_error_proto, "SyntaxError", si_name);
+        self.set_subtype_proto_name(string_forge, shape_forge, &self.uri_error_proto, "URIError", si_name);
+        self.set_subtype_proto_name(string_forge, shape_forge, &self.eval_error_proto, "EvalError", si_name);
+    }
+
+    fn set_subtype_proto_name(
+        &self, string_forge: &PermInterner, shape_forge: &ShapeForge, proto_p: &P<JsObject>, name: &str, si_name: u32,
+    ) {
+        let proto_ptr = P::as_ptr(proto_p) as *mut JsObject;
+        let proto = unsafe { &mut *proto_ptr };
+        let name_si = string_forge.intern(name).0;
+        let name_val = JsValue::perm_string(string_forge.string_ptr(name_si));
+        let name_shape = shape_forge.make_shape(proto.shape_id(), si_name);
+        proto.set_shape_id(name_shape);
+        proto.ensure_hash_props().push(name_val);
     }
 
     pub fn bind_string_methods(&self, methods: &StringMethods, string_forge: &PermInterner, shape_forge: &ShapeForge) {
@@ -1033,6 +1092,9 @@ impl BuiltinWorld {
             ("matchAll", methods.match_all, 1),
             ("replaceAll", methods.replace_all, 2),
             ("valueOf", methods.value_of, 0),
+            ("substr", methods.substr, 2),
+            ("at", methods.at, 1),
+            ("lastIndexOf", methods.last_index_of, 1),
         );
     }
 

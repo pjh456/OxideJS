@@ -208,6 +208,25 @@ impl Vm {
         if !rhs_val.is_object() {
             return self.raise_type_error("INSTANCEOF right-hand side is not callable");
         }
+
+        let has_instance_ptr = self.session.builtin_world().sym_has_instance.as_ptr() as *mut JsObject;
+        let has_instance_key = JsValue::from_js_object(has_instance_ptr);
+        let has_instance_si = self.property_key_si(has_instance_key);
+
+        let ctor_obj = unsafe { &*rhs_val.as_js_object_ptr() };
+        let has_instance_val = self.ordinary_get(ctor_obj, has_instance_si, rhs_val)?;
+        if !has_instance_val.is_undefined() && !has_instance_val.is_null() {
+            let fn_ptr = has_instance_val.as_js_object_ptr();
+            if !fn_ptr.is_null() {
+                let fn_obj = unsafe { &*fn_ptr };
+                if fn_obj.is_function() {
+                    let result = self.call_function_sync(has_instance_val, rhs_val, &[lhs_val])?;
+                    self.regs[rd] = JsValue::bool(to_boolean(result));
+                    return Ok(());
+                }
+            }
+        }
+
         if !lhs_val.is_object() {
             self.regs[rd] = JsValue::bool(false);
             return Ok(());
@@ -264,11 +283,21 @@ impl Vm {
     pub(crate) fn dispatch_for_in_init(&mut self, a: usize) -> Result<(), String> {
         vm_trace!("FOR_IN_INIT r{}={:?}", a, self.regs[a]);
         let obj_val = self.regs[a];
+        if obj_val.is_null() || obj_val.is_undefined() {
+            // null/undefined enumerate nothing — an empty for-in, not a TypeError.
+            let keys_vec: bumpalo::collections::Vec<(JsValue, u32)> =
+                bumpalo::collections::Vec::new_in(self.epoch.bump());
+            let iter = self.epoch.alloc(ForInIter { keys: keys_vec, index: 0 });
+            self.iters.push_for_in(iter.cast::<ForInIter<'static>>());
+            return Ok(());
+        }
         if !obj_val.is_object() {
+            // ToObject coercion for other primitives is not implemented yet — TypeError is correct until it lands.
             return self.raise_type_error("for-in right-hand side is not an object");
         }
 
-        let mut keys_vec = bumpalo::collections::Vec::new_in(self.epoch.bump());
+        let mut keys_vec: bumpalo::collections::Vec<(JsValue, u32)> =
+            bumpalo::collections::Vec::new_in(self.epoch.bump());
         let mut seen = std::collections::HashSet::new();
         let mut current = obj_val;
         let mut depth = 0usize;
@@ -282,6 +311,7 @@ impl Vm {
             }
             depth += 1;
             let cur = unsafe { &*current.as_js_object_ptr() };
+            let obj_start = keys_vec.len();
             let mut cursor = Some(cur.shape_id());
             while let Some(id) = cursor {
                 if id == oxide_kernel::shape_forge::EMPTY_SHAPE_ID {
@@ -300,8 +330,9 @@ impl Vm {
                             .map(|meta| meta.attributes.enumerable())
                             .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable());
                         if enumerable {
-                            keys_vec.push(JsValue::perm_string(
-                                self.kernel_core.perm_interner().string_ptr(shape.property_name),
+                            keys_vec.push((
+                                JsValue::perm_string(self.kernel_core.perm_interner().string_ptr(shape.property_name)),
+                                shape.property_name,
                             ));
                         }
                     }
@@ -310,8 +341,22 @@ impl Vm {
                     break;
                 }
             }
+            // The shape chain is walked leaf->root (reverse of insertion order);
+            // flip this object's slice back to insertion order before its proto.
+            keys_vec[obj_start..].reverse();
             current = cur.proto();
         }
+
+        // ES enumeration order: integer-index keys ascending, then the rest in
+        // insertion order. Stable sort preserves insertion order among non-index keys.
+        keys_vec.sort_by(|(_, a_si), (_, b_si)| {
+            match (self.array_index_from_property_key(*a_si), self.array_index_from_property_key(*b_si)) {
+                (Some(ai), Some(bi)) => ai.cmp(&bi),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        });
 
         let iter = self.epoch.alloc(ForInIter { keys: keys_vec, index: 0 });
         self.iters.push_for_in(iter.cast::<ForInIter<'static>>());
@@ -326,7 +371,7 @@ impl Vm {
         }
         let iter = unsafe { &mut *iter_ptr };
         if iter.index < iter.keys.len() {
-            self.regs[rd] = iter.keys[iter.index];
+            self.regs[rd] = iter.keys[iter.index].0;
             iter.index += 1;
         } else {
             self.regs[rd] = JsValue::undefined();
@@ -376,17 +421,26 @@ impl Vm {
             return Err("FOR_OF_DONE iterator is not an object".into());
         }
 
+        self.last_uncaught_value = None;
         let iter_obj = unsafe { &*iterator.as_js_object_ptr() };
         let next_si = self.kernel_core.perm_interner().intern("next").0;
-        let next_fn = self.ordinary_get(iter_obj, next_si, iterator)?;
-        let result = self.call_function_sync(next_fn, iterator, &[])?;
+        let next_fn = match self.ordinary_get(iter_obj, next_si, iterator) {
+            Ok(v) => v,
+            Err(e) => return self.throw_for_of_error(e),
+        };
+        let result = match self.call_function_sync(next_fn, iterator, &[]) {
+            Ok(v) => v,
+            Err(e) => return self.throw_for_of_error(e),
+        };
         if !result.is_object() {
             return self.raise_type_error("iterator result is not an object");
         }
-
         let result_obj = unsafe { &*result.as_js_object_ptr() };
         let done_si = self.kernel_core.perm_interner().intern("done").0;
-        let done_val = self.ordinary_get(result_obj, done_si, result)?;
+        let done_val = match self.ordinary_get(result_obj, done_si, result) {
+            Ok(v) => v,
+            Err(e) => return self.throw_for_of_error(e),
+        };
         let done = to_boolean(done_val);
         self.iters.set_last_for_of_result(result);
         self.regs[rd] = JsValue::bool(!done);
@@ -395,6 +449,7 @@ impl Vm {
 
     pub(crate) fn dispatch_for_of_next(&mut self, rd: usize) -> Result<(), String> {
         vm_trace!("FOR_OF_NEXT rd={}", rd);
+        self.last_uncaught_value = None;
         let result = self.iters.last_for_of_result();
         if !result.is_object() {
             self.regs[rd] = JsValue::undefined();
@@ -402,8 +457,25 @@ impl Vm {
         }
         let result_obj = unsafe { &*result.as_js_object_ptr() };
         let value_si = self.kernel_core.perm_interner().intern("value").0;
-        self.regs[rd] = self.ordinary_get(result_obj, value_si, result)?;
+        self.regs[rd] = match self.ordinary_get(result_obj, value_si, result) {
+            Ok(v) => v,
+            Err(e) => return self.throw_for_of_error(e),
+        };
         Ok(())
+    }
+
+    /// next()/value access threw: route through unwind so a surrounding try/catch can catch
+    /// it, re-throwing the ORIGINAL value when available. Per ECMA-262 the iterator is NOT
+    /// closed via return() on a next()-throw — pop it so the unwinding IteratorClose pass skips it.
+    fn throw_for_of_error(&mut self, msg: String) -> Result<(), String> {
+        self.iters.pop_for_of();
+        let exc = match self.last_uncaught_value.take() {
+            Some(v) => v,
+            None => oxide_builtins::error::create_error(self, &msg),
+        };
+        self.exception_value = Some(exc);
+        self.pending_error_kind = Some(self.thrown_error_kind(exc));
+        self.unwind()
     }
 
     pub(crate) fn dispatch_for_of_close(&mut self) -> Result<(), String> {
@@ -411,19 +483,58 @@ impl Vm {
         let Some(iterator) = self.iters.pop_for_of() else {
             return Ok(());
         };
+        // Normal / break / return exit: no prior abrupt completion, so return()'s own throw propagates.
+        self.close_for_of_iterator(iterator, false)
+    }
+
+    /// Call `iterator.return()` (IteratorClose). When `suppress_return_error` is true the call
+    /// is being made because an enclosing abrupt completion is unwinding: return()'s own result
+    /// is discarded and the in-flight exception is preserved across the call. When false (normal
+    /// for-of exit) return()'s error propagates.
+    pub(crate) fn close_for_of_iterator(
+        &mut self, iterator: JsValue, suppress_return_error: bool,
+    ) -> Result<(), String> {
         if !iterator.is_object() {
             return Ok(());
         }
         let iter_obj = unsafe { &*iterator.as_js_object_ptr() };
         let return_si = self.kernel_core.perm_interner().intern("return").0;
-        let return_fn = self.ordinary_get(iter_obj, return_si, iterator)?;
+        let return_fn = match self.ordinary_get(iter_obj, return_si, iterator) {
+            Ok(v) => v,
+            Err(e) => {
+                if suppress_return_error {
+                    return Ok(());
+                }
+                return Err(e);
+            }
+        };
         if return_fn.is_object() {
             let return_obj = unsafe { &*return_fn.as_js_object_ptr() };
             if return_obj.is_function() {
-                let _ = self.call_function_sync(return_fn, iterator, &[])?;
+                if suppress_return_error {
+                    let saved_exc = self.exception_value;
+                    let saved_kind = self.pending_error_kind;
+                    let _ = self.call_function_sync(return_fn, iterator, &[]);
+                    self.exception_value = saved_exc;
+                    self.pending_error_kind = saved_kind;
+                } else {
+                    let _ = self.call_function_sync(return_fn, iterator, &[])?;
+                }
             }
         }
         Ok(())
+    }
+
+    /// IteratorClose every active for-of iterator above `depth`, used by `unwind()` to close
+    /// loops abandoned by a throw. Pops before closing so a re-entrant call can't re-close,
+    /// and so the next()-throw path (which already popped its own iterator) is skipped.
+    pub(crate) fn close_for_of_above(&mut self, depth: usize) {
+        while self.iters.for_of_iters.len() > depth {
+            let Some(iterator) = self.iters.pop_for_of() else {
+                break;
+            };
+            let _ = self.close_for_of_iterator(iterator, true);
+        }
     }
 
     pub(crate) fn dispatch_rest_object(&mut self, rd: usize, a: usize) -> Result<(), String> {

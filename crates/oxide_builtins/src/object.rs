@@ -6,6 +6,13 @@ use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
+fn is_integer_index(key: &str) -> bool {
+    if key.is_empty() || key.len() > 1 && key.as_bytes()[0] == b'0' {
+        return false;
+    }
+    key.bytes().all(|b| b.is_ascii_digit()) && key.parse::<u64>().unwrap_or(u64::MAX) < (1u64 << 32) - 1
+}
+
 pub(crate) fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
     let mut keys: Vec<(u32, u32)> = Vec::new();
     let shape_id = obj.shape_id();
@@ -33,6 +40,16 @@ pub(crate) fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)
         }
         pos += 1;
     }
+    keys.sort_by(|(a_si, _), (b_si, _)| {
+        let a_str = vm.kernel_core().perm_interner().lookup(*a_si).unwrap_or("");
+        let b_str = vm.kernel_core().perm_interner().lookup(*b_si).unwrap_or("");
+        match (is_integer_index(a_str), is_integer_index(b_str)) {
+            (true, true) => a_str.parse::<u32>().unwrap().cmp(&b_str.parse::<u32>().unwrap()),
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            (false, false) => std::cmp::Ordering::Equal,
+        }
+    });
     keys
 }
 
@@ -42,28 +59,29 @@ pub fn object_constructor<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
 }
 
 pub fn object_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    if args.len() < 2 {
-        return NativeResult::Err(JsValue::undefined());
-    }
-    let val = vm.reg(args[1]);
-    if !val.is_object() {
-        return NativeResult::Err(JsValue::undefined());
-    }
-    let obj_ptr = val.as_js_object_ptr();
-    if obj_ptr.is_null() {
-        return NativeResult::Err(JsValue::undefined());
-    }
+    let obj_ptr = match require_obj_arg(vm, args, "keys") {
+        Ok(ptr) => ptr,
+        Err(err) => return NativeResult::Err(err),
+    };
 
     let key_names: Vec<String>;
     {
         let obj = unsafe { &*obj_ptr };
         let keys = walk_own_keys(vm, obj);
-        key_names = keys
+        let owned_keys: Vec<(u32, u32)> = keys
+            .into_iter()
+            .filter(|(_si, offset)| {
+                obj.prop_meta_at(*offset)
+                    .map(|m| m.attributes.enumerable())
+                    .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable())
+            })
+            .collect();
+        key_names = owned_keys
             .iter()
             .map(|(si, _offset)| vm.kernel_core().perm_interner().lookup(*si).unwrap_or("").to_string())
             .collect();
     }
-
+    // keys
     let n = key_names.len();
     let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let arr = vm.alloc_object(JsObject::new_array(
@@ -86,11 +104,18 @@ pub fn object_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
 pub fn object_create<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
-        return NativeResult::Ok(JsValue::undefined());
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.create: at least 1 argument required"));
     }
     let proto_val = vm.reg(args[1]);
-    if !proto_val.is_null() && !proto_val.is_object() {
-        return NativeResult::Ok(JsValue::undefined());
+    if proto_val.is_null() {
+        let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        return NativeResult::Ok(JsValue::from_js_object(obj));
+    }
+    if !proto_val.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Object.create: prototype must be an object or null",
+        ));
     }
     let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
     NativeResult::Ok(JsValue::from_js_object(obj))
@@ -109,53 +134,67 @@ pub fn object_assign<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if target_ptr.is_null() {
         return NativeResult::Ok(target_val);
     }
-    {
-        let target = unsafe { &mut *target_ptr };
-        for &arg_reg in args.iter().skip(2) {
-            let source_val = vm.reg(arg_reg);
-            if !source_val.is_object() {
-                continue;
-            }
-            let source_ptr = source_val.as_js_object_ptr();
-            if source_ptr.is_null() {
-                continue;
-            }
-            let source = unsafe { &*source_ptr };
-            let source_keys = walk_own_keys(vm, source);
-            for (_si, offset) in source_keys {
-                let prop_val = source.get_prop_at(offset);
-                target.push_prop(prop_val);
-            }
+
+    let mut all_assignments: Vec<(u32, JsValue, JsValue)> = Vec::new();
+    for &arg_reg in args.iter().skip(2) {
+        let source_val = vm.reg(arg_reg);
+        if !source_val.is_object() {
+            continue;
         }
+        let source_ptr = source_val.as_js_object_ptr();
+        if source_ptr.is_null() {
+            continue;
+        }
+        let source_keys: Vec<(u32, u32)> = {
+            let source = unsafe { &*source_ptr };
+            walk_own_keys(vm, source)
+        };
+        for (si, offset) in source_keys {
+            let source = unsafe { &*source_ptr };
+            let val = source.get_prop_at(offset);
+            all_assignments.push((si, source_val, val));
+        }
+    }
+
+    let target = unsafe { &mut *target_ptr };
+    for (si, source_val, val) in all_assignments {
+        let promoted = vm.promote_if_needed_for_write_ptr(target_ptr, val);
+        let _ = vm.ordinary_set(target, si, promoted, source_val);
     }
     NativeResult::Ok(target_val)
 }
 
 pub fn object_is<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let lhs = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let rhs = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    if args.len() < 3 {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.is called with insufficient arguments"));
+    }
+    let lhs = vm.reg(args[1]);
+    let rhs = vm.reg(args[2]);
     NativeResult::Ok(JsValue::bool(oxide_runtime_api::same_value(lhs, rhs)))
 }
 
 pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 4 {
-        return NativeResult::Err(JsValue::undefined());
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Object.defineProperty: expected at least 3 arguments",
+        ));
     }
     let obj_val = vm.reg(args[1]);
     if !obj_val.is_object() {
-        return NativeResult::Err(JsValue::undefined());
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.defineProperty called on non-object"));
     }
     let obj_ptr = obj_val.as_js_object_ptr();
     if obj_ptr.is_null() {
-        return NativeResult::Err(JsValue::undefined());
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.defineProperty called on non-object"));
     }
     let desc_val = vm.reg(args[3]);
     if !desc_val.is_object() {
-        return NativeResult::Err(JsValue::undefined());
+        return NativeResult::Err(crate::error::create_type_error(vm, "Property description must be an object"));
     }
     let desc_ptr = desc_val.as_js_object_ptr();
     if desc_ptr.is_null() {
-        return NativeResult::Err(JsValue::undefined());
+        return NativeResult::Err(crate::error::create_type_error(vm, "Property description must be an object"));
     }
     let prop_name_str = oxide_runtime_api::to_string(vm.reg(args[2]));
     let si = vm.kernel_core().perm_interner().intern(&prop_name_str).0;
@@ -188,10 +227,33 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
         ));
     }
 
+    let existing_pos = {
+        let obj = unsafe { &*obj_ptr };
+        vm.get_own_property_slot(obj, si)
+    };
+    let existing_meta = existing_pos.and_then(|pos| {
+        let obj = unsafe { &*obj_ptr };
+        obj.prop_meta_at(pos)
+    });
+    let existing_value = existing_pos.map_or(JsValue::undefined(), |pos| {
+        let obj = unsafe { &*obj_ptr };
+        obj.get_prop_at(pos)
+    });
+
     let obj = unsafe { &mut *obj_ptr };
     if has_accessor {
-        let get = get_field.unwrap_or(JsValue::undefined());
-        let set = set_field.unwrap_or(JsValue::undefined());
+        let get = get_field.unwrap_or_else(|| {
+            existing_meta
+                .filter(|m| m.is_accessor)
+                .map(|m| m.get)
+                .unwrap_or(JsValue::undefined())
+        });
+        let set = set_field.unwrap_or_else(|| {
+            existing_meta
+                .filter(|m| m.is_accessor)
+                .map(|m| m.set)
+                .unwrap_or(JsValue::undefined())
+        });
         if (!get.is_undefined() && !is_callable(get)) || (!set.is_undefined() && !is_callable(set)) {
             return NativeResult::Err(crate::error::create_type_error(
                 vm,
@@ -204,14 +266,53 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
         {
             return NativeResult::Err(crate::error::create_type_error(vm, "Cannot define property"));
         }
-    } else {
-        let value = value_field.unwrap_or(JsValue::undefined());
-        let writable = writable_field.map(oxide_runtime_api::to_boolean).unwrap_or(false);
+    } else if has_data {
+        let value = if existing_pos.is_some() {
+            value_field.unwrap_or(existing_value)
+        } else {
+            value_field.unwrap_or(JsValue::undefined())
+        };
+        let writable = if existing_pos.is_some() {
+            writable_field
+                .map(oxide_runtime_api::to_boolean)
+                .unwrap_or_else(|| existing_meta.map(|m| m.attributes.writable()).unwrap_or(false))
+        } else {
+            writable_field.map(oxide_runtime_api::to_boolean).unwrap_or(false)
+        };
         if vm
             .define_data_property(obj, si, value, PropAttributes::new(writable, enumerable, configurable))
             .is_err()
         {
             return NativeResult::Err(crate::error::create_type_error(vm, "Cannot define property"));
+        }
+    } else {
+        if existing_pos.is_none() {
+            if vm
+                .define_data_property(
+                    obj,
+                    si,
+                    JsValue::undefined(),
+                    PropAttributes::new(false, enumerable, configurable),
+                )
+                .is_err()
+            {
+                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot define property"));
+            }
+            return NativeResult::Ok(obj_val);
+        }
+        let is_accessor = existing_meta.map(|m| m.is_accessor).unwrap_or(false);
+        let writable = existing_meta.map(|m| m.attributes.writable()).unwrap_or(true);
+        let attrs = PropAttributes::new(writable, enumerable, configurable);
+        if is_accessor {
+            let get = existing_meta.map(|m| m.get).unwrap_or(JsValue::undefined());
+            let set = existing_meta.map(|m| m.set).unwrap_or(JsValue::undefined());
+            if vm.define_accessor_property(obj, si, get, set, attrs).is_err() {
+                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot define property"));
+            }
+        } else {
+            if vm.define_data_property(obj, si, existing_value, attrs).is_err() {
+                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot define property"));
+            }
         }
     }
     NativeResult::Ok(obj_val)
@@ -219,7 +320,10 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
 
 pub fn object_get_own_property_descriptor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 3 {
-        return NativeResult::Err(JsValue::undefined());
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Object.getOwnPropertyDescriptor called on non-object",
+        ));
     }
     let obj_val = vm.reg(args[1]);
     if !obj_val.is_object() {
@@ -328,62 +432,132 @@ macro_rules! native_try {
 
 pub fn object_freeze<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
-        return NativeResult::Ok(JsValue::undefined());
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.freeze called on non-object"));
     }
     let val = vm.reg(args[1]);
     if !val.is_object() || val.as_js_object_ptr().is_null() {
         return NativeResult::Ok(val);
+    }
+    let obj_ptr = val.as_js_object_ptr();
+    unsafe {
+        (*obj_ptr).set_frozen(true);
+        (*obj_ptr).set_extensible(false);
     }
     NativeResult::Ok(val)
 }
 
 pub fn object_seal<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
-        return NativeResult::Ok(JsValue::undefined());
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.seal called on non-object"));
     }
     let val = vm.reg(args[1]);
     if !val.is_object() || val.as_js_object_ptr().is_null() {
         return NativeResult::Ok(val);
+    }
+    let obj_ptr = val.as_js_object_ptr();
+    unsafe {
+        (*obj_ptr).set_sealed(true);
+        (*obj_ptr).set_extensible(false);
     }
     NativeResult::Ok(val)
 }
 
 pub fn object_prevent_extensions<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
-        return NativeResult::Ok(JsValue::undefined());
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.preventExtensions called on non-object"));
     }
     let val = vm.reg(args[1]);
     if !val.is_object() || val.as_js_object_ptr().is_null() {
         return NativeResult::Ok(val);
+    }
+    let obj_ptr = val.as_js_object_ptr();
+    unsafe {
+        (*obj_ptr).set_extensible(false);
     }
     NativeResult::Ok(val)
 }
 
 pub fn object_is_frozen<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
-        return NativeResult::Ok(JsValue::bool(true));
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.isFrozen called on non-object"));
     }
     let val = vm.reg(args[1]);
-    if !val.is_object() || val.as_js_object_ptr().is_null() {
+    if !val.is_object() {
         return NativeResult::Ok(JsValue::bool(true));
     }
-    NativeResult::Ok(JsValue::bool(false))
+    let obj_ptr = val.as_js_object_ptr();
+    if obj_ptr.is_null() {
+        return NativeResult::Ok(JsValue::bool(true));
+    }
+    let obj = unsafe { &*obj_ptr };
+    if obj.is_frozen() {
+        return NativeResult::Ok(JsValue::bool(true));
+    }
+    if obj.is_extensible() {
+        return NativeResult::Ok(JsValue::bool(false));
+    }
+    let keys = walk_own_keys(vm, obj);
+    for (_si, offset) in keys {
+        if let Some(meta) = obj.prop_meta_at(offset) {
+            if meta.attributes.configurable() {
+                return NativeResult::Ok(JsValue::bool(false));
+            }
+            if !meta.is_accessor && meta.attributes.writable() {
+                return NativeResult::Ok(JsValue::bool(false));
+            }
+        } else {
+            return NativeResult::Ok(JsValue::bool(false));
+        }
+    }
+    NativeResult::Ok(JsValue::bool(true))
 }
 
 pub fn object_is_sealed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
-        return NativeResult::Ok(JsValue::bool(true));
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.isSealed called on non-object"));
     }
     let val = vm.reg(args[1]);
-    if !val.is_object() || val.as_js_object_ptr().is_null() {
+    if !val.is_object() {
         return NativeResult::Ok(JsValue::bool(true));
     }
-    NativeResult::Ok(JsValue::bool(false))
+    let obj_ptr = val.as_js_object_ptr();
+    if obj_ptr.is_null() {
+        return NativeResult::Ok(JsValue::bool(true));
+    }
+    let obj = unsafe { &*obj_ptr };
+    if obj.is_sealed() {
+        return NativeResult::Ok(JsValue::bool(true));
+    }
+    if obj.is_extensible() {
+        return NativeResult::Ok(JsValue::bool(false));
+    }
+    let keys = walk_own_keys(vm, obj);
+    for (_si, offset) in keys {
+        if let Some(meta) = obj.prop_meta_at(offset) {
+            if meta.attributes.configurable() {
+                return NativeResult::Ok(JsValue::bool(false));
+            }
+        } else {
+            return NativeResult::Ok(JsValue::bool(false));
+        }
+    }
+    NativeResult::Ok(JsValue::bool(true))
 }
 
 pub fn object_is_extensible<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    native_try!(require_obj_arg(vm, args, "isExtensible"));
-    NativeResult::Ok(JsValue::bool(true))
+    if args.len() < 2 {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.isExtensible called on non-object"));
+    }
+    let val = vm.reg(args[1]);
+    if !val.is_object() {
+        return NativeResult::Ok(JsValue::bool(false));
+    }
+    let obj_ptr = val.as_js_object_ptr();
+    if obj_ptr.is_null() {
+        return NativeResult::Ok(JsValue::bool(false));
+    }
+    let obj = unsafe { &*obj_ptr };
+    NativeResult::Ok(JsValue::bool(obj.is_extensible()))
 }
 
 pub fn object_get_own_property_names<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -419,29 +593,94 @@ pub fn object_get_own_property_names<H: VmHost>(vm: &mut H, args: &[u8]) -> Nati
 
 pub fn object_define_properties<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 3 {
-        return NativeResult::Ok(vm.reg(args[1]));
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Object.defineProperties: expected at least 2 arguments",
+        ));
     }
-    let _obj_ptr = native_try!(require_obj_arg(vm, args, "defineProperties"));
+    let target_val = vm.reg(args[1]);
+    let target_ptr = match require_obj_arg(vm, args, "defineProperties") {
+        Ok(ptr) => ptr,
+        Err(err) => return NativeResult::Err(err),
+    };
     let desc_val = vm.reg(args[2]);
     if !desc_val.is_object() {
-        return NativeResult::Ok(vm.reg(args[1]));
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Object.defineProperties: descriptor must be an object",
+        ));
     }
-    NativeResult::Ok(vm.reg(args[1]))
+    let desc_ptr = desc_val.as_js_object_ptr();
+    if desc_ptr.is_null() {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Object.defineProperties: descriptor must be an object",
+        ));
+    }
+    let prop_keys: Vec<(u32, u32)> = {
+        let desc = unsafe { &*desc_ptr };
+        walk_own_keys(vm, desc)
+    };
+    for (key_si, offset) in prop_keys {
+        let desc = unsafe { &*desc_ptr };
+        let prop_desc_val = desc.get_prop_at(offset);
+        if !prop_desc_val.is_object() {
+            continue;
+        }
+        let value_si = vm.kernel_core().perm_interner().intern("value").0;
+        let desc_obj_ptr = prop_desc_val.as_js_object_ptr();
+        if desc_obj_ptr.is_null() {
+            continue;
+        }
+        let desc_obj = unsafe { &*desc_obj_ptr };
+        let prop_val = if let Some(pos) = vm.kernel_core().shape_forge().lookup_position(desc_obj.shape_id(), value_si)
+        {
+            desc_obj.get_prop_at(pos)
+        } else {
+            JsValue::undefined()
+        };
+        let target = unsafe { &mut *target_ptr };
+        let _ = vm.define_data_property(target, key_si, prop_val, PropAttributes::DEFAULT_DATA);
+    }
+    NativeResult::Ok(target_val)
 }
 
 pub fn object_from_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
-        return NativeResult::Ok(JsValue::null());
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.fromEntries: expected 1 argument"));
     }
     let entries = vm.reg(args[1]);
     if !entries.is_object() {
-        return NativeResult::Ok(JsValue::null());
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.fromEntries: argument must be iterable"));
     }
-    let obj_ptr = vm.alloc_object(JsObject::new_empty(
+    let entries_ptr = entries.as_js_object_ptr();
+    if entries_ptr.is_null() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.fromEntries: argument must be iterable"));
+    }
+    let obj = vm.alloc_object(JsObject::new_empty(
         EMPTY_SHAPE_ID,
         JsValue::from_js_object(vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject),
     ));
-    NativeResult::Ok(JsValue::from_js_object(obj_ptr))
+    let target_val = JsValue::from_js_object(obj);
+    let n: usize = unsafe { (*entries_ptr).prop_vec_len() };
+    for i in 0..n {
+        let pair_val = unsafe { (*entries_ptr).get_prop_at(i) };
+        if !pair_val.is_object() {
+            continue;
+        }
+        let pair_ptr = pair_val.as_js_object_ptr();
+        if pair_ptr.is_null() {
+            continue;
+        }
+        let pair = unsafe { &*pair_ptr };
+        let key_val = pair.get_prop_at(0);
+        let value_val = pair.get_prop_at(1);
+        let key_str = oxide_runtime_api::to_string(key_val);
+        let si = vm.kernel_core().perm_interner().intern(&key_str).0;
+        let promoted = vm.promote_if_needed_for_write_ptr(obj, value_val);
+        let _ = vm.ordinary_set(unsafe { &mut *obj }, si, promoted, target_val);
+    }
+    NativeResult::Ok(target_val)
 }
 
 pub fn object_get_prototype_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -457,6 +696,18 @@ pub fn object_has_own<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let key_si = vm.property_key_si(vm.reg(args[2]));
     let obj = unsafe { &*obj_ptr };
     NativeResult::Ok(JsValue::bool(vm.get_own_property_slot(obj, key_si).is_some()))
+}
+
+pub fn object_proto_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    // Object.prototype.valueOf returns the `this` object unchanged; OrdinaryToPrimitive
+    // then falls through to toString since the result is not primitive.
+    NativeResult::Ok(vm.reg(args[0]))
+}
+
+pub fn object_proto_to_string<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
+    // ponytail: minimal [[Class]] string — always "[object Object]". Type-specific
+    // tags ("[object Array]" etc.) and Symbol.toStringTag are a later refinement.
+    NativeResult::Ok(vm.new_string("[object Object]"))
 }
 
 pub fn object_proto_has_own_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -502,7 +753,15 @@ pub fn object_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj_ptr = native_try!(require_obj_arg(vm, args, "entries"));
     let obj = unsafe { &*obj_ptr };
     let keys = walk_own_keys(vm, obj);
-    let n = keys.len();
+    let owned_keys: Vec<(u32, u32)> = keys
+        .into_iter()
+        .filter(|(_si, offset)| {
+            obj.prop_meta_at(*offset)
+                .map(|m| m.attributes.enumerable())
+                .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable())
+        })
+        .collect();
+    let n = owned_keys.len();
     let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let arr = vm.alloc_object(JsObject::new_array(
         EMPTY_SHAPE_ID,
@@ -510,7 +769,7 @@ pub fn object_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         n,
         vm.epoch().bump(),
     ));
-    for (i, (si, offset)) in keys.iter().enumerate() {
+    for (i, (si, offset)) in owned_keys.iter().enumerate() {
         let key_str = vm.kernel_core().perm_interner().lookup(*si).unwrap_or_default();
         let key_val = vm.new_string(key_str);
         let val = obj.get_prop_at(*offset);
@@ -537,7 +796,15 @@ pub fn object_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj_ptr = native_try!(require_obj_arg(vm, args, "values"));
     let obj = unsafe { &*obj_ptr };
     let keys = walk_own_keys(vm, obj);
-    let n = keys.len();
+    let owned_keys: Vec<(u32, u32)> = keys
+        .into_iter()
+        .filter(|(_si, offset)| {
+            obj.prop_meta_at(*offset)
+                .map(|m| m.attributes.enumerable())
+                .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable())
+        })
+        .collect();
+    let n = owned_keys.len();
     let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let arr = vm.alloc_object(JsObject::new_array(
         EMPTY_SHAPE_ID,
@@ -545,7 +812,7 @@ pub fn object_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         n,
         vm.epoch().bump(),
     ));
-    for (i, (_si, offset)) in keys.iter().enumerate() {
+    for (i, (_si, offset)) in owned_keys.iter().enumerate() {
         let val = obj.get_prop_at(*offset);
         unsafe {
             (*arr).set_prop_at(i, val);

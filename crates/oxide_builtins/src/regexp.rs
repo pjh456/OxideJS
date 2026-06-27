@@ -148,7 +148,7 @@ pub fn regexp_test<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // SAFETY: fn_ptr holds a Box<regex::Regex> pointer stored by regexp_constructor.
     let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
     let haystack = oxide_runtime_api::to_string(vm.reg(if args.len() > 1 { args[1] } else { args[0] }));
-    let last_index = oxide_runtime_api::to_number(get_prop(re, 0)) as usize;
+    let last_index = vm.coerce_number_bounded(get_prop(re, 0)).unwrap_or(f64::NAN) as usize;
     let is_global = get_prop(re, 3).as_bool();
 
     if is_global {
@@ -181,7 +181,7 @@ pub fn regexp_exec<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
     let (last_index, is_global) = {
         let re = unsafe { &*re_ptr };
-        let li = oxide_runtime_api::to_number(get_prop(re, 0)) as usize;
+        let li = vm.coerce_number_bounded(get_prop(re, 0)).unwrap_or(f64::NAN) as usize;
         let g = get_prop(re, 3).as_bool();
         (li, g)
     };

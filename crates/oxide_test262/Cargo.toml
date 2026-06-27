@@ -16,6 +16,7 @@ oxide_compiler = { path = "../oxide_compiler" }
 oxide_vm = { path = "../oxide_vm" }
 oxide_parser = { path = "../oxide_parser" }
 oxide_kernel = { path = "../oxide_kernel" }
+oxide_log = { path = "../oxide_log" }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 walkdir = "2"

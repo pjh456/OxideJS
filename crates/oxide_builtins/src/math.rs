@@ -2,11 +2,11 @@ use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
-fn num<H: VmHost>(vm: &H, reg: u8) -> f64 {
-    oxide_runtime_api::to_number(vm.reg(reg))
+fn num<H: VmHost>(vm: &mut H, reg: u8) -> f64 {
+    vm.coerce_number_bounded(vm.reg(reg)).unwrap_or(f64::NAN)
 }
 
-fn arg1<H: VmHost>(vm: &H, args: &[u8]) -> f64 {
+fn arg1<H: VmHost>(vm: &mut H, args: &[u8]) -> f64 {
     if args.len() < 2 {
         f64::NAN
     } else {
@@ -14,11 +14,11 @@ fn arg1<H: VmHost>(vm: &H, args: &[u8]) -> f64 {
     }
 }
 
-fn arg2<H: VmHost>(vm: &H, args: &[u8]) -> (f64, f64) {
-    (
-        if args.len() > 1 { num(vm, args[1]) } else { f64::NAN },
-        if args.len() > 2 { num(vm, args[2]) } else { f64::NAN },
-    )
+fn arg2<H: VmHost>(vm: &mut H, args: &[u8]) -> (f64, f64) {
+    // Sequenced (not a tuple literal) so the two coercions take &mut H one at a time.
+    let a = if args.len() > 1 { num(vm, args[1]) } else { f64::NAN };
+    let b = if args.len() > 2 { num(vm, args[2]) } else { f64::NAN };
+    (a, b)
 }
 
 pub fn math_abs<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {

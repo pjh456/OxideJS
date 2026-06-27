@@ -32,7 +32,7 @@ fn range_error<H: VmHost>(vm: &mut H, msg: &str) -> JsValue {
 }
 
 fn to_index<H: VmHost>(vm: &mut H, value: JsValue, msg: &str) -> Result<usize, JsValue> {
-    let n = oxide_runtime_api::to_number(value);
+    let n = vm.coerce_number_bounded(value).unwrap_or(f64::NAN);
     if n.is_nan() {
         return Ok(0);
     }
@@ -42,8 +42,8 @@ fn to_index<H: VmHost>(vm: &mut H, value: JsValue, msg: &str) -> Result<usize, J
     Ok(n.trunc() as usize)
 }
 
-fn normalize_index<H: VmHost>(_vm: &mut H, value: JsValue, len: usize) -> usize {
-    let n = oxide_runtime_api::to_number(value);
+fn normalize_index<H: VmHost>(vm: &mut H, value: JsValue, len: usize) -> usize {
+    let n = vm.coerce_number_bounded(value).unwrap_or(f64::NAN);
     if n.is_nan() {
         return 0;
     }
@@ -235,8 +235,8 @@ fn read_element(kind: TypedArrayKind, bytes: &[u8], offset: usize) -> JsValue {
     }
 }
 
-fn numeric_value<H: VmHost>(_vm: &mut H, value: JsValue) -> f64 {
-    oxide_runtime_api::to_number(value)
+fn numeric_value<H: VmHost>(vm: &mut H, value: JsValue) -> f64 {
+    vm.coerce_number_bounded(value).unwrap_or(f64::NAN)
 }
 
 fn write_element(kind: TypedArrayKind, bytes: &mut [u8], offset: usize, value: f64) {

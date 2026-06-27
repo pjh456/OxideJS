@@ -23,6 +23,9 @@ pub fn bind_set(core: &Arc<KernelCore>, session: &KernelSession, global: &mut Js
             ("delete", oxide_builtins::set::set_delete::<crate::vm::Vm> as *const (), 1),
             ("clear", oxide_builtins::set::set_clear::<crate::vm::Vm> as *const (), 0),
             ("size", oxide_builtins::set::set_size::<crate::vm::Vm> as *const (), 0),
+            ("entries", oxide_builtins::set::set_entries::<crate::vm::Vm> as *const (), 0),
+            ("values", oxide_builtins::set::set_values::<crate::vm::Vm> as *const (), 0),
+            ("keys", oxide_builtins::set::set_keys::<crate::vm::Vm> as *const (), 0),
         ],
     );
 

@@ -24,6 +24,9 @@ pub fn bind_map(core: &Arc<KernelCore>, session: &KernelSession, global: &mut Js
             ("delete", oxide_builtins::map::map_delete::<crate::vm::Vm> as *const (), 1),
             ("clear", oxide_builtins::map::map_clear::<crate::vm::Vm> as *const (), 0),
             ("size", oxide_builtins::map::map_size::<crate::vm::Vm> as *const (), 0),
+            ("entries", oxide_builtins::map::map_entries::<crate::vm::Vm> as *const (), 0),
+            ("values", oxide_builtins::map::map_values::<crate::vm::Vm> as *const (), 0),
+            ("keys", oxide_builtins::map::map_keys::<crate::vm::Vm> as *const (), 0),
         ],
     );
 
