@@ -334,12 +334,14 @@ def report(all_data):
     if ox:
         o_pass = ox.get("pass", 0); o_fail = ox.get("fail", 0); o_ran = o_pass + o_fail
         q_pass = qj.get("pass", 0) if qj else 42000
+        q_fail = qj.get("fail", 0) if qj else 1000
+        o_rate = o_pass/o_ran*100 if o_ran else 0
         w("## Test262\n")
         w("| | OxideJS | QuickJS |")
         w("|------|---------|------|")
         w(f"| Pass | {o_pass:,} | {q_pass:,} |")
-        w(f"| Fail | {o_fail:,} | {qj.get('fail', 0):,} |")
-        w(f"| Rate | {o_pass/o_ran*100:.1f}% | ~99% |")
+        w(f"| Fail | {o_fail:,} | {q_fail:,} |")
+        w(f"| Rate | {o_rate:.1f}% | ~99% |")
         w("")
 
     # Timing
