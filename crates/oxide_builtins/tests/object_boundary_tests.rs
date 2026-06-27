@@ -99,3 +99,47 @@ fn test_assign_merges_two_sources() {
     let (_vm, result) = eval("var t = {a:1}; Object.assign(t, {b:2}); t.b").unwrap();
     assert!(result.is_int() || result.is_double(), "Object.assign should copy from source");
 }
+
+#[test]
+fn test_integrity_freeze_returns_object() {
+    let (_vm, result) = eval("var o = {x:1}; Object.freeze(o) === o").unwrap();
+    assert!(result.is_bool() && result.as_bool(), "freeze should return the object");
+}
+
+#[test]
+fn test_integrity_freeze_sets_non_extensible() {
+    let (_vm, result) = eval("var o = {x:1}; Object.freeze(o); Object.isExtensible(o)").unwrap();
+    assert!(result.is_bool() && !result.as_bool(), "freeze should set non-extensible");
+}
+
+#[test]
+fn test_integrity_seal_non_extensible() {
+    let (_vm, result) = eval("var o = {x:1}; Object.seal(o); Object.isExtensible(o)").unwrap();
+    assert!(result.is_bool() && !result.as_bool(), "seal should set non-extensible");
+}
+
+#[test]
+fn test_integrity_prevent_extensions() {
+    let (_vm, result) = eval("var o = {x:1}; Object.preventExtensions(o); Object.isExtensible(o)").unwrap();
+    assert!(result.is_bool() && !result.as_bool(), "preventExtensions should set non-extensible");
+}
+
+#[test]
+fn test_is_frozen_non_object_returns_true() {
+    let (_vm, result) = eval("Object.isFrozen(42)").unwrap();
+    assert!(result.is_bool() && result.as_bool(), "non-object should be frozen per ES spec");
+}
+
+#[test]
+fn test_is_sealed_non_object_returns_true() {
+    let (_vm, result) = eval("Object.isSealed(42)").unwrap();
+    assert!(result.is_bool() && result.as_bool(), "non-object should be sealed per ES spec");
+}
+
+#[test]
+fn test_is_extensible_non_object_returns_false() {
+    let (_vm, result) = eval("Object.isExtensible(42)").unwrap();
+    assert!(result.is_bool() && !result.as_bool(), "non-object should not be extensible per ES spec");
+}
+
+
