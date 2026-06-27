@@ -6,6 +6,13 @@ use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
+fn is_integer_index(key: &str) -> bool {
+    if key.is_empty() || key.len() > 1 && key.as_bytes()[0] == b'0' {
+        return false;
+    }
+    key.bytes().all(|b| b.is_ascii_digit()) && key.parse::<u64>().unwrap_or(u64::MAX) < (1u64 << 32) - 1
+}
+
 pub(crate) fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
     let mut keys: Vec<(u32, u32)> = Vec::new();
     let shape_id = obj.shape_id();
@@ -33,6 +40,16 @@ pub(crate) fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)
         }
         pos += 1;
     }
+    keys.sort_by(|(a_si, _), (b_si, _)| {
+        let a_str = vm.kernel_core().perm_interner().lookup(*a_si).unwrap_or("");
+        let b_str = vm.kernel_core().perm_interner().lookup(*b_si).unwrap_or("");
+        match (is_integer_index(a_str), is_integer_index(b_str)) {
+            (true, true) => a_str.parse::<u32>().unwrap().cmp(&b_str.parse::<u32>().unwrap()),
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            (false, false) => std::cmp::Ordering::Equal,
+        }
+    });
     keys
 }
 
@@ -51,12 +68,20 @@ pub fn object_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     {
         let obj = unsafe { &*obj_ptr };
         let keys = walk_own_keys(vm, obj);
-        key_names = keys
+        let owned_keys: Vec<(u32, u32)> = keys
+            .into_iter()
+            .filter(|(_si, offset)| {
+                obj.prop_meta_at(*offset)
+                    .map(|m| m.attributes.enumerable())
+                    .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable())
+            })
+            .collect();
+        key_names = owned_keys
             .iter()
             .map(|(si, _offset)| vm.kernel_core().perm_interner().lookup(*si).unwrap_or("").to_string())
             .collect();
     }
-
+    // keys
     let n = key_names.len();
     let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let arr = vm.alloc_object(JsObject::new_array(
@@ -202,10 +227,33 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
         ));
     }
 
+    let existing_pos = {
+        let obj = unsafe { &*obj_ptr };
+        vm.get_own_property_slot(obj, si)
+    };
+    let existing_meta = existing_pos.and_then(|pos| {
+        let obj = unsafe { &*obj_ptr };
+        obj.prop_meta_at(pos)
+    });
+    let existing_value = existing_pos.map_or(JsValue::undefined(), |pos| {
+        let obj = unsafe { &*obj_ptr };
+        obj.get_prop_at(pos)
+    });
+
     let obj = unsafe { &mut *obj_ptr };
     if has_accessor {
-        let get = get_field.unwrap_or(JsValue::undefined());
-        let set = set_field.unwrap_or(JsValue::undefined());
+        let get = get_field.unwrap_or_else(|| {
+            existing_meta
+                .filter(|m| m.is_accessor)
+                .map(|m| m.get)
+                .unwrap_or(JsValue::undefined())
+        });
+        let set = set_field.unwrap_or_else(|| {
+            existing_meta
+                .filter(|m| m.is_accessor)
+                .map(|m| m.set)
+                .unwrap_or(JsValue::undefined())
+        });
         if (!get.is_undefined() && !is_callable(get)) || (!set.is_undefined() && !is_callable(set)) {
             return NativeResult::Err(crate::error::create_type_error(
                 vm,
@@ -218,14 +266,45 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
         {
             return NativeResult::Err(crate::error::create_type_error(vm, "Cannot define property"));
         }
-    } else {
-        let value = value_field.unwrap_or(JsValue::undefined());
-        let writable = writable_field.map(oxide_runtime_api::to_boolean).unwrap_or(false);
+    } else if has_data {
+        let value = if existing_pos.is_some() {
+            value_field.unwrap_or(existing_value)
+        } else {
+            value_field.unwrap_or(JsValue::undefined())
+        };
+        let writable = if existing_pos.is_some() {
+            writable_field
+                .map(oxide_runtime_api::to_boolean)
+                .unwrap_or_else(|| existing_meta.map(|m| m.attributes.writable()).unwrap_or(false))
+        } else {
+            writable_field.map(oxide_runtime_api::to_boolean).unwrap_or(false)
+        };
         if vm
             .define_data_property(obj, si, value, PropAttributes::new(writable, enumerable, configurable))
             .is_err()
         {
             return NativeResult::Err(crate::error::create_type_error(vm, "Cannot define property"));
+        }
+    } else {
+        if existing_pos.is_none() {
+            return NativeResult::Err(crate::error::create_type_error(
+                vm,
+                "Cannot define new property without value or accessor",
+            ));
+        }
+        let is_accessor = existing_meta.map(|m| m.is_accessor).unwrap_or(false);
+        let writable = existing_meta.map(|m| m.attributes.writable()).unwrap_or(true);
+        let attrs = PropAttributes::new(writable, enumerable, configurable);
+        if is_accessor {
+            let get = existing_meta.map(|m| m.get).unwrap_or(JsValue::undefined());
+            let set = existing_meta.map(|m| m.set).unwrap_or(JsValue::undefined());
+            if vm.define_accessor_property(obj, si, get, set, attrs).is_err() {
+                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot define property"));
+            }
+        } else {
+            if vm.define_data_property(obj, si, existing_value, attrs).is_err() {
+                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot define property"));
+            }
         }
     }
     NativeResult::Ok(obj_val)
@@ -666,7 +745,15 @@ pub fn object_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj_ptr = native_try!(require_obj_arg(vm, args, "entries"));
     let obj = unsafe { &*obj_ptr };
     let keys = walk_own_keys(vm, obj);
-    let n = keys.len();
+    let owned_keys: Vec<(u32, u32)> = keys
+        .into_iter()
+        .filter(|(_si, offset)| {
+            obj.prop_meta_at(*offset)
+                .map(|m| m.attributes.enumerable())
+                .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable())
+        })
+        .collect();
+    let n = owned_keys.len();
     let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let arr = vm.alloc_object(JsObject::new_array(
         EMPTY_SHAPE_ID,
@@ -674,7 +761,7 @@ pub fn object_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         n,
         vm.epoch().bump(),
     ));
-    for (i, (si, offset)) in keys.iter().enumerate() {
+    for (i, (si, offset)) in owned_keys.iter().enumerate() {
         let key_str = vm.kernel_core().perm_interner().lookup(*si).unwrap_or_default();
         let key_val = vm.new_string(key_str);
         let val = obj.get_prop_at(*offset);
@@ -701,7 +788,15 @@ pub fn object_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj_ptr = native_try!(require_obj_arg(vm, args, "values"));
     let obj = unsafe { &*obj_ptr };
     let keys = walk_own_keys(vm, obj);
-    let n = keys.len();
+    let owned_keys: Vec<(u32, u32)> = keys
+        .into_iter()
+        .filter(|(_si, offset)| {
+            obj.prop_meta_at(*offset)
+                .map(|m| m.attributes.enumerable())
+                .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable())
+        })
+        .collect();
+    let n = owned_keys.len();
     let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let arr = vm.alloc_object(JsObject::new_array(
         EMPTY_SHAPE_ID,
@@ -709,7 +804,7 @@ pub fn object_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         n,
         vm.epoch().bump(),
     ));
-    for (i, (_si, offset)) in keys.iter().enumerate() {
+    for (i, (_si, offset)) in owned_keys.iter().enumerate() {
         let val = obj.get_prop_at(*offset);
         unsafe {
             (*arr).set_prop_at(i, val);
