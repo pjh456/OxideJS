@@ -345,3 +345,40 @@ fn date_set_utc_invalid_returns_nan() {
     let r = eval(&mut vm, "new Date(NaN).setUTCFullYear(2025)").unwrap();
     assert!(r.as_double().is_nan());
 }
+
+// setYear with no argument must not index a missing argument register (previously panicked);
+// a missing / NaN year sets the date value to NaN and returns NaN (B.2.4.2).
+#[test]
+fn date_set_year_no_arg_returns_nan() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "var d = new Date(0); d.setYear()").unwrap();
+    assert!(r.as_double().is_nan());
+}
+
+#[test]
+fn date_set_year_no_arg_sets_value_nan() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "var d = new Date(0); d.setYear(); d.valueOf()").unwrap();
+    assert!(r.as_double().is_nan());
+}
+
+#[test]
+fn date_set_year_nan_from_string() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "var d = new Date(0); d.setYear('not a number')").unwrap();
+    assert!(r.as_double().is_nan());
+}
+
+#[test]
+fn date_set_year_two_digit_maps_to_1900s() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "var d = new Date(0); d.setYear(95); d.getFullYear()").unwrap();
+    assert_eq!(r.as_double() as i64, 1995);
+}
+
+#[test]
+fn date_set_year_four_digit_kept() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "var d = new Date(0); d.setYear(2020); d.getFullYear()").unwrap();
+    assert_eq!(r.as_double() as i64, 2020);
+}
