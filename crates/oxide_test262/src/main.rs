@@ -401,6 +401,13 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
         "well-formed-json-stringify",
         "symbols-as-weakmap-keys",
         "class-accessors-private",
+        // ES2023/ES2024 新 API (尚未实现)
+        "array-grouping",
+        "change-array-by-copy",
+        "resizable-arraybuffer",
+        "promise-with-resolvers",
+        "set-methods",
+        "RegExp.escape",
     ];
 
     for feat in &meta.features {
