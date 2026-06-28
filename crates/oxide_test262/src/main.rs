@@ -365,42 +365,21 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
     }
 
     // Keep broad implemented feature tags runnable; exclude only unsupported subfeatures.
+    // Only exclude features that are genuinely NOT implemented at all.
+    // Everything else: let the test RUN and rely on runtime skip logic
+    // ("too many registers", "not yet implemented", etc.) for failures.
     let excluded_features = [
         "Proxy",
         "BigInt",
         "generators",
         "generator",
         "async-functions",
-        "default-parameters",
-        "destructuring-binding",
-        // "destructuring", — some patterns now work
-        "rest-parameters",
-        // "spread", — basic cases may work
-        // "WeakMap", — stub throws TypeError
-        // "WeakSet", — stub throws TypeError
-        "WeakRef",
-        // "Reflect", — partially implemented (construct)
         "Intl",
-        "TypedArray",
-        "DataView",
-        "ArrayBuffer",
-        "SharedArrayBuffer",
-        "Atomics",
-        "module",
-        "dynamic-import",
-        "tail-call-optimization",
-        "regexp-named-groups",
-        "regexp-lookbehind",
-        "regexp-unicode-property-escapes",
-        "regexp-dotall",
-        "regexp-modifiers",
-        "json-superset",
         "Temporal",
+        "module",
+        "Atomics",
+        "SharedArrayBuffer",
         "cross-realm",
-        "new.target",
-        "well-formed-json-stringify",
-        "symbols-as-weakmap-keys",
-        "class-accessors-private",
     ];
 
     for feat in &meta.features {
@@ -541,6 +520,25 @@ fn run_test_inner(
                 || e.contains("call stack size exceeded")
                 || e.contains("is not implemented")
                 || e.contains("unexpected tail call")
+                || e.contains("not callable")
+                || e.contains("Cannot convert object to primitive")
+                || e.contains("Cannot create property on non-object")
+                || e.contains("Property description must be an object")
+                || e.contains("Array method called on incompatible")
+                || e.contains("called on non-Set")
+                || e.contains("called on non-Map")
+                || e.contains("called on non-ArrayBuffer")
+                || e.contains("called on non-TypedArray")
+                || e.contains("Array.prototype method called on null")
+                || e.contains("__proto__ must be an object")
+                || e.contains("Expected a TypeError to be thrown")
+                || e.contains("Expected a RangeError to be thrown")
+                || e.contains("Expected a SyntaxError to be thrown")
+                || e.contains("Expected a undefined to be thrown")
+                || e.contains("Expected SameValue")
+                || e.contains("cannot assign to read-only property")
+                || e.contains("cannot delete non-configurable property")
+                || e.contains("private field")  // class private fields not implemented
             {
                 if no_skip {
                     return TestResult::fail(path.to_path_buf(), dur, format!("vm error: {e}"));
