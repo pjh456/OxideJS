@@ -248,10 +248,14 @@ fn make_pair(
     ctor.set_function(true);
 
     // Pre-allocate slots: proto[0]="constructor", ctor[0]="prototype", ctor[1]="name"
-    proto.ensure_hash_props().push(JsValue::undefined()); // placeholder, set by wire_ctor_proto
-    ctor.ensure_hash_props().push(JsValue::undefined()); // placeholder, set by wire_ctor_proto
-    // Set the actual name value immediately (vec[1])
+    proto.ensure_hash_props().push(JsValue::undefined()); // placeholder
+    ctor.ensure_hash_props().push(JsValue::undefined()); // placeholder for "prototype"
+    // Set the actual name value immediately (ctor vec[1])
     ctor.ensure_hash_props().push(JsValue::perm_string(string_forge.string_ptr(name_si)));
+    // Set attribute metadata: .prototype (ctor[0]) = writable:false, enumerable:false, configurable:false
+    ctor.set_data_meta(0u32, oxide_types::object::PropAttributes::new(false, false, false));
+    // .name (ctor[1]) = writable:false, enumerable:false, configurable:true
+    ctor.set_data_meta(1u32, oxide_types::object::PropAttributes::new(false, false, true));
 
     (P::new(proto), P::new(ctor))
 }
@@ -1149,18 +1153,23 @@ impl BuiltinWorld {
         // callers, all of which use fn-item expressions).
         wrapper.set_native_fn(Some(native_fn_ptr));
         wrapper.set_native_arg_count(arg_count);
-        // 设置 .length (ES spec: Function.length = formal parameter count, excluding rest/default)
+        // 设置 .length (ES spec: Function.length = formal parameter count,
+        // {[[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true})
         let si_length = string_forge.intern("length").0;
         let length_shape = shape_forge.make_shape(wrapper.shape_id(), si_length);
         wrapper.set_shape_id(length_shape);
         wrapper.ensure_hash_props().push(JsValue::int(arg_count as i32));
-        // 设置 .name
+        let length_pos = wrapper.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+        wrapper.set_data_meta(length_pos, oxide_types::object::PropAttributes::new(false, false, true));
+        // 设置 .name ({[[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true})
         let si_name = string_forge.intern("name").0;
         let name_shape = shape_forge.make_shape(wrapper.shape_id(), si_name);
         wrapper.set_shape_id(name_shape);
         wrapper
             .ensure_hash_props()
             .push(JsValue::perm_string(string_forge.string_ptr(si)));
+        let name_pos = wrapper.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+        wrapper.set_data_meta(name_pos, oxide_types::object::PropAttributes::new(false, false, true));
         let wrapper_val = JsValue::from_js_object(Box::into_raw(wrapper));
         let new_shape = shape_forge.make_shape(proto.shape_id(), si);
         proto.set_shape_id(new_shape);
