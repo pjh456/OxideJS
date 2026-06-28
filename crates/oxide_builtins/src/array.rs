@@ -21,8 +21,14 @@ macro_rules! array_ptr {
 
 macro_rules! array_ptr_len {
     ($vm:expr, $args:expr) => {{
-        let arr_ptr = array_ptr!($vm, $args);
-        let len = unsafe { (*arr_ptr).prop_count() } as usize;
+        let this_val = $vm.reg($args[0]);
+        let (arr_ptr, len, _is_arr) = match get_this_arraylike($vm, this_val) {
+            Ok(v) => v,
+            Err(err) => {
+                builtins_error!("Array method: invalid receiver");
+                return NativeResult::Err(err);
+            }
+        };
         (arr_ptr, len)
     }};
 }
