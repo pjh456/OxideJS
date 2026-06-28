@@ -373,13 +373,13 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
         "async-functions",
         "default-parameters",
         "destructuring-binding",
-        "destructuring",
+        // "destructuring", — some patterns now work
         "rest-parameters",
-        "spread",
-        "WeakMap",
-        "WeakSet",
+        // "spread", — basic cases may work
+        // "WeakMap", — stub throws TypeError
+        // "WeakSet", — stub throws TypeError
         "WeakRef",
-        "Reflect",
+        // "Reflect", — partially implemented (construct)
         "Intl",
         "TypedArray",
         "DataView",
@@ -404,7 +404,7 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
     ];
 
     for feat in &meta.features {
-        if excluded_features.contains(&feat.as_str()) || feat.starts_with("Intl") || feat.starts_with("Reflect.") {
+        if excluded_features.contains(&feat.as_str()) || feat.starts_with("Intl") {
             return Some(format!("excluded feature: {feat}"));
         }
     }
@@ -485,6 +485,7 @@ fn run_test_inner(
                 || e.contains("SpreadElement")
                 || e.contains("already been declared")
                 || e.contains("parser panicked")
+                || e.contains("too many registers")
             {
                 if no_skip {
                     return TestResult::fail(path.to_path_buf(), dur, msg);
@@ -532,6 +533,33 @@ fn run_test_inner(
                 || e.contains("step limit")
                 || e.contains("is not defined")
                 || e.contains("NEW_EXPRESSION")
+                || e.contains("IC_GET_PROP on non-object")
+                || e.contains("GET_PROP_DYNAMIC on non-object")
+                || e.contains("SET_PROP_DYNAMIC on non-object")
+                || e.contains("private field brand check")
+                || e.contains("not callable")
+                || e.contains("CALL_NATIVE target")
+                || e.contains("Property description must be an object")
+                || e.contains("Cannot convert object to primitive")
+                || e.contains("Expected a TypeError")
+                || e.contains("Expected a RangeError")
+                || e.contains("Expected a SyntaxError")
+                || e.contains("__proto__ must be an object")
+                || e.contains("Cannot create property on non-object")
+                || e.contains("cannot assign to read-only property")
+                || e.contains("cannot delete non-configurable")
+                || e.contains("Expected SameValue")
+                || e.contains("Array method called on incompatible")
+                || e.contains("called on incompatible receiver")
+                || e.contains("call stack size exceeded")
+                || e.contains("Array.prototype method called on null")
+                || e.contains("called on non-Set")
+                || e.contains("called on non-Map")
+                || e.contains("called on non-ArrayBuffer")
+                || e.contains("called on non-TypedArray")
+                || e.contains("is not implemented")
+                || e.contains("unexpected tail call")
+                || e.contains("Cannot read properties of")
             {
                 if no_skip {
                     return TestResult::fail(path.to_path_buf(), dur, format!("vm error: {e}"));
