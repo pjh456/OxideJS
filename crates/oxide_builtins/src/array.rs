@@ -237,27 +237,25 @@ pub fn array_pop<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
 pub fn array_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.slice called with {} args", args.len());
-    let arr_ptr = array_ptr!(vm, args);
-    let arr = unsafe { &*arr_ptr };
-    let n = arr.prop_count() as isize;
+    let this_val = vm.reg(args[0]);
+    let (arr_ptr, n, is_array) = match get_this_arraylike(vm, this_val) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
+    let n_isize = n as isize;
     let rel_start = if args.len() > 1 {
         oxide_runtime_api::to_integer_or_infinity(vm.reg(args[1])) as isize
-    } else {
-        0
-    };
+    } else { 0 };
     let rel_end = if args.len() > 2 {
         oxide_runtime_api::to_integer_or_infinity(vm.reg(args[2])) as isize
-    } else {
-        n
-    };
-    let start = if rel_start < 0 { (n + rel_start).max(0) } else { rel_start.min(n) } as usize;
-    let end = if rel_end < 0 { (n + rel_end).max(0) } else { rel_end.min(n) } as usize;
+    } else { n_isize };
+    let start = if rel_start < 0 { (n_isize + rel_start).max(0) } else { rel_start.min(n_isize) } as usize;
+    let end = if rel_end < 0 { (n_isize + rel_end).max(0) } else { rel_end.min(n_isize) } as usize;
     let count = end.saturating_sub(start);
-
     let new_arr = create_new_array(vm, count);
     unsafe {
         for i in 0..count {
-            (*new_arr).set_prop_at(i, arr.get_prop_at(start + i));
+            (*new_arr).set_prop_at(i, arraylike_get(vm, arr_ptr, is_array, start + i));
         }
         (*new_arr).set_prop_count(count);
     }
@@ -329,12 +327,14 @@ pub fn array_splice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
 pub fn array_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.concat called with {} args", args.len());
-    let arr_ptr = array_ptr!(vm, args);
-    let arr = unsafe { &*arr_ptr };
-    let n = arr.prop_count() as usize;
+    let this_val = vm.reg(args[0]);
+    let (arr_ptr, n, is_array) = match get_this_arraylike(vm, this_val) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
     let mut all: Vec<JsValue> = Vec::new();
     for i in 0..n {
-        all.push(arr.get_prop_at(i));
+        all.push(arraylike_get(vm, arr_ptr, is_array, i));
     }
     for &arg_reg in args.iter().skip(1) {
         let val = vm.reg(arg_reg);
@@ -342,8 +342,9 @@ pub fn array_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             let o_ptr = val.as_js_object_ptr();
             if !o_ptr.is_null() {
                 let o = unsafe { &*o_ptr };
-                if o.is_array() {
-                    let on = o.prop_count() as usize;
+                let on = o.prop_count() as usize;
+                // spread array elements if it's a real array
+                if o.is_array() && on > 0 {
                     for i in 0..on {
                         all.push(o.get_prop_at(i));
                     }
@@ -365,9 +366,11 @@ pub fn array_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
 pub fn array_join<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.join called with {} args", args.len());
-    let arr_ptr = array_ptr!(vm, args);
-    let arr = unsafe { &*arr_ptr };
-    let n = arr.prop_count() as usize;
+    let this_val = vm.reg(args[0]);
+    let (arr_ptr, n, is_array) = match get_this_arraylike(vm, this_val) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
     let sep = if args.len() > 1 {
         oxide_runtime_api::to_string(vm.reg(args[1]))
     } else {
@@ -375,7 +378,7 @@ pub fn array_join<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     let parts: Vec<String> = (0..n)
         .map(|i| {
-            let v = arr.get_prop_at(i);
+            let v = arraylike_get(vm, arr_ptr, is_array, i);
             if v.is_undefined() || v.is_null() {
                 String::new()
             } else {
@@ -384,8 +387,7 @@ pub fn array_join<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         })
         .collect();
     let joined = parts.join(&sep);
-    let result_val = vm.new_string(&joined);
-    NativeResult::Ok(result_val)
+    NativeResult::Ok(vm.new_string(&joined))
 }
 
 pub fn array_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
