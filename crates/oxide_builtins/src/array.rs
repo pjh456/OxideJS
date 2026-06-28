@@ -46,6 +46,46 @@ fn get_this_array_ref<H: VmHost>(vm: &mut H, val: JsValue) -> Result<*mut JsObje
     Ok(ptr)
 }
 
+/// 接受 array 或 ArrayLike (object with length property) — for read-only methods.
+/// 返回 (object_ptr, length, is_real_array)
+fn get_this_arraylike<H: VmHost>(vm: &mut H, val: JsValue) -> Result<(*mut JsObject, usize, bool), JsValue> {
+    if !val.is_object() {
+        return Err(array_type_error(vm, "Array.prototype method called on null or undefined"));
+    }
+    let ptr = val.as_js_object_ptr();
+    if ptr.is_null() {
+        return Err(array_type_error(vm, "Array.prototype method called on null or undefined"));
+    }
+    let obj = unsafe { &*ptr };
+    if obj.is_array() {
+        return Ok((ptr, obj.prop_count() as usize, true));
+    }
+    // 读取 length 属性
+    let length_key = vm.new_string("length");
+    let length_si = vm.property_key_si(length_key);
+    let len_val = vm.ordinary_get(unsafe { &*ptr }, length_si, val)
+        .unwrap_or(JsValue::int(0));
+    let len_num = vm.coerce_number_bounded(len_val).unwrap_or(0.0);
+    let len = if !len_num.is_finite() || len_num <= 0.0 {
+        0
+    } else {
+        (len_num as usize).min(MAX_DENSE_PROPS)
+    };
+    Ok((ptr, len, false))
+}
+
+/// 从 arraylike 读取 index 位置元素
+fn arraylike_get<H: VmHost>(vm: &mut H, ptr: *mut JsObject, is_array: bool, i: usize) -> JsValue {
+    if is_array {
+        unsafe { (*ptr).get_prop_at(i) }
+    } else {
+        let key_str = vm.new_string(&i.to_string());
+        let key_si = vm.property_key_si(key_str);
+        let recv = JsValue::from_js_object(ptr);
+        vm.ordinary_get(unsafe { &*ptr }, key_si, recv).unwrap_or(JsValue::undefined())
+    }
+}
+
 fn require_callback<H: VmHost>(vm: &mut H, callback_val: JsValue) -> Result<JsValue, JsValue> {
     if !callback_val.is_object() {
         return Err(array_type_error(vm, "callback is not a function"));
@@ -350,15 +390,32 @@ pub fn array_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
 pub fn array_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.indexOf called with {} args", args.len());
-    let arr_ptr = array_ptr!(vm, args);
-    let arr = unsafe { &*arr_ptr };
-    let n = arr.prop_count() as usize;
-    if args.len() < 2 {
+    let this_val = vm.reg(args[0]);
+    let (ptr, n, is_array) = match get_this_arraylike(vm, this_val) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
+    if n == 0 || args.len() < 2 {
         return NativeResult::Ok(JsValue::int(-1));
     }
     let target = vm.reg(args[1]);
-    for i in 0..n {
-        if oxide_runtime_api::strict_eq(arr.get_prop_at(i), target) {
+    // fromIndex
+    let from_index = if args.len() >= 3 {
+        let v = vm.reg(args[2]);
+        let f = vm.coerce_number_bounded(v).unwrap_or(0.0);
+        let f = if f.is_nan() { 0.0 } else { f.trunc() };
+        if f >= 0.0 {
+            (f as usize).min(n)
+        } else {
+            let from = n as f64 + f;
+            if from < 0.0 { 0 } else { from as usize }
+        }
+    } else {
+        0
+    };
+    for i in from_index..n {
+        let elem = arraylike_get(vm, ptr, is_array, i);
+        if oxide_runtime_api::strict_eq(elem, target) {
             return NativeResult::Ok(JsValue::int(i as i32));
         }
     }
@@ -367,27 +424,50 @@ pub fn array_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
 pub fn array_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.includes called with {} args", args.len());
-    let arr_ptr = array_ptr!(vm, args);
-    let arr = unsafe { &*arr_ptr };
-    let n = arr.prop_count() as usize;
-    if args.len() < 2 {
+    let this_val = vm.reg(args[0]);
+    let (ptr, n, is_array) = match get_this_arraylike(vm, this_val) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
+    if n == 0 {
         return NativeResult::Ok(JsValue::bool(false));
     }
-    let target = vm.reg(args[1]);
-    for i in 0..n {
-        let elem = arr.get_prop_at(i);
-        if elem.is_double() && target.is_double() {
-            let ea = elem.as_double();
-            let ta = target.as_double();
-            if ea.is_nan() && ta.is_nan() {
-                return NativeResult::Ok(JsValue::bool(true));
-            }
+    let target = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let from_index = if args.len() >= 3 {
+        let v = vm.reg(args[2]);
+        let f = vm.coerce_number_bounded(v).unwrap_or(0.0);
+        let f = if f.is_nan() { 0.0 } else { f.trunc() };
+        if f >= 0.0 {
+            (f as usize).min(n)
+        } else {
+            let from = n as f64 + f;
+            if from < 0.0 { 0 } else { from as usize }
         }
-        if oxide_runtime_api::strict_equality(elem, target) {
+    } else {
+        0
+    };
+    for i in from_index..n {
+        let elem = arraylike_get(vm, ptr, is_array, i);
+        // SameValueZero: NaN === NaN, +0 === -0
+        if same_value_zero(elem, target) {
             return NativeResult::Ok(JsValue::bool(true));
         }
     }
     NativeResult::Ok(JsValue::bool(false))
+}
+
+/// SameValueZero (ES2015 7.2.10): NaN === NaN, +0 === -0
+fn same_value_zero(a: JsValue, b: JsValue) -> bool {
+    // 都是数字时特殊处理
+    let a_is_num = a.is_int() || a.is_double();
+    let b_is_num = b.is_int() || b.is_double();
+    if a_is_num && b_is_num {
+        let av = if a.is_int() { a.as_int() as f64 } else { a.as_double() };
+        let bv = if b.is_int() { b.as_int() as f64 } else { b.as_double() };
+        if av.is_nan() && bv.is_nan() { return true; }
+        return av == bv; // +0 == -0 in Rust f64
+    }
+    oxide_runtime_api::strict_equality(a, b)
 }
 
 pub fn array_reverse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -911,13 +991,36 @@ pub fn array_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
 pub fn array_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.lastIndexOf called with {} args", args.len());
-    let arr_ptr = array_ptr!(vm, args);
-    let arr = unsafe { &*arr_ptr };
-    let len = arr.prop_count() as i32;
+    let this_val = vm.reg(args[0]);
+    let (ptr, n, is_array) = match get_this_arraylike(vm, this_val) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
+    if n == 0 {
+        return NativeResult::Ok(JsValue::int(-1));
+    }
     let search = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    for i in (0..len).rev() {
-        if oxide_runtime_api::strict_eq(arr.get_prop_at(i), search) {
-            return NativeResult::Ok(JsValue::int(i));
+    // fromIndex (default: n-1)
+    let from_index_isize: isize = if args.len() >= 3 {
+        let v = vm.reg(args[2]);
+        let f = vm.coerce_number_bounded(v).unwrap_or(0.0);
+        if f.is_nan() { return NativeResult::Ok(JsValue::int(-1)); }
+        let f = f.trunc();
+        if f >= 0.0 {
+            (f as isize).min(n as isize - 1)
+        } else {
+            n as isize + f as isize
+        }
+    } else {
+        n as isize - 1
+    };
+    if from_index_isize < 0 {
+        return NativeResult::Ok(JsValue::int(-1));
+    }
+    for i in (0..=from_index_isize as usize).rev() {
+        let elem = arraylike_get(vm, ptr, is_array, i);
+        if oxide_runtime_api::strict_eq(elem, search) {
+            return NativeResult::Ok(JsValue::int(i as i32));
         }
     }
     NativeResult::Ok(JsValue::int(-1))
