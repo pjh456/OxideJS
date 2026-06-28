@@ -154,7 +154,7 @@ def bench_test262_qjs():
     """QuickJS test262 成绩 — 直接使用录入值"""
     rate = 94.5
     return {"pass": 0, "fail": 0, "skip": 0, "total": 0, "elapsed_sec": 0,
-            "rate": rate, "note": "QuickJS 录入值}, {}
+            "rate": rate, "note": "QuickJS 录入值"}, {}
 
 def _dead_code_unused_qjs_runner():
     pass
