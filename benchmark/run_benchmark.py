@@ -76,21 +76,26 @@ def bench_timing():
     ]
 
     ITER = 200
+    has_qjs = QUICKJS_EXE.exists()
     results = []
     for name, js in tests:
         ox = []; qj = []
         for _ in range(ITER):
             rc, _, _, t = oxide_script(js, timeout=10)
             if rc == 0: ox.append(t * 1000)
-        for _ in range(ITER):
-            rc, _, _, t = qjs_script(js, timeout=10)
-            if rc == 0: qj.append(t * 1000)
+        if has_qjs:
+            for _ in range(ITER):
+                rc, _, _, t = qjs_script(js, timeout=10)
+                if rc == 0: qj.append(t * 1000)
 
         ox_avg = sum(ox)/len(ox) if ox else float('inf')
         qj_avg = sum(qj)/len(qj) if qj else float('inf')
-        ratio = ox_avg/qj_avg if qj_avg else float('inf')
+        ratio = ox_avg/qj_avg if qj_avg and qj_avg != float('inf') else float('inf')
         results.append({"name": name, "ox_ms": round(ox_avg, 3), "qjs_ms": round(qj_avg, 3), "ratio": round(ratio, 1)})
-        print(f"  {name:12s}  Oxide {ox_avg:.3f}ms  QuickJS {qj_avg:.3f}ms  {ratio:.1f}x")
+        if has_qjs:
+            print(f"  {name:12s}  Oxide {ox_avg:.3f}ms  QuickJS {qj_avg:.3f}ms  {ratio:.1f}x")
+        else:
+            print(f"  {name:12s}  Oxide {ox_avg:.3f}ms  QuickJS   N/A")
     return results
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -103,15 +108,21 @@ def bench_stress():
     if not STRESS_DIR.exists():
         print("  [SKIP] tests/stress/ 不存在")
         return []
+    has_qjs = QUICKJS_EXE.exists()
     results = []
     for f in sorted(STRESS_DIR.glob("*.js")):
         name = f.stem
         _, _, _, t1 = run([str(OXIDE_EXE), "run", str(f)], timeout=30)
-        _, _, _, t2 = run([str(QUICKJS_EXE), str(f)], timeout=30) if QUICKJS_EXE.exists() else (-1, "", "", 0)
-        ox = t1 * 1000; qj = t2 * 1000
-        ratio = ox/qj if qj else float('inf')
-        results.append({"test": name, "ox_ms": round(ox, 3), "qjs_ms": round(qj, 3), "ratio": round(ratio, 1)})
-        print(f"  {name:15s}  Oxide {ox:.1f}ms  QuickJS {qj:.1f}ms  {ratio:.1f}x")
+        ox = t1 * 1000
+        if has_qjs:
+            _, _, _, t2 = run([str(QUICKJS_EXE), str(f)], timeout=30)
+            qj = t2 * 1000
+            ratio = ox/qj if qj else float('inf')
+            results.append({"test": name, "ox_ms": round(ox, 3), "qjs_ms": round(qj, 3), "ratio": round(ratio, 1)})
+            print(f"  {name:15s}  Oxide {ox:.1f}ms  QuickJS {qj:.1f}ms  {ratio:.1f}x")
+        else:
+            results.append({"test": name, "ox_ms": round(ox, 3), "qjs_ms": 0, "ratio": 0})
+            print(f"  {name:15s}  Oxide {ox:.1f}ms  QuickJS   N/A")
     return results
 
 # ═══════════════════════════════════════════════════════════════════════
