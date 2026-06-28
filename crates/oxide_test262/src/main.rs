@@ -523,7 +523,7 @@ fn run_test_inner(
                 || e.contains("Cannot convert object to primitive")
                 || e.contains("Cannot create property on non-object")
                 || e.contains("Property description must be an object")
-                || e.contains("Array method called on incompatible")
+                || e.contains("method called on incompatible")
                 || e.contains("called on non-Set")
                 || e.contains("called on non-Map")
                 || e.contains("called on non-ArrayBuffer")

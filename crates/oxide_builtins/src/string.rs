@@ -580,54 +580,47 @@ pub fn string_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if is_regexp_obj(pattern_val, vm) {
         let re_ptr = pattern_val.as_js_object_ptr();
         let re = unsafe { &*re_ptr };
-        let fn_ptr = match re.native_fn() {
-            Some(p) => p,
-            None => return NativeResult::Ok(vm.new_string(&s)),
-        };
-        let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
+        if let Some(fn_ptr) = re.native_fn() {
+            let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
 
-        if args.len() > 2 {
-            let replacer_val = vm.reg(args[2]);
-            if replacer_val.is_object() {
-                let o = unsafe { &*replacer_val.as_js_object_ptr() };
-                if o.is_function() {
-                    builtins_debug!("string_replace: function replacer path");
-                    if let Some(captures) = regex.captures(&s) {
-                        let full = captures.get(0).unwrap();
-                        let mut cb_args: Vec<JsValue> = Vec::with_capacity(captures.len() + 2);
-                        cb_args.push(vm.new_string(full.as_str()));
-                        for i in 1..captures.len() {
-                            cb_args.push(vm.new_string(captures.get(i).map(|m| m.as_str()).unwrap_or("")));
-                        }
-                        cb_args.push(JsValue::int(full.start() as i32));
-                        cb_args.push(vm.new_string(&s));
-                        match vm.call_function_sync(replacer_val, JsValue::undefined(), &cb_args) {
-                            Ok(result) => {
-                                let result_str = oxide_runtime_api::to_string(result);
-                                let output = format!("{}{}{}", &s[..full.start()], &result_str, &s[full.end()..]);
-                                return NativeResult::Ok(vm.new_string(&output));
+            if args.len() > 2 {
+                let replacer_val = vm.reg(args[2]);
+                if replacer_val.is_object() {
+                    let o = unsafe { &*replacer_val.as_js_object_ptr() };
+                    if o.is_function() {
+                        if let Some(captures) = regex.captures(&s) {
+                            let full = captures.get(0).unwrap();
+                            let mut cb_args: Vec<JsValue> = Vec::with_capacity(captures.len() + 2);
+                            cb_args.push(vm.new_string(full.as_str()));
+                            for i in 1..captures.len() {
+                                cb_args.push(vm.new_string(captures.get(i).map(|m| m.as_str()).unwrap_or("")));
                             }
-                            Err(err) => {
-                                return NativeResult::Err(crate::error::create_type_error(
-                                    vm,
-                                    &format!("replace replacer: {}", err),
-                                ));
+                            cb_args.push(JsValue::int(full.start() as i32));
+                            cb_args.push(vm.new_string(&s));
+                            match vm.call_function_sync(replacer_val, JsValue::undefined(), &cb_args) {
+                                Ok(result) => {
+                                    let result_str = oxide_runtime_api::to_string(result);
+                                    let output = format!("{}{}{}", &s[..full.start()], &result_str, &s[full.end()..]);
+                                    return NativeResult::Ok(vm.new_string(&output));
+                                }
+                                Err(err) => return NativeResult::Err(crate::error::create_type_error(vm, &format!("replace replacer: {}", err))),
                             }
                         }
+                        return NativeResult::Ok(vm.new_string(&s));
                     }
-                    return NativeResult::Ok(vm.new_string(&s));
                 }
             }
-        }
 
-        let replacement = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { String::new() };
-        let is_global = re.hash_props_vec().and_then(|v| v.get(3)).map(|v| v.as_bool()).unwrap_or(false);
-        let result = if is_global {
-            regex.replace_all(&s, replacement.as_str()).to_string()
-        } else {
-            regex.replacen(&s, 1, replacement.as_str()).to_string()
-        };
-        return NativeResult::Ok(vm.new_string(&result));
+            let replacement = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { String::new() };
+            let is_global = re.hash_props_vec().and_then(|v| v.get(3)).map(|v| v.as_bool()).unwrap_or(false);
+            let result = if is_global {
+                regex.replace_all(&s, replacement.as_str()).to_string()
+            } else {
+                regex.replacen(&s, 1, replacement.as_str()).to_string()
+            };
+            return NativeResult::Ok(vm.new_string(&result));
+        }
+        // Fall back to string path for regex-like objects without native engine regex
     }
 
     let replacement = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { String::new() };
