@@ -76,8 +76,15 @@ build_quickjs() {
         return 0
     fi
     info "编译 QuickJS..."
-    make -j"$(nproc 2>/dev/null || echo 4)" all 2>&1 | grep -E "error|CC |LD " || true
-    cp qjs run-test262 build/ 2>/dev/null || true
+    if make -j"$(nproc 2>/dev/null || echo 4)" all 2>&1; then
+        info "QuickJS 编译成功"
+    else
+        err "QuickJS 编译失败 (rc=$?)"
+        cd "$SCRIPT_DIR"
+        return 1
+    fi
+    # QuickJS Makefile 将二进制输出到源根目录，拷贝到 build/ 备用
+    cp -f qjs run-test262 build/ 2>/dev/null || true
     cd "$SCRIPT_DIR"
     info "QuickJS 完成"
 }
