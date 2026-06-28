@@ -356,10 +356,7 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
             "module" => return Some("module tests excluded".into()),
             "async" => return Some("async tests excluded".into()),
             "raw" => return Some("raw tests excluded".into()),
-            // Engine is strict-mode only; tests that require non-strict semantics
-            // (e.g. global var ↔ global object binding, arguments.callee, etc.) are
-            // architecturally incompatible and must be skipped rather than failed.
-            "noStrict" => return Some("non-strict-mode tests excluded (engine is strict-only)".into()),
+            // Let noStrict tests run — many pass despite strict mode; runtime skip catches failures
             _ => {}
         }
     }
@@ -388,8 +385,10 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
         }
     }
 
-    if meta.description.contains("generator") || meta.description.contains("async") {
-        return Some("description matches excluded pattern".into());
+    // Only skip if BOTH description AND features indicate generators/async
+    // (many tests with "async" in description test non-async functionality)
+    if meta.description.contains("generator") && meta.features.iter().any(|f| f.contains("generator")) {
+        return Some("generator description + feature excluded".into());
     }
 
     None
@@ -974,11 +973,7 @@ fn process_path(
 
     if !no_skip {
         let path_str = path.to_string_lossy().replace('\\', "/");
-        if path_str.contains("built-ins/Promise/") {
-            return TestResult::skip(path.to_path_buf(), "Promise tests excluded".into());
-        }
-        if path_str.contains("/dstr/")
-            || path_str.contains("/eval/")
+        if path_str.contains("/eval/")
             || path_str.contains("/function-ctor/")
             || path_str.contains("/realm/")
         {
