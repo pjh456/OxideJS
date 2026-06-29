@@ -76,6 +76,7 @@ build_quickjs() {
         return 0
     fi
     info "编译 QuickJS..."
+    make clean 2>&1 | tail -1  # 清理跨平台残留 .obj，避免 PE/ELF 混用
     if make -j"$(nproc 2>/dev/null || echo 4)" all 2>&1; then
         info "QuickJS 编译成功"
     else
