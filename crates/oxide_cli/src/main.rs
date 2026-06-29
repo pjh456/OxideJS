@@ -42,6 +42,8 @@ enum Commands {
     },
     Run {
         file: String,
+        #[arg(long, default_value = "1")]
+        repeat: u64,
     },
     Compile {
         #[arg(short = 'e')]
@@ -78,10 +80,19 @@ fn main() -> ExitCode {
             let pool = make_pool(&kernel);
             eval(&code, &kernel, &pool)
         }
-        Some(Commands::Run { file }) => {
+        Some(Commands::Run { file, repeat }) => {
             let kernel = make_kernel(cli.verbose, cli.quiet);
             let pool = make_pool(&kernel);
-            run(&file, &kernel, &pool)
+            for n in 0..repeat {
+                let code = run(&file, &kernel, &pool);
+                if code != ExitCode::SUCCESS && code != ExitCode::FAILURE {
+                    return code;
+                }
+                if n + 1 < repeat {
+                    eprintln!("[oxide] iteration {}/{} done", n + 1, repeat);
+                }
+            }
+            ExitCode::SUCCESS
         }
         Some(Commands::Compile { expr, file }) => compile(expr, file),
         Some(Commands::Bench {
