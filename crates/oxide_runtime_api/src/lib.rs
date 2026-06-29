@@ -193,6 +193,54 @@ pub fn to_int32(val: JsValue) -> i32 {
     }
 }
 
+/// Append the string representation of `val` to `buf` without allocating
+/// intermediate temporary Strings. Used in hot-path string concatenation.
+pub fn push_to_string(val: JsValue, buf: &mut String) {
+    if val.is_int() {
+        use std::fmt::Write;
+        let _ = write!(buf, "{}", val.as_int());
+        return;
+    }
+    if val.is_double() {
+        let d = val.as_double();
+        if d.is_nan() {
+            buf.push_str("NaN");
+            return;
+        }
+        if d.is_infinite() {
+            buf.push_str(if d.is_sign_positive() { "Infinity" } else { "-Infinity" });
+            return;
+        }
+        if d.is_finite() && d.fract() == 0.0 {
+            use std::fmt::Write;
+            let _ = write!(buf, "{}", d as i64);
+            return;
+        }
+        let mut ryubuf = ryu::Buffer::new();
+        buf.push_str(ryubuf.format(d));
+        return;
+    }
+    if val.is_bool() {
+        buf.push_str(if val.as_bool() { "true" } else { "false" });
+        return;
+    }
+    if val.is_null() {
+        buf.push_str("null");
+        return;
+    }
+    if val.is_undefined() {
+        buf.push_str("undefined");
+        return;
+    }
+    if val.is_string() {
+        unsafe { buf.push_str(string_data(val)) };
+        return;
+    }
+    if val.is_object() {
+        buf.push_str("[object]");
+    }
+}
+
 pub fn to_string(val: JsValue) -> String {
     if val.is_int() {
         return val.as_int().to_string();

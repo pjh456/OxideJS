@@ -10,10 +10,12 @@ impl Vm {
         let lhs = self.coerce_primitive_bounded(self.regs[a], false)?;
         let rhs = self.coerce_primitive_bounded(self.regs[b], false)?;
         if lhs.is_string() || rhs.is_string() {
-            let ls = coercion::to_string(lhs);
-            let rs = coercion::to_string(rhs);
-            let concat = format!("{ls}{rs}");
-            self.regs[rd] = self.new_string(&concat);
+            let mut buf = std::mem::take(&mut self.string_buf);
+            buf.clear();
+            coercion::push_to_string(lhs, &mut buf);
+            coercion::push_to_string(rhs, &mut buf);
+            self.regs[rd] = self.new_string(&buf);
+            self.string_buf = buf;
         } else {
             let ln = coercion::to_number(lhs);
             let rn = coercion::to_number(rhs);
@@ -43,10 +45,12 @@ impl Vm {
         let lhs = self.coerce_primitive_bounded(self.regs[rd], false)?;
         let rhs = self.coerce_primitive_bounded(self.regs[a], false)?;
         if lhs.is_string() || rhs.is_string() {
-            let ls = coercion::to_string(lhs);
-            let rs = coercion::to_string(rhs);
-            let concat = format!("{ls}{rs}");
-            self.regs[rd] = self.new_string(&concat);
+            let mut buf = std::mem::take(&mut self.string_buf);
+            buf.clear();
+            coercion::push_to_string(lhs, &mut buf);
+            coercion::push_to_string(rhs, &mut buf);
+            self.regs[rd] = self.new_string(&buf);
+            self.string_buf = buf;
         } else {
             let ln = coercion::to_number(lhs);
             let rn = coercion::to_number(rhs);
