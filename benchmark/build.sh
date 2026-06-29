@@ -1,7 +1,7 @@
 #!/bin/bash
 # OxideJS Benchmark Suite — 一键构建
 # 兼容: Debian/Ubuntu, RHEL/Fedora, Arch, Alpine, openSUSE
-set -e
+set -eo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
@@ -13,23 +13,23 @@ step()  { echo -e "\n${BOLD}${CYAN}═══ $* ═══${NC}"; }
 
 # ── 包管理器检测 ─────────────────────────────────────────────────────
 detect_pm() {
-    if   command -v apt-get &>/dev/null; then echo "apt" "apt-get install -y" "apt-get update -qq"
-    elif command -v dnf     &>/dev/null; then echo "dnf" "dnf install -y" "dnf check-update 2>/dev/null || true"
-    elif command -v yum     &>/dev/null; then echo "yum" "yum install -y" "yum check-update 2>/dev/null || true"
-    elif command -v pacman  &>/dev/null; then echo "pacman" "pacman -S --noconfirm" "pacman -Sy --noconfirm"
-    elif command -v apk     &>/dev/null; then echo "apk" "apk add --no-cache" "apk update"
-    elif command -v zypper  &>/dev/null; then echo "zypper" "zypper install -y" "zypper refresh"
-    else echo "unknown" "" ""
+    if   command -v apt-get &>/dev/null; then echo "apt|apt-get install -y|apt-get update -qq"
+    elif command -v dnf     &>/dev/null; then echo "dnf|dnf install -y|dnf check-update 2>/dev/null || true"
+    elif command -v yum     &>/dev/null; then echo "yum|yum install -y|yum check-update 2>/dev/null || true"
+    elif command -v pacman  &>/dev/null; then echo "pacman|pacman -S --noconfirm|pacman -Sy --noconfirm"
+    elif command -v apk     &>/dev/null; then echo "apk|apk add --no-cache|apk update"
+    elif command -v zypper  &>/dev/null; then echo "zypper|zypper install -y|zypper refresh"
+    else echo "unknown||"
     fi
 }
 
 map_pkgs() {
     case "$1" in
-        apt)    echo "gcc make git python3 python3-pip curl pkg-config cmake";;
-        dnf|yum) echo "gcc make git python3 python3-pip curl pkgconfig cmake";;
-        pacman) echo "gcc make git python python-pip curl pkgconf cmake";;
-        apk)    echo "gcc make git python3 py3-pip curl pkgconfig cmake";;
-        zypper) echo "gcc make git python3 python3-pip curl pkg-config cmake";;
+        apt)    echo "gcc make git python3 python3-pip curl pkg-config cmake nodejs";;
+        dnf|yum) echo "gcc make git python3 python3-pip curl pkgconfig cmake nodejs";;
+        pacman) echo "gcc make git python python-pip curl pkgconf cmake nodejs";;
+        apk)    echo "gcc make git python3 py3-pip curl pkgconfig cmake nodejs";;
+        zypper) echo "gcc make git python3 python3-pip curl pkg-config cmake nodejs";;
         *)      echo "gcc make git python3 curl";;
     esac
 }
@@ -103,10 +103,10 @@ build_quickjs() {
 
 # ── BOA ──────────────────────────────────────────────────────────────────
 build_boa() {
-    step "BOA (baseline v0.21)"
-    local boa_dir="$REPO_ROOT/baseline-boa"
+    step "BOA (dev)"
+    local boa_dir="$REPO_ROOT/boa"
     if [ ! -d "$boa_dir" ]; then
-        warn "baseline-boa/ 不存在，跳过"
+        warn "boa/ 不存在，跳过"
         return 0
     fi
     if [ -f "$boa_dir/target/release/boa" ]; then
@@ -188,7 +188,7 @@ echo -e "${BOLD}${CYAN}╚══════════════════
 step "检测环境"
 echo "  OS: $(uname -a 2>/dev/null | cut -d' ' -f1-3)"
 echo "  CPU: $(nproc 2>/dev/null || echo '?') cores"
-read pm icmd ucmd <<< $(detect_pm)
+IFS='|' read pm icmd ucmd <<< $(detect_pm)
 info "包管理器: $pm"
 
 install_deps "$pm" "$icmd" "$ucmd" $(map_pkgs "$pm")

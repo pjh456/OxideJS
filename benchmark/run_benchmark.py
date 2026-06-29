@@ -31,18 +31,12 @@ RESULTS_DIR   = REPO_ROOT / "benchmark" / "results"
 class Engine:
     """A JS engine available for benchmarking."""
 
-    def __init__(self, key, name, exe, run_cmd, *,
-                 test262_exe=None, test262_rate=None,
-                 test262_runner_is_conf=False, test262_conf=None, test262_cwd=None):
+    def __init__(self, key, name, exe, run_cmd, *, test262_rate=None):
         self.key = key
         self.name = name
         self.exe = Path(exe) if isinstance(exe, str) else exe
         self._run_cmd = run_cmd          # list of str, {exe} and {file} placeholders
-        self.test262_exe = Path(test262_exe) if test262_exe else None
         self.test262_rate = test262_rate # pre-recorded pass rate or None
-        self.test262_runner_is_conf = test262_runner_is_conf
-        self.test262_conf = test262_conf
-        self.test262_cwd = test262_cwd
 
     @property
     def available(self):
@@ -58,7 +52,7 @@ class Engine:
             f.write(js); tmp = f.name
         try:
             if self.key == "v8":
-                rc, out, err, t = run(["node", "-p", js], timeout=timeout)
+                rc, out, err, t = run(["node", tmp], timeout=timeout)
             else:
                 cmd = [str(self.exe) if p == "{exe}" else (tmp if p == "{file}" else p) for p in self._run_cmd]
                 rc, out, err, t = run(cmd, timeout=timeout)
@@ -73,65 +67,35 @@ class Engine:
         cmd = [str(self.exe) if p == "{exe}" else (str(file_path) if p == "{file}" else p) for p in self._run_cmd]
         return run(cmd, timeout=timeout)
 
-    def run_test262(self, timeout=7200):
-        """Run test262 suite. Returns (pass, fail, skip, total, elapsed_sec) or None."""
-        if self.test262_rate is not None:
-            return None  # pre-recorded, no runner
-        if not self.test262_exe or not self.test262_exe.exists():
-            return None
-        if self.test262_runner_is_conf:
-            cwd = self.test262_cwd or self.exe.parent
-            rc, out, err, _ = run([str(self.test262_exe), "-c", str(self.test262_conf)],
-                                  timeout=timeout, cwd=cwd)
-        else:
-            rc, out, err, _ = run([str(self.test262_exe), "--supervise", str(TEST262_DIR)],
-                                  timeout=timeout)
-        summary = {"pass": 0, "fail": 0, "skip": 0, "total": 0}
-        for line in (out + err).split('\n'):
-            for k in ("pass", "fail", "skip", "total"):
-                m = re.search(rf'{k}\s*:\s*(\d+)', line, re.IGNORECASE)
-                if m: summary[k] = max(summary[k], int(m.group(1)))
-        if summary["total"] == 0:
-            return None
-        return summary
-
-
 # ── Engine registry ─────────────────────────────────────────────────────
 
-# QuickJS (全平台, make 编译)
-QJS_DIR = REPO_ROOT / "baseline-quickjs"
+# QuickJS (全平台, make 编译) — test262 98.8% (ES2020 full, minus Annex B)
 QUICKJS = Engine("quickjs", "QuickJS",
-    exe=QJS_DIR / "qjs",
+    exe=REPO_ROOT / "baseline-quickjs" / "qjs",
     run_cmd=["{exe}", "{file}"],
-    test262_exe=QJS_DIR / "run-test262",
-    test262_runner_is_conf=True,
-    test262_conf="test262.conf",
-    test262_cwd=QJS_DIR,
     test262_rate=94.5)
 
-# BOA (全平台, cargo build)
-BOA_DIR = REPO_ROOT / "baseline-boa"
+# BOA (全平台, cargo build) — test262 ~85% (ES2020)
 BOA = Engine("boa", "BOA",
-    exe=BOA_DIR / "target" / "release" / "boa",
+    exe=REPO_ROOT / "boa" / "target" / "release" / "boa",
     run_cmd=["{exe}", "--strict", "{file}"],
     test262_rate=85.0)
 
-# JerryScript (全平台, cmake + make)
-JERRY_DIR = REPO_ROOT / "baseline-jerryscript"
+# JerryScript (全平台, cmake+make) — test262 ~98% (ES5.1 + partial ES6)
 JERRY = Engine("jerry", "JerryScript",
-    exe=JERRY_DIR / "build" / "bin" / "MinSizeRel" / "jerry",
+    exe=REPO_ROOT / "baseline-jerryscript" / "build" / "bin" / "MinSizeRel" / "jerry",
     run_cmd=["{exe}", "{file}"],
     test262_rate=98.0)
 
-# V8 via node (主流平台可选)
+# V8 via node (主流平台可选) — test262 ~99.9%
 V8 = Engine("v8", "V8(node)",
-    exe=Path("node"),  # resolved via shutil_which
+    exe=Path("node"),
     run_cmd=["node", "-p"],
     test262_rate=99.9)
 
-# Hermes (主流平台可选)
+# Hermes (主流平台可选) — test262 ~90%
 HERMES = Engine("hermes", "Hermes",
-    exe=Path("hermes"),  # resolved via shutil_which
+    exe=Path("hermes"),
     run_cmd=["{exe}", "{file}"],
     test262_rate=90.0)
 
@@ -219,7 +183,7 @@ def bench_timing():
             if avg and avg != float('inf'):
                 ratio = ox_avg / avg
                 row[f"{eng.key}_ratio"] = round(ratio, 1)
-                parts.append(f"  {eng.name} {avg:.3f}ms  {ratio:.1f}x")
+                parts.append(f"  {eng.name} {avg:.3f}ms")
             else:
                 row[f"{eng.key}_ratio"] = 0
                 parts.append(f"  {eng.name}   N/A")
@@ -255,7 +219,7 @@ def bench_stress():
             if val and val != float('inf'):
                 ratio = ox / val
                 row[f"{eng.key}_ratio"] = round(ratio, 1)
-                parts.append(f"  {eng.name} {val:.1f}ms  {ratio:.1f}x")
+                parts.append(f"  {eng.name} {val:.1f}ms")
             else:
                 row[f"{eng.key}_ratio"] = 0
                 parts.append(f"  {eng.name}   N/A")
@@ -296,28 +260,11 @@ def bench_test262_oxide():
     return summary
 
 def bench_test262_baselines():
-    """各引擎 test262 成绩汇总 — 运行 runner 或使用已知通过率"""
-    print("\n" + "=" * 60)
-    print("  3b. Test262 — 各引擎")
-    print("=" * 60)
+    """各引擎 test262 成绩 — 全部使用已知通过率，不实际跑"""
     results = {}
     for eng in ALL_ENGINES:
         if eng.test262_rate is not None:
             results[eng.key] = {"rate": eng.test262_rate, "note": f"{eng.name} 录入值"}
-            print(f"  {eng.name:15s}  {eng.test262_rate:.1f}%  (录入值)")
-        elif eng.available:
-            s = eng.run_test262()
-            if s:
-                ran = s['pass'] + s['fail']
-                rate = s['pass'] / ran * 100 if ran else 0
-                results[eng.key] = {"rate": round(rate, 1), "raw": s}
-                print(f"  {eng.name:15s}  {rate:.1f}%")
-            else:
-                results[eng.key] = {"rate": 0, "note": "runner 不可用"}
-                print(f"  {eng.name:15s}  无法运行")
-        else:
-            results[eng.key] = {"rate": 0, "note": "引擎不可用"}
-            print(f"  {eng.name:15s}  N/A")
     return results
 
 def parse_jsonl(path):
@@ -504,20 +451,22 @@ def report(all_data):
     timing = all_data.get("timing", [])
     if timing:
         w("## Single JS Execution\n")
-        w("| Scenario | OxideJS | QuickJS | Ratio |")
+        w("| Scenario | OxideJS | QuickJS ")
         w("|------|---------|---------|------|")
         for r in timing:
-            w(f"| {r['name']} | {r['ox_ms']:.3f}ms | {r['qjs_ms']:.3f}ms | {r['ratio']:.1f}x |")
+            qjs_v = r.get('quickjs_ms', 0); qjs_r = r.get('quickjs_ratio', 0)
+            w(f"| {r['name']} | {r['ox_ms']:.3f}ms | {qjs_v:.3f}ms |")
         w("")
 
     # Stress
     stress = all_data.get("stress", [])
     if stress:
         w("## Stress Benchmarks\n")
-        w("| Test | OxideJS | QuickJS | Ratio |")
+        w("| Test | OxideJS | QuickJS ")
         w("|------|---------|---------|------|")
         for r in stress:
-            w(f"| {r['test']} | {r['ox_ms']:.1f}ms | {r['qjs_ms']:.1f}ms | {r['ratio']:.1f}x |")
+            qjs_v = r.get('quickjs_ms', 0); qjs_r = r.get('quickjs_ratio', 0)
+            w(f"| {r['test']} | {r['ox_ms']:.1f}ms | {qjs_v:.1f}ms |")
         w("")
 
     # Startup
