@@ -25,12 +25,23 @@ detect_pm() {
 
 map_pkgs() {
     case "$1" in
-        apt)    echo "gcc make git python3 python3-pip curl";;
-        dnf|yum) echo "gcc make git python3 python3-pip curl";;
-        pacman) echo "gcc make git python python-pip curl";;
-        apk)    echo "gcc make git python3 py3-pip curl";;
-        zypper) echo "gcc make git python3 python3-pip curl";;
+        apt)    echo "gcc make git python3 python3-pip curl pkg-config cmake";;
+        dnf|yum) echo "gcc make git python3 python3-pip curl pkgconfig cmake";;
+        pacman) echo "gcc make git python python-pip curl pkgconf cmake";;
+        apk)    echo "gcc make git python3 py3-pip curl pkgconfig cmake";;
+        zypper) echo "gcc make git python3 python3-pip curl pkg-config cmake";;
         *)      echo "gcc make git python3 curl";;
+    esac
+}
+
+install_openssl_dev() {
+    case "$1" in
+        apt)    apt-get install -y libssl-dev 2>/dev/null || true;;
+        dnf|yum) dnf install -y openssl-devel 2>/dev/null || true;;
+        pacman) ;;  # openssl is part of base
+        apk)    apk add --no-cache openssl-dev 2>/dev/null || true;;
+        zypper) zypper install -y libopenssl-devel 2>/dev/null || true;;
+        *)      ;;  # best effort
     esac
 }
 
@@ -103,8 +114,9 @@ build_boa() {
         return 0
     fi
     info "编译 BOA (Rust --release, 约 5-10 分钟)..."
+    install_openssl_dev "$pm"  # BOA depends on openssl-sys
     cd "$boa_dir"
-    if cargo build --release -p boa_cli --bin boa 2>&1 | tail -5; then
+    if cargo build --release -p boa_cli --bin boa 2>&1 | grep -E "error|Compiling boa|Finished|warning:" | tail -10; then
         info "BOA 编译成功"
     else
         warn "BOA 编译失败，跳过 (不影响整体)"
