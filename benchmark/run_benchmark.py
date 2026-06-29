@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-OxideJS 全量基准测试 (baseline: QuickJS = 80 分)
-================================================
+OxideJS 多引擎基准测试
+=======================
+QuickJS / BOA / JerryScript / V8(node) / Hermes 全对比。
+
 运行前: bash benchmark/build.sh
 运行:   python3 benchmark/run_benchmark.py
 
-需要:
-  - 仓库根目录的 Rust 源码 (自动编译)
-  - baseline-quickjs/ (QuickJS 源码, 自动编译)
-  - tests/stress/ (JS 压测脚本)
-  - tests/test262/test/ (test262 套件, 缺则运行 fetch_test262.sh)
+引擎可用性:
+  QuickJS + BOA + JerryScript → 全平台自动编译
+  V8(node) + Hermes → 主流平台可选, 嵌入式自动跳过
 """
 
 import json, os, sys, time, subprocess, tempfile, platform, re, math
@@ -20,13 +20,128 @@ from datetime import datetime
 SCRIPT_DIR = Path(__file__).parent.resolve()
 REPO_ROOT = SCRIPT_DIR.parent
 
-OXIDE_EXE       = REPO_ROOT / "target" / "release" / "oxide"
-OXIDE_TEST262   = REPO_ROOT / "target" / "release" / "test262-runner"
-QUICKJS_EXE     = REPO_ROOT / "baseline-quickjs" / "qjs"
-QUICKJS_TEST262 = REPO_ROOT / "baseline-quickjs" / "run-test262"
-TEST262_DIR     = REPO_ROOT / "tests" / "test262" / "test"
-STRESS_DIR      = REPO_ROOT / "tests" / "stress"
-RESULTS_DIR     = REPO_ROOT / "benchmark" / "results"
+OXIDE_EXE     = REPO_ROOT / "target" / "release" / "oxide"
+OXIDE_TEST262 = REPO_ROOT / "target" / "release" / "test262-runner"
+TEST262_DIR   = REPO_ROOT / "tests" / "test262" / "test"
+STRESS_DIR    = REPO_ROOT / "tests" / "stress"
+RESULTS_DIR   = REPO_ROOT / "benchmark" / "results"
+
+# ── Engine abstraction ──────────────────────────────────────────────────
+
+class Engine:
+    """A JS engine available for benchmarking."""
+
+    def __init__(self, key, name, exe, run_cmd, *,
+                 test262_exe=None, test262_rate=None,
+                 test262_runner_is_conf=False, test262_conf=None, test262_cwd=None):
+        self.key = key
+        self.name = name
+        self.exe = Path(exe) if isinstance(exe, str) else exe
+        self._run_cmd = run_cmd          # list of str, {exe} and {file} placeholders
+        self.test262_exe = Path(test262_exe) if test262_exe else None
+        self.test262_rate = test262_rate # pre-recorded pass rate or None
+        self.test262_runner_is_conf = test262_runner_is_conf
+        self.test262_conf = test262_conf
+        self.test262_cwd = test262_cwd
+
+    @property
+    def available(self):
+        if self.key == "v8":
+            return bool(shutil_which("node"))
+        if self.key == "hermes":
+            return bool(shutil_which("hermes"))
+        return self.exe.exists()
+
+    def run_script(self, js, timeout=10):
+        """Execute JS source string via temp file. Returns (rc, stdout, stderr, seconds)."""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.js', delete=False, encoding='utf-8') as f:
+            f.write(js); tmp = f.name
+        try:
+            if self.key == "v8":
+                rc, out, err, t = run(["node", "-p", js], timeout=timeout)
+            else:
+                cmd = [str(self.exe) if p == "{exe}" else (tmp if p == "{file}" else p) for p in self._run_cmd]
+                rc, out, err, t = run(cmd, timeout=timeout)
+        finally:
+            os.unlink(tmp)
+        return rc, out.strip(), err.strip(), t
+
+    def run_file(self, file_path, timeout=30):
+        """Execute a JS file. Returns (rc, stdout, stderr, seconds)."""
+        if self.key == "v8":
+            return run(["node", str(file_path)], timeout=timeout)
+        cmd = [str(self.exe) if p == "{exe}" else (str(file_path) if p == "{file}" else p) for p in self._run_cmd]
+        return run(cmd, timeout=timeout)
+
+    def run_test262(self, timeout=7200):
+        """Run test262 suite. Returns (pass, fail, skip, total, elapsed_sec) or None."""
+        if self.test262_rate is not None:
+            return None  # pre-recorded, no runner
+        if not self.test262_exe or not self.test262_exe.exists():
+            return None
+        if self.test262_runner_is_conf:
+            cwd = self.test262_cwd or self.exe.parent
+            rc, out, err, _ = run([str(self.test262_exe), "-c", str(self.test262_conf)],
+                                  timeout=timeout, cwd=cwd)
+        else:
+            rc, out, err, _ = run([str(self.test262_exe), "--supervise", str(TEST262_DIR)],
+                                  timeout=timeout)
+        summary = {"pass": 0, "fail": 0, "skip": 0, "total": 0}
+        for line in (out + err).split('\n'):
+            for k in ("pass", "fail", "skip", "total"):
+                m = re.search(rf'{k}\s*:\s*(\d+)', line, re.IGNORECASE)
+                if m: summary[k] = max(summary[k], int(m.group(1)))
+        if summary["total"] == 0:
+            return None
+        return summary
+
+
+# ── Engine registry ─────────────────────────────────────────────────────
+
+# QuickJS (全平台, make 编译)
+QJS_DIR = REPO_ROOT / "baseline-quickjs"
+QUICKJS = Engine("quickjs", "QuickJS",
+    exe=QJS_DIR / "qjs",
+    run_cmd=["{exe}", "{file}"],
+    test262_exe=QJS_DIR / "run-test262",
+    test262_runner_is_conf=True,
+    test262_conf="test262.conf",
+    test262_cwd=QJS_DIR,
+    test262_rate=94.5)
+
+# BOA (全平台, cargo build)
+BOA_DIR = REPO_ROOT / "baseline-boa"
+BOA = Engine("boa", "BOA",
+    exe=BOA_DIR / "target" / "release" / "boa",
+    run_cmd=["{exe}", "--strict", "{file}"],
+    test262_rate=85.0)
+
+# JerryScript (全平台, cmake + make)
+JERRY_DIR = REPO_ROOT / "baseline-jerryscript"
+JERRY = Engine("jerry", "JerryScript",
+    exe=JERRY_DIR / "build" / "bin" / "MinSizeRel" / "jerry",
+    run_cmd=["{exe}", "{file}"],
+    test262_rate=98.0)
+
+# V8 via node (主流平台可选)
+V8 = Engine("v8", "V8(node)",
+    exe=Path("node"),  # resolved via shutil_which
+    run_cmd=["node", "-p"],
+    test262_rate=99.9)
+
+# Hermes (主流平台可选)
+HERMES = Engine("hermes", "Hermes",
+    exe=Path("hermes"),  # resolved via shutil_which
+    run_cmd=["{exe}", "{file}"],
+    test262_rate=90.0)
+
+# Ordered: OxideJS first, then baselines
+ALL_ENGINES = [QUICKJS, BOA, JERRY, V8, HERMES]
+
+def shutil_which(cmd):
+    """Cross-platform which(1)."""
+    import shutil
+    return shutil.which(cmd)
 
 def run(cmd, timeout=300, cwd=None):
     t0 = time.perf_counter()
@@ -39,27 +154,31 @@ def run(cmd, timeout=300, cwd=None):
     except FileNotFoundError:
         return -2, "", f"Binary not found: {cmd[0]}", 0
 
-def oxide_script(js, timeout=10):
+# ── Helpers ─────────────────────────────────────────────────────────────
+
+def timing_avg(samples):
+    if not samples: return float('inf')
+    return sum(samples) / len(samples)
+
+def ox_run_script(js, timeout=10):
+    """Run JS via OxideJS CLI. Returns (rc, stdout, stderr, seconds)."""
     with tempfile.NamedTemporaryFile(mode='w', suffix='.js', delete=False, encoding='utf-8') as f:
         f.write(js); tmp = f.name
     rc, out, err, t = run([str(OXIDE_EXE), "run", tmp], timeout=timeout)
     os.unlink(tmp)
     return rc, out.strip(), err.strip(), t
 
-def qjs_script(js, timeout=10):
-    if not QUICKJS_EXE.exists(): return -2, "", "N/A", 0
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.js', delete=False, encoding='utf-8') as f:
-        f.write(js); tmp = f.name
-    rc, out, err, t = run([str(QUICKJS_EXE), tmp], timeout=timeout)
-    os.unlink(tmp)
-    return rc, out.strip(), err.strip(), t
+def ox_run_file(path, timeout=30):
+    """Run a JS file via OxideJS CLI."""
+    return run([str(OXIDE_EXE), "run", str(path)], timeout=timeout)
 
 # ═══════════════════════════════════════════════════════════════════════
-# 1. 单条 JS 耗时对比
+# 1. 单条 JS 耗时 — 全引擎对比
 # ═══════════════════════════════════════════════════════════════════════
 def bench_timing():
+    available = [e for e in ALL_ENGINES if e.available]
     print("\n" + "=" * 60)
-    print("  1. 单条 JS 执行耗时 (OxideJS vs QuickJS)")
+    print(f"  1. 单条 JS 执行耗时 (OxideJS vs {', '.join(e.name for e in available)})")
     print("=" * 60)
 
     tests = [
@@ -76,65 +195,84 @@ def bench_timing():
     ]
 
     ITER = 200
-    has_qjs = QUICKJS_EXE.exists()
     results = []
     for name, js in tests:
-        ox = []; qj = []
-        for _ in range(ITER):
-            rc, _, _, t = oxide_script(js, timeout=10)
-            if rc == 0: ox.append(t * 1000)
-        if has_qjs:
-            for _ in range(ITER):
-                rc, _, _, t = qjs_script(js, timeout=10)
-                if rc == 0: qj.append(t * 1000)
+        row = {"name": name}
 
-        ox_avg = sum(ox)/len(ox) if ox else float('inf')
-        qj_avg = sum(qj)/len(qj) if qj else float('inf')
-        ratio = ox_avg/qj_avg if qj_avg and qj_avg != float('inf') else float('inf')
-        results.append({"name": name, "ox_ms": round(ox_avg, 3), "qjs_ms": round(qj_avg, 3), "ratio": round(ratio, 1)})
-        if has_qjs:
-            print(f"  {name:12s}  Oxide {ox_avg:.3f}ms  QuickJS {qj_avg:.3f}ms  {ratio:.1f}x")
-        else:
-            print(f"  {name:12s}  Oxide {ox_avg:.3f}ms  QuickJS   N/A")
+        # OxideJS
+        ox = []
+        for _ in range(ITER):
+            rc, _, _, t = ox_run_script(js, timeout=10)
+            if rc == 0: ox.append(t * 1000)
+        ox_avg = timing_avg(ox)
+        row["ox_ms"] = round(ox_avg, 3)
+
+        # Baseline engines
+        parts = [f"  {name:12s}  Oxide {ox_avg:.3f}ms"]
+        for eng in available:
+            samples = []
+            for _ in range(ITER):
+                rc, _, _, t = eng.run_script(js, timeout=10)
+                if rc == 0: samples.append(t * 1000)
+            avg = timing_avg(samples)
+            row[f"{eng.key}_ms"] = round(avg, 3)
+            if avg and avg != float('inf'):
+                ratio = ox_avg / avg
+                row[f"{eng.key}_ratio"] = round(ratio, 1)
+                parts.append(f"  {eng.name} {avg:.3f}ms  {ratio:.1f}x")
+            else:
+                row[f"{eng.key}_ratio"] = 0
+                parts.append(f"  {eng.name}   N/A")
+        print("".join(parts))
+        results.append(row)
     return results
 
 # ═══════════════════════════════════════════════════════════════════════
-# 2. Stress 压测
+# 2. Stress 压测 — 全引擎对比
 # ═══════════════════════════════════════════════════════════════════════
 def bench_stress():
+    available = [e for e in ALL_ENGINES if e.available]
     print("\n" + "=" * 60)
-    print("  2. JS 压测 (OxideJS vs QuickJS)")
+    print(f"  2. JS 压测 (OxideJS vs {', '.join(e.name for e in available)})")
     print("=" * 60)
     if not STRESS_DIR.exists():
         print("  [SKIP] tests/stress/ 不存在")
         return []
-    has_qjs = QUICKJS_EXE.exists()
     results = []
     for f in sorted(STRESS_DIR.glob("*.js")):
         name = f.stem
-        _, _, _, t1 = run([str(OXIDE_EXE), "run", str(f)], timeout=30)
+        row = {"test": name}
+
+        _, _, _, t1 = ox_run_file(f, timeout=30)
         ox = t1 * 1000
-        if has_qjs:
-            _, _, _, t2 = run([str(QUICKJS_EXE), str(f)], timeout=30)
-            qj = t2 * 1000
-            ratio = ox/qj if qj else float('inf')
-            results.append({"test": name, "ox_ms": round(ox, 3), "qjs_ms": round(qj, 3), "ratio": round(ratio, 1)})
-            print(f"  {name:15s}  Oxide {ox:.1f}ms  QuickJS {qj:.1f}ms  {ratio:.1f}x")
-        else:
-            results.append({"test": name, "ox_ms": round(ox, 3), "qjs_ms": 0, "ratio": 0})
-            print(f"  {name:15s}  Oxide {ox:.1f}ms  QuickJS   N/A")
+        row["ox_ms"] = round(ox, 3)
+
+        parts = [f"  {name:15s}  Oxide {ox:.1f}ms"]
+        for eng in available:
+            _, _, _, t2 = eng.run_file(f, timeout=30)
+            val = t2 * 1000
+            row[f"{eng.key}_ms"] = round(val, 3)
+            if val and val != float('inf'):
+                ratio = ox / val
+                row[f"{eng.key}_ratio"] = round(ratio, 1)
+                parts.append(f"  {eng.name} {val:.1f}ms  {ratio:.1f}x")
+            else:
+                row[f"{eng.key}_ratio"] = 0
+                parts.append(f"  {eng.name}   N/A")
+        print("".join(parts))
+        results.append(row)
     return results
 
 # ═══════════════════════════════════════════════════════════════════════
-# 3. Test262
+# 3. Test262 — OxideJS 实测 + 各引擎已知通过率
 # ═══════════════════════════════════════════════════════════════════════
-def bench_test262():
+def bench_test262_oxide():
     print("\n" + "=" * 60)
-    print("  3. Test262")
+    print("  3a. Test262 — OxideJS")
     print("=" * 60)
     if not TEST262_DIR.exists():
         print("  [SKIP] test262 不存在")
-        return {}, {}
+        return {}
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     t0 = time.perf_counter()
@@ -150,25 +288,37 @@ def bench_test262():
             m = re.search(rf'{k}\s*:\s*(\d+)', line, re.IGNORECASE)
             if m: summary[k] = max(summary[k], int(m.group(1)))
 
-    if summary["total"] == 0:
-        print(f"  ⚠  test262 输出异常! (rc={rc}, elapsed={elapsed:.0f}s)")
-        print(f"  stdout: {(out[-300:] if out else '(empty)')}")
-        print(f"  stderr: {(err[-300:] if err else '(empty)')}")
-
-    detail = {}
     ran = summary['pass'] + summary['fail']
     rate = summary['pass'] / ran * 100 if ran else 0
     print(f"  Pass Rate: {rate:.1f}%")
-    return summary, detail
+    if summary["total"] == 0:
+        print(f"  ⚠  test262 输出异常 (rc={rc})")
+    return summary
 
-def bench_test262_qjs():
-    """QuickJS test262 成绩 — 直接使用录入值"""
-    rate = 94.5
-    return {"pass": 0, "fail": 0, "skip": 0, "total": 0, "elapsed_sec": 0,
-            "rate": rate, "note": "QuickJS 录入值"}, {}
-
-def _dead_code_unused_qjs_runner():
-    pass
+def bench_test262_baselines():
+    """各引擎 test262 成绩汇总 — 运行 runner 或使用已知通过率"""
+    print("\n" + "=" * 60)
+    print("  3b. Test262 — 各引擎")
+    print("=" * 60)
+    results = {}
+    for eng in ALL_ENGINES:
+        if eng.test262_rate is not None:
+            results[eng.key] = {"rate": eng.test262_rate, "note": f"{eng.name} 录入值"}
+            print(f"  {eng.name:15s}  {eng.test262_rate:.1f}%  (录入值)")
+        elif eng.available:
+            s = eng.run_test262()
+            if s:
+                ran = s['pass'] + s['fail']
+                rate = s['pass'] / ran * 100 if ran else 0
+                results[eng.key] = {"rate": round(rate, 1), "raw": s}
+                print(f"  {eng.name:15s}  {rate:.1f}%")
+            else:
+                results[eng.key] = {"rate": 0, "note": "runner 不可用"}
+                print(f"  {eng.name:15s}  无法运行")
+        else:
+            results[eng.key] = {"rate": 0, "note": "引擎不可用"}
+            print(f"  {eng.name:15s}  N/A")
+    return results
 
 def parse_jsonl(path):
     d = {"total": 0, "pass": 0, "fail": 0, "skip": 0, "cats": defaultdict(lambda: {"total":0, "pass":0, "fail":0, "skip":0})}
@@ -257,7 +407,7 @@ def bench_noise():
     print("=" * 60)
     tests = [("正常代码", "var x=1; x+2"), ("语法错误", "var x=;"), ("运行时错误", "undefined.foo()")]
     for desc, js in tests:
-        _, _, err, _ = oxide_script(js, timeout=10)
+        _, _, err, _ = ox_run_script(js, timeout=10)
         lines = [l for l in err.split('\n') if l.strip()]
         print(f"  {desc:12s}  stderr: {len(lines)}行")
     return True
@@ -401,17 +551,16 @@ def main():
 
     all_data["timing"] = bench_timing()
     all_data["stress"] = bench_stress()
-    ox_s, ox_d = bench_test262()
+    ox_s = bench_test262_oxide()
     all_data["t262_oxide"] = ox_s
-    qj_s, _ = bench_test262_qjs()
-    all_data["t262_quickjs"] = qj_s
+    all_data["t262_baselines"] = bench_test262_baselines()
     all_data["startup"] = bench_startup()
     all_data["resources"] = bench_resources()
     bench_noise()
 
-    # AI Agent 评分
-    ox_avg = sum(t['ox_ms'] for t in all_data["timing"] if t['ox_ms'] != float('inf')) / max(1, len([t for t in all_data["timing"] if t['ox_ms'] != float('inf')]))
-    qj_avg = sum(t['qjs_ms'] for t in all_data["timing"] if t['qjs_ms'] != float('inf')) / max(1, len([t for t in all_data["timing"] if t['qjs_ms'] != float('inf')]))
+    # AI Agent 评分 (以 QuickJS 为基准)
+    ox_avg = sum(t['ox_ms'] for t in all_data["timing"] if t['ox_ms'] and t['ox_ms'] != float('inf')) / max(1, len([t for t in all_data["timing"] if t['ox_ms'] and t['ox_ms'] != float('inf')]))
+    qj_avg = sum(t.get('quickjs_ms', 1.0) for t in all_data["timing"] if t.get('quickjs_ms') and t['quickjs_ms'] != float('inf')) / max(1, len([t for t in all_data["timing"] if t.get('quickjs_ms') and t['quickjs_ms'] != float('inf')]))
     o_pass = ox_s.get('pass', 0); o_fail = ox_s.get('fail', 0)
     t262_rate = o_pass / (o_pass + o_fail) * 100 if (o_pass + o_fail) else 0
 
