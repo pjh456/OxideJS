@@ -90,6 +90,56 @@ build_quickjs() {
     info "QuickJS 完成"
 }
 
+# ── BOA ──────────────────────────────────────────────────────────────────
+build_boa() {
+    step "BOA (baseline v0.21)"
+    local boa_dir="$REPO_ROOT/baseline-boa"
+    if [ ! -d "$boa_dir" ]; then
+        warn "baseline-boa/ 不存在，跳过"
+        return 0
+    fi
+    if [ -f "$boa_dir/target/release/boa" ]; then
+        info "BOA 已构建"
+        return 0
+    fi
+    info "编译 BOA (Rust --release, 约 5-10 分钟)..."
+    cd "$boa_dir"
+    if cargo build --release -p boa_cli --bin boa 2>&1 | tail -5; then
+        info "BOA 编译成功"
+    else
+        warn "BOA 编译失败，跳过 (不影响整体)"
+    fi
+    cd "$SCRIPT_DIR"
+}
+
+# ── JerryScript ──────────────────────────────────────────────────────────
+build_jerryscript() {
+    step "JerryScript"
+    local jerry_dir="$REPO_ROOT/baseline-jerryscript"
+    if [ ! -d "$jerry_dir" ]; then
+        warn "baseline-jerryscript/ 不存在，跳过"
+        return 0
+    fi
+    if [ -f "$jerry_dir/build/bin/MinSizeRel/jerry" ] || [ -f "$jerry_dir/build/bin/MinSizeRel/jerry.exe" ]; then
+        info "JerryScript 已构建"
+        return 0
+    fi
+    info "编译 JerryScript (CMake, 约 1 分钟)..."
+    mkdir -p "$jerry_dir/build"
+    cd "$jerry_dir/build"
+    if command -v cmake &>/dev/null; then
+        cmake .. -DCMAKE_BUILD_TYPE=MinSizeRel -DJERRY_ERROR_MESSAGES=ON -DJERRY_LOGGING=OFF 2>&1 | tail -3
+        if make -j"$(nproc 2>/dev/null || echo 4)" 2>&1 | tail -5; then
+            info "JerryScript 编译成功"
+        else
+            warn "JerryScript 编译失败，跳过 (不影响整体)"
+        fi
+    else
+        warn "cmake 未安装，跳过 JerryScript"
+    fi
+    cd "$SCRIPT_DIR"
+}
+
 # ── OxideJS ────────────────────────────────────────────────────────────
 build_oxide() {
     step "OxideJS"
@@ -133,6 +183,8 @@ install_deps "$pm" "$icmd" "$ucmd" $(map_pkgs "$pm")
 ensure_rust
 ensure_python
 build_quickjs
+build_boa
+build_jerryscript
 build_oxide
 ensure_test262
 
