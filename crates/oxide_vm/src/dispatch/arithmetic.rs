@@ -48,8 +48,14 @@ impl Vm {
 
     pub(crate) fn dispatch_compound_add(&mut self, rd: usize, a: usize) -> Result<(), String> {
         vm_trace!("COMPOUND_ADD rd={} r{}={:?}", rd, a, self.regs[a]);
-        let lhs = self.coerce_primitive_bounded(self.regs[rd], false)?;
-        let rhs = self.coerce_primitive_bounded(self.regs[a], false)?;
+        let lv = self.regs[rd];
+        let rv = self.regs[a];
+        if lv.is_int() && rv.is_int() {
+            self.regs[rd] = JsValue::float(lv.as_int() as f64 + rv.as_int() as f64);
+            return Ok(());
+        }
+        let lhs = self.coerce_primitive_bounded(lv, false)?;
+        let rhs = self.coerce_primitive_bounded(rv, false)?;
         if lhs.is_string() || rhs.is_string() {
             let mut buf = std::mem::take(&mut self.string_buf);
             buf.clear();
@@ -68,8 +74,14 @@ impl Vm {
     #[inline(always)]
     pub(crate) fn dispatch_compound_sub(&mut self, rd: usize, a: usize) -> Result<(), String> {
         vm_trace!("COMPOUND_SUB rd={} r{}={:?}", rd, a, self.regs[a]);
-        let l = self.coerce_number_bounded(self.regs[rd])?;
-        let r = self.coerce_number_bounded(self.regs[a])?;
+        let lv = self.regs[rd];
+        let rv = self.regs[a];
+        if lv.is_int() && rv.is_int() {
+            self.regs[rd] = JsValue::float(lv.as_int() as f64 - rv.as_int() as f64);
+            return Ok(());
+        }
+        let l = self.coerce_number_bounded(lv)?;
+        let r = self.coerce_number_bounded(rv)?;
         self.regs[rd] = JsValue::float(l - r);
         Ok(())
     }
@@ -77,8 +89,14 @@ impl Vm {
     #[inline(always)]
     pub(crate) fn dispatch_compound_mul(&mut self, rd: usize, a: usize) -> Result<(), String> {
         vm_trace!("COMPOUND_MUL rd={} r{}={:?}", rd, a, self.regs[a]);
-        let l = self.coerce_number_bounded(self.regs[rd])?;
-        let r = self.coerce_number_bounded(self.regs[a])?;
+        let lv = self.regs[rd];
+        let rv = self.regs[a];
+        if lv.is_int() && rv.is_int() {
+            self.regs[rd] = JsValue::float(lv.as_int() as f64 * rv.as_int() as f64);
+            return Ok(());
+        }
+        let l = self.coerce_number_bounded(lv)?;
+        let r = self.coerce_number_bounded(rv)?;
         self.regs[rd] = JsValue::float(l * r);
         Ok(())
     }
@@ -86,8 +104,14 @@ impl Vm {
     #[inline(always)]
     pub(crate) fn dispatch_compound_div(&mut self, rd: usize, a: usize) -> Result<(), String> {
         vm_trace!("COMPOUND_DIV rd={} r{}={:?}", rd, a, self.regs[a]);
-        let l = self.coerce_number_bounded(self.regs[rd])?;
-        let r = self.coerce_number_bounded(self.regs[a])?;
+        let lv = self.regs[rd];
+        let rv = self.regs[a];
+        if lv.is_int() && rv.is_int() {
+            self.regs[rd] = JsValue::float(lv.as_int() as f64 / rv.as_int() as f64);
+            return Ok(());
+        }
+        let l = self.coerce_number_bounded(lv)?;
+        let r = self.coerce_number_bounded(rv)?;
         self.regs[rd] = JsValue::float(l / r);
         Ok(())
     }
@@ -95,8 +119,14 @@ impl Vm {
     #[inline(always)]
     pub(crate) fn dispatch_compound_mod(&mut self, rd: usize, a: usize) -> Result<(), String> {
         vm_trace!("COMPOUND_MOD rd={} r{}={:?}", rd, a, self.regs[a]);
-        let l = self.coerce_number_bounded(self.regs[rd])?;
-        let r = self.coerce_number_bounded(self.regs[a])?;
+        let lv = self.regs[rd];
+        let rv = self.regs[a];
+        if lv.is_int() && rv.is_int() {
+            self.regs[rd] = JsValue::float(lv.as_int() as f64 % rv.as_int() as f64);
+            return Ok(());
+        }
+        let l = self.coerce_number_bounded(lv)?;
+        let r = self.coerce_number_bounded(rv)?;
         self.regs[rd] = JsValue::float(l % r);
         Ok(())
     }
@@ -104,8 +134,14 @@ impl Vm {
     #[inline(always)]
     pub(crate) fn dispatch_compound_exp(&mut self, rd: usize, a: usize) -> Result<(), String> {
         vm_trace!("COMPOUND_EXP rd={} r{}={:?}", rd, a, self.regs[a]);
-        let l = self.coerce_number_bounded(self.regs[rd])?;
-        let r = self.coerce_number_bounded(self.regs[a])?;
+        let lv = self.regs[rd];
+        let rv = self.regs[a];
+        if lv.is_int() && rv.is_int() {
+            self.regs[rd] = JsValue::float((lv.as_int() as f64).powf(rv.as_int() as f64));
+            return Ok(());
+        }
+        let l = self.coerce_number_bounded(lv)?;
+        let r = self.coerce_number_bounded(rv)?;
         self.regs[rd] = JsValue::float(l.powf(r));
         Ok(())
     }
