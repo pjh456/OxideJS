@@ -973,15 +973,13 @@ pub fn array_copy_within<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target = (if rel_target < 0 { (len + rel_target).max(0) } else { rel_target.min(len) }) as usize;
     let start = (if rel_start < 0 { (len + rel_start).max(0) } else { rel_start.min(len) }) as usize;
     let end = (if rel_end < 0 { (len + rel_end).max(0) } else { rel_end.min(len) }) as usize;
-    let mut to = target;
     let len_usize = len as usize;
-    for from in start..end {
+    for (to, from) in (target..).zip(start..end) {
         if to >= len_usize {
             break;
         }
         let v = arr.get_prop_at(from);
         arr.set_prop_at(to, v);
-        to += 1;
     }
     NativeResult::Ok(vm.reg(args[0]))
 }
