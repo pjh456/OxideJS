@@ -234,25 +234,28 @@ fn make_pair(
     si_name: u32,
 ) -> (P<JsObject>, P<JsObject>) {
     intern_label(string_forge, name);
+    let name_si = string_forge.intern(name).0; // intern the constructor's name value too
 
     let mut proto = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
     let mut ctor = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
 
     let proto_shape = shape_forge.make_shape(EMPTY_SHAPE_ID, si_constructor);
     proto.set_shape_id(proto_shape);
-    // proto shape: EMPTY -> "constructor" (slot 0)
 
     let ctor_shape1 = shape_forge.make_shape(EMPTY_SHAPE_ID, si_prototype);
     let ctor_shape2 = shape_forge.make_shape(ctor_shape1, si_name);
     ctor.set_shape_id(ctor_shape2);
-    // ctor shape: EMPTY -> "prototype" (slot 0) -> "name" (slot 1)
     ctor.set_function(true);
 
-    // Pre-allocate Vec slots so wire_ctor_proto can overwrite vec[0] later.
-    // Proto: 1 property ("constructor"), Ctor: 2 properties ("prototype", "name").
-    proto.ensure_hash_props().push(JsValue::undefined()); // slot 0: "constructor" placeholder
-    ctor.ensure_hash_props().push(JsValue::undefined()); // slot 0: "prototype" placeholder
-    ctor.ensure_hash_props().push(JsValue::undefined()); // slot 1: "name" placeholder
+    // Pre-allocate slots: proto[0]="constructor", ctor[0]="prototype", ctor[1]="name"
+    proto.ensure_hash_props().push(JsValue::undefined()); // placeholder
+    ctor.ensure_hash_props().push(JsValue::undefined()); // placeholder for "prototype"
+    // Set the actual name value immediately (ctor vec[1])
+    ctor.ensure_hash_props().push(JsValue::perm_string(string_forge.string_ptr(name_si)));
+    // Set attribute metadata: .prototype (ctor[0]) = writable:false, enumerable:false, configurable:false
+    ctor.set_data_meta(0u32, oxide_types::object::PropAttributes::new(false, false, false));
+    // .name (ctor[1]) = writable:false, enumerable:false, configurable:true
+    ctor.set_data_meta(1u32, oxide_types::object::PropAttributes::new(false, false, true));
 
     (P::new(proto), P::new(ctor))
 }
@@ -1150,12 +1153,23 @@ impl BuiltinWorld {
         // callers, all of which use fn-item expressions).
         wrapper.set_native_fn(Some(native_fn_ptr));
         wrapper.set_native_arg_count(arg_count);
+        // 设置 .length (ES spec: Function.length = formal parameter count,
+        // {[[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true})
+        let si_length = string_forge.intern("length").0;
+        let length_shape = shape_forge.make_shape(wrapper.shape_id(), si_length);
+        wrapper.set_shape_id(length_shape);
+        wrapper.ensure_hash_props().push(JsValue::int(arg_count as i32));
+        let length_pos = wrapper.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+        wrapper.set_data_meta(length_pos, oxide_types::object::PropAttributes::new(false, false, true));
+        // 设置 .name ({[[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true})
         let si_name = string_forge.intern("name").0;
         let name_shape = shape_forge.make_shape(wrapper.shape_id(), si_name);
         wrapper.set_shape_id(name_shape);
         wrapper
             .ensure_hash_props()
             .push(JsValue::perm_string(string_forge.string_ptr(si)));
+        let name_pos = wrapper.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+        wrapper.set_data_meta(name_pos, oxide_types::object::PropAttributes::new(false, false, true));
         let wrapper_val = JsValue::from_js_object(Box::into_raw(wrapper));
         let new_shape = shape_forge.make_shape(proto.shape_id(), si);
         proto.set_shape_id(new_shape);

@@ -49,6 +49,11 @@ macro_rules! bind_constructor {
         let ptr: *const () = ($ctor_fn as fn(&mut $crate::vm::Vm, &[u8]) -> oxide_runtime_api::NativeResult) as *const ();
         ctor.set_native_fn(Some(unsafe { oxide_types::object::NativeFnPtr::from_raw(ptr) }));
         ctor.set_native_arg_count($nargs);
+        // 设置 constructor.length (Function.length = formal parameter count)
+        let length_si = $core.perm_interner().intern("length").0;
+        let length_shape = $core.shape_forge().make_shape(ctor.shape_id(), length_si);
+        ctor.set_shape_id(length_shape);
+        ctor.ensure_hash_props().push($crate::JsValue::int($nargs as i32));
     }};
 }
 

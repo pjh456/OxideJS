@@ -22,8 +22,30 @@ pub fn reflect_apply<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
-pub fn reflect_construct<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
-    type_error(vm, "Reflect.construct not yet supported")
+pub fn reflect_construct<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let target = arg(vm, args, 1);
+    let arg_list = arg(vm, args, 2);
+    let new_target = if args.len() > 3 { arg(vm, args, 3) } else { target };
+
+    if !is_callable(target) {
+        return type_error(vm, "Reflect.construct target is not callable");
+    }
+    // newTarget must be constructable — check if it's an object with function flag
+    if new_target.is_object() {
+        let nt_ptr = new_target.as_js_object_ptr();
+        if !nt_ptr.is_null() && unsafe { &*nt_ptr }.is_function() {
+            // Accept: newTarget is a valid constructor
+        } else {
+            return type_error(vm, "Reflect.construct newTarget is not a constructor");
+        }
+    } else {
+        return type_error(vm, "Reflect.construct newTarget is not a constructor");
+    }
+    let call_args = array_like_elements(arg_list).unwrap_or_default();
+    match vm.call_function_sync(target, JsValue::undefined(), &call_args) {
+        Ok(value) => NativeResult::Ok(value),
+        Err(err) => NativeResult::Err(crate::error::create_type_error(vm, &err)),
+    }
 }
 
 pub fn reflect_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
