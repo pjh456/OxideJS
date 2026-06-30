@@ -571,6 +571,33 @@ impl JsObject {
         !self.prop_meta.is_null()
     }
 
+    /// Like `set_prop_count` but assumes `hash_props` is already allocated.
+    /// Caller must guarantee the object has at least one element (or was
+    /// created via `new_array`). Used in hot array builtins to skip the
+    /// redundant `ensure_hash_props` null check on each mutation.
+    #[inline]
+    pub fn set_prop_count_fast(&mut self, count: impl PropIndex) {
+        let target = count.to_u32() as usize;
+        // SAFETY: caller guarantees hash_props is non-null.
+        let vec = unsafe { &mut *(self.hash_props as *mut Vec<JsValue>) };
+        if target < vec.len() {
+            vec.truncate(target);
+        } else {
+            while vec.len() < target {
+                vec.push(JsValue::undefined());
+            }
+        }
+        if let Some(meta) = self.prop_meta_vec_mut() {
+            if target < meta.len() {
+                meta.truncate(target);
+            } else {
+                while meta.len() < target {
+                    meta.push(None);
+                }
+            }
+        }
+    }
+
     pub fn ensure_prop_meta(&mut self) -> &mut Vec<Option<PropMetaEntry>> {
         if self.prop_meta.is_null() {
             let len = self.prop_vec_len();

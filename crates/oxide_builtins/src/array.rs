@@ -245,7 +245,7 @@ pub fn array_pop<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(JsValue::undefined());
     }
     let last = arr.get_prop_at(len - 1);
-    arr.set_prop_count(len - 1);
+    arr.set_prop_count_fast(len - 1);
     NativeResult::Ok(last)
 }
 
@@ -335,7 +335,7 @@ pub fn array_splice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 
     let new_len = n + insert_count - delete_count;
-    arr.set_prop_count(new_len);
+    arr.set_prop_count_fast(new_len);
 
     let removed_arr = create_new_array(vm, removed.len());
     unsafe {
@@ -899,7 +899,7 @@ pub fn array_shift<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let v = arr.get_prop_at(i);
         arr.set_prop_at(i - 1, v);
     }
-    arr.set_prop_count(len - 1);
+    arr.set_prop_count_fast(len - 1);
     NativeResult::Ok(first)
 }
 
@@ -917,7 +917,7 @@ pub fn array_unshift<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         arr.set_prop_at(j, vm.reg(arg_reg));
     }
     let new_len = len as usize + n_items;
-    arr.set_prop_count(new_len);
+    arr.set_prop_count_fast(new_len);
     NativeResult::Ok(JsValue::int(new_len as i32))
 }
 
