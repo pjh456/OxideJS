@@ -147,7 +147,7 @@ pub fn string_value_eq(a: JsValue, b: JsValue) -> bool {
     }
     let sa = unsafe { &*a.as_string_ptr() };
     let sb = unsafe { &*b.as_string_ptr() };
-    sa.hash == sb.hash && sa.data == sb.data
+    sa.data == sb.data
 }
 
 pub fn to_number(val: JsValue) -> f64 {

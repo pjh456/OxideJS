@@ -1,27 +1,17 @@
-use std::hash::{Hash, Hasher};
-
-use rustc_hash::FxHasher;
-
 use crate::value::JsValue;
 
 /// Heap-allocated JS string value.
 ///
 /// String *values* are NaN-boxed as 48-bit pointers to a `JsString` (see
-/// `JsValue::string`), replacing the old interner `(index, hash16)` pair. `hash`
-/// is a full 64-bit FxHash computed once at construction and used as a fast
-/// inequality reject before content comparison.
+/// `JsValue::string`).
 #[derive(Debug)]
 pub struct JsString {
     pub data: String,
-    pub hash: u64,
 }
 
 impl JsString {
     pub fn new(data: String) -> Self {
-        let mut h = FxHasher::default();
-        data.hash(&mut h);
-        let hash = h.finish();
-        Self { data, hash }
+        Self { data }
     }
 
     pub fn len(&self) -> usize {
@@ -484,7 +474,9 @@ impl JsObject {
 
     pub fn set_upvalues(&mut self, v: Box<Vec<*mut Cell>>) {
         if !self.upvalues.is_null() {
-            unsafe { drop(Box::from_raw(self.upvalues as *mut Vec<*mut Cell>)); }
+            unsafe {
+                drop(Box::from_raw(self.upvalues as *mut Vec<*mut Cell>));
+            }
         }
         self.upvalues = Box::into_raw(v) as *mut u8;
     }
