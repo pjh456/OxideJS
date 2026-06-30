@@ -55,7 +55,9 @@ fn parse_int_hex() {
 fn parse_float_decimal() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "parseFloat('3.14')").unwrap();
-    assert!((result.as_double() - 3.14).abs() < 0.001);
+    #[allow(clippy::approx_constant)]
+    let expected = 3.14;
+    assert!((result.as_double() - expected).abs() < 0.001);
 }
 
 #[test]

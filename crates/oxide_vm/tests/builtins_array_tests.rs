@@ -132,13 +132,13 @@ fn array_index_of_not_found() {
 #[test]
 fn array_includes_true() {
     let (_vm, result) = eval("[1,2,3].includes(2)").unwrap();
-    assert_eq!(result.as_bool(), true);
+    assert!(result.as_bool());
 }
 
 #[test]
 fn array_includes_false() {
     let (_vm, result) = eval("[1,2,3].includes(99)").unwrap();
-    assert_eq!(result.as_bool(), false);
+    assert!(!result.as_bool());
 }
 
 #[test]
