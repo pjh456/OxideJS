@@ -120,9 +120,11 @@ impl Vm {
     pub(crate) fn ordinary_set(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue,
     ) -> Result<(), String> {
+        let val = self.promote_if_needed_for_write_ptr(obj as *mut JsObject, val);
         self.ordinary_set_inner(obj, prop_name_si, val, receiver, false)
     }
 
+    /// Dispatch-time entry: caller (dispatch_set_prop etc.) already promoted the value.
     pub(crate) fn ordinary_set_dispatch(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue,
     ) -> Result<(), String> {
@@ -138,7 +140,6 @@ impl Vm {
             prop_name_si,
             use_frame_push
         );
-        let val = self.promote_if_needed_for_write_ptr(obj as *mut JsObject, val);
         if let Some(pos) = self.get_own_property_slot(obj, prop_name_si) {
             if let Some(meta) = obj.prop_meta_at(pos) {
                 if meta.is_accessor {
@@ -260,7 +261,6 @@ impl Vm {
 
     pub(crate) fn set_or_create_prop_value(&mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue) {
         vm_trace!("set_or_create_prop_value: shape_id={} prop_name_si={}", obj.shape_id(), prop_name_si);
-        let val = self.promote_if_needed_for_write_ptr(obj as *mut JsObject, val);
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             obj.set_prop_at(pos, val);
         } else {

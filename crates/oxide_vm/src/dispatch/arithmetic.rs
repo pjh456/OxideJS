@@ -7,8 +7,14 @@ impl Vm {
     #[inline(always)]
     pub(crate) fn dispatch_add(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
         vm_trace!("ADD rd={} r{}={:?} r{}={:?}", rd, a, self.regs[a], b, self.regs[b]);
-        let lhs = self.coerce_primitive_bounded(self.regs[a], false)?;
-        let rhs = self.coerce_primitive_bounded(self.regs[b], false)?;
+        let lv = self.regs[a];
+        let rv = self.regs[b];
+        if lv.is_int() && rv.is_int() {
+            self.regs[rd] = JsValue::float(lv.as_int() as f64 + rv.as_int() as f64);
+            return Ok(());
+        }
+        let lhs = self.coerce_primitive_bounded(lv, false)?;
+        let rhs = self.coerce_primitive_bounded(rv, false)?;
         if lhs.is_string() || rhs.is_string() {
             let mut buf = std::mem::take(&mut self.string_buf);
             buf.clear();

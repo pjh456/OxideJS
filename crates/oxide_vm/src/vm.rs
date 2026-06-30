@@ -17,7 +17,7 @@ use oxide_runtime_api::NativeResult;
 use oxide_types::error::{JsError, JsErrorKind};
 use oxide_types::mem::{Epoch, P};
 use oxide_types::object::{Cell, JsObject, NativeFnPtr, PropAttributes};
-use oxide_types::value::JsValue;
+use oxide_types::value::{JsValue, PTR_MASK};
 
 pub(crate) const MAX_PROTO_CHAIN_DEPTH: usize = 1024;
 
@@ -77,9 +77,15 @@ macro_rules! throw_err {
 
 macro_rules! binary_arith {
     ($self:ident, $a:expr, $b:expr, $rd:expr, $op:tt) => {{
-        let l = $self.coerce_number_bounded($self.regs[$a])?;
-        let r = $self.coerce_number_bounded($self.regs[$b])?;
-        $self.regs[$rd] = JsValue::float(l $op r);
+        let lv = $self.regs[$a];
+        let rv = $self.regs[$b];
+        if lv.is_int() && rv.is_int() {
+            $self.regs[$rd] = JsValue::float(lv.as_int() as f64 $op rv.as_int() as f64);
+        } else {
+            let l = $self.coerce_number_bounded(lv)?;
+            let r = $self.coerce_number_bounded(rv)?;
+            $self.regs[$rd] = JsValue::float(l $op r);
+        }
     }}
 }
 
@@ -440,7 +446,7 @@ impl Vm {
             self.raise_type_error(error_msg)?;
             return Ok(None);
         }
-        let ptr = val.as_js_object_ptr();
+        let ptr = (val.to_bits() & PTR_MASK) as *mut JsObject;
         let addr = ptr as usize;
         if ptr.is_null() || addr < 0x10000 || addr % std::mem::align_of::<JsObject>() != 0 {
             self.raise_type_error(error_msg)?;

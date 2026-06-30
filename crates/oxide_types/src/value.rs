@@ -23,7 +23,7 @@ const TAG_STRING: u64 = 5;
 const TAG_SYMBOL: u64 = 6;
 
 /// 48-bit pointer mask (x86-64 canonical VA)
-const PTR_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
+pub const PTR_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 
 /// 32-bit integer payload mask
 const INT_MASK: u64 = 0x0000_0000_FFFF_FFFF;
@@ -79,6 +79,12 @@ impl JsValue {
     #[allow(dead_code)]
     pub(crate) fn from_bits(bits: u64) -> Self {
         Self(bits)
+    }
+
+    /// Raw NaN-boxed bits. For checked pointer extraction after is_object().
+    #[inline(always)]
+    pub fn to_bits(self) -> u64 {
+        self.0
     }
 
     pub fn int(v: i32) -> Self {

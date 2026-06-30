@@ -583,6 +583,7 @@ impl Vm {
                         {
                             let val = src_obj.get_prop_at(pos);
                             let rest = unsafe { &mut *rest_ptr };
+                            let val = self.promote_if_needed_for_write_ptr(rest_ptr, val);
                             self.set_or_create_prop_value(rest, shape.property_name, val);
                         }
                     }

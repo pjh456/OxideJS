@@ -228,13 +228,11 @@ pub fn array_is_array<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn array_push<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.push called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
-    let mut len = unsafe { &*arr_ptr }.prop_count();
     for &arg_reg in args.iter().skip(1) {
         let val = vm.promote_if_needed_for_write_ptr(arr_ptr, vm.reg(arg_reg));
-        unsafe { &mut *arr_ptr }.set_prop_at(len, val);
-        len += 1;
+        unsafe { &mut *arr_ptr }.push_prop(val);
     }
-    unsafe { &mut *arr_ptr }.set_prop_count(len);
+    let len = unsafe { &*arr_ptr }.prop_count();
     NativeResult::Ok(JsValue::int(len as i32))
 }
 
