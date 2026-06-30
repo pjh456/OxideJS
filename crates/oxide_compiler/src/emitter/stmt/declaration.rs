@@ -37,7 +37,7 @@ impl Compiler {
                 if is_captured {
                     let cell_idx = ctx.scopes.cell_registry.len() as u8;
                     ctx.scopes.cell_registry.push((bi.name.to_string(), cell_idx));
-                    ctx.emit(opcode::encode(OpCode::MAKE_CELL, var_reg, cell_idx, 0));
+                    ctx.emit(opcode::encode(OpCode::MAKE_CELL, tmp, cell_idx, 0));
                 } else {
                     ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, tmp, 0));
                 }

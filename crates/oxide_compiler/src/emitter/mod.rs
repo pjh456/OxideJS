@@ -356,9 +356,6 @@ impl Compiler {
     ) -> Result<(), String> {
         let var_reg = ctx.alloc_reg();
         let target_reg = if matches!(kind, VariableDeclarationKind::Var) {
-            // `var` is hoisted, so the count pass already registered the name. A redeclare
-            // here reuses that existing register instead of erroring; the freshly allocated
-            // reg matches it (count/emit allocate in lock-step) so either resolves the same.
             match ctx.declare(name, var_reg, kind, is_const) {
                 Ok(()) => var_reg,
                 Err(_) => ctx.lookup(name).unwrap_or(var_reg),
@@ -367,7 +364,13 @@ impl Compiler {
             ctx.declare(name, var_reg, kind, is_const)?;
             var_reg
         };
-        ctx.emit(opcode::encode(OpCode::STORE_VAR, target_reg, src_reg, if is_const { 1 } else { 0 }));
+        if ctx.scopes.symbols.lookup_is_captured(name) {
+            let cell_idx = ctx.scopes.cell_registry.len() as u8;
+            ctx.scopes.cell_registry.push((name.to_string(), cell_idx));
+            ctx.emit(opcode::encode(OpCode::MAKE_CELL, src_reg, cell_idx, 0));
+        } else {
+            ctx.emit(opcode::encode(OpCode::STORE_VAR, target_reg, src_reg, if is_const { 1 } else { 0 }));
+        }
         ctx.init_var(name);
         Ok(())
     }

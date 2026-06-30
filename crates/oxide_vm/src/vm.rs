@@ -769,7 +769,6 @@ impl Vm {
             self.sub_modules = Arc::new(callee_subs.clone());
             self.immutables_cache = (0..=callee_subs.len()).map(|_| OnceLock::new()).collect();
         }
-        self.cell_stack.push(Vec::with_capacity(subs[sub_idx].cells_needed as usize));
 
         self.active_reg_limit = sub_n_registers.max(1);
         self.pc = 0;

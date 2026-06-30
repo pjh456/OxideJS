@@ -96,7 +96,6 @@ impl Vm {
         let is_derived_constructor = sub.is_derived_constructor;
         let needs_home_object = sub.needs_home_object;
         let upvalue_captures = sub.upvalue_captures.clone();
-        let cells_needed = sub.cells_needed;
         let result = self.create_function_object(
             sub_idx,
             is_arrow,
@@ -104,7 +103,7 @@ impl Vm {
             is_derived_constructor,
             needs_home_object,
         );
-        if !upvalue_captures.is_empty() && cells_needed > 0 {
+        if !upvalue_captures.is_empty() {
             if let Some(current_cells) = self.cell_stack.last() {
                 let mut upvals = Box::new(Vec::with_capacity(upvalue_captures.len()));
                 for capture in &upvalue_captures {
@@ -126,7 +125,7 @@ impl Vm {
     pub(crate) fn dispatch_make_cell(&mut self, rd: usize, instr: u32) -> Result<(), String> {
         let cell_idx = opcode::imm16(instr) as usize;
         let value = self.regs[rd];
-        let cell = self.gc_state.session_epoch.alloc(Cell::new(value, false));
+        let cell = self.gc_state.session_epoch.alloc(Cell::new(value, true));
         let cell_ptr = cell as *mut Cell;
         let current = self.cell_stack.last_mut().unwrap();
         while current.len() <= cell_idx {
@@ -137,19 +136,18 @@ impl Vm {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn dispatch_cell_get(&mut self, rd: usize, _a: usize, b: usize) -> Result<(), String> {
+    pub(crate) fn dispatch_cell_get(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
         let cell_idx = b;
-        let current = self.cell_stack.last().unwrap();
-        if cell_idx >= current.len() {
-            self.regs[rd] = JsValue::undefined();
-            return Ok(());
+        let current = self.cell_stack.last_mut().unwrap();
+        while current.len() <= cell_idx {
+            current.push(std::ptr::null_mut());
         }
-        let cell_ptr = current[cell_idx];
-        if cell_ptr.is_null() {
-            self.regs[rd] = JsValue::undefined();
-            return Ok(());
+        if current[cell_idx].is_null() {
+            let val = self.regs[a];
+            let cell = self.gc_state.session_epoch.alloc(Cell::new(val, true));
+            current[cell_idx] = cell as *mut Cell;
         }
-        self.regs[rd] = unsafe { (*cell_ptr).value };
+        self.regs[rd] = unsafe { (*current[cell_idx]).value };
         Ok(())
     }
 
@@ -184,6 +182,23 @@ impl Vm {
                     self.regs[rd] = unsafe { (*cell).value };
                     return Ok(());
                 }
+            }
+        }
+        // Cell not yet created (hoisting order: CREATE_CLOSURE before MAKE_CELL).
+        // Create cell lazily with caller's register value.
+        self.lazy_create_upvalue_cell(rd, uv_idx)
+    }
+
+    fn lazy_create_upvalue_cell(&mut self, rd: usize, uv_idx: usize) -> Result<(), String> {
+        let callee = self.frames.last().unwrap().callee;
+        if callee.is_object() {
+            let obj = unsafe { &mut *callee.as_js_object_ptr() };
+            let upvals = obj.upvalues_slice_mut();
+            if uv_idx < upvals.len() {
+                let cell = self.gc_state.session_epoch.alloc(Cell::new(self.regs[rd], true));
+                upvals[uv_idx] = cell as *mut Cell;
+                self.regs[rd] = cell.value;
+                return Ok(());
             }
         }
         self.regs[rd] = JsValue::undefined();

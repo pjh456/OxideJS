@@ -1089,10 +1089,13 @@ impl Compiler {
             is_class_constructor: false,
             is_derived_constructor: false,
             needs_home_object: false,
-            upvalue_captures: Vec::new(),
-            cells_needed: ctx.scopes.symbols.scopes[0]
-                .bindings
-                .values()
+            upvalue_captures: ctx.current_upvalue_captures.clone(),
+            cells_needed: ctx
+                .scopes
+                .symbols
+                .scopes
+                .iter()
+                .flat_map(|s| s.bindings.values())
                 .filter(|b| b.is_captured.get())
                 .count() as u8,
         })
@@ -1193,10 +1196,13 @@ impl Compiler {
             is_class_constructor: false,
             is_derived_constructor: false,
             needs_home_object: false,
-            upvalue_captures: Vec::new(),
-            cells_needed: ctx.scopes.symbols.scopes[0]
-                .bindings
-                .values()
+            upvalue_captures: ctx.current_upvalue_captures.clone(),
+            cells_needed: ctx
+                .scopes
+                .symbols
+                .scopes
+                .iter()
+                .flat_map(|s| s.bindings.values())
                 .filter(|b| b.is_captured.get())
                 .count() as u8,
         })
