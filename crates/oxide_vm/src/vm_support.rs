@@ -70,6 +70,7 @@ impl Vm {
                 instruction_count: 0,
             },
             string_buf: String::new(),
+            cell_stack: Vec::new(),
         };
         vm_info!("Vm created");
         vm
@@ -129,6 +130,7 @@ impl Vm {
                 instruction_count: 0,
             },
             string_buf: String::new(),
+            cell_stack: Vec::new(),
         };
         vm_info!("Vm created (pool)");
         vm

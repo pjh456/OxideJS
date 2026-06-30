@@ -12,6 +12,13 @@ pub enum Constant {
     Undefined,
 }
 
+#[derive(Debug, Clone)]
+pub struct UpvalueCapture {
+    pub name: String,
+    pub enclosing_reg: u8,
+    pub cell_idx: u8,
+}
+
 pub struct CompiledModule {
     pub bytecode: Vec<opcode::Instr>,
     pub constants: Vec<Constant>,
@@ -37,6 +44,8 @@ pub struct CompiledModule {
     pub is_derived_constructor: bool,
     /// True for prototype methods whose function object needs a runtime home_object.
     pub needs_home_object: bool,
+    pub upvalue_captures: Vec<UpvalueCapture>,
+    pub cells_needed: u8,
 }
 
 impl CompiledModule {
@@ -55,6 +64,8 @@ impl CompiledModule {
             is_class_constructor: false,
             is_derived_constructor: false,
             needs_home_object: false,
+            upvalue_captures: Vec::new(),
+            cells_needed: 0,
         }
     }
 }
@@ -81,6 +92,8 @@ impl Clone for CompiledModule {
             is_class_constructor: self.is_class_constructor,
             is_derived_constructor: self.is_derived_constructor,
             needs_home_object: self.needs_home_object,
+            upvalue_captures: self.upvalue_captures.clone(),
+            cells_needed: self.cells_needed,
         }
     }
 }
@@ -92,6 +105,8 @@ impl fmt::Display for CompiledModule {
         for (i, c) in self.constants.iter().enumerate() {
             writeln!(f, ";   [{i}] = {c:?}")?;
         }
+        writeln!(f)?;
+        writeln!(f, "; upvalue_captures: {:?}", self.upvalue_captures)?;
         writeln!(f)?;
         for (offset, &instr) in self.bytecode.iter().enumerate() {
             let op = opcode::opcode(instr);

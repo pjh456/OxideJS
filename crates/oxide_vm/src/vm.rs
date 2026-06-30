@@ -16,7 +16,7 @@ use oxide_runtime_api as coercion;
 use oxide_runtime_api::NativeResult;
 use oxide_types::error::{JsError, JsErrorKind};
 use oxide_types::mem::{Epoch, P};
-use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
+use oxide_types::object::{Cell, JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
 pub(crate) const MAX_PROTO_CHAIN_DEPTH: usize = 1024;
@@ -189,6 +189,7 @@ pub struct Vm {
     pub(crate) iters: IterState,
     /// Grouped inline-cache and instruction counters.
     pub(crate) profiling: ProfilingState,
+    pub(crate) cell_stack: Vec<Vec<*mut Cell>>,
     /// Reusable string buffer for concatenation to avoid allocation per `+` op.
     pub(crate) string_buf: String,
 }
@@ -356,6 +357,17 @@ impl Vm {
         }
         for &v in &self.save_stack {
             f(v);
+        }
+        for cell_vec in &self.cell_stack {
+            for &cell_ptr in cell_vec {
+                if cell_ptr.is_null() {
+                    continue;
+                }
+                let cell = unsafe { &*cell_ptr };
+                if cell.value.is_object() || cell.value.is_string() {
+                    f(cell.value);
+                }
+            }
         }
         f(JsValue::from_js_object(self.session.global_object().as_ptr() as *mut JsObject));
         f(self.exception_value.unwrap_or(JsValue::undefined()));
@@ -709,6 +721,8 @@ impl Vm {
 
         self.saved_bytecode_stack.push(std::mem::take(&mut self.bytecode));
         self.saved_immutables_stack.push(self.active_immutables);
+        // cell_stack push disabled for debug
+        // self.cell_stack.push(Vec::with_capacity(...));
 
         let function_name = self.sub_modules[sub_idx]
             .function_name

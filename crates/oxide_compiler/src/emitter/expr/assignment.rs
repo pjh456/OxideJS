@@ -142,6 +142,20 @@ impl Compiler {
             } else {
                 let val_reg = self.emit_expression(&assign.right, ctx)?;
                 let name = id_ref.name.as_str();
+                // Check if target is an upvalue reference
+                if let Some(uv_idx) = ctx.current_upvalue_captures.iter().position(|u| u.name == name) {
+                    ctx.emit(opcode::encode(OpCode::STORE_UPVALUE, 0, val_reg, uv_idx as u8));
+                    return Ok(val_reg);
+                }
+                // Check if target is a captured cell
+                if ctx.scopes.symbols.lookup_is_captured(name) {
+                    let cell_idx = ctx.scopes.cell_registry.iter()
+                        .find(|(n, _)| n == name)
+                        .map(|(_, idx)| *idx)
+                        .unwrap_or(0);
+                    ctx.emit(opcode::encode(OpCode::CELL_SET, 0, val_reg, cell_idx));
+                    return Ok(val_reg);
+                }
                 let var_reg = ctx.lookup_or_global(name);
                 let is_const = ctx.lookup_const_flag(name);
                 let const_flag = if is_const { 1 } else { 0 };

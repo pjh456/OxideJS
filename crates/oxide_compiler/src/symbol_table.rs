@@ -17,6 +17,7 @@ pub(crate) struct Binding {
     pub(crate) reg: u8,
     pub(crate) initialized: bool,
     pub(crate) is_const: bool,
+    pub(crate) is_captured: bool,
 }
 
 pub struct SymbolTable {
@@ -84,6 +85,7 @@ impl SymbolTable {
                 reg,
                 initialized: false,
                 is_const: matches!(kind, VariableDeclarationKind::Const) || is_const,
+                is_captured: false,
             },
         );
         Ok(())
@@ -101,11 +103,20 @@ impl SymbolTable {
         Err(format!("Identifier '{name}' is not defined"))
     }
 
-    pub fn lookup_any(&self, name: &str) -> Option<u8> {
+    pub(crate) fn lookup_any(&self, name: &str) -> Option<u8> {
         self.scopes
             .iter()
             .rev()
             .find_map(|scope| scope.bindings.get(name).map(|binding| binding.reg))
+    }
+
+    pub(crate) fn lookup_any_binding(&self, name: &str) -> Option<(&Binding, usize)> {
+        for (i, scope) in self.scopes.iter().enumerate().rev() {
+            if let Some(b) = scope.bindings.get(name) {
+                return Some((b, i));
+            }
+        }
+        None
     }
 
     pub fn lookup_or_global(&mut self, name: &str, reg_for_new: u8) -> u8 {
@@ -120,6 +131,7 @@ impl SymbolTable {
                 reg: reg_for_new,
                 initialized: true,
                 is_const: false,
+                is_captured: false,
             },
         );
         reg_for_new
@@ -132,6 +144,15 @@ impl SymbolTable {
                     return b.is_const;
                 }
                 return false;
+            }
+        }
+        false
+    }
+
+    pub fn lookup_is_captured(&self, name: &str) -> bool {
+        for scope in self.scopes.iter().rev() {
+            if let Some(b) = scope.bindings.get(name) {
+                return b.is_captured;
             }
         }
         false
@@ -157,6 +178,7 @@ impl SymbolTable {
                 reg,
                 initialized: true,
                 is_const: matches!(kind, VariableDeclarationKind::Const) || is_const,
+                is_captured: false,
             },
         );
         Ok(())
@@ -167,6 +189,7 @@ impl SymbolTable {
             reg,
             initialized: true,
             is_const: false,
+            is_captured: false,
         });
     }
 

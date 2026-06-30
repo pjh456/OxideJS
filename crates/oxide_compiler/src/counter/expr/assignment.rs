@@ -32,13 +32,21 @@ impl Compiler {
             self.count_expression(&assign.right, ctx);
             ctx.count_load_const(); // private id
             ctx.count_instr(); // SET_PRIVATE
-        } else if let oxide_parser::AssignmentTarget::AssignmentTargetIdentifier(_) = &assign.left {
+        } else if let oxide_parser::AssignmentTarget::AssignmentTargetIdentifier(ati) = &assign.left {
+            let name = ati.name.as_str();
+            // Check if target is an upvalue or captured cell
+            let is_upvalue = ctx.current_upvalue_captures.iter().any(|u| u.name == name);
+            let is_captured = ctx.scopes.symbols.lookup_is_captured(name);
             if let Some(logical_op) = assign.operator.to_logical_operator() {
                 self.count_identifier_logical_assignment(logical_op, &assign.right, ctx);
             } else {
                 self.count_expression(&assign.right, ctx);
                 if assign.operator != AssignmentOperator::Assign {
                     ctx.projected_pc += 1; // COMPOUND_* on var
+                } else if is_upvalue {
+                    ctx.count_instr(); // STORE_UPVALUE
+                } else if is_captured {
+                    ctx.count_instr(); // CELL_SET
                 } else {
                     ctx.alloc_reg();
                     ctx.projected_pc += 1; // STORE_VAR

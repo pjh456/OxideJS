@@ -4,7 +4,7 @@ use crate::{vm_debug, vm_trace};
 use oxide_builtins::{builtins_debug, builtins_trace};
 use oxide_bytecode::opcode;
 use oxide_runtime_api::NativeResult;
-use oxide_types::object::JsObject;
+use oxide_types::object::{Cell, JsObject};
 use oxide_types::value::JsValue;
 use std::sync::Arc;
 
@@ -89,14 +89,119 @@ impl Vm {
         vm_trace!("CREATE_CLOSURE rd={} sub_idx={}", rd, sub_idx);
         debug_assert!(sub_idx > 0 && (sub_idx as usize) <= self.sub_modules.len());
         let sub = &self.sub_modules[sub_idx as usize - 1];
+        let is_arrow = sub.is_arrow;
+        let is_class_constructor = sub.is_class_constructor;
+        let is_derived_constructor = sub.is_derived_constructor;
+        let needs_home_object = sub.needs_home_object;
+        let upvalue_captures = sub.upvalue_captures.clone();
+        let cells_needed = sub.cells_needed;
         let result = self.create_function_object(
             sub_idx,
-            sub.is_arrow,
-            sub.is_class_constructor,
-            sub.is_derived_constructor,
-            sub.needs_home_object,
+            is_arrow,
+            is_class_constructor,
+            is_derived_constructor,
+            needs_home_object,
         );
+        if !upvalue_captures.is_empty() && cells_needed > 0 {
+            if let Some(current_cells) = self.cell_stack.last() {
+                let mut upvals = Box::new(Vec::with_capacity(upvalue_captures.len()));
+                for capture in &upvalue_captures {
+                    let cell_ptr = if (capture.cell_idx as usize) < current_cells.len() {
+                        current_cells[capture.cell_idx as usize]
+                    } else {
+                        std::ptr::null_mut()
+                    };
+                    upvals.push(cell_ptr);
+                }
+                let func_obj = unsafe { &mut *result.as_js_object_ptr() };
+                func_obj.set_upvalues(upvals);
+            }
+        }
         self.regs[rd] = result;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn dispatch_make_cell(&mut self, rd: usize, instr: u32) -> Result<(), String> {
+        let cell_idx = opcode::imm16(instr) as usize;
+        let value = self.regs[rd];
+        let cell = self.gc_state.session_epoch.alloc(Cell::new(value, false));
+        let cell_ptr = cell as *mut Cell;
+        let current = self.cell_stack.last_mut().unwrap();
+        while current.len() <= cell_idx {
+            current.push(std::ptr::null_mut());
+        }
+        current[cell_idx] = cell_ptr;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn dispatch_cell_get(&mut self, rd: usize, _a: usize, b: usize) -> Result<(), String> {
+        let cell_idx = b;
+        let current = self.cell_stack.last().unwrap();
+        if cell_idx >= current.len() {
+            self.regs[rd] = JsValue::undefined();
+            return Ok(());
+        }
+        let cell_ptr = current[cell_idx];
+        if cell_ptr.is_null() {
+            self.regs[rd] = JsValue::undefined();
+            return Ok(());
+        }
+        self.regs[rd] = unsafe { (*cell_ptr).value };
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn dispatch_cell_set(&mut self, a: usize, b: usize) -> Result<(), String> {
+        let cell_idx = b;
+        let src_val = self.regs[a];
+        let current = self.cell_stack.last_mut().unwrap();
+        if cell_idx >= current.len() {
+            return Ok(());
+        }
+        let cell_ptr = current[cell_idx];
+        if cell_ptr.is_null() {
+            return Ok(());
+        }
+        unsafe { (*cell_ptr).value = src_val; }
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn dispatch_load_upvalue(&mut self, rd: usize, instr: u32) -> Result<(), String> {
+        let uv_idx = opcode::imm16(instr) as usize;
+        let callee = self.frames.last().unwrap().callee;
+        if callee.is_object() {
+            let obj = unsafe { &*callee.as_js_object_ptr() };
+            let upvals = obj.upvalues_slice();
+            if uv_idx < upvals.len() {
+                let cell = upvals[uv_idx];
+                if !cell.is_null() {
+                    self.regs[rd] = unsafe { (*cell).value };
+                    return Ok(());
+                }
+            }
+        }
+        self.regs[rd] = JsValue::undefined();
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn dispatch_store_upvalue(&mut self, a: usize, b: usize) -> Result<(), String> {
+        let uv_idx = b;
+        let src_val = self.regs[a];
+        let callee = self.frames.last().unwrap().callee;
+        if callee.is_object() {
+            let obj = unsafe { &*callee.as_js_object_ptr() };
+            let upvals = obj.upvalues_slice();
+            if uv_idx < upvals.len() {
+                let cell = upvals[uv_idx];
+                if !cell.is_null() {
+                    unsafe { (*cell).value = src_val; }
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn dispatch_create_regexp(&mut self, rd: usize, a: usize, b: usize) -> Result<Option<JsValue>, String> {

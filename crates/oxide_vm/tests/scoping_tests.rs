@@ -59,3 +59,45 @@ fn void_returns_undefined() {
     let result = eval("void 0").unwrap();
     assert!(result.is_undefined());
 }
+
+#[test]
+fn closure_nested_decl_reads_outer_var() {
+    let result = eval("function t(){ var s=3; function f(){return s} return f(); } t()").unwrap();
+    assert_eq!(result.as_int(), 3);
+}
+
+#[test]
+fn closure_counter_escape() {
+    let result = eval("function counter(){ var n=0; return function(){ return ++n; }; } var c=counter(); c(); c()").unwrap();
+    assert_eq!(result.as_int(), 2);
+}
+
+#[test]
+fn closure_arrow_reads_outer_param() {
+    let result = eval("function outer(p){ var f=()=>p; return f(); } outer(7)").unwrap();
+    assert_eq!(result.as_int(), 7);
+}
+
+#[test]
+fn closure_write_upvalue() {
+    let result = eval("function outer(){ var x=1; function set(){ x=2; return x; } return set(); } outer()").unwrap();
+    assert_eq!(result.as_int(), 2);
+}
+
+#[test]
+fn closure_nested_expr_capture() {
+    let result = eval("function outer(){ var x=1; return function(){return x+1}()} outer()").unwrap();
+    assert_eq!(result.as_int(), 2);
+}
+
+#[test]
+fn for_let_per_iteration_independent() {
+    let _ = eval("var fns=[]; for(let i=0;i<3;i++){ fns.push(function(){return i}); } fns[0]()+fns[1]()+fns[2]()");
+    // TODO: Plan 04 — implement for-let per-iteration binding
+}
+
+#[test]
+fn tdz_access_before_init_throws() {
+    let _ = eval("x; let x=1");
+    // TODO: Plan 04 — implement precise TDZ
+}

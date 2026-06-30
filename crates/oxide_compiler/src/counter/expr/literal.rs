@@ -21,8 +21,26 @@ impl Compiler {
         let Expression::Identifier(ident) = expr else {
             return;
         };
-        if CompileCtx::is_known_builtin(ident.name.as_str()) {
-            let _ = ctx.lookup_or_builtin(ident.name.as_str());
+        let name = ident.name.as_str();
+
+        // Check if this is an upvalue reference (nested closure)
+        for up in &ctx.current_upvalue_captures {
+            if up.name == name {
+                ctx.alloc_reg();
+                ctx.count_instr(); // LOAD_UPVALUE
+                return;
+            }
+        }
+
+        // Check if the owner's binding is captured (cell access)
+        if ctx.scopes.symbols.lookup_is_captured(name) {
+            ctx.alloc_reg();
+            ctx.count_instr(); // CELL_GET
+            return;
+        }
+
+        if CompileCtx::is_known_builtin(name) {
+            let _ = ctx.lookup_or_builtin(name);
         }
         ctx.alloc_reg();
         ctx.projected_pc += 1; // LOAD_VAR

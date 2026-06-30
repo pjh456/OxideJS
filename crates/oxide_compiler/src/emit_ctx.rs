@@ -30,6 +30,7 @@ pub(crate) struct ScopeCtx {
     pub(crate) builtin_reg_map: Vec<(String, u8)>,
     pub(crate) private_name_map: Vec<(String, u32)>,
     pub(crate) next_private_name_id: u32,
+    pub(crate) cell_registry: Vec<(String, u8)>,
 }
 
 /// Reserved for destructuring-pattern state (Phase 15). Intentionally empty

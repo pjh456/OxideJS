@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use crate::emit_ctx::{LabelCtx, ScopeCtx};
 use crate::symbol_table::{Binding, SymbolTable};
 use oxide_bytecode::module::CompiledModule;
+use oxide_bytecode::module::UpvalueCapture;
 use oxide_bytecode::opcode::{self, OpCode};
 
 pub use crate::hash::{compiled_module_hash, structural_hash};
@@ -164,6 +165,7 @@ pub(crate) struct CompileCtx {
     /// constructor's instance-field code, added at the super() call site during body
     /// counting so projected_pc matches where the emit pass splices the field bytecode.
     pub(crate) after_super_count_words: Option<usize>,
+    pub(crate) current_upvalue_captures: Vec<UpvalueCapture>,
     /// Set when alloc_reg() overflows into the reserved this/new.target range (≥254).
     /// Checked after each emit phase to produce a compile error rather than silent corruption.
     pub(crate) reg_overflow: bool,
@@ -227,6 +229,7 @@ impl CompileCtx {
                 builtin_reg_map: Vec::new(),
                 private_name_map: Vec::new(),
                 next_private_name_id: 1,
+                cell_registry: Vec::new(),
             },
             projected_pc: 0,
             sub_modules: Vec::new(),
@@ -238,6 +241,7 @@ impl CompileCtx {
             after_super_insert: None,
             after_super_inserted: false,
             after_super_count_words: None,
+            current_upvalue_captures: Vec::new(),
             reg_overflow: false,
             const_overflow: false,
             jump_overflow: false,
@@ -587,6 +591,203 @@ impl Compiler {
         Self
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn analyze_upvalue_captures(
+        &self, body_stmts: &[Statement], parent_ctx: &CompileCtx, nested_symbols: &SymbolTable,
+    ) -> (Vec<UpvalueCapture>, u8) {
+        let mut captures: Vec<UpvalueCapture> = Vec::new();
+        let mut seen: HashMap<String, usize> = HashMap::new();
+
+        for stmt in body_stmts {
+            self.collect_upvalue_stmt(stmt, parent_ctx, nested_symbols, &mut captures, &mut seen);
+        }
+
+        let count = captures.len() as u8;
+        (captures, count)
+    }
+
+    #[allow(dead_code)]
+    fn collect_upvalue_stmt(
+        &self, stmt: &Statement, parent_ctx: &CompileCtx, nested_symbols: &SymbolTable,
+        captures: &mut Vec<UpvalueCapture>, seen: &mut HashMap<String, usize>,
+    ) {
+        match stmt {
+            Statement::ExpressionStatement(es) => {
+                self.collect_upvalue_expr(&es.expression, parent_ctx, nested_symbols, captures, seen);
+            }
+            Statement::VariableDeclaration(vd) => {
+                for decl in &vd.declarations {
+                    if let Some(init) = &decl.init {
+                        self.collect_upvalue_expr(init, parent_ctx, nested_symbols, captures, seen);
+                    }
+                }
+            }
+            Statement::ReturnStatement(rs) => {
+                if let Some(expr) = &rs.argument {
+                    self.collect_upvalue_expr(expr, parent_ctx, nested_symbols, captures, seen);
+                }
+            }
+            Statement::ForStatement(fs) => {
+                if let Some(init) = &fs.init {
+                    if let Some(e) = init.as_expression() {
+                        self.collect_upvalue_expr(e, parent_ctx, nested_symbols, captures, seen);
+                    }
+                }
+                if let Some(test) = &fs.test {
+                    self.collect_upvalue_expr(test, parent_ctx, nested_symbols, captures, seen);
+                }
+                if let Some(update) = &fs.update {
+                    self.collect_upvalue_expr(update, parent_ctx, nested_symbols, captures, seen);
+                }
+                self.collect_upvalue_stmt(&fs.body, parent_ctx, nested_symbols, captures, seen);
+            }
+            Statement::IfStatement(is) => {
+                self.collect_upvalue_expr(&is.test, parent_ctx, nested_symbols, captures, seen);
+                self.collect_upvalue_stmt(&is.consequent, parent_ctx, nested_symbols, captures, seen);
+                if let Some(alt) = &is.alternate {
+                    self.collect_upvalue_stmt(alt, parent_ctx, nested_symbols, captures, seen);
+                }
+            }
+            Statement::WhileStatement(ws) => {
+                self.collect_upvalue_expr(&ws.test, parent_ctx, nested_symbols, captures, seen);
+                self.collect_upvalue_stmt(&ws.body, parent_ctx, nested_symbols, captures, seen);
+            }
+            Statement::DoWhileStatement(dw) => {
+                self.collect_upvalue_stmt(&dw.body, parent_ctx, nested_symbols, captures, seen);
+                self.collect_upvalue_expr(&dw.test, parent_ctx, nested_symbols, captures, seen);
+            }
+            Statement::BlockStatement(bs) => {
+                for s in &bs.body {
+                    self.collect_upvalue_stmt(s, parent_ctx, nested_symbols, captures, seen);
+                }
+            }
+            Statement::TryStatement(ts) => {
+                for s in &ts.block.body {
+                    self.collect_upvalue_stmt(s, parent_ctx, nested_symbols, captures, seen);
+                }
+                if let Some(handler) = &ts.handler {
+                    for s in &handler.body.body {
+                        self.collect_upvalue_stmt(s, parent_ctx, nested_symbols, captures, seen);
+                    }
+                }
+                if let Some(finalizer) = &ts.finalizer {
+                    for s in &finalizer.body {
+                        self.collect_upvalue_stmt(s, parent_ctx, nested_symbols, captures, seen);
+                    }
+                }
+            }
+            Statement::ThrowStatement(ts) => {
+                self.collect_upvalue_expr(&ts.argument, parent_ctx, nested_symbols, captures, seen);
+            }
+            Statement::SwitchStatement(ss) => {
+                self.collect_upvalue_expr(&ss.discriminant, parent_ctx, nested_symbols, captures, seen);
+                for case in &ss.cases {
+                    for s in &case.consequent {
+                        self.collect_upvalue_stmt(s, parent_ctx, nested_symbols, captures, seen);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[allow(dead_code)]
+    fn collect_upvalue_expr(
+        &self, expr: &Expression, parent_ctx: &CompileCtx, nested_symbols: &SymbolTable,
+        captures: &mut Vec<UpvalueCapture>, seen: &mut HashMap<String, usize>,
+    ) {
+        match expr {
+            Expression::Identifier(ident) => {
+                let name = ident.name.as_str();
+                if nested_symbols.lookup_any_binding(name).is_some() {
+                    return;
+                }
+                if let Some((binding, _)) = parent_ctx.scopes.symbols.lookup_any_binding(name) {
+                    if seen.contains_key(name) {
+                        return;
+                    }
+                    let cell_idx = captures.len() as u8;
+                    seen.insert(name.to_string(), cell_idx as usize);
+                    captures.push(UpvalueCapture {
+                        name: name.to_string(),
+                        enclosing_reg: binding.reg,
+                        cell_idx,
+                    });
+                }
+            }
+            Expression::AssignmentExpression(ae) => {
+                if let oxide_parser::AssignmentTarget::AssignmentTargetIdentifier(ati) = &ae.left {
+                    let name = ati.name.as_str();
+                    if nested_symbols.lookup_any_binding(name).is_none() {
+                        if let Some((binding, _)) = parent_ctx.scopes.symbols.lookup_any_binding(name) {
+                            if !seen.contains_key(name) {
+                                let cell_idx = captures.len() as u8;
+                                seen.insert(name.to_string(), cell_idx as usize);
+                                captures.push(UpvalueCapture {
+                                    name: name.to_string(),
+                                    enclosing_reg: binding.reg,
+                                    cell_idx,
+                                });
+                            }
+                        }
+                    }
+                }
+                self.collect_upvalue_expr(&ae.right, parent_ctx, nested_symbols, captures, seen);
+            }
+            Expression::BinaryExpression(be) => {
+                self.collect_upvalue_expr(&be.left, parent_ctx, nested_symbols, captures, seen);
+                self.collect_upvalue_expr(&be.right, parent_ctx, nested_symbols, captures, seen);
+            }
+            Expression::UnaryExpression(ue) => {
+                self.collect_upvalue_expr(&ue.argument, parent_ctx, nested_symbols, captures, seen);
+            }
+            Expression::UpdateExpression(ue) => {
+                if let oxide_parser::SimpleAssignmentTarget::AssignmentTargetIdentifier(ati) = &ue.argument {
+                    let name = ati.name.as_str();
+                    if nested_symbols.lookup_any_binding(name).is_none() {
+                        if let Some((binding, _)) = parent_ctx.scopes.symbols.lookup_any_binding(name) {
+                            if !seen.contains_key(name) {
+                                let cell_idx = captures.len() as u8;
+                                seen.insert(name.to_string(), cell_idx as usize);
+                                captures.push(UpvalueCapture {
+                                    name: name.to_string(),
+                                    enclosing_reg: binding.reg,
+                                    cell_idx,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            Expression::CallExpression(ce) => {
+                self.collect_upvalue_expr(&ce.callee, parent_ctx, nested_symbols, captures, seen);
+                for arg in &ce.arguments {
+                    if let Some(e) = arg.as_expression() {
+                        self.collect_upvalue_expr(e, parent_ctx, nested_symbols, captures, seen);
+                    }
+                }
+            }
+            Expression::SequenceExpression(se) => {
+                for sub_expr in &se.expressions {
+                    self.collect_upvalue_expr(sub_expr, parent_ctx, nested_symbols, captures, seen);
+                }
+            }
+            Expression::ConditionalExpression(ce) => {
+                self.collect_upvalue_expr(&ce.test, parent_ctx, nested_symbols, captures, seen);
+                self.collect_upvalue_expr(&ce.consequent, parent_ctx, nested_symbols, captures, seen);
+                self.collect_upvalue_expr(&ce.alternate, parent_ctx, nested_symbols, captures, seen);
+            }
+            Expression::ArrayExpression(ae) => {
+                for elem in &ae.elements {
+                    if let Some(e) = elem.as_expression() {
+                        self.collect_upvalue_expr(e, parent_ctx, nested_symbols, captures, seen);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub(crate) fn extract_function_parts<'a>(
         &self, function: &'a oxide_parser::Function<'a>,
     ) -> Result<(Vec<ParamSpec<'a>>, &'a [Statement<'a>]), String> {
@@ -693,6 +894,7 @@ impl Compiler {
                     reg: binding.reg,
                     initialized: binding.initialized,
                     is_const: binding.is_const,
+                    is_captured: binding.is_captured,
                 },
             );
             inherited_reg_start = inherited_reg_start.max(binding.reg.saturating_add(1));
@@ -704,6 +906,7 @@ impl Compiler {
                     reg: *reg,
                     initialized: true,
                     is_const: true,
+                    is_captured: false,
                 },
             );
             inherited_reg_start = inherited_reg_start.max(reg.saturating_add(1));
@@ -713,6 +916,23 @@ impl Compiler {
         // Align next_reg with builtin count so both count and emit passes start at the
         // same register offset (params go after builtin slots).
         ctx.reset_regs();
+
+        // Free variable analysis for upvalue capture (Ordinary + Arrow functions only)
+        // ponytail: temporarily disabled to isolate closure bug
+        /*
+        if matches!(body_context, FunctionBodyContext::Ordinary | FunctionBodyContext::Arrow) {
+            let (captures, _cells) = self.analyze_upvalue_captures(body_stmts, parent_ctx, &ctx.scopes.symbols);
+            ctx.current_upvalue_captures = captures;
+            ctx.scopes.cell_registry = ctx.current_upvalue_captures.iter()
+                .map(|u| (u.name.clone(), u.cell_idx))
+                .collect();
+            for up in &ctx.current_upvalue_captures {
+                if let Some((binding, _)) = parent_ctx.scopes.symbols.lookup_any_binding(&up.name) {
+                    binding.is_captured.set(true);
+                }
+            }
+        }
+        */
 
         // Function body scope - params and local vars
         ctx.push_scope_with_kind(ScopeKind::FunctionScope);
@@ -858,6 +1078,8 @@ impl Compiler {
             is_class_constructor: false,
             is_derived_constructor: false,
             needs_home_object: false,
+            upvalue_captures: Vec::new(),
+            cells_needed: 0,
         })
     }
 
@@ -956,6 +1178,8 @@ impl Compiler {
             is_class_constructor: false,
             is_derived_constructor: false,
             needs_home_object: false,
+            upvalue_captures: Vec::new(),
+            cells_needed: 0,
         })
     }
 }

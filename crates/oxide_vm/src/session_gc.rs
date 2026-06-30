@@ -82,6 +82,16 @@ impl SessionGc {
         if obj.is_data_view_obj() {
             edges.extend(data_view::data_view_native_edges(obj));
         }
+        // Traverse upvalue cells for object references
+        for cell_ptr in obj.upvalues_slice() {
+            if cell_ptr.is_null() {
+                continue;
+            }
+            let cell = unsafe { &**cell_ptr };
+            if cell.value.is_object() {
+                edges.push(cell.value);
+            }
+        }
         edges
     }
 
@@ -102,6 +112,16 @@ impl SessionGc {
         }
         if obj.home_object().is_string() {
             live.insert(obj.home_object().as_string_ptr_mut());
+        }
+        // Scan upvalue cells for string references
+        for cell_ptr in obj.upvalues_slice() {
+            if cell_ptr.is_null() {
+                continue;
+            }
+            let cell = unsafe { &**cell_ptr };
+            if cell.value.is_string() {
+                live.insert(cell.value.as_string_ptr_mut());
+            }
         }
         if obj.is_map() {
             for value in map::map_native_edges(obj) {

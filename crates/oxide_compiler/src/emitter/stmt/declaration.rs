@@ -33,7 +33,14 @@ impl Compiler {
                 ctx.emit_load_const(tmp, idx);
                 let var_reg = ctx.alloc_reg();
                 ctx.declare(bi.name.as_str(), var_reg, decl.kind, is_const)?;
-                ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, tmp, 0));
+                let is_captured = ctx.scopes.symbols.lookup_is_captured(bi.name.as_str());
+                if is_captured {
+                    let cell_idx = ctx.scopes.cell_registry.len() as u8;
+                    ctx.scopes.cell_registry.push((bi.name.to_string(), cell_idx));
+                    ctx.emit(opcode::encode(OpCode::MAKE_CELL, var_reg, cell_idx, 0));
+                } else {
+                    ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, tmp, 0));
+                }
                 ctx.init_var(bi.name.as_str());
                 r = Some(var_reg);
             }

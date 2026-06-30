@@ -230,6 +230,54 @@ impl PropIndex for i32 {
 ///   sub_module_index: u32 (4 bytes + 4 pad, index into CompiledModule.sub_modules)
 ///   captured_this: JsValue (8 bytes, lexical this for arrow functions)
 ///   home_object: JsValue (8 bytes, [[HomeObject]] for super lookup)
+///   upvalues: *mut u8 (8 bytes, points to Box<Vec<*mut Cell>> for closures)
+///
+///   Total: 112 bytes
+///   Alignment: 8 bytes
+#[repr(C)]
+pub struct Cell {
+    pub value: JsValue,
+    pub flags: u8,
+    pub _pad: [u8; 7],
+}
+
+impl Cell {
+    pub const INITIALIZED: u8 = 0x01;
+    pub const GC_MARK: u8 = 0x02;
+
+    pub fn new(value: JsValue, initialized: bool) -> Self {
+        Cell {
+            value,
+            flags: if initialized { Self::INITIALIZED } else { 0 },
+            _pad: [0; 7],
+        }
+    }
+
+    pub fn is_initialized(&self) -> bool {
+        self.flags & Self::INITIALIZED != 0
+    }
+
+    pub fn set_initialized(&mut self, val: bool) {
+        if val {
+            self.flags |= Self::INITIALIZED;
+        } else {
+            self.flags &= !Self::INITIALIZED;
+        }
+    }
+
+    pub fn is_gc_marked(&self) -> bool {
+        self.flags & Self::GC_MARK != 0
+    }
+
+    pub fn set_gc_mark(&mut self, marked: bool) {
+        if marked {
+            self.flags |= Self::GC_MARK;
+        } else {
+            self.flags &= !Self::GC_MARK;
+        }
+    }
+}
+
 pub struct JsObject {
     header: u32,
     native_arg_count: u8,
@@ -247,6 +295,7 @@ pub struct JsObject {
     _pad3: [u8; 4],
     captured_this: JsValue,
     home_object: JsValue,
+    pub upvalues: *mut u8,
 }
 
 impl JsObject {
@@ -313,6 +362,7 @@ impl JsObject {
             _pad3: [0; 4],
             captured_this: JsValue::undefined(),
             home_object: JsValue::undefined(),
+            upvalues: std::ptr::null_mut(),
         }
     }
 
@@ -334,6 +384,7 @@ impl JsObject {
             _pad3: [0; 4],
             captured_this: JsValue::undefined(),
             home_object: JsValue::undefined(),
+            upvalues: std::ptr::null_mut(),
         };
         let vec = Box::new(vec![JsValue::undefined(); n_elements.min(MAX_DENSE_PROPS)]);
         obj.hash_props = Box::into_raw(vec) as *mut u8;
@@ -395,6 +446,7 @@ impl JsObject {
             _pad3: self._pad3,
             captured_this: self.captured_this,
             home_object: self.home_object,
+            upvalues: self.upvalues,
         }
     }
 
@@ -412,6 +464,29 @@ impl JsObject {
 
     pub fn set_native_data(&mut self, ptr: *mut u8) {
         self.native_data = ptr;
+    }
+
+    pub fn upvalues_slice(&self) -> &[*mut Cell] {
+        if self.upvalues.is_null() {
+            &[]
+        } else {
+            unsafe { &*(self.upvalues as *const Vec<*mut Cell>) }
+        }
+    }
+
+    pub fn upvalues_slice_mut(&mut self) -> &mut [*mut Cell] {
+        if self.upvalues.is_null() {
+            &mut []
+        } else {
+            unsafe { &mut *(self.upvalues as *mut Vec<*mut Cell>) }
+        }
+    }
+
+    pub fn set_upvalues(&mut self, v: Box<Vec<*mut Cell>>) {
+        if !self.upvalues.is_null() {
+            unsafe { drop(Box::from_raw(self.upvalues as *mut Vec<*mut Cell>)); }
+        }
+        self.upvalues = Box::into_raw(v) as *mut u8;
     }
 
     pub fn rewrite_object_values<F>(&mut self, mut rewrite: F)
@@ -443,6 +518,15 @@ impl JsObject {
         }
         if self.home_object.is_object() {
             self.home_object = rewrite(self.home_object);
+        }
+        if !self.upvalues.is_null() {
+            let cells = unsafe { &mut *(self.upvalues as *mut Vec<*mut Cell>) };
+            for cell_ptr in cells {
+                let cell = unsafe { &mut **cell_ptr };
+                if cell.value.is_object() {
+                    cell.value = rewrite(cell.value);
+                }
+            }
         }
     }
 
