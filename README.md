@@ -25,25 +25,30 @@ OxideJS 是一个基于 Rust 的轻量级 JavaScript 执行引擎，擅长短时
 - **NaN-boxing 值表示**：用 64-bit 值统一表示 number、boolean、object、string、null 和 undefined。
 - **Shape 对象布局**：使用隐藏类思想描述对象属性布局，便于缓存属性偏移。
 - **Inline Cache 方向**：围绕 shape/offset 缓存设计属性访问路径。
-- **共享运行时 Kernel**：统一管理字符串驻留、Shape、编译缓存、属性模板和内置对象。
+- **共享运行时 Kernel**：`KernelCore` 永久共享 key 驻留 / Shape / 编译缓存 / IC 模板, `KernelSession` 按会话管理 BuiltinWorld 与 global object。
 - **test262 runner**：内置兼容性测试运行器，输出 pass / fail / skip 统计。
 
 ## 3. 架构
 
-OxideJS 采用经典的 parse -> compile -> execute 流水线，同时使用 **单 Kernel、多 VM** 的运行时结构：一个 `OxideKernel` 保存可共享的字符串、Shape、编译缓存、属性模板和内置对象；多个 `oxide_vm` 实例面向不同执行请求独立运行，并共同引用同一个 Kernel。
+OxideJS 采用经典的 parse -> compile -> execute 流水线，同时使用 **单 Kernel、多 VM** 的运行时结构。Kernel 内部分为两层：`KernelCore` 永久共享 (PermInterner / Shape / Code / Prop)，`KernelSession` 按会话可重建 (BuiltinWorld / global object)；多个 `oxide_vm` 实例面向不同执行请求独立运行。
 
 ```text
-                         +----------------------+
-                         |     oxide_kernel     |
-                         |----------------------|
-                         |  StringForge         |
-                         |  ShapeForge          |
-                         |  CodeForge           |
-                         |  PropForge           |
-                         |  BuiltinWorld        |
-                         +----------+-----------+
+                         +-----------------------+
+                         |     oxide_kernel      |
+                         |-----------------------|
+                         | KernelCore            |
+                         |  PermInterner         |  append-only key 驻留
+                         |  ShapeForge           |  Shape / Hidden Class 表
+                         |  CodeForge            |  bytecode LRU 缓存
+                         |  PropForge            |  IC 模板
+                         |-----------------------|
+                         | KernelSession         |  可 full_reset() 重建
+                         |  BuiltinWorld         |
+                         |  Global object        |
+                         |  BuiltinSnapshot      |
+                         +----------+------------+
                                     |
-          shared Arc<OxideKernel>  |  shared Arc<OxideKernel>
+          shared Arc<KernelCore>  |  + per-VM KernelSession
                  +-----------------+-----------------+
                  |                 |                 |
                  v                 v                 v
@@ -52,7 +57,8 @@ OxideJS 采用经典的 parse -> compile -> execute 流水线，同时使用 **�
         |----------------| |----------------| |----------------|
         |  registers     | |  registers     | |  registers     |
         |  call frames   | |  call frames   | |  call frames   |
-        |  local epoch   | |  local epoch   | |  local epoch   |
+        |  Epoch Arena   | |  Epoch Arena   | |  Epoch Arena   |
+        |  JsString GC   | |  JsString GC   | |  JsString GC   |
         +-------+--------+ +-------+--------+ +-------+--------+
                 |                  |                  |
                 v                  v                  v
@@ -69,7 +75,7 @@ Per request pipeline:
         |
         v
 +------------------+
-| oxide_compiler   |  AST 编译为寄存器式字节码；可命中 Kernel.CodeForge
+| oxide_compiler   |  AST 编译为寄存器式字节码；可命中 KernelCore.CodeForge
 +------------------+
         |
         v
@@ -82,12 +88,12 @@ Per request pipeline:
 
 1. **Parser 前端**：通过 `oxide_parser` 将源码解析为 AST。
 2. **字节码编译器**：将 AST 降低为 OxideJS 字节码、常量池和寄存器布局。
-3. **寄存器式 VM**：`oxide_vm` 读取字节码并使用固定寄存器文件执行；每个 VM 保持自己的寄存器、调用栈和本地 epoch。
-4. **值系统**：`JsValue` 负责紧凑表示 JavaScript 运行时值。
+3. **寄存器式 VM**：`oxide_vm` 读取字节码并使用固定寄存器文件执行；每个 VM 持有自己的寄存器、调用栈、Epoch Arena 与 JsString GC。
+4. **值系统**：`JsValue` 通过 NaN-boxing 紧凑表示 JavaScript 运行时值；`JsString` 由 VM 内的标记清扫 GC 管理。
 5. **对象模型**：对象通过 Shape ID 描述属性布局。
-6. **运行时 Kernel**：`OxideKernel` 保存可跨 VM 复用的共享状态；多个 VM 通过 `Arc<OxideKernel>` 引用同一个 Kernel，避免重复初始化字符串池、Shape 表、内置对象和编译缓存。
-7. **内置对象层**：常用内置对象和方法由 Rust 原生实现。
-8. **兼容性测试层**：`oxide_test262` 运行 test262 用例并输出统计结果。
+6. **运行时 Kernel**：`KernelCore` 保存进程级永久共享状态 (`PermInterner` 等), `KernelSession` 保存可重建的会话级状态 (`BuiltinWorld` / global object); 多个 VM 通过 `Arc<KernelCore>` 引用同一份永久共享数据。
+7. **内置对象层**：常用内置对象和方法由 Rust 原生实现，通过 `BuiltinWorld` 注册。
+8. **兼容性测试层**：`oxide_test262` 运行 test262 用例并输出统计结果，支持 `--supervise` 子进程窗口模式实现单测超时与断点续跑。
 
 ## 4. 仓库结构
 
@@ -173,12 +179,35 @@ runner 会输出：
 
 兼容性数字属于开发过程指标。发布正式 benchmark 或兼容性结论前，应基于当前 checkout 的 test262 版本重新生成结果。
 
-## 8. 主要使用的开源项目
+## 8. Benchmark
+
+Benchmark 工作围绕可复现脚本和可比较 baseline 展开。
+
+计划中的 benchmark 分组：
+
+| 分组 | 目的 | 状态 |
+|------|------|------|
+| 表达式 microbenchmark | 算术、比较、逻辑操作 | planned |
+| 对象 / 属性访问 benchmark | 对象创建和属性访问路径 | planned |
+| Array / String benchmark | 常用内置对象操作 | planned |
+| 函数调用 benchmark | 字节码 call/return 与 native call 开销 | planned |
+| Agent 风格 workload | 短时、重复结构脚本和数据转换 | planned |
+| JetStream 2.0 子集 | 依赖兼容性的 JS benchmark 覆盖 | planned |
+
+当前研究用 baseline：
+
+- QuickJS
+- Boa
+- JerryScript
+
+[TODO] 完工时放与其他 baseline 的对比表格
+
+## 9. 主要使用的开源项目
 
 - [oxc](https://github.com/oxc-project/oxc) — JavaScript 源码解析，因为这不是我们的工作中心，所以没有自己构建该系统
 - [bumpalo](https://github.com/fitzgen/bumpalo) — Bump allocator，构成 `Epoch` arena 内存系统的底层分配器
 - [dashmap](https://github.com/xacrimon/dashmap) — 并发 HashMap，用于 `CodeForge`、`ShapeForge`、`PropForge` 跨 VM 缓存共享
 
-## 9. License
+## 10. License
 
 本项目采用 MIT License 开源协议。详见 [LICENSE](LICENSE)。
