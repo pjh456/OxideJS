@@ -205,6 +205,7 @@ impl Vm {
         self.saved_bytecode_stack.clear();
         self.saved_immutables_stack.clear();
         self.save_stack.clear();
+        self.cell_stack.clear();
         self.try_stack.clear();
         self.exception_value = None;
         self.pending_exception = None;

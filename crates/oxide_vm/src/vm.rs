@@ -767,7 +767,6 @@ impl Vm {
         let callee_subs = &subs[sub_idx].sub_modules;
         if !callee_subs.is_empty() {
             self.sub_modules = Arc::new(callee_subs.clone());
-            self.immutables_cache = (0..=callee_subs.len()).map(|_| OnceLock::new()).collect();
         }
 
         self.active_reg_limit = sub_n_registers.max(1);

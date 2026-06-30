@@ -152,6 +152,8 @@ impl Vm {
     pub fn run(&mut self, module: &CompiledModule) -> Result<JsValue, String> {
         vm_debug!("run: starting bytecode execution, {} instructions", module.bytecode.len());
         self.clear_execution_state();
+        self.cell_stack.clear();
+        self.cell_stack.push(Vec::new());
         self.sub_modules = Arc::new(module.sub_modules.clone());
         self.immutables_cache = (0..=self.sub_modules.len()).map(|_| OnceLock::new()).collect();
         self.bytecode = module.bytecode.clone();

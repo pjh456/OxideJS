@@ -195,7 +195,18 @@ impl Vm {
             let obj = unsafe { &mut *callee.as_js_object_ptr() };
             let upvals = obj.upvalues_slice_mut();
             if uv_idx < upvals.len() {
-                let cell = self.gc_state.session_epoch.alloc(Cell::new(self.regs[rd], true));
+                // Try to get value from caller's cell table (MAKE_CELL ran after CREATE_CLOSURE)
+                let val = if self.cell_stack.len() >= 2 {
+                    let caller_cells = &self.cell_stack[self.cell_stack.len() - 2];
+                    if uv_idx < caller_cells.len() && !caller_cells[uv_idx].is_null() {
+                        unsafe { (*caller_cells[uv_idx]).value }
+                    } else {
+                        self.regs[rd]
+                    }
+                } else {
+                    self.regs[rd]
+                };
+                let cell = self.gc_state.session_epoch.alloc(Cell::new(val, true));
                 upvals[uv_idx] = cell as *mut Cell;
                 self.regs[rd] = cell.value;
                 return Ok(());
