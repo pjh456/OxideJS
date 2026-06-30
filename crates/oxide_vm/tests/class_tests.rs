@@ -341,3 +341,14 @@ fn private_class_same_name_different_classes_do_not_share_brand() {
     .unwrap();
     assert!(result.is_bool() && result.as_bool());
 }
+
+#[test]
+fn this_survives_native_call_inside_method() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class C { v=7; m(){ Object.keys(this); Object.getOwnPropertyNames(this); return this.v; } } new C().m()",
+    )
+    .unwrap();
+    assert_eq!(result.as_int(), 7);
+}

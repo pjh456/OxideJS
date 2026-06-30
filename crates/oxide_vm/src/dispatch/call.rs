@@ -34,17 +34,24 @@ impl Vm {
         // SAFETY: native_fn was set via set_native_fn with a valid NativeFn pointer;
         // native_fn_ptr_to_fn is the single coercion point for NativeFnPtr → NativeFn.
         let func: NativeFn = unsafe { native_fn_ptr_to_fn(obj.native_fn().unwrap()) };
+        // regs[254] is the caller's `this` register and doubles as the "current callee"
+        // slot that dispatcher builtins (Function.prototype.bind/call/apply) read. Native
+        // calls share the flat register file with the caller, so snapshot the caller's
+        // `this`, expose the callee for the native's duration, then restore it — otherwise
+        // every native call leaves its own function object in the caller's `this` register.
+        let saved_this = self.regs[254];
         self.regs[254] = callee;
         self.native_call_depth += 1;
-        match func(self, args_slice) {
+        let result = func(self, args_slice);
+        self.native_call_depth -= 1;
+        self.regs[254] = saved_this;
+        match result {
             NativeResult::Ok(val) => {
-                self.native_call_depth -= 1;
                 builtins_trace!("native_call ok depth={}", self.native_call_depth);
                 self.regs[0] = val;
                 Ok(())
             }
             NativeResult::Err(err_val) => {
-                self.native_call_depth -= 1;
                 let (error, kind) = if err_val.is_object() {
                     (err_val, self.thrown_error_kind(err_val))
                 } else {
@@ -62,7 +69,6 @@ impl Vm {
                 self.unwind()
             }
             NativeResult::TailCall { callee, this, args } => {
-                self.native_call_depth -= 1;
                 if callee.is_object() {
                     let obj = unsafe { &*callee.as_js_object_ptr() };
                     if obj.native_fn().is_some() {
