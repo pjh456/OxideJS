@@ -131,6 +131,7 @@ impl Vm {
         if let Some(saved_subs) = self.sub_module_stack.pop() {
             self.sub_modules = saved_subs;
         }
+        self.temp_immutables.pop();
         let offset = frame.saved_reg_offset as usize;
         let len = frame.caller_reg_limit as usize;
         self.regs[..len].copy_from_slice(&self.save_stack[offset..offset + len]);

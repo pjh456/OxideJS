@@ -702,7 +702,11 @@ impl Compiler {
                 let name = ident.name.as_str();
                 if nested_symbols.lookup_any_binding(name).is_some() {
                     // Check if this is a parent function-scope binding (real upvalue)
-                    let is_parent_func_var = parent_ctx.scopes.symbols.scopes.iter()
+                    let is_parent_func_var = parent_ctx
+                        .scopes
+                        .symbols
+                        .scopes
+                        .iter()
                         .skip(1)
                         .any(|s| s.bindings.contains_key(name));
                     if !is_parent_func_var {
@@ -726,11 +730,15 @@ impl Compiler {
             Expression::AssignmentExpression(ae) => {
                 if let oxide_parser::AssignmentTarget::AssignmentTargetIdentifier(ati) = &ae.left {
                     let name = ati.name.as_str();
-let in_nested = nested_symbols.lookup_any_binding(name).is_some();
-let is_parent_func_var = parent_ctx.scopes.symbols.scopes.iter()
-    .skip(1)
-    .any(|s| s.bindings.contains_key(name));
-if !in_nested || is_parent_func_var {
+                    let in_nested = nested_symbols.lookup_any_binding(name).is_some();
+                    let is_parent_func_var = parent_ctx
+                        .scopes
+                        .symbols
+                        .scopes
+                        .iter()
+                        .skip(1)
+                        .any(|s| s.bindings.contains_key(name));
+                    if !in_nested || is_parent_func_var {
                         if let Some((binding, _)) = parent_ctx.scopes.symbols.lookup_any_binding(name) {
                             if !seen.contains_key(name) {
                                 let cell_idx = captures.len() as u8;
@@ -756,11 +764,15 @@ if !in_nested || is_parent_func_var {
             Expression::UpdateExpression(ue) => {
                 if let oxide_parser::SimpleAssignmentTarget::AssignmentTargetIdentifier(ati) = &ue.argument {
                     let name = ati.name.as_str();
-let in_nested = nested_symbols.lookup_any_binding(name).is_some();
-let is_parent_func_var = parent_ctx.scopes.symbols.scopes.iter()
-    .skip(1)
-    .any(|s| s.bindings.contains_key(name));
-if !in_nested || is_parent_func_var {
+                    let in_nested = nested_symbols.lookup_any_binding(name).is_some();
+                    let is_parent_func_var = parent_ctx
+                        .scopes
+                        .symbols
+                        .scopes
+                        .iter()
+                        .skip(1)
+                        .any(|s| s.bindings.contains_key(name));
+                    if !in_nested || is_parent_func_var {
                         if let Some((binding, _)) = parent_ctx.scopes.symbols.lookup_any_binding(name) {
                             if !seen.contains_key(name) {
                                 let cell_idx = captures.len() as u8;
@@ -869,6 +881,64 @@ if !in_nested || is_parent_func_var {
     }
 
     #[expect(clippy::too_many_arguments)]
+    fn pre_scan_function_expressions(
+        &self, stmts: &[Statement], parent_ctx: &mut CompileCtx,
+    ) -> Result<(), String> {
+        for stmt in stmts {
+            self.pre_scan_stmt(stmt, parent_ctx)?;
+        }
+        Ok(())
+    }
+
+    fn pre_scan_stmt(&self, stmt: &Statement, parent_ctx: &mut CompileCtx) -> Result<(), String> {
+        match stmt {
+            Statement::ExpressionStatement(es) => self.pre_scan_expr(&es.expression, parent_ctx)?,
+            Statement::ReturnStatement(rs) => { if let Some(a) = &rs.argument { self.pre_scan_expr(a, parent_ctx)?; } }
+            Statement::IfStatement(is) => {
+                self.pre_scan_expr(&is.test, parent_ctx)?;
+                self.pre_scan_stmt(&is.consequent, parent_ctx)?;
+                if let Some(alt) = &is.alternate { self.pre_scan_stmt(alt, parent_ctx)?; }
+            }
+            Statement::ForStatement(fs) => {
+                if let Some(init) = &fs.init { if let Some(e) = init.as_expression() { self.pre_scan_expr(e, parent_ctx)?; } }
+                if let Some(t) = &fs.test { self.pre_scan_expr(t, parent_ctx)?; }
+                if let Some(u) = &fs.update { self.pre_scan_expr(u, parent_ctx)?; }
+                self.pre_scan_stmt(&fs.body, parent_ctx)?;
+            }
+            Statement::BlockStatement(bs) => self.pre_scan_function_expressions(&bs.body, parent_ctx)?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn pre_scan_expr(&self, expr: &Expression, parent_ctx: &mut CompileCtx) -> Result<(), String> {
+        match expr {
+            Expression::FunctionExpression(fe) => {
+                let body: &[Statement] = fe.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
+                let nested_symbols = SymbolTable::new();
+                let (captures, _) = self.analyze_upvalue_captures(body, parent_ctx, &nested_symbols);
+                for up in &captures {
+                    if let Some((binding, _)) = parent_ctx.scopes.symbols.lookup_any_binding(&up.name) {
+                        binding.is_captured.set(true);
+                    }
+                }
+            }
+            Expression::ArrowFunctionExpression(_ae) => {}
+            Expression::CallExpression(ce) => {
+                self.pre_scan_expr(&ce.callee, parent_ctx)?;
+                for arg in &ce.arguments { if let Some(e) = arg.as_expression() { self.pre_scan_expr(e, parent_ctx)?; } }
+            }
+            Expression::BinaryExpression(be) => { self.pre_scan_expr(&be.left, parent_ctx)?; self.pre_scan_expr(&be.right, parent_ctx)?; }
+            Expression::ConditionalExpression(ce) => { self.pre_scan_expr(&ce.test, parent_ctx)?; self.pre_scan_expr(&ce.consequent, parent_ctx)?; self.pre_scan_expr(&ce.alternate, parent_ctx)?; }
+            Expression::ArrayExpression(ae) => { for e in &ae.elements { if let Some(e) = e.as_expression() { self.pre_scan_expr(e, parent_ctx)?; } } }
+            Expression::SequenceExpression(se) => { for e in &se.expressions { self.pre_scan_expr(e, parent_ctx)?; } }
+            Expression::AssignmentExpression(ae) => { self.pre_scan_expr(&ae.right, parent_ctx)?; }
+            Expression::UnaryExpression(ue) => { self.pre_scan_expr(&ue.argument, parent_ctx)?; }
+            _ => {}
+        }
+        Ok(())
+    }
+
     pub(crate) fn compile_function_body_with_field_hooks<'a, C, E>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, extra_bindings: &[(&str, u8)], body_context: FunctionBodyContext,
@@ -1011,6 +1081,9 @@ if !in_nested || is_parent_func_var {
                 self.emit_binding_pattern(pattern, src_reg, VariableDeclarationKind::Var, false, &mut ctx)?;
             }
         }
+
+        // Pre-scan: run analysis for nested function expressions to mark parent captures
+        self.pre_scan_function_expressions(body_stmts, &mut ctx)?;
 
         if let Some(emit) = emit_fields.as_mut() {
             if fields_after_super {

@@ -198,6 +198,7 @@ pub struct Vm {
     pub(crate) profiling: ProfilingState,
     pub(crate) sub_module_stack: Vec<Arc<Vec<CompiledModule>>>,
     pub(crate) cell_stack: Vec<Vec<*mut Cell>>,
+    pub(crate) temp_immutables: Vec<Vec<JsValue>>,
     /// Reusable string buffer for concatenation to avoid allocation per `+` op.
     pub(crate) string_buf: String,
 }
@@ -753,7 +754,9 @@ impl Vm {
         self.pc = 0;
         self.bytecode = sub_bytecode;
         let subs = Arc::clone(&self.sub_modules);
-        self.activate_immutables(sub_idx + 1, &subs[sub_idx].constants);
+        let converted = self.convert_immutables(&subs[sub_idx].constants);
+        self.temp_immutables.push(converted);
+        self.active_immutables = self.temp_immutables.last().unwrap().as_slice() as *const [JsValue];
         self.cell_stack.push(Vec::with_capacity(subs[sub_idx].cells_needed as usize));
         for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map.clone() {
             let si = self.kernel_core.perm_interner().intern(name.as_str()).0;

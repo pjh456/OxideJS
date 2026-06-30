@@ -226,9 +226,11 @@ impl Vm {
             let upvals = obj.upvalues_slice_mut();
             if uv_idx < upvals.len() {
                 if !upvals[uv_idx].is_null() {
-                    unsafe { (*upvals[uv_idx]).value = src_val; }
+                    unsafe {
+                        (*upvals[uv_idx]).value = src_val;
+                    }
+                    vm_debug!("STORE_UPVALUE len={} wrote existing", upvals.len());
                 } else {
-                    // Lazy create: cell was null (CREATE_CLOSURE before MAKE_CELL)
                     let cell = self.gc_state.session_epoch.alloc(Cell::new(src_val, true));
                     upvals[uv_idx] = cell as *mut Cell;
                 }

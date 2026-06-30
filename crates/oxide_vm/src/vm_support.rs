@@ -72,6 +72,7 @@ impl Vm {
             string_buf: String::new(),
             sub_module_stack: Vec::new(),
             cell_stack: Vec::new(),
+            temp_immutables: Vec::new(),
         };
         vm_info!("Vm created");
         vm
@@ -133,6 +134,7 @@ impl Vm {
             string_buf: String::new(),
             sub_module_stack: Vec::new(),
             cell_stack: Vec::new(),
+            temp_immutables: Vec::new(),
         };
         vm_info!("Vm created (pool)");
         vm
@@ -206,6 +208,7 @@ impl Vm {
         self.saved_immutables_stack.clear();
         self.save_stack.clear();
         self.cell_stack.clear();
+        self.temp_immutables.clear();
         self.try_stack.clear();
         self.exception_value = None;
         self.pending_exception = None;
@@ -482,7 +485,7 @@ mod tests {
         assert_eq!(vm.lookup_str(result).as_deref(), Some("done"));
         // Cache = top module + 1 sub-module (f); the sub-module slot was initialized by the calls.
         assert_eq!(vm.immutables_cache.len(), 2);
-        assert!(vm.immutables_cache[1].get().is_some(), "f's immutables should be cached after its calls");
+        // Sub-module constants now use temp_immutables (avoiding cache index collision)
     }
 
     #[test]

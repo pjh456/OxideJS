@@ -84,9 +84,20 @@ impl Compiler {
             return;
         };
         match &update.argument {
-            SimpleAssignmentTarget::AssignmentTargetIdentifier(_) => {
-                ctx.alloc_reg();
-                ctx.projected_pc += 1;
+            SimpleAssignmentTarget::AssignmentTargetIdentifier(id) => {
+                let name = id.name.as_str();
+                let is_upvalue = ctx.current_upvalue_captures.iter().any(|u| u.name == name);
+                let is_captured = ctx.scopes.symbols.lookup_is_captured(name);
+                if is_upvalue || is_captured {
+                    ctx.alloc_reg(); // val_reg
+                    ctx.count_instr(); // LOAD_UPVALUE or CELL_GET
+                    ctx.count_load_const(); // 1, alloc + instr
+                    ctx.count_instr(); // ADD/SUB
+                    ctx.count_instr(); // STORE_UPVALUE or CELL_SET
+                } else {
+                    ctx.alloc_reg();
+                    ctx.projected_pc += 1;
+                }
             }
             SimpleAssignmentTarget::StaticMemberExpression(member) => {
                 self.count_expression(&member.object, ctx);

@@ -253,16 +253,62 @@ impl Compiler {
         match &update.argument {
             SimpleAssignmentTarget::AssignmentTargetIdentifier(id) => {
                 let name = id.name.as_str();
-                let var_reg = ctx.lookup_or_global(name);
-                let result_reg = ctx.alloc_reg();
-                let op = match (update.operator, update.prefix) {
-                    (UpdateOperator::Increment, true) => OpCode::INC_PRE,
-                    (UpdateOperator::Increment, false) => OpCode::INC_POST,
-                    (UpdateOperator::Decrement, true) => OpCode::DEC_PRE,
-                    (UpdateOperator::Decrement, false) => OpCode::DEC_POST,
-                };
-                ctx.emit(opcode::encode(op, var_reg, result_reg, result_reg));
-                Ok(result_reg)
+                // Check if this is an upvalue or captured cell reference
+                let uv_idx = ctx.current_upvalue_captures.iter().position(|u| u.name == name);
+                let is_captured = ctx.scopes.symbols.lookup_is_captured(name);
+                if let Some(uv) = uv_idx {
+                    // Upvalue: LOAD_UPVALUE + CONST(1) + ADD/SUB + STORE_UPVALUE
+                    let val_reg = ctx.alloc_reg();
+                    ctx.emit(opcode::encode(OpCode::LOAD_UPVALUE, val_reg, uv as u8, 0));
+                    let one_idx = ctx.add_constant(Constant::Int(1));
+                    let one_reg = ctx.alloc_reg();
+                    ctx.emit_load_const(one_reg, one_idx);
+                    let op = if update.operator == UpdateOperator::Increment {
+                        OpCode::ADD
+                    } else {
+                        OpCode::SUB
+                    };
+                    ctx.emit(opcode::encode(op, val_reg, val_reg, one_reg));
+                    ctx.emit(opcode::encode(OpCode::STORE_UPVALUE, 0, val_reg, uv as u8));
+                    Ok(val_reg)
+                } else if is_captured {
+                    // Captured cell: CELL_GET + CONST(1) + ADD/SUB + CELL_SET
+                    let cell_idx = ctx
+                        .scopes
+                        .cell_registry
+                        .iter()
+                        .find(|(n, _)| n == name)
+                        .map(|(_, idx)| *idx)
+                        .unwrap_or(0);
+                    let val_reg = ctx.alloc_reg();
+                    if let Some((binding, _)) = ctx.scopes.symbols.lookup_any_binding(name) {
+                        ctx.emit(opcode::encode(OpCode::CELL_GET, val_reg, binding.reg, cell_idx));
+                    } else {
+                        ctx.emit(opcode::encode(OpCode::CELL_GET, val_reg, 0, cell_idx));
+                    }
+                    let one_idx = ctx.add_constant(Constant::Int(1));
+                    let one_reg = ctx.alloc_reg();
+                    ctx.emit_load_const(one_reg, one_idx);
+                    let op = if update.operator == UpdateOperator::Increment {
+                        OpCode::ADD
+                    } else {
+                        OpCode::SUB
+                    };
+                    ctx.emit(opcode::encode(op, val_reg, val_reg, one_reg));
+                    ctx.emit(opcode::encode(OpCode::CELL_SET, 0, val_reg, cell_idx));
+                    Ok(val_reg)
+                } else {
+                    let var_reg = ctx.lookup_or_global(name);
+                    let result_reg = ctx.alloc_reg();
+                    let op = match (update.operator, update.prefix) {
+                        (UpdateOperator::Increment, true) => OpCode::INC_PRE,
+                        (UpdateOperator::Increment, false) => OpCode::INC_POST,
+                        (UpdateOperator::Decrement, true) => OpCode::DEC_PRE,
+                        (UpdateOperator::Decrement, false) => OpCode::DEC_POST,
+                    };
+                    ctx.emit(opcode::encode(op, var_reg, result_reg, result_reg));
+                    Ok(result_reg)
+                }
             }
             SimpleAssignmentTarget::StaticMemberExpression(member) => {
                 let obj_reg = self.emit_expression(&member.object, ctx)?;
