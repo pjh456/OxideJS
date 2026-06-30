@@ -1504,10 +1504,21 @@ mod tests {
         let mut vm = Vm::new();
         vm.bytecode = vec![0, 0, 0];
         vm.pc = 3;
-        crate::ic_helper::write_ic_back(&mut vm.bytecode, vm.pc, 0x1234_5678, 7);
+        crate::ic_helper::write_ic_back(&mut vm.bytecode, vm.pc, 0x1234_5678, 7, 0);
         assert_eq!(vm.bytecode[0], 0x0034_5678);
         assert_eq!(vm.bytecode[1], 7);
         assert_eq!(vm.bytecode[2], 0);
+    }
+
+    #[test]
+    fn write_ic_back_stores_proto_depth() {
+        let mut vm = Vm::new();
+        vm.bytecode = vec![0, 0, 0];
+        vm.pc = 3;
+        crate::ic_helper::write_ic_back(&mut vm.bytecode, vm.pc, 0xAAAA_BBBB, 42, 2);
+        assert_eq!(vm.bytecode[0], 0x00AA_BBBB);
+        assert_eq!(vm.bytecode[1], 42);
+        assert_eq!(vm.bytecode[2], 2);
     }
 
     #[test]

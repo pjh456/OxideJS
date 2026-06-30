@@ -209,36 +209,52 @@ impl Vm {
         vm_trace!("read_member_prop: shape_id={} prop_name_si={}", obj.shape_id(), prop_name_si);
         let ext0 = self.bytecode[self.pc];
         let ext1 = self.bytecode[self.pc + 1];
-        let _ext2 = self.bytecode[self.pc + 2];
+        let ext2 = self.bytecode[self.pc + 2];
         self.pc += 3;
         if obj.has_prop_meta() {
             return self.ordinary_get(obj, prop_name_si, receiver);
         }
         let cached_shape_id = ext0 & 0x00FF_FFFF;
         let cached_slot = ext1;
+        let cached_depth = (ext2 & 0xFF) as u8;
 
-        let val =
-            if cached_shape_id != 0 && cached_shape_id == obj.shape_id() && cached_slot < obj.prop_vec_len() as u32 {
-                obj.get_prop_at(cached_slot)
-            } else if let Some(template) = self.kernel_core.prop_forge().get_template(obj.shape_id()) {
-                if template.prop_name != prop_name_si {
-                    self.ordinary_get(obj, prop_name_si, receiver)?
-                } else if template.position < obj.prop_vec_len() as u32 {
-                    crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), template.position);
-                    obj.get_prop_at(template.position)
-                } else {
-                    self.ordinary_get(obj, prop_name_si, receiver)?
-                }
+        let val = if let Some(v) = crate::ic_helper::ic_get_hit(obj, cached_shape_id, cached_slot, cached_depth) {
+            v
+        } else if let Some(template) = self.kernel_core.prop_forge().get_template(obj.shape_id()) {
+            if template.prop_name != prop_name_si {
+                self.proto_chain_ic_get(obj, prop_name_si, receiver)?
+            } else if template.position < obj.prop_vec_len() as u32 {
+                crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), template.position, 0);
+                obj.get_prop_at(template.position)
             } else {
-                let resolved = self.ordinary_get(obj, prop_name_si, receiver)?;
-                if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
-                    if !obj.is_accessor_meta(pos) {
-                        crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos);
-                    }
-                }
-                resolved
-            };
+                self.proto_chain_ic_get(obj, prop_name_si, receiver)?
+            }
+        } else {
+            self.proto_chain_ic_get(obj, prop_name_si, receiver)?
+        };
         Ok(val)
+    }
+
+    /// Perform ordinary_get and write back IC with proto chain depth.
+    fn proto_chain_ic_get(&mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue) -> Result<JsValue, String> {
+        let resolved = self.ordinary_get(obj, prop_name_si, receiver)?;
+        let mut cursor: *mut JsObject = obj as *const JsObject as *mut JsObject;
+        let mut depth = 0u8;
+        loop {
+            let co = unsafe { &*cursor };
+            if let Some(pos) = self.kernel_core.shape_forge().lookup_position(co.shape_id(), prop_name_si) {
+                if !co.is_accessor_meta(pos) {
+                    crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, co.shape_id(), pos, depth);
+                }
+                break;
+            }
+            if !co.proto().is_object() {
+                break;
+            }
+            cursor = co.proto().as_js_object_ptr();
+            depth += 1;
+        }
+        Ok(resolved)
     }
 
     pub(crate) fn set_member_prop(
@@ -252,7 +268,7 @@ impl Vm {
                 return Ok(());
             }
             obj.set_prop_at(pos, val);
-            crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos);
+            crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos, 0);
         } else {
             self.ordinary_set(obj, prop_name_si, val, receiver)?;
         }
