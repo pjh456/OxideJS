@@ -87,6 +87,12 @@ pub(crate) fn ic_get_hit(obj: &JsObject, shape_id: u32, slot_index: u32, proto_d
     if shape_id == 0 {
         return None;
     }
+    if proto_depth == 0 {
+        if obj.shape_id() == shape_id && slot_index < obj.prop_vec_len() as u32 {
+            return Some(obj.get_prop_at(slot_index));
+        }
+        return None;
+    }
     let target = resolve_proto_target_raw(obj as *const JsObject, proto_depth);
     if target.is_null() {
         return None;
@@ -102,6 +108,13 @@ pub(crate) fn ic_get_hit(obj: &JsObject, shape_id: u32, slot_index: u32, proto_d
 #[inline(always)]
 pub(crate) fn ic_set_hit(obj: &mut JsObject, shape_id: u32, slot_index: u32, proto_depth: u8, value: JsValue) -> bool {
     if shape_id == 0 {
+        return false;
+    }
+    if proto_depth == 0 {
+        if obj.shape_id() == shape_id && slot_index < obj.prop_vec_len() as u32 {
+            obj.set_prop_at(slot_index, value);
+            return true;
+        }
         return false;
     }
     let target = resolve_proto_target_raw(obj as *const JsObject, proto_depth);

@@ -207,23 +207,36 @@ impl Vm {
             prop_cache_miss();
             ic_debug!("IC_GET miss shape={} prop={}", obj.shape_id(), prop_name_si);
             let resolved = self.ordinary_get(obj, prop_name_si, val)?;
-            // Walk proto chain to find which object actually owns this property.
-            let mut cursor = obj_ptr;
-            let mut depth = 0u8;
-            loop {
-                let co = unsafe { &*cursor };
-                if let Some(pos) = self.kernel_core.shape_forge().lookup_position(co.shape_id(), prop_name_si) {
-                    if !co.is_accessor_meta(pos) {
-                        ic_helper::write_ic_back(&mut self.bytecode, self.pc, co.shape_id(), pos, depth);
-                        ic_debug!("IC_GET write-back shape={} slot={} depth={}", co.shape_id(), pos, depth);
+            // Try own property first (fast path, depth=0).
+            if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+                if !obj.is_accessor_meta(pos) {
+                    ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos, 0);
+                    ic_debug!("IC_GET write-back own shape={} slot={}", obj.shape_id(), pos);
+                }
+            } else {
+                // Walk proto chain to find which object actually owns this property.
+                let mut cursor = obj.proto().as_js_object_ptr();
+                let mut depth = 1u8;
+                while !cursor.is_null() {
+                    let co_ref = unsafe { &*cursor };
+                    if let Some(pos) = self.kernel_core.shape_forge().lookup_position(co_ref.shape_id(), prop_name_si) {
+                        if !co_ref.is_accessor_meta(pos) {
+                            ic_helper::write_ic_back(&mut self.bytecode, self.pc, co_ref.shape_id(), pos, depth);
+                            ic_debug!(
+                                "IC_GET write-back proto shape={} slot={} depth={}",
+                                co_ref.shape_id(),
+                                pos,
+                                depth
+                            );
+                        }
+                        break;
                     }
-                    break;
+                    if !co_ref.proto().is_object() {
+                        break;
+                    }
+                    cursor = co_ref.proto().as_js_object_ptr();
+                    depth += 1;
                 }
-                if !co.proto().is_object() {
-                    break;
-                }
-                cursor = co.proto().as_js_object_ptr();
-                depth += 1;
             }
             self.regs[a] = resolved;
         }

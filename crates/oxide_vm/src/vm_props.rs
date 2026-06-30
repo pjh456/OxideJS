@@ -238,9 +238,17 @@ impl Vm {
     /// Perform ordinary_get and write back IC with proto chain depth.
     fn proto_chain_ic_get(&mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue) -> Result<JsValue, String> {
         let resolved = self.ordinary_get(obj, prop_name_si, receiver)?;
-        let mut cursor: *mut JsObject = obj as *const JsObject as *mut JsObject;
-        let mut depth = 0u8;
-        loop {
+        // Fast path: own property (depth=0).
+        if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+            if !obj.is_accessor_meta(pos) {
+                crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos, 0);
+            }
+            return Ok(resolved);
+        }
+        // Walk proto chain for inherited properties.
+        let mut cursor = obj.proto().as_js_object_ptr();
+        let mut depth = 1u8;
+        while !cursor.is_null() {
             let co = unsafe { &*cursor };
             if let Some(pos) = self.kernel_core.shape_forge().lookup_position(co.shape_id(), prop_name_si) {
                 if !co.is_accessor_meta(pos) {
