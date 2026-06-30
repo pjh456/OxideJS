@@ -700,7 +700,9 @@ impl Compiler {
         match expr {
             Expression::Identifier(ident) => {
                 let name = ident.name.as_str();
-                if nested_symbols.lookup_any_binding(name).is_some() {
+                // Only skip if name is in the nested function's OWN scopes (not inherited scopes[0])
+                let is_local = nested_symbols.scopes.iter().skip(1).any(|s| s.bindings.contains_key(name));
+                if is_local {
                     return;
                 }
                 if let Some((binding, _)) = parent_ctx.scopes.symbols.lookup_any_binding(name) {
@@ -719,7 +721,8 @@ impl Compiler {
             Expression::AssignmentExpression(ae) => {
                 if let oxide_parser::AssignmentTarget::AssignmentTargetIdentifier(ati) = &ae.left {
                     let name = ati.name.as_str();
-                    if nested_symbols.lookup_any_binding(name).is_none() {
+                    let is_local = nested_symbols.scopes.iter().skip(1).any(|s| s.bindings.contains_key(name));
+                    if !is_local {
                         if let Some((binding, _)) = parent_ctx.scopes.symbols.lookup_any_binding(name) {
                             if !seen.contains_key(name) {
                                 let cell_idx = captures.len() as u8;
@@ -745,7 +748,8 @@ impl Compiler {
             Expression::UpdateExpression(ue) => {
                 if let oxide_parser::SimpleAssignmentTarget::AssignmentTargetIdentifier(ati) = &ue.argument {
                     let name = ati.name.as_str();
-                    if nested_symbols.lookup_any_binding(name).is_none() {
+                    let is_local = nested_symbols.scopes.iter().skip(1).any(|s| s.bindings.contains_key(name));
+                    if !is_local {
                         if let Some((binding, _)) = parent_ctx.scopes.symbols.lookup_any_binding(name) {
                             if !seen.contains_key(name) {
                                 let cell_idx = captures.len() as u8;
