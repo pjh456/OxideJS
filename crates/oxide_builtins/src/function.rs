@@ -82,18 +82,17 @@ pub fn function_apply<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
 pub fn function_bind<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.is_empty() {
-        return NativeResult::Err(JsValue::undefined());
+        return NativeResult::Err(crate::error::create_type_error(vm, "Function.prototype.bind called on null or undefined"));
     }
     let target_val = vm.reg(args[0]);
-    if !target_val.is_object() {
-        return NativeResult::Err(JsValue::undefined());
+    if !target_val.is_object() || target_val.as_js_object_ptr().is_null() || !unsafe { &*target_val.as_js_object_ptr() }.is_function() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Function.prototype.bind called on non-function"));
     }
     let bound_this = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
 
     let wrapper = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
     unsafe {
         (*wrapper).set_function(true);
-        // SAFETY: bind_dispatcher is a NativeFn fn-item; valid to store as NativeFnPtr.
         (*wrapper).set_native_fn(Some(NativeFnPtr::from_raw(bind_dispatcher::<H> as *const ())));
         (*wrapper).set_native_arg_count(0);
         (*wrapper).ensure_hash_props().push(target_val);

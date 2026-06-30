@@ -9,7 +9,12 @@ use crate::builtins_debug;
 use crate::builtins_error;
 
 fn this_string<H: VmHost>(vm: &H, args: &[u8]) -> String {
-    oxide_runtime_api::to_string(vm.reg(args[0]))
+    let this_val = vm.reg(args[0]);
+    if this_val.is_null() || this_val.is_undefined() {
+        String::new() // caller should check and throw TypeError
+    } else {
+        oxide_runtime_api::to_string(this_val)
+    }
 }
 
 pub fn string_from_char_code<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -116,8 +121,8 @@ fn make_string_array<H: VmHost>(vm: &mut H, parts: &[String]) -> JsValue {
     JsValue::from_js_object(arr)
 }
 
-fn as_string<H: VmHost>(_vm: &H, val: JsValue) -> String {
-    oxide_runtime_api::to_string(val)
+fn as_string<H: VmHost>(vm: &mut H, val: JsValue) -> String {
+    oxide_runtime_api::to_string_full(val, vm).unwrap_or_else(|_| oxide_runtime_api::to_string(val))
 }
 
 fn char_len(s: &str) -> usize {
@@ -515,52 +520,44 @@ pub fn string_ends_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn string_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.split called with {} args", args.len());
     let s = this_string(vm, args);
-    if args.len() < 2 {
+    // Spec: if separator is undefined, return [string]
+    if args.len() < 2 || vm.reg(args[1]).is_undefined() {
         let parts = vec![s.clone()];
         return NativeResult::Ok(make_string_array(vm, &parts));
     }
     let sep_val = vm.reg(args[1]);
+    // ToUint32(limit), default 2^32-1
     let limit = if args.len() > 2 {
-        oxide_runtime_api::to_integer_or_infinity(vm.reg(args[2])) as usize
+        let l = oxide_runtime_api::to_integer_or_infinity(vm.reg(args[2]));
+        if l.is_infinite() { u32::MAX as usize } else { (l.max(0.0).trunc() as u64).min(u32::MAX as u64) as usize }
     } else {
-        usize::MAX
+        u32::MAX as usize
     };
 
     if is_regexp_obj(sep_val, vm) {
         let re_ptr = sep_val.as_js_object_ptr();
         let re = unsafe { &*re_ptr };
-        let fn_ptr = match re.native_fn() {
-            Some(p) => p,
-            None => {
-                let parts = vec![s.clone()];
-                return NativeResult::Ok(make_string_array(vm, &parts));
-            }
-        };
-        let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
-        let mut parts: Vec<String> = Vec::new();
-        let mut last_end = 0;
-        for caps in regex.captures_iter(&s) {
-            if parts.len() >= limit {
-                break;
-            }
-            let full = caps.get(0).unwrap();
-            parts.push(s[last_end..full.start()].to_string());
-            if parts.len() >= limit {
-                break;
-            }
-            for i in 1..caps.len() {
-                if parts.len() >= limit {
-                    break;
+        if let Some(fn_ptr) = re.native_fn() {
+            let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
+            let mut parts: Vec<String> = Vec::new();
+            let mut last_end = 0;
+            for caps in regex.captures_iter(&s) {
+                if parts.len() >= limit { break; }
+                let full = caps.get(0).unwrap();
+                parts.push(s[last_end..full.start()].to_string());
+                if parts.len() >= limit { break; }
+                for i in 1..caps.len() {
+                    if parts.len() >= limit { break; }
+                    parts.push(caps.get(i).map(|m| m.as_str()).unwrap_or("").to_string());
                 }
-                let cap = caps.get(i).map(|m| m.as_str()).unwrap_or("");
-                parts.push(cap.to_string());
+                last_end = full.end();
             }
-            last_end = full.end();
+            if last_end <= s.len() && parts.len() < limit {
+                parts.push(s[last_end..].to_string());
+            }
+            return NativeResult::Ok(make_string_array(vm, &parts));
         }
-        if last_end <= s.len() && parts.len() < limit {
-            parts.push(s[last_end..].to_string());
-        }
-        return NativeResult::Ok(make_string_array(vm, &parts));
+        // Fall back to string path for regex-like objects without native engine regex
     }
 
     let sep = as_string(vm, sep_val);
@@ -583,54 +580,47 @@ pub fn string_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if is_regexp_obj(pattern_val, vm) {
         let re_ptr = pattern_val.as_js_object_ptr();
         let re = unsafe { &*re_ptr };
-        let fn_ptr = match re.native_fn() {
-            Some(p) => p,
-            None => return NativeResult::Ok(vm.new_string(&s)),
-        };
-        let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
+        if let Some(fn_ptr) = re.native_fn() {
+            let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
 
-        if args.len() > 2 {
-            let replacer_val = vm.reg(args[2]);
-            if replacer_val.is_object() {
-                let o = unsafe { &*replacer_val.as_js_object_ptr() };
-                if o.is_function() {
-                    builtins_debug!("string_replace: function replacer path");
-                    if let Some(captures) = regex.captures(&s) {
-                        let full = captures.get(0).unwrap();
-                        let mut cb_args: Vec<JsValue> = Vec::with_capacity(captures.len() + 2);
-                        cb_args.push(vm.new_string(full.as_str()));
-                        for i in 1..captures.len() {
-                            cb_args.push(vm.new_string(captures.get(i).map(|m| m.as_str()).unwrap_or("")));
-                        }
-                        cb_args.push(JsValue::int(full.start() as i32));
-                        cb_args.push(vm.new_string(&s));
-                        match vm.call_function_sync(replacer_val, JsValue::undefined(), &cb_args) {
-                            Ok(result) => {
-                                let result_str = oxide_runtime_api::to_string(result);
-                                let output = format!("{}{}{}", &s[..full.start()], &result_str, &s[full.end()..]);
-                                return NativeResult::Ok(vm.new_string(&output));
+            if args.len() > 2 {
+                let replacer_val = vm.reg(args[2]);
+                if replacer_val.is_object() {
+                    let o = unsafe { &*replacer_val.as_js_object_ptr() };
+                    if o.is_function() {
+                        if let Some(captures) = regex.captures(&s) {
+                            let full = captures.get(0).unwrap();
+                            let mut cb_args: Vec<JsValue> = Vec::with_capacity(captures.len() + 2);
+                            cb_args.push(vm.new_string(full.as_str()));
+                            for i in 1..captures.len() {
+                                cb_args.push(vm.new_string(captures.get(i).map(|m| m.as_str()).unwrap_or("")));
                             }
-                            Err(err) => {
-                                return NativeResult::Err(crate::error::create_type_error(
-                                    vm,
-                                    &format!("replace replacer: {}", err),
-                                ));
+                            cb_args.push(JsValue::int(full.start() as i32));
+                            cb_args.push(vm.new_string(&s));
+                            match vm.call_function_sync(replacer_val, JsValue::undefined(), &cb_args) {
+                                Ok(result) => {
+                                    let result_str = oxide_runtime_api::to_string(result);
+                                    let output = format!("{}{}{}", &s[..full.start()], &result_str, &s[full.end()..]);
+                                    return NativeResult::Ok(vm.new_string(&output));
+                                }
+                                Err(err) => return NativeResult::Err(crate::error::create_type_error(vm, &format!("replace replacer: {}", err))),
                             }
                         }
+                        return NativeResult::Ok(vm.new_string(&s));
                     }
-                    return NativeResult::Ok(vm.new_string(&s));
                 }
             }
-        }
 
-        let replacement = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { String::new() };
-        let is_global = re.hash_props_vec().and_then(|v| v.get(3)).map(|v| v.as_bool()).unwrap_or(false);
-        let result = if is_global {
-            regex.replace_all(&s, replacement.as_str()).to_string()
-        } else {
-            regex.replacen(&s, 1, replacement.as_str()).to_string()
-        };
-        return NativeResult::Ok(vm.new_string(&result));
+            let replacement = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { String::new() };
+            let is_global = re.hash_props_vec().and_then(|v| v.get(3)).map(|v| v.as_bool()).unwrap_or(false);
+            let result = if is_global {
+                regex.replace_all(&s, replacement.as_str()).to_string()
+            } else {
+                regex.replacen(&s, 1, replacement.as_str()).to_string()
+            };
+            return NativeResult::Ok(vm.new_string(&result));
+        }
+        // Fall back to string path for regex-like objects without native engine regex
     }
 
     let replacement = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { String::new() };

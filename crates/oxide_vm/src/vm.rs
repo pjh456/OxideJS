@@ -189,6 +189,8 @@ pub struct Vm {
     pub(crate) iters: IterState,
     /// Grouped inline-cache and instruction counters.
     pub(crate) profiling: ProfilingState,
+    /// Reusable string buffer for concatenation to avoid allocation per `+` op.
+    pub(crate) string_buf: String,
 }
 
 impl Vm {

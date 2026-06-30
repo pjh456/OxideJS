@@ -69,6 +69,7 @@ impl Vm {
                 ic_misses: std::cell::Cell::new(0),
                 instruction_count: 0,
             },
+            string_buf: String::new(),
         };
         vm_info!("Vm created");
         vm
@@ -127,6 +128,7 @@ impl Vm {
                 ic_misses: std::cell::Cell::new(0),
                 instruction_count: 0,
             },
+            string_buf: String::new(),
         };
         vm_info!("Vm created (pool)");
         vm
@@ -220,9 +222,15 @@ impl Vm {
     }
 
     pub fn new_string(&mut self, s: &str) -> JsValue {
-        let ptr = Box::into_raw(Box::new(JsString::new(s.to_string())));
+        self.new_string_owned(s.to_string())
+    }
+
+    /// Same as `new_string` but takes `String` by move, avoiding a clone.
+    pub fn new_string_owned(&mut self, s: String) -> JsValue {
+        let len = s.len();
+        let ptr = Box::into_raw(Box::new(JsString::new(s)));
         self.gc_state.session_string_ptrs.push(ptr);
-        self.gc_state.session_bytes_allocated += std::mem::size_of::<JsString>() + s.len();
+        self.gc_state.session_bytes_allocated += std::mem::size_of::<JsString>() + len;
         JsValue::string(ptr)
     }
 

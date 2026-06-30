@@ -39,14 +39,24 @@ pub fn create_kind_error<H: VmHost>(host: &mut H, kind: &str, msg: &str) -> JsVa
     let obj = host
         .epoch()
         .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
+    let sf = Arc::clone(host.kernel_core().perm_interner());
+    let sh = Arc::clone(host.kernel_core().shape_forge());
+    // 设置 .name = kind (ES spec: Error.prototype.name)
+    {
+        let si_name = sf.intern("name").0;
+        let shape = sh.make_shape(EMPTY_SHAPE_ID, si_name);
+        let name_val = host.new_string(kind);
+        unsafe {
+            (*obj).set_shape_id(shape);
+            (*obj).push_prop(name_val);
+        }
+    }
     if !msg.is_empty() {
-        let sf = Arc::clone(host.kernel_core().perm_interner());
-        let sh = Arc::clone(host.kernel_core().shape_forge());
-        let si = sf.intern("message").0;
-        let new_shape = sh.make_shape(EMPTY_SHAPE_ID, si);
+        let si_msg = sf.intern("message").0;
+        let shape = sh.make_shape(unsafe { (*obj).shape_id() }, si_msg);
         let msg_val = host.new_string(msg);
         unsafe {
-            (*obj).set_shape_id(new_shape);
+            (*obj).set_shape_id(shape);
             (*obj).push_prop(msg_val);
         }
     }
