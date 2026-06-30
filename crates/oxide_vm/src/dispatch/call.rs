@@ -163,7 +163,9 @@ impl Vm {
         if cell_ptr.is_null() {
             return Ok(());
         }
-        unsafe { (*cell_ptr).value = src_val; }
+        unsafe {
+            (*cell_ptr).value = src_val;
+        }
         Ok(())
     }
 
@@ -197,7 +199,9 @@ impl Vm {
             if uv_idx < upvals.len() {
                 let cell = upvals[uv_idx];
                 if !cell.is_null() {
-                    unsafe { (*cell).value = src_val; }
+                    unsafe {
+                        (*cell).value = src_val;
+                    }
                 }
             }
         }

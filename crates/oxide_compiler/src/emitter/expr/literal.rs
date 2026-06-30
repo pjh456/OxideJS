@@ -70,7 +70,10 @@ impl Compiler {
 
         // Check if the owner's binding is captured (cell access)
         if ctx.scopes.symbols.lookup_is_captured(name) {
-            let cell_idx = ctx.scopes.cell_registry.iter()
+            let cell_idx = ctx
+                .scopes
+                .cell_registry
+                .iter()
                 .find(|(n, _)| n == name)
                 .map(|(_, idx)| *idx)
                 .unwrap_or(0);

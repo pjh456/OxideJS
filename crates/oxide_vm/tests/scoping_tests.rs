@@ -68,7 +68,8 @@ fn closure_nested_decl_reads_outer_var() {
 
 #[test]
 fn closure_counter_escape() {
-    let result = eval("function counter(){ var n=0; return function(){ return ++n; }; } var c=counter(); c(); c()").unwrap();
+    let result =
+        eval("function counter(){ var n=0; return function(){ return ++n; }; } var c=counter(); c(); c()").unwrap();
     assert_eq!(result.as_int(), 2);
 }
 
