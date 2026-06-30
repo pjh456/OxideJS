@@ -92,13 +92,20 @@ fn reflect_apply_calls_function() {
 }
 
 #[test]
-fn reflect_construct_throws_clear_type_error() {
+fn reflect_construct_returns_new_instance() {
     let mut vm = Vm::new();
     let result = eval(
         &mut vm,
-        "try { Reflect.construct(function(){}, []) } catch (e) { e instanceof TypeError }",
+        "var o = Reflect.construct(function(){ this.x = 5; }, []); typeof o === 'object' && o.x === 5",
     )
     .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn reflect_construct_non_callable_target_throws_type_error() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "try { Reflect.construct(123, []) } catch (e) { e instanceof TypeError }").unwrap();
     assert!(result.as_bool());
 }
 

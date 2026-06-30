@@ -1,4 +1,5 @@
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
+use oxide_types::mem::P;
 use oxide_types::object::{JsObject, PropAttributes, PropMetaEntry};
 use oxide_types::value::JsValue;
 
@@ -30,20 +31,30 @@ pub fn reflect_construct<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if !is_callable(target) {
         return type_error(vm, "Reflect.construct target is not callable");
     }
-    // newTarget must be constructable — check if it's an object with function flag
-    if new_target.is_object() {
-        let nt_ptr = new_target.as_js_object_ptr();
-        if !nt_ptr.is_null() && unsafe { &*nt_ptr }.is_function() {
-            // Accept: newTarget is a valid constructor
-        } else {
-            return type_error(vm, "Reflect.construct newTarget is not a constructor");
-        }
+    let new_target_ptr = if new_target.is_object() {
+        new_target.as_js_object_ptr()
     } else {
+        std::ptr::null_mut()
+    };
+    if new_target_ptr.is_null() || !unsafe { &*new_target_ptr }.is_function() {
         return type_error(vm, "Reflect.construct newTarget is not a constructor");
     }
+
+    let proto_si = vm.kernel_core().perm_interner().intern("prototype").0;
+    let proto_val = match vm.resolve_property(unsafe { &*new_target_ptr }, proto_si) {
+        Some(p) if p.is_object() => p,
+        _ => JsValue::from_js_object(P::as_ptr(&vm.session().builtin_world().object_proto) as *mut JsObject),
+    };
+    let this_ptr = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
+    let this_val = JsValue::from_js_object(this_ptr);
+
     let call_args = array_like_elements(arg_list).unwrap_or_default();
-    match vm.call_function_sync(target, JsValue::undefined(), &call_args) {
-        Ok(value) => NativeResult::Ok(value),
+    // ponytail: construct by binding the freshly allocated `this` to a plain call;
+    // new.target is not propagated into target. Upgrade path: expose the VM's
+    // [[Construct]] frame (constructed_this/new_target in vm.rs) through VmHost.
+    match vm.call_function_sync(target, this_val, &call_args) {
+        Ok(ret) if ret.is_object() => NativeResult::Ok(ret),
+        Ok(_) => NativeResult::Ok(this_val),
         Err(err) => NativeResult::Err(crate::error::create_type_error(vm, &err)),
     }
 }
