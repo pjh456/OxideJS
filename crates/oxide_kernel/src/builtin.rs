@@ -250,8 +250,9 @@ fn make_pair(
     // Pre-allocate slots: proto[0]="constructor", ctor[0]="prototype", ctor[1]="name"
     proto.ensure_hash_props().push(JsValue::undefined()); // placeholder
     ctor.ensure_hash_props().push(JsValue::undefined()); // placeholder for "prototype"
-    // Set the actual name value immediately (ctor vec[1])
-    ctor.ensure_hash_props().push(JsValue::perm_string(string_forge.string_ptr(name_si)));
+                                                         // Set the actual name value immediately (ctor vec[1])
+    ctor.ensure_hash_props()
+        .push(JsValue::perm_string(string_forge.string_ptr(name_si)));
     // Set attribute metadata: .prototype (ctor[0]) = writable:false, enumerable:false, configurable:false
     ctor.set_data_meta(0u32, oxide_types::object::PropAttributes::new(false, false, false));
     // .name (ctor[1]) = writable:false, enumerable:false, configurable:true

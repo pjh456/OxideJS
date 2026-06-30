@@ -529,7 +529,11 @@ pub fn string_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // ToUint32(limit), default 2^32-1
     let limit = if args.len() > 2 {
         let l = oxide_runtime_api::to_integer_or_infinity(vm.reg(args[2]));
-        if l.is_infinite() { u32::MAX as usize } else { (l.max(0.0).trunc() as u64).min(u32::MAX as u64) as usize }
+        if l.is_infinite() {
+            u32::MAX as usize
+        } else {
+            (l.max(0.0).trunc() as u64).min(u32::MAX as u64) as usize
+        }
     } else {
         u32::MAX as usize
     };
@@ -542,12 +546,18 @@ pub fn string_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             let mut parts: Vec<String> = Vec::new();
             let mut last_end = 0;
             for caps in regex.captures_iter(&s) {
-                if parts.len() >= limit { break; }
+                if parts.len() >= limit {
+                    break;
+                }
                 let full = caps.get(0).unwrap();
                 parts.push(s[last_end..full.start()].to_string());
-                if parts.len() >= limit { break; }
+                if parts.len() >= limit {
+                    break;
+                }
                 for i in 1..caps.len() {
-                    if parts.len() >= limit { break; }
+                    if parts.len() >= limit {
+                        break;
+                    }
                     parts.push(caps.get(i).map(|m| m.as_str()).unwrap_or("").to_string());
                 }
                 last_end = full.end();
@@ -603,7 +613,12 @@ pub fn string_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                                     let output = format!("{}{}{}", &s[..full.start()], &result_str, &s[full.end()..]);
                                     return NativeResult::Ok(vm.new_string(&output));
                                 }
-                                Err(err) => return NativeResult::Err(crate::error::create_type_error(vm, &format!("replace replacer: {}", err))),
+                                Err(err) => {
+                                    return NativeResult::Err(crate::error::create_type_error(
+                                        vm,
+                                        &format!("replace replacer: {}", err),
+                                    ))
+                                }
                             }
                         }
                         return NativeResult::Ok(vm.new_string(&s));
