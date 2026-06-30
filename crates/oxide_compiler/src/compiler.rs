@@ -922,7 +922,9 @@ impl Compiler {
         if matches!(body_context, FunctionBodyContext::Ordinary | FunctionBodyContext::Arrow) {
             let (captures, _cells) = self.analyze_upvalue_captures(body_stmts, parent_ctx, &ctx.scopes.symbols);
             ctx.current_upvalue_captures = captures;
-            ctx.scopes.cell_registry = ctx.current_upvalue_captures.iter()
+            ctx.scopes.cell_registry = ctx
+                .current_upvalue_captures
+                .iter()
                 .map(|u| (u.name.clone(), u.cell_idx))
                 .collect();
             for up in &ctx.current_upvalue_captures {
@@ -1088,7 +1090,9 @@ impl Compiler {
             is_derived_constructor: false,
             needs_home_object: false,
             upvalue_captures: Vec::new(),
-            cells_needed: ctx.scopes.symbols.scopes[0].bindings.values()
+            cells_needed: ctx.scopes.symbols.scopes[0]
+                .bindings
+                .values()
                 .filter(|b| b.is_captured.get())
                 .count() as u8,
         })
@@ -1190,7 +1194,9 @@ impl Compiler {
             is_derived_constructor: false,
             needs_home_object: false,
             upvalue_captures: Vec::new(),
-            cells_needed: ctx.scopes.symbols.scopes[0].bindings.values()
+            cells_needed: ctx.scopes.symbols.scopes[0]
+                .bindings
+                .values()
                 .filter(|b| b.is_captured.get())
                 .count() as u8,
         })
