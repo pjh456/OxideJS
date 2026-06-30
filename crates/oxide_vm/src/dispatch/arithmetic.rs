@@ -20,8 +20,9 @@ impl Vm {
             buf.clear();
             coercion::push_to_string(lhs, &mut buf);
             coercion::push_to_string(rhs, &mut buf);
-            self.regs[rd] = self.new_string(&buf);
-            self.string_buf = buf;
+            let result = self.new_string_owned(buf);
+            self.string_buf = String::new();
+            self.regs[rd] = result;
         } else {
             let ln = coercion::to_number(lhs);
             let rn = coercion::to_number(rhs);
@@ -61,8 +62,9 @@ impl Vm {
             buf.clear();
             coercion::push_to_string(lhs, &mut buf);
             coercion::push_to_string(rhs, &mut buf);
-            self.regs[rd] = self.new_string(&buf);
-            self.string_buf = buf;
+            let result = self.new_string_owned(buf);
+            self.string_buf = String::new();
+            self.regs[rd] = result;
         } else {
             let ln = coercion::to_number(lhs);
             let rn = coercion::to_number(rhs);
