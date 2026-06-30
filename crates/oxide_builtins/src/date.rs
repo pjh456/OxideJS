@@ -670,7 +670,7 @@ pub fn date_set_utc_hours<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let h = h_num.trunc() as u32;
     let min = get_opt_arg(vm, args, 2, ndt.time().minute());
     let sec = get_opt_arg(vm, args, 3, ndt.time().second());
-    let ms_arg = get_opt_arg(vm, args, 4, ndt.time().nanosecond() as u32 / 1_000_000);
+    let ms_arg = get_opt_arg(vm, args, 4, ndt.time().nanosecond() / 1_000_000);
     let nd = ndt
         .with_hour(h)
         .and_then(|x| x.with_minute(min))
@@ -700,7 +700,7 @@ pub fn date_set_utc_minutes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     }
     let min = min_num.trunc() as u32;
     let sec = get_opt_arg(vm, args, 2, ndt.time().second());
-    let ms_arg = get_opt_arg(vm, args, 3, ndt.time().nanosecond() as u32 / 1_000_000);
+    let ms_arg = get_opt_arg(vm, args, 3, ndt.time().nanosecond() / 1_000_000);
     let nd = ndt
         .with_minute(min)
         .and_then(|x| x.with_second(sec))
@@ -728,7 +728,7 @@ pub fn date_set_utc_seconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
     let sec = sec_num.trunc() as u32;
-    let ms_arg = get_opt_arg(vm, args, 2, ndt.time().nanosecond() as u32 / 1_000_000);
+    let ms_arg = get_opt_arg(vm, args, 2, ndt.time().nanosecond() / 1_000_000);
     let nd = ndt
         .with_second(sec)
         .and_then(|x| x.with_nanosecond(ms_arg * 1_000_000))
