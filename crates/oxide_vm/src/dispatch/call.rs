@@ -222,20 +222,23 @@ impl Vm {
         let src_val = self.regs[a];
         let callee = self.frames.last().unwrap().callee;
         if callee.is_object() {
-            let obj = unsafe { &*callee.as_js_object_ptr() };
-            let upvals = obj.upvalues_slice();
+            let obj = unsafe { &mut *callee.as_js_object_ptr() };
+            let upvals = obj.upvalues_slice_mut();
             if uv_idx < upvals.len() {
-                let cell = upvals[uv_idx];
-                if !cell.is_null() {
-                    unsafe {
-                        (*cell).value = src_val;
-                    }
+                if !upvals[uv_idx].is_null() {
+                    unsafe { (*upvals[uv_idx]).value = src_val; }
+                } else {
+                    // Lazy create: cell was null (CREATE_CLOSURE before MAKE_CELL)
+                    let cell = self.gc_state.session_epoch.alloc(Cell::new(src_val, true));
+                    upvals[uv_idx] = cell as *mut Cell;
                 }
             }
         }
         Ok(())
     }
+}
 
+impl Vm {
     pub(crate) fn dispatch_create_regexp(&mut self, rd: usize, a: usize, b: usize) -> Result<Option<JsValue>, String> {
         vm_trace!("CREATE_REGEXP rd={}", rd);
         let pat_val = self.regs[a];
