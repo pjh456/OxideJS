@@ -179,35 +179,12 @@ runner 会输出：
 
 兼容性数字属于开发过程指标。发布正式 benchmark 或兼容性结论前，应基于当前 checkout 的 test262 版本重新生成结果。
 
-## 8. Benchmark
-
-Benchmark 工作围绕可复现脚本和可比较 baseline 展开。
-
-计划中的 benchmark 分组：
-
-| 分组 | 目的 | 状态 |
-|------|------|------|
-| 表达式 microbenchmark | 算术、比较、逻辑操作 | planned |
-| 对象 / 属性访问 benchmark | 对象创建和属性访问路径 | planned |
-| Array / String benchmark | 常用内置对象操作 | planned |
-| 函数调用 benchmark | 字节码 call/return 与 native call 开销 | planned |
-| Agent 风格 workload | 短时、重复结构脚本和数据转换 | planned |
-| JetStream 2.0 子集 | 依赖兼容性的 JS benchmark 覆盖 | planned |
-
-当前研究用 baseline：
-
-- QuickJS
-- Boa
-- JerryScript
-
-[TODO] 完工时放与其他 baseline 的对比表格
-
-## 9. 主要使用的开源项目
+## 8. 主要使用的开源项目
 
 - [oxc](https://github.com/oxc-project/oxc) — JavaScript 源码解析，因为这不是我们的工作中心，所以没有自己构建该系统
 - [bumpalo](https://github.com/fitzgen/bumpalo) — Bump allocator，构成 `Epoch` arena 内存系统的底层分配器
 - [dashmap](https://github.com/xacrimon/dashmap) — 并发 HashMap，用于 `CodeForge`、`ShapeForge`、`PropForge` 跨 VM 缓存共享
 
-## 10. License
+## 9. License
 
 本项目采用 MIT License 开源协议。详见 [LICENSE](LICENSE)。
