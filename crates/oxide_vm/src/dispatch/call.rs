@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use crate::native::NativeFn;
 use crate::vm::{native_fn_ptr_to_fn, CallFrame, FrameContinuation, Vm};
 use crate::{vm_debug, vm_trace};
@@ -346,13 +348,16 @@ impl Vm {
 
             self.saved_bytecode_stack.push(std::mem::take(&mut self.bytecode));
             self.saved_immutables_stack.push(self.active_immutables);
+
+            let function_name = self.sub_modules[sub_idx]
+                .function_name
+                .as_deref()
+                .map(|name| self.kernel_core.perm_interner().intern(name).0)
+                .unwrap_or(0);
+
             self.frames.push(CallFrame {
                 return_addr: self.pc,
-                function_name: self.sub_modules[sub_idx]
-                    .function_name
-                    .as_deref()
-                    .map(|name| self.kernel_core.perm_interner().intern(name).0)
-                    .unwrap_or(0),
+                function_name,
                 caller_reg_limit,
                 saved_reg_offset,
                 saved_this,
@@ -367,12 +372,20 @@ impl Vm {
             self.bytecode = sub_bytecode;
             let subs = Arc::clone(&self.sub_modules);
             self.activate_immutables(sub_idx + 1, &subs[sub_idx].constants);
-            for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map {
+            self.cell_stack.push(Vec::with_capacity(subs[sub_idx].cells_needed as usize));
+            for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map.clone() {
                 let si = self.kernel_core.perm_interner().intern(name.as_str()).0;
                 let global = self.session.global_object();
                 if let Some(pos) = self.kernel_core.shape_forge().lookup_position(global.shape_id(), si) {
                     self.regs[*reg as usize] = global.get_prop_at(pos);
                 }
+            }
+
+            self.sub_module_stack.push(Arc::clone(&self.sub_modules));
+            let callee_subs = &subs[sub_idx].sub_modules;
+            if !callee_subs.is_empty() {
+                self.sub_modules = Arc::new(callee_subs.clone());
+                self.immutables_cache = (0..=callee_subs.len()).map(|_| OnceLock::new()).collect();
             }
             self.active_reg_limit = sub_n_registers.max(1);
             self.pc = 0;

@@ -117,6 +117,7 @@ impl Vm {
             self.frames.last().map(|f| f.return_addr).unwrap_or(0)
         );
         if let Some(frame) = self.frames.pop() {
+            self.cell_stack.pop();
             let construct_result_reg = frame.construct_result_reg;
             let constructed_this = frame.constructed_this;
             let is_derived_constructor = frame.is_derived_constructor;

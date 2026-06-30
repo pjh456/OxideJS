@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::HashMap;
 
 use crate::emit_ctx::{LabelCtx, ScopeCtx};
@@ -894,7 +895,7 @@ impl Compiler {
                     reg: binding.reg,
                     initialized: binding.initialized,
                     is_const: binding.is_const,
-                    is_captured: binding.is_captured,
+                    is_captured: binding.is_captured.clone(),
                 },
             );
             inherited_reg_start = inherited_reg_start.max(binding.reg.saturating_add(1));
@@ -906,7 +907,7 @@ impl Compiler {
                     reg: *reg,
                     initialized: true,
                     is_const: true,
-                    is_captured: false,
+                    is_captured: Cell::new(false),
                 },
             );
             inherited_reg_start = inherited_reg_start.max(reg.saturating_add(1));
@@ -918,8 +919,6 @@ impl Compiler {
         ctx.reset_regs();
 
         // Free variable analysis for upvalue capture (Ordinary + Arrow functions only)
-        // ponytail: temporarily disabled to isolate closure bug
-        /*
         if matches!(body_context, FunctionBodyContext::Ordinary | FunctionBodyContext::Arrow) {
             let (captures, _cells) = self.analyze_upvalue_captures(body_stmts, parent_ctx, &ctx.scopes.symbols);
             ctx.current_upvalue_captures = captures;
@@ -932,7 +931,6 @@ impl Compiler {
                 }
             }
         }
-        */
 
         // Function body scope - params and local vars
         ctx.push_scope_with_kind(ScopeKind::FunctionScope);
@@ -1010,9 +1008,20 @@ impl Compiler {
         }
 
         // Emit body statements.
-        // Capture the last statement's expression result for expression-body arrows.
+        // First sub-pass: emit function declarations (hoisting + marks parent captures)
         let mut last_result_reg = None;
         for stmt in body_stmts {
+            if matches!(stmt, Statement::FunctionDeclaration(_)) {
+                if let Some(reg) = self.emit_statement(stmt, &mut ctx)? {
+                    last_result_reg = Some(reg);
+                }
+            }
+        }
+        // Second sub-pass: emit all other statements
+        for stmt in body_stmts {
+            if matches!(stmt, Statement::FunctionDeclaration(_)) {
+                continue;
+            }
             if let Some(reg) = self.emit_statement(stmt, &mut ctx)? {
                 last_result_reg = Some(reg);
             }
@@ -1079,7 +1088,9 @@ impl Compiler {
             is_derived_constructor: false,
             needs_home_object: false,
             upvalue_captures: Vec::new(),
-            cells_needed: 0,
+            cells_needed: ctx.scopes.symbols.scopes[0].bindings.values()
+                .filter(|b| b.is_captured.get())
+                .count() as u8,
         })
     }
 
@@ -1179,7 +1190,9 @@ impl Compiler {
             is_derived_constructor: false,
             needs_home_object: false,
             upvalue_captures: Vec::new(),
-            cells_needed: 0,
+            cells_needed: ctx.scopes.symbols.scopes[0].bindings.values()
+                .filter(|b| b.is_captured.get())
+                .count() as u8,
         })
     }
 }

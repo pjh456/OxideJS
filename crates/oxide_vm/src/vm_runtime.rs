@@ -60,6 +60,7 @@ impl Vm {
             saved_bytecode_stack: std::mem::take(&mut self.saved_bytecode_stack),
             saved_immutables_stack: std::mem::take(&mut self.saved_immutables_stack),
             save_stack: std::mem::take(&mut self.save_stack),
+            cell_stack: std::mem::take(&mut self.cell_stack),
         });
 
         self.regs = [JsValue::undefined(); 256];
@@ -110,6 +111,7 @@ impl Vm {
         self.saved_bytecode_stack = saved.saved_bytecode_stack;
         self.saved_immutables_stack = saved.saved_immutables_stack;
         self.save_stack = saved.save_stack;
+        self.cell_stack = saved.cell_stack;
 
         result
     }
@@ -125,6 +127,9 @@ impl Vm {
         }
         if let Some(saved_imm) = self.saved_immutables_stack.pop() {
             self.active_immutables = saved_imm;
+        }
+        if let Some(saved_subs) = self.sub_module_stack.pop() {
+            self.sub_modules = saved_subs;
         }
         let offset = frame.saved_reg_offset as usize;
         let len = frame.caller_reg_limit as usize;
@@ -148,7 +153,6 @@ impl Vm {
         vm_debug!("run: starting bytecode execution, {} instructions", module.bytecode.len());
         self.clear_execution_state();
         self.sub_modules = Arc::new(module.sub_modules.clone());
-        // Per-run convert-once cache: slot 0 = top module, slot sub_idx+1 = sub_modules[sub_idx].
         self.immutables_cache = (0..=self.sub_modules.len()).map(|_| OnceLock::new()).collect();
         self.bytecode = module.bytecode.clone();
         self.activate_immutables(0, &module.constants);

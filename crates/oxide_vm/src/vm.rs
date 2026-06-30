@@ -140,6 +140,7 @@ pub(crate) struct InlineSyncState {
     pub(crate) saved_bytecode_stack: Vec<Vec<opcode::Instr>>,
     pub(crate) saved_immutables_stack: Vec<*const [JsValue]>,
     pub(crate) save_stack: Vec<JsValue>,
+    pub(crate) cell_stack: Vec<Vec<*mut Cell>>,
 }
 
 pub struct Vm {
@@ -189,6 +190,7 @@ pub struct Vm {
     pub(crate) iters: IterState,
     /// Grouped inline-cache and instruction counters.
     pub(crate) profiling: ProfilingState,
+    pub(crate) sub_module_stack: Vec<Arc<Vec<CompiledModule>>>,
     pub(crate) cell_stack: Vec<Vec<*mut Cell>>,
     /// Reusable string buffer for concatenation to avoid allocation per `+` op.
     pub(crate) string_buf: String,
@@ -721,8 +723,6 @@ impl Vm {
 
         self.saved_bytecode_stack.push(std::mem::take(&mut self.bytecode));
         self.saved_immutables_stack.push(self.active_immutables);
-        // cell_stack push disabled for debug
-        // self.cell_stack.push(Vec::with_capacity(...));
 
         let function_name = self.sub_modules[sub_idx]
             .function_name
@@ -744,9 +744,11 @@ impl Vm {
             continuation,
         });
 
+        self.pc = 0;
         self.bytecode = sub_bytecode;
         let subs = Arc::clone(&self.sub_modules);
         self.activate_immutables(sub_idx + 1, &subs[sub_idx].constants);
+        self.cell_stack.push(Vec::with_capacity(subs[sub_idx].cells_needed as usize));
         for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map.clone() {
             let si = self.kernel_core.perm_interner().intern(name.as_str()).0;
             let global = self.session.global_object();
@@ -754,6 +756,14 @@ impl Vm {
                 self.regs[*reg as usize] = global.get_prop_at(pos);
             }
         }
+
+        self.sub_module_stack.push(Arc::clone(&self.sub_modules));
+        let callee_subs = &subs[sub_idx].sub_modules;
+        if !callee_subs.is_empty() {
+            self.sub_modules = Arc::new(callee_subs.clone());
+            self.immutables_cache = (0..=callee_subs.len()).map(|_| OnceLock::new()).collect();
+        }
+        self.cell_stack.push(Vec::with_capacity(subs[sub_idx].cells_needed as usize));
 
         self.active_reg_limit = sub_n_registers.max(1);
         self.pc = 0;
@@ -799,6 +809,21 @@ impl Vm {
 
                 OpCode::CREATE_CLOSURE => {
                     self.dispatch_create_closure(rd, instr);
+                }
+                OpCode::MAKE_CELL => {
+                    self.dispatch_make_cell(rd, instr)?;
+                }
+                OpCode::CELL_GET => {
+                    self.dispatch_cell_get(rd, a, b)?;
+                }
+                OpCode::CELL_SET => {
+                    self.dispatch_cell_set(a, b)?;
+                }
+                OpCode::LOAD_UPVALUE => {
+                    self.dispatch_load_upvalue(rd, instr)?;
+                }
+                OpCode::STORE_UPVALUE => {
+                    self.dispatch_store_upvalue(a, b)?;
                 }
                 OpCode::CREATE_REGEXP => match self.dispatch_create_regexp(rd, a, b) {
                     Ok(Some(result)) => return Ok(result),

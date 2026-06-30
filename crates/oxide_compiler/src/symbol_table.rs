@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::HashMap;
 
 use oxide_parser::VariableDeclarationKind;
@@ -17,7 +18,7 @@ pub(crate) struct Binding {
     pub(crate) reg: u8,
     pub(crate) initialized: bool,
     pub(crate) is_const: bool,
-    pub(crate) is_captured: bool,
+    pub(crate) is_captured: Cell<bool>,
 }
 
 pub struct SymbolTable {
@@ -85,7 +86,7 @@ impl SymbolTable {
                 reg,
                 initialized: false,
                 is_const: matches!(kind, VariableDeclarationKind::Const) || is_const,
-                is_captured: false,
+                is_captured: Cell::new(false),
             },
         );
         Ok(())
@@ -131,7 +132,7 @@ impl SymbolTable {
                 reg: reg_for_new,
                 initialized: true,
                 is_const: false,
-                is_captured: false,
+                is_captured: Cell::new(false),
             },
         );
         reg_for_new
@@ -152,7 +153,7 @@ impl SymbolTable {
     pub fn lookup_is_captured(&self, name: &str) -> bool {
         for scope in self.scopes.iter().rev() {
             if let Some(b) = scope.bindings.get(name) {
-                return b.is_captured;
+                return b.is_captured.get();
             }
         }
         false
@@ -178,7 +179,7 @@ impl SymbolTable {
                 reg,
                 initialized: true,
                 is_const: matches!(kind, VariableDeclarationKind::Const) || is_const,
-                is_captured: false,
+                is_captured: Cell::new(false),
             },
         );
         Ok(())
@@ -189,7 +190,7 @@ impl SymbolTable {
             reg,
             initialized: true,
             is_const: false,
-            is_captured: false,
+            is_captured: Cell::new(false),
         });
     }
 
