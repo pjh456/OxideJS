@@ -170,8 +170,7 @@ fn structural_hash_distinguishes_optional_chain_shape() {
 #[test]
 fn compiled_module_rejects_optional_chain_assignment_target() {
     let allocator = Allocator::default();
-    match oxide_parser::parse(&allocator, "a?.b = 1") {
-        Ok(program) => assert!(Compiler::new().compile(&program).is_err()),
-        Err(_) => {}
+    if let Ok(program) = oxide_parser::parse(&allocator, "a?.b = 1") {
+        assert!(Compiler::new().compile(&program).is_err());
     }
 }

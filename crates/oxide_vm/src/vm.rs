@@ -1175,6 +1175,127 @@ impl Default for Vm {
     }
 }
 
+impl oxide_runtime_api::VmHost for Vm {
+    fn reg(&self, idx: u8) -> JsValue {
+        self.reg(idx)
+    }
+    fn set_reg(&mut self, idx: u8, val: JsValue) {
+        self.set_reg(idx, val);
+    }
+    fn alloc_object(&mut self, obj: JsObject) -> *mut JsObject {
+        self.alloc_object(obj)
+    }
+    fn new_string(&mut self, s: &str) -> JsValue {
+        self.new_string(s)
+    }
+    fn kernel_core(&self) -> &Arc<KernelCore> {
+        self.kernel_core()
+    }
+    fn session(&self) -> &KernelSession {
+        self.session()
+    }
+    fn epoch(&self) -> &Epoch {
+        self.epoch()
+    }
+    fn take_uncaught_value(&mut self) -> Option<JsValue> {
+        self.last_uncaught_value.take()
+    }
+    fn property_key_si(&mut self, val: JsValue) -> u32 {
+        self.property_key_si(val)
+    }
+    fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
+        self.resolve_property(obj, prop_name_si)
+    }
+    fn get_own_property_slot(&self, obj: &JsObject, prop_name_si: u32) -> Option<u32> {
+        self.get_own_property_slot(obj, prop_name_si)
+    }
+    fn ordinary_get(&mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue) -> Result<JsValue, String> {
+        self.ordinary_get(obj, prop_name_si, receiver)
+    }
+    fn ordinary_set(
+        &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue,
+    ) -> Result<(), String> {
+        self.ordinary_set(obj, prop_name_si, val, receiver)
+    }
+    fn define_data_property(
+        &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, attributes: PropAttributes,
+    ) -> Result<(), String> {
+        self.define_data_property(obj, prop_name_si, val, attributes)
+    }
+    fn define_accessor_property(
+        &mut self, obj: &mut JsObject, prop_name_si: u32, get: JsValue, set: JsValue, attributes: PropAttributes,
+    ) -> Result<(), String> {
+        self.define_accessor_property(obj, prop_name_si, get, set, attributes)
+    }
+    fn set_or_create_prop_value(&mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue) {
+        self.set_or_create_prop_value(obj, prop_name_si, val)
+    }
+    fn lookup_str(&self, val: JsValue) -> Option<String> {
+        self.lookup_str(val)
+    }
+    fn coerce_primitive_bounded(&mut self, value: JsValue, prefer_string: bool) -> Result<JsValue, String> {
+        self.coerce_primitive_bounded(value, prefer_string)
+    }
+    fn coerce_number_bounded(&mut self, value: JsValue) -> Result<f64, String> {
+        self.coerce_number_bounded(value)
+    }
+    fn call_function_sync(&mut self, callee: JsValue, receiver: JsValue, args: &[JsValue]) -> Result<JsValue, String> {
+        self.call_function_sync(callee, receiver, args)
+    }
+    fn checked_object_ptr(&mut self, val: JsValue, error_msg: &str) -> Result<Option<*mut JsObject>, String> {
+        self.checked_object_ptr(val, error_msg)
+    }
+    fn raise_type_error(&mut self, msg: &str) -> Result<(), String> {
+        self.raise_type_error(msg)
+    }
+    fn error_message_text(&self, kind: &str, msg: &str) -> String {
+        self.error_message_text(kind, msg)
+    }
+    fn call_stack_function_names(&self) -> Vec<String> {
+        self.frames
+            .iter()
+            .rev()
+            .map(|f| {
+                self.kernel_core
+                    .perm_interner()
+                    .lookup(f.function_name)
+                    .unwrap_or("<anonymous>")
+                    .to_string()
+            })
+            .collect()
+    }
+    fn promote_if_needed_for_write_ptr(&mut self, target_ptr: *mut JsObject, value: JsValue) -> JsValue {
+        self.promote_if_needed_for_write_ptr(target_ptr, value)
+    }
+    fn step_rng(&mut self) {
+        self.step_rng()
+    }
+    fn math_rng_value(&self) -> f64 {
+        self.math_rng_value()
+    }
+    fn sub_module_function_name(&self, sub_idx: u16) -> String {
+        self.sub_modules
+            .get(sub_idx as usize)
+            .and_then(|m| m.function_name.clone())
+            .unwrap_or_default()
+    }
+    fn symbol_intern(&mut self, desc: String) -> u32 {
+        self.symbols.intern(desc)
+    }
+    fn symbol_description(&self, idx: u32) -> Option<&str> {
+        self.symbols.description(idx)
+    }
+    fn symbol_lookup_global(&self, key: &str) -> Option<u32> {
+        self.symbols.lookup_global(key)
+    }
+    fn symbol_register_global(&mut self, key: String, idx: u32) {
+        self.symbols.register_global(key, idx)
+    }
+    fn symbol_key_for_id(&self, idx: u32) -> Option<String> {
+        self.symbols.key_for_id(idx)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{opcode, JsValue, TryHandler, Vm};
@@ -1509,126 +1630,5 @@ mod tests {
         assert_eq!(vm.reg(253), JsValue::int(11));
         assert_eq!(vm.reg(254), JsValue::int(12));
         assert_eq!(vm.reg(255), JsValue::int(13));
-    }
-}
-
-impl oxide_runtime_api::VmHost for Vm {
-    fn reg(&self, idx: u8) -> JsValue {
-        self.reg(idx)
-    }
-    fn set_reg(&mut self, idx: u8, val: JsValue) {
-        self.set_reg(idx, val);
-    }
-    fn alloc_object(&mut self, obj: JsObject) -> *mut JsObject {
-        self.alloc_object(obj)
-    }
-    fn new_string(&mut self, s: &str) -> JsValue {
-        self.new_string(s)
-    }
-    fn kernel_core(&self) -> &Arc<KernelCore> {
-        self.kernel_core()
-    }
-    fn session(&self) -> &KernelSession {
-        self.session()
-    }
-    fn epoch(&self) -> &Epoch {
-        self.epoch()
-    }
-    fn take_uncaught_value(&mut self) -> Option<JsValue> {
-        self.last_uncaught_value.take()
-    }
-    fn property_key_si(&mut self, val: JsValue) -> u32 {
-        self.property_key_si(val)
-    }
-    fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
-        self.resolve_property(obj, prop_name_si)
-    }
-    fn get_own_property_slot(&self, obj: &JsObject, prop_name_si: u32) -> Option<u32> {
-        self.get_own_property_slot(obj, prop_name_si)
-    }
-    fn ordinary_get(&mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue) -> Result<JsValue, String> {
-        self.ordinary_get(obj, prop_name_si, receiver)
-    }
-    fn ordinary_set(
-        &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue,
-    ) -> Result<(), String> {
-        self.ordinary_set(obj, prop_name_si, val, receiver)
-    }
-    fn define_data_property(
-        &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, attributes: PropAttributes,
-    ) -> Result<(), String> {
-        self.define_data_property(obj, prop_name_si, val, attributes)
-    }
-    fn define_accessor_property(
-        &mut self, obj: &mut JsObject, prop_name_si: u32, get: JsValue, set: JsValue, attributes: PropAttributes,
-    ) -> Result<(), String> {
-        self.define_accessor_property(obj, prop_name_si, get, set, attributes)
-    }
-    fn set_or_create_prop_value(&mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue) {
-        self.set_or_create_prop_value(obj, prop_name_si, val)
-    }
-    fn lookup_str(&self, val: JsValue) -> Option<String> {
-        self.lookup_str(val)
-    }
-    fn coerce_primitive_bounded(&mut self, value: JsValue, prefer_string: bool) -> Result<JsValue, String> {
-        self.coerce_primitive_bounded(value, prefer_string)
-    }
-    fn coerce_number_bounded(&mut self, value: JsValue) -> Result<f64, String> {
-        self.coerce_number_bounded(value)
-    }
-    fn call_function_sync(&mut self, callee: JsValue, receiver: JsValue, args: &[JsValue]) -> Result<JsValue, String> {
-        self.call_function_sync(callee, receiver, args)
-    }
-    fn checked_object_ptr(&mut self, val: JsValue, error_msg: &str) -> Result<Option<*mut JsObject>, String> {
-        self.checked_object_ptr(val, error_msg)
-    }
-    fn raise_type_error(&mut self, msg: &str) -> Result<(), String> {
-        self.raise_type_error(msg)
-    }
-    fn error_message_text(&self, kind: &str, msg: &str) -> String {
-        self.error_message_text(kind, msg)
-    }
-    fn call_stack_function_names(&self) -> Vec<String> {
-        self.frames
-            .iter()
-            .rev()
-            .map(|f| {
-                self.kernel_core
-                    .perm_interner()
-                    .lookup(f.function_name)
-                    .unwrap_or("<anonymous>")
-                    .to_string()
-            })
-            .collect()
-    }
-    fn promote_if_needed_for_write_ptr(&mut self, target_ptr: *mut JsObject, value: JsValue) -> JsValue {
-        self.promote_if_needed_for_write_ptr(target_ptr, value)
-    }
-    fn step_rng(&mut self) {
-        self.step_rng()
-    }
-    fn math_rng_value(&self) -> f64 {
-        self.math_rng_value()
-    }
-    fn sub_module_function_name(&self, sub_idx: u16) -> String {
-        self.sub_modules
-            .get(sub_idx as usize)
-            .and_then(|m| m.function_name.clone())
-            .unwrap_or_default()
-    }
-    fn symbol_intern(&mut self, desc: String) -> u32 {
-        self.symbols.intern(desc)
-    }
-    fn symbol_description(&self, idx: u32) -> Option<&str> {
-        self.symbols.description(idx)
-    }
-    fn symbol_lookup_global(&self, key: &str) -> Option<u32> {
-        self.symbols.lookup_global(key)
-    }
-    fn symbol_register_global(&mut self, key: String, idx: u32) {
-        self.symbols.register_global(key, idx)
-    }
-    fn symbol_key_for_id(&self, idx: u32) -> Option<String> {
-        self.symbols.key_for_id(idx)
     }
 }

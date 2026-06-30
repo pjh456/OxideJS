@@ -148,7 +148,7 @@ fn date_local_getters_differ_from_utc() {
     if utc_hour != local_hour {
         assert_ne!(local_hour, utc_hour, "in non-UTC+0, local vs UTC hours should differ");
     }
-    assert!(local_hour >= 0.0 && local_hour < 24.0);
+    assert!((0.0..24.0).contains(&local_hour));
 }
 
 #[test]
