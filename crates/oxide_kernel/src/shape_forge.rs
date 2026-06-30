@@ -17,6 +17,8 @@ pub struct Shape {
     pub id: ShapeId,
     pub property_name: StringIndex,
     pub parent: Option<ShapeId>,
+    /// Number of non-sentinel properties from the root to this shape.
+    pub depth: u32,
 }
 
 /// Shared hidden-class store.
@@ -24,11 +26,13 @@ pub struct Shape {
 /// Concurrency model:
 /// - `shapes` is append-mostly behind an `RwLock`.
 /// - `transitions` is a sharded `DashMap` keyed by `(parent_shape, property_name)`.
+/// - `positions` caches `(shape_id, prop_name) → slot` for O(1) repeat lookups.
 /// - Shard count is fixed for reproducible contention behavior across machines instead
 ///   of relying on DashMap's CPU-dependent default.
 pub struct ShapeForge {
     shapes: RwLock<Vec<Option<Arc<Shape>>>>,
     transitions: DashMap<u64, ShapeId>,
+    positions: DashMap<u64, u32>,
     next_id: AtomicU32,
     overflow_map: RwLock<HashMap<u64, ShapeId>>,
     overflow_active: AtomicBool,
@@ -39,6 +43,7 @@ impl ShapeForge {
         let forge = Self {
             shapes: RwLock::new(Vec::with_capacity(256)),
             transitions: DashMap::with_capacity_and_shard_amount(256, 16),
+            positions: DashMap::with_capacity_and_shard_amount(256, 16),
             next_id: AtomicU32::new(2),
             overflow_map: RwLock::new(HashMap::new()),
             overflow_active: AtomicBool::new(false),
@@ -49,6 +54,7 @@ impl ShapeForge {
                 id: EMPTY_SHAPE_ID,
                 property_name: EMPTY_SENTINEL,
                 parent: None,
+                depth: 0,
             });
             debug_assert_eq!(shapes.len(), 0);
             shapes.push(Some(empty));
@@ -58,26 +64,6 @@ impl ShapeForge {
 
     pub fn pack_key(parent_id: ShapeId, prop_name: StringIndex) -> u64 {
         ((parent_id as u64) << 32) | (prop_name as u64)
-    }
-
-    fn compute_depth(shape_id: ShapeId, shapes: &[Option<Arc<Shape>>]) -> u32 {
-        if shape_id == 0 {
-            return 0;
-        }
-        let mut count = 0u32;
-        let mut cursor = Some(shape_id);
-        while let Some(id) = cursor {
-            match shapes.get((id - 1) as usize).and_then(|s| s.clone()) {
-                Some(s) => {
-                    if s.property_name != EMPTY_SENTINEL {
-                        count += 1;
-                    }
-                    cursor = s.parent;
-                }
-                None => break,
-            }
-        }
-        count
     }
 
     pub fn make_shape(&self, parent_id: ShapeId, prop_name: StringIndex) -> ShapeId {
@@ -111,10 +97,21 @@ impl ShapeForge {
             return new_id;
         }
 
+        // Compute depth from parent (O(1) — just read the cached value)
+        let parent_depth = {
+            let shapes = self.shapes.read().unwrap();
+            shapes
+                .get((parent_id - 1) as usize)
+                .and_then(|s| s.as_ref())
+                .map(|s| s.depth)
+                .unwrap_or(0)
+        };
+
         let shape = Arc::new(Shape {
             id: new_id,
             property_name: prop_name,
             parent: Some(parent_id),
+            depth: parent_depth + 1,
         });
 
         {
@@ -154,12 +151,19 @@ impl ShapeForge {
             shapes.truncate(1);
         }
         self.transitions.clear();
+        self.positions.clear();
         self.next_id.store(2, Ordering::Relaxed);
     }
 
     pub fn lookup_position(&self, shape_id: ShapeId, prop_name: StringIndex) -> Option<u32> {
+        let cache_key = Self::pack_key(shape_id, prop_name);
+        if let Some(pos) = self.positions.get(&cache_key) {
+            return Some(*pos);
+        }
+
         let shapes = self.shapes.read().unwrap();
-        let total_depth = Self::compute_depth(shape_id, &shapes);
+        let root = shapes.get((shape_id - 1) as usize)?.as_ref()?;
+        let total_depth = root.depth;
         let mut prop_steps: u32 = 0;
         let mut cursor = Some(shape_id);
         while let Some(id) = cursor {
@@ -167,7 +171,10 @@ impl ShapeForge {
                 Some(s) => {
                     if s.property_name != EMPTY_SENTINEL {
                         if s.property_name == prop_name {
-                            return total_depth.checked_sub(prop_steps + 1);
+                            let pos = total_depth.checked_sub(prop_steps + 1)?;
+                            drop(shapes);
+                            self.positions.insert(cache_key, pos);
+                            return Some(pos);
                         }
                         prop_steps += 1;
                     }
@@ -198,20 +205,11 @@ impl ShapeForge {
 
     pub fn shape_prop_count(&self, shape_id: ShapeId) -> u32 {
         let shapes = self.shapes.read().unwrap();
-        let mut count = 0u32;
-        let mut cursor = Some(shape_id);
-        while let Some(id) = cursor {
-            match shapes.get((id - 1) as usize).and_then(|s| s.clone()) {
-                Some(s) => {
-                    if s.property_name != EMPTY_SENTINEL {
-                        count += 1;
-                    }
-                    cursor = s.parent;
-                }
-                None => break,
-            }
-        }
-        count
+        shapes
+            .get((shape_id - 1) as usize)
+            .and_then(|s| s.as_ref())
+            .map(|s| s.depth)
+            .unwrap_or(0)
     }
 }
 
@@ -234,6 +232,7 @@ mod tests {
         let s = s.unwrap();
         assert_eq!(s.id, EMPTY_SHAPE_ID);
         assert!(s.parent.is_none());
+        assert_eq!(s.depth, 0);
     }
 
     #[test]
@@ -245,6 +244,7 @@ mod tests {
         let shape = forge.get_shape(s1).unwrap();
         assert_eq!(shape.property_name, key);
         assert_eq!(shape.parent, Some(EMPTY_SHAPE_ID));
+        assert_eq!(shape.depth, 1);
     }
 
     #[test]
@@ -277,6 +277,31 @@ mod tests {
         assert_eq!(forge.lookup_position(s3, 1_000_020), Some(1));
         assert_eq!(forge.lookup_position(s3, 1_000_010), Some(0));
         assert_eq!(forge.lookup_position(s3, 99), None);
+    }
+
+    #[test]
+    fn lookup_position_cached_second_call() {
+        let forge = ShapeForge::new();
+        let s1 = forge.make_shape(EMPTY_SHAPE_ID, 1_000_010);
+        let s2 = forge.make_shape(s1, 1_000_020);
+        let s3 = forge.make_shape(s2, 1_000_030);
+
+        // First call populates cache
+        assert_eq!(forge.lookup_position(s3, 1_000_020), Some(1));
+        // Second call hits cache (verify no regression)
+        assert_eq!(forge.lookup_position(s3, 1_000_020), Some(1));
+        assert_eq!(forge.lookup_position(s3, 1_000_030), Some(2));
+        assert_eq!(forge.lookup_position(s3, 1_000_030), Some(2));
+    }
+
+    #[test]
+    fn clear_transient_clears_positions() {
+        let forge = ShapeForge::new();
+        let s1 = forge.make_shape(EMPTY_SHAPE_ID, 1_000_010);
+        assert_eq!(forge.lookup_position(s1, 1_000_010), Some(0));
+        forge.clear_transient();
+        // After clear, EMPTY_SHAPE remains but others are gone
+        assert_eq!(forge.shapes.read().unwrap().len(), 1);
     }
 
     #[test]
