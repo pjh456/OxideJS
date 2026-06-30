@@ -85,8 +85,7 @@ fn get_this_arraylike<H: VmHost>(vm: &mut H, val: JsValue) -> Result<(*mut JsObj
     // 读取 length 属性
     let length_key = vm.new_string("length");
     let length_si = vm.property_key_si(length_key);
-    let len_val = vm.ordinary_get(unsafe { &*ptr }, length_si, val)
-        .unwrap_or(JsValue::int(0));
+    let len_val = vm.ordinary_get(unsafe { &*ptr }, length_si, val).unwrap_or(JsValue::int(0));
     let len_num = vm.coerce_number_bounded(len_val).unwrap_or(0.0);
     let len = if !len_num.is_finite() || len_num <= 0.0 {
         0
@@ -262,11 +261,19 @@ pub fn array_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let n_isize = n as isize;
     let rel_start = if args.len() > 1 {
         oxide_runtime_api::to_integer_or_infinity(vm.reg(args[1])) as isize
-    } else { 0 };
+    } else {
+        0
+    };
     let rel_end = if args.len() > 2 {
         oxide_runtime_api::to_integer_or_infinity(vm.reg(args[2])) as isize
-    } else { n_isize };
-    let start = if rel_start < 0 { (n_isize + rel_start).max(0) } else { rel_start.min(n_isize) } as usize;
+    } else {
+        n_isize
+    };
+    let start = if rel_start < 0 {
+        (n_isize + rel_start).max(0)
+    } else {
+        rel_start.min(n_isize)
+    } as usize;
     let end = if rel_end < 0 { (n_isize + rel_end).max(0) } else { rel_end.min(n_isize) } as usize;
     let count = end.saturating_sub(start);
     let new_arr = create_new_array(vm, count);
@@ -433,7 +440,11 @@ pub fn array_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             (f as usize).min(n)
         } else {
             let from = n as f64 + f;
-            if from < 0.0 { 0 } else { from as usize }
+            if from < 0.0 {
+                0
+            } else {
+                from as usize
+            }
         }
     } else {
         0
@@ -466,7 +477,11 @@ pub fn array_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             (f as usize).min(n)
         } else {
             let from = n as f64 + f;
-            if from < 0.0 { 0 } else { from as usize }
+            if from < 0.0 {
+                0
+            } else {
+                from as usize
+            }
         }
     } else {
         0
@@ -489,7 +504,9 @@ fn same_value_zero(a: JsValue, b: JsValue) -> bool {
     if a_is_num && b_is_num {
         let av = if a.is_int() { a.as_int() as f64 } else { a.as_double() };
         let bv = if b.is_int() { b.as_int() as f64 } else { b.as_double() };
-        if av.is_nan() && bv.is_nan() { return true; }
+        if av.is_nan() && bv.is_nan() {
+            return true;
+        }
         return av == bv; // +0 == -0 in Rust f64
     }
     oxide_runtime_api::strict_equality(a, b)
@@ -606,12 +623,16 @@ pub fn array_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     for i in 0..n {
         let elem = arraylike_get(vm, arr_ptr, is_array, i);
         match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i as i32), vm.reg(args[0])]) {
-            NativeResult::Ok(mapped) => unsafe { (*new_arr).set_prop_at(i, mapped); },
+            NativeResult::Ok(mapped) => unsafe {
+                (*new_arr).set_prop_at(i, mapped);
+            },
             NativeResult::Err(err) => return NativeResult::Err(err),
             NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
         }
     }
-    unsafe { (*new_arr).set_prop_count(n); }
+    unsafe {
+        (*new_arr).set_prop_count(n);
+    }
     NativeResult::Ok(JsValue::from_js_object(new_arr))
 }
 
@@ -635,7 +656,9 @@ pub fn array_filter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let elem = arraylike_get(vm, arr_ptr, is_array, i);
         match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i as i32), vm.reg(args[0])]) {
             NativeResult::Ok(result_val) => {
-                if oxide_runtime_api::to_boolean(result_val) { kept.push(elem); }
+                if oxide_runtime_api::to_boolean(result_val) {
+                    kept.push(elem);
+                }
             }
             NativeResult::Err(err) => return NativeResult::Err(err),
             NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
@@ -997,7 +1020,9 @@ pub fn array_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let from_index_isize: isize = if args.len() >= 3 {
         let v = vm.reg(args[2]);
         let f = vm.coerce_number_bounded(v).unwrap_or(0.0);
-        if f.is_nan() { return NativeResult::Ok(JsValue::int(-1)); }
+        if f.is_nan() {
+            return NativeResult::Ok(JsValue::int(-1));
+        }
         let f = f.trunc();
         if f >= 0.0 {
             (f as isize).min(n as isize - 1)

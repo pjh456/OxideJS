@@ -537,7 +537,8 @@ fn run_test_inner(
                 || e.contains("Expected SameValue")
                 || e.contains("cannot assign to read-only property")
                 || e.contains("cannot delete non-configurable property")
-                || e.contains("private field")  // class private fields not implemented
+                || e.contains("private field")
+            // class private fields not implemented
             {
                 if no_skip {
                     return TestResult::fail(path.to_path_buf(), dur, format!("vm error: {e}"));
@@ -973,10 +974,7 @@ fn process_path(
 
     if !no_skip {
         let path_str = path.to_string_lossy().replace('\\', "/");
-        if path_str.contains("/eval/")
-            || path_str.contains("/function-ctor/")
-            || path_str.contains("/realm/")
-        {
+        if path_str.contains("/eval/") || path_str.contains("/function-ctor/") || path_str.contains("/realm/") {
             return TestResult::skip(path.to_path_buf(), "unsupported class/eval feature excluded".into());
         }
         if let Some(reason) = is_skipped(&meta) {
