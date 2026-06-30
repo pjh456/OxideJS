@@ -38,6 +38,26 @@ fn coalesce_nonsimple_then_while() {
     );
 }
 
+// A jump-bearing construct (if/loop) followed by a hoisted function declaration:
+// the count pass must walk in the same function-hoisting order as the emit pass,
+// otherwise the construct's jump targets drift past the hoisted body and the
+// program loops forever at run time.
+
+#[test]
+fn if_then_hoisted_function() {
+    assert_eq!(eval("if(false){} function f(){return 1} f()"), "1");
+}
+
+#[test]
+fn for_of_then_hoisted_function() {
+    assert_eq!(eval("var r=0; for(const x of [1,2,3]) r+=x; function f(){return 100} r + f()"), "106");
+}
+
+#[test]
+fn while_then_hoisted_function() {
+    assert_eq!(eval("var n=0; while(n<3){n=n+1;} function f(){return 100} n + f()"), "103");
+}
+
 #[test]
 fn coalesce_nonsimple_then_for() {
     assert_eq!(

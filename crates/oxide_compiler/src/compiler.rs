@@ -866,8 +866,19 @@ impl Compiler {
         let mut ctx = CompileCtx::new();
         ctx.pre_register_builtins();
 
+        // The emit pass below hoists FunctionDeclarations to the front. The count pass
+        // must walk in that same order: counting in source order would record jump-target
+        // labels at source-order PCs while emit places code at hoisted-order PCs, drifting
+        // every jump that sits after a hoisted function declaration (infinite loops at run).
         for stmt in &program.body {
-            self.count_statement(stmt, &mut ctx);
+            if matches!(stmt, Statement::FunctionDeclaration(_)) {
+                self.count_statement(stmt, &mut ctx);
+            }
+        }
+        for stmt in &program.body {
+            if !matches!(stmt, Statement::FunctionDeclaration(_)) {
+                self.count_statement(stmt, &mut ctx);
+            }
         }
         crate::compiler_debug!("counter: {} instructions estimated", ctx.projected_pc);
         ctx.max_regs = ctx.max_regs.max(1);
