@@ -83,9 +83,7 @@ fn resolve_proto_target_raw(obj: *const JsObject, proto_depth: u8) -> *const JsO
 }
 
 #[inline(always)]
-pub(crate) fn ic_get_hit(
-    obj: &JsObject, shape_id: u32, slot_index: u32, proto_depth: u8,
-) -> Option<JsValue> {
+pub(crate) fn ic_get_hit(obj: &JsObject, shape_id: u32, slot_index: u32, proto_depth: u8) -> Option<JsValue> {
     if shape_id == 0 {
         return None;
     }
@@ -102,9 +100,7 @@ pub(crate) fn ic_get_hit(
 }
 
 #[inline(always)]
-pub(crate) fn ic_set_hit(
-    obj: &mut JsObject, shape_id: u32, slot_index: u32, proto_depth: u8, value: JsValue,
-) -> bool {
+pub(crate) fn ic_set_hit(obj: &mut JsObject, shape_id: u32, slot_index: u32, proto_depth: u8, value: JsValue) -> bool {
     if shape_id == 0 {
         return false;
     }
