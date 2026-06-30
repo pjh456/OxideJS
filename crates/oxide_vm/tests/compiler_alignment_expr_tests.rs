@@ -58,6 +58,20 @@ fn while_then_hoisted_function() {
     assert_eq!(eval("var n=0; while(n<3){n=n+1;} function f(){return 100} n + f()"), "103");
 }
 
+// A hoisted function declaration is emitted before the `var` statements it closes over,
+// so the count pass must register top-level `var` names too (not just function names);
+// otherwise the hoisted body cannot resolve the outer var ("Identifier not defined").
+
+#[test]
+fn hoisted_function_reads_outer_var() {
+    assert_eq!(eval("var s=3; function f(){return s} f()"), "3");
+}
+
+#[test]
+fn hoisted_function_reads_outer_var_and_function() {
+    assert_eq!(eval("var s=3; function g(){return 5} function f(){return g()+s} f()"), "8");
+}
+
 #[test]
 fn coalesce_nonsimple_then_for() {
     assert_eq!(

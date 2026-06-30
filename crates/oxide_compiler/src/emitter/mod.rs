@@ -355,8 +355,19 @@ impl Compiler {
         &self, name: &str, src_reg: u8, kind: VariableDeclarationKind, is_const: bool, ctx: &mut CompileCtx,
     ) -> Result<(), String> {
         let var_reg = ctx.alloc_reg();
-        ctx.declare(name, var_reg, kind, is_const)?;
-        ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, src_reg, if is_const { 1 } else { 0 }));
+        let target_reg = if matches!(kind, VariableDeclarationKind::Var) {
+            // `var` is hoisted, so the count pass already registered the name. A redeclare
+            // here reuses that existing register instead of erroring; the freshly allocated
+            // reg matches it (count/emit allocate in lock-step) so either resolves the same.
+            match ctx.declare(name, var_reg, kind, is_const) {
+                Ok(()) => var_reg,
+                Err(_) => ctx.lookup(name).unwrap_or(var_reg),
+            }
+        } else {
+            ctx.declare(name, var_reg, kind, is_const)?;
+            var_reg
+        };
+        ctx.emit(opcode::encode(OpCode::STORE_VAR, target_reg, src_reg, if is_const { 1 } else { 0 }));
         ctx.init_var(name);
         Ok(())
     }

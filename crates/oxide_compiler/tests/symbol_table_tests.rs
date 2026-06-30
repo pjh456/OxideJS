@@ -30,22 +30,19 @@ fn symbol_table_nested_scopes() {
 }
 
 #[test]
-fn symbol_table_tdz_global_shadow() {
-    let result = std::panic::catch_unwind(|| {
-        compile_source("var x = 1; { var x = x; }");
-    });
-    assert!(result.is_err(), "TDZ: accessing x in its own initializer inside a block should error");
+fn symbol_table_var_self_init_in_block_is_legal() {
+    // `var` has no temporal dead zone and hoists to the function scope, so a block-level
+    // `var x = x` reads the same already-initialized binding — legal in JS, not an error.
+    let module = compile_source("var x = 1; { var x = x; }");
+    assert!(!module.bytecode.is_empty(), "var self-init in block should compile");
 }
 
 #[test]
-fn symbol_table_duplicate_var() {
-    let result = std::panic::catch_unwind(|| {
-        compile_source("var x = 1; var x = 2;");
-    });
-    assert!(
-        result.is_err(),
-        "duplicate var declaration in same scope should error (strict-mode semantics)"
-    );
+fn symbol_table_duplicate_var_is_legal() {
+    // Duplicate `var` in the same scope is legal in JavaScript (even in strict mode);
+    // only duplicate `let`/`const` declarations are a SyntaxError.
+    let module = compile_source("var x = 1; var x = 2;");
+    assert!(!module.bytecode.is_empty(), "duplicate var should compile");
 }
 
 #[test]

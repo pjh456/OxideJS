@@ -2,9 +2,22 @@ use super::*;
 
 impl Compiler {
     fn count_variable_declaration(&self, decl: &oxide_parser::VariableDeclaration<'_>, ctx: &mut CompileCtx) {
+        let is_var = matches!(decl.kind, VariableDeclarationKind::Var);
         for d in &decl.declarations {
             if let Some(init) = &d.init {
                 self.count_expression(init, ctx);
+                if is_var {
+                    if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
+                        // `var` hoisting: register the name during the count pass (mirrors
+                        // count_function_declaration) so function bodies emitted earlier in the
+                        // hoisting sub-pass can resolve it. count_binding_pattern would only
+                        // allocate a register without declaring the name.
+                        let reg = ctx.alloc_reg();
+                        let _ = ctx.declare_initialized(bi.name.as_str(), reg, VariableDeclarationKind::Var, false);
+                        ctx.projected_pc += 1; // STORE_VAR
+                        continue;
+                    }
+                }
                 self.count_binding_pattern(&d.id, ctx);
             } else {
                 ctx.alloc_reg();
