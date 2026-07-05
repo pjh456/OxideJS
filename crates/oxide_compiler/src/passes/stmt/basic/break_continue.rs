@@ -1,4 +1,5 @@
-use super::super::*;
+use crate::compiler::{CompileCtx, Compiler};
+use oxide_bytecode::opcode;
 
 impl Compiler {
     pub(super) fn count_break_statement(&self, ctx: &mut CompileCtx) {

@@ -1,4 +1,5 @@
-use super::super::*;
+use crate::compiler::{CompileCtx, Compiler, Label};
+use oxide_parser::Statement;
 
 impl Compiler {
     pub(super) fn count_labeled_statement(&self, stmt: &oxide_parser::LabeledStatement<'_>, ctx: &mut CompileCtx) {

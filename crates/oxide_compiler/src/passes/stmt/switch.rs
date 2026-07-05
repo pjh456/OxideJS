@@ -1,4 +1,6 @@
-use super::*;
+use crate::compiler::{CompileCtx, Compiler, Label};
+use oxide_bytecode::opcode::{self, OpCode};
+use oxide_parser::Statement;
 
 impl Compiler {
     fn count_switch_statement(&self, stmt: &oxide_parser::SwitchStatement<'_>, ctx: &mut CompileCtx) {

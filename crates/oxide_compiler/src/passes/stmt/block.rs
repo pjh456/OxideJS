@@ -1,4 +1,5 @@
-use super::*;
+use crate::compiler::{CompileCtx, Compiler};
+use oxide_parser::Statement;
 
 impl Compiler {
     fn count_block_statement(&self, block: &oxide_parser::BlockStatement<'_>, ctx: &mut CompileCtx) {

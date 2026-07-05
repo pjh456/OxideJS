@@ -1,4 +1,6 @@
-use super::super::*;
+use crate::compiler::{CompileCtx, Compiler};
+use oxide_bytecode::opcode::{self, OpCode};
+use oxide_parser::Statement;
 
 impl Compiler {
     pub(super) fn count_return_statement(&self, stmt: &oxide_parser::ReturnStatement<'_>, ctx: &mut CompileCtx) {

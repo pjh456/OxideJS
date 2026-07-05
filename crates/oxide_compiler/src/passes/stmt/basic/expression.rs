@@ -1,4 +1,5 @@
-use super::super::*;
+use crate::compiler::{CompileCtx, Compiler};
+use oxide_parser::Statement;
 
 impl Compiler {
     pub(super) fn count_expression_statement(

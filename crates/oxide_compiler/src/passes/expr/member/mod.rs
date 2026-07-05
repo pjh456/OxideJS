@@ -1,4 +1,7 @@
-use super::*;
+use crate::compiler::{CompileCtx, Compiler, Label};
+use oxide_bytecode::module::Constant;
+use oxide_bytecode::opcode::{self, OpCode};
+use oxide_parser::Expression;
 
 impl Compiler {
     fn count_static_member_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {

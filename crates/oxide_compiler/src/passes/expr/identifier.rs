@@ -1,4 +1,6 @@
-use super::*;
+use crate::compiler::{CompileCtx, Compiler};
+use oxide_bytecode::opcode::{self, OpCode};
+use oxide_parser::Expression;
 
 impl Compiler {
     pub(crate) fn count_identifier_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {

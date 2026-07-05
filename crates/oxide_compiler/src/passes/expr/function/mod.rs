@@ -1,4 +1,6 @@
-use super::*;
+use crate::compiler::{CompileCtx, Compiler, ParamSpec};
+use oxide_bytecode::opcode::{self, OpCode};
+use oxide_parser::{Class, Expression, Statement};
 
 impl Compiler {
     fn count_arrow_function_expression(&self, ctx: &mut CompileCtx) {

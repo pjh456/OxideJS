@@ -1,13 +1,57 @@
-use super::super::*;
+use crate::compiler::{CompileCtx, Compiler, Label};
+use oxide_bytecode::opcode::{self, OpCode};
+use oxide_parser::{Statement, VariableDeclarationKind};
 
 impl Compiler {
-    pub(crate) fn emit_throw_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
-        let Statement::ThrowStatement(ts) = stmt else {
-            return Ok(None);
-        };
-        let exc_reg = self.emit_expression(&ts.argument, ctx)?;
-        ctx.emit(opcode::encode(OpCode::THROW, exc_reg, 0, 0));
-        Ok(None)
+    pub(crate) fn count_try_statement(&self, stmt: &oxide_parser::TryStatement<'_>, ctx: &mut CompileCtx) {
+        let id = ctx.next_label_id();
+        let catch_label = Label::CatchBody(id);
+        let try_end_label = Label::TryEnd(id);
+        let has_catch = stmt.handler.is_some();
+        let has_finally = stmt.finalizer.is_some();
+        ctx.alloc_reg();
+        if has_finally {
+            ctx.projected_pc += 1;
+        }
+        if has_catch {
+            ctx.projected_pc += 1;
+        }
+        for s in &stmt.block.body {
+            self.count_statement(s, ctx);
+        }
+        ctx.projected_pc += 1;
+        if has_catch {
+            ctx.projected_pc += 1;
+        }
+        let jmp_needed = has_catch || has_finally;
+        if jmp_needed {
+            ctx.projected_pc += 1;
+        }
+        ctx.labels.label_map.insert(catch_label, ctx.projected_pc);
+        if let Some(catch) = &stmt.handler {
+            ctx.push_scope();
+            if let Some(param) = &catch.param {
+                ctx.alloc_reg();
+                if let oxide_parser::BindingPattern::BindingIdentifier(_) = &param.pattern {
+                    ctx.projected_pc += 1;
+                }
+            }
+            for cs in &catch.body.body {
+                self.count_statement(cs, ctx);
+            }
+            ctx.projected_pc += 1;
+            ctx.pop_scope();
+        }
+        if let Some(finally) = &stmt.finalizer {
+            let finally_label = Label::FinallyBody(id);
+            ctx.labels.label_map.insert(finally_label, ctx.projected_pc);
+            for fs in &finally.body {
+                self.count_statement(fs, ctx);
+            }
+            ctx.projected_pc += 1;
+            ctx.projected_pc += 1;
+        }
+        ctx.labels.label_map.insert(try_end_label, ctx.projected_pc);
     }
 
     pub(crate) fn emit_try_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
@@ -103,13 +147,5 @@ impl Compiler {
         let try_end_pc = ctx.bytecode.len();
         ctx.labels.label_map.insert(try_end_label, try_end_pc);
         Ok(Some(result_reg))
-    }
-
-    pub(crate) fn emit_exception_domain(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
-        match stmt {
-            Statement::ThrowStatement(_) => self.emit_throw_statement(stmt, ctx),
-            Statement::TryStatement(_) => self.emit_try_statement(stmt, ctx),
-            _ => Ok(None),
-        }
     }
 }

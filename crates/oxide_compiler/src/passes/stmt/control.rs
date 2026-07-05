@@ -1,4 +1,7 @@
-use super::*;
+use crate::compiler::{CompileCtx, Compiler, Label};
+use oxide_bytecode::module::Constant;
+use oxide_bytecode::opcode::{self, OpCode};
+use oxide_parser::Statement;
 
 impl Compiler {
     fn count_if_statement(&self, stmt: &oxide_parser::IfStatement<'_>, ctx: &mut CompileCtx) {

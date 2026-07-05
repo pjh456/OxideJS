@@ -1,4 +1,5 @@
-use super::*;
+use crate::compiler::{CompileCtx, Compiler};
+use oxide_bytecode::opcode::{self, OpCode};
 
 impl Compiler {
     pub(crate) fn count_this_expression(&self, ctx: &mut CompileCtx) {

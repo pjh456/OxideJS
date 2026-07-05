@@ -1,4 +1,7 @@
-use super::*;
+use crate::compiler::{is_int_literal, CompileCtx, Compiler};
+use oxide_bytecode::module::Constant;
+use oxide_bytecode::opcode::{self, OpCode};
+use oxide_parser::Expression;
 
 impl Compiler {
     pub(crate) fn count_literal(&self, expr: &Expression, ctx: &mut CompileCtx) {

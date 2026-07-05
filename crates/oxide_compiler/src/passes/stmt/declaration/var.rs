@@ -1,7 +1,14 @@
-use super::super::*;
+use crate::compiler::{CompileCtx, Compiler};
+use oxide_bytecode::{
+    module::Constant,
+    opcode::{self, OpCode},
+};
+use oxide_parser::{BindingPattern, Expression, Statement, VariableDeclarationKind};
 
 impl Compiler {
-    fn count_variable_declaration(&self, decl: &oxide_parser::VariableDeclaration<'_>, ctx: &mut CompileCtx) {
+    pub(crate) fn count_variable_declaration(
+        &self, decl: &oxide_parser::VariableDeclaration<'_>, ctx: &mut CompileCtx,
+    ) {
         let is_var = matches!(decl.kind, VariableDeclarationKind::Var);
         for d in &decl.declarations {
             if let Some(init) = &d.init {
@@ -22,34 +29,6 @@ impl Compiler {
         }
     }
 
-    fn count_function_declaration(&self, decl: &oxide_parser::Function<'_>, ctx: &mut CompileCtx) {
-        let name = if let Some(id) = &decl.id {
-            id.name.to_string()
-        } else {
-            return;
-        };
-        let func_reg = ctx.alloc_reg();
-        let _ = ctx.declare_initialized(&name, func_reg, VariableDeclarationKind::Var, false);
-        ctx.count_words(2);
-    }
-
-    fn count_class_declaration(&self, class: &oxide_parser::Class<'_>, ctx: &mut CompileCtx) {
-        ctx.alloc_reg();
-        self.count_class(class, ctx);
-        ctx.projected_pc += 1;
-    }
-
-    pub(crate) fn count_declaration_domain(&self, stmt: &Statement, ctx: &mut CompileCtx) {
-        match stmt {
-            Statement::VariableDeclaration(decl) => self.count_variable_declaration(decl, ctx),
-            Statement::FunctionDeclaration(fd) => self.count_function_declaration(fd, ctx),
-            Statement::ClassDeclaration(class) => self.count_class_declaration(class, ctx),
-            _ => {}
-        }
-    }
-}
-
-impl Compiler {
     pub(crate) fn emit_variable_declaration_statement(
         &self, stmt: &Statement, ctx: &mut CompileCtx,
     ) -> Result<Option<u8>, String> {
@@ -95,68 +74,5 @@ impl Compiler {
             }
         }
         Ok(r)
-    }
-
-    pub(crate) fn emit_function_declaration_statement(
-        &self, stmt: &Statement, ctx: &mut CompileCtx,
-    ) -> Result<Option<u8>, String> {
-        let Statement::FunctionDeclaration(fd) = stmt else {
-            return Err("FunctionDeclaration without name".into());
-        };
-        let name = if let Some(id) = &fd.id {
-            id.name.to_string()
-        } else {
-            return Err("FunctionDeclaration without name".into());
-        };
-        let mut param_names = Vec::new();
-        for (idx, param) in fd.params.items.iter().enumerate() {
-            match &param.pattern {
-                oxide_parser::BindingPattern::BindingIdentifier(bi) => {
-                    param_names.push(ParamSpec::Identifier(bi.name.to_string()))
-                }
-                pattern => param_names.push(ParamSpec::Pattern {
-                    synthetic_name: format!("@@param_{idx}"),
-                    pattern,
-                }),
-            }
-        }
-        let body_stmts: &[Statement] = if let Some(body) = &fd.body { &body.statements } else { &[] };
-        let mut sub_module = self.compile_function_body(&param_names, body_stmts, ctx, false, false)?;
-        sub_module.function_name = Some(name.clone());
-        ctx.sub_modules.push(sub_module);
-        let sub_idx = ctx.sub_modules.len() as u32;
-        let var_reg = ctx.lookup(&name)?;
-        ctx.reserve_reg(var_reg);
-        ctx.emit_create_closure(var_reg, sub_idx);
-        ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, var_reg, 0));
-        Ok(None)
-    }
-
-    pub(crate) fn emit_class_declaration_statement(
-        &self, stmt: &Statement, ctx: &mut CompileCtx,
-    ) -> Result<Option<u8>, String> {
-        let Statement::ClassDeclaration(class) = stmt else {
-            return Err("ClassDeclaration without name".into());
-        };
-        let name = class
-            .id
-            .as_ref()
-            .map(|id| id.name.to_string())
-            .ok_or_else(|| "ClassDeclaration without name".to_string())?;
-        let var_reg = ctx.alloc_reg();
-        ctx.declare(&name, var_reg, VariableDeclarationKind::Let, false)?;
-        ctx.init_var(&name);
-        let ctor_reg = self.emit_class(class, ctx)?;
-        ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, ctor_reg, 0));
-        Ok(None)
-    }
-
-    pub(crate) fn emit_declaration_domain(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
-        match stmt {
-            Statement::VariableDeclaration(_) => self.emit_variable_declaration_statement(stmt, ctx),
-            Statement::FunctionDeclaration(_) => self.emit_function_declaration_statement(stmt, ctx),
-            Statement::ClassDeclaration(_) => self.emit_class_declaration_statement(stmt, ctx),
-            _ => Ok(None),
-        }
     }
 }

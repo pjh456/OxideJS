@@ -1,4 +1,7 @@
-use super::*;
+use crate::compiler::{is_side_effect_free, BinaryOperator, CompileCtx, Compiler, Label};
+use oxide_bytecode::module::Constant;
+use oxide_bytecode::opcode::{self, OpCode};
+use oxide_parser::{ChainElement, Expression, LogicalOperator, SimpleAssignmentTarget, UnaryOperator, UpdateOperator};
 
 impl Compiler {
     fn count_binary_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
@@ -387,7 +390,6 @@ impl Compiler {
     fn emit_logical_expression(
         &self, log: &oxide_parser::LogicalExpression, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {
-        use oxide_parser::LogicalOperator;
         let left_reg = self.emit_expression(&log.left, ctx)?;
 
         if is_side_effect_free(&log.left) && is_side_effect_free(&log.right) {
