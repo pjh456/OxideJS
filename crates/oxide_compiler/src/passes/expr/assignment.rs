@@ -28,7 +28,6 @@ impl Compiler {
             self.count_expression(&member.object, ctx);
             self.count_expression(&member.expression, ctx);
             self.count_expression(&assign.right, ctx);
-            ctx.alloc_reg();
             ctx.projected_pc += 1; // SET_PROP_DYNAMIC
         } else if let oxide_parser::AssignmentTarget::PrivateFieldExpression(member) = &assign.left {
             self.count_expression(&member.object, ctx);
