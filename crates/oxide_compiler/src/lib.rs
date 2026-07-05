@@ -1,10 +1,11 @@
 #![doc = "OxideJS - AST to bytecode compiler"]
 
+pub mod class;
 pub mod compiler;
 pub mod compiler_log;
-pub mod counter;
 pub mod emit_ctx;
-pub mod emitter;
+pub mod expr;
 pub mod hash;
-pub mod passes;
+pub mod shared;
+pub mod stmt;
 pub mod symbol_table;
