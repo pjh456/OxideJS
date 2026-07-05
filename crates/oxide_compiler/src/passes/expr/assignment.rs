@@ -1,0 +1,298 @@
+use super::*;
+
+impl Compiler {
+    fn count_assignment_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
+        let Expression::AssignmentExpression(assign) = expr else {
+            return;
+        };
+
+        if let oxide_parser::AssignmentTarget::StaticMemberExpression(member) = &assign.left {
+            if let Some(logical_op) = assign.operator.to_logical_operator() {
+                self.count_static_member_logical_assignment(member, logical_op, &assign.right, ctx);
+                return;
+            }
+            self.count_expression(&member.object, ctx);
+            self.count_expression(&assign.right, ctx);
+            // Both plain (IC_SET_PROP) and compound (COMPOUND_MEMBER_*) emit one opcode + 3 ext
+            // words after the key load — no extra instruction for the compound case.
+            ctx.count_load_const(); // key
+            ctx.count_ic_set_with_ext(); // IC_SET_PROP or COMPOUND_MEMBER_* + 3 ext words
+        } else if let oxide_parser::AssignmentTarget::ComputedMemberExpression(member) = &assign.left {
+            if let Some(logical_op) = assign.operator.to_logical_operator() {
+                self.count_computed_member_logical_assignment(member, logical_op, &assign.right, ctx);
+                return;
+            }
+            self.count_expression(&member.object, ctx);
+            self.count_expression(&member.expression, ctx);
+            self.count_expression(&assign.right, ctx);
+            ctx.alloc_reg();
+            ctx.projected_pc += 1; // SET_PROP_DYNAMIC
+        } else if let oxide_parser::AssignmentTarget::PrivateFieldExpression(member) = &assign.left {
+            self.count_expression(&member.object, ctx);
+            self.count_expression(&assign.right, ctx);
+            ctx.count_load_const(); // private id
+            ctx.count_instr(); // SET_PRIVATE
+        } else if let oxide_parser::AssignmentTarget::AssignmentTargetIdentifier(ati) = &assign.left {
+            let name = ati.name.as_str();
+            // Check if target is an upvalue or captured cell
+            let is_upvalue = ctx.current_upvalue_captures.iter().any(|u| u.name == name);
+            let is_captured = ctx.scopes.symbols.lookup_is_captured(name);
+            if let Some(logical_op) = assign.operator.to_logical_operator() {
+                self.count_identifier_logical_assignment(logical_op, &assign.right, ctx);
+            } else {
+                self.count_expression(&assign.right, ctx);
+                if assign.operator != AssignmentOperator::Assign {
+                    ctx.projected_pc += 1; // COMPOUND_* on var
+                } else if is_upvalue {
+                    ctx.count_instr(); // STORE_UPVALUE
+                } else if is_captured {
+                    ctx.count_instr(); // CELL_SET
+                } else {
+                    ctx.alloc_reg();
+                    ctx.projected_pc += 1; // STORE_VAR
+                }
+            }
+        } else if let oxide_parser::AssignmentTarget::ArrayAssignmentTarget(ap) = &assign.left {
+            self.count_expression(&assign.right, ctx);
+            self.count_array_assignment(ap, ctx);
+        } else if let oxide_parser::AssignmentTarget::ObjectAssignmentTarget(op) = &assign.left {
+            self.count_expression(&assign.right, ctx);
+            self.count_object_assignment(op, ctx);
+        } else {
+            self.count_expression(&assign.right, ctx);
+            ctx.alloc_reg();
+            ctx.projected_pc += 1;
+        }
+    }
+
+    fn count_static_member_logical_assignment(
+        &self, member: &oxide_parser::StaticMemberExpression<'_>, logical_op: LogicalOperator, right: &Expression,
+        ctx: &mut CompileCtx,
+    ) {
+        let id = ctx.next_label_id();
+        self.count_expression(&member.object, ctx);
+        ctx.count_load_const(); // key
+        ctx.count_load_var(); // current value copy
+        ctx.count_ic_instr_with_ext(); // IC_GET_PROP + 3 ext
+        self.count_logical_assign_test(logical_op, id, ctx);
+        self.count_expression(right, ctx);
+        ctx.count_ic_set_with_ext(); // IC_SET_PROP + 3 ext
+        ctx.projected_pc += 1; // LOAD_VAR result <- rhs
+        ctx.labels.label_map.insert(Label::TernaryEnd(id), ctx.projected_pc);
+    }
+
+    fn count_computed_member_logical_assignment(
+        &self, member: &oxide_parser::ComputedMemberExpression<'_>, logical_op: LogicalOperator, right: &Expression,
+        ctx: &mut CompileCtx,
+    ) {
+        let id = ctx.next_label_id();
+        self.count_expression(&member.object, ctx);
+        self.count_expression(&member.expression, ctx);
+        ctx.alloc_reg();
+        ctx.projected_pc += 1; // GET_PROP_DYNAMIC
+        self.count_logical_assign_test(logical_op, id, ctx);
+        self.count_expression(right, ctx);
+        ctx.projected_pc += 1; // SET_PROP_DYNAMIC
+        ctx.projected_pc += 1; // LOAD_VAR result <- rhs
+        ctx.labels.label_map.insert(Label::TernaryEnd(id), ctx.projected_pc);
+    }
+
+    fn count_identifier_logical_assignment(
+        &self, logical_op: LogicalOperator, right: &Expression, ctx: &mut CompileCtx,
+    ) {
+        let id = ctx.next_label_id();
+        ctx.alloc_reg();
+        ctx.projected_pc += 1; // LOAD_VAR result <- current var
+        self.count_logical_assign_test(logical_op, id, ctx);
+        self.count_expression(right, ctx);
+        ctx.projected_pc += 1; // STORE_VAR
+        ctx.projected_pc += 1; // LOAD_VAR result <- rhs
+        ctx.labels.label_map.insert(Label::TernaryEnd(id), ctx.projected_pc);
+    }
+
+    pub(crate) fn count_assignment(&self, expr: &Expression, ctx: &mut CompileCtx) {
+        self.count_assignment_expression(expr, ctx);
+    }
+}
+
+impl Compiler {
+    pub(crate) fn emit_assignment_expression(
+        &self, assign: &oxide_parser::AssignmentExpression, ctx: &mut CompileCtx,
+    ) -> Result<u8, String> {
+        if let oxide_parser::AssignmentTarget::StaticMemberExpression(member) = &assign.left {
+            if let Some(logical_op) = assign.operator.to_logical_operator() {
+                let id = ctx.next_label_id();
+                let store_label = Label::TernaryElse(id);
+                let end_label = Label::TernaryEnd(id);
+                let obj_reg = self.emit_expression(&member.object, ctx)?;
+                let prop_name = member.property.name.as_str();
+                let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
+                let key_reg = ctx.alloc_reg();
+                ctx.emit_load_const(key_reg, idx);
+                let result_reg = ctx.alloc_reg();
+                ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, obj_reg, 0));
+                ctx.emit(opcode::encode(OpCode::IC_GET_PROP, 0, result_reg, key_reg));
+                ctx.emit(0);
+                ctx.emit(0);
+                ctx.emit(0);
+                self.emit_logical_assign_test(logical_op, result_reg, store_label, end_label, ctx)?;
+                let val_reg = self.emit_expression(&assign.right, ctx)?;
+                ctx.emit(opcode::encode(OpCode::IC_SET_PROP, obj_reg, val_reg, key_reg));
+                ctx.emit(0);
+                ctx.emit(0);
+                ctx.emit(0);
+                ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, val_reg, 0));
+                return Ok(result_reg);
+            }
+            let obj_reg = self.emit_expression(&member.object, ctx)?;
+            let val_reg = self.emit_expression(&assign.right, ctx)?;
+            let prop_name = member.property.name.as_str();
+            let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
+            let key_reg = ctx.alloc_reg();
+            ctx.emit_load_const(key_reg, idx);
+            if assign.operator != AssignmentOperator::Assign {
+                let op = match assign.operator {
+                    AssignmentOperator::Addition => OpCode::COMPOUND_MEMBER_ADD,
+                    AssignmentOperator::Subtraction => OpCode::COMPOUND_MEMBER_SUB,
+                    AssignmentOperator::Multiplication => OpCode::COMPOUND_MEMBER_MUL,
+                    AssignmentOperator::Division => OpCode::COMPOUND_MEMBER_DIV,
+                    AssignmentOperator::Remainder => OpCode::COMPOUND_MEMBER_MOD,
+                    AssignmentOperator::Exponential => OpCode::COMPOUND_MEMBER_EXP,
+                    _ => return Err(format!("compound assignment operator {:?} not supported", assign.operator)),
+                };
+                ctx.emit(opcode::encode(op, obj_reg, val_reg, key_reg));
+                ctx.emit(0);
+                ctx.emit(0);
+                ctx.emit(0);
+                Ok(val_reg)
+            } else {
+                ctx.emit(opcode::encode(OpCode::IC_SET_PROP, obj_reg, val_reg, key_reg));
+                ctx.emit(0);
+                ctx.emit(0);
+                ctx.emit(0);
+                Ok(val_reg)
+            }
+        } else if let oxide_parser::AssignmentTarget::ComputedMemberExpression(member) = &assign.left {
+            if let Some(logical_op) = assign.operator.to_logical_operator() {
+                let id = ctx.next_label_id();
+                let store_label = Label::TernaryElse(id);
+                let end_label = Label::TernaryEnd(id);
+                let obj_reg = self.emit_expression(&member.object, ctx)?;
+                let key_reg = self.emit_expression(&member.expression, ctx)?;
+                let result_reg = ctx.alloc_reg();
+                ctx.emit(opcode::encode(OpCode::GET_PROP_DYNAMIC, obj_reg, key_reg, result_reg));
+                self.emit_logical_assign_test(logical_op, result_reg, store_label, end_label, ctx)?;
+                let val_reg = self.emit_expression(&assign.right, ctx)?;
+                ctx.emit(opcode::encode(OpCode::SET_PROP_DYNAMIC, obj_reg, key_reg, val_reg));
+                ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, val_reg, 0));
+                return Ok(result_reg);
+            }
+            let obj_reg = self.emit_expression(&member.object, ctx)?;
+            let key_reg = self.emit_expression(&member.expression, ctx)?;
+            let val_reg = self.emit_expression(&assign.right, ctx)?;
+            ctx.emit(opcode::encode(OpCode::SET_PROP_DYNAMIC, obj_reg, key_reg, val_reg));
+            Ok(val_reg)
+        } else if let oxide_parser::AssignmentTarget::PrivateFieldExpression(member) = &assign.left {
+            if assign.operator != AssignmentOperator::Assign {
+                return Err("compound assignment to private fields not supported".into());
+            }
+            let obj_reg = self.emit_expression(&member.object, ctx)?;
+            let val_reg = self.emit_expression(&assign.right, ctx)?;
+            let key_reg = self.emit_private_id_reg(member.field.name.as_str(), ctx)?;
+            ctx.emit(opcode::encode(OpCode::SET_PRIVATE, obj_reg, val_reg, key_reg));
+            Ok(val_reg)
+        } else if let oxide_parser::AssignmentTarget::AssignmentTargetIdentifier(id_ref) = &assign.left {
+            if assign.operator != AssignmentOperator::Assign {
+                if let Some(logical_op) = assign.operator.to_logical_operator() {
+                    let id = ctx.next_label_id();
+                    let store_label = Label::TernaryElse(id);
+                    let end_label = Label::TernaryEnd(id);
+                    let name = id_ref.name.as_str();
+                    let var_reg = ctx.lookup_or_global(name);
+                    let result_reg = ctx.alloc_reg();
+                    ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, var_reg, 0));
+                    self.emit_logical_assign_test(logical_op, result_reg, store_label, end_label, ctx)?;
+                    let val_reg = self.emit_expression(&assign.right, ctx)?;
+                    let is_const = ctx.lookup_const_flag(name);
+                    let const_flag = if is_const { 1 } else { 0 };
+                    ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, const_flag));
+                    ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, val_reg, 0));
+                    Ok(result_reg)
+                } else if assign.operator == AssignmentOperator::Addition
+                    || assign.operator == AssignmentOperator::Subtraction
+                    || assign.operator == AssignmentOperator::Multiplication
+                    || assign.operator == AssignmentOperator::Division
+                    || assign.operator == AssignmentOperator::Remainder
+                    || assign.operator == AssignmentOperator::Exponential
+                    || assign.operator == AssignmentOperator::BitwiseAnd
+                    || assign.operator == AssignmentOperator::BitwiseOR
+                    || assign.operator == AssignmentOperator::BitwiseXOR
+                    || assign.operator == AssignmentOperator::ShiftLeft
+                    || assign.operator == AssignmentOperator::ShiftRight
+                    || assign.operator == AssignmentOperator::ShiftRightZeroFill
+                {
+                    let rhs = self.emit_expression(&assign.right, ctx)?;
+                    let name = id_ref.name.as_str();
+                    let var_reg = ctx.lookup_or_global(name);
+                    let op = match assign.operator {
+                        AssignmentOperator::Addition => OpCode::COMPOUND_ADD,
+                        AssignmentOperator::Subtraction => OpCode::COMPOUND_SUB,
+                        AssignmentOperator::Multiplication => OpCode::COMPOUND_MUL,
+                        AssignmentOperator::Division => OpCode::COMPOUND_DIV,
+                        AssignmentOperator::Remainder => OpCode::COMPOUND_MOD,
+                        AssignmentOperator::Exponential => OpCode::COMPOUND_EXP,
+                        AssignmentOperator::BitwiseAnd => OpCode::COMPOUND_AND,
+                        AssignmentOperator::BitwiseOR => OpCode::COMPOUND_OR,
+                        AssignmentOperator::BitwiseXOR => OpCode::COMPOUND_XOR,
+                        AssignmentOperator::ShiftLeft => OpCode::COMPOUND_SHL,
+                        AssignmentOperator::ShiftRight => OpCode::COMPOUND_SHR,
+                        AssignmentOperator::ShiftRightZeroFill => OpCode::COMPOUND_USHR,
+                        _ => return Err(format!("compound assignment operator {:?} not supported", assign.operator)),
+                    };
+                    ctx.emit(opcode::encode(op, var_reg, rhs, 0));
+                    Ok(var_reg)
+                } else {
+                    Err(format!("compound assignment operator {:?} not supported", assign.operator))
+                }
+            } else {
+                let val_reg = self.emit_expression(&assign.right, ctx)?;
+                let name = id_ref.name.as_str();
+                // Check if target is an upvalue reference
+                if let Some(uv_idx) = ctx.current_upvalue_captures.iter().position(|u| u.name == name) {
+                    ctx.emit(opcode::encode(OpCode::STORE_UPVALUE, 0, val_reg, uv_idx as u8));
+                    return Ok(val_reg);
+                }
+                // Check if target is a captured cell
+                if ctx.scopes.symbols.lookup_is_captured(name) {
+                    let cell_idx = ctx
+                        .scopes
+                        .cell_registry
+                        .iter()
+                        .find(|(n, _)| n == name)
+                        .map(|(_, idx)| *idx)
+                        .unwrap_or(0);
+                    ctx.emit(opcode::encode(OpCode::CELL_SET, 0, val_reg, cell_idx));
+                    return Ok(val_reg);
+                }
+                let var_reg = ctx.lookup_or_global(name);
+                let is_const = ctx.lookup_const_flag(name);
+                let const_flag = if is_const { 1 } else { 0 };
+                ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, const_flag));
+                Ok(val_reg)
+            }
+        } else if matches!(
+            &assign.left,
+            oxide_parser::AssignmentTarget::ArrayAssignmentTarget(_)
+                | oxide_parser::AssignmentTarget::ObjectAssignmentTarget(_)
+        ) {
+            if assign.operator != AssignmentOperator::Assign {
+                return Err("compound destructuring assignment not supported".into());
+            }
+            let val_reg = self.emit_expression(&assign.right, ctx)?;
+            self.emit_assign_target(&assign.left, val_reg, ctx)?;
+            Ok(val_reg)
+        } else {
+            Err("assignment target not supported".into())
+        }
+    }
+}

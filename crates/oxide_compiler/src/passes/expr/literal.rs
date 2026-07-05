@@ -1,0 +1,99 @@
+use super::*;
+
+impl Compiler {
+    pub(crate) fn count_literal(&self, expr: &Expression, ctx: &mut CompileCtx) {
+        match expr {
+            Expression::RegExpLiteral(_) => self.count_regexp_literal(ctx),
+            _ => self.count_default_expression(ctx),
+        }
+    }
+
+    fn count_regexp_literal(&self, ctx: &mut CompileCtx) {
+        ctx.alloc_reg();
+        ctx.projected_pc += 1;
+        ctx.alloc_reg();
+        ctx.projected_pc += 1;
+        ctx.alloc_reg();
+        ctx.projected_pc += 1;
+    }
+
+    pub(crate) fn count_default_expression(&self, ctx: &mut CompileCtx) {
+        ctx.alloc_reg();
+        ctx.projected_pc += 1;
+    }
+
+    pub(crate) fn emit_literal(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u8, String> {
+        match expr {
+            Expression::NumericLiteral(n) => self.emit_numeric_literal_expression(n, ctx),
+            Expression::StringLiteral(s) => self.emit_string_literal_expression(s, ctx),
+            Expression::BooleanLiteral(b) => self.emit_boolean_literal_expression(b, ctx),
+            Expression::NullLiteral(_) => self.emit_null_literal_expression(ctx),
+            Expression::RegExpLiteral(lit) => self.emit_reg_exp_literal_expression(lit, ctx),
+            _ => self.emit_unsupported_expression(expr, ctx),
+        }
+    }
+
+    fn emit_numeric_literal_expression(
+        &self, n: &oxide_parser::NumericLiteral, ctx: &mut CompileCtx,
+    ) -> Result<u8, String> {
+        let idx = if is_int_literal(n.value) {
+            ctx.add_constant(Constant::Int(n.value as i32))
+        } else {
+            ctx.add_constant(Constant::Number(n.value))
+        };
+        let r = ctx.alloc_reg();
+        ctx.emit_load_const(r, idx);
+        Ok(r)
+    }
+
+    fn emit_string_literal_expression(
+        &self, s: &oxide_parser::StringLiteral, ctx: &mut CompileCtx,
+    ) -> Result<u8, String> {
+        let idx = ctx.add_constant(Constant::String(s.value.to_string()));
+        let r = ctx.alloc_reg();
+        ctx.emit_load_const(r, idx);
+        Ok(r)
+    }
+
+    fn emit_boolean_literal_expression(
+        &self, b: &oxide_parser::BooleanLiteral, ctx: &mut CompileCtx,
+    ) -> Result<u8, String> {
+        let idx = ctx.add_constant(Constant::Boolean(b.value));
+        let r = ctx.alloc_reg();
+        ctx.emit_load_const(r, idx);
+        Ok(r)
+    }
+
+    fn emit_null_literal_expression(&self, ctx: &mut CompileCtx) -> Result<u8, String> {
+        let idx = ctx.add_constant(Constant::Null);
+        let r = ctx.alloc_reg();
+        ctx.emit_load_const(r, idx);
+        Ok(r)
+    }
+
+    fn emit_reg_exp_literal_expression(
+        &self, lit: &oxide_parser::RegExpLiteral, ctx: &mut CompileCtx,
+    ) -> Result<u8, String> {
+        if let Some(raw) = &lit.raw {
+            let raw_str = raw.to_string();
+            if raw_str.len() >= 2 && raw_str.starts_with('/') {
+                let last_slash = raw_str.rfind('/').unwrap_or(raw_str.len() - 1);
+                let pattern = raw_str[1..last_slash].to_string();
+                let flags = raw_str[last_slash + 1..].to_string();
+                let pat_ci = ctx.add_constant(Constant::String(pattern));
+                let pat_reg = ctx.alloc_reg();
+                ctx.emit_load_const(pat_reg, pat_ci);
+                let flags_ci = ctx.add_constant(Constant::String(flags));
+                let flags_reg = ctx.alloc_reg();
+                ctx.emit_load_const(flags_reg, flags_ci);
+                let r = ctx.alloc_reg();
+                ctx.emit(opcode::encode(OpCode::CREATE_REGEXP, r, pat_reg, flags_reg));
+                Ok(r)
+            } else {
+                Err(format!("unsupported regexp literal: {:?}", lit))
+            }
+        } else {
+            Err(format!("unsupported regexp literal: {:?}", lit))
+        }
+    }
+}

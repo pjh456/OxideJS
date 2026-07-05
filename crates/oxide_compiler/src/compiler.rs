@@ -880,10 +880,8 @@ impl Compiler {
         )
     }
 
-    #[expect(clippy::too_many_arguments)]
-    fn pre_scan_function_expressions(
-        &self, stmts: &[Statement], parent_ctx: &mut CompileCtx,
-    ) -> Result<(), String> {
+    #[allow(clippy::too_many_arguments)]
+    fn pre_scan_function_expressions(&self, stmts: &[Statement], parent_ctx: &mut CompileCtx) -> Result<(), String> {
         for stmt in stmts {
             self.pre_scan_stmt(stmt, parent_ctx)?;
         }
@@ -893,16 +891,30 @@ impl Compiler {
     fn pre_scan_stmt(&self, stmt: &Statement, parent_ctx: &mut CompileCtx) -> Result<(), String> {
         match stmt {
             Statement::ExpressionStatement(es) => self.pre_scan_expr(&es.expression, parent_ctx)?,
-            Statement::ReturnStatement(rs) => { if let Some(a) = &rs.argument { self.pre_scan_expr(a, parent_ctx)?; } }
+            Statement::ReturnStatement(rs) => {
+                if let Some(a) = &rs.argument {
+                    self.pre_scan_expr(a, parent_ctx)?;
+                }
+            }
             Statement::IfStatement(is) => {
                 self.pre_scan_expr(&is.test, parent_ctx)?;
                 self.pre_scan_stmt(&is.consequent, parent_ctx)?;
-                if let Some(alt) = &is.alternate { self.pre_scan_stmt(alt, parent_ctx)?; }
+                if let Some(alt) = &is.alternate {
+                    self.pre_scan_stmt(alt, parent_ctx)?;
+                }
             }
             Statement::ForStatement(fs) => {
-                if let Some(init) = &fs.init { if let Some(e) = init.as_expression() { self.pre_scan_expr(e, parent_ctx)?; } }
-                if let Some(t) = &fs.test { self.pre_scan_expr(t, parent_ctx)?; }
-                if let Some(u) = &fs.update { self.pre_scan_expr(u, parent_ctx)?; }
+                if let Some(init) = &fs.init {
+                    if let Some(e) = init.as_expression() {
+                        self.pre_scan_expr(e, parent_ctx)?;
+                    }
+                }
+                if let Some(t) = &fs.test {
+                    self.pre_scan_expr(t, parent_ctx)?;
+                }
+                if let Some(u) = &fs.update {
+                    self.pre_scan_expr(u, parent_ctx)?;
+                }
                 self.pre_scan_stmt(&fs.body, parent_ctx)?;
             }
             Statement::BlockStatement(bs) => self.pre_scan_function_expressions(&bs.body, parent_ctx)?,
@@ -926,19 +938,45 @@ impl Compiler {
             Expression::ArrowFunctionExpression(_ae) => {}
             Expression::CallExpression(ce) => {
                 self.pre_scan_expr(&ce.callee, parent_ctx)?;
-                for arg in &ce.arguments { if let Some(e) = arg.as_expression() { self.pre_scan_expr(e, parent_ctx)?; } }
+                for arg in &ce.arguments {
+                    if let Some(e) = arg.as_expression() {
+                        self.pre_scan_expr(e, parent_ctx)?;
+                    }
+                }
             }
-            Expression::BinaryExpression(be) => { self.pre_scan_expr(&be.left, parent_ctx)?; self.pre_scan_expr(&be.right, parent_ctx)?; }
-            Expression::ConditionalExpression(ce) => { self.pre_scan_expr(&ce.test, parent_ctx)?; self.pre_scan_expr(&ce.consequent, parent_ctx)?; self.pre_scan_expr(&ce.alternate, parent_ctx)?; }
-            Expression::ArrayExpression(ae) => { for e in &ae.elements { if let Some(e) = e.as_expression() { self.pre_scan_expr(e, parent_ctx)?; } } }
-            Expression::SequenceExpression(se) => { for e in &se.expressions { self.pre_scan_expr(e, parent_ctx)?; } }
-            Expression::AssignmentExpression(ae) => { self.pre_scan_expr(&ae.right, parent_ctx)?; }
-            Expression::UnaryExpression(ue) => { self.pre_scan_expr(&ue.argument, parent_ctx)?; }
+            Expression::BinaryExpression(be) => {
+                self.pre_scan_expr(&be.left, parent_ctx)?;
+                self.pre_scan_expr(&be.right, parent_ctx)?;
+            }
+            Expression::ConditionalExpression(ce) => {
+                self.pre_scan_expr(&ce.test, parent_ctx)?;
+                self.pre_scan_expr(&ce.consequent, parent_ctx)?;
+                self.pre_scan_expr(&ce.alternate, parent_ctx)?;
+            }
+            Expression::ArrayExpression(ae) => {
+                for e in &ae.elements {
+                    if let Some(e) = e.as_expression() {
+                        self.pre_scan_expr(e, parent_ctx)?;
+                    }
+                }
+            }
+            Expression::SequenceExpression(se) => {
+                for e in &se.expressions {
+                    self.pre_scan_expr(e, parent_ctx)?;
+                }
+            }
+            Expression::AssignmentExpression(ae) => {
+                self.pre_scan_expr(&ae.right, parent_ctx)?;
+            }
+            Expression::UnaryExpression(ue) => {
+                self.pre_scan_expr(&ue.argument, parent_ctx)?;
+            }
             _ => {}
         }
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn compile_function_body_with_field_hooks<'a, C, E>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, extra_bindings: &[(&str, u8)], body_context: FunctionBodyContext,
@@ -1117,13 +1155,13 @@ impl Compiler {
             }
         }
 
-        debug_assert_eq!(
-            counted_pc,
-            ctx.bytecode.len(),
-            "counter/emitter instruction drift in function body (before implicit RETURN): counted {} vs emitted {}",
-            counted_pc,
-            ctx.bytecode.len()
-        );
+        if counted_pc != ctx.bytecode.len() {
+            return Err(format!(
+                "counter/emitter instruction drift in function body (before implicit RETURN): counted {} vs emitted {}",
+                counted_pc,
+                ctx.bytecode.len()
+            ));
+        }
 
         // Emit implicit RETURN: expression body returns the last expression,
         // statement body returns undefined.
@@ -1237,13 +1275,13 @@ impl Compiler {
         }
         crate::compiler_debug!("emitter: {} bytes emitted", ctx.bytecode.len());
 
-        debug_assert_eq!(
-            counted_pc,
-            ctx.bytecode.len(),
-            "counter/emitter instruction drift in top-level module (before result store + HALT): counted {} vs emitted {}",
-            counted_pc,
-            ctx.bytecode.len()
-        );
+        if counted_pc != ctx.bytecode.len() {
+            return Err(format!(
+                "counter/emitter instruction drift in top-level module (before result store + HALT): counted {} vs emitted {}",
+                counted_pc,
+                ctx.bytecode.len()
+            ));
+        }
 
         if let Some(r) = last_result {
             ctx.emit(opcode::encode(OpCode::LOAD_VAR, 0, r, 0));

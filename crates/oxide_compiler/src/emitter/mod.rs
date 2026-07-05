@@ -1,3 +1,4 @@
+#![allow(unused_imports)]
 use crate::compiler::Label;
 use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::{self, OpCode};
@@ -11,9 +12,6 @@ use oxide_parser::{
 use crate::compiler::{
     is_int_literal, is_side_effect_free, BinaryOperator, CompileCtx, Compiler, FunctionBodyContext, ParamSpec,
 };
-
-mod expr;
-mod stmt;
 
 impl Compiler {
     fn emit_optional_guard(&self, reg: u8, short_label: Label, ctx: &mut CompileCtx) -> Result<(), String> {
@@ -157,7 +155,7 @@ impl Compiler {
         }
     }
 
-    fn emit_chain_element(
+    pub(crate) fn emit_chain_element(
         &self, element: &ChainElement, short_label: Option<Label>, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {
         match element {
@@ -186,7 +184,7 @@ impl Compiler {
         }
     }
 
-    fn emit_logical_assign_test(
+    pub(crate) fn emit_logical_assign_test(
         &self, op: LogicalOperator, test_reg: u8, store_label: Label, end_label: Label, ctx: &mut CompileCtx,
     ) -> Result<(), String> {
         match op {
@@ -224,7 +222,7 @@ impl Compiler {
             .ok_or_else(|| format!("private name #{name} is not defined"))
     }
 
-    fn emit_private_id_reg(&self, name: &str, ctx: &mut CompileCtx) -> Result<u8, String> {
+    pub(crate) fn emit_private_id_reg(&self, name: &str, ctx: &mut CompileCtx) -> Result<u8, String> {
         let id = self.private_name_id(name, ctx)?;
         let idx = ctx.add_constant(Constant::Int(id as i32));
         let reg = ctx.alloc_reg();
@@ -324,7 +322,7 @@ impl Compiler {
         ctx.projected_pc += 1;
     }
 
-    fn static_property_name(&self, key: &PropertyKey) -> Result<String, String> {
+    pub(crate) fn static_property_name(&self, key: &PropertyKey) -> Result<String, String> {
         match key {
             PropertyKey::StaticIdentifier(ident) => Ok(ident.name.as_str().to_string()),
             PropertyKey::Identifier(ident) => Ok(ident.name.as_str().to_string()),
@@ -375,7 +373,9 @@ impl Compiler {
         Ok(())
     }
 
-    fn emit_assign_target(&self, target: &AssignmentTarget, src_reg: u8, ctx: &mut CompileCtx) -> Result<(), String> {
+    pub(crate) fn emit_assign_target(
+        &self, target: &AssignmentTarget, src_reg: u8, ctx: &mut CompileCtx,
+    ) -> Result<(), String> {
         match target {
             AssignmentTarget::AssignmentTargetIdentifier(id) => {
                 let name = id.name.as_str();
@@ -566,7 +566,7 @@ impl Compiler {
         }
     }
 
-    fn emit_array_assignment(
+    pub(crate) fn emit_array_assignment(
         &self, ap: &oxide_parser::ArrayAssignmentTarget, src_reg: u8, ctx: &mut CompileCtx,
     ) -> Result<(), String> {
         ctx.emit(opcode::encode(OpCode::FOR_OF_INIT, 0, src_reg, 0));
@@ -587,7 +587,7 @@ impl Compiler {
         Ok(())
     }
 
-    fn emit_object_assignment(
+    pub(crate) fn emit_object_assignment(
         &self, op: &ObjectAssignmentTarget, src_reg: u8, ctx: &mut CompileCtx,
     ) -> Result<(), String> {
         let mut excluded = Vec::new();
@@ -640,7 +640,7 @@ impl Compiler {
         }
     }
 
-    fn emit_class(&self, class: &Class, ctx: &mut CompileCtx) -> Result<u8, String> {
+    pub(crate) fn emit_class(&self, class: &Class, ctx: &mut CompileCtx) -> Result<u8, String> {
         let mut constructor_method = None;
         let mut instance_fields = Vec::new();
         let mut private_names = Vec::<(String, u32)>::new();
@@ -931,7 +931,7 @@ impl Compiler {
         Ok(ctor_reg)
     }
 
-    fn emit_undefined(&self, ctx: &mut CompileCtx) -> u8 {
+    pub(crate) fn emit_undefined(&self, ctx: &mut CompileCtx) -> u8 {
         let idx = ctx.add_constant(Constant::Undefined);
         let reg = ctx.alloc_reg();
         ctx.emit_load_const(reg, idx);
@@ -965,63 +965,5 @@ impl Compiler {
         ctx.emit_create_closure(method_reg, ctx.sub_modules.len() as u32);
         ctx.emit(opcode::encode(OpCode::SET_HOME_OBJECT, method_reg, home_reg, 0));
         Ok(method_reg)
-    }
-
-    pub(crate) fn emit_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
-        match stmt {
-            Statement::ExpressionStatement(_) | Statement::ReturnStatement(_) | Statement::EmptyStatement(_) => {
-                self.emit_basic_domain(stmt, ctx)
-            }
-            Statement::BlockStatement(_) => self.emit_block_domain(stmt, ctx),
-            Statement::VariableDeclaration(_) | Statement::FunctionDeclaration(_) | Statement::ClassDeclaration(_) => {
-                self.emit_declaration_domain(stmt, ctx)
-            }
-            Statement::IfStatement(_) => self.emit_control_domain(stmt, ctx),
-            Statement::WhileStatement(_)
-            | Statement::DoWhileStatement(_)
-            | Statement::ForStatement(_)
-            | Statement::ForInStatement(_)
-            | Statement::ForOfStatement(_) => self.emit_iteration_domain(stmt, ctx),
-            Statement::SwitchStatement(_) => self.emit_switch_domain(stmt, ctx),
-            Statement::ThrowStatement(_) | Statement::TryStatement(_) => self.emit_exception_domain(stmt, ctx),
-            Statement::BreakStatement(b) => self.emit_break_statement(b, ctx),
-            Statement::ContinueStatement(c) => self.emit_continue_statement(c, ctx),
-            Statement::LabeledStatement(ls) => self.emit_labeled_statement(ls, ctx),
-            _ => Ok(None),
-        }
-    }
-    pub(crate) fn emit_expression(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u8, String> {
-        match expr {
-            Expression::NumericLiteral(_)
-            | Expression::StringLiteral(_)
-            | Expression::BooleanLiteral(_)
-            | Expression::NullLiteral(_)
-            | Expression::RegExpLiteral(_) => self.emit_literal(expr, ctx),
-            Expression::BinaryExpression(_)
-            | Expression::PrivateInExpression(_)
-            | Expression::UnaryExpression(_)
-            | Expression::ConditionalExpression(_)
-            | Expression::LogicalExpression(_)
-            | Expression::UpdateExpression(_) => self.emit_operator(expr, ctx),
-            Expression::StaticMemberExpression(_)
-            | Expression::ComputedMemberExpression(_)
-            | Expression::PrivateFieldExpression(_)
-            | Expression::ChainExpression(_) => self.emit_member_domain(expr, ctx),
-            Expression::ObjectExpression(_) | Expression::ArrayExpression(_) => self.emit_object_domain(expr, ctx),
-            Expression::AssignmentExpression(assign) => self.emit_assignment_expression(assign, ctx),
-            Expression::TemplateLiteral(_) | Expression::TaggedTemplateExpression(_) => {
-                self.emit_template_domain(expr, ctx)
-            }
-            Expression::ArrowFunctionExpression(_)
-            | Expression::FunctionExpression(_)
-            | Expression::ClassExpression(_)
-            | Expression::NewExpression(_) => self.emit_function_domain(expr, ctx),
-            Expression::Identifier(ident) => self.emit_identifier_expression(ident, ctx),
-            Expression::CallExpression(_) => self.emit_call_domain(expr, ctx),
-            Expression::ThisExpression(_) => self.emit_this_expression(ctx),
-            Expression::SequenceExpression(seq) => self.emit_sequence_expression(seq, ctx),
-            Expression::ParenthesizedExpression(p) => self.emit_parenthesized_expression(p, ctx),
-            _ => self.emit_unsupported_expression(expr, ctx),
-        }
     }
 }

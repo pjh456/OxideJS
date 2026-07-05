@@ -46,7 +46,7 @@ impl Compiler {
         }
     }
 
-    pub(in crate::counter) fn count_rest_array(&self, ctx: &mut CompileCtx) {
+    pub(crate) fn count_rest_array(&self, ctx: &mut CompileCtx) {
         ctx.alloc_reg(); // rest
         ctx.count_instr(); // NEW_ARRAY
         ctx.count_load_const(); // idx = 0
@@ -61,9 +61,7 @@ impl Compiler {
         ctx.count_jump(); // JMP
     }
 
-    pub(in crate::counter) fn count_array_assignment(
-        &self, ap: &oxide_parser::ArrayAssignmentTarget, ctx: &mut CompileCtx,
-    ) {
+    pub(crate) fn count_array_assignment(&self, ap: &oxide_parser::ArrayAssignmentTarget, ctx: &mut CompileCtx) {
         ctx.count_instr(); // FOR_OF_INIT
         for elem in &ap.elements {
             ctx.alloc_reg();
@@ -86,9 +84,7 @@ impl Compiler {
         ctx.count_instr(); // FOR_OF_CLOSE
     }
 
-    pub(in crate::counter) fn count_object_assignment(
-        &self, op: &oxide_parser::ObjectAssignmentTarget, ctx: &mut CompileCtx,
-    ) {
+    pub(crate) fn count_object_assignment(&self, op: &oxide_parser::ObjectAssignmentTarget, ctx: &mut CompileCtx) {
         for prop in &op.properties {
             match prop {
                 oxide_parser::AssignmentTargetProperty::AssignmentTargetPropertyIdentifier(id) => {
@@ -118,7 +114,7 @@ impl Compiler {
         }
     }
 
-    pub(in crate::counter) fn count_assignment_maybe_default(
+    pub(crate) fn count_assignment_maybe_default(
         &self, target: &oxide_parser::AssignmentTargetMaybeDefault, ctx: &mut CompileCtx,
     ) {
         match target {
@@ -144,9 +140,7 @@ impl Compiler {
         }
     }
 
-    pub(in crate::counter) fn count_assign_target(
-        &self, target: &oxide_parser::AssignmentTarget, ctx: &mut CompileCtx,
-    ) {
+    pub(crate) fn count_assign_target(&self, target: &oxide_parser::AssignmentTarget, ctx: &mut CompileCtx) {
         match target {
             oxide_parser::AssignmentTarget::AssignmentTargetIdentifier(_) => {
                 ctx.alloc_reg();
