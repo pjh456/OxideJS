@@ -17,6 +17,8 @@ OxideJS 是一个基于 Rust 的轻量级 JavaScript 执行引擎，擅长短时
 
 当前项目聚焦于实用 ECMAScript 子集，并通过 [test262](https://github.com/tc39/test262) 持续验证兼容性。我们的最终目标是提供一个小型、可检查、跨平台、启动成本可预测、benchmark 可复现的 JavaScript runtime。
 
+演示视频链接: https://pan.baidu.com/s/11gvBV5G_rLrNTS0sb863Qg?pwd=pr7n 提取码: pr7n
+
 ## 2. 特性概览
 
 - **Rust 实现**：使用 Cargo workspace 组织 parser、compiler、VM、runtime、CLI 和 test runner。
