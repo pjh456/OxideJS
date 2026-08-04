@@ -138,12 +138,14 @@ impl Compiler {
                 ctx.emit(0);
                 ctx.emit(0);
                 self.emit_logical_assign_test(logical_op, result_reg, store_label, end_label, ctx)?;
+                ctx.labels.label_map.insert(store_label, ctx.bytecode.len());
                 let val_reg = self.emit_expression(&assign.right, ctx)?;
                 ctx.emit(opcode::encode(OpCode::IC_SET_PROP, obj_reg, val_reg, key_reg));
                 ctx.emit(0);
                 ctx.emit(0);
                 ctx.emit(0);
                 ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, val_reg, 0));
+                ctx.labels.label_map.insert(end_label, ctx.bytecode.len());
                 return Ok(result_reg);
             }
             let obj_reg = self.emit_expression(&member.object, ctx)?;
@@ -184,9 +186,11 @@ impl Compiler {
                 let result_reg = ctx.alloc_reg();
                 ctx.emit(opcode::encode(OpCode::GET_PROP_DYNAMIC, obj_reg, key_reg, result_reg));
                 self.emit_logical_assign_test(logical_op, result_reg, store_label, end_label, ctx)?;
+                ctx.labels.label_map.insert(store_label, ctx.bytecode.len());
                 let val_reg = self.emit_expression(&assign.right, ctx)?;
                 ctx.emit(opcode::encode(OpCode::SET_PROP_DYNAMIC, obj_reg, key_reg, val_reg));
                 ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, val_reg, 0));
+                ctx.labels.label_map.insert(end_label, ctx.bytecode.len());
                 return Ok(result_reg);
             }
             let obj_reg = self.emit_expression(&member.object, ctx)?;
@@ -214,11 +218,13 @@ impl Compiler {
                     let result_reg = ctx.alloc_reg();
                     ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, var_reg, 0));
                     self.emit_logical_assign_test(logical_op, result_reg, store_label, end_label, ctx)?;
+                    ctx.labels.label_map.insert(store_label, ctx.bytecode.len());
                     let val_reg = self.emit_expression(&assign.right, ctx)?;
                     let is_const = ctx.lookup_const_flag(name);
                     let const_flag = if is_const { 1 } else { 0 };
                     ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, const_flag));
                     ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, val_reg, 0));
+                    ctx.labels.label_map.insert(end_label, ctx.bytecode.len());
                     Ok(result_reg)
                 } else if assign.operator == AssignmentOperator::Addition
                     || assign.operator == AssignmentOperator::Subtraction
