@@ -1,14 +1,6 @@
 use crate::compiler::{CompileCtx, Compiler};
 
 impl Compiler {
-    pub(super) fn count_break_statement(&self, ctx: &mut CompileCtx) {
-        ctx.projected_pc += 1;
-    }
-
-    pub(super) fn count_continue_statement(&self, ctx: &mut CompileCtx) {
-        ctx.projected_pc += 1;
-    }
-
     pub(crate) fn emit_break_statement(
         &self, stmt: &oxide_parser::BreakStatement, ctx: &mut CompileCtx,
     ) -> Result<Option<u8>, String> {

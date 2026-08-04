@@ -331,6 +331,17 @@ impl CompileCtx {
         });
     }
 
+    pub(crate) fn emit_try_finally_begin_labeled(&mut self, label: Label) {
+        let pc = self.bytecode.len();
+        self.emit(opcode::encode_try_finally_begin(0));
+        self.fixups.push(JumpFixup {
+            pc,
+            label,
+            opcode: OpCode::TRY_FINALLY_BEGIN,
+            rd: 0,
+        });
+    }
+
     pub(crate) fn count_word(&mut self) {
         self.projected_pc += 1;
     }
@@ -481,6 +492,7 @@ impl CompileCtx {
                 OpCode::JMP_IF_TRUE => opcode::encode_jmp_if_true(fixup.rd, offset),
                 OpCode::JMP_IF_NULLISH => opcode::encode_jmp_if_nullish(fixup.rd, offset),
                 OpCode::TRY_BEGIN => opcode::encode_try_begin(offset),
+                OpCode::TRY_FINALLY_BEGIN => opcode::encode_try_finally_begin(offset),
                 _ => return Err(format!("Unsupported fixup opcode {:?}", fixup.opcode)),
             };
         }
@@ -1275,17 +1287,11 @@ impl Compiler {
 
     pub(crate) fn count_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) {
         match stmt {
-            Statement::BreakStatement(_) | Statement::ContinueStatement(_) | Statement::LabeledStatement(_) => {
-                self.count_basic(stmt, ctx)
-            }
-            Statement::IfStatement(_) => self.count_control_domain(stmt, ctx),
             Statement::WhileStatement(_)
             | Statement::DoWhileStatement(_)
             | Statement::ForStatement(_)
             | Statement::ForInStatement(_)
             | Statement::ForOfStatement(_) => self.count_iteration_domain(stmt, ctx),
-            Statement::SwitchStatement(_) => self.count_switch_domain(stmt, ctx),
-            Statement::TryStatement(_) => self.count_exception_domain(stmt, ctx),
             _ => {}
         }
     }

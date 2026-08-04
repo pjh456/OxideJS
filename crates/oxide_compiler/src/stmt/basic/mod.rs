@@ -15,13 +15,4 @@ impl Compiler {
             _ => Ok(None),
         }
     }
-
-    pub(crate) fn count_basic(&self, stmt: &Statement, ctx: &mut CompileCtx) {
-        match stmt {
-            Statement::BreakStatement(_) => self.count_break_statement(ctx),
-            Statement::ContinueStatement(_) => self.count_continue_statement(ctx),
-            Statement::LabeledStatement(ls) => self.count_labeled_statement(ls, ctx),
-            _ => {}
-        }
-    }
 }

@@ -219,6 +219,18 @@ fn compile_switch_break() {
 }
 
 #[test]
+fn compile_try_finally_resolves_finally_offset() {
+    let module = compile_source("try { 1; } finally { 2; }");
+    let try_finally_begin = module
+        .bytecode
+        .iter()
+        .copied()
+        .find(|&instr| opcode::opcode(instr) == OpCode::TRY_FINALLY_BEGIN)
+        .expect("try/finally should emit TRY_FINALLY_BEGIN");
+    assert_ne!(opcode::offset16(try_finally_begin), 0, "finally target offset should be resolved");
+}
+
+#[test]
 fn compile_continue_in_switch_errors() {
     let result = std::panic::catch_unwind(|| {
         compile_source("var x=0; switch(x){case 1:continue;}");

@@ -3,37 +3,6 @@ use oxide_bytecode::opcode::{self, OpCode};
 use oxide_parser::Statement;
 
 impl Compiler {
-    fn count_switch_statement(&self, stmt: &oxide_parser::SwitchStatement<'_>, ctx: &mut CompileCtx) {
-        let id = ctx.next_label_id();
-        let end_label = Label::SwitchEnd(id);
-        ctx.push_switch(end_label);
-        self.count_expression(&stmt.discriminant, ctx);
-        let compare_reg_checkpoint = ctx.reg_checkpoint();
-        let cases = &stmt.cases;
-        for case in cases.iter() {
-            if let Some(test) = &case.test {
-                self.count_expression(test, ctx);
-                ctx.projected_pc += 1;
-                ctx.alloc_reg();
-                ctx.projected_pc += 1;
-                ctx.restore_reg_checkpoint(compare_reg_checkpoint);
-            }
-        }
-        let has_default = cases.iter().any(|c| c.test.is_none());
-        if !has_default {
-            ctx.projected_pc += 1;
-        }
-        for (case_idx, case) in cases.iter().enumerate() {
-            let case_label = Label::SwitchCase(id, case_idx as u32);
-            ctx.labels.label_map.insert(case_label, ctx.projected_pc);
-            for s in &case.consequent {
-                self.count_statement(s, ctx);
-            }
-        }
-        ctx.labels.label_map.insert(end_label, ctx.projected_pc);
-        ctx.pop_switch();
-    }
-
     fn emit_switch_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
         let Statement::SwitchStatement(sw) = stmt else {
             return Ok(None);
@@ -68,12 +37,6 @@ impl Compiler {
         ctx.labels.label_map.insert(end_label, ctx.bytecode.len());
         ctx.pop_switch();
         Ok(None)
-    }
-
-    pub(crate) fn count_switch_domain(&self, stmt: &Statement, ctx: &mut CompileCtx) {
-        if let Statement::SwitchStatement(sw) = stmt {
-            self.count_switch_statement(sw, ctx);
-        }
     }
 
     pub(crate) fn emit_switch_domain(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {

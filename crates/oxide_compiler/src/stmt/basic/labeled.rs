@@ -2,24 +2,6 @@ use crate::compiler::{CompileCtx, Compiler, Label};
 use oxide_parser::Statement;
 
 impl Compiler {
-    pub(super) fn count_labeled_statement(&self, stmt: &oxide_parser::LabeledStatement<'_>, ctx: &mut CompileCtx) {
-        let body_is_loop = matches!(
-            stmt.body,
-            Statement::WhileStatement(_)
-                | Statement::DoWhileStatement(_)
-                | Statement::ForStatement(_)
-                | Statement::ForInStatement(_)
-                | Statement::ForOfStatement(_)
-        );
-        if body_is_loop {
-            self.count_statement(&stmt.body, ctx);
-        } else {
-            let id = ctx.next_label_id();
-            self.count_statement(&stmt.body, ctx);
-            ctx.labels.label_map.insert(Label::LabeledEnd(id), ctx.projected_pc);
-        }
-    }
-
     fn is_iteration_statement(stmt: &Statement) -> bool {
         matches!(
             stmt,

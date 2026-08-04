@@ -3,71 +3,19 @@ use oxide_bytecode::opcode::{self, OpCode};
 use oxide_parser::{Statement, VariableDeclarationKind};
 
 impl Compiler {
-    pub(crate) fn count_try_statement(&self, stmt: &oxide_parser::TryStatement<'_>, ctx: &mut CompileCtx) {
-        let id = ctx.next_label_id();
-        let catch_label = Label::CatchBody(id);
-        let try_end_label = Label::TryEnd(id);
-        let has_catch = stmt.handler.is_some();
-        let has_finally = stmt.finalizer.is_some();
-        ctx.alloc_reg();
-        if has_finally {
-            ctx.projected_pc += 1;
-        }
-        if has_catch {
-            ctx.projected_pc += 1;
-        }
-        for s in &stmt.block.body {
-            self.count_statement(s, ctx);
-        }
-        ctx.projected_pc += 1;
-        if has_catch {
-            ctx.projected_pc += 1;
-        }
-        let jmp_needed = has_catch || has_finally;
-        if jmp_needed {
-            ctx.projected_pc += 1;
-        }
-        ctx.labels.label_map.insert(catch_label, ctx.projected_pc);
-        if let Some(catch) = &stmt.handler {
-            ctx.push_scope();
-            if let Some(param) = &catch.param {
-                ctx.alloc_reg();
-                if let oxide_parser::BindingPattern::BindingIdentifier(_) = &param.pattern {
-                    ctx.projected_pc += 1;
-                }
-            }
-            for cs in &catch.body.body {
-                self.count_statement(cs, ctx);
-            }
-            ctx.projected_pc += 1;
-            ctx.pop_scope();
-        }
-        if let Some(finally) = &stmt.finalizer {
-            let finally_label = Label::FinallyBody(id);
-            ctx.labels.label_map.insert(finally_label, ctx.projected_pc);
-            for fs in &finally.body {
-                self.count_statement(fs, ctx);
-            }
-            ctx.projected_pc += 1;
-            ctx.projected_pc += 1;
-        }
-        ctx.labels.label_map.insert(try_end_label, ctx.projected_pc);
-    }
-
     pub(crate) fn emit_try_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
         let Statement::TryStatement(ts) = stmt else {
             return Ok(None);
         };
         let id = ctx.next_label_id();
         let catch_label = Label::CatchBody(id);
+        let finally_label = Label::FinallyBody(id);
         let try_end_label = Label::TryEnd(id);
         let has_catch = ts.handler.is_some();
         let has_finally = ts.finalizer.is_some();
         let result_reg = ctx.alloc_reg();
-        let mut try_finally_begin_pos: Option<usize> = None;
         if has_finally {
-            try_finally_begin_pos = Some(ctx.bytecode.len());
-            ctx.emit(opcode::encode_try_finally_begin(0));
+            ctx.emit_try_finally_begin_labeled(finally_label);
         }
         if has_catch {
             ctx.emit_try_begin_labeled(catch_label);
@@ -84,7 +32,7 @@ impl Compiler {
         }
         let jmp_needed = has_catch || has_finally;
         if jmp_needed {
-            let target = if has_finally { Label::FinallyBody(id) } else { try_end_label };
+            let target = if has_finally { finally_label } else { try_end_label };
             ctx.emit_jmp_labeled(target);
         }
         let catch_label_pc = ctx.bytecode.len();
@@ -108,14 +56,7 @@ impl Compiler {
             ctx.pop_scope();
         }
         if has_finally {
-            let finally_label = Label::FinallyBody(id);
-            let finally_label_pc = ctx.bytecode.len();
-            ctx.labels.label_map.insert(finally_label, finally_label_pc);
-            if let Some(fb_pos) = try_finally_begin_pos {
-                let offset = finally_label_pc as isize - (fb_pos as isize);
-                let offset = ctx.checked_jump_offset(offset);
-                ctx.bytecode[fb_pos] = opcode::encode_try_finally_begin(offset);
-            }
+            ctx.labels.label_map.insert(finally_label, ctx.bytecode.len());
             let mut last_finally_result: Option<u8> = None;
             for s in &ts.finalizer.as_ref().unwrap().body {
                 if let Some(r) = self.emit_statement(s, ctx)? {
