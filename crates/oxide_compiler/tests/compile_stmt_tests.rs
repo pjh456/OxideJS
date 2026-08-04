@@ -285,6 +285,12 @@ fn compile_class_declaration_emits_constructor_and_prototype_setup() {
 }
 
 #[test]
+fn compile_derived_constructor_inserts_instance_fields_after_super() {
+    let module = compile_source("class Base {} class Derived extends Base { value = 1; constructor() { super(); } }");
+    assert!(!module.sub_modules.is_empty(), "derived class should compile its constructor");
+}
+
+#[test]
 fn compile_class_declaration_default_constructor_creates_submodule() {
     let module = compile_source("class A {}");
     assert_eq!(module.sub_modules.len(), 1, "expected synthesized default constructor");

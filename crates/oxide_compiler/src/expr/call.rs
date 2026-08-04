@@ -19,10 +19,15 @@ impl Compiler {
             let result_reg = ctx.alloc_reg();
             ctx.emit(opcode::encode(OpCode::SUPER_CALL, result_reg, first_arg_reg, 0));
             ctx.emit(arg_regs.len() as u32);
-            if !ctx.after_super_inserted {
-                if let Some(field_code) = ctx.after_super_insert.clone() {
-                    ctx.bytecode.extend(field_code);
-                    ctx.after_super_inserted = true;
+            if let Some(mut field_buffer) = ctx.field_buffer.take() {
+                let insert_pc = ctx.bytecode.len();
+                ctx.bytecode.append(&mut field_buffer.bytecode);
+                for (label, relative_pc) in field_buffer.labels {
+                    ctx.labels.label_map.insert(label, insert_pc + relative_pc);
+                }
+                for mut fixup in field_buffer.fixups {
+                    fixup.pc += insert_pc;
+                    ctx.fixups.push(fixup);
                 }
             }
             return Ok(result_reg);

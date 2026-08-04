@@ -138,6 +138,12 @@ pub(crate) struct JumpFixup {
     pub(crate) rd: u8,
 }
 
+pub(crate) struct FieldBuffer {
+    pub(crate) bytecode: Vec<opcode::Instr>,
+    pub(crate) labels: Vec<(Label, usize)>,
+    pub(crate) fixups: Vec<JumpFixup>,
+}
+
 /// A labeled-statement scope active during emission. `break label` targets
 /// `break_label`; `continue label` targets `continue_label` (only set when the
 /// labeled statement directly wraps an iteration statement).
@@ -158,7 +164,6 @@ pub(crate) struct CompileCtx {
     reserved_reg_start: u8,
     pub(crate) labels: LabelCtx,
     pub(crate) scopes: ScopeCtx,
-    pub(crate) projected_pc: usize,
     pub(crate) sub_modules: Vec<CompiledModule>,
     /// Register holding `this` in the enclosing function context.
     /// Used by arrow functions to capture lexical `this`.
@@ -168,8 +173,7 @@ pub(crate) struct CompileCtx {
     pub(crate) in_instance_method: bool,
     pub(crate) in_static_method: bool,
     pub(crate) static_block_this_reg: Option<u8>,
-    pub(crate) after_super_insert: Option<Vec<opcode::Instr>>,
-    pub(crate) after_super_inserted: bool,
+    pub(crate) field_buffer: Option<FieldBuffer>,
     pub(crate) current_upvalue_captures: Vec<UpvalueCapture>,
     /// Set when alloc_reg() overflows into the reserved this/new.target range (≥254).
     /// Checked after each emit phase to produce a compile error rather than silent corruption.
@@ -237,15 +241,13 @@ impl CompileCtx {
                 next_private_name_id: 1,
                 cell_registry: Vec::new(),
             },
-            projected_pc: 0,
             sub_modules: Vec::new(),
             enclosing_this_reg: 254, // conventional this register at top level
             in_derived_constructor: false,
             in_instance_method: false,
             in_static_method: false,
             static_block_this_reg: None,
-            after_super_insert: None,
-            after_super_inserted: false,
+            field_buffer: None,
             current_upvalue_captures: Vec::new(),
             reg_overflow: false,
             const_overflow: false,
@@ -356,7 +358,6 @@ impl CompileCtx {
 
     pub(crate) fn reset_regs(&mut self) {
         self.next_reg = self.builtin_reg_floor().max(self.reserved_reg_start);
-        self.projected_pc = 0;
         self.labels.label_counter = 0;
     }
 
@@ -906,7 +907,6 @@ impl Compiler {
             is_expression_body,
             extra_bindings,
             body_context,
-            None::<fn(&Compiler, &mut CompileCtx)>,
             None::<fn(&Compiler, &mut CompileCtx) -> Result<(), String>>,
             false,
         )
@@ -1022,13 +1022,12 @@ impl Compiler {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn compile_function_body_with_field_hooks<'a, C, E>(
+    pub(crate) fn compile_function_body_with_field_hooks<'a, E>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, extra_bindings: &[(&str, u8)], body_context: FunctionBodyContext,
-        _count_fields: Option<C>, mut emit_fields: Option<E>, fields_after_super: bool,
+        mut emit_fields: Option<E>, fields_after_super: bool,
     ) -> Result<CompiledModule, String>
     where
-        C: FnMut(&Compiler, &mut CompileCtx),
         E: FnMut(&Compiler, &mut CompileCtx) -> Result<(), String>,
     {
         let mut ctx = CompileCtx::new();
@@ -1128,11 +1127,22 @@ impl Compiler {
 
         if let Some(emit) = emit_fields.as_mut() {
             if fields_after_super {
-                let start = ctx.bytecode.len();
+                let mut parent_bytecode = Vec::new();
+                let mut parent_labels = HashMap::new();
+                let mut parent_fixups = Vec::new();
+                std::mem::swap(&mut ctx.bytecode, &mut parent_bytecode);
+                std::mem::swap(&mut ctx.labels.label_map, &mut parent_labels);
+                std::mem::swap(&mut ctx.fixups, &mut parent_fixups);
                 emit(self, &mut ctx)?;
-                let field_code = ctx.bytecode.split_off(start);
-                ctx.after_super_insert = Some(field_code);
-                ctx.after_super_inserted = false;
+                let field_buffer = FieldBuffer {
+                    bytecode: std::mem::take(&mut ctx.bytecode),
+                    labels: std::mem::take(&mut ctx.labels.label_map).into_iter().collect(),
+                    fixups: std::mem::take(&mut ctx.fixups),
+                };
+                ctx.bytecode = parent_bytecode;
+                ctx.labels.label_map = parent_labels;
+                ctx.fixups = parent_fixups;
+                ctx.field_buffer = Some(field_buffer);
             } else {
                 emit(self, &mut ctx)?;
             }

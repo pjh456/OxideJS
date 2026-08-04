@@ -66,7 +66,6 @@ impl Compiler {
                 false,
                 &self_binding,
                 FunctionBodyContext::ClassElement,
-                None::<fn(&Compiler, &mut CompileCtx)>,
                 Some(|compiler: &Compiler, field_ctx: &mut CompileCtx| -> Result<(), String> {
                     for field in &instance_fields {
                         if let PropertyKey::PrivateIdentifier(private) = &field.key {
@@ -98,7 +97,6 @@ impl Compiler {
                 false,
                 &self_binding,
                 FunctionBodyContext::ClassElement,
-                None::<fn(&Compiler, &mut CompileCtx)>,
                 Some(|compiler: &Compiler, field_ctx: &mut CompileCtx| -> Result<(), String> {
                     for field in &instance_fields {
                         if let PropertyKey::PrivateIdentifier(private) = &field.key {
