@@ -1,5 +1,4 @@
 use crate::compiler::{CompileCtx, Compiler, Label};
-use oxide_bytecode::opcode;
 use oxide_parser::Statement;
 
 impl Compiler {
@@ -21,14 +20,13 @@ impl Compiler {
         let id = ctx.next_label_id();
         let start_label = Label::DoWhileStart(id);
         let end_label = Label::DoWhileEnd(id);
+        ctx.labels.label_map.insert(start_label, ctx.bytecode.len());
         ctx.push_loop(end_label, start_label);
         let n_labeled = ctx.take_pending_loop_labels(end_label, start_label);
         self.emit_statement(&dw.body, ctx)?;
         let test_reg = self.emit_expression(&dw.test, ctx)?;
-        let start_pos = ctx.resolve_label(start_label)?;
-        let offset = (start_pos as isize) - (ctx.bytecode.len() as isize);
-        let offset = ctx.checked_jump_offset(offset);
-        ctx.emit(opcode::encode_jmp_if_true(test_reg, offset));
+        ctx.emit_jmp_if_true_labeled(test_reg, start_label);
+        ctx.labels.label_map.insert(end_label, ctx.bytecode.len());
         ctx.pop_label_scopes(n_labeled);
         ctx.pop_loop();
         Ok(None)

@@ -72,21 +72,18 @@ impl Compiler {
                 }
             }
         }
+        ctx.labels.label_map.insert(start_label, ctx.bytecode.len());
         if let Some(test) = &fr.test {
             let test_reg = self.emit_expression(test, ctx)?;
-            let end_pos = ctx.resolve_label(end_label)?;
-            let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
-            let offset = ctx.checked_jump_offset(offset);
-            ctx.emit(opcode::encode_jmp_if_false(test_reg, offset));
+            ctx.emit_jmp_if_false_labeled(test_reg, end_label);
         }
         self.emit_statement(&fr.body, ctx)?;
+        ctx.labels.label_map.insert(update_label, ctx.bytecode.len());
         if let Some(update) = &fr.update {
             self.emit_expression(update, ctx)?;
         }
-        let start_pos = ctx.resolve_label(start_label)?;
-        let offset = (start_pos as isize) - (ctx.bytecode.len() as isize);
-        let offset = ctx.checked_jump_offset(offset);
-        ctx.emit(opcode::encode_jmp(offset));
+        ctx.emit_jmp_labeled(start_label);
+        ctx.labels.label_map.insert(end_label, ctx.bytecode.len());
         ctx.pop_label_scopes(n_labeled);
         ctx.pop_loop();
         Ok(None)

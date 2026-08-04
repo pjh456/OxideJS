@@ -42,15 +42,13 @@ impl Compiler {
         let end_label = Label::ForInEnd(id);
         let obj_reg = self.emit_expression(&fi.right, ctx)?;
         ctx.emit(opcode::encode(OpCode::FOR_IN_INIT, 0, obj_reg, 0));
+        ctx.labels.label_map.insert(start_label, ctx.bytecode.len());
         ctx.push_loop(end_label, start_label);
         let n_labeled = ctx.take_pending_loop_labels(end_label, start_label);
         let done_reg = ctx.alloc_reg();
         ctx.emit(opcode::encode(OpCode::FOR_IN_DONE, done_reg, 0, 0));
-        let end_pos = ctx.resolve_label(end_label)?;
-        let cleanup_jmp_offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
         ctx.emit(opcode::encode_jmp_if_false(done_reg, 2));
-        let cleanup_jmp_offset = ctx.checked_jump_offset(cleanup_jmp_offset);
-        ctx.emit(opcode::encode_jmp(cleanup_jmp_offset));
+        ctx.emit_jmp_labeled(end_label);
         let key_reg = ctx.alloc_reg();
         ctx.emit(opcode::encode(OpCode::FOR_IN_NEXT, key_reg, 0, 0));
         match &fi.left {
@@ -74,10 +72,8 @@ impl Compiler {
             _ => return Err("unsupported for-in left-hand side".into()),
         }
         self.emit_statement(&fi.body, ctx)?;
-        let start_pos = ctx.resolve_label(start_label)?;
-        let offset = (start_pos as isize) - (ctx.bytecode.len() as isize);
-        let offset = ctx.checked_jump_offset(offset);
-        ctx.emit(opcode::encode_jmp(offset));
+        ctx.emit_jmp_labeled(start_label);
+        ctx.labels.label_map.insert(end_label, ctx.bytecode.len());
         ctx.emit(opcode::encode(OpCode::FOR_IN_CLEANUP, 0, 0, 0));
         ctx.pop_label_scopes(n_labeled);
         ctx.pop_loop();
