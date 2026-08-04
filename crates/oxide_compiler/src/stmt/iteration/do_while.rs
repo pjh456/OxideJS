@@ -2,17 +2,6 @@ use crate::compiler::{CompileCtx, Compiler, Label};
 use oxide_parser::Statement;
 
 impl Compiler {
-    pub(crate) fn count_do_while_statement(&self, stmt: &oxide_parser::DoWhileStatement<'_>, ctx: &mut CompileCtx) {
-        let id = ctx.next_label_id();
-        let start_label = Label::DoWhileStart(id);
-        let end_label = Label::DoWhileEnd(id);
-        ctx.labels.label_map.insert(start_label, ctx.projected_pc);
-        self.count_statement(&stmt.body, ctx);
-        self.count_expression(&stmt.test, ctx);
-        ctx.projected_pc += 1;
-        ctx.labels.label_map.insert(end_label, ctx.projected_pc);
-    }
-
     pub(crate) fn emit_do_while_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
         let Statement::DoWhileStatement(dw) = stmt else {
             return Ok(None);

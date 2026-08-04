@@ -1286,14 +1286,7 @@ impl Compiler {
     }
 
     pub(crate) fn count_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) {
-        match stmt {
-            Statement::WhileStatement(_)
-            | Statement::DoWhileStatement(_)
-            | Statement::ForStatement(_)
-            | Statement::ForInStatement(_)
-            | Statement::ForOfStatement(_) => self.count_iteration_domain(stmt, ctx),
-            _ => {}
-        }
+        let _ = (stmt, ctx);
     }
 
     pub(crate) fn count_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {

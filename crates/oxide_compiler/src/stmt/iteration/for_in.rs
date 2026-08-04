@@ -3,36 +3,6 @@ use oxide_bytecode::opcode::{self, OpCode};
 use oxide_parser::{ForStatementLeft, Statement, VariableDeclarationKind};
 
 impl Compiler {
-    pub(crate) fn count_for_in_statement(&self, stmt: &oxide_parser::ForInStatement<'_>, ctx: &mut CompileCtx) {
-        let id = ctx.next_label_id();
-        let start_label = Label::ForInStart(id);
-        let end_label = Label::ForInEnd(id);
-        self.count_expression(&stmt.right, ctx);
-        ctx.count_instr();
-        ctx.labels.label_map.insert(start_label, ctx.projected_pc);
-        ctx.count_instr();
-        ctx.count_jump();
-        ctx.count_jump();
-        ctx.count_instr();
-        match &stmt.left {
-            oxide_parser::ForStatementLeft::VariableDeclaration(decl) => {
-                for _d in &decl.declarations {
-                    ctx.alloc_reg();
-                    ctx.count_instr();
-                }
-            }
-            oxide_parser::ForStatementLeft::AssignmentTargetIdentifier(_) => {
-                ctx.alloc_reg();
-                ctx.count_instr();
-            }
-            _ => {}
-        }
-        self.count_statement(&stmt.body, ctx);
-        ctx.count_jump();
-        ctx.labels.label_map.insert(end_label, ctx.projected_pc);
-        ctx.count_instr();
-    }
-
     pub(crate) fn emit_for_in_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
         let Statement::ForInStatement(fi) = stmt else {
             return Ok(None);

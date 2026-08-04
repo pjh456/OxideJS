@@ -3,42 +3,6 @@ use oxide_bytecode::opcode::{self, OpCode};
 use oxide_parser::{ForStatementLeft, Statement};
 
 impl Compiler {
-    pub(crate) fn count_for_of_statement(&self, stmt: &oxide_parser::ForOfStatement<'_>, ctx: &mut CompileCtx) {
-        let id = ctx.next_label_id();
-        let start_label = Label::ForOfStart(id);
-        let end_label = Label::ForOfEnd(id);
-        self.count_expression(&stmt.right, ctx);
-        ctx.count_instr();
-        ctx.labels.label_map.insert(start_label, ctx.projected_pc);
-        ctx.alloc_reg();
-        ctx.count_instr();
-        ctx.count_jump();
-        ctx.alloc_reg();
-        ctx.count_instr();
-        match &stmt.left {
-            oxide_parser::ForStatementLeft::VariableDeclaration(decl) => {
-                for d in &decl.declarations {
-                    self.count_binding_pattern(&d.id, ctx);
-                }
-            }
-            oxide_parser::ForStatementLeft::AssignmentTargetIdentifier(_) => {
-                ctx.alloc_reg();
-                ctx.count_instr();
-            }
-            oxide_parser::ForStatementLeft::ArrayAssignmentTarget(ap) => {
-                self.count_array_assignment(ap, ctx);
-            }
-            oxide_parser::ForStatementLeft::ObjectAssignmentTarget(op) => {
-                self.count_object_assignment(op, ctx);
-            }
-            _ => {}
-        }
-        self.count_statement(&stmt.body, ctx);
-        ctx.count_jump();
-        ctx.labels.label_map.insert(end_label, ctx.projected_pc);
-        ctx.count_instr();
-    }
-
     pub(crate) fn emit_for_of_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
         let Statement::ForOfStatement(fo) = stmt else {
             return Ok(None);

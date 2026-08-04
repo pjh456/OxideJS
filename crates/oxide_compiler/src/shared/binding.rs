@@ -7,51 +7,6 @@ use oxide_parser::{
 };
 
 impl Compiler {
-    pub(crate) fn count_binding_pattern(&self, pattern: &BindingPattern, ctx: &mut CompileCtx) {
-        match pattern {
-            BindingPattern::BindingIdentifier(_) => {
-                ctx.alloc_reg();
-                ctx.projected_pc += 1;
-            }
-            BindingPattern::ArrayPattern(ap) => {
-                ctx.count_instr(); // FOR_OF_INIT
-                for elem in &ap.elements {
-                    ctx.alloc_reg();
-                    ctx.count_instr(); // FOR_OF_DONE
-                    ctx.alloc_reg();
-                    ctx.count_instr(); // FOR_OF_NEXT
-                    if let Some(inner) = elem {
-                        self.count_binding_pattern(inner, ctx);
-                    }
-                }
-                if let Some(rest) = &ap.rest {
-                    self.count_rest_array(ctx);
-                    self.count_binding_pattern(&rest.argument, ctx);
-                }
-                ctx.count_instr(); // FOR_OF_CLOSE
-            }
-            BindingPattern::ObjectPattern(op) => {
-                for prop in &op.properties {
-                    self.count_object_property_read_key(&prop.key, prop.computed, ctx);
-                    self.count_binding_pattern(&prop.value, ctx);
-                }
-                if let Some(rest) = &op.rest {
-                    ctx.alloc_reg();
-                    ctx.count_instr_with_ext(1); // REST_OBJECT + excluded-keys ext
-                    self.count_binding_pattern(&rest.argument, ctx);
-                }
-            }
-            BindingPattern::AssignmentPattern(ap) => {
-                ctx.count_load_const(); // undefined
-                ctx.count_instr(); // STRICT_EQ
-                ctx.count_jump(); // JMP_IF_FALSE
-                self.count_expression(&ap.right, ctx);
-                ctx.count_instr(); // LOAD_VAR default
-                self.count_binding_pattern(&ap.left, ctx);
-            }
-        }
-    }
-
     pub(crate) fn count_rest_array(&self, ctx: &mut CompileCtx) {
         ctx.alloc_reg(); // rest
         ctx.count_instr(); // NEW_ARRAY
