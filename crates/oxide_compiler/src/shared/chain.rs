@@ -171,12 +171,9 @@ impl Compiler {
 
 impl Compiler {
     fn emit_optional_guard(&self, reg: u8, short_label: Label, ctx: &mut CompileCtx) -> Result<(), String> {
-        let short_pos = ctx.resolve_label(short_label)?;
         let dup_reg = ctx.alloc_reg();
         ctx.emit(opcode::encode(OpCode::LOAD_VAR, dup_reg, reg, 0));
-        let offset = (short_pos as isize) - (ctx.bytecode.len() as isize);
-        let offset = ctx.checked_jump_offset(offset);
-        ctx.emit(opcode::encode_jmp_if_nullish(dup_reg, offset));
+        ctx.emit_jmp_if_nullish_labeled(dup_reg, short_label);
         Ok(())
     }
 
@@ -344,27 +341,11 @@ impl Compiler {
         &self, op: LogicalOperator, test_reg: u8, store_label: Label, end_label: Label, ctx: &mut CompileCtx,
     ) -> Result<(), String> {
         match op {
-            LogicalOperator::And => {
-                let end_pos = ctx.resolve_label(end_label)?;
-                let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
-                let offset = ctx.checked_jump_offset(offset);
-                ctx.emit(opcode::encode_jmp_if_false(test_reg, offset));
-            }
-            LogicalOperator::Or => {
-                let end_pos = ctx.resolve_label(end_label)?;
-                let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
-                let offset = ctx.checked_jump_offset(offset);
-                ctx.emit(opcode::encode_jmp_if_true(test_reg, offset));
-            }
+            LogicalOperator::And => ctx.emit_jmp_if_false_labeled(test_reg, end_label),
+            LogicalOperator::Or => ctx.emit_jmp_if_true_labeled(test_reg, end_label),
             LogicalOperator::Coalesce => {
-                let store_pos = ctx.resolve_label(store_label)?;
-                let offset = (store_pos as isize) - (ctx.bytecode.len() as isize);
-                let offset = ctx.checked_jump_offset(offset);
-                ctx.emit(opcode::encode_jmp_if_nullish(test_reg, offset));
-                let end_pos = ctx.resolve_label(end_label)?;
-                let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
-                let offset = ctx.checked_jump_offset(offset);
-                ctx.emit(opcode::encode_jmp(offset));
+                ctx.emit_jmp_if_nullish_labeled(test_reg, store_label);
+                ctx.emit_jmp_labeled(end_label);
             }
         }
         Ok(())

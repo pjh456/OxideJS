@@ -124,12 +124,11 @@ impl Compiler {
         let value_reg = self.emit_chain_element(&chain.expression, Some(short_label), ctx)?;
         let result_reg = ctx.alloc_reg();
         ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, value_reg, 0));
-        let end_pos = ctx.resolve_label(end_label)?;
-        let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
-        let offset = ctx.checked_jump_offset(offset);
-        ctx.emit(opcode::encode_jmp(offset));
+        ctx.emit_jmp_labeled(end_label);
+        ctx.labels.label_map.insert(short_label, ctx.bytecode.len());
         let undefined_idx = ctx.add_constant(Constant::Undefined);
         ctx.emit_load_const(result_reg, undefined_idx);
+        ctx.labels.label_map.insert(end_label, ctx.bytecode.len());
         Ok(result_reg)
     }
 
