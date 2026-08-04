@@ -173,15 +173,15 @@ impl Compiler {
             ctx.alloc_reg();
             ctx.projected_pc += 1; // AND/OR
         } else if matches!(log.operator, LogicalOperator::Coalesce) {
-            // Mirror emit_logical_expression's Coalesce path: it patches raw bytecode
-            // positions and does NOT consume a label id. Consuming one here would shift
-            // every later construct's label id and break resolve_label at emit time.
+            let id = ctx.next_label_id();
             ctx.alloc_reg(); // dup register
             ctx.projected_pc += 1; // LOAD_VAR (DUP)
             ctx.projected_pc += 1; // JMP_IF_NULLISH
             ctx.projected_pc += 1; // JMP over RHS on non-nullish
             self.count_expression(&log.right, ctx);
             ctx.projected_pc += 1; // LOAD_VAR (overwrite)
+            ctx.labels.label_map.insert(Label::TernaryElse(id), ctx.projected_pc);
+            ctx.labels.label_map.insert(Label::TernaryEnd(id), ctx.projected_pc);
         } else {
             let id = ctx.next_label_id();
             ctx.alloc_reg(); // dup register
@@ -366,23 +366,18 @@ impl Compiler {
         let end_label = Label::TernaryEnd(id);
 
         let test_reg = self.emit_expression(&cond.test, ctx)?;
-        let else_pos = ctx.resolve_label(else_label)?;
-        let end_pos = ctx.resolve_label(end_label)?;
-
-        let offset = (else_pos as isize) - (ctx.bytecode.len() as isize);
-        let offset = ctx.checked_jump_offset(offset);
-        ctx.emit(opcode::encode_jmp_if_false(test_reg, offset));
+        ctx.emit_jmp_if_false_labeled(test_reg, else_label);
 
         let cons_reg = self.emit_expression(&cond.consequent, ctx)?;
         let result_reg = ctx.alloc_reg();
         ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, cons_reg, 0));
 
-        let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
-        let offset = ctx.checked_jump_offset(offset);
-        ctx.emit(opcode::encode_jmp(offset));
+        ctx.emit_jmp_labeled(end_label);
 
+        ctx.labels.label_map.insert(else_label, ctx.bytecode.len());
         let alt_reg = self.emit_expression(&cond.alternate, ctx)?;
         ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, alt_reg, 0));
+        ctx.labels.label_map.insert(end_label, ctx.bytecode.len());
 
         Ok(result_reg)
     }
@@ -405,22 +400,17 @@ impl Compiler {
         }
 
         if matches!(log.operator, LogicalOperator::Coalesce) {
+            let id = ctx.next_label_id();
+            let rhs_label = Label::TernaryElse(id);
+            let end_label = Label::TernaryEnd(id);
             let dup_reg = ctx.alloc_reg();
             ctx.emit(opcode::encode(OpCode::LOAD_VAR, dup_reg, left_reg, 0));
-            let nullish_jump_pos = ctx.bytecode.len();
-            ctx.emit(opcode::encode_jmp_if_nullish(dup_reg, 0));
-            let end_jump_pos = ctx.bytecode.len();
-            ctx.emit(opcode::encode_jmp(0));
-            let rhs_pos = ctx.bytecode.len();
+            ctx.emit_jmp_if_nullish_labeled(dup_reg, rhs_label);
+            ctx.emit_jmp_labeled(end_label);
+            ctx.labels.label_map.insert(rhs_label, ctx.bytecode.len());
             let right_reg = self.emit_expression(&log.right, ctx)?;
             ctx.emit(opcode::encode(OpCode::LOAD_VAR, dup_reg, right_reg, 0));
-            let end_pos = ctx.bytecode.len();
-            let offset = (rhs_pos as isize) - (nullish_jump_pos as isize);
-            let offset = ctx.checked_jump_offset(offset);
-            ctx.bytecode[nullish_jump_pos] = opcode::encode_jmp_if_nullish(dup_reg, offset);
-            let offset = (end_pos as isize) - (end_jump_pos as isize);
-            let offset = ctx.checked_jump_offset(offset);
-            ctx.bytecode[end_jump_pos] = opcode::encode_jmp(offset);
+            ctx.labels.label_map.insert(end_label, ctx.bytecode.len());
             return Ok(dup_reg);
         }
 
@@ -430,26 +420,18 @@ impl Compiler {
             LogicalOperator::Or => Label::TernaryElse(id),
             LogicalOperator::Coalesce => return Err("invalid logical operator dispatch".into()),
         };
-        let skip_pos = ctx.resolve_label(skip_label)?;
-
         let dup_reg = ctx.alloc_reg();
         ctx.emit(opcode::encode(OpCode::LOAD_VAR, dup_reg, left_reg, 0));
 
-        let offset = (skip_pos as isize) - (ctx.bytecode.len() as isize);
         match log.operator {
-            LogicalOperator::And => {
-                let offset = ctx.checked_jump_offset(offset);
-                ctx.emit(opcode::encode_jmp_if_false(dup_reg, offset));
-            }
-            LogicalOperator::Or => {
-                let offset = ctx.checked_jump_offset(offset);
-                ctx.emit(opcode::encode_jmp_if_true(dup_reg, offset));
-            }
+            LogicalOperator::And => ctx.emit_jmp_if_false_labeled(dup_reg, skip_label),
+            LogicalOperator::Or => ctx.emit_jmp_if_true_labeled(dup_reg, skip_label),
             LogicalOperator::Coalesce => return Err("invalid logical operator dispatch".into()),
         }
 
         let right_reg = self.emit_expression(&log.right, ctx)?;
         ctx.emit(opcode::encode(OpCode::LOAD_VAR, dup_reg, right_reg, 0));
+        ctx.labels.label_map.insert(skip_label, ctx.bytecode.len());
 
         Ok(dup_reg)
     }
