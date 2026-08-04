@@ -3,11 +3,6 @@ use oxide_bytecode::opcode::{self, OpCode};
 use oxide_parser::Statement;
 
 impl Compiler {
-    pub(crate) fn count_throw_statement(&self, stmt: &oxide_parser::ThrowStatement<'_>, ctx: &mut CompileCtx) {
-        self.count_expression(&stmt.argument, ctx);
-        ctx.projected_pc += 1;
-    }
-
     pub(crate) fn emit_throw_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
         let Statement::ThrowStatement(ts) = stmt else {
             return Ok(None);

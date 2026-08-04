@@ -7,7 +7,6 @@ mod try_catch;
 impl Compiler {
     pub(crate) fn count_exception_domain(&self, stmt: &Statement, ctx: &mut CompileCtx) {
         match stmt {
-            Statement::ThrowStatement(ts) => self.count_throw_statement(ts, ctx),
             Statement::TryStatement(ts) => self.count_try_statement(ts, ctx),
             _ => {}
         }

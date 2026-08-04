@@ -3,12 +3,6 @@ use oxide_bytecode::opcode::{self, OpCode};
 use oxide_parser::{Statement, VariableDeclarationKind};
 
 impl Compiler {
-    pub(crate) fn count_class_declaration(&self, class: &oxide_parser::Class<'_>, ctx: &mut CompileCtx) {
-        ctx.alloc_reg();
-        self.count_class(class, ctx);
-        ctx.projected_pc += 1;
-    }
-
     pub(crate) fn emit_class_declaration_statement(
         &self, stmt: &Statement, ctx: &mut CompileCtx,
     ) -> Result<Option<u8>, String> {

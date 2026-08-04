@@ -18,8 +18,6 @@ impl Compiler {
 
     pub(crate) fn count_basic(&self, stmt: &Statement, ctx: &mut CompileCtx) {
         match stmt {
-            Statement::ExpressionStatement(es) => self.count_expression_statement(es, ctx),
-            Statement::ReturnStatement(ret) => self.count_return_statement(ret, ctx),
             Statement::BreakStatement(_) => self.count_break_statement(ctx),
             Statement::ContinueStatement(_) => self.count_continue_statement(ctx),
             Statement::LabeledStatement(ls) => self.count_labeled_statement(ls, ctx),

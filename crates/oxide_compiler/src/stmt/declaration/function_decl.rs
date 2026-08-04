@@ -1,19 +1,8 @@
 use crate::compiler::{CompileCtx, Compiler, ParamSpec};
 use oxide_bytecode::opcode::{self, OpCode};
-use oxide_parser::{Statement, VariableDeclarationKind};
+use oxide_parser::Statement;
 
 impl Compiler {
-    pub(crate) fn count_function_declaration(&self, decl: &oxide_parser::Function<'_>, ctx: &mut CompileCtx) {
-        let name = if let Some(id) = &decl.id {
-            id.name.to_string()
-        } else {
-            return;
-        };
-        let func_reg = ctx.alloc_reg();
-        let _ = ctx.declare_initialized(&name, func_reg, VariableDeclarationKind::Var, false);
-        ctx.count_words(2);
-    }
-
     pub(crate) fn emit_function_declaration_statement(
         &self, stmt: &Statement, ctx: &mut CompileCtx,
     ) -> Result<Option<u8>, String> {

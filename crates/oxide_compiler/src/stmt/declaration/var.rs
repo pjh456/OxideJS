@@ -6,29 +6,6 @@ use oxide_bytecode::{
 use oxide_parser::{BindingPattern, Expression, Statement, VariableDeclarationKind};
 
 impl Compiler {
-    pub(crate) fn count_variable_declaration(
-        &self, decl: &oxide_parser::VariableDeclaration<'_>, ctx: &mut CompileCtx,
-    ) {
-        let is_var = matches!(decl.kind, VariableDeclarationKind::Var);
-        for d in &decl.declarations {
-            if let Some(init) = &d.init {
-                self.count_expression(init, ctx);
-                if is_var {
-                    if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
-                        let reg = ctx.alloc_reg();
-                        let _ = ctx.declare_initialized(bi.name.as_str(), reg, VariableDeclarationKind::Var, false);
-                        ctx.projected_pc += 1;
-                        continue;
-                    }
-                }
-                self.count_binding_pattern(&d.id, ctx);
-            } else {
-                ctx.alloc_reg();
-                ctx.count_words(2);
-            }
-        }
-    }
-
     pub(crate) fn emit_variable_declaration_statement(
         &self, stmt: &Statement, ctx: &mut CompileCtx,
     ) -> Result<Option<u8>, String> {
