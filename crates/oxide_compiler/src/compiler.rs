@@ -131,6 +131,13 @@ pub(crate) enum Label {
     LabeledEnd(u32),
 }
 
+pub(crate) struct JumpFixup {
+    pub(crate) pc: usize,
+    pub(crate) label: Label,
+    pub(crate) opcode: OpCode,
+    pub(crate) rd: u8,
+}
+
 /// A labeled-statement scope active during emission. `break label` targets
 /// `break_label`; `continue label` targets `continue_label` (only set when the
 /// labeled statement directly wraps an iteration statement).
@@ -143,6 +150,7 @@ pub(crate) struct LabelScope {
 
 pub(crate) struct CompileCtx {
     pub(crate) bytecode: Vec<opcode::Instr>,
+    pub(crate) fixups: Vec<JumpFixup>,
     pub(crate) constants: Vec<Constant>,
     constant_map: HashMap<ConstantKey, u16>,
     next_reg: u8,
@@ -212,6 +220,7 @@ impl CompileCtx {
     pub(crate) fn new() -> Self {
         Self {
             bytecode: Vec::new(),
+            fixups: Vec::new(),
             constants: Vec::new(),
             constant_map: HashMap::new(),
             next_reg: 1,
@@ -260,6 +269,66 @@ impl CompileCtx {
     pub(crate) fn emit_create_closure(&mut self, reg: u8, sub_idx: u32) {
         let idx = sub_idx as u16;
         self.emit(opcode::encode(OpCode::CREATE_CLOSURE, reg, (idx & 0xFF) as u8, ((idx >> 8) & 0xFF) as u8));
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn emit_jmp_labeled(&mut self, label: Label) {
+        let pc = self.bytecode.len();
+        self.emit(opcode::encode_jmp(0));
+        self.fixups.push(JumpFixup {
+            pc,
+            label,
+            opcode: OpCode::JMP,
+            rd: 0,
+        });
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn emit_jmp_if_false_labeled(&mut self, rd: u8, label: Label) {
+        let pc = self.bytecode.len();
+        self.emit(opcode::encode_jmp_if_false(rd, 0));
+        self.fixups.push(JumpFixup {
+            pc,
+            label,
+            opcode: OpCode::JMP_IF_FALSE,
+            rd,
+        });
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn emit_jmp_if_true_labeled(&mut self, rd: u8, label: Label) {
+        let pc = self.bytecode.len();
+        self.emit(opcode::encode_jmp_if_true(rd, 0));
+        self.fixups.push(JumpFixup {
+            pc,
+            label,
+            opcode: OpCode::JMP_IF_TRUE,
+            rd,
+        });
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn emit_jmp_if_nullish_labeled(&mut self, rd: u8, label: Label) {
+        let pc = self.bytecode.len();
+        self.emit(opcode::encode_jmp_if_nullish(rd, 0));
+        self.fixups.push(JumpFixup {
+            pc,
+            label,
+            opcode: OpCode::JMP_IF_NULLISH,
+            rd,
+        });
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn emit_try_begin_labeled(&mut self, label: Label) {
+        let pc = self.bytecode.len();
+        self.emit(opcode::encode_try_begin(0));
+        self.fixups.push(JumpFixup {
+            pc,
+            label,
+            opcode: OpCode::TRY_BEGIN,
+            rd: 0,
+        });
     }
 
     pub(crate) fn count_word(&mut self) {
@@ -404,6 +473,23 @@ impl CompileCtx {
             .get(&label)
             .copied()
             .ok_or_else(|| format!("Label {:?} not found in bytecode map", label))
+    }
+
+    pub(crate) fn resolve_fixups(&mut self) -> Result<(), String> {
+        let fixups = std::mem::take(&mut self.fixups);
+        for fixup in fixups {
+            let target_pc = self.resolve_label(fixup.label)?;
+            let offset = self.checked_jump_offset(target_pc as isize - fixup.pc as isize);
+            self.bytecode[fixup.pc] = match fixup.opcode {
+                OpCode::JMP => opcode::encode_jmp(offset),
+                OpCode::JMP_IF_FALSE => opcode::encode_jmp_if_false(fixup.rd, offset),
+                OpCode::JMP_IF_TRUE => opcode::encode_jmp_if_true(fixup.rd, offset),
+                OpCode::JMP_IF_NULLISH => opcode::encode_jmp_if_nullish(fixup.rd, offset),
+                OpCode::TRY_BEGIN => opcode::encode_try_begin(offset),
+                _ => return Err(format!("Unsupported fixup opcode {:?}", fixup.opcode)),
+            };
+        }
+        Ok(())
     }
 
     pub(crate) fn push_scope(&mut self) {
@@ -1155,6 +1241,8 @@ impl Compiler {
             }
         }
 
+        ctx.resolve_fixups()?;
+
         if counted_pc != ctx.bytecode.len() {
             return Err(format!(
                 "counter/emitter instruction drift in function body (before implicit RETURN): counted {} vs emitted {}",
@@ -1389,6 +1477,7 @@ impl Compiler {
                 None => last_result = None,
             }
         }
+        ctx.resolve_fixups()?;
         crate::compiler_debug!("emitter: {} bytes emitted", ctx.bytecode.len());
 
         if counted_pc != ctx.bytecode.len() {
