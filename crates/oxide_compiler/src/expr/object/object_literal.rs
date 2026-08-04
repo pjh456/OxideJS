@@ -6,30 +6,6 @@ use oxide_bytecode::{
 use oxide_parser::{Expression, ObjectPropertyKind, PropertyKey, PropertyKind};
 
 impl Compiler {
-    pub(crate) fn count_object_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
-        let Expression::ObjectExpression(obj) = expr else {
-            return;
-        };
-        ctx.alloc_reg();
-        ctx.projected_pc += 1;
-        let prop_checkpoint = ctx.reg_checkpoint();
-        for prop in &obj.properties {
-            if let ObjectPropertyKind::ObjectProperty(p) = prop {
-                if matches!(p.kind, PropertyKind::Get | PropertyKind::Set) {
-                    self.count_expression(&p.value, ctx);
-                    ctx.count_load_const();
-                    ctx.count_define_accessor();
-                } else {
-                    ctx.alloc_reg();
-                    ctx.projected_pc += 1;
-                    self.count_expression(&p.value, ctx);
-                    ctx.projected_pc += 1;
-                }
-                ctx.restore_reg_checkpoint(prop_checkpoint);
-            }
-        }
-    }
-
     pub(crate) fn emit_object_expression(
         &self, obj: &oxide_parser::ObjectExpression, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {

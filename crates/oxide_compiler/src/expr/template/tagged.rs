@@ -3,48 +3,7 @@ use oxide_bytecode::{
     module::Constant,
     opcode::{self, OpCode},
 };
-use oxide_parser::Expression;
-
 impl Compiler {
-    pub(crate) fn count_tagged_template_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
-        let Expression::TaggedTemplateExpression(tt) = expr else {
-            return;
-        };
-        self.count_expression(&tt.tag, ctx);
-        let quasi_count = tt.quasi.quasis.len();
-
-        for _ in 0..quasi_count {
-            ctx.count_load_const();
-            ctx.count_load_const();
-            ctx.count_instr();
-        }
-        ctx.alloc_reg();
-        ctx.count_instr();
-
-        for _ in 0..quasi_count {
-            ctx.count_load_const();
-            ctx.count_load_const();
-            ctx.count_instr();
-        }
-        ctx.alloc_reg();
-        ctx.count_instr();
-
-        for expr in &tt.quasi.expressions {
-            self.count_expression(expr, ctx);
-        }
-
-        ctx.alloc_reg();
-        ctx.alloc_reg();
-        for _ in &tt.quasi.expressions {
-            ctx.alloc_reg();
-            ctx.count_instr();
-        }
-        ctx.count_words(2);
-        ctx.count_load_const();
-        ctx.count_call_instr_with_arg_ext();
-        ctx.count_load_var();
-    }
-
     pub(crate) fn emit_tagged_template_expression(
         &self, tt: &oxide_parser::TaggedTemplateExpression, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {

@@ -1,35 +1,7 @@
 use crate::compiler::{CompileCtx, Compiler};
 use oxide_bytecode::opcode::{self, OpCode};
-use oxide_parser::Expression;
 
 impl Compiler {
-    pub(crate) fn count_identifier_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
-        let Expression::Identifier(ident) = expr else {
-            return;
-        };
-        let name = ident.name.as_str();
-
-        for up in &ctx.current_upvalue_captures {
-            if up.name == name {
-                ctx.alloc_reg();
-                ctx.count_instr();
-                return;
-            }
-        }
-
-        if ctx.scopes.symbols.lookup_is_captured(name) {
-            ctx.alloc_reg();
-            ctx.count_instr();
-            return;
-        }
-
-        if CompileCtx::is_known_builtin(name) {
-            let _ = ctx.lookup_or_builtin(name);
-        }
-        ctx.alloc_reg();
-        ctx.projected_pc += 1;
-    }
-
     pub(crate) fn emit_identifier_expression(
         &self, ident: &oxide_parser::IdentifierReference, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {

@@ -383,11 +383,6 @@ impl CompileCtx {
         self.count_instr();
     }
 
-    pub(crate) fn count_template_str(&mut self, segment_count: usize) {
-        self.alloc_reg();
-        self.count_instr_with_ext(1 + segment_count);
-    }
-
     pub(crate) fn count_jump(&mut self) {
         self.count_instr();
     }
@@ -1307,25 +1302,13 @@ impl Compiler {
             | Expression::SequenceExpression(_)
             | Expression::LogicalExpression(_) => self.count_conditional_chain(expr, ctx),
             Expression::ChainExpression(_) => self.count_chain_expression(expr, ctx),
-            Expression::ObjectExpression(_) | Expression::ArrayExpression(_) => self.count_object_domain(expr, ctx),
-            Expression::TemplateLiteral(_) | Expression::TaggedTemplateExpression(_) => {
-                self.count_template_domain(expr, ctx)
-            }
             Expression::ArrowFunctionExpression(_)
             | Expression::FunctionExpression(_)
             | Expression::ClassExpression(_) => self.count_function_domain(expr, ctx),
             Expression::StaticMemberExpression(_)
             | Expression::ComputedMemberExpression(_)
             | Expression::PrivateFieldExpression(_) => self.count_member_domain(expr, ctx),
-            Expression::ParenthesizedExpression(_) => self.count_parenthesized_expression(expr, ctx),
-            Expression::ThisExpression(_) => self.count_this_expression(ctx),
-            Expression::Identifier(_) => self.count_identifier_expression(expr, ctx),
-            Expression::NumericLiteral(_)
-            | Expression::StringLiteral(_)
-            | Expression::BooleanLiteral(_)
-            | Expression::NullLiteral(_)
-            | Expression::RegExpLiteral(_) => self.count_literal(expr, ctx),
-            _ => self.count_default_expression(ctx),
+            _ => {}
         }
     }
 

@@ -3,20 +3,7 @@ use oxide_bytecode::{
     module::Constant,
     opcode::{self, OpCode},
 };
-use oxide_parser::Expression;
-
 impl Compiler {
-    pub(crate) fn count_template_literal(&self, expr: &Expression, ctx: &mut CompileCtx) {
-        let Expression::TemplateLiteral(tl) = expr else {
-            return;
-        };
-        for expr in &tl.expressions {
-            self.count_expression(expr, ctx);
-        }
-        let segment_count = tl.quasis.len() + tl.expressions.len();
-        ctx.count_template_str(segment_count);
-    }
-
     pub(crate) fn emit_template_literal_expression(
         &self, tl: &oxide_parser::TemplateLiteral, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {

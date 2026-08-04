@@ -4,27 +4,6 @@ use oxide_bytecode::opcode::{self, OpCode};
 use oxide_parser::Expression;
 
 impl Compiler {
-    pub(crate) fn count_literal(&self, expr: &Expression, ctx: &mut CompileCtx) {
-        match expr {
-            Expression::RegExpLiteral(_) => self.count_regexp_literal(ctx),
-            _ => self.count_default_expression(ctx),
-        }
-    }
-
-    fn count_regexp_literal(&self, ctx: &mut CompileCtx) {
-        ctx.alloc_reg();
-        ctx.projected_pc += 1;
-        ctx.alloc_reg();
-        ctx.projected_pc += 1;
-        ctx.alloc_reg();
-        ctx.projected_pc += 1;
-    }
-
-    pub(crate) fn count_default_expression(&self, ctx: &mut CompileCtx) {
-        ctx.alloc_reg();
-        ctx.projected_pc += 1;
-    }
-
     pub(crate) fn emit_literal(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u8, String> {
         match expr {
             Expression::NumericLiteral(n) => self.emit_numeric_literal_expression(n, ctx),

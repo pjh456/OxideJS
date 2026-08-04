@@ -3,27 +3,7 @@ use oxide_bytecode::{
     module::Constant,
     opcode::{self, OpCode},
 };
-use oxide_parser::Expression;
-
 impl Compiler {
-    pub(crate) fn count_array_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
-        let Expression::ArrayExpression(arr) = expr else {
-            return;
-        };
-        ctx.alloc_reg();
-        ctx.projected_pc += 1;
-        let elem_checkpoint = ctx.reg_checkpoint();
-        for elem in &arr.elements {
-            if let Some(e) = elem.as_expression() {
-                self.count_expression(e, ctx);
-                ctx.alloc_reg();
-                ctx.projected_pc += 1;
-                ctx.projected_pc += 1;
-                ctx.restore_reg_checkpoint(elem_checkpoint);
-            }
-        }
-    }
-
     pub(crate) fn emit_array_expression(
         &self, arr: &oxide_parser::ArrayExpression, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {
