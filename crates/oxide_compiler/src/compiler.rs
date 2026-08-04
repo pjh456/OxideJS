@@ -1062,11 +1062,24 @@ impl Compiler {
         Ok(())
     }
 
+    fn predeclare_function_declarations(&self, statements: &[Statement], ctx: &mut CompileCtx) {
+        for statement in statements {
+            let Statement::FunctionDeclaration(function) = statement else {
+                continue;
+            };
+            let Some(identifier) = &function.id else {
+                continue;
+            };
+            let reg = ctx.alloc_reg();
+            let _ = ctx.declare_initialized(identifier.name.as_str(), reg, VariableDeclarationKind::Var, false);
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn compile_function_body_with_field_hooks<'a, C, E>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, extra_bindings: &[(&str, u8)], body_context: FunctionBodyContext,
-        mut count_fields: Option<C>, mut emit_fields: Option<E>, fields_after_super: bool,
+        _count_fields: Option<C>, mut emit_fields: Option<E>, fields_after_super: bool,
     ) -> Result<CompiledModule, String>
     where
         C: FnMut(&Compiler, &mut CompileCtx),
@@ -1148,51 +1161,7 @@ impl Compiler {
 
         let param_base = ctx.next_reg;
 
-        // Register parameters as initialized.
-        for spec in param_specs {
-            let name = spec.register_name();
-            let reg = ctx.alloc_reg();
-            ctx.declare_initialized(name, reg, VariableDeclarationKind::Var, false)?;
-        }
-
-        // Count the parameter destructuring prologue so the count pass matches the emit pass
-        // below (which emits it via emit_binding_pattern). Without this the projected program
-        // counter undercounts, drifting every jump target inside a function that has a
-        // destructured or default parameter.
-        for spec in param_specs {
-            if let ParamSpec::Pattern { pattern, .. } = spec {
-                self.count_binding_pattern(pattern, &mut ctx);
-            }
-        }
-
-        // Count pass. For derived constructors the emit pass allocates/counts the instance
-        // fields up front but splices the field bytecode into the body right after SUPER_CALL.
-        // Mirror that: count the fields (allocating the same registers/constants), capture
-        // their instruction count, undo the position here, and re-add it at the super() call
-        // site during body counting so labels after super() line up with the emit pass.
-        if let Some(count) = count_fields.as_mut() {
-            if fields_after_super {
-                let before = ctx.projected_pc;
-                count(self, &mut ctx);
-                let field_words = ctx.projected_pc - before;
-                ctx.projected_pc = before;
-                ctx.after_super_count_words = Some(field_words);
-            } else {
-                count(self, &mut ctx);
-            }
-        }
-        for stmt in body_stmts {
-            self.count_statement(stmt, &mut ctx);
-        }
-        ctx.max_regs = ctx.max_regs.max(1);
-        ctx.reg_overflow = false;
-        // Count-pass instruction total for this body, compared against the emit pass below
-        // to catch any counter/emitter drift (which would mis-target jumps). reset_regs zeroes
-        // projected_pc, so capture it first.
-        let counted_pc = ctx.projected_pc;
-        ctx.reset_regs();
-
-        // Emit pass - reallocate params (same order = same regs after reset)
+        // Emit parameters and destructuring prologue.
         for spec in param_specs {
             let name = spec.register_name();
             let reg = ctx.alloc_reg();
@@ -1205,6 +1174,8 @@ impl Compiler {
                 self.emit_binding_pattern(pattern, src_reg, VariableDeclarationKind::Var, false, &mut ctx)?;
             }
         }
+
+        self.predeclare_function_declarations(body_stmts, &mut ctx);
 
         // Pre-scan: run analysis for nested function expressions to mark parent captures
         self.pre_scan_function_expressions(body_stmts, &mut ctx)?;
@@ -1242,14 +1213,6 @@ impl Compiler {
         }
 
         ctx.resolve_fixups()?;
-
-        if counted_pc != ctx.bytecode.len() {
-            return Err(format!(
-                "counter/emitter instruction drift in function body (before implicit RETURN): counted {} vs emitted {}",
-                counted_pc,
-                ctx.bytecode.len()
-            ));
-        }
 
         // Emit implicit RETURN: expression body returns the last expression,
         // statement body returns undefined.
@@ -1435,28 +1398,7 @@ impl Compiler {
         crate::compiler_debug!("compile: starting...");
         let mut ctx = CompileCtx::new();
         ctx.pre_register_builtins();
-
-        // The emit pass below hoists FunctionDeclarations to the front. The count pass
-        // must walk in that same order: counting in source order would record jump-target
-        // labels at source-order PCs while emit places code at hoisted-order PCs, drifting
-        // every jump that sits after a hoisted function declaration (infinite loops at run).
-        for stmt in &program.body {
-            if matches!(stmt, Statement::FunctionDeclaration(_)) {
-                self.count_statement(stmt, &mut ctx);
-            }
-        }
-        for stmt in &program.body {
-            if !matches!(stmt, Statement::FunctionDeclaration(_)) {
-                self.count_statement(stmt, &mut ctx);
-            }
-        }
-        crate::compiler_debug!("counter: {} instructions estimated", ctx.projected_pc);
-        ctx.max_regs = ctx.max_regs.max(1);
-        ctx.reg_overflow = false;
-        // Count-pass instruction total, compared against the emit pass below to catch
-        // counter/emitter drift. reset_regs zeroes projected_pc, so capture it first.
-        let counted_pc = ctx.projected_pc;
-        ctx.reset_regs();
+        self.predeclare_function_declarations(&program.body, &mut ctx);
 
         // First sub-pass: emit FunctionDeclarations (hoisting)
         // This ensures function objects are available before any code runs.
@@ -1479,14 +1421,6 @@ impl Compiler {
         }
         ctx.resolve_fixups()?;
         crate::compiler_debug!("emitter: {} bytes emitted", ctx.bytecode.len());
-
-        if counted_pc != ctx.bytecode.len() {
-            return Err(format!(
-                "counter/emitter instruction drift in top-level module (before result store + HALT): counted {} vs emitted {}",
-                counted_pc,
-                ctx.bytecode.len()
-            ));
-        }
 
         if let Some(r) = last_result {
             ctx.emit(opcode::encode(OpCode::LOAD_VAR, 0, r, 0));
