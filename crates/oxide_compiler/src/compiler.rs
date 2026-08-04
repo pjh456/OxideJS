@@ -372,15 +372,7 @@ impl CompileCtx {
         self.count_instr_with_ext(3);
     }
 
-    pub(crate) fn count_ic_set_with_ext(&mut self) {
-        self.count_ic_instr_with_ext();
-    }
-
     pub(crate) fn count_call_instr_with_arg_ext(&mut self) {
-        self.count_instr_with_ext(1);
-    }
-
-    pub(crate) fn count_delete_static(&mut self) {
         self.count_instr_with_ext(1);
     }
 
@@ -391,10 +383,6 @@ impl CompileCtx {
     pub(crate) fn count_private_access(&mut self) {
         self.count_load_const();
         self.alloc_reg();
-        self.count_instr();
-    }
-
-    pub(crate) fn count_jump(&mut self) {
         self.count_instr();
     }
 
@@ -1291,22 +1279,10 @@ impl Compiler {
 
     pub(crate) fn count_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
         match expr {
-            Expression::BinaryExpression(_)
-            | Expression::PrivateInExpression(_)
-            | Expression::UnaryExpression(_)
-            | Expression::UpdateExpression(_) => self.count_operator(expr, ctx),
             Expression::CallExpression(_) | Expression::NewExpression(_) => self.count_call_domain(expr, ctx),
-            Expression::AssignmentExpression(_) => self.count_assignment(expr, ctx),
-            Expression::ConditionalExpression(_)
-            | Expression::SequenceExpression(_)
-            | Expression::LogicalExpression(_) => self.count_conditional_chain(expr, ctx),
-            Expression::ChainExpression(_) => self.count_chain_expression(expr, ctx),
             Expression::ArrowFunctionExpression(_)
             | Expression::FunctionExpression(_)
             | Expression::ClassExpression(_) => self.count_function_domain(expr, ctx),
-            Expression::StaticMemberExpression(_)
-            | Expression::ComputedMemberExpression(_)
-            | Expression::PrivateFieldExpression(_) => self.count_member_domain(expr, ctx),
             _ => {}
         }
     }
