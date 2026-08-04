@@ -4,40 +4,6 @@ use oxide_bytecode::opcode::{self, OpCode};
 use oxide_parser::{ClassElement, MethodDefinitionKind, PropertyKey};
 
 impl Compiler {
-    pub(crate) fn count_class_methods(&self, elements: &[ClassElement], ctx: &mut CompileCtx) {
-        for element in elements {
-            match element {
-                ClassElement::MethodDefinition(method) => {
-                    let method = method.as_ref();
-                    if matches!(method.kind, MethodDefinitionKind::Constructor) {
-                        continue;
-                    }
-                    if matches!(method.key, PropertyKey::PrivateIdentifier(_)) {
-                        ctx.count_load_const();
-                        ctx.count_load_const();
-                        ctx.count_instr();
-                        ctx.count_instr();
-                        continue;
-                    }
-                    self.count_class_key(&method.key, method.computed, ctx);
-                    ctx.count_load_const();
-                    ctx.count_instr();
-                    match method.kind {
-                        MethodDefinitionKind::Method => {
-                            ctx.count_instr();
-                        }
-                        MethodDefinitionKind::Get | MethodDefinitionKind::Set => {
-                            ctx.count_load_const();
-                            ctx.count_define_accessor();
-                        }
-                        MethodDefinitionKind::Constructor => {}
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
     pub(crate) fn emit_class_methods(
         &self, elements: &[ClassElement], ctor_reg: u8, proto_reg: u8, self_binding: &[(&str, u8)],
         ctx: &mut CompileCtx,

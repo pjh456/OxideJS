@@ -36,15 +36,6 @@ impl Compiler {
         self.emit_expression(key.to_expression(), ctx)
     }
 
-    pub(crate) fn count_class_key(&self, key: &PropertyKey, computed: bool, ctx: &mut CompileCtx) {
-        if computed {
-            self.count_expression(key.to_expression(), ctx);
-        } else {
-            ctx.alloc_reg();
-            ctx.projected_pc += 1;
-        }
-    }
-
     pub(crate) fn static_property_name(&self, key: &PropertyKey) -> Result<String, String> {
         match key {
             PropertyKey::StaticIdentifier(ident) => Ok(ident.name.as_str().to_string()),

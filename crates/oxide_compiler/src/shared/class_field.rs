@@ -45,29 +45,4 @@ impl Compiler {
         ctx.emit(opcode::encode(OpCode::INIT_PRIVATE, target_reg, method_reg, key_reg));
         Ok(())
     }
-
-    pub(crate) fn count_public_field_init(
-        &self, key: &PropertyKey, computed: bool, value: Option<&Expression>, ctx: &mut CompileCtx,
-    ) {
-        self.count_class_key(key, computed, ctx);
-        if let Some(expr) = value {
-            self.count_expression(expr, ctx);
-        } else {
-            ctx.alloc_reg();
-            ctx.projected_pc += 1;
-        }
-        ctx.projected_pc += 1;
-    }
-
-    pub(crate) fn count_private_field_init(&self, value: Option<&Expression>, ctx: &mut CompileCtx) {
-        ctx.alloc_reg();
-        ctx.projected_pc += 1;
-        if let Some(expr) = value {
-            self.count_expression(expr, ctx);
-        } else {
-            ctx.alloc_reg();
-            ctx.projected_pc += 1;
-        }
-        ctx.projected_pc += 1;
-    }
 }

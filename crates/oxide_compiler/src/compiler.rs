@@ -170,10 +170,6 @@ pub(crate) struct CompileCtx {
     pub(crate) static_block_this_reg: Option<u8>,
     pub(crate) after_super_insert: Option<Vec<opcode::Instr>>,
     pub(crate) after_super_inserted: bool,
-    /// Count-pass mirror of `after_super_insert`: the instruction count of a derived
-    /// constructor's instance-field code, added at the super() call site during body
-    /// counting so projected_pc matches where the emit pass splices the field bytecode.
-    pub(crate) after_super_count_words: Option<usize>,
     pub(crate) current_upvalue_captures: Vec<UpvalueCapture>,
     /// Set when alloc_reg() overflows into the reserved this/new.target range (≥254).
     /// Checked after each emit phase to produce a compile error rather than silent corruption.
@@ -250,7 +246,6 @@ impl CompileCtx {
             static_block_this_reg: None,
             after_super_insert: None,
             after_super_inserted: false,
-            after_super_count_words: None,
             current_upvalue_captures: Vec::new(),
             reg_overflow: false,
             const_overflow: false,
@@ -340,50 +335,6 @@ impl CompileCtx {
             opcode: OpCode::TRY_FINALLY_BEGIN,
             rd: 0,
         });
-    }
-
-    pub(crate) fn count_word(&mut self) {
-        self.projected_pc += 1;
-    }
-
-    pub(crate) fn count_words(&mut self, words: usize) {
-        self.projected_pc += words;
-    }
-
-    pub(crate) fn count_instr(&mut self) {
-        self.count_word();
-    }
-
-    pub(crate) fn count_instr_with_ext(&mut self, ext_words: usize) {
-        self.count_words(1 + ext_words);
-    }
-
-    pub(crate) fn count_load_const(&mut self) {
-        self.alloc_reg();
-        self.count_instr();
-    }
-
-    pub(crate) fn count_load_var(&mut self) {
-        self.alloc_reg();
-        self.count_instr();
-    }
-
-    pub(crate) fn count_ic_instr_with_ext(&mut self) {
-        self.count_instr_with_ext(3);
-    }
-
-    pub(crate) fn count_call_instr_with_arg_ext(&mut self) {
-        self.count_instr_with_ext(1);
-    }
-
-    pub(crate) fn count_define_accessor(&mut self) {
-        self.count_instr_with_ext(1);
-    }
-
-    pub(crate) fn count_private_access(&mut self) {
-        self.count_load_const();
-        self.alloc_reg();
-        self.count_instr();
     }
 
     pub(crate) fn alloc_reg(&mut self) -> u8 {
@@ -1271,20 +1222,6 @@ impl Compiler {
                 .filter(|b| b.is_captured.get())
                 .count() as u8,
         })
-    }
-
-    pub(crate) fn count_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) {
-        let _ = (stmt, ctx);
-    }
-
-    pub(crate) fn count_expression(&self, expr: &Expression, ctx: &mut CompileCtx) {
-        match expr {
-            Expression::CallExpression(_) | Expression::NewExpression(_) => self.count_call_domain(expr, ctx),
-            Expression::ArrowFunctionExpression(_)
-            | Expression::FunctionExpression(_)
-            | Expression::ClassExpression(_) => self.count_function_domain(expr, ctx),
-            _ => {}
-        }
     }
 
     pub(crate) fn emit_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {

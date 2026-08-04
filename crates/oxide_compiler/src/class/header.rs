@@ -1,14 +1,6 @@
 use crate::compiler::{CompileCtx, Compiler};
 
 impl Compiler {
-    pub(crate) fn count_class_header(&self, class: &oxide_parser::Class, ctx: &mut CompileCtx) {
-        ctx.alloc_reg();
-        ctx.alloc_reg();
-        if let Some(super_class) = &class.super_class {
-            self.count_expression(super_class, ctx);
-        }
-    }
-
     pub(crate) fn emit_class_header(
         &self, class: &oxide_parser::Class, ctx: &mut CompileCtx,
     ) -> Result<(u8, u8, Option<u8>), String> {

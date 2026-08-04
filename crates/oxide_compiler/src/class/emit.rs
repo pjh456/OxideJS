@@ -66,20 +66,7 @@ impl Compiler {
                 false,
                 &self_binding,
                 FunctionBodyContext::ClassElement,
-                Some(|compiler: &Compiler, field_ctx: &mut CompileCtx| {
-                    for field in &instance_fields {
-                        if matches!(field.key, PropertyKey::PrivateIdentifier(_)) {
-                            compiler.count_private_field_init(field.value.as_ref(), field_ctx);
-                        } else {
-                            compiler.count_public_field_init(
-                                &field.key,
-                                field.computed,
-                                field.value.as_ref(),
-                                field_ctx,
-                            );
-                        }
-                    }
-                }),
+                None::<fn(&Compiler, &mut CompileCtx)>,
                 Some(|compiler: &Compiler, field_ctx: &mut CompileCtx| -> Result<(), String> {
                     for field in &instance_fields {
                         if let PropertyKey::PrivateIdentifier(private) = &field.key {
@@ -111,20 +98,7 @@ impl Compiler {
                 false,
                 &self_binding,
                 FunctionBodyContext::ClassElement,
-                Some(|compiler: &Compiler, field_ctx: &mut CompileCtx| {
-                    for field in &instance_fields {
-                        if matches!(field.key, PropertyKey::PrivateIdentifier(_)) {
-                            compiler.count_private_field_init(field.value.as_ref(), field_ctx);
-                        } else {
-                            compiler.count_public_field_init(
-                                &field.key,
-                                field.computed,
-                                field.value.as_ref(),
-                                field_ctx,
-                            );
-                        }
-                    }
-                }),
+                None::<fn(&Compiler, &mut CompileCtx)>,
                 Some(|compiler: &Compiler, field_ctx: &mut CompileCtx| -> Result<(), String> {
                     for field in &instance_fields {
                         if let PropertyKey::PrivateIdentifier(private) = &field.key {

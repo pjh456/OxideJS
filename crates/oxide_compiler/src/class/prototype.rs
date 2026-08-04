@@ -3,25 +3,6 @@ use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::{self, OpCode};
 
 impl Compiler {
-    pub(crate) fn count_class_prototype(&self, has_super: bool, ctx: &mut CompileCtx) {
-        ctx.count_instr();
-        ctx.count_instr();
-        if has_super {
-            ctx.alloc_reg();
-            ctx.count_instr();
-            ctx.alloc_reg();
-            ctx.count_instr();
-            ctx.alloc_reg();
-            ctx.count_instr();
-            ctx.count_instr();
-            ctx.count_instr();
-        }
-        ctx.count_load_const();
-        ctx.count_instr();
-        ctx.count_load_const();
-        ctx.count_instr();
-    }
-
     pub(crate) fn emit_class_prototype(
         &self, ctor_reg: u8, proto_reg: u8, super_reg: Option<u8>, sub_idx: u32, ctx: &mut CompileCtx,
     ) -> Result<(), String> {
