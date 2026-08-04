@@ -42,6 +42,7 @@ impl Compiler {
             let id = ctx.next_label_id();
             ctx.push_label_scope(name, Label::LabeledEnd(id), None)?;
             self.emit_statement(&stmt.body, ctx)?;
+            ctx.labels.label_map.insert(Label::LabeledEnd(id), ctx.bytecode.len());
             ctx.pop_label_scope();
         }
         Ok(None)

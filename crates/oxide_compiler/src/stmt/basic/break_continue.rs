@@ -1,5 +1,4 @@
 use crate::compiler::{CompileCtx, Compiler};
-use oxide_bytecode::opcode;
 
 impl Compiler {
     pub(super) fn count_break_statement(&self, ctx: &mut CompileCtx) {
@@ -25,10 +24,7 @@ impl Compiler {
             let (bl, _) = ctx.current_loop().ok_or("break outside switch or loop".to_string())?;
             *bl
         };
-        let break_pos = ctx.resolve_label(break_label)?;
-        let offset = (break_pos as isize) - (ctx.bytecode.len() as isize);
-        let offset = ctx.checked_jump_offset(offset);
-        ctx.emit(opcode::encode_jmp(offset));
+        ctx.emit_jmp_labeled(break_label);
         Ok(None)
     }
 
@@ -47,10 +43,7 @@ impl Compiler {
             let (_, cl) = ctx.current_loop().ok_or("continue outside loop".to_string())?;
             *cl
         };
-        let continue_pos = ctx.resolve_label(continue_label)?;
-        let offset = (continue_pos as isize) - (ctx.bytecode.len() as isize);
-        let offset = ctx.checked_jump_offset(offset);
-        ctx.emit(opcode::encode_jmp(offset));
+        ctx.emit_jmp_labeled(continue_label);
         Ok(None)
     }
 }

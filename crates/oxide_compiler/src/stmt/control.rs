@@ -35,10 +35,7 @@ impl Compiler {
 
         let test_reg = self.emit_expression(&ifs.test, ctx)?;
 
-        let else_pos = ctx.resolve_label(else_label)?;
-        let offset = (else_pos as isize) - (ctx.bytecode.len() as isize);
-        let offset = ctx.checked_jump_offset(offset);
-        ctx.emit(opcode::encode_jmp_if_false(test_reg, offset));
+        ctx.emit_jmp_if_false_labeled(test_reg, else_label);
 
         let cons_reg = self.emit_statement(&ifs.consequent, ctx)?;
         let result_reg = ctx.alloc_reg();
@@ -50,12 +47,10 @@ impl Compiler {
         }
 
         if ifs.alternate.is_some() {
-            let end_pos = ctx.resolve_label(end_label)?;
-            let offset = (end_pos as isize) - (ctx.bytecode.len() as isize);
-            let offset = ctx.checked_jump_offset(offset);
-            ctx.emit(opcode::encode_jmp(offset));
+            ctx.emit_jmp_labeled(end_label);
         }
 
+        ctx.labels.label_map.insert(else_label, ctx.bytecode.len());
         if let Some(alt) = &ifs.alternate {
             let alt_reg = self.emit_statement(alt, ctx)?;
             if let Some(r) = alt_reg {
@@ -65,6 +60,8 @@ impl Compiler {
                 ctx.emit_load_const(result_reg, undef_idx);
             }
         }
+
+        ctx.labels.label_map.insert(end_label, ctx.bytecode.len());
 
         Ok(Some(result_reg))
     }
