@@ -12,6 +12,7 @@
 //! 分析视图（CFG/LiveInfo/AllocMap）是 pass 输出，不住进 IR。
 
 pub mod inst;
+pub mod lower;
 pub mod operand;
 
 use oxide_bytecode::module::{Constant, UpvalueCapture};
