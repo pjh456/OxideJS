@@ -1,3 +1,4 @@
+/// 输出 ERROR 级别日志，target 固定为 `oxide::builtins`。
 #[macro_export]
 macro_rules! builtins_error {
     ($($arg:tt)*) => {
@@ -5,6 +6,7 @@ macro_rules! builtins_error {
     };
 }
 
+/// 输出 WARN 级别日志，target 固定为 `oxide::builtins`。
 #[macro_export]
 macro_rules! builtins_warn {
     ($($arg:tt)*) => {
@@ -12,6 +14,7 @@ macro_rules! builtins_warn {
     };
 }
 
+/// 输出 INFO 级别日志，target 固定为 `oxide::builtins`。
 #[macro_export]
 macro_rules! builtins_info {
     ($($arg:tt)*) => {
@@ -19,6 +22,7 @@ macro_rules! builtins_info {
     };
 }
 
+/// 输出 DEBUG 级别日志，target 固定为 `oxide::builtins`。
 #[macro_export]
 macro_rules! builtins_debug {
     ($($arg:tt)*) => {
@@ -26,6 +30,7 @@ macro_rules! builtins_debug {
     };
 }
 
+/// 输出 TRACE 级别日志，target 固定为 `oxide::builtins`。
 #[macro_export]
 macro_rules! builtins_trace {
     ($($arg:tt)*) => {

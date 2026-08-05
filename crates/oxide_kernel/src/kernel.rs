@@ -16,6 +16,9 @@ use crate::string_forge::PermInterner;
 use oxide_log;
 use oxide_log::{Level, SUBSYSTEM_COUNT};
 
+/// kernel 运行配置：VM 池规模、步数/调用深度上限、session GC 阈值、
+/// 日志级别与内置对象预热开关。由三个预设构造器（[`KernelConfig::minimal`] /
+/// [`KernelConfig::standard`] / [`KernelConfig::full`]）或默认值创建。
 #[derive(Clone)]
 pub struct KernelConfig {
     pub min_pool_size: usize,
@@ -32,6 +35,7 @@ pub struct KernelConfig {
 }
 
 impl KernelConfig {
+    /// 最小配置：小 VM 池、关闭 code/IC 预热，适合嵌入式或单次执行场景。
     pub fn minimal() -> Self {
         Self {
             min_pool_size: 4,
@@ -48,6 +52,7 @@ impl KernelConfig {
         }
     }
 
+    /// 标准配置：默认 VM 池大小，开启内置对象 code 预热。
     pub fn standard() -> Self {
         Self {
             min_pool_size: 8,
@@ -64,6 +69,7 @@ impl KernelConfig {
         }
     }
 
+    /// 全量配置：无上限 VM 池，开启 shapes/code/IC 全量预热，为性能场景服务。
     pub fn full() -> Self {
         Self {
             min_pool_size: 16,
@@ -80,18 +86,22 @@ impl KernelConfig {
         }
     }
 
+    /// 读取 session GC 阈值（字节数）。
     pub fn session_gc_threshold(&self) -> usize {
         self.session_gc_threshold
     }
 
+    /// 设置 session GC 阈值（字节数），超过后触发一次 session 级 GC。
     pub fn set_session_gc_threshold(&mut self, bytes: usize) {
         self.session_gc_threshold = bytes;
     }
 
+    /// 读取 code cache 的 module 数量上限。
     pub fn max_cached_modules(&self) -> usize {
         self.max_cached_modules
     }
 
+    /// 设置 code cache 的 module 数量上限。
     pub fn set_max_cached_modules(&mut self, cap: usize) {
         self.max_cached_modules = cap;
     }
@@ -114,6 +124,7 @@ pub struct KernelCore {
 }
 
 impl KernelCore {
+    /// 按配置创建共享核心：初始化日志系统与四个共享 forge（interner/shape/code/prop）。
     pub fn new(config: KernelConfig) -> Arc<Self> {
         oxide_log::init(&oxide_log::LogConfig {
             output: oxide_log::Output::Stderr,
@@ -138,42 +149,55 @@ impl KernelCore {
         core
     }
 
+    /// 只读访问永久字符串 intern 表。
     pub fn perm_interner(&self) -> &Arc<PermInterner> {
         &self.perm_interner
     }
 
+    /// 只读访问共享 hidden class（shape）存储。
     pub fn shape_forge(&self) -> &Arc<ShapeForge> {
         &self.shape_forge
     }
 
+    /// 只读访问共享 bytecode cache。
     pub fn code_forge(&self) -> &Arc<CodeForge> {
         &self.code_forge
     }
 
+    /// 只读访问共享属性模板缓存。
     pub fn prop_forge(&self) -> &Arc<PropForge> {
         &self.prop_forge
     }
 
+    /// 只读访问构建时固定的配置。
     pub fn config(&self) -> &KernelConfig {
         &self.config
     }
 
+    /// 读取 session GC 阈值（字节数）。
     pub fn session_gc_threshold(&self) -> usize {
         self.config.session_gc_threshold
     }
 
+    /// 设置 session GC 阈值（字节数）。
     pub fn set_session_gc_threshold(&mut self, bytes: usize) {
         self.config.session_gc_threshold = bytes;
     }
 
+    /// 读取 code cache 的 module 数量上限。
     pub fn max_cached_modules(&self) -> usize {
         self.config.max_cached_modules
     }
 
+    /// 设置 code cache 的 module 数量上限。
     pub fn set_max_cached_modules(&mut self, cap: usize) {
         self.config.max_cached_modules = cap;
     }
 
+    /// 在每次 runner（test262 等）边界清理瞬时 shape/prop 缓存，防止跨测试累积膨胀。
+    ///
+    /// 字符串 intern 表是 append-only，无需清理；仅当 shape 或 prop 表超过阈值时才执行
+    /// [`ShapeForge::clear_transient`] 与 [`PropForge::clear`]。
     pub fn sweep_runner_forges(&self) {
         // The key interner is append-only (no per-run sweep); only the transient
         // shape/prop tables need bounding at the test262 per-test boundary.
@@ -203,6 +227,10 @@ pub struct KernelSession {
 /// correct builtin family.
 pub const NUM_BUILTINS: usize = 66;
 
+/// 内置对象枚举 id，与 `BuiltinWorld` 中的存储槽一一对应。
+///
+/// 覆盖各构造器/原型、Error 家族、集合类型、TypedArray 家族与 well-known symbols；
+/// `repr(u8)` 使其可直接作为数组下标（`u8` 值即下标）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum BuiltinId {
@@ -275,6 +303,7 @@ pub enum BuiltinId {
 }
 
 impl BuiltinId {
+    /// 全部 66 个内置对象的 id 常量表，供快照/脏检查按序遍历。
     pub const ALL: [BuiltinId; NUM_BUILTINS] = [
         BuiltinId::ObjectProto,
         BuiltinId::ArrayProto,
@@ -345,6 +374,9 @@ impl BuiltinId {
     ];
 }
 
+/// 内置对象世代（generation）快照：记录构造时各对象及其 stub 的世代号与数量。
+///
+/// 供 [`KernelSession::dirty_since_snapshot`] 对比，判断哪些 builtin 家族在运行期被污染。
 #[derive(Clone, Debug)]
 pub struct BuiltinSnapshot {
     pub generations: [u32; NUM_BUILTINS],
@@ -358,6 +390,7 @@ impl BuiltinSnapshot {
         obj.generation()
     }
 
+    /// 对给定 builtin world 与 global object 采集一份世代快照。
     pub fn new(world: &BuiltinWorld, global_object: &P<JsObject>) -> Self {
         let mut generations = [0u32; NUM_BUILTINS];
         for (i, id) in BuiltinId::ALL.iter().enumerate() {
@@ -373,6 +406,9 @@ impl BuiltinSnapshot {
     }
 }
 
+/// 按 builtin 家族划分的脏标记位集合：运行期哪些内置对象被用户代码修改过。
+///
+/// `any_builtin_dirty` 只关注 builtin world 内部对象，`any` 额外包含 global object。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BuiltinDirtySet {
     pub object: bool,
@@ -397,6 +433,7 @@ pub struct BuiltinDirtySet {
 }
 
 impl BuiltinDirtySet {
+    /// 是否存在任何 builtin world 内部对象被污染（不含 global object）。
     pub fn any_builtin_dirty(&self) -> bool {
         self.object
             || self.array
@@ -418,6 +455,7 @@ impl BuiltinDirtySet {
             || self.stubs
     }
 
+    /// 是否存在任何污染（builtin world 或 global object）。
     pub fn any(&self) -> bool {
         self.any_builtin_dirty() || self.global
     }
@@ -460,18 +498,22 @@ impl KernelSession {
         }
     }
 
+    /// 只读访问当前 session 的 builtin world。
     pub fn builtin_world(&self) -> &Arc<BuiltinWorld> {
         &self.builtin_world
     }
 
+    /// 只读访问当前 session 的 global object。
     pub fn global_object(&self) -> &P<JsObject> {
         &self.global_object
     }
 
+    /// 重新采集内置对象世代快照，作为下一次脏检查的基准。
     pub fn record_snapshot(&mut self) {
         self.builtin_snapshot = BuiltinSnapshot::new(&self.builtin_world, &self.global_object);
     }
 
+    /// 对比当前世代与最近快照，返回各 builtin 家族是否被污染。
     pub fn dirty_since_snapshot(&self) -> BuiltinDirtySet {
         let world = self.builtin_world.as_ref();
         let snapshot = &self.builtin_snapshot;
@@ -555,10 +597,14 @@ impl KernelSession {
         }
     }
 
+    /// 是否自上次快照以来存在任何污染。
     pub fn is_dirty_since_snapshot(&self) -> bool {
         self.dirty_since_snapshot().any()
     }
 
+    /// 选择性重置：只重建被污染的对象（global 或相应 builtin 家族），并返回脏集合。
+    ///
+    /// 相比全量重建，可保留未污染的内置对象指针与世代，减少隔离成本。
     pub fn selective_reset(&mut self, core: &Arc<KernelCore>) -> BuiltinDirtySet {
         let dirty = self.dirty_since_snapshot();
         if dirty.global {

@@ -1,3 +1,5 @@
+//! 表达式语句 emit：`emit_expression_statement` 求值并（按需）丢弃结果。
+
 use crate::{CompileCtx, Emitter};
 use oxide_parser::Statement;
 

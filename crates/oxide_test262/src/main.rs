@@ -17,10 +17,13 @@ use oxide_log::{Level, LogConfig, Output, SUBSYSTEM_COUNT};
 
 // Thread-local that records the path currently being executed.
 // Written before every test; read by the panic hook to identify the crash file.
+/// 记录当前正在执行的测试路径（thread-local）；每个测试执行前写入，
+/// panic hook 据此定位崩溃所在的测试文件。
 std::thread_local! {
     static CURRENT_TEST_PATH: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
 }
 
+/// 测试头部 YAML 元数据中的 `negative` 段：声明期望的失败阶段与错误类型。
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 struct Negative {
@@ -29,6 +32,8 @@ struct Negative {
     error_type: String,
 }
 
+/// test262 测试文件头部 `/*--- ... ---*/` 段解析出的元数据
+/// （description / flags / includes / features / negative 等）。
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 struct TestMeta {
@@ -50,6 +55,7 @@ struct TestMeta {
     esid: String,
 }
 
+/// 单个测试的判定结果：通过 / 失败 / 跳过（各带说明消息）。
 #[derive(Debug)]
 #[allow(dead_code)]
 enum TestOutcome {
@@ -58,6 +64,7 @@ enum TestOutcome {
     Skip(String),
 }
 
+/// 单个测试的运行结果：路径、判定与耗时（毫秒）。
 #[derive(Debug)]
 #[allow(dead_code)]
 struct TestResult {
@@ -67,6 +74,7 @@ struct TestResult {
 }
 
 impl TestResult {
+    /// 构造一个通过结果。
     fn pass(path: PathBuf, dur: u64, msg: impl Into<String>) -> Self {
         Self {
             path,
@@ -75,6 +83,7 @@ impl TestResult {
         }
     }
 
+    /// 构造一个失败结果。
     fn fail(path: PathBuf, dur: u64, msg: impl Into<String>) -> Self {
         Self {
             path,
@@ -83,6 +92,7 @@ impl TestResult {
         }
     }
 
+    /// 构造一个跳过结果（不计耗时）。
     fn skip(path: PathBuf, msg: String) -> Self {
         Self {
             path,
@@ -92,6 +102,7 @@ impl TestResult {
     }
 }
 
+/// 从测试源码头部解析 `/*--- YAML ---*/` 元数据；无该头部返回 None。
 fn parse_meta(source: &str) -> Option<TestMeta> {
     let header_start = source.find("/*---")?;
     let header = &source[header_start..];
@@ -102,6 +113,7 @@ fn parse_meta(source: &str) -> Option<TestMeta> {
     serde_yaml::from_str::<TestMeta>(yaml_body).ok()
 }
 
+/// 剥离测试源码头部的 YAML 元数据段，返回纯 JS 代码。
 fn strip_meta(source: &str) -> &str {
     if let Some(pos) = source.find("---*/") {
         return source[pos + 5..].trim_start();
@@ -109,6 +121,7 @@ fn strip_meta(source: &str) -> &str {
     source
 }
 
+/// 全部已运行测试的累计统计：通过/失败/跳过计数、总耗时与失败原因分类。
 #[derive(Default)]
 struct RunStats {
     pass: usize,
@@ -146,6 +159,7 @@ impl RunStats {
     }
 }
 
+/// 运行配置：test262 根目录、路径过滤器及各选项开关。
 #[derive(Debug, Default)]
 struct RunConfig {
     test262_root: Option<PathBuf>,
@@ -156,13 +170,16 @@ struct RunConfig {
     leak_check_interval: usize,
 }
 
+/// 内嵌的 test262 harness 辅助脚本注册表（编译期 include_str! 打包）。
 struct HarnessSources {
     sources: HashMap<&'static str, &'static str>,
 }
 
+/// harness 前缀缓存键：由测试 `includes` 列表唯一确定。
 type HarnessPrefixCache = HashMap<Vec<String>, String>;
 
 impl HarnessSources {
+    /// 构建 harness 源注册表（键为文件名，值为编译期内嵌源码）。
     fn new() -> Self {
         let mut sources = HashMap::new();
         sources.insert("sta.js", include_str!("../../../tests/test262/harness/sta.js"));
@@ -196,6 +213,7 @@ impl HarnessSources {
         Self { sources }
     }
 
+    /// 按文件名取 harness 源码。
     fn get(&self, name: &str) -> Option<&'static str> {
         self.sources.get(name).copied()
     }
@@ -203,6 +221,7 @@ impl HarnessSources {
 
 static HARNESS: OnceLock<HarnessSources> = OnceLock::new();
 
+/// 判断 harness 文件是否在支持范围之外（依赖 Proxy/Intl/async 等未实现特性）。
 fn is_blacklisted_harness(name: &str) -> bool {
     matches!(
         name,
@@ -224,6 +243,7 @@ fn is_blacklisted_harness(name: &str) -> bool {
     )
 }
 
+/// 生成 `Test262Error` 的 JS prelude（供测试脚本 `assert` 失败时抛出）。
 fn test262_error_prelude() -> &'static str {
     r#"
 function Test262Error(message) {
@@ -235,6 +255,7 @@ Test262Error.prototype.constructor = Test262Error;
 "#
 }
 
+/// 向拼接源码追加一段带注释标记的 harness 代码块。
 fn append_source_chunk(out: &mut String, name: &str, source: &str) {
     out.push_str("\n// ---- test262 harness: ");
     out.push_str(name);
@@ -243,10 +264,12 @@ fn append_source_chunk(out: &mut String, name: &str, source: &str) {
     out.push('\n');
 }
 
+/// 取测试元数据的 harness 缓存键（即其 `includes` 列表）。
 fn harness_key(meta: &TestMeta) -> Vec<String> {
     meta.includes.clone()
 }
 
+/// 按测试元数据拼接完整的 harness 前缀源码（prelude + sta/assert + 各 include）。
 fn build_harness_source(meta: &TestMeta, harness: &HarnessSources) -> Result<String, String> {
     let mut source = String::new();
     append_source_chunk(&mut source, "Test262Error prelude", test262_error_prelude());
@@ -272,6 +295,7 @@ fn build_harness_source(meta: &TestMeta, harness: &HarnessSources) -> Result<Str
     Ok(source)
 }
 
+/// 取得（并缓存）测试所需的 harness 前缀源码；缓存键为 includes 组合。
 fn get_harness_prefix(
     meta: &TestMeta, harness: &HarnessSources, cache: &Arc<RwLock<HarnessPrefixCache>>,
 ) -> Result<String, String> {
@@ -289,6 +313,7 @@ fn get_harness_prefix(
 }
 
 impl RunConfig {
+    /// 默认运行配置。
     fn new() -> Self {
         Self {
             test262_root: None,
@@ -300,6 +325,7 @@ impl RunConfig {
         }
     }
 
+    /// 解析命令行参数为运行配置；未知选项或参数过多返回错误。
     fn parse(args: &[String]) -> Result<Self, String> {
         let mut config = Self::new();
         let mut positional = Vec::new();
@@ -332,6 +358,7 @@ impl RunConfig {
         Ok(config)
     }
 
+    /// 打印用法说明。
     fn usage() -> String {
         "usage: test262-runner [--no-skip] [--supervise] [--leak-check] [--leak-check-interval=N] [test262-root] [path-filter]\n\
          \n\
@@ -350,6 +377,7 @@ impl RunConfig {
     }
 }
 
+/// 按测试元数据的 flags/features 判断是否应跳过，返回跳过原因（None 表示不跳过）。
 fn is_skipped(meta: &TestMeta) -> Option<String> {
     for flag in &meta.flags {
         match flag.as_str() {
@@ -394,6 +422,7 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
     None
 }
 
+/// 在 catch_unwind 保护下运行单个测试，把引擎 panic 记为失败。
 fn run_test(
     path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<KernelCore>, harness: &HarnessSources,
     harness_cache: &Arc<RwLock<HarnessPrefixCache>>, no_skip: bool,
@@ -413,6 +442,8 @@ fn run_test(
     }
 }
 
+/// 单测执行主流程：拼 harness 前缀 → parse → compile → run；
+/// 依据 `negative` 元数据校验期望错误，未实现特性按 no_skip 选择跳过或失败。
 fn run_test_inner(
     path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<KernelCore>, harness: &HarnessSources,
     harness_cache: &Arc<RwLock<HarnessPrefixCache>>, no_skip: bool,
@@ -551,6 +582,7 @@ fn run_test_inner(
     }
 }
 
+/// 递归发现 test262 根目录下全部 `.js` 测试文件（排序后返回）。
 fn discover_tests(test262_root: &Path) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = WalkDir::new(test262_root)
         .into_iter()
@@ -562,6 +594,7 @@ fn discover_tests(test262_root: &Path) -> Vec<PathBuf> {
     paths
 }
 
+/// 从子进程 stdout 中解析形如 `label   : N` 的汇总行。
 fn parse_summary_count(stdout: &str, label: &str) -> Option<usize> {
     stdout.lines().find_map(|line| {
         let trimmed = line.trim_start();
@@ -571,6 +604,7 @@ fn parse_summary_count(stdout: &str, label: &str) -> Option<usize> {
     })
 }
 
+/// 分块模式：按 chunk_size 把测试区间切块，逐块以子进程执行并汇总结果。
 fn run_chunked(args: &[String], skip_until: usize, end_index: usize, chunk_size: usize) -> bool {
     let exe = match std::env::current_exe() {
         Ok(path) => path,
@@ -1006,6 +1040,7 @@ fn build_runner_kernel() -> Arc<KernelCore> {
     KernelCore::new(kernel_config)
 }
 
+/// 把失败消息归类为可聚合的失败类别（compile/vm/parse/harness 等前缀）。
 fn categorize_fail(msg: &str) -> String {
     if msg.contains("compile error:") {
         let reason = msg.trim_start_matches("compile error: ").trim();
@@ -1058,6 +1093,7 @@ fn categorize_fail(msg: &str) -> String {
     }
 }
 
+/// 程序入口：安装带当前测试路径的 panic hook，并在大栈线程上运行测试。
 fn main() {
     // Install a panic hook that prints which test was running when the panic occurred.
     // This covers Rust panics; OS-level crashes (ACCESS_VIOLATION) are caught by the
@@ -1086,6 +1122,8 @@ fn main() {
     }
 }
 
+/// 测试主流程：解析配置 → 发现测试 → 按 supervise/chunked/并行 三种模式执行 →
+/// 汇总并打印统计；任何失败使返回值为 false（进程退出码 1）。
 fn run_tests() -> bool {
     let args: Vec<String> = std::env::args().collect();
     let config = match RunConfig::parse(&args) {

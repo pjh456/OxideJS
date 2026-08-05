@@ -1,3 +1,5 @@
+//! 基本语句域：表达式语句/return/空语句的分发与子模块聚合。
+
 use crate::{CompileCtx, Emitter};
 use oxide_parser::Statement;
 

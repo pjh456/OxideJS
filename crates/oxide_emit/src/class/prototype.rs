@@ -1,3 +1,5 @@
+//! 类原型对象构造：`emit_class_prototype` 建立 `Class.prototype` 与属性初始化。
+
 use crate::{CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

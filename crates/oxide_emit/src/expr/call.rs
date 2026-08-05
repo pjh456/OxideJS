@@ -1,3 +1,6 @@
+//! 调用表达式 emit：普通/原生/`new`/`super` 调用与调用域分发。
+//! 函数：`emit_call_expression`、`emit_call_domain`。
+
 use crate::{CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

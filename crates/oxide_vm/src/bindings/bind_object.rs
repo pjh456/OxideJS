@@ -7,6 +7,7 @@ use oxide_types::object::{JsObject, PropAttributes};
 use crate::bind_constructor;
 use crate::bindings::apply_binding_table;
 
+/// 把 Object 构造器与原型方法绑定到 global。
 pub fn bind_object(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let methods = ObjectMethods {
         keys: oxide_builtins::object::object_keys::<crate::vm::Vm> as *const (),

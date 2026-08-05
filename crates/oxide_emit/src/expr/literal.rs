@@ -1,3 +1,6 @@
+//! 字面量表达式 emit：数字/字符串/布尔/null/正则 → 常量池或立即数。
+//! 整数走立即数编码（`is_int_literal`），其余入常量池。
+
 use crate::{is_int_literal, CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

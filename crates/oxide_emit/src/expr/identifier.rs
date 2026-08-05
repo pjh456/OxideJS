@@ -1,3 +1,5 @@
+//! 标识符表达式 emit：`emit_identifier_expression` 按绑定/builtin/全局解析寄存器。
+
 use crate::{CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

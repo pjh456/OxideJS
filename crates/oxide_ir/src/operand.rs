@@ -10,6 +10,7 @@
 /// 统一跳转目标标识（取代语义化 `Label` 枚举）。
 pub type LabelId = u32;
 
+/// 类型安全操作数。IR 中不出现裸寄存器下标，语义见文件头 `//!`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operand {
     Reg(u32),

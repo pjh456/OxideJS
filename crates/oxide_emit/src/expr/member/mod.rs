@@ -1,3 +1,7 @@
+//! 成员访问域：静态/计算/私有字段成员与可选链表达式 emit 及分发。
+//! 函数：`emit_static_member_expression`、`emit_computed_member_expression`、
+//! `emit_private_field_expression`、`emit_chain_expression`、`emit_member_domain`。
+
 use crate::{CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

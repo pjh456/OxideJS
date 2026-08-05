@@ -12,12 +12,15 @@ use crate::bench::metrics::MetricCollection;
 use crate::bench::output::format_json;
 use crate::bench::BenchConfig;
 
+/// 滑动窗口采样器：对 `(iteration, value)` 序列做线性回归，
+/// 当斜率明显为正且拟合度 R² 高时判定为内存泄漏。
 pub struct LeakSampler {
     window: VecDeque<(usize, f64)>,
     window_size: usize,
 }
 
 impl LeakSampler {
+    /// 以给定窗口大小创建采样器。
     pub fn new(window_size: usize) -> Self {
         Self {
             window: VecDeque::new(),
@@ -25,6 +28,7 @@ impl LeakSampler {
         }
     }
 
+    /// 加入一次采样；样本足够且回归显著时返回泄漏判定。
     pub fn add_sample(&mut self, iteration: usize, value: f64) -> Option<LeakVerdict> {
         self.window.push_back((iteration, value));
         if self.window.len() >= self.window_size {
@@ -56,11 +60,14 @@ impl LeakSampler {
     }
 }
 
+/// 泄漏判定的回归结果：线性斜率和拟合优度 R²。
 pub struct LeakVerdict {
     pub slope: f64,
     pub r2: f64,
 }
 
+/// 反复运行固定 JS 脚本，跟踪 session/code-forge/symbol 等内存指标，
+/// 用 `LeakSampler` 回归检测随迭代次数增长的内存占用。
 pub fn run_leak_detect(config: &BenchConfig, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>) -> ExitCode {
     let js =
         "var ITERATIONS = 1000; var obj = {}; for (var i = 0; i < ITERATIONS; i++) { obj['key' + i] = i; } obj['key0']";

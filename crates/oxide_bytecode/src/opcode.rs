@@ -1,3 +1,9 @@
+//! 字节码操作码表与指令编解码。
+//!
+//! [`OpCode`] 由 `define_opcodes!` 宏从单张表生成；[`Instr`] 是 4 字节指令
+//! （opcode + rd + a + b，imm16/offset16 复用 a、b 两字节）。本模块提供
+//! 编译器发射（`encode*`）与 VM 解码（`opcode` / `rd` / `a` / `b` 等）全套函数。
+
 use std::fmt;
 
 /// Generate the `OpCode` enum plus its `TryFrom<u8>` and `Display` impls from a
@@ -196,6 +202,7 @@ define_opcodes! {
 }
 
 impl OpCode {
+    /// 是否需要 IC 扩展字（inline cache 元数据跟随指令之后）。
     pub fn has_ic_ext_words(&self) -> bool {
         matches!(
             self,
@@ -221,64 +228,77 @@ impl OpCode {
 /// - `b` — second source register, or imm16 high byte
 pub type Instr = u32;
 
+/// 把操作码与三个操作数字节编码为一条 [`Instr`]。
 pub fn encode(op: OpCode, rd: u8, a: u8, b: u8) -> Instr {
     ((b as Instr) << 24) | ((a as Instr) << 16) | ((rd as Instr) << 8) | (op as Instr)
 }
 
+/// 解码指令的低 8 位操作码；未知字节返回 [`OpCode::NOP`]。
 pub fn opcode(instr: Instr) -> OpCode {
     OpCode::try_from((instr & 0xFF) as u8).unwrap_or(OpCode::NOP)
 }
 
+/// 解码目标寄存器（bits 8-15）。
 pub fn rd(instr: Instr) -> u8 {
     ((instr >> 8) & 0xFF) as u8
 }
 
+/// 解码第一个操作数（bits 16-23）。
 pub fn a(instr: Instr) -> u8 {
     ((instr >> 16) & 0xFF) as u8
 }
 
+/// 解码第二个操作数（bits 24-31）。
 pub fn b(instr: Instr) -> u8 {
     ((instr >> 24) & 0xFF) as u8
 }
 
+/// 解码 16 位立即数（bits 16-31，由 a、b 两字节拼成）。
 pub fn imm16(instr: Instr) -> u16 {
     ((instr >> 16) & 0xFFFF) as u16
 }
 
+/// 解码 16 位有符号跳转偏移（bits 16-31）。
 pub fn offset16(instr: Instr) -> i16 {
     ((instr >> 16) & 0xFFFF) as i16
 }
 
+/// 发射无条件跳转指令（`JMP`，偏移以 16 位补码编码）。
 pub fn encode_jmp(offset: i16) -> Instr {
     let lo = (offset as u16 & 0xFF) as u8;
     let hi = ((offset as u16 >> 8) & 0xFF) as u8;
     encode(OpCode::JMP, 0, lo, hi)
 }
 
+/// 发射 `JMP_IF_FALSE`：当 `rd` 寄存器为 falsy 时跳转。
 pub fn encode_jmp_if_false(rd: u8, offset: i16) -> Instr {
     let lo = (offset as u16 & 0xFF) as u8;
     let hi = ((offset as u16 >> 8) & 0xFF) as u8;
     encode(OpCode::JMP_IF_FALSE, rd, lo, hi)
 }
 
+/// 发射 `JMP_IF_TRUE`：当 `rd` 寄存器为 truthy 时跳转。
 pub fn encode_jmp_if_true(rd: u8, offset: i16) -> Instr {
     let lo = (offset as u16 & 0xFF) as u8;
     let hi = ((offset as u16 >> 8) & 0xFF) as u8;
     encode(OpCode::JMP_IF_TRUE, rd, lo, hi)
 }
 
+/// 发射 `JMP_IF_NULLISH`：当 `rd` 为 `null` / `undefined` 时跳转（`??` 短路）。
 pub fn encode_jmp_if_nullish(rd: u8, offset: i16) -> Instr {
     let lo = (offset as u16 & 0xFF) as u8;
     let hi = ((offset as u16 >> 8) & 0xFF) as u8;
     encode(OpCode::JMP_IF_NULLISH, rd, lo, hi)
 }
 
+/// 发射 `TRY_BEGIN`：标记 try 块开始，偏移指向 catch 处理器。
 pub fn encode_try_begin(offset: i16) -> Instr {
     let lo = (offset as u16 & 0xFF) as u8;
     let hi = ((offset as u16 >> 8) & 0xFF) as u8;
     encode(OpCode::TRY_BEGIN, 0, lo, hi)
 }
 
+/// 发射 `TRY_FINALLY_BEGIN`：标记 try/finally 块开始，偏移指向 finally 处理器。
 pub fn encode_try_finally_begin(offset: i16) -> Instr {
     let lo = (offset as u16 & 0xFF) as u8;
     let hi = ((offset as u16 >> 8) & 0xFF) as u8;

@@ -1,3 +1,9 @@
+//! 闭包捕获分析（AST 级，emit 前完成，时序无关）。
+//!
+//! 收集本函数绑定的名字（own_bindings）与被嵌套函数捕获的名字
+//! （captured_bindings → cell_idx，按名排序稳定跨 run），为 MAKE_CELL /
+//! CELL_GET / CELL_SET 与子函数 upvalue cell_idx 提供统一依据。
+
 use std::collections::{BTreeMap, HashSet};
 
 use oxide_bytecode::module::UpvalueCapture;

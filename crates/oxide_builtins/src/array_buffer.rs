@@ -74,6 +74,7 @@ fn array_buffer_vec_ptr(obj: &JsObject) -> Option<*mut Vec<u8>> {
     obj.native_fn().map(|ptr| ptr.as_ptr() as *mut Vec<u8>)
 }
 
+/// 克隆 ArrayBuffer 的字节数据到新对象（跨 epoch 克隆流程用）。
 pub fn clone_array_buffer_native(old_obj: &JsObject, new_obj: &mut JsObject) {
     let Some(ptr) = array_buffer_vec_ptr(old_obj) else {
         return;
@@ -86,6 +87,7 @@ pub fn clone_array_buffer_native(old_obj: &JsObject, new_obj: &mut JsObject) {
     new_obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(cloned_ptr as *const ()) }));
 }
 
+/// 释放 ArrayBuffer 的字节缓冲（native_fn 槽中的 `Box<Vec<u8>>`），返回字节数。
 pub fn drop_array_buffer_native(obj: &mut JsObject) -> u64 {
     let Some(data_ptr) = array_buffer_vec_ptr(obj) else {
         return 0;
@@ -122,6 +124,7 @@ pub(crate) fn array_buffer_data_ptr<H: VmHost>(vm: &mut H, this_val: JsValue) ->
     Ok(data_ptr)
 }
 
+/// `ArrayBuffer(length)` 构造逻辑：分配 length 字节（0 填充）的新缓冲区。
 pub fn array_buffer_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let length = if args.len() > 1 {
         match to_index(vm, vm.reg(args[1])) {
@@ -134,12 +137,14 @@ pub fn array_buffer_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
     NativeResult::Ok(JsValue::from_js_object(new_array_buffer(vm, vec![0; length])))
 }
 
+/// `ArrayBuffer.prototype.byteLength` getter：返回缓冲区字节数。
 pub fn array_buffer_byte_length<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let data_ptr = native_try!(array_buffer_data_ptr(vm, this_val));
     NativeResult::Ok(JsValue::int(unsafe { (*data_ptr).len() } as i32))
 }
 
+/// `ArrayBuffer.prototype.slice(start, end)`：复制字节区间生成新 ArrayBuffer。
 pub fn array_buffer_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let data_ptr = native_try!(array_buffer_data_ptr(vm, this_val));
@@ -151,6 +156,7 @@ pub fn array_buffer_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(new_array_buffer(vm, data[start..end].to_vec())))
 }
 
+/// `ArrayBuffer.isView(value)`：参数是 DataView 或 TypedArray 才返回 true。
 pub fn array_buffer_is_view<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     if !value.is_object() {
@@ -164,6 +170,7 @@ pub fn array_buffer_is_view<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     NativeResult::Ok(JsValue::bool(obj.is_data_view_obj() || obj.is_typed_array_obj()))
 }
 
+/// `ArrayBuffer.prototype.toString`：校验 receiver 后返回 `[object ArrayBuffer]`。
 pub fn array_buffer_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if array_buffer_data_ptr(vm, this_val).is_err() {

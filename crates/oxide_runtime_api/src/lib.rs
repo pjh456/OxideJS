@@ -27,14 +27,17 @@ pub enum NativeResult {
 }
 
 impl NativeResult {
+    /// 构造成功结果，携带一个 `JsValue` 返回值。
     pub fn ok(val: JsValue) -> Self {
         Self::Ok(val)
     }
 
+    /// 构造失败结果，携带被抛出的异常值。
     pub fn err(val: JsValue) -> Self {
         Self::Err(val)
     }
 
+    /// 取出成功值；若为 `Err` 或 `TailCall` 则 panic。仅用于已知必然成功的场景。
     pub fn unwrap(self) -> JsValue {
         match self {
             Self::Ok(val) => val,
@@ -43,6 +46,8 @@ impl NativeResult {
         }
     }
 
+    /// 把 `Err` 分支的错误值映射为自定义错误类型并转为 `Result`；
+    /// `TailCall` 不能转换，遇到时 panic。
     pub fn map_err<E, F>(self, op: F) -> Result<JsValue, E>
     where
         F: FnOnce(JsValue) -> E,
@@ -121,6 +126,7 @@ pub trait VmHost {
     fn symbol_key_for_id(&self, idx: u32) -> Option<String>;
 }
 
+/// 拼接 JS 错误消息，格式为 `"{name}: {msg}"`；任一段为空时只取非空段。
 pub fn format_error_message(name: &str, msg: &str) -> String {
     if name.is_empty() {
         msg.to_string()
@@ -140,6 +146,9 @@ pub unsafe fn string_data(val: JsValue) -> &'static str {
     (*val.as_string_ptr()).as_str()
 }
 
+/// 按内容比较两个字符串 `JsValue` 是否相等。
+///
+/// 先做指针级短路（同一 interned 字符串必等），否则逐字节比较 `JsString` 内容。
 #[inline]
 pub fn string_value_eq(a: JsValue, b: JsValue) -> bool {
     if a.as_string_ptr() == b.as_string_ptr() {
@@ -150,6 +159,10 @@ pub fn string_value_eq(a: JsValue, b: JsValue) -> bool {
     sa.data == sb.data
 }
 
+/// 对原始值执行 ECMAScript ToNumber 的快速路径（不触发对象 coercion）。
+///
+/// Number/String/Boolean/null 按规范转换；undefined 与不可解析字符串为 `NaN`；
+/// Object 与 Symbol 不在此处理，返回 `NaN`（对象需走 [`to_number_full`]）。
 pub fn to_number(val: JsValue) -> f64 {
     if val.is_int() {
         return val.as_int() as f64;
@@ -176,6 +189,7 @@ pub fn to_number(val: JsValue) -> f64 {
     f64::NAN
 }
 
+/// ToUint32（ECMA-262 §7.1.6）：对数值取模 2^32。NaN/±0/Infinity 归零。
 pub fn to_uint32(val: JsValue) -> u32 {
     let n = to_number(val);
     if n == 0.0 || !n.is_finite() {
@@ -184,6 +198,7 @@ pub fn to_uint32(val: JsValue) -> u32 {
     n.trunc().rem_euclid(4_294_967_296.0) as u32
 }
 
+/// ToInt32（ECMA-262 §7.1.5）：对数值取模 2^32 后按有符号 32 位解释。
 pub fn to_int32(val: JsValue) -> i32 {
     let int = to_uint32(val);
     if int > i32::MAX as u32 {
@@ -241,6 +256,10 @@ pub fn push_to_string(val: JsValue, buf: &mut String) {
     }
 }
 
+/// 把原始值转成字符串（ToString 的原始值路径）。
+///
+/// 数值使用与 V8 一致的格式化（整数直接打印、有限数用 ryu 最短表示）；
+/// Object 在此返回占位符 `[object]`，完整路径见 [`to_string_full`]。
 pub fn to_string(val: JsValue) -> String {
     if val.is_int() {
         return val.as_int().to_string();
@@ -281,6 +300,7 @@ pub fn to_string(val: JsValue) -> String {
     String::new()
 }
 
+/// ToBoolean（ECMA-262 §7.1.2）：falsy 值仅限 undefined/null/false/±0/NaN/空串，其余为 true。
 pub fn to_boolean(val: JsValue) -> bool {
     if val.is_undefined() || val.is_null() {
         return false;
@@ -380,6 +400,9 @@ pub fn abstract_eq<H: VmHost>(lhs: JsValue, rhs: JsValue, host: &mut H) -> Resul
     Ok(false)
 }
 
+/// Strict Equality Comparison（`===`，ECMA-262 §7.2.14）。
+///
+/// 类型不同直接为 false；同类型下 Object 按指针、其余按值比较。
 pub fn strict_eq(lhs: JsValue, rhs: JsValue) -> bool {
     if lhs.is_int() && rhs.is_int() {
         return lhs.as_int() == rhs.as_int();
@@ -415,6 +438,9 @@ fn strict_double_eq(a: f64, b: f64) -> bool {
     a == b
 }
 
+/// Relational Comparison（`<`，ECMA-262 §7.2.13）的原始值版本。
+///
+/// 双字符串按字典序；否则转数值比较，任一侧为 NaN 时返回 `None`（表示比较未定义，调用方据此处理 `<`/`>`）。
 pub fn relational_compare(lhs: JsValue, rhs: JsValue) -> Option<bool> {
     if lhs.is_string() && rhs.is_string() {
         let ls = unsafe { string_data(lhs) };
@@ -429,6 +455,7 @@ pub fn relational_compare(lhs: JsValue, rhs: JsValue) -> Option<bool> {
     l.partial_cmp(&r).map(|o| o.is_lt())
 }
 
+/// 拼接两个字符串，按已知总长度预分配容量以避免重复扩容。
 pub fn string_concat(lhs: &str, rhs: &str) -> String {
     let mut s = String::with_capacity(lhs.len() + rhs.len());
     s.push_str(lhs);
@@ -446,6 +473,7 @@ fn to_f64(val: JsValue) -> f64 {
     }
 }
 
+/// SameValue(x, y)（ECMA-262 §7.2.9）：与 `===` 的区别在于 NaN 视为相等、+0/-0 视为不同。
 pub fn same_value(lhs: JsValue, rhs: JsValue) -> bool {
     if lhs.is_double() && rhs.is_double() {
         let a = lhs.as_double();
@@ -527,6 +555,7 @@ pub fn same_value_zero(lhs: JsValue, rhs: JsValue) -> bool {
     same_value(lhs, rhs)
 }
 
+/// 与 [`strict_eq`] 等价的规范层实现：双浮点走 NaN 安全比较，其余复用 [`same_value`]。
 pub fn strict_equality(lhs: JsValue, rhs: JsValue) -> bool {
     if lhs.is_double() && rhs.is_double() {
         return strict_double_eq(lhs.as_double(), rhs.as_double());
@@ -534,6 +563,9 @@ pub fn strict_equality(lhs: JsValue, rhs: JsValue) -> bool {
     same_value(lhs, rhs)
 }
 
+/// ToObject（ECMA-262 §7.1.13）：null/undefined 抛 TypeError，其余原始值包装为对应包装对象。
+///
+/// 包装对象按类型选择原型（String/Number/Boolean 原型或默认 Object 原型），原始值存入 hash props 槽。
 pub fn to_object<H: VmHost>(val: JsValue, host: &mut H) -> Result<JsValue, String> {
     if val.is_object() {
         return Ok(val);

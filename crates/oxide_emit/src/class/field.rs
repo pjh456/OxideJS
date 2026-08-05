@@ -1,3 +1,5 @@
+//! 类静态字段/元素 emit：`emit_class_static_elements`。
+
 use crate::{CompileCtx, Emitter};
 use oxide_ir::operand::Operand;
 use oxide_parser::{ClassElement, PropertyKey};

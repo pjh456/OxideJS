@@ -1,3 +1,5 @@
+//! 类相关 AST 节点的结构哈希（ClassElement/ClassExpression 等）。
+
 use super::*;
 
 pub(super) fn hash_class_element(element: &ClassElement, h: &mut rustc_hash::FxHasher, include_binding_names: bool) {

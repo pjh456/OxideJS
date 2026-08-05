@@ -1,3 +1,10 @@
+//! emit：AST → IR 代码生成（parse → IR → bytecode 中段）。
+//!
+//! `Emitter` 提供各语法域的 emit_* 方法；核心状态集中在 `CompileCtx`：
+//! 执行流字段（insts/registers/constants/labels）平铺其上，标识符绑定与
+//! 闭包捕获分别下沉到 `SymbolTable` / `captured_bindings`。产出分域组合的
+//! `IRFunction`，由 `oxide_ir::lower` 降为 bytecode。
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use oxide_bytecode::module::UpvalueCapture;
@@ -9,16 +16,23 @@ use oxide_ir::IRFunction;
 use crate::emit_ctx::{LabelCtx, ScopeCtx};
 use crate::symbol_table::{Binding, ScopeKind, SymbolTable};
 
+/// 常量池项（bytecode module 类型）re-export，供调用方构造常量。
 pub use oxide_bytecode::module::Constant;
+/// 变量声明种类（var/let/const），re-export 自 parser。
 pub use oxide_parser::VariableDeclarationKind;
+/// AST 语法树节点与运算符类型，re-export 自 parser。
 pub use oxide_parser::{AssignmentOperator, BinaryOperator, Expression, Statement, UnaryOperator};
 
+/// 编译入口（marker 类型）。方法按语法域组织在 `impl Emitter` 中。
 pub struct Emitter;
 
+/// 判断 f64 是否为整数值且在 i32 范围内（整数常量编码用）。
 pub fn is_int_literal(value: f64) -> bool {
     value.fract() == 0.0 && value >= i32::MIN as f64 && value <= i32::MAX as f64
 }
 
+/// 判断表达式是否无副作用（字面量/标识符/纯二元运算等）。
+/// 用于可丢弃值的优化路径。
 pub fn is_side_effect_free(expr: &Expression) -> bool {
     let mut stack = vec![expr];
     while let Some(expr) = stack.pop() {
@@ -120,6 +134,8 @@ pub struct LabelScope {
     pub(crate) continue_label: Option<LabelId>,
 }
 
+/// 单函数编译上下文：执行流 + 作用域 + 闭包捕获的聚合状态。
+/// 指令、常量池、寄存器分配平铺于此，作用域/绑定见 `ScopeCtx`，跳转见 `LabelCtx`。
 pub struct CompileCtx {
     pub(crate) insts: Vec<Inst>,
     pub(crate) constants: Vec<Constant>,
@@ -152,13 +168,18 @@ pub struct CompileCtx {
     pub(crate) const_overflow: bool,
 }
 
+/// 函数体编译上下文：决定 `this`/`super` 绑定与参数前导（prologue）形态。
 #[derive(Clone, Copy)]
 pub enum FunctionBodyContext {
+    /// 普通函数：自身 `this`、独立作用域。
     Ordinary,
+    /// 箭头函数：词法捕获外层 `this`，不生成参数前导。
     Arrow,
+    /// 类元素方法：按类语义处理 `super` 与 home object。
     ClassElement,
 }
 
+/// 参数规格：普通形参为标识符，解构形参用合成名 + 原始 pattern。
 pub enum ParamSpec<'a> {
     Identifier(String),
     Pattern {
@@ -513,6 +534,7 @@ impl ConstantKey {
 }
 
 impl Emitter {
+    /// 构造空 `Emitter`（无内部状态，所有状态在 `CompileCtx` 中）。
     pub fn new() -> Self {
         Self
     }

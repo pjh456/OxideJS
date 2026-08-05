@@ -1,3 +1,5 @@
+//! 编译日志宏：`compiler_error!/warn!/info!/debug!/trace!`，经由 oxide_log 上报。
+
 #[macro_export]
 macro_rules! compiler_error {
     ($($arg:tt)*) => {

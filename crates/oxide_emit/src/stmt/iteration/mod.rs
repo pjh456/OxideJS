@@ -1,3 +1,5 @@
+//! 迭代语句域：while/do-while/for/for-in/for-of 的分发与子模块聚合。
+
 use crate::{CompileCtx, Emitter};
 use oxide_parser::Statement;
 

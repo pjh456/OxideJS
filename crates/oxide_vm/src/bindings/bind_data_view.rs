@@ -5,6 +5,7 @@ use crate::bindings::{apply_binding_table, configure_native_constructor};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 
+/// 把 DataView 构造器与原型方法绑定到 global。
 pub fn bind_data_view(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let ctor_ptr = session.builtin_world().data_view_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };

@@ -1,3 +1,5 @@
+//! 标签语句 emit：`emit_labeled_statement` 登记 break/continue 标签作用域。
+
 use crate::{CompileCtx, Emitter};
 use oxide_parser::Statement;
 

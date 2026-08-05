@@ -1,3 +1,5 @@
+//! 异常语句域：throw/try 的分发与子模块聚合。
+
 use crate::{CompileCtx, Emitter};
 use oxide_parser::Statement;
 

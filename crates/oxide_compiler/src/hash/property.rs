@@ -1,3 +1,5 @@
+//! 对象属性键/属性类型（PropertyKey/ObjectPropertyKind）的结构哈希。
+
 use super::*;
 
 pub(super) fn hash_property_key(key: &PropertyKey, h: &mut rustc_hash::FxHasher, include_binding_names: bool) {

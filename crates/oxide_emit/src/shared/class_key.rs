@@ -1,3 +1,6 @@
+//! 类属性键/私有名 emit：私有名 id 分配、类字段键寄存器与 undefined 常量。
+//! 函数：`private_name_id`、`emit_private_id_reg`、`emit_class_key_reg` 等。
+
 use crate::{CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

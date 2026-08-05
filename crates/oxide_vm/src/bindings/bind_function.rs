@@ -7,6 +7,7 @@ use oxide_types::value::JsValue;
 
 use super::bind_global_value;
 
+/// 把 Function 构造器与原型方法绑定到 global。
 pub fn bind_function(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let function_methods = FunctionMethods {
         call: oxide_builtins::function::function_call::<crate::vm::Vm> as *const (),

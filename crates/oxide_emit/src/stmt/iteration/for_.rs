@@ -1,3 +1,5 @@
+//! for 语句 emit：`emit_for_statement` 含 init/test/update 三段与循环跳转。
+
 use crate::{CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

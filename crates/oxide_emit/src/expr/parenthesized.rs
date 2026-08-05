@@ -1,3 +1,5 @@
+//! 括号表达式 emit：`emit_parenthesized_expression` 透传内层表达式。
+
 use crate::{CompileCtx, Emitter};
 
 impl Emitter {

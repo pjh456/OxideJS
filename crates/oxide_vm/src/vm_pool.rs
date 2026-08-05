@@ -12,6 +12,10 @@ struct VmPoolInner {
     total_count: usize,
 }
 
+/// 共享 `Vm` 实例池：按需创建并复用 VM，避免每次执行重建 kernel 共享状态。
+///
+/// 空闲 VM 存放在 `available` 队列；达到 `max_size` 上限时 `spawn` 会阻塞等待
+/// 归还（带 5 秒超时强制扩容兜底）。线程安全，可供多线程并发领取。
 pub struct VmPool {
     kernel_core: Arc<KernelCore>,
     inner: Mutex<VmPoolInner>,
@@ -19,6 +23,10 @@ pub struct VmPool {
     max_size: Option<usize>,
 }
 
+/// 从池中借出的 VM 独占句柄（RAII）。
+///
+/// 持有期间独占访问 [`VmGuard::vm`] / [`VmGuard::vm_mut`]；`Drop` 时归还池：
+/// 干净 VM 执行 `full_reset` 后复用，被标记 dirty 的 VM 直接丢弃并新建替补。
 pub struct VmGuard {
     vm: Option<Vm>,
     pool: Arc<VmPool>,
@@ -26,6 +34,7 @@ pub struct VmGuard {
 }
 
 impl VmPool {
+    /// 创建空池。`min_size` 当前仅作预热预留（未使用），`max_size` 为池上限，`None` 表示不限。
     pub fn new(kernel_core: Arc<KernelCore>, _min_size: usize, max_size: Option<usize>) -> Arc<Self> {
         Arc::new(Self {
             kernel_core,
@@ -46,6 +55,7 @@ impl VmPool {
         Self::new_vm(&self.kernel_core)
     }
 
+    /// 从池中借出一个 VM：优先复用空闲实例，否则在池未满时新建，池满则阻塞等待归还。
     pub fn spawn(self: &Arc<Self>) -> VmGuard {
         loop {
             let mut inner = self.inner.lock().unwrap();
@@ -94,10 +104,12 @@ impl VmPool {
 }
 
 impl VmGuard {
+    /// 只读访问被借出的 VM。
     pub fn vm(&self) -> &Vm {
         self.vm.as_ref().expect("VmGuard has no VM")
     }
 
+    /// 可变访问被借出的 VM。
     pub fn vm_mut(&mut self) -> &mut Vm {
         self.vm.as_mut().expect("VmGuard has no VM")
     }

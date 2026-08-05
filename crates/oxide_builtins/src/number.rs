@@ -2,6 +2,8 @@ use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
+/// JS `Number()` 构造逻辑：把参数按 ToNumber 语义转换。
+/// 普通调用返回原始 number（整数走 int 表示）；new 语义返回 `[[NumberData]]` 包装对象。
 pub fn number_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let n = if args.len() > 1 {
         vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN)
@@ -46,6 +48,7 @@ pub fn number_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
+/// `Number.isNaN`：参数严格等于 NaN 才返回 true（不做隐式类型转换）。
 pub fn number_is_nan<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::bool(false));
@@ -54,6 +57,7 @@ pub fn number_is_nan<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(n.is_nan()))
 }
 
+/// `Number.isFinite`：参数为有限数才返回 true（不做隐式类型转换）。
 pub fn number_is_finite<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::bool(false));
@@ -62,6 +66,8 @@ pub fn number_is_finite<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(n.is_finite()))
 }
 
+/// `parseInt(string, radix)`：按指定进制解析整数前缀；支持 `0x` 前缀，
+/// 空串或非法前缀返回 NaN。radix 为 0 或缺省时按 10 进制（`0x` 前缀除外）。
 pub fn number_parse_int<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::float(f64::NAN));
@@ -103,6 +109,7 @@ pub fn number_parse_int<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::float(f64::NAN))
 }
 
+/// `parseFloat(string)`：解析尽可能长的十进制浮点前缀；无法解析返回 NaN。
 pub fn number_parse_float<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::float(f64::NAN));
@@ -120,6 +127,8 @@ pub fn number_parse_float<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
+/// `Number.prototype.toString(radix)`：按指定进制（2..36）转字符串。
+/// 十进制走 ryu 快速格式化，NaN/Infinity 有专名输出。
 pub fn number_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let n = vm.coerce_number_bounded(vm.reg(args[0])).unwrap_or(f64::NAN);
     let radix = if args.len() > 1 {
@@ -171,6 +180,8 @@ pub fn number_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
+/// `Number.prototype.toFixed(digits)`：固定小数位数（0..100）输出字符串，
+/// 超出范围抛 RangeError；NaN/Infinity 输出专名。
 pub fn number_to_fixed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let n = vm.coerce_number_bounded(vm.reg(args[0])).unwrap_or(f64::NAN);
     if n.is_nan() {
@@ -196,6 +207,7 @@ pub fn number_to_fixed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(&formatted))
 }
 
+/// `Number.isInteger`：参数是有限且无小数部分的数值才返回 true。
 pub fn number_is_integer<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = vm.reg(if args.len() > 1 { args[1] } else { args[0] });
     if !val.is_int() && !val.is_double() {
@@ -205,6 +217,7 @@ pub fn number_is_integer<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(n.trunc() == n && n.is_finite()))
 }
 
+/// `Number.isSafeInteger`：参数是安全整数范围（±2^53-1）内的整数才返回 true。
 pub fn number_is_safe_integer<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = vm.reg(if args.len() > 1 { args[1] } else { args[0] });
     if !val.is_int() && !val.is_double() {
@@ -215,6 +228,8 @@ pub fn number_is_safe_integer<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     NativeResult::Ok(JsValue::bool(safe))
 }
 
+/// `Number.prototype.toPrecision(precision)`：按有效数字位数（1..100）输出，
+/// 科学计数法与定点表示按指数自动切换，超范围抛 RangeError。
 pub fn number_to_precision<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() <= 1 {
         return NativeResult::Err(crate::error::create_range_error(
@@ -253,6 +268,8 @@ pub fn number_to_precision<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
+/// `Number.prototype.toExponential(digits)`：按科学计数法输出；
+/// digits 缺省时自动决定小数位数，超范围抛 RangeError。
 pub fn number_to_exponential<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let n = vm.coerce_number_bounded(vm.reg(args[0])).unwrap_or(f64::NAN);
     if n.is_nan() {
@@ -291,6 +308,8 @@ pub fn number_to_exponential<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     NativeResult::Ok(vm.new_string(&format!("{}{}", sign_prefix, formatted)))
 }
 
+/// `Number.prototype.valueOf`：返回包装对象的原始 number；
+/// 原始 number 直接返回，非 Number 对象抛 TypeError。
 pub fn number_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(args[0]);
     if this_val.is_int() || this_val.is_double() {

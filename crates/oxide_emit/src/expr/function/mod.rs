@@ -1,3 +1,7 @@
+//! 函数表达式域：箭头/普通函数/类表达式/`new` 表达式的 emit 与分发。
+//! 函数：`emit_arrow_function_expression`、`emit_function_expression`、
+//! `emit_class_expression`、`emit_new_expression`、`emit_function_domain`。
+
 use crate::{CompileCtx, Emitter, ParamSpec};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

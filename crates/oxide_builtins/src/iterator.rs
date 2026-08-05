@@ -7,10 +7,13 @@ use oxide_runtime_api::{NativeResult, VmHost};
 const INNER_PROP: &str = "__inner__";
 const INDEX_PROP: &str = "__index__";
 
+/// 占位构造函数：`Iterator` 不是构造函数，任何调用都抛 TypeError。
 pub fn iterator_constructor<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     NativeResult::Err(crate::error::create_type_error(vm, "Iterator is not a constructor"))
 }
 
+/// `Iterator.from(iterable)`：为任意可迭代值包装一个迭代器对象。
+/// 包装器带 `next` 与 `return`（用于 for-of 提前退出时的 IteratorClose 清理）。
 pub fn iterator_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let iterable = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     match make_iterator_for_value(vm, iterable) {
@@ -19,6 +22,8 @@ pub fn iterator_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
+/// 为任意值创建统一迭代器包装对象：String/Array/Map/Set 直接支持索引遍历，
+/// 其它对象则要求提供可调用的 `next`。不可迭代时返回 TypeError。
 pub fn make_iterator_for_value<H: VmHost>(vm: &mut H, value: JsValue) -> Result<JsValue, JsValue> {
     let inner = get_iterator(vm, value)?;
     let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
@@ -70,6 +75,8 @@ fn iterator_wrapper_return<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
+/// 迭代器包装器的 `next` 方法：对 Array/String/Map/Set 直接按索引取值，
+/// 其它对象委托其自身 `next`；底层抛出异常时透传原始值（不做二次包装）。
 pub fn iterator_wrapper_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if !this_val.is_object() {

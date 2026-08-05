@@ -6,6 +6,7 @@ use oxide_types::object::JsObject;
 
 use crate::bind_constructor;
 
+/// 把 RegExp 构造器与原型方法绑定到 global。
 pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let ctor_ptr = session.builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };

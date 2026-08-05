@@ -1,3 +1,5 @@
+//! throw 语句 emit：`emit_throw_statement` 求值异常值并生成 THROW。
+
 use crate::{CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

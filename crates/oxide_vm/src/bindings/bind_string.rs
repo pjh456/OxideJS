@@ -6,6 +6,7 @@ use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
+/// 把 String 构造器与原型方法绑定到 global。
 pub fn bind_string(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let string_methods = StringMethods {
         from_char_code: oxide_builtins::string::string_from_char_code::<crate::vm::Vm> as *const (),

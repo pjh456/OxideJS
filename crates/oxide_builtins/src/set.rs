@@ -15,6 +15,8 @@ macro_rules! native_try {
     };
 }
 
+/// Set/Map 的键包装：用 SameValue 语义比较（NaN 视为相同、±0 视为相同），
+/// 非 double 值按原始位比较。
 #[derive(Clone, Copy)]
 pub struct SetKey(pub JsValue);
 
@@ -104,6 +106,7 @@ fn alloc_set<H: VmHost>(vm: &mut H) -> *mut JsObject {
     vm.alloc_object(obj)
 }
 
+/// 收集 Set 中作为对象引用的元素（GC 根边），供跨 epoch 遍历/重写时追踪。
 pub fn set_native_edges(obj: &JsObject) -> Vec<JsValue> {
     if !obj.is_set() {
         return Vec::new();
@@ -121,6 +124,7 @@ pub fn set_native_edges(obj: &JsObject) -> Vec<JsValue> {
     }
 }
 
+/// 克隆 Set 的 native 数据到新对象，用 `rewrite` 改写其中的对象引用。
 pub fn clone_set_native_with_rewrite<F>(src: &JsObject, dst: &mut JsObject, mut rewrite: F)
 where
     F: FnMut(JsValue) -> JsValue,
@@ -143,6 +147,7 @@ where
     dst.set_native_data(Box::into_raw(Box::new(cloned)) as *mut u8);
 }
 
+/// 原地重写 Set 的 native 数据，用 `rewrite` 改写其中的对象引用。
 pub fn rewrite_set_native<F>(obj: &mut JsObject, mut rewrite: F)
 where
     F: FnMut(JsValue) -> JsValue,
@@ -164,6 +169,7 @@ where
     }
 }
 
+/// 释放 Set 的 native 数据（IndexSet），返回释放的字节数供泄漏统计。
 pub fn drop_set_native(obj: &mut JsObject) -> u64 {
     if !obj.is_set() {
         return 0;
@@ -181,11 +187,13 @@ pub fn drop_set_native(obj: &mut JsObject) -> u64 {
     }
 }
 
+/// `Set` 构造函数：创建带空 IndexSet native 数据的 Set 对象。
 pub fn set_constructor<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     let set_obj = alloc_set(vm);
     NativeResult::Ok(JsValue::from_js_object(set_obj))
 }
 
+/// `Set.prototype.add(value)`：插入元素，返回 this。
 pub fn set_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let inner = native_try!(get_set_inner(vm, this_val));
@@ -196,6 +204,7 @@ pub fn set_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(this_val)
 }
 
+/// `Set.prototype.has(value)`：元素是否存在。
 pub fn set_has<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let inner = native_try!(get_set_inner(vm, this_val));
@@ -204,6 +213,7 @@ pub fn set_has<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(found))
 }
 
+/// `Set.prototype.delete(value)`：删除元素并返回是否删除成功。
 pub fn set_delete<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let inner = native_try!(get_set_inner(vm, this_val));
@@ -212,6 +222,7 @@ pub fn set_delete<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(removed))
 }
 
+/// `Set.prototype.clear()`：清空全部元素，返回 undefined。
 pub fn set_clear<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let inner = native_try!(get_set_inner(vm, this_val));
@@ -221,12 +232,14 @@ pub fn set_clear<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::undefined())
 }
 
+/// `Set.prototype.size` getter：返回元素数量。
 pub fn set_size<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let inner = native_try!(get_set_inner(vm, this_val));
     NativeResult::Ok(JsValue::float(unsafe { (*inner).len() } as f64))
 }
 
+/// `Set.prototype.entries()`：返回按插入序迭代 `[value, value]` 对的迭代器。
 pub fn set_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let _inner = native_try!(get_set_inner(vm, this_val));
@@ -237,6 +250,7 @@ pub fn set_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     ))
 }
 
+/// `Set.prototype.values()`：返回按插入序迭代值的迭代器。
 pub fn set_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let _inner = native_try!(get_set_inner(vm, this_val));
@@ -247,6 +261,7 @@ pub fn set_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     ))
 }
 
+/// `Set.prototype.keys()`：别名 `values()`（Set 无独立键），返回同样的迭代器。
 pub fn set_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let _inner = native_try!(get_set_inner(vm, this_val));

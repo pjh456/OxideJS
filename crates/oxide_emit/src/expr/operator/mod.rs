@@ -1,3 +1,7 @@
+//! 运算符域：二元/一元/条件/逻辑/更新/`in` 表达式 emit 与分发。
+//! 逻辑与 `??` 用短路跳转，复合求值利用 `is_side_effect_free` 优化。
+//! 函数：`emit_operator` 及各类 `emit_*_expression`。
+
 use crate::{is_side_effect_free, BinaryOperator, CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

@@ -5,6 +5,7 @@ use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
+/// 把 JSON 单例对象及其方法（parse/stringify 等）绑定到 global。
 pub fn bind_json(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let json_ptr = session.builtin_world().json_object.as_ptr() as *mut JsObject;
     let json = unsafe { &mut *json_ptr };

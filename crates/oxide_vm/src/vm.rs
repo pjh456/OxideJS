@@ -6,6 +6,7 @@ use oxide_bytecode::module::{CompiledModule, Constant};
 use oxide_bytecode::opcode::{self, OpCode};
 use smallvec::SmallVec;
 
+/// 初始化一个 session 的内置对象（global 槽位、各构造器与原型、IC 预热）。
 pub use crate::bindings::init_kernel_builtins;
 use crate::native::NativeFn;
 use crate::session_gc::SessionGc;
@@ -89,6 +90,10 @@ macro_rules! binary_arith {
     }}
 }
 
+/// 调用帧被挂起后，恢复时需要继续的执行方式。
+///
+/// `AccessorGet` 表示 accessor getter 返回后需把结果写回 `target_reg`；
+/// `AccessorSet` 表示 setter 调用完成；`None` 为普通调用返回。
 #[derive(Debug, Clone, Copy)]
 pub enum FrameContinuation {
     None,
@@ -96,6 +101,10 @@ pub enum FrameContinuation {
     AccessorSet,
 }
 
+/// 一次函数调用的调用帧：记录返回地址、调用方寄存器窗口与 `this`/`new.target`。
+///
+/// 调用方寄存器窗口在 `save_stack` 中按 `saved_reg_offset` 保存，返回时由
+/// `restore_frame` 恢复；`continuation` 描述 getter/setter 场景的恢复方式。
 pub struct CallFrame {
     pub return_addr: usize,
     pub function_name: u32,
@@ -110,6 +119,9 @@ pub struct CallFrame {
     pub continuation: FrameContinuation,
 }
 
+/// 一次 `for-in` 迭代的游标：已收集的 key 列表与当前下标。
+///
+/// 每个 key 与它的 intern id 配对保存，使整型下标 key 无需重新 intern 即可排到字符串 key 之前。
 pub struct ForInIter<'bump> {
     /// Each key paired with its string-intern id, so for-in can sort
     /// integer-index keys ahead of string keys without re-interning.
@@ -117,6 +129,7 @@ pub struct ForInIter<'bump> {
     pub index: usize,
 }
 
+/// try/catch/finally 处理记录，异常展开时用于定位跳转目标与清理范围。
 pub struct TryHandler {
     pub catch_pc: Option<usize>,
     pub finally_pc: Option<usize>,
@@ -149,6 +162,11 @@ pub(crate) struct InlineSyncState {
     pub(crate) cell_stack: Vec<Vec<*mut Cell>>,
 }
 
+/// 基于寄存器的 JS 虚拟机：持有执行状态、寄存器文件、调用栈与 session 内存。
+///
+/// 执行入口为 [`Vm::run`]（见 `vm_runtime` 模块）；内存模型为 epoch arena +
+/// session 对象（可被 `SessionGc` 移动式回收）+ session 字符串。多数内部字段为
+/// `pub(crate)`，对外提供统计与内省 getter。
 pub struct Vm {
     pub(crate) regs: [JsValue; 256],
     pub(crate) pc: usize,
@@ -404,38 +422,47 @@ impl Vm {
         self.gc_state.session_gc = session_gc;
     }
 
+    /// 只读访问 session GC 的统计（回收次数、存活/死亡对象数、释放字节等）。
     pub fn session_gc_stats(&self) -> &SessionGc {
         &self.gc_state.session_gc
     }
 
+    /// 当前 session arena 中存活（已晋升）的对象数量。
     pub fn session_object_count(&self) -> usize {
         self.gc_state.session_object_ptrs.len()
     }
 
+    /// session 当前分配的字节数（对象 + 存活字符串）。
     pub fn session_bytes_allocated(&self) -> usize {
         self.gc_state.session_bytes_allocated
     }
 
+    /// 当前 epoch 中已分配并跟踪的对象数量（未晋升到 session 的临时对象）。
     pub fn epoch_object_count(&self) -> usize {
         self.gc_state.epoch_object_ptrs.len()
     }
 
+    /// inline cache 命中率（0.0~1.0），用于观测 IC 预热效果。
     pub fn ic_hit_rate(&self) -> f64 {
         self.profiling.ic_hit_rate()
     }
 
+    /// 累计执行的指令数（profiling）。
     pub fn instruction_count(&self) -> u64 {
         self.profiling.instruction_count
     }
 
+    /// 全局 symbol 注册表中已注册的 key 数量。
     pub fn symbol_registry_len(&self) -> usize {
         self.symbols.registry_len()
     }
 
+    /// inline cache 命中次数。
     pub fn ic_hit_count(&self) -> u64 {
         self.profiling.ic_hits.get()
     }
 
+    /// inline cache 未命中次数。
     pub fn ic_miss_count(&self) -> u64 {
         self.profiling.ic_misses.get()
     }
@@ -477,6 +504,7 @@ impl Vm {
         format_error_message(kind, msg)
     }
 
+    /// 推进线性同余 RNG 一步（Math.random 用）。首次调用以系统时间纳秒播种。
     pub fn step_rng(&mut self) {
         if self.math_rng_state == 0 {
             self.math_rng_state = std::time::SystemTime::now()
@@ -491,14 +519,17 @@ impl Vm {
             .wrapping_add(1442695040888963407);
     }
 
+    /// 读取当前 RNG 状态生成的 [0,1) 浮点数。
     pub fn math_rng_value(&self) -> f64 {
         (self.math_rng_state >> 33) as f64 / (1u64 << 31) as f64
     }
 
+    /// 只读访问 VM 共享的 `KernelCore`。
     pub fn kernel_core(&self) -> &Arc<KernelCore> {
         &self.kernel_core
     }
 
+    /// 只读访问当前 session（builtin world 与 global object）。
     pub fn session(&self) -> &KernelSession {
         &self.session
     }
@@ -508,18 +539,22 @@ impl Vm {
         std::ptr::eq(ptr, proto_ptr)
     }
 
+    /// 读取寄存器 `idx` 的值（`VmHost` 与 native 绑定的统一入口）。
     pub fn reg(&self, idx: u8) -> JsValue {
         self.regs[idx as usize]
     }
 
+    /// 写入寄存器 `idx` 的值。
     pub fn set_reg(&mut self, idx: u8, val: JsValue) {
         self.regs[idx as usize] = val;
     }
 
+    /// 只读访问 VM 的 epoch arena。
     pub fn epoch(&self) -> &Epoch {
         &self.epoch
     }
 
+    /// 若 `val` 是字符串，返回其内容的 `String` 副本；否则返回 `None`。
     pub fn lookup_str(&self, val: JsValue) -> Option<String> {
         if !val.is_string() {
             return None;

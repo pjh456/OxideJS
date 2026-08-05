@@ -1,3 +1,9 @@
+//! 标识符合法化 / 作用域符号表。
+//!
+//! 层叠作用域栈：`var` 声明提升到最近函数作用域，`let`/`const` 留在当前块。
+//! 绑定记录寄存器号 + 初始化标志（TDZ 检查）+ const 标志。声明即写入，
+//! `lookup` 在未初始化时报 TDZ 错误。
+
 use std::collections::HashMap;
 
 use oxide_parser::VariableDeclarationKind;
@@ -19,6 +25,8 @@ pub(crate) struct Binding {
     pub(crate) is_const: bool,
 }
 
+/// 作用域符号表：名字 → 寄存器号/初始化状态/const 标志。
+/// 首层为全局函数作用域，后续 push 的为块作用域。
 pub struct SymbolTable {
     pub(crate) scopes: Vec<Scope>,
 }
@@ -30,6 +38,7 @@ impl Default for SymbolTable {
 }
 
 impl SymbolTable {
+    /// 构造符号表：预置一个全局函数作用域。
     pub fn new() -> Self {
         Self {
             scopes: vec![Scope {
@@ -39,6 +48,7 @@ impl SymbolTable {
         }
     }
 
+    /// 压入新的块作用域（`let`/`const` 限定于此）。
     pub fn push_scope(&mut self) {
         self.scopes.push(Scope {
             bindings: HashMap::new(),
@@ -50,6 +60,7 @@ impl SymbolTable {
         self.scopes.push(Scope { bindings: HashMap::new(), kind });
     }
 
+    /// 弹出最内层作用域；全局作用域不可弹出。
     pub fn pop_scope(&mut self) {
         if self.scopes.len() > 1 {
             self.scopes.pop();
@@ -65,6 +76,8 @@ impl SymbolTable {
         0
     }
 
+    /// 声明绑定：`var` 提升到函数作用域，`let`/`const` 落在当前块。
+    /// 初始为未初始化态（TDZ）；重复声明报错。
     pub fn declare(
         &mut self, name: &str, reg: u8, kind: VariableDeclarationKind, is_const: bool,
     ) -> Result<(), String> {
@@ -89,6 +102,7 @@ impl SymbolTable {
         Ok(())
     }
 
+    /// 从内到外查找已初始化绑定；命中未初始化绑定报 TDZ 错误，未找到报未定义。
     pub fn lookup(&self, name: &str) -> Result<u8, String> {
         for scope in self.scopes.iter().rev() {
             if let Some(b) = scope.bindings.get(name) {
@@ -117,6 +131,7 @@ impl SymbolTable {
         None
     }
 
+    /// 查找或视为全局：未命中时以 `reg_for_new` 在全局作用域登记并返回（隐式全局）。
     pub fn lookup_or_global(&mut self, name: &str, reg_for_new: u8) -> u8 {
         for scope in self.scopes.iter().rev() {
             if let Some(b) = scope.bindings.get(name) {
@@ -134,6 +149,7 @@ impl SymbolTable {
         reg_for_new
     }
 
+    /// 返回已初始化绑定是否为 const（用于 const 赋值检查）；未初始化/未找到返回 false。
     pub fn lookup_is_const(&self, name: &str) -> bool {
         for scope in self.scopes.iter().rev() {
             if let Some(b) = scope.bindings.get(name) {
@@ -146,6 +162,7 @@ impl SymbolTable {
         false
     }
 
+    /// 声明并直接标记为已初始化；绑定已存在时仅补初始化标志（供预声明路径）。
     pub fn declare_initialized(
         &mut self, name: &str, reg: u8, kind: VariableDeclarationKind, is_const: bool,
     ) -> Result<(), String> {
@@ -171,6 +188,7 @@ impl SymbolTable {
         Ok(())
     }
 
+    /// 在全局作用域预登记绑定（builtin 全局等），不覆盖已存在的同名绑定。
     pub fn pre_register_global(&mut self, name: &str, reg: u8) {
         self.scopes[0].bindings.entry(name.to_string()).or_insert(Binding {
             reg,
@@ -179,6 +197,7 @@ impl SymbolTable {
         });
     }
 
+    /// 从内到外将同名绑定标记为已初始化（var 提升后初始化阶段使用）。
     pub fn init_var(&mut self, name: &str) {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(b) = scope.bindings.get_mut(name) {

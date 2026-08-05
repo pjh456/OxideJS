@@ -6,6 +6,7 @@ use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
+/// 把 Number 构造器与原型方法绑定到 global（含 NaN/POSITIVE_INFINITY 等常量）。
 pub fn bind_number(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let ctor_ptr = session.builtin_world().number_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };

@@ -7,6 +7,7 @@ use oxide_types::value::JsValue;
 
 use crate::bindings::{apply_binding_table, bind_global_value, configure_native_constructor};
 
+/// 绑定迭代器基础设施：`%IteratorPrototype%` 与 `%ArrayIteratorPrototype%` 等。
 pub fn bind_iterator(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let function_proto = session.builtin_world().function_proto.as_ptr() as *mut JsObject;
     let mut iterator = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(function_proto)));

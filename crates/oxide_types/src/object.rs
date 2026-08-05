@@ -1,3 +1,11 @@
+//! 对象模型：字符串、对象、属性元数据、闭包 cell 与原生函数指针。
+//!
+//! `JsObject` 为定长 `repr(C)` 结构（112 字节 + 对齐），核心字段内联在
+//! header 位域中；dense 属性向量、属性元数据与 upvalue cell 列表通过裸指针
+//! 挂在堆上，由 VM / GC 负责生命周期。本模块同时定义属性标志
+//! (`PropAttributes`)、访问器/数据属性元数据 (`PropMetaEntry`) 与
+//! 闭包共享 cell (`Cell`)。
+
 use crate::value::JsValue;
 
 /// Heap-allocated JS string value.
@@ -10,18 +18,22 @@ pub struct JsString {
 }
 
 impl JsString {
+    /// 用 UTF-8 数据构造字符串。
     pub fn new(data: String) -> Self {
         Self { data }
     }
 
+    /// 字符串的字节长度（非字符数）。
     pub fn len(&self) -> usize {
         self.data.len()
     }
 
+    /// 是否为空字符串。
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
 
+    /// 底层 UTF-8 切片。
     pub fn as_str(&self) -> &str {
         self.data.as_str()
     }
@@ -66,9 +78,13 @@ impl NativeFnPtr {
 unsafe impl Send for NativeFnPtr {}
 unsafe impl Sync for NativeFnPtr {}
 
+/// 形状标识符（对象 header 低位 24 位）。
 pub type ShapeId = u32;
+
+/// dense 属性向量长度的硬上限，防止索引失控导致内存膨胀。
 pub const MAX_DENSE_PROPS: usize = 1_000_000;
 
+/// TypedArray 的元素类型，决定 `bytes_per_element` 与内存视图的字节序解读。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypedArrayKind {
     Int8,
@@ -85,6 +101,7 @@ pub enum TypedArrayKind {
 }
 
 impl TypedArrayKind {
+    /// 每个元素的字节数（1/2/4/8）。
     pub const fn bytes_per_element(self) -> usize {
         match self {
             Self::Int8 | Self::Uint8 | Self::Uint8Clamped => 1,
@@ -95,15 +112,23 @@ impl TypedArrayKind {
     }
 }
 
+/// 属性描述符标志位集合，压缩在单个 `u8` 中。
+///
+/// 位定义：bit0 = writable，bit1 = enumerable，bit2 = configurable。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PropAttributes(pub u8);
 
 impl PropAttributes {
+    /// writable 标志位（`0b001`）。
     pub const WRITABLE: u8 = 0b001;
+    /// enumerable 标志位（`0b010`）。
     pub const ENUMERABLE: u8 = 0b010;
+    /// configurable 标志位（`0b100`）。
     pub const CONFIGURABLE: u8 = 0b100;
+    /// 数据属性默认描述符：三标志全开。
     pub const DEFAULT_DATA: Self = Self(Self::WRITABLE | Self::ENUMERABLE | Self::CONFIGURABLE);
 
+    /// 由三个布尔标志构造描述符。
     pub const fn new(writable: bool, enumerable: bool, configurable: bool) -> Self {
         let mut bits = 0;
         if writable {
@@ -118,19 +143,26 @@ impl PropAttributes {
         Self(bits)
     }
 
+    /// 是否 writable。
     pub const fn writable(self) -> bool {
         self.0 & Self::WRITABLE != 0
     }
 
+    /// 是否 enumerable。
     pub const fn enumerable(self) -> bool {
         self.0 & Self::ENUMERABLE != 0
     }
 
+    /// 是否 configurable。
     pub const fn configurable(self) -> bool {
         self.0 & Self::CONFIGURABLE != 0
     }
 }
 
+/// 单个属性的元数据条目。
+///
+/// 数据属性仅用 `attributes`；访问器属性额外携带 getter / setter
+/// 的 [`JsValue`] 与 `is_accessor = true` 标记。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PropMetaEntry {
     pub attributes: PropAttributes,
@@ -140,6 +172,7 @@ pub struct PropMetaEntry {
 }
 
 impl PropMetaEntry {
+    /// 构造数据属性条目。
     pub fn data(attributes: PropAttributes) -> Self {
         Self {
             attributes,
@@ -149,6 +182,7 @@ impl PropMetaEntry {
         }
     }
 
+    /// 构造访问器属性条目（getter/setter 可为 `undefined`）。
     pub fn accessor(get: JsValue, set: JsValue, attributes: PropAttributes) -> Self {
         Self {
             attributes,
@@ -159,6 +193,10 @@ impl PropMetaEntry {
     }
 }
 
+/// 可转换为 dense 属性下标的值。
+///
+/// 为 `u8` / `u16` / `u32` / `usize` / 非负 `i32` 实现，统一属性向量
+/// 下标参数的类型。
 pub trait PropIndex {
     fn to_u32(self) -> u32;
 }
@@ -196,30 +234,30 @@ impl PropIndex for i32 {
 
 /// Layout:
 ///   header: u32 bits
-///     [0:23]   shape_id
-///     [24]     is_set
-///     [25]     is_map
-///     [26]     is_derived_constructor
-///     [27]     is_class_constructor
-///     [28]     is_arrow
-///     [29]     is_array
-///     [30]     is_extensible
-///     [31]     is_function
+///     \[0:23\]   shape_id
+///     \[24\]     is_set
+///     \[25\]     is_map
+///     \[26\]     is_derived_constructor
+///     \[27\]     is_class_constructor
+///     \[28\]     is_arrow
+///     \[29\]     is_array
+///     \[30\]     is_extensible
+///     \[31\]     is_function
 ///   native_arg_count: u8 (1 byte)
 ///   type_tag: u8 — OBJ_TYPE_* constant identifying wrapper/exotic object kind (1 byte)
 ///   is_session_epoch: u8 (1 byte)
 ///   _pad: u8
-///   hash_props: *mut u8 (8 bytes, points to Box<Vec<JsValue>>)
-///   prop_meta: *mut u8 (8 bytes, points to Box<Vec<Option<PropMetaEntry>>>)
+///   hash_props: *mut u8 (8 bytes, points to Box\<Vec\<JsValue\>\>)
+///   prop_meta: *mut u8 (8 bytes, points to Box\<Vec\<Option\<PropMetaEntry\>\>\>)
 ///   native_data: *mut u8 (8 bytes, opaque VM-owned native/exotic payload)
 ///   proto: JsValue (8 bytes)
 ///   generation: u32 (4 bytes + 4 pad)
-///   native_fn: Option<NativeFnPtr> (16 bytes — Option<NonNull> optimization NOT available for
+///   native_fn: Option\<NativeFnPtr\> (16 bytes — Option\<NonNull\> optimization NOT available for
 ///              raw *const (); stored as Option wrapping an 8-byte pointer, with 8 bytes of
 ///              discriminant padding due to repr(Rust) layout rules)
 ///   sub_module_index: u32 (4 bytes + 4 pad, index into CompiledModule.sub_modules)
 ///   captured_this: JsValue (8 bytes, lexical this for arrow functions)
-///   home_object: JsValue (8 bytes, [[HomeObject]] for super lookup)
+///   home_object: JsValue (8 bytes, \[\[HomeObject\]\] for super lookup)
 ///   upvalues: *mut u8 (8 bytes, points to Box<Vec<*mut Cell>> for closures)
 ///
 ///   Total: 112 bytes
@@ -232,9 +270,12 @@ pub struct Cell {
 }
 
 impl Cell {
+    /// 已初始化标志（TDZ / 未赋值检测）。
     pub const INITIALIZED: u8 = 0x01;
+    /// GC 标记位。
     pub const GC_MARK: u8 = 0x02;
 
+    /// 构造 cell，`initialized` 决定是否立即置 [`INITIALIZED`](Cell::INITIALIZED) 位。
     pub fn new(value: JsValue, initialized: bool) -> Self {
         Cell {
             value,
@@ -243,10 +284,12 @@ impl Cell {
         }
     }
 
+    /// 是否已初始化。
     pub fn is_initialized(&self) -> bool {
         self.flags & Self::INITIALIZED != 0
     }
 
+    /// 设置 / 清除已初始化标志。
     pub fn set_initialized(&mut self, val: bool) {
         if val {
             self.flags |= Self::INITIALIZED;
@@ -255,10 +298,12 @@ impl Cell {
         }
     }
 
+    /// 是否被 GC 标记。
     pub fn is_gc_marked(&self) -> bool {
         self.flags & Self::GC_MARK != 0
     }
 
+    /// 设置 / 清除 GC 标记。
     pub fn set_gc_mark(&mut self, marked: bool) {
         if marked {
             self.flags |= Self::GC_MARK;
@@ -268,6 +313,13 @@ impl Cell {
     }
 }
 
+/// 定长对象头 + 堆外数据指针的 JS 普通/外来对象。
+///
+/// 内联字段：`header`（shape_id + 一组标志位）、`type_tag`（外来对象种类）、
+/// `proto`、`generation` 等；dense 属性向量、属性元数据、native payload 与
+/// upvalue cell 列表以裸指针挂在堆上，由 VM / GC 维护。对象可分配在
+/// session arena（`Epoch`）或持久堆（`PersistentHeap`），通过
+/// `is_session_epoch` 位区分。
 pub struct JsObject {
     header: u32,
     native_arg_count: u8,
@@ -289,51 +341,71 @@ pub struct JsObject {
 }
 
 impl JsObject {
+    /// 普通对象类型标签。
     pub const OBJ_TYPE_PLAIN: u8 = 0;
+    /// Date 对象类型标签。
     pub const OBJ_TYPE_DATE: u8 = 1;
+    /// RegExp 对象类型标签。
     pub const OBJ_TYPE_REGEXP: u8 = 2;
+    /// 装箱 Boolean 对象类型标签。
     pub const OBJ_TYPE_BOOLEAN_OBJ: u8 = 3;
+    /// 装箱 Number 对象类型标签。
     pub const OBJ_TYPE_NUMBER_OBJ: u8 = 4;
+    /// 装箱 String 对象类型标签。
     pub const OBJ_TYPE_STRING_OBJ: u8 = 5;
+    /// ArrayBuffer 对象类型标签。
     pub const OBJ_TYPE_ARRAY_BUFFER: u8 = 6;
+    /// DataView 对象类型标签。
     pub const OBJ_TYPE_DATA_VIEW: u8 = 7;
+    /// TypedArray 对象类型标签。
     pub const OBJ_TYPE_TYPED_ARRAY: u8 = 8;
+    /// `is_session_epoch` 字段中的 session 标记位。
     pub const SESSION_EPOCH_BIT: u8 = 0x01;
+    /// `is_session_epoch` 字段中的 GC 标记位。
     pub const GC_MARK_BIT: u8 = 0x02;
 
+    /// 是否 Date 外来对象。
     #[inline]
     pub fn is_date_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_DATE
     }
+    /// 是否 RegExp 外来对象。
     #[inline]
     pub fn is_regexp_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_REGEXP
     }
+    /// 是否装箱 Boolean 对象。
     #[inline]
     pub fn is_boolean_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_BOOLEAN_OBJ
     }
+    /// 是否装箱 Number 对象。
     #[inline]
     pub fn is_number_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_NUMBER_OBJ
     }
+    /// 是否装箱 String 对象。
     #[inline]
     pub fn is_string_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_STRING_OBJ
     }
+    /// 是否 ArrayBuffer 对象。
     #[inline]
     pub fn is_array_buffer_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_ARRAY_BUFFER
     }
+    /// 是否 DataView 对象。
     #[inline]
     pub fn is_data_view_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_DATA_VIEW
     }
+    /// 是否 TypedArray 对象。
     #[inline]
     pub fn is_typed_array_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_TYPED_ARRAY
     }
 
+    /// 构造无属性、可扩展的空对象（`new Object()` 的基础对象）。
     pub fn new_empty(shape_id: ShapeId, proto: JsValue) -> Self {
         Self {
             header: (shape_id & 0x00FF_FFFF) | (1 << 30),
@@ -356,6 +428,7 @@ impl JsObject {
         }
     }
 
+    /// 构造数组对象：预分配 `n_elements` 个 `undefined` 的 dense 向量并置 array 标志。
     pub fn new_array(shape_id: ShapeId, proto: JsValue, n_elements: usize, _bump: &bumpalo::Bump) -> Self {
         let mut obj = Self {
             header: (shape_id & 0x00FF_FFFF) | (1 << 30) | (1 << 29),
@@ -381,11 +454,13 @@ impl JsObject {
         obj
     }
 
+    /// 是否 session-epoch 分配（调用期内分配，调用结束即失效）。
     #[inline]
     pub fn is_session_epoch(&self) -> bool {
         self.is_session_epoch & Self::SESSION_EPOCH_BIT != 0
     }
 
+    /// 设置 / 清除 session-epoch 标记。
     #[inline]
     pub fn set_session_epoch(&mut self, value: bool) {
         if value {
@@ -395,11 +470,13 @@ impl JsObject {
         }
     }
 
+    /// 是否被 GC 标记。
     #[inline]
     pub fn is_gc_marked(&self) -> bool {
         self.is_session_epoch & Self::GC_MARK_BIT != 0
     }
 
+    /// 设置 / 清除 GC 标记。
     #[inline]
     pub fn set_gc_mark(&mut self, marked: bool) {
         if marked {
@@ -409,6 +486,9 @@ impl JsObject {
         }
     }
 
+    /// 深拷贝本对象到 session epoch：复制属性向量与元数据，标记为新 session 对象。
+    ///
+    /// 用于把持久对象快照进当前调用上下文，修改不反向传播到源对象。
     pub fn clone_for_session_epoch(&self) -> Self {
         let hash_props = self
             .hash_props_vec()
@@ -440,22 +520,27 @@ impl JsObject {
         }
     }
 
+    /// dense 属性向量底层指针（未分配时为空指针）。
     pub fn hash_props_raw(&self) -> *mut u8 {
         self.hash_props
     }
 
+    /// 属性元数据向量底层指针（未分配时为空指针）。
     pub fn prop_meta_raw(&self) -> *mut u8 {
         self.prop_meta
     }
 
+    /// 原生 / 外来对象 payload 指针。
     pub fn native_data(&self) -> *mut u8 {
         self.native_data
     }
 
+    /// 设置原生 / 外来对象 payload 指针。
     pub fn set_native_data(&mut self, ptr: *mut u8) {
         self.native_data = ptr;
     }
 
+    /// 闭包 upvalue cell 列表切片（未设置时为空切片）。
     pub fn upvalues_slice(&self) -> &[*mut Cell] {
         if self.upvalues.is_null() {
             &[]
@@ -464,6 +549,7 @@ impl JsObject {
         }
     }
 
+    /// 可变 upvalue cell 列表切片（未设置时为空切片）。
     pub fn upvalues_slice_mut(&mut self) -> &mut [*mut Cell] {
         if self.upvalues.is_null() {
             &mut []
@@ -472,6 +558,7 @@ impl JsObject {
         }
     }
 
+    /// 替换 upvalue cell 列表（释放旧列表）。
     pub fn set_upvalues(&mut self, v: Box<Vec<*mut Cell>>) {
         if !self.upvalues.is_null() {
             unsafe {
@@ -481,6 +568,11 @@ impl JsObject {
         self.upvalues = Box::into_raw(v) as *mut u8;
     }
 
+    /// 用 `rewrite` 改写对象内引用的所有对象值。
+    ///
+    /// 用于 GC 移动 / 世代晋升：遍历 dense 属性、访问器 getter/setter、
+    /// `proto`、`captured_this`、`home_object` 与 upvalue cell 中的对象值，
+    /// 原地替换为新地址。非对象值保持不变。
     pub fn rewrite_object_values<F>(&mut self, mut rewrite: F)
     where
         F: FnMut(JsValue) -> JsValue,
@@ -522,10 +614,12 @@ impl JsObject {
         }
     }
 
+    /// 当前形状 ID（header 低位 24 位）。
     pub fn shape_id(&self) -> ShapeId {
         self.header & 0x00FF_FFFF
     }
 
+    /// 设置形状 ID（低位 24 位，保留其它标志位）。
     pub fn set_shape_id(&mut self, id: ShapeId) {
         self.header = (self.header & !0x00FF_FFFF) | (id & 0x00FF_FFFF);
     }
@@ -567,6 +661,7 @@ impl JsObject {
         }
     }
 
+    /// 是否已分配属性元数据向量。
     pub fn has_prop_meta(&self) -> bool {
         !self.prop_meta.is_null()
     }
@@ -598,6 +693,9 @@ impl JsObject {
         }
     }
 
+    /// 确保属性元数据向量已分配并返回可变引用。
+    ///
+    /// 初始长度与当前 dense 属性数对齐，全部初始化为 `None`（无元数据）。
     pub fn ensure_prop_meta(&mut self) -> &mut Vec<Option<PropMetaEntry>> {
         if self.prop_meta.is_null() {
             let len = self.prop_vec_len();
@@ -609,6 +707,7 @@ impl JsObject {
         unsafe { &mut *(self.prop_meta as *mut Vec<Option<PropMetaEntry>>) }
     }
 
+    /// 只读访问属性元数据向量（未分配时返回 `None`）。
     pub fn prop_meta_vec(&self) -> Option<&Vec<Option<PropMetaEntry>>> {
         if self.prop_meta.is_null() {
             None
@@ -629,21 +728,25 @@ impl JsObject {
         }
     }
 
+    /// 读取指定下标属性的元数据；无元数据或越界返回 `None`。
     pub fn prop_meta_at(&self, position: impl PropIndex) -> Option<PropMetaEntry> {
         let pos = position.to_u32() as usize;
         self.prop_meta_vec().and_then(|vec| vec.get(pos).copied().flatten())
     }
 
+    /// 设置指定下标属性的数据属性描述符。
     pub fn set_data_meta(&mut self, position: impl PropIndex, attributes: PropAttributes) {
         self.set_meta_at(position, PropMetaEntry::data(attributes));
     }
 
+    /// 设置指定下标属性的访问器描述符（getter/setter）。
     pub fn set_accessor_meta(
         &mut self, position: impl PropIndex, get: JsValue, set: JsValue, attributes: PropAttributes,
     ) {
         self.set_meta_at(position, PropMetaEntry::accessor(get, set, attributes));
     }
 
+    /// 判断指定下标的属性是否为访问器属性。
     pub fn is_accessor_meta(&self, position: impl PropIndex) -> bool {
         self.prop_meta_at(position).is_some_and(|entry| entry.is_accessor)
     }
@@ -661,14 +764,17 @@ impl JsObject {
         meta[pos] = Some(entry);
     }
 
+    /// 是否数组（header bit 29）。
     pub fn is_array(&self) -> bool {
         (self.header >> 29) & 1 != 0
     }
 
+    /// 是否可扩展（header bit 30，与 `Object.preventExtensions` 对应）。
     pub fn is_extensible(&self) -> bool {
         (self.header >> 30) & 1 != 0
     }
 
+    /// 设置可扩展标志。
     pub fn set_extensible(&mut self, ext: bool) {
         if ext {
             self.header |= 1 << 30;
@@ -677,10 +783,12 @@ impl JsObject {
         }
     }
 
+    /// 是否冻结（`Object.freeze`，存在访问器/描述符时仍由属性级 configurable 约束）。
     pub fn is_frozen(&self) -> bool {
         (self._pad) & 1 != 0
     }
 
+    /// 设置冻结标志。
     pub fn set_frozen(&mut self, frozen: bool) {
         if frozen {
             self._pad |= 1 << 0;
@@ -689,10 +797,12 @@ impl JsObject {
         }
     }
 
+    /// 是否密封（`Object.seal`）。
     pub fn is_sealed(&self) -> bool {
         (self._pad >> 1) & 1 != 0
     }
 
+    /// 设置密封标志。
     pub fn set_sealed(&mut self, sealed: bool) {
         if sealed {
             self._pad |= 1 << 1;
@@ -701,10 +811,12 @@ impl JsObject {
         }
     }
 
+    /// 是否 Set 实例（header bit 24）。
     pub fn is_set(&self) -> bool {
         (self.header >> 24) & 1 != 0
     }
 
+    /// 设置 Set 实例标志。
     pub fn set_set(&mut self, s: bool) {
         if s {
             self.header |= 1 << 24;
@@ -713,10 +825,12 @@ impl JsObject {
         }
     }
 
+    /// 是否 Map 实例（header bit 25）。
     pub fn is_map(&self) -> bool {
         (self.header >> 25) & 1 != 0
     }
 
+    /// 设置 Map 实例标志。
     pub fn set_map(&mut self, m: bool) {
         if m {
             self.header |= 1 << 25;
@@ -725,10 +839,12 @@ impl JsObject {
         }
     }
 
+    /// 是否函数对象（header bit 31）。
     pub fn is_function(&self) -> bool {
         (self.header >> 31) & 1 != 0
     }
 
+    /// 设置函数对象标志。
     pub fn set_function(&mut self, f: bool) {
         if f {
             self.header |= 1 << 31;
@@ -822,10 +938,15 @@ impl JsObject {
         }
     }
 
+    /// 当前 `[[Prototype]]` 值。
     pub fn proto(&self) -> JsValue {
         self.proto
     }
 
+    /// 设置 `[[Prototype]]`，成功时递增 generation。
+    ///
+    /// 仅接受 `null` 或对象；沿新原型链检查是否构成环，成环返回
+    /// `Err("cyclic __proto__ value")`。
     pub fn set_proto(&mut self, proto: JsValue) -> Result<(), &'static str> {
         if proto.is_null() {
             self.proto = proto;
@@ -852,34 +973,42 @@ impl JsObject {
         Ok(())
     }
 
+    /// 当前 generation（对象结构变更计数器，IC 失效依据之一）。
     pub fn generation(&self) -> u32 {
         self.generation
     }
 
+    /// 递增 generation（`wrapping_add`）。
     pub fn bump_generation(&mut self) {
         self.generation = self.generation.wrapping_add(1);
     }
 
+    /// 关联的原生函数指针（若为内建/原生函数对象）。
     pub fn native_fn(&self) -> Option<NativeFnPtr> {
         self.native_fn
     }
 
+    /// 设置 / 清除原生函数指针。
     pub fn set_native_fn(&mut self, ptr: Option<NativeFnPtr>) {
         self.native_fn = ptr;
     }
 
+    /// 原生函数声明的参数个数。
     pub fn native_arg_count(&self) -> u8 {
         self.native_arg_count
     }
 
+    /// 设置原生函数参数个数。
     pub fn set_native_arg_count(&mut self, n: u8) {
         self.native_arg_count = n;
     }
 
+    /// 子模块下标（函数对象对应的 `CompiledModule` 索引）。
     pub fn sub_module_index(&self) -> u32 {
         self.sub_module_index
     }
 
+    /// 设置子模块下标。
     pub fn set_sub_module_index(&mut self, idx: u32) {
         self.sub_module_index = idx;
     }
@@ -890,6 +1019,7 @@ impl JsObject {
         (self.header >> 28) & 1 != 0
     }
 
+    /// 设置箭头函数标志（header bit 28）。
     pub fn set_arrow(&mut self, v: bool) {
         if v {
             self.header |= 1 << 28;
@@ -904,6 +1034,7 @@ impl JsObject {
         self.captured_this
     }
 
+    /// 设置箭头函数捕获的词法 `this`。
     pub fn set_captured_this(&mut self, v: JsValue) {
         self.captured_this = v;
     }
@@ -914,6 +1045,7 @@ impl JsObject {
         (self.header >> 27) & 1 != 0
     }
 
+    /// 设置类构造函数标志（header bit 27）。
     pub fn set_class_constructor(&mut self, v: bool) {
         if v {
             self.header |= 1 << 27;
@@ -922,10 +1054,12 @@ impl JsObject {
         }
     }
 
+    /// 是否派生类构造函数（有 `extends` 子句，header bit 26）。
     pub fn is_derived_constructor(&self) -> bool {
         (self.header >> 26) & 1 != 0
     }
 
+    /// 设置派生类构造函数标志（header bit 26）。
     pub fn set_derived_constructor(&mut self, v: bool) {
         if v {
             self.header |= 1 << 26;
@@ -934,10 +1068,12 @@ impl JsObject {
         }
     }
 
+    /// 当前 `[[HomeObject]]`（供 `super` 属性访问解析）。
     pub fn home_object(&self) -> JsValue {
         self.home_object
     }
 
+    /// 设置 `[[HomeObject]]`。
     pub fn set_home_object(&mut self, v: JsValue) {
         self.home_object = v;
     }

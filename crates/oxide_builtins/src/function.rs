@@ -30,6 +30,8 @@ fn bind_dispatcher<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     invoke_target(vm, bound_target, bound_this, &arg_regs)
 }
 
+/// `Function.prototype.call(thisArg, ...args)`：以指定 this 调用目标函数。
+/// 返回 TailCall 让 VM 继续执行目标函数体。
 pub fn function_call<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Err(JsValue::undefined());
@@ -40,6 +42,8 @@ pub fn function_call<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     invoke_target(vm, target_val, this_val, &arg_regs)
 }
 
+/// `Function.prototype.apply(thisArg, argsArray)`：以指定 this 和参数数组调用目标函数。
+/// 数组元素拷入寄存器（上限受寄存器空间限制，最多 55 个参数）。
 pub fn function_apply<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Err(JsValue::undefined());
@@ -80,6 +84,8 @@ pub fn function_apply<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     invoke_target(vm, target_val, this_val, &arg_regs)
 }
 
+/// `Function.prototype.bind(thisArg, ...args)`：返回绑定 this 的新包装函数，
+/// 调用时通过 `bind_dispatcher` 转发到原目标。非函数目标抛 TypeError。
 pub fn function_bind<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Err(crate::error::create_type_error(
@@ -111,6 +117,8 @@ pub fn function_bind<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(wrapper))
 }
 
+/// `Function.prototype.toString`：返回 `function name() { [native code] }`
+/// 或 `[bytecode]` 形式；函数名取自 `name` 属性或字节码子模块名。
 pub fn function_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if !this_val.is_object() {

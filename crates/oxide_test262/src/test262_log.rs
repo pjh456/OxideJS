@@ -1,3 +1,4 @@
+/// 输出 ERROR 级别日志，target 固定为 `oxide::test262`。
 #[macro_export]
 macro_rules! test262_error {
     ($($arg:tt)*) => {
@@ -5,6 +6,7 @@ macro_rules! test262_error {
     };
 }
 
+/// 输出 INFO 级别日志，target 固定为 `oxide::test262`。
 #[macro_export]
 macro_rules! test262_info {
     ($($arg:tt)*) => {
@@ -12,6 +14,7 @@ macro_rules! test262_info {
     };
 }
 
+/// 输出 DEBUG 级别日志，target 固定为 `oxide::test262`。
 #[macro_export]
 macro_rules! test262_debug {
     ($($arg:tt)*) => {

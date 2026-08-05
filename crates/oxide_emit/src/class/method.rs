@@ -1,3 +1,6 @@
+//! 类方法 emit：`emit_class_methods` 逐方法构造，`emit_class_method_function`
+//! 负责单个方法函数体（含 `super` 与 home object）。
+
 use crate::{CompileCtx, Emitter, FunctionBodyContext};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

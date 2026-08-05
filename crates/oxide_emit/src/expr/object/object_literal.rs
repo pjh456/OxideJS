@@ -1,3 +1,5 @@
+//! 对象字面量 emit：`emit_object_expression` 逐属性定义（含 getter/setter/展开）。
+
 use crate::{CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

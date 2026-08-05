@@ -6,12 +6,19 @@ use dashmap::DashMap;
 
 use crate::{kernel_debug, kernel_trace};
 
+/// 隐藏类（shape）的整数标识符。
 pub type ShapeId = u32;
+/// 属性名在字符串 intern 表（[`crate::string_forge::PermInterner`]）中的 id。
 pub type StringIndex = u32;
 
+/// 空 shape 的保留 id：表示"无属性"的根节点，构造对象时以此为初始 shape。
 pub const EMPTY_SHAPE_ID: ShapeId = 1;
 const EMPTY_SENTINEL: StringIndex = u32::MAX;
 
+/// 单个隐藏类节点：记录新增的属性名、父节点与根到自身的深度。
+///
+/// shape 构成一棵树，从根（[`EMPTY_SHAPE_ID`]）出发每添加一个属性产生一个子节点；
+/// `depth` 即该节点的属性总数。
 #[derive(Debug, Clone)]
 pub struct Shape {
     pub id: ShapeId,
@@ -39,6 +46,7 @@ pub struct ShapeForge {
 }
 
 impl ShapeForge {
+    /// 创建空 forge，并预置 [`EMPTY_SHAPE_ID`] 根节点。
     pub fn new() -> Self {
         let forge = Self {
             shapes: RwLock::new(Vec::with_capacity(256)),
@@ -62,10 +70,14 @@ impl ShapeForge {
         forge
     }
 
+    /// 把 `(parent_shape, prop_name)` 打包为单个 u64 key，用作 transition / position 缓存的键。
     pub fn pack_key(parent_id: ShapeId, prop_name: StringIndex) -> u64 {
         ((parent_id as u64) << 32) | (prop_name as u64)
     }
 
+    /// 取（或创建）`parent_id` 加属性 `prop_name` 对应的 shape id，实现哈希一致性。
+    ///
+    /// 相同 `(parent, prop_name)` 组合返回同一 id；超过 24 位上限后转入 overflow map 兜底。
     pub fn make_shape(&self, parent_id: ShapeId, prop_name: StringIndex) -> ShapeId {
         let key = Self::pack_key(parent_id, prop_name);
 
@@ -132,19 +144,25 @@ impl ShapeForge {
         id
     }
 
+    /// 按 id 取出 shape 节点的 `Arc` 副本；id 不存在时返回 `None`。
     pub fn get_shape(&self, id: ShapeId) -> Option<Arc<Shape>> {
         let shapes = self.shapes.read().unwrap();
         shapes.get((id - 1) as usize).and_then(|s| s.clone())
     }
 
+    /// 当前登记在册的 shape 节点数（含根节点）。
     pub fn len(&self) -> usize {
         self.shapes.read().unwrap().len()
     }
 
+    /// 是否尚无任何 shape（正常情况下始终为 false，因根节点恒存在）。
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    /// 清空所有非根 shape、transition 与 position 缓存，id 计数器复位。
+    ///
+    /// 用于 session 重建：丢弃一次性对象产生的形状，只保留跨 session 共享的根节点。
     pub fn clear_transient(&self) {
         let mut shapes = self.shapes.write().unwrap();
         if shapes.len() > 1 {
@@ -155,6 +173,7 @@ impl ShapeForge {
         self.next_id.store(2, Ordering::Relaxed);
     }
 
+    /// 查询属性在给定 shape 对应对象存储中的槽位下标；沿父链上溯查找并缓存结果。
     pub fn lookup_position(&self, shape_id: ShapeId, prop_name: StringIndex) -> Option<u32> {
         let cache_key = Self::pack_key(shape_id, prop_name);
         if let Some(pos) = self.positions.get(&cache_key) {
@@ -186,6 +205,7 @@ impl ShapeForge {
         None
     }
 
+    /// 判断 shape 或其祖先链上是否存在指定属性。
     pub fn has_property(&self, shape_id: ShapeId, prop_name: StringIndex) -> bool {
         let shapes = self.shapes.read().unwrap();
         let mut cursor = Some(shape_id);
@@ -203,6 +223,7 @@ impl ShapeForge {
         false
     }
 
+    /// 返回 shape 的属性数量（即根到该节点的深度）；未知 id 返回 0。
     pub fn shape_prop_count(&self, shape_id: ShapeId) -> u32 {
         let shapes = self.shapes.read().unwrap();
         shapes

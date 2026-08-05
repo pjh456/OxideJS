@@ -1,13 +1,29 @@
+//! 隐藏类（hidden class / shape）存储。
+//!
+//! 形状表是对象属性布局的可共享描述：每次往对象添加一个命名属性就沿链增长一个
+//! shape。形状按 `(parent_id, prop_name)` 哈希一致化（hash-cons），使结构相同的
+//! 对象共享同一 shape，从而支持属性位置缓存（inline cache）。全局单例
+//! `SHAPE_STORE` 以互斥锁保护，见 `get_shape` 等自由函数。
+
 use std::sync::{Arc, Mutex, OnceLock};
 
 use hashbrown::HashMap;
 
+/// 形状标识符，作为对象 header 中 24 位属性存储。
 pub type ShapeId = u32;
+/// 属性名字符串索引（进入字符串表的下标）。
 pub type StringIndex = u32;
 
+/// 空形状（无任何属性）的固定 ID。
+///
+/// 所有对象至少从空形状出发，`ShapeStore` 构造时即预置。
 pub const EMPTY_SHAPE_ID: ShapeId = 1;
 const EMPTY_SENTINEL: StringIndex = u32::MAX;
 
+/// 单个形状：一次属性添加对应的节点。
+///
+/// `property_name` 为本节点新增的属性名（空形状为 `EMPTY_SENTINEL`），
+/// `parent` 指向前一个形状，形成从当前形状到空形状的属性链。
 #[derive(Debug, Clone)]
 pub struct Shape {
     pub id: ShapeId,
@@ -143,22 +159,31 @@ fn store() -> &'static Mutex<ShapeStore> {
     SHAPE_STORE.get_or_init(|| Mutex::new(ShapeStore::new()))
 }
 
+/// 按 ID 获取形状，不存在则返回 `None`。
 pub fn get_shape(id: ShapeId) -> Option<Arc<Shape>> {
     store().lock().unwrap().get_shape(id)
 }
 
+/// 获取或创建 `(parent_id, prop_name)` 对应的形状 ID（hash-cons）。
+///
+/// 同一 `(parent, prop_name)` 键返回同一 ID；首次出现时分配新 ID 并沿链挂接。
 pub fn make_shape(parent_id: ShapeId, prop_name: StringIndex) -> ShapeId {
     store().lock().unwrap().make_shape(parent_id, prop_name)
 }
 
+/// 在形状的属性链中查找 `prop_name` 的位置（从父向子的深度编号）。
+///
+/// 位置即该属性在 dense 属性向量中的下标：深度 0 表示链中最老的属性。
 pub fn lookup_position(shape_id: ShapeId, prop_name: StringIndex) -> Option<u32> {
     store().lock().unwrap().lookup_position(shape_id, prop_name)
 }
 
+/// 判断形状链中是否包含 `prop_name`。
 pub fn has_property(shape_id: ShapeId, prop_name: StringIndex) -> bool {
     store().lock().unwrap().has_property(shape_id, prop_name)
 }
 
+/// 返回形状链的属性数量（空形状计 0）。
 pub fn shape_prop_count(shape_id: ShapeId) -> u32 {
     store().lock().unwrap().shape_prop_count(shape_id)
 }

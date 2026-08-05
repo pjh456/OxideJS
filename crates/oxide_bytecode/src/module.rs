@@ -1,7 +1,16 @@
+//! 编译产物（compiled module）与常量池 ABI。
+//!
+//! [`CompiledModule`] 是编译器输出的字节码函数单元：指令序列、常量池、
+//! 寄存器布局元信息、子函数（嵌套函数）与 upvalue 捕获描述；随 VM 解释执行
+//! 或由其它模块克隆复制。`Display` 输出可读的反汇编文本，供调试用。
+
 use std::fmt;
 
 use crate::opcode::{self, OpCode};
 
+/// 常量池条目：编译期折叠的不可变值。
+///
+/// 变体覆盖 ECMAScript 顶层字面量类型；`Display` 未实现，调试输出走 `Debug`。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Constant {
     Number(f64),
@@ -12,6 +21,10 @@ pub enum Constant {
     Undefined,
 }
 
+/// 闭包对上层作用域一个变量的捕获描述。
+///
+/// `enclosing_reg` 是外层函数中该变量的寄存器位；若外层变量本身就是 upvalue
+/// （多级闭包），`cell_idx` 指向链式捕获的 cell。
 #[derive(Debug, Clone)]
 pub struct UpvalueCapture {
     pub name: String,
@@ -19,6 +32,16 @@ pub struct UpvalueCapture {
     pub cell_idx: u8,
 }
 
+/// 一个函数单元（或顶层脚本）的编译产物。
+///
+/// 字段说明：
+/// - `bytecode` / `constants` — 指令序列与常量池；
+/// - `n_registers` / `n_args` / `param_base` — 寄存器窗口布局；
+/// - `builtin_reg_map` — 内置对象到寄存器的预绑定；
+/// - `sub_modules` — 嵌套函数（闭包体）的编译产物；
+/// - `is_arrow` / `captured_this_const_idx` — 箭头函数词法 `this`；
+/// - `is_class_constructor` / `is_derived_constructor` / `needs_home_object` — 类相关；
+/// - `upvalue_captures` / `cells_needed` — 闭包捕获描述。
 pub struct CompiledModule {
     pub bytecode: Vec<opcode::Instr>,
     pub constants: Vec<Constant>,
@@ -49,6 +72,7 @@ pub struct CompiledModule {
 }
 
 impl CompiledModule {
+    /// 构造空模块：空字节码、空常量池、零寄存器与全部标志默认关闭。
     pub fn new() -> Self {
         Self {
             bytecode: Vec::new(),

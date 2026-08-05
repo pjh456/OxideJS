@@ -1,23 +1,48 @@
+//! 内置对象绑定：把 `oxide_builtins` 中的 native 实现安装到每个 session 的
+//! builtin 构造器/原型及 global object 上。绑定在 session 创建（`init_kernel_builtins`）
+//! 与 dirty reset（`rebind_dirty_builtins`）两个时机执行。
+
+/// Array 构造器与原型的 native 方法绑定。
 pub mod bind_array;
+/// ArrayBuffer 构造器与原型的 native 方法绑定。
 pub mod bind_array_buffer;
+/// Boolean 构造器与原型的 native 方法绑定。
 pub mod bind_boolean;
+/// DataView 构造器与原型的 native 方法绑定。
 pub mod bind_data_view;
+/// Date 构造器与原型的 native 方法绑定。
 pub mod bind_date;
+/// Error 家族构造器与原型的 native 方法绑定（含各子类型构造器创建）。
 pub mod bind_error;
+/// Function 构造器与原型的 native 方法绑定。
 pub mod bind_function;
+/// global 对象上的普通全局函数（parseInt、isNaN 等）绑定。
 pub mod bind_global;
+/// Iterator 相关全局辅助对象（%IteratorPrototype% 等）绑定。
 pub mod bind_iterator;
+/// JSON 单例对象及其 native 方法绑定。
 pub mod bind_json;
+/// Map 构造器与原型的 native 方法绑定。
 pub mod bind_map;
+/// Math 单例对象及其 native 方法绑定。
 pub mod bind_math;
+/// Number 构造器与原型的 native 方法绑定（含常量属性）。
 pub mod bind_number;
+/// Object 构造器与原型的 native 方法绑定。
 pub mod bind_object;
+/// Reflect 单例对象及其 native 方法绑定。
 pub mod bind_reflect;
+/// RegExp 构造器与原型的 native 方法绑定。
 pub mod bind_regexp;
+/// Set 构造器与原型的 native 方法绑定。
 pub mod bind_set;
+/// String 构造器与原型的 native 方法绑定。
 pub mod bind_string;
+/// 未实现内置（Proxy/BigInt/WeakMap 等）的 stub 构造器绑定。
 pub mod bind_stubs;
+/// Symbol 构造器与原型的 native 方法绑定。
 pub mod bind_symbol;
+/// 各 TypedArray 构造器与共享原型的 native 方法绑定。
 pub mod bind_typed_array;
 
 use std::sync::Arc;
@@ -256,6 +281,10 @@ fn bind_stub_globals(core: &Arc<KernelCore>, session: &KernelSession, global: &m
     }
 }
 
+/// 把已有 builtin 构造器的 native 实现与 global 槽位一次性装配完整。
+///
+/// 在 global 对象重建（dirty reset）后调用：重新配置构造器 native 函数并重绑
+/// `Object`/`Array`/`Math` 等全局名、TypedArray 家族、stub 与 `globalThis`。
 pub fn bind_global_builtin_slots(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let world = session.builtin_world();
 
@@ -464,6 +493,7 @@ pub fn bind_global_builtin_slots(core: &Arc<KernelCore>, session: &KernelSession
 
 /// Maintenance: when adding a `BuiltinDirtySet` group, update this rebind map,
 /// `BuiltinSnapshot`, and `BuiltinWorld::rebuild_with_dirty()` together.
+/// 按脏标记重绑被污染的内置对象；`dirty` 为 `None` 时绑定全部（初始化路径）。
 pub fn rebind_dirty_builtins(core: &Arc<KernelCore>, session: &mut KernelSession, dirty: Option<&BuiltinDirtySet>) {
     let global_ptr = session.global_object().as_ptr() as *mut JsObject;
     let global = unsafe { &mut *global_ptr };
@@ -524,6 +554,7 @@ pub fn rebind_dirty_builtins(core: &Arc<KernelCore>, session: &mut KernelSession
     }
 }
 
+/// 完整初始化一个 session 的内置对象（全量绑定 + `globalThis` + 快照记录）。
 pub fn init_kernel_builtins(core: &Arc<KernelCore>, session: &mut KernelSession) {
     rebind_dirty_builtins(core, session, None);
     let global_ptr = session.global_object().as_ptr() as *mut oxide_types::object::JsObject;

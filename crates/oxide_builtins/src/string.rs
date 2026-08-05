@@ -17,6 +17,7 @@ fn this_string<H: VmHost>(vm: &H, args: &[u8]) -> String {
     }
 }
 
+/// `String.fromCharCode(...codes)`：把各参数按低 16 位转成字符拼接为字符串。
 pub fn string_from_char_code<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.fromCharCode called with {} args", args.len());
     let mut out = String::new();
@@ -31,6 +32,7 @@ pub fn string_from_char_code<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     NativeResult::Ok(vm.new_string(&out))
 }
 
+/// `String.prototype.valueOf`：返回包装对象的原始字符串；其它 this 抛 TypeError。
 pub fn string_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.valueOf called with {} args", args.len());
     let this_val = vm.reg(args[0]);
@@ -53,6 +55,7 @@ pub fn string_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     ))
 }
 
+/// JS `String()` 构造逻辑：把参数转成字符串；new 语义返回 `[[StringData]]` 包装对象。
 pub fn string_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = if args.len() > 1 {
         oxide_runtime_api::to_string(vm.reg(args[1]))
@@ -85,6 +88,7 @@ pub fn string_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(this_val)
 }
 
+/// `String.prototype.toString`：返回包装对象的原始字符串；其它 this 抛 TypeError。
 pub fn string_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(args[0]);
     if this_val.is_string() {
@@ -167,6 +171,7 @@ fn is_regexp_obj<H: VmHost>(val: JsValue, vm: &H) -> bool {
     std::ptr::eq(proto_ptr, rp)
 }
 
+/// `String.prototype.indexOf(searchString, position)`：按字符索引查找首次出现位置。
 pub fn string_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.indexOf called with {} args", args.len());
     let s = this_string(vm, args);
@@ -199,6 +204,7 @@ pub fn string_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::int(-1))
 }
 
+/// `String.prototype.includes(searchString, position)`：是否包含子串。
 pub fn string_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.includes called with {} args", args.len());
     let s = this_string(vm, args);
@@ -225,6 +231,7 @@ pub fn string_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
+/// `String.prototype.charAt(index)`：返回指定位置的单字符；越界返回空串。
 pub fn string_char_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.charAt called with {} args", args.len());
     let s = this_string(vm, args);
@@ -242,6 +249,7 @@ pub fn string_char_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(&ch))
 }
 
+/// `String.prototype.charCodeAt(index)`：返回指定位置字符的 UTF-16 code unit；越界返回 NaN。
 pub fn string_char_code_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.charCodeAt called with {} args", args.len());
     let s = this_string(vm, args);
@@ -258,6 +266,7 @@ pub fn string_char_code_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::int(s.chars().nth(idx as usize).unwrap() as i32))
 }
 
+/// `String.prototype.concat(...strings)`：拼接 this 与各参数返回新字符串。
 pub fn string_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.concat called with {} args", args.len());
     let mut result = this_string(vm, args);
@@ -267,6 +276,7 @@ pub fn string_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(&result))
 }
 
+/// `String.prototype.slice(start, end)`：按字符区间（支持负索引）取子串。
 pub fn string_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.slice called with {} args", args.len());
     let s = this_string(vm, args);
@@ -297,6 +307,7 @@ pub fn string_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(result))
 }
 
+/// `String.prototype.substring(start, end)`：取子串，start/end 自动对调且取非负。
 pub fn string_substring<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.substring called with {} args", args.len());
     let s = this_string(vm, args);
@@ -328,6 +339,7 @@ pub fn string_substring<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(result))
 }
 
+/// `String.prototype.substr(start, length)`：从 start 取 length 个字符（Annex B，支持负 start）。
 pub fn string_substr<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.substr called with {} args", args.len());
     let s = this_string(vm, args);
@@ -351,6 +363,7 @@ pub fn string_substr<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(&result))
 }
 
+/// `String.prototype.at(index)`：按字符索引取字符（支持负索引）；越界返回 undefined。
 pub fn string_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.at called with {} args", args.len());
     let s = this_string(vm, args);
@@ -368,6 +381,7 @@ pub fn string_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(&ch))
 }
 
+/// `String.prototype.lastIndexOf(searchString, position)`：从后往前查找首次出现位置。
 pub fn string_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.lastIndexOf called with {} args", args.len());
     let s = this_string(vm, args);
@@ -406,24 +420,28 @@ pub fn string_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     NativeResult::Ok(JsValue::int(-1))
 }
 
+/// `String.prototype.toUpperCase`：全大写转换。
 pub fn string_to_upper_case<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.toUpperCase called with {} args", args.len());
     let s = this_string(vm, args);
     NativeResult::Ok(vm.new_string(&s.to_uppercase()))
 }
 
+/// `String.prototype.toLowerCase`：全小写转换。
 pub fn string_to_lower_case<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.toLowerCase called with {} args", args.len());
     let s = this_string(vm, args);
     NativeResult::Ok(vm.new_string(&s.to_lowercase()))
 }
 
+/// `String.prototype.trim`：去除两端空白。
 pub fn string_trim<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.trim called with {} args", args.len());
     let s = this_string(vm, args);
     NativeResult::Ok(vm.new_string(s.trim()))
 }
 
+/// `String.prototype.repeat(count)`：重复字符串 count 次（当前上限 10000 防滥用）。
 pub fn string_repeat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.repeat called with {} args", args.len());
     let s = this_string(vm, args);
@@ -435,6 +453,7 @@ pub fn string_repeat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(&s.repeat(n)))
 }
 
+/// `String.prototype.padStart(targetLength, padString)`：在头部补足 padString 到目标长度。
 pub fn string_pad_start<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.padStart called with {} args", args.len());
     let s = this_string(vm, args);
@@ -460,6 +479,7 @@ pub fn string_pad_start<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(&out))
 }
 
+/// `String.prototype.padEnd(targetLength, padString)`：在尾部补足 padString 到目标长度。
 pub fn string_pad_end<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.padEnd called with {} args", args.len());
     let s = this_string(vm, args);
@@ -485,6 +505,7 @@ pub fn string_pad_end<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(&out))
 }
 
+/// `String.prototype.startsWith(searchString, position)`：是否以指定子串开头。
 pub fn string_starts_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.startsWith called with {} args", args.len());
     let s = this_string(vm, args);
@@ -501,6 +522,7 @@ pub fn string_starts_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(s[byte_index_at_char(&s, pos)..].starts_with(&search)))
 }
 
+/// `String.prototype.endsWith(searchString, endPosition)`：是否以指定子串结尾。
 pub fn string_ends_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.endsWith called with {} args", args.len());
     let s = this_string(vm, args);
@@ -517,6 +539,8 @@ pub fn string_ends_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(s[..byte_index_at_char(&s, end_pos)].ends_with(&search)))
 }
 
+/// `String.prototype.split(separator, limit)`：按分隔符拆分为字符串数组；
+/// 分隔符可为 RegExp（含捕获组）或字符串。
 pub fn string_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.split called with {} args", args.len());
     let s = this_string(vm, args);
@@ -579,6 +603,8 @@ pub fn string_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(make_string_array(vm, &parts))
 }
 
+/// `String.prototype.replace(pattern, replacement)`：替换首个匹配；
+/// 支持 RegExp（global 全替换）、字符串以及函数替换器。
 pub fn string_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.replace called with {} args", args.len());
     let s = this_string(vm, args);
@@ -644,6 +670,8 @@ pub fn string_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(&result))
 }
 
+/// `String.prototype.match(pattern)`：按 RegExp 匹配；global 返回全部匹配数组，
+/// 否则返回首个匹配及捕获组，无匹配返回 null。
 pub fn string_match_fn<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.match called with {} args", args.len());
     let s = this_string(vm, args);
@@ -683,6 +711,7 @@ pub fn string_match_fn<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::null())
 }
 
+/// `String.prototype.search(pattern)`：返回首个匹配位置，无匹配返回 -1。
 pub fn string_search<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.search called with {} args", args.len());
     let s = this_string(vm, args);
@@ -713,18 +742,22 @@ pub fn string_search<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::int(-1))
 }
 
+/// `String.prototype.trimStart`：去除头部空白。
 pub fn string_trim_start<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.trimStart called with {} args", args.len());
     let s = this_string(vm, args);
     NativeResult::Ok(vm.new_string(s.trim_start()))
 }
 
+/// `String.prototype.trimEnd`：去除尾部空白。
 pub fn string_trim_end<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.trimEnd called with {} args", args.len());
     let s = this_string(vm, args);
     NativeResult::Ok(vm.new_string(s.trim_end()))
 }
 
+/// `String.prototype.codePointAt(pos)`：返回 code point（surrogate pair 会合并），
+/// 越界返回 undefined。
 pub fn string_code_point_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.codePointAt called with {} args", args.len());
     let s = this_string(vm, args);
@@ -748,6 +781,7 @@ pub fn string_code_point_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     NativeResult::Ok(JsValue::int(c as i32))
 }
 
+/// `String.prototype.normalize(form)`：按 NFC/NFD/NFKC/NFKD 规范化为 Unicode 规范形式。
 pub fn string_normalize<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.normalize called with {} args", args.len());
     use unicode_normalization::UnicodeNormalization;
@@ -766,6 +800,8 @@ const MALL_INPUT: &str = "__mal_input__";
 const MALL_INDEX: &str = "__mal_index__";
 const MALL_RE: &str = "__mal_re__";
 
+/// `String.prototype.matchAll(pattern)`：返回带 `next` 的迭代器，逐步产出全部匹配
+/// （要求 RegExp 带 global 标志；普通字符串会被转义成等效正则）。
 pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.matchAll called with {} args", args.len());
     let s = this_string(vm, args);
@@ -846,6 +882,7 @@ fn make_public_native_fn<H: VmHost>(vm: &mut H, name: &str, native_fn: *const ()
     JsValue::from_js_object(func)
 }
 
+/// `matchAll` 迭代器的 `next`：返回 `{value: 匹配数组, done}`，耗尽后 done 为 true。
 pub fn string_match_all_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if !this_val.is_object() {
@@ -908,6 +945,8 @@ fn make_match_done_result<H: VmHost>(vm: &mut H, value: JsValue) -> NativeResult
     NativeResult::Ok(JsValue::from_js_object(obj))
 }
 
+/// `String.prototype.replaceAll(pattern, replacement)`：替换全部匹配
+/// （RegExp 或字符串模式）。
 pub fn string_replace_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.replaceAll called with {} args", args.len());
     let s = this_string(vm, args);

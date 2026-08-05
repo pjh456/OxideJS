@@ -6,6 +6,7 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
+/// 把 Reflect 单例对象及其方法（get/set/construct/defineProperty 等）绑定到 global。
 pub fn bind_reflect(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let mut reflect = Box::new(JsObject::new_empty(
         EMPTY_SHAPE_ID,

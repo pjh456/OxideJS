@@ -1,3 +1,5 @@
+//! 类声明语句 emit：`emit_class_declaration_statement` 声明类名并初始化类对象。
+
 use crate::{CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

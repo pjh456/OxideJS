@@ -15,6 +15,7 @@ use oxide_types::object::{JsObject, JsString, PropAttributes};
 use oxide_types::value::JsValue;
 
 impl Vm {
+    /// 以最小配置创建独立 VM：新建 `KernelCore` + `KernelSession` 并初始化内置对象。
     pub fn new() -> Self {
         let core = KernelCore::new(KernelConfig::minimal());
         let mut session = KernelSession::new(&core);
@@ -78,6 +79,7 @@ impl Vm {
         vm
     }
 
+    /// 复用共享 `KernelCore` 创建 VM（VM 池路径），共享 intern/shape/code 缓存。
     pub fn with_kernel_core(core: Arc<KernelCore>) -> Self {
         let mut session = KernelSession::new(&core);
         bindings::init_kernel_builtins(&core, &mut session);
@@ -140,6 +142,9 @@ impl Vm {
         vm
     }
 
+    /// 全量隔离重置：仅重建被污染的内置对象与 global，并清空所有执行状态与内存。
+    ///
+    /// 用于在多次 JS 执行之间达到完全隔离：session 内未被污染的 builtin 保留原指针。
     pub fn full_reset(&mut self) {
         let dirty = self.session.selective_reset(&self.kernel_core);
         if dirty.any_builtin_dirty() {
@@ -156,6 +161,7 @@ impl Vm {
         vm_info!("full_reset completed");
     }
 
+    /// 旧版全量重置：总是丢弃并重建整个 session 与内置对象（benchmark 专用）。
     #[doc(hidden)]
     pub fn full_reset_legacy_for_bench(&mut self) {
         self.session = KernelSession::new(&self.kernel_core);
@@ -216,6 +222,7 @@ impl Vm {
         self.native_call_depth = 0;
     }
 
+    /// 轻量重置：清空执行状态并回收 epoch 内存，但保留 session 字符串与 builtin。
     pub fn reset(&mut self) {
         self.clear_execution_state();
         self.maybe_collect_session_gc();
@@ -229,6 +236,7 @@ impl Vm {
         self.active_reg_limit = 0;
     }
 
+    /// 分配一个可被 session GC 回收的字符串 `JsValue`（session-heap 字符串）。
     pub fn new_string(&mut self, s: &str) -> JsValue {
         self.new_string_owned(s.to_string())
     }
@@ -242,6 +250,7 @@ impl Vm {
         JsValue::string(ptr)
     }
 
+    /// 把字符串 intern 为永久 key id（属性名/方法名），进程生命周期内稳定。
     pub fn intern_key(&self, s: &str) -> u32 {
         self.kernel_core.perm_interner().intern(s).0
     }

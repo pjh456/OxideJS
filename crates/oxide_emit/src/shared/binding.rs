@@ -1,3 +1,7 @@
+//! 解构绑定/赋值 emit：数组与对象 pattern 的绑定初始化、rest 收集与解构赋值。
+//! 函数：`emit_bind_target`、`emit_binding_pattern`、`emit_array_binding`、
+//! `emit_object_binding`、`emit_assign_target` 等。
+
 use crate::{CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

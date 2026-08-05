@@ -1,3 +1,6 @@
+//! 赋值表达式 emit：简单 `=`、复合赋值与解构赋值（数组/对象 pattern）。
+//! 函数：`emit_assignment_expression`。
+
 use crate::{CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

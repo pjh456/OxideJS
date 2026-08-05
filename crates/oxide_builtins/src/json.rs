@@ -9,6 +9,8 @@ use crate::object::walk_own_keys;
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
+/// `JSON.parse(text, reviver)`：解析 JSON 文本为 JS 值（经 serde_json）。
+/// 提供 reviver 时以后序遍历逐属性调用 reviver 重建值。
 pub fn json_parse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Err(crate::error::create_syntax_error(vm, "JSON.parse requires 1 argument"));
@@ -205,6 +207,8 @@ fn call_to_json<H: VmHost>(vm: &mut H, obj_val: JsValue, key: &str) -> Result<Js
     }
 }
 
+/// `JSON.stringify(value, replacer, space)`：将 JS 值序列化为 JSON 文本。
+/// 支持 replacer 函数/属性白名单、toJSON 钩子、缩进与循环引用检测。
 pub fn json_stringify<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::undefined());

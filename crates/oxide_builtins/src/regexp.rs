@@ -59,6 +59,8 @@ fn set_prop_at(obj: *mut JsObject, idx: usize, val: JsValue) {
     }
 }
 
+/// `RegExp(pattern, flags)` 构造逻辑：用 regex crate 编译模式，
+/// 支持 g/i/m 标志；非法模式抛 SyntaxError。编译结果存于对象的 native_fn 槽。
 pub fn regexp_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (pattern, flags) = if args.len() < 2 {
         (String::new(), String::new())
@@ -115,6 +117,7 @@ pub fn regexp_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(obj_ptr))
 }
 
+/// 释放 RegExp 对象 native_fn 槽中编译的 `regex::Regex`，返回释放字节数。
 pub fn drop_regexp_native(obj: &mut JsObject) -> u64 {
     if !obj.is_regexp_obj() {
         return 0;
@@ -131,6 +134,7 @@ pub fn drop_regexp_native(obj: &mut JsObject) -> u64 {
     std::mem::size_of::<regex::Regex>() as u64
 }
 
+/// `RegExp.prototype.test(string)`：判断是否匹配。global 模式下从 lastIndex 开始匹配。
 pub fn regexp_test<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let re_ptr = match get_regexp_ptr(vm, args) {
         Ok(ptr) => ptr,
@@ -159,6 +163,8 @@ pub fn regexp_test<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
+/// `RegExp.prototype.exec(string)`：执行匹配并返回数组（含捕获组、index、input）。
+/// 无匹配返回 null；global 模式推进/重置 lastIndex。
 pub fn regexp_exec<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let re_ptr = match get_regexp_ptr(vm, args) {
         Ok(ptr) => ptr,
@@ -233,6 +239,7 @@ pub fn regexp_exec<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
+/// `RegExp.prototype.toString`：按 `/source/flags` 形式返回。
 pub fn regexp_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let re_ptr = match get_regexp_ptr(vm, args) {
         Ok(ptr) => ptr,

@@ -1,3 +1,6 @@
+//! 可选链（`?.`）emit：短路守卫、链式成员访问/调用与逻辑赋值短路测试。
+//! 函数：`emit_chainable_expression`、`emit_optional_guard`、`emit_chain_call` 等。
+
 use crate::{CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::{LabelId, Operand};

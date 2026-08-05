@@ -1,3 +1,5 @@
+//! 赋值目标（SimpleAssignmentTarget）的结构哈希。
+
 use super::*;
 
 pub(super) fn hash_simple_assignment_target(

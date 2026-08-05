@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+/// 单次 benchmark 测试收集的完整指标集（可序列化为 JSON 用于基线持久化）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricCollection {
     pub test_name: String,
@@ -21,6 +22,7 @@ pub struct MetricCollection {
 }
 
 impl MetricCollection {
+    /// 导出为 `(指标名, 值)` 列表，供回归对比与表格输出遍历。
     pub fn iter_metrics(&self) -> Vec<(&'static str, f64)> {
         vec![
             ("wall_time_us", self.wall_time_us as f64),

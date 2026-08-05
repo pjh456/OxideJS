@@ -1,4 +1,8 @@
-#![doc = "OxideJS - Compiler-independent compiled module cache"]
+//! oxide_code_cache：编译结果缓存（LRU，与编译器解耦）。
+//!
+//! `CodeForge` 以调用方提供的模块哈希为键缓存 `CompiledModule`（`Arc` 共享）。
+//! 缓存自身不解析/编译 JS；键的计算与编译回调均由编译器侧提供。
+//! LRU 上限约束内存，供 eval 循环/REPL 等重复编译场景复用产物。
 
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
@@ -21,12 +25,14 @@ pub struct CodeForge {
 }
 
 impl CodeForge {
+    /// 构造容量为 `capacity` 的缓存（容量为 0 会 panic）。
     pub fn new(capacity: NonZeroUsize) -> Self {
         Self {
             map: Mutex::new(LruCache::new(capacity)),
         }
     }
 
+    /// 按哈希取缓存模块；未命中返回 None（命中会提升 LRU 位置）。
     pub fn get(&self, hash: u64) -> Option<Arc<CompiledModule>> {
         let result = self.map.lock().unwrap().get(&hash).map(Arc::clone);
         if result.is_some() {
@@ -35,6 +41,7 @@ impl CodeForge {
         result
     }
 
+    /// 插入模块并返回共享 `Arc`；超出容量时逐出最久未用项。
     pub fn insert(&self, hash: u64, module: CompiledModule) -> Arc<CompiledModule> {
         let module = Arc::new(module);
         let mut cache = self.map.lock().unwrap();
@@ -52,6 +59,8 @@ impl CodeForge {
         module
     }
 
+    /// 命中返回缓存模块，未命中则调用 `compile` 编译后缓存并返回。
+    /// debug 构建下命中时会重编译校验 bytecode，检测结构哈希碰撞。
     pub fn get_or_insert_with<F>(&self, hash: u64, compile: F) -> Result<Arc<CompiledModule>, String>
     where
         F: Fn() -> Result<CompiledModule, String>,
@@ -79,10 +88,12 @@ impl CodeForge {
         Ok(module)
     }
 
+    /// 当前缓存条目数。
     pub fn len(&self) -> usize {
         self.map.lock().unwrap().len()
     }
 
+    /// 缓存是否为空。
     pub fn is_empty(&self) -> bool {
         self.map.lock().unwrap().is_empty()
     }

@@ -121,6 +121,7 @@ fn write_bytes<const N: usize, H: VmHost>(vm: &mut H, args: &[u8], bytes: [u8; N
     Ok(())
 }
 
+/// `DataView(buffer, byteOffset, byteLength)` 构造逻辑：在 ArrayBuffer 上建立定点字节视图。
 pub fn data_view_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Err(crate::error::create_type_error(vm, "DataView requires an ArrayBuffer"));
@@ -182,6 +183,7 @@ fn data_view_data_ptr(obj: &JsObject) -> Option<*mut DataViewData> {
     obj.native_fn().map(|ptr| ptr.as_ptr() as *mut DataViewData)
 }
 
+/// 收集 DataView 引用的底层 buffer（GC 根边）。
 pub fn data_view_native_edges(obj: &JsObject) -> Vec<JsValue> {
     let Some(ptr) = data_view_data_ptr(obj) else {
         return Vec::new();
@@ -197,6 +199,7 @@ pub fn data_view_native_edges(obj: &JsObject) -> Vec<JsValue> {
     }
 }
 
+/// 克隆 DataView 视图数据到新对象，用 `rewrite` 改写 buffer 引用。
 pub fn clone_data_view_native_with_rewrite<F>(old_obj: &JsObject, new_obj: &mut JsObject, mut rewrite: F)
 where
     F: FnMut(JsValue) -> JsValue,
@@ -213,6 +216,7 @@ where
     new_obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(cloned as *const ()) }));
 }
 
+/// 原地重写 DataView 的 buffer 引用。
 pub fn rewrite_data_view_native<F>(obj: &mut JsObject, mut rewrite: F)
 where
     F: FnMut(JsValue) -> JsValue,
@@ -228,6 +232,7 @@ where
     }
 }
 
+/// 释放 DataView 视图数据（`Box<DataViewData>`），返回释放字节数。
 pub fn drop_data_view_native(obj: &mut JsObject) -> u64 {
     let Some(ptr) = data_view_data_ptr(obj) else {
         return 0;
@@ -240,16 +245,19 @@ pub fn drop_data_view_native(obj: &mut JsObject) -> u64 {
     std::mem::size_of::<DataViewData>() as u64
 }
 
+/// `DataView.prototype.getInt8(byteOffset)`：读取 1 字节有符号整数。
 pub fn data_view_get_int8<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let bytes = native_try!(read_bytes::<1, H>(vm, args));
     NativeResult::Ok(JsValue::int(i8::from_ne_bytes(bytes) as i32))
 }
 
+/// `DataView.prototype.getUint8(byteOffset)`：读取 1 字节无符号整数。
 pub fn data_view_get_uint8<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let bytes = native_try!(read_bytes::<1, H>(vm, args));
     NativeResult::Ok(JsValue::int(bytes[0] as i32))
 }
 
+/// `DataView.prototype.getInt16(byteOffset, littleEndian)`：读取 2 字节有符号整数。
 pub fn data_view_get_int16<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let bytes = native_try!(read_bytes::<2, H>(vm, args));
     let n = if is_little_endian(vm, args, 2) {
@@ -260,6 +268,7 @@ pub fn data_view_get_int16<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::int(n as i32))
 }
 
+/// `DataView.prototype.getUint16(byteOffset, littleEndian)`：读取 2 字节无符号整数。
 pub fn data_view_get_uint16<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let bytes = native_try!(read_bytes::<2, H>(vm, args));
     let n = if is_little_endian(vm, args, 2) {
@@ -270,6 +279,7 @@ pub fn data_view_get_uint16<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     NativeResult::Ok(JsValue::int(n as i32))
 }
 
+/// `DataView.prototype.getInt32(byteOffset, littleEndian)`：读取 4 字节有符号整数。
 pub fn data_view_get_int32<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let bytes = native_try!(read_bytes::<4, H>(vm, args));
     let n = if is_little_endian(vm, args, 2) {
@@ -280,6 +290,7 @@ pub fn data_view_get_int32<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::int(n))
 }
 
+/// `DataView.prototype.getUint32(byteOffset, littleEndian)`：读取 4 字节无符号整数。
 pub fn data_view_get_uint32<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let bytes = native_try!(read_bytes::<4, H>(vm, args));
     let n = if is_little_endian(vm, args, 2) {
@@ -290,6 +301,7 @@ pub fn data_view_get_uint32<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     NativeResult::Ok(JsValue::float(n as f64))
 }
 
+/// `DataView.prototype.getFloat32(byteOffset, littleEndian)`：读取 4 字节单精度浮点。
 pub fn data_view_get_float32<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let bytes = native_try!(read_bytes::<4, H>(vm, args));
     let n = if is_little_endian(vm, args, 2) {
@@ -300,6 +312,7 @@ pub fn data_view_get_float32<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     NativeResult::Ok(JsValue::float(n as f64))
 }
 
+/// `DataView.prototype.getFloat64(byteOffset, littleEndian)`：读取 8 字节双精度浮点。
 pub fn data_view_get_float64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let bytes = native_try!(read_bytes::<8, H>(vm, args));
     let n = if is_little_endian(vm, args, 2) {
@@ -310,6 +323,7 @@ pub fn data_view_get_float64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     NativeResult::Ok(JsValue::float(n))
 }
 
+/// `DataView.prototype.getBigInt64(byteOffset, littleEndian)`：读取 8 字节有符号 64 位整数。
 pub fn data_view_get_big_int64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let bytes = native_try!(read_bytes::<8, H>(vm, args));
     let n = if is_little_endian(vm, args, 2) {
@@ -320,6 +334,7 @@ pub fn data_view_get_big_int64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     NativeResult::Ok(JsValue::float(n as f64))
 }
 
+/// `DataView.prototype.getBigUint64(byteOffset, littleEndian)`：读取 8 字节无符号 64 位整数。
 pub fn data_view_get_big_uint64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let bytes = native_try!(read_bytes::<8, H>(vm, args));
     let n = if is_little_endian(vm, args, 2) {
@@ -330,18 +345,21 @@ pub fn data_view_get_big_uint64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
     NativeResult::Ok(JsValue::float(n as f64))
 }
 
+/// `DataView.prototype.setInt8(byteOffset, value)`：写入 1 字节有符号整数。
 pub fn data_view_set_int8<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let value = numeric_arg(vm, args, 2) as i32 as u8 as i8;
     native_try!(write_bytes(vm, args, value.to_ne_bytes()));
     NativeResult::Ok(JsValue::undefined())
 }
 
+/// `DataView.prototype.setUint8(byteOffset, value)`：写入 1 字节无符号整数。
 pub fn data_view_set_uint8<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let value = numeric_arg(vm, args, 2) as i32 as u8;
     native_try!(write_bytes(vm, args, [value]));
     NativeResult::Ok(JsValue::undefined())
 }
 
+/// `DataView.prototype.setInt16(byteOffset, value, littleEndian)`：写入 2 字节有符号整数。
 pub fn data_view_set_int16<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let value = numeric_arg(vm, args, 2) as i32 as u16 as i16;
     let bytes = if is_little_endian(vm, args, 3) {
@@ -353,6 +371,7 @@ pub fn data_view_set_int16<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::undefined())
 }
 
+/// `DataView.prototype.setUint16(byteOffset, value, littleEndian)`：写入 2 字节无符号整数。
 pub fn data_view_set_uint16<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let value = numeric_arg(vm, args, 2) as i32 as u16;
     let bytes = if is_little_endian(vm, args, 3) {
@@ -364,6 +383,7 @@ pub fn data_view_set_uint16<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     NativeResult::Ok(JsValue::undefined())
 }
 
+/// `DataView.prototype.setInt32(byteOffset, value, littleEndian)`：写入 4 字节有符号整数。
 pub fn data_view_set_int32<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let value = numeric_arg(vm, args, 2) as i32;
     let bytes = if is_little_endian(vm, args, 3) {
@@ -375,6 +395,7 @@ pub fn data_view_set_int32<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::undefined())
 }
 
+/// `DataView.prototype.setUint32(byteOffset, value, littleEndian)`：写入 4 字节无符号整数。
 pub fn data_view_set_uint32<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let value = numeric_arg(vm, args, 2) as u32;
     let bytes = if is_little_endian(vm, args, 3) {
@@ -386,6 +407,7 @@ pub fn data_view_set_uint32<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     NativeResult::Ok(JsValue::undefined())
 }
 
+/// `DataView.prototype.setFloat32(byteOffset, value, littleEndian)`：写入单精度浮点。
 pub fn data_view_set_float32<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let value = numeric_arg(vm, args, 2) as f32;
     let bytes = if is_little_endian(vm, args, 3) {
@@ -397,6 +419,7 @@ pub fn data_view_set_float32<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     NativeResult::Ok(JsValue::undefined())
 }
 
+/// `DataView.prototype.setFloat64(byteOffset, value, littleEndian)`：写入双精度浮点。
 pub fn data_view_set_float64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let value = numeric_arg(vm, args, 2);
     let bytes = if is_little_endian(vm, args, 3) {
@@ -408,6 +431,7 @@ pub fn data_view_set_float64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     NativeResult::Ok(JsValue::undefined())
 }
 
+/// `DataView.prototype.setBigInt64(byteOffset, value, littleEndian)`：写入 8 字节有符号 64 位整数。
 pub fn data_view_set_big_int64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let value = numeric_arg(vm, args, 2) as i64;
     let bytes = if is_little_endian(vm, args, 3) {
@@ -419,6 +443,7 @@ pub fn data_view_set_big_int64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     NativeResult::Ok(JsValue::undefined())
 }
 
+/// `DataView.prototype.setBigUint64(byteOffset, value, littleEndian)`：写入 8 字节无符号 64 位整数。
 pub fn data_view_set_big_uint64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let value = numeric_arg(vm, args, 2) as u64;
     let bytes = if is_little_endian(vm, args, 3) {
@@ -430,6 +455,7 @@ pub fn data_view_set_big_uint64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
     NativeResult::Ok(JsValue::undefined())
 }
 
+/// `DataView.prototype.toString`：校验 receiver 后返回 `[object DataView]`。
 pub fn data_view_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     native_try!(get_data_view_data(vm, this_val));

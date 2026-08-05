@@ -1,3 +1,5 @@
+//! 声明语句域：变量/函数/类声明的分发与子模块聚合。
+
 use crate::{CompileCtx, Emitter};
 use oxide_parser::Statement;
 

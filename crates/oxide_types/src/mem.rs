@@ -1,3 +1,10 @@
+//! 内存管理抽象：跨 epoch 持久存储与每次调用（agent call）内的 arena 分配。
+//!
+//! `P<T>` 是基于 `Arc` 的持久指针，持有者跨 `Epoch::reset()` 存活；
+//! `PersistentHeap` 负责把对象"提升"到持久堆；`Epoch` 则是对
+//! `bumpalo::Bump` 的封装，用于每次调用内的高频分配与 O(1) 整体回收，
+//! 并通过 epoch ID 辅助悬挂指针检测。
+
 use std::fmt;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -11,14 +18,17 @@ use std::sync::Arc;
 pub struct P<T>(Arc<T>);
 
 impl<T> P<T> {
+    /// 在堆上分配并包装 `value`。
     pub fn new(value: T) -> Self {
         Self(Arc::new(value))
     }
 
+    /// 返回内部 `Arc<T>` 的底层裸指针。
     pub fn as_ptr(&self) -> *const T {
         Arc::as_ptr(&self.0)
     }
 
+    /// 返回可变裸指针（用于外部 GC / 遍历改写）。
     #[inline(always)]
     pub fn as_mut_ptr(&self) -> *mut T {
         self.as_ptr() as *mut T
@@ -59,6 +69,7 @@ impl<T: fmt::Display> fmt::Display for P<T> {
 pub struct PersistentHeap;
 
 impl PersistentHeap {
+    /// 创建空持久堆（无内部状态，仅提供 `promote`）。
     pub fn new() -> Self {
         Self
     }
@@ -86,6 +97,7 @@ pub struct Epoch {
 }
 
 impl Epoch {
+    /// 创建从 epoch 0 开始、空 arena 的调用级分配器。
     pub fn new() -> Self {
         Self {
             bump: bumpalo::Bump::new(),
@@ -104,6 +116,9 @@ impl Epoch {
         self.bump.alloc(value)
     }
 
+    /// 直接访问底层 `bumpalo::Bump`。
+    ///
+    /// 供需要依赖 bumpalo API（如 `alloc_slice`）的调用方使用。
     pub fn bump(&self) -> &bumpalo::Bump {
         &self.bump
     }

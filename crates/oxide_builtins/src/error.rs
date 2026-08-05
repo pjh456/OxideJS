@@ -26,6 +26,8 @@ fn set_own_message<H: VmHost>(host: &mut H, this: *mut JsObject, args: &[u8]) {
     }
 }
 
+/// 按错误类型名创建对应 Error 对象（message 非空时写为自身属性）。
+/// 这是引擎内部构造错误的统一入口，供 VM/native 层抛错使用。
 pub fn create_kind_error<H: VmHost>(host: &mut H, kind: &str, msg: &str) -> JsValue {
     let proto_ptr = match kind {
         "TypeError" => P::as_ptr(&host.session().builtin_world().type_error_proto) as *mut JsObject,
@@ -53,32 +55,40 @@ pub fn create_kind_error<H: VmHost>(host: &mut H, kind: &str, msg: &str) -> JsVa
     JsValue::from_js_object(obj)
 }
 
+/// 创建一个带指定 message 的 TypeError 对象。
 pub fn create_type_error<H: VmHost>(host: &mut H, msg: &str) -> JsValue {
     create_kind_error(host, "TypeError", msg)
 }
 
+/// 创建一个带指定 message 的普通 Error 对象。
 pub fn create_error<H: VmHost>(host: &mut H, msg: &str) -> JsValue {
     create_kind_error(host, "Error", msg)
 }
 
+/// 创建一个带指定 message 的 ReferenceError 对象。
 pub fn create_reference_error<H: VmHost>(host: &mut H, msg: &str) -> JsValue {
     create_kind_error(host, "ReferenceError", msg)
 }
 
+/// 创建一个带指定 message 的 RangeError 对象。
 pub fn create_range_error<H: VmHost>(host: &mut H, msg: &str) -> JsValue {
     create_kind_error(host, "RangeError", msg)
 }
 
+/// 创建一个带指定 message 的 SyntaxError 对象。
 pub fn create_syntax_error<H: VmHost>(host: &mut H, msg: &str) -> JsValue {
     create_kind_error(host, "SyntaxError", msg)
 }
 
+/// 创建一个带指定 message 的 URIError 对象。
 pub fn create_uri_error<H: VmHost>(host: &mut H, msg: &str) -> JsValue {
     create_kind_error(host, "URIError", msg)
 }
 
 macro_rules! error_ctor {
     ($name:ident, $proto_field:ident) => {
+        /// 对应 Error 子类（如 `TypeError`）的构造函数：接收第一个实参作为 message，
+        /// 返回原型链指向对应 prototype 的 Error 对象。
         pub fn $name<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
             let this_val = host.reg(255);
             let this = if this_val.is_object() {
@@ -102,6 +112,8 @@ error_ctor!(syntax_error_constructor, syntax_error_proto);
 error_ctor!(uri_error_constructor, uri_error_proto);
 error_ctor!(eval_error_constructor, eval_error_proto);
 
+/// `Error.prototype.toString`：按 `name: message` 拼接字符串；
+/// 缺少 name/message 时按规范回退到 `"Error"` 或空串。
 pub fn error_to_string<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
     let this_val = host.reg(args[0]);
     if !this_val.is_object() {
@@ -145,6 +157,7 @@ pub fn error_to_string<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(host.new_string(&result))
 }
 
+/// `Error.prototype.stack` getter：输出 `name: message` 头后附调用栈函数名列表。
 pub fn error_stack_getter<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
     let this_val = host.reg(args[0]);
     let (name_str, msg_str) = if this_val.is_object() {

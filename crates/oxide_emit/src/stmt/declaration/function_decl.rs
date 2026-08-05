@@ -1,3 +1,5 @@
+//! 函数声明语句 emit：`emit_function_declaration_statement` 创建闭包并绑定函数名。
+
 use crate::{CompileCtx, Emitter, ParamSpec};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

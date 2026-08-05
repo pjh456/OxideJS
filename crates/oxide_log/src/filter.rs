@@ -1,3 +1,9 @@
+//! 按子系统过滤日志事件的 `tracing` 层过滤器。
+//!
+//! [`SubsystemFilter`] 为每个子系统保存一个独立的原子级别槽位，并实现
+//! [`Filter<S>`](tracing_subscriber::layer::Filter)。`tracing` 事件的 target
+//! （形如 `oxide::vm::...`）先被映射到子系统，再按该子系统当前级别决定是否放行。
+
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
@@ -7,22 +13,29 @@ use tracing_subscriber::layer::Filter;
 use crate::level::Level;
 use crate::subsystem::{SubsystemId, SUBSYSTEM_COUNT};
 
+/// 按子系统维护日志级别的过滤层。
+///
+/// `Clone` 为浅拷贝（内部 `Arc`），多个 subscriber 层可共享同一份级别状态，
+/// 因此 [`set_level`](SubsystemFilter::set_level) 对已初始化的 subscriber 即时生效。
 #[derive(Clone)]
 pub struct SubsystemFilter {
     levels: Arc<[AtomicU8; SUBSYSTEM_COUNT]>,
 }
 
 impl SubsystemFilter {
+    /// 创建全部子系统级别为 `Off` 的过滤器。
     pub fn new() -> Self {
         Self {
             levels: Arc::new([AtomicU8::new(0), AtomicU8::new(0), AtomicU8::new(0), AtomicU8::new(0)]),
         }
     }
 
+    /// 设置子系统的日志级别（原子写，`Relaxed` 序足够）。
     pub fn set_level(&self, id: SubsystemId, level: Level) {
         self.levels[id as usize].store(level as u8, Ordering::Relaxed);
     }
 
+    /// 读取子系统的当前日志级别。
     pub fn get_level(&self, id: SubsystemId) -> Level {
         let raw = self.levels[id as usize].load(Ordering::Relaxed);
         match raw {

@@ -7,6 +7,7 @@ use crate::object::walk_own_keys;
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
+/// `Reflect.apply(target, thisArgument, argumentsList)`：以指定 this 与参数数组调用函数。
 pub fn reflect_apply<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target = arg(vm, args, 1);
     let this_arg = arg(vm, args, 2);
@@ -23,6 +24,8 @@ pub fn reflect_apply<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
+/// `Reflect.construct(target, argumentsList, newTarget)`：以 newTarget 的 prototype
+/// 分配 this 后调用 target；返回值非对象时回退到新建的 this。
 pub fn reflect_construct<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target = arg(vm, args, 1);
     let arg_list = arg(vm, args, 2);
@@ -59,6 +62,8 @@ pub fn reflect_construct<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
+/// `Reflect.defineProperty(target, key, descriptor)`：按 descriptor 定义属性，
+/// 数据/访问器属性混用或非法 getter/setter 返回 false。
 pub fn reflect_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
@@ -111,6 +116,8 @@ pub fn reflect_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     NativeResult::Ok(JsValue::bool(result.is_ok()))
 }
 
+/// `Reflect.deleteProperty(target, key)`：删除自身属性；
+/// 属性不可配置时返回 false，否则重构属性表并返回 true。
 pub fn reflect_delete_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
@@ -121,6 +128,7 @@ pub fn reflect_delete_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     NativeResult::Ok(JsValue::bool(delete_own_property(vm, target, key_si)))
 }
 
+/// `Reflect.get(target, key, receiver)`：读取属性（含原型链与 accessor）。
 pub fn reflect_get<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
@@ -134,6 +142,7 @@ pub fn reflect_get<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
+/// `Reflect.getOwnPropertyDescriptor(target, key)`：复用 Object 同名实现。
 pub fn reflect_get_own_property_descriptor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(_) = object_ptr(target_val) else {
@@ -142,6 +151,7 @@ pub fn reflect_get_own_property_descriptor<H: VmHost>(vm: &mut H, args: &[u8]) -
     crate::object::object_get_own_property_descriptor(vm, args)
 }
 
+/// `Reflect.getPrototypeOf(target)`：返回对象的 prototype。
 pub fn reflect_get_prototype_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
@@ -150,6 +160,7 @@ pub fn reflect_get_prototype_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
     NativeResult::Ok(unsafe { &*target_ptr }.proto())
 }
 
+/// `Reflect.has(target, key)`：属性是否存在（含原型链）。
 pub fn reflect_has<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
@@ -159,6 +170,7 @@ pub fn reflect_has<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(vm.resolve_property(unsafe { &*target_ptr }, key_si).is_some()))
 }
 
+/// `Reflect.isExtensible(target)`：对象是否可扩展。
 pub fn reflect_is_extensible<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
@@ -167,6 +179,7 @@ pub fn reflect_is_extensible<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     NativeResult::Ok(JsValue::bool(unsafe { &*target_ptr }.is_extensible()))
 }
 
+/// `Reflect.ownKeys(target)`：返回对象全部自身属性名（字符串数组）。
 pub fn reflect_own_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
@@ -180,6 +193,7 @@ pub fn reflect_own_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(make_string_array(vm, &key_names))
 }
 
+/// `Reflect.preventExtensions(target)`：阻止扩展，返回 true。
 pub fn reflect_prevent_extensions<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
@@ -189,6 +203,8 @@ pub fn reflect_prevent_extensions<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeR
     NativeResult::Ok(JsValue::bool(true))
 }
 
+/// `Reflect.set(target, key, value, receiver)`：写入属性；
+/// 不可扩展且属性不存在时返回 false。
 pub fn reflect_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
@@ -204,6 +220,7 @@ pub fn reflect_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(vm.ordinary_set(target, key_si, value, receiver).is_ok()))
 }
 
+/// `Reflect.setPrototypeOf(target, proto)`：设置 prototype（对象或 null）。
 pub fn reflect_set_prototype_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {

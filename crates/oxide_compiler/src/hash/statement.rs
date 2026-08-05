@@ -1,3 +1,5 @@
+//! 语句 AST 节点的结构哈希。
+
 use super::*;
 
 pub(super) fn hash_statement(stmt: &Statement, h: &mut rustc_hash::FxHasher, include_binding_names: bool) {

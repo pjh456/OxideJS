@@ -1,3 +1,9 @@
+//! AST 结构哈希：按语法域（statement/expression/class/...）递归计算
+//! `Program` 的稳定哈希，用作编译缓存键（code cache）。
+//!
+//! `structural_hash` 忽略绑定名（结构相等即可命中），
+//! `compiled_module_hash` 纳入绑定名（精确匹配避免错误复用）。
+
 use oxide_parser::{
     BindingPattern, ChainElement, ClassElement, Expression, ForStatementInit, ObjectPropertyKind, PropertyKey,
     SimpleAssignmentTarget, Statement,
@@ -30,10 +36,12 @@ mod property;
 mod statement;
 mod target;
 
+/// 结构哈希：忽略绑定名的 `Program` 哈希（用于粗粒度缓存命中判断）。
 pub fn structural_hash(program: &oxide_parser::Program) -> u64 {
     hash_program(program, false)
 }
 
+/// 编译模块哈希：纳入绑定名的 `Program` 哈希（用于精确缓存命中判断）。
 pub fn compiled_module_hash(program: &oxide_parser::Program) -> u64 {
     hash_program(program, true)
 }

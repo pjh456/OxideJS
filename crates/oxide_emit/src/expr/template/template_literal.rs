@@ -1,3 +1,6 @@
+//! 模板字面量 emit：`emit_template_literal_expression` 生成 TEMPLATE_STR 指令
+//! 拼接字面量段与内插表达式。
+
 use crate::{CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

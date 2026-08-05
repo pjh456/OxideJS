@@ -3,6 +3,8 @@ use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
+/// JS `Boolean()` 构造逻辑：把参数按 ToBoolean 语义转换。
+/// 以普通函数调用时返回原始 bool；以 new 语义调用时返回 `[[BooleanData]]` 为结果的包装对象。
 pub fn boolean_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let bool_val = if args.len() > 1 {
@@ -50,6 +52,8 @@ pub fn boolean_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(this_val)
 }
 
+/// `Boolean.prototype.valueOf`：返回包装对象的原始 bool 值。
+/// this 为原始 bool 时直接返回；否则必须是 Boolean 包装对象，否则抛 TypeError。
 pub fn boolean_prototype_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if this_val.is_bool() {
@@ -72,6 +76,8 @@ pub fn boolean_prototype_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeR
     NativeResult::Ok(val)
 }
 
+/// `Boolean.prototype.toString`：返回 `"true"` 或 `"false"`。
+/// 支持原始 bool 与 Boolean 包装对象；其它 this 抛 TypeError。
 pub fn boolean_prototype_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if this_val.is_bool() {

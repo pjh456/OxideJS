@@ -7,6 +7,7 @@ use oxide_types::object::{JsObject, PropAttributes};
 use crate::bind_constructor;
 use crate::bindings::apply_binding_table;
 
+/// 把 Array 构造器与原型方法绑定到 global。
 pub fn bind_array(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let _array_methods = ArrayMethods {
         is_array: oxide_builtins::array::array_is_array::<crate::vm::Vm> as *const (),

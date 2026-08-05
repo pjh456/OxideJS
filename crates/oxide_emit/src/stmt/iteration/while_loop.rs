@@ -1,3 +1,5 @@
+//! while 语句 emit：`emit_while_statement` 先测条件后执行体。
+
 use crate::{CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 use oxide_parser::Statement;

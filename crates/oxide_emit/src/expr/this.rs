@@ -1,3 +1,5 @@
+//! `this` 表达式 emit：`emit_this_expression` 解析当前函数的 this 寄存器。
+
 use crate::{CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

@@ -10,6 +10,12 @@ use rustc_hash::FxBuildHasher;
 use crate::vm::Vm;
 use oxide_builtins::{array_buffer, data_view, map, regexp, set, typed_array};
 
+/// session 级 mark-sweep GC 的状态与统计。
+///
+/// 回收 session arena 中不再可达的对象与 `Vm::new_string` 分配的 session 字符串：
+/// `mark` 从 VM roots 标记存活对象，`sweep` 将存活对象复制进新 arena（移动式）、
+/// 更新所有引用，并释放死对象；`sweep_session_strings` 按存活标记回收字符串。
+/// 所有统计字段供外部观测 GC 行为。
 pub struct SessionGc {
     pub total_collections: u64,
     pub total_bytes_freed: u64,
@@ -28,6 +34,7 @@ pub struct SessionGc {
 }
 
 impl SessionGc {
+    /// 创建全零统计、空标记栈的空 GC 实例。
     pub fn new() -> Self {
         Self::default()
     }

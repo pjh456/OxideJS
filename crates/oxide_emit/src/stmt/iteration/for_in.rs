@@ -1,3 +1,5 @@
+//! for-in 语句 emit：`emit_for_in_statement` 遍历可枚举属性名。
+
 use crate::{CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

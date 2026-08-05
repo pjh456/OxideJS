@@ -1,3 +1,5 @@
+//! for-of 语句 emit：`emit_for_of_statement` 迭代器协议遍历。
+
 use crate::{CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

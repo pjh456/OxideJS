@@ -1,3 +1,5 @@
+//! 标签模板表达式 emit：`emit_tagged_template_expression` 构造 template object 并调用标签函数。
+
 use crate::{CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

@@ -84,6 +84,8 @@ fn naive_from_ms(ms: f64) -> Option<NaiveDateTime> {
     dt_from_ms(ms).map(|dt| dt.naive_utc())
 }
 
+/// JS `Date()` 构造逻辑：无参取当前时间；单参支持时间戳/字符串/Date 对象；
+/// 多参按本地时间字段（年/月/日/时/分/秒/毫秒）组合。非构造调用返回日期字符串。
 pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let is_ctor_call = this_val.is_object() && {
@@ -214,10 +216,13 @@ pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(ptr))
 }
 
+/// `Date.now()`：返回当前时间戳（毫秒）。
 pub fn date_now<H: VmHost>(_vm: &mut H, _args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::float(Utc::now().timestamp_millis() as f64))
 }
 
+/// `Date.parse(string)`：解析日期字符串（RFC 2822、ISO 8601 及常用格式）为时间戳；
+/// 无法解析返回 NaN。
 pub fn date_parse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::float(f64::NAN));
@@ -263,6 +268,7 @@ pub fn date_parse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::float(ts))
 }
 
+/// `Date.UTC(y, m, d, h, min, s, ms)`：按 UTC 各字段组合成时间戳（m 为 0-based 月）。
 pub fn date_utc<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 3 {
         return NativeResult::Ok(JsValue::float(f64::NAN));
@@ -309,6 +315,7 @@ pub fn date_utc<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
 macro_rules! make_getter {
     ($name:ident, $f:expr, $df:expr) => {
+        /// UTC 视图 getter（如 `getTime`）：返回 UTC 时间的指定分量；Invalid Date 返回 NaN。
         pub fn $name<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             let obj = unsafe { &*native_try!(date_this(vm, args)) };
             let ms = get_timestamp(obj);
@@ -325,6 +332,7 @@ macro_rules! make_getter {
 
 macro_rules! make_utc_getter {
     ($name:ident, $f:expr, $df:expr) => {
+        /// UTC getter（如 `getUTCFullYear`）：返回 UTC 时间的指定分量；Invalid Date 返回 NaN。
         pub fn $name<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             let obj = unsafe { &*native_try!(date_this(vm, args)) };
             let ms = get_timestamp(obj);
@@ -341,6 +349,7 @@ macro_rules! make_utc_getter {
 
 macro_rules! make_local_getter {
     ($name:ident, $f:expr, $df:expr) => {
+        /// 本地时区 getter（如 `getFullYear`）：返回本地时间的指定分量；Invalid Date 返回 NaN。
         pub fn $name<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             let obj = unsafe { &*native_try!(date_this(vm, args)) };
             let ms = get_timestamp(obj);
@@ -382,6 +391,7 @@ make_utc_getter!(
     f64::NAN
 );
 
+/// `Date.prototype.getTimezoneOffset()`：返回本地时区相对 UTC 的分钟偏移。
 pub fn date_get_timezone_offset<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &*native_try!(date_this(vm, args)) };
     let ms = get_timestamp(obj);
@@ -408,6 +418,7 @@ fn get_opt_arg<H: VmHost>(vm: &H, args: &[u8], idx: usize, default: u32) -> u32 
     }
 }
 
+/// `Date.prototype.setTime(ms)`：直接设置时间戳，返回新时间戳。
 pub fn date_set_time<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let val = if args.len() > 1 {
@@ -419,6 +430,7 @@ pub fn date_set_time<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::float(val))
 }
 
+/// `Date.prototype.setFullYear(y, m, d)`：设置本地年份（可选月/日），返回新时间戳。
 pub fn date_set_full_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let v = vm.coerce_number_bounded(val).unwrap_or(f64::NAN);
@@ -442,6 +454,7 @@ pub fn date_set_full_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     set_timestamp(obj, ts);
     NativeResult::Ok(JsValue::float(ts))
 }
+/// `Date.prototype.setMonth(m, d)`：设置本地月份（可选日），返回新时间戳。
 pub fn date_set_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let v = vm.coerce_number_bounded(val).unwrap_or(f64::NAN);
@@ -463,6 +476,7 @@ pub fn date_set_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     set_timestamp(obj, ts);
     NativeResult::Ok(JsValue::float(ts))
 }
+/// `Date.prototype.setDate(d)`：设置本地日，返回新时间戳。
 pub fn date_set_date<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let v = vm.coerce_number_bounded(val).unwrap_or(f64::NAN);
@@ -480,6 +494,7 @@ pub fn date_set_date<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     set_timestamp(obj, ts);
     NativeResult::Ok(JsValue::float(ts))
 }
+/// `Date.prototype.setHours(h, min, s, ms)`：设置本地小时（可选分/秒/毫秒），返回新时间戳。
 pub fn date_set_hours<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let v = vm.coerce_number_bounded(val).unwrap_or(f64::NAN);
@@ -505,6 +520,7 @@ pub fn date_set_hours<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     set_timestamp(obj, ts);
     NativeResult::Ok(JsValue::float(ts))
 }
+/// `Date.prototype.setMinutes(min, s, ms)`：设置本地分钟（可选秒/毫秒），返回新时间戳。
 pub fn date_set_minutes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let v = vm.coerce_number_bounded(val).unwrap_or(f64::NAN);
@@ -528,6 +544,7 @@ pub fn date_set_minutes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     set_timestamp(obj, ts);
     NativeResult::Ok(JsValue::float(ts))
 }
+/// `Date.prototype.setSeconds(s, ms)`：设置本地秒（可选毫秒），返回新时间戳。
 pub fn date_set_seconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let v = vm.coerce_number_bounded(val).unwrap_or(f64::NAN);
@@ -549,6 +566,7 @@ pub fn date_set_seconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     set_timestamp(obj, ts);
     NativeResult::Ok(JsValue::float(ts))
 }
+/// `Date.prototype.setMilliseconds(ms)`：设置本地毫秒，返回新时间戳。
 pub fn date_set_milliseconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let v = vm.coerce_number_bounded(val).unwrap_or(f64::NAN);
@@ -567,6 +585,7 @@ pub fn date_set_milliseconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     NativeResult::Ok(JsValue::float(ts))
 }
 
+/// `Date.prototype.setUTCFullYear(y, m, d)`：设置 UTC 年份（可选月/日），返回新时间戳。
 pub fn date_set_utc_full_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
@@ -596,6 +615,7 @@ pub fn date_set_utc_full_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     NativeResult::Ok(JsValue::float(ts))
 }
 
+/// `Date.prototype.setUTCMonth(m, d)`：设置 UTC 月份（可选日），返回新时间戳。
 pub fn date_set_utc_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
@@ -624,6 +644,7 @@ pub fn date_set_utc_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::float(ts))
 }
 
+/// `Date.prototype.setUTCDate(d)`：设置 UTC 日，返回新时间戳。
 pub fn date_set_utc_date<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
@@ -651,6 +672,7 @@ pub fn date_set_utc_date<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::float(ts))
 }
 
+/// `Date.prototype.setUTCHours(h, min, s, ms)`：设置 UTC 小时（可选分/秒/毫秒），返回新时间戳。
 pub fn date_set_utc_hours<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
@@ -682,6 +704,7 @@ pub fn date_set_utc_hours<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::float(ts))
 }
 
+/// `Date.prototype.setUTCMinutes(min, s, ms)`：设置 UTC 分钟（可选秒/毫秒），返回新时间戳。
 pub fn date_set_utc_minutes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
@@ -711,6 +734,7 @@ pub fn date_set_utc_minutes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     NativeResult::Ok(JsValue::float(ts))
 }
 
+/// `Date.prototype.setUTCSeconds(s, ms)`：设置 UTC 秒（可选毫秒），返回新时间戳。
 pub fn date_set_utc_seconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
@@ -738,6 +762,7 @@ pub fn date_set_utc_seconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     NativeResult::Ok(JsValue::float(ts))
 }
 
+/// `Date.prototype.setUTCMilliseconds(ms)`：设置 UTC 毫秒，返回新时间戳。
 pub fn date_set_utc_milliseconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
@@ -761,6 +786,7 @@ pub fn date_set_utc_milliseconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRe
     NativeResult::Ok(JsValue::float(ts))
 }
 
+/// Annex B `Date.prototype.getYear()`：返回本地年减 1900。
 pub fn date_get_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &*native_try!(date_this(vm, args)) };
     let ms = get_timestamp(obj);
@@ -773,6 +799,8 @@ pub fn date_get_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
+/// Annex B `Date.prototype.setYear(y)`：设置年份，0..99 自动加 1900；
+/// 缺参/NaN 置为 Invalid Date。
 pub fn date_set_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
@@ -799,18 +827,22 @@ pub fn date_set_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::float(ts))
 }
 
+/// `Date.prototype.toGMTString()`：别名 `toUTCString`（GMT 格式）。
 pub fn date_to_gmt_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     date_to_utc_string(vm, args)
 }
 
+/// `Date.prototype.toLocaleDateString()`：本地化日期字符串（当前等同于 `toDateString`）。
 pub fn date_to_locale_date_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     date_to_date_string(vm, args)
 }
 
+/// `Date.prototype.toLocaleString()`：本地化日期时间字符串（当前等同于 `toString`）。
 pub fn date_to_locale_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     date_to_string(vm, args)
 }
 
+/// `Date.prototype.toLocaleTimeString()`：本地化时间字符串（当前等同于 `toTimeString`）。
 pub fn date_to_locale_time_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     date_to_time_string(vm, args)
 }
@@ -828,10 +860,12 @@ fn date_to_string_inner<H: VmHost>(vm: &mut H, args: &[u8], format_str: &str, in
     NativeResult::Ok(vm.new_string(&s))
 }
 
+/// `Date.prototype.toISOString()`：输出 ISO 8601 格式（`YYYY-MM-DDTHH:MM:SS.mmmZ`）。
 pub fn date_to_iso_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     date_to_string_inner(vm, args, "%Y-%m-%dT%H:%M:%S%.3fZ", "Invalid Date")
 }
 
+/// `Date.prototype.toJSON()`：输出 ISO 8601 字符串；Invalid Date 返回 null。
 pub fn date_to_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &*native_try!(date_this(vm, args)) };
     let ms = get_timestamp(obj);
@@ -845,22 +879,27 @@ pub fn date_to_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(&s))
 }
 
+/// `Date.prototype.toString()`：本地时间完整字符串（如 `Wed Aug 05 2026 12:00:00 GMT+0000`）。
 pub fn date_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     date_to_string_inner(vm, args, "%a %b %d %Y %H:%M:%S %Z %z", "Invalid Date")
 }
 
+/// `Date.prototype.toDateString()`：日期部分字符串（如 `Wed Aug 05 2026`）。
 pub fn date_to_date_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     date_to_string_inner(vm, args, "%a %b %d %Y", "Invalid Date")
 }
 
+/// `Date.prototype.toTimeString()`：时间部分字符串（如 `12:00:00 GMT+0000`）。
 pub fn date_to_time_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     date_to_string_inner(vm, args, "%H:%M:%S %Z", "Invalid Date")
 }
 
+/// `Date.prototype.toUTCString()`：UTC 完整字符串（如 `Wed, 05 Aug 2026 12:00:00 GMT`）。
 pub fn date_to_utc_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     date_to_string_inner(vm, args, "%a, %d %b %Y %H:%M:%S GMT", "Invalid Date")
 }
 
+/// `Date.prototype.valueOf()`：返回时间戳（毫秒）。
 pub fn date_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &*native_try!(date_this(vm, args)) };
     let ms = get_timestamp(obj);

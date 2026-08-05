@@ -181,6 +181,7 @@ fn unexpected_tail_call_error<H: VmHost>(vm: &mut H) -> NativeResult {
     NativeResult::Err(crate::error::create_type_error(vm, "unexpected tail call in array callback"))
 }
 
+/// JS `Array()` 构造逻辑：单个数字参数创建指定长度空数组，其余情况把参数作为元素。
 pub fn array_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let proto_val = JsValue::from_js_object(proto);
@@ -210,6 +211,7 @@ pub fn array_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(arr))
 }
 
+/// `Array.isArray(value)`：参数是否为真正的 Array 对象。
 pub fn array_is_array<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::bool(false));
@@ -225,6 +227,7 @@ pub fn array_is_array<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(unsafe { &*ptr }.is_array()))
 }
 
+/// `Array.prototype.push(...items)`：追加元素到尾部，返回新长度。
 pub fn array_push<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.push called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
@@ -236,6 +239,7 @@ pub fn array_push<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::int(len as i32))
 }
 
+/// `Array.prototype.pop()`：移除并返回末位元素；空数组返回 undefined。
 pub fn array_pop<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.pop called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
@@ -249,6 +253,7 @@ pub fn array_pop<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(last)
 }
 
+/// `Array.prototype.slice(start, end)`：复制区间元素返回新数组（支持负索引）。
 pub fn array_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.slice called with {} args", args.len());
     let this_val = vm.reg(args[0]);
@@ -284,6 +289,8 @@ pub fn array_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(new_arr))
 }
 
+/// `Array.prototype.splice(start, deleteCount, ...items)`：删除并/或插入元素，
+/// 返回被删除元素组成的新数组。
 pub fn array_splice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.splice called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
@@ -347,6 +354,7 @@ pub fn array_splice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(removed_arr))
 }
 
+/// `Array.prototype.concat(...items)`：连接 this 与参数（数组参数展开）返回新数组。
 pub fn array_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.concat called with {} args", args.len());
     let this_val = vm.reg(args[0]);
@@ -386,6 +394,7 @@ pub fn array_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(new_arr))
 }
 
+/// `Array.prototype.join(separator)`：用分隔符连接元素字符串（null/undefined 视为空串）。
 pub fn array_join<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.join called with {} args", args.len());
     let this_val = vm.reg(args[0]);
@@ -412,12 +421,14 @@ pub fn array_join<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(&joined))
 }
 
+/// `Array.prototype.toString`：委托给 join，默认用 `,` 分隔。
 pub fn array_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // Array.prototype.toString() delegates to join with the default "," separator,
     // ignoring its own arguments per spec.
     array_join(vm, &[args[0]])
 }
 
+/// `Array.prototype.indexOf(searchElement, fromIndex)`：用严格相等查找首个匹配索引，找不到返回 -1。
 pub fn array_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.indexOf called with {} args", args.len());
     let this_val = vm.reg(args[0]);
@@ -456,6 +467,8 @@ pub fn array_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::int(-1))
 }
 
+/// `Array.prototype.includes(searchElement, fromIndex)`：用 SameValueZero 判断是否包含
+/// （NaN 视为存在、+0/-0 视为相同）。
 pub fn array_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.includes called with {} args", args.len());
     let this_val = vm.reg(args[0]);
@@ -510,6 +523,7 @@ fn same_value_zero(a: JsValue, b: JsValue) -> bool {
     oxide_runtime_api::strict_equality(a, b)
 }
 
+/// `Array.prototype.reverse()`：原地反转元素顺序，返回 this。
 pub fn array_reverse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.reverse called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
@@ -527,6 +541,7 @@ pub fn array_reverse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.reg(args[0]))
 }
 
+/// `Array.prototype.flat(depth)`：按深度递归展开嵌套数组（含循环引用保护）返回新数组。
 pub fn array_flat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.flat called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
@@ -584,6 +599,7 @@ pub fn array_flat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(new_arr))
 }
 
+/// `Array.prototype.forEach(callback, thisArg)`：对每个元素调用 callback，返回 undefined。
 pub fn array_for_each<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.forEach called with {} args", args.len());
     let (arr_ptr, n, is_array) = array_ptr_len3!(vm, args);
@@ -606,6 +622,7 @@ pub fn array_for_each<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::undefined())
 }
 
+/// `Array.prototype.map(callback, thisArg)`：对每个元素调用 callback 生成新数组。
 pub fn array_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.map called with {} args", args.len());
     let (arr_ptr, n, is_array) = array_ptr_len3!(vm, args);
@@ -634,6 +651,7 @@ pub fn array_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(new_arr))
 }
 
+/// `Array.prototype.filter(callback, thisArg)`：保留 callback 返回真值的元素形成新数组。
 pub fn array_filter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.filter called with {} args", args.len());
     let (arr_ptr, n, is_array) = array_ptr_len3!(vm, args);
@@ -672,6 +690,8 @@ pub fn array_filter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(new_arr))
 }
 
+/// `Array.prototype.reduce(callback, initialValue)`：从左到右累计归约；
+/// 空数组且无初始值抛 TypeError。
 pub fn array_reduce<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.reduce called with {} args", args.len());
     let (arr_ptr, n, is_array) = array_ptr_len3!(vm, args);
@@ -723,6 +743,7 @@ pub fn array_reduce<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(accumulator)
 }
 
+/// `Array.prototype.find(callback, thisArg)`：返回首个 callback 为真的元素，否则 undefined。
 pub fn array_find<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.find called with {} args", args.len());
     let (arr_ptr, n, is_array) = array_ptr_len3!(vm, args);
@@ -759,6 +780,7 @@ pub fn array_find<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::undefined())
 }
 
+/// `Array.prototype.some(callback, thisArg)`：任一元素满足 callback 返回 true。
 pub fn array_some<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.some called with {} args", args.len());
     let (arr_ptr, n, is_array) = array_ptr_len3!(vm, args);
@@ -795,6 +817,7 @@ pub fn array_some<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(false))
 }
 
+/// `Array.prototype.every(callback, thisArg)`：所有元素满足 callback 才返回 true。
 pub fn array_every<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.every called with {} args", args.len());
     let (arr_ptr, n, is_array) = array_ptr_len3!(vm, args);
@@ -831,6 +854,7 @@ pub fn array_every<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(true))
 }
 
+/// `Array.prototype.flatMap(callback, thisArg)`：map 后把返回的数组展开一层。
 pub fn array_flat_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.flatMap called with {} args", args.len());
     let (arr_ptr, n, is_array) = array_ptr_len3!(vm, args);
@@ -886,6 +910,7 @@ pub fn array_flat_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(new_arr))
 }
 
+/// `Array.prototype.shift()`：移除并返回首元素，其余元素前移；空数组返回 undefined。
 pub fn array_shift<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.shift called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
@@ -903,6 +928,7 @@ pub fn array_shift<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(first)
 }
 
+/// `Array.prototype.unshift(...items)`：插入元素到头部，返回新长度。
 pub fn array_unshift<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.unshift called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
@@ -921,6 +947,7 @@ pub fn array_unshift<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::int(new_len as i32))
 }
 
+/// `Array.prototype.fill(value, start, end)`：用给定值填充区间，返回 this。
 pub fn array_fill<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.fill called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
@@ -945,6 +972,7 @@ pub fn array_fill<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.reg(args[0]))
 }
 
+/// `Array.prototype.copyWithin(target, start, end)`：在数组内部复制元素区间，返回 this。
 pub fn array_copy_within<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.copyWithin called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
@@ -982,6 +1010,7 @@ pub fn array_copy_within<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.reg(args[0]))
 }
 
+/// `Array.prototype.at(index)`：按索引取元素，支持负索引；越界返回 undefined。
 pub fn array_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.at called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
@@ -1001,6 +1030,7 @@ pub fn array_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(arr.get_prop_at(index))
 }
 
+/// `Array.prototype.lastIndexOf(searchElement, fromIndex)`：从后往前查找首个匹配索引。
 pub fn array_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.lastIndexOf called with {} args", args.len());
     let this_val = vm.reg(args[0]);
@@ -1040,6 +1070,7 @@ pub fn array_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::int(-1))
 }
 
+/// `Array.prototype.findIndex(callback, thisArg)`：返回首个 callback 为真的索引，否则 -1。
 pub fn array_find_index<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.findIndex called with {} args", args.len());
     let (arr_ptr, n, is_array) = array_ptr_len3!(vm, args);
@@ -1076,6 +1107,7 @@ pub fn array_find_index<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::int(-1))
 }
 
+/// `Array.prototype.findLast(callback, thisArg)`：从后往前返回首个 callback 为真的元素。
 pub fn array_find_last<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.findLast called with {} args", args.len());
     let (arr_ptr, n) = {
@@ -1115,6 +1147,7 @@ pub fn array_find_last<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::undefined())
 }
 
+/// `Array.prototype.reduceRight(callback, initialValue)`：从右到左累计归约。
 pub fn array_reduce_right<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.reduceRight called with {} args", args.len());
     let (arr_ptr, n, _is_array) = array_ptr_len3!(vm, args);
@@ -1160,6 +1193,8 @@ pub fn array_reduce_right<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(acc)
 }
 
+/// `Array.prototype.sort(compareFn)`：原地排序。默认按字符串字典序；
+/// 提供比较函数时按其返回值（<0/=0/>0）排序，回调抛错则中止。
 pub fn array_sort<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.sort called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
@@ -1224,6 +1259,7 @@ pub fn array_sort<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.reg(args[0]))
 }
 
+/// `Array.prototype.values()`：返回迭代数组元素的迭代器。
 pub fn array_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.values called with {} args", args.len());
     let this_val = vm.reg(args[0]);

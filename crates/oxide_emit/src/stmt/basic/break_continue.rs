@@ -1,3 +1,5 @@
+//! break/continue 语句 emit：解析标签与最近循环的跳转目标。
+
 use crate::{CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 

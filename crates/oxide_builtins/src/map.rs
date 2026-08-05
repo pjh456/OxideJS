@@ -68,6 +68,7 @@ fn alloc_map<H: VmHost>(vm: &mut H) -> *mut JsObject {
     vm.alloc_object(obj)
 }
 
+/// 收集 Map 中作为对象引用的键和值（GC 根边），供跨 epoch 遍历/重写时追踪。
 pub fn map_native_edges(obj: &JsObject) -> Vec<JsValue> {
     if !obj.is_map() {
         return Vec::new();
@@ -85,6 +86,8 @@ pub fn map_native_edges(obj: &JsObject) -> Vec<JsValue> {
     }
 }
 
+/// 克隆 Map 的 native 数据到新对象，用 `rewrite` 改写其中的对象引用
+/// （供跨 epoch 的对象重写/克隆流程使用）。
 pub fn clone_map_native_with_rewrite<F>(src: &JsObject, dst: &mut JsObject, mut rewrite: F)
 where
     F: FnMut(JsValue) -> JsValue,
@@ -108,6 +111,7 @@ where
     dst.set_native_data(Box::into_raw(Box::new(cloned)) as *mut u8);
 }
 
+/// 原地重写 Map 的 native 数据，用 `rewrite` 改写其中的对象引用。
 pub fn rewrite_map_native<F>(obj: &mut JsObject, mut rewrite: F)
 where
     F: FnMut(JsValue) -> JsValue,
@@ -130,6 +134,7 @@ where
     }
 }
 
+/// 释放 Map 的 native 数据（IndexMap），返回释放的字节数供泄漏统计。
 pub fn drop_map_native(obj: &mut JsObject) -> u64 {
     if !obj.is_map() {
         return 0;
@@ -147,11 +152,13 @@ pub fn drop_map_native(obj: &mut JsObject) -> u64 {
     }
 }
 
+/// `Map` 构造函数：创建带空 IndexMap native 数据的 Map 对象。
 pub fn map_constructor<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     let map_obj = alloc_map(vm);
     NativeResult::Ok(JsValue::from_js_object(map_obj))
 }
 
+/// `Map.prototype.set(key, value)`：插入/更新键值对，返回 this。
 pub fn map_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let inner = native_try!(get_map_inner(vm, this_val));
@@ -163,6 +170,7 @@ pub fn map_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(this_val)
 }
 
+/// `Map.prototype.get(key)`：返回 key 对应的值；不存在返回 undefined。
 pub fn map_get<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let inner = native_try!(get_map_inner(vm, this_val));
@@ -171,6 +179,7 @@ pub fn map_get<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(found.unwrap_or(JsValue::undefined()))
 }
 
+/// `Map.prototype.has(key)`：key 是否存在。
 pub fn map_has<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let inner = native_try!(get_map_inner(vm, this_val));
@@ -179,6 +188,7 @@ pub fn map_has<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(found))
 }
 
+/// `Map.prototype.delete(key)`：删除键并返回是否删除成功。
 pub fn map_delete<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let inner = native_try!(get_map_inner(vm, this_val));
@@ -187,6 +197,7 @@ pub fn map_delete<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(removed.is_some()))
 }
 
+/// `Map.prototype.clear()`：清空全部键值对，返回 undefined。
 pub fn map_clear<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let inner = native_try!(get_map_inner(vm, this_val));
@@ -196,12 +207,14 @@ pub fn map_clear<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::undefined())
 }
 
+/// `Map.prototype.size` getter：返回键值对数量。
 pub fn map_size<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let inner = native_try!(get_map_inner(vm, this_val));
     NativeResult::Ok(JsValue::float(unsafe { (*inner).len() } as f64))
 }
 
+/// `Map.prototype.entries()`：返回按插入序迭代 `[key, value]` 对的迭代器。
 pub fn map_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let _inner = native_try!(get_map_inner(vm, this_val));
@@ -212,6 +225,7 @@ pub fn map_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     ))
 }
 
+/// `Map.prototype.values()`：返回按插入序迭代值的迭代器。
 pub fn map_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let _inner = native_try!(get_map_inner(vm, this_val));
@@ -222,6 +236,7 @@ pub fn map_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     ))
 }
 
+/// `Map.prototype.keys()`：返回按插入序迭代键的迭代器。
 pub fn map_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let _inner = native_try!(get_map_inner(vm, this_val));

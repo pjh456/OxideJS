@@ -142,6 +142,7 @@ impl Vm {
         self.pc = frame.return_addr;
     }
 
+    /// 重新执行当前已加载的 bytecode：清空执行状态并重置 IC 缓存后再次 dispatch。
     pub fn rerun(&mut self) -> Result<JsValue, String> {
         vm_info!("rerun: clearing IC caches");
         self.clear_execution_state();
@@ -150,6 +151,10 @@ impl Vm {
         self.dispatch()
     }
 
+    /// 加载并执行一个已编译模块，返回模块顶层执行结果或未捕获异常消息。
+    ///
+    /// 内部初始化寄存器/bytecode/immutables 与 builtin 寄存器预绑定，然后进入
+    /// dispatch 主循环；执行完成或异常展开后返回。
     pub fn run(&mut self, module: &CompiledModule) -> Result<JsValue, String> {
         vm_debug!("run: starting bytecode execution, {} instructions", module.bytecode.len());
         self.clear_execution_state();

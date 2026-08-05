@@ -1,3 +1,5 @@
+//! 模板字符串域：普通/标签模板子模块与域分发 `emit_template_domain`。
+
 use crate::{CompileCtx, Emitter};
 use oxide_parser::Expression;
 

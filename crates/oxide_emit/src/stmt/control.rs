@@ -1,3 +1,5 @@
+//! 控制流语句 emit：`if` 条件分支（含 else）与域分发 `emit_control_domain`。
+
 use crate::{CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

@@ -5,6 +5,7 @@ use oxide_types::object::JsObject;
 
 use crate::bindings::apply_binding_table;
 
+/// 把普通全局函数（`isNaN`、`parseInt`、`decodeURIComponent` 等）绑定到 global。
 pub fn bind_global(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     apply_binding_table(
         session.builtin_world(),

@@ -13,6 +13,7 @@ fn is_integer_index(key: &str) -> bool {
     key.bytes().all(|b| b.is_ascii_digit()) && key.parse::<u64>().unwrap_or(u64::MAX) < (1u64 << 32) - 1
 }
 
+/// 收集对象全部自身属性（shape 链），按规范顺序排列：整数索引在前升序，其余保持插入序。
 pub(crate) fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
     let mut keys: Vec<(u32, u32)> = Vec::new();
     let shape_id = obj.shape_id();
@@ -53,11 +54,13 @@ pub(crate) fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)
     keys
 }
 
+/// JS `Object()` 构造逻辑：创建空对象（prototype 为 null，由 VM 补装内置原型）。
 pub fn object_constructor<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
     NativeResult::Ok(JsValue::from_js_object(obj))
 }
 
+/// `Object.keys(obj)`：返回可枚举自身属性的字符串名数组。
 pub fn object_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj_ptr = match require_obj_arg(vm, args, "keys") {
         Ok(ptr) => ptr,
@@ -102,6 +105,7 @@ pub fn object_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(arr))
 }
 
+/// `Object.create(proto, properties)`：以指定 prototype 创建新对象。
 pub fn object_create<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Err(crate::error::create_type_error(vm, "Object.create: at least 1 argument required"));
@@ -121,6 +125,7 @@ pub fn object_create<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(obj))
 }
 
+/// `Object.assign(target, ...sources)`：拷贝各源对象的可枚举自身属性到目标，返回目标。
 pub fn object_assign<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Err(crate::error::create_type_error(vm, "Object.assign requires a target"));
@@ -164,6 +169,7 @@ pub fn object_assign<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(target_val)
 }
 
+/// `Object.is(a, b)`：按 SameValue 语义比较（NaN 相等、+0/-0 不等）。
 pub fn object_is<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 3 {
         return NativeResult::Err(crate::error::create_type_error(vm, "Object.is called with insufficient arguments"));
@@ -173,6 +179,8 @@ pub fn object_is<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(oxide_runtime_api::same_value(lhs, rhs)))
 }
 
+/// `Object.defineProperty(obj, key, descriptor)`：按 descriptor 定义/修改属性，
+/// 支持数据与访问器描述符，兼容已有属性的默认回填。
 pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 4 {
         return NativeResult::Err(crate::error::create_type_error(
@@ -318,6 +326,8 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     NativeResult::Ok(obj_val)
 }
 
+/// `Object.getOwnPropertyDescriptor(obj, key)`：返回自身属性的描述符对象；
+/// 不存在返回 undefined。
 pub fn object_get_own_property_descriptor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 3 {
         return NativeResult::Err(crate::error::create_type_error(
@@ -430,6 +440,7 @@ macro_rules! native_try {
     };
 }
 
+/// `Object.freeze(obj)`：冻结对象（不可扩展 + 全部属性不可配置/不可写），返回原对象。
 pub fn object_freeze<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Err(crate::error::create_type_error(vm, "Object.freeze called on non-object"));
@@ -446,6 +457,7 @@ pub fn object_freeze<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(val)
 }
 
+/// `Object.seal(obj)`：密封对象（不可扩展 + 全部属性不可配置），返回原对象。
 pub fn object_seal<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Err(crate::error::create_type_error(vm, "Object.seal called on non-object"));
@@ -462,6 +474,7 @@ pub fn object_seal<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(val)
 }
 
+/// `Object.preventExtensions(obj)`：禁止添加新属性，返回原对象。
 pub fn object_prevent_extensions<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Err(crate::error::create_type_error(vm, "Object.preventExtensions called on non-object"));
@@ -477,6 +490,7 @@ pub fn object_prevent_extensions<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRe
     NativeResult::Ok(val)
 }
 
+/// `Object.isFrozen(obj)`：对象是否冻结（检查 extensible 及全部属性 writable/configurable）。
 pub fn object_is_frozen<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Err(crate::error::create_type_error(vm, "Object.isFrozen called on non-object"));
@@ -512,6 +526,7 @@ pub fn object_is_frozen<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(true))
 }
 
+/// `Object.isSealed(obj)`：对象是否密封（检查 extensible 及全部属性 configurable）。
 pub fn object_is_sealed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Err(crate::error::create_type_error(vm, "Object.isSealed called on non-object"));
@@ -544,6 +559,7 @@ pub fn object_is_sealed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(true))
 }
 
+/// `Object.isExtensible(obj)`：对象是否可扩展。
 pub fn object_is_extensible<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Err(crate::error::create_type_error(vm, "Object.isExtensible called on non-object"));
@@ -560,6 +576,7 @@ pub fn object_is_extensible<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     NativeResult::Ok(JsValue::bool(obj.is_extensible()))
 }
 
+/// `Object.getOwnPropertyNames(obj)`：返回全部自身属性名（含不可枚举）。
 pub fn object_get_own_property_names<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj_ptr = native_try!(require_obj_arg(vm, args, "getOwnPropertyNames"));
 
@@ -591,6 +608,7 @@ pub fn object_get_own_property_names<H: VmHost>(vm: &mut H, args: &[u8]) -> Nati
     NativeResult::Ok(JsValue::from_js_object(arr))
 }
 
+/// `Object.defineProperties(obj, descriptors)`：批量定义数据属性，返回目标对象。
 pub fn object_define_properties<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 3 {
         return NativeResult::Err(crate::error::create_type_error(
@@ -645,6 +663,7 @@ pub fn object_define_properties<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
     NativeResult::Ok(target_val)
 }
 
+/// `Object.fromEntries(entries)`：由 `[key, value]` 对数组构建对象。
 pub fn object_from_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Err(crate::error::create_type_error(vm, "Object.fromEntries: expected 1 argument"));
@@ -683,11 +702,13 @@ pub fn object_from_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(target_val)
 }
 
+/// `Object.getPrototypeOf(obj)`：返回对象的 prototype。
 pub fn object_get_prototype_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj_ptr = native_try!(require_obj_arg(vm, args, "getPrototypeOf"));
     NativeResult::Ok(unsafe { (*obj_ptr).proto() })
 }
 
+/// `Object.hasOwn(obj, key)`：对象是否有指定自身属性。
 pub fn object_has_own<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 3 {
         return NativeResult::Ok(JsValue::bool(false));
@@ -698,18 +719,21 @@ pub fn object_has_own<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(vm.get_own_property_slot(obj, key_si).is_some()))
 }
 
+/// `Object.prototype.valueOf`：返回 this 本身（配合 OrdinaryToPrimitive 的兜底）。
 pub fn object_proto_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // Object.prototype.valueOf returns the `this` object unchanged; OrdinaryToPrimitive
     // then falls through to toString since the result is not primitive.
     NativeResult::Ok(vm.reg(args[0]))
 }
 
+/// `Object.prototype.toString`：返回 `[object Object]`（暂不区分具体类型标签）。
 pub fn object_proto_to_string<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     // ponytail: minimal [[Class]] string — always "[object Object]". Type-specific
     // tags ("[object Array]" etc.) and Symbol.toStringTag are a later refinement.
     NativeResult::Ok(vm.new_string("[object Object]"))
 }
 
+/// `Object.prototype.hasOwnProperty(key)`：this 是否有指定自身属性。
 pub fn object_proto_has_own_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::bool(false));
@@ -726,6 +750,7 @@ pub fn object_proto_has_own_property<H: VmHost>(vm: &mut H, args: &[u8]) -> Nati
     NativeResult::Ok(JsValue::bool(vm.get_own_property_slot(obj, key_si).is_some()))
 }
 
+/// `Object.prototype.propertyIsEnumerable(key)`：指定自身属性是否可枚举。
 pub fn object_proto_property_is_enumerable<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::bool(false));
@@ -749,6 +774,7 @@ pub fn object_proto_property_is_enumerable<H: VmHost>(vm: &mut H, args: &[u8]) -
     NativeResult::Ok(JsValue::bool(enumerable))
 }
 
+/// `Object.entries(obj)`：返回可枚举自身属性的 `[key, value]` 对数组。
 pub fn object_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj_ptr = native_try!(require_obj_arg(vm, args, "entries"));
     let obj = unsafe { &*obj_ptr };
@@ -792,6 +818,7 @@ pub fn object_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(arr))
 }
 
+/// `Object.values(obj)`：返回可枚举自身属性的值数组。
 pub fn object_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj_ptr = native_try!(require_obj_arg(vm, args, "values"));
     let obj = unsafe { &*obj_ptr };

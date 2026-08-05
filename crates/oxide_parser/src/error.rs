@@ -1,5 +1,11 @@
+//! 解析错误类型。
+//!
+//! [`OxideError`] 把 oxc 的 `OxcDiagnostic` 归一化为引擎可消费的
+//! 消息 + 字节区间，供 `parse` 返回错误列表。
+
 use std::fmt;
 
+/// 一条解析错误：消息与出错源码区间（`(start, end)` 字节偏移）。
 #[derive(Debug, Clone)]
 pub struct OxideError {
     pub message: String,

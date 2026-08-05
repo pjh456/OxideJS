@@ -59,6 +59,7 @@ pub struct IRFunction {
 }
 
 impl IRFunction {
+    /// 构造空 IRFunction：全域置空/置零，等价于 Default。
     pub fn new() -> Self {
         Self {
             insts: Vec::new(),

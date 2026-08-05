@@ -7,6 +7,7 @@ use oxide_types::value::JsValue;
 
 use crate::bind_constructor;
 
+/// 把 Symbol 构造器与原型方法绑定到 global（含 `Symbol.iterator` 等 well-known symbols）。
 pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let ctor_ptr = session.builtin_world().symbol_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };

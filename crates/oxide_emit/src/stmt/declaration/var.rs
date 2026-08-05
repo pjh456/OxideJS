@@ -1,3 +1,5 @@
+//! var/let/const 声明语句 emit：声明 + 初始化表达式，处理提升与解构 pattern。
+
 use crate::{CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

@@ -1,3 +1,10 @@
+//! ECMAScript 值表示：NaN-boxing 的 64 位 `JsValue`。
+//!
+//! 普通 double 直接以 IEEE-754 位模式存放；其余类型用静默 NaN 前缀
+//! `0xFFF8_0000_0000_0000` 加上 3 位 tag（bits 50-48）区分 int / bool /
+//! null / undefined / object / string / symbol。对象与字符串存 48 位指针，
+//! 使一个 `JsValue` 可塞进寄存器且类型判断为常数时间。
+
 use std::fmt;
 
 use crate::object::{JsObject, JsString};
@@ -36,6 +43,11 @@ fn get_tag(bits: u64) -> u64 {
     (bits & TAG_MASK) >> TAG_SHIFT
 }
 
+/// 统一 ECMAScript 值：一个 NaN-boxed 的 64 位字。
+///
+/// `repr(transparent)` 包裹单个 `u64`。double 原样编码；非 double 类型
+/// 使用 NaN 前缀 + tag + payload。`Copy`，寄存器宽度，是引擎栈与对象
+/// 属性向量的基本元素。字符串/对象按指针恒等比较，内容比较交给上层。
 #[repr(transparent)]
 #[derive(Copy, Clone)]
 pub struct JsValue(u64);
@@ -87,10 +99,15 @@ impl JsValue {
         self.0
     }
 
+    /// 构造 32 位整数（tag = int，payload 为 `i32` 位模式）。
     pub fn int(v: i32) -> Self {
         Self(make_tag(TAG_INT) | (v as u32 as u64))
     }
 
+    /// 构造双精度浮点。
+    ///
+    /// NaN 会被规范化为引擎内唯一的安静 NaN 编码，保证
+    /// `float(x).as_double()` 幂等且 `PartialEq` 对 NaN 恒为 false。
     pub fn float(v: f64) -> Self {
         let bits = v.to_bits();
         if is_nan_bits(bits) {
@@ -100,24 +117,33 @@ impl JsValue {
         }
     }
 
+    /// 构造布尔值。
     pub fn bool(v: bool) -> Self {
         Self(make_tag(TAG_BOOL) | (v as u64))
     }
 
+    /// 构造 `null`。
     pub fn null() -> Self {
         Self(make_tag(TAG_NULL))
     }
 
+    /// 构造 `undefined`。
     pub fn undefined() -> Self {
         Self(make_tag(TAG_UNDEFINED))
     }
 
+    /// 构造对象引用（48 位指针 + object tag）。
+    ///
+    /// # Panics (debug)
+    ///
+    /// debug 构建下若指针超出 48 位地址空间会 panic。
     pub fn object(ptr: *const u8) -> Self {
         let addr = ptr as u64;
         debug_assert!(addr <= PTR_MASK, "object pointer must fit in 48 bits");
         Self(make_tag(TAG_OBJECT) | addr)
     }
 
+    /// 构造字符串引用（指向 [`JsString`] 的 48 位指针 + string tag）。
     pub fn string(ptr: *const JsString) -> Self {
         let addr = ptr as u64;
         debug_assert!(addr <= PTR_MASK, "string pointer must fit in 48 bits");
@@ -131,38 +157,49 @@ impl JsValue {
         Self::string(ptr)
     }
 
+    /// 是否为普通双精度浮点（非 NaN-box 编码）。
     pub fn is_double(&self) -> bool {
         !is_nan_boxed(self.0)
     }
 
+    /// 是否为 32 位整数。
     pub fn is_int(&self) -> bool {
         is_nan_boxed(self.0) && get_tag(self.0) == TAG_INT
     }
 
+    /// 是否为布尔值。
     pub fn is_bool(&self) -> bool {
         is_nan_boxed(self.0) && get_tag(self.0) == TAG_BOOL
     }
 
+    /// 是否为 `null`。
     pub fn is_null(&self) -> bool {
         is_nan_boxed(self.0) && get_tag(self.0) == TAG_NULL
     }
 
+    /// 是否为 `undefined`。
     pub fn is_undefined(&self) -> bool {
         is_nan_boxed(self.0) && get_tag(self.0) == TAG_UNDEFINED
     }
 
+    /// 是否为 `null` 或 `undefined`（`??` 与可选链的判据）。
     pub fn is_nullish(&self) -> bool {
         self.is_null() || self.is_undefined()
     }
 
+    /// 是否为对象引用。
     pub fn is_object(&self) -> bool {
         is_nan_boxed(self.0) && get_tag(self.0) == TAG_OBJECT
     }
 
+    /// 是否为字符串引用。
     pub fn is_string(&self) -> bool {
         is_nan_boxed(self.0) && get_tag(self.0) == TAG_STRING
     }
 
+    /// 解出双精度值。
+    ///
+    /// debug 构建下断言必须是 double；release 下非法时返回 `NaN`。
     pub fn as_double(&self) -> f64 {
         debug_assert!(self.is_double(), "JsValue is not a double");
         #[cfg(not(debug_assertions))]
@@ -172,6 +209,9 @@ impl JsValue {
         f64::from_bits(self.0)
     }
 
+    /// 解出 32 位整数。
+    ///
+    /// debug 构建下断言必须是 int；release 下非法时返回 0。
     pub fn as_int(&self) -> i32 {
         debug_assert!(self.is_int(), "JsValue is not an int");
         #[cfg(not(debug_assertions))]
@@ -181,6 +221,9 @@ impl JsValue {
         (self.0 & INT_MASK) as i32
     }
 
+    /// 解出布尔值。
+    ///
+    /// debug 构建下断言必须是 bool；release 下非法时返回 false。
     pub fn as_bool(&self) -> bool {
         debug_assert!(self.is_bool(), "JsValue is not a bool");
         #[cfg(not(debug_assertions))]
@@ -190,6 +233,7 @@ impl JsValue {
         (self.0 & 1) != 0
     }
 
+    /// 解出对象底层指针；非对象时返回空指针。
     pub fn as_ptr(&self) -> *const u8 {
         if !self.is_object() {
             return std::ptr::null();
@@ -197,6 +241,7 @@ impl JsValue {
         (self.0 & PTR_MASK) as *const u8
     }
 
+    /// 解出可变对象底层指针；非对象时返回空指针。
     pub fn as_object_ptr(&self) -> *mut u8 {
         if !self.is_object() {
             return std::ptr::null_mut();
@@ -204,6 +249,7 @@ impl JsValue {
         (self.0 & PTR_MASK) as *mut u8
     }
 
+    /// 解出 `JsObject` 指针；非对象时返回空指针。
     pub fn as_js_object_ptr(&self) -> *mut JsObject {
         if !self.is_object() {
             return std::ptr::null_mut();
@@ -211,30 +257,36 @@ impl JsValue {
         (self.0 & PTR_MASK) as *mut JsObject
     }
 
+    /// 从 `JsObject` 指针构造对象值（`object` 的类型化别名）。
     pub fn from_js_object(ptr: *mut JsObject) -> Self {
         let addr = ptr as u64;
         debug_assert!(addr <= PTR_MASK, "object pointer must fit in 48 bits");
         Self(make_tag(TAG_OBJECT) | addr)
     }
 
+    /// 解出字符串指针；调用方须先保证 [`is_string`](JsValue::is_string)。
     pub fn as_string_ptr(&self) -> *const JsString {
         debug_assert!(self.is_string(), "JsValue is not a string");
         (self.0 & PTR_MASK) as *const JsString
     }
 
+    /// 解出可变字符串指针；调用方须先保证 [`is_string`](JsValue::is_string)。
     pub fn as_string_ptr_mut(&self) -> *mut JsString {
         debug_assert!(self.is_string(), "JsValue is not a string");
         (self.0 & PTR_MASK) as *mut JsString
     }
 
+    /// 构造 symbol 值（payload 为符号表下标）。
     pub fn symbol(index: u32) -> Self {
         Self(make_tag(TAG_SYMBOL) | (index as u64))
     }
 
+    /// 是否为 symbol。
     pub fn is_symbol(&self) -> bool {
         is_nan_boxed(self.0) && get_tag(self.0) == TAG_SYMBOL
     }
 
+    /// 解出 symbol 下标；调用方须先保证 [`is_symbol`](JsValue::is_symbol)。
     pub fn as_symbol_index(&self) -> u32 {
         debug_assert!(self.is_symbol());
         (self.0 & INT_MASK) as u32

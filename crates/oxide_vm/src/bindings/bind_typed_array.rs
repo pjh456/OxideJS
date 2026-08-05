@@ -13,6 +13,7 @@ macro_rules! bind_typed_array_constructor {
     }};
 }
 
+/// 把所有 TypedArray 家族构造器（Int8Array/Uint8Array/.../BigUint64Array）与其共享原型绑定到 global。
 pub fn bind_typed_array(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let shared_proto_ptr = session.builtin_world().typed_array_proto.as_ptr() as *mut JsObject;
     let shared_proto = unsafe { &mut *shared_proto_ptr };

@@ -43,6 +43,7 @@ fn bind_error_subtype_constructor(
     global.bump_generation();
 }
 
+/// 把 Error 及各子类型（TypeError/ReferenceError/...）构造器与原型方法绑定到 global。
 pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let error_methods = ErrorMethods {
         error: oxide_builtins::error::error_constructor::<crate::vm::Vm> as *const (),

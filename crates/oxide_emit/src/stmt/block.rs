@@ -1,3 +1,5 @@
+//! 块语句 emit：`emit_block_statement` 压/弹作用域并顺序编译子语句（含域分发）。
+
 use crate::{CompileCtx, Emitter};
 use oxide_parser::Statement;
 

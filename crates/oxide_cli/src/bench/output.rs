@@ -1,9 +1,11 @@
 use crate::bench::metrics::MetricCollection;
 
+/// 把结果序列化为美观 JSON 字符串。
 pub fn format_json(results: &[MetricCollection]) -> String {
     serde_json::to_string_pretty(results).unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e))
 }
 
+/// 把结果格式化为对齐的文本表格（供终端打印）。
 pub fn format_text_table(results: &[MetricCollection]) -> String {
     let mut out = String::new();
     out.push_str(&format!(

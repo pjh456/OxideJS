@@ -1,3 +1,8 @@
+//! 表达式编译域：表达式分发 + sequence/unsupported。
+//!
+//! `emit_expression` 按 `Expression` 变体分发到各子模块；本文件还处理
+//! 序列表达式（逐项求值取末值）与不支持表达式的报错。
+
 use crate::{CompileCtx, Emitter};
 use oxide_parser::Expression;
 

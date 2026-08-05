@@ -5,6 +5,7 @@ use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
+/// 把 Math 单例对象及其方法（abs/floor/max/random 等）绑定到 global。
 pub fn bind_math(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let math_ptr = session.builtin_world().math_object.as_ptr() as *mut JsObject;
     let math = unsafe { &mut *math_ptr };

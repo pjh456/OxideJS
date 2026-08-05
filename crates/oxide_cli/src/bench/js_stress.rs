@@ -13,6 +13,8 @@ use crate::bench::metrics::MetricCollection;
 use crate::bench::output::{format_json, format_text_table};
 use crate::bench::BenchConfig;
 
+/// 运行 `tests/stress/` 下全部（或 filter 匹配的）JS 压力测试：
+/// 预热后迭代执行并采集指标，输出 JSON + 表格；必要时保存/对比基线。
 pub fn run_js_stress_bench(config: &BenchConfig, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>) -> ExitCode {
     let mut results: Vec<MetricCollection> = Vec::new();
     let compiler = Compiler::new();

@@ -1,3 +1,5 @@
+//! 类字段初始化 emit：公有/私有实例字段与私有方法的实例化初始化。
+
 use crate::{CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

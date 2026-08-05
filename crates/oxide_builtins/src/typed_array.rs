@@ -126,6 +126,7 @@ fn typed_array_data_ptr(obj: &JsObject) -> Option<*mut TypedArrayData> {
     obj.native_fn().map(|ptr| ptr.as_ptr() as *mut TypedArrayData)
 }
 
+/// 收集 TypedArray 引用的底层 buffer（GC 根边）。
 pub fn typed_array_native_edges(obj: &JsObject) -> Vec<JsValue> {
     let Some(ptr) = typed_array_data_ptr(obj) else {
         return Vec::new();
@@ -141,6 +142,7 @@ pub fn typed_array_native_edges(obj: &JsObject) -> Vec<JsValue> {
     }
 }
 
+/// 克隆 TypedArray 的视图数据到新对象，用 `rewrite` 改写 buffer 引用。
 pub fn clone_typed_array_native_with_rewrite<F>(old_obj: &JsObject, new_obj: &mut JsObject, mut rewrite: F)
 where
     F: FnMut(JsValue) -> JsValue,
@@ -157,6 +159,7 @@ where
     new_obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(cloned as *const ()) }));
 }
 
+/// 原地重写 TypedArray 的 buffer 引用。
 pub fn rewrite_typed_array_native<F>(obj: &mut JsObject, mut rewrite: F)
 where
     F: FnMut(JsValue) -> JsValue,
@@ -172,6 +175,7 @@ where
     }
 }
 
+/// 释放 TypedArray 的视图数据（`Box<TypedArrayData>`），返回释放字节数。
 pub fn drop_typed_array_native(obj: &mut JsObject) -> u64 {
     let Some(ptr) = typed_array_data_ptr(obj) else {
         return 0;
@@ -341,6 +345,8 @@ fn typed_array_new<H: VmHost>(vm: &mut H, args: &[u8], kind: TypedArrayKind) -> 
 
 macro_rules! typed_array_ctor {
     ($name:ident, $kind:ident) => {
+        /// 对应类型（如 `Int8Array`）的构造函数：支持数字长度、ArrayBuffer+offset+length
+        /// 或 array-like 数据三种调用形式。
         pub fn $name<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             typed_array_new(vm, args, TypedArrayKind::$kind)
         }
@@ -359,6 +365,7 @@ typed_array_ctor!(float64array_constructor, Float64);
 typed_array_ctor!(bigint64array_constructor, BigInt64);
 typed_array_ctor!(biguint64array_constructor, BigUint64);
 
+/// `TypedArray.prototype.at(index)`：按索引取元素，支持负索引；越界返回 undefined。
 pub fn typed_array_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
@@ -376,6 +383,7 @@ pub fn typed_array_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(read_element(view.kind, buffer, absolute_byte_offset(view, idx as usize)))
 }
 
+/// `TypedArray.prototype.fill(value, start, end)`：用给定值填充区间，返回 this。
 pub fn typed_array_fill<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
@@ -399,6 +407,7 @@ pub fn typed_array_fill<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(this_val)
 }
 
+/// `TypedArray.prototype.slice(start, end)`：复制区间元素生成新同类型 TypedArray。
 pub fn typed_array_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
@@ -424,6 +433,7 @@ pub fn typed_array_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(create_typed_array(vm, view.kind, buffer, 0, count)))
 }
 
+/// `TypedArray.prototype.subarray(start, end)`：共享底层 buffer 创建区间子视图。
 pub fn typed_array_subarray<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
@@ -448,6 +458,8 @@ pub fn typed_array_subarray<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     )))
 }
 
+/// `TypedArray.prototype.set(source, offset)`：从 array-like/另一个 TypedArray 拷贝元素；
+/// 越界抛 RangeError。
 pub fn typed_array_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
@@ -473,6 +485,7 @@ pub fn typed_array_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::undefined())
 }
 
+/// `TypedArray.prototype.toString`：校验 receiver 后返回 `[object TypedArray]`。
 pub fn typed_array_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     native_try!(get_typed_array_data(vm, this_val));

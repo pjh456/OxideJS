@@ -1,3 +1,5 @@
+//! 对象表达式域：对象/数组字面量子模块与域分发 `emit_object_domain`。
+
 use crate::{CompileCtx, Emitter};
 use oxide_parser::Expression;
 

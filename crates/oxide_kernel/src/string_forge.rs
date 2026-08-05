@@ -46,6 +46,7 @@ pub struct PermInterner {
 }
 
 impl PermInterner {
+    /// 创建空 intern 表。
     pub fn new() -> Self {
         Self {
             hash_map: DashMap::new(),
@@ -110,6 +111,7 @@ impl PermInterner {
         self.entries.read().unwrap().len() as u32
     }
 
+    /// 是否尚无任何 intern 过的 key。
     pub fn is_empty(&self) -> bool {
         self.entry_count() == 0
     }

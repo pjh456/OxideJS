@@ -21,6 +21,7 @@ fn arg2<H: VmHost>(vm: &mut H, args: &[u8]) -> (f64, f64) {
     (a, b)
 }
 
+/// `Math.abs`：返回参数的绝对值。int 参数走 int 运算，其余按 double 返回。
 pub fn math_abs<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::float(f64::NAN));
@@ -35,6 +36,8 @@ pub fn math_abs<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
 macro_rules! math_unary {
     ($name:ident, $op:ident) => {
+        /// 一元数学函数（`Math.acos` 等）：对首个参数做 Rust 同名浮点运算，
+        /// 返回 double 结果；缺参或不可转数字时按 NaN 处理。
         pub fn $name<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             NativeResult::Ok(JsValue::float(arg1(vm, args).$op()))
         }
@@ -65,17 +68,20 @@ math_unary!(math_tan, tan);
 math_unary!(math_tanh, tanh);
 math_unary!(math_trunc, trunc);
 
+/// `Math.atan2(y, x)`：返回 y/x 的反正切角（弧度）。
 pub fn math_atan2<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (a, b) = arg2(vm, args);
     NativeResult::Ok(JsValue::float(a.atan2(b)))
 }
 
+/// `Math.round`：四舍五入到最接近的整数，.5 时向正无穷取整（JS 语义）。
 pub fn math_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let x = arg1(vm, args);
     let r = if x < 0.0 { (x - 0.5).ceil() } else { (x + 0.5).floor() };
     NativeResult::Ok(JsValue::float(r))
 }
 
+/// `Math.sign`：返回 1 / -1 / 0 / -0 / NaN。
 pub fn math_sign<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let x = arg1(vm, args);
     if x.is_nan() {
@@ -89,30 +95,36 @@ pub fn math_sign<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
+/// `Math.clz32`：返回 32 位无符号整数表示的前导零个数。
 pub fn math_clz32<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let n = arg1(vm, args) as u32;
     NativeResult::Ok(JsValue::int(n.leading_zeros() as i32))
 }
 
+/// `Math.fround`：把 double 舍入到 float32 精度再还原为 double。
 pub fn math_fround<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::float(arg1(vm, args) as f32 as f64))
 }
 
+/// `Math.hypot`：返回 sqrt(a²+b²)（当前仅支持两个参数）。
 pub fn math_hypot<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (a, b) = arg2(vm, args);
     NativeResult::Ok(JsValue::float(a.hypot(b)))
 }
 
+/// `Math.imul`：按 32 位整数做 wrap-around 乘法。
 pub fn math_imul<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (a, b) = arg2(vm, args);
     NativeResult::Ok(JsValue::int((a as i32).wrapping_mul(b as i32)))
 }
 
+/// `Math.pow(base, exp)`：返回幂运算结果。
 pub fn math_pow<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (a, b) = arg2(vm, args);
     NativeResult::Ok(JsValue::float(a.powf(b)))
 }
 
+/// `Math.max`：返回参数中的最大值；任一无参时返回 -Infinity，任一 NaN 时返回 NaN。
 pub fn math_max<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::float(f64::NEG_INFINITY));
@@ -130,6 +142,7 @@ pub fn math_max<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::float(m))
 }
 
+/// `Math.min`：返回参数中的最小值；无参时返回 Infinity，任一 NaN 时返回 NaN。
 pub fn math_min<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::float(f64::INFINITY));
@@ -147,6 +160,7 @@ pub fn math_min<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::float(m))
 }
 
+/// `Math.random`：推进 RNG 并返回 [0, 1) 的伪随机浮点数。
 pub fn math_random<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     vm.step_rng();
     NativeResult::Ok(JsValue::float(vm.math_rng_value()))

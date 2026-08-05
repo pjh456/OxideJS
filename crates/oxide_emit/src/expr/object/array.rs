@@ -1,3 +1,5 @@
+//! 数组字面量 emit：`emit_array_expression` 逐元素求值并建数组（含 holes）。
+
 use crate::{CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

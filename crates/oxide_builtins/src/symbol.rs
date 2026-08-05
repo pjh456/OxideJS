@@ -3,6 +3,8 @@ use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
+/// JS `Symbol()` 构造逻辑：以可选 description 创建一个新的唯一 Symbol。
+/// 当以 new 语义调用（this 原型链指向 Symbol.prototype）时抛 TypeError，与规范一致。
 pub fn symbol_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if this_val.is_object() {
@@ -32,6 +34,8 @@ pub fn symbol_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::symbol(idx))
 }
 
+/// `Symbol.prototype.toString`：返回 `Symbol(description)` 形式字符串。
+/// this 必须是 Symbol，否则抛 TypeError。
 pub fn symbol_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(args[0]);
     if !this_val.is_symbol() {
@@ -44,6 +48,8 @@ pub fn symbol_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(&result))
 }
 
+/// `Symbol.for(key)`：在全局 symbol 注册表中查找并返回同 key 的 Symbol；
+/// 不存在则新建并登记。同 key 的 Symbol 在全局唯一。
 pub fn symbol_for<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let key = if args.len() > 1 {
         oxide_runtime_api::to_string(vm.reg(args[1]))
@@ -60,6 +66,8 @@ pub fn symbol_for<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::symbol(idx))
 }
 
+/// `Symbol.keyFor(sym)`：返回全局注册表中该 Symbol 的 key；未登记返回 undefined。
+/// 参数非 Symbol 抛 TypeError。
 pub fn symbol_key_for<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let sym = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     if !sym.is_symbol() {

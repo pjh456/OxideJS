@@ -85,16 +85,22 @@ fn uri_error<H: VmHost>(vm: &mut H) -> NativeResult {
     NativeResult::Err(crate::error::create_uri_error(vm, URI_ERROR_MESSAGE))
 }
 
+/// `encodeURI`：编码输入为 URI，保留未转义字符与保留字符 `;/?:@&=+$,#`，
+/// 其余按 UTF-8 字节转成 `%XX`。
 pub fn encode_uri<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let input = super::string_arg(vm, args);
     NativeResult::Ok(vm.new_string(&encode_uri_string(&input, URI_SAFE)))
 }
 
+/// `encodeURIComponent`：编码输入为 URI component，仅保留未转义字符，
+/// 保留字符（如 `=&`）也会被转成 `%XX`。
 pub fn encode_uri_component<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let input = super::string_arg(vm, args);
     NativeResult::Ok(vm.new_string(&encode_uri_string(&input, URI_UNESCAPED)))
 }
 
+/// `decodeURI`：解码 `%XX` 序列，但保留字符的转义形式原样保留（不还原），
+/// 保证 decode(encode(uri)) 不变。非法序列抛 URIError。
 pub fn decode_uri<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let input = super::string_arg(vm, args);
     match decode_uri_string(&input, true) {
@@ -103,6 +109,8 @@ pub fn decode_uri<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
+/// `decodeURIComponent`：解码所有 `%XX` 序列（含保留字符），
+/// 非法或截断的 UTF-8 序列抛 URIError。
 pub fn decode_uri_component<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let input = super::string_arg(vm, args);
     match decode_uri_string(&input, false) {

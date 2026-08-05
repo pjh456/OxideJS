@@ -1,3 +1,7 @@
+//! class 声明整体 emit：驱动头、原型、方法、字段各阶段，组装最终类对象。
+//!
+//! 函数：`emit_class`。
+
 use crate::{CompileCtx, Emitter, FunctionBodyContext};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

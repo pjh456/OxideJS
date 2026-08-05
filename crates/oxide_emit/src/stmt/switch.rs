@@ -1,3 +1,5 @@
+//! switch 语句 emit：case 匹配链 + 穿落（fallthrough）与 default，见 `emit_switch_statement`。
+
 use crate::{CompileCtx, Emitter};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;

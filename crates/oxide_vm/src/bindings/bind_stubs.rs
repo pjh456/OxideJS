@@ -27,6 +27,8 @@ const STUBS: [(&str, *const (), u8); 8] = [
     ("Atomics", oxide_builtins::stubs::atomics_stub::<crate::vm::Vm> as *const (), 0),
 ];
 
+/// 把未实现内置（Proxy/BigInt/WeakMap/WeakSet/WeakRef/FinalizationRegistry/SharedArrayBuffer/Atomics）
+/// 的 stub 构造器绑定到 global，并登记到 `stub_objects` 供快照跟踪。
 pub fn bind_stubs(core: &Arc<KernelCore>, session: &mut KernelSession, global: &mut JsObject) {
     let builtin_world = Arc::get_mut(&mut session.builtin_world)
         .expect("BuiltinWorld must be uniquely owned during init_kernel_builtins");

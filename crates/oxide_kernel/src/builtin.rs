@@ -40,6 +40,8 @@ macro_rules! bind_methods_static {
     };
 }
 
+/// Object 静态方法与原型方法的 native 函数指针集合，由 builtin 绑定层填充后交给
+/// [`BuiltinWorld::bind_object_methods`] 安装到对象/原型上。
 pub struct ObjectMethods {
     pub keys: *const (),
     pub create: *const (),
@@ -64,6 +66,7 @@ pub struct ObjectMethods {
     pub property_is_enumerable: *const (),
 }
 
+/// Array 静态方法与原型方法的 native 函数指针集合，由 [`BuiltinWorld::bind_array_methods`] 安装。
 pub struct ArrayMethods {
     pub is_array: *const (),
     pub push: *const (),
@@ -97,6 +100,7 @@ pub struct ArrayMethods {
     pub values: *const (),
 }
 
+/// Error 家族（含各子类型）构造器与原型方法的 native 函数指针集合，由 [`BuiltinWorld::bind_error_methods`] 安装。
 pub struct ErrorMethods {
     pub error: *const (),
     pub type_error: *const (),
@@ -109,6 +113,7 @@ pub struct ErrorMethods {
     pub stack: *const (),
 }
 
+/// String 静态方法与原型方法的 native 函数指针集合，由 [`BuiltinWorld::bind_string_methods`] 安装。
 pub struct StringMethods {
     pub from_char_code: *const (),
     pub index_of: *const (),
@@ -142,12 +147,14 @@ pub struct StringMethods {
     pub last_index_of: *const (),
 }
 
+/// RegExp 原型方法的 native 函数指针集合。
 pub struct RegExpMethods {
     pub exec: *const (),
     pub test: *const (),
     pub to_string: *const (),
 }
 
+/// Function 原型方法的 native 函数指针集合，由 [`BuiltinWorld::bind_function_methods`] 安装。
 pub struct FunctionMethods {
     pub call: *const (),
     pub apply: *const (),
@@ -155,6 +162,10 @@ pub struct FunctionMethods {
     pub to_string: *const (),
 }
 
+/// 全部内置对象（原型、构造器、全局单例 Math/JSON、well-known symbol 与 stub 对象）的持有者。
+///
+/// 每个 session 独立持有自己的 `BuiltinWorld`，保证 session 间内置对象隔离；
+/// 由 [`BuiltinWorld::new`] 全量构造，或 [`BuiltinWorld::rebuild_with_dirty`] 按脏标记部分重建。
 pub struct BuiltinWorld {
     pub object_proto: P<JsObject>,
     pub array_proto: P<JsObject>,
@@ -485,6 +496,7 @@ impl BuiltinWorld {
         JsValue::from_js_object(self.function_proto.as_ptr() as *mut JsObject)
     }
 
+    /// 按 [`BuiltinId`] 取对应内置对象的指针引用。
     pub fn get_by_id(&self, id: BuiltinId) -> &P<JsObject> {
         match id {
             BuiltinId::ObjectProto => &self.object_proto,
@@ -556,6 +568,8 @@ impl BuiltinWorld {
         }
     }
 
+    /// 全量构造一个全新的 builtin world：创建所有原型/构造器对、Error 子类型、
+    /// TypedArray 家族与 well-known symbol 对象，并建立原型链链接。
     pub fn new(string_forge: &PermInterner, shape_forge: &ShapeForge) -> Self {
         let labels = builtin_labels(string_forge);
 
@@ -666,6 +680,7 @@ impl BuiltinWorld {
         world
     }
 
+    /// 按脏标记选择性重建 builtin world：仅重建被污染的对象家族，未污染的保留原指针。
     pub fn rebuild_with_dirty(
         current: &BuiltinWorld, string_forge: &PermInterner, shape_forge: &ShapeForge, dirty: &BuiltinDirtySet,
     ) -> BuiltinWorld {
@@ -900,6 +915,7 @@ impl BuiltinWorld {
         world
     }
 
+    /// 把 Object 家族方法安装到 Object 构造器与原型上（含 `hasOwnProperty` 等非枚举元数据修正）。
     pub fn bind_object_methods(&self, methods: &ObjectMethods, string_forge: &PermInterner, shape_forge: &ShapeForge) {
         let ctor_ptr = P::as_ptr(&self.object_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
@@ -947,6 +963,7 @@ impl BuiltinWorld {
         }
     }
 
+    /// 把 Array 家族方法安装到 Array 构造器与原型上。
     pub fn bind_array_methods(&self, methods: &ArrayMethods, string_forge: &PermInterner, shape_forge: &ShapeForge) {
         let ctor_ptr = P::as_ptr(&self.array_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
@@ -999,6 +1016,7 @@ impl BuiltinWorld {
         debug_assert!(shape_forge.lookup_position(proto.shape_id(), si).is_some());
     }
 
+    /// 把 Error 家族方法安装到 Error 及各子类型构造器与原型上。
     pub fn bind_error_methods(&self, methods: &ErrorMethods, string_forge: &PermInterner, shape_forge: &ShapeForge) {
         let ctor_ptr = P::as_ptr(&self.error_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
@@ -1061,6 +1079,7 @@ impl BuiltinWorld {
         proto.ensure_hash_props().push(name_val);
     }
 
+    /// 把 String 家族方法安装到 String 构造器与原型上。
     pub fn bind_string_methods(&self, methods: &StringMethods, string_forge: &PermInterner, shape_forge: &ShapeForge) {
         let ctor_ptr = P::as_ptr(&self.string_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
@@ -1105,6 +1124,7 @@ impl BuiltinWorld {
         );
     }
 
+    /// 把 Function 原型方法安装到 Function.prototype 上。
     pub fn bind_function_methods(
         &self, methods: &FunctionMethods, string_forge: &PermInterner, shape_forge: &ShapeForge,
     ) {
@@ -1123,6 +1143,7 @@ impl BuiltinWorld {
         );
     }
 
+    /// 在指定原型上安装一个 native 方法，wrapper 函数以本 world 的 Function 原型为原型。
     pub fn bind_method(
         &self, proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &PermInterner, method_name: &str,
         native_fn_ptr: NativeFnPtr, arg_count: u8,
@@ -1138,6 +1159,9 @@ impl BuiltinWorld {
         )
     }
 
+    /// 构造并安装一个 native 方法 wrapper 函数对象（设置 `length`/`name` 属性与参数元数据）。
+    ///
+    /// 无状态版本，不依赖 `BuiltinWorld` 实例，供静态绑定宏在初始化阶段直接调用。
     pub fn bind_method_static(
         proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &PermInterner, method_name: &str,
         native_fn_ptr: NativeFnPtr, arg_count: u8, wrapper_proto: JsValue,

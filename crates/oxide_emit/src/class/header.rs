@@ -1,3 +1,5 @@
+//! 类头 emit：类名绑定、继承链（`extends`）设置，见 `emit_class_header`。
+
 use crate::{CompileCtx, Emitter};
 
 impl Emitter {

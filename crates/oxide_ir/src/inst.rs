@@ -8,6 +8,8 @@ use smallvec::SmallVec;
 
 use crate::operand::{LabelId, Operand};
 
+/// IR 指令：opcode + 三个操作数槽（rd/a/b）+ 扩展字 `ext`。
+/// `ext` 内部是裸 u32，其数量与语义值编码由下方 `inst_*` 构造 API 保证。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Inst {
     pub op: OpCode,
@@ -41,74 +43,91 @@ impl Inst {
 
     // ── IC 系：ext = [0, 0, 0]（shape/slot/proto 占位字，VM 运行时 patch）──
 
+    /// 内联缓存读属性：结果写入 `dst`，属性键为 `key`。
     pub fn ic_get(dst: Operand, key: Operand) -> Self {
         Self::with_ext(OpCode::IC_GET_PROP, Operand::None, dst, key, &[0, 0, 0])
     }
 
+    /// 内联缓存写属性：`obj[key] = value`。
     pub fn ic_set(obj: Operand, value: Operand, key: Operand) -> Self {
         Self::with_ext(OpCode::IC_SET_PROP, obj, value, key, &[0, 0, 0])
     }
 
+    /// 成员自增：`obj[key]++`，val 为当前值寄存器。
     pub fn member_inc(obj: Operand, val: Operand, key: Operand) -> Self {
         Self::with_ext(OpCode::MEMBER_INC, obj, val, key, &[0, 0, 0])
     }
 
+    /// 成员自减：`obj[key]--`，val 为当前值寄存器。
     pub fn member_dec(obj: Operand, val: Operand, key: Operand) -> Self {
         Self::with_ext(OpCode::MEMBER_DEC, obj, val, key, &[0, 0, 0])
     }
 
+    /// 成员复合赋值加法：`obj[key] += val`。
     pub fn compound_member_add(obj: Operand, val: Operand, key: Operand) -> Self {
         Self::with_ext(OpCode::COMPOUND_MEMBER_ADD, obj, val, key, &[0, 0, 0])
     }
 
+    /// 成员复合赋值减法：`obj[key] -= val`。
     pub fn compound_member_sub(obj: Operand, val: Operand, key: Operand) -> Self {
         Self::with_ext(OpCode::COMPOUND_MEMBER_SUB, obj, val, key, &[0, 0, 0])
     }
 
+    /// 成员复合赋值乘法：`obj[key] *= val`。
     pub fn compound_member_mul(obj: Operand, val: Operand, key: Operand) -> Self {
         Self::with_ext(OpCode::COMPOUND_MEMBER_MUL, obj, val, key, &[0, 0, 0])
     }
 
+    /// 成员复合赋值除法：`obj[key] /= val`。
     pub fn compound_member_div(obj: Operand, val: Operand, key: Operand) -> Self {
         Self::with_ext(OpCode::COMPOUND_MEMBER_DIV, obj, val, key, &[0, 0, 0])
     }
 
+    /// 成员复合赋值取模：`obj[key] %= val`。
     pub fn compound_member_mod(obj: Operand, val: Operand, key: Operand) -> Self {
         Self::with_ext(OpCode::COMPOUND_MEMBER_MOD, obj, val, key, &[0, 0, 0])
     }
 
+    /// 成员复合赋值指数：`obj[key] **= val`。
     pub fn compound_member_exp(obj: Operand, val: Operand, key: Operand) -> Self {
         Self::with_ext(OpCode::COMPOUND_MEMBER_EXP, obj, val, key, &[0, 0, 0])
     }
 
     // ── Call 系：ext = [nargs] ──
 
+    /// 普通函数调用：rd=callee，a=this，b=首参，ext=\[nargs\]。参数从 `first_arg` 起连续占 nargs 个寄存器。
     pub fn call(callee: Operand, this: Operand, first_arg: Operand, nargs: u8) -> Self {
         Self::with_ext(OpCode::CALL, callee, this, first_arg, &[nargs as u32])
     }
 
+    /// 原生函数调用（内置），不经 JS 调用协议。
     pub fn call_native(callee: Operand, this: Operand, first_arg: Operand, nargs: u8) -> Self {
         Self::with_ext(OpCode::CALL_NATIVE, callee, this, first_arg, &[nargs as u32])
     }
 
+    /// `new` 表达式：结果写入 `result`，构造函数为 `constructor`。
     pub fn new_expression(result: Operand, constructor: Operand, first_arg: Operand, nargs: u8) -> Self {
         Self::with_ext(OpCode::NEW_EXPRESSION, result, constructor, first_arg, &[nargs as u32])
     }
 
+    /// 派生类构造中的 `super(...)`：结果写入 `result`。
     pub fn super_call(result: Operand, first_arg: Operand, nargs: u8) -> Self {
         Self::with_ext(OpCode::SUPER_CALL, result, first_arg, Operand::None, &[nargs as u32])
     }
 
     // ── 其他带 ext 字 ──
 
+    /// 定义访问器属性：home 为宿主对象，get/set 为访问器函数寄存器，key_idx 为属性名常量下标。
     pub fn define_accessor(home: Operand, get: Operand, set: Operand, key_idx: u32) -> Self {
         Self::with_ext(OpCode::DEFINE_ACCESSOR, home, get, set, &[key_idx])
     }
 
+    /// 静态删除属性：obj 同时放 rd/a 槽，const_idx 为属性名常量下标。
     pub fn delete_prop_static(obj: Operand, const_idx: u32) -> Self {
         Self::with_ext(OpCode::DELETE_PROP_STATIC, obj, obj, Operand::None, &[const_idx])
     }
 
+    /// 对象 rest 展开：`{...src, 排除 excluded_idx 常量列出的键}` 存入 `rest`。
     pub fn rest_object(rest: Operand, src: Operand, excluded_idx: u32) -> Self {
         Self::with_ext(OpCode::REST_OBJECT, rest, src, Operand::None, &[excluded_idx])
     }
@@ -130,20 +149,24 @@ impl Inst {
 
     // ── 无 ext：立即数/索引指令（拆字是 lowering 职责）──
 
+    /// 加载常量池常量：`dst = constants[idx]`。a 槽 Const 下标由 lowering 拆字。
     pub fn load_const(dst: Operand, idx: u16) -> Self {
         Self::new(OpCode::LOAD_CONST, dst, Operand::Const(idx), Operand::None)
     }
 
+    /// 创建闭包：`dst = nested[sub_idx]` 实例化。a 槽 Imm 子函数下标由 lowering 拆字。
     pub fn create_closure(dst: Operand, sub_idx: u16) -> Self {
         Self::new(OpCode::CREATE_CLOSURE, dst, Operand::Imm(sub_idx), Operand::None)
     }
 
     // ── 跳转族：label 放 b 槽，offset 计算是 lowering 职责 ──
 
+    /// 无条件跳转。label 放 b 槽，offset 由 lowering 回填。
     pub fn jmp(label: LabelId) -> Self {
         Self::new(OpCode::JMP, Operand::None, Operand::None, Operand::Label(label))
     }
 
+    /// 条件寄存器为 false 时跳转。
     pub fn jmp_if_false(cond_reg: u8, label: LabelId) -> Self {
         Self::new(
             OpCode::JMP_IF_FALSE,
@@ -153,6 +176,7 @@ impl Inst {
         )
     }
 
+    /// 条件寄存器为 true 时跳转。
     pub fn jmp_if_true(cond_reg: u8, label: LabelId) -> Self {
         Self::new(
             OpCode::JMP_IF_TRUE,
@@ -162,6 +186,7 @@ impl Inst {
         )
     }
 
+    /// 条件寄存器为 null/undefined 时跳转（`??` / 可选链短路）。
     pub fn jmp_if_nullish(cond_reg: u8, label: LabelId) -> Self {
         Self::new(
             OpCode::JMP_IF_NULLISH,
@@ -171,10 +196,12 @@ impl Inst {
         )
     }
 
+    /// try 块起始，label 指向对应的 catch/finally 处理入口。
     pub fn try_begin(label: LabelId) -> Self {
         Self::new(OpCode::TRY_BEGIN, Operand::None, Operand::None, Operand::Label(label))
     }
 
+    /// try-finally 块起始，label 指向 finally 入口。
     pub fn try_finally_begin(label: LabelId) -> Self {
         Self::new(OpCode::TRY_FINALLY_BEGIN, Operand::None, Operand::None, Operand::Label(label))
     }

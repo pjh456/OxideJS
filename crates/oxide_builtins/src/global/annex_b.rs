@@ -84,11 +84,15 @@ fn unescape_string(input: &str) -> String {
     out
 }
 
+/// Annex B 的全局 `escape(string)`：除 ASCII 字母数字与 `@*_+-./` 外全部编码。
+/// <=0xFF 字符用 `%XX`，其它按 UTF-16 code unit 用 `%uXXXX` 转义。
 pub fn js_escape<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let input = super::string_arg(vm, args);
     NativeResult::Ok(vm.new_string(&escape_string(&input)))
 }
 
+/// Annex B 的全局 `unescape(string)`：解码 `escape` 生成的 `%XX`/`%uXXXX` 序列，
+/// 支持 surrogate pair 合并；无法解析的序列原样保留。
 pub fn js_unescape<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let input = super::string_arg(vm, args);
     NativeResult::Ok(vm.new_string(&unescape_string(&input)))
