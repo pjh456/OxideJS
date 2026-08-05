@@ -542,8 +542,6 @@ impl Emitter {
     // ── 闭包捕获分析（AST 级，时序无关）──
 
     /// 收集函数参数的绑定名（BindingIdentifier 形态）。
-
-
     pub(crate) fn extract_function_parts<'a>(
         &self, function: &'a oxide_parser::Function<'a>,
     ) -> Result<(Vec<ParamSpec<'a>>, &'a [Statement<'a>]), String> {
