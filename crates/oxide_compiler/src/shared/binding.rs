@@ -42,9 +42,7 @@ impl Compiler {
             ctx.declare(name, var_reg, kind, is_const)?;
             var_reg
         };
-        if ctx.captured_bindings.contains(name) {
-            let cell_idx = ctx.scopes.cell_registry.len() as u8;
-            ctx.scopes.cell_registry.push((name.to_string(), cell_idx));
+        if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
             ctx.inst(Inst::new(OpCode::MAKE_CELL, Operand::Reg(src_reg as u32), Operand::Imm(cell_idx as u16), Operand::None));
         } else {
             ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(target_reg as u32), Operand::Reg(src_reg as u32), Operand::Imm(if is_const { 1 } else { 0 })));

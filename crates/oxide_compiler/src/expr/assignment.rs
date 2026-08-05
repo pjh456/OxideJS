@@ -146,14 +146,7 @@ impl Compiler {
                     return Ok(val_reg);
                 }
                 // Check if target is a captured cell
-                if ctx.captured_bindings.contains(name) {
-                    let cell_idx = ctx
-                        .scopes
-                        .cell_registry
-                        .iter()
-                        .find(|(n, _)| n == name)
-                        .map(|(_, idx)| *idx)
-                        .unwrap_or(0);
+                if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
                     ctx.inst(Inst::new(OpCode::CELL_SET, Operand::None, Operand::Reg(val_reg as u32), Operand::Imm(cell_idx as u16)));
                     return Ok(val_reg);
                 }

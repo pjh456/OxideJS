@@ -46,10 +46,7 @@ impl Compiler {
                     ctx.declare(bi.name.as_str(), var_reg, decl.kind, is_const)?;
                     var_reg
                 };
-                let is_captured = ctx.captured_bindings.contains(bi.name.as_str());
-                if is_captured {
-                    let cell_idx = ctx.scopes.cell_registry.len() as u8;
-                    ctx.scopes.cell_registry.push((bi.name.to_string(), cell_idx));
+                if let Some(&cell_idx) = ctx.captured_bindings.get(bi.name.as_str()) {
                     ctx.inst(Inst::new(OpCode::MAKE_CELL, Operand::Reg(tmp as u32), Operand::Imm(cell_idx as u16), Operand::None));
                 } else {
                     ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(target_reg as u32), Operand::Reg(tmp as u32), Operand::None));

@@ -20,7 +20,11 @@ impl Compiler {
         ctx.declare(&name, var_reg, VariableDeclarationKind::Let, false)?;
         ctx.init_var(&name);
         let ctor_reg = self.emit_class(class, ctx)?;
-        ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(var_reg as u32), Operand::Reg(ctor_reg as u32), Operand::None));
+        if let Some(&cell_idx) = ctx.captured_bindings.get(&name) {
+            ctx.inst(Inst::new(OpCode::MAKE_CELL, Operand::Reg(var_reg as u32), Operand::Imm(cell_idx as u16), Operand::None));
+        } else {
+            ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(var_reg as u32), Operand::Reg(ctor_reg as u32), Operand::None));
+        }
         Ok(None)
     }
 }

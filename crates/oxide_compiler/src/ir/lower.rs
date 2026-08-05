@@ -88,14 +88,16 @@ pub fn lower(f: &IRFunction) -> Result<CompiledModule, String> {
     })
 }
 
-/// Operand → u8 槽位。Const/Imm/Label 不在通用槽位路径（拆字/offset 单独处理）。
+/// Operand → u8 槽位。Const/Imm 在 a 槽走拆字（operand_pair_to_u8）；
+/// 出现在 b/rd 槽时按低字节直写（const_flag、cell_idx、uv_idx 等一字节立即数）。
 fn operand_to_u8(o: &Operand) -> u8 {
     match o {
         Operand::Reg(r) => *r as u8,
         Operand::This => 254,
         Operand::NewTarget => 255,
-        Operand::None => 0,
-        Operand::Const(_) | Operand::Imm(_) | Operand::Label(_) => 0,
+        Operand::Imm(v) => (v & 0xFF) as u8,
+        Operand::Const(v) => (v & 0xFF) as u8,
+        Operand::Label(_) | Operand::None => 0,
     }
 }
 

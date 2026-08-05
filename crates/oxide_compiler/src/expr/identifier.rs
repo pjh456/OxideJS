@@ -18,19 +18,12 @@ impl Compiler {
             }
         }
 
-        if ctx.captured_bindings.contains(name) {
-            let cell_idx = ctx
-                .scopes
-                .cell_registry
-                .iter()
-                .find(|(n, _)| n == name)
-                .map(|(_, idx)| *idx)
-                .unwrap_or(0);
+        if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
             let r = ctx.alloc_reg();
             if let Some((binding, _)) = ctx.scopes.symbols.lookup_any_binding(name) {
-                ctx.inst(Inst::new(OpCode::CELL_GET, Operand::Reg(r as u32), Operand::Reg(binding.reg as u32), Operand::Reg(cell_idx as u32)));
+                ctx.inst(Inst::new(OpCode::CELL_GET, Operand::Reg(r as u32), Operand::Reg(binding.reg as u32), Operand::Imm(cell_idx as u16)));
             } else {
-                ctx.inst(Inst::new(OpCode::CELL_GET, Operand::Reg(r as u32), Operand::None, Operand::Reg(cell_idx as u32)));
+                ctx.inst(Inst::new(OpCode::CELL_GET, Operand::Reg(r as u32), Operand::None, Operand::Imm(cell_idx as u16)));
             }
             return Ok(r);
         }

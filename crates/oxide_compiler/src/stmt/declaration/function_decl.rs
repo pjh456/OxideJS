@@ -35,7 +35,11 @@ impl Compiler {
         let var_reg = ctx.lookup(&name)?;
         ctx.reserve_reg(var_reg);
         ctx.inst(Inst::create_closure(Operand::Reg(var_reg as u32), ctx.nested.len() as u16));
-        ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(var_reg as u32), Operand::Reg(var_reg as u32), Operand::None));
+        if let Some(&cell_idx) = ctx.captured_bindings.get(&name) {
+            ctx.inst(Inst::new(OpCode::MAKE_CELL, Operand::Reg(var_reg as u32), Operand::Imm(cell_idx as u16), Operand::None));
+        } else {
+            ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(var_reg as u32), Operand::Reg(var_reg as u32), Operand::None));
+        }
         Ok(None)
     }
 }

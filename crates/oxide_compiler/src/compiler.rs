@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::emit_ctx::{LabelCtx, ScopeCtx};
 use crate::ir::inst::Inst;
@@ -145,9 +145,10 @@ pub(crate) struct CompileCtx {
     pub(crate) current_upvalue_captures: Vec<UpvalueCapture>,
     /// 本函数作用域声明的绑定名（参数 + 变量/函数声明，AST 收集，emit 前确定）。
     pub(crate) own_bindings: HashSet<String>,
-    /// 本函数被嵌套函数捕获的绑定名（AST 分析，emit 前确定）。
-    /// 捕获判断（MAKE_CELL / CELL_GET / CELL_SET）统一查此集合，消除符号表时序依赖。
-    pub(crate) captured_bindings: HashSet<String>,
+    /// 本函数被嵌套函数捕获的绑定名 → cell_idx（名字排序分配，稳定跨 run）。
+    /// 捕获判断（MAKE_CELL / CELL_GET / CELL_SET）与子函数 upvalue cell_idx 统一查此映射，
+    /// 消除符号表时序依赖与 cell 索引错位。
+    pub(crate) captured_bindings: BTreeMap<String, u8>,
     /// Set when alloc_reg() overflows into the reserved this/new.target range (≥254).
     /// Checked after each emit phase to produce a compile error rather than silent corruption.
     pub(crate) reg_overflow: bool,
@@ -210,7 +211,6 @@ impl CompileCtx {
                 builtin_reg_map: Vec::new(),
                 private_name_map: Vec::new(),
                 next_private_name_id: 1,
-                cell_registry: Vec::new(),
             },
             nested: Vec::new(),
             enclosing_this_reg: 254, // conventional this register at top level
@@ -221,7 +221,7 @@ impl CompileCtx {
             field_buffer: None,
             current_upvalue_captures: Vec::new(),
             own_bindings: HashSet::new(),
-            captured_bindings: HashSet::new(),
+            captured_bindings: BTreeMap::new(),
             reg_overflow: false,
             const_overflow: false,
         }
@@ -522,6 +522,17 @@ impl Compiler {
 
     // ── 闭包捕获分析（AST 级，时序无关）──
 
+    /// 收集函数参数的绑定名（BindingIdentifier 形态）。
+    fn collect_fn_param_names(&self, params: &oxide_parser::FormalParameters) -> HashSet<String> {
+        let mut names = HashSet::new();
+        for p in &params.items {
+            if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &p.pattern {
+                names.insert(bi.name.to_string());
+            }
+        }
+        names
+    }
+
     /// 收集当前函数作用域声明的绑定名（参数 + 变量/函数声明，含嵌套 block，不含嵌套函数体）。
     fn collect_own_binding_names(&self, param_names: &[&str], stmts: &[Statement]) -> HashSet<String> {
         let mut names = HashSet::new();
@@ -621,6 +632,7 @@ impl Compiler {
             Statement::FunctionDeclaration(fd) => {
                 let body: &[Statement] = fd.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
                 let mut inner = shadow.clone();
+                inner.extend(self.collect_fn_param_names(&fd.params));
                 inner.extend(self.collect_own_binding_names(&[], body));
                 self.collect_capture_names_shadowed(body, ref_set, &inner, out);
             }
@@ -728,11 +740,13 @@ impl Compiler {
             Expression::FunctionExpression(fe) => {
                 let body: &[Statement] = fe.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
                 let mut inner = shadow.clone();
+                inner.extend(self.collect_fn_param_names(&fe.params));
                 inner.extend(self.collect_own_binding_names(&[], body));
                 self.collect_capture_names_shadowed(body, ref_set, &inner, out);
             }
             Expression::ArrowFunctionExpression(ae) => {
                 let mut inner = shadow.clone();
+                inner.extend(self.collect_fn_param_names(&ae.params));
                 inner.extend(self.collect_own_binding_names(&[], &ae.body.statements));
                 self.collect_capture_names_shadowed(&ae.body.statements, ref_set, &inner, out);
             }
@@ -836,12 +850,19 @@ impl Compiler {
     }
 
     /// 分析本函数：哪些绑定被任意深度嵌套函数捕获 → captured_bindings。
-    fn collect_captured_bindings(&self, stmts: &[Statement], own: &HashSet<String>) -> HashSet<String> {
-        let mut captured = HashSet::new();
+    fn collect_captured_bindings(&self, stmts: &[Statement], own: &HashSet<String>) -> BTreeMap<String, u8> {
+        let mut names = HashSet::new();
         for stmt in stmts {
-            self.collect_captured_stmt(stmt, own, &mut captured);
+            self.collect_captured_stmt(stmt, own, &mut names);
         }
-        captured
+        // 名字排序分配 cell_idx（稳定跨 run，父 MAKE_CELL 与子 upvalue 统一引用）
+        let mut sorted: Vec<String> = names.into_iter().collect();
+        sorted.sort();
+        sorted
+            .into_iter()
+            .enumerate()
+            .map(|(i, n)| (n, i as u8))
+            .collect()
     }
 
     /// 只从嵌套函数节点进入扫描（本函数直接引用不算捕获）。
@@ -939,10 +960,14 @@ impl Compiler {
         match expr {
             Expression::FunctionExpression(fe) => {
                 let body: &[Statement] = fe.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
-                self.collect_capture_names(body, own, out);
+                let mut inner = self.collect_fn_param_names(&fe.params);
+                inner.extend(self.collect_own_binding_names(&[], body));
+                self.collect_capture_names_shadowed(body, own, &inner, out);
             }
             Expression::ArrowFunctionExpression(ae) => {
-                self.collect_capture_names(&ae.body.statements, own, out);
+                let mut inner = self.collect_fn_param_names(&ae.params);
+                inner.extend(self.collect_own_binding_names(&[], &ae.body.statements));
+                self.collect_capture_names_shadowed(&ae.body.statements, own, &inner, out);
             }
             Expression::CallExpression(ce) => {
                 self.collect_captured_expr(&ce.callee, own, out);
@@ -984,20 +1009,26 @@ impl Compiler {
     }
 
     /// 分析子函数 body：引用父级绑定的名字 → upvalue_captures（enclosing_reg 由父 emit 完成后填充）。
+    /// 分析子函数 body：引用父级被捕获绑定的名字 → upvalue_captures。
+    /// cell_idx 直接取父 captured_bindings 映射（父 emit 前已确定，索引一致）；
+    /// enclosing_reg 由父 emit 完成后填充（assemble_ir）。
     fn collect_upvalue_names(
-        &self, body_stmts: &[Statement], parent_own: &HashSet<String>, sub_own: &HashSet<String>,
+        &self, body_stmts: &[Statement], parent_captured: &BTreeMap<String, u8>, sub_own: &HashSet<String>,
     ) -> Vec<UpvalueCapture> {
+        let parent_names: HashSet<String> = parent_captured.keys().cloned().collect();
         let mut names = HashSet::new();
-        self.collect_capture_names_shadowed(body_stmts, parent_own, sub_own, &mut names);
-        let mut captures = Vec::with_capacity(names.len());
-        for (cell_idx, name) in names.iter().enumerate() {
-            captures.push(UpvalueCapture {
-                name: name.clone(),
-                enclosing_reg: 0, // assemble_ir 时从父符号表填充
-                cell_idx: cell_idx as u8,
-            });
-        }
-        captures
+        self.collect_capture_names_shadowed(body_stmts, &parent_names, sub_own, &mut names);
+        names
+            .into_iter()
+            .map(|name| {
+                let cell_idx = parent_captured.get(&name).copied().unwrap_or(0);
+                UpvalueCapture {
+                    name,
+                    enclosing_reg: 0, // assemble_ir 时从父符号表填充
+                    cell_idx,
+                }
+            })
+            .collect()
     }
 
 
@@ -1496,13 +1527,8 @@ impl Compiler {
 
         // Free variable analysis for upvalue capture (Ordinary + Arrow functions only)
         if matches!(body_context, FunctionBodyContext::Ordinary | FunctionBodyContext::Arrow) {
-            let captures = self.collect_upvalue_names(body_stmts, &parent_ctx.own_bindings, &ctx.own_bindings);
-            ctx.current_upvalue_captures = captures;
-            ctx.scopes.cell_registry = ctx
-                .current_upvalue_captures
-                .iter()
-                .map(|u| (u.name.clone(), u.cell_idx))
-                .collect();
+            ctx.current_upvalue_captures =
+                self.collect_upvalue_names(body_stmts, &parent_ctx.captured_bindings, &ctx.own_bindings);
         }
 
         self.predeclare_function_declarations(body_stmts, &mut ctx);

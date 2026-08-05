@@ -222,7 +222,7 @@ impl Compiler {
                 let name = id.name.as_str();
                 // Check if this is an upvalue or captured cell reference
                 let uv_idx = ctx.current_upvalue_captures.iter().position(|u| u.name == name);
-                let is_captured = ctx.captured_bindings.contains(name);
+                let captured_cell = ctx.captured_bindings.get(name).copied();
                 if let Some(uv) = uv_idx {
                     // Upvalue: LOAD_UPVALUE + CONST(1) + ADD/SUB + STORE_UPVALUE
                     let val_reg = ctx.alloc_reg();
@@ -238,15 +238,8 @@ impl Compiler {
                     ctx.inst(Inst::new(op, Operand::Reg(val_reg as u32), Operand::Reg(val_reg as u32), Operand::Reg(one_reg as u32)));
                     ctx.inst(Inst::new(OpCode::STORE_UPVALUE, Operand::None, Operand::Reg(val_reg as u32), Operand::Imm(uv as u16)));
                     Ok(val_reg)
-                } else if is_captured {
+                } else if let Some(cell_idx) = captured_cell {
                     // Captured cell: CELL_GET + CONST(1) + ADD/SUB + CELL_SET
-                    let cell_idx = ctx
-                        .scopes
-                        .cell_registry
-                        .iter()
-                        .find(|(n, _)| n == name)
-                        .map(|(_, idx)| *idx)
-                        .unwrap_or(0);
                     let val_reg = ctx.alloc_reg();
                     if let Some((binding, _)) = ctx.scopes.symbols.lookup_any_binding(name) {
                         ctx.inst(Inst::new(OpCode::CELL_GET, Operand::Reg(val_reg as u32), Operand::Reg(binding.reg as u32), Operand::Imm(cell_idx as u16)));

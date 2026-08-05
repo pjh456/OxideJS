@@ -120,3 +120,11 @@ fn multiple_arrows_in_same_scope() {
 //     // const o = {x:10, f:function(){ return (() => this.x)(); }}; o.f()
 //     // Expected: 10
 // }
+
+// -- Closure capture diagnostics --
+
+#[test]
+fn closure_captures_outer_let() {
+    assert_eq!(eval("var f; { let x = 7; f = () => x; } f()"), "7");
+}
+
