@@ -109,7 +109,8 @@ fn date_to_iso_string() {
 #[test]
 fn date_to_json() {
     let mut vm = Vm::new();
-    let r = eval(&mut vm, "new Date(2020, 0, 1).toJSON()").unwrap();
+    // Parse an explicit ISO UTC string to avoid timezone dependency
+    let r = eval(&mut vm, "new Date('2020-01-01T00:00:00Z').toJSON()").unwrap();
     let s = str_val(&vm, r);
     assert!(s.starts_with("2020-01-01"), "got: {s}");
 }
