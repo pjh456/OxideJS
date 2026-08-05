@@ -17,8 +17,8 @@ use oxide_log::{Level, LogConfig, Output, SUBSYSTEM_COUNT};
 
 // Thread-local that records the path currently being executed.
 // Written before every test; read by the panic hook to identify the crash file.
-/// 记录当前正在执行的测试路径（thread-local）；每个测试执行前写入，
-/// panic hook 据此定位崩溃所在的测试文件。
+// 记录当前正在执行的测试路径（thread-local）；每个测试执行前写入，
+// panic hook 据此定位崩溃所在的测试文件。
 std::thread_local! {
     static CURRENT_TEST_PATH: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
 }
