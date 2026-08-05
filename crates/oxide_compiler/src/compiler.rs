@@ -310,7 +310,6 @@ impl CompileCtx {
         self.scopes.symbols.declare_initialized(name, reg, kind, is_const)
     }
 
-    #[allow(dead_code)]
     pub(crate) fn push_scope_with_kind(&mut self, kind: ScopeKind) {
         self.scopes.symbols.push_scope_with_kind(kind);
     }
@@ -507,7 +506,6 @@ impl Compiler {
         Self
     }
 
-    #[allow(dead_code)]
     pub(crate) fn analyze_upvalue_captures(
         &self, body_stmts: &[Statement], parent_ctx: &CompileCtx, nested_symbols: &SymbolTable,
     ) -> (Vec<UpvalueCapture>, u8) {
@@ -522,7 +520,6 @@ impl Compiler {
         (captures, count)
     }
 
-    #[allow(dead_code)]
     fn collect_upvalue_stmt(
         &self, stmt: &Statement, parent_ctx: &CompileCtx, nested_symbols: &SymbolTable,
         captures: &mut Vec<UpvalueCapture>, seen: &mut HashMap<String, usize>,
@@ -607,7 +604,6 @@ impl Compiler {
         }
     }
 
-    #[allow(dead_code)]
     fn collect_upvalue_expr(
         &self, expr: &Expression, parent_ctx: &CompileCtx, nested_symbols: &SymbolTable,
         captures: &mut Vec<UpvalueCapture>, seen: &mut HashMap<String, usize>,

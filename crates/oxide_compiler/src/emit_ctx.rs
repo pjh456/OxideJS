@@ -15,7 +15,6 @@ pub(crate) struct LabelCtx {
     /// label id → 指令下标。id 连续递增，Vec 索引即 id；写入前须扩容。
     pub(crate) label_pos: Vec<Option<usize>>,
     pub(crate) loop_stack: Vec<(LabelId, LabelId)>,
-    #[allow(dead_code)]
     pub(crate) switch_stack: Vec<LabelId>,
     /// Active labeled-statement scopes (resolves `break label` / `continue label`).
     pub(crate) label_scopes: Vec<LabelScope>,

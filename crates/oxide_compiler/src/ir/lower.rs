@@ -13,10 +13,6 @@ use super::IRFunction;
 
 /// IRFunction → CompiledModule。错误消息与现状（退役前 compiler.rs）逐字一致。
 pub fn lower(f: &IRFunction) -> Result<CompiledModule, String> {
-    if f.reg_overflow || f.const_overflow {
-        // 溢出标志在下方统一检查；先做结构验证
-    }
-
     // 溢出检查 1：寄存器（仅 Operand::Reg 变体；This/NewTarget 是语义操作数，映射 254/255 合法）
     if f.reg_overflow {
         return Err("RangeError: function body uses too many registers (max 253)".into());
