@@ -1,0 +1,12 @@
+[package]
+name = "oxide_emit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OxideJS - AST to IR emit pass"
+
+[dependencies]
+oxide_parser = { path = "../oxide_parser" }
+oxide_bytecode = { path = "../oxide_bytecode" }
+oxide_ir = { path = "../oxide_ir" }
