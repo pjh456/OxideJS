@@ -1077,6 +1077,16 @@ name = "oxide_bytecode"
 version = "0.1.0"
 
 [[package]]
+name = "oxide_cfg"
+version = "0.1.0"
+dependencies = [
+ "oxide_bytecode",
+ "oxide_emit",
+ "oxide_ir",
+ "oxide_parser",
+]
+
+[[package]]
 name = "oxide_cli"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,15 @@
+[package]
+name = "oxide_cfg"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OxideJS - basic block partition and CFG analysis pass over IR"
+
+[dependencies]
+oxide_ir = { path = "../oxide_ir" }
+oxide_bytecode = { path = "../oxide_bytecode" }
+
+[dev-dependencies]
+oxide_parser = { path = "../oxide_parser" }
+oxide_emit = { path = "../oxide_emit" }

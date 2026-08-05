@@ -8,6 +8,7 @@ members = [
     "crates/oxide_compiler",
     "crates/oxide_emit",
     "crates/oxide_ir",
+    "crates/oxide_cfg",
     "crates/oxide_types",
     "crates/oxide_vm",
     "crates/oxide_kernel",
