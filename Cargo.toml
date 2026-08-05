@@ -6,6 +6,7 @@ members = [
     "crates/oxide_code_cache",
     "crates/oxide_log",
     "crates/oxide_compiler",
+    "crates/oxide_ir",
     "crates/oxide_types",
     "crates/oxide_vm",
     "crates/oxide_kernel",
@@ -29,6 +30,7 @@ oxc_ast = "0.134.0"
 oxc_span = "0.134.0"
 oxc_diagnostics = "0.134.0"
 oxc_syntax = "0.134.0"
+oxide_ir = { path = "crates/oxide_ir" }
 clap = { version = "4", features = ["derive"] }
 rustyline = "14"
 ansi_term = "0.12"

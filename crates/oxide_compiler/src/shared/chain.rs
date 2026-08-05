@@ -1,6 +1,6 @@
 use crate::compiler::{CompileCtx, Compiler};
-use crate::ir::inst::Inst;
-use crate::ir::operand::{LabelId, Operand};
+use oxide_ir::inst::Inst;
+use oxide_ir::operand::{LabelId, Operand};
 use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
 use oxide_parser::{ChainElement, Expression, LogicalOperator, PropertyKey};

@@ -1,0 +1,11 @@
+[package]
+name = "oxide_ir"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OxideJS - IR intermediate representation and lowering to bytecode"
+
+[dependencies]
+oxide_bytecode = { path = "../oxide_bytecode" }
+smallvec.workspace = true

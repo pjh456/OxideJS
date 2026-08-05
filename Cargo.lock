@@ -1111,11 +1111,19 @@ version = "0.1.0"
 dependencies = [
  "oxide_bytecode",
  "oxide_code_cache",
+ "oxide_ir",
  "oxide_log",
  "oxide_parser",
  "rustc-hash",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "oxide_ir"
+version = "0.1.0"
+dependencies = [
+ "oxide_bytecode",
  "smallvec",
 ]
 

@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::emit_ctx::{LabelCtx, ScopeCtx};
-use crate::ir::inst::Inst;
-use crate::ir::lower::lower;
-use crate::ir::operand::{LabelId, Operand};
-use crate::ir::IRFunction;
+use oxide_ir::inst::Inst;
+use oxide_ir::lower::lower;
+use oxide_ir::operand::{LabelId, Operand};
+use oxide_ir::IRFunction;
 use crate::symbol_table::{Binding, SymbolTable};
 use oxide_bytecode::module::CompiledModule;
 use oxide_bytecode::module::UpvalueCapture;
@@ -464,7 +464,7 @@ impl CompileCtx {
 
     /// 组装 IRFunction（两出口共用），take 走编译产物状态。
     /// `parent_ctx` 用于补全 upvalue_captures 的 enclosing_reg（父符号表在父 emit 完成后完整）。
-    fn assemble_ir(&mut self, param_layout: crate::ir::ParamLayout, parent_ctx: Option<&CompileCtx>) -> IRFunction {
+    fn assemble_ir(&mut self, param_layout: oxide_ir::ParamLayout, parent_ctx: Option<&CompileCtx>) -> IRFunction {
         let upvalue_captures = self
             .current_upvalue_captures
             .iter()
@@ -716,7 +716,7 @@ impl Compiler {
         }
 
         let ir = ctx.assemble_ir(
-            crate::ir::ParamLayout {
+            oxide_ir::ParamLayout {
                 base: param_base as u32,
                 count: param_specs.len() as u32,
             },
@@ -889,7 +889,7 @@ impl Compiler {
         crate::compiler_debug!("compile: done, {} instructions, {} constants", ctx.insts.len(), ctx.constants.len());
 
         let ir = ctx.assemble_ir(
-            crate::ir::ParamLayout {
+            oxide_ir::ParamLayout {
                 base: ctx.scopes.builtin_reg_map.len() as u32,
                 count: 0,
             },

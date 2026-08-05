@@ -7,9 +7,9 @@
 use oxide_bytecode::module::CompiledModule;
 use oxide_bytecode::opcode::{self, OpCode};
 
-use super::inst::Inst;
-use super::operand::Operand;
-use super::IRFunction;
+use crate::inst::Inst;
+use crate::operand::Operand;
+use crate::IRFunction;
 
 /// IRFunction → CompiledModule。错误消息与现状（退役前 compiler.rs）逐字一致。
 pub fn lower(f: &IRFunction) -> Result<CompiledModule, String> {

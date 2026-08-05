@@ -7,7 +7,7 @@
 //! `CompileCtx`.
 
 use crate::compiler::LabelScope;
-use crate::ir::operand::LabelId;
+use oxide_ir::operand::LabelId;
 use crate::symbol_table::SymbolTable;
 
 /// Jump-target / labeled-statement resolution state.

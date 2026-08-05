@@ -1,5 +1,5 @@
 use crate::compiler::{CompileCtx, Compiler};
-use crate::ir::inst::Inst;
+use oxide_ir::inst::Inst;
 
 impl Compiler {
     pub(crate) fn emit_break_statement(

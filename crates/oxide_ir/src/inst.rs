@@ -6,7 +6,7 @@
 use oxide_bytecode::opcode::OpCode;
 use smallvec::SmallVec;
 
-use super::operand::{LabelId, Operand};
+use crate::operand::{LabelId, Operand};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Inst {

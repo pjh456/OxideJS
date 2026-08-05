@@ -1,5 +1,5 @@
 use crate::compiler::{CompileCtx, Compiler};
-use crate::ir::operand::Operand;
+use oxide_ir::operand::Operand;
 use oxide_parser::{ClassElement, PropertyKey};
 
 impl Compiler {

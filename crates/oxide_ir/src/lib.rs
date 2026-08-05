@@ -17,7 +17,7 @@ pub mod operand;
 
 use oxide_bytecode::module::{Constant, UpvalueCapture};
 
-use self::inst::Inst;
+use crate::inst::Inst;
 
 /// 参数段布局：base 起 count 个寄存器连续（VM 调用契约），RegAlloc 输入。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

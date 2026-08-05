@@ -2,10 +2,10 @@
 
 use oxide_bytecode::module::{CompiledModule, Constant};
 use oxide_bytecode::opcode::{self, OpCode};
-use oxide_compiler::ir::inst::Inst;
-use oxide_compiler::ir::lower::lower;
-use oxide_compiler::ir::operand::Operand;
-use oxide_compiler::ir::IRFunction;
+use oxide_ir::inst::Inst;
+use oxide_ir::lower::lower;
+use oxide_ir::operand::Operand;
+use oxide_ir::IRFunction;
 
 fn base_module() -> IRFunction {
     IRFunction::new()
@@ -166,7 +166,7 @@ fn module_fields_are_copied_through() {
     let mut f = base_module();
     f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
     f.constants.push(Constant::Int(42));
-    f.param_layout = oxide_compiler::ir::ParamLayout { base: 2, count: 3 };
+    f.param_layout = oxide_ir::ParamLayout { base: 2, count: 3 };
     f.n_registers = 8;
     f.is_arrow = true;
     f.builtin_reg_map.push(("Math".to_string(), 1));
@@ -250,7 +250,7 @@ fn ir_function_domain_assemble_default_clone() {
     let mut f = IRFunction::new();
     f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
     f.constants.push(Constant::Int(1));
-    f.param_layout = oxide_compiler::ir::ParamLayout { base: 0, count: 1 };
+    f.param_layout = oxide_ir::ParamLayout { base: 0, count: 1 };
     f.n_registers = 2;
     f.is_arrow = true;
     f.builtin_reg_map.push(("Math".to_string(), 1));
