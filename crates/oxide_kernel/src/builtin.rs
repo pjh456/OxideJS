@@ -257,6 +257,9 @@ fn make_pair(
     ctor.set_data_meta(0u32, oxide_types::object::PropAttributes::new(false, false, false));
     // .name (ctor[1]) = writable:false, enumerable:false, configurable:true
     ctor.set_data_meta(1u32, oxide_types::object::PropAttributes::new(false, false, true));
+    // .constructor (proto[0]) = writable:true, enumerable:false, configurable:true
+    // (JS spec: prototype.constructor is non-enumerable so it doesn't leak into for-in)
+    proto.set_data_meta(0u32, oxide_types::object::PropAttributes::new(true, false, true));
 
     (P::new(proto), P::new(ctor))
 }
@@ -1175,6 +1178,10 @@ impl BuiltinWorld {
         let new_shape = shape_forge.make_shape(proto.shape_id(), si);
         proto.set_shape_id(new_shape);
         proto.ensure_hash_props().push(wrapper_val);
+        // Built-in prototype methods are non-enumerable per the ES spec; otherwise
+        // they leak into for-in enumeration (e.g. array push/pop showing up in `for k in []`).
+        let method_pos = proto.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+        proto.set_data_meta(method_pos, oxide_types::object::PropAttributes::new(true, false, true));
         proto.bump_generation();
         Ok(())
     }

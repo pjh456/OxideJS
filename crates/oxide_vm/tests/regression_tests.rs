@@ -104,8 +104,8 @@ fn regression_throw_statement_preserves_syntax_error_kind() {
 fn regression_for_in_prototype_chain() {
     assert_eq!(
         eval("var c=0;for(var k in {a:1}){c=c+1;}c"),
-        "2",
-        "for-in should include inherited constructor from prototype"
+        "1",
+        "for-in must not include non-enumerable prototype properties like constructor"
     );
 }
 

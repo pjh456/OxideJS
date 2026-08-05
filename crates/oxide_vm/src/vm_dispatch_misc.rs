@@ -300,6 +300,29 @@ impl Vm {
             bumpalo::collections::Vec::new_in(self.epoch.bump());
         let mut seen = std::collections::HashSet::new();
         let mut current = obj_val;
+
+        // Arrays store integer-indexed elements in prop_vec, which is not part of
+        // the shape chain. Enumerate them (ES: array indices are enumerable string
+        // keys, ordered ascending before other own keys).
+        if current.is_object() {
+            let arr = unsafe { &*current.as_js_object_ptr() };
+            if arr.is_array() {
+                for i in 0..arr.prop_vec_len() {
+                    let is_enum = arr
+                        .prop_meta_at(i)
+                        .map(|m| m.attributes.enumerable())
+                        .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable());
+                    if is_enum {
+                        let idx = self.kernel_core.perm_interner().intern(&i.to_string()).0;
+                        keys_vec.push((
+                            JsValue::perm_string(self.kernel_core.perm_interner().string_ptr(idx)),
+                            idx,
+                        ));
+                    }
+                }
+            }
+        }
+
         let mut depth = 0usize;
 
         loop {

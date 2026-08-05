@@ -166,7 +166,8 @@ fn object_proto_has_own_property_call_works() {
 #[test]
 fn object_proto_property_is_enumerable_call_works() {
     let (_vm, result) = eval("Object.prototype.propertyIsEnumerable.call(Object, 'assign')").unwrap();
-    assert_eq!(result, JsValue::bool(true));
+    // Built-in methods are non-enumerable per the ES spec.
+    assert_eq!(result, JsValue::bool(false));
 }
 
 #[test]
