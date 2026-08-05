@@ -244,3 +244,46 @@ fn const_overflow_flag_errors() {
     let err = lower_err(&f);
     assert!(err.contains("too many constants"), "unexpected error: {err}");
 }
+
+#[test]
+fn ir_function_domain_assemble_default_clone() {
+    let mut f = IRFunction::new();
+    f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
+    f.constants.push(Constant::Int(1));
+    f.param_layout = oxide_compiler::ir::ParamLayout { base: 0, count: 1 };
+    f.n_registers = 2;
+    f.is_arrow = true;
+    f.builtin_reg_map.push(("Math".to_string(), 1));
+    f.upvalue_captures.push(oxide_bytecode::module::UpvalueCapture {
+        name: "x".to_string(),
+        enclosing_reg: 0,
+        cell_idx: 0,
+    });
+    f.cells_needed = 1;
+    f.function_name = Some("f".to_string());
+    let mut inner = IRFunction::new();
+    inner.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
+    f.nested.push(inner);
+
+    let d = IRFunction::new();
+    assert!(d.insts.is_empty());
+    assert!(d.nested.is_empty());
+    assert_eq!(d.n_registers, 0);
+    assert_eq!(d.label_pos.len(), 0);
+
+    let mut g = f.clone();
+    g.insts.clear();
+    g.nested.clear();
+    assert_eq!(f.insts.len(), 1, "clone must be deep copy for insts");
+    assert_eq!(f.nested.len(), 1, "clone must be deep copy for nested");
+    assert_eq!(f.function_name.as_deref(), Some("f"));
+}
+
+#[test]
+fn operand_this_is_semantic_not_physical_index() {
+    assert_ne!(Operand::This, Operand::Reg(254));
+    assert_ne!(Operand::NewTarget, Operand::Reg(255));
+    assert_ne!(Operand::None, Operand::Reg(0));
+    assert_eq!(Operand::This, Operand::This);
+    assert_eq!(Operand::NewTarget, Operand::NewTarget);
+}
