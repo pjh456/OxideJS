@@ -156,8 +156,7 @@ impl Compiler {
 
         self.emit_class_prototype(ctor_reg, proto_reg, super_reg, ctx.sub_modules.len() as u32, ctx)?;
         self.emit_class_methods(&class.body.body, ctor_reg, proto_reg, &self_binding, ctx)?;
-        self.emit_class_static_fields(&class.body.body, ctor_reg, ctx)?;
-        self.emit_class_static_blocks(&class.body.body, ctor_reg, ctx)?;
+        self.emit_class_static_elements(&class.body.body, ctor_reg, ctx)?;
 
         ctx.scopes.private_name_map = saved_private_names;
         Ok(ctor_reg)
