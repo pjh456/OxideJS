@@ -42,7 +42,7 @@ impl Compiler {
             ctx.declare(name, var_reg, kind, is_const)?;
             var_reg
         };
-        if ctx.scopes.symbols.lookup_is_captured(name) {
+        if ctx.captured_bindings.contains(name) {
             let cell_idx = ctx.scopes.cell_registry.len() as u8;
             ctx.scopes.cell_registry.push((name.to_string(), cell_idx));
             ctx.inst(Inst::new(OpCode::MAKE_CELL, Operand::Reg(src_reg as u32), Operand::Imm(cell_idx as u16), Operand::None));

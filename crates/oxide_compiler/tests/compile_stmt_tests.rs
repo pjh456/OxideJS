@@ -367,6 +367,24 @@ fn compile_closure_capture_emits_upvalue_load() {
 }
 
 #[test]
+fn compile_closure_capture_emits_make_cell_for_captured_var() {
+    let module = compile_source("function outer() { var x = 1; return function() { return x; }; }");
+    assert!(
+        has_opcode(&module, OpCode::MAKE_CELL),
+        "captured outer var should emit MAKE_CELL so the inner closure can read it"
+    );
+}
+
+#[test]
+fn compile_closure_capture_arrow_emits_make_cell() {
+    let module = compile_source("function outer() { let x = 1; return () => x; }");
+    assert!(
+        has_opcode(&module, OpCode::MAKE_CELL),
+        "captured let in arrow closure should emit MAKE_CELL"
+    );
+}
+
+#[test]
 fn compile_compound_assignment_complement_ops() {
     let module = compile_source("let x = 10; x -= 1; x *= 2; x /= 3; x %= 4;");
     assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::COMPOUND_SUB), "x -= should emit COMPOUND_SUB");

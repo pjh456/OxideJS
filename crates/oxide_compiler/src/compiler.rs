@@ -1,5 +1,4 @@
-use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::emit_ctx::{LabelCtx, ScopeCtx};
 use crate::ir::inst::Inst;
@@ -144,6 +143,11 @@ pub(crate) struct CompileCtx {
     pub(crate) static_block_this_reg: Option<u8>,
     pub(crate) field_buffer: Option<FieldBuffer>,
     pub(crate) current_upvalue_captures: Vec<UpvalueCapture>,
+    /// 本函数作用域声明的绑定名（参数 + 变量/函数声明，AST 收集，emit 前确定）。
+    pub(crate) own_bindings: HashSet<String>,
+    /// 本函数被嵌套函数捕获的绑定名（AST 分析，emit 前确定）。
+    /// 捕获判断（MAKE_CELL / CELL_GET / CELL_SET）统一查此集合，消除符号表时序依赖。
+    pub(crate) captured_bindings: HashSet<String>,
     /// Set when alloc_reg() overflows into the reserved this/new.target range (≥254).
     /// Checked after each emit phase to produce a compile error rather than silent corruption.
     pub(crate) reg_overflow: bool,
@@ -216,6 +220,8 @@ impl CompileCtx {
             static_block_this_reg: None,
             field_buffer: None,
             current_upvalue_captures: Vec::new(),
+            own_bindings: HashSet::new(),
+            captured_bindings: HashSet::new(),
             reg_overflow: false,
             const_overflow: false,
         }
@@ -457,7 +463,22 @@ impl CompileCtx {
     }
 
     /// 组装 IRFunction（两出口共用），take 走编译产物状态。
-    fn assemble_ir(&mut self, param_layout: crate::ir::ParamLayout) -> IRFunction {
+    /// `parent_ctx` 用于补全 upvalue_captures 的 enclosing_reg（父符号表在父 emit 完成后完整）。
+    fn assemble_ir(&mut self, param_layout: crate::ir::ParamLayout, parent_ctx: Option<&CompileCtx>) -> IRFunction {
+        let upvalue_captures = self
+            .current_upvalue_captures
+            .iter()
+            .map(|u| {
+                let enclosing_reg = parent_ctx
+                    .and_then(|p| p.scopes.symbols.lookup_any(u.name.as_str()))
+                    .unwrap_or(0);
+                UpvalueCapture {
+                    name: u.name.clone(),
+                    enclosing_reg,
+                    cell_idx: u.cell_idx,
+                }
+            })
+            .collect();
         IRFunction {
             insts: std::mem::take(&mut self.insts),
             label_pos: std::mem::take(&mut self.labels.label_pos),
@@ -465,15 +486,8 @@ impl CompileCtx {
             constants: std::mem::take(&mut self.constants),
             param_layout,
             builtin_reg_map: std::mem::take(&mut self.scopes.builtin_reg_map),
-            upvalue_captures: self.current_upvalue_captures.clone(),
-            cells_needed: self
-                .scopes
-                .symbols
-                .scopes
-                .iter()
-                .flat_map(|s| s.bindings.values())
-                .filter(|b| b.is_captured.get())
-                .count() as u8,
+            upvalue_captures,
+            cells_needed: self.captured_bindings.len() as u8,
             n_registers: self.max_regs,
             is_arrow: false,
             is_class_constructor: false,
@@ -506,97 +520,314 @@ impl Compiler {
         Self
     }
 
-    pub(crate) fn analyze_upvalue_captures(
-        &self, body_stmts: &[Statement], parent_ctx: &CompileCtx, nested_symbols: &SymbolTable,
-    ) -> (Vec<UpvalueCapture>, u8) {
-        let mut captures: Vec<UpvalueCapture> = Vec::new();
-        let mut seen: HashMap<String, usize> = HashMap::new();
+    // ── 闭包捕获分析（AST 级，时序无关）──
 
-        for stmt in body_stmts {
-            self.collect_upvalue_stmt(stmt, parent_ctx, nested_symbols, &mut captures, &mut seen);
+    /// 收集当前函数作用域声明的绑定名（参数 + 变量/函数声明，含嵌套 block，不含嵌套函数体）。
+    fn collect_own_binding_names(&self, param_names: &[&str], stmts: &[Statement]) -> HashSet<String> {
+        let mut names = HashSet::new();
+        for p in param_names {
+            names.insert(p.to_string());
         }
-
-        let count = captures.len() as u8;
-        (captures, count)
+        self.collect_decl_names_stmt(stmts, &mut names);
+        names
     }
 
-    fn collect_upvalue_stmt(
-        &self, stmt: &Statement, parent_ctx: &CompileCtx, nested_symbols: &SymbolTable,
-        captures: &mut Vec<UpvalueCapture>, seen: &mut HashMap<String, usize>,
+    fn collect_decl_names_stmt(&self, stmts: &[Statement], out: &mut HashSet<String>) {
+        for stmt in stmts {
+            match stmt {
+                Statement::VariableDeclaration(vd) => {
+                    for d in &vd.declarations {
+                        if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
+                            out.insert(bi.name.to_string());
+                        }
+                    }
+                }
+                Statement::FunctionDeclaration(fd) => {
+                    if let Some(id) = &fd.id {
+                        out.insert(id.name.to_string());
+                    }
+                }
+                Statement::BlockStatement(b) => self.collect_decl_names_stmt(&b.body, out),
+                Statement::IfStatement(is) => {
+                    self.collect_decl_names_stmt(std::slice::from_ref(&is.consequent), out);
+                    if let Some(alt) = &is.alternate {
+                        self.collect_decl_names_stmt(std::slice::from_ref(alt), out);
+                    }
+                }
+                Statement::WhileStatement(w) => self.collect_decl_names_stmt(std::slice::from_ref(&w.body), out),
+                Statement::DoWhileStatement(d) => self.collect_decl_names_stmt(std::slice::from_ref(&d.body), out),
+                Statement::ForStatement(f) => {
+                    if let Some(oxide_parser::ForStatementInit::VariableDeclaration(vd)) = &f.init {
+                        for d in &vd.declarations {
+                            if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
+                                out.insert(bi.name.to_string());
+                            }
+                        }
+                    }
+                    self.collect_decl_names_stmt(std::slice::from_ref(&f.body), out);
+                }
+                Statement::SwitchStatement(sw) => {
+                    for case in &sw.cases {
+                        self.collect_decl_names_stmt(&case.consequent, out);
+                    }
+                }
+                Statement::TryStatement(ts) => {
+                    self.collect_decl_names_stmt(&ts.block.body, out);
+                    if let Some(h) = &ts.handler {
+                        self.collect_decl_names_stmt(&h.body.body, out);
+                    }
+                    if let Some(f) = &ts.finalizer {
+                        self.collect_decl_names_stmt(&f.body, out);
+                    }
+                }
+                Statement::LabeledStatement(ls) => self.collect_decl_names_stmt(std::slice::from_ref(&ls.body), out),
+                _ => {}
+            }
+        }
+    }
+
+    /// 扫描 stmts 内（含任意深度嵌套函数）对 `ref_set` 的引用，写入 out。
+    /// 递归进入嵌套函数时累加其局部绑定为遮蔽集，避免把内层局部误判为捕获。
+    fn collect_capture_names(&self, stmts: &[Statement], ref_set: &HashSet<String>, out: &mut HashSet<String>) {
+        let shadow = HashSet::new();
+        self.collect_capture_names_shadowed(stmts, ref_set, &shadow, out);
+    }
+
+    fn collect_capture_names_shadowed(
+        &self, stmts: &[Statement], ref_set: &HashSet<String>, shadow: &HashSet<String>, out: &mut HashSet<String>,
+    ) {
+        for stmt in stmts {
+            self.collect_capture_names_stmt(stmt, ref_set, shadow, out);
+        }
+    }
+
+    fn collect_capture_names_stmt(
+        &self, stmt: &Statement, ref_set: &HashSet<String>, shadow: &HashSet<String>, out: &mut HashSet<String>,
     ) {
         match stmt {
-            Statement::ExpressionStatement(es) => {
-                self.collect_upvalue_expr(&es.expression, parent_ctx, nested_symbols, captures, seen);
+            Statement::ExpressionStatement(es) => self.collect_capture_names_expr(&es.expression, ref_set, shadow, out),
+            Statement::ReturnStatement(rs) => {
+                if let Some(a) = &rs.argument {
+                    self.collect_capture_names_expr(a, ref_set, shadow, out);
+                }
             }
             Statement::VariableDeclaration(vd) => {
-                for decl in &vd.declarations {
-                    if let Some(init) = &decl.init {
-                        self.collect_upvalue_expr(init, parent_ctx, nested_symbols, captures, seen);
+                for d in &vd.declarations {
+                    if let Some(init) = &d.init {
+                        self.collect_capture_names_expr(init, ref_set, shadow, out);
                     }
                 }
             }
-            Statement::ReturnStatement(rs) => {
-                if let Some(expr) = &rs.argument {
-                    self.collect_upvalue_expr(expr, parent_ctx, nested_symbols, captures, seen);
+            Statement::FunctionDeclaration(fd) => {
+                let body: &[Statement] = fd.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
+                let mut inner = shadow.clone();
+                inner.extend(self.collect_own_binding_names(&[], body));
+                self.collect_capture_names_shadowed(body, ref_set, &inner, out);
+            }
+            Statement::IfStatement(is) => {
+                self.collect_capture_names_expr(&is.test, ref_set, shadow, out);
+                self.collect_capture_names_stmt(&is.consequent, ref_set, shadow, out);
+                if let Some(alt) = &is.alternate {
+                    self.collect_capture_names_stmt(alt, ref_set, shadow, out);
                 }
             }
             Statement::ForStatement(fs) => {
                 if let Some(init) = &fs.init {
                     if let Some(e) = init.as_expression() {
-                        self.collect_upvalue_expr(e, parent_ctx, nested_symbols, captures, seen);
+                        self.collect_capture_names_expr(e, ref_set, shadow, out);
+                    }
+                    if let oxide_parser::ForStatementInit::VariableDeclaration(vd) = init {
+                        for d in &vd.declarations {
+                            if let Some(i) = &d.init {
+                                self.collect_capture_names_expr(i, ref_set, shadow, out);
+                            }
+                        }
                     }
                 }
-                if let Some(test) = &fs.test {
-                    self.collect_upvalue_expr(test, parent_ctx, nested_symbols, captures, seen);
+                if let Some(t) = &fs.test {
+                    self.collect_capture_names_expr(t, ref_set, shadow, out);
                 }
-                if let Some(update) = &fs.update {
-                    self.collect_upvalue_expr(update, parent_ctx, nested_symbols, captures, seen);
+                if let Some(u) = &fs.update {
+                    self.collect_capture_names_expr(u, ref_set, shadow, out);
                 }
-                self.collect_upvalue_stmt(&fs.body, parent_ctx, nested_symbols, captures, seen);
+                self.collect_capture_names_stmt(&fs.body, ref_set, shadow, out);
             }
-            Statement::IfStatement(is) => {
-                self.collect_upvalue_expr(&is.test, parent_ctx, nested_symbols, captures, seen);
-                self.collect_upvalue_stmt(&is.consequent, parent_ctx, nested_symbols, captures, seen);
-                if let Some(alt) = &is.alternate {
-                    self.collect_upvalue_stmt(alt, parent_ctx, nested_symbols, captures, seen);
-                }
+            Statement::WhileStatement(w) => {
+                self.collect_capture_names_expr(&w.test, ref_set, shadow, out);
+                self.collect_capture_names_stmt(&w.body, ref_set, shadow, out);
             }
-            Statement::WhileStatement(ws) => {
-                self.collect_upvalue_expr(&ws.test, parent_ctx, nested_symbols, captures, seen);
-                self.collect_upvalue_stmt(&ws.body, parent_ctx, nested_symbols, captures, seen);
+            Statement::DoWhileStatement(d) => {
+                self.collect_capture_names_stmt(&d.body, ref_set, shadow, out);
+                self.collect_capture_names_expr(&d.test, ref_set, shadow, out);
             }
-            Statement::DoWhileStatement(dw) => {
-                self.collect_upvalue_stmt(&dw.body, parent_ctx, nested_symbols, captures, seen);
-                self.collect_upvalue_expr(&dw.test, parent_ctx, nested_symbols, captures, seen);
+            Statement::ForInStatement(fi) => {
+                self.collect_capture_names_expr(&fi.right, ref_set, shadow, out);
+                self.collect_capture_names_stmt(&fi.body, ref_set, shadow, out);
             }
-            Statement::BlockStatement(bs) => {
-                for s in &bs.body {
-                    self.collect_upvalue_stmt(s, parent_ctx, nested_symbols, captures, seen);
-                }
+            Statement::ForOfStatement(fo) => {
+                self.collect_capture_names_expr(&fo.right, ref_set, shadow, out);
+                self.collect_capture_names_stmt(&fo.body, ref_set, shadow, out);
             }
+            Statement::BlockStatement(b) => self.collect_capture_names_shadowed(&b.body, ref_set, shadow, out),
             Statement::TryStatement(ts) => {
                 for s in &ts.block.body {
-                    self.collect_upvalue_stmt(s, parent_ctx, nested_symbols, captures, seen);
+                    self.collect_capture_names_stmt(s, ref_set, shadow, out);
                 }
-                if let Some(handler) = &ts.handler {
-                    for s in &handler.body.body {
-                        self.collect_upvalue_stmt(s, parent_ctx, nested_symbols, captures, seen);
+                if let Some(h) = &ts.handler {
+                    for s in &h.body.body {
+                        self.collect_capture_names_stmt(s, ref_set, shadow, out);
                     }
                 }
-                if let Some(finalizer) = &ts.finalizer {
-                    for s in &finalizer.body {
-                        self.collect_upvalue_stmt(s, parent_ctx, nested_symbols, captures, seen);
+                if let Some(f) = &ts.finalizer {
+                    for s in &f.body {
+                        self.collect_capture_names_stmt(s, ref_set, shadow, out);
                     }
                 }
             }
-            Statement::ThrowStatement(ts) => {
-                self.collect_upvalue_expr(&ts.argument, parent_ctx, nested_symbols, captures, seen);
-            }
-            Statement::SwitchStatement(ss) => {
-                self.collect_upvalue_expr(&ss.discriminant, parent_ctx, nested_symbols, captures, seen);
-                for case in &ss.cases {
+            Statement::ThrowStatement(ts) => self.collect_capture_names_expr(&ts.argument, ref_set, shadow, out),
+            Statement::SwitchStatement(sw) => {
+                self.collect_capture_names_expr(&sw.discriminant, ref_set, shadow, out);
+                for case in &sw.cases {
                     for s in &case.consequent {
-                        self.collect_upvalue_stmt(s, parent_ctx, nested_symbols, captures, seen);
+                        self.collect_capture_names_stmt(s, ref_set, shadow, out);
+                    }
+                }
+            }
+            Statement::LabeledStatement(ls) => self.collect_capture_names_stmt(&ls.body, ref_set, shadow, out),
+            _ => {}
+        }
+    }
+
+    fn collect_capture_names_expr(
+        &self, expr: &Expression, ref_set: &HashSet<String>, shadow: &HashSet<String>, out: &mut HashSet<String>,
+    ) {
+        match expr {
+            Expression::Identifier(id) => {
+                let name = id.name.as_str();
+                if ref_set.contains(name) && !shadow.contains(name) {
+                    out.insert(id.name.to_string());
+                }
+            }
+            Expression::AssignmentExpression(ae) => {
+                if let oxide_parser::AssignmentTarget::AssignmentTargetIdentifier(ati) = &ae.left {
+                    let name = ati.name.as_str();
+                    if ref_set.contains(name) && !shadow.contains(name) {
+                        out.insert(ati.name.to_string());
+                    }
+                }
+                self.collect_capture_names_expr(&ae.right, ref_set, shadow, out);
+            }
+            Expression::UpdateExpression(ue) => {
+                if let oxide_parser::SimpleAssignmentTarget::AssignmentTargetIdentifier(ati) = &ue.argument {
+                    let name = ati.name.as_str();
+                    if ref_set.contains(name) && !shadow.contains(name) {
+                        out.insert(ati.name.to_string());
+                    }
+                }
+            }
+            Expression::FunctionExpression(fe) => {
+                let body: &[Statement] = fe.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
+                let mut inner = shadow.clone();
+                inner.extend(self.collect_own_binding_names(&[], body));
+                self.collect_capture_names_shadowed(body, ref_set, &inner, out);
+            }
+            Expression::ArrowFunctionExpression(ae) => {
+                let mut inner = shadow.clone();
+                inner.extend(self.collect_own_binding_names(&[], &ae.body.statements));
+                self.collect_capture_names_shadowed(&ae.body.statements, ref_set, &inner, out);
+            }
+            Expression::BinaryExpression(be) => {
+                self.collect_capture_names_expr(&be.left, ref_set, shadow, out);
+                self.collect_capture_names_expr(&be.right, ref_set, shadow, out);
+            }
+            Expression::UnaryExpression(ue) => self.collect_capture_names_expr(&ue.argument, ref_set, shadow, out),
+            Expression::CallExpression(ce) => {
+                self.collect_capture_names_expr(&ce.callee, ref_set, shadow, out);
+                for a in &ce.arguments {
+                    if let Some(e) = a.as_expression() {
+                        self.collect_capture_names_expr(e, ref_set, shadow, out);
+                    }
+                }
+            }
+            Expression::NewExpression(ne) => {
+                self.collect_capture_names_expr(&ne.callee, ref_set, shadow, out);
+                for a in &ne.arguments {
+                    if let Some(e) = a.as_expression() {
+                        self.collect_capture_names_expr(e, ref_set, shadow, out);
+                    }
+                }
+            }
+            Expression::SequenceExpression(se) => {
+                for e in &se.expressions {
+                    self.collect_capture_names_expr(e, ref_set, shadow, out);
+                }
+            }
+            Expression::ConditionalExpression(ce) => {
+                self.collect_capture_names_expr(&ce.test, ref_set, shadow, out);
+                self.collect_capture_names_expr(&ce.consequent, ref_set, shadow, out);
+                self.collect_capture_names_expr(&ce.alternate, ref_set, shadow, out);
+            }
+            Expression::ArrayExpression(ae) => {
+                for e in &ae.elements {
+                    if let Some(e) = e.as_expression() {
+                        self.collect_capture_names_expr(e, ref_set, shadow, out);
+                    }
+                }
+            }
+            Expression::LogicalExpression(le) => {
+                self.collect_capture_names_expr(&le.left, ref_set, shadow, out);
+                self.collect_capture_names_expr(&le.right, ref_set, shadow, out);
+            }
+            Expression::ComputedMemberExpression(m) => {
+                self.collect_capture_names_expr(&m.object, ref_set, shadow, out);
+                self.collect_capture_names_expr(&m.expression, ref_set, shadow, out);
+            }
+            Expression::StaticMemberExpression(m) => self.collect_capture_names_expr(&m.object, ref_set, shadow, out),
+            Expression::PrivateFieldExpression(m) => self.collect_capture_names_expr(&m.object, ref_set, shadow, out),
+            Expression::ParenthesizedExpression(p) => self.collect_capture_names_expr(&p.expression, ref_set, shadow, out),
+            Expression::TemplateLiteral(tl) => {
+                for e in &tl.expressions {
+                    self.collect_capture_names_expr(e, ref_set, shadow, out);
+                }
+            }
+            Expression::TaggedTemplateExpression(tt) => {
+                self.collect_capture_names_expr(&tt.tag, ref_set, shadow, out);
+                for e in &tt.quasi.expressions {
+                    self.collect_capture_names_expr(e, ref_set, shadow, out);
+                }
+            }
+            Expression::ObjectExpression(o) => {
+                for prop in &o.properties {
+                    if let oxide_parser::ObjectPropertyKind::ObjectProperty(p) = prop {
+                        self.collect_capture_names_expr(&p.value, ref_set, shadow, out);
+                    }
+                }
+            }
+            Expression::ChainExpression(c) => self.collect_capture_names_chain(&c.expression, ref_set, shadow, out),
+            _ => {}
+        }
+    }
+
+    fn collect_capture_names_chain(
+        &self, element: &oxide_parser::ChainElement, ref_set: &HashSet<String>, shadow: &HashSet<String>,
+        out: &mut HashSet<String>,
+    ) {
+        match element {
+            oxide_parser::ChainElement::StaticMemberExpression(m) => {
+                self.collect_capture_names_expr(&m.object, ref_set, shadow, out);
+            }
+            oxide_parser::ChainElement::ComputedMemberExpression(m) => {
+                self.collect_capture_names_expr(&m.object, ref_set, shadow, out);
+                self.collect_capture_names_expr(&m.expression, ref_set, shadow, out);
+            }
+            oxide_parser::ChainElement::PrivateFieldExpression(m) => {
+                self.collect_capture_names_expr(&m.object, ref_set, shadow, out);
+            }
+            oxide_parser::ChainElement::CallExpression(call) => {
+                self.collect_capture_names_expr(&call.callee, ref_set, shadow, out);
+                for a in &call.arguments {
+                    if let Some(e) = a.as_expression() {
+                        self.collect_capture_names_expr(e, ref_set, shadow, out);
                     }
                 }
             }
@@ -604,128 +835,171 @@ impl Compiler {
         }
     }
 
-    fn collect_upvalue_expr(
-        &self, expr: &Expression, parent_ctx: &CompileCtx, nested_symbols: &SymbolTable,
-        captures: &mut Vec<UpvalueCapture>, seen: &mut HashMap<String, usize>,
-    ) {
+    /// 分析本函数：哪些绑定被任意深度嵌套函数捕获 → captured_bindings。
+    fn collect_captured_bindings(&self, stmts: &[Statement], own: &HashSet<String>) -> HashSet<String> {
+        let mut captured = HashSet::new();
+        for stmt in stmts {
+            self.collect_captured_stmt(stmt, own, &mut captured);
+        }
+        captured
+    }
+
+    /// 只从嵌套函数节点进入扫描（本函数直接引用不算捕获）。
+    fn collect_captured_stmt(&self, stmt: &Statement, own: &HashSet<String>, out: &mut HashSet<String>) {
+        match stmt {
+            Statement::FunctionDeclaration(fd) => {
+                let body: &[Statement] = fd.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
+                self.collect_capture_names(body, own, out);
+            }
+            Statement::ExpressionStatement(es) => self.collect_captured_expr(&es.expression, own, out),
+            Statement::ReturnStatement(rs) => {
+                if let Some(a) = &rs.argument {
+                    self.collect_captured_expr(a, own, out);
+                }
+            }
+            Statement::VariableDeclaration(vd) => {
+                for d in &vd.declarations {
+                    if let Some(init) = &d.init {
+                        self.collect_captured_expr(init, own, out);
+                    }
+                }
+            }
+            Statement::IfStatement(is) => {
+                self.collect_captured_expr(&is.test, own, out);
+                self.collect_captured_stmt(&is.consequent, own, out);
+                if let Some(alt) = &is.alternate {
+                    self.collect_captured_stmt(alt, own, out);
+                }
+            }
+            Statement::ForStatement(fs) => {
+                if let Some(init) = &fs.init {
+                    if let Some(e) = init.as_expression() {
+                        self.collect_captured_expr(e, own, out);
+                    }
+                }
+                if let Some(t) = &fs.test {
+                    self.collect_captured_expr(t, own, out);
+                }
+                if let Some(u) = &fs.update {
+                    self.collect_captured_expr(u, own, out);
+                }
+                self.collect_captured_stmt(&fs.body, own, out);
+            }
+            Statement::WhileStatement(w) => {
+                self.collect_captured_expr(&w.test, own, out);
+                self.collect_captured_stmt(&w.body, own, out);
+            }
+            Statement::DoWhileStatement(d) => {
+                self.collect_captured_stmt(&d.body, own, out);
+                self.collect_captured_expr(&d.test, own, out);
+            }
+            Statement::ForInStatement(fi) => {
+                self.collect_captured_expr(&fi.right, own, out);
+                self.collect_captured_stmt(&fi.body, own, out);
+            }
+            Statement::ForOfStatement(fo) => {
+                self.collect_captured_expr(&fo.right, own, out);
+                self.collect_captured_stmt(&fo.body, own, out);
+            }
+            Statement::BlockStatement(b) => {
+                for s in &b.body {
+                    self.collect_captured_stmt(s, own, out);
+                }
+            }
+            Statement::TryStatement(ts) => {
+                for s in &ts.block.body {
+                    self.collect_captured_stmt(s, own, out);
+                }
+                if let Some(h) = &ts.handler {
+                    for s in &h.body.body {
+                        self.collect_captured_stmt(s, own, out);
+                    }
+                }
+                if let Some(f) = &ts.finalizer {
+                    for s in &f.body {
+                        self.collect_captured_stmt(s, own, out);
+                    }
+                }
+            }
+            Statement::ThrowStatement(ts) => self.collect_captured_expr(&ts.argument, own, out),
+            Statement::SwitchStatement(sw) => {
+                self.collect_captured_expr(&sw.discriminant, own, out);
+                for case in &sw.cases {
+                    for s in &case.consequent {
+                        self.collect_captured_stmt(s, own, out);
+                    }
+                }
+            }
+            Statement::LabeledStatement(ls) => self.collect_captured_stmt(&ls.body, own, out),
+            _ => {}
+        }
+    }
+
+    fn collect_captured_expr(&self, expr: &Expression, own: &HashSet<String>, out: &mut HashSet<String>) {
         match expr {
-            Expression::Identifier(ident) => {
-                let name = ident.name.as_str();
-                if nested_symbols.lookup_any_binding(name).is_some() {
-                    // Check if this is a parent function-scope binding (real upvalue)
-                    let is_parent_func_var = parent_ctx
-                        .scopes
-                        .symbols
-                        .scopes
-                        .iter()
-                        .skip(1)
-                        .any(|s| s.bindings.contains_key(name));
-                    if !is_parent_func_var {
-                        return; // true local or global, not upvalue
-                    }
-                    // falls through to capture
-                }
-                if let Some((binding, _)) = parent_ctx.scopes.symbols.lookup_any_binding(name) {
-                    if seen.contains_key(name) {
-                        return;
-                    }
-                    let cell_idx = captures.len() as u8;
-                    seen.insert(name.to_string(), cell_idx as usize);
-                    captures.push(UpvalueCapture {
-                        name: name.to_string(),
-                        enclosing_reg: binding.reg,
-                        cell_idx,
-                    });
-                }
+            Expression::FunctionExpression(fe) => {
+                let body: &[Statement] = fe.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
+                self.collect_capture_names(body, own, out);
             }
-            Expression::AssignmentExpression(ae) => {
-                if let oxide_parser::AssignmentTarget::AssignmentTargetIdentifier(ati) = &ae.left {
-                    let name = ati.name.as_str();
-                    let in_nested = nested_symbols.lookup_any_binding(name).is_some();
-                    let is_parent_func_var = parent_ctx
-                        .scopes
-                        .symbols
-                        .scopes
-                        .iter()
-                        .skip(1)
-                        .any(|s| s.bindings.contains_key(name));
-                    if !in_nested || is_parent_func_var {
-                        if let Some((binding, _)) = parent_ctx.scopes.symbols.lookup_any_binding(name) {
-                            if !seen.contains_key(name) {
-                                let cell_idx = captures.len() as u8;
-                                seen.insert(name.to_string(), cell_idx as usize);
-                                captures.push(UpvalueCapture {
-                                    name: name.to_string(),
-                                    enclosing_reg: binding.reg,
-                                    cell_idx,
-                                });
-                            }
-                        }
-                    }
-                }
-                self.collect_upvalue_expr(&ae.right, parent_ctx, nested_symbols, captures, seen);
-            }
-            Expression::BinaryExpression(be) => {
-                self.collect_upvalue_expr(&be.left, parent_ctx, nested_symbols, captures, seen);
-                self.collect_upvalue_expr(&be.right, parent_ctx, nested_symbols, captures, seen);
-            }
-            Expression::UnaryExpression(ue) => {
-                self.collect_upvalue_expr(&ue.argument, parent_ctx, nested_symbols, captures, seen);
-            }
-            Expression::UpdateExpression(ue) => {
-                if let oxide_parser::SimpleAssignmentTarget::AssignmentTargetIdentifier(ati) = &ue.argument {
-                    let name = ati.name.as_str();
-                    let in_nested = nested_symbols.lookup_any_binding(name).is_some();
-                    let is_parent_func_var = parent_ctx
-                        .scopes
-                        .symbols
-                        .scopes
-                        .iter()
-                        .skip(1)
-                        .any(|s| s.bindings.contains_key(name));
-                    if !in_nested || is_parent_func_var {
-                        if let Some((binding, _)) = parent_ctx.scopes.symbols.lookup_any_binding(name) {
-                            if !seen.contains_key(name) {
-                                let cell_idx = captures.len() as u8;
-                                seen.insert(name.to_string(), cell_idx as usize);
-                                captures.push(UpvalueCapture {
-                                    name: name.to_string(),
-                                    enclosing_reg: binding.reg,
-                                    cell_idx,
-                                });
-                            }
-                        }
-                    }
-                }
+            Expression::ArrowFunctionExpression(ae) => {
+                self.collect_capture_names(&ae.body.statements, own, out);
             }
             Expression::CallExpression(ce) => {
-                self.collect_upvalue_expr(&ce.callee, parent_ctx, nested_symbols, captures, seen);
-                for arg in &ce.arguments {
-                    if let Some(e) = arg.as_expression() {
-                        self.collect_upvalue_expr(e, parent_ctx, nested_symbols, captures, seen);
+                self.collect_captured_expr(&ce.callee, own, out);
+                for a in &ce.arguments {
+                    if let Some(e) = a.as_expression() {
+                        self.collect_captured_expr(e, own, out);
                     }
                 }
             }
-            Expression::SequenceExpression(se) => {
-                for sub_expr in &se.expressions {
-                    self.collect_upvalue_expr(sub_expr, parent_ctx, nested_symbols, captures, seen);
-                }
+            Expression::BinaryExpression(be) => {
+                self.collect_captured_expr(&be.left, own, out);
+                self.collect_captured_expr(&be.right, own, out);
+            }
+            Expression::UnaryExpression(ue) => self.collect_captured_expr(&ue.argument, own, out),
+            Expression::LogicalExpression(le) => {
+                self.collect_captured_expr(&le.left, own, out);
+                self.collect_captured_expr(&le.right, own, out);
             }
             Expression::ConditionalExpression(ce) => {
-                self.collect_upvalue_expr(&ce.test, parent_ctx, nested_symbols, captures, seen);
-                self.collect_upvalue_expr(&ce.consequent, parent_ctx, nested_symbols, captures, seen);
-                self.collect_upvalue_expr(&ce.alternate, parent_ctx, nested_symbols, captures, seen);
+                self.collect_captured_expr(&ce.test, own, out);
+                self.collect_captured_expr(&ce.consequent, own, out);
+                self.collect_captured_expr(&ce.alternate, own, out);
             }
+            Expression::SequenceExpression(se) => {
+                for e in &se.expressions {
+                    self.collect_captured_expr(e, own, out);
+                }
+            }
+            Expression::AssignmentExpression(ae) => self.collect_captured_expr(&ae.right, own, out),
             Expression::ArrayExpression(ae) => {
-                for elem in &ae.elements {
-                    if let Some(e) = elem.as_expression() {
-                        self.collect_upvalue_expr(e, parent_ctx, nested_symbols, captures, seen);
+                for e in &ae.elements {
+                    if let Some(e) = e.as_expression() {
+                        self.collect_captured_expr(e, own, out);
                     }
                 }
             }
             _ => {}
         }
     }
+
+    /// 分析子函数 body：引用父级绑定的名字 → upvalue_captures（enclosing_reg 由父 emit 完成后填充）。
+    fn collect_upvalue_names(
+        &self, body_stmts: &[Statement], parent_own: &HashSet<String>, sub_own: &HashSet<String>,
+    ) -> Vec<UpvalueCapture> {
+        let mut names = HashSet::new();
+        self.collect_capture_names_shadowed(body_stmts, parent_own, sub_own, &mut names);
+        let mut captures = Vec::with_capacity(names.len());
+        for (cell_idx, name) in names.iter().enumerate() {
+            captures.push(UpvalueCapture {
+                name: name.clone(),
+                enclosing_reg: 0, // assemble_ir 时从父符号表填充
+                cell_idx: cell_idx as u8,
+            });
+        }
+        captures
+    }
+
 
     pub(crate) fn extract_function_parts<'a>(
         &self, function: &'a oxide_parser::Function<'a>,
@@ -790,48 +1064,6 @@ impl Compiler {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn pre_scan_function_expressions(&self, stmts: &[Statement], parent_ctx: &mut CompileCtx) -> Result<(), String> {
-        for stmt in stmts {
-            self.pre_scan_stmt(stmt, parent_ctx)?;
-        }
-        Ok(())
-    }
-
-    fn pre_scan_stmt(&self, stmt: &Statement, parent_ctx: &mut CompileCtx) -> Result<(), String> {
-        match stmt {
-            Statement::ExpressionStatement(es) => self.pre_scan_expr(&es.expression, parent_ctx)?,
-            Statement::ReturnStatement(rs) => {
-                if let Some(a) = &rs.argument {
-                    self.pre_scan_expr(a, parent_ctx)?;
-                }
-            }
-            Statement::IfStatement(is) => {
-                self.pre_scan_expr(&is.test, parent_ctx)?;
-                self.pre_scan_stmt(&is.consequent, parent_ctx)?;
-                if let Some(alt) = &is.alternate {
-                    self.pre_scan_stmt(alt, parent_ctx)?;
-                }
-            }
-            Statement::ForStatement(fs) => {
-                if let Some(init) = &fs.init {
-                    if let Some(e) = init.as_expression() {
-                        self.pre_scan_expr(e, parent_ctx)?;
-                    }
-                }
-                if let Some(t) = &fs.test {
-                    self.pre_scan_expr(t, parent_ctx)?;
-                }
-                if let Some(u) = &fs.update {
-                    self.pre_scan_expr(u, parent_ctx)?;
-                }
-                self.pre_scan_stmt(&fs.body, parent_ctx)?;
-            }
-            Statement::BlockStatement(bs) => self.pre_scan_function_expressions(&bs.body, parent_ctx)?,
-            _ => {}
-        }
-        Ok(())
-    }
 
     /// Pre-register all builtin identifiers referenced anywhere in this body
     /// (expressions, member objects, call args, class fields, etc.) so their
@@ -1095,58 +1327,6 @@ impl Compiler {
         }
     }
 
-    fn pre_scan_expr(&self, expr: &Expression, parent_ctx: &mut CompileCtx) -> Result<(), String> {
-        match expr {
-            Expression::FunctionExpression(fe) => {
-                let body: &[Statement] = fe.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
-                let nested_symbols = SymbolTable::new();
-                let (captures, _) = self.analyze_upvalue_captures(body, parent_ctx, &nested_symbols);
-                for up in &captures {
-                    if let Some((binding, _)) = parent_ctx.scopes.symbols.lookup_any_binding(&up.name) {
-                        binding.is_captured.set(true);
-                    }
-                }
-            }
-            Expression::ArrowFunctionExpression(_ae) => {}
-            Expression::CallExpression(ce) => {
-                self.pre_scan_expr(&ce.callee, parent_ctx)?;
-                for arg in &ce.arguments {
-                    if let Some(e) = arg.as_expression() {
-                        self.pre_scan_expr(e, parent_ctx)?;
-                    }
-                }
-            }
-            Expression::BinaryExpression(be) => {
-                self.pre_scan_expr(&be.left, parent_ctx)?;
-                self.pre_scan_expr(&be.right, parent_ctx)?;
-            }
-            Expression::ConditionalExpression(ce) => {
-                self.pre_scan_expr(&ce.test, parent_ctx)?;
-                self.pre_scan_expr(&ce.consequent, parent_ctx)?;
-                self.pre_scan_expr(&ce.alternate, parent_ctx)?;
-            }
-            Expression::ArrayExpression(ae) => {
-                for e in &ae.elements {
-                    if let Some(e) = e.as_expression() {
-                        self.pre_scan_expr(e, parent_ctx)?;
-                    }
-                }
-            }
-            Expression::SequenceExpression(se) => {
-                for e in &se.expressions {
-                    self.pre_scan_expr(e, parent_ctx)?;
-                }
-            }
-            Expression::AssignmentExpression(ae) => {
-                self.pre_scan_expr(&ae.right, parent_ctx)?;
-            }
-            Expression::UnaryExpression(ue) => {
-                self.pre_scan_expr(&ue.argument, parent_ctx)?;
-            }
-            _ => {}
-        }
-        Ok(())
-    }
 
     fn predeclare_function_declarations(&self, statements: &[Statement], ctx: &mut CompileCtx) {
         for statement in statements {
@@ -1269,7 +1449,6 @@ impl Compiler {
                     reg: binding.reg,
                     initialized: binding.initialized,
                     is_const: binding.is_const,
-                    is_captured: binding.is_captured.clone(),
                 },
             );
             inherited_reg_start = inherited_reg_start.max(binding.reg.saturating_add(1));
@@ -1281,7 +1460,6 @@ impl Compiler {
                     reg: *reg,
                     initialized: true,
                     is_const: true,
-                    is_captured: Cell::new(false),
                 },
             );
             inherited_reg_start = inherited_reg_start.max(reg.saturating_add(1));
@@ -1291,22 +1469,6 @@ impl Compiler {
         // Align next_reg with builtin count so both count and emit passes start at the
         // same register offset (params go after builtin slots).
         ctx.reset_regs();
-
-        // Free variable analysis for upvalue capture (Ordinary + Arrow functions only)
-        if matches!(body_context, FunctionBodyContext::Ordinary | FunctionBodyContext::Arrow) {
-            let (captures, _cells) = self.analyze_upvalue_captures(body_stmts, parent_ctx, &ctx.scopes.symbols);
-            ctx.current_upvalue_captures = captures;
-            ctx.scopes.cell_registry = ctx
-                .current_upvalue_captures
-                .iter()
-                .map(|u| (u.name.clone(), u.cell_idx))
-                .collect();
-            for up in &ctx.current_upvalue_captures {
-                if let Some((binding, _)) = parent_ctx.scopes.symbols.lookup_any_binding(&up.name) {
-                    binding.is_captured.set(true);
-                }
-            }
-        }
 
         // Function body scope - params and local vars
         ctx.push_scope_with_kind(ScopeKind::FunctionScope);
@@ -1327,10 +1489,23 @@ impl Compiler {
             }
         }
 
-        self.predeclare_function_declarations(body_stmts, &mut ctx);
+        // 闭包捕获分析（AST 级，emit 前确定，时序无关）
+        let param_names: Vec<&str> = param_specs.iter().map(|s| s.register_name()).collect();
+        ctx.own_bindings = self.collect_own_binding_names(&param_names, body_stmts);
+        ctx.captured_bindings = self.collect_captured_bindings(body_stmts, &ctx.own_bindings);
 
-        // Pre-scan: run analysis for nested function expressions to mark parent captures
-        self.pre_scan_function_expressions(body_stmts, &mut ctx)?;
+        // Free variable analysis for upvalue capture (Ordinary + Arrow functions only)
+        if matches!(body_context, FunctionBodyContext::Ordinary | FunctionBodyContext::Arrow) {
+            let captures = self.collect_upvalue_names(body_stmts, &parent_ctx.own_bindings, &ctx.own_bindings);
+            ctx.current_upvalue_captures = captures;
+            ctx.scopes.cell_registry = ctx
+                .current_upvalue_captures
+                .iter()
+                .map(|u| (u.name.clone(), u.cell_idx))
+                .collect();
+        }
+
+        self.predeclare_function_declarations(body_stmts, &mut ctx);
 
         // Pre-register builtin identifier references before emitting any temporary
         // register, so builtin slots never collide with reused temporaries.
@@ -1401,10 +1576,13 @@ impl Compiler {
             ctx.inst(Inst::new(OpCode::RETURN, Operand::Reg(undef_reg as u32), Operand::None, Operand::None));
         }
 
-        let ir = ctx.assemble_ir(crate::ir::ParamLayout {
-            base: param_base as u32,
-            count: param_specs.len() as u32,
-        });
+        let ir = ctx.assemble_ir(
+            crate::ir::ParamLayout {
+                base: param_base as u32,
+                count: param_specs.len() as u32,
+            },
+            Some(parent_ctx),
+        );
         Ok(ir)
     }
 
@@ -1481,6 +1659,10 @@ impl Compiler {
         // (emitted in the first sub-pass below) can resolve the outer vars.
         self.predeclare_var_declarations(&program.body, &mut ctx);
 
+        // 闭包捕获分析（AST 级，emit 前确定）
+        ctx.own_bindings = self.collect_own_binding_names(&[], &program.body);
+        ctx.captured_bindings = self.collect_captured_bindings(&program.body, &ctx.own_bindings);
+
         // First sub-pass: emit FunctionDeclarations (hoisting)
         // This ensures function objects are available before any code runs.
         for stmt in &program.body {
@@ -1510,10 +1692,13 @@ impl Compiler {
 
         crate::compiler_debug!("compile: done, {} instructions, {} constants", ctx.insts.len(), ctx.constants.len());
 
-        let ir = ctx.assemble_ir(crate::ir::ParamLayout {
-            base: ctx.scopes.builtin_reg_map.len() as u32,
-            count: 0,
-        });
+        let ir = ctx.assemble_ir(
+            crate::ir::ParamLayout {
+                base: ctx.scopes.builtin_reg_map.len() as u32,
+                count: 0,
+            },
+            None,
+        );
         lower(&ir)
     }
 }

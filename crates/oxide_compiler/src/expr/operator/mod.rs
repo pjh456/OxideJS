@@ -222,7 +222,7 @@ impl Compiler {
                 let name = id.name.as_str();
                 // Check if this is an upvalue or captured cell reference
                 let uv_idx = ctx.current_upvalue_captures.iter().position(|u| u.name == name);
-                let is_captured = ctx.scopes.symbols.lookup_is_captured(name);
+                let is_captured = ctx.captured_bindings.contains(name);
                 if let Some(uv) = uv_idx {
                     // Upvalue: LOAD_UPVALUE + CONST(1) + ADD/SUB + STORE_UPVALUE
                     let val_reg = ctx.alloc_reg();

@@ -146,7 +146,7 @@ impl Compiler {
                     return Ok(val_reg);
                 }
                 // Check if target is a captured cell
-                if ctx.scopes.symbols.lookup_is_captured(name) {
+                if ctx.captured_bindings.contains(name) {
                     let cell_idx = ctx
                         .scopes
                         .cell_registry

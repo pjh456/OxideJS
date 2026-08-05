@@ -46,11 +46,11 @@ impl Compiler {
                     ctx.declare(bi.name.as_str(), var_reg, decl.kind, is_const)?;
                     var_reg
                 };
-                let is_captured = ctx.scopes.symbols.lookup_is_captured(bi.name.as_str());
+                let is_captured = ctx.captured_bindings.contains(bi.name.as_str());
                 if is_captured {
                     let cell_idx = ctx.scopes.cell_registry.len() as u8;
                     ctx.scopes.cell_registry.push((bi.name.to_string(), cell_idx));
-                    ctx.inst(Inst::new(OpCode::MAKE_CELL, Operand::Reg(tmp as u32), Operand::Reg(cell_idx as u32), Operand::None));
+                    ctx.inst(Inst::new(OpCode::MAKE_CELL, Operand::Reg(tmp as u32), Operand::Imm(cell_idx as u16), Operand::None));
                 } else {
                     ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(target_reg as u32), Operand::Reg(tmp as u32), Operand::None));
                 }
