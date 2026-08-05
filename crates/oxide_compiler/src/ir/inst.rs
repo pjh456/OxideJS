@@ -1,0 +1,265 @@
+//! IR 指令结构 + 构造 API。
+//!
+//! `ext` 内部是裸 u32（lowering 直拼字节码扩展字）。扩展字的**数量与语义值编码**
+//! 全部由 `inst_*` 构造 API 保证——emit 代码不直接触碰 `ext` 字段。
+
+use oxide_bytecode::opcode::OpCode;
+use smallvec::SmallVec;
+
+use super::operand::{LabelId, Operand};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Inst {
+    pub op: OpCode,
+    pub rd: Operand,
+    pub a: Operand,
+    pub b: Operand,
+    pub ext: SmallVec<[u32; 4]>,
+}
+
+impl Inst {
+    /// 基础构造：ext 为空。
+    pub fn new(op: OpCode, rd: Operand, a: Operand, b: Operand) -> Self {
+        Self {
+            op,
+            rd,
+            a,
+            b,
+            ext: SmallVec::new(),
+        }
+    }
+
+    fn with_ext(op: OpCode, rd: Operand, a: Operand, b: Operand, ext: &[u32]) -> Self {
+        Self {
+            op,
+            rd,
+            a,
+            b,
+            ext: SmallVec::from_slice(ext),
+        }
+    }
+
+    // ── IC 系：ext = [0, 0, 0]（shape/slot/proto 占位字，VM 运行时 patch）──
+
+    pub fn ic_get(dst: Operand, key: Operand) -> Self {
+        Self::with_ext(OpCode::IC_GET_PROP, Operand::None, dst, key, &[0, 0, 0])
+    }
+
+    pub fn ic_set(obj: Operand, value: Operand, key: Operand) -> Self {
+        Self::with_ext(OpCode::IC_SET_PROP, obj, value, key, &[0, 0, 0])
+    }
+
+    pub fn member_inc(obj: Operand, val: Operand, key: Operand) -> Self {
+        Self::with_ext(OpCode::MEMBER_INC, obj, val, key, &[0, 0, 0])
+    }
+
+    pub fn member_dec(obj: Operand, val: Operand, key: Operand) -> Self {
+        Self::with_ext(OpCode::MEMBER_DEC, obj, val, key, &[0, 0, 0])
+    }
+
+    pub fn compound_member_add(obj: Operand, val: Operand, key: Operand) -> Self {
+        Self::with_ext(OpCode::COMPOUND_MEMBER_ADD, obj, val, key, &[0, 0, 0])
+    }
+
+    pub fn compound_member_sub(obj: Operand, val: Operand, key: Operand) -> Self {
+        Self::with_ext(OpCode::COMPOUND_MEMBER_SUB, obj, val, key, &[0, 0, 0])
+    }
+
+    pub fn compound_member_mul(obj: Operand, val: Operand, key: Operand) -> Self {
+        Self::with_ext(OpCode::COMPOUND_MEMBER_MUL, obj, val, key, &[0, 0, 0])
+    }
+
+    pub fn compound_member_div(obj: Operand, val: Operand, key: Operand) -> Self {
+        Self::with_ext(OpCode::COMPOUND_MEMBER_DIV, obj, val, key, &[0, 0, 0])
+    }
+
+    pub fn compound_member_mod(obj: Operand, val: Operand, key: Operand) -> Self {
+        Self::with_ext(OpCode::COMPOUND_MEMBER_MOD, obj, val, key, &[0, 0, 0])
+    }
+
+    pub fn compound_member_exp(obj: Operand, val: Operand, key: Operand) -> Self {
+        Self::with_ext(OpCode::COMPOUND_MEMBER_EXP, obj, val, key, &[0, 0, 0])
+    }
+
+    // ── Call 系：ext = [nargs] ──
+
+    pub fn call(callee: Operand, this: Operand, first_arg: Operand, nargs: u8) -> Self {
+        Self::with_ext(OpCode::CALL, callee, this, first_arg, &[nargs as u32])
+    }
+
+    pub fn call_native(callee: Operand, this: Operand, first_arg: Operand, nargs: u8) -> Self {
+        Self::with_ext(OpCode::CALL_NATIVE, callee, this, first_arg, &[nargs as u32])
+    }
+
+    pub fn new_expression(result: Operand, constructor: Operand, first_arg: Operand, nargs: u8) -> Self {
+        Self::with_ext(OpCode::NEW_EXPRESSION, result, constructor, first_arg, &[nargs as u32])
+    }
+
+    pub fn super_call(result: Operand, first_arg: Operand, nargs: u8) -> Self {
+        Self::with_ext(OpCode::SUPER_CALL, result, first_arg, Operand::None, &[nargs as u32])
+    }
+
+    // ── 其他带 ext 字 ──
+
+    pub fn define_accessor(home: Operand, get: Operand, set: Operand, key_idx: u32) -> Self {
+        Self::with_ext(OpCode::DEFINE_ACCESSOR, home, get, set, &[key_idx])
+    }
+
+    pub fn rest_object(rest: Operand, src: Operand, excluded_idx: u32) -> Self {
+        Self::with_ext(OpCode::REST_OBJECT, rest, src, Operand::None, &[excluded_idx])
+    }
+
+    // ── 无 ext：立即数/索引指令（拆字是 lowering 职责）──
+
+    pub fn load_const(dst: Operand, idx: u16) -> Self {
+        Self::new(OpCode::LOAD_CONST, dst, Operand::Const(idx), Operand::None)
+    }
+
+    pub fn create_closure(dst: Operand, sub_idx: u16) -> Self {
+        Self::new(OpCode::CREATE_CLOSURE, dst, Operand::Imm(sub_idx), Operand::None)
+    }
+
+    // ── 跳转族：label 放 b 槽，offset 计算是 lowering 职责 ──
+
+    pub fn jmp(label: LabelId) -> Self {
+        Self::new(OpCode::JMP, Operand::None, Operand::None, Operand::Label(label))
+    }
+
+    pub fn jmp_if_false(cond_reg: u8, label: LabelId) -> Self {
+        Self::new(
+            OpCode::JMP_IF_FALSE,
+            Operand::Reg(cond_reg as u32),
+            Operand::None,
+            Operand::Label(label),
+        )
+    }
+
+    pub fn jmp_if_true(cond_reg: u8, label: LabelId) -> Self {
+        Self::new(
+            OpCode::JMP_IF_TRUE,
+            Operand::Reg(cond_reg as u32),
+            Operand::None,
+            Operand::Label(label),
+        )
+    }
+
+    pub fn jmp_if_nullish(cond_reg: u8, label: LabelId) -> Self {
+        Self::new(
+            OpCode::JMP_IF_NULLISH,
+            Operand::Reg(cond_reg as u32),
+            Operand::None,
+            Operand::Label(label),
+        )
+    }
+
+    pub fn try_begin(label: LabelId) -> Self {
+        Self::new(OpCode::TRY_BEGIN, Operand::None, Operand::None, Operand::Label(label))
+    }
+
+    pub fn try_finally_begin(label: LabelId) -> Self {
+        Self::new(OpCode::TRY_FINALLY_BEGIN, Operand::None, Operand::None, Operand::Label(label))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inst_new_has_empty_ext() {
+        let inst = Inst::new(OpCode::ADD, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2));
+        assert!(inst.ext.is_empty());
+        assert_eq!(inst.op, OpCode::ADD);
+    }
+
+    #[test]
+    fn ic_instructions_carry_three_zero_ext_words() {
+        let insts = [
+            Inst::ic_get(Operand::Reg(1), Operand::Reg(2)),
+            Inst::ic_set(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)),
+            Inst::member_inc(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)),
+            Inst::member_dec(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)),
+            Inst::compound_member_add(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)),
+            Inst::compound_member_sub(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)),
+            Inst::compound_member_mul(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)),
+            Inst::compound_member_div(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)),
+            Inst::compound_member_mod(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)),
+            Inst::compound_member_exp(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)),
+        ];
+        for inst in &insts {
+            assert_eq!(inst.ext.as_slice(), &[0, 0, 0], "IC op {} must carry 3 zero ext words", inst.op);
+            assert!(inst.ext.len() == 3);
+        }
+    }
+
+    #[test]
+    fn call_instructions_carry_nargs() {
+        let call = Inst::call(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2), 3);
+        assert_eq!(call.ext.as_slice(), &[3]);
+        assert_eq!(call.rd, Operand::Reg(0));
+        assert_eq!(call.a, Operand::Reg(1));
+        assert_eq!(call.b, Operand::Reg(2));
+
+        let native = Inst::call_native(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2), 0);
+        assert_eq!(native.ext.as_slice(), &[0]);
+
+        let new_expr = Inst::new_expression(Operand::Reg(3), Operand::Reg(0), Operand::Reg(1), 2);
+        assert_eq!(new_expr.ext.as_slice(), &[2]);
+        assert_eq!(new_expr.rd, Operand::Reg(3));
+        assert_eq!(new_expr.a, Operand::Reg(0));
+
+        let super_call = Inst::super_call(Operand::Reg(3), Operand::Reg(1), 1);
+        assert_eq!(super_call.ext.as_slice(), &[1]);
+        assert_eq!(super_call.rd, Operand::Reg(3));
+        assert_eq!(super_call.a, Operand::Reg(1));
+    }
+
+    #[test]
+    fn single_ext_word_instructions() {
+        let accessor = Inst::define_accessor(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2), 42);
+        assert_eq!(accessor.ext.as_slice(), &[42]);
+        assert_eq!(accessor.rd, Operand::Reg(0));
+        assert_eq!(accessor.a, Operand::Reg(1));
+        assert_eq!(accessor.b, Operand::Reg(2));
+
+        let rest = Inst::rest_object(Operand::Reg(0), Operand::Reg(1), 7);
+        assert_eq!(rest.ext.as_slice(), &[7]);
+    }
+
+    #[test]
+    fn load_const_and_create_closure_keep_semantic_operands() {
+        let lc = Inst::load_const(Operand::Reg(4), 300);
+        assert_eq!(lc.a, Operand::Const(300));
+        assert_eq!(lc.b, Operand::None);
+        assert!(lc.ext.is_empty());
+
+        let cc = Inst::create_closure(Operand::Reg(4), 5);
+        assert_eq!(cc.a, Operand::Imm(5));
+        assert_eq!(cc.b, Operand::None);
+        assert!(cc.ext.is_empty());
+    }
+
+    #[test]
+    fn jump_family_puts_label_in_b_slot() {
+        let jmp = Inst::jmp(9);
+        assert_eq!(jmp.b, Operand::Label(9));
+        assert_eq!(jmp.rd, Operand::None);
+
+        let cond = Inst::jmp_if_false(3, 9);
+        assert_eq!(cond.rd, Operand::Reg(3));
+        assert_eq!(cond.b, Operand::Label(9));
+
+        let true_jmp = Inst::jmp_if_true(3, 9);
+        assert_eq!(true_jmp.b, Operand::Label(9));
+
+        let nullish = Inst::jmp_if_nullish(3, 9);
+        assert_eq!(nullish.b, Operand::Label(9));
+
+        let try_begin = Inst::try_begin(9);
+        assert_eq!(try_begin.b, Operand::Label(9));
+        assert_eq!(try_begin.rd, Operand::None);
+
+        let try_fin = Inst::try_finally_begin(9);
+        assert_eq!(try_fin.b, Operand::Label(9));
+    }
+}

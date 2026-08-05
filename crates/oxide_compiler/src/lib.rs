@@ -6,6 +6,7 @@ pub mod compiler_log;
 pub mod emit_ctx;
 pub mod expr;
 pub mod hash;
+pub mod ir;
 pub mod shared;
 pub mod stmt;
 pub mod symbol_table;

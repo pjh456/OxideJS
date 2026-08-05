@@ -13,6 +13,7 @@ oxide_log = { path = "../oxide_log" }
 serde.workspace = true
 serde_json.workspace = true
 rustc-hash.workspace = true
+smallvec.workspace = true
 
 [dev-dependencies]
 oxide_code_cache = { path = "../oxide_code_cache" }
