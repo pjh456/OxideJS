@@ -4,9 +4,17 @@
 //! 分析快照（D-01：pass 输出视图，不住进 IR）。本 crate 只管 CFG（D-02）：
 //! 不建通用分析框架、不递归 nested（D-11）。无生命周期参数——CFG 只存指令
 //! 下标区间，使用方同时持有 `&IRFunction` 与 `&Cfg` 联合访问。
+//!
+//! 构建是四阶段分发：`partition`（块头）→ `split`（切块+出边）→ `exception`
+//! （异常边）→ `finalize`（exit 哨兵 + preds 反推）。每阶段是独立文件的纯函数，
+//! 中间产物（heads / blocks / exit_id）显式传参，无共享可变状态。
+
+mod exception;
+mod finalize;
+mod partition;
+mod split;
 
 use oxide_bytecode::opcode::OpCode;
-use oxide_ir::operand::Operand;
 use oxide_ir::IRFunction;
 
 /// 基本块 id：blocks 向量下标（D-03）。
@@ -71,13 +79,12 @@ fn is_terminator(op: OpCode) -> bool {
 
 /// 构建 CFG：`&IRFunction → Cfg`。纯函数，只读 IR（D-06 方案 A）。
 ///
-/// 四 pass：块头识别（Pass 1）→ 线性切块 + 出边（Pass 2）→ 异常边（Pass 3）
-/// → preds 反推 + exit 哨兵收尾（Pass 4）。幂等（CFG-03）。
+/// 四阶段分发：`partition::partition_blocks`（Pass 1 块头）→ `split::split_and_edges`
+/// （Pass 2 切块 + 出边）→ `exception::add_exception_edges`（Pass 3 异常边）
+/// → `finalize::finalize`（Pass 4 exit 哨兵 + preds 反推）。幂等（CFG-03）。
 pub fn build_cfg(f: &IRFunction) -> Cfg {
-    let len = f.insts.len();
-
     // 空 IRFunction 退化形态：仅 exit 哨兵一块（Pitfall 5）。
-    if len == 0 {
+    if f.insts.is_empty() {
         return Cfg {
             blocks: vec![BasicBlock { inst_range: 0..0, preds: Vec::new(), succs: Vec::new() }],
             entry: 0,
@@ -85,135 +92,17 @@ pub fn build_cfg(f: &IRFunction) -> Cfg {
         };
     }
 
-    // ── Pass 1：块头识别 ──
-    // 块头 = {0} ∪ label 位置 ∪ 跳转目标 ∪ 条件跳转 fallthrough 后继。
-    // 长度 len+1 容纳指向末尾的空尾块（Pitfall 3）。
-    let mut heads = vec![false; len + 1];
-    heads[0] = true;
-    for p in f.label_pos.iter().flatten() {
-        heads[*p] = true;
-    }
-    for (i, inst) in f.insts.iter().enumerate() {
-        // label 恒在 b 槽（inst.rs 构造 API 保证，不查 rd/a 槽）。
-        if let Operand::Label(l) = inst.b {
-            match f.label_pos.get(l as usize).and_then(|p| *p) {
-                Some(p) => heads[p] = true,
-                None => debug_assert!(false, "unresolved label {l}"),
-            }
-        }
-        // 条件跳转的 fallthrough 后继是块头（否则 cond+then 融块、条件边丢失）。
-        if matches!(inst.op, OpCode::JMP_IF_TRUE | OpCode::JMP_IF_FALSE | OpCode::JMP_IF_NULLISH) {
-            heads[i + 1] = true;
-        }
-    }
-
-    // ── Pass 2：线性切块 + 出边 ──
-    let head_positions: Vec<usize> = heads.iter().enumerate().filter(|(_, &h)| h).map(|(i, _)| i).collect();
-    let mut blocks: Vec<BasicBlock> = Vec::with_capacity(head_positions.len());
-    for (idx, &start) in head_positions.iter().enumerate() {
-        let end = head_positions.get(idx + 1).copied().unwrap_or(len);
-        blocks.push(BasicBlock { inst_range: start..end, preds: Vec::new(), succs: Vec::new() });
-    }
-    let exit_id = blocks.len(); // exit 哨兵块号 = 实块数
-
-    for i in 0..blocks.len() {
-        if blocks[i].inst_range.is_empty() {
-            continue; // 空尾块（label 指向 len）：无指令可判出边
-        }
-        let last = &f.insts[blocks[i].inst_range.end - 1];
-        if is_terminator(last.op) {
-            match last.op {
-                OpCode::JMP => {
-                    if let Operand::Label(l) = last.b {
-                        match f.label_pos.get(l as usize).and_then(|p| *p) {
-                            Some(p) => {
-                                let target = block_id_of(p, &blocks);
-                                blocks[i].succs.push((target, EdgeKind::Jump));
-                            }
-                            None => debug_assert!(false, "unresolved label {l}"),
-                        }
-                    }
-                }
-                OpCode::JMP_IF_TRUE | OpCode::JMP_IF_FALSE | OpCode::JMP_IF_NULLISH => {
-                    if let Operand::Label(l) = last.b {
-                        match f.label_pos.get(l as usize).and_then(|p| *p) {
-                            Some(p) => {
-                                let target = block_id_of(p, &blocks);
-                                blocks[i].succs.push((target, EdgeKind::Jump));
-                            }
-                            None => debug_assert!(false, "unresolved label {l}"),
-                        }
-                    }
-                    // fallthrough 后继：下一块（Pass 1 置 heads[i+1] 保证存在）。
-                    blocks[i].succs.push((i + 1, EdgeKind::Fallthrough));
-                }
-                OpCode::RETURN | OpCode::HALT => {
-                    // RETURN/HALT 汇入 exit 哨兵，用 Fallthrough 表达正常流出口（A1 语义归属）。
-                    blocks[i].succs.push((exit_id, EdgeKind::Fallthrough));
-                }
-                OpCode::THROW => { /* 无出边：异常传播，D-07 不建恢复路径 */ }
-                _ => unreachable!("is_terminator 已穷尽其余分支"),
-            }
-        } else {
-            // 非 terminator：顺序落入下一块；已是最后一块则无出边。
-            if i + 1 < blocks.len() {
-                blocks[i].succs.push((i + 1, EdgeKind::Fallthrough));
-            }
-        }
-    }
-
-    // ── Pass 3：异常边 ──
-    // 块内扫 TRY_BEGIN / TRY_FINALLY_BEGIN（块内标记，非 terminator，Pitfall 1），
-    // 从所在 BB 连 Exception 边到处理入口（D-07/D-08：仅起始 BB，不扩散）。
-    for i in 0..blocks.len() {
-        let range = blocks[i].inst_range.clone();
-        for inst_idx in range.start..range.end {
-            let inst = &f.insts[inst_idx];
-            if !matches!(inst.op, OpCode::TRY_BEGIN | OpCode::TRY_FINALLY_BEGIN) {
-                continue;
-            }
-            if let Operand::Label(l) = inst.b {
-                match f.label_pos.get(l as usize).and_then(|p| *p) {
-                    Some(p) => {
-                        let target = block_id_of(p, &blocks);
-                        // push 前去重（Pitfall 4：块内多个 TRY 标记可指向同一目标）。
-                        if !blocks[i].succs.contains(&(target, EdgeKind::Exception)) {
-                            blocks[i].succs.push((target, EdgeKind::Exception));
-                        }
-                    }
-                    None => debug_assert!(false, "unresolved label {l}"),
-                }
-            }
-        }
-    }
-
-    // ── Pass 4：exit 哨兵收尾 + succs 反推 preds ──
-    blocks.push(BasicBlock { inst_range: 0..0, preds: Vec::new(), succs: Vec::new() });
-    let mut succs_total = 0usize;
-    let mut preds_total = 0usize;
-    for i in 0..blocks.len() {
-        succs_total += blocks[i].succs.len();
-        let targets: Vec<BBId> = blocks[i].succs.iter().map(|&(t, _)| t).collect();
-        for target in targets {
-            blocks[target].preds.push(i);
-            preds_total += 1;
-        }
-    }
-    debug_assert_eq!(succs_total, preds_total, "succs/preds 不对称（Pitfall 4）");
-
-    Cfg { blocks, entry: 0, exit: exit_id }
-}
-
-/// label 目标指令位置 → 块 id。blocks 按 `inst_range.start` 升序，p 必为某块块头
-/// （Pass 1 已把所有 label 目标置为块头）。
-fn block_id_of(p: usize, blocks: &[BasicBlock]) -> usize {
-    blocks.partition_point(|b| b.inst_range.start <= p) - 1
+    let heads = partition::partition_blocks(f);
+    let (mut blocks, exit_id) = split::split_and_edges(f, &heads);
+    exception::add_exception_edges(f, &mut blocks);
+    finalize::finalize(blocks, exit_id)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use oxide_ir::inst::Inst;
+    use oxide_ir::operand::Operand;
 
     fn succs_total(cfg: &Cfg) -> usize {
         cfg.blocks.iter().map(|b| b.succs.len()).sum()
