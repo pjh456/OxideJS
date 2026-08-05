@@ -456,6 +456,37 @@ impl CompileCtx {
         // hook preserves the compile pipeline without reserving ~60 registers in
         // every module.
     }
+
+    /// 组装 IRFunction（两出口共用），take 走编译产物状态。
+    fn assemble_ir(&mut self, param_layout: crate::ir::ParamLayout) -> IRFunction {
+        IRFunction {
+            insts: std::mem::take(&mut self.insts),
+            label_pos: std::mem::take(&mut self.labels.label_pos),
+            label_count: self.labels.label_counter,
+            constants: std::mem::take(&mut self.constants),
+            param_layout,
+            builtin_reg_map: std::mem::take(&mut self.scopes.builtin_reg_map),
+            upvalue_captures: self.current_upvalue_captures.clone(),
+            cells_needed: self
+                .scopes
+                .symbols
+                .scopes
+                .iter()
+                .flat_map(|s| s.bindings.values())
+                .filter(|b| b.is_captured.get())
+                .count() as u8,
+            n_registers: self.max_regs,
+            is_arrow: false,
+            is_class_constructor: false,
+            is_derived_constructor: false,
+            needs_home_object: false,
+            captured_this_const_idx: 0,
+            function_name: None,
+            reg_overflow: self.reg_overflow,
+            const_overflow: self.const_overflow,
+            nested: std::mem::take(&mut self.nested),
+        }
+    }
 }
 
 impl ConstantKey {
@@ -1374,35 +1405,10 @@ impl Compiler {
             ctx.inst(Inst::new(OpCode::RETURN, Operand::Reg(undef_reg as u32), Operand::None, Operand::None));
         }
 
-        let ir = IRFunction {
-            insts: ctx.insts,
-            label_pos: ctx.labels.label_pos,
-            label_count: ctx.labels.label_counter,
-            constants: ctx.constants,
-            param_layout: crate::ir::ParamLayout {
-                base: param_base as u32,
-                count: param_specs.len() as u32,
-            },            builtin_reg_map: ctx.scopes.builtin_reg_map,
-            upvalue_captures: ctx.current_upvalue_captures.clone(),
-            cells_needed: ctx
-                .scopes
-                .symbols
-                .scopes
-                .iter()
-                .flat_map(|s| s.bindings.values())
-                .filter(|b| b.is_captured.get())
-                .count() as u8,
-            n_registers: ctx.max_regs,
-            is_arrow: false,
-            is_class_constructor: false,
-            is_derived_constructor: false,
-            needs_home_object: false,
-            captured_this_const_idx: 0,
-            function_name: None,
-            reg_overflow: ctx.reg_overflow,
-            const_overflow: ctx.const_overflow,
-            nested: ctx.nested,
-        };
+        let ir = ctx.assemble_ir(crate::ir::ParamLayout {
+            base: param_base as u32,
+            count: param_specs.len() as u32,
+        });
         Ok(ir)
     }
 
@@ -1508,36 +1514,10 @@ impl Compiler {
 
         crate::compiler_debug!("compile: done, {} instructions, {} constants", ctx.insts.len(), ctx.constants.len());
 
-        let ir = IRFunction {
-            insts: ctx.insts,
-            label_pos: ctx.labels.label_pos,
-            label_count: ctx.labels.label_counter,
-            constants: ctx.constants,
-            param_layout: crate::ir::ParamLayout {
-                base: ctx.scopes.builtin_reg_map.len() as u32,
-                count: 0,
-            },
-            builtin_reg_map: ctx.scopes.builtin_reg_map,
-            upvalue_captures: ctx.current_upvalue_captures.clone(),
-            cells_needed: ctx
-                .scopes
-                .symbols
-                .scopes
-                .iter()
-                .flat_map(|s| s.bindings.values())
-                .filter(|b| b.is_captured.get())
-                .count() as u8,
-            n_registers: ctx.max_regs,
-            is_arrow: false,
-            is_class_constructor: false,
-            is_derived_constructor: false,
-            needs_home_object: false,
-            captured_this_const_idx: 0,
-            function_name: None,
-            reg_overflow: ctx.reg_overflow,
-            const_overflow: ctx.const_overflow,
-            nested: ctx.nested,
-        };
+        let ir = ctx.assemble_ir(crate::ir::ParamLayout {
+            base: ctx.scopes.builtin_reg_map.len() as u32,
+            count: 0,
+        });
         lower(&ir)
     }
 }
