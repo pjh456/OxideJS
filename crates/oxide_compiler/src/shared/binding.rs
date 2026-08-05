@@ -27,13 +27,18 @@ impl Compiler {
     fn emit_bind_target(
         &self, name: &str, src_reg: u8, kind: VariableDeclarationKind, is_const: bool, ctx: &mut CompileCtx,
     ) -> Result<(), String> {
-        let var_reg = ctx.alloc_reg();
         let target_reg = if matches!(kind, VariableDeclarationKind::Var) {
-            match ctx.declare(name, var_reg, kind, is_const) {
-                Ok(()) => var_reg,
-                Err(_) => ctx.lookup(name).unwrap_or(var_reg),
+            // `var` names are pre-declared (hoisting); reuse the pre-registered slot
+            // instead of allocating a new one so n_registers matches let/const.
+            if let Some(reg) = ctx.scopes.symbols.lookup_any(name) {
+                reg
+            } else {
+                let var_reg = ctx.alloc_reg();
+                ctx.declare(name, var_reg, kind, is_const)?;
+                var_reg
             }
         } else {
+            let var_reg = ctx.alloc_reg();
             ctx.declare(name, var_reg, kind, is_const)?;
             var_reg
         };

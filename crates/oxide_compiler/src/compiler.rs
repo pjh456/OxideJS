@@ -1283,6 +1283,73 @@ impl Compiler {
         }
     }
 
+    /// Pre-declare all `var` bindings in this statement list so hoisted function
+    /// declarations emitted earlier can resolve them. Mirrors the removed count
+    /// pass behavior (see fe8bd86): top-level `var` names must be visible while
+    /// compiling function bodies that close over them.
+    fn predeclare_var_declarations(&self, statements: &[Statement], ctx: &mut CompileCtx) {
+        for statement in statements {
+            match statement {
+                Statement::VariableDeclaration(decl) => {
+                    if !matches!(decl.kind, VariableDeclarationKind::Var) {
+                        continue;
+                    }
+                    for d in &decl.declarations {
+                        if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
+                            let reg = ctx.alloc_reg();
+                            let _ = ctx.declare_initialized(bi.name.as_str(), reg, VariableDeclarationKind::Var, false);
+                        }
+                    }
+                }
+                Statement::BlockStatement(bs) => self.predeclare_var_declarations(&bs.body, ctx),
+                Statement::IfStatement(is) => {
+                    self.predeclare_var_declarations(std::slice::from_ref(&is.consequent), ctx);
+                    if let Some(alt) = &is.alternate {
+                        self.predeclare_var_declarations(std::slice::from_ref(alt), ctx);
+                    }
+                }
+                Statement::WhileStatement(wh) => {
+                    self.predeclare_var_declarations(std::slice::from_ref(&wh.body), ctx);
+                }
+                Statement::DoWhileStatement(dw) => {
+                    self.predeclare_var_declarations(std::slice::from_ref(&dw.body), ctx);
+                }
+                Statement::ForStatement(fs) => {
+                    if let Some(oxide_parser::ForStatementInit::VariableDeclaration(decl)) = &fs.init {
+                        if matches!(decl.kind, VariableDeclarationKind::Var) {
+                            for d in &decl.declarations {
+                                if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
+                                    let reg = ctx.alloc_reg();
+                                    let _ =
+                                        ctx.declare_initialized(bi.name.as_str(), reg, VariableDeclarationKind::Var, false);
+                                }
+                            }
+                        }
+                    }
+                    self.predeclare_var_declarations(std::slice::from_ref(&fs.body), ctx);
+                }
+                Statement::SwitchStatement(sw) => {
+                    for case in &sw.cases {
+                        self.predeclare_var_declarations(&case.consequent, ctx);
+                    }
+                }
+                Statement::TryStatement(ts) => {
+                    self.predeclare_var_declarations(&ts.block.body, ctx);
+                    if let Some(handler) = &ts.handler {
+                        self.predeclare_var_declarations(&handler.body.body, ctx);
+                    }
+                    if let Some(finalizer) = &ts.finalizer {
+                        self.predeclare_var_declarations(&finalizer.body, ctx);
+                    }
+                }
+                Statement::LabeledStatement(ls) => {
+                    self.predeclare_var_declarations(std::slice::from_ref(&ls.body), ctx);
+                }
+                _ => {}
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn compile_function_body_with_field_hooks<'a, E>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
@@ -1390,6 +1457,10 @@ impl Compiler {
         // Pre-register builtin identifier references before emitting any temporary
         // register, so builtin slots never collide with reused temporaries.
         self.pre_register_builtin_references(body_stmts, &mut ctx);
+
+        // Pre-declare `var` names so hoisted function declarations (emitted in the
+        // first sub-pass below) can resolve the outer vars they close over.
+        self.predeclare_var_declarations(body_stmts, &mut ctx);
 
         if let Some(emit) = emit_fields.as_mut() {
             if fields_after_super {
@@ -1568,6 +1639,10 @@ impl Compiler {
         // Pre-register builtin identifier references before any temporary register
         // is emitted, keeping builtin slots clear of the temporary register pool.
         self.pre_register_builtin_references(&program.body, &mut ctx);
+
+        // Pre-declare top-level `var` names so hoisted function declarations
+        // (emitted in the first sub-pass below) can resolve the outer vars.
+        self.predeclare_var_declarations(&program.body, &mut ctx);
 
         // First sub-pass: emit FunctionDeclarations (hoisting)
         // This ensures function objects are available before any code runs.

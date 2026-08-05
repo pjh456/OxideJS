@@ -37,14 +37,22 @@ impl Compiler {
                 let tmp = ctx.alloc_reg();
                 ctx.emit_load_const(tmp, idx);
                 let var_reg = ctx.alloc_reg();
-                ctx.declare(bi.name.as_str(), var_reg, decl.kind, is_const)?;
+                let target_reg = if matches!(decl.kind, VariableDeclarationKind::Var) {
+                    match ctx.declare(bi.name.as_str(), var_reg, decl.kind, is_const) {
+                        Ok(()) => var_reg,
+                        Err(_) => ctx.lookup(bi.name.as_str()).unwrap_or(var_reg),
+                    }
+                } else {
+                    ctx.declare(bi.name.as_str(), var_reg, decl.kind, is_const)?;
+                    var_reg
+                };
                 let is_captured = ctx.scopes.symbols.lookup_is_captured(bi.name.as_str());
                 if is_captured {
                     let cell_idx = ctx.scopes.cell_registry.len() as u8;
                     ctx.scopes.cell_registry.push((bi.name.to_string(), cell_idx));
                     ctx.emit(opcode::encode(OpCode::MAKE_CELL, tmp, cell_idx, 0));
                 } else {
-                    ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, tmp, 0));
+                    ctx.emit(opcode::encode(OpCode::STORE_VAR, target_reg, tmp, 0));
                 }
                 ctx.init_var(bi.name.as_str());
                 r = Some(var_reg);
