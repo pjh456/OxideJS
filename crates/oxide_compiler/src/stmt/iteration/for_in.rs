@@ -1,5 +1,7 @@
-use crate::compiler::{CompileCtx, Compiler, Label};
-use oxide_bytecode::opcode::{self, OpCode};
+use crate::compiler::{CompileCtx, Compiler};
+use crate::ir::inst::Inst;
+use crate::ir::operand::Operand;
+use oxide_bytecode::opcode::OpCode;
 use oxide_parser::{ForStatementLeft, Statement, VariableDeclarationKind};
 
 impl Compiler {
@@ -7,20 +9,22 @@ impl Compiler {
         let Statement::ForInStatement(fi) = stmt else {
             return Ok(None);
         };
-        let id = ctx.next_label_id();
-        let start_label = Label::ForInStart(id);
-        let end_label = Label::ForInEnd(id);
+        let start_label = ctx.next_label_id();
+        let end_label = ctx.next_label_id();
         let obj_reg = self.emit_expression(&fi.right, ctx)?;
-        ctx.emit(opcode::encode(OpCode::FOR_IN_INIT, 0, obj_reg, 0));
-        ctx.labels.label_map.insert(start_label, ctx.bytecode.len());
+        ctx.inst(Inst::new(OpCode::FOR_IN_INIT, Operand::None, Operand::Reg(obj_reg as u32), Operand::None));
+        ctx.labels.set_label_pos(start_label, ctx.insts.len());
         ctx.push_loop(end_label, start_label);
         let n_labeled = ctx.take_pending_loop_labels(end_label, start_label);
         let done_reg = ctx.alloc_reg();
-        ctx.emit(opcode::encode(OpCode::FOR_IN_DONE, done_reg, 0, 0));
-        ctx.emit(opcode::encode_jmp_if_false(done_reg, 2));
-        ctx.emit_jmp_labeled(end_label);
+        ctx.inst(Inst::new(OpCode::FOR_IN_DONE, Operand::Reg(done_reg as u32), Operand::None, Operand::None));
+        // done=true 表示迭代结束：done=false 时跳过 end jmp 继续迭代
+        let continue_label = ctx.next_label_id();
+        ctx.inst(Inst::jmp_if_false(done_reg, continue_label));
+        ctx.inst(Inst::jmp(end_label));
+        ctx.labels.set_label_pos(continue_label, ctx.insts.len());
         let key_reg = ctx.alloc_reg();
-        ctx.emit(opcode::encode(OpCode::FOR_IN_NEXT, key_reg, 0, 0));
+        ctx.inst(Inst::new(OpCode::FOR_IN_NEXT, Operand::Reg(key_reg as u32), Operand::None, Operand::None));
         match &fi.left {
             ForStatementLeft::VariableDeclaration(decl) => {
                 for d in &decl.declarations {
@@ -30,21 +34,21 @@ impl Compiler {
                     };
                     let var_reg = ctx.alloc_reg();
                     ctx.declare(name, var_reg, decl.kind, matches!(decl.kind, VariableDeclarationKind::Const))?;
-                    ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, key_reg, 0));
+                    ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(var_reg as u32), Operand::Reg(key_reg as u32), Operand::None));
                     ctx.init_var(name);
                 }
             }
             ForStatementLeft::AssignmentTargetIdentifier(id_ref) => {
                 let name = id_ref.name.as_str();
                 let var_reg = ctx.lookup_or_global(name);
-                ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, key_reg, 0));
+                ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(var_reg as u32), Operand::Reg(key_reg as u32), Operand::None));
             }
             _ => return Err("unsupported for-in left-hand side".into()),
         }
         self.emit_statement(&fi.body, ctx)?;
-        ctx.emit_jmp_labeled(start_label);
-        ctx.labels.label_map.insert(end_label, ctx.bytecode.len());
-        ctx.emit(opcode::encode(OpCode::FOR_IN_CLEANUP, 0, 0, 0));
+        ctx.inst(Inst::jmp(start_label));
+        ctx.labels.set_label_pos(end_label, ctx.insts.len());
+        ctx.inst(Inst::new(OpCode::FOR_IN_CLEANUP, Operand::None, Operand::None, Operand::None));
         ctx.pop_label_scopes(n_labeled);
         ctx.pop_loop();
         Ok(None)

@@ -1,6 +1,8 @@
 use crate::compiler::{is_int_literal, CompileCtx, Compiler};
+use crate::ir::inst::Inst;
+use crate::ir::operand::Operand;
 use oxide_bytecode::module::Constant;
-use oxide_bytecode::opcode::{self, OpCode};
+use oxide_bytecode::opcode::OpCode;
 use oxide_parser::Expression;
 
 impl Compiler {
@@ -24,7 +26,7 @@ impl Compiler {
             ctx.add_constant(Constant::Number(n.value))
         };
         let r = ctx.alloc_reg();
-        ctx.emit_load_const(r, idx);
+        ctx.inst(Inst::load_const(Operand::Reg(r as u32), idx));
         Ok(r)
     }
 
@@ -33,7 +35,7 @@ impl Compiler {
     ) -> Result<u8, String> {
         let idx = ctx.add_constant(Constant::String(s.value.to_string()));
         let r = ctx.alloc_reg();
-        ctx.emit_load_const(r, idx);
+        ctx.inst(Inst::load_const(Operand::Reg(r as u32), idx));
         Ok(r)
     }
 
@@ -42,14 +44,14 @@ impl Compiler {
     ) -> Result<u8, String> {
         let idx = ctx.add_constant(Constant::Boolean(b.value));
         let r = ctx.alloc_reg();
-        ctx.emit_load_const(r, idx);
+        ctx.inst(Inst::load_const(Operand::Reg(r as u32), idx));
         Ok(r)
     }
 
     fn emit_null_literal_expression(&self, ctx: &mut CompileCtx) -> Result<u8, String> {
         let idx = ctx.add_constant(Constant::Null);
         let r = ctx.alloc_reg();
-        ctx.emit_load_const(r, idx);
+        ctx.inst(Inst::load_const(Operand::Reg(r as u32), idx));
         Ok(r)
     }
 
@@ -64,12 +66,12 @@ impl Compiler {
                 let flags = raw_str[last_slash + 1..].to_string();
                 let pat_ci = ctx.add_constant(Constant::String(pattern));
                 let pat_reg = ctx.alloc_reg();
-                ctx.emit_load_const(pat_reg, pat_ci);
+                ctx.inst(Inst::load_const(Operand::Reg(pat_reg as u32), pat_ci));
                 let flags_ci = ctx.add_constant(Constant::String(flags));
                 let flags_reg = ctx.alloc_reg();
-                ctx.emit_load_const(flags_reg, flags_ci);
+                ctx.inst(Inst::load_const(Operand::Reg(flags_reg as u32), flags_ci));
                 let r = ctx.alloc_reg();
-                ctx.emit(opcode::encode(OpCode::CREATE_REGEXP, r, pat_reg, flags_reg));
+                ctx.inst(Inst::new(OpCode::CREATE_REGEXP, Operand::Reg(r as u32), Operand::Reg(pat_reg as u32), Operand::Reg(flags_reg as u32)));
                 Ok(r)
             } else {
                 Err(format!("unsupported regexp literal: {:?}", lit))

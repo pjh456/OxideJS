@@ -1,6 +1,8 @@
-use crate::compiler::{CompileCtx, Compiler, Label};
+use crate::compiler::{CompileCtx, Compiler};
+use crate::ir::inst::Inst;
+use crate::ir::operand::Operand;
 use oxide_bytecode::module::Constant;
-use oxide_bytecode::opcode::{self, OpCode};
+use oxide_bytecode::opcode::OpCode;
 use oxide_parser::Statement;
 
 impl Compiler {
@@ -8,39 +10,38 @@ impl Compiler {
         let Statement::IfStatement(ifs) = stmt else {
             return Ok(None);
         };
-        let id = ctx.next_label_id();
-        let else_label = Label::IfElse(id);
-        let end_label = Label::IfEnd(id);
+        let else_label = ctx.next_label_id();
+        let end_label = ctx.next_label_id();
 
         let test_reg = self.emit_expression(&ifs.test, ctx)?;
 
-        ctx.emit_jmp_if_false_labeled(test_reg, else_label);
+        ctx.inst(Inst::jmp_if_false(test_reg, else_label));
 
         let cons_reg = self.emit_statement(&ifs.consequent, ctx)?;
         let result_reg = ctx.alloc_reg();
         if let Some(r) = cons_reg {
-            ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, r, 0));
+            ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg as u32), Operand::Reg(r as u32), Operand::None));
         } else {
             let undef_idx = ctx.add_constant(Constant::Undefined);
-            ctx.emit_load_const(result_reg, undef_idx);
+            ctx.inst(Inst::load_const(Operand::Reg(result_reg as u32), undef_idx));
         }
 
         if ifs.alternate.is_some() {
-            ctx.emit_jmp_labeled(end_label);
+            ctx.inst(Inst::jmp(end_label));
         }
 
-        ctx.labels.label_map.insert(else_label, ctx.bytecode.len());
+        ctx.labels.set_label_pos(else_label, ctx.insts.len());
         if let Some(alt) = &ifs.alternate {
             let alt_reg = self.emit_statement(alt, ctx)?;
             if let Some(r) = alt_reg {
-                ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, r, 0));
+                ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg as u32), Operand::Reg(r as u32), Operand::None));
             } else {
                 let undef_idx = ctx.add_constant(Constant::Undefined);
-                ctx.emit_load_const(result_reg, undef_idx);
+                ctx.inst(Inst::load_const(Operand::Reg(result_reg as u32), undef_idx));
             }
         }
 
-        ctx.labels.label_map.insert(end_label, ctx.bytecode.len());
+        ctx.labels.set_label_pos(end_label, ctx.insts.len());
 
         Ok(Some(result_reg))
     }

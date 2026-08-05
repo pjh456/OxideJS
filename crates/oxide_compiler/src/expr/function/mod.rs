@@ -1,5 +1,6 @@
 use crate::compiler::{CompileCtx, Compiler, ParamSpec};
-use oxide_bytecode::opcode::{self, OpCode};
+use crate::ir::inst::Inst;
+use crate::ir::operand::Operand;
 use oxide_parser::{Class, Expression, Statement};
 
 impl Compiler {
@@ -35,12 +36,12 @@ impl Compiler {
         let mut sub_module = self.compile_function_body(&param_names, body_stmts, ctx, is_expr_body, true)?;
         sub_module.is_arrow = true;
 
-        ctx.sub_modules.push(sub_module);
+        ctx.nested.push(sub_module);
         // 1-indexed: 0 = no sub_module (sentinel)
-        let sub_idx = ctx.sub_modules.len() as u32;
+        let sub_idx = ctx.nested.len() as u16;
 
         let r = ctx.alloc_reg();
-        ctx.emit_create_closure(r, sub_idx);
+        ctx.inst(Inst::create_closure(Operand::Reg(r as u32), sub_idx));
         Ok(r)
     }
 
@@ -67,12 +68,12 @@ impl Compiler {
         if let Some(id) = &fe.id {
             sub_module.function_name = Some(id.name.to_string());
         }
-        ctx.sub_modules.push(sub_module);
+        ctx.nested.push(sub_module);
         // 1-indexed: 0 = no sub_module (sentinel)
-        let sub_idx = ctx.sub_modules.len() as u32;
+        let sub_idx = ctx.nested.len() as u16;
 
         let r = ctx.alloc_reg();
-        ctx.emit_create_closure(r, sub_idx);
+        ctx.inst(Inst::create_closure(Operand::Reg(r as u32), sub_idx));
         Ok(r)
     }
 
@@ -90,8 +91,12 @@ impl Compiler {
         }
         let first_arg_reg = if arg_regs.is_empty() { 0u8 } else { arg_regs[0] };
         let r = ctx.alloc_reg();
-        ctx.emit(opcode::encode(OpCode::NEW_EXPRESSION, r, constructor_reg, first_arg_reg));
-        ctx.emit(arg_regs.len() as u32);
+        ctx.inst(Inst::new_expression(
+            Operand::Reg(r as u32),
+            Operand::Reg(constructor_reg as u32),
+            Operand::Reg(first_arg_reg as u32),
+            arg_regs.len() as u8,
+        ));
         Ok(r)
     }
 

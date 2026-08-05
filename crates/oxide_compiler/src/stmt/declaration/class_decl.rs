@@ -1,5 +1,7 @@
 use crate::compiler::{CompileCtx, Compiler};
-use oxide_bytecode::opcode::{self, OpCode};
+use crate::ir::inst::Inst;
+use crate::ir::operand::Operand;
+use oxide_bytecode::opcode::OpCode;
 use oxide_parser::{Statement, VariableDeclarationKind};
 
 impl Compiler {
@@ -18,7 +20,7 @@ impl Compiler {
         ctx.declare(&name, var_reg, VariableDeclarationKind::Let, false)?;
         ctx.init_var(&name);
         let ctor_reg = self.emit_class(class, ctx)?;
-        ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, ctor_reg, 0));
+        ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(var_reg as u32), Operand::Reg(ctor_reg as u32), Operand::None));
         Ok(None)
     }
 }

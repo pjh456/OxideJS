@@ -1,5 +1,7 @@
 use crate::compiler::{CompileCtx, Compiler, ParamSpec};
-use oxide_bytecode::opcode::{self, OpCode};
+use crate::ir::inst::Inst;
+use crate::ir::operand::Operand;
+use oxide_bytecode::opcode::OpCode;
 use oxide_parser::Statement;
 
 impl Compiler {
@@ -29,12 +31,11 @@ impl Compiler {
         let body_stmts: &[Statement] = if let Some(body) = &fd.body { &body.statements } else { &[] };
         let mut sub_module = self.compile_function_body(&param_names, body_stmts, ctx, false, false)?;
         sub_module.function_name = Some(name.clone());
-        ctx.sub_modules.push(sub_module);
-        let sub_idx = ctx.sub_modules.len() as u32;
+        ctx.nested.push(sub_module);
         let var_reg = ctx.lookup(&name)?;
         ctx.reserve_reg(var_reg);
-        ctx.emit_create_closure(var_reg, sub_idx);
-        ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, var_reg, 0));
+        ctx.inst(Inst::create_closure(Operand::Reg(var_reg as u32), ctx.nested.len() as u16));
+        ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(var_reg as u32), Operand::Reg(var_reg as u32), Operand::None));
         Ok(None)
     }
 }

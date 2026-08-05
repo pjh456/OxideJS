@@ -1,8 +1,8 @@
 use crate::compiler::{CompileCtx, Compiler};
-use oxide_bytecode::{
-    module::Constant,
-    opcode::{self, OpCode},
-};
+use crate::ir::inst::Inst;
+use crate::ir::operand::Operand;
+use oxide_bytecode::module::Constant;
+use oxide_bytecode::opcode::OpCode;
 impl Compiler {
     pub(crate) fn emit_tagged_template_expression(
         &self, tt: &oxide_parser::TaggedTemplateExpression, ctx: &mut CompileCtx,
@@ -13,29 +13,29 @@ impl Compiler {
         let tag_reg = self.emit_expression(&tt.tag, ctx)?;
 
         let cooked_temp = ctx.alloc_reg();
-        ctx.emit(opcode::encode(OpCode::NEW_ARRAY, cooked_temp, quasis.len() as u8, 0));
+        ctx.inst(Inst::new(OpCode::NEW_ARRAY, Operand::Reg(cooked_temp as u32), Operand::Imm(quasis.len() as u16), Operand::None));
         for (i, quasi) in quasis.iter().enumerate() {
             let s = quasi.value.cooked.as_ref().map(|c| c.to_string()).unwrap_or_default();
             let const_idx = ctx.add_constant(Constant::String(s));
             let str_reg = ctx.alloc_reg();
-            ctx.emit_load_const(str_reg, const_idx);
+            ctx.inst(Inst::load_const(Operand::Reg(str_reg as u32), const_idx));
             let idx_const = ctx.add_constant(Constant::Int(i as i32));
             let idx_reg = ctx.alloc_reg();
-            ctx.emit_load_const(idx_reg, idx_const);
-            ctx.emit(opcode::encode(OpCode::SET_ELEM, cooked_temp, idx_reg, str_reg));
+            ctx.inst(Inst::load_const(Operand::Reg(idx_reg as u32), idx_const));
+            ctx.inst(Inst::new(OpCode::SET_ELEM, Operand::Reg(cooked_temp as u32), Operand::Reg(idx_reg as u32), Operand::Reg(str_reg as u32)));
         }
 
         let raw_temp = ctx.alloc_reg();
-        ctx.emit(opcode::encode(OpCode::NEW_ARRAY, raw_temp, quasis.len() as u8, 0));
+        ctx.inst(Inst::new(OpCode::NEW_ARRAY, Operand::Reg(raw_temp as u32), Operand::Imm(quasis.len() as u16), Operand::None));
         for (i, quasi) in quasis.iter().enumerate() {
             let raw = quasi.value.raw.to_string();
             let const_idx = ctx.add_constant(Constant::String(raw));
             let str_reg = ctx.alloc_reg();
-            ctx.emit_load_const(str_reg, const_idx);
+            ctx.inst(Inst::load_const(Operand::Reg(str_reg as u32), const_idx));
             let idx_const = ctx.add_constant(Constant::Int(i as i32));
             let idx_reg = ctx.alloc_reg();
-            ctx.emit_load_const(idx_reg, idx_const);
-            ctx.emit(opcode::encode(OpCode::SET_ELEM, raw_temp, idx_reg, str_reg));
+            ctx.inst(Inst::load_const(Operand::Reg(idx_reg as u32), idx_const));
+            ctx.inst(Inst::new(OpCode::SET_ELEM, Operand::Reg(raw_temp as u32), Operand::Reg(idx_reg as u32), Operand::Reg(str_reg as u32)));
         }
 
         let mut expr_temps = Vec::new();
@@ -50,22 +50,26 @@ impl Compiler {
             expr_slots.push(ctx.alloc_reg());
         }
 
-        ctx.emit(opcode::encode(OpCode::LOAD_VAR, cooked_slot, cooked_temp, 0));
-        ctx.emit(opcode::encode(OpCode::LOAD_VAR, raw_slot, raw_temp, 0));
+        ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(cooked_slot as u32), Operand::Reg(cooked_temp as u32), Operand::None));
+        ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(raw_slot as u32), Operand::Reg(raw_temp as u32), Operand::None));
         for (slot, temp) in expr_slots.iter().zip(expr_temps.iter()) {
-            ctx.emit(opcode::encode(OpCode::LOAD_VAR, *slot, *temp, 0));
+            ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(*slot as u32), Operand::Reg(*temp as u32), Operand::None));
         }
 
         let undef_idx = ctx.add_constant(Constant::Undefined);
         let undef_reg = ctx.alloc_reg();
-        ctx.emit_load_const(undef_reg, undef_idx);
+        ctx.inst(Inst::load_const(Operand::Reg(undef_reg as u32), undef_idx));
 
         let arg_count = 2 + expressions.len();
-        ctx.emit(opcode::encode(OpCode::CALL, tag_reg, undef_reg, cooked_slot));
-        ctx.emit(arg_count as u32);
+        ctx.inst(Inst::call(
+            Operand::Reg(tag_reg as u32),
+            Operand::Reg(undef_reg as u32),
+            Operand::Reg(cooked_slot as u32),
+            arg_count as u8,
+        ));
 
         let result_reg = ctx.alloc_reg();
-        ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, 0, 0));
+        ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg as u32), Operand::None, Operand::None));
         Ok(result_reg)
     }
 }

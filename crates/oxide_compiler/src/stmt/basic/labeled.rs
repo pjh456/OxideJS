@@ -1,4 +1,4 @@
-use crate::compiler::{CompileCtx, Compiler, Label};
+use crate::compiler::{CompileCtx, Compiler};
 use oxide_parser::Statement;
 
 impl Compiler {
@@ -22,9 +22,9 @@ impl Compiler {
             self.emit_statement(&stmt.body, ctx)?;
         } else {
             let id = ctx.next_label_id();
-            ctx.push_label_scope(name, Label::LabeledEnd(id), None)?;
+            ctx.push_label_scope(name, id, None)?;
             self.emit_statement(&stmt.body, ctx)?;
-            ctx.labels.label_map.insert(Label::LabeledEnd(id), ctx.bytecode.len());
+            ctx.labels.set_label_pos(id, ctx.insts.len());
             ctx.pop_label_scope();
         }
         Ok(None)

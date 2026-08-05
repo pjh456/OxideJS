@@ -1,4 +1,5 @@
-use crate::compiler::{CompileCtx, Compiler, Label};
+use crate::compiler::{CompileCtx, Compiler};
+use crate::ir::inst::Inst;
 use oxide_parser::Statement;
 
 impl Compiler {
@@ -6,17 +7,16 @@ impl Compiler {
         let Statement::WhileStatement(wh) = stmt else {
             return Ok(None);
         };
-        let id = ctx.next_label_id();
-        let start_label = Label::WhileStart(id);
-        let end_label = Label::WhileEnd(id);
-        ctx.labels.label_map.insert(start_label, ctx.bytecode.len());
+        let start_label = ctx.next_label_id();
+        let end_label = ctx.next_label_id();
+        ctx.labels.set_label_pos(start_label, ctx.insts.len());
         ctx.push_loop(end_label, start_label);
         let n_labeled = ctx.take_pending_loop_labels(end_label, start_label);
         let test_reg = self.emit_expression(&wh.test, ctx)?;
-        ctx.emit_jmp_if_false_labeled(test_reg, end_label);
+        ctx.inst(Inst::jmp_if_false(test_reg, end_label));
         self.emit_statement(&wh.body, ctx)?;
-        ctx.emit_jmp_labeled(start_label);
-        ctx.labels.label_map.insert(end_label, ctx.bytecode.len());
+        ctx.inst(Inst::jmp(start_label));
+        ctx.labels.set_label_pos(end_label, ctx.insts.len());
         ctx.pop_label_scopes(n_labeled);
         ctx.pop_loop();
         Ok(None)

@@ -1,6 +1,8 @@
-use crate::compiler::{is_side_effect_free, BinaryOperator, CompileCtx, Compiler, Label};
+use crate::compiler::{is_side_effect_free, BinaryOperator, CompileCtx, Compiler};
+use crate::ir::inst::Inst;
+use crate::ir::operand::Operand;
 use oxide_bytecode::module::Constant;
-use oxide_bytecode::opcode::{self, OpCode};
+use oxide_bytecode::opcode::OpCode;
 use oxide_parser::{ChainElement, Expression, LogicalOperator, SimpleAssignmentTarget, UnaryOperator, UpdateOperator};
 
 impl Compiler {
@@ -10,7 +12,7 @@ impl Compiler {
         let obj_reg = self.emit_expression(&pin.right, ctx)?;
         let key_reg = self.emit_private_id_reg(pin.left.name.as_str(), ctx)?;
         let result_reg = ctx.alloc_reg();
-        ctx.emit(opcode::encode(OpCode::PRIVATE_BRAND_IN, result_reg, obj_reg, key_reg));
+        ctx.inst(Inst::new(OpCode::PRIVATE_BRAND_IN, Operand::Reg(result_reg as u32), Operand::Reg(obj_reg as u32), Operand::Reg(key_reg as u32)));
         Ok(result_reg)
     }
 
@@ -42,7 +44,7 @@ impl Compiler {
             BinaryOperator::StrictInequality => OpCode::STRICT_NEQ,
             _ => return Err(format!("unsupported binary operator: {:?}", bin.operator)),
         };
-        ctx.emit(opcode::encode(op, left, left, right));
+        ctx.inst(Inst::new(op, Operand::Reg(left as u32), Operand::Reg(left as u32), Operand::Reg(right as u32)));
         if is_side_effect_free(&bin.left) && is_side_effect_free(&bin.right) {
             ctx.restore_reg_checkpoint(checkpoint.saturating_add(1).max(left.saturating_add(1)));
         }
@@ -59,65 +61,49 @@ impl Compiler {
                     let obj_reg = self.emit_expression(&member.object, ctx)?;
                     let prop_name = member.property.name.as_str();
                     let const_idx = ctx.add_constant(Constant::String(prop_name.to_string()));
-                    ctx.emit(opcode::encode(OpCode::DELETE_PROP_STATIC, obj_reg, obj_reg, 0));
-                    ctx.emit(const_idx as u32);
+                    ctx.inst(Inst::delete_prop_static(Operand::Reg(obj_reg as u32), const_idx as u32));
                     Ok(obj_reg)
                 }
                 Expression::ComputedMemberExpression(member) => {
                     let obj_reg = self.emit_expression(&member.object, ctx)?;
                     let key_reg = self.emit_expression(&member.expression, ctx)?;
-                    ctx.emit(opcode::encode(OpCode::DELETE_PROP_DYNAMIC, obj_reg, obj_reg, key_reg));
+                    ctx.inst(Inst::new(OpCode::DELETE_PROP_DYNAMIC, Operand::Reg(obj_reg as u32), Operand::Reg(obj_reg as u32), Operand::Reg(key_reg as u32)));
                     Ok(obj_reg)
                 }
                 Expression::ChainExpression(chain) => {
-                    let mut nullish_jumps = Vec::new();
+                    let short_label = ctx.next_label_id();
                     let result_reg = match &chain.expression {
                         ChainElement::StaticMemberExpression(member) => {
                             let obj_reg = self.emit_expression(&member.object, ctx)?;
                             if member.optional {
                                 let dup_reg = ctx.alloc_reg();
-                                ctx.emit(opcode::encode(OpCode::LOAD_VAR, dup_reg, obj_reg, 0));
-                                let jump_pos = ctx.bytecode.len();
-                                ctx.emit(opcode::encode_jmp_if_nullish(dup_reg, 0));
-                                nullish_jumps.push(jump_pos);
+                                ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(dup_reg as u32), Operand::Reg(obj_reg as u32), Operand::None));
+                                ctx.inst(Inst::jmp_if_nullish(dup_reg, short_label));
                             }
                             let prop_name = member.property.name.as_str();
                             let const_idx = ctx.add_constant(Constant::String(prop_name.to_string()));
-                            ctx.emit(opcode::encode(OpCode::DELETE_PROP_STATIC, obj_reg, obj_reg, 0));
-                            ctx.emit(const_idx as u32);
+                            ctx.inst(Inst::delete_prop_static(Operand::Reg(obj_reg as u32), const_idx as u32));
                             obj_reg
                         }
                         ChainElement::ComputedMemberExpression(member) => {
                             let obj_reg = self.emit_expression(&member.object, ctx)?;
                             if member.optional {
                                 let dup_reg = ctx.alloc_reg();
-                                ctx.emit(opcode::encode(OpCode::LOAD_VAR, dup_reg, obj_reg, 0));
-                                let jump_pos = ctx.bytecode.len();
-                                ctx.emit(opcode::encode_jmp_if_nullish(dup_reg, 0));
-                                nullish_jumps.push(jump_pos);
+                                ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(dup_reg as u32), Operand::Reg(obj_reg as u32), Operand::None));
+                                ctx.inst(Inst::jmp_if_nullish(dup_reg, short_label));
                             }
                             let key_reg = self.emit_expression(&member.expression, ctx)?;
-                            ctx.emit(opcode::encode(OpCode::DELETE_PROP_DYNAMIC, obj_reg, obj_reg, key_reg));
+                            ctx.inst(Inst::new(OpCode::DELETE_PROP_DYNAMIC, Operand::Reg(obj_reg as u32), Operand::Reg(obj_reg as u32), Operand::Reg(key_reg as u32)));
                             obj_reg
                         }
                         _ => return Err("invalid delete target".into()),
                     };
-                    let end_jump_pos = ctx.bytecode.len();
-                    ctx.emit(opcode::encode_jmp(0));
-                    let short_pos = ctx.bytecode.len();
-                    for jump_pos in nullish_jumps {
-                        let offset = (short_pos as isize) - (jump_pos as isize);
-                        let instr = ctx.bytecode[jump_pos];
-                        let rd = opcode::rd(instr);
-                        let offset = ctx.checked_jump_offset(offset);
-                        ctx.bytecode[jump_pos] = opcode::encode_jmp_if_nullish(rd, offset);
-                    }
+                    let end_label = ctx.next_label_id();
+                    ctx.inst(Inst::jmp(end_label));
+                    ctx.labels.set_label_pos(short_label, ctx.insts.len());
                     let true_idx = ctx.add_constant(Constant::Boolean(true));
-                    ctx.emit_load_const(result_reg, true_idx);
-                    let end_pos = ctx.bytecode.len();
-                    let offset = (end_pos as isize) - (end_jump_pos as isize);
-                    let offset = ctx.checked_jump_offset(offset);
-                    ctx.bytecode[end_jump_pos] = opcode::encode_jmp(offset);
+                    ctx.inst(Inst::load_const(Operand::Reg(result_reg as u32), true_idx));
+                    ctx.labels.set_label_pos(end_label, ctx.insts.len());
                     Ok(result_reg)
                 }
                 _ => Err("invalid delete target".into()),
@@ -126,27 +112,27 @@ impl Compiler {
         let arg = self.emit_expression(&un.argument, ctx)?;
         match un.operator {
             UnaryOperator::UnaryNegation => {
-                ctx.emit(opcode::encode(OpCode::NEG, arg, arg, 0));
+                ctx.inst(Inst::new(OpCode::NEG, Operand::Reg(arg as u32), Operand::Reg(arg as u32), Operand::None));
                 Ok(arg)
             }
             UnaryOperator::Typeof => {
-                ctx.emit(opcode::encode(OpCode::TYPEOF, arg, arg, 0));
+                ctx.inst(Inst::new(OpCode::TYPEOF, Operand::Reg(arg as u32), Operand::Reg(arg as u32), Operand::None));
                 Ok(arg)
             }
             UnaryOperator::Void => {
-                ctx.emit(opcode::encode(OpCode::VOID, arg, arg, 0));
+                ctx.inst(Inst::new(OpCode::VOID, Operand::Reg(arg as u32), Operand::Reg(arg as u32), Operand::None));
                 Ok(arg)
             }
             UnaryOperator::LogicalNot => {
-                ctx.emit(opcode::encode(OpCode::NOT, arg, arg, 0));
+                ctx.inst(Inst::new(OpCode::NOT, Operand::Reg(arg as u32), Operand::Reg(arg as u32), Operand::None));
                 Ok(arg)
             }
             UnaryOperator::BitwiseNot => {
-                ctx.emit(opcode::encode(OpCode::BIT_NOT, arg, arg, 0));
+                ctx.inst(Inst::new(OpCode::BIT_NOT, Operand::Reg(arg as u32), Operand::Reg(arg as u32), Operand::None));
                 Ok(arg)
             }
             UnaryOperator::UnaryPlus => {
-                ctx.emit(opcode::encode(OpCode::UNARY_PLUS, arg, arg, 0));
+                ctx.inst(Inst::new(OpCode::UNARY_PLUS, Operand::Reg(arg as u32), Operand::Reg(arg as u32), Operand::None));
                 Ok(arg)
             }
             UnaryOperator::Delete => Err("invalid delete target".into()),
@@ -156,23 +142,22 @@ impl Compiler {
     fn emit_conditional_expression(
         &self, cond: &oxide_parser::ConditionalExpression, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {
-        let id = ctx.next_label_id();
-        let else_label = Label::TernaryElse(id);
-        let end_label = Label::TernaryEnd(id);
+        let else_label = ctx.next_label_id();
+        let end_label = ctx.next_label_id();
 
         let test_reg = self.emit_expression(&cond.test, ctx)?;
-        ctx.emit_jmp_if_false_labeled(test_reg, else_label);
+        ctx.inst(Inst::jmp_if_false(test_reg, else_label));
 
         let cons_reg = self.emit_expression(&cond.consequent, ctx)?;
         let result_reg = ctx.alloc_reg();
-        ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, cons_reg, 0));
+        ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg as u32), Operand::Reg(cons_reg as u32), Operand::None));
 
-        ctx.emit_jmp_labeled(end_label);
+        ctx.inst(Inst::jmp(end_label));
 
-        ctx.labels.label_map.insert(else_label, ctx.bytecode.len());
+        ctx.labels.set_label_pos(else_label, ctx.insts.len());
         let alt_reg = self.emit_expression(&cond.alternate, ctx)?;
-        ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, alt_reg, 0));
-        ctx.labels.label_map.insert(end_label, ctx.bytecode.len());
+        ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg as u32), Operand::Reg(alt_reg as u32), Operand::None));
+        ctx.labels.set_label_pos(end_label, ctx.insts.len());
 
         Ok(result_reg)
     }
@@ -190,43 +175,41 @@ impl Compiler {
                 LogicalOperator::Or => OpCode::OR,
                 LogicalOperator::Coalesce => OpCode::NULLISH,
             };
-            ctx.emit(opcode::encode(op, r, left_reg, right_reg));
+            ctx.inst(Inst::new(op, Operand::Reg(r as u32), Operand::Reg(left_reg as u32), Operand::Reg(right_reg as u32)));
             return Ok(r);
         }
 
         if matches!(log.operator, LogicalOperator::Coalesce) {
-            let id = ctx.next_label_id();
-            let rhs_label = Label::TernaryElse(id);
-            let end_label = Label::TernaryEnd(id);
+            let rhs_label = ctx.next_label_id();
+            let end_label = ctx.next_label_id();
             let dup_reg = ctx.alloc_reg();
-            ctx.emit(opcode::encode(OpCode::LOAD_VAR, dup_reg, left_reg, 0));
-            ctx.emit_jmp_if_nullish_labeled(dup_reg, rhs_label);
-            ctx.emit_jmp_labeled(end_label);
-            ctx.labels.label_map.insert(rhs_label, ctx.bytecode.len());
+            ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(dup_reg as u32), Operand::Reg(left_reg as u32), Operand::None));
+            ctx.inst(Inst::jmp_if_nullish(dup_reg, rhs_label));
+            ctx.inst(Inst::jmp(end_label));
+            ctx.labels.set_label_pos(rhs_label, ctx.insts.len());
             let right_reg = self.emit_expression(&log.right, ctx)?;
-            ctx.emit(opcode::encode(OpCode::LOAD_VAR, dup_reg, right_reg, 0));
-            ctx.labels.label_map.insert(end_label, ctx.bytecode.len());
+            ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(dup_reg as u32), Operand::Reg(right_reg as u32), Operand::None));
+            ctx.labels.set_label_pos(end_label, ctx.insts.len());
             return Ok(dup_reg);
         }
 
-        let id = ctx.next_label_id();
         let skip_label = match log.operator {
-            LogicalOperator::And => Label::TernaryEnd(id),
-            LogicalOperator::Or => Label::TernaryElse(id),
+            LogicalOperator::And => ctx.next_label_id(),
+            LogicalOperator::Or => ctx.next_label_id(),
             LogicalOperator::Coalesce => return Err("invalid logical operator dispatch".into()),
         };
         let dup_reg = ctx.alloc_reg();
-        ctx.emit(opcode::encode(OpCode::LOAD_VAR, dup_reg, left_reg, 0));
+        ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(dup_reg as u32), Operand::Reg(left_reg as u32), Operand::None));
 
         match log.operator {
-            LogicalOperator::And => ctx.emit_jmp_if_false_labeled(dup_reg, skip_label),
-            LogicalOperator::Or => ctx.emit_jmp_if_true_labeled(dup_reg, skip_label),
+            LogicalOperator::And => ctx.inst(Inst::jmp_if_false(dup_reg, skip_label)),
+            LogicalOperator::Or => ctx.inst(Inst::jmp_if_true(dup_reg, skip_label)),
             LogicalOperator::Coalesce => return Err("invalid logical operator dispatch".into()),
         }
 
         let right_reg = self.emit_expression(&log.right, ctx)?;
-        ctx.emit(opcode::encode(OpCode::LOAD_VAR, dup_reg, right_reg, 0));
-        ctx.labels.label_map.insert(skip_label, ctx.bytecode.len());
+        ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(dup_reg as u32), Operand::Reg(right_reg as u32), Operand::None));
+        ctx.labels.set_label_pos(skip_label, ctx.insts.len());
 
         Ok(dup_reg)
     }
@@ -243,17 +226,17 @@ impl Compiler {
                 if let Some(uv) = uv_idx {
                     // Upvalue: LOAD_UPVALUE + CONST(1) + ADD/SUB + STORE_UPVALUE
                     let val_reg = ctx.alloc_reg();
-                    ctx.emit(opcode::encode(OpCode::LOAD_UPVALUE, val_reg, uv as u8, 0));
+                    ctx.inst(Inst::new(OpCode::LOAD_UPVALUE, Operand::Reg(val_reg as u32), Operand::Imm(uv as u16), Operand::None));
                     let one_idx = ctx.add_constant(Constant::Int(1));
                     let one_reg = ctx.alloc_reg();
-                    ctx.emit_load_const(one_reg, one_idx);
+                    ctx.inst(Inst::load_const(Operand::Reg(one_reg as u32), one_idx));
                     let op = if update.operator == UpdateOperator::Increment {
                         OpCode::ADD
                     } else {
                         OpCode::SUB
                     };
-                    ctx.emit(opcode::encode(op, val_reg, val_reg, one_reg));
-                    ctx.emit(opcode::encode(OpCode::STORE_UPVALUE, 0, val_reg, uv as u8));
+                    ctx.inst(Inst::new(op, Operand::Reg(val_reg as u32), Operand::Reg(val_reg as u32), Operand::Reg(one_reg as u32)));
+                    ctx.inst(Inst::new(OpCode::STORE_UPVALUE, Operand::None, Operand::Reg(val_reg as u32), Operand::Imm(uv as u16)));
                     Ok(val_reg)
                 } else if is_captured {
                     // Captured cell: CELL_GET + CONST(1) + ADD/SUB + CELL_SET
@@ -266,20 +249,20 @@ impl Compiler {
                         .unwrap_or(0);
                     let val_reg = ctx.alloc_reg();
                     if let Some((binding, _)) = ctx.scopes.symbols.lookup_any_binding(name) {
-                        ctx.emit(opcode::encode(OpCode::CELL_GET, val_reg, binding.reg, cell_idx));
+                        ctx.inst(Inst::new(OpCode::CELL_GET, Operand::Reg(val_reg as u32), Operand::Reg(binding.reg as u32), Operand::Imm(cell_idx as u16)));
                     } else {
-                        ctx.emit(opcode::encode(OpCode::CELL_GET, val_reg, 0, cell_idx));
+                        ctx.inst(Inst::new(OpCode::CELL_GET, Operand::Reg(val_reg as u32), Operand::None, Operand::Imm(cell_idx as u16)));
                     }
                     let one_idx = ctx.add_constant(Constant::Int(1));
                     let one_reg = ctx.alloc_reg();
-                    ctx.emit_load_const(one_reg, one_idx);
+                    ctx.inst(Inst::load_const(Operand::Reg(one_reg as u32), one_idx));
                     let op = if update.operator == UpdateOperator::Increment {
                         OpCode::ADD
                     } else {
                         OpCode::SUB
                     };
-                    ctx.emit(opcode::encode(op, val_reg, val_reg, one_reg));
-                    ctx.emit(opcode::encode(OpCode::CELL_SET, 0, val_reg, cell_idx));
+                    ctx.inst(Inst::new(op, Operand::Reg(val_reg as u32), Operand::Reg(val_reg as u32), Operand::Reg(one_reg as u32)));
+                    ctx.inst(Inst::new(OpCode::CELL_SET, Operand::None, Operand::Reg(val_reg as u32), Operand::Imm(cell_idx as u16)));
                     Ok(val_reg)
                 } else {
                     let var_reg = ctx.lookup_or_global(name);
@@ -290,7 +273,7 @@ impl Compiler {
                         (UpdateOperator::Decrement, true) => OpCode::DEC_PRE,
                         (UpdateOperator::Decrement, false) => OpCode::DEC_POST,
                     };
-                    ctx.emit(opcode::encode(op, var_reg, result_reg, result_reg));
+                    ctx.inst(Inst::new(op, Operand::Reg(var_reg as u32), Operand::Reg(result_reg as u32), Operand::Reg(result_reg as u32)));
                     Ok(result_reg)
                 }
             }
@@ -299,21 +282,21 @@ impl Compiler {
                 let prop_name = member.property.name.as_str();
                 let key_idx = ctx.add_constant(Constant::String(prop_name.to_string()));
                 let key_reg = ctx.alloc_reg();
-                ctx.emit(opcode::encode(
-                    OpCode::LOAD_CONST,
-                    key_reg,
-                    (key_idx & 0xFF) as u8,
-                    ((key_idx >> 8) & 0xFF) as u8,
-                ));
+                ctx.inst(Inst::load_const(Operand::Reg(key_reg as u32), key_idx));
                 let val_reg = ctx.alloc_reg();
                 let op = match update.operator {
                     UpdateOperator::Increment => OpCode::MEMBER_INC,
                     UpdateOperator::Decrement => OpCode::MEMBER_DEC,
                 };
-                ctx.emit(opcode::encode(op, obj_reg, val_reg, key_reg));
-                ctx.emit(0);
-                ctx.emit(0);
-                ctx.emit(0);
+                match op {
+                    OpCode::MEMBER_INC => {
+                        ctx.inst(Inst::member_inc(Operand::Reg(obj_reg as u32), Operand::Reg(val_reg as u32), Operand::Reg(key_reg as u32)));
+                    }
+                    OpCode::MEMBER_DEC => {
+                        ctx.inst(Inst::member_dec(Operand::Reg(obj_reg as u32), Operand::Reg(val_reg as u32), Operand::Reg(key_reg as u32)));
+                    }
+                    _ => unreachable!(),
+                }
                 Ok(val_reg)
             }
             SimpleAssignmentTarget::ComputedMemberExpression(member) => {
@@ -324,7 +307,7 @@ impl Compiler {
                     UpdateOperator::Increment => OpCode::DYN_MEMBER_INC,
                     UpdateOperator::Decrement => OpCode::DYN_MEMBER_DEC,
                 };
-                ctx.emit(opcode::encode(op, obj_reg, key_reg, val_reg));
+                ctx.inst(Inst::new(op, Operand::Reg(obj_reg as u32), Operand::Reg(key_reg as u32), Operand::Reg(val_reg as u32)));
                 Ok(val_reg)
             }
             _ => Err("member update not yet supported".into()),

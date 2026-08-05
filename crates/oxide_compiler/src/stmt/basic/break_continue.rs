@@ -1,4 +1,5 @@
 use crate::compiler::{CompileCtx, Compiler};
+use crate::ir::inst::Inst;
 
 impl Compiler {
     pub(crate) fn emit_break_statement(
@@ -16,7 +17,7 @@ impl Compiler {
             let (bl, _) = ctx.current_loop().ok_or("break outside switch or loop".to_string())?;
             *bl
         };
-        ctx.emit_jmp_labeled(break_label);
+        ctx.inst(Inst::jmp(break_label));
         Ok(None)
     }
 
@@ -35,7 +36,7 @@ impl Compiler {
             let (_, cl) = ctx.current_loop().ok_or("continue outside loop".to_string())?;
             *cl
         };
-        ctx.emit_jmp_labeled(continue_label);
+        ctx.inst(Inst::jmp(continue_label));
         Ok(None)
     }
 }

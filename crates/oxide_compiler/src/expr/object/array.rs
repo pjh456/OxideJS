@@ -1,15 +1,15 @@
 use crate::compiler::{CompileCtx, Compiler};
-use oxide_bytecode::{
-    module::Constant,
-    opcode::{self, OpCode},
-};
+use crate::ir::inst::Inst;
+use crate::ir::operand::Operand;
+use oxide_bytecode::module::Constant;
+use oxide_bytecode::opcode::OpCode;
 impl Compiler {
     pub(crate) fn emit_array_expression(
         &self, arr: &oxide_parser::ArrayExpression, ctx: &mut CompileCtx,
     ) -> Result<u8, String> {
         let arr_reg = ctx.alloc_reg();
         let n = arr.elements.len() as u16;
-        ctx.emit(opcode::encode(OpCode::NEW_ARRAY, arr_reg, (n & 0xFF) as u8, ((n >> 8) & 0xFF) as u8));
+        ctx.inst(Inst::new(OpCode::NEW_ARRAY, Operand::Reg(arr_reg as u32), Operand::Imm(n), Operand::None));
         let elem_checkpoint = ctx.reg_checkpoint();
         for (i, elem) in arr.elements.iter().enumerate() {
             let Some(e) = elem.as_expression() else {
@@ -18,8 +18,8 @@ impl Compiler {
             let val_reg = self.emit_expression(e, ctx)?;
             let idx_reg = ctx.alloc_reg();
             let idx = ctx.add_constant(Constant::Int(i as i32));
-            ctx.emit_load_const(idx_reg, idx);
-            ctx.emit(opcode::encode(OpCode::SET_ELEM, arr_reg, idx_reg, val_reg));
+            ctx.inst(Inst::load_const(Operand::Reg(idx_reg as u32), idx));
+            ctx.inst(Inst::new(OpCode::SET_ELEM, Operand::Reg(arr_reg as u32), Operand::Reg(idx_reg as u32), Operand::Reg(val_reg as u32)));
             ctx.restore_reg_checkpoint(elem_checkpoint);
         }
         Ok(arr_reg)

@@ -1,8 +1,8 @@
 use crate::compiler::{CompileCtx, Compiler};
-use oxide_bytecode::{
-    module::Constant,
-    opcode::{self, OpCode},
-};
+use crate::ir::inst::Inst;
+use crate::ir::operand::Operand;
+use oxide_bytecode::module::Constant;
+use oxide_bytecode::opcode::OpCode;
 use oxide_parser::{BindingPattern, Expression, Statement, VariableDeclarationKind};
 
 impl Compiler {
@@ -23,7 +23,7 @@ impl Compiler {
                 self.emit_binding_pattern(&d.id, val_reg, decl.kind, is_const, ctx)?;
                 if let BindingPattern::BindingIdentifier(bi) = &d.id {
                     if matches!(*init, Expression::ArrowFunctionExpression(_)) {
-                        if let Some(sub_mod) = ctx.sub_modules.last_mut() {
+                        if let Some(sub_mod) = ctx.nested.last_mut() {
                             sub_mod.function_name = Some(bi.name.to_string());
                         }
                     }
@@ -35,7 +35,7 @@ impl Compiler {
                 };
                 let idx = ctx.add_constant(Constant::Undefined);
                 let tmp = ctx.alloc_reg();
-                ctx.emit_load_const(tmp, idx);
+                ctx.inst(Inst::load_const(Operand::Reg(tmp as u32), idx));
                 let var_reg = ctx.alloc_reg();
                 let target_reg = if matches!(decl.kind, VariableDeclarationKind::Var) {
                     match ctx.declare(bi.name.as_str(), var_reg, decl.kind, is_const) {
@@ -50,9 +50,9 @@ impl Compiler {
                 if is_captured {
                     let cell_idx = ctx.scopes.cell_registry.len() as u8;
                     ctx.scopes.cell_registry.push((bi.name.to_string(), cell_idx));
-                    ctx.emit(opcode::encode(OpCode::MAKE_CELL, tmp, cell_idx, 0));
+                    ctx.inst(Inst::new(OpCode::MAKE_CELL, Operand::Reg(tmp as u32), Operand::Reg(cell_idx as u32), Operand::None));
                 } else {
-                    ctx.emit(opcode::encode(OpCode::STORE_VAR, target_reg, tmp, 0));
+                    ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(target_reg as u32), Operand::Reg(tmp as u32), Operand::None));
                 }
                 ctx.init_var(bi.name.as_str());
                 r = Some(var_reg);

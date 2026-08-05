@@ -2,10 +2,14 @@ use std::cell::Cell;
 use std::collections::HashMap;
 
 use crate::emit_ctx::{LabelCtx, ScopeCtx};
+use crate::ir::inst::Inst;
+use crate::ir::lower::lower;
+use crate::ir::operand::{LabelId, Operand};
+use crate::ir::IRFunction;
 use crate::symbol_table::{Binding, SymbolTable};
 use oxide_bytecode::module::CompiledModule;
 use oxide_bytecode::module::UpvalueCapture;
-use oxide_bytecode::opcode::{self, OpCode};
+use oxide_bytecode::opcode::OpCode;
 
 pub use crate::hash::{compiled_module_hash, structural_hash};
 use crate::symbol_table::ScopeKind;
@@ -105,43 +109,9 @@ const BUILTIN_GLOBALS: &[&str] = &[
     "decodeURIComponent",
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
-pub(crate) enum Label {
-    IfElse(u32),
-    IfEnd(u32),
-    WhileStart(u32),
-    WhileEnd(u32),
-    ForStart(u32),
-    ForUpdate(u32),
-    ForEnd(u32),
-    TernaryEnd(u32),
-    TernaryElse(u32),
-    DoWhileStart(u32),
-    DoWhileEnd(u32),
-    ForInStart(u32),
-    ForInEnd(u32),
-    ForOfStart(u32),
-    ForOfEnd(u32),
-    SwitchEnd(u32),
-    SwitchCase(u32, u32),
-    CatchBody(u32),
-    FinallyBody(u32),
-    TryEnd(u32),
-    LabeledEnd(u32),
-}
-
-pub(crate) struct JumpFixup {
-    pub(crate) pc: usize,
-    pub(crate) label: Label,
-    pub(crate) opcode: OpCode,
-    pub(crate) rd: u8,
-}
-
 pub(crate) struct FieldBuffer {
-    pub(crate) bytecode: Vec<opcode::Instr>,
-    pub(crate) labels: Vec<(Label, usize)>,
-    pub(crate) fixups: Vec<JumpFixup>,
+    pub(crate) insts: Vec<Inst>,
+    pub(crate) labels: Vec<(LabelId, usize)>,
 }
 
 /// A labeled-statement scope active during emission. `break label` targets
@@ -150,13 +120,12 @@ pub(crate) struct FieldBuffer {
 #[derive(Debug, Clone)]
 pub(crate) struct LabelScope {
     pub(crate) name: String,
-    pub(crate) break_label: Label,
-    pub(crate) continue_label: Option<Label>,
+    pub(crate) break_label: LabelId,
+    pub(crate) continue_label: Option<LabelId>,
 }
 
 pub(crate) struct CompileCtx {
-    pub(crate) bytecode: Vec<opcode::Instr>,
-    pub(crate) fixups: Vec<JumpFixup>,
+    pub(crate) insts: Vec<Inst>,
     pub(crate) constants: Vec<Constant>,
     constant_map: HashMap<ConstantKey, u16>,
     next_reg: u8,
@@ -164,7 +133,7 @@ pub(crate) struct CompileCtx {
     reserved_reg_start: u8,
     pub(crate) labels: LabelCtx,
     pub(crate) scopes: ScopeCtx,
-    pub(crate) sub_modules: Vec<CompiledModule>,
+    pub(crate) nested: Vec<IRFunction>,
     /// Register holding `this` in the enclosing function context.
     /// Used by arrow functions to capture lexical `this`.
     /// Initialized to 254 (conventional this register) at the top level.
@@ -179,7 +148,6 @@ pub(crate) struct CompileCtx {
     /// Checked after each emit phase to produce a compile error rather than silent corruption.
     pub(crate) reg_overflow: bool,
     pub(crate) const_overflow: bool,
-    pub(crate) jump_overflow: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -219,15 +187,14 @@ enum ConstantKey {
 impl CompileCtx {
     pub(crate) fn new() -> Self {
         Self {
-            bytecode: Vec::new(),
-            fixups: Vec::new(),
+            insts: Vec::new(),
             constants: Vec::new(),
             constant_map: HashMap::new(),
             next_reg: 1,
             max_regs: 1,
             reserved_reg_start: 1,
             labels: LabelCtx {
-                label_map: HashMap::new(),
+                label_pos: Vec::new(),
                 loop_stack: Vec::new(),
                 switch_stack: Vec::new(),
                 label_scopes: Vec::new(),
@@ -241,7 +208,7 @@ impl CompileCtx {
                 next_private_name_id: 1,
                 cell_registry: Vec::new(),
             },
-            sub_modules: Vec::new(),
+            nested: Vec::new(),
             enclosing_this_reg: 254, // conventional this register at top level
             in_derived_constructor: false,
             in_instance_method: false,
@@ -251,92 +218,11 @@ impl CompileCtx {
             current_upvalue_captures: Vec::new(),
             reg_overflow: false,
             const_overflow: false,
-            jump_overflow: false,
         }
     }
 
-    pub(crate) fn emit(&mut self, instr: opcode::Instr) {
-        self.bytecode.push(instr);
-    }
-
-    pub(crate) fn emit_load_const(&mut self, reg: u8, idx: u16) {
-        self.emit(opcode::encode(OpCode::LOAD_CONST, reg, (idx & 0xFF) as u8, ((idx >> 8) & 0xFF) as u8));
-    }
-
-    pub(crate) fn emit_create_closure(&mut self, reg: u8, sub_idx: u32) {
-        let idx = sub_idx as u16;
-        self.emit(opcode::encode(OpCode::CREATE_CLOSURE, reg, (idx & 0xFF) as u8, ((idx >> 8) & 0xFF) as u8));
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn emit_jmp_labeled(&mut self, label: Label) {
-        let pc = self.bytecode.len();
-        self.emit(opcode::encode_jmp(0));
-        self.fixups.push(JumpFixup {
-            pc,
-            label,
-            opcode: OpCode::JMP,
-            rd: 0,
-        });
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn emit_jmp_if_false_labeled(&mut self, rd: u8, label: Label) {
-        let pc = self.bytecode.len();
-        self.emit(opcode::encode_jmp_if_false(rd, 0));
-        self.fixups.push(JumpFixup {
-            pc,
-            label,
-            opcode: OpCode::JMP_IF_FALSE,
-            rd,
-        });
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn emit_jmp_if_true_labeled(&mut self, rd: u8, label: Label) {
-        let pc = self.bytecode.len();
-        self.emit(opcode::encode_jmp_if_true(rd, 0));
-        self.fixups.push(JumpFixup {
-            pc,
-            label,
-            opcode: OpCode::JMP_IF_TRUE,
-            rd,
-        });
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn emit_jmp_if_nullish_labeled(&mut self, rd: u8, label: Label) {
-        let pc = self.bytecode.len();
-        self.emit(opcode::encode_jmp_if_nullish(rd, 0));
-        self.fixups.push(JumpFixup {
-            pc,
-            label,
-            opcode: OpCode::JMP_IF_NULLISH,
-            rd,
-        });
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn emit_try_begin_labeled(&mut self, label: Label) {
-        let pc = self.bytecode.len();
-        self.emit(opcode::encode_try_begin(0));
-        self.fixups.push(JumpFixup {
-            pc,
-            label,
-            opcode: OpCode::TRY_BEGIN,
-            rd: 0,
-        });
-    }
-
-    pub(crate) fn emit_try_finally_begin_labeled(&mut self, label: Label) {
-        let pc = self.bytecode.len();
-        self.emit(opcode::encode_try_finally_begin(0));
-        self.fixups.push(JumpFixup {
-            pc,
-            label,
-            opcode: OpCode::TRY_FINALLY_BEGIN,
-            rd: 0,
-        });
+    pub(crate) fn inst(&mut self, inst: Inst) {
+        self.insts.push(inst);
     }
 
     pub(crate) fn alloc_reg(&mut self) -> u8 {
@@ -404,41 +290,6 @@ impl CompileCtx {
         idx as u16
     }
 
-    pub(crate) fn checked_jump_offset(&mut self, offset: isize) -> i16 {
-        if offset < i16::MIN as isize || offset > i16::MAX as isize {
-            self.jump_overflow = true;
-            0
-        } else {
-            offset as i16
-        }
-    }
-
-    pub(crate) fn resolve_label(&self, label: Label) -> Result<usize, String> {
-        self.labels
-            .label_map
-            .get(&label)
-            .copied()
-            .ok_or_else(|| format!("Label {:?} not found in bytecode map", label))
-    }
-
-    pub(crate) fn resolve_fixups(&mut self) -> Result<(), String> {
-        let fixups = std::mem::take(&mut self.fixups);
-        for fixup in fixups {
-            let target_pc = self.resolve_label(fixup.label)?;
-            let offset = self.checked_jump_offset(target_pc as isize - fixup.pc as isize);
-            self.bytecode[fixup.pc] = match fixup.opcode {
-                OpCode::JMP => opcode::encode_jmp(offset),
-                OpCode::JMP_IF_FALSE => opcode::encode_jmp_if_false(fixup.rd, offset),
-                OpCode::JMP_IF_TRUE => opcode::encode_jmp_if_true(fixup.rd, offset),
-                OpCode::JMP_IF_NULLISH => opcode::encode_jmp_if_nullish(fixup.rd, offset),
-                OpCode::TRY_BEGIN => opcode::encode_try_begin(offset),
-                OpCode::TRY_FINALLY_BEGIN => opcode::encode_try_finally_begin(offset),
-                _ => return Err(format!("Unsupported fixup opcode {:?}", fixup.opcode)),
-            };
-        }
-        Ok(())
-    }
-
     pub(crate) fn push_scope(&mut self) {
         self.scopes.symbols.push_scope();
     }
@@ -503,7 +354,7 @@ impl CompileCtx {
         id
     }
 
-    pub(crate) fn push_loop(&mut self, break_label: Label, continue_label: Label) {
+    pub(crate) fn push_loop(&mut self, break_label: LabelId, continue_label: LabelId) {
         self.labels.loop_stack.push((break_label, continue_label));
     }
 
@@ -511,11 +362,11 @@ impl CompileCtx {
         self.labels.loop_stack.pop();
     }
 
-    pub(crate) fn current_loop(&self) -> Option<&(Label, Label)> {
+    pub(crate) fn current_loop(&self) -> Option<&(LabelId, LabelId)> {
         self.labels.loop_stack.last()
     }
 
-    pub(crate) fn push_switch(&mut self, break_label: Label) {
+    pub(crate) fn push_switch(&mut self, break_label: LabelId) {
         self.labels.switch_stack.push(break_label);
     }
 
@@ -523,12 +374,12 @@ impl CompileCtx {
         self.labels.switch_stack.pop();
     }
 
-    pub(crate) fn current_switch(&self) -> Option<&Label> {
+    pub(crate) fn current_switch(&self) -> Option<&LabelId> {
         self.labels.switch_stack.last()
     }
 
     pub(crate) fn push_label_scope(
-        &mut self, name: &str, break_label: Label, continue_label: Option<Label>,
+        &mut self, name: &str, break_label: LabelId, continue_label: Option<LabelId>,
     ) -> Result<(), String> {
         if self.labels.label_scopes.iter().any(|s| s.name == name) {
             return Err(format!("SyntaxError: Label '{name}' has already been declared"));
@@ -564,7 +415,7 @@ impl CompileCtx {
 
     /// Drain queued loop labels into active scopes bound to this loop's break and
     /// continue targets. Returns how many scopes were pushed (to pop after).
-    pub(crate) fn take_pending_loop_labels(&mut self, break_label: Label, continue_label: Label) -> usize {
+    pub(crate) fn take_pending_loop_labels(&mut self, break_label: LabelId, continue_label: LabelId) -> usize {
         let names = std::mem::take(&mut self.labels.pending_loop_labels);
         let count = names.len();
         for name in names {
@@ -880,7 +731,7 @@ impl Compiler {
     pub(crate) fn compile_function_body<'a>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, is_arrow: bool,
-    ) -> Result<CompiledModule, String> {
+    ) -> Result<IRFunction, String> {
         let body_context = if is_arrow {
             FunctionBodyContext::Arrow
         } else {
@@ -899,7 +750,7 @@ impl Compiler {
     pub(crate) fn compile_function_body_with_bindings<'a>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, extra_bindings: &[(&str, u8)], body_context: FunctionBodyContext,
-    ) -> Result<CompiledModule, String> {
+    ) -> Result<IRFunction, String> {
         self.compile_function_body_with_field_hooks(
             param_specs,
             body_stmts,
@@ -1355,7 +1206,7 @@ impl Compiler {
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, extra_bindings: &[(&str, u8)], body_context: FunctionBodyContext,
         mut emit_fields: Option<E>, fields_after_super: bool,
-    ) -> Result<CompiledModule, String>
+    ) -> Result<IRFunction, String>
     where
         E: FnMut(&Compiler, &mut CompileCtx) -> Result<(), String>,
     {
@@ -1464,21 +1315,21 @@ impl Compiler {
 
         if let Some(emit) = emit_fields.as_mut() {
             if fields_after_super {
-                let mut parent_bytecode = Vec::new();
-                let mut parent_labels = HashMap::new();
-                let mut parent_fixups = Vec::new();
-                std::mem::swap(&mut ctx.bytecode, &mut parent_bytecode);
-                std::mem::swap(&mut ctx.labels.label_map, &mut parent_labels);
-                std::mem::swap(&mut ctx.fixups, &mut parent_fixups);
+                let mut parent_insts = Vec::new();
+                let mut parent_label_pos = Vec::new();
+                std::mem::swap(&mut ctx.insts, &mut parent_insts);
+                std::mem::swap(&mut ctx.labels.label_pos, &mut parent_label_pos);
                 emit(self, &mut ctx)?;
                 let field_buffer = FieldBuffer {
-                    bytecode: std::mem::take(&mut ctx.bytecode),
-                    labels: std::mem::take(&mut ctx.labels.label_map).into_iter().collect(),
-                    fixups: std::mem::take(&mut ctx.fixups),
+                    insts: std::mem::take(&mut ctx.insts),
+                    labels: std::mem::take(&mut ctx.labels.label_pos)
+                        .into_iter()
+                        .enumerate()
+                        .filter_map(|(id, pos)| pos.map(|p| (id as LabelId, p)))
+                        .collect(),
                 };
-                ctx.bytecode = parent_bytecode;
-                ctx.labels.label_map = parent_labels;
-                ctx.fixups = parent_fixups;
+                ctx.insts = parent_insts;
+                ctx.labels.label_pos = parent_label_pos;
                 ctx.field_buffer = Some(field_buffer);
             } else {
                 emit(self, &mut ctx)?;
@@ -1505,60 +1356,33 @@ impl Compiler {
             }
         }
 
-        ctx.resolve_fixups()?;
-
         // Emit implicit RETURN: expression body returns the last expression,
         // statement body returns undefined.
         if is_expression_body {
             if let Some(reg) = last_result_reg {
-                ctx.emit(opcode::encode(OpCode::RETURN, reg, 0, 0));
+                ctx.inst(Inst::new(OpCode::RETURN, Operand::Reg(reg as u32), Operand::None, Operand::None));
             } else {
                 let undef_idx = ctx.add_constant(Constant::Undefined);
                 let undef_reg = ctx.alloc_reg();
-                ctx.emit(opcode::encode(
-                    OpCode::LOAD_CONST,
-                    undef_reg,
-                    (undef_idx & 0xFF) as u8,
-                    ((undef_idx >> 8) & 0xFF) as u8,
-                ));
-                ctx.emit(opcode::encode(OpCode::RETURN, undef_reg, 0, 0));
+                ctx.inst(Inst::load_const(Operand::Reg(undef_reg as u32), undef_idx));
+                ctx.inst(Inst::new(OpCode::RETURN, Operand::Reg(undef_reg as u32), Operand::None, Operand::None));
             }
         } else {
             let undef_idx = ctx.add_constant(Constant::Undefined);
             let undef_reg = ctx.alloc_reg();
-            ctx.emit(opcode::encode(
-                OpCode::LOAD_CONST,
-                undef_reg,
-                (undef_idx & 0xFF) as u8,
-                ((undef_idx >> 8) & 0xFF) as u8,
-            ));
-            ctx.emit(opcode::encode(OpCode::RETURN, undef_reg, 0, 0));
+            ctx.inst(Inst::load_const(Operand::Reg(undef_reg as u32), undef_idx));
+            ctx.inst(Inst::new(OpCode::RETURN, Operand::Reg(undef_reg as u32), Operand::None, Operand::None));
         }
 
-        if ctx.reg_overflow {
-            return Err("RangeError: function body uses too many registers (max 253)".into());
-        }
-        if ctx.const_overflow {
-            return Err("RangeError: too many constants".into());
-        }
-        if ctx.jump_overflow {
-            return Err("RangeError: jump offset out of range".into());
-        }
-
-        Ok(CompiledModule {
-            bytecode: ctx.bytecode,
+        let ir = IRFunction {
+            insts: ctx.insts,
+            label_pos: ctx.labels.label_pos,
+            label_count: ctx.labels.label_counter,
             constants: ctx.constants,
-            n_registers: ctx.max_regs,
-            n_args: param_specs.len() as u8,
-            param_base,
-            builtin_reg_map: ctx.scopes.builtin_reg_map,
-            sub_modules: ctx.sub_modules,
-            is_arrow: false,
-            captured_this_const_idx: 0,
-            function_name: None,
-            is_class_constructor: false,
-            is_derived_constructor: false,
-            needs_home_object: false,
+            param_layout: crate::ir::ParamLayout {
+                base: param_base as u32,
+                count: param_specs.len() as u32,
+            },            builtin_reg_map: ctx.scopes.builtin_reg_map,
             upvalue_captures: ctx.current_upvalue_captures.clone(),
             cells_needed: ctx
                 .scopes
@@ -1568,7 +1392,18 @@ impl Compiler {
                 .flat_map(|s| s.bindings.values())
                 .filter(|b| b.is_captured.get())
                 .count() as u8,
-        })
+            n_registers: ctx.max_regs,
+            is_arrow: false,
+            is_class_constructor: false,
+            is_derived_constructor: false,
+            needs_home_object: false,
+            captured_this_const_idx: 0,
+            function_name: None,
+            reg_overflow: ctx.reg_overflow,
+            const_overflow: ctx.const_overflow,
+            nested: ctx.nested,
+        };
+        Ok(ir)
     }
 
     pub(crate) fn emit_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
@@ -1663,48 +1498,26 @@ impl Compiler {
                 None => last_result = None,
             }
         }
-        ctx.resolve_fixups()?;
-        crate::compiler_debug!("emitter: {} bytes emitted", ctx.bytecode.len());
-
         if let Some(r) = last_result {
-            ctx.emit(opcode::encode(OpCode::LOAD_VAR, 0, r, 0));
+            ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::None, Operand::Reg(r as u32), Operand::None));
         } else {
             let undef_idx = ctx.add_constant(Constant::Undefined);
-            ctx.emit(opcode::encode(
-                OpCode::LOAD_CONST,
-                0,
-                (undef_idx & 0xFF) as u8,
-                ((undef_idx >> 8) & 0xFF) as u8,
-            ));
+            ctx.inst(Inst::load_const(Operand::None, undef_idx));
         }
-        ctx.emit(opcode::encode(OpCode::HALT, 0, 0, 0));
+        ctx.inst(Inst::new(OpCode::HALT, Operand::None, Operand::None, Operand::None));
 
-        if ctx.reg_overflow {
-            return Err("RangeError: function body uses too many registers (max 253)".into());
-        }
-        if ctx.const_overflow {
-            return Err("RangeError: too many constants".into());
-        }
-        if ctx.jump_overflow {
-            return Err("RangeError: jump offset out of range".into());
-        }
+        crate::compiler_debug!("compile: done, {} instructions, {} constants", ctx.insts.len(), ctx.constants.len());
 
-        crate::compiler_debug!("compile: done, {} instructions, {} constants", ctx.bytecode.len(), ctx.constants.len());
-
-        Ok(CompiledModule {
-            bytecode: ctx.bytecode,
+        let ir = IRFunction {
+            insts: ctx.insts,
+            label_pos: ctx.labels.label_pos,
+            label_count: ctx.labels.label_counter,
             constants: ctx.constants,
-            n_registers: ctx.max_regs,
-            n_args: 0,
-            param_base: ctx.scopes.builtin_reg_map.len() as u8,
+            param_layout: crate::ir::ParamLayout {
+                base: ctx.scopes.builtin_reg_map.len() as u32,
+                count: 0,
+            },
             builtin_reg_map: ctx.scopes.builtin_reg_map,
-            sub_modules: ctx.sub_modules,
-            is_arrow: false,
-            captured_this_const_idx: 0,
-            function_name: None,
-            is_class_constructor: false,
-            is_derived_constructor: false,
-            needs_home_object: false,
             upvalue_captures: ctx.current_upvalue_captures.clone(),
             cells_needed: ctx
                 .scopes
@@ -1714,25 +1527,23 @@ impl Compiler {
                 .flat_map(|s| s.bindings.values())
                 .filter(|b| b.is_captured.get())
                 .count() as u8,
-        })
+            n_registers: ctx.max_regs,
+            is_arrow: false,
+            is_class_constructor: false,
+            is_derived_constructor: false,
+            needs_home_object: false,
+            captured_this_const_idx: 0,
+            function_name: None,
+            reg_overflow: ctx.reg_overflow,
+            const_overflow: ctx.const_overflow,
+            nested: ctx.nested,
+        };
+        lower(&ir)
     }
 }
 
 impl Default for Compiler {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::CompileCtx;
-
-    #[test]
-    fn test_jump_offset_overflow_range_error() {
-        let mut ctx = CompileCtx::new();
-        let offset = ctx.checked_jump_offset(i16::MAX as isize + 1);
-        assert_eq!(offset, 0);
-        assert!(ctx.jump_overflow);
     }
 }

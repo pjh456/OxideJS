@@ -1,9 +1,9 @@
-use crate::compiler::{CompileCtx, Compiler, Label};
+use crate::compiler::{CompileCtx, Compiler};
+use crate::ir::inst::Inst;
+use crate::ir::operand::Operand;
 use oxide_bytecode::module::Constant;
-use oxide_bytecode::opcode::{self, OpCode};
+use oxide_bytecode::opcode::OpCode;
 use oxide_parser::AssignmentOperator;
-
-impl Compiler {}
 
 impl Compiler {
     pub(crate) fn emit_assignment_expression(
@@ -11,29 +11,22 @@ impl Compiler {
     ) -> Result<u8, String> {
         if let oxide_parser::AssignmentTarget::StaticMemberExpression(member) = &assign.left {
             if let Some(logical_op) = assign.operator.to_logical_operator() {
-                let id = ctx.next_label_id();
-                let store_label = Label::TernaryElse(id);
-                let end_label = Label::TernaryEnd(id);
+                let store_label = ctx.next_label_id();
+                let end_label = ctx.next_label_id();
                 let obj_reg = self.emit_expression(&member.object, ctx)?;
                 let prop_name = member.property.name.as_str();
                 let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
                 let key_reg = ctx.alloc_reg();
-                ctx.emit_load_const(key_reg, idx);
+                ctx.inst(Inst::load_const(Operand::Reg(key_reg as u32), idx));
                 let result_reg = ctx.alloc_reg();
-                ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, obj_reg, 0));
-                ctx.emit(opcode::encode(OpCode::IC_GET_PROP, 0, result_reg, key_reg));
-                ctx.emit(0);
-                ctx.emit(0);
-                ctx.emit(0);
+                ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg as u32), Operand::Reg(obj_reg as u32), Operand::None));
+                ctx.inst(Inst::ic_get(Operand::Reg(result_reg as u32), Operand::Reg(key_reg as u32)));
                 self.emit_logical_assign_test(logical_op, result_reg, store_label, end_label, ctx)?;
-                ctx.labels.label_map.insert(store_label, ctx.bytecode.len());
+                ctx.labels.set_label_pos(store_label, ctx.insts.len());
                 let val_reg = self.emit_expression(&assign.right, ctx)?;
-                ctx.emit(opcode::encode(OpCode::IC_SET_PROP, obj_reg, val_reg, key_reg));
-                ctx.emit(0);
-                ctx.emit(0);
-                ctx.emit(0);
-                ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, val_reg, 0));
-                ctx.labels.label_map.insert(end_label, ctx.bytecode.len());
+                ctx.inst(Inst::ic_set(Operand::Reg(obj_reg as u32), Operand::Reg(val_reg as u32), Operand::Reg(key_reg as u32)));
+                ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg as u32), Operand::Reg(val_reg as u32), Operand::None));
+                ctx.labels.set_label_pos(end_label, ctx.insts.len());
                 return Ok(result_reg);
             }
             let obj_reg = self.emit_expression(&member.object, ctx)?;
@@ -41,50 +34,45 @@ impl Compiler {
             let prop_name = member.property.name.as_str();
             let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
             let key_reg = ctx.alloc_reg();
-            ctx.emit_load_const(key_reg, idx);
+            ctx.inst(Inst::load_const(Operand::Reg(key_reg as u32), idx));
             if assign.operator != AssignmentOperator::Assign {
-                let op = match assign.operator {
-                    AssignmentOperator::Addition => OpCode::COMPOUND_MEMBER_ADD,
-                    AssignmentOperator::Subtraction => OpCode::COMPOUND_MEMBER_SUB,
-                    AssignmentOperator::Multiplication => OpCode::COMPOUND_MEMBER_MUL,
-                    AssignmentOperator::Division => OpCode::COMPOUND_MEMBER_DIV,
-                    AssignmentOperator::Remainder => OpCode::COMPOUND_MEMBER_MOD,
-                    AssignmentOperator::Exponential => OpCode::COMPOUND_MEMBER_EXP,
+                let obj = Operand::Reg(obj_reg as u32);
+                let val = Operand::Reg(val_reg as u32);
+                let key = Operand::Reg(key_reg as u32);
+                match assign.operator {
+                    AssignmentOperator::Addition => ctx.inst(Inst::compound_member_add(obj, val, key)),
+                    AssignmentOperator::Subtraction => ctx.inst(Inst::compound_member_sub(obj, val, key)),
+                    AssignmentOperator::Multiplication => ctx.inst(Inst::compound_member_mul(obj, val, key)),
+                    AssignmentOperator::Division => ctx.inst(Inst::compound_member_div(obj, val, key)),
+                    AssignmentOperator::Remainder => ctx.inst(Inst::compound_member_mod(obj, val, key)),
+                    AssignmentOperator::Exponential => ctx.inst(Inst::compound_member_exp(obj, val, key)),
                     _ => return Err(format!("compound assignment operator {:?} not supported", assign.operator)),
-                };
-                ctx.emit(opcode::encode(op, obj_reg, val_reg, key_reg));
-                ctx.emit(0);
-                ctx.emit(0);
-                ctx.emit(0);
+                }
                 Ok(val_reg)
             } else {
-                ctx.emit(opcode::encode(OpCode::IC_SET_PROP, obj_reg, val_reg, key_reg));
-                ctx.emit(0);
-                ctx.emit(0);
-                ctx.emit(0);
+                ctx.inst(Inst::ic_set(Operand::Reg(obj_reg as u32), Operand::Reg(val_reg as u32), Operand::Reg(key_reg as u32)));
                 Ok(val_reg)
             }
         } else if let oxide_parser::AssignmentTarget::ComputedMemberExpression(member) = &assign.left {
             if let Some(logical_op) = assign.operator.to_logical_operator() {
-                let id = ctx.next_label_id();
-                let store_label = Label::TernaryElse(id);
-                let end_label = Label::TernaryEnd(id);
+                let store_label = ctx.next_label_id();
+                let end_label = ctx.next_label_id();
                 let obj_reg = self.emit_expression(&member.object, ctx)?;
                 let key_reg = self.emit_expression(&member.expression, ctx)?;
                 let result_reg = ctx.alloc_reg();
-                ctx.emit(opcode::encode(OpCode::GET_PROP_DYNAMIC, obj_reg, key_reg, result_reg));
+                ctx.inst(Inst::new(OpCode::GET_PROP_DYNAMIC, Operand::Reg(obj_reg as u32), Operand::Reg(key_reg as u32), Operand::Reg(result_reg as u32)));
                 self.emit_logical_assign_test(logical_op, result_reg, store_label, end_label, ctx)?;
-                ctx.labels.label_map.insert(store_label, ctx.bytecode.len());
+                ctx.labels.set_label_pos(store_label, ctx.insts.len());
                 let val_reg = self.emit_expression(&assign.right, ctx)?;
-                ctx.emit(opcode::encode(OpCode::SET_PROP_DYNAMIC, obj_reg, key_reg, val_reg));
-                ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, val_reg, 0));
-                ctx.labels.label_map.insert(end_label, ctx.bytecode.len());
+                ctx.inst(Inst::new(OpCode::SET_PROP_DYNAMIC, Operand::Reg(obj_reg as u32), Operand::Reg(key_reg as u32), Operand::Reg(val_reg as u32)));
+                ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg as u32), Operand::Reg(val_reg as u32), Operand::None));
+                ctx.labels.set_label_pos(end_label, ctx.insts.len());
                 return Ok(result_reg);
             }
             let obj_reg = self.emit_expression(&member.object, ctx)?;
             let key_reg = self.emit_expression(&member.expression, ctx)?;
             let val_reg = self.emit_expression(&assign.right, ctx)?;
-            ctx.emit(opcode::encode(OpCode::SET_PROP_DYNAMIC, obj_reg, key_reg, val_reg));
+            ctx.inst(Inst::new(OpCode::SET_PROP_DYNAMIC, Operand::Reg(obj_reg as u32), Operand::Reg(key_reg as u32), Operand::Reg(val_reg as u32)));
             Ok(val_reg)
         } else if let oxide_parser::AssignmentTarget::PrivateFieldExpression(member) = &assign.left {
             if assign.operator != AssignmentOperator::Assign {
@@ -93,26 +81,25 @@ impl Compiler {
             let obj_reg = self.emit_expression(&member.object, ctx)?;
             let val_reg = self.emit_expression(&assign.right, ctx)?;
             let key_reg = self.emit_private_id_reg(member.field.name.as_str(), ctx)?;
-            ctx.emit(opcode::encode(OpCode::SET_PRIVATE, obj_reg, val_reg, key_reg));
+            ctx.inst(Inst::new(OpCode::SET_PRIVATE, Operand::Reg(obj_reg as u32), Operand::Reg(val_reg as u32), Operand::Reg(key_reg as u32)));
             Ok(val_reg)
         } else if let oxide_parser::AssignmentTarget::AssignmentTargetIdentifier(id_ref) = &assign.left {
             if assign.operator != AssignmentOperator::Assign {
                 if let Some(logical_op) = assign.operator.to_logical_operator() {
-                    let id = ctx.next_label_id();
-                    let store_label = Label::TernaryElse(id);
-                    let end_label = Label::TernaryEnd(id);
+                    let store_label = ctx.next_label_id();
+                    let end_label = ctx.next_label_id();
                     let name = id_ref.name.as_str();
                     let var_reg = ctx.lookup_or_global(name);
                     let result_reg = ctx.alloc_reg();
-                    ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, var_reg, 0));
+                    ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg as u32), Operand::Reg(var_reg as u32), Operand::None));
                     self.emit_logical_assign_test(logical_op, result_reg, store_label, end_label, ctx)?;
-                    ctx.labels.label_map.insert(store_label, ctx.bytecode.len());
+                    ctx.labels.set_label_pos(store_label, ctx.insts.len());
                     let val_reg = self.emit_expression(&assign.right, ctx)?;
                     let is_const = ctx.lookup_const_flag(name);
                     let const_flag = if is_const { 1 } else { 0 };
-                    ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, const_flag));
-                    ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, val_reg, 0));
-                    ctx.labels.label_map.insert(end_label, ctx.bytecode.len());
+                    ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(var_reg as u32), Operand::Reg(val_reg as u32), Operand::Imm(const_flag)));
+                    ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg as u32), Operand::Reg(val_reg as u32), Operand::None));
+                    ctx.labels.set_label_pos(end_label, ctx.insts.len());
                     Ok(result_reg)
                 } else if assign.operator == AssignmentOperator::Addition
                     || assign.operator == AssignmentOperator::Subtraction
@@ -145,7 +132,7 @@ impl Compiler {
                         AssignmentOperator::ShiftRightZeroFill => OpCode::COMPOUND_USHR,
                         _ => return Err(format!("compound assignment operator {:?} not supported", assign.operator)),
                     };
-                    ctx.emit(opcode::encode(op, var_reg, rhs, 0));
+                    ctx.inst(Inst::new(op, Operand::Reg(var_reg as u32), Operand::Reg(rhs as u32), Operand::None));
                     Ok(var_reg)
                 } else {
                     Err(format!("compound assignment operator {:?} not supported", assign.operator))
@@ -155,7 +142,7 @@ impl Compiler {
                 let name = id_ref.name.as_str();
                 // Check if target is an upvalue reference
                 if let Some(uv_idx) = ctx.current_upvalue_captures.iter().position(|u| u.name == name) {
-                    ctx.emit(opcode::encode(OpCode::STORE_UPVALUE, 0, val_reg, uv_idx as u8));
+                    ctx.inst(Inst::new(OpCode::STORE_UPVALUE, Operand::None, Operand::Reg(val_reg as u32), Operand::Imm(uv_idx as u16)));
                     return Ok(val_reg);
                 }
                 // Check if target is a captured cell
@@ -167,13 +154,13 @@ impl Compiler {
                         .find(|(n, _)| n == name)
                         .map(|(_, idx)| *idx)
                         .unwrap_or(0);
-                    ctx.emit(opcode::encode(OpCode::CELL_SET, 0, val_reg, cell_idx));
+                    ctx.inst(Inst::new(OpCode::CELL_SET, Operand::None, Operand::Reg(val_reg as u32), Operand::Imm(cell_idx as u16)));
                     return Ok(val_reg);
                 }
                 let var_reg = ctx.lookup_or_global(name);
                 let is_const = ctx.lookup_const_flag(name);
                 let const_flag = if is_const { 1 } else { 0 };
-                ctx.emit(opcode::encode(OpCode::STORE_VAR, var_reg, val_reg, const_flag));
+                ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(var_reg as u32), Operand::Reg(val_reg as u32), Operand::Imm(const_flag)));
                 Ok(val_reg)
             }
         } else if matches!(

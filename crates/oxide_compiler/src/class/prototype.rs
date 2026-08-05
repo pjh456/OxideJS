@@ -1,33 +1,35 @@
 use crate::compiler::{CompileCtx, Compiler};
+use crate::ir::inst::Inst;
+use crate::ir::operand::Operand;
 use oxide_bytecode::module::Constant;
-use oxide_bytecode::opcode::{self, OpCode};
+use oxide_bytecode::opcode::OpCode;
 
 impl Compiler {
     pub(crate) fn emit_class_prototype(
-        &self, ctor_reg: u8, proto_reg: u8, super_reg: Option<u8>, sub_idx: u32, ctx: &mut CompileCtx,
+        &self, ctor_reg: u8, proto_reg: u8, super_reg: Option<u8>, sub_idx: u16, ctx: &mut CompileCtx,
     ) -> Result<(), String> {
-        ctx.emit_create_closure(ctor_reg, sub_idx);
-        ctx.emit(opcode::encode(OpCode::NEW_OBJECT, proto_reg, 0, 0));
+        ctx.inst(Inst::create_closure(Operand::Reg(ctor_reg as u32), sub_idx));
+        ctx.inst(Inst::new(OpCode::NEW_OBJECT, Operand::Reg(proto_reg as u32), Operand::None, Operand::None));
         if let Some(super_reg) = super_reg {
             let proto_key_idx = ctx.add_constant(Constant::String("prototype".to_string()));
             let parent_proto_key_reg = ctx.alloc_reg();
-            ctx.emit_load_const(parent_proto_key_reg, proto_key_idx);
+            ctx.inst(Inst::load_const(Operand::Reg(parent_proto_key_reg as u32), proto_key_idx));
             let parent_proto_reg = ctx.alloc_reg();
-            ctx.emit(opcode::encode(OpCode::GET_PROP, super_reg, parent_proto_reg, parent_proto_key_reg));
+            ctx.inst(Inst::new(OpCode::GET_PROP, Operand::Reg(super_reg as u32), Operand::Reg(parent_proto_reg as u32), Operand::Reg(parent_proto_key_reg as u32)));
             let proto_link_idx = ctx.add_constant(Constant::String("__proto__".to_string()));
             let proto_link_key_reg = ctx.alloc_reg();
-            ctx.emit_load_const(proto_link_key_reg, proto_link_idx);
-            ctx.emit(opcode::encode(OpCode::SET_PROP, proto_reg, parent_proto_reg, proto_link_key_reg));
-            ctx.emit(opcode::encode(OpCode::SET_PROP, ctor_reg, super_reg, proto_link_key_reg));
+            ctx.inst(Inst::load_const(Operand::Reg(proto_link_key_reg as u32), proto_link_idx));
+            ctx.inst(Inst::new(OpCode::SET_PROP, Operand::Reg(proto_reg as u32), Operand::Reg(parent_proto_reg as u32), Operand::Reg(proto_link_key_reg as u32)));
+            ctx.inst(Inst::new(OpCode::SET_PROP, Operand::Reg(ctor_reg as u32), Operand::Reg(super_reg as u32), Operand::Reg(proto_link_key_reg as u32)));
         }
         let ctor_key_idx = ctx.add_constant(Constant::String("constructor".to_string()));
         let ctor_key_reg = ctx.alloc_reg();
-        ctx.emit_load_const(ctor_key_reg, ctor_key_idx);
-        ctx.emit(opcode::encode(OpCode::SET_PROP, proto_reg, ctor_reg, ctor_key_reg));
+        ctx.inst(Inst::load_const(Operand::Reg(ctor_key_reg as u32), ctor_key_idx));
+        ctx.inst(Inst::new(OpCode::SET_PROP, Operand::Reg(proto_reg as u32), Operand::Reg(ctor_reg as u32), Operand::Reg(ctor_key_reg as u32)));
         let proto_key_idx = ctx.add_constant(Constant::String("prototype".to_string()));
         let proto_key_reg = ctx.alloc_reg();
-        ctx.emit_load_const(proto_key_reg, proto_key_idx);
-        ctx.emit(opcode::encode(OpCode::SET_PROP, ctor_reg, proto_reg, proto_key_reg));
+        ctx.inst(Inst::load_const(Operand::Reg(proto_key_reg as u32), proto_key_idx));
+        ctx.inst(Inst::new(OpCode::SET_PROP, Operand::Reg(ctor_reg as u32), Operand::Reg(proto_reg as u32), Operand::Reg(proto_key_reg as u32)));
         Ok(())
     }
 }

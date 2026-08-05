@@ -1,5 +1,7 @@
 use crate::compiler::{CompileCtx, Compiler, FunctionBodyContext};
-use oxide_bytecode::opcode::{self, OpCode};
+use crate::ir::inst::Inst;
+use crate::ir::operand::Operand;
+use oxide_bytecode::opcode::OpCode;
 use oxide_parser::{Class, ClassElement, MethodDefinitionKind, PropertyKey};
 
 impl Compiler {
@@ -57,6 +59,17 @@ impl Compiler {
         ctx.in_derived_constructor = is_derived;
         ctx.scopes.private_name_map = private_names.clone();
 
+        let emit_instance_fields = |compiler: &Compiler, field_ctx: &mut CompileCtx| -> Result<(), String> {
+            for field in &instance_fields {
+                if let PropertyKey::PrivateIdentifier(private) = &field.key {
+                    compiler.emit_private_field_init(Operand::This, private.name.as_str(), field.value.as_ref(), field_ctx)?;
+                } else {
+                    compiler.emit_public_field_init(Operand::This, &field.key, field.computed, field.value.as_ref(), field_ctx)?;
+                }
+            }
+            Ok(())
+        };
+
         let mut ctor_module = if let Some(method) = constructor_method {
             let (param_names, body_stmts) = self.extract_function_parts(method.value.as_ref())?;
             self.compile_function_body_with_field_hooks(
@@ -66,27 +79,7 @@ impl Compiler {
                 false,
                 &self_binding,
                 FunctionBodyContext::ClassElement,
-                Some(|compiler: &Compiler, field_ctx: &mut CompileCtx| -> Result<(), String> {
-                    for field in &instance_fields {
-                        if let PropertyKey::PrivateIdentifier(private) = &field.key {
-                            compiler.emit_private_field_init(
-                                254,
-                                private.name.as_str(),
-                                field.value.as_ref(),
-                                field_ctx,
-                            )?;
-                        } else {
-                            compiler.emit_public_field_init(
-                                254,
-                                &field.key,
-                                field.computed,
-                                field.value.as_ref(),
-                                field_ctx,
-                            )?;
-                        }
-                    }
-                    Ok(())
-                }),
+                Some(&emit_instance_fields),
                 is_derived,
             )?
         } else {
@@ -97,54 +90,21 @@ impl Compiler {
                 false,
                 &self_binding,
                 FunctionBodyContext::ClassElement,
-                Some(|compiler: &Compiler, field_ctx: &mut CompileCtx| -> Result<(), String> {
-                    for field in &instance_fields {
-                        if let PropertyKey::PrivateIdentifier(private) = &field.key {
-                            compiler.emit_private_field_init(
-                                254,
-                                private.name.as_str(),
-                                field.value.as_ref(),
-                                field_ctx,
-                            )?;
-                        } else {
-                            compiler.emit_public_field_init(
-                                254,
-                                &field.key,
-                                field.computed,
-                                field.value.as_ref(),
-                                field_ctx,
-                            )?;
-                        }
-                    }
-                    Ok(())
-                }),
+                Some(&emit_instance_fields),
                 is_derived,
             )?;
             if is_derived {
-                module.bytecode.clear();
+                module.insts.clear();
                 module.constants.clear();
                 module.n_registers = 1;
-                module.bytecode.push(opcode::encode(OpCode::SUPER_CALL, 0, 0, 0));
-                module.bytecode.push(0);
+                module.insts.push(Inst::super_call(Operand::None, Operand::None, 0));
                 let mut field_ctx = CompileCtx::new();
                 field_ctx.scopes.private_name_map = private_names.clone();
-                for field in &instance_fields {
-                    if let PropertyKey::PrivateIdentifier(private) = &field.key {
-                        self.emit_private_field_init(254, private.name.as_str(), field.value.as_ref(), &mut field_ctx)?;
-                    } else {
-                        self.emit_public_field_init(
-                            254,
-                            &field.key,
-                            field.computed,
-                            field.value.as_ref(),
-                            &mut field_ctx,
-                        )?;
-                    }
-                }
-                module.bytecode.extend(field_ctx.bytecode);
+                emit_instance_fields(self, &mut field_ctx)?;
+                module.insts.extend(field_ctx.insts);
                 module.constants = field_ctx.constants;
                 module.n_registers = field_ctx.max_regs.max(1);
-                module.bytecode.push(opcode::encode(OpCode::RETURN, 0, 0, 0));
+                module.insts.push(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None));
             }
             module
         };
@@ -152,9 +112,9 @@ impl Compiler {
         ctor_module.is_class_constructor = true;
         ctor_module.is_derived_constructor = is_derived;
         ctor_module.function_name = ctor_name.clone();
-        ctx.sub_modules.push(ctor_module);
+        ctx.nested.push(ctor_module);
 
-        self.emit_class_prototype(ctor_reg, proto_reg, super_reg, ctx.sub_modules.len() as u32, ctx)?;
+        self.emit_class_prototype(ctor_reg, proto_reg, super_reg, ctx.nested.len() as u16, ctx)?;
         self.emit_class_methods(&class.body.body, ctor_reg, proto_reg, &self_binding, ctx)?;
         self.emit_class_static_elements(&class.body.body, ctor_reg, ctx)?;
 

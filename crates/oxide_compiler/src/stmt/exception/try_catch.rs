@@ -1,5 +1,7 @@
-use crate::compiler::{CompileCtx, Compiler, Label};
-use oxide_bytecode::opcode::{self, OpCode};
+use crate::compiler::{CompileCtx, Compiler};
+use crate::ir::inst::Inst;
+use crate::ir::operand::Operand;
+use oxide_bytecode::opcode::OpCode;
 use oxide_parser::{Statement, VariableDeclarationKind};
 
 impl Compiler {
@@ -7,18 +9,17 @@ impl Compiler {
         let Statement::TryStatement(ts) = stmt else {
             return Ok(None);
         };
-        let id = ctx.next_label_id();
-        let catch_label = Label::CatchBody(id);
-        let finally_label = Label::FinallyBody(id);
-        let try_end_label = Label::TryEnd(id);
+        let catch_label = ctx.next_label_id();
+        let finally_label = ctx.next_label_id();
+        let try_end_label = ctx.next_label_id();
         let has_catch = ts.handler.is_some();
         let has_finally = ts.finalizer.is_some();
         let result_reg = ctx.alloc_reg();
         if has_finally {
-            ctx.emit_try_finally_begin_labeled(finally_label);
+            ctx.inst(Inst::try_finally_begin(finally_label));
         }
         if has_catch {
-            ctx.emit_try_begin_labeled(catch_label);
+            ctx.inst(Inst::try_begin(catch_label));
         }
         let mut last_try_result: Option<u8> = None;
         for s in &ts.block.body {
@@ -26,24 +27,23 @@ impl Compiler {
                 last_try_result = Some(r);
             }
         }
-        ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, last_try_result.unwrap_or(result_reg), 0));
+        ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg as u32), Operand::Reg(last_try_result.unwrap_or(result_reg) as u32), Operand::None));
         if has_catch {
-            ctx.emit(opcode::encode(OpCode::TRY_END, 0, 0, 0));
+            ctx.inst(Inst::new(OpCode::TRY_END, Operand::None, Operand::None, Operand::None));
         }
         let jmp_needed = has_catch || has_finally;
         if jmp_needed {
             let target = if has_finally { finally_label } else { try_end_label };
-            ctx.emit_jmp_labeled(target);
+            ctx.inst(Inst::jmp(target));
         }
-        let catch_label_pc = ctx.bytecode.len();
-        ctx.labels.label_map.insert(catch_label, catch_label_pc);
+        ctx.labels.set_label_pos(catch_label, ctx.insts.len());
         if let Some(catch) = &ts.handler {
             ctx.push_scope();
             if let Some(param) = &catch.param {
                 let catch_reg = ctx.alloc_reg();
                 if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &param.pattern {
                     ctx.declare_initialized(bi.name.as_str(), catch_reg, VariableDeclarationKind::Let, false)?;
-                    ctx.emit(opcode::encode(OpCode::STORE_VAR, catch_reg, 0, 0));
+                    ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(catch_reg as u32), Operand::None, Operand::None));
                 }
             }
             let mut last_catch_result: Option<u8> = None;
@@ -52,22 +52,21 @@ impl Compiler {
                     last_catch_result = Some(r);
                 }
             }
-            ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, last_catch_result.unwrap_or(result_reg), 0));
+            ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg as u32), Operand::Reg(last_catch_result.unwrap_or(result_reg) as u32), Operand::None));
             ctx.pop_scope();
         }
         if has_finally {
-            ctx.labels.label_map.insert(finally_label, ctx.bytecode.len());
+            ctx.labels.set_label_pos(finally_label, ctx.insts.len());
             let mut last_finally_result: Option<u8> = None;
             for s in &ts.finalizer.as_ref().unwrap().body {
                 if let Some(r) = self.emit_statement(s, ctx)? {
                     last_finally_result = Some(r);
                 }
             }
-            ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, last_finally_result.unwrap_or(result_reg), 0));
-            ctx.emit(opcode::encode(OpCode::TRY_FINALLY_END, 0, 0, 0));
+            ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg as u32), Operand::Reg(last_finally_result.unwrap_or(result_reg) as u32), Operand::None));
+            ctx.inst(Inst::new(OpCode::TRY_FINALLY_END, Operand::None, Operand::None, Operand::None));
         }
-        let try_end_pc = ctx.bytecode.len();
-        ctx.labels.label_map.insert(try_end_label, try_end_pc);
+        ctx.labels.set_label_pos(try_end_label, ctx.insts.len());
         Ok(Some(result_reg))
     }
 }

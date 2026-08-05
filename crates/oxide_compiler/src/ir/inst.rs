@@ -105,8 +105,27 @@ impl Inst {
         Self::with_ext(OpCode::DEFINE_ACCESSOR, home, get, set, &[key_idx])
     }
 
+    pub fn delete_prop_static(obj: Operand, const_idx: u32) -> Self {
+        Self::with_ext(OpCode::DELETE_PROP_STATIC, obj, obj, Operand::None, &[const_idx])
+    }
+
     pub fn rest_object(rest: Operand, src: Operand, excluded_idx: u32) -> Self {
         Self::with_ext(OpCode::REST_OBJECT, rest, src, Operand::None, &[excluded_idx])
+    }
+
+    /// TEMPLATE_STR：变长 ext。首字打包 `(segment_count<<16) | total_len_hint`，
+    /// 后续每 quasi 一项 `quasi_const_idx & 0x7FFF_FFFF`，其后若跟表达式再一项 `0x8000_0000 | expr_reg`。
+    pub fn template_str(dst: Operand, segment_count: u32, total_len_hint: u16, parts: &[u32]) -> Self {
+        let mut ext = SmallVec::with_capacity(2 + parts.len());
+        ext.push(((segment_count & 0xFFFF) << 16) | (total_len_hint as u32 & 0xFFFF));
+        ext.extend_from_slice(parts);
+        Self {
+            op: OpCode::TEMPLATE_STR,
+            rd: dst,
+            a: Operand::None,
+            b: Operand::None,
+            ext,
+        }
     }
 
     // ── 无 ext：立即数/索引指令（拆字是 lowering 职责）──
@@ -261,5 +280,16 @@ mod tests {
 
         let try_fin = Inst::try_finally_begin(9);
         assert_eq!(try_fin.b, Operand::Label(9));
+    }
+
+    #[test]
+    fn template_str_packs_segment_count_and_hint() {
+        let inst = Inst::template_str(Operand::Reg(1), 3, 10, &[0x1234, 0x8000_0000 | 5]);
+        assert_eq!(inst.op, OpCode::TEMPLATE_STR);
+        assert_eq!(inst.rd, Operand::Reg(1));
+        assert_eq!(inst.ext.len(), 3);
+        assert_eq!(inst.ext[0], (3 << 16) | 10);
+        assert_eq!(inst.ext[1], 0x1234);
+        assert_eq!(inst.ext[2], 0x8000_0000 | 5);
     }
 }

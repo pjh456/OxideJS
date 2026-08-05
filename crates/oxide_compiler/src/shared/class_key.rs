@@ -1,4 +1,6 @@
 use crate::compiler::{CompileCtx, Compiler};
+use crate::ir::inst::Inst;
+use crate::ir::operand::Operand;
 use oxide_bytecode::module::Constant;
 use oxide_parser::PropertyKey;
 
@@ -15,7 +17,7 @@ impl Compiler {
         let id = self.private_name_id(name, ctx)?;
         let idx = ctx.add_constant(Constant::Int(id as i32));
         let reg = ctx.alloc_reg();
-        ctx.emit_load_const(reg, idx);
+        ctx.inst(Inst::load_const(Operand::Reg(reg as u32), idx));
         Ok(reg)
     }
 
@@ -26,7 +28,7 @@ impl Compiler {
             let name = self.class_property_name(key)?;
             let idx = ctx.add_constant(Constant::String(name));
             let reg = ctx.alloc_reg();
-            ctx.emit_load_const(reg, idx);
+            ctx.inst(Inst::load_const(Operand::Reg(reg as u32), idx));
             return Ok(reg);
         }
 
@@ -60,7 +62,7 @@ impl Compiler {
     pub(crate) fn emit_undefined(&self, ctx: &mut CompileCtx) -> u8 {
         let idx = ctx.add_constant(Constant::Undefined);
         let reg = ctx.alloc_reg();
-        ctx.emit_load_const(reg, idx);
+        ctx.inst(Inst::load_const(Operand::Reg(reg as u32), idx));
         reg
     }
 }

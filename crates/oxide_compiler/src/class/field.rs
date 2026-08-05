@@ -1,4 +1,5 @@
 use crate::compiler::{CompileCtx, Compiler};
+use crate::ir::operand::Operand;
 use oxide_parser::{ClassElement, PropertyKey};
 
 impl Compiler {
@@ -17,9 +18,9 @@ impl Compiler {
                     let prop = prop.as_ref();
                     if prop.r#static {
                         if let PropertyKey::PrivateIdentifier(private) = &prop.key {
-                            self.emit_private_field_init(ctor_reg, private.name.as_str(), prop.value.as_ref(), ctx)?;
+                            self.emit_private_field_init(Operand::Reg(ctor_reg as u32), private.name.as_str(), prop.value.as_ref(), ctx)?;
                         } else {
-                            self.emit_public_field_init(ctor_reg, &prop.key, prop.computed, prop.value.as_ref(), ctx)?;
+                            self.emit_public_field_init(Operand::Reg(ctor_reg as u32), &prop.key, prop.computed, prop.value.as_ref(), ctx)?;
                         }
                     }
                 }

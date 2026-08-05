@@ -1,5 +1,7 @@
-use crate::compiler::{CompileCtx, Compiler, Label};
-use oxide_bytecode::opcode::{self, OpCode};
+use crate::compiler::{CompileCtx, Compiler};
+use crate::ir::inst::Inst;
+use crate::ir::operand::Operand;
+use oxide_bytecode::opcode::OpCode;
 use oxide_parser::Statement;
 
 impl Compiler {
@@ -7,34 +9,35 @@ impl Compiler {
         let Statement::SwitchStatement(sw) = stmt else {
             return Ok(None);
         };
-        let id = ctx.next_label_id();
-        let end_label = Label::SwitchEnd(id);
+        let end_label = ctx.next_label_id();
         ctx.push_switch(end_label);
         let disc_reg = self.emit_expression(&sw.discriminant, ctx)?;
         let compare_reg_checkpoint = ctx.reg_checkpoint();
         let cases = &sw.cases;
-        for (case_idx, case) in cases.iter().enumerate() {
+        let mut case_labels = Vec::with_capacity(cases.len());
+        for case in cases.iter() {
+            let case_label = ctx.next_label_id();
+            case_labels.push(case_label);
             if let Some(test) = &case.test {
                 let test_reg = self.emit_expression(test, ctx)?;
                 let eq_reg = ctx.alloc_reg();
-                ctx.emit(opcode::encode(OpCode::EQ, eq_reg, disc_reg, test_reg));
-                let case_label = Label::SwitchCase(id, case_idx as u32);
-                ctx.emit_jmp_if_true_labeled(eq_reg, case_label);
+                ctx.inst(Inst::new(OpCode::EQ, Operand::Reg(eq_reg as u32), Operand::Reg(disc_reg as u32), Operand::Reg(test_reg as u32)));
+                ctx.inst(Inst::jmp_if_true(eq_reg, case_label));
                 ctx.restore_reg_checkpoint(compare_reg_checkpoint);
             }
         }
         let has_default = cases.iter().any(|c| c.test.is_none());
         if !has_default {
-            ctx.emit_jmp_labeled(end_label);
+            ctx.inst(Inst::jmp(end_label));
         }
         for (case_idx, case) in cases.iter().enumerate() {
-            let case_label = Label::SwitchCase(id, case_idx as u32);
-            ctx.labels.label_map.insert(case_label, ctx.bytecode.len());
+            let case_label = case_labels[case_idx];
+            ctx.labels.set_label_pos(case_label, ctx.insts.len());
             for s in &case.consequent {
                 self.emit_statement(s, ctx)?;
             }
         }
-        ctx.labels.label_map.insert(end_label, ctx.bytecode.len());
+        ctx.labels.set_label_pos(end_label, ctx.insts.len());
         ctx.pop_switch();
         Ok(None)
     }

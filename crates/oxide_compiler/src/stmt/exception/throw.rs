@@ -1,5 +1,7 @@
 use crate::compiler::{CompileCtx, Compiler};
-use oxide_bytecode::opcode::{self, OpCode};
+use crate::ir::inst::Inst;
+use crate::ir::operand::Operand;
+use oxide_bytecode::opcode::OpCode;
 use oxide_parser::Statement;
 
 impl Compiler {
@@ -8,7 +10,7 @@ impl Compiler {
             return Ok(None);
         };
         let exc_reg = self.emit_expression(&ts.argument, ctx)?;
-        ctx.emit(opcode::encode(OpCode::THROW, exc_reg, 0, 0));
+        ctx.inst(Inst::new(OpCode::THROW, Operand::Reg(exc_reg as u32), Operand::None, Operand::None));
         Ok(None)
     }
 }

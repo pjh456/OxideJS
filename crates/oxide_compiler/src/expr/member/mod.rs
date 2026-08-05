@@ -1,6 +1,8 @@
-use crate::compiler::{CompileCtx, Compiler, Label};
+use crate::compiler::{CompileCtx, Compiler};
+use crate::ir::inst::Inst;
+use crate::ir::operand::Operand;
 use oxide_bytecode::module::Constant;
-use oxide_bytecode::opcode::{self, OpCode};
+use oxide_bytecode::opcode::OpCode;
 use oxide_parser::Expression;
 
 impl Compiler {
@@ -14,27 +16,24 @@ impl Compiler {
             let prop_name = member.property.name.as_str();
             let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
             let key_reg = ctx.alloc_reg();
-            ctx.emit_load_const(key_reg, idx);
+            ctx.inst(Inst::load_const(Operand::Reg(key_reg as u32), idx));
             let this_reg = ctx.alloc_reg();
-            ctx.emit(opcode::encode(OpCode::LOAD_VAR, this_reg, 254, 0));
+            ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(this_reg as u32), Operand::This, Operand::None));
             let result_reg = ctx.alloc_reg();
             let op = if ctx.in_static_method {
                 OpCode::SUPER_STATIC_GET_PROP
             } else {
                 OpCode::SUPER_GET_PROP
             };
-            ctx.emit(opcode::encode(op, result_reg, this_reg, key_reg));
+            ctx.inst(Inst::new(op, Operand::Reg(result_reg as u32), Operand::Reg(this_reg as u32), Operand::Reg(key_reg as u32)));
             return Ok(result_reg);
         }
         let obj_reg = self.emit_expression(&member.object, ctx)?;
         let prop_name = member.property.name.as_str();
         let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
         let key_reg = ctx.alloc_reg();
-        ctx.emit(opcode::encode(OpCode::LOAD_CONST, key_reg, (idx & 0xFF) as u8, ((idx >> 8) & 0xFF) as u8));
-        ctx.emit(opcode::encode(OpCode::IC_GET_PROP, 0, obj_reg, key_reg));
-        ctx.emit(0);
-        ctx.emit(0);
-        ctx.emit(0);
+        ctx.inst(Inst::load_const(Operand::Reg(key_reg as u32), idx));
+        ctx.inst(Inst::ic_get(Operand::Reg(obj_reg as u32), Operand::Reg(key_reg as u32)));
         Ok(obj_reg)
     }
 
@@ -44,7 +43,7 @@ impl Compiler {
         let obj_reg = self.emit_expression(&member.object, ctx)?;
         let key_reg = self.emit_expression(&member.expression, ctx)?;
         let r = ctx.alloc_reg();
-        ctx.emit(opcode::encode(OpCode::GET_PROP_DYNAMIC, obj_reg, key_reg, r));
+        ctx.inst(Inst::new(OpCode::GET_PROP_DYNAMIC, Operand::Reg(obj_reg as u32), Operand::Reg(key_reg as u32), Operand::Reg(r as u32)));
         Ok(r)
     }
 
@@ -54,22 +53,21 @@ impl Compiler {
         let obj_reg = self.emit_expression(&member.object, ctx)?;
         let key_reg = self.emit_private_id_reg(member.field.name.as_str(), ctx)?;
         let r = ctx.alloc_reg();
-        ctx.emit(opcode::encode(OpCode::GET_PRIVATE, r, obj_reg, key_reg));
+        ctx.inst(Inst::new(OpCode::GET_PRIVATE, Operand::Reg(r as u32), Operand::Reg(obj_reg as u32), Operand::Reg(key_reg as u32)));
         Ok(r)
     }
 
     fn emit_chain_expression(&self, chain: &oxide_parser::ChainExpression, ctx: &mut CompileCtx) -> Result<u8, String> {
-        let id = ctx.next_label_id();
-        let short_label = Label::TernaryElse(id);
-        let end_label = Label::TernaryEnd(id);
+        let short_label = ctx.next_label_id();
+        let end_label = ctx.next_label_id();
         let value_reg = self.emit_chain_element(&chain.expression, Some(short_label), ctx)?;
         let result_reg = ctx.alloc_reg();
-        ctx.emit(opcode::encode(OpCode::LOAD_VAR, result_reg, value_reg, 0));
-        ctx.emit_jmp_labeled(end_label);
-        ctx.labels.label_map.insert(short_label, ctx.bytecode.len());
+        ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg as u32), Operand::Reg(value_reg as u32), Operand::None));
+        ctx.inst(Inst::jmp(end_label));
+        ctx.labels.set_label_pos(short_label, ctx.insts.len());
         let undefined_idx = ctx.add_constant(Constant::Undefined);
-        ctx.emit_load_const(result_reg, undefined_idx);
-        ctx.labels.label_map.insert(end_label, ctx.bytecode.len());
+        ctx.inst(Inst::load_const(Operand::Reg(result_reg as u32), undefined_idx));
+        ctx.labels.set_label_pos(end_label, ctx.insts.len());
         Ok(result_reg)
     }
 
