@@ -193,9 +193,31 @@ fn rewrite_inst(
         }
     };
 
-    let mut rd = rewrite(inst.rd);
+    let rd = rewrite(inst.rd);
     let mut a = rewrite(inst.a);
     let mut b = rewrite(inst.b);
+    // TEMPLATE_STR 的 ext 编码表达式寄存器（seg>>31==1 时低 8 位为 expr_reg）——必须随
+    // RegAlloc 重映射，否则读旧 vreg 号对应的物理槽（错值）。
+    let ext = if inst.op == OpCode::TEMPLATE_STR {
+        let mut ext = inst.ext.clone();
+        for seg in ext.iter_mut().skip(1) {
+            if *seg >> 31 == 1 {
+                let r = *seg & 0xFF;
+                let nr = if let Some(&c) = slot_color.get(&r) {
+                    c
+                } else {
+                    match map.map.get(&r) {
+                        Some(Alloc::Phys(p)) => *p,
+                        _ => r, // 非真实 vreg / spilled 未覆盖（防御保留原号）
+                    }
+                };
+                *seg = (*seg & !0xFFu32) | (nr & 0xFF);
+            }
+        }
+        ext
+    } else {
+        inst.ext.clone()
+    };
     // 调用点首参槽改指 arg_window_base（桥接后）
     if let Some(ab) = arg_base {
         match inst.op {
@@ -212,11 +234,8 @@ fn rewrite_inst(
             _ => {}
         }
     }
-    let _ = &mut rd;
-    let _ = &mut a;
-    let _ = &mut b;
     let _ = f;
-    (Inst { op: inst.op, rd, a, b, ext: inst.ext.clone() }, arg_movs)
+    (Inst { op: inst.op, rd, a, b, ext }, arg_movs)
 }
 
 /// terminator 判定：跳转族 + RETURN/HALT/THROW（def 结果必死，SPILL 跳过）。

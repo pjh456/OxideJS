@@ -750,6 +750,17 @@ impl Emitter {
         ctx.own_bindings = self.collect_own_binding_names(&param_names, body_stmts);
         ctx.captured_bindings = self.collect_captured_bindings(body_stmts, &ctx.own_bindings);
 
+        // 被捕获的参数也必须建 cell（MAKE_CELL）：否则子函数经 lazy upvalue 路径读
+        // 自身寄存器（依赖调用者寄存器残留），vreg 化/RegAlloc 移动寄存器后读到垃圾。
+        // 与 var/let/const 的 MAKE_CELL 语义一致（binding.rs:50）。
+        for spec in param_specs {
+            let name = spec.register_name();
+            if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
+                let reg = ctx.lookup(name)?;
+                ctx.inst(Inst::new(OpCode::MAKE_CELL, Operand::Reg(reg), Operand::Imm(cell_idx as u16), Operand::None));
+            }
+        }
+
         // Free variable analysis for upvalue capture (Ordinary + Arrow functions only)
         if matches!(body_context, FunctionBodyContext::Ordinary | FunctionBodyContext::Arrow) {
             ctx.current_upvalue_captures =

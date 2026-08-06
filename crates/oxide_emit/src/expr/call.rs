@@ -20,7 +20,7 @@ impl Emitter {
                     arg_regs.push(self.emit_expression(expr, ctx)?);
                 }
             }
-            let first_arg_reg = if arg_regs.is_empty() { 0u32 } else { arg_regs[0] };
+            let first_arg_reg = if arg_regs.is_empty() { 0u32 } else { pack_arg_regs(&mut arg_regs, ctx) };
             let result_reg = ctx.alloc_reg();
             ctx.inst(Inst::super_call(
                 Operand::Reg(result_reg),
@@ -88,7 +88,7 @@ impl Emitter {
                 arg_regs.push(self.emit_expression(expr, ctx)?);
             }
         }
-        let first_arg_reg = if arg_regs.is_empty() { 0u32 } else { arg_regs[0] };
+        let first_arg_reg = if arg_regs.is_empty() { 0u32 } else { pack_arg_regs(&mut arg_regs, ctx) };
         let op = match &call.callee {
             Expression::Identifier(ident) if ctx.is_builtin(ident.name.as_str()) => OpCode::CALL_NATIVE,
             _ => OpCode::CALL,
@@ -123,4 +123,24 @@ impl Emitter {
             _ => self.emit_unsupported_expression(expr, ctx),
         }
     }
+}
+
+/// 把调用参数打包到连续寄存器块（VM 按 `regs[first_arg + i]` 连续读参数，D-17/调用契约）。
+/// vreg 化（05-02）后各参数由独立 vreg 承载，复杂表达式（对象/数组字面量、嵌套调用）
+/// 的临时寄存器会使参数 vreg 不连续——这里检测到不连续时用 MOV 打包到新连续块。
+/// 返回首参寄存器；参数为空时返回 0。
+fn pack_arg_regs(arg_regs: &mut [u32], ctx: &mut CompileCtx) -> u32 {
+    let consecutive = arg_regs.windows(2).all(|w| w[1] == w[0] + 1);
+    if consecutive {
+        return arg_regs[0];
+    }
+    // 预留连续块（单调 alloc_reg 保证 base..base+n 连续）
+    let base = ctx.alloc_reg();
+    for _ in 1..arg_regs.len() {
+        ctx.alloc_reg();
+    }
+    for (i, &reg) in arg_regs.iter().enumerate() {
+        ctx.inst(Inst::inst_mov(Operand::Reg(base + i as u32), Operand::Reg(reg)));
+    }
+    base
 }

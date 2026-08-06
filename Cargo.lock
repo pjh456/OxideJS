@@ -1120,12 +1120,15 @@ name = "oxide_compiler"
 version = "0.1.0"
 dependencies = [
  "oxide_bytecode",
+ "oxide_cfg",
  "oxide_code_cache",
  "oxide_dce",
  "oxide_emit",
  "oxide_ir",
+ "oxide_liveness",
  "oxide_log",
  "oxide_parser",
+ "oxide_regalloc",
  "rustc-hash",
  "serde",
  "serde_json",
@@ -1214,6 +1217,7 @@ version = "0.1.0"
 dependencies = [
  "oxide_bytecode",
  "oxide_cfg",
+ "oxide_dce",
  "oxide_emit",
  "oxide_ir",
  "oxide_liveness",

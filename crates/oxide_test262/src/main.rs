@@ -168,6 +168,10 @@ struct RunConfig {
     supervise: bool,
     leak_check: bool,
     leak_check_interval: usize,
+    /// D-18：关闭 liveness/精确 DCE/RegAlloc 链（on/off 对比基础设施）。
+    no_regalloc: bool,
+    /// 逐测试打印 PASS/FAIL/SKIP（on/off 结果集合对比用）。
+    verbose: bool,
 }
 
 /// 内嵌的 test262 harness 辅助脚本注册表（编译期 include_str! 打包）。
@@ -322,6 +326,8 @@ impl RunConfig {
             supervise: false,
             leak_check: false,
             leak_check_interval: 1000,
+            no_regalloc: false,
+            verbose: false,
         }
     }
 
@@ -333,6 +339,8 @@ impl RunConfig {
         for arg in args.iter().skip(1) {
             match arg.as_str() {
                 "--no-skip" => config.no_skip = true,
+                "--no-regalloc" => config.no_regalloc = true,
+                "--verbose" => config.verbose = true,
                 "--supervise" => config.supervise = true,
                 "--leak-check" => config.leak_check = true,
                 "--help" | "-h" => return Err(Self::usage()),
@@ -360,9 +368,11 @@ impl RunConfig {
 
     /// 打印用法说明。
     fn usage() -> String {
-        "usage: test262-runner [--no-skip] [--supervise] [--leak-check] [--leak-check-interval=N] [test262-root] [path-filter]\n\
+        "usage: test262-runner [--no-skip] [--no-regalloc] [--verbose] [--supervise] [--leak-check] [--leak-check-interval=N] [test262-root] [path-filter]\n\
          \n\
          --no-skip    Run capability-excluded tests and count unsupported compile/runtime results as failures.\n\
+         --no-regalloc  Disable the liveness/precise-DCE/RegAlloc compiler chain (vregs stay as physical numbers).\n\
+         --verbose    Print one PASS/FAIL/SKIP line per test (for on/off result-set comparison).\n\
          --supervise  Run the suite as single-worker child-process windows with a hard per-test timeout and\n\
          \x20            automatic resume past any hanging/crashing test. A hang or crash is reported by path.\n\
          --leak-check Monitor session_object_ptrs, session_bytes, code_forge.len(), symbol_registry.len() every\n\
@@ -423,14 +433,15 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
 }
 
 /// 在 catch_unwind 保护下运行单个测试，把引擎 panic 记为失败。
+#[expect(clippy::too_many_arguments)]
 fn run_test(
     path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<KernelCore>, harness: &HarnessSources,
-    harness_cache: &Arc<RwLock<HarnessPrefixCache>>, no_skip: bool,
+    harness_cache: &Arc<RwLock<HarnessPrefixCache>>, no_skip: bool, no_regalloc: bool,
 ) -> TestResult {
     let start = std::time::Instant::now();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_test_inner(path, source, meta, kernel, harness, harness_cache, no_skip)
+        run_test_inner(path, source, meta, kernel, harness, harness_cache, no_skip, no_regalloc)
     }));
 
     match result {
@@ -444,9 +455,10 @@ fn run_test(
 
 /// 单测执行主流程：拼 harness 前缀 → parse → compile → run；
 /// 依据 `negative` 元数据校验期望错误，未实现特性按 no_skip 选择跳过或失败。
+#[expect(clippy::too_many_arguments)]
 fn run_test_inner(
     path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<KernelCore>, harness: &HarnessSources,
-    harness_cache: &Arc<RwLock<HarnessPrefixCache>>, no_skip: bool,
+    harness_cache: &Arc<RwLock<HarnessPrefixCache>>, no_skip: bool, no_regalloc: bool,
 ) -> TestResult {
     let start = std::time::Instant::now();
 
@@ -478,7 +490,8 @@ fn run_test_inner(
         }
     };
 
-    let module = match Compiler::new().compile(&program) {
+    let compiler = if no_regalloc { Compiler::new().with_regalloc(false) } else { Compiler::new() };
+    let module = match compiler.compile(&program) {
         Ok(m) => m,
         Err(e) => {
             let dur = start.elapsed().as_millis() as u64;
@@ -982,8 +995,8 @@ fn run_supervised(args: &[String], skip_until: usize, end_index: usize, no_skip:
 /// exactly one `TestResult`. Worker-owned state (`kernel`, `harness_sources`,
 /// `harness_cache`) never crosses a thread boundary.
 fn process_path(
-    path: &Path, filter: &Option<String>, no_skip: bool, kernel: &Arc<KernelCore>, harness_sources: &HarnessSources,
-    harness_cache: &Arc<RwLock<HarnessPrefixCache>>,
+    path: &Path, filter: &Option<String>, no_skip: bool, no_regalloc: bool, kernel: &Arc<KernelCore>,
+    harness_sources: &HarnessSources, harness_cache: &Arc<RwLock<HarnessPrefixCache>>,
 ) -> TestResult {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -1016,7 +1029,7 @@ fn process_path(
         }
     }
 
-    run_test(path, &source, &meta, kernel, harness_sources, harness_cache, no_skip)
+    run_test(path, &source, &meta, kernel, harness_sources, harness_cache, no_skip, no_regalloc)
 }
 
 /// Build a runner kernel with a bounded step limit. Each parallel worker owns
@@ -1242,6 +1255,8 @@ fn run_tests() -> bool {
     let progress = AtomicUsize::new(skip_until);
     let filter = &filter;
     let no_skip = config.no_skip;
+    let no_regalloc = config.no_regalloc;
+    let verbose = config.verbose;
     let paths_ref = &paths;
     let heartbeat_ref = &heartbeat_path;
     let harness_cache = Arc::new(RwLock::new(HarnessPrefixCache::new()));
@@ -1284,9 +1299,18 @@ fn run_tests() -> bool {
                                 write_heartbeat(hb, "START", i, stats.pass, stats.fail, stats.skip);
                             }
 
-                            let result =
-                                process_path(&paths_ref[i], filter, no_skip, &kernel, harness_sources, &harness_cache);
+                            let result = process_path(
+                                &paths_ref[i], filter, no_skip, no_regalloc, &kernel, harness_sources, &harness_cache,
+                            );
                             stats.record(&result);
+                            if verbose {
+                                let tag = match &result.outcome {
+                                    TestOutcome::Pass(_) => "PASS",
+                                    TestOutcome::Fail(_) => "FAIL",
+                                    TestOutcome::Skip(_) => "SKIP",
+                                };
+                                println!("{tag} {}", paths_ref[i].display());
+                            }
                             tests_since_kernel_reset += 1;
 
                             let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
