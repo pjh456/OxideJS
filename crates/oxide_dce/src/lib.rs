@@ -126,11 +126,15 @@ fn pass_c_sweep(f: &mut IRFunction, keep: &[bool]) {
             *pos = old_to_new.get(old).filter(|n| **n != usize::MAX).copied();
         }
     }
+    // 防御性校验（T-04-03）：存活 label 新下标不越界（空尾块映射 new insts.len() 合法透传）
+    let new_len = f.insts.len();
+    debug_assert!(f.label_pos.iter().all(|p| p.map_or(true, |np| np <= new_len)));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxide_bytecode::module::Constant;
     use oxide_bytecode::opcode::OpCode;
     use oxide_ir::inst::Inst;
     use oxide_ir::operand::Operand;
@@ -269,5 +273,74 @@ mod tests {
         dce(&mut f);
         assert_eq!(f.insts.len(), 1);
         assert_eq!(f.insts[0].op, OpCode::RETURN);
+    }
+
+    /// 存活 label 新旧下标对应：删除前置死指令后，label 目标重映射到新下标。
+    #[test]
+    fn live_label_remapped_to_new_index() {
+        let mut f = IRFunction::new();
+        f.insts.push(Inst::load_const(Operand::Reg(5), 1)); // 0: 存活（RETURN 保活 r5）
+        f.insts.push(Inst::load_const(Operand::Reg(9), 2)); // 1: 死（r9 无人读，删）
+        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None)); // 2
+        f.label_pos = vec![Some(2)]; // label 0 → inst 2（RETURN）
+        f.label_count = 1;
+
+        dce(&mut f);
+        assert_eq!(f.insts.len(), 2, "死 LOAD_CONST 删除");
+        assert_eq!(f.insts[0].op, OpCode::LOAD_CONST);
+        assert_eq!(f.insts[1].op, OpCode::RETURN);
+        assert_eq!(f.label_pos, vec![Some(1)], "存活 label 2 → 新下标 1");
+    }
+
+    /// 空函数退化：insts 空时 dce 直接返回，状态不变。
+    #[test]
+    fn empty_function_unchanged() {
+        let mut f = IRFunction::new();
+        dce(&mut f);
+        assert!(f.insts.is_empty());
+        assert!(f.label_pos.is_empty());
+        assert_eq!(f.label_count, 0);
+    }
+
+    /// 幂等性：dce 两次结果一致（不动点后无二次改写）。
+    #[test]
+    fn dce_is_idempotent() {
+        let mut f = IRFunction::new();
+        f.insts.push(Inst::load_const(Operand::Reg(1), 0)); // 0: 死
+        f.insts.push(Inst::new(OpCode::ADD, Operand::Reg(2), Operand::Reg(1), Operand::Reg(1))); // 1: 死
+        f.insts.push(Inst::load_const(Operand::Reg(0), 1)); // 2: 存活（CALL 保活 r0）
+        f.insts.push(Inst::call(Operand::Reg(0), Operand::Reg(0), Operand::Reg(0), 0)); // 3
+        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None)); // 4
+        f.label_pos = vec![Some(0)];
+
+        dce(&mut f);
+        let once_insts = f.insts.clone();
+        let once_labels = f.label_pos.clone();
+        dce(&mut f);
+        assert_eq!(f.insts, once_insts, "二次 dce 后 insts 不变");
+        assert_eq!(f.label_pos, once_labels, "二次 dce 后 label_pos 不变");
+    }
+
+    /// 不动域断言（D-14/D-04/D-03/D-13）：constants / n_registers / nested / label_count
+    /// 一律不动；死 label 置 None、存活 label 重映射、原 None 保持。
+    #[test]
+    fn untouched_domains_asserted() {
+        let mut f = IRFunction::new();
+        f.insts.push(Inst::load_const(Operand::Reg(1), 0)); // 0: 死（label 0 目标 → None）
+        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None)); // 1
+        f.label_pos = vec![Some(0), Some(1), None];
+        f.label_count = 3;
+        f.n_registers = 10;
+        f.constants = vec![Constant::Number(1.0)];
+        f.nested.push(IRFunction::new());
+
+        dce(&mut f);
+        assert_eq!(f.insts.len(), 1);
+        assert_eq!(f.insts[0].op, OpCode::RETURN);
+        assert_eq!(f.label_pos, vec![None, Some(0), None], "死 label→None、存活→新下标、原 None 保持");
+        assert_eq!(f.label_count, 3, "label_count 不动（D-13）");
+        assert_eq!(f.n_registers, 10, "n_registers 不收缩（D-04）");
+        assert_eq!(f.constants, vec![Constant::Number(1.0)], "常量池不清理（D-14）");
+        assert_eq!(f.nested.len(), 1, "nested 不递归不回收（D-03）");
     }
 }
