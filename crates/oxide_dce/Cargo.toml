@@ -1,0 +1,16 @@
+[package]
+name = "oxide_dce"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OxideJS - dead code elimination pass over IR (reachability + use-count iteration + mark-sweep)"
+
+[dependencies]
+oxide_ir = { path = "../oxide_ir" }
+oxide_cfg = { path = "../oxide_cfg" }
+
+[dev-dependencies]
+oxide_parser = { path = "../oxide_parser" }
+oxide_emit = { path = "../oxide_emit" }
+oxide_vm = { path = "../oxide_vm" }
