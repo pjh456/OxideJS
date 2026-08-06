@@ -95,6 +95,11 @@ pub(super) fn build(
     // escaped：递归 nested 收集 LOAD_VAR.a / STORE_VAR.rd 直引的父槽（B012）
     let mut escaped_colors: Vec<u32> = Vec::new();
     collect_escaped(&f.nested, &mut pre_colors, &mut escaped_colors);
+    // 对称缺口（B013 延伸）：子模块自身引用的父槽也必须预着色恒等。父侧 collect_escaped
+    // 只保证父不移动槽；但子模块 alloc 时，它引用父槽的 LOAD_VAR.a / STORE_VAR.rd 会被
+    // 当作子模块自己的 vreg 参与染色而移走 → 子模块读错物理槽。分界线 = param_layout.base
+    // （emit 的 inherited_reg_start 继承机制：子模块 vreg ≥ base，父槽引用 < base）。
+    collect_own_escaped(f, &mut pre_colors, &mut escaped_colors);
 
     // ── 可分配色集 ──
     let max_nargs = f
@@ -186,6 +191,33 @@ fn collect_escaped(nested: &[IRFunction], pre_colors: &mut BTreeMap<u32, u32>, o
             }
         }
         collect_escaped(&sub.nested, pre_colors, out);
+    }
+    out.sort_unstable();
+}
+
+/// 收集当前函数自身对父槽的直接引用（B013 延伸，父侧保护的对称缺口）：
+/// `LOAD_VAR.a` / `STORE_VAR.rd` 中槽号 < param_layout.base 的 vreg 是父槽引用
+/// （emit inherited_reg_start 分界：子函数自身 vreg 从 base 起分配，父槽引用 < base）。
+/// 父侧 collect_escaped 只保护父不移动槽；此处保证子函数 alloc 时这些引用不被染色移走。
+fn collect_own_escaped(f: &IRFunction, pre_colors: &mut BTreeMap<u32, u32>, out: &mut Vec<u32>) {
+    let base = f.param_layout.base;
+    if base == 0 {
+        return; // 顶层/无父槽场景无分界，跳过
+    }
+    for inst in &f.insts {
+        let slot = match inst.op {
+            OpCode::LOAD_VAR => inst.a,
+            OpCode::STORE_VAR => inst.rd,
+            _ => Operand::None,
+        };
+        if let Operand::Reg(r) = slot {
+            if r < base {
+                pre_colors.entry(r).or_insert(r);
+                if !out.contains(&r) {
+                    out.push(r);
+                }
+            }
+        }
     }
     out.sort_unstable();
 }

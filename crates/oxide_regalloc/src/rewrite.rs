@@ -269,6 +269,9 @@ pub(super) fn spilled_builtin_bindings(f: &IRFunction, map: &AllocMap) -> Vec<(S
     }
     // escaped 色（递归 nested 的 LOAD_VAR.a / STORE_VAR.rd）
     collect_escaped(&f.nested, &mut excluded);
+    // own-escaped 色（B013 延伸）：本函数 LOAD_VAR.a / STORE_VAR.rd 引用父槽（< base）。
+    // 与 graph.rs collect_own_escaped 对称——spill 自由色不得占用父槽号。
+    collect_own_escaped(f, &mut excluded);
     // 窗口
     for c in map.arg_window_base..=253 {
         excluded.push(c);
@@ -318,6 +321,27 @@ fn collect_escaped(nested: &[IRFunction], out: &mut Vec<u32>) {
             }
         }
         collect_escaped(&sub.nested, out);
+    }
+}
+
+/// 收集本函数 LOAD_VAR.a / STORE_VAR.rd 中引用父槽（槽号 < param_layout.base）的 vreg。
+/// 与 graph.rs::collect_own_escaped 对称：base = emit inherited_reg_start 分界线。
+fn collect_own_escaped(f: &IRFunction, out: &mut Vec<u32>) {
+    let base = f.param_layout.base;
+    if base == 0 {
+        return;
+    }
+    for inst in &f.insts {
+        let slot = match inst.op {
+            OpCode::LOAD_VAR => inst.a,
+            OpCode::STORE_VAR => inst.rd,
+            _ => Operand::None,
+        };
+        if let Operand::Reg(r) = slot {
+            if r < base {
+                out.push(r);
+            }
+        }
     }
 }
 
