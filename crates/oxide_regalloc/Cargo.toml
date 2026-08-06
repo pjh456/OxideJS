@@ -10,9 +10,10 @@ description = "OxideJS - register allocation pass over IR (interference graph + 
 oxide_ir = { path = "../oxide_ir" }
 oxide_liveness = { path = "../oxide_liveness" }
 oxide_bytecode = { path = "../oxide_bytecode" }
+oxide_cfg = { path = "../oxide_cfg" }
 
 [dev-dependencies]
 oxide_parser = { path = "../oxide_parser" }
 oxide_emit = { path = "../oxide_emit" }
 oxide_vm = { path = "../oxide_vm" }
-oxide_cfg = { path = "../oxide_cfg" }
+oxide_dce = { path = "../oxide_dce" }
