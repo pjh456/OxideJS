@@ -205,6 +205,21 @@ impl Inst {
     pub fn try_finally_begin(label: LabelId) -> Self {
         Self::new(OpCode::TRY_FINALLY_BEGIN, Operand::None, Operand::None, Operand::Label(label))
     }
+
+    // ── 寄存器契约（DCE 与 liveness 共用，D-06）──
+
+    /// 本指令定义的寄存器（None 槽按 Reg(0) 映射；CALL 系含隐式 reg 0）。
+    /// 无写入返回 None。
+    pub fn def_reg(&self) -> Option<u32> {
+        // TODO: Pattern 2 表逐 opcode 实现
+        None
+    }
+
+    /// 本指令读取的寄存器（None 槽按 Reg(0) 映射；HALT 特判 reg 0；TEMPLATE_STR 解析 ext）。
+    pub fn use_regs(&self) -> SmallVec<[u32; 4]> {
+        // TODO: Pattern 2 表逐 opcode 实现
+        SmallVec::new()
+    }
 }
 
 #[cfg(test)]
@@ -318,5 +333,192 @@ mod tests {
         assert_eq!(inst.ext[0], (3 << 16) | 10);
         assert_eq!(inst.ext[1], 0x1234);
         assert_eq!(inst.ext[2], 0x8000_0000 | 5);
+    }
+
+    // ── def_reg / use_regs 契约测试（Pattern 2 表，反直觉槽位手工 IR 锁定）──
+
+    #[test]
+    fn binary_op_def_rd_use_ab() {
+        let inst = Inst::new(OpCode::ADD, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2));
+        assert_eq!(inst.def_reg(), Some(0));
+        assert_eq!(inst.use_regs().as_slice(), &[1, 2]);
+    }
+
+    #[test]
+    fn unary_op_def_rd_use_a() {
+        let inst = Inst::new(OpCode::NEG, Operand::Reg(0), Operand::Reg(1), Operand::None);
+        assert_eq!(inst.def_reg(), Some(0));
+        assert_eq!(inst.use_regs().as_slice(), &[1]);
+    }
+
+    #[test]
+    fn get_prop_def_is_a_slot_not_rd() {
+        // Pitfall 3：GET_PROP rd=obj 是 use，结果写 a 槽
+        let inst = Inst::new(OpCode::GET_PROP, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2));
+        assert_eq!(inst.def_reg(), Some(1));
+        assert_eq!(inst.use_regs().as_slice(), &[0, 2]);
+    }
+
+    #[test]
+    fn get_prop_dynamic_def_is_b_slot() {
+        // Pitfall 3：GET_PROP_DYNAMIC rd=obj 是 use，结果写 b 槽
+        let inst = Inst::new(OpCode::GET_PROP_DYNAMIC, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2));
+        assert_eq!(inst.def_reg(), Some(2));
+        assert_eq!(inst.use_regs().as_slice(), &[0, 1]);
+    }
+
+    #[test]
+    fn ic_get_prop_a_slot_is_use_and_def() {
+        // Pitfall 3：IC_GET_PROP a 槽既是对象 use 又是结果 def
+        let inst = Inst::ic_get(Operand::Reg(1), Operand::Reg(2));
+        assert_eq!(inst.def_reg(), Some(1));
+        let uses = inst.use_regs();
+        assert_eq!(uses.as_slice(), &[1, 2]);
+    }
+
+    #[test]
+    fn call_def_is_implicit_reg0_with_arg_range() {
+        // Pitfall 1：CALL rd=callee 是 use，结果隐式写 reg 0；参数 b..b+nargs 连续
+        let inst = Inst::call(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2), 3);
+        assert_eq!(inst.def_reg(), Some(0));
+        assert_eq!(inst.use_regs().as_slice(), &[0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn call_native_def_is_implicit_reg0() {
+        let inst = Inst::call_native(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2), 1);
+        assert_eq!(inst.def_reg(), Some(0));
+        assert_eq!(inst.use_regs().as_slice(), &[0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn new_expression_uses_ctor_and_arg_range() {
+        let inst = Inst::new_expression(Operand::Reg(3), Operand::Reg(0), Operand::Reg(1), 2);
+        assert_eq!(inst.def_reg(), Some(3));
+        assert_eq!(inst.use_regs().as_slice(), &[0, 1, 2]);
+    }
+
+    #[test]
+    fn super_call_uses_arg_range() {
+        let inst = Inst::super_call(Operand::Reg(3), Operand::Reg(1), 1);
+        assert_eq!(inst.def_reg(), Some(3));
+        assert_eq!(inst.use_regs().as_slice(), &[1]);
+    }
+
+    #[test]
+    fn halt_implicitly_uses_reg0() {
+        // Pitfall 2：HALT 返回 regs[0]，顶层 LOAD_VAR(None, r) 链靠它保活
+        let inst = Inst::new(OpCode::HALT, Operand::None, Operand::None, Operand::None);
+        assert_eq!(inst.def_reg(), None);
+        assert_eq!(inst.use_regs().as_slice(), &[0]);
+    }
+
+    #[test]
+    fn void_defs_rd_no_use() {
+        // VM 的 VOID handler 不读 a 槽
+        let inst = Inst::new(OpCode::VOID, Operand::Reg(1), Operand::Reg(2), Operand::None);
+        assert_eq!(inst.def_reg(), Some(1));
+        assert!(inst.use_regs().is_empty());
+    }
+
+    #[test]
+    fn load_const_create_closure_load_upvalue_no_use() {
+        // a 槽是 Const/Imm 立即数，非寄存器
+        let lc = Inst::load_const(Operand::Reg(1), 5);
+        assert_eq!(lc.def_reg(), Some(1));
+        assert!(lc.use_regs().is_empty());
+
+        let cc = Inst::create_closure(Operand::Reg(1), 0);
+        assert_eq!(cc.def_reg(), Some(1));
+        assert!(cc.use_regs().is_empty());
+
+        let lu = Inst::new(OpCode::LOAD_UPVALUE, Operand::Reg(1), Operand::Imm(0), Operand::None);
+        assert_eq!(lu.def_reg(), Some(1));
+        assert!(lu.use_regs().is_empty());
+    }
+
+    #[test]
+    fn none_slot_maps_to_reg0() {
+        // A3：None 槽与 lower.rs operand_to_u8 一致，统一映射物理 reg 0
+        let lv = Inst::new(OpCode::LOAD_VAR, Operand::Reg(1), Operand::None, Operand::None);
+        assert_eq!(lv.use_regs().as_slice(), &[0]);
+
+        let cg = Inst::new(OpCode::CELL_GET, Operand::Reg(0), Operand::None, Operand::Imm(0));
+        assert_eq!(cg.use_regs().as_slice(), &[0]);
+    }
+
+    #[test]
+    fn template_str_parses_expr_regs_from_ext() {
+        // ext[0] 跳过；后续 seg>>31==1 则低 8 位是 expr_reg（A1，emit 8 位编码）
+        let with_expr = Inst::template_str(Operand::Reg(1), 2, 10, &[0x1234, 0x8000_0000 | 5]);
+        assert_eq!(with_expr.use_regs().as_slice(), &[5]);
+
+        // 纯 quasi（无表达式）：不误报寄存器
+        let no_expr = Inst::template_str(Operand::Reg(1), 1, 10, &[0x1234]);
+        assert!(no_expr.use_regs().is_empty());
+    }
+
+    #[test]
+    fn jmp_if_false_uses_cond_reg() {
+        let inst = Inst::jmp_if_false(3, 9);
+        assert_eq!(inst.def_reg(), None);
+        assert_eq!(inst.use_regs().as_slice(), &[3]);
+    }
+
+    #[test]
+    fn jmp_and_try_no_use() {
+        assert!(Inst::jmp(9).use_regs().is_empty());
+        assert!(Inst::try_begin(9).use_regs().is_empty());
+        assert!(Inst::try_finally_begin(9).use_regs().is_empty());
+    }
+
+    #[test]
+    fn make_cell_no_def_uses_rd() {
+        let inst = Inst::new(OpCode::MAKE_CELL, Operand::Reg(5), Operand::None, Operand::None);
+        assert_eq!(inst.def_reg(), None);
+        assert_eq!(inst.use_regs().as_slice(), &[5]);
+    }
+
+    #[test]
+    fn cell_set_and_store_upvalue_use_a_no_def() {
+        let cs = Inst::new(OpCode::CELL_SET, Operand::None, Operand::Reg(1), Operand::Imm(0));
+        assert_eq!(cs.def_reg(), None);
+        assert_eq!(cs.use_regs().as_slice(), &[1]);
+
+        let su = Inst::new(OpCode::STORE_UPVALUE, Operand::None, Operand::Reg(1), Operand::Imm(0));
+        assert_eq!(su.def_reg(), None);
+        assert_eq!(su.use_regs().as_slice(), &[1]);
+    }
+
+    #[test]
+    fn return_throw_use_rd_with_none_mapping_reg0() {
+        let ret = Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None);
+        assert_eq!(ret.def_reg(), None);
+        assert_eq!(ret.use_regs().as_slice(), &[0]);
+
+        let thr = Inst::new(OpCode::THROW, Operand::Reg(2), Operand::None, Operand::None);
+        assert_eq!(thr.def_reg(), None);
+        assert_eq!(thr.use_regs().as_slice(), &[2]);
+    }
+
+    #[test]
+    fn rest_object_uses_a() {
+        let inst = Inst::rest_object(Operand::Reg(0), Operand::Reg(1), 7);
+        assert_eq!(inst.def_reg(), Some(0));
+        assert_eq!(inst.use_regs().as_slice(), &[1]);
+    }
+
+    #[test]
+    fn for_in_next_defs_rd_no_use() {
+        let inst = Inst::new(OpCode::FOR_IN_NEXT, Operand::Reg(0), Operand::None, Operand::None);
+        assert_eq!(inst.def_reg(), Some(0));
+        assert!(inst.use_regs().is_empty());
+    }
+
+    #[test]
+    fn store_var_def_rd_use_a() {
+        let inst = Inst::new(OpCode::STORE_VAR, Operand::Reg(0), Operand::Reg(1), Operand::None);
+        assert_eq!(inst.def_reg(), Some(0));
+        assert_eq!(inst.use_regs().as_slice(), &[1]);
     }
 }
