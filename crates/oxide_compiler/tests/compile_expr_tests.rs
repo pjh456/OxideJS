@@ -85,12 +85,10 @@ fn compile_negation() {
 fn compile_multiple_stmts() {
     let module = compile_source("1; 2; 3;");
 
-    let load_count = module
-        .bytecode
-        .iter()
-        .filter(|&&i| opcode::opcode(i) == OpCode::LOAD_CONST)
-        .count();
-    assert!(load_count >= 3);
+    // D-11 放宽：Compiler 默认 DCE 开启，死 `1; 2` 链的 LOAD_CONST 被删除，
+    // 仅剩顶层值 `3` 的 LOAD_CONST（HALT 经 reg0 返回）。精确计数断言放宽为存在性断言。
+    let has_load = module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::LOAD_CONST);
+    assert!(has_load, "expected at least one LOAD_CONST for the final value");
 }
 
 #[test]
