@@ -9,12 +9,17 @@
 //! 本 pass 不碰 nested（D-03 不递归）、常量池（D-14 不清理）、n_registers（D-04 不收缩）、
 //! label_count（D-13 不读不改）。中间产物（keep/use_count）用局部 Vec 显式传参，
 //! 不做 struct 状态持有（无共享可变状态约定）。零 unsafe。
+//!
+//! 精确二轮 `dce_precise`（D-17/D-19/D-20）：liveness 驱动的死指令 + 局部死 STORE_VAR 删除，
+//! 消费 `oxide_liveness::LiveInfo`，mark-sweep 重建复用 Pass C。
 
 mod iter_sweep;
+mod precise_sweep;
 mod reachability;
 mod rebuild;
 
 use oxide_ir::IRFunction;
+use oxide_liveness::LiveInfo;
 
 /// 死代码消除：块级不可达删除 + 全函数 use 计数迭代删除到不动点 + mark-sweep 重建。
 pub fn dce(f: &mut IRFunction) {
@@ -27,6 +32,24 @@ pub fn dce(f: &mut IRFunction) {
     // Pass B：可达存活指令上全函数 use 计数迭代删除到不动点（D-02 连锁语义）。
     iter_sweep::pass_b_dead_code(f, &mut keep);
     // Pass C：mark-sweep 一次性重建 insts + label_pos 重映射（D-13）。
+    rebuild::pass_c_sweep(f, &keep);
+}
+
+/// 精确二轮（D-17/D-19/D-20）：liveness 驱动的死指令 + 局部死 STORE_VAR 删除。
+/// 消费 oxide_liveness::LiveInfo（RegAlloc 前由 05-09 管线传入；入口处重跑 liveness
+/// 是 RegAlloc 的职责，D-17 意图：不重复建分析引擎）。mark-sweep 重建复用既有 Pass C。
+pub fn dce_precise(f: &mut IRFunction, live: &LiveInfo) {
+    // 空函数退化（照 dce 先例）
+    if f.insts.is_empty() {
+        return;
+    }
+    // 维度守卫：live 与 insts 对齐才可信（删改后的过期 LiveInfo 索引错位会误删活指令）
+    if live.inst_live_after.len() != f.insts.len() {
+        return;
+    }
+    let mut keep = vec![true; f.insts.len()];
+    precise_sweep::pass_dead_with_liveness(f, live, &mut keep);
+    // D-20：mark-sweep 一次性重建
     rebuild::pass_c_sweep(f, &keep);
 }
 

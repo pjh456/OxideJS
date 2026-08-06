@@ -10,6 +10,7 @@ description = "OxideJS - dead code elimination pass over IR (reachability + use-
 oxide_ir = { path = "../oxide_ir" }
 oxide_cfg = { path = "../oxide_cfg" }
 oxide_bytecode = { path = "../oxide_bytecode" }
+oxide_liveness = { path = "../oxide_liveness" }
 
 [dev-dependencies]
 oxide_parser = { path = "../oxide_parser" }

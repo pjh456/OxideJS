@@ -496,6 +496,7 @@ impl CompileCtx {
             needs_home_object: false,
             captured_this_const_idx: 0,
             function_name: None,
+            is_top_level: parent_ctx.is_none(),
             const_overflow: self.const_overflow,
             nested: std::mem::take(&mut self.nested),
         }

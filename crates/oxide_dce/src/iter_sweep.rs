@@ -79,7 +79,8 @@ pub(super) fn pass_b_dead_code(f: &IRFunction, keep: &mut [bool]) {
 
 /// 递归收集 nested 树中全部变量槽引用（LOAD_VAR.a 读槽、STORE_VAR.rd 写槽）。
 /// 槽号 = 寄存器号编码的变量槽；其余操作数（局部寄存器/Imm/This）不构成跨函数引用。
-fn collect_escaped_slots(nested: &[IRFunction], out: &mut Vec<bool>) {
+/// precise_sweep 复用（B012 约束同一来源）。
+pub(crate) fn collect_escaped_slots(nested: &[IRFunction], out: &mut Vec<bool>) {
     for sub in nested {
         for inst in &sub.insts {
             let slot = match inst.op {

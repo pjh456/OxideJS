@@ -52,6 +52,10 @@ pub struct IRFunction {
     pub needs_home_object: bool,
     pub captured_this_const_idx: u16,
     pub function_name: Option<String>,
+    /// 本函数是否为顶层脚本函数（D-19）：顶层 STORE_VAR 全局可观察（B008）不可删，
+    /// 函数内局部 STORE_VAR 才可被精确 DCE 删除。emit 在 assemble_ir 处由
+    /// `parent_ctx.is_none()` 填充；nested/手工构造默认 false。
+    pub is_top_level: bool,
     pub const_overflow: bool,
     // nested 域
     pub nested: Vec<IRFunction>,
@@ -76,6 +80,7 @@ impl IRFunction {
             needs_home_object: false,
             captured_this_const_idx: 0,
             function_name: None,
+            is_top_level: false,
             const_overflow: false,
             nested: Vec::new(),
         }
