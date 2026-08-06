@@ -49,7 +49,11 @@ impl Emitter {
         if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
             ctx.inst(Inst::new(OpCode::MAKE_CELL, Operand::Reg(src_reg as u32), Operand::Imm(cell_idx as u16), Operand::None));
         } else {
-            ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(target_reg as u32), Operand::Reg(src_reg as u32), Operand::Imm(if is_const { 1 } else { 0 })));
+            // B011: const 声明路径 STORE_VAR 恒 b=0，不查运行时 guard。
+            // guard 读 regs[rd] 判断槽是否已初始化，依赖槽初始为 undefined；
+            // 声明冗余检查由编译期 declare() 完成（重复声明编译报错），
+            // 运行时 guard 只服务"对 const 再赋值"（赋值路径，见 emit_assign_target）。
+            ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(target_reg as u32), Operand::Reg(src_reg as u32), Operand::Imm(0)));
         }
         ctx.init_var(name);
         Ok(())
