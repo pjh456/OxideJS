@@ -271,18 +271,18 @@ impl Inst {
             OpCode::CALL | OpCode::CALL_NATIVE => {
                 push_operand(&mut uses, &self.rd);
                 push_operand(&mut uses, &self.a);
-                let nargs = self.ext.first().copied().unwrap_or(0) as u32;
+                let nargs = self.ext.first().copied().unwrap_or(0);
                 push_range(&mut uses, reg_of(&self.b), nargs);
             }
             // NEW_EXPRESSION：a=ctor, b..b+nargs
             OpCode::NEW_EXPRESSION => {
                 push_operand(&mut uses, &self.a);
-                let nargs = self.ext.first().copied().unwrap_or(0) as u32;
+                let nargs = self.ext.first().copied().unwrap_or(0);
                 push_range(&mut uses, reg_of(&self.b), nargs);
             }
             // SUPER_CALL：a..a+nargs
             OpCode::SUPER_CALL => {
-                let nargs = self.ext.first().copied().unwrap_or(0) as u32;
+                let nargs = self.ext.first().copied().unwrap_or(0);
                 push_range(&mut uses, reg_of(&self.a), nargs);
             }
             // GET_PROP 系：结果写 a/b 槽，rd=obj 是 use（Pitfall 3）
@@ -444,9 +444,35 @@ fn push_range(uses: &mut SmallVec<[u32; 4]>, first: Option<u32>, nargs: u32) {
 
 impl Inst {
     /// 本指令是否无观察副作用（Pattern 1 纯表；LOAD_VAR 的 This+derived 特判需 &IRFunction）。
-    pub fn is_pure(&self, _f: &IRFunction) -> bool {
-        // TODO: Pattern 1 表逐 opcode 实现
-        false
+    ///
+    /// 纯 = 结果未用时可删。表外 opcode 一律有副作用（D-05 精确表，宁少删不错删）。
+    pub fn is_pure(&self, f: &IRFunction) -> bool {
+        match self.op {
+            // 算术 / 比较 / 位 / 逻辑：coerce 对象路径有抛错风险，D-05 决策算纯（运行时等价兜底）
+            OpCode::ADD | OpCode::SUB | OpCode::MUL | OpCode::DIV | OpCode::MOD | OpCode::NEG
+            | OpCode::UNARY_PLUS | OpCode::EQ | OpCode::NEQ | OpCode::LT | OpCode::GT
+            | OpCode::LTE | OpCode::GTE | OpCode::STRICT_EQ | OpCode::STRICT_NEQ
+            | OpCode::BIT_AND | OpCode::BIT_OR | OpCode::BIT_XOR | OpCode::SHL | OpCode::SHR
+            | OpCode::USHR | OpCode::BIT_NOT | OpCode::AND | OpCode::OR | OpCode::NOT
+            | OpCode::NULLISH => true,
+            // 分配 / 常量 / 空操作（a 槽非寄存器）
+            OpCode::NOP | OpCode::LOAD_CONST | OpCode::VOID | OpCode::TYPEOF | OpCode::NEW_OBJECT
+            | OpCode::NEW_ARRAY => true,
+            // 闭包 / cell 读取：无抛错路径（D-07）
+            OpCode::CREATE_CLOSURE | OpCode::LOAD_UPVALUE | OpCode::CELL_GET => true,
+            // 模板字符串：纯拼接写 rd，无抛错（use 统计覆盖其 ext）
+            OpCode::TEMPLATE_STR => true,
+            // LOAD_VAR：仅 a==This 且 derived 构造函数读 this 可能抛 ReferenceError（misc.rs:52-63）
+            OpCode::LOAD_VAR => {
+                !(self.a == Operand::This && f.is_derived_constructor)
+            }
+            // STORE_VAR：b==None/Imm(0) 纯拷贝无 guard；b==Imm(1) const guard 运行时判定（Pitfall 5）
+            OpCode::STORE_VAR => {
+                matches!(self.b, Operand::None | Operand::Imm(0))
+            }
+            // 其余全部有副作用（getter/调用/控制流/迭代器/复合更新/写共享状态/占位防御）
+            _ => false,
+        }
     }
 }
 
