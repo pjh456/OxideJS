@@ -1176,6 +1176,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxide_liveness"
+version = "0.1.0"
+dependencies = [
+ "oxide_bytecode",
+ "oxide_cfg",
+ "oxide_emit",
+ "oxide_ir",
+ "oxide_parser",
+]
+
+[[package]]
 name = "oxide_log"
 version = "0.1.0"
 dependencies = [

@@ -10,6 +10,7 @@ members = [
     "crates/oxide_ir",
     "crates/oxide_cfg",
     "crates/oxide_dce",
+    "crates/oxide_liveness",
     "crates/oxide_types",
     "crates/oxide_vm",
     "crates/oxide_kernel",

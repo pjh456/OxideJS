@@ -1,0 +1,16 @@
+[package]
+name = "oxide_liveness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OxideJS - liveness analysis pass over IR (CFG dataflow + per-instruction live ranges)"
+
+[dependencies]
+oxide_ir = { path = "../oxide_ir" }
+oxide_cfg = { path = "../oxide_cfg" }
+
+[dev-dependencies]
+oxide_parser = { path = "../oxide_parser" }
+oxide_emit = { path = "../oxide_emit" }
+oxide_bytecode = { path = "../oxide_bytecode" }
