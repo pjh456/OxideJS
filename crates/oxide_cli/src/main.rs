@@ -49,6 +49,8 @@ enum Commands {
         #[arg(short = 'e')]
         expr: Option<String>,
         file: Option<String>,
+        #[arg(long)]
+        no_dce: bool,
     },
     Bench {
         #[arg(default_value = "js")]
@@ -94,7 +96,7 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Some(Commands::Compile { expr, file }) => compile(expr, file),
+        Some(Commands::Compile { expr, file, no_dce }) => compile(expr, file, no_dce),
         Some(Commands::Bench {
             mode,
             filter,
@@ -259,7 +261,7 @@ fn run(file: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>) -> ExitCode {
     }
 }
 
-fn compile(expr: Option<String>, file: Option<String>) -> ExitCode {
+fn compile(expr: Option<String>, file: Option<String>, no_dce: bool) -> ExitCode {
     let source = if let Some(code) = expr {
         code
     } else if let Some(path) = file {
@@ -289,7 +291,7 @@ fn compile(expr: Option<String>, file: Option<String>) -> ExitCode {
         }
     };
 
-    let compiler = Compiler::new();
+    let compiler = if no_dce { Compiler::new().with_dce(false) } else { Compiler::new() };
     match compiler.compile(&program) {
         Ok(module) => {
             print!("{module}");
