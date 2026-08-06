@@ -211,14 +211,233 @@ impl Inst {
     /// 本指令定义的寄存器（None 槽按 Reg(0) 映射；CALL 系含隐式 reg 0）。
     /// 无写入返回 None。
     pub fn def_reg(&self) -> Option<u32> {
-        // TODO: Pattern 2 表逐 opcode 实现
-        None
+        match self.op {
+            // CALL 系：结果隐式写 reg 0，rd 是 callee use（Pitfall 1）
+            OpCode::CALL | OpCode::CALL_NATIVE => Some(0),
+            // GET_PROP 系：结果写 a/b 槽而非 rd（Pitfall 3）
+            OpCode::GET_PROP | OpCode::IC_GET_PROP => reg_of(&self.a),
+            OpCode::GET_PROP_DYNAMIC => reg_of(&self.b),
+            // 成员读写：val 槽原地更新（a 槽 / b 槽）
+            OpCode::MEMBER_INC | OpCode::MEMBER_DEC => reg_of(&self.a),
+            OpCode::DYN_MEMBER_INC | OpCode::DYN_MEMBER_DEC => reg_of(&self.b),
+            OpCode::COMPOUND_MEMBER_ADD
+            | OpCode::COMPOUND_MEMBER_SUB
+            | OpCode::COMPOUND_MEMBER_MUL
+            | OpCode::COMPOUND_MEMBER_DIV
+            | OpCode::COMPOUND_MEMBER_MOD
+            | OpCode::COMPOUND_MEMBER_EXP => reg_of(&self.a),
+            // 无 def：控制流 / 写共享状态 / 纯写对象
+            OpCode::HALT
+            | OpCode::RETURN
+            | OpCode::THROW
+            | OpCode::JMP
+            | OpCode::JMP_IF_FALSE
+            | OpCode::JMP_IF_TRUE
+            | OpCode::JMP_IF_NULLISH
+            | OpCode::TRY_BEGIN
+            | OpCode::TRY_END
+            | OpCode::TRY_FINALLY_BEGIN
+            | OpCode::TRY_FINALLY_END
+            | OpCode::MAKE_CELL
+            | OpCode::CELL_SET
+            | OpCode::STORE_UPVALUE
+            | OpCode::SET_PROP
+            | OpCode::SET_PROP_DYNAMIC
+            | OpCode::IC_SET_PROP
+            | OpCode::SET_ELEM
+            | OpCode::GET_PRIVATE
+            | OpCode::SET_PRIVATE
+            | OpCode::INIT_PRIVATE
+            | OpCode::PRIVATE_BRAND_IN
+            | OpCode::DELETE_PROP_STATIC
+            | OpCode::DELETE_PROP_DYNAMIC
+            | OpCode::DEFINE_ACCESSOR
+            | OpCode::SET_HOME_OBJECT
+            | OpCode::FOR_IN_INIT
+            | OpCode::FOR_OF_INIT
+            | OpCode::FOR_IN_CLEANUP
+            | OpCode::FOR_OF_CLOSE => None,
+            // 其余指令 rd 即 def（算术/比较/位/逻辑/加载族/迭代器 NEXT 等）
+            _ => reg_of(&self.rd),
+        }
     }
 
     /// 本指令读取的寄存器（None 槽按 Reg(0) 映射；HALT 特判 reg 0；TEMPLATE_STR 解析 ext）。
     pub fn use_regs(&self) -> SmallVec<[u32; 4]> {
-        // TODO: Pattern 2 表逐 opcode 实现
-        SmallVec::new()
+        let mut uses = SmallVec::new();
+        match self.op {
+            // CALL 系：rd=callee, a=this, b..b+nargs 参数区间（Pitfall 1）
+            OpCode::CALL | OpCode::CALL_NATIVE => {
+                push_operand(&mut uses, &self.rd);
+                push_operand(&mut uses, &self.a);
+                let nargs = self.ext.first().copied().unwrap_or(0) as u32;
+                push_range(&mut uses, reg_of(&self.b), nargs);
+            }
+            // NEW_EXPRESSION：a=ctor, b..b+nargs
+            OpCode::NEW_EXPRESSION => {
+                push_operand(&mut uses, &self.a);
+                let nargs = self.ext.first().copied().unwrap_or(0) as u32;
+                push_range(&mut uses, reg_of(&self.b), nargs);
+            }
+            // SUPER_CALL：a..a+nargs
+            OpCode::SUPER_CALL => {
+                let nargs = self.ext.first().copied().unwrap_or(0) as u32;
+                push_range(&mut uses, reg_of(&self.a), nargs);
+            }
+            // GET_PROP 系：结果写 a/b 槽，rd=obj 是 use（Pitfall 3）
+            OpCode::GET_PROP => {
+                push_operand(&mut uses, &self.rd);
+                push_operand(&mut uses, &self.b);
+            }
+            OpCode::GET_PROP_DYNAMIC => {
+                push_operand(&mut uses, &self.rd);
+                push_operand(&mut uses, &self.a);
+            }
+            OpCode::IC_GET_PROP => {
+                push_operand(&mut uses, &self.a);
+                push_operand(&mut uses, &self.b);
+            }
+            // 成员更新：obj + key 是 use，val 槽是 def
+            OpCode::MEMBER_INC | OpCode::MEMBER_DEC => {
+                push_operand(&mut uses, &self.rd);
+                push_operand(&mut uses, &self.b);
+            }
+            OpCode::DYN_MEMBER_INC | OpCode::DYN_MEMBER_DEC => {
+                push_operand(&mut uses, &self.rd);
+                push_operand(&mut uses, &self.a);
+            }
+            OpCode::COMPOUND_MEMBER_ADD
+            | OpCode::COMPOUND_MEMBER_SUB
+            | OpCode::COMPOUND_MEMBER_MUL
+            | OpCode::COMPOUND_MEMBER_DIV
+            | OpCode::COMPOUND_MEMBER_MOD
+            | OpCode::COMPOUND_MEMBER_EXP => {
+                push_operand(&mut uses, &self.rd);
+                push_operand(&mut uses, &self.a);
+                push_operand(&mut uses, &self.b);
+            }
+            // 复合赋值：rd 与 a 都是 use（coerce 读双寄存器）
+            OpCode::COMPOUND_ADD
+            | OpCode::COMPOUND_SUB
+            | OpCode::COMPOUND_MUL
+            | OpCode::COMPOUND_DIV
+            | OpCode::COMPOUND_MOD
+            | OpCode::COMPOUND_EXP
+            | OpCode::COMPOUND_AND
+            | OpCode::COMPOUND_OR
+            | OpCode::COMPOUND_XOR
+            | OpCode::COMPOUND_SHL
+            | OpCode::COMPOUND_SHR
+            | OpCode::COMPOUND_USHR => {
+                push_operand(&mut uses, &self.rd);
+                push_operand(&mut uses, &self.a);
+            }
+            // 自增/自减：读 rd（写 rd 和 a）
+            OpCode::INC_PRE | OpCode::INC_POST | OpCode::DEC_PRE | OpCode::DEC_POST => {
+                push_operand(&mut uses, &self.rd);
+            }
+            // 二元运算：a, b
+            OpCode::ADD | OpCode::SUB | OpCode::MUL | OpCode::DIV | OpCode::MOD | OpCode::EQ
+            | OpCode::NEQ | OpCode::LT | OpCode::GT | OpCode::LTE | OpCode::GTE | OpCode::AND
+            | OpCode::OR | OpCode::NULLISH | OpCode::STRICT_EQ | OpCode::STRICT_NEQ
+            | OpCode::BIT_AND | OpCode::BIT_OR | OpCode::BIT_XOR | OpCode::SHL | OpCode::SHR
+            | OpCode::USHR | OpCode::INSTANCEOF | OpCode::IN | OpCode::CREATE_REGEXP => {
+                push_operand(&mut uses, &self.a);
+                push_operand(&mut uses, &self.b);
+            }
+            // 一元：a（emit 常 rd==a）
+            OpCode::NEG | OpCode::NOT | OpCode::UNARY_PLUS | OpCode::BIT_NOT | OpCode::TYPEOF => {
+                push_operand(&mut uses, &self.a);
+            }
+            // 无条件跳转 / try 标记：b 是 Label，无寄存器
+            OpCode::JMP | OpCode::TRY_BEGIN | OpCode::TRY_FINALLY_BEGIN | OpCode::TRY_END
+            | OpCode::TRY_FINALLY_END | OpCode::FOR_IN_CLEANUP | OpCode::FOR_OF_CLOSE => {}
+            // 条件跳转：rd=cond
+            OpCode::JMP_IF_FALSE | OpCode::JMP_IF_TRUE | OpCode::JMP_IF_NULLISH => {
+                push_operand(&mut uses, &self.rd);
+            }
+            // HALT：隐式读 reg 0（顶层返回值，Pitfall 2）
+            OpCode::HALT => uses.push(0),
+            // RETURN/THROW：读 rd（None→0）
+            OpCode::RETURN | OpCode::THROW => push_operand(&mut uses, &self.rd),
+            // 加载族：a 槽是 Const/Imm 立即数，无寄存器 use
+            OpCode::LOAD_CONST | OpCode::CREATE_CLOSURE | OpCode::LOAD_UPVALUE | OpCode::VOID
+            | OpCode::NEW_OBJECT | OpCode::NEW_ARRAY | OpCode::NOP => {}
+            // 变量读写：LOAD_VAR/STORE_VAR/CELL_GET 读 a（None→0）
+            OpCode::LOAD_VAR | OpCode::STORE_VAR | OpCode::CELL_GET => {
+                push_operand(&mut uses, &self.a);
+            }
+            // MAKE_CELL：cell 初值读 rd；CELL_SET/STORE_UPVALUE 读 a
+            OpCode::MAKE_CELL => push_operand(&mut uses, &self.rd),
+            OpCode::CELL_SET | OpCode::STORE_UPVALUE => push_operand(&mut uses, &self.a),
+            // 写对象属性：rd/a/b 全 use
+            OpCode::SET_PROP | OpCode::SET_PROP_DYNAMIC | OpCode::IC_SET_PROP | OpCode::SET_ELEM
+            | OpCode::GET_PRIVATE | OpCode::SET_PRIVATE | OpCode::INIT_PRIVATE
+            | OpCode::PRIVATE_BRAND_IN | OpCode::DEFINE_ACCESSOR => {
+                push_operand(&mut uses, &self.rd);
+                push_operand(&mut uses, &self.a);
+                push_operand(&mut uses, &self.b);
+            }
+            // delete：读 obj（+dynamic 读 key）
+            OpCode::DELETE_PROP_STATIC => push_operand(&mut uses, &self.rd),
+            OpCode::DELETE_PROP_DYNAMIC => {
+                push_operand(&mut uses, &self.rd);
+                push_operand(&mut uses, &self.b);
+            }
+            // super 属性读：a=this, b=key
+            OpCode::SUPER_GET_PROP | OpCode::SUPER_STATIC_GET_PROP => {
+                push_operand(&mut uses, &self.a);
+                push_operand(&mut uses, &self.b);
+            }
+            // SET_HOME_OBJECT：rd=func, a=home
+            OpCode::SET_HOME_OBJECT => {
+                push_operand(&mut uses, &self.rd);
+                push_operand(&mut uses, &self.a);
+            }
+            // for-in/of 迭代器：INIT 读 a；NEXT/DONE 读迭代器栈隐式状态
+            OpCode::FOR_IN_INIT | OpCode::FOR_OF_INIT => push_operand(&mut uses, &self.a),
+            OpCode::FOR_IN_NEXT | OpCode::FOR_IN_DONE | OpCode::FOR_OF_NEXT | OpCode::FOR_OF_DONE => {}
+            // REST_OBJECT：读 a（ext 是 excluded_idx 常量）
+            OpCode::REST_OBJECT => push_operand(&mut uses, &self.a),
+            // TEMPLATE_STR：解析 ext，跳过 ext[0]，后续 seg>>31==1 则低 8 位是 expr_reg（A1）
+            OpCode::TEMPLATE_STR => {
+                for seg in self.ext.iter().skip(1) {
+                    if seg >> 31 == 1 {
+                        uses.push(seg & 0xFF);
+                    }
+                }
+            }
+            // 占位 opcode（emit 不产）：按无 use 保守处理，不影响合法产物
+            OpCode::SWITCH_TABLE | OpCode::PROFILE_TYPE | OpCode::PROFILE_SHAPE
+            | OpCode::PROFILE_BRANCH | OpCode::PROFILE_CALL | OpCode::FORK | OpCode::JOIN => {}
+        }
+        uses
+    }
+}
+
+/// 操作数 → 物理寄存器号。None 槽映射 reg 0（A3，与 lower.rs operand_to_u8 一致）；
+/// Const/Imm/Label 不是寄存器槽，返回 None。
+fn reg_of(o: &Operand) -> Option<u32> {
+    match o {
+        Operand::Reg(r) => Some(*r),
+        Operand::This => Some(254),
+        Operand::NewTarget => Some(255),
+        Operand::None => Some(0),
+        Operand::Const(_) | Operand::Imm(_) | Operand::Label(_) => None,
+    }
+}
+
+/// 把寄存器操作数推入 use 集合（非寄存器槽跳过）。
+fn push_operand(uses: &mut SmallVec<[u32; 4]>, o: &Operand) {
+    if let Some(r) = reg_of(o) {
+        uses.push(r);
+    }
+}
+
+/// 推入连续参数区间 [first, first+nargs)。
+fn push_range(uses: &mut SmallVec<[u32; 4]>, first: Option<u32>, nargs: u32) {
+    if let Some(f) = first {
+        uses.extend((0..nargs).map(|i| f + i));
     }
 }
 
@@ -388,7 +607,7 @@ mod tests {
     fn call_native_def_is_implicit_reg0() {
         let inst = Inst::call_native(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2), 1);
         assert_eq!(inst.def_reg(), Some(0));
-        assert_eq!(inst.use_regs().as_slice(), &[0, 1, 2, 3]);
+        assert_eq!(inst.use_regs().as_slice(), &[0, 1, 2]);
     }
 
     #[test]
