@@ -58,6 +58,8 @@ impl Inst {
             | OpCode::DELETE_PROP_DYNAMIC
             | OpCode::DEFINE_ACCESSOR
             | OpCode::SET_HOME_OBJECT
+            // SPILL 写 VM spill 栈而非寄存器（恢复由 UNSPILL 写 rd）
+            | OpCode::SPILL
             | OpCode::FOR_IN_INIT
             | OpCode::FOR_OF_INIT
             | OpCode::FOR_IN_CLEANUP
@@ -172,6 +174,10 @@ impl Inst {
             OpCode::LOAD_VAR | OpCode::STORE_VAR | OpCode::CELL_GET => {
                 push_operand(&mut uses, &self.a);
             }
+            // RegAlloc 辅助：MOV 读 src（a 槽）；SPILL 读待溢出寄存器（rd）；UNSPILL 仅写 rd 无寄存器读
+            OpCode::MOV => push_operand(&mut uses, &self.a),
+            OpCode::SPILL => push_operand(&mut uses, &self.rd),
+            OpCode::UNSPILL => {}
             // MAKE_CELL：cell 初值读 rd；CELL_SET/STORE_UPVALUE 读 a
             OpCode::MAKE_CELL => push_operand(&mut uses, &self.rd),
             OpCode::CELL_SET | OpCode::STORE_UPVALUE => push_operand(&mut uses, &self.a),
@@ -234,6 +240,10 @@ impl Inst {
             // 分配 / 常量 / 空操作（a 槽非寄存器）
             OpCode::NOP | OpCode::LOAD_CONST | OpCode::VOID | OpCode::TYPEOF | OpCode::NEW_OBJECT
             | OpCode::NEW_ARRAY => true,
+            // MOV：寄存器复制无副作用，可删无害
+            OpCode::MOV => true,
+            // SPILL/UNSPILL：RegAlloc 插入的指令，删 SPILL 后 UNSPILL 读陈旧值（Pitfall 7），永不删
+            OpCode::SPILL | OpCode::UNSPILL => false,
             // 闭包 / cell 读取：无抛错路径（D-07）
             OpCode::CREATE_CLOSURE | OpCode::LOAD_UPVALUE | OpCode::CELL_GET => true,
             // 模板字符串：纯拼接写 rd，无抛错（use 统计覆盖其 ext）
@@ -472,6 +482,21 @@ mod tests {
         assert_eq!(inst.use_regs().as_slice(), &[1]);
     }
 
+    #[test]
+    fn regalloc_opcodes_def_use_contract() {
+        let mov = Inst::inst_mov(Operand::Reg(3), Operand::Reg(7));
+        assert_eq!(mov.def_reg(), Some(3));
+        assert_eq!(mov.use_regs().as_slice(), &[7]);
+
+        let spill = Inst::inst_spill(Operand::Reg(5), 42);
+        assert_eq!(spill.def_reg(), None);
+        assert_eq!(spill.use_regs().as_slice(), &[5]);
+
+        let unspill = Inst::inst_unspill(Operand::Reg(9), 42);
+        assert_eq!(unspill.def_reg(), Some(9));
+        assert!(unspill.use_regs().is_empty());
+    }
+
     // ── is_pure 契约测试（Pattern 1 表，纯/非纯族代表 opcode）──
 
     #[test]
@@ -504,6 +529,8 @@ mod tests {
         assert!(Inst::new(OpCode::CELL_GET, Operand::Reg(0), Operand::Reg(1), Operand::Imm(0)).is_pure(&f));
         // 模板字符串
         assert!(Inst::template_str(Operand::Reg(1), 1, 10, &[0x1234]).is_pure(&f));
+        // RegAlloc 辅助：MOV 纯
+        assert!(Inst::inst_mov(Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
         // LOAD_VAR 普通（a=Reg）纯
         assert!(Inst::new(OpCode::LOAD_VAR, Operand::Reg(1), Operand::Reg(2), Operand::None).is_pure(&f));
         // STORE_VAR 一律有副作用（Pitfall 6：顶层变量赋值全局可观察，不删）
@@ -553,6 +580,9 @@ mod tests {
         assert!(!Inst::new(OpCode::STORE_UPVALUE, Operand::None, Operand::Reg(1), Operand::Imm(0)).is_pure(&f));
         assert!(!Inst::new(OpCode::CELL_SET, Operand::None, Operand::Reg(1), Operand::Imm(0)).is_pure(&f));
         assert!(!Inst::new(OpCode::MAKE_CELL, Operand::Reg(5), Operand::None, Operand::None).is_pure(&f));
+        // RegAlloc 辅助：SPILL/UNSPILL 有副作用（删 SPILL 后 UNSPILL 读陈旧值，Pitfall 7）
+        assert!(!Inst::inst_spill(Operand::Reg(5), 42).is_pure(&f));
+        assert!(!Inst::inst_unspill(Operand::Reg(9), 42).is_pure(&f));
         // 占位 opcode 防御性有副作用
         assert!(!Inst::new(OpCode::SWITCH_TABLE, Operand::None, Operand::None, Operand::None).is_pure(&f));
     }

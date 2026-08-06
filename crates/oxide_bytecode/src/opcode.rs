@@ -64,6 +64,9 @@ define_opcodes! {
     COMPOUND_DIV = 0x09 => "COMPOUND_DIV",
     COMPOUND_MOD = 0x0A => "COMPOUND_MOD",
     COMPOUND_EXP = 0x0B => "COMPOUND_EXP",
+    MOV = 0x0C => "MOV",          // rd=dst, a=src（寄存器复制，D-07，区间拆分搬值）
+    SPILL = 0x0D => "SPILL",      // rd=src, ext=[slot u16]（溢出写 VM spill 栈，D-06）
+    UNSPILL = 0x0E => "UNSPILL",  // rd=dst, ext=[slot u16]（从 VM spill 栈恢复，D-06）
 
     // -- Comparison (0x10-0x1F) --
     EQ = 0x10 => "EQ",
@@ -322,8 +325,14 @@ mod tests {
         assert_eq!(OpCode::STRICT_EQ as u8, 0x1A);
         assert_eq!(OpCode::JMP_IF_NULLISH as u8, 0x8F);
         assert_eq!(OpCode::VOID as u8, 0xF3);
+        assert_eq!(OpCode::MOV as u8, 0x0C);
+        assert_eq!(OpCode::SPILL as u8, 0x0D);
+        assert_eq!(OpCode::UNSPILL as u8, 0x0E);
         assert_eq!(OpCode::ADD.to_string(), "ADD");
         assert_eq!(OpCode::COMPOUND_MEMBER_EXP.to_string(), "COMPOUND_MEMBER_EXP");
+        assert_eq!(OpCode::MOV.to_string(), "MOV");
+        assert_eq!(OpCode::SPILL.to_string(), "SPILL");
+        assert_eq!(OpCode::UNSPILL.to_string(), "UNSPILL");
 
         assert!(OpCode::try_from(0x1B).is_err());
         assert!(OpCode::try_from(0xFF).is_err());

@@ -148,6 +148,24 @@ impl Inst {
         }
     }
 
+    // ── RegAlloc 辅助指令（D-06/D-07）──
+
+    /// 寄存器复制 rd = a（D-07，RegAlloc 区间拆分搬值）。
+    /// 不可用 LOAD_VAR/STORE_VAR 组合模拟——引入变量绑定语义会误触 const guard。
+    pub fn inst_mov(dst: Operand, src: Operand) -> Self {
+        Self::with_ext(OpCode::MOV, dst, src, Operand::None, &[])
+    }
+
+    /// 溢出：regs[rd] → spill_stack[frame_base + slot]，ext=[slot u16]（D-06）。
+    pub fn inst_spill(src: Operand, slot: u16) -> Self {
+        Self::with_ext(OpCode::SPILL, src, Operand::None, Operand::None, &[slot as u32])
+    }
+
+    /// 恢复：spill_stack[frame_base + slot] → regs[rd]，ext=[slot u16]（D-06）。
+    pub fn inst_unspill(dst: Operand, slot: u16) -> Self {
+        Self::with_ext(OpCode::UNSPILL, dst, Operand::None, Operand::None, &[slot as u32])
+    }
+
     // ── 无 ext：立即数/索引指令（拆字是 lowering 职责）──
 
     /// 加载常量池常量：`dst = constants[idx]`。a 槽 Const 下标由 lowering 拆字。
@@ -271,6 +289,30 @@ mod tests {
 
         let rest = Inst::rest_object(Operand::Reg(0), Operand::Reg(1), 7);
         assert_eq!(rest.ext.as_slice(), &[7]);
+    }
+
+    #[test]
+    fn regalloc_constructors_carry_expected_slots() {
+        let mov = Inst::inst_mov(Operand::Reg(3), Operand::Reg(7));
+        assert_eq!(mov.op, OpCode::MOV);
+        assert_eq!(mov.rd, Operand::Reg(3));
+        assert_eq!(mov.a, Operand::Reg(7));
+        assert_eq!(mov.b, Operand::None);
+        assert!(mov.ext.is_empty());
+
+        let spill = Inst::inst_spill(Operand::Reg(5), 42);
+        assert_eq!(spill.op, OpCode::SPILL);
+        assert_eq!(spill.rd, Operand::Reg(5));
+        assert_eq!(spill.a, Operand::None);
+        assert_eq!(spill.b, Operand::None);
+        assert_eq!(spill.ext.as_slice(), &[42]);
+
+        let unspill = Inst::inst_unspill(Operand::Reg(9), 0xFFFF);
+        assert_eq!(unspill.op, OpCode::UNSPILL);
+        assert_eq!(unspill.rd, Operand::Reg(9));
+        assert_eq!(unspill.a, Operand::None);
+        assert_eq!(unspill.b, Operand::None);
+        assert_eq!(unspill.ext.as_slice(), &[0xFFFF]);
     }
 
     #[test]
