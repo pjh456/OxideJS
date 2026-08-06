@@ -391,6 +391,7 @@ impl Vm {
                 function_name,
                 caller_reg_limit,
                 saved_reg_offset,
+                spill_offset: self.spill_stack.len() as u32,
                 saved_this,
                 saved_new_target,
                 callee: super_ctor,

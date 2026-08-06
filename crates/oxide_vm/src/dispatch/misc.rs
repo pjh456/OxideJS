@@ -75,6 +75,44 @@ impl Vm {
         Ok(false)
     }
 
+    /// SPILL：regs[rd] → spill_stack[帧基址 + slot]。ext 字 = slot u16（D-06）。
+    /// 帧基址 = 当前 CallFrame.spill_offset（顶层模块无帧 = 0，D-08）。
+    #[inline(always)]
+    pub(crate) fn dispatch_spill(&mut self, rd: usize) -> Result<(), String> {
+        let slot = self.bytecode[self.pc] as usize;
+        self.pc += 1;
+        if slot > u16::MAX as usize {
+            return Err(format!("SPILL slot {slot} out of range (max 65535)"));
+        }
+        let base = self.frames.last().map(|f| f.spill_offset as usize).unwrap_or(0);
+        let idx = base + slot;
+        if idx >= self.spill_stack.len() {
+            self.spill_stack.resize(idx + 1, JsValue::undefined());
+        }
+        vm_trace!("SPILL r{} -> slot[{}] base={}", rd, slot, base);
+        self.spill_stack[idx] = self.regs[rd];
+        Ok(())
+    }
+
+    /// UNSPILL：spill_stack[帧基址 + slot] → regs[rd]。越界读 undefined（防御，D-06 slot 由 RegAlloc 保证在界内）。
+    #[inline(always)]
+    pub(crate) fn dispatch_unspill(&mut self, rd: usize) -> Result<(), String> {
+        let slot = self.bytecode[self.pc] as usize;
+        self.pc += 1;
+        if slot > u16::MAX as usize {
+            return Err(format!("UNSPILL slot {slot} out of range (max 65535)"));
+        }
+        let base = self.frames.last().map(|f| f.spill_offset as usize).unwrap_or(0);
+        let idx = base + slot;
+        vm_trace!("UNSPILL r{} <- slot[{}] base={}", rd, slot, base);
+        self.regs[rd] = if idx < self.spill_stack.len() {
+            self.spill_stack[idx]
+        } else {
+            JsValue::undefined()
+        };
+        Ok(())
+    }
+
     #[inline(always)]
     pub(crate) fn dispatch_new_object(&mut self, rd: usize) {
         vm_trace!("NEW_OBJECT rd={}", rd);

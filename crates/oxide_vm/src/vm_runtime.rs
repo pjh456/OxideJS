@@ -60,6 +60,7 @@ impl Vm {
             saved_bytecode_stack: std::mem::take(&mut self.saved_bytecode_stack),
             saved_immutables_stack: std::mem::take(&mut self.saved_immutables_stack),
             save_stack: std::mem::take(&mut self.save_stack),
+            spill_stack: std::mem::take(&mut self.spill_stack),
             cell_stack: std::mem::take(&mut self.cell_stack),
         });
 
@@ -111,6 +112,7 @@ impl Vm {
         self.saved_bytecode_stack = saved.saved_bytecode_stack;
         self.saved_immutables_stack = saved.saved_immutables_stack;
         self.save_stack = saved.save_stack;
+        self.spill_stack = saved.spill_stack;
         self.cell_stack = saved.cell_stack;
 
         result
@@ -136,6 +138,8 @@ impl Vm {
         let len = frame.caller_reg_limit as usize;
         self.regs[..len].copy_from_slice(&self.save_stack[offset..offset + len]);
         self.save_stack.truncate(offset);
+        // spill 帧边界截断（D-08，仿 save_stack 窗口）：子函数 spill 数据在帧恢复后丢弃
+        self.spill_stack.truncate(frame.spill_offset as usize);
         self.regs[254] = frame.saved_this;
         self.regs[255] = frame.saved_new_target;
         self.active_reg_limit = frame.caller_reg_limit;

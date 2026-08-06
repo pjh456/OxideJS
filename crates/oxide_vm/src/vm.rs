@@ -110,6 +110,8 @@ pub struct CallFrame {
     pub function_name: u32,
     pub caller_reg_limit: u8,
     pub saved_reg_offset: u32,
+    /// push 时记录 spill_stack 长度（D-08 帧边界，SPILL/UNSPILL 基址）。
+    pub spill_offset: u32,
     pub saved_this: JsValue,
     pub saved_new_target: JsValue,
     pub callee: JsValue,
@@ -159,6 +161,7 @@ pub(crate) struct InlineSyncState {
     pub(crate) saved_bytecode_stack: Vec<Vec<opcode::Instr>>,
     pub(crate) saved_immutables_stack: Vec<*const [JsValue]>,
     pub(crate) save_stack: Vec<JsValue>,
+    pub(crate) spill_stack: Vec<JsValue>,
     pub(crate) cell_stack: Vec<Vec<*mut Cell>>,
 }
 
@@ -191,6 +194,9 @@ pub struct Vm {
     /// registers (`regs[..caller_reg_limit]`) here at `saved_reg_offset`; restore copies
     /// them back and truncates. Capacity is retained across calls — zero per-call heap alloc.
     pub(crate) save_stack: Vec<JsValue>,
+    /// VM 级 spill 栈（D-08，仿 save_stack 帧边界）。`CallFrame.spill_offset` 定位本帧区，
+    /// 调用子函数时从边界后分配，restore_frame 截断恢复。
+    pub(crate) spill_stack: Vec<JsValue>,
     pub(crate) try_stack: Vec<TryHandler>,
     pub(crate) exception_value: Option<JsValue>,
     /// Side-channel carrying the JsValue thrown by a sync call whose error was flattened
@@ -383,6 +389,10 @@ impl Vm {
             f(frame.constructed_this.unwrap_or(JsValue::undefined()));
         }
         for &v in &self.save_stack {
+            f(v);
+        }
+        // spill 栈是 session GC 根（漏根 → 溢出值被回收 → use-after-free）
+        for &v in &self.spill_stack {
             f(v);
         }
         for cell_vec in &self.cell_stack {
@@ -777,6 +787,7 @@ impl Vm {
             function_name,
             caller_reg_limit,
             saved_reg_offset,
+            spill_offset: self.spill_stack.len() as u32,
             saved_this,
             saved_new_target,
             callee,
@@ -988,6 +999,19 @@ impl Vm {
                     Ok(false) => {}
                     Err(e) => return Err(e),
                 },
+
+                OpCode::MOV => {
+                    vm_trace!("MOV r{} = r{}", rd, a);
+                    self.regs[rd] = self.regs[a];
+                }
+
+                OpCode::SPILL => {
+                    self.dispatch_spill(rd)?;
+                }
+
+                OpCode::UNSPILL => {
+                    self.dispatch_unspill(rd)?;
+                }
 
                 OpCode::CALL => match self.dispatch_call(rd, a, b) {
                     Ok(true) => continue,
@@ -1461,6 +1485,7 @@ mod tests {
             function_name: 0,
             caller_reg_limit: 2,
             saved_reg_offset: 0,
+            spill_offset: 0,
             saved_this: JsValue::undefined(),
             saved_new_target: JsValue::undefined(),
             callee: JsValue::undefined(),

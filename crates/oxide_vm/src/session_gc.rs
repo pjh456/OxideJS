@@ -506,6 +506,9 @@ fn rewrite_vm_roots(vm: &mut Vm, forwarding: &HashMap<*mut JsObject, *mut JsObje
     for value in &mut vm.save_stack {
         *value = rewrite_forwarded_value(*value, forwarding);
     }
+    for value in &mut vm.spill_stack {
+        *value = rewrite_forwarded_value(*value, forwarding);
+    }
     for frame in &mut vm.frames {
         frame.saved_this = rewrite_forwarded_value(frame.saved_this, forwarding);
         frame.saved_new_target = rewrite_forwarded_value(frame.saved_new_target, forwarding);
@@ -586,6 +589,7 @@ mod tests {
             function_name: 0,
             caller_reg_limit: 1,
             saved_reg_offset: 0,
+            spill_offset: 0,
             saved_this: JsValue::from_js_object(this_session),
             saved_new_target: JsValue::from_js_object(child_session),
             callee: JsValue::from_js_object(child_session),

@@ -29,6 +29,7 @@ rustc-hash.workspace = true
 oxide_compiler = { path = "../oxide_compiler" }
 proptest.workspace = true
 oxide_parser = { path = "../oxide_parser" }
+oxide_ir = { path = "../oxide_ir" }
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]

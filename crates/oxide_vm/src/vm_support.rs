@@ -37,6 +37,7 @@ impl Vm {
             saved_bytecode_stack: Vec::new(),
             saved_immutables_stack: Vec::new(),
             save_stack: Vec::new(),
+            spill_stack: Vec::new(),
             try_stack: Vec::new(),
             exception_value: None,
             last_uncaught_value: None,
@@ -100,6 +101,7 @@ impl Vm {
             saved_bytecode_stack: Vec::new(),
             saved_immutables_stack: Vec::new(),
             save_stack: Vec::new(),
+            spill_stack: Vec::new(),
             try_stack: Vec::new(),
             exception_value: None,
             last_uncaught_value: None,
@@ -213,6 +215,7 @@ impl Vm {
         self.saved_bytecode_stack.clear();
         self.saved_immutables_stack.clear();
         self.save_stack.clear();
+        self.spill_stack.clear();
         self.cell_stack.clear();
         self.temp_immutables.clear();
         self.try_stack.clear();
