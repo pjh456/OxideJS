@@ -51,6 +51,9 @@ enum Commands {
         file: Option<String>,
         #[arg(long)]
         no_dce: bool,
+        /// D-18：关闭 liveness/精确 DCE/RegAlloc 链，vreg 原样当物理号。
+        #[arg(long)]
+        no_regalloc: bool,
     },
     Bench {
         #[arg(default_value = "js")]
@@ -96,7 +99,7 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Some(Commands::Compile { expr, file, no_dce }) => compile(expr, file, no_dce),
+        Some(Commands::Compile { expr, file, no_dce, no_regalloc }) => compile(expr, file, no_dce, no_regalloc),
         Some(Commands::Bench {
             mode,
             filter,
@@ -261,7 +264,7 @@ fn run(file: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>) -> ExitCode {
     }
 }
 
-fn compile(expr: Option<String>, file: Option<String>, no_dce: bool) -> ExitCode {
+fn compile(expr: Option<String>, file: Option<String>, no_dce: bool, no_regalloc: bool) -> ExitCode {
     let source = if let Some(code) = expr {
         code
     } else if let Some(path) = file {
@@ -291,7 +294,13 @@ fn compile(expr: Option<String>, file: Option<String>, no_dce: bool) -> ExitCode
         }
     };
 
-    let compiler = if no_dce { Compiler::new().with_dce(false) } else { Compiler::new() };
+    let mut compiler = Compiler::new();
+    if no_dce {
+        compiler = compiler.with_dce(false);
+    }
+    if no_regalloc {
+        compiler = compiler.with_regalloc(false);
+    }
     match compiler.compile(&program) {
         Ok(module) => {
             print!("{module}");

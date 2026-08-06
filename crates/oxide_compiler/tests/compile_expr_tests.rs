@@ -502,7 +502,8 @@ fn compile_builtin_globals_are_registered_lazily() {
 
 #[test]
 fn compile_comparison_complement_ops() {
-    let module = compile_source("let a = 1, b = 2; a > b; a <= b; a >= b; a != b;");
+    // 结果被使用（赋值）→ 比较指令不被 DCE 删除（精确 DCE 会删结果丢弃的死比较）
+    let module = compile_source("let a = 1, b = 2; var r = a > b; var s = a <= b; var t = a >= b; var u = a != b;");
     assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::GT), "a > b should emit GT");
     assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::LTE), "a <= b should emit LTE");
     assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::GTE), "a >= b should emit GTE");

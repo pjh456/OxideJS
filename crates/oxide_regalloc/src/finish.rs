@@ -32,7 +32,9 @@ pub(super) fn run(f: &mut IRFunction, map: &AllocMap) {
                 }
             }
             None => {
-                debug_assert!(false, "builtin vreg {v} 不在 AllocMap");
+                // 未使用的 builtin（引用被 DCE 删除，vreg 不在 AllocMap）。
+                // builtin 槽是预注册低号，保持原值无害（VM 入口写入，无读取者）。
+                // 保持原项（*vreg 不变）。
             }
         }
     }
