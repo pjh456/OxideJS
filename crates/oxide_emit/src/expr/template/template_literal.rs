@@ -9,13 +9,13 @@ use oxide_bytecode::module::Constant;
 impl Emitter {
     pub(crate) fn emit_template_literal_expression(
         &self, tl: &oxide_parser::TemplateLiteral, ctx: &mut CompileCtx,
-    ) -> Result<u8, String> {
+    ) -> Result<u32, String> {
         let r = ctx.alloc_reg();
         let quasis = &tl.quasis;
         let expressions = &tl.expressions;
         let segment_count = quasis.len() + expressions.len();
 
-        let expr_regs: Vec<u8> = expressions
+        let expr_regs: Vec<u32> = expressions
             .iter()
             .map(|e| self.emit_expression(e, ctx))
             .collect::<Result<Vec<_>, _>>()?;
@@ -38,12 +38,12 @@ impl Emitter {
         for const_idx in quasi_const_idxs.iter() {
             parts.push(*const_idx as u32 & 0x7FFF_FFFF);
             if let Some(expr_reg) = expr_iter.next() {
-                parts.push(0x8000_0000u32 | (*expr_reg as u32));
+                parts.push(0x8000_0000u32 | (*expr_reg));
             }
         }
 
         ctx.inst(Inst::template_str(
-            Operand::Reg(r as u32),
+            Operand::Reg(r),
             segment_count as u32,
             total_len_hint as u16,
             &parts,

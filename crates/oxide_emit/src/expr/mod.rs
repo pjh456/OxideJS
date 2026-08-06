@@ -19,15 +19,15 @@ pub mod template;
 pub mod this;
 
 impl Emitter {
-    pub(crate) fn emit_unsupported_expression(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u8, String> {
+    pub(crate) fn emit_unsupported_expression(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u32, String> {
         let _ = ctx;
         Err(format!("unsupported expression type: {:?}", expr))
     }
 
     pub(crate) fn emit_sequence_expression(
         &self, seq: &oxide_parser::SequenceExpression, ctx: &mut CompileCtx,
-    ) -> Result<u8, String> {
-        let mut last = 0u8;
+    ) -> Result<u32, String> {
+        let mut last = 0u32;
         for e in &seq.expressions {
             last = self.emit_expression(e, ctx)?;
         }

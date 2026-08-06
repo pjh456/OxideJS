@@ -188,10 +188,10 @@ fn module_fields_are_copied_through() {
 }
 
 #[test]
-fn reg_overflow_flag_errors() {
+fn n_registers_overflow_errors() {
     let mut f = base_module();
     f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
-    f.reg_overflow = true;
+    f.n_registers = 300;
     let err = lower_err(&f);
     assert!(err.contains("too many registers"), "unexpected error: {err}");
 }

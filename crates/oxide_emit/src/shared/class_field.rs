@@ -17,9 +17,9 @@ impl Emitter {
             self.emit_undefined(ctx)
         };
         if computed {
-            ctx.inst(Inst::new(OpCode::SET_PROP_DYNAMIC, target, Operand::Reg(key_reg as u32), Operand::Reg(value_reg as u32)));
+            ctx.inst(Inst::new(OpCode::SET_PROP_DYNAMIC, target, Operand::Reg(key_reg), Operand::Reg(value_reg)));
         } else {
-            ctx.inst(Inst::new(OpCode::SET_PROP, target, Operand::Reg(value_reg as u32), Operand::Reg(key_reg as u32)));
+            ctx.inst(Inst::new(OpCode::SET_PROP, target, Operand::Reg(value_reg), Operand::Reg(key_reg)));
         }
         Ok(())
     }
@@ -33,7 +33,7 @@ impl Emitter {
         } else {
             self.emit_undefined(ctx)
         };
-        ctx.inst(Inst::new(OpCode::INIT_PRIVATE, target, Operand::Reg(value_reg as u32), Operand::Reg(key_reg as u32)));
+        ctx.inst(Inst::new(OpCode::INIT_PRIVATE, target, Operand::Reg(value_reg), Operand::Reg(key_reg)));
         Ok(())
     }
 
@@ -46,7 +46,7 @@ impl Emitter {
         let name = private.name.as_str();
         let key_reg = self.emit_private_id_reg(name, ctx)?;
         let method_reg = self.emit_class_method_function(method, name, home_reg, ctx, &[])?;
-        ctx.inst(Inst::new(OpCode::INIT_PRIVATE, target, Operand::Reg(method_reg as u32), Operand::Reg(key_reg as u32)));
+        ctx.inst(Inst::new(OpCode::INIT_PRIVATE, target, Operand::Reg(method_reg), Operand::Reg(key_reg)));
         Ok(())
     }
 }

@@ -5,7 +5,7 @@ use crate::{CompileCtx, Emitter};
 impl Emitter {
     pub(crate) fn emit_class_header(
         &self, class: &oxide_parser::Class, ctx: &mut CompileCtx,
-    ) -> Result<(u8, u8, Option<u8>), String> {
+    ) -> Result<(u32, u32, Option<u32>), String> {
         let ctor_reg = ctx.alloc_reg();
         let proto_reg = ctx.alloc_reg();
         let super_reg = if let Some(super_expr) = &class.super_class {

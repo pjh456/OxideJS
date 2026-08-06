@@ -10,7 +10,7 @@ use oxide_parser::{Class, Expression, Statement};
 impl Emitter {
     fn emit_arrow_function_expression(
         &self, arrow: &oxide_parser::ArrowFunctionExpression, ctx: &mut CompileCtx,
-    ) -> Result<u8, String> {
+    ) -> Result<u32, String> {
         // Rest params not yet supported
         if let Some(_rest) = &arrow.params.rest {
             return Err("rest params in arrow functions not yet supported".into());
@@ -45,11 +45,11 @@ impl Emitter {
         let sub_idx = ctx.nested.len() as u16;
 
         let r = ctx.alloc_reg();
-        ctx.inst(Inst::create_closure(Operand::Reg(r as u32), sub_idx));
+        ctx.inst(Inst::create_closure(Operand::Reg(r), sub_idx));
         Ok(r)
     }
 
-    fn emit_function_expression(&self, fe: &oxide_parser::Function, ctx: &mut CompileCtx) -> Result<u8, String> {
+    fn emit_function_expression(&self, fe: &oxide_parser::Function, ctx: &mut CompileCtx) -> Result<u32, String> {
         // FunctionExpression: compile body, emit LOAD_CONST(BytecodeFunc)
         let mut param_names = Vec::new();
         for (idx, param) in fe.params.items.iter().enumerate() {
@@ -77,15 +77,15 @@ impl Emitter {
         let sub_idx = ctx.nested.len() as u16;
 
         let r = ctx.alloc_reg();
-        ctx.inst(Inst::create_closure(Operand::Reg(r as u32), sub_idx));
+        ctx.inst(Inst::create_closure(Operand::Reg(r), sub_idx));
         Ok(r)
     }
 
-    fn emit_class_expression(&self, class: &Class, ctx: &mut CompileCtx) -> Result<u8, String> {
+    fn emit_class_expression(&self, class: &Class, ctx: &mut CompileCtx) -> Result<u32, String> {
         self.emit_class(class, ctx)
     }
 
-    fn emit_new_expression(&self, ne: &oxide_parser::NewExpression, ctx: &mut CompileCtx) -> Result<u8, String> {
+    fn emit_new_expression(&self, ne: &oxide_parser::NewExpression, ctx: &mut CompileCtx) -> Result<u32, String> {
         let constructor_reg = self.emit_expression(&ne.callee, ctx)?;
         let mut arg_regs = Vec::new();
         for arg in &ne.arguments {
@@ -93,18 +93,18 @@ impl Emitter {
                 arg_regs.push(self.emit_expression(expr, ctx)?);
             }
         }
-        let first_arg_reg = if arg_regs.is_empty() { 0u8 } else { arg_regs[0] };
+        let first_arg_reg = if arg_regs.is_empty() { 0u32 } else { arg_regs[0] };
         let r = ctx.alloc_reg();
         ctx.inst(Inst::new_expression(
-            Operand::Reg(r as u32),
-            Operand::Reg(constructor_reg as u32),
-            Operand::Reg(first_arg_reg as u32),
+            Operand::Reg(r),
+            Operand::Reg(constructor_reg),
+            Operand::Reg(first_arg_reg),
             arg_regs.len() as u8,
         ));
         Ok(r)
     }
 
-    pub(crate) fn emit_function_domain(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u8, String> {
+    pub(crate) fn emit_function_domain(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u32, String> {
         match expr {
             Expression::ArrowFunctionExpression(arrow) => self.emit_arrow_function_expression(arrow, ctx),
             Expression::FunctionExpression(fe) => self.emit_function_expression(fe, ctx),

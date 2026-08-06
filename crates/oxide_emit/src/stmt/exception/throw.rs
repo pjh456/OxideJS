@@ -7,12 +7,12 @@ use oxide_bytecode::opcode::OpCode;
 use oxide_parser::Statement;
 
 impl Emitter {
-    pub(crate) fn emit_throw_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
+    pub(crate) fn emit_throw_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u32>, String> {
         let Statement::ThrowStatement(ts) = stmt else {
             return Ok(None);
         };
         let exc_reg = self.emit_expression(&ts.argument, ctx)?;
-        ctx.inst(Inst::new(OpCode::THROW, Operand::Reg(exc_reg as u32), Operand::None, Operand::None));
+        ctx.inst(Inst::new(OpCode::THROW, Operand::Reg(exc_reg), Operand::None, Operand::None));
         Ok(None)
     }
 }

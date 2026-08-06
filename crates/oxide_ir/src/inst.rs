@@ -168,30 +168,30 @@ impl Inst {
     }
 
     /// 条件寄存器为 false 时跳转。
-    pub fn jmp_if_false(cond_reg: u8, label: LabelId) -> Self {
+    pub fn jmp_if_false(cond_reg: u32, label: LabelId) -> Self {
         Self::new(
             OpCode::JMP_IF_FALSE,
-            Operand::Reg(cond_reg as u32),
+            Operand::Reg(cond_reg),
             Operand::None,
             Operand::Label(label),
         )
     }
 
     /// 条件寄存器为 true 时跳转。
-    pub fn jmp_if_true(cond_reg: u8, label: LabelId) -> Self {
+    pub fn jmp_if_true(cond_reg: u32, label: LabelId) -> Self {
         Self::new(
             OpCode::JMP_IF_TRUE,
-            Operand::Reg(cond_reg as u32),
+            Operand::Reg(cond_reg),
             Operand::None,
             Operand::Label(label),
         )
     }
 
     /// 条件寄存器为 null/undefined 时跳转（`??` / 可选链短路）。
-    pub fn jmp_if_nullish(cond_reg: u8, label: LabelId) -> Self {
+    pub fn jmp_if_nullish(cond_reg: u32, label: LabelId) -> Self {
         Self::new(
             OpCode::JMP_IF_NULLISH,
-            Operand::Reg(cond_reg as u32),
+            Operand::Reg(cond_reg),
             Operand::None,
             Operand::Label(label),
         )

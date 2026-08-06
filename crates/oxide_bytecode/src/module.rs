@@ -28,7 +28,7 @@ pub enum Constant {
 #[derive(Debug, Clone)]
 pub struct UpvalueCapture {
     pub name: String,
-    pub enclosing_reg: u8,
+    pub enclosing_reg: u32,
     pub cell_idx: u8,
 }
 
@@ -48,7 +48,7 @@ pub struct CompiledModule {
     pub n_registers: u8,
     pub n_args: u8,
     pub param_base: u8,
-    pub builtin_reg_map: Vec<(String, u8)>,
+    pub builtin_reg_map: Vec<(String, u32)>,
     pub sub_modules: Vec<CompiledModule>,
     /// True when this module is an arrow function body.
     /// Arrow functions capture lexical `this` from the enclosing scope.

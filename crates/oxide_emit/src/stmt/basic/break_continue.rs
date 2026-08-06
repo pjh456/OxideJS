@@ -6,7 +6,7 @@ use oxide_ir::inst::Inst;
 impl Emitter {
     pub(crate) fn emit_break_statement(
         &self, stmt: &oxide_parser::BreakStatement, ctx: &mut CompileCtx,
-    ) -> Result<Option<u8>, String> {
+    ) -> Result<Option<u32>, String> {
         let break_label = if let Some(label) = &stmt.label {
             let name = label.name.as_str();
             let scope = ctx
@@ -25,7 +25,7 @@ impl Emitter {
 
     pub(crate) fn emit_continue_statement(
         &self, stmt: &oxide_parser::ContinueStatement, ctx: &mut CompileCtx,
-    ) -> Result<Option<u8>, String> {
+    ) -> Result<Option<u32>, String> {
         let continue_label = if let Some(label) = &stmt.label {
             let name = label.name.as_str();
             let scope = ctx

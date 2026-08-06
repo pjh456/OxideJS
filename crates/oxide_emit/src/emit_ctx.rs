@@ -36,7 +36,7 @@ impl LabelCtx {
 /// Identifier-binding state: symbols, builtin registers, private names.
 pub(crate) struct ScopeCtx {
     pub(crate) symbols: SymbolTable,
-    pub(crate) builtin_reg_map: Vec<(String, u8)>,
+    pub(crate) builtin_reg_map: Vec<(String, u32)>,
     pub(crate) private_name_map: Vec<(String, u32)>,
     pub(crate) next_private_name_id: u32,
 }

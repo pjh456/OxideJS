@@ -140,9 +140,9 @@ pub struct CompileCtx {
     pub(crate) insts: Vec<Inst>,
     pub(crate) constants: Vec<Constant>,
     constant_map: HashMap<ConstantKey, u16>,
-    next_reg: u8,
-    pub(crate) max_regs: u8,
-    reserved_reg_start: u8,
+    next_reg: u32,
+    pub(crate) max_regs: u32,
+    reserved_reg_start: u32,
     pub(crate) labels: LabelCtx,
     pub(crate) scopes: ScopeCtx,
     pub(crate) nested: Vec<IRFunction>,
@@ -162,9 +162,6 @@ pub struct CompileCtx {
     /// 捕获判断（MAKE_CELL / CELL_GET / CELL_SET）与子函数 upvalue cell_idx 统一查此映射，
     /// 消除符号表时序依赖与 cell 索引错位。
     pub(crate) captured_bindings: BTreeMap<String, u8>,
-    /// Set when alloc_reg() overflows into the reserved this/new.target range (≥254).
-    /// Checked after each emit phase to produce a compile error rather than silent corruption.
-    pub(crate) reg_overflow: bool,
     pub(crate) const_overflow: bool,
 }
 
@@ -240,7 +237,6 @@ impl CompileCtx {
             current_upvalue_captures: Vec::new(),
             own_bindings: HashSet::new(),
             captured_bindings: BTreeMap::new(),
-            reg_overflow: false,
             const_overflow: false,
         }
     }
@@ -249,17 +245,12 @@ impl CompileCtx {
         self.insts.push(inst);
     }
 
-    pub(crate) fn alloc_reg(&mut self) -> u8 {
+    pub(crate) fn alloc_reg(&mut self) -> u32 {
         let r = self.next_reg;
-        // Registers 254 (this) and 255 (new.target) are reserved by the VM.
-        // Allocating into them silently corrupts the call convention, turning
-        // method calls' `this` into garbage. Clamp to 253 and set a flag so
-        // the compiler can surface a proper error after the emit pass.
-        if r >= 254 {
-            self.reg_overflow = true;
-            return 253; // clamp to last safe register; emit continues but reg_overflow triggers error
-        }
-        self.next_reg = self.next_reg.wrapping_add(1);
+        // vreg 化（D-02）：寄存器号无上限，RegAlloc 阶段负责压缩到物理域（≤253）。
+        // 254/255 是 VM 保留的 this/new.target，vreg 世界允许虚拟号越过它们，
+        // 只有 RegAlloc 完成映射后 lower 的物理域检查才相关。
+        self.next_reg += 1;
         if self.next_reg > self.max_regs {
             self.max_regs = self.next_reg;
         }
@@ -271,15 +262,7 @@ impl CompileCtx {
         self.labels.label_counter = 0;
     }
 
-    pub(crate) fn reg_checkpoint(&self) -> u8 {
-        self.next_reg
-    }
-
-    pub(crate) fn restore_reg_checkpoint(&mut self, checkpoint: u8) {
-        self.next_reg = checkpoint;
-    }
-
-    pub(crate) fn reserve_reg(&mut self, reg: u8) {
+    pub(crate) fn reserve_reg(&mut self, reg: u32) {
         let next = reg.wrapping_add(1);
         if self.next_reg <= reg {
             self.next_reg = next;
@@ -323,13 +306,13 @@ impl CompileCtx {
     }
 
     pub(crate) fn declare(
-        &mut self, name: &str, reg: u8, kind: VariableDeclarationKind, is_const: bool,
+        &mut self, name: &str, reg: u32, kind: VariableDeclarationKind, is_const: bool,
     ) -> Result<(), String> {
         self.scopes.symbols.declare(name, reg, kind, is_const)
     }
 
     pub(crate) fn declare_initialized(
-        &mut self, name: &str, reg: u8, kind: VariableDeclarationKind, is_const: bool,
+        &mut self, name: &str, reg: u32, kind: VariableDeclarationKind, is_const: bool,
     ) -> Result<(), String> {
         self.scopes.symbols.declare_initialized(name, reg, kind, is_const)
     }
@@ -338,11 +321,11 @@ impl CompileCtx {
         self.scopes.symbols.push_scope_with_kind(kind);
     }
 
-    pub(crate) fn lookup(&self, name: &str) -> Result<u8, String> {
+    pub(crate) fn lookup(&self, name: &str) -> Result<u32, String> {
         self.scopes.symbols.lookup(name)
     }
 
-    pub(crate) fn lookup_or_builtin(&mut self, name: &str) -> Result<u8, String> {
+    pub(crate) fn lookup_or_builtin(&mut self, name: &str) -> Result<u32, String> {
         match self.scopes.symbols.lookup(name) {
             Ok(reg) => Ok(reg),
             Err(err) if Self::is_known_builtin(name) && err.contains("is not defined") => {
@@ -355,7 +338,7 @@ impl CompileCtx {
         }
     }
 
-    pub(crate) fn lookup_or_global(&mut self, name: &str) -> u8 {
+    pub(crate) fn lookup_or_global(&mut self, name: &str) -> u32 {
         if let Some(reg) = self.scopes.symbols.lookup_any(name) {
             return reg;
         }
@@ -465,7 +448,7 @@ impl CompileCtx {
         BUILTIN_GLOBALS.contains(&name)
     }
 
-    fn builtin_reg_floor(&self) -> u8 {
+    fn builtin_reg_floor(&self) -> u32 {
         self.scopes
             .builtin_reg_map
             .iter()
@@ -513,7 +496,6 @@ impl CompileCtx {
             needs_home_object: false,
             captured_this_const_idx: 0,
             function_name: None,
-            reg_overflow: self.reg_overflow,
             const_overflow: self.const_overflow,
             nested: std::mem::take(&mut self.nested),
         }
@@ -591,7 +573,7 @@ impl Emitter {
 
     pub(crate) fn compile_function_body_with_bindings<'a>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
-        is_expression_body: bool, extra_bindings: &[(&str, u8)], body_context: FunctionBodyContext,
+        is_expression_body: bool, extra_bindings: &[(&str, u32)], body_context: FunctionBodyContext,
     ) -> Result<IRFunction, String> {
         self.compile_function_body_with_field_hooks(
             param_specs,
@@ -610,14 +592,12 @@ impl Emitter {
     /// (expressions, member objects, call args, class fields, etc.) so their
     /// register slots are reserved *before* any temporary register is emitted.
     ///
-    /// Without this, single-pass emission lazily allocates builtin slots via
-    /// `lookup_or_builtin` at first use, which can collide with a temporary
-    /// register already reused by `restore_reg_checkpoint`. Pre-scanning moves
-    /// builtin slot allocation ahead of the temporary register pool.
+    /// vreg 化（D-01）后临时值不复用（独立 vreg），但 builtin 槽预注册仍
+    /// 保证分配序稳定：builtin 槽先于临时值池，nested 继承边界（B012）不受扰。
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn compile_function_body_with_field_hooks<'a, E>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
-        is_expression_body: bool, extra_bindings: &[(&str, u8)], body_context: FunctionBodyContext,
+        is_expression_body: bool, extra_bindings: &[(&str, u32)], body_context: FunctionBodyContext,
         mut emit_fields: Option<E>, fields_after_super: bool,
     ) -> Result<IRFunction, String>
     where
@@ -647,7 +627,7 @@ impl Emitter {
 
         // Inherit parent's global scope entries so previously-declared function names
         // are visible from within the body.
-        let mut inherited_reg_start = 1u8.max(ctx.builtin_reg_floor());
+        let mut inherited_reg_start = 1u32.max(ctx.builtin_reg_floor());
         for (name, binding) in &parent_ctx.scopes.symbols.scopes[0].bindings {
             ctx.scopes.symbols.scopes[0].bindings.insert(
                 name.clone(),
@@ -718,23 +698,23 @@ impl Emitter {
         // statement body returns undefined.
         if is_expression_body {
             if let Some(reg) = last_result_reg {
-                ctx.inst(Inst::new(OpCode::RETURN, Operand::Reg(reg as u32), Operand::None, Operand::None));
+                ctx.inst(Inst::new(OpCode::RETURN, Operand::Reg(reg), Operand::None, Operand::None));
             } else {
                 let undef_idx = ctx.add_constant(Constant::Undefined);
                 let undef_reg = ctx.alloc_reg();
-                ctx.inst(Inst::load_const(Operand::Reg(undef_reg as u32), undef_idx));
-                ctx.inst(Inst::new(OpCode::RETURN, Operand::Reg(undef_reg as u32), Operand::None, Operand::None));
+                ctx.inst(Inst::load_const(Operand::Reg(undef_reg), undef_idx));
+                ctx.inst(Inst::new(OpCode::RETURN, Operand::Reg(undef_reg), Operand::None, Operand::None));
             }
         } else {
             let undef_idx = ctx.add_constant(Constant::Undefined);
             let undef_reg = ctx.alloc_reg();
-            ctx.inst(Inst::load_const(Operand::Reg(undef_reg as u32), undef_idx));
-            ctx.inst(Inst::new(OpCode::RETURN, Operand::Reg(undef_reg as u32), Operand::None, Operand::None));
+            ctx.inst(Inst::load_const(Operand::Reg(undef_reg), undef_idx));
+            ctx.inst(Inst::new(OpCode::RETURN, Operand::Reg(undef_reg), Operand::None, Operand::None));
         }
 
         let ir = ctx.assemble_ir(
             oxide_ir::ParamLayout {
-                base: param_base as u32,
+                base: param_base,
                 count: param_specs.len() as u32,
             },
             Some(parent_ctx),
@@ -746,7 +726,7 @@ impl Emitter {
     fn emit_params_prologue<'a>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         ctx: &mut CompileCtx, body_context: FunctionBodyContext,
-    ) -> Result<u8, String> {
+    ) -> Result<u32, String> {
         ctx.push_scope_with_kind(ScopeKind::FunctionScope);
         let param_base = ctx.next_reg;
 
@@ -779,7 +759,7 @@ impl Emitter {
     }
 
     /// 双 sub-pass emit body：先函数声明（hoisting），再其余语句。返回最后结果寄存器。
-    fn emit_body_stmts(&self, body_stmts: &[Statement], ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
+    fn emit_body_stmts(&self, body_stmts: &[Statement], ctx: &mut CompileCtx) -> Result<Option<u32>, String> {
         let mut last_result_reg = None;
         for stmt in body_stmts {
             if matches!(stmt, Statement::FunctionDeclaration(_)) {
@@ -799,7 +779,7 @@ impl Emitter {
         Ok(last_result_reg)
     }
 
-    pub(crate) fn emit_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
+    pub(crate) fn emit_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u32>, String> {
         match stmt {
             Statement::ExpressionStatement(_) | Statement::ReturnStatement(_) | Statement::EmptyStatement(_) => {
                 self.emit_basic_domain(stmt, ctx)
@@ -823,7 +803,7 @@ impl Emitter {
         }
     }
 
-    pub(crate) fn emit_expression(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u8, String> {
+    pub(crate) fn emit_expression(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u32, String> {
         match expr {
             Expression::NumericLiteral(_)
             | Expression::StringLiteral(_)
@@ -887,7 +867,7 @@ impl Emitter {
         }
 
         // Second sub-pass: emit all other statements
-        let mut last_result: Option<u8> = None;
+        let mut last_result: Option<u32> = None;
         for stmt in &program.body {
             if matches!(stmt, Statement::FunctionDeclaration(_)) {
                 continue; // Already emitted above
@@ -898,7 +878,7 @@ impl Emitter {
             }
         }
         if let Some(r) = last_result {
-            ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::None, Operand::Reg(r as u32), Operand::None));
+            ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::None, Operand::Reg(r), Operand::None));
         } else {
             let undef_idx = ctx.add_constant(Constant::Undefined);
             ctx.inst(Inst::load_const(Operand::None, undef_idx));

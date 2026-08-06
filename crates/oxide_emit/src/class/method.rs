@@ -10,7 +10,7 @@ use oxide_parser::{ClassElement, MethodDefinitionKind, PropertyKey};
 
 impl Emitter {
     pub(crate) fn emit_class_methods(
-        &self, elements: &[ClassElement], ctor_reg: u8, proto_reg: u8, self_binding: &[(&str, u8)],
+        &self, elements: &[ClassElement], ctor_reg: u32, proto_reg: u32, self_binding: &[(&str, u32)],
         ctx: &mut CompileCtx,
     ) -> Result<(), String> {
         for element in elements {
@@ -21,7 +21,7 @@ impl Emitter {
                 }
                 if matches!(method.key, PropertyKey::PrivateIdentifier(_)) {
                     let home_reg = if method.r#static { ctor_reg } else { proto_reg };
-                    self.emit_private_method_init(Operand::Reg(home_reg as u32), method, Operand::Reg(home_reg as u32), ctx)?;
+                    self.emit_private_method_init(Operand::Reg(home_reg), method, Operand::Reg(home_reg), ctx)?;
                     continue;
                 }
                 let home_reg = if method.r#static { ctor_reg } else { proto_reg };
@@ -32,13 +32,13 @@ impl Emitter {
                     self.class_property_name(&method.key)?
                 };
                 let accessor_reg =
-                    self.emit_class_method_function(method, &method_name, Operand::Reg(home_reg as u32), ctx, self_binding)?;
+                    self.emit_class_method_function(method, &method_name, Operand::Reg(home_reg), ctx, self_binding)?;
                 match method.kind {
                     MethodDefinitionKind::Method => {
                         if method.computed {
-                            ctx.inst(Inst::new(OpCode::SET_PROP_DYNAMIC, Operand::Reg(home_reg as u32), Operand::Reg(key_reg as u32), Operand::Reg(accessor_reg as u32)));
+                            ctx.inst(Inst::new(OpCode::SET_PROP_DYNAMIC, Operand::Reg(home_reg), Operand::Reg(key_reg), Operand::Reg(accessor_reg)));
                         } else {
-                            ctx.inst(Inst::new(OpCode::SET_PROP, Operand::Reg(home_reg as u32), Operand::Reg(accessor_reg as u32), Operand::Reg(key_reg as u32)));
+                            ctx.inst(Inst::new(OpCode::SET_PROP, Operand::Reg(home_reg), Operand::Reg(accessor_reg), Operand::Reg(key_reg)));
                         }
                     }
                     MethodDefinitionKind::Get | MethodDefinitionKind::Set => {
@@ -54,9 +54,9 @@ impl Emitter {
                         let key_name = self.class_property_name(&method.key)?;
                         let key_idx = ctx.add_constant(Constant::String(key_name));
                         ctx.inst(Inst::define_accessor(
-                            Operand::Reg(home_reg as u32),
-                            Operand::Reg(get_reg as u32),
-                            Operand::Reg(set_reg as u32),
+                            Operand::Reg(home_reg),
+                            Operand::Reg(get_reg),
+                            Operand::Reg(set_reg),
                             key_idx as u32,
                         ));
                     }
@@ -69,8 +69,8 @@ impl Emitter {
 
     pub(crate) fn emit_class_method_function(
         &self, method: &oxide_parser::MethodDefinition, method_name: &str, home_reg: Operand, ctx: &mut CompileCtx,
-        self_binding: &[(&str, u8)],
-    ) -> Result<u8, String> {
+        self_binding: &[(&str, u32)],
+    ) -> Result<u32, String> {
         let (param_names, body_stmts) = self.extract_function_parts(method.value.as_ref())?;
         let saved_instance = ctx.in_instance_method;
         let saved_static = ctx.in_static_method;
@@ -90,8 +90,8 @@ impl Emitter {
         method_module.needs_home_object = true;
         ctx.nested.push(method_module);
         let method_reg = ctx.alloc_reg();
-        ctx.inst(Inst::create_closure(Operand::Reg(method_reg as u32), ctx.nested.len() as u16));
-        ctx.inst(Inst::new(OpCode::SET_HOME_OBJECT, Operand::Reg(method_reg as u32), home_reg, Operand::None));
+        ctx.inst(Inst::create_closure(Operand::Reg(method_reg), ctx.nested.len() as u16));
+        ctx.inst(Inst::new(OpCode::SET_HOME_OBJECT, Operand::Reg(method_reg), home_reg, Operand::None));
         Ok(method_reg)
     }
 }

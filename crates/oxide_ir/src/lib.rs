@@ -40,20 +40,18 @@ pub struct IRFunction {
     // bindings 域
     pub param_layout: ParamLayout,
     // builtins 域
-    pub builtin_reg_map: Vec<(String, u8)>,
+    pub builtin_reg_map: Vec<(String, u32)>,
     // closures 域
     pub upvalue_captures: Vec<UpvalueCapture>,
     pub cells_needed: u8,
     // meta 域
-    pub n_registers: u8,
+    pub n_registers: u32,
     pub is_arrow: bool,
     pub is_class_constructor: bool,
     pub is_derived_constructor: bool,
     pub needs_home_object: bool,
     pub captured_this_const_idx: u16,
     pub function_name: Option<String>,
-    /// emit 侧溢出证据，lowering 读标志报错（D-20）。
-    pub reg_overflow: bool,
     pub const_overflow: bool,
     // nested 域
     pub nested: Vec<IRFunction>,
@@ -78,7 +76,6 @@ impl IRFunction {
             needs_home_object: false,
             captured_this_const_idx: 0,
             function_name: None,
-            reg_overflow: false,
             const_overflow: false,
             nested: Vec::new(),
         }

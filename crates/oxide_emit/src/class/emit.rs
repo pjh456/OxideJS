@@ -9,7 +9,7 @@ use oxide_bytecode::opcode::OpCode;
 use oxide_parser::{Class, ClassElement, MethodDefinitionKind, PropertyKey};
 
 impl Emitter {
-    pub(crate) fn emit_class(&self, class: &Class, ctx: &mut CompileCtx) -> Result<u8, String> {
+    pub(crate) fn emit_class(&self, class: &Class, ctx: &mut CompileCtx) -> Result<u32, String> {
         let mut constructor_method = None;
         let mut instance_fields = Vec::new();
         let mut private_names = Vec::<(String, u32)>::new();

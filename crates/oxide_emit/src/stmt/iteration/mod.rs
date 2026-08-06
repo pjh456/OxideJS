@@ -10,7 +10,7 @@ mod for_of;
 mod while_loop;
 
 impl Emitter {
-    pub(crate) fn emit_iteration_domain(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
+    pub(crate) fn emit_iteration_domain(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u32>, String> {
         match stmt {
             Statement::WhileStatement(_) => self.emit_while_statement(stmt, ctx),
             Statement::DoWhileStatement(_) => self.emit_do_while_statement(stmt, ctx),

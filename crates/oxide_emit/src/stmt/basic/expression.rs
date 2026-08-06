@@ -4,14 +4,14 @@ use crate::{CompileCtx, Emitter};
 use oxide_parser::Statement;
 
 impl Emitter {
-    fn emit_expression_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
+    fn emit_expression_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u32>, String> {
         let Statement::ExpressionStatement(es) = stmt else {
             return Ok(None);
         };
         Ok(Some(self.emit_expression(&es.expression, ctx)?))
     }
 
-    pub(crate) fn emit_basic_expression(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
+    pub(crate) fn emit_basic_expression(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u32>, String> {
         self.emit_expression_statement(stmt, ctx)
     }
 }

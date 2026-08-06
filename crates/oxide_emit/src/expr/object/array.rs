@@ -8,11 +8,10 @@ use oxide_bytecode::opcode::OpCode;
 impl Emitter {
     pub(crate) fn emit_array_expression(
         &self, arr: &oxide_parser::ArrayExpression, ctx: &mut CompileCtx,
-    ) -> Result<u8, String> {
+    ) -> Result<u32, String> {
         let arr_reg = ctx.alloc_reg();
         let n = arr.elements.len() as u16;
-        ctx.inst(Inst::new(OpCode::NEW_ARRAY, Operand::Reg(arr_reg as u32), Operand::Imm(n), Operand::None));
-        let elem_checkpoint = ctx.reg_checkpoint();
+        ctx.inst(Inst::new(OpCode::NEW_ARRAY, Operand::Reg(arr_reg), Operand::Imm(n), Operand::None));
         for (i, elem) in arr.elements.iter().enumerate() {
             let Some(e) = elem.as_expression() else {
                 return Err("spread not supported".into());
@@ -20,9 +19,8 @@ impl Emitter {
             let val_reg = self.emit_expression(e, ctx)?;
             let idx_reg = ctx.alloc_reg();
             let idx = ctx.add_constant(Constant::Int(i as i32));
-            ctx.inst(Inst::load_const(Operand::Reg(idx_reg as u32), idx));
-            ctx.inst(Inst::new(OpCode::SET_ELEM, Operand::Reg(arr_reg as u32), Operand::Reg(idx_reg as u32), Operand::Reg(val_reg as u32)));
-            ctx.restore_reg_checkpoint(elem_checkpoint);
+            ctx.inst(Inst::load_const(Operand::Reg(idx_reg), idx));
+            ctx.inst(Inst::new(OpCode::SET_ELEM, Operand::Reg(arr_reg), Operand::Reg(idx_reg), Operand::Reg(val_reg)));
         }
         Ok(arr_reg)
     }

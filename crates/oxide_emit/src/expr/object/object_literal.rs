@@ -10,10 +10,9 @@ use oxide_parser::{Expression, ObjectPropertyKind, PropertyKey, PropertyKind};
 impl Emitter {
     pub(crate) fn emit_object_expression(
         &self, obj: &oxide_parser::ObjectExpression, ctx: &mut CompileCtx,
-    ) -> Result<u8, String> {
+    ) -> Result<u32, String> {
         let obj_reg = ctx.alloc_reg();
-        ctx.inst(Inst::new(OpCode::NEW_OBJECT, Operand::Reg(obj_reg as u32), Operand::None, Operand::None));
-        let prop_checkpoint = ctx.reg_checkpoint();
+        ctx.inst(Inst::new(OpCode::NEW_OBJECT, Operand::Reg(obj_reg), Operand::None, Operand::None));
         for prop in &obj.properties {
             let ObjectPropertyKind::ObjectProperty(p) = prop else {
                 return Err("spread properties not yet supported".into());
@@ -37,25 +36,23 @@ impl Emitter {
                     };
                     let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
                     ctx.inst(Inst::define_accessor(
-                        Operand::Reg(obj_reg as u32),
-                        Operand::Reg(get_reg as u32),
-                        Operand::Reg(set_reg as u32),
+                        Operand::Reg(obj_reg),
+                        Operand::Reg(get_reg),
+                        Operand::Reg(set_reg),
                         idx as u32,
                     ));
-                    ctx.restore_reg_checkpoint(prop_checkpoint);
                 }
                 _ => {
                     let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
                     let key_reg = ctx.alloc_reg();
-                    ctx.inst(Inst::load_const(Operand::Reg(key_reg as u32), idx));
+                    ctx.inst(Inst::load_const(Operand::Reg(key_reg), idx));
                     let val_reg = self.emit_expression(&p.value, ctx)?;
                     if matches!(&p.value, Expression::ArrowFunctionExpression(_)) {
                         if let Some(sub_mod) = ctx.nested.last_mut() {
                             sub_mod.function_name = Some(prop_name.to_string());
                         }
                     }
-                    ctx.inst(Inst::new(OpCode::SET_PROP, Operand::Reg(obj_reg as u32), Operand::Reg(val_reg as u32), Operand::Reg(key_reg as u32)));
-                    ctx.restore_reg_checkpoint(prop_checkpoint);
+                    ctx.inst(Inst::new(OpCode::SET_PROP, Operand::Reg(obj_reg), Operand::Reg(val_reg), Operand::Reg(key_reg)));
                 }
             }
         }

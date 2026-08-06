@@ -20,7 +20,7 @@ pub(crate) struct Scope {
 }
 
 pub(crate) struct Binding {
-    pub(crate) reg: u8,
+    pub(crate) reg: u32,
     pub(crate) initialized: bool,
     pub(crate) is_const: bool,
 }
@@ -79,7 +79,7 @@ impl SymbolTable {
     /// 声明绑定：`var` 提升到函数作用域，`let`/`const` 落在当前块。
     /// 初始为未初始化态（TDZ）；重复声明报错。
     pub fn declare(
-        &mut self, name: &str, reg: u8, kind: VariableDeclarationKind, is_const: bool,
+        &mut self, name: &str, reg: u32, kind: VariableDeclarationKind, is_const: bool,
     ) -> Result<(), String> {
         let target_idx = if matches!(kind, VariableDeclarationKind::Var) {
             self.find_var_target_scope()
@@ -103,7 +103,7 @@ impl SymbolTable {
     }
 
     /// 从内到外查找已初始化绑定；命中未初始化绑定报 TDZ 错误，未找到报未定义。
-    pub fn lookup(&self, name: &str) -> Result<u8, String> {
+    pub fn lookup(&self, name: &str) -> Result<u32, String> {
         for scope in self.scopes.iter().rev() {
             if let Some(b) = scope.bindings.get(name) {
                 if b.initialized {
@@ -115,7 +115,7 @@ impl SymbolTable {
         Err(format!("Identifier '{name}' is not defined"))
     }
 
-    pub(crate) fn lookup_any(&self, name: &str) -> Option<u8> {
+    pub(crate) fn lookup_any(&self, name: &str) -> Option<u32> {
         self.scopes
             .iter()
             .rev()
@@ -132,7 +132,7 @@ impl SymbolTable {
     }
 
     /// 查找或视为全局：未命中时以 `reg_for_new` 在全局作用域登记并返回（隐式全局）。
-    pub fn lookup_or_global(&mut self, name: &str, reg_for_new: u8) -> u8 {
+    pub fn lookup_or_global(&mut self, name: &str, reg_for_new: u32) -> u32 {
         for scope in self.scopes.iter().rev() {
             if let Some(b) = scope.bindings.get(name) {
                 return b.reg;
@@ -164,7 +164,7 @@ impl SymbolTable {
 
     /// 声明并直接标记为已初始化；绑定已存在时仅补初始化标志（供预声明路径）。
     pub fn declare_initialized(
-        &mut self, name: &str, reg: u8, kind: VariableDeclarationKind, is_const: bool,
+        &mut self, name: &str, reg: u32, kind: VariableDeclarationKind, is_const: bool,
     ) -> Result<(), String> {
         let target_idx = if matches!(kind, VariableDeclarationKind::Var) {
             self.find_var_target_scope()
@@ -189,7 +189,7 @@ impl SymbolTable {
     }
 
     /// 在全局作用域预登记绑定（builtin 全局等），不覆盖已存在的同名绑定。
-    pub fn pre_register_global(&mut self, name: &str, reg: u8) {
+    pub fn pre_register_global(&mut self, name: &str, reg: u32) {
         self.scopes[0].bindings.entry(name.to_string()).or_insert(Binding {
             reg,
             initialized: true,

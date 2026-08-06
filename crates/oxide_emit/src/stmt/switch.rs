@@ -7,14 +7,13 @@ use oxide_bytecode::opcode::OpCode;
 use oxide_parser::Statement;
 
 impl Emitter {
-    fn emit_switch_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
+    fn emit_switch_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u32>, String> {
         let Statement::SwitchStatement(sw) = stmt else {
             return Ok(None);
         };
         let end_label = ctx.next_label_id();
         ctx.push_switch(end_label);
         let disc_reg = self.emit_expression(&sw.discriminant, ctx)?;
-        let compare_reg_checkpoint = ctx.reg_checkpoint();
         let cases = &sw.cases;
         let mut case_labels = Vec::with_capacity(cases.len());
         for case in cases.iter() {
@@ -23,9 +22,8 @@ impl Emitter {
             if let Some(test) = &case.test {
                 let test_reg = self.emit_expression(test, ctx)?;
                 let eq_reg = ctx.alloc_reg();
-                ctx.inst(Inst::new(OpCode::EQ, Operand::Reg(eq_reg as u32), Operand::Reg(disc_reg as u32), Operand::Reg(test_reg as u32)));
+                ctx.inst(Inst::new(OpCode::EQ, Operand::Reg(eq_reg), Operand::Reg(disc_reg), Operand::Reg(test_reg)));
                 ctx.inst(Inst::jmp_if_true(eq_reg, case_label));
-                ctx.restore_reg_checkpoint(compare_reg_checkpoint);
             }
         }
         let has_default = cases.iter().any(|c| c.test.is_none());
@@ -44,7 +42,7 @@ impl Emitter {
         Ok(None)
     }
 
-    pub(crate) fn emit_switch_domain(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
+    pub(crate) fn emit_switch_domain(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u32>, String> {
         match stmt {
             Statement::SwitchStatement(_) => self.emit_switch_statement(stmt, ctx),
             _ => Ok(None),

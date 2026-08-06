@@ -8,7 +8,7 @@ use oxide_bytecode::opcode::OpCode;
 use oxide_parser::{BindingPattern, ForStatementInit, Statement, VariableDeclarationKind};
 
 impl Emitter {
-    pub(crate) fn emit_for_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
+    pub(crate) fn emit_for_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u32>, String> {
         let Statement::ForStatement(fr) = stmt else {
             return Ok(None);
         };
@@ -29,7 +29,7 @@ impl Emitter {
                     } else if let BindingPattern::BindingIdentifier(bi) = &d.id {
                         let idx = ctx.add_constant(Constant::Undefined);
                         let tmp = ctx.alloc_reg();
-                        ctx.inst(Inst::load_const(Operand::Reg(tmp as u32), idx));
+                        ctx.inst(Inst::load_const(Operand::Reg(tmp), idx));
                         let var_reg = ctx.alloc_reg();
                         let target_reg = if matches!(decl.kind, VariableDeclarationKind::Var) {
                             match ctx.declare(bi.name.as_str(), var_reg, decl.kind, is_const) {
@@ -40,7 +40,7 @@ impl Emitter {
                             ctx.declare(bi.name.as_str(), var_reg, decl.kind, is_const)?;
                             var_reg
                         };
-                        ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(target_reg as u32), Operand::Reg(tmp as u32), Operand::None));
+                        ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(target_reg), Operand::Reg(tmp), Operand::None));
                         ctx.init_var(bi.name.as_str());
                     }
                 }

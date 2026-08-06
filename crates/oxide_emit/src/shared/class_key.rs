@@ -16,22 +16,22 @@ impl Emitter {
             .ok_or_else(|| format!("private name #{name} is not defined"))
     }
 
-    pub(crate) fn emit_private_id_reg(&self, name: &str, ctx: &mut CompileCtx) -> Result<u8, String> {
+    pub(crate) fn emit_private_id_reg(&self, name: &str, ctx: &mut CompileCtx) -> Result<u32, String> {
         let id = self.private_name_id(name, ctx)?;
         let idx = ctx.add_constant(Constant::Int(id as i32));
         let reg = ctx.alloc_reg();
-        ctx.inst(Inst::load_const(Operand::Reg(reg as u32), idx));
+        ctx.inst(Inst::load_const(Operand::Reg(reg), idx));
         Ok(reg)
     }
 
     pub(crate) fn emit_class_key_reg(
         &self, key: &PropertyKey, computed: bool, ctx: &mut CompileCtx,
-    ) -> Result<u8, String> {
+    ) -> Result<u32, String> {
         if !computed {
             let name = self.class_property_name(key)?;
             let idx = ctx.add_constant(Constant::String(name));
             let reg = ctx.alloc_reg();
-            ctx.inst(Inst::load_const(Operand::Reg(reg as u32), idx));
+            ctx.inst(Inst::load_const(Operand::Reg(reg), idx));
             return Ok(reg);
         }
 
@@ -62,10 +62,10 @@ impl Emitter {
         }
     }
 
-    pub(crate) fn emit_undefined(&self, ctx: &mut CompileCtx) -> u8 {
+    pub(crate) fn emit_undefined(&self, ctx: &mut CompileCtx) -> u32 {
         let idx = ctx.add_constant(Constant::Undefined);
         let reg = ctx.alloc_reg();
-        ctx.inst(Inst::load_const(Operand::Reg(reg as u32), idx));
+        ctx.inst(Inst::load_const(Operand::Reg(reg), idx));
         reg
     }
 }

@@ -8,7 +8,7 @@ use oxide_bytecode::opcode::OpCode;
 use oxide_parser::Statement;
 
 impl Emitter {
-    fn emit_if_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
+    fn emit_if_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u32>, String> {
         let Statement::IfStatement(ifs) = stmt else {
             return Ok(None);
         };
@@ -22,10 +22,10 @@ impl Emitter {
         let cons_reg = self.emit_statement(&ifs.consequent, ctx)?;
         let result_reg = ctx.alloc_reg();
         if let Some(r) = cons_reg {
-            ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg as u32), Operand::Reg(r as u32), Operand::None));
+            ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg), Operand::Reg(r), Operand::None));
         } else {
             let undef_idx = ctx.add_constant(Constant::Undefined);
-            ctx.inst(Inst::load_const(Operand::Reg(result_reg as u32), undef_idx));
+            ctx.inst(Inst::load_const(Operand::Reg(result_reg), undef_idx));
         }
 
         if ifs.alternate.is_some() {
@@ -36,10 +36,10 @@ impl Emitter {
         if let Some(alt) = &ifs.alternate {
             let alt_reg = self.emit_statement(alt, ctx)?;
             if let Some(r) = alt_reg {
-                ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg as u32), Operand::Reg(r as u32), Operand::None));
+                ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg), Operand::Reg(r), Operand::None));
             } else {
                 let undef_idx = ctx.add_constant(Constant::Undefined);
-                ctx.inst(Inst::load_const(Operand::Reg(result_reg as u32), undef_idx));
+                ctx.inst(Inst::load_const(Operand::Reg(result_reg), undef_idx));
             }
         }
 
@@ -48,7 +48,7 @@ impl Emitter {
         Ok(Some(result_reg))
     }
 
-    pub(crate) fn emit_control_domain(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
+    pub(crate) fn emit_control_domain(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u32>, String> {
         match stmt {
             Statement::IfStatement(_) => self.emit_if_statement(stmt, ctx),
             _ => Ok(None),

@@ -9,7 +9,7 @@ use oxide_bytecode::opcode::OpCode;
 use oxide_parser::Expression;
 
 impl Emitter {
-    pub(crate) fn emit_literal(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u8, String> {
+    pub(crate) fn emit_literal(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u32, String> {
         match expr {
             Expression::NumericLiteral(n) => self.emit_numeric_literal_expression(n, ctx),
             Expression::StringLiteral(s) => self.emit_string_literal_expression(s, ctx),
@@ -22,45 +22,45 @@ impl Emitter {
 
     fn emit_numeric_literal_expression(
         &self, n: &oxide_parser::NumericLiteral, ctx: &mut CompileCtx,
-    ) -> Result<u8, String> {
+    ) -> Result<u32, String> {
         let idx = if is_int_literal(n.value) {
             ctx.add_constant(Constant::Int(n.value as i32))
         } else {
             ctx.add_constant(Constant::Number(n.value))
         };
         let r = ctx.alloc_reg();
-        ctx.inst(Inst::load_const(Operand::Reg(r as u32), idx));
+        ctx.inst(Inst::load_const(Operand::Reg(r), idx));
         Ok(r)
     }
 
     fn emit_string_literal_expression(
         &self, s: &oxide_parser::StringLiteral, ctx: &mut CompileCtx,
-    ) -> Result<u8, String> {
+    ) -> Result<u32, String> {
         let idx = ctx.add_constant(Constant::String(s.value.to_string()));
         let r = ctx.alloc_reg();
-        ctx.inst(Inst::load_const(Operand::Reg(r as u32), idx));
+        ctx.inst(Inst::load_const(Operand::Reg(r), idx));
         Ok(r)
     }
 
     fn emit_boolean_literal_expression(
         &self, b: &oxide_parser::BooleanLiteral, ctx: &mut CompileCtx,
-    ) -> Result<u8, String> {
+    ) -> Result<u32, String> {
         let idx = ctx.add_constant(Constant::Boolean(b.value));
         let r = ctx.alloc_reg();
-        ctx.inst(Inst::load_const(Operand::Reg(r as u32), idx));
+        ctx.inst(Inst::load_const(Operand::Reg(r), idx));
         Ok(r)
     }
 
-    fn emit_null_literal_expression(&self, ctx: &mut CompileCtx) -> Result<u8, String> {
+    fn emit_null_literal_expression(&self, ctx: &mut CompileCtx) -> Result<u32, String> {
         let idx = ctx.add_constant(Constant::Null);
         let r = ctx.alloc_reg();
-        ctx.inst(Inst::load_const(Operand::Reg(r as u32), idx));
+        ctx.inst(Inst::load_const(Operand::Reg(r), idx));
         Ok(r)
     }
 
     fn emit_reg_exp_literal_expression(
         &self, lit: &oxide_parser::RegExpLiteral, ctx: &mut CompileCtx,
-    ) -> Result<u8, String> {
+    ) -> Result<u32, String> {
         if let Some(raw) = &lit.raw {
             let raw_str = raw.to_string();
             if raw_str.len() >= 2 && raw_str.starts_with('/') {
@@ -69,12 +69,12 @@ impl Emitter {
                 let flags = raw_str[last_slash + 1..].to_string();
                 let pat_ci = ctx.add_constant(Constant::String(pattern));
                 let pat_reg = ctx.alloc_reg();
-                ctx.inst(Inst::load_const(Operand::Reg(pat_reg as u32), pat_ci));
+                ctx.inst(Inst::load_const(Operand::Reg(pat_reg), pat_ci));
                 let flags_ci = ctx.add_constant(Constant::String(flags));
                 let flags_reg = ctx.alloc_reg();
-                ctx.inst(Inst::load_const(Operand::Reg(flags_reg as u32), flags_ci));
+                ctx.inst(Inst::load_const(Operand::Reg(flags_reg), flags_ci));
                 let r = ctx.alloc_reg();
-                ctx.inst(Inst::new(OpCode::CREATE_REGEXP, Operand::Reg(r as u32), Operand::Reg(pat_reg as u32), Operand::Reg(flags_reg as u32)));
+                ctx.inst(Inst::new(OpCode::CREATE_REGEXP, Operand::Reg(r), Operand::Reg(pat_reg), Operand::Reg(flags_reg)));
                 Ok(r)
             } else {
                 Err(format!("unsupported regexp literal: {:?}", lit))

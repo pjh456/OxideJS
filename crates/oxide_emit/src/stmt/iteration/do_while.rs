@@ -5,7 +5,7 @@ use oxide_ir::inst::Inst;
 use oxide_parser::Statement;
 
 impl Emitter {
-    pub(crate) fn emit_do_while_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u8>, String> {
+    pub(crate) fn emit_do_while_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u32>, String> {
         let Statement::DoWhileStatement(dw) = stmt else {
             return Ok(None);
         };

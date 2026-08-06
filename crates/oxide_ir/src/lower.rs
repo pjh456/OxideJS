@@ -14,9 +14,6 @@ use crate::IRFunction;
 /// IRFunction → CompiledModule。错误消息与现状（退役前 compiler.rs）逐字一致。
 pub fn lower(f: &IRFunction) -> Result<CompiledModule, String> {
     // 溢出检查 1：寄存器（仅 Operand::Reg 变体；This/NewTarget 是语义操作数，映射 254/255 合法）
-    if f.reg_overflow {
-        return Err("RangeError: function body uses too many registers (max 253)".into());
-    }
     for inst in &f.insts {
         for o in [&inst.rd, &inst.a, &inst.b] {
             if let Operand::Reg(r) = o {
@@ -25,6 +22,13 @@ pub fn lower(f: &IRFunction) -> Result<CompiledModule, String> {
                 }
             }
         }
+    }
+
+    // 溢出检查 1b：n_registers（u32 → CompiledModule u8 前的显式截断检查）。
+    // n_registers = max_regs = 最高分配号 + 1，合法上限 254（reg 0..253）。
+    // 纯参数/空体函数可能无指令引用最高号寄存器，逐指令检查漏掉，计数检查兜底防 u8 静默截断。
+    if f.n_registers > 254 {
+        return Err("RangeError: function body uses too many registers (max 253)".into());
     }
 
     // 溢出检查 2：常量池
@@ -72,7 +76,7 @@ pub fn lower(f: &IRFunction) -> Result<CompiledModule, String> {
     Ok(CompiledModule {
         bytecode: instrs,
         constants: f.constants.clone(),
-        n_registers: f.n_registers,
+        n_registers: f.n_registers as u8,
         n_args: f.param_layout.count as u8,
         param_base: f.param_layout.base as u8,
         builtin_reg_map: f.builtin_reg_map.clone(),

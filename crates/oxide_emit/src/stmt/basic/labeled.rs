@@ -17,7 +17,7 @@ impl Emitter {
 
     pub(crate) fn emit_labeled_statement(
         &self, stmt: &oxide_parser::LabeledStatement, ctx: &mut CompileCtx,
-    ) -> Result<Option<u8>, String> {
+    ) -> Result<Option<u32>, String> {
         let name = stmt.label.name.as_str();
         if Self::is_iteration_statement(&stmt.body) {
             ctx.queue_loop_label(name)?;
