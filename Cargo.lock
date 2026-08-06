@@ -1139,6 +1139,7 @@ dependencies = [
  "oxide_cfg",
  "oxide_emit",
  "oxide_ir",
+ "oxide_liveness",
  "oxide_parser",
  "oxide_vm",
 ]
@@ -1208,6 +1209,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxide_regalloc"
+version = "0.1.0"
+dependencies = [
+ "oxide_bytecode",
+ "oxide_cfg",
+ "oxide_emit",
+ "oxide_ir",
+ "oxide_liveness",
+ "oxide_parser",
+ "oxide_vm",
+]
+
+[[package]]
 name = "oxide_runtime_api"
 version = "0.1.0"
 dependencies = [
@@ -1254,6 +1268,7 @@ dependencies = [
  "oxide_builtins",
  "oxide_bytecode",
  "oxide_compiler",
+ "oxide_ir",
  "oxide_kernel",
  "oxide_log",
  "oxide_parser",

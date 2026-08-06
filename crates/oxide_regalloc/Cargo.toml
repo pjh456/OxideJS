@@ -1,0 +1,18 @@
+[package]
+name = "oxide_regalloc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OxideJS - register allocation pass over IR (interference graph + graph coloring + spill splitting)"
+
+[dependencies]
+oxide_ir = { path = "../oxide_ir" }
+oxide_liveness = { path = "../oxide_liveness" }
+oxide_bytecode = { path = "../oxide_bytecode" }
+
+[dev-dependencies]
+oxide_parser = { path = "../oxide_parser" }
+oxide_emit = { path = "../oxide_emit" }
+oxide_vm = { path = "../oxide_vm" }
+oxide_cfg = { path = "../oxide_cfg" }
