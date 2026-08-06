@@ -7,6 +7,7 @@ use oxide_bytecode::opcode::OpCode;
 use smallvec::SmallVec;
 
 use crate::operand::{LabelId, Operand};
+use crate::IRFunction;
 
 /// IR 指令：opcode + 三个操作数槽（rd/a/b）+ 扩展字 `ext`。
 /// `ext` 内部是裸 u32，其数量与语义值编码由下方 `inst_*` 构造 API 保证。
@@ -441,6 +442,14 @@ fn push_range(uses: &mut SmallVec<[u32; 4]>, first: Option<u32>, nargs: u32) {
     }
 }
 
+impl Inst {
+    /// 本指令是否无观察副作用（Pattern 1 纯表；LOAD_VAR 的 This+derived 特判需 &IRFunction）。
+    pub fn is_pure(&self, _f: &IRFunction) -> bool {
+        // TODO: Pattern 1 表逐 opcode 实现
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -739,5 +748,114 @@ mod tests {
         let inst = Inst::new(OpCode::STORE_VAR, Operand::Reg(0), Operand::Reg(1), Operand::None);
         assert_eq!(inst.def_reg(), Some(0));
         assert_eq!(inst.use_regs().as_slice(), &[1]);
+    }
+
+    // ── is_pure 契约测试（Pattern 1 表，纯/非纯族代表 opcode）──
+
+    #[test]
+    fn pure_ops_are_deletable() {
+        let f = IRFunction::new();
+        // 算术 / 比较 / 位 / 逻辑
+        assert!(Inst::new(OpCode::ADD, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
+        assert!(Inst::new(OpCode::SUB, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
+        assert!(Inst::new(OpCode::MUL, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
+        assert!(Inst::new(OpCode::NEG, Operand::Reg(0), Operand::Reg(1), Operand::None).is_pure(&f));
+        assert!(Inst::new(OpCode::EQ, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
+        assert!(Inst::new(OpCode::STRICT_EQ, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
+        assert!(Inst::new(OpCode::LT, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
+        assert!(Inst::new(OpCode::BIT_AND, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
+        assert!(Inst::new(OpCode::BIT_NOT, Operand::Reg(0), Operand::Reg(1), Operand::None).is_pure(&f));
+        assert!(Inst::new(OpCode::AND, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
+        assert!(Inst::new(OpCode::OR, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
+        assert!(Inst::new(OpCode::NOT, Operand::Reg(0), Operand::Reg(1), Operand::None).is_pure(&f));
+        assert!(Inst::new(OpCode::NULLISH, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
+        // 分配/常量/空操作
+        assert!(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None).is_pure(&f));
+        assert!(Inst::load_const(Operand::Reg(1), 0).is_pure(&f));
+        assert!(Inst::new(OpCode::VOID, Operand::Reg(1), Operand::None, Operand::None).is_pure(&f));
+        assert!(Inst::new(OpCode::TYPEOF, Operand::Reg(1), Operand::Reg(2), Operand::None).is_pure(&f));
+        assert!(Inst::new(OpCode::NEW_OBJECT, Operand::Reg(1), Operand::None, Operand::None).is_pure(&f));
+        assert!(Inst::new(OpCode::NEW_ARRAY, Operand::Reg(1), Operand::None, Operand::None).is_pure(&f));
+        // 闭包/单元读取
+        assert!(Inst::create_closure(Operand::Reg(1), 0).is_pure(&f));
+        assert!(Inst::new(OpCode::LOAD_UPVALUE, Operand::Reg(1), Operand::Imm(0), Operand::None).is_pure(&f));
+        assert!(Inst::new(OpCode::CELL_GET, Operand::Reg(0), Operand::Reg(1), Operand::Imm(0)).is_pure(&f));
+        // 模板字符串
+        assert!(Inst::template_str(Operand::Reg(1), 1, 10, &[0x1234]).is_pure(&f));
+        // LOAD_VAR 普通（a=Reg）纯
+        assert!(Inst::new(OpCode::LOAD_VAR, Operand::Reg(1), Operand::Reg(2), Operand::None).is_pure(&f));
+        // STORE_VAR b=None/Imm(0) 纯拷贝
+        assert!(Inst::new(OpCode::STORE_VAR, Operand::Reg(0), Operand::Reg(1), Operand::None).is_pure(&f));
+        assert!(Inst::new(OpCode::STORE_VAR, Operand::Reg(0), Operand::Reg(1), Operand::Imm(0)).is_pure(&f));
+    }
+
+    #[test]
+    fn impure_ops_are_not_deletable() {
+        let f = IRFunction::new();
+        // getter / 写对象属性
+        assert!(!Inst::ic_get(Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
+        assert!(!Inst::new(OpCode::GET_PROP, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
+        assert!(!Inst::new(OpCode::GET_PROP_DYNAMIC, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
+        assert!(!Inst::ic_set(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
+        assert!(!Inst::new(OpCode::SET_PROP, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
+        assert!(!Inst::new(OpCode::SUPER_GET_PROP, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
+        assert!(!Inst::new(OpCode::DEFINE_ACCESSOR, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
+        assert!(!Inst::new(OpCode::DELETE_PROP_STATIC, Operand::Reg(0), Operand::Reg(0), Operand::None).is_pure(&f));
+        assert!(!Inst::new(OpCode::DELETE_PROP_DYNAMIC, Operand::Reg(0), Operand::None, Operand::Reg(2)).is_pure(&f));
+        // 调用 / 异常 / 控制流
+        assert!(!Inst::call(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2), 0).is_pure(&f));
+        assert!(!Inst::call_native(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2), 0).is_pure(&f));
+        assert!(!Inst::new_expression(Operand::Reg(3), Operand::Reg(0), Operand::Reg(1), 0).is_pure(&f));
+        assert!(!Inst::super_call(Operand::Reg(3), Operand::Reg(1), 0).is_pure(&f));
+        assert!(!Inst::new(OpCode::CREATE_REGEXP, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
+        assert!(!Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None).is_pure(&f));
+        assert!(!Inst::new(OpCode::THROW, Operand::Reg(2), Operand::None, Operand::None).is_pure(&f));
+        assert!(!Inst::new(OpCode::HALT, Operand::None, Operand::None, Operand::None).is_pure(&f));
+        assert!(!Inst::jmp(9).is_pure(&f));
+        assert!(!Inst::jmp_if_false(3, 9).is_pure(&f));
+        assert!(!Inst::try_begin(9).is_pure(&f));
+        assert!(!Inst::try_finally_begin(9).is_pure(&f));
+        // 迭代器 / 复合更新 / 写共享状态
+        assert!(!Inst::new(OpCode::FOR_IN_NEXT, Operand::Reg(0), Operand::None, Operand::None).is_pure(&f));
+        assert!(!Inst::new(OpCode::FOR_OF_NEXT, Operand::Reg(0), Operand::None, Operand::None).is_pure(&f));
+        assert!(!Inst::new(OpCode::INC_PRE, Operand::Reg(0), Operand::Reg(0), Operand::None).is_pure(&f));
+        assert!(!Inst::new(OpCode::COMPOUND_ADD, Operand::Reg(0), Operand::Reg(1), Operand::None).is_pure(&f));
+        assert!(!Inst::new(OpCode::MEMBER_INC, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
+        assert!(!Inst::new(OpCode::COMPOUND_MEMBER_ADD, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
+        assert!(!Inst::rest_object(Operand::Reg(0), Operand::Reg(1), 7).is_pure(&f));
+        assert!(!Inst::new(OpCode::INSTANCEOF, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
+        assert!(!Inst::new(OpCode::IN, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
+        assert!(!Inst::new(OpCode::GET_PRIVATE, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
+        assert!(!Inst::new(OpCode::SET_HOME_OBJECT, Operand::Reg(0), Operand::Reg(1), Operand::None).is_pure(&f));
+        assert!(!Inst::new(OpCode::STORE_UPVALUE, Operand::None, Operand::Reg(1), Operand::Imm(0)).is_pure(&f));
+        assert!(!Inst::new(OpCode::CELL_SET, Operand::None, Operand::Reg(1), Operand::Imm(0)).is_pure(&f));
+        assert!(!Inst::new(OpCode::MAKE_CELL, Operand::Reg(5), Operand::None, Operand::None).is_pure(&f));
+        // 占位 opcode 防御性有副作用
+        assert!(!Inst::new(OpCode::SWITCH_TABLE, Operand::None, Operand::None, Operand::None).is_pure(&f));
+    }
+
+    #[test]
+    fn store_var_b_branches() {
+        // Pitfall 5 + A2：None/Imm(0) 纯拷贝，Imm(1) 有 const guard
+        let f = IRFunction::new();
+        assert!(Inst::new(OpCode::STORE_VAR, Operand::Reg(0), Operand::Reg(1), Operand::None).is_pure(&f));
+        assert!(Inst::new(OpCode::STORE_VAR, Operand::Reg(0), Operand::Reg(1), Operand::Imm(0)).is_pure(&f));
+        assert!(!Inst::new(OpCode::STORE_VAR, Operand::Reg(0), Operand::Reg(1), Operand::Imm(1)).is_pure(&f));
+    }
+
+    #[test]
+    fn load_var_this_derived_constructor_special_case() {
+        // a==This + is_derived_constructor 时读 this 可能抛 ReferenceError，不可删
+        let mut derived = IRFunction::new();
+        derived.is_derived_constructor = true;
+        let non_derived = IRFunction::new();
+
+        let this_load = Inst::new(OpCode::LOAD_VAR, Operand::Reg(1), Operand::This, Operand::None);
+        assert!(!this_load.is_pure(&derived));
+        assert!(this_load.is_pure(&non_derived));
+
+        // a=Reg 普通 LOAD_VAR 在 derived 函数中也纯
+        let reg_load = Inst::new(OpCode::LOAD_VAR, Operand::Reg(1), Operand::Reg(2), Operand::None);
+        assert!(reg_load.is_pure(&derived));
     }
 }
