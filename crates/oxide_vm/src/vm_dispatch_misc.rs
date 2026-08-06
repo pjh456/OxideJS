@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::native::NativeFn;
 use crate::vm::{native_fn_ptr_to_fn, CallFrame, ForInIter, FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
@@ -151,6 +151,16 @@ impl Vm {
                 if let Some(pos) = self.kernel_core.shape_forge().lookup_position(global.shape_id(), si) {
                     self.regs[*reg as usize] = global.get_prop_at(pos);
                 }
+            }
+
+            let callee_subs = &subs[sub_idx].sub_modules;
+            if callee_subs.is_empty() {
+                self.sub_module_stack.push((Arc::clone(&self.sub_modules), None));
+            } else {
+                self.sub_module_stack
+                    .push((Arc::clone(&self.sub_modules), Some(std::mem::take(&mut self.immutables_cache))));
+                self.sub_modules = Arc::new(callee_subs.clone());
+                self.immutables_cache = (0..=callee_subs.len()).map(|_| OnceLock::new()).collect();
             }
 
             self.active_reg_limit = sub_n_registers.max(1);
