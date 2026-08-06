@@ -10,6 +10,7 @@ description = "OxideJS - AST to bytecode compiler"
 oxide_bytecode = { path = "../oxide_bytecode" }
 oxide_parser = { path = "../oxide_parser" }
 oxide_log = { path = "../oxide_log" }
+oxide_dce = { path = "../oxide_dce" }
 oxide_ir.workspace = true
 oxide_emit.workspace = true
 serde.workspace = true
