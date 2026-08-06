@@ -47,6 +47,7 @@ impl Vm {
             active_reg_limit: 0,
             native_call_depth: 0,
             accessor_frame_target_reg: None,
+            inline_callee: None,
             gc_state: GcState {
                 session_epoch: bumpalo::Bump::new(),
                 session_gc: crate::session_gc::SessionGc::new(),
@@ -111,6 +112,7 @@ impl Vm {
             active_reg_limit: 0,
             native_call_depth: 0,
             accessor_frame_target_reg: None,
+            inline_callee: None,
             gc_state: GcState {
                 session_epoch: bumpalo::Bump::new(),
                 session_gc: crate::session_gc::SessionGc::new(),

@@ -62,6 +62,7 @@ impl Vm {
             save_stack: std::mem::take(&mut self.save_stack),
             spill_stack: std::mem::take(&mut self.spill_stack),
             cell_stack: std::mem::take(&mut self.cell_stack),
+            inline_callee: self.inline_callee,
         });
 
         self.regs = [JsValue::undefined(); 256];
@@ -70,6 +71,8 @@ impl Vm {
         self.activate_immutables(sub_idx + 1, &sub.constants);
         self.active_reg_limit = sub.n_registers.max(1);
         self.root_reg_limit = self.active_reg_limit;
+        self.cell_stack.push(Vec::with_capacity(sub.cells_needed as usize));
+        self.inline_callee = Some(callee);
         for i in 0..sub.n_args as usize {
             self.regs[sub.param_base as usize + i] = args.get(i).copied().unwrap_or(JsValue::undefined());
         }
@@ -114,6 +117,7 @@ impl Vm {
         self.save_stack = saved.save_stack;
         self.spill_stack = saved.spill_stack;
         self.cell_stack = saved.cell_stack;
+        self.inline_callee = saved.inline_callee;
 
         result
     }

@@ -163,6 +163,7 @@ pub(crate) struct InlineSyncState {
     pub(crate) save_stack: Vec<JsValue>,
     pub(crate) spill_stack: Vec<JsValue>,
     pub(crate) cell_stack: Vec<Vec<*mut Cell>>,
+    pub(crate) inline_callee: Option<JsValue>,
 }
 
 /// 基于寄存器的 JS 虚拟机：持有执行状态、寄存器文件、调用栈与 session 内存。
@@ -212,6 +213,10 @@ pub struct Vm {
     /// 调度循环检查该标志，跳过用调用结果写 `regs[target_reg]` —— 值改由 RETURN
     /// 处理器交付。
     pub(crate) accessor_frame_target_reg: Option<u8>,
+    /// `call_bytecode_function_inline` 执行期间当前回调闭包；LOAD/STORE_UPVALUE 在
+    /// frames 为空（inline 隔离状态）时由此取闭包 upvalues。嵌套 inline 由
+    /// InlineSyncState 保存/恢复。
+    pub(crate) inline_callee: Option<JsValue>,
     /// 分组保存 session arena / GC 簿记状态。
     pub(crate) gc_state: GcState,
     /// 分组保存 `Symbol` intern 状态。

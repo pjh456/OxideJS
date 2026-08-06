@@ -169,18 +169,25 @@ impl Vm {
         Ok(())
     }
 
+    /// 当前执行函数的闭包对象：普通路径取 frames 栈顶帧，inline（sync 回调）路径
+    /// frames 被隔离为空，取 `inline_callee`。
+    fn current_callee(&self) -> Option<JsValue> {
+        self.frames.last().map(|f| f.callee).or(self.inline_callee)
+    }
+
     #[allow(dead_code)]
     pub(crate) fn dispatch_load_upvalue(&mut self, rd: usize, instr: u32) -> Result<(), String> {
         let uv_idx = opcode::imm16(instr) as usize;
-        let callee = self.frames.last().unwrap().callee;
-        if callee.is_object() {
-            let obj = unsafe { &*callee.as_js_object_ptr() };
-            let upvals = obj.upvalues_slice();
-            if uv_idx < upvals.len() {
-                let cell = upvals[uv_idx];
-                if !cell.is_null() {
-                    self.regs[rd] = unsafe { (*cell).value };
-                    return Ok(());
+        if let Some(callee) = self.current_callee() {
+            if callee.is_object() {
+                let obj = unsafe { &*callee.as_js_object_ptr() };
+                let upvals = obj.upvalues_slice();
+                if uv_idx < upvals.len() {
+                    let cell = upvals[uv_idx];
+                    if !cell.is_null() {
+                        self.regs[rd] = unsafe { (*cell).value };
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -190,26 +197,27 @@ impl Vm {
     }
 
     fn lazy_create_upvalue_cell(&mut self, rd: usize, uv_idx: usize) -> Result<(), String> {
-        let callee = self.frames.last().unwrap().callee;
-        if callee.is_object() {
-            let obj = unsafe { &mut *callee.as_js_object_ptr() };
-            let upvals = obj.upvalues_slice_mut();
-            if uv_idx < upvals.len() {
-                // 尝试从调用方 cell 表取初值（MAKE_CELL 在 CREATE_CLOSURE 之后执行）。
-                let val = if self.cell_stack.len() >= 2 {
-                    let caller_cells = &self.cell_stack[self.cell_stack.len() - 2];
-                    if uv_idx < caller_cells.len() && !caller_cells[uv_idx].is_null() {
-                        unsafe { (*caller_cells[uv_idx]).value }
+        if let Some(callee) = self.current_callee() {
+            if callee.is_object() {
+                let obj = unsafe { &mut *callee.as_js_object_ptr() };
+                let upvals = obj.upvalues_slice_mut();
+                if uv_idx < upvals.len() {
+                    // 尝试从调用方 cell 表取初值（MAKE_CELL 在 CREATE_CLOSURE 之后执行）。
+                    let val = if self.cell_stack.len() >= 2 {
+                        let caller_cells = &self.cell_stack[self.cell_stack.len() - 2];
+                        if uv_idx < caller_cells.len() && !caller_cells[uv_idx].is_null() {
+                            unsafe { (*caller_cells[uv_idx]).value }
+                        } else {
+                            self.regs[rd]
+                        }
                     } else {
                         self.regs[rd]
-                    }
-                } else {
-                    self.regs[rd]
-                };
-                let cell = self.gc_state.session_epoch.alloc(Cell::new(val, true));
-                upvals[uv_idx] = cell as *mut Cell;
-                self.regs[rd] = cell.value;
-                return Ok(());
+                    };
+                    let cell = self.gc_state.session_epoch.alloc(Cell::new(val, true));
+                    upvals[uv_idx] = cell as *mut Cell;
+                    self.regs[rd] = cell.value;
+                    return Ok(());
+                }
             }
         }
         self.regs[rd] = JsValue::undefined();
@@ -220,19 +228,20 @@ impl Vm {
     pub(crate) fn dispatch_store_upvalue(&mut self, a: usize, b: usize) -> Result<(), String> {
         let uv_idx = b;
         let src_val = self.regs[a];
-        let callee = self.frames.last().unwrap().callee;
-        if callee.is_object() {
-            let obj = unsafe { &mut *callee.as_js_object_ptr() };
-            let upvals = obj.upvalues_slice_mut();
-            if uv_idx < upvals.len() {
-                if !upvals[uv_idx].is_null() {
-                    unsafe {
-                        (*upvals[uv_idx]).value = src_val;
+        if let Some(callee) = self.current_callee() {
+            if callee.is_object() {
+                let obj = unsafe { &mut *callee.as_js_object_ptr() };
+                let upvals = obj.upvalues_slice_mut();
+                if uv_idx < upvals.len() {
+                    if !upvals[uv_idx].is_null() {
+                        unsafe {
+                            (*upvals[uv_idx]).value = src_val;
+                        }
+                        vm_debug!("STORE_UPVALUE len={} wrote existing", upvals.len());
+                    } else {
+                        let cell = self.gc_state.session_epoch.alloc(Cell::new(src_val, true));
+                        upvals[uv_idx] = cell as *mut Cell;
                     }
-                    vm_debug!("STORE_UPVALUE len={} wrote existing", upvals.len());
-                } else {
-                    let cell = self.gc_state.session_epoch.alloc(Cell::new(src_val, true));
-                    upvals[uv_idx] = cell as *mut Cell;
                 }
             }
         }
