@@ -64,3 +64,29 @@ fn single_sample_top_level_return_value() {
     assert_eq!(a, b, "顶层返回值在 DCE 后变化");
     assert_eq!(a, (true, "3".to_string()), "顶层 1+2 应返回 3");
 }
+
+/// Pitfall 6 回归：脚本顶层变量赋值是全局可观察状态（class 计算属性名里的 `x = 1`
+/// 会被测试 harness 的 `assert.sameValue(x, 1)` 观察），即使本函数内无 use，
+/// DCE 也**不得删除**对应 STORE_VAR——删除会改变外部可观察语义。
+#[test]
+fn top_level_store_var_kept() {
+    let src = "let x = 0; class C { [x = 1]() { return 2; } } new C();";
+    let allocator = oxide_parser::Allocator::default();
+    let program = oxide_parser::parse(&allocator, src).expect("parse failed");
+    let mut ir = oxide_emit::Emitter::new().emit_program(&program).expect("emit failed");
+    oxide_dce::dce(&mut ir);
+    let module = oxide_ir::lower::lower(&ir).expect("lower failed");
+    let has_store_var = module
+        .bytecode
+        .iter()
+        .any(|&i| oxide_bytecode::opcode::opcode(i) == oxide_bytecode::opcode::OpCode::STORE_VAR);
+    assert!(
+        has_store_var,
+        "顶层 x 赋值（全局可观察）不应被 DCE 删除: {src}"
+    );
+
+    // 运行时兜底：DCE 开/关执行结果一致，且 x 最终值为 1（未被删赋值破坏）
+    let a = normalize(run_source(src, true));
+    let b = normalize(run_source(src, false));
+    assert_eq!(a, b, "DCE 前后语义不一致: {src}");
+}

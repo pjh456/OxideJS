@@ -214,19 +214,22 @@ mod tests {
         assert_eq!(f.insts.len(), 8, "有副作用指令一律保留");
     }
 
-    /// STORE_VAR b=None 纯拷贝死删（A2）；b=Imm(1) const guard 保留（Pitfall 5）。
+    /// STORE_VAR 一律保留（Pitfall 6）：写变量槽可能被外部观察（脚本顶层/模块作用域变量、
+    /// nested 闭包跨函数读槽），即使本函数内无 use 也不删——b=None/Imm(0) 与 b=Imm(1) 同待遇。
     #[test]
-    fn store_var_pure_copy_deleted_guard_kept() {
-        // 纯拷贝死删 + 连锁：STORE_VAR 删后其源 LOAD_CONST 也死
+    fn store_var_never_deleted() {
+        // b=None 普通赋值：保留（源寄存器因此保活）
         let mut f = IRFunction::new();
         f.insts.push(Inst::load_const(Operand::Reg(1), 1)); // 0
         f.insts.push(Inst::new(OpCode::STORE_VAR, Operand::Reg(0), Operand::Reg(1), Operand::None)); // 1
         f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None)); // 2
         dce(&mut f);
-        assert_eq!(f.insts.len(), 1);
-        assert_eq!(f.insts[0].op, OpCode::RETURN);
+        assert_eq!(f.insts.len(), 3, "STORE_VAR 与其源 LOAD_CONST 全部保留");
+        assert_eq!(f.insts[0].op, OpCode::LOAD_CONST);
+        assert_eq!(f.insts[1].op, OpCode::STORE_VAR);
+        assert_eq!(f.insts[2].op, OpCode::RETURN);
 
-        // b=Imm(1) const guard：不纯保留，源寄存器保活
+        // b=Imm(1) const guard：同样保留
         let mut g = IRFunction::new();
         g.insts.push(Inst::load_const(Operand::Reg(1), 1)); // 0
         g.insts.push(Inst::new(OpCode::STORE_VAR, Operand::Reg(0), Operand::Reg(1), Operand::Imm(1))); // 1
@@ -407,16 +410,17 @@ mod tests {
         assert_eq!(f.insts[2].op, OpCode::RETURN);
     }
 
-    /// STORE_VAR 纯拷贝死删仍成立（无 nested 逃逸时）：b=None 无 guard，槽无跨函数引用 → 删。
+    /// STORE_VAR 无 nested 时仍保留（Pitfall 6）：顶层/模块作用域变量赋值全局可观察，
+    /// 本函数 use 计数为 0 不代表外部不可读——DCE 不删任何 STORE_VAR（保守，Phase 5 精确活度再捡回）。
     #[test]
-    fn store_var_pure_copy_still_deleted_without_nested() {
+    fn store_var_still_kept_without_nested() {
         let mut f = IRFunction::new();
         f.insts.push(Inst::load_const(Operand::Reg(1), 1)); // 0
         f.insts.push(Inst::new(OpCode::STORE_VAR, Operand::Reg(0), Operand::Reg(1), Operand::None)); // 1
         f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None)); // 2
         dce(&mut f);
-        assert_eq!(f.insts.len(), 1);
-        assert_eq!(f.insts[0].op, OpCode::RETURN);
+        assert_eq!(f.insts.len(), 3, "顶层 STORE_VAR 及其源保留");
+        assert_eq!(f.insts[1].op, OpCode::STORE_VAR);
     }
 
     /// 不动域断言（D-14/D-04/D-03/D-13）：constants / n_registers / nested / label_count

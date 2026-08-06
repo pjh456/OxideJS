@@ -466,10 +466,10 @@ impl Inst {
             OpCode::LOAD_VAR => {
                 !(self.a == Operand::This && f.is_derived_constructor)
             }
-            // STORE_VAR：b==None/Imm(0) 纯拷贝无 guard；b==Imm(1) const guard 运行时判定（Pitfall 5）
-            OpCode::STORE_VAR => {
-                matches!(self.b, Operand::None | Operand::Imm(0))
-            }
+            // STORE_VAR：写变量目标寄存器。脚本顶层/模块作用域的变量是**全局可观察状态**
+            // （Pitfall 6：`let x=0; class C{[x=1](){}}` 无后续本地读取时删除 `x=1` 会改变
+            // 外部 `assert(x===1)` 的观察结果）；函数内局部未用赋值的优化留给 Phase 5 精确活度。
+            OpCode::STORE_VAR => false,
             // 其余全部有副作用（getter/调用/控制流/迭代器/复合更新/写共享状态/占位防御）
             _ => false,
         }
@@ -810,9 +810,10 @@ mod tests {
         assert!(Inst::template_str(Operand::Reg(1), 1, 10, &[0x1234]).is_pure(&f));
         // LOAD_VAR 普通（a=Reg）纯
         assert!(Inst::new(OpCode::LOAD_VAR, Operand::Reg(1), Operand::Reg(2), Operand::None).is_pure(&f));
-        // STORE_VAR b=None/Imm(0) 纯拷贝
-        assert!(Inst::new(OpCode::STORE_VAR, Operand::Reg(0), Operand::Reg(1), Operand::None).is_pure(&f));
-        assert!(Inst::new(OpCode::STORE_VAR, Operand::Reg(0), Operand::Reg(1), Operand::Imm(0)).is_pure(&f));
+        // STORE_VAR 一律有副作用（Pitfall 6：顶层变量赋值全局可观察，不删）
+        assert!(!Inst::new(OpCode::STORE_VAR, Operand::Reg(0), Operand::Reg(1), Operand::None).is_pure(&f));
+        assert!(!Inst::new(OpCode::STORE_VAR, Operand::Reg(0), Operand::Reg(1), Operand::Imm(0)).is_pure(&f));
+        assert!(!Inst::new(OpCode::STORE_VAR, Operand::Reg(0), Operand::Reg(1), Operand::Imm(1)).is_pure(&f));
     }
 
     #[test]
@@ -861,11 +862,12 @@ mod tests {
     }
 
     #[test]
-    fn store_var_b_branches() {
-        // Pitfall 5 + A2：None/Imm(0) 纯拷贝，Imm(1) 有 const guard
+    fn store_var_all_branches_are_impure() {
+        // Pitfall 6：STORE_VAR 写目标变量寄存器，顶层/模块作用域变量全局可观察，一律不删
+        // （const guard 抛错、普通 var/let 赋值都可能改变外部观察状态）
         let f = IRFunction::new();
-        assert!(Inst::new(OpCode::STORE_VAR, Operand::Reg(0), Operand::Reg(1), Operand::None).is_pure(&f));
-        assert!(Inst::new(OpCode::STORE_VAR, Operand::Reg(0), Operand::Reg(1), Operand::Imm(0)).is_pure(&f));
+        assert!(!Inst::new(OpCode::STORE_VAR, Operand::Reg(0), Operand::Reg(1), Operand::None).is_pure(&f));
+        assert!(!Inst::new(OpCode::STORE_VAR, Operand::Reg(0), Operand::Reg(1), Operand::Imm(0)).is_pure(&f));
         assert!(!Inst::new(OpCode::STORE_VAR, Operand::Reg(0), Operand::Reg(1), Operand::Imm(1)).is_pure(&f));
     }
 
