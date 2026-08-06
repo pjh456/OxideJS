@@ -508,6 +508,12 @@ impl Emitter {
         let parent_names: HashSet<String> = parent_captured.keys().cloned().collect();
         let mut names = HashSet::new();
         self.collect_capture_names_shadowed(body_stmts, &parent_names, sub_own, &mut names);
+        // HashSet 迭代序带随机种子（进程级非确定），必须排序使 upvalue_captures 的顺序与
+        // 父 captured_bindings 的 cell_idx（BTreeMap 名字序）对齐——否则 uv_idx（identifier.rs
+        // LOAD_UPVALUE 的 a 槽编码）与 cell_idx 错位，读错 upvalue（hoisted_function_reads_outer_var_and_function
+        // 抖动根因）。
+        let mut names: Vec<String> = names.into_iter().collect();
+        names.sort();
         names
             .into_iter()
             .map(|name| {
