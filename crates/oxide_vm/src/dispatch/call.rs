@@ -86,10 +86,18 @@ impl Vm {
 }
 
 impl Vm {
-    pub(crate) fn dispatch_create_closure(&mut self, rd: usize, instr: u32) {
+    pub(crate) fn dispatch_create_closure(&mut self, rd: usize, instr: u32) -> Result<(), String> {
         let sub_idx = opcode::imm16(instr) as u32;
         vm_trace!("CREATE_CLOSURE rd={} sub_idx={}", rd, sub_idx);
-        debug_assert!(sub_idx > 0 && (sub_idx as usize) <= self.sub_modules.len());
+        if sub_idx == 0 || (sub_idx as usize) > self.sub_modules.len() {
+            // 逃逸闭包（函数对象在定义模块之外被创建）时 sub_idx 相对定义模块，
+            // 超出当前 sub_modules 上下文——按运行时错误处理而非索引越界 panic。
+            return Err(format!(
+                "CREATE_CLOSURE: sub_module_index {} out of bounds (max {})",
+                sub_idx,
+                self.sub_modules.len()
+            ));
+        }
         let sub = &self.sub_modules[sub_idx as usize - 1];
         let is_arrow = sub.is_arrow;
         let is_class_constructor = sub.is_class_constructor;
@@ -119,6 +127,7 @@ impl Vm {
             }
         }
         self.regs[rd] = result;
+        Ok(())
     }
 
     #[allow(dead_code)]

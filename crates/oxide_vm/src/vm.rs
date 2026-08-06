@@ -869,7 +869,7 @@ impl Vm {
                 }
 
                 OpCode::CREATE_CLOSURE => {
-                    self.dispatch_create_closure(rd, instr);
+                    self.dispatch_create_closure(rd, instr)?;
                 }
                 OpCode::MAKE_CELL => {
                     self.dispatch_make_cell(rd, instr)?;
