@@ -1131,6 +1131,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxide_dce"
+version = "0.1.0"
+dependencies = [
+ "oxide_bytecode",
+ "oxide_cfg",
+ "oxide_emit",
+ "oxide_ir",
+ "oxide_parser",
+ "oxide_vm",
+]
+
+[[package]]
 name = "oxide_emit"
 version = "0.1.0"
 dependencies = [
