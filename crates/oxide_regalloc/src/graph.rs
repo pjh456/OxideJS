@@ -80,7 +80,8 @@ pub(super) fn build(
     f: &IRFunction, live: &LiveInfo, spill_set: &BTreeSet<u32>, fresh: &[FreshVreg],
 ) -> InterferenceGraph {
     let real = collect_real_vregs(f);
-    let reg_count = live.inst_live_before.len();
+    // inst_live_before 长度 = 指令数（逐指令活集索引）
+    let inst_count = live.inst_live_before.len();
 
     // ── 预着色 ──
     let mut pre_colors: BTreeMap<u32, u32> = BTreeMap::new();
@@ -143,7 +144,7 @@ pub(super) fn build(
     for &v in &node_ids {
         adj_sets.entry(v).or_default();
     }
-    for i in 0..reg_count {
+    for i in 0..inst_count {
         let mut at_i: Vec<u32> = Vec::new();
         for &v in &node_ids {
             if live.inst_live_before[i].get(v as usize).copied().unwrap_or(false) {

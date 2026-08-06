@@ -24,8 +24,7 @@ pub fn color(f: &IRFunction, live: &LiveInfo) -> Result<AllocMap, String> {
     if f.insts.is_empty() {
         return Ok(AllocMap::new());
     }
-    let graph = graph::build(f, live, &std::collections::BTreeSet::new(), &[]);
-    color::run(f, live, &graph)
+    color::run(f, live)
 }
 
 /// 寄存器分配改写：`&mut IRFunction + &LiveInfo → Result<(), String>`（D-16）。

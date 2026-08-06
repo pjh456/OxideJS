@@ -15,7 +15,7 @@ use crate::alloc_map::{Alloc, AllocMap, FreshKind, FreshVreg, SpillPlan};
 use crate::graph::{self, InterferenceGraph};
 
 /// 主染色循环：产出 AllocMap。
-pub(super) fn run(f: &IRFunction, live: &LiveInfo, _graph: &InterferenceGraph) -> Result<AllocMap, String> {
+pub(super) fn run(f: &IRFunction, live: &LiveInfo) -> Result<AllocMap, String> {
     let max_real = graph::collect_real_vregs(f).into_iter().max().unwrap_or(0);
     let mut next_fresh_id = max_real + 1;
     let mut next_slot: u16 = 0;
@@ -44,7 +44,7 @@ pub(super) fn run(f: &IRFunction, live: &LiveInfo, _graph: &InterferenceGraph) -
                 fresh.push(FreshVreg { id: next_fresh_id, at: d, kind: FreshKind::Def, owner: v });
                 next_fresh_id += 1;
             }
-            for u in use_points(live, v) {
+            for u in use_points(f, v) {
                 fresh.push(FreshVreg { id: next_fresh_id, at: u, kind: FreshKind::Use, owner: v });
                 next_fresh_id += 1;
             }
@@ -69,12 +69,15 @@ fn def_points(f: &IRFunction, v: u32) -> Vec<usize> {
         .collect()
 }
 
-/// use 点：`live_before[i][v]`（v 的活点）。RMW 指令同时是 def 与 use，各建一个 fresh。
-fn use_points(live: &LiveInfo, v: u32) -> Vec<usize> {
-    live.inst_live_before
+/// use 点：`inst.use_regs()` 含 v 的指令下标（精确 use，非 live_before 活集——
+/// 活集包含"仅经过不读取"的指令，会产生多余 UNSPILL）。RMW 指令（如 COMPOUND_ADD
+/// rd 读旧值写新值）同时是 def 与 use，此处与 def_points 各建一个 fresh，由 rewrite 判
+/// rmw_v 决定用 def-fresh（rewrite.rs RMW 分支）。
+fn use_points(f: &IRFunction, v: u32) -> Vec<usize> {
+    f.insts
         .iter()
         .enumerate()
-        .filter(|(_, set)| set.get(v as usize).copied().unwrap_or(false))
+        .filter(|(_, i)| i.use_regs().contains(&v))
         .map(|(i, _)| i)
         .collect()
 }
