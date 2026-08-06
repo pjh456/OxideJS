@@ -1,4 +1,4 @@
-//! B013 延伸回归：nested 子模块直接槽引用父槽，RegAlloc on/off 运行时等价。
+//! 嵌套父槽引用回归：nested 子模块直接槽引用父槽，RegAlloc on/off 运行时等价。
 //!
 //! 父侧 collect_escaped 保证父不移动槽；但子模块自身 alloc 时引用父槽的
 //! LOAD_VAR.a / STORE_VAR.rd 曾被当作子模块自己的 vreg 染色移走（→ 读错物理槽，

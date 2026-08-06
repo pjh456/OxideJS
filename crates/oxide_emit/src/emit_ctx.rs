@@ -1,24 +1,23 @@
-//! Grouped `CompileCtx` sub-contexts.
+//! `CompileCtx` 的成组子上下文。
 //!
-//! Splits the compiler's central `CompileCtx` so syntax-domain workers borrow
-//! only the slice they need: `LabelCtx` for jump-target resolution, `ScopeCtx`
-//! for identifier binding. `PatternCtx` is reserved for destructuring work.
-//! Execution-stream fields (insts, registers, pc, …) stay flat on
-//! `CompileCtx`.
+//! 把编译器中心 `CompileCtx` 拆开，语法域 worker 只借用所需切片：
+//! `LabelCtx` 负责跳转目标解析，`ScopeCtx` 负责标识符绑定。
+//! `PatternCtx` 为解构工作预留。执行流字段（insts/registers/pc 等）仍
+//! 平铺在 `CompileCtx` 上。
 
 use crate::symbol_table::SymbolTable;
 use crate::LabelScope;
 use oxide_ir::operand::LabelId;
 
-/// Jump-target / labeled-statement resolution state.
+/// 跳转目标 / 标签语句解析状态。
 pub(crate) struct LabelCtx {
     /// label id → 指令下标。id 连续递增，Vec 索引即 id；写入前须扩容。
     pub(crate) label_pos: Vec<Option<usize>>,
     pub(crate) loop_stack: Vec<(LabelId, LabelId)>,
     pub(crate) switch_stack: Vec<LabelId>,
-    /// Active labeled-statement scopes (resolves `break label` / `continue label`).
+    /// 活动标签语句作用域（解析 `break label` / `continue label`）。
     pub(crate) label_scopes: Vec<LabelScope>,
-    /// Label names awaiting binding to the next emitted loop's continue target.
+    /// 等待绑定到下一个循环 continue 目标的标签名。
     pub(crate) pending_loop_labels: Vec<String>,
     pub(crate) label_counter: u32,
 }
@@ -33,7 +32,7 @@ impl LabelCtx {
     }
 }
 
-/// Identifier-binding state: symbols, builtin registers, private names.
+/// 标识符绑定状态：符号表、builtin 寄存器、私有名。
 pub(crate) struct ScopeCtx {
     pub(crate) symbols: SymbolTable,
     pub(crate) builtin_reg_map: Vec<(String, u32)>,
@@ -41,7 +40,6 @@ pub(crate) struct ScopeCtx {
     pub(crate) next_private_name_id: u32,
 }
 
-/// Reserved for destructuring-pattern state (Phase 15). Intentionally empty
-/// today; named so future pattern work has a home without touching `ScopeCtx`.
+/// 预留的解构 pattern 状态。当前为空；为后续解构工作预留归属地，避免改动 `ScopeCtx`。
 #[allow(dead_code)]
 pub(crate) struct PatternCtx;

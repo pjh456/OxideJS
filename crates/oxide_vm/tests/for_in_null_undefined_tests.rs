@@ -44,15 +44,14 @@ fn for_in_null_does_not_execute_body() {
 
 #[test]
 fn for_in_null_does_not_throw() {
-    // Must NOT produce a "vm error: ..." — a quiet empty loop, then a sentinel value.
+    // 不得产生 "vm error: ..."——静默空循环，然后哨兵值。
     assert_eq!(eval("for(var k in null){} 7"), "7", "for-in null must not throw");
 }
 
 #[test]
 fn for_in_number_primitive_currently_throws() {
-    // Interim behavior: ToObject coercion for non-null/undefined primitives is not
-    // implemented yet, so a number right-hand side still throws TypeError. When
-    // ToObject lands this becomes an empty loop and this assertion should change.
+    // 过渡行为：非 null/undefined 基本类型的 ToObject 强转尚未实现，
+    // 因此数字右侧仍抛 TypeError。ToObject 落地后它应变成空循环，届时本断言需变更。
     let out = eval("for(var k in 42){}");
     assert!(out.contains("TypeError"), "expected TypeError for number primitive, got: {out}");
 }

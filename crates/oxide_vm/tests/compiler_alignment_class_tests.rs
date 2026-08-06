@@ -19,8 +19,8 @@ fn eval(source: &str) -> String {
     }
 }
 
-// A class body must not drift the instruction count of code that follows it. Each repro
-// places a bounded loop after the class so a wrong count corrupts the loop's jump target.
+// 类体不得漂移其后代码的指令计数。每个复现都在类后放置有界循环，
+// 计数错误会破坏循环跳转目标。
 
 #[test]
 fn non_static_private_method_then_loop() {
@@ -32,8 +32,7 @@ fn static_private_method_then_loop() {
     assert_eq!(eval("class C{static #m(){return 1;}} var c=0; while(c<3){c=c+1;} c"), "3");
 }
 
-// Multi-word computed key — a single-identifier key happens to be one word and would not
-// expose the drift.
+// 多字计算键——单标识符键恰好是单字，暴露不出漂移。
 #[test]
 fn computed_method_key_then_loop() {
     assert_eq!(eval("class C{[\"x\"+\"y\"](){return 1;}} var c=0; while(c<3){c=c+1;} c"), "3");
@@ -44,8 +43,8 @@ fn computed_static_field_key_then_loop() {
     assert_eq!(eval("class C{static [\"a\"+\"b\"]=1;} var c=0; while(c<3){c=c+1;} c"), "3");
 }
 
-// Derived constructor with an instance field and a loop after super(): the field code is
-// injected after SUPER_CALL, so the loop's jump target must account for it.
+// 含实例字段的派生构造函数在 super() 后跟循环：字段代码注入在 SUPER_CALL 之后，
+// 循环跳转目标必须计入它。
 #[test]
 fn derived_ctor_field_then_post_super_loop() {
     assert_eq!(
@@ -67,7 +66,7 @@ fn derived_ctor_statement_before_super() {
     );
 }
 
-// Non-derived class with an instance field and a ctor loop stays correct (unchanged path).
+// 非派生类含实例字段与构造循环保持正确（路径未变）。
 #[test]
 fn non_derived_ctor_field_then_loop() {
     assert_eq!(
@@ -76,7 +75,7 @@ fn non_derived_ctor_field_then_loop() {
     );
 }
 
-// Behavioral regressions: methods/getters/private calls still work.
+// 行为回归：方法/getter/私有调用仍正常。
 #[test]
 fn plain_method_call_regression() {
     assert_eq!(eval("class C{m(){return 9;}} new C().m()"), "9");

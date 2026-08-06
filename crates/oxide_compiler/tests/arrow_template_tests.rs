@@ -14,11 +14,11 @@ fn compile_source(source: &str) -> oxide_bytecode::module::CompiledModule {
     compiler.compile(&program).expect("compile failed")
 }
 
-// -- Arrow function structural hash tests --
+// -- 箭头函数结构哈希测试 --
 
 #[test]
 fn hash_arrow_expression_body() {
-    // Expression-body arrows at top level compile successfully
+    // 表达式体的顶层箭头可正常编译。
     let hash = parse_to_hash("var f = () => 42;");
     assert!(hash != 0, "arrow function should produce a non-zero hash");
 }
@@ -45,18 +45,18 @@ fn hash_arrow_block_body() {
 
 #[test]
 fn hash_arrow_same_shape() {
-    // Same structural shape: different variable name, same arrow expression
+    // 结构形状相同：变量名不同、箭头表达式相同。
     let hash_a = parse_to_hash("var f = () => 1 + 2;");
     let hash_b = parse_to_hash("var g = () => 1 + 2;");
     assert_eq!(hash_a, hash_b, "same-shaped arrow functions should have same hash");
 }
 
-// -- Arrow function compilation tests --
+// -- 箭头函数编译测试 --
 
 #[test]
 fn compile_arrow_expression_body() {
     let module = compile_source("var f = () => 42; f();");
-    // Verify the sub_module for the arrow is marked as is_arrow
+    // 校验箭头的子模块被标记为 is_arrow。
     let arrow_found = module.sub_modules.iter().any(|m| m.is_arrow);
     assert!(arrow_found, "arrow function sub_module should have is_arrow=true");
 }
@@ -71,7 +71,7 @@ fn compile_arrow_block_body() {
 #[test]
 fn compile_arrow_name_inference() {
     let module = compile_source("var myArrow = () => 42;");
-    // The sub_module for the arrow should have function_name set
+    // 箭头的子模块应带有 function_name。
     let named = module
         .sub_modules
         .iter()
@@ -82,7 +82,7 @@ fn compile_arrow_name_inference() {
 #[test]
 fn compile_regular_function_not_arrow() {
     let module = compile_source("var f = function() { return 42; }; f();");
-    // Regular FunctionExpression should NOT have is_arrow=true
+    // 普通 FunctionExpression 不应标记 is_arrow。
     let has_arrow = module.sub_modules.iter().any(|m| m.is_arrow);
     assert!(!has_arrow, "regular function expression should not be marked as arrow");
 }

@@ -1,6 +1,6 @@
-//! 集成回归锚（D-12 第 2 层）：真实 JS 编译产物 parse→emit→build_cfg。
+//! 集成回归锚：真实 JS 编译产物 parse→emit→build_cfg。
 //!
-//! 验证 CFG 不崩且结构合理。仅新增本文件，不修改既有测试文件（D-13）。
+//! 验证 CFG 不崩且结构合理。
 
 use oxide_cfg::build_cfg;
 use oxide_cfg::EdgeKind;
@@ -13,7 +13,7 @@ fn cfg_from_source(src: &str) -> oxide_cfg::Cfg {
     build_cfg(&ir)
 }
 
-/// succs/preds 对称性断言（Pitfall 4）。
+/// succs/preds 对称性断言。
 fn assert_symmetric(cfg: &oxide_cfg::Cfg) {
     let succs_total: usize = cfg.blocks.iter().map(|b| b.succs.len()).sum();
     let preds_total: usize = cfg.blocks.iter().map(|b| b.preds.len()).sum();
@@ -33,10 +33,13 @@ fn assert_targets_resolvable(cfg: &oxide_cfg::Cfg) {
 #[test]
 fn try_catch_regression_anchor() {
     let cfg = cfg_from_source("try { var x = 1; } catch (e) { var y = 2; }");
-    // (a) TRY_BEGIN 出发的异常边至少一条（D-07/D-08）
-    let has_exception = cfg.blocks.iter().any(|b| b.succs.iter().any(|&(_, k)| k == EdgeKind::Exception));
+    // (a) TRY_BEGIN 出发的异常边至少一条
+    let has_exception = cfg
+        .blocks
+        .iter()
+        .any(|b| b.succs.iter().any(|&(_, k)| k == EdgeKind::Exception));
     assert!(has_exception, "期望存在 Exception 边");
-    // (b) 顶层 HALT 收尾 → exit 哨兵 preds 非空（D-05）
+    // (b) 顶层 HALT 收尾 → exit 哨兵 preds 非空
     assert!(!cfg.blocks[cfg.exit].preds.is_empty(), "exit 哨兵应有 pred（HALT 汇入）");
     // (c) 全部边目标可解析
     assert_targets_resolvable(&cfg);
@@ -44,11 +47,12 @@ fn try_catch_regression_anchor() {
     assert_symmetric(&cfg);
 }
 
-/// 每个 nested 子函数各自独立可建 CFG（D-11：不递归，但各函数可建）。
+/// 每个 nested 子函数各自独立可建 CFG（不递归，但各函数可建）。
 #[test]
 fn nested_function_cfgs_are_independent() {
     let allocator = oxide_parser::Allocator::default();
-    let program = oxide_parser::parse(&allocator, "function outer(){ var x = 0; while(x<3){x=x+1;} }").expect("parse failed");
+    let program =
+        oxide_parser::parse(&allocator, "function outer(){ var x = 0; while(x<3){x=x+1;} }").expect("parse failed");
     let ir = oxide_emit::Emitter::new().emit_program(&program).expect("emit failed");
     for nested in &ir.nested {
         let cfg = build_cfg(nested);
@@ -56,7 +60,7 @@ fn nested_function_cfgs_are_independent() {
     }
 }
 
-/// 线性程序：1 实块 + exit 哨兵（CFG-01 线性函数单块）。
+/// 线性程序：1 实块 + exit 哨兵。
 #[test]
 fn linear_program_single_block_plus_exit() {
     let cfg = cfg_from_source("var x = 1;");
@@ -64,7 +68,7 @@ fn linear_program_single_block_plus_exit() {
     assert_eq!(cfg.exit, 1);
 }
 
-/// 顶层 if/else：条件分裂块 + entry 可达覆盖全部块 + 对称（CFG-01 对 if/else）。
+/// 顶层 if/else：条件分裂块 + entry 可达覆盖全部块 + 对称。
 #[test]
 fn if_else_conditional_edges() {
     let cfg = cfg_from_source("var x = 1; if(x){ var a = 1; } else { var b = 2; }");

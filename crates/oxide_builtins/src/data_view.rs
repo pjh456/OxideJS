@@ -155,8 +155,8 @@ pub fn data_view_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         byte_offset,
         byte_length,
     }));
-    // SAFETY: DataView objects are not callable, so native_fn is an opaque Box<DataViewData>
-    // pointer, matching ArrayBuffer and RegExp typed-storage patterns.
+    // SAFETY: DataView 对象不可调用，native_fn 存不透明 `Box<DataViewData>` 指针，
+    // 与 ArrayBuffer / RegExp 的类型化存储模式一致。
     obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(data as *const ()) }));
     set_named_prop(vm, &mut obj, "buffer", buffer, PropAttributes::new(false, false, false));
     set_named_prop(

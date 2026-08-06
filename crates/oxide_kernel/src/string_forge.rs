@@ -7,41 +7,40 @@ use rustc_hash::FxHasher;
 
 use crate::{kernel_debug, kernel_trace};
 
-/// Full 64-bit content hash. Replaces the old 16-bit `hash16` so the interner's
-/// hash→candidate map has negligible collision risk.
+/// 完整 64 位内容哈希。替代旧的 16 位 `hash16`，使 interner 的
+/// hash→候选表碰撞风险可忽略。
 fn hash64(s: &str) -> u64 {
     let mut h = FxHasher::default();
     s.hash(&mut h);
     h.finish()
 }
 
-/// One interned key. `data` is a leaked `&'static str` — permanent keys are never
-/// freed (append-only by design), so the leak is the storage model, not a bug.
+/// 一条 intern 过的键。`data` 是泄漏的 `&'static str`——永久键从不释放
+/// （按设计 append-only），所以泄漏即存储模型，而非 bug。
 #[derive(Clone, Copy)]
 struct PermEntry {
     data: &'static str,
     hash: u64,
 }
 
-/// Append-only, never-move, lock-free-read key interner shared by all VMs.
+/// 所有 VM 共享的 append-only、永不移动、读无锁的键 interner。
 ///
-/// Replaces the old ref-counted `StringForge` (and its buggy `maybe_sweep`
-/// renumber path). Keys (property names, method names) are interned once and
-/// addressed by a stable `u32` id that the shape/IC system keys on. Runtime
-/// string *values* are no longer interned here — they are heap `JsString`
-/// pointers (see `oxide_vm::Vm::new_string`).
+/// 取代旧的引用计数 `StringForge`（及其有缺陷的 `maybe_sweep` 重编号路径）。
+/// 键（属性名、方法名）只 intern 一次，以 shape/IC 系统所依赖的稳定 `u32` id
+/// 寻址。运行时字符串*值*不再在此 intern——它们是堆上的 `JsString`
+/// 指针（见 `oxide_vm::Vm::new_string`）。
 ///
-/// Concurrency:
-/// - `hash_map` (`DashMap`) gives sharded, lock-free reads of the hash→candidates
-///   mapping on the hot intern path.
-/// - `entries` sits behind a short `RwLock`; reads copy out a `&'static str`
-///   (Copy) so the borrow outlives the guard.
+/// 并发性：
+/// - `hash_map`（`DashMap`）在热 intern 路径上提供分片、无锁的
+///   hash→候选映射读。
+/// - `entries` 位于短 `RwLock` 之后；读时拷贝出 `&'static str`（Copy），
+///   使借用存活时间超过锁守卫。
 pub struct PermInterner {
     hash_map: DashMap<u64, Vec<u32>>,
     entries: RwLock<Vec<PermEntry>>,
-    /// Lazily materialized permanent `JsString` values, indexed by entry id.
-    /// Used when a permanent key must also exist as a JS string *value*
-    /// (e.g. method names exposed as property values at builtin init).
+    /// 惰性物化的永久 `JsString` 值，按下标索引。
+    /// 用于永久键还必须以 JS 字符串*值*存在的情形
+    /// （如 builtin 初始化时作为属性值暴露的方法名）。
     permanent_strings: RwLock<Vec<Option<Box<JsString>>>>,
 }
 
@@ -55,12 +54,12 @@ impl PermInterner {
         }
     }
 
-    /// Intern a key. Returns its stable id and full 64-bit hash. Each unique
-    /// string is stored exactly once (single allocation, no double `to_string`).
+    /// Intern 一个键。返回其稳定 id 与完整 64 位哈希。每个唯一字符串
+    /// 恰好存储一次（单次分配，无双重 `to_string`）。
     pub fn intern(&self, s: &str) -> (u32, u64) {
         let hash = hash64(s);
 
-        // Fast path: lock-free candidate read, short entries read-lock.
+        // 快路径：无锁候选读，短 entries 读锁。
         if let Some(candidates) = self.hash_map.get(&hash) {
             let entries = self.entries.read().unwrap();
             for &id in candidates.iter() {
@@ -71,7 +70,7 @@ impl PermInterner {
             }
         }
 
-        // Slow path: append under write lock, re-checking for a racing insert.
+        // 慢路径：写锁下追加，重查是否存在并发插入。
         let mut entries = self.entries.write().unwrap();
         if let Some(candidates) = self.hash_map.get(&hash) {
             for &id in candidates.iter() {
@@ -93,20 +92,20 @@ impl PermInterner {
         (id, hash)
     }
 
-    /// Resolve a key id to its text with zero clone. The returned `&'static str`
-    /// is valid for the program lifetime (keys are never freed).
+    /// 以零克隆解析键 id 的文本。返回的 `&'static str`
+    /// 在整个程序生命周期内有效（键从不释放）。
     pub fn lookup(&self, id: u32) -> Option<&'static str> {
         let entries = self.entries.read().unwrap();
         entries.get(id as usize).map(|e| e.data)
     }
 
-    /// Full 64-bit hash for a key id.
+    /// 键 id 的完整 64 位哈希。
     pub fn get_hash(&self, id: u32) -> Option<u64> {
         let entries = self.entries.read().unwrap();
         entries.get(id as usize).map(|e| e.hash)
     }
 
-    /// Total number of unique keys interned.
+    /// 全部唯一 intern 键的数量。
     pub fn entry_count(&self) -> u32 {
         self.entries.read().unwrap().len() as u32
     }
@@ -116,8 +115,8 @@ impl PermInterner {
         self.entry_count() == 0
     }
 
-    /// Materialize (once) and return a stable pointer to a permanent `JsString`
-    /// for the given key id. The `JsString` lives for the program lifetime.
+    /// 物化（仅一次）并返回指定键 id 的永久 `JsString` 稳定指针。
+    /// 该 `JsString` 在整个程序生命周期内存活。
     pub fn string_ptr(&self, id: u32) -> *const JsString {
         {
             let perm = self.permanent_strings.read().unwrap();
@@ -204,7 +203,7 @@ mod tests {
         let (id, _) = interner.intern("perm");
         let ptr = interner.string_ptr(id);
         assert_eq!(unsafe { (*ptr).as_str() }, "perm");
-        // Second call returns the same stable pointer (materialized once).
+        // 二次调用返回同一稳定指针（仅物化一次）。
         assert_eq!(interner.string_ptr(id), ptr);
     }
 }

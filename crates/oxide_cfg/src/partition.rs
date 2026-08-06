@@ -6,7 +6,7 @@ use oxide_bytecode::opcode::OpCode;
 use oxide_ir::operand::Operand;
 use oxide_ir::IRFunction;
 
-/// 识别块头位置：返回 `heads`，长度 `insts.len()+1`（+1 容纳指向末尾的空尾块，Pitfall 3）。
+/// 识别块头位置：返回 `heads`，长度 `insts.len()+1`（+1 容纳指向末尾的空尾块）。
 pub(super) fn partition_blocks(f: &IRFunction) -> Vec<bool> {
     let len = f.insts.len();
     let mut heads = vec![false; len + 1];
@@ -25,10 +25,7 @@ pub(super) fn partition_blocks(f: &IRFunction) -> Vec<bool> {
         // 跳转的 fallthrough 后继是块头：条件跳转否则 cond+then 融块、条件边丢失；
         // 无条件 JMP 同样必须切块头——JMP 不 fallthrough，但其后继位置需成块边界，
         // 否则 JMP 与后续指令融块、块尾判定错、Jump 边丢失（DCE 可达性误删目标块）。
-        if matches!(
-            inst.op,
-            OpCode::JMP | OpCode::JMP_IF_TRUE | OpCode::JMP_IF_FALSE | OpCode::JMP_IF_NULLISH
-        ) {
+        if matches!(inst.op, OpCode::JMP | OpCode::JMP_IF_TRUE | OpCode::JMP_IF_FALSE | OpCode::JMP_IF_NULLISH) {
             heads[i + 1] = true;
         }
     }
@@ -44,9 +41,12 @@ mod tests {
     #[test]
     fn linear_function_only_entry_is_head() {
         let mut f = IRFunction::new();
-        f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
-        f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None));
 
         let heads = partition_blocks(&f);
         assert_eq!(heads, vec![true, false, false, false], "仅 inst 0 是块头");
@@ -56,9 +56,12 @@ mod tests {
     #[test]
     fn label_target_is_head() {
         let mut f = IRFunction::new();
-        f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None)); // 0
-        f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None)); // 1: label 0 目标
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None)); // 2
+        f.insts
+            .push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None)); // 0
+        f.insts
+            .push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None)); // 1: label 0 目标
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None)); // 2
         f.label_pos = vec![Some(1)];
         f.label_count = 1;
 
@@ -72,8 +75,10 @@ mod tests {
     fn conditional_jump_fallthrough_successor_is_head() {
         let mut f = IRFunction::new();
         f.insts.push(Inst::jmp_if_false(1, 0)); // 0: cond → L0(else)
-        f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None)); // 1: then
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None)); // 2
+        f.insts
+            .push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None)); // 1: then
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None)); // 2
         f.label_pos = vec![Some(2)];
         f.label_count = 1;
 
@@ -86,8 +91,10 @@ mod tests {
     fn unconditional_jmp_successor_is_head() {
         let mut f = IRFunction::new();
         f.insts.push(Inst::jmp(0)); // 0: → L0
-        f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None)); // 1: 独立块头
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None)); // 2
+        f.insts
+            .push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None)); // 1: 独立块头
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None)); // 2
         f.label_pos = vec![Some(2)];
         f.label_count = 1;
 

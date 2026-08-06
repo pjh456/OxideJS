@@ -56,7 +56,7 @@ pub fn bind_array(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         core,
         &[("toString", oxide_builtins::array::array_to_string::<crate::vm::Vm> as *const (), 0)],
     );
-    // Built-in prototype methods are non-enumerable (otherwise they leak into for-in).
+    // 内置原型方法不可枚举（否则会泄漏进 for-in）。
     let si = core.perm_interner().intern("toString").0;
     if let Some(pos) = core.shape_forge().lookup_position(array_proto.shape_id(), si) {
         array_proto.set_data_meta(pos, PropAttributes::new(true, false, true));

@@ -17,16 +17,15 @@ macro_rules! native_try {
 
 pub(crate) type MapInner = indexmap::IndexMap<SetKey, JsValue>;
 
-/// Retrieve the `IndexMap` pointer stored in a Map object's native-data slot.
+/// 取出 Map 对象 native-data 槽中存储的 `IndexMap` 指针。
 ///
-/// # Safety contract maintained by callers
+/// # 调用方维护的安全性契约
 ///
-/// The pointer is valid as long as the Map `JsObject` itself is alive, which is guaranteed
-/// because the `JsObject` lives in the current `Epoch` arena and `Epoch::reset()` is never
-/// called while a native builtin is executing. The `Box<IndexMap>` that owns the allocation
-/// is created in `new_map_inner()` and is never freed until the process exits (intentional
-/// leak — lifetime is tied to the epoch). Only one live `*mut` alias exists at a time
-/// per Map object because native calls are single-threaded.
+/// 指针在 Map `JsObject` 存活期间有效：`JsObject` 分配于当前 `Epoch` arena，
+/// native builtin 执行期间不会调用 `Epoch::reset()`。持有分配的
+/// `Box<IndexMap>` 由 `new_map_inner()` 创建，进程退出前不释放（生命周期与
+/// epoch 绑定，属有意为之）。native 调用为单线程，同一 Map 对象同时至多
+/// 存在一个活 `*mut` 别名。
 fn get_map_inner<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<*mut MapInner, JsValue> {
     if !this_val.is_object() {
         return Err(crate::error::create_type_error(vm, "called on non-Map object"));
@@ -35,9 +34,8 @@ fn get_map_inner<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<*mut MapInn
     if map_ptr.is_null() {
         return Err(crate::error::create_type_error(vm, "Map internal state invalid"));
     }
-    // SAFETY: map_ptr is a non-null, aligned pointer to a JsObject bump-allocated in the
-    // current Epoch. It remains valid for the duration of this call (epoch is not reset
-    // during native execution).
+    // SAFETY: map_ptr 是当前 Epoch bump 分配的 JsObject 的非空、对齐指针；
+    // native 执行期间 epoch 不重置，指针在本调用内有效。
     let map_obj = unsafe { &*map_ptr };
     if !map_obj.is_map() {
         return Err(crate::error::create_type_error(
@@ -45,9 +43,9 @@ fn get_map_inner<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<*mut MapInn
             "Map.prototype method called on incompatible receiver",
         ));
     }
-    // SAFETY: native_data holds the raw pointer written by `alloc_map`.
-    // The pointer is a valid, heap-allocated `Box<IndexMap<SetKey, JsValue>>`.
-    // Alignment: IndexMap requires at most 8-byte alignment; the global allocator satisfies this.
+    // SAFETY: native_data 持有 `alloc_map` 写入的裸指针，即有效的
+    // 堆分配 `Box<IndexMap<SetKey, JsValue>>`；IndexMap 至多要求 8 字节对齐，
+    // 全局分配器满足该要求。
     let inner_ptr = map_obj.native_data() as *mut MapInner;
     if inner_ptr.is_null() {
         return Err(crate::error::create_type_error(vm, "Map internal state invalid"));

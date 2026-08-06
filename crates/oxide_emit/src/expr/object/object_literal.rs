@@ -1,10 +1,10 @@
 //! 对象字面量 emit：`emit_object_expression` 逐属性定义（含 getter/setter/展开）。
 
 use crate::{CompileCtx, Emitter};
-use oxide_ir::inst::Inst;
-use oxide_ir::operand::Operand;
 use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
+use oxide_ir::inst::Inst;
+use oxide_ir::operand::Operand;
 use oxide_parser::{Expression, ObjectPropertyKind, PropertyKey, PropertyKind};
 
 impl Emitter {
@@ -52,7 +52,12 @@ impl Emitter {
                             sub_mod.function_name = Some(prop_name.to_string());
                         }
                     }
-                    ctx.inst(Inst::new(OpCode::SET_PROP, Operand::Reg(obj_reg), Operand::Reg(val_reg), Operand::Reg(key_reg)));
+                    ctx.inst(Inst::new(
+                        OpCode::SET_PROP,
+                        Operand::Reg(obj_reg),
+                        Operand::Reg(val_reg),
+                        Operand::Reg(key_reg),
+                    ));
                 }
             }
         }

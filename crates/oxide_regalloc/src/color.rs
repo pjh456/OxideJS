@@ -1,10 +1,11 @@
-//! 染色：Kemp 简化 + 贪心选色 + spill 区间拆分循环 → AllocMap（D-09/D-05/D-02）。
+//! 染色：Kemp 简化 + 贪心选色 + spill 区间拆分循环 → AllocMap。
 //!
 //! 主循环：build 干涉图 → Kemp 简化（degree < k 入栈）→ 卡住选 spill 候选 → 被 spill 的
 //! vreg 按 def/use 点拆成单点活度 fresh vreg → 重建图重试（外循环固定点）→ 收敛后贪心
-//! 选色。fresh 染色失败 = 单点活度 ≥ k = 无可行染色 → Err（D-02 RangeError 路径）。
+//! 选色。fresh 染色失败 = 单点活度 ≥ k = 无可行染色 → Err（RangeError 路径，消息与
+//! lower 逐字一致）。
 //!
-//! 确定性：BTreeMap/BTreeSet + Vec 排序，禁 HashMap（B010）。
+//! 确定性：BTreeMap/BTreeSet + Vec 排序，禁 HashMap。
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -32,28 +33,35 @@ pub(super) fn run(f: &IRFunction, live: &LiveInfo) -> Result<AllocMap, String> {
         }
         for v in failed {
             if fresh.iter().any(|fr| fr.id == v) {
-                // 单点活度 ≥ k：无可行染色（D-02 错误路径，消息与 lower 逐字一致）
+                // 单点活度 ≥ k：无可行染色（消息与 lower 逐字一致）
                 return Err("RangeError: function body uses too many registers (max 253)".into());
             }
-            // 真实 vreg 溢出（D-05 区间拆分 v1）
+            // 真实 vreg 溢出：按 def/use 点拆成单点活度 fresh，重建图重试
             spill_set.insert(v);
             debug_assert!(u32::from(next_slot) <= u16::MAX as u32, "spill slot 超 u16 上限");
             slot_for_vreg.insert(v, next_slot);
             next_slot += 1;
             for d in def_points(f, v) {
-                fresh.push(FreshVreg { id: next_fresh_id, at: d, kind: FreshKind::Def, owner: v });
+                fresh.push(FreshVreg {
+                    id: next_fresh_id,
+                    at: d,
+                    kind: FreshKind::Def,
+                    owner: v,
+                });
                 next_fresh_id += 1;
             }
             for u in use_points(f, v) {
-                fresh.push(FreshVreg { id: next_fresh_id, at: u, kind: FreshKind::Use, owner: v });
+                fresh.push(FreshVreg {
+                    id: next_fresh_id,
+                    at: u,
+                    kind: FreshKind::Use,
+                    owner: v,
+                });
                 next_fresh_id += 1;
             }
         }
         iters += 1;
-        debug_assert!(
-            iters < max_real as usize * 2 + fresh.len() + 8,
-            "RegAlloc 染色疑似不收敛"
-        );
+        debug_assert!(iters < max_real as usize * 2 + fresh.len() + 8, "RegAlloc 染色疑似不收敛");
     };
 
     assemble(f, colors, spill_set, fresh, slot_for_vreg, arg_window_base)
@@ -183,7 +191,12 @@ fn assemble(
         .saturating_add(1)
         .min(254);
 
-    Ok(AllocMap { map, spills, phys_peak, arg_window_base })
+    Ok(AllocMap {
+        map,
+        spills,
+        phys_peak,
+        arg_window_base,
+    })
 }
 
 #[cfg(test)]
@@ -271,10 +284,13 @@ mod tests {
     #[test]
     fn escaped_vreg_keeps_color_and_not_spilled() {
         let mut f = empty_function();
-        f.insts.push(Inst::new(OpCode::ADD, Operand::Reg(5), Operand::Reg(3), Operand::Reg(4)));
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::ADD, Operand::Reg(5), Operand::Reg(3), Operand::Reg(4)));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None));
         let mut sub = empty_function();
-        sub.insts.push(Inst::new(OpCode::LOAD_VAR, Operand::Reg(9), Operand::Reg(3), Operand::None));
+        sub.insts
+            .push(Inst::new(OpCode::LOAD_VAR, Operand::Reg(9), Operand::Reg(3), Operand::None));
         f.nested.push(sub);
         let cfg = oxide_cfg::build_cfg(&f);
         let live = oxide_liveness::liveness(&f, &cfg);
@@ -311,11 +327,7 @@ mod tests {
         assert!(m.spills.iter().any(|s| s.vreg == 1000), "spill 的是 L");
         assert!(m.phys_peak <= 253, "phys_peak ≤ 253");
         // 全部 fresh 应有 Phys 分配
-        let fresh_phys: Vec<&Alloc> = m
-            .map
-            .values()
-            .filter(|a| matches!(a, Alloc::Phys(_)))
-            .collect();
+        let fresh_phys: Vec<&Alloc> = m.map.values().filter(|a| matches!(a, Alloc::Phys(_))).collect();
         assert!(!fresh_phys.is_empty(), "fresh vreg 应着色为 Phys");
     }
 

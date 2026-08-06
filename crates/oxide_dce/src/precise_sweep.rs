@@ -1,10 +1,10 @@
-//! 精确轮（Pass D）：liveness 驱动的死指令 + 局部死 STORE_VAR 删除（D-17/D-19）。
+//! 精确轮（Pass D）：liveness 驱动的死指令 + 局部死 STORE_VAR 删除。
 //!
-//! 消费 `oxide_liveness::LiveInfo::inst_live_after` 判定（D-22 契约复用，不重复建）：
+//! 消费 `oxide_liveness::LiveInfo::inst_live_after` 判定（契约复用 contract.rs，不重复建分析引擎）：
 //! - 通用规则：纯指令 def_reg 不在 live_after → 删（含寄存器复用死写，保守 use 计数抓不到）
 //! - STORE_VAR 特例（def_reg=None 不命中通用规则）：非顶层 && b==Imm(0) && 槽非 escaped && 槽不在 live_after → 删
 //!
-//! label 目标保守保留；单遍不级联（保守轮已做连锁）；nested 不递归（D-03 延续）。
+//! label 目标保守保留；单遍不级联（保守轮已做连锁）；nested 不递归。
 
 use oxide_bytecode::opcode::OpCode;
 use oxide_ir::operand::Operand;
@@ -20,8 +20,8 @@ pub(super) fn pass_dead_with_liveness(f: &IRFunction, live: &LiveInfo, keep: &mu
             *t = true;
         }
     }
-    // escaped 槽位图：nested 树 LOAD_VAR.a / STORE_VAR.rd 直引的父槽（B012——父 liveness
-    // 看不到跨函数读，删 STORE_VAR 后子模块读陈旧/undefined 槽）
+    // escaped 槽位图：nested 树 LOAD_VAR.a / STORE_VAR.rd 直引的父槽（父 liveness 看不到
+    // 跨函数读，删 STORE_VAR 后子模块会读陈旧/undefined 槽）
     let mut max_reg: usize = 0;
     for inst in &f.insts {
         if let Some(d) = inst.def_reg() {
@@ -47,17 +47,17 @@ pub(super) fn pass_dead_with_liveness(f: &IRFunction, live: &LiveInfo, keep: &mu
                 continue;
             }
         }
-        // STORE_VAR 特例：def_reg=None 不命中通用规则，单独判定（四条件全满足才删）
-        // 槽活度条件是必须的（RESEARCH Pattern 5 补齐）：`var y=1; return y` 删掉
-        // STORE_VAR 会让 LOAD_VAR 读到陈旧/undefined 槽（vreg 化 + RegAlloc 复用后脏槽）。
+        // STORE_VAR 特例：def_reg=None 不命中通用规则，单独判定（四条件全满足才删）。
+        // 槽活度条件是必须的：`var y=1; return y` 删掉 STORE_VAR 会让 LOAD_VAR 读到
+        // 陈旧/undefined 槽（vreg 化 + RegAlloc 复用后脏槽）。
         if inst.op == OpCode::STORE_VAR {
             let slot = match inst.rd {
                 Operand::Reg(s) => s as usize,
                 _ => continue,
             };
-            let deletable = !f.is_top_level // B008：顶层赋值全局可观察
-                && matches!(inst.b, Operand::Imm(0)) // const 赋值 b=1 抛 TypeError 不可删
-                && !escaped_slot.get(slot).copied().unwrap_or(false) // B012：nested 直读槽不可动
+            let deletable = !f.is_top_level // 顶层赋值全局可观察，不可删
+                && matches!(inst.b, Operand::Imm(0)) // const 赋值 b=1 抛 TypeError，不可删
+                && !escaped_slot.get(slot).copied().unwrap_or(false) // nested 直读槽不可动
                 && not_live_after(slot as u32); // 槽无后续读（vreg 复用后脏槽风险）
             if deletable {
                 keep[i] = false;
@@ -96,9 +96,24 @@ mod tests {
     #[test]
     fn reuse_killed_dead_write_deleted() {
         let mut f = IRFunction::new();
-        f.insts.push(Inst::new(oxide_bytecode::opcode::OpCode::ADD, Operand::Reg(5), Operand::Reg(1), Operand::Reg(2)));
-        f.insts.push(Inst::new(oxide_bytecode::opcode::OpCode::ADD, Operand::Reg(5), Operand::Reg(3), Operand::Reg(4)));
-        f.insts.push(Inst::new(oxide_bytecode::opcode::OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None));
+        f.insts.push(Inst::new(
+            oxide_bytecode::opcode::OpCode::ADD,
+            Operand::Reg(5),
+            Operand::Reg(1),
+            Operand::Reg(2),
+        ));
+        f.insts.push(Inst::new(
+            oxide_bytecode::opcode::OpCode::ADD,
+            Operand::Reg(5),
+            Operand::Reg(3),
+            Operand::Reg(4),
+        ));
+        f.insts.push(Inst::new(
+            oxide_bytecode::opcode::OpCode::RETURN,
+            Operand::Reg(5),
+            Operand::None,
+            Operand::None,
+        ));
         // inst_live_after = [{3,4}, {5}, {}]：inst0 def 5 在 live_after[0] 无 5（后写杀死）
         run_precise(&mut f, &[&[3, 4], &[5], &[]], 5);
         assert_eq!(f.insts.len(), 2, "死写（前一个 ADD）应被删");
@@ -109,37 +124,72 @@ mod tests {
     fn local_dead_store_var_deleted() {
         let mut f = IRFunction::new();
         f.insts.push(Inst::load_const(Operand::Reg(1), 0));
-        f.insts.push(Inst::new(oxide_bytecode::opcode::OpCode::STORE_VAR, Operand::Reg(2), Operand::Reg(1), Operand::Imm(0)));
-        f.insts.push(Inst::new(oxide_bytecode::opcode::OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None));
+        f.insts.push(Inst::new(
+            oxide_bytecode::opcode::OpCode::STORE_VAR,
+            Operand::Reg(2),
+            Operand::Reg(1),
+            Operand::Imm(0),
+        ));
+        f.insts.push(Inst::new(
+            oxide_bytecode::opcode::OpCode::RETURN,
+            Operand::Reg(5),
+            Operand::None,
+            Operand::None,
+        ));
         // is_top_level 默认 false；inst_live_after = [{1,5}, {5}, {}]
         run_precise(&mut f, &[&[1, 5], &[5], &[]], 5);
         assert_eq!(f.insts.len(), 2, "局部死 STORE_VAR 应被删（LOAD_CONST 单遍不级联保留）");
     }
 
-    /// 顶层 STORE_VAR 永不删（B008）。
+    /// 顶层 STORE_VAR 永不删（顶层赋值全局可观察）。
     #[test]
     fn top_level_store_var_kept() {
         let mut f = IRFunction::new();
         f.is_top_level = true;
         f.insts.push(Inst::load_const(Operand::Reg(1), 0));
-        f.insts.push(Inst::new(oxide_bytecode::opcode::OpCode::STORE_VAR, Operand::Reg(2), Operand::Reg(1), Operand::Imm(0)));
-        f.insts.push(Inst::new(oxide_bytecode::opcode::OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None));
+        f.insts.push(Inst::new(
+            oxide_bytecode::opcode::OpCode::STORE_VAR,
+            Operand::Reg(2),
+            Operand::Reg(1),
+            Operand::Imm(0),
+        ));
+        f.insts.push(Inst::new(
+            oxide_bytecode::opcode::OpCode::RETURN,
+            Operand::Reg(5),
+            Operand::None,
+            Operand::None,
+        ));
         run_precise(&mut f, &[&[1, 5], &[5], &[]], 5);
         assert_eq!(f.insts.len(), 3, "顶层 STORE_VAR 不可删");
     }
 
-    /// escaped 槽 STORE_VAR 永不删（B012 nested 直读）。
+    /// escaped 槽 STORE_VAR 永不删（nested 直读）。
     #[test]
     fn escaped_slot_store_var_kept() {
         let mut f = IRFunction::new();
         f.insts.push(Inst::load_const(Operand::Reg(1), 0));
-        f.insts.push(Inst::new(oxide_bytecode::opcode::OpCode::STORE_VAR, Operand::Reg(2), Operand::Reg(1), Operand::Imm(0)));
-        f.insts.push(Inst::new(oxide_bytecode::opcode::OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None));
+        f.insts.push(Inst::new(
+            oxide_bytecode::opcode::OpCode::STORE_VAR,
+            Operand::Reg(2),
+            Operand::Reg(1),
+            Operand::Imm(0),
+        ));
+        f.insts.push(Inst::new(
+            oxide_bytecode::opcode::OpCode::RETURN,
+            Operand::Reg(5),
+            Operand::None,
+            Operand::None,
+        ));
         let mut sub = IRFunction::new();
-        sub.insts.push(Inst::new(oxide_bytecode::opcode::OpCode::LOAD_VAR, Operand::Reg(5), Operand::Reg(2), Operand::None));
+        sub.insts.push(Inst::new(
+            oxide_bytecode::opcode::OpCode::LOAD_VAR,
+            Operand::Reg(5),
+            Operand::Reg(2),
+            Operand::None,
+        ));
         f.nested.push(sub);
         run_precise(&mut f, &[&[1, 5], &[5], &[]], 5);
-        assert_eq!(f.insts.len(), 3, "escaped 槽 STORE_VAR 不可删（B012）");
+        assert_eq!(f.insts.len(), 3, "被嵌套函数直引的 escaped 槽 STORE_VAR 不可删");
     }
 
     /// const 赋值路径 b=1 保留（运行时抛 TypeError 可观察）。
@@ -147,8 +197,18 @@ mod tests {
     fn const_guard_store_var_kept() {
         let mut f = IRFunction::new();
         f.insts.push(Inst::load_const(Operand::Reg(1), 0));
-        f.insts.push(Inst::new(oxide_bytecode::opcode::OpCode::STORE_VAR, Operand::Reg(2), Operand::Reg(1), Operand::Imm(1)));
-        f.insts.push(Inst::new(oxide_bytecode::opcode::OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None));
+        f.insts.push(Inst::new(
+            oxide_bytecode::opcode::OpCode::STORE_VAR,
+            Operand::Reg(2),
+            Operand::Reg(1),
+            Operand::Imm(1),
+        ));
+        f.insts.push(Inst::new(
+            oxide_bytecode::opcode::OpCode::RETURN,
+            Operand::Reg(5),
+            Operand::None,
+            Operand::None,
+        ));
         run_precise(&mut f, &[&[1, 5], &[5], &[]], 5);
         assert_eq!(f.insts.len(), 3, "b=1 const 赋值路径不可删");
     }
@@ -158,7 +218,12 @@ mod tests {
     fn label_target_inst_never_deleted() {
         let mut f = IRFunction::new();
         f.insts.push(Inst::load_const(Operand::Reg(1), 0)); // label 0 目标，纯且结果未用
-        f.insts.push(Inst::new(oxide_bytecode::opcode::OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None));
+        f.insts.push(Inst::new(
+            oxide_bytecode::opcode::OpCode::RETURN,
+            Operand::Reg(5),
+            Operand::None,
+            Operand::None,
+        ));
         f.label_pos = vec![Some(0)];
         run_precise(&mut f, &[&[5], &[]], 5);
         assert_eq!(f.insts.len(), 2, "label 目标指令不可删");
@@ -171,7 +236,12 @@ mod tests {
         f.insts.push(Inst::inst_spill(Operand::Reg(1), 0));
         f.insts.push(Inst::inst_unspill(Operand::Reg(2), 0));
         f.insts.push(Inst::inst_mov(Operand::Reg(3), Operand::Reg(2)));
-        f.insts.push(Inst::new(oxide_bytecode::opcode::OpCode::RETURN, Operand::Reg(3), Operand::None, Operand::None));
+        f.insts.push(Inst::new(
+            oxide_bytecode::opcode::OpCode::RETURN,
+            Operand::Reg(3),
+            Operand::None,
+            Operand::None,
+        ));
         run_precise(&mut f, &[&[], &[2], &[3], &[]], 5);
         assert_eq!(f.insts.len(), 4, "SPILL/UNSPILL 永不删，活 MOV 保留");
     }
@@ -181,8 +251,18 @@ mod tests {
     fn stale_liveinfo_no_op() {
         let mut f = IRFunction::new();
         f.insts.push(Inst::load_const(Operand::Reg(1), 0));
-        f.insts.push(Inst::new(oxide_bytecode::opcode::OpCode::STORE_VAR, Operand::Reg(2), Operand::Reg(1), Operand::Imm(0)));
-        f.insts.push(Inst::new(oxide_bytecode::opcode::OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None));
+        f.insts.push(Inst::new(
+            oxide_bytecode::opcode::OpCode::STORE_VAR,
+            Operand::Reg(2),
+            Operand::Reg(1),
+            Operand::Imm(0),
+        ));
+        f.insts.push(Inst::new(
+            oxide_bytecode::opcode::OpCode::RETURN,
+            Operand::Reg(5),
+            Operand::None,
+            Operand::None,
+        ));
         let live = LiveInfo::new(); // 空 LiveInfo：维度不符
         dce_precise(&mut f, &live);
         assert_eq!(f.insts.len(), 3, "过期 LiveInfo 不得删除任何指令");
@@ -194,8 +274,18 @@ mod tests {
     fn dce_precise_converges() {
         let mut f = IRFunction::new();
         f.insts.push(Inst::load_const(Operand::Reg(1), 0));
-        f.insts.push(Inst::new(oxide_bytecode::opcode::OpCode::STORE_VAR, Operand::Reg(2), Operand::Reg(1), Operand::Imm(0)));
-        f.insts.push(Inst::new(oxide_bytecode::opcode::OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None));
+        f.insts.push(Inst::new(
+            oxide_bytecode::opcode::OpCode::STORE_VAR,
+            Operand::Reg(2),
+            Operand::Reg(1),
+            Operand::Imm(0),
+        ));
+        f.insts.push(Inst::new(
+            oxide_bytecode::opcode::OpCode::RETURN,
+            Operand::Reg(5),
+            Operand::None,
+            Operand::None,
+        ));
         // 第一遍：手填 live（STORE_VAR 死）
         run_precise(&mut f, &[&[1, 5], &[5], &[]], 5);
         assert_eq!(f.insts.len(), 2, "第一遍删 STORE_VAR");

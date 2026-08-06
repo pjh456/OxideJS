@@ -1,9 +1,9 @@
 //! 标识符表达式 emit：`emit_identifier_expression` 按绑定/builtin/全局解析寄存器。
 
 use crate::{CompileCtx, Emitter};
+use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
-use oxide_bytecode::opcode::OpCode;
 
 impl Emitter {
     pub(crate) fn emit_identifier_expression(
@@ -23,7 +23,12 @@ impl Emitter {
         if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
             let r = ctx.alloc_reg();
             if let Some((binding, _)) = ctx.scopes.symbols.lookup_any_binding(name) {
-                ctx.inst(Inst::new(OpCode::CELL_GET, Operand::Reg(r), Operand::Reg(binding.reg), Operand::Imm(cell_idx as u16)));
+                ctx.inst(Inst::new(
+                    OpCode::CELL_GET,
+                    Operand::Reg(r),
+                    Operand::Reg(binding.reg),
+                    Operand::Imm(cell_idx as u16),
+                ));
             } else {
                 ctx.inst(Inst::new(OpCode::CELL_GET, Operand::Reg(r), Operand::None, Operand::Imm(cell_idx as u16)));
             }

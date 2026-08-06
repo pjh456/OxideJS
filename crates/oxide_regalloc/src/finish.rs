@@ -1,4 +1,4 @@
-//! 元数据回写：n_registers / builtin_reg_map / param_layout / upvalue_captures（D-10/D-03）。
+//! 元数据回写：n_registers / builtin_reg_map / param_layout / upvalue_captures。
 //!
 //! - n_registers = map.phys_peak（≤253；不含参数窗口——窗口是调用点暂存槽，
 //!   CALL handler 在 push 前收集 args 进 Vec，n_registers 只控 save_stack 窗口）
@@ -39,23 +39,23 @@ pub(super) fn run(f: &mut IRFunction, map: &AllocMap) {
         }
     }
 
-    // (c) param_layout 不动（参数段 pre-colored 恒等；窗口与参数段重叠仅 05-07 标注的罕见情形）
+    // (c) param_layout 不动（参数段预着色恒等；窗口与参数段重叠仅参数段贴 254 的罕见情形）
     let pl = f.param_layout;
     debug_assert!(pl.base + pl.count <= map.arg_window_base || map.arg_window_base == 254);
 
     // (d) upvalue_captures 不动。enclosing_reg 是编译期产物（MAKE_CELL 定位用），VM 运行时
     // 不读（CREATE_CLOSURE 走 cell_idx，cell 捕获后值在 cell 中）——无需跨函数同步。
-    // 直接槽引用（class field 计算键等）的 escaped vreg 已由 05-07 预着色恒等保留。
-    // 注：cell 捕获变量的父 vreg 可被 RegAlloc 移动（MAKE_CELL 后值入 cell，register 无关），
+    // 直接槽引用（class field 计算键等）的 escaped vreg 已由预着色恒等保留。
+    // 注：cell 捕获变量的父 vreg 可被 RegAlloc 移动（MAKE_CELL 后值入 cell，与寄存器无关），
     // 此处不做恒等断言。
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxide_bytecode::opcode::OpCode;
     use oxide_ir::inst::Inst;
     use oxide_ir::operand::Operand;
-    use oxide_bytecode::opcode::OpCode;
 
     #[test]
     fn n_registers_equals_phys_peak() {
@@ -70,7 +70,8 @@ mod tests {
     fn builtin_moved_rewritten() {
         let mut f = IRFunction::new();
         f.builtin_reg_map = vec![("Math".to_string(), 5)];
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(1), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(1), Operand::None, Operand::None));
         let mut map = AllocMap::new();
         map.map.insert(5, Alloc::Phys(9));
         map.map.insert(1, Alloc::Phys(1));
@@ -82,7 +83,8 @@ mod tests {
     fn builtin_spilled_bound_to_free_color() {
         let mut f = IRFunction::new();
         f.builtin_reg_map = vec![("Math".to_string(), 5)];
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(1), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(1), Operand::None, Operand::None));
         let mut map = AllocMap::new();
         map.map.insert(5, Alloc::Spill(0));
         map.map.insert(1, Alloc::Phys(1));

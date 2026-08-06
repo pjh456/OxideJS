@@ -268,7 +268,7 @@ fn string_call_conversion_stays_primitive() {
     assert_eq!(to_str(&vm, v), "123");
 }
 
-// ── Plan 01: replace tests ──
+// ── replace 测试 ──
 
 #[test]
 fn string_replace_non_global_first_only() {
@@ -305,7 +305,7 @@ fn string_replace_string_pattern() {
     assert_eq!(to_str(&vm, s), "heLlo");
 }
 
-// ── Plan 02: split tests ──
+// ── split 测试 ──
 
 #[test]
 fn string_split_regex_capture_groups() {
@@ -348,7 +348,7 @@ fn string_split_string_separator() {
     assert_eq!(obj.prop_count(), 3);
 }
 
-// ── Plan 03: match tests ──
+// ── match 测试 ──
 
 #[test]
 fn string_match_non_global_captures() {
@@ -390,7 +390,7 @@ fn string_match_string_pattern() {
     assert_eq!(to_str(&vm, obj.get_prop_at(0)), "ll");
 }
 
-// ── Plan 04: matchAll tests ──
+// ── matchAll 测试 ──
 
 #[test]
 fn string_match_all_returns_iterator() {
@@ -420,7 +420,7 @@ fn string_match_all_next_exhausted() {
     assert!(done);
 }
 
-// ── Plan 05: substring tests ──
+// ── substring 测试 ──
 
 #[test]
 fn string_substring_nan_index() {
@@ -443,7 +443,7 @@ fn string_substring_swap() {
     assert_eq!(to_str(&vm, s), "el");
 }
 
-// ── Plan 06: substr + at tests ──
+// ── substr + at 测试 ──
 
 #[test]
 fn string_substr_positive() {
@@ -487,7 +487,7 @@ fn string_at_out_of_range() {
     assert!(s.is_undefined());
 }
 
-// ── Plan 07: lastIndexOf tests ──
+// ── lastIndexOf 测试 ──
 
 #[test]
 fn string_last_index_of_basic() {

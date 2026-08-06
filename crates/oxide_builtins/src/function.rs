@@ -25,7 +25,7 @@ fn bind_dispatcher<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         .and_then(|v| v.get(1).copied())
         .unwrap_or(JsValue::undefined());
 
-    // Forward bound call arguments (skip args[0], the bound-wrapper receiver).
+    // 转发绑定后的调用实参（跳过 args[0] 即绑定包装器的 receiver）。
     let arg_regs: Vec<u8> = args.iter().skip(1).copied().collect();
     invoke_target(vm, bound_target, bound_this, &arg_regs)
 }
@@ -59,7 +59,7 @@ pub fn function_apply<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             if !arr_ptr.is_null() {
                 let arr = unsafe { &*arr_ptr };
                 if arr.is_array() {
-                    let max_args = 55usize; // base=200, max safe register is 255.
+                    let max_args = 55usize; // base=200，255 号寄存器之前的安全上限。
                     let n = arr.hash_props_vec().map_or(0, |v| v.len()).min(max_args);
                     let base = 200u8;
                     arg_regs = (0..n).map(|i| base + i as u8).collect();

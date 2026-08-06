@@ -1,4 +1,4 @@
-//! VM spill 栈执行语义测试（D-06/D-07/D-08）：MOV 复制、SPILL/UNSPILL 往返、
+//! VM spill 栈执行语义测试：MOV 复制、SPILL/UNSPILL 往返、
 //! 帧边界（父 spill 跨子调用完好）、嵌套双 spill 交互、UNSPILL 越界防御。
 //!
 //! 手工 IR 是唯一可达路径——RegAlloc 未接入，真实 JS 编译产物不会含三指令。
@@ -28,7 +28,7 @@ fn int_module(insts: Vec<Inst>, value: i32, n_registers: u8, nested: Vec<IRFunct
     f
 }
 
-/// 测试 1：MOV 寄存器复制语义（D-07）。r3=42 → MOV r5=r3 → HALT 输出 42。
+/// 测试 1：MOV 寄存器复制语义。r3=42 → MOV r5=r3 → HALT 输出 42。
 #[test]
 fn mov_copies_register() {
     let insts = vec![
@@ -41,7 +41,7 @@ fn mov_copies_register() {
     assert_eq!(out, "42");
 }
 
-/// 测试 2：SPILL→UNSPILL 往返（D-06）。SPILL r3 slot0 → MOV 弄脏 r5 → UNSPILL r5 slot0 → 读回 42。
+/// 测试 2：SPILL→UNSPILL 往返。SPILL r3 slot0 → MOV 弄脏 r5 → UNSPILL r5 slot0 → 读回 42。
 #[test]
 fn spill_unspill_roundtrip() {
     let insts = vec![
@@ -56,7 +56,7 @@ fn spill_unspill_roundtrip() {
     assert_eq!(out, "42");
 }
 
-/// 测试 3：帧边界——父函数 SPILL 后 CALL 子函数，子函数返回后父 UNSPILL 仍得 42（D-08）。
+/// 测试 3：帧边界——父函数 SPILL 后 CALL 子函数，子函数返回后父 UNSPILL 仍得 42。
 #[test]
 fn frame_boundary_parent_spill_survives_call() {
     let child = int_module(

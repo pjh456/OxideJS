@@ -124,7 +124,7 @@ impl Vm {
         self.ordinary_set_inner(obj, prop_name_si, val, receiver, false)
     }
 
-    /// Dispatch-time entry: caller (dispatch_set_prop etc.) already promoted the value.
+    /// 分发期入口：调用方（dispatch_set_prop 等）已对值做过 promote。
     pub(crate) fn ordinary_set_dispatch(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue,
     ) -> Result<(), String> {
@@ -235,17 +235,17 @@ impl Vm {
         Ok(val)
     }
 
-    /// Perform ordinary_get and write back IC with proto chain depth.
+    /// 执行 ordinary_get 并把 IC 按原型链深度写回。
     fn proto_chain_ic_get(&mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue) -> Result<JsValue, String> {
         let resolved = self.ordinary_get(obj, prop_name_si, receiver)?;
-        // Fast path: own property (depth=0).
+        // 快路径：自身属性（depth=0）。
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             if !obj.is_accessor_meta(pos) {
                 crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos, 0);
             }
             return Ok(resolved);
         }
-        // Walk proto chain for inherited properties.
+        // 沿原型链查找继承属性。
         let mut cursor = obj.proto().as_js_object_ptr();
         let mut depth = 1u8;
         while !cursor.is_null() {

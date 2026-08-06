@@ -95,11 +95,11 @@ fn closure_nested_expr_capture() {
 #[test]
 fn for_let_per_iteration_independent() {
     let _ = eval("var fns=[]; for(let i=0;i<3;i++){ fns.push(function(){return i}); } fns[0]()+fns[1]()+fns[2]()");
-    // TODO: Plan 04 — implement for-let per-iteration binding
+    // 未支持：for-let 逐次迭代绑定尚未实现。
 }
 
 #[test]
 fn tdz_access_before_init_throws() {
     let _ = eval("x; let x=1");
-    // TODO: Plan 04 — implement precise TDZ
+    // 未支持：精确 TDZ 尚未实现。
 }

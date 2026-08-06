@@ -3,10 +3,10 @@
 //! 函数：`emit_operator` 及各类 `emit_*_expression`。
 
 use crate::{is_side_effect_free, BinaryOperator, CompileCtx, Emitter};
-use oxide_ir::inst::Inst;
-use oxide_ir::operand::Operand;
 use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
+use oxide_ir::inst::Inst;
+use oxide_ir::operand::Operand;
 use oxide_parser::{ChainElement, Expression, LogicalOperator, SimpleAssignmentTarget, UnaryOperator, UpdateOperator};
 
 impl Emitter {
@@ -16,11 +16,18 @@ impl Emitter {
         let obj_reg = self.emit_expression(&pin.right, ctx)?;
         let key_reg = self.emit_private_id_reg(pin.left.name.as_str(), ctx)?;
         let result_reg = ctx.alloc_reg();
-        ctx.inst(Inst::new(OpCode::PRIVATE_BRAND_IN, Operand::Reg(result_reg), Operand::Reg(obj_reg), Operand::Reg(key_reg)));
+        ctx.inst(Inst::new(
+            OpCode::PRIVATE_BRAND_IN,
+            Operand::Reg(result_reg),
+            Operand::Reg(obj_reg),
+            Operand::Reg(key_reg),
+        ));
         Ok(result_reg)
     }
 
-    fn emit_binary_expression(&self, bin: &oxide_parser::BinaryExpression, ctx: &mut CompileCtx) -> Result<u32, String> {
+    fn emit_binary_expression(
+        &self, bin: &oxide_parser::BinaryExpression, ctx: &mut CompileCtx,
+    ) -> Result<u32, String> {
         let left = self.emit_expression(&bin.left, ctx)?;
         let right = self.emit_expression(&bin.right, ctx)?;
         let op = match bin.operator {
@@ -67,7 +74,12 @@ impl Emitter {
                 Expression::ComputedMemberExpression(member) => {
                     let obj_reg = self.emit_expression(&member.object, ctx)?;
                     let key_reg = self.emit_expression(&member.expression, ctx)?;
-                    ctx.inst(Inst::new(OpCode::DELETE_PROP_DYNAMIC, Operand::Reg(obj_reg), Operand::Reg(obj_reg), Operand::Reg(key_reg)));
+                    ctx.inst(Inst::new(
+                        OpCode::DELETE_PROP_DYNAMIC,
+                        Operand::Reg(obj_reg),
+                        Operand::Reg(obj_reg),
+                        Operand::Reg(key_reg),
+                    ));
                     Ok(obj_reg)
                 }
                 Expression::ChainExpression(chain) => {
@@ -77,7 +89,12 @@ impl Emitter {
                             let obj_reg = self.emit_expression(&member.object, ctx)?;
                             if member.optional {
                                 let dup_reg = ctx.alloc_reg();
-                                ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(dup_reg), Operand::Reg(obj_reg), Operand::None));
+                                ctx.inst(Inst::new(
+                                    OpCode::LOAD_VAR,
+                                    Operand::Reg(dup_reg),
+                                    Operand::Reg(obj_reg),
+                                    Operand::None,
+                                ));
                                 ctx.inst(Inst::jmp_if_nullish(dup_reg, short_label));
                             }
                             let prop_name = member.property.name.as_str();
@@ -89,11 +106,21 @@ impl Emitter {
                             let obj_reg = self.emit_expression(&member.object, ctx)?;
                             if member.optional {
                                 let dup_reg = ctx.alloc_reg();
-                                ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(dup_reg), Operand::Reg(obj_reg), Operand::None));
+                                ctx.inst(Inst::new(
+                                    OpCode::LOAD_VAR,
+                                    Operand::Reg(dup_reg),
+                                    Operand::Reg(obj_reg),
+                                    Operand::None,
+                                ));
                                 ctx.inst(Inst::jmp_if_nullish(dup_reg, short_label));
                             }
                             let key_reg = self.emit_expression(&member.expression, ctx)?;
-                            ctx.inst(Inst::new(OpCode::DELETE_PROP_DYNAMIC, Operand::Reg(obj_reg), Operand::Reg(obj_reg), Operand::Reg(key_reg)));
+                            ctx.inst(Inst::new(
+                                OpCode::DELETE_PROP_DYNAMIC,
+                                Operand::Reg(obj_reg),
+                                Operand::Reg(obj_reg),
+                                Operand::Reg(key_reg),
+                            ));
                             obj_reg
                         }
                         _ => return Err("invalid delete target".into()),
@@ -150,13 +177,23 @@ impl Emitter {
 
         let cons_reg = self.emit_expression(&cond.consequent, ctx)?;
         let result_reg = ctx.alloc_reg();
-        ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg), Operand::Reg(cons_reg), Operand::None));
+        ctx.inst(Inst::new(
+            OpCode::LOAD_VAR,
+            Operand::Reg(result_reg),
+            Operand::Reg(cons_reg),
+            Operand::None,
+        ));
 
         ctx.inst(Inst::jmp(end_label));
 
         ctx.labels.set_label_pos(else_label, ctx.insts.len());
         let alt_reg = self.emit_expression(&cond.alternate, ctx)?;
-        ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg), Operand::Reg(alt_reg), Operand::None));
+        ctx.inst(Inst::new(
+            OpCode::LOAD_VAR,
+            Operand::Reg(result_reg),
+            Operand::Reg(alt_reg),
+            Operand::None,
+        ));
         ctx.labels.set_label_pos(end_label, ctx.insts.len());
 
         Ok(result_reg)
@@ -220,13 +257,18 @@ impl Emitter {
         match &update.argument {
             SimpleAssignmentTarget::AssignmentTargetIdentifier(id) => {
                 let name = id.name.as_str();
-                // Check if this is an upvalue or captured cell reference
+                // 判断目标是 upvalue 还是被捕获 cell
                 let uv_idx = ctx.current_upvalue_captures.iter().position(|u| u.name == name);
                 let captured_cell = ctx.captured_bindings.get(name).copied();
                 if let Some(uv) = uv_idx {
-                    // Upvalue: LOAD_UPVALUE + CONST(1) + ADD/SUB + STORE_UPVALUE
+                    // upvalue：LOAD_UPVALUE + 常量 1 + ADD/SUB + STORE_UPVALUE
                     let val_reg = ctx.alloc_reg();
-                    ctx.inst(Inst::new(OpCode::LOAD_UPVALUE, Operand::Reg(val_reg), Operand::Imm(uv as u16), Operand::None));
+                    ctx.inst(Inst::new(
+                        OpCode::LOAD_UPVALUE,
+                        Operand::Reg(val_reg),
+                        Operand::Imm(uv as u16),
+                        Operand::None,
+                    ));
                     let one_idx = ctx.add_constant(Constant::Int(1));
                     let one_reg = ctx.alloc_reg();
                     ctx.inst(Inst::load_const(Operand::Reg(one_reg), one_idx));
@@ -236,15 +278,30 @@ impl Emitter {
                         OpCode::SUB
                     };
                     ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(val_reg), Operand::Reg(one_reg)));
-                    ctx.inst(Inst::new(OpCode::STORE_UPVALUE, Operand::None, Operand::Reg(val_reg), Operand::Imm(uv as u16)));
+                    ctx.inst(Inst::new(
+                        OpCode::STORE_UPVALUE,
+                        Operand::None,
+                        Operand::Reg(val_reg),
+                        Operand::Imm(uv as u16),
+                    ));
                     Ok(val_reg)
                 } else if let Some(cell_idx) = captured_cell {
-                    // Captured cell: CELL_GET + CONST(1) + ADD/SUB + CELL_SET
+                    // 被捕获 cell：CELL_GET + 常量 1 + ADD/SUB + CELL_SET
                     let val_reg = ctx.alloc_reg();
                     if let Some((binding, _)) = ctx.scopes.symbols.lookup_any_binding(name) {
-                        ctx.inst(Inst::new(OpCode::CELL_GET, Operand::Reg(val_reg), Operand::Reg(binding.reg), Operand::Imm(cell_idx as u16)));
+                        ctx.inst(Inst::new(
+                            OpCode::CELL_GET,
+                            Operand::Reg(val_reg),
+                            Operand::Reg(binding.reg),
+                            Operand::Imm(cell_idx as u16),
+                        ));
                     } else {
-                        ctx.inst(Inst::new(OpCode::CELL_GET, Operand::Reg(val_reg), Operand::None, Operand::Imm(cell_idx as u16)));
+                        ctx.inst(Inst::new(
+                            OpCode::CELL_GET,
+                            Operand::Reg(val_reg),
+                            Operand::None,
+                            Operand::Imm(cell_idx as u16),
+                        ));
                     }
                     let one_idx = ctx.add_constant(Constant::Int(1));
                     let one_reg = ctx.alloc_reg();
@@ -255,7 +312,12 @@ impl Emitter {
                         OpCode::SUB
                     };
                     ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(val_reg), Operand::Reg(one_reg)));
-                    ctx.inst(Inst::new(OpCode::CELL_SET, Operand::None, Operand::Reg(val_reg), Operand::Imm(cell_idx as u16)));
+                    ctx.inst(Inst::new(
+                        OpCode::CELL_SET,
+                        Operand::None,
+                        Operand::Reg(val_reg),
+                        Operand::Imm(cell_idx as u16),
+                    ));
                     Ok(val_reg)
                 } else {
                     let var_reg = ctx.lookup_or_global(name);

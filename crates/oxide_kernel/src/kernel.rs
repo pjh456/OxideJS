@@ -113,8 +113,8 @@ impl Default for KernelConfig {
     }
 }
 
-/// Immutable, permanently shared state across all VM instances.
-/// Never rebuilt after construction — forge tables are append-only.
+/// 不可变、跨所有 VM 实例永久共享的状态。
+/// 构造后从不重建——forge 表为 append-only。
 pub struct KernelCore {
     pub config: KernelConfig,
     pub perm_interner: Arc<PermInterner>,
@@ -199,10 +199,10 @@ impl KernelCore {
     /// 字符串 intern 表是 append-only，无需清理；仅当 shape 或 prop 表超过阈值时才执行
     /// [`ShapeForge::clear_transient`] 与 [`PropForge::clear`]。
     pub fn sweep_runner_forges(&self) {
-        // The key interner is append-only (no per-run sweep); only the transient
-        // shape/prop tables need bounding at the test262 per-test boundary.
-        // test262 creates a fresh VM/session per test. At this boundary no JS object
-        // from prior tests may retain transient shapes/templates.
+        // 键 interner 是 append-only（无逐次清理）；只有瞬时 shape/prop 表
+        // 需要在 test262 每测试边界做上限约束。
+        // test262 每测试新建 VM/session。在该边界，此前测试产生的 JS 对象
+        // 不应保留任何瞬时 shape/模板。
         if self.shape_forge.len() > 50_000 {
             self.shape_forge.clear_transient();
             self.prop_forge.clear();
@@ -212,19 +212,19 @@ impl KernelCore {
     }
 }
 
-/// Per-session mutable state: builtin prototype objects and the global object.
-/// Rebuilt on full_reset() to achieve complete isolation between JS executions.
+/// 每会话可变状态：内置原型对象与全局对象。
+/// 在 full_reset() 时重建，实现 JS 执行之间的完全隔离。
 pub struct KernelSession {
     pub builtin_world: Arc<BuiltinWorld>,
     pub global_object: P<JsObject>,
     pub builtin_snapshot: BuiltinSnapshot,
 }
 
-/// Generation snapshot for reset dirty checks.
+/// 供 reset 脏检查用的世代快照。
 ///
-/// Maintenance: every new `BuiltinWorld` object field must be added here and to
-/// `KernelSession::dirty_since_snapshot()` so selective reset can rebuild the
-/// correct builtin family.
+/// 维护注意：每个新增的 `BuiltinWorld` 对象字段都必须加到这里以及
+/// `KernelSession::dirty_since_snapshot()`，以便选择性重置重建正确的
+/// builtin 家族。
 pub const NUM_BUILTINS: usize = 66;
 
 /// 内置对象枚举 id，与 `BuiltinWorld` 中的存储槽一一对应。
@@ -484,8 +484,8 @@ impl KernelSession {
         P::new(global_obj)
     }
 
-    /// Build a fresh session from a KernelCore. All string/shape intern calls hit
-    /// cache on second and subsequent calls — net cost is < 0.5 ms.
+    /// 从 KernelCore 构建一个全新 session。所有 string/shape intern 调用在
+    /// 第二次及后续调用时命中缓存——净开销 < 0.5 ms。
     pub fn new(core: &KernelCore) -> Self {
         let builtin_world = Arc::new(BuiltinWorld::new(&core.perm_interner, &core.shape_forge));
         let global_object = Self::new_global_object(core);

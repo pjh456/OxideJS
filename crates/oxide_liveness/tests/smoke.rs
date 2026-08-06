@@ -37,9 +37,8 @@ fn smoke_loop_with_variables() {
 
 #[test]
 fn smoke_try_catch() {
-    let (info, cfg, _) = run_liveness(
-        "function x() {} function y(e) {} function f() { try { x(); } catch (e) { y(e); } } f()",
-    );
+    let (info, cfg, _) =
+        run_liveness("function x() {} function y(e) {} function f() { try { x(); } catch (e) { y(e); } } f()");
     // entry 块 liveIn 不含 reg 0（异常边 reg0 截断在真实产物上成立）
     assert!(!info.block_live_in[cfg.entry][0], "entry 块 liveIn 不得含 reg0");
 }

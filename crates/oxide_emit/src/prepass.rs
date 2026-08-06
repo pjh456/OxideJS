@@ -8,8 +8,7 @@ use crate::{CompileCtx, Emitter};
 use oxide_parser::{Expression, Statement, VariableDeclarationKind};
 
 impl Emitter {
-
-    /// builtin slot allocation ahead of the temporary register pool.
+    /// 在临时寄存器池之前分配 builtin 槽位。
     pub(crate) fn pre_register_builtin_references(&self, stmts: &[Statement], ctx: &mut CompileCtx) {
         for stmt in stmts {
             self.pre_scan_builtin_stmt(stmt, ctx);
@@ -264,7 +263,6 @@ impl Emitter {
         }
     }
 
-
     pub(crate) fn predeclare_function_declarations(&self, statements: &[Statement], ctx: &mut CompileCtx) {
         for statement in statements {
             let Statement::FunctionDeclaration(function) = statement else {
@@ -278,10 +276,8 @@ impl Emitter {
         }
     }
 
-    /// Pre-declare all `var` bindings in this statement list so hoisted function
-    /// declarations emitted earlier can resolve them. Mirrors the removed count
-    /// pass behavior (see fe8bd86): top-level `var` names must be visible while
-    /// compiling function bodies that close over them.
+    /// 预声明语句列表中的全部 `var` 绑定，使先发的提升函数声明能解析它们。
+    /// 顶层 `var` 名在编译闭包捕获它的函数体时必须可见。
     pub(crate) fn predeclare_var_declarations(&self, statements: &[Statement], ctx: &mut CompileCtx) {
         for statement in statements {
             match statement {
@@ -315,8 +311,12 @@ impl Emitter {
                             for d in &decl.declarations {
                                 if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
                                     let reg = ctx.alloc_reg();
-                                    let _ =
-                                        ctx.declare_initialized(bi.name.as_str(), reg, VariableDeclarationKind::Var, false);
+                                    let _ = ctx.declare_initialized(
+                                        bi.name.as_str(),
+                                        reg,
+                                        VariableDeclarationKind::Var,
+                                        false,
+                                    );
                                 }
                             }
                         }
@@ -344,5 +344,4 @@ impl Emitter {
             }
         }
     }
-
 }

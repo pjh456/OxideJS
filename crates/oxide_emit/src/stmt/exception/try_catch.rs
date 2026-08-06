@@ -1,9 +1,9 @@
 //! try/catch/finally 语句 emit：`emit_try_statement` 生成 TRY_BEGIN 与处理入口。
 
 use crate::{CompileCtx, Emitter};
+use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
-use oxide_bytecode::opcode::OpCode;
 use oxide_parser::{Statement, VariableDeclarationKind};
 
 impl Emitter {
@@ -29,7 +29,12 @@ impl Emitter {
                 last_try_result = Some(r);
             }
         }
-        ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg), Operand::Reg(last_try_result.unwrap_or(result_reg)), Operand::None));
+        ctx.inst(Inst::new(
+            OpCode::LOAD_VAR,
+            Operand::Reg(result_reg),
+            Operand::Reg(last_try_result.unwrap_or(result_reg)),
+            Operand::None,
+        ));
         if has_catch {
             ctx.inst(Inst::new(OpCode::TRY_END, Operand::None, Operand::None, Operand::None));
         }
@@ -54,7 +59,12 @@ impl Emitter {
                     last_catch_result = Some(r);
                 }
             }
-            ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg), Operand::Reg(last_catch_result.unwrap_or(result_reg)), Operand::None));
+            ctx.inst(Inst::new(
+                OpCode::LOAD_VAR,
+                Operand::Reg(result_reg),
+                Operand::Reg(last_catch_result.unwrap_or(result_reg)),
+                Operand::None,
+            ));
             ctx.pop_scope();
         }
         if has_finally {
@@ -65,7 +75,12 @@ impl Emitter {
                     last_finally_result = Some(r);
                 }
             }
-            ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg), Operand::Reg(last_finally_result.unwrap_or(result_reg)), Operand::None));
+            ctx.inst(Inst::new(
+                OpCode::LOAD_VAR,
+                Operand::Reg(result_reg),
+                Operand::Reg(last_finally_result.unwrap_or(result_reg)),
+                Operand::None,
+            ));
             ctx.inst(Inst::new(OpCode::TRY_FINALLY_END, Operand::None, Operand::None, Operand::None));
         }
         ctx.labels.set_label_pos(try_end_label, ctx.insts.len());

@@ -25,7 +25,8 @@ fn lower_err(f: &IRFunction) -> String {
 #[test]
 fn three_operand_opcode_encodes_rd_a_b() {
     let mut f = base_module();
-    f.insts.push(Inst::new(OpCode::ADD, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)));
+    f.insts
+        .push(Inst::new(OpCode::ADD, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)));
     let m = lower_ok(&f);
     assert_eq!(m.bytecode.len(), 1);
     assert_eq!(opcode::opcode(m.bytecode[0]), OpCode::ADD);
@@ -61,7 +62,8 @@ fn create_closure_splits_sub_idx_into_a_b() {
 fn forward_jump_encodes_positive_offset() {
     let mut f = base_module();
     f.insts.push(Inst::jmp(0));
-    f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
+    f.insts
+        .push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
     f.label_pos = vec![Some(1)];
     f.label_count = 1;
     let m = lower_ok(&f);
@@ -73,7 +75,8 @@ fn forward_jump_encodes_positive_offset() {
 #[test]
 fn backward_jump_encodes_negative_offset() {
     let mut f = base_module();
-    f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
+    f.insts
+        .push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
     f.insts.push(Inst::jmp(0));
     f.label_pos = vec![Some(0)];
     f.label_count = 1;
@@ -84,11 +87,12 @@ fn backward_jump_encodes_negative_offset() {
 
 #[test]
 fn jump_offset_counts_ext_words_in_target() {
-    // jmp(0) -> ic_get (1 + 3 ext = 4 instr) -> ADD (instr 5)
+    // jmp(0) → ic_get（1 + 3 ext = 4 instr）→ ADD（instr 5）
     let mut f = base_module();
     f.insts.push(Inst::jmp(0));
     f.insts.push(Inst::ic_get(Operand::Reg(1), Operand::Reg(2)));
-    f.insts.push(Inst::new(OpCode::ADD, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)));
+    f.insts
+        .push(Inst::new(OpCode::ADD, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)));
     f.label_pos = vec![Some(2)];
     f.label_count = 1;
     let m = lower_ok(&f);
@@ -125,7 +129,8 @@ fn call_carries_nargs_ext_word() {
 #[test]
 fn define_accessor_and_rest_object_carry_single_ext_word() {
     let mut f = base_module();
-    f.insts.push(Inst::define_accessor(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2), 42));
+    f.insts
+        .push(Inst::define_accessor(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2), 42));
     f.insts.push(Inst::rest_object(Operand::Reg(3), Operand::Reg(4), 7));
     let m = lower_ok(&f);
     assert_eq!(m.bytecode.len(), 4);
@@ -140,8 +145,10 @@ fn define_accessor_and_rest_object_carry_single_ext_word() {
 #[test]
 fn this_and_new_target_map_to_254_255() {
     let mut f = base_module();
-    f.insts.push(Inst::new(OpCode::LOAD_VAR, Operand::Reg(1), Operand::This, Operand::None));
-    f.insts.push(Inst::new(OpCode::LOAD_VAR, Operand::Reg(2), Operand::NewTarget, Operand::None));
+    f.insts
+        .push(Inst::new(OpCode::LOAD_VAR, Operand::Reg(1), Operand::This, Operand::None));
+    f.insts
+        .push(Inst::new(OpCode::LOAD_VAR, Operand::Reg(2), Operand::NewTarget, Operand::None));
     let m = lower_ok(&f);
     assert_eq!(opcode::a(m.bytecode[0]), 254);
     assert_eq!(opcode::a(m.bytecode[1]), 255);
@@ -151,7 +158,9 @@ fn this_and_new_target_map_to_254_255() {
 fn nested_ir_functions_pack_into_sub_modules() {
     let mut outer = base_module();
     let mut inner = base_module();
-    inner.insts.push(Inst::new(OpCode::ADD, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)));
+    inner
+        .insts
+        .push(Inst::new(OpCode::ADD, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)));
     inner.n_registers = 3;
     outer.nested.push(inner);
     let m = lower_ok(&outer);
@@ -164,7 +173,8 @@ fn nested_ir_functions_pack_into_sub_modules() {
 #[test]
 fn module_fields_are_copied_through() {
     let mut f = base_module();
-    f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
+    f.insts
+        .push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
     f.constants.push(Constant::Int(42));
     f.param_layout = oxide_ir::ParamLayout { base: 2, count: 3 };
     f.n_registers = 8;
@@ -190,7 +200,8 @@ fn module_fields_are_copied_through() {
 #[test]
 fn n_registers_overflow_errors() {
     let mut f = base_module();
-    f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
+    f.insts
+        .push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
     f.n_registers = 300;
     let err = lower_err(&f);
     assert!(err.contains("too many registers"), "unexpected error: {err}");
@@ -199,7 +210,8 @@ fn n_registers_overflow_errors() {
 #[test]
 fn explicit_reg_254_errors() {
     let mut f = base_module();
-    f.insts.push(Inst::new(OpCode::ADD, Operand::Reg(254), Operand::Reg(1), Operand::Reg(2)));
+    f.insts
+        .push(Inst::new(OpCode::ADD, Operand::Reg(254), Operand::Reg(1), Operand::Reg(2)));
     let err = lower_err(&f);
     assert!(err.contains("too many registers"), "unexpected error: {err}");
 }
@@ -209,7 +221,8 @@ fn jump_offset_overflow_errors() {
     let mut f = base_module();
     f.insts.push(Inst::jmp(0));
     for _ in 0..40_000 {
-        f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
     }
     f.label_pos = vec![Some(40_000)];
     f.label_count = 1;
@@ -230,7 +243,8 @@ fn missing_label_errors() {
 #[test]
 fn const_overflow_errors() {
     let mut f = base_module();
-    f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
+    f.insts
+        .push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
     f.constants = vec![Constant::Int(0); 70_000];
     let err = lower_err(&f);
     assert!(err.contains("too many constants"), "unexpected error: {err}");
@@ -239,7 +253,8 @@ fn const_overflow_errors() {
 #[test]
 fn const_overflow_flag_errors() {
     let mut f = base_module();
-    f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
+    f.insts
+        .push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
     f.const_overflow = true;
     let err = lower_err(&f);
     assert!(err.contains("too many constants"), "unexpected error: {err}");
@@ -248,7 +263,8 @@ fn const_overflow_flag_errors() {
 #[test]
 fn ir_function_domain_assemble_default_clone() {
     let mut f = IRFunction::new();
-    f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
+    f.insts
+        .push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
     f.constants.push(Constant::Int(1));
     f.param_layout = oxide_ir::ParamLayout { base: 0, count: 1 };
     f.n_registers = 2;
@@ -262,7 +278,9 @@ fn ir_function_domain_assemble_default_clone() {
     f.cells_needed = 1;
     f.function_name = Some("f".to_string());
     let mut inner = IRFunction::new();
-    inner.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
+    inner
+        .insts
+        .push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
     f.nested.push(inner);
 
     let d = IRFunction::new();

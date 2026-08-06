@@ -24,18 +24,17 @@ pub struct Shape {
     pub id: ShapeId,
     pub property_name: StringIndex,
     pub parent: Option<ShapeId>,
-    /// Number of non-sentinel properties from the root to this shape.
+    /// 从根到本 shape 的非哨兵属性数。
     pub depth: u32,
 }
 
-/// Shared hidden-class store.
+/// 共享隐藏类存储。
 ///
-/// Concurrency model:
-/// - `shapes` is append-mostly behind an `RwLock`.
-/// - `transitions` is a sharded `DashMap` keyed by `(parent_shape, property_name)`.
-/// - `positions` caches `(shape_id, prop_name) → slot` for O(1) repeat lookups.
-/// - Shard count is fixed for reproducible contention behavior across machines instead
-///   of relying on DashMap's CPU-dependent default.
+/// 并发模型：
+/// - `shapes` 为 append-mostly，受 `RwLock` 保护。
+/// - `transitions` 是以 `(parent_shape, property_name)` 为键的分片 `DashMap`。
+/// - `positions` 缓存 `(shape_id, prop_name) → slot`，供 O(1) 重复查询。
+/// - 分片数固定，保证跨机器的争用行为可复现，不依赖 DashMap 的 CPU 相关默认值。
 pub struct ShapeForge {
     shapes: RwLock<Vec<Option<Arc<Shape>>>>,
     transitions: DashMap<u64, ShapeId>,
@@ -109,7 +108,7 @@ impl ShapeForge {
             return new_id;
         }
 
-        // Compute depth from parent (O(1) — just read the cached value)
+        // 从父节点计算深度（O(1)——只读缓存值）。
         let parent_depth = {
             let shapes = self.shapes.read().unwrap();
             shapes
@@ -307,9 +306,9 @@ mod tests {
         let s2 = forge.make_shape(s1, 1_000_020);
         let s3 = forge.make_shape(s2, 1_000_030);
 
-        // First call populates cache
+        // 首次调用填充缓存。
         assert_eq!(forge.lookup_position(s3, 1_000_020), Some(1));
-        // Second call hits cache (verify no regression)
+        // 二次调用命中缓存（验证无回归）。
         assert_eq!(forge.lookup_position(s3, 1_000_020), Some(1));
         assert_eq!(forge.lookup_position(s3, 1_000_030), Some(2));
         assert_eq!(forge.lookup_position(s3, 1_000_030), Some(2));
@@ -321,7 +320,7 @@ mod tests {
         let s1 = forge.make_shape(EMPTY_SHAPE_ID, 1_000_010);
         assert_eq!(forge.lookup_position(s1, 1_000_010), Some(0));
         forge.clear_transient();
-        // After clear, EMPTY_SHAPE remains but others are gone
+        // 清理后只剩 EMPTY_SHAPE，其余全部移除。
         assert_eq!(forge.shapes.read().unwrap().len(), 1);
     }
 

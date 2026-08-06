@@ -22,35 +22,35 @@ fn assert_err_contains(result: Result<JsValue, String>, expected: &str) {
     }
 }
 
-// -- Partial writable update preserves existing value --
+// ── 部分 writable 更新保留既有值 ──
 #[test]
 fn define_property_partial_writable_preserves_value() {
     let r = eval_str("var obj={}; obj.x=42; Object.defineProperty(obj,'x',{writable:false}); obj.x").unwrap();
     assert!(r.is_int() && r.as_int() == 42, "value should be preserved at 42, got {:?}", r);
 }
 
-// -- Mixed descriptor (value+get) throws TypeError --
+// ── 混合描述符（value+get）抛 TypeError ──
 #[test]
 fn define_property_mixed_value_get_throws() {
     let result = eval_str("var obj={}; Object.defineProperty(obj,'x',{value:1,get:function(){}});");
     assert_err_contains(result, "mix");
 }
 
-// -- Mixed descriptor (writable+set) throws TypeError --
+// ── 混合描述符（writable+set）抛 TypeError ──
 #[test]
 fn define_property_mixed_writable_set_throws() {
     let result = eval_str("var obj={}; Object.defineProperty(obj,'x',{writable:true,set:function(){}});");
     assert_err_contains(result, "mix");
 }
 
-// -- Partial enumerable-only update preserves value --
+// ── 仅 enumerable 的部分更新保留既有值 ──
 #[test]
 fn define_property_partial_enumerable_only_preserves_value() {
     let r = eval_str("var obj={}; obj.x=42; Object.defineProperty(obj,'x',{enumerable:true}); obj.x").unwrap();
     assert!(r.is_int() && r.as_int() == 42, "value should be preserved at 42, got {:?}", r);
 }
 
-// -- getOwnPropertyDescriptor returns data fields (no get/set) --
+// ── getOwnPropertyDescriptor 返回数据字段（无 get/set）──
 #[test]
 fn get_own_property_descriptor_data_fields() {
     let r = eval_str(
@@ -70,7 +70,7 @@ fn get_own_property_descriptor_data_fields() {
     assert!(obj.get_prop_at(5).is_undefined(), "set should be undefined");
 }
 
-// -- getOwnPropertyDescriptor returns accessor fields (no value/writable) --
+// ── getOwnPropertyDescriptor 返回访问器字段（无 value/writable）──
 #[test]
 fn get_own_property_descriptor_accessor_fields() {
     let r = eval_str(
@@ -92,7 +92,7 @@ fn get_own_property_descriptor_accessor_fields() {
     );
 }
 
-// -- New property without value or accessor defaults to data descriptor (ES spec behavior) --
+// ── 无 value/accessor 的新属性默认为数据描述符（ES 规范行为）──
 #[test]
 fn define_property_new_attributes_only_defaults_value_undefined() {
     let r = eval_str("var obj={}; Object.defineProperty(obj,'x',{enumerable:true}); obj.x").unwrap();
@@ -103,7 +103,7 @@ fn define_property_new_attributes_only_defaults_value_undefined() {
     );
 }
 
-// -- Partial configurable on existing property preserves value --
+// ── 既有属性的部分 configurable 更新保留既有值 ──
 #[test]
 fn define_property_partial_configurable_preserves_value() {
     let r = eval_str("var obj={}; obj.x=1; Object.defineProperty(obj,'x',{configurable:false}); [obj.x]").unwrap();

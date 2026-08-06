@@ -31,16 +31,16 @@ fn symbol_table_nested_scopes() {
 
 #[test]
 fn symbol_table_var_self_init_in_block_is_legal() {
-    // `var` has no temporal dead zone and hoists to the function scope, so a block-level
-    // `var x = x` reads the same already-initialized binding — legal in JS, not an error.
+    // `var` 无暂时性死区且提升到函数作用域，块级 `var x = x` 读取的是
+    // 同一已初始化绑定——JS 合法，非错误。
     let module = compile_source("var x = 1; { var x = x; }");
     assert!(!module.bytecode.is_empty(), "var self-init in block should compile");
 }
 
 #[test]
 fn symbol_table_duplicate_var_is_legal() {
-    // Duplicate `var` in the same scope is legal in JavaScript (even in strict mode);
-    // only duplicate `let`/`const` declarations are a SyntaxError.
+    // JavaScript 中同作用域重复 `var` 合法（严格模式亦然）；
+    // 只有重复 `let`/`const` 才是 SyntaxError。
     let module = compile_source("var x = 1; var x = 2;");
     assert!(!module.bytecode.is_empty(), "duplicate var should compile");
 }

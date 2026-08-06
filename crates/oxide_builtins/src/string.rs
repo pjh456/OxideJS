@@ -544,13 +544,13 @@ pub fn string_ends_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn string_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.split called with {} args", args.len());
     let s = this_string(vm, args);
-    // Spec: if separator is undefined, return [string]
+    // 规范：separator 为 undefined 时返回 [string]。
     if args.len() < 2 || vm.reg(args[1]).is_undefined() {
         let parts = vec![s.clone()];
         return NativeResult::Ok(make_string_array(vm, &parts));
     }
     let sep_val = vm.reg(args[1]);
-    // ToUint32(limit), default 2^32-1
+    // ToUint32(limit)，缺省为 2^32-1。
     let limit = if args.len() > 2 {
         let l = oxide_runtime_api::to_integer_or_infinity(vm.reg(args[2]));
         if l.is_infinite() {
@@ -591,7 +591,7 @@ pub fn string_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             }
             return NativeResult::Ok(make_string_array(vm, &parts));
         }
-        // Fall back to string path for regex-like objects without native engine regex
+        // 无原生正则的类正则对象回退到字符串路径。
     }
 
     let sep = as_string(vm, sep_val);
@@ -661,7 +661,7 @@ pub fn string_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             };
             return NativeResult::Ok(vm.new_string(&result));
         }
-        // Fall back to string path for regex-like objects without native engine regex
+        // 无原生正则的类正则对象回退到字符串路径。
     }
 
     let replacement = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { String::new() };
@@ -727,7 +727,7 @@ pub fn string_search<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             Some(p) => p,
             None => return NativeResult::Ok(JsValue::int(-1)),
         };
-        // SAFETY: fn_ptr holds a Box<regex::Regex> pointer stored by regexp_constructor.
+        // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regex::Regex>` 指针。
         let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
         if let Some(m) = regex.find(&s) {
             return NativeResult::Ok(JsValue::int(m.start() as i32));
@@ -841,7 +841,7 @@ pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         JsValue::from_js_object(stub_ptr)
     };
 
-    // Build wrapper object
+    // 构建包装对象。
     builder_wrapper(vm, &s, re_obj)
 }
 
@@ -962,7 +962,7 @@ pub fn string_replace_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             Some(p) => p,
             None => return NativeResult::Ok(vm.new_string(&s)),
         };
-        // SAFETY: fn_ptr holds a Box<regex::Regex> pointer stored by regexp_constructor.
+        // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regex::Regex>` 指针。
         let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
         let result = regex.replace_all(&s, replacement.as_str()).to_string();
         return NativeResult::Ok(vm.new_string(&result));

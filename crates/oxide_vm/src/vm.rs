@@ -22,11 +22,11 @@ use oxide_types::value::{JsValue, PTR_MASK};
 
 pub(crate) const MAX_PROTO_CHAIN_DEPTH: usize = 1024;
 
-/// Convert a `NativeFnPtr` to a callable `NativeFn`.
+/// 将 [`NativeFnPtr`] 转换为可调用的 [`NativeFn`]。
 ///
 /// # Safety
-/// The pointer stored in `ptr` must have been created from a valid `NativeFn` fn-item.
-/// This is the single point in the codebase where `NativeFnPtr → NativeFn` coercion happens.
+/// `ptr` 必须由合法的 `NativeFn` 函数项产生。
+/// 这是代码库中唯一一处 `NativeFnPtr → NativeFn` 的强制转换点。
 #[inline(always)]
 pub(crate) unsafe fn native_fn_ptr_to_fn(ptr: NativeFnPtr) -> NativeFn {
     std::mem::transmute::<*const (), NativeFn>(ptr.as_ptr())
@@ -110,7 +110,7 @@ pub struct CallFrame {
     pub function_name: u32,
     pub caller_reg_limit: u8,
     pub saved_reg_offset: u32,
-    /// push 时记录 spill_stack 长度（D-08 帧边界，SPILL/UNSPILL 基址）。
+    /// 记录本帧 spill 栈起始长度，作为 SPILL/UNSPILL 的帧边界基址（push 时快照）。
     pub spill_offset: u32,
     pub saved_this: JsValue,
     pub saved_new_target: JsValue,
@@ -125,8 +125,8 @@ pub struct CallFrame {
 ///
 /// 每个 key 与它的 intern id 配对保存，使整型下标 key 无需重新 intern 即可排到字符串 key 之前。
 pub struct ForInIter<'bump> {
-    /// Each key paired with its string-intern id, so for-in can sort
-    /// integer-index keys ahead of string keys without re-interning.
+    /// 每个 key 与其字符串 intern id 配对，使 for-in 排序时整型下标 key 无需
+    /// 重新 intern 即可排到字符串 key 之前。
     pub keys: bumpalo::collections::Vec<'bump, (JsValue, u32)>,
     pub index: usize,
 }
@@ -136,13 +136,13 @@ pub struct TryHandler {
     pub catch_pc: Option<usize>,
     pub finally_pc: Option<usize>,
     pub frame_depth: usize,
-    /// for_of_iters length at try entry — bounds which iterators IteratorClose on unwind.
+    /// try 入口时 for_of_iters 的长度，界定异常展开时哪些迭代器需要 IteratorClose。
     pub for_of_depth: usize,
 }
 
-/// Heap-allocated snapshot used by `call_bytecode_function_inline`.
-/// Keeping it on the heap prevents Rust stack overflow when JS code
-/// chains multiple sync bytecode calls (e.g. sort comparator, accessor).
+/// `call_bytecode_function_inline` 使用的堆分配快照。
+/// 放在堆上避免 JS 代码链式同步字节码调用（如 sort 比较器、accessor）时
+/// 耗尽 Rust 栈。
 pub(crate) struct InlineSyncState {
     pub(crate) regs: Box<[JsValue; 256]>,
     pub(crate) pc: usize,
@@ -174,12 +174,12 @@ pub struct Vm {
     pub(crate) regs: [JsValue; 256],
     pub(crate) pc: usize,
     pub(crate) bytecode: Vec<opcode::Instr>,
-    /// Per-run convert-once immutables cache. Index 0 = top module, sub_idx+1 = sub_modules[sub_idx].
-    /// Each `OnceLock` holds that module's constants converted to `JsValue`s exactly once this run.
-    /// Rebuilt every `run()`. Immutables are scalars + perm-strings — read-only, never GC roots.
+    /// 每次 run 转换一次的不可变常量缓存。下标 0 = 顶层模块，sub_idx+1 = sub_modules[sub_idx]。
+    /// 每个 `OnceLock` 保存该模块常量本次运行中只转换一次的 `JsValue` 结果，每次 `run()` 重建。
+    /// 不可变常量是标量 + perm 字符串，只读，不作为 GC 根。
     pub(crate) immutables_cache: Vec<OnceLock<Vec<JsValue>>>,
-    /// Read-only view into the currently-active module's converted immutables (inside immutables_cache).
-    /// A fat `*const` because the cache Vec is VM-owned and run-stable (OnceLock filled once).
+    /// 当前活动模块已转换不可变常量的只读视图（指向 immutables_cache 内部）。
+    /// 用胖 `*const`：缓存 Vec 归 VM 所有且本次运行稳定（OnceLock 只填一次）。
     pub(crate) active_immutables: *const [JsValue],
     pub(crate) frames: SmallVec<[CallFrame; 16]>,
     pub(crate) kernel_core: Arc<KernelCore>,
@@ -190,40 +190,40 @@ pub struct Vm {
     pub(crate) sub_modules: Arc<Vec<CompiledModule>>,
     pub(crate) saved_bytecode_stack: Vec<Vec<opcode::Instr>>,
     pub(crate) saved_immutables_stack: Vec<*const [JsValue]>,
-    /// Shared register save-stack. Each active `CallFrame` saved its caller's live
-    /// registers (`regs[..caller_reg_limit]`) here at `saved_reg_offset`; restore copies
-    /// them back and truncates. Capacity is retained across calls — zero per-call heap alloc.
+    /// 共享寄存器保存栈。每个活动 `CallFrame` 在 push 时把调用方活跃寄存器
+    /// （`regs[..caller_reg_limit]`）按 `saved_reg_offset` 存到这里；恢复时复制回
+    /// 并截断。容量跨调用保留，避免每次调用堆分配。
     pub(crate) save_stack: Vec<JsValue>,
-    /// VM 级 spill 栈（D-08，仿 save_stack 帧边界）。`CallFrame.spill_offset` 定位本帧区，
-    /// 调用子函数时从边界后分配，restore_frame 截断恢复。
+    /// VM 级 spill 栈。`CallFrame.spill_offset` 定位本帧区：调用子函数时从边界后分配，
+    /// 帧恢复时截断到边界，子函数 spill 数据随帧丢弃。
     pub(crate) spill_stack: Vec<JsValue>,
     pub(crate) try_stack: Vec<TryHandler>,
     pub(crate) exception_value: Option<JsValue>,
-    /// Side-channel carrying the JsValue thrown by a sync call whose error was flattened
-    /// to a String by `call_function_sync`/`unwind`, so for-of can re-throw the original
-    /// value. Plain field (NOT in InlineSyncState) so it survives the inline-call restore.
+    /// 同步调用抛出的原始 JsValue 侧通道：`call_function_sync`/`unwind` 把错误展平为
+    /// String 后，for-of 需要重新抛出原值。放在 VM 顶层字段（不在 InlineSyncState 中）
+    /// 以便跨内联调用的恢复过程存活。
     pub(crate) last_uncaught_value: Option<JsValue>,
     pub(crate) pending_exception: Option<JsValue>,
     pub(crate) pending_error_kind: Option<&'static str>,
     pub(crate) root_reg_limit: u8,
     pub(crate) active_reg_limit: u8,
     pub(crate) native_call_depth: usize,
-    /// Set to Some(target_reg) when `ordinary_get` pushes a bytecode accessor frame.
-    /// The dispatch loop checks this flag and skips writing `regs[target_reg]` from the
-    /// call result — the value will be delivered by the RETURN handler instead.
+    /// `ordinary_get` 压入字节码 accessor 帧时设为 Some(target_reg)。
+    /// 调度循环检查该标志，跳过用调用结果写 `regs[target_reg]` —— 值改由 RETURN
+    /// 处理器交付。
     pub(crate) accessor_frame_target_reg: Option<u8>,
-    /// Grouped session-arena / GC bookkeeping.
+    /// 分组保存 session arena / GC 簿记状态。
     pub(crate) gc_state: GcState,
-    /// Grouped `Symbol` interning state.
+    /// 分组保存 `Symbol` intern 状态。
     pub(crate) symbols: SymbolState,
-    /// Grouped live `for-in` / `for-of` iterator state.
+    /// 分组保存活跃的 for-in / for-of 迭代器状态。
     pub(crate) iters: IterState,
-    /// Grouped inline-cache and instruction counters.
+    /// 分组保存 inline cache 与指令计数器。
     pub(crate) profiling: ProfilingState,
     pub(crate) sub_module_stack: Vec<Arc<Vec<CompiledModule>>>,
     pub(crate) cell_stack: Vec<Vec<*mut Cell>>,
     pub(crate) temp_immutables: Vec<Vec<JsValue>>,
-    /// Reusable string buffer for concatenation to avoid allocation per `+` op.
+    /// 可复用字符串缓冲区，避免每次 `+` 拼接都分配。
     pub(crate) string_buf: String,
 }
 
@@ -342,7 +342,7 @@ impl Vm {
         if obj_ptr.is_null() {
             return false;
         }
-        // SAFETY: obj_ptr is non-null and points to a `JsObject` owned by this session.
+        // SAFETY: obj_ptr 非空且指向本 session 拥有的 JsObject。
         unsafe { (*obj_ptr).is_session_epoch() }
     }
 
@@ -352,25 +352,25 @@ impl Vm {
         ptr
     }
 
-    /// Read-only view into the active module's converted immutables. Empty before any `run()`.
+    /// 活动模块已转换不可变常量的只读视图；任何 `run()` 之前为空。
     #[inline(always)]
     pub(crate) fn immutables(&self) -> &[JsValue] {
         if self.active_immutables.is_null() {
             &[]
         } else {
-            // SAFETY: active_immutables points into a OnceLock<Vec<JsValue>> inside immutables_cache,
-            // which the VM owns; the Vec is filled once and never reallocated for the run's lifetime.
+            // SAFETY: active_immutables 指向 VM 拥有的 immutables_cache 内的 OnceLock<Vec<JsValue>>，
+            // Vec 只填充一次，本次运行期间不再重分配。
             unsafe { &*self.active_immutables }
         }
     }
 
-    /// Activate module `cache_idx`'s immutables (0 = top, sub_idx+1 = sub_modules[sub_idx]),
-    /// converting them once into `immutables_cache[cache_idx]` and pointing `active_immutables` at
-    /// the cached Vec. `constants` is passed by the caller (it already holds `&module.constants`).
+    /// 激活模块 `cache_idx` 的不可变常量（0 = 顶层，sub_idx+1 = sub_modules[sub_idx]），
+    /// 只转换一次存入 `immutables_cache[cache_idx]`，并把 `active_immutables` 指向该 Vec。
+    /// `constants` 由调用方传入（它已持有 `&module.constants`）。
     pub(crate) fn activate_immutables(&mut self, cache_idx: usize, constants: &[Constant]) {
-        // Raw-ptr the cache slot so `get_or_init` (which borrows immutables_cache) and the &self
-        // convert_immutables closure don't conflict with the subsequent self.active_immutables write.
-        // Sound: immutables_cache is VM-owned, read-only, and run-stable.
+        // 用裸指针访问缓存槽，避免 get_or_init（借用 immutables_cache）与 &self 的
+        // convert_immutables 闭包和随后对 active_immutables 的写入发生借用冲突。
+        // 成立前提：immutables_cache 归 VM 所有、只读、本次运行稳定。
         let slot: *const OnceLock<Vec<JsValue>> = &self.immutables_cache[cache_idx];
         let vec = unsafe { &*slot }.get_or_init(|| self.convert_immutables(constants));
         self.active_immutables = vec.as_slice() as *const [JsValue];
@@ -413,7 +413,7 @@ impl Vm {
             f(v);
         }
         f(self.iters.last_for_of_result);
-        // Converted immutables (scalars + perm-strings) are NOT session GC roots — not scanned.
+        // 已转换的不可变常量（标量 + perm 字符串）不作为 session GC 根，不参与扫描。
         for iter in &self.iters.for_in_iters {
             if iter.is_null() {
                 continue;
@@ -569,7 +569,7 @@ impl Vm {
         if !val.is_string() {
             return None;
         }
-        // SAFETY: val is a string value; its JsString pointer is alive for its lifetime.
+        // SAFETY: val 是字符串值，其 JsString 指针在生命周期内有效。
         Some(unsafe { (*val.as_string_ptr()).data.clone() })
     }
 
@@ -599,7 +599,7 @@ impl Vm {
 
     pub(crate) fn property_key_si(&mut self, val: JsValue) -> u32 {
         if val.is_string() {
-            // SAFETY: val is a string value; bridge its content to a permanent key id.
+            // SAFETY: val 是字符串值，把其内容桥接为永久 key id。
             let s = unsafe { &(*val.as_string_ptr()).data };
             return self.kernel_core.perm_interner().intern(s).0;
         }
@@ -702,8 +702,8 @@ impl Vm {
             }
             let saved_regs = self.regs;
             let arg_regs = self.pack_sync_native_call_args(receiver, callee, args);
-            // SAFETY: native_fn was set via set_native_fn with a valid NativeFn pointer;
-            // native_fn_ptr_to_fn is the single coercion point for NativeFnPtr → NativeFn.
+            // SAFETY: native_fn 经 set_native_fn 以合法 NativeFn 指针设置；
+            // native_fn_ptr_to_fn 是 NativeFnPtr → NativeFn 的唯一强制转换点。
             let func: NativeFn = unsafe { native_fn_ptr_to_fn(native_fn) };
             self.native_call_depth += 1;
             let result = func(self, &arg_regs);
@@ -719,10 +719,9 @@ impl Vm {
             };
         }
 
-        // Run bytecode function inline on self (same epoch) to prevent use-after-free.
-        // A separate sub-VM would own a different epoch; returning a JsValue that contains
-        // a pointer into the sub-VM epoch and then dropping the sub-VM causes a dangling
-        // pointer / access violation in release builds.
+        // 字节码函数在自身（同一 epoch）内联执行，防止 use-after-free。
+        // 独立子 VM 拥有不同 epoch：返回含子 VM epoch 指针的 JsValue 后再销毁子 VM，
+        // 会在 release 构建中产生悬垂指针 / 访问违规。
         self.call_bytecode_function_inline(callee, callee_obj, receiver, args)
     }
 
@@ -1448,7 +1447,7 @@ mod tests {
         let proto = vm.session.builtin_world().function_proto.as_ptr() as *mut JsObject;
         let mut obj = JsObject::new_empty(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
         obj.set_function(true);
-        // SAFETY: f is a NativeFn fn-item; valid to store as NativeFnPtr.
+        // SAFETY: f 是 NativeFn 函数项，可作为 NativeFnPtr 存储。
         obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(f as *const ()) }));
         JsValue::object(vm.alloc_object(obj) as *mut u8)
     }

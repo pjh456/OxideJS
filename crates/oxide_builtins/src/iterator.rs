@@ -41,7 +41,7 @@ pub fn make_iterator_for_value<H: VmHost>(vm: &mut H, value: JsValue) -> Result<
     let next_fn = make_native_function(vm, "next", iterator_wrapper_next::<H> as *const (), 0);
     vm.set_or_create_prop_value(wrapper_obj, next_si, next_fn);
 
-    // Forward IteratorClose to the inner iterator so for-of abrupt completion can clean up.
+    // 把 IteratorClose 转发给内层迭代器，使 for-of 异常退出时可清理。
     let return_si = vm.kernel_core().perm_interner().intern("return").0;
     let return_fn = make_native_function(vm, "return", iterator_wrapper_return::<H> as *const (), 0);
     vm.set_or_create_prop_value(wrapper_obj, return_si, return_fn);
@@ -104,8 +104,8 @@ pub fn iterator_wrapper_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         };
         return match vm.call_function_sync(next, inner, &[]) {
             Ok(result) => NativeResult::Ok(result),
-            // Forward the ORIGINAL thrown value (any type) instead of re-wrapping it as a
-            // TypeError, so a surrounding try/catch sees the real error.
+            // 透传原始抛出的值（任意类型）而非重新包装成 TypeError，
+            // 使外围 try/catch 能看到真正的错误。
             Err(err) => match vm.take_uncaught_value() {
                 Some(original) => NativeResult::Err(original),
                 None => NativeResult::Err(crate::error::create_type_error(vm, &err)),
@@ -158,7 +158,7 @@ fn next_array_like<H: VmHost>(vm: &mut H, wrapper: &mut JsObject, inner: JsValue
         return Some(make_iter_result(vm, JsValue::undefined(), true));
     }
 
-    // for-of loop default iterators: Map yields [key, value] entries, Set yields values.
+    // for-of 循环默认迭代：Map 产出 [key, value] 对，Set 产出值。
     if is_map_value(inner) {
         return Some(map_set_step(vm, wrapper, inner, index_si, MapSetMode::MapEntries));
     }
@@ -194,7 +194,7 @@ fn make_native_function<H: VmHost>(vm: &mut H, name: &str, native_fn: *const (),
     let function_proto = vm.session().builtin_world().function_proto.as_ptr() as *mut JsObject;
     let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(function_proto));
     func.set_function(true);
-    // SAFETY: native_fn is provided from a NativeFn fn item.
+    // SAFETY: native_fn 来自 NativeFn 函数项。
     func.set_native_fn(Some(unsafe { oxide_types::object::NativeFnPtr::from_raw(native_fn) }));
     func.set_native_arg_count(arg_count);
     let func = vm.alloc_object(func);
@@ -245,7 +245,7 @@ fn make_map_set_pair<H: VmHost>(vm: &mut H, a: JsValue, b: JsValue) -> JsValue {
         2,
         vm.epoch().bump(),
     ));
-    // SAFETY: pair is a freshly allocated array JsObject in the current epoch.
+    // SAFETY: pair 是当前 epoch 内新分配的数组 JsObject。
     unsafe {
         (*pair).set_prop_at(0, a);
         (*pair).set_prop_at(1, b);
@@ -263,10 +263,9 @@ enum MapSetMode {
     SetValues,
 }
 
-/// Advance a Map/Set iterator wrapper one step, yielding the {value, done} result for
-/// the requested mode. Entries live in the indexmap stored in the collection's
-/// native-data slot; the (a, b) pair is copied out before any allocation so no borrow
-/// of the native collection is held across a `vm` call.
+/// 把 Map/Set 迭代器包装器推进一步，按指定模式产出 `{value, done}` 结果。
+/// 条目存放在集合 native-data 槽的 indexmap 中；(a, b) 对在任意分配之前拷出，
+/// 使对 native 集合的借用不会跨越 `vm` 调用保持。
 fn map_set_step<H: VmHost>(
     vm: &mut H, wrapper: &mut JsObject, inner: JsValue, index_si: u32, mode: MapSetMode,
 ) -> JsValue {
@@ -342,9 +341,9 @@ pub(crate) fn set_entries_iter_next<H: VmHost>(vm: &mut H, args: &[u8]) -> Nativ
     map_set_next_dispatch::<H>(vm, args, MapSetMode::SetEntries)
 }
 
-/// Build an iterator wrapper whose `next` delegates to a caller-supplied mode-specific
-/// native function. Mirrors `make_iterator_for_value` but lets Map/Set prototype methods
-/// pick the values/keys/entries variant.
+/// 构造迭代器包装器，其 `next` 委托给调用方指定的按模式分发的 native 函数。
+/// 与 `make_iterator_for_value` 一致，但允许 Map/Set 原型方法选择
+/// values/keys/entries 变体。
 pub(crate) fn make_mode_iterator<H: VmHost>(vm: &mut H, inner: JsValue, next_fn: *const ()) -> JsValue {
     let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
     let wrapper = vm

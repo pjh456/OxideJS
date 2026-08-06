@@ -1,11 +1,10 @@
 //! 块内反向扫描：块级 liveOut → 逐指令 live_before/live_after。
 //!
-//! 起点是 **block_live_out**（非 liveIn，RESEARCH 伪代码笔误已修正——从 liveIn
-//! 出发会得到错误放大的逐指令集）。反向扫描 **kill 先于 gen**（`live = (live − def)
-//! ∪ use`）：COMPOUND_ADD 等读-写同寄存器指令 use 含 rd（contract.rs:137），
-//! gen 先于 kill 会把 rd 旧值从 live_before 错误剔除。Exception 目标块入口
-//! reg 0 隐式 def 在此截断，并以 `debug_assert_eq!(live, block_live_in[b])`
-//! 校验与 dataflow 一致性。
+//! 起点是 **block_live_out**（非 liveIn——从 liveIn 出发会得到错误放大的逐指令集）。
+//! 反向扫描 **kill 先于 gen**（`live = (live − def) ∪ use`）：COMPOUND_ADD 等读-写
+//! 同寄存器指令 use 含 rd（contract.rs:137），gen 先于 kill 会把 rd 旧值从
+//! live_before 错误剔除。Exception 目标块入口 reg 0 隐式 def 在此截断，并以
+//! `debug_assert_eq!(live, block_live_in[b])` 校验与 dataflow 一致性。
 
 use oxide_cfg::{Cfg, EdgeKind};
 use oxide_ir::IRFunction;
@@ -48,9 +47,9 @@ pub(super) fn inst_liveness(
 mod tests {
     use super::*;
     use crate::dataflow::block_liveness;
+    use oxide_bytecode::opcode::OpCode;
     use oxide_ir::inst::Inst;
     use oxide_ir::operand::Operand;
-    use oxide_bytecode::opcode::OpCode;
 
     fn empty_function() -> IRFunction {
         IRFunction::new()
@@ -60,8 +59,10 @@ mod tests {
     fn linear_block_instruction_sets() {
         // 0: ADD r2=r0+r1    1: RETURN r2
         let mut f = empty_function();
-        f.insts.push(Inst::new(OpCode::ADD, Operand::Reg(2), Operand::Reg(0), Operand::Reg(1)));
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(2), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::ADD, Operand::Reg(2), Operand::Reg(0), Operand::Reg(1)));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(2), Operand::None, Operand::None));
         let cfg = oxide_cfg::build_cfg(&f);
         let (live_in, live_out, rc) = block_liveness(&f, &cfg);
         let (before, after) = inst_liveness(&f, &cfg, &live_out, &live_in, rc);
@@ -77,8 +78,10 @@ mod tests {
         // 0: COMPOUND_ADD rd=1, a=2    def {1} use {1,2}
         // 1: RETURN r1
         let mut f = empty_function();
-        f.insts.push(Inst::new(OpCode::COMPOUND_ADD, Operand::Reg(1), Operand::Reg(2), Operand::None));
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(1), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::COMPOUND_ADD, Operand::Reg(1), Operand::Reg(2), Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(1), Operand::None, Operand::None));
         let cfg = oxide_cfg::build_cfg(&f);
         let (live_in, live_out, rc) = block_liveness(&f, &cfg);
         let (before, _) = inst_liveness(&f, &cfg, &live_out, &live_in, rc);
@@ -94,8 +97,10 @@ mod tests {
         // 2: RETURN r4
         let mut f = empty_function();
         f.insts.push(Inst::call(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 1));
-        f.insts.push(Inst::new(OpCode::LOAD_VAR, Operand::Reg(4), Operand::None, Operand::None));
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(4), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::LOAD_VAR, Operand::Reg(4), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(4), Operand::None, Operand::None));
         let cfg = oxide_cfg::build_cfg(&f);
         let (live_in, live_out, rc) = block_liveness(&f, &cfg);
         let (before, after) = inst_liveness(&f, &cfg, &live_out, &live_in, rc);
@@ -111,10 +116,14 @@ mod tests {
         // 3: STORE_VAR(r5, None, None)   4: RETURN r5
         let mut f = empty_function();
         f.insts.push(Inst::try_begin(3));
-        f.insts.push(Inst::new(OpCode::ADD, Operand::Reg(3), Operand::Reg(3), Operand::Reg(2)));
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(3), Operand::None, Operand::None));
-        f.insts.push(Inst::new(OpCode::STORE_VAR, Operand::Reg(5), Operand::None, Operand::None));
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::ADD, Operand::Reg(3), Operand::Reg(3), Operand::Reg(2)));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(3), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::STORE_VAR, Operand::Reg(5), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None));
         f.label_pos = vec![None, None, None, Some(3)];
         f.label_count = 1;
         let cfg = oxide_cfg::build_cfg(&f);

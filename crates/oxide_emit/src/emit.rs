@@ -124,9 +124,8 @@ pub(crate) struct FieldBuffer {
     pub(crate) labels: Vec<(LabelId, usize)>,
 }
 
-/// A labeled-statement scope active during emission. `break label` targets
-/// `break_label`; `continue label` targets `continue_label` (only set when the
-/// labeled statement directly wraps an iteration statement).
+/// 标签语句作用域：编译期内登记 `break label` / `continue label` 的跳转目标。
+/// `continue_label` 仅在标签直接包裹迭代语句时存在。
 #[derive(Debug, Clone)]
 pub struct LabelScope {
     pub(crate) name: String,
@@ -146,9 +145,8 @@ pub struct CompileCtx {
     pub(crate) labels: LabelCtx,
     pub(crate) scopes: ScopeCtx,
     pub(crate) nested: Vec<IRFunction>,
-    /// Register holding `this` in the enclosing function context.
-    /// Used by arrow functions to capture lexical `this`.
-    /// Initialized to 254 (conventional this register) at the top level.
+    /// 外层函数上下文中持有 `this` 的寄存器。
+    /// 箭头函数用它捕获词法 `this`；顶层初始化为 254（约定 this 寄存器）。
     pub(crate) enclosing_this_reg: u8,
     pub(crate) in_derived_constructor: bool,
     pub(crate) in_instance_method: bool,
@@ -247,7 +245,7 @@ impl CompileCtx {
 
     pub(crate) fn alloc_reg(&mut self) -> u32 {
         let r = self.next_reg;
-        // vreg 化（D-02）：寄存器号无上限，RegAlloc 阶段负责压缩到物理域（≤253）。
+        // vreg 化：寄存器号无上限，RegAlloc 阶段负责压缩到物理域（≤253）。
         // 254/255 是 VM 保留的 this/new.target，vreg 世界允许虚拟号越过它们，
         // 只有 RegAlloc 完成映射后 lower 的物理域检查才相关。
         self.next_reg += 1;
@@ -406,9 +404,8 @@ impl CompileCtx {
         self.labels.label_scopes.iter().rev().find(|s| s.name == name)
     }
 
-    /// Queue a label name to be bound to the continue target of the next loop
-    /// emitted as the labeled statement's body. Rejects duplicates in the active
-    /// or pending sets.
+    /// 登记一个待绑定标签名：该标签将作为下一个 emit 的循环（标签语句体）的
+    /// continue 目标。活动集合与待绑定集合中出现重名报错。
     pub(crate) fn queue_loop_label(&mut self, name: &str) -> Result<(), String> {
         if self.labels.label_scopes.iter().any(|s| s.name == name)
             || self.labels.pending_loop_labels.iter().any(|n| n == name)
@@ -419,8 +416,8 @@ impl CompileCtx {
         Ok(())
     }
 
-    /// Drain queued loop labels into active scopes bound to this loop's break and
-    /// continue targets. Returns how many scopes were pushed (to pop after).
+    /// 把待绑定标签名落地为活动标签作用域，绑定到本次循环的 break/continue 目标。
+    /// 返回压入的作用域个数（供事后对称弹出）。
     pub(crate) fn take_pending_loop_labels(&mut self, break_label: LabelId, continue_label: LabelId) -> usize {
         let names = std::mem::take(&mut self.labels.pending_loop_labels);
         let count = names.len();
@@ -458,9 +455,8 @@ impl CompileCtx {
     }
 
     pub(crate) fn pre_register_builtins(&mut self) {
-        // Builtin globals are resolved lazily by lookup_or_builtin(). Keeping this
-        // hook preserves the compile pipeline without reserving ~60 registers in
-        // every module.
+        // builtin 全局由 lookup_or_builtin() 惰性解析。保留此钩子维持编译管线形态，
+        // 避免在每个模块预留约 60 个寄存器槽。
     }
 
     /// 组装 IRFunction（两出口共用），take 走编译产物状态。
@@ -546,13 +542,11 @@ impl Emitter {
         Ok((param_specs, body_stmts))
     }
 
-    /// Compile a function body (used for FD, FE, and arrow functions).
-    /// This performs both counting and emitting in one pass.
-    /// When `is_expression_body` is true (arrow function with expression body),
-    /// the last expression's value is returned instead of undefined.
-    /// `is_arrow` controls whether super flags are inherited from the parent scope
-    /// (true for arrow functions, which have lexical super) or reset to false
-    /// (false for regular functions, which create a new super scope).
+    /// 编译函数体（函数声明/函数表达式/箭头函数共用），单 pass 完成发码。
+    ///
+    /// `is_expression_body` 为 true（箭头表达式体）时返回最后一个表达式的值，
+    /// 否则返回 undefined。`is_arrow` 控制 super 相关标志的继承：箭头函数词法
+    /// 继承外层 super，普通函数重置 super 作用域。
     pub(crate) fn compile_function_body<'a>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, is_arrow: bool,
@@ -588,13 +582,13 @@ impl Emitter {
         )
     }
 
-
-    /// Pre-register all builtin identifiers referenced anywhere in this body
-    /// (expressions, member objects, call args, class fields, etc.) so their
-    /// register slots are reserved *before* any temporary register is emitted.
+    /// 预注册 builtin 引用并编译函数体（普通/箭头/类元素方法共用入口）。
     ///
-    /// vreg 化（D-01）后临时值不复用（独立 vreg），但 builtin 槽预注册仍
-    /// 保证分配序稳定：builtin 槽先于临时值池，nested 继承边界（B012）不受扰。
+    /// 本函数体内任意位置（表达式、成员对象、调用实参、类字段等）引用的内置全局
+    /// 标识符，其寄存器槽都先于任何临时寄存器登记。
+    ///
+    /// vreg 化后临时值不复用（独立 vreg），但 builtin 槽预注册仍保证分配序稳定：
+    /// builtin 槽先于临时值池，嵌套函数继承边界不受扰。
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn compile_function_body_with_field_hooks<'a, E>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
@@ -606,16 +600,16 @@ impl Emitter {
     {
         let mut ctx = CompileCtx::new();
 
-        // Inherit parent's builtin_reg_map so builtin identifiers (Math, Object, etc.)
-        // resolve to the correct pre-allocated registers in the sub-module's register file.
+        // 继承父内置寄存器映射：子模块寄存器文件中，内置标识符（Math、Object 等）
+        // 解析到父预先分配的槽位。
         ctx.scopes.builtin_reg_map = parent_ctx.scopes.builtin_reg_map.clone();
         ctx.scopes.private_name_map = parent_ctx.scopes.private_name_map.clone();
         ctx.scopes.next_private_name_id = parent_ctx.scopes.next_private_name_id;
 
-        // Propagate enclosing_this_reg so nested arrow functions capture the correct `this`.
+        // 传递 enclosing_this_reg：嵌套箭头函数捕获正确的 `this`。
         ctx.enclosing_this_reg = parent_ctx.enclosing_this_reg;
-        // Arrow functions inherit lexical super. Class method bodies also need the
-        // class-provided super context for their top-level body compilation.
+
+        // 箭头函数词法继承 super；类方法体顶层编译也需要类提供的 super 上下文。
         if matches!(body_context, FunctionBodyContext::Arrow | FunctionBodyContext::ClassElement) {
             ctx.in_derived_constructor = parent_ctx.in_derived_constructor;
             ctx.in_instance_method = parent_ctx.in_instance_method;
@@ -626,8 +620,7 @@ impl Emitter {
             ctx.in_static_method = false;
         }
 
-        // Inherit parent's global scope entries so previously-declared function names
-        // are visible from within the body.
+        // 继承父全局作用域条目：先前声明的函数名在函数体内可见。
         let mut inherited_reg_start = 1u32.max(ctx.builtin_reg_floor());
         for (name, binding) in &parent_ctx.scopes.symbols.scopes[0].bindings {
             ctx.scopes.symbols.scopes[0].bindings.insert(
@@ -653,20 +646,17 @@ impl Emitter {
         }
         ctx.reserved_reg_start = inherited_reg_start.max(1);
 
-        // Align next_reg with builtin count so both count and emit passes start at the
-        // same register offset (params go after builtin slots).
+        // 让 next_reg 与 builtin 槽位对齐，参数在 builtin 槽之后分配。
         ctx.reset_regs();
 
         let param_base = self.emit_params_prologue(param_specs, body_stmts, parent_ctx, &mut ctx, body_context)?;
 
         self.predeclare_function_declarations(body_stmts, &mut ctx);
 
-        // Pre-register builtin identifier references before emitting any temporary
-        // register, so builtin slots never collide with reused temporaries.
+        // 预注册 builtin 引用（先于任何临时寄存器），builtin 槽不与被复用的临时值冲突。
         self.pre_register_builtin_references(body_stmts, &mut ctx);
 
-        // Pre-declare `var` names so hoisted function declarations (emitted in the
-        // first sub-pass below) can resolve the outer vars they close over.
+        // 预声明 `var` 名，使首个 sub-pass 中提升的函数声明能解析其闭包引用的外层 var。
         self.predeclare_var_declarations(body_stmts, &mut ctx);
 
         if let Some(emit) = emit_fields.as_mut() {
@@ -692,11 +682,10 @@ impl Emitter {
             }
         }
 
-        // Emit body statements（先函数声明 hoisting，再其余）。
+        // 发 body 语句（先函数声明 hoisting，再其余）。
         let last_result_reg = self.emit_body_stmts(body_stmts, &mut ctx)?;
 
-        // Emit implicit RETURN: expression body returns the last expression,
-        // statement body returns undefined.
+        // 隐式 RETURN：表达式体返回最后表达式，语句体返回 undefined。
         if is_expression_body {
             if let Some(reg) = last_result_reg {
                 ctx.inst(Inst::new(OpCode::RETURN, Operand::Reg(reg), Operand::None, Operand::None));
@@ -731,7 +720,7 @@ impl Emitter {
         ctx.push_scope_with_kind(ScopeKind::FunctionScope);
         let param_base = ctx.next_reg;
 
-        // Emit parameters and destructuring prologue.
+        // 发参数与解构 prologue。
         for spec in param_specs {
             let name = spec.register_name();
             let reg = ctx.alloc_reg();
@@ -757,11 +746,16 @@ impl Emitter {
             let name = spec.register_name();
             if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
                 let reg = ctx.lookup(name)?;
-                ctx.inst(Inst::new(OpCode::MAKE_CELL, Operand::Reg(reg), Operand::Imm(cell_idx as u16), Operand::None));
+                ctx.inst(Inst::new(
+                    OpCode::MAKE_CELL,
+                    Operand::Reg(reg),
+                    Operand::Imm(cell_idx as u16),
+                    Operand::None,
+                ));
             }
         }
 
-        // Free variable analysis for upvalue capture (Ordinary + Arrow functions only)
+        // 自由变量分析（仅普通/箭头函数）：收集 upvalue 捕获。
         if matches!(body_context, FunctionBodyContext::Ordinary | FunctionBodyContext::Arrow) {
             ctx.current_upvalue_captures =
                 self.collect_upvalue_names(body_stmts, &parent_ctx.captured_bindings, &ctx.own_bindings);
@@ -850,35 +844,33 @@ impl Emitter {
         }
     }
 
-    /// Emit a full program into an IRFunction (top-level module body).
-    /// Split from the original `Compiler::compile`: this is the emit half;
-    /// oxide_compiler::Compiler::compile calls this then `oxide_ir::lower::lower`.
+    /// 把完整程序编译为顶层模块体的 IRFunction。
+    ///
+    /// 调用方为 `oxide_compiler::Compiler::compile`：本函数完成 emit 半程，
+    /// 随后由 `oxide_ir::lower::lower` 降为字节码。
     pub fn emit_program(&self, program: &oxide_parser::Program) -> Result<IRFunction, String> {
         let mut ctx = CompileCtx::new();
         ctx.pre_register_builtins();
         self.predeclare_function_declarations(&program.body, &mut ctx);
 
-        // Pre-register builtin identifier references before any temporary register
-        // is emitted, keeping builtin slots clear of the temporary register pool.
+        // 预注册 builtin 引用（先于任何临时寄存器），builtin 槽不进入临时寄存器池。
         self.pre_register_builtin_references(&program.body, &mut ctx);
 
-        // Pre-declare top-level `var` names so hoisted function declarations
-        // (emitted in the first sub-pass below) can resolve the outer vars.
+        // 预声明顶层 `var` 名，使首个 sub-pass 中提升的函数声明能解析外层 var。
         self.predeclare_var_declarations(&program.body, &mut ctx);
 
         // 闭包捕获分析（AST 级，emit 前确定）
         ctx.own_bindings = self.collect_own_binding_names(&[], &program.body);
         ctx.captured_bindings = self.collect_captured_bindings(&program.body, &ctx.own_bindings);
 
-        // First sub-pass: emit FunctionDeclarations (hoisting)
-        // This ensures function objects are available before any code runs.
+        // 首个 sub-pass：发函数声明（hoisting），保证任何代码运行前函数对象已就绪。
         for stmt in &program.body {
             if matches!(stmt, Statement::FunctionDeclaration(_)) {
                 self.emit_statement(stmt, &mut ctx)?;
             }
         }
 
-        // Second sub-pass: emit all other statements
+        // 第二个 sub-pass：发其余所有语句。
         let mut last_result: Option<u32> = None;
         for stmt in &program.body {
             if matches!(stmt, Statement::FunctionDeclaration(_)) {

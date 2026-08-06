@@ -1,9 +1,9 @@
 //! return 语句 emit：`emit_return_statement` 求值返回值并生成返回指令。
 
 use crate::{CompileCtx, Emitter};
+use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
-use oxide_bytecode::opcode::OpCode;
 use oxide_parser::Statement;
 
 impl Emitter {

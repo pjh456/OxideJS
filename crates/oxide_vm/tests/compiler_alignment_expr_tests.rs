@@ -19,8 +19,8 @@ fn eval(source: &str) -> String {
     }
 }
 
-// Non-simple `??` (side-effecting operands) followed by a label-bearing construct must not
-// shift the downstream label id (which produced `Label ... not found` at emit time).
+// 非简单 `??`（带副作用操作数）后跟带标签的构造不得把下游 label id 移位
+// （否则 emit 期报 `Label ... not found`）。
 
 #[test]
 fn coalesce_nonsimple_then_if() {
@@ -38,10 +38,9 @@ fn coalesce_nonsimple_then_while() {
     );
 }
 
-// A jump-bearing construct (if/loop) followed by a hoisted function declaration:
-// the count pass must walk in the same function-hoisting order as the emit pass,
-// otherwise the construct's jump targets drift past the hoisted body and the
-// program loops forever at run time.
+// 含跳转的构造（if/loop）后跟被提升的函数声明：
+// 计数 pass 必须与 emit pass 采用相同的函数提升顺序，
+// 否则构造的跳转目标越过提升的函数体，程序运行时无限循环。
 
 #[test]
 fn if_then_hoisted_function() {
@@ -58,9 +57,9 @@ fn while_then_hoisted_function() {
     assert_eq!(eval("var n=0; while(n<3){n=n+1;} function f(){return 100} n + f()"), "103");
 }
 
-// A hoisted function declaration is emitted before the `var` statements it closes over,
-// so the count pass must register top-level `var` names too (not just function names);
-// otherwise the hoisted body cannot resolve the outer var ("Identifier not defined").
+// 提升的函数声明先于它闭包的 `var` 语句发射，
+// 因此计数 pass 必须同时登记顶层 `var` 名（不只是函数名）；
+// 否则提升的函数体无法解析外层 var（"Identifier not defined"）。
 
 #[test]
 fn hoisted_function_reads_outer_var() {
@@ -82,15 +81,14 @@ fn coalesce_nonsimple_then_for() {
 
 #[test]
 fn coalesce_nonsimple_short_circuits_on_value() {
-    // 0 is not nullish, so `a() ?? b()` is 0 and the loop never runs.
+    // 0 不是 nullish，因此 `a() ?? b()` 为 0，循环不会运行。
     assert_eq!(
         eval("function a(){return 0;} function b(){return 9;} var v=a()??b(); var c=0; while(c<v){c=c+1;} c"),
         "0"
     );
 }
 
-// Static member compound assignment must not over-count vs the emitter (the extra +1 drifted
-// the following loop's jump target).
+// 静态成员复合赋值不得相对 emitter 多计（多出的 +1 会漂移其后循环的跳转目标）。
 
 #[test]
 fn static_member_compound_assign_then_loop() {
@@ -102,7 +100,7 @@ fn static_member_compound_assign_in_loop() {
     assert_eq!(eval("var o={x:0}; var c=0; while(o.x<3){o.x+=1; c=c+1;} c"), "3");
 }
 
-// Regressions: simple coalesce, nested coalesce, And/Or, compound member value, plain assign.
+// 回归：简单 coalesce、嵌套 coalesce、And/Or、复合成员值、普通赋值。
 #[test]
 fn simple_coalesce_regression() {
     assert_eq!(eval("var x = null ?? 5; x"), "5");

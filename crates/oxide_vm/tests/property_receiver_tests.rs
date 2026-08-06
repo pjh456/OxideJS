@@ -15,7 +15,7 @@ fn eval_str(source: &str) -> Result<JsValue, String> {
     eval(source).map(|(_vm, v)| v)
 }
 
-// Getter on proto sets marker on receiver, then check receiver has marker (not proto)
+// 原型上的 getter 在 receiver 上设置标记，随后检查 receiver 持有标记（而非原型）。
 #[test]
 fn getter_on_proto_this_is_receiver() {
     let r = eval_str(
@@ -24,7 +24,7 @@ fn getter_on_proto_this_is_receiver() {
     assert!(r.is_int() && r.as_int() == 1, "getter should set marker on child (receiver), got {:?}", r);
 }
 
-// Getter on deep proto chain: grandchild → child → proto. Getter defined on proto.
+// 深层原型链上的 getter：grandchild → child → proto，getter 定义在 proto 上。
 #[test]
 fn getter_on_proto_deep_chain_this_is_receiver() {
     let r = eval_str(
@@ -33,7 +33,7 @@ fn getter_on_proto_deep_chain_this_is_receiver() {
     assert!(r.is_bool() && r.as_bool(), "grandchild should have _deep marker, got {:?}", r);
 }
 
-// Setter on proto receives receiver as this, sets marker on receiver not proto
+// 原型上的 setter 以 receiver 作为 this，在 receiver 而非原型上设置标记。
 #[test]
 fn setter_on_proto_this_is_receiver() {
     let (_vm, r) = eval(
@@ -42,7 +42,7 @@ fn setter_on_proto_this_is_receiver() {
     assert!(r.is_string(), "child should have _set_by_setter, got {:?}", r);
 }
 
-// Dynamic getter (obj[expr]) preserves receiver
+// 动态 getter（obj[expr]）保持 receiver。
 #[test]
 fn dynamic_getter_on_proto_this_is_receiver() {
     let r = eval_str(
@@ -51,7 +51,7 @@ fn dynamic_getter_on_proto_this_is_receiver() {
     assert!(r.is_int() && r.as_int() == 1, "dynamic getter should set marker on child, got {:?}", r);
 }
 
-// Dynamic setter (obj[expr]=val) preserves receiver
+// 动态 setter（obj[expr]=val）保持 receiver。
 #[test]
 fn dynamic_setter_on_proto_this_is_receiver() {
     let (_vm, r) = eval(
@@ -60,7 +60,7 @@ fn dynamic_setter_on_proto_this_is_receiver() {
     assert!(r.is_string(), "child should have _dyn_set after dynamic setter, got {:?}", r);
 }
 
-// Own getter on object — this is the object itself
+// 对象自身的 getter——this 即对象本身。
 #[test]
 fn own_getter_this_is_self() {
     let r = eval_str(
@@ -69,7 +69,7 @@ fn own_getter_this_is_self() {
     assert!(r.is_int() && r.as_int() == 42, "own getter should set marker on self, got {:?}", r);
 }
 
-// Own setter on object — this is the object itself
+// 对象自身的 setter——this 即对象本身。
 #[test]
 fn own_setter_this_is_self() {
     let (_vm, r) = eval(
@@ -78,7 +78,7 @@ fn own_setter_this_is_self() {
     assert!(r.is_string(), "own setter should set marker on self, got {:?}", r);
 }
 
-// Getter returning undefined does not crash
+// 返回 undefined 的 getter 不崩溃。
 #[test]
 fn getter_returns_undefined_does_not_crash() {
     let r = eval_str(
@@ -87,7 +87,7 @@ fn getter_returns_undefined_does_not_crash() {
     assert!(r.is_undefined(), "getter returning nothing should yield undefined, got {:?}", r);
 }
 
-// String .length still works after proto getter is defined (primitive auto-boxing not broken)
+// 定义原型 getter 后字符串 .length 仍正常（基本类型自动装箱未被破坏）。
 #[test]
 fn string_length_still_works_after_proto_getter() {
     let r = eval_str("'hello'.length").unwrap();

@@ -19,10 +19,10 @@ fn eval(source: &str) -> String {
     }
 }
 
-// Assertions stay inside JS and resolve to a boolean/number, because JsValue Display
-// reveals numbers/bools but not string/object contents.
+// 断言放在 JS 内部并解析为布尔/数字，因为 JsValue 的 Display 只暴露
+// 数字/布尔，不暴露字符串/对象内容。
 
-// ---- for-of loop over Map/Set (default iterators) ----
+// ── 对 Map/Set（默认迭代器）的 for-of ──
 
 #[test]
 fn for_of_map_yields_key_value_entries() {
@@ -52,7 +52,7 @@ fn for_of_empty_set_runs_zero_times() {
     assert_eq!(eval("var s=new Set();var r=0;for(var v of s){r=r+1;}r===0"), "true");
 }
 
-// ---- Map.prototype.{entries,values,keys} ----
+// ── Map.prototype.{entries,values,keys} ──
 
 #[test]
 fn map_values_iterator_yields_values() {
@@ -80,7 +80,7 @@ fn map_iterator_reports_done_at_end() {
     assert_eq!(eval("var m=new Map();var it=m.values();it.next().done===true"), "true");
 }
 
-// ---- Set.prototype.{entries,values,keys} ----
+// ── Set.prototype.{entries,values,keys} ──
 
 #[test]
 fn set_values_iterator_yields_values() {

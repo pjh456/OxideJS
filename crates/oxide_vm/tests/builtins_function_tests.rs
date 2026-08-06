@@ -95,9 +95,9 @@ fn function_to_string_non_function_throws() {
 
 #[test]
 fn function_call_returns_object_stays_valid() {
-    // Regression: call_function_sync used to run bytecode in a sub-VM with a separate
-    // epoch; objects allocated in the sub-VM epoch became dangling after sub-VM drop.
-    // This test forces the returned object to be dereferenced after the call returns.
+    // 回归：call_function_sync 曾在一个带独立 epoch 的子 VM 中运行字节码；
+    // 子 VM epoch 中分配的对象在子 VM 销毁后成为悬垂指针。
+    // 本测试强制在调用返回后解引用返回对象。
     let mut vm = Vm::new();
     let result = eval(&mut vm, "function f() { return {x: 42}; } f.call(null).x").unwrap();
     assert_eq!(result, JsValue::int(42));
@@ -112,8 +112,8 @@ fn function_apply_returns_object_stays_valid() {
 
 #[test]
 fn getter_returns_object_stays_valid() {
-    // Same class of bug: ordinary_get sync-path (target_reg=None) for bytecode
-    // accessor ran in sub-VM; returned object was freed on sub-VM drop.
+    // 同类 bug：字节码 accessor 经 ordinary_get 同步路径（target_reg=None）在子 VM
+    // 中运行，返回对象在子 VM 销毁后被释放。
     let mut vm = Vm::new();
     let result = eval(&mut vm, "var o = { get p() { return {z: 7}; } }; o.p.z").unwrap();
     assert_eq!(result, JsValue::int(7));

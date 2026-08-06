@@ -1,9 +1,9 @@
 //! 类字段初始化 emit：公有/私有实例字段与私有方法的实例化初始化。
 
 use crate::{CompileCtx, Emitter};
+use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
-use oxide_bytecode::opcode::OpCode;
 use oxide_parser::{Expression, PropertyKey};
 
 impl Emitter {
@@ -17,7 +17,12 @@ impl Emitter {
             self.emit_undefined(ctx)
         };
         if computed {
-            ctx.inst(Inst::new(OpCode::SET_PROP_DYNAMIC, target, Operand::Reg(key_reg), Operand::Reg(value_reg)));
+            ctx.inst(Inst::new(
+                OpCode::SET_PROP_DYNAMIC,
+                target,
+                Operand::Reg(key_reg),
+                Operand::Reg(value_reg),
+            ));
         } else {
             ctx.inst(Inst::new(OpCode::SET_PROP, target, Operand::Reg(value_reg), Operand::Reg(key_reg)));
         }

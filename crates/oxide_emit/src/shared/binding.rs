@@ -3,10 +3,10 @@
 //! `emit_object_binding`、`emit_assign_target` 等。
 
 use crate::{CompileCtx, Emitter};
-use oxide_ir::inst::Inst;
-use oxide_ir::operand::Operand;
 use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
+use oxide_ir::inst::Inst;
+use oxide_ir::operand::Operand;
 use oxide_parser::{
     ArrayAssignmentTarget, ArrayPattern, AssignmentTarget, AssignmentTargetMaybeDefault, AssignmentTargetProperty,
     BindingPattern, Expression, ObjectAssignmentTarget, ObjectPattern, VariableDeclarationKind,
@@ -18,12 +18,22 @@ impl Emitter {
     ) -> Result<u32, String> {
         let undef_reg = self.emit_undefined(ctx);
         let eq_reg = ctx.alloc_reg();
-        ctx.inst(Inst::new(OpCode::STRICT_EQ, Operand::Reg(eq_reg), Operand::Reg(val_reg), Operand::Reg(undef_reg)));
+        ctx.inst(Inst::new(
+            OpCode::STRICT_EQ,
+            Operand::Reg(eq_reg),
+            Operand::Reg(val_reg),
+            Operand::Reg(undef_reg),
+        ));
         // val != undefined（eq 为 false）→ 跳过默认值
         let end_label = ctx.next_label_id();
         ctx.inst(Inst::jmp_if_false(eq_reg, end_label));
         let default_reg = self.emit_expression(default_expr, ctx)?;
-        ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(val_reg), Operand::Reg(default_reg), Operand::None));
+        ctx.inst(Inst::new(
+            OpCode::LOAD_VAR,
+            Operand::Reg(val_reg),
+            Operand::Reg(default_reg),
+            Operand::None,
+        ));
         ctx.labels.set_label_pos(end_label, ctx.insts.len());
         Ok(val_reg)
     }
@@ -32,8 +42,7 @@ impl Emitter {
         &self, name: &str, src_reg: u32, kind: VariableDeclarationKind, is_const: bool, ctx: &mut CompileCtx,
     ) -> Result<(), String> {
         let target_reg = if matches!(kind, VariableDeclarationKind::Var) {
-            // `var` names are pre-declared (hoisting); reuse the pre-registered slot
-            // instead of allocating a new one so n_registers matches let/const.
+            // `var` 名已预声明（hoisting），复用预登记槽位而非新分配，使 n_registers 与 let/const 一致。
             if let Some(reg) = ctx.scopes.symbols.lookup_any(name) {
                 reg
             } else {
@@ -47,13 +56,23 @@ impl Emitter {
             var_reg
         };
         if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
-            ctx.inst(Inst::new(OpCode::MAKE_CELL, Operand::Reg(src_reg), Operand::Imm(cell_idx as u16), Operand::None));
+            ctx.inst(Inst::new(
+                OpCode::MAKE_CELL,
+                Operand::Reg(src_reg),
+                Operand::Imm(cell_idx as u16),
+                Operand::None,
+            ));
         } else {
-            // B011: const 声明路径 STORE_VAR 恒 b=0，不查运行时 guard。
+            // const 声明路径 STORE_VAR 恒 b=0，不查运行时 guard。
             // guard 读 regs[rd] 判断槽是否已初始化，依赖槽初始为 undefined；
             // 声明冗余检查由编译期 declare() 完成（重复声明编译报错），
             // 运行时 guard 只服务"对 const 再赋值"（赋值路径，见 emit_assign_target）。
-            ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(target_reg), Operand::Reg(src_reg), Operand::Imm(0)));
+            ctx.inst(Inst::new(
+                OpCode::STORE_VAR,
+                Operand::Reg(target_reg),
+                Operand::Reg(src_reg),
+                Operand::Imm(0),
+            ));
         }
         ctx.init_var(name);
         Ok(())
@@ -132,9 +151,19 @@ impl Emitter {
         ctx.inst(Inst::jmp_if_false(has_reg, loop_end));
         let val_reg = ctx.alloc_reg();
         ctx.inst(Inst::new(OpCode::FOR_OF_NEXT, Operand::Reg(val_reg), Operand::None, Operand::None));
-        ctx.inst(Inst::new(OpCode::SET_ELEM, Operand::Reg(rest_reg), Operand::Reg(idx_reg), Operand::Reg(val_reg)));
+        ctx.inst(Inst::new(
+            OpCode::SET_ELEM,
+            Operand::Reg(rest_reg),
+            Operand::Reg(idx_reg),
+            Operand::Reg(val_reg),
+        ));
         let tmp_reg = ctx.alloc_reg();
-        ctx.inst(Inst::new(OpCode::INC_PRE, Operand::Reg(idx_reg), Operand::Reg(tmp_reg), Operand::Reg(tmp_reg)));
+        ctx.inst(Inst::new(
+            OpCode::INC_PRE,
+            Operand::Reg(idx_reg),
+            Operand::Reg(tmp_reg),
+            Operand::Reg(tmp_reg),
+        ));
         ctx.inst(Inst::jmp(loop_start));
         ctx.labels.set_label_pos(loop_end, ctx.insts.len());
         Ok(rest_reg)

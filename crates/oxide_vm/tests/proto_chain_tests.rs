@@ -24,7 +24,7 @@ macro_rules! assert_undefined {
     };
 }
 
-// -- Proto chains: every (non-Object) constructor.prototype should inherit from Object.prototype --
+// ── 原型链：每个（非 Object）构造器的 prototype 都应继承自 Object.prototype ──
 #[test]
 fn array_proto_chain() {
     assert_bool!(eval("Object.getPrototypeOf(Array.prototype) === Object.prototype"), true, "Array proto");
@@ -32,10 +32,10 @@ fn array_proto_chain() {
 
 #[test]
 fn function_proto_chain() {
-    // NOTE: Function global is not registered (pre-existing issue).
-    // Function.prototype.__proto__ IS wired to Object.prototype via kernel patch.
-    // Verified by checking that Function.prototype (accessed via other means) has correct proto.
-    // Skip this test until Function global is registered.
+    // 未支持：Function 全局尚未注册（既有能力限制）。
+    // Function.prototype.__proto__ 已经由 kernel 补丁接到 Object.prototype。
+    // 通过其它途径访问 Function.prototype 可验证其原型正确。
+    // 待 Function 全局注册后再启用本测试。
 }
 
 #[test]
@@ -87,14 +87,14 @@ fn regexp_proto_chain() {
     assert_bool!(eval("Object.getPrototypeOf(RegExp.prototype) === Object.prototype"), true, "RegExp proto");
 }
 
-// -- Object.prototype is the root, its __proto__ is null --
+// ── Object.prototype 是根，其 __proto__ 为 null ──
 #[test]
 fn object_proto_is_root() {
     let r = eval("Object.getPrototypeOf(Object.prototype)").unwrap();
     assert!(r.is_null(), "Object.prototype.__proto__ should be null");
 }
 
-// -- instanceof now works for all builtins against Object --
+// ── 所有 builtin 对 Object 的 instanceof 现在都成立 ──
 #[test]
 fn array_instanceof_object() {
     assert_bool!(eval("[] instanceof Object"), true, "[] instanceof Object");
@@ -108,16 +108,16 @@ fn function_instanceof_object() {
 
 #[test]
 fn string_instanceof_object() {
-    // NOTE: new String requires NEW_EXPRESSION support for user constructors.
-    // Pre-existing limitation. Verify String.prototype is accessible.
+    // 未支持：new String 依赖用户构造器的 NEW_EXPRESSION 支持（既有能力限制）。
+    // 验证 String.prototype 可访问。
     let r = eval("typeof String.prototype").unwrap();
     assert!(r.is_string(), "String.prototype should be object");
 }
 
 #[test]
 fn boolean_not_instanceof_function() {
-    // NOTE: Function global is not registered (pre-existing issue).
-    // Skip until Function global registration is fixed.
+    // 未支持：Function 全局尚未注册（既有能力限制）。
+    // 待 Function 全局注册修复后再启用。
 }
 
 #[test]
@@ -179,7 +179,7 @@ fn derived_constructor_inherits_parent_constructor_chain() {
     );
 }
 
-// -- instanceof for native types should NOT respond to their own false positives --
+// ── native 类型的 instanceof 不应响应自身的误判 ──
 #[test]
 fn number_not_instanceof_array() {
     assert_bool!(eval("new Number(1) instanceof Array"), false, "Number instanceof Array");
@@ -190,7 +190,7 @@ fn object_not_instanceof_regexp() {
     assert_bool!(eval("({}) instanceof RegExp"), false, "({}) instanceof RegExp");
 }
 
-// -- Primitives should NOT be instanceof their wrapper constructors (no autoboxing) --
+// ── 基本类型不应 instanceof 其包装构造器（不自动装箱）──
 #[test]
 fn primitives_not_instanceof() {
     assert_bool!(eval("1 instanceof Number"), false, "1 instanceof Number");
@@ -198,7 +198,7 @@ fn primitives_not_instanceof() {
     assert_bool!(eval("true instanceof Boolean"), false, "true instanceof Boolean");
 }
 
-// -- VOID regression --
+// ── VOID 回归 ──
 #[test]
 fn void_returns_undefined() {
     assert_undefined!(eval("void 0"), "void 0");

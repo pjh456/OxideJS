@@ -155,7 +155,7 @@ pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     } else {
         let val = vm.reg(args[1]);
         if val.is_string() {
-            // SAFETY: val is a string value.
+            // SAFETY: val 已确认是字符串值。
             let s = unsafe { (*val.as_string_ptr()).data.clone() };
             let formats = ["%Y-%m-%dT%H:%M:%S%.fZ", "%Y-%m-%dT%H:%M:%S%.f"];
             let mut ts = f64::NAN;
@@ -231,7 +231,7 @@ pub fn date_parse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if !val.is_string() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-    // SAFETY: val is a string value.
+    // SAFETY: val 已确认是字符串值。
     let s = unsafe { (*val.as_string_ptr()).data.clone() };
     let mut ts = f64::NAN;
     if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(&s) {
@@ -804,8 +804,8 @@ pub fn date_get_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn date_set_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
-    // A missing year argument coerces to NaN; per B.2.4.2 a NaN year sets the date value to
-    // NaN and returns NaN.
+    // 缺省年份参数强制转为 NaN；按 Annex B 语义，NaN 年份把日期值置为
+    // NaN 并返回 NaN。
     let arg = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let y_num = oxide_runtime_api::to_number(arg);
     if y_num.is_nan() {

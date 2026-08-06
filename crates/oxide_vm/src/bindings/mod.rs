@@ -83,7 +83,7 @@ macro_rules! bind_constructor {
 }
 
 pub(crate) fn configure_native_constructor(ctor: &mut JsObject, native_fn: *const (), arg_count: u8) {
-    // SAFETY: native_fn is always a valid NativeFn fn-item pointer cast to *const () by callers.
+    // SAFETY: native_fn 始终是调用方转成 *const () 的合法 NativeFn 函数项指针。
     ctor.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(native_fn) }));
     ctor.set_native_arg_count(arg_count);
 }
@@ -100,7 +100,7 @@ pub(crate) fn apply_binding_table(
     let shape_forge = core.shape_forge().as_ref();
     let string_forge = core.perm_interner().as_ref();
     for (name, func, nargs) in bindings {
-        // SAFETY: all entries in the binding table are NativeFn fn-item pointers cast to *const ().
+        // SAFETY: 绑定表中所有条目都是转成 *const () 的 NativeFn 函数项指针。
         let fn_ptr = unsafe { oxide_types::object::NativeFnPtr::from_raw(*func) };
         let _ = world.bind_method(target, shape_forge, string_forge, name, fn_ptr, *nargs);
     }
@@ -491,9 +491,11 @@ pub fn bind_global_builtin_slots(core: &Arc<KernelCore>, session: &KernelSession
     bind_existing_global(core, global, "globalThis", global_this);
 }
 
-/// Maintenance: when adding a `BuiltinDirtySet` group, update this rebind map,
-/// `BuiltinSnapshot`, and `BuiltinWorld::rebuild_with_dirty()` together.
 /// 按脏标记重绑被污染的内置对象；`dirty` 为 `None` 时绑定全部（初始化路径）。
+///
+/// # 注意事项
+/// 维护：新增 `BuiltinDirtySet` 分组时，须同步更新本重绑映射、`BuiltinSnapshot` 与
+/// `BuiltinWorld::rebuild_with_dirty()`。
 pub fn rebind_dirty_builtins(core: &Arc<KernelCore>, session: &mut KernelSession, dirty: Option<&BuiltinDirtySet>) {
     let global_ptr = session.global_object().as_ptr() as *mut JsObject;
     let global = unsafe { &mut *global_ptr };

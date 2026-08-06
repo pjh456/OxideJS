@@ -22,7 +22,7 @@ fn assert_err_contains(result: Result<JsValue, String>, expected: &str) {
     }
 }
 
-// -- Delete configurable property succeeds --
+// ── 删除可配置属性成功 ──
 #[test]
 fn delete_configurable_property_succeeds_and_returns_true() {
     let r = eval_many(&[
@@ -34,7 +34,7 @@ fn delete_configurable_property_succeeds_and_returns_true() {
     assert!(r.is_bool() && r.as_bool(), "delete configurable should return true, got {:?}", r);
 }
 
-// -- Delete non-configurable property throws --
+// ── 删除不可配置属性抛错 ──
 #[test]
 fn delete_non_configurable_throws_type_error() {
     let result = eval_many(&[
@@ -45,21 +45,21 @@ fn delete_non_configurable_throws_type_error() {
     assert_err_contains(result, "cannot delete non-configurable property");
 }
 
-// -- Delete non-existent property returns true --
+// ── 删除不存在的属性返回 true ──
 #[test]
 fn delete_non_existent_returns_true() {
     let r = eval_many(&["var obj = {}", "delete obj.x"]).unwrap();
     assert!(r.is_bool() && r.as_bool(), "delete non-existent should return true, got {:?}", r);
 }
 
-// -- Delete default (no explicit defineProperty) configurable succeeds --
+// ── 删除默认（无显式 defineProperty）可配置属性成功 ──
 #[test]
 fn delete_default_configurable_succeeds() {
     let r = eval_many(&["var obj = {}", "obj.x = 1", "delete obj.x"]).unwrap();
     assert!(r.is_bool() && r.as_bool(), "delete default configurable should return true, got {:?}", r);
 }
 
-// -- Delete non-configurable proto property on child: child doesn't own it, so returns true --
+// ── 子对象删除原型上不可配置的属性：子对象不拥有它，因此返回 true ──
 #[test]
 fn delete_non_configurable_proto_property_on_child_returns_true() {
     let r = eval_many(&[

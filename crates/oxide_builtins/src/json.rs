@@ -20,7 +20,7 @@ pub fn json_parse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Err(crate::error::create_syntax_error(vm, "JSON.parse: argument is not a string"));
     }
     let text = {
-        // SAFETY: val is a string value.
+        // SAFETY: val 已确认是字符串值。
         unsafe { (*val.as_string_ptr()).data.clone() }
     };
 
@@ -31,7 +31,7 @@ pub fn json_parse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
     let mut result = value_to_jsvalue(vm, &parsed);
 
-    // Apply reviver if provided (D-05)
+    // 提供 reviver 时以后序遍历逐属性调用，重建解析后的值。
     if args.len() > 2 {
         let reviver_val = vm.reg(args[2]);
         if reviver_val.is_object() {
@@ -66,7 +66,7 @@ fn walk_reviver<H: VmHost>(
     };
     let mut val = holder.get_prop_at(pos);
 
-    // Post-order: recurse on children first
+    // 后序遍历：先递归处理子节点。
     if val.is_object() {
         let obj_ptr = val.as_js_object_ptr();
         if !obj_ptr.is_null() {
@@ -78,20 +78,20 @@ fn walk_reviver<H: VmHost>(
                     let child_si = vm.kernel_core().perm_interner().intern(&index_str).0;
                     walk_reviver(vm, obj_ptr, child_si, reviver)?;
                 }
-                // Re-read value after children modified it
+                // 子节点可能已改写父级，重新读取当前值。
                 val = holder.get_prop_at(pos);
             } else {
                 let keys = walk_own_keys(vm, obj);
                 for (child_si, _child_pos) in keys {
                     walk_reviver(vm, obj_ptr, child_si, reviver)?;
                 }
-                // Re-read value after children modified it
+                // 子节点可能已改写父级，重新读取当前值。
                 val = holder.get_prop_at(pos);
             }
         }
     }
 
-    // Call reviver on current value
+    // 对当前值调用 reviver，用返回值覆盖属性槽。
     let kc = vm.kernel_core().clone();
     let key_str = kc.perm_interner().lookup(key_si).unwrap_or("");
     let key_val = vm.new_string(key_str);
@@ -364,7 +364,7 @@ fn stringify_object<H: VmHost>(
     out.push('{');
 
     let keys = walk_own_keys(vm, obj);
-    // Pre-compute (name, position) pairs with whitelist filtering
+    // 预计算 (名称, 槽位) 对，并应用白名单过滤。
     let kc = vm.kernel_core().clone();
     let perm_interner = kc.perm_interner();
     let entries: Vec<(String, u32)> = keys
@@ -384,7 +384,7 @@ fn stringify_object<H: VmHost>(
     for (name, pos) in entries {
         let val = obj.get_prop_at(pos);
 
-        // Replacer function callback (toJSON handled by jsvalue_to_json)
+        // replacer 函数回调（toJSON 已在 jsvalue_to_json 中处理）。
         let val = if let Some(replacer) = replacer_fn {
             let key_val = vm.new_string(&name);
             let holder = JsValue::from_js_object(obj as *const JsObject as *mut JsObject);
@@ -468,7 +468,7 @@ fn stringify_array<H: VmHost>(
 
         let index_str = i.to_string();
 
-        // Replacer function callback (toJSON handled by jsvalue_to_json)
+        // replacer 函数回调（toJSON 已在 jsvalue_to_json 中处理）。
         let val = if let Some(replacer) = replacer_fn {
             let key_val = vm.new_string(&index_str);
             let holder = JsValue::from_js_object(obj as *const JsObject as *mut JsObject);

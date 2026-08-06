@@ -12,14 +12,13 @@ use oxide_bytecode::CompiledModule;
 
 mod code_cache_log;
 
-/// Shared compiled-module cache keyed by a caller-provided safe module hash.
+/// 以调用方提供的安全模块哈希为键的共享编译模块缓存。
 ///
-/// The cache intentionally does not know how to parse or compile JavaScript.
-/// Compiler-aware callers compute the key and provide the compile callback.
+/// 缓存自身不负责解析或编译 JavaScript：由编译器感知的调用方计算键并提供
+/// 编译回调。
 ///
-/// Bounded by an LRU eviction policy: at most `capacity` modules are retained,
-/// so an eval loop that compiles unbounded distinct sources cannot grow the
-/// cache without limit.
+/// 以 LRU 淘汰策略约束内存：至多保留 `capacity` 个模块，因此对无界不同源码
+/// 反复编译的 eval 循环不会让缓存无限增长。
 pub struct CodeForge {
     map: Mutex<LruCache<u64, Arc<CompiledModule>>>,
 }
@@ -145,7 +144,7 @@ mod tests {
         forge.insert(2, CompiledModule::new());
         forge.insert(3, CompiledModule::new());
 
-        // Touch key 1 so key 2 becomes the least-recently-used entry.
+        // 触碰键 1，使键 2 成为最久未使用条目。
         assert!(forge.get(1).is_some());
         forge.insert(4, CompiledModule::new());
 

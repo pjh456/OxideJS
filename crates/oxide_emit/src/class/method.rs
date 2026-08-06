@@ -2,10 +2,10 @@
 //! 负责单个方法函数体（含 `super` 与 home object）。
 
 use crate::{CompileCtx, Emitter, FunctionBodyContext};
-use oxide_ir::inst::Inst;
-use oxide_ir::operand::Operand;
 use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
+use oxide_ir::inst::Inst;
+use oxide_ir::operand::Operand;
 use oxide_parser::{ClassElement, MethodDefinitionKind, PropertyKey};
 
 impl Emitter {
@@ -36,9 +36,19 @@ impl Emitter {
                 match method.kind {
                     MethodDefinitionKind::Method => {
                         if method.computed {
-                            ctx.inst(Inst::new(OpCode::SET_PROP_DYNAMIC, Operand::Reg(home_reg), Operand::Reg(key_reg), Operand::Reg(accessor_reg)));
+                            ctx.inst(Inst::new(
+                                OpCode::SET_PROP_DYNAMIC,
+                                Operand::Reg(home_reg),
+                                Operand::Reg(key_reg),
+                                Operand::Reg(accessor_reg),
+                            ));
                         } else {
-                            ctx.inst(Inst::new(OpCode::SET_PROP, Operand::Reg(home_reg), Operand::Reg(accessor_reg), Operand::Reg(key_reg)));
+                            ctx.inst(Inst::new(
+                                OpCode::SET_PROP,
+                                Operand::Reg(home_reg),
+                                Operand::Reg(accessor_reg),
+                                Operand::Reg(key_reg),
+                            ));
                         }
                     }
                     MethodDefinitionKind::Get | MethodDefinitionKind::Set => {

@@ -19,10 +19,9 @@ fn eval(source: &str) -> String {
     }
 }
 
-// Order is asserted via a position map built inside JS, so the comparison
-// returns a boolean (JsValue Display only reveals number/bool, not string
-// contents). This is also tolerant of any inherited enumerable keys the
-// engine appends after the object's own keys.
+// 顺序经 JS 内部构建的位置映射断言，比较返回布尔（JsValue 的 Display 只暴露
+// number/bool，不暴露字符串内容）。该写法也容忍引擎在对象自有键之后追加的
+// 任意继承可枚举键。
 
 #[test]
 fn for_in_ordering_integer_indices_first() {

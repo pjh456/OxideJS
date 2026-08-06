@@ -1,10 +1,10 @@
 //! var/let/const 声明语句 emit：声明 + 初始化表达式，处理提升与解构 pattern。
 
 use crate::{CompileCtx, Emitter};
-use oxide_ir::inst::Inst;
-use oxide_ir::operand::Operand;
 use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
+use oxide_ir::inst::Inst;
+use oxide_ir::operand::Operand;
 use oxide_parser::{BindingPattern, Expression, Statement, VariableDeclarationKind};
 
 impl Emitter {
@@ -49,7 +49,12 @@ impl Emitter {
                     var_reg
                 };
                 if let Some(&cell_idx) = ctx.captured_bindings.get(bi.name.as_str()) {
-                    ctx.inst(Inst::new(OpCode::MAKE_CELL, Operand::Reg(tmp), Operand::Imm(cell_idx as u16), Operand::None));
+                    ctx.inst(Inst::new(
+                        OpCode::MAKE_CELL,
+                        Operand::Reg(tmp),
+                        Operand::Imm(cell_idx as u16),
+                        Operand::None,
+                    ));
                 } else {
                     ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(target_reg), Operand::Reg(tmp), Operand::None));
                 }

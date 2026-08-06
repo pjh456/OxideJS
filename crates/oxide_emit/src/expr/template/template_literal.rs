@@ -2,9 +2,9 @@
 //! 拼接字面量段与内插表达式。
 
 use crate::{CompileCtx, Emitter};
+use oxide_bytecode::module::Constant;
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
-use oxide_bytecode::module::Constant;
 
 impl Emitter {
     pub(crate) fn emit_template_literal_expression(
@@ -42,12 +42,7 @@ impl Emitter {
             }
         }
 
-        ctx.inst(Inst::template_str(
-            Operand::Reg(r),
-            segment_count as u32,
-            total_len_hint as u16,
-            &parts,
-        ));
+        ctx.inst(Inst::template_str(Operand::Reg(r), segment_count as u32, total_len_hint as u16, &parts));
 
         Ok(r)
     }

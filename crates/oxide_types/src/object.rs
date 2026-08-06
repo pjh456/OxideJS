@@ -8,10 +8,9 @@
 
 use crate::value::JsValue;
 
-/// Heap-allocated JS string value.
+/// 堆分配的 JS 字符串值。
 ///
-/// String *values* are NaN-boxed as 48-bit pointers to a `JsString` (see
-/// `JsValue::string`).
+/// 字符串*值*以 48 位指针（指向 `JsString`）NaN-box（见 `JsValue::string`）。
 #[derive(Debug)]
 pub struct JsString {
     pub data: String,
@@ -39,42 +38,41 @@ impl JsString {
     }
 }
 
-/// Type-safe opaque wrapper around a native function pointer.
+/// 原生函数指针的类型安全不透明包装。
 ///
-/// Stored as `*const ()` rather than a concrete `fn` type so that `oxide_types` does not
-/// need to depend on `oxide_vm::Vm`. Callers in `oxide_vm` cast back to `NativeFn` via
-/// `NativeFnPtr::call_with` — transmute is confined to a single generic helper there.
+/// 以 `*const ()` 存储而非具体 `fn` 类型，使 `oxide_types` 无需依赖
+/// `oxide_vm::Vm`。`oxide_vm` 中的调用方经 `NativeFnPtr::call_with` 转回
+/// `NativeFn`——transmute 被限制在单个泛型辅助函数中。
 ///
-/// # Safety invariants
+/// # Safety 不变量
 ///
-/// A `NativeFnPtr` value must always have been created from a valid `NativeFn` function
-/// pointer (a bare `fn` item or function-item coercion — **not** a closure). The pointer is
-/// never null. `Send + Sync` are safe because function-item pointers are inherently
-/// thread-safe (they contain no data).
+/// `NativeFnPtr` 必须总是由合法的 `NativeFn` 函数指针（裸 `fn` 项或函数项
+/// 强制转换——**不是**闭包）创建。指针永不为空。`Send + Sync` 安全是因为
+/// 函数项指针天然线程安全（不含数据）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct NativeFnPtr(pub *const ());
 
 impl NativeFnPtr {
-    /// Wrap a raw function pointer. The pointer must point to a valid `NativeFn` fn-item.
+    /// 包装裸函数指针。指针必须指向合法的 `NativeFn` 函数项。
     ///
     /// # Safety
-    /// `ptr` must be a non-null function pointer of type `fn(&mut Vm, &[u8]) -> NativeResult`
-    /// cast to `*const ()`. Using any other pointer value is UB at call time.
+    /// `ptr` 必须是类型为 `fn(&mut Vm, &[u8]) -> NativeResult` 的非空函数指针
+    /// 转成的 `*const ()`。使用任何其它指针值在调用时是 UB。
     #[inline(always)]
     pub unsafe fn from_raw(ptr: *const ()) -> Self {
         debug_assert!(!ptr.is_null(), "NativeFnPtr must not be null");
         Self(ptr)
     }
 
-    /// Return the underlying raw pointer.
+    /// 返回底层裸指针。
     #[inline(always)]
     pub fn as_ptr(self) -> *const () {
         self.0
     }
 }
 
-// SAFETY: fn-item pointers contain no mutable state; safe to share across threads.
+// SAFETY: 函数项指针不含可变状态，可安全跨线程共享。
 unsafe impl Send for NativeFnPtr {}
 unsafe impl Sync for NativeFnPtr {}
 
@@ -119,9 +117,9 @@ impl TypedArrayKind {
 pub struct PropAttributes(pub u8);
 
 impl PropAttributes {
-    /// writable 标志位（`0b001`）。
+    /// writable 标志位（bit0）。
     pub const WRITABLE: u8 = 0b001;
-    /// enumerable 标志位（`0b010`）。
+    /// enumerable 标志位（bit1）。
     pub const ENUMERABLE: u8 = 0b010;
     /// configurable 标志位（`0b100`）。
     pub const CONFIGURABLE: u8 = 0b100;
@@ -232,8 +230,8 @@ impl PropIndex for i32 {
     }
 }
 
-/// Layout:
-///   header: u32 bits
+/// 布局：
+///   header: u32 位
 ///     \[0:23\]   shape_id
 ///     \[24\]     is_set
 ///     \[25\]     is_map
@@ -243,25 +241,25 @@ impl PropIndex for i32 {
 ///     \[29\]     is_array
 ///     \[30\]     is_extensible
 ///     \[31\]     is_function
-///   native_arg_count: u8 (1 byte)
-///   type_tag: u8 — OBJ_TYPE_* constant identifying wrapper/exotic object kind (1 byte)
-///   is_session_epoch: u8 (1 byte)
+///   native_arg_count: u8 (1 字节)
+///   type_tag: u8 — 标识包装/外来对象种类的 OBJ_TYPE_* 常量 (1 字节)
+///   is_session_epoch: u8 (1 字节)
 ///   _pad: u8
-///   hash_props: *mut u8 (8 bytes, points to Box\<Vec\<JsValue\>\>)
-///   prop_meta: *mut u8 (8 bytes, points to Box\<Vec\<Option\<PropMetaEntry\>\>\>)
-///   native_data: *mut u8 (8 bytes, opaque VM-owned native/exotic payload)
-///   proto: JsValue (8 bytes)
-///   generation: u32 (4 bytes + 4 pad)
-///   native_fn: Option\<NativeFnPtr\> (16 bytes — Option\<NonNull\> optimization NOT available for
-///              raw *const (); stored as Option wrapping an 8-byte pointer, with 8 bytes of
-///              discriminant padding due to repr(Rust) layout rules)
-///   sub_module_index: u32 (4 bytes + 4 pad, index into CompiledModule.sub_modules)
-///   captured_this: JsValue (8 bytes, lexical this for arrow functions)
-///   home_object: JsValue (8 bytes, \[\[HomeObject\]\] for super lookup)
-///   upvalues: *mut u8 (8 bytes, points to Box<Vec<*mut Cell>> for closures)
+///   hash_props: *mut u8 (8 字节，指向 Box\<Vec\<JsValue\>\>)
+///   prop_meta: *mut u8 (8 字节，指向 Box\<Vec\<Option\<PropMetaEntry\>\>\>)
+///   native_data: *mut u8 (8 字节，VM 拥有的不透明 native/外来载荷)
+///   proto: JsValue (8 字节)
+///   generation: u32 (4 字节 + 4 填充)
+///   native_fn: Option\<NativeFnPtr\> (16 字节 — 裸 `*const ()` 无法利用 Option\<NonNull\>
+///              优化；因 repr(Rust) 布局规则存为包装 8 字节指针的 Option，带 8 字节
+///              判别式填充)
+///   sub_module_index: u32 (4 字节 + 4 填充，索引 CompiledModule.sub_modules)
+///   captured_this: JsValue (8 字节，箭头函数的词法 this)
+///   home_object: JsValue (8 字节，\[\[HomeObject\]\]，供 super 查找)
+///   upvalues: *mut u8 (8 字节，指向闭包的 Box<Vec<*mut Cell>>)
 ///
-///   Total: 112 bytes
-///   Alignment: 8 bytes
+///   总计：112 字节
+///   对齐：8 字节
 #[repr(C)]
 pub struct Cell {
     pub value: JsValue,
@@ -624,20 +622,20 @@ impl JsObject {
         self.header = (self.header & !0x00FF_FFFF) | (id & 0x00FF_FFFF);
     }
 
-    /// Returns property count from the hash_props vec length.
-    /// Returns 0 if hash_props has not been allocated.
+    /// 返回 hash_props vec 的长度作为属性数。
+    /// hash_props 未分配时返回 0。
     pub fn prop_count(&self) -> u32 {
         if self.hash_props.is_null() {
             0
         } else {
-            // SAFETY: hash_props is either null or was created from Box<Vec<JsValue>>
-            // in ensure_hash_props/new_array and remains owned by this object.
+            // SAFETY: hash_props 要么为空，要么在 ensure_hash_props/new_array 中
+            // 由 Box<Vec<JsValue>> 创建并归本对象所有。
             let vec = unsafe { &*(self.hash_props as *const Vec<JsValue>) };
             vec.len() as u32
         }
     }
 
-    /// Sets the length of hash_props vec. Truncates or extends with undefined.
+    /// 设置 hash_props vec 的长度。截断或补 undefined 扩展。
     pub fn set_prop_count(&mut self, count: impl PropIndex) {
         let target = count.to_u32() as usize;
         {
@@ -666,14 +664,13 @@ impl JsObject {
         !self.prop_meta.is_null()
     }
 
-    /// Like `set_prop_count` but assumes `hash_props` is already allocated.
-    /// Caller must guarantee the object has at least one element (or was
-    /// created via `new_array`). Used in hot array builtins to skip the
-    /// redundant `ensure_hash_props` null check on each mutation.
+    /// 同 `set_prop_count`，但假定 `hash_props` 已分配。
+    /// 调用方须保证对象至少含一个元素（或经 `new_array` 创建）。
+    /// 用于热路径数组 builtin，跳过每次变更时冗余的 `ensure_hash_props` 空检查。
     #[inline]
     pub fn set_prop_count_fast(&mut self, count: impl PropIndex) {
         let target = count.to_u32() as usize;
-        // SAFETY: caller guarantees hash_props is non-null.
+        // SAFETY: 调用方保证 hash_props 非空。
         let vec = unsafe { &mut *(self.hash_props as *mut Vec<JsValue>) };
         if target < vec.len() {
             vec.truncate(target);
@@ -702,8 +699,8 @@ impl JsObject {
             let vec = Box::new(vec![None::<PropMetaEntry>; len]);
             self.prop_meta = Box::into_raw(vec) as *mut u8;
         }
-        // SAFETY: prop_meta was set from Box<Vec<Option<PropMetaEntry>>> in
-        // ensure_prop_meta and remains valid while this object owns it.
+        // SAFETY: prop_meta 在 ensure_prop_meta 中由
+        // Box<Vec<Option<PropMetaEntry>>> 创建，本对象持有期间始终有效。
         unsafe { &mut *(self.prop_meta as *mut Vec<Option<PropMetaEntry>>) }
     }
 
@@ -712,8 +709,8 @@ impl JsObject {
         if self.prop_meta.is_null() {
             None
         } else {
-            // SAFETY: prop_meta was set from Box<Vec<Option<PropMetaEntry>>> in
-            // ensure_prop_meta and remains valid while this object owns it.
+            // SAFETY: prop_meta 在 ensure_prop_meta 中由
+            // Box<Vec<Option<PropMetaEntry>>> 创建，本对象持有期间始终有效。
             unsafe { Some(&*(self.prop_meta as *const Vec<Option<PropMetaEntry>>)) }
         }
     }
@@ -722,8 +719,8 @@ impl JsObject {
         if self.prop_meta.is_null() {
             None
         } else {
-            // SAFETY: prop_meta was set from Box<Vec<Option<PropMetaEntry>>> in
-            // ensure_prop_meta and remains valid while this object owns it.
+            // SAFETY: prop_meta 在 ensure_prop_meta 中由
+            // Box<Vec<Option<PropMetaEntry>>> 创建，本对象持有期间始终有效。
             unsafe { Some(&mut *(self.prop_meta as *mut Vec<Option<PropMetaEntry>>)) }
         }
     }
@@ -853,22 +850,22 @@ impl JsObject {
         }
     }
 
-    /// Initialize hash_props if null, return mutable reference to Vec.
+    /// 若 hash_props 为空则初始化，返回其可变引用。
     pub fn ensure_hash_props(&mut self) -> &mut Vec<JsValue> {
         if self.hash_props.is_null() {
             let vec = Box::new(Vec::<JsValue>::new());
             self.hash_props = Box::into_raw(vec) as *mut u8;
         }
-        // SAFETY: hash_props was set from Box<Vec<JsValue>> in this method or new_array.
+        // SAFETY: hash_props 在本方法或 new_array 中由 Box<Vec<JsValue>> 创建。
         unsafe { &mut *(self.hash_props as *mut Vec<JsValue>) }
     }
 
-    /// Safe read access to hash_props vec. Returns None if not allocated.
+    /// hash_props vec 的安全只读访问；未分配时返回 None。
     pub fn hash_props_vec(&self) -> Option<&Vec<JsValue>> {
         if self.hash_props.is_null() {
             None
         } else {
-            // SAFETY: hash_props was set from Box<Vec<JsValue>> in ensure_hash_props/new_array.
+            // SAFETY: hash_props 在 ensure_hash_props/new_array 中由 Box<Vec<JsValue>> 创建。
             unsafe { Some(&*(self.hash_props as *const Vec<JsValue>)) }
         }
     }
@@ -877,23 +874,23 @@ impl JsObject {
         if self.hash_props.is_null() {
             None
         } else {
-            // SAFETY: hash_props was set from Box<Vec<JsValue>> in ensure_hash_props/new_array.
+            // SAFETY: hash_props 在 ensure_hash_props/new_array 中由 Box<Vec<JsValue>> 创建。
             unsafe { Some(&mut *(self.hash_props as *mut Vec<JsValue>)) }
         }
     }
 
-    /// Get property value at position index in the vec.
-    /// Returns JsValue::undefined() if hash_props not allocated or position out of bounds.
+    /// 取下标 position 处的属性值。
+    /// hash_props 未分配或越界时返回 JsValue::undefined()。
     pub fn get_prop_at(&self, position: impl PropIndex) -> JsValue {
         if self.hash_props.is_null() {
             return JsValue::undefined();
         }
-        // SAFETY: hash_props was set from Box<Vec<JsValue>> in ensure_hash_props/new_array.
+        // SAFETY: hash_props 在 ensure_hash_props/new_array 中由 Box<Vec<JsValue>> 创建。
         let vec = unsafe { &*(self.hash_props as *const Vec<JsValue>) };
         vec.get(position.to_u32() as usize).copied().unwrap_or(JsValue::undefined())
     }
 
-    /// Set property value at position index. Vec auto-grows if needed.
+    /// 设置下标 position 处的属性值。vec 按需自动扩容。
     pub fn set_prop_at(&mut self, position: impl PropIndex, val: JsValue) {
         let pos = position.to_u32() as usize;
         if pos > MAX_DENSE_PROPS {
@@ -917,7 +914,7 @@ impl JsObject {
         }
     }
 
-    /// Push a value onto hash_props vec. Returns the index position.
+    /// 把值压入 hash_props vec，返回其下标。
     pub fn push_prop(&mut self, val: JsValue) -> u32 {
         let vec = self.ensure_hash_props();
         let pos = vec.len();
@@ -928,12 +925,12 @@ impl JsObject {
         pos as u32
     }
 
-    /// Get the length of hash_props vec (returns 0 if not allocated).
+    /// 返回 hash_props vec 的长度（未分配时返回 0）。
     pub fn prop_vec_len(&self) -> usize {
         if self.hash_props.is_null() {
             0
         } else {
-            // SAFETY: hash_props was set from Box<Vec<JsValue>> in ensure_hash_props/new_array.
+            // SAFETY: hash_props 在 ensure_hash_props/new_array 中由 Box<Vec<JsValue>> 创建。
             unsafe { &*(self.hash_props as *const Vec<JsValue>) }.len()
         }
     }
@@ -964,7 +961,7 @@ impl JsObject {
                 return Err("cyclic __proto__ value");
             }
             debug_assert!(!cursor_ptr.is_null(), "prototype cursor pointer must not be null");
-            // SAFETY: cursor is known to be an object JsValue, so it encodes a valid JsObject pointer.
+            // SAFETY: cursor 已知为对象 JsValue，编码的是合法 JsObject 指针。
             let obj = unsafe { &*cursor_ptr };
             cursor = obj.proto;
         }
@@ -1013,8 +1010,8 @@ impl JsObject {
         self.sub_module_index = idx;
     }
 
-    /// Arrow function flag (header bit 28).
-    /// When true, CALL dispatch captures lexical `this` from creation time.
+    /// 箭头函数标志（header bit 28）。
+    /// 为 true 时，CALL 分发捕获创建时的词法 `this`。
     pub fn is_arrow(&self) -> bool {
         (self.header >> 28) & 1 != 0
     }
@@ -1028,8 +1025,8 @@ impl JsObject {
         }
     }
 
-    /// Lexical `this` captured at arrow function creation time.
-    /// Only meaningful when `is_arrow()` returns true.
+    /// 箭头函数创建时捕获的词法 `this`。
+    /// 仅在 `is_arrow()` 返回 true 时有意义。
     pub fn captured_this(&self) -> JsValue {
         self.captured_this
     }
@@ -1039,8 +1036,8 @@ impl JsObject {
         self.captured_this = v;
     }
 
-    /// Class constructor flag (header bit 27).
-    /// Ordinary CALL rejects objects with this flag; NEW_EXPRESSION is allowed.
+    /// 类构造函数标志（header bit 27）。
+    /// 普通 CALL 拒绝带此标志的对象；NEW_EXPRESSION 允许。
     pub fn is_class_constructor(&self) -> bool {
         (self.header >> 27) & 1 != 0
     }

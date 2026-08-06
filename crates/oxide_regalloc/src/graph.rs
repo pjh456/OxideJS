@@ -1,13 +1,13 @@
-//! 干涉图构建 + 预着色 + 可分配色集（D-09/D-10/D-11 + RESEARCH 发现 4）。
+//! 干涉图构建 + 预着色 + 可分配色集。
 //!
 //! - 真实 vreg：字面 `Operand::Reg(r)`（rd/a/b）+ CALL 系参数连续区间 [first, first+nargs)
 //! - 干涉边：逐指令 `live_before[i]` 中同时 live 的真实 vreg 两两加边（fresh vreg 按 at==i 并入）
-//! - 预着色：参数段 [param_base, base+count) 钉死原号（VM 调用契约 D-10）；escaped vreg
-//!   （nested `LOAD_VAR.a`/`STORE_VAR.rd` 直引父槽）钉死原槽号且排除 spill（B012）
+//! - 预着色：参数段 [param_base, base+count) 钉死原号（VM 调用契约）；escaped vreg
+//!   （nested `LOAD_VAR.a`/`STORE_VAR.rd` 直引父槽）钉死原槽号且排除 spill
 //! - 可分配色集：`(1..=253) − 参数色 − escaped 色 − [arg_window_base, 253]`
-//!   （arg_window_base = 254 − max_nargs，为 05-08 调用点 MOV 补位留空槽）
+//!   （arg_window_base = 254 − max_nargs，为调用点参数连续性 MOV 补位留空槽）
 //!
-//! 确定性：全 BTreeMap + Vec 排序，禁 HashMap 迭代序（B010）。
+//! 确定性：全 BTreeMap + Vec 排序，禁 HashMap 迭代序。
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -36,10 +36,10 @@ pub(super) struct InterferenceGraph {
 
 /// 收集全部真实 vreg（BTreeSet 保确定性）：
 /// 字面 `Operand::Reg(r)`（rd/a/b 三槽）+ CALL/CALL_NATIVE/NEW_EXPRESSION b 槽参数区间
-/// + SUPER_CALL a 槽参数区间。0 无条件排除（reg 0 永非真实——emit alloc_reg 从 ≥1 起）。
+/// + SUPER_CALL a 槽参数区间。0 无条件排除（reg 0 永非真实——emit 分配寄存器从 ≥1 起）。
 ///
-/// 254/255 的 over-approx 规则：live bitset 中位 254/255 无法区分 This/NewTarget 占用与
-/// 真实 vreg 活度，若函数存在该号真实 vreg（大函数 B005 场景）则按真实 vreg 建节点染色——
+/// 254/255 的过近似规则：live bitset 中位 254/255 无法区分 This/NewTarget 占用与
+/// 真实 vreg 活度，若函数存在该号真实 vreg（大函数场景）则按真实 vreg 建节点染色——
 /// 多出的边只造成过度约束（安全方向），缺失边才会错值。
 pub(super) fn collect_real_vregs(f: &IRFunction) -> BTreeSet<u32> {
     let mut real = BTreeSet::new();
@@ -85,7 +85,7 @@ pub(super) fn build(
 
     // ── 预着色 ──
     let mut pre_colors: BTreeMap<u32, u32> = BTreeMap::new();
-    // 参数段：VM 调用写 regs[param_base+i]，钉死不可动（D-10）
+    // 参数段：VM 调用写 regs[param_base+i]，钉死不可动（调用契约）
     let pl = f.param_layout;
     if pl.count > 0 {
         for i in 0..pl.count {
@@ -93,12 +93,12 @@ pub(super) fn build(
             pre_colors.insert(v, v);
         }
     }
-    // escaped：递归 nested 收集 LOAD_VAR.a / STORE_VAR.rd 直引的父槽（B012）
+    // escaped：递归 nested 收集 LOAD_VAR.a / STORE_VAR.rd 直引的父槽
     let mut escaped_colors: Vec<u32> = Vec::new();
     collect_escaped(&f.nested, &mut pre_colors, &mut escaped_colors);
-    // 对称缺口（B013 延伸）：子模块自身引用的父槽也必须预着色恒等。父侧 collect_escaped
-    // 只保证父不移动槽；但子模块 alloc 时，它引用父槽的 LOAD_VAR.a / STORE_VAR.rd 会被
-    // 当作子模块自己的 vreg 参与染色而移走 → 子模块读错物理槽。分界线 = param_layout.base
+    // 对称缺口：子模块自身引用的父槽也必须预着色恒等。父侧 collect_escaped 只保证父不
+    // 移动槽；但子模块 alloc 时，它引用父槽的 LOAD_VAR.a / STORE_VAR.rd 会被当作子模块
+    // 自己的 vreg 参与染色而移走 → 子模块读错物理槽。分界线 = param_layout.base
     // （emit 的 inherited_reg_start 继承机制：子模块 vreg ≥ base，父槽引用 < base）。
     collect_own_escaped(f, &mut pre_colors, &mut escaped_colors);
 
@@ -106,12 +106,7 @@ pub(super) fn build(
     let max_nargs = f
         .insts
         .iter()
-        .filter(|i| {
-            matches!(
-                i.op,
-                OpCode::CALL | OpCode::CALL_NATIVE | OpCode::NEW_EXPRESSION | OpCode::SUPER_CALL
-            )
-        })
+        .filter(|i| matches!(i.op, OpCode::CALL | OpCode::CALL_NATIVE | OpCode::NEW_EXPRESSION | OpCode::SUPER_CALL))
         .map(|i| i.ext.first().copied().unwrap_or(0))
         .max()
         .unwrap_or(0);
@@ -131,12 +126,18 @@ pub(super) fn build(
         if !spill_set.contains(&v) {
             nodes.insert(
                 v,
-                Node { pre_color: pre_colors.get(&v).copied(), adj: Vec::new() },
+                Node {
+                    pre_color: pre_colors.get(&v).copied(),
+                    adj: Vec::new(),
+                },
             );
         }
     }
     for fr in fresh {
-        nodes.entry(fr.id).or_insert(Node { pre_color: None, adj: Vec::new() });
+        nodes.entry(fr.id).or_insert(Node {
+            pre_color: None,
+            adj: Vec::new(),
+        });
     }
     // 邻接表（BTreeMap<u32, BTreeSet<u32>> 去重后转 Vec 排序）
     let mut adj_sets: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
@@ -171,11 +172,16 @@ pub(super) fn build(
         }
     }
 
-    InterferenceGraph { nodes, allocatable, k, arg_window_base }
+    InterferenceGraph {
+        nodes,
+        allocatable,
+        k,
+        arg_window_base,
+    }
 }
 
 /// 递归收集 nested 树中变量槽引用（LOAD_VAR.a 读槽、STORE_VAR.rd 写槽），
-/// 注入 pre_colors 并记录 escaped 色列表（可分配集排除 + spill 候选排除，B012）。
+/// 注入 pre_colors 并记录 escaped 色列表（可分配集排除 + spill 候选排除）。
 fn collect_escaped(nested: &[IRFunction], pre_colors: &mut BTreeMap<u32, u32>, out: &mut Vec<u32>) {
     for sub in nested {
         for inst in &sub.insts {
@@ -196,7 +202,7 @@ fn collect_escaped(nested: &[IRFunction], pre_colors: &mut BTreeMap<u32, u32>, o
     out.sort_unstable();
 }
 
-/// 收集当前函数自身对父槽的直接引用（B013 延伸，父侧保护的对称缺口）：
+/// 收集当前函数自身对父槽的直接引用（父侧保护的对称缺口）：
 /// `LOAD_VAR.a` / `STORE_VAR.rd` 中槽号 < param_layout.base 的 vreg 是父槽引用
 /// （emit inherited_reg_start 分界：子函数自身 vreg 从 base 起分配，父槽引用 < base）。
 /// 父侧 collect_escaped 只保护父不移动槽；此处保证子函数 alloc 时这些引用不被染色移走。
@@ -245,8 +251,10 @@ mod tests {
         let mut f = empty_function();
         f.insts.push(Inst::load_const(Operand::Reg(1), 0));
         f.insts.push(Inst::load_const(Operand::Reg(2), 0));
-        f.insts.push(Inst::new(OpCode::ADD, Operand::Reg(3), Operand::Reg(1), Operand::Reg(2)));
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(3), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::ADD, Operand::Reg(3), Operand::Reg(1), Operand::Reg(2)));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(3), Operand::None, Operand::None));
         let g = build_graph(&f);
         assert!(g.nodes[&1].adj.contains(&2), "r1 与 r2 应邻接");
         assert!(g.nodes[&2].adj.contains(&1));
@@ -259,11 +267,14 @@ mod tests {
         let mut f = empty_function();
         f.insts.push(Inst::load_const(Operand::Reg(1), 0));
         f.insts.push(Inst::load_const(Operand::Reg(2), 0));
-        f.insts.push(Inst::new(OpCode::ADD, Operand::Reg(3), Operand::Reg(1), Operand::Reg(2)));
+        f.insts
+            .push(Inst::new(OpCode::ADD, Operand::Reg(3), Operand::Reg(1), Operand::Reg(2)));
         f.insts.push(Inst::load_const(Operand::Reg(4), 0));
         f.insts.push(Inst::load_const(Operand::Reg(5), 0));
-        f.insts.push(Inst::new(OpCode::ADD, Operand::Reg(6), Operand::Reg(4), Operand::Reg(5)));
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(6), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::ADD, Operand::Reg(6), Operand::Reg(4), Operand::Reg(5)));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(6), Operand::None, Operand::None));
         let g = build_graph(&f);
         assert!(!g.nodes[&1].adj.contains(&4), "r1 与 r4 活度不相交，无边");
     }
@@ -272,8 +283,10 @@ mod tests {
     fn param_segment_precolored() {
         let mut f = empty_function();
         f.param_layout = oxide_ir::ParamLayout { base: 1, count: 2 };
-        f.insts.push(Inst::new(OpCode::ADD, Operand::Reg(3), Operand::Reg(1), Operand::Reg(2)));
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(3), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::ADD, Operand::Reg(3), Operand::Reg(1), Operand::Reg(2)));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(3), Operand::None, Operand::None));
         let g = build_graph(&f);
         assert_eq!(g.nodes[&1].pre_color, Some(1));
         assert_eq!(g.nodes[&2].pre_color, Some(2));
@@ -284,10 +297,13 @@ mod tests {
     #[test]
     fn escaped_slots_precolored() {
         let mut f = empty_function();
-        f.insts.push(Inst::new(OpCode::ADD, Operand::Reg(5), Operand::Reg(3), Operand::Reg(4)));
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::ADD, Operand::Reg(5), Operand::Reg(3), Operand::Reg(4)));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None));
         let mut sub = empty_function();
-        sub.insts.push(Inst::new(OpCode::LOAD_VAR, Operand::Reg(9), Operand::Reg(3), Operand::None));
+        sub.insts
+            .push(Inst::new(OpCode::LOAD_VAR, Operand::Reg(9), Operand::Reg(3), Operand::None));
         f.nested.push(sub);
         let g = build_graph(&f);
         assert_eq!(g.nodes[&3].pre_color, Some(3), "escaped 槽 r3 预着色");
@@ -297,8 +313,10 @@ mod tests {
     #[test]
     fn reserved_colors_excluded() {
         let mut f = empty_function();
-        f.insts.push(Inst::new(OpCode::ADD, Operand::Reg(3), Operand::Reg(1), Operand::Reg(2)));
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(3), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::ADD, Operand::Reg(3), Operand::Reg(1), Operand::Reg(2)));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(3), Operand::None, Operand::None));
         let g = build_graph(&f);
         assert!(!g.allocatable.contains(&0), "色 0 排除（CALL 隐式 reg0）");
         assert!(!g.allocatable.contains(&254) && !g.allocatable.contains(&255), "254/255 排除");
@@ -309,7 +327,8 @@ mod tests {
     fn arg_window_reserved() {
         let mut f = empty_function();
         f.insts.push(Inst::call(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 3));
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None));
         let g = build_graph(&f);
         assert_eq!(g.arg_window_base, 251, "max_nargs=3 → base 251");
         assert!(!g.allocatable.contains(&251) && !g.allocatable.contains(&252) && !g.allocatable.contains(&253));
@@ -317,10 +336,12 @@ mod tests {
 
     #[test]
     fn high_numbered_vreg_254_is_real_node() {
-        // 大函数场景：真实 vreg 254 必须建节点（B005 正确性前提）
+        // 大函数场景：真实 vreg 254 必须建节点（正确性前提）
         let mut f = empty_function();
-        f.insts.push(Inst::new(OpCode::ADD, Operand::Reg(254), Operand::Reg(252), Operand::Reg(253)));
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(254), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::ADD, Operand::Reg(254), Operand::Reg(252), Operand::Reg(253)));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(254), Operand::None, Operand::None));
         let real = collect_real_vregs(&f);
         assert!(real.contains(&254), "真实 vreg 254 必须被收集");
         let g = build_graph(&f);

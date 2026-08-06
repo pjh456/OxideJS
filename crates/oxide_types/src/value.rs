@@ -9,16 +9,16 @@ use std::fmt;
 
 use crate::object::{JsObject, JsString};
 
-/// Quiet NaN prefix — bits 63-51 = sign(1) + exponent(0x7FF) + quiet_bit(1)
+/// 静默 NaN 前缀——bits 63-51 = sign(1) + exponent(0x7FF) + quiet_bit(1)
 const QNAN_PREFIX: u64 = 0xFFF8_0000_0000_0000;
 
-/// NaN exponent mask — bits 62-52
+/// NaN 指数掩码——bits 62-52
 const EXP_MASK: u64 = 0x7FF0_0000_0000_0000;
 
-/// Mantissa mask — bits 51-0
+/// 尾数掩码——bits 51-0
 const MANTISSA_MASK: u64 = 0x000F_FFFF_FFFF_FFFF;
 
-/// Tag sits in bits 50-48 of mantissa
+/// tag 位于尾数的 bits 50-48
 const TAG_MASK: u64 = 0x0007_0000_0000_0000;
 const TAG_SHIFT: u64 = 48;
 const TAG_INT: u64 = 0;
@@ -32,7 +32,7 @@ const TAG_SYMBOL: u64 = 6;
 /// 48-bit pointer mask (x86-64 canonical VA)
 pub const PTR_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 
-/// 32-bit integer payload mask
+/// 32 位整数载荷掩码
 const INT_MASK: u64 = 0x0000_0000_FFFF_FFFF;
 
 fn make_tag(tag: u64) -> u64 {
@@ -93,7 +93,7 @@ impl JsValue {
         Self(bits)
     }
 
-    /// Raw NaN-boxed bits. For checked pointer extraction after is_object().
+    /// 原始 NaN-boxed 位模式。用于在 `is_object()` 之后做受检的指针提取。
     #[inline(always)]
     pub fn to_bits(self) -> u64 {
         self.0
@@ -150,9 +150,9 @@ impl JsValue {
         Self(make_tag(TAG_STRING) | addr)
     }
 
-    /// Semantic alias for permanent (kernel-owned, never-collected) strings.
-    /// Encoding is identical to `string`; the perm-vs-session distinction is by
-    /// ownership (membership in the GC root set), not by the NaN-box bits.
+    /// 永久字符串（内核持有、永不回收）的语义别名。
+    /// 编码与 `string` 完全相同；perm 与 session 的区分在所有权（是否属于
+    /// GC 根集），而非 NaN-box 位。
     pub fn perm_string(ptr: *const JsString) -> Self {
         Self::string(ptr)
     }
@@ -485,8 +485,8 @@ mod tests {
         let b = Box::new(JsString::new("x".to_string()));
         let va = JsValue::string(&*a);
         let vb = JsValue::string(&*b);
-        // Distinct allocations with identical content are NOT == (pointer identity).
-        // Semantic content equality is handled in coercion, not PartialEq.
+        // 内容相同但分配不同 → NOT ==（指针同一性）。
+        // 语义内容相等在 coercion 层处理，不在 PartialEq。
         assert_ne!(va, vb);
         assert_eq!(va, JsValue::string(&*a));
         assert_eq!(unsafe { (*va.as_string_ptr()).as_str() }, unsafe { (*vb.as_string_ptr()).as_str() });

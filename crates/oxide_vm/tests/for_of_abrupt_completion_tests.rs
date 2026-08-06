@@ -19,10 +19,10 @@ fn eval(source: &str) -> String {
     }
 }
 
-// Spec (ECMA-262 §13.7.5): next()-throw propagates the ORIGINAL value WITHOUT calling
-// return(); IteratorClose (return()) runs only on BODY abrupt completion (throw/break/return).
-// return() is observed via globalThis (a function CAN read/write globalThis properties;
-// it cannot write a plain outer `var` in this engine).
+// 规范（ECMA-262 §13.7.5）：next()-throw 传播原始值且不调用 return()；
+// IteratorClose（return()）只在循环体突然完成（throw/break/return）时执行。
+// return() 经 globalThis 观测（函数可读写 globalThis 属性；
+// 本引擎中它不能写入外层普通 `var`）。
 
 #[test]
 fn for_of_next_throw_is_catchable_with_original_type() {

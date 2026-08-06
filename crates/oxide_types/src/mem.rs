@@ -9,11 +9,10 @@ use std::fmt;
 use std::ops::Deref;
 use std::sync::Arc;
 
-/// Reference-counted persistent pointer.
+/// 引用计数持久指针。
 ///
-/// Wraps `Arc<T>` for cross-epoch object storage. `Clone` increments the
-/// reference count; `Drop` decrements it. Objects wrapped in `P<T>` survive
-/// `Epoch::reset()` — they live on the global heap.
+/// 包装 `Arc<T>` 用于跨 epoch 对象存储。`Clone` 递增引用计数，`Drop` 递减；
+/// `P<T>` 包裹的对象在 `Epoch::reset()` 后仍存活——它们位于全局堆上。
 #[repr(transparent)]
 pub struct P<T>(Arc<T>);
 
@@ -61,11 +60,10 @@ impl<T: fmt::Display> fmt::Display for P<T> {
     }
 }
 
-/// Persistent heap for cross-epoch object storage.
+/// 跨 epoch 对象存储的持久堆。
 ///
-/// Provides a minimal API: `promote(value)` moves `value` to the
-/// global heap under `Arc` and returns `P<T>`. Typed storage for shapes,
-/// code, IC templates, and strings lives in the OxideKernel.
+/// 提供最小 API：`promote(value)` 把 `value` 以 `Arc` 移到全局堆并返回 `P<T>`。
+/// shape、code、IC 模板与字符串的类型化存储位于 OxideKernel。
 pub struct PersistentHeap;
 
 impl PersistentHeap {
@@ -74,9 +72,8 @@ impl PersistentHeap {
         Self
     }
 
-    /// Move a value to the persistent heap and return a reference-counted pointer.
-    /// The returned `P<T>` survives epoch resets — it's stored on the global heap
-    /// under `Arc`.
+    /// 把 `value` 移到持久堆并返回引用计数指针。
+    /// 返回的 `P<T>` 跨 epoch 重置存活——它以 `Arc` 存在全局堆上。
     pub fn promote<T>(&self, value: T) -> P<T> {
         P::new(value)
     }
@@ -88,9 +85,8 @@ impl Default for PersistentHeap {
     }
 }
 ///
-/// Wraps `bumpalo::Bump` with an epoch ID counter for dangling pointer detection.
-/// All Agent-call objects are allocated here; `reset()` clears them in O(1)
-/// at the end of each call.
+/// 包装 `bumpalo::Bump` 并携带 epoch ID 计数器用于悬挂指针检测。
+/// 所有 Agent 调用级对象分配于此；`reset()` 在每次调用结束时 O(1) 清空。
 pub struct Epoch {
     bump: bumpalo::Bump,
     epoch_id: u64,
@@ -105,13 +101,12 @@ impl Epoch {
         }
     }
 
-    /// Bump-allocate a value and return a raw pointer to it.
+    /// 在 arena 中 bump 分配一个值并返回裸指针。
     ///
     /// # Safety
     ///
-    /// The returned pointer is valid until `reset()` is called on this epoch.
-    /// Callers must not store it beyond that boundary, and must ensure no
-    /// aliases are used after the arena is reset.
+    /// 返回的指针在本 epoch 的 `reset()` 调用之前有效。调用方不得在
+    /// 该边界之后继续持有，并须确保 arena 重置后不再使用任何别名。
     pub fn alloc<T>(&self, value: T) -> *mut T {
         self.bump.alloc(value)
     }
@@ -123,8 +118,8 @@ impl Epoch {
         &self.bump
     }
 
-    /// Bump-allocate a value using a closure for initialization.
-    /// Better for compiler optimization — construct directly on arena.
+    /// 用初始化闭包在 arena 上直接构造值。
+    /// 对编译器优化更友好——直接在 arena 上构造。
     pub fn alloc_with<T, F>(&self, f: F) -> *mut T
     where
         F: FnOnce() -> T,
@@ -132,17 +127,17 @@ impl Epoch {
         self.bump.alloc_with(f)
     }
 
-    /// Return true when `ptr` lies inside one of the currently allocated bump chunks.
+    /// 当 `ptr` 位于当前已分配 bump chunk 之一时返回 true。
     ///
-    /// This only compares addresses and does not dereference `ptr`.
+    /// 仅比较地址，不解引用 `ptr`。
     #[inline]
     pub fn is_epoch_ptr(&self, ptr: *const u8) -> bool {
         let addr = ptr as usize;
         if addr == 0 {
             return false;
         }
-        // SAFETY: this helper performs no allocations while walking the raw chunk
-        // iterator, so bumpalo's chunk list cannot change during iteration.
+        // SAFETY: 本辅助函数在遍历原始 chunk 迭代器时不执行任何分配，
+        // 因此 bumpalo 的 chunk 列表在迭代期间不会变化。
         unsafe {
             self.bump.iter_allocated_chunks_raw().any(|(base, len)| {
                 let start = base as usize;
@@ -152,15 +147,15 @@ impl Epoch {
         }
     }
 
-    /// O(1) mass deallocation. All previous allocations become invalid.
-    /// Increments epoch ID to invalidate stale pointers (debug_assert guard).
+    /// O(1) 批量释放。此前所有分配立即失效。
+    /// 递增 epoch ID 以使过期指针失效（debug_assert 守卫）。
     pub fn reset(&mut self) {
         self.bump.reset();
         self.epoch_id += 1;
     }
 
-    /// Current epoch ID. Arena-allocated objects store this value;
-    /// dereference checks they match the current ID (debug_assert only).
+    /// 当前 epoch ID。arena 分配的对象存储此值；
+    /// 解引用时校验与当前 ID 一致（仅 debug_assert）。
     pub fn current_id(&self) -> u64 {
         self.epoch_id
     }

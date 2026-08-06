@@ -112,9 +112,8 @@ fn multiple_arrows_in_same_scope() {
     assert_eq!(eval("var a = () => 1, b = () => 2; a() + b()"), "3");
 }
 
-// NOTE: Arrow functions capturing lexical `this` from enclosing functions
-// require nested function call support (sub_module flattening), which is
-// a pre-existing limitation. These tests will be enabled in a future phase:
+// 未支持：箭头函数从外围函数捕获词法 `this` 依赖嵌套函数调用（子模块展平），
+// 是既有能力限制。以下测试待能力补齐后启用：
 //
 // fn arrow_captures_enclosing_this() {
 //     // const o = {x:10, f:function(){ return (() => this.x)(); }}; o.f()
@@ -127,4 +126,3 @@ fn multiple_arrows_in_same_scope() {
 fn closure_captures_outer_let() {
     assert_eq!(eval("var f; { let x = 7; f = () => x; } f()"), "7");
 }
-

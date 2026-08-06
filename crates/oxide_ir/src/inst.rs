@@ -42,7 +42,7 @@ impl Inst {
         }
     }
 
-    // ── IC 系：ext = [0, 0, 0]（shape/slot/proto 占位字，VM 运行时 patch）──
+    // ── IC 系：ext = [0, 0, 0]（shape/slot/proto 占位字，VM 运行时回填）──
 
     /// 内联缓存读属性：结果写入 `dst`，属性键为 `key`。
     pub fn ic_get(dst: Operand, key: Operand) -> Self {
@@ -148,20 +148,20 @@ impl Inst {
         }
     }
 
-    // ── RegAlloc 辅助指令（D-06/D-07）──
+    // ── RegAlloc 辅助指令 ──
 
-    /// 寄存器复制 rd = a（D-07，RegAlloc 区间拆分搬值）。
+    /// 寄存器复制 rd = a（RegAlloc 区间拆分时搬值）。
     /// 不可用 LOAD_VAR/STORE_VAR 组合模拟——引入变量绑定语义会误触 const guard。
     pub fn inst_mov(dst: Operand, src: Operand) -> Self {
         Self::with_ext(OpCode::MOV, dst, src, Operand::None, &[])
     }
 
-    /// 溢出：regs[rd] → spill_stack[frame_base + slot]，ext=[slot u16]（D-06）。
+    /// 溢出：regs[rd] → spill_stack[frame_base + slot]，ext=[slot u16]。
     pub fn inst_spill(src: Operand, slot: u16) -> Self {
         Self::with_ext(OpCode::SPILL, src, Operand::None, Operand::None, &[slot as u32])
     }
 
-    /// 恢复：spill_stack[frame_base + slot] → regs[rd]，ext=[slot u16]（D-06）。
+    /// 恢复：spill_stack[frame_base + slot] → regs[rd]，ext=[slot u16]。
     pub fn inst_unspill(dst: Operand, slot: u16) -> Self {
         Self::with_ext(OpCode::UNSPILL, dst, Operand::None, Operand::None, &[slot as u32])
     }
@@ -187,32 +187,17 @@ impl Inst {
 
     /// 条件寄存器为 false 时跳转。
     pub fn jmp_if_false(cond_reg: u32, label: LabelId) -> Self {
-        Self::new(
-            OpCode::JMP_IF_FALSE,
-            Operand::Reg(cond_reg),
-            Operand::None,
-            Operand::Label(label),
-        )
+        Self::new(OpCode::JMP_IF_FALSE, Operand::Reg(cond_reg), Operand::None, Operand::Label(label))
     }
 
     /// 条件寄存器为 true 时跳转。
     pub fn jmp_if_true(cond_reg: u32, label: LabelId) -> Self {
-        Self::new(
-            OpCode::JMP_IF_TRUE,
-            Operand::Reg(cond_reg),
-            Operand::None,
-            Operand::Label(label),
-        )
+        Self::new(OpCode::JMP_IF_TRUE, Operand::Reg(cond_reg), Operand::None, Operand::Label(label))
     }
 
     /// 条件寄存器为 null/undefined 时跳转（`??` / 可选链短路）。
     pub fn jmp_if_nullish(cond_reg: u32, label: LabelId) -> Self {
-        Self::new(
-            OpCode::JMP_IF_NULLISH,
-            Operand::Reg(cond_reg),
-            Operand::None,
-            Operand::Label(label),
-        )
+        Self::new(OpCode::JMP_IF_NULLISH, Operand::Reg(cond_reg), Operand::None, Operand::Label(label))
     }
 
     /// try 块起始，label 指向对应的 catch/finally 处理入口。

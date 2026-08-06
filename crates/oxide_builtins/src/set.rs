@@ -33,7 +33,7 @@ impl PartialEq for SetKey {
             }
             return a == b;
         }
-        // SAFETY: JsValue is an 8-byte NaN-boxed Copy value; raw bits define non-double identity here.
+        // SAFETY: JsValue 是 8 字节 NaN-box Copy 值；此处以原始位定义非 double 值的同一性。
         unsafe { std::mem::transmute::<JsValue, u64>(self.0) == std::mem::transmute::<JsValue, u64>(other.0) }
     }
 }
@@ -52,7 +52,7 @@ impl Hash for SetKey {
                 d.to_bits().hash(state);
             }
         } else {
-            // SAFETY: JsValue is an 8-byte NaN-boxed Copy value; hashing raw bits matches equality above.
+            // SAFETY: JsValue 是 8 字节 NaN-box Copy 值；哈希原始位与上面的相等判定一致。
             unsafe { std::mem::transmute::<JsValue, u64>(self.0).hash(state) }
         }
     }
@@ -60,15 +60,14 @@ impl Hash for SetKey {
 
 pub(crate) type SetInner = indexmap::IndexSet<SetKey>;
 
-/// Retrieve the `IndexSet` pointer stored in a Set object's native-data slot.
+/// 取出 Set 对象 native-data 槽中存储的 `IndexSet` 指针。
 ///
-/// # Safety contract maintained by callers
+/// # 调用方维护的安全性契约
 ///
-/// The pointer is valid as long as the Set `JsObject` itself is alive. The `JsObject`
-/// lives in the current `Epoch` arena and `Epoch::reset()` is never called while a
-/// native builtin is executing. The `Box<IndexSet>` is allocated in `new_set_inner()`
-/// and is never freed during the Set's lifetime. Only one live `*mut` alias exists per
-/// Set object at a time because native calls are single-threaded.
+/// 指针在 Set `JsObject` 存活期间有效：`JsObject` 分配于当前 `Epoch` arena，
+/// native builtin 执行期间不会调用 `Epoch::reset()`。持有分配的
+/// `Box<IndexSet>` 由 `new_set_inner()` 创建，Set 生命周期内不释放。
+/// native 调用为单线程，同一 Set 对象同时至多存在一个活 `*mut` 别名。
 fn get_set_inner<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<*mut SetInner, JsValue> {
     if !this_val.is_object() {
         return Err(crate::error::create_type_error(vm, "called on non-Set object"));
@@ -77,15 +76,15 @@ fn get_set_inner<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<*mut SetInn
     if set_ptr.is_null() {
         return Err(crate::error::create_type_error(vm, "Set internal state invalid"));
     }
-    // SAFETY: set_ptr is a non-null, aligned pointer to a JsObject bump-allocated in the
-    // current Epoch. Remains valid for the duration of this call.
+    // SAFETY: set_ptr 是当前 Epoch bump 分配的 JsObject 的非空、对齐指针，
+    // 本调用期间有效。
     let set_obj = unsafe { &*set_ptr };
     if !set_obj.is_set() {
         return Err(crate::error::create_type_error(vm, "Set.prototype.add called on incompatible receiver"));
     }
-    // SAFETY: native_data holds the raw pointer written by `alloc_set`.
-    // The pointer is a valid, heap-allocated `Box<IndexSet<SetKey>>`.
-    // Alignment: IndexSet requires at most 8-byte alignment; the global allocator satisfies this.
+    // SAFETY: native_data 持有 `alloc_set` 写入的裸指针，即有效的
+    // 堆分配 `Box<IndexSet<SetKey>>`；IndexSet 至多要求 8 字节对齐，
+    // 全局分配器满足该要求。
     let inner_ptr = set_obj.native_data() as *mut SetInner;
     if inner_ptr.is_null() {
         return Err(crate::error::create_type_error(vm, "Set internal state invalid"));
@@ -265,7 +264,7 @@ pub fn set_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn set_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let _inner = native_try!(get_set_inner(vm, this_val));
-    // Set keys() is an alias for values() — same per-element iterator.
+    // Set 的 keys() 是 values() 的别名——返回同样的逐元素迭代器。
     NativeResult::Ok(crate::iterator::make_mode_iterator(
         vm,
         this_val,

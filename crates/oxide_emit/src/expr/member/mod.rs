@@ -3,10 +3,10 @@
 //! `emit_private_field_expression`、`emit_chain_expression`、`emit_member_domain`。
 
 use crate::{CompileCtx, Emitter};
-use oxide_ir::inst::Inst;
-use oxide_ir::operand::Operand;
 use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
+use oxide_ir::inst::Inst;
+use oxide_ir::operand::Operand;
 use oxide_parser::Expression;
 
 impl Emitter {
@@ -47,7 +47,12 @@ impl Emitter {
         let obj_reg = self.emit_expression(&member.object, ctx)?;
         let key_reg = self.emit_expression(&member.expression, ctx)?;
         let r = ctx.alloc_reg();
-        ctx.inst(Inst::new(OpCode::GET_PROP_DYNAMIC, Operand::Reg(obj_reg), Operand::Reg(key_reg), Operand::Reg(r)));
+        ctx.inst(Inst::new(
+            OpCode::GET_PROP_DYNAMIC,
+            Operand::Reg(obj_reg),
+            Operand::Reg(key_reg),
+            Operand::Reg(r),
+        ));
         Ok(r)
     }
 
@@ -57,16 +62,28 @@ impl Emitter {
         let obj_reg = self.emit_expression(&member.object, ctx)?;
         let key_reg = self.emit_private_id_reg(member.field.name.as_str(), ctx)?;
         let r = ctx.alloc_reg();
-        ctx.inst(Inst::new(OpCode::GET_PRIVATE, Operand::Reg(r), Operand::Reg(obj_reg), Operand::Reg(key_reg)));
+        ctx.inst(Inst::new(
+            OpCode::GET_PRIVATE,
+            Operand::Reg(r),
+            Operand::Reg(obj_reg),
+            Operand::Reg(key_reg),
+        ));
         Ok(r)
     }
 
-    fn emit_chain_expression(&self, chain: &oxide_parser::ChainExpression, ctx: &mut CompileCtx) -> Result<u32, String> {
+    fn emit_chain_expression(
+        &self, chain: &oxide_parser::ChainExpression, ctx: &mut CompileCtx,
+    ) -> Result<u32, String> {
         let short_label = ctx.next_label_id();
         let end_label = ctx.next_label_id();
         let value_reg = self.emit_chain_element(&chain.expression, Some(short_label), ctx)?;
         let result_reg = ctx.alloc_reg();
-        ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg), Operand::Reg(value_reg), Operand::None));
+        ctx.inst(Inst::new(
+            OpCode::LOAD_VAR,
+            Operand::Reg(result_reg),
+            Operand::Reg(value_reg),
+            Operand::None,
+        ));
         ctx.inst(Inst::jmp(end_label));
         ctx.labels.set_label_pos(short_label, ctx.insts.len());
         let undefined_idx = ctx.add_constant(Constant::Undefined);

@@ -203,11 +203,11 @@ impl Vm {
     }
 
     pub(crate) fn clear_execution_state(&mut self) {
-        // Reset contract:
-        // - Clears register file, pc, frame/iterator stacks, saved execution stacks,
-        //   try handlers, pending exceptions, and native call depth.
-        // - Leaves kernel-owned shared state intact.
-        // - `reset()` additionally clears bytecode/constants and resets epoch ownership.
+        // 重置契约：
+        // - 清空寄存器文件、pc、帧/迭代器栈、保存的执行栈、try 处理器、
+        //   待处理异常与 native 调用深度。
+        // - 保留 kernel 共享状态不变。
+        // - `reset()` 额外清空 bytecode/constants 并重置 epoch 归属。
         self.regs = [JsValue::undefined(); 256];
         self.pc = 0;
         self.frames.clear();
@@ -244,7 +244,7 @@ impl Vm {
         self.new_string_owned(s.to_string())
     }
 
-    /// Same as `new_string` but takes `String` by move, avoiding a clone.
+    /// 同 `new_string`，但以 move 接收 `String`，避免一次克隆。
     pub fn new_string_owned(&mut self, s: String) -> JsValue {
         let len = s.len();
         let ptr = Box::into_raw(Box::new(JsString::new(s)));
@@ -258,34 +258,30 @@ impl Vm {
         self.kernel_core.perm_interner().intern(s).0
     }
 
-    /// Intern a compile-time string literal as a permanent, process-lifetime
-    /// `JsString` value shared across sessions. Source literals and RegExp
-    /// source/flags recur (templated/repetitive code) and are immutable, so
-    /// sharing them via `PermInterner` restores cross-session string reuse —
-    /// without interning transient computed values, which stay session-heap
-    /// (`new_string`) so they remain collectable.
+    /// 把编译期字符串字面量 intern 为永久、进程生命周期内、跨 session 共享的
+    /// `JsString` 值。源码字面量与 RegExp 的 source/flags 会反复出现（模板化/
+    /// 重复代码）且不可变，经 `PermInterner` 共享可恢复跨 session 字符串复用——
+    /// 不 intern 瞬态计算值（它们走 session 堆 `new_string`，保持可回收）。
     pub fn perm_string(&self, s: &str) -> JsValue {
         let id = self.kernel_core.perm_interner().intern(s).0;
         JsValue::perm_string(self.kernel_core.perm_interner().string_ptr(id))
     }
 
-    /// Drop all session-heap `JsString` values. Called only on full isolation reset
-    /// (`full_reset` / `clear_full_reset_state`), where no surviving session object
-    /// can reference them. The lighter `reset()` deliberately keeps them alive,
-    /// mirroring session-object survival across evals.
+    /// 释放全部 session 堆 `JsString`。仅在完全隔离重置
+    /// （`full_reset` / `clear_full_reset_state`）时调用，此时没有存活的 session 对象
+    /// 会引用它们。较轻量的 `reset()` 刻意保留它们，与 session 对象跨 eval 存活一致。
     fn free_session_string_heap_data(&mut self) {
         for ptr in self.gc_state.session_string_ptrs.drain(..) {
-            // SAFETY: each ptr came from Box::into_raw(Box::new(JsString)) in new_string
-            // and is dropped exactly once here.
+            // SAFETY: 每个指针来自 new_string 中的 Box::into_raw(Box::new(JsString))，
+            // 且只在这里恰好释放一次。
             unsafe {
                 drop(Box::from_raw(ptr));
             }
         }
     }
 
-    /// Create a function JsObject for a BytecodeFunc constant.
-    /// When `is_arrow` is true, captures the current `this` (regs[254])
-    /// for lexical this binding at call time.
+    /// 为 BytecodeFunc 常量创建函数 JsObject。
+    /// 当 `is_arrow` 为 true 时，捕获当前 `this`（regs[254]），供调用时词法 this 绑定。
     pub(crate) fn create_function_object(
         &mut self, sub_idx: u32, is_arrow: bool, is_class_constructor: bool, is_derived_constructor: bool,
         needs_home_object: bool,
@@ -364,9 +360,9 @@ impl Vm {
         }
     }
 
-    /// Convert a module's immutable constant pool to `JsValue`s. Infallible — the pool holds only
-    /// scalars + permanent-interner string values after CreateClosure/CreateRegExp pulled functions
-    /// and regexes out of the pool. `&self` so it can run inside `OnceLock::get_or_init`.
+    /// 把模块的不可变常量池转换为 `JsValue`。不可能失败——CreateClosure/CreateRegExp
+    /// 已把函数与正则移出常量池，池中只剩标量 + 永久 intern 字符串值。`&self`
+    /// 使其可运行于 `OnceLock::get_or_init` 内部。
     pub(crate) fn convert_immutables(&self, constants: &[Constant]) -> Vec<JsValue> {
         constants.iter().map(|c| self.convert_constant(c)).collect()
     }
@@ -491,13 +487,13 @@ mod tests {
     #[test]
     fn immutables_cache_filled_once_per_module() {
         let mut vm = Vm::new();
-        // `f` recurses (same sub-module entered 4x). Its immutables convert once via OnceLock.
+        // `f` 递归（同一子模块进入 4 次），其不可变常量经 OnceLock 只转换一次。
         let result = run_source(&mut vm, "function f(n){ if(n<=0){ return 'done'; } return f(n-1); } f(3)");
         assert!(result.is_string());
         assert_eq!(vm.lookup_str(result).as_deref(), Some("done"));
-        // Cache = top module + 1 sub-module (f); the sub-module slot was initialized by the calls.
+        // 缓存 = 顶层模块 + 1 个子模块（f）；子模块槽由这些调用初始化。
         assert_eq!(vm.immutables_cache.len(), 2);
-        // Sub-module constants now use temp_immutables (avoiding cache index collision)
+        // 子模块常量改走 temp_immutables（避免缓存下标冲突）
     }
 
     #[test]

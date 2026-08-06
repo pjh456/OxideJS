@@ -50,22 +50,17 @@ pub struct CompiledModule {
     pub param_base: u8,
     pub builtin_reg_map: Vec<(String, u32)>,
     pub sub_modules: Vec<CompiledModule>,
-    /// True when this module is an arrow function body.
-    /// Arrow functions capture lexical `this` from the enclosing scope.
+    /// 是否为箭头函数体（箭头函数从外围作用域词法捕获 `this`）。
     pub is_arrow: bool,
-    /// Index into `constants` holding the captured `this` JsValue.
-    /// 0 means "not captured - use standard this binding".
+    /// 捕获 `this` 的 JsValue 在常量池中的下标；0 表示未捕获，使用标准 this 绑定。
     pub captured_this_const_idx: u16,
-    /// Function name inferred from assignment context.
-    /// Set at the VariableDeclaration / ObjectProperty assignment site.
+    /// 由赋值上下文推断的函数名，在变量声明 / 对象属性赋值点设置。
     pub function_name: Option<String>,
-    /// True when this bytecode function is a class constructor.
-    /// Ordinary CALL must reject it, while NEW_EXPRESSION may construct through it.
+    /// 是否为类构造函数（普通 CALL 必须拒绝它，仅 NEW_EXPRESSION 可经它构造）。
     pub is_class_constructor: bool,
-    /// True when this class constructor has an `extends` clause.
-    /// `this` stays uninitialized until SUPER_CALL completes.
+    /// 类构造函数是否有 `extends` 子句（`this` 在 SUPER_CALL 完成前保持未初始化）。
     pub is_derived_constructor: bool,
-    /// True for prototype methods whose function object needs a runtime home_object.
+    /// 原型方法是否需要运行时 home_object。
     pub needs_home_object: bool,
     pub upvalue_captures: Vec<UpvalueCapture>,
     pub cells_needed: u8,

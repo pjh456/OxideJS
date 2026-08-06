@@ -11,12 +11,12 @@ impl Emitter {
     fn emit_arrow_function_expression(
         &self, arrow: &oxide_parser::ArrowFunctionExpression, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
-        // Rest params not yet supported
+        // 未支持：箭头函数 rest 参数
         if let Some(_rest) = &arrow.params.rest {
             return Err("rest params in arrow functions not yet supported".into());
         }
 
-        // Extract param names (same pattern as FunctionExpression)
+        // 提取形参名（与函数表达式相同的形态）
         let mut param_names = Vec::new();
         for (idx, param) in arrow.params.items.iter().enumerate() {
             match &param.pattern {
@@ -32,8 +32,7 @@ impl Emitter {
             }
         }
 
-        // Expression body: pass body statements directly with is_expression_body=true.
-        // Statement body: pass body statements with is_expression_body=false.
+        // 表达式体：以 is_expression_body=true 编译；语句体：以 false 编译。
         let body_stmts = &arrow.body.statements;
         let is_expr_body = arrow.expression;
 
@@ -41,7 +40,7 @@ impl Emitter {
         sub_module.is_arrow = true;
 
         ctx.nested.push(sub_module);
-        // 1-indexed: 0 = no sub_module (sentinel)
+        // 子模块下标 1 起始：0 保留为无子模块哨兵
         let sub_idx = ctx.nested.len() as u16;
 
         let r = ctx.alloc_reg();
@@ -50,7 +49,7 @@ impl Emitter {
     }
 
     fn emit_function_expression(&self, fe: &oxide_parser::Function, ctx: &mut CompileCtx) -> Result<u32, String> {
-        // FunctionExpression: compile body, emit LOAD_CONST(BytecodeFunc)
+        // 函数表达式：编译函数体为子模块，create_closure 实例化闭包
         let mut param_names = Vec::new();
         for (idx, param) in fe.params.items.iter().enumerate() {
             match &param.pattern {
@@ -73,7 +72,7 @@ impl Emitter {
             sub_module.function_name = Some(id.name.to_string());
         }
         ctx.nested.push(sub_module);
-        // 1-indexed: 0 = no sub_module (sentinel)
+        // 子模块下标 1 起始：0 保留为无子模块哨兵
         let sub_idx = ctx.nested.len() as u16;
 
         let r = ctx.alloc_reg();

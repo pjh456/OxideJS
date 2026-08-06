@@ -85,7 +85,7 @@ fn compile_negation() {
 fn compile_multiple_stmts() {
     let module = compile_source("1; 2; 3;");
 
-    // D-11 放宽：Compiler 默认 DCE 开启，死 `1; 2` 链的 LOAD_CONST 被删除，
+    // Compiler 默认 DCE 开启：死 `1; 2` 链的 LOAD_CONST 被删除，
     // 仅剩顶层值 `3` 的 LOAD_CONST（HALT 经 reg0 返回）。精确计数断言放宽为存在性断言。
     let has_load = module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::LOAD_CONST);
     assert!(has_load, "expected at least one LOAD_CONST for the final value");
@@ -505,30 +505,61 @@ fn compile_comparison_complement_ops() {
     // 结果被使用（赋值）→ 比较指令不被 DCE 删除（精确 DCE 会删结果丢弃的死比较）
     let module = compile_source("let a = 1, b = 2; var r = a > b; var s = a <= b; var t = a >= b; var u = a != b;");
     assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::GT), "a > b should emit GT");
-    assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::LTE), "a <= b should emit LTE");
-    assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::GTE), "a >= b should emit GTE");
-    assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::NEQ), "a != b should emit NEQ");
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::LTE),
+        "a <= b should emit LTE"
+    );
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::GTE),
+        "a >= b should emit GTE"
+    );
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::NEQ),
+        "a != b should emit NEQ"
+    );
 }
 
 #[test]
 fn compile_template_literal_emits_template_str() {
     let module = compile_source("let name = 'x'; `hello ${name}`;");
-    assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::TEMPLATE_STR), "template literal should emit TEMPLATE_STR");
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::TEMPLATE_STR),
+        "template literal should emit TEMPLATE_STR"
+    );
 }
 
 #[test]
 fn compile_dynamic_member_ops() {
     let module = compile_source("let obj = {}, k = 'x', arr = [1]; obj[k]; obj[k] = 1; arr[0];");
-    assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::NEW_ARRAY), "array literal should emit NEW_ARRAY");
-    assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::GET_PROP_DYNAMIC), "obj[k] should emit GET_PROP_DYNAMIC");
-    assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::SET_PROP_DYNAMIC), "obj[k] = should emit SET_PROP_DYNAMIC");
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::NEW_ARRAY),
+        "array literal should emit NEW_ARRAY"
+    );
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::GET_PROP_DYNAMIC),
+        "obj[k] should emit GET_PROP_DYNAMIC"
+    );
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::SET_PROP_DYNAMIC),
+        "obj[k] = should emit SET_PROP_DYNAMIC"
+    );
 }
 
 #[test]
 fn compile_delete_new_instanceof_in() {
-    let module = compile_source("let obj = { x: 1 }, B = function(){}; delete obj.x; new B(); obj instanceof B; 'x' in obj;");
-    assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::DELETE_PROP_STATIC), "delete obj.x should emit DELETE_PROP_STATIC");
-    assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::NEW_EXPRESSION), "new B() should emit NEW_EXPRESSION");
-    assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::INSTANCEOF), "instanceof should emit INSTANCEOF");
+    let module =
+        compile_source("let obj = { x: 1 }, B = function(){}; delete obj.x; new B(); obj instanceof B; 'x' in obj;");
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::DELETE_PROP_STATIC),
+        "delete obj.x should emit DELETE_PROP_STATIC"
+    );
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::NEW_EXPRESSION),
+        "new B() should emit NEW_EXPRESSION"
+    );
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::INSTANCEOF),
+        "instanceof should emit INSTANCEOF"
+    );
     assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::IN), "in should emit IN");
 }

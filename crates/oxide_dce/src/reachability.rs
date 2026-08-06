@@ -1,7 +1,7 @@
 //! Pass A：块级可达性。
 //!
 //! 消费 `oxide_cfg::build_cfg` 的 Cfg，从 entry 沿 succs DFS（**遍历含 EdgeKind::Exception 边**，
-//! D-07/Pitfall 4——catch/finally 入口强制可达），不可达块的全部指令标记删除。
+//! catch/finally 入口强制可达），不可达块的全部指令标记删除。
 
 use oxide_cfg::build_cfg;
 use oxide_ir::IRFunction;
@@ -16,7 +16,7 @@ pub(super) fn pass_a_reachable(f: &IRFunction) -> Vec<bool> {
             continue;
         }
         reachable[b] = true;
-        // succs 三边全遍历：Jump / Fallthrough / Exception（D-07 保守）
+        // succs 三边全遍历：Jump / Fallthrough / Exception（保守，异常入口强制可达）
         for &(succ, _kind) in &cfg.blocks[b].succs {
             stack.push(succ);
         }
@@ -36,16 +36,17 @@ pub(super) fn pass_a_reachable(f: &IRFunction) -> Vec<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxide_bytecode::opcode::OpCode;
     use oxide_ir::inst::Inst;
     use oxide_ir::operand::Operand;
-    use oxide_bytecode::opcode::OpCode;
 
     /// 线性函数全可达：所有指令 keep=true。
     #[test]
     fn linear_all_insts_reachable() {
         let mut f = IRFunction::new();
         f.insts.push(Inst::load_const(Operand::Reg(1), 0));
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(1), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(1), Operand::None, Operand::None));
         let keep = pass_a_reachable(&f);
         assert!(keep.iter().all(|k| *k), "线性函数全指令可达");
     }
@@ -54,9 +55,11 @@ mod tests {
     #[test]
     fn unreachable_block_marked_dead() {
         let mut f = IRFunction::new();
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(0), Operand::None, Operand::None)); // 0
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(0), Operand::None, Operand::None)); // 0
         f.insts.push(Inst::jmp(0)); // 1: 死块（L0 目标），自指 JMP
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(1), Operand::None, Operand::None)); // 2
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(1), Operand::None, Operand::None)); // 2
         f.label_pos = vec![Some(1)];
         f.label_count = 1;
 
@@ -65,16 +68,18 @@ mod tests {
         assert!(!keep[1] && !keep[2], "return 后死块不可达");
     }
 
-    /// Exception 边保守（Pitfall 4）：TRY_BEGIN 的 Exception 边使 catch 入口强制可达，
+    /// Exception 边保守：TRY_BEGIN 的 Exception 边使 catch 入口强制可达，
     /// 即使没有正常边指向它。
     #[test]
     fn exception_edge_keeps_catch_entry() {
         let mut f = IRFunction::new();
         f.insts.push(Inst::try_begin(0)); // 0: TRY_BEGIN → catch 入口（label 0 → inst 3）
         f.insts.push(Inst::load_const(Operand::Reg(5), 1)); // 1
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None)); // 2
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None)); // 2
         f.insts.push(Inst::load_const(Operand::Reg(6), 2)); // 3: catch 入口
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(6), Operand::None, Operand::None)); // 4
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(6), Operand::None, Operand::None)); // 4
         f.label_pos = vec![Some(3)];
         f.label_count = 1;
 

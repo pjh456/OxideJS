@@ -47,8 +47,8 @@ impl SessionGc {
             if ptr.is_null() {
                 continue;
             }
-            // SAFETY: ptrs in session_object_ptrs come only from `session_epoch.alloc` in
-            // `promote_object_inner`, and are valid while the arena is alive.
+            // SAFETY: session_object_ptrs 中的指针只来自 promote_object_inner 的
+            // session_epoch.alloc，在 arena 存活期间有效。
             unsafe { (*ptr).set_gc_mark(false) };
         }
     }
@@ -89,7 +89,7 @@ impl SessionGc {
         if obj.is_data_view_obj() {
             edges.extend(data_view::data_view_native_edges(obj));
         }
-        // Traverse upvalue cells for object references
+        // 遍历 upvalue cell 中的对象引用。
         for cell_ptr in obj.upvalues_slice() {
             if cell_ptr.is_null() {
                 continue;
@@ -102,10 +102,10 @@ impl SessionGc {
         edges
     }
 
-    /// Record session-string values held directly by `obj` into `live`. JsStrings hold no GC
-    /// references, so "reaching" a string IS marking it — there is no string DFS stack. Permanent
-    /// strings are also recorded here harmlessly; the sweep only iterates `session_string_ptrs`, so
-    /// non-session pointers in `live` are simply never consulted.
+    /// 把 `obj` 直接持有的 session 字符串值记入 `live`。JsString 不持有 GC 引用，
+    /// 因此"到达"一个字符串就等于标记它——不存在字符串 DFS 栈。永久字符串也会被
+    /// 无害地记录；sweep 只遍历 `session_string_ptrs`，`live` 中的非 session 指针
+    /// 永远不会被查询。
     fn record_object_string_edges(live: &mut HashSet<*mut JsString, FxBuildHasher>, obj: &JsObject) {
         if let Some(props) = obj.hash_props_vec() {
             for value in props.iter() {
@@ -120,7 +120,7 @@ impl SessionGc {
         if obj.home_object().is_string() {
             live.insert(obj.home_object().as_string_ptr_mut());
         }
-        // Scan upvalue cells for string references
+        // 扫描 upvalue cell 中的字符串引用。
         for cell_ptr in obj.upvalues_slice() {
             if cell_ptr.is_null() {
                 continue;
@@ -179,7 +179,7 @@ impl SessionGc {
                 stack.push(ptr);
                 continue;
             }
-            // SAFETY: object roots are produced by VM-owned fields and builtin objects.
+            // SAFETY: 对象根由 VM 自有的字段与 builtin 对象产生。
             let obj = unsafe { &*ptr };
             Self::record_object_string_edges(live_strings, obj);
             for edge in Self::object_edges(obj) {
@@ -196,8 +196,7 @@ impl SessionGc {
             if ptr.is_null() {
                 continue;
             }
-            // SAFETY: ptr was discovered from a root/session edge and session root checks require
-            // this to be a valid session object pointer.
+            // SAFETY: ptr 由根/session 边发现，session 根检查保证它是合法 session 对象指针。
             unsafe {
                 let obj = &mut *ptr;
                 if obj.is_gc_marked() {
@@ -223,9 +222,9 @@ impl SessionGc {
         if obj_ptr.is_null() {
             return 0;
         }
-        // SAFETY: `obj_ptr` is verified before calling this helper and points to a session object
-        // owned by the VM session arena. We only reconstruct Boxes that were allocated in
-        // `JsObject::ensure_hash_props`/`ensure_prop_meta` and then drop them once here.
+        // SAFETY: `obj_ptr` 在调用本辅助函数前已校验，指向 VM session arena 拥有的
+        // session 对象。只重建 JsObject::ensure_hash_props/ensure_prop_meta 分配的 Box，
+        // 且只在这里释放一次。
         unsafe {
             let obj = &mut *obj_ptr;
             if require_session {
@@ -267,12 +266,13 @@ impl SessionGc {
         Self::drop_session_object_heap_data(obj_ptr) + size_of::<JsObject>() as u64
     }
 
-    /// Drop a dead session `JsString` (allocated by `Vm::new_string` via `Box::into_raw`),
-    /// returning the bytes freed. Mirrors `Vm::free_session_string_heap_data`'s drop, but applied
-    /// selectively to a single dead pointer.
+    /// 释放一个已死 session `JsString`（由 `Vm::new_string` 经 `Box::into_raw` 分配），
+    /// 返回释放的字节数。与 `Vm::free_session_string_heap_data` 的释放一致，但只
+    /// 选择性作用于单个已死指针。
     ///
-    /// SAFETY: `ptr` must be a non-null pointer produced by `Box::into_raw(Box::new(JsString))` in
-    /// `Vm::new_string`, still present in `session_string_ptrs`, and dropped exactly once.
+    /// # Safety
+    /// `ptr` 必须是 `Vm::new_string` 中 `Box::into_raw(Box::new(JsString))` 产生的
+    /// 非空指针，仍存在于 `session_string_ptrs`，且恰好释放一次。
     unsafe fn drop_dead_session_string(ptr: *mut JsString) -> u64 {
         let bytes = (size_of::<JsString>() + (*ptr).len()) as u64;
         drop(Box::from_raw(ptr));
@@ -291,8 +291,7 @@ impl SessionGc {
             if old_ptr.is_null() {
                 continue;
             }
-            // SAFETY: old_ptr comes from session_arena promotions and still points into the old
-            // session arena while sweep runs.
+            // SAFETY: old_ptr 来自 session_arena 的晋升，sweep 运行期间仍指向旧 session arena。
             let is_live = unsafe { (*old_ptr).is_gc_marked() };
             if is_live {
                 survivors += 1;
@@ -320,7 +319,7 @@ impl SessionGc {
         }
 
         for &dst in forwarding.values() {
-            // SAFETY: all pointers in forwarding are newly allocated and initialized objects.
+            // SAFETY: forwarding 中的指针全是新分配且已初始化的对象。
             let obj = unsafe { &mut *dst };
             obj.rewrite_object_values(|value| {
                 if value.is_object() {
@@ -378,11 +377,11 @@ impl SessionGc {
         freed_bytes
     }
 
-    /// Sweep session `JsString`s: keep the pointers recorded live during `mark()`, drop the rest
-    /// via `Box::from_raw`. Live strings are NOT moved — Box addresses are stable — so no forwarding
-    /// map and no root-pointer rewriting are needed. Run after the object sweep (which resets
-    /// `session_bytes_allocated` to object-only), re-adding surviving string bytes. Returns the
-    /// bytes freed.
+    /// 清扫 session `JsString`：保留 `mark()` 阶段记为存活的部分，其余经
+    /// `Box::from_raw` 释放。存活字符串不被搬移——Box 地址稳定——因此无需
+    /// forwarding 表与根指针重写。在对象清扫之后运行（对象清扫会把
+    /// `session_bytes_allocated` 重置为仅对象），再补回存活字符串字节。
+    /// 返回释放的字节数。
     pub(crate) fn sweep_session_strings(&mut self, vm: &mut Vm) -> u64 {
         vm_debug!("[GC] sweep strings: {} string ptrs", vm.gc_state.session_string_ptrs.len());
         let old = std::mem::take(&mut vm.gc_state.session_string_ptrs);
@@ -394,12 +393,12 @@ impl SessionGc {
                 continue;
             }
             if self.live_strings.contains(&ptr) {
-                // Survivor — address unchanged, no rewrite needed.
-                // SAFETY: ptr is a live session-string box still owned by the VM.
+                // 存活——地址不变，无需重写。
+                // SAFETY: ptr 是仍归 VM 所有的存活 session 字符串 box。
                 live_bytes += unsafe { size_of::<JsString>() + (*ptr).len() };
                 live.push(ptr);
             } else {
-                // SAFETY: ptr is in session_string_ptrs but not reachable; drop exactly once.
+                // SAFETY: ptr 在 session_string_ptrs 中但不可达，恰好释放一次。
                 freed += unsafe { Self::drop_dead_session_string(ptr) };
             }
         }
@@ -521,12 +520,12 @@ fn rewrite_vm_roots(vm: &mut Vm, forwarding: &HashMap<*mut JsObject, *mut JsObje
         *value = rewrite_forwarded_value(*value, forwarding);
     }
     vm.iters.last_for_of_result = rewrite_forwarded_value(vm.iters.last_for_of_result, forwarding);
-    // Converted immutables are non-session (scalars + perm-strings) — not rewritten.
+    // 已转换的不可变常量不是 session 值（标量 + perm 字符串）——不重写。
     for iter in &mut vm.iters.for_in_iters {
         if iter.is_null() {
             continue;
         }
-        // SAFETY: for_in_iters stores live iterator pointers owned by the current VM epoch.
+        // SAFETY: for_in_iters 存放由当前 VM epoch 拥有的存活迭代器指针。
         unsafe {
             for (value, _si) in (*(*iter)).keys.iter_mut() {
                 *value = rewrite_forwarded_value(*value, forwarding);
@@ -535,7 +534,7 @@ fn rewrite_vm_roots(vm: &mut Vm, forwarding: &HashMap<*mut JsObject, *mut JsObje
     }
     let global_ptr = vm.session.global_object().as_ptr() as *mut JsObject;
     if !global_ptr.is_null() {
-        // SAFETY: KernelSession owns global_object for the VM lifetime.
+        // SAFETY: KernelSession 在 VM 生命周期内拥有 global_object。
         unsafe {
             (*global_ptr).rewrite_object_values(|value| rewrite_forwarded_value(value, forwarding));
         }
@@ -689,8 +688,8 @@ mod tests {
         let _ = gc.sweep(&mut vm);
         vm.gc_state.session_gc = gc;
 
-        // The reused forwarding map MUST be cleared after sweep, otherwise
-        // promote would observe stale old->new entries pointing into the freed arena.
+        // 复用的 forwarding 表必须在 sweep 后清空，否则 promote 会观察到指向已释放
+        // arena 的过期 old->new 条目。
         assert!(vm.gc_state.forwarding.is_empty());
     }
 
@@ -934,7 +933,7 @@ mod tests {
         let dead_ptr = dead.as_string_ptr_mut();
         assert!(vm.gc_state.session_string_ptrs.contains(&dead_ptr));
 
-        // No root references `dead` (it lives only on the Rust stack as a value wrapper).
+        // 没有根引用 `dead`（它只作为值包装存在于 Rust 栈上）。
         collect(&mut vm);
 
         assert!(!vm.gc_state.session_string_ptrs.contains(&dead_ptr));
@@ -950,7 +949,7 @@ mod tests {
         collect(&mut vm);
 
         assert!(vm.gc_state.session_string_ptrs.contains(&live_ptr));
-        // Live strings are never moved — the register still points at the same box.
+        // 存活字符串永不搬移——寄存器仍指向同一 box。
         assert_eq!(vm.regs[0].as_string_ptr_mut(), live_ptr);
         assert_eq!(unsafe { (*live_ptr).as_str() }, "live-in-reg");
     }
@@ -966,7 +965,7 @@ mod tests {
         }
         let obj_session = vm.promote_object(obj);
 
-        // The string is reachable ONLY through the live object's property, not via any register.
+        // 该字符串仅通过存活对象的属性可达，不经过任何寄存器。
         vm.regs.fill(JsValue::undefined());
         vm.regs[0] = JsValue::from_js_object(obj_session);
 
@@ -981,13 +980,13 @@ mod tests {
         let mut vm = Vm::new();
         let perm = vm.perm_string("perm");
         let perm_ptr = perm.as_string_ptr_mut();
-        // Permanent strings live in PermInterner, never in the session set.
+        // 永久字符串位于 PermInterner，绝不在 session 集合中。
         assert!(!vm.gc_state.session_string_ptrs.contains(&perm_ptr));
         vm.regs[0] = perm;
 
         collect(&mut vm);
 
-        // Never dropped by the session sweep (still readable, still absent from session set).
+        // 绝不被 session 清扫释放（仍可读，仍不在 session 集合中）。
         assert!(!vm.gc_state.session_string_ptrs.contains(&perm_ptr));
         assert_eq!(unsafe { (*perm_ptr).as_str() }, "perm");
     }

@@ -2,10 +2,10 @@
 //! 函数：`emit_call_expression`、`emit_call_domain`。
 
 use crate::{CompileCtx, Emitter};
-use oxide_ir::inst::Inst;
-use oxide_ir::operand::Operand;
 use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
+use oxide_ir::inst::Inst;
+use oxide_ir::operand::Operand;
 use oxide_parser::Expression;
 
 impl Emitter {
@@ -41,7 +41,12 @@ impl Emitter {
                 let obj_reg = self.emit_expression(&member.object, ctx)?;
                 let key_reg = self.emit_private_id_reg(member.field.name.as_str(), ctx)?;
                 let callee_reg = ctx.alloc_reg();
-                ctx.inst(Inst::new(OpCode::GET_PRIVATE, Operand::Reg(callee_reg), Operand::Reg(obj_reg), Operand::Reg(key_reg)));
+                ctx.inst(Inst::new(
+                    OpCode::GET_PRIVATE,
+                    Operand::Reg(callee_reg),
+                    Operand::Reg(obj_reg),
+                    Operand::Reg(key_reg),
+                ));
                 (callee_reg, obj_reg)
             }
             Expression::StaticMemberExpression(member) => {
@@ -69,7 +74,12 @@ impl Emitter {
                     };
                     ctx.inst(Inst::new(op, Operand::Reg(callee_reg), Operand::Reg(obj_reg), Operand::Reg(key_reg)));
                 } else {
-                    ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(callee_reg), Operand::Reg(obj_reg), Operand::None));
+                    ctx.inst(Inst::new(
+                        OpCode::LOAD_VAR,
+                        Operand::Reg(callee_reg),
+                        Operand::Reg(obj_reg),
+                        Operand::None,
+                    ));
                     ctx.inst(Inst::ic_get(Operand::Reg(callee_reg), Operand::Reg(key_reg)));
                 }
                 (callee_reg, obj_reg)
@@ -125,9 +135,9 @@ impl Emitter {
     }
 }
 
-/// 把调用参数打包到连续寄存器块（VM 按 `regs[first_arg + i]` 连续读参数，D-17/调用契约）。
-/// vreg 化（05-02）后各参数由独立 vreg 承载，复杂表达式（对象/数组字面量、嵌套调用）
-/// 的临时寄存器会使参数 vreg 不连续——这里检测到不连续时用 MOV 打包到新连续块。
+/// 把调用参数打包到连续寄存器块（VM 按 `regs[first_arg + i]` 连续读参数）。
+/// 各参数由独立 vreg 承载，复杂表达式（对象/数组字面量、嵌套调用）的临时寄存器
+/// 会使参数 vreg 不连续——检测到不连续时用 MOV 打包到新连续块。
 /// 返回首参寄存器；参数为空时返回 0。
 fn pack_arg_regs(arg_regs: &mut [u32], ctx: &mut CompileCtx) -> u32 {
     let consecutive = arg_regs.windows(2).all(|w| w[1] == w[0] + 1);

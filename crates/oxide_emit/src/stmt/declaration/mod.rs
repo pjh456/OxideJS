@@ -8,7 +8,9 @@ mod function_decl;
 mod var;
 
 impl Emitter {
-    pub(crate) fn emit_declaration_domain(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u32>, String> {
+    pub(crate) fn emit_declaration_domain(
+        &self, stmt: &Statement, ctx: &mut CompileCtx,
+    ) -> Result<Option<u32>, String> {
         match stmt {
             Statement::VariableDeclaration(_) => self.emit_variable_declaration_statement(stmt, ctx),
             Statement::FunctionDeclaration(_) => self.emit_function_declaration_statement(stmt, ctx),

@@ -22,7 +22,7 @@ fn keys_to_strings(result: JsValue) -> Vec<String> {
     for i in 0..len {
         let v = obj.get_prop_at(i);
         if v.is_string() {
-            // SAFETY: string value pointing into VM arena (caller keeps vm alive)
+            // SAFETY: 字符串值指向 VM arena（调用方保持 vm 存活）。
             let s = unsafe { &*v.as_string_ptr() };
             keys.push(s.data.clone());
         }
@@ -30,7 +30,7 @@ fn keys_to_strings(result: JsValue) -> Vec<String> {
     keys
 }
 
-// -- Integer keys in ascending order --
+// ── 整型键按升序 ──
 #[test]
 fn keys_integer_order_ascending() {
     let r = eval_str("var obj={}; obj[3]='c'; obj[1]='a'; obj[2]='b'; Object.keys(obj).length").unwrap();
@@ -40,7 +40,7 @@ fn keys_integer_order_ascending() {
     assert_eq!(keys, vec!["1", "2", "3"], "integer keys should be ascending, got {:?}", keys);
 }
 
-// -- Mixed keys: integers first, then strings in creation order --
+// ── 混合键：整型优先，字符串按创建序 ──
 #[test]
 fn keys_mixed_order_integers_first() {
     let (_vm, r) = eval("var obj={}; obj[2]='b'; obj['1']='a'; obj['a']=1; Object.keys(obj)").unwrap();
@@ -58,7 +58,7 @@ fn keys_mixed_order_integers_first() {
     }
 }
 
-// -- Object.keys excludes non-enumerable properties --
+// ── Object.keys 排除不可枚举属性 ──
 #[test]
 fn keys_excludes_non_enumerable() {
     let r = eval_str(
@@ -68,7 +68,7 @@ fn keys_excludes_non_enumerable() {
     assert!(r.is_int() && r.as_int() == 1, "keys should exclude non-enumerable, got {:?}", r);
 }
 
-// -- Object.getOwnPropertyNames includes non-enumerable properties --
+// ── Object.getOwnPropertyNames 包含不可枚举属性 ──
 #[test]
 fn get_own_property_names_includes_non_enumerable() {
     let r = eval_str("var obj={a:1}; Object.defineProperty(obj,'hidden',{value:2,enumerable:false}); Object.getOwnPropertyNames(obj).length").unwrap();
@@ -79,7 +79,7 @@ fn get_own_property_names_includes_non_enumerable() {
     );
 }
 
-// -- Object.entries excludes non-enumerable properties --
+// ── Object.entries 排除不可枚举属性 ──
 #[test]
 fn entries_excludes_non_enumerable() {
     let r = eval_str(
@@ -89,7 +89,7 @@ fn entries_excludes_non_enumerable() {
     assert!(r.is_int() && r.as_int() == 1, "entries should exclude non-enumerable, got {:?}", r);
 }
 
-// -- Object.values excludes non-enumerable properties --
+// ── Object.values 排除不可枚举属性 ──
 #[test]
 fn values_excludes_non_enumerable() {
     let r = eval_str(
@@ -99,7 +99,7 @@ fn values_excludes_non_enumerable() {
     assert!(r.is_int() && r.as_int() == 1, "values should exclude non-enumerable, got {:?}", r);
 }
 
-// -- Leading zero strings are NOT integer indices --
+// ── 前导零字符串不是整型下标 ──
 #[test]
 fn keys_with_leading_zero_not_integer_index() {
     let (_vm, r) = eval("Object.keys({'01':'a','1':'b'})").unwrap();

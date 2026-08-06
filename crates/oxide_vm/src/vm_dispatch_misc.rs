@@ -179,7 +179,7 @@ impl Vm {
                 let reg = (seg & 0x7F) as u8;
                 let val = self.regs[reg as usize];
                 let s = if val.is_string() {
-                    // SAFETY: val is a string value.
+                    // SAFETY: val 是字符串值。
                     unsafe { (*val.as_string_ptr()).data.clone() }
                 } else {
                     format!("{}", val)
@@ -191,7 +191,7 @@ impl Vm {
                 if const_idx < imm.len() {
                     let val = imm[const_idx];
                     if val.is_string() {
-                        // SAFETY: val is a string value.
+                        // SAFETY: val 是字符串值。
                         let s = unsafe { (*val.as_string_ptr()).data.clone() };
                         result.push_str(&s);
                     }
@@ -285,7 +285,7 @@ impl Vm {
         vm_trace!("FOR_IN_INIT r{}={:?}", a, self.regs[a]);
         let obj_val = self.regs[a];
         if obj_val.is_null() || obj_val.is_undefined() {
-            // null/undefined enumerate nothing — an empty for-in, not a TypeError.
+            // null/undefined 枚举不到任何键——是空 for-in，而非 TypeError。
             let keys_vec: bumpalo::collections::Vec<(JsValue, u32)> =
                 bumpalo::collections::Vec::new_in(self.epoch.bump());
             let iter = self.epoch.alloc(ForInIter { keys: keys_vec, index: 0 });
@@ -293,7 +293,7 @@ impl Vm {
             return Ok(());
         }
         if !obj_val.is_object() {
-            // ToObject coercion for other primitives is not implemented yet — TypeError is correct until it lands.
+            // 未支持：其它基本类型的 ToObject 强转尚未实现，在此之前抛 TypeError 是正确行为。
             return self.raise_type_error("for-in right-hand side is not an object");
         }
 
@@ -302,9 +302,8 @@ impl Vm {
         let mut seen = std::collections::HashSet::new();
         let mut current = obj_val;
 
-        // Arrays store integer-indexed elements in prop_vec, which is not part of
-        // the shape chain. Enumerate them (ES: array indices are enumerable string
-        // keys, ordered ascending before other own keys).
+        // 数组把整型下标元素存在 prop_vec，而 prop_vec 不属于 shape 链。
+        // 单独枚举它们（ES：数组下标是可枚举字符串键，按升序排在其它自有键之前）。
         if current.is_object() {
             let arr = unsafe { &*current.as_js_object_ptr() };
             if arr.is_array() {
@@ -315,10 +314,7 @@ impl Vm {
                         .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable());
                     if is_enum {
                         let idx = self.kernel_core.perm_interner().intern(&i.to_string()).0;
-                        keys_vec.push((
-                            JsValue::perm_string(self.kernel_core.perm_interner().string_ptr(idx)),
-                            idx,
-                        ));
+                        keys_vec.push((JsValue::perm_string(self.kernel_core.perm_interner().string_ptr(idx)), idx));
                     }
                 }
             }
@@ -365,14 +361,13 @@ impl Vm {
                     break;
                 }
             }
-            // The shape chain is walked leaf->root (reverse of insertion order);
-            // flip this object's slice back to insertion order before its proto.
+            // shape 链按叶→根遍历（与插入序相反）；在接上原型前把本对象的切片
+            // 翻转为插入序。
             keys_vec[obj_start..].reverse();
             current = cur.proto();
         }
 
-        // ES enumeration order: integer-index keys ascending, then the rest in
-        // insertion order. Stable sort preserves insertion order among non-index keys.
+        // ES 枚举序：整型下标键升序，其余按插入序。稳定排序保持非下标键间的插入序。
         keys_vec.sort_by(|(_, a_si), (_, b_si)| {
             match (self.array_index_from_property_key(*a_si), self.array_index_from_property_key(*b_si)) {
                 (Some(ai), Some(bi)) => ai.cmp(&bi),
@@ -488,9 +483,9 @@ impl Vm {
         Ok(())
     }
 
-    /// next()/value access threw: route through unwind so a surrounding try/catch can catch
-    /// it, re-throwing the ORIGINAL value when available. Per ECMA-262 the iterator is NOT
-    /// closed via return() on a next()-throw — pop it so the unwinding IteratorClose pass skips it.
+    /// next()/value 访问抛出：经 unwind 走异常展开，使外围 try/catch 能捕获，并尽可能
+    /// 重新抛出原始值。按 ECMA-262，next() 抛出时不会经 return() 关闭迭代器——
+    /// 先弹出它，使展开时的 IteratorClose 遍历跳过该迭代器。
     fn throw_for_of_error(&mut self, msg: String) -> Result<(), String> {
         self.iters.pop_for_of();
         let exc = match self.last_uncaught_value.take() {
@@ -507,14 +502,16 @@ impl Vm {
         let Some(iterator) = self.iters.pop_for_of() else {
             return Ok(());
         };
-        // Normal / break / return exit: no prior abrupt completion, so return()'s own throw propagates.
+        // 正常 / break / return 退出：此前无进行中的突然完成，return() 自身的抛出直接传播。
         self.close_for_of_iterator(iterator, false)
     }
 
-    /// Call `iterator.return()` (IteratorClose). When `suppress_return_error` is true the call
-    /// is being made because an enclosing abrupt completion is unwinding: return()'s own result
-    /// is discarded and the in-flight exception is preserved across the call. When false (normal
-    /// for-of exit) return()'s error propagates.
+    /// 调用 `iterator.return()`（IteratorClose）。
+    ///
+    /// # 边界与前提
+    /// - `suppress_return_error` 为 true 时表示正在展开某个外围突然完成：return() 的
+    ///   自身结果被丢弃，并保留在途异常跨调用存活。
+    /// - 为 false 时（正常 for-of 退出）return() 的错误向外传播。
     pub(crate) fn close_for_of_iterator(
         &mut self, iterator: JsValue, suppress_return_error: bool,
     ) -> Result<(), String> {
@@ -549,9 +546,9 @@ impl Vm {
         Ok(())
     }
 
-    /// IteratorClose every active for-of iterator above `depth`, used by `unwind()` to close
-    /// loops abandoned by a throw. Pops before closing so a re-entrant call can't re-close,
-    /// and so the next()-throw path (which already popped its own iterator) is skipped.
+    /// 对 `depth` 以上的所有活跃 for-of 迭代器执行 IteratorClose，供 `unwind()` 关闭
+    /// 被异常中断的循环。先弹出再关闭，防止重入调用重复关闭，同时跳过 next()-throw
+    /// 路径（它已弹出自己的迭代器）。
     pub(crate) fn close_for_of_above(&mut self, depth: usize) {
         while self.iters.for_of_iters.len() > depth {
             let Some(iterator) = self.iters.pop_for_of() else {
@@ -574,7 +571,7 @@ impl Vm {
             .get(excluded_idx)
             .and_then(|v| {
                 if v.is_string() {
-                    // SAFETY: v is a string constant value.
+                    // SAFETY: v 是字符串常量值。
                     Some(unsafe { (*v.as_string_ptr()).data.clone() })
                 } else {
                     None

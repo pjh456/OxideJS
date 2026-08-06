@@ -1,13 +1,12 @@
-//! Grouped `Vm` state sub-structs.
+//! `Vm` 的状态子结构分组。
 //!
-//! `Vm` owns these as fields (`gc_state`, `symbols`, `iters`, `profiling`) so
-//! that workers refactoring one subsystem touch one struct instead of the
-//! central `Vm` god-struct. Per the project's parallel-dev decisions:
-//! Symbol/Iter/Profiling are full sinks (their logic is self-contained), while
-//! `GcState` is field-classification only — GC `mark`/`sweep`/`alloc_object`
-//! scan roots across *all* sub-structs and stay as `&mut Vm` methods.
+//! `Vm` 以字段持有这些子结构（`gc_state`、`symbols`、`iters`、`profiling`），
+//! 使各子系统维护者只需改动一个结构而非庞大的 `Vm` 主结构。约定：
+//! Symbol/Iter/Profiling 为完整子模块（逻辑自包含）；`GcState` 仅做字段分类——
+//! GC 的 mark/sweep/alloc_object 需要扫描跨全部子结构的根（regs、frames、
+//! 迭代器等），仍以 `&mut Vm` 方法驻留。
 //!
-//! This file defines fields only; methods live with `Vm`.
+//! 本文件只定义字段；方法随 `Vm` 存放。
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -20,11 +19,11 @@ use oxide_types::value::JsValue;
 use crate::session_gc::SessionGc;
 use crate::vm::ForInIter;
 
-/// Session-arena and garbage-collection bookkeeping.
+/// session arena 与 GC 簿记。
 ///
-/// Field-classify only. `mark`/`sweep`/`rewrite_vm_roots` live on `Vm` because
-/// GC scans all sub-struct roots (regs, frames, for_in_iters, for_of_iters,
-/// exception_value, etc.) — they cannot be confined to GcState.
+/// 仅做字段分类。mark/sweep/rewrite_vm_roots 驻留在 `Vm` 上：GC 需扫描所有
+/// 子结构的根（regs、frames、for_in_iters、for_of_iters、exception_value 等），
+/// 无法限制在 GcState 内。
 pub(crate) struct GcState {
     pub(crate) session_epoch: bumpalo::Bump,
     pub(crate) session_gc: SessionGc,
@@ -41,7 +40,7 @@ impl GcState {
     }
 }
 
-/// `Symbol` interning state.
+/// Symbol 的 intern 状态。
 pub(crate) struct SymbolState {
     pub(crate) symbol_counter: u32,
     pub(crate) symbol_descriptions: Vec<String>,
@@ -83,7 +82,7 @@ impl SymbolState {
     }
 }
 
-/// Live iterator state for `for-in` / `for-of`.
+/// for-in / for-of 的活跃迭代器状态。
 pub(crate) struct IterState {
     pub(crate) for_in_iters: Vec<*mut ForInIter<'static>>,
     pub(crate) for_of_iters: Vec<JsValue>,
@@ -134,7 +133,7 @@ impl IterState {
     }
 }
 
-/// Inline-cache hit/miss and instruction counters.
+/// inline cache 命中/未命中计数与指令计数。
 pub(crate) struct ProfilingState {
     pub(crate) ic_hits: Cell<u64>,
     pub(crate) ic_misses: Cell<u64>,

@@ -15,7 +15,7 @@ fn arg1<H: VmHost>(vm: &mut H, args: &[u8]) -> f64 {
 }
 
 fn arg2<H: VmHost>(vm: &mut H, args: &[u8]) -> (f64, f64) {
-    // Sequenced (not a tuple literal) so the two coercions take &mut H one at a time.
+    // 顺序求值（非元组字面量）：两次 coercion 各自单独借用 &mut H。
     let a = if args.len() > 1 { num(vm, args[1]) } else { f64::NAN };
     let b = if args.len() > 2 { num(vm, args[2]) } else { f64::NAN };
     (a, b)

@@ -11,7 +11,7 @@ use crate::string_forge::PermInterner;
 macro_rules! bind_method {
     ($world:expr, $target:expr, $sf:expr, $sh:expr, $name:literal, $func:expr, $nargs:expr) => {{
         let _raw: *const () = $func as *const ();
-        // SAFETY: $func is a NativeFn fn-item; a fn-item coerced to *const () is always valid.
+        // SAFETY: $func 是 NativeFn 函数项；函数项强转为 *const () 始终有效。
         let _func_ptr = unsafe { oxide_types::object::NativeFnPtr::from_raw(_raw) };
         let _ = $world.bind_method($target, $sh, $sf, $name, _func_ptr, $nargs);
     }};
@@ -31,7 +31,7 @@ macro_rules! bind_methods_static {
      $(($name:literal, $func:expr, $nargs:expr)),* $(,)?) => {
         $({
             let _raw: *const () = $func as *const ();
-            // SAFETY: $func is a NativeFn fn-item; valid to coerce and wrap.
+            // SAFETY: $func 是 NativeFn 函数项；强转并包装合法。
             let _func_ptr = unsafe { oxide_types::object::NativeFnPtr::from_raw(_raw) };
             let _ = $crate::builtin::BuiltinWorld::bind_method_static(
                 $target, $sh, $sf, $name, _func_ptr, $nargs, $wrapper_proto,
@@ -245,7 +245,7 @@ fn make_pair(
     si_name: u32,
 ) -> (P<JsObject>, P<JsObject>) {
     intern_label(string_forge, name);
-    let name_si = string_forge.intern(name).0; // intern the constructor's name value too
+    let name_si = string_forge.intern(name).0; // 同时 intern 构造器名作为属性值
 
     let mut proto = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
     let mut ctor = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
@@ -258,18 +258,18 @@ fn make_pair(
     ctor.set_shape_id(ctor_shape2);
     ctor.set_function(true);
 
-    // Pre-allocate slots: proto[0]="constructor", ctor[0]="prototype", ctor[1]="name"
-    proto.ensure_hash_props().push(JsValue::undefined()); // placeholder
-    ctor.ensure_hash_props().push(JsValue::undefined()); // placeholder for "prototype"
-                                                         // Set the actual name value immediately (ctor vec[1])
+    // 预分配槽位：proto[0]="constructor"、ctor[0]="prototype"、ctor[1]="name"。
+    proto.ensure_hash_props().push(JsValue::undefined()); // 占位
+    ctor.ensure_hash_props().push(JsValue::undefined()); // "prototype" 占位
+                                                         // 立即写入实际 name 值（ctor vec[1]）。
     ctor.ensure_hash_props()
         .push(JsValue::perm_string(string_forge.string_ptr(name_si)));
-    // Set attribute metadata: .prototype (ctor[0]) = writable:false, enumerable:false, configurable:false
+    // 属性元数据：.prototype（ctor[0]）= writable:false, enumerable:false, configurable:false。
     ctor.set_data_meta(0u32, oxide_types::object::PropAttributes::new(false, false, false));
-    // .name (ctor[1]) = writable:false, enumerable:false, configurable:true
+    // .name（ctor[1]）= writable:false, enumerable:false, configurable:true。
     ctor.set_data_meta(1u32, oxide_types::object::PropAttributes::new(false, false, true));
-    // .constructor (proto[0]) = writable:true, enumerable:false, configurable:true
-    // (JS spec: prototype.constructor is non-enumerable so it doesn't leak into for-in)
+    // .constructor（proto[0]）= writable:true, enumerable:false, configurable:true。
+    // （JS 规范：prototype.constructor 非枚举，避免泄漏进 for-in。）
     proto.set_data_meta(0u32, oxide_types::object::PropAttributes::new(true, false, true));
 
     (P::new(proto), P::new(ctor))
@@ -398,9 +398,9 @@ fn make_typed_array_family(
     }
 }
 
-/// Overwrite placeholder slots (set up by make_pair) with real values.
-/// ctor.vec[0] = constructor.prototype -> proto
-/// proto.vec[0] = proto.constructor -> ctor
+/// 用真实值覆盖（`make_pair` 设置的）占位槽。
+/// ctor.vec[0] = constructor.prototype → proto。
+/// proto.vec[0] = proto.constructor → ctor。
 fn wire_ctor_proto(ctor: &P<JsObject>, proto: &P<JsObject>) {
     let ctor_ptr = ctor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };
@@ -1009,7 +1009,7 @@ impl BuiltinWorld {
 
         let si = string_forge.intern("@@iterator").0;
         let raw = methods.values;
-        // SAFETY: methods.values is a NativeFn fn-item passed by the VM binding layer.
+        // SAFETY: methods.values 是 VM 绑定层传入的 NativeFn 函数项。
         let func_ptr = unsafe { NativeFnPtr::from_raw(raw) };
         let _ =
             Self::bind_method_static(proto, shape_forge, string_forge, "@@iterator", func_ptr, 0, self.fn_proto_val());
@@ -1177,8 +1177,8 @@ impl BuiltinWorld {
             wrapper.set_proto(wrapper_proto).ok();
         }
         wrapper.set_function(true);
-        // The NativeFnPtr invariant is upheld by callers (see bind_method / bind_method_static
-        // callers, all of which use fn-item expressions).
+        // NativeFnPtr 不变量由调用方维护（见 bind_method / bind_method_static
+        // 的调用方，均使用函数项表达式）。
         wrapper.set_native_fn(Some(native_fn_ptr));
         wrapper.set_native_arg_count(arg_count);
         // 设置 .length (ES spec: Function.length = formal parameter count,
@@ -1202,8 +1202,8 @@ impl BuiltinWorld {
         let new_shape = shape_forge.make_shape(proto.shape_id(), si);
         proto.set_shape_id(new_shape);
         proto.ensure_hash_props().push(wrapper_val);
-        // Built-in prototype methods are non-enumerable per the ES spec; otherwise
-        // they leak into for-in enumeration (e.g. array push/pop showing up in `for k in []`).
+        // 内置原型方法按 ES 规范非枚举；否则会泄漏进 for-in 枚举
+        // （例如 `for k in []` 中会出现 array push/pop）。
         let method_pos = proto.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
         proto.set_data_meta(method_pos, oxide_types::object::PropAttributes::new(true, false, true));
         proto.bump_generation();
@@ -1270,9 +1270,9 @@ mod tests {
     #[test]
     fn test_protos_have_null_proto() {
         let w = make_world();
-        // Object.prototype is the root - its __proto__ is null.
+        // Object.prototype 是根——其 __proto__ 为 null。
         assert!(w.object_proto.proto().is_null());
-        // All other constructor prototypes inherit from Object.prototype.
+        // 其余构造器原型均继承自 Object.prototype。
         assert!(w.array_proto.proto().is_object());
         assert!(w.function_proto.proto().is_object());
         assert!(w.string_proto.proto().is_object());

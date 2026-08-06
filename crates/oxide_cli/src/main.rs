@@ -51,7 +51,7 @@ enum Commands {
         file: Option<String>,
         #[arg(long)]
         no_dce: bool,
-        /// D-18：关闭 liveness/精确 DCE/RegAlloc 链，vreg 原样当物理号。
+        /// 关闭 liveness/精确 DCE/RegAlloc 链，vreg 原样当物理号（调试降级路径）。
         #[arg(long)]
         no_regalloc: bool,
     },
@@ -99,7 +99,12 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Some(Commands::Compile { expr, file, no_dce, no_regalloc }) => compile(expr, file, no_dce, no_regalloc),
+        Some(Commands::Compile {
+            expr,
+            file,
+            no_dce,
+            no_regalloc,
+        }) => compile(expr, file, no_dce, no_regalloc),
         Some(Commands::Bench {
             mode,
             filter,
@@ -187,7 +192,7 @@ fn format_result(string_forge: &PermInterner, shape_forge: &ShapeForge, val: JsV
 
 fn format_js_value(string_forge: &PermInterner, shape_forge: &ShapeForge, val: JsValue) -> String {
     if val.is_string() {
-        // SAFETY: val is a string value.
+        // SAFETY: val 已确认是字符串值。
         let s = unsafe { (*val.as_string_ptr()).data.clone() };
         format!("\"{s}\"")
     } else if val.is_object() {

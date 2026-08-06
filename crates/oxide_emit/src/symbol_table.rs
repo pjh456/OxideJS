@@ -284,16 +284,16 @@ mod tests {
     #[test]
     fn var_hoists_to_function_scope() {
         let mut st = SymbolTable::new();
-        // Global scope is FunctionScope
+        // 全局作用域是函数作用域
         st.declare("x", 0, l(), false).unwrap();
         st.init_var("x");
-        // Push a block scope
+        // 压入块作用域
         st.push_scope();
-        // var declaration inside block should go to function scope
+        // 块内的 var 声明应落到函数作用域
         st.declare("y", 1, v(), false).unwrap();
         st.init_var("y");
         st.pop_scope();
-        // y should be accessible (it was declared in function scope, not block scope)
+        // y 可见（声明在函数作用域而非块作用域）
         assert_eq!(st.lookup("y").unwrap(), 1);
     }
 
@@ -326,7 +326,7 @@ mod tests {
         st.declare("y", 1, v(), false).unwrap();
         st.pop_scope();
         st.push_scope();
-        // Same function scope, so this should be a duplicate
+        // 同一函数作用域，故应为重复声明
         assert!(st.declare("y", 2, v(), false).is_err());
         st.pop_scope();
     }

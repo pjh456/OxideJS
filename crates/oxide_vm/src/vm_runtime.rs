@@ -138,7 +138,7 @@ impl Vm {
         let len = frame.caller_reg_limit as usize;
         self.regs[..len].copy_from_slice(&self.save_stack[offset..offset + len]);
         self.save_stack.truncate(offset);
-        // spill 帧边界截断（D-08，仿 save_stack 窗口）：子函数 spill 数据在帧恢复后丢弃
+        // spill 帧边界截断：子函数写入的 spill 数据在帧恢复后丢弃。
         self.spill_stack.truncate(frame.spill_offset as usize);
         self.regs[254] = frame.saved_this;
         self.regs[255] = frame.saved_new_target;
@@ -192,7 +192,7 @@ impl Vm {
                     self.restore_frame(frame);
                 }
             }
-            // IteratorClose any for-of loops abandoned inside this handler's scope.
+            // 对该处理器作用域内被中断的 for-of 循环执行 IteratorClose。
             self.close_for_of_above(handler.for_of_depth);
             if let Some(finally_pc) = handler.finally_pc {
                 vm_trace!("unwind: entering finally at pc={}", finally_pc);
@@ -216,8 +216,8 @@ impl Vm {
             self.restore_frame(frame);
         }
         let exc = self.exception_value.take().unwrap_or(JsValue::undefined());
-        // Preserve the escaping JsValue so a for-of next()-throw can re-throw the original
-        // value instead of the flattened string (consumed by dispatch_for_of_done/next).
+        // 保留逃逸的 JsValue，使 for-of 的 next() 抛出时可重新抛出原值而非展平后的
+        // 字符串（由 dispatch_for_of_done/next 消费）。
         self.last_uncaught_value = Some(exc);
         let kind_str = self.pending_error_kind.take().unwrap_or("Error");
         let exc_text = self.error_text(exc);

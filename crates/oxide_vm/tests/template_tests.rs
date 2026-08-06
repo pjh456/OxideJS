@@ -87,22 +87,21 @@ fn template_numeric_expression() {
     assert_eq!(to_str(&vm, result.unwrap()), "2");
 }
 
-// -- Template tagging tests (basic) --
+// ── 模板标签调用测试（基础）──
 
 #[test]
 fn tagged_template_basic() {
-    // Use Math.max as a simple native tag function to verify the CALL dispatch works.
-    // Math.max(cooked_array, raw_array, 42) should return 42 (the max of the args).
-    // This avoids bytecode function call complexity.
+    // 用 Math.max 作为简单 native 标签函数，验证 CALL 分发可用。
+    // Math.max(cooked_array, raw_array, 42) 应返回 42（参数最大值）。
+    // 由此避开字节码函数调用复杂度。
     let result = eval("Math.max`hello ${42} world`");
-    // Math.max on the args should work - just verify it doesn't crash
+    // Math.max 作用于参数——仅验证不崩溃。
     assert!(!result.starts_with("vm error:"), "Tagged template should not crash, got: {}", result);
 }
 
 #[test]
 fn tagged_template_compiles_no_error() {
-    // Verify that tagged templates compile without error (even if the tag
-    // function behavior isn't fully tested)
+    // 验证带标签模板编译不报错（即使标签函数行为未被完整测试）。
     let result = eval("function t(s,v){ return s[0]+v; } t`x${1}`");
     assert!(!result.starts_with("compile error:"), "Tagged template should compile");
 }

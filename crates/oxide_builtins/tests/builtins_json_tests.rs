@@ -82,7 +82,7 @@ fn tojson_called_before_serialize() {
 #[test]
 fn tojson_non_callable_ignored() {
     let (_, result) = eval(r#"JSON.stringify({toJSON:'not-a-function', a:1})"#).unwrap();
-    // toJSON property is a string, should be serialized normally
+    // toJSON 属性是字符串，应按普通属性序列化。
     assert!(stringify_val(&result).contains("toJSON"));
     assert!(stringify_val(&result).contains(r#""a":1"#));
 }
@@ -117,8 +117,8 @@ fn reviver_transform_values() {
 fn reviver_delete_property() {
     let (_, result) =
         eval(r#"JSON.parse('{"a":1,"b":2}', function(k,v){if(k==='a')return undefined;return v})"#).unwrap();
-    // The property is soft-deleted (set to undefined)
-    // For test262 compatibility, stringify should omit undefined properties
+    // 属性被软删除（置为 undefined）。
+    // 为 test262 兼容，stringify 应省略 undefined 属性。
     assert!(result.is_object());
 }
 

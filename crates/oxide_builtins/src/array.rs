@@ -373,7 +373,7 @@ pub fn array_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             if !o_ptr.is_null() {
                 let o = unsafe { &*o_ptr };
                 let on = o.prop_count() as usize;
-                // spread array elements if it's a real array
+                // 真数组时展开元素。
                 if o.is_array() && on > 0 {
                     for i in 0..on {
                         all.push(o.get_prop_at(i));
@@ -423,8 +423,8 @@ pub fn array_join<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
 /// `Array.prototype.toString`：委托给 join，默认用 `,` 分隔。
 pub fn array_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    // Array.prototype.toString() delegates to join with the default "," separator,
-    // ignoring its own arguments per spec.
+    // Array.prototype.toString() 委托给 join，默认用 "," 分隔，
+    // 按规范忽略自身参数。
     array_join(vm, &[args[0]])
 }
 
@@ -440,7 +440,7 @@ pub fn array_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(JsValue::int(-1));
     }
     let target = vm.reg(args[1]);
-    // fromIndex
+    // fromIndex：负索引从尾部折算，NaN 视为 0。
     let from_index = if args.len() >= 3 {
         let v = vm.reg(args[2]);
         let f = vm.coerce_number_bounded(v).unwrap_or(0.0);
@@ -499,7 +499,7 @@ pub fn array_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     for i in from_index..n {
         let elem = arraylike_get(vm, ptr, is_array, i);
-        // SameValueZero: NaN === NaN, +0 === -0
+        // SameValueZero：NaN 视为相等、+0 与 -0 视为相同。
         if same_value_zero(elem, target) {
             return NativeResult::Ok(JsValue::bool(true));
         }
@@ -507,9 +507,9 @@ pub fn array_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(false))
 }
 
-/// SameValueZero (ES2015 7.2.10): NaN === NaN, +0 === -0
+/// SameValueZero（ES2015 §7.2.10）：NaN 视为相等、+0 与 -0 视为相同。
 fn same_value_zero(a: JsValue, b: JsValue) -> bool {
-    // 都是数字时特殊处理
+    // 双数字时特殊处理。
     let a_is_num = a.is_int() || a.is_double();
     let b_is_num = b.is_int() || b.is_double();
     if a_is_num && b_is_num {
@@ -518,7 +518,7 @@ fn same_value_zero(a: JsValue, b: JsValue) -> bool {
         if av.is_nan() && bv.is_nan() {
             return true;
         }
-        return av == bv; // +0 == -0 in Rust f64
+        return av == bv; // Rust f64 中 +0 == -0。
     }
     oxide_runtime_api::strict_equality(a, b)
 }
@@ -1042,7 +1042,7 @@ pub fn array_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(JsValue::int(-1));
     }
     let search = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    // fromIndex (default: n-1)
+    // fromIndex（缺省：n-1）。
     let from_index_isize: isize = if args.len() >= 3 {
         let v = vm.reg(args[2]);
         let f = vm.coerce_number_bounded(v).unwrap_or(0.0);

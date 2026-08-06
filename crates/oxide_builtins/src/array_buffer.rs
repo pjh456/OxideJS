@@ -54,8 +54,8 @@ pub(crate) fn new_array_buffer<H: VmHost>(vm: &mut H, data: Vec<u8>) -> *mut JsO
     obj.type_tag = JsObject::OBJ_TYPE_ARRAY_BUFFER;
     let len = data.len();
     let data_ptr = Box::into_raw(Box::new(data));
-    // SAFETY: ArrayBuffer objects are not callable, so their native_fn slot is reused
-    // as an opaque Box<Vec<u8>> pointer, matching the existing RegExp storage pattern.
+    // SAFETY: ArrayBuffer 对象不可调用，故 native_fn 槽复用作不透明 `Box<Vec<u8>>`
+    // 指针，与既有 RegExp 存储模式一致。
     obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(data_ptr as *const ()) }));
     set_named_prop(
         vm,
@@ -95,7 +95,7 @@ pub fn drop_array_buffer_native(obj: &mut JsObject) -> u64 {
     if data_ptr.is_null() {
         return 0;
     }
-    // SAFETY: ArrayBuffer stores `Box<Vec<u8>>` in native_fn.
+    // SAFETY: ArrayBuffer 在 native_fn 槽中存 `Box<Vec<u8>>`。
     let data = unsafe { Box::from_raw(data_ptr) };
     let bytes = std::mem::size_of::<Vec<u8>>() + data.capacity();
     obj.set_native_fn(None);

@@ -46,7 +46,7 @@ impl Vm {
         if val.is_string() {
             let length_si = self.kernel_core.perm_interner().intern("length").0;
             if prop_name_si == length_si {
-                // SAFETY: val is a string value.
+                // SAFETY: val 是字符串值。
                 let len = unsafe { (*val.as_string_ptr()).data.encode_utf16().count() };
                 return Ok(Some(JsValue::int(len as i32)));
             }
@@ -207,14 +207,14 @@ impl Vm {
             prop_cache_miss();
             ic_debug!("IC_GET miss shape={} prop={}", obj.shape_id(), prop_name_si);
             let resolved = self.ordinary_get(obj, prop_name_si, val)?;
-            // Try own property first (fast path, depth=0).
+            // 先试自身属性（快路径，depth=0）。
             if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
                 if !obj.is_accessor_meta(pos) {
                     ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos, 0);
                     ic_debug!("IC_GET write-back own shape={} slot={}", obj.shape_id(), pos);
                 }
             } else {
-                // Walk proto chain to find which object actually owns this property.
+                // 沿原型链查找真正拥有该属性的对象。
                 let mut cursor = obj.proto().as_js_object_ptr();
                 let mut depth = 1u8;
                 while !cursor.is_null() {

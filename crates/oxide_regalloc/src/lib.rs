@@ -1,10 +1,10 @@
 //! RegAlloc 改写 pass：干涉图染色决策（前半）+ 指令改写/元数据回写（后半）。
 //!
-//! 消费 `oxide_liveness::LiveInfo`（inst_live_before 逐指令活集，05-04 交付）与
+//! 消费 `oxide_liveness::LiveInfo`（inst_live_before 逐指令活集）与
 //! `oxide_ir::IRFunction`（param_layout 参数段 + nested escaped 收集）。染色：干涉图
 //! （graph.rs）+ Kemp 简化/贪心/spill 区间拆分（color.rs）→ AllocMap；改写：rewrite.rs
 //! （指令槽 vreg→phys 重写 + spill 插入 + 参数连续性 MOV + label 重建）+ finish.rs
-//! （元数据回写）。`alloc()` 是完整改写 pass 入口（D-16），`color()` 只产决策。
+//! （元数据回写）。`alloc()` 是完整改写 pass 入口，`color()` 只产决策。
 
 mod alloc_map;
 mod color;
@@ -18,8 +18,8 @@ use oxide_ir::IRFunction;
 use oxide_liveness::LiveInfo;
 
 /// 染色：`&IRFunction + &LiveInfo → Result<AllocMap, String>`。纯函数，只读 IR。
-/// 空 IRFunction 退化：Ok(AllocMap::new())。Err = 无可行染色（D-02 RangeError 路径，
-/// 05-08 接线时转 lower 错误）。
+/// 空 IRFunction 退化：Ok(AllocMap::new())。Err = 无可行染色（RangeError 路径，
+/// 消息与 lower 逐字一致，编译接线时原样传播）。
 pub fn color(f: &IRFunction, live: &LiveInfo) -> Result<AllocMap, String> {
     if f.insts.is_empty() {
         return Ok(AllocMap::new());
@@ -27,12 +27,17 @@ pub fn color(f: &IRFunction, live: &LiveInfo) -> Result<AllocMap, String> {
     color::run(f, live)
 }
 
-/// 寄存器分配改写：`&mut IRFunction + &LiveInfo → Result<(), String>`（D-16）。
+/// 寄存器分配改写：`&mut IRFunction + &LiveInfo → Result<(), String>`。
 ///
-/// 流程：LiveInfo 维度守卫（inst 数不符 → 内部重跑 build_cfg + liveness，D-17 修正：
-/// 精确 DCE 删指令后 LiveInfo 过期，重跑纯函数一次调用，不重复建分析引擎）→
-/// `color()`（Err 原样传播）→ `rewrite::run` → `finish::run` → nested 递归自顶向下
-/// （每子函数独立 vreg 空间独立 alloc，D-03/D-10）。
+/// # 步骤
+/// - LiveInfo 维度守卫：inst 数不符说明 LiveInfo 已过期（精确 DCE 删指令后下标位移），
+///   内部重跑 build_cfg + liveness 重建，不重复建分析引擎
+/// - `color()` 产染色决策（Err 原样传播）
+/// - `rewrite::run` 指令改写 → `finish::run` 元数据回写
+/// - nested 递归自顶向下：每子函数独立 vreg 空间独立 alloc
+///
+/// # 注意事项
+/// - 嵌套子函数不继承父 LiveInfo，各自重跑 build_cfg + liveness。
 pub fn alloc(f: &mut IRFunction, live: &LiveInfo) -> Result<(), String> {
     if f.insts.is_empty() && f.nested.is_empty() {
         return Ok(());
@@ -71,8 +76,10 @@ mod tests {
     #[test]
     fn alloc_stale_live_reruns() {
         let mut f = IRFunction::new();
-        f.insts.push(Inst::new(OpCode::ADD, Operand::Reg(3), Operand::Reg(1), Operand::Reg(2)));
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(3), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::ADD, Operand::Reg(3), Operand::Reg(1), Operand::Reg(2)));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(3), Operand::None, Operand::None));
         // 空 LiveInfo（维度不符）→ 内部重跑
         let stale = LiveInfo::new();
         assert!(alloc(&mut f, &stale).is_ok());
@@ -88,10 +95,12 @@ mod tests {
 
     #[test]
     fn alloc_err_propagates() {
-        // 255 参数 CALL：窗口吞并 → k=0 → 无可行染色 → Err
+        // 255 参数 CALL：参数窗口吞并全部可分配色 → k=0 → 无可行染色 → Err
         let mut f = IRFunction::new();
-        f.insts.push(Inst::call(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3000), 255));
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::call(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3000), 255));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None));
         let cfg = oxide_cfg::build_cfg(&f);
         let live = oxide_liveness::liveness(&f, &cfg);
         let err = alloc(&mut f, &live).unwrap_err();
@@ -102,10 +111,12 @@ mod tests {
     fn alloc_recurses_nested() {
         let mut f = IRFunction::new();
         f.insts.push(Inst::load_const(Operand::Reg(1), 0));
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(1), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(1), Operand::None, Operand::None));
         let mut sub = IRFunction::new();
         sub.insts.push(Inst::load_const(Operand::Reg(3), 0));
-        sub.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(3), Operand::None, Operand::None));
+        sub.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(3), Operand::None, Operand::None));
         f.nested.push(sub);
         let cfg = oxide_cfg::build_cfg(&f);
         let live = oxide_liveness::liveness(&f, &cfg);
@@ -122,4 +133,3 @@ mod tests {
         assert!(f.nested[0].n_registers <= 253, "子函数 n_registers 已回写");
     }
 }
-

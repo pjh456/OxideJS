@@ -33,14 +33,14 @@ impl Vm {
         let args_slice = &args_buf[..len];
         builtins_debug!("native_call depth={} args={}", self.native_call_depth, arg_count);
 
-        // SAFETY: native_fn was set via set_native_fn with a valid NativeFn pointer;
-        // native_fn_ptr_to_fn is the single coercion point for NativeFnPtr → NativeFn.
+        // SAFETY: native_fn 经 set_native_fn 以合法 NativeFn 指针设置；
+        // native_fn_ptr_to_fn 是 NativeFnPtr → NativeFn 的唯一强制转换点。
         let func: NativeFn = unsafe { native_fn_ptr_to_fn(obj.native_fn().unwrap()) };
-        // regs[254] is the caller's `this` register and doubles as the "current callee"
-        // slot that dispatcher builtins (Function.prototype.bind/call/apply) read. Native
-        // calls share the flat register file with the caller, so snapshot the caller's
-        // `this`, expose the callee for the native's duration, then restore it — otherwise
-        // every native call leaves its own function object in the caller's `this` register.
+        // regs[254] 是调用方的 `this` 寄存器，同时充当分发型 builtin
+        // （Function.prototype.bind/call/apply）读取的"当前 callee"槽。native 调用与
+        // 调用方共享扁平寄存器文件，因此先快照调用方 `this`，在 native 执行期间暴露
+        // callee，随后恢复——否则每次 native 调用都会把自己的函数对象留在调用方的
+        // `this` 寄存器里。
         let saved_this = self.regs[254];
         self.regs[254] = callee;
         self.native_call_depth += 1;
@@ -58,7 +58,7 @@ impl Vm {
                     (err_val, self.thrown_error_kind(err_val))
                 } else {
                     let msg = if err_val.is_string() {
-                        // SAFETY: err_val is a string value.
+                        // SAFETY: err_val 是字符串值。
                         unsafe { (*err_val.as_string_ptr()).data.clone() }
                     } else {
                         format!("{err_val}")
@@ -184,8 +184,8 @@ impl Vm {
                 }
             }
         }
-        // Cell not yet created (hoisting order: CREATE_CLOSURE before MAKE_CELL).
-        // Create cell lazily with caller's register value.
+        // cell 尚未创建（hoisting 顺序：CREATE_CLOSURE 先于 MAKE_CELL），
+        // 用调用方寄存器值惰性创建 cell。
         self.lazy_create_upvalue_cell(rd, uv_idx)
     }
 
@@ -195,7 +195,7 @@ impl Vm {
             let obj = unsafe { &mut *callee.as_js_object_ptr() };
             let upvals = obj.upvalues_slice_mut();
             if uv_idx < upvals.len() {
-                // Try to get value from caller's cell table (MAKE_CELL ran after CREATE_CLOSURE)
+                // 尝试从调用方 cell 表取初值（MAKE_CELL 在 CREATE_CLOSURE 之后执行）。
                 let val = if self.cell_stack.len() >= 2 {
                     let caller_cells = &self.cell_stack[self.cell_stack.len() - 2];
                     if uv_idx < caller_cells.len() && !caller_cells[uv_idx].is_null() {
@@ -317,10 +317,10 @@ impl Vm {
 
         if super_obj.native_fn().is_some() {
             self.regs[253] = derived_this;
-            self.regs[254] = super_ctor; // bind_dispatcher reads regs[254] as the wrapper callee
+            self.regs[254] = super_ctor; // bind_dispatcher 把 regs[254] 当作包装 callee 读取
             let (args_buf, len) = Self::build_native_args(first_arg_reg, arg_count, 253);
-            // SAFETY: native_fn was set via set_native_fn with a valid NativeFn pointer;
-            // native_fn_ptr_to_fn is the single coercion point for NativeFnPtr → NativeFn.
+            // SAFETY: native_fn 经 set_native_fn 以合法 NativeFn 指针设置；
+            // native_fn_ptr_to_fn 是 NativeFnPtr → NativeFn 的唯一强制转换点。
             let func: NativeFn = unsafe { native_fn_ptr_to_fn(super_obj.native_fn().unwrap()) };
             match func(self, &args_buf[..len]) {
                 NativeResult::Ok(val) => {
@@ -336,8 +336,8 @@ impl Vm {
                     }
                 }
                 NativeResult::TailCall { callee, this, args } => {
-                    // e.g. bound function: resolve the tail call, use its return
-                    // value as the constructed instance (or fall back to derived_this).
+                    // 如 bound 函数：解析尾调用，用其返回值作为构造实例
+                    // （或回退到 derived_this）。
                     match self.call_function_sync(callee, this, &args) {
                         Ok(val) => {
                             self.regs[254] = if val.is_object() { val } else { derived_this };

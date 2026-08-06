@@ -2,9 +2,9 @@
 //! 函数：`private_name_id`、`emit_private_id_reg`、`emit_class_key_reg` 等。
 
 use crate::{CompileCtx, Emitter};
+use oxide_bytecode::module::Constant;
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
-use oxide_bytecode::module::Constant;
 use oxide_parser::PropertyKey;
 
 impl Emitter {

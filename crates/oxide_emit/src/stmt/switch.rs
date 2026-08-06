@@ -1,9 +1,9 @@
 //! switch 语句 emit：case 匹配链 + 穿落（fallthrough）与 default，见 `emit_switch_statement`。
 
 use crate::{CompileCtx, Emitter};
+use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
-use oxide_bytecode::opcode::OpCode;
 use oxide_parser::Statement;
 
 impl Emitter {
@@ -22,7 +22,12 @@ impl Emitter {
             if let Some(test) = &case.test {
                 let test_reg = self.emit_expression(test, ctx)?;
                 let eq_reg = ctx.alloc_reg();
-                ctx.inst(Inst::new(OpCode::EQ, Operand::Reg(eq_reg), Operand::Reg(disc_reg), Operand::Reg(test_reg)));
+                ctx.inst(Inst::new(
+                    OpCode::EQ,
+                    Operand::Reg(eq_reg),
+                    Operand::Reg(disc_reg),
+                    Operand::Reg(test_reg),
+                ));
                 ctx.inst(Inst::jmp_if_true(eq_reg, case_label));
             }
         }

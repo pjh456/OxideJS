@@ -2,10 +2,10 @@
 //! 函数：`emit_chainable_expression`、`emit_optional_guard`、`emit_chain_call` 等。
 
 use crate::{CompileCtx, Emitter};
-use oxide_ir::inst::Inst;
-use oxide_ir::operand::{LabelId, Operand};
 use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
+use oxide_ir::inst::Inst;
+use oxide_ir::operand::{LabelId, Operand};
 use oxide_parser::{ChainElement, Expression, LogicalOperator, PropertyKey};
 
 impl Emitter {
@@ -45,7 +45,12 @@ impl Emitter {
         }
         let key_reg = self.emit_expression(&member.expression, ctx)?;
         let value_reg = ctx.alloc_reg();
-        ctx.inst(Inst::new(OpCode::GET_PROP_DYNAMIC, Operand::Reg(obj_reg), Operand::Reg(key_reg), Operand::Reg(value_reg)));
+        ctx.inst(Inst::new(
+            OpCode::GET_PROP_DYNAMIC,
+            Operand::Reg(obj_reg),
+            Operand::Reg(key_reg),
+            Operand::Reg(value_reg),
+        ));
         Ok((value_reg, obj_reg))
     }
 
@@ -68,7 +73,12 @@ impl Emitter {
                 }
                 let key_reg = self.emit_private_id_reg(member.field.name.as_str(), ctx)?;
                 let callee_reg = ctx.alloc_reg();
-                ctx.inst(Inst::new(OpCode::GET_PRIVATE, Operand::Reg(callee_reg), Operand::Reg(obj_reg), Operand::Reg(key_reg)));
+                ctx.inst(Inst::new(
+                    OpCode::GET_PRIVATE,
+                    Operand::Reg(callee_reg),
+                    Operand::Reg(obj_reg),
+                    Operand::Reg(key_reg),
+                ));
                 (callee_reg, obj_reg)
             }
             _ => {
@@ -152,7 +162,12 @@ impl Emitter {
                 }
                 let key_reg = self.emit_private_id_reg(member.field.name.as_str(), ctx)?;
                 let value_reg = ctx.alloc_reg();
-                ctx.inst(Inst::new(OpCode::GET_PRIVATE, Operand::Reg(value_reg), Operand::Reg(obj_reg), Operand::Reg(key_reg)));
+                ctx.inst(Inst::new(
+                    OpCode::GET_PRIVATE,
+                    Operand::Reg(value_reg),
+                    Operand::Reg(obj_reg),
+                    Operand::Reg(key_reg),
+                ));
                 Ok(value_reg)
             }
             Expression::CallExpression(call) => self.emit_chain_call(call, short_label, ctx),
@@ -182,7 +197,12 @@ impl Emitter {
                 }
                 let key_reg = self.emit_private_id_reg(member.field.name.as_str(), ctx)?;
                 let value_reg = ctx.alloc_reg();
-                ctx.inst(Inst::new(OpCode::GET_PRIVATE, Operand::Reg(value_reg), Operand::Reg(obj_reg), Operand::Reg(key_reg)));
+                ctx.inst(Inst::new(
+                    OpCode::GET_PRIVATE,
+                    Operand::Reg(value_reg),
+                    Operand::Reg(obj_reg),
+                    Operand::Reg(key_reg),
+                ));
                 Ok(value_reg)
             }
             ChainElement::CallExpression(call) => self.emit_chain_call(call, short_label, ctx),
@@ -204,7 +224,7 @@ impl Emitter {
         Ok(())
     }
 
-    pub(crate) fn emit_object_property_read(        &self, src_reg: u32, key: &str, ctx: &mut CompileCtx) -> u32 {
+    pub(crate) fn emit_object_property_read(&self, src_reg: u32, key: &str, ctx: &mut CompileCtx) -> u32 {
         let prop_reg = ctx.alloc_reg();
         ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(prop_reg), Operand::Reg(src_reg), Operand::None));
         let key_idx = ctx.add_constant(Constant::String(key.to_string()));
@@ -257,7 +277,12 @@ impl Emitter {
         ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(prop_reg), Operand::Reg(src_reg), Operand::None));
         let key_reg = self.emit_property_key_expression(key, ctx)?;
         let val_reg = ctx.alloc_reg();
-        ctx.inst(Inst::new(OpCode::GET_PROP_DYNAMIC, Operand::Reg(prop_reg), Operand::Reg(key_reg), Operand::Reg(val_reg)));
+        ctx.inst(Inst::new(
+            OpCode::GET_PROP_DYNAMIC,
+            Operand::Reg(prop_reg),
+            Operand::Reg(key_reg),
+            Operand::Reg(val_reg),
+        ));
         Ok((val_reg, None))
     }
 }

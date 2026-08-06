@@ -88,10 +88,10 @@ pub fn regexp_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     match compiled {
         Ok(re) => {
             let re_ptr = Box::into_raw(Box::new(re));
-            // SAFETY: re_ptr is a Box<regex::Regex> pointer stored by the constructor via
-            // NativeFnPtr::from_raw(re_ptr as *const ()). RegExp objects repurpose the native_fn
-            // field to hold the compiled Regex — not a NativeFn pointer. Valid for the object's
-            // lifetime; VM reset drops the Box through `drop_regexp_native`.
+            // SAFETY: re_ptr 是构造器经 `NativeFnPtr::from_raw(re_ptr as *const ())`
+            // 写入的 `Box<regex::Regex>` 指针。RegExp 对象把 native_fn 字段复用作
+            // 已编译 Regex 的存放处——而非 NativeFn 指针。对象存活期间有效；
+            // VM 重置经 `drop_regexp_native` 释放该 Box。
             obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(re_ptr as *const ()) }));
         }
         Err(e) => {
@@ -149,7 +149,7 @@ pub fn regexp_test<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Some(p) => p,
     };
 
-    // SAFETY: fn_ptr holds a Box<regex::Regex> pointer stored by regexp_constructor.
+    // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regex::Regex>` 指针。
     let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
     let haystack = oxide_runtime_api::to_string(vm.reg(if args.len() > 1 { args[1] } else { args[0] }));
     let last_index = vm.coerce_number_bounded(get_prop(re, 0)).unwrap_or(f64::NAN) as usize;
@@ -181,7 +181,7 @@ pub fn regexp_exec<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
     };
 
-    // SAFETY: fn_ptr holds a Box<regex::Regex> pointer stored by regexp_constructor.
+    // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regex::Regex>` 指针。
     let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
     let haystack = oxide_runtime_api::to_string(vm.reg(if args.len() > 1 { args[1] } else { args[0] }));
 

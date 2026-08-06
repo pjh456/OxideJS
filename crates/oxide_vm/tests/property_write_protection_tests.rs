@@ -22,7 +22,7 @@ fn assert_err_contains(result: Result<JsValue, String>, expected: &str) {
     }
 }
 
-// -- Assign to non-writable own property throws TypeError --
+// ── 向不可写自身属性赋值抛 TypeError ──
 #[test]
 fn assign_to_non_writable_throws() {
     let result = eval_many(&[
@@ -33,7 +33,7 @@ fn assign_to_non_writable_throws() {
     assert_err_contains(result, "read-only");
 }
 
-// -- Assign to writable own property succeeds --
+// ── 向可写自身属性赋值成功 ──
 #[test]
 fn assign_to_writable_succeeds() {
     let r = eval_many(&[
@@ -46,7 +46,7 @@ fn assign_to_writable_succeeds() {
     assert!(r.is_int() && r.as_int() == 2, "assign to writable should set value to 2, got {:?}", r);
 }
 
-// -- Assign to inherited non-writable property on proto throws --
+// ── 向原型上不可写的继承属性赋值抛错 ──
 #[test]
 fn assign_to_inherited_non_writable_throws() {
     let result = eval_many(&[
@@ -58,9 +58,9 @@ fn assign_to_inherited_non_writable_throws() {
     assert_err_contains(result, "read-only");
 }
 
-// -- Assign creates own property on child when proto's is non-writable but child has no own prop
+// ── 原型属性不可写但子对象无自有属性时，赋值会在子对象上创建自有属性
 // ponytail: spec allows shadowing when proto prop is configurable; engine doesn't yet.
-// The engine correctly throws for non-writable proto props. Full shadowing is a follow-up.
+// 引擎对不可写原型属性正确抛错；完整遮蔽作为后续工作。
 #[test]
 fn assign_non_writable_proto_configurable_prop_throws() {
     let result = eval_many(&[

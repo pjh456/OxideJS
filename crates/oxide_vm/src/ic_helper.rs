@@ -1,22 +1,20 @@
-//! Inline-cache (IC) bytecode-stream helpers.
+//! inline cache（IC）字节码流辅助函数。
 //!
-//! Contains ALL IC read/write/clear logic — property dispatch and member
-//! update handlers route through here, so IC format changes (like the future
-//! side-table migration) require editing only this file.
+//! 汇聚全部 IC 读写/清零逻辑——属性分发与成员更新 handler 都经由此处，IC 格式
+//! 变更（如未来的 side-table 迁移）只需改这一个文件。
 //!
-//! IC entry format (3 extension words after opcode):
-//!   ext0 = shape_id (24 bits)
-//!   ext1 = slot_index (32 bits)
-//!   ext2 = proto_depth (u8, 0 = own property on receiver)
+//! IC 项格式（操作码后 3 个扩展字）：
+//!   ext0 = shape_id（24 位）
+//!   ext1 = slot_index（32 位）
+//!   ext2 = proto_depth（u8，0 = 接收者自身属性）
 
 use crate::vm_trace;
 use oxide_bytecode::opcode::{self, Instr};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-/// Read the three IC extension words at `pc` (the bytes following an
-/// IC-bearing opcode), advance `pc` past them, and return the decoded
-/// `(shape_id, slot, proto_depth)`.
+/// 读取 `pc` 处 IC 指令后的三个扩展字，把 `pc` 前进越过它们，
+/// 返回解码的 `(shape_id, slot, proto_depth)`。
 pub(crate) fn read_ic_entry(bytecode: &[Instr], pc: &mut usize) -> (u32, u32, u8) {
     let ext0 = bytecode[*pc];
     let ext1 = bytecode[*pc + 1];
@@ -25,9 +23,8 @@ pub(crate) fn read_ic_entry(bytecode: &[Instr], pc: &mut usize) -> (u32, u32, u8
     (ext0 & 0x00FF_FFFF, ext1, (ext2 & 0xFF) as u8)
 }
 
-/// Write a resolved `(shape_id, slot, proto_depth)` back into the three IC
-/// extension words at `pc - 3` (they precede the current instruction).
-/// Called on an IC miss after resolving a property.
+/// 把解析出的 `(shape_id, slot, proto_depth)` 写回 `pc - 3` 处的三个 IC 扩展字
+/// （位于当前指令之前）。IC 未命中并完成属性解析后调用。
 pub(crate) fn write_ic_back(bytecode: &mut [Instr], pc: usize, shape_id: u32, slot_index: u32, proto_depth: u8) {
     debug_assert!(pc >= 3, "IC write-back requires 3 extension words before pc");
     vm_trace!("write_ic_back: pc={} shape_id={} slot={} depth={}", pc, shape_id, slot_index, proto_depth);
@@ -36,7 +33,7 @@ pub(crate) fn write_ic_back(bytecode: &mut [Instr], pc: usize, shape_id: u32, sl
     bytecode[pc - 1] = proto_depth as u32;
 }
 
-/// Zero every IC extension word in the stream, invalidating all cached shapes.
+/// 把流中所有 IC 扩展字清零，使全部缓存 shape 失效。
 pub(crate) fn clear_ic_caches(bytecode: &mut [Instr]) {
     let mut i = 0;
     while i < bytecode.len() {
@@ -54,8 +51,7 @@ pub(crate) fn clear_ic_caches(bytecode: &mut [Instr]) {
     }
 }
 
-/// Walk `proto_depth` steps up the prototype chain, returning a raw pointer
-/// to the target object (or null if the chain is shorter).
+/// 沿原型链上溯 `proto_depth` 步，返回目标对象的裸指针（链不足时返回 null）。
 #[inline(always)]
 fn resolve_proto_target_raw(obj: *const JsObject, proto_depth: u8) -> *const JsObject {
     if proto_depth == 0 {

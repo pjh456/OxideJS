@@ -1,9 +1,9 @@
-//! LiveInfo：liveness 分析输出视图（D-15：pass 输出，不住进 IR）。
+//! LiveInfo：liveness 分析输出视图（pass 输出，不住进 IR）。
 //!
 //! 全部 live 集为按 reg 号索引的 bitset（`Vec<bool>`，长度 = reg_count+1，由
 //! dataflow 求上界）。四字段语义：
-//! - `block_live_in` / `block_live_out`：块级数据流迭代结果（05-06 精确 DCE 消费）
-//! - `inst_live_before` / `inst_live_after`：逐指令活集（05-07 干涉图消费 live_before）
+//! - `block_live_in` / `block_live_out`：块级数据流迭代结果（精确 DCE 消费）
+//! - `inst_live_before` / `inst_live_after`：逐指令活集（RegAlloc 干涉图消费 live_before）
 
 /// liveness 输出：块级 liveIn/liveOut + 逐指令 live_before/live_after。
 #[derive(Debug, Clone)]

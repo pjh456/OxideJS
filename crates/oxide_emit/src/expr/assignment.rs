@@ -2,10 +2,10 @@
 //! 函数：`emit_assignment_expression`。
 
 use crate::{CompileCtx, Emitter};
-use oxide_ir::inst::Inst;
-use oxide_ir::operand::Operand;
 use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
+use oxide_ir::inst::Inst;
+use oxide_ir::operand::Operand;
 use oxide_parser::AssignmentOperator;
 
 impl Emitter {
@@ -22,13 +22,23 @@ impl Emitter {
                 let key_reg = ctx.alloc_reg();
                 ctx.inst(Inst::load_const(Operand::Reg(key_reg), idx));
                 let result_reg = ctx.alloc_reg();
-                ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg), Operand::Reg(obj_reg), Operand::None));
+                ctx.inst(Inst::new(
+                    OpCode::LOAD_VAR,
+                    Operand::Reg(result_reg),
+                    Operand::Reg(obj_reg),
+                    Operand::None,
+                ));
                 ctx.inst(Inst::ic_get(Operand::Reg(result_reg), Operand::Reg(key_reg)));
                 self.emit_logical_assign_test(logical_op, result_reg, store_label, end_label, ctx)?;
                 ctx.labels.set_label_pos(store_label, ctx.insts.len());
                 let val_reg = self.emit_expression(&assign.right, ctx)?;
                 ctx.inst(Inst::ic_set(Operand::Reg(obj_reg), Operand::Reg(val_reg), Operand::Reg(key_reg)));
-                ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg), Operand::Reg(val_reg), Operand::None));
+                ctx.inst(Inst::new(
+                    OpCode::LOAD_VAR,
+                    Operand::Reg(result_reg),
+                    Operand::Reg(val_reg),
+                    Operand::None,
+                ));
                 ctx.labels.set_label_pos(end_label, ctx.insts.len());
                 return Ok(result_reg);
             }
@@ -63,19 +73,39 @@ impl Emitter {
                 let obj_reg = self.emit_expression(&member.object, ctx)?;
                 let key_reg = self.emit_expression(&member.expression, ctx)?;
                 let result_reg = ctx.alloc_reg();
-                ctx.inst(Inst::new(OpCode::GET_PROP_DYNAMIC, Operand::Reg(obj_reg), Operand::Reg(key_reg), Operand::Reg(result_reg)));
+                ctx.inst(Inst::new(
+                    OpCode::GET_PROP_DYNAMIC,
+                    Operand::Reg(obj_reg),
+                    Operand::Reg(key_reg),
+                    Operand::Reg(result_reg),
+                ));
                 self.emit_logical_assign_test(logical_op, result_reg, store_label, end_label, ctx)?;
                 ctx.labels.set_label_pos(store_label, ctx.insts.len());
                 let val_reg = self.emit_expression(&assign.right, ctx)?;
-                ctx.inst(Inst::new(OpCode::SET_PROP_DYNAMIC, Operand::Reg(obj_reg), Operand::Reg(key_reg), Operand::Reg(val_reg)));
-                ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg), Operand::Reg(val_reg), Operand::None));
+                ctx.inst(Inst::new(
+                    OpCode::SET_PROP_DYNAMIC,
+                    Operand::Reg(obj_reg),
+                    Operand::Reg(key_reg),
+                    Operand::Reg(val_reg),
+                ));
+                ctx.inst(Inst::new(
+                    OpCode::LOAD_VAR,
+                    Operand::Reg(result_reg),
+                    Operand::Reg(val_reg),
+                    Operand::None,
+                ));
                 ctx.labels.set_label_pos(end_label, ctx.insts.len());
                 return Ok(result_reg);
             }
             let obj_reg = self.emit_expression(&member.object, ctx)?;
             let key_reg = self.emit_expression(&member.expression, ctx)?;
             let val_reg = self.emit_expression(&assign.right, ctx)?;
-            ctx.inst(Inst::new(OpCode::SET_PROP_DYNAMIC, Operand::Reg(obj_reg), Operand::Reg(key_reg), Operand::Reg(val_reg)));
+            ctx.inst(Inst::new(
+                OpCode::SET_PROP_DYNAMIC,
+                Operand::Reg(obj_reg),
+                Operand::Reg(key_reg),
+                Operand::Reg(val_reg),
+            ));
             Ok(val_reg)
         } else if let oxide_parser::AssignmentTarget::PrivateFieldExpression(member) = &assign.left {
             if assign.operator != AssignmentOperator::Assign {
@@ -84,7 +114,12 @@ impl Emitter {
             let obj_reg = self.emit_expression(&member.object, ctx)?;
             let val_reg = self.emit_expression(&assign.right, ctx)?;
             let key_reg = self.emit_private_id_reg(member.field.name.as_str(), ctx)?;
-            ctx.inst(Inst::new(OpCode::SET_PRIVATE, Operand::Reg(obj_reg), Operand::Reg(val_reg), Operand::Reg(key_reg)));
+            ctx.inst(Inst::new(
+                OpCode::SET_PRIVATE,
+                Operand::Reg(obj_reg),
+                Operand::Reg(val_reg),
+                Operand::Reg(key_reg),
+            ));
             Ok(val_reg)
         } else if let oxide_parser::AssignmentTarget::AssignmentTargetIdentifier(id_ref) = &assign.left {
             if assign.operator != AssignmentOperator::Assign {
@@ -94,14 +129,29 @@ impl Emitter {
                     let name = id_ref.name.as_str();
                     let var_reg = ctx.lookup_or_global(name);
                     let result_reg = ctx.alloc_reg();
-                    ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg), Operand::Reg(var_reg), Operand::None));
+                    ctx.inst(Inst::new(
+                        OpCode::LOAD_VAR,
+                        Operand::Reg(result_reg),
+                        Operand::Reg(var_reg),
+                        Operand::None,
+                    ));
                     self.emit_logical_assign_test(logical_op, result_reg, store_label, end_label, ctx)?;
                     ctx.labels.set_label_pos(store_label, ctx.insts.len());
                     let val_reg = self.emit_expression(&assign.right, ctx)?;
                     let is_const = ctx.lookup_const_flag(name);
                     let const_flag = if is_const { 1 } else { 0 };
-                    ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(var_reg), Operand::Reg(val_reg), Operand::Imm(const_flag)));
-                    ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg), Operand::Reg(val_reg), Operand::None));
+                    ctx.inst(Inst::new(
+                        OpCode::STORE_VAR,
+                        Operand::Reg(var_reg),
+                        Operand::Reg(val_reg),
+                        Operand::Imm(const_flag),
+                    ));
+                    ctx.inst(Inst::new(
+                        OpCode::LOAD_VAR,
+                        Operand::Reg(result_reg),
+                        Operand::Reg(val_reg),
+                        Operand::None,
+                    ));
                     ctx.labels.set_label_pos(end_label, ctx.insts.len());
                     Ok(result_reg)
                 } else if assign.operator == AssignmentOperator::Addition
@@ -143,20 +193,35 @@ impl Emitter {
             } else {
                 let val_reg = self.emit_expression(&assign.right, ctx)?;
                 let name = id_ref.name.as_str();
-                // Check if target is an upvalue reference
+                // 目标若是 upvalue 引用，走 STORE_UPVALUE
                 if let Some(uv_idx) = ctx.current_upvalue_captures.iter().position(|u| u.name == name) {
-                    ctx.inst(Inst::new(OpCode::STORE_UPVALUE, Operand::None, Operand::Reg(val_reg), Operand::Imm(uv_idx as u16)));
+                    ctx.inst(Inst::new(
+                        OpCode::STORE_UPVALUE,
+                        Operand::None,
+                        Operand::Reg(val_reg),
+                        Operand::Imm(uv_idx as u16),
+                    ));
                     return Ok(val_reg);
                 }
-                // Check if target is a captured cell
+                // 目标若是被捕获 cell，走 CELL_SET
                 if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
-                    ctx.inst(Inst::new(OpCode::CELL_SET, Operand::None, Operand::Reg(val_reg), Operand::Imm(cell_idx as u16)));
+                    ctx.inst(Inst::new(
+                        OpCode::CELL_SET,
+                        Operand::None,
+                        Operand::Reg(val_reg),
+                        Operand::Imm(cell_idx as u16),
+                    ));
                     return Ok(val_reg);
                 }
                 let var_reg = ctx.lookup_or_global(name);
                 let is_const = ctx.lookup_const_flag(name);
                 let const_flag = if is_const { 1 } else { 0 };
-                ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(var_reg), Operand::Reg(val_reg), Operand::Imm(const_flag)));
+                ctx.inst(Inst::new(
+                    OpCode::STORE_VAR,
+                    Operand::Reg(var_reg),
+                    Operand::Reg(val_reg),
+                    Operand::Imm(const_flag),
+                ));
                 Ok(val_reg)
             }
         } else if matches!(

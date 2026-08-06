@@ -1,8 +1,8 @@
-//! Inst 寄存器契约：def/use 扫描 + 副作用判定（DCE 与 Phase 5 liveness 共用，D-06）。
+//! Inst 寄存器契约：def/use 扫描 + 副作用判定（DCE 与 liveness 共用单源）。
 //!
 //! `def_reg` / `use_regs` / `is_pure` 是 `Inst` 的类型契约方法（`impl Inst` 与 `inst.rs`
 //! 中的构造 API 同属一类型），落在 oxide_ir 契约层供 DCE 消费、liveness 复用。
-//! 寄存器规则逐条对照 VM dispatch handler（RESEARCH Pattern 1/2 全表）：
+//! 寄存器规则与 VM dispatch handler 行为一致：
 //! CALL 隐式写 reg 0、GET_PROP 结果写 a/b 槽、HALT 隐式读 reg 0、None 槽映射 Reg(0)。
 
 use oxide_bytecode::opcode::OpCode;
@@ -17,9 +17,9 @@ impl Inst {
     /// 无写入返回 None。
     pub fn def_reg(&self) -> Option<u32> {
         match self.op {
-            // CALL 系：结果隐式写 reg 0，rd 是 callee use（Pitfall 1）
+            // CALL 系：结果隐式写 reg 0，rd 是 callee 的 use
             OpCode::CALL | OpCode::CALL_NATIVE => Some(0),
-            // GET_PROP 系：结果写 a/b 槽而非 rd（Pitfall 3）
+            // GET_PROP 系：结果写 a/b 槽而非 rd
             OpCode::GET_PROP | OpCode::IC_GET_PROP => reg_of(&self.a),
             OpCode::GET_PROP_DYNAMIC => reg_of(&self.b),
             // 成员读写：val 槽原地更新（a 槽 / b 槽）
@@ -73,7 +73,7 @@ impl Inst {
     pub fn use_regs(&self) -> SmallVec<[u32; 4]> {
         let mut uses = SmallVec::new();
         match self.op {
-            // CALL 系：rd=callee, a=this, b..b+nargs 参数区间（Pitfall 1）
+            // CALL 系：rd=callee, a=this, b..b+nargs 参数区间
             OpCode::CALL | OpCode::CALL_NATIVE => {
                 push_operand(&mut uses, &self.rd);
                 push_operand(&mut uses, &self.a);
@@ -91,7 +91,7 @@ impl Inst {
                 let nargs = self.ext.first().copied().unwrap_or(0);
                 push_range(&mut uses, reg_of(&self.a), nargs);
             }
-            // GET_PROP 系：结果写 a/b 槽，rd=obj 是 use（Pitfall 3）
+            // GET_PROP 系：结果写 a/b 槽，rd=obj 是 use
             OpCode::GET_PROP => {
                 push_operand(&mut uses, &self.rd);
                 push_operand(&mut uses, &self.b);
@@ -144,11 +144,31 @@ impl Inst {
                 push_operand(&mut uses, &self.rd);
             }
             // 二元运算：a, b
-            OpCode::ADD | OpCode::SUB | OpCode::MUL | OpCode::DIV | OpCode::MOD | OpCode::EQ
-            | OpCode::NEQ | OpCode::LT | OpCode::GT | OpCode::LTE | OpCode::GTE | OpCode::AND
-            | OpCode::OR | OpCode::NULLISH | OpCode::STRICT_EQ | OpCode::STRICT_NEQ
-            | OpCode::BIT_AND | OpCode::BIT_OR | OpCode::BIT_XOR | OpCode::SHL | OpCode::SHR
-            | OpCode::USHR | OpCode::INSTANCEOF | OpCode::IN | OpCode::CREATE_REGEXP => {
+            OpCode::ADD
+            | OpCode::SUB
+            | OpCode::MUL
+            | OpCode::DIV
+            | OpCode::MOD
+            | OpCode::EQ
+            | OpCode::NEQ
+            | OpCode::LT
+            | OpCode::GT
+            | OpCode::LTE
+            | OpCode::GTE
+            | OpCode::AND
+            | OpCode::OR
+            | OpCode::NULLISH
+            | OpCode::STRICT_EQ
+            | OpCode::STRICT_NEQ
+            | OpCode::BIT_AND
+            | OpCode::BIT_OR
+            | OpCode::BIT_XOR
+            | OpCode::SHL
+            | OpCode::SHR
+            | OpCode::USHR
+            | OpCode::INSTANCEOF
+            | OpCode::IN
+            | OpCode::CREATE_REGEXP => {
                 push_operand(&mut uses, &self.a);
                 push_operand(&mut uses, &self.b);
             }
@@ -157,19 +177,29 @@ impl Inst {
                 push_operand(&mut uses, &self.a);
             }
             // 无条件跳转 / try 标记：b 是 Label，无寄存器
-            OpCode::JMP | OpCode::TRY_BEGIN | OpCode::TRY_FINALLY_BEGIN | OpCode::TRY_END
-            | OpCode::TRY_FINALLY_END | OpCode::FOR_IN_CLEANUP | OpCode::FOR_OF_CLOSE => {}
+            OpCode::JMP
+            | OpCode::TRY_BEGIN
+            | OpCode::TRY_FINALLY_BEGIN
+            | OpCode::TRY_END
+            | OpCode::TRY_FINALLY_END
+            | OpCode::FOR_IN_CLEANUP
+            | OpCode::FOR_OF_CLOSE => {}
             // 条件跳转：rd=cond
             OpCode::JMP_IF_FALSE | OpCode::JMP_IF_TRUE | OpCode::JMP_IF_NULLISH => {
                 push_operand(&mut uses, &self.rd);
             }
-            // HALT：隐式读 reg 0（顶层返回值，Pitfall 2）
+            // HALT：隐式读 reg 0（顶层返回值）
             OpCode::HALT => uses.push(0),
             // RETURN/THROW：读 rd（None→0）
             OpCode::RETURN | OpCode::THROW => push_operand(&mut uses, &self.rd),
             // 加载族：a 槽是 Const/Imm 立即数，无寄存器 use
-            OpCode::LOAD_CONST | OpCode::CREATE_CLOSURE | OpCode::LOAD_UPVALUE | OpCode::VOID
-            | OpCode::NEW_OBJECT | OpCode::NEW_ARRAY | OpCode::NOP => {}
+            OpCode::LOAD_CONST
+            | OpCode::CREATE_CLOSURE
+            | OpCode::LOAD_UPVALUE
+            | OpCode::VOID
+            | OpCode::NEW_OBJECT
+            | OpCode::NEW_ARRAY
+            | OpCode::NOP => {}
             // 变量读写：LOAD_VAR/STORE_VAR/CELL_GET 读 a（None→0）
             OpCode::LOAD_VAR | OpCode::STORE_VAR | OpCode::CELL_GET => {
                 push_operand(&mut uses, &self.a);
@@ -182,9 +212,15 @@ impl Inst {
             OpCode::MAKE_CELL => push_operand(&mut uses, &self.rd),
             OpCode::CELL_SET | OpCode::STORE_UPVALUE => push_operand(&mut uses, &self.a),
             // 写对象属性：rd/a/b 全 use
-            OpCode::SET_PROP | OpCode::SET_PROP_DYNAMIC | OpCode::IC_SET_PROP | OpCode::SET_ELEM
-            | OpCode::GET_PRIVATE | OpCode::SET_PRIVATE | OpCode::INIT_PRIVATE
-            | OpCode::PRIVATE_BRAND_IN | OpCode::DEFINE_ACCESSOR => {
+            OpCode::SET_PROP
+            | OpCode::SET_PROP_DYNAMIC
+            | OpCode::IC_SET_PROP
+            | OpCode::SET_ELEM
+            | OpCode::GET_PRIVATE
+            | OpCode::SET_PRIVATE
+            | OpCode::INIT_PRIVATE
+            | OpCode::PRIVATE_BRAND_IN
+            | OpCode::DEFINE_ACCESSOR => {
                 push_operand(&mut uses, &self.rd);
                 push_operand(&mut uses, &self.a);
                 push_operand(&mut uses, &self.b);
@@ -210,7 +246,7 @@ impl Inst {
             OpCode::FOR_IN_NEXT | OpCode::FOR_IN_DONE | OpCode::FOR_OF_NEXT | OpCode::FOR_OF_DONE => {}
             // REST_OBJECT：读 a（ext 是 excluded_idx 常量）
             OpCode::REST_OBJECT => push_operand(&mut uses, &self.a),
-            // TEMPLATE_STR：解析 ext，跳过 ext[0]，后续 seg>>31==1 则低 8 位是 expr_reg（A1）
+            // TEMPLATE_STR：解析 ext，跳过 ext[0]，后续 seg>>31==1 则低 8 位是 expr_reg
             OpCode::TEMPLATE_STR => {
                 for seg in self.ext.iter().skip(1) {
                     if seg >> 31 == 1 {
@@ -219,42 +255,68 @@ impl Inst {
                 }
             }
             // 占位 opcode（emit 不产）：按无 use 保守处理，不影响合法产物
-            OpCode::SWITCH_TABLE | OpCode::PROFILE_TYPE | OpCode::PROFILE_SHAPE
-            | OpCode::PROFILE_BRANCH | OpCode::PROFILE_CALL | OpCode::FORK | OpCode::JOIN => {}
+            OpCode::SWITCH_TABLE
+            | OpCode::PROFILE_TYPE
+            | OpCode::PROFILE_SHAPE
+            | OpCode::PROFILE_BRANCH
+            | OpCode::PROFILE_CALL
+            | OpCode::FORK
+            | OpCode::JOIN => {}
         }
         uses
     }
 
-    /// 本指令是否无观察副作用（Pattern 1 纯表；LOAD_VAR 的 This+derived 特判需 &IRFunction）。
+    /// 本指令是否无观察副作用（LOAD_VAR 的 This+derived 特判需要函数元信息）。
     ///
-    /// 纯 = 结果未用时可删。表外 opcode 一律有副作用（D-05 精确表，宁少删不错删）。
+    /// 纯 = 结果未用时可删。表外 opcode 一律视为有副作用，宁少删不错删。
     pub fn is_pure(&self, f: &IRFunction) -> bool {
         match self.op {
-            // 算术 / 比较 / 位 / 逻辑：coerce 对象路径有抛错风险，D-05 决策算纯（运行时等价兜底）
-            OpCode::ADD | OpCode::SUB | OpCode::MUL | OpCode::DIV | OpCode::MOD | OpCode::NEG
-            | OpCode::UNARY_PLUS | OpCode::EQ | OpCode::NEQ | OpCode::LT | OpCode::GT
-            | OpCode::LTE | OpCode::GTE | OpCode::STRICT_EQ | OpCode::STRICT_NEQ
-            | OpCode::BIT_AND | OpCode::BIT_OR | OpCode::BIT_XOR | OpCode::SHL | OpCode::SHR
-            | OpCode::USHR | OpCode::BIT_NOT | OpCode::AND | OpCode::OR | OpCode::NOT
+            // 算术 / 比较 / 位 / 逻辑：coerce 对象路径有抛错风险，仍按纯处理（运行时等价兜底）
+            OpCode::ADD
+            | OpCode::SUB
+            | OpCode::MUL
+            | OpCode::DIV
+            | OpCode::MOD
+            | OpCode::NEG
+            | OpCode::UNARY_PLUS
+            | OpCode::EQ
+            | OpCode::NEQ
+            | OpCode::LT
+            | OpCode::GT
+            | OpCode::LTE
+            | OpCode::GTE
+            | OpCode::STRICT_EQ
+            | OpCode::STRICT_NEQ
+            | OpCode::BIT_AND
+            | OpCode::BIT_OR
+            | OpCode::BIT_XOR
+            | OpCode::SHL
+            | OpCode::SHR
+            | OpCode::USHR
+            | OpCode::BIT_NOT
+            | OpCode::AND
+            | OpCode::OR
+            | OpCode::NOT
             | OpCode::NULLISH => true,
             // 分配 / 常量 / 空操作（a 槽非寄存器）
-            OpCode::NOP | OpCode::LOAD_CONST | OpCode::VOID | OpCode::TYPEOF | OpCode::NEW_OBJECT
+            OpCode::NOP
+            | OpCode::LOAD_CONST
+            | OpCode::VOID
+            | OpCode::TYPEOF
+            | OpCode::NEW_OBJECT
             | OpCode::NEW_ARRAY => true,
             // MOV：寄存器复制无副作用，可删无害
             OpCode::MOV => true,
-            // SPILL/UNSPILL：RegAlloc 插入的指令，删 SPILL 后 UNSPILL 读陈旧值（Pitfall 7），永不删
+            // SPILL/UNSPILL：RegAlloc 插入的指令，删 SPILL 后 UNSPILL 读陈旧值，永不删
             OpCode::SPILL | OpCode::UNSPILL => false,
-            // 闭包 / cell 读取：无抛错路径（D-07）
+            // 闭包 / cell 读取：无抛错路径
             OpCode::CREATE_CLOSURE | OpCode::LOAD_UPVALUE | OpCode::CELL_GET => true,
             // 模板字符串：纯拼接写 rd，无抛错（use 统计覆盖其 ext）
             OpCode::TEMPLATE_STR => true,
-            // LOAD_VAR：仅 a==This 且 derived 构造函数读 this 可能抛 ReferenceError（misc.rs:52-63）
-            OpCode::LOAD_VAR => {
-                !(self.a == Operand::This && f.is_derived_constructor)
-            }
-            // STORE_VAR：写变量目标寄存器。脚本顶层/模块作用域的变量是**全局可观察状态**
-            // （Pitfall 6：`let x=0; class C{[x=1](){}}` 无后续本地读取时删除 `x=1` 会改变
-            // 外部 `assert(x===1)` 的观察结果）；函数内局部未用赋值的优化留给 Phase 5 精确活度。
+            // LOAD_VAR：仅 a==This 且 derived 构造函数读 this 时可能抛 ReferenceError
+            OpCode::LOAD_VAR => !(self.a == Operand::This && f.is_derived_constructor),
+            // STORE_VAR：写变量目标寄存器。脚本顶层/模块作用域的变量是全局可观察状态，
+            // 删除会改变外部观察结果；函数内局部未用赋值的优化交给精确 DCE。
             OpCode::STORE_VAR => false,
             // 其余全部有副作用（getter/调用/控制流/迭代器/复合更新/写共享状态/占位防御）
             _ => false,
@@ -262,7 +324,7 @@ impl Inst {
     }
 }
 
-/// 操作数 → 物理寄存器号。None 槽映射 reg 0（A3，与 lower.rs operand_to_u8 一致）；
+/// 操作数 → 物理寄存器号。None 槽映射 reg 0（与 lower.rs operand_to_u8 一致）；
 /// Const/Imm/Label 不是寄存器槽，返回 None。
 fn reg_of(o: &Operand) -> Option<u32> {
     match o {
@@ -295,7 +357,7 @@ mod tests {
     use crate::operand::Operand;
     use crate::IRFunction;
 
-    // ── def_reg / use_regs 契约测试（Pattern 2 全表，反直觉槽位锁定）──
+    // ── def_reg / use_regs 契约测试（反直觉槽位断言）──
 
     #[test]
     fn binary_op_def_rd_use_ab() {
@@ -313,7 +375,7 @@ mod tests {
 
     #[test]
     fn get_prop_def_is_a_slot_not_rd() {
-        // Pitfall 3：GET_PROP rd=obj 是 use，结果写 a 槽
+        // GET_PROP rd=obj 是 use，结果写 a 槽
         let inst = Inst::new(OpCode::GET_PROP, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2));
         assert_eq!(inst.def_reg(), Some(1));
         assert_eq!(inst.use_regs().as_slice(), &[0, 2]);
@@ -321,7 +383,7 @@ mod tests {
 
     #[test]
     fn get_prop_dynamic_def_is_b_slot() {
-        // Pitfall 3：GET_PROP_DYNAMIC rd=obj 是 use，结果写 b 槽
+        // GET_PROP_DYNAMIC rd=obj 是 use，结果写 b 槽
         let inst = Inst::new(OpCode::GET_PROP_DYNAMIC, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2));
         assert_eq!(inst.def_reg(), Some(2));
         assert_eq!(inst.use_regs().as_slice(), &[0, 1]);
@@ -329,7 +391,7 @@ mod tests {
 
     #[test]
     fn ic_get_prop_a_slot_is_use_and_def() {
-        // Pitfall 3：IC_GET_PROP a 槽既是对象 use 又是结果 def
+        // IC_GET_PROP a 槽既是对象 use 又是结果 def
         let inst = Inst::ic_get(Operand::Reg(1), Operand::Reg(2));
         assert_eq!(inst.def_reg(), Some(1));
         let uses = inst.use_regs();
@@ -338,7 +400,7 @@ mod tests {
 
     #[test]
     fn call_def_is_implicit_reg0_with_arg_range() {
-        // Pitfall 1：CALL rd=callee 是 use，结果隐式写 reg 0；参数 b..b+nargs 连续
+        // CALL rd=callee 是 use，结果隐式写 reg 0；参数 b..b+nargs 连续
         let inst = Inst::call(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2), 3);
         assert_eq!(inst.def_reg(), Some(0));
         assert_eq!(inst.use_regs().as_slice(), &[0, 1, 2, 3, 4]);
@@ -367,7 +429,7 @@ mod tests {
 
     #[test]
     fn halt_implicitly_uses_reg0() {
-        // Pitfall 2：HALT 返回 regs[0]，顶层 LOAD_VAR(None, r) 链靠它保活
+        // HALT 返回 regs[0]，顶层 LOAD_VAR(None, r) 链靠它保活
         let inst = Inst::new(OpCode::HALT, Operand::None, Operand::None, Operand::None);
         assert_eq!(inst.def_reg(), None);
         assert_eq!(inst.use_regs().as_slice(), &[0]);
@@ -399,7 +461,7 @@ mod tests {
 
     #[test]
     fn none_slot_maps_to_reg0() {
-        // A3：None 槽与 lower.rs operand_to_u8 一致，统一映射物理 reg 0
+        // None 槽与 lower.rs operand_to_u8 一致，统一映射物理 reg 0
         let lv = Inst::new(OpCode::LOAD_VAR, Operand::Reg(1), Operand::None, Operand::None);
         assert_eq!(lv.use_regs().as_slice(), &[0]);
 
@@ -409,7 +471,7 @@ mod tests {
 
     #[test]
     fn template_str_parses_expr_regs_from_ext() {
-        // ext[0] 跳过；后续 seg>>31==1 则低 8 位是 expr_reg（A1，emit 8 位编码）
+        // ext[0] 跳过；后续 seg>>31==1 则低 8 位是 expr_reg（emit 8 位编码）
         let with_expr = Inst::template_str(Operand::Reg(1), 2, 10, &[0x1234, 0x8000_0000 | 5]);
         assert_eq!(with_expr.use_regs().as_slice(), &[5]);
 
@@ -497,7 +559,7 @@ mod tests {
         assert!(unspill.use_regs().is_empty());
     }
 
-    // ── is_pure 契约测试（Pattern 1 表，纯/非纯族代表 opcode）──
+    // ── is_pure 契约测试（纯/非纯族代表 opcode）──
 
     #[test]
     fn pure_ops_are_deletable() {
@@ -533,7 +595,7 @@ mod tests {
         assert!(Inst::inst_mov(Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
         // LOAD_VAR 普通（a=Reg）纯
         assert!(Inst::new(OpCode::LOAD_VAR, Operand::Reg(1), Operand::Reg(2), Operand::None).is_pure(&f));
-        // STORE_VAR 一律有副作用（Pitfall 6：顶层变量赋值全局可观察，不删）
+        // STORE_VAR 一律有副作用（顶层变量赋值全局可观察，不删）
         assert!(!Inst::new(OpCode::STORE_VAR, Operand::Reg(0), Operand::Reg(1), Operand::None).is_pure(&f));
         assert!(!Inst::new(OpCode::STORE_VAR, Operand::Reg(0), Operand::Reg(1), Operand::Imm(0)).is_pure(&f));
         assert!(!Inst::new(OpCode::STORE_VAR, Operand::Reg(0), Operand::Reg(1), Operand::Imm(1)).is_pure(&f));
@@ -580,7 +642,7 @@ mod tests {
         assert!(!Inst::new(OpCode::STORE_UPVALUE, Operand::None, Operand::Reg(1), Operand::Imm(0)).is_pure(&f));
         assert!(!Inst::new(OpCode::CELL_SET, Operand::None, Operand::Reg(1), Operand::Imm(0)).is_pure(&f));
         assert!(!Inst::new(OpCode::MAKE_CELL, Operand::Reg(5), Operand::None, Operand::None).is_pure(&f));
-        // RegAlloc 辅助：SPILL/UNSPILL 有副作用（删 SPILL 后 UNSPILL 读陈旧值，Pitfall 7）
+        // RegAlloc 辅助：SPILL/UNSPILL 有副作用（删 SPILL 后 UNSPILL 读陈旧值）
         assert!(!Inst::inst_spill(Operand::Reg(5), 42).is_pure(&f));
         assert!(!Inst::inst_unspill(Operand::Reg(9), 42).is_pure(&f));
         // 占位 opcode 防御性有副作用
@@ -589,7 +651,7 @@ mod tests {
 
     #[test]
     fn store_var_all_branches_are_impure() {
-        // Pitfall 6：STORE_VAR 写目标变量寄存器，顶层/模块作用域变量全局可观察，一律不删
+        // STORE_VAR 写目标变量寄存器，顶层/模块作用域变量全局可观察，一律不删
         // （const guard 抛错、普通 var/let 赋值都可能改变外部观察状态）
         let f = IRFunction::new();
         assert!(!Inst::new(OpCode::STORE_VAR, Operand::Reg(0), Operand::Reg(1), Operand::None).is_pure(&f));

@@ -4,36 +4,36 @@ fn stub_error<H: VmHost>(vm: &mut H, name: &str) -> NativeResult {
     NativeResult::Err(crate::error::create_type_error(vm, &format!("{name} is not implemented")))
 }
 
-// Architecturally deferred — these features are excluded from the supported language subset by design.
-/// Stub for the `Proxy` global. Always throws a TypeError; Proxy is deferred by design.
+// 架构性延后：这些特性按设计排除在受支持语言子集之外。
+/// `Proxy` 全局占位：始终抛 TypeError。Proxy 按设计延后实现。
 pub fn proxy_stub<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     stub_error(vm, "Proxy")
 }
-/// Stub for the `BigInt` global. Always throws a TypeError; BigInt is deferred by design.
+/// `BigInt` 全局占位：始终抛 TypeError。BigInt 按设计延后实现。
 pub fn bigint_stub<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     stub_error(vm, "BigInt")
 }
-/// Stub for the `WeakMap` global. Always throws a TypeError; WeakMap is deferred by design.
+/// `WeakMap` 全局占位：始终抛 TypeError。WeakMap 按设计延后实现。
 pub fn weakmap_stub<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     stub_error(vm, "WeakMap")
 }
-/// Stub for the `WeakSet` global. Always throws a TypeError; WeakSet is deferred by design.
+/// `WeakSet` 全局占位：始终抛 TypeError。WeakSet 按设计延后实现。
 pub fn weakset_stub<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     stub_error(vm, "WeakSet")
 }
-/// Stub for the `WeakRef` global. Always throws a TypeError; WeakRef is deferred by design.
+/// `WeakRef` 全局占位：始终抛 TypeError。WeakRef 按设计延后实现。
 pub fn weakref_stub<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     stub_error(vm, "WeakRef")
 }
-/// Stub for the `FinalizationRegistry` global. Always throws a TypeError; deferred by design.
+/// `FinalizationRegistry` 全局占位：始终抛 TypeError。按设计延后实现。
 pub fn finalization_registry_stub<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     stub_error(vm, "FinalizationRegistry")
 }
-/// Stub for the `SharedArrayBuffer` global. Always throws a TypeError; deferred by design.
+/// `SharedArrayBuffer` 全局占位：始终抛 TypeError。按设计延后实现。
 pub fn shared_array_buffer_stub<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     stub_error(vm, "SharedArrayBuffer")
 }
-/// Stub for the `Atomics` global. Always throws a TypeError; deferred by design.
+/// `Atomics` 全局占位：始终抛 TypeError。按设计延后实现。
 pub fn atomics_stub<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     stub_error(vm, "Atomics")
 }

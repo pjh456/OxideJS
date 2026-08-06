@@ -5,10 +5,10 @@ use oxide_ir::operand::Operand;
 use oxide_parser::{ClassElement, PropertyKey};
 
 impl Emitter {
-    /// Emit static field initializers and static blocks in source order.
-    /// JS class semantics interleave them (e.g. `static x = 1; static {
-    /// this.y = 1 } static z = this.y + 1` must run in that order). Emitting
-    /// all fields before all blocks would make `z` read `y` before it is set.
+    /// 按源码顺序发静态字段初始化与静态块。
+    /// JS 类语义要求两者交织执行（如 `static x = 1; static { this.y = 1 }
+    /// static z = this.y + 1` 必须按此顺序），若全部字段先于静态块发出，
+    /// `z` 会在 `y` 赋值前读到它。
     pub(crate) fn emit_class_static_elements(
         &self, elements: &[ClassElement], ctor_reg: u32, ctx: &mut CompileCtx,
     ) -> Result<(), String> {
@@ -23,9 +23,20 @@ impl Emitter {
                     let prop = prop.as_ref();
                     if prop.r#static {
                         if let PropertyKey::PrivateIdentifier(private) = &prop.key {
-                            self.emit_private_field_init(Operand::Reg(ctor_reg), private.name.as_str(), prop.value.as_ref(), ctx)?;
+                            self.emit_private_field_init(
+                                Operand::Reg(ctor_reg),
+                                private.name.as_str(),
+                                prop.value.as_ref(),
+                                ctx,
+                            )?;
                         } else {
-                            self.emit_public_field_init(Operand::Reg(ctor_reg), &prop.key, prop.computed, prop.value.as_ref(), ctx)?;
+                            self.emit_public_field_init(
+                                Operand::Reg(ctor_reg),
+                                &prop.key,
+                                prop.computed,
+                                prop.value.as_ref(),
+                                ctx,
+                            )?;
                         }
                     }
                 }

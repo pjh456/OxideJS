@@ -65,7 +65,7 @@ impl Vm {
     pub(crate) fn dispatch_store_var(&mut self, rd: usize, a: usize, b: usize) -> Result<bool, String> {
         vm_trace!("STORE_VAR r{}={:?} const={}", rd, self.regs[a], b);
         if b != 0 {
-            // const guard: check if already initialized
+            // const guard：检查目标槽是否已初始化。
             if !self.regs[rd].is_undefined() {
                 self.raise_error_kind("TypeError", "Assignment to constant variable")?;
                 return Ok(true);
@@ -75,8 +75,13 @@ impl Vm {
         Ok(false)
     }
 
-    /// SPILL：regs[rd] → spill_stack[帧基址 + slot]。ext 字 = slot u16（D-06）。
-    /// 帧基址 = 当前 CallFrame.spill_offset（顶层模块无帧 = 0，D-08）。
+    /// SPILL：`regs[rd]` → `spill_stack[帧基址 + slot]`。
+    ///
+    /// ext 字为 slot（u16）；帧基址 = 当前 CallFrame.spill_offset（顶层模块无帧为 0）。
+    /// # 边界与前提
+    /// - slot 超 u16 范围返回错误（RegAlloc 保证发射在界内）。
+    /// # 副作用
+    /// - 写 spill 栈，可能触发 resize 扩容。
     #[inline(always)]
     pub(crate) fn dispatch_spill(&mut self, rd: usize) -> Result<(), String> {
         let slot = self.bytecode[self.pc] as usize;
@@ -94,7 +99,11 @@ impl Vm {
         Ok(())
     }
 
-    /// UNSPILL：spill_stack[帧基址 + slot] → regs[rd]。越界读 undefined（防御，D-06 slot 由 RegAlloc 保证在界内）。
+    /// UNSPILL：`spill_stack[帧基址 + slot]` → `regs[rd]`。
+    ///
+    /// # 边界与前提
+    /// - slot 超 u16 范围返回错误。
+    /// - 越界读返回 undefined（防御：slot 由 RegAlloc 保证在界内）。
     #[inline(always)]
     pub(crate) fn dispatch_unspill(&mut self, rd: usize) -> Result<(), String> {
         let slot = self.bytecode[self.pc] as usize;

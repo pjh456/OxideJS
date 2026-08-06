@@ -1,15 +1,14 @@
-//! `oxide_runtime_api` — the abstract interface between builtins and the VM.
+//! `oxide_runtime_api` —— builtins 与 VM 之间的抽象接口。
 //!
-//! Builtins are written generically against the [`VmHost`] trait
-//! (`fn xxx<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult`); `Vm`
-//! implements `VmHost`. This breaks what would otherwise be a circular
-//! dependency between the builtins crate and `oxide_vm`:
+//! Builtins 以泛型方式针对 [`VmHost`] trait 编写
+//! （`fn xxx<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult`）；`Vm`
+//! 实现 `VmHost`。这打破了 builtins crate 与 `oxide_vm` 之间本会形成的
+//! 循环依赖：
 //!
 //! `oxide_types ← oxide_kernel ← oxide_runtime_api ← oxide_builtins ← oxide_vm`
 //!
-//! The trait is GENERIC-friendly, not object-safe: monomorphizing `H = Vm`
-//! inlines every `host.*()` call, so there is zero runtime overhead versus
-//! builtins living inside `oxide_vm`.
+//! trait 面向泛型而非对象安全：单态化 `H = Vm` 使每个 `host.*()` 调用内联，
+//! 相对 builtins 直接位于 `oxide_vm` 内部没有运行时开销。
 
 use std::sync::Arc;
 
@@ -19,7 +18,7 @@ use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::shape::EMPTY_SHAPE_ID;
 use oxide_types::value::JsValue;
 
-/// Return value of every builtin native function.
+/// 每个 builtin native 函数的返回值。
 pub enum NativeResult {
     Ok(JsValue),
     Err(JsValue),
@@ -60,37 +59,36 @@ impl NativeResult {
     }
 }
 
-/// The set of `Vm` capabilities that builtins depend on.
+/// builtins 依赖的 `Vm` 能力集合。
 ///
-/// Signatures are byte-for-byte copies of the corresponding inherent methods on
-/// `Vm`; `impl VmHost for Vm` delegates to them. The trait is intentionally
-/// flat and not object-safe — builtins always take `&mut impl VmHost`.
+/// 方法签名是 `Vm` 上同名固有方法的逐字节拷贝；`impl VmHost for Vm` 委托给
+/// 它们。trait 刻意保持扁平且非对象安全——builtins 始终接受 `&mut impl VmHost`。
 pub trait VmHost {
-    // Register access
+    // 寄存器访问
     fn reg(&self, idx: u8) -> JsValue;
     fn set_reg(&mut self, idx: u8, val: JsValue);
 
-    // Object allocation / string creation
+    // 对象分配 / 字符串创建
     fn alloc_object(&mut self, obj: JsObject) -> *mut JsObject;
     fn new_string(&mut self, s: &str) -> JsValue;
 
-    // Kernel accessors
+    // 内核访问器
     fn kernel_core(&self) -> &Arc<KernelCore>;
     fn session(&self) -> &KernelSession;
     fn epoch(&self) -> &Epoch;
 
-    // Property resolution
+    // 属性解析
     fn property_key_si(&mut self, val: JsValue) -> u32;
     fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue>;
     fn get_own_property_slot(&self, obj: &JsObject, prop_name_si: u32) -> Option<u32>;
 
-    // Property access
+    // 属性访问
     fn ordinary_get(&mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue) -> Result<JsValue, String>;
     fn ordinary_set(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue,
     ) -> Result<(), String>;
 
-    // Property definition
+    // 属性定义
     fn define_data_property(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, attributes: PropAttributes,
     ) -> Result<(), String>;
@@ -99,18 +97,18 @@ pub trait VmHost {
     ) -> Result<(), String>;
     fn set_or_create_prop_value(&mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue);
 
-    // Lookup / coercion
+    // 查找 / 强制转换
     fn lookup_str(&self, val: JsValue) -> Option<String>;
     fn coerce_primitive_bounded(&mut self, value: JsValue, prefer_string: bool) -> Result<JsValue, String>;
     fn coerce_number_bounded(&mut self, value: JsValue) -> Result<f64, String>;
 
-    // Call infrastructure
+    // 调用基础设施
     fn call_function_sync(&mut self, callee: JsValue, receiver: JsValue, args: &[JsValue]) -> Result<JsValue, String>;
-    /// Take the original thrown JsValue preserved across a String-flattening call boundary,
-    /// so an iterator wrapper can re-throw the original error instead of re-wrapping it.
+    /// 取回在 String 展平调用边界上保留下来的原始抛出 JsValue，
+    /// 使迭代器包装器能重新抛出原错误而非二次包装。
     fn take_uncaught_value(&mut self) -> Option<JsValue>;
 
-    // Error handling
+    // 错误处理
     fn checked_object_ptr(&mut self, val: JsValue, error_msg: &str) -> Result<Option<*mut JsObject>, String>;
     fn raise_type_error(&mut self, msg: &str) -> Result<(), String>;
     fn error_message_text(&self, kind: &str, msg: &str) -> String;
@@ -137,10 +135,10 @@ pub fn format_error_message(name: &str, msg: &str) -> String {
     }
 }
 
-/// Borrow a string value's content.
+/// 借出字符串值的文本内容。
 ///
 /// # Safety
-/// `val` must be a string `JsValue` whose `JsString` pointer is alive.
+/// `val` 必须是字符串 `JsValue`，且其 `JsString` 指针存活。
 #[inline]
 pub unsafe fn string_data(val: JsValue) -> &'static str {
     (*val.as_string_ptr()).as_str()
@@ -208,8 +206,8 @@ pub fn to_int32(val: JsValue) -> i32 {
     }
 }
 
-/// Append the string representation of `val` to `buf` without allocating
-/// intermediate temporary Strings. Used in hot-path string concatenation.
+/// 把 `val` 的字符串表示追加到 `buf`，不分配中间临时 String。
+/// 用于热路径字符串拼接。
 pub fn push_to_string(val: JsValue, buf: &mut String) {
     if val.is_int() {
         use std::fmt::Write;
@@ -327,8 +325,8 @@ pub fn to_boolean(val: JsValue) -> bool {
     false
 }
 
-/// Whether two values share the same ECMAScript language type. Number treats
-/// int- and double-tagged values as one type (both are Number).
+/// 两个值是否共享同一 ECMAScript 语言类型。Number 把 int 与 double tag 的值
+/// 视为同一类型（都是 Number）。
 fn same_type(a: JsValue, b: JsValue) -> bool {
     if a.is_string() && b.is_string() {
         return true;
@@ -354,49 +352,48 @@ fn same_type(a: JsValue, b: JsValue) -> bool {
     false
 }
 
-/// IsLooselyEqual(x, y) — ECMA-262 §7.2.15 (`==`).
+/// IsLooselyEqual(x, y) — ECMA-262 §7.2.15（`==`）。
 ///
-/// BigInt steps are omitted (the engine prunes BigInt). Object operands are
-/// coerced via ToPrimitive, which may invoke user `valueOf` / `toString` /
-/// `@@toPrimitive`; hence the `VmHost` parameter and the `Result` (a thrown
-/// TypeError from those callbacks propagates as `Err`). Note: `Object == Symbol`
-/// does NOT trigger ToPrimitive (spec steps 11/12 cover only Number/String) and
-/// falls through to `false`.
+/// 省略 BigInt 步骤（引擎剪除 BigInt）。对象操作数经 ToPrimitive 强制转换，
+/// 可能调用用户 `valueOf` / `toString` / `@@toPrimitive`；因此需要 `VmHost`
+/// 参数与 `Result`（这些回调抛出的 TypeError 以 `Err` 传播）。
+/// 注意：`Object == Symbol` 不触发 ToPrimitive（规范步骤 11/12 只覆盖
+/// Number/String），直接落到 `false`。
 pub fn abstract_eq<H: VmHost>(lhs: JsValue, rhs: JsValue, host: &mut H) -> Result<bool, String> {
-    // Step 1: same type -> strict equality.
+    // 步骤 1：同类型 → 严格相等。
     if same_type(lhs, rhs) {
         return Ok(strict_equality(lhs, rhs));
     }
-    // Steps 2-3: null <-> undefined.
+    // 步骤 2-3：null 与 undefined 互等。
     if (lhs.is_null() && rhs.is_undefined()) || (lhs.is_undefined() && rhs.is_null()) {
         return Ok(true);
     }
-    // Steps 5-6: Number <-> String.
+    // 步骤 5-6：Number 与 String。
     if (lhs.is_int() || lhs.is_double()) && rhs.is_string() {
         return Ok(strict_double_eq(to_number(lhs), to_number(rhs)));
     }
     if lhs.is_string() && (rhs.is_int() || rhs.is_double()) {
         return Ok(strict_double_eq(to_number(lhs), to_number(rhs)));
     }
-    // Step 9: x is Boolean -> compare ToNumber(x).
+    // 步骤 9：x 为 Boolean → 比较 ToNumber(x)。
     if lhs.is_bool() {
         return abstract_eq(JsValue::float(to_number(lhs)), rhs, host);
     }
-    // Step 10: y is Boolean -> compare ToNumber(y).
+    // 步骤 10：y 为 Boolean → 比较 ToNumber(y)。
     if rhs.is_bool() {
         return abstract_eq(lhs, JsValue::float(to_number(rhs)), host);
     }
-    // Step 11: x is Number/String, y is Object -> ToPrimitive(y).
+    // 步骤 11：x 为 Number/String，y 为 Object → ToPrimitive(y)。
     if (lhs.is_int() || lhs.is_double() || lhs.is_string()) && rhs.is_object() {
         let prim = to_primitive(rhs, ToPrimitiveHint::Default, host)?;
         return abstract_eq(lhs, prim, host);
     }
-    // Step 12: x is Object, y is Number/String -> ToPrimitive(x).
+    // 步骤 12：x 为 Object，y 为 Number/String → ToPrimitive(x)。
     if lhs.is_object() && (rhs.is_int() || rhs.is_double() || rhs.is_string()) {
         let prim = to_primitive(lhs, ToPrimitiveHint::Default, host)?;
         return abstract_eq(prim, rhs, host);
     }
-    // Step 14: otherwise not equal.
+    // 步骤 14：否则不相等。
     Ok(false)
 }
 
@@ -602,7 +599,7 @@ pub enum ToPrimitiveHint {
 }
 
 impl ToPrimitiveHint {
-    /// OrdinaryToPrimitive method-name ordering hint: `Default`/`Number` -> "number", `String` -> "string".
+    /// OrdinaryToPrimitive 方法名顺序提示：`Default`/`Number` → "number"，`String` → "string"。
     pub fn as_str(self) -> &'static str {
         match self {
             ToPrimitiveHint::String => "string",
@@ -613,10 +610,9 @@ impl ToPrimitiveHint {
 
 /// ToPrimitive(input, hint) per ECMA-262 §7.1.1.
 ///
-/// Primitives pass through unchanged. Objects are coerced via the VM's
-/// `coerce_primitive_bounded`, which consults `obj[Symbol.toPrimitive]` first and
-/// otherwise runs OrdinaryToPrimitive (valueOf/toString in hint order). Keeping the
-/// object path in one place avoids duplicating OrdinaryToPrimitive here.
+/// 原始值原样通过。对象经 VM 的 `coerce_primitive_bounded` 强制转换——先查询
+/// `obj[Symbol.toPrimitive]`，否则按 hint 顺序运行 OrdinaryToPrimitive
+/// （valueOf/toString）。对象路径集中在单处，避免在此重复 OrdinaryToPrimitive。
 pub fn to_primitive<H: VmHost>(val: JsValue, hint: ToPrimitiveHint, host: &mut H) -> Result<JsValue, String> {
     if !val.is_object() {
         return Ok(val);
@@ -624,8 +620,8 @@ pub fn to_primitive<H: VmHost>(val: JsValue, hint: ToPrimitiveHint, host: &mut H
     host.coerce_primitive_bounded(val, hint == ToPrimitiveHint::String)
 }
 
-/// ToNumber(input) with full object coercion: objects go through ToPrimitive
-/// (number hint); Symbol values throw a TypeError per spec.
+/// 带完整对象强制转换的 ToNumber(input)：对象经 ToPrimitive（number hint）
+/// 处理；Symbol 值按规范抛 TypeError。
 pub fn to_number_full<H: VmHost>(val: JsValue, host: &mut H) -> Result<f64, String> {
     let primitive = to_primitive(val, ToPrimitiveHint::Number, host)?;
     if primitive.is_symbol() {
@@ -634,7 +630,7 @@ pub fn to_number_full<H: VmHost>(val: JsValue, host: &mut H) -> Result<f64, Stri
     Ok(to_number(primitive))
 }
 
-/// ToString(input) with full object coercion: objects go through ToPrimitive (string hint).
+/// 带完整对象强制转换的 ToString(input)：对象经 ToPrimitive（string hint）处理。
 pub fn to_string_full<H: VmHost>(val: JsValue, host: &mut H) -> Result<String, String> {
     let primitive = to_primitive(val, ToPrimitiveHint::String, host)?;
     Ok(to_string(primitive))

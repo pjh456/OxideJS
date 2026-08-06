@@ -1,8 +1,8 @@
-//! AllocMap：寄存器染色决策输出视图（D-01：pass 输出，不住进 IR）。
+//! AllocMap：寄存器染色决策输出视图（pass 输出，不住进 IR）。
 //!
 //! `AllocMap.map` 含全部真实 + fresh vreg 的 Phys/Spill 去向；`spills` 为
-//! SPILL/UNSPILL 插入决策表（05-08 rewrite 消费）；`phys_peak` 回写 n_registers；
-//! `arg_window_base` 供调用点参数连续性 MOV 补位。BTreeMap 保确定性（B010，禁 HashMap）。
+//! SPILL/UNSPILL 插入决策表（rewrite 消费）；`phys_peak` 回写 n_registers；
+//! `arg_window_base` 供调用点参数连续性 MOV 补位。BTreeMap 保确定性。
 
 use std::collections::BTreeMap;
 
@@ -31,7 +31,7 @@ pub struct FreshVreg {
 }
 
 /// 溢出决策表：被 spill 的 vreg 的 def/use 点 + fresh vreg id 对照。
-/// defs/uses 两 Vec 按下标升序。05-08 rewrite 消费此结构插 SPILL/UNSPILL。
+/// defs/uses 两 Vec 按下标升序，rewrite 消费此结构插 SPILL/UNSPILL。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpillPlan {
     pub vreg: u32,
@@ -47,9 +47,9 @@ pub struct AllocMap {
     pub map: BTreeMap<u32, Alloc>,
     /// spill 决策表（按 vreg 升序）
     pub spills: Vec<SpillPlan>,
-    /// 物理峰值（05-08 回写 n_registers，≤253）
+    /// 物理峰值（finish 回写 n_registers，≤253）
     pub phys_peak: u32,
-    /// 参数窗口基址（05-08 调用点 MOV 补位，max_nargs=0 时 = 254 无窗口）
+    /// 参数窗口基址（调用点 MOV 补位，max_nargs=0 时 = 254 无窗口）
     pub arg_window_base: u32,
 }
 

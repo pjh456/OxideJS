@@ -35,7 +35,7 @@ fn date_parse_invalid() {
     assert!(r.as_double().is_nan());
 }
 
-// -- new Date() constructor via JS --
+// ── 经 JS 调用 new Date() 构造器 ──
 
 #[test]
 fn date_new_multi_arg() {
@@ -100,7 +100,7 @@ fn date_value_of() {
 #[test]
 fn date_to_iso_string() {
     let mut vm = Vm::new();
-    // Parse an explicit ISO UTC string to avoid timezone dependency
+    // 解析显式 ISO UTC 字符串，避免时区依赖。
     let r = eval(&mut vm, "new Date('2020-01-01T00:00:00Z').toISOString()").unwrap();
     let s = str_val(&vm, r);
     assert!(s.starts_with("2020-01-01"), "got: {s}");
@@ -109,7 +109,7 @@ fn date_to_iso_string() {
 #[test]
 fn date_to_json() {
     let mut vm = Vm::new();
-    // Parse an explicit ISO UTC string to avoid timezone dependency
+    // 解析显式 ISO UTC 字符串，避免时区依赖。
     let r = eval(&mut vm, "new Date('2020-01-01T00:00:00Z').toJSON()").unwrap();
     let s = str_val(&vm, r);
     assert!(s.starts_with("2020-01-01"), "got: {s}");
@@ -136,7 +136,7 @@ fn date_objects_use_bounded_numeric_coercion() {
     assert_eq!(r.as_double(), 0.0);
 }
 
-// -- Plan 01 timezone-correct tests --
+// ── 时区正确性测试 ──
 
 #[test]
 fn date_local_getters_differ_from_utc() {
@@ -145,7 +145,7 @@ fn date_local_getters_differ_from_utc() {
     let local_hour = r.as_double();
     let r = eval(&mut vm, "var d = new Date(2020, 6, 15, 12, 0, 0); d.getUTCHours()").unwrap();
     let utc_hour = r.as_double();
-    // In UTC+0 they are equal (correct), otherwise they differ
+    // 在 UTC+0 下二者相等（正确），否则不相等。
     if utc_hour != local_hour {
         assert_ne!(local_hour, utc_hour, "in non-UTC+0, local vs UTC hours should differ");
     }
@@ -155,7 +155,7 @@ fn date_local_getters_differ_from_utc() {
 #[test]
 fn date_constructor_uses_local_timezone() {
     let mut vm = Vm::new();
-    // getTimezoneOffset = UTC - local; UTC hour = local + offset/60
+    // getTimezoneOffset = UTC - local；UTC 小时 = local + offset/60
     let r = eval(&mut vm, "var d = new Date(2020, 0, 1, 12, 0, 0); d.getUTCHours()").unwrap();
     let utc_hour = r.as_double();
     let r = eval(&mut vm, "var d = new Date(2020, 0, 1, 12, 0, 0); d.getTimezoneOffset()").unwrap();
@@ -167,7 +167,7 @@ fn date_constructor_uses_local_timezone() {
 #[test]
 fn date_constructor_defaults_from_current_time() {
     let mut vm = Vm::new();
-    // D-02: missing args default to current time components
+    // 缺省参数回退到当前时间分量。
     let r = eval(&mut vm, "var d = new Date(2020, 5); d.getMonth()").unwrap();
     assert_eq!(r.as_double(), 5.0);
     let r = eval(&mut vm, "new Date(2020, 5).getDate()").unwrap();
@@ -177,7 +177,7 @@ fn date_constructor_defaults_from_current_time() {
 #[test]
 fn date_constructor_truncation() {
     let mut vm = Vm::new();
-    // D-03: ToInteger truncation
+    // 年月参数按 ToInteger 截断。
     let r = eval(&mut vm, "new Date(2024.7, 5.9).getFullYear()").unwrap();
     assert_eq!(r.as_double(), 2024.0);
     let r = eval(&mut vm, "new Date(2024.7, 5.9).getMonth()").unwrap();
@@ -187,7 +187,7 @@ fn date_constructor_truncation() {
 #[test]
 fn date_setters_return_timestamp() {
     let mut vm = Vm::new();
-    // D-05: setters return modified timestamp
+    // setter 返回修改后的时间戳。
     let r = eval(&mut vm, "var d = new Date(0); var ts = d.setHours(12); ts == d.getTime() ? 1 : 0").unwrap();
     assert_eq!(r.as_int(), 1);
 }
@@ -195,12 +195,12 @@ fn date_setters_return_timestamp() {
 #[test]
 fn date_invalid_returns_nan() {
     let mut vm = Vm::new();
-    // D-06: Invalid Date getters/setters return NaN
+    // Invalid Date 的 getter/setter 返回 NaN。
     let r = eval(&mut vm, "new Date(NaN).getFullYear()").unwrap();
     assert!(r.as_double().is_nan());
     let r = eval(&mut vm, "new Date(NaN).setHours(0)").unwrap();
     assert!(r.as_double().is_nan());
-    // D-04: Invalid Date constructor
+    // Invalid Date 构造（NaN 参数）。
     let r = eval(&mut vm, "new Date(NaN, 0).getTime()").unwrap();
     assert!(r.as_double().is_nan());
 }
@@ -208,7 +208,7 @@ fn date_invalid_returns_nan() {
 #[test]
 fn date_get_timezone_offset_uses_date_timestamp() {
     let mut vm = Vm::new();
-    // D-09/D-10: offset uses date's timestamp, not now()
+    // 偏移基于日期的自身时间戳，而非当前时间。
     let r = eval(&mut vm, "new Date(0).getTimezoneOffset()").unwrap();
     assert!(r.as_double().is_finite());
 }
@@ -216,7 +216,7 @@ fn date_get_timezone_offset_uses_date_timestamp() {
 #[test]
 fn date_setters_optional_chain() {
     let mut vm = Vm::new();
-    // D-08: setFullYear supports optional month/day params
+    // setFullYear 支持可选的月/日参数。
     let r = eval(&mut vm, "var d = new Date(2020, 0, 1); d.setFullYear(2025, 11, 25); d.getFullYear()").unwrap();
     assert_eq!(r.as_double(), 2025.0);
     let r = eval(&mut vm, "var d = new Date(2020, 0, 1); d.setFullYear(2025, 11, 25); d.getMonth()").unwrap();
@@ -228,12 +228,12 @@ fn date_setters_optional_chain() {
 #[test]
 fn date_local_setters_preserve_utc_offset() {
     let mut vm = Vm::new();
-    // setHours changes local hour; verify local hour value
+    // setHours 改变本地小时，验证本地小时值。
     let r = eval(&mut vm, "var d = new Date(2020, 0, 1, 0, 0, 0); d.setHours(12); d.getHours()").unwrap();
     assert_eq!(r.as_double(), 12.0, "setHours(12) should make getHours() return 12");
 }
 
-// -- Plan 02 new method tests --
+// ── 后续新增方法测试 ──
 
 #[test]
 fn date_set_utc_full_year_works() {
@@ -313,7 +313,7 @@ fn date_get_year_deprecated() {
 #[test]
 fn date_set_year_deprecated() {
     let mut vm = Vm::new();
-    // setYear(0-99) adds 1900; setYear(20) → fullYear 1920
+    // setYear(0-99) 加 1900；setYear(20) → fullYear 1920。
     let r = eval(&mut vm, "var d = new Date(2020, 0, 1); d.setYear(20); d.getFullYear()").unwrap();
     assert_eq!(r.as_double(), 1920.0);
 }
@@ -347,8 +347,8 @@ fn date_set_utc_invalid_returns_nan() {
     assert!(r.as_double().is_nan());
 }
 
-// setYear with no argument must not index a missing argument register (previously panicked);
-// a missing / NaN year sets the date value to NaN and returns NaN (B.2.4.2).
+// setYear 无参数时不得索引缺失的参数寄存器（此前会 panic）；
+// 缺失 / NaN 的年份把日期值置为 NaN 并返回 NaN（B.2.4.2）。
 #[test]
 fn date_set_year_no_arg_returns_nan() {
     let mut vm = Vm::new();
@@ -384,8 +384,8 @@ fn date_set_year_four_digit_kept() {
     assert_eq!(r.as_double() as i64, 2020);
 }
 
-// UTC setters called with no argument previously indexed a missing argument register
-// (panic / process abort). A missing primary argument now yields NaN and sets the date NaN.
+// UTC setter 无参数调用此前会索引缺失的参数寄存器（panic / 进程中止）。
+// 缺失的主参数现在产出 NaN 并把日期置为 NaN。
 #[test]
 fn date_set_utc_setters_no_arg_return_nan() {
     let mut vm = Vm::new();

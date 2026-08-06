@@ -84,7 +84,6 @@ pub fn object_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             .map(|(si, _offset)| vm.kernel_core().perm_interner().lookup(*si).unwrap_or("").to_string())
             .collect();
     }
-    // keys
     let n = key_names.len();
     let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let arr = vm.alloc_object(JsObject::new_array(
@@ -721,8 +720,8 @@ pub fn object_has_own<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
 /// `Object.prototype.valueOf`：返回 this 本身（配合 OrdinaryToPrimitive 的兜底）。
 pub fn object_proto_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    // Object.prototype.valueOf returns the `this` object unchanged; OrdinaryToPrimitive
-    // then falls through to toString since the result is not primitive.
+    // Object.prototype.valueOf 原样返回 this 对象；OrdinaryToPrimitive
+    // 因结果非原始值而继续走 toString。
     NativeResult::Ok(vm.reg(args[0]))
 }
 

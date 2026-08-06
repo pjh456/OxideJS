@@ -1,9 +1,9 @@
-//! B005 复现 + n_registers 汇总断言（REG-04 直接验收）。
+//! 大函数寄存器收缩复现 + n_registers 汇总断言。
 //!
 //! 低层管线直调（不经 Compiler——oxide_regalloc dev-dep oxide_compiler 会构成依赖环）：
-//! parse → emit → dce（保守）→（regalloc on/off）→ lower。on 分支按 RESEARCH 例 6：
-//! 精确 DCE 后重跑 build_cfg + liveness 再 alloc（D-17 索引位移修正）；off 分支 = D-18
-//! 降级路径（vreg 原样当物理号 → lower Reg>253 抛 RangeError）。
+//! parse → emit → dce（保守）→（regalloc on/off）→ lower。on 分支按编译管线：
+//! 精确 DCE 后重跑 build_cfg + liveness 再 alloc（删指令后下标位移，重建避免错位）；
+//! off 分支为降级路径（vreg 原样当物理号 → lower Reg>253 抛 RangeError）。
 
 use oxide_bytecode::module::CompiledModule;
 
@@ -23,7 +23,7 @@ fn compile_source(src: &str, regalloc: bool) -> Result<CompiledModule, String> {
     oxide_ir::lower::lower(&ir)
 }
 
-/// B005 样例生成器：n 个逐语句独立 vreg（各值立即死）→ vreg 总数 ≈ 2n ≫ 253，
+/// 大函数样例生成器：n 个逐语句独立 vreg（各值立即死）→ vreg 总数 ≈ 2n ≫ 253，
 /// 但峰值活度极小 → RegAlloc 有充分复用空间。
 fn gen_big(n: usize) -> String {
     let mut src = String::from("function f() { ");
@@ -43,9 +43,9 @@ fn module_max_n_registers(m: &CompiledModule) -> u8 {
     max
 }
 
-/// B005 前置复现：off 模式（降级路径）250 变量函数报 RangeError。
+/// 前置复现：off 模式（降级路径）250 变量函数报 RangeError。
 #[test]
-fn b005_repro_errors_without_regalloc() {
+fn large_function_errors_without_regalloc() {
     let err = match compile_source(&gen_big(250), false) {
         Err(e) => e,
         Ok(_) => panic!("off 模式应报 RangeError"),
@@ -53,14 +53,14 @@ fn b005_repro_errors_without_regalloc() {
     assert!(err.contains("RangeError"), "off 模式应报 RangeError: {err}");
 }
 
-/// B005 修复达成：on 模式 250 变量函数编译成功，模块树 n_registers ≤ 253。
+/// 修复达成：on 模式 250 变量函数编译成功，模块树 n_registers ≤ 253。
 #[test]
-fn b005_compiles_with_regalloc() {
+fn large_function_compiles_with_regalloc() {
     let module = compile_source(&gen_big(250), true).expect("on 模式应编译成功");
     assert!(module_max_n_registers(&module) <= 253, "模块树 n_registers 应 ≤253");
 }
 
-/// 样例集 n_registers on ≤ off 且至少一个严格下降（证明寄存器复用，REG-04 核心）。
+/// 样例集 n_registers on ≤ off 且至少一个严格下降（证明寄存器复用）。
 #[test]
 fn n_registers_on_off_aggregate() {
     let samples = [
@@ -78,7 +78,7 @@ fn n_registers_on_off_aggregate() {
         "function f() { var [a, b] = [1, 2]; var { c, d } = { c: 3, d: 4 }; return a + b + c + d; } f();",
         // 箭头函数
         "var f = (a, b) => a * b; f(6, 7);",
-        // switch+const（B011 回归）
+        // switch+const（const guard 回归）
         "function f(x) { switch (x) { case 1: break; } const c = 5; return c; } f(1);",
         // 数组字面量
         "function f() { var a = [1, 2, 3, 4, 5]; return a[0] + a[4]; } f();",
@@ -90,10 +90,7 @@ fn n_registers_on_off_aggregate() {
         assert!(on_max <= 253, "样例 {i} on n_registers {on_max} 超 253");
         if let Ok(off) = compile_source(src, false) {
             let off_max = module_max_n_registers(&off);
-            assert!(
-                on_max <= off_max,
-                "样例 {i} on({on_max}) > off({off_max})——RegAlloc 不应增寄存器窗口"
-            );
+            assert!(on_max <= off_max, "样例 {i} on({on_max}) > off({off_max})——RegAlloc 不应增寄存器窗口");
             if on_max < off_max {
                 strict_decrease = true;
             }
@@ -102,7 +99,7 @@ fn n_registers_on_off_aggregate() {
     assert!(strict_decrease, "至少一个样例应严格 on < off（复用证明）");
 }
 
-/// 确定性：同一源码 on 模式编译两次字节码逐字节相同（B010，structural_hash 缓存依赖）。
+/// 确定性：同一源码 on 模式编译两次字节码逐字节相同（确定性排序，缓存 key 依赖）。
 #[test]
 fn regalloc_deterministic_output() {
     let a = compile_source(&gen_big(50), true).expect("on 编译成功");

@@ -6,21 +6,19 @@
 
 use std::fmt;
 
-/// Generate the `OpCode` enum plus its `TryFrom<u8>` and `Display` impls from a
-/// single table. Each row is `VARIANT = 0xXX => "DISPLAY"` — the byte value is
-/// the enum discriminant, the `TryFrom` match arm, and the `Display` name come
-/// from the same row, so the three tables can never drift. A new opcode is one
-/// row.
+/// 从单张表生成 [`OpCode`] 枚举及其 `TryFrom<u8>`、`Display` 实现。
 ///
-/// Grouping comments (`// -- Arithmetic --`) are stripped by the lexer before
-/// macro expansion, so they can be interleaved freely between rows.
+/// 每行 `VARIANT = 0xXX => "DISPLAY"` 同时提供枚举判别值、`TryFrom` 匹配分支
+/// 与 `Display` 名称三份信息，保证三表永不漂移；新增操作码只需加一行。
+///
+/// # 注意事项
+/// - 分组注释（`// ── 算术 ──`）在宏展开前被词法器剥离，可自由插入行间。
 macro_rules! define_opcodes {
     ( $( $name:ident = $val:literal => $disp:literal ),+ $(,)? ) => {
-        /// OpCode for register-based bytecode VM.
+        /// 寄存器字节码虚拟机的操作码。
         ///
-        /// Organized in groups of 16 for readability. Implemented opcodes have
-        /// emitter support in the compiler; placeholder opcodes are reserved
-        /// for future phases (IC, profiling, parallelization).
+        /// 按 16 个一组组织便于阅读。已实现的操作码在编译器中有发射支持；
+        /// 占位符操作码为后续阶段预留（IC、profiling、并行化）。
         #[repr(u8)]
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         #[allow(non_camel_case_types)]
@@ -64,11 +62,11 @@ define_opcodes! {
     COMPOUND_DIV = 0x09 => "COMPOUND_DIV",
     COMPOUND_MOD = 0x0A => "COMPOUND_MOD",
     COMPOUND_EXP = 0x0B => "COMPOUND_EXP",
-    MOV = 0x0C => "MOV",          // rd=dst, a=src（寄存器复制，D-07，区间拆分搬值）
-    SPILL = 0x0D => "SPILL",      // rd=src, ext=[slot u16]（溢出写 VM spill 栈，D-06）
-    UNSPILL = 0x0E => "UNSPILL",  // rd=dst, ext=[slot u16]（从 VM spill 栈恢复，D-06）
+    MOV = 0x0C => "MOV",          // rd=dst, a=src（寄存器复制，区间拆分搬值）
+    SPILL = 0x0D => "SPILL",      // rd=src, ext=[slot u16]（寄存器值写 VM spill 栈）
+    UNSPILL = 0x0E => "UNSPILL",  // rd=dst, ext=[slot u16]（从 VM spill 栈恢复寄存器）
 
-    // -- Comparison (0x10-0x1F) --
+    // ── 比较 (0x10-0x1F) ──
     EQ = 0x10 => "EQ",
     NEQ = 0x11 => "NEQ",
     LT = 0x12 => "LT",
@@ -83,14 +81,14 @@ define_opcodes! {
     STRICT_NEQ = 0x1C => "STRICT_NEQ",
     UNARY_PLUS = 0x1D => "UNARY_PLUS",
 
-    // -- Control Flow (0x20-0x2F) --
+    // ── 控制流 (0x20-0x2F) ──
     JMP = 0x20 => "JMP",
     JMP_IF_FALSE = 0x21 => "JMP_IF_FALSE",
     JMP_IF_TRUE = 0x22 => "JMP_IF_TRUE",
     FOR_OF_INIT = 0x23 => "FOR_OF_INIT",
     FOR_OF_NEXT = 0x24 => "FOR_OF_NEXT",
 
-    // -- Update (0x25-0x28) --
+    // ── 更新 (0x25-0x28) ──
     INC_PRE = 0x25 => "INC_PRE",
     INC_POST = 0x26 => "INC_POST",
     DEC_PRE = 0x27 => "DEC_PRE",
@@ -102,7 +100,7 @@ define_opcodes! {
     SWITCH_TABLE = 0x2C => "SWITCH_TABLE",
     FOR_IN_CLEANUP = 0x2D => "FOR_IN_CLEANUP",
 
-    // -- Exception (0x2E-0x2F, 0x33-0x35) --
+    // ── 异常 (0x2E-0x2F, 0x33-0x35) ──
     THROW = 0x2E => "THROW",
     TRY_BEGIN = 0x2F => "TRY_BEGIN",
     TRY_END = 0x33 => "TRY_END",
@@ -111,10 +109,10 @@ define_opcodes! {
     FOR_OF_DONE = 0x36 => "FOR_OF_DONE",
     FOR_OF_CLOSE = 0x37 => "FOR_OF_CLOSE",
 
-    // -- Template Literal (0x38) --
+    // ── 模板字符串 (0x38) ──
     TEMPLATE_STR = 0x38 => "TEMPLATE_STR",
 
-    // -- Small Language Features (0x39-0x3B) --
+    // ── 小语言特性 (0x39-0x3B) ──
     DELETE_PROP_STATIC = 0x39 => "DELETE_PROP_STATIC",
     DELETE_PROP_DYNAMIC = 0x3A => "DELETE_PROP_DYNAMIC",
     INSTANCEOF = 0x3B => "INSTANCEOF",
@@ -123,12 +121,12 @@ define_opcodes! {
     REST_OBJECT = 0x3E => "REST_OBJECT",
     CELL_SET = 0x3F => "CELL_SET",
 
-    // -- Variable (0x30-0x32) --
+    // ── 变量 (0x30-0x32) ──
     LOAD_VAR = 0x30 => "LOAD_VAR",
     STORE_VAR = 0x31 => "STORE_VAR",
     LOAD_CONST = 0x32 => "LOAD_CONST",
 
-    // -- Call (0x40-0x4F) --
+    // ── 调用 (0x40-0x4F) ──
     CALL = 0x40 => "CALL",
     RETURN = 0x41 => "RETURN",
     CALL_NATIVE = 0x42 => "CALL_NATIVE",
@@ -154,7 +152,7 @@ define_opcodes! {
     NEW_ARRAY = 0x57 => "NEW_ARRAY",
     SET_ELEM = 0x58 => "SET_ELEM",
 
-    // -- Member Update (0x59-0x62) --
+    // ── 成员更新 (0x59-0x62) ──
     MEMBER_INC = 0x59 => "MEMBER_INC",
     MEMBER_DEC = 0x5A => "MEMBER_DEC",
     DYN_MEMBER_INC = 0x5B => "DYN_MEMBER_INC",
@@ -166,13 +164,13 @@ define_opcodes! {
     COMPOUND_MEMBER_MOD = 0x61 => "COMPOUND_MEMBER_MOD",
     COMPOUND_MEMBER_EXP = 0x62 => "COMPOUND_MEMBER_EXP",
 
-    // -- Profiling - placeholders (0x63-0x6F) --
+    // ── Profiling — 占位符 (0x63-0x6F) ──
     PROFILE_TYPE = 0x63 => "PROFILE_TYPE",
     PROFILE_SHAPE = 0x64 => "PROFILE_SHAPE",
     PROFILE_BRANCH = 0x65 => "PROFILE_BRANCH",
     PROFILE_CALL = 0x66 => "PROFILE_CALL",
 
-    // ── Parallel — placeholders (0x70-0x7F) ──
+    // ── 并行 — 占位符 (0x70-0x7F) ──
     FORK = 0x70 => "FORK",
     JOIN = 0x71 => "JOIN",
     GET_PRIVATE = 0x72 => "GET_PRIVATE",
@@ -180,7 +178,7 @@ define_opcodes! {
     INIT_PRIVATE = 0x74 => "INIT_PRIVATE",
     PRIVATE_BRAND_IN = 0x75 => "PRIVATE_BRAND_IN",
 
-    // -- Bitwise (0x80-0x8F) --
+    // ── 位运算 (0x80-0x8F) ──
     BIT_AND = 0x80 => "BIT_AND",
     BIT_OR = 0x81 => "BIT_OR",
     BIT_XOR = 0x82 => "BIT_XOR",
@@ -197,7 +195,7 @@ define_opcodes! {
     NULLISH = 0x8E => "NULLISH",
     JMP_IF_NULLISH = 0x8F => "JMP_IF_NULLISH",
 
-    // ── Misc (0xF0-0xFF) ──
+    // ── 杂项 (0xF0-0xFF) ──
     NOP = 0xF0 => "NOP",
     HALT = 0xF1 => "HALT",
     TYPEOF = 0xF2 => "TYPEOF",
@@ -223,12 +221,12 @@ impl OpCode {
     }
 }
 
-/// 4-byte instruction.
+/// 4 字节定长指令。
 ///
-/// Layout: `[opcode: u8] [rd: u8] [a: u8] [b: u8]`
-/// - `rd` — destination register
-/// - `a` — first source register, or imm16 low byte
-/// - `b` — second source register, or imm16 high byte
+/// 布局 `[opcode: u8] [rd: u8] [a: u8] [b: u8]`：
+/// - `rd` — 目标寄存器
+/// - `a` — 第一个源寄存器，或 imm16 低字节
+/// - `b` — 第二个源寄存器，或 imm16 高字节
 pub type Instr = u32;
 
 /// 把操作码与三个操作数字节编码为一条 [`Instr`]。

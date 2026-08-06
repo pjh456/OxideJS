@@ -2,10 +2,10 @@
 //! 整数走立即数编码（`is_int_literal`），其余入常量池。
 
 use crate::{is_int_literal, CompileCtx, Emitter};
-use oxide_ir::inst::Inst;
-use oxide_ir::operand::Operand;
 use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
+use oxide_ir::inst::Inst;
+use oxide_ir::operand::Operand;
 use oxide_parser::Expression;
 
 impl Emitter {
@@ -74,7 +74,12 @@ impl Emitter {
                 let flags_reg = ctx.alloc_reg();
                 ctx.inst(Inst::load_const(Operand::Reg(flags_reg), flags_ci));
                 let r = ctx.alloc_reg();
-                ctx.inst(Inst::new(OpCode::CREATE_REGEXP, Operand::Reg(r), Operand::Reg(pat_reg), Operand::Reg(flags_reg)));
+                ctx.inst(Inst::new(
+                    OpCode::CREATE_REGEXP,
+                    Operand::Reg(r),
+                    Operand::Reg(pat_reg),
+                    Operand::Reg(flags_reg),
+                ));
                 Ok(r)
             } else {
                 Err(format!("unsupported regexp literal: {:?}", lit))

@@ -16,7 +16,11 @@ pub(super) fn split_and_edges(f: &IRFunction, heads: &[bool]) -> (Vec<BasicBlock
     let mut blocks: Vec<BasicBlock> = Vec::with_capacity(head_positions.len());
     for (idx, &start) in head_positions.iter().enumerate() {
         let end = head_positions.get(idx + 1).copied().unwrap_or(len);
-        blocks.push(BasicBlock { inst_range: start..end, preds: Vec::new(), succs: Vec::new() });
+        blocks.push(BasicBlock {
+            inst_range: start..end,
+            preds: Vec::new(),
+            succs: Vec::new(),
+        });
     }
     let exit_id = blocks.len(); // exit 哨兵块号 = 实块数
 
@@ -58,10 +62,10 @@ pub(super) fn split_and_edges(f: &IRFunction, heads: &[bool]) -> (Vec<BasicBlock
                 blocks[i].succs.push((i + 1, EdgeKind::Fallthrough));
             }
             OpCode::RETURN | OpCode::HALT => {
-                // RETURN/HALT 汇入 exit 哨兵，用 Fallthrough 表达正常流出口（A1 语义归属）。
+                // RETURN/HALT 汇入 exit 哨兵，用 Fallthrough 表达正常流出口。
                 blocks[i].succs.push((exit_id, EdgeKind::Fallthrough));
             }
-            OpCode::THROW => { /* 无出边：异常传播，D-07 不建恢复路径 */ }
+            OpCode::THROW => { /* 无出边：异常传播，不建恢复路径 */ }
             _ => unreachable!("is_terminator 已穷尽其余分支"),
         }
     }
@@ -85,7 +89,8 @@ mod tests {
     fn unconditional_jmp_produces_jump_edge() {
         let mut f = IRFunction::new();
         f.insts.push(Inst::jmp(0)); // 0: → L0
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None)); // 1: L0 目标
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None)); // 1: L0 目标
         f.label_pos = vec![Some(1)];
         f.label_count = 1;
 
@@ -101,8 +106,10 @@ mod tests {
     fn conditional_jump_dual_edges() {
         let mut f = IRFunction::new();
         f.insts.push(Inst::jmp_if_false(1, 0)); // 0: cond → L0(else)
-        f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None)); // 1: then
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None)); // 2: else 入口
+        f.insts
+            .push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None)); // 1: then
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None)); // 2: else 入口
         f.label_pos = vec![Some(2)];
         f.label_count = 1;
 
@@ -119,9 +126,12 @@ mod tests {
     #[test]
     fn non_terminator_fallthrough_and_return_to_exit() {
         let mut f = IRFunction::new();
-        f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None)); // 0
-        f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None)); // 1
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None)); // 2
+        f.insts
+            .push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None)); // 0
+        f.insts
+            .push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None)); // 1
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None)); // 2
 
         let heads = crate::partition::partition_blocks(&f);
         let (blocks, exit_id) = split_and_edges(&f, &heads);
@@ -138,7 +148,8 @@ mod tests {
         f.insts.push(Inst::call(Operand::Reg(2), Operand::Reg(0), Operand::Reg(3), 1));
         f.insts.push(Inst::jmp(1));
         f.insts.push(Inst::call(Operand::Reg(4), Operand::Reg(0), Operand::Reg(3), 1));
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None));
         f.label_pos = vec![Some(3), Some(4)];
         f.label_count = 2;
 

@@ -244,8 +244,8 @@ mod tests {
         let first = plain_object(&mut vm);
         let promoted = vm.promote_object(first);
         assert!(!promoted.is_null());
-        // The shared forwarding map must be cleared after each promote so a
-        // later promote (or GC sweep) never observes stale old->new mappings.
+        // 共享 forwarding 表必须在每次 promote 后清空，使后续 promote（或 GC 清扫）
+        // 永不观察到过期的 old->new 映射。
         assert!(vm.gc_state.forwarding.is_empty());
 
         let second = plain_object(&mut vm);

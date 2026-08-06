@@ -1,14 +1,14 @@
-//! 指令改写：消费 AllocMap 就地重写 IR（D-05/D-07/D-20/RESEARCH 发现 4）。
+//! 指令改写：消费 AllocMap 就地重写 IR。
 //!
 //! - 槽位 vreg→phys 重写：仅 `Operand::Reg`；None/This/NewTarget/Const/Imm/Label 零改动
-//!   （None→0、This→254、NewTarget→255 由 lower 映射，D-11）
-//! - spill 落点（D-05 区间拆分 v1）：def 点后 SPILL、use 点前 UNSPILL；RMW（COMPOUND 系
-//!   rd 读旧值）UNSPILL 进 def-fresh 寄存器、use-fresh 弃用
-//! - 调用点参数连续性（RESEARCH 发现 4）：参数分散则 MOV 搬进 ARG_WINDOW
+//!   （None→0、This→254、NewTarget→255 由 lower 映射）
+//! - spill 落点：def 点后 SPILL、use 点前 UNSPILL；RMW（COMPOUND 系 rd 读旧值）UNSPILL
+//!   进 def-fresh 寄存器、use-fresh 弃用
+//! - 调用点参数连续性：参数分散则 MOV 搬进 ARG_WINDOW
 //! - spilled builtin 入口 SPILL（builtin 无指令 def，VM 入口隐式绑定）
 //! - label_pos mark-sweep 重建：label 落 group 起点（跳转先执行 before-插入）
 //!
-//! 确定性：全 BTreeMap/Vec 排序，禁 HashMap（B010）。
+//! 确定性：全 BTreeMap/Vec 排序，禁 HashMap。
 
 use std::collections::BTreeMap;
 
@@ -189,7 +189,7 @@ fn rewrite_inst(
                     }
                 }
             }
-            other => other, // None/This/NewTarget/Const/Imm/Label 零改动（D-11）
+            other => other, // None/This/NewTarget/Const/Imm/Label 零改动，lower 映射语义号
         }
     };
 
@@ -269,7 +269,7 @@ pub(super) fn spilled_builtin_bindings(f: &IRFunction, map: &AllocMap) -> Vec<(S
     }
     // escaped 色（递归 nested 的 LOAD_VAR.a / STORE_VAR.rd）
     collect_escaped(&f.nested, &mut excluded);
-    // own-escaped 色（B013 延伸）：本函数 LOAD_VAR.a / STORE_VAR.rd 引用父槽（< base）。
+    // own-escaped 色：本函数 LOAD_VAR.a / STORE_VAR.rd 引用父槽（< base）。
     // 与 graph.rs collect_own_escaped 对称——spill 自由色不得占用父槽号。
     collect_own_escaped(f, &mut excluded);
     // 窗口
@@ -364,7 +364,8 @@ mod tests {
     #[test]
     fn semantic_operands_untouched() {
         let mut f = empty_function();
-        f.insts.push(Inst::new(OpCode::ADD, Operand::This, Operand::NewTarget, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::ADD, Operand::This, Operand::NewTarget, Operand::None));
         f.insts.push(Inst::load_const(Operand::Reg(1), 3));
         let map = AllocMap::new();
         run(&mut f, &map);
@@ -376,8 +377,10 @@ mod tests {
     #[test]
     fn slots_rewritten_per_map() {
         let mut f = empty_function();
-        f.insts.push(Inst::new(OpCode::ADD, Operand::Reg(3), Operand::Reg(1), Operand::Reg(2)));
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(3), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::ADD, Operand::Reg(3), Operand::Reg(1), Operand::Reg(2)));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(3), Operand::None, Operand::None));
         let mut map = AllocMap::new();
         map.map.insert(1, Alloc::Phys(10));
         map.map.insert(2, Alloc::Phys(11));
@@ -484,7 +487,11 @@ mod tests {
         assert!(spill_pos < ret_pos, "SPILL 在 RETURN 前");
         // RETURN rd → use-fresh 8，其前有 UNSPILL(8)
         assert_eq!(f.insts[ret_pos].rd, Operand::Reg(8));
-        let unspill8 = f.insts.iter().position(|i| i.op == OpCode::UNSPILL && i.rd == Operand::Reg(8)).unwrap();
+        let unspill8 = f
+            .insts
+            .iter()
+            .position(|i| i.op == OpCode::UNSPILL && i.rd == Operand::Reg(8))
+            .unwrap();
         assert!(unspill8 < ret_pos, "RETURN 前 UNSPILL use-fresh");
         // use-fresh 6（RMW 点弃用）不得产生 UNSPILL
         assert!(
@@ -533,7 +540,8 @@ mod tests {
     #[test]
     fn spilled_builtin_entry_spill_inserted() {
         let mut f = empty_function();
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None));
         f.builtin_reg_map = vec![("Math".to_string(), 10)];
         let mut map = AllocMap::new();
         map.map.insert(10, Alloc::Spill(0));

@@ -69,7 +69,7 @@ fn test_throw_err_type_error_catchable() {
 
 #[test]
 fn test_throw_err_type_error_is_object() {
-    // IC_GET_PROP on null throws TypeError which is catchable; catch body runs
+    // 对 null 的 IC_GET_PROP 抛可捕获的 TypeError；catch 体执行。
     let result = eval("try { null.prop; } catch(e) { 99; }");
     assert_eq!(result, "99");
 }

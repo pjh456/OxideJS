@@ -65,7 +65,7 @@ fn tmap_size_and_clear() {
     assert_eq!(map_size(&mut vm, &[0]).unwrap().as_double(), 0.0);
 }
 
-// -- JS eval tests using new keyword (all in one eval per test) --
+// ── 经 JS 使用 new 关键字的 eval 测试（每个测试一次 eval）──
 
 #[test]
 fn map_new_set_get() {

@@ -15,8 +15,6 @@ use walkdir::WalkDir;
 mod test262_log;
 use oxide_log::{Level, LogConfig, Output, SUBSYSTEM_COUNT};
 
-// Thread-local that records the path currently being executed.
-// Written before every test; read by the panic hook to identify the crash file.
 // 记录当前正在执行的测试路径（thread-local）；每个测试执行前写入，
 // panic hook 据此定位崩溃所在的测试文件。
 std::thread_local! {
@@ -132,8 +130,8 @@ struct RunStats {
 }
 
 impl RunStats {
-    /// Fold another worker's partial stats into this one. Used to reduce
-    /// per-worker results back into a single total after parallel execution.
+    /// 把另一个 worker 的部分统计并入本对象。用于并行执行后把各 worker 的
+    /// 结果合并回单一总计。
     fn merge(&mut self, other: RunStats) {
         self.pass += other.pass;
         self.fail += other.fail;
@@ -144,7 +142,7 @@ impl RunStats {
         }
     }
 
-    /// Record a single test result into the running totals.
+    /// 把单个测试结果记入运行累计。
     fn record(&mut self, result: &TestResult) {
         match &result.outcome {
             TestOutcome::Pass(_) => self.pass += 1,
@@ -168,7 +166,7 @@ struct RunConfig {
     supervise: bool,
     leak_check: bool,
     leak_check_interval: usize,
-    /// D-18：关闭 liveness/精确 DCE/RegAlloc 链（on/off 对比基础设施）。
+    /// 关闭 liveness/精确 DCE/RegAlloc 链（on/off 对比基础设施）。
     no_regalloc: bool,
     /// 逐测试打印 PASS/FAIL/SKIP（on/off 结果集合对比用）。
     verbose: bool,
@@ -394,15 +392,14 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
             "module" => return Some("module tests excluded".into()),
             "async" => return Some("async tests excluded".into()),
             "raw" => return Some("raw tests excluded".into()),
-            // Let noStrict tests run — many pass despite strict mode; runtime skip catches failures
+            // noStrict 测试放行——很多在严格模式下仍可通过；运行时跳过逻辑会捕获失败。
             _ => {}
         }
     }
 
-    // Keep broad implemented feature tags runnable; exclude only unsupported subfeatures.
-    // Only exclude features that are genuinely NOT implemented at all.
-    // Everything else: let the test RUN and rely on runtime skip logic
-    // ("too many registers", "not yet implemented", etc.) for failures.
+    // 保持大范围已实现 feature tag 可运行；只排除真正未实现的子特性。
+    // 其余一切让测试实际运行，依赖运行时跳过逻辑
+    // （"too many registers"、"not yet implemented" 等）判定失败。
     let excluded_features = [
         "Proxy",
         "BigInt",
@@ -423,8 +420,8 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
         }
     }
 
-    // Only skip if BOTH description AND features indicate generators/async
-    // (many tests with "async" in description test non-async functionality)
+    // 仅当 description 与 features 都表明 generator/async 时才跳过
+    // （许多 description 含 "async" 的测试测的是非 async 功能）。
     if meta.description.contains("generator") && meta.features.iter().any(|f| f.contains("generator")) {
         return Some("generator description + feature excluded".into());
     }
@@ -582,7 +579,7 @@ fn run_test_inner(
                 || e.contains("cannot assign to read-only property")
                 || e.contains("cannot delete non-configurable property")
                 || e.contains("private field")
-            // class private fields not implemented
+            // 类私有字段未实现。
             {
                 if no_skip {
                     return TestResult::fail(path.to_path_buf(), dur, format!("vm error: {e}"));
@@ -684,10 +681,10 @@ fn run_chunked(args: &[String], skip_until: usize, end_index: usize, chunk_size:
     aggregate_fail == 0
 }
 
-/// One heartbeat record written by a supervised child and polled by the parent.
-/// `index` is the global test index the child is about to run (`START`) or the
-/// window end it finished (`DONE`); the tallies always cover tests completed
-/// *before* `index`, so the in-flight test is never counted yet.
+/// 监督模式下子进程写入、父进程轮询的一条心跳记录。
+/// `index` 是子进程即将运行的全局测试下标（`START`）或其完成窗口的
+/// 结束下标（`DONE`）；计数始终覆盖 `index` *之前* 已完成的测试，
+/// 因此进行中的测试不会被计入。
 struct Heartbeat {
     phase: String,
     index: usize,
@@ -696,16 +693,15 @@ struct Heartbeat {
     skip: usize,
 }
 
-/// Overwrite the heartbeat file with a single line. Errors are ignored: a missed
-/// heartbeat just delays stall detection by one poll interval. Assumes a single
-/// worker (the supervisor always forces `OXIDE_TEST262_WORKERS=1`); with more
-/// than one worker the running index is ambiguous and the file races.
+/// 用单行内容覆写心跳文件。错误被忽略：漏写心跳只是把停滞检测推迟一个
+/// 轮询间隔。假定单 worker（监督器强制 `OXIDE_TEST262_WORKERS=1`）；
+/// 多 worker 时运行下标有歧义且文件存在竞争。
 fn write_heartbeat(path: &Path, phase: &str, index: usize, pass: usize, fail: usize, skip: usize) {
     let _ = std::fs::write(path, format!("{phase} {index} {pass} {fail} {skip}\n"));
 }
 
-/// Read the latest heartbeat. Returns `None` on any missing/partial/malformed
-/// content so the poll loop can simply retry on the next tick.
+/// 读取最新心跳。任何缺失/残缺/畸形内容均返回 `None`，使轮询循环可直接
+/// 在下一拍重试。
 fn read_heartbeat(path: &Path) -> Option<Heartbeat> {
     let content = std::fs::read_to_string(path).ok()?;
     let line = content.lines().next()?;
@@ -718,15 +714,13 @@ fn read_heartbeat(path: &Path) -> Option<Heartbeat> {
     Some(Heartbeat { phase, index, pass, fail, skip })
 }
 
-/// Run one window `[wstart, wend)` to completion under supervision, returning
-/// `(pass, fail, skip)` aggregated across however many child restarts it took.
+/// 在监督下运行一个窗口 `[wstart, wend)`，返回经过多次子进程重启
+/// 聚合的 `(pass, fail, skip)`。
 ///
-/// A single-worker child runs the normal in-process path (warm kernel + harness
-/// prefix cache) and emits a heartbeat before each test. If the running index
-/// stalls past `timeout`, the child is killed, the culprit is reported by path,
-/// and a fresh child resumes from `culprit + 1`. A child that crashes mid-test
-/// is recovered through the same path. Timeouts/crashes count as skip by default
-/// and fail under `--no-skip`.
+/// 单 worker 子进程运行常规 in-process 路径（预热 kernel + harness 前缀缓存）
+/// 并在每个测试前发出心跳。若运行下标停滞超过 `timeout`，子进程被杀死、
+/// 按路径报告肇事者，并由全新子进程从 `culprit + 1` 续跑。子进程在测试中途
+/// 崩溃也经同路径恢复。超时/崩溃默认计为 skip，`--no-skip` 下计为失败。
 #[expect(clippy::too_many_arguments)]
 fn supervise_window(
     exe: &Path, args: &[String], no_skip: bool, wstart: usize, wend: usize, timeout: Duration, startup_grace: Duration,
@@ -872,10 +866,9 @@ fn supervise_window(
     (pass, fail, skip)
 }
 
-/// Orchestrate a supervised full run: split `[skip_until, end_index)` into
-/// windows and run up to `supervisors` of them concurrently. The supervisor
-/// threads only spawn/poll/kill child processes and touch files — they never
-/// hold a `KernelCore`, so sharing `paths`/`args` by reference is safe.
+/// 编排一次监督式全量运行：把 `[skip_until, end_index)` 切分为窗口，至多
+/// `supervisors` 个窗口并发。监督线程只派生/轮询/杀死子进程并读写文件——
+/// 从不持有 `KernelCore`，因此按引用共享 `paths`/`args` 是安全的。
 fn run_supervised(args: &[String], skip_until: usize, end_index: usize, no_skip: bool, paths: &[PathBuf]) -> bool {
     let exe = match std::env::current_exe() {
         Ok(path) => path,
@@ -990,10 +983,9 @@ fn run_supervised(args: &[String], skip_until: usize, end_index: usize, no_skip:
     fail == 0
 }
 
-/// Per-test pipeline shared by the serial and parallel execution paths:
-/// read the file, parse metadata, apply skip filters, then run. Returns
-/// exactly one `TestResult`. Worker-owned state (`kernel`, `harness_sources`,
-/// `harness_cache`) never crosses a thread boundary.
+/// 串行与并行执行路径共享的每测试管线：
+/// 读文件、解析元数据、应用跳过过滤，然后运行。恰好返回一个 `TestResult`。
+/// worker 自有状态（`kernel`、`harness_sources`、`harness_cache`）永不跨线程。
 fn process_path(
     path: &Path, filter: &Option<String>, no_skip: bool, no_regalloc: bool, kernel: &Arc<KernelCore>,
     harness_sources: &HarnessSources, harness_cache: &Arc<RwLock<HarnessPrefixCache>>,
@@ -1032,21 +1024,19 @@ fn process_path(
     run_test(path, &source, &meta, kernel, harness_sources, harness_cache, no_skip, no_regalloc)
 }
 
-/// Build a runner kernel with a bounded step limit. Each parallel worker owns
-/// its own kernel because `KernelCore` + session state is `!Send` (it holds
-/// `P<JsObject>` = `Arc<JsObject>`, and `JsObject` stores raw `*mut u8` property
-/// pointers). Nothing kernel-shaped can cross a thread boundary, so sharing is
-/// impossible; per-worker construction is the only correct design.
+/// 构建带步数上限的 runner kernel。每个并行 worker 拥有自己的 kernel，
+/// 因为 `KernelCore` + session 状态是 `!Send`（持有 `P<JsObject>` =
+/// `Arc<JsObject>`，而 `JsObject` 存有裸 `*mut u8` 属性指针）。任何 kernel
+/// 形态的对象都不能跨线程边界，因此共享不可能；每 worker 自建是唯一正确设计。
 fn build_runner_kernel() -> Arc<KernelCore> {
-    // Bound each test's execution so a single infinite-loop / unsupported-feature
-    // loop fails (or skips) instead of stalling the run. The VM emits a
-    // "VM step limit exceeded" error on overrun, which the runner classifies as a
-    // step-limit result (skip by default, fail under --no-skip). Override only the
-    // runner's local config; KernelConfig::minimal() stays unbounded for other crates.
+    // 约束每个测试的执行步数，使单个死循环 / 未支持特性循环失败（或跳过）
+    // 而非拖垮整个运行。VM 超限时抛 "VM step limit exceeded" 错误，
+    // runner 将其归类为 step-limit 结果（默认 skip，--no-skip 下 fail）。
+    // 只覆盖 runner 本地配置；KernelConfig::minimal() 对其它 crate 保持无界。
     let mut kernel_config = KernelConfig::minimal();
     kernel_config.max_steps = Some(50_000_000);
-    // Keep test262 recursion tests from reaching Rust's native stack before the
-    // VM converts deep JS calls into a catchable RangeError.
+    // 防止 test262 递归测试在 VM 把深层 JS 调用转成可捕获的 RangeError 之前
+    // 触及 Rust 原生栈。
     kernel_config.max_call_depth = 256;
     kernel_config.min_pool_size = 1;
     kernel_config.max_pool_size = Some(1);
@@ -1108,10 +1098,9 @@ fn categorize_fail(msg: &str) -> String {
 
 /// 程序入口：安装带当前测试路径的 panic hook，并在大栈线程上运行测试。
 fn main() {
-    // Install a panic hook that prints which test was running when the panic occurred.
-    // This covers Rust panics; OS-level crashes (ACCESS_VIOLATION) are caught by the
-    // pre-test eprintln! below — the last line printed before a hard crash identifies
-    // the file.
+    // 安装 panic hook，打印崩溃发生时正在运行的测试。
+    // 覆盖 Rust panic；OS 级崩溃（ACCESS_VIOLATION）由测试前的 eprintln! 捕获——
+    // 硬崩溃前打印的最后一行即标识文件。
     std::panic::set_hook(Box::new(|info| {
         let path = CURRENT_TEST_PATH.with(|p| p.borrow().clone());
         if !path.is_empty() {
@@ -1191,11 +1180,11 @@ fn run_tests() -> bool {
 
     let total = paths.len();
 
-    // Determine worker count. `KernelCore` + session state is `!Send` (it holds
-    // one kernel via Arc across threads; instead each worker builds and owns its
-    // own kernel + harness-source registry + prefix cache. Only `PathBuf` and
-    // `TestResult` (both `Send`) cross thread boundaries. Workers pull test
-    // indices from a shared atomic cursor for dynamic load balancing.
+    // 确定 worker 数。`KernelCore` + session 状态是 `!Send`（它持有
+    // 经 Arc 共享的一个 kernel；相反每个 worker 构建并拥有自己的
+    // kernel + harness 源注册表 + 前缀缓存。只有 `PathBuf` 和
+    // `TestResult`（均 `Send`）跨线程。worker 从共享原子游标取测试下标，
+    // 实现动态负载均衡。
     let default_workers = if config.no_skip {
         4
     } else {
@@ -1261,17 +1250,16 @@ fn run_tests() -> bool {
     let heartbeat_ref = &heartbeat_path;
     let harness_cache = Arc::new(RwLock::new(HarnessPrefixCache::new()));
 
-    // Keep memory flat: workers return only aggregate stats. Retaining tens of
-    // thousands of `TestResult`s makes `--no-skip` runs accumulate path/error
-    // strings until the process OOMs near the end of the suite.
+    // 保持内存平稳：worker 只返回聚合统计。保留数万个 `TestResult` 会使
+    // `--no-skip` 运行在套件末尾附近累积 path/error 字符串直至进程 OOM。
     let partials: Vec<RunStats> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..workers)
             .map(|_| {
                 let cursor = &cursor;
                 let progress = &progress;
                 let harness_cache = Arc::clone(&harness_cache);
-                // Match main()'s 16MB stack: the VM recurses on deeply nested
-                // test programs and would overflow the default worker stack.
+                // 与 main() 的 16MB 栈一致：VM 在深层嵌套测试程序上递归，
+                // 默认 worker 栈会溢出。
                 std::thread::Builder::new()
                     .stack_size(16 * 1024 * 1024)
                     .spawn_scoped(scope, move || {
@@ -1287,9 +1275,9 @@ fn run_tests() -> bool {
                                 break;
                             }
                             let path_str = paths_ref[i].display().to_string();
-                            // Always record the current test path so the panic hook can
-                            // identify Rust panics. Set OXIDE_TEST262_RUNNING_LOG=1 when
-                            // diagnosing OS-level crashes that need the last stderr line.
+                            // 始终记录当前测试路径，使 panic hook 能标识 Rust panic。
+                            // 诊断需要最后一行 stderr 的 OS 级崩溃时设置
+                            // OXIDE_TEST262_RUNNING_LOG=1。
                             CURRENT_TEST_PATH.with(|p| *p.borrow_mut() = path_str.clone());
                             if log_running_tests {
                                 test262_debug!("running: {}", path_str);
@@ -1300,7 +1288,13 @@ fn run_tests() -> bool {
                             }
 
                             let result = process_path(
-                                &paths_ref[i], filter, no_skip, no_regalloc, &kernel, harness_sources, &harness_cache,
+                                &paths_ref[i],
+                                filter,
+                                no_skip,
+                                no_regalloc,
+                                &kernel,
+                                harness_sources,
+                                &harness_cache,
                             );
                             stats.record(&result);
                             if verbose {
@@ -1339,7 +1333,7 @@ fn run_tests() -> bool {
             .collect()
     });
 
-    // Reduce partial stats without materializing every test result in memory.
+    // 归约各 worker 的部分统计，不物化每个测试结果到内存。
     let mut stats = RunStats::default();
     for partial_stats in partials {
         stats.merge(partial_stats);

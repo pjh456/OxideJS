@@ -1,8 +1,8 @@
 //! IRFunction → CompiledModule 等价转换。
 //!
-//! 字节码格式（4 字节 u32 + 扩展字）与现状逐指令一致（D-13 锚）。
+//! 字节码格式（4 字节 u32 + 扩展字）逐指令一致。
 //! label 用前缀和：`label_pos` 记 Inst 下标，平铺时维护 inst→instr 映射，
-//! 跳转 offset 以 Instr（含 ext 字）为单位（D-17）。
+//! 跳转 offset 以 Instr（含 ext 字）为单位。
 
 use oxide_bytecode::module::CompiledModule;
 use oxide_bytecode::opcode::{self, OpCode};
@@ -11,7 +11,7 @@ use crate::inst::Inst;
 use crate::operand::Operand;
 use crate::IRFunction;
 
-/// IRFunction → CompiledModule。错误消息与现状（退役前 compiler.rs）逐字一致。
+/// IRFunction → CompiledModule 等价转换。溢出/标签错误消息为既有格式，逐字保持一致。
 pub fn lower(f: &IRFunction) -> Result<CompiledModule, String> {
     // 溢出检查 1：常量池（先于寄存器——超大常量池伴生的海量 vreg 会使后续检查的
     // 稠密 bitset 表示爆内存；常量池超限是更基础的失效，先报它）
@@ -47,7 +47,7 @@ pub fn lower(f: &IRFunction) -> Result<CompiledModule, String> {
         encode_inst(inst, &mut instrs, &mut jumps)?;
     }
 
-    // 跳转回填：offset = 目标 Instr - 当前 Instr（前缀和，D-17）
+    // 跳转回填：offset = 目标 Instr - 当前 Instr（前缀和）
     for (instr_idx, label) in jumps {
         let target_inst = f
             .label_pos

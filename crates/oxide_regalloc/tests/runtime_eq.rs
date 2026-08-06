@@ -1,4 +1,4 @@
-//! RegAlloc on/off 运行时等价（D-21 主验证）+ B005/spill 样例运行正确（REG-04）。
+//! RegAlloc on/off 运行时等价（主验证）+ 大函数/spill 样例运行正确。
 //!
 //! 同一 JS 源码走两条管线：parse → emit → dce（保守恒定）→（regalloc on/off）→ lower → run，
 //! 对比顶层执行结果。**不经 Compiler::compile**（测试层直调底层函数）。
@@ -38,9 +38,9 @@ fn normalize(r: Result<JsValue, String>) -> (bool, String) {
 #[test]
 fn regalloc_preserves_semantics() {
     let samples = [
-        // switch+const（B011 回归）
+        // switch+const（const guard 回归）
         "function f(x) { switch (x) { case 1: break; } const c = 5; return c; } f(1);",
-        // 类字段（B012 行为锚）
+        // 类字段（escaped 槽行为锚）
         "var x = 0; class C { p = (x = 1); } new C(); x;",
         // try-catch
         "function f() { try { throw 1; } catch (e) { return e + 1; } } f();",
@@ -95,15 +95,16 @@ fn gen_spill_function(n: u32) -> String {
     src
 }
 
-/// B005 大函数（200+ 变量）与 spill 压力样例 on 运行正确。
-/// off 路径 lower 失败（B005 上限）——不能做 on/off 相等，on 运行正确即 REG-04 证据。
+/// 大函数（200+ 变量）与 spill 压力样例 on 运行正确。
+/// off 路径 lower 失败（vreg 超 253 上限）——不能做 on/off 相等，on 运行正确即
+/// 寄存器复用与 spill 的证据。
 #[test]
-fn b005_and_spill_samples_run_correctly() {
-    // B005：220 变量 → vreg 数远超 253，但同时存活 < 253 → RegAlloc 复用解决
-    let src_b005 = gen_sum_function(220);
-    let expected_b005 = 220 * 219 / 2;
-    let out = run_source(&src_b005, true).expect("B005 样例 on 应编译成功");
-    assert_eq!(out.to_string(), expected_b005.to_string(), "B005 样例结果错误");
+fn large_and_spill_samples_run_correctly() {
+    // 220 变量 → vreg 数远超 253，但同时存活 < 253 → RegAlloc 复用解决
+    let src_large = gen_sum_function(220);
+    let expected_large = 220 * 219 / 2;
+    let out = run_source(&src_large, true).expect("大函数样例 on 应编译成功");
+    assert_eq!(out.to_string(), expected_large.to_string(), "大函数样例结果错误");
 
     // spill 压力：长活 L + 254 短活 → L 溢出，验证 SPILL/UNSPILL 真实发生且结果正确
     let src_spill = gen_spill_function(254);
@@ -124,7 +125,10 @@ fn b005_and_spill_samples_run_correctly() {
     let module = oxide_ir::lower::lower(&ir).expect("lower");
     // 递归扫描模块树（spill 发生在嵌套函数 f 中，非顶层 f(1) 调用）
     fn has_op(m: &oxide_bytecode::module::CompiledModule, target: OpCode) -> bool {
-        if m.bytecode.iter().any(|&instr| OpCode::try_from(instr as u8).ok() == Some(target)) {
+        if m.bytecode
+            .iter()
+            .any(|&instr| OpCode::try_from(instr as u8).ok() == Some(target))
+        {
             return true;
         }
         m.sub_modules.iter().any(|s| has_op(s, target))

@@ -127,7 +127,7 @@ fn fd_calls_builtin_two_args() {
     assert!((result.as_double() - 9.0).abs() < 0.0001);
 }
 
-// --- Multiple FDs, first FD calls second ---
+// ── 多个函数声明，首个调用第二个 ──
 
 #[test]
 fn fd_chain_call() {
@@ -136,7 +136,7 @@ fn fd_chain_call() {
     assert_eq!(result.as_int(), 10);
 }
 
-// --- new Xxx() in function ---
+// ── 函数内的 new Xxx() ──
 
 #[test]
 fn fd_returns_new_object() {
@@ -152,7 +152,7 @@ fn fd_returns_new_array() {
     assert!(result.is_object());
 }
 
-// --- this expression ---
+// ── this 表达式 ──
 
 #[test]
 fn this_in_function_reads_value() {

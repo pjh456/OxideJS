@@ -1,10 +1,10 @@
 //! for 语句 emit：`emit_for_statement` 含 init/test/update 三段与循环跳转。
 
 use crate::{CompileCtx, Emitter};
-use oxide_ir::inst::Inst;
-use oxide_ir::operand::Operand;
 use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
+use oxide_ir::inst::Inst;
+use oxide_ir::operand::Operand;
 use oxide_parser::{BindingPattern, ForStatementInit, Statement, VariableDeclarationKind};
 
 impl Emitter {
@@ -40,7 +40,12 @@ impl Emitter {
                             ctx.declare(bi.name.as_str(), var_reg, decl.kind, is_const)?;
                             var_reg
                         };
-                        ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(target_reg), Operand::Reg(tmp), Operand::None));
+                        ctx.inst(Inst::new(
+                            OpCode::STORE_VAR,
+                            Operand::Reg(target_reg),
+                            Operand::Reg(tmp),
+                            Operand::None,
+                        ));
                         ctx.init_var(bi.name.as_str());
                     }
                 }

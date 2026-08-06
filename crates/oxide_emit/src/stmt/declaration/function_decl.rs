@@ -1,9 +1,9 @@
 //! 函数声明语句 emit：`emit_function_declaration_statement` 创建闭包并绑定函数名。
 
 use crate::{CompileCtx, Emitter, ParamSpec};
+use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
-use oxide_bytecode::opcode::OpCode;
 use oxide_parser::Statement;
 
 impl Emitter {
@@ -38,7 +38,12 @@ impl Emitter {
         ctx.reserve_reg(var_reg);
         ctx.inst(Inst::create_closure(Operand::Reg(var_reg), ctx.nested.len() as u16));
         if let Some(&cell_idx) = ctx.captured_bindings.get(&name) {
-            ctx.inst(Inst::new(OpCode::MAKE_CELL, Operand::Reg(var_reg), Operand::Imm(cell_idx as u16), Operand::None));
+            ctx.inst(Inst::new(
+                OpCode::MAKE_CELL,
+                Operand::Reg(var_reg),
+                Operand::Imm(cell_idx as u16),
+                Operand::None,
+            ));
         } else {
             ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(var_reg), Operand::Reg(var_reg), Operand::None));
         }

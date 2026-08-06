@@ -144,7 +144,7 @@ fn error_subtype_constructors_produce_named_objects() {
     assert_eq!(format!("{}", eval("new SyntaxError('boom').name == 'SyntaxError'").unwrap()), "true");
 }
 
-// New tests for prototype properties + constructor fixes
+// ── 原型属性与构造器修复测试 ──
 
 #[test]
 fn error_prototype_has_name() {
@@ -276,7 +276,7 @@ fn create_type_error_no_own_name() {
     assert_eq!(obj.prop_count(), 1);
 }
 
-// Plan 02: toString tests
+// ── toString 测试 ──
 
 #[test]
 fn error_to_string_basic() {
@@ -319,7 +319,7 @@ fn error_to_string_non_object_throws() {
     }
 }
 
-// format_error_message tests
+// ── format_error_message 测试 ──
 
 #[test]
 fn format_error_message_both() {
@@ -339,7 +339,7 @@ fn format_error_message_empty_name() {
     assert_eq!(result, "msg");
 }
 
-// stack tests
+// ── stack 测试 ──
 
 #[test]
 fn error_stack_is_string() {

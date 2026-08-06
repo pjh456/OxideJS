@@ -1,4 +1,4 @@
-//! REG-04 断言：RegAlloc on ≤253 且 < off（寄存器收缩）；B005 大函数 on 编译成功。
+//! 寄存器收缩断言：RegAlloc on ≤253 且 < off（寄存器复用）；大函数 on 编译成功。
 
 fn n_registers(src: &str, regalloc: bool) -> Result<u8, String> {
     let allocator = oxide_parser::Allocator::default();
@@ -70,15 +70,15 @@ fn n_registers_shrinks_with_regalloc() {
     }
 }
 
-/// B005 大函数：on 编译成功 ≤253；off 报 RangeError（B005 解决证据）。
+/// 大函数：on 编译成功 ≤253；off 报 RangeError（vreg 超上限）。
 #[test]
-fn b005_large_function_fits_in_253() {
+fn large_function_fits_in_253() {
     let src = gen_sum_function(220);
     let on = n_registers(&src, true);
-    assert!(on.is_ok(), "B005 样例 on 应编译成功");
+    assert!(on.is_ok(), "大函数样例 on 应编译成功");
     assert!(on.unwrap() <= 253, "on ≤253");
     let off = n_registers(&src, false);
-    assert!(off.is_err(), "B005 样例 off 应报 RangeError");
+    assert!(off.is_err(), "大函数样例 off 应报 RangeError");
     assert!(off.unwrap_err().contains("too many registers"), "off Err 消息");
 }
 

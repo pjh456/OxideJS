@@ -89,8 +89,8 @@ fn create_typed_array<H: VmHost>(
         byte_offset,
         length,
     }));
-    // SAFETY: TypedArray instances are not callable; native_fn stores opaque Box<TypedArrayData>,
-    // matching ArrayBuffer/DataView typed-object storage in this VM.
+    // SAFETY: TypedArray 实例不可调用，native_fn 存不透明 `Box<TypedArrayData>`，
+    // 与本 VM 中 ArrayBuffer/DataView 的类型化对象存储一致。
     obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(data as *const ()) }));
 
     let byte_length = length.saturating_mul(kind.bytes_per_element());

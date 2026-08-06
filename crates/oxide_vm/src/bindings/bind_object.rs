@@ -53,7 +53,7 @@ pub fn bind_object(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             ("valueOf", oxide_builtins::object::object_proto_value_of::<crate::vm::Vm> as *const (), 0),
         ],
     );
-    // Built-in prototype methods are non-enumerable (otherwise they leak into for-in).
+    // 内置原型方法不可枚举（否则会泄漏进 for-in）。
     for name in ["toString", "valueOf"] {
         let si = core.perm_interner().intern(name).0;
         if let Some(pos) = core.shape_forge().lookup_position(object_proto.shape_id(), si) {

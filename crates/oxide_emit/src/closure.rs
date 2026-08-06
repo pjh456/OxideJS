@@ -12,7 +12,6 @@ use oxide_parser::{Expression, Statement};
 use crate::Emitter;
 
 impl Emitter {
-
     fn collect_fn_param_names(&self, params: &oxide_parser::FormalParameters) -> HashSet<String> {
         let mut names = HashSet::new();
         for p in &params.items {
@@ -288,7 +287,9 @@ impl Emitter {
             }
             Expression::StaticMemberExpression(m) => self.collect_capture_names_expr(&m.object, ref_set, shadow, out),
             Expression::PrivateFieldExpression(m) => self.collect_capture_names_expr(&m.object, ref_set, shadow, out),
-            Expression::ParenthesizedExpression(p) => self.collect_capture_names_expr(&p.expression, ref_set, shadow, out),
+            Expression::ParenthesizedExpression(p) => {
+                self.collect_capture_names_expr(&p.expression, ref_set, shadow, out)
+            }
             Expression::TemplateLiteral(tl) => {
                 for e in &tl.expressions {
                     self.collect_capture_names_expr(e, ref_set, shadow, out);
@@ -348,11 +349,7 @@ impl Emitter {
         // 名字排序分配 cell_idx（稳定跨 run，父 MAKE_CELL 与子 upvalue 统一引用）
         let mut sorted: Vec<String> = names.into_iter().collect();
         sorted.sort();
-        sorted
-            .into_iter()
-            .enumerate()
-            .map(|(i, n)| (n, i as u8))
-            .collect()
+        sorted.into_iter().enumerate().map(|(i, n)| (n, i as u8)).collect()
     }
 
     /// 只从嵌套函数节点进入扫描（本函数直接引用不算捕获）。
@@ -498,7 +495,6 @@ impl Emitter {
         }
     }
 
-    /// 分析子函数 body：引用父级绑定的名字 → upvalue_captures（enclosing_reg 由父 emit 完成后填充）。
     /// 分析子函数 body：引用父级被捕获绑定的名字 → upvalue_captures。
     /// cell_idx 直接取父 captured_bindings 映射（父 emit 前已确定，索引一致）；
     /// enclosing_reg 由父 emit 完成后填充（assemble_ir）。
@@ -509,9 +505,8 @@ impl Emitter {
         let mut names = HashSet::new();
         self.collect_capture_names_shadowed(body_stmts, &parent_names, sub_own, &mut names);
         // HashSet 迭代序带随机种子（进程级非确定），必须排序使 upvalue_captures 的顺序与
-        // 父 captured_bindings 的 cell_idx（BTreeMap 名字序）对齐——否则 uv_idx（identifier.rs
-        // LOAD_UPVALUE 的 a 槽编码）与 cell_idx 错位，读错 upvalue（hoisted_function_reads_outer_var_and_function
-        // 抖动根因）。
+        // 父 captured_bindings 的 cell_idx（BTreeMap 名字序）对齐——否则 LOAD_UPVALUE 的
+        // a 槽 uv_idx 编码与 cell_idx 错位，读错 upvalue。
         let mut names: Vec<String> = names.into_iter().collect();
         names.sort();
         names

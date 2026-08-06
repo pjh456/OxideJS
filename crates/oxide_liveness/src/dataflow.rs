@@ -1,8 +1,8 @@
 //! 块级数据流迭代：gen/kill + reverse_postorder 不动点。
 //!
-//! gen/kill 直接消费 `oxide_ir::contract` 的 `def_reg`/`use_regs`（D-22），
+//! gen/kill 直接消费 `oxide_ir::contract` 的 `def_reg`/`use_regs`，
 //! None→0 / This→254 / NewTarget→255 / CALL 隐式 reg0 全内置，不重复建。
-//! Exception 边当普通边参与迭代（D-13）；Exception 目标块入口 reg 0 隐式 def
+//! Exception 边当普通边参与迭代；Exception 目标块入口 reg 0 隐式 def
 //! （异常展开写 regs[0]，vm_runtime.rs:204-205）在此建模：gen.remove(0)+kill.insert(0)。
 
 use oxide_cfg::{Cfg, EdgeKind};
@@ -63,7 +63,7 @@ pub(super) fn block_liveness(f: &IRFunction, cfg: &Cfg) -> (Vec<Vec<bool>>, Vec<
         }
     }
 
-    // 3. reverse_postorder（确定性，禁 HashMap 迭代序——B010）
+    // 3. reverse_postorder（确定性，禁 HashMap 迭代序）
     let rpo = reverse_postorder(cfg);
 
     // 4. 不动点迭代
@@ -73,7 +73,7 @@ pub(super) fn block_liveness(f: &IRFunction, cfg: &Cfg) -> (Vec<Vec<bool>>, Vec<
     loop {
         let mut changed = false;
         for &b in &rpo {
-            // live_out[b] = ∪ live_in[s]（全部 succs，含 Exception 边——D-13 当普通边）
+            // live_out[b] = ∪ live_in[s]（全部 succs，含 Exception 边当普通边）
             let mut out = vec![false; bits];
             for &(succ, _kind) in &cfg.blocks[b].succs {
                 for (r, &v) in live_in[succ].iter().enumerate() {
@@ -104,7 +104,7 @@ pub(super) fn block_liveness(f: &IRFunction, cfg: &Cfg) -> (Vec<Vec<bool>>, Vec<
 }
 
 /// 从 entry 出发 DFS 沿 succs 存储序（确定序）收集 postorder 后反转；
-/// 不可达块按升序追加在末尾。纯 Vec + visited 位图（B010）。
+/// 不可达块按升序追加在末尾。纯 Vec + visited 位图，保证确定性。
 fn reverse_postorder(cfg: &Cfg) -> Vec<usize> {
     let n = cfg.blocks.len();
     let mut visited = vec![false; n];
@@ -131,9 +131,9 @@ fn reverse_postorder(cfg: &Cfg) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxide_bytecode::opcode::OpCode;
     use oxide_ir::inst::Inst;
     use oxide_ir::operand::Operand;
-    use oxide_bytecode::opcode::OpCode;
 
     fn set(v: &[bool], regs: &[u32]) -> bool {
         regs.iter().all(|&r| v[r as usize])
@@ -146,8 +146,10 @@ mod tests {
     #[test]
     fn linear_function_liveness() {
         let mut f = empty_function();
-        f.insts.push(Inst::new(OpCode::ADD, Operand::Reg(2), Operand::Reg(0), Operand::Reg(1)));
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(2), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::ADD, Operand::Reg(2), Operand::Reg(0), Operand::Reg(1)));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(2), Operand::None, Operand::None));
         let cfg = oxide_cfg::build_cfg(&f);
         let (live_in, live_out, reg_count) = block_liveness(&f, &cfg);
         assert!(reg_count >= 2);
@@ -170,11 +172,15 @@ mod tests {
         // 5: RETURN Reg(6)
         let mut f = empty_function();
         f.insts.push(Inst::jmp_if_false(1, 1));
-        f.insts.push(Inst::new(OpCode::ADD, Operand::Reg(3), Operand::Reg(3), Operand::Reg(2)));
+        f.insts
+            .push(Inst::new(OpCode::ADD, Operand::Reg(3), Operand::Reg(3), Operand::Reg(2)));
         f.insts.push(Inst::jmp(2));
-        f.insts.push(Inst::new(OpCode::SUB, Operand::Reg(4), Operand::Reg(4), Operand::Reg(5)));
-        f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(6), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::SUB, Operand::Reg(4), Operand::Reg(4), Operand::Reg(5)));
+        f.insts
+            .push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(6), Operand::None, Operand::None));
         f.label_pos = vec![None, Some(3), Some(4)];
         f.label_count = 3;
         let cfg = oxide_cfg::build_cfg(&f);
@@ -201,10 +207,13 @@ mod tests {
         // 4: RETURN Reg(6)
         let mut f = empty_function();
         f.insts.push(Inst::jmp_if_false(1, 1));
-        f.insts.push(Inst::new(OpCode::ADD, Operand::Reg(3), Operand::Reg(3), Operand::Reg(2)));
+        f.insts
+            .push(Inst::new(OpCode::ADD, Operand::Reg(3), Operand::Reg(3), Operand::Reg(2)));
         f.insts.push(Inst::jmp(0));
-        f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(6), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(6), Operand::None, Operand::None));
         f.label_pos = vec![Some(0), Some(3)];
         f.label_count = 2;
         let cfg = oxide_cfg::build_cfg(&f);
@@ -227,10 +236,14 @@ mod tests {
         // 4: RETURN Reg(5)
         let mut f = empty_function();
         f.insts.push(Inst::try_begin(3));
-        f.insts.push(Inst::new(OpCode::ADD, Operand::Reg(3), Operand::Reg(3), Operand::Reg(2)));
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(3), Operand::None, Operand::None));
-        f.insts.push(Inst::new(OpCode::STORE_VAR, Operand::Reg(5), Operand::None, Operand::None));
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::ADD, Operand::Reg(3), Operand::Reg(3), Operand::Reg(2)));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(3), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::STORE_VAR, Operand::Reg(5), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None));
         f.label_pos = vec![None, None, None, Some(3)];
         f.label_count = 1;
         let cfg = oxide_cfg::build_cfg(&f);
@@ -249,8 +262,10 @@ mod tests {
         // 0: LOAD_VAR(Reg(5), None, None)   def 5 use {0}
         // 1: HALT(None, None, None)          contract.rs HALT 读 regs[0]
         let mut f = empty_function();
-        f.insts.push(Inst::new(OpCode::LOAD_VAR, Operand::Reg(5), Operand::None, Operand::None));
-        f.insts.push(Inst::new(OpCode::HALT, Operand::None, Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::LOAD_VAR, Operand::Reg(5), Operand::None, Operand::None));
+        f.insts
+            .push(Inst::new(OpCode::HALT, Operand::None, Operand::None, Operand::None));
         let cfg = oxide_cfg::build_cfg(&f);
         let (live_in, _, _) = block_liveness(&f, &cfg);
         assert!(live_in[0][0], "None→0 映射由 contract.rs 消费生效");

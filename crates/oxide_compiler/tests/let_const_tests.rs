@@ -9,7 +9,7 @@ fn hash_var_let_const_differ() {
     let let_ast = oxide_parser::parse(&allocator, "let x = 1").unwrap();
     let const_ast = oxide_parser::parse(&allocator, "const x = 1").unwrap();
 
-    // Different AST structures should produce different bytecode
+    // 不同的 AST 结构应产出不同的字节码。
     let var_module = compiler.compile(&var_ast).unwrap();
     let let_module = compiler.compile(&let_ast).unwrap();
     let const_module = compiler.compile(&const_ast).unwrap();

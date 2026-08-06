@@ -3,9 +3,9 @@
 //! 函数：`emit_class`。
 
 use crate::{CompileCtx, Emitter, FunctionBodyContext};
+use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
-use oxide_bytecode::opcode::OpCode;
 use oxide_parser::{Class, ClassElement, MethodDefinitionKind, PropertyKey};
 
 impl Emitter {
@@ -66,9 +66,20 @@ impl Emitter {
         let emit_instance_fields = |compiler: &Emitter, field_ctx: &mut CompileCtx| -> Result<(), String> {
             for field in &instance_fields {
                 if let PropertyKey::PrivateIdentifier(private) = &field.key {
-                    compiler.emit_private_field_init(Operand::This, private.name.as_str(), field.value.as_ref(), field_ctx)?;
+                    compiler.emit_private_field_init(
+                        Operand::This,
+                        private.name.as_str(),
+                        field.value.as_ref(),
+                        field_ctx,
+                    )?;
                 } else {
-                    compiler.emit_public_field_init(Operand::This, &field.key, field.computed, field.value.as_ref(), field_ctx)?;
+                    compiler.emit_public_field_init(
+                        Operand::This,
+                        &field.key,
+                        field.computed,
+                        field.value.as_ref(),
+                        field_ctx,
+                    )?;
                 }
             }
             Ok(())
@@ -108,7 +119,9 @@ impl Emitter {
                 module.insts.extend(field_ctx.insts);
                 module.constants = field_ctx.constants;
                 module.n_registers = field_ctx.max_regs.max(1);
-                module.insts.push(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None));
+                module
+                    .insts
+                    .push(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None));
             }
             module
         };

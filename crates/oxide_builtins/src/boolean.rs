@@ -14,7 +14,7 @@ pub fn boolean_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         } else if arg.is_bool() {
             arg.as_bool()
         } else if arg.is_string() {
-            // SAFETY: arg is a string value.
+            // SAFETY: arg 已确认是字符串值。
             !unsafe { (*arg.as_string_ptr()).is_empty() }
         } else if arg.is_object() {
             true

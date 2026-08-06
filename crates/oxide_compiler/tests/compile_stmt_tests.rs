@@ -120,9 +120,9 @@ fn regression_for_var_init() {
 
 #[test]
 fn regression_var_decl_counter_no_init() {
-    // `for (var i; ...)` initializes `i` to undefined (var semantics, not TDZ), and the
-    // counter/emitter agree on the no-init declarator's instruction count, so it compiles
-    // to a well-formed loop header instead of panicking.
+    // `for (var i; ...)` 把 `i` 初始化为 undefined（var 语义而非 TDZ），且
+    // 编译器对无初始化声明符的指令数保持一致，因此可编译为良构循环头
+    // 而非 panic。
     let module = compile_source("for (var i; i < 3; i = i + 1) {}");
     assert!(!module.bytecode.is_empty(), "for(var) no-init should compile");
     assert!(
@@ -336,18 +336,39 @@ fn compile_empty_statements_are_skipped() {
 #[test]
 fn compile_for_of_emits_iterator_protocol() {
     let module = compile_source("let arr = [1]; for (const v of arr) { v; }");
-    assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::FOR_OF_INIT), "for-of should emit FOR_OF_INIT");
-    assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::FOR_OF_NEXT), "for-of should emit FOR_OF_NEXT");
-    assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::FOR_OF_DONE), "for-of should emit FOR_OF_DONE");
-    assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::FOR_OF_CLOSE), "for-of should emit FOR_OF_CLOSE");
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::FOR_OF_INIT),
+        "for-of should emit FOR_OF_INIT"
+    );
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::FOR_OF_NEXT),
+        "for-of should emit FOR_OF_NEXT"
+    );
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::FOR_OF_DONE),
+        "for-of should emit FOR_OF_DONE"
+    );
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::FOR_OF_CLOSE),
+        "for-of should emit FOR_OF_CLOSE"
+    );
 }
 
 #[test]
 fn compile_try_catch_emits_try_begin_and_throw() {
     let module = compile_source("try { throw new Error('x'); } catch (e) { e; }");
-    assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::THROW), "throw should emit THROW");
-    assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::TRY_BEGIN), "try-catch should emit TRY_BEGIN");
-    assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::TRY_END), "try-catch should emit TRY_END");
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::THROW),
+        "throw should emit THROW"
+    );
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::TRY_BEGIN),
+        "try-catch should emit TRY_BEGIN"
+    );
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::TRY_END),
+        "try-catch should emit TRY_END"
+    );
 }
 
 fn has_opcode(module: &CompiledModule, target: OpCode) -> bool {
@@ -387,8 +408,20 @@ fn compile_closure_capture_arrow_emits_make_cell() {
 #[test]
 fn compile_compound_assignment_complement_ops() {
     let module = compile_source("let x = 10; x -= 1; x *= 2; x /= 3; x %= 4;");
-    assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::COMPOUND_SUB), "x -= should emit COMPOUND_SUB");
-    assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::COMPOUND_MUL), "x *= should emit COMPOUND_MUL");
-    assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::COMPOUND_DIV), "x /= should emit COMPOUND_DIV");
-    assert!(module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::COMPOUND_MOD), "x %= should emit COMPOUND_MOD");
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::COMPOUND_SUB),
+        "x -= should emit COMPOUND_SUB"
+    );
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::COMPOUND_MUL),
+        "x *= should emit COMPOUND_MUL"
+    );
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::COMPOUND_DIV),
+        "x /= should emit COMPOUND_DIV"
+    );
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::COMPOUND_MOD),
+        "x %= should emit COMPOUND_MOD"
+    );
 }
