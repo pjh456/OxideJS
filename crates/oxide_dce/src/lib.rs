@@ -9,7 +9,9 @@
 //! 不做 struct 状态持有（无共享可变状态约定）。零 unsafe。
 
 use oxide_cfg::build_cfg;
+use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
+use oxide_ir::operand::Operand;
 use oxide_ir::IRFunction;
 
 /// 死代码消除：块级不可达删除 + 全函数 use 计数迭代删除到不动点 + mark-sweep 重建。
@@ -60,6 +62,8 @@ fn pass_a_reachable(f: &IRFunction) -> Vec<bool> {
 /// Some(r) 且 use_count[r]==0 且 `is_pure(f)` 的指令 → 删除并减去其 use_regs → 迭代。
 /// CALL 隐式 def reg0 不参与死删（CALL 本身 is_pure=false 永不删，Pitfall 1），但 CALL
 /// 的 use 计数正常聚合——喂活上游写其参数的纯指令。
+/// **label 目标指令强制保留**：块头是控制流汇合点，即使 def 无 use 也删除会使存活
+/// JMP 的 label 引用悬空（lowering "Label not found"）——保守保留（D-01 少删不错删）。
 fn pass_b_dead_code(f: &IRFunction, keep: &mut [bool]) {
     // 寄存器号上界：覆盖可达指令全部 def/use（手工 IR 可能超 n_registers，动态取上界）
     let mut max_reg: u32 = 0;
@@ -81,17 +85,36 @@ fn pass_b_dead_code(f: &IRFunction, keep: &mut [bool]) {
             }
         }
     }
+    // label 目标指令位图：label_pos 指向的 Inst 下标（越界防御性忽略）
+    let mut label_target = vec![false; f.insts.len()];
+    for pos in f.label_pos.iter().flatten() {
+        if let Some(t) = label_target.get_mut(*pos) {
+            *t = true;
+        }
+    }
+    // nested 树引用的变量槽位图：闭包可跨函数读外层变量槽（LOAD_VAR.a 读槽 / STORE_VAR.rd 写槽
+    // 以寄存器号编码）。D-03 不递归删除 nested，但跨函数引用必须保活当前函数内写该槽的
+    // STORE_VAR——否则死 `var k='x'` + 构造器内 `[k]` computed key 读槽被误删（回归锚）。
+    let mut escaped_slot = vec![false; max_reg as usize + 1];
+    collect_escaped_slots(&f.nested, &mut escaped_slot);
     // 迭代删除至不动点：删一条纯指令 → 减其 use_regs → 上游写者可能连锁变死（D-02）
     loop {
         let mut deleted = false;
         for (i, k) in keep.iter_mut().enumerate() {
-            if !*k {
+            if !*k || label_target[i] {
                 continue;
             }
             let inst = &f.insts[i];
             // CALL 系隐式 def reg0 是注册写入不参与死删收集；is_pure=false 已保证永不删（Pitfall 1）
             if let Some(r) = inst.def_reg() {
-                if use_count[r as usize] == 0 && inst.is_pure(f) {
+                // STORE_VAR 写变量槽可被 nested 闭包跨函数读取（computed class field key 等
+                // 场景：构造函数 submodule 内 LOAD_VAR a 槽引外层变量槽）。D-03 不递归 nested，
+                // 顶层 use 计数看不到跨函数读——凡 nested 树引用的变量槽，其顶层写者保活
+                //（保守"少删不错删"，D-01）。
+                let slot_escapes = inst.op == OpCode::STORE_VAR
+                    && matches!(inst.rd, Operand::Reg(_))
+                    && escaped_slot.get(r as usize).copied().unwrap_or(false);
+                if use_count[r as usize] == 0 && !slot_escapes && inst.is_pure(f) {
                     *k = false;
                     for u in inst.use_regs() {
                         use_count[u as usize] -= 1;
@@ -103,6 +126,28 @@ fn pass_b_dead_code(f: &IRFunction, keep: &mut [bool]) {
         if !deleted {
             break;
         }
+    }
+}
+
+/// 递归收集 nested 树中全部变量槽引用（LOAD_VAR.a 读槽、STORE_VAR.rd 写槽）。
+/// 槽号 = 寄存器号编码的变量槽；其余操作数（局部寄存器/Imm/This）不构成跨函数引用。
+fn collect_escaped_slots(nested: &[IRFunction], out: &mut Vec<bool>) {
+    for sub in nested {
+        for inst in &sub.insts {
+            let slot = match inst.op {
+                OpCode::LOAD_VAR => inst.a,
+                OpCode::STORE_VAR => inst.rd,
+                _ => Operand::None,
+            };
+            if let Operand::Reg(r) = slot {
+                let idx = r as usize;
+                if idx >= out.len() {
+                    out.resize(idx + 1, false);
+                }
+                out[idx] = true;
+            }
+        }
+        collect_escaped_slots(&sub.nested, out);
     }
 }
 
@@ -321,23 +366,78 @@ mod tests {
         assert_eq!(f.label_pos, once_labels, "二次 dce 后 label_pos 不变");
     }
 
+    /// label 目标指令强制保留（回归：do-while 形态）。`LOAD_CONST r0` 是 label 0 的目标，
+    /// 虽然 def 无 use 属死值，但删除会使存活 JMP_IF_TRUE 的 label 引用悬空
+    /// （lowering 报 "Label not found"）——保守保留（D-01 少删不错删）。
+    #[test]
+    fn label_target_inst_never_deleted() {
+        let mut f = IRFunction::new();
+        f.insts.push(Inst::load_const(Operand::Reg(0), 1)); // 0: body 头，label 0 目标（死值）
+        f.insts.push(Inst::load_const(Operand::Reg(1), 1)); // 1: 条件 true
+        f.insts.push(Inst::jmp_if_true(1, 0)); // 2: 回跳 label 0
+        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None)); // 3
+        f.label_pos = vec![Some(0)];
+        f.label_count = 1;
+
+        dce(&mut f);
+        assert_eq!(f.insts.len(), 4, "label 目标指令与跳转链全部保留");
+        assert_eq!(f.label_pos, vec![Some(0)], "存活 label 目标重映射不变");
+    }
+
+    /// STORE_VAR 跨函数逃逸（回归：computed class field key）。顶层写变量槽 Reg(1) 的
+    /// STORE_VAR 在本函数无 use，但 nested 构造器内 LOAD_VAR a=Reg(1) 跨函数读该槽——
+    /// DCE 只统计当前函数（D-03 不递归），若删除则闭包读到 undefined。nested 引用槽保活顶层写者。
+    #[test]
+    fn store_var_slot_read_by_nested_kept() {
+        let mut f = IRFunction::new();
+        f.insts.push(Inst::load_const(Operand::Reg(2), 0)); // 0: 'x'
+        f.insts.push(Inst::new(OpCode::STORE_VAR, Operand::Reg(1), Operand::Reg(2), Operand::Imm(0))); // 1: k = 'x'（槽 1）
+        f.insts.push(Inst::create_closure(Operand::Reg(4), 0)); // 2
+        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None)); // 3
+        // nested 构造器：LOAD_VAR a=Reg(1) 跨函数读外层变量槽 1（computed key）
+        let mut sub = IRFunction::new();
+        sub.insts.push(Inst::new(OpCode::LOAD_VAR, Operand::Reg(5), Operand::Reg(1), Operand::None));
+        sub.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(7), Operand::None, Operand::None));
+        f.nested.push(sub);
+
+        dce(&mut f);
+        assert_eq!(f.insts.len(), 3, "nested 引用的变量槽写者 STORE_VAR 与源 LOAD_CONST 保留（死 CREATE_CLOSURE 仍删）");
+        assert_eq!(f.insts[0].op, OpCode::LOAD_CONST);
+        assert_eq!(f.insts[1].op, OpCode::STORE_VAR, "跨函数读槽的 STORE_VAR 保活");
+        assert_eq!(f.insts[2].op, OpCode::RETURN);
+    }
+
+    /// STORE_VAR 纯拷贝死删仍成立（无 nested 逃逸时）：b=None 无 guard，槽无跨函数引用 → 删。
+    #[test]
+    fn store_var_pure_copy_still_deleted_without_nested() {
+        let mut f = IRFunction::new();
+        f.insts.push(Inst::load_const(Operand::Reg(1), 1)); // 0
+        f.insts.push(Inst::new(OpCode::STORE_VAR, Operand::Reg(0), Operand::Reg(1), Operand::None)); // 1
+        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None)); // 2
+        dce(&mut f);
+        assert_eq!(f.insts.len(), 1);
+        assert_eq!(f.insts[0].op, OpCode::RETURN);
+    }
+
     /// 不动域断言（D-14/D-04/D-03/D-13）：constants / n_registers / nested / label_count
     /// 一律不动；死 label 置 None、存活 label 重映射、原 None 保持。
     #[test]
     fn untouched_domains_asserted() {
         let mut f = IRFunction::new();
-        f.insts.push(Inst::load_const(Operand::Reg(1), 0)); // 0: 死（label 0 目标 → None）
-        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None)); // 1
-        f.label_pos = vec![Some(0), Some(1), None];
+        f.insts.push(Inst::load_const(Operand::Reg(1), 0)); // 0: label 0 目标（死值，保守保留）
+        f.insts.push(Inst::load_const(Operand::Reg(2), 1)); // 1: 非 label 目标的死指令（删）
+        f.insts.push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None)); // 2
+        f.label_pos = vec![Some(0), Some(2), None];
         f.label_count = 3;
         f.n_registers = 10;
         f.constants = vec![Constant::Number(1.0)];
         f.nested.push(IRFunction::new());
 
         dce(&mut f);
-        assert_eq!(f.insts.len(), 1);
-        assert_eq!(f.insts[0].op, OpCode::RETURN);
-        assert_eq!(f.label_pos, vec![None, Some(0), None], "死 label→None、存活→新下标、原 None 保持");
+        assert_eq!(f.insts.len(), 2, "非目标死指令删、label 目标死指令保守保留");
+        assert_eq!(f.insts[0].op, OpCode::LOAD_CONST);
+        assert_eq!(f.insts[1].op, OpCode::RETURN);
+        assert_eq!(f.label_pos, vec![Some(0), Some(1), None], "存活 label→新下标、原 None 保持");
         assert_eq!(f.label_count, 3, "label_count 不动（D-13）");
         assert_eq!(f.n_registers, 10, "n_registers 不收缩（D-04）");
         assert_eq!(f.constants, vec![Constant::Number(1.0)], "常量池不清理（D-14）");
