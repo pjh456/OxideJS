@@ -211,6 +211,7 @@ impl Vm {
         self.regs = [JsValue::undefined(); 256];
         self.pc = 0;
         self.frames.clear();
+        self.sub_module_stack.clear();
         self.iters.reset();
         self.saved_bytecode_stack.clear();
         self.saved_immutables_stack.clear();

@@ -130,8 +130,11 @@ impl Vm {
         if let Some(saved_imm) = self.saved_immutables_stack.pop() {
             self.active_immutables = saved_imm;
         }
-        if let Some(saved_subs) = self.sub_module_stack.pop() {
+        if let Some((saved_subs, saved_cache)) = self.sub_module_stack.pop() {
             self.sub_modules = saved_subs;
+            if let Some(saved_cache) = saved_cache {
+                self.immutables_cache = saved_cache;
+            }
         }
         self.temp_immutables.pop();
         let offset = frame.saved_reg_offset as usize;
@@ -189,6 +192,7 @@ impl Vm {
         while let Some(handler) = self.try_stack.pop() {
             while self.frames.len() > handler.frame_depth {
                 if let Some(frame) = self.frames.pop() {
+                    self.cell_stack.pop();
                     self.restore_frame(frame);
                 }
             }
@@ -213,6 +217,7 @@ impl Vm {
         }
         self.close_for_of_above(0);
         while let Some(frame) = self.frames.pop() {
+            self.cell_stack.pop();
             self.restore_frame(frame);
         }
         let exc = self.exception_value.take().unwrap_or(JsValue::undefined());

@@ -143,6 +143,7 @@ impl Vm {
             self.bytecode = sub_bytecode;
             let subs = Arc::clone(&self.sub_modules);
             self.activate_immutables(sub_idx + 1, &subs[sub_idx].constants);
+            self.cell_stack.push(Vec::with_capacity(subs[sub_idx].cells_needed as usize));
 
             for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map {
                 let si = self.kernel_core.perm_interner().intern(name.as_str()).0;

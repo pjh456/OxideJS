@@ -220,7 +220,7 @@ pub struct Vm {
     pub(crate) iters: IterState,
     /// 分组保存 inline cache 与指令计数器。
     pub(crate) profiling: ProfilingState,
-    pub(crate) sub_module_stack: Vec<Arc<Vec<CompiledModule>>>,
+    pub(crate) sub_module_stack: Vec<(Arc<Vec<CompiledModule>>, Option<Vec<OnceLock<Vec<JsValue>>>>)>,
     pub(crate) cell_stack: Vec<Vec<*mut Cell>>,
     pub(crate) temp_immutables: Vec<Vec<JsValue>>,
     /// 可复用字符串缓冲区，避免每次 `+` 拼接都分配。
@@ -811,10 +811,14 @@ impl Vm {
             }
         }
 
-        self.sub_module_stack.push(Arc::clone(&self.sub_modules));
         let callee_subs = &subs[sub_idx].sub_modules;
-        if !callee_subs.is_empty() {
+        if callee_subs.is_empty() {
+            self.sub_module_stack.push((Arc::clone(&self.sub_modules), None));
+        } else {
+            self.sub_module_stack
+                .push((Arc::clone(&self.sub_modules), Some(std::mem::take(&mut self.immutables_cache))));
             self.sub_modules = Arc::new(callee_subs.clone());
+            self.immutables_cache = (0..=callee_subs.len()).map(|_| OnceLock::new()).collect();
         }
 
         self.active_reg_limit = sub_n_registers.max(1);
