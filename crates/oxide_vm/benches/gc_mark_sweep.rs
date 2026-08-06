@@ -11,7 +11,7 @@ fn bench_gc(c: &mut Criterion) {
     let js = "var g = {}; for (var i = 0; i < 500; i++) { var obj = { x: i, y: i * 2 }; g[i] = obj; } g[\"x\"]";
     let alloc = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&alloc, js).expect("parse");
-    let module = Compiler.compile(&program).expect("compile");
+    let module = Compiler::new().compile(&program).expect("compile");
 
     c.bench_function("gc_mark_sweep", |b| {
         b.iter_batched(
