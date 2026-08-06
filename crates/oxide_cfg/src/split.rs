@@ -74,3 +74,76 @@ pub(super) fn split_and_edges(f: &IRFunction, heads: &[bool]) -> (Vec<BasicBlock
 pub(super) fn block_id_of(p: usize, blocks: &[BasicBlock]) -> usize {
     blocks.partition_point(|b| b.inst_range.start <= p) - 1
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxide_ir::inst::Inst;
+
+    /// JMP → Jump 边指向 label 目标块。
+    #[test]
+    fn unconditional_jmp_produces_jump_edge() {
+        let mut f = IRFunction::new();
+        f.insts.push(Inst::jmp(0)); // 0: → L0
+        f.insts.push(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None)); // 1: L0 目标
+        f.label_pos = vec![Some(1)];
+        f.label_count = 1;
+
+        // heads: 0（entry）+ 1（label 目标）+ JMP 后继 1
+        let heads = crate::partition::partition_blocks(&f);
+        let (blocks, _exit_id) = split_and_edges(&f, &heads);
+        assert_eq!(blocks[0].succs, vec![(1, EdgeKind::Jump)], "JMP 产出 Jump 边");
+        assert_eq!(blocks[1].succs, vec![(2, EdgeKind::Fallthrough)], "RETURN 汇 exit");
+    }
+
+    /// 条件跳转双出边：Jump → 目标块 + Fallthrough → 下一块。
+    #[test]
+    fn conditional_jump_dual_edges() {
+        let mut f = IRFunction::new();
+        f.insts.push(Inst::jmp_if_false(1, 0)); // 0: cond → L0(else)
+        f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None)); // 1: then
+        f.insts.push(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None)); // 2: else 入口
+        f.label_pos = vec![Some(2)];
+        f.label_count = 1;
+
+        let heads = crate::partition::partition_blocks(&f);
+        let (blocks, _exit_id) = split_and_edges(&f, &heads);
+        assert_eq!(
+            blocks[0].succs,
+            vec![(2, EdgeKind::Jump), (1, EdgeKind::Fallthrough)],
+            "条件跳转双出边：Jump→else + Fallthrough→then"
+        );
+    }
+
+    /// 非 terminator 块尾：Fallthrough → 下一块；RETURN 汇 exit 哨兵。
+    #[test]
+    fn non_terminator_fallthrough_and_return_to_exit() {
+        let mut f = IRFunction::new();
+        f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None)); // 0
+        f.insts.push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None)); // 1
+        f.insts.push(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None)); // 2
+
+        let heads = crate::partition::partition_blocks(&f);
+        let (blocks, exit_id) = split_and_edges(&f, &heads);
+        assert_eq!(blocks.len(), 1, "线性函数单块");
+        assert_eq!(exit_id, 1, "exit 哨兵 id = 实块数");
+        assert_eq!(blocks[0].succs, vec![(1, EdgeKind::Fallthrough)], "RETURN Fallthrough 汇 exit");
+    }
+
+    /// exit_id 恒为实块数（split 的 exit 约定，finalize 追加哨兵）。
+    #[test]
+    fn exit_id_equals_block_count() {
+        let mut f = IRFunction::new();
+        f.insts.push(Inst::jmp_if_false(1, 0));
+        f.insts.push(Inst::call(Operand::Reg(2), Operand::Reg(0), Operand::Reg(3), 1));
+        f.insts.push(Inst::jmp(1));
+        f.insts.push(Inst::call(Operand::Reg(4), Operand::Reg(0), Operand::Reg(3), 1));
+        f.insts.push(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None));
+        f.label_pos = vec![Some(3), Some(4)];
+        f.label_count = 2;
+
+        let heads = crate::partition::partition_blocks(&f);
+        let (blocks, exit_id) = split_and_edges(&f, &heads);
+        assert_eq!(exit_id, blocks.len(), "exit_id = 实块数（4 实块）");
+    }
+}
