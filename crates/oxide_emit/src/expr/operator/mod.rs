@@ -261,11 +261,12 @@ impl Emitter {
                 let uv_idx = ctx.current_upvalue_captures.iter().position(|u| u.name == name);
                 let captured_cell = ctx.captured_bindings.get(name).copied();
                 if let Some(uv) = uv_idx {
-                    // upvalue：LOAD_UPVALUE + 常量 1 + ADD/SUB + STORE_UPVALUE
-                    let val_reg = ctx.alloc_reg();
+                    // upvalue：LOAD_UPVALUE + 常量 1 + ADD/SUB + STORE_UPVALUE；
+                    // 后缀形式返回旧值（前缀返回新值）。
+                    let old_reg = ctx.alloc_reg();
                     ctx.inst(Inst::new(
                         OpCode::LOAD_UPVALUE,
-                        Operand::Reg(val_reg),
+                        Operand::Reg(old_reg),
                         Operand::Imm(uv as u16),
                         Operand::None,
                     ));
@@ -277,14 +278,15 @@ impl Emitter {
                     } else {
                         OpCode::SUB
                     };
-                    ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(val_reg), Operand::Reg(one_reg)));
+                    let new_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::new(op, Operand::Reg(new_reg), Operand::Reg(old_reg), Operand::Reg(one_reg)));
                     ctx.inst(Inst::new(
                         OpCode::STORE_UPVALUE,
                         Operand::None,
-                        Operand::Reg(val_reg),
+                        Operand::Reg(new_reg),
                         Operand::Imm(uv as u16),
                     ));
-                    Ok(val_reg)
+                    Ok(if update.prefix { new_reg } else { old_reg })
                 } else if let Some(cell_idx) = captured_cell {
                     // 被捕获 cell：CELL_GET + 常量 1 + ADD/SUB + CELL_SET
                     let val_reg = ctx.alloc_reg();

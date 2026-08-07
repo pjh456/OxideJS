@@ -491,6 +491,66 @@ impl Emitter {
                     }
                 }
             }
+            Expression::ObjectExpression(o) => {
+                for prop in &o.properties {
+                    if let oxide_parser::ObjectPropertyKind::ObjectProperty(p) = prop {
+                        self.collect_captured_expr(&p.value, own, out);
+                    }
+                }
+            }
+            Expression::NewExpression(ne) => {
+                self.collect_captured_expr(&ne.callee, own, out);
+                for a in &ne.arguments {
+                    if let Some(e) = a.as_expression() {
+                        self.collect_captured_expr(e, own, out);
+                    }
+                }
+            }
+            Expression::ComputedMemberExpression(m) => {
+                self.collect_captured_expr(&m.object, own, out);
+                self.collect_captured_expr(&m.expression, own, out);
+            }
+            Expression::StaticMemberExpression(m) => self.collect_captured_expr(&m.object, own, out),
+            Expression::PrivateFieldExpression(m) => self.collect_captured_expr(&m.object, own, out),
+            Expression::TemplateLiteral(tl) => {
+                for e in &tl.expressions {
+                    self.collect_captured_expr(e, own, out);
+                }
+            }
+            Expression::TaggedTemplateExpression(tt) => {
+                self.collect_captured_expr(&tt.tag, own, out);
+                for e in &tt.quasi.expressions {
+                    self.collect_captured_expr(e, own, out);
+                }
+            }
+            Expression::ParenthesizedExpression(p) => self.collect_captured_expr(&p.expression, own, out),
+            Expression::ChainExpression(c) => self.collect_captured_chain(&c.expression, own, out),
+            _ => {}
+        }
+    }
+
+    fn collect_captured_chain(
+        &self, element: &oxide_parser::ChainElement, own: &HashSet<String>, out: &mut HashSet<String>,
+    ) {
+        match element {
+            oxide_parser::ChainElement::StaticMemberExpression(m) => {
+                self.collect_captured_expr(&m.object, own, out);
+            }
+            oxide_parser::ChainElement::ComputedMemberExpression(m) => {
+                self.collect_captured_expr(&m.object, own, out);
+                self.collect_captured_expr(&m.expression, own, out);
+            }
+            oxide_parser::ChainElement::PrivateFieldExpression(m) => {
+                self.collect_captured_expr(&m.object, own, out);
+            }
+            oxide_parser::ChainElement::CallExpression(c) => {
+                self.collect_captured_expr(&c.callee, own, out);
+                for a in &c.arguments {
+                    if let Some(e) = a.as_expression() {
+                        self.collect_captured_expr(e, own, out);
+                    }
+                }
+            }
             _ => {}
         }
     }

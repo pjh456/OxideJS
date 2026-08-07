@@ -123,6 +123,30 @@ fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<JsValue, JsValu
 
     if value.is_object() {
         let obj = unsafe { &*value.as_js_object_ptr() };
+        // 迭代协议：GetIterator 先取 value[Symbol.iterator] 并调用。
+        let sym_iter_si = vm.kernel_core().perm_interner().intern("@@iterator").0;
+        let method = vm.ordinary_get(obj, sym_iter_si, value);
+        if let Ok(method) = method {
+            if is_callable(method) {
+                let iterator = match vm.call_function_sync(method, value, &[]) {
+                    Ok(it) => it,
+                    Err(err) => {
+                        let exc = vm
+                            .take_uncaught_value()
+                            .unwrap_or_else(|| crate::error::create_type_error(vm, &err));
+                        return Err(exc);
+                    }
+                };
+                if !iterator.is_object() {
+                    return Err(crate::error::create_type_error(
+                        vm,
+                        "Result of the Symbol.iterator method is not an object",
+                    ));
+                }
+                return Ok(iterator);
+            }
+        }
+        // 鸭子回退：对象自身有可调用 next（Map/Set 迭代器包装等既有用法）。
         let next_si = vm.kernel_core().perm_interner().intern("next").0;
         if let Ok(next) = vm.ordinary_get(obj, next_si, value) {
             if is_callable(next) {
