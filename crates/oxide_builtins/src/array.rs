@@ -233,7 +233,10 @@ pub fn array_push<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let arr_ptr = array_ptr!(vm, args);
     for &arg_reg in args.iter().skip(1) {
         let val = vm.promote_if_needed_for_write_ptr(arr_ptr, vm.reg(arg_reg));
-        unsafe { &mut *arr_ptr }.push_prop(val);
+        // 元素写入须维护 array_prop_count（set_prop_at 对数组自动更新）。
+        let arr = unsafe { &mut *arr_ptr };
+        let idx = arr.prop_count();
+        arr.set_prop_at(idx, val);
     }
     let len = unsafe { &*arr_ptr }.prop_count();
     NativeResult::Ok(JsValue::int(len as i32))

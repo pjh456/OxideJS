@@ -760,10 +760,50 @@ pub fn object_proto_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
 }
 
 /// `Object.prototype.toString`：返回 `[object Object]`（暂不区分具体类型标签）。
-pub fn object_proto_to_string<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
-    // ponytail: minimal [[Class]] string — always "[object Object]". Type-specific
-    // tags ("[object Array]" etc.) and Symbol.toStringTag are a later refinement.
-    NativeResult::Ok(vm.new_string("[object Object]"))
+pub fn object_proto_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let tag = if !this_val.is_object() {
+        if this_val.is_string() {
+            "String"
+        } else if this_val.is_int() || this_val.is_double() {
+            "Number"
+        } else if this_val.is_bool() {
+            "Boolean"
+        } else if this_val.is_symbol() {
+            "Symbol"
+        } else {
+            "Object"
+        }
+    } else {
+        let ptr = this_val.as_js_object_ptr();
+        if ptr.is_null() {
+            "Object"
+        } else {
+            let obj = unsafe { &*ptr };
+            if obj.is_array() {
+                "Array"
+            } else if obj.is_function() {
+                "Function"
+            } else if obj.is_string_obj() {
+                "String"
+            } else if obj.is_number_obj() {
+                "Number"
+            } else if obj.is_boolean_obj() {
+                "Boolean"
+            } else if obj.is_regexp_obj() {
+                "RegExp"
+            } else if obj.is_date_obj() {
+                "Date"
+            } else if obj.is_typed_array_obj() {
+                "TypedArray"
+            } else if obj.is_array_buffer_obj() {
+                "ArrayBuffer"
+            } else {
+                "Object"
+            }
+        }
+    };
+    NativeResult::Ok(vm.new_string(&format!("[object {tag}]")))
 }
 
 /// `Object.prototype.hasOwnProperty(key)`：this 是否有指定自身属性。
