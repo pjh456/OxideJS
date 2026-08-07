@@ -175,8 +175,14 @@ impl Emitter {
                     self.collect_capture_names_stmt(s, ref_set, shadow, out);
                 }
                 if let Some(h) = &ts.handler {
+                    // catch 参数解构模式内的表达式引用（默认值等）也会被内部闭包捕获；
+                    // 参数声明名遮蔽 catch 作用域。
+                    let mut catch_shadow = shadow.clone();
+                    if let Some(param) = &h.param {
+                        self.collect_capture_names_binding_pattern(&param.pattern, ref_set, shadow, out, &mut catch_shadow);
+                    }
                     for s in &h.body.body {
-                        self.collect_capture_names_stmt(s, ref_set, shadow, out);
+                        self.collect_capture_names_stmt(s, ref_set, &catch_shadow, out);
                     }
                 }
                 if let Some(f) = &ts.finalizer {
@@ -196,6 +202,41 @@ impl Emitter {
             }
             Statement::LabeledStatement(ls) => self.collect_capture_names_stmt(&ls.body, ref_set, shadow, out),
             _ => {}
+        }
+    }
+
+    /// 遍历 catch 参数解构模式：收集模式内表达式引用（默认值等），声明名写入
+    /// `catch_shadow` 遮蔽 catch 作用域。
+    fn collect_capture_names_binding_pattern(
+        &self, pattern: &oxide_parser::BindingPattern, ref_set: &HashSet<String>, shadow: &HashSet<String>,
+        out: &mut HashSet<String>, catch_shadow: &mut HashSet<String>,
+    ) {
+        match pattern {
+            oxide_parser::BindingPattern::BindingIdentifier(bi) => {
+                catch_shadow.insert(bi.name.as_str().to_string());
+            }
+            oxide_parser::BindingPattern::ArrayPattern(ap) => {
+                for elem in &ap.elements {
+                    if let Some(p) = elem {
+                        self.collect_capture_names_binding_pattern(p, ref_set, shadow, out, catch_shadow);
+                    }
+                }
+                if let Some(rest) = &ap.rest {
+                    self.collect_capture_names_binding_pattern(&rest.argument, ref_set, shadow, out, catch_shadow);
+                }
+            }
+            oxide_parser::BindingPattern::ObjectPattern(op) => {
+                for prop in &op.properties {
+                    self.collect_capture_names_binding_pattern(&prop.value, ref_set, shadow, out, catch_shadow);
+                }
+                if let Some(rest) = &op.rest {
+                    self.collect_capture_names_binding_pattern(&rest.argument, ref_set, shadow, out, catch_shadow);
+                }
+            }
+            oxide_parser::BindingPattern::AssignmentPattern(ap) => {
+                self.collect_capture_names_expr(&ap.right, ref_set, shadow, out);
+                self.collect_capture_names_binding_pattern(&ap.left, ref_set, shadow, out, catch_shadow);
+            }
         }
     }
 
@@ -353,8 +394,7 @@ impl Emitter {
     }
 
     /// 只从嵌套函数节点进入扫描（本函数直接引用不算捕获）。
-    fn collect_captured_stmt(&self, stmt: &Statement, own: &HashSet<String>, out: &mut HashSet<String>) {
-        match stmt {
+    fn collect_captured_stmt(&self, stmt: &Statement, own: &HashSet<String>, out: &mut HashSet<String>) {        match stmt {
             Statement::FunctionDeclaration(fd) => {
                 let body: &[Statement] = fd.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
                 self.collect_capture_names(body, own, out);
@@ -419,6 +459,9 @@ impl Emitter {
                     self.collect_captured_stmt(s, own, out);
                 }
                 if let Some(h) = &ts.handler {
+                    if let Some(param) = &h.param {
+                        self.collect_captured_binding_pattern(&param.pattern, own, out);
+                    }
                     for s in &h.body.body {
                         self.collect_captured_stmt(s, own, out);
                     }
@@ -440,6 +483,37 @@ impl Emitter {
             }
             Statement::LabeledStatement(ls) => self.collect_captured_stmt(&ls.body, own, out),
             _ => {}
+        }
+    }
+
+    /// 遍历 catch 参数解构模式内表达式引用（默认值等），供父层 MAKE_CELL 判定。
+    fn collect_captured_binding_pattern(
+        &self, pattern: &oxide_parser::BindingPattern, own: &HashSet<String>, out: &mut HashSet<String>,
+    ) {
+        match pattern {
+            oxide_parser::BindingPattern::BindingIdentifier(_) => {}
+            oxide_parser::BindingPattern::ArrayPattern(ap) => {
+                for elem in &ap.elements {
+                    if let Some(p) = elem {
+                        self.collect_captured_binding_pattern(p, own, out);
+                    }
+                }
+                if let Some(rest) = &ap.rest {
+                    self.collect_captured_binding_pattern(&rest.argument, own, out);
+                }
+            }
+            oxide_parser::BindingPattern::ObjectPattern(op) => {
+                for prop in &op.properties {
+                    self.collect_captured_binding_pattern(&prop.value, own, out);
+                }
+                if let Some(rest) = &op.rest {
+                    self.collect_captured_binding_pattern(&rest.argument, own, out);
+                }
+            }
+            oxide_parser::BindingPattern::AssignmentPattern(ap) => {
+                self.collect_captured_expr(&ap.right, own, out);
+                self.collect_captured_binding_pattern(&ap.left, own, out);
+            }
         }
     }
 
