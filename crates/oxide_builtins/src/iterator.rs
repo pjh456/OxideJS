@@ -91,8 +91,10 @@ pub fn iterator_wrapper_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         _ => return NativeResult::Err(crate::error::create_type_error(vm, "Iterator wrapper has no inner iterator")),
     };
 
-    if let Some(result) = next_array_like(vm, wrapper, inner, index_si) {
-        return NativeResult::Ok(result);
+    match next_array_like(vm, wrapper, inner, index_si) {
+        Ok(Some(result)) => return NativeResult::Ok(result),
+        Ok(None) => {}
+        Err(original) => return NativeResult::Err(original),
     }
 
     if inner.is_object() {
@@ -158,16 +160,29 @@ fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<JsValue, JsValu
     Err(crate::error::create_type_error(vm, "value is not iterable"))
 }
 
-fn next_array_like<H: VmHost>(vm: &mut H, wrapper: &mut JsObject, inner: JsValue, index_si: u32) -> Option<JsValue> {
+fn next_array_like<H: VmHost>(
+    vm: &mut H, wrapper: &mut JsObject, inner: JsValue, index_si: u32,
+) -> Result<Option<JsValue>, JsValue> {
     if is_array_value(inner) {
         let index = current_index(vm, wrapper, index_si);
         let arr = unsafe { &*inner.as_js_object_ptr() };
         if index < arr.prop_count() as usize {
-            let value = arr.get_prop_at(index);
+            // 数组元素读取走 GetValue：普通数据属性返回槽值，访问器属性
+            // （defineProperty getter）触发 getter 并透传异常。
+            let key_si = vm.kernel_core().perm_interner().intern(&index.to_string()).0;
+            let value = match vm.ordinary_get(arr, key_si, inner) {
+                Ok(v) => v,
+                Err(err) => {
+                    let exc = vm
+                        .take_uncaught_value()
+                        .unwrap_or_else(|| crate::error::create_error(vm, &err));
+                    return Err(exc);
+                }
+            };
             vm.set_or_create_prop_value(wrapper, index_si, JsValue::int((index + 1) as i32));
-            return Some(make_iter_result(vm, value, false));
+            return Ok(Some(make_iter_result(vm, value, false)));
         }
-        return Some(make_iter_result(vm, JsValue::undefined(), true));
+        return Ok(Some(make_iter_result(vm, JsValue::undefined(), true)));
     }
 
     if inner.is_string() {
@@ -177,20 +192,20 @@ fn next_array_like<H: VmHost>(vm: &mut H, wrapper: &mut JsObject, inner: JsValue
         if let Some(ch) = chars.nth(index) {
             vm.set_or_create_prop_value(wrapper, index_si, JsValue::int((index + 1) as i32));
             let value = vm.new_string(&ch.to_string());
-            return Some(make_iter_result(vm, value, false));
+            return Ok(Some(make_iter_result(vm, value, false)));
         }
-        return Some(make_iter_result(vm, JsValue::undefined(), true));
+        return Ok(Some(make_iter_result(vm, JsValue::undefined(), true)));
     }
 
     // for-of 循环默认迭代：Map 产出 [key, value] 对，Set 产出值。
     if is_map_value(inner) {
-        return Some(map_set_step(vm, wrapper, inner, index_si, MapSetMode::MapEntries));
+        return Ok(Some(map_set_step(vm, wrapper, inner, index_si, MapSetMode::MapEntries)));
     }
     if is_set_value(inner) {
-        return Some(map_set_step(vm, wrapper, inner, index_si, MapSetMode::SetValues));
+        return Ok(Some(map_set_step(vm, wrapper, inner, index_si, MapSetMode::SetValues)));
     }
 
-    None
+    Ok(None)
 }
 
 fn current_index<H: VmHost>(vm: &mut H, wrapper: &JsObject, index_si: u32) -> usize {

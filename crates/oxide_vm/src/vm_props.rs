@@ -31,6 +31,24 @@ impl Vm {
             if obj.is_array() {
                 if let Some(index) = self.array_index_from_property_key(prop_name_si) {
                     if index < obj.prop_vec_len() as u32 {
+                        // 数组元素为访问器属性（defineProperty getter）时须触发
+                        // getter，而非直接读数据槽。
+                        if let Some(meta) = obj.prop_meta_at(index) {
+                            if meta.is_accessor {
+                                return if meta.get.is_undefined() {
+                                    Ok(JsValue::undefined())
+                                } else if let Some(tr) = target_reg {
+                                    let getter = meta.get;
+                                    let pushed = self.push_bytecode_getter_frame(getter, receiver, tr)?;
+                                    if pushed {
+                                        return Ok(JsValue::undefined());
+                                    }
+                                    Ok(self.regs[tr as usize])
+                                } else {
+                                    self.call_function_sync(meta.get, receiver, &[])
+                                };
+                            }
+                        }
                         return Ok(obj.get_prop_at(index));
                     }
                 }
