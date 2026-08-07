@@ -561,6 +561,10 @@ impl Vm {
 
     pub(crate) fn dispatch_rest_object(&mut self, rd: usize, a: usize) -> Result<(), String> {
         vm_trace!("REST_OBJECT rd={}", rd);
+        // ext 字（excluded 常量下标）在任何路径都先消费，防止 ToObject 早返回后
+        // pc 错位把 ext 字当下一条指令解码（曾误读成 UNSPILL slot）。
+        let excluded_idx = self.bytecode[self.pc] as usize;
+        self.pc += 1;
         let src = self.regs[a];
         if !src.is_object() {
             // ToObject：null/undefined 抛；number/boolean/symbol 无自有属性 → 空对象；
@@ -586,8 +590,6 @@ impl Vm {
             self.regs[rd] = JsValue::from_js_object(rest_ptr);
             return Ok(());
         }
-        let excluded_idx = self.bytecode[self.pc] as usize;
-        self.pc += 1;
         let excluded = self
             .immutables()
             .get(excluded_idx)
