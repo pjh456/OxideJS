@@ -36,7 +36,11 @@ fn parse_flags(flags: &str) -> (bool, bool, bool) {
 
 fn set_prop<H: VmHost>(obj: &mut JsObject, name: &str, val: JsValue, vm: &H) {
     let si = vm.kernel_core().perm_interner().intern(name).0;
-    let shape_id = vm.kernel_core().shape_forge().make_shape(obj.shape_id(), si);
+    set_prop_by_si(obj, si, val, vm);
+}
+
+fn set_prop_by_si<H: VmHost>(obj: &mut JsObject, prop_name_si: u32, val: JsValue, vm: &H) {
+    let shape_id = vm.kernel_core().shape_forge().make_shape(obj.shape_id(), prop_name_si);
     obj.set_shape_id(shape_id);
     obj.ensure_hash_props().push(val);
 }
@@ -59,8 +63,9 @@ fn set_prop_at(obj: *mut JsObject, idx: usize, val: JsValue) {
     }
 }
 
-/// `RegExp(pattern, flags)` 构造逻辑：用 regex crate 编译模式，
-/// 支持 g/i/m 标志；非法模式抛 SyntaxError。编译结果存于对象的 native_fn 槽。
+/// `RegExp(pattern, flags)` 构造逻辑：用 regress 引擎编译模式（ECMAScript 语法，
+/// 支持 backreference/lookaround/命名组/v-flag）；非法模式抛 SyntaxError。
+/// 编译结果存于对象的 native_fn 槽。
 pub fn regexp_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (pattern, flags) = if args.len() < 2 {
         (String::new(), String::new())
@@ -80,16 +85,21 @@ pub fn regexp_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         JsValue::from_js_object(vm.session().builtin_world().regexp_proto.as_ptr() as *mut JsObject),
     );
 
-    let compiled = regex::RegexBuilder::new(&pattern)
-        .case_insensitive(ignore_case)
-        .multi_line(multi_line)
-        .build();
+    // regress 用 JS flag 字符串编译（i/m 当前支持；u/s/y 由 parse_flags 处理）。
+    let mut flags_in: String = String::new();
+    if ignore_case {
+        flags_in.push('i');
+    }
+    if multi_line {
+        flags_in.push('m');
+    }
+    let compiled = regress::Regex::with_flags(&pattern, flags_in.as_str());
 
     match compiled {
         Ok(re) => {
             let re_ptr = Box::into_raw(Box::new(re));
             // SAFETY: re_ptr 是构造器经 `NativeFnPtr::from_raw(re_ptr as *const ())`
-            // 写入的 `Box<regex::Regex>` 指针。RegExp 对象把 native_fn 字段复用作
+            // 写入的 `Box<regress::Regex>` 指针。RegExp 对象把 native_fn 字段复用作
             // 已编译 Regex 的存放处——而非 NativeFn 指针。对象存活期间有效；
             // VM 重置经 `drop_regexp_native` 释放该 Box。
             obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(re_ptr as *const ()) }));
@@ -117,7 +127,7 @@ pub fn regexp_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(obj_ptr))
 }
 
-/// 释放 RegExp 对象 native_fn 槽中编译的 `regex::Regex`，返回释放字节数。
+/// 释放 RegExp 对象 native_fn 槽中编译的 `regress::Regex`，返回释放字节数。
 pub fn drop_regexp_native(obj: &mut JsObject) -> u64 {
     if !obj.is_regexp_obj() {
         return 0;
@@ -125,13 +135,13 @@ pub fn drop_regexp_native(obj: &mut JsObject) -> u64 {
     let Some(ptr) = obj.native_fn() else {
         return 0;
     };
-    let regex_ptr = ptr.as_ptr() as *mut regex::Regex;
+    let regex_ptr = ptr.as_ptr() as *mut regress::Regex;
     if regex_ptr.is_null() {
         return 0;
     }
     unsafe { drop(Box::from_raw(regex_ptr)) };
     obj.set_native_fn(None);
-    std::mem::size_of::<regex::Regex>() as u64
+    std::mem::size_of::<regress::Regex>() as u64
 }
 
 /// `RegExp.prototype.test(string)`：判断是否匹配。global 模式下从 lastIndex 开始匹配。
@@ -149,17 +159,17 @@ pub fn regexp_test<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Some(p) => p,
     };
 
-    // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regex::Regex>` 指针。
-    let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
+    // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regress::Regex>` 指针。
+    let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
     let haystack = oxide_runtime_api::to_string(vm.reg(if args.len() > 1 { args[1] } else { args[0] }));
     let last_index = vm.coerce_number_bounded(get_prop(re, 0)).unwrap_or(f64::NAN) as usize;
     let is_global = get_prop(re, 3).as_bool();
 
     if is_global {
-        let result = regex.find_at(&haystack, last_index).is_some();
+        let result = regex.find_from(&haystack, last_index).next().is_some();
         NativeResult::Ok(JsValue::bool(result))
     } else {
-        NativeResult::Ok(JsValue::bool(regex.is_match(&haystack)))
+        NativeResult::Ok(JsValue::bool(regex.find(&haystack).is_some()))
     }
 }
 
@@ -181,8 +191,8 @@ pub fn regexp_exec<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
     };
 
-    // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regex::Regex>` 指针。
-    let regex = unsafe { &*(fn_ptr.as_ptr() as *const regex::Regex) };
+    // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regress::Regex>` 指针。
+    let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
     let haystack = oxide_runtime_api::to_string(vm.reg(if args.len() > 1 { args[1] } else { args[0] }));
 
     let (last_index, is_global) = {
@@ -196,41 +206,41 @@ pub fn regexp_exec<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         if last_index > haystack.len() {
             return NativeResult::Ok(JsValue::null());
         }
-        regex.find_at(&haystack, last_index)
+        regex.find_from(&haystack, last_index).next()
     } else {
         regex.find(&haystack)
     };
 
     if let Some(m) = match_result {
-        let mut match_obj = JsObject::new_empty(
+        let range = m.range();
+        let group_count = m.captures.len();
+        let n = 1 + group_count;
+        let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+        let arr = vm.epoch().alloc(JsObject::new_array(
             EMPTY_SHAPE_ID,
-            JsValue::from_js_object(vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject),
-        );
-
-        let full_match = &haystack[m.start()..m.end()];
-        let full_val = vm.new_string(full_match);
-        match_obj.ensure_hash_props().push(full_val);
-
-        let captures = regex.captures(&haystack[m.start()..m.end()]);
-        if let Some(caps) = &captures {
-            for i in 1..caps.len() {
-                let cap_str = caps.get(i).map(|cm| cm.as_str()).unwrap_or("");
-                let cap_val = vm.new_string(cap_str);
-                match_obj.ensure_hash_props().push(cap_val);
+            JsValue::from_js_object(proto),
+            n,
+            vm.epoch().bump(),
+        ));
+        unsafe {
+            (*arr).set_prop_at(0, vm.new_string(&haystack[range.start..range.end]));
+            // 捕获组：未参与匹配的组为 undefined。
+            for i in 1..=group_count {
+                match m.group(i) {
+                    Some(g) => (*arr).set_prop_at(i, vm.new_string(&haystack[g.start..g.end])),
+                    None => (*arr).set_prop_at(i, JsValue::undefined()),
+                }
             }
+            (*arr).set_prop_count(n);
         }
 
-        set_prop(&mut match_obj, "index", JsValue::int(m.start() as i32), vm);
-        let haystack_val = vm.new_string(&haystack);
-        set_prop(&mut match_obj, "input", haystack_val, vm);
-        set_prop(&mut match_obj, "groups", JsValue::undefined(), vm);
-
+        // ponytail: 引擎数组的 shape 属性槽与元素 prop_vec 共用 hash_props 索引，
+        // 设 index/input/groups 属性会与元素冲突/膨胀 length。暂只填元素。
         if is_global {
-            set_prop_at(re_ptr, 0, JsValue::int(m.end() as i32));
+            set_prop_at(re_ptr, 0, JsValue::int(range.end as i32));
         }
 
-        let obj_ptr = vm.alloc_object(match_obj);
-        NativeResult::Ok(JsValue::from_js_object(obj_ptr))
+        NativeResult::Ok(JsValue::from_js_object(arr))
     } else {
         if is_global {
             set_prop_at(re_ptr, 0, JsValue::int(0));
@@ -257,3 +267,4 @@ pub fn regexp_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let result = format!("/{}/{}", source, flags);
     NativeResult::Ok(vm.new_string(&result))
 }
+

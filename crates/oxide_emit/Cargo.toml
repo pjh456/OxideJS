@@ -11,3 +11,5 @@ oxide_parser = { path = "../oxide_parser" }
 oxide_bytecode = { path = "../oxide_bytecode" }
 oxide_ir = { path = "../oxide_ir" }
 regex.workspace = true
+regress.workspace = true
+

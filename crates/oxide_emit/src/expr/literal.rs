@@ -36,6 +36,7 @@ impl Emitter {
     fn emit_string_literal_expression(
         &self, s: &oxide_parser::StringLiteral, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
+        eprintln!("[DBG] string literal value={:?}", s.value.as_str());
         let idx = ctx.add_constant(Constant::String(s.value.to_string()));
         let r = ctx.alloc_reg();
         ctx.inst(Inst::load_const(Operand::Reg(r), idx));
@@ -68,12 +69,8 @@ impl Emitter {
                 let pattern = raw_str[1..last_slash].to_string();
                 let flags = raw_str[last_slash + 1..].to_string();
                 // 非法正则字面量须在编译期报 SyntaxError（负面测试期望编译失败）。
-                if regex::RegexBuilder::new(&pattern)
-                    .case_insensitive(flags.contains('i'))
-                    .multi_line(flags.contains('m'))
-                    .build()
-                    .is_err()
-                {
+                // 用 regress（ECMAScript 语法）校验，避免误报 backreference/lookaround 等合法模式。
+                if regress::Regex::with_flags(&pattern, flags.as_str()).is_err() {
                     return Err(format!(
                         "SyntaxError: Invalid regular expression: /{pattern}/{flags}"
                     ));
@@ -100,3 +97,5 @@ impl Emitter {
         }
     }
 }
+
+
