@@ -346,18 +346,18 @@ impl Vm {
         if let Some(current) = obj.prop_meta_at(pos) {
             if !current.attributes.configurable() {
                 if current.is_accessor {
-                    return self.raise_type_error("cannot redefine non-configurable property");
+                    return Err("cannot redefine non-configurable property".to_string());
                 }
                 if current.attributes.enumerable() != attributes.enumerable() {
-                    return self.raise_type_error("cannot redefine non-configurable property");
+                    return Err("cannot redefine non-configurable property".to_string());
                 }
                 if !current.attributes.writable()
                     && (attributes.writable() || !coercion::same_value(obj.get_prop_at(pos), val))
                 {
-                    return self.raise_type_error("cannot redefine non-configurable property");
+                    return Err("cannot redefine non-configurable property".to_string());
                 }
                 if current.attributes.configurable() != attributes.configurable() {
-                    return self.raise_type_error("cannot redefine non-configurable property");
+                    return Err("cannot redefine non-configurable property".to_string());
                 }
             }
         }
@@ -399,7 +399,7 @@ impl Vm {
                     || current.get != get
                     || current.set != set)
             {
-                return self.raise_type_error("cannot redefine non-configurable property");
+                return Err("cannot redefine non-configurable property".to_string());
             }
         }
         obj.set_prop_storage(pos, JsValue::undefined());
@@ -422,28 +422,28 @@ impl Vm {
     ) -> Result<(), String> {
         let pos = index as usize;
         if pos > oxide_types::object::MAX_DENSE_PROPS {
-            return self.raise_type_error("array index out of dense range");
+            return Err("array index out of dense range".to_string());
         }
         let pos = pos as u32;
         if let Some(current) = obj.prop_meta_at(pos) {
             if !current.attributes.configurable() {
                 if current.is_accessor != is_accessor {
-                    return self.raise_type_error("cannot redefine non-configurable property");
+                    return Err("cannot redefine non-configurable property".to_string());
                 }
                 if current.attributes.enumerable() != attributes.enumerable() {
-                    return self.raise_type_error("cannot redefine non-configurable property");
+                    return Err("cannot redefine non-configurable property".to_string());
                 }
                 if current.attributes.configurable() != attributes.configurable() {
-                    return self.raise_type_error("cannot redefine non-configurable property");
+                    return Err("cannot redefine non-configurable property".to_string());
                 }
                 if is_accessor {
                     if current.get != get || current.set != set {
-                        return self.raise_type_error("cannot redefine non-configurable property");
+                        return Err("cannot redefine non-configurable property".to_string());
                     }
                 } else if !current.attributes.writable()
                     && (attributes.writable() || !coercion::same_value(obj.get_prop_at(pos), val))
                 {
-                    return self.raise_type_error("cannot redefine non-configurable property");
+                    return Err("cannot redefine non-configurable property".to_string());
                 }
             }
         }

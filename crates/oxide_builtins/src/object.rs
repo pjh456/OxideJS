@@ -252,12 +252,23 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     let get_field = own_field(vm, desc, get_si);
     let set_field = own_field(vm, desc, set_si);
     let writable_field = own_field(vm, desc, writable_si);
+
+    let existing_pos = {
+        let obj = unsafe { &*obj_ptr };
+        vm.get_own_property_slot(obj, si)
+    };
+    let existing_meta = existing_pos.and_then(|pos| {
+        let obj = unsafe { &*obj_ptr };
+        obj.prop_meta_at(pos)
+    });
+
+    // 修改已有属性时缺省字段回填现有值，仅定义新属性时缺省才为 false。
     let enumerable = own_field(vm, desc, enumerable_si)
         .map(oxide_runtime_api::to_boolean)
-        .unwrap_or(false);
+        .unwrap_or_else(|| existing_meta.map(|m| m.attributes.enumerable()).unwrap_or(false));
     let configurable = own_field(vm, desc, configurable_si)
         .map(oxide_runtime_api::to_boolean)
-        .unwrap_or(false);
+        .unwrap_or_else(|| existing_meta.map(|m| m.attributes.configurable()).unwrap_or(false));
 
     let has_data = value_field.is_some() || writable_field.is_some();
     let has_accessor = get_field.is_some() || set_field.is_some();
@@ -268,14 +279,6 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
         ));
     }
 
-    let existing_pos = {
-        let obj = unsafe { &*obj_ptr };
-        vm.get_own_property_slot(obj, si)
-    };
-    let existing_meta = existing_pos.and_then(|pos| {
-        let obj = unsafe { &*obj_ptr };
-        obj.prop_meta_at(pos)
-    });
     let existing_value = existing_pos.map_or(JsValue::undefined(), |pos| {
         let obj = unsafe { &*obj_ptr };
         obj.get_prop_at(pos)
@@ -301,11 +304,9 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
                 "accessor descriptor get/set must be callable or undefined",
             ));
         }
-        if vm
-            .define_accessor_property(obj, si, get, set, PropAttributes::new(false, enumerable, configurable))
-            .is_err()
+        if let Err(e) = vm.define_accessor_property(obj, si, get, set, PropAttributes::new(false, enumerable, configurable))
         {
-            return NativeResult::Err(crate::error::create_type_error(vm, "Cannot define property"));
+            return NativeResult::Err(crate::error::create_type_error(vm, &e));
         }
     } else if has_data {
         let value = if existing_pos.is_some() {
@@ -320,24 +321,18 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
         } else {
             writable_field.map(oxide_runtime_api::to_boolean).unwrap_or(false)
         };
-        if vm
-            .define_data_property(obj, si, value, PropAttributes::new(writable, enumerable, configurable))
-            .is_err()
-        {
-            return NativeResult::Err(crate::error::create_type_error(vm, "Cannot define property"));
+        if let Err(e) = vm.define_data_property(obj, si, value, PropAttributes::new(writable, enumerable, configurable)) {
+            return NativeResult::Err(crate::error::create_type_error(vm, &e));
         }
     } else {
         if existing_pos.is_none() {
-            if vm
-                .define_data_property(
-                    obj,
-                    si,
-                    JsValue::undefined(),
-                    PropAttributes::new(false, enumerable, configurable),
-                )
-                .is_err()
-            {
-                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot define property"));
+            if let Err(e) = vm.define_data_property(
+                obj,
+                si,
+                JsValue::undefined(),
+                PropAttributes::new(false, enumerable, configurable),
+            ) {
+                return NativeResult::Err(crate::error::create_type_error(vm, &e));
             }
             return NativeResult::Ok(obj_val);
         }
@@ -347,13 +342,11 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
         if is_accessor {
             let get = existing_meta.map(|m| m.get).unwrap_or(JsValue::undefined());
             let set = existing_meta.map(|m| m.set).unwrap_or(JsValue::undefined());
-            if vm.define_accessor_property(obj, si, get, set, attrs).is_err() {
-                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot define property"));
+            if let Err(e) = vm.define_accessor_property(obj, si, get, set, attrs) {
+                return NativeResult::Err(crate::error::create_type_error(vm, &e));
             }
-        } else {
-            if vm.define_data_property(obj, si, existing_value, attrs).is_err() {
-                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot define property"));
-            }
+        } else if let Err(e) = vm.define_data_property(obj, si, existing_value, attrs) {
+            return NativeResult::Err(crate::error::create_type_error(vm, &e));
         }
     }
     NativeResult::Ok(obj_val)

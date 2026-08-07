@@ -118,7 +118,10 @@ impl Vm {
         } else {
             setter
         };
-        self.define_accessor_property(obj, prop_name_si, get, set, PropAttributes::DEFAULT_DATA)
+        match self.define_accessor_property(obj, prop_name_si, get, set, PropAttributes::DEFAULT_DATA) {
+            Ok(()) => Ok(()),
+            Err(msg) => self.raise_error_kind("TypeError", &msg),
+        }
     }
 
     pub(crate) fn dispatch_return(&mut self, rd: usize) -> Result<Option<JsValue>, String> {

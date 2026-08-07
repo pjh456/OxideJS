@@ -157,12 +157,18 @@ impl Vm {
 
         // length：实参个数，可写、不可枚举、可配置。
         let length_si = self.kernel_core.perm_interner().intern("length").0;
-        self.define_data_property(obj, length_si, JsValue::int(count as i32), PropAttributes::new(true, false, true))?;
+        if let Err(msg) =
+            self.define_data_property(obj, length_si, JsValue::int(count as i32), PropAttributes::new(true, false, true))
+        {
+            return self.raise_error_kind("TypeError", &msg);
+        }
 
         // callee：当前执行函数，可写、不可枚举、可配置（严格模式应抛 TypeError，未支持）。
         let callee_si = self.kernel_core.perm_interner().intern("callee").0;
         let callee = self.current_callee().unwrap_or(JsValue::undefined());
-        self.define_data_property(obj, callee_si, callee, PropAttributes::new(true, false, true))?;
+        if let Err(msg) = self.define_data_property(obj, callee_si, callee, PropAttributes::new(true, false, true)) {
+            return self.raise_error_kind("TypeError", &msg);
+        }
 
         self.regs[rd] = JsValue::from_js_object(obj_ptr);
         Ok(())
