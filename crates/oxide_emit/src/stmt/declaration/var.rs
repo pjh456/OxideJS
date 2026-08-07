@@ -24,7 +24,12 @@ impl Emitter {
                 let val_reg = self.emit_expression(init, ctx)?;
                 self.emit_binding_pattern(&d.id, val_reg, decl.kind, is_const, ctx)?;
                 if let BindingPattern::BindingIdentifier(bi) = &d.id {
-                    if matches!(*init, Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_)) {
+                    if matches!(
+                        *init,
+                        Expression::ArrowFunctionExpression(_)
+                            | Expression::FunctionExpression(_)
+                            | Expression::ClassExpression(_)
+                    ) {
                         if let Some(sub_mod) = ctx.nested.last_mut() {
                             if sub_mod.function_name.is_none() {
                                 sub_mod.function_name = Some(bi.name.to_string());
