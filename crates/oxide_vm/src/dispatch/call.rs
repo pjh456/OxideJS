@@ -72,9 +72,26 @@ impl Vm {
                 if callee.is_object() {
                     let obj = unsafe { &*callee.as_js_object_ptr() };
                     if obj.native_fn().is_some() {
-                        let result = self.call_function_sync(callee, this, &args)?;
-                        self.regs[0] = result;
-                        return Ok(());
+                        match self.call_function_sync(callee, this, &args) {
+                            Ok(val) => {
+                                self.regs[0] = val;
+                                return Ok(());
+                            }
+                            Err(_) => {
+                                // call_function_sync 已把 native 错误展平为 String，
+                                // 原始 JsValue 暂存在 last_uncaught_value——恢复为 JS 异常，
+                                // 使外围 try/catch 能捕获（而非作为引擎错误上抛）。
+                                let exc = self
+                                    .last_uncaught_value
+                                    .take()
+                                    .unwrap_or_else(|| oxide_builtins::error::create_error(self, "call failed"));
+                                let kind = self.thrown_error_kind(exc);
+                                self.exception_value = Some(exc);
+                                self.pending_error_kind = Some(kind);
+                                self.unwind()?;
+                                return Ok(());
+                            }
+                        }
                     }
                 }
                 self.push_bytecode_frame(callee, this, &args, None, None, JsValue::undefined(), FrameContinuation::None)
