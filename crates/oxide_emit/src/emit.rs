@@ -811,7 +811,7 @@ impl Emitter {
                 ParamSpec::Pattern { synthetic_name, pattern, initializer } => {
                     let src_reg = ctx.lookup(synthetic_name)?;
                     let src_reg = if let Some(init) = initializer {
-                        self.emit_default_if_undefined(src_reg, init, ctx)?
+                        self.emit_default_if_undefined(src_reg, init, Some(synthetic_name), ctx)?
                     } else {
                         src_reg
                     };
@@ -821,7 +821,7 @@ impl Emitter {
                     if let Some(init) = initializer {
                         // 默认参数：实参为 undefined 时用默认值。
                         let reg = ctx.lookup(name)?;
-                        self.emit_default_if_undefined(reg, init, ctx)?;
+                        self.emit_default_if_undefined(reg, init, Some(name), ctx)?;
                     }
                 }
             }

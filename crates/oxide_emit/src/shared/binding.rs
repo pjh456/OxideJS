@@ -14,7 +14,7 @@ use oxide_parser::{
 
 impl Emitter {
     pub(crate) fn emit_default_if_undefined(
-        &self, val_reg: u32, default_expr: &Expression, ctx: &mut CompileCtx,
+        &self, val_reg: u32, default_expr: &Expression, name: Option<&str>, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
         let undef_reg = self.emit_undefined(ctx);
         let eq_reg = ctx.alloc_reg();
@@ -28,6 +28,21 @@ impl Emitter {
         let end_label = ctx.next_label_id();
         ctx.inst(Inst::jmp_if_false(eq_reg, end_label));
         let default_reg = self.emit_expression(default_expr, ctx)?;
+        // 默认值表达式是匿名函数/箭头/class 时按绑定名推断 name（SetFunctionName）。
+        if let Some(name) = name {
+            if matches!(
+                default_expr,
+                Expression::ArrowFunctionExpression(_)
+                    | Expression::FunctionExpression(_)
+                    | Expression::ClassExpression(_)
+            ) {
+                if let Some(sub_mod) = ctx.nested.last_mut() {
+                    if sub_mod.function_name.is_none() {
+                        sub_mod.function_name = Some(name.to_string());
+                    }
+                }
+            }
+        }
         ctx.inst(Inst::new(
             OpCode::LOAD_VAR,
             Operand::Reg(val_reg),
@@ -110,7 +125,12 @@ impl Emitter {
             BindingPattern::ArrayPattern(ap) => self.emit_array_binding(ap, src_reg, kind, is_const, ctx),
             BindingPattern::ObjectPattern(op) => self.emit_object_binding(op, src_reg, kind, is_const, ctx),
             BindingPattern::AssignmentPattern(ap) => {
-                let val_reg = self.emit_default_if_undefined(src_reg, &ap.right, ctx)?;
+                // `[x = fn]`：默认值函数按绑定名推断 name。
+                let name = match &ap.left {
+                    BindingPattern::BindingIdentifier(bi) => Some(bi.name.as_str()),
+                    _ => None,
+                };
+                let val_reg = self.emit_default_if_undefined(src_reg, &ap.right, name, ctx)?;
                 self.emit_binding_pattern(&ap.left, val_reg, kind, is_const, ctx)
             }
         }
@@ -194,7 +214,11 @@ impl Emitter {
     ) -> Result<(), String> {
         match target {
             AssignmentTargetMaybeDefault::AssignmentTargetWithDefault(default) => {
-                let val_reg = self.emit_default_if_undefined(src_reg, &default.init, ctx)?;
+                let name = match &default.binding {
+                    AssignmentTarget::AssignmentTargetIdentifier(id) => Some(id.name.as_str()),
+                    _ => None,
+                };
+                let val_reg = self.emit_default_if_undefined(src_reg, &default.init, name, ctx)?;
                 self.emit_assign_target(&default.binding, val_reg, ctx)
             }
             AssignmentTargetMaybeDefault::ArrayAssignmentTarget(ap) => self.emit_array_assignment(ap, src_reg, ctx),
@@ -246,7 +270,8 @@ impl Emitter {
                     excluded.push(key.clone());
                     let mut prop_reg = self.emit_object_property_read(src_reg, &key, ctx);
                     if let Some(default_expr) = &id.init {
-                        prop_reg = self.emit_default_if_undefined(prop_reg, default_expr, ctx)?;
+                        let name = id.binding.name.as_str();
+                        prop_reg = self.emit_default_if_undefined(prop_reg, default_expr, Some(name), ctx)?;
                     }
                     let name = id.binding.name.as_str();
                     let var_reg = ctx.lookup_or_global(name);
