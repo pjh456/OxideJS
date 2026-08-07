@@ -235,6 +235,25 @@ fn rewrite_inst(
         }
     }
     let _ = f;
+    // 防御：imm16 编码位的操作数必须是 Imm/None，不得是 Reg——
+    // 否则会被上面的 Reg 重写改号，VM 侧 imm16 读到错值（历史 B020 根因）。
+    match inst.op {
+        OpCode::LOAD_UPVALUE | OpCode::CREATE_CLOSURE => {
+            debug_assert!(
+                matches!(a, Operand::Imm(_) | Operand::None),
+                "{}: a 槽是 imm16 编码位，不得为 Reg",
+                inst.op
+            );
+        }
+        OpCode::MAKE_CELL | OpCode::CELL_GET | OpCode::CELL_SET | OpCode::STORE_UPVALUE => {
+            debug_assert!(
+                matches!(b, Operand::Imm(_) | Operand::None),
+                "{}: b 槽是 imm16 编码位，不得为 Reg",
+                inst.op
+            );
+        }
+        _ => {}
+    }
     (Inst { op: inst.op, rd, a, b, ext }, arg_movs)
 }
 

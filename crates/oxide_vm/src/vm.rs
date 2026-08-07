@@ -836,6 +836,13 @@ impl Vm {
             let global = self.session.global_object();
             if let Some(pos) = self.kernel_core.shape_forge().lookup_position(global.shape_id(), si) {
                 self.regs[*reg as usize] = global.get_prop_at(pos);
+            } else {
+                vm_debug!(
+                    "push_frame: builtin '{}' reg={} NOT on global object (stays {})",
+                    name,
+                    reg,
+                    self.regs[*reg as usize]
+                );
             }
         }
 

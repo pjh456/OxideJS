@@ -918,7 +918,9 @@ impl Emitter {
 
         let ir = ctx.assemble_ir(
             oxide_ir::ParamLayout {
-                base: ctx.scopes.builtin_reg_map.len() as u32,
+                // 顶层模块无父函数：base 恒 0。曾用 builtin_reg_map.len()，harness 前缀
+                // 大时把模块自身低号 vreg 误判为父槽 → 恒等色收缩可分配色集、spill 增多。
+                base: 0,
                 count: 0,
             },
             None,

@@ -15,8 +15,7 @@ impl Vm {
             let obj_ptr = callee.as_js_object_ptr();
             if !obj_ptr.is_null() {
                 let obj = unsafe { &*obj_ptr };
-                if obj.is_function() {
-                    if obj.is_class_constructor() {
+                if obj.is_function() {                    if obj.is_class_constructor() {
                         return self
                             .raise_type_error("class constructor cannot be invoked without 'new'")
                             .map(|_| true);
@@ -48,6 +47,19 @@ impl Vm {
             }
         }
 
+        let fn_flag: u8 = if callee.is_object() {
+            unsafe { (*callee.as_js_object_ptr()).is_function() as u8 }
+        } else {
+            2
+        };
+        crate::vm_debug!(
+            "CALL target not callable: rd={} a={} b={} callee={:?} fn_flag={}",
+            rd,
+            a,
+            b,
+            callee,
+            fn_flag
+        );
         self.raise_type_error("CALL target is not callable").map(|_| true)
     }
 
