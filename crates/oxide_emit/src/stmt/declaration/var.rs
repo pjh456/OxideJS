@@ -5,7 +5,7 @@ use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
-use oxide_parser::{BindingPattern, Expression, Statement, VariableDeclarationKind};
+use oxide_parser::{BindingPattern, Statement, VariableDeclarationKind};
 
 impl Emitter {
     pub(crate) fn emit_variable_declaration_statement(
@@ -24,12 +24,7 @@ impl Emitter {
                 let val_reg = self.emit_expression(init, ctx)?;
                 self.emit_binding_pattern(&d.id, val_reg, decl.kind, is_const, ctx)?;
                 if let BindingPattern::BindingIdentifier(bi) = &d.id {
-                    if matches!(
-                        *init,
-                        Expression::ArrowFunctionExpression(_)
-                            | Expression::FunctionExpression(_)
-                            | Expression::ClassExpression(_)
-                    ) {
+                    if crate::is_anonymous_function_definition(init) {
                         if let Some(sub_mod) = ctx.nested.last_mut() {
                             if sub_mod.function_name.is_none() {
                                 sub_mod.function_name = Some(bi.name.to_string());
@@ -72,3 +67,4 @@ impl Emitter {
         Ok(r)
     }
 }
+

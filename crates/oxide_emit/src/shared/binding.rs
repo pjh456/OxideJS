@@ -30,12 +30,7 @@ impl Emitter {
         let default_reg = self.emit_expression(default_expr, ctx)?;
         // 默认值表达式是匿名函数/箭头/class 时按绑定名推断 name（SetFunctionName）。
         if let Some(name) = name {
-            if matches!(
-                default_expr,
-                Expression::ArrowFunctionExpression(_)
-                    | Expression::FunctionExpression(_)
-                    | Expression::ClassExpression(_)
-            ) {
+            if crate::is_anonymous_function_definition(default_expr) {
                 if let Some(sub_mod) = ctx.nested.last_mut() {
                     if sub_mod.function_name.is_none() {
                         sub_mod.function_name = Some(name.to_string());

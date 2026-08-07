@@ -15,7 +15,7 @@ pub mod shared;
 pub mod stmt;
 pub mod symbol_table;
 
-pub use emit::{is_int_literal, is_side_effect_free};
+pub use emit::{is_anonymous_function_definition, is_int_literal, is_side_effect_free};
 pub use emit::{CompileCtx, Emitter, FunctionBodyContext, LabelScope, ParamSpec};
 pub use oxide_bytecode::module::Constant;
 pub use oxide_parser::{AssignmentOperator, BinaryOperator, UnaryOperator};

@@ -194,12 +194,7 @@ impl Emitter {
                 let val_reg = self.emit_expression(&assign.right, ctx)?;
                 let name = id_ref.name.as_str();
                 // 赋值函数/箭头/class 表达式 → 推断 name。
-                if matches!(
-                    &assign.right,
-                    oxide_parser::Expression::ArrowFunctionExpression(_)
-                        | oxide_parser::Expression::FunctionExpression(_)
-                        | oxide_parser::Expression::ClassExpression(_)
-                ) {
+                if crate::is_anonymous_function_definition(&assign.right) {
                     if let Some(sub_mod) = ctx.nested.last_mut() {
                         if sub_mod.function_name.is_none() {
                             sub_mod.function_name = Some(name.to_string());

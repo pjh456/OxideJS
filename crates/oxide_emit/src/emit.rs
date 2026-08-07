@@ -13,6 +13,18 @@ use oxide_ir::inst::Inst;
 use oxide_ir::operand::{LabelId, Operand};
 use oxide_ir::IRFunction;
 
+/// 是否为匿名函数定义（剥括号）：函数/箭头/class 表达式。
+pub fn is_anonymous_function_definition(expr: &oxide_parser::Expression) -> bool {
+    match expr {
+        oxide_parser::Expression::ArrowFunctionExpression(_)
+        | oxide_parser::Expression::FunctionExpression(_)
+        | oxide_parser::Expression::ClassExpression(_) => true,
+        oxide_parser::Expression::ParenthesizedExpression(p) => is_anonymous_function_definition(&p.expression),
+        _ => false,
+    }
+}
+
+
 use crate::emit_ctx::{LabelCtx, ScopeCtx};
 use crate::symbol_table::{Binding, ScopeKind, SymbolTable};
 

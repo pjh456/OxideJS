@@ -5,7 +5,7 @@ use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
-use oxide_parser::{Expression, ObjectPropertyKind, PropertyKind};
+use oxide_parser::{ObjectPropertyKind, PropertyKind};
 
 impl Emitter {
     pub(crate) fn emit_object_expression(
@@ -56,12 +56,7 @@ impl Emitter {
                         reg
                     };
                     let val_reg = self.emit_expression(&p.value, ctx)?;
-                    if matches!(
-                        &p.value,
-                        Expression::ArrowFunctionExpression(_)
-                            | Expression::FunctionExpression(_)
-                            | Expression::ClassExpression(_)
-                    ) {
+                    if crate::is_anonymous_function_definition(&p.value) {
                         if let Some(sub_mod) = ctx.nested.last_mut() {
                             sub_mod.function_name = Some(prop_name.to_string());
                         }
@@ -84,3 +79,4 @@ impl Emitter {
         Ok(obj_reg)
     }
 }
+
