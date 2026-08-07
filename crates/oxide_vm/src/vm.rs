@@ -1475,6 +1475,9 @@ impl oxide_runtime_api::VmHost for Vm {
             .and_then(|m| m.function_name.clone())
             .unwrap_or_default()
     }
+    fn create_dynamic_function(&mut self, params: &[String], body: &str) -> Result<JsValue, String> {
+        self.create_dynamic_function(params, body)
+    }
     fn symbol_intern(&mut self, desc: String) -> u32 {
         self.symbols.intern(desc)
     }
@@ -1489,6 +1492,88 @@ impl oxide_runtime_api::VmHost for Vm {
     }
     fn symbol_key_for_id(&self, idx: u32) -> Option<String> {
         self.symbols.key_for_id(idx)
+    }
+}
+
+impl Vm {
+    /// 动态编译函数（`Function` 构造器路径）：把参数列表与函数体 wrap 成匿名函数
+    /// 源码，走完整编译链后取匿名函数模块追加进 VM 平表，返回对应函数对象。
+    ///
+    /// # 步骤
+    /// 1. wrap 源码 `function anonymous(p...) { body }`，parse + compile。
+    /// 2. 取 `sub_modules[0]`（匿名函数模块），把其子树 flat_id 重编号到平表末尾
+    ///    并重写子树内每条 `CREATE_CLOSURE` 的 imm16。
+    /// 3. 同步 resize `immutables_cache`，建函数对象并设置 name/length。
+    ///
+    /// # 边界与前提
+    /// - 编译或解析失败返回 `Err`（由 builtin 层转 SyntaxError）。
+    /// - 追加的子树原 flat_id 自 1 连续（flatten 后 1=匿名体，2…=其嵌套函数）；
+    ///   新 id = 平表长度 + (old - 1)。
+    /// - 动态函数只在本次 `run()` 内有效：下次 run 重建平表，跨 run 引用会越界。
+    ///
+    /// # 副作用
+    /// - 修改 `self.sub_modules` 与 `self.immutables_cache`。
+    pub fn create_dynamic_function(&mut self, params: &[String], body: &str) -> Result<JsValue, String> {
+        // wrap 源码：末尾换行防止 body 以行注释结尾吞掉右花括号。
+        let params_str = params.join(", ");
+        let source = format!("function anonymous({params_str}) {{\n{body}\n}}");
+
+        let allocator = oxide_parser::Allocator::default();
+        let program = oxide_parser::parse(&allocator, &source)
+            .map_err(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>().join("\n"))?;
+        let mut module = oxide_compiler::compiler::Compiler::new().compile(&program)?;
+        let anonymous = module.sub_modules.remove(0);
+        // 形参数以编译结果为准：单个实参 "a,b,c" 拼接后解析为 3 个形参
+        // （ES 动态函数把非末位实参以逗号连接成参数串再解析）。
+        let formal_count = anonymous.n_args as i32;
+
+        // 子树重编号 + 追加：base = 当前平表长度，DFS 前序压入，push 序即新 flat_id。
+        let base = self.sub_modules.len() as u32;
+        let mut added = Vec::new();
+        rehome_subtree(&anonymous, base, &mut added);
+        Arc::make_mut(&mut self.sub_modules).extend(added);
+        // 平表变长后同步扩容常量缓存，否则激活新模块常量时越界 panic。
+        self.immutables_cache
+            .extend((0..self.sub_modules.len().saturating_sub(self.immutables_cache.len())).map(|_| OnceLock::new()));
+
+        let func_val = self.create_function_object(base, false, false, false, false);
+        let func_obj = unsafe { &mut *func_val.as_js_object_ptr() };
+        let length_si = self.kernel_core.perm_interner().intern("length").0;
+        let name_si = self.kernel_core.perm_interner().intern("name").0;
+        // length/name 为不可写不可枚举可配置，且 length 先于 name（规范属性顺序）。
+        let attrs = PropAttributes::new(false, false, true);
+        let length_val = JsValue::int(formal_count);
+        let name_val = self.new_string("anonymous");
+        self.define_data_property(func_obj, length_si, length_val, attrs)?;
+        self.define_data_property(func_obj, name_si, name_val, attrs)?;
+        Ok(func_val)
+    }
+}
+
+/// 把 flatten 后的子模块子树重编号到平表偏移 `base`：DFS 前序拷贝进 `out`，
+/// 新 flat_id = base + (old - 1)，子树内每条 `CREATE_CLOSURE` 的 imm16 同步重写。
+/// 原子树 flat_id 自 1 连续，因此拷贝顺序即新 id 顺序，`out` 下标对齐平表槽位。
+fn rehome_subtree(module: &CompiledModule, base: u32, out: &mut Vec<CompiledModule>) {
+    let new_id = base + module.flat_id - 1;
+    let mut bytecode = module.bytecode.clone();
+    for instr in &mut bytecode {
+        if opcode::opcode(*instr) == OpCode::CREATE_CLOSURE {
+            let old = opcode::imm16(*instr) as u32;
+            let new_flat = base + (old - 1);
+            *instr = opcode::encode(
+                OpCode::CREATE_CLOSURE,
+                opcode::rd(*instr),
+                (new_flat & 0xFF) as u8,
+                ((new_flat >> 8) & 0xFF) as u8,
+            );
+        }
+    }
+    let mut rehomed = module.clone();
+    rehomed.bytecode = bytecode;
+    rehomed.flat_id = new_id;
+    out.push(rehomed);
+    for sub in &module.sub_modules {
+        rehome_subtree(sub, base, out);
     }
 }
 

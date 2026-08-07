@@ -2,7 +2,7 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr};
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::{NativeResult, VmHost};
+use oxide_runtime_api::{to_string_full, NativeResult, VmHost};
 
 fn invoke_target<H: VmHost>(vm: &mut H, target_val: JsValue, this_val: JsValue, arg_regs: &[u8]) -> NativeResult {
     let args: Vec<JsValue> = arg_regs.iter().map(|&r| vm.reg(r)).collect();
@@ -11,6 +11,47 @@ fn invoke_target<H: VmHost>(vm: &mut H, target_val: JsValue, this_val: JsValue, 
         this: this_val,
         args,
     }
+}
+
+/// `Function(...)` / `new Function(...)` 构造器：动态编译一个匿名函数。
+///
+/// 除最后一个实参为函数体外，其余实参为形参名；无实参时函数体为空串。
+/// 编译成功返回函数对象，语法错误抛 SyntaxError，实参 ToString 失败抛 TypeError。
+pub fn function_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let arg_regs = &args[1..];
+    let (param_regs, body_reg) = if arg_regs.is_empty() {
+        (vec![], None)
+    } else {
+        let (head, tail) = arg_regs.split_at(arg_regs.len() - 1);
+        (head.to_vec(), Some(tail[0]))
+    };
+
+    let mut params = Vec::with_capacity(param_regs.len());
+    for &r in &param_regs {
+        match to_string_full(vm.reg(r), vm) {
+            Ok(s) => params.push(s),
+            Err(e) => return NativeResult::Err(to_string_error_value(vm, &e)),
+        }
+    }
+    let body = match body_reg {
+        Some(r) => match to_string_full(vm.reg(r), vm) {
+            Ok(s) => s,
+            Err(e) => return NativeResult::Err(to_string_error_value(vm, &e)),
+        },
+        None => String::new(),
+    };
+
+    match vm.create_dynamic_function(&params, &body) {
+        Ok(func) => NativeResult::Ok(func),
+        Err(msg) => NativeResult::Err(crate::error::create_syntax_error(vm, &msg)),
+    }
+}
+
+/// 把 ToString 强制转换错误转成可抛异常值：用户回调抛出的原始值优先原样传播
+/// （经 `last_uncaught_value` 侧通道），否则按普通 TypeError 处理。
+fn to_string_error_value<H: VmHost>(vm: &mut H, msg: &str) -> JsValue {
+    vm.take_uncaught_value()
+        .unwrap_or_else(|| crate::error::create_type_error(vm, msg))
 }
 
 fn bind_dispatcher<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {

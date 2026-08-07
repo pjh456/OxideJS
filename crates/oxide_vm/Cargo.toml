@@ -13,6 +13,8 @@ oxide_runtime_api = { path = "../oxide_runtime_api" }
 oxide_builtins = { path = "../oxide_builtins" }
 oxide_types = { path = "../oxide_types" }
 oxide_log = { path = "../oxide_log" }
+oxide_compiler = { path = "../oxide_compiler" }
+oxide_parser = { path = "../oxide_parser" }
 bumpalo.workspace = true
 fast-float.workspace = true
 ryu.workspace = true
@@ -26,9 +28,7 @@ unicode-normalization.workspace = true
 rustc-hash.workspace = true
 
 [dev-dependencies]
-oxide_compiler = { path = "../oxide_compiler" }
 proptest.workspace = true
-oxide_parser = { path = "../oxide_parser" }
 oxide_ir = { path = "../oxide_ir" }
 criterion = { version = "0.5", features = ["html_reports"] }
 

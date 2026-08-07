@@ -498,6 +498,110 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_function_basic_arity() {
+        let mut vm = Vm::new();
+        // 与等价静态函数返回值逐位一致（引擎函数调用统一产 Double 数值）。
+        let expected = run_source(&mut vm, "function f(a,b){return a+b} f(3,4)");
+        let result = run_source(&mut vm, "new Function('a','b','return a+b')(3,4)");
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn dynamic_function_called_without_new() {
+        let mut vm = Vm::new();
+        let expected = run_source(&mut vm, "function f(a,b){return a*b} f(6,7)");
+        let result = run_source(&mut vm, "Function('a','b','return a*b')(6,7)");
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn dynamic_function_empty_body_returns_undefined() {
+        let mut vm = Vm::new();
+        assert!(run_source(&mut vm, "Function()()").is_undefined());
+    }
+
+    #[test]
+    fn dynamic_function_syntax_error_throws_syntax_error() {
+        let mut vm = Vm::new();
+        let result = run_source(&mut vm, "try{new Function('return {{')}catch(e){e.name}");
+        assert!(result.is_string());
+        assert_eq!(vm.lookup_str(result).as_deref(), Some("SyntaxError"));
+    }
+
+    #[test]
+    fn dynamic_function_nested_closure_renumbering() {
+        let mut vm = Vm::new();
+        // 匿名函数体声明嵌套函数 g，返回值是引用 g 的闭包：验证子树 flat_id 重编号
+        // 与 CREATE_CLOSURE imm16 重写后嵌套调用仍指向正确的子模块。
+        let expected = run_source(
+            &mut vm,
+            "function outer(){var g=function(n){return n*2}; return function(){return g(21)}} outer()()",
+        );
+        let result = run_source(
+            &mut vm,
+            "new Function('var g=function(n){return n*2}; return function(){return g(21)}')()()",
+        );
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn dynamic_function_multiple_in_one_run() {
+        let mut vm = Vm::new();
+        // 同一 run 内连续创建多个动态函数：验证 base 偏移累计正确。
+        let expected = run_source(
+            &mut vm,
+            "function f1(){return 1} function f2(){return 2} function f3(a){return a*3} f1()+f2()+f3(4)",
+        );
+        let result = run_source(
+            &mut vm,
+            "new Function('return 1')() + new Function('return 2')() + new Function('a','return a*3')(4)",
+        );
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn dynamic_function_name_and_length() {
+        let mut vm = Vm::new();
+        let name = run_source(&mut vm, "var f=new Function('a','b','return a'); f.name");
+        assert!(name.is_string());
+        assert_eq!(vm.lookup_str(name).as_deref(), Some("anonymous"));
+        let len = run_source(&mut vm, "var f=new Function('a','b','return a'); f.length");
+        assert_eq!(len, JsValue::int(2));
+    }
+
+    #[test]
+    fn dynamic_function_comma_split_params_count() {
+        let mut vm = Vm::new();
+        // 单个实参 "a,b,c" 拼接解析为 3 个形参，length 应为解析后的形参数。
+        let result = run_source(&mut vm, "new Function('a,b,c','null').length");
+        assert_eq!(result, JsValue::int(3));
+    }
+
+    #[test]
+    fn dynamic_function_name_and_length_attributes() {
+        let mut vm = Vm::new();
+        // length/name 为不可写、不可枚举、可配置的数据属性。
+        let attrs = run_source(
+            &mut vm,
+            "var d=Object.getOwnPropertyDescriptor(new Function('a','return a'),'length'); String(d.value)+d.writable+d.enumerable+d.configurable",
+        );
+        assert_eq!(vm.lookup_str(attrs).as_deref(), Some("1falsefalsetrue"));
+        let name_attrs = run_source(
+            &mut vm,
+            "var d=Object.getOwnPropertyDescriptor(Function(),'name'); String(d.writable)+d.enumerable+d.configurable",
+        );
+        assert_eq!(vm.lookup_str(name_attrs).as_deref(), Some("falsefalsetrue"));
+    }
+
+    #[test]
+    fn dynamic_function_rethrows_to_string_exception() {
+        let mut vm = Vm::new();
+        // 形参 ToString 回调抛出的原始值须原样传播，而非包成 TypeError。
+        let result = run_source(&mut vm, "try{new Function({toString:function(){throw 7}})}catch(e){e}");
+        assert_eq!(result, JsValue::int(7));
+    }
+
+    #[test]
     fn session_epoch_reset_is_only_in_full_reset_state_clear() {
         let src = include_str!("vm_support.rs");
         let production = src.split("#[cfg(test)]").next().expect("production source");
