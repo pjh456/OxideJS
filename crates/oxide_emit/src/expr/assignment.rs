@@ -193,6 +193,19 @@ impl Emitter {
             } else {
                 let val_reg = self.emit_expression(&assign.right, ctx)?;
                 let name = id_ref.name.as_str();
+                // 赋值函数/箭头/class 表达式 → 推断 name。
+                if matches!(
+                    &assign.right,
+                    oxide_parser::Expression::ArrowFunctionExpression(_)
+                        | oxide_parser::Expression::FunctionExpression(_)
+                        | oxide_parser::Expression::ClassExpression(_)
+                ) {
+                    if let Some(sub_mod) = ctx.nested.last_mut() {
+                        if sub_mod.function_name.is_none() {
+                            sub_mod.function_name = Some(name.to_string());
+                        }
+                    }
+                }
                 // 目标若是 upvalue 引用，走 STORE_UPVALUE
                 if let Some(uv_idx) = ctx.current_upvalue_captures.iter().position(|u| u.name == name) {
                     ctx.inst(Inst::new(

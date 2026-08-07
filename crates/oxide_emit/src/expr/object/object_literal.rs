@@ -56,7 +56,12 @@ impl Emitter {
                         reg
                     };
                     let val_reg = self.emit_expression(&p.value, ctx)?;
-                    if matches!(&p.value, Expression::ArrowFunctionExpression(_)) {
+                    if matches!(
+                        &p.value,
+                        Expression::ArrowFunctionExpression(_)
+                            | Expression::FunctionExpression(_)
+                            | Expression::ClassExpression(_)
+                    ) {
                         if let Some(sub_mod) = ctx.nested.last_mut() {
                             sub_mod.function_name = Some(prop_name.to_string());
                         }
