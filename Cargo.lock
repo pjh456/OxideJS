@@ -1197,6 +1197,7 @@ dependencies = [
  "oxide_bytecode",
  "oxide_ir",
  "oxide_parser",
+ "regex",
 ]
 
 [[package]]

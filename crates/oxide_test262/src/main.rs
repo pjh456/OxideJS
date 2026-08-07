@@ -569,15 +569,7 @@ fn run_test_inner(
                 || e.contains("called on non-TypedArray")
                 || e.contains("Array.prototype method called on null")
                 || e.contains("__proto__ must be an object")
-                || e.contains("Expected a TypeError to be thrown")
-                || e.contains("Expected a RangeError to be thrown")
-                || e.contains("Expected a SyntaxError to be thrown")
-                || e.contains("Expected a undefined to be thrown")
-                || e.contains("Expected SameValue")
-                || e.contains("cannot assign to read-only property")
-                || e.contains("cannot delete non-configurable property")
-                || e.contains("private field")
-            // 类私有字段未实现。
+            // 私有字段未实现。
             {
                 if no_skip {
                     return TestResult::fail(path.to_path_buf(), dur, format!("vm error: {e}"));
