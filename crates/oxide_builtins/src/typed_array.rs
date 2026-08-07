@@ -214,6 +214,19 @@ fn absolute_byte_offset(view: TypedArrayData, index: usize) -> usize {
     view.byte_offset + index * view.kind.bytes_per_element()
 }
 
+/// 读 TypedArray 指定整数索引的元素（供 VM 普通属性 get 的 typed 分支使用）。
+/// 越界返回 undefined；内部状态非法返回 Err(String)。
+pub fn typed_array_element_get<H: VmHost>(vm: &mut H, obj: &JsObject, index: u32) -> Result<JsValue, String> {
+    let this_val = JsValue::from_js_object(obj as *const JsObject as *mut JsObject);
+    let view = get_typed_array_data(vm, this_val).map_err(|e| format!("{e}"))?;
+    if index as usize >= view.length {
+        return Ok(JsValue::undefined());
+    }
+    let buffer_ptr = array_buffer_data_ptr(vm, view.buffer).map_err(|e| format!("{e}"))?;
+    let buffer = unsafe { &*buffer_ptr };
+    Ok(read_element(view.kind, buffer, absolute_byte_offset(view, index as usize)))
+}
+
 fn read_element(kind: TypedArrayKind, bytes: &[u8], offset: usize) -> JsValue {
     match kind {
         TypedArrayKind::Int8 => JsValue::int(bytes[offset] as i8 as i32),

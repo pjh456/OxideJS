@@ -119,7 +119,12 @@ pub fn iterator_wrapper_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
 }
 
 fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<JsValue, JsValue> {
-    if value.is_string() || is_array_value(value) || is_map_value(value) || is_set_value(value) {
+    if value.is_string()
+        || is_array_value(value)
+        || is_typed_array_value(value)
+        || is_map_value(value)
+        || is_set_value(value)
+    {
         return Ok(value);
     }
 
@@ -197,6 +202,25 @@ fn next_array_like<H: VmHost>(
         return Ok(Some(make_iter_result(vm, JsValue::undefined(), true)));
     }
 
+    if is_typed_array_value(inner) {
+        let index = current_index(vm, wrapper, index_si);
+        let length_si = vm.kernel_core().perm_interner().intern("length").0;
+        let obj = unsafe { &*inner.as_js_object_ptr() };
+        let len = vm
+            .ordinary_get(obj, length_si, inner)
+            .map(|v| if v.is_int() { v.as_int().max(0) as usize } else { 0 })
+            .unwrap_or(0);
+        if index < len {
+            let value = match crate::typed_array::typed_array_element_get(vm, obj, index as u32) {
+                Ok(v) => v,
+                Err(e) => return Err(crate::error::create_type_error(vm, &e)),
+            };
+            vm.set_or_create_prop_value(wrapper, index_si, JsValue::int((index + 1) as i32));
+            return Ok(Some(make_iter_result(vm, value, false)));
+        }
+        return Ok(Some(make_iter_result(vm, JsValue::undefined(), true)));
+    }
+
     // for-of 循环默认迭代：Map 产出 [key, value] 对，Set 产出值。
     if is_map_value(inner) {
         return Ok(Some(map_set_step(vm, wrapper, inner, index_si, MapSetMode::MapEntries)));
@@ -250,6 +274,14 @@ fn is_array_value(value: JsValue) -> bool {
     }
     let ptr = value.as_js_object_ptr();
     !ptr.is_null() && unsafe { &*ptr }.is_array()
+}
+
+fn is_typed_array_value(value: JsValue) -> bool {
+    if !value.is_object() {
+        return false;
+    }
+    let ptr = value.as_js_object_ptr();
+    !ptr.is_null() && unsafe { &*ptr }.is_typed_array_obj()
 }
 
 fn is_callable(value: JsValue) -> bool {

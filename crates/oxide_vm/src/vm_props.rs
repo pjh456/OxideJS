@@ -53,6 +53,11 @@ impl Vm {
                     }
                 }
             }
+            if obj.is_typed_array_obj() {
+                if let Some(index) = self.array_index_from_property_key(prop_name_si) {
+                    return oxide_builtins::typed_array::typed_array_element_get(self, obj, index);
+                }
+            }
             if let Some(pos) = self.get_own_property_slot(obj, prop_name_si) {
                 if let Some(meta) = obj.prop_meta_at(pos) {
                     if meta.is_accessor {
