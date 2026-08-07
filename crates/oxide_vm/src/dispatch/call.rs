@@ -406,7 +406,13 @@ impl Vm {
             let func: NativeFn = unsafe { native_fn_ptr_to_fn(super_obj.native_fn().unwrap()) };
             match func(self, &args_buf[..len]) {
                 NativeResult::Ok(val) => {
-                    self.regs[254] = if val.is_object() { val } else { derived_this };
+                    // super() 返回实例的 [[Prototype]] 须设为 new.target.prototype
+                    //（native 构造器不知道 new.target，由调用方设置）。
+                    let instance = if val.is_object() { val } else { derived_this };
+                    if instance.is_object() {
+                        self.set_constructed_proto(instance, new_target_obj)?;
+                    }
+                    self.regs[254] = instance;
                     self.regs[rd] = self.regs[254];
                 }
                 NativeResult::Err(err_val) => {
@@ -422,7 +428,11 @@ impl Vm {
                     // （或回退到 derived_this）。
                     match self.call_function_sync(callee, this, &args) {
                         Ok(val) => {
-                            self.regs[254] = if val.is_object() { val } else { derived_this };
+                            let instance = if val.is_object() { val } else { derived_this };
+                            if instance.is_object() {
+                                self.set_constructed_proto(instance, new_target_obj)?;
+                            }
+                            self.regs[254] = instance;
                             self.regs[rd] = self.regs[254];
                         }
                         Err(e) => return Err(e),
@@ -503,6 +513,18 @@ impl Vm {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    /// super() 返回的构造实例其 [[Prototype]] 设为 new.target.prototype。
+    fn set_constructed_proto(&mut self, instance: JsValue, new_target_obj: &JsObject) -> Result<(), String> {
+        let proto_si = self.kernel_core.perm_interner().intern("prototype").0;
+        if let Some(proto_val) = self.resolve_property(new_target_obj, proto_si) {
+            if proto_val.is_object() {
+                let obj = unsafe { &mut *instance.as_js_object_ptr() };
+                obj.set_proto(proto_val).map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn dispatch_super_get_prop(&mut self, rd: usize, a: usize, b: usize) -> Result<bool, String> {
