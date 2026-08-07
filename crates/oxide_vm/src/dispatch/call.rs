@@ -154,8 +154,10 @@ impl Vm {
                         // MAKE_CELL）——建占位 Cell，后续 MAKE_CELL 更新同一 Cell 的值，
                         // 保证 upvalue 始终指向定义方表里的稳定 cell（而非调用方表）。
                         if current_cells[cell_idx].is_null() {
+                            // 占位 Cell 保持未初始化（TDZ）直到 MAKE_CELL 置位；
+                            // 若绑定为 var 则其初始化 MAKE_CELL 在函数序言先于任何读取执行。
                             let cell =
-                                self.gc_state.session_epoch.alloc(Cell::new(JsValue::undefined(), true));
+                                self.gc_state.session_epoch.alloc(Cell::new(JsValue::undefined(), false));
                             current_cells[cell_idx] = cell as *mut Cell;
                         }
                         current_cells[cell_idx]
@@ -184,9 +186,11 @@ impl Vm {
             current[cell_idx] = cell as *mut Cell;
         } else {
             // 更新占位 cell（CREATE_CLOSURE 已建），使闭包 upvalue 指向的
-            // cell 值跟随初始化。
+            // cell 值跟随初始化；赋值即解除 TDZ。
             unsafe {
-                (*current[cell_idx]).value = value;
+                let cell = &mut *current[cell_idx];
+                cell.value = value;
+                cell.set_initialized(true);
             }
         }
         Ok(())
@@ -204,7 +208,11 @@ impl Vm {
             let cell = self.gc_state.session_epoch.alloc(Cell::new(val, true));
             current[cell_idx] = cell as *mut Cell;
         }
-        self.regs[rd] = unsafe { (*current[cell_idx]).value };
+        let c = unsafe { &*current[cell_idx] };
+        if !c.is_initialized() {
+            return self.raise_error_kind("ReferenceError", "Cannot access variable before initialization");
+        }
+        self.regs[rd] = c.value;
         Ok(())
     }
 
@@ -221,7 +229,9 @@ impl Vm {
             return Ok(());
         }
         unsafe {
-            (*cell_ptr).value = src_val;
+            let cell = &mut *cell_ptr;
+            cell.value = src_val;
+            cell.set_initialized(true);
         }
         Ok(())
     }
@@ -242,7 +252,11 @@ impl Vm {
                 if uv_idx < upvals.len() {
                     let cell = upvals[uv_idx];
                     if !cell.is_null() {
-                        self.regs[rd] = unsafe { (*cell).value };
+                        let c = unsafe { &*cell };
+                        if !c.is_initialized() {
+                            return self.raise_error_kind("ReferenceError", "Cannot access variable before initialization");
+                        }
+                        self.regs[rd] = c.value;
                         return Ok(());
                     }
                 }
@@ -292,7 +306,9 @@ impl Vm {
                 if uv_idx < upvals.len() {
                     if !upvals[uv_idx].is_null() {
                         unsafe {
-                            (*upvals[uv_idx]).value = src_val;
+                            let cell = &mut *upvals[uv_idx];
+                            cell.value = src_val;
+                            cell.set_initialized(true);
                         }
                         vm_debug!("STORE_UPVALUE len={} wrote existing", upvals.len());
                     } else {
