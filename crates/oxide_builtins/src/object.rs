@@ -1,6 +1,6 @@
 use oxide_kernel::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use oxide_kernel::string_forge::PermInterner;
-use oxide_types::object::{JsObject, PropAttributes};
+use oxide_types::object::{JsObject, PropAttributes, PropMetaEntry};
 use oxide_types::private_key::is_private_name_key;
 use oxide_types::value::JsValue;
 
@@ -52,6 +52,126 @@ pub(crate) fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)
         }
     });
     keys
+}
+
+/// 字符串键是否为数组下标（"0"~"4294967294"，无前导零）。
+fn array_index_of<H: VmHost>(vm: &H, key_si: u32) -> Option<u32> {
+    let key = vm.kernel_core().perm_interner().lookup(key_si)?;
+    if key.is_empty() || (key.len() > 1 && key.starts_with('0')) {
+        return None;
+    }
+    key.parse::<u32>().ok()
+}
+
+/// 删除对象自身属性（字节码 delete 与 Reflect.deleteProperty 共用）。
+///
+/// 数组下标键在元素区（shape 链外），标记为 hole（值 undefined + hole meta），
+/// length 不变；命名属性经 shape 链重建移除。属性不可配置时返回 false。
+///
+/// # 步骤
+/// 1. 数组下标元素：检查 configurable，`mark_hole_at` 标记为 hole
+/// 2. 命名属性：walk_own_keys 定位槽位，不可配置返回 false
+/// 3. 数组先保存元素区（值 + meta），重建命名属性后恢复元素区
+///
+/// # 边界与前提
+/// - 键不在对象自身（含原型链属性）返回 true
+/// - 非 configurable 属性返回 false
+/// - `key_si` 须已 intern
+///
+/// # 副作用
+/// - 修改 obj 的 shape_id、属性表与 generation；数组元素区内容不变
+///
+/// # 注意事项
+/// - 数组元素存在性以 `prop_meta_at` 的 hole 标记判定，删除后重新写入元素
+///   会自动清除 hole 标记恢复存在
+pub fn delete_own_property<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u32) -> bool {
+    // 数组下标元素在元素区，不参与 shape 链，单独删除（保持 length 不变）。
+    if obj.is_array() {
+        if let Some(index) = array_index_of(vm, key_si) {
+            if index < obj.array_prop_count {
+                let meta = obj.prop_meta_at(index);
+                // 已是 hole 视为不存在；非 configurable 不可删。
+                if meta.is_some_and(|m| m.is_hole()) {
+                    return true;
+                }
+                if meta.is_some_and(|m| !m.attributes.configurable()) {
+                    return false;
+                }
+                obj.mark_hole_at(index);
+                obj.bump_generation();
+                return true;
+            }
+            return true;
+        }
+    }
+
+    let keys = walk_own_keys(vm, obj);
+    let Some((_, delete_pos)) = keys.iter().find(|(si, _)| *si == key_si).copied() else {
+        return true;
+    };
+    // delete_pos 是 shape 槽位；数组对象存储索引 = 元素数 + 槽位。
+    let delete_store = if obj.is_array() { obj.array_prop_count + delete_pos } else { delete_pos };
+    if obj
+        .prop_meta_at(delete_store)
+        .map(|meta| !meta.attributes.configurable())
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
+    // 数组重建前保存元素区（值 + meta），重建后恢复到命名属性之前。
+    let saved_elements: Vec<JsValue> = if obj.is_array() {
+        (0..obj.array_prop_count).map(|i| obj.get_prop_at(i)).collect()
+    } else {
+        Vec::new()
+    };
+    let saved_element_meta: Option<Vec<Option<PropMetaEntry>>> = if obj.is_array() {
+        obj.prop_meta_vec().map(|meta| meta[..obj.array_prop_count as usize].to_vec())
+    } else {
+        None
+    };
+
+    let retained: Vec<(u32, JsValue, Option<PropMetaEntry>)> = keys
+        .into_iter()
+        .filter(|(_, pos)| *pos != delete_pos)
+        .map(|(si, pos)| {
+            let store = if obj.is_array() { obj.array_prop_count + pos } else { pos };
+            (si, obj.get_prop_at(store), obj.prop_meta_at(store))
+        })
+        .collect();
+
+    // 重建 shape 链与属性表（数组先清空，含元素区，随后恢复）。
+    obj.set_shape_id(EMPTY_SHAPE_ID);
+    obj.clear_props();
+    for (si, value, meta) in retained {
+        let shape = vm.kernel_core().shape_forge().make_shape(obj.shape_id(), si);
+        obj.set_shape_id(shape);
+        let pos = obj.push_prop(value);
+        if let Some(meta) = meta {
+            if meta.is_accessor {
+                obj.set_accessor_meta(pos, meta.get, meta.set, meta.attributes);
+            } else {
+                obj.set_data_meta(pos, meta.attributes);
+            }
+        }
+    }
+    if obj.is_array() {
+        let n = saved_elements.len();
+        obj.set_prop_count(n);
+        for (i, val) in saved_elements.into_iter().enumerate() {
+            obj.set_prop_at(i, val);
+        }
+        if let Some(saved_meta) = saved_element_meta {
+            let meta = obj.ensure_prop_meta();
+            for (i, entry) in saved_meta.into_iter().enumerate() {
+                if let Some(entry) = entry {
+                    meta[i] = Some(entry);
+                }
+            }
+        }
+    }
+    obj.bump_generation();
+    true
 }
 
 /// JS `Object()` 构造逻辑：创建空对象（prototype 为 null，由 VM 补装内置原型）。
@@ -303,7 +423,8 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
                 "accessor descriptor get/set must be callable or undefined",
             ));
         }
-        if let Err(e) = vm.define_accessor_property(obj, si, get, set, PropAttributes::new(false, enumerable, configurable))
+        if let Err(e) =
+            vm.define_accessor_property(obj, si, get, set, PropAttributes::new(false, enumerable, configurable))
         {
             return NativeResult::Err(crate::error::create_type_error(vm, &e));
         }
@@ -320,7 +441,8 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
         } else {
             writable_field.map(oxide_runtime_api::to_boolean).unwrap_or(false)
         };
-        if let Err(e) = vm.define_data_property(obj, si, value, PropAttributes::new(writable, enumerable, configurable)) {
+        if let Err(e) = vm.define_data_property(obj, si, value, PropAttributes::new(writable, enumerable, configurable))
+        {
             return NativeResult::Err(crate::error::create_type_error(vm, &e));
         }
     } else {
@@ -912,4 +1034,3 @@ pub fn object_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     NativeResult::Ok(JsValue::from_js_object(arr))
 }
-

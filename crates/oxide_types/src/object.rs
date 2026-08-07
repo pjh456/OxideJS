@@ -160,13 +160,15 @@ impl PropAttributes {
 /// 单个属性的元数据条目。
 ///
 /// 数据属性仅用 `attributes`；访问器属性额外携带 getter / setter
-/// 的 [`JsValue`] 与 `is_accessor = true` 标记。
+/// 的 [`JsValue`] 与 `is_accessor = true` 标记。`hole` 标记数组元素被删除
+/// 后保留的稀疏空洞（数组元素区存在性判定依据）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PropMetaEntry {
     pub attributes: PropAttributes,
     pub get: JsValue,
     pub set: JsValue,
     pub is_accessor: bool,
+    pub hole: bool,
 }
 
 impl PropMetaEntry {
@@ -177,6 +179,7 @@ impl PropMetaEntry {
             get: JsValue::undefined(),
             set: JsValue::undefined(),
             is_accessor: false,
+            hole: false,
         }
     }
 
@@ -187,7 +190,24 @@ impl PropMetaEntry {
             get,
             set,
             is_accessor: true,
+            hole: false,
         }
+    }
+
+    /// 构造数组元素删除后的 hole 标记条目。
+    pub fn hole() -> Self {
+        Self {
+            attributes: PropAttributes::DEFAULT_DATA,
+            get: JsValue::undefined(),
+            set: JsValue::undefined(),
+            is_accessor: false,
+            hole: true,
+        }
+    }
+
+    /// 是否数组元素 hole 标记（删除后保留的稀疏空洞）。
+    pub fn is_hole(&self) -> bool {
+        self.hole
     }
 }
 
@@ -772,6 +792,48 @@ impl JsObject {
         meta[pos] = Some(entry);
     }
 
+    /// 把数组元素槽标记为 hole（删除语义）：值置 undefined 并写入 hole 标记，
+    /// `array_prop_count` 与元素区大小不变（length 保持不变）。
+    pub fn mark_hole_at(&mut self, position: impl PropIndex) {
+        let pos = position.to_u32() as usize;
+        if pos >= self.prop_vec_len() {
+            self.set_prop_count(pos + 1);
+        }
+        self.set_prop_at(pos, JsValue::undefined());
+        let meta = self.ensure_prop_meta();
+        while meta.len() <= pos {
+            meta.push(None);
+        }
+        meta[pos] = Some(PropMetaEntry::hole());
+    }
+
+    /// 若指定下标是 hole 标记则清除（元素被重新写入时恢复为存在）。
+    fn clear_hole_marker(&mut self, pos: usize) {
+        if let Some(meta) = self.prop_meta_vec_mut() {
+            if meta.get(pos).is_some_and(|entry| entry.is_some_and(|e| e.is_hole())) {
+                meta[pos] = None;
+            }
+        }
+    }
+
+    /// 清空全部属性与数组元素区，`array_prop_count` 归零。
+    ///
+    /// 供 shape 链重建（如 delete 重排属性表）使用：清空后以 `push_prop` /
+    /// `set_prop_count` 按新形状重填。不清除形状 ID，调用方自行处理。
+    pub fn clear_props(&mut self) {
+        if !self.hash_props.is_null() {
+            // SAFETY: hash_props 在 ensure_hash_props/new_array 中由 Box<Vec<JsValue>> 创建。
+            let vec = unsafe { &mut *(self.hash_props as *mut Vec<JsValue>) };
+            vec.clear();
+        }
+        if !self.prop_meta.is_null() {
+            // SAFETY: prop_meta 在 ensure_prop_meta 中由 Box<Vec<Option<PropMetaEntry>>> 创建。
+            let meta = unsafe { &mut *(self.prop_meta as *mut Vec<Option<PropMetaEntry>>) };
+            meta.clear();
+        }
+        self.array_prop_count = 0;
+    }
+
     /// 是否数组（header bit 29）。
     pub fn is_array(&self) -> bool {
         (self.header >> 29) & 1 != 0
@@ -915,6 +977,7 @@ impl JsObject {
             }
             let vec = self.ensure_hash_props();
             vec[pos] = val;
+            self.clear_hole_marker(pos);
             return;
         }
         {
@@ -963,6 +1026,7 @@ impl JsObject {
             vec.push(JsValue::undefined());
         }
         vec[idx] = val;
+        self.clear_hole_marker(idx);
         if let Some(meta) = self.prop_meta_vec_mut() {
             while meta.len() <= idx {
                 meta.push(None);
@@ -1367,4 +1431,3 @@ mod tests {
         assert!(obj.prop_meta_at(2).is_some());
     }
 }
-

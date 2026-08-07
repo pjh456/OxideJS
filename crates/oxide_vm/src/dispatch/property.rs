@@ -170,7 +170,8 @@ impl Vm {
         let obj = unsafe { &*obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[b]);
         let (cached_shape_id, cached_slot, cached_depth) = ic_helper::read_ic_entry(&self.bytecode, &mut self.pc);
-        if obj.has_prop_meta() {            let val = self.ordinary_get_with_target(obj, prop_name_si, val, a as u8)?;
+        if obj.has_prop_meta() {
+            let val = self.ordinary_get_with_target(obj, prop_name_si, val, a as u8)?;
             if self.accessor_frame_target_reg.take().is_none() {
                 self.regs[a] = val;
             }
@@ -412,17 +413,13 @@ impl Vm {
         let key_val = self.immutables().get(prop_idx).copied().unwrap_or_else(JsValue::undefined);
         let prop_name_si = self.property_key_si(key_val);
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "delete on non-object")? else {
-            return Ok(true);
+            self.regs[rd] = JsValue::bool(true);
+            return Ok(false);
         };
         let obj = unsafe { &mut *obj_ptr };
-        if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
-            let configurable = obj.prop_meta_at(pos).map(|m| m.attributes.configurable()).unwrap_or(true);
-            if !configurable {
-                return self.raise_type_error("cannot delete non-configurable property").map(|()| false);
-            }
-            obj.set_prop_shape(pos, JsValue::undefined());
-        }
-        self.regs[rd] = JsValue::bool(true);
+        // 统一走共享删除逻辑（与 Reflect.deleteProperty 一致）；不可配置返回 false。
+        let deleted = oxide_builtins::object::delete_own_property(self, obj, prop_name_si);
+        self.regs[rd] = JsValue::bool(deleted);
         Ok(false)
     }
 
@@ -430,18 +427,13 @@ impl Vm {
         vm_trace!("DELETE_PROP_DYNAMIC rd={}", rd);
         let prop_name_si = self.property_key_si(self.regs[b]);
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "delete on non-object")? else {
-            return Ok(true);
+            self.regs[rd] = JsValue::bool(true);
+            return Ok(false);
         };
         let obj = unsafe { &mut *obj_ptr };
-        if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
-            let configurable = obj.prop_meta_at(pos).map(|m| m.attributes.configurable()).unwrap_or(true);
-            if !configurable {
-                return self.raise_type_error("cannot delete non-configurable property").map(|()| false);
-            }
-            obj.set_prop_shape(pos, JsValue::undefined());
-        }
-        self.regs[rd] = JsValue::bool(true);
+        // 统一走共享删除逻辑（与 Reflect.deleteProperty 一致）；不可配置返回 false。
+        let deleted = oxide_builtins::object::delete_own_property(self, obj, prop_name_si);
+        self.regs[rd] = JsValue::bool(deleted);
         Ok(false)
     }
 }
-

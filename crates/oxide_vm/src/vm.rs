@@ -663,7 +663,8 @@ impl Vm {
         }
         if obj.is_array() {
             if let Some(index) = self.array_index_from_property_key(prop_name_si) {
-                if index < obj.prop_vec_len() as u32 {
+                // 数组元素区：hole（删除标记）视为不存在。
+                if index < obj.array_prop_count && !obj.prop_meta_at(index).is_some_and(|m| m.is_hole()) {
                     return Some(obj.get_prop_at(index));
                 }
             }
@@ -701,7 +702,8 @@ impl Vm {
         }
         if obj.is_array() {
             if let Some(index) = self.array_index_from_property_key(prop_name_si) {
-                if index < obj.prop_vec_len() as u32 {
+                // 数组元素区：hole（删除标记）视为不存在。
+                if index < obj.array_prop_count && !obj.prop_meta_at(index).is_some_and(|m| m.is_hole()) {
                     return Some(index);
                 }
             }
@@ -1840,4 +1842,3 @@ mod tests {
         assert_eq!(vm.reg(255), JsValue::int(13));
     }
 }
-

@@ -236,3 +236,42 @@ fn test_property_is_enumerable_own_property() {
     let (_vm, result) = eval("var o = {x: 1}; o.propertyIsEnumerable('x')").unwrap();
     assert!(result.is_bool() && result.as_bool());
 }
+
+fn eval_str(source: &str) -> String {
+    let (_vm, result) = eval(source).unwrap();
+    assert!(result.is_string(), "expected string result, got {result:?}");
+    unsafe { &*result.as_string_ptr() }.as_str().to_string()
+}
+
+#[test]
+fn delete_prop_removes_own_property() {
+    // 删除命名属性后 hasOwnProperty / keys / 读取一致反映删除。
+    assert_eq!(
+        eval_str("var o={a:1,b:2}; delete o.a; JSON.stringify([o.hasOwnProperty('a'), Object.keys(o).join(',')])"),
+        "[false,\"b\"]"
+    );
+    // 删除数组元素：length 不变，槽位变 hole。
+    assert_eq!(
+        eval_str("var a=[1,2,3]; delete a[1]; JSON.stringify([a.length, a.hasOwnProperty('1'), a[1] === undefined])"),
+        "[3,false,true]"
+    );
+    // 值为 undefined 的元素不是 hole，hasOwnProperty 仍为 true。
+    assert_eq!(
+        eval_str("var a=[undefined,1]; JSON.stringify([a.hasOwnProperty('0'), 0 in a])"),
+        "[true,true]"
+    );
+    // 删除数组命名属性：元素区保留。
+    assert_eq!(
+        eval_str("var a=[1,2]; a.custom=9; delete a.custom; JSON.stringify([a.hasOwnProperty('custom'), a[0]])"),
+        "[false,1]"
+    );
+    // 不可配置属性返回 false 且保留。
+    assert_eq!(
+        eval_str("var o={}; Object.defineProperty(o,'x',{value:1,configurable:false}); JSON.stringify([delete o.x, o.hasOwnProperty('x')])"),
+        "[false,true]"
+    );
+    // 原型链属性删除为 no-op true。
+    assert_eq!(eval_str("var o={}; JSON.stringify(delete o.hasOwnProperty)"), "true");
+    // 删除后重新赋值数组元素回到元素区。
+    assert_eq!(eval_str("var a=[1,2,3]; delete a[1]; a[1]=9; JSON.stringify([a[1], a.length])"), "[9,3]");
+}

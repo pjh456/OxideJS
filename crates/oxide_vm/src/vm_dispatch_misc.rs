@@ -37,9 +37,7 @@ impl Vm {
         }
         // native 方法（非构造器）不可 new。
         if ctor_obj.native_fn().is_some() && ctor_obj.type_tag != oxide_types::object::JsObject::OBJ_TYPE_CONSTRUCTOR {
-            return self
-                .raise_type_error("object is not a constructor")
-                .map(|_| true);
+            return self.raise_type_error("object is not a constructor").map(|_| true);
         }
 
         let ext = self.bytecode[self.pc];
@@ -321,10 +319,14 @@ impl Vm {
 
         // 数组把整型下标元素存在 prop_vec，而 prop_vec 不属于 shape 链。
         // 单独枚举它们（ES：数组下标是可枚举字符串键，按升序排在其它自有键之前）。
+        // hole（删除标记）跳过——for-in 不枚举数组稀疏空洞。
         if current.is_object() {
             let arr = unsafe { &*current.as_js_object_ptr() };
             if arr.is_array() {
-                for i in 0..arr.prop_vec_len() {
+                for i in 0..arr.array_prop_count {
+                    if arr.prop_meta_at(i).is_some_and(|m| m.is_hole()) {
+                        continue;
+                    }
                     let is_enum = arr
                         .prop_meta_at(i)
                         .map(|m| m.attributes.enumerable())

@@ -30,7 +30,8 @@ impl Vm {
             }
             if obj.is_array() {
                 if let Some(index) = self.array_index_from_property_key(prop_name_si) {
-                    if index < obj.prop_vec_len() as u32 {
+                    // 数组元素区：hole（删除标记）视为不存在，落到原型链。
+                    if index < obj.array_prop_count && !obj.prop_meta_at(index).is_some_and(|m| m.is_hole()) {
                         // 数组元素为访问器属性（defineProperty getter）时须触发
                         // getter，而非直接读数据槽。
                         if let Some(meta) = obj.prop_meta_at(index) {
@@ -309,6 +310,13 @@ impl Vm {
 
     pub(crate) fn set_or_create_prop_value(&mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue) {
         vm_trace!("set_or_create_prop_value: shape_id={} prop_name_si={}", obj.shape_id(), prop_name_si);
+        // 数组下标键写入元素区（维护 array_prop_count），不进入 shape 链。
+        if obj.is_array() {
+            if let Some(index) = self.array_index_from_property_key(prop_name_si) {
+                obj.set_prop_at(index, val);
+                return;
+            }
+        }
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             obj.set_prop_shape(pos, val);
         } else {
@@ -328,7 +336,15 @@ impl Vm {
         if obj.is_array() {
             if let Some(index) = self.array_index_from_property_key(prop_name_si) {
                 // 数组索引属性存元素区并维护 array_prop_count（元素数随索引增长）。
-                return self.define_array_index_element(obj, index, val, attributes, false, JsValue::undefined(), JsValue::undefined());
+                return self.define_array_index_element(
+                    obj,
+                    index,
+                    val,
+                    attributes,
+                    false,
+                    JsValue::undefined(),
+                    JsValue::undefined(),
+                );
             }
         }
         let pos = if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
@@ -411,14 +427,8 @@ impl Vm {
     /// 数组索引属性（`"0"`~`"4294967294"`）的 define 路径：存入元素区并维护
     /// `array_prop_count`（length 随最高索引增长），meta 与元素槽对齐。
     fn define_array_index_element(
-        &mut self,
-        obj: &mut JsObject,
-        index: u32,
-        val: JsValue,
-        attributes: PropAttributes,
-        is_accessor: bool,
-        get: JsValue,
-        set: JsValue,
+        &mut self, obj: &mut JsObject, index: u32, val: JsValue, attributes: PropAttributes, is_accessor: bool,
+        get: JsValue, set: JsValue,
     ) -> Result<(), String> {
         let pos = index as usize;
         if pos > oxide_types::object::MAX_DENSE_PROPS {

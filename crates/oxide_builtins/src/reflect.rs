@@ -1,9 +1,9 @@
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::mem::P;
-use oxide_types::object::{JsObject, PropAttributes, PropMetaEntry};
+use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
-use crate::object::walk_own_keys;
+use crate::object::{delete_own_property, walk_own_keys};
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
@@ -44,7 +44,8 @@ pub fn reflect_construct<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     // 不可构造：箭头函数、native 方法（非构造器，OBJ_TYPE_CONSTRUCTOR 标记的除外）。
     let nt = unsafe { &*new_target_ptr };
-    if nt.is_arrow() || (nt.native_fn().is_some() && nt.type_tag != oxide_types::object::JsObject::OBJ_TYPE_CONSTRUCTOR) {
+    if nt.is_arrow() || (nt.native_fn().is_some() && nt.type_tag != oxide_types::object::JsObject::OBJ_TYPE_CONSTRUCTOR)
+    {
         return type_error(vm, "Reflect.construct newTarget is not a constructor");
     }
 
@@ -287,41 +288,4 @@ fn make_string_array<H: VmHost>(vm: &mut H, parts: &[String]) -> JsValue {
     }
     unsafe { &mut *arr }.set_prop_count(parts.len());
     JsValue::from_js_object(arr)
-}
-
-fn delete_own_property<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u32) -> bool {
-    let keys = walk_own_keys(vm, obj);
-    let Some((_, delete_pos)) = keys.iter().find(|(si, _)| *si == key_si).copied() else {
-        return true;
-    };
-    if obj
-        .prop_meta_at(delete_pos)
-        .map(|meta| !meta.attributes.configurable())
-        .unwrap_or(false)
-    {
-        return false;
-    }
-
-    let retained: Vec<(u32, JsValue, Option<PropMetaEntry>)> = keys
-        .into_iter()
-        .filter(|(_, pos)| *pos != delete_pos)
-        .map(|(si, pos)| (si, obj.get_prop_at(pos), obj.prop_meta_at(pos)))
-        .collect();
-
-    obj.set_shape_id(EMPTY_SHAPE_ID);
-    obj.set_prop_count(0usize);
-    for (si, value, meta) in retained {
-        let shape = vm.kernel_core().shape_forge().make_shape(obj.shape_id(), si);
-        obj.set_shape_id(shape);
-        let pos = obj.push_prop(value);
-        if let Some(meta) = meta {
-            if meta.is_accessor {
-                obj.set_accessor_meta(pos, meta.get, meta.set, meta.attributes);
-            } else {
-                obj.set_data_meta(pos, meta.attributes);
-            }
-        }
-    }
-    obj.bump_generation();
-    true
 }
