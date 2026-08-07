@@ -8,12 +8,13 @@ use oxide_runtime_api::{NativeResult, VmHost};
 use crate::builtins_debug;
 use crate::builtins_error;
 
-fn this_string<H: VmHost>(vm: &H, args: &[u8]) -> String {
+fn this_string<H: VmHost>(vm: &mut H, args: &[u8]) -> String {
     let this_val = vm.reg(args[0]);
     if this_val.is_null() || this_val.is_undefined() {
         String::new() // caller should check and throw TypeError
     } else {
-        oxide_runtime_api::to_string(this_val)
+        // 对象 this 须经 ToString 完整转换（boxed Number/String 等取内部原始值）。
+        oxide_runtime_api::to_string_full(this_val, vm).unwrap_or_else(|_| String::new())
     }
 }
 

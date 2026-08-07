@@ -55,8 +55,42 @@ pub(crate) fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)
 }
 
 /// JS `Object()` 构造逻辑：创建空对象（prototype 为 null，由 VM 补装内置原型）。
-pub fn object_constructor<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
-    let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+pub fn object_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    // 对象参数原样返回；原始值参数创建对应 boxed 对象（规范 ToObject）。
+    if val.is_object() {
+        return NativeResult::Ok(val);
+    }
+    if val.is_null() || val.is_undefined() {
+        let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
+        return NativeResult::Ok(JsValue::from_js_object(obj));
+    }
+    if val.is_int() || val.is_double() {
+        let proto = vm.session().builtin_world().number_proto.as_ptr() as *mut JsObject;
+        let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)));
+        let obj_ref = unsafe { &mut *obj };
+        obj_ref.type_tag = JsObject::OBJ_TYPE_NUMBER_OBJ;
+        obj_ref.set_prop_at(0, val);
+        return NativeResult::Ok(JsValue::from_js_object(obj));
+    }
+    if val.is_string() {
+        let proto = vm.session().builtin_world().string_proto.as_ptr() as *mut JsObject;
+        let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)));
+        let obj_ref = unsafe { &mut *obj };
+        obj_ref.type_tag = JsObject::OBJ_TYPE_STRING_OBJ;
+        obj_ref.set_prop_at(0, val);
+        return NativeResult::Ok(JsValue::from_js_object(obj));
+    }
+    if val.is_bool() {
+        let proto = vm.session().builtin_world().boolean_proto.as_ptr() as *mut JsObject;
+        let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)));
+        let obj_ref = unsafe { &mut *obj };
+        obj_ref.type_tag = JsObject::OBJ_TYPE_BOOLEAN_OBJ;
+        obj_ref.set_prop_at(0, val);
+        return NativeResult::Ok(JsValue::from_js_object(obj));
+    }
+    let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
     NativeResult::Ok(JsValue::from_js_object(obj))
 }
 
@@ -849,3 +883,4 @@ pub fn object_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     NativeResult::Ok(JsValue::from_js_object(arr))
 }
+
