@@ -58,7 +58,11 @@ pub fn string_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// JS `String()` 构造逻辑：把参数转成字符串；new 语义返回 `[[StringData]]` 包装对象。
 pub fn string_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = if args.len() > 1 {
-        oxide_runtime_api::to_string(vm.reg(args[1]))
+        // 对象参数须经 ToPrimitive/ToString 完整转换（数组 → join，对象 → toString）。
+        match oxide_runtime_api::to_string_full(vm.reg(args[1]), vm) {
+            Ok(s) => s,
+            Err(e) => return NativeResult::Err(crate::error::create_error(vm, &e)),
+        }
     } else {
         String::new()
     };
