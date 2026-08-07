@@ -153,7 +153,10 @@ fn invoke_native_callback<H: VmHost>(
     }
     match vm.call_function_sync(callback_val, this_val, cb_args) {
         Ok(value) => NativeResult::Ok(value),
-        Err(err) => NativeResult::Err(callback_error_from_text(vm, &err)),
+        Err(err) => match vm.take_uncaught_value() {
+            Some(original) => NativeResult::Err(original),
+            None => NativeResult::Err(callback_error_from_text(vm, &err)),
+        },
     }
 }
 

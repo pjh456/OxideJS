@@ -16,6 +16,8 @@ fn bind_error_subtype_constructor(
 
     let mut ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(function_proto_ptr)));
     ctor.set_function(true);
+    // Error 子类型须标记可构造：new TypeError(...) 走 NEW_EXPRESSION 校验。
+    ctor.type_tag = JsObject::OBJ_TYPE_CONSTRUCTOR;
     // SAFETY: ctor_fn 是调用方转成 *const () 的 NativeFn 函数项指针。
     ctor.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(ctor_fn) }));
     ctor.set_native_arg_count(1);
@@ -121,6 +123,7 @@ pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
     {
         let err_ctor_ptr = session.builtin_world().error_constructor.as_ptr() as *mut JsObject;
         let err_ctor = unsafe { &mut *err_ctor_ptr };
+        err_ctor.type_tag = JsObject::OBJ_TYPE_CONSTRUCTOR;
         // SAFETY: error_constructor 是 NativeFn 函数项。
         err_ctor.set_native_fn(Some(unsafe {
             NativeFnPtr::from_raw(oxide_builtins::error::error_constructor::<crate::vm::Vm> as *const ())
