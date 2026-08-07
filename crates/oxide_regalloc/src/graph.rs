@@ -101,6 +101,19 @@ pub(super) fn build(
     // 自己的 vreg 参与染色而移走 → 子模块读错物理槽。分界线 = param_layout.base
     // （emit 的 inherited_reg_start 继承机制：子模块 vreg ≥ base，父槽引用 < base）。
     collect_own_escaped(f, &mut pre_colors, &mut escaped_colors);
+    // builtin 槽：VM 帧推入时写 regs[slot]=全局值（无指令 def 却活到入口），
+    // 物理号必须恒等并排除出可分配集。否则 prologue 死定义临时（如解构
+    // FOR_OF_DONE 结果）与它同色，在 builtin use 前执行写入 → 覆写全局值
+    // （B021：解构参数后 builtin 调用读到 false/undefined）。
+    for (_, reg) in &f.builtin_reg_map {
+        let v = *reg;
+        if real.contains(&v) {
+            pre_colors.entry(v).or_insert(v);
+            if !escaped_colors.contains(&v) {
+                escaped_colors.push(v);
+            }
+        }
+    }
 
     // ── 可分配色集 ──
     let max_nargs = f
