@@ -563,7 +563,28 @@ impl Vm {
         vm_trace!("REST_OBJECT rd={}", rd);
         let src = self.regs[a];
         if !src.is_object() {
-            return self.raise_type_error("Cannot destructure property of null/undefined");
+            // ToObject：null/undefined 抛；number/boolean/symbol 无自有属性 → 空对象；
+            // string 的索引字符（UTF-16 code unit）是可枚举自有属性。
+            if src.is_null() || src.is_undefined() {
+                return self.raise_type_error("Cannot destructure property of null/undefined");
+            }
+            let proto_ptr = self.session.builtin_world().object_proto.as_ptr() as *mut JsObject;
+            let rest_ptr = self.alloc_object(JsObject::new_empty(
+                oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
+                JsValue::from_js_object(proto_ptr),
+            ));
+            if src.is_string() {
+                let code_units: Vec<u16> = unsafe { (*src.as_string_ptr()).data.encode_utf16().collect() };
+                for (i, unit) in code_units.iter().enumerate() {
+                    let s = char::from_u32(*unit as u32).map(|c| c.to_string()).unwrap_or_default();
+                    let si = self.kernel_core.perm_interner().intern(&i.to_string()).0;
+                    let ch_val = self.new_string(&s);
+                    let rest = unsafe { &mut *rest_ptr };
+                    self.set_or_create_prop_value(rest, si, ch_val);
+                }
+            }
+            self.regs[rd] = JsValue::from_js_object(rest_ptr);
+            return Ok(());
         }
         let excluded_idx = self.bytecode[self.pc] as usize;
         self.pc += 1;
