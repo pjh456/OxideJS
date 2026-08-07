@@ -13,7 +13,7 @@ use oxide_parser::{
 };
 
 impl Emitter {
-    fn emit_default_if_undefined(
+    pub(crate) fn emit_default_if_undefined(
         &self, val_reg: u32, default_expr: &Expression, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
         let undef_reg = self.emit_undefined(ctx);

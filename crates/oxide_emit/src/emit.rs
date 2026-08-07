@@ -174,19 +174,23 @@ pub enum FunctionBodyContext {
     ClassElement,
 }
 
-/// 参数规格：普通形参为标识符，解构形参用合成名 + 原始 pattern。
+/// 参数规格：普通形参为标识符（可带默认值 initializer），解构形参用合成名 + 原始 pattern。
 pub enum ParamSpec<'a> {
-    Identifier(String),
+    Identifier {
+        name: String,
+        initializer: Option<&'a Expression<'a>>,
+    },
     Pattern {
         synthetic_name: String,
         pattern: &'a oxide_parser::BindingPattern<'a>,
+        initializer: Option<&'a Expression<'a>>,
     },
 }
 
 impl ParamSpec<'_> {
     pub(crate) fn register_name(&self) -> &str {
         match self {
-            Self::Identifier(name) => name,
+            Self::Identifier { name, .. } => name,
             Self::Pattern { synthetic_name, .. } => synthetic_name,
         }
     }
@@ -529,12 +533,16 @@ impl Emitter {
         for (idx, param) in function.params.items.iter().enumerate() {
             match &param.pattern {
                 oxide_parser::BindingPattern::BindingIdentifier(bi) => {
-                    param_specs.push(ParamSpec::Identifier(bi.name.to_string()));
+                    param_specs.push(ParamSpec::Identifier {
+                        name: bi.name.to_string(),
+                        initializer: param.initializer.as_deref(),
+                    });
                 }
                 pattern => {
                     param_specs.push(ParamSpec::Pattern {
                         synthetic_name: format!("@@param_{idx}"),
                         pattern,
+                        initializer: param.initializer.as_deref(),
                     });
                 }
             }
@@ -729,9 +737,23 @@ impl Emitter {
         }
 
         for spec in param_specs {
-            if let ParamSpec::Pattern { synthetic_name, pattern } = spec {
-                let src_reg = ctx.lookup(synthetic_name)?;
-                self.emit_binding_pattern(pattern, src_reg, VariableDeclarationKind::Var, false, ctx)?;
+            match spec {
+                ParamSpec::Pattern { synthetic_name, pattern, initializer } => {
+                    let src_reg = ctx.lookup(synthetic_name)?;
+                    let src_reg = if let Some(init) = initializer {
+                        self.emit_default_if_undefined(src_reg, init, ctx)?
+                    } else {
+                        src_reg
+                    };
+                    self.emit_binding_pattern(pattern, src_reg, VariableDeclarationKind::Var, false, ctx)?;
+                }
+                ParamSpec::Identifier { name, initializer } => {
+                    if let Some(init) = initializer {
+                        // 默认参数：实参为 undefined 时用默认值。
+                        let reg = ctx.lookup(name)?;
+                        self.emit_default_if_undefined(reg, init, ctx)?;
+                    }
+                }
             }
         }
 
@@ -910,3 +932,4 @@ impl Default for Emitter {
         Self::new()
     }
 }
+

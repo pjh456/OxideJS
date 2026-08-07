@@ -21,12 +21,16 @@ impl Emitter {
         for (idx, param) in arrow.params.items.iter().enumerate() {
             match &param.pattern {
                 oxide_parser::BindingPattern::BindingIdentifier(bi) => {
-                    param_names.push(ParamSpec::Identifier(bi.name.to_string()));
+                    param_names.push(ParamSpec::Identifier {
+                        name: bi.name.to_string(),
+                        initializer: param.initializer.as_deref(),
+                    });
                 }
                 pattern => {
                     param_names.push(ParamSpec::Pattern {
                         synthetic_name: format!("@@param_{idx}"),
                         pattern,
+                        initializer: param.initializer.as_deref(),
                     });
                 }
             }
@@ -54,12 +58,16 @@ impl Emitter {
         for (idx, param) in fe.params.items.iter().enumerate() {
             match &param.pattern {
                 oxide_parser::BindingPattern::BindingIdentifier(bi) => {
-                    param_names.push(ParamSpec::Identifier(bi.name.to_string()));
+                    param_names.push(ParamSpec::Identifier {
+                        name: bi.name.to_string(),
+                        initializer: param.initializer.as_deref(),
+                    });
                 }
                 pattern => {
                     param_names.push(ParamSpec::Pattern {
                         synthetic_name: format!("@@param_{idx}"),
                         pattern,
+                        initializer: param.initializer.as_deref(),
                     });
                 }
             }
@@ -113,3 +121,4 @@ impl Emitter {
         }
     }
 }
+
