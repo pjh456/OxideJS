@@ -112,6 +112,10 @@ pub struct CallFrame {
     pub saved_reg_offset: u32,
     /// 记录本帧 spill 栈起始长度，作为 SPILL/UNSPILL 的帧边界基址（push 时快照）。
     pub spill_offset: u32,
+    /// 本帧完整实参在 spill 栈的起始下标（帧恢复时随 spill 区一起截断丢弃）。
+    pub arguments_base: u32,
+    /// 实际传入的实参个数（可大于形参个数）。
+    pub arguments_count: u16,
     pub saved_this: JsValue,
     pub saved_new_target: JsValue,
     pub callee: JsValue,
@@ -164,6 +168,8 @@ pub(crate) struct InlineSyncState {
     pub(crate) spill_stack: Vec<JsValue>,
     pub(crate) cell_stack: Vec<Vec<*mut Cell>>,
     pub(crate) inline_callee: Option<JsValue>,
+    pub(crate) inline_args_base: u32,
+    pub(crate) inline_args_count: u16,
 }
 
 /// 基于寄存器的 JS 虚拟机：持有执行状态、寄存器文件、调用栈与 session 内存。
@@ -211,6 +217,10 @@ pub struct Vm {
     pub(crate) root_reg_limit: u8,
     pub(crate) active_reg_limit: u8,
     pub(crate) native_call_depth: usize,
+    /// inline 同步调用（`call_bytecode_function_inline`，frames 为空）的实参区位置。
+    /// frames 非空时 CREATE_ARGUMENTS 优先读当前帧的实参区；此字段只服务内联路径。
+    pub(crate) inline_args_base: u32,
+    pub(crate) inline_args_count: u16,
     /// `ordinary_get` 压入字节码 accessor 帧时设为 Some(target_reg)。
     /// 调度循环检查该标志，跳过用调用结果写 `regs[target_reg]` —— 值改由 RETURN
     /// 处理器交付。
@@ -822,12 +832,20 @@ impl Vm {
             .map(|name| self.kernel_core.perm_interner().intern(name).0)
             .unwrap_or(0);
 
+        // 完整实参写入 spill 栈实参区（在帧的 spill 区之前）：CREATE_ARGUMENTS 据此
+        // 构建 arguments 对象，帧恢复时随 spill 区截断一起丢弃。
+        let args_base = self.spill_stack.len() as u32;
+        self.spill_stack.extend_from_slice(args);
+        let args_count = args.len().min(u16::MAX as usize) as u16;
+
         self.frames.push(CallFrame {
             return_addr: self.pc,
             function_name,
             caller_reg_limit,
             saved_reg_offset,
             spill_offset: self.spill_stack.len() as u32,
+            arguments_base: args_base,
+            arguments_count: args_count,
             saved_this,
             saved_new_target,
             callee,
@@ -1142,6 +1160,10 @@ impl Vm {
 
                 OpCode::NEW_OBJECT => {
                     self.dispatch_new_object(rd);
+                }
+
+                OpCode::CREATE_ARGUMENTS => {
+                    self.dispatch_create_arguments(rd)?;
                 }
 
                 OpCode::NEW_ARRAY => {
@@ -1553,6 +1575,8 @@ mod tests {
             caller_reg_limit: 2,
             saved_reg_offset: 0,
             spill_offset: 0,
+            arguments_base: 0,
+            arguments_count: 0,
             saved_this: JsValue::undefined(),
             saved_new_target: JsValue::undefined(),
             callee: JsValue::undefined(),
@@ -1653,7 +1677,7 @@ mod tests {
     fn unimplemented_profile_opcode_fails_explicitly() {
         let module = CompiledModule {
             bytecode: vec![
-                opcode::encode(opcode::OpCode::PROFILE_TYPE, 0, 0, 0),
+                opcode::encode(opcode::OpCode::PROFILE_SHAPE, 0, 0, 0),
                 opcode::encode(opcode::OpCode::HALT, 0, 0, 0),
             ],
             n_registers: 1,
@@ -1661,7 +1685,7 @@ mod tests {
         };
         let mut vm = Vm::new();
         let err = vm.run(&module).expect_err("unimplemented opcode should fail explicitly");
-        assert_eq!(err, "opcode PROFILE_TYPE not yet implemented");
+        assert_eq!(err, "opcode PROFILE_SHAPE not yet implemented");
     }
 
     #[test]

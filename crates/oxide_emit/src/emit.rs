@@ -803,6 +803,18 @@ impl Emitter {
             }
         }
         ctx.own_bindings = self.collect_own_binding_names(&param_names, body_stmts);
+
+        // 自动声明 arguments 绑定（非箭头函数，且用户未显式声明同名标识符）。
+        // 先登记符号并纳入 own_bindings，使嵌套箭头引用 arguments 被识别为本函数
+        // 绑定（否则被当自由变量 → 子模块 upvalue 解析错位）。
+        let mut arguments_reg = None;
+        if !matches!(body_context, FunctionBodyContext::Arrow) && !ctx.own_bindings.contains("arguments") {
+            let reg = ctx.alloc_reg();
+            ctx.declare_initialized("arguments", reg, VariableDeclarationKind::Var, false)?;
+            ctx.own_bindings.insert("arguments".to_string());
+            arguments_reg = Some(reg);
+        }
+
         ctx.captured_bindings = self.collect_captured_bindings(body_stmts, &param_defaults, &ctx.own_bindings);
         // 自由变量分析：收集 upvalue 捕获（类方法也是普通函数，可捕获外层变量）。
         if matches!(
@@ -816,6 +828,11 @@ impl Emitter {
                 &parent_ctx.current_upvalue_captures,
                 &ctx.own_bindings,
             );
+        }
+
+        // 创建 arguments 对象：指令须在默认参数求值前发出（默认参数可引用 arguments）。
+        if let Some(reg) = arguments_reg {
+            ctx.inst(Inst::create_arguments(Operand::Reg(reg)));
         }
 
         for spec in param_specs {
@@ -854,6 +871,16 @@ impl Emitter {
                     Operand::None,
                 ));
             }
+        }
+
+        // 被捕获的 arguments 绑定同样建 cell（与参数一致，须在默认值之后）。
+        if let (Some(reg), Some(&cell_idx)) = (arguments_reg, ctx.captured_bindings.get("arguments")) {
+            ctx.inst(Inst::new(
+                OpCode::MAKE_CELL,
+                Operand::Reg(reg),
+                Operand::Imm(cell_idx as u16),
+                Operand::None,
+            ));
         }
 
         Ok(param_base)

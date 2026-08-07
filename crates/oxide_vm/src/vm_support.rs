@@ -46,6 +46,8 @@ impl Vm {
             root_reg_limit: 0,
             active_reg_limit: 0,
             native_call_depth: 0,
+            inline_args_base: 0,
+            inline_args_count: 0,
             accessor_frame_target_reg: None,
             inline_callee: None,
             gc_state: GcState {
@@ -109,6 +111,8 @@ impl Vm {
             root_reg_limit: 0,
             active_reg_limit: 0,
             native_call_depth: 0,
+            inline_args_base: 0,
+            inline_args_count: 0,
             accessor_frame_target_reg: None,
             inline_callee: None,
             gc_state: GcState {

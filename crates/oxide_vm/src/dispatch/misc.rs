@@ -2,7 +2,7 @@ use crate::vm::Vm;
 use crate::{vm_error, vm_trace};
 use oxide_bytecode::opcode;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_types::object::JsObject;
+use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
 impl Vm {
@@ -130,6 +130,42 @@ impl Vm {
             .epoch
             .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
         self.regs[rd] = JsValue::object(obj as *mut u8);
+    }
+
+    /// 创建 arguments 对象：索引属性取当前帧（或 inline 同步调用）的完整实参，
+    /// 附 length / callee 属性。第一版为 unmapped（非严格）语义，索引与形参不同步。
+    ///
+    /// # 边界与前提
+    /// - 实参区由 `push_bytecode_frame` / `dispatch_super_call` / `dispatch_new_expression`
+    ///   在推帧时写入 spill 栈；frames 为空（inline 同步调用）时读 `inline_args_*`。
+    /// - 索引属性用 shape 槽存储（普通对象），length/callee 为不可枚举数据属性。
+    pub(crate) fn dispatch_create_arguments(&mut self, rd: usize) -> Result<(), String> {
+        let (base, count) = match self.frames.last() {
+            Some(frame) => (frame.arguments_base, frame.arguments_count),
+            None => (self.inline_args_base, self.inline_args_count),
+        };
+        let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
+        let obj_ptr = self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
+        let obj = unsafe { &mut *obj_ptr };
+
+        // 索引属性：按实参下标写入 shape 槽，属性描述符为默认（可写/可枚举/可配置）。
+        for i in 0..count as usize {
+            let si = self.kernel_core.perm_interner().intern(&i.to_string()).0;
+            let val = self.spill_stack.get(base as usize + i).copied().unwrap_or(JsValue::undefined());
+            self.set_or_create_prop_value(obj, si, val);
+        }
+
+        // length：实参个数，可写、不可枚举、可配置。
+        let length_si = self.kernel_core.perm_interner().intern("length").0;
+        self.define_data_property(obj, length_si, JsValue::int(count as i32), PropAttributes::new(true, false, true))?;
+
+        // callee：当前执行函数，可写、不可枚举、可配置（严格模式应抛 TypeError，未支持）。
+        let callee_si = self.kernel_core.perm_interner().intern("callee").0;
+        let callee = self.current_callee().unwrap_or(JsValue::undefined());
+        self.define_data_property(obj, callee_si, callee, PropAttributes::new(true, false, true))?;
+
+        self.regs[rd] = JsValue::from_js_object(obj_ptr);
+        Ok(())
     }
 
     #[inline(always)]

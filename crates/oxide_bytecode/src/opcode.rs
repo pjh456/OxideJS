@@ -164,8 +164,10 @@ define_opcodes! {
     COMPOUND_MEMBER_MOD = 0x61 => "COMPOUND_MEMBER_MOD",
     COMPOUND_MEMBER_EXP = 0x62 => "COMPOUND_MEMBER_EXP",
 
-    // ── Profiling — 占位符 (0x63-0x6F) ──
-    PROFILE_TYPE = 0x63 => "PROFILE_TYPE",
+    // ── 对象 (0x63) ──
+    CREATE_ARGUMENTS = 0x63 => "CREATE_ARGUMENTS",
+
+    // ── Profiling — 占位符 (0x64-0x6F) ──
     PROFILE_SHAPE = 0x64 => "PROFILE_SHAPE",
     PROFILE_BRANCH = 0x65 => "PROFILE_BRANCH",
     PROFILE_CALL = 0x66 => "PROFILE_CALL",
@@ -326,6 +328,7 @@ mod tests {
         assert_eq!(OpCode::MOV as u8, 0x0C);
         assert_eq!(OpCode::SPILL as u8, 0x0D);
         assert_eq!(OpCode::UNSPILL as u8, 0x0E);
+        assert_eq!(OpCode::CREATE_ARGUMENTS as u8, 0x63);
         assert_eq!(OpCode::ADD.to_string(), "ADD");
         assert_eq!(OpCode::COMPOUND_MEMBER_EXP.to_string(), "COMPOUND_MEMBER_EXP");
         assert_eq!(OpCode::MOV.to_string(), "MOV");

@@ -589,6 +589,8 @@ mod tests {
             caller_reg_limit: 1,
             saved_reg_offset: 0,
             spill_offset: 0,
+            arguments_base: 0,
+            arguments_count: 0,
             saved_this: JsValue::from_js_object(this_session),
             saved_new_target: JsValue::from_js_object(child_session),
             callee: JsValue::from_js_object(child_session),

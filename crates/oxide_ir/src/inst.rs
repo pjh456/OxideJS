@@ -178,6 +178,12 @@ impl Inst {
         Self::new(OpCode::CREATE_CLOSURE, dst, Operand::Imm(sub_idx), Operand::None)
     }
 
+    /// 创建 arguments 对象：`dst = 当前帧的实参列表`。运行时从当前帧
+    /// （CallFrame 或 inline 同步调用）的实参区构建，无寄存器 use。
+    pub fn create_arguments(dst: Operand) -> Self {
+        Self::new(OpCode::CREATE_ARGUMENTS, dst, Operand::None, Operand::None)
+    }
+
     // ── 跳转族：label 放 b 槽，offset 计算是 lowering 职责 ──
 
     /// 无条件跳转。label 放 b 槽，offset 由 lowering 回填。
@@ -311,6 +317,13 @@ mod tests {
         assert_eq!(cc.a, Operand::Imm(5));
         assert_eq!(cc.b, Operand::None);
         assert!(cc.ext.is_empty());
+
+        let ca = Inst::create_arguments(Operand::Reg(6));
+        assert_eq!(ca.op, OpCode::CREATE_ARGUMENTS);
+        assert_eq!(ca.rd, Operand::Reg(6));
+        assert_eq!(ca.a, Operand::None);
+        assert_eq!(ca.b, Operand::None);
+        assert!(ca.ext.is_empty());
     }
 
     #[test]

@@ -199,6 +199,7 @@ impl Inst {
             | OpCode::VOID
             | OpCode::NEW_OBJECT
             | OpCode::NEW_ARRAY
+            | OpCode::CREATE_ARGUMENTS
             | OpCode::NOP => {}
             // 变量读写：LOAD_VAR/STORE_VAR/CELL_GET 读 a（None→0）
             OpCode::LOAD_VAR | OpCode::STORE_VAR | OpCode::CELL_GET => {
@@ -256,7 +257,6 @@ impl Inst {
             }
             // 占位 opcode（emit 不产）：按无 use 保守处理，不影响合法产物
             OpCode::SWITCH_TABLE
-            | OpCode::PROFILE_TYPE
             | OpCode::PROFILE_SHAPE
             | OpCode::PROFILE_BRANCH
             | OpCode::PROFILE_CALL
@@ -528,6 +528,17 @@ mod tests {
         let inst = Inst::rest_object(Operand::Reg(0), Operand::Reg(1), 7);
         assert_eq!(inst.def_reg(), Some(0));
         assert_eq!(inst.use_regs().as_slice(), &[1]);
+    }
+
+    #[test]
+    fn create_arguments_defs_rd_no_register_use_impure() {
+        // CREATE_ARGUMENTS 写 rd；实参从 spill 栈读取，无寄存器 use；
+        // 创建对象有观察副作用（分配的 arguments 可被外部观察到），不可删除。
+        let inst = Inst::create_arguments(Operand::Reg(6));
+        assert_eq!(inst.def_reg(), Some(6));
+        assert!(inst.use_regs().is_empty());
+        let f = IRFunction::new();
+        assert!(!inst.is_pure(&f));
     }
 
     #[test]

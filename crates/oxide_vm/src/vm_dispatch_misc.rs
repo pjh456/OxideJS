@@ -113,6 +113,14 @@ impl Vm {
             let saved_this = self.regs[254];
             let saved_new_target = self.regs[255];
 
+            // 完整实参写入 spill 栈实参区（在帧的 spill 区之前），供 CREATE_ARGUMENTS 使用。
+            let args_base = self.spill_stack.len() as u32;
+            for i in 0..arg_count {
+                let src_reg = first_arg_reg.wrapping_add(i as u8) as usize;
+                self.spill_stack.push(self.regs[src_reg]);
+            }
+            let args_count = arg_count.min(u16::MAX as usize) as u16;
+
             for i in 0..sub_n_args {
                 let src_reg = first_arg_reg.wrapping_add(i as u8) as usize;
                 self.regs[sub_param_base + i] = self.regs[src_reg];
@@ -137,6 +145,8 @@ impl Vm {
                 caller_reg_limit,
                 saved_reg_offset,
                 spill_offset: self.spill_stack.len() as u32,
+                arguments_base: args_base,
+                arguments_count: args_count,
                 saved_this,
                 saved_new_target,
                 callee: constructor,
