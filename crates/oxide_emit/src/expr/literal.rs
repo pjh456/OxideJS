@@ -36,7 +36,6 @@ impl Emitter {
     fn emit_string_literal_expression(
         &self, s: &oxide_parser::StringLiteral, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
-        eprintln!("[DBG] string literal value={:?}", s.value.as_str());
         let idx = ctx.add_constant(Constant::String(s.value.to_string()));
         let r = ctx.alloc_reg();
         ctx.inst(Inst::load_const(Operand::Reg(r), idx));

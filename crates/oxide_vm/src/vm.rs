@@ -700,11 +700,23 @@ impl Vm {
             .shape_forge()
             .lookup_position(obj.shape_id(), prop_name_si)
             .and_then(|pos| {
-                let val = obj.get_prop_at(pos);
-                if !val.is_undefined() || obj.prop_vec_len() > pos as usize {
-                    Some(pos)
+                if obj.is_array() {
+                    // 数组属性存储索引 = array_prop_count + shape 槽位（与元素区分）。
+                    let idx = obj.array_prop_count as usize + pos as usize;
+                    let val = obj.get_prop_at(idx);
+                    eprintln!("[DBG] gos array prop pos={} apc={} idx={} val={:?}", pos, obj.array_prop_count, idx, val);
+                    if !val.is_undefined() {
+                        Some(idx as u32)
+                    } else {
+                        None
+                    }
                 } else {
-                    None
+                    let val = obj.get_prop_at(pos);
+                    if !val.is_undefined() || obj.prop_vec_len() > pos as usize {
+                        Some(pos)
+                    } else {
+                        None
+                    }
                 }
             })
     }
@@ -1805,3 +1817,4 @@ mod tests {
         assert_eq!(vm.reg(255), JsValue::int(13));
     }
 }
+

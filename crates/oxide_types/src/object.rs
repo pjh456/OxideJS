@@ -329,7 +329,9 @@ pub struct JsObject {
     native_data: *mut u8,
     proto: JsValue,
     generation: u32,
-    _pad2: [u8; 4],
+    /// 数组元素数（数组对象）。普通对象恒 0。属性（shape 槽位）存储偏移
+    /// `array_prop_count + 槽位`，与元素区分（JS 数组属性不影响 length）。
+    pub array_prop_count: u32,
     native_fn: Option<NativeFnPtr>,
     sub_module_index: u32,
     _pad3: [u8; 4],
@@ -418,7 +420,7 @@ impl JsObject {
             native_data: std::ptr::null_mut(),
             proto,
             generation: 1,
-            _pad2: [0; 4],
+            array_prop_count: 0,
             native_fn: None,
             sub_module_index: 0,
             _pad3: [0; 4],
@@ -441,7 +443,7 @@ impl JsObject {
             native_data: std::ptr::null_mut(),
             proto,
             generation: 1,
-            _pad2: [0; 4],
+            array_prop_count: 0,
             native_fn: None,
             sub_module_index: 0,
             _pad3: [0; 4],
@@ -451,6 +453,7 @@ impl JsObject {
         };
         let vec = Box::new(vec![JsValue::undefined(); n_elements.min(MAX_DENSE_PROPS)]);
         obj.hash_props = Box::into_raw(vec) as *mut u8;
+        obj.array_prop_count = n_elements as u32;
         obj
     }
 
@@ -510,7 +513,7 @@ impl JsObject {
             native_data: self.native_data,
             proto: self.proto,
             generation: self.generation,
-            _pad2: self._pad2,
+            array_prop_count: self.array_prop_count,
             native_fn: self.native_fn,
             sub_module_index: self.sub_module_index,
             _pad3: self._pad3,
@@ -627,6 +630,9 @@ impl JsObject {
     /// 返回 hash_props vec 的长度作为属性数。
     /// hash_props 未分配时返回 0。
     pub fn prop_count(&self) -> u32 {
+        if self.is_array() {
+            return self.array_prop_count;
+        }
         if self.hash_props.is_null() {
             0
         } else {
@@ -638,9 +644,21 @@ impl JsObject {
     }
 
     /// 设置 hash_props vec 的长度。截断或补 undefined 扩展。
+    /// 数组对象只调整元素区（`array_prop_count`），属性区（尾部）整体搬移保持对齐。
     pub fn set_prop_count(&mut self, count: impl PropIndex) {
         let target = count.to_u32() as usize;
-        {
+        if self.is_array() {
+            let old = self.array_prop_count as usize;
+            let vec = self.ensure_hash_props();
+            if target > old {
+                for _ in old..target {
+                    vec.insert(old, JsValue::undefined());
+                }
+            } else if target < old {
+                vec.drain(target..old);
+            }
+            self.array_prop_count = target as u32;
+        } else {
             let vec = self.ensure_hash_props();
             if target < vec.len() {
                 vec.truncate(target);
@@ -671,25 +689,7 @@ impl JsObject {
     /// 用于热路径数组 builtin，跳过每次变更时冗余的 `ensure_hash_props` 空检查。
     #[inline]
     pub fn set_prop_count_fast(&mut self, count: impl PropIndex) {
-        let target = count.to_u32() as usize;
-        // SAFETY: 调用方保证 hash_props 非空。
-        let vec = unsafe { &mut *(self.hash_props as *mut Vec<JsValue>) };
-        if target < vec.len() {
-            vec.truncate(target);
-        } else {
-            while vec.len() < target {
-                vec.push(JsValue::undefined());
-            }
-        }
-        if let Some(meta) = self.prop_meta_vec_mut() {
-            if target < meta.len() {
-                meta.truncate(target);
-            } else {
-                while meta.len() < target {
-                    meta.push(None);
-                }
-            }
-        }
+        self.set_prop_count(count);
     }
 
     /// 确保属性元数据向量已分配并返回可变引用。
@@ -893,6 +893,7 @@ impl JsObject {
     }
 
     /// 设置下标 position 处的属性值。vec 按需自动扩容。
+    /// 数组对象元素写入会更新 `array_prop_count`（元素数随最高索引增长）。
     pub fn set_prop_at(&mut self, position: impl PropIndex, val: JsValue) {
         let pos = position.to_u32() as usize;
         if pos > MAX_DENSE_PROPS {
@@ -914,6 +915,40 @@ impl JsObject {
                 meta.push(None);
             }
         }
+        if self.is_array() && pos >= self.array_prop_count as usize {
+            self.array_prop_count = (pos + 1) as u32;
+        }
+    }
+
+    /// 数组对象（shape 槽位 → 存储索引 = `array_prop_count + 槽位`）的
+    /// 属性写入；普通对象等价 `set_prop_at`。
+    pub fn set_prop_shape(&mut self, shape_pos: u32, val: JsValue) {
+        let idx = if self.is_array() {
+            self.array_prop_count as usize + shape_pos as usize
+        } else {
+            shape_pos as usize
+        };
+        let vec = self.ensure_hash_props();
+        while vec.len() <= idx {
+            vec.push(JsValue::undefined());
+        }
+        vec[idx] = val;
+        if let Some(meta) = self.prop_meta_vec_mut() {
+            while meta.len() <= idx {
+                meta.push(None);
+            }
+        }
+    }
+
+    /// 数组对象属性读取（shape 槽位 → 存储索引 = `array_prop_count + 槽位`）；
+    /// 普通对象等价 `get_prop_at`。越界返回 undefined。
+    pub fn get_prop_shape(&self, shape_pos: u32) -> JsValue {
+        let idx = if self.is_array() {
+            self.array_prop_count as usize + shape_pos as usize
+        } else {
+            shape_pos as usize
+        };
+        self.get_prop_at(idx)
     }
 
     /// 把值压入 hash_props vec，返回其下标。
@@ -1265,3 +1300,4 @@ mod tests {
         assert_eq!(obj.prop_meta_vec().expect("meta").len(), obj.prop_vec_len());
     }
 }
+

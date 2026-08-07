@@ -85,7 +85,9 @@ pub(crate) fn ic_get_hit(obj: &JsObject, shape_id: u32, slot_index: u32, proto_d
     }
     if proto_depth == 0 {
         if obj.shape_id() == shape_id && slot_index < obj.prop_vec_len() as u32 {
-            return Some(obj.get_prop_at(slot_index));
+            let v = obj.get_prop_shape(slot_index);
+            eprintln!("[DBG] ic_get_hit shape={} slot={} apc={} v={:?}", shape_id, slot_index, obj.array_prop_count, v);
+            return Some(v);
         }
         return None;
     }
@@ -95,7 +97,7 @@ pub(crate) fn ic_get_hit(obj: &JsObject, shape_id: u32, slot_index: u32, proto_d
     }
     let target_ref = unsafe { &*target };
     if target_ref.shape_id() == shape_id && slot_index < target_ref.prop_vec_len() as u32 {
-        Some(target_ref.get_prop_at(slot_index))
+        Some(target_ref.get_prop_shape(slot_index))
     } else {
         None
     }
@@ -108,7 +110,7 @@ pub(crate) fn ic_set_hit(obj: &mut JsObject, shape_id: u32, slot_index: u32, pro
     }
     if proto_depth == 0 {
         if obj.shape_id() == shape_id && slot_index < obj.prop_vec_len() as u32 {
-            obj.set_prop_at(slot_index, value);
+            obj.set_prop_shape(slot_index, value);
             return true;
         }
         return false;
@@ -119,9 +121,10 @@ pub(crate) fn ic_set_hit(obj: &mut JsObject, shape_id: u32, slot_index: u32, pro
     }
     let target_ref = unsafe { &*target };
     if target_ref.shape_id() == shape_id && slot_index < target_ref.prop_vec_len() as u32 {
-        unsafe { &mut *(target as *mut JsObject) }.set_prop_at(slot_index, value);
+        unsafe { &mut *(target as *mut JsObject) }.set_prop_shape(slot_index, value);
         true
     } else {
         false
     }
 }
+

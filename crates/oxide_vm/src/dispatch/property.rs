@@ -170,8 +170,7 @@ impl Vm {
         let obj = unsafe { &*obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[b]);
         let (cached_shape_id, cached_slot, cached_depth) = ic_helper::read_ic_entry(&self.bytecode, &mut self.pc);
-        if obj.has_prop_meta() {
-            let val = self.ordinary_get_with_target(obj, prop_name_si, val, a as u8)?;
+        if obj.has_prop_meta() {            let val = self.ordinary_get_with_target(obj, prop_name_si, val, a as u8)?;
             if self.accessor_frame_target_reg.take().is_none() {
                 self.regs[a] = val;
             }
@@ -194,7 +193,7 @@ impl Vm {
                         prop_name_si,
                         template.position
                     );
-                    self.regs[a] = obj.get_prop_at(template.position);
+                    self.regs[a] = obj.get_prop_shape(template.position);
                 } else {
                     ic_debug!("IC_GET miss shape={} prop={}", obj.shape_id(), prop_name_si);
                     self.regs[a] = self.ordinary_get(obj, prop_name_si, val)?;
@@ -445,3 +444,4 @@ impl Vm {
         Ok(false)
     }
 }
+

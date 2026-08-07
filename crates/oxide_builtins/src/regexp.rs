@@ -234,8 +234,13 @@ pub fn regexp_exec<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             (*arr).set_prop_count(n);
         }
 
-        // ponytail: 引擎数组的 shape 属性槽与元素 prop_vec 共用 hash_props 索引，
-        // 设 index/input/groups 属性会与元素冲突/膨胀 length。暂只填元素。
+        let index_si = vm.kernel_core().perm_interner().intern("index").0;
+        vm.set_or_create_prop_value(unsafe { &mut *arr }, index_si, JsValue::int(range.start as i32));
+        let input_si = vm.kernel_core().perm_interner().intern("input").0;
+        let haystack_val = vm.new_string(&haystack);
+        vm.set_or_create_prop_value(unsafe { &mut *arr }, input_si, haystack_val);
+        let groups_si = vm.kernel_core().perm_interner().intern("groups").0;
+        vm.set_or_create_prop_value(unsafe { &mut *arr }, groups_si, JsValue::undefined());
         if is_global {
             set_prop_at(re_ptr, 0, JsValue::int(range.end as i32));
         }

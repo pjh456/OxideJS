@@ -309,10 +309,11 @@ impl Vm {
     pub(crate) fn set_or_create_prop_value(&mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue) {
         vm_trace!("set_or_create_prop_value: shape_id={} prop_name_si={}", obj.shape_id(), prop_name_si);
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
-            obj.set_prop_at(pos, val);
+            obj.set_prop_shape(pos, val);
         } else {
             let new_shape_id = self.kernel_core.shape_forge().make_shape(obj.shape_id(), prop_name_si);
             obj.set_shape_id(new_shape_id);
+            // 数组对象：属性追加到 hash_props 属性区（元素之后），array_prop_count 不变。
             obj.push_prop(val);
             obj.bump_generation();
         }
@@ -324,11 +325,16 @@ impl Vm {
         vm_trace!("define_data_property: shape={} prop_si={}", obj.shape_id(), prop_name_si);
         let val = self.promote_if_needed_for_write_ptr(obj as *mut JsObject, val);
         let pos = if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
-            pos
+            // shape 槽位 → 存储索引（数组属性在元素区之后）。
+            if obj.is_array() {
+                obj.array_prop_count as usize + pos as usize
+            } else {
+                pos as usize
+            }
         } else {
             let new_shape_id = self.kernel_core.shape_forge().make_shape(obj.shape_id(), prop_name_si);
             obj.set_shape_id(new_shape_id);
-            obj.push_prop(JsValue::undefined())
+            obj.push_prop(JsValue::undefined()) as usize
         };
         if let Some(current) = obj.prop_meta_at(pos) {
             if !current.attributes.configurable() {
