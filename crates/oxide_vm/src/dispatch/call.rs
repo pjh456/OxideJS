@@ -343,7 +343,10 @@ impl Vm {
         let result = match func(self, &[0, 1, 2]) {
             NativeResult::Ok(v) => v,
             NativeResult::Err(e) => {
-                return Err(self.error_message_text("TypeError", &self.error_text(e)));
+                // 保留原始错误对象与类型（非法正则字面量须抛 SyntaxError，非 TypeError）。
+                self.exception_value = Some(e);
+                self.pending_error_kind = Some(self.thrown_error_kind(e));
+                return self.unwind().map(|_| None);
             }
             NativeResult::TailCall { .. } => {
                 return Err(self.error_message_text("TypeError", "unexpected tail call"));

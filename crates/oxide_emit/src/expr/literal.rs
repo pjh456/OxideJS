@@ -67,6 +67,17 @@ impl Emitter {
                 let last_slash = raw_str.rfind('/').unwrap_or(raw_str.len() - 1);
                 let pattern = raw_str[1..last_slash].to_string();
                 let flags = raw_str[last_slash + 1..].to_string();
+                // 非法正则字面量须在编译期报 SyntaxError（负面测试期望编译失败）。
+                if regex::RegexBuilder::new(&pattern)
+                    .case_insensitive(flags.contains('i'))
+                    .multi_line(flags.contains('m'))
+                    .build()
+                    .is_err()
+                {
+                    return Err(format!(
+                        "SyntaxError: Invalid regular expression: /{pattern}/{flags}"
+                    ));
+                }
                 let pat_ci = ctx.add_constant(Constant::String(pattern));
                 let pat_reg = ctx.alloc_reg();
                 ctx.inst(Inst::load_const(Operand::Reg(pat_reg), pat_ci));
