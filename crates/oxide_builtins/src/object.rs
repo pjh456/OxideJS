@@ -247,11 +247,10 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     let enumerable_si = vm.kernel_core().perm_interner().intern("enumerable").0;
     let configurable_si = vm.kernel_core().perm_interner().intern("configurable").0;
 
-    let desc = unsafe { &*desc_ptr };
-    let value_field = own_field(vm, desc, value_si);
-    let get_field = own_field(vm, desc, get_si);
-    let set_field = own_field(vm, desc, set_si);
-    let writable_field = own_field(vm, desc, writable_si);
+    let value_field = own_field(vm, desc_val, value_si);
+    let get_field = own_field(vm, desc_val, get_si);
+    let set_field = own_field(vm, desc_val, set_si);
+    let writable_field = own_field(vm, desc_val, writable_si);
 
     let existing_pos = {
         let obj = unsafe { &*obj_ptr };
@@ -263,10 +262,10 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     });
 
     // 修改已有属性时缺省字段回填现有值，仅定义新属性时缺省才为 false。
-    let enumerable = own_field(vm, desc, enumerable_si)
+    let enumerable = own_field(vm, desc_val, enumerable_si)
         .map(oxide_runtime_api::to_boolean)
         .unwrap_or_else(|| existing_meta.map(|m| m.attributes.enumerable()).unwrap_or(false));
-    let configurable = own_field(vm, desc, configurable_si)
+    let configurable = own_field(vm, desc_val, configurable_si)
         .map(oxide_runtime_api::to_boolean)
         .unwrap_or_else(|| existing_meta.map(|m| m.attributes.configurable()).unwrap_or(false));
 
@@ -419,17 +418,14 @@ pub fn object_get_own_property_descriptor<H: VmHost>(vm: &mut H, args: &[u8]) ->
     NativeResult::Ok(JsValue::from_js_object(desc))
 }
 
-fn own_field<H: VmHost>(vm: &H, obj: &JsObject, prop_si: u32) -> Option<JsValue> {
-    vm.kernel_core()
-        .shape_forge()
-        .lookup_position(obj.shape_id(), prop_si)
-        .and_then(|pos| {
-            if obj.prop_vec_len() > pos as usize {
-                Some(obj.get_prop_at(pos))
-            } else {
-                None
-            }
-        })
+/// 按 ToPropertyDescriptor 语义取描述符字段：沿原型链判存在性，存在时经
+/// ordinary_get 取值（触发 accessor getter，receiver 为描述符对象本身）。
+fn own_field<H: VmHost>(vm: &mut H, desc: JsValue, prop_si: u32) -> Option<JsValue> {
+    // ordinary_get 对缺失属性返回 undefined，无法区分"不存在"与"值为
+    // undefined"，故先用 resolve_property 沿原型链判 HasProperty。
+    let obj = unsafe { &*desc.as_js_object_ptr() };
+    vm.resolve_property(obj, prop_si)?;
+    vm.ordinary_get(obj, prop_si, desc).ok()
 }
 
 fn is_callable(value: JsValue) -> bool {

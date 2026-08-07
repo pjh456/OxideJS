@@ -75,12 +75,11 @@ pub fn reflect_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
         return type_error(vm, "Reflect.defineProperty target is not an object");
     };
     let desc_val = arg(vm, args, 3);
-    let Some(desc_ptr) = object_ptr(desc_val) else {
+    let Some(_) = object_ptr(desc_val) else {
         return type_error(vm, "Reflect.defineProperty descriptor is not an object");
     };
 
     let key_si = vm.property_key_si(arg(vm, args, 2));
-    let desc = unsafe { &*desc_ptr };
     let value_si = vm.kernel_core().perm_interner().intern("value").0;
     let get_si = vm.kernel_core().perm_interner().intern("get").0;
     let set_si = vm.kernel_core().perm_interner().intern("set").0;
@@ -88,14 +87,14 @@ pub fn reflect_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     let enumerable_si = vm.kernel_core().perm_interner().intern("enumerable").0;
     let configurable_si = vm.kernel_core().perm_interner().intern("configurable").0;
 
-    let value_field = own_field(vm, desc, value_si);
-    let get_field = own_field(vm, desc, get_si);
-    let set_field = own_field(vm, desc, set_si);
-    let writable_field = own_field(vm, desc, writable_si);
-    let enumerable = own_field(vm, desc, enumerable_si)
+    let value_field = own_field(vm, desc_val, value_si);
+    let get_field = own_field(vm, desc_val, get_si);
+    let set_field = own_field(vm, desc_val, set_si);
+    let writable_field = own_field(vm, desc_val, writable_si);
+    let enumerable = own_field(vm, desc_val, enumerable_si)
         .map(oxide_runtime_api::to_boolean)
         .unwrap_or(false);
-    let configurable = own_field(vm, desc, configurable_si)
+    let configurable = own_field(vm, desc_val, configurable_si)
         .map(oxide_runtime_api::to_boolean)
         .unwrap_or(false);
 
@@ -264,11 +263,14 @@ fn array_like_elements(value: JsValue) -> Option<Vec<JsValue>> {
     Some((0..obj.prop_count() as usize).map(|idx| obj.get_prop_at(idx)).collect())
 }
 
-fn own_field<H: VmHost>(vm: &H, obj: &JsObject, prop_si: u32) -> Option<JsValue> {
-    vm.kernel_core()
-        .shape_forge()
-        .lookup_position(obj.shape_id(), prop_si)
-        .and_then(|pos| (obj.prop_vec_len() > pos as usize).then(|| obj.get_prop_at(pos)))
+/// 按 ToPropertyDescriptor 语义取描述符字段：沿原型链判存在性，存在时经
+/// ordinary_get 取值（触发 accessor getter，receiver 为描述符对象本身）。
+fn own_field<H: VmHost>(vm: &mut H, desc: JsValue, prop_si: u32) -> Option<JsValue> {
+    // ordinary_get 对缺失属性返回 undefined，无法区分"不存在"与"值为
+    // undefined"，故先用 resolve_property 沿原型链判 HasProperty。
+    let obj = unsafe { &*desc.as_js_object_ptr() };
+    vm.resolve_property(obj, prop_si)?;
+    vm.ordinary_get(obj, prop_si, desc).ok()
 }
 
 fn make_string_array<H: VmHost>(vm: &mut H, parts: &[String]) -> JsValue {
