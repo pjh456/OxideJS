@@ -123,6 +123,7 @@ impl Emitter {
                 let mut inner = shadow.clone();
                 inner.extend(self.collect_fn_param_names(&fd.params));
                 inner.extend(self.collect_own_binding_names(&[], body));
+                self.collect_fn_default_names(&fd.params, ref_set, shadow, out);
                 self.collect_capture_names_shadowed(body, ref_set, &inner, out);
             }
             Statement::IfStatement(is) => {
@@ -240,6 +241,20 @@ impl Emitter {
         }
     }
 
+    /// 收集函数参数默认值表达式里的引用（子层 upvalue 判定；参数名遮蔽）。
+    fn collect_fn_default_names(
+        &self, params: &oxide_parser::FormalParameters, ref_set: &HashSet<String>, shadow: &HashSet<String>,
+        out: &mut HashSet<String>,
+    ) {
+        for p in &params.items {
+            if let Some(init) = &p.initializer {
+                self.collect_capture_names_expr(init, ref_set, shadow, out);
+            }
+            let mut param_shadow = shadow.clone();
+            self.collect_capture_names_binding_pattern(&p.pattern, ref_set, shadow, out, &mut param_shadow);
+        }
+    }
+
     fn collect_capture_names_expr(
         &self, expr: &Expression, ref_set: &HashSet<String>, shadow: &HashSet<String>, out: &mut HashSet<String>,
     ) {
@@ -272,12 +287,14 @@ impl Emitter {
                 let mut inner = shadow.clone();
                 inner.extend(self.collect_fn_param_names(&fe.params));
                 inner.extend(self.collect_own_binding_names(&[], body));
+                self.collect_fn_default_names(&fe.params, ref_set, shadow, out);
                 self.collect_capture_names_shadowed(body, ref_set, &inner, out);
             }
             Expression::ArrowFunctionExpression(ae) => {
                 let mut inner = shadow.clone();
                 inner.extend(self.collect_fn_param_names(&ae.params));
                 inner.extend(self.collect_own_binding_names(&[], &ae.body.statements));
+                self.collect_fn_default_names(&ae.params, ref_set, shadow, out);
                 self.collect_capture_names_shadowed(&ae.body.statements, ref_set, &inner, out);
             }
             Expression::BinaryExpression(be) => {
@@ -382,10 +399,17 @@ impl Emitter {
     }
 
     /// 分析本函数：哪些绑定被任意深度嵌套函数捕获 → captured_bindings。
-    pub(crate) fn collect_captured_bindings(&self, stmts: &[Statement], own: &HashSet<String>) -> BTreeMap<String, u8> {
+    pub(crate) fn collect_captured_bindings(
+        &self, stmts: &[Statement], extra_exprs: &[&oxide_parser::Expression], own: &HashSet<String>,
+    ) -> BTreeMap<String, u8> {
         let mut names = HashSet::new();
         for stmt in stmts {
             self.collect_captured_stmt(stmt, own, &mut names);
+        }
+        // 参数默认值表达式（不在 body_stmts 内）里的嵌套函数引用也要纳入捕获，
+        // 否则默认值内 IIFE 引用全局/外层变量走 LOAD_VAR 读寄存器残留（B022 扩展）。
+        for expr in extra_exprs {
+            self.collect_captured_expr(expr, own, &mut names);
         }
         // 名字排序分配 cell_idx（稳定跨 run，父 MAKE_CELL 与子 upvalue 统一引用）
         let mut sorted: Vec<String> = names.into_iter().collect();
@@ -393,10 +417,23 @@ impl Emitter {
         sorted.into_iter().enumerate().map(|(i, n)| (n, i as u8)).collect()
     }
 
+    /// 收集函数参数默认值表达式里的嵌套函数引用（父层 captured/子层 upvalue 判定）。
+    fn collect_fn_default_captured(
+        &self, params: &oxide_parser::FormalParameters, own: &HashSet<String>, out: &mut HashSet<String>,
+    ) {
+        for p in &params.items {
+            if let Some(init) = &p.initializer {
+                self.collect_captured_expr(init, own, out);
+            }
+            self.collect_captured_binding_pattern(&p.pattern, own, out);
+        }
+    }
+
     /// 只从嵌套函数节点进入扫描（本函数直接引用不算捕获）。
     fn collect_captured_stmt(&self, stmt: &Statement, own: &HashSet<String>, out: &mut HashSet<String>) {        match stmt {
             Statement::FunctionDeclaration(fd) => {
                 let body: &[Statement] = fd.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
+                self.collect_fn_default_captured(&fd.params, own, out);
                 self.collect_capture_names(body, own, out);
             }
             Statement::ExpressionStatement(es) => self.collect_captured_expr(&es.expression, own, out),
@@ -523,11 +560,13 @@ impl Emitter {
                 let body: &[Statement] = fe.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
                 let mut inner = self.collect_fn_param_names(&fe.params);
                 inner.extend(self.collect_own_binding_names(&[], body));
+                self.collect_fn_default_captured(&fe.params, own, out);
                 self.collect_capture_names_shadowed(body, own, &inner, out);
             }
             Expression::ArrowFunctionExpression(ae) => {
                 let mut inner = self.collect_fn_param_names(&ae.params);
                 inner.extend(self.collect_own_binding_names(&[], &ae.body.statements));
+                self.collect_fn_default_captured(&ae.params, own, out);
                 self.collect_capture_names_shadowed(&ae.body.statements, own, &inner, out);
             }
             Expression::CallExpression(ce) => {
@@ -634,7 +673,7 @@ impl Emitter {
     /// 若在父 `upvalue_captures`（父自身从更外层捕获）则链式标记 `parent_uv_idx`，
     /// 运行时从父闭包 upvalues 取 cell。enclosing_reg 由父 emit 完成后填充。
     pub(crate) fn collect_upvalue_names(
-        &self, body_stmts: &[Statement], parent_captured: &BTreeMap<String, u8>,
+        &self, body_stmts: &[Statement], extra_exprs: &[&oxide_parser::Expression], parent_captured: &BTreeMap<String, u8>,
         parent_upvalues: &[UpvalueCapture], sub_own: &HashSet<String>,
     ) -> Vec<UpvalueCapture> {
         let mut parent_names: HashSet<String> = parent_captured.keys().cloned().collect();
@@ -643,6 +682,10 @@ impl Emitter {
         }
         let mut names = HashSet::new();
         self.collect_capture_names_shadowed(body_stmts, &parent_names, sub_own, &mut names);
+        // 参数默认值表达式（不在 body_stmts）里的嵌套函数引用也会捕获父变量。
+        for expr in extra_exprs {
+            self.collect_capture_names_expr(expr, &parent_names, sub_own, &mut names);
+        }
         // HashSet 迭代序带随机种子（进程级非确定），必须排序使 upvalue_captures 的顺序与
         // 父 captured_bindings 的 cell_idx（BTreeMap 名字序）对齐——否则 LOAD_UPVALUE 的
         // a 槽 uv_idx 编码与 cell_idx 错位，读错 upvalue。

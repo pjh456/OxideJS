@@ -523,6 +523,39 @@ impl Emitter {
         Self
     }
 
+    /// 遍历解构 pattern 收集内嵌默认值表达式（AssignmentPattern.right）。
+    fn collect_pattern_default_exprs<'a>(
+        &self, pattern: &'a oxide_parser::BindingPattern<'a>, out: &mut Vec<&'a oxide_parser::Expression<'a>>,
+    ) {
+        use oxide_parser::BindingPattern;
+        match pattern {
+            BindingPattern::AssignmentPattern(ap) => {
+                out.push(&ap.right);
+                self.collect_pattern_default_exprs(&ap.left, out);
+            }
+            BindingPattern::ArrayPattern(ap) => {
+                for elem in &ap.elements {
+                    if let Some(p) = elem {
+                        self.collect_pattern_default_exprs(p, out);
+                    }
+                }
+                if let Some(rest) = &ap.rest {
+                    self.collect_pattern_default_exprs(&rest.argument, out);
+                }
+            }
+            BindingPattern::ObjectPattern(op) => {
+                for prop in &op.properties {
+                    self.collect_pattern_default_exprs(&prop.value, out);
+                }
+                if let Some(rest) = &op.rest {
+                    self.collect_pattern_default_exprs(&rest.argument, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+
     // ── 闭包捕获分析（AST 级，时序无关）──
 
     /// 收集函数参数的绑定名（BindingIdentifier 形态）。
@@ -759,8 +792,26 @@ impl Emitter {
 
         // 闭包捕获分析（AST 级，emit 前确定，时序无关）
         let param_names: Vec<&str> = param_specs.iter().map(|s| s.register_name()).collect();
+        let mut param_defaults: Vec<&oxide_parser::Expression> = Vec::new();
+        for spec in param_specs {
+            match spec {
+                ParamSpec::Identifier { initializer, .. } => {
+                    if let Some(init) = initializer {
+                        param_defaults.push(init);
+                    }
+                }
+                ParamSpec::Pattern { pattern, initializer, .. } => {
+                    if let Some(init) = initializer {
+                        param_defaults.push(init);
+                    }
+                    // 模式内嵌默认值（`[x = expr]` 的 AssignmentPattern.right）也会被
+                    // 内部闭包引用，需纳入捕获分析。
+                    self.collect_pattern_default_exprs(pattern, &mut param_defaults);
+                }
+            }
+        }
         ctx.own_bindings = self.collect_own_binding_names(&param_names, body_stmts);
-        ctx.captured_bindings = self.collect_captured_bindings(body_stmts, &ctx.own_bindings);
+        ctx.captured_bindings = self.collect_captured_bindings(body_stmts, &param_defaults, &ctx.own_bindings);
 
         // 被捕获的参数也必须建 cell（MAKE_CELL）：否则子函数经 lazy upvalue 路径读
         // 自身寄存器（依赖调用者寄存器残留），vreg 化/RegAlloc 移动寄存器后读到垃圾。
@@ -782,6 +833,7 @@ impl Emitter {
         if matches!(body_context, FunctionBodyContext::Ordinary | FunctionBodyContext::Arrow) {
             ctx.current_upvalue_captures = self.collect_upvalue_names(
                 body_stmts,
+                &param_defaults,
                 &parent_ctx.captured_bindings,
                 &parent_ctx.current_upvalue_captures,
                 &ctx.own_bindings,
@@ -888,7 +940,7 @@ impl Emitter {
 
         // 闭包捕获分析（AST 级，emit 前确定）
         ctx.own_bindings = self.collect_own_binding_names(&[], &program.body);
-        ctx.captured_bindings = self.collect_captured_bindings(&program.body, &ctx.own_bindings);
+        ctx.captured_bindings = self.collect_captured_bindings(&program.body, &[], &ctx.own_bindings);
 
         // 首个 sub-pass：发函数声明（hoisting），保证任何代码运行前函数对象已就绪。
         for stmt in &program.body {
