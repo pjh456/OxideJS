@@ -149,6 +149,16 @@ impl Vm {
         if let Some(saved_bc) = self.saved_bytecode_stack.pop() {
             self.bytecode = saved_bc;
         }
+        vm_debug!(
+            "restore_frame: return_addr={} bc_len={} saved_stack={} fn={:?}",
+            frame.return_addr,
+            self.bytecode.len(),
+            self.saved_bytecode_stack.len(),
+            self.kernel_core
+                .perm_interner()
+                .lookup(frame.function_name)
+                .map(|s| s.to_string())
+        );
         if let Some(saved_imm) = self.saved_immutables_stack.pop() {
             self.active_immutables = saved_imm;
         }

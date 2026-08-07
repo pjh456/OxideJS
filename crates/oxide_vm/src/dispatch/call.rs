@@ -133,15 +133,21 @@ impl Vm {
         let name_val = function_name.as_deref().map(|n| self.new_string(n)).unwrap_or_else(|| self.new_string(""));
         self.set_or_create_prop_value(func_obj, name_si, name_val);
         if !upvalue_captures.is_empty() {
-            if let Some(current_cells) = self.cell_stack.last() {
+            if let Some(current_cells) = self.cell_stack.last_mut() {
                 let mut upvals = Box::new(Vec::with_capacity(upvalue_captures.len()));
                 for capture in &upvalue_captures {
-                    let cell_ptr = if (capture.cell_idx as usize) < current_cells.len() {
-                        current_cells[capture.cell_idx as usize]
-                    } else {
-                        std::ptr::null_mut()
-                    };
-                    upvals.push(cell_ptr);
+                    let cell_idx = capture.cell_idx as usize;
+                    if cell_idx >= current_cells.len() {
+                        current_cells.resize(cell_idx + 1, std::ptr::null_mut());
+                    }
+                    // cell 可能尚未 MAKE_CELL（hoisting 顺序：CREATE_CLOSURE 先于
+                    // MAKE_CELL）——建占位 Cell，后续 MAKE_CELL 更新同一 Cell 的值，
+                    // 保证 upvalue 始终指向定义方表里的稳定 cell（而非调用方表）。
+                    if current_cells[cell_idx].is_null() {
+                        let cell = self.gc_state.session_epoch.alloc(Cell::new(JsValue::undefined(), true));
+                        current_cells[cell_idx] = cell as *mut Cell;
+                    }
+                    upvals.push(current_cells[cell_idx]);
                 }
                 let func_obj = unsafe { &mut *result.as_js_object_ptr() };
                 func_obj.set_upvalues(upvals);
@@ -155,13 +161,21 @@ impl Vm {
     pub(crate) fn dispatch_make_cell(&mut self, rd: usize, instr: u32) -> Result<(), String> {
         let cell_idx = opcode::imm16(instr) as usize;
         let value = self.regs[rd];
-        let cell = self.gc_state.session_epoch.alloc(Cell::new(value, true));
-        let cell_ptr = cell as *mut Cell;
         let current = self.cell_stack.last_mut().unwrap();
         while current.len() <= cell_idx {
             current.push(std::ptr::null_mut());
         }
-        current[cell_idx] = cell_ptr;
+        if current[cell_idx].is_null() {
+            // 无占位 cell：新建。
+            let cell = self.gc_state.session_epoch.alloc(Cell::new(value, true));
+            current[cell_idx] = cell as *mut Cell;
+        } else {
+            // 更新占位 cell（CREATE_CLOSURE 已建），使闭包 upvalue 指向的
+            // cell 值跟随初始化。
+            unsafe {
+                (*current[cell_idx]).value = value;
+            }
+        }
         Ok(())
     }
 

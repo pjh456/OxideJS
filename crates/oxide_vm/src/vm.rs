@@ -856,6 +856,34 @@ impl Vm {
                 }
             }
             if self.pc >= self.bytecode.len() {
+                let tail: Vec<String> = self
+                    .bytecode
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .take(5)
+                    .map(|(i, &instr)| format!("{i}:{:?}", opcode::opcode(instr)))
+                    .collect();
+                let fn_names: Vec<String> = self
+                    .frames
+                    .iter()
+                    .map(|f| {
+                        self.kernel_core
+                            .perm_interner()
+                            .lookup(f.function_name)
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| "?".into())
+                    })
+                    .collect();
+                vm_error!(
+                    "dispatch: program counter out of bounds pc={} len={} frames={} cell_stack={} tail={:?} fns={:?}",
+                    self.pc,
+                    self.bytecode.len(),
+                    self.frames.len(),
+                    self.cell_stack.len(),
+                    tail,
+                    fn_names
+                );
                 vm_error!("dispatch: program counter out of bounds pc={} len={}", self.pc, self.bytecode.len());
                 self.profiling.instruction_count = steps;
                 return Err("program counter out of bounds".into());

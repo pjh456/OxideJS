@@ -85,7 +85,8 @@ pub fn init(config: &LogConfig) {
         }
         SUBSYSTEM.set(filter.clone()).ok();
 
-        let env_filter = EnvFilter::try_from_env("OXIDE_LOG").unwrap_or_else(|_| EnvFilter::new("oxide=off"));
+        let env_filter = EnvFilter::try_from_env("OXIDE_LOG")
+            .unwrap_or_else(|_| EnvFilter::new("oxide=trace"));
 
         subsystem::apply_env_levels();
 

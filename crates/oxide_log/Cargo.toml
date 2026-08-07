@@ -7,6 +7,6 @@ rust-version.workspace = true
 description = "OxideJS - Structured logging subsystem (tracing-based)"
 
 [dependencies]
-tracing = { workspace = true, features = ["max_level_trace", "release_max_level_info"] }
+tracing = { workspace = true, features = ["max_level_trace", "release_max_level_debug"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "registry"] }
 tracing-appender = "0.2.5"

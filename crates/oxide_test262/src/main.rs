@@ -1135,9 +1135,16 @@ fn run_tests() -> bool {
         }
     };
 
+    let mut log_level = Level::Info;
+    if let Ok(s) = std::env::var("OXIDE_TEST262_LOG_LEVEL") {
+        if let Some(l) = oxide_log::subsystem::parse_level(&s) {
+            log_level = l;
+        }
+    }
+    eprintln!("[LOG] level={log_level:?}");
     oxide_log::init(&LogConfig {
         output: Output::Stderr,
-        levels: [Level::Info; SUBSYSTEM_COUNT],
+        levels: [log_level; SUBSYSTEM_COUNT],
     });
 
     let test262_root = if let Some(root) = config.test262_root.clone() {
