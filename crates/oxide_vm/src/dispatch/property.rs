@@ -114,7 +114,7 @@ impl Vm {
         };
         let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
         let obj = unsafe { &mut *obj_ptr };
-        obj.set_prop_at(pos, value);
+        obj.set_prop_shape(pos, value);
         Ok(())
     }
 
@@ -128,7 +128,7 @@ impl Vm {
         let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
         let obj = unsafe { &mut *obj_ptr };
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), private_key) {
-            obj.set_prop_at(pos, value);
+            obj.set_prop_shape(pos, value);
         } else {
             self.set_or_create_prop_value(obj, private_key, value);
         }
@@ -277,7 +277,7 @@ impl Vm {
         } else if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             self.profiling.record_ic_miss();
             prop_cache_miss();
-            obj.set_prop_at(pos, value);
+            obj.set_prop_shape(pos, value);
             ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos, 0);
             ic_debug!("IC_SET write-back shape={} slot={}", obj.shape_id(), pos);
         } else {
@@ -420,7 +420,7 @@ impl Vm {
             if !configurable {
                 return self.raise_type_error("cannot delete non-configurable property").map(|()| false);
             }
-            obj.set_prop_at(pos, JsValue::undefined());
+            obj.set_prop_shape(pos, JsValue::undefined());
         }
         self.regs[rd] = JsValue::bool(true);
         Ok(false)
@@ -438,7 +438,7 @@ impl Vm {
             if !configurable {
                 return self.raise_type_error("cannot delete non-configurable property").map(|()| false);
             }
-            obj.set_prop_at(pos, JsValue::undefined());
+            obj.set_prop_shape(pos, JsValue::undefined());
         }
         self.regs[rd] = JsValue::bool(true);
         Ok(false)

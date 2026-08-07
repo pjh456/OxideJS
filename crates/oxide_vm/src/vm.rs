@@ -704,7 +704,6 @@ impl Vm {
                     // 数组属性存储索引 = array_prop_count + shape 槽位（与元素区分）。
                     let idx = obj.array_prop_count as usize + pos as usize;
                     let val = obj.get_prop_at(idx);
-                    eprintln!("[DBG] gos array prop pos={} apc={} idx={} val={:?}", pos, obj.array_prop_count, idx, val);
                     if !val.is_undefined() {
                         Some(idx as u32)
                     } else {

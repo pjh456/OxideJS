@@ -658,6 +658,15 @@ impl JsObject {
                 vec.drain(target..old);
             }
             self.array_prop_count = target as u32;
+            if let Some(meta) = self.prop_meta_vec_mut() {
+                if target > old {
+                    for _ in old..target {
+                        meta.insert(old, None);
+                    }
+                } else if target < old {
+                    meta.drain(target..old);
+                }
+            }
         } else {
             let vec = self.ensure_hash_props();
             if target < vec.len() {
@@ -667,13 +676,13 @@ impl JsObject {
                     vec.push(JsValue::undefined());
                 }
             }
-        }
-        if let Some(meta) = self.prop_meta_vec_mut() {
-            if target < meta.len() {
-                meta.truncate(target);
-            } else {
-                while meta.len() < target {
-                    meta.push(None);
+            if let Some(meta) = self.prop_meta_vec_mut() {
+                if target < meta.len() {
+                    meta.truncate(target);
+                } else {
+                    while meta.len() < target {
+                        meta.push(None);
+                    }
                 }
             }
         }
@@ -899,6 +908,15 @@ impl JsObject {
         if pos > MAX_DENSE_PROPS {
             return;
         }
+        if self.is_array() {
+            // 元素写入越过元素区：先搬移属性区到 pos+1 之后，保持元素/属性分界不变。
+            if pos >= self.array_prop_count as usize {
+                self.set_prop_count(pos + 1);
+            }
+            let vec = self.ensure_hash_props();
+            vec[pos] = val;
+            return;
+        }
         {
             let vec = self.ensure_hash_props();
             if pos < vec.len() {
@@ -915,9 +933,6 @@ impl JsObject {
                 meta.push(None);
             }
         }
-        if self.is_array() && pos >= self.array_prop_count as usize {
-            self.array_prop_count = (pos + 1) as u32;
-        }
     }
 
     /// 数组对象（shape 槽位 → 存储索引 = `array_prop_count + 槽位`）的
@@ -928,6 +943,21 @@ impl JsObject {
         } else {
             shape_pos as usize
         };
+        let vec = self.ensure_hash_props();
+        while vec.len() <= idx {
+            vec.push(JsValue::undefined());
+        }
+        vec[idx] = val;
+        if let Some(meta) = self.prop_meta_vec_mut() {
+            while meta.len() <= idx {
+                meta.push(None);
+            }
+        }
+    }
+
+    /// 按绝对存储索引写入属性，不触发数组元素区搬移（属性区已在元素之后）。
+    /// 用于调用方已知属性存储位置（如 `get_own_property_slot` 返回的索引）的场景。
+    pub fn set_prop_storage(&mut self, idx: usize, val: JsValue) {
         let vec = self.ensure_hash_props();
         while vec.len() <= idx {
             vec.push(JsValue::undefined());
@@ -1298,6 +1328,43 @@ mod tests {
 
         obj.push_prop(JsValue::int(4));
         assert_eq!(obj.prop_meta_vec().expect("meta").len(), obj.prop_vec_len());
+    }
+
+    #[test]
+    fn array_element_write_preserves_props_after_element_growth() {
+        // 先写属性再 push 元素：元素区增长必须整体搬移属性区，不覆盖属性。
+        let bump = bumpalo::Bump::new();
+        let mut obj = JsObject::new_array(EMPTY_SHAPE_ID, JsValue::null(), 3, &bump);
+        obj.set_prop_shape(0, JsValue::int(99));
+        obj.set_prop_at(3, JsValue::int(4));
+        assert_eq!(obj.prop_count(), 4);
+        assert_eq!(obj.get_prop_at(3), JsValue::int(4));
+        assert_eq!(obj.get_prop_shape(0), JsValue::int(99));
+    }
+
+    #[test]
+    fn array_element_write_beyond_count_relocates_prop_zone() {
+        // 稀疏写入（越界索引）把属性区推到新元素之后，属性读取仍命中。
+        let bump = bumpalo::Bump::new();
+        let mut obj = JsObject::new_array(EMPTY_SHAPE_ID, JsValue::null(), 2, &bump);
+        obj.set_prop_shape(0, JsValue::int(7));
+        obj.set_prop_at(5, JsValue::int(50));
+        assert_eq!(obj.prop_count(), 6);
+        assert_eq!(obj.get_prop_at(5), JsValue::int(50));
+        assert_eq!(obj.get_prop_shape(0), JsValue::int(7));
+    }
+
+    #[test]
+    fn array_prop_count_truncate_keeps_prop_zone() {
+        // pop 截断元素区时属性区不得被删（meta 同步 insert/drain 对齐）。
+        let bump = bumpalo::Bump::new();
+        let mut obj = JsObject::new_array(EMPTY_SHAPE_ID, JsValue::null(), 3, &bump);
+        obj.set_prop_shape(0, JsValue::int(5));
+        obj.set_data_meta(3, PropAttributes::new(true, false, true));
+        obj.set_prop_count_fast(2);
+        assert_eq!(obj.prop_count(), 2);
+        assert_eq!(obj.get_prop_shape(0), JsValue::int(5));
+        assert!(obj.prop_meta_at(2).is_some());
     }
 }
 

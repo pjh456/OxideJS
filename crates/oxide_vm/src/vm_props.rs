@@ -175,7 +175,8 @@ impl Vm {
                     return self.raise_type_error("cannot assign to read-only property");
                 }
             }
-            obj.set_prop_at(pos, val);
+            // pos 是存储索引（get_own_property_slot 对数组已加元素区偏移）。
+            obj.set_prop_storage(pos as usize, val);
             return Ok(());
         }
 
@@ -248,7 +249,7 @@ impl Vm {
                 self.proto_chain_ic_get(obj, prop_name_si, receiver)?
             } else if template.position < obj.prop_vec_len() as u32 {
                 crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), template.position, 0);
-                obj.get_prop_at(template.position)
+                obj.get_prop_shape(template.position)
             } else {
                 self.proto_chain_ic_get(obj, prop_name_si, receiver)?
             }
@@ -298,7 +299,7 @@ impl Vm {
                 self.ordinary_set(obj, prop_name_si, val, receiver)?;
                 return Ok(());
             }
-            obj.set_prop_at(pos, val);
+            obj.set_prop_shape(pos, val);
             crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos, 0);
         } else {
             self.ordinary_set(obj, prop_name_si, val, receiver)?;
@@ -324,6 +325,12 @@ impl Vm {
     ) -> Result<(), String> {
         vm_trace!("define_data_property: shape={} prop_si={}", obj.shape_id(), prop_name_si);
         let val = self.promote_if_needed_for_write_ptr(obj as *mut JsObject, val);
+        if obj.is_array() {
+            if let Some(index) = self.array_index_from_property_key(prop_name_si) {
+                // 数组索引属性存元素区并维护 array_prop_count（元素数随索引增长）。
+                return self.define_array_index_element(obj, index, val, attributes, false, JsValue::undefined(), JsValue::undefined());
+            }
+        }
         let pos = if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             // shape 槽位 → 存储索引（数组属性在元素区之后）。
             if obj.is_array() {
@@ -354,7 +361,7 @@ impl Vm {
                 }
             }
         }
-        obj.set_prop_at(pos, val);
+        obj.set_prop_storage(pos, val);
         obj.set_data_meta(pos, attributes);
         obj.bump_generation();
         Ok(())
@@ -367,12 +374,22 @@ impl Vm {
         let target_ptr = obj as *mut JsObject;
         let get = self.promote_if_needed_for_write_ptr(target_ptr, get);
         let set = self.promote_if_needed_for_write_ptr(target_ptr, set);
+        if obj.is_array() {
+            if let Some(index) = self.array_index_from_property_key(prop_name_si) {
+                return self.define_array_index_element(obj, index, JsValue::undefined(), attributes, true, get, set);
+            }
+        }
         let pos = if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
-            pos
+            // shape 槽位 → 存储索引（数组属性在元素区之后）。
+            if obj.is_array() {
+                obj.array_prop_count as usize + pos as usize
+            } else {
+                pos as usize
+            }
         } else {
             let new_shape_id = self.kernel_core.shape_forge().make_shape(obj.shape_id(), prop_name_si);
             obj.set_shape_id(new_shape_id);
-            obj.push_prop(JsValue::undefined())
+            obj.push_prop(JsValue::undefined()) as usize
         };
         if let Some(current) = obj.prop_meta_at(pos) {
             if !current.attributes.configurable()
@@ -385,8 +402,57 @@ impl Vm {
                 return self.raise_type_error("cannot redefine non-configurable property");
             }
         }
-        obj.set_prop_at(pos, JsValue::undefined());
+        obj.set_prop_storage(pos, JsValue::undefined());
         obj.set_accessor_meta(pos, get, set, attributes);
+        obj.bump_generation();
+        Ok(())
+    }
+
+    /// 数组索引属性（`"0"`~`"4294967294"`）的 define 路径：存入元素区并维护
+    /// `array_prop_count`（length 随最高索引增长），meta 与元素槽对齐。
+    fn define_array_index_element(
+        &mut self,
+        obj: &mut JsObject,
+        index: u32,
+        val: JsValue,
+        attributes: PropAttributes,
+        is_accessor: bool,
+        get: JsValue,
+        set: JsValue,
+    ) -> Result<(), String> {
+        let pos = index as usize;
+        if pos > oxide_types::object::MAX_DENSE_PROPS {
+            return self.raise_type_error("array index out of dense range");
+        }
+        let pos = pos as u32;
+        if let Some(current) = obj.prop_meta_at(pos) {
+            if !current.attributes.configurable() {
+                if current.is_accessor != is_accessor {
+                    return self.raise_type_error("cannot redefine non-configurable property");
+                }
+                if current.attributes.enumerable() != attributes.enumerable() {
+                    return self.raise_type_error("cannot redefine non-configurable property");
+                }
+                if current.attributes.configurable() != attributes.configurable() {
+                    return self.raise_type_error("cannot redefine non-configurable property");
+                }
+                if is_accessor {
+                    if current.get != get || current.set != set {
+                        return self.raise_type_error("cannot redefine non-configurable property");
+                    }
+                } else if !current.attributes.writable()
+                    && (attributes.writable() || !coercion::same_value(obj.get_prop_at(pos), val))
+                {
+                    return self.raise_type_error("cannot redefine non-configurable property");
+                }
+            }
+        }
+        obj.set_prop_at(pos, val);
+        if is_accessor {
+            obj.set_accessor_meta(pos, get, set, attributes);
+        } else {
+            obj.set_data_meta(pos, attributes);
+        }
         obj.bump_generation();
         Ok(())
     }
