@@ -1,5 +1,3 @@
-use std::sync::OnceLock;
-
 use crate::native::NativeFn;
 use crate::vm::{native_fn_ptr_to_fn, CallFrame, FrameContinuation, Vm};
 use crate::{vm_debug, vm_trace};
@@ -89,7 +87,7 @@ impl Vm {
     pub(crate) fn dispatch_create_closure(&mut self, rd: usize, instr: u32) -> Result<(), String> {
         let sub_idx = opcode::imm16(instr) as u32;
         vm_trace!("CREATE_CLOSURE rd={} sub_idx={}", rd, sub_idx);
-        if sub_idx == 0 || (sub_idx as usize) > self.sub_modules.len() {
+        if sub_idx == 0 || (sub_idx as usize) >= self.sub_modules.len() {
             // 逃逸闭包（函数对象在定义模块之外被创建）时 sub_idx 相对定义模块，
             // 超出当前 sub_modules 上下文——按运行时错误处理而非索引越界 panic。
             return Err(format!(
@@ -98,7 +96,7 @@ impl Vm {
                 self.sub_modules.len()
             ));
         }
-        let sub = &self.sub_modules[sub_idx as usize - 1];
+        let sub = &self.sub_modules[sub_idx as usize];
         let is_arrow = sub.is_arrow;
         let is_class_constructor = sub.is_class_constructor;
         let is_derived_constructor = sub.is_derived_constructor;
@@ -366,7 +364,7 @@ impl Vm {
                 }
             }
         } else if super_obj.sub_module_index() > 0 {
-            let sub_idx = super_obj.sub_module_index() as usize - 1;
+            let sub_idx = super_obj.sub_module_index() as usize;
             if sub_idx >= self.sub_modules.len() {
                 return Err(format!(
                     "SUPER_CALL: sub_module_index {} out of bounds (max {})",
@@ -421,7 +419,7 @@ impl Vm {
 
             self.bytecode = sub_bytecode;
             let subs = Arc::clone(&self.sub_modules);
-            self.activate_immutables(sub_idx + 1, &subs[sub_idx].constants);
+            self.activate_immutables(sub_idx, &subs[sub_idx].constants);
             self.cell_stack.push(Vec::with_capacity(subs[sub_idx].cells_needed as usize));
             for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map.clone() {
                 let si = self.kernel_core.perm_interner().intern(name.as_str()).0;
@@ -431,15 +429,6 @@ impl Vm {
                 }
             }
 
-            let callee_subs = &subs[sub_idx].sub_modules;
-            if callee_subs.is_empty() {
-                self.sub_module_stack.push((Arc::clone(&self.sub_modules), None));
-            } else {
-                self.sub_module_stack
-                    .push((Arc::clone(&self.sub_modules), Some(std::mem::take(&mut self.immutables_cache))));
-                self.sub_modules = Arc::new(callee_subs.clone());
-                self.immutables_cache = (0..=callee_subs.len()).map(|_| OnceLock::new()).collect();
-            }
             self.active_reg_limit = sub_n_registers.max(1);
             self.pc = 0;
             return Ok(true);

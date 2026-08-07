@@ -188,6 +188,8 @@ pub struct Vm {
     pub epoch: Epoch,
     pub object_prototype: P<JsObject>,
     pub math_rng_state: u64,
+    /// 全局扁平模块表：下标 = 模块 `flat_id`（顶层 0，子模块 flatten 后全局唯一）。
+    /// 闭包 `sub_module_index` 即 flat_id，逃逸闭包也能自足解析。
     pub(crate) sub_modules: Arc<Vec<CompiledModule>>,
     pub(crate) saved_bytecode_stack: Vec<Vec<opcode::Instr>>,
     pub(crate) saved_immutables_stack: Vec<*const [JsValue]>,
@@ -225,9 +227,7 @@ pub struct Vm {
     pub(crate) iters: IterState,
     /// 分组保存 inline cache 与指令计数器。
     pub(crate) profiling: ProfilingState,
-    pub(crate) sub_module_stack: Vec<(Arc<Vec<CompiledModule>>, Option<Vec<OnceLock<Vec<JsValue>>>>)>,
     pub(crate) cell_stack: Vec<Vec<*mut Cell>>,
-    pub(crate) temp_immutables: Vec<Vec<JsValue>>,
     /// 可复用字符串缓冲区，避免每次 `+` 拼接都分配。
     pub(crate) string_buf: String,
 }
@@ -608,6 +608,31 @@ impl Vm {
             let s = unsafe { &(*val.as_string_ptr()).data };
             return self.kernel_core.perm_interner().intern(s).0;
         }
+        // well-known symbol 是空对象：按指针比对映射为各自专属键，避免全部塌缩。
+        if val.is_object() {
+            let world = self.session.builtin_world();
+            let ptr = val.as_js_object_ptr();
+            let key = if std::ptr::eq(ptr, world.sym_iterator.as_ptr()) {
+                "@@iterator"
+            } else if std::ptr::eq(ptr, world.sym_match.as_ptr()) {
+                "@@match"
+            } else if std::ptr::eq(ptr, world.sym_replace.as_ptr()) {
+                "@@replace"
+            } else if std::ptr::eq(ptr, world.sym_search.as_ptr()) {
+                "@@search"
+            } else if std::ptr::eq(ptr, world.sym_split.as_ptr()) {
+                "@@split"
+            } else if std::ptr::eq(ptr, world.sym_to_primitive.as_ptr()) {
+                "@@toPrimitive"
+            } else if std::ptr::eq(ptr, world.sym_has_instance.as_ptr()) {
+                "@@hasInstance"
+            } else {
+                ""
+            };
+            if !key.is_empty() {
+                return self.kernel_core.perm_interner().intern(key).0;
+            }
+        }
         let key = coercion::to_string(val);
         self.kernel_core.perm_interner().intern(&key).0
     }
@@ -748,7 +773,7 @@ impl Vm {
         if !obj.is_function() || obj.sub_module_index() == 0 {
             return Err(self.error_message_text("TypeError", "CALL target is not callable"));
         }
-        let sub_idx = obj.sub_module_index() as usize - 1;
+        let sub_idx = obj.sub_module_index() as usize;
         if sub_idx >= self.sub_modules.len() {
             return Err(format!(
                 "CALL: sub_module_index {} out of bounds (max {})",
@@ -804,9 +829,7 @@ impl Vm {
         self.pc = 0;
         self.bytecode = sub_bytecode;
         let subs = Arc::clone(&self.sub_modules);
-        let converted = self.convert_immutables(&subs[sub_idx].constants);
-        self.temp_immutables.push(converted);
-        self.active_immutables = self.temp_immutables.last().unwrap().as_slice() as *const [JsValue];
+        self.activate_immutables(sub_idx, &subs[sub_idx].constants);
         self.cell_stack.push(Vec::with_capacity(subs[sub_idx].cells_needed as usize));
         for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map.clone() {
             let si = self.kernel_core.perm_interner().intern(name.as_str()).0;
@@ -814,16 +837,6 @@ impl Vm {
             if let Some(pos) = self.kernel_core.shape_forge().lookup_position(global.shape_id(), si) {
                 self.regs[*reg as usize] = global.get_prop_at(pos);
             }
-        }
-
-        let callee_subs = &subs[sub_idx].sub_modules;
-        if callee_subs.is_empty() {
-            self.sub_module_stack.push((Arc::clone(&self.sub_modules), None));
-        } else {
-            self.sub_module_stack
-                .push((Arc::clone(&self.sub_modules), Some(std::mem::take(&mut self.immutables_cache))));
-            self.sub_modules = Arc::new(callee_subs.clone());
-            self.immutables_cache = (0..=callee_subs.len()).map(|_| OnceLock::new()).collect();
         }
 
         self.active_reg_limit = sub_n_registers.max(1);

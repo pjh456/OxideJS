@@ -6,4 +6,5 @@
 
 pub mod compiler;
 pub mod compiler_log;
+pub mod flatten;
 pub mod hash;

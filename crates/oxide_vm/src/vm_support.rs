@@ -73,9 +73,7 @@ impl Vm {
                 instruction_count: 0,
             },
             string_buf: String::new(),
-            sub_module_stack: Vec::new(),
             cell_stack: Vec::new(),
-            temp_immutables: Vec::new(),
         };
         vm_info!("Vm created");
         vm
@@ -138,9 +136,7 @@ impl Vm {
                 instruction_count: 0,
             },
             string_buf: String::new(),
-            sub_module_stack: Vec::new(),
             cell_stack: Vec::new(),
-            temp_immutables: Vec::new(),
         };
         vm_info!("Vm created (pool)");
         vm
@@ -213,14 +209,12 @@ impl Vm {
         self.regs = [JsValue::undefined(); 256];
         self.pc = 0;
         self.frames.clear();
-        self.sub_module_stack.clear();
         self.iters.reset();
         self.saved_bytecode_stack.clear();
         self.saved_immutables_stack.clear();
         self.save_stack.clear();
         self.spill_stack.clear();
         self.cell_stack.clear();
-        self.temp_immutables.clear();
         self.try_stack.clear();
         self.exception_value = None;
         self.pending_exception = None;

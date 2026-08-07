@@ -1,4 +1,4 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use crate::native::NativeFn;
 use crate::vm::{native_fn_ptr_to_fn, CallFrame, ForInIter, FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
@@ -83,7 +83,7 @@ impl Vm {
                 }
             }
         } else if ctor_obj.sub_module_index() > 0 {
-            let sub_idx = ctor_obj.sub_module_index() as usize - 1;
+            let sub_idx = ctor_obj.sub_module_index() as usize;
             if sub_idx >= self.sub_modules.len() {
                 return Err(format!(
                     "NEW_EXPRESSION: sub_module_index {} out of bounds (max {})",
@@ -142,7 +142,7 @@ impl Vm {
 
             self.bytecode = sub_bytecode;
             let subs = Arc::clone(&self.sub_modules);
-            self.activate_immutables(sub_idx + 1, &subs[sub_idx].constants);
+            self.activate_immutables(sub_idx, &subs[sub_idx].constants);
             self.cell_stack.push(Vec::with_capacity(subs[sub_idx].cells_needed as usize));
 
             for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map {
@@ -151,16 +151,6 @@ impl Vm {
                 if let Some(pos) = self.kernel_core.shape_forge().lookup_position(global.shape_id(), si) {
                     self.regs[*reg as usize] = global.get_prop_at(pos);
                 }
-            }
-
-            let callee_subs = &subs[sub_idx].sub_modules;
-            if callee_subs.is_empty() {
-                self.sub_module_stack.push((Arc::clone(&self.sub_modules), None));
-            } else {
-                self.sub_module_stack
-                    .push((Arc::clone(&self.sub_modules), Some(std::mem::take(&mut self.immutables_cache))));
-                self.sub_modules = Arc::new(callee_subs.clone());
-                self.immutables_cache = (0..=callee_subs.len()).map(|_| OnceLock::new()).collect();
             }
 
             self.active_reg_limit = sub_n_registers.max(1);

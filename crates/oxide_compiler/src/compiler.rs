@@ -58,7 +58,9 @@ impl Compiler {
             oxide_regalloc::alloc(&mut ir, &live2)?; // 无可行染色 → RangeError 上抛
         }
         crate::compiler_debug!("compile: done, {} instructions", ir.insts.len());
-        lower(&ir)
+        let mut module = lower(&ir)?;
+        crate::flatten::flatten_submodules(&mut module);
+        Ok(module)
     }
 }
 

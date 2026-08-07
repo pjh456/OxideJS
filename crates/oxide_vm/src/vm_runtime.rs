@@ -7,6 +7,24 @@ use crate::{vm_debug, vm_info, vm_trace, vm_warn};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
+/// 按 `flat_id` 下标收集整棵子模块树为平表，供 `run()` 装载。
+fn collect_flat_modules(module: &CompiledModule) -> Vec<CompiledModule> {
+    let mut out: Vec<Option<CompiledModule>> = Vec::new();
+    place_flat(module, &mut out);
+    out.into_iter().map(|m| m.expect("flat_id slot must be filled")).collect()
+}
+
+fn place_flat(module: &CompiledModule, out: &mut Vec<Option<CompiledModule>>) {
+    let idx = module.flat_id as usize;
+    if idx >= out.len() {
+        out.resize(idx + 1, None);
+    }
+    out[idx] = Some(module.clone());
+    for sub in &module.sub_modules {
+        place_flat(sub, out);
+    }
+}
+
 impl Vm {
     pub(crate) fn call_bytecode_function_inline(
         &mut self, callee: JsValue, callee_obj: &JsObject, receiver: JsValue, args: &[JsValue],
@@ -14,7 +32,7 @@ impl Vm {
         if callee_obj.sub_module_index() == 0 {
             return Err(self.error_message_text("TypeError", "accessor is not callable"));
         }
-        let sub_idx = callee_obj.sub_module_index() as usize - 1;
+        let sub_idx = callee_obj.sub_module_index() as usize;
         vm_debug!(
             "call_bytecode_function_inline: sub_idx={}, args={}, depth={}",
             sub_idx,
@@ -68,7 +86,7 @@ impl Vm {
         self.regs = [JsValue::undefined(); 256];
         self.pc = 0;
         self.bytecode = sub.bytecode.clone();
-        self.activate_immutables(sub_idx + 1, &sub.constants);
+        self.activate_immutables(sub_idx, &sub.constants);
         self.active_reg_limit = sub.n_registers.max(1);
         self.root_reg_limit = self.active_reg_limit;
         self.cell_stack.push(Vec::with_capacity(sub.cells_needed as usize));
@@ -134,13 +152,6 @@ impl Vm {
         if let Some(saved_imm) = self.saved_immutables_stack.pop() {
             self.active_immutables = saved_imm;
         }
-        if let Some((saved_subs, saved_cache)) = self.sub_module_stack.pop() {
-            self.sub_modules = saved_subs;
-            if let Some(saved_cache) = saved_cache {
-                self.immutables_cache = saved_cache;
-            }
-        }
-        self.temp_immutables.pop();
         let offset = frame.saved_reg_offset as usize;
         let len = frame.caller_reg_limit as usize;
         self.regs[..len].copy_from_slice(&self.save_stack[offset..offset + len]);
@@ -171,8 +182,8 @@ impl Vm {
         self.clear_execution_state();
         self.cell_stack.clear();
         self.cell_stack.push(Vec::new());
-        self.sub_modules = Arc::new(module.sub_modules.clone());
-        self.immutables_cache = (0..=self.sub_modules.len()).map(|_| OnceLock::new()).collect();
+        self.sub_modules = Arc::new(collect_flat_modules(module));
+        self.immutables_cache = (0..self.sub_modules.len()).map(|_| OnceLock::new()).collect();
         self.bytecode = module.bytecode.clone();
         self.activate_immutables(0, &module.constants);
         self.root_reg_limit = module.n_registers.max(1);
