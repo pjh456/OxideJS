@@ -268,12 +268,20 @@ fn append_source_chunk(out: &mut String, name: &str, source: &str) {
 
 /// 取测试元数据的 harness 缓存键（即其 `includes` 列表）。
 fn harness_key(meta: &TestMeta) -> Vec<String> {
-    meta.includes.clone()
+    let mut key = meta.includes.clone();
+    if meta.flags.iter().any(|f| f == "onlyStrict") {
+        key.push("__onlyStrict__".into());
+    }
+    key
 }
 
 /// 按测试元数据拼接完整的 harness 前缀源码（prelude + sta/assert + 各 include）。
 fn build_harness_source(meta: &TestMeta, harness: &HarnessSources) -> Result<String, String> {
     let mut source = String::new();
+    // onlyStrict 测试在严格模式下运行：指令必须位于脚本最前（harness 之前）。
+    if meta.flags.iter().any(|f| f == "onlyStrict") {
+        append_source_chunk(&mut source, "use strict", "\"use strict\";");
+    }
     append_source_chunk(&mut source, "Test262Error prelude", test262_error_prelude());
     append_source_chunk(
         &mut source,

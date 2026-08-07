@@ -62,7 +62,12 @@ impl Emitter {
         if matches!(un.operator, UnaryOperator::Delete) {
             return match &un.argument {
                 Expression::Identifier(_) => {
-                    Err("SyntaxError: delete of an unqualified identifier in strict mode".into())
+                    // 严格模式的 delete 标识符由 oxc_semantic 提前拦截为早期错误；
+                    // 非严格语义返回 false（标识符不可删除）。
+                    let idx = ctx.add_constant(Constant::Boolean(false));
+                    let reg = ctx.alloc_reg();
+                    ctx.inst(Inst::load_const(Operand::Reg(reg), idx));
+                    Ok(reg)
                 }
                 Expression::StaticMemberExpression(member) => {
                     let obj_reg = self.emit_expression(&member.object, ctx)?;

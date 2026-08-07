@@ -20,7 +20,7 @@ pub fn parse<'a>(allocator: &'a Allocator, source: &'a str) -> Result<Program<'a
     use oxc_parser::Parser;
     use oxc_span::SourceType;
 
-    let source_type = SourceType::default();
+    let source_type = SourceType::unambiguous();
     let ret = Parser::new(allocator, source, source_type).parse();
 
     if ret.panicked {
@@ -32,6 +32,14 @@ pub fn parse<'a>(allocator: &'a Allocator, source: &'a str) -> Result<Program<'a
 
     if !ret.errors.is_empty() {
         return Err(ret.errors.into_iter().map(OxideError::from).collect());
+    }
+
+    // 语法早期错误（Early Errors）检查：oxc parser 把复杂早期错误委托给
+    // oxc_semantic（strict 绑定标识符、重复参数、NSPL、super 位置等）。
+    let semantic_ret =
+        oxc_semantic::SemanticBuilder::new().with_check_syntax_error(true).build(&ret.program);
+    if !semantic_ret.errors.is_empty() {
+        return Err(semantic_ret.errors.into_iter().map(OxideError::from).collect());
     }
 
     Ok(ret.program)
