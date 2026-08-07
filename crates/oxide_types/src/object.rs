@@ -357,6 +357,8 @@ impl JsObject {
     pub const OBJ_TYPE_DATA_VIEW: u8 = 7;
     /// TypedArray 对象类型标签。
     pub const OBJ_TYPE_TYPED_ARRAY: u8 = 8;
+    /// native 构造器（Set/Array/Object 等，可 [[Construct]]）；区别于不可构造的 native 方法。
+    pub const OBJ_TYPE_CONSTRUCTOR: u8 = 9;
     /// `is_session_epoch` 字段中的 session 标记位。
     pub const SESSION_EPOCH_BIT: u8 = 0x01;
     /// `is_session_epoch` 字段中的 GC 标记位。

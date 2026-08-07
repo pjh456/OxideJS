@@ -74,6 +74,7 @@ macro_rules! bind_constructor {
         let ptr: *const () = ($ctor_fn as fn(&mut $crate::vm::Vm, &[u8]) -> oxide_runtime_api::NativeResult) as *const ();
         ctor.set_native_fn(Some(unsafe { oxide_types::object::NativeFnPtr::from_raw(ptr) }));
         ctor.set_native_arg_count($nargs);
+        ctor.type_tag = oxide_types::object::JsObject::OBJ_TYPE_CONSTRUCTOR;
         // 设置 constructor.length (Function.length = formal parameter count)
         let length_si = $core.perm_interner().intern("length").0;
         let length_shape = $core.shape_forge().make_shape(ctor.shape_id(), length_si);
@@ -86,6 +87,7 @@ pub(crate) fn configure_native_constructor(ctor: &mut JsObject, native_fn: *cons
     // SAFETY: native_fn 始终是调用方转成 *const () 的合法 NativeFn 函数项指针。
     ctor.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(native_fn) }));
     ctor.set_native_arg_count(arg_count);
+    ctor.type_tag = JsObject::OBJ_TYPE_CONSTRUCTOR;
 }
 
 fn configure_existing_ctor(ctor: &P<JsObject>, native_fn: *const (), arg_count: u8) {

@@ -42,6 +42,11 @@ pub fn reflect_construct<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if new_target_ptr.is_null() || !unsafe { &*new_target_ptr }.is_function() {
         return type_error(vm, "Reflect.construct newTarget is not a constructor");
     }
+    // 不可构造：箭头函数、native 方法（非构造器，OBJ_TYPE_CONSTRUCTOR 标记的除外）。
+    let nt = unsafe { &*new_target_ptr };
+    if nt.is_arrow() || (nt.native_fn().is_some() && nt.type_tag != oxide_types::object::JsObject::OBJ_TYPE_CONSTRUCTOR) {
+        return type_error(vm, "Reflect.construct newTarget is not a constructor");
+    }
 
     let proto_si = vm.kernel_core().perm_interner().intern("prototype").0;
     let proto_val = match vm.resolve_property(unsafe { &*new_target_ptr }, proto_si) {

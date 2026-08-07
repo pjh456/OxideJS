@@ -35,6 +35,12 @@ impl Vm {
                 .raise_type_error("arrow functions cannot be used as constructors")
                 .map(|_| true);
         }
+        // native 方法（非构造器）不可 new。
+        if ctor_obj.native_fn().is_some() && ctor_obj.type_tag != oxide_types::object::JsObject::OBJ_TYPE_CONSTRUCTOR {
+            return self
+                .raise_type_error("object is not a constructor")
+                .map(|_| true);
+        }
 
         let ext = self.bytecode[self.pc];
         self.pc += 1;
