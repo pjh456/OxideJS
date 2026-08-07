@@ -102,6 +102,7 @@ impl Vm {
         let is_derived_constructor = sub.is_derived_constructor;
         let needs_home_object = sub.needs_home_object;
         let upvalue_captures = sub.upvalue_captures.clone();
+        let function_name = sub.function_name.clone();
         let result = self.create_function_object(
             sub_idx,
             is_arrow,
@@ -109,6 +110,11 @@ impl Vm {
             is_derived_constructor,
             needs_home_object,
         );
+        // 函数名推断：emit 端在变量声明/对象属性赋值点设置 function_name。
+        let func_obj = unsafe { &mut *result.as_js_object_ptr() };
+        let name_si = self.kernel_core.perm_interner().intern("name").0;
+        let name_val = function_name.as_deref().map(|n| self.new_string(n)).unwrap_or_else(|| self.new_string(""));
+        self.set_or_create_prop_value(func_obj, name_si, name_val);
         if !upvalue_captures.is_empty() {
             if let Some(current_cells) = self.cell_stack.last() {
                 let mut upvals = Box::new(Vec::with_capacity(upvalue_captures.len()));

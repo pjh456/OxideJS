@@ -246,17 +246,6 @@ fn is_blacklisted_harness(name: &str) -> bool {
 }
 
 /// 生成 `Test262Error` 的 JS prelude（供测试脚本 `assert` 失败时抛出）。
-fn test262_error_prelude() -> &'static str {
-    r#"
-function Test262Error(message) {
-  this.message = message;
-  this.name = "Test262Error";
-}
-Test262Error.prototype = new Error();
-Test262Error.prototype.constructor = Test262Error;
-"#
-}
-
 /// 向拼接源码追加一段带注释标记的 harness 代码块。
 fn append_source_chunk(out: &mut String, name: &str, source: &str) {
     out.push_str("\n// ---- test262 harness: ");
@@ -282,7 +271,8 @@ fn build_harness_source(meta: &TestMeta, harness: &HarnessSources) -> Result<Str
     if meta.flags.iter().any(|f| f == "onlyStrict") {
         append_source_chunk(&mut source, "use strict", "\"use strict\";");
     }
-    append_source_chunk(&mut source, "Test262Error prelude", test262_error_prelude());
+    // Test262Error 由 sta.js 提供；此处不再重复定义（重复函数声明会引发
+    // 引擎 prototype 语义错乱，导致 assert.throws 的 constructor 比对失败）。
     append_source_chunk(
         &mut source,
         "sta.js",
