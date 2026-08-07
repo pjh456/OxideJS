@@ -23,13 +23,17 @@ pub enum Constant {
 
 /// 闭包对上层作用域一个变量的捕获描述。
 ///
-/// `enclosing_reg` 是外层函数中该变量的寄存器位；若外层变量本身就是 upvalue
-/// （多级闭包），`cell_idx` 指向链式捕获的 cell。
+/// `enclosing_reg` 是外层函数中该变量的寄存器位；`cell_idx` 是父函数 own cell
+/// 表下标（`parent_uv_idx` 为 None 时）。多级闭包（外层变量本身就是父函数从更
+/// 外层捕获的 upvalue）时 `parent_uv_idx` 给出父闭包 `upvalues` 数组下标。
 #[derive(Debug, Clone)]
 pub struct UpvalueCapture {
     pub name: String,
     pub enclosing_reg: u32,
     pub cell_idx: u8,
+    /// 链式捕获：None = 父 own cell（cell_idx 索引定义方 cell 表）；
+    /// Some = 父函数自身 upvalue（运行时从父闭包 upvalues[parent_uv_idx] 取 cell）。
+    pub parent_uv_idx: Option<u8>,
 }
 
 /// 一个函数单元（或顶层脚本）的编译产物。

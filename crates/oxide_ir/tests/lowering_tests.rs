@@ -184,6 +184,7 @@ fn module_fields_are_copied_through() {
         name: "x".to_string(),
         enclosing_reg: 5,
         cell_idx: 0,
+        parent_uv_idx: None,
     });
     f.cells_needed = 1;
     let m = lower_ok(&f);
@@ -274,6 +275,7 @@ fn ir_function_domain_assemble_default_clone() {
         name: "x".to_string(),
         enclosing_reg: 0,
         cell_idx: 0,
+        parent_uv_idx: None,
     });
     f.cells_needed = 1;
     f.function_name = Some("f".to_string());
@@ -305,3 +307,4 @@ fn operand_this_is_semantic_not_physical_index() {
     assert_eq!(Operand::This, Operand::This);
     assert_eq!(Operand::NewTarget, Operand::NewTarget);
 }
+

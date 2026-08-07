@@ -556,12 +556,17 @@ impl Emitter {
     }
 
     /// 分析子函数 body：引用父级被捕获绑定的名字 → upvalue_captures。
-    /// cell_idx 直接取父 captured_bindings 映射（父 emit 前已确定，索引一致）；
-    /// enclosing_reg 由父 emit 完成后填充（assemble_ir）。
+    /// 名字若在父 `captured_bindings`（父 own cell）则 `cell_idx` 索引定义方表；
+    /// 若在父 `upvalue_captures`（父自身从更外层捕获）则链式标记 `parent_uv_idx`，
+    /// 运行时从父闭包 upvalues 取 cell。enclosing_reg 由父 emit 完成后填充。
     pub(crate) fn collect_upvalue_names(
-        &self, body_stmts: &[Statement], parent_captured: &BTreeMap<String, u8>, sub_own: &HashSet<String>,
+        &self, body_stmts: &[Statement], parent_captured: &BTreeMap<String, u8>,
+        parent_upvalues: &[UpvalueCapture], sub_own: &HashSet<String>,
     ) -> Vec<UpvalueCapture> {
-        let parent_names: HashSet<String> = parent_captured.keys().cloned().collect();
+        let mut parent_names: HashSet<String> = parent_captured.keys().cloned().collect();
+        for u in parent_upvalues {
+            parent_names.insert(u.name.clone());
+        }
         let mut names = HashSet::new();
         self.collect_capture_names_shadowed(body_stmts, &parent_names, sub_own, &mut names);
         // HashSet 迭代序带随机种子（进程级非确定），必须排序使 upvalue_captures 的顺序与
@@ -572,11 +577,13 @@ impl Emitter {
         names
             .into_iter()
             .map(|name| {
+                let parent_uv_idx = parent_upvalues.iter().position(|u| u.name == name).map(|i| i as u8);
                 let cell_idx = parent_captured.get(&name).copied().unwrap_or(0);
                 UpvalueCapture {
                     name,
                     enclosing_reg: 0, // assemble_ir 时从父符号表填充
                     cell_idx,
+                    parent_uv_idx,
                 }
             })
             .collect()

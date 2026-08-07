@@ -473,6 +473,7 @@ impl CompileCtx {
                     name: u.name.clone(),
                     enclosing_reg,
                     cell_idx: u.cell_idx,
+                    parent_uv_idx: u.parent_uv_idx,
                 }
             })
             .collect();
@@ -757,8 +758,12 @@ impl Emitter {
 
         // 自由变量分析（仅普通/箭头函数）：收集 upvalue 捕获。
         if matches!(body_context, FunctionBodyContext::Ordinary | FunctionBodyContext::Arrow) {
-            ctx.current_upvalue_captures =
-                self.collect_upvalue_names(body_stmts, &parent_ctx.captured_bindings, &ctx.own_bindings);
+            ctx.current_upvalue_captures = self.collect_upvalue_names(
+                body_stmts,
+                &parent_ctx.captured_bindings,
+                &parent_ctx.current_upvalue_captures,
+                &ctx.own_bindings,
+            );
         }
 
         Ok(param_base)

@@ -133,21 +133,34 @@ impl Vm {
         let name_val = function_name.as_deref().map(|n| self.new_string(n)).unwrap_or_else(|| self.new_string(""));
         self.set_or_create_prop_value(func_obj, name_si, name_val);
         if !upvalue_captures.is_empty() {
+            // 链式捕获（parent_uv_idx）：从父闭包（创建者）的 upvalues 取 cell。
+            let parent_upvalues: Vec<*mut Cell> = match self.current_callee() {
+                Some(callee) if callee.is_object() => {
+                    unsafe { &*callee.as_js_object_ptr() }.upvalues_slice().to_vec()
+                }
+                _ => Vec::new(),
+            };
             if let Some(current_cells) = self.cell_stack.last_mut() {
                 let mut upvals = Box::new(Vec::with_capacity(upvalue_captures.len()));
                 for capture in &upvalue_captures {
-                    let cell_idx = capture.cell_idx as usize;
-                    if cell_idx >= current_cells.len() {
-                        current_cells.resize(cell_idx + 1, std::ptr::null_mut());
-                    }
-                    // cell 可能尚未 MAKE_CELL（hoisting 顺序：CREATE_CLOSURE 先于
-                    // MAKE_CELL）——建占位 Cell，后续 MAKE_CELL 更新同一 Cell 的值，
-                    // 保证 upvalue 始终指向定义方表里的稳定 cell（而非调用方表）。
-                    if current_cells[cell_idx].is_null() {
-                        let cell = self.gc_state.session_epoch.alloc(Cell::new(JsValue::undefined(), true));
-                        current_cells[cell_idx] = cell as *mut Cell;
-                    }
-                    upvals.push(current_cells[cell_idx]);
+                    let cell_ptr = if let Some(puv) = capture.parent_uv_idx {
+                        parent_upvalues.get(puv as usize).copied().unwrap_or(std::ptr::null_mut())
+                    } else {
+                        let cell_idx = capture.cell_idx as usize;
+                        if cell_idx >= current_cells.len() {
+                            current_cells.resize(cell_idx + 1, std::ptr::null_mut());
+                        }
+                        // cell 可能尚未 MAKE_CELL（hoisting 顺序：CREATE_CLOSURE 先于
+                        // MAKE_CELL）——建占位 Cell，后续 MAKE_CELL 更新同一 Cell 的值，
+                        // 保证 upvalue 始终指向定义方表里的稳定 cell（而非调用方表）。
+                        if current_cells[cell_idx].is_null() {
+                            let cell =
+                                self.gc_state.session_epoch.alloc(Cell::new(JsValue::undefined(), true));
+                            current_cells[cell_idx] = cell as *mut Cell;
+                        }
+                        current_cells[cell_idx]
+                    };
+                    upvals.push(cell_ptr);
                 }
                 let func_obj = unsafe { &mut *result.as_js_object_ptr() };
                 func_obj.set_upvalues(upvals);

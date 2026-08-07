@@ -118,6 +118,7 @@ mod tests {
             name: "x".to_string(),
             enclosing_reg: 7,
             cell_idx: 0,
+            parent_uv_idx: None,
         });
         let map = AllocMap::new();
         run(&mut f, &map);
