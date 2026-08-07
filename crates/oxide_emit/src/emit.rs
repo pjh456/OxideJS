@@ -762,11 +762,48 @@ impl Emitter {
         ctx.push_scope_with_kind(ScopeKind::FunctionScope);
         let param_base = ctx.next_reg;
 
-        // 发参数与解构 prologue。
+        // 发参数声明（分配寄存器；分析用 register_name 引用）。
         for spec in param_specs {
             let name = spec.register_name();
             let reg = ctx.alloc_reg();
             ctx.declare_initialized(name, reg, VariableDeclarationKind::Var, false)?;
+        }
+
+        // 闭包捕获分析（AST 级，emit 前确定）：须在参数默认值 emit 之前，
+        // 否则默认值内嵌套函数（IIFE）编译时父分析为空 → upvalue 捕获丢失。
+        let param_names: Vec<&str> = param_specs.iter().map(|s| s.register_name()).collect();
+        let mut param_defaults: Vec<&oxide_parser::Expression> = Vec::new();
+        for spec in param_specs {
+            match spec {
+                ParamSpec::Identifier { initializer, .. } => {
+                    if let Some(init) = initializer {
+                        param_defaults.push(init);
+                    }
+                }
+                ParamSpec::Pattern { pattern, initializer, .. } => {
+                    if let Some(init) = initializer {
+                        param_defaults.push(init);
+                    }
+                    // 模式内嵌默认值（`[x = expr]` 的 AssignmentPattern.right）也会被
+                    // 内部闭包引用，需纳入捕获分析。
+                    self.collect_pattern_default_exprs(pattern, &mut param_defaults);
+                }
+            }
+        }
+        ctx.own_bindings = self.collect_own_binding_names(&param_names, body_stmts);
+        ctx.captured_bindings = self.collect_captured_bindings(body_stmts, &param_defaults, &ctx.own_bindings);
+        // 自由变量分析：收集 upvalue 捕获（类方法也是普通函数，可捕获外层变量）。
+        if matches!(
+            body_context,
+            FunctionBodyContext::Ordinary | FunctionBodyContext::Arrow | FunctionBodyContext::ClassElement
+        ) {
+            ctx.current_upvalue_captures = self.collect_upvalue_names(
+                body_stmts,
+                &param_defaults,
+                &parent_ctx.captured_bindings,
+                &parent_ctx.current_upvalue_captures,
+                &ctx.own_bindings,
+            );
         }
 
         for spec in param_specs {
@@ -790,32 +827,10 @@ impl Emitter {
             }
         }
 
-        // 闭包捕获分析（AST 级，emit 前确定，时序无关）
-        let param_names: Vec<&str> = param_specs.iter().map(|s| s.register_name()).collect();
-        let mut param_defaults: Vec<&oxide_parser::Expression> = Vec::new();
-        for spec in param_specs {
-            match spec {
-                ParamSpec::Identifier { initializer, .. } => {
-                    if let Some(init) = initializer {
-                        param_defaults.push(init);
-                    }
-                }
-                ParamSpec::Pattern { pattern, initializer, .. } => {
-                    if let Some(init) = initializer {
-                        param_defaults.push(init);
-                    }
-                    // 模式内嵌默认值（`[x = expr]` 的 AssignmentPattern.right）也会被
-                    // 内部闭包引用，需纳入捕获分析。
-                    self.collect_pattern_default_exprs(pattern, &mut param_defaults);
-                }
-            }
-        }
-        ctx.own_bindings = self.collect_own_binding_names(&param_names, body_stmts);
-        ctx.captured_bindings = self.collect_captured_bindings(body_stmts, &param_defaults, &ctx.own_bindings);
-
         // 被捕获的参数也必须建 cell（MAKE_CELL）：否则子函数经 lazy upvalue 路径读
         // 自身寄存器（依赖调用者寄存器残留），vreg 化/RegAlloc 移动寄存器后读到垃圾。
-        // 与 var/let/const 的 MAKE_CELL 语义一致（binding.rs:50）。
+        // 与 var/let/const 的 MAKE_CELL 语义一致（binding.rs:50）。须在默认值之后
+        // （默认值 emit 会读参数寄存器）。
         for spec in param_specs {
             let name = spec.register_name();
             if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
@@ -827,17 +842,6 @@ impl Emitter {
                     Operand::None,
                 ));
             }
-        }
-
-        // 自由变量分析（仅普通/箭头函数）：收集 upvalue 捕获。
-        if matches!(body_context, FunctionBodyContext::Ordinary | FunctionBodyContext::Arrow) {
-            ctx.current_upvalue_captures = self.collect_upvalue_names(
-                body_stmts,
-                &param_defaults,
-                &parent_ctx.captured_bindings,
-                &parent_ctx.current_upvalue_captures,
-                &ctx.own_bindings,
-            );
         }
 
         Ok(param_base)
