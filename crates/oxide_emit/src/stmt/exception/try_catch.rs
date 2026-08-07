@@ -47,11 +47,10 @@ impl Emitter {
         if let Some(catch) = &ts.handler {
             ctx.push_scope();
             if let Some(param) = &catch.param {
-                let catch_reg = ctx.alloc_reg();
-                if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &param.pattern {
-                    ctx.declare_initialized(bi.name.as_str(), catch_reg, VariableDeclarationKind::Let, false)?;
-                    ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(catch_reg), Operand::None, Operand::None));
-                }
+                let src_reg = ctx.alloc_reg();
+                // 异常值在 VM 物理 regs[0]（unwind 展开处写入），STORE_VAR a=None 读回。
+                ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(src_reg), Operand::None, Operand::None));
+                self.emit_binding_pattern(&param.pattern, src_reg, VariableDeclarationKind::Let, false, ctx)?;
             }
             let mut last_catch_result: Option<u32> = None;
             for s in &catch.body.body {
