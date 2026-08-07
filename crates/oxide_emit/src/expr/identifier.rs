@@ -15,7 +15,7 @@ impl Emitter {
             if up.name == name {
                 let r = ctx.alloc_reg();
                 let idx = uv_idx as u8;
-                ctx.inst(Inst::new(OpCode::LOAD_UPVALUE, Operand::Reg(r), Operand::Reg(idx as u32), Operand::None));
+                ctx.inst(Inst::new(OpCode::LOAD_UPVALUE, Operand::Reg(r), Operand::Imm(idx as u16), Operand::None));
                 return Ok(r);
             }
         }
