@@ -245,16 +245,107 @@ fn expand_dollar(text: &str, m: &regress::Match, replacement: &str) -> String {
                 i += 1;
             } else {
                 let n: usize = digits.parse().unwrap_or(0);
-                let g = m.group(n);
-                match g {
-                    Some(g) => out.push_str(&text[g.start..g.end]),
-                    None => {}
+                if let Some(g) = m.group(n) {
+                    out.push_str(&text[g.start..g.end]);
                 }
                 i += 1 + digits.len();
             }
         }
     }
     out
+}
+
+/// 调用函数 replacer 并把返回值 ToString 为替换文本；调用抛出的异常原样恢复。
+fn call_replacer<H: VmHost>(vm: &mut H, replacer: JsValue, cb_args: &[JsValue]) -> Result<String, JsValue> {
+    match vm.call_function_sync(replacer, JsValue::undefined(), cb_args) {
+        Ok(result) => Ok(oxide_runtime_api::to_string(result)),
+        Err(err) => Err(vm
+            .take_uncaught_value()
+            .unwrap_or_else(|| crate::error::create_type_error(vm, &format!("replace replacer: {}", err)))),
+    }
+}
+
+/// 函数 replacer 的回调参数：匹配串、各捕获组（未匹配为 undefined）、position、原字符串。
+/// position 按字符索引（非字节偏移）。
+fn replacer_cb_args<H: VmHost>(vm: &mut H, text: &str, m: &regress::Match) -> Vec<JsValue> {
+    let range = m.range();
+    let mut cb_args: Vec<JsValue> = Vec::with_capacity(m.captures.len() + 2);
+    cb_args.push(vm.new_string(&text[range.start..range.end]));
+    for i in 1..=m.captures.len() {
+        match m.group(i) {
+            Some(g) => cb_args.push(vm.new_string(&text[g.start..g.end])),
+            None => cb_args.push(JsValue::undefined()),
+        }
+    }
+    cb_args.push(JsValue::int(text[..range.start].chars().count() as i32));
+    cb_args.push(vm.new_string(text));
+    cb_args
+}
+
+/// 正则模式 + 函数 replacer：global 全替换否则替换首个，逐匹配调用回调，
+/// 返回值 ToString 作为替换文本（不展开 `$` 引用）。
+fn regex_replace_fn<H: VmHost>(
+    vm: &mut H, regex: &regress::Regex, text: &str, replacer: JsValue, global: bool,
+) -> NativeResult {
+    let matches: Vec<regress::Match> = if global {
+        regex.find_iter(text).collect()
+    } else {
+        regex.find(text).into_iter().collect()
+    };
+    let mut out = String::new();
+    let mut last_end = 0;
+    for m in matches {
+        let range = m.range();
+        out.push_str(&text[last_end..range.start]);
+        let cb_args = replacer_cb_args(vm, text, &m);
+        let repl = try_string!(call_replacer(vm, replacer, &cb_args));
+        out.push_str(&repl);
+        last_end = range.end;
+    }
+    out.push_str(&text[last_end..]);
+    NativeResult::Ok(vm.new_string(&out))
+}
+
+/// 字符串模式 + 函数 replacer：all 全替换否则替换首个。回调参数
+/// `(match, position, string)`（无捕获组）。空模式在每个字符边界匹配一次。
+fn string_replace_fn<H: VmHost>(vm: &mut H, text: &str, pattern: &str, replacer: JsValue, all: bool) -> NativeResult {
+    let search_length = pattern.len();
+    let mut positions: Vec<usize> = Vec::new();
+    if search_length == 0 {
+        positions.push(0);
+        if all {
+            let mut byte = 0;
+            for ch in text.chars() {
+                byte += ch.len_utf8();
+                positions.push(byte);
+            }
+        }
+    } else {
+        let mut start = 0;
+        while let Some(rel) = text[start..].find(pattern) {
+            let p = start + rel;
+            positions.push(p);
+            if !all {
+                break;
+            }
+            start = p + search_length;
+        }
+    }
+    let mut out = String::new();
+    let mut last_end = 0;
+    for p in positions {
+        out.push_str(&text[last_end..p]);
+        let cb_args = [
+            vm.new_string(&text[p..p + search_length]),
+            JsValue::int(text[..p].chars().count() as i32),
+            vm.new_string(text),
+        ];
+        let repl = try_string!(call_replacer(vm, replacer, &cb_args));
+        out.push_str(&repl);
+        last_end = p + search_length;
+    }
+    out.push_str(&text[last_end..]);
+    NativeResult::Ok(vm.new_string(&out))
 }
 
 fn char_len(s: &str) -> usize {
@@ -749,46 +840,19 @@ pub fn string_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let re = unsafe { &*re_ptr };
         if let Some(fn_ptr) = re.native_fn() {
             let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
+            let is_global = re.hash_props_vec().and_then(|v| v.get(3)).map(|v| v.as_bool()).unwrap_or(false);
 
             if args.len() > 2 {
                 let replacer_val = vm.reg(args[2]);
                 if replacer_val.is_object() {
                     let o = unsafe { &*replacer_val.as_js_object_ptr() };
                     if o.is_function() {
-                        if let Some(m) = regex.find(&s) {
-                            let range = m.range();
-                            let mut cb_args: Vec<JsValue> = Vec::with_capacity(m.captures.len() + 2);
-                            cb_args.push(vm.new_string(&s[range.start..range.end]));
-                            for i in 1..=m.captures.len() {
-                                match m.group(i) {
-                                    Some(g) => cb_args.push(vm.new_string(&s[g.start..g.end])),
-                                    None => cb_args.push(JsValue::undefined()),
-                                }
-                            }
-                            cb_args.push(JsValue::int(range.start as i32));
-                            cb_args.push(vm.new_string(&s));
-                            match vm.call_function_sync(replacer_val, JsValue::undefined(), &cb_args) {
-                                Ok(result) => {
-                                    let result_str = oxide_runtime_api::to_string(result);
-                                    let output =
-                                        format!("{}{}{}", &s[..range.start], &result_str, &s[range.end..]);
-                                    return NativeResult::Ok(vm.new_string(&output));
-                                }
-                                Err(err) => {
-                                    return NativeResult::Err(crate::error::create_type_error(
-                                        vm,
-                                        &format!("replace replacer: {}", err),
-                                    ))
-                                }
-                            }
-                        }
-                        return NativeResult::Ok(vm.new_string(&s));
+                        return regex_replace_fn(vm, regex, &s, replacer_val, is_global);
                     }
                 }
             }
 
-    let replacement = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { String::new() };
-            let is_global = re.hash_props_vec().and_then(|v| v.get(3)).map(|v| v.as_bool()).unwrap_or(false);
+            let replacement = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { String::new() };
             // 手动展开 $ 引用（regress 的 replace 对 $n 展开为空）。
             let result = regex_replace_manual(regex, &s, &replacement, is_global);
             return NativeResult::Ok(vm.new_string(&result));
@@ -796,8 +860,17 @@ pub fn string_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         // 无原生正则的类正则对象回退到字符串路径。
     }
 
-    let replacement = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { String::new() };
     let pattern = as_string(vm, pattern_val);
+    if args.len() > 2 {
+        let replacer_val = vm.reg(args[2]);
+        if replacer_val.is_object() {
+            let o = unsafe { &*replacer_val.as_js_object_ptr() };
+            if o.is_function() {
+                return string_replace_fn(vm, &s, &pattern, replacer_val, false);
+            }
+        }
+    }
+    let replacement = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { String::new() };
     let result = s.replacen(&pattern, &replacement, 1);
     NativeResult::Ok(vm.new_string(&result))
 }
@@ -1155,7 +1228,6 @@ pub fn string_replace_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(vm.new_string(&s));
     }
     let pattern_val = vm.reg(args[1]);
-    let replacement = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { String::new() };
     if is_regexp_obj(pattern_val, vm) {
         let re_ptr = pattern_val.as_js_object_ptr();
         let re = unsafe { &*re_ptr };
@@ -1165,10 +1237,30 @@ pub fn string_replace_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         };
         // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regress::Regex>` 指针。
         let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
+        if args.len() > 2 {
+            let replacer_val = vm.reg(args[2]);
+            if replacer_val.is_object() {
+                let o = unsafe { &*replacer_val.as_js_object_ptr() };
+                if o.is_function() {
+                    return regex_replace_fn(vm, regex, &s, replacer_val, true);
+                }
+            }
+        }
+        let replacement = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { String::new() };
         let result = regex_replace_manual(regex, &s, &replacement, true);
         return NativeResult::Ok(vm.new_string(&result));
     }
     let pattern = as_string(vm, pattern_val);
+    if args.len() > 2 {
+        let replacer_val = vm.reg(args[2]);
+        if replacer_val.is_object() {
+            let o = unsafe { &*replacer_val.as_js_object_ptr() };
+            if o.is_function() {
+                return string_replace_fn(vm, &s, &pattern, replacer_val, true);
+            }
+        }
+    }
+    let replacement = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { String::new() };
     let result = s.replace(&pattern, &replacement);
     NativeResult::Ok(vm.new_string(&result))
 }
