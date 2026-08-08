@@ -19,19 +19,27 @@ fn get_regexp_ptr<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<*mut JsObject, J
     Ok(ptr)
 }
 
-fn parse_flags(flags: &str) -> (bool, bool, bool) {
+fn parse_flags(flags: &str) -> (bool, bool, bool, bool, bool, bool, bool) {
     let mut global = false;
     let mut ignore_case = false;
     let mut multi_line = false;
+    let mut dot_all = false;
+    let mut sticky = false;
+    let mut unicode = false;
+    let mut has_indices = false;
     for c in flags.chars() {
         match c {
             'g' => global = true,
             'i' => ignore_case = true,
             'm' => multi_line = true,
+            's' => dot_all = true,
+            'y' => sticky = true,
+            'u' => unicode = true,
+            'd' => has_indices = true,
             _ => {}
         }
     }
-    (global, ignore_case, multi_line)
+    (global, ignore_case, multi_line, dot_all, sticky, unicode, has_indices)
 }
 
 fn set_prop<H: VmHost>(obj: &mut JsObject, name: &str, val: JsValue, vm: &H) {
@@ -78,22 +86,15 @@ pub fn regexp_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         (pat, fl)
     };
 
-    let (global, ignore_case, multi_line) = parse_flags(&flags);
+    let (global, ignore_case, multi_line, dot_all, sticky, unicode, has_indices) = parse_flags(&flags);
 
     let mut obj = JsObject::new_empty(
         EMPTY_SHAPE_ID,
         JsValue::from_js_object(vm.session().builtin_world().regexp_proto.as_ptr() as *mut JsObject),
     );
 
-    // regress 用 JS flag 字符串编译（i/m 当前支持；u/s/y 由 parse_flags 处理）。
-    let mut flags_in: String = String::new();
-    if ignore_case {
-        flags_in.push('i');
-    }
-    if multi_line {
-        flags_in.push('m');
-    }
-    let compiled = regress::Regex::with_flags(&pattern, flags_in.as_str());
+    // regress 用 JS flag 字符串编译：g/i/m/s/u/y 原样透传（v 由调用方映射为 u+set 语义）。
+    let compiled = regress::Regex::with_flags(&pattern, flags.as_str());
 
     match compiled {
         Ok(re) => {
@@ -118,9 +119,10 @@ pub fn regexp_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     set_prop(&mut obj, "global", JsValue::bool(global), vm);
     set_prop(&mut obj, "ignoreCase", JsValue::bool(ignore_case), vm);
     set_prop(&mut obj, "multiline", JsValue::bool(multi_line), vm);
-    set_prop(&mut obj, "dotAll", JsValue::bool(false), vm);
-    set_prop(&mut obj, "sticky", JsValue::bool(false), vm);
-    set_prop(&mut obj, "unicode", JsValue::bool(false), vm);
+    set_prop(&mut obj, "dotAll", JsValue::bool(dot_all), vm);
+    set_prop(&mut obj, "sticky", JsValue::bool(sticky), vm);
+    set_prop(&mut obj, "unicode", JsValue::bool(unicode), vm);
+    set_prop(&mut obj, "hasIndices", JsValue::bool(has_indices), vm);
     obj.type_tag = JsObject::OBJ_TYPE_REGEXP;
 
     let obj_ptr = vm.alloc_object(obj);
