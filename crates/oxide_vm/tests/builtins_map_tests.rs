@@ -1,5 +1,7 @@
 use oxide_builtins::map::{map_clear, map_constructor as new_map, map_delete, map_get, map_has, map_set, map_size};
 use oxide_compiler::compiler::Compiler;
+use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
+use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
 
@@ -14,11 +16,23 @@ fn str_val(vm: &Vm, val: JsValue) -> String {
     vm.lookup_str(val).unwrap_or_default()
 }
 
+/// 分配一个原型指向 Map.prototype 的占位对象并写入 reg 0，作为构造器调用的 `this`。
+fn map_this(vm: &mut Vm) -> JsValue {
+    let proto = vm.session().builtin_world().map_proto.as_ptr() as *mut JsObject;
+    let obj = vm
+        .epoch()
+        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)));
+    let val = JsValue::from_js_object(obj);
+    vm.set_reg(0, val);
+    val
+}
+
 // -- direct native fn tests --
 
 #[test]
 fn tmap_constructor_returns_object() {
     let mut vm = Vm::new();
+    map_this(&mut vm);
     let r = new_map(&mut vm, &[0]).unwrap();
     assert!(r.is_object());
 }
@@ -26,6 +40,7 @@ fn tmap_constructor_returns_object() {
 #[test]
 fn tmap_set_get() {
     let mut vm = Vm::new();
+    map_this(&mut vm);
     let m = new_map(&mut vm, &[0]).unwrap();
     vm.set_reg(0, m);
     vm.set_reg(1, JsValue::float(42.0));
@@ -38,6 +53,7 @@ fn tmap_set_get() {
 #[test]
 fn tmap_has_and_delete() {
     let mut vm = Vm::new();
+    map_this(&mut vm);
     let m = new_map(&mut vm, &[0]).unwrap();
     vm.set_reg(0, m);
     vm.set_reg(1, JsValue::float(7.0));
@@ -51,6 +67,7 @@ fn tmap_has_and_delete() {
 #[test]
 fn tmap_size_and_clear() {
     let mut vm = Vm::new();
+    map_this(&mut vm);
     let m = new_map(&mut vm, &[0]).unwrap();
     vm.set_reg(0, m);
     assert_eq!(map_size(&mut vm, &[0]).unwrap().as_double(), 0.0);

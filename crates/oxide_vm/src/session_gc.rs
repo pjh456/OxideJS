@@ -710,6 +710,30 @@ mod tests {
         }
     }
 
+    /// 分配一个原型指向 Map.prototype 的占位对象并写入寄存器，作为构造器调用的 `this`。
+    fn map_this(vm: &mut Vm, reg: u8) -> JsValue {
+        let proto = vm.session.builtin_world().map_proto.as_ptr() as *mut JsObject;
+        let obj = vm.epoch.alloc(JsObject::new_empty(
+            oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
+            JsValue::from_js_object(proto),
+        ));
+        let val = JsValue::from_js_object(obj);
+        vm.regs[reg as usize] = val;
+        val
+    }
+
+    /// 分配一个原型指向 Set.prototype 的占位对象并写入寄存器，作为构造器调用的 `this`。
+    fn set_this(vm: &mut Vm, reg: u8) -> JsValue {
+        let proto = vm.session.builtin_world().set_proto.as_ptr() as *mut JsObject;
+        let obj = vm.epoch.alloc(JsObject::new_empty(
+            oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
+            JsValue::from_js_object(proto),
+        ));
+        let val = JsValue::from_js_object(obj);
+        vm.regs[reg as usize] = val;
+        val
+    }
+
     #[test]
     fn reset_maybe_collect_collects_after_threshold() {
         let mut vm = vm_with_low_threshold();
@@ -770,7 +794,8 @@ mod tests {
     #[test]
     fn map_native_storage_is_not_a_normal_object_edge() {
         let mut vm = Vm::new();
-        let map_value = native_ok(map::map_constructor(&mut vm, &[]));
+        map_this(&mut vm, 1);
+        let map_value = native_ok(map::map_constructor(&mut vm, &[1]));
         let map_obj = unsafe { &*map_value.as_js_object_ptr() };
         let native_ptr = map_obj.native_data() as *mut JsObject;
 
@@ -784,7 +809,8 @@ mod tests {
     #[test]
     fn session_gc_traces_map_object_key_and_value() {
         let mut vm = vm_with_low_threshold();
-        let map_value = native_ok(map::map_constructor(&mut vm, &[]));
+        map_this(&mut vm, 3);
+        let map_value = native_ok(map::map_constructor(&mut vm, &[3]));
         let key = JsValue::from_js_object(plain_object(&mut vm));
         let value = JsValue::from_js_object(plain_object(&mut vm));
         vm.regs[0] = map_value;
@@ -809,7 +835,8 @@ mod tests {
     #[test]
     fn session_gc_traces_set_object_key() {
         let mut vm = vm_with_low_threshold();
-        let set_value = native_ok(set::set_constructor(&mut vm, &[]));
+        set_this(&mut vm, 2);
+        let set_value = native_ok(set::set_constructor(&mut vm, &[2]));
         let key = JsValue::from_js_object(plain_object(&mut vm));
         vm.regs[0] = set_value;
         vm.regs[1] = key;

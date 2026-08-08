@@ -51,7 +51,7 @@ use oxide_kernel::builtin::BuiltinWorld;
 use oxide_kernel::kernel::{BuiltinDirtySet, KernelCore, KernelSession};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::mem::P;
-use oxide_types::object::{JsObject, NativeFnPtr};
+use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
 #[macro_export]
@@ -106,6 +106,74 @@ pub(crate) fn apply_binding_table(
         let fn_ptr = unsafe { oxide_types::object::NativeFnPtr::from_raw(*func) };
         let _ = world.bind_method(target, shape_forge, string_forge, name, fn_ptr, *nargs);
     }
+}
+
+/// 在原型上绑定一个原生访问器 getter（如 Set/Map 的 `size`），set 恒为 undefined。
+///
+/// # 步骤
+/// 1. 构造一个 native getter 函数对象（name 为 `get <prop>`，length 0）。
+/// 2. 为属性名开 shape 槽位并写入访问器 meta。
+///
+/// # 注意事项
+/// getter 函数对象经 `Box::into_raw` 持有，与 `bind_method` 的方法 wrapper 同一生命周期约定
+/// （内置对象在 session 生命周期内不被回收）。
+pub(crate) fn bind_accessor_getter(
+    core: &Arc<KernelCore>, session: &KernelSession, proto: &mut JsObject, name: &str, getter_fn: *const (),
+) {
+    let shape_forge = core.shape_forge().as_ref();
+    let string_forge = core.perm_interner().as_ref();
+    let fn_proto_val = JsValue::from_js_object(session.builtin_world().function_proto.as_ptr() as *mut JsObject);
+
+    let getter_name = format!("get {name}");
+    let mut getter = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
+    getter.set_function(true);
+    // SAFETY: getter_fn 是转成 *const () 的 NativeFn 函数项指针。
+    getter.set_native_fn(Some(unsafe { oxide_types::object::NativeFnPtr::from_raw(getter_fn) }));
+    getter.set_native_arg_count(0);
+
+    let si_name = string_forge.intern("name").0;
+    let name_shape = shape_forge.make_shape(getter.shape_id(), si_name);
+    getter.set_shape_id(name_shape);
+    getter
+        .ensure_hash_props()
+        .push(JsValue::perm_string(string_forge.string_ptr(string_forge.intern(&getter_name).0)));
+    let name_pos = getter.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+    getter.set_data_meta(name_pos, PropAttributes::new(false, false, true));
+
+    let si_length = string_forge.intern("length").0;
+    let length_shape = shape_forge.make_shape(getter.shape_id(), si_length);
+    getter.set_shape_id(length_shape);
+    getter.ensure_hash_props().push(JsValue::int(0));
+    let length_pos = getter.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+    getter.set_data_meta(length_pos, PropAttributes::new(false, false, true));
+
+    let getter_val = JsValue::from_js_object(Box::into_raw(getter));
+
+    let si = string_forge.intern(name).0;
+    let new_shape = shape_forge.make_shape(proto.shape_id(), si);
+    proto.set_shape_id(new_shape);
+    let pos = proto.push_prop(JsValue::undefined());
+    proto.set_accessor_meta(pos, getter_val, JsValue::undefined(), PropAttributes::new(true, false, true));
+    proto.bump_generation();
+}
+
+/// 把原型上 `source` 属性已绑定的函数值复制到 `alias` 名下（共享同一函数对象）。
+///
+/// 用于规范要求的方法别名（如 Set 的 `keys`/`@@iterator` 与 `values` 同一函数对象）。
+pub(crate) fn bind_method_alias(core: &Arc<KernelCore>, proto: &mut JsObject, source: &str, alias: &str) {
+    let shape_forge = core.shape_forge().as_ref();
+    let string_forge = core.perm_interner().as_ref();
+    let src_si = string_forge.intern(source).0;
+    let Some(pos) = shape_forge.lookup_position(proto.shape_id(), src_si) else {
+        return;
+    };
+    let value = proto.get_prop_at(pos);
+    let alias_si = string_forge.intern(alias).0;
+    let new_shape = shape_forge.make_shape(proto.shape_id(), alias_si);
+    proto.set_shape_id(new_shape);
+    let alias_pos = proto.push_prop(value);
+    proto.set_data_meta(alias_pos, PropAttributes::new(true, false, true));
+    proto.bump_generation();
 }
 
 pub(crate) fn bind_global_value(core: &Arc<KernelCore>, global: &mut JsObject, name: &str, value: JsValue) {

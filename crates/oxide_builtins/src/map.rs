@@ -150,10 +150,92 @@ pub fn drop_map_native(obj: &mut JsObject) -> u64 {
     }
 }
 
-/// `Map` 构造函数：创建带空 IndexMap native 数据的 Map 对象。
-pub fn map_constructor<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
+/// `Map` 构造函数：创建带空 IndexMap native 数据的 Map 对象，若提供可迭代实参
+/// 则逐元素（须为对象）取 `[0]`/`[1]` 作为键值调用 set。
+///
+/// # 步骤
+/// 1. 校验 NewTarget：`this` 的原型须是 Map.prototype（普通调用 `Map()` 抛 TypeError）。
+/// 2. 创建空 Map。
+/// 3. 取 adder = Get(map, "set")，要求可调用（否则 TypeError）。
+/// 4. 对可迭代实参逐元素：元素须为对象（否则 TypeError），读 `0`/`1` 属性后调用 adder。
+///
+/// # 边界与前提
+/// - 无实参或实参为 null/undefined 时返回空 Map，不触碰 adder。
+/// - 任一环节抛错先 IteratorClose 再透传。
+pub fn map_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let is_new_call = this_val.is_object() && {
+        let map_proto = vm.session().builtin_world().map_proto.as_ptr() as *mut JsObject;
+        // 沿原型链查找 Map.prototype：`new Map()` 直接命中，子类 `super()` 经
+        // 子类 prototype 链命中；普通调用（global/undefined）不命中。
+        let this_ptr = this_val.as_js_object_ptr();
+        if this_ptr.is_null() {
+            false
+        } else {
+            let mut proto = unsafe { &*this_ptr }.proto();
+            let mut found = false;
+            for _ in 0..16 {
+                if !proto.is_object() {
+                    break;
+                }
+                let proto_ptr = proto.as_js_object_ptr();
+                if proto_ptr.is_null() {
+                    break;
+                }
+                if std::ptr::eq(proto_ptr, map_proto) {
+                    found = true;
+                    break;
+                }
+                proto = unsafe { &*proto_ptr }.proto();
+            }
+            found
+        }
+    };
+    if !is_new_call {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Map must be called with new"));
+    }
+
     let map_obj = alloc_map(vm);
-    NativeResult::Ok(JsValue::from_js_object(map_obj))
+    let map_val = JsValue::from_js_object(map_obj);
+
+    if args.len() > 1 {
+        let iterable = vm.reg(args[1]);
+        if !iterable.is_undefined() && !iterable.is_null() {
+            let map_ref = unsafe { &*map_obj };
+            let set_si = vm.kernel_core().perm_interner().intern("set").0;
+            let adder = match vm.ordinary_get(map_ref, set_si, map_val) {
+                Ok(v) => v,
+                Err(err) => return NativeResult::Err(crate::iterator::engine_error(vm, &err)),
+            };
+            if !crate::iterator::is_callable(adder) {
+                return NativeResult::Err(crate::error::create_type_error(vm, "Map.set is not callable"));
+            }
+            let key_si = vm.kernel_core().perm_interner().intern("0").0;
+            let value_si = vm.kernel_core().perm_interner().intern("1").0;
+            if let Err(err) = crate::iterator::iterate_elements(vm, iterable, |vm, item| {
+                if !item.is_object() {
+                    return Err(crate::error::create_type_error(vm, "iterator value is not an entry object"));
+                }
+                let item_obj = unsafe { &*item.as_js_object_ptr() };
+                let k = match vm.ordinary_get(item_obj, key_si, item) {
+                    Ok(v) => v,
+                    Err(err) => return Err(crate::iterator::engine_error(vm, &err)),
+                };
+                let v = match vm.ordinary_get(item_obj, value_si, item) {
+                    Ok(v) => v,
+                    Err(err) => return Err(crate::iterator::engine_error(vm, &err)),
+                };
+                match vm.call_function_sync(adder, map_val, &[k, v]) {
+                    Ok(_) => Ok(()),
+                    Err(err) => Err(crate::iterator::engine_error(vm, &err)),
+                }
+            }) {
+                return NativeResult::Err(err);
+            }
+        }
+    }
+
+    NativeResult::Ok(map_val)
 }
 
 /// `Map.prototype.set(key, value)`：插入/更新键值对，返回 this。
@@ -201,6 +283,29 @@ pub fn map_clear<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let inner = native_try!(get_map_inner(vm, this_val));
     unsafe {
         (*inner).clear();
+    }
+    NativeResult::Ok(JsValue::undefined())
+}
+
+/// `Map.prototype.forEach(callbackfn, thisArg)`：按插入序对每个键值对调用回调，
+/// 回调参数为 `(value, key, map)`。迭代期间新增的键值对也会被访问。
+pub fn map_for_each<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let inner = native_try!(get_map_inner(vm, this_val));
+    let callback = vm.reg(if args.len() > 1 { args[1] } else { 0 });
+    if !crate::iterator::is_callable(callback) {
+        return NativeResult::Err(crate::error::create_type_error(vm, "callback is not a function"));
+    }
+    let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    // 按下标迭代：每次回调后重新读当前下标（支持迭代期间插入）。
+    let mut index = 0usize;
+    loop {
+        let entry = unsafe { (*inner).get_index(index).map(|(key, value)| (key.0, *value)) };
+        let Some((key, value)) = entry else { break };
+        index += 1;
+        if let Err(err) = vm.call_function_sync(callback, this_arg, &[value, key, this_val]) {
+            return NativeResult::Err(crate::iterator::engine_error(vm, &err));
+        }
     }
     NativeResult::Ok(JsValue::undefined())
 }

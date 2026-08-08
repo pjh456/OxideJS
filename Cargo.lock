@@ -1275,6 +1275,7 @@ version = "0.1.0"
 dependencies = [
  "oxide_bytecode",
  "oxide_cfg",
+ "oxide_compiler",
  "oxide_dce",
  "oxide_emit",
  "oxide_ir",

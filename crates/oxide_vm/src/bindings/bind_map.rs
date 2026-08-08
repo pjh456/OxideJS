@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::bind_constructor;
-use crate::bindings::{apply_binding_table, configure_native_constructor};
+use crate::bindings::{apply_binding_table, bind_accessor_getter, bind_method_alias, configure_native_constructor};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 
@@ -14,6 +14,7 @@ pub fn bind_map(core: &Arc<KernelCore>, session: &KernelSession, global: &mut Js
     configure_native_constructor(ctor, oxide_builtins::map::map_constructor::<crate::vm::Vm> as *const (), 1);
     let proto = unsafe { &mut *proto_ptr };
 
+    // size 是访问器 getter，不进 apply_binding_table。
     apply_binding_table(
         session.builtin_world(),
         proto,
@@ -24,12 +25,16 @@ pub fn bind_map(core: &Arc<KernelCore>, session: &KernelSession, global: &mut Js
             ("has", oxide_builtins::map::map_has::<crate::vm::Vm> as *const (), 1),
             ("delete", oxide_builtins::map::map_delete::<crate::vm::Vm> as *const (), 1),
             ("clear", oxide_builtins::map::map_clear::<crate::vm::Vm> as *const (), 0),
-            ("size", oxide_builtins::map::map_size::<crate::vm::Vm> as *const (), 0),
+            ("forEach", oxide_builtins::map::map_for_each::<crate::vm::Vm> as *const (), 1),
             ("entries", oxide_builtins::map::map_entries::<crate::vm::Vm> as *const (), 0),
             ("values", oxide_builtins::map::map_values::<crate::vm::Vm> as *const (), 0),
             ("keys", oxide_builtins::map::map_keys::<crate::vm::Vm> as *const (), 0),
         ],
     );
+
+    // Map 的 @@iterator 是 entries 的同一函数对象。
+    bind_method_alias(core, proto, "entries", "@@iterator");
+    bind_accessor_getter(core, session, proto, "size", oxide_builtins::map::map_size::<crate::vm::Vm> as *const ());
 
     bind_constructor!(core, global, "Map", ctor_ptr, oxide_builtins::map::map_constructor::<crate::vm::Vm>, 1, hash: true);
 }

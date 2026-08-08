@@ -1,5 +1,7 @@
 use oxide_builtins::set::{set_add, set_clear, set_constructor as new_set, set_delete, set_has, set_size};
 use oxide_compiler::compiler::Compiler;
+use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
+use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
 
@@ -10,11 +12,23 @@ fn eval(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
     vm.run(&module)
 }
 
+/// 分配一个原型指向 Set.prototype 的占位对象并写入 reg 0，作为构造器调用的 `this`。
+fn set_this(vm: &mut Vm) -> JsValue {
+    let proto = vm.session().builtin_world().set_proto.as_ptr() as *mut JsObject;
+    let obj = vm
+        .epoch()
+        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)));
+    let val = JsValue::from_js_object(obj);
+    vm.set_reg(0, val);
+    val
+}
+
 // -- direct native fn tests --
 
 #[test]
 fn tset_constructor_returns_object() {
     let mut vm = Vm::new();
+    set_this(&mut vm);
     let r = new_set(&mut vm, &[0]).unwrap();
     assert!(r.is_object());
 }
@@ -22,6 +36,7 @@ fn tset_constructor_returns_object() {
 #[test]
 fn tset_add_has() {
     let mut vm = Vm::new();
+    set_this(&mut vm);
     let s = new_set(&mut vm, &[0]).unwrap();
     vm.set_reg(0, s);
     vm.set_reg(1, JsValue::float(42.0));
@@ -32,6 +47,7 @@ fn tset_add_has() {
 #[test]
 fn tset_has_missing() {
     let mut vm = Vm::new();
+    set_this(&mut vm);
     let s = new_set(&mut vm, &[0]).unwrap();
     vm.set_reg(0, s);
     vm.set_reg(1, JsValue::float(99.0));
@@ -41,6 +57,7 @@ fn tset_has_missing() {
 #[test]
 fn tset_delete_works() {
     let mut vm = Vm::new();
+    set_this(&mut vm);
     let s = new_set(&mut vm, &[0]).unwrap();
     vm.set_reg(0, s);
     vm.set_reg(1, JsValue::float(7.0));
@@ -52,6 +69,7 @@ fn tset_delete_works() {
 #[test]
 fn tset_size_and_clear() {
     let mut vm = Vm::new();
+    set_this(&mut vm);
     let s = new_set(&mut vm, &[0]).unwrap();
     vm.set_reg(0, s);
     assert_eq!(set_size(&mut vm, &[0]).unwrap().as_double(), 0.0);
@@ -67,6 +85,7 @@ fn tset_size_and_clear() {
 #[test]
 fn tset_nan_equality() {
     let mut vm = Vm::new();
+    set_this(&mut vm);
     let s = new_set(&mut vm, &[0]).unwrap();
     vm.set_reg(0, s);
     vm.set_reg(1, JsValue::float(f64::NAN));
@@ -79,6 +98,7 @@ fn tset_nan_equality() {
 #[test]
 fn tset_signed_zero() {
     let mut vm = Vm::new();
+    set_this(&mut vm);
     let s = new_set(&mut vm, &[0]).unwrap();
     vm.set_reg(0, s);
     vm.set_reg(1, JsValue::float(0.0));

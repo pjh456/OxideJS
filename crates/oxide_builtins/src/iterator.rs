@@ -353,12 +353,93 @@ fn is_typed_array_value(value: JsValue) -> bool {
     !ptr.is_null() && unsafe { &*ptr }.is_typed_array_obj()
 }
 
-fn is_callable(value: JsValue) -> bool {
+/// 判断值是否为可调用对象（native 或字节码函数）。
+pub(crate) fn is_callable(value: JsValue) -> bool {
     if !value.is_object() {
         return false;
     }
     let ptr = value.as_js_object_ptr();
     !ptr.is_null() && unsafe { &*ptr }.is_function()
+}
+
+/// 把 `call_function_sync` 返回的 `Err` 文本恢复为原始异常值；
+/// 无保留的 uncaught 值时回退为普通 TypeError。
+pub(crate) fn engine_error<H: VmHost>(vm: &mut H, err: &str) -> JsValue {
+    vm.take_uncaught_value()
+        .unwrap_or_else(|| crate::error::create_type_error(vm, err))
+}
+
+/// IteratorClose：异常退出时调用迭代器包装器的 `return()`（转发给内层迭代器），
+/// 丢弃 return 自身抛出的错误，保留在途异常。
+pub(crate) fn close_iterator<H: VmHost>(vm: &mut H, iterator: JsValue) {
+    if !iterator.is_object() {
+        return;
+    }
+    let iter_obj = unsafe { &*iterator.as_js_object_ptr() };
+    let return_si = vm.kernel_core().perm_interner().intern("return").0;
+    if let Ok(ret) = vm.ordinary_get(iter_obj, return_si, iterator) {
+        if is_callable(ret) {
+            let _ = vm.call_function_sync(ret, iterator, &[]);
+        }
+    }
+}
+
+/// 遍历可迭代值，把每个元素交给 `on_elem`。
+///
+/// # 步骤
+/// 1. 经迭代协议取迭代器包装器，逐次 `next` 读取 `{done, value}`。
+/// 2. 每个元素调用 `on_elem`；元素读取或回调抛错时先 IteratorClose 再透传原异常。
+///
+/// # 返回值
+/// - `Ok(())`：迭代完成；
+/// - `Err`：迭代或回调抛出的原异常值（任意类型）。
+pub(crate) fn iterate_elements<H: VmHost, F>(vm: &mut H, iterable: JsValue, mut on_elem: F) -> Result<(), JsValue>
+where
+    F: FnMut(&mut H, JsValue) -> Result<(), JsValue>,
+{
+    let iterator = make_iterator_for_value(vm, iterable)?;
+    iterate_iterator(vm, iterator, &mut on_elem)
+}
+
+/// 遍历一个已取得的迭代器对象（带 `next`），把每个元素交给 `on_elem`。
+/// 与 [`iterate_elements`] 的差异：入参是迭代器本身而非可迭代值，
+/// 用于 Set 方法从 SetRecord 的 `keys` 方法返回值继续取元素。
+///
+/// # 副作用
+/// 迭代或回调抛错时调用迭代器的 `return()`（IteratorClose）后透传原异常。
+pub(crate) fn iterate_iterator<H: VmHost, F>(vm: &mut H, iterator: JsValue, mut on_elem: F) -> Result<(), JsValue>
+where
+    F: FnMut(&mut H, JsValue) -> Result<(), JsValue>,
+{
+    let next_si = vm.kernel_core().perm_interner().intern("next").0;
+    let done_si = vm.kernel_core().perm_interner().intern("done").0;
+    let value_si = vm.kernel_core().perm_interner().intern("value").0;
+    let run: Result<(), JsValue> = (|| {
+        loop {
+            let iter_obj = unsafe { &*iterator.as_js_object_ptr() };
+            let next_fn = vm.ordinary_get(iter_obj, next_si, iterator).map_err(|e| engine_error(vm, &e))?;
+            let result = vm
+                .call_function_sync(next_fn, iterator, &[])
+                .map_err(|e| engine_error(vm, &e))?;
+            if !result.is_object() {
+                return Err(crate::error::create_type_error(vm, "iterator result is not an object"));
+            }
+            let result_obj = unsafe { &*result.as_js_object_ptr() };
+            let done = vm.ordinary_get(result_obj, done_si, result).map_err(|e| engine_error(vm, &e))?;
+            if oxide_runtime_api::to_boolean(done) {
+                break;
+            }
+            let elem = vm
+                .ordinary_get(result_obj, value_si, result)
+                .map_err(|e| engine_error(vm, &e))?;
+            on_elem(vm, elem)?;
+        }
+        Ok(())
+    })();
+    if run.is_err() {
+        close_iterator(vm, iterator);
+    }
+    run
 }
 
 fn is_map_value(value: JsValue) -> bool {
@@ -442,7 +523,12 @@ fn map_set_step<H: VmHost>(
             };
             make_iter_result(vm, value, false)
         }
-        None => make_iter_result(vm, JsValue::undefined(), true),
+        None => {
+            // 迭代器已耗尽：把下标推进到永不匹配的哨兵值，使后续 next() 恒返回 done，
+            // 即使集合之后又新增元素也不会"复活"。
+            vm.set_or_create_prop_value(wrapper, index_si, JsValue::int(i32::MAX));
+            make_iter_result(vm, JsValue::undefined(), true)
+        }
     }
 }
 
