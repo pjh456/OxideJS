@@ -689,6 +689,8 @@ impl Vm {
                 "@@toPrimitive"
             } else if std::ptr::eq(ptr, world.sym_has_instance.as_ptr()) {
                 "@@hasInstance"
+            } else if std::ptr::eq(ptr, world.sym_match_all.as_ptr()) {
+                "@@matchAll"
             } else {
                 ""
             };

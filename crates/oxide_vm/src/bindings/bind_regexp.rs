@@ -23,6 +23,15 @@ pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             ("exec", oxide_builtins::regexp::regexp_exec::<crate::vm::Vm> as *const (), 1),
             ("test", oxide_builtins::regexp::regexp_test::<crate::vm::Vm> as *const (), 1),
             ("toString", oxide_builtins::regexp::regexp_to_string::<crate::vm::Vm> as *const (), 0),
+            ("@@match", oxide_builtins::regexp::regexp_symbol_match::<crate::vm::Vm> as *const (), 1),
+            (
+                "@@replace",
+                oxide_builtins::regexp::regexp_symbol_replace::<crate::vm::Vm> as *const (),
+                2,
+            ),
+            ("@@search", oxide_builtins::regexp::regexp_symbol_search::<crate::vm::Vm> as *const (), 1),
+            ("@@split", oxide_builtins::regexp::regexp_symbol_split::<crate::vm::Vm> as *const (), 2),
+            ("@@matchAll", oxide_builtins::regexp::regexp_symbol_match_all::<crate::vm::Vm> as *const (), 1),
         ],
     );
 

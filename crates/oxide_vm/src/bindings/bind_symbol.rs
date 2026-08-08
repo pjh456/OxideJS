@@ -62,6 +62,10 @@ pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             "hasInstance",
             JsValue::from_js_object(session.builtin_world().sym_has_instance.as_ptr() as *mut JsObject),
         ),
+        (
+            "matchAll",
+            JsValue::from_js_object(session.builtin_world().sym_match_all.as_ptr() as *mut JsObject),
+        ),
     ] {
         bind_well_known_symbol(core, ctor, name, val);
     }

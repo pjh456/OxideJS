@@ -84,6 +84,18 @@ impl Emitter {
                 }
                 (callee_reg, obj_reg)
             }
+            Expression::ComputedMemberExpression(member) => {
+                let obj_reg = self.emit_expression(&member.object, ctx)?;
+                let key_reg = self.emit_expression(&member.expression, ctx)?;
+                let callee_reg = ctx.alloc_reg();
+                ctx.inst(Inst::new(
+                    OpCode::GET_PROP_DYNAMIC,
+                    Operand::Reg(obj_reg),
+                    Operand::Reg(key_reg),
+                    Operand::Reg(callee_reg),
+                ));
+                (callee_reg, obj_reg)
+            }
             _ => {
                 let callee_reg = self.emit_expression(&call.callee, ctx)?;
                 let this_idx = ctx.add_constant(Constant::Undefined);

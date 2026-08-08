@@ -163,9 +163,12 @@ pub fn regexp_test<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
     // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regress::Regex>` 指针。
     let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
-    let haystack = oxide_runtime_api::to_string(vm.reg(if args.len() > 1 { args[1] } else { args[0] }));
+    let haystack = match regexp_string_arg(vm, args) {
+        Ok(s) => s,
+        Err(err) => return NativeResult::Err(err),
+    };
     let last_index = vm.coerce_number_bounded(get_prop(re, 0)).unwrap_or(f64::NAN) as usize;
-    let is_global = get_prop(re, 3).as_bool();
+    let is_global = is_global(re);
 
     if is_global {
         let result = regex.find_from(&haystack, last_index).next().is_some();
@@ -195,12 +198,15 @@ pub fn regexp_exec<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
     // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regress::Regex>` 指针。
     let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
-    let haystack = oxide_runtime_api::to_string(vm.reg(if args.len() > 1 { args[1] } else { args[0] }));
+    let haystack = match regexp_string_arg(vm, args) {
+        Ok(s) => s,
+        Err(err) => return NativeResult::Err(err),
+    };
 
     let (last_index, is_global) = {
         let re = unsafe { &*re_ptr };
         let li = vm.coerce_number_bounded(get_prop(re, 0)).unwrap_or(f64::NAN) as usize;
-        let g = get_prop(re, 3).as_bool();
+        let g = is_global(re);
         (li, g)
     };
 
@@ -273,5 +279,270 @@ pub fn regexp_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     let result = format!("/{}/{}", source, flags);
     NativeResult::Ok(vm.new_string(&result))
+}
+
+// RegExp 对象 hash 槽中属性的固定下标（构造顺序：lastIndex/source/flags/global/...）。
+const PROP_LAST_INDEX: usize = 0;
+const PROP_SOURCE: usize = 1;
+const PROP_FLAGS: usize = 2;
+const PROP_GLOBAL: usize = 3;
+
+/// 读 global 标志；槽值被 accessor 重定义后不再保证是 bool，非 bool 一律视为 false。
+fn is_global(re: &JsObject) -> bool {
+    match get_prop(re, PROP_GLOBAL) {
+        v if v.is_bool() => v.as_bool(),
+        _ => false,
+    }
+}
+
+/// 取 this 的已编译 regress 正则与匹配文本；this 非 RegExp 或缺失编译结果时返回 Err。
+fn regexp_regex_and_text<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<(&'static regress::Regex, String), JsValue> {
+    let re_ptr = get_regexp_ptr(vm, args)?;
+    let fn_ptr = {
+        let re = unsafe { &*re_ptr };
+        match re.native_fn() {
+            None => return Err(crate::error::create_type_error(vm, "invalid RegExp")),
+            Some(p) => p,
+        }
+    };
+    // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regress::Regex>` 指针。
+    let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
+    let haystack = regexp_string_arg(vm, args)?;
+    Ok((regex, haystack))
+}
+
+/// 取匹配文本参数，按 ToString 语义完整转换（对象经 toString/valueOf）；异常原样传播。
+fn regexp_string_arg<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<String, JsValue> {
+    let val = vm.reg(if args.len() > 1 { args[1] } else { args[0] });
+    match oxide_runtime_api::to_string_full(val, vm) {
+        Ok(s) => Ok(s),
+        Err(_) => {
+            // ToString 触发对象 toString/valueOf 抛出的原生异常须原样传播。
+            if let Some(exc) = vm.take_uncaught_value() {
+                return Err(exc);
+            }
+            Err(crate::error::create_type_error(vm, "Cannot convert value to a string"))
+        }
+    }
+}
+
+/// `RegExp.prototype[Symbol.match](string)`：global 正则收集全部匹配串，
+/// 非 global 返回单个 exec 匹配数组；无匹配返回 null。
+///
+/// # 步骤
+/// 1. 非 global：直接复用 exec 结果（数组含 index/input/groups）。
+/// 2. global：lastIndex 归零后逐匹配收集完整匹配串，末次匹配后推进 lastIndex。
+pub fn regexp_symbol_match<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let re_ptr = match get_regexp_ptr(vm, args) {
+        Ok(ptr) => ptr,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let is_global = is_global(unsafe { &*re_ptr });
+    if !is_global {
+        return regexp_exec(vm, args);
+    }
+
+    let (regex, haystack) = match regexp_regex_and_text(vm, args) {
+        Ok(pair) => pair,
+        Err(err) => return NativeResult::Err(err),
+    };
+    set_prop_at(re_ptr, PROP_LAST_INDEX, JsValue::int(0));
+    let mut matches: Vec<String> = Vec::new();
+    let mut last_end = 0;
+    for m in regex.find_iter(&haystack) {
+        let range = m.range();
+        matches.push(haystack[range.start..range.end].to_string());
+        last_end = range.end;
+    }
+    set_prop_at(re_ptr, PROP_LAST_INDEX, JsValue::int(last_end as i32));
+    if matches.is_empty() {
+        return NativeResult::Ok(JsValue::null());
+    }
+    NativeResult::Ok(crate::string::make_string_array(vm, &matches))
+}
+
+/// `RegExp.prototype[Symbol.replace](string, replacement)`：按匹配替换。
+/// 字符串 replacement 展开 `$` 引用（`$$`/`$&`/``$` ``/`$'`/`$n`），函数 replacement
+/// 逐匹配调用；global 全替换，否则替换首个。
+///
+/// # 步骤
+/// 1. global 时 lastIndex 归零，复用 string 模块的替换逻辑。
+/// 2. 结束后把 lastIndex 推进到末次匹配末尾（无匹配保持 0）。
+pub fn regexp_symbol_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let re_ptr = match get_regexp_ptr(vm, args) {
+        Ok(ptr) => ptr,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let is_global = is_global(unsafe { &*re_ptr });
+    let (regex, haystack) = match regexp_regex_and_text(vm, args) {
+        Ok(pair) => pair,
+        Err(err) => return NativeResult::Err(err),
+    };
+    if is_global {
+        set_prop_at(re_ptr, PROP_LAST_INDEX, JsValue::int(0));
+    }
+
+    let result = if args.len() > 2 {
+        let replacer_val = vm.reg(args[2]);
+        if replacer_val.is_object() {
+            let o = unsafe { &*replacer_val.as_js_object_ptr() };
+            if o.is_function() {
+                crate::string::regex_replace_fn(vm, regex, &haystack, replacer_val, is_global)
+            } else {
+                let replacement = oxide_runtime_api::to_string(replacer_val);
+                NativeResult::Ok(vm.new_string(&crate::string::regex_replace_manual(
+                    regex,
+                    &haystack,
+                    &replacement,
+                    is_global,
+                )))
+            }
+        } else {
+            let replacement = oxide_runtime_api::to_string(replacer_val);
+            NativeResult::Ok(vm.new_string(&crate::string::regex_replace_manual(
+                regex,
+                &haystack,
+                &replacement,
+                is_global,
+            )))
+        }
+    } else {
+        NativeResult::Ok(vm.new_string(&crate::string::regex_replace_manual(regex, &haystack, "", is_global)))
+    };
+
+    if is_global {
+        let mut last_end = 0;
+        for m in regex.find_iter(&haystack) {
+            last_end = m.range().end;
+        }
+        set_prop_at(re_ptr, PROP_LAST_INDEX, JsValue::int(last_end as i32));
+    }
+    result
+}
+
+/// `RegExp.prototype[Symbol.search](string)`：返回首个匹配位置（字符索引），
+/// 无匹配返回 -1。global 标志不影响 search。
+pub fn regexp_symbol_search<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let (regex, haystack) = match regexp_regex_and_text(vm, args) {
+        Ok(pair) => pair,
+        Err(err) => return NativeResult::Err(err),
+    };
+    if let Some(m) = regex.find(&haystack) {
+        return NativeResult::Ok(JsValue::int(m.range().start as i32));
+    }
+    NativeResult::Ok(JsValue::int(-1))
+}
+
+/// `RegExp.prototype[Symbol.split](string, limit)`：按匹配切分，捕获组作为
+/// 分隔元素插入结果；limit 限制结果长度，缺省切分全部。
+pub fn regexp_symbol_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let (regex, haystack) = match regexp_regex_and_text(vm, args) {
+        Ok(pair) => pair,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let limit = if args.len() > 2 {
+        let l = oxide_runtime_api::to_integer_or_infinity(vm.reg(args[2]));
+        if l.is_infinite() {
+            u32::MAX as usize
+        } else {
+            (l.max(0.0).trunc() as u64).min(u32::MAX as u64) as usize
+        }
+    } else {
+        u32::MAX as usize
+    };
+
+    let mut parts: Vec<String> = Vec::new();
+    let mut last_end = 0;
+    for m in regex.find_iter(&haystack) {
+        if parts.len() >= limit {
+            break;
+        }
+        let range = m.range();
+        parts.push(haystack[last_end..range.start].to_string());
+        if parts.len() >= limit {
+            break;
+        }
+        for i in 1..=m.captures.len() {
+            if parts.len() >= limit {
+                break;
+            }
+            match m.group(i) {
+                Some(g) => parts.push(haystack[g.start..g.end].to_string()),
+                None => parts.push(String::new()),
+            }
+        }
+        last_end = range.end;
+    }
+    if last_end <= haystack.len() && parts.len() < limit {
+        parts.push(haystack[last_end..].to_string());
+    }
+    NativeResult::Ok(crate::string::make_string_array(vm, &parts))
+}
+
+/// `RegExp.prototype[Symbol.matchAll](string)`：返回按 global 语义逐个产出
+/// 匹配数组的迭代器。global 正则直接复用（初始下标取 lastIndex）；
+/// 非 global 正则复制一份加 `g` 标志后迭代。
+pub fn regexp_symbol_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let re_ptr = match get_regexp_ptr(vm, args) {
+        Ok(ptr) => ptr,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let re = unsafe { &*re_ptr };
+    let is_global = is_global(re);
+    let last_index = vm.coerce_number_bounded(get_prop(re, PROP_LAST_INDEX)).unwrap_or(f64::NAN) as usize;
+    let haystack = match regexp_string_arg(vm, args) {
+        Ok(s) => s,
+        Err(err) => return NativeResult::Err(err),
+    };
+
+    // 迭代目标：global 用原正则，非 global 复制并补 g 标志。
+    let iter_re = if is_global {
+        vm.reg(args[0])
+    } else {
+        let source = {
+            let val = get_prop(re, PROP_SOURCE);
+            vm.lookup_str(val).unwrap_or_default()
+        };
+        let mut flags = {
+            let val = get_prop(re, PROP_FLAGS);
+            vm.lookup_str(val).unwrap_or_default()
+        };
+        if !flags.contains('g') {
+            flags.push('g');
+        }
+        let compiled = match regress::Regex::with_flags(&source, flags.as_str()) {
+            Ok(rx) => rx,
+            Err(e) => {
+                return NativeResult::Err(crate::error::create_syntax_error(
+                    vm,
+                    &format!("Invalid regular expression: {e}"),
+                ));
+            }
+        };
+        let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+        let mut stub = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto));
+        let raw = Box::into_raw(Box::new(compiled)) as *const u8;
+        stub.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(raw as *const ()) }));
+        JsValue::from_js_object(vm.alloc_object(stub))
+    };
+
+    // 复用 String.prototype.matchAll 的迭代器包装（next 经 string_match_all_next 推进）。
+    let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let wrapper = vm
+        .epoch()
+        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
+    let wrapper_obj = unsafe { &mut *wrapper };
+    let input_si = vm.kernel_core().perm_interner().intern(crate::string::MALL_INPUT).0;
+    let index_si = vm.kernel_core().perm_interner().intern(crate::string::MALL_INDEX).0;
+    let re_si = vm.kernel_core().perm_interner().intern(crate::string::MALL_RE).0;
+    let next_si = vm.kernel_core().perm_interner().intern("next").0;
+    let input_val = vm.new_string(&haystack);
+    vm.set_or_create_prop_value(wrapper_obj, input_si, input_val);
+    vm.set_or_create_prop_value(wrapper_obj, index_si, JsValue::int(last_index as i32));
+    vm.set_or_create_prop_value(wrapper_obj, re_si, iter_re);
+    let next_fn =
+        crate::string::make_public_native_fn(vm, "next", crate::string::string_match_all_next::<H> as *const (), 0);
+    vm.set_or_create_prop_value(wrapper_obj, next_si, next_fn);
+    NativeResult::Ok(JsValue::from_js_object(wrapper))
 }
 

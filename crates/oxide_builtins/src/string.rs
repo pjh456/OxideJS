@@ -168,7 +168,7 @@ pub fn string_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     ))
 }
 
-fn make_string_array<H: VmHost>(vm: &mut H, parts: &[String]) -> JsValue {
+pub(crate) fn make_string_array<H: VmHost>(vm: &mut H, parts: &[String]) -> JsValue {
     let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let n = parts.len();
     let arr =
@@ -190,7 +190,7 @@ fn as_string<H: VmHost>(vm: &mut H, val: JsValue) -> String {
 
 /// 正则替换的手动实现：按 JS 语义展开 replacement 中的 `$` 引用
 /// （`$$`、`$&`、`` $` ``、`$'`、`$n`），global 全替换否则首个。
-fn regex_replace_manual(regex: &regress::Regex, text: &str, replacement: &str, global: bool) -> String {
+pub(crate) fn regex_replace_manual(regex: &regress::Regex, text: &str, replacement: &str, global: bool) -> String {
     let mut out = String::new();
     let mut last_end = 0;
     let matches: Vec<regress::Match> = if global {
@@ -284,7 +284,7 @@ fn replacer_cb_args<H: VmHost>(vm: &mut H, text: &str, m: &regress::Match) -> Ve
 
 /// 正则模式 + 函数 replacer：global 全替换否则替换首个，逐匹配调用回调，
 /// 返回值 ToString 作为替换文本（不展开 `$` 引用）。
-fn regex_replace_fn<H: VmHost>(
+pub(crate) fn regex_replace_fn<H: VmHost>(
     vm: &mut H, regex: &regress::Regex, text: &str, replacer: JsValue, global: bool,
 ) -> NativeResult {
     let matches: Vec<regress::Match> = if global {
@@ -1068,9 +1068,9 @@ pub fn string_normalize<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(&result))
 }
 
-const MALL_INPUT: &str = "__mal_input__";
-const MALL_INDEX: &str = "__mal_index__";
-const MALL_RE: &str = "__mal_re__";
+pub(crate) const MALL_INPUT: &str = "__mal_input__";
+pub(crate) const MALL_INDEX: &str = "__mal_index__";
+pub(crate) const MALL_RE: &str = "__mal_re__";
 
 /// `String.prototype.matchAll(pattern)`：返回带 `next` 的迭代器，逐步产出全部匹配
 /// （要求 RegExp 带 global 标志；普通字符串会被转义成等效正则）。
@@ -1140,7 +1140,7 @@ fn builder_wrapper<H: VmHost>(vm: &mut H, input: &str, re_obj: JsValue) -> Nativ
     NativeResult::Ok(JsValue::from_js_object(wrapper))
 }
 
-fn make_public_native_fn<H: VmHost>(vm: &mut H, name: &str, native_fn: *const (), arg_count: u8) -> JsValue {
+pub(crate) fn make_public_native_fn<H: VmHost>(vm: &mut H, name: &str, native_fn: *const (), arg_count: u8) -> JsValue {
     let function_proto = vm.session().builtin_world().function_proto.as_ptr() as *mut JsObject;
     let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(function_proto));
     func.set_function(true);
