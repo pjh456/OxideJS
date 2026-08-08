@@ -61,7 +61,54 @@ impl Emitter {
     fn emit_unary_expression(&self, un: &oxide_parser::UnaryExpression, ctx: &mut CompileCtx) -> Result<u32, String> {
         if matches!(un.operator, UnaryOperator::Delete) {
             return match &un.argument {
-                Expression::Identifier(_) => {
+                Expression::Identifier(ident) => {
+                    let name = ident.name.as_str();
+                    // with 体内自由标识符：对象有该属性则删除对象属性（返回删除结果），
+                    // 否则非严格语义返回 true。
+                    if !ctx.with_stack.is_empty() && !ctx.is_with_internal_binding(name) {
+                        let obj_reg = ctx.innermost_with_obj().expect("with stack non-empty");
+                        let key_idx = ctx.add_constant(Constant::String(name.to_string()));
+                        let key_reg = ctx.alloc_reg();
+                        ctx.inst(Inst::load_const(Operand::Reg(key_reg), key_idx));
+                        let has_reg = ctx.alloc_reg();
+                        ctx.inst(Inst::new(
+                            OpCode::IN,
+                            Operand::Reg(has_reg),
+                            Operand::Reg(key_reg),
+                            Operand::Reg(obj_reg),
+                        ));
+                        let fallback_label = ctx.next_label_id();
+                        let end_label = ctx.next_label_id();
+                        ctx.inst(Inst::jmp_if_false(has_reg, fallback_label));
+                        // 复制 obj 到临时寄存器执行删除：DELETE_PROP_DYNAMIC 把结果写回
+                        // rd 槽，直接用它会把 with 对象寄存器覆盖为布尔值。
+                        let tmp_reg = ctx.alloc_reg();
+                        ctx.inst(Inst::new(
+                            OpCode::LOAD_VAR,
+                            Operand::Reg(tmp_reg),
+                            Operand::Reg(obj_reg),
+                            Operand::None,
+                        ));
+                        ctx.inst(Inst::new(
+                            OpCode::DELETE_PROP_DYNAMIC,
+                            Operand::Reg(tmp_reg),
+                            Operand::Reg(tmp_reg),
+                            Operand::Reg(key_reg),
+                        ));
+                        let result_reg = ctx.alloc_reg();
+                        ctx.inst(Inst::new(
+                            OpCode::LOAD_VAR,
+                            Operand::Reg(result_reg),
+                            Operand::Reg(tmp_reg),
+                            Operand::None,
+                        ));
+                        ctx.inst(Inst::jmp(end_label));
+                        ctx.labels.set_label_pos(fallback_label, ctx.insts.len());
+                        let true_idx = ctx.add_constant(Constant::Boolean(true));
+                        ctx.inst(Inst::load_const(Operand::Reg(result_reg), true_idx));
+                        ctx.labels.set_label_pos(end_label, ctx.insts.len());
+                        return Ok(result_reg);
+                    }
                     // 严格模式的 delete 标识符由 oxc_semantic 提前拦截为早期错误；
                     // 非严格语义返回 false（标识符不可删除）。
                     let idx = ctx.add_constant(Constant::Boolean(false));
@@ -262,54 +309,32 @@ impl Emitter {
         match &update.argument {
             SimpleAssignmentTarget::AssignmentTargetIdentifier(id) => {
                 let name = id.name.as_str();
-                // 判断目标是 upvalue 还是被捕获 cell
-                let uv_idx = ctx.current_upvalue_captures.iter().position(|u| u.name == name);
-                let captured_cell = ctx.captured_bindings.get(name).copied();
-                if let Some(uv) = uv_idx {
-                    // upvalue：LOAD_UPVALUE + 常量 1 + ADD/SUB + STORE_UPVALUE；
-                    // 后缀形式返回旧值（前缀返回新值）。
+                // with 体内自由标识符的自增/自减：对象有属性则读写对象，否则回退外层。
+                if !ctx.with_stack.is_empty() && !ctx.is_with_internal_binding(name) {
+                    let obj_reg = ctx.innermost_with_obj().expect("with stack non-empty");
+                    let key_idx = ctx.add_constant(Constant::String(name.to_string()));
+                    let key_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::load_const(Operand::Reg(key_reg), key_idx));
+                    let has_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::new(
+                        OpCode::IN,
+                        Operand::Reg(has_reg),
+                        Operand::Reg(key_reg),
+                        Operand::Reg(obj_reg),
+                    ));
+                    let fallback_label = ctx.next_label_id();
+                    let end_label = ctx.next_label_id();
+                    ctx.inst(Inst::jmp_if_false(has_reg, fallback_label));
+
+                    // 对象有该属性：读属性 → 增减 → 写回对象。
                     let old_reg = ctx.alloc_reg();
                     ctx.inst(Inst::new(
-                        OpCode::LOAD_UPVALUE,
+                        OpCode::GET_PROP_DYNAMIC,
+                        Operand::Reg(obj_reg),
+                        Operand::Reg(key_reg),
                         Operand::Reg(old_reg),
-                        Operand::Imm(uv as u16),
-                        Operand::None,
                     ));
-                    let one_idx = ctx.add_constant(Constant::Int(1));
-                    let one_reg = ctx.alloc_reg();
-                    ctx.inst(Inst::load_const(Operand::Reg(one_reg), one_idx));
-                    let op = if update.operator == UpdateOperator::Increment {
-                        OpCode::ADD
-                    } else {
-                        OpCode::SUB
-                    };
                     let new_reg = ctx.alloc_reg();
-                    ctx.inst(Inst::new(op, Operand::Reg(new_reg), Operand::Reg(old_reg), Operand::Reg(one_reg)));
-                    ctx.inst(Inst::new(
-                        OpCode::STORE_UPVALUE,
-                        Operand::None,
-                        Operand::Reg(new_reg),
-                        Operand::Imm(uv as u16),
-                    ));
-                    Ok(if update.prefix { new_reg } else { old_reg })
-                } else if let Some(cell_idx) = captured_cell {
-                    // 被捕获 cell：CELL_GET + 常量 1 + ADD/SUB + CELL_SET
-                    let val_reg = ctx.alloc_reg();
-                    if let Some((binding, _)) = ctx.scopes.symbols.lookup_any_binding(name) {
-                        ctx.inst(Inst::new(
-                            OpCode::CELL_GET,
-                            Operand::Reg(val_reg),
-                            Operand::Reg(binding.reg),
-                            Operand::Imm(cell_idx as u16),
-                        ));
-                    } else {
-                        ctx.inst(Inst::new(
-                            OpCode::CELL_GET,
-                            Operand::Reg(val_reg),
-                            Operand::None,
-                            Operand::Imm(cell_idx as u16),
-                        ));
-                    }
                     let one_idx = ctx.add_constant(Constant::Int(1));
                     let one_reg = ctx.alloc_reg();
                     ctx.inst(Inst::load_const(Operand::Reg(one_reg), one_idx));
@@ -318,26 +343,41 @@ impl Emitter {
                     } else {
                         OpCode::SUB
                     };
-                    ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(val_reg), Operand::Reg(one_reg)));
                     ctx.inst(Inst::new(
-                        OpCode::CELL_SET,
-                        Operand::None,
-                        Operand::Reg(val_reg),
-                        Operand::Imm(cell_idx as u16),
+                        op,
+                        Operand::Reg(new_reg),
+                        Operand::Reg(old_reg),
+                        Operand::Reg(one_reg),
                     ));
-                    Ok(val_reg)
-                } else {
-                    let var_reg = ctx.lookup_or_global(name);
+                    ctx.inst(Inst::new(
+                        OpCode::SET_PROP_DYNAMIC,
+                        Operand::Reg(obj_reg),
+                        Operand::Reg(key_reg),
+                        Operand::Reg(new_reg),
+                    ));
                     let result_reg = ctx.alloc_reg();
-                    let op = match (update.operator, update.prefix) {
-                        (UpdateOperator::Increment, true) => OpCode::INC_PRE,
-                        (UpdateOperator::Increment, false) => OpCode::INC_POST,
-                        (UpdateOperator::Decrement, true) => OpCode::DEC_PRE,
-                        (UpdateOperator::Decrement, false) => OpCode::DEC_POST,
-                    };
-                    ctx.inst(Inst::new(op, Operand::Reg(var_reg), Operand::Reg(result_reg), Operand::Reg(result_reg)));
-                    Ok(result_reg)
+                    ctx.inst(Inst::new(
+                        OpCode::LOAD_VAR,
+                        Operand::Reg(result_reg),
+                        Operand::Reg(if update.prefix { new_reg } else { old_reg }),
+                        Operand::None,
+                    ));
+                    ctx.inst(Inst::jmp(end_label));
+
+                    // 对象无该属性：回退静态自增/自减，结果写入同一 result_reg。
+                    ctx.labels.set_label_pos(fallback_label, ctx.insts.len());
+                    let static_result = self.emit_identifier_update_static(name, update, ctx)?;
+                    ctx.inst(Inst::new(
+                        OpCode::LOAD_VAR,
+                        Operand::Reg(result_reg),
+                        Operand::Reg(static_result),
+                        Operand::None,
+                    ));
+                    ctx.labels.set_label_pos(end_label, ctx.insts.len());
+                    return Ok(result_reg);
                 }
+                // 判断目标是 upvalue 还是被捕获 cell
+                self.emit_identifier_update_static(name, update, ctx)
             }
             SimpleAssignmentTarget::StaticMemberExpression(member) => {
                 let obj_reg = self.emit_expression(&member.object, ctx)?;
@@ -373,6 +413,88 @@ impl Emitter {
                 Ok(val_reg)
             }
             _ => Err("member update not yet supported".into()),
+        }
+    }
+
+    /// 标识符自增/自减的静态路径：upvalue / 被捕获 cell 走显式读-增减-写回，
+    /// 普通槽用 INC_PRE/POST 或 DEC_PRE/POST。返回结果寄存器。
+    fn emit_identifier_update_static(
+        &self, name: &str, update: &oxide_parser::UpdateExpression, ctx: &mut CompileCtx,
+    ) -> Result<u32, String> {
+        let uv_idx = ctx.current_upvalue_captures.iter().position(|u| u.name == name);
+        let captured_cell = ctx.captured_bindings.get(name).copied();
+        if let Some(uv) = uv_idx {
+            // upvalue：LOAD_UPVALUE + 常量 1 + ADD/SUB + STORE_UPVALUE；
+            // 后缀形式返回旧值（前缀返回新值）。
+            let old_reg = ctx.alloc_reg();
+            ctx.inst(Inst::new(
+                OpCode::LOAD_UPVALUE,
+                Operand::Reg(old_reg),
+                Operand::Imm(uv as u16),
+                Operand::None,
+            ));
+            let one_idx = ctx.add_constant(Constant::Int(1));
+            let one_reg = ctx.alloc_reg();
+            ctx.inst(Inst::load_const(Operand::Reg(one_reg), one_idx));
+            let op = if update.operator == UpdateOperator::Increment {
+                OpCode::ADD
+            } else {
+                OpCode::SUB
+            };
+            let new_reg = ctx.alloc_reg();
+            ctx.inst(Inst::new(op, Operand::Reg(new_reg), Operand::Reg(old_reg), Operand::Reg(one_reg)));
+            ctx.inst(Inst::new(
+                OpCode::STORE_UPVALUE,
+                Operand::None,
+                Operand::Reg(new_reg),
+                Operand::Imm(uv as u16),
+            ));
+            Ok(if update.prefix { new_reg } else { old_reg })
+        } else if let Some(cell_idx) = captured_cell {
+            // 被捕获 cell：CELL_GET + 常量 1 + ADD/SUB + CELL_SET
+            let val_reg = ctx.alloc_reg();
+            if let Some((binding, _)) = ctx.scopes.symbols.lookup_any_binding(name) {
+                ctx.inst(Inst::new(
+                    OpCode::CELL_GET,
+                    Operand::Reg(val_reg),
+                    Operand::Reg(binding.reg),
+                    Operand::Imm(cell_idx as u16),
+                ));
+            } else {
+                ctx.inst(Inst::new(
+                    OpCode::CELL_GET,
+                    Operand::Reg(val_reg),
+                    Operand::None,
+                    Operand::Imm(cell_idx as u16),
+                ));
+            }
+            let one_idx = ctx.add_constant(Constant::Int(1));
+            let one_reg = ctx.alloc_reg();
+            ctx.inst(Inst::load_const(Operand::Reg(one_reg), one_idx));
+            let op = if update.operator == UpdateOperator::Increment {
+                OpCode::ADD
+            } else {
+                OpCode::SUB
+            };
+            ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(val_reg), Operand::Reg(one_reg)));
+            ctx.inst(Inst::new(
+                OpCode::CELL_SET,
+                Operand::None,
+                Operand::Reg(val_reg),
+                Operand::Imm(cell_idx as u16),
+            ));
+            Ok(val_reg)
+        } else {
+            let var_reg = ctx.lookup_or_global(name);
+            let result_reg = ctx.alloc_reg();
+            let op = match (update.operator, update.prefix) {
+                (UpdateOperator::Increment, true) => OpCode::INC_PRE,
+                (UpdateOperator::Increment, false) => OpCode::INC_POST,
+                (UpdateOperator::Decrement, true) => OpCode::DEC_PRE,
+                (UpdateOperator::Decrement, false) => OpCode::DEC_POST,
+            };
+            ctx.inst(Inst::new(op, Operand::Reg(var_reg), Operand::Reg(result_reg), Operand::Reg(result_reg)));
+            Ok(result_reg)
         }
     }
 

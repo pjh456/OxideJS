@@ -1305,6 +1305,10 @@ impl Vm {
                     self.dispatch_typeof(rd, a);
                 }
 
+                OpCode::TO_OBJECT => {
+                    self.dispatch_to_object(rd)?;
+                }
+
                 OpCode::VOID => {
                     self.dispatch_void(rd);
                 }
@@ -1374,7 +1378,13 @@ impl Vm {
                 | OpCode::COMPOUND_MEMBER_MUL
                 | OpCode::COMPOUND_MEMBER_DIV
                 | OpCode::COMPOUND_MEMBER_MOD
-                | OpCode::COMPOUND_MEMBER_EXP => {
+                | OpCode::COMPOUND_MEMBER_EXP
+                | OpCode::COMPOUND_MEMBER_BIT_AND
+                | OpCode::COMPOUND_MEMBER_BIT_OR
+                | OpCode::COMPOUND_MEMBER_BIT_XOR
+                | OpCode::COMPOUND_MEMBER_SHL
+                | OpCode::COMPOUND_MEMBER_SHR
+                | OpCode::COMPOUND_MEMBER_USHR => {
                     self.dispatch_member_op(op, rd, a, b)?;
                 }
 

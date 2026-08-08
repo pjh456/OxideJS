@@ -94,6 +94,36 @@ impl Inst {
         Self::with_ext(OpCode::COMPOUND_MEMBER_EXP, obj, val, key, &[0, 0, 0])
     }
 
+    /// 成员复合赋值按位与：`obj[key] &= val`。
+    pub fn compound_member_bit_and(obj: Operand, val: Operand, key: Operand) -> Self {
+        Self::with_ext(OpCode::COMPOUND_MEMBER_BIT_AND, obj, val, key, &[0, 0, 0])
+    }
+
+    /// 成员复合赋值按位或：`obj[key] |= val`。
+    pub fn compound_member_bit_or(obj: Operand, val: Operand, key: Operand) -> Self {
+        Self::with_ext(OpCode::COMPOUND_MEMBER_BIT_OR, obj, val, key, &[0, 0, 0])
+    }
+
+    /// 成员复合赋值按位异或：`obj[key] ^= val`。
+    pub fn compound_member_bit_xor(obj: Operand, val: Operand, key: Operand) -> Self {
+        Self::with_ext(OpCode::COMPOUND_MEMBER_BIT_XOR, obj, val, key, &[0, 0, 0])
+    }
+
+    /// 成员复合赋值左移：`obj[key] <<= val`。
+    pub fn compound_member_shl(obj: Operand, val: Operand, key: Operand) -> Self {
+        Self::with_ext(OpCode::COMPOUND_MEMBER_SHL, obj, val, key, &[0, 0, 0])
+    }
+
+    /// 成员复合赋值右移：`obj[key] >>= val`。
+    pub fn compound_member_shr(obj: Operand, val: Operand, key: Operand) -> Self {
+        Self::with_ext(OpCode::COMPOUND_MEMBER_SHR, obj, val, key, &[0, 0, 0])
+    }
+
+    /// 成员复合赋值无符号右移：`obj[key] >>>= val`。
+    pub fn compound_member_ushr(obj: Operand, val: Operand, key: Operand) -> Self {
+        Self::with_ext(OpCode::COMPOUND_MEMBER_USHR, obj, val, key, &[0, 0, 0])
+    }
+
     // ── Call 系：ext = [nargs] ──
 
     /// 普通函数调用：rd=callee，a=this，b=首参，ext=\[nargs\]。参数从 `first_arg` 起连续占 nargs 个寄存器。

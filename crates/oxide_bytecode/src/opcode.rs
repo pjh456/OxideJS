@@ -173,10 +173,18 @@ define_opcodes! {
     // ── 对象 (0x63) ──
     CREATE_ARGUMENTS = 0x63 => "CREATE_ARGUMENTS",
 
-    // ── Profiling — 占位符 (0x64-0x6F) ──
-    PROFILE_SHAPE = 0x64 => "PROFILE_SHAPE",
-    PROFILE_BRANCH = 0x65 => "PROFILE_BRANCH",
-    PROFILE_CALL = 0x66 => "PROFILE_CALL",
+    // ── 成员复合赋值：位/移位 (0x64-0x69) ──
+    COMPOUND_MEMBER_BIT_AND = 0x64 => "COMPOUND_MEMBER_BIT_AND",
+    COMPOUND_MEMBER_BIT_OR = 0x65 => "COMPOUND_MEMBER_BIT_OR",
+    COMPOUND_MEMBER_BIT_XOR = 0x66 => "COMPOUND_MEMBER_BIT_XOR",
+    COMPOUND_MEMBER_SHL = 0x67 => "COMPOUND_MEMBER_SHL",
+    COMPOUND_MEMBER_SHR = 0x68 => "COMPOUND_MEMBER_SHR",
+    COMPOUND_MEMBER_USHR = 0x69 => "COMPOUND_MEMBER_USHR",
+
+    // ── Profiling — 占位符 (0x6A-0x6F) ──
+    PROFILE_SHAPE = 0x6A => "PROFILE_SHAPE",
+    PROFILE_BRANCH = 0x6B => "PROFILE_BRANCH",
+    PROFILE_CALL = 0x6C => "PROFILE_CALL",
 
     // ── 并行 — 占位符 (0x70-0x7F) ──
     FORK = 0x70 => "FORK",
@@ -194,6 +202,7 @@ define_opcodes! {
     SHR = 0x84 => "SHR",
     USHR = 0x85 => "USHR",
     BIT_NOT = 0x86 => "BIT_NOT",
+    TO_OBJECT = 0x87 => "TO_OBJECT",
     COMPOUND_AND = 0x88 => "COMPOUND_AND",
     COMPOUND_OR = 0x89 => "COMPOUND_OR",
     COMPOUND_XOR = 0x8A => "COMPOUND_XOR",
@@ -225,6 +234,12 @@ impl OpCode {
                 | OpCode::COMPOUND_MEMBER_DIV
                 | OpCode::COMPOUND_MEMBER_MOD
                 | OpCode::COMPOUND_MEMBER_EXP
+                | OpCode::COMPOUND_MEMBER_BIT_AND
+                | OpCode::COMPOUND_MEMBER_BIT_OR
+                | OpCode::COMPOUND_MEMBER_BIT_XOR
+                | OpCode::COMPOUND_MEMBER_SHL
+                | OpCode::COMPOUND_MEMBER_SHR
+                | OpCode::COMPOUND_MEMBER_USHR
         )
     }
 }

@@ -114,7 +114,11 @@ impl Emitter {
             let mut static_regs = words;
             let first_arg_reg = if static_regs.is_empty() { 0u32 } else { pack_arg_regs(&mut static_regs, ctx) };
             let op = match &call.callee {
-                Expression::Identifier(ident) if ctx.is_builtin(ident.name.as_str()) => OpCode::CALL_NATIVE,
+                Expression::Identifier(ident)
+                    if ctx.is_builtin(ident.name.as_str()) && !ctx.is_local_shadowing_builtin(ident.name.as_str()) =>
+                {
+                    OpCode::CALL_NATIVE
+                }
                 _ => OpCode::CALL,
             };
             match op {

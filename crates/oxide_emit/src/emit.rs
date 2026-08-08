@@ -175,6 +175,9 @@ pub struct CompileCtx {
     /// 消除符号表时序依赖与 cell 索引错位。
     pub(crate) captured_bindings: BTreeMap<String, u8>,
     pub(crate) const_overflow: bool,
+    /// with 语句作用域栈：元素为 (with 对象寄存器, 打开时的作用域深度)。
+    /// 非空时 with 体内的自由标识符需动态解析（先查对象属性，回退外层）。
+    pub(crate) with_stack: Vec<(u32, usize)>,
 }
 
 /// 函数体编译上下文：决定 `this`/`super` 绑定与参数前导（prologue）形态。
@@ -255,6 +258,7 @@ impl CompileCtx {
             own_bindings: HashSet::new(),
             captured_bindings: BTreeMap::new(),
             const_overflow: false,
+            with_stack: Vec::new(),
         }
     }
 
@@ -475,8 +479,43 @@ impl CompileCtx {
         self.scopes.builtin_reg_map.iter().any(|(n, _)| n == name)
     }
 
+    /// 内置名是否被局部声明遮蔽（`var parseInt = ...` 等）。
+    /// builtin_reg_map 记录的是全局内置槽；若该名在静态作用域另有绑定，则调用应解析局部。
+    pub(crate) fn is_local_shadowing_builtin(&self, name: &str) -> bool {
+        if let Some(reg) = self.scopes.symbols.lookup_any(name) {
+            let is_builtin_slot = self.scopes.builtin_reg_map.iter().any(|(n, r)| n == name && *r == reg);
+            return !is_builtin_slot;
+        }
+        false
+    }
+
     pub(crate) fn is_known_builtin(name: &str) -> bool {
         BUILTIN_GLOBALS.contains(&name)
+    }
+
+    /// 进入 with 语句体：记录对象寄存器与当前作用域深度，供动态标识符解析。
+    pub(crate) fn push_with(&mut self, obj_reg: u32) {
+        let depth = self.scopes.symbols.scopes.len();
+        self.with_stack.push((obj_reg, depth));
+    }
+
+    /// 离开 with 语句体。
+    pub(crate) fn pop_with(&mut self) {
+        self.with_stack.pop();
+    }
+
+    /// 最内层 with 对象寄存器；无 with 时为 None。
+    pub(crate) fn innermost_with_obj(&self) -> Option<u32> {
+        self.with_stack.last().map(|&(reg, _)| reg)
+    }
+
+    /// 指定名字是否在 with 语句体**内**（with 打开之后的块作用域）声明。
+    /// with 内声明优先于对象属性；with 之前的外层声明被对象遮蔽。
+    pub(crate) fn is_with_internal_binding(&self, name: &str) -> bool {
+        let Some(&(_, depth)) = self.with_stack.last() else {
+            return false;
+        };
+        matches!(self.scopes.symbols.lookup_any_binding(name), Some((_, idx)) if idx >= depth)
     }
 
     fn builtin_reg_floor(&self) -> u32 {
@@ -945,6 +984,7 @@ impl Emitter {
             Statement::BreakStatement(b) => self.emit_break_statement(b, ctx),
             Statement::ContinueStatement(c) => self.emit_continue_statement(c, ctx),
             Statement::LabeledStatement(ls) => self.emit_labeled_statement(ls, ctx),
+            Statement::WithStatement(_) => self.emit_with_domain(stmt, ctx),
             _ => Ok(None),
         }
     }

@@ -108,6 +108,10 @@ impl Emitter {
                 }
             }
             Statement::LabeledStatement(ls) => self.pre_scan_builtin_stmt(&ls.body, ctx),
+            Statement::WithStatement(ws) => {
+                self.pre_scan_builtin_expr(&ws.object, ctx);
+                self.pre_scan_builtin_stmt(&ws.body, ctx);
+            }
             Statement::ClassDeclaration(cd) => {
                 if let Some(super_class) = &cd.super_class {
                     self.pre_scan_builtin_expr(super_class, ctx);
@@ -342,6 +346,9 @@ impl Emitter {
                 }
                 Statement::LabeledStatement(ls) => {
                     self.predeclare_var_declarations(std::slice::from_ref(&ls.body), ctx);
+                }
+                Statement::WithStatement(ws) => {
+                    self.predeclare_var_declarations(std::slice::from_ref(&ws.body), ctx);
                 }
                 _ => {}
             }

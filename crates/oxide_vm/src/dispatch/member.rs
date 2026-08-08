@@ -55,6 +55,57 @@ impl Vm {
                 "COMPOUND_MEMBER_EXP on non-object",
                 |l, r| l.powf(r),
             ),
+            OpCode::COMPOUND_MEMBER_BIT_AND => self.dispatch_compound_member_bitwise(
+                "COMPOUND_MEMBER_BIT_AND",
+                rd,
+                a,
+                b,
+                "COMPOUND_MEMBER_BIT_AND on non-object",
+                |l, r| l & r,
+            ),
+            OpCode::COMPOUND_MEMBER_BIT_OR => self.dispatch_compound_member_bitwise(
+                "COMPOUND_MEMBER_BIT_OR",
+                rd,
+                a,
+                b,
+                "COMPOUND_MEMBER_BIT_OR on non-object",
+                |l, r| l | r,
+            ),
+            OpCode::COMPOUND_MEMBER_BIT_XOR => self.dispatch_compound_member_bitwise(
+                "COMPOUND_MEMBER_BIT_XOR",
+                rd,
+                a,
+                b,
+                "COMPOUND_MEMBER_BIT_XOR on non-object",
+                |l, r| l ^ r,
+            ),
+            OpCode::COMPOUND_MEMBER_SHL => self.dispatch_compound_member_shift(
+                "COMPOUND_MEMBER_SHL",
+                rd,
+                a,
+                b,
+                "COMPOUND_MEMBER_SHL on non-object",
+                false,
+                false,
+            ),
+            OpCode::COMPOUND_MEMBER_SHR => self.dispatch_compound_member_shift(
+                "COMPOUND_MEMBER_SHR",
+                rd,
+                a,
+                b,
+                "COMPOUND_MEMBER_SHR on non-object",
+                true,
+                false,
+            ),
+            OpCode::COMPOUND_MEMBER_USHR => self.dispatch_compound_member_shift(
+                "COMPOUND_MEMBER_USHR",
+                rd,
+                a,
+                b,
+                "COMPOUND_MEMBER_USHR on non-object",
+                true,
+                true,
+            ),
             _ => unreachable!("non-member opcode passed to dispatch_member_op"),
         }
     }
@@ -175,6 +226,62 @@ impl Vm {
         };
         let rn = self.coerce_number_bounded(self.regs[a])?;
         let new_val = JsValue::float(op(ln, rn));
+        self.regs[a] = new_val;
+        let obj = unsafe { &mut *obj_ptr };
+        self.set_member_prop(obj, prop_name_si, new_val, receiver)?;
+        Ok(())
+    }
+
+    fn dispatch_compound_member_bitwise<F>(
+        &mut self, op_name: &str, rd: usize, a: usize, b: usize, error_msg: &str, op: F,
+    ) -> Result<(), String>
+    where
+        F: FnOnce(i32, i32) -> i32,
+    {
+        vm_trace!("{} rd={} a={} b={}", op_name, rd, a, b);
+        let Ok((obj_ptr, prop_name_si)) = self.member_target(rd, b, error_msg) else {
+            return Ok(());
+        };
+        let receiver = self.regs[rd];
+        let ln = {
+            let obj = unsafe { &mut *obj_ptr };
+            let prop_val = self.read_member_prop(obj, prop_name_si, receiver)?;
+            self.coerce_int32_bounded(prop_val)?
+        };
+        let rn = self.coerce_int32_bounded(self.regs[a])?;
+        let new_val = JsValue::int(op(ln, rn));
+        self.regs[a] = new_val;
+        let obj = unsafe { &mut *obj_ptr };
+        self.set_member_prop(obj, prop_name_si, new_val, receiver)?;
+        Ok(())
+    }
+
+    fn dispatch_compound_member_shift(
+        &mut self, op_name: &str, rd: usize, a: usize, b: usize, error_msg: &str, is_right: bool, is_unsigned: bool,
+    ) -> Result<(), String> {
+        vm_trace!("{} rd={} a={} b={}", op_name, rd, a, b);
+        let Ok((obj_ptr, prop_name_si)) = self.member_target(rd, b, error_msg) else {
+            return Ok(());
+        };
+        let receiver = self.regs[rd];
+        let ln = {
+            let obj = unsafe { &mut *obj_ptr };
+            let prop_val = self.read_member_prop(obj, prop_name_si, receiver)?;
+            self.coerce_int32_bounded(prop_val)?
+        };
+        let shift = self.coerce_uint32_bounded(self.regs[a])? & 0x1F;
+        let new_val = if !is_right {
+            JsValue::int(ln.wrapping_shl(shift))
+        } else if is_unsigned {
+            let u = (ln as u32) >> shift;
+            if u <= i32::MAX as u32 {
+                JsValue::int(u as i32)
+            } else {
+                JsValue::float(u as f64)
+            }
+        } else {
+            JsValue::int(ln >> shift)
+        };
         self.regs[a] = new_val;
         let obj = unsafe { &mut *obj_ptr };
         self.set_member_prop(obj, prop_name_si, new_val, receiver)?;

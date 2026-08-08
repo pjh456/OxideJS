@@ -103,8 +103,8 @@ fn arrow_block_body_needs_explicit_return() {
 }
 
 #[test]
-fn arrow_at_global_scope_this_is_undefined() {
-    assert_eq!(eval("(() => this)()"), "undefined");
+fn arrow_at_global_scope_this_is_global_object() {
+    assert_eq!(eval("(() => this === globalThis)()"), "true");
 }
 
 #[test]

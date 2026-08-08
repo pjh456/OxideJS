@@ -9,6 +9,60 @@ use oxide_ir::operand::Operand;
 use oxide_parser::AssignmentOperator;
 
 impl Emitter {
+    /// 标识符复合赋值的静态路径：upvalue / 被捕获 cell 走显式读取-运算-写回
+    /// （写穿透共享单元），普通槽用 COMPOUND_* 寄存器内 RMW。返回结果寄存器。
+    ///
+    /// # 边界与前提
+    /// - `op` 必须是 COMPOUND_* 族（rd 兼作 lhs 源，a 为 rhs）。
+    /// - upvalue / cell 场景忽略 const 语义（共享单元由闭包机制保证）。
+    fn emit_compound_identifier_static(
+        &self, name: &str, op: OpCode, rhs: u32, ctx: &mut CompileCtx,
+    ) -> Result<u32, String> {
+        let uv_idx = ctx.current_upvalue_captures.iter().position(|u| u.name == name);
+        let captured_cell = ctx.captured_bindings.get(name).copied();
+        if let Some(uv) = uv_idx {
+            let val_reg = ctx.alloc_reg();
+            ctx.inst(Inst::new(
+                OpCode::LOAD_UPVALUE,
+                Operand::Reg(val_reg),
+                Operand::Imm(uv as u16),
+                Operand::None,
+            ));
+            ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(rhs), Operand::None));
+            ctx.inst(Inst::new(
+                OpCode::STORE_UPVALUE,
+                Operand::None,
+                Operand::Reg(val_reg),
+                Operand::Imm(uv as u16),
+            ));
+            Ok(val_reg)
+        } else if let Some(cell_idx) = captured_cell {
+            let val_reg = ctx.alloc_reg();
+            let a_operand = match ctx.scopes.symbols.lookup_any_binding(name) {
+                Some((binding, _)) => Operand::Reg(binding.reg),
+                None => Operand::None,
+            };
+            ctx.inst(Inst::new(
+                OpCode::CELL_GET,
+                Operand::Reg(val_reg),
+                a_operand,
+                Operand::Imm(cell_idx as u16),
+            ));
+            ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(rhs), Operand::None));
+            ctx.inst(Inst::new(
+                OpCode::CELL_SET,
+                Operand::None,
+                Operand::Reg(val_reg),
+                Operand::Imm(cell_idx as u16),
+            ));
+            Ok(val_reg)
+        } else {
+            let var_reg = ctx.lookup_or_global(name);
+            ctx.inst(Inst::new(op, Operand::Reg(var_reg), Operand::Reg(rhs), Operand::None));
+            Ok(var_reg)
+        }
+    }
+
     pub(crate) fn emit_assignment_expression(
         &self, assign: &oxide_parser::AssignmentExpression, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
@@ -59,6 +113,12 @@ impl Emitter {
                     AssignmentOperator::Division => ctx.inst(Inst::compound_member_div(obj, val, key)),
                     AssignmentOperator::Remainder => ctx.inst(Inst::compound_member_mod(obj, val, key)),
                     AssignmentOperator::Exponential => ctx.inst(Inst::compound_member_exp(obj, val, key)),
+                    AssignmentOperator::BitwiseAnd => ctx.inst(Inst::compound_member_bit_and(obj, val, key)),
+                    AssignmentOperator::BitwiseOR => ctx.inst(Inst::compound_member_bit_or(obj, val, key)),
+                    AssignmentOperator::BitwiseXOR => ctx.inst(Inst::compound_member_bit_xor(obj, val, key)),
+                    AssignmentOperator::ShiftLeft => ctx.inst(Inst::compound_member_shl(obj, val, key)),
+                    AssignmentOperator::ShiftRight => ctx.inst(Inst::compound_member_shr(obj, val, key)),
+                    AssignmentOperator::ShiftRightZeroFill => ctx.inst(Inst::compound_member_ushr(obj, val, key)),
                     _ => return Err(format!("compound assignment operator {:?} not supported", assign.operator)),
                 }
                 Ok(val_reg)
@@ -99,6 +159,40 @@ impl Emitter {
             }
             let obj_reg = self.emit_expression(&member.object, ctx)?;
             let key_reg = self.emit_expression(&member.expression, ctx)?;
+            if assign.operator != AssignmentOperator::Assign {
+                // 复合赋值：读属性 → 运算 → 写回。val_reg 同时承载旧值与新值。
+                let val_reg = ctx.alloc_reg();
+                ctx.inst(Inst::new(
+                    OpCode::GET_PROP_DYNAMIC,
+                    Operand::Reg(obj_reg),
+                    Operand::Reg(key_reg),
+                    Operand::Reg(val_reg),
+                ));
+                let rhs = self.emit_expression(&assign.right, ctx)?;
+                let op = match assign.operator {
+                    AssignmentOperator::Addition => OpCode::ADD,
+                    AssignmentOperator::Subtraction => OpCode::SUB,
+                    AssignmentOperator::Multiplication => OpCode::MUL,
+                    AssignmentOperator::Division => OpCode::DIV,
+                    AssignmentOperator::Remainder => OpCode::MOD,
+                    AssignmentOperator::Exponential => OpCode::COMPOUND_EXP,
+                    AssignmentOperator::BitwiseAnd => OpCode::BIT_AND,
+                    AssignmentOperator::BitwiseOR => OpCode::BIT_OR,
+                    AssignmentOperator::BitwiseXOR => OpCode::BIT_XOR,
+                    AssignmentOperator::ShiftLeft => OpCode::SHL,
+                    AssignmentOperator::ShiftRight => OpCode::SHR,
+                    AssignmentOperator::ShiftRightZeroFill => OpCode::USHR,
+                    _ => return Err(format!("compound assignment operator {:?} not supported", assign.operator)),
+                };
+                ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(val_reg), Operand::Reg(rhs)));
+                ctx.inst(Inst::new(
+                    OpCode::SET_PROP_DYNAMIC,
+                    Operand::Reg(obj_reg),
+                    Operand::Reg(key_reg),
+                    Operand::Reg(val_reg),
+                ));
+                return Ok(val_reg);
+            }
             let val_reg = self.emit_expression(&assign.right, ctx)?;
             ctx.inst(Inst::new(
                 OpCode::SET_PROP_DYNAMIC,
@@ -184,51 +278,55 @@ impl Emitter {
                         AssignmentOperator::ShiftRightZeroFill => OpCode::COMPOUND_USHR,
                         _ => return Err(format!("compound assignment operator {:?} not supported", assign.operator)),
                     };
-                    // 目标为 upvalue / 被捕获 cell 时走显式读取-运算-写回，保证写穿透共享单元；
-                    // 只有普通槽位才用 COMPOUND_* 的寄存器内 RMW（rd 兼作 lhs 源）。
-                    let uv_idx = ctx.current_upvalue_captures.iter().position(|u| u.name == name);
-                    let captured_cell = ctx.captured_bindings.get(name).copied();
-                    if let Some(uv) = uv_idx {
+                    // with 体内自由标识符的复合赋值走动态路径：对象有属性则读对象、
+                    // 运算后写回对象，否则回退外层静态复合。
+                    if !ctx.with_stack.is_empty() && !ctx.is_with_internal_binding(name) {
+                        let obj_reg = ctx.innermost_with_obj().expect("with stack non-empty");
+                        let key_idx = ctx.add_constant(Constant::String(name.to_string()));
+                        let key_reg = ctx.alloc_reg();
+                        ctx.inst(Inst::load_const(Operand::Reg(key_reg), key_idx));
+
+                        let has_reg = ctx.alloc_reg();
+                        ctx.inst(Inst::new(
+                            OpCode::IN,
+                            Operand::Reg(has_reg),
+                            Operand::Reg(key_reg),
+                            Operand::Reg(obj_reg),
+                        ));
+                        let fallback_label = ctx.next_label_id();
+                        let end_label = ctx.next_label_id();
+                        ctx.inst(Inst::jmp_if_false(has_reg, fallback_label));
+
+                        // 对象有该属性：读对象属性 → 运算 → 写回对象。
                         let val_reg = ctx.alloc_reg();
                         ctx.inst(Inst::new(
-                            OpCode::LOAD_UPVALUE,
+                            OpCode::GET_PROP_DYNAMIC,
+                            Operand::Reg(obj_reg),
+                            Operand::Reg(key_reg),
                             Operand::Reg(val_reg),
-                            Operand::Imm(uv as u16),
-                            Operand::None,
                         ));
                         ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(rhs), Operand::None));
                         ctx.inst(Inst::new(
-                            OpCode::STORE_UPVALUE,
-                            Operand::None,
+                            OpCode::SET_PROP_DYNAMIC,
+                            Operand::Reg(obj_reg),
+                            Operand::Reg(key_reg),
                             Operand::Reg(val_reg),
-                            Operand::Imm(uv as u16),
                         ));
-                        Ok(val_reg)
-                    } else if let Some(cell_idx) = captured_cell {
-                        let val_reg = ctx.alloc_reg();
-                        let a_operand = match ctx.scopes.symbols.lookup_any_binding(name) {
-                            Some((binding, _)) => Operand::Reg(binding.reg),
-                            None => Operand::None,
-                        };
+                        ctx.inst(Inst::jmp(end_label));
+
+                        // 对象无该属性：回退静态复合赋值，结果写入同一 val_reg。
+                        ctx.labels.set_label_pos(fallback_label, ctx.insts.len());
+                        let fallback_val = self.emit_compound_identifier_static(name, op, rhs, ctx)?;
                         ctx.inst(Inst::new(
-                            OpCode::CELL_GET,
+                            OpCode::LOAD_VAR,
                             Operand::Reg(val_reg),
-                            a_operand,
-                            Operand::Imm(cell_idx as u16),
-                        ));
-                        ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(rhs), Operand::None));
-                        ctx.inst(Inst::new(
-                            OpCode::CELL_SET,
+                            Operand::Reg(fallback_val),
                             Operand::None,
-                            Operand::Reg(val_reg),
-                            Operand::Imm(cell_idx as u16),
                         ));
-                        Ok(val_reg)
-                    } else {
-                        let var_reg = ctx.lookup_or_global(name);
-                        ctx.inst(Inst::new(op, Operand::Reg(var_reg), Operand::Reg(rhs), Operand::None));
-                        Ok(var_reg)
+                        ctx.labels.set_label_pos(end_label, ctx.insts.len());
+                        return Ok(val_reg);
                     }
+                    self.emit_compound_identifier_static(name, op, rhs, ctx)
                 } else {
                     Err(format!("compound assignment operator {:?} not supported", assign.operator))
                 }
@@ -243,35 +341,16 @@ impl Emitter {
                         }
                     }
                 }
-                // 目标若是 upvalue 引用，走 STORE_UPVALUE
-                if let Some(uv_idx) = ctx.current_upvalue_captures.iter().position(|u| u.name == name) {
-                    ctx.inst(Inst::new(
-                        OpCode::STORE_UPVALUE,
-                        Operand::None,
-                        Operand::Reg(val_reg),
-                        Operand::Imm(uv_idx as u16),
-                    ));
+                // with 体内的自由标识符走动态写：对象有属性则写对象，否则写外层。
+                if !ctx.with_stack.is_empty() && !ctx.is_with_internal_binding(name) {
+                    let is_const = ctx.lookup_const_flag(name);
+                    let const_flag: u16 = if is_const { 1 } else { 0 };
+                    self.emit_with_dynamic_write(name, val_reg, const_flag, ctx);
                     return Ok(val_reg);
                 }
-                // 目标若是被捕获 cell，走 CELL_SET
-                if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
-                    ctx.inst(Inst::new(
-                        OpCode::CELL_SET,
-                        Operand::None,
-                        Operand::Reg(val_reg),
-                        Operand::Imm(cell_idx as u16),
-                    ));
-                    return Ok(val_reg);
-                }
-                let var_reg = ctx.lookup_or_global(name);
                 let is_const = ctx.lookup_const_flag(name);
-                let const_flag = if is_const { 1 } else { 0 };
-                ctx.inst(Inst::new(
-                    OpCode::STORE_VAR,
-                    Operand::Reg(var_reg),
-                    Operand::Reg(val_reg),
-                    Operand::Imm(const_flag),
-                ));
+                let const_flag: u16 = if is_const { 1 } else { 0 };
+                self.emit_identifier_store(name, val_reg, const_flag, ctx);
                 Ok(val_reg)
             }
         } else if matches!(

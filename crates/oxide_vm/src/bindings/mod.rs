@@ -230,6 +230,8 @@ fn bind_global_functions(core: &Arc<KernelCore>, session: &KernelSession, global
         &[
             ("parseInt", oxide_builtins::number::number_parse_int::<crate::vm::Vm> as *const (), 1),
             ("parseFloat", oxide_builtins::number::number_parse_float::<crate::vm::Vm> as *const (), 1),
+            ("isNaN", oxide_builtins::global::global_is_nan::<crate::vm::Vm> as *const (), 1),
+            ("isFinite", oxide_builtins::global::global_is_finite::<crate::vm::Vm> as *const (), 1),
             ("escape", oxide_builtins::global::js_escape::<crate::vm::Vm> as *const (), 1),
             ("unescape", oxide_builtins::global::js_unescape::<crate::vm::Vm> as *const (), 1),
             ("encodeURI", oxide_builtins::global::encode_uri::<crate::vm::Vm> as *const (), 1),

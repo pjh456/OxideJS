@@ -7,3 +7,4 @@ pub mod declaration;
 pub mod exception;
 pub mod iteration;
 pub mod switch;
+pub mod with;

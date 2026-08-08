@@ -49,6 +49,20 @@ impl Vm {
         self.regs[rd] = self.new_string(result);
     }
 
+    /// ToObject：rd 原地转换。对象直接返回；null/undefined 抛 TypeError；
+    /// 其余原始值包装为对应包装对象（with 对象环境需要）。
+    #[inline(always)]
+    pub(crate) fn dispatch_to_object(&mut self, rd: usize) -> Result<(), String> {
+        vm_trace!("TO_OBJECT rd={} r{}={:?}", rd, rd, self.regs[rd]);
+        let val = self.regs[rd];
+        if val.is_object() {
+            return Ok(());
+        }
+        let obj_val = oxide_runtime_api::to_object(val, self)?;
+        self.regs[rd] = obj_val;
+        Ok(())
+    }
+
     pub(crate) fn dispatch_load_var(&mut self, rd: usize, a: usize) -> Result<bool, String> {
         vm_trace!("LOAD_VAR rd={} r{}={:?}", rd, a, self.regs[a]);
         if a == 254

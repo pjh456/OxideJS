@@ -30,7 +30,13 @@ impl Inst {
             | OpCode::COMPOUND_MEMBER_MUL
             | OpCode::COMPOUND_MEMBER_DIV
             | OpCode::COMPOUND_MEMBER_MOD
-            | OpCode::COMPOUND_MEMBER_EXP => reg_of(&self.a),
+            | OpCode::COMPOUND_MEMBER_EXP
+            | OpCode::COMPOUND_MEMBER_BIT_AND
+            | OpCode::COMPOUND_MEMBER_BIT_OR
+            | OpCode::COMPOUND_MEMBER_BIT_XOR
+            | OpCode::COMPOUND_MEMBER_SHL
+            | OpCode::COMPOUND_MEMBER_SHR
+            | OpCode::COMPOUND_MEMBER_USHR => reg_of(&self.a),
             // 无 def：控制流 / 写共享状态 / 纯写对象
             OpCode::HALT
             | OpCode::RETURN
@@ -139,7 +145,13 @@ impl Inst {
             | OpCode::COMPOUND_MEMBER_MUL
             | OpCode::COMPOUND_MEMBER_DIV
             | OpCode::COMPOUND_MEMBER_MOD
-            | OpCode::COMPOUND_MEMBER_EXP => {
+            | OpCode::COMPOUND_MEMBER_EXP
+            | OpCode::COMPOUND_MEMBER_BIT_AND
+            | OpCode::COMPOUND_MEMBER_BIT_OR
+            | OpCode::COMPOUND_MEMBER_BIT_XOR
+            | OpCode::COMPOUND_MEMBER_SHL
+            | OpCode::COMPOUND_MEMBER_SHR
+            | OpCode::COMPOUND_MEMBER_USHR => {
                 push_operand(&mut uses, &self.rd);
                 push_operand(&mut uses, &self.a);
                 push_operand(&mut uses, &self.b);
@@ -290,6 +302,10 @@ impl Inst {
             | OpCode::PROFILE_CALL
             | OpCode::FORK
             | OpCode::JOIN => {}
+            // TO_OBJECT：rd 原地转换（读且写）
+            OpCode::TO_OBJECT => {
+                push_operand(&mut uses, &self.rd);
+            }
         }
         uses
     }

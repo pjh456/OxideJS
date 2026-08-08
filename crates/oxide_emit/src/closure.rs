@@ -81,6 +81,7 @@ impl Emitter {
                     }
                 }
                 Statement::LabeledStatement(ls) => self.collect_decl_names_stmt(std::slice::from_ref(&ls.body), out),
+                Statement::WithStatement(ws) => self.collect_decl_names_stmt(std::slice::from_ref(&ws.body), out),
                 _ => {}
             }
         }
@@ -202,6 +203,10 @@ impl Emitter {
                 }
             }
             Statement::LabeledStatement(ls) => self.collect_capture_names_stmt(&ls.body, ref_set, shadow, out),
+            Statement::WithStatement(ws) => {
+                self.collect_capture_names_expr(&ws.object, ref_set, shadow, out);
+                self.collect_capture_names_stmt(&ws.body, ref_set, shadow, out);
+            }
             _ => {}
         }
     }
@@ -525,6 +530,10 @@ impl Emitter {
                 }
             }
             Statement::LabeledStatement(ls) => self.collect_captured_stmt(&ls.body, own, out),
+            Statement::WithStatement(ws) => {
+                self.collect_captured_expr(&ws.object, own, out);
+                self.collect_captured_stmt(&ws.body, own, out);
+            }
             _ => {}
         }
     }
