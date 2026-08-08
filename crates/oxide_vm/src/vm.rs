@@ -139,9 +139,53 @@ pub struct ForInIter<'bump> {
 pub struct TryHandler {
     pub catch_pc: Option<usize>,
     pub finally_pc: Option<usize>,
+    /// finally 体是否已进入（normal JMP / 异常展开 / 完成穿越都会置位）。
+    /// 用标志而非 pc 范围判定"当前是否执行 finally 体"：try 体末指令可能因 DCE
+    /// 紧贴 finally 入口，pc 边界会误判。
+    pub finally_active: bool,
     pub frame_depth: usize,
     /// try 入口时 for_of_iters 的长度，界定异常展开时哪些迭代器需要 IteratorClose。
     pub for_of_depth: usize,
+}
+
+/// 控制流完成：break/continue/return 逃出 finally 域时暂存的完成目标。
+///
+/// 仿 `pending_exception` 的侧通道：finally 执行期间悬挂在此，由 TRY_FINALLY_END
+/// 逐个恢复（`remaining_finally` 为仍需穿越的 finally 体数，进入一个递减一个）。
+#[derive(Debug, Clone, Copy)]
+pub enum Completion {
+    Break {
+        target_pc: usize,
+        remaining_finally: usize,
+    },
+    Continue {
+        target_pc: usize,
+        remaining_finally: usize,
+    },
+    Return {
+        value: JsValue,
+        remaining_finally: usize,
+    },
+}
+
+impl Completion {
+    /// 仍需穿越的 finally 体数。
+    pub fn remaining_finally(&self) -> usize {
+        match *self {
+            Completion::Break { remaining_finally, .. }
+            | Completion::Continue { remaining_finally, .. }
+            | Completion::Return { remaining_finally, .. } => remaining_finally,
+        }
+    }
+
+    /// 复制并改写剩余 finally 计数（进入一个 finally 后递减）。
+    pub fn with_remaining(&self, remaining: usize) -> Completion {
+        match *self {
+            Completion::Break { target_pc, .. } => Completion::Break { target_pc, remaining_finally: remaining },
+            Completion::Continue { target_pc, .. } => Completion::Continue { target_pc, remaining_finally: remaining },
+            Completion::Return { value, .. } => Completion::Return { value, remaining_finally: remaining },
+        }
+    }
 }
 
 /// `call_bytecode_function_inline` 使用的堆分配快照。
@@ -159,6 +203,7 @@ pub(crate) struct InlineSyncState {
     pub(crate) exception_value: Option<JsValue>,
     pub(crate) pending_exception: Option<JsValue>,
     pub(crate) pending_error_kind: Option<&'static str>,
+    pub(crate) pending_completion: Option<Completion>,
     pub(crate) for_in_iters: Vec<*mut ForInIter<'static>>,
     pub(crate) for_of_iters: Vec<JsValue>,
     pub(crate) last_for_of_result: JsValue,
@@ -214,6 +259,8 @@ pub struct Vm {
     pub(crate) last_uncaught_value: Option<JsValue>,
     pub(crate) pending_exception: Option<JsValue>,
     pub(crate) pending_error_kind: Option<&'static str>,
+    /// 控制流完成（break/continue/return）暂存，finally 执行后由 TRY_FINALLY_END 恢复。
+    pub(crate) pending_completion: Option<Completion>,
     pub(crate) root_reg_limit: u8,
     pub(crate) active_reg_limit: u8,
     pub(crate) native_call_depth: usize,
@@ -424,6 +471,12 @@ impl Vm {
         f(JsValue::from_js_object(self.session.global_object().as_ptr() as *mut JsObject));
         f(self.exception_value.unwrap_or(JsValue::undefined()));
         f(self.pending_exception.unwrap_or(JsValue::undefined()));
+        // 悬挂的 return 完成持有返回值，是 GC 根。
+        if let Some(Completion::Return { value, .. }) = self.pending_completion {
+            if value.is_object() || value.is_string() {
+                f(value);
+            }
+        }
         for &v in &self.iters.for_of_iters {
             f(v);
         }
@@ -1063,6 +1116,14 @@ impl Vm {
                     self.dispatch_jmp(instr);
                 }
 
+                OpCode::BREAK => {
+                    self.dispatch_break(instr);
+                }
+
+                OpCode::CONTINUE => {
+                    self.dispatch_continue(instr);
+                }
+
                 OpCode::JMP_IF_FALSE => {
                     self.dispatch_jmp_if_false(rd, instr);
                 }
@@ -1374,8 +1435,8 @@ impl Vm {
                 }
 
                 OpCode::TRY_FINALLY_END => match self.dispatch_try_finally_end() {
-                    Ok(true) => continue,
-                    Ok(false) => {}
+                    Ok(Some(result)) => return Ok(result),
+                    Ok(None) => {}
                     Err(e) => return Err(e),
                 },
 
@@ -1706,6 +1767,7 @@ mod tests {
         vm.try_stack.push(TryHandler {
             catch_pc: Some(1),
             finally_pc: None,
+            finally_active: false,
             frame_depth: 0,
             for_of_depth: 0,
         });

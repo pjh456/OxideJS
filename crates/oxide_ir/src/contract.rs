@@ -36,6 +36,8 @@ impl Inst {
             | OpCode::RETURN
             | OpCode::THROW
             | OpCode::JMP
+            | OpCode::BREAK
+            | OpCode::CONTINUE
             | OpCode::JMP_IF_FALSE
             | OpCode::JMP_IF_TRUE
             | OpCode::JMP_IF_NULLISH
@@ -197,6 +199,8 @@ impl Inst {
             }
             // 无条件跳转 / try 标记：b 是 Label，无寄存器
             OpCode::JMP
+            | OpCode::BREAK
+            | OpCode::CONTINUE
             | OpCode::TRY_BEGIN
             | OpCode::TRY_FINALLY_BEGIN
             | OpCode::TRY_END

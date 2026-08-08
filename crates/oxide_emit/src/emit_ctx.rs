@@ -13,12 +13,16 @@ use oxide_ir::operand::LabelId;
 pub(crate) struct LabelCtx {
     /// label id → 指令下标。id 连续递增，Vec 索引即 id；写入前须扩容。
     pub(crate) label_pos: Vec<Option<usize>>,
-    pub(crate) loop_stack: Vec<(LabelId, LabelId)>,
-    pub(crate) switch_stack: Vec<LabelId>,
+    /// 每个条目记录循环打开时嵌套的 finally 域数（break/continue 跨越 finally 计数用）。
+    pub(crate) loop_stack: Vec<(LabelId, LabelId, usize)>,
+    /// 每个条目记录 switch 打开时嵌套的 finally 域数。
+    pub(crate) switch_stack: Vec<(LabelId, usize)>,
     /// 活动标签语句作用域（解析 `break label` / `continue label`）。
     pub(crate) label_scopes: Vec<LabelScope>,
     /// 等待绑定到下一个循环 continue 目标的标签名。
     pub(crate) pending_loop_labels: Vec<String>,
+    /// 当前打开（正在 emit）的 try/finally 域数。
+    pub(crate) finally_depth: usize,
     pub(crate) label_counter: u32,
 }
 

@@ -72,6 +72,7 @@ impl Vm {
             exception_value: self.exception_value.take(),
             pending_exception: self.pending_exception.take(),
             pending_error_kind: self.pending_error_kind.take(),
+            pending_completion: self.pending_completion,
             for_in_iters: std::mem::take(&mut self.iters.for_in_iters),
             for_of_iters: std::mem::take(&mut self.iters.for_of_iters),
             last_for_of_result: self.iters.last_for_of_result,
@@ -133,6 +134,7 @@ impl Vm {
         self.exception_value = saved.exception_value;
         self.pending_exception = saved.pending_exception;
         self.pending_error_kind = saved.pending_error_kind;
+        self.pending_completion = saved.pending_completion;
         self.iters.for_in_iters = saved.for_in_iters;
         self.iters.for_of_iters = saved.for_of_iters;
         self.iters.last_for_of_result = saved.last_for_of_result;
@@ -222,7 +224,7 @@ impl Vm {
 
     pub(crate) fn unwind(&mut self) -> Result<(), String> {
         vm_debug!("unwind: {} try handlers on stack", self.try_stack.len());
-        while let Some(handler) = self.try_stack.pop() {
+        while let Some(mut handler) = self.try_stack.pop() {
             while self.frames.len() > handler.frame_depth {
                 if let Some(frame) = self.frames.pop() {
                     self.cell_stack.pop();
@@ -232,10 +234,17 @@ impl Vm {
             // 对该处理器作用域内被中断的 for-of 循环执行 IteratorClose。
             self.close_for_of_above(handler.for_of_depth);
             if let Some(finally_pc) = handler.finally_pc {
-                vm_trace!("unwind: entering finally at pc={}", finally_pc);
-                if self.pending_exception.is_none() {
-                    self.pending_exception = self.exception_value.take();
+                if handler.finally_active {
+                    // 新异常在 finally 体内抛出：覆盖在途异常与完成，继续向外展开，
+                    // 不再重入本 finally（否则已执行的 finally 会重复运行）。
+                    self.pending_exception = None;
+                    self.pending_error_kind = None;
+                    self.pending_completion = None;
+                    continue;
                 }
+                vm_trace!("unwind: entering finally at pc={}", finally_pc);
+                self.pending_exception = Some(self.exception_value.take().unwrap_or(JsValue::undefined()));
+                handler.finally_active = true;
                 self.try_stack.push(handler);
                 self.pc = finally_pc;
                 return Ok(());

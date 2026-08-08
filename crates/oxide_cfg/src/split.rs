@@ -37,7 +37,7 @@ pub(super) fn split_and_edges(f: &IRFunction, heads: &[bool]) -> (Vec<BasicBlock
             continue;
         }
         match last.op {
-            OpCode::JMP => {
+            OpCode::JMP | OpCode::BREAK | OpCode::CONTINUE => {
                 if let Operand::Label(l) = last.b {
                     match f.label_pos.get(l as usize).and_then(|p| *p) {
                         Some(p) => {

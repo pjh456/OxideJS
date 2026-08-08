@@ -284,6 +284,8 @@ fn is_terminator(op: OpCode) -> bool {
     matches!(
         op,
         OpCode::JMP
+            | OpCode::BREAK
+            | OpCode::CONTINUE
             | OpCode::JMP_IF_TRUE
             | OpCode::JMP_IF_FALSE
             | OpCode::JMP_IF_NULLISH

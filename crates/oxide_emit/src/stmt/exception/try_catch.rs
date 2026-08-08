@@ -18,6 +18,9 @@ impl Emitter {
         let has_finally = ts.finalizer.is_some();
         let result_reg = ctx.alloc_reg();
         if has_finally {
+            // finally 域跨整个语句（try 体 + catch 体 + finally 体）：期间 break/continue
+            // 逃出语句时须穿越本 finally，词法上记录域深度供跨越计数。
+            ctx.push_finally_domain();
             ctx.inst(Inst::try_finally_begin(finally_label));
         }
         if has_catch {
@@ -81,6 +84,7 @@ impl Emitter {
                 Operand::None,
             ));
             ctx.inst(Inst::new(OpCode::TRY_FINALLY_END, Operand::None, Operand::None, Operand::None));
+            ctx.pop_finally_domain();
         }
         ctx.labels.set_label_pos(try_end_label, ctx.insts.len());
         Ok(Some(result_reg))

@@ -143,6 +143,8 @@ pub struct LabelScope {
     pub(crate) name: String,
     pub(crate) break_label: LabelId,
     pub(crate) continue_label: Option<LabelId>,
+    /// 标签打开时嵌套的 finally 域数：break/continue 跨越 finally 的计数依据。
+    pub(crate) finally_depth_at_open: usize,
 }
 
 /// 单函数编译上下文：执行流 + 作用域 + 闭包捕获的聚合状态。
@@ -233,6 +235,7 @@ impl CompileCtx {
                 switch_stack: Vec::new(),
                 label_scopes: Vec::new(),
                 pending_loop_labels: Vec::new(),
+                finally_depth: 0,
                 label_counter: 0,
             },
             scopes: ScopeCtx {
@@ -375,27 +378,38 @@ impl CompileCtx {
     }
 
     pub(crate) fn push_loop(&mut self, break_label: LabelId, continue_label: LabelId) {
-        self.labels.loop_stack.push((break_label, continue_label));
+        let fd = self.labels.finally_depth;
+        self.labels.loop_stack.push((break_label, continue_label, fd));
     }
 
     pub(crate) fn pop_loop(&mut self) {
         self.labels.loop_stack.pop();
     }
 
-    pub(crate) fn current_loop(&self) -> Option<&(LabelId, LabelId)> {
+    pub(crate) fn current_loop(&self) -> Option<&(LabelId, LabelId, usize)> {
         self.labels.loop_stack.last()
     }
 
     pub(crate) fn push_switch(&mut self, break_label: LabelId) {
-        self.labels.switch_stack.push(break_label);
+        let fd = self.labels.finally_depth;
+        self.labels.switch_stack.push((break_label, fd));
     }
 
     pub(crate) fn pop_switch(&mut self) {
         self.labels.switch_stack.pop();
     }
 
-    pub(crate) fn current_switch(&self) -> Option<&LabelId> {
+    pub(crate) fn current_switch(&self) -> Option<&(LabelId, usize)> {
         self.labels.switch_stack.last()
+    }
+
+    /// 进入/离开一个 try/finally 域：break/continue 跨越 finally 计数用。
+    pub(crate) fn push_finally_domain(&mut self) {
+        self.labels.finally_depth += 1;
+    }
+
+    pub(crate) fn pop_finally_domain(&mut self) {
+        self.labels.finally_depth -= 1;
     }
 
     pub(crate) fn push_label_scope(
@@ -404,10 +418,12 @@ impl CompileCtx {
         if self.labels.label_scopes.iter().any(|s| s.name == name) {
             return Err(format!("SyntaxError: Label '{name}' has already been declared"));
         }
+        let fd = self.labels.finally_depth;
         self.labels.label_scopes.push(LabelScope {
             name: name.to_string(),
             break_label,
             continue_label,
+            finally_depth_at_open: fd,
         });
         Ok(())
     }
@@ -437,11 +453,13 @@ impl CompileCtx {
     pub(crate) fn take_pending_loop_labels(&mut self, break_label: LabelId, continue_label: LabelId) -> usize {
         let names = std::mem::take(&mut self.labels.pending_loop_labels);
         let count = names.len();
+        let fd = self.labels.finally_depth;
         for name in names {
             self.labels.label_scopes.push(LabelScope {
                 name,
                 break_label,
                 continue_label: Some(continue_label),
+                finally_depth_at_open: fd,
             });
         }
         count

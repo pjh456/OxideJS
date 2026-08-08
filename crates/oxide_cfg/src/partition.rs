@@ -25,7 +25,7 @@ pub(super) fn partition_blocks(f: &IRFunction) -> Vec<bool> {
         // 跳转的 fallthrough 后继是块头：条件跳转否则 cond+then 融块、条件边丢失；
         // 无条件 JMP 同样必须切块头——JMP 不 fallthrough，但其后继位置需成块边界，
         // 否则 JMP 与后续指令融块、块尾判定错、Jump 边丢失（DCE 可达性误删目标块）。
-        if matches!(inst.op, OpCode::JMP | OpCode::JMP_IF_TRUE | OpCode::JMP_IF_FALSE | OpCode::JMP_IF_NULLISH) {
+        if matches!(inst.op, OpCode::JMP | OpCode::BREAK | OpCode::CONTINUE | OpCode::JMP_IF_TRUE | OpCode::JMP_IF_FALSE | OpCode::JMP_IF_NULLISH) {
             heads[i + 1] = true;
         }
     }

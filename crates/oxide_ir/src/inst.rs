@@ -218,6 +218,18 @@ impl Inst {
         Self::new(OpCode::JMP, Operand::None, Operand::None, Operand::Label(label))
     }
 
+    /// break 完成：label 指向循环/switch 出口，`crossed` 为逃出的 finally 域数
+    /// （emit 词法计算，运行时据此逐个穿越 finally；0 表示未逃出，不产生完成语义）。
+    /// 编码：rd 槽放 crossed（≤255），label 放 b 槽。
+    pub fn brk(label: LabelId, crossed: u16) -> Self {
+        Self::new(OpCode::BREAK, Operand::Imm(crossed), Operand::None, Operand::Label(label))
+    }
+
+    /// continue 完成：同 break，label 指向循环继续目标。
+    pub fn cont(label: LabelId, crossed: u16) -> Self {
+        Self::new(OpCode::CONTINUE, Operand::Imm(crossed), Operand::None, Operand::Label(label))
+    }
+
     /// 条件寄存器为 false 时跳转。
     pub fn jmp_if_false(cond_reg: u32, label: LabelId) -> Self {
         Self::new(OpCode::JMP_IF_FALSE, Operand::Reg(cond_reg), Operand::None, Operand::Label(label))

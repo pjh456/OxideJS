@@ -126,6 +126,7 @@ fn encode_inst(inst: &Inst, instrs: &mut Vec<u32>, jumps: &mut Vec<(usize, u32)>
         let start = instrs.len();
         let instr = match inst.op {
             OpCode::JMP => opcode::encode_jmp(0),
+            OpCode::BREAK | OpCode::CONTINUE => opcode::encode(inst.op, cond, 0, 0),
             OpCode::JMP_IF_FALSE => opcode::encode_jmp_if_false(cond, 0),
             OpCode::JMP_IF_TRUE => opcode::encode_jmp_if_true(cond, 0),
             OpCode::JMP_IF_NULLISH => opcode::encode_jmp_if_nullish(cond, 0),
@@ -149,6 +150,8 @@ fn is_jump_op(op: OpCode) -> bool {
     matches!(
         op,
         OpCode::JMP
+            | OpCode::BREAK
+            | OpCode::CONTINUE
             | OpCode::JMP_IF_FALSE
             | OpCode::JMP_IF_TRUE
             | OpCode::JMP_IF_NULLISH

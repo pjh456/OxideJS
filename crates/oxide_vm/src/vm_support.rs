@@ -43,6 +43,7 @@ impl Vm {
             last_uncaught_value: None,
             pending_exception: None,
             pending_error_kind: None,
+            pending_completion: None,
             root_reg_limit: 0,
             active_reg_limit: 0,
             native_call_depth: 0,
@@ -108,6 +109,7 @@ impl Vm {
             last_uncaught_value: None,
             pending_exception: None,
             pending_error_kind: None,
+            pending_completion: None,
             root_reg_limit: 0,
             active_reg_limit: 0,
             native_call_depth: 0,
@@ -223,6 +225,7 @@ impl Vm {
         self.exception_value = None;
         self.pending_exception = None;
         self.pending_error_kind = None;
+        self.pending_completion = None;
         self.native_call_depth = 0;
     }
 

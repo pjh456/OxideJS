@@ -1,4 +1,4 @@
-use crate::vm::{FrameContinuation, TryHandler, Vm};
+use crate::vm::{Completion, FrameContinuation, TryHandler, Vm};
 use crate::vm_trace;
 use oxide_bytecode::opcode;
 use oxide_types::object::PropAttributes;
@@ -124,6 +124,83 @@ impl Vm {
         }
     }
 
+    /// break 完成：`crossed`（rd 槽）为 emit 词法算出的逃出 finally 域数。
+    /// 逐个穿越 finally 后跳转到目标；crossed 为 0 时直接跳转。
+    pub(crate) fn dispatch_break(&mut self, instr: u32) {
+        let offset = opcode::offset16(instr) as isize;
+        let target_pc = ((self.pc as isize) + offset - 1) as usize;
+        let crossed = opcode::rd(instr) as usize;
+        if let Some(finally_pc) = self.record_completion(Completion::Break { target_pc, remaining_finally: crossed }) {
+            self.pc = finally_pc;
+        } else {
+            self.pc = target_pc;
+        }
+    }
+
+    /// continue 完成：同 break，目标为循环继续位置。
+    pub(crate) fn dispatch_continue(&mut self, instr: u32) {
+        let offset = opcode::offset16(instr) as isize;
+        let target_pc = ((self.pc as isize) + offset - 1) as usize;
+        let crossed = opcode::rd(instr) as usize;
+        if let Some(finally_pc) = self.record_completion(Completion::Continue { target_pc, remaining_finally: crossed }) {
+            self.pc = finally_pc;
+        } else {
+            self.pc = target_pc;
+        }
+    }
+
+    /// 记录一次控制流完成：穿越 `remaining_finally` 个 finally 体后执行完成本身。
+    ///
+    /// # 步骤
+    /// 1. 新完成覆盖在途异常/完成（break/continue/return 是新的突然完成）。
+    /// 2. 从栈顶向下扫描：逃出的 catch-only handler 弹出；正在执行的 finally 体
+    ///    （`finally_active`）被覆盖弹出并计数；未进入的包裹 finally 计数后进入。
+    /// 3. 计数耗尽（全部跨越的 finally 已进入或已覆盖）→ 返回 None（快速路径）。
+    ///
+    /// # 边界与前提
+    /// - 只扫描当前帧深度（`frames.len()`）的 handler；调用者的 handler 不参与——
+    ///   break/continue 词法不跨函数，return 也只逃出本函数 finally。
+    ///
+    /// # 副作用
+    /// - 清空 `pending_exception`/`pending_completion`，弹出被逃出的 handler。
+    fn record_completion(&mut self, c: Completion) -> Option<usize> {
+        self.pending_exception = None;
+        self.pending_error_kind = None;
+        self.pending_completion = None;
+        let depth = self.frames.len();
+        let mut remaining = c.remaining_finally();
+        loop {
+            if remaining == 0 {
+                return None;
+            }
+            let (frame_depth, finally_pc, finally_active) = {
+                let Some(h) = self.try_stack.last() else {
+                    return None;
+                };
+                (h.frame_depth, h.finally_pc, h.finally_active)
+            };
+            if frame_depth != depth {
+                return None;
+            }
+            let Some(fp) = finally_pc else {
+                // 逃出的 catch-only handler：丢弃防泄漏。
+                self.try_stack.pop();
+                continue;
+            };
+            remaining -= 1;
+            if finally_active {
+                // 正在执行本 finally 体：本完成覆盖它，弹出。
+                self.try_stack.pop();
+                continue;
+            }
+            self.try_stack.last_mut().unwrap().finally_active = true;
+            self.pending_completion = Some(c.with_remaining(remaining));
+            return Some(fp);
+        }
+    }
+
+    /// return 完成：`crossed` = 当前帧深度内全部 finally handler 数（return 逃出整个
+    /// 函数，途中被覆盖的 finally 体也在内），穿越后实际返回。
     pub(crate) fn dispatch_return(&mut self, rd: usize) -> Result<Option<JsValue>, String> {
         let result = self.regs[rd];
         crate::vm_debug!(
@@ -131,6 +208,23 @@ impl Vm {
             self.frames.len(),
             self.frames.last().map(|f| f.return_addr).unwrap_or(0)
         );
+        let crossed = self
+            .try_stack
+            .iter()
+            .filter(|h| h.frame_depth == self.frames.len() && h.finally_pc.is_some())
+            .count();
+        if let Some(finally_pc) =
+            self.record_completion(Completion::Return { value: result, remaining_finally: crossed })
+        {
+            self.pc = finally_pc;
+            return Ok(None);
+        }
+        self.do_return(result)
+    }
+
+    /// 实际执行返回：弹出当前帧并交付返回值（供 dispatch_return 与 finally 完成
+    /// 恢复共用）。
+    fn do_return(&mut self, result: JsValue) -> Result<Option<JsValue>, String> {
         if let Some(frame) = self.frames.pop() {
             self.cell_stack.pop();
             let construct_result_reg = frame.construct_result_reg;
@@ -139,10 +233,9 @@ impl Vm {
             let continuation = frame.continuation;
             let callee_this = self.regs[254];
             vm_trace!(
-                "RETURN frame: continuation={:?}, derived={}, result_reg={}",
+                "RETURN frame: continuation={:?}, derived={}",
                 continuation,
-                is_derived_constructor,
-                rd
+                is_derived_constructor
             );
             self.restore_frame(frame);
             if let (Some(target_reg), Some(constructed_this)) = (construct_result_reg, constructed_this) {
@@ -192,6 +285,7 @@ impl Vm {
         self.try_stack.push(TryHandler {
             catch_pc,
             finally_pc: None,
+            finally_active: false,
             frame_depth: self.frames.len(),
             for_of_depth: self.iters.for_of_iters.len(),
         });
@@ -209,20 +303,75 @@ impl Vm {
         self.try_stack.push(TryHandler {
             catch_pc: None,
             finally_pc: Some(finally_pc),
+            finally_active: false,
             frame_depth: self.frames.len(),
             for_of_depth: self.iters.for_of_iters.len(),
         });
     }
 
-    pub(crate) fn dispatch_try_finally_end(&mut self) -> Result<bool, String> {
+    /// finally 完成分发点：弹出当前 handler 后统一恢复在途异常或控制流完成。
+    ///
+    /// # 步骤
+    /// 1. 弹出刚执行完的 finally handler。
+    /// 2. 优先恢复在途异常（unwind 继续向外展开）。
+    /// 3. 否则查 `pending_completion`：仍有剩余 finally 体则进入下一个（递减计数）；
+    ///    耗尽则执行完成本身（break/continue 跳转目标，return 交付返回值）。
+    ///
+    /// # 返回值
+    /// `Ok(Some(value))` = 函数返回；`Ok(None)` = 正常继续 dispatch。
+    pub(crate) fn dispatch_try_finally_end(&mut self) -> Result<Option<JsValue>, String> {
         vm_trace!("TRY_FINALLY_END has_pending_exc={}", self.pending_exception.is_some());
         self.try_stack.pop();
         if self.pending_exception.is_some() && self.exception_value.is_none() {
             self.exception_value = self.pending_exception.take();
-            self.unwind().map(|_| true)
-        } else {
-            self.pending_exception = None;
-            Ok(false)
+            self.unwind()?;
+            return Ok(None);
+        }
+        self.pending_exception = None;
+        let Some(c) = self.pending_completion.take() else {
+            return Ok(None);
+        };
+        if c.remaining_finally() > 0 {
+            let next = c.with_remaining(c.remaining_finally() - 1);
+            if let Some(finally_pc) = self.find_next_finally() {
+                self.pending_completion = Some(next);
+                self.pc = finally_pc;
+                return Ok(None);
+            }
+        }
+        match c {
+            Completion::Break { target_pc, .. } | Completion::Continue { target_pc, .. } => {
+                self.pc = target_pc;
+                Ok(None)
+            }
+            Completion::Return { value, .. } => self.do_return(value),
+        }
+    }
+
+    /// 找下一个未被覆盖的包裹 finally 并进入（resume 路径用）：弹出途中被逃出的
+    /// catch-only 与防御性的 active handler。无更多返回 None。
+    fn find_next_finally(&mut self) -> Option<usize> {
+        let depth = self.frames.len();
+        loop {
+            let (frame_depth, finally_pc, finally_active) = {
+                let Some(h) = self.try_stack.last() else {
+                    return None;
+                };
+                (h.frame_depth, h.finally_pc, h.finally_active)
+            };
+            if frame_depth != depth {
+                return None;
+            }
+            let Some(fp) = finally_pc else {
+                self.try_stack.pop();
+                continue;
+            };
+            if finally_active {
+                self.try_stack.pop();
+                continue;
+            }
+            self.try_stack.last_mut().unwrap().finally_active = true;
+            return Some(fp);
         }
     }
 }

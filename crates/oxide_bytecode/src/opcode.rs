@@ -82,7 +82,9 @@ define_opcodes! {
     STRICT_NEQ = 0x1C => "STRICT_NEQ",
     UNARY_PLUS = 0x1D => "UNARY_PLUS",
 
-    // ── 控制流 (0x20-0x2F) ──
+    // ── 控制流 (0x1E-0x2F) ──
+    BREAK = 0x1E => "BREAK",
+    CONTINUE = 0x1F => "CONTINUE",
     JMP = 0x20 => "JMP",
     JMP_IF_FALSE = 0x21 => "JMP_IF_FALSE",
     JMP_IF_TRUE = 0x22 => "JMP_IF_TRUE",

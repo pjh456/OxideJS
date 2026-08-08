@@ -8,8 +8,16 @@ impl Vm {
     #[inline(always)]
     pub(crate) fn dispatch_jmp(&mut self, instr: Instr) {
         let offset = opcode::offset16(instr) as isize;
+        let target = ((self.pc as isize) + offset - 1) as usize;
+        // try 体正常完成跳入 finally（`JMP finally_pc`）：标记 handler 进入 finally 体，
+        // 供 break/continue/return/异常判定覆盖语义。
+        if let Some(h) = self.try_stack.last_mut() {
+            if h.frame_depth == self.frames.len() && h.finally_pc == Some(target) {
+                h.finally_active = true;
+            }
+        }
         vm_trace!("JMP offset={}", offset);
-        self.pc = ((self.pc as isize) + offset - 1) as usize;
+        self.pc = target;
     }
 
     #[inline(always)]
