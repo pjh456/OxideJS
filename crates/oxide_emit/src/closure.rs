@@ -305,17 +305,13 @@ impl Emitter {
             Expression::CallExpression(ce) => {
                 self.collect_capture_names_expr(&ce.callee, ref_set, shadow, out);
                 for a in &ce.arguments {
-                    if let Some(e) = a.as_expression() {
-                        self.collect_capture_names_expr(e, ref_set, shadow, out);
-                    }
+                    self.collect_capture_names_arg(a, ref_set, shadow, out);
                 }
             }
             Expression::NewExpression(ne) => {
                 self.collect_capture_names_expr(&ne.callee, ref_set, shadow, out);
                 for a in &ne.arguments {
-                    if let Some(e) = a.as_expression() {
-                        self.collect_capture_names_expr(e, ref_set, shadow, out);
-                    }
+                    self.collect_capture_names_arg(a, ref_set, shadow, out);
                 }
             }
             Expression::SequenceExpression(se) => {
@@ -389,12 +385,22 @@ impl Emitter {
             oxide_parser::ChainElement::CallExpression(call) => {
                 self.collect_capture_names_expr(&call.callee, ref_set, shadow, out);
                 for a in &call.arguments {
-                    if let Some(e) = a.as_expression() {
-                        self.collect_capture_names_expr(e, ref_set, shadow, out);
-                    }
+                    self.collect_capture_names_arg(a, ref_set, shadow, out);
                 }
             }
             _ => {}
+        }
+    }
+
+    /// 遍历调用实参：静态实参与 spread 内部表达式都纳入捕获扫描。
+    fn collect_capture_names_arg(
+        &self, arg: &oxide_parser::Argument, ref_set: &HashSet<String>, shadow: &HashSet<String>,
+        out: &mut HashSet<String>,
+    ) {
+        if let Some(e) = arg.as_expression() {
+            self.collect_capture_names_expr(e, ref_set, shadow, out);
+        } else if let oxide_parser::Argument::SpreadElement(sp) = arg {
+            self.collect_capture_names_expr(&sp.argument, ref_set, shadow, out);
         }
     }
 
@@ -572,9 +578,7 @@ impl Emitter {
             Expression::CallExpression(ce) => {
                 self.collect_captured_expr(&ce.callee, own, out);
                 for a in &ce.arguments {
-                    if let Some(e) = a.as_expression() {
-                        self.collect_captured_expr(e, own, out);
-                    }
+                    self.collect_captured_arg(a, own, out);
                 }
             }
             Expression::BinaryExpression(be) => {
@@ -614,9 +618,7 @@ impl Emitter {
             Expression::NewExpression(ne) => {
                 self.collect_captured_expr(&ne.callee, own, out);
                 for a in &ne.arguments {
-                    if let Some(e) = a.as_expression() {
-                        self.collect_captured_expr(e, own, out);
-                    }
+                    self.collect_captured_arg(a, own, out);
                 }
             }
             Expression::ComputedMemberExpression(m) => {
@@ -659,12 +661,19 @@ impl Emitter {
             oxide_parser::ChainElement::CallExpression(c) => {
                 self.collect_captured_expr(&c.callee, own, out);
                 for a in &c.arguments {
-                    if let Some(e) = a.as_expression() {
-                        self.collect_captured_expr(e, own, out);
-                    }
+                    self.collect_captured_arg(a, own, out);
                 }
             }
             _ => {}
+        }
+    }
+
+    /// 遍历调用实参：静态实参与 spread 内部表达式都纳入捕获判定。
+    fn collect_captured_arg(&self, arg: &oxide_parser::Argument, own: &HashSet<String>, out: &mut HashSet<String>) {
+        if let Some(e) = arg.as_expression() {
+            self.collect_captured_expr(e, own, out);
+        } else if let oxide_parser::Argument::SpreadElement(sp) = arg {
+            self.collect_captured_expr(&sp.argument, own, out);
         }
     }
 
@@ -673,8 +682,8 @@ impl Emitter {
     /// 若在父 `upvalue_captures`（父自身从更外层捕获）则链式标记 `parent_uv_idx`，
     /// 运行时从父闭包 upvalues 取 cell。enclosing_reg 由父 emit 完成后填充。
     pub(crate) fn collect_upvalue_names(
-        &self, body_stmts: &[Statement], extra_exprs: &[&oxide_parser::Expression], parent_captured: &BTreeMap<String, u8>,
-        parent_upvalues: &[UpvalueCapture], sub_own: &HashSet<String>,
+        &self, body_stmts: &[Statement], extra_exprs: &[&oxide_parser::Expression],
+        parent_captured: &BTreeMap<String, u8>, parent_upvalues: &[UpvalueCapture], sub_own: &HashSet<String>,
     ) -> Vec<UpvalueCapture> {
         let mut parent_names: HashSet<String> = parent_captured.keys().cloned().collect();
         for u in parent_upvalues {

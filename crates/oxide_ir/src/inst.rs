@@ -116,6 +116,26 @@ impl Inst {
         Self::with_ext(OpCode::SUPER_CALL, result, first_arg, Operand::None, &[nargs as u32])
     }
 
+    /// spread 实参调用：rd=callee，a=this，b 槽未用。
+    /// ext=[nstatic|(nspread<<8), 有序实参字…]；每个实参字：静态实参为寄存器号，
+    /// spread 源为 `0x8000_0000 | 寄存器号`（高位标记），按源码求值序排列。
+    pub fn call_spread(callee: Operand, this: Operand, words: &[u32]) -> Self {
+        let ext = spread_ext(words);
+        Self::with_ext(OpCode::CALL_SPREAD, callee, this, Operand::None, &ext)
+    }
+
+    /// spread 实参 `new`：结果写入 `result`，构造函数为 `constructor`。
+    pub fn new_expression_spread(result: Operand, constructor: Operand, words: &[u32]) -> Self {
+        let ext = spread_ext(words);
+        Self::with_ext(OpCode::NEW_EXPRESSION_SPREAD, result, constructor, Operand::None, &ext)
+    }
+
+    /// 派生类构造中的 `super(...spread)`：结果写入 `result`。
+    pub fn super_call_spread(result: Operand, words: &[u32]) -> Self {
+        let ext = spread_ext(words);
+        Self::with_ext(OpCode::SUPER_CALL_SPREAD, result, Operand::None, Operand::None, &ext)
+    }
+
     // ── 其他带 ext 字 ──
 
     /// 定义访问器属性：home 为宿主对象，get/set 为访问器函数寄存器，key_idx 为属性名常量下标。
@@ -217,6 +237,17 @@ impl Inst {
     }
 }
 
+/// spread 调用系 ext 构造：首字打包 `nstatic | (nspread << 8)`，后续按源码求值序排列
+/// 每个实参字（静态实参 = 寄存器号，spread 源 = `0x8000_0000 | 寄存器号`）。
+fn spread_ext(words: &[u32]) -> SmallVec<[u32; 4]> {
+    let nspread = words.iter().filter(|w| *w >> 31 == 1).count() as u32;
+    let nstatic = (words.len() as u32) - nspread;
+    let mut ext = SmallVec::with_capacity(1 + words.len());
+    ext.push(nstatic | (nspread << 8));
+    ext.extend_from_slice(words);
+    ext
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,6 +311,29 @@ mod tests {
 
         let rest = Inst::rest_object(Operand::Reg(0), Operand::Reg(1), 7);
         assert_eq!(rest.ext.as_slice(), &[7]);
+    }
+
+    #[test]
+    fn spread_call_constructors_carry_header_and_source_regs() {
+        let call = Inst::call_spread(Operand::Reg(0), Operand::Reg(1), &[10, 0x8000_0000 | 300]);
+        assert_eq!(call.op, OpCode::CALL_SPREAD);
+        assert_eq!(call.rd, Operand::Reg(0));
+        assert_eq!(call.a, Operand::Reg(1));
+        assert_eq!(call.b, Operand::None);
+        assert_eq!(call.ext.as_slice(), &[1 | (1 << 8), 10, 0x8000_0000 | 300]);
+
+        let ne = Inst::new_expression_spread(Operand::Reg(3), Operand::Reg(0), &[0x8000_0000 | 7]);
+        assert_eq!(ne.op, OpCode::NEW_EXPRESSION_SPREAD);
+        assert_eq!(ne.rd, Operand::Reg(3));
+        assert_eq!(ne.a, Operand::Reg(0));
+        assert_eq!(ne.ext.as_slice(), &[1 << 8, 0x8000_0000 | 7]);
+
+        let sc = Inst::super_call_spread(Operand::Reg(3), &[1, 0x8000_0000 | 5]);
+        assert_eq!(sc.op, OpCode::SUPER_CALL_SPREAD);
+        assert_eq!(sc.rd, Operand::Reg(3));
+        assert_eq!(sc.a, Operand::None);
+        assert_eq!(sc.b, Operand::None);
+        assert_eq!(sc.ext.as_slice(), &[1 | (1 << 8), 1, 0x8000_0000 | 5]);
     }
 
     #[test]

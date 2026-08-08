@@ -1,9 +1,10 @@
 use crate::native::NativeFn;
 use crate::vm::{native_fn_ptr_to_fn, CallFrame, FrameContinuation, Vm};
 use crate::{vm_debug, vm_trace};
+use oxide_builtins::iterator::make_iterator_for_value;
 use oxide_builtins::{builtins_debug, builtins_trace};
 use oxide_bytecode::opcode;
-use oxide_runtime_api::NativeResult;
+use oxide_runtime_api::{to_boolean, NativeResult};
 use oxide_types::object::{Cell, JsObject};
 use oxide_types::value::JsValue;
 use std::sync::Arc;
@@ -130,14 +131,15 @@ impl Vm {
         // 函数名推断：emit 端在变量声明/对象属性赋值点设置 function_name。
         let func_obj = unsafe { &mut *result.as_js_object_ptr() };
         let name_si = self.kernel_core.perm_interner().intern("name").0;
-        let name_val = function_name.as_deref().map(|n| self.new_string(n)).unwrap_or_else(|| self.new_string(""));
+        let name_val = function_name
+            .as_deref()
+            .map(|n| self.new_string(n))
+            .unwrap_or_else(|| self.new_string(""));
         self.set_or_create_prop_value(func_obj, name_si, name_val);
         if !upvalue_captures.is_empty() {
             // 链式捕获（parent_uv_idx）：从父闭包（创建者）的 upvalues 取 cell。
             let parent_upvalues: Vec<*mut Cell> = match self.current_callee() {
-                Some(callee) if callee.is_object() => {
-                    unsafe { &*callee.as_js_object_ptr() }.upvalues_slice().to_vec()
-                }
+                Some(callee) if callee.is_object() => unsafe { &*callee.as_js_object_ptr() }.upvalues_slice().to_vec(),
                 _ => Vec::new(),
             };
             if let Some(current_cells) = self.cell_stack.last_mut() {
@@ -156,8 +158,7 @@ impl Vm {
                         if current_cells[cell_idx].is_null() {
                             // 占位 Cell 保持未初始化（TDZ）直到 MAKE_CELL 置位；
                             // 若绑定为 var 则其初始化 MAKE_CELL 在函数序言先于任何读取执行。
-                            let cell =
-                                self.gc_state.session_epoch.alloc(Cell::new(JsValue::undefined(), false));
+                            let cell = self.gc_state.session_epoch.alloc(Cell::new(JsValue::undefined(), false));
                             current_cells[cell_idx] = cell as *mut Cell;
                         }
                         current_cells[cell_idx]
@@ -254,7 +255,8 @@ impl Vm {
                     if !cell.is_null() {
                         let c = unsafe { &*cell };
                         if !c.is_initialized() {
-                            return self.raise_error_kind("ReferenceError", "Cannot access variable before initialization");
+                            return self
+                                .raise_error_kind("ReferenceError", "Cannot access variable before initialization");
                         }
                         self.regs[rd] = c.value;
                         return Ok(());
@@ -588,5 +590,344 @@ impl Vm {
         }
         func_obj.set_home_object(home_val);
         Ok(false)
+    }
+}
+
+impl Vm {
+    /// 解析 spread 调用系 ext：读走 `nstatic | (nspread<<8)` 首字与 `nstatic+nspread`
+    /// 个有序实参字（静态字 = 寄存器号，spread 字高位标记）。
+    fn read_spread_ext(&mut self) -> Vec<usize> {
+        let header = self.bytecode[self.pc];
+        self.pc += 1;
+        let nstatic = (header & 0xFF) as usize;
+        let nspread = (header >> 8) as usize;
+        let mut words = Vec::with_capacity(nstatic + nspread);
+        for _ in 0..nstatic + nspread {
+            words.push(self.bytecode[self.pc] as usize);
+            self.pc += 1;
+        }
+        words
+    }
+
+    /// 按源码求值序物化完整实参 Vec：静态字直接读寄存器，spread 字迭代展开。
+    ///
+    /// # 步骤
+    /// 1. 静态实参逐个从寄存器读入；spread 源经 `make_iterator_for_value` 迭代追加。
+    /// 2. 迭代中途抛错 → 当前迭代器经 return() 关闭（IteratorClose），异常恢复为 JS
+    ///    异常后 unwind。
+    /// 3. 展开总数超过 u16 上限（arguments_count 字段）→ RangeError。
+    ///
+    /// # 返回值
+    /// - `Ok(Some(vec))` 成功；
+    /// - `Ok(None)` 异常已展开（调用方按 continue 处理）；
+    /// - `Err` 引擎错误直接传播。
+    fn materialize_spread_args(&mut self, words: &[usize]) -> Result<Option<Vec<JsValue>>, String> {
+        let mut args = Vec::with_capacity(words.len());
+        let next_si = self.kernel_core.perm_interner().intern("next").0;
+        let done_si = self.kernel_core.perm_interner().intern("done").0;
+        let value_si = self.kernel_core.perm_interner().intern("value").0;
+        for &w in words {
+            if w >> 31 == 1 {
+                let value = self.regs[w & 0x7FFF_FFFF];
+                let iterator = match make_iterator_for_value(self, value) {
+                    Ok(it) => it,
+                    Err(err) => {
+                        self.exception_value = Some(err);
+                        self.pending_error_kind = Some(self.thrown_error_kind(err));
+                        return self.unwind().map(|_| None);
+                    }
+                };
+                loop {
+                    let iter_obj = unsafe { &*iterator.as_js_object_ptr() };
+                    let next_fn = match self.ordinary_get(iter_obj, next_si, iterator) {
+                        Ok(v) => v,
+                        Err(e) => return self.spread_iter_error(iterator, e, "Error"),
+                    };
+                    let result = match self.call_function_sync(next_fn, iterator, &[]) {
+                        Ok(v) => v,
+                        Err(e) => return self.spread_iter_error(iterator, e, "Error"),
+                    };
+                    if !result.is_object() {
+                        return self.spread_iter_error(
+                            iterator,
+                            self.error_message_text("TypeError", "iterator result is not an object"),
+                            "TypeError",
+                        );
+                    }
+                    let result_obj = unsafe { &*result.as_js_object_ptr() };
+                    let done = match self.ordinary_get(result_obj, done_si, result) {
+                        Ok(v) => to_boolean(v),
+                        Err(e) => return self.spread_iter_error(iterator, e, "Error"),
+                    };
+                    if done {
+                        break;
+                    }
+                    let val = match self.ordinary_get(result_obj, value_si, result) {
+                        Ok(v) => v,
+                        Err(e) => return self.spread_iter_error(iterator, e, "Error"),
+                    };
+                    args.push(val);
+                    if args.len() > u16::MAX as usize {
+                        self.raise_error_kind("RangeError", "Too many arguments in function call")?;
+                        return Ok(None);
+                    }
+                }
+            } else {
+                args.push(self.regs[w]);
+                if args.len() > u16::MAX as usize {
+                    self.raise_error_kind("RangeError", "Too many arguments in function call")?;
+                    return Ok(None);
+                }
+            }
+        }
+        Ok(Some(args))
+    }
+
+    /// spread 迭代中途异常：先关闭当前迭代器（suppress return 自身错误，保留在途异常），
+    /// 再把原异常（native 错误经 last_uncaught_value 恢复）重新抛出并展开。
+    fn spread_iter_error(
+        &mut self, iterator: JsValue, msg: String, fallback_kind: &'static str,
+    ) -> Result<Option<Vec<JsValue>>, String> {
+        let exc = self
+            .last_uncaught_value
+            .take()
+            .unwrap_or_else(|| oxide_builtins::error::create_kind_error(self, fallback_kind, &msg));
+        self.close_for_of_iterator(iterator, true)?;
+        self.exception_value = Some(exc);
+        self.pending_error_kind = Some(self.thrown_error_kind(exc));
+        self.unwind().map(|_| None)
+    }
+
+    /// CALL_SPREAD：运行期物化完整实参后按目标分派（native 走值传递，字节码走帧）。
+    pub(crate) fn dispatch_call_spread(&mut self, rd: usize, a: usize, _b: usize) -> Result<bool, String> {
+        let callee = self.regs[rd];
+        let this_value = self.regs[a];
+        let words = self.read_spread_ext();
+        let args = match self.materialize_spread_args(&words)? {
+            Some(args) => args,
+            None => return Ok(true),
+        };
+        if callee.is_object() {
+            let obj_ptr = callee.as_js_object_ptr();
+            if !obj_ptr.is_null() {
+                let obj = unsafe { &*obj_ptr };
+                if obj.is_function() {
+                    if obj.is_class_constructor() {
+                        return self
+                            .raise_type_error("class constructor cannot be invoked without 'new'")
+                            .map(|_| true);
+                    }
+                    if obj.native_fn().is_some() {
+                        match self.call_function_sync(callee, this_value, &args) {
+                            Ok(v) => {
+                                self.regs[0] = v;
+                                return Ok(false);
+                            }
+                            Err(_) => {
+                                let exc = self
+                                    .last_uncaught_value
+                                    .take()
+                                    .unwrap_or_else(|| oxide_builtins::error::create_error(self, "call failed"));
+                                self.exception_value = Some(exc);
+                                self.pending_error_kind = Some(self.thrown_error_kind(exc));
+                                return self.unwind().map(|_| true);
+                            }
+                        }
+                    } else if obj.sub_module_index() > 0 {
+                        self.push_bytecode_frame(
+                            callee,
+                            this_value,
+                            &args,
+                            None,
+                            None,
+                            JsValue::undefined(),
+                            FrameContinuation::None,
+                        )?;
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        self.raise_type_error("CALL target is not callable").map(|_| true)
+    }
+
+    /// NEW_EXPRESSION_SPREAD：物化实参后按构造函数目标分派（native 走值传递，字节码走帧）。
+    pub(crate) fn dispatch_new_expression_spread(&mut self, rd: usize, a: usize, _b: usize) -> Result<bool, String> {
+        let constructor_reg = a;
+        let constructor = self.regs[constructor_reg];
+
+        if !constructor.is_object() {
+            return self
+                .raise_type_error("NEW_EXPRESSION: constructor is not an object")
+                .map(|_| true);
+        }
+        let ctor_ptr = constructor.as_js_object_ptr();
+        if ctor_ptr.is_null() {
+            return self.raise_type_error("NEW_EXPRESSION: constructor is null").map(|_| true);
+        }
+        let ctor_obj = unsafe { &*ctor_ptr };
+        if !ctor_obj.is_function() {
+            return self
+                .raise_type_error("NEW_EXPRESSION: constructor is not a function")
+                .map(|_| true);
+        }
+        if ctor_obj.is_arrow() {
+            return self
+                .raise_type_error("arrow functions cannot be used as constructors")
+                .map(|_| true);
+        }
+        // native 方法（非构造器）不可 new。
+        if ctor_obj.native_fn().is_some() && ctor_obj.type_tag != oxide_types::object::JsObject::OBJ_TYPE_CONSTRUCTOR {
+            return self.raise_type_error("object is not a constructor").map(|_| true);
+        }
+
+        let words = self.read_spread_ext();
+        let args = match self.materialize_spread_args(&words)? {
+            Some(args) => args,
+            None => return Ok(true),
+        };
+
+        let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
+        let new_obj = self.alloc_object(JsObject::new_empty(
+            oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
+            JsValue::from_js_object(proto_ptr),
+        ));
+        let proto_si = self.kernel_core.perm_interner().intern("prototype").0;
+        if let Some(proto_val) = self.resolve_property(ctor_obj, proto_si) {
+            if proto_val.is_object() {
+                let new_obj_mut = unsafe { &mut *new_obj };
+                let proto_obj_ptr = proto_val.as_js_object_ptr();
+                let _ = new_obj_mut.set_proto(JsValue::from_js_object(proto_obj_ptr));
+            }
+        }
+        let new_obj_val = JsValue::object(new_obj as *mut u8);
+
+        if ctor_obj.native_fn().is_some() {
+            // native 构造器：receiver 为新对象，值传递调用。
+            match self.call_function_sync(constructor, new_obj_val, &args) {
+                Ok(v) => {
+                    self.regs[rd] = if v.is_object() { v } else { new_obj_val };
+                    Ok(false)
+                }
+                Err(_) => {
+                    let exc = self
+                        .last_uncaught_value
+                        .take()
+                        .unwrap_or_else(|| oxide_builtins::error::create_error(self, "constructor call failed"));
+                    self.exception_value = Some(exc);
+                    self.pending_error_kind = Some(self.thrown_error_kind(exc));
+                    self.unwind().map(|_| true)
+                }
+            }
+        } else if ctor_obj.sub_module_index() > 0 {
+            if self.frames.len() >= self.kernel_core.config.max_call_depth {
+                return Err(self.error_message_text("RangeError", "Maximum call stack size exceeded"));
+            }
+            let this_value = if ctor_obj.is_derived_constructor() {
+                JsValue::undefined()
+            } else {
+                new_obj_val
+            };
+            self.push_bytecode_frame(
+                constructor,
+                this_value,
+                &args,
+                Some(rd as u8),
+                Some(new_obj_val),
+                constructor,
+                FrameContinuation::None,
+            )?;
+            Ok(true)
+        } else {
+            let error =
+                oxide_builtins::error::create_error(self, "NEW_EXPRESSION: bytecode constructors not yet supported");
+            self.exception_value = Some(error);
+            self.pending_error_kind = Some(self.thrown_error_kind(error));
+            self.unwind().map(|_| true)
+        }
+    }
+
+    /// SUPER_CALL_SPREAD：物化实参后按父构造器目标分派（native 走值传递，字节码走帧）。
+    pub(crate) fn dispatch_super_call_spread(&mut self, rd: usize, _a: usize) -> Result<bool, String> {
+        let words = self.read_spread_ext();
+
+        let Some(frame) = self.frames.last() else {
+            self.raise_error_kind("ReferenceError", "super() used outside class constructor")?;
+            return Ok(true);
+        };
+        if !frame.is_derived_constructor {
+            self.raise_error_kind("ReferenceError", "super() used outside derived constructor")?;
+            return Ok(true);
+        }
+        if !self.regs[254].is_undefined() {
+            self.raise_error_kind("ReferenceError", "super() called more than once")?;
+            return Ok(true);
+        }
+        let Some(derived_this) = frame.constructed_this else {
+            self.raise_error_kind("ReferenceError", "super() without derived this")?;
+            return Ok(true);
+        };
+        let new_target = self.regs[255];
+        if !new_target.is_object() {
+            self.raise_error_kind("TypeError", "super() new.target is not an object")?;
+            return Ok(true);
+        }
+        let new_target_obj = unsafe { &*new_target.as_js_object_ptr() };
+        let super_ctor = new_target_obj.proto();
+        if !super_ctor.is_object() {
+            self.raise_error_kind("TypeError", "super constructor is not an object")?;
+            return Ok(true);
+        }
+        let super_obj = unsafe { &*super_ctor.as_js_object_ptr() };
+        if !super_obj.is_function() {
+            self.raise_error_kind("TypeError", "super constructor is not a function")?;
+            return Ok(true);
+        }
+
+        let args = match self.materialize_spread_args(&words)? {
+            Some(args) => args,
+            None => return Ok(true),
+        };
+
+        if super_obj.native_fn().is_some() {
+            match self.call_function_sync(super_ctor, derived_this, &args) {
+                Ok(val) => {
+                    // super() 返回实例的 [[Prototype]] 须设为 new.target.prototype
+                    let instance = if val.is_object() { val } else { derived_this };
+                    if instance.is_object() {
+                        self.set_constructed_proto(instance, new_target_obj)?;
+                    }
+                    self.regs[254] = instance;
+                    self.regs[rd] = instance;
+                }
+                Err(_) => {
+                    let exc = self
+                        .last_uncaught_value
+                        .take()
+                        .unwrap_or_else(|| oxide_builtins::error::create_error(self, "super() call failed"));
+                    self.exception_value = Some(exc);
+                    self.pending_error_kind = Some(self.thrown_error_kind(exc));
+                    self.unwind().map(|_| true)?;
+                }
+            }
+            Ok(false)
+        } else if super_obj.sub_module_index() > 0 {
+            if self.frames.len() >= self.kernel_core.config.max_call_depth {
+                return Err(self.error_message_text("RangeError", "Maximum call stack size exceeded"));
+            }
+            self.push_bytecode_frame(
+                super_ctor,
+                derived_this,
+                &args,
+                Some(254),
+                Some(derived_this),
+                new_target,
+                FrameContinuation::None,
+            )?;
+            Ok(true)
+        } else {
+            self.raise_error_kind("TypeError", "super constructor is not callable")?;
+            Ok(true)
+        }
     }
 }

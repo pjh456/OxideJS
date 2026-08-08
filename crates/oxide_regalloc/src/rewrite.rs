@@ -134,7 +134,8 @@ pub(super) fn run(f: &mut IRFunction, map: &AllocMap) {
 fn rewrite_inst(
     f: &IRFunction, inst: &Inst, map: &AllocMap, slot_color: &BTreeMap<u32, u32>, i: usize,
 ) -> (Inst, Vec<(u32, u32)>) {
-    let nargs = inst.ext.first().copied().unwrap_or(0);
+    let raw_nargs = inst.ext.first().copied().unwrap_or(0);
+    let nargs = raw_nargs;
     let first_arg = match inst.op {
         OpCode::CALL | OpCode::CALL_NATIVE | OpCode::NEW_EXPRESSION => Some(inst.b),
         OpCode::SUPER_CALL => Some(inst.a),
@@ -197,26 +198,34 @@ fn rewrite_inst(
     let mut a = rewrite(inst.a);
     let mut b = rewrite(inst.b);
     // TEMPLATE_STR 的 ext 编码表达式寄存器（seg>>31==1 时低 8 位为 expr_reg）——必须随
-    // RegAlloc 重映射，否则读旧 vreg 号对应的物理槽（错值）。
-    let ext = if inst.op == OpCode::TEMPLATE_STR {
-        let mut ext = inst.ext.clone();
-        for seg in ext.iter_mut().skip(1) {
-            if *seg >> 31 == 1 {
-                let r = *seg & 0xFF;
-                let nr = if let Some(&c) = slot_color.get(&r) {
-                    c
-                } else {
-                    match map.map.get(&r) {
-                        Some(Alloc::Phys(p)) => *p,
-                        _ => r, // 非真实 vreg / spilled 未覆盖（防御保留原号）
-                    }
-                };
-                *seg = (*seg & !0xFFu32) | (nr & 0xFF);
+    // RegAlloc 重映射，否则读旧 vreg 号对应的物理槽（错值）。spread 调用系 ext[1..] 每个
+    // 字是完整 spread 源 vreg，同样需重映射到物理号。
+    let ext = match inst.op {
+        OpCode::TEMPLATE_STR => {
+            let mut ext = inst.ext.clone();
+            for seg in ext.iter_mut().skip(1) {
+                if *seg >> 31 == 1 {
+                    let r = *seg & 0xFF;
+                    let nr = remap_ext_reg(r, slot_color, map);
+                    *seg = (*seg & !0xFFu32) | (nr & 0xFF);
+                }
             }
+            ext
         }
-        ext
-    } else {
-        inst.ext.clone()
+        OpCode::CALL_SPREAD | OpCode::NEW_EXPRESSION_SPREAD | OpCode::SUPER_CALL_SPREAD => {
+            // 有序实参字：静态字直接重映射，spread 字保留高位标记、低 31 位重映射。
+            let mut ext = inst.ext.clone();
+            for seg in ext.iter_mut().skip(1) {
+                if *seg >> 31 == 1 {
+                    let nr = remap_ext_reg(*seg & 0x7FFF_FFFF, slot_color, map);
+                    *seg = 0x8000_0000 | nr;
+                } else {
+                    *seg = remap_ext_reg(*seg, slot_color, map);
+                }
+            }
+            ext
+        }
+        _ => inst.ext.clone(),
     };
     // 调用点首参槽改指 arg_window_base（桥接后）
     if let Some(ab) = arg_base {
@@ -255,6 +264,19 @@ fn rewrite_inst(
         _ => {}
     }
     (Inst { op: inst.op, rd, a, b, ext }, arg_movs)
+}
+
+/// ext 内嵌寄存器重映射：优先用本指令点的 fresh 色（spilled vreg 的 use 点 UNSPILL），
+/// 其次 AllocMap 物理色；未映射（防御）保留原号。
+fn remap_ext_reg(r: u32, slot_color: &BTreeMap<u32, u32>, map: &AllocMap) -> u32 {
+    if let Some(&c) = slot_color.get(&r) {
+        c
+    } else {
+        match map.map.get(&r) {
+            Some(Alloc::Phys(p)) => *p,
+            _ => r,
+        }
+    }
 }
 
 /// terminator 判定：跳转族 + RETURN/HALT/THROW（def 结果必死，SPILL 跳过）。

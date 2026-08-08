@@ -2,6 +2,7 @@
 //! 函数：`emit_arrow_function_expression`、`emit_function_expression`、
 //! `emit_class_expression`、`emit_new_expression`、`emit_function_domain`。
 
+use crate::expr::call::pack_arg_regs;
 use crate::{CompileCtx, Emitter, ParamSpec};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
@@ -94,20 +95,20 @@ impl Emitter {
 
     fn emit_new_expression(&self, ne: &oxide_parser::NewExpression, ctx: &mut CompileCtx) -> Result<u32, String> {
         let constructor_reg = self.emit_expression(&ne.callee, ctx)?;
-        let mut arg_regs = Vec::new();
-        for arg in &ne.arguments {
-            if let Some(expr) = arg.as_expression() {
-                arg_regs.push(self.emit_expression(expr, ctx)?);
-            }
-        }
-        let first_arg_reg = if arg_regs.is_empty() { 0u32 } else { arg_regs[0] };
+        let words = self.emit_call_args(&ne.arguments, ctx)?;
         let r = ctx.alloc_reg();
-        ctx.inst(Inst::new_expression(
-            Operand::Reg(r),
-            Operand::Reg(constructor_reg),
-            Operand::Reg(first_arg_reg),
-            arg_regs.len() as u8,
-        ));
+        if words.iter().any(|w| w >> 31 == 1) {
+            ctx.inst(Inst::new_expression_spread(Operand::Reg(r), Operand::Reg(constructor_reg), &words));
+        } else {
+            let mut static_regs = words;
+            let first_arg_reg = if static_regs.is_empty() { 0u32 } else { pack_arg_regs(&mut static_regs, ctx) };
+            ctx.inst(Inst::new_expression(
+                Operand::Reg(r),
+                Operand::Reg(constructor_reg),
+                Operand::Reg(first_arg_reg),
+                static_regs.len() as u8,
+            ));
+        }
         Ok(r)
     }
 
@@ -121,4 +122,3 @@ impl Emitter {
         }
     }
 }
-

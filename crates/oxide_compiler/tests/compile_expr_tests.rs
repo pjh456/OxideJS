@@ -529,6 +529,26 @@ fn compile_template_literal_emits_template_str() {
 }
 
 #[test]
+fn compile_call_spread_emits_spread_opcodes() {
+    // 普通调用 / new 表达式含 spread 实参 → 发 spread 变体 opcode
+    let module = compile_source("function f(){}; f(...[1,2]); new f(...[3]);");
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::CALL_SPREAD),
+        "f(...args) should emit CALL_SPREAD"
+    );
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::NEW_EXPRESSION_SPREAD),
+        "new f(...args) should emit NEW_EXPRESSION_SPREAD"
+    );
+    // 无 spread 的调用不发 spread 变体
+    let plain = compile_source("function f(a){}; f(1);");
+    assert!(
+        !plain.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::CALL_SPREAD),
+        "plain call should not emit CALL_SPREAD"
+    );
+}
+
+#[test]
 fn compile_dynamic_member_ops() {
     let module = compile_source("let obj = {}, k = 'x', arr = [1]; obj[k]; obj[k] = 1; arr[0];");
     assert!(

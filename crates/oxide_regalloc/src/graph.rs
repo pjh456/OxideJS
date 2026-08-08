@@ -70,6 +70,15 @@ pub(super) fn collect_real_vregs(f: &IRFunction) -> BTreeSet<u32> {
                 }
             }
         }
+        // spread 调用系：ext 首字之后每个有序实参字是寄存器号（spread 源带高位标记）
+        if matches!(inst.op, OpCode::CALL_SPREAD | OpCode::NEW_EXPRESSION_SPREAD | OpCode::SUPER_CALL_SPREAD) {
+            for &w in inst.ext.iter().skip(1) {
+                let r = w & 0x7FFF_FFFF;
+                if r != 0 {
+                    real.insert(r);
+                }
+            }
+        }
     }
     real
 }
@@ -116,6 +125,7 @@ pub(super) fn build(
     }
 
     // ── 可分配色集 ──
+    // 窗口只为参数连续性 MOV 桥预留；spread 调用实参经 ext 逐个读寄存器，无连续性要求。
     let max_nargs = f
         .insts
         .iter()

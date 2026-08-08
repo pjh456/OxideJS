@@ -1110,13 +1110,31 @@ impl Vm {
                     self.dispatch_call_native(rd, a, b)?;
                 }
 
+                OpCode::CALL_SPREAD => match self.dispatch_call_spread(rd, a, b) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(e) => return Err(e),
+                },
+
                 OpCode::NEW_EXPRESSION => match self.dispatch_new_expression(rd, a, b) {
                     Ok(true) => continue,
                     Ok(false) => {}
                     Err(e) => return Err(e),
                 },
 
+                OpCode::NEW_EXPRESSION_SPREAD => match self.dispatch_new_expression_spread(rd, a, b) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(e) => return Err(e),
+                },
+
                 OpCode::SUPER_CALL => match self.dispatch_super_call(rd, a) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(e) => return Err(e),
+                },
+
+                OpCode::SUPER_CALL_SPREAD => match self.dispatch_super_call_spread(rd, a) {
                     Ok(true) => continue,
                     Ok(false) => {}
                     Err(e) => return Err(e),

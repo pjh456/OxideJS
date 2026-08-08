@@ -135,17 +135,13 @@ impl Emitter {
             Expression::CallExpression(call) => {
                 self.pre_scan_builtin_expr(&call.callee, ctx);
                 for arg in &call.arguments {
-                    if let Some(e) = arg.as_expression() {
-                        self.pre_scan_builtin_expr(e, ctx);
-                    }
+                    self.pre_scan_builtin_arg(arg, ctx);
                 }
             }
             Expression::NewExpression(ne) => {
                 self.pre_scan_builtin_expr(&ne.callee, ctx);
                 for arg in &ne.arguments {
-                    if let Some(e) = arg.as_expression() {
-                        self.pre_scan_builtin_expr(e, ctx);
-                    }
+                    self.pre_scan_builtin_arg(arg, ctx);
                 }
             }
             Expression::LogicalExpression(log) => {
@@ -254,12 +250,19 @@ impl Emitter {
             oxide_parser::ChainElement::CallExpression(call) => {
                 self.pre_scan_builtin_expr(&call.callee, ctx);
                 for arg in &call.arguments {
-                    if let Some(e) = arg.as_expression() {
-                        self.pre_scan_builtin_expr(e, ctx);
-                    }
+                    self.pre_scan_builtin_arg(arg, ctx);
                 }
             }
             _ => {}
+        }
+    }
+
+    /// 遍历调用实参：spread 内部表达式也纳入 builtin 预扫描。
+    fn pre_scan_builtin_arg(&self, arg: &oxide_parser::Argument, ctx: &mut CompileCtx) {
+        if let Some(e) = arg.as_expression() {
+            self.pre_scan_builtin_expr(e, ctx);
+        } else if let oxide_parser::Argument::SpreadElement(sp) = arg {
+            self.pre_scan_builtin_expr(&sp.argument, ctx);
         }
     }
 

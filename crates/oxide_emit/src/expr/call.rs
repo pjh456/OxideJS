@@ -14,19 +14,19 @@ impl Emitter {
             if !ctx.in_derived_constructor {
                 return Err("super() only supported in derived constructors".into());
             }
-            let mut arg_regs = Vec::new();
-            for arg in &call.arguments {
-                if let Some(expr) = arg.as_expression() {
-                    arg_regs.push(self.emit_expression(expr, ctx)?);
-                }
-            }
-            let first_arg_reg = if arg_regs.is_empty() { 0u32 } else { pack_arg_regs(&mut arg_regs, ctx) };
+            let words = self.emit_call_args(&call.arguments, ctx)?;
             let result_reg = ctx.alloc_reg();
-            ctx.inst(Inst::super_call(
-                Operand::Reg(result_reg),
-                Operand::Reg(first_arg_reg),
-                arg_regs.len() as u8,
-            ));
+            if words.iter().any(|w| w >> 31 == 1) {
+                ctx.inst(Inst::super_call_spread(Operand::Reg(result_reg), &words));
+            } else {
+                let mut static_regs = words;
+                let first_arg_reg = if static_regs.is_empty() { 0u32 } else { pack_arg_regs(&mut static_regs, ctx) };
+                ctx.inst(Inst::super_call(
+                    Operand::Reg(result_reg),
+                    Operand::Reg(first_arg_reg),
+                    static_regs.len() as u8,
+                ));
+            }
             if let Some(mut field_buffer) = ctx.field_buffer.take() {
                 let insert_inst = ctx.insts.len();
                 ctx.insts.append(&mut field_buffer.insts);
@@ -92,35 +92,36 @@ impl Emitter {
                 (callee_reg, this_reg)
             }
         };
-        let mut arg_regs = Vec::new();
-        for arg in &call.arguments {
-            if let Some(expr) = arg.as_expression() {
-                arg_regs.push(self.emit_expression(expr, ctx)?);
+        let words = self.emit_call_args(&call.arguments, ctx)?;
+        if words.iter().any(|w| w >> 31 == 1) {
+            // 任一实参是 spread → 运行期物化完整实参（有序字逐个读寄存器 / 迭代展开）。
+            ctx.inst(Inst::call_spread(Operand::Reg(callee_reg), Operand::Reg(this_reg), &words));
+        } else {
+            let mut static_regs = words;
+            let first_arg_reg = if static_regs.is_empty() { 0u32 } else { pack_arg_regs(&mut static_regs, ctx) };
+            let op = match &call.callee {
+                Expression::Identifier(ident) if ctx.is_builtin(ident.name.as_str()) => OpCode::CALL_NATIVE,
+                _ => OpCode::CALL,
+            };
+            match op {
+                OpCode::CALL => {
+                    ctx.inst(Inst::call(
+                        Operand::Reg(callee_reg),
+                        Operand::Reg(this_reg),
+                        Operand::Reg(first_arg_reg),
+                        static_regs.len() as u8,
+                    ));
+                }
+                OpCode::CALL_NATIVE => {
+                    ctx.inst(Inst::call_native(
+                        Operand::Reg(callee_reg),
+                        Operand::Reg(this_reg),
+                        Operand::Reg(first_arg_reg),
+                        static_regs.len() as u8,
+                    ));
+                }
+                _ => unreachable!(),
             }
-        }
-        let first_arg_reg = if arg_regs.is_empty() { 0u32 } else { pack_arg_regs(&mut arg_regs, ctx) };
-        let op = match &call.callee {
-            Expression::Identifier(ident) if ctx.is_builtin(ident.name.as_str()) => OpCode::CALL_NATIVE,
-            _ => OpCode::CALL,
-        };
-        match op {
-            OpCode::CALL => {
-                ctx.inst(Inst::call(
-                    Operand::Reg(callee_reg),
-                    Operand::Reg(this_reg),
-                    Operand::Reg(first_arg_reg),
-                    arg_regs.len() as u8,
-                ));
-            }
-            OpCode::CALL_NATIVE => {
-                ctx.inst(Inst::call_native(
-                    Operand::Reg(callee_reg),
-                    Operand::Reg(this_reg),
-                    Operand::Reg(first_arg_reg),
-                    arg_regs.len() as u8,
-                ));
-            }
-            _ => unreachable!(),
         }
         let result_reg = ctx.alloc_reg();
         ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg), Operand::None, Operand::None));
@@ -139,7 +140,7 @@ impl Emitter {
 /// 各参数由独立 vreg 承载，复杂表达式（对象/数组字面量、嵌套调用）的临时寄存器
 /// 会使参数 vreg 不连续——检测到不连续时用 MOV 打包到新连续块。
 /// 返回首参寄存器；参数为空时返回 0。
-fn pack_arg_regs(arg_regs: &mut [u32], ctx: &mut CompileCtx) -> u32 {
+pub(crate) fn pack_arg_regs(arg_regs: &mut [u32], ctx: &mut CompileCtx) -> u32 {
     let consecutive = arg_regs.windows(2).all(|w| w[1] == w[0] + 1);
     if consecutive {
         return arg_regs[0];
@@ -153,4 +154,22 @@ fn pack_arg_regs(arg_regs: &mut [u32], ctx: &mut CompileCtx) -> u32 {
         ctx.inst(Inst::inst_mov(Operand::Reg(base + i as u32), Operand::Reg(reg)));
     }
     base
+}
+
+impl Emitter {
+    /// 收集调用实参为有序实参字（保持源码求值序）：静态实参 = 寄存器号，
+    /// spread 源 = `0x8000_0000 | 寄存器号`（高位标记区分）。
+    pub(crate) fn emit_call_args(
+        &self, args: &[oxide_parser::Argument], ctx: &mut CompileCtx,
+    ) -> Result<Vec<u32>, String> {
+        let mut words = Vec::new();
+        for arg in args {
+            if let Some(expr) = arg.as_expression() {
+                words.push(self.emit_expression(expr, ctx)?);
+            } else if let oxide_parser::Argument::SpreadElement(sp) = arg {
+                words.push(0x8000_0000 | self.emit_expression(&sp.argument, ctx)?);
+            }
+        }
+        Ok(words)
+    }
 }

@@ -18,7 +18,7 @@ impl Inst {
     pub fn def_reg(&self) -> Option<u32> {
         match self.op {
             // CALL 系：结果隐式写 reg 0，rd 是 callee 的 use
-            OpCode::CALL | OpCode::CALL_NATIVE => Some(0),
+            OpCode::CALL | OpCode::CALL_NATIVE | OpCode::CALL_SPREAD => Some(0),
             // GET_PROP 系：结果写 a/b 槽而非 rd
             OpCode::GET_PROP | OpCode::IC_GET_PROP => reg_of(&self.a),
             OpCode::GET_PROP_DYNAMIC => reg_of(&self.b),
@@ -90,6 +90,25 @@ impl Inst {
             OpCode::SUPER_CALL => {
                 let nargs = self.ext.first().copied().unwrap_or(0);
                 push_range(&mut uses, reg_of(&self.a), nargs);
+            }
+            // spread 调用系：ext 内嵌有序实参字（静态寄存器号 / `0x8000_0000|reg` spread 源）
+            OpCode::CALL_SPREAD => {
+                push_operand(&mut uses, &self.rd);
+                push_operand(&mut uses, &self.a);
+                for &w in self.ext.iter().skip(1) {
+                    uses.push(w & 0x7FFF_FFFF);
+                }
+            }
+            OpCode::NEW_EXPRESSION_SPREAD => {
+                push_operand(&mut uses, &self.a);
+                for &w in self.ext.iter().skip(1) {
+                    uses.push(w & 0x7FFF_FFFF);
+                }
+            }
+            OpCode::SUPER_CALL_SPREAD => {
+                for &w in self.ext.iter().skip(1) {
+                    uses.push(w & 0x7FFF_FFFF);
+                }
             }
             // GET_PROP 系：结果写 a/b 槽，rd=obj 是 use
             OpCode::GET_PROP => {
@@ -436,6 +455,24 @@ mod tests {
     }
 
     #[test]
+    fn spread_call_def_and_uses() {
+        // CALL_SPREAD：结果隐式写 reg 0；use = callee + this + ext 有序实参字（静态/spread 同编）
+        let call = Inst::call_spread(Operand::Reg(0), Operand::Reg(1), &[5, 0x8000_0000 | 9, 300]);
+        assert_eq!(call.def_reg(), Some(0));
+        assert_eq!(call.use_regs().as_slice(), &[0, 1, 5, 9, 300]);
+
+        // NEW_EXPRESSION_SPREAD：rd 即 def；use = ctor + 实参字
+        let ne = Inst::new_expression_spread(Operand::Reg(3), Operand::Reg(0), &[7, 0x8000_0000 | 12]);
+        assert_eq!(ne.def_reg(), Some(3));
+        assert_eq!(ne.use_regs().as_slice(), &[0, 7, 12]);
+
+        // SUPER_CALL_SPREAD：无 callee/this 槽
+        let sc = Inst::super_call_spread(Operand::Reg(3), &[4, 0x8000_0000 | 8]);
+        assert_eq!(sc.def_reg(), Some(3));
+        assert_eq!(sc.use_regs().as_slice(), &[4, 8]);
+    }
+
+    #[test]
     fn void_defs_rd_no_use() {
         // VM 的 VOID handler 不读 a 槽
         let inst = Inst::new(OpCode::VOID, Operand::Reg(1), Operand::Reg(2), Operand::None);
@@ -630,6 +667,9 @@ mod tests {
         assert!(!Inst::call_native(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2), 0).is_pure(&f));
         assert!(!Inst::new_expression(Operand::Reg(3), Operand::Reg(0), Operand::Reg(1), 0).is_pure(&f));
         assert!(!Inst::super_call(Operand::Reg(3), Operand::Reg(1), 0).is_pure(&f));
+        assert!(!Inst::call_spread(Operand::Reg(0), Operand::Reg(1), &[3]).is_pure(&f));
+        assert!(!Inst::new_expression_spread(Operand::Reg(3), Operand::Reg(0), &[2]).is_pure(&f));
+        assert!(!Inst::super_call_spread(Operand::Reg(3), &[2]).is_pure(&f));
         assert!(!Inst::new(OpCode::CREATE_REGEXP, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
         assert!(!Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None).is_pure(&f));
         assert!(!Inst::new(OpCode::THROW, Operand::Reg(2), Operand::None, Operand::None).is_pure(&f));

@@ -1,6 +1,7 @@
 //! 可选链（`?.`）emit：短路守卫、链式成员访问/调用与逻辑赋值短路测试。
 //! 函数：`emit_chainable_expression`、`emit_optional_guard`、`emit_chain_call` 等。
 
+use crate::expr::call::pack_arg_regs;
 use crate::{CompileCtx, Emitter};
 use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
@@ -106,35 +107,35 @@ impl Emitter {
                 self.emit_optional_guard(callee_reg, label, ctx)?;
             }
         }
-        let mut arg_regs = Vec::new();
-        for arg in &call.arguments {
-            if let Some(expr) = arg.as_expression() {
-                arg_regs.push(self.emit_expression(expr, ctx)?);
+        let words = self.emit_call_args(&call.arguments, ctx)?;
+        if words.iter().any(|w| w >> 31 == 1) {
+            ctx.inst(Inst::call_spread(Operand::Reg(callee_reg), Operand::Reg(this_reg), &words));
+        } else {
+            let mut static_regs = words;
+            let first_arg_reg = if static_regs.is_empty() { 0u32 } else { pack_arg_regs(&mut static_regs, ctx) };
+            let op = match &call.callee {
+                Expression::Identifier(ident) if ctx.is_builtin(ident.name.as_str()) => OpCode::CALL_NATIVE,
+                _ => OpCode::CALL,
+            };
+            match op {
+                OpCode::CALL => {
+                    ctx.inst(Inst::call(
+                        Operand::Reg(callee_reg),
+                        Operand::Reg(this_reg),
+                        Operand::Reg(first_arg_reg),
+                        static_regs.len() as u8,
+                    ));
+                }
+                OpCode::CALL_NATIVE => {
+                    ctx.inst(Inst::call_native(
+                        Operand::Reg(callee_reg),
+                        Operand::Reg(this_reg),
+                        Operand::Reg(first_arg_reg),
+                        static_regs.len() as u8,
+                    ));
+                }
+                _ => unreachable!(),
             }
-        }
-        let first_arg_reg = if arg_regs.is_empty() { 0u32 } else { arg_regs[0] };
-        let op = match &call.callee {
-            Expression::Identifier(ident) if ctx.is_builtin(ident.name.as_str()) => OpCode::CALL_NATIVE,
-            _ => OpCode::CALL,
-        };
-        match op {
-            OpCode::CALL => {
-                ctx.inst(Inst::call(
-                    Operand::Reg(callee_reg),
-                    Operand::Reg(this_reg),
-                    Operand::Reg(first_arg_reg),
-                    arg_regs.len() as u8,
-                ));
-            }
-            OpCode::CALL_NATIVE => {
-                ctx.inst(Inst::call_native(
-                    Operand::Reg(callee_reg),
-                    Operand::Reg(this_reg),
-                    Operand::Reg(first_arg_reg),
-                    arg_regs.len() as u8,
-                ));
-            }
-            _ => unreachable!(),
         }
         let result_reg = ctx.alloc_reg();
         ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg), Operand::None, Operand::None));
