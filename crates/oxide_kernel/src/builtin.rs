@@ -69,6 +69,8 @@ pub struct ObjectMethods {
 /// Array 静态方法与原型方法的 native 函数指针集合，由 [`BuiltinWorld::bind_array_methods`] 安装。
 pub struct ArrayMethods {
     pub is_array: *const (),
+    pub from: *const (),
+    pub of: *const (),
     pub push: *const (),
     pub pop: *const (),
     pub slice: *const (),
@@ -967,7 +969,15 @@ impl BuiltinWorld {
     pub fn bind_array_methods(&self, methods: &ArrayMethods, string_forge: &PermInterner, shape_forge: &ShapeForge) {
         let ctor_ptr = P::as_ptr(&self.array_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
-        bind_methods!(self, ctor, string_forge, shape_forge, ("isArray", methods.is_array, 1),);
+        bind_methods!(
+            self,
+            ctor,
+            string_forge,
+            shape_forge,
+            ("isArray", methods.is_array, 1),
+            ("from", methods.from, 1),
+            ("of", methods.of, 0),
+        );
 
         let proto_ptr = P::as_ptr(&self.array_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };

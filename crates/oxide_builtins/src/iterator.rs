@@ -25,7 +25,30 @@ pub fn iterator_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// 为任意值创建统一迭代器包装对象：String/Array/Map/Set 直接支持索引遍历，
 /// 其它对象则要求提供可调用的 `next`。不可迭代时返回 TypeError。
 pub fn make_iterator_for_value<H: VmHost>(vm: &mut H, value: JsValue) -> Result<JsValue, JsValue> {
-    let inner = get_iterator(vm, value)?;
+    match try_make_iterator(vm, value) {
+        Ok(Some(iterator)) => Ok(iterator),
+        Ok(None) => Err(crate::error::create_type_error(vm, "value is not iterable")),
+        Err(err) => Err(err),
+    }
+}
+
+/// 尝试创建迭代器包装对象，把"不可迭代"与"真异常"区分返回。
+///
+/// # 步骤
+/// 1. 经迭代协议取内层迭代器（String/Array/Map/Set 直接作为内层，其余对象调用
+///    `@@iterator` 或回退可调用的 `next`）。
+/// 2. 包装成统一迭代器对象（带 `next` 与 `return`），供调用方逐个取元素。
+///
+/// # 返回值
+/// - `Ok(Some(iterator))`：可迭代，返回包装器；
+/// - `Ok(None)`：不可迭代（调用方回退 array-like 路径）；
+/// - `Err`：`@@iterator` getter/call 抛错，透传原异常值。
+pub(crate) fn try_make_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<JsValue>, JsValue> {
+    let inner = match get_iterator(vm, value) {
+        Ok(Some(inner)) => inner,
+        Ok(None) => return Ok(None),
+        Err(err) => return Err(err),
+    };
     let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
     let wrapper = vm
         .epoch()
@@ -46,7 +69,7 @@ pub fn make_iterator_for_value<H: VmHost>(vm: &mut H, value: JsValue) -> Result<
     let return_fn = make_native_function(vm, "return", iterator_wrapper_return::<H> as *const (), 0);
     vm.set_or_create_prop_value(wrapper_obj, return_si, return_fn);
 
-    Ok(JsValue::from_js_object(wrapper))
+    Ok(Some(JsValue::from_js_object(wrapper)))
 }
 
 fn iterator_wrapper_return<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -118,14 +141,55 @@ pub fn iterator_wrapper_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     NativeResult::Err(crate::error::create_type_error(vm, "value is not iterable"))
 }
 
-fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<JsValue, JsValue> {
+/// 判断 value 是否可迭代，只读取 `@@iterator` 方法而不调用它（GetMethod 语义）。
+///
+/// 与 [`get_iterator`] 的判定一致：内建集合（String/Array/TypedArray/Map/Set）恒可迭代；
+/// 其它对象读取 `@@iterator`，可调用即视为可迭代，否则回退到自身可调用的 `next`。
+/// `@@iterator` getter 抛错时透传 `Err`。
+pub(crate) fn peek_iterator_method<H: VmHost>(vm: &mut H, value: JsValue) -> Result<bool, JsValue> {
     if value.is_string()
         || is_array_value(value)
         || is_typed_array_value(value)
         || is_map_value(value)
         || is_set_value(value)
     {
-        return Ok(value);
+        return Ok(true);
+    }
+    if value.is_object() {
+        let obj = unsafe { &*value.as_js_object_ptr() };
+        let sym_iter_si = vm.kernel_core().perm_interner().intern("@@iterator").0;
+        let method = match vm.ordinary_get(obj, sym_iter_si, value) {
+            Ok(m) => m,
+            Err(err) => {
+                // GetMethod 取 @@iterator 时 getter 抛出：透传原值，不落入鸭子回退。
+                let exc = vm
+                    .take_uncaught_value()
+                    .unwrap_or_else(|| crate::error::create_type_error(vm, &err));
+                return Err(exc);
+            }
+        };
+        if is_callable(method) {
+            return Ok(true);
+        }
+        // 鸭子回退：对象自身有可调用 next。
+        let next_si = vm.kernel_core().perm_interner().intern("next").0;
+        if let Ok(next) = vm.ordinary_get(obj, next_si, value) {
+            if is_callable(next) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<JsValue>, JsValue> {
+    if value.is_string()
+        || is_array_value(value)
+        || is_typed_array_value(value)
+        || is_map_value(value)
+        || is_set_value(value)
+    {
+        return Ok(Some(value));
     }
 
     if value.is_object() {
@@ -158,18 +222,18 @@ fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<JsValue, JsValu
                     "Result of the Symbol.iterator method is not an object",
                 ));
             }
-            return Ok(iterator);
+            return Ok(Some(iterator));
         }
         // 鸭子回退：对象自身有可调用 next（Map/Set 迭代器包装等既有用法）。
         let next_si = vm.kernel_core().perm_interner().intern("next").0;
         if let Ok(next) = vm.ordinary_get(obj, next_si, value) {
             if is_callable(next) {
-                return Ok(value);
+                return Ok(Some(value));
             }
         }
     }
 
-    Err(crate::error::create_type_error(vm, "value is not iterable"))
+    Ok(None)
 }
 
 fn next_array_like<H: VmHost>(

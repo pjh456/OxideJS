@@ -11,6 +11,8 @@ use crate::bindings::apply_binding_table;
 pub fn bind_array(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let _array_methods = ArrayMethods {
         is_array: oxide_builtins::array::array_is_array::<crate::vm::Vm> as *const (),
+        from: oxide_builtins::array::array_from::<crate::vm::Vm> as *const (),
+        of: oxide_builtins::array::array_of::<crate::vm::Vm> as *const (),
         push: oxide_builtins::array::array_push::<crate::vm::Vm> as *const (),
         pop: oxide_builtins::array::array_pop::<crate::vm::Vm> as *const (),
         slice: oxide_builtins::array::array_slice::<crate::vm::Vm> as *const (),
