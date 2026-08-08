@@ -15,13 +15,6 @@ fn eval_many(lines: &[&str]) -> Result<JsValue, String> {
     eval(&source)
 }
 
-fn assert_err_contains(result: Result<JsValue, String>, expected: &str) {
-    match result {
-        Ok(_) => panic!("expected error containing '{}', got Ok", expected),
-        Err(e) => assert!(e.contains(expected), "expected error containing '{}', got: {}", expected, e),
-    }
-}
-
 // ── 删除可配置属性成功 ──
 #[test]
 fn delete_configurable_property_succeeds_and_returns_true() {
@@ -34,15 +27,16 @@ fn delete_configurable_property_succeeds_and_returns_true() {
     assert!(r.is_bool() && r.as_bool(), "delete configurable should return true, got {:?}", r);
 }
 
-// ── 删除不可配置属性抛错 ──
+// ── 删除不可配置属性：sloppy 模式返回 false（不抛错）──
 #[test]
-fn delete_non_configurable_throws_type_error() {
-    let result = eval_many(&[
+fn delete_non_configurable_returns_false_in_sloppy_mode() {
+    let r = eval_many(&[
         "var obj = {}",
         "Object.defineProperty(obj, 'x', {value: 1, configurable: false})",
         "delete obj.x",
-    ]);
-    assert_err_contains(result, "cannot delete non-configurable property");
+    ])
+    .unwrap();
+    assert!(r.is_bool() && !r.as_bool(), "delete non-configurable in sloppy should return false, got {:?}", r);
 }
 
 // ── 删除不存在的属性返回 true ──

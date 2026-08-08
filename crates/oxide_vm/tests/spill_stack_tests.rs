@@ -11,7 +11,9 @@ use oxide_ir::IRFunction;
 use oxide_vm::vm::Vm;
 
 fn run_ir(ir: IRFunction) -> String {
-    let module = oxide_ir::lower::lower(&ir).expect("lower failed");
+    let mut module = oxide_ir::lower::lower(&ir).expect("lower failed");
+    // 手工 IR 不经 Compiler::compile，需手动扁平化子模块（create_closure 相对索引）。
+    oxide_compiler::flatten::flatten_submodules(&mut module);
     let mut vm = Vm::new();
     match vm.run(&module) {
         Ok(v) => format!("{v}"),

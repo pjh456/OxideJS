@@ -17,3 +17,4 @@ oxide_parser = { path = "../oxide_parser" }
 oxide_emit = { path = "../oxide_emit" }
 oxide_vm = { path = "../oxide_vm" }
 oxide_dce = { path = "../oxide_dce" }
+oxide_compiler = { path = "../oxide_compiler" }

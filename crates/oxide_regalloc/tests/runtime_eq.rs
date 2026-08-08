@@ -22,6 +22,10 @@ fn run_source(src: &str, regalloc: bool) -> Result<JsValue, String> {
         oxide_regalloc::alloc(&mut ir, &live2)?;
     }
     let module = oxide_ir::lower::lower(&ir).expect("lower failed");
+    // 测试走底层链路（不经 Compiler::compile），需手动扁平化子模块，
+    // 否则 CREATE_CLOSURE 的相对索引在运行期越界。
+    let mut module = module;
+    oxide_compiler::flatten::flatten_submodules(&mut module);
     let mut vm = Vm::new();
     vm.run(&module)
 }
