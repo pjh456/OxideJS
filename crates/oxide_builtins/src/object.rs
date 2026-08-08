@@ -259,7 +259,8 @@ pub fn object_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(arr))
 }
 
-/// `Object.create(proto, properties)`：以指定 prototype 创建新对象。
+/// `Object.create(proto, properties)`：以指定 prototype 创建新对象，可选地按
+/// 属性描述符集合定义自身属性。
 pub fn object_create<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Err(crate::error::create_type_error(vm, "Object.create: at least 1 argument required"));
@@ -267,6 +268,11 @@ pub fn object_create<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let proto_val = vm.reg(args[1]);
     if proto_val.is_null() {
         let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        if args.len() >= 3 && !vm.reg(args[2]).is_undefined() {
+            if let Err(msg) = define_all_from_properties(vm, obj, vm.reg(args[2])) {
+                return NativeResult::Err(crate::error::create_type_error(vm, &msg));
+            }
+        }
         return NativeResult::Ok(JsValue::from_js_object(obj));
     }
     if !proto_val.is_object() {
@@ -276,6 +282,11 @@ pub fn object_create<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         ));
     }
     let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
+    if args.len() >= 3 && !vm.reg(args[2]).is_undefined() {
+        if let Err(msg) = define_all_from_properties(vm, obj, vm.reg(args[2])) {
+            return NativeResult::Err(crate::error::create_type_error(vm, &msg));
+        }
+    }
     NativeResult::Ok(JsValue::from_js_object(obj))
 }
 
@@ -333,34 +344,32 @@ pub fn object_is<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(oxide_runtime_api::same_value(lhs, rhs)))
 }
 
-/// `Object.defineProperty(obj, key, descriptor)`：按 descriptor 定义/修改属性，
-/// 支持数据与访问器描述符，兼容已有属性的默认回填。
-pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    if args.len() < 4 {
-        return NativeResult::Err(crate::error::create_type_error(
-            vm,
-            "Object.defineProperty: expected at least 3 arguments",
-        ));
-    }
-    let obj_val = vm.reg(args[1]);
-    if !obj_val.is_object() {
-        return NativeResult::Err(crate::error::create_type_error(vm, "Object.defineProperty called on non-object"));
-    }
-    let obj_ptr = obj_val.as_js_object_ptr();
-    if obj_ptr.is_null() {
-        return NativeResult::Err(crate::error::create_type_error(vm, "Object.defineProperty called on non-object"));
-    }
-    let desc_val = vm.reg(args[3]);
+/// 按 ToPropertyDescriptor 语义把描述符定义/修改到对象的自身属性上。
+///
+/// 处理数据（value/writable）与访问器（get/set）两类描述符；描述符字段沿原型
+/// 链解析（ordinary_get，触发 accessor getter）；字段缺失时按已有属性回填，
+/// 新属性缺省字段为 false。
+///
+/// # 步骤
+/// 1. 解析 value/get/set/writable/enumerable/configurable 字段
+/// 2. 校验 data 与 accessor 字段互斥、getter/setter 可调用
+/// 3. 按访问器/数据/无字段三种形态调用对应 define 操作
+///
+/// # 边界与前提
+/// - `desc_val` 必须是对象；`key_si` 须已 intern
+/// - 修改已有属性时缺省字段回填现有值；新属性缺省为 false
+///
+/// # 副作用
+/// - 修改 obj 的 shape 链、属性表与 generation
+fn define_from_descriptor<H: VmHost>(
+    vm: &mut H,
+    obj_ptr: *mut JsObject,
+    key_si: u32,
+    desc_val: JsValue,
+) -> Result<(), String> {
     if !desc_val.is_object() {
-        return NativeResult::Err(crate::error::create_type_error(vm, "Property description must be an object"));
+        return Err("Property description must be an object".to_string());
     }
-    let desc_ptr = desc_val.as_js_object_ptr();
-    if desc_ptr.is_null() {
-        return NativeResult::Err(crate::error::create_type_error(vm, "Property description must be an object"));
-    }
-    // well-known symbol 等特殊键统一走 property_key_si（映射到 @@iterator 等别名），
-    // 保证与计算属性访问、Reflect.defineProperty 等读键路径一致。
-    let si = vm.property_key_si(vm.reg(args[2]));
 
     let value_si = vm.kernel_core().perm_interner().intern("value").0;
     let get_si = vm.kernel_core().perm_interner().intern("get").0;
@@ -376,7 +385,7 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
 
     let existing_pos = {
         let obj = unsafe { &*obj_ptr };
-        vm.get_own_property_slot(obj, si)
+        vm.get_own_property_slot(obj, key_si)
     };
     let existing_meta = existing_pos.and_then(|pos| {
         let obj = unsafe { &*obj_ptr };
@@ -394,10 +403,7 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     let has_data = value_field.is_some() || writable_field.is_some();
     let has_accessor = get_field.is_some() || set_field.is_some();
     if has_data && has_accessor {
-        return NativeResult::Err(crate::error::create_type_error(
-            vm,
-            "Invalid property descriptor: cannot mix data and accessor fields",
-        ));
+        return Err("Invalid property descriptor: cannot mix data and accessor fields".to_string());
     }
 
     let existing_value = existing_pos.map_or(JsValue::undefined(), |pos| {
@@ -420,16 +426,9 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
                 .unwrap_or(JsValue::undefined())
         });
         if (!get.is_undefined() && !is_callable(get)) || (!set.is_undefined() && !is_callable(set)) {
-            return NativeResult::Err(crate::error::create_type_error(
-                vm,
-                "accessor descriptor get/set must be callable or undefined",
-            ));
+            return Err("accessor descriptor get/set must be callable or undefined".to_string());
         }
-        if let Err(e) =
-            vm.define_accessor_property(obj, si, get, set, PropAttributes::new(false, enumerable, configurable))
-        {
-            return NativeResult::Err(crate::error::create_type_error(vm, &e));
-        }
+        vm.define_accessor_property(obj, key_si, get, set, PropAttributes::new(false, enumerable, configurable))?;
     } else if has_data {
         let value = if existing_pos.is_some() {
             value_field.unwrap_or(existing_value)
@@ -443,21 +442,16 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
         } else {
             writable_field.map(oxide_runtime_api::to_boolean).unwrap_or(false)
         };
-        if let Err(e) = vm.define_data_property(obj, si, value, PropAttributes::new(writable, enumerable, configurable))
-        {
-            return NativeResult::Err(crate::error::create_type_error(vm, &e));
-        }
+        vm.define_data_property(obj, key_si, value, PropAttributes::new(writable, enumerable, configurable))?;
     } else {
         if existing_pos.is_none() {
-            if let Err(e) = vm.define_data_property(
+            vm.define_data_property(
                 obj,
-                si,
+                key_si,
                 JsValue::undefined(),
                 PropAttributes::new(false, enumerable, configurable),
-            ) {
-                return NativeResult::Err(crate::error::create_type_error(vm, &e));
-            }
-            return NativeResult::Ok(obj_val);
+            )?;
+            return Ok(());
         }
         let is_accessor = existing_meta.map(|m| m.is_accessor).unwrap_or(false);
         let writable = existing_meta.map(|m| m.attributes.writable()).unwrap_or(true);
@@ -465,12 +459,78 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
         if is_accessor {
             let get = existing_meta.map(|m| m.get).unwrap_or(JsValue::undefined());
             let set = existing_meta.map(|m| m.set).unwrap_or(JsValue::undefined());
-            if let Err(e) = vm.define_accessor_property(obj, si, get, set, attrs) {
-                return NativeResult::Err(crate::error::create_type_error(vm, &e));
-            }
-        } else if let Err(e) = vm.define_data_property(obj, si, existing_value, attrs) {
-            return NativeResult::Err(crate::error::create_type_error(vm, &e));
+            vm.define_accessor_property(obj, key_si, get, set, attrs)?;
+        } else {
+            vm.define_data_property(obj, key_si, existing_value, attrs)?;
         }
+    }
+    Ok(())
+}
+
+/// 遍历对象自身的可枚举属性，把每个值当作描述符依次定义到目标对象上。
+/// `Object.defineProperties` 与 `Object.create(proto, properties)` 共用。
+///
+/// # 边界与前提
+/// - `props_val` 必须是对象，否则返回错误（null 触 ToObject 抛 TypeError）
+/// - 仅处理可枚举自身属性；描述符值经 ordinary_get 读取（触发访问器 getter）
+///
+/// # 副作用
+/// - 修改 target 的 shape 链、属性表与 generation
+fn define_all_from_properties<H: VmHost>(
+    vm: &mut H,
+    target_ptr: *mut JsObject,
+    props_val: JsValue,
+) -> Result<(), String> {
+    if !props_val.is_object() {
+        return Err("Property description must be an object".to_string());
+    }
+    let props_ptr = props_val.as_js_object_ptr();
+    if props_ptr.is_null() {
+        return Err("Property description must be an object".to_string());
+    }
+    let prop_keys: Vec<(u32, u32)> = {
+        let props = unsafe { &*props_ptr };
+        walk_own_keys(vm, props)
+    };
+    for (key_si, offset) in prop_keys {
+        let props = unsafe { &*props_ptr };
+        // 非可枚举自身属性跳过；无显式 meta 视为可枚举（普通字面量默认）。
+        if props
+            .prop_meta_at(offset)
+            .map(|m| !m.attributes.enumerable())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let desc_val = vm.ordinary_get(props, key_si, props_val)?;
+        define_from_descriptor(vm, target_ptr, key_si, desc_val)?;
+    }
+    Ok(())
+}
+
+/// `Object.defineProperty(obj, key, descriptor)`：按 descriptor 定义/修改属性，
+/// 支持数据与访问器描述符，兼容已有属性的默认回填。
+pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    if args.len() < 4 {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Object.defineProperty: expected at least 3 arguments",
+        ));
+    }
+    let obj_val = vm.reg(args[1]);
+    if !obj_val.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.defineProperty called on non-object"));
+    }
+    let obj_ptr = obj_val.as_js_object_ptr();
+    if obj_ptr.is_null() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.defineProperty called on non-object"));
+    }
+    // well-known symbol 等特殊键统一走 property_key_si（映射到 @@iterator 等别名），
+    // 保证与计算属性访问、Reflect.defineProperty 等读键路径一致。
+    let si = vm.property_key_si(vm.reg(args[2]));
+
+    if let Err(msg) = define_from_descriptor(vm, obj_ptr, si, vm.reg(args[3])) {
+        return NativeResult::Err(crate::error::create_type_error(vm, &msg));
     }
     NativeResult::Ok(obj_val)
 }
@@ -754,7 +814,7 @@ pub fn object_get_own_property_names<H: VmHost>(vm: &mut H, args: &[u8]) -> Nati
     NativeResult::Ok(JsValue::from_js_object(arr))
 }
 
-/// `Object.defineProperties(obj, descriptors)`：批量定义数据属性，返回目标对象。
+/// `Object.defineProperties(obj, descriptors)`：批量按描述符定义属性，返回目标对象。
 pub fn object_define_properties<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 3 {
         return NativeResult::Err(crate::error::create_type_error(
@@ -767,44 +827,8 @@ pub fn object_define_properties<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
         Ok(ptr) => ptr,
         Err(err) => return NativeResult::Err(err),
     };
-    let desc_val = vm.reg(args[2]);
-    if !desc_val.is_object() {
-        return NativeResult::Err(crate::error::create_type_error(
-            vm,
-            "Object.defineProperties: descriptor must be an object",
-        ));
-    }
-    let desc_ptr = desc_val.as_js_object_ptr();
-    if desc_ptr.is_null() {
-        return NativeResult::Err(crate::error::create_type_error(
-            vm,
-            "Object.defineProperties: descriptor must be an object",
-        ));
-    }
-    let prop_keys: Vec<(u32, u32)> = {
-        let desc = unsafe { &*desc_ptr };
-        walk_own_keys(vm, desc)
-    };
-    for (key_si, offset) in prop_keys {
-        let desc = unsafe { &*desc_ptr };
-        let prop_desc_val = desc.get_prop_at(offset);
-        if !prop_desc_val.is_object() {
-            continue;
-        }
-        let value_si = vm.kernel_core().perm_interner().intern("value").0;
-        let desc_obj_ptr = prop_desc_val.as_js_object_ptr();
-        if desc_obj_ptr.is_null() {
-            continue;
-        }
-        let desc_obj = unsafe { &*desc_obj_ptr };
-        let prop_val = if let Some(pos) = vm.kernel_core().shape_forge().lookup_position(desc_obj.shape_id(), value_si)
-        {
-            desc_obj.get_prop_at(pos)
-        } else {
-            JsValue::undefined()
-        };
-        let target = unsafe { &mut *target_ptr };
-        let _ = vm.define_data_property(target, key_si, prop_val, PropAttributes::DEFAULT_DATA);
+    if let Err(msg) = define_all_from_properties(vm, target_ptr, vm.reg(args[2])) {
+        return NativeResult::Err(crate::error::create_type_error(vm, &msg));
     }
     NativeResult::Ok(target_val)
 }
