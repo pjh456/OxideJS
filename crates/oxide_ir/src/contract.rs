@@ -266,6 +266,11 @@ impl Inst {
             OpCode::FOR_IN_NEXT | OpCode::FOR_IN_DONE | OpCode::FOR_OF_NEXT | OpCode::FOR_OF_DONE => {}
             // REST_OBJECT：读 a（ext 是 excluded_idx 常量）
             OpCode::REST_OBJECT => push_operand(&mut uses, &self.a),
+            // SPREAD_OBJECT：原地改目标对象，读目标（rd）与源（a）
+            OpCode::SPREAD_OBJECT => {
+                push_operand(&mut uses, &self.rd);
+                push_operand(&mut uses, &self.a);
+            }
             // TEMPLATE_STR：解析 ext，跳过 ext[0]，后续 seg>>31==1 则低 8 位是 expr_reg
             OpCode::TEMPLATE_STR => {
                 for seg in self.ext.iter().skip(1) {
@@ -565,6 +570,16 @@ mod tests {
         let inst = Inst::rest_object(Operand::Reg(0), Operand::Reg(1), 7);
         assert_eq!(inst.def_reg(), Some(0));
         assert_eq!(inst.use_regs().as_slice(), &[1]);
+    }
+
+    #[test]
+    fn spread_object_def_rd_uses_rd_and_a() {
+        // SPREAD_OBJECT 原地改目标对象：def=rd，use=[rd, a]，不可删除（有观察副作用）
+        let inst = Inst::spread_object(Operand::Reg(3), Operand::Reg(7));
+        assert_eq!(inst.def_reg(), Some(3));
+        assert_eq!(inst.use_regs().as_slice(), &[3, 7]);
+        let f = IRFunction::new();
+        assert!(!inst.is_pure(&f));
     }
 
     #[test]

@@ -65,6 +65,7 @@ define_opcodes! {
     MOV = 0x0C => "MOV",          // rd=dst, a=src（寄存器复制，区间拆分搬值）
     SPILL = 0x0D => "SPILL",      // rd=src, ext=[slot u16]（寄存器值写 VM spill 栈）
     UNSPILL = 0x0E => "UNSPILL",  // rd=dst, ext=[slot u16]（从 VM spill 栈恢复寄存器）
+    SPREAD_OBJECT = 0x0F => "SPREAD_OBJECT", // rd=目标对象, a=源（对象字面量 ... 展开，原地写目标）
 
     // ── 比较 (0x10-0x1F) ──
     EQ = 0x10 => "EQ",
@@ -331,12 +332,14 @@ mod tests {
         assert_eq!(OpCode::MOV as u8, 0x0C);
         assert_eq!(OpCode::SPILL as u8, 0x0D);
         assert_eq!(OpCode::UNSPILL as u8, 0x0E);
+        assert_eq!(OpCode::SPREAD_OBJECT as u8, 0x0F);
         assert_eq!(OpCode::CREATE_ARGUMENTS as u8, 0x63);
         assert_eq!(OpCode::ADD.to_string(), "ADD");
         assert_eq!(OpCode::COMPOUND_MEMBER_EXP.to_string(), "COMPOUND_MEMBER_EXP");
         assert_eq!(OpCode::MOV.to_string(), "MOV");
         assert_eq!(OpCode::SPILL.to_string(), "SPILL");
         assert_eq!(OpCode::UNSPILL.to_string(), "UNSPILL");
+        assert_eq!(OpCode::SPREAD_OBJECT.to_string(), "SPREAD_OBJECT");
 
         assert!(OpCode::try_from(0x1B).is_err());
         assert!(OpCode::try_from(0xFF).is_err());

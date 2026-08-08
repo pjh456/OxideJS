@@ -153,6 +153,13 @@ impl Inst {
         Self::with_ext(OpCode::REST_OBJECT, rest, src, Operand::None, &[excluded_idx])
     }
 
+    /// 对象字面量 spread 展开：把源 `src` 的可枚举自有属性写入目标对象 `rd`（原地改）。
+    /// 语义 = CopyDataProperties 的"非 null/undefined 源"：null/undefined 合法（空展开），
+    /// 与 REST_OBJECT（对 null/undefined 抛 TypeError）不同。
+    pub fn spread_object(target: Operand, src: Operand) -> Self {
+        Self::new(OpCode::SPREAD_OBJECT, target, src, Operand::None)
+    }
+
     /// TEMPLATE_STR：变长 ext。首字打包 `(segment_count<<16) | total_len_hint`，
     /// 后续每 quasi 一项 `quasi_const_idx & 0x7FFF_FFFF`，其后若跟表达式再一项 `0x8000_0000 | expr_reg`。
     pub fn template_str(dst: Operand, segment_count: u32, total_len_hint: u16, parts: &[u32]) -> Self {
@@ -311,6 +318,13 @@ mod tests {
 
         let rest = Inst::rest_object(Operand::Reg(0), Operand::Reg(1), 7);
         assert_eq!(rest.ext.as_slice(), &[7]);
+
+        let spread = Inst::spread_object(Operand::Reg(0), Operand::Reg(1));
+        assert_eq!(spread.op, OpCode::SPREAD_OBJECT);
+        assert_eq!(spread.rd, Operand::Reg(0));
+        assert_eq!(spread.a, Operand::Reg(1));
+        assert_eq!(spread.b, Operand::None);
+        assert!(spread.ext.is_empty());
     }
 
     #[test]

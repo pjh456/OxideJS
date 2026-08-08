@@ -14,7 +14,8 @@ fn is_integer_index(key: &str) -> bool {
 }
 
 /// 收集对象全部自身属性（shape 链），按规范顺序排列：整数索引在前升序，其余保持插入序。
-pub(crate) fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
+/// 数组元素区（整数下标）不在此列，调用方需另行枚举。
+pub fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
     let mut keys: Vec<(u32, u32)> = Vec::new();
     let shape_id = obj.shape_id();
     let mut pos: u32 = 0;

@@ -14,69 +14,77 @@ impl Emitter {
         let obj_reg = ctx.alloc_reg();
         ctx.inst(Inst::new(OpCode::NEW_OBJECT, Operand::Reg(obj_reg), Operand::None, Operand::None));
         for prop in &obj.properties {
-            let ObjectPropertyKind::ObjectProperty(p) = prop else {
-                return Err("spread properties not yet supported".into());
+            let ObjectPropertyKind::SpreadProperty(spread) = prop else {
+                self.emit_object_property(obj_reg, prop, ctx)?;
+                continue;
             };
-            let computed = p.computed;
-            let prop_name = if computed {
-                "<computed>".to_string()
-            } else {
-                self.class_property_name(&p.key)?
-            };
-            match p.kind {
-                PropertyKind::Get | PropertyKind::Set => {
-                    if computed {
-                        return Err("computed object accessors not yet supported".into());
-                    }
-                    let accessor_reg = self.emit_expression(&p.value, ctx)?;
-                    if let Some(sub_mod) = ctx.nested.last_mut() {
-                        sub_mod.function_name = Some(prop_name.to_string());
-                    }
-                    let undef_reg = self.emit_undefined(ctx);
-                    let (get_reg, set_reg) = if p.kind == PropertyKind::Get {
-                        (accessor_reg, undef_reg)
-                    } else {
-                        (undef_reg, accessor_reg)
-                    };
-                    let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
-                    ctx.inst(Inst::define_accessor(
-                        Operand::Reg(obj_reg),
-                        Operand::Reg(get_reg),
-                        Operand::Reg(set_reg),
-                        idx as u32,
-                    ));
-                }
-                _ => {
-                    let key_reg = if computed {
-                        self.emit_expression(p.key.to_expression(), ctx)?
-                    } else {
-                        let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
-                        let reg = ctx.alloc_reg();
-                        ctx.inst(Inst::load_const(Operand::Reg(reg), idx));
-                        reg
-                    };
-                    let val_reg = self.emit_expression(&p.value, ctx)?;
-                    if crate::is_anonymous_function_definition(&p.value) {
-                        if let Some(sub_mod) = ctx.nested.last_mut() {
-                            sub_mod.function_name = Some(prop_name.to_string());
-                        }
-                    }
-                    let op = if computed { OpCode::SET_PROP_DYNAMIC } else { OpCode::SET_PROP };
-                    let operands = if computed {
-                        (Operand::Reg(key_reg), Operand::Reg(val_reg))
-                    } else {
-                        (Operand::Reg(val_reg), Operand::Reg(key_reg))
-                    };
-                    ctx.inst(Inst::new(
-                        op,
-                        Operand::Reg(obj_reg),
-                        operands.0,
-                        operands.1,
-                    ));
-                }
-            }
+            // spread 展开：把源表达式的可枚举自有属性写入目标对象（原地改）。
+            // 顺序语义：{...b, a:1} 在 spread 之后定义 a，后者覆盖前者（从左到右求值）。
+            let src_reg = self.emit_expression(&spread.argument, ctx)?;
+            ctx.inst(Inst::spread_object(Operand::Reg(obj_reg), Operand::Reg(src_reg)));
         }
         Ok(obj_reg)
     }
-}
 
+    fn emit_object_property(
+        &self, obj_reg: u32, prop: &oxide_parser::ObjectPropertyKind, ctx: &mut CompileCtx,
+    ) -> Result<(), String> {
+        let ObjectPropertyKind::ObjectProperty(p) = prop else {
+            return Err("unsupported object property kind".into());
+        };
+        let computed = p.computed;
+        let prop_name = if computed {
+            "<computed>".to_string()
+        } else {
+            self.class_property_name(&p.key)?
+        };
+        match p.kind {
+            PropertyKind::Get | PropertyKind::Set => {
+                if computed {
+                    return Err("computed object accessors not yet supported".into());
+                }
+                let accessor_reg = self.emit_expression(&p.value, ctx)?;
+                if let Some(sub_mod) = ctx.nested.last_mut() {
+                    sub_mod.function_name = Some(prop_name.to_string());
+                }
+                let undef_reg = self.emit_undefined(ctx);
+                let (get_reg, set_reg) = if p.kind == PropertyKind::Get {
+                    (accessor_reg, undef_reg)
+                } else {
+                    (undef_reg, accessor_reg)
+                };
+                let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
+                ctx.inst(Inst::define_accessor(
+                    Operand::Reg(obj_reg),
+                    Operand::Reg(get_reg),
+                    Operand::Reg(set_reg),
+                    idx as u32,
+                ));
+            }
+            _ => {
+                let key_reg = if computed {
+                    self.emit_expression(p.key.to_expression(), ctx)?
+                } else {
+                    let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
+                    let reg = ctx.alloc_reg();
+                    ctx.inst(Inst::load_const(Operand::Reg(reg), idx));
+                    reg
+                };
+                let val_reg = self.emit_expression(&p.value, ctx)?;
+                if crate::is_anonymous_function_definition(&p.value) {
+                    if let Some(sub_mod) = ctx.nested.last_mut() {
+                        sub_mod.function_name = Some(prop_name.to_string());
+                    }
+                }
+                let op = if computed { OpCode::SET_PROP_DYNAMIC } else { OpCode::SET_PROP };
+                let operands = if computed {
+                    (Operand::Reg(key_reg), Operand::Reg(val_reg))
+                } else {
+                    (Operand::Reg(val_reg), Operand::Reg(key_reg))
+                };
+                ctx.inst(Inst::new(op, Operand::Reg(obj_reg), operands.0, operands.1));
+            }
+        }
+        Ok(())
+    }
+}

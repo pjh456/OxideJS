@@ -657,4 +657,97 @@ impl Vm {
         self.regs[rd] = JsValue::from_js_object(rest_ptr);
         Ok(())
     }
+
+    /// SPREAD_OBJECT：对象字面量 `...` 展开，把源的可枚举自有属性写入目标对象（原地改）。
+    ///
+    /// 语义 = CopyDataProperties 的"非 null/undefined 源"分支：`{...null}` / `{...undefined}`
+    /// 合法（产出空展开），与 REST_OBJECT 对 null/undefined 抛 TypeError 不同。
+    ///
+    /// # 步骤
+    /// 1. null/undefined 源直接返回（空展开）
+    /// 2. 字符串源按 UTF-16 code unit 下标复制为可枚举索引属性
+    /// 3. 对象源先收集可枚举自有属性（数组元素区 + shape 链），取值经 ordinary_get
+    ///    触发访问器 getter，再统一写入目标
+    ///
+    /// # 边界与前提
+    /// - 其它原始值（number/boolean/symbol）无自有可枚举属性 → 空展开
+    /// - 目标已有同名属性被覆盖（后定义/后展开者胜）
+    ///
+    /// # 副作用
+    /// - 原地修改 rd 指向的对象；取值可能触发 getter 并抛异常（异常传播）
+    pub(crate) fn dispatch_spread_object(&mut self, rd: usize, a: usize) -> Result<(), String> {
+        vm_trace!("SPREAD_OBJECT rd={}", rd);
+        let target_val = self.regs[rd];
+        let src = self.regs[a];
+
+        // null/undefined 源合法：展开为空，直接返回。
+        if src.is_null() || src.is_undefined() {
+            return Ok(());
+        }
+
+        // 字符串源：按索引复制字符（可枚举索引属性）。
+        if src.is_string() {
+            let target = unsafe { &mut *target_val.as_js_object_ptr() };
+            let code_units: Vec<u16> = unsafe { (*src.as_string_ptr()).data.encode_utf16().collect() };
+            for (i, unit) in code_units.iter().enumerate() {
+                let s = char::from_u32(*unit as u32).map(|c| c.to_string()).unwrap_or_default();
+                let si = self.kernel_core.perm_interner().intern(&i.to_string()).0;
+                let ch_val = self.new_string(&s);
+                self.set_or_create_prop_value(target, si, ch_val);
+            }
+            return Ok(());
+        }
+
+        // 其它原始值无自有可枚举属性 → 空展开。
+        if !src.is_object() {
+            return Ok(());
+        }
+
+        let src_obj = unsafe { &*src.as_js_object_ptr() };
+
+        // 收集-提交：先取齐 (键, 值)，取值阶段触发 getter（可能抛异常），
+        // 再统一写目标，避免提交写与取值互相交错。
+        let mut assignments: Vec<(u32, JsValue)> = Vec::new();
+
+        // 数组元素区：整数下标可枚举元素（hole 跳过）。
+        if src_obj.is_array() {
+            for i in 0..src_obj.array_prop_count {
+                if src_obj.prop_meta_at(i).is_some_and(|m| m.is_hole()) {
+                    continue;
+                }
+                let enumerable = src_obj
+                    .prop_meta_at(i)
+                    .map(|m| m.attributes.enumerable())
+                    .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable());
+                if enumerable {
+                    let si = self.kernel_core.perm_interner().intern(&i.to_string()).0;
+                    let val = self.ordinary_get(src_obj, si, src)?;
+                    assignments.push((si, val));
+                }
+            }
+        }
+
+        // 命名属性：shape 链（walk_own_keys 规范顺序），仅可枚举。
+        let keys = oxide_builtins::object::walk_own_keys(self, src_obj);
+        for (si, pos) in keys {
+            let store = if src_obj.is_array() { src_obj.array_prop_count + pos } else { pos };
+            let enumerable = src_obj
+                .prop_meta_at(store)
+                .map(|m| m.attributes.enumerable())
+                .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable());
+            if !enumerable {
+                continue;
+            }
+            let val = self.ordinary_get(src_obj, si, src)?;
+            assignments.push((si, val));
+        }
+
+        // 提交：覆盖目标已有同名属性（从左到右求值，后展开者胜）。
+        let target = unsafe { &mut *target_val.as_js_object_ptr() };
+        for (si, val) in assignments {
+            let promoted = self.promote_if_needed_for_write_ptr(target, val);
+            self.set_or_create_prop_value(target, si, promoted);
+        }
+        Ok(())
+    }
 }

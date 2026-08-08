@@ -168,6 +168,19 @@ fn structural_hash_distinguishes_optional_chain_shape() {
 }
 
 #[test]
+fn object_spread_source_shapes_differ() {
+    // 编译模块哈希含绑定名：{...a} 与 {...b} 展开源不同，缓存键必须不同。
+    let spread_a = parse_to_compiled_hash("var o = { ...a };");
+    let spread_b = parse_to_compiled_hash("var o = { ...b };");
+    assert_ne!(spread_a, spread_b, "different spread sources must produce different hashes");
+
+    // 结构哈希区分 spread 与非 spread 的对象字面量。
+    let plain = parse_to_hash("var o = { a: 1 };");
+    let spread_after = parse_to_hash("var o = { a: 1, ...x };");
+    assert_ne!(plain, spread_after, "spread vs non-spread object must hash differently");
+}
+
+#[test]
 fn compiled_module_rejects_optional_chain_assignment_target() {
     let allocator = Allocator::default();
     if let Ok(program) = oxide_parser::parse(&allocator, "a?.b = 1") {

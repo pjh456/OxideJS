@@ -36,6 +36,9 @@ pub(super) fn hash_object_property_kind(
             hash_property_key(&p.key, h, include_binding_names);
             expression::hash_expression(&p.value, h, include_binding_names);
         }
-        ObjectPropertyKind::SpreadProperty(_) => {}
+        ObjectPropertyKind::SpreadProperty(spread) => {
+            // spread 的源表达式计入哈希：`{...a}` 与 `{...b}` 结构不同，避免缓存碰撞。
+            expression::hash_expression(&spread.argument, h, include_binding_names);
+        }
     });
 }

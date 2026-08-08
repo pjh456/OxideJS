@@ -1351,6 +1351,10 @@ impl Vm {
                     self.dispatch_rest_object(rd, a)?;
                 }
 
+                OpCode::SPREAD_OBJECT => {
+                    self.dispatch_spread_object(rd, a)?;
+                }
+
                 OpCode::THROW => match self.dispatch_throw(rd) {
                     Ok(true) => continue,
                     Ok(false) => {}

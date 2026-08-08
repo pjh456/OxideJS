@@ -152,3 +152,37 @@ fn object_literal_setter_updates_receiver() {
 fn object_literal_getter_setter_pair() {
     assert_eq!(eval("var o={ get x(){ return this.y }, set x(v){ this.y=v } }; o.x=9; o.x"), "9");
 }
+
+fn eval_string(source: &str) -> String {
+    let allocator = Allocator::default();
+    let mut vm = Vm::new();
+    let program = oxide_parser::parse(&allocator, source).expect("parse failed");
+    let module = Compiler::new().compile(&program).expect("compile failed");
+    let result = vm.run(&module).expect("vm run failed");
+    vm.lookup_str(result).unwrap_or_default()
+}
+
+#[test]
+fn object_literal_spread_copies_own_properties() {
+    assert_eq!(eval_string("JSON.stringify({a:0,...{x:1,y:2}})"), r#"{"a":0,"x":1,"y":2}"#);
+}
+
+#[test]
+fn object_literal_spread_later_definitions_override() {
+    assert_eq!(eval("({...{a:1},a:9}).a"), "9");
+    assert_eq!(eval("({a:1,...{a:9}}).a"), "9");
+}
+
+#[test]
+fn object_literal_spread_nullish_is_empty() {
+    assert_eq!(eval_string("JSON.stringify({...null})"), "{}");
+    assert_eq!(eval_string("JSON.stringify({...undefined})"), "{}");
+    assert_eq!(eval_string("JSON.stringify({...42})"), "{}");
+}
+
+#[test]
+fn object_literal_spread_string_indexes_and_getters() {
+    assert_eq!(eval_string("JSON.stringify({...'ab'})"), r#"{"0":"a","1":"b"}"#);
+    assert_eq!(eval("({...{get x(){return 5}}}).x"), "5");
+    assert_eq!(eval_string("JSON.stringify({...[],a:1})"), r#"{"a":1}"#);
+}
