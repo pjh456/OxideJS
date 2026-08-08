@@ -22,9 +22,11 @@ impl Emitter {
             // 逃出语句时须穿越本 finally，词法上记录域深度供跨越计数。
             ctx.push_finally_domain();
             ctx.inst(Inst::try_finally_begin(finally_label));
+            ctx.push_open_finally_handler();
         }
         if has_catch {
             ctx.inst(Inst::try_begin(catch_label));
+            ctx.push_open_catch_handler();
         }
         let mut last_try_result: Option<u32> = None;
         for s in &ts.block.body {
@@ -40,6 +42,7 @@ impl Emitter {
         ));
         if has_catch {
             ctx.inst(Inst::new(OpCode::TRY_END, Operand::None, Operand::None, Operand::None));
+            ctx.pop_open_try_handler();
         }
         let jmp_needed = has_catch || has_finally;
         if jmp_needed {
@@ -84,6 +87,7 @@ impl Emitter {
                 Operand::None,
             ));
             ctx.inst(Inst::new(OpCode::TRY_FINALLY_END, Operand::None, Operand::None, Operand::None));
+            ctx.pop_open_try_handler();
             ctx.pop_finally_domain();
         }
         ctx.labels.set_label_pos(try_end_label, ctx.insts.len());

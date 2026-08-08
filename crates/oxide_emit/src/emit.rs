@@ -178,6 +178,10 @@ pub struct CompileCtx {
     /// with 语句作用域栈：元素为 (with 对象寄存器, 打开时的作用域深度)。
     /// 非空时 with 体内的自由标识符需动态解析（先查对象属性，回退外层）。
     pub(crate) with_stack: Vec<(u32, usize)>,
+    /// 打开中（尚未 emit 对应 END）的 try handler 栈，自底向上镜像运行时
+    /// try_stack 组成。每项标记是否为纯 catch handler（TRY_BEGIN，由 TRY_END
+    /// 弹出）：return 逃出 try 域时据此弹出栈顶连续纯 catch，防 handler 泄漏。
+    pub(crate) open_try_handlers: Vec<bool>,
 }
 
 /// 函数体编译上下文：决定 `this`/`super` 绑定与参数前导（prologue）形态。
@@ -259,6 +263,7 @@ impl CompileCtx {
             captured_bindings: BTreeMap::new(),
             const_overflow: false,
             with_stack: Vec::new(),
+            open_try_handlers: Vec::new(),
         }
     }
 
@@ -414,6 +419,29 @@ impl CompileCtx {
 
     pub(crate) fn pop_finally_domain(&mut self) {
         self.labels.finally_depth -= 1;
+    }
+
+    /// 记录一个纯 catch handler 打开（对应 emit try_begin 后的运行时 TRY_BEGIN）。
+    pub(crate) fn push_open_catch_handler(&mut self) {
+        self.open_try_handlers.push(true);
+    }
+
+    /// 记录一个 finally handler 打开（对应 emit try_finally_begin 后的运行时
+    /// TRY_FINALLY_BEGIN）。
+    pub(crate) fn push_open_finally_handler(&mut self) {
+        self.open_try_handlers.push(false);
+    }
+
+    /// 弹出最近打开的 handler（对应 emit 的 TRY_END / TRY_FINALLY_END）。
+    pub(crate) fn pop_open_try_handler(&mut self) {
+        self.open_try_handlers.pop();
+    }
+
+    /// 栈顶连续打开的纯 catch handler 数（遇 finally handler 即停）。
+    /// return 逃出本函数时，这些 handler 可由 TRY_END 直接从栈顶弹出；
+    /// finally 之下的 catch 无法经 TRY_END 弹出，交给运行时统一清理。
+    pub(crate) fn top_open_catch_handlers(&self) -> usize {
+        self.open_try_handlers.iter().rev().take_while(|&&is_catch| is_catch).count()
     }
 
     pub(crate) fn push_label_scope(

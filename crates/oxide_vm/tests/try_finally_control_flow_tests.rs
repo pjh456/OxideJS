@@ -189,3 +189,60 @@ fn throw_in_finally_discards_pending_break() {
         "9"
     );
 }
+
+#[test]
+fn return_in_try_catch_cleans_handler() {
+    assert_eq!(eval("function f(){ try{ return 1 } catch(e){ return 2 } }; f()"), "1");
+}
+
+#[test]
+fn return_in_try_catch_value_path() {
+    assert_eq!(eval("function f(){ try{ throw 1 } catch(e){ return e } }; f()"), "1");
+}
+
+#[test]
+fn return_in_try_finally_runs_finally() {
+    assert_eq!(eval("var fin = 0; function f(){ try{ return 1 } finally{ fin = 1 } } f() * 10 + fin"), "11");
+}
+
+#[test]
+fn finally_throw_overrides_return() {
+    assert_eq!(eval("function f(){ try{ return 1 } finally { throw 2 } } ; try{ f() }catch(e){ e }"), "2");
+}
+
+#[test]
+fn rethrow_in_leaked_catch_no_longer_hangs() {
+    // return 穿过 try/catch 后，泄漏的 catch handler 不得在后续异常时被跳入：
+    // 否则 catch 再 throw → 同一 handler 再弹 → 无限循环。修复后该 handler
+    // 在 return 时被清理 / unwind 时被跳过，异常交给外层 catch。
+    assert_eq!(
+        eval("var n = 0; function f(){ try { return 1 } catch(e) { throw e; } } f(); try { undefined.x } catch(e){ n = 1; } n"),
+        "1"
+    );
+}
+
+#[test]
+fn return_crosses_finally_below_outer_catch() {
+    // return 穿过 finally（其下还有外层 catch）：finally 必须执行，外层 catch
+    // 不得残留泄漏（该场景 TRY_END 无法从栈顶弹出，靠运行时扫描兜底）。
+    assert_eq!(
+        eval("var fin = 0; function f(){ try { try { return 1 } finally { fin = 1 } } catch(e){ return 2 } } f() * 10 + fin"),
+        "11"
+    );
+}
+
+#[test]
+fn return_crosses_outer_finally_above_inner_catch() {
+    assert_eq!(
+        eval("var fin = 0; function f(){ try { try { return 1 } catch(e){ return 2 } } finally { fin = 1 } } f() * 10 + fin"),
+        "11"
+    );
+}
+
+#[test]
+fn leaked_nested_handler_then_exception_is_caught() {
+    assert_eq!(
+        eval("function f(){ try { try { return 1 } finally { } } catch(e){ } } f(); var n = 0; try { undefined.x } catch(e){ n = (e.name === 'TypeError') ? 1 : 2 } n"),
+        "1"
+    );
+}

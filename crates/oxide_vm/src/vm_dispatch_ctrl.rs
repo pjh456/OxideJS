@@ -214,6 +214,12 @@ impl Vm {
             self.frames.len(),
             self.frames.last().map(|f| f.return_addr).unwrap_or(0)
         );
+        // return 逃出整个函数：当前帧残留的纯 catch handler 一律弹出（return 不被
+        // catch 捕获），finally handler 保留给下方完成穿越逐个执行。即使 emit 侧已
+        // 从栈顶弹出连续 catch，这里仍扫描兜底——finally 之下的 catch 无法由
+        // TRY_END 直接弹出。防 handler 泄漏到已返回函数，导致后续异常 unwind
+        // 跳回死函数的 catch 形成死循环。
+        self.pop_frame_catch_handlers();
         let crossed = self
             .try_stack
             .iter()
@@ -228,9 +234,31 @@ impl Vm {
         self.do_return(result)
     }
 
+    /// 弹出当前帧内所有残留的纯 catch handler（无 finally 域），供 return 逃出
+    /// 本函数时清理。保留 finally handler（供完成穿越）与其它帧的 handler。
+    ///
+    /// # 边界与前提
+    /// - 只处理 `frame_depth == frames.len()` 的 handler：return 只逃出本帧，
+    ///   调用者的 handler 必须保留。
+    /// - 纯 catch 判定为 `finally_pc.is_none()`（不携带 finally 的 TRY_BEGIN）。
+    fn pop_frame_catch_handlers(&mut self) {
+        let depth = self.frames.len();
+        let mut kept = Vec::with_capacity(self.try_stack.len());
+        for h in self.try_stack.drain(..) {
+            if h.frame_depth == depth && h.finally_pc.is_none() {
+                continue;
+            }
+            kept.push(h);
+        }
+        self.try_stack = kept;
+    }
+
     /// 实际执行返回：弹出当前帧并交付返回值（供 dispatch_return 与 finally 完成
     /// 恢复共用）。
     fn do_return(&mut self, result: JsValue) -> Result<Option<JsValue>, String> {
+        // 兜底：return 完成恢复路径（dispatch_try_finally_end 直达）也可能携带
+        // 未清理的纯 catch handler，先弹出再弹帧。
+        self.pop_frame_catch_handlers();
         if let Some(frame) = self.frames.pop() {
             self.cell_stack.pop();
             let construct_result_reg = frame.construct_result_reg;

@@ -227,6 +227,13 @@ impl Vm {
     pub(crate) fn unwind(&mut self) -> Result<(), String> {
         vm_debug!("unwind: {} try handlers on stack", self.try_stack.len());
         while let Some(mut handler) = self.try_stack.pop() {
+            if handler.frame_depth > self.frames.len() {
+                // 残留 handler 所属帧已返回（return 逃出泄漏的兜底）：丢弃防跳回
+                // 死函数的 catch/finally——否则 catch 再抛会反复弹出同一 handler
+                // 形成死循环。其 for_of_depth 快照属于已死帧，也不可据此关闭
+                // 当前帧的迭代器，故整体跳过。
+                continue;
+            }
             while self.frames.len() > handler.frame_depth {
                 if let Some(frame) = self.frames.pop() {
                     self.cell_stack.pop();
