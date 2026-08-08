@@ -128,56 +128,83 @@ pub fn number_parse_float<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 /// `Number.prototype.toString(radix)`：按指定进制（2..36）转字符串。
-/// 十进制走 ryu 快速格式化，NaN/Infinity 有专名输出。
+///
+/// 十进制走共享的 ECMA-262 Number::toString 格式化；非十进制对截断后的整数
+/// 部分做进制转换（小数部分按近似处理）。radix 经 ToInteger 后越界抛 RangeError，
+/// NaN/Infinity 输出专名。
 pub fn number_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let n = vm.coerce_number_bounded(vm.reg(args[0])).unwrap_or(f64::NAN);
     let radix = if args.len() > 1 {
-        let r = vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as u32;
-        r.clamp(2, 36)
+        let radix_arg = vm.reg(args[1]);
+        if radix_arg.is_undefined() {
+            10u32
+        } else {
+            // radix 走 ToIntegerOrInfinity：先经对象 coercion（poisoned valueOf
+            // 需传播其异常），NaN/±0 归 0 后越界抛 RangeError。
+            let raw = match vm.coerce_number_bounded(radix_arg) {
+                Ok(n) => n,
+                Err(_) => {
+                    // coercion 触发用户 valueOf/toString 抛出的异常经
+                    // last_uncaught_value 恢复后原样重新抛出。
+                    if let Some(exc) = vm.take_uncaught_value() {
+                        return NativeResult::Err(exc);
+                    }
+                    return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert radix to a number"));
+                }
+            };
+            let r = if raw.is_nan() || raw == 0.0 {
+                0.0
+            } else if raw.is_infinite() {
+                raw
+            } else {
+                raw.trunc()
+            };
+            if !(2.0..=36.0).contains(&r) {
+                return NativeResult::Err(crate::error::create_range_error(
+                    vm,
+                    "toString() radix must be between 2 and 36",
+                ));
+            }
+            r as u32
+        }
     } else {
         10u32
     };
 
     if radix == 10 {
-        if n.is_nan() {
-            return NativeResult::Ok(vm.new_string("NaN"));
-        }
-        if n.is_infinite() {
-            if n.is_sign_positive() {
-                return NativeResult::Ok(vm.new_string("Infinity"));
-            }
-            return NativeResult::Ok(vm.new_string("-Infinity"));
-        }
-        if n.fract() == 0.0 && n >= i32::MIN as f64 && n <= i32::MAX as f64 {
-            return NativeResult::Ok(vm.new_string(&(n as i64).to_string()));
-        }
-        let mut buf = ryu::Buffer::new();
-        NativeResult::Ok(vm.new_string(buf.format(n)))
-    } else {
-        if n.is_nan() {
-            return NativeResult::Ok(vm.new_string("NaN"));
-        }
-        let nn = n as i64;
-        let mut result = String::new();
-        let mut value = nn.abs();
-        if value == 0 {
-            result.push('0');
-        } else {
-            let chars = "0123456789abcdefghijklmnopqrstuvwxyz";
-            let mut digits = Vec::new();
-            while value > 0 {
-                digits.push(chars.as_bytes()[(value % radix as i64) as usize] as char);
-                value /= radix as i64;
-            }
-            for ch in digits.iter().rev() {
-                result.push(*ch);
-            }
-        }
-        if nn < 0 {
-            result.insert(0, '-');
-        }
-        NativeResult::Ok(vm.new_string(&result))
+        return NativeResult::Ok(vm.new_string(&oxide_runtime_api::js_number_to_string(n)));
     }
+
+    if n.is_nan() {
+        return NativeResult::Ok(vm.new_string("NaN"));
+    }
+    if n.is_infinite() {
+        return NativeResult::Ok(vm.new_string(if n.is_sign_positive() { "Infinity" } else { "-Infinity" }));
+    }
+    if n.abs() >= u128::MAX as f64 {
+        // 超出 u128 可精确表示的整数范围，退化为十进制近似。
+        return NativeResult::Ok(vm.new_string(&oxide_runtime_api::js_number_to_string(n)));
+    }
+    let neg = n.is_sign_negative();
+    let mut value = n.abs().trunc() as u128;
+    let mut result = String::new();
+    if value == 0 {
+        result.push('0');
+    } else {
+        let chars = b"0123456789abcdefghijklmnopqrstuvwxyz";
+        let mut digits = Vec::new();
+        while value > 0 {
+            digits.push(chars[(value % radix as u128) as usize] as char);
+            value /= radix as u128;
+        }
+        for ch in digits.iter().rev() {
+            result.push(*ch);
+        }
+    }
+    if neg {
+        result.insert(0, '-');
+    }
+    NativeResult::Ok(vm.new_string(&result))
 }
 
 /// `Number.prototype.toFixed(digits)`：固定小数位数（0..100）输出字符串，
@@ -318,6 +345,11 @@ pub fn number_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if this_val.is_object() {
         let ptr = this_val.as_js_object_ptr();
         if !ptr.is_null() {
+            // Number.prototype 本身是 Number 对象，其 [[NumberData]] 为 +0。
+            let number_proto = vm.session().builtin_world().number_proto.as_ptr() as *mut oxide_types::object::JsObject;
+            if ptr == number_proto {
+                return NativeResult::Ok(JsValue::int(0));
+            }
             let obj = unsafe { &*ptr };
             if obj.is_number_obj() {
                 return NativeResult::Ok(obj.get_prop_at(0));

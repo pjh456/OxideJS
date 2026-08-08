@@ -91,6 +91,59 @@ fn to_fixed_of_number() {
 }
 
 #[test]
+fn to_string_scientific_boundaries() {
+    let mut vm = Vm::new();
+    let cases = [
+        ("(1e21).toString()", "1e+21"),
+        ("(1e20).toString()", "100000000000000000000"),
+        ("(123.45).toString()", "123.45"),
+        ("(0.000001).toString()", "0.000001"),
+        ("(0.0000001).toString()", "1e-7"),
+        ("(1e15).toString()", "1000000000000000"),
+        ("(0.1+0.2).toString()", "0.30000000000000004"),
+        ("String(1e21)", "1e+21"),
+        ("(\"\" + 1e21)", "1e+21"),
+        ("(-1e21).toString()", "-1e+21"),
+        ("JSON.stringify(1e21)", "1e+21"),
+        ("JSON.stringify(1e20)", "100000000000000000000"),
+    ];
+    for (src, expected) in cases {
+        let result = eval(&mut vm, src).unwrap();
+        let s = vm.lookup_str(result).unwrap_or_default();
+        assert_eq!(s, expected, "for {}", src);
+    }
+}
+
+#[test]
+fn to_string_radix_and_range_error() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "(255).toString(16)").unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap_or_default(), "ff");
+
+    let result = eval(&mut vm, "(2).toString(2)").unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap_or_default(), "10");
+
+    let err = eval(&mut vm, "(10).toString(1)").unwrap_err();
+    assert!(err.contains("RangeError"), "got: {}", err);
+
+    let err = eval(&mut vm, "(10).toString(37)").unwrap_err();
+    assert!(err.contains("RangeError"), "got: {}", err);
+}
+
+#[test]
+fn number_constructor_string_rules() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Number('0xa')").unwrap();
+    assert_eq!(result.as_int(), 10);
+
+    let result = eval(&mut vm, "Number('')").unwrap();
+    assert_eq!(result.as_int(), 0);
+
+    let result = eval(&mut vm, "Number('INFINITY')").unwrap();
+    assert!(result.as_double().is_nan());
+}
+
+#[test]
 fn number_is_integer_true() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "Number.isInteger(42)").unwrap();

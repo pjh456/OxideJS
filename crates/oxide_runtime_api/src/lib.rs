@@ -182,12 +182,155 @@ pub fn to_number(val: JsValue) -> f64 {
     }
     if val.is_string() {
         let s = unsafe { string_data(val) };
-        return s.parse::<f64>().unwrap_or(f64::NAN);
+        return parse_js_number(s);
     }
     if val.is_object() {
         return f64::NAN;
     }
     f64::NAN
+}
+
+/// 按 ECMA-262 ToNumber 的 StringNumericLiteral 语法解析字符串。
+///
+/// 在 Rust `parse::<f64>` 之上补齐 JS 特有规则：空串为 0、`0x/0o/0b` 前缀按
+/// 对应进制解析、精确匹配 `±Infinity`。Rust parse 对 inf/nan 大小写不敏感，
+/// 需先按十进制字符集排除这些令牌（JS 只接受精确的 "Infinity"）。
+///
+/// # 边界与前提
+/// - trim 后空串 → 0
+/// - 十六/八/二进制要求全部字符为有效数字，含非法字符 → NaN
+/// - 十进制结果与 Rust parse 一致，溢出时归 ±inf / 0
+fn parse_js_number(s: &str) -> f64 {
+    let t = s.trim();
+    if t.is_empty() {
+        return 0.0;
+    }
+    let lower = t.to_ascii_lowercase();
+    if let Some(digits) = lower.strip_prefix("0x") {
+        return parse_radix_int(digits, 16);
+    }
+    if let Some(digits) = lower.strip_prefix("0o") {
+        return parse_radix_int(digits, 8);
+    }
+    if let Some(digits) = lower.strip_prefix("0b") {
+        return parse_radix_int(digits, 2);
+    }
+    if t == "Infinity" || t == "+Infinity" {
+        return f64::INFINITY;
+    }
+    if t == "-Infinity" {
+        return f64::NEG_INFINITY;
+    }
+    // 十进制语法仅允许数字、符号、小数点与指数 e；含其它字符的令牌（如
+    // inf/nan 变体）不是合法 StringNumericLiteral，一律 NaN。
+    if !t
+        .chars()
+        .all(|c| c.is_ascii_digit() || c == '+' || c == '-' || c == '.' || c == 'e' || c == 'E')
+    {
+        return f64::NAN;
+    }
+    t.parse::<f64>().unwrap_or(f64::NAN)
+}
+
+/// 解析指定进制的无符号整数；全部字符必须是有效数字，否则返回 NaN。
+///
+/// 累积在 f64 中：2/8/16 是 2 的幂，逐位乘加即为正确舍入结果；十进制不适用。
+fn parse_radix_int(s: &str, radix: u32) -> f64 {
+    if s.is_empty() {
+        return f64::NAN;
+    }
+    let mut v = 0.0f64;
+    for c in s.chars() {
+        match c.to_digit(radix) {
+            Some(d) => v = v * radix as f64 + d as f64,
+            None => return f64::NAN,
+        }
+    }
+    v
+}
+
+/// 把 f64 格式化为 ECMA-262 Number::toString 的字符串（含 NaN/±Infinity 专名）。
+///
+/// 对有限非零数，先经 ryu 最短表示取出有效数字与十进制指数（`format_finite`
+/// 输出形如 `"123.45"` / `"1e21"` / `"0.001"`），再按规范分段重建：指数
+/// `-6 < n <= 21` 时用定点表示，其余用科学计数法 `d.ddde±e`。替代原先
+/// `(d as i64)` 直接转换——后者对 `>= 2^63` 的数值溢出。
+///
+/// # 步骤
+/// 1. 取绝对值经 ryu `format_finite` 得最短表示 `s`
+/// 2. 含 `e` 时解析出有效数字与指数，按四段规则重建（整数/带小数点/纯小数/科学计数）
+/// 3. 不含 `e` 的定点形式仅需去掉整数末尾的 `.0` 后缀
+///
+/// # 边界与前提
+/// - NaN → "NaN"，±∞ → "±Infinity"，±0 → "0"
+/// - 负数先格式化绝对值再加 "-" 前缀
+pub fn js_number_to_string(d: f64) -> String {
+    if d.is_nan() {
+        return "NaN".to_string();
+    }
+    if d.is_infinite() {
+        return if d.is_sign_positive() {
+            "Infinity".to_string()
+        } else {
+            "-Infinity".to_string()
+        };
+    }
+    if d == 0.0 {
+        return "0".to_string();
+    }
+    let neg = d.is_sign_negative();
+    let mut buf = ryu::Buffer::new();
+    let s = buf.format_finite(d.abs());
+    let mut out = String::new();
+    if let Some(e_pos) = s.find('e') {
+        let digits: Vec<char> = s[..e_pos].chars().filter(|c| *c != '.').collect();
+        let exp: i32 = s[e_pos + 1..].parse().unwrap_or(0);
+        let k = digits.len() as i32;
+        let n = exp + 1;
+        if n > -6 && n <= 21 {
+            // 定点：ryu 在此范围输出指数形式但 JS 要求十进制。
+            if n <= 0 {
+                out.push_str("0.");
+                for _ in 0..(-n) {
+                    out.push('0');
+                }
+                out.extend(digits.iter());
+            } else if k <= n {
+                out.extend(digits.iter());
+                for _ in 0..(n - k) {
+                    out.push('0');
+                }
+            } else {
+                out.extend(digits[..n as usize].iter());
+                out.push('.');
+                out.extend(digits[n as usize..].iter());
+            }
+        } else {
+            // 科学计数：首位 + (可选 "." + 剩余) + e[+/-]指数。
+            out.push(digits[0]);
+            if k > 1 {
+                out.push('.');
+                out.extend(digits[1..].iter());
+            }
+            out.push('e');
+            if n > 1 {
+                out.push('+');
+            }
+            out.push_str(&(n - 1).to_string());
+        }
+    } else if let Some(stripped) = s.strip_suffix(".0") {
+        out.push_str(stripped);
+    } else {
+        out.push_str(s);
+    }
+    if neg {
+        let mut res = String::with_capacity(out.len() + 1);
+        res.push('-');
+        res.push_str(&out);
+        res
+    } else {
+        out
+    }
 }
 
 /// ToUint32（ECMA-262 §7.1.6）：对数值取模 2^32。NaN/±0/Infinity 归零。
@@ -218,22 +361,7 @@ pub fn push_to_string(val: JsValue, buf: &mut String) {
         return;
     }
     if val.is_double() {
-        let d = val.as_double();
-        if d.is_nan() {
-            buf.push_str("NaN");
-            return;
-        }
-        if d.is_infinite() {
-            buf.push_str(if d.is_sign_positive() { "Infinity" } else { "-Infinity" });
-            return;
-        }
-        if d.is_finite() && d.fract() == 0.0 {
-            use std::fmt::Write;
-            let _ = write!(buf, "{}", d as i64);
-            return;
-        }
-        let mut ryubuf = ryu::Buffer::new();
-        buf.push_str(ryubuf.format(d));
+        buf.push_str(&js_number_to_string(val.as_double()));
         return;
     }
     if val.is_bool() {
@@ -259,29 +387,14 @@ pub fn push_to_string(val: JsValue, buf: &mut String) {
 
 /// 把原始值转成字符串（ToString 的原始值路径）。
 ///
-/// 数值使用与 V8 一致的格式化（整数直接打印、有限数用 ryu 最短表示）；
-/// Object 在此返回占位符 `[object]`，完整路径见 [`to_string_full`]。
+/// 数值走 ECMA-262 Number::toString 格式化；Object 在此返回占位符 `[object]`，
+/// 完整路径见 [`to_string_full`]。
 pub fn to_string(val: JsValue) -> String {
     if val.is_int() {
         return val.as_int().to_string();
     }
     if val.is_double() {
-        let d = val.as_double();
-        if d.is_nan() {
-            return "NaN".to_string();
-        }
-        if d.is_infinite() {
-            return if d.is_sign_positive() {
-                "Infinity".to_string()
-            } else {
-                "-Infinity".to_string()
-            };
-        }
-        if d.is_finite() && d.fract() == 0.0 {
-            return (d as i64).to_string();
-        }
-        let mut buf = ryu::Buffer::new();
-        return buf.format(d).to_string();
+        return js_number_to_string(val.as_double());
     }
     if val.is_bool() {
         return val.as_bool().to_string();
@@ -637,4 +750,54 @@ pub fn to_number_full<H: VmHost>(val: JsValue, host: &mut H) -> Result<f64, Stri
 pub fn to_string_full<H: VmHost>(val: JsValue, host: &mut H) -> Result<String, String> {
     let primitive = to_primitive(val, ToPrimitiveHint::String, host)?;
     Ok(to_string(primitive))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fmt(d: f64) -> String {
+        js_number_to_string(d)
+    }
+
+    #[test]
+    fn number_to_string_boundaries() {
+        assert_eq!(fmt(1e21), "1e+21");
+        assert_eq!(fmt(1e20), "100000000000000000000");
+        assert_eq!(fmt(123.45), "123.45");
+        assert_eq!(fmt(0.000001), "0.000001");
+        assert_eq!(fmt(0.0000001), "1e-7");
+        assert_eq!(fmt(1e15), "1000000000000000");
+        assert_eq!(fmt(0.1 + 0.2), "0.30000000000000004");
+        assert_eq!(fmt(0.0), "0");
+        assert_eq!(fmt(-0.0), "0");
+        assert_eq!(fmt(-123.45), "-123.45");
+        assert_eq!(fmt(-1e21), "-1e+21");
+        assert_eq!(fmt(1e16), "10000000000000000");
+        assert_eq!(fmt(f64::MAX), "1.7976931348623157e+308");
+        assert_eq!(fmt(5e-324), "5e-324");
+        assert_eq!(fmt(1.5e20), "150000000000000000000");
+        assert_eq!(fmt(f64::NAN), "NaN");
+        assert_eq!(fmt(f64::INFINITY), "Infinity");
+        assert_eq!(fmt(f64::NEG_INFINITY), "-Infinity");
+    }
+
+    #[test]
+    fn parse_js_number_rules() {
+        assert_eq!(parse_js_number(""), 0.0);
+        assert_eq!(parse_js_number("   "), 0.0);
+        assert_eq!(parse_js_number("0xa"), 10.0);
+        assert_eq!(parse_js_number("0X1f"), 31.0);
+        assert_eq!(parse_js_number("0b101"), 5.0);
+        assert_eq!(parse_js_number("0o17"), 15.0);
+        assert_eq!(parse_js_number("Infinity"), f64::INFINITY);
+        assert_eq!(parse_js_number("-Infinity"), f64::NEG_INFINITY);
+        assert!(parse_js_number("INFINITY").is_nan());
+        assert!(parse_js_number("infinity").is_nan());
+        assert!(parse_js_number("0x1g").is_nan());
+        assert!(parse_js_number("-0x1").is_nan());
+        assert_eq!(parse_js_number("1.5e3"), 1500.0);
+        assert_eq!(parse_js_number("-0"), -0.0);
+        assert!(parse_js_number("1abc").is_nan());
+    }
 }

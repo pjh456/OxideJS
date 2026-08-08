@@ -301,11 +301,8 @@ fn jsvalue_to_json<H: VmHost>(
         let n = val.as_double();
         if !n.is_finite() {
             out.push_str("null");
-        } else if n.fract() == 0.0 && n.abs() < 1e21 {
-            write!(out, "{}", n as i64).unwrap();
         } else {
-            let mut buf = ryu::Buffer::new();
-            out.push_str(buf.format(n));
+            out.push_str(&oxide_runtime_api::js_number_to_string(n));
         }
     } else if val.is_string() {
         let s = unsafe { (*val.as_string_ptr()).data.clone() };
