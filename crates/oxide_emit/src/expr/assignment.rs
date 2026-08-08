@@ -169,7 +169,6 @@ impl Emitter {
                 {
                     let rhs = self.emit_expression(&assign.right, ctx)?;
                     let name = id_ref.name.as_str();
-                    let var_reg = ctx.lookup_or_global(name);
                     let op = match assign.operator {
                         AssignmentOperator::Addition => OpCode::COMPOUND_ADD,
                         AssignmentOperator::Subtraction => OpCode::COMPOUND_SUB,
@@ -185,8 +184,51 @@ impl Emitter {
                         AssignmentOperator::ShiftRightZeroFill => OpCode::COMPOUND_USHR,
                         _ => return Err(format!("compound assignment operator {:?} not supported", assign.operator)),
                     };
-                    ctx.inst(Inst::new(op, Operand::Reg(var_reg), Operand::Reg(rhs), Operand::None));
-                    Ok(var_reg)
+                    // 目标为 upvalue / 被捕获 cell 时走显式读取-运算-写回，保证写穿透共享单元；
+                    // 只有普通槽位才用 COMPOUND_* 的寄存器内 RMW（rd 兼作 lhs 源）。
+                    let uv_idx = ctx.current_upvalue_captures.iter().position(|u| u.name == name);
+                    let captured_cell = ctx.captured_bindings.get(name).copied();
+                    if let Some(uv) = uv_idx {
+                        let val_reg = ctx.alloc_reg();
+                        ctx.inst(Inst::new(
+                            OpCode::LOAD_UPVALUE,
+                            Operand::Reg(val_reg),
+                            Operand::Imm(uv as u16),
+                            Operand::None,
+                        ));
+                        ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(rhs), Operand::None));
+                        ctx.inst(Inst::new(
+                            OpCode::STORE_UPVALUE,
+                            Operand::None,
+                            Operand::Reg(val_reg),
+                            Operand::Imm(uv as u16),
+                        ));
+                        Ok(val_reg)
+                    } else if let Some(cell_idx) = captured_cell {
+                        let val_reg = ctx.alloc_reg();
+                        let a_operand = match ctx.scopes.symbols.lookup_any_binding(name) {
+                            Some((binding, _)) => Operand::Reg(binding.reg),
+                            None => Operand::None,
+                        };
+                        ctx.inst(Inst::new(
+                            OpCode::CELL_GET,
+                            Operand::Reg(val_reg),
+                            a_operand,
+                            Operand::Imm(cell_idx as u16),
+                        ));
+                        ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(rhs), Operand::None));
+                        ctx.inst(Inst::new(
+                            OpCode::CELL_SET,
+                            Operand::None,
+                            Operand::Reg(val_reg),
+                            Operand::Imm(cell_idx as u16),
+                        ));
+                        Ok(val_reg)
+                    } else {
+                        let var_reg = ctx.lookup_or_global(name);
+                        ctx.inst(Inst::new(op, Operand::Reg(var_reg), Operand::Reg(rhs), Operand::None));
+                        Ok(var_reg)
+                    }
                 } else {
                     Err(format!("compound assignment operator {:?} not supported", assign.operator))
                 }

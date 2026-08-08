@@ -357,8 +357,9 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     if desc_ptr.is_null() {
         return NativeResult::Err(crate::error::create_type_error(vm, "Property description must be an object"));
     }
-    let prop_name_str = oxide_runtime_api::to_string(vm.reg(args[2]));
-    let si = vm.kernel_core().perm_interner().intern(&prop_name_str).0;
+    // well-known symbol 等特殊键统一走 property_key_si（映射到 @@iterator 等别名），
+    // 保证与计算属性访问、Reflect.defineProperty 等读键路径一致。
+    let si = vm.property_key_si(vm.reg(args[2]));
 
     let value_si = vm.kernel_core().perm_interner().intern("value").0;
     let get_si = vm.kernel_core().perm_interner().intern("get").0;
