@@ -227,6 +227,67 @@ pub fn typed_array_element_get<H: VmHost>(vm: &mut H, obj: &JsObject, index: u32
     Ok(read_element(view.kind, buffer, absolute_byte_offset(view, index as usize)))
 }
 
+/// 若对象是 TypedArray 且属性键是整数索引，返回 `(索引, 视图长度)`；否则 `None`。
+/// 供 VM 在 receiver ≠ TA 时裁决整数索引的写前语义（越界直接返回，界内落到 receiver）。
+pub fn typed_array_integer_index<H: VmHost>(vm: &mut H, obj: &JsObject, prop_name_si: u32) -> Option<(usize, usize)> {
+    let ptr = typed_array_data_ptr(obj)?;
+    if ptr.is_null() {
+        return None;
+    }
+    let view = unsafe { *ptr };
+    let key = vm.kernel_core().perm_interner().lookup(prop_name_si)?;
+    if key.is_empty() || (key.len() > 1 && key.starts_with('0')) {
+        return None;
+    }
+    let index = key.parse::<u32>().ok()?;
+    Some((index as usize, view.length))
+}
+
+/// 写 TypedArray 指定整数索引的元素（供 VM 普通属性 set 的 typed 分支使用）。
+/// 越界忽略（不创建属性、不报错）；内部状态非法返回 Err(String)。
+pub fn typed_array_element_set<H: VmHost>(
+    vm: &mut H, obj: &JsObject, index: u32, value: JsValue,
+) -> Result<(), String> {
+    let this_val = JsValue::from_js_object(obj as *const JsObject as *mut JsObject);
+    let view = get_typed_array_data(vm, this_val).map_err(|e| format!("{e}"))?;
+    write_typed_array_element(vm, view, index, value)
+}
+
+/// 定义 TypedArray 整数索引元素（defineProperty 语义）。
+///
+/// # 边界与前提
+/// - 索引越界：拒绝定义（Err），与整数索引 exotic 对象的 [[DefineOwnProperty]] 一致
+///
+/// # 副作用
+/// - 把值 ToNumber 后写入底层 buffer
+// ponytail: 不校验 writable 描述符——调用方把"省略 writable"折叠为 false，
+// 无法与显式 false 区分；TA 元素天然可写，直接写入。
+pub fn typed_array_element_define<H: VmHost>(
+    vm: &mut H, obj: &JsObject, index: u32, value: JsValue,
+) -> Result<(), String> {
+    let this_val = JsValue::from_js_object(obj as *const JsObject as *mut JsObject);
+    let view = get_typed_array_data(vm, this_val).map_err(|e| format!("{e}"))?;
+    if index as usize >= view.length {
+        return Err("cannot define property: TypedArray index out of range".to_string());
+    }
+    write_typed_array_element(vm, view, index, value)
+}
+
+fn write_typed_array_element<H: VmHost>(
+    vm: &mut H, view: TypedArrayData, index: u32, value: JsValue,
+) -> Result<(), String> {
+    // 先 ToNumber（valueOf 副作用先于越界判定触发），越界再静默忽略。
+    let n = numeric_value(vm, value);
+    if index as usize >= view.length {
+        return Ok(());
+    }
+    let buffer_ptr = array_buffer_data_ptr(vm, view.buffer).map_err(|e| format!("{e}"))?;
+    // SAFETY: buffer_ptr 经 array_buffer_data_ptr 校验为合法 ArrayBuffer。
+    let buffer = unsafe { &mut *buffer_ptr };
+    write_element(view.kind, buffer, absolute_byte_offset(view, index as usize), n);
+    Ok(())
+}
+
 fn read_element(kind: TypedArrayKind, bytes: &[u8], offset: usize) -> JsValue {
     match kind {
         TypedArrayKind::Int8 => JsValue::int(bytes[offset] as i8 as i32),

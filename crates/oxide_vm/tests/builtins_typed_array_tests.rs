@@ -134,3 +134,67 @@ fn typed_array_to_string_is_identifiable() {
     let result = eval(&mut vm, "var ta = new Uint8Array(1); ta.toString()").unwrap();
     assert_eq!(to_str(&vm, result), "[object TypedArray]");
 }
+
+#[test]
+fn typed_array_element_write_roundtrips() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var ta = new Int32Array(2); ta[0] = 42; ta[1] = ta[0] * 2; ta[1] === 84",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_element_write_clamps_int8() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var ta = new Int8Array(1); ta[0] = 300; ta[0]").unwrap();
+    assert_eq!(result.as_int(), 44);
+}
+
+#[test]
+fn typed_array_out_of_bounds_write_is_ignored() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var ta = new Int8Array(1); ta[5] = 1; ta.length === 1 && ta[5] === undefined",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_bypes_per_element_on_ctor_and_proto() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "Int8Array.BYTES_PER_ELEMENT === 1 && Float64Array.BYTES_PER_ELEMENT === 8 && \
+         Int8Array.prototype.BYTES_PER_ELEMENT === 1 && Uint32Array.prototype.BYTES_PER_ELEMENT === 4",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_define_property_writes_element() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var ta = new Uint8Array(3); Object.defineProperty(ta, 1, { value: 9 }); ta[1] === 9",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_reflect_set_writes_to_receiver() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var ta = new Uint8Array(3); var o = {}; \
+         Reflect.set(ta, 1, 5, o) && o[1] === 5 && ta[1] === 0",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}

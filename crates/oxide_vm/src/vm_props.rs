@@ -164,6 +164,16 @@ impl Vm {
             prop_name_si,
             use_frame_push
         );
+        // TypedArray 整数索引：receiver 为 TA 本体时写底层 buffer（越界静默忽略）；
+        // receiver 非 TA 时按规范把写入落到 receiver 对象，不碰 TA buffer。
+        if obj.is_typed_array_obj() {
+            if let Some(index) = self.array_index_from_property_key(prop_name_si) {
+                if receiver.as_js_object_ptr() != obj as *const JsObject as *mut JsObject {
+                    return self.set_to_receiver(obj, prop_name_si, val, receiver, index as usize, use_frame_push);
+                }
+                return oxide_builtins::typed_array::typed_array_element_set(self, obj, index, val);
+            }
+        }
         if let Some(pos) = self.get_own_property_slot(obj, prop_name_si) {
             if let Some(meta) = obj.prop_meta_at(pos) {
                 if meta.is_accessor {
@@ -195,6 +205,29 @@ impl Vm {
 
         self.set_or_create_prop_value(obj, prop_name_si, val);
         Ok(())
+    }
+
+    /// TypedArray 整数索引在 `receiver` ≠ TA 时的 [[Set]] 语义：越界或非对象
+    /// receiver 直接返回 true（不写、不 ToNumber）；界内对象 receiver 走普通 set
+    /// 把属性落到 receiver 自身。
+    fn set_to_receiver(
+        &mut self, ta_obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, index: usize,
+        use_frame_push: bool,
+    ) -> Result<(), String> {
+        let Some((_, length)) = oxide_builtins::typed_array::typed_array_integer_index(self, ta_obj, prop_name_si)
+        else {
+            return Ok(());
+        };
+        if index >= length {
+            return Ok(());
+        }
+        let receiver_ptr = receiver.as_js_object_ptr();
+        if receiver_ptr.is_null() {
+            return Ok(());
+        }
+        let promoted = self.promote_if_needed_for_write_ptr(receiver_ptr, val);
+        let receiver_obj = unsafe { &mut *receiver_ptr };
+        self.ordinary_set_inner(receiver_obj, prop_name_si, promoted, receiver, use_frame_push)
     }
 
     fn call_or_push_setter(
@@ -310,6 +343,13 @@ impl Vm {
 
     pub(crate) fn set_or_create_prop_value(&mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue) {
         vm_trace!("set_or_create_prop_value: shape_id={} prop_name_si={}", obj.shape_id(), prop_name_si);
+        // TypedArray 整数索引写 buffer（越界忽略），不进入 shape/prop 槽。
+        if obj.is_typed_array_obj() {
+            if let Some(index) = self.array_index_from_property_key(prop_name_si) {
+                let _ = oxide_builtins::typed_array::typed_array_element_set(self, obj, index, val);
+                return;
+            }
+        }
         // 数组下标键写入元素区（维护 array_prop_count），不进入 shape 链。
         if obj.is_array() {
             if let Some(index) = self.array_index_from_property_key(prop_name_si) {
@@ -333,6 +373,12 @@ impl Vm {
     ) -> Result<(), String> {
         vm_trace!("define_data_property: shape={} prop_si={}", obj.shape_id(), prop_name_si);
         let val = self.promote_if_needed_for_write_ptr(obj as *mut JsObject, val);
+        // TypedArray 整数索引：走元素定义（界内写 buffer，越界/非法描述符拒绝）。
+        if obj.is_typed_array_obj() {
+            if let Some(index) = self.array_index_from_property_key(prop_name_si) {
+                return oxide_builtins::typed_array::typed_array_element_define(self, obj, index, val);
+            }
+        }
         if obj.is_array() {
             if let Some(index) = self.array_index_from_property_key(prop_name_si) {
                 // 数组索引属性存元素区并维护 array_prop_count（元素数随索引增长）。
