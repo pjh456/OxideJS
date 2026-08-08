@@ -22,8 +22,21 @@ fn this_string<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<String, JsValue> {
     if this_val.is_null() || this_val.is_undefined() {
         return Err(crate::error::create_type_error(vm, "String.prototype method called on null or undefined"));
     }
+    if this_val.is_symbol() {
+        return Err(crate::error::create_type_error(vm, "Cannot convert a Symbol value to a string"));
+    }
     // 对象 this 须经 ToString 完整转换（boxed Number/String 等取内部原始值）。
-    oxide_runtime_api::to_string_full(this_val, vm).map_err(|e| crate::error::create_error(vm, &e))
+    match oxide_runtime_api::to_string_full(this_val, vm) {
+        Ok(s) => Ok(s),
+        Err(_) => {
+            // ToString 触发对象 toString/valueOf 抛出的原生异常须原样传播，
+            // 否则会被展平为普通 Error 丢失原始异常对象。
+            if let Some(exc) = vm.take_uncaught_value() {
+                return Err(exc);
+            }
+            Err(crate::error::create_type_error(vm, "Cannot convert this value to a string"))
+        }
+    }
 }
 
 /// `String.fromCharCode(...codes)`：把各参数按低 16 位转成字符拼接为字符串。
@@ -36,6 +49,39 @@ pub fn string_from_char_code<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
             out.push(ch);
         } else {
             out.push('\u{FFFD}');
+        }
+    }
+    NativeResult::Ok(vm.new_string(&out))
+}
+
+/// `String.fromCodePoint(...codes)`：把各参数按 ToNumber 语义转成 code point
+/// （0..0x10FFFF 的整数）拼接为字符串；非整数、NaN 或越界抛 RangeError，
+/// Symbol 抛 TypeError。surrogate 区间按现行规范接受（孤立 surrogate 无法在
+/// UTF-8 表示，与字面量编码一致输出 U+FFFD + 四位小写 hex 文本）。
+pub fn string_from_code_point<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.fromCodePoint called with {} args", args.len());
+    let mut out = String::new();
+    for &arg_reg in args.iter().skip(1) {
+        let n = match oxide_runtime_api::to_number_full(vm.reg(arg_reg), vm) {
+            Ok(n) => n,
+            Err(_) => {
+                // ToNumber 触发对象 valueOf/toString 抛出的原生异常须原样传播，
+                // 否则会被展平为普通 Error 丢失原始异常对象。
+                if let Some(exc) = vm.take_uncaught_value() {
+                    return NativeResult::Err(exc);
+                }
+                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a number"));
+            }
+        };
+        if !n.is_finite() || n.trunc() != n || n < 0.0 || n > 0x10FFFF as f64 {
+            return NativeResult::Err(crate::error::create_range_error(vm, "Invalid code point"));
+        }
+        let code = n as u32;
+        if (0xD800..=0xDFFF).contains(&code) {
+            out.push('\u{FFFD}');
+            out.push_str(&format!("{code:04x}"));
+        } else {
+            out.push(char::from_u32(code).unwrap());
         }
     }
     NativeResult::Ok(vm.new_string(&out))
@@ -846,29 +892,92 @@ pub fn string_trim_end<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(s.trim_end()))
 }
 
-/// `String.prototype.codePointAt(pos)`：返回 code point（surrogate pair 会合并），
-/// 越界返回 undefined。
+/// `String.prototype.codePointAt(pos)`：按 UTF-16 code unit 位置取 code point
+/// （surrogate pair 合并）；越界或孤立代理返回 undefined。
 pub fn string_code_point_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.codePointAt called with {} args", args.len());
     let s = try_string!(this_string(vm, args));
     let pos = if args.len() > 1 {
-        vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as usize
+        let pos_val = vm.reg(args[1]);
+        if pos_val.is_symbol() {
+            return NativeResult::Err(crate::error::create_type_error(
+                vm,
+                "Cannot convert a Symbol value to a number",
+            ));
+        }
+        match vm.coerce_number_bounded(pos_val) {
+            Ok(n) => n,
+            Err(_) => {
+                // pos 对象 valueOf/toString 抛出的异常须原样传播。
+                if let Some(exc) = vm.take_uncaught_value() {
+                    return NativeResult::Err(exc);
+                }
+                return NativeResult::Err(crate::error::create_type_error(
+                    vm,
+                    "Cannot convert argument to a number",
+                ));
+            }
+        }
     } else {
-        0
+        0.0
     };
-    let chars: Vec<char> = s.chars().collect();
-    if pos >= chars.len() {
+    let pos = if pos.is_nan() { 0.0 } else { pos.trunc() };
+    if pos < 0.0 || pos > u32::MAX as f64 {
         return NativeResult::Ok(JsValue::undefined());
     }
-    let c = chars[pos] as u32;
-    if (0xD800..=0xDBFF).contains(&c) && pos + 1 < chars.len() {
-        let next = chars[pos + 1] as u32;
-        if (0xDC00..=0xDFFF).contains(&next) {
-            let cp = 0x10000 + ((c - 0xD800) << 10) + (next - 0xDC00);
+    let pos = pos as usize;
+    // JS 规范索引是 UTF-16 code unit 位置，须按代理对展开定位（astral 字符占两单元）。
+    let units: Vec<u16> = s.encode_utf16().collect();
+    if pos >= units.len() {
+        return NativeResult::Ok(JsValue::undefined());
+    }
+    let first = units[pos];
+    if (0xD800..=0xDBFF).contains(&first) && pos + 1 < units.len() {
+        let second = units[pos + 1];
+        if (0xDC00..=0xDFFF).contains(&second) {
+            let cp = 0x10000 + (((first - 0xD800) as u32) << 10) + (second - 0xDC00) as u32;
             return NativeResult::Ok(JsValue::int(cp as i32));
         }
     }
-    NativeResult::Ok(JsValue::int(c as i32))
+    NativeResult::Ok(JsValue::int(first as i32))
+}
+
+/// `String.prototype.isWellFormed()`：字符串无孤立 surrogate（每个 UTF-16
+/// 码元要么是合法字符，要么与相邻码元成代理对）时返回 true。
+pub fn string_is_well_formed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.isWellFormed called with {} args", args.len());
+    let s = try_string!(this_string(vm, args));
+    let mut iter = s.encode_utf16().peekable();
+    while let Some(&first) = iter.peek() {
+        if (0xDC00..=0xDFFF).contains(&first) {
+            return NativeResult::Ok(JsValue::bool(false));
+        }
+        if (0xD800..=0xDBFF).contains(&first) {
+            if !matches!(iter.nth(1), Some(second) if (0xDC00..=0xDFFF).contains(&second)) {
+                return NativeResult::Ok(JsValue::bool(false));
+            }
+        } else {
+            iter.next();
+        }
+    }
+    NativeResult::Ok(JsValue::bool(true))
+}
+
+/// `String.prototype.toWellFormed()`：把孤立 surrogate 替换为 U+FFFD 返回新字符串。
+pub fn string_to_well_formed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.toWellFormed called with {} args", args.len());
+    let s = try_string!(this_string(vm, args));
+    // 引擎字符串为合法 UTF-8，Rust char 不可能落在 surrogate 区间；遍历保留
+    // 通用来正确编码未来可能出现的替换路径。
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if (0xD800..=0xDFFF).contains(&(c as u32)) {
+            out.push('\u{FFFD}');
+        } else {
+            out.push(c);
+        }
+    }
+    NativeResult::Ok(vm.new_string(&out))
 }
 
 /// `String.prototype.normalize(form)`：按 NFC/NFD/NFKC/NFKD 规范化为 Unicode 规范形式。

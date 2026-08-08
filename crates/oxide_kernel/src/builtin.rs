@@ -147,6 +147,9 @@ pub struct StringMethods {
     pub substr: *const (),
     pub at: *const (),
     pub last_index_of: *const (),
+    pub from_code_point: *const (),
+    pub is_well_formed: *const (),
+    pub to_well_formed: *const (),
 }
 
 /// RegExp 原型方法的 native 函数指针集合。
@@ -1093,7 +1096,7 @@ impl BuiltinWorld {
     pub fn bind_string_methods(&self, methods: &StringMethods, string_forge: &PermInterner, shape_forge: &ShapeForge) {
         let ctor_ptr = P::as_ptr(&self.string_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
-        bind_methods!(self, ctor, string_forge, shape_forge, ("fromCharCode", methods.from_char_code, 1),);
+        bind_methods!(self, ctor, string_forge, shape_forge, ("fromCharCode", methods.from_char_code, 1), ("fromCodePoint", methods.from_code_point, 1),);
 
         let proto_ptr = P::as_ptr(&self.string_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
@@ -1131,6 +1134,8 @@ impl BuiltinWorld {
             ("substr", methods.substr, 2),
             ("at", methods.at, 1),
             ("lastIndexOf", methods.last_index_of, 1),
+            ("isWellFormed", methods.is_well_formed, 0),
+            ("toWellFormed", methods.to_well_formed, 0),
         );
     }
 
