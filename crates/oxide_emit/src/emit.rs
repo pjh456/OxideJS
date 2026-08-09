@@ -106,6 +106,7 @@ const BUILTIN_GLOBALS: &[&str] = &[
     "DataView",
     "Iterator",
     "BigInt",
+    "TypedArray",
     "Int8Array",
     "Uint8Array",
     "Uint8ClampedArray",

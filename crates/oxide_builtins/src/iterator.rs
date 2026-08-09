@@ -567,6 +567,66 @@ pub(crate) fn set_entries_iter_next<H: VmHost>(vm: &mut H, args: &[u8]) -> Nativ
     map_set_next_dispatch::<H>(vm, args, MapSetMode::SetEntries)
 }
 
+#[derive(Clone, Copy)]
+enum TypedArrayMode {
+    Values,
+    Keys,
+    Entries,
+}
+
+/// 按模式让 TypedArray 迭代器包装器推进一步：values 产出元素，keys 产出索引，
+/// entries 产出 `[index, element]` 对；耗尽后把下标推进到哨兵值防止"复活"。
+fn typed_array_step<H: VmHost>(
+    vm: &mut H, wrapper: &mut JsObject, inner: JsValue, index_si: u32, mode: TypedArrayMode,
+) -> Result<JsValue, JsValue> {
+    let index = current_index(vm, wrapper, index_si);
+    let view = crate::typed_array::get_typed_array_data(vm, inner)?;
+    if index >= view.length {
+        vm.set_or_create_prop_value(wrapper, index_si, JsValue::int(i32::MAX));
+        return Ok(make_iter_result(vm, JsValue::undefined(), true));
+    }
+    let elem = crate::typed_array::typed_array_element_get(vm, unsafe { &*inner.as_js_object_ptr() }, index as u32)
+        .map_err(|e| crate::error::create_type_error(vm, &e))?;
+    vm.set_or_create_prop_value(wrapper, index_si, JsValue::int((index + 1) as i32));
+    let value = match mode {
+        TypedArrayMode::Values => elem,
+        TypedArrayMode::Keys => JsValue::int(index as i32),
+        TypedArrayMode::Entries => make_map_set_pair(vm, JsValue::int(index as i32), elem),
+    };
+    Ok(make_iter_result(vm, value, false))
+}
+
+/// TypedArray 模式迭代器 `next` 的分发：校验包装器后按模式推进。
+fn typed_array_next_dispatch<H: VmHost>(vm: &mut H, args: &[u8], mode: TypedArrayMode) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    if !this_val.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "iterator next called on non-object"));
+    }
+    let wrapper = unsafe { &mut *this_val.as_js_object_ptr() };
+    let inner_si = vm.kernel_core().perm_interner().intern(INNER_PROP).0;
+    let index_si = vm.kernel_core().perm_interner().intern(INDEX_PROP).0;
+    let inner = match vm.ordinary_get(wrapper, inner_si, this_val) {
+        Ok(inner) if !inner.is_undefined() => inner,
+        _ => return NativeResult::Err(crate::error::create_type_error(vm, "iterator has no inner typed array")),
+    };
+    match typed_array_step(vm, wrapper, inner, index_si, mode) {
+        Ok(result) => NativeResult::Ok(result),
+        Err(err) => NativeResult::Err(err),
+    }
+}
+
+pub(crate) fn typed_array_values_iter_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    typed_array_next_dispatch::<H>(vm, args, TypedArrayMode::Values)
+}
+
+pub(crate) fn typed_array_keys_iter_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    typed_array_next_dispatch::<H>(vm, args, TypedArrayMode::Keys)
+}
+
+pub(crate) fn typed_array_entries_iter_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    typed_array_next_dispatch::<H>(vm, args, TypedArrayMode::Entries)
+}
+
 /// 构造迭代器包装器，其 `next` 委托给调用方指定的按模式分发的 native 函数。
 /// 与 `make_iterator_for_value` 一致，但允许 Map/Set 原型方法选择
 /// values/keys/entries 变体。

@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use crate::bind_constructor;
-use crate::bindings::{apply_binding_table, bind_accessor_getter, configure_native_constructor};
+use crate::bindings::{
+    apply_binding_table, bind_accessor_getter, bind_global_value, bind_method_alias, configure_native_constructor,
+};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
@@ -110,8 +112,90 @@ pub fn bind_typed_array(core: &Arc<KernelCore>, session: &KernelSession, global:
                 oxide_builtins::typed_array::typed_array_subarray::<crate::vm::Vm> as *const (),
                 2,
             ),
+            ("map", oxide_builtins::typed_array::typed_array_map::<crate::vm::Vm> as *const (), 1),
+            ("filter", oxide_builtins::typed_array::typed_array_filter::<crate::vm::Vm> as *const (), 1),
+            ("reduce", oxide_builtins::typed_array::typed_array_reduce::<crate::vm::Vm> as *const (), 1),
+            (
+                "reduceRight",
+                oxide_builtins::typed_array::typed_array_reduce_right::<crate::vm::Vm> as *const (),
+                1,
+            ),
+            (
+                "forEach",
+                oxide_builtins::typed_array::typed_array_for_each::<crate::vm::Vm> as *const (),
+                1,
+            ),
+            ("every", oxide_builtins::typed_array::typed_array_every::<crate::vm::Vm> as *const (), 1),
+            ("some", oxide_builtins::typed_array::typed_array_some::<crate::vm::Vm> as *const (), 1),
+            ("find", oxide_builtins::typed_array::typed_array_find::<crate::vm::Vm> as *const (), 1),
+            (
+                "findIndex",
+                oxide_builtins::typed_array::typed_array_find_index::<crate::vm::Vm> as *const (),
+                1,
+            ),
+            (
+                "findLast",
+                oxide_builtins::typed_array::typed_array_find_last::<crate::vm::Vm> as *const (),
+                1,
+            ),
+            (
+                "findLastIndex",
+                oxide_builtins::typed_array::typed_array_find_last_index::<crate::vm::Vm> as *const (),
+                1,
+            ),
+            (
+                "indexOf",
+                oxide_builtins::typed_array::typed_array_index_of::<crate::vm::Vm> as *const (),
+                1,
+            ),
+            (
+                "lastIndexOf",
+                oxide_builtins::typed_array::typed_array_last_index_of::<crate::vm::Vm> as *const (),
+                1,
+            ),
+            (
+                "includes",
+                oxide_builtins::typed_array::typed_array_includes::<crate::vm::Vm> as *const (),
+                1,
+            ),
+            ("join", oxide_builtins::typed_array::typed_array_join::<crate::vm::Vm> as *const (), 1),
+            ("values", oxide_builtins::typed_array::typed_array_values::<crate::vm::Vm> as *const (), 0),
+            ("keys", oxide_builtins::typed_array::typed_array_keys::<crate::vm::Vm> as *const (), 0),
+            (
+                "entries",
+                oxide_builtins::typed_array::typed_array_entries::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            ("sort", oxide_builtins::typed_array::typed_array_sort::<crate::vm::Vm> as *const (), 1),
+            (
+                "reverse",
+                oxide_builtins::typed_array::typed_array_reverse::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "copyWithin",
+                oxide_builtins::typed_array::typed_array_copy_within::<crate::vm::Vm> as *const (),
+                2,
+            ),
+            (
+                "toLocaleString",
+                oxide_builtins::typed_array::typed_array_to_locale_string::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "toReversed",
+                oxide_builtins::typed_array::typed_array_to_reversed::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "toSorted",
+                oxide_builtins::typed_array::typed_array_to_sorted::<crate::vm::Vm> as *const (),
+                1,
+            ),
+            ("with", oxide_builtins::typed_array::typed_array_with::<crate::vm::Vm> as *const (), 2),
         ],
     );
+    bind_method_alias(core, shared_proto, "values", "@@iterator");
 
     // 原型访问器：视图属性（buffer/byteOffset/byteLength/length）读内部数据槽，
     // @@toStringTag 返回具体类型名，供 Object.prototype.toString 区分类型。
@@ -152,6 +236,11 @@ pub fn bind_typed_array(core: &Arc<KernelCore>, session: &KernelSession, global:
     );
 
     bind_typed_array_abstract_ctor(core, session);
+
+    // 把 `%TypedArray%` 抽象构造器暴露为全局 `TypedArray`（具体构造器的 [[Prototype]]）。
+    let abstract_ctor_val =
+        JsValue::from_js_object(session.builtin_world().typed_array_constructor.as_ptr() as *mut JsObject);
+    bind_global_value(core, global, "TypedArray", abstract_ctor_val);
 
     bind_typed_array_constructor!(
         core,

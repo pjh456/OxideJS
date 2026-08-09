@@ -520,6 +520,10 @@ pub fn strict_eq(lhs: JsValue, rhs: JsValue) -> bool {
     if lhs.is_int() && rhs.is_int() {
         return lhs.as_int() == rhs.as_int();
     }
+    // Number 跨 int/double 表示比较：`42 === 42.0` 按 SameValue 语义应相等。
+    if (lhs.is_int() || lhs.is_double()) && (rhs.is_int() || rhs.is_double()) {
+        return strict_double_eq(to_f64(lhs), to_f64(rhs));
+    }
     if lhs.is_double() && rhs.is_double() {
         return strict_double_eq(lhs.as_double(), rhs.as_double());
     }

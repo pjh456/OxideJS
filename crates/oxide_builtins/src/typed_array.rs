@@ -32,7 +32,10 @@ fn range_error<H: VmHost>(vm: &mut H, msg: &str) -> JsValue {
 }
 
 fn to_index<H: VmHost>(vm: &mut H, value: JsValue, msg: &str) -> Result<usize, JsValue> {
-    let n = vm.coerce_number_bounded(value).unwrap_or(f64::NAN);
+    let n = match vm.coerce_number_bounded(value) {
+        Ok(n) => n,
+        Err(e) => return Err(crate::iterator::engine_error(vm, &e)),
+    };
     if n.is_nan() {
         return Ok(0);
     }
@@ -42,16 +45,21 @@ fn to_index<H: VmHost>(vm: &mut H, value: JsValue, msg: &str) -> Result<usize, J
     Ok(n.trunc() as usize)
 }
 
-fn normalize_index<H: VmHost>(vm: &mut H, value: JsValue, len: usize) -> usize {
-    let n = vm.coerce_number_bounded(value).unwrap_or(f64::NAN);
+/// 按 ToIntegerOrInfinity 语义把索引归一化到 `[0, len]`（越界夹取）；符号等不可
+/// 转换值透传异常。
+fn normalize_index<H: VmHost>(vm: &mut H, value: JsValue, len: usize) -> Result<usize, JsValue> {
+    let n = match vm.coerce_number_bounded(value) {
+        Ok(n) => n,
+        Err(e) => return Err(crate::iterator::engine_error(vm, &e)),
+    };
     if n.is_nan() {
-        return 0;
+        return Ok(0);
     }
     let int = n.trunc() as isize;
     if int < 0 {
-        len.saturating_sub((-int) as usize)
+        Ok(len.saturating_sub((-int) as usize))
     } else {
-        (int as usize).min(len)
+        Ok((int as usize).min(len))
     }
 }
 
@@ -450,7 +458,7 @@ pub fn typed_array_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
     let raw_index = if args.len() > 1 {
-        numeric_value(vm, vm.reg(args[1])).trunc() as isize
+        native_try!(ta_to_number(vm, vm.reg(args[1]))).trunc() as isize
     } else {
         0
     };
@@ -468,17 +476,17 @@ pub fn typed_array_fill<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
     let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let n = native_try!(ta_to_number(vm, value));
     let start = if args.len() > 2 {
-        normalize_index(vm, vm.reg(args[2]), view.length)
+        native_try!(normalize_index(vm, vm.reg(args[2]), view.length))
     } else {
         0
     };
-    let end = if args.len() > 3 {
-        normalize_index(vm, vm.reg(args[3]), view.length)
+    let end = if args.len() > 3 && !vm.reg(args[3]).is_undefined() {
+        native_try!(normalize_index(vm, vm.reg(args[3]), view.length))
     } else {
         view.length
     };
-    let n = numeric_value(vm, value);
     let buffer_ptr = native_try!(array_buffer_data_ptr(vm, view.buffer));
     let buffer = unsafe { &mut *buffer_ptr };
     for idx in start..end.max(start) {
@@ -492,12 +500,12 @@ pub fn typed_array_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
     let start = if args.len() > 1 {
-        normalize_index(vm, vm.reg(args[1]), view.length)
+        native_try!(normalize_index(vm, vm.reg(args[1]), view.length))
     } else {
         0
     };
-    let end = if args.len() > 2 {
-        normalize_index(vm, vm.reg(args[2]), view.length)
+    let end = if args.len() > 2 && !vm.reg(args[2]).is_undefined() {
+        native_try!(normalize_index(vm, vm.reg(args[2]), view.length))
     } else {
         view.length
     };
@@ -518,12 +526,12 @@ pub fn typed_array_subarray<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
     let start = if args.len() > 1 {
-        normalize_index(vm, vm.reg(args[1]), view.length)
+        native_try!(normalize_index(vm, vm.reg(args[1]), view.length))
     } else {
         0
     };
-    let end = if args.len() > 2 {
-        normalize_index(vm, vm.reg(args[2]), view.length)
+    let end = if args.len() > 2 && !vm.reg(args[2]).is_undefined() {
+        native_try!(normalize_index(vm, vm.reg(args[2]), view.length))
     } else {
         view.length
     };
@@ -659,6 +667,730 @@ pub fn typed_array_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
     }
     NativeResult::Ok(new_obj)
+}
+
+/// 读 TypedArray 指定索引的元素（视图 data 已取出的形式，供原型方法内部使用）；
+/// 越界返回 undefined。
+fn ta_read<H: VmHost>(vm: &mut H, view: TypedArrayData, index: usize) -> Result<JsValue, JsValue> {
+    if index >= view.length {
+        return Ok(JsValue::undefined());
+    }
+    let buffer_ptr = array_buffer_data_ptr(vm, view.buffer)?;
+    let buffer = unsafe { &*buffer_ptr };
+    Ok(read_element(view.kind, buffer, absolute_byte_offset(view, index)))
+}
+
+/// 把数值写入 TypedArray 指定索引（视图 data 已取出的形式，供原型方法内部使用）。
+fn ta_write<H: VmHost>(vm: &mut H, view: TypedArrayData, index: usize, value: f64) -> Result<(), JsValue> {
+    let buffer_ptr = array_buffer_data_ptr(vm, view.buffer)?;
+    let buffer = unsafe { &mut *buffer_ptr };
+    write_element(view.kind, buffer, absolute_byte_offset(view, index), value);
+    Ok(())
+}
+
+/// 把一组数值写成同类型的新 TypedArray（map/filter/toReversed/toSorted/with 共用）。
+fn create_ta_from_numbers<H: VmHost>(
+    vm: &mut H, kind: TypedArrayKind, numbers: Vec<f64>,
+) -> Result<*mut JsObject, JsValue> {
+    let bpe = kind.bytes_per_element();
+    let len = numbers.len();
+    let buffer = JsValue::from_js_object(new_array_buffer(vm, vec![0; len * bpe]));
+    let buffer_ptr = array_buffer_data_ptr(vm, buffer)?;
+    let buffer_ref = unsafe { &mut *buffer_ptr };
+    for (idx, n) in numbers.into_iter().enumerate() {
+        write_element(kind, buffer_ref, idx * bpe, n);
+    }
+    Ok(create_typed_array(vm, kind, buffer, 0, len))
+}
+
+/// 调用 TypedArray 回调并收敛异常：tail call 一律视为内部错误。
+fn invoke_cb<H: VmHost>(vm: &mut H, cb: JsValue, this_arg: JsValue, cb_args: &[JsValue]) -> Result<JsValue, JsValue> {
+    match crate::array::invoke_native_callback(vm, cb, this_arg, cb_args) {
+        NativeResult::Ok(v) => Ok(v),
+        NativeResult::Err(e) => Err(e),
+        NativeResult::TailCall { .. } => Err(type_error(vm, "unexpected tail call in TypedArray callback")),
+    }
+}
+
+/// ToNumber 并恢复引擎错误为原始异常值。
+fn ta_to_number<H: VmHost>(vm: &mut H, value: JsValue) -> Result<f64, JsValue> {
+    oxide_runtime_api::to_number_full(value, vm).map_err(|e| crate::iterator::engine_error(vm, &e))
+}
+
+/// `%TypedArray%.prototype.forEach(callback, thisArg)`：对每个元素调用 callback，返回 undefined。
+pub fn typed_array_for_each<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    if args.len() < 2 {
+        return NativeResult::Err(type_error(vm, "callback is not a function"));
+    }
+    let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
+    let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    for i in 0..view.length {
+        let elem = native_try!(ta_read(vm, view, i));
+        native_try!(invoke_cb(vm, callback, this_arg, &[elem, JsValue::int(i as i32), this_val]));
+    }
+    NativeResult::Ok(JsValue::undefined())
+}
+
+/// `%TypedArray%.prototype.map(callback, thisArg)`：对每个元素调用 callback，
+/// 结果 ToNumber 后写入同类型的新 TypedArray。
+pub fn typed_array_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    if args.len() < 2 {
+        return NativeResult::Err(type_error(vm, "callback is not a function"));
+    }
+    let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
+    let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let mut numbers = Vec::with_capacity(view.length);
+    for i in 0..view.length {
+        let elem = native_try!(ta_read(vm, view, i));
+        let mapped = native_try!(invoke_cb(vm, callback, this_arg, &[elem, JsValue::int(i as i32), this_val]));
+        numbers.push(native_try!(ta_to_number(vm, mapped)));
+    }
+    let new_obj = native_try!(create_ta_from_numbers(vm, view.kind, numbers));
+    NativeResult::Ok(JsValue::from_js_object(new_obj))
+}
+
+/// `%TypedArray%.prototype.filter(callback, thisArg)`：保留 callback 为真的元素，
+/// 组成同类型的新 TypedArray。
+pub fn typed_array_filter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    if args.len() < 2 {
+        return NativeResult::Err(type_error(vm, "callback is not a function"));
+    }
+    let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
+    let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let mut numbers = Vec::new();
+    for i in 0..view.length {
+        let elem = native_try!(ta_read(vm, view, i));
+        let result = native_try!(invoke_cb(vm, callback, this_arg, &[elem, JsValue::int(i as i32), this_val]));
+        if oxide_runtime_api::to_boolean(result) {
+            numbers.push(native_try!(ta_to_number(vm, elem)));
+        }
+    }
+    let new_obj = native_try!(create_ta_from_numbers(vm, view.kind, numbers));
+    NativeResult::Ok(JsValue::from_js_object(new_obj))
+}
+
+/// `%TypedArray%.prototype.reduce(callback, initialValue)`：从左到右累计归约；
+/// 空数组且无初始值抛 TypeError。
+pub fn typed_array_reduce<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    if view.length == 0 && args.len() < 3 {
+        return NativeResult::Err(type_error(vm, "Reduce of empty array with no initial value"));
+    }
+    if args.len() < 2 {
+        return NativeResult::Err(type_error(vm, "callback is not a function"));
+    }
+    let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
+    let (mut accumulator, start_idx) = if args.len() > 2 {
+        (vm.reg(args[2]), 0usize)
+    } else {
+        (native_try!(ta_read(vm, view, 0)), 1)
+    };
+    for i in start_idx..view.length {
+        let elem = native_try!(ta_read(vm, view, i));
+        accumulator = native_try!(invoke_cb(
+            vm,
+            callback,
+            JsValue::undefined(),
+            &[accumulator, elem, JsValue::int(i as i32), this_val],
+        ));
+    }
+    NativeResult::Ok(accumulator)
+}
+
+/// `%TypedArray%.prototype.reduceRight(callback, initialValue)`：从右到左累计归约。
+pub fn typed_array_reduce_right<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    if view.length == 0 && args.len() < 3 {
+        return NativeResult::Err(type_error(vm, "Reduce of empty array with no initial value"));
+    }
+    if args.len() < 2 {
+        return NativeResult::Err(type_error(vm, "callback is not a function"));
+    }
+    let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
+    let (mut accumulator, start_idx): (JsValue, i32) = if args.len() > 2 {
+        (vm.reg(args[2]), view.length as i32 - 1)
+    } else {
+        (native_try!(ta_read(vm, view, view.length - 1)), view.length as i32 - 2)
+    };
+    for i in (0..=start_idx).rev() {
+        let elem = native_try!(ta_read(vm, view, i as usize));
+        accumulator = native_try!(invoke_cb(
+            vm,
+            callback,
+            JsValue::undefined(),
+            &[accumulator, elem, JsValue::int(i), this_val],
+        ));
+    }
+    NativeResult::Ok(accumulator)
+}
+
+/// `%TypedArray%.prototype.every(callback, thisArg)`：所有元素满足 callback 才返回 true。
+pub fn typed_array_every<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    if args.len() < 2 {
+        return NativeResult::Err(type_error(vm, "callback is not a function"));
+    }
+    let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
+    let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    for i in 0..view.length {
+        let elem = native_try!(ta_read(vm, view, i));
+        let result = native_try!(invoke_cb(vm, callback, this_arg, &[elem, JsValue::int(i as i32), this_val]));
+        if !oxide_runtime_api::to_boolean(result) {
+            return NativeResult::Ok(JsValue::bool(false));
+        }
+    }
+    NativeResult::Ok(JsValue::bool(true))
+}
+
+/// `%TypedArray%.prototype.some(callback, thisArg)`：任一元素满足 callback 返回 true。
+pub fn typed_array_some<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    if args.len() < 2 {
+        return NativeResult::Err(type_error(vm, "callback is not a function"));
+    }
+    let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
+    let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    for i in 0..view.length {
+        let elem = native_try!(ta_read(vm, view, i));
+        let result = native_try!(invoke_cb(vm, callback, this_arg, &[elem, JsValue::int(i as i32), this_val]));
+        if oxide_runtime_api::to_boolean(result) {
+            return NativeResult::Ok(JsValue::bool(true));
+        }
+    }
+    NativeResult::Ok(JsValue::bool(false))
+}
+
+/// `%TypedArray%.prototype.find(callback, thisArg)`：返回首个 callback 为真的元素，否则 undefined。
+pub fn typed_array_find<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    if args.len() < 2 {
+        return NativeResult::Err(type_error(vm, "callback is not a function"));
+    }
+    let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
+    let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    for i in 0..view.length {
+        let elem = native_try!(ta_read(vm, view, i));
+        let result = native_try!(invoke_cb(vm, callback, this_arg, &[elem, JsValue::int(i as i32), this_val]));
+        if oxide_runtime_api::to_boolean(result) {
+            return NativeResult::Ok(elem);
+        }
+    }
+    NativeResult::Ok(JsValue::undefined())
+}
+
+/// `%TypedArray%.prototype.findIndex(callback, thisArg)`：返回首个 callback 为真的索引，否则 -1。
+pub fn typed_array_find_index<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    if args.len() < 2 {
+        return NativeResult::Err(type_error(vm, "callback is not a function"));
+    }
+    let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
+    let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    for i in 0..view.length {
+        let elem = native_try!(ta_read(vm, view, i));
+        let result = native_try!(invoke_cb(vm, callback, this_arg, &[elem, JsValue::int(i as i32), this_val]));
+        if oxide_runtime_api::to_boolean(result) {
+            return NativeResult::Ok(JsValue::int(i as i32));
+        }
+    }
+    NativeResult::Ok(JsValue::int(-1))
+}
+
+/// `%TypedArray%.prototype.findLast(callback, thisArg)`：从后往前返回首个 callback 为真的元素。
+pub fn typed_array_find_last<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    if args.len() < 2 {
+        return NativeResult::Err(type_error(vm, "callback is not a function"));
+    }
+    let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
+    let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    for i in (0..view.length).rev() {
+        let elem = native_try!(ta_read(vm, view, i));
+        let result = native_try!(invoke_cb(vm, callback, this_arg, &[elem, JsValue::int(i as i32), this_val]));
+        if oxide_runtime_api::to_boolean(result) {
+            return NativeResult::Ok(elem);
+        }
+    }
+    NativeResult::Ok(JsValue::undefined())
+}
+
+/// `%TypedArray%.prototype.findLastIndex(callback, thisArg)`：从后往前返回首个 callback
+/// 为真的索引，否则 -1。
+pub fn typed_array_find_last_index<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    if args.len() < 2 {
+        return NativeResult::Err(type_error(vm, "callback is not a function"));
+    }
+    let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
+    let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    for i in (0..view.length).rev() {
+        let elem = native_try!(ta_read(vm, view, i));
+        let result = native_try!(invoke_cb(vm, callback, this_arg, &[elem, JsValue::int(i as i32), this_val]));
+        if oxide_runtime_api::to_boolean(result) {
+            return NativeResult::Ok(JsValue::int(i as i32));
+        }
+    }
+    NativeResult::Ok(JsValue::int(-1))
+}
+
+/// 规范化 indexOf/includes 的 fromIndex：NaN 视为 0，负值折算后从 0 夹取，正值夹到长度。
+fn normalize_from_index<H: VmHost>(vm: &mut H, value: JsValue, len: usize) -> Result<usize, JsValue> {
+    let n = match vm.coerce_number_bounded(value) {
+        Ok(n) => n,
+        Err(e) => return Err(crate::iterator::engine_error(vm, &e)),
+    };
+    if n.is_nan() {
+        return Ok(0);
+    }
+    let int = n.trunc();
+    if int >= 0.0 {
+        Ok((int as usize).min(len))
+    } else {
+        let from = len as f64 + int;
+        if from < 0.0 {
+            Ok(0)
+        } else {
+            Ok(from as usize)
+        }
+    }
+}
+
+/// `%TypedArray%.prototype.indexOf(searchElement, fromIndex)`：用严格相等查找首个匹配索引。
+pub fn typed_array_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    if view.length == 0 || args.len() < 2 {
+        return NativeResult::Ok(JsValue::int(-1));
+    }
+    let target = vm.reg(args[1]);
+    let from_index = if args.len() >= 3 {
+        native_try!(normalize_from_index(vm, vm.reg(args[2]), view.length))
+    } else {
+        0
+    };
+    for i in from_index..view.length {
+        let elem = native_try!(ta_read(vm, view, i));
+        if oxide_runtime_api::strict_eq(elem, target) {
+            return NativeResult::Ok(JsValue::int(i as i32));
+        }
+    }
+    NativeResult::Ok(JsValue::int(-1))
+}
+
+/// `%TypedArray%.prototype.lastIndexOf(searchElement, fromIndex)`：从后往前查找首个匹配索引。
+pub fn typed_array_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    if view.length == 0 {
+        return NativeResult::Ok(JsValue::int(-1));
+    }
+    let target = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let from_index: isize = if args.len() >= 3 {
+        let v = vm.reg(args[2]);
+        let f = match vm.coerce_number_bounded(v) {
+            Ok(n) => n,
+            Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
+        };
+        if f.is_nan() {
+            return NativeResult::Ok(JsValue::int(-1));
+        }
+        let f = f.trunc();
+        if f >= 0.0 {
+            (f as isize).min(view.length as isize - 1)
+        } else {
+            view.length as isize + f as isize
+        }
+    } else {
+        view.length as isize - 1
+    };
+    if from_index < 0 {
+        return NativeResult::Ok(JsValue::int(-1));
+    }
+    for i in (0..=from_index as usize).rev() {
+        let elem = native_try!(ta_read(vm, view, i));
+        if oxide_runtime_api::strict_eq(elem, target) {
+            return NativeResult::Ok(JsValue::int(i as i32));
+        }
+    }
+    NativeResult::Ok(JsValue::int(-1))
+}
+
+/// `%TypedArray%.prototype.includes(searchElement, fromIndex)`：用 SameValueZero 判断是否包含
+/// （NaN 视为存在、+0/-0 视为相同）。
+pub fn typed_array_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    if view.length == 0 {
+        return NativeResult::Ok(JsValue::bool(false));
+    }
+    let target = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let from_index = if args.len() >= 3 {
+        native_try!(normalize_from_index(vm, vm.reg(args[2]), view.length))
+    } else {
+        0
+    };
+    for i in from_index..view.length {
+        let elem = native_try!(ta_read(vm, view, i));
+        if oxide_runtime_api::same_value_zero(elem, target) {
+            return NativeResult::Ok(JsValue::bool(true));
+        }
+    }
+    NativeResult::Ok(JsValue::bool(false))
+}
+
+/// `%TypedArray%.prototype.join(separator)`：用分隔符连接元素字符串（元素恒为数值）。
+pub fn typed_array_join<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    let sep = if args.len() > 1 {
+        native_try!(
+            oxide_runtime_api::to_string_full(vm.reg(args[1]), vm).map_err(|e| crate::iterator::engine_error(vm, &e))
+        )
+    } else {
+        ",".to_string()
+    };
+    let mut parts = Vec::with_capacity(view.length);
+    for i in 0..view.length {
+        let elem = native_try!(ta_read(vm, view, i));
+        parts.push(oxide_runtime_api::to_string(elem));
+    }
+    NativeResult::Ok(vm.new_string(&parts.join(&sep)))
+}
+
+/// `%TypedArray%.prototype.values()`：返回迭代元素值的迭代器。
+pub fn typed_array_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    native_try!(get_typed_array_data(vm, this_val));
+    NativeResult::Ok(crate::iterator::make_mode_iterator(
+        vm,
+        this_val,
+        crate::iterator::typed_array_values_iter_next::<H> as *const (),
+    ))
+}
+
+/// `%TypedArray%.prototype.keys()`：返回迭代元素索引的迭代器。
+pub fn typed_array_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    native_try!(get_typed_array_data(vm, this_val));
+    NativeResult::Ok(crate::iterator::make_mode_iterator(
+        vm,
+        this_val,
+        crate::iterator::typed_array_keys_iter_next::<H> as *const (),
+    ))
+}
+
+/// `%TypedArray%.prototype.entries()`：返回迭代 `[index, element]` 对的迭代器。
+pub fn typed_array_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    native_try!(get_typed_array_data(vm, this_val));
+    NativeResult::Ok(crate::iterator::make_mode_iterator(
+        vm,
+        this_val,
+        crate::iterator::typed_array_entries_iter_next::<H> as *const (),
+    ))
+}
+
+/// 默认数值排序比较：NaN 视为最大排到末尾，其余按数值升序。
+fn default_ta_order(a: f64, b: f64) -> std::cmp::Ordering {
+    if a.is_nan() && b.is_nan() {
+        std::cmp::Ordering::Equal
+    } else if a.is_nan() {
+        std::cmp::Ordering::Greater
+    } else if b.is_nan() {
+        std::cmp::Ordering::Less
+    } else {
+        a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)
+    }
+}
+
+/// `%TypedArray%.prototype.sort(comparefn)`：原地排序，默认按数值升序（NaN 排末尾）。
+pub fn typed_array_sort<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    let comparator = if args.len() > 1 {
+        let c = vm.reg(args[1]);
+        if c.is_undefined() {
+            None
+        } else {
+            Some(native_try!(crate::array::require_callback(vm, c)))
+        }
+    } else {
+        None
+    };
+    let mut vals: Vec<f64> = Vec::with_capacity(view.length);
+    for i in 0..view.length {
+        let elem = native_try!(ta_read(vm, view, i));
+        vals.push(native_try!(ta_to_number(vm, elem)));
+    }
+    let mut sort_error = None;
+    vals.sort_by(|a, b| {
+        if sort_error.is_some() {
+            return std::cmp::Ordering::Equal;
+        }
+        if let Some(cb) = comparator {
+            match crate::array::invoke_native_callback(
+                vm,
+                cb,
+                JsValue::undefined(),
+                &[JsValue::float(*a), JsValue::float(*b)],
+            ) {
+                NativeResult::Ok(r) => {
+                    let n = oxide_runtime_api::to_number(r);
+                    if n.is_nan() || n == 0.0 {
+                        std::cmp::Ordering::Equal
+                    } else if n < 0.0 {
+                        std::cmp::Ordering::Less
+                    } else {
+                        std::cmp::Ordering::Greater
+                    }
+                }
+                NativeResult::Err(err) => {
+                    sort_error = Some(err);
+                    std::cmp::Ordering::Equal
+                }
+                NativeResult::TailCall { .. } => {
+                    sort_error =
+                        Some(crate::error::create_type_error(vm, "unexpected tail call in typed array callback"));
+                    std::cmp::Ordering::Equal
+                }
+            }
+        } else {
+            default_ta_order(*a, *b)
+        }
+    });
+    if let Some(err) = sort_error {
+        return NativeResult::Err(err);
+    }
+    for (i, n) in vals.into_iter().enumerate() {
+        native_try!(ta_write(vm, view, i, n));
+    }
+    NativeResult::Ok(this_val)
+}
+
+/// `%TypedArray%.prototype.reverse()`：原地反转元素顺序，返回 this。
+pub fn typed_array_reverse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    let mut i = 0;
+    let mut j = view.length.saturating_sub(1);
+    while i < j {
+        let tmp = native_try!(ta_read(vm, view, i));
+        let n = native_try!(ta_to_number(vm, tmp));
+        let jtmp = native_try!(ta_read(vm, view, j));
+        let jv = native_try!(ta_to_number(vm, jtmp));
+        native_try!(ta_write(vm, view, j, n));
+        native_try!(ta_write(vm, view, i, jv));
+        i += 1;
+        j = j.saturating_sub(1);
+    }
+    NativeResult::Ok(this_val)
+}
+
+/// `%TypedArray%.prototype.copyWithin(target, start, end)`：在数组内部复制元素区间，返回 this。
+pub fn typed_array_copy_within<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    let len = view.length;
+    let target = if args.len() > 1 {
+        native_try!(normalize_index(vm, vm.reg(args[1]), len))
+    } else {
+        0
+    };
+    let start = if args.len() > 2 {
+        native_try!(normalize_index(vm, vm.reg(args[2]), len))
+    } else {
+        0
+    };
+    let end = if args.len() > 3 && !vm.reg(args[3]).is_undefined() {
+        native_try!(normalize_index(vm, vm.reg(args[3]), len))
+    } else {
+        len
+    };
+    let count = end.max(start).saturating_sub(start).min(len.saturating_sub(target));
+    // 目标区间前移与源区间重叠时逆序遍历，避免覆盖未读的源元素。
+    let (mut from, mut to, direction) = if start < target && target < start + count {
+        (start + count - 1, target + count - 1, -1isize)
+    } else {
+        (start, target, 1isize)
+    };
+    for _ in 0..count {
+        let elem = native_try!(ta_read(vm, view, from));
+        let v = native_try!(ta_to_number(vm, elem));
+        native_try!(ta_write(vm, view, to, v));
+        from = (from as isize + direction) as usize;
+        to = (to as isize + direction) as usize;
+    }
+    NativeResult::Ok(this_val)
+}
+
+/// 以元素为 receiver 调用其 `toLocaleString` 方法，返回结果（失败透传原异常）。
+///
+/// # 注意事项
+/// `toLocaleString` 方法缺失时回退为 ToString 结果（无 Intl 的最小实现）。
+fn invoke_element_to_locale_string<H: VmHost>(vm: &mut H, element: JsValue) -> Result<JsValue, JsValue> {
+    let obj_val = oxide_runtime_api::to_object(element, vm).map_err(|e| crate::iterator::engine_error(vm, &e))?;
+    let obj = unsafe { &*obj_val.as_js_object_ptr() };
+    let method_si = vm.kernel_core().perm_interner().intern("toLocaleString").0;
+    let method = vm
+        .ordinary_get(obj, method_si, element)
+        .map_err(|e| crate::iterator::engine_error(vm, &e))?;
+    if !crate::iterator::is_callable(method) {
+        return Ok(vm.new_string(&oxide_runtime_api::to_string(element)));
+    }
+    match vm.call_function_sync(method, element, &[]) {
+        Ok(r) => Ok(r),
+        Err(e) => Err(crate::iterator::engine_error(vm, &e)),
+    }
+}
+
+/// `%TypedArray%.prototype.toLocaleString()`：元素逐个调用 `toLocaleString` 后用 `,` 连接。
+pub fn typed_array_to_locale_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    if view.length == 0 {
+        return NativeResult::Ok(vm.new_string(""));
+    }
+    let mut parts = Vec::with_capacity(view.length);
+    for i in 0..view.length {
+        let elem = native_try!(ta_read(vm, view, i));
+        let r = native_try!(invoke_element_to_locale_string(vm, elem));
+        let s =
+            native_try!(oxide_runtime_api::to_string_full(r, vm).map_err(|e| crate::iterator::engine_error(vm, &e)));
+        parts.push(s);
+    }
+    NativeResult::Ok(vm.new_string(&parts.join(",")))
+}
+
+/// `%TypedArray%.prototype.toReversed()`：返回元素反转的同类型新 TypedArray（原对象不变）。
+pub fn typed_array_to_reversed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    let mut numbers = Vec::with_capacity(view.length);
+    for i in (0..view.length).rev() {
+        let elem = native_try!(ta_read(vm, view, i));
+        numbers.push(native_try!(ta_to_number(vm, elem)));
+    }
+    let new_obj = native_try!(create_ta_from_numbers(vm, view.kind, numbers));
+    NativeResult::Ok(JsValue::from_js_object(new_obj))
+}
+
+/// `%TypedArray%.prototype.toSorted(comparefn)`：返回元素排序后的同类型新 TypedArray
+/// （原对象不变）。
+pub fn typed_array_to_sorted<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    let comparator = if args.len() > 1 {
+        let c = vm.reg(args[1]);
+        if c.is_undefined() {
+            None
+        } else {
+            Some(native_try!(crate::array::require_callback(vm, c)))
+        }
+    } else {
+        None
+    };
+    let mut vals: Vec<f64> = Vec::with_capacity(view.length);
+    for i in 0..view.length {
+        let elem = native_try!(ta_read(vm, view, i));
+        vals.push(native_try!(ta_to_number(vm, elem)));
+    }
+    let mut sort_error = None;
+    vals.sort_by(|a, b| {
+        if sort_error.is_some() {
+            return std::cmp::Ordering::Equal;
+        }
+        if let Some(cb) = comparator {
+            match crate::array::invoke_native_callback(
+                vm,
+                cb,
+                JsValue::undefined(),
+                &[JsValue::float(*a), JsValue::float(*b)],
+            ) {
+                NativeResult::Ok(r) => {
+                    let n = oxide_runtime_api::to_number(r);
+                    if n.is_nan() || n == 0.0 {
+                        std::cmp::Ordering::Equal
+                    } else if n < 0.0 {
+                        std::cmp::Ordering::Less
+                    } else {
+                        std::cmp::Ordering::Greater
+                    }
+                }
+                NativeResult::Err(err) => {
+                    sort_error = Some(err);
+                    std::cmp::Ordering::Equal
+                }
+                NativeResult::TailCall { .. } => {
+                    sort_error =
+                        Some(crate::error::create_type_error(vm, "unexpected tail call in typed array callback"));
+                    std::cmp::Ordering::Equal
+                }
+            }
+        } else {
+            default_ta_order(*a, *b)
+        }
+    });
+    if let Some(err) = sort_error {
+        return NativeResult::Err(err);
+    }
+    let new_obj = native_try!(create_ta_from_numbers(vm, view.kind, vals));
+    NativeResult::Ok(JsValue::from_js_object(new_obj))
+}
+
+/// `%TypedArray%.prototype.with(index, value)`：返回替换指定索引元素后的同类型新 TypedArray；
+/// 负索引从尾部折算，折算后越界抛 RangeError。
+pub fn typed_array_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    if args.len() < 2 {
+        return NativeResult::Err(type_error(vm, "TypedArray.prototype.with requires an index"));
+    }
+    // ToIntegerOrInfinity(index)，负值折算为 len + index。
+    let raw = native_try!(ta_to_number(vm, vm.reg(args[1])));
+    let relative_index = if raw.is_nan() || raw == 0.0 {
+        0.0
+    } else if raw.is_infinite() {
+        raw
+    } else {
+        raw.trunc()
+    };
+    let actual_index = if relative_index >= 0.0 {
+        relative_index
+    } else {
+        view.length as f64 + relative_index
+    };
+    // 先 ToNumber(value)（可触发副作用/抛错），再做索引范围校验。
+    let value = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let replacement = native_try!(ta_to_number(vm, value));
+    if actual_index.is_nan() || actual_index < 0.0 || actual_index >= view.length as f64 {
+        return NativeResult::Err(range_error(vm, "Invalid typed array index"));
+    }
+    let index = actual_index as usize;
+    let mut numbers = Vec::with_capacity(view.length);
+    for i in 0..view.length {
+        if i == index {
+            numbers.push(replacement);
+            continue;
+        }
+        let elem = native_try!(ta_read(vm, view, i));
+        numbers.push(native_try!(ta_to_number(vm, elem)));
+    }
+    let new_obj = native_try!(create_ta_from_numbers(vm, view.kind, numbers));
+    NativeResult::Ok(JsValue::from_js_object(new_obj))
 }
 
 /// `%TypedArray%.from(source, mapfn?, thisArg?)`：从可迭代对象或 array-like 构造
