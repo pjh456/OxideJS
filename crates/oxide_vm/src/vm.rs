@@ -285,6 +285,9 @@ pub struct Vm {
     /// 生成器体 `dispatch()` 让出时的信号：YIELD 置 Some(让出值)，恢复方（
     /// generator 内嵌 dispatch 循环）取走并判定挂起。None = 正常返回/异常。
     pub(crate) generator_suspended: Option<JsValue>,
+    /// `yield*` 委托中的内层迭代器：YIELD_STAR 让出时置入，恢复时转发 next/return/throw
+    /// 后按结局清空。随生成器挂起/恢复经 GeneratorState 传递（snapshot/rewrite 共管）。
+    pub(crate) delegated_iterator: Option<JsValue>,
     /// 当前是否处于生成器内嵌 dispatch 循环：生成器帧弹出且 frames 清空时，
     /// `do_return` 据此把结果交付给恢复方（而非当作普通顶层返回继续执行）。
     pub(crate) generator_dispatch: bool,
@@ -1509,6 +1512,23 @@ impl Vm {
                     self.generator_suspended = Some(value);
                     self.profiling.set_instruction_count(steps);
                     return Ok(JsValue::undefined());
+                }
+
+                OpCode::YIELD_STAR => {
+                    // `yield*` 委托：取内层迭代器并推进一步。
+                    // 未 done → 挂起让出（存委托迭代器）；done → 委托完成值写 reg 0 继续外层；
+                    // unwind 捕获到异常 → 继续 dispatch（已展开到 catch/finally）。
+                    match self.dispatch_yield_star(rd)? {
+                        crate::generator::YieldStarOutcome::Suspend(value) => {
+                            self.generator_suspended = Some(value);
+                            self.profiling.set_instruction_count(steps);
+                            return Ok(JsValue::undefined());
+                        }
+                        crate::generator::YieldStarOutcome::Continue(value) => {
+                            self.regs[0] = value;
+                        }
+                        crate::generator::YieldStarOutcome::Unwind => {}
+                    }
                 }
 
                 OpCode::SUSPEND_BODY => {

@@ -273,6 +273,12 @@ impl Inst {
         Self::new(OpCode::YIELD, src, Operand::None, Operand::None)
     }
 
+    /// `yield*` 委托：`rd` 为内层可迭代对象。运行时取迭代器并转发 next/return/throw，
+    /// 委托完成值（内层 done 的 value）经 reg 0 交付，与 `yield_value` 同协议。
+    pub fn yield_star(src: Operand) -> Self {
+        Self::new(OpCode::YIELD_STAR, src, Operand::None, Operand::None)
+    }
+
     /// 生成器 body 起点标记：调用时参数初始化完成后挂起于此，首次 `next()` 继续。
     pub fn suspend_body() -> Self {
         Self::new(OpCode::SUSPEND_BODY, Operand::None, Operand::None, Operand::None)

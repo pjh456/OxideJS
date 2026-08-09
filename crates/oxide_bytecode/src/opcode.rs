@@ -197,10 +197,12 @@ define_opcodes! {
     INIT_PRIVATE = 0x74 => "INIT_PRIVATE",
     PRIVATE_BRAND_IN = 0x75 => "PRIVATE_BRAND_IN",
 
-    // ── 生成器 (0x76-0x77) ──
+    // ── 生成器 (0x76-0x78) ──
     YIELD = 0x76 => "YIELD", // rd=被让出的值（结果经 reg 0 交付，见 contract.rs）
     // 生成器 body 起点标记：调用时参数初始化完成后挂起于此，首次 next() 从这继续。
     SUSPEND_BODY = 0x77 => "SUSPEND_BODY",
+    // `yield*` 委托：rd=内层可迭代对象；委托完成值经 reg 0 交付（与 YIELD 同协议）。
+    YIELD_STAR = 0x78 => "YIELD_STAR",
 
     // ── 位运算 (0x80-0x8F) ──
     BIT_AND = 0x80 => "BIT_AND",

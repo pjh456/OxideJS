@@ -54,6 +54,7 @@ impl Vm {
             accessor_frame_target_reg: None,
             inline_callee: None,
             generator_suspended: None,
+            delegated_iterator: None,
             generator_dispatch: false,
             generator_init_step: false,
             generator_body_started: false,
@@ -127,6 +128,7 @@ impl Vm {
             accessor_frame_target_reg: None,
             inline_callee: None,
             generator_suspended: None,
+            delegated_iterator: None,
             generator_dispatch: false,
             generator_init_step: false,
             generator_body_started: false,
@@ -251,6 +253,7 @@ impl Vm {
         self.pending_error_kind = None;
         self.pending_completion = None;
         self.generator_suspended = None;
+        self.delegated_iterator = None;
         self.generator_dispatch = false;
         self.generator_init_step = false;
         self.generator_body_started = false;

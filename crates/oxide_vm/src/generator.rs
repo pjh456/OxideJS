@@ -8,10 +8,10 @@
 
 use std::sync::Arc;
 
-use oxide_builtins::iterator::make_iter_result;
+use oxide_builtins::iterator::{is_callable, make_iter_result};
 use oxide_bytecode::opcode;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_runtime_api::NativeResult;
+use oxide_runtime_api::{to_boolean, NativeResult};
 use oxide_types::mem::P;
 use oxide_types::object::{Cell, JsObject, NativeFnPtr};
 use oxide_types::value::JsValue;
@@ -62,6 +62,8 @@ pub(crate) struct GeneratorState {
     pub for_in_iters: Vec<*mut ForInIter<'static>>,
     pub for_of_iters: Vec<JsValue>,
     pub last_for_of_result: JsValue,
+    /// `yield*` 委托中的内层迭代器：Some = 挂起在委托点，恢复时转发 next/return/throw。
+    pub delegated_iterator: Option<JsValue>,
     pub saved_bytecode_stack: Vec<Vec<opcode::Instr>>,
     pub saved_immutables_stack: Vec<*const [JsValue]>,
     /// 在途异常/完成（throw 穿越 finally 挂起时保留，恢复后继续展开）。
@@ -86,10 +88,35 @@ pub(crate) enum GeneratorResumeMode {
 pub(crate) enum GeneratorStep {
     /// 让出：`value` 为 `yield` 的值，生成器仍可继续。
     Suspended { value: JsValue },
+    /// `yield*` 委托让出：`value` 为内层迭代器的原始结果对象，外层 next() 原样返回
+    /// （透传内层 done/value 字段，spec GeneratorYield 语义）。
+    SuspendedRaw { value: JsValue },
     /// 完成：`value` 为返回值。
     Completed { value: JsValue },
     /// 未捕获异常逃逸：`value` 为原异常值，调用方须重新抛出。
     Thrown { value: JsValue },
+}
+
+/// `yield*` 首次推进（YIELD_STAR dispatch）的结局。
+pub(crate) enum YieldStarOutcome {
+    /// 内层未 done：挂起外层，让出内层原始结果对象（原样透传）。
+    Suspend(JsValue),
+    /// 内层 done：委托完成，value 为委托值（写 reg 0 继续外层）。
+    Continue(JsValue),
+    /// 异常已展开到外层 catch/finally：继续 dispatch。
+    Unwind,
+}
+
+/// `yield*` 委托转发（生成器恢复时）的结局。
+enum DelegateOutcome {
+    /// 内层未 done：保持委托挂起，让出 value。
+    Suspend { value: JsValue },
+    /// 内层消化 next/throw 后 done：委托结束，外层继续，value 为委托值。
+    Continue { value: JsValue },
+    /// 内层消化 return 后 done / 无 return 方法：委托结束，外层完成，value 为返回值。
+    Complete { value: JsValue },
+    /// 内层调用抛错且已展开到外层 catch/finally：委托终止，继续 dispatch。
+    Unwind,
 }
 
 impl Vm {
@@ -124,6 +151,7 @@ impl Vm {
             for_in_iters: Vec::new(),
             for_of_iters: Vec::new(),
             last_for_of_result: JsValue::undefined(),
+            delegated_iterator: None,
             saved_bytecode_stack: Vec::new(),
             saved_immutables_stack: Vec::new(),
             exception_value: None,
@@ -313,6 +341,7 @@ impl Vm {
             self.iters.for_in_iters.clear();
             self.iters.for_of_iters.clear();
             self.iters.last_for_of_result = JsValue::undefined();
+            self.delegated_iterator = None;
             self.spill_stack.clear();
             self.save_stack.clear();
             self.saved_bytecode_stack.clear();
@@ -362,6 +391,7 @@ impl Vm {
             self.iters.for_in_iters = std::mem::take(&mut state.for_in_iters);
             self.iters.for_of_iters = std::mem::take(&mut state.for_of_iters);
             self.iters.last_for_of_result = state.last_for_of_result;
+            self.delegated_iterator = state.delegated_iterator.take();
             self.saved_bytecode_stack = std::mem::take(&mut state.saved_bytecode_stack);
             self.saved_immutables_stack = std::mem::take(&mut state.saved_immutables_stack);
             self.exception_value = state.exception_value.take();
@@ -371,8 +401,64 @@ impl Vm {
             self.inline_callee = None;
             state.phase = GeneratorPhase::Running;
 
-            // 注入模式：next(v) 写 reg 0；throw(e) 恢复异常上下文；return(v) 完成穿越。
-            match mode {
+            // `yield*` 委托恢复：把 next/return/throw 请求转发给内层迭代器，按内层
+            // 结局决定挂起透传 / 外层继续 / 外层完成 / 异常传播。
+            // 委托分支处置完毕后直接进入 dispatch，不再执行注入模式（reg 0 已就位）。
+            if self.delegated_iterator.is_some() {
+                let forwarded = self.delegate_forward(mode);
+                match forwarded {
+                    Err(e) => {
+                        // 委托期间异常逃逸（unwind 失败，已弹出全部帧）：标记完成并交付 Thrown。
+                        let exc = self
+                            .last_uncaught_value
+                            .take()
+                            .unwrap_or_else(|| oxide_builtins::error::create_error(self, &e));
+                        self.restore_inline_state(saved);
+                        self.native_call_depth -= 1;
+                        let state = unsafe { &mut *state_ptr };
+                        state.phase = GeneratorPhase::Completed;
+                        state.result = JsValue::undefined();
+                        return Ok(GeneratorStep::Thrown { value: exc });
+                    }
+                    Ok(DelegateOutcome::Suspend { value }) => {
+                        let state = unsafe { &mut *state_ptr };
+                        state.phase = GeneratorPhase::Suspended;
+                        self.snapshot_generator(state)?;
+                        self.restore_inline_state(saved);
+                        self.native_call_depth -= 1;
+                        // 委托让出原样透传内层结果对象，不二次包装。
+                        return Ok(GeneratorStep::SuspendedRaw { value });
+                    }
+                    Ok(DelegateOutcome::Continue { value }) => {
+                        // 委托结束（内层消化 next/throw 后 done）：yield* 表达式值为
+                        // value，外层继续执行。
+                        self.regs[0] = value;
+                    }
+                    Ok(DelegateOutcome::Complete { value }) => {
+                        // 委托结束（内层消化 return 后 done 或无 return 方法）：外层完成，
+                        // 交付值为内层结果，穿越自身 finally。
+                        let prev_dispatch = self.generator_dispatch;
+                        self.generator_dispatch = true;
+                        let completed = self.complete_generator_return(value);
+                        self.generator_dispatch = prev_dispatch;
+                        if let Some(completed) = completed? {
+                            self.restore_inline_state(saved);
+                            self.native_call_depth -= 1;
+                            let state = unsafe { &mut *state_ptr };
+                            state.phase = GeneratorPhase::Completed;
+                            state.result = completed;
+                            return Ok(GeneratorStep::Completed { value: completed });
+                        }
+                        // 进入 finally 穿越：继续 dispatch。
+                    }
+                    Ok(DelegateOutcome::Unwind) => {
+                        // 内层调用抛错且已展开到外层 catch/finally：委托终止，继续 dispatch。
+                        self.delegated_iterator = None;
+                    }
+                }
+            } else {
+                // 注入模式：next(v) 写 reg 0；throw(e) 恢复异常上下文；return(v) 完成穿越。
+                match mode {
                 GeneratorResumeMode::Next(arg) => {
                     self.regs[0] = arg;
                 }
@@ -403,6 +489,7 @@ impl Vm {
                         return Ok(GeneratorStep::Completed { value: completed });
                     }
                 }
+                }
             }
         }
 
@@ -415,8 +502,13 @@ impl Vm {
         // YIELD 让出：快照挂起状态。
         if let Some(value) = self.generator_suspended.take() {
             let state = unsafe { &mut *state_ptr };
+            // 委托挂起时 value 是内层原始结果对象，原样透传；普通 yield 才二次包装。
+            let delegating = self.delegated_iterator.is_some();
             self.snapshot_generator(state)?;
             self.restore_inline_state(saved);
+            if delegating {
+                return Ok(GeneratorStep::SuspendedRaw { value });
+            }
             return Ok(GeneratorStep::Suspended { value });
         }
 
@@ -440,6 +532,216 @@ impl Vm {
                 self.restore_inline_state(saved);
                 Ok(GeneratorStep::Thrown { value: exc })
             }
+        }
+    }
+
+    /// `yield*` 委托首次进入：GetIterator 取内层迭代器并推进一步。
+    ///
+    /// # 步骤
+    /// 1. 经迭代协议把内层值包装为迭代器（不可迭代抛 TypeError）。
+    /// 2. 调内层 next(undefined) 得 {value, done}。
+    /// 3. done → 委托完成值交付（外层继续）；未 done → 挂起，委托迭代器存入
+    ///    `self.delegated_iterator`。
+    ///
+    /// # 副作用
+    /// - 内层 next 同步执行，可能压入/弹出调用帧。
+    /// - 挂起时设置 `delegated_iterator`，由 snapshot_generator 存入生成器状态。
+    pub(crate) fn dispatch_yield_star(&mut self, rd: usize) -> Result<YieldStarOutcome, String> {
+        let inner = self.regs[rd];
+        let iterator = match oxide_builtins::iterator::make_iterator_for_value_without_return(self, inner) {
+            Ok(it) => it,
+            Err(exc) => {
+                self.last_uncaught_value = Some(exc);
+                return self.yield_star_raise(String::new());
+            }
+        };
+        let iter_obj = unsafe { &*iterator.as_js_object_ptr() };
+        let next_si = self.kernel_core.perm_interner().intern("next").0;
+        let next_fn = match self.ordinary_get(iter_obj, next_si, iterator) {
+            Ok(f) => f,
+            Err(e) => return self.yield_star_raise(e),
+        };
+        let result = if is_callable(next_fn) {
+            match self.call_function_sync(next_fn, iterator, &[JsValue::undefined()]) {
+                Ok(r) => r,
+                Err(e) => return self.yield_star_raise(e),
+            }
+        } else {
+            return self.yield_star_raise(self.error_message_text("TypeError", "iterator.next is not callable"));
+        };
+        if !result.is_object() {
+            return self.yield_star_raise(self.error_message_text("TypeError", "iterator result is not an object"));
+        }
+        let result_obj = unsafe { &*result.as_js_object_ptr() };
+        let done_si = self.kernel_core.perm_interner().intern("done").0;
+        let value_si = self.kernel_core.perm_interner().intern("value").0;
+        let done = to_boolean(match self.ordinary_get(result_obj, done_si, result) {
+            Ok(v) => v,
+            Err(e) => return self.yield_star_raise(e),
+        });
+        // done 时才读取 value（委托完成值）；done=false 直接让出原始结果对象。
+        if done {
+            let value = match self.ordinary_get(result_obj, value_si, result) {
+                Ok(v) => v,
+                Err(e) => return self.yield_star_raise(e),
+            };
+            Ok(YieldStarOutcome::Continue(value))
+        } else {
+            self.delegated_iterator = Some(iterator);
+            // 挂起让出内层原始结果对象：外层 next() 原样透传（done 字段保持内层值）。
+            Ok(YieldStarOutcome::Suspend(result))
+        }
+    }
+
+    /// `yield*` 委托单步转发：把外层恢复请求转发给内层迭代器。
+    ///
+    /// # 步骤
+    /// 1. next 走统一包装器（数组/字符串按索引、对象委托自身 next，方法内置不提前绑定）；
+    ///    return/throw 对内层迭代器延迟 GetMethod（wrapper 不应在创建时访问内层方法）。
+    /// 2. 方法缺失时按语义兜底：next → TypeError；return → 外层直接完成（值为请求值）；
+    ///    throw → 先 IteratorClose（调内层 return，其抛错以该错为准）再补抛原异常。
+    /// 3. 调内层方法得结果对象，读 done/value 判定委托结局。
+    ///
+    /// # 副作用
+    /// - 内层调用抛错时经 unwind 展开（可被外层 catch/finally 捕获，返回 Unwind）。
+    /// - 委托结束时清空 `self.delegated_iterator`，挂起透传时保留。
+    fn delegate_forward(&mut self, mode: GeneratorResumeMode) -> Result<DelegateOutcome, String> {
+        let iterator = match self.delegated_iterator {
+            Some(it) => it,
+            None => return Ok(DelegateOutcome::Unwind),
+        };
+        let (method, arg) = match mode {
+            GeneratorResumeMode::Next(v) => ("next", v),
+            GeneratorResumeMode::Return(v) => ("return", v),
+            GeneratorResumeMode::Throw(e) => ("throw", e),
+        };
+        // return/throw 的 receiver 与 GetMethod 目标都是内层迭代器（包装器统一 next）。
+        let inner = if matches!(mode, GeneratorResumeMode::Next(_)) {
+            iterator
+        } else {
+            self.iterator_inner(iterator)
+        };
+        let iter_obj = unsafe { &*inner.as_js_object_ptr() };
+        let method_si = self.kernel_core.perm_interner().intern(method).0;
+        let method_fn = match self.ordinary_get(iter_obj, method_si, inner) {
+            Ok(f) => f,
+            Err(e) => return self.delegate_raise(e),
+        };
+        let inner_result = if is_callable(method_fn) {
+            match self.call_function_sync(method_fn, inner, &[arg]) {
+                Ok(r) => r,
+                Err(e) => return self.delegate_raise(e),
+            }
+        } else {
+            match mode {
+                GeneratorResumeMode::Next(_) => {
+                    return self.delegate_raise(self.error_message_text("TypeError", "iterator.next is not callable"))
+                }
+                GeneratorResumeMode::Return(v) => {
+                    // 内层无 return 方法：外层直接完成，值为请求值。
+                    self.delegated_iterator = None;
+                    return Ok(DelegateOutcome::Complete { value: v });
+                }
+                GeneratorResumeMode::Throw(_e) => {
+                    // 内层无 throw 方法：先 IteratorClose（GetMethod 内层 return，getter 抛错
+                    // 传播、调用抛错传播、结果非对象抛 TypeError），再抛 TypeError（协议违规）。
+                    let ret_si = self.kernel_core.perm_interner().intern("return").0;
+                    let ret_fn = match self.ordinary_get(iter_obj, ret_si, inner) {
+                        Ok(f) => f,
+                        Err(e) => return self.delegate_raise(e),
+                    };
+                    if is_callable(ret_fn) {
+                        let close_result = match self.call_function_sync(ret_fn, inner, &[]) {
+                            Ok(r) => r,
+                            Err(e) => return self.delegate_raise(e),
+                        };
+                        if !close_result.is_object() {
+                            return self.delegate_raise(
+                                self.error_message_text("TypeError", "IteratorResult is not an object"),
+                            );
+                        }
+                    }
+                    self.delegated_iterator = None;
+                    return self.delegate_raise(self.error_message_text(
+                        "TypeError",
+                        "yield* protocol violation: iterator does not have a throw method",
+                    ));
+                }
+            }
+        };
+        if !inner_result.is_object() {
+            return self.delegate_raise(self.error_message_text("TypeError", "iterator result is not an object"));
+        }
+        let result_obj = unsafe { &*inner_result.as_js_object_ptr() };
+        let done_si = self.kernel_core.perm_interner().intern("done").0;
+        let value_si = self.kernel_core.perm_interner().intern("value").0;
+        let done = to_boolean(match self.ordinary_get(result_obj, done_si, inner_result) {
+            Ok(v) => v,
+            Err(e) => return self.delegate_raise(e),
+        });
+        // done 时才读取 value（委托完成值）；done=false 直接让出原始结果对象。
+        if done {
+            let value = match self.ordinary_get(result_obj, value_si, inner_result) {
+                Ok(v) => v,
+                Err(e) => return self.delegate_raise(e),
+            };
+            // 委托结束：next/throw 被内层消化后外层继续，return 被内层消化后外层完成。
+            self.delegated_iterator = None;
+            match mode {
+                GeneratorResumeMode::Next(_) | GeneratorResumeMode::Throw(_) => Ok(DelegateOutcome::Continue { value }),
+                GeneratorResumeMode::Return(_) => Ok(DelegateOutcome::Complete { value }),
+            }
+        } else {
+            // 转发期间内层生成器的恢复会覆盖 `self.delegated_iterator`，须重新存回
+            // 委托迭代器，使外层挂起快照保留委托状态。让出内层原始结果对象。
+            self.delegated_iterator = Some(iterator);
+            Ok(DelegateOutcome::Suspend { value: inner_result })
+        }
+    }
+
+    /// 从统一包装器中取内层迭代器（`__inner__` 槽），兜底返回包装器自身。
+    fn iterator_inner(&mut self, wrapper: JsValue) -> JsValue {
+        if !wrapper.is_object() {
+            return wrapper;
+        }
+        let obj = unsafe { &*wrapper.as_js_object_ptr() };
+        let inner_si = self.kernel_core.perm_interner().intern("__inner__").0;
+        match self.ordinary_get(obj, inner_si, wrapper) {
+            Ok(v) if !v.is_undefined() => v,
+            _ => wrapper,
+        }
+    }
+
+    /// 委托期间的异常注入：恢复原始异常值并经 unwind 展开。
+    ///
+    /// # 返回值
+    /// - `Ok(Unwind)`：异常被外层 catch/finally 捕获，可继续 dispatch；
+    /// - `Err`：异常逃逸出外层（unwind 失败），调用方按 Thrown 交付。
+    fn delegate_raise(&mut self, msg: String) -> Result<DelegateOutcome, String> {
+        let exc = self
+            .last_uncaught_value
+            .take()
+            .unwrap_or_else(|| oxide_builtins::error::create_type_error(self, &msg));
+        self.exception_value = Some(exc);
+        self.pending_error_kind = Some(self.thrown_error_kind(exc));
+        match self.unwind() {
+            Ok(()) => Ok(DelegateOutcome::Unwind),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// `yield*` 首次推进的异常注入：与 [`delegate_raise`] 同路径，结局为
+    /// [`YieldStarOutcome`] 的 Unwind。
+    fn yield_star_raise(&mut self, msg: String) -> Result<YieldStarOutcome, String> {
+        let exc = self
+            .last_uncaught_value
+            .take()
+            .unwrap_or_else(|| oxide_builtins::error::create_type_error(self, &msg));
+        self.exception_value = Some(exc);
+        self.pending_error_kind = Some(self.thrown_error_kind(exc));
+        match self.unwind() {
+            Ok(()) => Ok(YieldStarOutcome::Unwind),
+            Err(e) => Err(e),
         }
     }
 
@@ -469,6 +771,7 @@ impl Vm {
         state.for_in_iters = std::mem::take(&mut self.iters.for_in_iters);
         state.for_of_iters = std::mem::take(&mut self.iters.for_of_iters);
         state.last_for_of_result = self.iters.last_for_of_result;
+        state.delegated_iterator = self.delegated_iterator.take();
         state.saved_bytecode_stack = std::mem::take(&mut self.saved_bytecode_stack);
         state.saved_immutables_stack = std::mem::take(&mut self.saved_immutables_stack);
         state.exception_value = self.exception_value.take();
@@ -535,8 +838,10 @@ pub(crate) fn generator_symbol_iterator(vm: &mut Vm, args: &[u8]) -> NativeResul
 }
 
 /// 把恢复结局折叠为迭代器结果 `{value, done}` 或传播异常。
+/// 委托让出（SuspendedRaw）原样透传内层结果对象，不做二次包装。
 fn generator_step_result(vm: &mut Vm, step: Result<GeneratorStep, String>) -> NativeResult {
     match step {
+        Ok(GeneratorStep::SuspendedRaw { value }) => NativeResult::Ok(value),
         Ok(GeneratorStep::Suspended { value }) | Ok(GeneratorStep::Completed { value }) => {
             let done = matches!(step, Ok(GeneratorStep::Completed { .. }));
             NativeResult::Ok(make_iter_result(vm, value, done))
@@ -684,6 +989,9 @@ pub(crate) fn generator_native_edges(obj: &JsObject) -> Vec<JsValue> {
     }
     edges.extend(state.for_of_iters.iter().copied().filter(|v| v.is_object()));
     push(state.last_for_of_result, &mut edges);
+    if let Some(iter) = state.delegated_iterator {
+        push(iter, &mut edges);
+    }
     edges
 }
 
@@ -726,6 +1034,7 @@ pub(crate) fn rewrite_generator_native(obj: &JsObject, mut rewrite: impl FnMut(J
         *v = rewrite(*v);
     }
     state.last_for_of_result = rewrite(state.last_for_of_result);
+    state.delegated_iterator = state.delegated_iterator.map(&mut rewrite);
 }
 
 /// 释放生成器状态盒（对象被 GC 回收时），返回释放字节数。
