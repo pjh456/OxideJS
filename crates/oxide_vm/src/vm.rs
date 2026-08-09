@@ -239,6 +239,11 @@ pub struct Vm {
     pub(crate) session: KernelSession,
     pub epoch: Epoch,
     pub object_prototype: P<JsObject>,
+    /// `%GeneratorPrototype%`：生成器实例的原型（next/return/throw 方法挂此）。
+    pub generator_proto: P<JsObject>,
+    /// `%GeneratorFunction.prototype%`：生成器函数对象的原型（`constructor` 指向
+    /// `%GeneratorFunction%`，使 `g.constructor.name` 解析为 "GeneratorFunction"）。
+    pub generator_function_proto: P<JsObject>,
     pub math_rng_state: u64,
     /// 全局扁平模块表：下标 = 模块 `flat_id`（顶层 0，子模块 flatten 后全局唯一）。
     /// 闭包 `sub_module_index` 即 flat_id，逃逸闭包也能自足解析。
@@ -277,6 +282,16 @@ pub struct Vm {
     /// frames 为空（inline 隔离状态）时由此取闭包 upvalues。嵌套 inline 由
     /// InlineSyncState 保存/恢复。
     pub(crate) inline_callee: Option<JsValue>,
+    /// 生成器体 `dispatch()` 让出时的信号：YIELD 置 Some(让出值)，恢复方（
+    /// generator 内嵌 dispatch 循环）取走并判定挂起。None = 正常返回/异常。
+    pub(crate) generator_suspended: Option<JsValue>,
+    /// 当前是否处于生成器内嵌 dispatch 循环：生成器帧弹出且 frames 清空时，
+    /// `do_return` 据此把结果交付给恢复方（而非当作普通顶层返回继续执行）。
+    pub(crate) generator_dispatch: bool,
+    /// 生成器调用时参数初始化步：body 起点标记（SUSPEND_BODY）据此判定"挂起在 body 前"。
+    pub(crate) generator_init_step: bool,
+    /// 参数初始化步中已越过 body 起点标记的信号（`initialize_generator` 消费后复位）。
+    pub(crate) generator_body_started: bool,
     /// 分组保存 session arena / GC 簿记状态。
     pub(crate) gc_state: GcState,
     /// 分组保存 `Symbol` intern 状态。
@@ -1487,6 +1502,23 @@ impl Vm {
                     Ok(None) => {}
                     Err(e) => return Err(e),
                 },
+
+                OpCode::YIELD => {
+                    // 生成器让出：把让出值存入信号，内嵌 dispatch 返回，恢复方快照挂起状态。
+                    let value = self.regs[rd];
+                    self.generator_suspended = Some(value);
+                    self.profiling.set_instruction_count(steps);
+                    return Ok(JsValue::undefined());
+                }
+
+                OpCode::SUSPEND_BODY => {
+                    // 生成器调用时参数初始化结束：挂起在 body 起点；正常 next() 恢复时直接穿过。
+                    if self.generator_init_step {
+                        self.generator_body_started = true;
+                        self.profiling.set_instruction_count(steps);
+                        return Ok(JsValue::undefined());
+                    }
+                }
 
                 _ => {
                     return Err(format!("opcode {op} not yet implemented"));

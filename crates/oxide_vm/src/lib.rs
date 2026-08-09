@@ -10,6 +10,7 @@
 /// 内置对象绑定模块：向 session 的 global 对象安装 Object/Array/... 及各原型。
 pub mod bindings;
 mod dispatch;
+mod generator;
 mod ic_helper;
 /// native 函数签名类型（[`native::NativeFn`]），builtin 绑定与 VM 调用约定依赖它。
 pub mod native;

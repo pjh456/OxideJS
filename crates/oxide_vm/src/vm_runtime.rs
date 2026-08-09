@@ -26,6 +26,64 @@ fn place_flat(module: &CompiledModule, out: &mut Vec<Option<CompiledModule>>) {
 }
 
 impl Vm {
+    /// 保存当前完整 VM 执行状态到堆上（内联同步调用与生成器恢复共用）。
+    pub(crate) fn save_inline_state(&mut self) -> Box<InlineSyncState> {
+        vm_trace!("save_inline_state: pc={} depth={}", self.pc, self.frames.len());
+        Box::new(InlineSyncState {
+            regs: Box::new(self.regs),
+            pc: self.pc,
+            bytecode: std::mem::take(&mut self.bytecode),
+            active_immutables: self.active_immutables,
+            active_reg_limit: self.active_reg_limit,
+            root_reg_limit: self.root_reg_limit,
+            try_stack: std::mem::take(&mut self.try_stack),
+            frames: std::mem::take(&mut self.frames),
+            exception_value: self.exception_value.take(),
+            pending_exception: self.pending_exception.take(),
+            pending_error_kind: self.pending_error_kind.take(),
+            pending_completion: self.pending_completion,
+            for_in_iters: std::mem::take(&mut self.iters.for_in_iters),
+            for_of_iters: std::mem::take(&mut self.iters.for_of_iters),
+            last_for_of_result: self.iters.last_for_of_result,
+            saved_bytecode_stack: std::mem::take(&mut self.saved_bytecode_stack),
+            saved_immutables_stack: std::mem::take(&mut self.saved_immutables_stack),
+            save_stack: std::mem::take(&mut self.save_stack),
+            spill_stack: std::mem::take(&mut self.spill_stack),
+            cell_stack: std::mem::take(&mut self.cell_stack),
+            inline_callee: self.inline_callee,
+            inline_args_base: self.inline_args_base,
+            inline_args_count: self.inline_args_count,
+        })
+    }
+
+    /// 把 [`save_inline_state`] 保存的状态完整恢复回 VM。
+    pub(crate) fn restore_inline_state(&mut self, saved: Box<InlineSyncState>) {
+        vm_trace!("restore_inline_state: pc={}", saved.pc);
+        self.regs = *saved.regs;
+        self.pc = saved.pc;
+        self.bytecode = saved.bytecode;
+        self.active_immutables = saved.active_immutables;
+        self.active_reg_limit = saved.active_reg_limit;
+        self.root_reg_limit = saved.root_reg_limit;
+        self.try_stack = saved.try_stack;
+        self.frames = saved.frames;
+        self.exception_value = saved.exception_value;
+        self.pending_exception = saved.pending_exception;
+        self.pending_error_kind = saved.pending_error_kind;
+        self.pending_completion = saved.pending_completion;
+        self.iters.for_in_iters = saved.for_in_iters;
+        self.iters.for_of_iters = saved.for_of_iters;
+        self.iters.last_for_of_result = saved.last_for_of_result;
+        self.saved_bytecode_stack = saved.saved_bytecode_stack;
+        self.saved_immutables_stack = saved.saved_immutables_stack;
+        self.save_stack = saved.save_stack;
+        self.spill_stack = saved.spill_stack;
+        self.cell_stack = saved.cell_stack;
+        self.inline_callee = saved.inline_callee;
+        self.inline_args_base = saved.inline_args_base;
+        self.inline_args_count = saved.inline_args_count;
+    }
+
     pub(crate) fn call_bytecode_function_inline(
         &mut self, callee: JsValue, callee_obj: &JsObject, receiver: JsValue, args: &[JsValue],
     ) -> Result<JsValue, String> {
@@ -54,37 +112,17 @@ impl Vm {
             self.raise_error_kind("RangeError", "Maximum call stack size exceeded")?;
             return Ok(JsValue::undefined());
         }
+        // 生成器函数调用返回迭代器对象，不执行函数体。
+        if self.sub_modules[sub_idx].is_generator {
+            return self.create_generator_object(callee, receiver, args);
+        }
         self.native_call_depth += 1;
 
         let subs = Arc::clone(&self.sub_modules);
         let sub = &subs[sub_idx];
 
         vm_trace!("call_bytecode: saving state pc={} depth={}", self.pc, self.frames.len());
-        let saved = Box::new(InlineSyncState {
-            regs: Box::new(self.regs),
-            pc: self.pc,
-            bytecode: std::mem::take(&mut self.bytecode),
-            active_immutables: self.active_immutables,
-            active_reg_limit: self.active_reg_limit,
-            root_reg_limit: self.root_reg_limit,
-            try_stack: std::mem::take(&mut self.try_stack),
-            frames: std::mem::take(&mut self.frames),
-            exception_value: self.exception_value.take(),
-            pending_exception: self.pending_exception.take(),
-            pending_error_kind: self.pending_error_kind.take(),
-            pending_completion: self.pending_completion,
-            for_in_iters: std::mem::take(&mut self.iters.for_in_iters),
-            for_of_iters: std::mem::take(&mut self.iters.for_of_iters),
-            last_for_of_result: self.iters.last_for_of_result,
-            saved_bytecode_stack: std::mem::take(&mut self.saved_bytecode_stack),
-            saved_immutables_stack: std::mem::take(&mut self.saved_immutables_stack),
-            save_stack: std::mem::take(&mut self.save_stack),
-            spill_stack: std::mem::take(&mut self.spill_stack),
-            cell_stack: std::mem::take(&mut self.cell_stack),
-            inline_callee: self.inline_callee,
-            inline_args_base: self.inline_args_base,
-            inline_args_count: self.inline_args_count,
-        });
+        let saved = self.save_inline_state();
 
         self.regs = [JsValue::undefined(); 256];
         self.pc = 0;
@@ -123,30 +161,7 @@ impl Vm {
         self.native_call_depth -= 1;
 
         vm_trace!("call_bytecode: restoring state pc={} result={:?}", saved.pc, result.as_ref().ok());
-        self.regs = *saved.regs;
-        self.pc = saved.pc;
-        self.bytecode = saved.bytecode;
-        self.active_immutables = saved.active_immutables;
-        self.active_reg_limit = saved.active_reg_limit;
-        self.root_reg_limit = saved.root_reg_limit;
-        self.try_stack = saved.try_stack;
-        self.frames = saved.frames;
-        self.exception_value = saved.exception_value;
-        self.pending_exception = saved.pending_exception;
-        self.pending_error_kind = saved.pending_error_kind;
-        self.pending_completion = saved.pending_completion;
-        self.iters.for_in_iters = saved.for_in_iters;
-        self.iters.for_of_iters = saved.for_of_iters;
-        self.iters.last_for_of_result = saved.last_for_of_result;
-        self.saved_bytecode_stack = saved.saved_bytecode_stack;
-        self.saved_immutables_stack = saved.saved_immutables_stack;
-        self.save_stack = saved.save_stack;
-        self.spill_stack = saved.spill_stack;
-        self.cell_stack = saved.cell_stack;
-        self.inline_callee = saved.inline_callee;
-        self.inline_args_base = saved.inline_args_base;
-        self.inline_args_count = saved.inline_args_count;
-
+        self.restore_inline_state(saved);
         result
     }
 

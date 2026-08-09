@@ -131,7 +131,7 @@ fn define_accessor_and_rest_object_carry_single_ext_word() {
     let mut f = base_module();
     f.insts
         .push(Inst::define_accessor(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2), 42));
-    f.insts.push(Inst::rest_object(Operand::Reg(3), Operand::Reg(4), 7));
+    f.insts.push(Inst::rest_object(Operand::Reg(3), Operand::Reg(4), 7, None));
     let m = lower_ok(&f);
     assert_eq!(m.bytecode.len(), 4);
     assert_eq!(opcode::opcode(m.bytecode[0]), OpCode::DEFINE_ACCESSOR);

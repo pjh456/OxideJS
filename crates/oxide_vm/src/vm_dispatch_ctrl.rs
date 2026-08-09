@@ -31,9 +31,16 @@ impl Vm {
                         self.dispatch_native_call(obj, callee, this_reg, first_arg_reg, arg_count)?;
                         return Ok(true);
                     } else if obj.sub_module_index() > 0 {
+                        let sub_idx = obj.sub_module_index() as usize;
                         let args: Vec<JsValue> = (0..arg_count)
                             .map(|i| self.regs[first_arg_reg.wrapping_add(i as u8) as usize])
                             .collect();
+                        // 生成器函数调用返回迭代器对象，不执行函数体。
+                        if sub_idx < self.sub_modules.len() && self.sub_modules[sub_idx].is_generator {
+                            let gen = self.create_generator_object(callee, self.regs[this_reg as usize], &args)?;
+                            self.regs[0] = gen;
+                            return Ok(false);
+                        }
                         self.push_bytecode_frame(
                             callee,
                             self.regs[this_reg as usize],
@@ -200,7 +207,7 @@ impl Vm {
     ///
     /// # 副作用
     /// - 清空 `pending_exception`/`pending_completion`，弹出被逃出的 handler。
-    fn record_completion(&mut self, c: Completion) -> Option<usize> {
+    pub(crate) fn record_completion(&mut self, c: Completion) -> Option<usize> {
         self.pending_exception = None;
         self.pending_error_kind = None;
         self.pending_completion = None;
@@ -273,7 +280,7 @@ impl Vm {
     /// - 只处理 `frame_depth == frames.len()` 的 handler：return 只逃出本帧，
     ///   调用者的 handler 必须保留。
     /// - 纯 catch 判定为 `finally_pc.is_none()`（不携带 finally 的 TRY_BEGIN）。
-    fn pop_frame_catch_handlers(&mut self) {
+    pub(crate) fn pop_frame_catch_handlers(&mut self) {
         let depth = self.frames.len();
         let mut kept = Vec::with_capacity(self.try_stack.len());
         for h in self.try_stack.drain(..) {
@@ -287,7 +294,7 @@ impl Vm {
 
     /// 实际执行返回：弹出当前帧并交付返回值（供 dispatch_return 与 finally 完成
     /// 恢复共用）。
-    fn do_return(&mut self, result: JsValue) -> Result<Option<JsValue>, String> {
+    pub(crate) fn do_return(&mut self, result: JsValue) -> Result<Option<JsValue>, String> {
         // 兜底：return 完成恢复路径（dispatch_try_finally_end 直达）也可能携带
         // 未清理的纯 catch handler，先弹出再弹帧。
         self.pop_frame_catch_handlers();
@@ -319,6 +326,10 @@ impl Vm {
                         vm_trace!("RETURN accessor_set");
                     }
                 }
+            }
+            // 生成器内嵌 dispatch：帧全部弹出后把结果交付恢复方，而非继续执行。
+            if self.frames.is_empty() && self.generator_dispatch {
+                return Ok(Some(result));
             }
             Ok(None)
         } else {

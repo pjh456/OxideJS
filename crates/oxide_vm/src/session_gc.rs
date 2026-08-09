@@ -89,6 +89,9 @@ impl SessionGc {
         if obj.is_data_view_obj() {
             edges.extend(data_view::data_view_native_edges(obj));
         }
+        if obj.is_generator_obj() {
+            edges.extend(crate::generator::generator_native_edges(obj));
+        }
         // 遍历 upvalue cell 中的对象引用。
         for cell_ptr in obj.upvalues_slice() {
             if cell_ptr.is_null() {
@@ -139,6 +142,13 @@ impl SessionGc {
         }
         if obj.is_set() {
             for value in set::set_native_edges(obj) {
+                if value.is_string() {
+                    live.insert(value.as_string_ptr_mut());
+                }
+            }
+        }
+        if obj.is_generator_obj() {
+            for value in crate::generator::generator_native_edges(obj) {
                 if value.is_string() {
                     live.insert(value.as_string_ptr_mut());
                 }
@@ -253,6 +263,7 @@ impl SessionGc {
             freed_bytes += regexp::drop_regexp_native(obj);
             freed_bytes += typed_array::drop_typed_array_native(obj);
             freed_bytes += data_view::drop_data_view_native(obj);
+            freed_bytes += crate::generator::drop_generator_native(obj);
 
             freed_bytes
         }
@@ -338,6 +349,8 @@ impl SessionGc {
                 typed_array::rewrite_typed_array_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
             } else if obj.is_data_view_obj() {
                 data_view::rewrite_data_view_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
+            } else if obj.is_generator_obj() {
+                crate::generator::rewrite_generator_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
             }
         }
 

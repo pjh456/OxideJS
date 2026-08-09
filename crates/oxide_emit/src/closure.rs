@@ -324,6 +324,150 @@ impl Emitter {
         }
     }
 
+    /// 扫描赋值目标中的引用（标识符写名，成员目标扫对象/键，解构目标递归元素）。
+    fn collect_capture_names_assign_target(
+        &self, target: &oxide_parser::AssignmentTarget, ref_set: &HashSet<String>, shadow: &HashSet<String>,
+        out: &mut HashSet<String>,
+    ) {
+        match target {
+            oxide_parser::AssignmentTarget::AssignmentTargetIdentifier(ati) => {
+                let name = ati.name.as_str();
+                if ref_set.contains(name) && !shadow.contains(name) {
+                    out.insert(ati.name.to_string());
+                }
+            }
+            oxide_parser::AssignmentTarget::StaticMemberExpression(m) => {
+                self.collect_capture_names_expr(&m.object, ref_set, shadow, out);
+            }
+            oxide_parser::AssignmentTarget::ComputedMemberExpression(m) => {
+                self.collect_capture_names_expr(&m.object, ref_set, shadow, out);
+                self.collect_capture_names_expr(&m.expression, ref_set, shadow, out);
+            }
+            oxide_parser::AssignmentTarget::ArrayAssignmentTarget(a) => {
+                for elem in &a.elements {
+                    if let Some(e) = elem {
+                        self.collect_capture_names_maybe_default_target(e, ref_set, shadow, out);
+                    }
+                }
+                if let Some(rest) = &a.rest {
+                    self.collect_capture_names_assign_target(&rest.target, ref_set, shadow, out);
+                }
+            }
+            oxide_parser::AssignmentTarget::ObjectAssignmentTarget(o) => {
+                for prop in &o.properties {
+                    if let oxide_parser::AssignmentTargetProperty::AssignmentTargetPropertyIdentifier(id) = prop {
+                        if ref_set.contains(id.binding.name.as_str()) && !shadow.contains(id.binding.name.as_str()) {
+                            out.insert(id.binding.name.to_string());
+                        }
+                        if let Some(init) = &id.init {
+                            self.collect_capture_names_expr(init, ref_set, shadow, out);
+                        }
+                    } else if let oxide_parser::AssignmentTargetProperty::AssignmentTargetPropertyProperty(p) = prop {
+                        if let Some(name_expr) = p.name.as_expression() {
+                            self.collect_capture_names_expr(name_expr, ref_set, shadow, out);
+                        }
+                        self.collect_capture_names_maybe_default_target(&p.binding, ref_set, shadow, out);
+                    }
+                }
+                if let Some(rest) = &o.rest {
+                    self.collect_capture_names_assign_target(&rest.target, ref_set, shadow, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 解构赋值元素可能是 `AssignmentTarget` 或带默认值的包装（后者多一层 `init`）。
+    fn collect_capture_names_maybe_default_target(
+        &self, target: &oxide_parser::AssignmentTargetMaybeDefault, ref_set: &HashSet<String>,
+        shadow: &HashSet<String>, out: &mut HashSet<String>,
+    ) {
+        use oxide_parser::AssignmentTargetMaybeDefault as MaybeDefault;
+        match target {
+            MaybeDefault::AssignmentTargetWithDefault(d) => {
+                self.collect_capture_names_expr(&d.init, ref_set, shadow, out);
+                self.collect_capture_names_assign_target(&d.binding, ref_set, shadow, out);
+            }
+            MaybeDefault::AssignmentTargetIdentifier(ati) => {
+                let name = ati.name.as_str();
+                if ref_set.contains(name) && !shadow.contains(name) {
+                    out.insert(ati.name.to_string());
+                }
+            }
+            MaybeDefault::StaticMemberExpression(m) => {
+                self.collect_capture_names_expr(&m.object, ref_set, shadow, out);
+            }
+            MaybeDefault::ComputedMemberExpression(m) => {
+                self.collect_capture_names_expr(&m.object, ref_set, shadow, out);
+                self.collect_capture_names_expr(&m.expression, ref_set, shadow, out);
+            }
+            MaybeDefault::ArrayAssignmentTarget(a) => {
+                for elem in &a.elements {
+                    if let Some(e) = elem {
+                        self.collect_capture_names_maybe_default_target(e, ref_set, shadow, out);
+                    }
+                }
+            }
+            MaybeDefault::ObjectAssignmentTarget(o) => {
+                for prop in &o.properties {
+                    if let oxide_parser::AssignmentTargetProperty::AssignmentTargetPropertyIdentifier(id) = prop {
+                        if ref_set.contains(id.binding.name.as_str()) && !shadow.contains(id.binding.name.as_str()) {
+                            out.insert(id.binding.name.to_string());
+                        }
+                        if let Some(init) = &id.init {
+                            self.collect_capture_names_expr(init, ref_set, shadow, out);
+                        }
+                    } else if let oxide_parser::AssignmentTargetProperty::AssignmentTargetPropertyProperty(p) = prop {
+                        if let Some(name_expr) = p.name.as_expression() {
+                            self.collect_capture_names_expr(name_expr, ref_set, shadow, out);
+                        }
+                        self.collect_capture_names_maybe_default_target(&p.binding, ref_set, shadow, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 扫描一元更新目标（`++x` / `obj.x++`）中的引用。
+    fn collect_capture_names_simple_target(
+        &self, target: &oxide_parser::SimpleAssignmentTarget, ref_set: &HashSet<String>, shadow: &HashSet<String>,
+        out: &mut HashSet<String>,
+    ) {
+        match target {
+            oxide_parser::SimpleAssignmentTarget::AssignmentTargetIdentifier(ati) => {
+                let name = ati.name.as_str();
+                if ref_set.contains(name) && !shadow.contains(name) {
+                    out.insert(ati.name.to_string());
+                }
+            }
+            oxide_parser::SimpleAssignmentTarget::StaticMemberExpression(m) => {
+                self.collect_capture_names_expr(&m.object, ref_set, shadow, out);
+            }
+            oxide_parser::SimpleAssignmentTarget::ComputedMemberExpression(m) => {
+                self.collect_capture_names_expr(&m.object, ref_set, shadow, out);
+                self.collect_capture_names_expr(&m.expression, ref_set, shadow, out);
+            }
+            _ => {}
+        }
+    }
+
+    /// `collect_captured_expr` 侧的赋值目标扫描：父绑定集合即 ref_set，无遮蔽。
+    fn collect_captured_assign_target(
+        &self, target: &oxide_parser::AssignmentTarget, own: &HashSet<String>, out: &mut HashSet<String>,
+    ) {
+        let empty = HashSet::new();
+        self.collect_capture_names_assign_target(target, own, &empty, out);
+    }
+
+    /// `collect_captured_expr` 侧的一元更新目标扫描。
+    fn collect_captured_simple_target(
+        &self, target: &oxide_parser::SimpleAssignmentTarget, own: &HashSet<String>, out: &mut HashSet<String>,
+    ) {
+        let empty = HashSet::new();
+        self.collect_capture_names_simple_target(target, own, &empty, out);
+    }
+
     /// 收集函数参数默认值表达式里的引用（子层 upvalue 判定；参数名遮蔽）。
     fn collect_fn_default_names(
         &self, params: &oxide_parser::FormalParameters, ref_set: &HashSet<String>, shadow: &HashSet<String>,
@@ -349,21 +493,12 @@ impl Emitter {
                 }
             }
             Expression::AssignmentExpression(ae) => {
-                if let oxide_parser::AssignmentTarget::AssignmentTargetIdentifier(ati) = &ae.left {
-                    let name = ati.name.as_str();
-                    if ref_set.contains(name) && !shadow.contains(name) {
-                        out.insert(ati.name.to_string());
-                    }
-                }
+                // 赋值目标里的引用也须捕获：标识符目标写名，成员/解构目标扫描其对象/元素。
+                self.collect_capture_names_assign_target(&ae.left, ref_set, shadow, out);
                 self.collect_capture_names_expr(&ae.right, ref_set, shadow, out);
             }
             Expression::UpdateExpression(ue) => {
-                if let oxide_parser::SimpleAssignmentTarget::AssignmentTargetIdentifier(ati) = &ue.argument {
-                    let name = ati.name.as_str();
-                    if ref_set.contains(name) && !shadow.contains(name) {
-                        out.insert(ati.name.to_string());
-                    }
-                }
+                self.collect_capture_names_simple_target(&ue.argument, ref_set, shadow, out);
             }
             Expression::FunctionExpression(fe) => {
                 let body: &[Statement] = fe.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
@@ -451,6 +586,13 @@ impl Emitter {
                     if let oxide_parser::ObjectPropertyKind::ObjectProperty(p) = prop {
                         self.collect_capture_names_expr(&p.value, ref_set, shadow, out);
                     }
+                }
+            }
+            // 生成器让出表达式：被让出的值里引用的父变量须纳入捕获，否则生成器体经
+            // LOAD_VAR 读调用方寄存器残留（挂起恢复后寄存器已被覆盖）。
+            Expression::YieldExpression(ye) => {
+                if let Some(a) = &ye.argument {
+                    self.collect_capture_names_expr(a, ref_set, shadow, out);
                 }
             }
             Expression::ChainExpression(c) => self.collect_capture_names_chain(&c.expression, ref_set, shadow, out),
@@ -716,7 +858,11 @@ impl Emitter {
                     self.collect_captured_expr(e, own, out);
                 }
             }
-            Expression::AssignmentExpression(ae) => self.collect_captured_expr(&ae.right, own, out),
+            Expression::AssignmentExpression(ae) => {
+                self.collect_captured_assign_target(&ae.left, own, out);
+                self.collect_captured_expr(&ae.right, own, out);
+            }
+            Expression::UpdateExpression(ue) => self.collect_captured_simple_target(&ue.argument, own, out),
             Expression::ArrayExpression(ae) => {
                 for e in &ae.elements {
                     if let Some(e) = e.as_expression() {
@@ -755,6 +901,11 @@ impl Emitter {
                 }
             }
             Expression::ParenthesizedExpression(p) => self.collect_captured_expr(&p.expression, own, out),
+            Expression::YieldExpression(ye) => {
+                if let Some(a) = &ye.argument {
+                    self.collect_captured_expr(a, own, out);
+                }
+            }
             Expression::ChainExpression(c) => self.collect_captured_chain(&c.expression, own, out),
             _ => {}
         }

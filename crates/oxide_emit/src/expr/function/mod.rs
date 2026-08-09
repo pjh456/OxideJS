@@ -76,7 +76,11 @@ impl Emitter {
 
         let body_stmts: &[Statement] = if let Some(body) = &fe.body { &body.statements } else { &[] };
 
-        let mut sub_module = self.compile_function_body(&param_names, body_stmts, ctx, false, false)?;
+        let mut sub_module = if fe.generator {
+            self.compile_generator_body(&param_names, body_stmts, ctx)?
+        } else {
+            self.compile_function_body(&param_names, body_stmts, ctx, false, false)?
+        };
         if let Some(id) = &fe.id {
             sub_module.function_name = Some(id.name.to_string());
         }

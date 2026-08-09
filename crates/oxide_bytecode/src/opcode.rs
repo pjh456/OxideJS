@@ -189,13 +189,18 @@ define_opcodes! {
     PROFILE_BRANCH = 0x6B => "PROFILE_BRANCH",
     PROFILE_CALL = 0x6C => "PROFILE_CALL",
 
-    // ── 并行 — 占位符 (0x70-0x7F) ──
+    // ── 并行 — 占位符 (0x70-0x75) ──
     FORK = 0x70 => "FORK",
     JOIN = 0x71 => "JOIN",
     GET_PRIVATE = 0x72 => "GET_PRIVATE",
     SET_PRIVATE = 0x73 => "SET_PRIVATE",
     INIT_PRIVATE = 0x74 => "INIT_PRIVATE",
     PRIVATE_BRAND_IN = 0x75 => "PRIVATE_BRAND_IN",
+
+    // ── 生成器 (0x76-0x77) ──
+    YIELD = 0x76 => "YIELD", // rd=被让出的值（结果经 reg 0 交付，见 contract.rs）
+    // 生成器 body 起点标记：调用时参数初始化完成后挂起于此，首次 next() 从这继续。
+    SUSPEND_BODY = 0x77 => "SUSPEND_BODY",
 
     // ── 位运算 (0x80-0x8F) ──
     BIT_AND = 0x80 => "BIT_AND",

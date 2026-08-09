@@ -401,8 +401,6 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
     let excluded_features = [
         "Proxy",
         "BigInt",
-        "generators",
-        "generator",
         "async-functions",
         "Intl",
         "Temporal",
@@ -416,12 +414,6 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
         if excluded_features.contains(&feat.as_str()) || feat.starts_with("Intl") {
             return Some(format!("excluded feature: {feat}"));
         }
-    }
-
-    // 仅当 description 与 features 都表明 generator/async 时才跳过
-    // （许多 description 含 "async" 的测试测的是非 async 功能）。
-    if meta.description.contains("generator") && meta.features.iter().any(|f| f.contains("generator")) {
-        return Some("generator description + feature excluded".into());
     }
 
     None

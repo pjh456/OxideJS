@@ -161,6 +161,8 @@ pub struct CompileCtx {
     pub(crate) in_derived_constructor: bool,
     pub(crate) in_instance_method: bool,
     pub(crate) in_static_method: bool,
+    /// 本函数是否为生成器函数体（`function*`），`assemble_ir` 回写到 IR。
+    pub(crate) is_generator: bool,
     pub(crate) static_block_this_reg: Option<u8>,
     pub(crate) field_buffer: Option<FieldBuffer>,
     /// 类构造器模块中 `@@field_keys` upvalue 下标（实例字段 computed key 数组）。
@@ -262,6 +264,7 @@ impl CompileCtx {
             in_derived_constructor: false,
             in_instance_method: false,
             in_static_method: false,
+            is_generator: false,
             static_block_this_reg: None,
             field_buffer: None,
             field_keys_uv: None,
@@ -603,6 +606,7 @@ impl CompileCtx {
             is_class_constructor: false,
             is_derived_constructor: false,
             needs_home_object: false,
+            is_generator: self.is_generator,
             captured_this_const_idx: 0,
             function_name: None,
             function_length: self.function_length,
@@ -701,26 +705,43 @@ impl Emitter {
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, is_arrow: bool,
     ) -> Result<IRFunction, String> {
+        self.compile_function_body_with_flags(param_specs, body_stmts, parent_ctx, is_expression_body, is_arrow, false)
+    }
+
+    /// 编译函数体并显式指定生成器标志（`function*` 走此入口）。
+    pub(crate) fn compile_generator_body<'a>(
+        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
+    ) -> Result<IRFunction, String> {
+        self.compile_function_body_with_flags(param_specs, body_stmts, parent_ctx, false, false, true)
+    }
+
+    fn compile_function_body_with_flags<'a>(
+        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
+        is_expression_body: bool, is_arrow: bool, is_generator: bool,
+    ) -> Result<IRFunction, String> {
         let body_context = if is_arrow {
             FunctionBodyContext::Arrow
         } else {
             FunctionBodyContext::Ordinary
         };
-        self.compile_function_body_with_bindings(
+        self.compile_function_body_with_bindings_gen(
             param_specs,
             body_stmts,
             parent_ctx,
             is_expression_body,
             &[],
             body_context,
+            is_generator,
         )
     }
 
-    pub(crate) fn compile_function_body_with_bindings<'a>(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn compile_function_body_with_bindings_gen<'a>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, extra_bindings: &[(&str, u32)], body_context: FunctionBodyContext,
+        is_generator: bool,
     ) -> Result<IRFunction, String> {
-        self.compile_function_body_with_field_hooks(
+        self.compile_function_body_with_field_hooks_gen(
             param_specs,
             body_stmts,
             parent_ctx,
@@ -731,6 +752,7 @@ impl Emitter {
             false,
             &[],
             &[],
+            is_generator,
         )
     }
 
@@ -745,13 +767,39 @@ impl Emitter {
     pub(crate) fn compile_function_body_with_field_hooks<'a, E>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, extra_bindings: &[(&str, u32)], body_context: FunctionBodyContext,
-        mut emit_fields: Option<E>, fields_after_super: bool, extra_capture_exprs: &[&'a Expression<'a>],
+        emit_fields: Option<E>, fields_after_super: bool, extra_capture_exprs: &[&'a Expression<'a>],
         extra_upvalue_names: &[(&str, u8)],
     ) -> Result<IRFunction, String>
     where
         E: FnMut(&Emitter, &mut CompileCtx) -> Result<(), String>,
     {
+        self.compile_function_body_with_field_hooks_gen(
+            param_specs,
+            body_stmts,
+            parent_ctx,
+            is_expression_body,
+            extra_bindings,
+            body_context,
+            emit_fields,
+            fields_after_super,
+            extra_capture_exprs,
+            extra_upvalue_names,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn compile_function_body_with_field_hooks_gen<'a, E>(
+        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
+        is_expression_body: bool, extra_bindings: &[(&str, u32)], body_context: FunctionBodyContext,
+        mut emit_fields: Option<E>, fields_after_super: bool, extra_capture_exprs: &[&'a Expression<'a>],
+        extra_upvalue_names: &[(&str, u8)], is_generator: bool,
+    ) -> Result<IRFunction, String>
+    where
+        E: FnMut(&Emitter, &mut CompileCtx) -> Result<(), String>,
+    {
         let mut ctx = CompileCtx::new();
+        ctx.is_generator = is_generator;
 
         // length = 第一个带默认值形参之前的形参数（解构默认与标识符默认同规则）；
         // rest 参数不在 param_specs 中（独立字段），天然不计入。
@@ -837,6 +885,12 @@ impl Emitter {
 
         // 预声明 `var` 名，使首个 sub-pass 中提升的函数声明能解析其闭包引用的外层 var。
         self.predeclare_var_declarations(body_stmts, &mut ctx);
+
+        // 生成器：body 起点标记——调用时参数初始化（emit_params_prologue）结束后挂起于此，
+        // 参数副作用/异常在 `g()` 调用时刻生效，首次 next() 从这继续执行 body。
+        if is_generator {
+            ctx.inst(Inst::suspend_body());
+        }
 
         if let Some(emit) = emit_fields.as_mut() {
             if fields_after_super {
@@ -1103,6 +1157,7 @@ impl Emitter {
             | Expression::ClassExpression(_)
             | Expression::NewExpression(_) => self.emit_function_domain(expr, ctx),
             Expression::Identifier(ident) => self.emit_identifier_expression(ident, ctx),
+            Expression::YieldExpression(ye) => self.emit_yield_expression(ye, ctx),
             Expression::CallExpression(_) => self.emit_call_domain(expr, ctx),
             Expression::ThisExpression(_) => self.emit_this_expression(ctx),
             Expression::SequenceExpression(seq) => self.emit_sequence_expression(seq, ctx),

@@ -267,6 +267,17 @@ impl Inst {
         Self::new(OpCode::CREATE_ARGUMENTS, dst, Operand::None, Operand::None)
     }
 
+    /// 生成器让出：`rd` 为被让出的值；恢复时 `next(v)` 的 `v` 经 reg 0 交付
+    /// （与 CALL 同协议，emit 用 `LOAD_VAR(None)` 读取）。
+    pub fn yield_value(src: Operand) -> Self {
+        Self::new(OpCode::YIELD, src, Operand::None, Operand::None)
+    }
+
+    /// 生成器 body 起点标记：调用时参数初始化完成后挂起于此，首次 `next()` 继续。
+    pub fn suspend_body() -> Self {
+        Self::new(OpCode::SUSPEND_BODY, Operand::None, Operand::None, Operand::None)
+    }
+
     // ── 跳转族：label 放 b 槽，offset 计算是 lowering 职责 ──
 
     /// 无条件跳转。label 放 b 槽，offset 由 lowering 回填。
@@ -384,7 +395,7 @@ mod tests {
         assert_eq!(accessor.a, Operand::Reg(1));
         assert_eq!(accessor.b, Operand::Reg(2));
 
-        let rest = Inst::rest_object(Operand::Reg(0), Operand::Reg(1), 7);
+        let rest = Inst::rest_object(Operand::Reg(0), Operand::Reg(1), 7, None);
         assert_eq!(rest.ext.as_slice(), &[7]);
 
         let spread = Inst::spread_object(Operand::Reg(0), Operand::Reg(1));

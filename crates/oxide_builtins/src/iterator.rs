@@ -320,7 +320,8 @@ fn current_index<H: VmHost>(vm: &mut H, wrapper: &JsObject, index_si: u32) -> us
     }
 }
 
-fn make_iter_result<H: VmHost>(vm: &mut H, value: JsValue, done: bool) -> JsValue {
+/// 构造迭代器结果对象 `{value, done}`（生成器 next/return 结果复用）。
+pub fn make_iter_result<H: VmHost>(vm: &mut H, value: JsValue, done: bool) -> JsValue {
     let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
     let obj = vm
         .epoch()

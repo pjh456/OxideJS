@@ -19,6 +19,8 @@ impl Inst {
         match self.op {
             // CALL 系：结果隐式写 reg 0，rd 是 callee 的 use
             OpCode::CALL | OpCode::CALL_NATIVE | OpCode::CALL_SPREAD => Some(0),
+            // YIELD：恢复时 next(v) 的 v 经 reg 0 交付（与 CALL 同协议）
+            OpCode::YIELD => Some(0),
             // GET_PROP 系：结果写 a/b 槽而非 rd
             OpCode::GET_PROP | OpCode::IC_GET_PROP => reg_of(&self.a),
             OpCode::GET_PROP_DYNAMIC => reg_of(&self.b),
@@ -70,7 +72,8 @@ impl Inst {
             | OpCode::FOR_IN_INIT
             | OpCode::FOR_OF_INIT
             | OpCode::FOR_IN_CLEANUP
-            | OpCode::FOR_OF_CLOSE => None,
+            | OpCode::FOR_OF_CLOSE
+            | OpCode::SUSPEND_BODY => None,
             // 其余指令 rd 即 def（算术/比较/位/逻辑/加载族/迭代器 NEXT 等）
             _ => reg_of(&self.rd),
         }
@@ -208,7 +211,7 @@ impl Inst {
             OpCode::NEG | OpCode::NOT | OpCode::UNARY_PLUS | OpCode::BIT_NOT | OpCode::TYPEOF => {
                 push_operand(&mut uses, &self.a);
             }
-            // 无条件跳转 / try 标记：b 是 Label，无寄存器
+            // 无条件跳转 / try 标记 / 生成器 body 标记：无寄存器
             OpCode::JMP
             | OpCode::BREAK
             | OpCode::CONTINUE
@@ -217,15 +220,16 @@ impl Inst {
             | OpCode::TRY_END
             | OpCode::TRY_FINALLY_END
             | OpCode::FOR_IN_CLEANUP
-            | OpCode::FOR_OF_CLOSE => {}
+            | OpCode::FOR_OF_CLOSE
+            | OpCode::SUSPEND_BODY => {}
             // 条件跳转：rd=cond
             OpCode::JMP_IF_FALSE | OpCode::JMP_IF_TRUE | OpCode::JMP_IF_NULLISH => {
                 push_operand(&mut uses, &self.rd);
             }
             // HALT：隐式读 reg 0（顶层返回值）
             OpCode::HALT => uses.push(0),
-            // RETURN/THROW：读 rd（None→0）
-            OpCode::RETURN | OpCode::THROW => push_operand(&mut uses, &self.rd),
+            // RETURN/THROW/YIELD：读 rd（None→0）
+            OpCode::RETURN | OpCode::THROW | OpCode::YIELD => push_operand(&mut uses, &self.rd),
             // 加载族：a 槽是 Const/Imm 立即数，无寄存器 use
             OpCode::LOAD_CONST
             | OpCode::CREATE_CLOSURE
@@ -611,9 +615,10 @@ mod tests {
 
     #[test]
     fn rest_object_uses_a() {
-        let inst = Inst::rest_object(Operand::Reg(0), Operand::Reg(1), 7);
+        let inst = Inst::rest_object(Operand::Reg(0), Operand::Reg(1), 7, None);
         assert_eq!(inst.def_reg(), Some(0));
-        assert_eq!(inst.use_regs().as_slice(), &[1]);
+        // b 槽 None 映射 reg 0（excl_arr 缺省），REST_OBJECT 运行时同时读源与排除键。
+        assert_eq!(inst.use_regs().as_slice(), &[1, 0]);
     }
 
     #[test]
@@ -744,7 +749,7 @@ mod tests {
         assert!(!Inst::new(OpCode::COMPOUND_ADD, Operand::Reg(0), Operand::Reg(1), Operand::None).is_pure(&f));
         assert!(!Inst::new(OpCode::MEMBER_INC, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
         assert!(!Inst::new(OpCode::COMPOUND_MEMBER_ADD, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
-        assert!(!Inst::rest_object(Operand::Reg(0), Operand::Reg(1), 7).is_pure(&f));
+        assert!(!Inst::rest_object(Operand::Reg(0), Operand::Reg(1), 7, None).is_pure(&f));
         assert!(!Inst::new(OpCode::INSTANCEOF, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
         assert!(!Inst::new(OpCode::IN, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
         assert!(!Inst::new(OpCode::GET_PRIVATE, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));

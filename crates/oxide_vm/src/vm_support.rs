@@ -21,7 +21,7 @@ impl Vm {
         let mut session = KernelSession::new(&core);
         bindings::init_kernel_builtins(&core, &mut session);
         let obj_proto = P::clone(&session.builtin_world().object_proto);
-        let vm = Self {
+        let mut vm = Self {
             regs: [JsValue::undefined(); 256],
             pc: 0,
             bytecode: Vec::new(),
@@ -32,6 +32,8 @@ impl Vm {
             session,
             epoch: Epoch::new(),
             object_prototype: obj_proto,
+            generator_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+            generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             math_rng_state: 0,
             sub_modules: Arc::new(Vec::new()),
             saved_bytecode_stack: Vec::new(),
@@ -51,6 +53,10 @@ impl Vm {
             inline_args_count: 0,
             accessor_frame_target_reg: None,
             inline_callee: None,
+            generator_suspended: None,
+            generator_dispatch: false,
+            generator_init_step: false,
+            generator_body_started: false,
             gc_state: GcState {
                 session_epoch: bumpalo::Bump::new(),
                 session_gc: crate::session_gc::SessionGc::new(),
@@ -78,6 +84,7 @@ impl Vm {
             string_buf: String::new(),
             cell_stack: Vec::new(),
         };
+        vm.init_generator_intrinsics();
         vm_info!("Vm created");
         vm
     }
@@ -87,7 +94,7 @@ impl Vm {
         let mut session = KernelSession::new(&core);
         bindings::init_kernel_builtins(&core, &mut session);
         let obj_proto = P::clone(&session.builtin_world().object_proto);
-        let vm = Self {
+        let mut vm = Self {
             regs: [JsValue::undefined(); 256],
             pc: 0,
             bytecode: Vec::new(),
@@ -98,6 +105,8 @@ impl Vm {
             session,
             epoch: Epoch::new(),
             object_prototype: obj_proto,
+            generator_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+            generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             math_rng_state: 0,
             sub_modules: Arc::new(Vec::new()),
             saved_bytecode_stack: Vec::new(),
@@ -117,6 +126,10 @@ impl Vm {
             inline_args_count: 0,
             accessor_frame_target_reg: None,
             inline_callee: None,
+            generator_suspended: None,
+            generator_dispatch: false,
+            generator_init_step: false,
+            generator_body_started: false,
             gc_state: GcState {
                 session_epoch: bumpalo::Bump::new(),
                 session_gc: crate::session_gc::SessionGc::new(),
@@ -144,8 +157,17 @@ impl Vm {
             string_buf: String::new(),
             cell_stack: Vec::new(),
         };
+        vm.init_generator_intrinsics();
         vm_info!("Vm created (pool)");
         vm
+    }
+
+    /// 初始化/重建生成器内建对象（`%GeneratorPrototype%` 与 `%GeneratorFunction.prototype%`）。
+    ///
+    /// 在 VM 创建与 `full_reset`（session 重建）后调用——原型继承自 session 的
+    /// Object/Function 原型，session 重建后须重挂。
+    pub(crate) fn init_generator_intrinsics(&mut self) {
+        crate::generator::init_generator_intrinsics(self);
     }
 
     /// 全量隔离重置：仅重建被污染的内置对象与 global，并清空所有执行状态与内存。
@@ -163,6 +185,7 @@ impl Vm {
         }
         self.session.record_snapshot();
         self.object_prototype = P::clone(&self.session.builtin_world().object_proto);
+        self.init_generator_intrinsics();
         self.clear_full_reset_state();
         vm_info!("full_reset completed");
     }
@@ -173,6 +196,7 @@ impl Vm {
         self.session = KernelSession::new(&self.kernel_core);
         bindings::init_kernel_builtins(&self.kernel_core, &mut self.session);
         self.object_prototype = P::clone(&self.session.builtin_world().object_proto);
+        self.init_generator_intrinsics();
         self.clear_full_reset_state();
     }
 
@@ -226,6 +250,10 @@ impl Vm {
         self.pending_exception = None;
         self.pending_error_kind = None;
         self.pending_completion = None;
+        self.generator_suspended = None;
+        self.generator_dispatch = false;
+        self.generator_init_step = false;
+        self.generator_body_started = false;
         self.native_call_depth = 0;
     }
 
@@ -290,8 +318,14 @@ impl Vm {
         &mut self, sub_idx: u32, is_arrow: bool, is_class_constructor: bool, is_derived_constructor: bool,
         needs_home_object: bool,
     ) -> JsValue {
-        let func_proto_ptr = self.session.builtin_world().function_proto.as_ptr() as *mut JsObject;
-        let proto_val = JsValue::from_js_object(func_proto_ptr);
+        // 生成器函数对象：原型为 %GeneratorFunction.prototype%（constructor 链解析到
+        // "GeneratorFunction"），且不像普通函数那样拥有 `prototype` 属性。
+        let is_generator = self.sub_modules.get(sub_idx as usize).map(|m| m.is_generator).unwrap_or(false);
+        let proto_val = if is_generator {
+            JsValue::from_js_object(self.generator_function_proto.as_ptr() as *mut JsObject)
+        } else {
+            JsValue::from_js_object(self.session.builtin_world().function_proto.as_ptr() as *mut JsObject)
+        };
         let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto_val);
         obj.set_function(true);
         obj.set_sub_module_index(sub_idx);
@@ -306,26 +340,36 @@ impl Vm {
         let func_val = JsValue::object(obj_ptr as *mut u8);
 
         if !is_arrow {
-            let object_proto_ptr = self.session.builtin_world().object_proto.as_ptr() as *mut JsObject;
-            let prototype_obj = self
-                .epoch
-                .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto_ptr)));
+            // 原型对象自身的 [[Prototype]]：生成器为 %GeneratorPrototype%，普通函数为 Object.prototype。
+            let proto_of_proto = if is_generator {
+                JsValue::from_js_object(self.generator_proto.as_ptr() as *mut JsObject)
+            } else {
+                JsValue::from_js_object(self.session.builtin_world().object_proto.as_ptr() as *mut JsObject)
+            };
+            let prototype_obj = self.epoch.alloc(JsObject::new_empty(EMPTY_SHAPE_ID, proto_of_proto));
             self.gc_state.track_epoch_object(prototype_obj);
             let prototype_val = JsValue::from_js_object(prototype_obj);
 
-            let constructor_si = self.kernel_core.perm_interner().intern("constructor").0;
-            let constructor_shape = self.kernel_core.shape_forge().make_shape(EMPTY_SHAPE_ID, constructor_si);
-            let prototype = unsafe { &mut *prototype_obj };
-            prototype.set_shape_id(constructor_shape);
-            let constructor_pos = prototype.push_prop(func_val);
-            prototype.set_data_meta(constructor_pos, PropAttributes::new(true, false, true));
-            prototype.bump_generation();
+            if !is_generator {
+                // 普通函数：prototype 对象带 constructor 指回函数。
+                let constructor_si = self.kernel_core.perm_interner().intern("constructor").0;
+                let constructor_shape = self.kernel_core.shape_forge().make_shape(EMPTY_SHAPE_ID, constructor_si);
+                let prototype = unsafe { &mut *prototype_obj };
+                prototype.set_shape_id(constructor_shape);
+                let constructor_pos = prototype.push_prop(func_val);
+                prototype.set_data_meta(constructor_pos, PropAttributes::new(true, false, true));
+                prototype.bump_generation();
+            }
 
+            // 函数自身 `prototype` 属性：生成器 writable:true / enumerable:false / configurable:false。
             let prototype_si = self.kernel_core.perm_interner().intern("prototype").0;
             let func = unsafe { &mut *obj_ptr };
             let prototype_shape = self.kernel_core.shape_forge().make_shape(func.shape_id(), prototype_si);
             func.set_shape_id(prototype_shape);
-            func.ensure_hash_props().push(prototype_val);
+            let prototype_pos = func.push_prop(prototype_val);
+            if is_generator {
+                func.set_data_meta(prototype_pos, PropAttributes::new(true, false, false));
+            }
             func.bump_generation();
         }
 

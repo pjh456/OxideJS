@@ -398,6 +398,8 @@ impl JsObject {
     pub const OBJ_TYPE_TYPED_ARRAY: u8 = 8;
     /// native 构造器（Set/Array/Object 等，可 [[Construct]]）；区别于不可构造的 native 方法。
     pub const OBJ_TYPE_CONSTRUCTOR: u8 = 9;
+    /// 生成器迭代器对象（`function*` 调用返回）：状态快照存于 `native_data`。
+    pub const OBJ_TYPE_GENERATOR: u8 = 10;
     /// `is_session_epoch` 字段中的 session 标记位。
     pub const SESSION_EPOCH_BIT: u8 = 0x01;
     /// `is_session_epoch` 字段中的 GC 标记位。
@@ -442,6 +444,11 @@ impl JsObject {
     #[inline]
     pub fn is_typed_array_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_TYPED_ARRAY
+    }
+    /// 是否生成器迭代器对象。
+    #[inline]
+    pub fn is_generator_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_GENERATOR
     }
 
     /// 构造无属性、可扩展的空对象（`new Object()` 的基础对象）。

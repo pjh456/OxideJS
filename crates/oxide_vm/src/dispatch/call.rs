@@ -741,6 +741,13 @@ impl Vm {
                             }
                         }
                     } else if obj.sub_module_index() > 0 {
+                        let sub_idx = obj.sub_module_index() as usize;
+                        // 生成器函数调用返回迭代器对象，不执行函数体。
+                        if sub_idx < self.sub_modules.len() && self.sub_modules[sub_idx].is_generator {
+                            let gen = self.create_generator_object(callee, this_value, &args)?;
+                            self.regs[0] = gen;
+                            return Ok(false);
+                        }
                         self.push_bytecode_frame(
                             callee,
                             this_value,
@@ -827,6 +834,12 @@ impl Vm {
                 }
             }
         } else if ctor_obj.sub_module_index() > 0 {
+            // 生成器函数不是构造器：`new g()` 抛 TypeError。
+            if (ctor_obj.sub_module_index() as usize) < self.sub_modules.len()
+                && self.sub_modules[ctor_obj.sub_module_index() as usize].is_generator
+            {
+                return self.raise_type_error("g is not a constructor").map(|_| true);
+            }
             if self.frames.len() >= self.kernel_core.config.max_call_depth {
                 return Err(self.error_message_text("RangeError", "Maximum call stack size exceeded"));
             }

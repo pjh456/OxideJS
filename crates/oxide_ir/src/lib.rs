@@ -50,6 +50,8 @@ pub struct IRFunction {
     pub is_class_constructor: bool,
     pub is_derived_constructor: bool,
     pub needs_home_object: bool,
+    /// 是否为生成器函数体（`function*`）。
+    pub is_generator: bool,
     pub captured_this_const_idx: u16,
     pub function_name: Option<String>,
     /// 函数 `length` 属性值：第一个带默认值/解构默认的形参之前的形参数（rest 不计）。
@@ -80,6 +82,7 @@ impl IRFunction {
             is_class_constructor: false,
             is_derived_constructor: false,
             needs_home_object: false,
+            is_generator: false,
             captured_this_const_idx: 0,
             function_name: None,
             function_length: 0,

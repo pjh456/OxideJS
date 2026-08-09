@@ -17,6 +17,7 @@ pub mod operator;
 pub mod parenthesized;
 pub mod template;
 pub mod this;
+pub mod yield_expr;
 
 impl Emitter {
     pub(crate) fn emit_unsupported_expression(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u32, String> {
