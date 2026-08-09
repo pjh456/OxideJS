@@ -203,8 +203,10 @@ impl Inst {
     }
 
     /// 对象 rest 展开：`{...src, 排除 excluded_idx 常量列出的键}` 存入 `rest`。
-    pub fn rest_object(rest: Operand, src: Operand, excluded_idx: u32) -> Self {
-        Self::with_ext(OpCode::REST_OBJECT, rest, src, Operand::None, &[excluded_idx])
+    /// `excl_arr` 为可选运行时 excluded 键数组寄存器（computed key 求值结果），
+    /// None 时仅用编译期 excluded_idx 常量。
+    pub fn rest_object(rest: Operand, src: Operand, excluded_idx: u32, excl_arr: Option<Operand>) -> Self {
+        Self::with_ext(OpCode::REST_OBJECT, rest, src, excl_arr.unwrap_or(Operand::None), &[excluded_idx])
     }
 
     /// 对象字面量 spread 展开：把源 `src` 的可枚举自有属性写入目标对象 `rd`（原地改）。

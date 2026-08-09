@@ -1453,7 +1453,7 @@ impl Vm {
                 }
 
                 OpCode::REST_OBJECT => {
-                    self.dispatch_rest_object(rd, a)?;
+                    self.dispatch_rest_object(rd, a, b)?;
                 }
 
                 OpCode::SPREAD_OBJECT => {

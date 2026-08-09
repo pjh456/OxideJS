@@ -180,12 +180,28 @@ pub(super) fn build(
                 at_i.push(fr.id);
             }
         }
-        // 两两加边
+        // 两两加边（基于 live_before：约束 use/def 与执行前存活值）
         for a in 0..at_i.len() {
             for b in a + 1..at_i.len() {
                 let (x, y) = (at_i[a], at_i[b]);
                 adj_sets.entry(x).or_default().insert(y);
                 adj_sets.entry(y).or_default().insert(x);
+            }
+        }
+        // def 结果与执行后仍存活的值冲突（写覆盖）：live_after 含 def 后存活者。
+        // live_before 已 kill def 自身，纯写指令（FOR_OF_NEXT 等）的结果若与长活
+        // 寄存器同色会覆盖其值（elision 解构返回值被覆盖），须补此干涉边。
+        if let Some(d) = f.insts[i].def_reg() {
+            if nodes.contains_key(&d) {
+                for &v in &node_ids {
+                    if v == d {
+                        continue;
+                    }
+                    if live.inst_live_after[i].get(v as usize).copied().unwrap_or(false) {
+                        adj_sets.entry(d).or_default().insert(v);
+                        adj_sets.entry(v).or_default().insert(d);
+                    }
+                }
             }
         }
     }

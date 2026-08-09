@@ -5,7 +5,7 @@ use oxide_builtins::iterator::make_iterator_for_value;
 use oxide_builtins::{builtins_debug, builtins_trace};
 use oxide_bytecode::opcode;
 use oxide_runtime_api::{to_boolean, NativeResult};
-use oxide_types::object::{Cell, JsObject};
+use oxide_types::object::{Cell, JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 use std::sync::Arc;
 
@@ -135,7 +135,8 @@ impl Vm {
             .as_deref()
             .map(|n| self.new_string(n))
             .unwrap_or_else(|| self.new_string(""));
-        self.set_or_create_prop_value(func_obj, name_si, name_val);
+        // name 属性描述符：不可写、不可枚举、可配置（SetFunctionName 语义）。
+        self.define_data_property(func_obj, name_si, name_val, PropAttributes::new(false, false, true))?;
         if !upvalue_captures.is_empty() {
             // 链式捕获（parent_uv_idx）：从父闭包（创建者）的 upvalues 取 cell。
             let parent_upvalues: Vec<*mut Cell> = match self.current_callee() {

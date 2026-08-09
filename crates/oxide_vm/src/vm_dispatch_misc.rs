@@ -521,6 +521,18 @@ impl Vm {
         let Some(iterator) = self.iters.pop_for_of() else {
             return Ok(());
         };
+        // 迭代已自然结束（最后一次 next 返回 done:true）时不调 return()；
+        // 仅当元素耗尽但迭代器未 done（提前退出）才执行 IteratorClose。
+        let result = self.iters.last_for_of_result();
+        if result.is_object() {
+            let result_obj = unsafe { &*result.as_js_object_ptr() };
+            let done_si = self.kernel_core.perm_interner().intern("done").0;
+            if let Ok(done_val) = self.ordinary_get(result_obj, done_si, result) {
+                if to_boolean(done_val) {
+                    return Ok(());
+                }
+            }
+        }
         // 正常 / break / return 退出：此前无进行中的突然完成，return() 自身的抛出直接传播。
         self.close_for_of_iterator(iterator, false)
     }
@@ -558,7 +570,16 @@ impl Vm {
                     self.exception_value = saved_exc;
                     self.pending_error_kind = saved_kind;
                 } else {
-                    let _ = self.call_function_sync(return_fn, iterator, &[])?;
+                    let inner = match self.call_function_sync(return_fn, iterator, &[]) {
+                        Ok(v) => v,
+                        // return() 抛出：恢复原始异常值并展开，使外围 try/catch 可捕获。
+                        Err(e) => return self.raise_call_error(&e).map(|_| ()),
+                    };
+                    // IteratorClose 要求 return() 返回值是对象，否则抛 TypeError。
+                    if !inner.is_object() {
+                        self.raise_type_error("iterator return() result is not an object")?;
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -577,7 +598,7 @@ impl Vm {
         }
     }
 
-    pub(crate) fn dispatch_rest_object(&mut self, rd: usize, a: usize) -> Result<(), String> {
+    pub(crate) fn dispatch_rest_object(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
         vm_trace!("REST_OBJECT rd={}", rd);
         // ext 字（excluded 常量下标）在任何路径都先消费，防止 ToObject 早返回后
         // pc 错位把 ext 字当下一条指令解码（曾误读成 UNSPILL slot）。
@@ -608,7 +629,7 @@ impl Vm {
             self.regs[rd] = JsValue::from_js_object(rest_ptr);
             return Ok(());
         }
-        let excluded = self
+        let excluded_const = self
             .immutables()
             .get(excluded_idx)
             .and_then(|v| {
@@ -620,39 +641,96 @@ impl Vm {
                 }
             })
             .unwrap_or_default();
-        let excluded: std::collections::HashSet<&str> = excluded.split('\0').filter(|s| !s.is_empty()).collect();
+        let mut excluded: std::collections::HashSet<u32> = excluded_const
+            .split('\0')
+            .filter(|s| !s.is_empty())
+            .map(|s| self.kernel_core.perm_interner().intern(s).0)
+            .collect();
+        // 运行时 excluded：b 槽数组（computed key 求值结果）的元素 ToPropertyKey 后排除。
+        if b != 0 {
+            let arr_val = self.regs[b];
+            if arr_val.is_object() {
+                let arr_obj = unsafe { &*arr_val.as_js_object_ptr() };
+                if arr_obj.is_array() {
+                    for i in 0..arr_obj.array_prop_count {
+                        let v = arr_obj.get_prop_at(i);
+                        let si = self.property_key_si(v);
+                        excluded.insert(si);
+                    }
+                }
+            }
+        }
 
+        let src_obj = unsafe { &*src.as_js_object_ptr() };
+
+        // 收集-提交：先取齐 (键, 值)，取值阶段触发 getter（可能抛异常），再统一写
+        // 目标对象，避免提交写与取值互相交错。只复制可枚举自有属性（CopyDataProperties）。
+        let mut assignments: Vec<(u32, JsValue)> = Vec::new();
+
+        // 字符串包装对象：索引字符是可枚举自有属性（ToObject("str") 的 0..len-1）。
+        if src_obj.type_tag == JsObject::OBJ_TYPE_STRING_OBJ {
+            let raw = src_obj.get_prop_at(0);
+            let s = unsafe { (*raw.as_string_ptr()).data.clone() };
+            let code_units: Vec<u16> = s.encode_utf16().collect();
+            for (i, unit) in code_units.iter().enumerate() {
+                let ch = char::from_u32(*unit as u32).map(|c| c.to_string()).unwrap_or_default();
+                let si = self.kernel_core.perm_interner().intern(&i.to_string()).0;
+                assignments.push((si, self.new_string(&ch)));
+            }
+        }
+
+        // 数组元素区：整数下标可枚举元素（hole 跳过）。
+        if src_obj.is_array() {
+            for i in 0..src_obj.array_prop_count {
+                if src_obj.prop_meta_at(i).is_some_and(|m| m.is_hole()) {
+                    continue;
+                }
+                let enumerable = src_obj
+                    .prop_meta_at(i)
+                    .map(|m| m.attributes.enumerable())
+                    .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable());
+                if enumerable {
+                    let si = self.kernel_core.perm_interner().intern(&i.to_string()).0;
+                    let val = match self.ordinary_get(src_obj, si, src) {
+                        Ok(v) => v,
+                        Err(e) => return self.raise_call_error(&e).map(|_| ()),
+                    };
+                    assignments.push((si, val));
+                }
+            }
+        }
+
+        // 命名属性：shape 链（walk_own_keys 规范顺序），仅可枚举，跳过 pattern 已绑定的键。
+        let keys = oxide_builtins::object::walk_own_keys(self, src_obj);
+        for (si, pos) in keys {
+            let store = if src_obj.is_array() { src_obj.array_prop_count + pos } else { pos };
+            let enumerable = src_obj
+                .prop_meta_at(store)
+                .map(|m| m.attributes.enumerable())
+                .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable());
+            if !enumerable {
+                continue;
+            }
+            if excluded.contains(&si) {
+                continue;
+            }
+            let val = match self.ordinary_get(src_obj, si, src) {
+                Ok(v) => v,
+                Err(e) => return self.raise_call_error(&e).map(|_| ()),
+            };
+            assignments.push((si, val));
+        }
+
+        // 提交到 rest 对象。
         let proto_ptr = self.session.builtin_world().object_proto.as_ptr() as *mut JsObject;
         let rest_ptr = self.alloc_object(JsObject::new_empty(
             oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
             JsValue::from_js_object(proto_ptr),
         ));
-        let src_obj = unsafe { &*src.as_js_object_ptr() };
-        let mut cursor = Some(src_obj.shape_id());
-        while let Some(shape_id) = cursor {
-            if shape_id == oxide_kernel::shape_forge::EMPTY_SHAPE_ID {
-                break;
-            }
-            let Some(shape) = self.kernel_core.shape_forge().get_shape(shape_id) else {
-                break;
-            };
-            if shape.property_name != u32::MAX && !is_private_name_key(shape.property_name) {
-                if let Some(name) = self.kernel_core.perm_interner().lookup(shape.property_name) {
-                    if !excluded.contains(name) {
-                        if let Some(pos) = self
-                            .kernel_core
-                            .shape_forge()
-                            .lookup_position(src_obj.shape_id(), shape.property_name)
-                        {
-                            let val = src_obj.get_prop_at(pos);
-                            let rest = unsafe { &mut *rest_ptr };
-                            let val = self.promote_if_needed_for_write_ptr(rest_ptr, val);
-                            self.set_or_create_prop_value(rest, shape.property_name, val);
-                        }
-                    }
-                }
-            }
-            cursor = shape.parent;
+        let rest = unsafe { &mut *rest_ptr };
+        for (si, val) in assignments {
+            let promoted = self.promote_if_needed_for_write_ptr(rest_ptr, val);
+            self.set_or_create_prop_value(rest, si, promoted);
         }
         self.regs[rd] = JsValue::from_js_object(rest_ptr);
         Ok(())

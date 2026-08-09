@@ -301,8 +301,11 @@ impl Inst {
             // for-in/of 迭代器：INIT 读 a；NEXT/DONE 读迭代器栈隐式状态
             OpCode::FOR_IN_INIT | OpCode::FOR_OF_INIT => push_operand(&mut uses, &self.a),
             OpCode::FOR_IN_NEXT | OpCode::FOR_IN_DONE | OpCode::FOR_OF_NEXT | OpCode::FOR_OF_DONE => {}
-            // REST_OBJECT：读 a（ext 是 excluded_idx 常量）
-            OpCode::REST_OBJECT => push_operand(&mut uses, &self.a),
+            // REST_OBJECT：读 a（src）与可选 b（运行时 excluded 数组），ext 是 excluded_idx 常量
+            OpCode::REST_OBJECT => {
+                push_operand(&mut uses, &self.a);
+                push_operand(&mut uses, &self.b);
+            }
             // SPREAD_OBJECT：原地改目标对象，读目标（rd）与源（a）
             OpCode::SPREAD_OBJECT => {
                 push_operand(&mut uses, &self.rd);

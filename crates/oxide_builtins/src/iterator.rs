@@ -65,9 +65,19 @@ pub(crate) fn try_make_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result
     vm.set_or_create_prop_value(wrapper_obj, next_si, next_fn);
 
     // 把 IteratorClose 转发给内层迭代器，使 for-of 异常退出时可清理。
+    // 仅当内层提供可调用的 return 方法时包装器才暴露 return：内建集合
+    // （数组/字符串等索引迭代）无 return 方法，此时 GetMethod 应返回 undefined
+    // （IteratorClose 跳过），否则 return() 结果 undefined 会被误判为非对象报错。
     let return_si = vm.kernel_core().perm_interner().intern("return").0;
-    let return_fn = make_native_function(vm, "return", iterator_wrapper_return::<H> as *const (), 0);
-    vm.set_or_create_prop_value(wrapper_obj, return_si, return_fn);
+    if inner.is_object() {
+        let inner_obj = unsafe { &*inner.as_js_object_ptr() };
+        if let Ok(return_fn) = vm.ordinary_get(inner_obj, return_si, inner) {
+            if is_callable(return_fn) {
+                let wrapper_return = make_native_function(vm, "return", iterator_wrapper_return::<H> as *const (), 0);
+                vm.set_or_create_prop_value(wrapper_obj, return_si, wrapper_return);
+            }
+        }
+    }
 
     Ok(Some(JsValue::from_js_object(wrapper)))
 }

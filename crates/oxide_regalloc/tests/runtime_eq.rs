@@ -54,6 +54,11 @@ fn regalloc_preserves_semantics() {
         "function f(n) { var s = 0; for (var i = 0; i < n; i++) { s += i * i; } return s; } f(10);",
         // 解构
         "function f() { var [a, b] = [1, 2]; var { c, d } = { c: 3, d: 4 }; return a + b + c + d; } f();",
+        // elision 解构赋值：返回值寄存器与 FOR_OF_NEXT 结果须异色（def 干涉边回归）
+        "var result; var vals = [1, 2, 3]; result = [,] = vals; result[0] + result[1] + result[2];",
+        "var result; var vals = [1, 2, 3]; var x, y, z; result = [x, y, z] = vals; x + y + z;",
+        // 嵌套数组解构（内层迭代器覆盖外层 last result，done 检查须正确）
+        "var x; var vals = [[1]]; var result = [[x]] = vals; x;",
         // 闭包（upvalue cell 路径）
         "function f() { var x = 1; return function() { return x++; }; } var g = f(); var r = [g(), g(), g()]; r[0] + r[1] + r[2];",
         // 箭头函数

@@ -58,6 +58,11 @@ impl Vm {
         if val.is_object() {
             return Ok(());
         }
+        if val.is_null() || val.is_undefined() {
+            // 抛 JS 异常而非返回 Err：外围 try/catch 须能捕获（对象解构空 pattern）。
+            self.raise_error_kind("TypeError", "Cannot convert null or undefined to object")?;
+            return Ok(());
+        }
         let obj_val = oxide_runtime_api::to_object(val, self)?;
         self.regs[rd] = obj_val;
         Ok(())

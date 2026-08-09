@@ -22,6 +22,17 @@ impl Emitter {
         names
     }
 
+    /// 收集 for-in/for-of 头部声明（`var x` / 解构 pattern）绑定的名字。
+    fn collect_for_left_decl_names(&self, left: &oxide_parser::ForStatementLeft, out: &mut HashSet<String>) {
+        if let oxide_parser::ForStatementLeft::VariableDeclaration(vd) = left {
+            for d in &vd.declarations {
+                if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
+                    out.insert(bi.name.to_string());
+                }
+            }
+        }
+    }
+
     /// 收集当前函数作用域声明的绑定名（参数 + 变量/函数声明，含嵌套 block，不含嵌套函数体）。
     pub(crate) fn collect_own_binding_names(&self, param_names: &[&str], stmts: &[Statement]) -> HashSet<String> {
         let mut names = HashSet::new();
@@ -66,6 +77,28 @@ impl Emitter {
                     }
                     self.collect_decl_names_stmt(std::slice::from_ref(&f.body), out);
                 }
+                // for-in / for-of 头部的 var 声明是本函数局部绑定（遮蔽外层同名），
+                // 须计入 own_bindings，否则闭包捕获分析会误判为捕获外层变量。
+                Statement::ForInStatement(fi) => {
+                    if let oxide_parser::ForStatementLeft::VariableDeclaration(vd) = &fi.left {
+                        for d in &vd.declarations {
+                            if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
+                                out.insert(bi.name.to_string());
+                            }
+                        }
+                    }
+                    self.collect_decl_names_stmt(std::slice::from_ref(&fi.body), out);
+                }
+                Statement::ForOfStatement(fo) => {
+                    if let oxide_parser::ForStatementLeft::VariableDeclaration(vd) = &fo.left {
+                        for d in &vd.declarations {
+                            if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
+                                out.insert(bi.name.to_string());
+                            }
+                        }
+                    }
+                    self.collect_decl_names_stmt(std::slice::from_ref(&fo.body), out);
+                }
                 Statement::SwitchStatement(sw) => {
                     for case in &sw.cases {
                         self.collect_decl_names_stmt(&case.consequent, out);
@@ -85,13 +118,6 @@ impl Emitter {
                 _ => {}
             }
         }
-    }
-
-    /// 扫描 stmts 内（含任意深度嵌套函数）对 `ref_set` 的引用，写入 out。
-    /// 递归进入嵌套函数时累加其局部绑定为遮蔽集，避免把内层局部误判为捕获。
-    fn collect_capture_names(&self, stmts: &[Statement], ref_set: &HashSet<String>, out: &mut HashSet<String>) {
-        let shadow = HashSet::new();
-        self.collect_capture_names_shadowed(stmts, ref_set, &shadow, out);
     }
 
     fn collect_capture_names_shadowed(
@@ -174,11 +200,16 @@ impl Emitter {
             }
             Statement::ForInStatement(fi) => {
                 self.collect_capture_names_expr(&fi.right, ref_set, shadow, out);
-                self.collect_capture_names_stmt(&fi.body, ref_set, shadow, out);
+                // left 的 var 声明遮蔽外层同名绑定，body 内引用不视为捕获外层。
+                let mut for_shadow = shadow.clone();
+                self.collect_for_left_decl_names(&fi.left, &mut for_shadow);
+                self.collect_capture_names_shadowed(std::slice::from_ref(&fi.body), ref_set, &for_shadow, out);
             }
             Statement::ForOfStatement(fo) => {
                 self.collect_capture_names_expr(&fo.right, ref_set, shadow, out);
-                self.collect_capture_names_stmt(&fo.body, ref_set, shadow, out);
+                let mut for_shadow = shadow.clone();
+                self.collect_for_left_decl_names(&fo.left, &mut for_shadow);
+                self.collect_capture_names_shadowed(std::slice::from_ref(&fo.body), ref_set, &for_shadow, out);
             }
             Statement::BlockStatement(b) => self.collect_capture_names_shadowed(&b.body, ref_set, shadow, out),
             Statement::TryStatement(ts) => {
@@ -501,7 +532,11 @@ impl Emitter {
             Statement::FunctionDeclaration(fd) => {
                 let body: &[Statement] = fd.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
                 self.collect_fn_default_captured(&fd.params, own, out);
-                self.collect_capture_names(body, own, out);
+                // 函数参数与体内部声明遮蔽父级绑定：体内对这些名字的引用不算捕获父级。
+                let mut fn_shadow = HashSet::new();
+                fn_shadow.extend(self.collect_fn_param_names(&fd.params));
+                fn_shadow.extend(self.collect_own_binding_names(&[], body));
+                self.collect_capture_names_shadowed(body, own, &fn_shadow, out);
             }
             Statement::ClassDeclaration(cd) => {
                 // 类构造器/方法体与字段表达式引用的父级绑定须建 cell，供子模块 upvalue 捕获。

@@ -281,11 +281,11 @@ impl Emitter {
 
     pub(crate) fn emit_object_property_read_key(
         &self, src_reg: u32, key: &PropertyKey, computed: bool, ctx: &mut CompileCtx,
-    ) -> Result<(u32, Option<String>), String> {
+    ) -> Result<(u32, Option<String>, Option<u32>), String> {
         if !computed {
             let key_name = self.static_property_name(key)?;
             let prop_reg = self.emit_object_property_read(src_reg, &key_name, ctx);
-            return Ok((prop_reg, Some(key_name)));
+            return Ok((prop_reg, Some(key_name), None));
         }
         let prop_reg = ctx.alloc_reg();
         ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(prop_reg), Operand::Reg(src_reg), Operand::None));
@@ -297,6 +297,6 @@ impl Emitter {
             Operand::Reg(key_reg),
             Operand::Reg(val_reg),
         ));
-        Ok((val_reg, None))
+        Ok((val_reg, None, Some(key_reg)))
     }
 }

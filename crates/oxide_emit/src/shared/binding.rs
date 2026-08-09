@@ -190,21 +190,72 @@ impl Emitter {
     fn emit_object_binding(
         &self, op: &ObjectPattern, src_reg: u32, kind: VariableDeclarationKind, is_const: bool, ctx: &mut CompileCtx,
     ) -> Result<(), String> {
+        // 对象解构先 ToObject(rhs)：null/undefined 抛 TypeError（含空 pattern），
+        // 原始值包装为对应对象，保证属性读取与 rest 都以对象为源。
+        // 写到临时寄存器，保留 src_reg 原值（声明初始化路径的返回值语义）。
+        let obj_reg = ctx.alloc_reg();
+        ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(obj_reg), Operand::Reg(src_reg), Operand::None));
+        ctx.inst(Inst::new(OpCode::TO_OBJECT, Operand::Reg(obj_reg), Operand::None, Operand::None));
+        // 有 rest 时构建运行时 excluded 数组：静态 key 直接 push 常量，computed key 求值结果 push 值。
         let mut excluded = Vec::new();
+        let mut excl_arr_reg = None;
+        let mut excl_push = 0usize;
+        if op.rest.is_some() {
+            excl_arr_reg = Some(self.emit_new_excluded_array(ctx));
+        }
         for prop in &op.properties {
-            let (prop_reg, static_key) = self.emit_object_property_read_key(src_reg, &prop.key, prop.computed, ctx)?;
+            let (prop_reg, static_key, key_reg) =
+                self.emit_object_property_read_key(obj_reg, &prop.key, prop.computed, ctx)?;
             if let Some(key) = static_key {
-                excluded.push(key);
+                excluded.push(key.clone());
+                if let Some(arr) = excl_arr_reg {
+                    self.emit_push_excluded_key(arr, None, &key, excl_push, ctx);
+                    excl_push += 1;
+                }
+            } else if let (Some(arr), Some(key_reg)) = (excl_arr_reg, key_reg) {
+                self.emit_push_excluded_key(arr, Some(key_reg), "", excl_push, ctx);
+                excl_push += 1;
             }
             self.emit_binding_pattern(&prop.value, prop_reg, kind, is_const, ctx)?;
         }
         if let Some(rest) = &op.rest {
             let rest_reg = ctx.alloc_reg();
             let excluded_idx = ctx.add_constant(Constant::String(excluded.join("\0")));
-            ctx.inst(Inst::rest_object(Operand::Reg(rest_reg), Operand::Reg(src_reg), excluded_idx as u32));
+            ctx.inst(Inst::rest_object(
+                Operand::Reg(rest_reg),
+                Operand::Reg(obj_reg),
+                excluded_idx as u32,
+                excl_arr_reg.map(Operand::Reg),
+            ));
             self.emit_binding_pattern(&rest.argument, rest_reg, kind, is_const, ctx)?;
         }
         Ok(())
+    }
+
+    /// 新建运行时 excluded 数组（NEW_ARRAY），供 REST_OBJECT 排除 computed key。
+    fn emit_new_excluded_array(&self, ctx: &mut CompileCtx) -> u32 {
+        let arr = ctx.alloc_reg();
+        ctx.inst(Inst::new(OpCode::NEW_ARRAY, Operand::Reg(arr), Operand::None, Operand::None));
+        arr
+    }
+
+    /// 向 excluded 数组下标 `idx` 写入一个键：`key_val` 为运行时寄存器值，否则用 `key_str` 常量。
+    fn emit_push_excluded_key(
+        &self, arr: u32, key_val: Option<u32>, key_str: &str, idx: usize, ctx: &mut CompileCtx,
+    ) {
+        let val_reg = match key_val {
+            Some(kv) => kv,
+            None => {
+                let ki = ctx.add_constant(Constant::String(key_str.to_string()));
+                let kr = ctx.alloc_reg();
+                ctx.inst(Inst::load_const(Operand::Reg(kr), ki));
+                kr
+            }
+        };
+        let elem_idx = ctx.alloc_reg();
+        let cidx = ctx.add_constant(Constant::Int(idx as i32));
+        ctx.inst(Inst::load_const(Operand::Reg(elem_idx), cidx));
+        ctx.inst(Inst::new(OpCode::SET_ELEM, Operand::Reg(arr), Operand::Reg(elem_idx), Operand::Reg(val_reg)));
     }
 
     fn emit_assignment_maybe_default(
@@ -260,13 +311,28 @@ impl Emitter {
     pub(crate) fn emit_object_assignment(
         &self, op: &ObjectAssignmentTarget, src_reg: u32, ctx: &mut CompileCtx,
     ) -> Result<(), String> {
+        // 对象解构先 ToObject(rhs)：null/undefined 抛 TypeError（含空 pattern），
+        // 原始值包装为对应对象，保证属性读取与 rest 都以对象为源。
+        // 写到临时寄存器，保留 src_reg 原值（解构赋值表达式返回值 = rhs）。
+        let obj_reg = ctx.alloc_reg();
+        ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(obj_reg), Operand::Reg(src_reg), Operand::None));
+        ctx.inst(Inst::new(OpCode::TO_OBJECT, Operand::Reg(obj_reg), Operand::None, Operand::None));
         let mut excluded = Vec::new();
+        let mut excl_arr_reg = None;
+        let mut excl_push = 0usize;
+        if op.rest.is_some() {
+            excl_arr_reg = Some(self.emit_new_excluded_array(ctx));
+        }
         for prop in &op.properties {
             match prop {
                 AssignmentTargetProperty::AssignmentTargetPropertyIdentifier(id) => {
                     let key = id.binding.name.as_str().to_string();
                     excluded.push(key.clone());
-                    let mut prop_reg = self.emit_object_property_read(src_reg, &key, ctx);
+                    if let Some(arr) = excl_arr_reg {
+                        self.emit_push_excluded_key(arr, None, &key, excl_push, ctx);
+                        excl_push += 1;
+                    }
+                    let mut prop_reg = self.emit_object_property_read(obj_reg, &key, ctx);
                     if let Some(default_expr) = &id.init {
                         let name = id.binding.name.as_str();
                         prop_reg = self.emit_default_if_undefined(prop_reg, default_expr, Some(name), ctx)?;
@@ -281,10 +347,17 @@ impl Emitter {
                     ));
                 }
                 AssignmentTargetProperty::AssignmentTargetPropertyProperty(prop) => {
-                    let (prop_reg, static_key) =
-                        self.emit_object_property_read_key(src_reg, &prop.name, prop.computed, ctx)?;
+                    let (prop_reg, static_key, key_reg) =
+                        self.emit_object_property_read_key(obj_reg, &prop.name, prop.computed, ctx)?;
                     if let Some(key) = static_key {
-                        excluded.push(key);
+                        excluded.push(key.clone());
+                        if let Some(arr) = excl_arr_reg {
+                            self.emit_push_excluded_key(arr, None, &key, excl_push, ctx);
+                            excl_push += 1;
+                        }
+                    } else if let (Some(arr), Some(key_reg)) = (excl_arr_reg, key_reg) {
+                        self.emit_push_excluded_key(arr, Some(key_reg), "", excl_push, ctx);
+                        excl_push += 1;
                     }
                     self.emit_assignment_maybe_default(&prop.binding, prop_reg, ctx)?;
                 }
@@ -293,7 +366,12 @@ impl Emitter {
         if let Some(rest) = &op.rest {
             let rest_reg = ctx.alloc_reg();
             let excluded_idx = ctx.add_constant(Constant::String(excluded.join("\0")));
-            ctx.inst(Inst::rest_object(Operand::Reg(rest_reg), Operand::Reg(src_reg), excluded_idx as u32));
+            ctx.inst(Inst::rest_object(
+                Operand::Reg(rest_reg),
+                Operand::Reg(obj_reg),
+                excluded_idx as u32,
+                excl_arr_reg.map(Operand::Reg),
+            ));
             self.emit_assign_target(&rest.target, rest_reg, ctx)?;
         }
         Ok(())
