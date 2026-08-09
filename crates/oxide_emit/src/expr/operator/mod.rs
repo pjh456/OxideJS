@@ -451,19 +451,20 @@ impl Emitter {
             ));
             Ok(if update.prefix { new_reg } else { old_reg })
         } else if let Some(cell_idx) = captured_cell {
-            // 被捕获 cell：CELL_GET + 常量 1 + ADD/SUB + CELL_SET
-            let val_reg = ctx.alloc_reg();
+            // 被捕获 cell：CELL_GET 旧值 + 常量 1 + ADD/SUB + CELL_SET。
+            // 后缀形式须保留旧值（结果寄存器），前缀返回新值。
+            let old_reg = ctx.alloc_reg();
             if let Some((binding, _)) = ctx.scopes.symbols.lookup_any_binding(name) {
                 ctx.inst(Inst::new(
                     OpCode::CELL_GET,
-                    Operand::Reg(val_reg),
+                    Operand::Reg(old_reg),
                     Operand::Reg(binding.reg),
                     Operand::Imm(cell_idx as u16),
                 ));
             } else {
                 ctx.inst(Inst::new(
                     OpCode::CELL_GET,
-                    Operand::Reg(val_reg),
+                    Operand::Reg(old_reg),
                     Operand::None,
                     Operand::Imm(cell_idx as u16),
                 ));
@@ -476,14 +477,15 @@ impl Emitter {
             } else {
                 OpCode::SUB
             };
-            ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(val_reg), Operand::Reg(one_reg)));
+            let new_reg = ctx.alloc_reg();
+            ctx.inst(Inst::new(op, Operand::Reg(new_reg), Operand::Reg(old_reg), Operand::Reg(one_reg)));
             ctx.inst(Inst::new(
                 OpCode::CELL_SET,
                 Operand::None,
-                Operand::Reg(val_reg),
+                Operand::Reg(new_reg),
                 Operand::Imm(cell_idx as u16),
             ));
-            Ok(val_reg)
+            Ok(if update.prefix { new_reg } else { old_reg })
         } else {
             let var_reg = ctx.lookup_or_global(name);
             let result_reg = ctx.alloc_reg();

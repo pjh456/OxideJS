@@ -130,6 +130,23 @@ impl Vm {
         }
     }
 
+    /// define 数据属性：rd=目标对象，a=值，b=键。与 SET_PROP 不同，不触发原型链
+    /// setter，走 `define_data_property`（默认属性 writable/enumerable/configurable）。
+    pub(crate) fn dispatch_define_prop(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("DEFINE_PROP rd={} value={} key={}", rd, a, b);
+        let obj_val = self.regs[rd];
+        if !obj_val.is_object() {
+            return self.raise_type_error("DEFINE_PROP target is not object");
+        }
+        let prop_name_si = self.property_key_si(self.regs[b]);
+        let value = self.regs[a];
+        let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
+        match self.define_data_property(obj, prop_name_si, value, PropAttributes::DEFAULT_DATA) {
+            Ok(()) => Ok(()),
+            Err(msg) => self.raise_error_kind("TypeError", &msg),
+        }
+    }
+
     /// break 完成：`crossed`（rd 槽）为 emit 词法算出的逃出 finally 域数。
     /// 逐个穿越 finally 后跳转到目标；crossed 为 0 时直接跳转。
     pub(crate) fn dispatch_break(&mut self, instr: u32) {

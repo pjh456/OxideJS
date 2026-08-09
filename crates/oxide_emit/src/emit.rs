@@ -167,6 +167,11 @@ pub struct CompileCtx {
     pub(crate) in_static_method: bool,
     pub(crate) static_block_this_reg: Option<u8>,
     pub(crate) field_buffer: Option<FieldBuffer>,
+    /// 类构造器模块中 `@@field_keys` upvalue 下标（实例字段 computed key 数组）。
+    /// 类定义期求值一次存入 cell，构造器经此 upvalue 读取。
+    pub(crate) field_keys_uv: Option<u8>,
+    /// 类定义期全部 computed key 数组寄存器（方法/静态字段阶段按 slot 读取）。
+    pub(crate) class_keys_reg: Option<u32>,
     pub(crate) current_upvalue_captures: Vec<UpvalueCapture>,
     /// 本函数作用域声明的绑定名（参数 + 变量/函数声明，AST 收集，emit 前确定）。
     pub(crate) own_bindings: HashSet<String>,
@@ -258,6 +263,8 @@ impl CompileCtx {
             in_static_method: false,
             static_block_this_reg: None,
             field_buffer: None,
+            field_keys_uv: None,
+            class_keys_reg: None,
             current_upvalue_captures: Vec::new(),
             own_bindings: HashSet::new(),
             captured_bindings: BTreeMap::new(),
@@ -718,6 +725,8 @@ impl Emitter {
             body_context,
             None::<fn(&Emitter, &mut CompileCtx) -> Result<(), String>>,
             false,
+            &[],
+            &[],
         )
     }
 
@@ -733,6 +742,7 @@ impl Emitter {
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, extra_bindings: &[(&str, u32)], body_context: FunctionBodyContext,
         mut emit_fields: Option<E>, fields_after_super: bool,
+        extra_capture_exprs: &[&'a Expression<'a>], extra_upvalue_names: &[(&str, u8)],
     ) -> Result<IRFunction, String>
     where
         E: FnMut(&Emitter, &mut CompileCtx) -> Result<(), String>,
@@ -788,7 +798,21 @@ impl Emitter {
         // 让 next_reg 与 builtin 槽位对齐，参数在 builtin 槽之后分配。
         ctx.reset_regs();
 
-        let param_base = self.emit_params_prologue(param_specs, body_stmts, parent_ctx, &mut ctx, body_context)?;
+        let param_base = self.emit_params_prologue(
+            param_specs,
+            body_stmts,
+            parent_ctx,
+            &mut ctx,
+            body_context,
+            extra_capture_exprs,
+            extra_upvalue_names,
+        )?;
+        // 实例字段 computed key 数组所在 upvalue 下标，供字段初始化 emit 定位。
+        ctx.field_keys_uv = ctx
+            .current_upvalue_captures
+            .iter()
+            .position(|u| u.name == "@@field_keys")
+            .map(|i| i as u8);
 
         self.predeclare_function_declarations(body_stmts, &mut ctx);
 
@@ -854,7 +878,8 @@ impl Emitter {
     /// 参数 prologue：函数作用域 + 参数声明/解构 + 闭包捕获与 upvalue 分析。返回 param_base。
     fn emit_params_prologue<'a>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
-        ctx: &mut CompileCtx, body_context: FunctionBodyContext,
+        ctx: &mut CompileCtx, body_context: FunctionBodyContext, extra_capture_exprs: &[&'a Expression<'a>],
+        extra_upvalue_names: &[(&str, u8)],
     ) -> Result<u32, String> {
         ctx.push_scope_with_kind(ScopeKind::FunctionScope);
         let param_base = ctx.next_reg;
@@ -900,7 +925,10 @@ impl Emitter {
             arguments_reg = Some(reg);
         }
 
-        ctx.captured_bindings = self.collect_captured_bindings(body_stmts, &param_defaults, &ctx.own_bindings);
+        // 字段初始化表达式（值表达式）与参数默认值一并纳入捕获分析。
+        let mut capture_exprs: Vec<&oxide_parser::Expression> = param_defaults.clone();
+        capture_exprs.extend_from_slice(extra_capture_exprs);
+        ctx.captured_bindings = self.collect_captured_bindings(body_stmts, &capture_exprs, &ctx.own_bindings);
         // 自由变量分析：收集 upvalue 捕获（类方法也是普通函数，可捕获外层变量）。
         if matches!(
             body_context,
@@ -908,11 +936,22 @@ impl Emitter {
         ) {
             ctx.current_upvalue_captures = self.collect_upvalue_names(
                 body_stmts,
-                &param_defaults,
+                &capture_exprs,
                 &parent_ctx.captured_bindings,
                 &parent_ctx.current_upvalue_captures,
                 &ctx.own_bindings,
             );
+            // 类字段 computed key 数组等合成捕获：直接追加 upvalue（cell_idx 由父分配）。
+            for (name, cell_idx) in extra_upvalue_names {
+                if !ctx.current_upvalue_captures.iter().any(|u| u.name == *name) {
+                    ctx.current_upvalue_captures.push(UpvalueCapture {
+                        name: (*name).to_string(),
+                        enclosing_reg: 0,
+                        cell_idx: *cell_idx,
+                        parent_uv_idx: None,
+                    });
+                }
+            }
         }
 
         // 创建 arguments 对象：指令须在默认参数求值前发出（默认参数可引用 arguments）。

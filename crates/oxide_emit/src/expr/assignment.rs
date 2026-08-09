@@ -221,25 +221,65 @@ impl Emitter {
                     let store_label = ctx.next_label_id();
                     let end_label = ctx.next_label_id();
                     let name = id_ref.name.as_str();
-                    let var_reg = ctx.lookup_or_global(name);
+                    // 目标判定：upvalue / 被捕获 cell / 普通槽，读与写须穿透共享单元。
+                    let uv_idx = ctx.current_upvalue_captures.iter().position(|u| u.name == name);
+                    let captured_cell = ctx.captured_bindings.get(name).copied();
                     let result_reg = ctx.alloc_reg();
-                    ctx.inst(Inst::new(
-                        OpCode::LOAD_VAR,
-                        Operand::Reg(result_reg),
-                        Operand::Reg(var_reg),
-                        Operand::None,
-                    ));
+                    if let Some(uv) = uv_idx {
+                        ctx.inst(Inst::new(
+                            OpCode::LOAD_UPVALUE,
+                            Operand::Reg(result_reg),
+                            Operand::Imm(uv as u16),
+                            Operand::None,
+                        ));
+                    } else if let Some(cell_idx) = captured_cell {
+                        let a_operand = match ctx.scopes.symbols.lookup_any_binding(name) {
+                            Some((binding, _)) => Operand::Reg(binding.reg),
+                            None => Operand::None,
+                        };
+                        ctx.inst(Inst::new(
+                            OpCode::CELL_GET,
+                            Operand::Reg(result_reg),
+                            a_operand,
+                            Operand::Imm(cell_idx as u16),
+                        ));
+                    } else {
+                        let var_reg = ctx.lookup_or_global(name);
+                        ctx.inst(Inst::new(
+                            OpCode::LOAD_VAR,
+                            Operand::Reg(result_reg),
+                            Operand::Reg(var_reg),
+                            Operand::None,
+                        ));
+                    }
                     self.emit_logical_assign_test(logical_op, result_reg, store_label, end_label, ctx)?;
                     ctx.labels.set_label_pos(store_label, ctx.insts.len());
                     let val_reg = self.emit_expression(&assign.right, ctx)?;
-                    let is_const = ctx.lookup_const_flag(name);
-                    let const_flag = if is_const { 1 } else { 0 };
-                    ctx.inst(Inst::new(
-                        OpCode::STORE_VAR,
-                        Operand::Reg(var_reg),
-                        Operand::Reg(val_reg),
-                        Operand::Imm(const_flag),
-                    ));
+                    if let Some(uv) = uv_idx {
+                        ctx.inst(Inst::new(
+                            OpCode::STORE_UPVALUE,
+                            Operand::None,
+                            Operand::Reg(val_reg),
+                            Operand::Imm(uv as u16),
+                        ));
+                    } else if let Some(cell_idx) = captured_cell {
+                        ctx.inst(Inst::new(
+                            OpCode::CELL_SET,
+                            Operand::None,
+                            Operand::Reg(val_reg),
+                            Operand::Imm(cell_idx as u16),
+                        ));
+                    } else {
+                        let is_const = ctx.lookup_const_flag(name);
+                        let const_flag = if is_const { 1 } else { 0 };
+                        let var_reg = ctx.lookup_or_global(name);
+                        ctx.inst(Inst::new(
+                            OpCode::STORE_VAR,
+                            Operand::Reg(var_reg),
+                            Operand::Reg(val_reg),
+                            Operand::Imm(const_flag),
+                        ));
+                    }
                     ctx.inst(Inst::new(
                         OpCode::LOAD_VAR,
                         Operand::Reg(result_reg),

@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use oxide_bytecode::module::UpvalueCapture;
-use oxide_parser::{Expression, Statement};
+use oxide_parser::{ClassBody, ClassElement, Expression, Statement};
 
 use crate::Emitter;
 
@@ -127,6 +127,15 @@ impl Emitter {
                 self.collect_fn_default_names(&fd.params, ref_set, shadow, out);
                 self.collect_capture_names_shadowed(body, ref_set, &inner, out);
             }
+            Statement::ClassDeclaration(cd) => {
+                // 类体（构造器/方法体、字段键与值、静态块）是嵌套作用域：
+                // 类名遮蔽外层绑定，方法形参与方法体局部进一步遮蔽。
+                let mut class_shadow = shadow.clone();
+                if let Some(id) = &cd.id {
+                    class_shadow.insert(id.name.as_str().to_string());
+                }
+                self.collect_class_capture_names(&cd.body, ref_set, &class_shadow, out);
+            }
             Statement::IfStatement(is) => {
                 self.collect_capture_names_expr(&is.test, ref_set, shadow, out);
                 self.collect_capture_names_stmt(&is.consequent, ref_set, shadow, out);
@@ -208,6 +217,38 @@ impl Emitter {
                 self.collect_capture_names_stmt(&ws.body, ref_set, shadow, out);
             }
             _ => {}
+        }
+    }
+
+    /// 收集类体对 `ref_set` 的引用：方法/构造器体、字段键与值、静态块。
+    /// 方法形参与方法体局部声明遮蔽外层绑定（捕获判定用）。
+    fn collect_class_capture_names(
+        &self, class_body: &ClassBody, ref_set: &HashSet<String>, class_shadow: &HashSet<String>,
+        out: &mut HashSet<String>,
+    ) {
+        for element in &class_body.body {
+            match element {
+                ClassElement::MethodDefinition(method) => {
+                    let mut inner = class_shadow.clone();
+                    inner.extend(self.collect_fn_param_names(&method.value.params));
+                    let body: &[Statement] = method.value.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
+                    inner.extend(self.collect_own_binding_names(&[], body));
+                    self.collect_fn_default_names(&method.value.params, ref_set, class_shadow, out);
+                    self.collect_capture_names_shadowed(body, ref_set, &inner, out);
+                }
+                ClassElement::PropertyDefinition(prop) => {
+                    if let Some(expr) = prop.key.as_expression() {
+                        self.collect_capture_names_expr(expr, ref_set, class_shadow, out);
+                    }
+                    if let Some(value) = &prop.value {
+                        self.collect_capture_names_expr(value, ref_set, class_shadow, out);
+                    }
+                }
+                ClassElement::StaticBlock(block) => {
+                    self.collect_capture_names_shadowed(&block.body, ref_set, class_shadow, out);
+                }
+                _ => {}
+            }
         }
     }
 
@@ -301,6 +342,14 @@ impl Emitter {
                 inner.extend(self.collect_own_binding_names(&[], &ae.body.statements));
                 self.collect_fn_default_names(&ae.params, ref_set, shadow, out);
                 self.collect_capture_names_shadowed(&ae.body.statements, ref_set, &inner, out);
+            }
+            Expression::ClassExpression(class) => {
+                // 类表达式：方法/构造器体与字段表达式是嵌套作用域，引用须捕获。
+                let mut class_shadow = shadow.clone();
+                if let Some(id) = &class.id {
+                    class_shadow.insert(id.name.as_str().to_string());
+                }
+                self.collect_class_capture_names(&class.body, ref_set, &class_shadow, out);
             }
             Expression::BinaryExpression(be) => {
                 self.collect_capture_names_expr(&be.left, ref_set, shadow, out);
@@ -447,6 +496,14 @@ impl Emitter {
                 self.collect_fn_default_captured(&fd.params, own, out);
                 self.collect_capture_names(body, own, out);
             }
+            Statement::ClassDeclaration(cd) => {
+                // 类构造器/方法体与字段表达式引用的父级绑定须建 cell，供子模块 upvalue 捕获。
+                let mut class_shadow = HashSet::new();
+                if let Some(id) = &cd.id {
+                    class_shadow.insert(id.name.as_str().to_string());
+                }
+                self.collect_class_capture_names(&cd.body, own, &class_shadow, out);
+            }
             Statement::ExpressionStatement(es) => self.collect_captured_expr(&es.expression, own, out),
             Statement::ReturnStatement(rs) => {
                 if let Some(a) = &rs.argument {
@@ -583,6 +640,14 @@ impl Emitter {
                 inner.extend(self.collect_own_binding_names(&[], &ae.body.statements));
                 self.collect_fn_default_captured(&ae.params, own, out);
                 self.collect_capture_names_shadowed(&ae.body.statements, own, &inner, out);
+            }
+            Expression::ClassExpression(class) => {
+                // 类表达式：构造器/方法体与字段表达式引用的父级绑定须建 cell。
+                let mut class_shadow = HashSet::new();
+                if let Some(id) = &class.id {
+                    class_shadow.insert(id.name.as_str().to_string());
+                }
+                self.collect_class_capture_names(&class.body, own, &class_shadow, out);
             }
             Expression::CallExpression(ce) => {
                 self.collect_captured_expr(&ce.callee, own, out);

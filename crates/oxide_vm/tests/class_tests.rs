@@ -352,3 +352,77 @@ fn this_survives_native_call_inside_method() {
     .unwrap();
     assert_eq!(result.as_int(), 7);
 }
+
+#[test]
+fn computed_field_key_evaluated_once_at_class_definition() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var n=0; class C { [++n] = 1; [++n] = 2; } n").unwrap();
+    assert_num(result, 2.0);
+}
+
+#[test]
+fn computed_field_key_once_but_value_per_instance() {
+    let mut vm = Vm::new();
+    let result =
+        eval(&mut vm, "var n=0; class C { [++n] = ++n; } var a=new C(); var b=new C(); n*100 + a[1]*10 + b[1]")
+            .unwrap();
+    assert_num(result, 323.0);
+}
+
+#[test]
+fn computed_keys_evaluate_in_source_order_across_static_and_instance() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var i=0; class C { [i++] = i++; static [i++] = i++; [i++] = i++; } var c = new C(); i*1000 + c[0]*100 + c[2]*10 + C[1]",
+    )
+    .unwrap();
+    assert_num(result, 6453.0);
+}
+
+#[test]
+fn field_definition_does_not_trigger_inherited_setter() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var log=[]; class B { set x(v){ log.push('setter'); } } class C extends B { x = 1; } var c = new C(); log.length*100 + (c.hasOwnProperty('x')?10:0) + c.x",
+    )
+    .unwrap();
+    assert_num(result, 11.0);
+}
+
+#[test]
+fn field_value_captures_outer_variable() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var n=0; class C { x = ++n; } var c = new C(); n*10 + c.x").unwrap();
+    assert_num(result, 11.0);
+}
+
+#[test]
+fn class_expression_field_value_captures_outer_variable() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var n=0; var C = class { x = ++n; }; new C(); n").unwrap();
+    assert_num(result, 1.0);
+}
+
+#[test]
+fn field_initializers_run_once_on_second_super_call() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var n=0; class B {} var C = class extends B { field = ++n; constructor(){ super(); super(); } }; var err; try { new C(); } catch(e) { err = e.name; } (err === 'ReferenceError'?1:0)*10 + n",
+    )
+    .unwrap();
+    assert_num(result, 11.0);
+}
+
+#[test]
+fn postfix_increment_on_captured_cell_returns_old_value() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var n=0; var arr = (function(){ return [n++, n, n++]; })(); arr[0]*1000 + arr[1]*100 + arr[2]*10 + n",
+    )
+    .unwrap();
+    assert_num(result, 112.0);
+}

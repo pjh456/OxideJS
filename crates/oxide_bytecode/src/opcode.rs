@@ -173,6 +173,9 @@ define_opcodes! {
     // ── 对象 (0x63) ──
     CREATE_ARGUMENTS = 0x63 => "CREATE_ARGUMENTS",
 
+    // ── define 语义属性写入 (0x6D) ──
+    DEFINE_PROP = 0x6D => "DEFINE_PROP",
+
     // ── 成员复合赋值：位/移位 (0x64-0x69) ──
     COMPOUND_MEMBER_BIT_AND = 0x64 => "COMPOUND_MEMBER_BIT_AND",
     COMPOUND_MEMBER_BIT_OR = 0x65 => "COMPOUND_MEMBER_BIT_OR",

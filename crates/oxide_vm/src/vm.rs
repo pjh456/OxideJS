@@ -1221,6 +1221,10 @@ impl Vm {
                     self.dispatch_define_accessor(rd, a, b)?;
                 }
 
+                OpCode::DEFINE_PROP => {
+                    self.dispatch_define_prop(rd, a, b)?;
+                }
+
                 OpCode::RETURN => match self.dispatch_return(rd) {
                     Ok(Some(result)) => return Ok(result),
                     Ok(None) => {}

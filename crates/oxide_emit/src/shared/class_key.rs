@@ -3,6 +3,7 @@
 
 use crate::{CompileCtx, Emitter};
 use oxide_bytecode::module::Constant;
+use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
 use oxide_parser::PropertyKey;
@@ -49,6 +50,22 @@ impl Emitter {
             PropertyKey::NumericLiteral(n) => Ok(n.value.to_string()),
             _ => Err("computed destructuring keys not yet supported".into()),
         }
+    }
+
+    /// 从类定义期 computed key 数组按 slot 取键（方法/静态字段在类定义期使用）。
+    pub(crate) fn emit_class_array_key_reg(&self, slot: u8, ctx: &mut CompileCtx) -> Result<u32, String> {
+        let arr_reg = ctx.class_keys_reg.expect("class computed keys array missing");
+        let idx_reg = ctx.alloc_reg();
+        let idx = ctx.add_constant(Constant::Int(slot as i32));
+        ctx.inst(Inst::load_const(Operand::Reg(idx_reg), idx));
+        let key_reg = ctx.alloc_reg();
+        ctx.inst(Inst::new(
+            OpCode::GET_PROP_DYNAMIC,
+            Operand::Reg(arr_reg),
+            Operand::Reg(idx_reg),
+            Operand::Reg(key_reg),
+        ));
+        Ok(key_reg)
     }
 
     pub(crate) fn class_property_name(&self, key: &PropertyKey) -> Result<String, String> {

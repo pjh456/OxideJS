@@ -65,6 +65,7 @@ impl Inst {
             | OpCode::DELETE_PROP_STATIC
             | OpCode::DELETE_PROP_DYNAMIC
             | OpCode::DEFINE_ACCESSOR
+            | OpCode::DEFINE_PROP
             | OpCode::SET_HOME_OBJECT
             // SPILL 写 VM spill 栈而非寄存器（恢复由 UNSPILL 写 rd）
             | OpCode::SPILL
@@ -256,7 +257,8 @@ impl Inst {
             | OpCode::SET_PRIVATE
             | OpCode::INIT_PRIVATE
             | OpCode::PRIVATE_BRAND_IN
-            | OpCode::DEFINE_ACCESSOR => {
+            | OpCode::DEFINE_ACCESSOR
+            | OpCode::DEFINE_PROP => {
                 push_operand(&mut uses, &self.rd);
                 push_operand(&mut uses, &self.a);
                 push_operand(&mut uses, &self.b);

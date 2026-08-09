@@ -11,9 +11,9 @@ use oxide_parser::{ClassElement, MethodDefinitionKind, PropertyKey};
 impl Emitter {
     pub(crate) fn emit_class_methods(
         &self, elements: &[ClassElement], ctor_reg: u32, proto_reg: u32, self_binding: &[(&str, u32)],
-        ctx: &mut CompileCtx,
+        key_slots: &[Option<u8>], ctx: &mut CompileCtx,
     ) -> Result<(), String> {
-        for element in elements {
+        for (element, &key_slot) in elements.iter().zip(key_slots) {
             if let ClassElement::MethodDefinition(method) = element {
                 let method = method.as_ref();
                 if method.kind == MethodDefinitionKind::Constructor {
@@ -25,7 +25,11 @@ impl Emitter {
                     continue;
                 }
                 let home_reg = if method.r#static { ctor_reg } else { proto_reg };
-                let key_reg = self.emit_class_key_reg(&method.key, method.computed, ctx)?;
+                let key_reg = if method.computed {
+                    self.emit_class_array_key_reg(key_slot.unwrap_or(0), ctx)?
+                } else {
+                    self.emit_class_key_reg(&method.key, false, ctx)?
+                };
                 let method_name = if method.computed {
                     "<computed>".to_string()
                 } else {

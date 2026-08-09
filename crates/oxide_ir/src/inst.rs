@@ -173,6 +173,12 @@ impl Inst {
         Self::with_ext(OpCode::DEFINE_ACCESSOR, home, get, set, &[key_idx])
     }
 
+    /// define 数据属性：target 为宿主对象，value/key 为寄存器。
+    /// 不触发原型链 setter，与 SET_PROP 语义不同。
+    pub fn define_prop(target: Operand, value: Operand, key: Operand) -> Self {
+        Self::new(OpCode::DEFINE_PROP, target, value, key)
+    }
+
     /// 静态删除属性：obj 同时放 rd/a 槽，const_idx 为属性名常量下标。
     pub fn delete_prop_static(obj: Operand, const_idx: u32) -> Self {
         Self::with_ext(OpCode::DELETE_PROP_STATIC, obj, obj, Operand::None, &[const_idx])
