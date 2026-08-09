@@ -80,6 +80,11 @@ impl Vm {
             crate::async_func::clone_async_native_with_rewrite(src_ref, dst_ref, |value| {
                 self.promote_value_if_epoch_object(value, forwarding)
             });
+        } else if src_ref.is_async_generator_obj() {
+            // 异步生成器状态盒深拷贝到新对象：源盒随 epoch 释放，互不共享。
+            crate::async_generator::clone_async_generator_native_with_rewrite(src_ref, dst_ref, |value| {
+                self.promote_value_if_epoch_object(value, forwarding)
+            });
         }
         dst
     }

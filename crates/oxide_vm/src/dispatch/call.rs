@@ -742,6 +742,15 @@ impl Vm {
                         }
                     } else if obj.sub_module_index() > 0 {
                         let sub_idx = obj.sub_module_index() as usize;
+                        // 异步生成器函数调用返回异步生成器迭代器对象。
+                        if sub_idx < self.sub_modules.len()
+                            && self.sub_modules[sub_idx].is_generator
+                            && self.sub_modules[sub_idx].is_async
+                        {
+                            let gen = self.create_async_generator_object(callee, this_value, &args)?;
+                            self.regs[0] = gen;
+                            return Ok(false);
+                        }
                         // 生成器函数调用返回迭代器对象，不执行函数体。
                         if sub_idx < self.sub_modules.len() && self.sub_modules[sub_idx].is_generator {
                             let gen = self.create_generator_object(callee, this_value, &args)?;

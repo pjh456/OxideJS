@@ -87,7 +87,7 @@ pub(crate) enum AsyncResumeMode {
 }
 
 /// 异步上下文对象上存 capability 闭包的属性名（await 恢复闭包定位上下文用）。
-const ASYNC_CTX_PROP: &str = "__oxide_async_ctx__";
+pub(crate) const ASYNC_CTX_PROP: &str = "__oxide_async_ctx__";
 /// 恢复闭包上区分 reject 角色的属性名。
 const ASYNC_REJECT_PROP: &str = "__oxide_async_reject__";
 
@@ -167,7 +167,11 @@ impl Vm {
         self.async_suspended = false;
         let prev_ctx = self.async_context.take();
         let prev_dispatch = self.async_dispatch;
+        let prev_gen_ctx = self.async_gen_context.take();
+        let prev_gen_dispatch = self.async_gen_dispatch;
         self.async_dispatch = true;
+        // 普通异步函数执行期间 AWAIT 走普通异步恢复路径：屏蔽外层异步生成器上下文。
+        self.async_gen_dispatch = false;
         self.async_context = Some(ctx_val);
         self.native_call_depth += 1;
 
@@ -200,8 +204,7 @@ impl Vm {
         );
         unsafe { (*state_ptr).args = args };
         if let Err(e) = push_res {
-            self.async_dispatch = prev_dispatch;
-            self.async_context = prev_ctx;
+            self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
             self.native_call_depth -= 1;
             self.restore_inline_state(saved);
             return Err(e);
@@ -209,8 +212,7 @@ impl Vm {
         unsafe { (*state_ptr).phase = AsyncPhase::Running };
 
         let result = self.dispatch();
-        self.async_dispatch = prev_dispatch;
-        self.async_context = prev_ctx;
+        self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
         self.native_call_depth -= 1;
 
         if std::mem::take(&mut self.async_suspended) {
@@ -251,7 +253,11 @@ impl Vm {
         self.async_suspended = false;
         let prev_ctx = self.async_context.take();
         let prev_dispatch = self.async_dispatch;
+        let prev_gen_ctx = self.async_gen_context.take();
+        let prev_gen_dispatch = self.async_gen_dispatch;
         self.async_dispatch = true;
+        // 普通异步函数执行期间 AWAIT 走普通异步恢复路径：屏蔽外层异步生成器上下文。
+        self.async_gen_dispatch = false;
         self.async_context = Some(ctx_val);
         self.native_call_depth += 1;
 
@@ -265,8 +271,7 @@ impl Vm {
                 self.activate_immutables(state.sub_idx as usize, &subs[state.sub_idx as usize].constants);
             } else {
                 // 挂起状态跨 run：sub_modules 已重建，无法恢复（与生成器同限制）。
-                self.async_dispatch = prev_dispatch;
-                self.async_context = prev_ctx;
+                self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
                 self.native_call_depth -= 1;
                 self.restore_inline_state(saved);
                 return Err("async function suspended across runs is no longer valid".into());
@@ -300,8 +305,7 @@ impl Vm {
             self.pending_error_kind = Some(self.thrown_error_kind(exc));
             if self.unwind().is_err() {
                 // 异常逃逸出异步帧（无 catch/finally）：结算为 reject。
-                self.async_dispatch = prev_dispatch;
-                self.async_context = prev_ctx;
+                self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
                 self.native_call_depth -= 1;
                 let thrown = self.last_uncaught_value.take().unwrap_or(exc);
                 self.finish_async(state_ptr, Err(thrown))?;
@@ -313,8 +317,7 @@ impl Vm {
         }
 
         let result = self.dispatch();
-        self.async_dispatch = prev_dispatch;
-        self.async_context = prev_ctx;
+        self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
         self.native_call_depth -= 1;
 
         if std::mem::take(&mut self.async_suspended) {
@@ -340,6 +343,17 @@ impl Vm {
                 Ok(())
             }
         }
+    }
+
+    /// 恢复嵌套 dispatch 覆盖的 async 上下文标志（含外层异步生成器上下文）。
+    fn restore_async_flags(
+        &mut self, prev_ctx: Option<JsValue>, prev_dispatch: bool, prev_gen_ctx: Option<JsValue>,
+        prev_gen_dispatch: bool,
+    ) {
+        self.async_dispatch = prev_dispatch;
+        self.async_context = prev_ctx;
+        self.async_gen_dispatch = prev_gen_dispatch;
+        self.async_gen_context = prev_gen_ctx;
     }
 
     /// 结算异步函数：正常结束 resolve capability，异常结束 reject capability。
@@ -374,6 +388,8 @@ impl Vm {
     /// # 副作用
     /// - 被等待值为原生 Promise 时直接复用，否则建新 promise 并 PromiseResolve。
     /// - 经 `perform_promise_then` 登记 fulfill/reject 恢复反应（微任务入队）。
+    /// - 异步生成器内（`async_gen_dispatch`）登记异步生成器恢复闭包并置
+    ///   `async_gen_suspended`；普通异步函数走 `async_suspended`。
     pub(crate) fn dispatch_await(&mut self, rd: usize) -> Result<(), String> {
         let ctx = match self.async_context {
             Some(c) => c,
@@ -387,6 +403,13 @@ impl Vm {
             let _ = self.resolve_promise(p, value);
             p
         };
+        if self.async_gen_dispatch {
+            let fulfill_fn = self.make_async_gen_await_resume_fn(ctx, false);
+            let reject_fn = self.make_async_gen_await_resume_fn(ctx, true);
+            let _ = self.perform_promise_then(promise, fulfill_fn, reject_fn);
+            self.async_gen_suspended = true;
+            return Ok(());
+        }
         let fulfill_fn = self.make_async_await_resume_fn(ctx, false);
         let reject_fn = self.make_async_await_resume_fn(ctx, true);
         let _ = self.perform_promise_then(promise, fulfill_fn, reject_fn);
@@ -416,10 +439,7 @@ impl Vm {
     ///
     /// 异步帧弹出存 `frame`，其余栈段整段搬入（嵌套循环期间这些栈只含异步数据）。
     fn snapshot_async(&mut self, state: &mut AsyncState) -> Result<(), String> {
-        let frame = self
-            .frames
-            .pop()
-            .ok_or_else(|| "async frame missing on await".to_string())?;
+        let frame = self.frames.pop().ok_or_else(|| "async frame missing on await".to_string())?;
         state.frame = Some(frame);
         state.regs = Box::new(self.regs);
         state.pc = self.pc;
@@ -459,9 +479,7 @@ fn async_await_resume_closure(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let ctx_si = vm.kernel_core.perm_interner().intern(ASYNC_CTX_PROP).0;
     let ctx = vm.resolve_property(callee_obj, ctx_si).unwrap_or(JsValue::undefined());
     let role_si = vm.kernel_core.perm_interner().intern(ASYNC_REJECT_PROP).0;
-    let is_reject = vm
-        .resolve_property(callee_obj, role_si)
-        .map_or(false, to_boolean);
+    let is_reject = vm.resolve_property(callee_obj, role_si).map_or(false, to_boolean);
     let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let mode = if is_reject {
         AsyncResumeMode::Throw(value)
@@ -520,10 +538,7 @@ pub(crate) fn init_async_intrinsics(vm: &mut Vm) {
 
 /// `%AsyncFunction%` 占位：动态异步函数创建未实现，调用抛错。
 fn async_function_stub(vm: &mut Vm, _args: &[u8]) -> NativeResult {
-    NativeResult::Err(oxide_builtins::error::create_type_error(
-        vm,
-        "AsyncFunction constructor is not supported",
-    ))
+    NativeResult::Err(oxide_builtins::error::create_type_error(vm, "AsyncFunction constructor is not supported"))
 }
 
 // ── session GC 支撑：状态快照中的 JsValues 作为异步上下文对象边追踪 ──

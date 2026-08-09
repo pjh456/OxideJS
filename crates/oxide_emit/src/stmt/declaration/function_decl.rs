@@ -36,7 +36,9 @@ impl Emitter {
             self.push_rest_param(&rest.rest.argument, &mut param_names)?;
         }
         let body_stmts: &[Statement] = if let Some(body) = &fd.body { &body.statements } else { &[] };
-        let mut sub_module = if fd.generator {
+        let mut sub_module = if fd.generator && fd.r#async {
+            self.compile_async_generator_body(&param_names, body_stmts, ctx)?
+        } else if fd.generator {
             self.compile_generator_body(&param_names, body_stmts, ctx)?
         } else if fd.r#async {
             self.compile_async_body(&param_names, body_stmts, ctx, false, false)?

@@ -112,6 +112,10 @@ impl Vm {
             self.raise_error_kind("RangeError", "Maximum call stack size exceeded")?;
             return Ok(JsValue::undefined());
         }
+        // 异步生成器函数调用返回异步生成器迭代器对象，next/return/throw 返回 Promise。
+        if self.sub_modules[sub_idx].is_generator && self.sub_modules[sub_idx].is_async {
+            return self.create_async_generator_object(callee, receiver, args);
+        }
         // 生成器函数调用返回迭代器对象，不执行函数体。
         if self.sub_modules[sub_idx].is_generator {
             return self.create_generator_object(callee, receiver, args);

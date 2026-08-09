@@ -256,6 +256,10 @@ pub struct Vm {
     pub aggregate_error_proto: P<JsObject>,
     /// `%AsyncFunction.prototype%`：异步函数对象的原型（`constructor` 指向 `%AsyncFunction%`）。
     pub async_function_proto: P<JsObject>,
+    /// `%AsyncGeneratorPrototype%`：异步生成器实例的原型（next/return/throw/@@asyncIterator）。
+    pub async_generator_proto: P<JsObject>,
+    /// `%AsyncGeneratorFunction.prototype%`：异步生成器函数对象的原型。
+    pub async_generator_function_proto: P<JsObject>,
     /// 微任务队列（Promise reactions / thenable 委托），`run()` 末尾 FIFO drain。
     pub(crate) job_queue: VecDeque<crate::promise::Microtask>,
     pub math_rng_state: u64,
@@ -318,6 +322,16 @@ pub struct Vm {
     /// 当前是否处于异步函数内嵌 dispatch 循环：异步帧弹出且 frames 清空时，
     /// `do_return` 据此把结果交付给恢复方（与 generator_dispatch 同语义）。
     pub(crate) async_dispatch: bool,
+    /// 当前正在执行的异步生成器上下文对象（`OBJ_TYPE_ASYNC_GENERATOR`，持有
+    /// `AsyncGeneratorState` 快照）。AWAIT dispatch 据此登记异步生成器恢复反应；
+    /// 跨嵌套 async 调用保存/恢复（与 `async_context` 同生命周期，二者互斥占用）。
+    pub(crate) async_gen_context: Option<JsValue>,
+    /// 当前是否处于异步生成器内嵌 dispatch 循环：AWAIT 据此走异步生成器恢复
+    /// 闭包；yield 让出复用 `generator_suspended` 信号。
+    pub(crate) async_gen_dispatch: bool,
+    /// 异步生成器 body `dispatch()` 的 AWAIT 让出信号：置 true 表示挂起在 await，
+    /// 恢复方（异步生成器内嵌 dispatch 循环）据此快照挂起状态。
+    pub(crate) async_gen_suspended: bool,
     /// 分组保存 session arena / GC 簿记状态。
     pub(crate) gc_state: GcState,
     /// 分组保存 `Symbol` intern 状态。

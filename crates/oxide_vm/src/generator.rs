@@ -108,7 +108,7 @@ pub(crate) enum YieldStarOutcome {
 }
 
 /// `yield*` 委托转发（生成器恢复时）的结局。
-enum DelegateOutcome {
+pub(crate) enum DelegateOutcome {
     /// 内层未 done：保持委托挂起，让出 value。
     Suspend { value: JsValue },
     /// 内层消化 next/throw 后 done：委托结束，外层继续，value 为委托值。
@@ -605,7 +605,7 @@ impl Vm {
     /// # 副作用
     /// - 内层调用抛错时经 unwind 展开（可被外层 catch/finally 捕获，返回 Unwind）。
     /// - 委托结束时清空 `self.delegated_iterator`，挂起透传时保留。
-    fn delegate_forward(&mut self, mode: GeneratorResumeMode) -> Result<DelegateOutcome, String> {
+    pub(crate) fn delegate_forward(&mut self, mode: GeneratorResumeMode) -> Result<DelegateOutcome, String> {
         let iterator = match self.delegated_iterator {
             Some(it) => it,
             None => return Ok(DelegateOutcome::Unwind),
@@ -787,8 +787,7 @@ impl Vm {
     /// # 返回值
     /// - `Ok(Some(value))`：直接完成，无需再 dispatch（`value` 为返回值）；
     /// - `Ok(None)`：进入 finally 穿越，调用方须继续 `dispatch()`。
-    fn complete_generator_return(&mut self, value: JsValue) -> Result<Option<JsValue>, String> {
-        // return 逃出当前帧：弹出纯 catch handler，穿越 finally。
+    pub(crate) fn complete_generator_return(&mut self, value: JsValue) -> Result<Option<JsValue>, String> {
         self.pop_frame_catch_handlers();
         let crossed = self
             .try_stack

@@ -35,6 +35,16 @@ impl Vm {
                         let args: Vec<JsValue> = (0..arg_count)
                             .map(|i| self.regs[first_arg_reg.wrapping_add(i as u8) as usize])
                             .collect();
+                        // 异步生成器函数调用返回异步生成器迭代器对象。
+                        if sub_idx < self.sub_modules.len()
+                            && self.sub_modules[sub_idx].is_generator
+                            && self.sub_modules[sub_idx].is_async
+                        {
+                            let gen =
+                                self.create_async_generator_object(callee, self.regs[this_reg as usize], &args)?;
+                            self.regs[0] = gen;
+                            return Ok(false);
+                        }
                         // 生成器函数调用返回迭代器对象，不执行函数体。
                         if sub_idx < self.sub_modules.len() && self.sub_modules[sub_idx].is_generator {
                             let gen = self.create_generator_object(callee, self.regs[this_reg as usize], &args)?;

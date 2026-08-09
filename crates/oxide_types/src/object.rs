@@ -404,6 +404,9 @@ impl JsObject {
     pub const OBJ_TYPE_PROMISE: u8 = 11;
     /// 异步函数执行上下文（隐藏对象）：`AsyncState` 快照存于 `native_data`。
     pub const OBJ_TYPE_ASYNC: u8 = 12;
+    /// 异步生成器迭代器对象（`async function*` 调用返回）：`AsyncGeneratorState`
+    /// 快照存于 `native_data`。
+    pub const OBJ_TYPE_ASYNC_GENERATOR: u8 = 13;
     /// `is_session_epoch` 字段中的 session 标记位。
     pub const SESSION_EPOCH_BIT: u8 = 0x01;
     /// `is_session_epoch` 字段中的 GC 标记位。
@@ -463,6 +466,11 @@ impl JsObject {
     #[inline]
     pub fn is_async_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_ASYNC
+    }
+    /// 是否异步生成器迭代器对象。
+    #[inline]
+    pub fn is_async_generator_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_ASYNC_GENERATOR
     }
 
     /// 构造无属性、可扩展的空对象（`new Object()` 的基础对象）。

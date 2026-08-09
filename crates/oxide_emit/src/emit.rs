@@ -686,9 +686,7 @@ impl Emitter {
     ) -> Result<(), String> {
         match argument {
             oxide_parser::BindingPattern::BindingIdentifier(bi) => {
-                out.push(ParamSpec::Rest {
-                    name: bi.name.to_string(),
-                });
+                out.push(ParamSpec::Rest { name: bi.name.to_string() });
             }
             _ => return Err("rest parameters with destructuring patterns not yet supported".into()),
         }
@@ -733,7 +731,15 @@ impl Emitter {
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, is_arrow: bool,
     ) -> Result<IRFunction, String> {
-        self.compile_function_body_with_flags(param_specs, body_stmts, parent_ctx, is_expression_body, is_arrow, false, false)
+        self.compile_function_body_with_flags(
+            param_specs,
+            body_stmts,
+            parent_ctx,
+            is_expression_body,
+            is_arrow,
+            false,
+            false,
+        )
     }
 
     /// 编译函数体并显式指定生成器标志（`function*` 走此入口）。
@@ -741,6 +747,15 @@ impl Emitter {
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
     ) -> Result<IRFunction, String> {
         self.compile_function_body_with_flags(param_specs, body_stmts, parent_ctx, false, false, true, false)
+    }
+
+    /// 编译异步生成器函数体（`async function*` / async 生成器表达式走此入口）：
+    /// 同时标记 `is_generator` 与 `is_async`，VM 调用时按异步生成器协议执行
+    /// （next 返回 Promise，yield 挂起与 await 挂起共存）。
+    pub(crate) fn compile_async_generator_body<'a>(
+        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
+    ) -> Result<IRFunction, String> {
+        self.compile_function_body_with_flags(param_specs, body_stmts, parent_ctx, false, false, true, true)
     }
 
     /// 编译异步函数体（`async function` / async 箭头走此入口）：`is_async` 使
@@ -1110,10 +1125,8 @@ impl Emitter {
                 ParamSpec::Rest { name } => {
                     // rest 数组：从实参区收集固定形参之后的实参，绑定为普通变量。
                     let reg = ctx.lookup(name)?;
-                    let fixed_count = param_specs
-                        .iter()
-                        .filter(|s| !matches!(s, ParamSpec::Rest { .. }))
-                        .count() as u32;
+                    let fixed_count =
+                        param_specs.iter().filter(|s| !matches!(s, ParamSpec::Rest { .. })).count() as u32;
                     ctx.inst(Inst::create_rest_array(Operand::Reg(reg), fixed_count));
                 }
             }

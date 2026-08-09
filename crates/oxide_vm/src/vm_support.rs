@@ -40,6 +40,8 @@ impl Vm {
             aggregate_error_constructor: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             aggregate_error_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             async_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+            async_generator_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+            async_generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             job_queue: VecDeque::new(),
             math_rng_state: 0,
             sub_modules: Arc::new(Vec::new()),
@@ -68,6 +70,9 @@ impl Vm {
             async_context: None,
             async_suspended: false,
             async_dispatch: false,
+            async_gen_context: None,
+            async_gen_dispatch: false,
+            async_gen_suspended: false,
             gc_state: GcState {
                 session_epoch: bumpalo::Bump::new(),
                 session_gc: crate::session_gc::SessionGc::new(),
@@ -98,6 +103,7 @@ impl Vm {
         vm.init_generator_intrinsics();
         vm.init_promise_intrinsics();
         vm.init_async_intrinsics();
+        vm.init_async_generator_intrinsics();
         // Promise 全局绑定发生在快照采集之后，重录快照避免首次 full_reset 误判脏。
         vm.session.record_snapshot();
         vm_info!("Vm created");
@@ -127,6 +133,8 @@ impl Vm {
             aggregate_error_constructor: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             aggregate_error_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             async_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+            async_generator_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+            async_generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             job_queue: VecDeque::new(),
             math_rng_state: 0,
             sub_modules: Arc::new(Vec::new()),
@@ -155,6 +163,9 @@ impl Vm {
             async_context: None,
             async_suspended: false,
             async_dispatch: false,
+            async_gen_context: None,
+            async_gen_dispatch: false,
+            async_gen_suspended: false,
             gc_state: GcState {
                 session_epoch: bumpalo::Bump::new(),
                 session_gc: crate::session_gc::SessionGc::new(),
@@ -185,6 +196,7 @@ impl Vm {
         vm.init_generator_intrinsics();
         vm.init_promise_intrinsics();
         vm.init_async_intrinsics();
+        vm.init_async_generator_intrinsics();
         // Promise 全局绑定发生在快照采集之后，重录快照避免首次 full_reset 误判脏。
         vm.session.record_snapshot();
         vm_info!("Vm created (pool)");
@@ -206,6 +218,14 @@ impl Vm {
         crate::async_func::init_async_intrinsics(self);
     }
 
+    /// 初始化/重建异步生成器内建对象（`%AsyncGeneratorPrototype%` 与
+    /// `%AsyncGeneratorFunction.prototype%`）。
+    ///
+    /// 在 VM 创建与 `full_reset`（session 重建）后调用。
+    pub(crate) fn init_async_generator_intrinsics(&mut self) {
+        crate::async_generator::init_async_generator_intrinsics(self);
+    }
+
     /// 全量隔离重置：仅重建被污染的内置对象与 global，并清空所有执行状态与内存。
     ///
     /// 用于在多次 JS 执行之间达到完全隔离：session 内未被污染的 builtin 保留原指针。
@@ -223,6 +243,7 @@ impl Vm {
         self.init_generator_intrinsics();
         self.init_promise_intrinsics();
         self.init_async_intrinsics();
+        self.init_async_generator_intrinsics();
         // 快照须在 Promise 全局绑定之后采集：绑定会修改 global 世代。
         self.session.record_snapshot();
         self.clear_full_reset_state();
@@ -238,6 +259,7 @@ impl Vm {
         self.init_generator_intrinsics();
         self.init_promise_intrinsics();
         self.init_async_intrinsics();
+        self.init_async_generator_intrinsics();
         self.session.record_snapshot();
         self.clear_full_reset_state();
     }
@@ -300,6 +322,9 @@ impl Vm {
         self.async_context = None;
         self.async_suspended = false;
         self.async_dispatch = false;
+        self.async_gen_context = None;
+        self.async_gen_dispatch = false;
+        self.async_gen_suspended = false;
         self.native_call_depth = 0;
         // 微任务队列是执行期状态：跨 run 不保留。
         self.job_queue.clear();
@@ -370,7 +395,11 @@ impl Vm {
         // "GeneratorFunction"），且不像普通函数那样拥有 `prototype` 属性。
         let is_generator = self.sub_modules.get(sub_idx as usize).map(|m| m.is_generator).unwrap_or(false);
         let is_async = self.sub_modules.get(sub_idx as usize).map(|m| m.is_async).unwrap_or(false);
-        let proto_val = if is_generator {
+        // 异步生成器（`async function*`）函数对象：原型为 %AsyncGeneratorFunction.prototype%。
+        let is_async_generator = is_generator && is_async;
+        let proto_val = if is_async_generator {
+            JsValue::from_js_object(self.async_generator_function_proto.as_ptr() as *mut JsObject)
+        } else if is_generator {
             JsValue::from_js_object(self.generator_function_proto.as_ptr() as *mut JsObject)
         } else if is_async {
             JsValue::from_js_object(self.async_function_proto.as_ptr() as *mut JsObject)
@@ -392,7 +421,9 @@ impl Vm {
 
         if !is_arrow {
             // 原型对象自身的 [[Prototype]]：生成器为 %GeneratorPrototype%，普通函数为 Object.prototype。
-            let proto_of_proto = if is_generator {
+            let proto_of_proto = if is_async_generator {
+                JsValue::from_js_object(self.async_generator_proto.as_ptr() as *mut JsObject)
+            } else if is_generator {
                 JsValue::from_js_object(self.generator_proto.as_ptr() as *mut JsObject)
             } else {
                 JsValue::from_js_object(self.session.builtin_world().object_proto.as_ptr() as *mut JsObject)
@@ -418,7 +449,7 @@ impl Vm {
             let prototype_shape = self.kernel_core.shape_forge().make_shape(func.shape_id(), prototype_si);
             func.set_shape_id(prototype_shape);
             let prototype_pos = func.push_prop(prototype_val);
-            if is_generator {
+            if is_generator || is_async_generator {
                 func.set_data_meta(prototype_pos, PropAttributes::new(true, false, false));
             }
             func.bump_generation();

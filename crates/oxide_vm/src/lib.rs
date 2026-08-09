@@ -7,9 +7,10 @@
 //! 核心入口为 [`vm::Vm`]；`VmPool` 负责 VM 实例的复用；`session_gc` 提供
 //! session 内存回收；`bindings` 把内置对象绑定到每个 session 的 global 上。
 
+mod async_func;
+mod async_generator;
 /// 内置对象绑定模块：向 session 的 global 对象安装 Object/Array/... 及各原型。
 pub mod bindings;
-mod async_func;
 mod dispatch;
 mod generator;
 mod ic_helper;
