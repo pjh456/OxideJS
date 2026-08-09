@@ -452,22 +452,6 @@ impl Emitter {
         }
     }
 
-    /// `collect_captured_expr` 侧的赋值目标扫描：父绑定集合即 ref_set，无遮蔽。
-    fn collect_captured_assign_target(
-        &self, target: &oxide_parser::AssignmentTarget, own: &HashSet<String>, out: &mut HashSet<String>,
-    ) {
-        let empty = HashSet::new();
-        self.collect_capture_names_assign_target(target, own, &empty, out);
-    }
-
-    /// `collect_captured_expr` 侧的一元更新目标扫描。
-    fn collect_captured_simple_target(
-        &self, target: &oxide_parser::SimpleAssignmentTarget, own: &HashSet<String>, out: &mut HashSet<String>,
-    ) {
-        let empty = HashSet::new();
-        self.collect_capture_names_simple_target(target, own, &empty, out);
-    }
-
     /// 收集函数参数默认值表达式里的引用（子层 upvalue 判定；参数名遮蔽）。
     fn collect_fn_default_names(
         &self, params: &oxide_parser::FormalParameters, ref_set: &HashSet<String>, shadow: &HashSet<String>,
@@ -859,10 +843,11 @@ impl Emitter {
                 }
             }
             Expression::AssignmentExpression(ae) => {
-                self.collect_captured_assign_target(&ae.left, own, out);
+                // 只扫右侧：左侧赋值目标是本函数绑定，不引用嵌套函数；
+                // 若目标含嵌套函数表达式（如 `[f()] = ...`），由其自身递归处理。
                 self.collect_captured_expr(&ae.right, own, out);
             }
-            Expression::UpdateExpression(ue) => self.collect_captured_simple_target(&ue.argument, own, out),
+            Expression::UpdateExpression(_ue) => {} // 一元更新目标不引用嵌套函数，无需捕获
             Expression::ArrayExpression(ae) => {
                 for e in &ae.elements {
                     if let Some(e) = e.as_expression() {
