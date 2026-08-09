@@ -99,6 +99,10 @@ impl Vm {
             if self.sub_modules[sub_idx].is_generator {
                 return self.raise_type_error("g is not a constructor").map(|_| true);
             }
+            // 异步函数不是构造器：`new f()` 抛 TypeError。
+            if self.sub_modules[sub_idx].is_async {
+                return self.raise_type_error("g is not a constructor").map(|_| true);
+            }
 
             if self.frames.len() >= self.kernel_core.config.max_call_depth {
                 return Err(self.error_message_text("RangeError", "Maximum call stack size exceeded"));

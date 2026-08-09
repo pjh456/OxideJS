@@ -98,18 +98,36 @@ impl Emitter {
             .map(|c| ("@@class_brand", *c))
             .into_iter()
             .collect();
-        let mut method_module = self.compile_function_body_with_field_hooks(
-            &param_names,
-            body_stmts,
-            ctx,
-            false,
-            self_binding,
-            FunctionBodyContext::ClassElement,
-            None::<fn(&Emitter, &mut CompileCtx) -> Result<(), String>>,
-            false,
-            &[],
-            &extra_uv,
-        )?;
+        let method_value = method.value.as_ref();
+        let mut method_module = if method_value.r#async {
+            self.compile_function_body_with_field_hooks_gen(
+                &param_names,
+                body_stmts,
+                ctx,
+                false,
+                self_binding,
+                FunctionBodyContext::ClassElement,
+                None::<fn(&Emitter, &mut CompileCtx) -> Result<(), String>>,
+                false,
+                &[],
+                &extra_uv,
+                false,
+                true,
+            )?
+        } else {
+            self.compile_function_body_with_field_hooks(
+                &param_names,
+                body_stmts,
+                ctx,
+                false,
+                self_binding,
+                FunctionBodyContext::ClassElement,
+                None::<fn(&Emitter, &mut CompileCtx) -> Result<(), String>>,
+                false,
+                &[],
+                &extra_uv,
+            )?
+        };
         ctx.in_instance_method = saved_instance;
         ctx.in_static_method = saved_static;
         // 访问器函数名带 "get "/"set " 前缀（SetFunctionName 语义），普通方法裸属性名。

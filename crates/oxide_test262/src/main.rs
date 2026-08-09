@@ -401,7 +401,6 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
     let excluded_features = [
         "Proxy",
         "BigInt",
-        "async-functions",
         "Intl",
         "Temporal",
         "module",

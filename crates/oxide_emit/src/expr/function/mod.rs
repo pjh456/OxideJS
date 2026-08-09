@@ -41,7 +41,11 @@ impl Emitter {
         let body_stmts = &arrow.body.statements;
         let is_expr_body = arrow.expression;
 
-        let mut sub_module = self.compile_function_body(&param_names, body_stmts, ctx, is_expr_body, true)?;
+        let mut sub_module = if arrow.r#async {
+            self.compile_async_body(&param_names, body_stmts, ctx, is_expr_body, true)?
+        } else {
+            self.compile_function_body(&param_names, body_stmts, ctx, is_expr_body, true)?
+        };
         sub_module.is_arrow = true;
 
         ctx.nested.push(sub_module);
@@ -78,6 +82,8 @@ impl Emitter {
 
         let mut sub_module = if fe.generator {
             self.compile_generator_body(&param_names, body_stmts, ctx)?
+        } else if fe.r#async {
+            self.compile_async_body(&param_names, body_stmts, ctx, false, false)?
         } else {
             self.compile_function_body(&param_names, body_stmts, ctx, false, false)?
         };

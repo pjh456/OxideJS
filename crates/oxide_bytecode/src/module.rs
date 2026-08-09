@@ -70,6 +70,8 @@ pub struct CompiledModule {
     pub needs_home_object: bool,
     /// 是否为生成器函数体（`function*`）：调用返回迭代器对象，body 挂起/恢复执行。
     pub is_generator: bool,
+    /// 是否为异步函数体（`async function` / async 箭头）：调用返回 promise，body 挂起/恢复执行。
+    pub is_async: bool,
     pub upvalue_captures: Vec<UpvalueCapture>,
     pub cells_needed: u8,
     /// 全局扁平模块 id：编译末端 flatten 阶段分配（顶层 0，子模块 DFS 递增）。
@@ -96,6 +98,7 @@ impl CompiledModule {
             is_derived_constructor: false,
             needs_home_object: false,
             is_generator: false,
+            is_async: false,
             upvalue_captures: Vec::new(),
             cells_needed: 0,
             flat_id: 0,
@@ -127,6 +130,7 @@ impl Clone for CompiledModule {
             is_derived_constructor: self.is_derived_constructor,
             needs_home_object: self.needs_home_object,
             is_generator: self.is_generator,
+            is_async: self.is_async,
             upvalue_captures: self.upvalue_captures.clone(),
             cells_needed: self.cells_needed,
             flat_id: self.flat_id,

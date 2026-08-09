@@ -203,6 +203,8 @@ define_opcodes! {
     SUSPEND_BODY = 0x77 => "SUSPEND_BODY",
     // `yield*` 委托：rd=内层可迭代对象；委托完成值经 reg 0 交付（与 YIELD 同协议）。
     YIELD_STAR = 0x78 => "YIELD_STAR",
+    // `await`：rd=被等待的值（PromiseResolve 包装）；挂起异步帧，恢复值经 reg 0 交付。
+    AWAIT = 0x79 => "AWAIT",
 
     // ── 位运算 (0x80-0x8F) ──
     BIT_AND = 0x80 => "BIT_AND",

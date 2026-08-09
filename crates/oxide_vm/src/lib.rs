@@ -9,6 +9,7 @@
 
 /// 内置对象绑定模块：向 session 的 global 对象安装 Object/Array/... 及各原型。
 pub mod bindings;
+mod async_func;
 mod dispatch;
 mod generator;
 mod ic_helper;

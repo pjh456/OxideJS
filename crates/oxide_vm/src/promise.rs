@@ -97,7 +97,7 @@ impl Vm {
 
     /// 新建 Promise 能力 `(promise, resolve, reject)`：resolve/reject 为携带
     /// 目标 promise 的 native 闭包，同时写入状态盒供 thenable 委托取用。
-    fn new_promise_capability(&mut self) -> (JsValue, JsValue, JsValue) {
+    pub(crate) fn new_promise_capability(&mut self) -> (JsValue, JsValue, JsValue) {
         let promise = self.create_promise_object();
         let resolve = self.make_resolve_reject_fn(promise, false);
         let reject = self.make_resolve_reject_fn(promise, true);
@@ -222,7 +222,7 @@ impl Vm {
     }
 
     /// 是否原生 Promise 对象。
-    fn is_promise_value(&self, v: JsValue) -> bool {
+    pub(crate) fn is_promise_value(&self, v: JsValue) -> bool {
         v.is_object() && {
             let ptr = v.as_js_object_ptr();
             !ptr.is_null() && unsafe { &*ptr }.is_promise_obj()
@@ -349,7 +349,7 @@ impl Vm {
     }
 
     /// `PerformPromiseThen` 核心：注册 fulfill/reject 两条反应；已 settle 则直接入队。
-    fn perform_promise_then(
+    pub(crate) fn perform_promise_then(
         &mut self, this_val: JsValue, on_fulfilled: JsValue, on_rejected: JsValue,
     ) -> Result<JsValue, JsValue> {
         if !self.is_promise_value(this_val) {
@@ -746,7 +746,7 @@ impl Vm {
 
     /// 给 native 函数对象补 `length`/`name` 数据属性（length 先于 name，符合
     /// CreateBuiltinFunction 属性顺序）。
-    fn add_fn_name_length(&mut self, obj: &mut JsObject, name: &str, length: u8) {
+    pub(crate) fn add_fn_name_length(&mut self, obj: &mut JsObject, name: &str, length: u8) {
         let attrs = PropAttributes::new(false, false, true);
         let sh = self.kernel_core.shape_forge().as_ref();
         let sf = self.kernel_core.perm_interner().as_ref();

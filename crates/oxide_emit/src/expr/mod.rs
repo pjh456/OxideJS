@@ -7,6 +7,7 @@ use crate::{CompileCtx, Emitter};
 use oxide_parser::Expression;
 
 pub mod assignment;
+pub mod await_expr;
 pub mod call;
 pub mod function;
 pub mod identifier;

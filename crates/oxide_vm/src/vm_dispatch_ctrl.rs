@@ -41,6 +41,12 @@ impl Vm {
                             self.regs[0] = gen;
                             return Ok(false);
                         }
+                        // 异步函数调用返回 capability promise，立即同步执行 body 到首个 await。
+                        if sub_idx < self.sub_modules.len() && self.sub_modules[sub_idx].is_async {
+                            let promise = self.create_async_object(callee, self.regs[this_reg as usize], &args)?;
+                            self.regs[0] = promise;
+                            return Ok(false);
+                        }
                         self.push_bytecode_frame(
                             callee,
                             self.regs[this_reg as usize],
@@ -327,8 +333,8 @@ impl Vm {
                     }
                 }
             }
-            // 生成器内嵌 dispatch：帧全部弹出后把结果交付恢复方，而非继续执行。
-            if self.frames.is_empty() && self.generator_dispatch {
+            // 生成器/异步内嵌 dispatch：帧全部弹出后把结果交付恢复方，而非继续执行。
+            if self.frames.is_empty() && (self.generator_dispatch || self.async_dispatch) {
                 return Ok(Some(result));
             }
             Ok(None)

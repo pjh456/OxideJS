@@ -90,6 +90,7 @@ pub fn lower(f: &IRFunction) -> Result<CompiledModule, String> {
         is_derived_constructor: f.is_derived_constructor,
         needs_home_object: f.needs_home_object,
         is_generator: f.is_generator,
+        is_async: f.is_async,
         upvalue_captures: f.upvalue_captures.clone(),
         cells_needed: f.cells_needed,
         flat_id: 0,

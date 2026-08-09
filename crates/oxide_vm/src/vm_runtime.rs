@@ -116,6 +116,10 @@ impl Vm {
         if self.sub_modules[sub_idx].is_generator {
             return self.create_generator_object(callee, receiver, args);
         }
+        // 异步函数调用返回 capability promise，立即同步执行 body 到首个 await。
+        if self.sub_modules[sub_idx].is_async {
+            return self.create_async_object(callee, receiver, args);
+        }
         self.native_call_depth += 1;
 
         let subs = Arc::clone(&self.sub_modules);

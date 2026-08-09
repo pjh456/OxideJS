@@ -216,6 +216,12 @@ impl Emitter {
                 self.pre_scan_builtin_chain(&chain.expression, ctx);
             }
             Expression::ParenthesizedExpression(p) => self.pre_scan_builtin_expr(&p.expression, ctx),
+            Expression::YieldExpression(ye) => {
+                if let Some(a) = &ye.argument {
+                    self.pre_scan_builtin_expr(a, ctx);
+                }
+            }
+            Expression::AwaitExpression(ae) => self.pre_scan_builtin_expr(&ae.argument, ctx),
             Expression::ArrowFunctionExpression(_)
             | Expression::FunctionExpression(_)
             | Expression::ClassExpression(_) => {}

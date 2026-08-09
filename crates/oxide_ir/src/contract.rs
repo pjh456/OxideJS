@@ -20,7 +20,7 @@ impl Inst {
             // CALL 系：结果隐式写 reg 0，rd 是 callee 的 use
             OpCode::CALL | OpCode::CALL_NATIVE | OpCode::CALL_SPREAD => Some(0),
             // YIELD/YIELD_STAR：恢复时 next(v) 的 v / 委托完成值经 reg 0 交付（与 CALL 同协议）
-            OpCode::YIELD | OpCode::YIELD_STAR => Some(0),
+            OpCode::YIELD | OpCode::YIELD_STAR | OpCode::AWAIT => Some(0),
             // GET_PROP 系：结果写 a/b 槽而非 rd
             OpCode::GET_PROP | OpCode::IC_GET_PROP => reg_of(&self.a),
             OpCode::GET_PROP_DYNAMIC => reg_of(&self.b),
@@ -228,8 +228,12 @@ impl Inst {
             }
             // HALT：隐式读 reg 0（顶层返回值）
             OpCode::HALT => uses.push(0),
-            // RETURN/THROW/YIELD/YIELD_STAR：读 rd（None→0）
-            OpCode::RETURN | OpCode::THROW | OpCode::YIELD | OpCode::YIELD_STAR => push_operand(&mut uses, &self.rd),
+            // RETURN/THROW/YIELD/YIELD_STAR/AWAIT：读 rd（None→0）
+            OpCode::RETURN
+            | OpCode::THROW
+            | OpCode::YIELD
+            | OpCode::YIELD_STAR
+            | OpCode::AWAIT => push_operand(&mut uses, &self.rd),
             // 加载族：a 槽是 Const/Imm 立即数，无寄存器 use
             OpCode::LOAD_CONST
             | OpCode::CREATE_CLOSURE

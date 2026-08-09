@@ -284,6 +284,12 @@ impl Inst {
         Self::new(OpCode::SUSPEND_BODY, Operand::None, Operand::None, Operand::None)
     }
 
+    /// `await` 让出：`rd` 为被等待的值（运行时 PromiseResolve 包装）；异步帧挂起，
+    /// promise settle 后恢复，值经 reg 0 交付（与 YIELD 同协议）。
+    pub fn await_expr(src: Operand) -> Self {
+        Self::new(OpCode::AWAIT, src, Operand::None, Operand::None)
+    }
+
     // ── 跳转族：label 放 b 槽，offset 计算是 lowering 职责 ──
 
     /// 无条件跳转。label 放 b 槽，offset 由 lowering 回填。

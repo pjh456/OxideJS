@@ -579,6 +579,11 @@ impl Emitter {
                     self.collect_capture_names_expr(a, ref_set, shadow, out);
                 }
             }
+            // await 表达式：被等待的值里引用的父变量须纳入捕获（与 yield 同因——
+            // 异步体挂起恢复后寄存器已被覆盖，只能经 cell 读取）。
+            Expression::AwaitExpression(ae) => {
+                self.collect_capture_names_expr(&ae.argument, ref_set, shadow, out);
+            }
             Expression::ChainExpression(c) => self.collect_capture_names_chain(&c.expression, ref_set, shadow, out),
             _ => {}
         }
@@ -891,6 +896,7 @@ impl Emitter {
                     self.collect_captured_expr(a, own, out);
                 }
             }
+            Expression::AwaitExpression(ae) => self.collect_captured_expr(&ae.argument, own, out),
             Expression::ChainExpression(c) => self.collect_captured_chain(&c.expression, own, out),
             _ => {}
         }

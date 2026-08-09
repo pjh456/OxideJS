@@ -748,6 +748,12 @@ impl Vm {
                             self.regs[0] = gen;
                             return Ok(false);
                         }
+                        // 异步函数调用返回 capability promise，立即同步执行 body 到首个 await。
+                        if sub_idx < self.sub_modules.len() && self.sub_modules[sub_idx].is_async {
+                            let promise = self.create_async_object(callee, this_value, &args)?;
+                            self.regs[0] = promise;
+                            return Ok(false);
+                        }
                         self.push_bytecode_frame(
                             callee,
                             this_value,
@@ -837,6 +843,12 @@ impl Vm {
             // 生成器函数不是构造器：`new g()` 抛 TypeError。
             if (ctor_obj.sub_module_index() as usize) < self.sub_modules.len()
                 && self.sub_modules[ctor_obj.sub_module_index() as usize].is_generator
+            {
+                return self.raise_type_error("g is not a constructor").map(|_| true);
+            }
+            // 异步函数不是构造器：`new f()` 抛 TypeError。
+            if (ctor_obj.sub_module_index() as usize) < self.sub_modules.len()
+                && self.sub_modules[ctor_obj.sub_module_index() as usize].is_async
             {
                 return self.raise_type_error("g is not a constructor").map(|_| true);
             }

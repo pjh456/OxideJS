@@ -163,6 +163,8 @@ pub struct CompileCtx {
     pub(crate) in_static_method: bool,
     /// 本函数是否为生成器函数体（`function*`），`assemble_ir` 回写到 IR。
     pub(crate) is_generator: bool,
+    /// 本函数是否为异步函数体（`async function` / async 箭头），`assemble_ir` 回写到 IR。
+    pub(crate) is_async: bool,
     pub(crate) static_block_this_reg: Option<u8>,
     pub(crate) field_buffer: Option<FieldBuffer>,
     /// 类构造器模块中 `@@field_keys` upvalue 下标（实例字段 computed key 数组）。
@@ -265,6 +267,7 @@ impl CompileCtx {
             in_instance_method: false,
             in_static_method: false,
             is_generator: false,
+            is_async: false,
             static_block_this_reg: None,
             field_buffer: None,
             field_keys_uv: None,
@@ -607,6 +610,7 @@ impl CompileCtx {
             is_derived_constructor: false,
             needs_home_object: false,
             is_generator: self.is_generator,
+            is_async: self.is_async,
             captured_this_const_idx: 0,
             function_name: None,
             function_length: self.function_length,
@@ -705,19 +709,36 @@ impl Emitter {
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, is_arrow: bool,
     ) -> Result<IRFunction, String> {
-        self.compile_function_body_with_flags(param_specs, body_stmts, parent_ctx, is_expression_body, is_arrow, false)
+        self.compile_function_body_with_flags(param_specs, body_stmts, parent_ctx, is_expression_body, is_arrow, false, false)
     }
 
     /// 编译函数体并显式指定生成器标志（`function*` 走此入口）。
     pub(crate) fn compile_generator_body<'a>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
     ) -> Result<IRFunction, String> {
-        self.compile_function_body_with_flags(param_specs, body_stmts, parent_ctx, false, false, true)
+        self.compile_function_body_with_flags(param_specs, body_stmts, parent_ctx, false, false, true, false)
+    }
+
+    /// 编译异步函数体（`async function` / async 箭头走此入口）：`is_async` 使
+    /// `assemble_ir` 标记模块，VM 调用时按异步函数协议执行。
+    pub(crate) fn compile_async_body<'a>(
+        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
+        is_expression_body: bool, is_arrow: bool,
+    ) -> Result<IRFunction, String> {
+        self.compile_function_body_with_flags(
+            param_specs,
+            body_stmts,
+            parent_ctx,
+            is_expression_body,
+            is_arrow,
+            false,
+            true,
+        )
     }
 
     fn compile_function_body_with_flags<'a>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
-        is_expression_body: bool, is_arrow: bool, is_generator: bool,
+        is_expression_body: bool, is_arrow: bool, is_generator: bool, is_async: bool,
     ) -> Result<IRFunction, String> {
         let body_context = if is_arrow {
             FunctionBodyContext::Arrow
@@ -732,6 +753,7 @@ impl Emitter {
             &[],
             body_context,
             is_generator,
+            is_async,
         )
     }
 
@@ -739,7 +761,7 @@ impl Emitter {
     pub(crate) fn compile_function_body_with_bindings_gen<'a>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, extra_bindings: &[(&str, u32)], body_context: FunctionBodyContext,
-        is_generator: bool,
+        is_generator: bool, is_async: bool,
     ) -> Result<IRFunction, String> {
         self.compile_function_body_with_field_hooks_gen(
             param_specs,
@@ -753,6 +775,7 @@ impl Emitter {
             &[],
             &[],
             is_generator,
+            is_async,
         )
     }
 
@@ -785,6 +808,7 @@ impl Emitter {
             extra_capture_exprs,
             extra_upvalue_names,
             false,
+            false,
         )
     }
 
@@ -793,13 +817,14 @@ impl Emitter {
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, extra_bindings: &[(&str, u32)], body_context: FunctionBodyContext,
         mut emit_fields: Option<E>, fields_after_super: bool, extra_capture_exprs: &[&'a Expression<'a>],
-        extra_upvalue_names: &[(&str, u8)], is_generator: bool,
+        extra_upvalue_names: &[(&str, u8)], is_generator: bool, is_async: bool,
     ) -> Result<IRFunction, String>
     where
         E: FnMut(&Emitter, &mut CompileCtx) -> Result<(), String>,
     {
         let mut ctx = CompileCtx::new();
         ctx.is_generator = is_generator;
+        ctx.is_async = is_async;
 
         // length = 第一个带默认值形参之前的形参数（解构默认与标识符默认同规则）；
         // rest 参数不在 param_specs 中（独立字段），天然不计入。
@@ -1158,6 +1183,7 @@ impl Emitter {
             | Expression::NewExpression(_) => self.emit_function_domain(expr, ctx),
             Expression::Identifier(ident) => self.emit_identifier_expression(ident, ctx),
             Expression::YieldExpression(ye) => self.emit_yield_expression(ye, ctx),
+            Expression::AwaitExpression(ae) => self.emit_await_expression(ae, ctx),
             Expression::CallExpression(_) => self.emit_call_domain(expr, ctx),
             Expression::ThisExpression(_) => self.emit_this_expression(ctx),
             Expression::SequenceExpression(seq) => self.emit_sequence_expression(seq, ctx),

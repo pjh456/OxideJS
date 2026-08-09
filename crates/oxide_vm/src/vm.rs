@@ -138,6 +138,7 @@ pub struct ForInIter<'bump> {
 }
 
 /// try/catch/finally 处理记录，异常展开时用于定位跳转目标与清理范围。
+#[derive(Debug, Clone, Copy)]
 pub struct TryHandler {
     pub catch_pc: Option<usize>,
     pub finally_pc: Option<usize>,
@@ -249,6 +250,8 @@ pub struct Vm {
     pub promise_constructor: P<JsObject>,
     /// `%Promise.prototype%`：Promise 实例的原型（then/catch/finally 方法挂此）。
     pub promise_proto: P<JsObject>,
+    /// `%AsyncFunction.prototype%`：异步函数对象的原型（`constructor` 指向 `%AsyncFunction%`）。
+    pub async_function_proto: P<JsObject>,
     /// 微任务队列（Promise reactions / thenable 委托），`run()` 末尾 FIFO drain。
     pub(crate) job_queue: VecDeque<crate::promise::Microtask>,
     pub math_rng_state: u64,
@@ -302,6 +305,15 @@ pub struct Vm {
     pub(crate) generator_init_step: bool,
     /// 参数初始化步中已越过 body 起点标记的信号（`initialize_generator` 消费后复位）。
     pub(crate) generator_body_started: bool,
+    /// 当前正在执行的异步函数上下文对象（`OBJ_TYPE_ASYNC`，持有 AsyncState 快照）。
+    /// AWAIT dispatch 据此登记恢复反应；跨嵌套 async 调用保存/恢复。
+    pub(crate) async_context: Option<JsValue>,
+    /// 异步体 `dispatch()` 让出时的信号：AWAIT 置 true，恢复方（async 内嵌 dispatch
+    /// 循环）取走并快照挂起状态。false = 正常返回/异常。
+    pub(crate) async_suspended: bool,
+    /// 当前是否处于异步函数内嵌 dispatch 循环：异步帧弹出且 frames 清空时，
+    /// `do_return` 据此把结果交付给恢复方（与 generator_dispatch 同语义）。
+    pub(crate) async_dispatch: bool,
     /// 分组保存 session arena / GC 簿记状态。
     pub(crate) gc_state: GcState,
     /// 分组保存 `Symbol` intern 状态。
@@ -1549,6 +1561,13 @@ impl Vm {
                         self.profiling.set_instruction_count(steps);
                         return Ok(JsValue::undefined());
                     }
+                }
+
+                OpCode::AWAIT => {
+                    // 异步帧挂起：登记恢复反应后内嵌 dispatch 返回，恢复方快照挂起状态。
+                    self.dispatch_await(rd)?;
+                    self.profiling.set_instruction_count(steps);
+                    return Ok(JsValue::undefined());
                 }
 
                 _ => {

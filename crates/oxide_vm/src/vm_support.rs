@@ -37,6 +37,7 @@ impl Vm {
             generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             promise_constructor: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             promise_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+            async_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             job_queue: VecDeque::new(),
             math_rng_state: 0,
             sub_modules: Arc::new(Vec::new()),
@@ -62,6 +63,9 @@ impl Vm {
             generator_dispatch: false,
             generator_init_step: false,
             generator_body_started: false,
+            async_context: None,
+            async_suspended: false,
+            async_dispatch: false,
             gc_state: GcState {
                 session_epoch: bumpalo::Bump::new(),
                 session_gc: crate::session_gc::SessionGc::new(),
@@ -91,6 +95,7 @@ impl Vm {
         };
         vm.init_generator_intrinsics();
         vm.init_promise_intrinsics();
+        vm.init_async_intrinsics();
         // Promise 全局绑定发生在快照采集之后，重录快照避免首次 full_reset 误判脏。
         vm.session.record_snapshot();
         vm_info!("Vm created");
@@ -117,6 +122,7 @@ impl Vm {
             generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             promise_constructor: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             promise_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+            async_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             job_queue: VecDeque::new(),
             math_rng_state: 0,
             sub_modules: Arc::new(Vec::new()),
@@ -142,6 +148,9 @@ impl Vm {
             generator_dispatch: false,
             generator_init_step: false,
             generator_body_started: false,
+            async_context: None,
+            async_suspended: false,
+            async_dispatch: false,
             gc_state: GcState {
                 session_epoch: bumpalo::Bump::new(),
                 session_gc: crate::session_gc::SessionGc::new(),
@@ -171,6 +180,7 @@ impl Vm {
         };
         vm.init_generator_intrinsics();
         vm.init_promise_intrinsics();
+        vm.init_async_intrinsics();
         // Promise 全局绑定发生在快照采集之后，重录快照避免首次 full_reset 误判脏。
         vm.session.record_snapshot();
         vm_info!("Vm created (pool)");
@@ -183,6 +193,13 @@ impl Vm {
     /// Object/Function 原型，session 重建后须重挂。
     pub(crate) fn init_generator_intrinsics(&mut self) {
         crate::generator::init_generator_intrinsics(self);
+    }
+
+    /// 初始化/重建异步函数内建对象（`%AsyncFunction.prototype%`）。
+    ///
+    /// 在 VM 创建与 `full_reset`（session 重建）后调用。
+    pub(crate) fn init_async_intrinsics(&mut self) {
+        crate::async_func::init_async_intrinsics(self);
     }
 
     /// 全量隔离重置：仅重建被污染的内置对象与 global，并清空所有执行状态与内存。
@@ -201,6 +218,7 @@ impl Vm {
         self.object_prototype = P::clone(&self.session.builtin_world().object_proto);
         self.init_generator_intrinsics();
         self.init_promise_intrinsics();
+        self.init_async_intrinsics();
         // 快照须在 Promise 全局绑定之后采集：绑定会修改 global 世代。
         self.session.record_snapshot();
         self.clear_full_reset_state();
@@ -215,6 +233,7 @@ impl Vm {
         self.object_prototype = P::clone(&self.session.builtin_world().object_proto);
         self.init_generator_intrinsics();
         self.init_promise_intrinsics();
+        self.init_async_intrinsics();
         self.session.record_snapshot();
         self.clear_full_reset_state();
     }
@@ -274,6 +293,9 @@ impl Vm {
         self.generator_dispatch = false;
         self.generator_init_step = false;
         self.generator_body_started = false;
+        self.async_context = None;
+        self.async_suspended = false;
+        self.async_dispatch = false;
         self.native_call_depth = 0;
         // 微任务队列是执行期状态：跨 run 不保留。
         self.job_queue.clear();
@@ -343,8 +365,11 @@ impl Vm {
         // 生成器函数对象：原型为 %GeneratorFunction.prototype%（constructor 链解析到
         // "GeneratorFunction"），且不像普通函数那样拥有 `prototype` 属性。
         let is_generator = self.sub_modules.get(sub_idx as usize).map(|m| m.is_generator).unwrap_or(false);
+        let is_async = self.sub_modules.get(sub_idx as usize).map(|m| m.is_async).unwrap_or(false);
         let proto_val = if is_generator {
             JsValue::from_js_object(self.generator_function_proto.as_ptr() as *mut JsObject)
+        } else if is_async {
+            JsValue::from_js_object(self.async_function_proto.as_ptr() as *mut JsObject)
         } else {
             JsValue::from_js_object(self.session.builtin_world().function_proto.as_ptr() as *mut JsObject)
         };
