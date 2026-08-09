@@ -91,7 +91,7 @@ impl Vm {
         Ok(JsValue::undefined())
     }
 
-    fn push_bytecode_getter_frame(
+    pub(crate) fn push_bytecode_getter_frame(
         &mut self, getter: JsValue, receiver: JsValue, target_reg: u8,
     ) -> Result<bool, String> {
         vm_trace!(
@@ -230,7 +230,7 @@ impl Vm {
         self.ordinary_set_inner(receiver_obj, prop_name_si, promoted, receiver, use_frame_push)
     }
 
-    fn call_or_push_setter(
+    pub(crate) fn call_or_push_setter(
         &mut self, setter: JsValue, receiver: JsValue, val: JsValue, use_frame_push: bool,
     ) -> Result<(), String> {
         vm_trace!("call_or_push_setter: frame_push={}", use_frame_push);

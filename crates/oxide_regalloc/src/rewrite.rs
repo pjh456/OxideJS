@@ -225,6 +225,16 @@ fn rewrite_inst(
             }
             ext
         }
+        // GET_PRIVATE/SET_PRIVATE：ext[0] 是 brand 对象寄存器（0 表示跳过检查），须重映射。
+        OpCode::GET_PRIVATE | OpCode::SET_PRIVATE => {
+            let mut ext = inst.ext.clone();
+            if let Some(brand_reg) = ext.first_mut() {
+                if *brand_reg != 0 {
+                    *brand_reg = remap_ext_reg(*brand_reg, slot_color, map);
+                }
+            }
+            ext
+        }
         _ => inst.ext.clone(),
     };
     // 调用点首参槽改指 arg_window_base（桥接后）

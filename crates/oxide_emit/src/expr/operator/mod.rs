@@ -343,12 +343,7 @@ impl Emitter {
                     } else {
                         OpCode::SUB
                     };
-                    ctx.inst(Inst::new(
-                        op,
-                        Operand::Reg(new_reg),
-                        Operand::Reg(old_reg),
-                        Operand::Reg(one_reg),
-                    ));
+                    ctx.inst(Inst::new(op, Operand::Reg(new_reg), Operand::Reg(old_reg), Operand::Reg(one_reg)));
                     ctx.inst(Inst::new(
                         OpCode::SET_PROP_DYNAMIC,
                         Operand::Reg(obj_reg),

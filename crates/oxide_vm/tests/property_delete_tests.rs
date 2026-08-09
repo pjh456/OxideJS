@@ -36,7 +36,11 @@ fn delete_non_configurable_returns_false_in_sloppy_mode() {
         "delete obj.x",
     ])
     .unwrap();
-    assert!(r.is_bool() && !r.as_bool(), "delete non-configurable in sloppy should return false, got {:?}", r);
+    assert!(
+        r.is_bool() && !r.as_bool(),
+        "delete non-configurable in sloppy should return false, got {:?}",
+        r
+    );
 }
 
 // ── 删除不存在的属性返回 true ──

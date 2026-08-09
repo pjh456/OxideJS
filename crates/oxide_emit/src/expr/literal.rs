@@ -70,9 +70,7 @@ impl Emitter {
                 // 非法正则字面量须在编译期报 SyntaxError（负面测试期望编译失败）。
                 // 用 regress（ECMAScript 语法）校验，避免误报 backreference/lookaround 等合法模式。
                 if regress::Regex::with_flags(&pattern, flags.as_str()).is_err() {
-                    return Err(format!(
-                        "SyntaxError: Invalid regular expression: /{pattern}/{flags}"
-                    ));
+                    return Err(format!("SyntaxError: Invalid regular expression: /{pattern}/{flags}"));
                 }
                 let pat_ci = ctx.add_constant(Constant::String(pattern));
                 let pat_reg = ctx.alloc_reg();
@@ -96,5 +94,3 @@ impl Emitter {
         }
     }
 }
-
-

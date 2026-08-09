@@ -307,4 +307,3 @@ fn operand_this_is_semantic_not_physical_index() {
     assert_eq!(Operand::This, Operand::This);
     assert_eq!(Operand::NewTarget, Operand::NewTarget);
 }
-

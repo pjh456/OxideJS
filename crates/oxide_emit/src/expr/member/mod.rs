@@ -60,13 +60,16 @@ impl Emitter {
         &self, member: &oxide_parser::PrivateFieldExpression, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
         let obj_reg = self.emit_expression(&member.object, ctx)?;
-        let key_reg = self.emit_private_id_reg(member.field.name.as_str(), ctx)?;
+        let name = member.field.name.as_str();
+        let (brand_reg, brand_id) = self.private_access_brand(obj_reg, name, ctx)?;
+        let key_reg = self.emit_private_id_reg(name, ctx)?;
         let r = ctx.alloc_reg();
-        ctx.inst(Inst::new(
-            OpCode::GET_PRIVATE,
+        ctx.inst(Inst::get_private(
             Operand::Reg(r),
             Operand::Reg(obj_reg),
             Operand::Reg(key_reg),
+            brand_reg,
+            brand_id,
         ));
         Ok(r)
     }

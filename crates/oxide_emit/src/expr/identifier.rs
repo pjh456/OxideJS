@@ -54,12 +54,7 @@ impl Emitter {
         ctx.inst(Inst::load_const(Operand::Reg(key_reg), key_idx));
 
         let has_reg = ctx.alloc_reg();
-        ctx.inst(Inst::new(
-            OpCode::IN,
-            Operand::Reg(has_reg),
-            Operand::Reg(key_reg),
-            Operand::Reg(obj_reg),
-        ));
+        ctx.inst(Inst::new(OpCode::IN, Operand::Reg(has_reg), Operand::Reg(key_reg), Operand::Reg(obj_reg)));
 
         let fallback_label = ctx.next_label_id();
         let end_label = ctx.next_label_id();
@@ -101,12 +96,7 @@ impl Emitter {
                 ));
             }
         } else if let Some(reg) = ctx.scopes.symbols.lookup_any(name) {
-            ctx.inst(Inst::new(
-                OpCode::LOAD_VAR,
-                Operand::Reg(result_reg),
-                Operand::Reg(reg),
-                Operand::None,
-            ));
+            ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg), Operand::Reg(reg), Operand::None));
         } else {
             let undef_idx = ctx.add_constant(Constant::Undefined);
             ctx.inst(Inst::load_const(Operand::Reg(result_reg), undef_idx));
@@ -164,12 +154,7 @@ impl Emitter {
         ctx.inst(Inst::load_const(Operand::Reg(key_reg), key_idx));
 
         let has_reg = ctx.alloc_reg();
-        ctx.inst(Inst::new(
-            OpCode::IN,
-            Operand::Reg(has_reg),
-            Operand::Reg(key_reg),
-            Operand::Reg(obj_reg),
-        ));
+        ctx.inst(Inst::new(OpCode::IN, Operand::Reg(has_reg), Operand::Reg(key_reg), Operand::Reg(obj_reg)));
 
         let fallback_label = ctx.next_label_id();
         let end_label = ctx.next_label_id();

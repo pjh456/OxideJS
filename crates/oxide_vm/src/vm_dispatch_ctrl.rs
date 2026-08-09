@@ -2,6 +2,7 @@ use crate::vm::{Completion, FrameContinuation, TryHandler, Vm};
 use crate::vm_trace;
 use oxide_bytecode::opcode;
 use oxide_types::object::PropAttributes;
+use oxide_types::private_key::make_private_name_id;
 use oxide_types::value::JsValue;
 
 impl Vm {
@@ -15,7 +16,8 @@ impl Vm {
             let obj_ptr = callee.as_js_object_ptr();
             if !obj_ptr.is_null() {
                 let obj = unsafe { &*obj_ptr };
-                if obj.is_function() {                    if obj.is_class_constructor() {
+                if obj.is_function() {
+                    if obj.is_class_constructor() {
                         return self
                             .raise_type_error("class constructor cannot be invoked without 'new'")
                             .map(|_| true);
@@ -106,7 +108,13 @@ impl Vm {
             return self.raise_type_error("DEFINE_ACCESSOR target is not object");
         }
         let key_val = self.immutables()[prop_idx];
-        let prop_name_si = self.property_key_si(key_val);
+        // 私有访问器：key 常量编码为 Int（私有名局部 id），映射到私有键高半区；
+        // 普通访问器 key 是字符串常量，走 interner 键。
+        let prop_name_si = if key_val.is_int() {
+            make_private_name_id(key_val.as_int().max(0) as u32)
+        } else {
+            self.property_key_si(key_val)
+        };
         let getter = self.regs[a];
         let setter = self.regs[b];
         let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
@@ -153,7 +161,10 @@ impl Vm {
         let offset = opcode::offset16(instr) as isize;
         let target_pc = ((self.pc as isize) + offset - 1) as usize;
         let crossed = opcode::rd(instr) as usize;
-        if let Some(finally_pc) = self.record_completion(Completion::Break { target_pc, remaining_finally: crossed }) {
+        if let Some(finally_pc) = self.record_completion(Completion::Break {
+            target_pc,
+            remaining_finally: crossed,
+        }) {
             self.pc = finally_pc;
         } else {
             self.pc = target_pc;
@@ -165,7 +176,10 @@ impl Vm {
         let offset = opcode::offset16(instr) as isize;
         let target_pc = ((self.pc as isize) + offset - 1) as usize;
         let crossed = opcode::rd(instr) as usize;
-        if let Some(finally_pc) = self.record_completion(Completion::Continue { target_pc, remaining_finally: crossed }) {
+        if let Some(finally_pc) = self.record_completion(Completion::Continue {
+            target_pc,
+            remaining_finally: crossed,
+        }) {
             self.pc = finally_pc;
         } else {
             self.pc = target_pc;
@@ -242,9 +256,10 @@ impl Vm {
             .iter()
             .filter(|h| h.frame_depth == self.frames.len() && h.finally_pc.is_some())
             .count();
-        if let Some(finally_pc) =
-            self.record_completion(Completion::Return { value: result, remaining_finally: crossed })
-        {
+        if let Some(finally_pc) = self.record_completion(Completion::Return {
+            value: result,
+            remaining_finally: crossed,
+        }) {
             self.pc = finally_pc;
             return Ok(None);
         }
@@ -283,11 +298,7 @@ impl Vm {
             let is_derived_constructor = frame.is_derived_constructor;
             let continuation = frame.continuation;
             let callee_this = self.regs[254];
-            vm_trace!(
-                "RETURN frame: continuation={:?}, derived={}",
-                continuation,
-                is_derived_constructor
-            );
+            vm_trace!("RETURN frame: continuation={:?}, derived={}", continuation, is_derived_constructor);
             self.restore_frame(frame);
             if let (Some(target_reg), Some(constructed_this)) = (construct_result_reg, constructed_this) {
                 if is_derived_constructor && result.is_undefined() && callee_this.is_undefined() {

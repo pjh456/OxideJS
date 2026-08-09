@@ -171,9 +171,12 @@ impl Vm {
 
         // length：实参个数，可写、不可枚举、可配置。
         let length_si = self.kernel_core.perm_interner().intern("length").0;
-        if let Err(msg) =
-            self.define_data_property(obj, length_si, JsValue::int(count as i32), PropAttributes::new(true, false, true))
-        {
+        if let Err(msg) = self.define_data_property(
+            obj,
+            length_si,
+            JsValue::int(count as i32),
+            PropAttributes::new(true, false, true),
+        ) {
             return self.raise_error_kind("TypeError", &msg);
         }
 

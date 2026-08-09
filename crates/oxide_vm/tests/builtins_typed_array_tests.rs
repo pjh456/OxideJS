@@ -138,11 +138,7 @@ fn typed_array_to_string_is_identifiable() {
 #[test]
 fn typed_array_element_write_roundtrips() {
     let mut vm = Vm::new();
-    let result = eval(
-        &mut vm,
-        "var ta = new Int32Array(2); ta[0] = 42; ta[1] = ta[0] * 2; ta[1] === 84",
-    )
-    .unwrap();
+    let result = eval(&mut vm, "var ta = new Int32Array(2); ta[0] = 42; ta[1] = ta[0] * 2; ta[1] === 84").unwrap();
     assert!(result.as_bool());
 }
 
@@ -156,11 +152,7 @@ fn typed_array_element_write_clamps_int8() {
 #[test]
 fn typed_array_out_of_bounds_write_is_ignored() {
     let mut vm = Vm::new();
-    let result = eval(
-        &mut vm,
-        "var ta = new Int8Array(1); ta[5] = 1; ta.length === 1 && ta[5] === undefined",
-    )
-    .unwrap();
+    let result = eval(&mut vm, "var ta = new Int8Array(1); ta[5] = 1; ta.length === 1 && ta[5] === undefined").unwrap();
     assert!(result.as_bool());
 }
 

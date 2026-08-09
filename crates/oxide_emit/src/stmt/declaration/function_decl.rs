@@ -21,17 +21,15 @@ impl Emitter {
         let mut param_names = Vec::new();
         for (idx, param) in fd.params.items.iter().enumerate() {
             match &param.pattern {
-                oxide_parser::BindingPattern::BindingIdentifier(bi) => {
-                    param_names.push(ParamSpec::Identifier {
-                        name: bi.name.to_string(),
-                        initializer: param.initializer.as_deref(),
-                    })
-                }
+                oxide_parser::BindingPattern::BindingIdentifier(bi) => param_names.push(ParamSpec::Identifier {
+                    name: bi.name.to_string(),
+                    initializer: param.initializer.as_deref(),
+                }),
                 pattern => param_names.push(ParamSpec::Pattern {
-                        synthetic_name: format!("@@param_{idx}"),
-                        pattern,
-                        initializer: param.initializer.as_deref(),
-                    }),
+                    synthetic_name: format!("@@param_{idx}"),
+                    pattern,
+                    initializer: param.initializer.as_deref(),
+                }),
             }
         }
         let body_stmts: &[Statement] = if let Some(body) = &fd.body { &body.statements } else { &[] };
@@ -54,4 +52,3 @@ impl Emitter {
         Ok(None)
     }
 }
-

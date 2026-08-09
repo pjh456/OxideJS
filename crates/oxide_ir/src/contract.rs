@@ -58,10 +58,8 @@ impl Inst {
             | OpCode::SET_PROP_DYNAMIC
             | OpCode::IC_SET_PROP
             | OpCode::SET_ELEM
-            | OpCode::GET_PRIVATE
             | OpCode::SET_PRIVATE
             | OpCode::INIT_PRIVATE
-            | OpCode::PRIVATE_BRAND_IN
             | OpCode::DELETE_PROP_STATIC
             | OpCode::DELETE_PROP_DYNAMIC
             | OpCode::DEFINE_ACCESSOR
@@ -253,13 +251,34 @@ impl Inst {
             | OpCode::SET_PROP_DYNAMIC
             | OpCode::IC_SET_PROP
             | OpCode::SET_ELEM
-            | OpCode::GET_PRIVATE
-            | OpCode::SET_PRIVATE
             | OpCode::INIT_PRIVATE
-            | OpCode::PRIVATE_BRAND_IN
             | OpCode::DEFINE_ACCESSOR
             | OpCode::DEFINE_PROP => {
                 push_operand(&mut uses, &self.rd);
+                push_operand(&mut uses, &self.a);
+                push_operand(&mut uses, &self.b);
+            }
+            // 私有写：rd=对象、a=值、b=键是 use，额外读 ext[0]（brand 对象寄存器）
+            OpCode::SET_PRIVATE => {
+                push_operand(&mut uses, &self.rd);
+                push_operand(&mut uses, &self.a);
+                push_operand(&mut uses, &self.b);
+                let brand_reg = self.ext.first().copied().unwrap_or(0);
+                if brand_reg != 0 {
+                    uses.push(brand_reg);
+                }
+            }
+            // 私有读/品牌检查：a=对象、b=私有键是 use，rd 是结果 def
+            // GET_PRIVATE 额外读 ext[0]（brand 对象寄存器，0 表示跳过检查）
+            OpCode::GET_PRIVATE => {
+                push_operand(&mut uses, &self.a);
+                push_operand(&mut uses, &self.b);
+                let brand_reg = self.ext.first().copied().unwrap_or(0);
+                if brand_reg != 0 {
+                    uses.push(brand_reg);
+                }
+            }
+            OpCode::PRIVATE_BRAND_IN => {
                 push_operand(&mut uses, &self.a);
                 push_operand(&mut uses, &self.b);
             }

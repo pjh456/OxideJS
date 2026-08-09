@@ -362,10 +362,7 @@ pub fn object_is<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// # 副作用
 /// - 修改 obj 的 shape 链、属性表与 generation
 fn define_from_descriptor<H: VmHost>(
-    vm: &mut H,
-    obj_ptr: *mut JsObject,
-    key_si: u32,
-    desc_val: JsValue,
+    vm: &mut H, obj_ptr: *mut JsObject, key_si: u32, desc_val: JsValue,
 ) -> Result<(), String> {
     if !desc_val.is_object() {
         return Err("Property description must be an object".to_string());
@@ -477,9 +474,7 @@ fn define_from_descriptor<H: VmHost>(
 /// # 副作用
 /// - 修改 target 的 shape 链、属性表与 generation
 fn define_all_from_properties<H: VmHost>(
-    vm: &mut H,
-    target_ptr: *mut JsObject,
-    props_val: JsValue,
+    vm: &mut H, target_ptr: *mut JsObject, props_val: JsValue,
 ) -> Result<(), String> {
     if !props_val.is_object() {
         return Err("Property description must be an object".to_string());
@@ -495,11 +490,7 @@ fn define_all_from_properties<H: VmHost>(
     for (key_si, offset) in prop_keys {
         let props = unsafe { &*props_ptr };
         // 非可枚举自身属性跳过；无显式 meta 视为可枚举（普通字面量默认）。
-        if props
-            .prop_meta_at(offset)
-            .map(|m| !m.attributes.enumerable())
-            .unwrap_or(false)
-        {
+        if props.prop_meta_at(offset).map(|m| !m.attributes.enumerable()).unwrap_or(false) {
             continue;
         }
         let desc_val = vm.ordinary_get(props, key_si, props_val)?;

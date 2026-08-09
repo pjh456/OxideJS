@@ -154,18 +154,9 @@ pub struct TryHandler {
 /// 逐个恢复（`remaining_finally` 为仍需穿越的 finally 体数，进入一个递减一个）。
 #[derive(Debug, Clone, Copy)]
 pub enum Completion {
-    Break {
-        target_pc: usize,
-        remaining_finally: usize,
-    },
-    Continue {
-        target_pc: usize,
-        remaining_finally: usize,
-    },
-    Return {
-        value: JsValue,
-        remaining_finally: usize,
-    },
+    Break { target_pc: usize, remaining_finally: usize },
+    Continue { target_pc: usize, remaining_finally: usize },
+    Return { value: JsValue, remaining_finally: usize },
 }
 
 impl Completion {
@@ -181,9 +172,18 @@ impl Completion {
     /// 复制并改写剩余 finally 计数（进入一个 finally 后递减）。
     pub fn with_remaining(&self, remaining: usize) -> Completion {
         match *self {
-            Completion::Break { target_pc, .. } => Completion::Break { target_pc, remaining_finally: remaining },
-            Completion::Continue { target_pc, .. } => Completion::Continue { target_pc, remaining_finally: remaining },
-            Completion::Return { value, .. } => Completion::Return { value, remaining_finally: remaining },
+            Completion::Break { target_pc, .. } => Completion::Break {
+                target_pc,
+                remaining_finally: remaining,
+            },
+            Completion::Continue { target_pc, .. } => Completion::Continue {
+                target_pc,
+                remaining_finally: remaining,
+            },
+            Completion::Return { value, .. } => Completion::Return {
+                value,
+                remaining_finally: remaining,
+            },
         }
     }
 }

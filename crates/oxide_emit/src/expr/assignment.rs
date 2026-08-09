@@ -207,12 +207,15 @@ impl Emitter {
             }
             let obj_reg = self.emit_expression(&member.object, ctx)?;
             let val_reg = self.emit_expression(&assign.right, ctx)?;
-            let key_reg = self.emit_private_id_reg(member.field.name.as_str(), ctx)?;
-            ctx.inst(Inst::new(
-                OpCode::SET_PRIVATE,
+            let name = member.field.name.as_str();
+            let (brand_reg, brand_id) = self.private_access_brand(obj_reg, name, ctx)?;
+            let key_reg = self.emit_private_id_reg(name, ctx)?;
+            ctx.inst(Inst::set_private(
                 Operand::Reg(obj_reg),
                 Operand::Reg(val_reg),
                 Operand::Reg(key_reg),
+                brand_reg,
+                brand_id,
             ));
             Ok(val_reg)
         } else if let oxide_parser::AssignmentTarget::AssignmentTargetIdentifier(id_ref) = &assign.left {

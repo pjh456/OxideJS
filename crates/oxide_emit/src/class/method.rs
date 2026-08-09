@@ -90,13 +90,25 @@ impl Emitter {
         let saved_static = ctx.in_static_method;
         ctx.in_instance_method = !method.r#static;
         ctx.in_static_method = method.r#static;
-        let mut method_module = self.compile_function_body_with_bindings(
+        // 私有方法/访问器访问需对接收者做 brand 检查：方法函数捕获类 brand 对象
+        // （@@class_brand upvalue，值 = 类原型）。
+        let extra_uv: Vec<(&str, u8)> = ctx
+            .captured_bindings
+            .get("@@class_brand")
+            .map(|c| ("@@class_brand", *c))
+            .into_iter()
+            .collect();
+        let mut method_module = self.compile_function_body_with_field_hooks(
             &param_names,
             body_stmts,
             ctx,
             false,
             self_binding,
             FunctionBodyContext::ClassElement,
+            None::<fn(&Emitter, &mut CompileCtx) -> Result<(), String>>,
+            false,
+            &[],
+            &extra_uv,
         )?;
         ctx.in_instance_method = saved_instance;
         ctx.in_static_method = saved_static;

@@ -36,8 +36,9 @@ pub fn parse<'a>(allocator: &'a Allocator, source: &'a str) -> Result<Program<'a
 
     // 语法早期错误（Early Errors）检查：oxc parser 把复杂早期错误委托给
     // oxc_semantic（strict 绑定标识符、重复参数、NSPL、super 位置等）。
-    let semantic_ret =
-        oxc_semantic::SemanticBuilder::new().with_check_syntax_error(true).build(&ret.program);
+    let semantic_ret = oxc_semantic::SemanticBuilder::new()
+        .with_check_syntax_error(true)
+        .build(&ret.program);
     if !semantic_ret.errors.is_empty() {
         return Err(semantic_ret.errors.into_iter().map(OxideError::from).collect());
     }

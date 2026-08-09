@@ -537,7 +537,10 @@ fn compile_call_spread_emits_spread_opcodes() {
         "f(...args) should emit CALL_SPREAD"
     );
     assert!(
-        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::NEW_EXPRESSION_SPREAD),
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::NEW_EXPRESSION_SPREAD),
         "new f(...args) should emit NEW_EXPRESSION_SPREAD"
     );
     // 无 spread 的调用不发 spread 变体

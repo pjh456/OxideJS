@@ -363,9 +363,11 @@ fn computed_field_key_evaluated_once_at_class_definition() {
 #[test]
 fn computed_field_key_once_but_value_per_instance() {
     let mut vm = Vm::new();
-    let result =
-        eval(&mut vm, "var n=0; class C { [++n] = ++n; } var a=new C(); var b=new C(); n*100 + a[1]*10 + b[1]")
-            .unwrap();
+    let result = eval(
+        &mut vm,
+        "var n=0; class C { [++n] = ++n; } var a=new C(); var b=new C(); n*100 + a[1]*10 + b[1]",
+    )
+    .unwrap();
     assert_num(result, 323.0);
 }
 

@@ -1104,7 +1104,14 @@ impl BuiltinWorld {
     pub fn bind_string_methods(&self, methods: &StringMethods, string_forge: &PermInterner, shape_forge: &ShapeForge) {
         let ctor_ptr = P::as_ptr(&self.string_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
-        bind_methods!(self, ctor, string_forge, shape_forge, ("fromCharCode", methods.from_char_code, 1), ("fromCodePoint", methods.from_code_point, 1),);
+        bind_methods!(
+            self,
+            ctor,
+            string_forge,
+            shape_forge,
+            ("fromCharCode", methods.from_char_code, 1),
+            ("fromCodePoint", methods.from_code_point, 1),
+        );
 
         let proto_ptr = P::as_ptr(&self.string_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };

@@ -973,10 +973,7 @@ pub fn string_code_point_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     let pos = if args.len() > 1 {
         let pos_val = vm.reg(args[1]);
         if pos_val.is_symbol() {
-            return NativeResult::Err(crate::error::create_type_error(
-                vm,
-                "Cannot convert a Symbol value to a number",
-            ));
+            return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert a Symbol value to a number"));
         }
         match vm.coerce_number_bounded(pos_val) {
             Ok(n) => n,
@@ -985,10 +982,7 @@ pub fn string_code_point_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
                 if let Some(exc) = vm.take_uncaught_value() {
                     return NativeResult::Err(exc);
                 }
-                return NativeResult::Err(crate::error::create_type_error(
-                    vm,
-                    "Cannot convert argument to a number",
-                ));
+                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert argument to a number"));
             }
         }
     } else {
@@ -1264,6 +1258,3 @@ pub fn string_replace_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let result = s.replace(&pattern, &replacement);
     NativeResult::Ok(vm.new_string(&result))
 }
-
-
-

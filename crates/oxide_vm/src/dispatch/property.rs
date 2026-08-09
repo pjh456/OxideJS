@@ -1,6 +1,7 @@
 use crate::{ic_debug, ic_trace, vm_trace};
 use oxide_bytecode::opcode::OpCode;
 use oxide_kernel::prop_forge::PropTemplate;
+use oxide_runtime_api as coercion;
 use oxide_types::object::JsObject;
 use oxide_types::private_key::make_private_name_id;
 use oxide_types::value::JsValue;
@@ -88,33 +89,115 @@ impl Vm {
         None
     }
 
-    fn dispatch_get_private(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
-        vm_trace!("GET_PRIVATE rd={} a={} b={}", rd, a, b);
-        let Some(obj_ptr) = self.checked_object_ptr(self.regs[a], "private field access on non-object")? else {
-            return Ok(());
-        };
-        let obj = unsafe { &*obj_ptr };
-        let private_key = self.private_key_from_reg(b);
-        let Some(value) = self.resolve_private_value(obj, private_key) else {
+    /// 沿实例→proto 链查找私有槽：私有方法/访问器存于类的 home（proto），
+    /// 私有字段存于实例自身，两者都需要原型链遍历。
+    fn find_private_slot(&self, obj: &JsObject, private_key: u32) -> Option<*mut JsObject> {
+        if self.private_slot(obj, private_key).is_some() {
+            return Some(obj as *const JsObject as *mut JsObject);
+        }
+        let mut proto = obj.proto();
+        let mut depth = 0usize;
+        while proto.is_object() && depth < MAX_PROTO_CHAIN_DEPTH {
+            depth += 1;
+            let proto_obj = unsafe { &*proto.as_js_object_ptr() };
+            if self.private_slot(proto_obj, private_key).is_some() {
+                return Some(proto_obj as *const JsObject as *mut JsObject);
+            }
+            proto = proto_obj.proto();
+        }
+        None
+    }
+
+    /// 私有方法/访问器/静态字段访问的 brand 检查：接收者 own 的 brand 槽（构造时写入
+    /// 的类 brand 对象）必须与当前类 brand 对象同一。类每次求值创建新 brand，同字节码
+    /// 多次实例化（eval/factory）可借此区分。
+    fn private_brand_check(&mut self, obj: &JsObject, brand_reg: usize, brand_key: u32) -> Result<(), String> {
+        let Some(pos) = self.private_slot(obj, brand_key) else {
             return self.raise_type_error("private field brand check failed");
         };
-        self.regs[rd] = value;
+        let inst_brand = obj.get_prop_at(pos);
+        if !coercion::strict_equality(inst_brand, self.regs[brand_reg]) {
+            return self.raise_type_error("private field brand check failed");
+        }
+        Ok(())
+    }
+
+    fn dispatch_get_private(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("GET_PRIVATE rd={} a={} b={}", rd, a, b);
+        let obj_val = self.regs[a];
+        let Some(obj_ptr) = self.checked_object_ptr(obj_val, "private field access on non-object")? else {
+            return Ok(());
+        };
+        let private_key = self.private_key_from_reg(b);
+        let brand_reg = self.bytecode[self.pc] as usize;
+        let brand_key = make_private_name_id(self.bytecode[self.pc + 1]);
+        self.pc += 2;
+        let obj = unsafe { &*obj_ptr };
+        let Some(home_ptr) = self.find_private_slot(obj, private_key) else {
+            return self.raise_type_error("private field brand check failed");
+        };
+        if brand_reg != 0 {
+            self.private_brand_check(obj, brand_reg, brand_key)?;
+        }
+        let home = unsafe { &*home_ptr };
+        let pos = self.private_slot(home, private_key).expect("slot just found");
+        if let Some(meta) = home.prop_meta_at(pos) {
+            if meta.is_accessor {
+                if meta.get.is_undefined() {
+                    return self.raise_type_error("private field has no getter");
+                }
+                let getter = meta.get;
+                let pushed = self.push_bytecode_getter_frame(getter, obj_val, rd as u8)?;
+                // 与 dispatch_get_prop 一致：getter 帧入栈后消费 accessor_frame_target_reg，
+                // 避免残留状态污染后续属性访问（getter 返回经 continuation 写 rd）。
+                self.accessor_frame_target_reg.take();
+                if pushed {
+                    return Ok(());
+                }
+                return Ok(());
+            }
+        }
+        self.regs[rd] = home.get_prop_at(pos);
         Ok(())
     }
 
     fn dispatch_set_private(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
         vm_trace!("SET_PRIVATE rd={} a={} b={}", rd, a, b);
-        let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "private field assignment on non-object")? else {
+        let obj_val = self.regs[rd];
+        let Some(obj_ptr) = self.checked_object_ptr(obj_val, "private field assignment on non-object")? else {
             return Ok(());
         };
         let private_key = self.private_key_from_reg(b);
-        let obj = unsafe { &mut *obj_ptr };
-        let Some(pos) = self.private_slot(obj, private_key) else {
+        let brand_reg = self.bytecode[self.pc] as usize;
+        let brand_key = make_private_name_id(self.bytecode[self.pc + 1]);
+        self.pc += 2;
+        let obj = unsafe { &*obj_ptr };
+        let Some(home_ptr) = self.find_private_slot(obj, private_key) else {
             return self.raise_type_error("private field brand check failed");
         };
-        let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
-        let obj = unsafe { &mut *obj_ptr };
-        obj.set_prop_shape(pos, value);
+        if brand_reg != 0 {
+            self.private_brand_check(obj, brand_reg, brand_key)?;
+        }
+        let home = unsafe { &*home_ptr };
+        let pos = self.private_slot(home, private_key).expect("slot just found");
+        if let Some(meta) = home.prop_meta_at(pos) {
+            if meta.is_accessor {
+                if meta.set.is_undefined() {
+                    return self.raise_type_error("private field has no setter");
+                }
+                let setter = meta.set;
+                let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
+                return self.call_or_push_setter(setter, obj_val, value, true);
+            }
+            // 私有方法槽不可写（init 时打标记）。
+            if meta.is_hole() {
+                return self
+                    .raise_type_error("Cannot write private member to an object whose class did not declare it");
+            }
+        }
+        let value = self.promote_if_needed_for_write_ptr(home_ptr, self.regs[a]);
+        let home = unsafe { &mut *home_ptr };
+        home.set_prop_shape(pos, value);
         Ok(())
     }
 
@@ -125,12 +208,28 @@ impl Vm {
             return Ok(());
         };
         let private_key = self.private_key_from_reg(b);
+        let is_method = self.bytecode[self.pc] != 0;
+        self.pc += 1;
         let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
         let obj = unsafe { &mut *obj_ptr };
-        if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), private_key) {
-            obj.set_prop_shape(pos, value);
-        } else {
-            self.set_or_create_prop_value(obj, private_key, value);
+        if self
+            .kernel_core
+            .shape_forge()
+            .lookup_position(obj.shape_id(), private_key)
+            .is_some()
+        {
+            // 私有元素重复初始化（构造器返回外部对象、同一对象再次初始化）：
+            // 规范 PrivateFieldAdd 对已存在的私有名抛 TypeError。
+            return self.raise_type_error("Cannot initialize private element twice");
+        }
+        self.set_or_create_prop_value(obj, private_key, value);
+        if is_method {
+            let pos = self
+                .kernel_core
+                .shape_forge()
+                .lookup_position(obj.shape_id(), private_key)
+                .expect("private slot just created");
+            obj.set_private_method_meta(pos);
         }
         Ok(())
     }
@@ -139,8 +238,8 @@ impl Vm {
         vm_trace!("PRIVATE_BRAND_IN rd={} a={} b={}", rd, a, b);
         let obj_val = self.regs[a];
         if !obj_val.is_object() {
-            self.regs[rd] = JsValue::bool(false);
-            return Ok(());
+            // `#x in rval`：rval 非对象抛 TypeError（规范 PrivateFieldIn 步骤 4）。
+            return self.raise_type_error("private field `in` requires an object on the right-hand side");
         }
         let obj = unsafe { &*obj_val.as_js_object_ptr() };
         let private_key = self.private_key_from_reg(b);

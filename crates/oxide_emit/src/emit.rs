@@ -24,7 +24,6 @@ pub fn is_anonymous_function_definition(expr: &oxide_parser::Expression) -> bool
     }
 }
 
-
 use crate::emit_ctx::{LabelCtx, ScopeCtx};
 use crate::symbol_table::{Binding, ScopeKind, SymbolTable};
 
@@ -254,6 +253,8 @@ impl CompileCtx {
                 symbols: SymbolTable::new(),
                 builtin_reg_map: Vec::new(),
                 private_name_map: Vec::new(),
+                private_element_kinds: Vec::new(),
+                private_brand_id: None,
                 next_private_name_id: 1,
             },
             nested: Vec::new(),
@@ -659,7 +660,6 @@ impl Emitter {
         }
     }
 
-
     // ── 闭包捕获分析（AST 级，时序无关）──
 
     /// 收集函数参数的绑定名（BindingIdentifier 形态）。
@@ -741,8 +741,8 @@ impl Emitter {
     pub(crate) fn compile_function_body_with_field_hooks<'a, E>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, extra_bindings: &[(&str, u32)], body_context: FunctionBodyContext,
-        mut emit_fields: Option<E>, fields_after_super: bool,
-        extra_capture_exprs: &[&'a Expression<'a>], extra_upvalue_names: &[(&str, u8)],
+        mut emit_fields: Option<E>, fields_after_super: bool, extra_capture_exprs: &[&'a Expression<'a>],
+        extra_upvalue_names: &[(&str, u8)],
     ) -> Result<IRFunction, String>
     where
         E: FnMut(&Emitter, &mut CompileCtx) -> Result<(), String>,
@@ -753,6 +753,8 @@ impl Emitter {
         // 解析到父预先分配的槽位。
         ctx.scopes.builtin_reg_map = parent_ctx.scopes.builtin_reg_map.clone();
         ctx.scopes.private_name_map = parent_ctx.scopes.private_name_map.clone();
+        ctx.scopes.private_element_kinds = parent_ctx.scopes.private_element_kinds.clone();
+        ctx.scopes.private_brand_id = parent_ctx.scopes.private_brand_id;
         ctx.scopes.next_private_name_id = parent_ctx.scopes.next_private_name_id;
 
         // 传递 enclosing_this_reg：嵌套箭头函数捕获正确的 `this`。
@@ -961,7 +963,11 @@ impl Emitter {
 
         for spec in param_specs {
             match spec {
-                ParamSpec::Pattern { synthetic_name, pattern, initializer } => {
+                ParamSpec::Pattern {
+                    synthetic_name,
+                    pattern,
+                    initializer,
+                } => {
                     let src_reg = ctx.lookup(synthetic_name)?;
                     let src_reg = if let Some(init) = initializer {
                         self.emit_default_if_undefined(src_reg, init, Some(synthetic_name), ctx)?
@@ -1154,4 +1160,3 @@ impl Default for Emitter {
         Self::new()
     }
 }
-

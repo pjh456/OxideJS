@@ -14,7 +14,7 @@ impl Emitter {
         let elements = &class.body.body;
         let mut constructor_method = None;
         let mut instance_field_indices = Vec::new();
-        let mut private_names = Vec::<(String, u32)>::new();
+        let mut private_names = Vec::<(String, u32, Option<MethodDefinitionKind>, bool)>::new();
         let is_derived = class.super_class.is_some();
 
         for (idx, element) in elements.iter().enumerate() {
@@ -23,12 +23,18 @@ impl Emitter {
                     let method = method.as_ref();
                     if let PropertyKey::PrivateIdentifier(private) = &method.key {
                         let name = private.name.as_str().to_string();
-                        if private_names.iter().any(|(existing, _)| existing == &name) {
-                            return Err(format!("duplicate private name #{name}"));
+                        let kind = method.kind;
+                        match private_names.iter().find(|(n, _, _, _)| n == &name) {
+                            // 同名 getter/setter 构成访问器对，复用同一私有名。
+                            Some((_, _, Some(MethodDefinitionKind::Get), _)) if kind == MethodDefinitionKind::Set => {}
+                            Some((_, _, Some(MethodDefinitionKind::Set), _)) if kind == MethodDefinitionKind::Get => {}
+                            Some(_) => return Err(format!("duplicate private name #{name}")),
+                            None => {
+                                let id = ctx.scopes.next_private_name_id;
+                                ctx.scopes.next_private_name_id = ctx.scopes.next_private_name_id.saturating_add(1);
+                                private_names.push((name, id, Some(kind), method.r#static));
+                            }
                         }
-                        let id = ctx.scopes.next_private_name_id;
-                        ctx.scopes.next_private_name_id = ctx.scopes.next_private_name_id.saturating_add(1);
-                        private_names.push((name, id));
                     }
                     if method.kind == MethodDefinitionKind::Constructor {
                         if constructor_method.is_some() {
@@ -41,12 +47,12 @@ impl Emitter {
                     let prop = prop.as_ref();
                     if let PropertyKey::PrivateIdentifier(private) = &prop.key {
                         let name = private.name.as_str().to_string();
-                        if private_names.iter().any(|(existing, _)| existing == &name) {
+                        if private_names.iter().any(|(existing, _, _, _)| existing == &name) {
                             return Err(format!("duplicate private name #{name}"));
                         }
                         let id = ctx.scopes.next_private_name_id;
                         ctx.scopes.next_private_name_id = ctx.scopes.next_private_name_id.saturating_add(1);
-                        private_names.push((name, id));
+                        private_names.push((name, id, None, prop.r#static));
                     }
                     if !prop.r#static {
                         instance_field_indices.push(idx);
@@ -85,8 +91,26 @@ impl Emitter {
         let self_binding = ctor_name.as_deref().map(|name| vec![(name, ctor_reg)]).unwrap_or_default();
         let saved_derived = ctx.in_derived_constructor;
         let saved_private_names = ctx.scopes.private_name_map.clone();
+        let saved_private_kinds = ctx.scopes.private_element_kinds.clone();
+        let saved_brand_id = ctx.scopes.private_brand_id;
         ctx.in_derived_constructor = is_derived;
-        ctx.scopes.private_name_map = private_names.clone();
+        ctx.scopes.private_name_map = private_names.iter().map(|(n, id, _, _)| (n.clone(), *id)).collect();
+        ctx.scopes.private_element_kinds = private_names
+            .iter()
+            .map(|(n, _, kind, is_static)| (n.clone(), *kind, *is_static))
+            .collect();
+
+        // 类 brand：有私有元素时分配 brand 私有名 id，并创建 brand 对象（= 类原型）。
+        // 构造器把 brand 槽写入实例 own；私有方法/访问器/静态字段访问（GET/SET）据
+        // brand 对象同一性做检查；instance 字段走 PrivateFieldFind 原型链查找，不检查。
+        let private_brand_id = if !private_names.is_empty() {
+            let id = ctx.scopes.next_private_name_id;
+            ctx.scopes.next_private_name_id = ctx.scopes.next_private_name_id.saturating_add(1);
+            Some(id)
+        } else {
+            None
+        };
+        ctx.scopes.private_brand_id = private_brand_id;
 
         // 实例公有字段 computed key 求值于构造器帧外，须类定义期存入数组。构造器以
         // upvalue 捕获该数组：父作用域登记 `@@field_keys`（cell_idx 取现有最大 +1）。
@@ -101,6 +125,12 @@ impl Emitter {
         } else {
             None
         };
+        // 类 brand 对象（= proto）由类定义期 MAKE_CELL 写入，构造器经 upvalue 捕获。
+        let brand_cell: Option<u8> = private_brand_id.map(|_| {
+            let cell_idx = ctx.captured_bindings.values().copied().max().map_or(0, |m| m.saturating_add(1));
+            ctx.captured_bindings.insert("@@class_brand".to_string(), cell_idx);
+            cell_idx
+        });
         // 字段值表达式运行于构造器帧：其自由变量须纳入构造器 upvalue 捕获。
         let field_value_exprs: Vec<&Expression> = instance_field_indices
             .iter()
@@ -109,11 +139,44 @@ impl Emitter {
                 _ => None,
             })
             .collect();
-        let extra_upvalue_names: Vec<(&str, u8)> = field_key_cell.map(|c| ("@@field_keys", c)).into_iter().collect();
+        let mut extra_upvalue_names: Vec<(&str, u8)> =
+            field_key_cell.map(|c| ("@@field_keys", c)).into_iter().collect();
+        if let Some(c) = brand_cell {
+            extra_upvalue_names.push(("@@class_brand", c));
+        }
 
         let emit_instance_fields = |compiler: &Emitter, field_ctx: &mut CompileCtx| -> Result<(), String> {
+            // 先写 brand 槽（私有方法/访问器的 brand 检查依据），再初始化字段。
+            if let Some(bid) = private_brand_id {
+                if brand_cell.is_none() {
+                    return Err("class brand cell missing".into());
+                }
+                let brand_reg = field_ctx.alloc_reg();
+                let uv_idx = field_ctx
+                    .current_upvalue_captures
+                    .iter()
+                    .position(|u| u.name == "@@class_brand")
+                    .ok_or("class brand upvalue missing")? as u16;
+                field_ctx.inst(Inst::new(
+                    OpCode::LOAD_UPVALUE,
+                    Operand::Reg(brand_reg),
+                    Operand::Imm(uv_idx),
+                    Operand::None,
+                ));
+                let key_idx = field_ctx.add_constant(Constant::Int(bid as i32));
+                let brand_key_reg = field_ctx.alloc_reg();
+                field_ctx.inst(Inst::load_const(Operand::Reg(brand_key_reg), key_idx));
+                field_ctx.inst(Inst::init_private(
+                    Operand::This,
+                    Operand::Reg(brand_reg),
+                    Operand::Reg(brand_key_reg),
+                    false,
+                ));
+            }
             for &idx in &instance_field_indices {
-                let ClassElement::PropertyDefinition(field) = &elements[idx] else { unreachable!() };
+                let ClassElement::PropertyDefinition(field) = &elements[idx] else {
+                    unreachable!()
+                };
                 let field = field.as_ref();
                 if let PropertyKey::PrivateIdentifier(private) = &field.key {
                     compiler.emit_private_field_init(
@@ -170,7 +233,8 @@ impl Emitter {
                 module.insts.push(Inst::super_call(Operand::None, Operand::None, 0));
                 // 字段初始化直接重发：构造器 upvalue/内置槽引用须与首轮编译产物对齐。
                 let mut field_ctx = CompileCtx::new();
-                field_ctx.scopes.private_name_map = private_names.clone();
+                field_ctx.scopes.private_name_map =
+                    private_names.iter().map(|(n, id, _, _)| (n.clone(), *id)).collect();
                 field_ctx.scopes.builtin_reg_map = module.builtin_reg_map.clone();
                 field_ctx.current_upvalue_captures = module.upvalue_captures.clone();
                 field_ctx.field_keys_uv = module
@@ -238,10 +302,31 @@ impl Emitter {
         }
 
         self.emit_class_prototype(ctor_reg, proto_reg, super_reg, ctor_sub_idx, ctx)?;
+        // brand 对象即类原型：构造器对象（静态私有访问）与实例（实例私有访问）各写
+        // brand 槽；构造器经 @@class_brand upvalue 捕获原型对象。
+        if let (Some(bid), Some(cell_idx)) = (private_brand_id, brand_cell) {
+            let key_idx = ctx.add_constant(Constant::Int(bid as i32));
+            let brand_key_reg = ctx.alloc_reg();
+            ctx.inst(Inst::load_const(Operand::Reg(brand_key_reg), key_idx));
+            ctx.inst(Inst::init_private(
+                Operand::Reg(ctor_reg),
+                Operand::Reg(proto_reg),
+                Operand::Reg(brand_key_reg),
+                false,
+            ));
+            ctx.inst(Inst::new(
+                OpCode::MAKE_CELL,
+                Operand::Reg(proto_reg),
+                Operand::Imm(cell_idx as u16),
+                Operand::None,
+            ));
+        }
         self.emit_class_methods(&class.body.body, ctor_reg, proto_reg, &self_binding, &key_slots, ctx)?;
         self.emit_class_static_elements(&class.body.body, ctor_reg, &key_slots, ctx)?;
 
         ctx.scopes.private_name_map = saved_private_names;
+        ctx.scopes.private_element_kinds = saved_private_kinds;
+        ctx.scopes.private_brand_id = saved_brand_id;
         Ok(ctor_reg)
     }
 }

@@ -168,6 +168,24 @@ impl Inst {
 
     // ── 其他带 ext 字 ──
 
+    /// 私有成员读取：result=结果，obj=接收者，key=私有名 id。
+    /// ext = [brand_reg, brand_id]：brand_reg 为当前类 brand 对象寄存器（0 表示跳过
+    /// brand 检查，instance 字段路径），brand_id 为实例 brand 槽的私有名 id。
+    pub fn get_private(result: Operand, obj: Operand, key: Operand, brand_reg: u32, brand_id: u32) -> Self {
+        Self::with_ext(OpCode::GET_PRIVATE, result, obj, key, &[brand_reg, brand_id])
+    }
+
+    /// 私有成员写入：obj=接收者，value=新值，key=私有名 id。ext 语义同 `get_private`。
+    pub fn set_private(obj: Operand, value: Operand, key: Operand, brand_reg: u32, brand_id: u32) -> Self {
+        Self::with_ext(OpCode::SET_PRIVATE, obj, value, key, &[brand_reg, brand_id])
+    }
+
+    /// 私有成员初始化：target=接收者，value=初值，key=私有名 id。
+    /// ext = [is_method]：1 表示私有方法槽（不可写），0 表示字段/brand 槽。
+    pub fn init_private(target: Operand, value: Operand, key: Operand, is_method: bool) -> Self {
+        Self::with_ext(OpCode::INIT_PRIVATE, target, value, key, &[is_method as u32])
+    }
+
     /// 定义访问器属性：home 为宿主对象，get/set 为访问器函数寄存器，key_idx 为属性名常量下标。
     pub fn define_accessor(home: Operand, get: Operand, set: Operand, key_idx: u32) -> Self {
         Self::with_ext(OpCode::DEFINE_ACCESSOR, home, get, set, &[key_idx])

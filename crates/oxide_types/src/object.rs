@@ -774,6 +774,18 @@ impl JsObject {
         self.set_meta_at(position, PropMetaEntry::accessor(get, set, attributes));
     }
 
+    /// 标记私有方法槽为不可写：复用 `hole` 位（私有键在普通属性/枚举路径不可见，
+    /// 与数组删除标记无冲突）。GET_PRIVATE 仍按数据槽取值，SET_PRIVATE 遇此标记抛错。
+    pub fn set_private_method_meta(&mut self, position: impl PropIndex) {
+        self.set_meta_at(
+            position,
+            PropMetaEntry {
+                hole: true,
+                ..PropMetaEntry::data(PropAttributes::DEFAULT_DATA)
+            },
+        );
+    }
+
     /// 判断指定下标的属性是否为访问器属性。
     pub fn is_accessor_meta(&self, position: impl PropIndex) -> bool {
         self.prop_meta_at(position).is_some_and(|entry| entry.is_accessor)

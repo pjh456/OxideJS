@@ -67,4 +67,3 @@ impl Emitter {
         Ok(r)
     }
 }
-

@@ -24,14 +24,13 @@ fn assign_ids(module: &mut CompiledModule, next_id: &mut u32) {
         if opcode::opcode(*instr) == OpCode::CREATE_CLOSURE {
             let rel = opcode::imm16(*instr) as usize;
             // rel 应为 1-based 子模块下标；0 表示无引用（异常输入），按未解析处理。
-            let flat = if rel > 0 { module.sub_modules.get(rel - 1).map(|s| s.flat_id).unwrap_or(0) } else { 0 };
+            let flat = if rel > 0 {
+                module.sub_modules.get(rel - 1).map(|s| s.flat_id).unwrap_or(0)
+            } else {
+                0
+            };
             let rd = opcode::rd(*instr);
-            *instr = opcode::encode(
-                OpCode::CREATE_CLOSURE,
-                rd,
-                (flat & 0xFF) as u8,
-                ((flat >> 8) & 0xFF) as u8,
-            );
+            *instr = opcode::encode(OpCode::CREATE_CLOSURE, rd, (flat & 0xFF) as u8, ((flat >> 8) & 0xFF) as u8);
         }
     }
     for sub in &mut module.sub_modules {

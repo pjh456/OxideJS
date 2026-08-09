@@ -27,17 +27,26 @@ fn eval(source: &str) -> String {
 
 #[test]
 fn break_runs_finally_and_exits_loop() {
-    assert_eq!(eval("var fin = 0; var i = 0; for (; i < 5; ) { try { break; } finally { fin = 1; } i = i + 1; } fin * 10 + i"), "10");
+    assert_eq!(
+        eval("var fin = 0; var i = 0; for (; i < 5; ) { try { break; } finally { fin = 1; } i = i + 1; } fin * 10 + i"),
+        "10"
+    );
 }
 
 #[test]
 fn continue_runs_finally_every_iteration() {
-    assert_eq!(eval("var fin = 0; for (var i = 0; i < 5; i++) { try { continue; } finally { fin = fin + 1; } } fin"), "5");
+    assert_eq!(
+        eval("var fin = 0; for (var i = 0; i < 5; i++) { try { continue; } finally { fin = fin + 1; } } fin"),
+        "5"
+    );
 }
 
 #[test]
 fn return_runs_finally() {
-    assert_eq!(eval("var fin = 0; function f() { try { return 1; } finally { fin = 1; } } var r = f(); r * 10 + fin"), "11");
+    assert_eq!(
+        eval("var fin = 0; function f() { try { return 1; } finally { fin = 1; } } var r = f(); r * 10 + fin"),
+        "11"
+    );
 }
 
 #[test]
@@ -47,7 +56,10 @@ fn break_inside_finally_breaks_loop() {
 
 #[test]
 fn throw_still_runs_finally() {
-    assert_eq!(eval("var fin = 0; function g() { try { throw 1; } finally { fin = 1; } } try { g(); } catch (e) {} fin"), "1");
+    assert_eq!(
+        eval("var fin = 0; function g() { try { throw 1; } finally { fin = 1; } } try { g(); } catch (e) {} fin"),
+        "1"
+    );
 }
 
 #[test]
@@ -101,12 +113,20 @@ fn break_in_finally_overrides_exception() {
 
 #[test]
 fn continue_in_finally_overrides_break() {
-    assert_eq!(eval("var log = 0; for (var i = 0; i < 3; i++) { try { break; } finally { log = log * 10 + i; continue; } } log"), "12");
+    assert_eq!(
+        eval(
+            "var log = 0; for (var i = 0; i < 3; i++) { try { break; } finally { log = log * 10 + i; continue; } } log"
+        ),
+        "12"
+    );
 }
 
 #[test]
 fn throw_in_finally_overrides_previous_exception() {
-    assert_eq!(eval("var fin = 0; try { try { throw 1; } finally { throw 2; } } catch (e) { fin = e; } fin"), "2");
+    assert_eq!(
+        eval("var fin = 0; try { try { throw 1; } finally { throw 2; } } catch (e) { fin = e; } fin"),
+        "2"
+    );
 }
 
 #[test]
@@ -143,7 +163,10 @@ fn continue_with_finally_conditionally() {
 
 #[test]
 fn normal_finally_path_still_works() {
-    assert_eq!(eval("var s = 0; for (var i = 0; i < 3; i++) { try { s = s + i; } finally { s = s + 10; } } s"), "33");
+    assert_eq!(
+        eval("var s = 0; for (var i = 0; i < 3; i++) { try { s = s + i; } finally { s = s + 10; } } s"),
+        "33"
+    );
 }
 
 #[test]
@@ -202,7 +225,10 @@ fn return_in_try_catch_value_path() {
 
 #[test]
 fn return_in_try_finally_runs_finally() {
-    assert_eq!(eval("var fin = 0; function f(){ try{ return 1 } finally{ fin = 1 } } f() * 10 + fin"), "11");
+    assert_eq!(
+        eval("var fin = 0; function f(){ try{ return 1 } finally{ fin = 1 } } f() * 10 + fin"),
+        "11"
+    );
 }
 
 #[test]

@@ -190,7 +190,13 @@ impl Emitter {
                     // 参数声明名遮蔽 catch 作用域。
                     let mut catch_shadow = shadow.clone();
                     if let Some(param) = &h.param {
-                        self.collect_capture_names_binding_pattern(&param.pattern, ref_set, shadow, out, &mut catch_shadow);
+                        self.collect_capture_names_binding_pattern(
+                            &param.pattern,
+                            ref_set,
+                            shadow,
+                            out,
+                            &mut catch_shadow,
+                        );
                     }
                     for s in &h.body.body {
                         self.collect_capture_names_stmt(s, ref_set, &catch_shadow, out);
@@ -490,7 +496,8 @@ impl Emitter {
     }
 
     /// 只从嵌套函数节点进入扫描（本函数直接引用不算捕获）。
-    fn collect_captured_stmt(&self, stmt: &Statement, own: &HashSet<String>, out: &mut HashSet<String>) {        match stmt {
+    fn collect_captured_stmt(&self, stmt: &Statement, own: &HashSet<String>, out: &mut HashSet<String>) {
+        match stmt {
             Statement::FunctionDeclaration(fd) => {
                 let body: &[Statement] = fd.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
                 self.collect_fn_default_captured(&fd.params, own, out);

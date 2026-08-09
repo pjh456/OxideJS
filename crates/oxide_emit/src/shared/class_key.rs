@@ -9,7 +9,7 @@ use oxide_ir::operand::Operand;
 use oxide_parser::PropertyKey;
 
 impl Emitter {
-    fn private_name_id(&self, name: &str, ctx: &CompileCtx) -> Result<u32, String> {
+    pub(crate) fn private_name_id(&self, name: &str, ctx: &CompileCtx) -> Result<u32, String> {
         ctx.scopes
             .private_name_map
             .iter()
@@ -23,6 +23,36 @@ impl Emitter {
         let reg = ctx.alloc_reg();
         ctx.inst(Inst::load_const(Operand::Reg(reg), idx));
         Ok(reg)
+    }
+
+    /// 私有成员访问的 brand 编码：返回 `(brand_reg, brand_id)`，供 GET_PRIVATE/SET_PRIVATE
+    /// dispatch 做 brand 检查。
+    ///
+    /// instance 字段走 PrivateFieldFind 原型链查找（允许 `Object.create` 链穿透），
+    /// 不检查 brand（返回 `(0,0)`）；方法/访问器/静态字段须验证接收者属于当前类
+    /// （brand 对象同一性）。brand 对象由方法函数捕获的 `@@class_brand` upvalue 提供；
+    /// 嵌套函数未捕获该 upvalue 时跳过检查（保持语法合法，brand 语义受限）。
+    pub(crate) fn private_access_brand(
+        &self, _obj_reg: u32, name: &str, ctx: &mut CompileCtx,
+    ) -> Result<(u32, u32), String> {
+        let Some(brand_id) = ctx.scopes.private_brand_id else { return Ok((0, 0)) };
+        let Some((_, kind, is_static)) = ctx.scopes.private_element_kinds.iter().find(|(n, _, _)| n == name) else {
+            return Ok((0, 0));
+        };
+        if kind.is_none() && !is_static {
+            return Ok((0, 0));
+        }
+        let Some(uv_idx) = ctx.current_upvalue_captures.iter().position(|u| u.name == "@@class_brand") else {
+            return Ok((0, 0));
+        };
+        let brand_reg = ctx.alloc_reg();
+        ctx.inst(Inst::new(
+            OpCode::LOAD_UPVALUE,
+            Operand::Reg(brand_reg),
+            Operand::Imm(uv_idx as u16),
+            Operand::None,
+        ));
+        Ok((brand_reg, brand_id))
     }
 
     pub(crate) fn emit_class_key_reg(
