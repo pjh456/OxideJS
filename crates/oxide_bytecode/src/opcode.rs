@@ -368,6 +368,6 @@ mod tests {
             .filter_map(|b| OpCode::try_from(b).ok())
             .filter(OpCode::has_ic_ext_words)
             .count();
-        assert_eq!(ic_count, 10);
+        assert_eq!(ic_count, 16);
     }
 }
