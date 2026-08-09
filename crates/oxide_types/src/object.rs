@@ -400,6 +400,8 @@ impl JsObject {
     pub const OBJ_TYPE_CONSTRUCTOR: u8 = 9;
     /// 生成器迭代器对象（`function*` 调用返回）：状态快照存于 `native_data`。
     pub const OBJ_TYPE_GENERATOR: u8 = 10;
+    /// Promise 对象：状态盒（Pending/Fulfilled/Rejected + reactions）存于 `native_data`。
+    pub const OBJ_TYPE_PROMISE: u8 = 11;
     /// `is_session_epoch` 字段中的 session 标记位。
     pub const SESSION_EPOCH_BIT: u8 = 0x01;
     /// `is_session_epoch` 字段中的 GC 标记位。
@@ -449,6 +451,11 @@ impl JsObject {
     #[inline]
     pub fn is_generator_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_GENERATOR
+    }
+    /// 是否 Promise 对象。
+    #[inline]
+    pub fn is_promise_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_PROMISE
     }
 
     /// 构造无属性、可扩展的空对象（`new Object()` 的基础对象）。

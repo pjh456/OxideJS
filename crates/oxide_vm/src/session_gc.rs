@@ -92,6 +92,9 @@ impl SessionGc {
         if obj.is_generator_obj() {
             edges.extend(crate::generator::generator_native_edges(obj));
         }
+        if obj.is_promise_obj() {
+            edges.extend(crate::promise::promise_native_edges(obj));
+        }
         // 遍历 upvalue cell 中的对象引用。
         for cell_ptr in obj.upvalues_slice() {
             if cell_ptr.is_null() {
@@ -149,6 +152,13 @@ impl SessionGc {
         }
         if obj.is_generator_obj() {
             for value in crate::generator::generator_native_edges(obj) {
+                if value.is_string() {
+                    live.insert(value.as_string_ptr_mut());
+                }
+            }
+        }
+        if obj.is_promise_obj() {
+            for value in crate::promise::promise_native_edges(obj) {
                 if value.is_string() {
                     live.insert(value.as_string_ptr_mut());
                 }
@@ -264,6 +274,7 @@ impl SessionGc {
             freed_bytes += typed_array::drop_typed_array_native(obj);
             freed_bytes += data_view::drop_data_view_native(obj);
             freed_bytes += crate::generator::drop_generator_native(obj);
+            freed_bytes += crate::promise::drop_promise_native(obj);
 
             freed_bytes
         }
@@ -320,6 +331,8 @@ impl SessionGc {
                     typed_array::clone_typed_array_native_with_rewrite(old_ref, new_ref, |value| value);
                 } else if old_ref.is_data_view_obj() {
                     data_view::clone_data_view_native_with_rewrite(old_ref, new_ref, |value| value);
+                } else if old_ref.is_promise_obj() {
+                    crate::promise::clone_promise_native_with_rewrite(old_ref, new_ref, |value| value);
                 }
                 forwarding.insert(old_ptr, new_ptr);
                 freed_bytes += Self::drop_session_object_heap_data(old_ptr);
@@ -351,6 +364,8 @@ impl SessionGc {
                 data_view::rewrite_data_view_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
             } else if obj.is_generator_obj() {
                 crate::generator::rewrite_generator_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
+            } else if obj.is_promise_obj() {
+                crate::promise::rewrite_promise_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
             }
         }
 
@@ -533,6 +548,10 @@ fn rewrite_vm_roots(vm: &mut Vm, forwarding: &HashMap<*mut JsObject, *mut JsObje
         *value = rewrite_forwarded_value(*value, forwarding);
     }
     vm.iters.last_for_of_result = rewrite_forwarded_value(vm.iters.last_for_of_result, forwarding);
+    // 微任务队列中的值随 sweep 重写。
+    for job in &mut vm.job_queue {
+        crate::promise::rewrite_job_values(job, |value| rewrite_forwarded_value(value, forwarding));
+    }
     // 已转换的不可变常量不是 session 值（标量 + perm 字符串）——不重写。
     for iter in &mut vm.iters.for_in_iters {
         if iter.is_null() {

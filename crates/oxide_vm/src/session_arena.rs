@@ -70,6 +70,11 @@ impl Vm {
             crate::generator::rewrite_generator_native(dst_ref, |value| {
                 self.promote_value_if_epoch_object(value, forwarding)
             });
+        } else if src_ref.is_promise_obj() {
+            // Promise 状态盒深拷贝到新对象：源盒随 epoch 释放，互不共享。
+            crate::promise::clone_promise_native_with_rewrite(src_ref, dst_ref, |value| {
+                self.promote_value_if_epoch_object(value, forwarding)
+            });
         }
         dst
     }

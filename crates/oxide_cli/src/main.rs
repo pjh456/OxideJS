@@ -175,7 +175,7 @@ fn eval(code: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>) -> ExitCode {
     let mut guard = pool.spawn();
     match guard.vm_mut().run(&module) {
         Ok(result) => {
-            format_result(kernel.perm_interner().as_ref(), kernel.shape_forge().as_ref(), result);
+            format_result(guard.vm(), kernel.perm_interner().as_ref(), kernel.shape_forge().as_ref(), result);
             ExitCode::SUCCESS
         }
         Err(err) => {
@@ -186,23 +186,35 @@ fn eval(code: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>) -> ExitCode {
     }
 }
 
-fn format_result(string_forge: &PermInterner, shape_forge: &ShapeForge, val: JsValue) {
-    println!("{}", format_js_value(string_forge, shape_forge, val));
+fn format_result(vm: &oxide_vm::vm::Vm, string_forge: &PermInterner, shape_forge: &ShapeForge, val: JsValue) {
+    println!("{}", format_js_value(vm, string_forge, shape_forge, val));
 }
 
-fn format_js_value(string_forge: &PermInterner, shape_forge: &ShapeForge, val: JsValue) -> String {
+fn format_js_value(
+    vm: &oxide_vm::vm::Vm, string_forge: &PermInterner, shape_forge: &ShapeForge, val: JsValue,
+) -> String {
     if val.is_string() {
         // SAFETY: val 已确认是字符串值。
         let s = unsafe { (*val.as_string_ptr()).data.clone() };
         format!("\"{s}\"")
     } else if val.is_object() {
         let obj = unsafe { &*val.as_js_object_ptr() };
+        if obj.is_promise_obj() {
+            // 已 settle 的 Promise 打印其结算值（便于 eval 观察微任务结果）。
+            return match oxide_vm::promise::promise_settled_value(obj) {
+                Some((true, v)) => format_js_value(vm, string_forge, shape_forge, v),
+                Some((false, v)) => {
+                    format!("Promise {{ <rejected> {} }}", format_js_value(vm, string_forge, shape_forge, v))
+                }
+                None => "Promise { <pending> }".to_string(),
+            };
+        }
         if obj.is_function() {
             "[Function]".to_string()
         } else if obj.is_array() {
-            format_array(string_forge, shape_forge, obj)
+            format_array(vm, string_forge, shape_forge, obj)
         } else {
-            format_object(string_forge, shape_forge, obj)
+            format_object(vm, string_forge, shape_forge, obj)
         }
     } else if val.is_undefined() {
         "undefined".to_string()
@@ -211,7 +223,9 @@ fn format_js_value(string_forge: &PermInterner, shape_forge: &ShapeForge, val: J
     }
 }
 
-fn format_object(string_forge: &PermInterner, shape_forge: &ShapeForge, obj: &JsObject) -> String {
+fn format_object(
+    vm: &oxide_vm::vm::Vm, string_forge: &PermInterner, shape_forge: &ShapeForge, obj: &JsObject,
+) -> String {
     let mut entries = Vec::new();
     let shape_id = obj.shape_id();
     let mut shape_ids = Vec::new();
@@ -239,7 +253,7 @@ fn format_object(string_forge: &PermInterner, shape_forge: &ShapeForge, obj: &Js
                     continue;
                 }
                 let name = string_forge.lookup(shape.property_name).unwrap_or_default();
-                let val_str = format_js_value(string_forge, shape_forge, prop_val);
+                let val_str = format_js_value(vm, string_forge, shape_forge, prop_val);
                 entries.push(format!("\"{name}\": {val_str}"));
             }
         }
@@ -248,12 +262,14 @@ fn format_object(string_forge: &PermInterner, shape_forge: &ShapeForge, obj: &Js
     format!("{{{}}}", entries.join(", "))
 }
 
-fn format_array(string_forge: &PermInterner, shape_forge: &ShapeForge, obj: &JsObject) -> String {
+fn format_array(
+    vm: &oxide_vm::vm::Vm, string_forge: &PermInterner, shape_forge: &ShapeForge, obj: &JsObject,
+) -> String {
     let len = obj.prop_vec_len();
     let mut items = Vec::new();
     for i in 0..len {
         let val = obj.get_prop_at(i);
-        items.push(format_js_value(string_forge, shape_forge, val));
+        items.push(format_js_value(vm, string_forge, shape_forge, val));
     }
     format!("[{}]", items.join(", "))
 }

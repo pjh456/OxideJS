@@ -1,5 +1,6 @@
 #![allow(clippy::arc_with_non_send_sync)]
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use oxide_bytecode::module::Constant;
@@ -34,6 +35,9 @@ impl Vm {
             object_prototype: obj_proto,
             generator_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+            promise_constructor: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+            promise_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+            job_queue: VecDeque::new(),
             math_rng_state: 0,
             sub_modules: Arc::new(Vec::new()),
             saved_bytecode_stack: Vec::new(),
@@ -86,6 +90,9 @@ impl Vm {
             cell_stack: Vec::new(),
         };
         vm.init_generator_intrinsics();
+        vm.init_promise_intrinsics();
+        // Promise 全局绑定发生在快照采集之后，重录快照避免首次 full_reset 误判脏。
+        vm.session.record_snapshot();
         vm_info!("Vm created");
         vm
     }
@@ -108,6 +115,9 @@ impl Vm {
             object_prototype: obj_proto,
             generator_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+            promise_constructor: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+            promise_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+            job_queue: VecDeque::new(),
             math_rng_state: 0,
             sub_modules: Arc::new(Vec::new()),
             saved_bytecode_stack: Vec::new(),
@@ -160,6 +170,9 @@ impl Vm {
             cell_stack: Vec::new(),
         };
         vm.init_generator_intrinsics();
+        vm.init_promise_intrinsics();
+        // Promise 全局绑定发生在快照采集之后，重录快照避免首次 full_reset 误判脏。
+        vm.session.record_snapshot();
         vm_info!("Vm created (pool)");
         vm
     }
@@ -185,9 +198,11 @@ impl Vm {
             let global = unsafe { &mut *global_ptr };
             bindings::bind_global_builtin_slots(&self.kernel_core, &self.session, global);
         }
-        self.session.record_snapshot();
         self.object_prototype = P::clone(&self.session.builtin_world().object_proto);
         self.init_generator_intrinsics();
+        self.init_promise_intrinsics();
+        // 快照须在 Promise 全局绑定之后采集：绑定会修改 global 世代。
+        self.session.record_snapshot();
         self.clear_full_reset_state();
         vm_info!("full_reset completed");
     }
@@ -199,6 +214,8 @@ impl Vm {
         bindings::init_kernel_builtins(&self.kernel_core, &mut self.session);
         self.object_prototype = P::clone(&self.session.builtin_world().object_proto);
         self.init_generator_intrinsics();
+        self.init_promise_intrinsics();
+        self.session.record_snapshot();
         self.clear_full_reset_state();
     }
 
@@ -258,6 +275,8 @@ impl Vm {
         self.generator_init_step = false;
         self.generator_body_started = false;
         self.native_call_depth = 0;
+        // 微任务队列是执行期状态：跨 run 不保留。
+        self.job_queue.clear();
     }
 
     /// 轻量重置：清空执行状态并回收 epoch 内存，但保留 session 字符串与 builtin。

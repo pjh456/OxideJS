@@ -236,7 +236,10 @@ impl Vm {
         let global = self.session.global_object();
         self.regs[254] = JsValue::from_js_object(global.as_ptr() as *mut JsObject);
 
-        self.dispatch()
+        let result = self.dispatch();
+        // 顶层执行结束后 drain 微任务队列：Promise reactions 与 thenable 委托在此执行。
+        self.drain_job_queue();
+        result
     }
 
     pub(crate) fn unwind(&mut self) -> Result<(), String> {

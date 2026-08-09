@@ -14,6 +14,8 @@ mod generator;
 mod ic_helper;
 /// native 函数签名类型（[`native::NativeFn`]），builtin 绑定与 VM 调用约定依赖它。
 pub mod native;
+/// Promise 运行时（状态盒 + 微任务队列 + 构造器/方法实现）。
+pub mod promise;
 mod session_arena;
 /// session 级 mark-sweep GC：标记-清扫 session arena 对象与 session 字符串。
 pub mod session_gc;

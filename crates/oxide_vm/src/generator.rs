@@ -459,36 +459,36 @@ impl Vm {
             } else {
                 // 注入模式：next(v) 写 reg 0；throw(e) 恢复异常上下文；return(v) 完成穿越。
                 match mode {
-                GeneratorResumeMode::Next(arg) => {
-                    self.regs[0] = arg;
-                }
-                GeneratorResumeMode::Throw(exc) => {
-                    self.exception_value = Some(exc);
-                    self.pending_error_kind = Some(self.thrown_error_kind(exc));
-                    if self.unwind().is_err() {
-                        self.restore_inline_state(saved);
-                        self.native_call_depth -= 1;
-                        let thrown = self.last_uncaught_value.take().unwrap_or(exc);
-                        unsafe { (*state_ptr).phase = GeneratorPhase::Completed };
-                        return Ok(GeneratorStep::Thrown { value: thrown });
+                    GeneratorResumeMode::Next(arg) => {
+                        self.regs[0] = arg;
                     }
-                }
-                GeneratorResumeMode::Return(value) => {
-                    // 等价于在挂起点执行 return：穿越 finally 或直接交付返回值。
-                    // 直接交付路径走 do_return（帧弹出后需按内嵌 dispatch 语义返回）。
-                    let prev_dispatch = self.generator_dispatch;
-                    self.generator_dispatch = true;
-                    let completed = self.complete_generator_return(value);
-                    self.generator_dispatch = prev_dispatch;
-                    if let Some(completed) = completed? {
-                        self.restore_inline_state(saved);
-                        self.native_call_depth -= 1;
-                        let state = unsafe { &mut *state_ptr };
-                        state.phase = GeneratorPhase::Completed;
-                        state.result = completed;
-                        return Ok(GeneratorStep::Completed { value: completed });
+                    GeneratorResumeMode::Throw(exc) => {
+                        self.exception_value = Some(exc);
+                        self.pending_error_kind = Some(self.thrown_error_kind(exc));
+                        if self.unwind().is_err() {
+                            self.restore_inline_state(saved);
+                            self.native_call_depth -= 1;
+                            let thrown = self.last_uncaught_value.take().unwrap_or(exc);
+                            unsafe { (*state_ptr).phase = GeneratorPhase::Completed };
+                            return Ok(GeneratorStep::Thrown { value: thrown });
+                        }
                     }
-                }
+                    GeneratorResumeMode::Return(value) => {
+                        // 等价于在挂起点执行 return：穿越 finally 或直接交付返回值。
+                        // 直接交付路径走 do_return（帧弹出后需按内嵌 dispatch 语义返回）。
+                        let prev_dispatch = self.generator_dispatch;
+                        self.generator_dispatch = true;
+                        let completed = self.complete_generator_return(value);
+                        self.generator_dispatch = prev_dispatch;
+                        if let Some(completed) = completed? {
+                            self.restore_inline_state(saved);
+                            self.native_call_depth -= 1;
+                            let state = unsafe { &mut *state_ptr };
+                            state.phase = GeneratorPhase::Completed;
+                            state.result = completed;
+                            return Ok(GeneratorStep::Completed { value: completed });
+                        }
+                    }
                 }
             }
         }
@@ -1039,6 +1039,9 @@ pub(crate) fn rewrite_generator_native(obj: &JsObject, mut rewrite: impl FnMut(J
 
 /// 释放生成器状态盒（对象被 GC 回收时），返回释放字节数。
 pub(crate) fn drop_generator_native(obj: &JsObject) -> u64 {
+    if !obj.is_generator_obj() {
+        return 0;
+    }
     let ptr = obj.native_data() as *mut GeneratorState;
     if ptr.is_null() {
         return 0;

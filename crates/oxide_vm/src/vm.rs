@@ -1,5 +1,6 @@
 #![allow(clippy::arc_with_non_send_sync)]
 
+use std::collections::VecDeque;
 use std::sync::{Arc, OnceLock};
 
 use oxide_bytecode::module::{CompiledModule, Constant};
@@ -244,6 +245,12 @@ pub struct Vm {
     /// `%GeneratorFunction.prototype%`：生成器函数对象的原型（`constructor` 指向
     /// `%GeneratorFunction%`，使 `g.constructor.name` 解析为 "GeneratorFunction"）。
     pub generator_function_proto: P<JsObject>,
+    /// `%Promise%` 构造器（resolve/reject 静态方法挂此，global 的 Promise 槽指向它）。
+    pub promise_constructor: P<JsObject>,
+    /// `%Promise.prototype%`：Promise 实例的原型（then/catch/finally 方法挂此）。
+    pub promise_proto: P<JsObject>,
+    /// 微任务队列（Promise reactions / thenable 委托），`run()` 末尾 FIFO drain。
+    pub(crate) job_queue: VecDeque<crate::promise::Microtask>,
     pub math_rng_state: u64,
     /// 全局扁平模块表：下标 = 模块 `flat_id`（顶层 0，子模块 flatten 后全局唯一）。
     /// 闭包 `sub_module_index` 即 flat_id，逃逸闭包也能自足解析。
@@ -526,6 +533,10 @@ impl Vm {
             f(v);
         }
         f(self.iters.last_for_of_result);
+        // 微任务队列中的处理器/能力/值都是 GC 根。
+        for job in &self.job_queue {
+            crate::promise::for_each_job_value(job, &mut f);
+        }
         // 已转换的不可变常量（标量 + perm 字符串）不作为 session GC 根，不参与扫描。
         for iter in &self.iters.for_in_iters {
             if iter.is_null() {
