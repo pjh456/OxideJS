@@ -1,10 +1,59 @@
 use std::sync::Arc;
 
 use crate::bind_constructor;
-use crate::bindings::{apply_binding_table, configure_native_constructor};
+use crate::bindings::{apply_binding_table, bind_accessor_getter, configure_native_constructor};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
+
+/// 把 `%TypedArray%` 抽象构造器的 native 实现配置为恒抛 TypeError（不可 new/不可调用），
+/// 设置 `length` 属性为 0，并挂载静态 `of`/`from`（具体构造器经原型链继承）。
+fn bind_typed_array_abstract_ctor(core: &Arc<KernelCore>, session: &KernelSession) {
+    let ctor_ptr = session.builtin_world().typed_array_constructor.as_ptr() as *mut JsObject;
+    let ctor = unsafe { &mut *ctor_ptr };
+    configure_native_constructor(
+        ctor,
+        oxide_builtins::typed_array::typed_array_abstract_constructor::<crate::vm::Vm> as *const (),
+        0,
+    );
+    let length_si = core.perm_interner().intern("length").0;
+    let length_shape = core.shape_forge().make_shape(ctor.shape_id(), length_si);
+    ctor.set_shape_id(length_shape);
+    ctor.ensure_hash_props().push(JsValue::int(0));
+    let pos = ctor.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+    ctor.set_data_meta(pos, PropAttributes::new(false, false, true));
+
+    let sf = core.perm_interner().as_ref();
+    let sh = core.shape_forge().as_ref();
+    let world = session.builtin_world();
+    let ctor_ptr = world.typed_array_constructor.as_ptr() as *mut JsObject;
+    let ctor = unsafe { &mut *ctor_ptr };
+    // SAFETY: of/from 是转成 *const () 的 NativeFn 函数项指针。
+    let _ = world.bind_method(
+        ctor,
+        sh,
+        sf,
+        "of",
+        unsafe {
+            oxide_types::object::NativeFnPtr::from_raw(
+                oxide_builtins::typed_array::typed_array_of::<crate::vm::Vm> as *const (),
+            )
+        },
+        0,
+    );
+    let _ = world.bind_method(
+        ctor,
+        sh,
+        sf,
+        "from",
+        unsafe {
+            oxide_types::object::NativeFnPtr::from_raw(
+                oxide_builtins::typed_array::typed_array_from::<crate::vm::Vm> as *const (),
+            )
+        },
+        1,
+    );
+}
 
 /// 给构造器与对应原型设置 `BYTES_PER_ELEMENT`（只读、不可枚举、不可配置）。
 ///
@@ -34,8 +83,11 @@ fn set_bypes_per_element(core: &Arc<KernelCore>, ctor_ptr: *mut JsObject, proto_
 macro_rules! bind_typed_array_constructor {
     ($core:expr, $global:expr, $name:literal, $ctor_ptr:expr, $proto_ptr:expr, $bpe:expr, $ctor_fn:path) => {{
         let ctor = unsafe { &mut *$ctor_ptr };
-        configure_native_constructor(ctor, ($ctor_fn as fn(&mut $crate::vm::Vm, &[u8]) -> oxide_runtime_api::NativeResult) as *const (), 1);
-        bind_constructor!($core, $global, $name, $ctor_ptr, $ctor_fn, 1, hash: true);
+        configure_native_constructor(ctor, ($ctor_fn as fn(&mut $crate::vm::Vm, &[u8]) -> oxide_runtime_api::NativeResult) as *const (), 3);
+        bind_constructor!($core, $global, $name, $ctor_ptr, $ctor_fn, 3, hash: true);
+        // Function.length 描述符：不可写、不可枚举、可配置。
+        let len_pos = ctor.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+        ctor.set_data_meta(len_pos, PropAttributes::new(false, false, true));
         set_bypes_per_element($core, $ctor_ptr, $proto_ptr, $bpe);
     }};
 }
@@ -58,13 +110,48 @@ pub fn bind_typed_array(core: &Arc<KernelCore>, session: &KernelSession, global:
                 oxide_builtins::typed_array::typed_array_subarray::<crate::vm::Vm> as *const (),
                 2,
             ),
-            (
-                "toString",
-                oxide_builtins::typed_array::typed_array_to_string::<crate::vm::Vm> as *const (),
-                0,
-            ),
         ],
     );
+
+    // 原型访问器：视图属性（buffer/byteOffset/byteLength/length）读内部数据槽，
+    // @@toStringTag 返回具体类型名，供 Object.prototype.toString 区分类型。
+    bind_accessor_getter(
+        core,
+        session,
+        shared_proto,
+        "buffer",
+        oxide_builtins::typed_array::typed_array_buffer_getter::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        shared_proto,
+        "byteOffset",
+        oxide_builtins::typed_array::typed_array_byte_offset_getter::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        shared_proto,
+        "byteLength",
+        oxide_builtins::typed_array::typed_array_byte_length_getter::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        shared_proto,
+        "length",
+        oxide_builtins::typed_array::typed_array_length_getter::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        shared_proto,
+        "@@toStringTag",
+        oxide_builtins::typed_array::typed_array_to_string_tag_getter::<crate::vm::Vm> as *const (),
+    );
+
+    bind_typed_array_abstract_ctor(core, session);
 
     bind_typed_array_constructor!(
         core,

@@ -57,18 +57,21 @@ fn to_string_error_value<H: VmHost>(vm: &mut H, msg: &str) -> JsValue {
 fn bind_dispatcher<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let wrapper_val = vm.reg(254);
     let wrapper = unsafe { &*wrapper_val.as_js_object_ptr() };
-    let bound_target = wrapper
-        .hash_props_vec()
-        .and_then(|v| v.first().copied())
-        .unwrap_or(JsValue::undefined());
-    let bound_this = wrapper
-        .hash_props_vec()
-        .and_then(|v| v.get(1).copied())
-        .unwrap_or(JsValue::undefined());
+    let props = wrapper.hash_props_vec().cloned().unwrap_or_default();
+    let bound_target = props.first().copied().unwrap_or(JsValue::undefined());
+    let bound_this = props.get(1).copied().unwrap_or(JsValue::undefined());
 
-    // 转发绑定后的调用实参（跳过 args[0] 即绑定包装器的 receiver）。
-    let arg_regs: Vec<u8> = args.iter().skip(1).copied().collect();
-    invoke_target(vm, bound_target, bound_this, &arg_regs)
+    // 拼接调用实参：绑定实参（hash_props[2..]）在前，本次调用实参（跳过 args[0]
+    // 即绑定包装器的 receiver）在后，与规范的"绑定实参先于调用实参"一致。
+    let mut call_args: Vec<JsValue> = props.iter().skip(2).copied().collect();
+    for &r in args.iter().skip(1) {
+        call_args.push(vm.reg(r));
+    }
+    NativeResult::TailCall {
+        callee: bound_target,
+        this: bound_this,
+        args: call_args,
+    }
 }
 
 /// `Function.prototype.call(thisArg, ...args)`：以指定 this 调用目标函数。
@@ -125,8 +128,8 @@ pub fn function_apply<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     invoke_target(vm, target_val, this_val, &arg_regs)
 }
 
-/// `Function.prototype.bind(thisArg, ...args)`：返回绑定 this 的新包装函数，
-/// 调用时通过 `bind_dispatcher` 转发到原目标。非函数目标抛 TypeError。
+/// `Function.prototype.bind(thisArg, ...args)`：返回绑定 this 与前置实参的新包装函数，
+/// 调用时通过 `bind_dispatcher` 把绑定实参拼到调用实参前转发到原目标。非函数目标抛 TypeError。
 pub fn function_bind<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Err(crate::error::create_type_error(
@@ -150,9 +153,15 @@ pub fn function_bind<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     unsafe {
         (*wrapper).set_function(true);
         (*wrapper).set_native_fn(Some(NativeFnPtr::from_raw(bind_dispatcher::<H> as *const ())));
-        (*wrapper).set_native_arg_count(0);
-        (*wrapper).ensure_hash_props().push(target_val);
-        (*wrapper).ensure_hash_props().push(bound_this);
+        // hash_props 布局：[target, thisArg, ...boundArgs]；绑定实参个数记入
+        // native_arg_count，与 Function.length 语义一致。
+        (*wrapper).set_native_arg_count(args.len().saturating_sub(2) as u8);
+        let props = (*wrapper).ensure_hash_props();
+        props.push(target_val);
+        props.push(bound_this);
+        for &r in &args[2..] {
+            props.push(vm.reg(r));
+        }
     }
 
     NativeResult::Ok(JsValue::from_js_object(wrapper))

@@ -108,6 +108,23 @@ impl TypedArrayKind {
             Self::Float64 | Self::BigInt64 | Self::BigUint64 => 8,
         }
     }
+
+    /// 对应的具体构造器名（如 `Int16Array`），供 `@@toStringTag` getter 返回。
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Int8 => "Int8Array",
+            Self::Uint8 => "Uint8Array",
+            Self::Uint8Clamped => "Uint8ClampedArray",
+            Self::Int16 => "Int16Array",
+            Self::Uint16 => "Uint16Array",
+            Self::Int32 => "Int32Array",
+            Self::Uint32 => "Uint32Array",
+            Self::Float32 => "Float32Array",
+            Self::Float64 => "Float64Array",
+            Self::BigInt64 => "BigInt64Array",
+            Self::BigUint64 => "BigUint64Array",
+        }
+    }
 }
 
 /// 属性描述符标志位集合，压缩在单个 `u8` 中。

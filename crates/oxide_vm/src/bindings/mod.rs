@@ -502,7 +502,7 @@ pub fn bind_global_builtin_slots(core: &Arc<KernelCore>, session: &KernelSession
             oxide_builtins::typed_array::biguint64array_constructor::<crate::vm::Vm> as *const (),
         ),
     ] {
-        configure_existing_ctor(ctor, native_fn, 1);
+        configure_existing_ctor(ctor, native_fn, 3);
         bind_existing_global(core, global, name, JsValue::from_js_object(ctor.as_ptr() as *mut JsObject));
     }
 

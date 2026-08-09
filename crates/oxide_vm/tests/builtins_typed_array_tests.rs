@@ -132,7 +132,7 @@ fn typed_array_bigint_fallback_returns_float() {
 fn typed_array_to_string_is_identifiable() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "var ta = new Uint8Array(1); ta.toString()").unwrap();
-    assert_eq!(to_str(&vm, result), "[object TypedArray]");
+    assert_eq!(to_str(&vm, result), "[object Uint8Array]");
 }
 
 #[test]

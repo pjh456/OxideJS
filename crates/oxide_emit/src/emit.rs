@@ -44,6 +44,9 @@ pub fn is_int_literal(value: f64) -> bool {
 
 /// 判断表达式是否无副作用（字面量/标识符/纯二元运算等）。
 /// 用于可丢弃值的优化路径。
+/// 逻辑运算符快速路径的"无副作用"判定：仅字面量/标识符/this 读取安全。
+/// 算术表达式（`1 / a` 等）不得判为无副作用——对象操作数强转（ToNumber 触发
+/// valueOf/toString/getter）可能在运行期抛错，急切求值会破坏 `||`/`&&` 短路。
 pub fn is_side_effect_free(expr: &Expression) -> bool {
     let mut stack = vec![expr];
     while let Some(expr) = stack.pop() {
@@ -56,13 +59,6 @@ pub fn is_side_effect_free(expr: &Expression) -> bool {
             | Expression::RegExpLiteral(_)
             | Expression::ThisExpression(_) => {}
             Expression::ParenthesizedExpression(p) => stack.push(&p.expression),
-            Expression::BinaryExpression(bin) => {
-                stack.push(&bin.left);
-                stack.push(&bin.right);
-            }
-            Expression::UnaryExpression(un) if !matches!(un.operator, UnaryOperator::Delete) => {
-                stack.push(&un.argument);
-            }
             _ => return false,
         }
     }
@@ -362,7 +358,9 @@ impl CompileCtx {
     pub(crate) fn lookup_or_builtin(&mut self, name: &str) -> Result<u32, String> {
         match self.scopes.symbols.lookup(name) {
             Ok(reg) => Ok(reg),
-            Err(err) if Self::is_known_builtin(name) && err.contains("is not defined") => {
+            // 未声明标识符按全局处理：`typeof X` 守卫等合法 JS 应在运行期判定
+            // 未定义（读取未定义全局返回 undefined），而非编译期报错。
+            Err(err) if err.contains("is not defined") => {
                 let reg = self.alloc_reg();
                 self.scopes.symbols.pre_register_global(name, reg);
                 self.scopes.builtin_reg_map.push((name.to_string(), reg));

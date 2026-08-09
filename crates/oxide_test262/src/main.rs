@@ -212,6 +212,7 @@ impl HarnessSources {
         );
         sources.insert("typeCoercion.js", include_str!("../../../tests/test262/harness/typeCoercion.js"));
         sources.insert("deepEqual.js", include_str!("../../../tests/test262/harness/deepEqual.js"));
+        sources.insert("testTypedArray.js", include_str!("../../../tests/test262/harness/testTypedArray.js"));
         Self { sources }
     }
 
@@ -227,8 +228,7 @@ static HARNESS: OnceLock<HarnessSources> = OnceLock::new();
 fn is_blacklisted_harness(name: &str) -> bool {
     matches!(
         name,
-        "testTypedArray.js"
-            | "testIntl.js"
+        "testIntl.js"
             | "testAtomics.js"
             | "atomicsHelper.js"
             | "proxyTrapsHelper.js"

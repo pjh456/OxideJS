@@ -887,7 +887,8 @@ pub fn object_proto_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     NativeResult::Ok(vm.reg(args[0]))
 }
 
-/// `Object.prototype.toString`：返回 `[object Object]`（暂不区分具体类型标签）。
+/// `Object.prototype.toString`：返回 `[object Tag]`。对象路径先按内置类型判定标签，
+/// 再读 `@@toStringTag`——为字符串时覆盖内置标签（TypedArray 依赖它区分具体类型）。
 pub fn object_proto_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let tag = if !this_val.is_object() {
@@ -908,7 +909,7 @@ pub fn object_proto_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
             "Object"
         } else {
             let obj = unsafe { &*ptr };
-            if obj.is_array() {
+            let builtin = if obj.is_array() {
                 "Array"
             } else if obj.is_function() {
                 "Function"
@@ -928,6 +929,15 @@ pub fn object_proto_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
                 "ArrayBuffer"
             } else {
                 "Object"
+            };
+            // @@toStringTag 为字符串时覆盖内置标签；getter 抛错透传原异常。
+            let tag_si = vm.kernel_core().perm_interner().intern("@@toStringTag").0;
+            match vm.ordinary_get(obj, tag_si, this_val) {
+                Ok(v) => match vm.lookup_str(v) {
+                    Some(s) => return NativeResult::Ok(vm.new_string(&format!("[object {s}]"))),
+                    None => builtin,
+                },
+                Err(err) => return NativeResult::Err(crate::iterator::engine_error(vm, &err)),
             }
         }
     };

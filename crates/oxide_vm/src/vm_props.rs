@@ -108,7 +108,10 @@ impl Vm {
         }
 
         if getter_obj.native_fn().is_some() {
-            let result = self.call_function_sync(getter, receiver, &[])?;
+            let result = match self.call_function_sync(getter, receiver, &[]) {
+                Ok(v) => v,
+                Err(err) => self.raise_call_error(&err)?,
+            };
             self.regs[target_reg as usize] = result;
             return Ok(false);
         }

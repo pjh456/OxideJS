@@ -209,6 +209,7 @@ pub struct BuiltinWorld {
     pub data_view_constructor: P<JsObject>,
     pub data_view_proto: P<JsObject>,
     pub typed_array_proto: P<JsObject>,
+    pub typed_array_constructor: P<JsObject>,
     pub int8array_constructor: P<JsObject>,
     pub int8array_proto: P<JsObject>,
     pub uint8array_constructor: P<JsObject>,
@@ -328,6 +329,7 @@ struct ErrorSubtypeProtos {
 }
 
 struct TypedArrayFamily {
+    typed_array_constructor: P<JsObject>,
     typed_array_proto: P<JsObject>,
     int8array_constructor: P<JsObject>,
     int8array_proto: P<JsObject>,
@@ -353,11 +355,40 @@ struct TypedArrayFamily {
     biguint64array_proto: P<JsObject>,
 }
 
+/// 建 `%TypedArray%` 抽象构造器对象：name=`TypedArray`、`prototype` 指向共享原型，
+/// 实际 native 实现由绑定层配置为恒抛 TypeError（不可 new 也不可调用）。
+fn make_typed_array_abstract_ctor(
+    string_forge: &PermInterner, shape_forge: &ShapeForge, labels: BuiltinLabels, typed_array_proto: &P<JsObject>,
+) -> P<JsObject> {
+    let name_si = string_forge.intern("TypedArray").0;
+    let mut ctor = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
+    let ctor_shape1 = shape_forge.make_shape(EMPTY_SHAPE_ID, labels.prototype);
+    let ctor_shape2 = shape_forge.make_shape(ctor_shape1, labels.name);
+    ctor.set_shape_id(ctor_shape2);
+    ctor.set_function(true);
+    ctor.ensure_hash_props()
+        .push(JsValue::from_js_object(typed_array_proto.as_ptr() as *mut JsObject));
+    ctor.ensure_hash_props()
+        .push(JsValue::perm_string(string_forge.string_ptr(name_si)));
+    // .prototype 不可写不可枚举不可配置；.name 不可写不可枚举可配置。
+    ctor.set_data_meta(0, PropAttributes::new(false, false, false));
+    ctor.set_data_meta(1, PropAttributes::new(false, false, true));
+    P::new(ctor)
+}
+
 fn make_typed_array_family(
     string_forge: &PermInterner, shape_forge: &ShapeForge, labels: BuiltinLabels, object_proto: &P<JsObject>,
 ) -> TypedArrayFamily {
     let obj_proto_val = JsValue::from_js_object(object_proto.as_ptr() as *mut JsObject);
-    let typed_array_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, obj_proto_val));
+    // 给共享原型开 "constructor" 槽位（占位值在 wire 时填抽象构造器）。
+    let mut typed_array_proto_obj = JsObject::new_empty(EMPTY_SHAPE_ID, obj_proto_val);
+    let ctor_si = labels.constructor;
+    let proto_shape = shape_forge.make_shape(typed_array_proto_obj.shape_id(), ctor_si);
+    typed_array_proto_obj.set_shape_id(proto_shape);
+    typed_array_proto_obj.ensure_hash_props().push(JsValue::undefined());
+    typed_array_proto_obj.set_data_meta(0, PropAttributes::new(true, false, true));
+    let typed_array_proto = P::new(typed_array_proto_obj);
+    let typed_array_constructor = make_typed_array_abstract_ctor(string_forge, shape_forge, labels, &typed_array_proto);
     let (int8array_proto, int8array_constructor) = make_named_pair(string_forge, shape_forge, labels, "Int8Array");
     let (uint8array_proto, uint8array_constructor) = make_named_pair(string_forge, shape_forge, labels, "Uint8Array");
     let (uint8clampedarray_proto, uint8clampedarray_constructor) =
@@ -378,6 +409,7 @@ fn make_typed_array_family(
         make_named_pair(string_forge, shape_forge, labels, "BigUint64Array");
 
     TypedArrayFamily {
+        typed_array_constructor,
         typed_array_proto,
         int8array_constructor,
         int8array_proto,
@@ -494,6 +526,28 @@ fn wire_builtin_world_links(world: &BuiltinWorld) {
     ];
     for proto in &typed_array_protos {
         set_proto_if_changed(proto, typed_array_proto_val);
+    }
+
+    // 共享原型与抽象构造器互指（prototype/constructor）；11 个具体构造器的
+    // [[Prototype]] 指向 `%TypedArray%`，抽象构造器自身 [[Prototype]] 为 Function.prototype。
+    wire_ctor_proto(&world.typed_array_constructor, &world.typed_array_proto);
+    set_proto_if_changed(&world.typed_array_constructor, world.fn_proto_val());
+    let typed_array_ctor_val = JsValue::from_js_object(world.typed_array_constructor.as_ptr() as *mut JsObject);
+    let typed_array_ctors: [&P<JsObject>; 11] = [
+        &world.int8array_constructor,
+        &world.uint8array_constructor,
+        &world.uint8clampedarray_constructor,
+        &world.int16array_constructor,
+        &world.uint16array_constructor,
+        &world.int32array_constructor,
+        &world.uint32array_constructor,
+        &world.float32array_constructor,
+        &world.float64array_constructor,
+        &world.bigint64array_constructor,
+        &world.biguint64array_constructor,
+    ];
+    for ctor in &typed_array_ctors {
+        set_proto_if_changed(ctor, typed_array_ctor_val);
     }
 }
 
@@ -652,6 +706,7 @@ impl BuiltinWorld {
             data_view_constructor,
             data_view_proto,
             typed_array_proto: typed_arrays.typed_array_proto,
+            typed_array_constructor: typed_arrays.typed_array_constructor,
             int8array_constructor: typed_arrays.int8array_constructor,
             int8array_proto: typed_arrays.int8array_proto,
             uint8array_constructor: typed_arrays.uint8array_constructor,
@@ -828,6 +883,7 @@ impl BuiltinWorld {
         } else {
             TypedArrayFamily {
                 typed_array_proto: current.typed_array_proto.clone(),
+                typed_array_constructor: current.typed_array_constructor.clone(),
                 int8array_constructor: current.int8array_constructor.clone(),
                 int8array_proto: current.int8array_proto.clone(),
                 uint8array_constructor: current.uint8array_constructor.clone(),
@@ -892,6 +948,7 @@ impl BuiltinWorld {
             data_view_constructor,
             data_view_proto,
             typed_array_proto: typed_arrays.typed_array_proto,
+            typed_array_constructor: typed_arrays.typed_array_constructor,
             int8array_constructor: typed_arrays.int8array_constructor,
             int8array_proto: typed_arrays.int8array_proto,
             uint8array_constructor: typed_arrays.uint8array_constructor,

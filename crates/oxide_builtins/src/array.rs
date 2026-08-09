@@ -108,7 +108,7 @@ fn arraylike_get<H: VmHost>(vm: &mut H, ptr: *mut JsObject, is_array: bool, i: u
     }
 }
 
-fn require_callback<H: VmHost>(vm: &mut H, callback_val: JsValue) -> Result<JsValue, JsValue> {
+pub(crate) fn require_callback<H: VmHost>(vm: &mut H, callback_val: JsValue) -> Result<JsValue, JsValue> {
     if !callback_val.is_object() {
         return Err(array_type_error(vm, "callback is not a function"));
     }
@@ -137,7 +137,7 @@ fn array_length_arg<H: VmHost>(vm: &mut H, value: JsValue) -> Result<usize, JsVa
     Ok(n as usize)
 }
 
-fn invoke_native_callback<H: VmHost>(
+pub(crate) fn invoke_native_callback<H: VmHost>(
     vm: &mut H, callback_val: JsValue, this_val: JsValue, cb_args: &[JsValue],
 ) -> NativeResult {
     if !callback_val.is_object() {

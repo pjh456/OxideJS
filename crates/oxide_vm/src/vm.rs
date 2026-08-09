@@ -323,7 +323,10 @@ impl Vm {
                 return Err(self.error_message_text("TypeError", "Symbol.toPrimitive is not a function"));
             }
             let hint_val = self.new_string(if prefer_string { "string" } else { "number" });
-            let result = self.call_function_sync(exotic, value, &[hint_val])?;
+            let result = match self.call_function_sync(exotic, value, &[hint_val]) {
+                Ok(r) => r,
+                Err(err) => return self.raise_call_error(&err),
+            };
             if result.is_object() {
                 return Err(self.error_message_text("TypeError", "Cannot convert object to primitive value"));
             }
@@ -351,13 +354,38 @@ impl Vm {
                 return Ok(JsValue::undefined());
             }
 
-            let result = self.call_function_sync(method, value, &[])?;
+            let result = match self.call_function_sync(method, value, &[]) {
+                Ok(r) => r,
+                Err(err) => return self.raise_call_error(&err),
+            };
             if !result.is_object() {
                 return Ok(result);
             }
         }
 
         Err(self.error_message_text("TypeError", "Cannot convert object to primitive value"))
+    }
+
+    /// 把 `call_function_sync` 返回的调用错误恢复为原始异常值并走异常展开，
+    /// 使外围 try/catch 可捕获（native 函数抛错时原值存于 `last_uncaught_value`）。
+    ///
+    /// # 注意事项
+    /// 仅在主 dispatch（`native_call_depth == 0`）下展开——此时 try_stack 只含当前
+    /// 字节码的处理器，展开后 pc/regs[0] 不会被中途的原生调用栈覆盖。原生 builtin
+    /// 内部（depth > 0）必须传播错误，由其调用边界（dispatch_native_call）转换。
+    pub(crate) fn raise_call_error(&mut self, err: &str) -> Result<JsValue, String> {
+        if self.native_call_depth == 0 {
+            let exc = self
+                .last_uncaught_value
+                .take()
+                .unwrap_or_else(|| oxide_builtins::error::create_error(self, err));
+            let kind = self.thrown_error_kind(exc);
+            self.exception_value = Some(exc);
+            self.pending_error_kind = Some(kind);
+            self.unwind()?;
+            return Ok(JsValue::undefined());
+        }
+        Err(err.to_string())
     }
 
     pub(crate) fn coerce_number_bounded(&mut self, value: JsValue) -> Result<f64, String> {

@@ -1,5 +1,5 @@
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes, TypedArrayKind};
+use oxide_types::object::{JsObject, NativeFnPtr, TypedArrayKind};
 use oxide_types::value::JsValue;
 
 use crate::array_buffer::{array_buffer_data_ptr, new_array_buffer, MAX_ARRAY_BUFFER_LENGTH};
@@ -55,11 +55,6 @@ fn normalize_index<H: VmHost>(vm: &mut H, value: JsValue, len: usize) -> usize {
     }
 }
 
-fn set_named_prop<H: VmHost>(vm: &mut H, obj: &mut JsObject, name: &str, value: JsValue, attributes: PropAttributes) {
-    let si = vm.kernel_core().perm_interner().intern(name).0;
-    let _ = vm.define_data_property(obj, si, value, attributes);
-}
-
 fn typed_array_proto_ptr<H: VmHost>(vm: &mut H, kind: TypedArrayKind) -> *mut JsObject {
     let world = vm.session().builtin_world();
     match kind {
@@ -92,30 +87,6 @@ fn create_typed_array<H: VmHost>(
     // SAFETY: TypedArray 实例不可调用，native_fn 存不透明 `Box<TypedArrayData>`，
     // 与本 VM 中 ArrayBuffer/DataView 的类型化对象存储一致。
     obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(data as *const ()) }));
-
-    let byte_length = length.saturating_mul(kind.bytes_per_element());
-    set_named_prop(vm, &mut obj, "buffer", buffer, PropAttributes::new(false, false, false));
-    set_named_prop(
-        vm,
-        &mut obj,
-        "byteOffset",
-        JsValue::int(byte_offset as i32),
-        PropAttributes::new(false, false, false),
-    );
-    set_named_prop(
-        vm,
-        &mut obj,
-        "byteLength",
-        JsValue::int(byte_length as i32),
-        PropAttributes::new(false, false, false),
-    );
-    set_named_prop(
-        vm,
-        &mut obj,
-        "length",
-        JsValue::int(length as i32),
-        PropAttributes::new(false, false, false),
-    );
     vm.alloc_object(obj)
 }
 
@@ -335,11 +306,11 @@ fn write_element(kind: TypedArrayKind, bytes: &mut [u8], offset: usize, value: f
 
 fn collect_array_like<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Vec<JsValue>, JsValue> {
     if !value.is_object() {
-        return Err(type_error(vm, "TypedArray source must be array-like"));
+        return Err(type_error(vm, "TypedArray source must be array-like or iterable"));
     }
     let ptr = value.as_js_object_ptr();
     if ptr.is_null() {
-        return Err(type_error(vm, "TypedArray source must be array-like"));
+        return Err(type_error(vm, "TypedArray source must be array-like or iterable"));
     }
     let obj = unsafe { &*ptr };
     if obj.is_array() {
@@ -354,7 +325,42 @@ fn collect_array_like<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Vec<JsVal
             .map(|i| read_element(view.kind, buffer, absolute_byte_offset(view, i)))
             .collect());
     }
-    Err(type_error(vm, "TypedArray source must be Array, ArrayBuffer, or TypedArray"))
+
+    // 有 @@iterator 走迭代路径（含用户自定义迭代器），否则按 array-like 读 length 逐索引取值。
+    if crate::iterator::peek_iterator_method(vm, value)? {
+        let mut values = Vec::new();
+        crate::iterator::iterate_elements(vm, value, |_vm, elem| {
+            values.push(elem);
+            Ok(())
+        })?;
+        return Ok(values);
+    }
+
+    let length_si = vm.kernel_core().perm_interner().intern("length").0;
+    let len_val = vm
+        .ordinary_get(obj, length_si, value)
+        .map_err(|e| crate::iterator::engine_error(vm, &e))?;
+    let n = oxide_runtime_api::to_number_full(len_val, vm).map_err(|e| crate::iterator::engine_error(vm, &e))?;
+    let len = to_collect_len(n);
+    let mut values = Vec::with_capacity(len);
+    for i in 0..len {
+        let key = vm.new_string(&i.to_string());
+        let key_si = vm.property_key_si(key);
+        let elem = vm
+            .ordinary_get(obj, key_si, value)
+            .map_err(|e| crate::iterator::engine_error(vm, &e))?;
+        values.push(elem);
+    }
+    Ok(values)
+}
+
+/// 按 ToLength 语义把 length 数值夹到收集上限：NaN/非正取 0，超出密集上限截断。
+fn to_collect_len(n: f64) -> usize {
+    if n.is_nan() || n <= 0.0 {
+        0
+    } else {
+        (n.min(9_007_199_254_740_991.0).trunc() as u64).min(oxide_types::object::MAX_DENSE_PROPS as u64) as usize
+    }
 }
 
 fn typed_array_new<H: VmHost>(vm: &mut H, args: &[u8], kind: TypedArrayKind) -> NativeResult {
@@ -559,9 +565,187 @@ pub fn typed_array_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::undefined())
 }
 
-/// `TypedArray.prototype.toString`：校验 receiver 后返回 `[object TypedArray]`。
-pub fn typed_array_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+/// `%TypedArray%` 抽象构造器：不可 new 也不可调用，任何调用方式都抛 TypeError。
+pub fn typed_array_abstract_constructor<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
+    NativeResult::Err(crate::error::create_type_error(vm, "TypedArray is not a constructor"))
+}
+
+/// `%TypedArray%.prototype.buffer` 访问器：返回视图引用的 ArrayBuffer。
+pub fn typed_array_buffer_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
-    native_try!(get_typed_array_data(vm, this_val));
-    NativeResult::Ok(vm.new_string("[object TypedArray]"))
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    NativeResult::Ok(view.buffer)
+}
+
+/// `%TypedArray%.prototype.byteOffset` 访问器：返回视图相对 buffer 起始的字节偏移。
+pub fn typed_array_byte_offset_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    NativeResult::Ok(JsValue::int(view.byte_offset as i32))
+}
+
+/// `%TypedArray%.prototype.byteLength` 访问器：返回视图占用的字节数。
+pub fn typed_array_byte_length_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    NativeResult::Ok(JsValue::int((view.length * view.kind.bytes_per_element()) as i32))
+}
+
+/// `%TypedArray%.prototype.length` 访问器：返回元素个数。
+pub fn typed_array_length_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    NativeResult::Ok(JsValue::int(view.length as i32))
+}
+
+/// `%TypedArray%.prototype[@@toStringTag]` 访问器：返回具体类型名（如 `Int16Array`），
+/// 供 `Object.prototype.toString` 区分类型。
+pub fn typed_array_to_string_tag_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    NativeResult::Ok(vm.new_string(view.kind.name()))
+}
+
+/// 按 TypedArrayCreateWithLength 语义构造 of/from 的结果对象：调用构造器 C 分配
+/// 长度为 `len` 的 TypedArray，校验结果确为 TypedArray 且长度不小于 `len`。
+///
+/// # 边界与前提
+/// - C 非可调用函数、调用抛错、返回非 TypedArray、或返回对象长度不足时抛 TypeError。
+fn allocate_typed_array<H: VmHost>(vm: &mut H, c: JsValue, len: usize) -> Result<JsValue, JsValue> {
+    if !c.is_object() || c.as_js_object_ptr().is_null() || !unsafe { &*c.as_js_object_ptr() }.is_function() {
+        return Err(type_error(vm, "TypedArray.of/from requires a constructor"));
+    }
+    let result = vm
+        .call_function_sync(c, JsValue::undefined(), &[JsValue::int(len as i32)])
+        .map_err(|e| crate::iterator::engine_error(vm, &e))?;
+    if !result.is_object() || result.as_js_object_ptr().is_null() {
+        return Err(type_error(vm, "TypedArray.of/from constructor did not return a TypedArray"));
+    }
+    let result_obj = unsafe { &*result.as_js_object_ptr() };
+    if !result_obj.is_typed_array_obj() {
+        return Err(type_error(vm, "TypedArray.of/from constructor did not return a TypedArray"));
+    }
+    let view = get_typed_array_data(vm, result)?;
+    if view.length < len {
+        return Err(type_error(
+            vm,
+            "TypedArray.of/from constructor returned a TypedArray with insufficient length",
+        ));
+    }
+    Ok(result)
+}
+
+/// 按 IntegerIndexedElementSet 语义把元素写入 TypedArray：先 ToNumber（symbol 等
+/// 不可转换值抛 TypeError），越界索引静默忽略。
+fn set_typed_array_element<H: VmHost>(vm: &mut H, ta: JsValue, index: usize, value: JsValue) -> Result<(), JsValue> {
+    let n = oxide_runtime_api::to_number_full(value, vm).map_err(|e| crate::iterator::engine_error(vm, &e))?;
+    let obj = unsafe { &*ta.as_js_object_ptr() };
+    typed_array_element_set(vm, obj, index as u32, JsValue::float(n)).map_err(|e| crate::iterator::engine_error(vm, &e))
+}
+
+/// `%TypedArray%.of(...items)`：以实参为元素构造一个以 `this`（构造器 C）为类型的
+/// TypedArray；元素逐个 ToNumber 写入，不可转换（如 Symbol）抛 TypeError。
+pub fn typed_array_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let c = vm.reg(args[0]);
+    let len = args.len().saturating_sub(1);
+    let new_obj = match allocate_typed_array(vm, c, len) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
+    for i in 0..len {
+        let value = vm.reg(args[1 + i]);
+        if let Err(e) = set_typed_array_element(vm, new_obj, i, value) {
+            return NativeResult::Err(e);
+        }
+    }
+    NativeResult::Ok(new_obj)
+}
+
+/// `%TypedArray%.from(source, mapfn?, thisArg?)`：从可迭代对象或 array-like 构造
+/// 以 `this`（构造器 C）为类型的 TypedArray；`mapfn` 逐元素映射（`thisArg` 作回调
+/// this），元素经 ToNumber 写入。
+///
+/// # 步骤
+/// 1. `source` 为 null/undefined 抛 TypeError；`mapfn` 非 undefined 时须可调用。
+/// 2. 经 `@@iterator` 判定可迭代：迭代路径逐元素收集（异常退出先 IteratorClose），
+///    array-like 路径读 `length` 逐索引取值（缺失属性取 undefined）。
+/// 3. 按长度构造结果对象，逐元素经 `mapfn` 映射后 ToNumber 写入。
+pub fn typed_array_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let c = vm.reg(args[0]);
+    let source = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    if source.is_null() || source.is_undefined() {
+        return NativeResult::Err(type_error(vm, "TypedArray.from requires an iterable or array-like object"));
+    }
+    let mapfn_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let mapping = if mapfn_val.is_undefined() {
+        None
+    } else {
+        match crate::array::require_callback(vm, mapfn_val) {
+            Ok(cb) => Some(cb),
+            Err(e) => return NativeResult::Err(e),
+        }
+    };
+    let this_arg = if args.len() > 3 { vm.reg(args[3]) } else { JsValue::undefined() };
+
+    let values = match crate::iterator::peek_iterator_method(vm, source) {
+        Ok(true) => {
+            let mut values = Vec::new();
+            match crate::iterator::iterate_elements(vm, source, |_vm, elem| {
+                values.push(elem);
+                Ok(())
+            }) {
+                Ok(()) => values,
+                Err(e) => return NativeResult::Err(e),
+            }
+        }
+        Ok(false) => {
+            let obj_val = match oxide_runtime_api::to_object(source, vm) {
+                Ok(o) => o,
+                Err(err) => return NativeResult::Err(crate::error::create_type_error(vm, &err)),
+            };
+            let obj = unsafe { &*obj_val.as_js_object_ptr() };
+            let length_si = vm.kernel_core().perm_interner().intern("length").0;
+            let len_val = match vm.ordinary_get(obj, length_si, obj_val) {
+                Ok(v) => v,
+                Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
+            };
+            let n = match oxide_runtime_api::to_number_full(len_val, vm) {
+                Ok(n) => n,
+                Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
+            };
+            let len = to_collect_len(n);
+            let mut values = Vec::with_capacity(len);
+            for i in 0..len {
+                let key = vm.new_string(&i.to_string());
+                let key_si = vm.property_key_si(key);
+                match vm.ordinary_get(obj, key_si, obj_val) {
+                    Ok(v) => values.push(v),
+                    Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
+                }
+            }
+            values
+        }
+        Err(e) => return NativeResult::Err(e),
+    };
+
+    let new_obj = match allocate_typed_array(vm, c, values.len()) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
+    for (k, elem) in values.into_iter().enumerate() {
+        let mapped = match mapping {
+            Some(cb) => match crate::array::invoke_native_callback(vm, cb, this_arg, &[elem, JsValue::int(k as i32)]) {
+                NativeResult::Ok(m) => m,
+                NativeResult::Err(e) => return NativeResult::Err(e),
+                NativeResult::TailCall { .. } => {
+                    return NativeResult::Err(type_error(vm, "unexpected tail call in TypedArray.from callback"))
+                }
+            },
+            None => elem,
+        };
+        if let Err(e) = set_typed_array_element(vm, new_obj, k, mapped) {
+            return NativeResult::Err(e);
+        }
+    }
+    NativeResult::Ok(new_obj)
 }
