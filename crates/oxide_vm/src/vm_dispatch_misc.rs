@@ -460,6 +460,111 @@ impl Vm {
         }
     }
 
+    /// for-await-of 初始化：按 GetAsyncIterator 协议取异步迭代器（缺失 `@@asyncIterator`
+    /// 时回退同步迭代器并包 AsyncFromSyncIterator），压入 for-of 迭代器栈。
+    pub(crate) fn dispatch_for_await_of_init(&mut self, a: usize) -> Result<(), String> {
+        vm_trace!("FOR_AWAIT_OF_INIT r{}={:?}", a, self.regs[a]);
+        let iterable = self.regs[a];
+        match crate::async_from_sync::make_async_iterator(self, iterable) {
+            Ok(iterator) => {
+                self.iters.push_for_of(iterator);
+                self.iters.clear_last_for_of_result();
+                Ok(())
+            }
+            Err(err) => {
+                self.exception_value = Some(err);
+                self.pending_error_kind = Some(self.thrown_error_kind(err));
+                self.unwind()
+            }
+        }
+    }
+
+    /// for-await-of 步进：调用迭代器 `next()`，把返回的 promise 写入 rd。
+    /// 随后的 `AWAIT` 负责挂起等待；next() 抛出时弹出迭代器并透传（与同步 for-of 一致）。
+    pub(crate) fn dispatch_for_await_of_next(&mut self, rd: usize) -> Result<(), String> {
+        vm_trace!("FOR_AWAIT_OF_NEXT rd={}", rd);
+        self.last_uncaught_value = None;
+        let Some(iterator) = self.iters.last_for_of() else {
+            return Err("FOR_AWAIT_OF_NEXT without active iterator".into());
+        };
+        if !iterator.is_object() {
+            return Err("FOR_AWAIT_OF_NEXT iterator is not an object".into());
+        }
+        let iter_obj = unsafe { &*iterator.as_js_object_ptr() };
+        let next_si = self.kernel_core.perm_interner().intern("next").0;
+        let next_fn = match self.ordinary_get(iter_obj, next_si, iterator) {
+            Ok(v) => v,
+            Err(e) => return self.throw_for_of_error(e),
+        };
+        let result = match self.call_function_sync(next_fn, iterator, &[]) {
+            Ok(v) => v,
+            Err(e) => return self.throw_for_of_error(e),
+        };
+        self.regs[rd] = result;
+        Ok(())
+    }
+
+    /// for-await-of 步进完成检查：读取 `AWAIT` 恢复值（a 槽，即迭代器结果对象）的
+    /// `done`，写入 last_for_of_result 并把 `!done` 写 rd（供 JMP_IF_FALSE 分支）。
+    pub(crate) fn dispatch_for_await_of_done(&mut self, rd: usize, a: usize) -> Result<(), String> {
+        vm_trace!("FOR_AWAIT_OF_DONE rd={} r{}={:?}", rd, a, self.regs[a]);
+        let result = self.regs[a];
+        if !result.is_object() {
+            return self.raise_type_error("iterator result is not an object");
+        }
+        self.iters.set_last_for_of_result(result);
+        let result_obj = unsafe { &*result.as_js_object_ptr() };
+        let done_si = self.kernel_core.perm_interner().intern("done").0;
+        let done_val = match self.ordinary_get(result_obj, done_si, result) {
+            Ok(v) => v,
+            Err(e) => return self.throw_for_of_error(e),
+        };
+        self.regs[rd] = JsValue::bool(!to_boolean(done_val));
+        Ok(())
+    }
+
+    /// for-await-of 收尾：迭代器自然 done 时跳过；否则执行异步 IteratorClose——
+    /// 调用 `return()`，其返回的 promise 经 await 挂起，恢复后继续循环后的指令。
+    pub(crate) fn dispatch_for_await_of_close(&mut self) -> Result<(), String> {
+        vm_trace!("FOR_AWAIT_OF_CLOSE");
+        let Some(iterator) = self.iters.pop_for_of() else {
+            return Ok(());
+        };
+        let result = self.iters.last_for_of_result();
+        if result.is_object() {
+            let result_obj = unsafe { &*result.as_js_object_ptr() };
+            let done_si = self.kernel_core.perm_interner().intern("done").0;
+            if let Ok(done_val) = self.ordinary_get(result_obj, done_si, result) {
+                if to_boolean(done_val) {
+                    return Ok(());
+                }
+            }
+        }
+        if !iterator.is_object() {
+            return Ok(());
+        }
+        let iter_obj = unsafe { &*iterator.as_js_object_ptr() };
+        let return_si = self.kernel_core.perm_interner().intern("return").0;
+        let return_fn = match self.ordinary_get(iter_obj, return_si, iterator) {
+            Ok(v) => v,
+            Err(e) => return Err(e),
+        };
+        if !return_fn.is_object() {
+            return Ok(());
+        }
+        if !unsafe { &*return_fn.as_js_object_ptr() }.is_function() {
+            return Ok(());
+        }
+        let inner = match self.call_function_sync(return_fn, iterator, &[]) {
+            Ok(v) => v,
+            Err(e) => return Err(e),
+        };
+        if !inner.is_object() {
+            return self.raise_type_error("iterator return() result is not an object");
+        }
+        self.perform_await(inner)
+    }
+
     pub(crate) fn dispatch_for_of_done(&mut self, rd: usize) -> Result<(), String> {
         vm_trace!("FOR_OF_DONE rd={}", rd);
         let Some(iterator) = self.iters.last_for_of() else {

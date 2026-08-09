@@ -782,6 +782,8 @@ impl Vm {
                 Some(6)
             } else if std::ptr::eq(ptr, world.sym_match_all.as_ptr()) {
                 Some(7)
+            } else if std::ptr::eq(ptr, world.sym_async_iterator.as_ptr()) {
+                Some(8)
             } else {
                 None
             };
@@ -1518,6 +1520,28 @@ impl Vm {
 
                 OpCode::FOR_OF_CLOSE => {
                     self.dispatch_for_of_close()?;
+                }
+
+                OpCode::FOR_AWAIT_OF_INIT => {
+                    self.dispatch_for_await_of_init(a)?;
+                }
+
+                OpCode::FOR_AWAIT_OF_NEXT => {
+                    self.dispatch_for_await_of_next(rd)?;
+                }
+
+                OpCode::FOR_AWAIT_OF_DONE => {
+                    self.dispatch_for_await_of_done(rd, a)?;
+                }
+
+                OpCode::FOR_AWAIT_OF_CLOSE => {
+                    self.dispatch_for_await_of_close()?;
+                    // 异步 IteratorClose 可能经 await 挂起（return() 的 promise），
+                    // 挂起时须像 AWAIT 一样让内嵌 dispatch 返回，由恢复方快照状态。
+                    if self.async_suspended || self.async_gen_suspended {
+                        self.profiling.set_instruction_count(steps);
+                        return Ok(JsValue::undefined());
+                    }
                 }
 
                 OpCode::REST_OBJECT => {

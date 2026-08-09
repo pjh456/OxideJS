@@ -826,6 +826,12 @@ pub(crate) fn async_generator_throw(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
 }
 
+/// `%AsyncGeneratorPrototype%[@@asyncIterator]`：异步生成器自身即是异步迭代器，返回 `this`。
+pub(crate) fn async_generator_symbol_async_iterator(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    NativeResult::Ok(this_val)
+}
+
 /// 初始化/重建异步生成器内建对象：`%AsyncGeneratorPrototype%`、
 /// `%AsyncGeneratorFunction.prototype%` 与占位 `%AsyncGeneratorFunction%`。
 ///
@@ -853,6 +859,18 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
     ag_proto.set_shape_id(tag_shape);
     let tag_pos = ag_proto.push_prop(JsValue::perm_string(sf.string_ptr(sf.intern("AsyncGenerator").0)));
     ag_proto.set_data_meta(tag_pos, PropAttributes::new(false, false, true));
+    // @@asyncIterator：返回自身（异步生成器是异步可迭代对象，供 for-await-of 消费）。
+    let aiter_key = oxide_types::private_key::make_well_known_symbol_key(8);
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method_key_static(
+        &mut ag_proto,
+        sh,
+        sf,
+        aiter_key,
+        "@@asyncIterator",
+        unsafe { oxide_types::object::NativeFnPtr::from_raw(async_generator_symbol_async_iterator as *const ()) },
+        0,
+        fn_proto_val,
+    );
     vm.async_generator_proto = P::new(*ag_proto);
 
     // %AsyncGeneratorFunction.prototype%：proto = Function.prototype，constructor = %AsyncGeneratorFunction%。

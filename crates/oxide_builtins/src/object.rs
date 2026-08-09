@@ -109,7 +109,8 @@ fn decode_symbol_key<H: VmHost>(vm: &H, key: u32) -> JsValue {
             4 => world.sym_split.as_ptr(),
             5 => world.sym_to_primitive.as_ptr(),
             6 => world.sym_has_instance.as_ptr(),
-            _ => world.sym_match_all.as_ptr(),
+            7 => world.sym_match_all.as_ptr(),
+            _ => world.sym_async_iterator.as_ptr(),
         };
         return JsValue::from_js_object(ptr as *mut JsObject);
     }

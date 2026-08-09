@@ -207,6 +207,13 @@ define_opcodes! {
     YIELD_STAR = 0x78 => "YIELD_STAR",
     // `await`：rd=被等待的值（PromiseResolve 包装）；挂起异步帧，恢复值经 reg 0 交付。
     AWAIT = 0x79 => "AWAIT",
+    // for-await-of 步进：INIT(a=可迭代值) 取异步迭代器；NEXT 调用迭代器 next()，
+    // 结果写 rd（随后由 AWAIT 等待）；DONE 读取 AWAIT 恢复值（a 槽）的 done 写 rd；
+    // CLOSE 执行异步 IteratorClose（return() 结果 await 后继续）。
+    FOR_AWAIT_OF_INIT = 0x7A => "FOR_AWAIT_OF_INIT",
+    FOR_AWAIT_OF_NEXT = 0x7B => "FOR_AWAIT_OF_NEXT",
+    FOR_AWAIT_OF_DONE = 0x7C => "FOR_AWAIT_OF_DONE",
+    FOR_AWAIT_OF_CLOSE = 0x7D => "FOR_AWAIT_OF_CLOSE",
 
     // ── 位运算 (0x80-0x8F) ──
     BIT_AND = 0x80 => "BIT_AND",

@@ -71,8 +71,10 @@ impl Inst {
             | OpCode::SPILL
             | OpCode::FOR_IN_INIT
             | OpCode::FOR_OF_INIT
+            | OpCode::FOR_AWAIT_OF_INIT
             | OpCode::FOR_IN_CLEANUP
             | OpCode::FOR_OF_CLOSE
+            | OpCode::FOR_AWAIT_OF_CLOSE
             | OpCode::SUSPEND_BODY => None,
             // 其余指令 rd 即 def（算术/比较/位/逻辑/加载族/迭代器 NEXT 等）
             _ => reg_of(&self.rd),
@@ -308,8 +310,11 @@ impl Inst {
                 push_operand(&mut uses, &self.a);
             }
             // for-in/of 迭代器：INIT 读 a；NEXT/DONE 读迭代器栈隐式状态
-            OpCode::FOR_IN_INIT | OpCode::FOR_OF_INIT => push_operand(&mut uses, &self.a),
+            OpCode::FOR_IN_INIT | OpCode::FOR_OF_INIT | OpCode::FOR_AWAIT_OF_INIT => push_operand(&mut uses, &self.a),
             OpCode::FOR_IN_NEXT | OpCode::FOR_IN_DONE | OpCode::FOR_OF_NEXT | OpCode::FOR_OF_DONE => {}
+            // for-await-of：NEXT 无寄存器 use；DONE 读取 AWAIT 恢复值（a 槽）的 done
+            OpCode::FOR_AWAIT_OF_NEXT | OpCode::FOR_AWAIT_OF_CLOSE => {}
+            OpCode::FOR_AWAIT_OF_DONE => push_operand(&mut uses, &self.a),
             // REST_OBJECT：读 a（src）与可选 b（运行时 excluded 数组），ext 是 excluded_idx 常量
             OpCode::REST_OBJECT => {
                 push_operand(&mut uses, &self.a);

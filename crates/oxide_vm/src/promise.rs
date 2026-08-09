@@ -373,6 +373,39 @@ impl Vm {
         Ok(())
     }
 
+    /// PromiseResolve（%Promise%, value）核心：value 为原生 Promise 时读取其
+    /// `constructor`，与 %Promise% 相同则原样返回；否则新建能力并经能力 resolve
+    /// 结算（thenable 委托）。constructor getter / 结算抛错时透传原异常值。
+    pub(crate) fn promise_resolve(&mut self, value: JsValue) -> Result<JsValue, JsValue> {
+        if self.is_promise_value(value) {
+            let obj = unsafe { &*value.as_js_object_ptr() };
+            let ctor_si = self.kernel_core.perm_interner().intern("constructor").0;
+            let ctor = match self.ordinary_get(obj, ctor_si, value) {
+                Ok(c) => c,
+                Err(e) => {
+                    let exc = self
+                        .last_uncaught_value
+                        .take()
+                        .unwrap_or_else(|| oxide_builtins::error::create_error(self, &e));
+                    return Err(exc);
+                }
+            };
+            let intrinsic = JsValue::from_js_object(self.promise_constructor.as_ptr() as *mut JsObject);
+            if oxide_runtime_api::same_value(ctor, intrinsic) {
+                return Ok(value);
+            }
+        }
+        let (promise, _resolve, _) = self.new_promise_capability();
+        if let Err(e) = self.resolve_promise(promise, value) {
+            let exc = self
+                .last_uncaught_value
+                .take()
+                .unwrap_or_else(|| oxide_builtins::error::create_error(self, &e));
+            return Err(exc);
+        }
+        Ok(promise)
+    }
+
     /// `PerformPromiseThen` 核心：注册 fulfill/reject 两条反应；已 settle 则直接入队。
     pub(crate) fn perform_promise_then(
         &mut self, this_val: JsValue, on_fulfilled: JsValue, on_rejected: JsValue,

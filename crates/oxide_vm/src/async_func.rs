@@ -391,11 +391,22 @@ impl Vm {
     /// - 异步生成器内（`async_gen_dispatch`）登记异步生成器恢复闭包并置
     ///   `async_gen_suspended`；普通异步函数走 `async_suspended`。
     pub(crate) fn dispatch_await(&mut self, rd: usize) -> Result<(), String> {
+        let value = self.regs[rd];
+        self.perform_await(value)
+    }
+
+    /// await 核心：PromiseResolve 包装被等待值、登记恢复反应，置挂起信号。
+    ///
+    /// # 副作用
+    /// - 被等待值为原生 Promise 时直接复用，否则建新 promise 并 PromiseResolve。
+    /// - 经 `perform_promise_then` 登记 fulfill/reject 恢复反应（微任务入队）。
+    /// - 异步生成器内（`async_gen_dispatch`）登记异步生成器恢复闭包并置
+    ///   `async_gen_suspended`；普通异步函数走 `async_suspended`。
+    pub(crate) fn perform_await(&mut self, value: JsValue) -> Result<(), String> {
         let ctx = match self.async_context {
             Some(c) => c,
             None => return Err("AWAIT executed outside async function".into()),
         };
-        let value = self.regs[rd];
         let promise = if self.is_promise_value(value) {
             value
         } else {
