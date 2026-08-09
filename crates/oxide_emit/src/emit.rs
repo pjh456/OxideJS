@@ -86,6 +86,7 @@ const BUILTIN_GLOBALS: &[&str] = &[
     "Math",
     "JSON",
     "Promise",
+    "AggregateError",
     "Date",
     "Set",
     "Map",

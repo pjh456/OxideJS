@@ -2,6 +2,7 @@
 
 use oxide_compiler::compiler::Compiler;
 use oxide_kernel::kernel::{KernelConfig, KernelCore};
+use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -213,6 +214,9 @@ impl HarnessSources {
         sources.insert("typeCoercion.js", include_str!("../../../tests/test262/harness/typeCoercion.js"));
         sources.insert("deepEqual.js", include_str!("../../../tests/test262/harness/deepEqual.js"));
         sources.insert("testTypedArray.js", include_str!("../../../tests/test262/harness/testTypedArray.js"));
+        sources.insert("asyncHelpers.js", include_str!("../../../tests/test262/harness/asyncHelpers.js"));
+        sources.insert("doneprintHandle.js", include_str!("../../../tests/test262/harness/doneprintHandle.js"));
+        sources.insert("promiseHelper.js", include_str!("../../../tests/test262/harness/promiseHelper.js"));
         Self { sources }
     }
 
@@ -234,14 +238,11 @@ fn is_blacklisted_harness(name: &str) -> bool {
             | "proxyTrapsHelper.js"
             | "temporalHelpers.js"
             | "tcoHelper.js"
-            | "asyncHelpers.js"
-            | "promiseHelper.js"
             | "detachArrayBuffer.js"
             | "resizableArrayBufferUtils.js"
             | "byteConversionValues.js"
             | "compareIterator.js"
             | "iteratorZipUtils.js"
-            | "doneprintHandle.js"
     )
 }
 
@@ -388,7 +389,6 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
     for flag in &meta.flags {
         match flag.as_str() {
             "module" => return Some("module tests excluded".into()),
-            "async" => return Some("async tests excluded".into()),
             "raw" => return Some("raw tests excluded".into()),
             // noStrict 测试放行——很多在严格模式下仍可通过；运行时跳过逻辑会捕获失败。
             _ => {}
@@ -407,6 +407,8 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
         "Atomics",
         "SharedArrayBuffer",
         "cross-realm",
+        // await-dictionary（Promise.allKeyed/allSettledKeyed）是 2025 proposal，未实现。
+        "await-dictionary",
     ];
 
     for feat in &meta.features {
@@ -448,9 +450,25 @@ fn run_test_inner(
 ) -> TestResult {
     let start = std::time::Instant::now();
 
+    let is_async = meta.flags.iter().any(|f| f == "async");
+
     let code = match get_harness_prefix(meta, harness, harness_cache) {
         Ok(prefix) => {
             let mut code = prefix;
+            if is_async {
+                // 异步测试：注入 print 捕获 + $DONE（asyncTests 用 $DONE 报告结果）。
+                // 结果写入 globalThis 全局字符串，run() 结束后由 runner 读取并按 marker 判定。
+                // （顶层 var 不落 global 对象，须显式写 globalThis。）
+                append_source_chunk(
+                    &mut code,
+                    "async capture",
+                    "globalThis.$__test262_async_result = \"\";\n\
+                     function print(msg) { globalThis.$__test262_async_result += String(msg) + \"\\n\"; }",
+                );
+                if let Some(done_src) = harness.get("doneprintHandle.js") {
+                    append_source_chunk(&mut code, "doneprintHandle.js", done_src);
+                }
+            }
             append_source_chunk(&mut code, "test source", strip_meta(source));
             code
         }
@@ -505,10 +523,15 @@ fn run_test_inner(
     };
 
     let mut vm = Vm::with_kernel_core(Arc::clone(kernel));
+    let run_result = vm.run(&module);
+    let dur = start.elapsed().as_millis() as u64;
 
-    match vm.run(&module) {
+    if is_async {
+        return judge_async_result(path, run_result, &mut vm, meta, dur, no_skip);
+    }
+
+    match run_result {
         Ok(result) => {
-            let dur = start.elapsed().as_millis() as u64;
             if let Some(neg) = meta.negative.as_ref() {
                 return TestResult::fail(
                     path.to_path_buf(),
@@ -518,58 +541,120 @@ fn run_test_inner(
             }
             TestResult::pass(path.to_path_buf(), dur, format!("ok: {result}"))
         }
-        Err(e) => {
-            let dur = start.elapsed().as_millis() as u64;
-            if let Some(neg) = meta.negative.as_ref() {
-                if e.contains("TypeError") && neg.error_type == "TypeError" {
-                    return TestResult::pass(path.to_path_buf(), dur, format!("expected: {e}"));
-                }
-                if e.contains("ReferenceError") && neg.error_type == "ReferenceError" {
-                    return TestResult::pass(path.to_path_buf(), dur, format!("expected: {e}"));
-                }
-                if e.contains("SyntaxError") && neg.error_type == "SyntaxError" {
-                    return TestResult::pass(path.to_path_buf(), dur, format!("expected: {e}"));
-                }
-                if e.contains(&neg.error_type) {
-                    return TestResult::pass(path.to_path_buf(), dur, format!("expected: {e}"));
-                }
-                TestResult::fail(path.to_path_buf(), dur, format!("expected {} error, got: {e}", neg.error_type))
-            } else if e.contains("not yet implemented")
-                || e.contains("not yet supported")
-                || e.contains("not supported")
-                || e.contains("unsupported")
-                || e.contains("step limit")
-                || e.contains("is not defined")
-                || e.contains("NEW_EXPRESSION")
-                || e.contains("IC_GET_PROP on non-object")
-                || e.contains("GET_PROP_DYNAMIC on non-object")
-                || e.contains("SET_PROP_DYNAMIC on non-object")
-                || e.contains("private field brand check")
-                || e.contains("CALL_NATIVE target")
-                || e.contains("call stack size exceeded")
-                || e.contains("is not implemented")
-                || e.contains("unexpected tail call")
-                || e.contains("not callable")
-                || e.contains("Cannot convert object to primitive")
-                || e.contains("Cannot create property on non-object")
-                || e.contains("Property description must be an object")
-                || e.contains("method called on incompatible")
-                || e.contains("called on non-Set")
-                || e.contains("called on non-Map")
-                || e.contains("called on non-ArrayBuffer")
-                || e.contains("called on non-TypedArray")
-                || e.contains("Array.prototype method called on null")
-                || e.contains("__proto__ must be an object")
-            // 私有字段未实现。
-            {
-                if no_skip {
-                    return TestResult::fail(path.to_path_buf(), dur, format!("vm error: {e}"));
-                }
-                TestResult::skip(path.to_path_buf(), format!("vm: {e}"))
-            } else {
-                TestResult::fail(path.to_path_buf(), dur, format!("vm error: {e}"))
+        Err(e) => judge_vm_error(path, &e, meta, dur, no_skip),
+    }
+}
+
+/// 异步测试判定：`$DONE` 把结果写入捕获串，run() 结束时微任务队列已 drain。
+///
+/// 失败 marker 优先（`Test262:AsyncTestFailure:<name>: <msg>`）；其次成功 marker
+/// （`Test262:AsyncTestComplete`）；两者都无则测试未在 run() 内同步完成
+/// （需 setTimeout 等异步 runner 的测试在此失败），回退到 run 结果判定。
+fn judge_async_result(
+    path: &Path, run_result: Result<JsValue, String>, vm: &mut Vm, meta: &TestMeta, dur: u64, no_skip: bool,
+) -> TestResult {
+    let output = read_async_output(vm);
+    if let Some(pos) = output.find("Test262:AsyncTestFailure:") {
+        let detail = output[pos..].trim();
+        if let Some(neg) = meta.negative.as_ref() {
+            let name = detail
+                .strip_prefix("Test262:AsyncTestFailure:")
+                .and_then(|rest| rest.split(':').next())
+                .unwrap_or("");
+            if name == neg.error_type {
+                return TestResult::pass(path.to_path_buf(), dur, format!("expected: {detail}"));
             }
+            return TestResult::fail(
+                path.to_path_buf(),
+                dur,
+                format!("expected {} error, got: {detail}", neg.error_type),
+            );
         }
+        return TestResult::fail(path.to_path_buf(), dur, detail);
+    }
+
+    if output.contains("Test262:AsyncTestComplete") {
+        if meta.negative.is_some() {
+            return TestResult::fail(
+                path.to_path_buf(),
+                dur,
+                format!("expected runtime error ({}), got: async complete", meta.negative.as_ref().unwrap().error_type),
+            );
+        }
+        return TestResult::pass(path.to_path_buf(), dur, "async ok");
+    }
+
+    // $DONE 未被调用：run() 结果决定成败（顶层抛错走普通判定，未抛错视为未完成）。
+    match run_result {
+        Ok(_) => TestResult::fail(path.to_path_buf(), dur, "async test did not call $DONE synchronously"),
+        Err(e) => judge_vm_error(path, &e, meta, dur, no_skip),
+    }
+}
+
+/// 读取异步测试捕获的 `$DONE` 输出字符串。
+fn read_async_output(vm: &Vm) -> String {
+    let si = vm.kernel_core().perm_interner().intern("$__test262_async_result").0;
+    let global = vm.session().global_object();
+    let val = vm
+        .kernel_core()
+        .shape_forge()
+        .lookup_position(global.shape_id(), si)
+        .map(|pos| global.get_prop_at(pos))
+        .unwrap_or(JsValue::undefined());
+    vm.lookup_str(val).unwrap_or_default()
+}
+
+/// 运行期错误的判定（negative 匹配 + 未实现特性跳过分类）。
+fn judge_vm_error(path: &Path, e: &str, meta: &TestMeta, dur: u64, no_skip: bool) -> TestResult {
+    if let Some(neg) = meta.negative.as_ref() {
+        if e.contains("TypeError") && neg.error_type == "TypeError" {
+            return TestResult::pass(path.to_path_buf(), dur, format!("expected: {e}"));
+        }
+        if e.contains("ReferenceError") && neg.error_type == "ReferenceError" {
+            return TestResult::pass(path.to_path_buf(), dur, format!("expected: {e}"));
+        }
+        if e.contains("SyntaxError") && neg.error_type == "SyntaxError" {
+            return TestResult::pass(path.to_path_buf(), dur, format!("expected: {e}"));
+        }
+        if e.contains(&neg.error_type) {
+            return TestResult::pass(path.to_path_buf(), dur, format!("expected: {e}"));
+        }
+        return TestResult::fail(path.to_path_buf(), dur, format!("expected {} error, got: {e}", neg.error_type));
+    }
+    if e.contains("not yet implemented")
+        || e.contains("not yet supported")
+        || e.contains("not supported")
+        || e.contains("unsupported")
+        || e.contains("step limit")
+        || e.contains("is not defined")
+        || e.contains("NEW_EXPRESSION")
+        || e.contains("IC_GET_PROP on non-object")
+        || e.contains("GET_PROP_DYNAMIC on non-object")
+        || e.contains("SET_PROP_DYNAMIC on non-object")
+        || e.contains("private field brand check")
+        || e.contains("CALL_NATIVE target")
+        || e.contains("call stack size exceeded")
+        || e.contains("is not implemented")
+        || e.contains("unexpected tail call")
+        || e.contains("not callable")
+        || e.contains("Cannot convert object to primitive")
+        || e.contains("Cannot create property on non-object")
+        || e.contains("Property description must be an object")
+        || e.contains("method called on incompatible")
+        || e.contains("called on non-Set")
+        || e.contains("called on non-Map")
+        || e.contains("called on non-ArrayBuffer")
+        || e.contains("called on non-TypedArray")
+        || e.contains("Array.prototype method called on null")
+        || e.contains("__proto__ must be an object")
+    // 私有字段未实现。
+    {
+        if no_skip {
+            return TestResult::fail(path.to_path_buf(), dur, format!("vm error: {e}"));
+        }
+        TestResult::skip(path.to_path_buf(), format!("vm: {e}"))
+    } else {
+        TestResult::fail(path.to_path_buf(), dur, format!("vm error: {e}"))
     }
 }
 

@@ -437,7 +437,7 @@ pub(crate) fn close_iterator<H: VmHost>(vm: &mut H, iterator: JsValue) {
 /// # 返回值
 /// - `Ok(())`：迭代完成；
 /// - `Err`：迭代或回调抛出的原异常值（任意类型）。
-pub(crate) fn iterate_elements<H: VmHost, F>(vm: &mut H, iterable: JsValue, mut on_elem: F) -> Result<(), JsValue>
+pub fn iterate_elements<H: VmHost, F>(vm: &mut H, iterable: JsValue, mut on_elem: F) -> Result<(), JsValue>
 where
     F: FnMut(&mut H, JsValue) -> Result<(), JsValue>,
 {
@@ -451,7 +451,7 @@ where
 ///
 /// # 副作用
 /// 迭代或回调抛错时调用迭代器的 `return()`（IteratorClose）后透传原异常。
-pub(crate) fn iterate_iterator<H: VmHost, F>(vm: &mut H, iterator: JsValue, mut on_elem: F) -> Result<(), JsValue>
+pub fn iterate_iterator<H: VmHost, F>(vm: &mut H, iterator: JsValue, mut on_elem: F) -> Result<(), JsValue>
 where
     F: FnMut(&mut H, JsValue) -> Result<(), JsValue>,
 {

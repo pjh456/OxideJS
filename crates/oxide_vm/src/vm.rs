@@ -250,6 +250,10 @@ pub struct Vm {
     pub promise_constructor: P<JsObject>,
     /// `%Promise.prototype%`：Promise 实例的原型（then/catch/finally 方法挂此）。
     pub promise_proto: P<JsObject>,
+    /// `%AggregateError%` 构造器（Promise.any 拒绝时构造 AggregateError 用）。
+    pub aggregate_error_constructor: P<JsObject>,
+    /// `%AggregateError.prototype%`（proto = %Error.prototype%）。
+    pub aggregate_error_proto: P<JsObject>,
     /// `%AsyncFunction.prototype%`：异步函数对象的原型（`constructor` 指向 `%AsyncFunction%`）。
     pub async_function_proto: P<JsObject>,
     /// 微任务队列（Promise reactions / thenable 委托），`run()` 末尾 FIFO drain。

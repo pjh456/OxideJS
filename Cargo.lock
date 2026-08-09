@@ -1302,6 +1302,7 @@ dependencies = [
  "oxide_kernel",
  "oxide_log",
  "oxide_parser",
+ "oxide_types",
  "oxide_vm",
  "serde",
  "serde_yaml",
