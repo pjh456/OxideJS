@@ -66,6 +66,7 @@ impl Inst {
             | OpCode::DELETE_PROP_DYNAMIC
             | OpCode::DEFINE_ACCESSOR
             | OpCode::DEFINE_PROP
+            | OpCode::DEFINE_GLOBAL_PROP
             | OpCode::SET_HOME_OBJECT
             // SPILL 写 VM spill 栈而非寄存器（恢复由 UNSPILL 写 rd）
             | OpCode::SPILL
@@ -231,11 +232,9 @@ impl Inst {
             // HALT：隐式读 reg 0（顶层返回值）
             OpCode::HALT => uses.push(0),
             // RETURN/THROW/YIELD/YIELD_STAR/AWAIT：读 rd（None→0）
-            OpCode::RETURN
-            | OpCode::THROW
-            | OpCode::YIELD
-            | OpCode::YIELD_STAR
-            | OpCode::AWAIT => push_operand(&mut uses, &self.rd),
+            OpCode::RETURN | OpCode::THROW | OpCode::YIELD | OpCode::YIELD_STAR | OpCode::AWAIT => {
+                push_operand(&mut uses, &self.rd)
+            }
             // 加载族：a 槽是 Const/Imm 立即数，无寄存器 use
             OpCode::LOAD_CONST
             | OpCode::CREATE_CLOSURE
@@ -264,7 +263,8 @@ impl Inst {
             | OpCode::SET_ELEM
             | OpCode::INIT_PRIVATE
             | OpCode::DEFINE_ACCESSOR
-            | OpCode::DEFINE_PROP => {
+            | OpCode::DEFINE_PROP
+            | OpCode::DEFINE_GLOBAL_PROP => {
                 push_operand(&mut uses, &self.rd);
                 push_operand(&mut uses, &self.a);
                 push_operand(&mut uses, &self.b);

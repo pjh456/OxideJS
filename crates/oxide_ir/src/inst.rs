@@ -197,6 +197,12 @@ impl Inst {
         Self::new(OpCode::DEFINE_PROP, target, value, key)
     }
 
+    /// 定义全局 var 绑定数据属性：target 为全局对象，value/key 为寄存器。
+    /// 属性可写/可枚举/不可配置（脚本顶层 var/function 声明的属性描述符）。
+    pub fn define_global_prop(target: Operand, value: Operand, key: Operand) -> Self {
+        Self::new(OpCode::DEFINE_GLOBAL_PROP, target, value, key)
+    }
+
     /// 静态删除属性：obj 同时放 rd/a 槽，const_idx 为属性名常量下标。
     pub fn delete_prop_static(obj: Operand, const_idx: u32) -> Self {
         Self::with_ext(OpCode::DELETE_PROP_STATIC, obj, obj, Operand::None, &[const_idx])

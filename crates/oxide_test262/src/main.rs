@@ -458,7 +458,7 @@ fn run_test_inner(
             if is_async {
                 // 异步测试：注入 print 捕获 + $DONE（asyncTests 用 $DONE 报告结果）。
                 // 结果写入 globalThis 全局字符串，run() 结束后由 runner 读取并按 marker 判定。
-                // （顶层 var 不落 global 对象，须显式写 globalThis。）
+                // print 为顶层函数声明，经全局对象反射落 globalThis；此处仅初始化累加器。
                 append_source_chunk(
                     &mut code,
                     "async capture",
@@ -578,7 +578,10 @@ fn judge_async_result(
             return TestResult::fail(
                 path.to_path_buf(),
                 dur,
-                format!("expected runtime error ({}), got: async complete", meta.negative.as_ref().unwrap().error_type),
+                format!(
+                    "expected runtime error ({}), got: async complete",
+                    meta.negative.as_ref().unwrap().error_type
+                ),
             );
         }
         return TestResult::pass(path.to_path_buf(), dur, "async ok");

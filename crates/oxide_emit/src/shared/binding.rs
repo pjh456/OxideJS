@@ -74,6 +74,7 @@ impl Emitter {
             ));
         } else if !ctx.with_stack.is_empty() && !ctx.is_with_internal_binding(name) {
             // with 内 var 初始化：对象有该属性则写对象，否则写提升槽（动态解析）。
+            // ponytail: with 内顶层 var 不写全局对象属性，with 语句本身已是稀见用例。
             self.emit_with_dynamic_write(name, src_reg, 0, ctx);
         } else {
             // const 声明路径 STORE_VAR 恒 b=0，不查运行时 guard。
@@ -88,6 +89,10 @@ impl Emitter {
             ));
         }
         ctx.init_var(name);
+        // 脚本顶层 var：同步写全局对象，使 globalThis.x 反射声明值。
+        if ctx.is_global_scope && matches!(kind, VariableDeclarationKind::Var) {
+            self.emit_global_prop_write(name, src_reg, ctx);
+        }
         Ok(())
     }
 
@@ -240,9 +245,7 @@ impl Emitter {
     }
 
     /// 向 excluded 数组下标 `idx` 写入一个键：`key_val` 为运行时寄存器值，否则用 `key_str` 常量。
-    fn emit_push_excluded_key(
-        &self, arr: u32, key_val: Option<u32>, key_str: &str, idx: usize, ctx: &mut CompileCtx,
-    ) {
+    fn emit_push_excluded_key(&self, arr: u32, key_val: Option<u32>, key_str: &str, idx: usize, ctx: &mut CompileCtx) {
         let val_reg = match key_val {
             Some(kv) => kv,
             None => {
@@ -255,7 +258,12 @@ impl Emitter {
         let elem_idx = ctx.alloc_reg();
         let cidx = ctx.add_constant(Constant::Int(idx as i32));
         ctx.inst(Inst::load_const(Operand::Reg(elem_idx), cidx));
-        ctx.inst(Inst::new(OpCode::SET_ELEM, Operand::Reg(arr), Operand::Reg(elem_idx), Operand::Reg(val_reg)));
+        ctx.inst(Inst::new(
+            OpCode::SET_ELEM,
+            Operand::Reg(arr),
+            Operand::Reg(elem_idx),
+            Operand::Reg(val_reg),
+        ));
     }
 
     fn emit_assignment_maybe_default(

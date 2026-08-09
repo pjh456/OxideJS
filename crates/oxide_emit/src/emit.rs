@@ -166,6 +166,9 @@ pub struct CompileCtx {
     pub(crate) is_generator: bool,
     /// 本函数是否为异步函数体（`async function` / async 箭头），`assemble_ir` 回写到 IR。
     pub(crate) is_async: bool,
+    /// 是否为脚本顶层模块（emit_program 的根上下文）。顶层 var/function 声明需
+    /// 同步写全局对象属性（脚本环境记录的 var 可经 globalThis 反射）；函数体为 false。
+    pub(crate) is_global_scope: bool,
     pub(crate) static_block_this_reg: Option<u8>,
     pub(crate) field_buffer: Option<FieldBuffer>,
     /// 类构造器模块中 `@@field_keys` upvalue 下标（实例字段 computed key 数组）。
@@ -274,6 +277,7 @@ impl CompileCtx {
             in_static_method: false,
             is_generator: false,
             is_async: false,
+            is_global_scope: false,
             static_block_this_reg: None,
             field_buffer: None,
             field_keys_uv: None,
@@ -1245,12 +1249,30 @@ impl Emitter {
         }
     }
 
+    /// 把脚本顶层 var/function 绑定的当前值同步写入全局对象属性，使顶层声明
+    /// 可经 `globalThis` 反射（脚本环境记录的 var 绑定全局对象属性）。
+    ///
+    /// # 边界与前提
+    /// - 仅顶层模块上下文调用：顶层 `this`（物理寄存器 254）恒为全局对象。
+    /// - let/const/class 不落全局对象，不得调用本函数。
+    ///
+    /// # 副作用
+    /// - 定义全局对象数据属性（可写/可枚举/不可配置），属性缺失时新建。
+    pub(crate) fn emit_global_prop_write(&self, name: &str, val_reg: u32, ctx: &mut CompileCtx) {
+        let idx = ctx.add_constant(Constant::String(name.to_string()));
+        let key_reg = ctx.alloc_reg();
+        ctx.inst(Inst::load_const(Operand::Reg(key_reg), idx));
+        ctx.inst(Inst::define_global_prop(Operand::This, Operand::Reg(val_reg), Operand::Reg(key_reg)));
+    }
+
     /// 把完整程序编译为顶层模块体的 IRFunction。
     ///
     /// 调用方为 `oxide_compiler::Compiler::compile`：本函数完成 emit 半程，
     /// 随后由 `oxide_ir::lower::lower` 降为字节码。
     pub fn emit_program(&self, program: &oxide_parser::Program) -> Result<IRFunction, String> {
         let mut ctx = CompileCtx::new();
+        // 脚本顶层：var/function 声明需落到全局对象，let/const/class 不进全局。
+        ctx.is_global_scope = true;
         ctx.pre_register_builtins();
         self.predeclare_function_declarations(&program.body, &mut ctx);
 

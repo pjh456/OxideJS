@@ -175,8 +175,11 @@ define_opcodes! {
     // rest 参数数组：rd=目标寄存器，b=固定形参数（rest 之前的形参个数）。
     CREATE_REST_ARRAY = 0x6E => "CREATE_REST_ARRAY",
 
-    // ── define 语义属性写入 (0x6D) ──
+    // ── define 语义属性写入 (0x6D, 0x6F) ──
     DEFINE_PROP = 0x6D => "DEFINE_PROP",
+    // 全局 var 绑定属性定义：rd=目标对象、a=值、b=键，数据属性可写/可枚举/不可配置
+    // （脚本顶层 var/function 声明同步到 globalThis 用，属性描述符与规范一致）。
+    DEFINE_GLOBAL_PROP = 0x6F => "DEFINE_GLOBAL_PROP",
 
     // ── 成员复合赋值：位/移位 (0x64-0x69) ──
     COMPOUND_MEMBER_BIT_AND = 0x64 => "COMPOUND_MEMBER_BIT_AND",

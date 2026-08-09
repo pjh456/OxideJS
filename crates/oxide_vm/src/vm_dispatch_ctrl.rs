@@ -178,6 +178,26 @@ impl Vm {
         }
     }
 
+    /// 定义全局 var 绑定数据属性：rd=全局对象，a=值，b=键。
+    /// 属性可写/可枚举/不可配置（CreateGlobalVarBinding 的属性描述符）。
+    ///
+    /// # 边界与前提
+    /// - 已有同名不可写属性（NaN/undefined/Infinity 等内置）时静默跳过：规范中
+    ///   var 绑定仍建立（寄存器侧），全局对象属性保持原样，不抛错。
+    /// - 已有同名可写数据属性（重复 var 声明）时按定义更新值。
+    pub(crate) fn dispatch_define_global_prop(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("DEFINE_GLOBAL_PROP rd={} value={} key={}", rd, a, b);
+        let obj_val = self.regs[rd];
+        if !obj_val.is_object() {
+            return Ok(());
+        }
+        let prop_name_si = self.property_key_si(self.regs[b]);
+        let value = self.regs[a];
+        let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
+        let _ = self.define_data_property(obj, prop_name_si, value, PropAttributes::new(true, true, false));
+        Ok(())
+    }
+
     /// break 完成：`crossed`（rd 槽）为 emit 词法算出的逃出 finally 域数。
     /// 逐个穿越 finally 后跳转到目标；crossed 为 0 时直接跳转。
     pub(crate) fn dispatch_break(&mut self, instr: u32) {

@@ -60,6 +60,10 @@ impl Emitter {
         } else {
             ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(var_reg), Operand::Reg(var_reg), Operand::None));
         }
+        // 脚本顶层函数声明：同步写全局对象，使 globalThis 可反射函数名。
+        if ctx.is_global_scope {
+            self.emit_global_prop_write(&name, var_reg, ctx);
+        }
         Ok(None)
     }
 }

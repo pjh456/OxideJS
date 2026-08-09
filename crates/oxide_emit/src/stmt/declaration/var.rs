@@ -61,6 +61,10 @@ impl Emitter {
                     ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(target_reg), Operand::Reg(tmp), Operand::None));
                 }
                 ctx.init_var(bi.name.as_str());
+                // 脚本顶层 var 无初始化：仍须写全局对象属性（值为 undefined）。
+                if ctx.is_global_scope && matches!(decl.kind, VariableDeclarationKind::Var) {
+                    self.emit_global_prop_write(bi.name.as_str(), tmp, ctx);
+                }
                 r = Some(var_reg);
             }
         }
