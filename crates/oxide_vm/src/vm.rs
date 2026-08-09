@@ -1330,6 +1330,11 @@ impl Vm {
                     self.dispatch_create_arguments(rd)?;
                 }
 
+                OpCode::CREATE_REST_ARRAY => {
+                    let fixed_count = opcode::b(instr) as usize;
+                    self.dispatch_create_rest_array(rd, fixed_count)?;
+                }
+
                 OpCode::NEW_ARRAY => {
                     self.dispatch_new_array(rd, instr);
                 }

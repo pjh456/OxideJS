@@ -12,11 +12,6 @@ impl Emitter {
     fn emit_arrow_function_expression(
         &self, arrow: &oxide_parser::ArrowFunctionExpression, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
-        // 未支持：箭头函数 rest 参数
-        if let Some(_rest) = &arrow.params.rest {
-            return Err("rest params in arrow functions not yet supported".into());
-        }
-
         // 提取形参名（与函数表达式相同的形态）
         let mut param_names = Vec::new();
         for (idx, param) in arrow.params.items.iter().enumerate() {
@@ -35,6 +30,9 @@ impl Emitter {
                     });
                 }
             }
+        }
+        if let Some(rest) = &arrow.params.rest {
+            self.push_rest_param(&rest.rest.argument, &mut param_names)?;
         }
 
         // 表达式体：以 is_expression_body=true 编译；语句体：以 false 编译。
@@ -76,6 +74,9 @@ impl Emitter {
                     });
                 }
             }
+        }
+        if let Some(rest) = &fe.params.rest {
+            self.push_rest_param(&rest.rest.argument, &mut param_names)?;
         }
 
         let body_stmts: &[Statement] = if let Some(body) = &fe.body { &body.statements } else { &[] };

@@ -242,6 +242,7 @@ impl Inst {
             | OpCode::NEW_OBJECT
             | OpCode::NEW_ARRAY
             | OpCode::CREATE_ARGUMENTS
+            | OpCode::CREATE_REST_ARRAY
             | OpCode::NOP => {}
             // 变量读写：LOAD_VAR/STORE_VAR/CELL_GET 读 a（None→0）
             OpCode::LOAD_VAR | OpCode::STORE_VAR | OpCode::CELL_GET => {

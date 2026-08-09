@@ -204,7 +204,8 @@ pub enum FunctionBodyContext {
     ClassElement,
 }
 
-/// 参数规格：普通形参为标识符（可带默认值 initializer），解构形参用合成名 + 原始 pattern。
+/// 参数规格：普通形参为标识符（可带默认值 initializer），解构形参用合成名 + 原始 pattern，
+/// rest 形参为数组（无默认值，只能是最末形参）。
 pub enum ParamSpec<'a> {
     Identifier {
         name: String,
@@ -215,6 +216,9 @@ pub enum ParamSpec<'a> {
         pattern: &'a oxide_parser::BindingPattern<'a>,
         initializer: Option<&'a Expression<'a>>,
     },
+    Rest {
+        name: String,
+    },
 }
 
 impl ParamSpec<'_> {
@@ -222,6 +226,7 @@ impl ParamSpec<'_> {
         match self {
             Self::Identifier { name, .. } => name,
             Self::Pattern { synthetic_name, .. } => synthetic_name,
+            Self::Rest { name } => name,
         }
     }
 }
@@ -675,6 +680,21 @@ impl Emitter {
 
     // ── 闭包捕获分析（AST 级，时序无关）──
 
+    /// 把 rest 形参的绑定模式追加为 `ParamSpec::Rest`：仅支持标识符形态（解构 rest 未支持）。
+    pub(crate) fn push_rest_param<'a>(
+        &self, argument: &'a oxide_parser::BindingPattern<'a>, out: &mut Vec<ParamSpec<'a>>,
+    ) -> Result<(), String> {
+        match argument {
+            oxide_parser::BindingPattern::BindingIdentifier(bi) => {
+                out.push(ParamSpec::Rest {
+                    name: bi.name.to_string(),
+                });
+            }
+            _ => return Err("rest parameters with destructuring patterns not yet supported".into()),
+        }
+        Ok(())
+    }
+
     /// 收集函数参数的绑定名（BindingIdentifier 形态）。
     pub(crate) fn extract_function_parts<'a>(
         &self, function: &'a oxide_parser::Function<'a>,
@@ -696,6 +716,9 @@ impl Emitter {
                     });
                 }
             }
+        }
+        if let Some(rest) = &function.params.rest {
+            self.push_rest_param(&rest.rest.argument, &mut param_specs)?;
         }
         let body_stmts: &[Statement] = if let Some(body) = &function.body { &body.statements } else { &[] };
         Ok((param_specs, body_stmts))
@@ -828,12 +851,13 @@ impl Emitter {
         ctx.is_async = is_async;
 
         // length = 第一个带默认值形参之前的形参数（解构默认与标识符默认同规则）；
-        // rest 参数不在 param_specs 中（独立字段），天然不计入。
+        // rest 参数不计入 length（以 0 结尾即止）。
         ctx.function_length = param_specs
             .iter()
             .take_while(|spec| match spec {
                 ParamSpec::Identifier { initializer, .. } => initializer.is_none(),
                 ParamSpec::Pattern { initializer, .. } => initializer.is_none(),
+                ParamSpec::Rest { .. } => false,
             })
             .count() as u32;
 
@@ -961,10 +985,15 @@ impl Emitter {
             ctx.inst(Inst::new(OpCode::RETURN, Operand::Reg(undef_reg), Operand::None, Operand::None));
         }
 
+        // 调用契约参数段只含固定形参：rest 是函数体内普通变量，不在 VM 实参传递区。
+        let fixed_count = param_specs
+            .iter()
+            .filter(|spec| !matches!(spec, ParamSpec::Rest { .. }))
+            .count() as u32;
         let ir = ctx.assemble_ir(
             oxide_ir::ParamLayout {
                 base: param_base,
-                count: param_specs.len() as u32,
+                count: fixed_count,
             },
             Some(parent_ctx),
         );
@@ -1006,6 +1035,7 @@ impl Emitter {
                     // 内部闭包引用，需纳入捕获分析。
                     self.collect_pattern_default_exprs(pattern, &mut param_defaults);
                 }
+                ParamSpec::Rest { .. } => {}
             }
         }
         ctx.own_bindings = self.collect_own_binding_names(&param_names, body_stmts);
@@ -1076,6 +1106,15 @@ impl Emitter {
                         let reg = ctx.lookup(name)?;
                         self.emit_default_if_undefined(reg, init, Some(name), ctx)?;
                     }
+                }
+                ParamSpec::Rest { name } => {
+                    // rest 数组：从实参区收集固定形参之后的实参，绑定为普通变量。
+                    let reg = ctx.lookup(name)?;
+                    let fixed_count = param_specs
+                        .iter()
+                        .filter(|s| !matches!(s, ParamSpec::Rest { .. }))
+                        .count() as u32;
+                    ctx.inst(Inst::create_rest_array(Operand::Reg(reg), fixed_count));
                 }
             }
         }

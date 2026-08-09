@@ -196,6 +196,43 @@ impl Vm {
         Ok(())
     }
 
+    /// 创建 rest 参数数组：实参区下标 ≥ `fixed_count` 的实参收集为数组存入 `rd`。
+    ///
+    /// # 步骤
+    /// 1. 读当前帧（或 inline 同步调用）的实参区基址与个数。
+    /// 2. 实参个数超出固定形参数的部分作为数组元素写入。
+    ///
+    /// # 边界与前提
+    /// - 实参来源与 CREATE_ARGUMENTS 相同（push_bytecode_frame / inline 路径写入 spill 栈）。
+    /// - 实参不足 `fixed_count` 时数组为空。
+    pub(crate) fn dispatch_create_rest_array(&mut self, rd: usize, fixed_count: usize) -> Result<(), String> {
+        let (base, count) = match self.frames.last() {
+            Some(frame) => (frame.arguments_base, frame.arguments_count),
+            None => (self.inline_args_base, self.inline_args_count),
+        };
+        let n = count as usize;
+        let rest_len = n.saturating_sub(fixed_count);
+        let proto_ptr = self.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
+        let bump = self.epoch.bump();
+        let obj_ptr = self.alloc_object(JsObject::new_array(
+            EMPTY_SHAPE_ID,
+            JsValue::from_js_object(proto_ptr),
+            rest_len,
+            bump,
+        ));
+        let obj = unsafe { &mut *obj_ptr };
+        for i in 0..rest_len {
+            let val = self
+                .spill_stack
+                .get(base as usize + fixed_count + i)
+                .copied()
+                .unwrap_or(JsValue::undefined());
+            obj.set_prop_at(i as u32, val);
+        }
+        self.regs[rd] = JsValue::object(obj_ptr as *mut u8);
+        Ok(())
+    }
+
     #[inline(always)]
     pub(crate) fn dispatch_new_array(&mut self, rd: usize, instr: u32) {
         let n = opcode::imm16(instr) as usize;

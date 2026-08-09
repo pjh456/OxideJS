@@ -19,6 +19,12 @@ impl Emitter {
                 names.insert(bi.name.to_string());
             }
         }
+        // rest 形参也是本函数作用域绑定，遮蔽外层同名变量。
+        if let Some(rest) = &params.rest {
+            if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &rest.rest.argument {
+                names.insert(bi.name.to_string());
+            }
+        }
         names
     }
 

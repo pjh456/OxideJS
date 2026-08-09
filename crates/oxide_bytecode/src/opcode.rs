@@ -172,6 +172,8 @@ define_opcodes! {
 
     // ── 对象 (0x63) ──
     CREATE_ARGUMENTS = 0x63 => "CREATE_ARGUMENTS",
+    // rest 参数数组：rd=目标寄存器，b=固定形参数（rest 之前的形参个数）。
+    CREATE_REST_ARRAY = 0x6E => "CREATE_REST_ARRAY",
 
     // ── define 语义属性写入 (0x6D) ──
     DEFINE_PROP = 0x6D => "DEFINE_PROP",
@@ -363,6 +365,7 @@ mod tests {
         assert_eq!(OpCode::UNSPILL as u8, 0x0E);
         assert_eq!(OpCode::SPREAD_OBJECT as u8, 0x0F);
         assert_eq!(OpCode::CREATE_ARGUMENTS as u8, 0x63);
+        assert_eq!(OpCode::CREATE_REST_ARRAY as u8, 0x6E);
         assert_eq!(OpCode::ADD.to_string(), "ADD");
         assert_eq!(OpCode::COMPOUND_MEMBER_EXP.to_string(), "COMPOUND_MEMBER_EXP");
         assert_eq!(OpCode::MOV.to_string(), "MOV");

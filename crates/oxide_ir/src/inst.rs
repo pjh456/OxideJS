@@ -267,6 +267,13 @@ impl Inst {
         Self::new(OpCode::CREATE_ARGUMENTS, dst, Operand::None, Operand::None)
     }
 
+    /// 创建 rest 参数数组：`dst = 当前帧实参区中下标 ≥ fixed_count 的实参组成的数组`。
+    /// `fixed_count` 为 rest 之前的固定形参数，编码进 b 槽（Imm 单字节），运行时
+    /// 与 CREATE_ARGUMENTS 同源读实参区，无寄存器 use。
+    pub fn create_rest_array(dst: Operand, fixed_count: u32) -> Self {
+        Self::new(OpCode::CREATE_REST_ARRAY, dst, Operand::None, Operand::Imm(fixed_count as u16))
+    }
+
     /// 生成器让出：`rd` 为被让出的值；恢复时 `next(v)` 的 `v` 经 reg 0 交付
     /// （与 CALL 同协议，emit 用 `LOAD_VAR(None)` 读取）。
     pub fn yield_value(src: Operand) -> Self {
