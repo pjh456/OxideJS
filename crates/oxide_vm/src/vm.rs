@@ -18,6 +18,7 @@ use oxide_runtime_api::NativeResult;
 use oxide_types::error::{JsError, JsErrorKind};
 use oxide_types::mem::{Epoch, P};
 use oxide_types::object::{Cell, JsObject, NativeFnPtr, PropAttributes};
+use oxide_types::private_key::{make_symbol_key, make_well_known_symbol_key};
 use oxide_types::value::{JsValue, PTR_MASK};
 
 pub(crate) const MAX_PROTO_CHAIN_DEPTH: usize = 1024;
@@ -304,10 +305,8 @@ impl Vm {
         }
 
         // ECMA-262 §7.1.1 step 1: an exotic obj[Symbol.toPrimitive] takes precedence
-        // over OrdinaryToPrimitive. ponytail: symbol-object keys all collapse to
-        // to_string()="[object]" inside property_key_si (an engine-wide symbol-key
-        // limitation), so this resolves obj[@@toPrimitive] the same way the setter
-        // stores it; the real fix belongs to a dedicated symbol-key phase.
+        // over OrdinaryToPrimitive. well-known symbol 键经 property_key_si 映射为
+        // 固定 Symbol 键，读键路径与写键路径一致。
         let sym_key = {
             let sym_ptr = self.session.builtin_world().sym_to_primitive.as_ptr() as *mut JsObject;
             JsValue::from_js_object(sym_ptr)
@@ -699,31 +698,36 @@ impl Vm {
             let s = unsafe { &(*val.as_string_ptr()).data };
             return self.kernel_core.perm_interner().intern(s).0;
         }
-        // well-known symbol 是空对象：按指针比对映射为各自专属键，避免全部塌缩。
+        // Symbol 值直接编码为 Symbol 键（不进字符串 interner，键相互独立）。
+        if val.is_symbol() {
+            return make_symbol_key(val.as_symbol_index());
+        }
+        // well-known symbol 是空对象：按指针比对映射到各自的 well-known Symbol 键，
+        // 避免全部塌缩成同一个键。
         if val.is_object() {
             let world = self.session.builtin_world();
             let ptr = val.as_js_object_ptr();
-            let key = if std::ptr::eq(ptr, world.sym_iterator.as_ptr()) {
-                "@@iterator"
+            let well_known_id = if std::ptr::eq(ptr, world.sym_iterator.as_ptr()) {
+                Some(0)
             } else if std::ptr::eq(ptr, world.sym_match.as_ptr()) {
-                "@@match"
+                Some(1)
             } else if std::ptr::eq(ptr, world.sym_replace.as_ptr()) {
-                "@@replace"
+                Some(2)
             } else if std::ptr::eq(ptr, world.sym_search.as_ptr()) {
-                "@@search"
+                Some(3)
             } else if std::ptr::eq(ptr, world.sym_split.as_ptr()) {
-                "@@split"
+                Some(4)
             } else if std::ptr::eq(ptr, world.sym_to_primitive.as_ptr()) {
-                "@@toPrimitive"
+                Some(5)
             } else if std::ptr::eq(ptr, world.sym_has_instance.as_ptr()) {
-                "@@hasInstance"
+                Some(6)
             } else if std::ptr::eq(ptr, world.sym_match_all.as_ptr()) {
-                "@@matchAll"
+                Some(7)
             } else {
-                ""
+                None
             };
-            if !key.is_empty() {
-                return self.kernel_core.perm_interner().intern(key).0;
+            if let Some(id) = well_known_id {
+                return make_well_known_symbol_key(id);
             }
         }
         let key = coercion::to_string(val);

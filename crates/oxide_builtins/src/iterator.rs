@@ -1,5 +1,6 @@
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::JsObject;
+use oxide_types::private_key::make_well_known_symbol_key;
 use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{NativeResult, VmHost};
@@ -167,7 +168,7 @@ pub(crate) fn peek_iterator_method<H: VmHost>(vm: &mut H, value: JsValue) -> Res
     }
     if value.is_object() {
         let obj = unsafe { &*value.as_js_object_ptr() };
-        let sym_iter_si = vm.kernel_core().perm_interner().intern("@@iterator").0;
+        let sym_iter_si = make_well_known_symbol_key(0);
         let method = match vm.ordinary_get(obj, sym_iter_si, value) {
             Ok(m) => m,
             Err(err) => {
@@ -205,7 +206,7 @@ fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<JsValue>
     if value.is_object() {
         let obj = unsafe { &*value.as_js_object_ptr() };
         // 迭代协议：GetIterator 先取 value[Symbol.iterator] 并调用。
-        let sym_iter_si = vm.kernel_core().perm_interner().intern("@@iterator").0;
+        let sym_iter_si = make_well_known_symbol_key(0);
         let method = match vm.ordinary_get(obj, sym_iter_si, value) {
             Ok(m) => m,
             Err(err) => {

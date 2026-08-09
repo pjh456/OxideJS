@@ -1,5 +1,6 @@
 use oxide_types::mem::P;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
+use oxide_types::private_key::make_well_known_symbol_key;
 use oxide_types::value::JsValue;
 
 use crate::kernel::{BuiltinDirtySet, BuiltinId};
@@ -56,6 +57,7 @@ pub struct ObjectMethods {
     pub is_sealed: *const (),
     pub is_extensible: *const (),
     pub get_own_property_names: *const (),
+    pub get_own_property_symbols: *const (),
     pub define_properties: *const (),
     pub from_entries: *const (),
     pub get_prototype_of: *const (),
@@ -552,7 +554,7 @@ fn wire_builtin_world_links(world: &BuiltinWorld) {
 }
 
 impl BuiltinWorld {
-    fn fn_proto_val(&self) -> JsValue {
+    pub fn fn_proto_val(&self) -> JsValue {
         JsValue::from_js_object(self.function_proto.as_ptr() as *mut JsObject)
     }
 
@@ -1007,6 +1009,7 @@ impl BuiltinWorld {
             ("isSealed", methods.is_sealed, 1),
             ("isExtensible", methods.is_extensible, 1),
             ("getOwnPropertyNames", methods.get_own_property_names, 1),
+            ("getOwnPropertySymbols", methods.get_own_property_symbols, 1),
             ("defineProperties", methods.define_properties, 2),
             ("fromEntries", methods.from_entries, 1),
             ("getPrototypeOf", methods.get_prototype_of, 1),
@@ -1085,13 +1088,21 @@ impl BuiltinWorld {
             ("values", methods.values, 0),
         );
 
-        let si = string_forge.intern("@@iterator").0;
+        let iterator_key = make_well_known_symbol_key(0);
         let raw = methods.values;
         // SAFETY: methods.values 是 VM 绑定层传入的 NativeFn 函数项。
         let func_ptr = unsafe { NativeFnPtr::from_raw(raw) };
-        let _ =
-            Self::bind_method_static(proto, shape_forge, string_forge, "@@iterator", func_ptr, 0, self.fn_proto_val());
-        debug_assert!(shape_forge.lookup_position(proto.shape_id(), si).is_some());
+        let _ = Self::bind_method_key_static(
+            proto,
+            shape_forge,
+            string_forge,
+            iterator_key,
+            "@@iterator",
+            func_ptr,
+            0,
+            self.fn_proto_val(),
+        );
+        debug_assert!(shape_forge.lookup_position(proto.shape_id(), iterator_key).is_some());
     }
 
     /// 把 Error 家族方法安装到 Error 及各子类型构造器与原型上。
@@ -1254,6 +1265,26 @@ impl BuiltinWorld {
         native_fn_ptr: NativeFnPtr, arg_count: u8, wrapper_proto: JsValue,
     ) -> Result<(), String> {
         let si = string_forge.intern(method_name).0;
+        Self::bind_method_key_static(
+            proto,
+            shape_forge,
+            string_forge,
+            si,
+            method_name,
+            native_fn_ptr,
+            arg_count,
+            wrapper_proto,
+        )
+    }
+
+    /// 按指定属性键安装方法 wrapper（键不要求字符串 intern，well-known symbol 键用此路径）。
+    ///
+    /// `method_name` 只用于 wrapper 的 `name` 属性；`key` 是属性的实际存储键。
+    #[expect(clippy::too_many_arguments)]
+    pub fn bind_method_key_static(
+        proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &PermInterner, key: u32, method_name: &str,
+        native_fn_ptr: NativeFnPtr, arg_count: u8, wrapper_proto: JsValue,
+    ) -> Result<(), String> {
         let wrapper_proto_ptr = if wrapper_proto.is_object() {
             wrapper_proto.as_js_object_ptr()
         } else {
@@ -1282,11 +1313,11 @@ impl BuiltinWorld {
         wrapper.set_shape_id(name_shape);
         wrapper
             .ensure_hash_props()
-            .push(JsValue::perm_string(string_forge.string_ptr(si)));
+            .push(JsValue::perm_string(string_forge.string_ptr(string_forge.intern(method_name).0)));
         let name_pos = wrapper.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
         wrapper.set_data_meta(name_pos, oxide_types::object::PropAttributes::new(false, false, true));
         let wrapper_val = JsValue::from_js_object(Box::into_raw(wrapper));
-        let new_shape = shape_forge.make_shape(proto.shape_id(), si);
+        let new_shape = shape_forge.make_shape(proto.shape_id(), key);
         proto.set_shape_id(new_shape);
         proto.ensure_hash_props().push(wrapper_val);
         // 内置原型方法按 ES 规范非枚举；否则会泄漏进 for-in 枚举

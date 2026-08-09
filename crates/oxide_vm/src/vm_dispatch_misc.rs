@@ -5,7 +5,7 @@ use crate::vm::{native_fn_ptr_to_fn, CallFrame, ForInIter, FrameContinuation, Vm
 use crate::vm_trace;
 use oxide_runtime_api::{to_boolean, NativeResult};
 use oxide_types::object::{JsObject, PropAttributes};
-use oxide_types::private_key::is_private_name_key;
+use oxide_types::private_key::{is_private_name_key, is_symbol_key};
 use oxide_types::value::JsValue;
 
 impl Vm {
@@ -357,7 +357,9 @@ impl Vm {
                     break;
                 }
                 if let Some(shape) = self.kernel_core.shape_forge().get_shape(id) {
+                    // Symbol 键/私有名键不参与 for-in 枚举。
                     if shape.property_name != u32::MAX
+                        && !is_symbol_key(shape.property_name)
                         && !is_private_name_key(shape.property_name)
                         && seen.insert(shape.property_name)
                     {

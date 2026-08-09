@@ -115,7 +115,9 @@ fn length_and_name_descriptors_are_non_writable_non_enumerable_configurable() {
 #[test]
 fn length_comes_before_name_in_property_order() {
     assert_eq!(
-        eval_str("function f(a,b,c){}; var p=Object.getOwnPropertyNames(f); p[p.indexOf('length')] < p[p.indexOf('name')]"),
+        eval_str(
+            "function f(a,b,c){}; var p=Object.getOwnPropertyNames(f); p[p.indexOf('length')] < p[p.indexOf('name')]"
+        ),
         "true"
     );
 }

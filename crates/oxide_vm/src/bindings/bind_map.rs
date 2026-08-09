@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use crate::bind_constructor;
-use crate::bindings::{apply_binding_table, bind_accessor_getter, bind_method_alias, configure_native_constructor};
+use crate::bindings::{
+    apply_binding_table, bind_accessor_getter, bind_well_known_method_alias, configure_native_constructor,
+};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 
@@ -32,8 +34,8 @@ pub fn bind_map(core: &Arc<KernelCore>, session: &KernelSession, global: &mut Js
         ],
     );
 
-    // Map 的 @@iterator 是 entries 的同一函数对象。
-    bind_method_alias(core, proto, "entries", "@@iterator");
+    // Map 的 @@iterator（Symbol.iterator）是 entries 的同一函数对象。
+    bind_well_known_method_alias(core, proto, "entries", 0);
     bind_accessor_getter(core, session, proto, "size", oxide_builtins::map::map_size::<crate::vm::Vm> as *const ());
 
     bind_constructor!(core, global, "Map", ctor_ptr, oxide_builtins::map::map_constructor::<crate::vm::Vm>, 1, hash: true);

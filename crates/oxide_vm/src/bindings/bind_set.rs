@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use crate::bind_constructor;
-use crate::bindings::{apply_binding_table, bind_accessor_getter, bind_method_alias, configure_native_constructor};
+use crate::bindings::{
+    apply_binding_table, bind_accessor_getter, bind_method_alias, bind_well_known_method_alias,
+    configure_native_constructor,
+};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 
@@ -45,9 +48,9 @@ pub fn bind_set(core: &Arc<KernelCore>, session: &KernelSession, global: &mut Js
         ],
     );
 
-    // keys 与 @@iterator 是 values 的同一函数对象。
+    // keys 与 @@iterator（Symbol.iterator）是 values 的同一函数对象。
     bind_method_alias(core, proto, "values", "keys");
-    bind_method_alias(core, proto, "values", "@@iterator");
+    bind_well_known_method_alias(core, proto, "values", 0);
     bind_accessor_getter(core, session, proto, "size", oxide_builtins::set::set_size::<crate::vm::Vm> as *const ());
 
     bind_constructor!(core, global, "Set", ctor_ptr, oxide_builtins::set::set_constructor::<crate::vm::Vm>, 1, hash: true);

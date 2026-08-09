@@ -205,3 +205,81 @@ fn has_instance_preserves_ordinary_has_instance() {
     let result = eval(&mut vm, "[] instanceof Array").unwrap();
     assert!(result.as_bool());
 }
+
+// --- Symbol 作属性键 ---
+
+#[test]
+fn symbol_keys_stay_distinct() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var s1=Symbol('a'), s2=Symbol('b'); var o={}; o[s1]=1; o[s2]=2; [o[s1],o[s2]]").unwrap();
+    let arr = unsafe { &*result.as_js_object_ptr() };
+    assert_eq!(arr.get_prop_at(0).as_int(), 1);
+    assert_eq!(arr.get_prop_at(1).as_int(), 2);
+}
+
+#[test]
+fn symbol_keys_excluded_from_object_keys() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var s=Symbol('x'); var o={a:1}; o[s]=2; Object.keys(o).length").unwrap();
+    assert_eq!(result.as_int(), 1);
+}
+
+#[test]
+fn symbol_keys_excluded_from_own_property_names() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var s=Symbol('x'); var o={}; o[s]=1; Object.getOwnPropertyNames(o).length").unwrap();
+    assert_eq!(result.as_int(), 0);
+}
+
+#[test]
+fn symbol_keys_excluded_from_json_stringify() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var s=Symbol('x'); var o={a:1}; o[s]=2; JSON.stringify(o)").unwrap();
+    assert_eq!(to_str(&vm, result), "{\"a\":1}");
+}
+
+#[test]
+fn symbol_keys_excluded_from_for_in() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var s=Symbol('x'); var o={}; o[s]=1; var n=0; for (var k in o) n++; n").unwrap();
+    assert_eq!(result.as_int(), 0);
+}
+
+#[test]
+fn get_own_property_symbols_roundtrip() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var s=Symbol('x'); var o={}; o[s]=7; var k=Object.getOwnPropertySymbols(o)[0]; o[k]").unwrap();
+    assert_eq!(result.as_int(), 7);
+}
+
+#[test]
+fn get_own_property_symbols_length() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var s=Symbol('x'); var o={}; o[s]=1; Object.getOwnPropertySymbols(o).length").unwrap();
+    assert_eq!(result.as_int(), 1);
+}
+
+#[test]
+fn computed_symbol_key_object_literal() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var o={[Symbol('k')]: 5, a: 1}; Object.keys(o).length").unwrap();
+    assert_eq!(result.as_int(), 1);
+}
+
+#[test]
+fn well_known_symbol_key_excluded_from_keys() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var o={}; o[Symbol.iterator]=1; Object.keys(o).length").unwrap();
+    assert_eq!(result.as_int(), 0);
+}
+
+#[test]
+fn symbol_key_read_via_get_own_property_symbols_index() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var s1=Symbol('a'), s2=Symbol('b'); var o={}; o[s1]=1; o[s2]=2; var ks=Object.getOwnPropertySymbols(o); var t=0; for (var i=0;i<ks.length;i++) t+=o[ks[i]]; t === 3",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}

@@ -24,6 +24,7 @@ pub fn bind_object(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         is_sealed: oxide_builtins::object::object_is_sealed::<crate::vm::Vm> as *const (),
         is_extensible: oxide_builtins::object::object_is_extensible::<crate::vm::Vm> as *const (),
         get_own_property_names: oxide_builtins::object::object_get_own_property_names::<crate::vm::Vm> as *const (),
+        get_own_property_symbols: oxide_builtins::object::object_get_own_property_symbols::<crate::vm::Vm> as *const (),
         define_properties: oxide_builtins::object::object_define_properties::<crate::vm::Vm> as *const (),
         from_entries: oxide_builtins::object::object_from_entries::<crate::vm::Vm> as *const (),
         get_prototype_of: oxide_builtins::object::object_get_prototype_of::<crate::vm::Vm> as *const (),

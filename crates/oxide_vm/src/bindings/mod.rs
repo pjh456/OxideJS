@@ -176,6 +176,48 @@ pub(crate) fn bind_method_alias(core: &Arc<KernelCore>, proto: &mut JsObject, so
     proto.bump_generation();
 }
 
+/// 在原型上按 well-known symbol 键绑定方法（键不字符串 intern，读键经
+/// `property_key_si` 的 well-known 分支映射到同一键）。
+pub(crate) fn bind_well_known_method(
+    world: &BuiltinWorld, core: &Arc<KernelCore>, target: &mut JsObject, well_known_id: u32, method_name: &str,
+    func: *const (), nargs: u8,
+) {
+    let shape_forge = core.shape_forge().as_ref();
+    let string_forge = core.perm_interner().as_ref();
+    // SAFETY: func 是转成 *const () 的 NativeFn 函数项指针。
+    let fn_ptr = unsafe { oxide_types::object::NativeFnPtr::from_raw(func) };
+    let key = oxide_types::private_key::make_well_known_symbol_key(well_known_id);
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method_key_static(
+        target,
+        shape_forge,
+        string_forge,
+        key,
+        method_name,
+        fn_ptr,
+        nargs,
+        world.fn_proto_val(),
+    );
+}
+
+/// 把原型上 `source` 属性已绑定的函数值复制到 well-known symbol 键名下（共享同一函数对象）。
+pub(crate) fn bind_well_known_method_alias(
+    core: &Arc<KernelCore>, proto: &mut JsObject, source: &str, well_known_id: u32,
+) {
+    let shape_forge = core.shape_forge().as_ref();
+    let string_forge = core.perm_interner().as_ref();
+    let src_si = string_forge.intern(source).0;
+    let Some(pos) = shape_forge.lookup_position(proto.shape_id(), src_si) else {
+        return;
+    };
+    let value = proto.get_prop_at(pos);
+    let key = oxide_types::private_key::make_well_known_symbol_key(well_known_id);
+    let new_shape = shape_forge.make_shape(proto.shape_id(), key);
+    proto.set_shape_id(new_shape);
+    let alias_pos = proto.push_prop(value);
+    proto.set_data_meta(alias_pos, PropAttributes::new(true, false, true));
+    proto.bump_generation();
+}
+
 pub(crate) fn bind_global_value(core: &Arc<KernelCore>, global: &mut JsObject, name: &str, value: JsValue) {
     let si = core.perm_interner().intern(name).0;
     let shape = core.shape_forge().make_shape(global.shape_id(), si);

@@ -1,7 +1,9 @@
 use oxide_kernel::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use oxide_kernel::string_forge::PermInterner;
 use oxide_types::object::{JsObject, PropAttributes, PropMetaEntry};
-use oxide_types::private_key::is_private_name_key;
+use oxide_types::private_key::{
+    is_private_name_key, is_symbol_key, symbol_index_from_key, well_known_symbol_id_from_key,
+};
 use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{NativeResult, VmHost};
@@ -27,7 +29,11 @@ pub fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
         }
         if let Some(shape) = vm.kernel_core().shape_forge().get_shape(id) {
             cursor = shape.parent;
-            if shape.property_name != u32::MAX && !is_private_name_key(shape.property_name) {
+            // Symbol 键/私有名键非字符串属性名，排除在字符串枚举之外。
+            if shape.property_name != u32::MAX
+                && !is_symbol_key(shape.property_name)
+                && !is_private_name_key(shape.property_name)
+            {
                 shape_ids.push(id);
             }
         } else {
@@ -36,7 +42,10 @@ pub fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
     }
     for id in shape_ids.iter().rev() {
         if let Some(shape) = vm.kernel_core().shape_forge().get_shape(*id) {
-            if shape.property_name != 0 && !is_private_name_key(shape.property_name) {
+            if shape.property_name != 0
+                && !is_symbol_key(shape.property_name)
+                && !is_private_name_key(shape.property_name)
+            {
                 keys.push((shape.property_name, pos));
             }
         }
@@ -53,6 +62,92 @@ pub fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
         }
     });
     keys
+}
+
+/// 收集对象自身全部 Symbol 键（shape 链），按键序排列（根→叶，即插入序）。
+/// 与 [`walk_own_keys`] 互补：只返回 Symbol 键，供 `getOwnPropertySymbols` 使用。
+fn walk_own_symbol_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
+    let mut keys: Vec<(u32, u32)> = Vec::new();
+    let shape_id = obj.shape_id();
+    let mut pos: u32 = 0;
+    let mut shape_ids = Vec::new();
+    let mut cursor = Some(shape_id);
+    while let Some(id) = cursor {
+        if id == EMPTY_SHAPE_ID {
+            break;
+        }
+        if let Some(shape) = vm.kernel_core().shape_forge().get_shape(id) {
+            cursor = shape.parent;
+            if shape.property_name != u32::MAX && is_symbol_key(shape.property_name) {
+                shape_ids.push(id);
+            }
+        } else {
+            break;
+        }
+    }
+    for id in shape_ids.iter().rev() {
+        if let Some(shape) = vm.kernel_core().shape_forge().get_shape(*id) {
+            if shape.property_name != 0 && is_symbol_key(shape.property_name) {
+                keys.push((shape.property_name, pos));
+            }
+        }
+        pos += 1;
+    }
+    keys
+}
+
+/// 把 Symbol 键反解为对应的 Symbol 值：well-known 键还原为内置 symbol 对象，
+/// 用户 symbol 键还原为 `JsValue::symbol` 值。
+fn decode_symbol_key<H: VmHost>(vm: &H, key: u32) -> JsValue {
+    if let Some(id) = well_known_symbol_id_from_key(key) {
+        let world = vm.session().builtin_world();
+        let ptr = match id {
+            0 => world.sym_iterator.as_ptr(),
+            1 => world.sym_match.as_ptr(),
+            2 => world.sym_replace.as_ptr(),
+            3 => world.sym_search.as_ptr(),
+            4 => world.sym_split.as_ptr(),
+            5 => world.sym_to_primitive.as_ptr(),
+            6 => world.sym_has_instance.as_ptr(),
+            _ => world.sym_match_all.as_ptr(),
+        };
+        return JsValue::from_js_object(ptr as *mut JsObject);
+    }
+    JsValue::symbol(symbol_index_from_key(key))
+}
+
+/// `Object.getOwnPropertySymbols(obj)`：返回全部自身 Symbol 键数组。
+pub fn object_get_own_property_symbols<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let obj_ptr = match require_obj_arg(vm, args, "getOwnPropertySymbols") {
+        Ok(ptr) => ptr,
+        Err(err) => return NativeResult::Err(err),
+    };
+
+    let symbols: Vec<JsValue> = {
+        let obj = unsafe { &*obj_ptr };
+        walk_own_symbol_keys(vm, obj)
+            .iter()
+            .map(|(key, _)| decode_symbol_key(vm, *key))
+            .collect()
+    };
+
+    let n = symbols.len();
+    let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let arr = vm.alloc_object(JsObject::new_array(
+        EMPTY_SHAPE_ID,
+        JsValue::from_js_object(array_proto),
+        n,
+        vm.epoch().bump(),
+    ));
+    for (i, v) in symbols.iter().enumerate() {
+        unsafe {
+            (*arr).set_prop_at(i, *v);
+        }
+    }
+    unsafe {
+        (*arr).set_prop_count(n);
+    }
+    NativeResult::Ok(JsValue::from_js_object(arr))
 }
 
 /// 字符串键是否为数组下标（"0"~"4294967294"，无前导零）。
@@ -516,7 +611,7 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     if obj_ptr.is_null() {
         return NativeResult::Err(crate::error::create_type_error(vm, "Object.defineProperty called on non-object"));
     }
-    // well-known symbol 等特殊键统一走 property_key_si（映射到 @@iterator 等别名），
+    // well-known symbol 等特殊键统一走 property_key_si（映射到各自的 Symbol 键），
     // 保证与计算属性访问、Reflect.defineProperty 等读键路径一致。
     let si = vm.property_key_si(vm.reg(args[2]));
 

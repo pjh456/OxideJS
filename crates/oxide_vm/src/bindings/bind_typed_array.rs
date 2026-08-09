@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use crate::bind_constructor;
 use crate::bindings::{
-    apply_binding_table, bind_accessor_getter, bind_global_value, bind_method_alias, configure_native_constructor,
+    apply_binding_table, bind_accessor_getter, bind_global_value, bind_method_alias, bind_well_known_method_alias,
+    configure_native_constructor,
 };
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::{JsObject, PropAttributes};
@@ -195,7 +196,8 @@ pub fn bind_typed_array(core: &Arc<KernelCore>, session: &KernelSession, global:
             ("with", oxide_builtins::typed_array::typed_array_with::<crate::vm::Vm> as *const (), 2),
         ],
     );
-    bind_method_alias(core, shared_proto, "values", "@@iterator");
+    bind_method_alias(core, shared_proto, "values", "keys");
+    bind_well_known_method_alias(core, shared_proto, "values", 0);
 
     // 原型访问器：视图属性（buffer/byteOffset/byteLength/length）读内部数据槽，
     // @@toStringTag 返回具体类型名，供 Object.prototype.toString 区分类型。
