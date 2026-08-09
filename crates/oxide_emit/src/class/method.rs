@@ -112,7 +112,13 @@ impl Emitter {
         )?;
         ctx.in_instance_method = saved_instance;
         ctx.in_static_method = saved_static;
-        method_module.function_name = Some(method_name.to_string());
+        // 访问器函数名带 "get "/"set " 前缀（SetFunctionName 语义），普通方法裸属性名。
+        let display_name = match method.kind {
+            MethodDefinitionKind::Get => format!("get {method_name}"),
+            MethodDefinitionKind::Set => format!("set {method_name}"),
+            _ => method_name.to_string(),
+        };
+        method_module.function_name = Some(display_name);
         method_module.needs_home_object = true;
         ctx.nested.push(method_module);
         let method_reg = ctx.alloc_reg();

@@ -121,6 +121,7 @@ impl Vm {
         let needs_home_object = sub.needs_home_object;
         let upvalue_captures = sub.upvalue_captures.clone();
         let function_name = sub.function_name.clone();
+        let function_length = sub.function_length;
         let result = self.create_function_object(
             sub_idx,
             is_arrow,
@@ -130,13 +131,18 @@ impl Vm {
         );
         // 函数名推断：emit 端在变量声明/对象属性赋值点设置 function_name。
         let func_obj = unsafe { &mut *result.as_js_object_ptr() };
+        let length_si = self.kernel_core.perm_interner().intern("length").0;
         let name_si = self.kernel_core.perm_interner().intern("name").0;
+        // length/name 描述符均为不可写、不可枚举、可配置（SetFunctionLength /
+        // SetFunctionName 语义）；length 先于 name 定义保证属性序 [prototype, length, name]。
+        let attrs = PropAttributes::new(false, false, true);
+        let length_val = JsValue::int(function_length as i32);
+        self.define_data_property(func_obj, length_si, length_val, attrs)?;
         let name_val = function_name
             .as_deref()
             .map(|n| self.new_string(n))
             .unwrap_or_else(|| self.new_string(""));
-        // name 属性描述符：不可写、不可枚举、可配置（SetFunctionName 语义）。
-        self.define_data_property(func_obj, name_si, name_val, PropAttributes::new(false, false, true))?;
+        self.define_data_property(func_obj, name_si, name_val, attrs)?;
         if !upvalue_captures.is_empty() {
             // 链式捕获（parent_uv_idx）：从父闭包（创建者）的 upvalues 取 cell。
             let parent_upvalues: Vec<*mut Cell> = match self.current_callee() {

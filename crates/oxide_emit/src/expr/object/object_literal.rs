@@ -45,7 +45,13 @@ impl Emitter {
                 }
                 let accessor_reg = self.emit_expression(&p.value, ctx)?;
                 if let Some(sub_mod) = ctx.nested.last_mut() {
-                    sub_mod.function_name = Some(prop_name.to_string());
+                    // 访问器函数名带 "get "/"set " 前缀（SetFunctionName 语义）。
+                    let fn_name = match p.kind {
+                        PropertyKind::Get => format!("get {prop_name}"),
+                        PropertyKind::Set => format!("set {prop_name}"),
+                        _ => prop_name.clone(),
+                    };
+                    sub_mod.function_name = Some(fn_name);
                 }
                 let undef_reg = self.emit_undefined(ctx);
                 let (get_reg, set_reg) = if p.kind == PropertyKind::Get {

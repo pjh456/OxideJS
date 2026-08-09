@@ -237,9 +237,16 @@ impl Vm {
         &mut self, setter: JsValue, receiver: JsValue, val: JsValue, use_frame_push: bool,
     ) -> Result<(), String> {
         vm_trace!("call_or_push_setter: frame_push={}", use_frame_push);
+        // native setter 抛错经 call_function_sync 以 String 返回（未 unwind）——
+        // 在此经 raise_call_error 恢复为可捕获的 JS 异常（与 getter 路径对称）。
+        let call_native = |vm: &mut Self| -> Result<(), String> {
+            if let Err(err) = vm.call_function_sync(setter, receiver, &[val]) {
+                vm.raise_call_error(&err)?;
+            }
+            Ok(())
+        };
         if !use_frame_push {
-            self.call_function_sync(setter, receiver, &[val])?;
-            return Ok(());
+            return call_native(self);
         }
         if !setter.is_object() {
             return self.raise_type_error("setter is not callable");
@@ -249,8 +256,7 @@ impl Vm {
             return self.raise_type_error("setter is not callable");
         }
         if setter_obj.native_fn().is_some() {
-            self.call_function_sync(setter, receiver, &[val])?;
-            return Ok(());
+            return call_native(self);
         }
         self.push_bytecode_frame(
             setter,

@@ -60,6 +60,8 @@ pub struct CompiledModule {
     pub captured_this_const_idx: u16,
     /// 由赋值上下文推断的函数名，在变量声明 / 对象属性赋值点设置。
     pub function_name: Option<String>,
+    /// 函数 `length` 属性值：第一个带默认值/解构默认的形参之前的形参数（rest 不计）。
+    pub function_length: u32,
     /// 是否为类构造函数（普通 CALL 必须拒绝它，仅 NEW_EXPRESSION 可经它构造）。
     pub is_class_constructor: bool,
     /// 类构造函数是否有 `extends` 子句（`this` 在 SUPER_CALL 完成前保持未初始化）。
@@ -87,6 +89,7 @@ impl CompiledModule {
             is_arrow: false,
             captured_this_const_idx: 0,
             function_name: None,
+            function_length: 0,
             is_class_constructor: false,
             is_derived_constructor: false,
             needs_home_object: false,
@@ -116,6 +119,7 @@ impl Clone for CompiledModule {
             is_arrow: self.is_arrow,
             captured_this_const_idx: self.captured_this_const_idx,
             function_name: self.function_name.clone(),
+            function_length: self.function_length,
             is_class_constructor: self.is_class_constructor,
             is_derived_constructor: self.is_derived_constructor,
             needs_home_object: self.needs_home_object,

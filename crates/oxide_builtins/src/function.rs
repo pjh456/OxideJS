@@ -1,8 +1,8 @@
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_types::object::{JsObject, NativeFnPtr};
+use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::{to_string_full, NativeResult, VmHost};
+use oxide_runtime_api::{to_integer_or_infinity, to_string_full, NativeResult, VmHost};
 
 fn invoke_target<H: VmHost>(vm: &mut H, target_val: JsValue, this_val: JsValue, arg_regs: &[u8]) -> NativeResult {
     let args: Vec<JsValue> = arg_regs.iter().map(|&r| vm.reg(r)).collect();
@@ -57,13 +57,16 @@ fn to_string_error_value<H: VmHost>(vm: &mut H, msg: &str) -> JsValue {
 fn bind_dispatcher<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let wrapper_val = vm.reg(254);
     let wrapper = unsafe { &*wrapper_val.as_js_object_ptr() };
+    // dense 布局：[length, name, caller, arguments, target, thisArg, ...boundArgs]——
+    // 前 4 槽是 shape 属性（length/name 数据 + caller/arguments 访问器占位），
+    // 绑定状态从槽位 4 起（shape 槽位与 dense 下标对齐）。
     let props = wrapper.hash_props_vec().cloned().unwrap_or_default();
-    let bound_target = props.first().copied().unwrap_or(JsValue::undefined());
-    let bound_this = props.get(1).copied().unwrap_or(JsValue::undefined());
+    let bound_target = props.get(4).copied().unwrap_or(JsValue::undefined());
+    let bound_this = props.get(5).copied().unwrap_or(JsValue::undefined());
 
-    // 拼接调用实参：绑定实参（hash_props[2..]）在前，本次调用实参（跳过 args[0]
+    // 拼接调用实参：绑定实参（props[6..]）在前，本次调用实参（跳过 args[0]
     // 即绑定包装器的 receiver）在后，与规范的"绑定实参先于调用实参"一致。
-    let mut call_args: Vec<JsValue> = props.iter().skip(2).copied().collect();
+    let mut call_args: Vec<JsValue> = props.iter().skip(6).copied().collect();
     for &r in args.iter().skip(1) {
         call_args.push(vm.reg(r));
     }
@@ -148,23 +151,91 @@ pub fn function_bind<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         ));
     }
     let bound_this = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let bound_arg_count = args.len().saturating_sub(2);
 
-    let wrapper = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+    // bound 函数 [[Prototype]] 为 Function.prototype（BoundFunctionCreate 语义）。
+    let fn_proto_val = JsValue::from_js_object(vm.session().builtin_world().function_proto.as_ptr() as *mut JsObject);
+    let wrapper = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
     unsafe {
         (*wrapper).set_function(true);
         (*wrapper).set_native_fn(Some(NativeFnPtr::from_raw(bind_dispatcher::<H> as *const ())));
-        // hash_props 布局：[target, thisArg, ...boundArgs]；绑定实参个数记入
-        // native_arg_count，与 Function.length 语义一致。
-        (*wrapper).set_native_arg_count(args.len().saturating_sub(2) as u8);
+        // 绑定实参个数记入 native_arg_count，与 Function.length 语义一致。
+        (*wrapper).set_native_arg_count(bound_arg_count as u8);
+    }
+
+    // length/name 先定义占 dense 槽位 0/1（shape 属性），绑定状态 [target, thisArg,
+    // ...boundArgs] 随后从槽位 2 起存放，保证 shape 槽位与 dense 下标对齐。
+    let length_si = vm.kernel_core().perm_interner().intern("length").0;
+    let name_si = vm.kernel_core().perm_interner().intern("name").0;
+    let caller_si = vm.kernel_core().perm_interner().intern("caller").0;
+    let arguments_si = vm.kernel_core().perm_interner().intern("arguments").0;
+    let attrs = PropAttributes::new(false, false, true);
+
+    // bound 函数的 caller/arguments 是受限访问器：读写一律抛 TypeError（poisoned）。
+    let thrower = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
+    unsafe {
+        (*thrower).set_function(true);
+        (*thrower).set_native_fn(Some(NativeFnPtr::from_raw(bound_restricted_thrower::<H> as *const ())));
+    }
+    let thrower_val = JsValue::from_js_object(thrower);
+
+    // 全部 shape 属性（length/name/caller/arguments）须先于状态数据定义完成，
+    // 保证 shape 槽位与 dense 下标对齐，再 push [target, thisArg, ...boundArgs]。
+    unsafe {
+        let wrapper_ref = &mut *wrapper;
+        let target_obj = &*target_val.as_js_object_ptr();
+        let target_length = vm
+            .resolve_property(target_obj, length_si)
+            .map(to_integer_or_infinity)
+            .unwrap_or(0.0);
+        // length = max(0, target.length - boundArgs)；target.length 为 +∞ 时保持 +∞。
+        let length = if target_length == f64::INFINITY {
+            f64::INFINITY
+        } else {
+            (target_length - bound_arg_count as f64).max(0.0)
+        };
+        // 规范 length 无上界：i32 装得下用 int，否则（如 2^31、MAX_SAFE_INTEGER）用 float。
+        let length_val = if length <= i32::MAX as f64 {
+            JsValue::int(length as i32)
+        } else {
+            JsValue::float(length)
+        };
+        if let Err(e) = vm.define_data_property(wrapper_ref, length_si, length_val, attrs) {
+            return NativeResult::Err(crate::error::create_type_error(vm, &e));
+        }
+        let target_name = vm
+            .resolve_property(target_obj, name_si)
+            .and_then(|v| vm.lookup_str(v))
+            .unwrap_or_default();
+        let name_val = vm.new_string(&format!("bound {target_name}"));
+        if let Err(e) = vm.define_data_property(wrapper_ref, name_si, name_val, attrs) {
+            return NativeResult::Err(crate::error::create_type_error(vm, &e));
+        }
+        if let Err(e) = vm.define_accessor_property(wrapper_ref, caller_si, thrower_val, thrower_val, attrs) {
+            return NativeResult::Err(crate::error::create_type_error(vm, &e));
+        }
+        if let Err(e) = vm.define_accessor_property(wrapper_ref, arguments_si, thrower_val, thrower_val, attrs) {
+            return NativeResult::Err(crate::error::create_type_error(vm, &e));
+        }
+    }
+    unsafe {
         let props = (*wrapper).ensure_hash_props();
         props.push(target_val);
         props.push(bound_this);
-        for &r in &args[2..] {
+        for &r in args.iter().skip(2) {
             props.push(vm.reg(r));
         }
     }
 
     NativeResult::Ok(JsValue::from_js_object(wrapper))
+}
+
+/// bound 函数 caller/arguments 的受限访问器：任何访问（get/set）都抛 TypeError。
+fn bound_restricted_thrower<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
+    NativeResult::Err(crate::error::create_type_error(
+        vm,
+        "'caller' and 'arguments' are restricted on bound functions",
+    ))
 }
 
 /// `Function.prototype.toString`：返回 `function name() { [native code] }`

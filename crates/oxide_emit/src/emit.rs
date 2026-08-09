@@ -175,6 +175,9 @@ pub struct CompileCtx {
     /// 捕获判断（MAKE_CELL / CELL_GET / CELL_SET）与子函数 upvalue cell_idx 统一查此映射，
     /// 消除符号表时序依赖与 cell 索引错位。
     pub(crate) captured_bindings: BTreeMap<String, u8>,
+    /// 函数 `length` 属性值：首个带默认值形参之前的形参数（rest 不计）。
+    /// emit_params_prologue 前由编译入口从 param_specs 计算。
+    pub(crate) function_length: u32,
     pub(crate) const_overflow: bool,
     /// with 语句作用域栈：元素为 (with 对象寄存器, 打开时的作用域深度)。
     /// 非空时 with 体内的自由标识符需动态解析（先查对象属性，回退外层）。
@@ -266,6 +269,7 @@ impl CompileCtx {
             current_upvalue_captures: Vec::new(),
             own_bindings: HashSet::new(),
             captured_bindings: BTreeMap::new(),
+            function_length: 0,
             const_overflow: false,
             with_stack: Vec::new(),
             open_try_handlers: Vec::new(),
@@ -601,6 +605,7 @@ impl CompileCtx {
             needs_home_object: false,
             captured_this_const_idx: 0,
             function_name: None,
+            function_length: self.function_length,
             is_top_level: parent_ctx.is_none(),
             const_overflow: self.const_overflow,
             nested: std::mem::take(&mut self.nested),
@@ -747,6 +752,16 @@ impl Emitter {
         E: FnMut(&Emitter, &mut CompileCtx) -> Result<(), String>,
     {
         let mut ctx = CompileCtx::new();
+
+        // length = 第一个带默认值形参之前的形参数（解构默认与标识符默认同规则）；
+        // rest 参数不在 param_specs 中（独立字段），天然不计入。
+        ctx.function_length = param_specs
+            .iter()
+            .take_while(|spec| match spec {
+                ParamSpec::Identifier { initializer, .. } => initializer.is_none(),
+                ParamSpec::Pattern { initializer, .. } => initializer.is_none(),
+            })
+            .count() as u32;
 
         // 继承父内置寄存器映射：子模块寄存器文件中，内置标识符（Math、Object 等）
         // 解析到父预先分配的槽位。
