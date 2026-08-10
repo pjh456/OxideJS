@@ -1124,10 +1124,13 @@ impl Vm {
     }
 
     pub(crate) fn dispatch(&mut self) -> Result<JsValue, String> {
+        // config.max_steps 逐指令只读且循环内不变：提到循环外，免每次经 kernel_core
+        // Arc 指针追寻读取（热点内唯一的 config 访问）。
+        let max_steps = self.kernel_core.config.max_steps;
         let mut steps: u64 = 0;
         loop {
             steps += 1;
-            if let Some(max_steps) = self.kernel_core.config.max_steps {
+            if let Some(max_steps) = max_steps {
                 if steps > max_steps {
                     vm_warn!("dispatch: step limit {} exceeded at pc={}", max_steps, self.pc);
                     self.profiling.set_instruction_count(steps);
