@@ -64,9 +64,15 @@ impl Emitter {
                 var_reg
             }
         } else {
-            let var_reg = ctx.alloc_reg();
-            ctx.declare(name, var_reg, kind, is_const)?;
-            var_reg
+            // let/const：本块预声明（TDZ 占位）则复用预登记槽位，不重复 declare；
+            // 否则（for 头等未预声明路径）按原逻辑声明。
+            if let Some(reg) = ctx.scopes.symbols.consume_predeclared_slot(name) {
+                reg
+            } else {
+                let var_reg = ctx.alloc_reg();
+                ctx.declare(name, var_reg, kind, is_const)?;
+                var_reg
+            }
         };
         if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
             let op = if fresh_cell { OpCode::MAKE_CELL_FRESH } else { OpCode::MAKE_CELL };

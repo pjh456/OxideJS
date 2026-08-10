@@ -373,6 +373,12 @@ impl CompileCtx {
         self.scopes.symbols.declare_initialized(name, reg, kind, is_const)
     }
 
+    pub(crate) fn declare_predeclared(
+        &mut self, name: &str, reg: u32, kind: VariableDeclarationKind, is_const: bool,
+    ) -> Result<(), String> {
+        self.scopes.symbols.declare_predeclared(name, reg, kind, is_const)
+    }
+
     pub(crate) fn push_scope_with_kind(&mut self, kind: ScopeKind) {
         self.scopes.symbols.push_scope_with_kind(kind);
     }
@@ -650,6 +656,34 @@ impl Emitter {
         Self
     }
 
+    /// 生成运行时抛 ReferenceError 的指令序列，返回一个未定义 dummy 寄存器
+    /// 保证 THROW 后不可达控制流的寄存器良定义。
+    ///
+    /// # 步骤
+    /// 1. 取全局 ReferenceError 构造器并 LOAD。
+    /// 2. 加载错误消息常量，`new ReferenceError(msg)` 构造错误对象。
+    /// 3. THROW 抛出；尾接 dummy 值保持后续读引用有确定寄存器。
+    pub(crate) fn emit_tdz_throw(&self, msg: &str, ctx: &mut CompileCtx) -> Result<u32, String> {
+        let ctor_reg = ctx.lookup_or_builtin("ReferenceError")?;
+        let ctor = ctx.alloc_reg();
+        ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(ctor), Operand::Reg(ctor_reg), Operand::None));
+        let msg_reg = ctx.alloc_reg();
+        let msg_idx = ctx.add_constant(Constant::String(msg.to_string()));
+        ctx.inst(Inst::load_const(Operand::Reg(msg_reg), msg_idx));
+        let exc_reg = ctx.alloc_reg();
+        ctx.inst(Inst::new_expression(
+            Operand::Reg(exc_reg),
+            Operand::Reg(ctor),
+            Operand::Reg(msg_reg),
+            1,
+        ));
+        ctx.inst(Inst::new(OpCode::THROW, Operand::Reg(exc_reg), Operand::None, Operand::None));
+        let dummy = ctx.alloc_reg();
+        let undef_idx = ctx.add_constant(Constant::Undefined);
+        ctx.inst(Inst::load_const(Operand::Reg(dummy), undef_idx));
+        Ok(dummy)
+    }
+
     /// 遍历解构 pattern 收集内嵌默认值表达式（AssignmentPattern.right）。
     fn collect_pattern_default_exprs<'a>(
         &self, pattern: &'a oxide_parser::BindingPattern<'a>, out: &mut Vec<&'a oxide_parser::Expression<'a>>,
@@ -911,6 +945,7 @@ impl Emitter {
                     reg: binding.reg,
                     initialized: binding.initialized,
                     is_const: binding.is_const,
+                    predeclared: false,
                 },
             );
             inherited_reg_start = inherited_reg_start.max(binding.reg.saturating_add(1));
@@ -922,6 +957,7 @@ impl Emitter {
                     reg: *reg,
                     initialized: true,
                     is_const: true,
+                    predeclared: false,
                 },
             );
             inherited_reg_start = inherited_reg_start.max(reg.saturating_add(1));
@@ -954,6 +990,10 @@ impl Emitter {
 
         // 预声明 `var` 名，使首个 sub-pass 中提升的函数声明能解析其闭包引用的外层 var。
         self.predeclare_var_declarations(body_stmts, &mut ctx);
+
+        // 预声明 body 级 `let`/`const`/`class`（未初始化 TDZ 占位），
+        // 使声明点前读取可编译为运行时 ReferenceError。
+        self.predeclare_lexical_declarations(body_stmts, &mut ctx);
 
         // 生成器：body 起点标记——调用时参数初始化（emit_params_prologue）结束后挂起于此，
         // 参数副作用/异常在 `g()` 调用时刻生效，首次 next() 从这继续执行 body。
@@ -1281,6 +1321,9 @@ impl Emitter {
 
         // 预声明顶层 `var` 名，使首个 sub-pass 中提升的函数声明能解析外层 var。
         self.predeclare_var_declarations(&program.body, &mut ctx);
+
+        // 预声明顶层 `let`/`const`/`class`（未初始化 TDZ 占位）。
+        self.predeclare_lexical_declarations(&program.body, &mut ctx);
 
         // 闭包捕获分析（AST 级，emit 前确定）
         ctx.own_bindings = self.collect_own_binding_names(&[], &program.body);

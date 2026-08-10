@@ -36,7 +36,14 @@ impl Emitter {
             return Ok(r);
         }
 
-        let var_reg = ctx.lookup_or_builtin(name)?;
+        let var_reg = match ctx.lookup_or_builtin(name) {
+            Ok(reg) => reg,
+            Err(err) if err.contains("before initialization") => {
+                // TDZ：块级预声明占位后，声明点前读取编译为运行时抛 ReferenceError。
+                return self.emit_tdz_throw(&err, ctx);
+            }
+            Err(err) => return Err(err),
+        };
         let r = ctx.alloc_reg();
         ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(r), Operand::Reg(var_reg), Operand::None));
         Ok(r)

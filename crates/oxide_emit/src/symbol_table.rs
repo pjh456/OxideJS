@@ -23,6 +23,9 @@ pub(crate) struct Binding {
     pub(crate) reg: u32,
     pub(crate) initialized: bool,
     pub(crate) is_const: bool,
+    /// 由块/函数级预声明（TDZ 占位）创建，声明点据此复用槽位。
+    /// 非预声明的同名绑定（如同 scope 的参数/var）不计，避免误复用。
+    pub(crate) predeclared: bool,
 }
 
 /// 作用域符号表：名字 → 寄存器号/初始化状态/const 标志。
@@ -97,6 +100,7 @@ impl SymbolTable {
                 reg,
                 initialized: false,
                 is_const: matches!(kind, VariableDeclarationKind::Const) || is_const,
+                predeclared: false,
             },
         );
         Ok(())
@@ -131,6 +135,19 @@ impl SymbolTable {
         None
     }
 
+    /// 消费当前（最内层）作用域中由预声明创建的绑定槽：存在且 `predeclared`
+    /// 时返回其寄存器并清除标志（声明点复用后不再视作预声明）；否则返回 None。
+    /// 同 scope 的非预声明绑定（参数/var/未推 scope 的 try 内声明）不计，避免误复用。
+    pub(crate) fn consume_predeclared_slot(&mut self, name: &str) -> Option<u32> {
+        let scope = self.scopes.last_mut()?;
+        let binding = scope.bindings.get_mut(name)?;
+        if !binding.predeclared {
+            return None;
+        }
+        binding.predeclared = false;
+        Some(binding.reg)
+    }
+
     /// 查找或视为全局：未命中时以 `reg_for_new` 在全局作用域登记并返回（隐式全局）。
     pub fn lookup_or_global(&mut self, name: &str, reg_for_new: u32) -> u32 {
         for scope in self.scopes.iter().rev() {
@@ -144,6 +161,7 @@ impl SymbolTable {
                 reg: reg_for_new,
                 initialized: true,
                 is_const: false,
+                predeclared: false,
             },
         );
         reg_for_new
@@ -183,6 +201,7 @@ impl SymbolTable {
                 reg,
                 initialized: true,
                 is_const: matches!(kind, VariableDeclarationKind::Const) || is_const,
+                predeclared: false,
             },
         );
         Ok(())
@@ -194,7 +213,34 @@ impl SymbolTable {
             reg,
             initialized: true,
             is_const: false,
+            predeclared: false,
         });
+    }
+
+    /// 声明未初始化绑定并标记为预声明（TDZ 占位），供声明点复用槽位。
+    /// 与 `declare` 同作用域规则，仅 `predeclared` 标志不同。
+    pub(crate) fn declare_predeclared(
+        &mut self, name: &str, reg: u32, kind: VariableDeclarationKind, is_const: bool,
+    ) -> Result<(), String> {
+        let target_idx = if matches!(kind, VariableDeclarationKind::Var) {
+            self.find_var_target_scope()
+        } else {
+            self.scopes.len() - 1
+        };
+        let target = &mut self.scopes[target_idx];
+        if target.bindings.contains_key(name) {
+            return Err(format!("Identifier '{name}' has already been declared"));
+        }
+        target.bindings.insert(
+            name.to_string(),
+            Binding {
+                reg,
+                initialized: false,
+                is_const: matches!(kind, VariableDeclarationKind::Const) || is_const,
+                predeclared: true,
+            },
+        );
+        Ok(())
     }
 
     /// 从内到外将同名绑定标记为已初始化（var 提升后初始化阶段使用）。

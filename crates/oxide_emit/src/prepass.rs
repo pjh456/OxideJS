@@ -5,7 +5,7 @@
 //! 支持提升语义。
 
 use crate::{CompileCtx, Emitter};
-use oxide_parser::{Expression, Statement, VariableDeclarationKind};
+use oxide_parser::{BindingPattern, Expression, Statement, VariableDeclarationKind};
 
 impl Emitter {
     /// 在临时寄存器池之前分配 builtin 槽位。
@@ -357,6 +357,107 @@ impl Emitter {
                     self.predeclare_var_declarations(std::slice::from_ref(&ws.body), ctx);
                 }
                 _ => {}
+            }
+        }
+    }
+
+    /// 预声明当前作用域直接子语句中的 `let`/`const`/`class` 绑定（未初始化，
+    /// 建立 TDZ 占位）。使声明点之前的读取在编译期可分辨为 TDZ 而非隐式全局，
+    /// 声明点复用预登记槽位。
+    ///
+    /// # 边界与前提
+    /// - 只扫描直接子语句 + 递归 switch case（switch 不推 scope，case 内 lexical
+    ///   声明属于外层作用域）；不递归块/if/for/while body（嵌套块自预声明，
+    ///   单语句 body 不含 lexical 声明）。
+    /// - 跳过 for 头声明（循环作用域由 for 分支内联 declare）。
+    pub(crate) fn predeclare_lexical_declarations(&self, statements: &[Statement], ctx: &mut CompileCtx) {
+        for statement in statements {
+            match statement {
+                Statement::VariableDeclaration(decl) => {
+                    if matches!(decl.kind, VariableDeclarationKind::Var) {
+                        continue;
+                    }
+                    let is_const = matches!(decl.kind, VariableDeclarationKind::Const);
+                    for d in &decl.declarations {
+                        self.predeclare_lexical_pattern(&d.id, is_const, ctx);
+                    }
+                }
+                Statement::ClassDeclaration(cd) => {
+                    if let Some(id) = &cd.id {
+                        let reg = ctx.alloc_reg();
+                        let _ = ctx.declare_predeclared(id.name.as_str(), reg, VariableDeclarationKind::Const, true);
+                    }
+                }
+                Statement::SwitchStatement(sw) => {
+                    for case in &sw.cases {
+                        for s in &case.consequent {
+                            self.predeclare_lexical_stmt(s, ctx);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// 预声明单个语句中的 lexical 声明（供 switch case 递归；`let`/`const`/`class` 分支）。
+    fn predeclare_lexical_stmt(&self, stmt: &Statement, ctx: &mut CompileCtx) {
+        match stmt {
+            Statement::VariableDeclaration(decl) => {
+                if matches!(decl.kind, VariableDeclarationKind::Var) {
+                    return;
+                }
+                let is_const = matches!(decl.kind, VariableDeclarationKind::Const);
+                for d in &decl.declarations {
+                    self.predeclare_lexical_pattern(&d.id, is_const, ctx);
+                }
+            }
+            Statement::ClassDeclaration(cd) => {
+                if let Some(id) = &cd.id {
+                    let reg = ctx.alloc_reg();
+                    let _ = ctx.declare_predeclared(id.name.as_str(), reg, VariableDeclarationKind::Const, true);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 递归预声明绑定 pattern 内的全部标识符（含数组/对象/默认值解构）。
+    fn predeclare_lexical_pattern(&self, pattern: &BindingPattern, is_const: bool, ctx: &mut CompileCtx) {
+        match pattern {
+            BindingPattern::BindingIdentifier(bi) => {
+                let reg = ctx.alloc_reg();
+                let _ = ctx.declare_predeclared(
+                    bi.name.as_str(),
+                    reg,
+                    if is_const {
+                        VariableDeclarationKind::Const
+                    } else {
+                        VariableDeclarationKind::Let
+                    },
+                    is_const,
+                );
+            }
+            BindingPattern::ArrayPattern(ap) => {
+                for elem in &ap.elements {
+                    if let Some(e) = elem {
+                        self.predeclare_lexical_pattern(e, is_const, ctx);
+                    }
+                }
+                if let Some(rest) = &ap.rest {
+                    self.predeclare_lexical_pattern(&rest.argument, is_const, ctx);
+                }
+            }
+            BindingPattern::ObjectPattern(op) => {
+                for prop in &op.properties {
+                    self.predeclare_lexical_pattern(&prop.value, is_const, ctx);
+                }
+                if let Some(rest) = &op.rest {
+                    self.predeclare_lexical_pattern(&rest.argument, is_const, ctx);
+                }
+            }
+            BindingPattern::AssignmentPattern(ap) => {
+                self.predeclare_lexical_pattern(&ap.left, is_const, ctx);
             }
         }
     }

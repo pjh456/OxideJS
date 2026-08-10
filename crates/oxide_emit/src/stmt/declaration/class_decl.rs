@@ -18,8 +18,14 @@ impl Emitter {
             .as_ref()
             .map(|id| id.name.to_string())
             .ok_or_else(|| "ClassDeclaration without name".to_string())?;
-        let var_reg = ctx.alloc_reg();
-        ctx.declare(&name, var_reg, VariableDeclarationKind::Let, false)?;
+        let var_reg = match ctx.scopes.symbols.consume_predeclared_slot(&name) {
+            Some(reg) => reg,
+            None => {
+                let reg = ctx.alloc_reg();
+                ctx.declare(&name, reg, VariableDeclarationKind::Let, false)?;
+                reg
+            }
+        };
         ctx.init_var(&name);
         let ctor_reg = self.emit_class(class, ctx)?;
         if let Some(&cell_idx) = ctx.captured_bindings.get(&name) {

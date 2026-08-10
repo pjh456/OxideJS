@@ -9,6 +9,7 @@ impl Emitter {
             return Ok(None);
         };
         ctx.push_scope();
+        self.predeclare_lexical_declarations(&block.body, ctx);
         let mut r = None;
         for s in &block.body {
             if let Some(rr) = self.emit_statement(s, ctx)? {
