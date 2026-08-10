@@ -15,12 +15,14 @@ impl Emitter {
     ) -> Result<u32, String> {
         let obj_reg = self.emit_expression(&pin.right, ctx)?;
         let key_reg = self.emit_private_id_reg(pin.left.name.as_str(), ctx)?;
+        let (brand_reg, brand_id) = self.private_access_brand(obj_reg, pin.left.name.as_str(), ctx)?;
         let result_reg = ctx.alloc_reg();
-        ctx.inst(Inst::new(
-            OpCode::PRIVATE_BRAND_IN,
+        ctx.inst(Inst::private_brand_in(
             Operand::Reg(result_reg),
             Operand::Reg(obj_reg),
             Operand::Reg(key_reg),
+            brand_reg,
+            brand_id,
         ));
         Ok(result_reg)
     }

@@ -354,6 +354,50 @@ fn this_survives_native_call_inside_method() {
 }
 
 #[test]
+fn private_field_access_does_not_pierce_prototype() {
+    // P4：Object.create(instance) 的对象访问 #x 抛 TypeError（字段不跨原型链）。
+    let mut vm = Vm::new();
+    let err = eval(&mut vm, "class C { #x = 1; m() { return this.#x; } } Object.create(new C()).m()").unwrap_err();
+    assert!(err.contains("TypeError"), "expected TypeError, got: {err}");
+}
+
+#[test]
+fn private_brand_in_does_not_pierce_prototype() {
+    // P5：#x in Object.create(instance) 为 false（PrivateFieldIn 只查 own）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class C { #x = 1; check(o) { return #x in o; } } var inst = new C(); var o = Object.create(inst); new C().check(o) === false && new C().check(inst) === true",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn private_method_in_requires_own_brand() {
+    // 方法场景：#m in Object.create(instance) 为 false（无 own brand）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class C { #m(){ return 1; } check(o) { return #m in o; } } var inst = new C(); new C().check(inst) === true && new C().check(Object.create(inst)) === false",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn private_field_read_write_after_two_statements() {
+    // 回归：字段 set/get 跨语句边界正常（不依赖 brand cell 值比较）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class C { #x = 0; set(v){ this.#x = v; } get(){ return this.#x; } } var c = new C(); c.set(4); c.get()",
+    )
+    .unwrap();
+    assert_eq!(result.as_int(), 4);
+}
+
+#[test]
 fn computed_field_key_evaluated_once_at_class_definition() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "var n=0; class C { [++n] = 1; [++n] = 2; } n").unwrap();

@@ -175,6 +175,14 @@ impl Inst {
         Self::with_ext(OpCode::GET_PRIVATE, result, obj, key, &[brand_reg, brand_id])
     }
 
+    /// 私有名 `in` 判定：result=结果，obj=接收者，key=私有名 id。
+    /// ext = [brand_reg, brand_id]：brand_reg 为当前类 brand 对象寄存器（0 表示跳过
+    /// brand 检查），brand_id 为实例 brand 槽的私有名 id。判定 own 私有槽（字段）或
+    /// own brand（方法/访问器，槽在 home）——不跨原型链（PrivateFieldIn）。
+    pub fn private_brand_in(result: Operand, obj: Operand, key: Operand, brand_reg: u32, brand_id: u32) -> Self {
+        Self::with_ext(OpCode::PRIVATE_BRAND_IN, result, obj, key, &[brand_reg, brand_id])
+    }
+
     /// 私有成员写入：obj=接收者，value=新值，key=私有名 id。ext 语义同 `get_private`。
     pub fn set_private(obj: Operand, value: Operand, key: Operand, brand_reg: u32, brand_id: u32) -> Self {
         Self::with_ext(OpCode::SET_PRIVATE, obj, value, key, &[brand_reg, brand_id])

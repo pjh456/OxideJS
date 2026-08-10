@@ -225,8 +225,9 @@ fn rewrite_inst(
             }
             ext
         }
-        // GET_PRIVATE/SET_PRIVATE：ext[0] 是 brand 对象寄存器（0 表示跳过检查），须重映射。
-        OpCode::GET_PRIVATE | OpCode::SET_PRIVATE => {
+        // GET_PRIVATE/SET_PRIVATE/PRIVATE_BRAND_IN：ext[0] 是 brand 对象寄存器
+        // （0 表示跳过检查），须重映射。
+        OpCode::GET_PRIVATE | OpCode::SET_PRIVATE | OpCode::PRIVATE_BRAND_IN => {
             let mut ext = inst.ext.clone();
             if let Some(brand_reg) = ext.first_mut() {
                 if *brand_reg != 0 {

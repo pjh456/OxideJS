@@ -72,36 +72,22 @@ impl Vm {
         self.kernel_core.shape_forge().lookup_position(obj.shape_id(), private_key)
     }
 
-    fn resolve_private_value(&self, obj: &JsObject, private_key: u32) -> Option<JsValue> {
-        if let Some(pos) = self.private_slot(obj, private_key) {
-            return Some(obj.get_prop_at(pos));
-        }
+    /// 沿实例→proto 链查找私有方法/访问器槽（存于类的 home=proto）。字段槽不跨原型
+    /// （PrivateFieldFind 只查 own）——链上遇到字段槽（无 hole meta）即拒绝，防
+    /// `Object.create(instance)` 穿透读取实例字段。
+    fn find_private_method_slot(&self, obj: &JsObject, private_key: u32) -> Option<*mut JsObject> {
         let mut proto = obj.proto();
         let mut depth = 0usize;
         while proto.is_object() && depth < MAX_PROTO_CHAIN_DEPTH {
             depth += 1;
             let proto_obj = unsafe { &*proto.as_js_object_ptr() };
             if let Some(pos) = self.private_slot(proto_obj, private_key) {
-                return Some(proto_obj.get_prop_at(pos));
-            }
-            proto = proto_obj.proto();
-        }
-        None
-    }
-
-    /// 沿实例→proto 链查找私有槽：私有方法/访问器存于类的 home（proto），
-    /// 私有字段存于实例自身，两者都需要原型链遍历。
-    fn find_private_slot(&self, obj: &JsObject, private_key: u32) -> Option<*mut JsObject> {
-        if self.private_slot(obj, private_key).is_some() {
-            return Some(obj as *const JsObject as *mut JsObject);
-        }
-        let mut proto = obj.proto();
-        let mut depth = 0usize;
-        while proto.is_object() && depth < MAX_PROTO_CHAIN_DEPTH {
-            depth += 1;
-            let proto_obj = unsafe { &*proto.as_js_object_ptr() };
-            if self.private_slot(proto_obj, private_key).is_some() {
-                return Some(proto_obj as *const JsObject as *mut JsObject);
+                // 方法槽有 hole 标记（set_private_method_meta）；字段槽（存实例）沿链出现
+                // 说明接收者并非本类实例 → 拒绝穿透。
+                if proto_obj.prop_meta_at(pos).is_some_and(|m| m.is_hole()) {
+                    return Some(proto_obj as *const JsObject as *mut JsObject);
+                }
+                return None;
             }
             proto = proto_obj.proto();
         }
@@ -133,7 +119,25 @@ impl Vm {
         let brand_key = make_private_name_id(self.bytecode[self.pc + 1]);
         self.pc += 2;
         let obj = unsafe { &*obj_ptr };
-        let Some(home_ptr) = self.find_private_slot(obj, private_key) else {
+        // 字段路径：own 有该私有槽（字段存实例 own）→ 直接读，不跨原型、不做 brand 值比较
+        // （PrivateFieldFind 只查 own；接收者带槽即构造器产物）。
+        if let Some(pos) = self.private_slot(obj, private_key) {
+            if let Some(meta) = obj.prop_meta_at(pos) {
+                if meta.is_accessor {
+                    if meta.get.is_undefined() {
+                        return self.raise_type_error("private field has no getter");
+                    }
+                    let getter = meta.get;
+                    self.push_bytecode_getter_frame(getter, obj_val, rd as u8)?;
+                    self.accessor_frame_target_reg.take();
+                    return Ok(());
+                }
+            }
+            self.regs[rd] = obj.get_prop_at(pos);
+            return Ok(());
+        }
+        // 方法路径：own 无槽（私有方法/访问器存于 home=proto）→ 沿链找方法槽 + brand 检查。
+        let Some(home_ptr) = self.find_private_method_slot(obj, private_key) else {
             return self.raise_type_error("private field brand check failed");
         };
         if brand_reg != 0 {
@@ -147,13 +151,10 @@ impl Vm {
                     return self.raise_type_error("private field has no getter");
                 }
                 let getter = meta.get;
-                let pushed = self.push_bytecode_getter_frame(getter, obj_val, rd as u8)?;
+                self.push_bytecode_getter_frame(getter, obj_val, rd as u8)?;
                 // 与 dispatch_get_prop 一致：getter 帧入栈后消费 accessor_frame_target_reg，
                 // 避免残留状态污染后续属性访问（getter 返回经 continuation 写 rd）。
                 self.accessor_frame_target_reg.take();
-                if pushed {
-                    return Ok(());
-                }
                 return Ok(());
             }
         }
@@ -172,7 +173,30 @@ impl Vm {
         let brand_key = make_private_name_id(self.bytecode[self.pc + 1]);
         self.pc += 2;
         let obj = unsafe { &*obj_ptr };
-        let Some(home_ptr) = self.find_private_slot(obj, private_key) else {
+        // 字段路径：own 有槽（字段存实例 own）→ 直接写，不跨原型、不做 brand 值比较。
+        if let Some(pos) = self.private_slot(obj, private_key) {
+            if let Some(meta) = obj.prop_meta_at(pos) {
+                if meta.is_accessor {
+                    if meta.set.is_undefined() {
+                        return self.raise_type_error("private field has no setter");
+                    }
+                    let setter = meta.set;
+                    let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
+                    return self.call_or_push_setter(setter, obj_val, value, true);
+                }
+                // 私有方法槽不可写（init 时打标记）。
+                if meta.is_hole() {
+                    return self
+                        .raise_type_error("Cannot write private member to an object whose class did not declare it");
+                }
+            }
+            let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
+            let obj = unsafe { &mut *obj_ptr };
+            obj.set_prop_shape(pos, value);
+            return Ok(());
+        }
+        // 方法路径：own 无槽（私有方法/访问器存于 home=proto）→ 沿链找方法槽 + brand 检查。
+        let Some(home_ptr) = self.find_private_method_slot(obj, private_key) else {
             return self.raise_type_error("private field brand check failed");
         };
         if brand_reg != 0 {
@@ -243,7 +267,19 @@ impl Vm {
         }
         let obj = unsafe { &*obj_val.as_js_object_ptr() };
         let private_key = self.private_key_from_reg(b);
-        self.regs[rd] = JsValue::bool(self.resolve_private_value(obj, private_key).is_some());
+        let brand_reg = self.bytecode[self.pc] as usize;
+        let brand_key = make_private_name_id(self.bytecode[self.pc + 1]);
+        self.pc += 2;
+        // 只查 own 私有元素（PrivateFieldIn 不跨原型链）：own 有该私有槽（字段）→ true；
+        // 否则接收者 own 有当前类 brand 槽（方法/访问器，槽在 home）→ true；否则 false。
+        // brand_key 是类级私有名 id（每类独立），own 存在该槽即本类实例——存在性即可
+        // 判定，不做 cell 值比较（规避 upvalue cell 生命周期缺陷）。
+        if self.private_slot(obj, private_key).is_some() {
+            self.regs[rd] = JsValue::bool(true);
+            return Ok(());
+        }
+        let has_brand = brand_reg != 0 && self.private_slot(obj, brand_key).is_some();
+        self.regs[rd] = JsValue::bool(has_brand);
         Ok(())
     }
 
