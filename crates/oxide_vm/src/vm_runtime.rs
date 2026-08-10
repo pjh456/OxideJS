@@ -25,63 +25,125 @@ fn place_flat(module: &CompiledModule, out: &mut Vec<Option<CompiledModule>>) {
     }
 }
 
+/// save 方向的字段取值表达式（字段名由调用方以 ident 位置提供，本宏只产出值）。
+macro_rules! inline_save_field {
+    ($recv:ident, regs, boxed_array) => { Box::new($recv.regs) };
+    ($recv:ident, pc, copy) => { $recv.pc };
+    ($recv:ident, bytecode, move_field) => { std::mem::take(&mut $recv.bytecode) };
+    ($recv:ident, active_immutables, copy) => { $recv.active_immutables };
+    ($recv:ident, active_reg_limit, copy) => { $recv.active_reg_limit };
+    ($recv:ident, root_reg_limit, copy) => { $recv.root_reg_limit };
+    ($recv:ident, try_stack, move_field) => { std::mem::take(&mut $recv.try_stack) };
+    ($recv:ident, frames, frames_values) => { std::mem::take(&mut $recv.frames) };
+    ($recv:ident, exception_value, opt_take) => { $recv.exception_value.take() };
+    ($recv:ident, pending_exception, opt_take) => { $recv.pending_exception.take() };
+    ($recv:ident, pending_error_kind, opt_take) => { $recv.pending_error_kind.take() };
+    ($recv:ident, pending_completion, opt_copy) => { $recv.pending_completion };
+    ($recv:ident, for_in_iters, for_in_keys) => { std::mem::take(&mut $recv.iters.for_in_iters) };
+    ($recv:ident, for_of_iters, iter_take) => { std::mem::take(&mut $recv.iters.for_of_iters) };
+    ($recv:ident, last_for_of_result, iter_copy) => { $recv.iters.last_for_of_result };
+    ($recv:ident, saved_bytecode_stack, move_field) => { std::mem::take(&mut $recv.saved_bytecode_stack) };
+    ($recv:ident, saved_immutables_stack, move_field) => { std::mem::take(&mut $recv.saved_immutables_stack) };
+    ($recv:ident, save_stack, move_field) => { std::mem::take(&mut $recv.save_stack) };
+    ($recv:ident, spill_stack, move_field) => { std::mem::take(&mut $recv.spill_stack) };
+    ($recv:ident, cell_stack, move_field) => { std::mem::take(&mut $recv.cell_stack) };
+    ($recv:ident, inline_callee, opt_copy) => { $recv.inline_callee };
+    ($recv:ident, inline_args_base, copy) => { $recv.inline_args_base };
+    ($recv:ident, inline_args_count, copy) => { $recv.inline_args_count };
+    ($recv:ident, accessor_frame_target_reg, copy) => { $recv.accessor_frame_target_reg };
+}
+
+/// restore 方向的字段写回语句。
+macro_rules! inline_restore_field {
+    ($recv:ident, $saved:ident, regs, boxed_array) => { $recv.regs = *$saved.regs };
+    ($recv:ident, $saved:ident, pc, copy) => { $recv.pc = $saved.pc };
+    ($recv:ident, $saved:ident, bytecode, move_field) => { $recv.bytecode = $saved.bytecode };
+    ($recv:ident, $saved:ident, active_immutables, copy) => { $recv.active_immutables = $saved.active_immutables };
+    ($recv:ident, $saved:ident, active_reg_limit, copy) => { $recv.active_reg_limit = $saved.active_reg_limit };
+    ($recv:ident, $saved:ident, root_reg_limit, copy) => { $recv.root_reg_limit = $saved.root_reg_limit };
+    ($recv:ident, $saved:ident, try_stack, move_field) => { $recv.try_stack = $saved.try_stack };
+    ($recv:ident, $saved:ident, frames, frames_values) => { $recv.frames = $saved.frames };
+    ($recv:ident, $saved:ident, exception_value, opt_take) => { $recv.exception_value = $saved.exception_value };
+    ($recv:ident, $saved:ident, pending_exception, opt_take) => { $recv.pending_exception = $saved.pending_exception };
+    ($recv:ident, $saved:ident, pending_error_kind, opt_take) => { $recv.pending_error_kind = $saved.pending_error_kind };
+    ($recv:ident, $saved:ident, pending_completion, opt_copy) => { $recv.pending_completion = $saved.pending_completion };
+    ($recv:ident, $saved:ident, for_in_iters, for_in_keys) => { $recv.iters.for_in_iters = $saved.for_in_iters };
+    ($recv:ident, $saved:ident, for_of_iters, iter_take) => { $recv.iters.for_of_iters = $saved.for_of_iters };
+    ($recv:ident, $saved:ident, last_for_of_result, iter_copy) => { $recv.iters.last_for_of_result = $saved.last_for_of_result };
+    ($recv:ident, $saved:ident, saved_bytecode_stack, move_field) => { $recv.saved_bytecode_stack = $saved.saved_bytecode_stack };
+    ($recv:ident, $saved:ident, saved_immutables_stack, move_field) => { $recv.saved_immutables_stack = $saved.saved_immutables_stack };
+    ($recv:ident, $saved:ident, save_stack, move_field) => { $recv.save_stack = $saved.save_stack };
+    ($recv:ident, $saved:ident, spill_stack, move_field) => { $recv.spill_stack = $saved.spill_stack };
+    ($recv:ident, $saved:ident, cell_stack, move_field) => { $recv.cell_stack = $saved.cell_stack };
+    ($recv:ident, $saved:ident, inline_callee, opt_copy) => { $recv.inline_callee = $saved.inline_callee };
+    ($recv:ident, $saved:ident, inline_args_base, copy) => { $recv.inline_args_base = $saved.inline_args_base };
+    ($recv:ident, $saved:ident, inline_args_count, copy) => { $recv.inline_args_count = $saved.inline_args_count };
+    ($recv:ident, $saved:ident, accessor_frame_target_reg, copy) => { $recv.accessor_frame_target_reg = $saved.accessor_frame_target_reg };
+}
+
+/// 内联同步调用可搬移执行核心字段的单一登记表。save/restore 双向由本宏展开；
+/// 新增字段只加一行（字段名, 操作符）。注释 = 该字段语义（M 搬移 / V 含 JsValue）。
+macro_rules! inline_core_fields {
+    ($recv:ident, $saved:ident, $ops:ident) => {
+        $ops!($recv, $saved,
+            (regs, boxed_array), // V M
+            (pc, copy), // M
+            (bytecode, move_field), // V M
+            (active_immutables, copy), // M
+            (active_reg_limit, copy), // M
+            (root_reg_limit, copy), // M
+            (try_stack, move_field), // M
+            (frames, frames_values), // V M
+            (exception_value, opt_take), // V M
+            (pending_exception, opt_take), // V M
+            (pending_error_kind, opt_take), // M
+            (pending_completion, opt_copy), // V M
+            (for_in_iters, for_in_keys), // V M
+            (for_of_iters, iter_take), // V M
+            (last_for_of_result, iter_copy), // V M
+            (saved_bytecode_stack, move_field), // M
+            (saved_immutables_stack, move_field), // M
+            (save_stack, move_field), // V M
+            (spill_stack, move_field), // V M
+            (cell_stack, move_field), // V M
+            (inline_callee, opt_copy), // V M
+            (inline_args_base, copy), // M
+            (inline_args_count, copy), // M
+            (accessor_frame_target_reg, copy), // M
+        )
+    };
+}
+
+/// 把字段表展开为 `InlineSyncState` 结构体字面量（字段名在 ident 位置，值由
+/// `inline_save_field` 产出）。
+macro_rules! inline_save {
+    ($recv:ident, $saved:ident, $(($field:ident, $op:ident)),* $(,)?) => {
+        InlineSyncState {
+            $($field: inline_save_field!($recv, $field, $op)),*
+        }
+    };
+}
+
+/// 把字段表展开为写回语句序列。
+macro_rules! inline_restore {
+    ($recv:ident, $saved:ident, $(($field:ident, $op:ident)),* $(,)?) => {
+        { $(inline_restore_field!($recv, $saved, $field, $op);)* }
+    };
+}
+
 impl Vm {
     /// 保存当前完整 VM 执行状态到堆上（内联同步调用与生成器恢复共用）。
     pub(crate) fn save_inline_state(&mut self) -> Box<InlineSyncState> {
         vm_trace!("save_inline_state: pc={} depth={}", self.pc, self.frames.len());
-        Box::new(InlineSyncState {
-            regs: Box::new(self.regs),
-            pc: self.pc,
-            bytecode: std::mem::take(&mut self.bytecode),
-            active_immutables: self.active_immutables,
-            active_reg_limit: self.active_reg_limit,
-            root_reg_limit: self.root_reg_limit,
-            try_stack: std::mem::take(&mut self.try_stack),
-            frames: std::mem::take(&mut self.frames),
-            exception_value: self.exception_value.take(),
-            pending_exception: self.pending_exception.take(),
-            pending_error_kind: self.pending_error_kind.take(),
-            pending_completion: self.pending_completion,
-            for_in_iters: std::mem::take(&mut self.iters.for_in_iters),
-            for_of_iters: std::mem::take(&mut self.iters.for_of_iters),
-            last_for_of_result: self.iters.last_for_of_result,
-            saved_bytecode_stack: std::mem::take(&mut self.saved_bytecode_stack),
-            saved_immutables_stack: std::mem::take(&mut self.saved_immutables_stack),
-            save_stack: std::mem::take(&mut self.save_stack),
-            spill_stack: std::mem::take(&mut self.spill_stack),
-            cell_stack: std::mem::take(&mut self.cell_stack),
-            inline_callee: self.inline_callee,
-            inline_args_base: self.inline_args_base,
-            inline_args_count: self.inline_args_count,
-        })
+        let vm = self;
+        Box::new(inline_core_fields!(vm, vm, inline_save))
     }
 
     /// 把 [`save_inline_state`] 保存的状态完整恢复回 VM。
     pub(crate) fn restore_inline_state(&mut self, saved: Box<InlineSyncState>) {
         vm_trace!("restore_inline_state: pc={}", saved.pc);
-        self.regs = *saved.regs;
-        self.pc = saved.pc;
-        self.bytecode = saved.bytecode;
-        self.active_immutables = saved.active_immutables;
-        self.active_reg_limit = saved.active_reg_limit;
-        self.root_reg_limit = saved.root_reg_limit;
-        self.try_stack = saved.try_stack;
-        self.frames = saved.frames;
-        self.exception_value = saved.exception_value;
-        self.pending_exception = saved.pending_exception;
-        self.pending_error_kind = saved.pending_error_kind;
-        self.pending_completion = saved.pending_completion;
-        self.iters.for_in_iters = saved.for_in_iters;
-        self.iters.for_of_iters = saved.for_of_iters;
-        self.iters.last_for_of_result = saved.last_for_of_result;
-        self.saved_bytecode_stack = saved.saved_bytecode_stack;
-        self.saved_immutables_stack = saved.saved_immutables_stack;
-        self.save_stack = saved.save_stack;
-        self.spill_stack = saved.spill_stack;
-        self.cell_stack = saved.cell_stack;
-        self.inline_callee = saved.inline_callee;
-        self.inline_args_base = saved.inline_args_base;
-        self.inline_args_count = saved.inline_args_count;
+        let vm = self;
+        inline_core_fields!(vm, saved, inline_restore);
     }
 
     /// 首次执行的 VM 就绪：清空执行核心（regs/pc/bytecode/各栈段/迭代器/内联态），
@@ -336,5 +398,61 @@ impl Vm {
         };
         vm_warn!("unwind: uncaught {}: {}", kind_str, exc_text);
         Err(msg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vm::Completion;
+    use oxide_types::value::JsValue;
+
+    #[test]
+    fn save_restore_inline_round_trip() {
+        // 构造带哨兵的 VM → save → 恢复 → 断言全部字段逐字往返（含 accessor_frame_target_reg）。
+        let mut vm = Vm::new();
+        vm.regs[3] = JsValue::float(1.0);
+        vm.pc = 7;
+        vm.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
+        vm.active_reg_limit = 4;
+        vm.root_reg_limit = 5;
+        vm.exception_value = Some(JsValue::float(6.0));
+        vm.pending_exception = Some(JsValue::float(7.0));
+        vm.pending_error_kind = Some("TypeError");
+        vm.pending_completion = Some(Completion::Return {
+            value: JsValue::float(8.0),
+            remaining_finally: 1,
+        });
+        vm.iters.last_for_of_result = JsValue::float(9.0);
+        vm.spill_stack.push(JsValue::float(10.0));
+        vm.save_stack.push(JsValue::float(11.0));
+        vm.inline_callee = Some(JsValue::float(12.0));
+        vm.inline_args_base = 2;
+        vm.inline_args_count = 3;
+        vm.accessor_frame_target_reg = Some(9);
+
+        let saved = vm.save_inline_state();
+        vm.regs[3] = JsValue::float(99.0);
+        vm.accessor_frame_target_reg = None;
+        vm.restore_inline_state(saved);
+
+        assert_eq!(vm.regs[3], JsValue::float(1.0));
+        assert_eq!(vm.pc, 7);
+        assert_eq!(vm.active_reg_limit, 4);
+        assert_eq!(vm.root_reg_limit, 5);
+        assert_eq!(vm.exception_value, Some(JsValue::float(6.0)));
+        assert_eq!(vm.pending_exception, Some(JsValue::float(7.0)));
+        assert_eq!(vm.pending_error_kind, Some("TypeError"));
+        assert!(matches!(
+            vm.pending_completion,
+            Some(Completion::Return { value, remaining_finally: 1 }) if value == JsValue::float(8.0)
+        ));
+        assert_eq!(vm.iters.last_for_of_result, JsValue::float(9.0));
+        assert_eq!(vm.spill_stack, vec![JsValue::float(10.0)]);
+        assert_eq!(vm.save_stack, vec![JsValue::float(11.0)]);
+        assert_eq!(vm.inline_callee, Some(JsValue::float(12.0)));
+        assert_eq!(vm.inline_args_base, 2);
+        assert_eq!(vm.inline_args_count, 3);
+        assert_eq!(vm.accessor_frame_target_reg, Some(9));
     }
 }

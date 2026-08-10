@@ -218,6 +218,7 @@ pub(crate) struct InlineSyncState {
     pub(crate) inline_callee: Option<JsValue>,
     pub(crate) inline_args_base: u32,
     pub(crate) inline_args_count: u16,
+    pub(crate) accessor_frame_target_reg: Option<u8>,
 }
 
 /// 基于寄存器的 JS 虚拟机：持有执行状态、寄存器文件、调用栈与 session 内存。
