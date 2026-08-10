@@ -7,7 +7,7 @@ use oxide_types::object::{JsObject, JsString, PropMetaEntry};
 use oxide_types::value::JsValue;
 use rustc_hash::FxBuildHasher;
 
-use crate::vm::{Completion, Vm};
+use crate::vm::Vm;
 use oxide_builtins::{array_buffer, data_view, map, regexp, set, typed_array};
 
 /// session 级 mark-sweep GC 的状态与统计。
@@ -553,63 +553,8 @@ fn rewrite_forwarded_value(
 
 fn rewrite_vm_roots(vm: &mut Vm, forwarding: &HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>) {
     vm_debug!("[GC] rewrite_vm_roots: {} forwarded objects", forwarding.len());
-    for value in &mut vm.regs {
-        *value = rewrite_forwarded_value(*value, forwarding);
-    }
-    for value in &mut vm.save_stack {
-        *value = rewrite_forwarded_value(*value, forwarding);
-    }
-    for value in &mut vm.spill_stack {
-        *value = rewrite_forwarded_value(*value, forwarding);
-    }
-    for frame in &mut vm.frames {
-        frame.saved_this = rewrite_forwarded_value(frame.saved_this, forwarding);
-        frame.saved_new_target = rewrite_forwarded_value(frame.saved_new_target, forwarding);
-        frame.callee = rewrite_forwarded_value(frame.callee, forwarding);
-        frame.constructed_this = frame.constructed_this.map(|value| rewrite_forwarded_value(value, forwarding));
-    }
-    vm.exception_value = vm.exception_value.map(|value| rewrite_forwarded_value(value, forwarding));
-    vm.pending_exception = vm.pending_exception.map(|value| rewrite_forwarded_value(value, forwarding));
-    vm.last_uncaught_value = vm.last_uncaught_value.map(|value| rewrite_forwarded_value(value, forwarding));
-    vm.pending_completion = vm.pending_completion.map(|completion| match completion {
-        Completion::Return { value, remaining_finally } => Completion::Return {
-            value: rewrite_forwarded_value(value, forwarding),
-            remaining_finally,
-        },
-        other => other,
-    });
-    vm.generator_suspended = vm.generator_suspended.map(|value| rewrite_forwarded_value(value, forwarding));
-    vm.delegated_iterator = vm.delegated_iterator.map(|value| rewrite_forwarded_value(value, forwarding));
-    vm.async_context = vm.async_context.map(|value| rewrite_forwarded_value(value, forwarding));
-    vm.async_gen_context = vm.async_gen_context.map(|value| rewrite_forwarded_value(value, forwarding));
-    vm.inline_callee = vm.inline_callee.map(|value| rewrite_forwarded_value(value, forwarding));
-    for value in &mut vm.iters.for_of_iters {
-        *value = rewrite_forwarded_value(*value, forwarding);
-    }
-    vm.iters.last_for_of_result = rewrite_forwarded_value(vm.iters.last_for_of_result, forwarding);
-    // 微任务队列中的值随 sweep 重写。
-    for job in &mut vm.job_queue {
-        crate::promise::rewrite_job_values(job, |value| rewrite_forwarded_value(value, forwarding));
-    }
-    // 已转换的不可变常量不是 session 值（标量 + perm 字符串）——不重写。
-    for iter in &mut vm.iters.for_in_iters {
-        if iter.is_null() {
-            continue;
-        }
-        // SAFETY: for_in_iters 存放由当前 VM epoch 拥有的存活迭代器指针。
-        unsafe {
-            for (value, _si) in (*(*iter)).keys.iter_mut() {
-                *value = rewrite_forwarded_value(*value, forwarding);
-            }
-        }
-    }
-    let global_ptr = vm.session.global_object().as_ptr() as *mut JsObject;
-    if !global_ptr.is_null() {
-        // SAFETY: KernelSession 在 VM 生命周期内拥有 global_object。
-        unsafe {
-            (*global_ptr).rewrite_object_values(|value| rewrite_forwarded_value(value, forwarding));
-        }
-    }
+    // 统一遍历：与 for_each_value 共用同一字段清单。
+    vm.rewrite_values(|value| rewrite_forwarded_value(value, forwarding));
 }
 
 #[cfg(test)]
@@ -720,8 +665,52 @@ mod tests {
     }
 
     #[test]
-    fn mark_phase_reaches_cycles_and_unreachable_are_unmarked() {
+    fn rewrite_matches_roots_coverage() {
+        // 指针重写必须覆盖根收集访问的同一组执行核心字段：session→marker 映射后，
+        // 每个持有 session 的字段都应被改写为 marker（与 Step 1 的 for_each 覆盖测试
+        // 互补，共同构成孪生清单验证）。
         let mut vm = Vm::new();
+        let obj = plain_object(&mut vm);
+        let session = vm.promote_object(obj);
+        let marker = plain_object(&mut vm);
+        let marker_session = vm.promote_object(marker);
+        vm.regs[0] = JsValue::from_js_object(session);
+        vm.last_uncaught_value = Some(JsValue::from_js_object(session));
+        vm.generator_suspended = Some(JsValue::from_js_object(session));
+        vm.delegated_iterator = Some(JsValue::from_js_object(session));
+        vm.async_context = Some(JsValue::from_js_object(session));
+        vm.async_gen_context = Some(JsValue::from_js_object(session));
+        vm.inline_callee = Some(JsValue::from_js_object(session));
+        vm.pending_completion = Some(crate::vm::Completion::Return {
+            value: JsValue::from_js_object(session),
+            remaining_finally: 0,
+        });
+
+        let mut forwarding = std::collections::HashMap::new();
+        forwarding.insert(session, marker_session);
+        vm.rewrite_values(|v| {
+            if v.is_object() {
+                if let Some(&m) = forwarding.get(&v.as_js_object_ptr()) {
+                    return JsValue::from_js_object(m);
+                }
+            }
+            v
+        });
+        assert_eq!(vm.regs[0].as_js_object_ptr(), marker_session);
+        assert_eq!(vm.last_uncaught_value.unwrap().as_js_object_ptr(), marker_session);
+        assert_eq!(vm.generator_suspended.unwrap().as_js_object_ptr(), marker_session);
+        assert_eq!(vm.delegated_iterator.unwrap().as_js_object_ptr(), marker_session);
+        assert_eq!(vm.async_context.unwrap().as_js_object_ptr(), marker_session);
+        assert_eq!(vm.async_gen_context.unwrap().as_js_object_ptr(), marker_session);
+        assert_eq!(vm.inline_callee.unwrap().as_js_object_ptr(), marker_session);
+        match vm.pending_completion.unwrap() {
+            crate::vm::Completion::Return { value, .. } => assert_eq!(value.as_js_object_ptr(), marker_session),
+            _ => panic!("expected Return completion"),
+        }
+    }
+
+    #[test]
+    fn mark_phase_reaches_cycles_and_unreachable_are_unmarked() {        let mut vm = Vm::new();
         let root = plain_object(&mut vm);
         let reachable = plain_object(&mut vm);
         let unreachable = plain_object(&mut vm);

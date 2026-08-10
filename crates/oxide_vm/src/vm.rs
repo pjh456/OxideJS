@@ -520,11 +520,13 @@ impl Vm {
         self.active_immutables = vec.as_slice() as *const [JsValue];
     }
 
-    pub(crate) fn for_each_root(&self, mut f: impl FnMut(JsValue)) {
+    /// GC 根收集的统一遍历（对象与字符串都产出）。与 `rewrite_values` 字段一一对应。
+    /// 覆盖执行核心的全部 JsValue 持有点：regs/帧/各栈段/cell/在途异常与完成/
+    /// 挂起信号/迭代器/微任务/global。新增执行字段必须同时登记在此与
+    /// `rewrite_values`。
+    pub(crate) fn for_each_value(&self, mut f: impl FnMut(JsValue)) {
         for value in &self.regs {
-            if value.is_object() || value.is_string() {
-                f(*value);
-            }
+            f(*value);
         }
         for frame in &self.frames {
             f(frame.saved_this);
@@ -535,7 +537,7 @@ impl Vm {
         for &v in &self.save_stack {
             f(v);
         }
-        // spill 栈是 session GC 根（漏根 → 溢出值被回收 → use-after-free）
+        // spill 栈是 session GC 根（漏根 → 溢出值被回收 → use-after-free）。
         for &v in &self.spill_stack {
             f(v);
         }
@@ -544,21 +546,16 @@ impl Vm {
                 if cell_ptr.is_null() {
                     continue;
                 }
-                let cell = unsafe { &*cell_ptr };
-                if cell.value.is_object() || cell.value.is_string() {
-                    f(cell.value);
-                }
+                // SAFETY: cell 由 session_epoch 分配，本 session 内指针有效。
+                f(unsafe { &*cell_ptr }.value);
             }
         }
-        f(JsValue::from_js_object(self.session.global_object().as_ptr() as *mut JsObject));
         f(self.exception_value.unwrap_or(JsValue::undefined()));
         f(self.pending_exception.unwrap_or(JsValue::undefined()));
         f(self.last_uncaught_value.unwrap_or(JsValue::undefined()));
         // 悬挂的 return 完成持有返回值，是 GC 根。
         if let Some(Completion::Return { value, .. }) = self.pending_completion {
-            if value.is_object() || value.is_string() {
-                f(value);
-            }
+            f(value);
         }
         f(self.generator_suspended.unwrap_or(JsValue::undefined()));
         f(self.delegated_iterator.unwrap_or(JsValue::undefined()));
@@ -573,17 +570,93 @@ impl Vm {
         for job in &self.job_queue {
             crate::promise::for_each_job_value(job, &mut f);
         }
-        // 已转换的不可变常量（标量 + perm 字符串）不作为 session GC 根，不参与扫描。
         for iter in &self.iters.for_in_iters {
             if iter.is_null() {
                 continue;
             }
+            // SAFETY: for_in_iters 存放由当前 VM epoch 拥有的存活迭代器指针。
             unsafe {
                 for (v, _si) in (*(*iter)).keys.iter() {
                     f(*v);
                 }
             }
         }
+        f(JsValue::from_js_object(self.session.global_object().as_ptr() as *mut JsObject));
+    }
+
+    /// GC 指针重写（session 搬移后调用）。与 `for_each_value` 字段一一对应。
+    pub(crate) fn rewrite_values(&mut self, mut rewrite: impl FnMut(JsValue) -> JsValue) {
+        for value in &mut self.regs {
+            *value = rewrite(*value);
+        }
+        for frame in &mut self.frames {
+            frame.saved_this = rewrite(frame.saved_this);
+            frame.saved_new_target = rewrite(frame.saved_new_target);
+            frame.callee = rewrite(frame.callee);
+            frame.constructed_this = frame.constructed_this.map(&mut rewrite);
+        }
+        for v in &mut self.save_stack {
+            *v = rewrite(*v);
+        }
+        for v in &mut self.spill_stack {
+            *v = rewrite(*v);
+        }
+        for cell_vec in &mut self.cell_stack {
+            for &mut cell_ptr in cell_vec.iter_mut() {
+                if cell_ptr.is_null() {
+                    continue;
+                }
+                // SAFETY: cell 由 session_epoch 分配，本 session 内指针有效。
+                let cell = unsafe { &mut *cell_ptr };
+                cell.value = rewrite(cell.value);
+            }
+        }
+        self.exception_value = self.exception_value.map(&mut rewrite);
+        self.pending_exception = self.pending_exception.map(&mut rewrite);
+        self.last_uncaught_value = self.last_uncaught_value.map(&mut rewrite);
+        self.pending_completion = self.pending_completion.map(|completion| match completion {
+            Completion::Return { value, remaining_finally } => Completion::Return {
+                value: rewrite(value),
+                remaining_finally,
+            },
+            other => other,
+        });
+        self.generator_suspended = self.generator_suspended.map(&mut rewrite);
+        self.delegated_iterator = self.delegated_iterator.map(&mut rewrite);
+        self.async_context = self.async_context.map(&mut rewrite);
+        self.async_gen_context = self.async_gen_context.map(&mut rewrite);
+        self.inline_callee = self.inline_callee.map(&mut rewrite);
+        for v in &mut self.iters.for_of_iters {
+            *v = rewrite(*v);
+        }
+        self.iters.last_for_of_result = rewrite(self.iters.last_for_of_result);
+        // 微任务队列中的值随 sweep 重写。
+        for job in &mut self.job_queue {
+            crate::promise::rewrite_job_values(job, &mut rewrite);
+        }
+        for iter in &mut self.iters.for_in_iters {
+            if iter.is_null() {
+                continue;
+            }
+            // SAFETY: for_in_iters 存放由当前 VM epoch 拥有的存活迭代器指针。
+            unsafe {
+                for (v, _si) in (*(*iter)).keys.iter_mut() {
+                    *v = rewrite(*v);
+                }
+            }
+        }
+        let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;
+        if !global_ptr.is_null() {
+            // SAFETY: KernelSession 在 VM 生命周期内拥有 global_object。
+            unsafe {
+                (*global_ptr).rewrite_object_values(|value| rewrite(value));
+            }
+        }
+    }
+
+    pub(crate) fn for_each_root(&self, f: impl FnMut(JsValue)) {
+        // 统一遍历：根收集与指针重写共用同一字段清单。
+        self.for_each_value(f);
     }
 
     pub(crate) fn maybe_collect_session_gc(&mut self) {
