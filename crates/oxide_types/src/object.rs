@@ -7,6 +7,7 @@
 //! 闭包共享 cell (`Cell`)。
 
 use crate::value::JsValue;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// 堆分配的 JS 字符串值。
 ///
@@ -14,17 +15,40 @@ use crate::value::JsValue;
 #[derive(Debug)]
 pub struct JsString {
     pub data: String,
+    /// JS 语义的字符串长度（UTF-16 code unit 数）懒缓存。
+    ///
+    /// 构造是热路径（拼接/格式化），长度查询少见，故不预付 O(n) 扫描；首次
+    /// `utf16_len()` 访问时计算一次。以 sentinel + `AtomicU32` 实现：perm 字符串
+    /// 可被多线程 VM 共享读，计算幂等，relaxed 序即可。
+    utf16_len: AtomicU32,
 }
+
+/// `utf16_len` 未计算的哨兵值（有效长度不可能为 u32::MAX）。
+const UTF16_LEN_UNSET: u32 = u32::MAX;
 
 impl JsString {
     /// 用 UTF-8 数据构造字符串。
     pub fn new(data: String) -> Self {
-        Self { data }
+        Self {
+            data,
+            utf16_len: AtomicU32::new(UTF16_LEN_UNSET),
+        }
     }
 
     /// 字符串的字节长度（非字符数）。
     pub fn len(&self) -> usize {
         self.data.len()
+    }
+
+    /// JS 字符串长度（UTF-16 code unit 数）。首次访问计算并缓存，此后 O(1)。
+    pub fn utf16_len(&self) -> u32 {
+        let cached = self.utf16_len.load(Ordering::Relaxed);
+        if cached != UTF16_LEN_UNSET {
+            return cached;
+        }
+        let len = self.data.encode_utf16().count() as u32;
+        self.utf16_len.store(len, Ordering::Relaxed);
+        len
     }
 
     /// 是否为空字符串。

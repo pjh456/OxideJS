@@ -47,8 +47,8 @@ impl Vm {
         if val.is_string() {
             let length_si = self.kernel_core.perm_interner().intern("length").0;
             if prop_name_si == length_si {
-                // SAFETY: val 是字符串值。
-                let len = unsafe { (*val.as_string_ptr()).data.encode_utf16().count() };
+                // SAFETY: val 是字符串值。utf16_len 构造时缓存，O(1) 读取。
+                let len = unsafe { (*val.as_string_ptr()).utf16_len() };
                 return Ok(Some(JsValue::int(len as i32)));
             }
             let proto_ptr = self.session.builtin_world().string_proto.as_ptr() as *mut JsObject;
