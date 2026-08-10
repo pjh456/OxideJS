@@ -297,7 +297,7 @@ impl Vm {
     /// `await` dispatch：PromiseResolve 包装被等待值、登记恢复反应，置挂起信号。
     ///
     /// # 副作用
-    /// - 被等待值为原生 Promise 时直接复用，否则建新 promise 并 PromiseResolve。
+    /// - 被等待值经 `promise_resolve` 包装（含 `constructor` 查询与 thenable 委托）。
     /// - 经 `perform_promise_then` 登记 fulfill/reject 恢复反应（微任务入队）。
     /// - 异步生成器内（`async_gen_dispatch`）登记异步生成器恢复闭包并置
     ///   `async_gen_suspended`；普通异步函数走 `async_suspended`。
@@ -309,7 +309,9 @@ impl Vm {
     /// await 核心：PromiseResolve 包装被等待值、登记恢复反应，置挂起信号。
     ///
     /// # 副作用
-    /// - 被等待值为原生 Promise 时直接复用，否则建新 promise 并 PromiseResolve。
+    /// - 被等待值经 `promise_resolve` 包装：原生 Promise 按其 `constructor`
+    ///   查询决定直接复用或重包装，thenable 委托结算；包装失败（constructor
+    ///   getter / 结算抛错）时构造 rejected promise 承接异常。
     /// - 经 `perform_promise_then` 登记 fulfill/reject 恢复反应（微任务入队）。
     /// - 异步生成器内（`async_gen_dispatch`）登记异步生成器恢复闭包并置
     ///   `async_gen_suspended`；普通异步函数走 `async_suspended`。
@@ -318,12 +320,13 @@ impl Vm {
             Some(c) => c,
             None => return Err("AWAIT executed outside async function".into()),
         };
-        let promise = if self.is_promise_value(value) {
-            value
-        } else {
-            let (p, _, _) = self.new_promise_capability();
-            let _ = self.resolve_promise(p, value);
-            p
+        let promise = match self.promise_resolve(value) {
+            Ok(p) => p,
+            Err(exc) => {
+                let (p, _, _) = self.new_promise_capability();
+                let _ = self.reject_promise(p, exc);
+                p
+            }
         };
         if self.async_gen_dispatch {
             let fulfill_fn = self.make_async_gen_await_resume_fn(ctx, false);
