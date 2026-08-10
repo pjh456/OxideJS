@@ -199,6 +199,42 @@ mod tests {
     }
 
     #[test]
+    fn session_arena_promotes_array_elements_and_element_meta() {
+        let mut vm = Vm::new();
+        let elem_child = plain_object(&mut vm);
+        let meta_getter = plain_object(&mut vm);
+        let array_proto = vm.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
+        let arr = vm.epoch.alloc(JsObject::new_array(
+            EMPTY_SHAPE_ID,
+            JsValue::from_js_object(array_proto),
+            2,
+            vm.epoch.bump(),
+        ));
+        unsafe {
+            (*arr).set_prop_at(0, JsValue::from_js_object(elem_child));
+            (*arr).set_accessor_meta(
+                1,
+                JsValue::from_js_object(meta_getter),
+                JsValue::undefined(),
+                PropAttributes::DEFAULT_DATA,
+            );
+            (*arr).set_prop_shape(0, JsValue::int(99));
+        }
+
+        let promoted = vm.promote_object(arr);
+        let promoted_arr = unsafe { &*promoted };
+
+        assert!(promoted_arr.is_session_epoch());
+        // 数组元素（含访问器 get）与命名属性随 clone + rewrite 迁移到 session。
+        assert!(!is_epoch_object(&vm, promoted_arr.get_prop_at(0)));
+        let meta = promoted_arr.prop_meta_at(1).expect("element accessor meta");
+        assert!(!is_epoch_object(&vm, meta.get));
+        assert_eq!(promoted_arr.get_prop_shape(0), JsValue::int(99));
+        // 元素计数与长度不因 promotion 改变。
+        assert_eq!(promoted_arr.prop_count(), 2);
+    }
+
+    #[test]
     fn session_arena_barrier_promotes_global_root_write() {
         let mut vm = Vm::new();
         let value = JsValue::from_js_object(plain_object(&mut vm));

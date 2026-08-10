@@ -223,7 +223,7 @@ pub fn delete_own_property<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u3
         Vec::new()
     };
     let saved_element_meta: Option<Vec<Option<PropMetaEntry>>> = if obj.is_array() {
-        obj.prop_meta_vec().map(|meta| meta[..obj.array_prop_count as usize].to_vec())
+        Some((0..obj.array_prop_count).map(|i| obj.prop_meta_at(i)).collect())
     } else {
         None
     };
@@ -259,9 +259,12 @@ pub fn delete_own_property<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u3
             obj.set_prop_at(i, val);
         }
         if let Some(saved_meta) = saved_element_meta {
-            let meta = obj.ensure_prop_meta();
+            let meta = obj.ensure_array_elements_meta();
             for (i, entry) in saved_meta.into_iter().enumerate() {
                 if let Some(entry) = entry {
+                    while meta.len() <= i {
+                        meta.push(None);
+                    }
                     meta[i] = Some(entry);
                 }
             }

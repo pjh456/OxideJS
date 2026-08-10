@@ -55,6 +55,19 @@ impl SessionGc {
 
     fn object_edges(obj: &JsObject) -> Vec<JsValue> {
         let mut edges = Vec::new();
+        if let Some(elements) = obj.array_elements_vec() {
+            edges.extend(elements.iter().copied().filter(|val| val.is_object()));
+        }
+        if let Some(meta) = obj.array_elements_meta_vec() {
+            for entry in meta.iter().flatten() {
+                if entry.get.is_object() {
+                    edges.push(entry.get);
+                }
+                if entry.set.is_object() {
+                    edges.push(entry.set);
+                }
+            }
+        }
         if let Some(props) = obj.hash_props_vec() {
             edges.extend(props.iter().copied().filter(|val| val.is_object()));
         }
@@ -119,6 +132,13 @@ impl SessionGc {
     /// 无害地记录；sweep 只遍历 `session_string_ptrs`，`live` 中的非 session 指针
     /// 永远不会被查询。
     fn record_object_string_edges(live: &mut HashSet<*mut JsString, FxBuildHasher>, obj: &JsObject) {
+        if let Some(elements) = obj.array_elements_vec() {
+            for value in elements.iter() {
+                if value.is_string() {
+                    live.insert(value.as_string_ptr_mut());
+                }
+            }
+        }
         if let Some(props) = obj.hash_props_vec() {
             for value in props.iter() {
                 if value.is_string() {
@@ -265,6 +285,21 @@ impl SessionGc {
                 debug_assert!(obj.is_session_epoch());
             }
             let mut freed_bytes = 0u64;
+
+            let elems_ptr = obj.array_elements_raw() as *mut Vec<JsValue>;
+            if !elems_ptr.is_null() {
+                let vec = Box::from_raw(elems_ptr);
+                freed_bytes += size_of::<Vec<JsValue>>() as u64 + (vec.capacity() * size_of::<JsValue>()) as u64;
+                std::mem::drop(vec);
+            }
+
+            let elems_meta_ptr = obj.array_elements_meta_raw() as *mut Vec<Option<PropMetaEntry>>;
+            if !elems_meta_ptr.is_null() {
+                let vec = Box::from_raw(elems_meta_ptr);
+                freed_bytes += size_of::<Vec<Option<PropMetaEntry>>>() as u64
+                    + (vec.capacity() * size_of::<Option<PropMetaEntry>>()) as u64;
+                std::mem::drop(vec);
+            }
 
             let hash_ptr = obj.hash_props_raw() as *mut Vec<JsValue>;
             if !hash_ptr.is_null() {
@@ -761,6 +796,39 @@ mod tests {
             .session_object_ptrs
             .iter()
             .any(|ptr| unsafe { (*(*ptr)).is_gc_marked() }));
+    }
+
+    #[test]
+    fn sweep_preserves_array_elements_and_collects_dead_element_object() {
+        let mut vm = Vm::new();
+        let array_proto = vm.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
+        let arr = vm.epoch.alloc(JsObject::new_array(
+            oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
+            JsValue::from_js_object(array_proto),
+            2,
+            vm.epoch.bump(),
+        ));
+        let live_elem = plain_object(&mut vm);
+        let dead_elem = plain_object(&mut vm);
+        unsafe {
+            (*arr).set_prop_at(0, JsValue::from_js_object(live_elem));
+            (*arr).set_prop_at(1, JsValue::from_js_object(dead_elem));
+        }
+        // 仅元素 0 的对象作为 GC 根：元素 1 的对象应被回收。
+        let arr_session = vm.promote_object(arr);
+        vm.regs[0] = JsValue::from_js_object(arr_session);
+        vm.regs[1] = JsValue::from_js_object(live_elem);
+
+        let mut gc = std::mem::take(&mut vm.gc_state.session_gc);
+        gc.mark(&vm);
+        let _ = gc.sweep(&mut vm);
+        vm.gc_state.session_gc = gc;
+
+        // 存活对象经克隆 + rewrite：数组元素 0 指向晋升后的 live_elem。
+        let live_session = unsafe { (*arr_session).get_prop_at(0).as_js_object_ptr() };
+        assert_eq!(unsafe { (*live_session).prop_count() }, 0);
+        assert_eq!(unsafe { (*arr_session).prop_count() }, 2);
+        assert_eq!(unsafe { (*arr_session).get_prop_at(0).as_js_object_ptr() }, live_session);
     }
 
     #[test]

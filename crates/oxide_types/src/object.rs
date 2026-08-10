@@ -282,8 +282,10 @@ impl PropIndex for i32 {
 ///   type_tag: u8 — 标识包装/外来对象种类的 OBJ_TYPE_* 常量 (1 字节)
 ///   is_session_epoch: u8 (1 字节)
 ///   _pad: u8
-///   hash_props: *mut u8 (8 字节，指向 Box\<Vec\<JsValue\>\>)
-///   prop_meta: *mut u8 (8 字节，指向 Box\<Vec\<Option\<PropMetaEntry\>\>\>)
+///   array_elements: *mut u8 (8 字节，数组对象元素区 Box\<Vec\<JsValue\>\>)
+///   array_elements_meta: *mut u8 (8 字节，数组元素元数据 Box\<Vec\<Option\<PropMetaEntry\>\>\>)
+///   hash_props: *mut u8 (8 字节，命名属性 Box\<Vec\<JsValue\>\>)
+///   prop_meta: *mut u8 (8 字节，命名属性元数据 Box\<Vec\<Option\<PropMetaEntry\>\>\>)
 ///   native_data: *mut u8 (8 字节，VM 拥有的不透明 native/外来载荷)
 ///   proto: JsValue (8 字节)
 ///   generation: u32 (4 字节 + 4 填充)
@@ -361,13 +363,17 @@ pub struct JsObject {
     pub type_tag: u8,
     is_session_epoch: u8,
     _pad: u8,
+    /// 数组元素区（仅数组对象）：`Vec<JsValue>`，`len == array_prop_count`。
+    array_elements: *mut u8,
+    /// 数组元素元数据区（仅数组对象，懒分配）：`Vec<Option<PropMetaEntry>>`。
+    array_elements_meta: *mut u8,
     hash_props: *mut u8,
     prop_meta: *mut u8,
     native_data: *mut u8,
     proto: JsValue,
     generation: u32,
-    /// 数组元素数（数组对象）。普通对象恒 0。属性（shape 槽位）存储偏移
-    /// `array_prop_count + 槽位`，与元素区分（JS 数组属性不影响 length）。
+    /// 数组元素数（数组对象）。普通对象恒 0。命名属性存储在 `hash_props`
+    /// （与元素区分，JS 数组命名属性不影响 length）。
     pub array_prop_count: u32,
     native_fn: Option<NativeFnPtr>,
     sub_module_index: u32,
@@ -481,6 +487,8 @@ impl JsObject {
             type_tag: 0,
             is_session_epoch: 0,
             _pad: 0,
+            array_elements: std::ptr::null_mut(),
+            array_elements_meta: std::ptr::null_mut(),
             hash_props: std::ptr::null_mut(),
             prop_meta: std::ptr::null_mut(),
             native_data: std::ptr::null_mut(),
@@ -496,7 +504,7 @@ impl JsObject {
         }
     }
 
-    /// 构造数组对象：预分配 `n_elements` 个 `undefined` 的 dense 向量并置 array 标志。
+    /// 构造数组对象：预分配 `n_elements` 个 `undefined` 的独立元素区并置 array 标志。
     pub fn new_array(shape_id: ShapeId, proto: JsValue, n_elements: usize, _bump: &bumpalo::Bump) -> Self {
         let mut obj = Self {
             header: (shape_id & 0x00FF_FFFF) | (1 << 30) | (1 << 29),
@@ -504,6 +512,8 @@ impl JsObject {
             type_tag: 0,
             is_session_epoch: 0,
             _pad: 0,
+            array_elements: std::ptr::null_mut(),
+            array_elements_meta: std::ptr::null_mut(),
             hash_props: std::ptr::null_mut(),
             prop_meta: std::ptr::null_mut(),
             native_data: std::ptr::null_mut(),
@@ -518,8 +528,8 @@ impl JsObject {
             upvalues: std::ptr::null_mut(),
         };
         let vec = Box::new(vec![JsValue::undefined(); n_elements.min(MAX_DENSE_PROPS)]);
-        obj.hash_props = Box::into_raw(vec) as *mut u8;
-        obj.array_prop_count = n_elements as u32;
+        obj.array_elements = Box::into_raw(vec) as *mut u8;
+        obj.array_prop_count = n_elements.min(MAX_DENSE_PROPS) as u32;
         obj
     }
 
@@ -567,6 +577,14 @@ impl JsObject {
             .prop_meta_vec()
             .map(|meta| Box::into_raw(Box::new(meta.clone())) as *mut u8)
             .unwrap_or(std::ptr::null_mut());
+        let array_elements = self
+            .array_elements_vec()
+            .map(|elems| Box::into_raw(Box::new(elems.clone())) as *mut u8)
+            .unwrap_or(std::ptr::null_mut());
+        let array_elements_meta = self
+            .array_elements_meta_vec()
+            .map(|meta| Box::into_raw(Box::new(meta.clone())) as *mut u8)
+            .unwrap_or(std::ptr::null_mut());
 
         Self {
             header: self.header,
@@ -574,6 +592,8 @@ impl JsObject {
             type_tag: self.type_tag,
             is_session_epoch: Self::SESSION_EPOCH_BIT,
             _pad: self._pad,
+            array_elements,
+            array_elements_meta,
             hash_props,
             prop_meta,
             native_data: self.native_data,
@@ -592,6 +612,16 @@ impl JsObject {
     /// dense 属性向量底层指针（未分配时为空指针）。
     pub fn hash_props_raw(&self) -> *mut u8 {
         self.hash_props
+    }
+
+    /// 数组元素区底层指针（未分配时为空指针）。
+    pub fn array_elements_raw(&self) -> *mut u8 {
+        self.array_elements
+    }
+
+    /// 数组元素元数据区底层指针（未分配时为空指针）。
+    pub fn array_elements_meta_raw(&self) -> *mut u8 {
+        self.array_elements_meta
     }
 
     /// 属性元数据向量底层指针（未分配时为空指针）。
@@ -639,13 +669,30 @@ impl JsObject {
 
     /// 用 `rewrite` 改写对象内引用的所有对象值。
     ///
-    /// 用于 GC 移动 / 世代晋升：遍历 dense 属性、访问器 getter/setter、
+    /// 用于 GC 移动 / 世代晋升：遍历数组元素区、dense 属性、访问器 getter/setter、
     /// `proto`、`captured_this`、`home_object` 与 upvalue cell 中的对象值，
     /// 原地替换为新地址。非对象值保持不变。
     pub fn rewrite_object_values<F>(&mut self, mut rewrite: F)
     where
         F: FnMut(JsValue) -> JsValue,
     {
+        if let Some(elements) = self.array_elements_vec_mut() {
+            for value in elements {
+                if value.is_object() {
+                    *value = rewrite(*value);
+                }
+            }
+        }
+        if let Some(meta) = self.array_elements_meta_vec_mut() {
+            for entry in meta.iter_mut().flatten() {
+                if entry.get.is_object() {
+                    entry.get = rewrite(entry.get);
+                }
+                if entry.set.is_object() {
+                    entry.set = rewrite(entry.set);
+                }
+            }
+        }
         if let Some(props) = self.hash_props_vec_mut() {
             for value in props {
                 if value.is_object() {
@@ -709,30 +756,27 @@ impl JsObject {
         }
     }
 
-    /// 设置 hash_props vec 的长度。截断或补 undefined 扩展。
-    /// 数组对象只调整元素区（`array_prop_count`），属性区（尾部）整体搬移保持对齐。
+    /// 设置数组元素数 / 命名属性向量长度。截断或补 undefined 扩展。
+    /// 数组对象只调整独立元素区（`array_elements` + `array_prop_count`），命名属性区
+    /// （`hash_props`）零搬移——push 为摊销 O(1) 的 `Vec::push`。
     pub fn set_prop_count(&mut self, count: impl PropIndex) {
         let target = count.to_u32() as usize;
         if self.is_array() {
             let old = self.array_prop_count as usize;
-            let vec = self.ensure_hash_props();
+            let vec = self.ensure_array_elements();
             if target > old {
-                for _ in old..target {
-                    vec.insert(old, JsValue::undefined());
-                }
+                vec.extend((old..target).map(|_| JsValue::undefined()));
             } else if target < old {
-                vec.drain(target..old);
+                vec.truncate(target);
+            }
+            if let Some(meta) = self.array_elements_meta_vec_mut() {
+                if target > old {
+                    meta.extend((old..target).map(|_| None));
+                } else if target < old {
+                    meta.truncate(target);
+                }
             }
             self.array_prop_count = target as u32;
-            if let Some(meta) = self.prop_meta_vec_mut() {
-                if target > old {
-                    for _ in old..target {
-                        meta.insert(old, None);
-                    }
-                } else if target < old {
-                    meta.drain(target..old);
-                }
-            }
         } else {
             let vec = self.ensure_hash_props();
             if target < vec.len() {
@@ -754,9 +798,9 @@ impl JsObject {
         }
     }
 
-    /// 是否已分配属性元数据向量。
+    /// 是否已分配任何属性元数据向量（命名属性区或数组元素区）。
     pub fn has_prop_meta(&self) -> bool {
-        !self.prop_meta.is_null()
+        !self.prop_meta.is_null() || !self.array_elements_meta.is_null()
     }
 
     /// 同 `set_prop_count`，但假定 `hash_props` 已分配。
@@ -802,9 +846,20 @@ impl JsObject {
         }
     }
 
-    /// 读取指定下标属性的元数据；无元数据或越界返回 `None`。
+    /// 读取绝对存储下标 position 处的元数据；无元数据或越界返回 `None`。
     pub fn prop_meta_at(&self, position: impl PropIndex) -> Option<PropMetaEntry> {
         let pos = position.to_u32() as usize;
+        if self.is_array() {
+            let count = self.array_prop_count as usize;
+            if pos < count {
+                return self
+                    .array_elements_meta_vec()
+                    .and_then(|vec| vec.get(pos).copied().flatten());
+            }
+            return self
+                .prop_meta_vec()
+                .and_then(|vec| vec.get(pos - count).copied().flatten());
+        }
         self.prop_meta_vec().and_then(|vec| vec.get(pos).copied().flatten())
     }
 
@@ -839,6 +894,25 @@ impl JsObject {
 
     fn set_meta_at(&mut self, position: impl PropIndex, entry: PropMetaEntry) {
         let pos = position.to_u32() as usize;
+        if self.is_array() {
+            let count = self.array_prop_count as usize;
+            if pos < count {
+                let meta = self.ensure_array_elements_meta();
+                while meta.len() <= pos {
+                    meta.push(None);
+                }
+                meta[pos] = Some(entry);
+                return;
+            }
+            // 命名属性区：值与长度由 set_prop_storage/push_prop 保证。
+            let np = pos - count;
+            let meta = self.ensure_prop_meta();
+            while meta.len() <= np {
+                meta.push(None);
+            }
+            meta[np] = Some(entry);
+            return;
+        }
         let prop_len = self.prop_vec_len();
         if pos >= prop_len {
             self.set_prop_count(pos + 1);
@@ -854,6 +928,22 @@ impl JsObject {
     /// `array_prop_count` 与元素区大小不变（length 保持不变）。
     pub fn mark_hole_at(&mut self, position: impl PropIndex) {
         let pos = position.to_u32() as usize;
+        if self.is_array() {
+            let count = self.array_prop_count as usize;
+            if pos < count {
+                let vec = self.ensure_array_elements();
+                if pos >= vec.len() {
+                    vec.push(JsValue::undefined());
+                }
+                vec[pos] = JsValue::undefined();
+                let meta = self.ensure_array_elements_meta();
+                while meta.len() <= pos {
+                    meta.push(None);
+                }
+                meta[pos] = Some(PropMetaEntry::hole());
+            }
+            return;
+        }
         if pos >= self.prop_vec_len() {
             self.set_prop_count(pos + 1);
         }
@@ -865,8 +955,26 @@ impl JsObject {
         meta[pos] = Some(PropMetaEntry::hole());
     }
 
-    /// 若指定下标是 hole 标记则清除（元素被重新写入时恢复为存在）。
+    /// 若绝对下标是 hole 标记则清除（元素被重新写入时恢复为存在）。
     fn clear_hole_marker(&mut self, pos: usize) {
+        if self.is_array() {
+            let count = self.array_prop_count as usize;
+            if pos < count {
+                if let Some(meta) = self.array_elements_meta_vec_mut() {
+                    if meta.get(pos).is_some_and(|entry| entry.is_some_and(|e| e.is_hole())) {
+                        meta[pos] = None;
+                    }
+                }
+                return;
+            }
+            if let Some(meta) = self.prop_meta_vec_mut() {
+                let np = pos - count;
+                if meta.get(np).is_some_and(|entry| entry.is_some_and(|e| e.is_hole())) {
+                    meta[np] = None;
+                }
+            }
+            return;
+        }
         if let Some(meta) = self.prop_meta_vec_mut() {
             if meta.get(pos).is_some_and(|entry| entry.is_some_and(|e| e.is_hole())) {
                 meta[pos] = None;
@@ -874,11 +982,21 @@ impl JsObject {
         }
     }
 
-    /// 清空全部属性与数组元素区，`array_prop_count` 归零。
+    /// 清空全部命名属性、数组元素区与元数据，`array_prop_count` 归零。
     ///
     /// 供 shape 链重建（如 delete 重排属性表）使用：清空后以 `push_prop` /
     /// `set_prop_count` 按新形状重填。不清除形状 ID，调用方自行处理。
     pub fn clear_props(&mut self) {
+        if !self.array_elements.is_null() {
+            // SAFETY: array_elements 在 ensure_array_elements/new_array 中由 Box<Vec<JsValue>> 创建。
+            let vec = unsafe { &mut *(self.array_elements as *mut Vec<JsValue>) };
+            vec.clear();
+        }
+        if !self.array_elements_meta.is_null() {
+            // SAFETY: array_elements_meta 在 ensure_array_elements_meta 中创建。
+            let meta = unsafe { &mut *(self.array_elements_meta as *mut Vec<Option<PropMetaEntry>>) };
+            meta.clear();
+        }
         if !self.hash_props.is_null() {
             // SAFETY: hash_props 在 ensure_hash_props/new_array 中由 Box<Vec<JsValue>> 创建。
             let vec = unsafe { &mut *(self.hash_props as *mut Vec<JsValue>) };
@@ -1010,30 +1128,115 @@ impl JsObject {
         }
     }
 
-    /// 取下标 position 处的属性值。
-    /// hash_props 未分配或越界时返回 JsValue::undefined()。
+    /// 若数组元素区为空则初始化，并把长度对齐到 `array_prop_count`，返回其可变引用。
+    fn ensure_array_elements(&mut self) -> &mut Vec<JsValue> {
+        if self.array_elements.is_null() {
+            let vec = Box::new(Vec::<JsValue>::new());
+            self.array_elements = Box::into_raw(vec) as *mut u8;
+        }
+        // SAFETY: array_elements 在本方法或 new_array 中由 Box<Vec<JsValue>> 创建。
+        let vec = unsafe { &mut *(self.array_elements as *mut Vec<JsValue>) };
+        while vec.len() < self.array_prop_count as usize {
+            vec.push(JsValue::undefined());
+        }
+        vec
+    }
+
+    /// 数组元素区的安全只读访问；未分配时返回 None。
+    pub fn array_elements_vec(&self) -> Option<&Vec<JsValue>> {
+        if self.array_elements.is_null() {
+            None
+        } else {
+            // SAFETY: array_elements 在 ensure_array_elements/new_array 中由 Box<Vec<JsValue>> 创建。
+            unsafe { Some(&*(self.array_elements as *const Vec<JsValue>)) }
+        }
+    }
+
+    fn array_elements_vec_mut(&mut self) -> Option<&mut Vec<JsValue>> {
+        if self.array_elements.is_null() {
+            None
+        } else {
+            // SAFETY: array_elements 在 ensure_array_elements/new_array 中由 Box<Vec<JsValue>> 创建。
+            unsafe { Some(&mut *(self.array_elements as *mut Vec<JsValue>)) }
+        }
+    }
+
+    /// 确保数组元素元数据向量已分配并返回可变引用（长度对齐当前元素数）。
+    pub fn ensure_array_elements_meta(&mut self) -> &mut Vec<Option<PropMetaEntry>> {
+        if self.array_elements_meta.is_null() {
+            let len = self.array_prop_count as usize;
+            let vec = Box::new(vec![None::<PropMetaEntry>; len]);
+            self.array_elements_meta = Box::into_raw(vec) as *mut u8;
+        }
+        // SAFETY: array_elements_meta 在本方法中由 Box<Vec<Option<PropMetaEntry>>> 创建。
+        let vec = unsafe { &mut *(self.array_elements_meta as *mut Vec<Option<PropMetaEntry>>) };
+        while vec.len() < self.array_prop_count as usize {
+            vec.push(None);
+        }
+        vec
+    }
+
+    /// 数组元素元数据区的安全只读访问；未分配时返回 None。
+    pub fn array_elements_meta_vec(&self) -> Option<&Vec<Option<PropMetaEntry>>> {
+        if self.array_elements_meta.is_null() {
+            None
+        } else {
+            // SAFETY: array_elements_meta 在 ensure_array_elements_meta 中创建。
+            unsafe { Some(&*(self.array_elements_meta as *const Vec<Option<PropMetaEntry>>)) }
+        }
+    }
+
+    fn array_elements_meta_vec_mut(&mut self) -> Option<&mut Vec<Option<PropMetaEntry>>> {
+        if self.array_elements_meta.is_null() {
+            None
+        } else {
+            // SAFETY: array_elements_meta 在 ensure_array_elements_meta 中创建。
+            unsafe { Some(&mut *(self.array_elements_meta as *mut Vec<Option<PropMetaEntry>>)) }
+        }
+    }
+
+    /// 取绝对存储下标 position 处的值（数组：元素区在前，命名属性区在后）。
+    /// 对应存储未分配或越界时返回 JsValue::undefined()。
     pub fn get_prop_at(&self, position: impl PropIndex) -> JsValue {
+        let pos = position.to_u32() as usize;
+        if self.is_array() {
+            let count = self.array_prop_count as usize;
+            if pos < count {
+                if self.array_elements.is_null() {
+                    return JsValue::undefined();
+                }
+                // SAFETY: array_elements 在 ensure_array_elements/new_array 中由 Box<Vec<JsValue>> 创建。
+                let vec = unsafe { &*(self.array_elements as *const Vec<JsValue>) };
+                return vec.get(pos).copied().unwrap_or(JsValue::undefined());
+            }
+            if self.hash_props.is_null() {
+                return JsValue::undefined();
+            }
+            // SAFETY: hash_props 在 ensure_hash_props/new_array 中由 Box<Vec<JsValue>> 创建。
+            let vec = unsafe { &*(self.hash_props as *const Vec<JsValue>) };
+            return vec.get(pos - count).copied().unwrap_or(JsValue::undefined());
+        }
         if self.hash_props.is_null() {
             return JsValue::undefined();
         }
         // SAFETY: hash_props 在 ensure_hash_props/new_array 中由 Box<Vec<JsValue>> 创建。
         let vec = unsafe { &*(self.hash_props as *const Vec<JsValue>) };
-        vec.get(position.to_u32() as usize).copied().unwrap_or(JsValue::undefined())
+        vec.get(pos).copied().unwrap_or(JsValue::undefined())
     }
 
-    /// 设置下标 position 处的属性值。vec 按需自动扩容。
-    /// 数组对象元素写入会更新 `array_prop_count`（元素数随最高索引增长）。
+    /// 设置数组元素 position 处的值（数组对象）；普通对象按绝对下标写入并自动扩容。
+    /// 数组元素写入会更新 `array_prop_count`（元素数随最高索引增长）。
     pub fn set_prop_at(&mut self, position: impl PropIndex, val: JsValue) {
         let pos = position.to_u32() as usize;
         if pos > MAX_DENSE_PROPS {
             return;
         }
         if self.is_array() {
-            // 元素写入越过元素区：先搬移属性区到 pos+1 之后，保持元素/属性分界不变。
+            // 元素写入越过元素区：只扩独立元素区，命名属性区零搬移。
             if pos >= self.array_prop_count as usize {
                 self.set_prop_count(pos + 1);
             }
-            let vec = self.ensure_hash_props();
+            let vec = self.ensure_array_elements();
             vec[pos] = val;
             self.clear_hole_marker(pos);
             return;
@@ -1056,29 +1259,45 @@ impl JsObject {
         }
     }
 
-    /// 数组对象（shape 槽位 → 存储索引 = `array_prop_count + 槽位`）的
-    /// 属性写入；普通对象等价 `set_prop_at`。
+    /// 数组对象（shape 槽位 → 命名属性区存储索引）的属性写入；普通对象等价
+    /// `set_prop_storage(shape_pos)`。
     pub fn set_prop_shape(&mut self, shape_pos: u32, val: JsValue) {
         let idx = if self.is_array() {
             self.array_prop_count as usize + shape_pos as usize
         } else {
             shape_pos as usize
         };
-        let vec = self.ensure_hash_props();
-        while vec.len() <= idx {
-            vec.push(JsValue::undefined());
-        }
-        vec[idx] = val;
-        if let Some(meta) = self.prop_meta_vec_mut() {
-            while meta.len() <= idx {
-                meta.push(None);
-            }
-        }
+        self.set_prop_storage(idx, val);
     }
 
-    /// 按绝对存储索引写入属性，不触发数组元素区搬移（属性区已在元素之后）。
+    /// 按绝对存储索引写入值，数组对象把元素区与命名属性区分派到各自存储。
     /// 用于调用方已知属性存储位置（如 `get_own_property_slot` 返回的索引）的场景。
     pub fn set_prop_storage(&mut self, idx: usize, val: JsValue) {
+        if self.is_array() {
+            let count = self.array_prop_count as usize;
+            if idx < count {
+                let vec = self.ensure_array_elements();
+                if idx >= vec.len() {
+                    vec.push(JsValue::undefined());
+                }
+                vec[idx] = val;
+                self.clear_hole_marker(idx);
+                return;
+            }
+            let np = idx - count;
+            let vec = self.ensure_hash_props();
+            while vec.len() <= np {
+                vec.push(JsValue::undefined());
+            }
+            vec[np] = val;
+            self.clear_hole_marker(idx);
+            if let Some(meta) = self.prop_meta_vec_mut() {
+                while meta.len() <= np {
+                    meta.push(None);
+                }
+            }
+            return;
+        }
         let vec = self.ensure_hash_props();
         while vec.len() <= idx {
             vec.push(JsValue::undefined());
@@ -1092,8 +1311,8 @@ impl JsObject {
         }
     }
 
-    /// 数组对象属性读取（shape 槽位 → 存储索引 = `array_prop_count + 槽位`）；
-    /// 普通对象等价 `get_prop_at`。越界返回 undefined。
+    /// 数组对象属性读取（shape 槽位 → 命名属性区存储索引）；普通对象等价
+    /// `get_prop_at(shape_pos)`。越界返回 undefined。
     pub fn get_prop_shape(&self, shape_pos: u32) -> JsValue {
         let idx = if self.is_array() {
             self.array_prop_count as usize + shape_pos as usize
@@ -1103,10 +1322,14 @@ impl JsObject {
         self.get_prop_at(idx)
     }
 
-    /// 把值压入 hash_props vec，返回其下标。
+    /// 把值压入命名属性区，返回其绝对存储下标（数组对象 = `array_prop_count + 命名下标`）。
     pub fn push_prop(&mut self, val: JsValue) -> u32 {
+        let pos = if self.is_array() {
+            self.array_prop_count as usize + self.hash_props_vec().map_or(0, Vec::len)
+        } else {
+            self.hash_props_vec().map_or(0, Vec::len)
+        };
         let vec = self.ensure_hash_props();
-        let pos = vec.len();
         vec.push(val);
         if let Some(meta) = self.prop_meta_vec_mut() {
             meta.push(None);

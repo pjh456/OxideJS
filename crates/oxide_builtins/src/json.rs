@@ -72,7 +72,7 @@ fn walk_reviver<H: VmHost>(
         if !obj_ptr.is_null() {
             let obj = unsafe { &*obj_ptr };
             if obj.is_array() {
-                let len = obj.prop_vec_len();
+                let len = obj.prop_count() as usize;
                 for i in 0..len {
                     let index_str = i.to_string();
                     let child_si = vm.kernel_core().perm_interner().intern(&index_str).0;
@@ -229,7 +229,7 @@ pub fn json_stringify<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                 if robj.is_function() {
                     replacer_fn = Some(replacer_val);
                 } else if robj.is_array() {
-                    let len = robj.prop_vec_len();
+                    let len = robj.prop_count() as usize;
                     let mut whitelist = HashSet::new();
                     for i in 0..len {
                         let elem = robj.get_prop_at(i);
@@ -446,7 +446,7 @@ fn stringify_array<H: VmHost>(
     let has_space = !space.is_empty();
     out.push('[');
 
-    let len = obj.prop_vec_len();
+    let len = obj.prop_count() as usize;
     for i in 0..len {
         if i > 0 && !has_space {
             out.push(',');

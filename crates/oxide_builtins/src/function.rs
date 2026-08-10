@@ -107,14 +107,12 @@ pub fn function_apply<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                 let arr = unsafe { &*arr_ptr };
                 if arr.is_array() {
                     let max_args = 55usize; // base=200，255 号寄存器之前的安全上限。
-                    let n = arr.hash_props_vec().map_or(0, |v| v.len()).min(max_args);
+                    let n = arr.prop_count() as usize;
+                    let n = n.min(max_args);
                     let base = 200u8;
                     arg_regs = (0..n).map(|i| base + i as u8).collect();
                     for i in 0..n {
-                        let vec = arr.hash_props_vec();
-                        if let Some(v) = vec.and_then(|v| v.get(i)) {
-                            vm.set_reg(base + i as u8, *v);
-                        }
+                        vm.set_reg(base + i as u8, arr.get_prop_at(i));
                     }
                 } else {
                     arg_regs = Vec::new();
