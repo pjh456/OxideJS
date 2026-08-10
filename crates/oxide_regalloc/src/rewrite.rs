@@ -292,18 +292,7 @@ fn remap_ext_reg(r: u32, slot_color: &BTreeMap<u32, u32>, map: &AllocMap) -> u32
 
 /// terminator 判定：跳转族 + RETURN/HALT/THROW（def 结果必死，SPILL 跳过）。
 fn is_terminator(op: OpCode) -> bool {
-    matches!(
-        op,
-        OpCode::JMP
-            | OpCode::BREAK
-            | OpCode::CONTINUE
-            | OpCode::JMP_IF_TRUE
-            | OpCode::JMP_IF_FALSE
-            | OpCode::JMP_IF_NULLISH
-            | OpCode::RETURN
-            | OpCode::HALT
-            | OpCode::THROW
-    )
+    op.is_terminator()
 }
 
 /// spilled builtin：对 builtin_reg_map 中 map[v]=Spill 的项分配确定性自由色 R。

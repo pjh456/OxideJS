@@ -5,7 +5,7 @@
 //! 寄存器规则与 VM dispatch handler 行为一致：
 //! CALL 隐式写 reg 0、GET_PROP 结果写 a/b 槽、HALT 隐式读 reg 0、None 槽映射 Reg(0)。
 
-use oxide_bytecode::opcode::OpCode;
+use oxide_bytecode::opcode::{OpCode, Slot, SlotSpec};
 use smallvec::SmallVec;
 
 use crate::inst::Inst;
@@ -15,335 +15,58 @@ use crate::IRFunction;
 impl Inst {
     /// 本指令定义的寄存器（None 槽按 Reg(0) 映射；CALL 系含隐式 reg 0）。
     /// 无写入返回 None。
+    ///
+    /// # 步骤
+    /// 表驱动解析：取语义表 def 槽位 → 解出对应操作数槽寄存器；Reg0 恒为常量 0。
+    ///
+    /// # 边界与前提
+    /// - `SlotSpec::Range/SpreadArgs/TemplateExprs/BrandReg` 不可能作 def，返回 None。
     pub fn def_reg(&self) -> Option<u32> {
-        match self.op {
-            // CALL 系：结果隐式写 reg 0，rd 是 callee 的 use
-            OpCode::CALL | OpCode::CALL_NATIVE | OpCode::CALL_SPREAD => Some(0),
-            // YIELD/YIELD_STAR：恢复时 next(v) 的 v / 委托完成值经 reg 0 交付（与 CALL 同协议）
-            OpCode::YIELD | OpCode::YIELD_STAR | OpCode::AWAIT => Some(0),
-            // GET_PROP 系：结果写 a/b 槽而非 rd
-            OpCode::GET_PROP | OpCode::IC_GET_PROP => reg_of(&self.a),
-            OpCode::GET_PROP_DYNAMIC => reg_of(&self.b),
-            // 成员读写：val 槽原地更新（a 槽 / b 槽）
-            OpCode::MEMBER_INC | OpCode::MEMBER_DEC => reg_of(&self.a),
-            OpCode::DYN_MEMBER_INC | OpCode::DYN_MEMBER_DEC => reg_of(&self.b),
-            OpCode::COMPOUND_MEMBER_ADD
-            | OpCode::COMPOUND_MEMBER_SUB
-            | OpCode::COMPOUND_MEMBER_MUL
-            | OpCode::COMPOUND_MEMBER_DIV
-            | OpCode::COMPOUND_MEMBER_MOD
-            | OpCode::COMPOUND_MEMBER_EXP
-            | OpCode::COMPOUND_MEMBER_BIT_AND
-            | OpCode::COMPOUND_MEMBER_BIT_OR
-            | OpCode::COMPOUND_MEMBER_BIT_XOR
-            | OpCode::COMPOUND_MEMBER_SHL
-            | OpCode::COMPOUND_MEMBER_SHR
-            | OpCode::COMPOUND_MEMBER_USHR => reg_of(&self.a),
-            // 无 def：控制流 / 写共享状态 / 纯写对象
-            OpCode::HALT
-            | OpCode::RETURN
-            | OpCode::THROW
-            | OpCode::JMP
-            | OpCode::BREAK
-            | OpCode::CONTINUE
-            | OpCode::JMP_IF_FALSE
-            | OpCode::JMP_IF_TRUE
-            | OpCode::JMP_IF_NULLISH
-            | OpCode::TRY_BEGIN
-            | OpCode::TRY_END
-            | OpCode::TRY_FINALLY_BEGIN
-            | OpCode::TRY_FINALLY_END
-            | OpCode::MAKE_CELL
-            | OpCode::MAKE_CELL_FRESH
-            | OpCode::CELL_SET
-            | OpCode::STORE_UPVALUE
-            | OpCode::SET_PROP
-            | OpCode::SET_PROP_DYNAMIC
-            | OpCode::IC_SET_PROP
-            | OpCode::SET_ELEM
-            | OpCode::SET_PRIVATE
-            | OpCode::INIT_PRIVATE
-            | OpCode::DELETE_PROP_STATIC
-            | OpCode::DELETE_PROP_DYNAMIC
-            | OpCode::DEFINE_ACCESSOR
-            | OpCode::DEFINE_PROP
-            | OpCode::DEFINE_GLOBAL_PROP
-            | OpCode::SET_HOME_OBJECT
-            // SPILL 写 VM spill 栈而非寄存器（恢复由 UNSPILL 写 rd）
-            | OpCode::SPILL
-            | OpCode::FOR_IN_INIT
-            | OpCode::FOR_OF_INIT
-            | OpCode::FOR_AWAIT_OF_INIT
-            | OpCode::FOR_IN_CLEANUP
-            | OpCode::FOR_OF_CLOSE
-            | OpCode::FOR_AWAIT_OF_CLOSE
-            | OpCode::SUSPEND_BODY => None,
-            // 其余指令 rd 即 def（算术/比较/位/逻辑/加载族/迭代器 NEXT 等）
-            _ => reg_of(&self.rd),
+        match self.op.semantics().def? {
+            SlotSpec::Slot(slot) => reg_of(slot_operand(slot, self)),
+            SlotSpec::Reg0 => Some(0),
+            _ => None,
         }
     }
 
     /// 本指令读取的寄存器（None 槽按 Reg(0) 映射；HALT 特判 reg 0；TEMPLATE_STR 解析 ext）。
+    ///
+    /// # 步骤
+    /// 按语义表 uses 槽位序逐项解析，序即输出序。
+    ///
+    /// # 边界与前提
+    /// - `Range`：nargs=ext[0]，从指定槽起连续 nargs 个寄存器。
+    /// - `SpreadArgs`：ext[1..] 每个字 `& 0x7FFF_FFFF`。
+    /// - `TemplateExprs`：ext[1..] 中 `seg>>31==1` 的低 8 位。
+    /// - `BrandReg`：ext[0] 非 0 才产生 use。
     pub fn use_regs(&self) -> SmallVec<[u32; 4]> {
         let mut uses = SmallVec::new();
-        match self.op {
-            // CALL 系：rd=callee, a=this, b..b+nargs 参数区间
-            OpCode::CALL | OpCode::CALL_NATIVE => {
-                push_operand(&mut uses, &self.rd);
-                push_operand(&mut uses, &self.a);
-                let nargs = self.ext.first().copied().unwrap_or(0);
-                push_range(&mut uses, reg_of(&self.b), nargs);
-            }
-            // NEW_EXPRESSION：a=ctor, b..b+nargs
-            OpCode::NEW_EXPRESSION => {
-                push_operand(&mut uses, &self.a);
-                let nargs = self.ext.first().copied().unwrap_or(0);
-                push_range(&mut uses, reg_of(&self.b), nargs);
-            }
-            // SUPER_CALL：a..a+nargs
-            OpCode::SUPER_CALL => {
-                let nargs = self.ext.first().copied().unwrap_or(0);
-                push_range(&mut uses, reg_of(&self.a), nargs);
-            }
-            // spread 调用系：ext 内嵌有序实参字（静态寄存器号 / `0x8000_0000|reg` spread 源）
-            OpCode::CALL_SPREAD => {
-                push_operand(&mut uses, &self.rd);
-                push_operand(&mut uses, &self.a);
-                for &w in self.ext.iter().skip(1) {
-                    uses.push(w & 0x7FFF_FFFF);
+        for &spec in self.op.semantics().uses {
+            match spec {
+                SlotSpec::Slot(slot) => push_operand(&mut uses, slot_operand(slot, self)),
+                SlotSpec::Reg0 => uses.push(0),
+                SlotSpec::Range(slot) => {
+                    let nargs = self.ext.first().copied().unwrap_or(0);
+                    push_range(&mut uses, reg_of(slot_operand(slot, self)), nargs);
                 }
-            }
-            OpCode::NEW_EXPRESSION_SPREAD => {
-                push_operand(&mut uses, &self.a);
-                for &w in self.ext.iter().skip(1) {
-                    uses.push(w & 0x7FFF_FFFF);
-                }
-            }
-            OpCode::SUPER_CALL_SPREAD => {
-                for &w in self.ext.iter().skip(1) {
-                    uses.push(w & 0x7FFF_FFFF);
-                }
-            }
-            // GET_PROP 系：结果写 a/b 槽，rd=obj 是 use
-            OpCode::GET_PROP => {
-                push_operand(&mut uses, &self.rd);
-                push_operand(&mut uses, &self.b);
-            }
-            OpCode::GET_PROP_DYNAMIC => {
-                push_operand(&mut uses, &self.rd);
-                push_operand(&mut uses, &self.a);
-            }
-            OpCode::IC_GET_PROP => {
-                push_operand(&mut uses, &self.a);
-                push_operand(&mut uses, &self.b);
-            }
-            // 成员更新：obj + key 是 use，val 槽是 def
-            OpCode::MEMBER_INC | OpCode::MEMBER_DEC => {
-                push_operand(&mut uses, &self.rd);
-                push_operand(&mut uses, &self.b);
-            }
-            OpCode::DYN_MEMBER_INC | OpCode::DYN_MEMBER_DEC => {
-                push_operand(&mut uses, &self.rd);
-                push_operand(&mut uses, &self.a);
-            }
-            OpCode::COMPOUND_MEMBER_ADD
-            | OpCode::COMPOUND_MEMBER_SUB
-            | OpCode::COMPOUND_MEMBER_MUL
-            | OpCode::COMPOUND_MEMBER_DIV
-            | OpCode::COMPOUND_MEMBER_MOD
-            | OpCode::COMPOUND_MEMBER_EXP
-            | OpCode::COMPOUND_MEMBER_BIT_AND
-            | OpCode::COMPOUND_MEMBER_BIT_OR
-            | OpCode::COMPOUND_MEMBER_BIT_XOR
-            | OpCode::COMPOUND_MEMBER_SHL
-            | OpCode::COMPOUND_MEMBER_SHR
-            | OpCode::COMPOUND_MEMBER_USHR => {
-                push_operand(&mut uses, &self.rd);
-                push_operand(&mut uses, &self.a);
-                push_operand(&mut uses, &self.b);
-            }
-            // 复合赋值：rd 与 a 都是 use（coerce 读双寄存器）
-            OpCode::COMPOUND_ADD
-            | OpCode::COMPOUND_SUB
-            | OpCode::COMPOUND_MUL
-            | OpCode::COMPOUND_DIV
-            | OpCode::COMPOUND_MOD
-            | OpCode::COMPOUND_EXP
-            | OpCode::COMPOUND_AND
-            | OpCode::COMPOUND_OR
-            | OpCode::COMPOUND_XOR
-            | OpCode::COMPOUND_SHL
-            | OpCode::COMPOUND_SHR
-            | OpCode::COMPOUND_USHR => {
-                push_operand(&mut uses, &self.rd);
-                push_operand(&mut uses, &self.a);
-            }
-            // 自增/自减：读 rd（写 rd 和 a）
-            OpCode::INC_PRE | OpCode::INC_POST | OpCode::DEC_PRE | OpCode::DEC_POST => {
-                push_operand(&mut uses, &self.rd);
-            }
-            // 二元运算：a, b
-            OpCode::ADD
-            | OpCode::SUB
-            | OpCode::MUL
-            | OpCode::DIV
-            | OpCode::MOD
-            | OpCode::EQ
-            | OpCode::NEQ
-            | OpCode::LT
-            | OpCode::GT
-            | OpCode::LTE
-            | OpCode::GTE
-            | OpCode::AND
-            | OpCode::OR
-            | OpCode::NULLISH
-            | OpCode::STRICT_EQ
-            | OpCode::STRICT_NEQ
-            | OpCode::BIT_AND
-            | OpCode::BIT_OR
-            | OpCode::BIT_XOR
-            | OpCode::SHL
-            | OpCode::SHR
-            | OpCode::USHR
-            | OpCode::INSTANCEOF
-            | OpCode::IN
-            | OpCode::CREATE_REGEXP => {
-                push_operand(&mut uses, &self.a);
-                push_operand(&mut uses, &self.b);
-            }
-            // 一元：a（emit 常 rd==a）
-            OpCode::NEG | OpCode::NOT | OpCode::UNARY_PLUS | OpCode::BIT_NOT | OpCode::TYPEOF => {
-                push_operand(&mut uses, &self.a);
-            }
-            // 无条件跳转 / try 标记 / 生成器 body 标记：无寄存器
-            OpCode::JMP
-            | OpCode::BREAK
-            | OpCode::CONTINUE
-            | OpCode::TRY_BEGIN
-            | OpCode::TRY_FINALLY_BEGIN
-            | OpCode::TRY_END
-            | OpCode::TRY_FINALLY_END
-            | OpCode::FOR_IN_CLEANUP
-            | OpCode::FOR_OF_CLOSE
-            | OpCode::SUSPEND_BODY => {}
-            // 条件跳转：rd=cond
-            OpCode::JMP_IF_FALSE | OpCode::JMP_IF_TRUE | OpCode::JMP_IF_NULLISH => {
-                push_operand(&mut uses, &self.rd);
-            }
-            // HALT：隐式读 reg 0（顶层返回值）
-            OpCode::HALT => uses.push(0),
-            // RETURN/THROW/YIELD/YIELD_STAR/AWAIT：读 rd（None→0）
-            OpCode::RETURN | OpCode::THROW | OpCode::YIELD | OpCode::YIELD_STAR | OpCode::AWAIT => {
-                push_operand(&mut uses, &self.rd)
-            }
-            // 加载族：a 槽是 Const/Imm 立即数，无寄存器 use
-            OpCode::LOAD_CONST
-            | OpCode::CREATE_CLOSURE
-            | OpCode::LOAD_UPVALUE
-            | OpCode::VOID
-            | OpCode::NEW_OBJECT
-            | OpCode::NEW_ARRAY
-            | OpCode::CREATE_ARGUMENTS
-            | OpCode::CREATE_REST_ARRAY
-            | OpCode::NOP => {}
-            // 变量读写：LOAD_VAR/STORE_VAR/CELL_GET 读 a（None→0）
-            OpCode::LOAD_VAR | OpCode::STORE_VAR | OpCode::CELL_GET => {
-                push_operand(&mut uses, &self.a);
-            }
-            // RegAlloc 辅助：MOV 读 src（a 槽）；SPILL 读待溢出寄存器（rd）；UNSPILL 仅写 rd 无寄存器读
-            OpCode::MOV => push_operand(&mut uses, &self.a),
-            OpCode::SPILL => push_operand(&mut uses, &self.rd),
-            OpCode::UNSPILL => {}
-            // MAKE_CELL：cell 初值读 rd；CELL_SET/STORE_UPVALUE 读 a
-            OpCode::MAKE_CELL | OpCode::MAKE_CELL_FRESH => push_operand(&mut uses, &self.rd),
-            OpCode::CELL_SET | OpCode::STORE_UPVALUE => push_operand(&mut uses, &self.a),
-            // 写对象属性：rd/a/b 全 use
-            OpCode::SET_PROP
-            | OpCode::SET_PROP_DYNAMIC
-            | OpCode::IC_SET_PROP
-            | OpCode::SET_ELEM
-            | OpCode::INIT_PRIVATE
-            | OpCode::DEFINE_ACCESSOR
-            | OpCode::DEFINE_PROP
-            | OpCode::DEFINE_GLOBAL_PROP => {
-                push_operand(&mut uses, &self.rd);
-                push_operand(&mut uses, &self.a);
-                push_operand(&mut uses, &self.b);
-            }
-            // 私有写：rd=对象、a=值、b=键是 use，额外读 ext[0]（brand 对象寄存器）
-            OpCode::SET_PRIVATE => {
-                push_operand(&mut uses, &self.rd);
-                push_operand(&mut uses, &self.a);
-                push_operand(&mut uses, &self.b);
-                let brand_reg = self.ext.first().copied().unwrap_or(0);
-                if brand_reg != 0 {
-                    uses.push(brand_reg);
-                }
-            }
-            // 私有读/品牌检查：a=对象、b=私有键是 use，rd 是结果 def
-            // GET_PRIVATE 额外读 ext[0]（brand 对象寄存器，0 表示跳过检查）
-            OpCode::GET_PRIVATE => {
-                push_operand(&mut uses, &self.a);
-                push_operand(&mut uses, &self.b);
-                let brand_reg = self.ext.first().copied().unwrap_or(0);
-                if brand_reg != 0 {
-                    uses.push(brand_reg);
-                }
-            }
-            OpCode::PRIVATE_BRAND_IN => {
-                push_operand(&mut uses, &self.a);
-                push_operand(&mut uses, &self.b);
-            }
-            // delete：读 obj（+dynamic 读 key）
-            OpCode::DELETE_PROP_STATIC => push_operand(&mut uses, &self.rd),
-            OpCode::DELETE_PROP_DYNAMIC => {
-                push_operand(&mut uses, &self.rd);
-                push_operand(&mut uses, &self.b);
-            }
-            // super 属性读：a=this, b=key
-            OpCode::SUPER_GET_PROP | OpCode::SUPER_STATIC_GET_PROP => {
-                push_operand(&mut uses, &self.a);
-                push_operand(&mut uses, &self.b);
-            }
-            // SET_HOME_OBJECT：rd=func, a=home
-            OpCode::SET_HOME_OBJECT => {
-                push_operand(&mut uses, &self.rd);
-                push_operand(&mut uses, &self.a);
-            }
-            // for-in/of 迭代器：INIT 读 a；NEXT/DONE 读迭代器栈隐式状态
-            OpCode::FOR_IN_INIT | OpCode::FOR_OF_INIT | OpCode::FOR_AWAIT_OF_INIT => push_operand(&mut uses, &self.a),
-            OpCode::FOR_IN_NEXT | OpCode::FOR_IN_DONE | OpCode::FOR_OF_NEXT | OpCode::FOR_OF_DONE => {}
-            // for-await-of：NEXT 无寄存器 use；DONE 读取 AWAIT 恢复值（a 槽）的 done
-            OpCode::FOR_AWAIT_OF_NEXT | OpCode::FOR_AWAIT_OF_CLOSE => {}
-            OpCode::FOR_AWAIT_OF_DONE => push_operand(&mut uses, &self.a),
-            // REST_OBJECT：读 a（src）与可选 b（运行时 excluded 数组），ext 是 excluded_idx 常量
-            OpCode::REST_OBJECT => {
-                push_operand(&mut uses, &self.a);
-                push_operand(&mut uses, &self.b);
-            }
-            // SPREAD_OBJECT：原地改目标对象，读目标（rd）与源（a）
-            OpCode::SPREAD_OBJECT => {
-                push_operand(&mut uses, &self.rd);
-                push_operand(&mut uses, &self.a);
-            }
-            // TEMPLATE_STR：解析 ext，跳过 ext[0]，后续 seg>>31==1 则低 8 位是 expr_reg
-            OpCode::TEMPLATE_STR => {
-                for seg in self.ext.iter().skip(1) {
-                    if seg >> 31 == 1 {
-                        uses.push(seg & 0xFF);
+                SlotSpec::SpreadArgs => {
+                    for &w in self.ext.iter().skip(1) {
+                        uses.push(w & 0x7FFF_FFFF);
                     }
                 }
-            }
-            // 占位 opcode（emit 不产）：按无 use 保守处理，不影响合法产物
-            OpCode::SWITCH_TABLE
-            | OpCode::PROFILE_SHAPE
-            | OpCode::PROFILE_BRANCH
-            | OpCode::PROFILE_CALL
-            | OpCode::FORK
-            | OpCode::JOIN => {}
-            // TO_OBJECT：rd 原地转换（读且写）
-            OpCode::TO_OBJECT => {
-                push_operand(&mut uses, &self.rd);
+                SlotSpec::TemplateExprs => {
+                    for seg in self.ext.iter().skip(1) {
+                        if seg >> 31 == 1 {
+                            uses.push(seg & 0xFF);
+                        }
+                    }
+                }
+                SlotSpec::BrandReg => {
+                    let brand_reg = self.ext.first().copied().unwrap_or(0);
+                    if brand_reg != 0 {
+                        uses.push(brand_reg);
+                    }
+                }
             }
         }
         uses
@@ -351,59 +74,19 @@ impl Inst {
 
     /// 本指令是否无观察副作用（LOAD_VAR 的 This+derived 特判需要函数元信息）。
     ///
-    /// 纯 = 结果未用时可删。表外 opcode 一律视为有副作用，宁少删不错删。
+    /// 纯 = 结果未用时可删。表内 pure 是静态字段，LOAD_VAR 上下文例外在此叠加。
     pub fn is_pure(&self, f: &IRFunction) -> bool {
-        match self.op {
-            // 算术 / 比较 / 位 / 逻辑：coerce 对象路径有抛错风险，仍按纯处理（运行时等价兜底）
-            OpCode::ADD
-            | OpCode::SUB
-            | OpCode::MUL
-            | OpCode::DIV
-            | OpCode::MOD
-            | OpCode::NEG
-            | OpCode::UNARY_PLUS
-            | OpCode::EQ
-            | OpCode::NEQ
-            | OpCode::LT
-            | OpCode::GT
-            | OpCode::LTE
-            | OpCode::GTE
-            | OpCode::STRICT_EQ
-            | OpCode::STRICT_NEQ
-            | OpCode::BIT_AND
-            | OpCode::BIT_OR
-            | OpCode::BIT_XOR
-            | OpCode::SHL
-            | OpCode::SHR
-            | OpCode::USHR
-            | OpCode::BIT_NOT
-            | OpCode::AND
-            | OpCode::OR
-            | OpCode::NOT
-            | OpCode::NULLISH => true,
-            // 分配 / 常量 / 空操作（a 槽非寄存器）
-            OpCode::NOP
-            | OpCode::LOAD_CONST
-            | OpCode::VOID
-            | OpCode::TYPEOF
-            | OpCode::NEW_OBJECT
-            | OpCode::NEW_ARRAY => true,
-            // MOV：寄存器复制无副作用，可删无害
-            OpCode::MOV => true,
-            // SPILL/UNSPILL：RegAlloc 插入的指令，删 SPILL 后 UNSPILL 读陈旧值，永不删
-            OpCode::SPILL | OpCode::UNSPILL => false,
-            // 闭包 / cell 读取：无抛错路径
-            OpCode::CREATE_CLOSURE | OpCode::LOAD_UPVALUE | OpCode::CELL_GET => true,
-            // 模板字符串：纯拼接写 rd，无抛错（use 统计覆盖其 ext）
-            OpCode::TEMPLATE_STR => true,
-            // LOAD_VAR：仅 a==This 且 derived 构造函数读 this 时可能抛 ReferenceError
-            OpCode::LOAD_VAR => !(self.a == Operand::This && f.is_derived_constructor),
-            // STORE_VAR：写变量目标寄存器。脚本顶层/模块作用域的变量是全局可观察状态，
-            // 删除会改变外部观察结果；函数内局部未用赋值的优化交给精确 DCE。
-            OpCode::STORE_VAR => false,
-            // 其余全部有副作用（getter/调用/控制流/迭代器/复合更新/写共享状态/占位防御）
-            _ => false,
-        }
+        let base = self.op.semantics().pure;
+        base && !(self.op == OpCode::LOAD_VAR && self.a == Operand::This && f.is_derived_constructor)
+    }
+}
+
+/// 槽位 → 对应操作数（表解析用；Const/Imm/Label 由 reg_of 过滤）。
+fn slot_operand(slot: Slot, i: &Inst) -> &Operand {
+    match slot {
+        Slot::Rd => &i.rd,
+        Slot::A => &i.a,
+        Slot::B => &i.b,
     }
 }
 
@@ -799,5 +482,311 @@ mod tests {
         // a=Reg 普通 LOAD_VAR 在 derived 函数中也纯
         let reg_load = Inst::new(OpCode::LOAD_VAR, Operand::Reg(1), Operand::Reg(2), Operand::None);
         assert!(reg_load.is_pure(&derived));
+    }
+
+    // ── 表驱动解析 vs 老 match 的一致性（Phase B1 迁移校验）──
+
+    /// 每个 opcode 构造一条规范指令：rd/a/b 置 Reg(1/2/3)，ext 按族填真实布局。
+    fn canonical_inst(op: OpCode) -> Inst {
+        match op {
+            OpCode::CALL | OpCode::CALL_NATIVE => {
+                Inst::call(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 2)
+            }
+            OpCode::NEW_EXPRESSION => {
+                Inst::new_expression(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 2)
+            }
+            OpCode::SUPER_CALL => Inst::super_call(Operand::Reg(1), Operand::Reg(2), 2),
+            OpCode::CALL_SPREAD => {
+                Inst::call_spread(Operand::Reg(1), Operand::Reg(2), &[5, 0x8000_0000 | 9])
+            }
+            OpCode::NEW_EXPRESSION_SPREAD => {
+                Inst::new_expression_spread(Operand::Reg(1), Operand::Reg(2), &[5, 0x8000_0000 | 9])
+            }
+            OpCode::SUPER_CALL_SPREAD => {
+                Inst::super_call_spread(Operand::Reg(1), &[5, 0x8000_0000 | 9])
+            }
+            OpCode::IC_GET_PROP => Inst::ic_get(Operand::Reg(1), Operand::Reg(2)),
+            OpCode::IC_SET_PROP => Inst::ic_set(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3)),
+            OpCode::MEMBER_INC => {
+                Inst::member_inc(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
+            }
+            OpCode::MEMBER_DEC => {
+                Inst::member_dec(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
+            }
+            OpCode::COMPOUND_MEMBER_ADD => {
+                Inst::compound_member_add(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
+            }
+            OpCode::COMPOUND_MEMBER_SUB => {
+                Inst::compound_member_sub(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
+            }
+            OpCode::COMPOUND_MEMBER_MUL => {
+                Inst::compound_member_mul(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
+            }
+            OpCode::COMPOUND_MEMBER_DIV => {
+                Inst::compound_member_div(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
+            }
+            OpCode::COMPOUND_MEMBER_MOD => {
+                Inst::compound_member_mod(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
+            }
+            OpCode::COMPOUND_MEMBER_EXP => {
+                Inst::compound_member_exp(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
+            }
+            OpCode::COMPOUND_MEMBER_BIT_AND => {
+                Inst::compound_member_bit_and(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
+            }
+            OpCode::COMPOUND_MEMBER_BIT_OR => {
+                Inst::compound_member_bit_or(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
+            }
+            OpCode::COMPOUND_MEMBER_BIT_XOR => {
+                Inst::compound_member_bit_xor(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
+            }
+            OpCode::COMPOUND_MEMBER_SHL => {
+                Inst::compound_member_shl(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
+            }
+            OpCode::COMPOUND_MEMBER_SHR => {
+                Inst::compound_member_shr(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
+            }
+            OpCode::COMPOUND_MEMBER_USHR => {
+                Inst::compound_member_ushr(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
+            }
+            OpCode::TEMPLATE_STR => Inst::template_str(Operand::Reg(1), 2, 10, &[0x1234, 0x8000_0000 | 5]),
+            OpCode::GET_PRIVATE => {
+                Inst::get_private(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 7, 99)
+            }
+            OpCode::SET_PRIVATE => {
+                Inst::set_private(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 7, 99)
+            }
+            OpCode::INIT_PRIVATE => {
+                Inst::init_private(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), true)
+            }
+            OpCode::PRIVATE_BRAND_IN => {
+                Inst::private_brand_in(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 7, 99)
+            }
+            OpCode::SPILL => Inst::inst_spill(Operand::Reg(1), 42),
+            OpCode::UNSPILL => Inst::inst_unspill(Operand::Reg(1), 42),
+            OpCode::REST_OBJECT => Inst::rest_object(Operand::Reg(1), Operand::Reg(2), 7, None),
+            OpCode::DEFINE_ACCESSOR => {
+                Inst::define_accessor(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 42)
+            }
+            OpCode::DELETE_PROP_STATIC => Inst::delete_prop_static(Operand::Reg(1), 9),
+            _ => Inst::new(op, Operand::Reg(1), Operand::Reg(2), Operand::Reg(3)),
+        }
+    }
+
+    /// 全 opcode 表遍历断言（golden）：def/use/pure 与表逐项一致。
+    fn assert_contract(op: OpCode, def: Option<u32>, uses: &[u32], pure: bool) {
+        let inst = canonical_inst(op);
+        let f = IRFunction::new();
+        assert_eq!(inst.def_reg(), def, "{op}: def");
+        assert_eq!(inst.use_regs().as_slice(), uses, "{op}: uses");
+        assert_eq!(inst.is_pure(&f), pure, "{op}: pure");
+    }
+
+    /// 同一规格的多个 opcode 批量断言。
+    fn assert_group(ops: &[OpCode], def: Option<u32>, uses: &[u32], pure: bool) {
+        for &op in ops {
+            assert_contract(op, def, uses, pure);
+        }
+    }
+
+    /// 每个 opcode 的 def/use/pure 与现有语义表一致（canonical rd=1, a=2, b=3）。
+    #[test]
+    fn opcode_semantics_golden_table() {
+        // 二元运算：def=rd, uses=[a,b]，纯
+        assert_group(
+            &[
+                OpCode::ADD,
+                OpCode::SUB,
+                OpCode::MUL,
+                OpCode::DIV,
+                OpCode::MOD,
+                OpCode::EQ,
+                OpCode::NEQ,
+                OpCode::LT,
+                OpCode::GT,
+                OpCode::LTE,
+                OpCode::GTE,
+                OpCode::AND,
+                OpCode::OR,
+                OpCode::STRICT_EQ,
+                OpCode::STRICT_NEQ,
+                OpCode::BIT_AND,
+                OpCode::BIT_OR,
+                OpCode::BIT_XOR,
+                OpCode::SHL,
+                OpCode::SHR,
+                OpCode::USHR,
+                OpCode::NULLISH,
+            ],
+            Some(1),
+            &[2, 3],
+            true,
+        );
+        // 二元但不可删：coerce 有观察路径
+        assert_group(&[OpCode::IN, OpCode::INSTANCEOF, OpCode::CREATE_REGEXP], Some(1), &[2, 3], false);
+        // 一元：def=rd, uses=[a]
+        assert_group(
+            &[OpCode::NEG, OpCode::NOT, OpCode::UNARY_PLUS, OpCode::BIT_NOT, OpCode::TYPEOF],
+            Some(1),
+            &[2],
+            true,
+        );
+        // 复合赋值：def=rd, uses=[rd,a]，不可删
+        assert_group(
+            &[
+                OpCode::COMPOUND_ADD,
+                OpCode::COMPOUND_SUB,
+                OpCode::COMPOUND_MUL,
+                OpCode::COMPOUND_DIV,
+                OpCode::COMPOUND_MOD,
+                OpCode::COMPOUND_EXP,
+                OpCode::COMPOUND_AND,
+                OpCode::COMPOUND_OR,
+                OpCode::COMPOUND_XOR,
+                OpCode::COMPOUND_SHL,
+                OpCode::COMPOUND_SHR,
+                OpCode::COMPOUND_USHR,
+            ],
+            Some(1),
+            &[1, 2],
+            false,
+        );
+        // RegAlloc 辅助
+        assert_contract(OpCode::MOV, Some(1), &[2], true);
+        assert_contract(OpCode::SPILL, None, &[1], false);
+        assert_contract(OpCode::UNSPILL, Some(1), &[], false);
+        assert_contract(OpCode::SPREAD_OBJECT, Some(1), &[1, 2], false);
+        // 无条件跳转 / try 标记 / 生成器 body 标记：无 def 无 use
+        assert_group(
+            &[
+                OpCode::BREAK,
+                OpCode::CONTINUE,
+                OpCode::JMP,
+                OpCode::TRY_BEGIN,
+                OpCode::TRY_END,
+                OpCode::TRY_FINALLY_BEGIN,
+                OpCode::TRY_FINALLY_END,
+                OpCode::FOR_IN_CLEANUP,
+                OpCode::FOR_OF_CLOSE,
+                OpCode::SUSPEND_BODY,
+            ],
+            None,
+            &[],
+            false,
+        );
+        // 条件跳转：uses=[rd]
+        assert_group(&[OpCode::JMP_IF_FALSE, OpCode::JMP_IF_TRUE, OpCode::JMP_IF_NULLISH], None, &[1], false);
+        // 迭代器 INIT 读 a；NEXT/DONE 无 use 写 rd
+        assert_group(&[OpCode::FOR_OF_INIT, OpCode::FOR_IN_INIT, OpCode::FOR_AWAIT_OF_INIT], None, &[2], false);
+        assert_group(
+            &[
+                OpCode::FOR_OF_NEXT,
+                OpCode::FOR_IN_NEXT,
+                OpCode::FOR_IN_DONE,
+                OpCode::FOR_OF_DONE,
+                OpCode::FOR_AWAIT_OF_NEXT,
+            ],
+            Some(1),
+            &[],
+            false,
+        );
+        assert_contract(OpCode::FOR_AWAIT_OF_DONE, Some(1), &[2], false);
+        // 自增/自减：def=rd, uses=[rd]
+        assert_group(&[OpCode::INC_PRE, OpCode::INC_POST, OpCode::DEC_PRE, OpCode::DEC_POST], Some(1), &[1], false);
+        // 占位 opcode：def=rd 保守，不可删
+        assert_group(
+            &[
+                OpCode::SWITCH_TABLE,
+                OpCode::PROFILE_SHAPE,
+                OpCode::PROFILE_BRANCH,
+                OpCode::PROFILE_CALL,
+                OpCode::FORK,
+                OpCode::JOIN,
+            ],
+            Some(1),
+            &[],
+            false,
+        );
+        // 异常 / 返回 / 停机
+        assert_contract(OpCode::THROW, None, &[1], false);
+        assert_contract(OpCode::RETURN, None, &[1], false);
+        assert_contract(OpCode::HALT, None, &[0], false);
+        // 模板字符串：表达式寄存器来自 ext
+        assert_contract(OpCode::TEMPLATE_STR, Some(1), &[5], true);
+        // 小语言特性
+        assert_contract(OpCode::DELETE_PROP_STATIC, None, &[1], false);
+        assert_contract(OpCode::DELETE_PROP_DYNAMIC, None, &[1, 3], false);
+        assert_contract(OpCode::MAKE_CELL, None, &[1], false);
+        assert_contract(OpCode::MAKE_CELL_FRESH, None, &[1], false);
+        assert_contract(OpCode::CELL_SET, None, &[2], false);
+        assert_contract(OpCode::CELL_GET, Some(1), &[2], true);
+        assert_contract(OpCode::REST_OBJECT, Some(1), &[2, 0], false);
+        // 变量加载族
+        assert_contract(OpCode::LOAD_VAR, Some(1), &[2], true);
+        assert_contract(OpCode::STORE_VAR, Some(1), &[2], false);
+        assert_contract(OpCode::LOAD_CONST, Some(1), &[], true);
+        assert_contract(OpCode::LOAD_UPVALUE, Some(1), &[], true);
+        assert_contract(OpCode::CREATE_CLOSURE, Some(1), &[], true);
+        assert_contract(OpCode::STORE_UPVALUE, None, &[2], false);
+        // 调用族：CALL 系隐式写 reg 0
+        assert_contract(OpCode::CALL, Some(0), &[1, 2, 3, 4], false);
+        assert_contract(OpCode::CALL_NATIVE, Some(0), &[1, 2, 3, 4], false);
+        assert_contract(OpCode::NEW_EXPRESSION, Some(1), &[2, 3, 4], false);
+        assert_contract(OpCode::SUPER_CALL, Some(1), &[2, 3], false);
+        assert_contract(OpCode::CALL_SPREAD, Some(0), &[1, 2, 5, 9], false);
+        assert_contract(OpCode::NEW_EXPRESSION_SPREAD, Some(1), &[2, 5, 9], false);
+        assert_contract(OpCode::SUPER_CALL_SPREAD, Some(1), &[5, 9], false);
+        // super 属性读 / home object / accessor
+        assert_group(&[OpCode::SUPER_GET_PROP, OpCode::SUPER_STATIC_GET_PROP], Some(1), &[2, 3], false);
+        assert_contract(OpCode::SET_HOME_OBJECT, None, &[1, 2], false);
+        assert_contract(OpCode::DEFINE_ACCESSOR, None, &[1, 2, 3], false);
+        // Object Property：GET_PROP 写 a 槽、DYNAMIC 写 b 槽
+        assert_contract(OpCode::GET_PROP, Some(2), &[1, 3], false);
+        assert_contract(OpCode::GET_PROP_DYNAMIC, Some(3), &[1, 2], false);
+        assert_contract(OpCode::IC_GET_PROP, Some(1), &[1, 2], false);
+        assert_contract(OpCode::SET_PROP, None, &[1, 2, 3], false);
+        assert_contract(OpCode::SET_PROP_DYNAMIC, None, &[1, 2, 3], false);
+        assert_contract(OpCode::IC_SET_PROP, None, &[1, 2, 3], false);
+        assert_contract(OpCode::SET_ELEM, None, &[1, 2, 3], false);
+        assert_group(&[OpCode::NEW_OBJECT, OpCode::NEW_ARRAY], Some(1), &[], true);
+        // define 语义属性写入 / arguments / rest
+        assert_group(&[OpCode::DEFINE_PROP, OpCode::DEFINE_GLOBAL_PROP], None, &[1, 2, 3], false);
+        assert_group(&[OpCode::CREATE_ARGUMENTS, OpCode::CREATE_REST_ARRAY], Some(1), &[], false);
+        // 成员更新：val 槽原地写（a/b 槽）
+        assert_group(&[OpCode::MEMBER_INC, OpCode::MEMBER_DEC], Some(2), &[1, 3], false);
+        assert_group(&[OpCode::DYN_MEMBER_INC, OpCode::DYN_MEMBER_DEC], Some(3), &[1, 2], false);
+        assert_group(
+            &[
+                OpCode::COMPOUND_MEMBER_ADD,
+                OpCode::COMPOUND_MEMBER_SUB,
+                OpCode::COMPOUND_MEMBER_MUL,
+                OpCode::COMPOUND_MEMBER_DIV,
+                OpCode::COMPOUND_MEMBER_MOD,
+                OpCode::COMPOUND_MEMBER_EXP,
+                OpCode::COMPOUND_MEMBER_BIT_AND,
+                OpCode::COMPOUND_MEMBER_BIT_OR,
+                OpCode::COMPOUND_MEMBER_BIT_XOR,
+                OpCode::COMPOUND_MEMBER_SHL,
+                OpCode::COMPOUND_MEMBER_SHR,
+                OpCode::COMPOUND_MEMBER_USHR,
+            ],
+            Some(2),
+            &[1, 2, 3],
+            false,
+        );
+        // 私有成员：brand_reg 非 0 时产生额外 use
+        assert_contract(OpCode::GET_PRIVATE, Some(1), &[2, 3, 7], false);
+        assert_contract(OpCode::SET_PRIVATE, None, &[1, 2, 3, 7], false);
+        assert_contract(OpCode::INIT_PRIVATE, None, &[1, 2, 3], false);
+        assert_contract(OpCode::PRIVATE_BRAND_IN, Some(1), &[2, 3], false);
+        // 生成器 / 异步：恢复值经 reg 0
+        assert_group(&[OpCode::YIELD, OpCode::YIELD_STAR, OpCode::AWAIT], Some(0), &[1], false);
+        assert_contract(OpCode::FOR_AWAIT_OF_CLOSE, None, &[], false);
+        // 位 / 对象 / 杂项
+        assert_contract(OpCode::TO_OBJECT, Some(1), &[1], false);
+        // NOP：rd=None 时 def_reg 仍为 Some(0)（catch-all 语义，表内保持 def=Rd）
+        assert_eq!(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None).def_reg(), Some(0));
+        assert_contract(OpCode::NOP, Some(1), &[], true);
+        assert_contract(OpCode::VOID, Some(1), &[], true);
     }
 }

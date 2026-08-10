@@ -120,7 +120,7 @@ fn operand_pair_to_u8(a: &Operand, b: &Operand) -> (u8, u8) {
 }
 
 fn encode_inst(inst: &Inst, instrs: &mut Vec<u32>, jumps: &mut Vec<(usize, u32)>) -> Result<(), String> {
-    if is_jump_op(inst.op) {
+    if inst.op.is_jump() {
         let label = match inst.b {
             Operand::Label(id) => id,
             _ => return Err(format!("jump op {:?} requires Label operand in b slot", inst.op)),
@@ -147,18 +147,4 @@ fn encode_inst(inst: &Inst, instrs: &mut Vec<u32>, jumps: &mut Vec<(usize, u32)>
     instrs.push(opcode::encode(inst.op, rd, a, b));
     instrs.extend_from_slice(&inst.ext);
     Ok(())
-}
-
-fn is_jump_op(op: OpCode) -> bool {
-    matches!(
-        op,
-        OpCode::JMP
-            | OpCode::BREAK
-            | OpCode::CONTINUE
-            | OpCode::JMP_IF_FALSE
-            | OpCode::JMP_IF_TRUE
-            | OpCode::JMP_IF_NULLISH
-            | OpCode::TRY_BEGIN
-            | OpCode::TRY_FINALLY_BEGIN
-    )
 }

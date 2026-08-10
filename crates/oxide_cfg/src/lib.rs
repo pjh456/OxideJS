@@ -68,18 +68,7 @@ impl Default for Cfg {
 /// 标记**（异常边起点，见 Pass 3），不是控制流终结——抄用 is_jump_op 会导致 try 体
 /// 被切块、异常边爆炸。
 fn is_terminator(op: OpCode) -> bool {
-    matches!(
-        op,
-        OpCode::JMP
-            | OpCode::BREAK
-            | OpCode::CONTINUE
-            | OpCode::JMP_IF_TRUE
-            | OpCode::JMP_IF_FALSE
-            | OpCode::JMP_IF_NULLISH
-            | OpCode::RETURN
-            | OpCode::HALT
-            | OpCode::THROW
-    )
+    op.is_terminator()
 }
 
 /// 构建 CFG：`&IRFunction → Cfg`。纯函数，只读 IR。
