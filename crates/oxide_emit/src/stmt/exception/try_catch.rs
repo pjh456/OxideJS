@@ -56,7 +56,7 @@ impl Emitter {
                 let src_reg = ctx.alloc_reg();
                 // 异常值在 VM 物理 regs[0]（unwind 展开处写入），STORE_VAR a=None 读回。
                 ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(src_reg), Operand::None, Operand::None));
-                self.emit_binding_pattern(&param.pattern, src_reg, VariableDeclarationKind::Let, false, ctx)?;
+                self.emit_binding_pattern(&param.pattern, src_reg, VariableDeclarationKind::Let, false, false, ctx)?;
             }
             let mut last_catch_result: Option<u32> = None;
             for s in &catch.body.body {

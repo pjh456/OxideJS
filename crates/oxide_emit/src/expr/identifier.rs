@@ -112,6 +112,19 @@ impl Emitter {
     /// - `const_flag` 为 1 时走 STORE_VAR 运行时 const guard（对 const 再赋值报错）。
     /// - upvalue 与 cell 写穿共享单元，不设 guard。
     pub(crate) fn emit_identifier_store(&self, name: &str, val_reg: u32, const_flag: u16, ctx: &mut CompileCtx) {
+        // 循环 update 段：被捕获绑定走寄存器而非 cell（C 风格 for 每迭代 fresh，
+        // update 写寄存器供下一迭代 fresh 拷贝，不污染本迭代闭包捕获的 cell）。
+        if ctx.register_update_names.iter().any(|n| n == name) {
+            if let Some(reg) = ctx.scopes.symbols.lookup_any(name) {
+                ctx.inst(Inst::new(
+                    OpCode::STORE_VAR,
+                    Operand::Reg(reg),
+                    Operand::Reg(val_reg),
+                    Operand::Imm(const_flag),
+                ));
+                return;
+            }
+        }
         // 目标若是 upvalue 引用，走 STORE_UPVALUE
         if let Some(uv_idx) = ctx.current_upvalue_captures.iter().position(|u| u.name == name) {
             ctx.inst(Inst::new(

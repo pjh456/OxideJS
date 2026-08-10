@@ -54,6 +54,7 @@ impl Inst {
             | OpCode::TRY_FINALLY_BEGIN
             | OpCode::TRY_FINALLY_END
             | OpCode::MAKE_CELL
+            | OpCode::MAKE_CELL_FRESH
             | OpCode::CELL_SET
             | OpCode::STORE_UPVALUE
             | OpCode::SET_PROP
@@ -254,7 +255,7 @@ impl Inst {
             OpCode::SPILL => push_operand(&mut uses, &self.rd),
             OpCode::UNSPILL => {}
             // MAKE_CELL：cell 初值读 rd；CELL_SET/STORE_UPVALUE 读 a
-            OpCode::MAKE_CELL => push_operand(&mut uses, &self.rd),
+            OpCode::MAKE_CELL | OpCode::MAKE_CELL_FRESH => push_operand(&mut uses, &self.rd),
             OpCode::CELL_SET | OpCode::STORE_UPVALUE => push_operand(&mut uses, &self.a),
             // 写对象属性：rd/a/b 全 use
             OpCode::SET_PROP

@@ -204,6 +204,24 @@ impl Vm {
         Ok(())
     }
 
+    /// 无条件新建 cell 并替换 cell_stack[cell_idx]，值为 `regs[rd]`。
+    ///
+    /// 循环每迭代绑定用：把当前迭代值拷入新 cell，本迭代创建的闭包经
+    /// CREATE_CLOSURE 捕获新 cell（旧闭包仍指向旧 cell，值保持）。与
+    /// `dispatch_make_cell` 的唯一区别是恒新建、不复用占位 cell。
+    #[allow(dead_code)]
+    pub(crate) fn dispatch_make_cell_fresh(&mut self, rd: usize, instr: u32) -> Result<(), String> {
+        let cell_idx = opcode::imm16(instr) as usize;
+        let value = self.regs[rd];
+        let current = self.cell_stack.last_mut().unwrap();
+        while current.len() <= cell_idx {
+            current.push(std::ptr::null_mut());
+        }
+        let cell = self.gc_state.session_epoch.alloc(Cell::new(value, true));
+        current[cell_idx] = cell as *mut Cell;
+        Ok(())
+    }
+
     #[allow(dead_code)]
     pub(crate) fn dispatch_cell_get(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
         let cell_idx = b;

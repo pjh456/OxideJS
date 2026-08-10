@@ -29,15 +29,30 @@ impl Emitter {
         ctx.inst(Inst::new(OpCode::FOR_IN_NEXT, Operand::Reg(key_reg), Operand::None, Operand::None));
         match &fi.left {
             ForStatementLeft::VariableDeclaration(decl) => {
+                // let/const 声明对被捕获绑定用 fresh cell（每迭代新 cell）；var 单绑定。
+                let fresh_cell = !matches!(decl.kind, VariableDeclarationKind::Var);
                 for d in &decl.declarations {
-                    let name = match &d.id {
-                        oxide_parser::BindingPattern::BindingIdentifier(bi) => bi.name.as_str(),
+                    match &d.id {
+                        oxide_parser::BindingPattern::BindingIdentifier(bi) => {
+                            let is_const = matches!(decl.kind, VariableDeclarationKind::Const);
+                            let name = bi.name.as_str();
+                            let var_reg = ctx.alloc_reg();
+                            ctx.declare(name, var_reg, decl.kind, is_const)?;
+                            if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
+                                let op = if fresh_cell { OpCode::MAKE_CELL_FRESH } else { OpCode::MAKE_CELL };
+                                ctx.inst(Inst::new(op, Operand::Reg(key_reg), Operand::Imm(cell_idx as u16), Operand::None));
+                            } else {
+                                ctx.inst(Inst::new(
+                                    OpCode::STORE_VAR,
+                                    Operand::Reg(var_reg),
+                                    Operand::Reg(key_reg),
+                                    Operand::None,
+                                ));
+                            }
+                            ctx.init_var(name);
+                        }
                         _ => return Err("destructuring not supported".into()),
-                    };
-                    let var_reg = ctx.alloc_reg();
-                    ctx.declare(name, var_reg, decl.kind, matches!(decl.kind, VariableDeclarationKind::Const))?;
-                    ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(var_reg), Operand::Reg(key_reg), Operand::None));
-                    ctx.init_var(name);
+                    }
                 }
             }
             ForStatementLeft::AssignmentTargetIdentifier(id_ref) => {

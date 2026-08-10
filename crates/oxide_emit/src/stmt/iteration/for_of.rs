@@ -9,7 +9,7 @@ use crate::{CompileCtx, Emitter};
 use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
-use oxide_parser::{ForOfStatement, ForStatementLeft, Statement};
+use oxide_parser::{ForOfStatement, ForStatementLeft, Statement, VariableDeclarationKind};
 
 impl Emitter {
     pub(crate) fn emit_for_of_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u32>, String> {
@@ -84,13 +84,16 @@ impl Emitter {
     }
 
     /// for-of/for-await-of 左侧绑定：把当前迭代值 `val_reg` 写入声明/赋值目标。
+    /// let/const 声明对被捕获绑定用 fresh cell（每迭代新 cell，规范 per-iteration 绑定）；
+    /// var 保持单绑定。
     fn emit_for_of_left_assignment(
         &self, left: &ForStatementLeft, val_reg: u32, ctx: &mut CompileCtx,
     ) -> Result<(), String> {
         match left {
             ForStatementLeft::VariableDeclaration(decl) => {
+                let fresh_cell = !matches!(decl.kind, VariableDeclarationKind::Var);
                 for d in &decl.declarations {
-                    self.emit_binding_pattern(&d.id, val_reg, decl.kind, false, ctx)?;
+                    self.emit_binding_pattern(&d.id, val_reg, decl.kind, false, fresh_cell, ctx)?;
                 }
             }
             ForStatementLeft::AssignmentTargetIdentifier(id_ref) => {

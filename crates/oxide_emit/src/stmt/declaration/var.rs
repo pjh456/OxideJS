@@ -22,7 +22,7 @@ impl Emitter {
             }
             if let Some(init) = &d.init {
                 let val_reg = self.emit_expression(init, ctx)?;
-                self.emit_binding_pattern(&d.id, val_reg, decl.kind, is_const, ctx)?;
+                self.emit_binding_pattern(&d.id, val_reg, decl.kind, is_const, false, ctx)?;
                 if let BindingPattern::BindingIdentifier(bi) = &d.id {
                     if crate::is_anonymous_function_definition(init) {
                         if let Some(sub_mod) = ctx.nested.last_mut() {

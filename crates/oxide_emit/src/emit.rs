@@ -194,6 +194,10 @@ pub struct CompileCtx {
     /// try_stack 组成。每项标记是否为纯 catch handler（TRY_BEGIN，由 TRY_END
     /// 弹出）：return 逃出 try 域时据此弹出栈顶连续纯 catch，防 handler 泄漏。
     pub(crate) open_try_handlers: Vec<bool>,
+    /// 循环 update 段中应走寄存器（而非 cell）的被捕获绑定名：C 风格 for 的
+    /// let/const 循环变量每迭代 fresh cell，update 写寄存器（不污染本迭代闭包
+    /// 捕获的 cell），下一迭代 fresh 从寄存器拷入新 cell。
+    pub(crate) register_update_names: Vec<String>,
 }
 
 /// 函数体编译上下文：决定 `this`/`super` 绑定与参数前导（prologue）形态。
@@ -289,6 +293,7 @@ impl CompileCtx {
             const_overflow: false,
             with_stack: Vec::new(),
             open_try_handlers: Vec::new(),
+            register_update_names: Vec::new(),
         }
     }
 
@@ -1117,7 +1122,7 @@ impl Emitter {
                     } else {
                         src_reg
                     };
-                    self.emit_binding_pattern(pattern, src_reg, VariableDeclarationKind::Var, false, ctx)?;
+                    self.emit_binding_pattern(pattern, src_reg, VariableDeclarationKind::Var, false, false, ctx)?;
                 }
                 ParamSpec::Identifier { name, initializer } => {
                     if let Some(init) = initializer {

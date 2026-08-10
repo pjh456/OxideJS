@@ -48,8 +48,11 @@ impl Emitter {
         Ok(val_reg)
     }
 
+    /// 绑定单个标识符到槽位。`fresh_cell` 为 true 时对被捕获绑定用 MAKE_CELL_FRESH
+    /// （循环每迭代绑定：无条件新建 cell，本迭代闭包捕获新 cell）。
     fn emit_bind_target(
-        &self, name: &str, src_reg: u32, kind: VariableDeclarationKind, is_const: bool, ctx: &mut CompileCtx,
+        &self, name: &str, src_reg: u32, kind: VariableDeclarationKind, is_const: bool, fresh_cell: bool,
+        ctx: &mut CompileCtx,
     ) -> Result<(), String> {
         let target_reg = if matches!(kind, VariableDeclarationKind::Var) {
             // `var` 名已预声明（hoisting），复用预登记槽位而非新分配，使 n_registers 与 let/const 一致。
@@ -66,8 +69,9 @@ impl Emitter {
             var_reg
         };
         if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
+            let op = if fresh_cell { OpCode::MAKE_CELL_FRESH } else { OpCode::MAKE_CELL };
             ctx.inst(Inst::new(
-                OpCode::MAKE_CELL,
+                op,
                 Operand::Reg(src_reg),
                 Operand::Imm(cell_idx as u16),
                 Operand::None,
@@ -119,14 +123,14 @@ impl Emitter {
 
     pub(crate) fn emit_binding_pattern(
         &self, pattern: &BindingPattern, src_reg: u32, kind: VariableDeclarationKind, is_const: bool,
-        ctx: &mut CompileCtx,
+        fresh_cell: bool, ctx: &mut CompileCtx,
     ) -> Result<(), String> {
         match pattern {
             BindingPattern::BindingIdentifier(bi) => {
-                self.emit_bind_target(bi.name.as_str(), src_reg, kind, is_const, ctx)
+                self.emit_bind_target(bi.name.as_str(), src_reg, kind, is_const, fresh_cell, ctx)
             }
-            BindingPattern::ArrayPattern(ap) => self.emit_array_binding(ap, src_reg, kind, is_const, ctx),
-            BindingPattern::ObjectPattern(op) => self.emit_object_binding(op, src_reg, kind, is_const, ctx),
+            BindingPattern::ArrayPattern(ap) => self.emit_array_binding(ap, src_reg, kind, is_const, fresh_cell, ctx),
+            BindingPattern::ObjectPattern(op) => self.emit_object_binding(op, src_reg, kind, is_const, fresh_cell, ctx),
             BindingPattern::AssignmentPattern(ap) => {
                 // `[x = fn]`：默认值函数按绑定名推断 name。
                 let name = match &ap.left {
@@ -134,13 +138,14 @@ impl Emitter {
                     _ => None,
                 };
                 let val_reg = self.emit_default_if_undefined(src_reg, &ap.right, name, ctx)?;
-                self.emit_binding_pattern(&ap.left, val_reg, kind, is_const, ctx)
+                self.emit_binding_pattern(&ap.left, val_reg, kind, is_const, fresh_cell, ctx)
             }
         }
     }
 
     fn emit_array_binding(
-        &self, ap: &ArrayPattern, src_reg: u32, kind: VariableDeclarationKind, is_const: bool, ctx: &mut CompileCtx,
+        &self, ap: &ArrayPattern, src_reg: u32, kind: VariableDeclarationKind, is_const: bool, fresh_cell: bool,
+        ctx: &mut CompileCtx,
     ) -> Result<(), String> {
         ctx.inst(Inst::new(OpCode::FOR_OF_INIT, Operand::None, Operand::Reg(src_reg), Operand::None));
         for elem in &ap.elements {
@@ -149,12 +154,12 @@ impl Emitter {
             let val_reg = ctx.alloc_reg();
             ctx.inst(Inst::new(OpCode::FOR_OF_NEXT, Operand::Reg(val_reg), Operand::None, Operand::None));
             if let Some(pattern) = elem {
-                self.emit_binding_pattern(pattern, val_reg, kind, is_const, ctx)?;
+                self.emit_binding_pattern(pattern, val_reg, kind, is_const, fresh_cell, ctx)?;
             }
         }
         if let Some(rest) = &ap.rest {
             let rest_reg = self.emit_collect_rest_array(ctx)?;
-            self.emit_binding_pattern(&rest.argument, rest_reg, kind, is_const, ctx)?;
+            self.emit_binding_pattern(&rest.argument, rest_reg, kind, is_const, fresh_cell, ctx)?;
         }
         ctx.inst(Inst::new(OpCode::FOR_OF_CLOSE, Operand::None, Operand::None, Operand::None));
         Ok(())
@@ -193,7 +198,8 @@ impl Emitter {
     }
 
     fn emit_object_binding(
-        &self, op: &ObjectPattern, src_reg: u32, kind: VariableDeclarationKind, is_const: bool, ctx: &mut CompileCtx,
+        &self, op: &ObjectPattern, src_reg: u32, kind: VariableDeclarationKind, is_const: bool, fresh_cell: bool,
+        ctx: &mut CompileCtx,
     ) -> Result<(), String> {
         // 对象解构先 ToObject(rhs)：null/undefined 抛 TypeError（含空 pattern），
         // 原始值包装为对应对象，保证属性读取与 rest 都以对象为源。
@@ -221,7 +227,7 @@ impl Emitter {
                 self.emit_push_excluded_key(arr, Some(key_reg), "", excl_push, ctx);
                 excl_push += 1;
             }
-            self.emit_binding_pattern(&prop.value, prop_reg, kind, is_const, ctx)?;
+            self.emit_binding_pattern(&prop.value, prop_reg, kind, is_const, fresh_cell, ctx)?;
         }
         if let Some(rest) = &op.rest {
             let rest_reg = ctx.alloc_reg();
@@ -232,7 +238,7 @@ impl Emitter {
                 excluded_idx as u32,
                 excl_arr_reg.map(Operand::Reg),
             ));
-            self.emit_binding_pattern(&rest.argument, rest_reg, kind, is_const, ctx)?;
+            self.emit_binding_pattern(&rest.argument, rest_reg, kind, is_const, fresh_cell, ctx)?;
         }
         Ok(())
     }

@@ -264,7 +264,7 @@ fn rewrite_inst(
                 inst.op
             );
         }
-        OpCode::MAKE_CELL | OpCode::CELL_GET | OpCode::CELL_SET | OpCode::STORE_UPVALUE => {
+        OpCode::MAKE_CELL | OpCode::MAKE_CELL_FRESH | OpCode::CELL_GET | OpCode::CELL_SET | OpCode::STORE_UPVALUE => {
             debug_assert!(
                 matches!(b, Operand::Imm(_) | Operand::None),
                 "{}: b 槽是 imm16 编码位，不得为 Reg",

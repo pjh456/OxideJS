@@ -418,6 +418,21 @@ impl Emitter {
     ) -> Result<u32, String> {
         let uv_idx = ctx.current_upvalue_captures.iter().position(|u| u.name == name);
         let captured_cell = ctx.captured_bindings.get(name).copied();
+        // 循环 update 段：被捕获绑定走寄存器 INC/DEC（C 风格 for 每迭代 fresh，
+        // update 写寄存器供下一迭代 fresh 拷贝，不污染本迭代闭包捕获的 cell）。
+        if ctx.register_update_names.iter().any(|n| n == name) {
+            if let Some(reg) = ctx.scopes.symbols.lookup_any(name) {
+                let result_reg = ctx.alloc_reg();
+                let op = match (update.operator, update.prefix) {
+                    (UpdateOperator::Increment, true) => OpCode::INC_PRE,
+                    (UpdateOperator::Increment, false) => OpCode::INC_POST,
+                    (UpdateOperator::Decrement, true) => OpCode::DEC_PRE,
+                    (UpdateOperator::Decrement, false) => OpCode::DEC_POST,
+                };
+                ctx.inst(Inst::new(op, Operand::Reg(reg), Operand::Reg(result_reg), Operand::Reg(result_reg)));
+                return Ok(result_reg);
+            }
+        }
         if let Some(uv) = uv_idx {
             // upvalue：LOAD_UPVALUE + 常量 1 + ADD/SUB + STORE_UPVALUE；
             // 后缀形式返回旧值（前缀返回新值）。

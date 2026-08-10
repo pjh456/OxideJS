@@ -217,6 +217,9 @@ define_opcodes! {
     FOR_AWAIT_OF_NEXT = 0x7B => "FOR_AWAIT_OF_NEXT",
     FOR_AWAIT_OF_DONE = 0x7C => "FOR_AWAIT_OF_DONE",
     FOR_AWAIT_OF_CLOSE = 0x7D => "FOR_AWAIT_OF_CLOSE",
+    // 无条件新建 cell 并替换 cell_stack[cell_idx]，值为 regs[rd]——循环每迭代绑定
+    // 把当前值拷入新 cell，本迭代闭包捕获新 cell（旧闭包仍指向旧 cell）。
+    MAKE_CELL_FRESH = 0x7E => "MAKE_CELL_FRESH",
 
     // ── 位运算 (0x80-0x8F) ──
     BIT_AND = 0x80 => "BIT_AND",

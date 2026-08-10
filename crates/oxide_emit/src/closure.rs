@@ -28,13 +28,39 @@ impl Emitter {
         names
     }
 
+    /// 递归收集 binding pattern 内全部绑定标识符名（解构 `[a, b]` / `{x: y}` 嵌套）。
+    fn collect_binding_pattern_names(&self, pattern: &oxide_parser::BindingPattern, out: &mut HashSet<String>) {
+        match pattern {
+            oxide_parser::BindingPattern::BindingIdentifier(bi) => {
+                out.insert(bi.name.to_string());
+            }
+            oxide_parser::BindingPattern::ArrayPattern(ap) => {
+                for p in ap.elements.iter().flatten() {
+                    self.collect_binding_pattern_names(p, out);
+                }
+                if let Some(rest) = &ap.rest {
+                    self.collect_binding_pattern_names(&rest.argument, out);
+                }
+            }
+            oxide_parser::BindingPattern::ObjectPattern(op) => {
+                for prop in &op.properties {
+                    self.collect_binding_pattern_names(&prop.value, out);
+                }
+                if let Some(rest) = &op.rest {
+                    self.collect_binding_pattern_names(&rest.argument, out);
+                }
+            }
+            oxide_parser::BindingPattern::AssignmentPattern(ap) => {
+                self.collect_binding_pattern_names(&ap.left, out);
+            }
+        }
+    }
+
     /// 收集 for-in/for-of 头部声明（`var x` / 解构 pattern）绑定的名字。
     fn collect_for_left_decl_names(&self, left: &oxide_parser::ForStatementLeft, out: &mut HashSet<String>) {
         if let oxide_parser::ForStatementLeft::VariableDeclaration(vd) = left {
             for d in &vd.declarations {
-                if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
-                    out.insert(bi.name.to_string());
-                }
+                self.collect_binding_pattern_names(&d.id, out);
             }
         }
     }
@@ -54,9 +80,7 @@ impl Emitter {
             match stmt {
                 Statement::VariableDeclaration(vd) => {
                     for d in &vd.declarations {
-                        if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
-                            out.insert(bi.name.to_string());
-                        }
+                        self.collect_binding_pattern_names(&d.id, out);
                     }
                 }
                 Statement::FunctionDeclaration(fd) => {
@@ -86,22 +110,14 @@ impl Emitter {
                 // for-in / for-of 头部的 var 声明是本函数局部绑定（遮蔽外层同名），
                 // 须计入 own_bindings，否则闭包捕获分析会误判为捕获外层变量。
                 Statement::ForInStatement(fi) => {
-                    if let oxide_parser::ForStatementLeft::VariableDeclaration(vd) = &fi.left {
-                        for d in &vd.declarations {
-                            if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
-                                out.insert(bi.name.to_string());
-                            }
-                        }
+                    if let oxide_parser::ForStatementLeft::VariableDeclaration(_) = &fi.left {
+                        self.collect_for_left_decl_names(&fi.left, out);
                     }
                     self.collect_decl_names_stmt(std::slice::from_ref(&fi.body), out);
                 }
                 Statement::ForOfStatement(fo) => {
-                    if let oxide_parser::ForStatementLeft::VariableDeclaration(vd) = &fo.left {
-                        for d in &vd.declarations {
-                            if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
-                                out.insert(bi.name.to_string());
-                            }
-                        }
+                    if let oxide_parser::ForStatementLeft::VariableDeclaration(_) = &fo.left {
+                        self.collect_for_left_decl_names(&fo.left, out);
                     }
                     self.collect_decl_names_stmt(std::slice::from_ref(&fo.body), out);
                 }

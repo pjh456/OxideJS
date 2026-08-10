@@ -18,6 +18,14 @@ impl Emitter {
     fn emit_compound_identifier_static(
         &self, name: &str, op: OpCode, rhs: u32, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
+        // 循环 update 段：被捕获绑定走寄存器 RMW（C 风格 for 每迭代 fresh，
+        // update 写寄存器供下一迭代 fresh 拷贝，不污染本迭代闭包捕获的 cell）。
+        if ctx.register_update_names.iter().any(|n| n == name) {
+            if let Some(reg) = ctx.scopes.symbols.lookup_any(name) {
+                ctx.inst(Inst::new(op, Operand::Reg(reg), Operand::Reg(rhs), Operand::None));
+                return Ok(reg);
+            }
+        }
         let uv_idx = ctx.current_upvalue_captures.iter().position(|u| u.name == name);
         let captured_cell = ctx.captured_bindings.get(name).copied();
         if let Some(uv) = uv_idx {
