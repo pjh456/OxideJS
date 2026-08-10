@@ -10,14 +10,13 @@
 
 use std::sync::Arc;
 
-use oxide_bytecode::opcode;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::{to_boolean, NativeResult};
 use oxide_types::mem::P;
-use oxide_types::object::{Cell, JsObject, NativeFnPtr, PropAttributes};
+use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
-use crate::vm::{CallFrame, Completion, ForInIter, FrameContinuation, TryHandler, Vm};
+use crate::vm::Vm;
 
 /// 异步函数执行阶段。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,30 +50,8 @@ pub(crate) struct AsyncState {
     /// capability 上的 resolve/reject 闭包（完成时结算用）。
     pub resolve: JsValue,
     pub reject: JsValue,
-    // ── 挂起时的执行上下文 ──
-    pub regs: Box<[JsValue; 256]>,
-    pub pc: usize,
-    pub bytecode: Vec<opcode::Instr>,
-    /// 异步模块 flat_id（恢复时重激活 immutables）。
-    pub sub_idx: u32,
-    pub active_reg_limit: u8,
-    pub root_reg_limit: u8,
-    /// 异步帧（压入时由 push_bytecode_frame 构造，挂起时弹出存此）。
-    pub frame: Option<CallFrame>,
-    pub spill_stack: Vec<JsValue>,
-    pub save_stack: Vec<JsValue>,
-    pub cell_stack: Vec<Vec<*mut Cell>>,
-    pub try_stack: Vec<TryHandler>,
-    pub for_in_iters: Vec<*mut ForInIter<'static>>,
-    pub for_of_iters: Vec<JsValue>,
-    pub last_for_of_result: JsValue,
-    pub saved_bytecode_stack: Vec<Vec<opcode::Instr>>,
-    pub saved_immutables_stack: Vec<*const [JsValue]>,
-    /// 在途异常/完成（异常展开穿越 await 挂起时保留，恢复后继续展开）。
-    pub exception_value: Option<JsValue>,
-    pub pending_exception: Option<JsValue>,
-    pub pending_error_kind: Option<&'static str>,
-    pub pending_completion: Option<Completion>,
+    /// 挂起时的执行上下文（regs/pc/bytecode/各栈段/迭代器/在途异常）。
+    pub suspended: crate::suspended::SuspendedFrame,
 }
 
 /// 一次 await 恢复的注入模式。
@@ -125,26 +102,7 @@ impl Vm {
             promise,
             resolve,
             reject,
-            regs: Box::new([JsValue::undefined(); 256]),
-            pc: 0,
-            bytecode: Vec::new(),
-            sub_idx: 0,
-            active_reg_limit: 0,
-            root_reg_limit: 0,
-            frame: None,
-            spill_stack: Vec::new(),
-            save_stack: Vec::new(),
-            cell_stack: Vec::new(),
-            try_stack: Vec::new(),
-            for_in_iters: Vec::new(),
-            for_of_iters: Vec::new(),
-            last_for_of_result: JsValue::undefined(),
-            saved_bytecode_stack: Vec::new(),
-            saved_immutables_stack: Vec::new(),
-            exception_value: None,
-            pending_exception: None,
-            pending_error_kind: None,
-            pending_completion: None,
+            suspended: crate::suspended::SuspendedFrame::new_empty(),
         });
         obj.set_native_data(Box::into_raw(state) as *mut u8);
         JsValue::from_js_object(ptr)
@@ -175,33 +133,10 @@ impl Vm {
         self.async_context = Some(ctx_val);
         self.native_call_depth += 1;
 
-        self.regs = [JsValue::undefined(); 256];
-        self.pc = 0;
-        self.bytecode = Vec::new();
-        self.active_reg_limit = 1;
-        self.root_reg_limit = 1;
-        self.try_stack.clear();
-        self.iters.for_in_iters.clear();
-        self.iters.for_of_iters.clear();
-        self.iters.last_for_of_result = JsValue::undefined();
-        self.spill_stack.clear();
-        self.save_stack.clear();
-        self.saved_bytecode_stack.clear();
-        self.saved_immutables_stack.clear();
-        self.cell_stack.clear();
-        self.inline_callee = None;
         let callee = unsafe { (*state_ptr).callee };
         let this_value = unsafe { (*state_ptr).this_value };
         let args = unsafe { std::mem::take(&mut (*state_ptr).args) };
-        let push_res = self.push_bytecode_frame(
-            callee,
-            this_value,
-            &args,
-            None,
-            None,
-            JsValue::undefined(),
-            FrameContinuation::None,
-        );
+        let push_res = self.prepare_execution_initial(callee, this_value, &args);
         unsafe { (*state_ptr).args = args };
         if let Err(e) = push_res {
             self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
@@ -263,39 +198,15 @@ impl Vm {
 
         {
             let state = unsafe { &mut *state_ptr };
-            self.regs = *state.regs;
-            self.pc = state.pc;
-            self.bytecode = std::mem::take(&mut state.bytecode);
             let subs = Arc::clone(&self.sub_modules);
-            if (state.sub_idx as usize) < subs.len() {
-                self.activate_immutables(state.sub_idx as usize, &subs[state.sub_idx as usize].constants);
-            } else {
+            let restore_res = state.suspended.restore_into(self, &subs);
+            if restore_res.is_err() {
                 // 挂起状态跨 run：sub_modules 已重建，无法恢复（与生成器同限制）。
                 self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
                 self.native_call_depth -= 1;
                 self.restore_inline_state(saved);
                 return Err("async function suspended across runs is no longer valid".into());
             }
-            self.active_reg_limit = state.active_reg_limit;
-            self.root_reg_limit = state.root_reg_limit;
-            self.frames.clear();
-            if let Some(frame) = state.frame.take() {
-                self.frames.push(frame);
-            }
-            self.spill_stack = std::mem::take(&mut state.spill_stack);
-            self.save_stack = std::mem::take(&mut state.save_stack);
-            self.cell_stack = std::mem::take(&mut state.cell_stack);
-            self.try_stack = std::mem::take(&mut state.try_stack);
-            self.iters.for_in_iters = std::mem::take(&mut state.for_in_iters);
-            self.iters.for_of_iters = std::mem::take(&mut state.for_of_iters);
-            self.iters.last_for_of_result = state.last_for_of_result;
-            self.saved_bytecode_stack = std::mem::take(&mut state.saved_bytecode_stack);
-            self.saved_immutables_stack = std::mem::take(&mut state.saved_immutables_stack);
-            self.exception_value = state.exception_value.take();
-            self.pending_exception = state.pending_exception.take();
-            self.pending_error_kind = state.pending_error_kind.take();
-            self.pending_completion = state.pending_completion.take();
-            self.inline_callee = None;
             state.phase = AsyncPhase::Running;
         }
 
@@ -448,33 +359,10 @@ impl Vm {
 
     /// 把当前 VM 执行状态（异步 body 刚在嵌套 dispatch 中让出）快照进状态盒。
     ///
-    /// 异步帧弹出存 `frame`，其余栈段整段搬入（嵌套循环期间这些栈只含异步数据）。
+    /// 异步帧弹出存 `suspended.frame`，其余栈段整段搬入（嵌套循环期间这些栈
+    /// 只含异步数据）。
     fn snapshot_async(&mut self, state: &mut AsyncState) -> Result<(), String> {
-        let frame = self.frames.pop().ok_or_else(|| "async frame missing on await".to_string())?;
-        state.frame = Some(frame);
-        state.regs = Box::new(self.regs);
-        state.pc = self.pc;
-        state.bytecode = std::mem::take(&mut self.bytecode);
-        state.sub_idx = if state.callee.is_object() {
-            unsafe { (*state.callee.as_js_object_ptr()).sub_module_index() }
-        } else {
-            0
-        };
-        state.active_reg_limit = self.active_reg_limit;
-        state.root_reg_limit = self.root_reg_limit;
-        state.spill_stack = std::mem::take(&mut self.spill_stack);
-        state.save_stack = std::mem::take(&mut self.save_stack);
-        state.cell_stack = std::mem::take(&mut self.cell_stack);
-        state.try_stack = std::mem::take(&mut self.try_stack);
-        state.for_in_iters = std::mem::take(&mut self.iters.for_in_iters);
-        state.for_of_iters = std::mem::take(&mut self.iters.for_of_iters);
-        state.last_for_of_result = self.iters.last_for_of_result;
-        state.saved_bytecode_stack = std::mem::take(&mut self.saved_bytecode_stack);
-        state.saved_immutables_stack = std::mem::take(&mut self.saved_immutables_stack);
-        state.exception_value = self.exception_value.take();
-        state.pending_exception = self.pending_exception.take();
-        state.pending_error_kind = self.pending_error_kind.take();
-        state.pending_completion = self.pending_completion.take();
+        state.suspended.save_from(self, state.callee)?;
         state.phase = AsyncPhase::Suspended;
         Ok(())
     }
@@ -582,30 +470,39 @@ pub(crate) fn async_native_edges(obj: &JsObject) -> Vec<JsValue> {
     push(state.promise, &mut edges);
     push(state.resolve, &mut edges);
     push(state.reject, &mut edges);
-    edges.extend(state.regs.iter().copied().filter(|v| v.is_object()));
-    if let Some(frame) = &state.frame {
-        push(frame.saved_this, &mut edges);
-        push(frame.saved_new_target, &mut edges);
-        push(frame.callee, &mut edges);
-        if let Some(ct) = frame.constructed_this {
-            push(ct, &mut edges);
+    state.suspended.for_each_value(|v| {
+        if v.is_object() {
+            edges.push(v);
         }
-    }
-    edges.extend(state.spill_stack.iter().copied().filter(|v| v.is_object()));
-    edges.extend(state.save_stack.iter().copied().filter(|v| v.is_object()));
-    for cells in &state.cell_stack {
-        for &cell_ptr in cells {
-            if cell_ptr.is_null() {
-                continue;
-            }
-            // SAFETY: cell 由 session_epoch 分配，本 session 内指针有效。
-            let cell = unsafe { &*cell_ptr };
-            push(cell.value, &mut edges);
-        }
-    }
-    edges.extend(state.for_of_iters.iter().copied().filter(|v| v.is_object()));
-    push(state.last_for_of_result, &mut edges);
+    });
     edges
+}
+
+/// 异步状态内所有 session 字符串的扁平列表（GC mark 字符串边）。
+pub(crate) fn async_native_string_edges(obj: &JsObject) -> Vec<*mut oxide_types::object::JsString> {
+    let Some(state) = async_state_mut(obj) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let push_str = |v: JsValue, out: &mut Vec<*mut oxide_types::object::JsString>| {
+        if v.is_string() {
+            out.push(v.as_string_ptr_mut());
+        }
+    };
+    push_str(state.callee, &mut out);
+    for &v in &state.args {
+        push_str(v, &mut out);
+    }
+    push_str(state.result, &mut out);
+    push_str(state.promise, &mut out);
+    push_str(state.resolve, &mut out);
+    push_str(state.reject, &mut out);
+    state.suspended.for_each_value(|v| {
+        if v.is_string() {
+            out.push(v.as_string_ptr_mut());
+        }
+    });
+    out
 }
 
 /// 用转发函数重写状态快照中的所有 JsValue（session GC 移动式清扫 / promote 用）。
@@ -621,35 +518,7 @@ pub(crate) fn rewrite_async_native(obj: &JsObject, mut rewrite: impl FnMut(JsVal
     state.promise = rewrite(state.promise);
     state.resolve = rewrite(state.resolve);
     state.reject = rewrite(state.reject);
-    for v in state.regs.iter_mut() {
-        *v = rewrite(*v);
-    }
-    if let Some(frame) = &mut state.frame {
-        frame.saved_this = rewrite(frame.saved_this);
-        frame.saved_new_target = rewrite(frame.saved_new_target);
-        frame.callee = rewrite(frame.callee);
-        frame.constructed_this = frame.constructed_this.map(&mut rewrite);
-    }
-    for v in &mut state.spill_stack {
-        *v = rewrite(*v);
-    }
-    for v in &mut state.save_stack {
-        *v = rewrite(*v);
-    }
-    for cells in &mut state.cell_stack {
-        for &mut cell_ptr in cells.iter_mut() {
-            if cell_ptr.is_null() {
-                continue;
-            }
-            // SAFETY: cell 由 session_epoch 分配，本 session 内指针有效。
-            let cell = unsafe { &mut *cell_ptr };
-            cell.value = rewrite(cell.value);
-        }
-    }
-    for v in &mut state.for_of_iters {
-        *v = rewrite(*v);
-    }
-    state.last_for_of_result = rewrite(state.last_for_of_result);
+    state.suspended.rewrite_values(rewrite);
 }
 
 /// 深拷贝状态盒到新对象（promote / sweep 用）：新对象持独立 Box，源盒可安全释放。
@@ -668,47 +537,7 @@ pub(crate) fn clone_async_native_with_rewrite(
         promise: rewrite(state.promise),
         resolve: rewrite(state.resolve),
         reject: rewrite(state.reject),
-        regs: Box::new({
-            let mut regs = [JsValue::undefined(); 256];
-            for (i, v) in state.regs.iter().enumerate() {
-                regs[i] = rewrite(*v);
-            }
-            regs
-        }),
-        pc: state.pc,
-        bytecode: state.bytecode.clone(),
-        sub_idx: state.sub_idx,
-        active_reg_limit: state.active_reg_limit,
-        root_reg_limit: state.root_reg_limit,
-        frame: state.frame.as_ref().map(|f| CallFrame {
-            return_addr: f.return_addr,
-            function_name: f.function_name,
-            caller_reg_limit: f.caller_reg_limit,
-            saved_reg_offset: f.saved_reg_offset,
-            spill_offset: f.spill_offset,
-            arguments_base: f.arguments_base,
-            arguments_count: f.arguments_count,
-            saved_this: rewrite(f.saved_this),
-            saved_new_target: rewrite(f.saved_new_target),
-            callee: rewrite(f.callee),
-            construct_result_reg: f.construct_result_reg,
-            constructed_this: f.constructed_this.map(&mut rewrite),
-            is_derived_constructor: f.is_derived_constructor,
-            continuation: f.continuation,
-        }),
-        spill_stack: state.spill_stack.iter().copied().map(&mut rewrite).collect(),
-        save_stack: state.save_stack.iter().copied().map(&mut rewrite).collect(),
-        cell_stack: state.cell_stack.clone(),
-        try_stack: state.try_stack.clone(),
-        for_in_iters: state.for_in_iters.clone(),
-        for_of_iters: state.for_of_iters.iter().copied().map(&mut rewrite).collect(),
-        last_for_of_result: rewrite(state.last_for_of_result),
-        saved_bytecode_stack: state.saved_bytecode_stack.clone(),
-        saved_immutables_stack: state.saved_immutables_stack.clone(),
-        exception_value: state.exception_value.map(&mut rewrite),
-        pending_exception: state.pending_exception.map(&mut rewrite),
-        pending_error_kind: state.pending_error_kind,
-        pending_completion: state.pending_completion,
+        suspended: state.suspended.clone_with_rewrite(rewrite),
     };
     new.set_native_data(Box::into_raw(Box::new(cloned)) as *mut u8);
 }
@@ -725,8 +554,6 @@ pub(crate) fn drop_async_native(obj: &JsObject) -> u64 {
     // SAFETY: 指针来自 create_async_context 的 Box::into_raw，只在 GC 回收时释放一次。
     let state = unsafe { Box::from_raw(ptr) };
     std::mem::size_of::<AsyncState>() as u64
-        + state.bytecode.len() as u64 * std::mem::size_of::<u32>() as u64
-        + state.spill_stack.capacity() as u64 * std::mem::size_of::<JsValue>() as u64
-        + state.save_stack.capacity() as u64 * std::mem::size_of::<JsValue>() as u64
+        + state.suspended.heap_bytes()
         + state.args.capacity() as u64 * std::mem::size_of::<JsValue>() as u64
 }
