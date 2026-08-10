@@ -168,12 +168,12 @@ mod tests {
     fn cache_hit_debug_verifies_bytecode() {
         let forge = forge(16);
         let mut m1 = CompiledModule::new();
-        m1.bytecode = vec![1, 2, 3];
+        m1.bytecode = Arc::from(vec![1, 2, 3]);
         forge.insert(42, m1);
         let _ = forge
             .get_or_insert_with(42, || {
                 let mut m = CompiledModule::new();
-                m.bytecode = vec![4, 5, 6];
+                m.bytecode = Arc::from(vec![4, 5, 6]);
                 Ok(m)
             })
             .unwrap();
@@ -183,12 +183,12 @@ mod tests {
     fn cache_hit_returns_cached_not_recompiled() {
         let forge = forge(16);
         let mut m = CompiledModule::new();
-        m.bytecode = vec![1, 2, 3];
+        m.bytecode = Arc::from(vec![1, 2, 3]);
         let cached = forge.insert(99, m);
         let result = forge
             .get_or_insert_with(99, || {
                 let mut m = CompiledModule::new();
-                m.bytecode = vec![1, 2, 3];
+                m.bytecode = Arc::from(vec![1, 2, 3]);
                 Ok(m)
             })
             .unwrap();

@@ -25,7 +25,7 @@ impl Vm {
         let mut vm = Self {
             regs: [JsValue::undefined(); 256],
             pc: 0,
-            bytecode: Vec::new(),
+            bytecode: Arc::default(),
             immutables_cache: Vec::new(),
             active_immutables: std::ptr::slice_from_raw_parts(std::ptr::null(), 0),
             frames: smallvec::SmallVec::new(),
@@ -118,7 +118,7 @@ impl Vm {
         let mut vm = Self {
             regs: [JsValue::undefined(); 256],
             pc: 0,
-            bytecode: Vec::new(),
+            bytecode: Arc::default(),
             immutables_cache: Vec::new(),
             active_immutables: std::ptr::slice_from_raw_parts(std::ptr::null(), 0),
             frames: smallvec::SmallVec::new(),
@@ -266,7 +266,7 @@ impl Vm {
 
     fn clear_full_reset_state(&mut self) {
         self.clear_execution_state();
-        self.bytecode.clear();
+        self.bytecode = Arc::default();
         self.immutables_cache.clear();
         self.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
         self.free_epoch_object_heap_data();
@@ -334,7 +334,7 @@ impl Vm {
     pub fn reset(&mut self) {
         self.clear_execution_state();
         self.maybe_collect_session_gc();
-        self.bytecode.clear();
+        self.bytecode = Arc::default();
         self.immutables_cache.clear();
         self.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
         self.free_epoch_object_heap_data();

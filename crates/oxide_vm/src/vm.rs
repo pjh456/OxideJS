@@ -197,7 +197,7 @@ impl Completion {
 pub(crate) struct InlineSyncState {
     pub(crate) regs: Box<[JsValue; 256]>,
     pub(crate) pc: usize,
-    pub(crate) bytecode: Vec<opcode::Instr>,
+    pub(crate) bytecode: Arc<[opcode::Instr]>,
     pub(crate) active_immutables: *const [JsValue],
     pub(crate) active_reg_limit: u8,
     pub(crate) root_reg_limit: u8,
@@ -210,7 +210,7 @@ pub(crate) struct InlineSyncState {
     pub(crate) for_in_iters: Vec<*mut ForInIter<'static>>,
     pub(crate) for_of_iters: Vec<JsValue>,
     pub(crate) last_for_of_result: JsValue,
-    pub(crate) saved_bytecode_stack: Vec<Vec<opcode::Instr>>,
+    pub(crate) saved_bytecode_stack: Vec<Arc<[opcode::Instr]>>,
     pub(crate) saved_immutables_stack: Vec<*const [JsValue]>,
     pub(crate) save_stack: Vec<JsValue>,
     pub(crate) spill_stack: Vec<JsValue>,
@@ -229,7 +229,10 @@ pub(crate) struct InlineSyncState {
 pub struct Vm {
     pub(crate) regs: [JsValue; 256],
     pub(crate) pc: usize,
-    pub(crate) bytecode: Vec<opcode::Instr>,
+    /// 当前活动字节码。以 `Arc<[Instr]>` 共享：函数调用经 `Arc::clone` 换帧（O(1)），
+    /// 不再逐帧深拷贝。与 sub_modules 源共享同一缓冲，IC 写回经 `bytecode_mut` 的
+    /// `Arc::make_mut` 写时复制，保证独占后才改写（miss 时才深拷贝，频率低）。
+    pub(crate) bytecode: Arc<[opcode::Instr]>,
     /// 每次 run 转换一次的不可变常量缓存。下标 0 = 顶层模块，sub_idx+1 = sub_modules[sub_idx]。
     /// 每个 `OnceLock` 保存该模块常量本次运行中只转换一次的 `JsValue` 结果，每次 `run()` 重建。
     /// 不可变常量是标量 + perm 字符串，只读，不作为 GC 根。
@@ -267,7 +270,8 @@ pub struct Vm {
     /// 全局扁平模块表：下标 = 模块 `flat_id`（顶层 0，子模块 flatten 后全局唯一）。
     /// 闭包 `sub_module_index` 即 flat_id，逃逸闭包也能自足解析。
     pub(crate) sub_modules: Arc<Vec<CompiledModule>>,
-    pub(crate) saved_bytecode_stack: Vec<Vec<opcode::Instr>>,
+    /// 帧切换时暂存调用方字节码的 Arc 栈（与 `bytecode` 同共享语义）。
+    pub(crate) saved_bytecode_stack: Vec<Arc<[opcode::Instr]>>,
     pub(crate) saved_immutables_stack: Vec<*const [JsValue]>,
     /// 共享寄存器保存栈。每个活动 `CallFrame` 在 push 时把调用方活跃寄存器
     /// （`regs[..caller_reg_limit]`）按 `saved_reg_offset` 存到这里；恢复时复制回
@@ -519,6 +523,13 @@ impl Vm {
         let slot: *const OnceLock<Vec<JsValue>> = &self.immutables_cache[cache_idx];
         let vec = unsafe { &*slot }.get_or_init(|| self.convert_immutables(constants));
         self.active_immutables = vec.as_slice() as *const [JsValue];
+    }
+
+    /// 当前活动字节码的可变访问入口。bytecode 以 `Arc<[Instr]>` 与 sub_modules 源共享，
+    /// IC 写回经 `Arc::make_mut` 保证独占：独占时零拷贝原地写，共享时先深拷贝再写
+    /// （IC miss 才触发，频率低）。所有写操作必须经此方法，防止共享缓冲被多实例污染。
+    pub(crate) fn bytecode_mut(&mut self) -> &mut [opcode::Instr] {
+        Arc::make_mut(&mut self.bytecode)
     }
 
     /// GC 根收集的统一遍历（对象与字符串都产出）。与 `rewrite_values` 字段一一对应。
@@ -1036,7 +1047,7 @@ impl Vm {
             return self.raise_error_kind("RangeError", "Maximum call stack size exceeded");
         }
 
-        let sub_bytecode = self.sub_modules[sub_idx].bytecode.clone();
+        let sub_bytecode = Arc::clone(&self.sub_modules[sub_idx].bytecode);
         let sub_n_args = self.sub_modules[sub_idx].n_args as usize;
         let sub_n_registers = self.sub_modules[sub_idx].n_registers;
         let sub_param_base = self.sub_modules[sub_idx].param_base as usize;
@@ -1902,7 +1913,7 @@ impl Vm {
 /// 原子树 flat_id 自 1 连续，因此拷贝顺序即新 id 顺序，`out` 下标对齐平表槽位。
 fn rehome_subtree(module: &CompiledModule, base: u32, out: &mut Vec<CompiledModule>) {
     let new_id = base + module.flat_id - 1;
-    let mut bytecode = module.bytecode.clone();
+    let mut bytecode = module.bytecode.to_vec();
     for instr in &mut bytecode {
         if opcode::opcode(*instr) == OpCode::CREATE_CLOSURE {
             let old = opcode::imm16(*instr) as u32;
@@ -1916,7 +1927,7 @@ fn rehome_subtree(module: &CompiledModule, base: u32, out: &mut Vec<CompiledModu
         }
     }
     let mut rehomed = module.clone();
-    rehomed.bytecode = bytecode;
+    rehomed.bytecode = Arc::from(bytecode);
     rehomed.flat_id = new_id;
     out.push(rehomed);
     for sub in &module.sub_modules {
@@ -1927,6 +1938,7 @@ fn rehome_subtree(module: &CompiledModule, base: u32, out: &mut Vec<CompiledModu
 #[cfg(test)]
 mod tests {
     use super::{opcode, JsValue, TryHandler, Vm};
+    use std::sync::Arc;
     use oxide_bytecode::module::CompiledModule;
     use oxide_runtime_api::NativeResult;
     use oxide_types::object::NativeFnPtr;
@@ -2025,7 +2037,7 @@ mod tests {
             .push(std::ptr::dangling_mut::<super::ForInIter<'static>>());
         vm.iters.for_of_iters.push(JsValue::undefined());
         vm.saved_bytecode_stack
-            .push(vec![opcode::encode(opcode::OpCode::HALT, 0, 0, 0)]);
+            .push(Arc::from(vec![opcode::encode(opcode::OpCode::HALT, 0, 0, 0)]));
         vm.saved_immutables_stack
             .push(std::ptr::slice_from_raw_parts(std::ptr::null(), 0));
         vm.try_stack.push(TryHandler {
@@ -2071,10 +2083,10 @@ mod tests {
     #[test]
     fn for_of_close_pops_iterator_stack() {
         let module = CompiledModule {
-            bytecode: vec![
+            bytecode: Arc::from(vec![
                 opcode::encode(opcode::OpCode::FOR_OF_CLOSE, 0, 0, 0),
                 opcode::encode(opcode::OpCode::HALT, 0, 0, 0),
-            ],
+            ]),
             n_registers: 1,
             ..CompiledModule::new()
         };
@@ -2089,9 +2101,9 @@ mod tests {
     #[test]
     fn write_ic_back_updates_three_extension_words() {
         let mut vm = Vm::new();
-        vm.bytecode = vec![0, 0, 0];
+        vm.bytecode = Arc::from(vec![0, 0, 0]);
         vm.pc = 3;
-        crate::ic_helper::write_ic_back(&mut vm.bytecode, vm.pc, 0x1234_5678, 7, 0);
+        crate::ic_helper::write_ic_back(Arc::make_mut(&mut vm.bytecode), vm.pc, 0x1234_5678, 7, 0);
         assert_eq!(vm.bytecode[0], 0x0034_5678);
         assert_eq!(vm.bytecode[1], 7);
         assert_eq!(vm.bytecode[2], 0);
@@ -2100,9 +2112,9 @@ mod tests {
     #[test]
     fn write_ic_back_stores_proto_depth() {
         let mut vm = Vm::new();
-        vm.bytecode = vec![0, 0, 0];
+        vm.bytecode = Arc::from(vec![0, 0, 0]);
         vm.pc = 3;
-        crate::ic_helper::write_ic_back(&mut vm.bytecode, vm.pc, 0xAAAA_BBBB, 42, 2);
+        crate::ic_helper::write_ic_back(Arc::make_mut(&mut vm.bytecode), vm.pc, 0xAAAA_BBBB, 42, 2);
         assert_eq!(vm.bytecode[0], 0x00AA_BBBB);
         assert_eq!(vm.bytecode[1], 42);
         assert_eq!(vm.bytecode[2], 2);
@@ -2111,10 +2123,10 @@ mod tests {
     #[test]
     fn unimplemented_profile_opcode_fails_explicitly() {
         let module = CompiledModule {
-            bytecode: vec![
+            bytecode: Arc::from(vec![
                 opcode::encode(opcode::OpCode::PROFILE_SHAPE, 0, 0, 0),
                 opcode::encode(opcode::OpCode::HALT, 0, 0, 0),
-            ],
+            ]),
             n_registers: 1,
             ..CompiledModule::new()
         };

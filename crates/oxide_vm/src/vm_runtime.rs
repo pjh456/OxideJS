@@ -156,7 +156,7 @@ impl Vm {
     ) -> Result<(), String> {
         self.regs = [JsValue::undefined(); 256];
         self.pc = 0;
-        self.bytecode = Vec::new();
+        self.bytecode = Arc::default();
         self.active_reg_limit = 1;
         self.root_reg_limit = 1;
         self.try_stack.clear();
@@ -222,7 +222,7 @@ impl Vm {
 
         self.regs = [JsValue::undefined(); 256];
         self.pc = 0;
-        self.bytecode = sub.bytecode.clone();
+        self.bytecode = Arc::clone(&sub.bytecode);
         self.activate_immutables(sub_idx, &sub.constants);
         self.active_reg_limit = sub.n_registers.max(1);
         self.root_reg_limit = self.active_reg_limit;
@@ -300,7 +300,7 @@ impl Vm {
         vm_info!("rerun: clearing IC caches");
         self.clear_execution_state();
         self.active_reg_limit = self.root_reg_limit;
-        crate::ic_helper::clear_ic_caches(&mut self.bytecode);
+        crate::ic_helper::clear_ic_caches(self.bytecode_mut());
         self.dispatch()
     }
 
@@ -315,7 +315,7 @@ impl Vm {
         self.cell_stack.push(Vec::new());
         self.sub_modules = Arc::new(collect_flat_modules(module));
         self.immutables_cache = (0..self.sub_modules.len()).map(|_| OnceLock::new()).collect();
-        self.bytecode = module.bytecode.clone();
+        self.bytecode = Arc::clone(&module.bytecode);
         self.activate_immutables(0, &module.constants);
         self.root_reg_limit = module.n_registers.max(1);
         self.active_reg_limit = self.root_reg_limit;

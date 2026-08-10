@@ -305,6 +305,7 @@ impl Vm {
         let obj = unsafe { &*obj_ptr };
         let prop_name_si = self.property_key_si(self.regs[b]);
         let (cached_shape_id, cached_slot, cached_depth) = ic_helper::read_ic_entry(&self.bytecode, &mut self.pc);
+        let ic_pc = self.pc;
         if obj.has_prop_meta() {
             let val = self.ordinary_get_with_target(obj, prop_name_si, val, a as u8)?;
             if self.accessor_frame_target_reg.take().is_none() {
@@ -322,7 +323,7 @@ impl Vm {
             prop_cache_miss();
             if template.prop_name == prop_name_si {
                 if template.position < obj.prop_vec_len() as u32 {
-                    ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), template.position, 0);
+                    ic_helper::write_ic_back(self.bytecode_mut(), ic_pc, obj.shape_id(), template.position, 0);
                     ic_debug!(
                         "IC_GET propforge hit shape={} prop={} slot={}",
                         obj.shape_id(),
@@ -345,7 +346,7 @@ impl Vm {
             // 先试自身属性（快路径，depth=0）。
             if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
                 if !obj.is_accessor_meta(pos) {
-                    ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos, 0);
+                    ic_helper::write_ic_back(self.bytecode_mut(), ic_pc, obj.shape_id(), pos, 0);
                     ic_debug!("IC_GET write-back own shape={} slot={}", obj.shape_id(), pos);
                 }
             } else {
@@ -356,7 +357,7 @@ impl Vm {
                     let co_ref = unsafe { &*cursor };
                     if let Some(pos) = self.kernel_core.shape_forge().lookup_position(co_ref.shape_id(), prop_name_si) {
                         if !co_ref.is_accessor_meta(pos) {
-                            ic_helper::write_ic_back(&mut self.bytecode, self.pc, co_ref.shape_id(), pos, depth);
+                            ic_helper::write_ic_back(self.bytecode_mut(), ic_pc, co_ref.shape_id(), pos, depth);
                             ic_debug!(
                                 "IC_GET write-back proto shape={} slot={} depth={}",
                                 co_ref.shape_id(),
@@ -399,6 +400,7 @@ impl Vm {
         }
 
         let (cached_shape_id, cached_slot, cached_depth) = ic_helper::read_ic_entry(&self.bytecode, &mut self.pc);
+        let ic_pc = self.pc;
         let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
         let receiver = self.regs[rd];
         let obj = unsafe { &mut *obj_ptr };
@@ -414,7 +416,7 @@ impl Vm {
             self.profiling.record_ic_miss();
             prop_cache_miss();
             obj.set_prop_shape(pos, value);
-            ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos, 0);
+            ic_helper::write_ic_back(self.bytecode_mut(), ic_pc, obj.shape_id(), pos, 0);
             ic_debug!("IC_SET write-back shape={} slot={}", obj.shape_id(), pos);
         } else {
             self.profiling.record_ic_miss();
@@ -423,7 +425,7 @@ impl Vm {
             self.ordinary_set_dispatch(obj, prop_name_si, value, receiver)?;
             if old_shape != obj.shape_id() {
                 if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
-                    ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos, 0);
+                    ic_helper::write_ic_back(self.bytecode_mut(), ic_pc, obj.shape_id(), pos, 0);
                     ic_debug!("IC_SET write-back shape={} slot={}", obj.shape_id(), pos);
                     self.kernel_core.prop_forge().upsert(
                         obj.shape_id(),

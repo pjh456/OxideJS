@@ -5,6 +5,7 @@
 //! 或由其它模块克隆复制。`Display` 输出可读的反汇编文本，供调试用。
 
 use std::fmt;
+use std::sync::Arc;
 
 use crate::opcode::{self, OpCode};
 
@@ -47,7 +48,7 @@ pub struct UpvalueCapture {
 /// - `is_class_constructor` / `is_derived_constructor` / `needs_home_object` — 类相关；
 /// - `upvalue_captures` / `cells_needed` — 闭包捕获描述。
 pub struct CompiledModule {
-    pub bytecode: Vec<opcode::Instr>,
+    pub bytecode: Arc<[opcode::Instr]>,
     pub constants: Vec<Constant>,
     pub n_registers: u8,
     pub n_args: u8,
@@ -83,7 +84,7 @@ impl CompiledModule {
     /// 构造空模块：空字节码、空常量池、零寄存器与全部标志默认关闭。
     pub fn new() -> Self {
         Self {
-            bytecode: Vec::new(),
+            bytecode: Arc::from(Vec::new()),
             constants: Vec::new(),
             n_registers: 0,
             n_args: 0,

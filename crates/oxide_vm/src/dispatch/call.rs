@@ -482,7 +482,7 @@ impl Vm {
                 return Err(self.error_message_text("RangeError", "Maximum call stack size exceeded"));
             }
 
-            let sub_bytecode = self.sub_modules[sub_idx].bytecode.clone();
+            let sub_bytecode = Arc::clone(&self.sub_modules[sub_idx].bytecode);
             let sub_n_args = self.sub_modules[sub_idx].n_args as usize;
             let sub_n_registers = self.sub_modules[sub_idx].n_registers;
             let sub_param_base = self.sub_modules[sub_idx].param_base as usize;

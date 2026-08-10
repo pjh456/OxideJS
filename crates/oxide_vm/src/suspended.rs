@@ -18,7 +18,7 @@ use crate::vm::{CallFrame, Completion, ForInIter, TryHandler, Vm};
 pub(crate) struct SuspendedFrame {
     pub regs: Box<[JsValue; 256]>,
     pub pc: usize,
-    pub bytecode: Vec<opcode::Instr>,
+    pub bytecode: Arc<[opcode::Instr]>,
     /// 模块 flat_id（恢复时经 sub_modules 重激活 immutables；跨 run 失效据此报错）。
     pub sub_idx: u32,
     pub active_reg_limit: u8,
@@ -34,7 +34,7 @@ pub(crate) struct SuspendedFrame {
     pub last_for_of_result: JsValue,
     /// `yield*` 委托中的内层迭代器；异步函数恒为 None。
     pub delegated_iterator: Option<JsValue>,
-    pub saved_bytecode_stack: Vec<Vec<opcode::Instr>>,
+    pub saved_bytecode_stack: Vec<Arc<[opcode::Instr]>>,
     pub saved_immutables_stack: Vec<*const [JsValue]>,
     pub exception_value: Option<JsValue>,
     pub pending_exception: Option<JsValue>,
@@ -47,7 +47,7 @@ impl SuspendedFrame {
     pub fn new_empty() -> Self {        SuspendedFrame {
             regs: Box::new([JsValue::undefined(); 256]),
             pc: 0,
-            bytecode: Vec::new(),
+            bytecode: Arc::default(),
             sub_idx: 0,
             active_reg_limit: 0,
             root_reg_limit: 0,
@@ -349,7 +349,7 @@ mod tests {
         frame.regs[0] = JsValue::float(1.0);
         frame.regs[7] = JsValue::float(2.0);
         frame.pc = 11;
-        frame.bytecode = vec![0u32];
+        frame.bytecode = Arc::from(vec![0u32]);
         frame.sub_idx = 3;
         frame.active_reg_limit = 4;
         frame.root_reg_limit = 5;
@@ -367,7 +367,7 @@ mod tests {
         frame.for_of_iters.push(JsValue::float(6.0));
         frame.last_for_of_result = JsValue::float(7.0);
         frame.delegated_iterator = Some(JsValue::float(8.0));
-        frame.saved_bytecode_stack.push(vec![0u32]);
+        frame.saved_bytecode_stack.push(Arc::from(vec![0u32]));
         frame.saved_immutables_stack.push(std::ptr::slice_from_raw_parts(std::ptr::null(), 0));
         frame.exception_value = Some(JsValue::float(9.0));
         frame.pending_exception = Some(JsValue::float(10.0));

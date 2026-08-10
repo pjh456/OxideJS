@@ -278,6 +278,7 @@ impl Vm {
         let ext1 = self.bytecode[self.pc + 1];
         let ext2 = self.bytecode[self.pc + 2];
         self.pc += 3;
+        let ic_pc = self.pc;
         if obj.has_prop_meta() {
             return self.ordinary_get(obj, prop_name_si, receiver);
         }
@@ -291,7 +292,7 @@ impl Vm {
             if template.prop_name != prop_name_si {
                 self.proto_chain_ic_get(obj, prop_name_si, receiver)?
             } else if template.position < obj.prop_vec_len() as u32 {
-                crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), template.position, 0);
+                crate::ic_helper::write_ic_back(self.bytecode_mut(), ic_pc, obj.shape_id(), template.position, 0);
                 obj.get_prop_shape(template.position)
             } else {
                 self.proto_chain_ic_get(obj, prop_name_si, receiver)?
@@ -304,11 +305,12 @@ impl Vm {
 
     /// 执行 ordinary_get 并把 IC 按原型链深度写回。
     fn proto_chain_ic_get(&mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue) -> Result<JsValue, String> {
+        let ic_pc = self.pc;
         let resolved = self.ordinary_get(obj, prop_name_si, receiver)?;
         // 快路径：自身属性（depth=0）。
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             if !obj.is_accessor_meta(pos) {
-                crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos, 0);
+                crate::ic_helper::write_ic_back(self.bytecode_mut(), ic_pc, obj.shape_id(), pos, 0);
             }
             return Ok(resolved);
         }
@@ -319,7 +321,7 @@ impl Vm {
             let co = unsafe { &*cursor };
             if let Some(pos) = self.kernel_core.shape_forge().lookup_position(co.shape_id(), prop_name_si) {
                 if !co.is_accessor_meta(pos) {
-                    crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, co.shape_id(), pos, depth);
+                    crate::ic_helper::write_ic_back(self.bytecode_mut(), ic_pc, co.shape_id(), pos, depth);
                 }
                 break;
             }
@@ -336,6 +338,7 @@ impl Vm {
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue,
     ) -> Result<(), String> {
         ic_trace!("set_member_prop: shape_id={} prop_name_si={}", obj.shape_id(), prop_name_si);
+        let ic_pc = self.pc;
         let val = self.promote_if_needed_for_write_ptr(obj as *mut JsObject, val);
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             if obj.has_prop_meta() {
@@ -343,7 +346,7 @@ impl Vm {
                 return Ok(());
             }
             obj.set_prop_shape(pos, val);
-            crate::ic_helper::write_ic_back(&mut self.bytecode, self.pc, obj.shape_id(), pos, 0);
+            crate::ic_helper::write_ic_back(self.bytecode_mut(), ic_pc, obj.shape_id(), pos, 0);
         } else {
             self.ordinary_set(obj, prop_name_si, val, receiver)?;
         }

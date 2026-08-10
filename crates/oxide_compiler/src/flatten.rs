@@ -6,6 +6,8 @@
 //! imm16 重写为对应子模块的 `flat_id`。运行时以 `flat_id` 为平表下标，闭包自足，
 //! 不再依赖调用上下文。
 
+use std::sync::Arc;
+
 use oxide_bytecode::module::CompiledModule;
 use oxide_bytecode::opcode::{self, OpCode};
 
@@ -20,7 +22,7 @@ fn assign_ids(module: &mut CompiledModule, next_id: &mut u32) {
         sub.flat_id = *next_id;
         *next_id += 1;
     }
-    for instr in &mut module.bytecode {
+    for instr in Arc::make_mut(&mut module.bytecode).iter_mut() {
         if opcode::opcode(*instr) == OpCode::CREATE_CLOSURE {
             let rel = opcode::imm16(*instr) as usize;
             // rel 应为 1-based 子模块下标；0 表示无引用（异常输入），按未解析处理。
@@ -51,10 +53,10 @@ mod tests {
     #[test]
     fn flatten_assigns_global_ids_and_rewrites_closures() {
         let mut leaf = CompiledModule::new();
-        leaf.bytecode = vec![opcode::encode(OpCode::CREATE_CLOSURE, 1, 1, 0)];
+        leaf.bytecode = Arc::from(vec![opcode::encode(OpCode::CREATE_CLOSURE, 1, 1, 0)]);
         let mut mid = CompiledModule::new();
         mid.sub_modules = vec![leaf];
-        mid.bytecode = vec![opcode::encode(OpCode::CREATE_CLOSURE, 2, 1, 0)];
+        mid.bytecode = Arc::from(vec![opcode::encode(OpCode::CREATE_CLOSURE, 2, 1, 0)]);
         let mut top = module_with_closure(vec![mid]);
 
         flatten_submodules(&mut top);

@@ -4,6 +4,8 @@
 //! label 用前缀和：`label_pos` 记 Inst 下标，平铺时维护 inst→instr 映射，
 //! 跳转 offset 以 Instr（含 ext 字）为单位。
 
+use std::sync::Arc;
+
 use oxide_bytecode::module::CompiledModule;
 use oxide_bytecode::opcode::{self, OpCode};
 
@@ -75,7 +77,7 @@ pub fn lower(f: &IRFunction) -> Result<CompiledModule, String> {
     }
 
     Ok(CompiledModule {
-        bytecode: instrs,
+        bytecode: Arc::from(instrs),
         constants: f.constants.clone(),
         n_registers: f.n_registers as u8,
         n_args: f.param_layout.count as u8,

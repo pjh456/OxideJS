@@ -109,7 +109,7 @@ impl Vm {
             }
 
             let new_obj_val = JsValue::object(new_obj as *mut u8);
-            let sub_bytecode = self.sub_modules[sub_idx].bytecode.clone();
+            let sub_bytecode = Arc::clone(&self.sub_modules[sub_idx].bytecode);
             let sub_n_args = self.sub_modules[sub_idx].n_args as usize;
             let sub_n_registers = self.sub_modules[sub_idx].n_registers;
             let sub_param_base = self.sub_modules[sub_idx].param_base as usize;
