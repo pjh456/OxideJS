@@ -19,7 +19,8 @@ pub fn flatten_submodules(module: &mut CompiledModule) {
 
 fn assign_ids(module: &mut CompiledModule, next_id: &mut u32) {
     for sub in &mut module.sub_modules {
-        sub.flat_id = *next_id;
+        // 子模块以 Arc 共享；flatten 在编译末端跑（refcount 1），make_mut 无拷贝。
+        Arc::make_mut(sub).flat_id = *next_id;
         *next_id += 1;
     }
     for instr in Arc::make_mut(&mut module.bytecode).iter_mut() {
@@ -36,7 +37,7 @@ fn assign_ids(module: &mut CompiledModule, next_id: &mut u32) {
         }
     }
     for sub in &mut module.sub_modules {
-        assign_ids(sub, next_id);
+        assign_ids(Arc::make_mut(sub), next_id);
     }
 }
 
@@ -44,7 +45,7 @@ fn assign_ids(module: &mut CompiledModule, next_id: &mut u32) {
 mod tests {
     use super::*;
 
-    fn module_with_closure(nested: Vec<CompiledModule>) -> CompiledModule {
+    fn module_with_closure(nested: Vec<Arc<CompiledModule>>) -> CompiledModule {
         let mut m = CompiledModule::new();
         m.sub_modules = nested;
         m
@@ -55,9 +56,9 @@ mod tests {
         let mut leaf = CompiledModule::new();
         leaf.bytecode = Arc::from(vec![opcode::encode(OpCode::CREATE_CLOSURE, 1, 1, 0)]);
         let mut mid = CompiledModule::new();
-        mid.sub_modules = vec![leaf];
+        mid.sub_modules = vec![Arc::new(leaf)];
         mid.bytecode = Arc::from(vec![opcode::encode(OpCode::CREATE_CLOSURE, 2, 1, 0)]);
-        let mut top = module_with_closure(vec![mid]);
+        let mut top = module_with_closure(vec![Arc::new(mid)]);
 
         flatten_submodules(&mut top);
 

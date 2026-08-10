@@ -8,18 +8,23 @@ use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
 /// 按 `flat_id` 下标收集整棵子模块树为平表，供 `run()` 装载。
-fn collect_flat_modules(module: &CompiledModule) -> Vec<CompiledModule> {
-    let mut out: Vec<Option<CompiledModule>> = Vec::new();
-    place_flat(module, &mut out);
+///
+/// 子模块节点以 `Arc` 与调用方模块树共享：只做 Arc::clone（O(1) 引用计数），
+/// 不再深拷贝 constants/upvalue_captures 等。顶层模块本身以浅拷贝包 Arc——
+/// 其自有 constants 仍逐 run 复制，但整棵子树零深拷贝。
+fn collect_flat_modules(module: &CompiledModule) -> Vec<Arc<CompiledModule>> {
+    let mut out: Vec<Option<Arc<CompiledModule>>> = Vec::new();
+    let top = Arc::new(module.clone());
+    place_flat(&top, &mut out);
     out.into_iter().map(|m| m.expect("flat_id slot must be filled")).collect()
 }
 
-fn place_flat(module: &CompiledModule, out: &mut Vec<Option<CompiledModule>>) {
+fn place_flat(module: &Arc<CompiledModule>, out: &mut Vec<Option<Arc<CompiledModule>>>) {
     let idx = module.flat_id as usize;
     if idx >= out.len() {
         out.resize(idx + 1, None);
     }
-    out[idx] = Some(module.clone());
+    out[idx] = Some(Arc::clone(module));
     for sub in &module.sub_modules {
         place_flat(sub, out);
     }

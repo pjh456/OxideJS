@@ -73,7 +73,7 @@ pub fn lower(f: &IRFunction) -> Result<CompiledModule, String> {
 
     let mut sub_modules = Vec::with_capacity(f.nested.len());
     for nested in &f.nested {
-        sub_modules.push(lower(nested)?);
+        sub_modules.push(Arc::new(lower(nested)?));
     }
 
     Ok(CompiledModule {

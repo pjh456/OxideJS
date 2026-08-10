@@ -112,7 +112,7 @@ impl SuspendedFrame {
     /// # 边界
     /// `sub_idx >= sub_modules.len()`（挂起状态跨 run）返回 Err，调用方须按各自
     /// 路径回滚并报错（保持现有三处行为）。
-    pub fn restore_into(&mut self, vm: &mut Vm, sub_modules: &Arc<Vec<CompiledModule>>) -> Result<(), String> {
+    pub fn restore_into(&mut self, vm: &mut Vm, sub_modules: &Arc<Vec<Arc<CompiledModule>>>) -> Result<(), String> {
         vm.regs = *self.regs;
         vm.pc = self.pc;
         vm.bytecode = std::mem::take(&mut self.bytecode);

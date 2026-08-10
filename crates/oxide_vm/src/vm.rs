@@ -269,7 +269,9 @@ pub struct Vm {
     pub math_rng_state: u64,
     /// 全局扁平模块表：下标 = 模块 `flat_id`（顶层 0，子模块 flatten 后全局唯一）。
     /// 闭包 `sub_module_index` 即 flat_id，逃逸闭包也能自足解析。
-    pub(crate) sub_modules: Arc<Vec<CompiledModule>>,
+    /// 条目为 `Arc<CompiledModule>`，与调用方模块树共享（`run()` 只做 Arc::clone，
+    /// 不再每次深拷贝整棵子树）。
+    pub(crate) sub_modules: Arc<Vec<Arc<CompiledModule>>>,
     /// 帧切换时暂存调用方字节码的 Arc 栈（与 `bytecode` 同共享语义）。
     pub(crate) saved_bytecode_stack: Vec<Arc<[opcode::Instr]>>,
     pub(crate) saved_immutables_stack: Vec<*const [JsValue]>,
@@ -1911,7 +1913,7 @@ impl Vm {
 /// 把 flatten 后的子模块子树重编号到平表偏移 `base`：DFS 前序拷贝进 `out`，
 /// 新 flat_id = base + (old - 1)，子树内每条 `CREATE_CLOSURE` 的 imm16 同步重写。
 /// 原子树 flat_id 自 1 连续，因此拷贝顺序即新 id 顺序，`out` 下标对齐平表槽位。
-fn rehome_subtree(module: &CompiledModule, base: u32, out: &mut Vec<CompiledModule>) {
+fn rehome_subtree(module: &CompiledModule, base: u32, out: &mut Vec<Arc<CompiledModule>>) {
     let new_id = base + module.flat_id - 1;
     let mut bytecode = module.bytecode.to_vec();
     for instr in &mut bytecode {
@@ -1929,7 +1931,7 @@ fn rehome_subtree(module: &CompiledModule, base: u32, out: &mut Vec<CompiledModu
     let mut rehomed = module.clone();
     rehomed.bytecode = Arc::from(bytecode);
     rehomed.flat_id = new_id;
-    out.push(rehomed);
+    out.push(Arc::new(rehomed));
     for sub in &module.sub_modules {
         rehome_subtree(sub, base, out);
     }

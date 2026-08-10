@@ -43,7 +43,7 @@ pub struct UpvalueCapture {
 /// - `bytecode` / `constants` — 指令序列与常量池；
 /// - `n_registers` / `n_args` / `param_base` — 寄存器窗口布局；
 /// - `builtin_reg_map` — 内置对象到寄存器的预绑定；
-/// - `sub_modules` — 嵌套函数（闭包体）的编译产物；
+/// - `sub_modules` — 嵌套函数（闭包体）的编译产物（`Arc` 共享，避免每次 run 深拷贝模块树）；
 /// - `is_arrow` / `captured_this_const_idx` — 箭头函数词法 `this`；
 /// - `is_class_constructor` / `is_derived_constructor` / `needs_home_object` — 类相关；
 /// - `upvalue_captures` / `cells_needed` — 闭包捕获描述。
@@ -54,7 +54,7 @@ pub struct CompiledModule {
     pub n_args: u8,
     pub param_base: u8,
     pub builtin_reg_map: Vec<(String, u32)>,
-    pub sub_modules: Vec<CompiledModule>,
+    pub sub_modules: Vec<Arc<CompiledModule>>,
     /// 是否为箭头函数体（箭头函数从外围作用域词法捕获 `this`）。
     pub is_arrow: bool,
     /// 捕获 `this` 的 JsValue 在常量池中的下标；0 表示未捕获，使用标准 this 绑定。
