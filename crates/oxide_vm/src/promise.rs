@@ -43,6 +43,9 @@ pub(crate) struct PromiseState {
     /// 本 promise 能力上的 resolve/reject 闭包（thenable 委托入队时取用）。
     pub resolve_fn: JsValue,
     pub reject_fn: JsValue,
+    /// resolve/reject 是否已被调用过（Resolve Promise Functions 的 alreadyResolved）。
+    /// 首次调用后置位，后续任何 resolve/reject（含 thenable 委托期间）均 no-op。
+    pub already_resolved: bool,
 }
 
 /// 一条微任务（job）。
@@ -69,6 +72,8 @@ const MAX_DRAIN_JOBS: usize = 1_000_000;
 
 /// 闭包函数对象上存目标 promise 的属性名。
 const PROMISE_PROP: &str = "__oxide_promise__";
+/// thenable 委托结算代理标志：绕过 alreadyResolved（委托是真正结算路径）。
+const DELEGATED_PROP: &str = "__oxide_delegated__";
 /// finally 处理器上存 onFinally 回调的属性名。
 const ON_FINALLY_PROP: &str = "__oxide_on_finally__";
 /// finally 处理器上区分 reject 角色的属性名。
@@ -115,6 +120,7 @@ impl Vm {
             reactions: Vec::new(),
             resolve_fn: JsValue::undefined(),
             reject_fn: JsValue::undefined(),
+            already_resolved: false,
         });
         obj.set_native_data(Box::into_raw(state) as *mut u8);
         JsValue::from_js_object(ptr)
@@ -124,8 +130,8 @@ impl Vm {
     /// 目标 promise 的 native 闭包，同时写入状态盒供 thenable 委托取用。
     pub(crate) fn new_promise_capability(&mut self) -> (JsValue, JsValue, JsValue) {
         let promise = self.create_promise_object();
-        let resolve = self.make_resolve_reject_fn(promise, false);
-        let reject = self.make_resolve_reject_fn(promise, true);
+        let resolve = self.make_resolve_reject_fn(promise, false, false);
+        let reject = self.make_resolve_reject_fn(promise, true, false);
         let state = self.promise_state_ptr(promise);
         let state = unsafe { &mut *state };
         state.resolve_fn = resolve;
@@ -211,7 +217,10 @@ impl Vm {
     }
 
     /// 构造携带目标 promise 的 native 闭包（resolve 或 reject 角色）。
-    fn make_resolve_reject_fn(&mut self, promise: JsValue, reject_role: bool) -> JsValue {
+    /// `delegated` 为 true 表示 thenable 委托用的结算代理：绕过 alreadyResolved
+    /// （委托是唯一真正的结算路径，由 then 的 resolve/reject 触发），但 state != Pending
+    /// 仍阻止二次结算。
+    fn make_resolve_reject_fn(&mut self, promise: JsValue, reject_role: bool, delegated: bool) -> JsValue {
         let native_fn: NativeFn = if reject_role { promise_reject_closure } else { promise_resolve_closure };
         let fn_proto = self.session.builtin_world().fn_proto_val();
         let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto);
@@ -223,6 +232,8 @@ impl Vm {
         let obj = unsafe { &mut *ptr };
         let si = self.kernel_core.perm_interner().intern(PROMISE_PROP).0;
         self.set_or_create_prop_value(obj, si, promise);
+        let dsi = self.kernel_core.perm_interner().intern(DELEGATED_PROP).0;
+        self.set_or_create_prop_value(obj, dsi, JsValue::bool(delegated));
         self.add_fn_name_length(obj, "", 1);
         JsValue::from_js_object(ptr)
     }
@@ -239,6 +250,17 @@ impl Vm {
             Some(v) if v.is_object() => Some(v),
             _ => None,
         }
+    }
+
+    /// 当前 resolve/reject 闭包是否为 thenable 委托结算代理（绕过 alreadyResolved）。
+    fn callee_delegated_flag(&self) -> bool {
+        let callee = self.regs[254];
+        if !callee.is_object() {
+            return false;
+        }
+        let obj = unsafe { &*callee.as_js_object_ptr() };
+        let si = self.kernel_core.perm_interner().intern(DELEGATED_PROP).0;
+        self.resolve_property(obj, si).map(|v| v.is_bool() && v.as_bool()).unwrap_or(false)
     }
 
     /// 取出 Promise 状态盒指针（调用方须先校验 `is_promise_value`）。
@@ -289,6 +311,9 @@ impl Vm {
     /// - 可能入队 Thenable 微任务，或直接 settle 目标 promise。
     /// - then getter 抛错时拒绝目标 promise（错误在内部消化，调用方无需处理）。
     pub(crate) fn resolve_promise(&mut self, promise: JsValue, x: JsValue) -> Result<(), String> {
+        // alreadyResolved 守卫在 resolve 闭包层（首次调用置位，含 thenable 委托期间）。
+        // 本函数自身不检查：委托闭包调用它时须放行（委托才是真正结算路径）；
+        // 二次结算由 fulfill/reject 的 state != Pending 守卫兜底。
         if oxide_runtime_api::same_value(x, promise) {
             let err = oxide_builtins::error::create_type_error(self, "Chaining cycle detected for promise");
             return self.reject_promise(promise, err);
@@ -307,10 +332,14 @@ impl Vm {
                 }
             };
             if oxide_builtins::iterator::is_callable(then) {
+                // thenable 委托期间本 promise 仍未 settle，但 already_resolved 已置位，
+                // 后续 executor 的 resolve/reject 均 no-op。委托用独立结算代理闭包
+                // （绕过 alreadyResolved——委托才是真正结算路径），仍受 state != Pending 守卫。
                 let state = self.promise_state_ptr(promise);
-                let state = unsafe { &*state };
-                let resolve = state.resolve_fn;
-                let reject = state.reject_fn;
+                let state = unsafe { &mut *state };
+                state.already_resolved = true;
+                let resolve = self.make_resolve_reject_fn(promise, false, true);
+                let reject = self.make_resolve_reject_fn(promise, true, true);
                 self.enqueue(Microtask::Thenable {
                     thenable: x,
                     then,
@@ -662,14 +691,15 @@ fn promise_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let obj = unsafe { &mut *this_val.as_js_object_ptr() };
     obj.type_tag = JsObject::OBJ_TYPE_PROMISE;
-    let resolve = vm.make_resolve_reject_fn(this_val, false);
-    let reject = vm.make_resolve_reject_fn(this_val, true);
+    let resolve = vm.make_resolve_reject_fn(this_val, false, false);
+    let reject = vm.make_resolve_reject_fn(this_val, true, false);
     let state = Box::new(PromiseState {
         state: PromiseStateKind::Pending,
         result: JsValue::undefined(),
         reactions: Vec::new(),
         resolve_fn: resolve,
         reject_fn: reject,
+        already_resolved: false,
     });
     obj.set_native_data(Box::into_raw(state) as *mut u8);
     let executor = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
@@ -691,11 +721,23 @@ fn promise_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
 }
 
 /// resolve 闭包：`resolve(x)` 对目标 promise 执行 PromiseResolve。
+/// 非委托闭包入口检查 alreadyResolved（首次调用置位，后续 no-op）；
+/// 委托闭包（thenable 的 resolve）绕过该检查直接结算。
 fn promise_resolve_closure(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let Some(promise) = vm.promise_from_callee() else {
         return NativeResult::Err(oxide_builtins::error::create_type_error(vm, "resolve function is invalid"));
     };
+    let delegated = vm.callee_delegated_flag();
     let x = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    if !delegated {
+        // 非委托：alreadyResolved 守卫——首次调用置位，含 thenable 委托期间。
+        let state = vm.promise_state_ptr(promise);
+        let state = unsafe { &mut *state };
+        if state.already_resolved {
+            return NativeResult::Ok(JsValue::undefined());
+        }
+        state.already_resolved = true;
+    }
     if let Err(e) = vm.resolve_promise(promise, x) {
         let exc = vm
             .last_uncaught_value
@@ -711,7 +753,16 @@ fn promise_reject_closure(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let Some(promise) = vm.promise_from_callee() else {
         return NativeResult::Err(oxide_builtins::error::create_type_error(vm, "reject function is invalid"));
     };
+    let delegated = vm.callee_delegated_flag();
     let reason = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    if !delegated {
+        let state = vm.promise_state_ptr(promise);
+        let state = unsafe { &mut *state };
+        if state.already_resolved {
+            return NativeResult::Ok(JsValue::undefined());
+        }
+        state.already_resolved = true;
+    }
     let _ = vm.reject_promise(promise, reason);
     NativeResult::Ok(JsValue::undefined())
 }
@@ -1635,6 +1686,7 @@ pub(crate) fn clone_promise_native_with_rewrite(
             .collect(),
         resolve_fn: rewrite(state.resolve_fn),
         reject_fn: rewrite(state.reject_fn),
+        already_resolved: state.already_resolved,
     };
     new.set_native_data(Box::into_raw(Box::new(cloned)) as *mut u8);
 }

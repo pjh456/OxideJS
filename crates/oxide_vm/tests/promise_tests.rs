@@ -99,3 +99,55 @@ fn custom_ctor_failure_is_type_error() {
     .unwrap();
     assert_eq!(vm.lookup_str(result).as_deref(), Some("TypeError"));
 }
+
+#[test]
+fn resolve_thenable_then_reject_keeps_fulfilled() {
+    // P3：resolve(thenable) 置位 alreadyResolved，随后同调用内 reject 不覆盖。
+    let mut vm = Vm::new();
+    let (ok, val) = settled(
+        &mut vm,
+        "new Promise((res, rej) => { res({ then(res2) { res2({ then(r3) { r3('final'); } }); } }); rej('oops'); }).then(v => v, e => 'rejected:' + e)",
+    );
+    assert!(ok);
+    assert_eq!(vm.lookup_str(val).as_deref(), Some("final"));
+}
+
+#[test]
+fn double_resolve_second_noop() {
+    let mut vm = Vm::new();
+    let (ok, val) = settled(&mut vm, "new Promise((res) => { res(1); res(2); }).then(v => v)");
+    assert!(ok);
+    assert_eq!(val.as_int(), 1);
+}
+
+#[test]
+fn reject_then_resolve_keeps_rejected() {
+    let mut vm = Vm::new();
+    let (ok, val) = settled(&mut vm, "new Promise((res, rej) => { rej('e'); res(1); }).then(v => v, e => 'rejected:' + e)");
+    assert!(ok);
+    assert_eq!(vm.lookup_str(val).as_deref(), Some("rejected:e"));
+}
+
+#[test]
+fn thenable_resolve_after_reject_noop() {
+    // reject 先行置位，随后 resolve(thenable) 不得触发委托结算。
+    let mut vm = Vm::new();
+    let (ok, val) = settled(
+        &mut vm,
+        "new Promise((res, rej) => { rej('e'); res({ then(r) { r(1); } }); }).then(v => v, e => 'rejected:' + e)",
+    );
+    assert!(ok);
+    assert_eq!(vm.lookup_str(val).as_deref(), Some("rejected:e"));
+}
+
+#[test]
+fn thenable_chain_after_already_resolved_noop() {
+    // 双重 resolve(thenable)：第二次委托不结算，结果保持第一次。
+    let mut vm = Vm::new();
+    let (ok, val) = settled(
+        &mut vm,
+        "new Promise((res) => { res({ then(r) { r(5); } }); res({ then(r) { r(9); } }); }).then(v => v)",
+    );
+    assert!(ok);
+    assert_eq!(val.as_int(), 5);
+}
