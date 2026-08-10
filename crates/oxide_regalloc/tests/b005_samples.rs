@@ -53,6 +53,20 @@ fn large_function_errors_without_regalloc() {
     assert!(err.contains("RangeError"), "off 模式应报 RangeError: {err}");
 }
 
+/// 大函数晚引用全局（builtin 槽号 >253）：builtin 槽须重映射到低号物理色，不得以
+/// 恒等号 >253 编码（RegAlloc 后 lower 的 Reg>253 兜底检查报 RangeError，见
+/// temporalHelpers.js + 测试文件拼接场景）。`late` 首次引用在函数尾部，槽号必 >253。
+#[test]
+fn late_builtin_slot_beyond_253_compiles() {
+    let mut src = String::new();
+    for i in 0..160 {
+        src.push_str(&format!("var v{i} = {i}; v{i}; "));
+    }
+    src.push_str("var result = late;");
+    let module = compile_source(&src, true).expect("on 模式应编译成功");
+    assert!(module_max_n_registers(&module) <= 253, "模块树 n_registers 应 ≤253");
+}
+
 /// 修复达成：on 模式 250 变量函数编译成功，模块树 n_registers ≤ 253。
 #[test]
 fn large_function_compiles_with_regalloc() {

@@ -117,19 +117,6 @@ pub(super) fn build(
     // 自己的 vreg 参与染色而移走 → 子模块读错物理槽。分界线 = param_layout.base
     // （emit 的 inherited_reg_start 继承机制：子模块 vreg ≥ base，父槽引用 < base）。
     collect_own_escaped(f, &mut pre_colors, &mut escaped_colors);
-    // builtin 槽：VM 帧推入时写 regs[slot]=全局值（无指令 def 却活到入口），
-    // 物理号必须恒等并排除出可分配集。否则 prologue 死定义临时（如解构
-    // FOR_OF_DONE 结果）与它同色，在 builtin use 前执行写入 → 覆写全局值
-    // （B021：解构参数后 builtin 调用读到 false/undefined）。
-    for (_, reg) in &f.builtin_reg_map {
-        let v = *reg;
-        if real.contains(&v) {
-            pre_colors.entry(v).or_insert(v);
-            if !escaped_colors.contains(&v) {
-                escaped_colors.push(v);
-            }
-        }
-    }
 
     // ── 可分配色集 ──
     // 窗口只为参数连续性 MOV 桥预留；spread 调用实参经 ext 逐个读寄存器，无连续性要求。
@@ -141,6 +128,42 @@ pub(super) fn build(
         .max()
         .unwrap_or(0);
     let arg_window_base = 254u32.saturating_sub(max_nargs);
+
+    // ── builtin 槽 ──
+    // VM 帧推入时写 regs[slot]=全局值（无指令 def 却活到入口），物理号须恒定且排除出
+    // 可分配集，否则 prologue 死定义临时（如解构 FOR_OF_DONE 结果）与它同色，在
+    // builtin use 前执行写入 → 覆写全局值。
+    // 恒等号 v 在 ≤253 且不落入参数 MOV 窗口时保持恒等；大函数晚引用 builtin 的槽号
+    // >253（或 ≥arg_window_base 与 MOV 桥冲突）时恒等号不可编码 → 改分配确定性自由色
+    // R（算法与 spilled_builtin_bindings 同源：1..arg_window_base 中最小未占用）。
+    let mut builtin_entries: Vec<(String, u32)> = f
+        .builtin_reg_map
+        .iter()
+        .filter(|(_, reg)| real.contains(reg))
+        .map(|(name, reg)| (name.clone(), *reg))
+        .collect();
+    builtin_entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut used_colors: Vec<u32> = Vec::new();
+    for (_, v) in builtin_entries {
+        let r = if v <= 253 && v < arg_window_base {
+            v
+        } else {
+            (1u32..arg_window_base)
+                .find(|c| {
+                    !pre_colors.values().any(|p| *p == *c) && !escaped_colors.contains(c) && !used_colors.contains(c)
+                })
+                .unwrap_or_else(|| {
+                    debug_assert!(false, "builtin 槽无自由色（v={v}）");
+                    1
+                })
+        };
+        used_colors.push(r);
+        pre_colors.insert(v, r);
+        if !escaped_colors.contains(&r) {
+            escaped_colors.push(r);
+        }
+    }
+
     let mut allocatable: Vec<u32> = Vec::new();
     for c in 1u32..=253 {
         if pre_colors.contains_key(&c) || escaped_colors.contains(&c) || c >= arg_window_base {
