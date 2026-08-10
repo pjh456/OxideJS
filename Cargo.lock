@@ -1094,18 +1094,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "oxide_api"
-version = "0.1.0"
-dependencies = [
- "oxide_compiler",
- "oxide_kernel",
- "oxide_parser",
- "oxide_vm",
- "rayon",
- "serde_json",
-]
-
-[[package]]
 name = "oxide_builtins"
 version = "0.1.0"
 dependencies = [
@@ -1147,7 +1135,6 @@ version = "0.1.0"
 dependencies = [
  "ansi_term",
  "clap",
- "oxide_api",
  "oxide_bytecode",
  "oxide_code_cache",
  "oxide_compiler",

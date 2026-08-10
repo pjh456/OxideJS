@@ -17,7 +17,6 @@ members = [
     "crates/oxide_kernel",
     "crates/oxide_runtime_api",
     "crates/oxide_builtins",
-    "crates/oxide_api",
     "crates/oxide_cli",
     "crates/oxide_test262",
 ]

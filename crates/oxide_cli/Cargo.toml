@@ -18,7 +18,6 @@ oxide_types = { path = "../oxide_types" }
 oxide_compiler = { path = "../oxide_compiler" }
 oxide_vm = { path = "../oxide_vm" }
 oxide_kernel = { path = "../oxide_kernel" }
-oxide_api = { path = "../oxide_api" }
 oxide_log = { path = "../oxide_log" }
 clap.workspace = true
 rustyline.workspace = true

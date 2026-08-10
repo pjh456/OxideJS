@@ -353,7 +353,7 @@ impl Cell {
 /// 内联字段：`header`（shape_id + 一组标志位）、`type_tag`（外来对象种类）、
 /// `proto`、`generation` 等；dense 属性向量、属性元数据、native payload 与
 /// upvalue cell 列表以裸指针挂在堆上，由 VM / GC 维护。对象可分配在
-/// session arena（`Epoch`）或持久堆（`PersistentHeap`），通过
+/// session arena（`Epoch`）或全局堆（`Arc`），通过
 /// `is_session_epoch` 位区分。
 pub struct JsObject {
     header: u32,

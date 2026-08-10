@@ -1,9 +1,8 @@
 //! 内存管理抽象：跨 epoch 持久存储与每次调用（agent call）内的 arena 分配。
 //!
-//! `P<T>` 是基于 `Arc` 的持久指针，持有者跨 `Epoch::reset()` 存活；
-//! `PersistentHeap` 负责把对象"提升"到持久堆；`Epoch` 则是对
-//! `bumpalo::Bump` 的封装，用于每次调用内的高频分配与 O(1) 整体回收，
-//! 并通过 epoch ID 辅助悬挂指针检测。
+//! `P<T>` 是 `Arc` 的透明包装，持有者跨 `Epoch::reset()` 存活；
+//! `Epoch` 则是对 `bumpalo::Bump` 的封装，用于每次调用内的高频分配与
+//! O(1) 整体回收，并通过 epoch ID 辅助悬挂指针检测。
 
 use std::fmt;
 use std::ops::Deref;
@@ -11,8 +10,9 @@ use std::sync::Arc;
 
 /// 引用计数持久指针。
 ///
-/// 包装 `Arc<T>` 用于跨 epoch 对象存储。`Clone` 递增引用计数，`Drop` 递减；
-/// `P<T>` 包裹的对象在 `Epoch::reset()` 后仍存活——它们位于全局堆上。
+/// `P<T>` 是 `Arc<T>` 的透明包装（`repr(transparent)`），语义等价于 `Arc`：
+/// `Clone` 递增引用计数，`Drop` 递减。对象位于全局堆上，跨 `Epoch::reset()`
+/// 存活。
 #[repr(transparent)]
 pub struct P<T>(Arc<T>);
 
@@ -60,31 +60,6 @@ impl<T: fmt::Display> fmt::Display for P<T> {
     }
 }
 
-/// 跨 epoch 对象存储的持久堆。
-///
-/// 提供最小 API：`promote(value)` 把 `value` 以 `Arc` 移到全局堆并返回 `P<T>`。
-/// shape、code、IC 模板与字符串的类型化存储位于 OxideKernel。
-pub struct PersistentHeap;
-
-impl PersistentHeap {
-    /// 创建空持久堆（无内部状态，仅提供 `promote`）。
-    pub fn new() -> Self {
-        Self
-    }
-
-    /// 把 `value` 移到持久堆并返回引用计数指针。
-    /// 返回的 `P<T>` 跨 epoch 重置存活——它以 `Arc` 存在全局堆上。
-    pub fn promote<T>(&self, value: T) -> P<T> {
-        P::new(value)
-    }
-}
-
-impl Default for PersistentHeap {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-///
 /// 包装 `bumpalo::Bump` 并携带 epoch ID 计数器用于悬挂指针检测。
 /// 所有 Agent 调用级对象分配于此；`reset()` 在每次调用结束时 O(1) 清空。
 pub struct Epoch {
@@ -186,8 +161,7 @@ mod tests {
     #[test]
     fn is_epoch_ptr_returns_false_for_heap_and_stack_pointers() {
         let epoch = Epoch::new();
-        let heap = PersistentHeap::new();
-        let persistent = heap.promote(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let persistent = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let stack_value = 7i32;
 
         assert!(!epoch.is_epoch_ptr(persistent.as_ptr().cast::<u8>()));

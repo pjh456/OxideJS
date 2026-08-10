@@ -587,11 +587,6 @@ impl CompileCtx {
             .unwrap_or(0)
     }
 
-    pub(crate) fn pre_register_builtins(&mut self) {
-        // builtin 全局由 lookup_or_builtin() 惰性解析。保留此钩子维持编译管线形态，
-        // 避免在每个模块预留约 60 个寄存器槽。
-    }
-
     /// 组装 IRFunction（两出口共用），take 走编译产物状态。
     /// `parent_ctx` 用于补全 upvalue_captures 的 enclosing_reg（父符号表在父 emit 完成后完整）。
     fn assemble_ir(&mut self, param_layout: oxide_ir::ParamLayout, parent_ctx: Option<&CompileCtx>) -> IRFunction {
@@ -1278,7 +1273,6 @@ impl Emitter {
         let mut ctx = CompileCtx::new();
         // 脚本顶层：var/function 声明需落到全局对象，let/const/class 不进全局。
         ctx.is_global_scope = true;
-        ctx.pre_register_builtins();
         self.predeclare_function_declarations(&program.body, &mut ctx);
 
         // 预注册 builtin 引用（先于任何临时寄存器），builtin 槽不进入临时寄存器池。

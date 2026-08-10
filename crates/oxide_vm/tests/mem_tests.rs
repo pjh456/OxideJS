@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use oxide_types::mem::{Epoch, PersistentHeap};
+use oxide_types::mem::{Epoch, P};
 
 #[test]
 fn epoch_alloc_and_read() {
@@ -54,17 +54,15 @@ fn epoch_benchmark_1m_allocations() {
 }
 
 #[test]
-fn persistent_promote_and_deref() {
-    let heap = PersistentHeap::new();
-    let p = heap.promote(42i32);
+fn persistent_new_and_deref() {
+    let p = P::new(42i32);
     assert_eq!(*p, 42);
 }
 
 #[test]
-fn persistent_promote_survives_epoch_reset() {
-    let heap = PersistentHeap::new();
+fn persistent_survives_epoch_reset() {
     let mut epoch = Epoch::new();
-    let p = heap.promote(100i32);
+    let p = P::new(100i32);
 
     epoch.reset();
 
@@ -73,8 +71,7 @@ fn persistent_promote_survives_epoch_reset() {
 
 #[test]
 fn persistent_clone_shares_data() {
-    let heap = PersistentHeap::new();
-    let a = heap.promote(42i32);
+    let a = P::new(42i32);
     let b = a.clone();
 
     assert_eq!(*a, 42);
@@ -86,15 +83,14 @@ fn persistent_clone_shares_data() {
 }
 
 #[test]
-fn persistent_promote_custom_type() {
+fn persistent_custom_type() {
     #[derive(Debug, PartialEq)]
     struct Data {
         name: String,
         value: i32,
     }
 
-    let heap = PersistentHeap::new();
-    let p = heap.promote(Data {
+    let p = P::new(Data {
         name: "test".to_string(),
         value: 42,
     });
@@ -105,15 +101,13 @@ fn persistent_promote_custom_type() {
 
 #[test]
 fn persistent_debug_format() {
-    let heap = PersistentHeap::new();
-    let p = heap.promote(42i32);
+    let p = P::new(42i32);
     assert_eq!(format!("{:?}", p), "P(42)");
 }
 
 #[test]
 fn persistent_display_format() {
-    let heap = PersistentHeap::new();
-    let p = heap.promote(42i32);
+    let p = P::new(42i32);
     assert_eq!(format!("{}", p), "42");
 }
 
@@ -123,13 +117,6 @@ fn epoch_default_creates_valid() {
     assert_eq!(epoch.current_id(), 0);
     let ptr = epoch.alloc(7i32);
     assert_eq!(unsafe { *ptr }, 7);
-}
-
-#[test]
-fn persistent_heap_default() {
-    let heap = PersistentHeap;
-    let p = heap.promote("hello");
-    assert_eq!(*p, "hello");
 }
 
 #[test]
