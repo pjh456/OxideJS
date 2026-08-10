@@ -236,7 +236,6 @@ fn is_blacklisted_harness(name: &str) -> bool {
             | "testAtomics.js"
             | "atomicsHelper.js"
             | "proxyTrapsHelper.js"
-            | "temporalHelpers.js"
             | "tcoHelper.js"
             | "detachArrayBuffer.js"
             | "resizableArrayBufferUtils.js"
@@ -402,7 +401,6 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
         "Proxy",
         "BigInt",
         "Intl",
-        "Temporal",
         "module",
         "Atomics",
         "SharedArrayBuffer",

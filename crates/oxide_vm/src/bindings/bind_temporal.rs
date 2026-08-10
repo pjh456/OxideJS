@@ -94,7 +94,10 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         world,
         plain_date_ctor,
         core,
-        &[("from", oxide_builtins::temporal::plain_date_from::<crate::vm::Vm> as *const (), 1)],
+        &[
+            ("from", oxide_builtins::temporal::plain_date_from::<crate::vm::Vm> as *const (), 1),
+            ("compare", oxide_builtins::temporal::plain_date_compare::<crate::vm::Vm> as *const (), 2),
+        ],
     );
     let plain_date_proto_ptr = world.plain_date_proto.as_ptr() as *mut JsObject;
     let plain_date_proto = unsafe { &mut *plain_date_proto_ptr };
@@ -119,11 +122,109 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         "day",
         oxide_builtins::temporal::plain_date_day::<crate::vm::Vm> as *const (),
     );
+    bind_accessor_getter(
+        core,
+        session,
+        plain_date_proto,
+        "dayOfWeek",
+        oxide_builtins::temporal::plain_date_day_of_week::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        plain_date_proto,
+        "dayOfYear",
+        oxide_builtins::temporal::plain_date_day_of_year::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        plain_date_proto,
+        "daysInMonth",
+        oxide_builtins::temporal::plain_date_days_in_month::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        plain_date_proto,
+        "daysInWeek",
+        oxide_builtins::temporal::plain_date_days_in_week::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        plain_date_proto,
+        "daysInYear",
+        oxide_builtins::temporal::plain_date_days_in_year::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        plain_date_proto,
+        "monthsInYear",
+        oxide_builtins::temporal::plain_date_months_in_year::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        plain_date_proto,
+        "inLeapYear",
+        oxide_builtins::temporal::plain_date_in_leap_year::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        plain_date_proto,
+        "weekOfYear",
+        oxide_builtins::temporal::plain_date_week_of_year::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        plain_date_proto,
+        "yearOfWeek",
+        oxide_builtins::temporal::plain_date_year_of_week::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        plain_date_proto,
+        "monthCode",
+        oxide_builtins::temporal::plain_date_month_code::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        plain_date_proto,
+        "era",
+        oxide_builtins::temporal::plain_date_era::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        plain_date_proto,
+        "eraYear",
+        oxide_builtins::temporal::plain_date_era_year::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        plain_date_proto,
+        "calendarId",
+        oxide_builtins::temporal::plain_date_calendar_id::<crate::vm::Vm> as *const (),
+    );
     apply_binding_table(
         world,
         plain_date_proto,
         core,
-        &[("toString", oxide_builtins::temporal::plain_date_to_string::<crate::vm::Vm> as *const (), 0)],
+        &[
+            ("toString", oxide_builtins::temporal::plain_date_to_string::<crate::vm::Vm> as *const (), 0),
+            ("toJSON", oxide_builtins::temporal::plain_date_to_json::<crate::vm::Vm> as *const (), 0),
+            ("valueOf", oxide_builtins::temporal::plain_date_value_of::<crate::vm::Vm> as *const (), 0),
+            ("equals", oxide_builtins::temporal::plain_date_equals::<crate::vm::Vm> as *const (), 1),
+            ("add", oxide_builtins::temporal::plain_date_add::<crate::vm::Vm> as *const (), 1),
+            ("subtract", oxide_builtins::temporal::plain_date_subtract::<crate::vm::Vm> as *const (), 1),
+        ],
     );
 
     // Temporal.PlainTime：构造器 + 6 个分量 getter 与 toString。

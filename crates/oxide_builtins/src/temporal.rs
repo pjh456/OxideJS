@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, NaiveDate, SecondsFormat, Utc};
+use chrono::{DateTime, Datelike, Days, Months, NaiveDate, SecondsFormat, Utc};
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::{to_number, to_string, NativeResult, VmHost};
@@ -461,4 +461,282 @@ pub fn plain_time_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         }
         NativeResult::Ok(vm.new_string(&format!("{h:02}:{m:02}:{s:02}.{digits}")))
     }
+}
+
+// ───────────────────── PlainDate 扩展方法 ─────────────────────
+
+/// 从 PlainDate receiver 读 year/month/day 并构造 chrono NaiveDate（供日期计算）。
+fn plain_date_naive<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<NaiveDate, JsValue> {
+    let (y, m, d) = plain_date_ymd(vm, args)?;
+    NaiveDate::from_ymd_opt(y as i32, m as u32, d as u32)
+        .ok_or_else(|| crate::error::create_range_error(vm, "invalid date"))
+}
+
+/// 从对象式日期字段（`{year, month, day}`）读三字段；PlainDate 对象直接读内部槽；
+/// 缺字段返回 None。
+fn object_ymd<H: VmHost>(vm: &mut H, val: JsValue) -> Option<(i32, u32, u32)> {
+    if !val.is_object() {
+        return None;
+    }
+    let obj = unsafe { &*val.as_js_object_ptr() };
+    if obj.is_plain_date_obj() {
+        return Some((
+            get_double_prop(obj, 0) as i32,
+            get_double_prop(obj, 1) as u32,
+            get_double_prop(obj, 2) as u32,
+        ));
+    }
+    let y = read_prop_number(vm, obj, val, "year");
+    let m = read_prop_number(vm, obj, val, "month");
+    let d = read_prop_number(vm, obj, val, "day");
+    if y.is_nan() || m.is_nan() || d.is_nan() {
+        return None;
+    }
+    Some((y.trunc() as i32, m.trunc() as u32, d.trunc() as u32))
+}
+
+/// `Temporal.PlainDate.prototype.dayOfWeek` getter：ISO 周几（周一 1 … 周日 7）。
+pub fn plain_date_day_of_week<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let date = match plain_date_naive(vm, args) {
+        Ok(d) => d,
+        Err(e) => return NativeResult::Err(e),
+    };
+    NativeResult::Ok(JsValue::float((date.weekday().num_days_from_monday() + 1) as f64))
+}
+
+/// `Temporal.PlainDate.prototype.dayOfYear` getter：年内第几天（1 起）。
+pub fn plain_date_day_of_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let date = match plain_date_naive(vm, args) {
+        Ok(d) => d,
+        Err(e) => return NativeResult::Err(e),
+    };
+    NativeResult::Ok(JsValue::float(date.ordinal() as f64))
+}
+
+/// 计算给定年月的天数（含闰年）。
+fn days_in_month_iso(year: i32, month: u32) -> u32 {
+    NaiveDate::from_ymd_opt(year, month + 1, 1)
+        .and_then(|next| next.checked_sub_days(Days::new(1)))
+        .map(|d| d.day())
+        .unwrap_or(31)
+}
+
+/// `Temporal.PlainDate.prototype.daysInMonth` getter。
+pub fn plain_date_days_in_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let date = match plain_date_naive(vm, args) {
+        Ok(d) => d,
+        Err(e) => return NativeResult::Err(e),
+    };
+    NativeResult::Ok(JsValue::float(days_in_month_iso(date.year(), date.month()) as f64))
+}
+
+/// `Temporal.PlainDate.prototype.daysInWeek` getter：恒 7。
+pub fn plain_date_days_in_week<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let _ = match receiver_obj(vm, args) {
+        Ok(p) => p,
+        Err(e) => return NativeResult::Err(e),
+    };
+    NativeResult::Ok(JsValue::float(7.0))
+}
+
+fn is_leap_year_iso(year: i32) -> bool {
+    NaiveDate::from_ymd_opt(year, 2, 29).is_some()
+}
+
+/// `Temporal.PlainDate.prototype.daysInYear` getter：366（闰年）或 365。
+pub fn plain_date_days_in_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let date = match plain_date_naive(vm, args) {
+        Ok(d) => d,
+        Err(e) => return NativeResult::Err(e),
+    };
+    NativeResult::Ok(JsValue::float(if is_leap_year_iso(date.year()) { 366.0 } else { 365.0 }))
+}
+
+/// `Temporal.PlainDate.prototype.monthsInYear` getter：恒 12（ISO 日历）。
+pub fn plain_date_months_in_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let _ = match receiver_obj(vm, args) {
+        Ok(p) => p,
+        Err(e) => return NativeResult::Err(e),
+    };
+    NativeResult::Ok(JsValue::float(12.0))
+}
+
+/// `Temporal.PlainDate.prototype.inLeapYear` getter。
+pub fn plain_date_in_leap_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let date = match plain_date_naive(vm, args) {
+        Ok(d) => d,
+        Err(e) => return NativeResult::Err(e),
+    };
+    NativeResult::Ok(JsValue::bool(is_leap_year_iso(date.year())))
+}
+
+/// `Temporal.PlainDate.prototype.weekOfYear` getter：ISO 周数。
+pub fn plain_date_week_of_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let date = match plain_date_naive(vm, args) {
+        Ok(d) => d,
+        Err(e) => return NativeResult::Err(e),
+    };
+    NativeResult::Ok(JsValue::float(date.iso_week().week() as f64))
+}
+
+/// `Temporal.PlainDate.prototype.yearOfWeek` getter：ISO 周所属年。
+pub fn plain_date_year_of_week<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let date = match plain_date_naive(vm, args) {
+        Ok(d) => d,
+        Err(e) => return NativeResult::Err(e),
+    };
+    NativeResult::Ok(JsValue::float(date.iso_week().year() as f64))
+}
+
+/// `Temporal.PlainDate.prototype.monthCode` getter：`M01`..`M12`。
+pub fn plain_date_month_code<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let (_, m, _) = match plain_date_ymd(vm, args) {
+        Ok(x) => x,
+        Err(e) => return NativeResult::Err(e),
+    };
+    NativeResult::Ok(vm.new_string(&format!("M{m:02}")))
+}
+
+/// `Temporal.PlainDate.prototype.era` getter：ISO 日历无纪元，恒 undefined。
+pub fn plain_date_era<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let _ = match receiver_obj(vm, args) {
+        Ok(p) => p,
+        Err(e) => return NativeResult::Err(e),
+    };
+    NativeResult::Ok(JsValue::undefined())
+}
+
+/// `Temporal.PlainDate.prototype.eraYear` getter：ISO 日历无纪元，恒 undefined。
+pub fn plain_date_era_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let _ = match receiver_obj(vm, args) {
+        Ok(p) => p,
+        Err(e) => return NativeResult::Err(e),
+    };
+    NativeResult::Ok(JsValue::undefined())
+}
+
+/// `Temporal.PlainDate.prototype.calendarId` getter：恒 `"iso8601"`。
+pub fn plain_date_calendar_id<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let _ = match receiver_obj(vm, args) {
+        Ok(p) => p,
+        Err(e) => return NativeResult::Err(e),
+    };
+    NativeResult::Ok(vm.new_string("iso8601"))
+}
+
+/// `Temporal.PlainDate.prototype.equals(other)`：比较年月日是否相等。
+pub fn plain_date_equals<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let (y, m, d) = match plain_date_ymd(vm, args) {
+        Ok(x) => x,
+        Err(e) => return NativeResult::Err(e),
+    };
+    let other_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let equal = match object_ymd(vm, other_val) {
+        Some((oy, om, od)) => oy as f64 == y && om as f64 == m && od as f64 == d,
+        None => false,
+    };
+    NativeResult::Ok(JsValue::bool(equal))
+}
+
+/// `Temporal.PlainDate.compare(a, b)`：静态比较，返回 -1/0/1。
+pub fn plain_date_compare<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let a_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let b_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let a = match object_ymd(vm, a_val) {
+        Some(x) => x,
+        None => {
+            return NativeResult::Err(crate::error::create_type_error(vm, "cannot convert to PlainDate"));
+        }
+    };
+    let b = match object_ymd(vm, b_val) {
+        Some(x) => x,
+        None => {
+            return NativeResult::Err(crate::error::create_type_error(vm, "cannot convert to PlainDate"));
+        }
+    };
+    let cmp = (a.0, a.1, a.2).cmp(&(b.0, b.1, b.2));
+    NativeResult::Ok(JsValue::float(match cmp {
+        std::cmp::Ordering::Less => -1.0,
+        std::cmp::Ordering::Equal => 0.0,
+        std::cmp::Ordering::Greater => 1.0,
+    }))
+}
+
+/// `Temporal.PlainDate.prototype.valueOf()`：Temporal 对象禁止转原始值。
+pub fn plain_date_value_of<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
+    NativeResult::Err(crate::error::create_type_error(vm, "Temporal.PlainDate has no valueOf"))
+}
+
+/// `Temporal.PlainDate.prototype.toJSON()`：输出 ISO 日期串（同 toString）。
+pub fn plain_date_to_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = match receiver_obj(vm, args) {
+        Ok(p) => p,
+        Err(e) => return NativeResult::Err(e),
+    };
+    let obj = unsafe { &*ptr };
+    if let Err(e) = ensure_plain_date(vm, obj) {
+        return NativeResult::Err(e);
+    }
+    let year = get_double_prop(obj, 0) as i32;
+    let month = get_double_prop(obj, 1) as u32;
+    let day = get_double_prop(obj, 2) as u32;
+    NativeResult::Ok(vm.new_string(&format!("{year:04}-{month:02}-{day:02}")))
+}
+
+/// 从 duration-like 值读日期单位字段（year/month/week/day）；非对象或字段缺失视为 0。
+fn duration_like_date_fields<H: VmHost>(vm: &mut H, val: JsValue) -> (f64, f64, f64, f64) {
+    if !val.is_object() {
+        return (0.0, 0.0, 0.0, 0.0);
+    }
+    let obj = unsafe { &*val.as_js_object_ptr() };
+    let y = read_prop_number(vm, obj, val, "years");
+    let m = read_prop_number(vm, obj, val, "months");
+    let w = read_prop_number(vm, obj, val, "weeks");
+    let d = read_prop_number(vm, obj, val, "days");
+    (
+        if y.is_nan() { 0.0 } else { y.trunc() },
+        if m.is_nan() { 0.0 } else { m.trunc() },
+        if w.is_nan() { 0.0 } else { w.trunc() },
+        if d.is_nan() { 0.0 } else { d.trunc() },
+    )
+}
+
+/// 按 duration-like 日期字段对日期做加减（Temporal 大单位运算，月份不足日时取月末）。
+fn date_apply_duration<H: VmHost>(
+    vm: &mut H, args: &[u8], sign: i64,
+) -> NativeResult {
+    let date = match plain_date_naive(vm, args) {
+        Ok(d) => d,
+        Err(e) => return NativeResult::Err(e),
+    };
+    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let (y, m, w, d) = duration_like_date_fields(vm, val);
+    let mut result = date;
+    let total_months = (y * 12.0 + m) * sign as f64;
+    if total_months != 0.0 {
+        if let Some(nd) = result.checked_add_months(Months::new(total_months as u32)) {
+            result = nd;
+        } else {
+            return NativeResult::Err(crate::error::create_range_error(vm, "date out of range"));
+        }
+    }
+    let total_days = (w * 7.0 + d) * sign as f64;
+    if total_days != 0.0 {
+        if let Some(nd) = result.checked_add_days(Days::new(total_days as u64)) {
+            result = nd;
+        } else {
+            return NativeResult::Err(crate::error::create_range_error(vm, "date out of range"));
+        }
+    }
+    make_plain_date(vm, result.year(), result.month(), result.day())
+}
+
+/// `Temporal.PlainDate.prototype.add(durationLike)`。
+pub fn plain_date_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    date_apply_duration(vm, args, 1)
+}
+
+/// `Temporal.PlainDate.prototype.subtract(durationLike)`。
+pub fn plain_date_subtract<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    date_apply_duration(vm, args, -1)
 }
