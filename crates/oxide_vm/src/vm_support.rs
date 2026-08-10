@@ -97,7 +97,6 @@ impl Vm {
                 ic_misses: std::cell::Cell::new(0),
                 instruction_count: 0,
             },
-            string_buf: String::new(),
             cell_stack: Vec::new(),
         };
         vm.init_generator_intrinsics();
@@ -190,7 +189,6 @@ impl Vm {
                 ic_misses: std::cell::Cell::new(0),
                 instruction_count: 0,
             },
-            string_buf: String::new(),
             cell_stack: Vec::new(),
         };
         vm.init_generator_intrinsics();

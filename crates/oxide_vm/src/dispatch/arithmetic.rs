@@ -16,12 +16,16 @@ impl Vm {
         let lhs = self.coerce_primitive_bounded(lv, false)?;
         let rhs = self.coerce_primitive_bounded(rv, false)?;
         if lhs.is_string() || rhs.is_string() {
-            let mut buf = std::mem::take(&mut self.string_buf);
-            buf.clear();
+            let lbytes = if lhs.is_string() { unsafe { (*lhs.as_string_ptr()).len() } } else { 0 };
+            let rbytes = if rhs.is_string() { unsafe { (*rhs.as_string_ptr()).len() } } else { 0 };
+            // 预分配精确容量：字符串操作数 O(1) 取字节长，一次分配写齐，免 push_str
+            // 几何 realloc 的二次拷贝（字符串拼接热路径的主要额外成本）。
+            // 32 字节余量覆盖数字/布尔等格式化文本（f64 文本最长约 24 字节），
+            // 避免追加非字符串操作数时二次扩容。
+            let mut buf = String::with_capacity(lbytes + rbytes + 32);
             coercion::push_to_string(lhs, &mut buf);
             coercion::push_to_string(rhs, &mut buf);
             let result = self.new_string_owned(buf);
-            self.string_buf = String::new();
             self.regs[rd] = result;
         } else {
             let ln = coercion::to_number(lhs);
@@ -58,12 +62,16 @@ impl Vm {
         let lhs = self.coerce_primitive_bounded(lv, false)?;
         let rhs = self.coerce_primitive_bounded(rv, false)?;
         if lhs.is_string() || rhs.is_string() {
-            let mut buf = std::mem::take(&mut self.string_buf);
-            buf.clear();
+            let lbytes = if lhs.is_string() { unsafe { (*lhs.as_string_ptr()).len() } } else { 0 };
+            let rbytes = if rhs.is_string() { unsafe { (*rhs.as_string_ptr()).len() } } else { 0 };
+            // 预分配精确容量：字符串操作数 O(1) 取字节长，一次分配写齐，免 push_str
+            // 几何 realloc 的二次拷贝（字符串拼接热路径的主要额外成本）。
+            // 32 字节余量覆盖数字/布尔等格式化文本（f64 文本最长约 24 字节），
+            // 避免追加非字符串操作数时二次扩容。
+            let mut buf = String::with_capacity(lbytes + rbytes + 32);
             coercion::push_to_string(lhs, &mut buf);
             coercion::push_to_string(rhs, &mut buf);
             let result = self.new_string_owned(buf);
-            self.string_buf = String::new();
             self.regs[rd] = result;
         } else {
             let ln = coercion::to_number(lhs);

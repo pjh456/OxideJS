@@ -348,8 +348,6 @@ pub struct Vm {
     /// 分组保存 inline cache 与指令计数器。
     pub(crate) profiling: ProfilingState,
     pub(crate) cell_stack: Vec<Vec<*mut Cell>>,
-    /// 可复用字符串缓冲区，避免每次 `+` 拼接都分配。
-    pub(crate) string_buf: String,
 }
 
 impl Vm {
