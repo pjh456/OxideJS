@@ -1270,6 +1270,7 @@ impl Emitter {
     /// 调用方为 `oxide_compiler::Compiler::compile`：本函数完成 emit 半程，
     /// 随后由 `oxide_ir::lower::lower` 降为字节码。
     pub fn emit_program(&self, program: &oxide_parser::Program) -> Result<IRFunction, String> {
+        crate::emit_debug!("emit_program: {} stmts", program.body.len());
         let mut ctx = CompileCtx::new();
         // 脚本顶层：var/function 声明需落到全局对象，let/const/class 不进全局。
         ctx.is_global_scope = true;

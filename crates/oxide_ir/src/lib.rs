@@ -13,6 +13,7 @@
 
 pub mod contract;
 pub mod inst;
+mod ir_log;
 pub mod lower;
 pub mod operand;
 

@@ -10,6 +10,8 @@
 //! trait 面向泛型而非对象安全：单态化 `H = Vm` 使每个 `host.*()` 调用内联，
 //! 相对 builtins 直接位于 `oxide_vm` 内部没有运行时开销。
 
+mod runtime_api_log;
+
 use std::sync::Arc;
 
 use oxide_kernel::kernel::{KernelCore, KernelSession};

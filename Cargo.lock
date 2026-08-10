@@ -1118,6 +1118,9 @@ dependencies = [
 [[package]]
 name = "oxide_bytecode"
 version = "0.1.0"
+dependencies = [
+ "oxide_log",
+]
 
 [[package]]
 name = "oxide_cfg"
@@ -1126,6 +1129,7 @@ dependencies = [
  "oxide_bytecode",
  "oxide_emit",
  "oxide_ir",
+ "oxide_log",
  "oxide_parser",
 ]
 
@@ -1185,6 +1189,7 @@ dependencies = [
  "oxide_emit",
  "oxide_ir",
  "oxide_liveness",
+ "oxide_log",
  "oxide_parser",
  "oxide_vm",
 ]
@@ -1195,6 +1200,7 @@ version = "0.1.0"
 dependencies = [
  "oxide_bytecode",
  "oxide_ir",
+ "oxide_log",
  "oxide_parser",
  "regex",
  "regress",
@@ -1205,6 +1211,7 @@ name = "oxide_ir"
 version = "0.1.0"
 dependencies = [
  "oxide_bytecode",
+ "oxide_log",
  "smallvec",
 ]
 
@@ -1231,6 +1238,7 @@ dependencies = [
  "oxide_cfg",
  "oxide_emit",
  "oxide_ir",
+ "oxide_log",
  "oxide_parser",
 ]
 
@@ -1254,6 +1262,7 @@ dependencies = [
  "oxc_semantic",
  "oxc_span",
  "oxc_syntax",
+ "oxide_log",
 ]
 
 [[package]]
@@ -1267,6 +1276,7 @@ dependencies = [
  "oxide_emit",
  "oxide_ir",
  "oxide_liveness",
+ "oxide_log",
  "oxide_parser",
  "oxide_vm",
 ]
@@ -1276,6 +1286,7 @@ name = "oxide_runtime_api"
 version = "0.1.0"
 dependencies = [
  "oxide_kernel",
+ "oxide_log",
  "oxide_types",
  "ryu",
 ]
@@ -1302,6 +1313,7 @@ version = "0.1.0"
 dependencies = [
  "bumpalo",
  "hashbrown 0.14.5",
+ "oxide_log",
  "proptest",
  "rustc-hash",
 ]

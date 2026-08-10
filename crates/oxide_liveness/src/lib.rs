@@ -7,6 +7,7 @@
 
 mod dataflow;
 mod live_info;
+mod liveness_log;
 mod ranges;
 
 pub use live_info::LiveInfo;
@@ -20,6 +21,7 @@ pub fn liveness(f: &IRFunction, cfg: &Cfg) -> LiveInfo {
     if f.insts.is_empty() {
         return LiveInfo::new();
     }
+    liveness_debug!("liveness: {} blocks, {} insts", cfg.blocks.len(), f.insts.len());
     let (block_in, block_out, reg_count) = dataflow::block_liveness(f, cfg);
     let (inst_before, inst_after) = ranges::inst_liveness(f, cfg, &block_out, &block_in, reg_count);
     LiveInfo {

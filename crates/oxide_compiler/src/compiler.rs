@@ -43,8 +43,10 @@ impl Compiler {
     pub fn compile(&self, program: &oxide_parser::Program) -> Result<CompiledModule, String> {
         crate::compiler_debug!("compile: starting...");
         let mut ir = Emitter::new().emit_program(program)?;
+        crate::compiler_debug!("compile: after emit {} insts", ir.insts.len());
         if self.enable_dce {
             oxide_dce::dce(&mut ir); // 顶层函数；nested 不递归
+            crate::compiler_debug!("compile: after DCE {} insts", ir.insts.len());
         }
         if self.enable_regalloc && !ir.const_overflow {
             // 优化管线：liveness → 精确 DCE → 重算 liveness → RegAlloc
@@ -56,6 +58,7 @@ impl Compiler {
             let cfg2 = oxide_cfg::build_cfg(&ir); // 精确 DCE 删指令后 inst 下标位移，CFG 重建
             let live2 = oxide_liveness::liveness(&ir, &cfg2); // 重算，绝不用过期 live
             oxide_regalloc::alloc(&mut ir, &live2)?; // 无可行染色 → RangeError 上抛
+            crate::compiler_debug!("compile: after regalloc {} insts", ir.insts.len());
         }
         crate::compiler_debug!("compile: done, {} instructions", ir.insts.len());
         let mut module = lower(&ir)?;

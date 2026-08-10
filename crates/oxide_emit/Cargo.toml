@@ -10,6 +10,7 @@ description = "OxideJS - AST to IR emit pass"
 oxide_parser = { path = "../oxide_parser" }
 oxide_bytecode = { path = "../oxide_bytecode" }
 oxide_ir = { path = "../oxide_ir" }
+oxide_log = { path = "../oxide_log" }
 regex.workspace = true
 regress.workspace = true
 

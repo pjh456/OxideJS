@@ -8,6 +8,7 @@
 //! （异常边）→ `finalize`（exit 哨兵 + preds 反推）。每阶段是独立文件的纯函数，
 //! 中间产物（heads / blocks / exit_id）显式传参，无共享可变状态。
 
+mod cfg_log;
 mod exception;
 mod finalize;
 mod partition;
@@ -93,7 +94,9 @@ pub fn build_cfg(f: &IRFunction) -> Cfg {
     let heads = partition::partition_blocks(f);
     let (mut blocks, exit_id) = split::split_and_edges(f, &heads);
     exception::add_exception_edges(f, &mut blocks);
-    finalize::finalize(blocks, exit_id)
+    let cfg = finalize::finalize(blocks, exit_id);
+    cfg_debug!("build_cfg: {} blocks", cfg.blocks.len());
+    cfg
 }
 
 #[cfg(test)]

@@ -1,5 +1,8 @@
 #![doc = "OxideJS - Shared bytecode protocol and compiled module ABI"]
 
+/// bytecode 日志宏（`bytecode_error`/`bytecode_info` 等），target 为 `oxide::kernel`。
+mod bytecode_log;
+
 /// 编译产物与常量池 ABI（[`CompiledModule`] / [`Constant`]）。
 pub mod module;
 /// 操作码表与指令编解码（[`OpCode`] / [`Instr`]）。

@@ -13,6 +13,7 @@
 //! 精确二轮 `dce_precise`：liveness 驱动的死指令 + 局部死 STORE_VAR 删除，
 //! 消费 `oxide_liveness::LiveInfo`，mark-sweep 重建复用 Pass C。
 
+mod dce_log;
 mod iter_sweep;
 mod precise_sweep;
 mod reachability;
@@ -31,6 +32,8 @@ pub fn dce(f: &mut IRFunction) {
     let mut keep = reachability::pass_a_reachable(f);
     // Pass B：可达存活指令上全函数 use 计数迭代删除到不动点（连锁删上游写者）。
     iter_sweep::pass_b_dead_code(f, &mut keep);
+    let dead = keep.iter().filter(|k| !**k).count();
+    dce_info!("DCE: removing {} dead instructions", dead);
     // Pass C：mark-sweep 一次性重建 insts + label_pos 重映射。
     rebuild::pass_c_sweep(f, &keep);
 }

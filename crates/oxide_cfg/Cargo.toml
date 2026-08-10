@@ -9,6 +9,7 @@ description = "OxideJS - basic block partition and CFG analysis pass over IR"
 [dependencies]
 oxide_ir = { path = "../oxide_ir" }
 oxide_bytecode = { path = "../oxide_bytecode" }
+oxide_log = { path = "../oxide_log" }
 
 [dev-dependencies]
 oxide_parser = { path = "../oxide_parser" }

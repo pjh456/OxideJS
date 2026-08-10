@@ -9,6 +9,7 @@ description = "OxideJS - Shared core types (JsValue, JsObject, Shape, P, Epoch)"
 [dependencies]
 bumpalo.workspace = true
 hashbrown.workspace = true
+oxide_log = { path = "../oxide_log" }
 rustc-hash.workspace = true
 
 [dev-dependencies]

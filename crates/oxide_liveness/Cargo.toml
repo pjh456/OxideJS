@@ -9,6 +9,7 @@ description = "OxideJS - liveness analysis pass over IR (CFG dataflow + per-inst
 [dependencies]
 oxide_ir = { path = "../oxide_ir" }
 oxide_cfg = { path = "../oxide_cfg" }
+oxide_log = { path = "../oxide_log" }
 
 [dev-dependencies]
 oxide_parser = { path = "../oxide_parser" }

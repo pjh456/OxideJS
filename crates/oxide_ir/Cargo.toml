@@ -8,4 +8,5 @@ description = "OxideJS - IR intermediate representation and lowering to bytecode
 
 [dependencies]
 oxide_bytecode = { path = "../oxide_bytecode" }
+oxide_log = { path = "../oxide_log" }
 smallvec.workspace = true

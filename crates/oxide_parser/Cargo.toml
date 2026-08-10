@@ -7,6 +7,7 @@ rust-version.workspace = true
 description = "OxideJS - JavaScript parser (oxc_parser re-export)"
 
 [dependencies]
+oxide_log = { path = "../oxide_log" }
 oxc_parser.workspace = true
 oxc_allocator.workspace = true
 oxc_ast.workspace = true

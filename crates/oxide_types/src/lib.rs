@@ -13,5 +13,8 @@ pub mod shape;
 /// ECMAScript 值（NaN-boxing 的 `JsValue`）。
 pub mod value;
 
+/// 类型层日志宏（`types_error`/`types_info` 等），target 为 `oxide::kernel`。
+mod types_log;
+
 /// 重导出 [`error`] 模块的运行时错误类型。
 pub use error::{JsError, JsErrorKind};

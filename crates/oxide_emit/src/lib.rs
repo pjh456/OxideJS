@@ -8,6 +8,7 @@
 pub mod class;
 pub mod closure;
 pub mod emit;
+mod emit_log;
 pub mod emit_ctx;
 pub mod expr;
 pub mod prepass;

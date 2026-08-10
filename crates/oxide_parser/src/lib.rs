@@ -1,6 +1,7 @@
 #![doc = "OxideJS - JavaScript parser (oxc_parser re-export)"]
 
 mod error;
+mod parser_log;
 
 /// 解析错误：消息 + 源文件字节区间（起始，结束）。
 pub use error::OxideError;

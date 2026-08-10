@@ -10,6 +10,7 @@ mod alloc_map;
 mod color;
 mod finish;
 mod graph;
+mod regalloc_log;
 mod rewrite;
 
 pub use alloc_map::{Alloc, AllocMap, FreshKind, FreshVreg, SpillPlan};
@@ -50,6 +51,7 @@ pub fn alloc(f: &mut IRFunction, live: &LiveInfo) -> Result<(), String> {
         oxide_liveness::liveness(f, &cfg)
     };
     let map = color(f, &live)?;
+    regalloc_debug!("alloc: {} vregs -> {} phys", map.map.len(), map.phys_peak);
     rewrite::run(f, &map);
     finish::run(f, &map);
     for child in &mut f.nested {

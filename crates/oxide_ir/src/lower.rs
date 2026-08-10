@@ -15,6 +15,7 @@ use crate::IRFunction;
 
 /// IRFunction → CompiledModule 等价转换。溢出/标签错误消息为既有格式，逐字保持一致。
 pub fn lower(f: &IRFunction) -> Result<CompiledModule, String> {
+    crate::ir_debug!("lower: {} insts", f.insts.len());
     // 溢出检查 1：常量池（先于寄存器——超大常量池伴生的海量 vreg 会使后续检查的
     // 稠密 bitset 表示爆内存；常量池超限是更基础的失效，先报它）
     if f.const_overflow || f.constants.len() > u16::MAX as usize {
