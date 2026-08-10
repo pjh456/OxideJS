@@ -17,8 +17,10 @@ fn object_keys_no_args_type_error() {
 }
 
 #[test]
-fn object_keys_non_object_type_error() {
-    assert!(eval("Object.keys(42)").is_err(), "Object.keys(42) should throw TypeError");
+fn object_keys_boxes_primitive() {
+    // ToObject 装箱：Object.keys(42) 返回装箱对象的自身键（空）。
+    let (_vm, result) = eval("Object.keys(42).join(',')").unwrap();
+    assert!(result.is_string() && unsafe { &*result.as_string_ptr() }.as_str() == "");
 }
 
 #[test]
@@ -51,11 +53,9 @@ fn object_get_own_property_names_no_args_type_error() {
 }
 
 #[test]
-fn object_get_own_property_names_non_object_type_error() {
-    assert!(
-        eval("Object.getOwnPropertyNames(42)").is_err(),
-        "Object.getOwnPropertyNames(42) should throw TypeError"
-    );
+fn object_get_own_property_names_boxes_primitive() {
+    let (_vm, result) = eval("Object.getOwnPropertyNames(42).join(',')").unwrap();
+    assert!(result.is_string(), "Object.getOwnPropertyNames(42) should box the primitive");
 }
 
 #[test]
@@ -227,8 +227,10 @@ fn test_get_own_property_descriptor_no_args_type_error() {
 }
 
 #[test]
-fn test_has_own_property_non_object_this_type_error() {
-    assert!(eval("Object.prototype.hasOwnProperty.call(42, 'x')").is_err());
+fn test_has_own_property_boxes_primitive_this() {
+    // ToObject 装箱 this：原始值上 hasOwnProperty 返回 false 而非抛错。
+    let (_vm, result) = eval("Object.prototype.hasOwnProperty.call(42, 'x')").unwrap();
+    assert!(result.is_bool() && !result.as_bool());
 }
 
 #[test]

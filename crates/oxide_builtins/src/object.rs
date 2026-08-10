@@ -607,14 +607,11 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
             "Object.defineProperty: expected at least 3 arguments",
         ));
     }
-    let obj_val = vm.reg(args[1]);
-    if !obj_val.is_object() {
-        return NativeResult::Err(crate::error::create_type_error(vm, "Object.defineProperty called on non-object"));
-    }
+    let obj_val = match oxide_runtime_api::to_object(vm.reg(args[1]), vm) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(crate::error::create_type_error(vm, &msg)),
+    };
     let obj_ptr = obj_val.as_js_object_ptr();
-    if obj_ptr.is_null() {
-        return NativeResult::Err(crate::error::create_type_error(vm, "Object.defineProperty called on non-object"));
-    }
     // well-known symbol 等特殊键统一走 property_key_si（映射到各自的 Symbol 键），
     // 保证与计算属性访问、Reflect.defineProperty 等读键路径一致。
     let si = vm.property_key_si(vm.reg(args[2]));
@@ -634,14 +631,11 @@ pub fn object_get_own_property_descriptor<H: VmHost>(vm: &mut H, args: &[u8]) ->
             "Object.getOwnPropertyDescriptor called on non-object",
         ));
     }
-    let obj_val = vm.reg(args[1]);
-    if !obj_val.is_object() {
-        return NativeResult::Ok(JsValue::undefined());
-    }
+    let obj_val = match oxide_runtime_api::to_object(vm.reg(args[1]), vm) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(crate::error::create_type_error(vm, &msg)),
+    };
     let obj_ptr = obj_val.as_js_object_ptr();
-    if obj_ptr.is_null() {
-        return NativeResult::Ok(JsValue::undefined());
-    }
     let prop_name_str = oxide_runtime_api::to_string(vm.reg(args[2]));
     let si = vm.kernel_core().perm_interner().intern(&prop_name_str).0;
 
@@ -717,14 +711,12 @@ fn require_obj_arg<H: VmHost>(vm: &mut H, args: &[u8], fn_name: &str) -> Result<
         return Err(crate::error::create_type_error(vm, &format!("Object.{fn_name} called on non-object")));
     }
     let val = vm.reg(args[1]);
-    if !val.is_object() {
-        return Err(crate::error::create_type_error(vm, &format!("Object.{fn_name} called on non-object")));
-    }
-    let ptr = val.as_js_object_ptr();
-    if ptr.is_null() {
-        return Err(crate::error::create_type_error(vm, &format!("Object.{fn_name} called on non-object")));
-    }
-    Ok(ptr)
+    // ToObject：原始值装箱后返回其对象指针；null/undefined 抛 TypeError。
+    let obj_val = match oxide_runtime_api::to_object(val, vm) {
+        Ok(v) => v,
+        Err(msg) => return Err(crate::error::create_type_error(vm, &msg)),
+    };
+    Ok(obj_val.as_js_object_ptr())
 }
 
 macro_rules! native_try {
@@ -1044,36 +1036,40 @@ pub fn object_proto_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
 }
 
 /// `Object.prototype.hasOwnProperty(key)`：this 是否有指定自身属性。
+///
+/// # 步骤
+/// 1. 先 ToPropertyKey 求键（spec 顺序：键先于 ToObject）。
+/// 2. ToObject 装箱 this（null/undefined 抛 TypeError，原始值装箱后查 own 槽）。
 pub fn object_proto_has_own_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::bool(false));
     }
-    let this_val = vm.reg(args[0]);
-    if !this_val.is_object() || this_val.as_js_object_ptr().is_null() {
-        return NativeResult::Err(crate::error::create_type_error(
-            vm,
-            "Object.prototype.hasOwnProperty called on non-object",
-        ));
-    }
     let key_si = vm.property_key_si(vm.reg(args[1]));
-    let obj = unsafe { &*this_val.as_js_object_ptr() };
+    let this_val = vm.reg(args[0]);
+    let obj_val = match oxide_runtime_api::to_object(this_val, vm) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(crate::error::create_type_error(vm, &msg)),
+    };
+    let obj = unsafe { &*obj_val.as_js_object_ptr() };
     NativeResult::Ok(JsValue::bool(vm.get_own_property_slot(obj, key_si).is_some()))
 }
 
 /// `Object.prototype.propertyIsEnumerable(key)`：指定自身属性是否可枚举。
+///
+/// # 步骤
+/// 1. 先 ToPropertyKey 求键。
+/// 2. ToObject 装箱 this（null/undefined 抛 TypeError）。
 pub fn object_proto_property_is_enumerable<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::bool(false));
     }
-    let this_val = vm.reg(args[0]);
-    if !this_val.is_object() || this_val.as_js_object_ptr().is_null() {
-        return NativeResult::Err(crate::error::create_type_error(
-            vm,
-            "Object.prototype.propertyIsEnumerable called on non-object",
-        ));
-    }
     let key_si = vm.property_key_si(vm.reg(args[1]));
-    let obj = unsafe { &*this_val.as_js_object_ptr() };
+    let this_val = vm.reg(args[0]);
+    let obj_val = match oxide_runtime_api::to_object(this_val, vm) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(crate::error::create_type_error(vm, &msg)),
+    };
+    let obj = unsafe { &*obj_val.as_js_object_ptr() };
     let Some(pos) = vm.get_own_property_slot(obj, key_si) else {
         return NativeResult::Ok(JsValue::bool(false));
     };
