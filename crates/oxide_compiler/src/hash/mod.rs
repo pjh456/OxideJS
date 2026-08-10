@@ -5,8 +5,9 @@
 //! `compiled_module_hash` 纳入绑定名（精确匹配避免错误复用）。
 
 use oxide_parser::{
-    BindingPattern, ChainElement, ClassElement, Expression, ForStatementInit, ObjectPropertyKind, PropertyKey,
-    SimpleAssignmentTarget, Statement,
+    ArrayExpressionElement, BindingPattern, ChainElement, Class, ClassElement, Declaration, ExportDefaultDeclarationKind,
+    Expression, ForStatementInit, ForStatementLeft, Function, ImportDeclarationSpecifier, ModuleExportName,
+    ObjectPropertyKind, PropertyKey, SimpleAssignmentTarget, Statement,
 };
 use std::hash::Hash;
 

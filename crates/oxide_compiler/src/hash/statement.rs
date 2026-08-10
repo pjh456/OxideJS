@@ -53,8 +53,25 @@ pub(super) fn hash_statement(stmt: &Statement, h: &mut rustc_hash::FxHasher, inc
             expression::hash_expression(&dw.test, h, include_binding_names);
         }
         Statement::ForInStatement(fi) => {
+            hash_for_statement_left(&fi.left, h, include_binding_names);
             expression::hash_expression(&fi.right, h, include_binding_names);
             hash_statement(&fi.body, h, include_binding_names);
+        }
+        Statement::ForOfStatement(fo) => {
+            fo.r#await.hash(h);
+            hash_for_statement_left(&fo.left, h, include_binding_names);
+            expression::hash_expression(&fo.right, h, include_binding_names);
+            hash_statement(&fo.body, h, include_binding_names);
+        }
+        Statement::WithStatement(ws) => {
+            expression::hash_expression(&ws.object, h, include_binding_names);
+            hash_statement(&ws.body, h, include_binding_names);
+        }
+        Statement::EmptyStatement(_) => {
+            1u8.hash(h);
+        }
+        Statement::DebuggerStatement(_) => {
+            2u8.hash(h);
         }
         Statement::SwitchStatement(sw) => {
             expression::hash_expression(&sw.discriminant, h, include_binding_names);
@@ -71,16 +88,7 @@ pub(super) fn hash_statement(stmt: &Statement, h: &mut rustc_hash::FxHasher, inc
             hash_function_declaration(fd, h, include_binding_names);
         }
         Statement::ClassDeclaration(class) => {
-            if let Some(id) = &class.id {
-                id.name.as_str().hash(h);
-            }
-            class.super_class.is_some().hash(h);
-            if let Some(super_class) = &class.super_class {
-                expression::hash_expression(super_class, h, include_binding_names);
-            }
-            for element in &class.body.body {
-                class::hash_class_element(element, h, include_binding_names);
-            }
+            hash_class(class, h, include_binding_names);
         }
         Statement::ThrowStatement(ts) => {
             expression::hash_expression(&ts.argument, h, include_binding_names);
@@ -88,6 +96,67 @@ pub(super) fn hash_statement(stmt: &Statement, h: &mut rustc_hash::FxHasher, inc
         Statement::TryStatement(ts) => {
             hash_try_statement(ts, h, include_binding_names);
         }
+        Statement::ImportDeclaration(imp) => {
+            imp.source.value.hash(h);
+            if let Some(specifiers) = &imp.specifiers {
+                (specifiers.len() as u32).hash(h);
+                for spec in specifiers {
+                    match spec {
+                        ImportDeclarationSpecifier::ImportSpecifier(s) => {
+                            hash_module_export_name(&s.imported, h);
+                            if include_binding_names {
+                                s.local.name.as_str().hash(h);
+                            }
+                        }
+                        ImportDeclarationSpecifier::ImportDefaultSpecifier(s) => {
+                            if include_binding_names {
+                                s.local.name.as_str().hash(h);
+                            }
+                        }
+                        ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) => {
+                            if include_binding_names {
+                                s.local.name.as_str().hash(h);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Statement::ExportNamedDeclaration(exp) => {
+            if let Some(decl) = &exp.declaration {
+                hash_declaration(decl, h, include_binding_names);
+            }
+            (exp.specifiers.len() as u32).hash(h);
+            for spec in &exp.specifiers {
+                hash_module_export_name(&spec.local, h);
+                hash_module_export_name(&spec.exported, h);
+            }
+            if let Some(source) = &exp.source {
+                source.value.hash(h);
+            }
+        }
+        Statement::ExportDefaultDeclaration(exp) => {
+            match &exp.declaration {
+                ExportDefaultDeclarationKind::FunctionDeclaration(fd) => {
+                    hash_function_declaration(fd, h, include_binding_names);
+                }
+                ExportDefaultDeclarationKind::ClassDeclaration(class) => {
+                    hash_class(class, h, include_binding_names);
+                }
+                other => {
+                    if let Some(expr) = other.as_expression() {
+                        expression::hash_expression(expr, h, include_binding_names);
+                    }
+                }
+            }
+        }
+        Statement::ExportAllDeclaration(exp) => {
+            if let Some(exported) = &exp.exported {
+                hash_module_export_name(exported, h);
+            }
+            exp.source.value.hash(h);
+        }
+        // TS 声明/JSX 等变体在 JS 模式（SourceType::unambiguous）下不可达，落入兜底。
         _ => {}
     });
 }
@@ -125,7 +194,7 @@ fn hash_for_statement(fr: &oxide_parser::ForStatement<'_>, h: &mut rustc_hash::F
 }
 
 fn hash_function_declaration(
-    fd: &oxide_parser::Function<'_>, h: &mut rustc_hash::FxHasher, include_binding_names: bool,
+    fd: &Function<'_>, h: &mut rustc_hash::FxHasher, include_binding_names: bool,
 ) {
     if include_binding_names {
         if let Some(id) = &fd.id {
@@ -144,6 +213,45 @@ fn hash_function_declaration(
         for s in &body.statements {
             hash_statement(s, h, include_binding_names);
         }
+    }
+}
+
+fn hash_class(class: &Class<'_>, h: &mut rustc_hash::FxHasher, include_binding_names: bool) {
+    if let Some(id) = &class.id {
+        id.name.as_str().hash(h);
+    }
+    class.super_class.is_some().hash(h);
+    if let Some(super_class) = &class.super_class {
+        expression::hash_expression(super_class, h, include_binding_names);
+    }
+    for element in &class.body.body {
+        class::hash_class_element(element, h, include_binding_names);
+    }
+}
+
+fn hash_declaration(decl: &Declaration<'_>, h: &mut rustc_hash::FxHasher, include_binding_names: bool) {
+    match decl {
+        Declaration::VariableDeclaration(vd) => hash_variable_declaration(vd, h, include_binding_names),
+        Declaration::FunctionDeclaration(fd) => hash_function_declaration(fd, h, include_binding_names),
+        Declaration::ClassDeclaration(class) => hash_class(class, h, include_binding_names),
+        _ => {}
+    }
+}
+
+fn hash_module_export_name(name: &ModuleExportName<'_>, h: &mut rustc_hash::FxHasher) {
+    match name {
+        ModuleExportName::IdentifierName(ident) => ident.name.as_str().hash(h),
+        ModuleExportName::IdentifierReference(ident) => ident.name.as_str().hash(h),
+        ModuleExportName::StringLiteral(s) => s.value.hash(h),
+    }
+}
+
+fn hash_for_statement_left(left: &ForStatementLeft<'_>, h: &mut rustc_hash::FxHasher, include_binding_names: bool) {
+    std::mem::discriminant(left).hash(h);
+    if let ForStatementLeft::VariableDeclaration(decl) = left {
+        hash_variable_declaration(decl, h, include_binding_names);
+    } else if let Some(target) = left.as_simple_assignment_target() {
+        target::hash_simple_assignment_target(target, h, include_binding_names);
     }
 }
 

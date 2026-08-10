@@ -37,6 +37,15 @@ pub(super) fn hash_class_element(element: &ClassElement, h: &mut rustc_hash::FxH
                 statement::hash_statement(stmt, h, include_binding_names);
             }
         }
+        ClassElement::AccessorProperty(prop) => {
+            prop.r#static.hash(h);
+            prop.computed.hash(h);
+            property::hash_property_key(&prop.key, h, include_binding_names);
+            if let Some(value) = &prop.value {
+                expression::hash_expression(value, h, include_binding_names);
+            }
+        }
+        // TS 索引签名变体在 JS 模式（SourceType::unambiguous）下不可达，落入兜底。
         _ => {}
     });
 }

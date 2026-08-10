@@ -154,11 +154,89 @@ pub(super) fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher, i
             hash_chain_element(&chain.expression, h, include_binding_names);
         }
         Expression::Super(_) => {}
+        Expression::NullLiteral(_) => {
+            1u8.hash(h);
+        }
+        Expression::ThisExpression(_) => {
+            2u8.hash(h);
+        }
+        Expression::BigIntLiteral(big) => {
+            big.value.hash(h);
+        }
         Expression::RegExpLiteral(lit) => {
             if let Some(raw) = &lit.raw {
                 raw.to_string().hash(h);
             }
         }
+        Expression::ArrayExpression(arr) => {
+            (arr.elements.len() as u32).hash(h);
+            for element in &arr.elements {
+                match element {
+                    ArrayExpressionElement::SpreadElement(spread) => {
+                        hash_expression(&spread.argument, h, include_binding_names);
+                    }
+                    ArrayExpressionElement::Elision(_) => {
+                        1u8.hash(h);
+                    }
+                    other => {
+                        if let Some(expr) = other.as_expression() {
+                            hash_expression(expr, h, include_binding_names);
+                        }
+                    }
+                }
+            }
+        }
+        Expression::MetaProperty(mp) => {
+            mp.meta.name.as_str().hash(h);
+            mp.property.name.as_str().hash(h);
+        }
+        Expression::AwaitExpression(ae) => {
+            hash_expression(&ae.argument, h, include_binding_names);
+        }
+        Expression::YieldExpression(ye) => {
+            ye.delegate.hash(h);
+            if let Some(arg) = &ye.argument {
+                hash_expression(arg, h, include_binding_names);
+            }
+        }
+        Expression::ImportExpression(ie) => {
+            hash_expression(&ie.source, h, include_binding_names);
+            if let Some(options) = &ie.options {
+                hash_expression(options, h, include_binding_names);
+            }
+            match &ie.phase {
+                Some(phase) => std::mem::discriminant(phase).hash(h),
+                None => 0u8.hash(h),
+            }
+        }
+        Expression::ParenthesizedExpression(p) => {
+            hash_expression(&p.expression, h, include_binding_names);
+        }
+        Expression::TSAsExpression(ts) => {
+            hash_expression(&ts.expression, h, include_binding_names);
+        }
+        Expression::TSSatisfiesExpression(ts) => {
+            hash_expression(&ts.expression, h, include_binding_names);
+        }
+        Expression::TSTypeAssertion(ts) => {
+            hash_expression(&ts.expression, h, include_binding_names);
+        }
+        Expression::TSNonNullExpression(ts) => {
+            hash_expression(&ts.expression, h, include_binding_names);
+        }
+        Expression::TSInstantiationExpression(ts) => {
+            hash_expression(&ts.expression, h, include_binding_names);
+        }
+        Expression::V8IntrinsicExpression(v8) => {
+            v8.name.name.as_str().hash(h);
+            (v8.arguments.len() as u32).hash(h);
+            for arg in &v8.arguments {
+                if let Some(expr) = arg.as_expression() {
+                    hash_expression(expr, h, include_binding_names);
+                }
+            }
+        }
+        // JSX 变体在 JS 模式（SourceType::unambiguous）下不可达，落入兜底。
         _ => {}
     });
 }

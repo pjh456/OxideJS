@@ -22,6 +22,17 @@ pub(super) fn hash_simple_assignment_target(
             expression::hash_expression(&member.object, h, include_binding_names);
             member.field.name.as_str().hash(h);
         }
-        _ => {}
+        SimpleAssignmentTarget::TSAsExpression(ts) => {
+            expression::hash_expression(&ts.expression, h, include_binding_names);
+        }
+        SimpleAssignmentTarget::TSSatisfiesExpression(ts) => {
+            expression::hash_expression(&ts.expression, h, include_binding_names);
+        }
+        SimpleAssignmentTarget::TSNonNullExpression(ts) => {
+            expression::hash_expression(&ts.expression, h, include_binding_names);
+        }
+        SimpleAssignmentTarget::TSTypeAssertion(ts) => {
+            expression::hash_expression(&ts.expression, h, include_binding_names);
+        }
     });
 }
