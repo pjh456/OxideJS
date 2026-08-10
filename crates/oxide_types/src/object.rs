@@ -437,6 +437,12 @@ impl JsObject {
     /// 异步生成器迭代器对象（`async function*` 调用返回）：`AsyncGeneratorState`
     /// 快照存于 `native_data`。
     pub const OBJ_TYPE_ASYNC_GENERATOR: u8 = 13;
+    /// Temporal.Instant 对象：纪元纳秒存于 prop 0。
+    pub const OBJ_TYPE_INSTANT: u8 = 14;
+    /// Temporal.PlainDate 对象：ISO 年/月/日存于 prop 0-2。
+    pub const OBJ_TYPE_PLAIN_DATE: u8 = 15;
+    /// Temporal.PlainTime 对象：午夜后纳秒存于 prop 0。
+    pub const OBJ_TYPE_PLAIN_TIME: u8 = 16;
     /// `is_session_epoch` 字段中的 session 标记位。
     pub const SESSION_EPOCH_BIT: u8 = 0x01;
     /// `is_session_epoch` 字段中的 GC 标记位。
@@ -501,6 +507,21 @@ impl JsObject {
     #[inline]
     pub fn is_async_generator_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_ASYNC_GENERATOR
+    }
+    /// 是否 Temporal.Instant 对象。
+    #[inline]
+    pub fn is_instant_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_INSTANT
+    }
+    /// 是否 Temporal.PlainDate 对象。
+    #[inline]
+    pub fn is_plain_date_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_PLAIN_DATE
+    }
+    /// 是否 Temporal.PlainTime 对象。
+    #[inline]
+    pub fn is_plain_time_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_PLAIN_TIME
     }
 
     /// 构造无属性、可扩展的空对象（`new Object()` 的基础对象）。

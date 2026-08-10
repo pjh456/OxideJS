@@ -243,6 +243,14 @@ pub struct BuiltinWorld {
     pub sym_has_instance: P<JsObject>,
     pub sym_match_all: P<JsObject>,
     pub sym_async_iterator: P<JsObject>,
+    pub temporal_object: P<JsObject>,
+    pub temporal_now_object: P<JsObject>,
+    pub instant_constructor: P<JsObject>,
+    pub instant_proto: P<JsObject>,
+    pub plain_date_constructor: P<JsObject>,
+    pub plain_date_proto: P<JsObject>,
+    pub plain_time_constructor: P<JsObject>,
+    pub plain_time_proto: P<JsObject>,
     pub stub_objects: Vec<P<JsObject>>,
 }
 
@@ -491,9 +499,12 @@ fn wire_builtin_world_links(world: &BuiltinWorld) {
     wire_ctor_proto(&world.float64array_constructor, &world.float64array_proto);
     wire_ctor_proto(&world.bigint64array_constructor, &world.bigint64array_proto);
     wire_ctor_proto(&world.biguint64array_constructor, &world.biguint64array_proto);
+    wire_ctor_proto(&world.instant_constructor, &world.instant_proto);
+    wire_ctor_proto(&world.plain_date_constructor, &world.plain_date_proto);
+    wire_ctor_proto(&world.plain_time_constructor, &world.plain_time_proto);
 
     let obj_proto_val = JsValue::from_js_object(world.object_proto.as_ptr() as *mut JsObject);
-    let non_object_protos: [&P<JsObject>; 14] = [
+    let non_object_protos: [&P<JsObject>; 17] = [
         &world.array_proto,
         &world.function_proto,
         &world.string_proto,
@@ -508,10 +519,17 @@ fn wire_builtin_world_links(world: &BuiltinWorld) {
         &world.array_buffer_proto,
         &world.data_view_proto,
         &world.typed_array_proto,
+        &world.instant_proto,
+        &world.plain_date_proto,
+        &world.plain_time_proto,
     ];
     for proto in &non_object_protos {
         set_proto_if_changed(proto, obj_proto_val);
     }
+
+    // Temporal 命名空间对象（非构造器）继承 Object.prototype。
+    set_proto_if_changed(&world.temporal_object, obj_proto_val);
+    set_proto_if_changed(&world.temporal_now_object, obj_proto_val);
 
     let typed_array_proto_val = JsValue::from_js_object(world.typed_array_proto.as_ptr() as *mut JsObject);
     let typed_array_protos: [&P<JsObject>; 11] = [
@@ -630,6 +648,14 @@ impl BuiltinWorld {
             BuiltinId::SymHasInstance => &self.sym_has_instance,
             BuiltinId::SymMatchAll => &self.sym_match_all,
             BuiltinId::SymAsyncIterator => &self.sym_async_iterator,
+            BuiltinId::TemporalObject => &self.temporal_object,
+            BuiltinId::TemporalNowObject => &self.temporal_now_object,
+            BuiltinId::InstantConstructor => &self.instant_constructor,
+            BuiltinId::InstantProto => &self.instant_proto,
+            BuiltinId::PlainDateConstructor => &self.plain_date_constructor,
+            BuiltinId::PlainDateProto => &self.plain_date_proto,
+            BuiltinId::PlainTimeConstructor => &self.plain_time_constructor,
+            BuiltinId::PlainTimeProto => &self.plain_time_proto,
         }
     }
 
@@ -671,6 +697,13 @@ impl BuiltinWorld {
         let sym_has_instance = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let sym_match_all = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let sym_async_iterator = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let temporal_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let temporal_now_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let (instant_proto, instant_constructor) = make_named_pair(string_forge, shape_forge, labels, "Instant");
+        let (plain_date_proto, plain_date_constructor) =
+            make_named_pair(string_forge, shape_forge, labels, "PlainDate");
+        let (plain_time_proto, plain_time_constructor) =
+            make_named_pair(string_forge, shape_forge, labels, "PlainTime");
         let stub_objects = Vec::new();
 
         let world = Self {
@@ -743,6 +776,14 @@ impl BuiltinWorld {
             sym_has_instance,
             sym_match_all,
             sym_async_iterator,
+            temporal_object,
+            temporal_now_object,
+            instant_constructor,
+            instant_proto,
+            plain_date_constructor,
+            plain_date_proto,
+            plain_time_constructor,
+            plain_time_proto,
             stub_objects,
         };
         wire_builtin_world_links(&world);
@@ -917,6 +958,35 @@ impl BuiltinWorld {
                 biguint64array_proto: current.biguint64array_proto.clone(),
             }
         };
+        let (temporal_object, temporal_now_object, instant_proto, instant_constructor, plain_date_proto, plain_date_constructor, plain_time_proto, plain_time_constructor) = if dirty.temporal {
+            let (instant_proto, instant_constructor) =
+                make_named_pair(string_forge, shape_forge, labels, "Instant");
+            let (plain_date_proto, plain_date_constructor) =
+                make_named_pair(string_forge, shape_forge, labels, "PlainDate");
+            let (plain_time_proto, plain_time_constructor) =
+                make_named_pair(string_forge, shape_forge, labels, "PlainTime");
+            (
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                instant_proto,
+                instant_constructor,
+                plain_date_proto,
+                plain_date_constructor,
+                plain_time_proto,
+                plain_time_constructor,
+            )
+        } else {
+            (
+                current.temporal_object.clone(),
+                current.temporal_now_object.clone(),
+                current.instant_proto.clone(),
+                current.instant_constructor.clone(),
+                current.plain_date_proto.clone(),
+                current.plain_date_constructor.clone(),
+                current.plain_time_proto.clone(),
+                current.plain_time_constructor.clone(),
+            )
+        };
         let stub_objects = if dirty.stubs { Vec::new() } else { current.stub_objects.clone() };
 
         let world = BuiltinWorld {
@@ -989,6 +1059,14 @@ impl BuiltinWorld {
             sym_has_instance,
             sym_match_all,
             sym_async_iterator,
+            temporal_object,
+            temporal_now_object,
+            instant_constructor,
+            instant_proto,
+            plain_date_constructor,
+            plain_date_proto,
+            plain_time_constructor,
+            plain_time_proto,
             stub_objects,
         };
         wire_builtin_world_links(&world);

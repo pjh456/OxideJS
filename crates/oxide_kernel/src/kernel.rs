@@ -225,7 +225,7 @@ pub struct KernelSession {
 /// 维护注意：每个新增的 `BuiltinWorld` 对象字段都必须加到这里以及
 /// `KernelSession::dirty_since_snapshot()`，以便选择性重置重建正确的
 /// builtin 家族。
-pub const NUM_BUILTINS: usize = 68;
+pub const NUM_BUILTINS: usize = 76;
 
 /// 内置对象枚举 id，与 `BuiltinWorld` 中的存储槽一一对应。
 ///
@@ -302,6 +302,14 @@ pub enum BuiltinId {
     SymHasInstance = 65,
     SymMatchAll = 66,
     SymAsyncIterator = 67,
+    TemporalObject = 68,
+    TemporalNowObject = 69,
+    InstantConstructor = 70,
+    InstantProto = 71,
+    PlainDateConstructor = 72,
+    PlainDateProto = 73,
+    PlainTimeConstructor = 74,
+    PlainTimeProto = 75,
 }
 
 impl BuiltinId {
@@ -375,6 +383,14 @@ impl BuiltinId {
         BuiltinId::SymHasInstance,
         BuiltinId::SymMatchAll,
         BuiltinId::SymAsyncIterator,
+        BuiltinId::TemporalObject,
+        BuiltinId::TemporalNowObject,
+        BuiltinId::InstantConstructor,
+        BuiltinId::InstantProto,
+        BuiltinId::PlainDateConstructor,
+        BuiltinId::PlainDateProto,
+        BuiltinId::PlainTimeConstructor,
+        BuiltinId::PlainTimeProto,
     ];
 }
 
@@ -432,6 +448,7 @@ pub struct BuiltinDirtySet {
     pub array_buffer: bool,
     pub data_view: bool,
     pub typed_array_family: bool,
+    pub temporal: bool,
     pub stubs: bool,
     pub global: bool,
 }
@@ -456,6 +473,7 @@ impl BuiltinDirtySet {
             || self.array_buffer
             || self.data_view
             || self.typed_array_family
+            || self.temporal
             || self.stubs
     }
 
@@ -598,6 +616,14 @@ impl KernelSession {
                 || gen(BuiltinId::BigInt64ArrayProto) != snap(BuiltinId::BigInt64ArrayProto)
                 || gen(BuiltinId::BigUint64ArrayConstructor) != snap(BuiltinId::BigUint64ArrayConstructor)
                 || gen(BuiltinId::BigUint64ArrayProto) != snap(BuiltinId::BigUint64ArrayProto),
+            temporal: gen(BuiltinId::TemporalObject) != snap(BuiltinId::TemporalObject)
+                || gen(BuiltinId::TemporalNowObject) != snap(BuiltinId::TemporalNowObject)
+                || gen(BuiltinId::InstantConstructor) != snap(BuiltinId::InstantConstructor)
+                || gen(BuiltinId::InstantProto) != snap(BuiltinId::InstantProto)
+                || gen(BuiltinId::PlainDateConstructor) != snap(BuiltinId::PlainDateConstructor)
+                || gen(BuiltinId::PlainDateProto) != snap(BuiltinId::PlainDateProto)
+                || gen(BuiltinId::PlainTimeConstructor) != snap(BuiltinId::PlainTimeConstructor)
+                || gen(BuiltinId::PlainTimeProto) != snap(BuiltinId::PlainTimeProto),
             stubs: world.stub_objects.len() != snapshot.stub_objects_len || stub_generations_dirty,
             global: BuiltinSnapshot::gen(&self.global_object) != snapshot.global_object_generation,
         }

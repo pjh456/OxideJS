@@ -42,6 +42,8 @@ pub mod bind_string;
 pub mod bind_stubs;
 /// Symbol 构造器与原型的 native 方法绑定。
 pub mod bind_symbol;
+/// Temporal 命名空间对象（Now/Instant/PlainDate/PlainTime）绑定。
+pub mod bind_temporal;
 /// 各 TypedArray 构造器与共享原型的 native 方法绑定。
 pub mod bind_typed_array;
 
@@ -483,6 +485,7 @@ pub fn bind_global_builtin_slots(core: &Arc<KernelCore>, session: &KernelSession
         ("Symbol", JsValue::from_js_object(world.symbol_constructor.as_ptr() as *mut JsObject)),
         ("Math", JsValue::from_js_object(world.math_object.as_ptr() as *mut JsObject)),
         ("JSON", JsValue::from_js_object(world.json_object.as_ptr() as *mut JsObject)),
+        ("Temporal", JsValue::from_js_object(world.temporal_object.as_ptr() as *mut JsObject)),
     ] {
         bind_existing_global(core, global, name, value);
     }
@@ -664,6 +667,9 @@ pub fn rebind_dirty_builtins(core: &Arc<KernelCore>, session: &mut KernelSession
     }
     if dirty.map_or(true, |d| d.symbol_family) {
         bind_symbol::bind_symbol(core, session, global);
+    }
+    if dirty.map_or(true, |d| d.temporal) {
+        bind_temporal::bind_temporal(core, session, global);
     }
     if dirty.map_or(true, |d| d.stubs) {
         bind_stubs::bind_stubs(core, session, global);
