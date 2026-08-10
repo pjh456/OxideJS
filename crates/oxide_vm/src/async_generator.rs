@@ -448,7 +448,8 @@ impl Vm {
                         let state = unsafe { &mut *state_ptr };
                         state.current.take()
                     };
-                    unsafe { (*state_ptr).phase = AsyncGenPhase::YieldSuspended };
+                    // 委托让出同样在 unwrap 前不可恢复（AsyncGeneratorYield 先 Await）。
+                    unsafe { (*state_ptr).phase = AsyncGenPhase::AwaitSuspended };
                     self.snapshot_async_generator(state_ptr)?;
                     self.restore_inline_state(saved);
                     if let Some(req) = request {
@@ -529,7 +530,10 @@ impl Vm {
                 let state = unsafe { &mut *state_ptr };
                 state.current.take()
             };
-            unsafe { (*state_ptr).phase = AsyncGenPhase::YieldSuspended };
+            // yield 值 unwrap 前视为 await 挂起（不可由新 next 恢复）：AsyncGeneratorYield
+            // 先 Await(value)，unwrap 完成前排队请求不得恢复生成器——否则被拒 yield 值
+            // 尚未结算，排队 next 会错误地继续执行。
+            unsafe { (*state_ptr).phase = AsyncGenPhase::AwaitSuspended };
             self.snapshot_async_generator(state_ptr)?;
             self.restore_inline_state(saved);
             if let Some(req) = request {
@@ -779,14 +783,25 @@ fn async_gen_yield_unwrap_closure(vm: &mut Vm, args: &[u8]) -> NativeResult {
             let obj = unsafe { &*ctx.as_js_object_ptr() };
             if obj.is_async_generator_obj() {
                 let state = vm.async_gen_state_ptr(ctx);
-                // 仅在仍挂起在 yield 点（未被新的 next 恢复）时关闭。
-                if unsafe { (*state).phase } == AsyncGenPhase::YieldSuspended {
+                // 仅在仍挂起在 yield 点（unwrap 前 AwaitSuspended，未被新 next 恢复）时关闭。
+                if unsafe { (*state).phase } == AsyncGenPhase::AwaitSuspended {
                     unsafe { (*state).phase = AsyncGenPhase::Completed };
                     unsafe { (*state).result = JsValue::undefined() };
                 }
             }
         }
     } else {
+        // yield 值 unwrap 完成：恢复可让出状态（async_generator_start 在 AwaitSuspended
+        // 下不启动，须先转回 YieldSuspended 才能恢复执行继续 yield/完成）。
+        if ctx.is_object() {
+            let obj = unsafe { &*ctx.as_js_object_ptr() };
+            if obj.is_async_generator_obj() {
+                let state = vm.async_gen_state_ptr(ctx);
+                if unsafe { (*state).phase } == AsyncGenPhase::AwaitSuspended {
+                    unsafe { (*state).phase = AsyncGenPhase::YieldSuspended };
+                }
+            }
+        }
         let result = if raw { value } else { make_iter_result(vm, value, false) };
         let _ = vm.resolve_promise(promise, result);
     }

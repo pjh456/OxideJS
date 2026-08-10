@@ -116,3 +116,46 @@ fn async_constructor_name() {
 fn async_class_method() {
     assert_eq!(eval("class A { async m(){ return await 7 } } new A().m()"), "7");
 }
+
+#[test]
+fn async_gen_rejected_yield_queued_next_gets_done() {
+    // P6：yield 值被拒 → 生成器 completed，unwrap 前排队的 next 得 {done:true}，
+    // 不得错误继续执行后续 yield。
+    assert_eq!(
+        eval(
+            "async function* g() { yield Promise.reject('e1'); yield 'never'; } \
+             async function run() { const it = g(); const p1 = it.next(); const p2 = it.next(); \
+             let r1, r2; try { await p1; r1 = 'p1-ok'; } catch (e) { r1 = 'p1-rej:' + e; } \
+             try { const v = await p2; r2 = 'p2:' + v.value + ':' + v.done; } catch (e) { r2 = 'p2-rej:' + e; } \
+             return r1 + '|' + r2; } run()"
+        ),
+        "\"p1-rej:e1|p2:undefined:true\""
+    );
+}
+
+#[test]
+fn async_gen_normal_yield_awaits_value() {
+    // yield 一个 resolved promise：unwrap 完成后让出展开值；next(arg) 作为 yield 表达式值。
+    assert_eq!(
+        eval(
+            "async function* g() { var v = yield Promise.resolve(9); yield v; } \
+             async function run() { const it = g(); const a = (await it.next()).value; \
+             const b = (await it.next(100)).value; return a + ',' + b; } run()"
+        ),
+        "\"9,100\""
+    );
+}
+
+#[test]
+fn async_gen_yield_then_next_continues() {
+    // 正常 yield 值（非 promise）后 next 继续执行到完成。
+    assert_eq!(
+        eval(
+            "async function* g() { yield 1; yield 2; } \
+             async function run() { const it = g(); const a = (await it.next()).value; \
+             const b = (await it.next()).value; const c = (await it.next()).done; \
+             return a + ',' + b + ',' + c; } run()"
+        ),
+        "\"1,2,true\""
+    );
+}
