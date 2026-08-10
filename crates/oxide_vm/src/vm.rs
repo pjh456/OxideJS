@@ -84,10 +84,40 @@ macro_rules! binary_arith {
         let rv = $self.regs[$b];
         if lv.is_int() && rv.is_int() {
             $self.regs[$rd] = JsValue::float(lv.as_int() as f64 $op rv.as_int() as f64);
+        } else if lv.is_bigint() && rv.is_bigint() {
+            let l = $self.bigint_value(lv);
+            let r = $self.bigint_value(rv);
+            if r == 0 {
+                // BigInt 除/模零：规范要求 RangeError（Number 路径走 f64 inf/NaN）。
+                $self.raise_error_kind("RangeError", "Division by zero")?;
+                $self.regs[$rd] = JsValue::undefined();
+            } else {
+                $self.regs[$rd] = $self.new_bigint(l $op r);
+            }
         } else {
-            let l = $self.coerce_number_bounded(lv)?;
-            let r = $self.coerce_number_bounded(rv)?;
-            $self.regs[$rd] = JsValue::float(l $op r);
+            // 注意：混合 BigInt/Number 检查不能在此前置（对象操作数如
+            // `{valueOf: () => 2n}` 需先 ToPrimitive 再判定），统一放 coerce 之后。
+            let l = $self.coerce_primitive_bounded(lv, false)?;
+            let r = $self.coerce_primitive_bounded(rv, false)?;
+            if l.is_bigint() && r.is_bigint() {
+                // 包装对象 coerce 后暴露双 BigInt（如 Object(2n) / 2n）。
+                let lv = $self.bigint_value(l);
+                let rv = $self.bigint_value(r);
+                if rv == 0 {
+                    $self.raise_error_kind("RangeError", "Division by zero")?;
+                    $self.regs[$rd] = JsValue::undefined();
+                } else {
+                    $self.regs[$rd] = $self.new_bigint(lv $op rv);
+                }
+            } else if l.is_bigint() != r.is_bigint() {
+                // 包装对象 coerce 后暴露 BigInt 混合（如 Object(1n) - 1）。
+                $self.raise_type_error("Cannot mix BigInt and other types, use explicit conversions")?;
+                $self.regs[$rd] = JsValue::undefined();
+            } else {
+                let ln = coercion::to_number(l);
+                let rn = coercion::to_number(r);
+                $self.regs[$rd] = JsValue::float(ln $op rn);
+            }
         }
     }}
 }
@@ -1744,6 +1774,12 @@ impl oxide_runtime_api::VmHost for Vm {
     }
     fn new_string(&mut self, s: &str) -> JsValue {
         self.new_string(s)
+    }
+    fn new_bigint(&mut self, v: i128) -> JsValue {
+        Vm::new_bigint(self, v)
+    }
+    fn bigint_value(&mut self, val: JsValue) -> i128 {
+        Vm::bigint_value(self, val)
     }
     fn kernel_core(&self) -> &Arc<KernelCore> {
         self.kernel_core()

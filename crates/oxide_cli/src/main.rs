@@ -197,6 +197,8 @@ fn format_js_value(
         // SAFETY: val 已确认是字符串值。
         let s = unsafe { (*val.as_string_ptr()).data.clone() };
         format!("\"{s}\"")
+    } else if val.is_bigint() {
+        format!("{}", vm.bigint_value(val))
     } else if val.is_object() {
         let obj = unsafe { &*val.as_js_object_ptr() };
         if obj.is_promise_obj() {

@@ -251,6 +251,8 @@ pub struct BuiltinWorld {
     pub plain_date_proto: P<JsObject>,
     pub plain_time_constructor: P<JsObject>,
     pub plain_time_proto: P<JsObject>,
+    pub bigint_constructor: P<JsObject>,
+    pub bigint_proto: P<JsObject>,
     pub stub_objects: Vec<P<JsObject>>,
 }
 
@@ -502,9 +504,10 @@ fn wire_builtin_world_links(world: &BuiltinWorld) {
     wire_ctor_proto(&world.instant_constructor, &world.instant_proto);
     wire_ctor_proto(&world.plain_date_constructor, &world.plain_date_proto);
     wire_ctor_proto(&world.plain_time_constructor, &world.plain_time_proto);
+    wire_ctor_proto(&world.bigint_constructor, &world.bigint_proto);
 
     let obj_proto_val = JsValue::from_js_object(world.object_proto.as_ptr() as *mut JsObject);
-    let non_object_protos: [&P<JsObject>; 17] = [
+    let non_object_protos: [&P<JsObject>; 18] = [
         &world.array_proto,
         &world.function_proto,
         &world.string_proto,
@@ -522,6 +525,7 @@ fn wire_builtin_world_links(world: &BuiltinWorld) {
         &world.instant_proto,
         &world.plain_date_proto,
         &world.plain_time_proto,
+        &world.bigint_proto,
     ];
     for proto in &non_object_protos {
         set_proto_if_changed(proto, obj_proto_val);
@@ -656,6 +660,8 @@ impl BuiltinWorld {
             BuiltinId::PlainDateProto => &self.plain_date_proto,
             BuiltinId::PlainTimeConstructor => &self.plain_time_constructor,
             BuiltinId::PlainTimeProto => &self.plain_time_proto,
+            BuiltinId::BigIntConstructor => &self.bigint_constructor,
+            BuiltinId::BigIntProto => &self.bigint_proto,
         }
     }
 
@@ -704,6 +710,7 @@ impl BuiltinWorld {
             make_named_pair(string_forge, shape_forge, labels, "PlainDate");
         let (plain_time_proto, plain_time_constructor) =
             make_named_pair(string_forge, shape_forge, labels, "PlainTime");
+        let (bigint_proto, bigint_constructor) = make_named_pair(string_forge, shape_forge, labels, "BigInt");
         let stub_objects = Vec::new();
 
         let world = Self {
@@ -784,6 +791,8 @@ impl BuiltinWorld {
             plain_date_proto,
             plain_time_constructor,
             plain_time_proto,
+            bigint_constructor,
+            bigint_proto,
             stub_objects,
         };
         wire_builtin_world_links(&world);
@@ -987,6 +996,11 @@ impl BuiltinWorld {
                 current.plain_time_constructor.clone(),
             )
         };
+        let (bigint_proto, bigint_constructor) = if dirty.stubs {
+            make_named_pair(string_forge, shape_forge, labels, "BigInt")
+        } else {
+            (current.bigint_proto.clone(), current.bigint_constructor.clone())
+        };
         let stub_objects = if dirty.stubs { Vec::new() } else { current.stub_objects.clone() };
 
         let world = BuiltinWorld {
@@ -1067,6 +1081,8 @@ impl BuiltinWorld {
             plain_date_proto,
             plain_time_constructor,
             plain_time_proto,
+            bigint_constructor,
+            bigint_proto,
             stub_objects,
         };
         wire_builtin_world_links(&world);

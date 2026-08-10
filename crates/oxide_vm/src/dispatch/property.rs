@@ -65,6 +65,11 @@ impl Vm {
             let proto = unsafe { &*proto_ptr };
             return self.ordinary_get(proto, prop_name_si, val).map(Some);
         }
+        if val.is_bigint() {
+            let proto_ptr = self.session.builtin_world().bigint_proto.as_ptr() as *mut JsObject;
+            let proto = unsafe { &*proto_ptr };
+            return self.ordinary_get(proto, prop_name_si, val).map(Some);
+        }
         Ok(None)
     }
 

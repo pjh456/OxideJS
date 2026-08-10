@@ -6,6 +6,8 @@
 pub mod bind_array;
 /// ArrayBuffer 构造器与原型的 native 方法绑定。
 pub mod bind_array_buffer;
+/// BigInt 构造器与原型的 native 方法绑定。
+pub mod bind_bigint;
 /// Boolean 构造器与原型的 native 方法绑定。
 pub mod bind_boolean;
 /// DataView 构造器与原型的 native 方法绑定。
@@ -371,7 +373,6 @@ fn bind_iterator_global(core: &Arc<KernelCore>, session: &KernelSession, global:
 fn bind_stub_globals(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     for (index, (name, native_fn, arg_count)) in [
         ("Proxy", oxide_builtins::stubs::proxy_stub::<crate::vm::Vm> as *const (), 2),
-        ("BigInt", oxide_builtins::stubs::bigint_stub::<crate::vm::Vm> as *const (), 1),
         ("WeakMap", oxide_builtins::stubs::weakmap_stub::<crate::vm::Vm> as *const (), 0),
         ("WeakSet", oxide_builtins::stubs::weakset_stub::<crate::vm::Vm> as *const (), 0),
         ("WeakRef", oxide_builtins::stubs::weakref_stub::<crate::vm::Vm> as *const (), 1),
@@ -603,6 +604,7 @@ pub fn bind_global_builtin_slots(core: &Arc<KernelCore>, session: &KernelSession
     bind_reflect_global(core, session, global);
     bind_iterator_global(core, session, global);
     bind_stub_globals(core, session, global);
+    bind_bigint::bind_bigint(core, session, global);
     bind_global_functions(core, session, global);
     let global_this = JsValue::from_js_object(global as *mut JsObject);
     bind_existing_global(core, global, "globalThis", global_this);
@@ -673,6 +675,9 @@ pub fn rebind_dirty_builtins(core: &Arc<KernelCore>, session: &mut KernelSession
     }
     if dirty.map_or(true, |d| d.stubs) {
         bind_stubs::bind_stubs(core, session, global);
+    }
+    if dirty.map_or(true, |d| d.stubs) {
+        bind_bigint::bind_bigint(core, session, global);
     }
 }
 

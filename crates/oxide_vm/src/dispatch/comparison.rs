@@ -29,6 +29,9 @@ impl Vm {
         vm_trace!("LT rd={} r{}={:?} r{}={:?}", rd, a, self.regs[a], b, self.regs[b]);
         let va = self.coerce_primitive_bounded(self.regs[a], false)?;
         let vb = self.coerce_primitive_bounded(self.regs[b], false)?;
+        if (va.is_bigint() || vb.is_bigint()) && (va.is_symbol() || vb.is_symbol()) {
+            return self.raise_type_error("Cannot mix BigInt and other types, use explicit conversions");
+        }
         match coercion::relational_compare(va, vb) {
             Some(r) => self.regs[rd] = JsValue::bool(r),
             None => {
@@ -44,6 +47,9 @@ impl Vm {
         vm_trace!("GT rd={} r{}={:?} r{}={:?}", rd, a, self.regs[a], b, self.regs[b]);
         let va = self.coerce_primitive_bounded(self.regs[a], false)?;
         let vb = self.coerce_primitive_bounded(self.regs[b], false)?;
+        if (va.is_bigint() || vb.is_bigint()) && (va.is_symbol() || vb.is_symbol()) {
+            return self.raise_type_error("Cannot mix BigInt and other types, use explicit conversions");
+        }
         match coercion::relational_compare(vb, va) {
             Some(r) => self.regs[rd] = JsValue::bool(r),
             None => {
@@ -59,6 +65,9 @@ impl Vm {
         vm_trace!("LTE rd={} r{}={:?} r{}={:?}", rd, a, self.regs[a], b, self.regs[b]);
         let va = self.coerce_primitive_bounded(self.regs[a], false)?;
         let vb = self.coerce_primitive_bounded(self.regs[b], false)?;
+        if (va.is_bigint() || vb.is_bigint()) && (va.is_symbol() || vb.is_symbol()) {
+            return self.raise_type_error("Cannot mix BigInt and other types, use explicit conversions");
+        }
         match coercion::relational_compare(vb, va) {
             Some(r) => self.regs[rd] = JsValue::bool(!r),
             None => {
@@ -74,6 +83,9 @@ impl Vm {
         vm_trace!("GTE rd={} r{}={:?} r{}={:?}", rd, a, self.regs[a], b, self.regs[b]);
         let va = self.coerce_primitive_bounded(self.regs[a], false)?;
         let vb = self.coerce_primitive_bounded(self.regs[b], false)?;
+        if (va.is_bigint() || vb.is_bigint()) && (va.is_symbol() || vb.is_symbol()) {
+            return self.raise_type_error("Cannot mix BigInt and other types, use explicit conversions");
+        }
         match coercion::relational_compare(va, vb) {
             Some(r) => self.regs[rd] = JsValue::bool(!r),
             None => {

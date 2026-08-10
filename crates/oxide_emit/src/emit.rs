@@ -242,6 +242,7 @@ impl ParamSpec<'_> {
 enum ConstantKey {
     Number(u64),
     Int(i32),
+    BigInt(i128),
     String(String),
     Boolean(bool),
     Null,
@@ -642,6 +643,7 @@ impl ConstantKey {
         match value {
             Constant::Number(v) => Some(Self::Number(v.to_bits())),
             Constant::Int(v) => Some(Self::Int(*v)),
+            Constant::BigInt(v) => Some(Self::BigInt(*v)),
             Constant::String(v) => Some(Self::String(v.clone())),
             Constant::Boolean(v) => Some(Self::Boolean(*v)),
             Constant::Null => Some(Self::Null),
@@ -1255,6 +1257,7 @@ impl Emitter {
     pub(crate) fn emit_expression(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u32, String> {
         match expr {
             Expression::NumericLiteral(_)
+            | Expression::BigIntLiteral(_)
             | Expression::StringLiteral(_)
             | Expression::BooleanLiteral(_)
             | Expression::NullLiteral(_)

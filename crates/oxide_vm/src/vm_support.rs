@@ -79,6 +79,7 @@ impl Vm {
                 epoch_object_ptrs: Vec::new(),
                 session_object_ptrs: Vec::new(),
                 session_string_ptrs: Vec::new(),
+                session_bigint_ptrs: std::cell::RefCell::new(Vec::new()),
                 session_bytes_allocated: 0,
                 forwarding: std::collections::HashMap::with_hasher(rustc_hash::FxBuildHasher),
             },
@@ -171,6 +172,7 @@ impl Vm {
                 epoch_object_ptrs: Vec::new(),
                 session_object_ptrs: Vec::new(),
                 session_string_ptrs: Vec::new(),
+                session_bigint_ptrs: std::cell::RefCell::new(Vec::new()),
                 session_bytes_allocated: 0,
                 forwarding: std::collections::HashMap::with_hasher(rustc_hash::FxBuildHasher),
             },
@@ -275,6 +277,7 @@ impl Vm {
         self.gc_state.session_bytes_allocated = 0;
         self.gc_state.session_gc = crate::session_gc::SessionGc::new();
         self.free_session_string_heap_data();
+        self.free_session_bigint_heap_data();
         self.symbols.reset();
         self.root_reg_limit = 0;
         self.active_reg_limit = 0;
@@ -477,10 +480,39 @@ impl Vm {
         format!("{val}")
     }
 
+    /// 分配一个 BigInt 值：把 `i128` 堆分配为 box 并返回携带指针的 `JsValue`。
+    ///
+    /// box 指针登记进 `gc_state.session_bigint_ptrs`，在 `full_reset` 统一释放。
+    /// `&self` 使 `convert_immutables`（常量池 → JsValue）也能分配。
+    pub fn new_bigint(&self, v: i128) -> JsValue {
+        let ptr = Box::into_raw(Box::new(v));
+        self.gc_state.session_bigint_ptrs.borrow_mut().push(ptr);
+        JsValue::bigint(ptr)
+    }
+
+    /// 读取 BigInt 值；调用方须保证 `val.is_bigint()`。
+    pub fn bigint_value(&self, val: JsValue) -> i128 {
+        // SAFETY: bigint 指针由 new_bigint 经 Box::into_raw 产生，存活至 full_reset。
+        unsafe { *val.as_bigint_ptr() }
+    }
+
+    /// 释放全部 session 堆 `i128` box。仅在完全隔离重置（`full_reset`）时调用，
+    /// 此时没有存活的 session 对象/寄存器会引用它们。
+    fn free_session_bigint_heap_data(&mut self) {
+        for ptr in self.gc_state.session_bigint_ptrs.borrow_mut().drain(..) {
+            // SAFETY: 每个指针来自 new_bigint 的 Box::into_raw(Box::new(i128))，
+            // 且只在这里恰好释放一次。
+            unsafe {
+                drop(Box::from_raw(ptr));
+            }
+        }
+    }
+
     fn convert_constant(&self, constant: &Constant) -> JsValue {
         match constant {
             Constant::Number(v) => JsValue::float(*v),
             Constant::Int(v) => JsValue::int(*v),
+            Constant::BigInt(v) => self.new_bigint(*v),
             Constant::String(s) => self.perm_string(s),
             Constant::Boolean(b) => JsValue::bool(*b),
             Constant::Null => JsValue::null(),
@@ -751,5 +783,80 @@ mod tests {
             vm.session.builtin_world().object_proto.as_ptr()
         ));
         assert!(!vm.session.is_dirty_since_snapshot());
+    }
+
+    #[test]
+    fn bigint_literal_arithmetic_and_comparison() {
+        let mut vm = Vm::new();
+        assert_eq!(run_source(&mut vm, "100n + 23n"), run_source(&mut vm, "123n"));
+        assert_eq!(run_source(&mut vm, "100n - 30n"), run_source(&mut vm, "70n"));
+        assert_eq!(run_source(&mut vm, "7n * 6n"), run_source(&mut vm, "42n"));
+        assert_eq!(run_source(&mut vm, "10n / 4n"), run_source(&mut vm, "2n"));
+        assert_eq!(run_source(&mut vm, "10n % 3n"), run_source(&mut vm, "1n"));
+        assert_eq!(run_source(&mut vm, "-7n"), run_source(&mut vm, "0n - 7n"));
+        assert_eq!(run_source(&mut vm, "123n == 123n"), JsValue::bool(true));
+        assert_eq!(run_source(&mut vm, "123n === 123n"), JsValue::bool(true));
+        assert_eq!(run_source(&mut vm, "5n < 3n"), JsValue::bool(false));
+        assert_eq!(run_source(&mut vm, "5n > 3n"), JsValue::bool(true));
+        assert_eq!(run_source(&mut vm, "1n === 1"), JsValue::bool(false));
+        let typeof_result = run_source(&mut vm, "typeof 123n");
+        assert!(typeof_result.is_string());
+        assert_eq!(vm.lookup_str(typeof_result).as_deref(), Some("bigint"));
+    }
+
+    #[test]
+    fn bigint_constructor_and_string() {
+        let mut vm = Vm::new();
+        assert_eq!(run_source(&mut vm, "BigInt(42)"), run_source(&mut vm, "42n"));
+        assert_eq!(run_source(&mut vm, "BigInt('123')"), run_source(&mut vm, "123n"));
+        assert_eq!(run_source(&mut vm, "BigInt('0x10')"), run_source(&mut vm, "16n"));
+        let s = run_source(&mut vm, "String(123n)");
+        assert!(s.is_string());
+        assert_eq!(vm.lookup_str(s).as_deref(), Some("123"));
+        let ts = run_source(&mut vm, "(123n).toString()");
+        assert!(ts.is_string());
+        assert_eq!(vm.lookup_str(ts).as_deref(), Some("123"));
+        assert_eq!(run_source(&mut vm, "Number(5n)"), JsValue::int(5));
+    }
+
+    #[test]
+    fn bigint_mixed_type_throws() {
+        let mut vm = Vm::new();
+        let te = run_source(&mut vm, "try { 1n + 1 } catch(e) { e.name }");
+        assert_eq!(vm.lookup_str(te).as_deref(), Some("TypeError"));
+        let re = run_source(&mut vm, "try { 1n / 0n } catch(e) { e.name }");
+        assert_eq!(vm.lookup_str(re).as_deref(), Some("RangeError"));
+        let ne = run_source(&mut vm, "try { new BigInt(1) } catch(e) { e.name }");
+        assert_eq!(vm.lookup_str(ne).as_deref(), Some("TypeError"));
+    }
+
+    #[test]
+    fn bigint_survives_reset_and_gc() {
+        let mut vm = Vm::new();
+        let result = run_source(&mut vm, "100n + 23n");
+        assert!(result.is_bigint());
+        assert_eq!(vm.bigint_value(result), 123);
+        vm.reset();
+        // reset 保留 session 字符串/bigint box：值仍可读。
+        assert_eq!(vm.bigint_value(result), 123);
+    }
+
+    #[test]
+    fn bigint_wrapped_and_number_comparison() {
+        let mut vm = Vm::new();
+        // 包装对象 coerce 后双 BigInt 运算。
+        assert_eq!(run_source(&mut vm, "Object(2n) / 2n"), run_source(&mut vm, "1n"));
+        assert_eq!(run_source(&mut vm, "Object(2n) * 3n"), run_source(&mut vm, "6n"));
+        assert_eq!(run_source(&mut vm, "2n + Object(3n)"), run_source(&mut vm, "5n"));
+        // BigInt 与 Number 精确关系比较（超出 f64 精度仍精确）。
+        assert_eq!(run_source(&mut vm, "9007199254740993n > 9007199254740992"), JsValue::bool(true));
+        assert_eq!(run_source(&mut vm, "9007199254740993n < 9007199254740994"), JsValue::bool(true));
+        assert_eq!(run_source(&mut vm, "2n < 3"), JsValue::bool(true));
+        assert_eq!(run_source(&mut vm, "3n >= 3"), JsValue::bool(true));
+        // NaN 关系比较为 false。
+        assert_eq!(run_source(&mut vm, "0n < NaN"), JsValue::bool(false));
+        // 混合算术抛 TypeError。
+        let te = run_source(&mut vm, "try { Object(1n) - 1 } catch(e) { e.name }");
+        assert_eq!(vm.lookup_str(te).as_deref(), Some("TypeError"));
     }
 }

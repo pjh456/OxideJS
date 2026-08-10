@@ -12,6 +12,7 @@
 
 mod runtime_api_log;
 
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 use oxide_kernel::kernel::{KernelCore, KernelSession};
@@ -73,6 +74,10 @@ pub trait VmHost {
     // 对象分配 / 字符串创建
     fn alloc_object(&mut self, obj: JsObject) -> *mut JsObject;
     fn new_string(&mut self, s: &str) -> JsValue;
+    /// 分配 BigInt 值（`i128` box 登记到 VM，返回携带指针的 `JsValue`）。
+    fn new_bigint(&mut self, v: i128) -> JsValue;
+    /// 读取 BigInt 值；调用方须保证 `val.is_bigint()`。
+    fn bigint_value(&mut self, val: JsValue) -> i128;
 
     // 内核访问器
     fn kernel_core(&self) -> &Arc<KernelCore>;
@@ -162,6 +167,23 @@ pub fn string_value_eq(a: JsValue, b: JsValue) -> bool {
     sa.data == sb.data
 }
 
+/// 借出 BigInt 值。
+///
+/// # Safety
+/// `val` 必须是 BigInt `JsValue`，且其 `i128` box 存活（VM 在 full_reset 前保证）。
+#[inline]
+pub unsafe fn bigint_data(val: JsValue) -> i128 {
+    *val.as_bigint_ptr()
+}
+
+/// BigInt 的十进制字符串表示（`i128` → 十进制）。
+///
+/// 与 ECMA-262 `Number::toString` 无关：BigInt 恒以十进制输出，负号前缀。
+#[inline]
+pub fn bigint_to_string(v: i128) -> String {
+    v.to_string()
+}
+
 /// 对原始值执行 ECMAScript ToNumber 的快速路径（不触发对象 coercion）。
 ///
 /// Number/String/Boolean/null 按规范转换；undefined 与不可解析字符串为 `NaN`；
@@ -185,6 +207,11 @@ pub fn to_number(val: JsValue) -> f64 {
     if val.is_string() {
         let s = unsafe { string_data(val) };
         return parse_js_number(s);
+    }
+    if val.is_bigint() {
+        // BigInt → Number 近似转换：i128 超出 f64 精度时舍入为近似值。
+        // 规范路径（显式 Number(bigint) / 位运算）在 builtins / dispatch 层精确处理。
+        return unsafe { bigint_data(val) } as f64;
     }
     if val.is_object() {
         return f64::NAN;
@@ -382,6 +409,11 @@ pub fn push_to_string(val: JsValue, buf: &mut String) {
         unsafe { buf.push_str(string_data(val)) };
         return;
     }
+    if val.is_bigint() {
+        use std::fmt::Write;
+        let _ = write!(buf, "{}", unsafe { bigint_data(val) });
+        return;
+    }
     if val.is_object() {
         buf.push_str("[object]");
     }
@@ -410,6 +442,9 @@ pub fn to_string(val: JsValue) -> String {
     if val.is_string() {
         return unsafe { string_data(val) }.to_string();
     }
+    if val.is_bigint() {
+        return unsafe { bigint_data(val) }.to_string();
+    }
     if val.is_object() {
         return "[object]".to_string();
     }
@@ -433,6 +468,9 @@ pub fn to_boolean(val: JsValue) -> bool {
     }
     if val.is_string() {
         return !unsafe { (*val.as_string_ptr()).is_empty() };
+    }
+    if val.is_bigint() {
+        return unsafe { bigint_data(val) } != 0;
     }
     if val.is_object() {
         return true;
@@ -467,6 +505,9 @@ fn same_type(a: JsValue, b: JsValue) -> bool {
     if a.is_symbol() && b.is_symbol() {
         return true;
     }
+    if a.is_bigint() && b.is_bigint() {
+        return true;
+    }
     false
 }
 
@@ -485,6 +526,22 @@ pub fn abstract_eq<H: VmHost>(lhs: JsValue, rhs: JsValue, host: &mut H) -> Resul
     // 步骤 2-3：null 与 undefined 互等。
     if (lhs.is_null() && rhs.is_undefined()) || (lhs.is_undefined() && rhs.is_null()) {
         return Ok(true);
+    }
+    // BigInt 与 Number：转 f64 比较（精度内精确；超出精度近似）。
+    if lhs.is_bigint() && (rhs.is_int() || rhs.is_double()) {
+        return Ok(unsafe { bigint_data(lhs) } as f64 == to_number(rhs));
+    }
+    if (lhs.is_int() || lhs.is_double()) && rhs.is_bigint() {
+        return Ok(to_number(lhs) == unsafe { bigint_data(rhs) } as f64);
+    }
+    // BigInt 与 String：字符串解析为数字后比较。
+    if lhs.is_bigint() && rhs.is_string() {
+        let r = parse_js_number(unsafe { string_data(rhs) });
+        return Ok(unsafe { bigint_data(lhs) } as f64 == r);
+    }
+    if lhs.is_string() && rhs.is_bigint() {
+        let l = parse_js_number(unsafe { string_data(lhs) });
+        return Ok(l == unsafe { bigint_data(rhs) } as f64);
     }
     // 步骤 5-6：Number 与 String。
     if (lhs.is_int() || lhs.is_double()) && rhs.is_string() {
@@ -547,6 +604,9 @@ pub fn strict_eq(lhs: JsValue, rhs: JsValue) -> bool {
     if lhs.is_symbol() && rhs.is_symbol() {
         return lhs.as_symbol_index() == rhs.as_symbol_index();
     }
+    if lhs.is_bigint() && rhs.is_bigint() {
+        return unsafe { bigint_data(lhs) } == unsafe { bigint_data(rhs) };
+    }
     false
 }
 
@@ -565,6 +625,37 @@ pub fn relational_compare(lhs: JsValue, rhs: JsValue) -> Option<bool> {
         let ls = unsafe { string_data(lhs) };
         let rs = unsafe { string_data(rhs) };
         return Some(ls < rs);
+    }
+    if lhs.is_bigint() && rhs.is_bigint() {
+        let l = unsafe { bigint_data(lhs) };
+        let r = unsafe { bigint_data(rhs) };
+        return Some(l < r);
+    }
+    // BigInt 与 Number 混合：Number 为整数且落在 i128 范围时转 i128 精确比较，
+    // 否则（非整数/超出范围/NaN/±Infinity）转 f64 比较（NaN 结果为未定义）。
+    if lhs.is_bigint() && (rhs.is_int() || rhs.is_double()) {
+        if rhs.is_double() && rhs.as_double().is_nan() {
+            return None;
+        }
+        let l = unsafe { bigint_data(lhs) };
+        return Some(bigint_cmp_number(l, rhs) == Ordering::Less);
+    }
+    if (lhs.is_int() || lhs.is_double()) && rhs.is_bigint() {
+        if lhs.is_double() && lhs.as_double().is_nan() {
+            return None;
+        }
+        let r = unsafe { bigint_data(rhs) };
+        // lhs(Number) < rhs(BigInt) ⇔ 反向比较（lhs 作为"number 侧"）。
+        return Some(number_cmp_bigint(lhs, r) == Ordering::Less);
+    }
+    // BigInt 与 String/Boolean 混合：转 Number 后比较。
+    if lhs.is_bigint() || rhs.is_bigint() {
+        let l = to_number(lhs);
+        let r = to_number(rhs);
+        if l.is_nan() || r.is_nan() {
+            return None;
+        }
+        return l.partial_cmp(&r).map(|o| o.is_lt());
     }
     let l = to_number(lhs);
     let r = to_number(rhs);
@@ -590,6 +681,31 @@ fn to_f64(val: JsValue) -> f64 {
     } else {
         f64::NAN
     }
+}
+
+/// BigInt 与 Number 的序比较：Number 为整数且落于 i128 范围时精确比较，
+/// 否则退化为 f64 近似比较（非有限/超出 i128 范围时）。
+fn bigint_cmp_number(big: i128, num: JsValue) -> Ordering {
+    number_cmp_bigint(num, big).reverse()
+}
+
+/// Number 与 BigInt 的序比较（`num` 与 `big` 的 `<`/`=`/`>`）。
+fn number_cmp_bigint(num: JsValue, big: i128) -> Ordering {
+    if num.is_int() {
+        return (num.as_int() as i128).cmp(&big);
+    }
+    let d = num.as_double();
+    if d.is_nan() {
+        return Ordering::Greater;
+    }
+    if d.is_infinite() {
+        return if d.is_sign_positive() { Ordering::Greater } else { Ordering::Less };
+    }
+    let truncated = d.trunc();
+    if truncated != d || truncated.abs() > i128::MAX as f64 {
+        return (d).partial_cmp(&(big as f64)).unwrap_or(Ordering::Equal);
+    }
+    (truncated as i128).cmp(&big)
 }
 
 /// SameValue(x, y)（ECMA-262 §7.2.9）：与 `===` 的区别在于 NaN 视为相等、+0/-0 视为不同。
@@ -638,6 +754,9 @@ pub fn same_value(lhs: JsValue, rhs: JsValue) -> bool {
     }
     if lhs.is_symbol() && rhs.is_symbol() {
         return lhs.as_symbol_index() == rhs.as_symbol_index();
+    }
+    if lhs.is_bigint() && rhs.is_bigint() {
+        return unsafe { bigint_data(lhs) } == unsafe { bigint_data(rhs) };
     }
     false
 }
@@ -699,6 +818,8 @@ pub fn to_object<H: VmHost>(val: JsValue, host: &mut H) -> Result<JsValue, Strin
         (P::as_ptr(&world.number_proto) as *mut JsObject, JsObject::OBJ_TYPE_NUMBER_OBJ)
     } else if val.is_bool() {
         (P::as_ptr(&world.boolean_proto) as *mut JsObject, JsObject::OBJ_TYPE_BOOLEAN_OBJ)
+    } else if val.is_bigint() {
+        (P::as_ptr(&world.bigint_proto) as *mut JsObject, JsObject::OBJ_TYPE_PLAIN)
     } else {
         (P::as_ptr(&world.object_proto) as *mut JsObject, JsObject::OBJ_TYPE_PLAIN)
     };

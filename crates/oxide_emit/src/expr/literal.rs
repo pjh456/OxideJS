@@ -12,6 +12,7 @@ impl Emitter {
     pub(crate) fn emit_literal(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u32, String> {
         match expr {
             Expression::NumericLiteral(n) => self.emit_numeric_literal_expression(n, ctx),
+            Expression::BigIntLiteral(b) => self.emit_bigint_literal_expression(b, ctx),
             Expression::StringLiteral(s) => self.emit_string_literal_expression(s, ctx),
             Expression::BooleanLiteral(b) => self.emit_boolean_literal_expression(b, ctx),
             Expression::NullLiteral(_) => self.emit_null_literal_expression(ctx),
@@ -28,6 +29,19 @@ impl Emitter {
         } else {
             ctx.add_constant(Constant::Number(n.value))
         };
+        let r = ctx.alloc_reg();
+        ctx.inst(Inst::load_const(Operand::Reg(r), idx));
+        Ok(r)
+    }
+
+    fn emit_bigint_literal_expression(
+        &self, b: &oxide_parser::BigIntLiteral, ctx: &mut CompileCtx,
+    ) -> Result<u32, String> {
+        let value = b
+            .value
+            .parse::<i128>()
+            .map_err(|_| format!("BigInt literal out of range: {}", b.value))?;
+        let idx = ctx.add_constant(Constant::BigInt(value));
         let r = ctx.alloc_reg();
         ctx.inst(Inst::load_const(Operand::Reg(r), idx));
         Ok(r)

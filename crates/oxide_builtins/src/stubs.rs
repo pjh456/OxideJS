@@ -9,10 +9,6 @@ fn stub_error<H: VmHost>(vm: &mut H, name: &str) -> NativeResult {
 pub fn proxy_stub<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     stub_error(vm, "Proxy")
 }
-/// `BigInt` 全局占位：始终抛 TypeError。BigInt 按设计延后实现。
-pub fn bigint_stub<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
-    stub_error(vm, "BigInt")
-}
 /// `WeakMap` 全局占位：始终抛 TypeError。WeakMap 按设计延后实现。
 pub fn weakmap_stub<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     stub_error(vm, "WeakMap")
