@@ -42,7 +42,6 @@ pub(crate) struct SuspendedFrame {
     pub pending_completion: Option<Completion>,
 }
 
-#[allow(dead_code)] // 接入 generator/async/asyncgen 前先落地（Step 3-5 逐步移除）
 impl SuspendedFrame {
     /// 全空帧（New 阶段构造状态盒时用）。
     pub fn new_empty() -> Self {        SuspendedFrame {
