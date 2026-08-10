@@ -2,7 +2,7 @@ use std::sync::{Arc, OnceLock};
 
 use oxide_bytecode::module::CompiledModule;
 
-use crate::vm::{CallFrame, InlineSyncState, Vm};
+use crate::vm::{CallFrame, FrameContinuation, InlineSyncState, Vm};
 use crate::{vm_debug, vm_info, vm_trace, vm_warn};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
@@ -82,6 +82,32 @@ impl Vm {
         self.inline_callee = saved.inline_callee;
         self.inline_args_base = saved.inline_args_base;
         self.inline_args_count = saved.inline_args_count;
+    }
+
+    /// 首次执行的 VM 就绪：清空执行核心（regs/pc/bytecode/各栈段/迭代器/内联态），
+    /// 压入首帧。参数初始化步与 async/gen 调度标志由调用方管理。
+    ///
+    /// # 边界
+    /// callee 非函数 / sub_idx 越界 / 超调用深度时由 push_bytecode_frame 返回 Err。
+    pub(crate) fn prepare_execution_initial(
+        &mut self, callee: JsValue, this_value: JsValue, args: &[JsValue],
+    ) -> Result<(), String> {
+        self.regs = [JsValue::undefined(); 256];
+        self.pc = 0;
+        self.bytecode = Vec::new();
+        self.active_reg_limit = 1;
+        self.root_reg_limit = 1;
+        self.try_stack.clear();
+        self.iters.for_in_iters.clear();
+        self.iters.for_of_iters.clear();
+        self.iters.last_for_of_result = JsValue::undefined();
+        self.spill_stack.clear();
+        self.save_stack.clear();
+        self.saved_bytecode_stack.clear();
+        self.saved_immutables_stack.clear();
+        self.cell_stack.clear();
+        self.inline_callee = None;
+        self.push_bytecode_frame(callee, this_value, args, None, None, JsValue::undefined(), FrameContinuation::None)
     }
 
     pub(crate) fn call_bytecode_function_inline(
