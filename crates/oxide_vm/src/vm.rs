@@ -1441,6 +1441,10 @@ impl Vm {
                     self.dispatch_define_accessor(rd, a, b)?;
                 }
 
+                OpCode::DEFINE_ACCESSOR_DYNAMIC => {
+                    self.dispatch_define_accessor_dynamic(rd, a, b)?;
+                }
+
                 OpCode::DEFINE_PROP => {
                     self.dispatch_define_prop(rd, a, b)?;
                 }

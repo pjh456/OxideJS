@@ -40,18 +40,25 @@ impl Emitter {
         };
         match p.kind {
             PropertyKind::Get | PropertyKind::Set => {
-                if computed {
-                    return Err("computed object accessors not yet supported".into());
-                }
+                // 计算键：键表达式先于访问器函数求值（规范求值序），键值运行时
+                // 由 DEFINE_ACCESSOR_DYNAMIC 从 key_reg 读取。
+                let key_reg = if computed {
+                    Some(self.emit_expression(p.key.to_expression(), ctx)?)
+                } else {
+                    None
+                };
                 let accessor_reg = self.emit_expression(&p.value, ctx)?;
-                if let Some(sub_mod) = ctx.nested.last_mut() {
-                    // 访问器函数名带 "get "/"set " 前缀（SetFunctionName 语义）。
-                    let fn_name = match p.kind {
-                        PropertyKind::Get => format!("get {prop_name}"),
-                        PropertyKind::Set => format!("set {prop_name}"),
-                        _ => prop_name.clone(),
-                    };
-                    sub_mod.function_name = Some(fn_name);
+                if !computed {
+                    if let Some(sub_mod) = ctx.nested.last_mut() {
+                        // 访问器函数名带 "get "/"set " 前缀（SetFunctionName 语义）。
+                        // 计算键的键值运行时才知，静态无法定名，保持匿名。
+                        let fn_name = match p.kind {
+                            PropertyKind::Get => format!("get {prop_name}"),
+                            PropertyKind::Set => format!("set {prop_name}"),
+                            _ => prop_name.clone(),
+                        };
+                        sub_mod.function_name = Some(fn_name);
+                    }
                 }
                 let undef_reg = self.emit_undefined(ctx);
                 let (get_reg, set_reg) = if p.kind == PropertyKind::Get {
@@ -59,13 +66,25 @@ impl Emitter {
                 } else {
                     (undef_reg, accessor_reg)
                 };
-                let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
-                ctx.inst(Inst::define_accessor(
-                    Operand::Reg(obj_reg),
-                    Operand::Reg(get_reg),
-                    Operand::Reg(set_reg),
-                    idx as u32,
-                ));
+                match key_reg {
+                    Some(key_reg) => {
+                        ctx.inst(Inst::define_accessor_dynamic(
+                            Operand::Reg(obj_reg),
+                            Operand::Reg(get_reg),
+                            Operand::Reg(set_reg),
+                            key_reg,
+                        ));
+                    }
+                    None => {
+                        let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
+                        ctx.inst(Inst::define_accessor(
+                            Operand::Reg(obj_reg),
+                            Operand::Reg(get_reg),
+                            Operand::Reg(set_reg),
+                            idx as u32,
+                        ));
+                    }
+                }
             }
             _ => {
                 let key_reg = if computed {

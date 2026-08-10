@@ -126,10 +126,6 @@ impl Vm {
         if prop_idx >= self.immutables().len() {
             return self.raise_type_error("DEFINE_ACCESSOR constant index out of bounds");
         }
-        let obj_val = self.regs[rd];
-        if !obj_val.is_object() {
-            return self.raise_type_error("DEFINE_ACCESSOR target is not object");
-        }
         let key_val = self.immutables()[prop_idx];
         // 私有访问器：key 常量编码为 Int（私有名局部 id），映射到私有键高半区；
         // 普通访问器 key 是字符串常量，走 interner 键。
@@ -138,6 +134,27 @@ impl Vm {
         } else {
             self.property_key_si(key_val)
         };
+        self.dispatch_define_accessor_common(rd, a, b, prop_name_si)
+    }
+
+    /// 计算键访问器：ext[0] 高位标记 `0x8000_0000 | key_reg`，键值运行时从寄存器读取。
+    pub(crate) fn dispatch_define_accessor_dynamic(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("DEFINE_ACCESSOR_DYNAMIC rd={} getter={} setter={}", rd, a, b);
+        let key_word = self.bytecode[self.pc];
+        self.pc += 1;
+        let key_reg = (key_word & 0x7FFF_FFFF) as usize;
+        let prop_name_si = self.property_key_si(self.regs[key_reg]);
+        self.dispatch_define_accessor_common(rd, a, b, prop_name_si)
+    }
+
+    /// 访问器定义公共路径：读 get/set 槽、合并已有访问器、写属性。
+    fn dispatch_define_accessor_common(
+        &mut self, rd: usize, a: usize, b: usize, prop_name_si: u32,
+    ) -> Result<(), String> {
+        let obj_val = self.regs[rd];
+        if !obj_val.is_object() {
+            return self.raise_type_error("DEFINE_ACCESSOR target is not object");
+        }
         let getter = self.regs[a];
         let setter = self.regs[b];
         let obj = unsafe { &mut *obj_val.as_js_object_ptr() };

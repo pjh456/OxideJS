@@ -199,6 +199,12 @@ impl Inst {
         Self::with_ext(OpCode::DEFINE_ACCESSOR, home, get, set, &[key_idx])
     }
 
+    /// 定义访问器属性（运行时计算键）：home 为宿主对象，get/set 为访问器函数寄存器，
+    /// key_reg 为键值寄存器（编码进 ext[0]，高位标记 `0x8000_0000 | key_reg`）。
+    pub fn define_accessor_dynamic(home: Operand, get: Operand, set: Operand, key_reg: u32) -> Self {
+        Self::with_ext(OpCode::DEFINE_ACCESSOR_DYNAMIC, home, get, set, &[0x8000_0000 | key_reg])
+    }
+
     /// define 数据属性：target 为宿主对象，value/key 为寄存器。
     /// 不触发原型链 setter，与 SET_PROP 语义不同。
     pub fn define_prop(target: Operand, value: Operand, key: Operand) -> Self {
@@ -427,6 +433,13 @@ mod tests {
         assert_eq!(accessor.rd, Operand::Reg(0));
         assert_eq!(accessor.a, Operand::Reg(1));
         assert_eq!(accessor.b, Operand::Reg(2));
+
+        let dyn_accessor = Inst::define_accessor_dynamic(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2), 7);
+        assert_eq!(dyn_accessor.op, OpCode::DEFINE_ACCESSOR_DYNAMIC);
+        assert_eq!(dyn_accessor.ext.as_slice(), &[0x8000_0000 | 7]);
+        assert_eq!(dyn_accessor.rd, Operand::Reg(0));
+        assert_eq!(dyn_accessor.a, Operand::Reg(1));
+        assert_eq!(dyn_accessor.b, Operand::Reg(2));
 
         let rest = Inst::rest_object(Operand::Reg(0), Operand::Reg(1), 7, None);
         assert_eq!(rest.ext.as_slice(), &[7]);

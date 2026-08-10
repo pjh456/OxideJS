@@ -79,6 +79,13 @@ pub(super) fn collect_real_vregs(f: &IRFunction) -> BTreeSet<u32> {
                 }
             }
         }
+        // 计算键访问器：ext[0] 是 key 寄存器（高位标记 `0x8000_0000 | vreg`）。
+        if inst.op == OpCode::DEFINE_ACCESSOR_DYNAMIC {
+            let r = inst.ext.first().copied().unwrap_or(0) & 0x7FFF_FFFF;
+            if r != 0 {
+                real.insert(r);
+            }
+        }
     }
     real
 }

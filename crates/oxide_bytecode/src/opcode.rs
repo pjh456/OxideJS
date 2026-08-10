@@ -28,6 +28,7 @@ pub enum Slot {
 /// - `SpreadArgs`：ext[1..] 每个字 `& 0x7FFF_FFFF` 是实参寄存器（spread 源同低 31 位）。
 /// - `TemplateExprs`：TEMPLATE_STR 的 ext[1..]，`seg>>31==1` 时低 8 位是表达式寄存器。
 /// - `BrandReg`：ext[0] 是 brand 对象寄存器，0 表示跳过检查（不产生 use）。
+/// - `ExtReg`：ext[0] 是寄存器，高位标记 `0x8000_0000 | vreg`，低 31 位是 vreg。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotSpec {
     /// 读写对应操作数槽。
@@ -42,6 +43,8 @@ pub enum SlotSpec {
     TemplateExprs,
     /// ext[0] 的 brand 对象寄存器（0 跳过检查）。
     BrandReg,
+    /// ext[0] 的寄存器（高位标记，与 SpreadArgs 同款编码）。
+    ExtReg,
 }
 
 /// 单张语义表行：一个 opcode 的 def/uses/pure/跳转/终结/IC 扩展字声明。
@@ -570,6 +573,10 @@ define_opcodes! {
     MAKE_CELL_FRESH = 0x7E => "MAKE_CELL_FRESH",
         def = None, uses = [SlotSpec::Slot(Slot::Rd)],
         pure = false, jump = false, term = false, ic = false,
+    // 计算键访问器：ext[0]=key 寄存器（`0x8000_0000 | vreg`，低 31 位是 vreg）。
+    DEFINE_ACCESSOR_DYNAMIC = 0x7F => "DEFINE_ACCESSOR_DYNAMIC",
+        def = None, uses = [SlotSpec::Slot(Slot::Rd), SlotSpec::Slot(Slot::A), SlotSpec::Slot(Slot::B), SlotSpec::ExtReg],
+        pure = false, jump = false, term = false, ic = false,
 
     // ── 位运算 (0x80-0x8F) ──
     BIT_AND = 0x80 => "BIT_AND",
@@ -749,6 +756,7 @@ mod tests {
         assert_eq!(OpCode::SPREAD_OBJECT as u8, 0x0F);
         assert_eq!(OpCode::CREATE_ARGUMENTS as u8, 0x63);
         assert_eq!(OpCode::CREATE_REST_ARRAY as u8, 0x6E);
+        assert_eq!(OpCode::DEFINE_ACCESSOR_DYNAMIC as u8, 0x7F);
         assert_eq!(OpCode::ADD.to_string(), "ADD");
         assert_eq!(OpCode::COMPOUND_MEMBER_EXP.to_string(), "COMPOUND_MEMBER_EXP");
         assert_eq!(OpCode::MOV.to_string(), "MOV");

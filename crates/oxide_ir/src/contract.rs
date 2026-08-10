@@ -39,6 +39,7 @@ impl Inst {
     /// - `SpreadArgs`：ext[1..] 每个字 `& 0x7FFF_FFFF`。
     /// - `TemplateExprs`：ext[1..] 中 `seg>>31==1` 的低 8 位。
     /// - `BrandReg`：ext[0] 非 0 才产生 use。
+    /// - `ExtReg`：ext[0] `& 0x7FFF_FFFF`（高位标记的寄存器号）。
     pub fn use_regs(&self) -> SmallVec<[u32; 4]> {
         let mut uses = SmallVec::new();
         for &spec in self.op.semantics().uses {
@@ -66,6 +67,10 @@ impl Inst {
                     if brand_reg != 0 {
                         uses.push(brand_reg);
                     }
+                }
+                SlotSpec::ExtReg => {
+                    let w = self.ext.first().copied().unwrap_or(0);
+                    uses.push(w & 0x7FFF_FFFF);
                 }
             }
         }
@@ -418,6 +423,7 @@ mod tests {
         assert!(!Inst::new(OpCode::SET_PROP, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
         assert!(!Inst::new(OpCode::SUPER_GET_PROP, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
         assert!(!Inst::new(OpCode::DEFINE_ACCESSOR, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
+        assert!(!Inst::new(OpCode::DEFINE_ACCESSOR_DYNAMIC, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
         assert!(!Inst::new(OpCode::DELETE_PROP_STATIC, Operand::Reg(0), Operand::Reg(0), Operand::None).is_pure(&f));
         assert!(!Inst::new(OpCode::DELETE_PROP_DYNAMIC, Operand::Reg(0), Operand::None, Operand::Reg(2)).is_pure(&f));
         // 调用 / 异常 / 控制流
@@ -567,6 +573,9 @@ mod tests {
             OpCode::REST_OBJECT => Inst::rest_object(Operand::Reg(1), Operand::Reg(2), 7, None),
             OpCode::DEFINE_ACCESSOR => {
                 Inst::define_accessor(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 42)
+            }
+            OpCode::DEFINE_ACCESSOR_DYNAMIC => {
+                Inst::define_accessor_dynamic(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 7)
             }
             OpCode::DELETE_PROP_STATIC => Inst::delete_prop_static(Operand::Reg(1), 9),
             _ => Inst::new(op, Operand::Reg(1), Operand::Reg(2), Operand::Reg(3)),
@@ -740,6 +749,7 @@ mod tests {
         assert_group(&[OpCode::SUPER_GET_PROP, OpCode::SUPER_STATIC_GET_PROP], Some(1), &[2, 3], false);
         assert_contract(OpCode::SET_HOME_OBJECT, None, &[1, 2], false);
         assert_contract(OpCode::DEFINE_ACCESSOR, None, &[1, 2, 3], false);
+        assert_contract(OpCode::DEFINE_ACCESSOR_DYNAMIC, None, &[1, 2, 3, 7], false);
         // Object Property：GET_PROP 写 a 槽、DYNAMIC 写 b 槽
         assert_contract(OpCode::GET_PROP, Some(2), &[1, 3], false);
         assert_contract(OpCode::GET_PROP_DYNAMIC, Some(3), &[1, 2], false);
