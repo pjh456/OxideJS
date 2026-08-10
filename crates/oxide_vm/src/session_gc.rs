@@ -174,10 +174,8 @@ impl SessionGc {
             }
         }
         if obj.is_async_generator_obj() {
-            for value in crate::async_generator::async_generator_native_edges(obj) {
-                if value.is_string() {
-                    live.insert(value.as_string_ptr_mut());
-                }
+            for ptr in crate::async_generator::async_generator_native_string_edges(obj) {
+                live.insert(ptr);
             }
         }
     }
