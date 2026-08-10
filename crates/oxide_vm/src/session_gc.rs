@@ -7,7 +7,7 @@ use oxide_types::object::{JsObject, JsString, PropMetaEntry};
 use oxide_types::value::JsValue;
 use rustc_hash::FxBuildHasher;
 
-use crate::vm::Vm;
+use crate::vm::{Completion, Vm};
 use oxide_builtins::{array_buffer, data_view, map, regexp, set, typed_array};
 
 /// session 级 mark-sweep GC 的状态与统计。
@@ -576,6 +576,19 @@ fn rewrite_vm_roots(vm: &mut Vm, forwarding: &HashMap<*mut JsObject, *mut JsObje
     }
     vm.exception_value = vm.exception_value.map(|value| rewrite_forwarded_value(value, forwarding));
     vm.pending_exception = vm.pending_exception.map(|value| rewrite_forwarded_value(value, forwarding));
+    vm.last_uncaught_value = vm.last_uncaught_value.map(|value| rewrite_forwarded_value(value, forwarding));
+    vm.pending_completion = vm.pending_completion.map(|completion| match completion {
+        Completion::Return { value, remaining_finally } => Completion::Return {
+            value: rewrite_forwarded_value(value, forwarding),
+            remaining_finally,
+        },
+        other => other,
+    });
+    vm.generator_suspended = vm.generator_suspended.map(|value| rewrite_forwarded_value(value, forwarding));
+    vm.delegated_iterator = vm.delegated_iterator.map(|value| rewrite_forwarded_value(value, forwarding));
+    vm.async_context = vm.async_context.map(|value| rewrite_forwarded_value(value, forwarding));
+    vm.async_gen_context = vm.async_gen_context.map(|value| rewrite_forwarded_value(value, forwarding));
+    vm.inline_callee = vm.inline_callee.map(|value| rewrite_forwarded_value(value, forwarding));
     for value in &mut vm.iters.for_of_iters {
         *value = rewrite_forwarded_value(*value, forwarding);
     }
@@ -630,8 +643,37 @@ mod tests {
     }
 
     #[test]
-    fn gc_roots_contains_registers_frames_and_root_roots() {
+    fn uncaught_value_is_gc_root() {
         let mut vm = Vm::new();
+        let obj = plain_object(&mut vm);
+        let session = vm.promote_object(obj);
+        vm.last_uncaught_value = Some(JsValue::from_js_object(session));
+        let mut roots = Vec::new();
+        vm.for_each_root(|v| roots.push(v));
+        assert!(has_ptr(&roots, session));
+    }
+
+    #[test]
+    fn suspended_signal_fields_are_roots() {
+        let mut vm = Vm::new();
+        let a = plain_object(&mut vm);
+        let b = plain_object(&mut vm);
+        let c = plain_object(&mut vm);
+        let a_s = vm.promote_object(a);
+        let b_s = vm.promote_object(b);
+        let c_s = vm.promote_object(c);
+        vm.generator_suspended = Some(JsValue::from_js_object(a_s));
+        vm.async_context = Some(JsValue::from_js_object(b_s));
+        vm.async_gen_context = Some(JsValue::from_js_object(c_s));
+        let mut roots = Vec::new();
+        vm.for_each_root(|v| roots.push(v));
+        assert!(has_ptr(&roots, a_s));
+        assert!(has_ptr(&roots, b_s));
+        assert!(has_ptr(&roots, c_s));
+    }
+
+    #[test]
+    fn gc_roots_contains_registers_frames_and_root_roots() {        let mut vm = Vm::new();
         let root = plain_object(&mut vm);
         let frame_obj = plain_object(&mut vm);
         let saved_this = plain_object(&mut vm);

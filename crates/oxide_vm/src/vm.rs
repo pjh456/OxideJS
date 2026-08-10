@@ -553,12 +553,18 @@ impl Vm {
         f(JsValue::from_js_object(self.session.global_object().as_ptr() as *mut JsObject));
         f(self.exception_value.unwrap_or(JsValue::undefined()));
         f(self.pending_exception.unwrap_or(JsValue::undefined()));
+        f(self.last_uncaught_value.unwrap_or(JsValue::undefined()));
         // 悬挂的 return 完成持有返回值，是 GC 根。
         if let Some(Completion::Return { value, .. }) = self.pending_completion {
             if value.is_object() || value.is_string() {
                 f(value);
             }
         }
+        f(self.generator_suspended.unwrap_or(JsValue::undefined()));
+        f(self.delegated_iterator.unwrap_or(JsValue::undefined()));
+        f(self.async_context.unwrap_or(JsValue::undefined()));
+        f(self.async_gen_context.unwrap_or(JsValue::undefined()));
+        f(self.inline_callee.unwrap_or(JsValue::undefined()));
         for &v in &self.iters.for_of_iters {
             f(v);
         }
