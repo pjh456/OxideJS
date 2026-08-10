@@ -243,12 +243,99 @@ fn valid_iso_date(year: i32, month: u32, day: u32) -> bool {
     NaiveDate::from_ymd_opt(year, month, day).is_some()
 }
 
-fn parse_plain_date_string(s: &str) -> Option<(i32, u32, u32)> {
-    let t = s.trim();
-    NaiveDate::parse_from_str(t, "%Y-%m-%d").ok().map(|d| {
-        let (y, m, day) = (d.year(), d.month(), d.day());
-        (y, m, day)
-    })
+/// 读两位数字（basic 格式的月/日等紧凑分量）。
+fn read_iso2(t: &str, i: &mut usize, bytes: &[u8]) -> Result<u32, String> {
+    if *i + 2 > bytes.len() {
+        return Err("truncated ISO component".into());
+    }
+    let two = &t[*i..*i + 2];
+    *i += 2;
+    two.parse().map_err(|_| "invalid ISO component".to_string())
+}
+
+/// 从 Temporal ISO 字符串中提取日期分量 `(year, month, day)`。
+///
+/// # 支持
+/// - extended `YYYY-MM-DD` 与 basic `YYYYMMDD`，可带 `+`/`-` 符号（扩展年）。
+/// - 时间部分（`T`/`t` 起）与 offset（`Z`/`±HH:MM`）与 annotations 允许存在，
+///   日期提取时忽略（日历选择由调用方处理）。
+///
+/// # 边界
+/// - 空串、年份不足 4 位、月/日超界、零年（含 `-000000` 减零年）均拒绝。
+/// - 日期后的残余内容须以 `T`/`t`、offset、`[` 开头，否则拒绝。
+fn parse_iso_date(s: &str) -> Result<(i32, u32, u32), String> {
+    let t = s.trim().replace('\u{2212}', "-");
+    if t.is_empty() {
+        return Err("invalid ISO string".into());
+    }
+    let bytes = t.as_bytes();
+    let mut i = 0usize;
+    let negative = if i < bytes.len() && (bytes[i] == b'-' || bytes[i] == b'+') {
+        let neg = bytes[i] == b'-';
+        i += 1;
+        neg
+    } else {
+        false
+    };
+    let y_start = i;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    let digits = &t[y_start..i];
+    // basic 格式（无分隔符，年月日连续）：8-10 位数字，前 4-6 位年，后 4 位月日。
+    // 否则纯年（4-6 位），月/日由 `-MM-DD` 接续。
+    let (year_digits, month_day) = if digits.len() >= 8 {
+        if !(8..=10).contains(&digits.len()) {
+            return Err("invalid ISO date".into());
+        }
+        let y_len = digits.len() - 4;
+        if !(4..=6).contains(&y_len) {
+            return Err("invalid ISO year".into());
+        }
+        (&digits[..y_len], Some(&digits[y_len..]))
+    } else {
+        (digits, None)
+    };
+    if year_digits.len() < 4 || year_digits.len() > 6 {
+        return Err("invalid ISO year".into());
+    }
+    let mut year: i64 = year_digits.parse().map_err(|_| "invalid ISO year".to_string())?;
+    if negative {
+        year = -year;
+    }
+    let (month, day) = if let Some(md) = month_day {
+        if md.len() != 4 {
+            return Err("invalid ISO date".into());
+        }
+        let m: u32 = md[..2].parse().map_err(|_| "invalid ISO month".to_string())?;
+        let d: u32 = md[2..].parse().map_err(|_| "invalid ISO day".to_string())?;
+        (m, d)
+    } else if i < bytes.len() && bytes[i] == b'-' {
+        i += 1;
+        let m = read_iso2(&t, &mut i, bytes)?;
+        if i >= bytes.len() || bytes[i] != b'-' {
+            return Err("invalid ISO date".into());
+        }
+        i += 1;
+        let d = read_iso2(&t, &mut i, bytes)?;
+        (m, d)
+    } else {
+        return Err("missing month/day".into());
+    };
+    let rest = &t[i..];
+    if !rest.is_empty() {
+        let ok = rest.starts_with(['T', 't', '[', '+', '-', 'Z', 'z']);
+        if !ok {
+            return Err("invalid trailing content".into());
+        }
+    }
+    if month == 0 || month > 12 || day == 0 {
+        return Err("invalid ISO date".into());
+    }
+    if year == 0 {
+        return Err("invalid ISO year zero".into());
+    }
+    Ok((year as i32, month, day))
 }
 
 /// `Temporal.PlainDate` 构造器：`new PlainDate(year, month, day)`。
@@ -269,14 +356,14 @@ pub fn plain_date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     make_plain_date(vm, year, month, day)
 }
 
-/// `Temporal.PlainDate.from(value)`：接受 `YYYY-MM-DD` 字符串或 `{year, month, day}` 对象。
+/// `Temporal.PlainDate.from(value)`：接受 ISO 日期字符串或 `{year, month, day}` 对象。
 pub fn plain_date_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
     let (year, month, day) = if val.is_string() {
         let s = to_string(val);
-        match parse_plain_date_string(&s) {
-            Some(ymd) => ymd,
-            None => {
+        match parse_iso_date(&s) {
+            Ok(ymd) => ymd,
+            Err(_) => {
                 return NativeResult::Err(crate::error::create_range_error(vm, "invalid ISO 8601 date"));
             }
         }

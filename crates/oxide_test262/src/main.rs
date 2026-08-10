@@ -214,6 +214,7 @@ impl HarnessSources {
         sources.insert("typeCoercion.js", include_str!("../../../tests/test262/harness/typeCoercion.js"));
         sources.insert("deepEqual.js", include_str!("../../../tests/test262/harness/deepEqual.js"));
         sources.insert("testTypedArray.js", include_str!("../../../tests/test262/harness/testTypedArray.js"));
+        sources.insert("temporalHelpers.js", include_str!("../../../tests/test262/harness/temporalHelpers.js"));
         sources.insert("asyncHelpers.js", include_str!("../../../tests/test262/harness/asyncHelpers.js"));
         sources.insert("doneprintHandle.js", include_str!("../../../tests/test262/harness/doneprintHandle.js"));
         sources.insert("promiseHelper.js", include_str!("../../../tests/test262/harness/promiseHelper.js"));
