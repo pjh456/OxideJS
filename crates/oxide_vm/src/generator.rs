@@ -187,7 +187,7 @@ impl Vm {
         // 参数初始化抛错/异常结束：恢复调用方上下文后重新抛出。
         let exc = self.last_uncaught_value.take().unwrap_or_else(|| match result {
             Ok(v) => oxide_builtins::error::create_error(self, &format!("generator initialization failed: {v:?}")),
-            Err(e) => oxide_builtins::error::create_error(self, &e),
+            Err(e) => oxide_builtins::error::create_from_text(self, &e),
         });
         let kind = self.thrown_error_kind(exc);
         unsafe { (*state_ptr).phase = GeneratorPhase::Completed };
@@ -296,7 +296,7 @@ impl Vm {
                         let exc = self
                             .last_uncaught_value
                             .take()
-                            .unwrap_or_else(|| oxide_builtins::error::create_error(self, &e));
+                            .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e));
                         self.restore_inline_state(saved);
                         self.native_call_depth -= 1;
                         let state = unsafe { &mut *state_ptr };
@@ -409,7 +409,7 @@ impl Vm {
                 let exc = self
                     .last_uncaught_value
                     .take()
-                    .unwrap_or_else(|| oxide_builtins::error::create_error(self, &e));
+                    .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e));
                 let state = unsafe { &mut *state_ptr };
                 state.phase = GeneratorPhase::Completed;
                 state.result = JsValue::undefined();

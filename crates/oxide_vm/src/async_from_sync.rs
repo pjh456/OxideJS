@@ -163,7 +163,7 @@ fn continue_async_from_sync(vm: &mut Vm, inner: JsValue, result: Result<JsValue,
                     let exc = vm
                         .last_uncaught_value
                         .take()
-                        .unwrap_or_else(|| oxide_builtins::error::create_error(vm, &e));
+                        .unwrap_or_else(|| oxide_builtins::error::create_from_text(vm, &e));
                     reject_with(vm, exc);
                     return NativeResult::Ok(promise);
                 }
@@ -175,7 +175,7 @@ fn continue_async_from_sync(vm: &mut Vm, inner: JsValue, result: Result<JsValue,
                     let exc = vm
                         .last_uncaught_value
                         .take()
-                        .unwrap_or_else(|| oxide_builtins::error::create_error(vm, &e));
+                        .unwrap_or_else(|| oxide_builtins::error::create_from_text(vm, &e));
                     reject_with(vm, exc);
                     return NativeResult::Ok(promise);
                 }
@@ -205,7 +205,7 @@ fn continue_async_from_sync(vm: &mut Vm, inner: JsValue, result: Result<JsValue,
             let exc = vm
                 .last_uncaught_value
                 .take()
-                .unwrap_or_else(|| oxide_builtins::error::create_error(vm, &e));
+                .unwrap_or_else(|| oxide_builtins::error::create_from_text(vm, &e));
             reject_with(vm, exc);
             NativeResult::Ok(promise)
         }
@@ -316,7 +316,7 @@ fn async_from_sync_next(vm: &mut Vm, args: &[u8]) -> NativeResult {
             let exc = vm
                 .last_uncaught_value
                 .take()
-                .unwrap_or_else(|| oxide_builtins::error::create_error(vm, &e));
+                .unwrap_or_else(|| oxide_builtins::error::create_from_text(vm, &e));
             return NativeResult::Err(exc);
         }
     };
@@ -344,7 +344,7 @@ fn async_from_sync_return(vm: &mut Vm, args: &[u8]) -> NativeResult {
             let exc = vm
                 .last_uncaught_value
                 .take()
-                .unwrap_or_else(|| oxide_builtins::error::create_error(vm, &e));
+                .unwrap_or_else(|| oxide_builtins::error::create_from_text(vm, &e));
             return NativeResult::Err(exc);
         }
     };
@@ -377,7 +377,7 @@ fn async_from_sync_throw(vm: &mut Vm, args: &[u8]) -> NativeResult {
             let exc = vm
                 .last_uncaught_value
                 .take()
-                .unwrap_or_else(|| oxide_builtins::error::create_error(vm, &e));
+                .unwrap_or_else(|| oxide_builtins::error::create_from_text(vm, &e));
             return NativeResult::Err(exc);
         }
     };

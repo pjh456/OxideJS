@@ -212,7 +212,7 @@ impl Vm {
             Err(e) => Err(self
                 .last_uncaught_value
                 .take()
-                .unwrap_or_else(|| oxide_builtins::error::create_error(self, &e))),
+                .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e))),
         }
     }
 
@@ -327,7 +327,7 @@ impl Vm {
                     let exc = self
                         .last_uncaught_value
                         .take()
-                        .unwrap_or_else(|| oxide_builtins::error::create_error(self, &e));
+                        .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e));
                     return self.reject_promise(promise, exc);
                 }
             };
@@ -415,7 +415,7 @@ impl Vm {
                     let exc = self
                         .last_uncaught_value
                         .take()
-                        .unwrap_or_else(|| oxide_builtins::error::create_error(self, &e));
+                        .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e));
                     return Err(exc);
                 }
             };
@@ -429,7 +429,7 @@ impl Vm {
             let exc = self
                 .last_uncaught_value
                 .take()
-                .unwrap_or_else(|| oxide_builtins::error::create_error(self, &e));
+                .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e));
             return Err(exc);
         }
         Ok(promise)
@@ -545,7 +545,7 @@ impl Vm {
                         let exc = self
                             .last_uncaught_value
                             .take()
-                            .unwrap_or_else(|| oxide_builtins::error::create_error(self, &e));
+                            .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e));
                         let _ = self.call_function_sync(reject, JsValue::undefined(), &[exc]);
                     }
                 }
@@ -563,7 +563,7 @@ impl Vm {
                         let exc = self
                             .last_uncaught_value
                             .take()
-                            .unwrap_or_else(|| oxide_builtins::error::create_error(self, &e));
+                            .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e));
                         let _ = self.call_function_sync(reject, JsValue::undefined(), &[exc]);
                     }
                 }
@@ -713,7 +713,7 @@ fn promise_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
             let exc = vm
                 .last_uncaught_value
                 .take()
-                .unwrap_or_else(|| oxide_builtins::error::create_error(vm, &e));
+                .unwrap_or_else(|| oxide_builtins::error::create_from_text(vm, &e));
             let _ = vm.reject_promise(this_val, exc);
             NativeResult::Ok(this_val)
         }
@@ -742,7 +742,7 @@ fn promise_resolve_closure(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let exc = vm
             .last_uncaught_value
             .take()
-            .unwrap_or_else(|| oxide_builtins::error::create_error(vm, &e));
+            .unwrap_or_else(|| oxide_builtins::error::create_from_text(vm, &e));
         let _ = vm.reject_promise(promise, exc);
     }
     NativeResult::Ok(JsValue::undefined())
@@ -825,7 +825,7 @@ impl Vm {
                 let exc = self
                     .last_uncaught_value
                     .take()
-                    .unwrap_or_else(|| oxide_builtins::error::create_error(self, &e));
+                    .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e));
                 return Err(exc);
             }
         };
@@ -837,7 +837,7 @@ impl Vm {
             Err(e) => Err(self
                 .last_uncaught_value
                 .take()
-                .unwrap_or_else(|| oxide_builtins::error::create_error(self, &e))),
+                .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e))),
         }
     }
 
@@ -1082,7 +1082,7 @@ fn promise_finally_handler(vm: &mut Vm, args: &[u8]) -> NativeResult {
             let exc = vm
                 .last_uncaught_value
                 .take()
-                .unwrap_or_else(|| oxide_builtins::error::create_error(vm, &e));
+                .unwrap_or_else(|| oxide_builtins::error::create_from_text(vm, &e));
             NativeResult::Err(exc)
         }
     }
@@ -1102,7 +1102,7 @@ fn promise_static_resolve(vm: &mut Vm, args: &[u8]) -> NativeResult {
                 let exc = vm
                     .last_uncaught_value
                     .take()
-                    .unwrap_or_else(|| oxide_builtins::error::create_error(vm, &e));
+                    .unwrap_or_else(|| oxide_builtins::error::create_from_text(vm, &e));
                 return NativeResult::Err(exc);
             }
         };
@@ -1121,7 +1121,7 @@ fn promise_static_resolve(vm: &mut Vm, args: &[u8]) -> NativeResult {
             let exc = vm
                 .last_uncaught_value
                 .take()
-                .unwrap_or_else(|| oxide_builtins::error::create_error(vm, &e));
+                .unwrap_or_else(|| oxide_builtins::error::create_from_text(vm, &e));
             NativeResult::Err(exc)
         }
     }
@@ -1141,7 +1141,7 @@ fn promise_static_reject(vm: &mut Vm, args: &[u8]) -> NativeResult {
             let exc = vm
                 .last_uncaught_value
                 .take()
-                .unwrap_or_else(|| oxide_builtins::error::create_error(vm, &e));
+                .unwrap_or_else(|| oxide_builtins::error::create_from_text(vm, &e));
             NativeResult::Err(exc)
         }
     }
@@ -1217,7 +1217,7 @@ fn perform_promise_combine(
                 let exc = vm
                     .last_uncaught_value
                     .take()
-                    .unwrap_or_else(|| oxide_builtins::error::create_error(vm, &e));
+                    .unwrap_or_else(|| oxide_builtins::error::create_from_text(vm, &e));
                 let _ = vm.call_function_sync(reject, JsValue::undefined(), &[exc]);
                 return Ok(promise);
             }
@@ -1415,7 +1415,7 @@ fn agg_call_resolve(vm: &mut Vm, record: JsValue, arg: JsValue) {
         let exc = vm
             .last_uncaught_value
             .take()
-            .unwrap_or_else(|| oxide_builtins::error::create_error(vm, &e));
+            .unwrap_or_else(|| oxide_builtins::error::create_from_text(vm, &e));
         let reject = agg_record_val(vm, record, AGG_REJECT_PROP);
         let _ = vm.call_function_sync(reject, JsValue::undefined(), &[exc]);
     }
@@ -1425,7 +1425,7 @@ fn agg_call_resolve(vm: &mut Vm, record: JsValue, arg: JsValue) {
 fn agg_engine_error(vm: &mut Vm, err: &str) -> JsValue {
     vm.last_uncaught_value
         .take()
-        .unwrap_or_else(|| oxide_builtins::error::create_error(vm, err))
+        .unwrap_or_else(|| oxide_builtins::error::create_from_text(vm, err))
 }
 
 /// IteratorClose：调用迭代器的 `return()`（可调用时），忽略其抛错。
@@ -1548,7 +1548,7 @@ fn aggregate_error_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
                 let exc = vm
                     .last_uncaught_value
                     .take()
-                    .unwrap_or_else(|| oxide_builtins::error::create_error(vm, &e));
+                    .unwrap_or_else(|| oxide_builtins::error::create_from_text(vm, &e));
                 return NativeResult::Err(exc);
             }
         };

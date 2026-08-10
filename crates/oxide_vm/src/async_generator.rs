@@ -176,7 +176,7 @@ impl Vm {
             Ok(v) => {
                 oxide_builtins::error::create_error(self, &format!("async generator initialization failed: {v:?}"))
             }
-            Err(e) => oxide_builtins::error::create_error(self, &e),
+            Err(e) => oxide_builtins::error::create_from_text(self, &e),
         });
         let kind = self.thrown_error_kind(exc);
         unsafe { (*state_ptr).phase = AsyncGenPhase::Completed };
@@ -221,7 +221,7 @@ impl Vm {
                 let exc = self
                     .last_uncaught_value
                     .take()
-                    .unwrap_or_else(|| oxide_builtins::error::create_error(self, &e));
+                    .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e));
                 return Err(exc);
             }
         }
@@ -337,7 +337,7 @@ impl Vm {
                     let exc = self
                         .last_uncaught_value
                         .take()
-                        .unwrap_or_else(|| oxide_builtins::error::create_error(self, &e));
+                        .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e));
                     self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
                     return self.finish_async_gen_exc(state_ptr, saved, gen_val, exc);
                 }
@@ -467,7 +467,7 @@ impl Vm {
                 let exc = self
                     .last_uncaught_value
                     .take()
-                    .unwrap_or_else(|| oxide_builtins::error::create_error(self, &e));
+                    .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e));
                 self.finish_async_gen_exc(state_ptr, saved, gen_val, exc)
             }
         }
@@ -629,7 +629,7 @@ fn async_gen_await_resume_closure(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     match vm.resume_async_generator(ctx) {
         Ok(()) => NativeResult::Ok(JsValue::undefined()),
-        Err(e) => NativeResult::Err(oxide_builtins::error::create_error(vm, &e)),
+        Err(e) => NativeResult::Err(oxide_builtins::error::create_from_text(vm, &e)),
     }
 }
 

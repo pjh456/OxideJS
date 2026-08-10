@@ -167,7 +167,7 @@ impl Vm {
                 let exc = self
                     .last_uncaught_value
                     .take()
-                    .unwrap_or_else(|| oxide_builtins::error::create_error(self, &e));
+                    .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e));
                 self.finish_async(state_ptr, Err(exc))?;
                 self.restore_inline_state(saved);
                 Ok(())
@@ -248,7 +248,7 @@ impl Vm {
                 let exc = self
                     .last_uncaught_value
                     .take()
-                    .unwrap_or_else(|| oxide_builtins::error::create_error(self, &e));
+                    .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e));
                 self.finish_async(state_ptr, Err(exc))?;
                 self.restore_inline_state(saved);
                 Ok(())
@@ -390,7 +390,7 @@ fn async_await_resume_closure(vm: &mut Vm, args: &[u8]) -> NativeResult {
     };
     match vm.resume_async(ctx, mode) {
         Ok(()) => NativeResult::Ok(JsValue::undefined()),
-        Err(e) => NativeResult::Err(oxide_builtins::error::create_error(vm, &e)),
+        Err(e) => NativeResult::Err(oxide_builtins::error::create_from_text(vm, &e)),
     }
 }
 

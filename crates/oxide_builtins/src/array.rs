@@ -155,29 +155,9 @@ pub(crate) fn invoke_native_callback<H: VmHost>(
         Ok(value) => NativeResult::Ok(value),
         Err(err) => match vm.take_uncaught_value() {
             Some(original) => NativeResult::Err(original),
-            None => NativeResult::Err(callback_error_from_text(vm, &err)),
+            None => NativeResult::Err(crate::error::create_from_text(vm, &err)),
         },
     }
-}
-
-fn callback_error_from_text<H: VmHost>(vm: &mut H, err: &str) -> JsValue {
-    let err = err.strip_prefix("uncaught ").unwrap_or(err);
-    if let Some(msg) = err.strip_prefix("TypeError: ") {
-        return crate::error::create_type_error(vm, msg);
-    }
-    if let Some(msg) = err.strip_prefix("ReferenceError: ") {
-        return crate::error::create_reference_error(vm, msg);
-    }
-    if let Some(msg) = err.strip_prefix("RangeError: ") {
-        return crate::error::create_range_error(vm, msg);
-    }
-    if let Some(msg) = err.strip_prefix("SyntaxError: ") {
-        return crate::error::create_syntax_error(vm, msg);
-    }
-    if let Some(msg) = err.strip_prefix("Error: ") {
-        return crate::error::create_error(vm, msg);
-    }
-    crate::error::create_error(vm, err)
 }
 
 fn unexpected_tail_call_error<H: VmHost>(vm: &mut H) -> NativeResult {
@@ -412,9 +392,9 @@ pub fn array_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(a_ptr))
 }
 
-/// 引擎调用边界抛出的错误恢复为原始异常值（透传），否则按错误文本构造普通错误。
+/// 引擎调用边界抛出的错误恢复为原始异常值（透传），否则按错误文本构造对应 kind 的错误。
 fn from_engine_error<H: VmHost>(vm: &mut H, err: &str) -> JsValue {
-    vm.take_uncaught_value().unwrap_or_else(|| callback_error_from_text(vm, err))
+    vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_from_text(vm, err))
 }
 
 /// 按构造函数 C 构造 Array.from 的结果对象：C 可构造时以 C.prototype 分配 `this`

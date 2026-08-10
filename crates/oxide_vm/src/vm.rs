@@ -437,7 +437,7 @@ impl Vm {
             let exc = self
                 .last_uncaught_value
                 .take()
-                .unwrap_or_else(|| oxide_builtins::error::create_error(self, err));
+                .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, err));
             let kind = self.thrown_error_kind(exc);
             self.exception_value = Some(exc);
             self.pending_error_kind = Some(kind);

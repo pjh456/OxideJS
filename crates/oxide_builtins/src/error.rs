@@ -65,6 +65,32 @@ pub fn create_error<H: VmHost>(host: &mut H, msg: &str) -> JsValue {
     create_kind_error(host, "Error", msg)
 }
 
+/// 从错误文本（形如 `TypeError: msg` / `ReferenceError: msg`）解析类型前缀并创建
+/// 对应 kind 的错误对象；无前缀时创建普通 Error。
+///
+/// # 使用场景
+/// 异常传播链中错误对象被降级为文本（error_text 输出、`last_uncaught_value` 被
+/// 嵌套覆盖后的兜底路径）时，据此恢复错误类型，避免全部塌缩成普通 Error。
+pub fn create_from_text<H: VmHost>(host: &mut H, text: &str) -> JsValue {
+    let text = text.strip_prefix("uncaught ").unwrap_or(text);
+    for (kind, prefix) in [
+        ("TypeError", "TypeError: "),
+        ("ReferenceError", "ReferenceError: "),
+        ("RangeError", "RangeError: "),
+        ("SyntaxError", "SyntaxError: "),
+        ("URIError", "URIError: "),
+        ("EvalError", "EvalError: "),
+    ] {
+        if let Some(msg) = text.strip_prefix(prefix) {
+            return create_kind_error(host, kind, msg);
+        }
+    }
+    if let Some(msg) = text.strip_prefix("Error: ") {
+        return create_kind_error(host, "Error", msg);
+    }
+    create_error(host, text)
+}
+
 /// 创建一个带指定 message 的 ReferenceError 对象。
 pub fn create_reference_error<H: VmHost>(host: &mut H, msg: &str) -> JsValue {
     create_kind_error(host, "ReferenceError", msg)
