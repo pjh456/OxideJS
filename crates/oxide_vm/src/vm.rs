@@ -80,7 +80,7 @@ macro_rules! throw_err {
 }
 
 macro_rules! binary_arith {
-    ($self:ident, $a:expr, $b:expr, $rd:expr, $op:tt) => {{
+    ($self:ident, $a:expr, $b:expr, $rd:expr, $op:tt, $check_zero:expr) => {{
         let lv = $self.regs[$a];
         let rv = $self.regs[$b];
         if lv.is_int() && rv.is_int() {
@@ -88,8 +88,9 @@ macro_rules! binary_arith {
         } else if lv.is_bigint() && rv.is_bigint() {
             let l = $self.bigint_value(lv).clone();
             let r = $self.bigint_value(rv).clone();
-            if r.is_zero() {
-                // BigInt 除/模零：规范要求 RangeError（Number 路径走 f64 inf/NaN）。
+            if r.is_zero() && $check_zero {
+                // 仅除/模对 BigInt 零除数抛 RangeError；SUB/MUL 等其余二元运算
+                // 遇到 0n 必须正常计算（Number 路径走 f64 inf/NaN）。
                 $self.raise_error_kind("RangeError", "Division by zero")?;
                 $self.regs[$rd] = JsValue::undefined();
             } else {
@@ -104,7 +105,7 @@ macro_rules! binary_arith {
                 // 包装对象 coerce 后暴露双 BigInt（如 Object(2n) / 2n）。
                 let lv = $self.bigint_value(l).clone();
                 let rv = $self.bigint_value(r).clone();
-                if rv.is_zero() {
+                if rv.is_zero() && $check_zero {
                     $self.raise_error_kind("RangeError", "Division by zero")?;
                     $self.regs[$rd] = JsValue::undefined();
                 } else {
@@ -1254,19 +1255,19 @@ impl Vm {
                 }
 
                 OpCode::SUB => {
-                    binary_arith!(self, a, b, rd, -);
+                    binary_arith!(self, a, b, rd, -, false);
                 }
 
                 OpCode::MUL => {
-                    binary_arith!(self, a, b, rd, *);
+                    binary_arith!(self, a, b, rd, *, false);
                 }
 
                 OpCode::DIV => {
-                    binary_arith!(self, a, b, rd, /);
+                    binary_arith!(self, a, b, rd, /, true);
                 }
 
                 OpCode::MOD => {
-                    binary_arith!(self, a, b, rd, %);
+                    binary_arith!(self, a, b, rd, %, true);
                 }
 
                 OpCode::NEG => {
