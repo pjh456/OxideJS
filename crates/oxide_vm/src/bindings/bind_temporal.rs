@@ -394,6 +394,19 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         .map_or(0, |props| props.len() as u32)
         .saturating_sub(1);
     plain_date_time_ctor.set_data_meta(length_pos, PropAttributes::new(false, false, true));
+    apply_binding_table(
+        world,
+        plain_date_time_ctor,
+        core,
+        &[
+            ("from", oxide_builtins::temporal::plain_date_time_from::<crate::vm::Vm> as *const (), 1),
+            (
+                "compare",
+                oxide_builtins::temporal::plain_date_time_compare::<crate::vm::Vm> as *const (),
+                2,
+            ),
+        ],
+    );
     let plain_date_time_proto_ptr = world.plain_date_time_proto.as_ptr() as *mut JsObject;
     let plain_date_time_proto = unsafe { &mut *plain_date_time_proto_ptr };
     for (name, getter) in [
@@ -485,6 +498,16 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
             (
                 "valueOf",
                 oxide_builtins::temporal::plain_date_time_value_of::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "toString",
+                oxide_builtins::temporal::plain_date_time_to_string::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "toJSON",
+                oxide_builtins::temporal::plain_date_time_to_json::<crate::vm::Vm> as *const (),
                 0,
             ),
         ],

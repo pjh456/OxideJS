@@ -1343,6 +1343,17 @@ fn make_plain_time<H: VmHost>(vm: &mut H, total_ns: f64) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(vm.alloc_object(obj)))
 }
 
+fn make_plain_date_time<H: VmHost>(vm: &mut H, year: i32, month: u32, day: u32, total_ns: f64) -> NativeResult {
+    let proto = JsValue::from_js_object(vm.session().builtin_world().plain_date_time_proto.as_ptr() as *mut JsObject);
+    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
+    obj.type_tag = JsObject::OBJ_TYPE_PLAIN_DATE_TIME;
+    obj.set_prop_at(0, JsValue::float(year as f64));
+    obj.set_prop_at(1, JsValue::float(month as f64));
+    obj.set_prop_at(2, JsValue::float(day as f64));
+    obj.set_prop_at(3, JsValue::float(total_ns));
+    NativeResult::Ok(JsValue::from_js_object(vm.alloc_object(obj)))
+}
+
 fn make_duration<H: VmHost>(vm: &mut H, values: [f64; 10]) -> NativeResult {
     let proto = JsValue::from_js_object(vm.session().builtin_world().duration_proto.as_ptr() as *mut JsObject);
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
@@ -1812,7 +1823,8 @@ fn parse_iso_date(s: &str) -> Result<(i32, u32, u32), String> {
     }
     let bytes = t.as_bytes();
     let mut i = 0usize;
-    let negative = if i < bytes.len() && (bytes[i] == b'-' || bytes[i] == b'+') {
+    let signed_year = i < bytes.len() && (bytes[i] == b'-' || bytes[i] == b'+');
+    let negative = if signed_year {
         let neg = bytes[i] == b'-';
         i += 1;
         neg
@@ -1838,7 +1850,8 @@ fn parse_iso_date(s: &str) -> Result<(i32, u32, u32), String> {
     } else {
         (digits, None)
     };
-    if year_digits.len() < 4 || year_digits.len() > 6 {
+    let expected_year_digits = if signed_year { 6 } else { 4 };
+    if year_digits.len() != expected_year_digits {
         return Err("invalid ISO year".into());
     }
     let mut year: i64 = year_digits.parse().map_err(|_| "invalid ISO year".to_string())?;
@@ -1874,8 +1887,8 @@ fn parse_iso_date(s: &str) -> Result<(i32, u32, u32), String> {
     if month == 0 || month > 12 || day == 0 {
         return Err("invalid ISO date".into());
     }
-    if year == 0 {
-        return Err("invalid ISO year zero".into());
+    if negative && year == 0 {
+        return Err("invalid ISO negative zero year".into());
     }
     Ok((year as i32, month, day))
 }
@@ -2177,6 +2190,333 @@ pub fn plain_date_time_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
     )
 }
 
+fn validate_temporal_annotation_suffix(mut suffix: &str) -> Result<(), String> {
+    let mut calendar_seen = false;
+    let mut time_zone_seen = false;
+    while !suffix.is_empty() {
+        if !suffix.starts_with('[') {
+            return Err("invalid annotation suffix".into());
+        }
+        let Some(end) = suffix.find(']') else {
+            return Err("unterminated annotation".into());
+        };
+        if end == 1 {
+            return Err("empty annotation".into());
+        }
+        let annotation = &suffix[1..end];
+        let (critical, body) = annotation.strip_prefix('!').map_or((false, annotation), |body| (true, body));
+        if let Some((key, value)) = body.split_once('=') {
+            if key.bytes().any(|byte| byte.is_ascii_uppercase()) {
+                return Err("annotation keys must be lowercase".into());
+            }
+            if key == "u-ca" {
+                if calendar_seen || !value.eq_ignore_ascii_case("iso8601") {
+                    return Err("invalid calendar annotation".into());
+                }
+                calendar_seen = true;
+            } else if critical {
+                return Err("unknown critical annotation".into());
+            }
+        } else {
+            if critical || time_zone_seen {
+                return Err("invalid time-zone annotation".into());
+            }
+            time_zone_seen = true;
+        }
+        suffix = &suffix[end + 1..];
+    }
+    Ok(())
+}
+
+fn parse_plain_date_time_string(input: &str) -> Result<(i32, u32, u32, f64), String> {
+    let trimmed = input.trim();
+    if trimmed.contains('\u{2212}') {
+        return Err("variant minus sign is not valid for PlainDateTime".into());
+    }
+    let text = trimmed.to_owned();
+    let annotation_start = text.find('[').unwrap_or(text.len());
+    validate_temporal_annotation_suffix(&text[annotation_start..])?;
+    let text = &text[..annotation_start];
+    if text.contains('Z') || text.contains('z') {
+        return Err("UTC designator is not valid for PlainDateTime".into());
+    }
+    let (year, month, day) = parse_iso_date(text)?;
+    let separator = text.find(['T', 't', ' ']);
+    let Some(separator) = separator else {
+        if text.contains('+') {
+            return Err("offset without time is not valid for PlainDateTime".into());
+        }
+        if !valid_iso_date(year, month, day) {
+            return Err("invalid ISO date".into());
+        }
+        return Ok((year, month, day, 0.0));
+    };
+
+    let time_and_suffix = &text[separator + 1..];
+    let time_end = time_and_suffix
+        .char_indices()
+        .find_map(|(index, ch)| matches!(ch, '+' | '-' | '[').then_some(index))
+        .unwrap_or(time_and_suffix.len());
+    if time_end < time_and_suffix.len() {
+        let suffix = &time_and_suffix[time_end..];
+        let annotations = if suffix.starts_with('[') {
+            suffix
+        } else {
+            let offset_end = if suffix.len() >= 6 && suffix.as_bytes().get(3) == Some(&b':') {
+                6
+            } else if suffix.len() >= 5 {
+                5
+            } else if suffix.len() >= 3 {
+                3
+            } else {
+                0
+            };
+            if offset_end == 0 {
+                return Err("invalid ISO offset".into());
+            }
+            &suffix[offset_end..]
+        };
+        if annotations.starts_with(':') || validate_temporal_annotation_suffix(annotations).is_err() {
+            return Err("invalid ISO offset".into());
+        }
+    }
+    let time = &time_and_suffix[..time_end];
+    if time.is_empty() {
+        return Err("missing ISO time".into());
+    }
+
+    let (clock, fraction) = match time.find(['.', ',']) {
+        Some(index) => (&time[..index], Some(&time[index + 1..])),
+        None => (time, None),
+    };
+    let fields = if clock.contains(':') {
+        clock.split(':').collect::<Vec<_>>()
+    } else {
+        if clock.len() % 2 != 0 || clock.len() > 6 {
+            return Err("invalid ISO time".into());
+        }
+        clock
+            .as_bytes()
+            .chunks(2)
+            .map(std::str::from_utf8)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "invalid ISO time".to_string())?
+    };
+    if fields.is_empty() || fields.len() > 3 || fields.iter().any(|field| field.len() != 2) {
+        return Err("invalid ISO time".into());
+    }
+    if fraction.is_some() && fields.len() < 3 {
+        return Err("fractional hours and minutes are not valid".into());
+    }
+    let parse_field = |index: usize| -> Result<u32, String> {
+        fields
+            .get(index)
+            .map_or(Ok(0), |field| field.parse().map_err(|_| "invalid ISO time".to_string()))
+    };
+    let hour = parse_field(0)?;
+    let minute = parse_field(1)?;
+    let mut second = parse_field(2)?;
+    if second == 60 {
+        second = 59;
+    }
+    let subsecond = match fraction {
+        Some(digits) if !digits.is_empty() && digits.len() <= 9 && digits.bytes().all(|byte| byte.is_ascii_digit()) => {
+            let mut padded = digits.to_owned();
+            padded.extend(std::iter::repeat('0').take(9 - digits.len()));
+            padded.parse::<u32>().map_err(|_| "invalid ISO fraction".to_string())?
+        }
+        Some(_) => return Err("invalid ISO fraction".into()),
+        None => 0,
+    };
+    let millisecond = subsecond / 1_000_000;
+    let microsecond = subsecond / 1_000 % 1_000;
+    let nanosecond = subsecond % 1_000;
+    if !valid_plain_time(hour, minute, second, millisecond, microsecond, nanosecond) {
+        return Err("invalid ISO time".into());
+    }
+    if !valid_iso_date(year, month, day) {
+        return Err("invalid ISO date".into());
+    }
+    let total_ns = hour as f64 * 3_600_000_000_000.0
+        + minute as f64 * 60_000_000_000.0
+        + second as f64 * 1_000_000_000.0
+        + subsecond as f64;
+    Ok((year, month, day, total_ns))
+}
+
+fn plain_date_time_object_parts<H: VmHost>(
+    vm: &mut H, value: JsValue, obj: &JsObject, constrain: bool,
+) -> Result<(i32, u32, u32, f64), JsValue> {
+    let calendar = temporal_option_value(vm, obj, value, "calendar")?;
+    if !calendar.is_undefined() && !temporal_option_string(vm, calendar)?.eq_ignore_ascii_case("iso8601") {
+        return Err(crate::error::create_range_error(vm, "unsupported calendar"));
+    }
+
+    let (day, hour, microsecond, millisecond, minute, month) = {
+        let mut number_field = |name: &str| -> Result<Option<f64>, JsValue> {
+            let raw = temporal_option_value(vm, obj, value, name)?;
+            if raw.is_undefined() {
+                Ok(None)
+            } else {
+                temporal_option_number(vm, raw).map(|number| Some(number.trunc()))
+            }
+        };
+        (
+            number_field("day")?,
+            number_field("hour")?.unwrap_or(0.0),
+            number_field("microsecond")?.unwrap_or(0.0),
+            number_field("millisecond")?.unwrap_or(0.0),
+            number_field("minute")?.unwrap_or(0.0),
+            number_field("month")?,
+        )
+    };
+    let month_code_raw = temporal_option_value(vm, obj, value, "monthCode")?;
+    let month_code = if month_code_raw.is_undefined() {
+        None
+    } else {
+        let code = temporal_option_string(vm, month_code_raw)?;
+        let parsed = code
+            .strip_prefix('M')
+            .filter(|digits| digits.len() == 2)
+            .and_then(|digits| digits.parse::<u32>().ok())
+            .filter(|number| (1..=12).contains(number))
+            .ok_or_else(|| crate::error::create_range_error(vm, "invalid monthCode"))?;
+        Some(parsed as f64)
+    };
+    let mut number_field = |name: &str| -> Result<Option<f64>, JsValue> {
+        let raw = temporal_option_value(vm, obj, value, name)?;
+        if raw.is_undefined() {
+            Ok(None)
+        } else {
+            temporal_option_number(vm, raw).map(|number| Some(number.trunc()))
+        }
+    };
+    let nanosecond = number_field("nanosecond")?.unwrap_or(0.0);
+    let second = number_field("second")?.unwrap_or(0.0);
+    let year = number_field("year")?;
+
+    let day = day.ok_or_else(|| crate::error::create_type_error(vm, "day is required"))?;
+    let year = year.ok_or_else(|| crate::error::create_type_error(vm, "year is required"))?;
+    let month = match (month, month_code) {
+        (Some(month), Some(code)) if month != code => {
+            return Err(crate::error::create_range_error(vm, "month and monthCode disagree"));
+        }
+        (Some(month), _) => month,
+        (None, Some(code)) => code,
+        (None, None) => return Err(crate::error::create_type_error(vm, "month is required")),
+    };
+    let mut values = [year, month, day, hour, minute, second, millisecond, microsecond, nanosecond];
+    if values.iter().any(|number| !number.is_finite()) || values[1..].iter().any(|number| *number < 0.0) {
+        return Err(crate::error::create_range_error(vm, "invalid date-time component"));
+    }
+    if constrain {
+        values[1] = values[1].clamp(1.0, 12.0);
+        values[2] = values[2].clamp(1.0, days_in_month(values[0] as i128, values[1] as i128).unwrap_or(31) as f64);
+        values[3] = values[3].clamp(0.0, 23.0);
+        values[4] = values[4].clamp(0.0, 59.0);
+        values[5] = values[5].clamp(0.0, 59.0);
+        values[6] = values[6].clamp(0.0, 999.0);
+        values[7] = values[7].clamp(0.0, 999.0);
+        values[8] = values[8].clamp(0.0, 999.0);
+    }
+    let [year, month, day, hour, minute, second, millisecond, microsecond, nanosecond] = values;
+    let (year, month, day) = (year as i32, month as u32, day as u32);
+    let (hour, minute, second) = (hour as u32, minute as u32, second as u32);
+    let (millisecond, microsecond, nanosecond) = (millisecond as u32, microsecond as u32, nanosecond as u32);
+    if !valid_iso_date(year, month, day)
+        || !valid_plain_time(hour, minute, second, millisecond, microsecond, nanosecond)
+    {
+        return Err(crate::error::create_range_error(vm, "invalid date-time component"));
+    }
+    let total_ns = hour as f64 * 3_600_000_000_000.0
+        + minute as f64 * 60_000_000_000.0
+        + second as f64 * 1_000_000_000.0
+        + millisecond as f64 * 1_000_000.0
+        + microsecond as f64 * 1_000.0
+        + nanosecond as f64;
+    Ok((year, month, day, total_ns))
+}
+
+fn plain_date_time_like_parts<H: VmHost>(
+    vm: &mut H, value: JsValue, constrain: bool,
+) -> Result<(i32, u32, u32, f64), JsValue> {
+    if value.is_string() {
+        return parse_plain_date_time_string(&to_string(value))
+            .map_err(|_| crate::error::create_range_error(vm, "invalid ISO 8601 date-time"));
+    }
+    if !value.is_object() {
+        return Err(crate::error::create_type_error(vm, "cannot convert to PlainDateTime"));
+    }
+    let ptr = value.as_js_object_ptr();
+    if ptr.is_null() {
+        return Err(crate::error::create_type_error(vm, "cannot convert to PlainDateTime"));
+    }
+    let obj = unsafe { &*ptr };
+    if obj.is_plain_date_time_obj() {
+        return Ok((
+            get_double_prop(obj, 0) as i32,
+            get_double_prop(obj, 1) as u32,
+            get_double_prop(obj, 2) as u32,
+            get_double_prop(obj, 3),
+        ));
+    }
+    if obj.is_plain_date_obj() {
+        return Ok((
+            get_double_prop(obj, 0) as i32,
+            get_double_prop(obj, 1) as u32,
+            get_double_prop(obj, 2) as u32,
+            0.0,
+        ));
+    }
+    plain_date_time_object_parts(vm, value, obj, constrain)
+}
+
+fn plain_date_time_overflow<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<bool, JsValue> {
+    let options = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    if options.is_undefined() {
+        return Ok(true);
+    }
+    if !options.is_object() {
+        return Err(crate::error::create_type_error(vm, "options must be an object"));
+    }
+    let ptr = options.as_js_object_ptr();
+    if ptr.is_null() {
+        return Err(crate::error::create_type_error(vm, "options must be an object"));
+    }
+    let raw = temporal_option_value(vm, unsafe { &*ptr }, options, "overflow")?;
+    if raw.is_undefined() {
+        return Ok(true);
+    }
+    let value = temporal_option_string(vm, raw)?;
+    match value.as_str() {
+        "constrain" => Ok(true),
+        "reject" => Ok(false),
+        _ => Err(crate::error::create_range_error(vm, "invalid overflow")),
+    }
+}
+
+/// `Temporal.PlainDateTime.from(item)`：从实例、ISO 字符串或字段对象创建副本。
+pub fn plain_date_time_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let constrain = native_try!(plain_date_time_overflow(vm, args));
+    let (year, month, day, total_ns) = native_try!(plain_date_time_like_parts(vm, value, constrain));
+    make_plain_date_time(vm, year, month, day, total_ns)
+}
+
+/// `Temporal.PlainDateTime.compare(one, two)`：按 ISO 日期时间字段做字典序比较。
+pub fn plain_date_time_compare<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let one = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let two = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let one = native_try!(plain_date_time_like_parts(vm, one, true));
+    let two = native_try!(plain_date_time_like_parts(vm, two, true));
+    let ordering = (one.0, one.1, one.2, one.3 as u64).cmp(&(two.0, two.1, two.2, two.3 as u64));
+    NativeResult::Ok(JsValue::int(match ordering {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }))
+}
+
 fn plain_date_time_parts<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<(i32, u32, u32, f64), JsValue> {
     let ptr = receiver_obj(vm, args)?;
     let obj = unsafe { &*ptr };
@@ -2338,6 +2678,35 @@ pub fn plain_date_time_to_plain_time<H: VmHost>(vm: &mut H, args: &[u8]) -> Nati
 /// Temporal 对象禁止隐式转换为原始值。
 pub fn plain_date_time_value_of<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     NativeResult::Err(crate::error::create_type_error(vm, "Temporal.PlainDateTime has no valueOf"))
+}
+
+fn plain_date_time_iso_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let (year, month, day, total_ns) = native_try!(plain_date_time_parts(vm, args));
+    let (hour, minute, second, millisecond, microsecond, nanosecond) = plain_time_components(total_ns);
+    let fraction = millisecond as u64 * 1_000_000 + microsecond as u64 * 1_000 + nanosecond as u64;
+    let mut output = format!("{}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}", format_iso_year(year as i128));
+    if fraction != 0 {
+        let mut digits = format!("{fraction:09}");
+        while digits.ends_with('0') {
+            digits.pop();
+        }
+        output.push('.');
+        output.push_str(&digits);
+    }
+    NativeResult::Ok(vm.new_string(&output))
+}
+
+/// `Temporal.PlainDateTime.prototype.toString()`：输出本地 ISO 日期时间。
+pub fn plain_date_time_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    if args.len() > 1 && !vm.reg(args[1]).is_undefined() && !vm.reg(args[1]).is_object() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "options must be an object"));
+    }
+    plain_date_time_iso_string(vm, args)
+}
+
+/// `Temporal.PlainDateTime.prototype.toJSON()`：输出默认 ISO 日期时间。
+pub fn plain_date_time_to_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_date_time_iso_string(vm, args)
 }
 
 // ───────────────────── PlainDate 扩展方法 ─────────────────────

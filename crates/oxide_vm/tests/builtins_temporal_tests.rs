@@ -686,3 +686,47 @@ fn plain_date_time_metadata_and_value_of() {
     .unwrap();
     assert_eq!(str_val(&vm, r), "3,true,[object Temporal.PlainDateTime],TypeError");
 }
+
+#[test]
+fn plain_date_time_from_instances_strings_and_objects() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "let original = new Temporal.PlainDateTime(1976, 11, 18, 15, 23, 30, 1, 123, 456);
+         let copy = Temporal.PlainDateTime.from(original);
+         let parsed = Temporal.PlainDateTime.from('1976-11-18T15:23:30.001123456');
+         let bag = Temporal.PlainDateTime.from({year: 1976, monthCode: 'M11', day: 18, hour: 15});
+         (copy !== original) + ',' + parsed.toString() + ',' + bag.toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true,1976-11-18T15:23:30.001123456,1976-11-18T15:00:00");
+}
+
+#[test]
+fn plain_date_time_compare_uses_internal_slots() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "let earlier = new Temporal.PlainDateTime(2000, 5, 2, 12, 34, 56);
+         let later = new Temporal.PlainDateTime(2000, 5, 2, 12, 34, 57);
+         Object.defineProperty(earlier, 'year', {get() { throw new Error('getter') }});
+         Object.defineProperty(later, 'year', {get() { throw new Error('getter') }});
+         Temporal.PlainDateTime.compare(earlier, later) + ',' +
+         Temporal.PlainDateTime.compare(later, earlier) + ',' +
+         Temporal.PlainDateTime.compare(earlier, earlier)",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "-1,1,0");
+}
+
+#[test]
+fn plain_date_time_serializes_extended_years() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "new Temporal.PlainDateTime(-1, 8, 7, 6, 54, 32, 100).toString() + ',' +
+         new Temporal.PlainDateTime(10000, 6, 7, 8, 9, 10, 987).toJSON()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "-000001-08-07T06:54:32.1,+010000-06-07T08:09:10.987");
+}
