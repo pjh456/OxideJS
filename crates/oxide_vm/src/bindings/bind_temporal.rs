@@ -89,8 +89,10 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
             ("add", oxide_builtins::temporal::instant_add::<crate::vm::Vm> as *const (), 1),
             ("equals", oxide_builtins::temporal::instant_equals::<crate::vm::Vm> as *const (), 1),
             ("round", oxide_builtins::temporal::instant_round::<crate::vm::Vm> as *const (), 1),
+            ("since", oxide_builtins::temporal::instant_since::<crate::vm::Vm> as *const (), 1),
             ("subtract", oxide_builtins::temporal::instant_subtract::<crate::vm::Vm> as *const (), 1),
             ("toString", oxide_builtins::temporal::instant_to_string::<crate::vm::Vm> as *const (), 0),
+            ("until", oxide_builtins::temporal::instant_until::<crate::vm::Vm> as *const (), 1),
             ("valueOf", oxide_builtins::temporal::instant_value_of::<crate::vm::Vm> as *const (), 0),
         ],
     );

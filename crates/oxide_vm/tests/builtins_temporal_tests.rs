@@ -259,6 +259,43 @@ fn instant_round_handles_nested_destructured_callback_captures() {
 }
 
 #[test]
+fn instant_until_and_since_balance_exact_differences() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "let earlier = new Temporal.Instant(1000000000000000000n);
+         let later = new Temporal.Instant(1000090061987654321n);
+         let exact = earlier.until(later);
+         let hours = later.since(earlier, { largestUnit: 'hours' });
+         exact.seconds === 90061 && exact.milliseconds === 987
+           && exact.microseconds === 654 && exact.nanoseconds === 321
+           && hours.hours === 25 && hours.minutes === 1 && hours.seconds === 1
+           && hours.milliseconds === 987 && hours.microseconds === 654 && hours.nanoseconds === 321",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn instant_difference_rounds_signed_values_and_validates_units() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "let zero = new Temporal.Instant(0n), value = new Temporal.Instant(7199000000000n);
+         let positive = zero.until(value, { largestUnit: 'hours', smallestUnit: 'minutes', roundingMode: 'expand' });
+         let negative = zero.since(value, { largestUnit: 'hours', smallestUnit: 'minutes', roundingMode: 'expand' });
+         positive.hours === 2 && positive.minutes === 0
+           && negative.hours === -2 && negative.minutes === 0
+           && (() => { try { zero.until(value, { largestUnit: 'seconds', smallestUnit: 'hours' }); return false }
+                        catch (e) { return e instanceof RangeError } })()
+           && (() => { try { zero.until(value, { smallestUnit: 'minutes', roundingIncrement: 60 }); return false }
+                        catch (e) { return e instanceof RangeError } })()",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
 fn instant_epoch_factories_validate_input_and_range() {
     let mut vm = Vm::new();
     let r = eval(

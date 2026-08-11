@@ -791,6 +791,166 @@ pub fn instant_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     make_instant(vm, rounded_ns)
 }
 
+fn instant_difference_unit(value: &str) -> Option<(usize, i128, i128)> {
+    match value {
+        "hour" | "hours" => Some((0, 3_600_000_000_000, 24)),
+        "minute" | "minutes" => Some((1, 60_000_000_000, 60)),
+        "second" | "seconds" => Some((2, 1_000_000_000, 60)),
+        "millisecond" | "milliseconds" => Some((3, 1_000_000, 1_000)),
+        "microsecond" | "microseconds" => Some((4, 1_000, 1_000)),
+        "nanosecond" | "nanoseconds" => Some((5, 1, 1_000)),
+        _ => None,
+    }
+}
+
+/// 按普通有符号数语义舍入 Instant 差值。
+fn round_instant_difference(value: i128, increment: i128, mode: InstantRoundingMode) -> Option<i128> {
+    let negative = value < 0;
+    let magnitude = value.checked_abs()?;
+    let quotient = magnitude / increment;
+    let remainder = magnitude % increment;
+    if remainder == 0 {
+        return Some(value);
+    }
+    let use_upper = match mode {
+        InstantRoundingMode::Ceil => !negative,
+        InstantRoundingMode::Expand => true,
+        InstantRoundingMode::Floor => negative,
+        InstantRoundingMode::Trunc => false,
+        _ => match (remainder * 2).cmp(&increment) {
+            std::cmp::Ordering::Less => false,
+            std::cmp::Ordering::Greater => true,
+            std::cmp::Ordering::Equal => match mode {
+                InstantRoundingMode::HalfCeil => !negative,
+                InstantRoundingMode::HalfEven => quotient.rem_euclid(2) != 0,
+                InstantRoundingMode::HalfExpand => true,
+                InstantRoundingMode::HalfFloor => negative,
+                InstantRoundingMode::HalfTrunc => false,
+                _ => unreachable!(),
+            },
+        },
+    };
+    let rounded = quotient.checked_add(i128::from(use_upper))?.checked_mul(increment)?;
+    Some(if negative { -rounded } else { rounded })
+}
+
+fn balance_instant_difference(value: i128, largest_unit: usize) -> Option<[f64; 10]> {
+    const SCALES: [i128; 6] = [3_600_000_000_000, 60_000_000_000, 1_000_000_000, 1_000_000, 1_000, 1];
+    let negative = value < 0;
+    let mut remainder = value.checked_abs()?;
+    let mut values = [0.0; 10];
+    for (index, scale) in SCALES.iter().enumerate().skip(largest_unit) {
+        let component = remainder / scale;
+        remainder %= scale;
+        if component != 0 {
+            values[index + 4] = if negative { -(component as f64) } else { component as f64 };
+        }
+    }
+    Some(values)
+}
+
+fn instant_difference<H: VmHost>(vm: &mut H, args: &[u8], since: bool) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_instant(vm, obj));
+    let Some(epoch_ns) = get_instant_epoch_ns(obj) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid Instant"));
+    };
+
+    // other 必须先完成 Instant 转换，之后才读取 options。
+    let other = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
+    let other_ns = native_try!(instant_like_epoch_ns(vm, other));
+    let options_value = if args.len() < 3 { JsValue::undefined() } else { vm.reg(args[2]) };
+
+    let (largest_value, increment_value, mode_value, smallest_value) = if options_value.is_undefined() {
+        (None, 1.0, "trunc".to_string(), "nanosecond".to_string())
+    } else {
+        if !options_value.is_object() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "options must be an object"));
+        }
+        let options_ptr = options_value.as_js_object_ptr();
+        if options_ptr.is_null() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "options must be an object"));
+        }
+        let options = unsafe { &*options_ptr };
+        let largest_raw = native_try!(temporal_option_value(vm, options, options_value, "largestUnit"));
+        let largest = if largest_raw.is_undefined() {
+            None
+        } else {
+            Some(native_try!(temporal_option_string(vm, largest_raw)))
+        };
+        let increment_raw = native_try!(temporal_option_value(vm, options, options_value, "roundingIncrement"));
+        let increment = if increment_raw.is_undefined() {
+            1.0
+        } else {
+            native_try!(temporal_option_number(vm, increment_raw))
+        };
+        let mode_raw = native_try!(temporal_option_value(vm, options, options_value, "roundingMode"));
+        let mode = if mode_raw.is_undefined() {
+            "trunc".to_string()
+        } else {
+            native_try!(temporal_option_string(vm, mode_raw))
+        };
+        let smallest_raw = native_try!(temporal_option_value(vm, options, options_value, "smallestUnit"));
+        let smallest = if smallest_raw.is_undefined() {
+            "nanosecond".to_string()
+        } else {
+            native_try!(temporal_option_string(vm, smallest_raw))
+        };
+        (largest, increment, mode, smallest)
+    };
+
+    let Some((smallest_index, smallest_ns, increment_limit)) = instant_difference_unit(&smallest_value) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid smallest unit"));
+    };
+    let largest_index = match largest_value {
+        Some(value) => match instant_difference_unit(&value) {
+            Some((index, _, _)) => index,
+            None => return NativeResult::Err(crate::error::create_range_error(vm, "invalid largest unit")),
+        },
+        None => smallest_index.min(2),
+    };
+    let Some(mode) = instant_rounding_mode(&mode_value) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding mode"));
+    };
+    if !increment_value.is_finite() {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
+    }
+    let increment = increment_value.trunc();
+    if !(1.0..=1_000_000_000.0).contains(&increment) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
+    }
+    let increment = increment as i128;
+    if increment >= increment_limit || increment_limit % increment != 0 {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
+    }
+    if largest_index > smallest_index {
+        return NativeResult::Err(crate::error::create_range_error(vm, "smallest unit exceeds largest unit"));
+    }
+
+    let delta = if since { epoch_ns - other_ns } else { other_ns - epoch_ns };
+    let Some(quantum_ns) = smallest_ns.checked_mul(increment) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
+    };
+    let Some(rounded_ns) = round_instant_difference(delta, quantum_ns, mode) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "Instant difference is out of range"));
+    };
+    let Some(values) = balance_instant_difference(rounded_ns, largest_index) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "Instant difference is out of range"));
+    };
+    make_duration(vm, values)
+}
+
+/// `Temporal.Instant.prototype.until(other, options)`：返回从 receiver 到 other 的精确时长。
+pub fn instant_until<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    instant_difference(vm, args, false)
+}
+
+/// `Temporal.Instant.prototype.since(other, options)`：返回从 other 到 receiver 的精确时长。
+pub fn instant_since<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    instant_difference(vm, args, true)
+}
+
 /// `Temporal.Instant.prototype.toString()`：输出 ISO 8601 UTC（如 `2024-01-01T00:00:00Z`）。
 pub fn instant_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ptr = native_try!(receiver_obj(vm, args));
