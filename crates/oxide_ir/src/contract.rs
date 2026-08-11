@@ -37,7 +37,7 @@ impl Inst {
     /// # 边界与前提
     /// - `Range`：nargs=ext[0]，从指定槽起连续 nargs 个寄存器。
     /// - `SpreadArgs`：ext[1..] 每个字 `& 0x7FFF_FFFF`。
-    /// - `TemplateExprs`：ext[1..] 中 `seg>>31==1` 的低 8 位。
+    /// - `TemplateExprs`：ext[1..] 中 `seg>>31==1` 的低 31 位。
     /// - `BrandReg`：ext[0] 非 0 才产生 use。
     /// - `ExtReg`：ext[0] `& 0x7FFF_FFFF`（高位标记的寄存器号）。
     pub fn use_regs(&self) -> SmallVec<[u32; 4]> {
@@ -58,7 +58,7 @@ impl Inst {
                 SlotSpec::TemplateExprs => {
                     for seg in self.ext.iter().skip(1) {
                         if seg >> 31 == 1 {
-                            uses.push(seg & 0xFF);
+                            uses.push(seg & 0x7FFF_FFFF);
                         }
                     }
                 }
@@ -260,9 +260,9 @@ mod tests {
 
     #[test]
     fn template_str_parses_expr_regs_from_ext() {
-        // ext[0] 跳过；后续 seg>>31==1 则低 8 位是 expr_reg（emit 8 位编码）
-        let with_expr = Inst::template_str(Operand::Reg(1), 2, 10, &[0x1234, 0x8000_0000 | 5]);
-        assert_eq!(with_expr.use_regs().as_slice(), &[5]);
+        // ext[0] 跳过；表达式段在 RegAlloc 前保留完整 u32 vreg。
+        let with_expr = Inst::template_str(Operand::Reg(1), 2, 10, &[0x1234, 0x8000_0000 | 300]);
+        assert_eq!(with_expr.use_regs().as_slice(), &[300]);
 
         // 纯 quasi（无表达式）：不误报寄存器
         let no_expr = Inst::template_str(Operand::Reg(1), 1, 10, &[0x1234]);

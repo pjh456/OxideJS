@@ -1,4 +1,9 @@
+use oxide_bytecode::module::Constant;
+use oxide_bytecode::opcode::OpCode;
 use oxide_compiler::compiler::Compiler;
+use oxide_ir::inst::Inst;
+use oxide_ir::operand::Operand;
+use oxide_ir::IRFunction;
 use oxide_parser::Allocator;
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
@@ -85,6 +90,36 @@ fn template_with_numbers() {
 fn template_numeric_expression() {
     let (vm, result) = eval_val("`${1 + 1}`");
     assert_eq!(to_str(&vm, result.unwrap()), "2");
+}
+
+#[test]
+fn template_expression_reads_physical_register_above_127() {
+    let mut ir = IRFunction::new();
+    ir.constants = vec![Constant::String("value".to_string()), Constant::String(String::new())];
+    ir.n_registers = 202;
+    ir.insts = vec![
+        Inst::load_const(Operand::Reg(200), 0),
+        Inst::template_str(Operand::Reg(201), 3, 0, &[1, 0x8000_0000 | 200, 1]),
+        Inst::inst_mov(Operand::Reg(0), Operand::Reg(201)),
+        Inst::new(OpCode::HALT, Operand::None, Operand::None, Operand::None),
+    ];
+
+    let module = oxide_ir::lower::lower(&ir).expect("lower template IR");
+    let mut vm = Vm::new();
+    let result = vm.run(&module).expect("run template IR");
+    assert_eq!(to_str(&vm, result), "value");
+}
+
+#[test]
+fn template_expression_survives_high_vreg_regalloc() {
+    let mut source = String::from("function f() {");
+    for i in 0..180 {
+        source.push_str(&format!("let v{i}={i};"));
+    }
+    source.push_str("let value='unit'; return `${value}s`; } f();");
+
+    let (vm, result) = eval_val(&source);
+    assert_eq!(to_str(&vm, result.unwrap()), "units");
 }
 
 // ── 模板标签调用测试（基础）──

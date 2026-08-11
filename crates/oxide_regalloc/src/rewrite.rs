@@ -197,7 +197,7 @@ fn rewrite_inst(
     let rd = rewrite(inst.rd);
     let mut a = rewrite(inst.a);
     let mut b = rewrite(inst.b);
-    // TEMPLATE_STR 的 ext 编码表达式寄存器（seg>>31==1 时低 8 位为 expr_reg）——必须随
+    // TEMPLATE_STR 的 ext 编码表达式寄存器（seg>>31==1 时低 31 位为 expr_reg）——必须随
     // RegAlloc 重映射，否则读旧 vreg 号对应的物理槽（错值）。spread 调用系 ext[1..] 每个
     // 字是完整 spread 源 vreg，同样需重映射到物理号。
     let ext = match inst.op {
@@ -205,9 +205,9 @@ fn rewrite_inst(
             let mut ext = inst.ext.clone();
             for seg in ext.iter_mut().skip(1) {
                 if *seg >> 31 == 1 {
-                    let r = *seg & 0xFF;
+                    let r = *seg & 0x7FFF_FFFF;
                     let nr = remap_ext_reg(r, slot_color, map);
-                    *seg = (*seg & !0xFFu32) | (nr & 0xFF);
+                    *seg = 0x8000_0000 | nr;
                 }
             }
             ext
@@ -443,6 +443,18 @@ mod tests {
         assert_eq!(f.insts[0].a, Operand::Reg(10));
         assert_eq!(f.insts[0].b, Operand::Reg(11));
         assert_eq!(f.insts[1].rd, Operand::Reg(12));
+    }
+
+    #[test]
+    fn template_expr_ext_rewrites_full_vreg() {
+        let inst = Inst::template_str(Operand::Reg(1), 3, 0, &[0, 0x8000_0000 | 300, 1]);
+        let mut map = AllocMap::new();
+        map.map.insert(1, Alloc::Phys(2));
+        map.map.insert(300, Alloc::Phys(200));
+        let f = rewrite_with_map(vec![inst], map);
+
+        assert_eq!(f.insts[0].rd, Operand::Reg(2));
+        assert_eq!(f.insts[0].ext.as_slice(), &[3 << 16, 0, 0x8000_0000 | 200, 1]);
     }
 
     #[test]

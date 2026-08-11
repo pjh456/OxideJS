@@ -199,8 +199,8 @@ impl Vm {
             let seg = self.bytecode[self.pc];
             self.pc += 1;
             if (seg >> 31) == 1 {
-                let reg = (seg & 0x7F) as u8;
-                let val = self.regs[reg as usize];
+                let reg = (seg & 0x7FFF_FFFF) as usize;
+                let val = self.regs[reg];
                 let s = if val.is_string() {
                     // SAFETY: val 是字符串值。
                     unsafe { (*val.as_string_ptr()).data.clone() }
