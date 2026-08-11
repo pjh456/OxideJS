@@ -516,6 +516,35 @@ fn wire_builtin_world_links(world: &BuiltinWorld) {
     wire_ctor_proto(&world.plain_date_time_constructor, &world.plain_date_time_proto);
     wire_ctor_proto(&world.bigint_constructor, &world.bigint_proto);
 
+    // 所有内置构造器的 [[Prototype]] 指向 %FunctionPrototype%（ECMA-262 §17：
+    // 标准内置函数对象均继承 Function.prototype；此前仅 TypedArray 构造器设置过）。
+    let fn_proto_val = world.fn_proto_val();
+    for ctor in [
+        &world.object_constructor,
+        &world.array_constructor,
+        &world.function_constructor,
+        &world.string_constructor,
+        &world.number_constructor,
+        &world.boolean_constructor,
+        &world.error_constructor,
+        &world.symbol_constructor,
+        &world.date_constructor,
+        &world.set_constructor,
+        &world.map_constructor,
+        &world.regexp_constructor,
+        &world.array_buffer_constructor,
+        &world.data_view_constructor,
+        &world.bigint_constructor,
+        &world.instant_constructor,
+        &world.plain_date_constructor,
+        &world.plain_time_constructor,
+        &world.duration_constructor,
+        &world.zoned_date_time_constructor,
+        &world.plain_date_time_constructor,
+    ] {
+        set_proto_if_changed(ctor, fn_proto_val);
+    }
+
     let obj_proto_val = JsValue::from_js_object(world.object_proto.as_ptr() as *mut JsObject);
     let non_object_protos: [&P<JsObject>; 21] = [
         &world.array_proto,
