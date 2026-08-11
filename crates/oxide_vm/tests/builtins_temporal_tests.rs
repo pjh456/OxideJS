@@ -181,6 +181,84 @@ fn instant_arithmetic_rejects_date_units_and_out_of_range_results() {
 }
 
 #[test]
+fn instant_round_supports_all_rounding_directions() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "let i = new Temporal.Instant(-1500n);
+         i.round({smallestUnit:'microsecond', roundingMode:'floor'}).epochNanoseconds === -2000n
+           && i.round({smallestUnit:'microsecond', roundingMode:'ceil'}).epochNanoseconds === -1000n
+           && i.round({smallestUnit:'microsecond', roundingMode:'halfFloor'}).epochNanoseconds === -2000n
+           && i.round({smallestUnit:'microsecond', roundingMode:'halfCeil'}).epochNanoseconds === -1000n
+           && i.round({smallestUnit:'microsecond', roundingMode:'halfEven'}).epochNanoseconds === -2000n",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn instant_round_validates_increment_and_accepts_shorthand() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "let i = new Temporal.Instant(123456789n);
+         i.round('microseconds').epochNanoseconds === 123457000n
+           && i.round({smallestUnit:'nanosecond', roundingIncrement:2.5, roundingMode:'expand'}).epochNanoseconds === 123456790n
+           && (() => { try { i.round({smallestUnit:'hour', roundingIncrement:7}); return false } catch (e) { return e instanceof RangeError } })()",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn instant_round_accepts_plural_units_inside_callbacks() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "let i = new Temporal.Instant(1000000000123456789n), ok = true;
+         ['hour','minute','second','millisecond','microsecond','nanosecond'].forEach(unit => {
+           ok = ok && i.round({smallestUnit:unit}).equals(i.round({smallestUnit:`${unit}s`}));
+         });
+         ok",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn instant_round_handles_shorthand_callback_parameters() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "let i = new Temporal.Instant(1n), shorthand = true;
+         ['hour'].forEach(smallestUnit => {
+           shorthand = i.round({smallestUnit}).equals(i.round(smallestUnit));
+         });
+         shorthand",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn instant_round_handles_nested_destructured_callback_captures() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "let i = new Temporal.Instant(1n);
+         let pairs = [['hour', [1, 2]]], captured = true;
+         pairs.forEach(([unit, increments]) => {
+           increments.forEach(increment => {
+             captured = captured && i.round({smallestUnit: unit, roundingIncrement: increment}) instanceof Temporal.Instant;
+           });
+         });
+         captured",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
 fn instant_epoch_factories_validate_input_and_range() {
     let mut vm = Vm::new();
     let r = eval(

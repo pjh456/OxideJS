@@ -624,6 +624,173 @@ pub fn instant_subtract<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     instant_add_duration(vm, args, -1)
 }
 
+#[derive(Clone, Copy)]
+enum InstantRoundingMode {
+    Ceil,
+    Expand,
+    Floor,
+    HalfCeil,
+    HalfEven,
+    HalfExpand,
+    HalfFloor,
+    HalfTrunc,
+    Trunc,
+}
+
+fn temporal_option_value<H: VmHost>(
+    vm: &mut H, obj: &JsObject, receiver: JsValue, name: &str,
+) -> Result<JsValue, JsValue> {
+    let key = vm.new_string(name);
+    let si = vm.property_key_si(key);
+    vm.ordinary_get(obj, si, receiver)
+        .map_err(|error| native_engine_error(vm, &error))
+}
+
+fn temporal_option_number<H: VmHost>(vm: &mut H, value: JsValue) -> Result<f64, JsValue> {
+    let primitive = oxide_runtime_api::to_primitive(value, oxide_runtime_api::ToPrimitiveHint::Number, vm)
+        .map_err(|error| native_engine_error(vm, &error))?;
+    if primitive.is_symbol() || primitive.is_bigint() {
+        return Err(crate::error::create_type_error(vm, "cannot convert option to number"));
+    }
+    Ok(to_number(primitive))
+}
+
+fn temporal_option_string<H: VmHost>(vm: &mut H, value: JsValue) -> Result<String, JsValue> {
+    let primitive = oxide_runtime_api::to_primitive(value, oxide_runtime_api::ToPrimitiveHint::String, vm)
+        .map_err(|error| native_engine_error(vm, &error))?;
+    if primitive.is_symbol() {
+        return Err(crate::error::create_type_error(vm, "cannot convert option to string"));
+    }
+    Ok(to_string(primitive))
+}
+
+fn instant_rounding_mode(value: &str) -> Option<InstantRoundingMode> {
+    match value {
+        "ceil" => Some(InstantRoundingMode::Ceil),
+        "expand" => Some(InstantRoundingMode::Expand),
+        "floor" => Some(InstantRoundingMode::Floor),
+        "halfCeil" => Some(InstantRoundingMode::HalfCeil),
+        "halfEven" => Some(InstantRoundingMode::HalfEven),
+        "halfExpand" => Some(InstantRoundingMode::HalfExpand),
+        "halfFloor" => Some(InstantRoundingMode::HalfFloor),
+        "halfTrunc" => Some(InstantRoundingMode::HalfTrunc),
+        "trunc" => Some(InstantRoundingMode::Trunc),
+        _ => None,
+    }
+}
+
+fn instant_round_unit(value: &str) -> Option<(i128, i128)> {
+    match value {
+        "hour" | "hours" => Some((3_600_000_000_000, 24)),
+        "minute" | "minutes" => Some((60_000_000_000, 1_440)),
+        "second" | "seconds" => Some((1_000_000_000, 86_400)),
+        "millisecond" | "milliseconds" => Some((1_000_000, 86_400_000)),
+        "microsecond" | "microseconds" => Some((1_000, 86_400_000_000)),
+        "nanosecond" | "nanoseconds" => Some((1, 86_400_000_000_000)),
+        _ => None,
+    }
+}
+
+/// 按 Temporal 的 `RoundNumberToIncrementAsIfPositive` 语义舍入纳秒。
+fn round_instant_ns(value: i128, increment: i128, mode: InstantRoundingMode) -> Option<i128> {
+    let quotient = value.div_euclid(increment);
+    let remainder = value.rem_euclid(increment);
+    if remainder == 0 {
+        return Some(value);
+    }
+    let use_upper = match mode {
+        InstantRoundingMode::Ceil | InstantRoundingMode::Expand => true,
+        InstantRoundingMode::Floor | InstantRoundingMode::Trunc => false,
+        _ => match (remainder * 2).cmp(&increment) {
+            std::cmp::Ordering::Less => false,
+            std::cmp::Ordering::Greater => true,
+            std::cmp::Ordering::Equal => match mode {
+                InstantRoundingMode::HalfCeil | InstantRoundingMode::HalfExpand => true,
+                InstantRoundingMode::HalfFloor | InstantRoundingMode::HalfTrunc => false,
+                InstantRoundingMode::HalfEven => quotient.rem_euclid(2) != 0,
+                _ => unreachable!(),
+            },
+        },
+    };
+    quotient
+        .checked_add(i128::from(use_upper))
+        .and_then(|rounded| rounded.checked_mul(increment))
+}
+
+/// `Temporal.Instant.prototype.round(roundTo)`：按给定单位、增量和模式精确舍入。
+pub fn instant_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_instant(vm, obj));
+    let Some(epoch_ns) = get_instant_epoch_ns(obj) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid Instant"));
+    };
+
+    let round_to = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
+    let (increment_value, mode_value, unit_value) = if round_to.is_string() {
+        (1.0, "halfExpand".to_string(), Some(to_string(round_to)))
+    } else {
+        if !round_to.is_object() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "roundTo must be a string or object"));
+        }
+        let options_ptr = round_to.as_js_object_ptr();
+        if options_ptr.is_null() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "roundTo must be a string or object"));
+        }
+        let options = unsafe { &*options_ptr };
+        let increment_raw = native_try!(temporal_option_value(vm, options, round_to, "roundingIncrement"));
+        let increment = if increment_raw.is_undefined() {
+            1.0
+        } else {
+            native_try!(temporal_option_number(vm, increment_raw))
+        };
+        let mode_raw = native_try!(temporal_option_value(vm, options, round_to, "roundingMode"));
+        let mode = if mode_raw.is_undefined() {
+            "halfExpand".to_string()
+        } else {
+            native_try!(temporal_option_string(vm, mode_raw))
+        };
+        let unit_raw = native_try!(temporal_option_value(vm, options, round_to, "smallestUnit"));
+        let unit = if unit_raw.is_undefined() {
+            None
+        } else {
+            Some(native_try!(temporal_option_string(vm, unit_raw)))
+        };
+        (increment, mode, unit)
+    };
+
+    let Some(mode) = instant_rounding_mode(&mode_value) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding mode"));
+    };
+    let Some(unit_value) = unit_value else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "smallestUnit is required"));
+    };
+    let Some((unit_ns, units_per_day)) = instant_round_unit(&unit_value) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid smallest unit"));
+    };
+    if !increment_value.is_finite() {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
+    }
+    let increment = increment_value.trunc();
+    if !(1.0..=1_000_000_000.0).contains(&increment) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
+    }
+    let increment = increment as i128;
+    if units_per_day % increment != 0 {
+        return NativeResult::Err(crate::error::create_range_error(vm, "rounding increment must divide a day"));
+    }
+    let Some(quantum_ns) = unit_ns.checked_mul(increment) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
+    };
+    let Some(rounded_ns) = round_instant_ns(epoch_ns, quantum_ns, mode) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "Instant outside supported range"));
+    };
+    if rounded_ns.unsigned_abs() > MAX_INSTANT_NS as u128 {
+        return NativeResult::Err(crate::error::create_range_error(vm, "Instant outside supported range"));
+    }
+    make_instant(vm, rounded_ns)
+}
+
 /// `Temporal.Instant.prototype.toString()`：输出 ISO 8601 UTC（如 `2024-01-01T00:00:00Z`）。
 pub fn instant_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ptr = native_try!(receiver_obj(vm, args));
