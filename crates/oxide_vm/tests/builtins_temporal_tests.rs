@@ -235,6 +235,44 @@ fn duration_constructor_exposes_components() {
 }
 
 #[test]
+fn duration_from_validates_property_bags_and_preserves_precision() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "try { Temporal.Duration.from({}) } catch (e) { e.constructor.name }").unwrap();
+    assert_eq!(str_val(&vm, r), "TypeError");
+    let r = eval(
+        &mut vm,
+        "try { Temporal.Duration.from({hours:1,minutes:-1}) } catch (e) { e.constructor.name }",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "RangeError");
+    let r = eval(
+        &mut vm,
+        "Temporal.Duration.from({milliseconds:4503599627370497000,microseconds:4503599627370495000000}).toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "PT9007199254740991.975424S");
+}
+
+#[test]
+fn duration_from_propagates_getter_errors_and_checks_range() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "try { Temporal.Duration.from({get years(){throw new TypeError('sentinel')}}) } catch (e) { e.message }",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "sentinel");
+    let r = eval(
+        &mut vm,
+        "try { Temporal.Duration.from({seconds:9007199254740992}) } catch (e) { e.constructor.name }",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "RangeError");
+    let r = eval(&mut vm, "Temporal.Duration.from('p1y1m1dt1h1m1s').toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "P1Y1M1DT1H1M1S");
+}
+
+#[test]
 fn plain_date_balances_duration_time_units_into_days() {
     let mut vm = Vm::new();
     let r = eval(&mut vm, "new Temporal.PlainDate(2000,5,2).add('P1DT24H1440M86400S').toString()").unwrap();

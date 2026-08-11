@@ -338,6 +338,8 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         &[
             ("abs", oxide_builtins::temporal::duration_abs::<crate::vm::Vm> as *const (), 0),
             ("negated", oxide_builtins::temporal::duration_negated::<crate::vm::Vm> as *const (), 0),
+            ("with", oxide_builtins::temporal::duration_with::<crate::vm::Vm> as *const (), 1),
+            ("total", oxide_builtins::temporal::duration_total::<crate::vm::Vm> as *const (), 1),
             ("toString", oxide_builtins::temporal::duration_to_string::<crate::vm::Vm> as *const (), 0),
             ("valueOf", oxide_builtins::temporal::duration_value_of::<crate::vm::Vm> as *const (), 0),
         ],

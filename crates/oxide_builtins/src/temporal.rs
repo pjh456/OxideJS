@@ -264,7 +264,7 @@ fn parse_duration_string(input: &str) -> Option<[f64; 10]> {
         }
         _ => false,
     };
-    if bytes.get(cursor) != Some(&b'P') {
+    if bytes.get(cursor).copied().map(|byte| byte.to_ascii_uppercase()) != Some(b'P') {
         return None;
     }
     cursor += 1;
@@ -276,7 +276,7 @@ fn parse_duration_string(input: &str) -> Option<[f64; 10]> {
     let mut last_order = 0usize;
     let mut fraction_seen = false;
     while cursor < bytes.len() {
-        if bytes[cursor] == b'T' {
+        if bytes[cursor].eq_ignore_ascii_case(&b'T') {
             if in_time {
                 return None;
             }
@@ -312,7 +312,7 @@ fn parse_duration_string(input: &str) -> Option<[f64; 10]> {
             fraction = Some((numerator, 10_u64.pow(digits as u32)));
         }
 
-        let unit = *bytes.get(cursor)?;
+        let unit = bytes.get(cursor)?.to_ascii_uppercase();
         cursor += 1;
         let (index, order, unit_nanos) = match (in_time, unit) {
             (false, b'Y') => (0, 1, None),
@@ -324,7 +324,7 @@ fn parse_duration_string(input: &str) -> Option<[f64; 10]> {
             (true, b'S') => (6, 7, Some(1_000_000_000_u64)),
             _ => return None,
         };
-        if order <= last_order || (fraction_seen && (whole != 0.0 || fraction.is_some_and(|f| f.0 != 0))) {
+        if order <= last_order || fraction_seen {
             return None;
         }
         last_order = order;
@@ -363,46 +363,122 @@ fn parse_duration_string(input: &str) -> Option<[f64; 10]> {
     Some(values)
 }
 
-fn duration_like_values<H: VmHost>(vm: &mut H, val: JsValue) -> Result<[f64; 10], JsValue> {
-    if val.is_string() {
-        return parse_duration_string(&to_string(val))
-            .ok_or_else(|| crate::error::create_range_error(vm, "invalid duration string"));
+const DURATION_FIELD_ORDER: [(&str, usize); 10] = [
+    ("days", 3),
+    ("hours", 4),
+    ("microseconds", 8),
+    ("milliseconds", 7),
+    ("minutes", 5),
+    ("months", 1),
+    ("nanoseconds", 9),
+    ("seconds", 6),
+    ("weeks", 2),
+    ("years", 0),
+];
+
+fn duration_engine_error<H: VmHost>(vm: &mut H, error: &str) -> JsValue {
+    vm.take_uncaught_value()
+        .unwrap_or_else(|| crate::error::create_from_text(vm, error))
+}
+
+fn duration_field_number<H: VmHost>(
+    vm: &mut H, obj: &JsObject, receiver: JsValue, name: &str,
+) -> Result<Option<f64>, JsValue> {
+    let key_val = vm.new_string(name);
+    let si = vm.property_key_si(key_val);
+    let raw = match vm.ordinary_get(obj, si, receiver) {
+        Ok(value) => value,
+        Err(error) => return Err(duration_engine_error(vm, &error)),
+    };
+    if raw.is_undefined() {
+        return Ok(None);
     }
+    let primitive = match oxide_runtime_api::to_primitive(raw, oxide_runtime_api::ToPrimitiveHint::Number, vm) {
+        Ok(value) => value,
+        Err(error) => return Err(duration_engine_error(vm, &error)),
+    };
+    if primitive.is_symbol() || primitive.is_bigint() {
+        return Err(crate::error::create_type_error(vm, "cannot convert duration field to number"));
+    }
+    Ok(Some(to_number(primitive)))
+}
+
+fn duration_partial_values<H: VmHost>(vm: &mut H, val: JsValue) -> Result<[Option<f64>; 10], JsValue> {
     if !val.is_object() {
-        return Err(crate::error::create_type_error(vm, "cannot convert value to Duration"));
+        return Err(crate::error::create_type_error(vm, "duration-like value must be an object"));
     }
     let ptr = val.as_js_object_ptr();
     if ptr.is_null() {
-        return Err(crate::error::create_type_error(vm, "cannot convert value to Duration"));
+        return Err(crate::error::create_type_error(vm, "duration-like value must be an object"));
     }
     let obj = unsafe { &*ptr };
-    let names = [
-        "years",
-        "months",
-        "weeks",
-        "days",
-        "hours",
-        "minutes",
-        "seconds",
-        "milliseconds",
-        "microseconds",
-        "nanoseconds",
-    ];
-    let mut values = [0.0; 10];
-    for (index, name) in names.iter().enumerate() {
-        let value = if obj.is_duration_obj() {
-            get_double_prop(obj, index)
-        } else {
-            read_prop_number(vm, obj, val, name)
-        };
-        if value.is_nan() {
-            continue;
-        }
-        if !value.is_finite() || value.fract() != 0.0 {
+    if obj.is_duration_obj() {
+        return Ok(std::array::from_fn(|index| Some(get_double_prop(obj, index))));
+    }
+
+    let mut values = [None; 10];
+    for (name, index) in DURATION_FIELD_ORDER {
+        values[index] = duration_field_number(vm, obj, val, name)?;
+    }
+    if values.iter().all(Option::is_none) {
+        return Err(crate::error::create_type_error(vm, "duration-like object has no duration fields"));
+    }
+    Ok(values)
+}
+
+fn duration_component_integer(value: f64) -> Option<i128> {
+    if !value.is_finite() || value.fract() != 0.0 || value.abs() >= i128::MAX as f64 {
+        return None;
+    }
+    Some(value as i128)
+}
+
+fn duration_time_nanoseconds(values: &[f64; 10]) -> Option<i128> {
+    const SCALES: [i128; 7] =
+        [86_400_000_000_000, 3_600_000_000_000, 60_000_000_000, 1_000_000_000, 1_000_000, 1_000, 1];
+    let mut total = 0_i128;
+    for (value, scale) in values[3..].iter().zip(SCALES) {
+        total = total.checked_add(duration_component_integer(*value)?.checked_mul(scale)?)?;
+    }
+    Some(total)
+}
+
+fn validate_duration_values<H: VmHost>(vm: &mut H, values: &[f64; 10]) -> Result<(), JsValue> {
+    let mut sign = 0_i8;
+    for value in values {
+        if duration_component_integer(*value).is_none() {
             return Err(crate::error::create_range_error(vm, "invalid duration"));
         }
-        values[index] = value;
+        if *value != 0.0 {
+            let current = if value.is_sign_negative() { -1 } else { 1 };
+            if sign != 0 && sign != current {
+                return Err(crate::error::create_range_error(vm, "duration fields must have the same sign"));
+            }
+            sign = current;
+        }
     }
+    if values[..3].iter().any(|value| value.abs() > u32::MAX as f64) {
+        return Err(crate::error::create_range_error(vm, "duration date field is out of range"));
+    }
+    const MAX_TIME_NANOSECONDS: i128 = (1_i128 << 53) * 1_000_000_000;
+    let total = duration_time_nanoseconds(values)
+        .ok_or_else(|| crate::error::create_range_error(vm, "duration time fields are out of range"))?;
+    if total.abs() >= MAX_TIME_NANOSECONDS {
+        return Err(crate::error::create_range_error(vm, "duration time fields are out of range"));
+    }
+    Ok(())
+}
+
+fn duration_like_values<H: VmHost>(vm: &mut H, val: JsValue) -> Result<[f64; 10], JsValue> {
+    if val.is_string() {
+        let values = parse_duration_string(&to_string(val))
+            .ok_or_else(|| crate::error::create_range_error(vm, "invalid duration string"))?;
+        validate_duration_values(vm, &values)?;
+        return Ok(values);
+    }
+    let partial = duration_partial_values(vm, val)?;
+    let values = std::array::from_fn(|index| partial[index].unwrap_or(0.0));
+    validate_duration_values(vm, &values)?;
     Ok(values)
 }
 
@@ -426,6 +502,7 @@ pub fn duration_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         }
         *value = number;
     }
+    native_try!(validate_duration_values(vm, &values));
     make_duration(vm, values)
 }
 
@@ -445,13 +522,18 @@ fn format_duration_number(value: f64) -> String {
 }
 
 fn format_duration_seconds(seconds: f64, milliseconds: f64, microseconds: f64, nanoseconds: f64) -> Option<String> {
-    let subsecond = milliseconds * 1_000_000.0 + microseconds * 1_000.0 + nanoseconds;
-    if seconds == 0.0 && subsecond == 0.0 {
+    let total = duration_component_integer(seconds)?
+        .checked_mul(1_000_000_000)?
+        .checked_add(duration_component_integer(milliseconds)?.checked_mul(1_000_000)?)?
+        .checked_add(duration_component_integer(microseconds)?.checked_mul(1_000)?)?
+        .checked_add(duration_component_integer(nanoseconds)?)?;
+    if total == 0 {
         return None;
     }
-    let negative = seconds < 0.0 || (seconds == 0.0 && subsecond < 0.0);
-    let whole = seconds.abs() as i64;
-    let fraction = subsecond.abs() as u64;
+    let negative = total < 0;
+    let magnitude = total.abs();
+    let whole = magnitude / 1_000_000_000;
+    let fraction = magnitude % 1_000_000_000;
     let mut result = format!("{}", whole);
     if fraction != 0 {
         let mut digits = format!("{fraction:09}");
@@ -465,6 +547,46 @@ fn format_duration_seconds(seconds: f64, milliseconds: f64, microseconds: f64, n
         result.insert(0, '-');
     }
     Some(result)
+}
+
+/// `Temporal.Duration.prototype.with(partial)`，以给定字段替换当前时长分量。
+pub fn duration_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_duration(vm, obj));
+    let partial_value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let partial = native_try!(duration_partial_values(vm, partial_value));
+    let mut values = duration_values(obj);
+    for (index, value) in partial.into_iter().enumerate() {
+        if let Some(value) = value {
+            values[index] = value;
+        }
+    }
+    native_try!(validate_duration_values(vm, &values));
+    make_duration(vm, values)
+}
+
+/// `Temporal.Duration.prototype.total("seconds")`，汇总不含日历大单位的总秒数。
+pub fn duration_total<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_duration(vm, obj));
+    let unit_value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    if !unit_value.is_string() || !to_string(unit_value).eq_ignore_ascii_case("seconds") {
+        return NativeResult::Err(crate::error::create_range_error(vm, "only seconds total is supported"));
+    }
+    let values = duration_values(obj);
+    if values[..3].iter().any(|value| *value != 0.0) {
+        return NativeResult::Err(crate::error::create_range_error(
+            vm,
+            "a relativeTo option is required for calendar units",
+        ));
+    }
+    let total = match duration_time_nanoseconds(&values) {
+        Some(value) => value,
+        None => return NativeResult::Err(crate::error::create_range_error(vm, "duration is out of range")),
+    };
+    NativeResult::Ok(JsValue::float(total as f64 / 1_000_000_000.0))
 }
 
 /// `Temporal.Duration.prototype.toString()` 的 ISO 8601 表示。
