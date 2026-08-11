@@ -81,7 +81,19 @@ fn receiver_obj<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<*mut JsObject, JsV
     Ok(ptr)
 }
 
-/// 读 receiver 是否为构造调用：`new` 时 this 的原型是相应构造器的 prototype。
+fn initialize_temporal_receiver<H: VmHost, const N: usize>(
+    vm: &mut H, args: &[u8], type_tag: u8, values: [JsValue; N],
+) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &mut *ptr };
+    obj.type_tag = type_tag;
+    for (index, value) in values.into_iter().enumerate() {
+        obj.set_prop_at(index, value);
+    }
+    NativeResult::Ok(JsValue::undefined())
+}
+
+/// 读 receiver 是否为构造调用：`new` 时 this 的原型链包含相应构造器的 prototype。
 fn is_ctor_call<H: VmHost>(vm: &mut H, args: &[u8], proto_ptr: *const JsObject) -> bool {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if !this_val.is_object() {
@@ -92,8 +104,18 @@ fn is_ctor_call<H: VmHost>(vm: &mut H, args: &[u8], proto_ptr: *const JsObject) 
         return false;
     }
     let obj = unsafe { &*ptr };
-    let this_proto = obj.proto().as_js_object_ptr();
-    !this_proto.is_null() && std::ptr::eq(this_proto, proto_ptr)
+    let mut this_proto = obj.proto();
+    while this_proto.is_object() {
+        let this_proto_ptr = this_proto.as_js_object_ptr();
+        if this_proto_ptr.is_null() {
+            return false;
+        }
+        if std::ptr::eq(this_proto_ptr, proto_ptr) {
+            return true;
+        }
+        this_proto = unsafe { &*this_proto_ptr }.proto();
+    }
+    false
 }
 
 fn make_instant<H: VmHost>(vm: &mut H, epoch_ns: i128) -> NativeResult {
@@ -439,7 +461,8 @@ pub fn instant_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if epoch_ns.unsigned_abs() > MAX_INSTANT_NS as u128 {
         return NativeResult::Err(crate::error::create_range_error(vm, "Instant outside supported range"));
     }
-    make_instant(vm, epoch_ns)
+    let epoch_value = vm.new_bigint(epoch_ns);
+    initialize_temporal_receiver(vm, args, JsObject::OBJ_TYPE_INSTANT, [epoch_value])
 }
 
 /// `Temporal.Instant.from(value)`：接受 Instant、ISO 字符串或可转换为字符串的对象。
@@ -561,6 +584,44 @@ pub fn instant_equals<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let other = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
     let other_ns = native_try!(instant_like_epoch_ns(vm, other));
     NativeResult::Ok(JsValue::bool(epoch_ns == other_ns))
+}
+
+fn instant_add_duration<H: VmHost>(vm: &mut H, args: &[u8], direction: i128) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_instant(vm, obj));
+    let Some(epoch_ns) = get_instant_epoch_ns(obj) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid Instant"));
+    };
+
+    let duration_like = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
+    let values = native_try!(duration_like_values(vm, duration_like));
+    if values[..4].iter().any(|value| *value != 0.0) {
+        return NativeResult::Err(crate::error::create_range_error(
+            vm,
+            "Instant arithmetic does not support date units",
+        ));
+    }
+    let Some(delta_ns) = duration_time_nanoseconds(&values) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid duration"));
+    };
+    let Some(result_ns) = delta_ns.checked_mul(direction).and_then(|delta| epoch_ns.checked_add(delta)) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "Instant outside supported range"));
+    };
+    if result_ns.unsigned_abs() > MAX_INSTANT_NS as u128 {
+        return NativeResult::Err(crate::error::create_range_error(vm, "Instant outside supported range"));
+    }
+    make_instant(vm, result_ns)
+}
+
+/// `Temporal.Instant.prototype.add(durationLike)`：精确增加仅含时间单位的时长。
+pub fn instant_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    instant_add_duration(vm, args, 1)
+}
+
+/// `Temporal.Instant.prototype.subtract(durationLike)`：精确减去仅含时间单位的时长。
+pub fn instant_subtract<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    instant_add_duration(vm, args, -1)
 }
 
 /// `Temporal.Instant.prototype.toString()`：输出 ISO 8601 UTC（如 `2024-01-01T00:00:00Z`）。
@@ -854,7 +915,7 @@ pub fn duration_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         *value = number;
     }
     native_try!(validate_duration_values(vm, &values));
-    make_duration(vm, values)
+    initialize_temporal_receiver(vm, args, JsObject::OBJ_TYPE_DURATION, values.map(JsValue::float))
 }
 
 /// `Temporal.Duration.from(value)`，复制 Duration 或读取同名字段。
@@ -1148,7 +1209,12 @@ pub fn plain_date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     if !valid_iso_date(year, month, day) {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid ISO date"));
     }
-    make_plain_date(vm, year, month, day)
+    initialize_temporal_receiver(
+        vm,
+        args,
+        JsObject::OBJ_TYPE_PLAIN_DATE,
+        [JsValue::float(year as f64), JsValue::float(month as f64), JsValue::float(day as f64)],
+    )
 }
 
 /// `Temporal.PlainDate.from(value)`：接受 ISO 日期字符串或 `{year, month, day}` 对象。
@@ -1226,22 +1292,6 @@ pub fn plain_date_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     NativeResult::Ok(vm.new_string(&format!("{year:04}-{month:02}-{day:02}")))
 }
 
-fn make_plain_time<H: VmHost>(
-    vm: &mut H, hour: u32, minute: u32, second: u32, ms: u32, us: u32, ns: u32,
-) -> NativeResult {
-    let total_ns = hour as f64 * 3.6e12
-        + minute as f64 * 6e10
-        + second as f64 * 1e9
-        + ms as f64 * 1e6
-        + us as f64 * 1e3
-        + ns as f64;
-    let proto = JsValue::from_js_object(vm.session().builtin_world().plain_time_proto.as_ptr() as *mut JsObject);
-    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
-    obj.type_tag = JsObject::OBJ_TYPE_PLAIN_TIME;
-    obj.set_prop_at(0, JsValue::float(total_ns));
-    NativeResult::Ok(JsValue::from_js_object(vm.alloc_object(obj)))
-}
-
 fn valid_plain_time(hour: u32, minute: u32, second: u32, ms: u32, us: u32, ns: u32) -> bool {
     hour <= 23 && minute <= 59 && second <= 59 && ms <= 999 && us <= 999 && ns <= 999
 }
@@ -1271,7 +1321,13 @@ pub fn plain_time_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     if !valid_plain_time(hour, minute, second, ms, us, ns) {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid time component"));
     }
-    make_plain_time(vm, hour, minute, second, ms, us, ns)
+    let total_ns = hour as f64 * 3.6e12
+        + minute as f64 * 6e10
+        + second as f64 * 1e9
+        + ms as f64 * 1e6
+        + us as f64 * 1e3
+        + ns as f64;
+    initialize_temporal_receiver(vm, args, JsObject::OBJ_TYPE_PLAIN_TIME, [JsValue::float(total_ns)])
 }
 
 /// 拆解午夜后纳秒为各分量。

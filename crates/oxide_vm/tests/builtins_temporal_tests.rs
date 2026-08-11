@@ -142,6 +142,45 @@ fn instant_compare_accepts_instances_strings_and_annotations() {
 }
 
 #[test]
+fn instant_add_and_subtract_are_exact() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "let i = Temporal.Instant.fromEpochNanoseconds(1582966647747612578n);
+         i.add({hours: 1, microseconds: 9007199254740991}).epochNanoseconds === 10590169502488603578n
+           && i.subtract('PT1.03125H').epochNanoseconds === 1582962935247612578n",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn instant_add_ignores_receiver_subclass_for_result() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "class Sub extends Temporal.Instant { constructor(value) { super(value); } }
+         let result = new Sub(10n).add({nanoseconds: 5});
+         result instanceof Temporal.Instant && !(result instanceof Sub) && result.epochNanoseconds === 15n",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn instant_arithmetic_rejects_date_units_and_out_of_range_results() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "let max = Temporal.Instant.fromEpochNanoseconds(8640000000000000000000n);
+         (() => { try { max.add({nanoseconds: 1}); return false } catch (e) { return e instanceof RangeError } })()
+           && (() => { try { max.subtract({days: 1}); return false } catch (e) { return e instanceof RangeError } })()",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
 fn instant_epoch_factories_validate_input_and_range() {
     let mut vm = Vm::new();
     let r = eval(
