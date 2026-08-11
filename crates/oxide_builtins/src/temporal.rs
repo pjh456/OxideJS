@@ -2962,6 +2962,72 @@ pub fn plain_date_time_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRe
     NativeResult::Ok(vm.new_string(&output))
 }
 
+/// 按 duration-like 分量对 PlainDateTime 做加减：先平衡时间（溢出为天），
+/// 再按年/月/周/日推进日期，最后校验范围。
+fn plain_date_time_apply_duration<H: VmHost>(vm: &mut H, args: &[u8], sign: i64) -> NativeResult {
+    let (year, month, day, time_ns) = match plain_date_time_parts(vm, args) {
+        Ok(parts) => parts,
+        Err(error) => return NativeResult::Err(error),
+    };
+    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let values = match duration_like_values(vm, val) {
+        Ok(values) => values,
+        Err(error) => return NativeResult::Err(error),
+    };
+    let constrain = match plain_date_time_overflow(vm, args) {
+        Ok(constrain) => constrain,
+        Err(error) => return NativeResult::Err(error),
+    };
+    const DAY_NS: i128 = 86_400_000_000_000;
+    // 时间字段（hours 起）单独换算纳秒；days 由日期部分处理，避免重复计入。
+    let [_, _, _, _, h, min, s, ms, us, ns] = values;
+    let time_delta = duration_component_integer(h).unwrap_or(0) * 3_600_000_000_000
+        + duration_component_integer(min).unwrap_or(0) * 60_000_000_000
+        + duration_component_integer(s).unwrap_or(0) * 1_000_000_000
+        + duration_component_integer(ms).unwrap_or(0) * 1_000_000
+        + duration_component_integer(us).unwrap_or(0) * 1_000
+        + duration_component_integer(ns).unwrap_or(0);
+    let total_ns = time_ns as i128 + time_delta * sign as i128;
+    let extra_days = total_ns.div_euclid(DAY_NS);
+    let new_time_ns = total_ns.rem_euclid(DAY_NS);
+
+    let [y, m, w, d, ..] = values;
+    let months =
+        (duration_component_integer(y).unwrap_or(0) * 12 + duration_component_integer(m).unwrap_or(0)) * sign as i128;
+    let total_month = i128::from(year) * 12 + i128::from(month) - 1 + months;
+    let ny = total_month.div_euclid(12);
+    let nm = total_month.rem_euclid(12) + 1;
+    let Some(max_day) = days_in_month(ny, nm) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid date"));
+    };
+    let day = i128::from(day);
+    let new_day = if day > max_day {
+        if !constrain {
+            return NativeResult::Err(crate::error::create_range_error(vm, "day out of range"));
+        }
+        max_day
+    } else {
+        day
+    };
+    let day_delta = duration_component_integer(w).unwrap_or(0) * 7 + duration_component_integer(d).unwrap_or(0);
+    let total_days = days_from_civil(ny, nm, new_day) + extra_days + day_delta * sign as i128;
+    let (yy, mm, dd) = civil_from_days(total_days);
+    if !valid_plain_date_time_range(yy as i32, mm as u32, dd as u32, new_time_ns as f64) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid date-time"));
+    }
+    make_plain_date_time(vm, yy as i32, mm as u32, dd as u32, new_time_ns as f64)
+}
+
+/// `Temporal.PlainDateTime.prototype.add(durationLike, options)`。
+pub fn plain_date_time_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_date_time_apply_duration(vm, args, 1)
+}
+
+/// `Temporal.PlainDateTime.prototype.subtract(durationLike, options)`。
+pub fn plain_date_time_subtract<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_date_time_apply_duration(vm, args, -1)
+}
+
 /// `Temporal.PlainDateTime.prototype.toJSON()`：输出默认 ISO 日期时间。
 pub fn plain_date_time_to_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     plain_date_time_iso_string(vm, args)

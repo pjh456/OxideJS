@@ -510,6 +510,16 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
                 oxide_builtins::temporal::plain_date_time_to_json::<crate::vm::Vm> as *const (),
                 0,
             ),
+            (
+                "add",
+                oxide_builtins::temporal::plain_date_time_add::<crate::vm::Vm> as *const (),
+                1,
+            ),
+            (
+                "subtract",
+                oxide_builtins::temporal::plain_date_time_subtract::<crate::vm::Vm> as *const (),
+                1,
+            ),
         ],
     );
     bind_well_known_data_property(

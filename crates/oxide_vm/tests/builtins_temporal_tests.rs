@@ -821,3 +821,26 @@ fn zdt_subclass_compare_debug() {
     .unwrap();
     assert_eq!(str_val(&vm, r), "number:-1");
 }
+
+#[test]
+fn plain_date_time_add_balances_months_days_and_time() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "const a = Temporal.PlainDateTime.from('1997-12-01T12:34');
+         const b = a.add(new Temporal.Duration(3, 6, 0, 17));
+         const c = a.add(new Temporal.Duration(0, 1, 0, 0, 36));
+         const d = a.subtract(new Temporal.Duration(0, 0, 0, 1));
+         const constrained = new Temporal.PlainDateTime(2020, 1, 31, 15, 0).add({ months: 1 });
+         const rejected = (() => { try {
+           new Temporal.PlainDateTime(2020, 1, 31, 15, 0).add({ months: 1 }, { overflow: 'reject' });
+           return false;
+         } catch (e) { return e instanceof RangeError; } })();
+         [b.year, b.month, b.day, b.hour, b.minute, b.second,
+          c.day, c.hour,
+          d.year, d.month, d.day,
+          constrained.month, constrained.day, rejected].join(':')",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "2001:6:18:12:34:0:3:0:1997:11:30:2:29:true");
+}
