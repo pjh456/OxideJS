@@ -447,6 +447,8 @@ impl JsObject {
     pub const OBJ_TYPE_DURATION: u8 = 17;
     /// Temporal.ZonedDateTime 对象：纪元纳秒、时区 ID、日历 ID 存于 prop 0-2。
     pub const OBJ_TYPE_ZONED_DATE_TIME: u8 = 18;
+    /// Temporal.PlainDateTime 对象：ISO 年/月/日与午夜后纳秒存于 prop 0-3。
+    pub const OBJ_TYPE_PLAIN_DATE_TIME: u8 = 19;
     /// `is_session_epoch` 字段中的 session 标记位。
     pub const SESSION_EPOCH_BIT: u8 = 0x01;
     /// `is_session_epoch` 字段中的 GC 标记位。
@@ -536,6 +538,11 @@ impl JsObject {
     #[inline]
     pub fn is_zoned_date_time_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_ZONED_DATE_TIME
+    }
+    /// 是否 Temporal.PlainDateTime 对象。
+    #[inline]
+    pub fn is_plain_date_time_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_PLAIN_DATE_TIME
     }
 
     /// 构造无属性、可扩展的空对象（`new Object()` 的基础对象）。

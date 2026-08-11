@@ -616,3 +616,73 @@ fn plain_time_range_validation() {
     let r = eval(&mut vm, "try { new Temporal.PlainTime(0, 60, 0) } catch (e) { e.constructor.name }").unwrap();
     assert_eq!(str_val(&vm, r), "RangeError");
 }
+
+// -- Temporal.PlainDateTime --
+
+#[test]
+fn plain_date_time_constructor_and_components() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "let dt = new Temporal.PlainDateTime(2024, 2, 29, 23, 58, 57, 987, 654, 321);
+         dt.year + ',' + dt.month + ',' + dt.day + ',' + dt.hour + ',' + dt.minute + ',' +
+         dt.second + ',' + dt.millisecond + ',' + dt.microsecond + ',' + dt.nanosecond + ',' + dt.calendarId",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "2024,2,29,23,58,57,987,654,321,iso8601");
+}
+
+#[test]
+fn plain_date_time_defaults_time_to_midnight() {
+    let mut vm = Vm::new();
+    assert_eq!(
+        num(
+            &mut vm,
+            "let dt = new Temporal.PlainDateTime(2024, 7, 6); dt.hour + dt.minute + dt.second + dt.nanosecond",
+        ),
+        0.0
+    );
+}
+
+#[test]
+fn plain_date_time_splits_into_plain_date_and_time() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "let dt = new Temporal.PlainDateTime(2000, 5, 2, 12, 34, 56, 789, 123, 456);
+         dt.toPlainDate().toString() + 'T' + dt.toPlainTime().toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "2000-05-02T12:34:56.789123456");
+}
+
+#[test]
+fn plain_date_time_validates_brand_and_ranges() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "let getter = Object.getOwnPropertyDescriptor(Temporal.PlainDateTime.prototype, 'year').get;
+         let a; let b; let c;
+         try { getter.call({}) } catch (e) { a = e.constructor.name }
+         try { new Temporal.PlainDateTime(2023, 2, 29) } catch (e) { b = e.constructor.name }
+         try { new Temporal.PlainDateTime(2024, 1, 1, 24) } catch (e) { c = e.constructor.name }
+         a + ',' + b + ',' + c",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "TypeError,RangeError,RangeError");
+}
+
+#[test]
+fn plain_date_time_metadata_and_value_of() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "let dt = new Temporal.PlainDateTime(2024, 1, 2);
+         let error;
+         try { dt.valueOf() } catch (e) { error = e.constructor.name }
+         Temporal.PlainDateTime.length + ',' + (dt instanceof Temporal.PlainDateTime) + ',' +
+         Object.prototype.toString.call(dt) + ',' + error",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "3,true,[object Temporal.PlainDateTime],TypeError");
+}

@@ -377,6 +377,129 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         )],
     );
 
+    // Temporal.PlainDateTime：ISO 日期时间分量、拆分转换与禁止隐式原始值转换。
+    let plain_date_time_ctor_ptr = world.plain_date_time_constructor.as_ptr() as *mut JsObject;
+    let plain_date_time_ctor = unsafe { &mut *plain_date_time_ctor_ptr };
+    configure_native_constructor(
+        plain_date_time_ctor,
+        oxide_builtins::temporal::plain_date_time_constructor::<crate::vm::Vm> as *const (),
+        3,
+    );
+    let length_si = core.perm_interner().intern("length").0;
+    let length_shape = core.shape_forge().make_shape(plain_date_time_ctor.shape_id(), length_si);
+    plain_date_time_ctor.set_shape_id(length_shape);
+    plain_date_time_ctor.ensure_hash_props().push(JsValue::int(3));
+    let length_pos = plain_date_time_ctor
+        .hash_props_vec()
+        .map_or(0, |props| props.len() as u32)
+        .saturating_sub(1);
+    plain_date_time_ctor.set_data_meta(length_pos, PropAttributes::new(false, false, true));
+    let plain_date_time_proto_ptr = world.plain_date_time_proto.as_ptr() as *mut JsObject;
+    let plain_date_time_proto = unsafe { &mut *plain_date_time_proto_ptr };
+    for (name, getter) in [
+        ("year", oxide_builtins::temporal::plain_date_time_year::<crate::vm::Vm> as *const ()),
+        ("month", oxide_builtins::temporal::plain_date_time_month::<crate::vm::Vm> as *const ()),
+        ("day", oxide_builtins::temporal::plain_date_time_day::<crate::vm::Vm> as *const ()),
+        (
+            "dayOfWeek",
+            oxide_builtins::temporal::plain_date_time_day_of_week::<crate::vm::Vm> as *const (),
+        ),
+        (
+            "dayOfYear",
+            oxide_builtins::temporal::plain_date_time_day_of_year::<crate::vm::Vm> as *const (),
+        ),
+        (
+            "daysInMonth",
+            oxide_builtins::temporal::plain_date_time_days_in_month::<crate::vm::Vm> as *const (),
+        ),
+        (
+            "daysInWeek",
+            oxide_builtins::temporal::plain_date_time_days_in_week::<crate::vm::Vm> as *const (),
+        ),
+        (
+            "daysInYear",
+            oxide_builtins::temporal::plain_date_time_days_in_year::<crate::vm::Vm> as *const (),
+        ),
+        (
+            "monthsInYear",
+            oxide_builtins::temporal::plain_date_time_months_in_year::<crate::vm::Vm> as *const (),
+        ),
+        (
+            "inLeapYear",
+            oxide_builtins::temporal::plain_date_time_in_leap_year::<crate::vm::Vm> as *const (),
+        ),
+        (
+            "weekOfYear",
+            oxide_builtins::temporal::plain_date_time_week_of_year::<crate::vm::Vm> as *const (),
+        ),
+        (
+            "yearOfWeek",
+            oxide_builtins::temporal::plain_date_time_year_of_week::<crate::vm::Vm> as *const (),
+        ),
+        (
+            "monthCode",
+            oxide_builtins::temporal::plain_date_time_month_code::<crate::vm::Vm> as *const (),
+        ),
+        ("era", oxide_builtins::temporal::plain_date_time_era::<crate::vm::Vm> as *const ()),
+        (
+            "eraYear",
+            oxide_builtins::temporal::plain_date_time_era_year::<crate::vm::Vm> as *const (),
+        ),
+        ("hour", oxide_builtins::temporal::plain_date_time_hour::<crate::vm::Vm> as *const ()),
+        ("minute", oxide_builtins::temporal::plain_date_time_minute::<crate::vm::Vm> as *const ()),
+        ("second", oxide_builtins::temporal::plain_date_time_second::<crate::vm::Vm> as *const ()),
+        (
+            "millisecond",
+            oxide_builtins::temporal::plain_date_time_millisecond::<crate::vm::Vm> as *const (),
+        ),
+        (
+            "microsecond",
+            oxide_builtins::temporal::plain_date_time_microsecond::<crate::vm::Vm> as *const (),
+        ),
+        (
+            "nanosecond",
+            oxide_builtins::temporal::plain_date_time_nanosecond::<crate::vm::Vm> as *const (),
+        ),
+        (
+            "calendarId",
+            oxide_builtins::temporal::plain_date_time_calendar_id::<crate::vm::Vm> as *const (),
+        ),
+    ] {
+        bind_accessor_getter(core, session, plain_date_time_proto, name, getter);
+    }
+    apply_binding_table(
+        world,
+        plain_date_time_proto,
+        core,
+        &[
+            (
+                "toPlainDate",
+                oxide_builtins::temporal::plain_date_time_to_plain_date::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "toPlainTime",
+                oxide_builtins::temporal::plain_date_time_to_plain_time::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "valueOf",
+                oxide_builtins::temporal::plain_date_time_value_of::<crate::vm::Vm> as *const (),
+                0,
+            ),
+        ],
+    );
+    bind_well_known_data_property(
+        core,
+        plain_date_time_proto,
+        9,
+        JsValue::perm_string(
+            core.perm_interner()
+                .string_ptr(core.perm_interner().intern("Temporal.PlainDateTime").0),
+        ),
+        PropAttributes::new(false, false, true),
+    );
+
     // Temporal.Duration：构造器、from、分量 getter 与 ISO 字符串转换。
     let duration_ctor_ptr = world.duration_constructor.as_ptr() as *mut JsObject;
     let duration_ctor = unsafe { &mut *duration_ctor_ptr };
@@ -435,6 +558,7 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
     bind_global_value(core, temporal, "Instant", JsValue::from_js_object(instant_ctor_ptr));
     bind_global_value(core, temporal, "PlainDate", JsValue::from_js_object(plain_date_ctor_ptr));
     bind_global_value(core, temporal, "PlainTime", JsValue::from_js_object(plain_time_ctor_ptr));
+    bind_global_value(core, temporal, "PlainDateTime", JsValue::from_js_object(plain_date_time_ctor_ptr));
     bind_global_value(core, temporal, "Duration", JsValue::from_js_object(duration_ctor_ptr));
     bind_global_value(core, temporal, "ZonedDateTime", JsValue::from_js_object(zoned_date_time_ctor_ptr));
     bind_global_value(core, global, "Temporal", JsValue::from_js_object(temporal_ptr));

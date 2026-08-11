@@ -6,9 +6,11 @@ use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
 // Temporal 命名空间的最小实现子集：Temporal.Now / Temporal.Instant /
-// Temporal.PlainDate / Temporal.PlainTime / Temporal.ZonedDateTime。内部数据按对象类型存入 prop 槽：
+// Temporal.PlainDate / Temporal.PlainTime / Temporal.PlainDateTime / Temporal.ZonedDateTime。
+// 内部数据按对象类型存入 prop 槽：
 // Instant 存纪元纳秒（BigInt，prop 0）、PlainDate 存年/月/日（prop 0-2）、
-// PlainTime 存午夜后纳秒（f64，prop 0），ZonedDateTime 存纪元纳秒、时区 ID、日历 ID（prop 0-2）。
+// PlainTime 存午夜后纳秒（f64，prop 0）、PlainDateTime 存年/月/日与午夜后纳秒（prop 0-3），
+// ZonedDateTime 存纪元纳秒、时区 ID、日历 ID（prop 0-2）。
 
 const MAX_INSTANT_NS: i128 = 8_640_000_000_000_000_000_000;
 
@@ -57,6 +59,13 @@ fn ensure_plain_date<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<(), JsValu
 
 fn ensure_plain_time<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<(), JsValue> {
     if !obj.is_plain_time_obj() {
+        return Err(crate::error::create_type_error(vm, "called on incompatible receiver"));
+    }
+    Ok(())
+}
+
+fn ensure_plain_date_time<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<(), JsValue> {
+    if !obj.is_plain_date_time_obj() {
         return Err(crate::error::create_type_error(vm, "called on incompatible receiver"));
     }
     Ok(())
@@ -1326,6 +1335,14 @@ fn make_plain_date<H: VmHost>(vm: &mut H, year: i32, month: u32, day: u32) -> Na
     NativeResult::Ok(JsValue::from_js_object(vm.alloc_object(obj)))
 }
 
+fn make_plain_time<H: VmHost>(vm: &mut H, total_ns: f64) -> NativeResult {
+    let proto = JsValue::from_js_object(vm.session().builtin_world().plain_time_proto.as_ptr() as *mut JsObject);
+    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
+    obj.type_tag = JsObject::OBJ_TYPE_PLAIN_TIME;
+    obj.set_prop_at(0, JsValue::float(total_ns));
+    NativeResult::Ok(JsValue::from_js_object(vm.alloc_object(obj)))
+}
+
 fn make_duration<H: VmHost>(vm: &mut H, values: [f64; 10]) -> NativeResult {
     let proto = JsValue::from_js_object(vm.session().builtin_world().duration_proto.as_ptr() as *mut JsObject);
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
@@ -2070,6 +2087,257 @@ pub fn plain_time_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         }
         NativeResult::Ok(vm.new_string(&format!("{h:02}:{m:02}:{s:02}.{digits}")))
     }
+}
+
+// ───────────────────── PlainDateTime 基础方法 ─────────────────────
+
+/// `Temporal.PlainDateTime` 构造器：保存 ISO 日期与午夜后纳秒。
+pub fn plain_date_time_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ctor_proto = vm.session().builtin_world().plain_date_time_proto.as_ptr();
+    if !is_ctor_call(vm, args, ctor_proto) {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Class constructor Temporal.PlainDateTime cannot be invoked without 'new'",
+        ));
+    }
+
+    let mut component = |index: usize, default: f64| -> Result<f64, JsValue> {
+        if args.len() > index {
+            let raw = vm.reg(args[index]);
+            temporal_option_number(vm, raw).map(f64::trunc)
+        } else {
+            Ok(default)
+        }
+    };
+    let year_value = native_try!(component(1, f64::NAN));
+    let month_value = native_try!(component(2, f64::NAN));
+    let day_value = native_try!(component(3, f64::NAN));
+    let hour_value = native_try!(component(4, 0.0));
+    let minute_value = native_try!(component(5, 0.0));
+    let second_value = native_try!(component(6, 0.0));
+    let millisecond_value = native_try!(component(7, 0.0));
+    let microsecond_value = native_try!(component(8, 0.0));
+    let nanosecond_value = native_try!(component(9, 0.0));
+    let components = [
+        year_value,
+        month_value,
+        day_value,
+        hour_value,
+        minute_value,
+        second_value,
+        millisecond_value,
+        microsecond_value,
+        nanosecond_value,
+    ];
+    if components.iter().any(|value| !value.is_finite()) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid date-time component"));
+    }
+
+    let year = year_value as i32;
+    let month = month_value as u32;
+    let day = day_value as u32;
+    let hour = hour_value as u32;
+    let minute = minute_value as u32;
+    let second = second_value as u32;
+    let millisecond = millisecond_value as u32;
+    let microsecond = microsecond_value as u32;
+    let nanosecond = nanosecond_value as u32;
+    let non_negative = components[1..].iter().all(|value| *value >= 0.0);
+    if !non_negative
+        || !valid_iso_date(year, month, day)
+        || !valid_plain_time(hour, minute, second, millisecond, microsecond, nanosecond)
+    {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid date-time component"));
+    }
+
+    if args.len() > 10 && !vm.reg(args[10]).is_undefined() {
+        let calendar = vm.reg(args[10]);
+        let calendar = native_try!(temporal_option_string(vm, calendar));
+        if !calendar.eq_ignore_ascii_case("iso8601") {
+            return NativeResult::Err(crate::error::create_range_error(vm, "unsupported calendar"));
+        }
+    }
+
+    let total_ns = hour as f64 * 3_600_000_000_000.0
+        + minute as f64 * 60_000_000_000.0
+        + second as f64 * 1_000_000_000.0
+        + millisecond as f64 * 1_000_000.0
+        + microsecond as f64 * 1_000.0
+        + nanosecond as f64;
+    initialize_temporal_receiver(
+        vm,
+        args,
+        JsObject::OBJ_TYPE_PLAIN_DATE_TIME,
+        [
+            JsValue::float(year as f64),
+            JsValue::float(month as f64),
+            JsValue::float(day as f64),
+            JsValue::float(total_ns),
+        ],
+    )
+}
+
+fn plain_date_time_parts<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<(i32, u32, u32, f64), JsValue> {
+    let ptr = receiver_obj(vm, args)?;
+    let obj = unsafe { &*ptr };
+    ensure_plain_date_time(vm, obj)?;
+    Ok((
+        get_double_prop(obj, 0) as i32,
+        get_double_prop(obj, 1) as u32,
+        get_double_prop(obj, 2) as u32,
+        get_double_prop(obj, 3),
+    ))
+}
+
+macro_rules! plain_date_time_date_getter {
+    ($name:ident, $index:tt) => {
+        pub fn $name<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+            let parts = native_try!(plain_date_time_parts(vm, args));
+            NativeResult::Ok(JsValue::float(parts.$index as f64))
+        }
+    };
+}
+
+plain_date_time_date_getter!(plain_date_time_year, 0);
+plain_date_time_date_getter!(plain_date_time_month, 1);
+plain_date_time_date_getter!(plain_date_time_day, 2);
+
+fn plain_date_time_naive<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<NaiveDate, JsValue> {
+    let (year, month, day, _) = plain_date_time_parts(vm, args)?;
+    NaiveDate::from_ymd_opt(year, month, day).ok_or_else(|| crate::error::create_range_error(vm, "invalid date"))
+}
+
+/// `Temporal.PlainDateTime.prototype.dayOfWeek` getter。
+pub fn plain_date_time_day_of_week<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let date = native_try!(plain_date_time_naive(vm, args));
+    NativeResult::Ok(JsValue::float((date.weekday().num_days_from_monday() + 1) as f64))
+}
+
+/// `Temporal.PlainDateTime.prototype.dayOfYear` getter。
+pub fn plain_date_time_day_of_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let date = native_try!(plain_date_time_naive(vm, args));
+    NativeResult::Ok(JsValue::float(date.ordinal() as f64))
+}
+
+/// `Temporal.PlainDateTime.prototype.daysInMonth` getter。
+pub fn plain_date_time_days_in_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let date = native_try!(plain_date_time_naive(vm, args));
+    NativeResult::Ok(JsValue::float(days_in_month_iso(date.year(), date.month()) as f64))
+}
+
+/// `Temporal.PlainDateTime.prototype.daysInWeek` getter。
+pub fn plain_date_time_days_in_week<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let _ = native_try!(plain_date_time_parts(vm, args));
+    NativeResult::Ok(JsValue::float(7.0))
+}
+
+/// `Temporal.PlainDateTime.prototype.daysInYear` getter。
+pub fn plain_date_time_days_in_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let date = native_try!(plain_date_time_naive(vm, args));
+    NativeResult::Ok(JsValue::float(if is_leap_year_iso(date.year()) { 366.0 } else { 365.0 }))
+}
+
+/// `Temporal.PlainDateTime.prototype.monthsInYear` getter。
+pub fn plain_date_time_months_in_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let _ = native_try!(plain_date_time_parts(vm, args));
+    NativeResult::Ok(JsValue::float(12.0))
+}
+
+/// `Temporal.PlainDateTime.prototype.inLeapYear` getter。
+pub fn plain_date_time_in_leap_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let date = native_try!(plain_date_time_naive(vm, args));
+    NativeResult::Ok(JsValue::bool(is_leap_year_iso(date.year())))
+}
+
+/// `Temporal.PlainDateTime.prototype.weekOfYear` getter。
+pub fn plain_date_time_week_of_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let date = native_try!(plain_date_time_naive(vm, args));
+    NativeResult::Ok(JsValue::float(date.iso_week().week() as f64))
+}
+
+/// `Temporal.PlainDateTime.prototype.yearOfWeek` getter。
+pub fn plain_date_time_year_of_week<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let date = native_try!(plain_date_time_naive(vm, args));
+    NativeResult::Ok(JsValue::float(date.iso_week().year() as f64))
+}
+
+/// `Temporal.PlainDateTime.prototype.monthCode` getter。
+pub fn plain_date_time_month_code<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let (_, month, _, _) = native_try!(plain_date_time_parts(vm, args));
+    NativeResult::Ok(vm.new_string(&format!("M{month:02}")))
+}
+
+/// ISO 日历没有可观察的 era 字段。
+pub fn plain_date_time_era<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let _ = native_try!(plain_date_time_parts(vm, args));
+    NativeResult::Ok(JsValue::undefined())
+}
+
+/// ISO 日历没有可观察的 eraYear 字段。
+pub fn plain_date_time_era_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let _ = native_try!(plain_date_time_parts(vm, args));
+    NativeResult::Ok(JsValue::undefined())
+}
+
+fn plain_date_time_time_get<H: VmHost>(
+    vm: &mut H, args: &[u8], select: fn(u32, u32, u32, u32, u32, u32) -> u32,
+) -> NativeResult {
+    let (_, _, _, total_ns) = native_try!(plain_date_time_parts(vm, args));
+    let (hour, minute, second, millisecond, microsecond, nanosecond) = plain_time_components(total_ns);
+    NativeResult::Ok(JsValue::float(select(hour, minute, second, millisecond, microsecond, nanosecond) as f64))
+}
+
+/// `Temporal.PlainDateTime.prototype.hour` getter。
+pub fn plain_date_time_hour<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_date_time_time_get(vm, args, |hour, _, _, _, _, _| hour)
+}
+
+/// `Temporal.PlainDateTime.prototype.minute` getter。
+pub fn plain_date_time_minute<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_date_time_time_get(vm, args, |_, minute, _, _, _, _| minute)
+}
+
+/// `Temporal.PlainDateTime.prototype.second` getter。
+pub fn plain_date_time_second<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_date_time_time_get(vm, args, |_, _, second, _, _, _| second)
+}
+
+/// `Temporal.PlainDateTime.prototype.millisecond` getter。
+pub fn plain_date_time_millisecond<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_date_time_time_get(vm, args, |_, _, _, millisecond, _, _| millisecond)
+}
+
+/// `Temporal.PlainDateTime.prototype.microsecond` getter。
+pub fn plain_date_time_microsecond<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_date_time_time_get(vm, args, |_, _, _, _, microsecond, _| microsecond)
+}
+
+/// `Temporal.PlainDateTime.prototype.nanosecond` getter。
+pub fn plain_date_time_nanosecond<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_date_time_time_get(vm, args, |_, _, _, _, _, nanosecond| nanosecond)
+}
+
+/// `Temporal.PlainDateTime.prototype.calendarId` getter。
+pub fn plain_date_time_calendar_id<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let _ = native_try!(plain_date_time_parts(vm, args));
+    NativeResult::Ok(vm.new_string("iso8601"))
+}
+
+/// 返回仅保留日期分量的新 `Temporal.PlainDate`。
+pub fn plain_date_time_to_plain_date<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let (year, month, day, _) = native_try!(plain_date_time_parts(vm, args));
+    make_plain_date(vm, year, month, day)
+}
+
+/// 返回仅保留时间分量的新 `Temporal.PlainTime`。
+pub fn plain_date_time_to_plain_time<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let (_, _, _, total_ns) = native_try!(plain_date_time_parts(vm, args));
+    make_plain_time(vm, total_ns)
+}
+
+/// Temporal 对象禁止隐式转换为原始值。
+pub fn plain_date_time_value_of<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
+    NativeResult::Err(crate::error::create_type_error(vm, "Temporal.PlainDateTime has no valueOf"))
 }
 
 // ───────────────────── PlainDate 扩展方法 ─────────────────────

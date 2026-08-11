@@ -225,7 +225,7 @@ pub struct KernelSession {
 /// 维护注意：每个新增的 `BuiltinWorld` 对象字段都必须加到这里以及
 /// `KernelSession::dirty_since_snapshot()`，以便选择性重置重建正确的
 /// builtin 家族。
-pub const NUM_BUILTINS: usize = 83;
+pub const NUM_BUILTINS: usize = 85;
 
 /// 内置对象枚举 id，与 `BuiltinWorld` 中的存储槽一一对应。
 ///
@@ -317,6 +317,8 @@ pub enum BuiltinId {
     SymToStringTag = 80,
     ZonedDateTimeConstructor = 81,
     ZonedDateTimeProto = 82,
+    PlainDateTimeConstructor = 83,
+    PlainDateTimeProto = 84,
 }
 
 impl BuiltinId {
@@ -405,6 +407,8 @@ impl BuiltinId {
         BuiltinId::SymToStringTag,
         BuiltinId::ZonedDateTimeConstructor,
         BuiltinId::ZonedDateTimeProto,
+        BuiltinId::PlainDateTimeConstructor,
+        BuiltinId::PlainDateTimeProto,
     ];
 }
 
@@ -642,7 +646,9 @@ impl KernelSession {
                 || gen(BuiltinId::DurationConstructor) != snap(BuiltinId::DurationConstructor)
                 || gen(BuiltinId::DurationProto) != snap(BuiltinId::DurationProto)
                 || gen(BuiltinId::ZonedDateTimeConstructor) != snap(BuiltinId::ZonedDateTimeConstructor)
-                || gen(BuiltinId::ZonedDateTimeProto) != snap(BuiltinId::ZonedDateTimeProto),
+                || gen(BuiltinId::ZonedDateTimeProto) != snap(BuiltinId::ZonedDateTimeProto)
+                || gen(BuiltinId::PlainDateTimeConstructor) != snap(BuiltinId::PlainDateTimeConstructor)
+                || gen(BuiltinId::PlainDateTimeProto) != snap(BuiltinId::PlainDateTimeProto),
             stubs: world.stub_objects.len() != snapshot.stub_objects_len
                 || stub_generations_dirty
                 || gen(BuiltinId::BigIntConstructor) != snap(BuiltinId::BigIntConstructor)
