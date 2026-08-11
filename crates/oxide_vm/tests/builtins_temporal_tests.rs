@@ -112,8 +112,11 @@ fn instant_value_of_throws() {
 #[test]
 fn instant_method_on_non_instant_throws() {
     let mut vm = Vm::new();
-    let r = eval(&mut vm, "try { Temporal.Instant.prototype.toString.call({}) } catch (e) { e.constructor.name }")
-        .unwrap();
+    let r = eval(
+        &mut vm,
+        "try { Temporal.Instant.prototype.toString.call({}) } catch (e) { e.constructor.name }",
+    )
+    .unwrap();
     assert_eq!(str_val(&vm, r), "TypeError");
 }
 
@@ -186,6 +189,58 @@ fn plain_date_method_on_non_date_throws() {
     )
     .unwrap();
     assert_eq!(str_val(&vm, r), "TypeError");
+}
+
+#[test]
+fn plain_date_add_and_subtract_support_negative_offsets() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "new Temporal.PlainDate(2024, 1, 31).add({months:1}).toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "2024-02-29");
+    let r = eval(&mut vm, "new Temporal.PlainDate(2024, 1, 5).subtract({days:10}).toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "2023-12-26");
+}
+
+#[test]
+fn plain_date_until_and_since_return_duration() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "new Temporal.PlainDate(2024, 1, 1).until('2024-01-06').toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "P5D");
+    assert_eq!(
+        num(
+            &mut vm,
+            "new Temporal.PlainDate(2024, 1, 6).since(new Temporal.PlainDate(2024, 1, 11)).days",
+        ),
+        -5.0
+    );
+    assert_eq!(
+        num(
+            &mut vm,
+            "new Temporal.PlainDate(1997, 7, 16).since(new Temporal.PlainDate(2021, 7, 15), {largestUnit:'years'}).days",
+        ),
+        -29.0
+    );
+}
+
+#[test]
+fn duration_constructor_exposes_components() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "new Temporal.Duration(1,2,3,4,5,6,7,8,9,10).toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "P1Y2M3W4DT5H6M7.00800901S");
+    assert_eq!(num(&mut vm, "new Temporal.Duration(1,2,3,4,5,6,7,8,9,10).nanoseconds"), 10.0);
+    let r = eval(&mut vm, "Temporal.Duration.from('-PT24.567890123H').toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "-PT24H34M4.4044428S");
+    assert_eq!(num(&mut vm, "Temporal.Duration.from('P43Y').years"), 43.0);
+    let r = eval(&mut vm, "new Temporal.Duration(1,2,3,4).negated().abs().toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "P1Y2M3W4D");
+}
+
+#[test]
+fn plain_date_balances_duration_time_units_into_days() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "new Temporal.PlainDate(2000,5,2).add('P1DT24H1440M86400S').toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "2000-05-06");
+    let r = eval(&mut vm, "new Temporal.PlainDate(2000,5,2).add('-PT24.567890123H').toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "2000-05-01");
 }
 
 // -- Temporal.PlainTime --

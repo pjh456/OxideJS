@@ -251,6 +251,8 @@ pub struct BuiltinWorld {
     pub plain_date_proto: P<JsObject>,
     pub plain_time_constructor: P<JsObject>,
     pub plain_time_proto: P<JsObject>,
+    pub duration_constructor: P<JsObject>,
+    pub duration_proto: P<JsObject>,
     pub bigint_constructor: P<JsObject>,
     pub bigint_proto: P<JsObject>,
     pub stub_objects: Vec<P<JsObject>>,
@@ -504,10 +506,11 @@ fn wire_builtin_world_links(world: &BuiltinWorld) {
     wire_ctor_proto(&world.instant_constructor, &world.instant_proto);
     wire_ctor_proto(&world.plain_date_constructor, &world.plain_date_proto);
     wire_ctor_proto(&world.plain_time_constructor, &world.plain_time_proto);
+    wire_ctor_proto(&world.duration_constructor, &world.duration_proto);
     wire_ctor_proto(&world.bigint_constructor, &world.bigint_proto);
 
     let obj_proto_val = JsValue::from_js_object(world.object_proto.as_ptr() as *mut JsObject);
-    let non_object_protos: [&P<JsObject>; 18] = [
+    let non_object_protos: [&P<JsObject>; 19] = [
         &world.array_proto,
         &world.function_proto,
         &world.string_proto,
@@ -525,6 +528,7 @@ fn wire_builtin_world_links(world: &BuiltinWorld) {
         &world.instant_proto,
         &world.plain_date_proto,
         &world.plain_time_proto,
+        &world.duration_proto,
         &world.bigint_proto,
     ];
     for proto in &non_object_protos {
@@ -660,6 +664,8 @@ impl BuiltinWorld {
             BuiltinId::PlainDateProto => &self.plain_date_proto,
             BuiltinId::PlainTimeConstructor => &self.plain_time_constructor,
             BuiltinId::PlainTimeProto => &self.plain_time_proto,
+            BuiltinId::DurationConstructor => &self.duration_constructor,
+            BuiltinId::DurationProto => &self.duration_proto,
             BuiltinId::BigIntConstructor => &self.bigint_constructor,
             BuiltinId::BigIntProto => &self.bigint_proto,
         }
@@ -710,6 +716,7 @@ impl BuiltinWorld {
             make_named_pair(string_forge, shape_forge, labels, "PlainDate");
         let (plain_time_proto, plain_time_constructor) =
             make_named_pair(string_forge, shape_forge, labels, "PlainTime");
+        let (duration_proto, duration_constructor) = make_named_pair(string_forge, shape_forge, labels, "Duration");
         let (bigint_proto, bigint_constructor) = make_named_pair(string_forge, shape_forge, labels, "BigInt");
         let stub_objects = Vec::new();
 
@@ -791,6 +798,8 @@ impl BuiltinWorld {
             plain_date_proto,
             plain_time_constructor,
             plain_time_proto,
+            duration_constructor,
+            duration_proto,
             bigint_constructor,
             bigint_proto,
             stub_objects,
@@ -967,13 +976,24 @@ impl BuiltinWorld {
                 biguint64array_proto: current.biguint64array_proto.clone(),
             }
         };
-        let (temporal_object, temporal_now_object, instant_proto, instant_constructor, plain_date_proto, plain_date_constructor, plain_time_proto, plain_time_constructor) = if dirty.temporal {
-            let (instant_proto, instant_constructor) =
-                make_named_pair(string_forge, shape_forge, labels, "Instant");
+        let (
+            temporal_object,
+            temporal_now_object,
+            instant_proto,
+            instant_constructor,
+            plain_date_proto,
+            plain_date_constructor,
+            plain_time_proto,
+            plain_time_constructor,
+            duration_proto,
+            duration_constructor,
+        ) = if dirty.temporal {
+            let (instant_proto, instant_constructor) = make_named_pair(string_forge, shape_forge, labels, "Instant");
             let (plain_date_proto, plain_date_constructor) =
                 make_named_pair(string_forge, shape_forge, labels, "PlainDate");
             let (plain_time_proto, plain_time_constructor) =
                 make_named_pair(string_forge, shape_forge, labels, "PlainTime");
+            let (duration_proto, duration_constructor) = make_named_pair(string_forge, shape_forge, labels, "Duration");
             (
                 P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
                 P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
@@ -983,6 +1003,8 @@ impl BuiltinWorld {
                 plain_date_constructor,
                 plain_time_proto,
                 plain_time_constructor,
+                duration_proto,
+                duration_constructor,
             )
         } else {
             (
@@ -994,6 +1016,8 @@ impl BuiltinWorld {
                 current.plain_date_constructor.clone(),
                 current.plain_time_proto.clone(),
                 current.plain_time_constructor.clone(),
+                current.duration_proto.clone(),
+                current.duration_constructor.clone(),
             )
         };
         let (bigint_proto, bigint_constructor) = if dirty.stubs {
@@ -1081,6 +1105,8 @@ impl BuiltinWorld {
             plain_date_proto,
             plain_time_constructor,
             plain_time_proto,
+            duration_constructor,
+            duration_proto,
             bigint_constructor,
             bigint_proto,
             stub_objects,

@@ -443,6 +443,8 @@ impl JsObject {
     pub const OBJ_TYPE_PLAIN_DATE: u8 = 15;
     /// Temporal.PlainTime 对象：午夜后纳秒存于 prop 0。
     pub const OBJ_TYPE_PLAIN_TIME: u8 = 16;
+    /// Temporal.Duration 对象：十个时长分量依次存于 prop 0-9。
+    pub const OBJ_TYPE_DURATION: u8 = 17;
     /// `is_session_epoch` 字段中的 session 标记位。
     pub const SESSION_EPOCH_BIT: u8 = 0x01;
     /// `is_session_epoch` 字段中的 GC 标记位。
@@ -522,6 +524,11 @@ impl JsObject {
     #[inline]
     pub fn is_plain_time_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_PLAIN_TIME
+    }
+    /// 是否 Temporal.Duration 对象。
+    #[inline]
+    pub fn is_duration_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_DURATION
     }
 
     /// 构造无属性、可扩展的空对象（`new Object()` 的基础对象）。
@@ -897,13 +904,9 @@ impl JsObject {
         if self.is_array() {
             let count = self.array_prop_count as usize;
             if pos < count {
-                return self
-                    .array_elements_meta_vec()
-                    .and_then(|vec| vec.get(pos).copied().flatten());
+                return self.array_elements_meta_vec().and_then(|vec| vec.get(pos).copied().flatten());
             }
-            return self
-                .prop_meta_vec()
-                .and_then(|vec| vec.get(pos - count).copied().flatten());
+            return self.prop_meta_vec().and_then(|vec| vec.get(pos - count).copied().flatten());
         }
         self.prop_meta_vec().and_then(|vec| vec.get(pos).copied().flatten())
     }

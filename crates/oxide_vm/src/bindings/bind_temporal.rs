@@ -5,7 +5,7 @@ use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-/// 把 Temporal 命名空间及其 Now/Instant/PlainDate/PlainTime 子对象绑定到 global。
+/// 把 Temporal 命名空间及其子对象绑定到 global。
 pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let world = session.builtin_world();
     let temporal_ptr = world.temporal_object.as_ptr() as *mut JsObject;
@@ -20,11 +20,7 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         core,
         &[
             ("instant", oxide_builtins::temporal::now_instant::<crate::vm::Vm> as *const (), 0),
-            (
-                "timeZoneId",
-                oxide_builtins::temporal::now_time_zone_id::<crate::vm::Vm> as *const (),
-                0,
-            ),
+            ("timeZoneId", oxide_builtins::temporal::now_time_zone_id::<crate::vm::Vm> as *const (), 0),
         ],
     );
 
@@ -218,12 +214,18 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         plain_date_proto,
         core,
         &[
-            ("toString", oxide_builtins::temporal::plain_date_to_string::<crate::vm::Vm> as *const (), 0),
+            (
+                "toString",
+                oxide_builtins::temporal::plain_date_to_string::<crate::vm::Vm> as *const (),
+                0,
+            ),
             ("toJSON", oxide_builtins::temporal::plain_date_to_json::<crate::vm::Vm> as *const (), 0),
             ("valueOf", oxide_builtins::temporal::plain_date_value_of::<crate::vm::Vm> as *const (), 0),
             ("equals", oxide_builtins::temporal::plain_date_equals::<crate::vm::Vm> as *const (), 1),
             ("add", oxide_builtins::temporal::plain_date_add::<crate::vm::Vm> as *const (), 1),
             ("subtract", oxide_builtins::temporal::plain_date_subtract::<crate::vm::Vm> as *const (), 1),
+            ("until", oxide_builtins::temporal::plain_date_until::<crate::vm::Vm> as *const (), 1),
+            ("since", oxide_builtins::temporal::plain_date_since::<crate::vm::Vm> as *const (), 1),
         ],
     );
 
@@ -283,7 +285,62 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         world,
         plain_time_proto,
         core,
-        &[("toString", oxide_builtins::temporal::plain_time_to_string::<crate::vm::Vm> as *const (), 0)],
+        &[(
+            "toString",
+            oxide_builtins::temporal::plain_time_to_string::<crate::vm::Vm> as *const (),
+            0,
+        )],
+    );
+
+    // Temporal.Duration：构造器、from、分量 getter 与 ISO 字符串转换。
+    let duration_ctor_ptr = world.duration_constructor.as_ptr() as *mut JsObject;
+    let duration_ctor = unsafe { &mut *duration_ctor_ptr };
+    configure_native_constructor(
+        duration_ctor,
+        oxide_builtins::temporal::duration_constructor::<crate::vm::Vm> as *const (),
+        10,
+    );
+    apply_binding_table(
+        world,
+        duration_ctor,
+        core,
+        &[("from", oxide_builtins::temporal::duration_from::<crate::vm::Vm> as *const (), 1)],
+    );
+    let duration_proto_ptr = world.duration_proto.as_ptr() as *mut JsObject;
+    let duration_proto = unsafe { &mut *duration_proto_ptr };
+    for (name, getter) in [
+        ("years", oxide_builtins::temporal::duration_years::<crate::vm::Vm> as *const ()),
+        ("months", oxide_builtins::temporal::duration_months::<crate::vm::Vm> as *const ()),
+        ("weeks", oxide_builtins::temporal::duration_weeks::<crate::vm::Vm> as *const ()),
+        ("days", oxide_builtins::temporal::duration_days::<crate::vm::Vm> as *const ()),
+        ("hours", oxide_builtins::temporal::duration_hours::<crate::vm::Vm> as *const ()),
+        ("minutes", oxide_builtins::temporal::duration_minutes::<crate::vm::Vm> as *const ()),
+        ("seconds", oxide_builtins::temporal::duration_seconds::<crate::vm::Vm> as *const ()),
+        (
+            "milliseconds",
+            oxide_builtins::temporal::duration_milliseconds::<crate::vm::Vm> as *const (),
+        ),
+        (
+            "microseconds",
+            oxide_builtins::temporal::duration_microseconds::<crate::vm::Vm> as *const (),
+        ),
+        (
+            "nanoseconds",
+            oxide_builtins::temporal::duration_nanoseconds::<crate::vm::Vm> as *const (),
+        ),
+    ] {
+        bind_accessor_getter(core, session, duration_proto, name, getter);
+    }
+    apply_binding_table(
+        world,
+        duration_proto,
+        core,
+        &[
+            ("abs", oxide_builtins::temporal::duration_abs::<crate::vm::Vm> as *const (), 0),
+            ("negated", oxide_builtins::temporal::duration_negated::<crate::vm::Vm> as *const (), 0),
+            ("toString", oxide_builtins::temporal::duration_to_string::<crate::vm::Vm> as *const (), 0),
+            ("valueOf", oxide_builtins::temporal::duration_value_of::<crate::vm::Vm> as *const (), 0),
+        ],
     );
 
     // 把子对象挂到 Temporal 命名空间对象上，再把 Temporal 挂到 global。
@@ -291,5 +348,6 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
     bind_global_value(core, temporal, "Instant", JsValue::from_js_object(instant_ctor_ptr));
     bind_global_value(core, temporal, "PlainDate", JsValue::from_js_object(plain_date_ctor_ptr));
     bind_global_value(core, temporal, "PlainTime", JsValue::from_js_object(plain_time_ctor_ptr));
+    bind_global_value(core, temporal, "Duration", JsValue::from_js_object(duration_ctor_ptr));
     bind_global_value(core, global, "Temporal", JsValue::from_js_object(temporal_ptr));
 }

@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, Days, Months, NaiveDate, SecondsFormat, Utc};
+use chrono::{DateTime, Datelike, Days, NaiveDate, SecondsFormat, Utc};
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::{to_number, to_string, NativeResult, VmHost};
@@ -44,6 +44,13 @@ fn ensure_plain_date<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<(), JsValu
 
 fn ensure_plain_time<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<(), JsValue> {
     if !obj.is_plain_time_obj() {
+        return Err(crate::error::create_type_error(vm, "called on incompatible receiver"));
+    }
+    Ok(())
+}
+
+fn ensure_duration<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<(), JsValue> {
+    if !obj.is_duration_obj() {
         return Err(crate::error::create_type_error(vm, "called on incompatible receiver"));
     }
     Ok(())
@@ -123,11 +130,7 @@ pub fn instant_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             "Class constructor Temporal.Instant cannot be invoked without 'new'",
         ));
     }
-    let epoch_ns = if args.len() < 2 {
-        0.0
-    } else {
-        to_number(vm.reg(args[1]))
-    };
+    let epoch_ns = if args.len() < 2 { 0.0 } else { to_number(vm.reg(args[1])) };
     make_instant(vm, epoch_ns as i128)
 }
 
@@ -228,8 +231,7 @@ pub fn instant_value_of<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
 }
 
 fn make_plain_date<H: VmHost>(vm: &mut H, year: i32, month: u32, day: u32) -> NativeResult {
-    let proto =
-        JsValue::from_js_object(vm.session().builtin_world().plain_date_proto.as_ptr() as *mut JsObject);
+    let proto = JsValue::from_js_object(vm.session().builtin_world().plain_date_proto.as_ptr() as *mut JsObject);
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
     obj.type_tag = JsObject::OBJ_TYPE_PLAIN_DATE;
     obj.set_prop_at(0, JsValue::float(year as f64));
@@ -237,6 +239,326 @@ fn make_plain_date<H: VmHost>(vm: &mut H, year: i32, month: u32, day: u32) -> Na
     obj.set_prop_at(2, JsValue::float(day as f64));
     NativeResult::Ok(JsValue::from_js_object(vm.alloc_object(obj)))
 }
+
+fn make_duration<H: VmHost>(vm: &mut H, values: [f64; 10]) -> NativeResult {
+    let proto = JsValue::from_js_object(vm.session().builtin_world().duration_proto.as_ptr() as *mut JsObject);
+    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
+    obj.type_tag = JsObject::OBJ_TYPE_DURATION;
+    for (index, value) in values.into_iter().enumerate() {
+        obj.set_prop_at(index, JsValue::float(value));
+    }
+    NativeResult::Ok(JsValue::from_js_object(vm.alloc_object(obj)))
+}
+
+fn parse_duration_string(input: &str) -> Option<[f64; 10]> {
+    let bytes = input.as_bytes();
+    let mut cursor = 0usize;
+    let negative = match bytes.first().copied() {
+        Some(b'-') => {
+            cursor += 1;
+            true
+        }
+        Some(b'+') => {
+            cursor += 1;
+            false
+        }
+        _ => false,
+    };
+    if bytes.get(cursor) != Some(&b'P') {
+        return None;
+    }
+    cursor += 1;
+
+    let mut values = [0.0; 10];
+    let mut in_time = false;
+    let mut saw_unit = false;
+    let mut saw_time_unit = false;
+    let mut last_order = 0usize;
+    let mut fraction_seen = false;
+    while cursor < bytes.len() {
+        if bytes[cursor] == b'T' {
+            if in_time {
+                return None;
+            }
+            in_time = true;
+            cursor += 1;
+            continue;
+        }
+
+        let number_start = cursor;
+        while bytes.get(cursor).is_some_and(u8::is_ascii_digit) {
+            cursor += 1;
+        }
+        if cursor == number_start {
+            return None;
+        }
+        let whole = input[number_start..cursor].parse::<f64>().ok()?;
+        if !whole.is_finite() {
+            return None;
+        }
+
+        let mut fraction = None;
+        if matches!(bytes.get(cursor), Some(b'.' | b',')) {
+            cursor += 1;
+            let fraction_start = cursor;
+            while bytes.get(cursor).is_some_and(u8::is_ascii_digit) {
+                cursor += 1;
+            }
+            let digits = cursor - fraction_start;
+            if digits == 0 || digits > 9 {
+                return None;
+            }
+            let numerator = input[fraction_start..cursor].parse::<u64>().ok()?;
+            fraction = Some((numerator, 10_u64.pow(digits as u32)));
+        }
+
+        let unit = *bytes.get(cursor)?;
+        cursor += 1;
+        let (index, order, unit_nanos) = match (in_time, unit) {
+            (false, b'Y') => (0, 1, None),
+            (false, b'M') => (1, 2, None),
+            (false, b'W') => (2, 3, None),
+            (false, b'D') => (3, 4, None),
+            (true, b'H') => (4, 5, Some(3_600_000_000_000_u64)),
+            (true, b'M') => (5, 6, Some(60_000_000_000_u64)),
+            (true, b'S') => (6, 7, Some(1_000_000_000_u64)),
+            _ => return None,
+        };
+        if order <= last_order || (fraction_seen && (whole != 0.0 || fraction.is_some_and(|f| f.0 != 0))) {
+            return None;
+        }
+        last_order = order;
+        values[index] = whole;
+        saw_unit = true;
+        saw_time_unit |= in_time;
+
+        if let Some((numerator, scale)) = fraction {
+            let unit_nanos = unit_nanos?;
+            let mut nanos = (numerator as u128 * unit_nanos as u128 / scale as u128) as u64;
+            if index <= 4 {
+                values[5] += (nanos / 60_000_000_000) as f64;
+                nanos %= 60_000_000_000;
+            }
+            if index <= 5 {
+                values[6] += (nanos / 1_000_000_000) as f64;
+                nanos %= 1_000_000_000;
+            }
+            values[7] += (nanos / 1_000_000) as f64;
+            nanos %= 1_000_000;
+            values[8] += (nanos / 1_000) as f64;
+            values[9] += (nanos % 1_000) as f64;
+            fraction_seen = true;
+        }
+    }
+    if !saw_unit || (in_time && !saw_time_unit) {
+        return None;
+    }
+    if negative {
+        for value in &mut values {
+            if *value != 0.0 {
+                *value = -*value;
+            }
+        }
+    }
+    Some(values)
+}
+
+fn duration_like_values<H: VmHost>(vm: &mut H, val: JsValue) -> Result<[f64; 10], JsValue> {
+    if val.is_string() {
+        return parse_duration_string(&to_string(val))
+            .ok_or_else(|| crate::error::create_range_error(vm, "invalid duration string"));
+    }
+    if !val.is_object() {
+        return Err(crate::error::create_type_error(vm, "cannot convert value to Duration"));
+    }
+    let ptr = val.as_js_object_ptr();
+    if ptr.is_null() {
+        return Err(crate::error::create_type_error(vm, "cannot convert value to Duration"));
+    }
+    let obj = unsafe { &*ptr };
+    let names = [
+        "years",
+        "months",
+        "weeks",
+        "days",
+        "hours",
+        "minutes",
+        "seconds",
+        "milliseconds",
+        "microseconds",
+        "nanoseconds",
+    ];
+    let mut values = [0.0; 10];
+    for (index, name) in names.iter().enumerate() {
+        let value = if obj.is_duration_obj() {
+            get_double_prop(obj, index)
+        } else {
+            read_prop_number(vm, obj, val, name)
+        };
+        if value.is_nan() {
+            continue;
+        }
+        if !value.is_finite() || value.fract() != 0.0 {
+            return Err(crate::error::create_range_error(vm, "invalid duration"));
+        }
+        values[index] = value;
+    }
+    Ok(values)
+}
+
+/// `Temporal.Duration` 构造器，保存十个整数时长分量。
+pub fn duration_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ctor_proto = vm.session().builtin_world().duration_proto.as_ptr();
+    if !is_ctor_call(vm, args, ctor_proto) {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Class constructor Temporal.Duration cannot be invoked without 'new'",
+        ));
+    }
+    let mut values = [0.0; 10];
+    for (index, value) in values.iter_mut().enumerate() {
+        if args.len() <= index + 1 {
+            continue;
+        }
+        let number = to_number(vm.reg(args[index + 1]));
+        if !number.is_finite() || number.fract() != 0.0 {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid duration"));
+        }
+        *value = number;
+    }
+    make_duration(vm, values)
+}
+
+/// `Temporal.Duration.from(value)`，复制 Duration 或读取同名字段。
+pub fn duration_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let values = native_try!(duration_like_values(vm, val));
+    make_duration(vm, values)
+}
+
+fn duration_values(obj: &JsObject) -> [f64; 10] {
+    std::array::from_fn(|index| get_double_prop(obj, index))
+}
+
+fn format_duration_number(value: f64) -> String {
+    format!("{}", value as i64)
+}
+
+fn format_duration_seconds(seconds: f64, milliseconds: f64, microseconds: f64, nanoseconds: f64) -> Option<String> {
+    let subsecond = milliseconds * 1_000_000.0 + microseconds * 1_000.0 + nanoseconds;
+    if seconds == 0.0 && subsecond == 0.0 {
+        return None;
+    }
+    let negative = seconds < 0.0 || (seconds == 0.0 && subsecond < 0.0);
+    let whole = seconds.abs() as i64;
+    let fraction = subsecond.abs() as u64;
+    let mut result = format!("{}", whole);
+    if fraction != 0 {
+        let mut digits = format!("{fraction:09}");
+        while digits.ends_with('0') {
+            digits.pop();
+        }
+        result.push('.');
+        result.push_str(&digits);
+    }
+    if negative {
+        result.insert(0, '-');
+    }
+    Some(result)
+}
+
+/// `Temporal.Duration.prototype.toString()` 的 ISO 8601 表示。
+pub fn duration_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_duration(vm, obj));
+    let mut values = duration_values(obj);
+    let negative = values.iter().any(|value| *value < 0.0);
+    for value in &mut values {
+        *value = value.abs();
+    }
+    let mut output = String::from(if negative { "-P" } else { "P" });
+    let date_units = [(0, "Y"), (1, "M"), (2, "W"), (3, "D")];
+    let mut has_date = false;
+    for (index, suffix) in date_units {
+        if values[index] != 0.0 {
+            has_date = true;
+            output.push_str(&format_duration_number(values[index]));
+            output.push_str(suffix);
+        }
+    }
+    let time_units = [(4, "H"), (5, "M")];
+    let has_time = values[4..].iter().any(|value| *value != 0.0);
+    if has_time || !has_date {
+        output.push('T');
+        for (index, suffix) in time_units {
+            if values[index] != 0.0 {
+                output.push_str(&format_duration_number(values[index]));
+                output.push_str(suffix);
+            }
+        }
+        if let Some(seconds) = format_duration_seconds(values[6], values[7], values[8], values[9]) {
+            output.push_str(&seconds);
+            output.push('S');
+        } else if output.ends_with('T') {
+            output.push_str("0S");
+        }
+    }
+    NativeResult::Ok(vm.new_string(&output))
+}
+
+/// `Temporal.Duration.prototype.valueOf()` 始终拒绝隐式数值转换。
+pub fn duration_value_of<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
+    NativeResult::Err(crate::error::create_type_error(vm, "Temporal.Duration has no valueOf"))
+}
+
+/// `Temporal.Duration.prototype.abs()`，返回所有分量的绝对值副本。
+pub fn duration_abs<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_duration(vm, obj));
+    let mut values = duration_values(obj);
+    for value in &mut values {
+        *value = value.abs();
+    }
+    make_duration(vm, values)
+}
+
+/// `Temporal.Duration.prototype.negated()`，返回非零分量取反的副本。
+pub fn duration_negated<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_duration(vm, obj));
+    let mut values = duration_values(obj);
+    for value in &mut values {
+        if *value != 0.0 {
+            *value = -*value;
+        }
+    }
+    make_duration(vm, values)
+}
+
+macro_rules! duration_getter {
+    ($name:ident, $index:expr) => {
+        pub fn $name<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+            let ptr = native_try!(receiver_obj(vm, args));
+            let obj = unsafe { &*ptr };
+            native_try!(ensure_duration(vm, obj));
+            NativeResult::Ok(JsValue::float(get_double_prop(obj, $index)))
+        }
+    };
+}
+
+duration_getter!(duration_years, 0);
+duration_getter!(duration_months, 1);
+duration_getter!(duration_weeks, 2);
+duration_getter!(duration_days, 3);
+duration_getter!(duration_hours, 4);
+duration_getter!(duration_minutes, 5);
+duration_getter!(duration_seconds, 6);
+duration_getter!(duration_milliseconds, 7);
+duration_getter!(duration_microseconds, 8);
+duration_getter!(duration_nanoseconds, 9);
 
 /// 校验 ISO 日期分量（month 1-12、day 按月份与闰年）。
 fn valid_iso_date(year: i32, month: u32, day: u32) -> bool {
@@ -399,11 +721,7 @@ fn plain_date_ymd<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<(f64, f64, f64),
     let ptr = receiver_obj(vm, args)?;
     let obj = unsafe { &*ptr };
     ensure_plain_date(vm, obj)?;
-    Ok((
-        get_double_prop(obj, 0),
-        get_double_prop(obj, 1),
-        get_double_prop(obj, 2),
-    ))
+    Ok((get_double_prop(obj, 0), get_double_prop(obj, 1), get_double_prop(obj, 2)))
 }
 
 /// `Temporal.PlainDate.prototype.year` getter。
@@ -435,10 +753,16 @@ pub fn plain_date_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     NativeResult::Ok(vm.new_string(&format!("{year:04}-{month:02}-{day:02}")))
 }
 
-fn make_plain_time<H: VmHost>(vm: &mut H, hour: u32, minute: u32, second: u32, ms: u32, us: u32, ns: u32) -> NativeResult {
-    let total_ns = hour as f64 * 3.6e12 + minute as f64 * 6e10 + second as f64 * 1e9 + ms as f64 * 1e6 + us as f64 * 1e3 + ns as f64;
-    let proto =
-        JsValue::from_js_object(vm.session().builtin_world().plain_time_proto.as_ptr() as *mut JsObject);
+fn make_plain_time<H: VmHost>(
+    vm: &mut H, hour: u32, minute: u32, second: u32, ms: u32, us: u32, ns: u32,
+) -> NativeResult {
+    let total_ns = hour as f64 * 3.6e12
+        + minute as f64 * 6e10
+        + second as f64 * 1e9
+        + ms as f64 * 1e6
+        + us as f64 * 1e3
+        + ns as f64;
+    let proto = JsValue::from_js_object(vm.session().builtin_world().plain_time_proto.as_ptr() as *mut JsObject);
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
     obj.type_tag = JsObject::OBJ_TYPE_PLAIN_TIME;
     obj.set_prop_at(0, JsValue::float(total_ns));
@@ -565,7 +889,11 @@ fn object_ymd<H: VmHost>(vm: &mut H, val: JsValue) -> Option<(i32, u32, u32)> {
     if !val.is_object() {
         return None;
     }
-    let obj = unsafe { &*val.as_js_object_ptr() };
+    let ptr = val.as_js_object_ptr();
+    if ptr.is_null() {
+        return None;
+    }
+    let obj = unsafe { &*ptr };
     if obj.is_plain_date_obj() {
         return Some((
             get_double_prop(obj, 0) as i32,
@@ -580,6 +908,77 @@ fn object_ymd<H: VmHost>(vm: &mut H, val: JsValue) -> Option<(i32, u32, u32)> {
         return None;
     }
     Some((y.trunc() as i32, m.trunc() as u32, d.trunc() as u32))
+}
+
+fn date_like_ymd<H: VmHost>(vm: &mut H, val: JsValue) -> Result<(i32, u32, u32), JsValue> {
+    let ymd = if val.is_string() {
+        parse_iso_date(&to_string(val)).map_err(|_| crate::error::create_range_error(vm, "invalid ISO 8601 date"))?
+    } else {
+        object_ymd(vm, val).ok_or_else(|| crate::error::create_type_error(vm, "cannot convert to PlainDate"))?
+    };
+    if !valid_iso_date(ymd.0, ymd.1, ymd.2) {
+        return Err(crate::error::create_range_error(vm, "invalid ISO date"));
+    }
+    Ok(ymd)
+}
+
+fn read_prop_text<H: VmHost>(vm: &mut H, obj: &JsObject, receiver: JsValue, name: &str) -> Option<String> {
+    let key_val = vm.new_string(name);
+    let si = vm.property_key_si(key_val);
+    vm.ordinary_get(obj, si, receiver)
+        .ok()
+        .filter(|value| value.is_string())
+        .map(to_string)
+}
+
+fn largest_unit<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<String, JsValue> {
+    if args.len() <= 2 {
+        return Ok("days".to_string());
+    }
+    let options = vm.reg(args[2]);
+    if options.is_nullish() {
+        return Ok("days".to_string());
+    }
+    if !options.is_object() {
+        return Err(crate::error::create_type_error(vm, "options must be an object"));
+    }
+    let ptr = options.as_js_object_ptr();
+    if ptr.is_null() {
+        return Err(crate::error::create_type_error(vm, "options must be an object"));
+    }
+    let unit = read_prop_text(vm, unsafe { &*ptr }, options, "largestUnit").unwrap_or_else(|| "days".to_string());
+    let unit = unit.to_ascii_lowercase();
+    let unit = unit.strip_suffix('s').unwrap_or(&unit);
+    match unit {
+        "year" | "month" | "week" | "day" => Ok(unit.to_string()),
+        "auto" => Ok("day".to_string()),
+        _ => Err(crate::error::create_range_error(vm, "invalid largestUnit")),
+    }
+}
+
+fn date_difference(start: NaiveDate, end: NaiveDate, unit: &str) -> [f64; 10] {
+    let total_days = end.signed_duration_since(start).num_days();
+    if unit == "day" {
+        return [0.0, 0.0, 0.0, total_days as f64, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    }
+    if unit == "week" {
+        return [0.0, 0.0, (total_days / 7) as f64, (total_days % 7) as f64, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    }
+
+    let direction = if end >= start { 1_i64 } else { -1_i64 };
+    let mut total_months = (end.year() as i64 - start.year() as i64) * 12 + end.month0() as i64 - start.month0() as i64;
+    let mut candidate = add_signed_months(start, total_months).unwrap_or(start);
+    if (direction > 0 && candidate > end) || (direction < 0 && candidate < end) {
+        total_months -= direction;
+        candidate = add_signed_months(start, total_months).unwrap_or(start);
+    }
+    let remainder_days = end.signed_duration_since(candidate).num_days();
+    let (years, months) = if unit == "year" {
+        (total_months / 12, total_months % 12)
+    } else {
+        (0, total_months)
+    };
+    [years as f64, months as f64, 0.0, remainder_days as f64, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 }
 
 /// `Temporal.PlainDate.prototype.dayOfWeek` getter：ISO 周几（周一 1 … 周日 7）。
@@ -770,46 +1169,42 @@ pub fn plain_date_to_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(&format!("{year:04}-{month:02}-{day:02}")))
 }
 
-/// 从 duration-like 值读日期单位字段（year/month/week/day）；非对象或字段缺失视为 0。
-fn duration_like_date_fields<H: VmHost>(vm: &mut H, val: JsValue) -> (f64, f64, f64, f64) {
-    if !val.is_object() {
-        return (0.0, 0.0, 0.0, 0.0);
-    }
-    let obj = unsafe { &*val.as_js_object_ptr() };
-    let y = read_prop_number(vm, obj, val, "years");
-    let m = read_prop_number(vm, obj, val, "months");
-    let w = read_prop_number(vm, obj, val, "weeks");
-    let d = read_prop_number(vm, obj, val, "days");
-    (
-        if y.is_nan() { 0.0 } else { y.trunc() },
-        if m.is_nan() { 0.0 } else { m.trunc() },
-        if w.is_nan() { 0.0 } else { w.trunc() },
-        if d.is_nan() { 0.0 } else { d.trunc() },
-    )
-}
-
 /// 按 duration-like 日期字段对日期做加减（Temporal 大单位运算，月份不足日时取月末）。
-fn date_apply_duration<H: VmHost>(
-    vm: &mut H, args: &[u8], sign: i64,
-) -> NativeResult {
+fn date_apply_duration<H: VmHost>(vm: &mut H, args: &[u8], sign: i64) -> NativeResult {
     let date = match plain_date_naive(vm, args) {
         Ok(d) => d,
         Err(e) => return NativeResult::Err(e),
     };
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let (y, m, w, d) = duration_like_date_fields(vm, val);
+    let values = match duration_like_values(vm, val) {
+        Ok(values) => values,
+        Err(error) => return NativeResult::Err(error),
+    };
+    let [y, m, w, d, h, min, s, ms, us, ns] = values;
     let mut result = date;
-    let total_months = (y * 12.0 + m) * sign as f64;
-    if total_months != 0.0 {
-        if let Some(nd) = result.checked_add_months(Months::new(total_months as u32)) {
+    let total_months = ((y * 12.0 + m) * sign as f64) as i64;
+    if total_months != 0 {
+        if let Some(nd) = add_signed_months(result, total_months) {
             result = nd;
         } else {
             return NativeResult::Err(crate::error::create_range_error(vm, "date out of range"));
         }
     }
-    let total_days = (w * 7.0 + d) * sign as f64;
-    if total_days != 0.0 {
-        if let Some(nd) = result.checked_add_days(Days::new(total_days as u64)) {
+    let time_days = (h / 24.0
+        + min / 1_440.0
+        + s / 86_400.0
+        + ms / 86_400_000.0
+        + us / 86_400_000_000.0
+        + ns / 86_400_000_000_000.0)
+        .trunc();
+    let total_days = ((w * 7.0 + d + time_days) * sign as f64) as i64;
+    if total_days != 0 {
+        let next = if total_days >= 0 {
+            result.checked_add_days(Days::new(total_days as u64))
+        } else {
+            result.checked_sub_days(Days::new(total_days.unsigned_abs()))
+        };
+        if let Some(nd) = next {
             result = nd;
         } else {
             return NativeResult::Err(crate::error::create_range_error(vm, "date out of range"));
@@ -826,4 +1221,57 @@ pub fn plain_date_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `Temporal.PlainDate.prototype.subtract(durationLike)`。
 pub fn plain_date_subtract<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     date_apply_duration(vm, args, -1)
+}
+
+fn add_signed_months(date: NaiveDate, months: i64) -> Option<NaiveDate> {
+    let total = date.year() as i64 * 12 + date.month0() as i64 + months;
+    let year = total.div_euclid(12);
+    let month = total.rem_euclid(12) as u32 + 1;
+    let year = i32::try_from(year).ok()?;
+    let day = date.day().min(days_in_month_iso(year, month));
+    NaiveDate::from_ymd_opt(year, month, day)
+}
+
+/// `Temporal.PlainDate.prototype.until(other)`，按默认天单位返回差值。
+pub fn plain_date_until<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let start = match plain_date_naive(vm, args) {
+        Ok(date) => date,
+        Err(error) => return NativeResult::Err(error),
+    };
+    let other_value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let (year, month, day) = match date_like_ymd(vm, other_value) {
+        Ok(value) => value,
+        Err(error) => return NativeResult::Err(error),
+    };
+    let other = NaiveDate::from_ymd_opt(year, month, day).expect("date_like_ymd validates ISO date");
+    let unit = match largest_unit(vm, args) {
+        Ok(unit) => unit,
+        Err(error) => return NativeResult::Err(error),
+    };
+    make_duration(vm, date_difference(start, other, &unit))
+}
+
+/// `Temporal.PlainDate.prototype.since(other)`，按默认天单位返回差值。
+pub fn plain_date_since<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let start = match plain_date_naive(vm, args) {
+        Ok(date) => date,
+        Err(error) => return NativeResult::Err(error),
+    };
+    let other_value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let (year, month, day) = match date_like_ymd(vm, other_value) {
+        Ok(value) => value,
+        Err(error) => return NativeResult::Err(error),
+    };
+    let other = NaiveDate::from_ymd_opt(year, month, day).expect("date_like_ymd validates ISO date");
+    let unit = match largest_unit(vm, args) {
+        Ok(unit) => unit,
+        Err(error) => return NativeResult::Err(error),
+    };
+    let mut values = date_difference(start, other, &unit);
+    for value in &mut values {
+        if *value != 0.0 {
+            *value = -*value;
+        }
+    }
+    make_duration(vm, values)
 }
