@@ -85,10 +85,74 @@ fn instant_epoch_milliseconds() {
 #[test]
 fn instant_epoch_nanoseconds() {
     let mut vm = Vm::new();
-    assert_eq!(
-        num(&mut vm, "Temporal.Instant.from('2024-01-01T00:00:00Z').epochNanoseconds"),
-        1704067200000000000.0
-    );
+    let r = eval(
+        &mut vm,
+        "Temporal.Instant.from('2024-01-01T00:00:00Z').epochNanoseconds === 1704067200000000000n",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn instant_from_epoch_milliseconds_is_exact() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "Temporal.Instant.fromEpochMilliseconds(-217175010876).epochNanoseconds === -217175010876000000n",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn instant_from_epoch_nanoseconds_is_exact() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "Temporal.Instant.fromEpochNanoseconds(217175010123456789n).epochNanoseconds === 217175010123456789n
+            && Temporal.Instant.fromEpochNanoseconds(-217175010876543211n).epochMilliseconds === -217175010877",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn instant_equals_compares_exact_epoch_nanoseconds() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "Temporal.Instant.fromEpochNanoseconds(217175010123456789n)
+            .equals(Temporal.Instant.fromEpochMilliseconds(217175010123))",
+    )
+    .unwrap();
+    assert!(!r.as_bool());
+}
+
+#[test]
+fn instant_compare_accepts_instances_strings_and_annotations() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "Temporal.Instant.compare('1970-01-01T00:00Z[UTC]', new Temporal.Instant(0n)) === 0
+            && Temporal.Instant.compare('1969-12-31T23:00+00:00', new Temporal.Instant(0n)) === -1
+            && Temporal.Instant.compare('1970-01-01T01:00+00:00', new Temporal.Instant(0n)) === 1",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn instant_epoch_factories_validate_input_and_range() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "(() => { try { Temporal.Instant.fromEpochMilliseconds(1.5); return false } catch (e) { return e instanceof RangeError } })()
+        && (() => { try { Temporal.Instant.fromEpochMilliseconds(1n); return false } catch (e) { return e instanceof TypeError } })()
+        && (() => { try { Temporal.Instant.fromEpochNanoseconds(1); return false } catch (e) { return e instanceof TypeError } })()
+        && (() => { try { Temporal.Instant.fromEpochNanoseconds(8640000000000000000001n); return false } catch (e) { return e instanceof RangeError } })()",
+    )
+    .unwrap();
+    assert!(r.as_bool());
 }
 
 #[test]

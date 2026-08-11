@@ -24,7 +24,7 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         ],
     );
 
-    // Temporal.Instant：构造器 + from 静态方法 + 原型 getter 与 toString/valueOf。
+    // Temporal.Instant：构造器 + 静态方法 + 原型 getter 与 toString/valueOf。
     let instant_ctor_ptr = world.instant_constructor.as_ptr() as *mut JsObject;
     let instant_ctor = unsafe { &mut *instant_ctor_ptr };
     configure_native_constructor(
@@ -36,7 +36,20 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         world,
         instant_ctor,
         core,
-        &[("from", oxide_builtins::temporal::instant_from::<crate::vm::Vm> as *const (), 1)],
+        &[
+            ("from", oxide_builtins::temporal::instant_from::<crate::vm::Vm> as *const (), 1),
+            ("compare", oxide_builtins::temporal::instant_compare::<crate::vm::Vm> as *const (), 2),
+            (
+                "fromEpochMilliseconds",
+                oxide_builtins::temporal::instant_from_epoch_milliseconds::<crate::vm::Vm> as *const (),
+                1,
+            ),
+            (
+                "fromEpochNanoseconds",
+                oxide_builtins::temporal::instant_from_epoch_nanoseconds::<crate::vm::Vm> as *const (),
+                1,
+            ),
+        ],
     );
     let instant_proto_ptr = world.instant_proto.as_ptr() as *mut JsObject;
     let instant_proto = unsafe { &mut *instant_proto_ptr };
@@ -73,6 +86,7 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         instant_proto,
         core,
         &[
+            ("equals", oxide_builtins::temporal::instant_equals::<crate::vm::Vm> as *const (), 1),
             ("toString", oxide_builtins::temporal::instant_to_string::<crate::vm::Vm> as *const (), 0),
             ("valueOf", oxide_builtins::temporal::instant_value_of::<crate::vm::Vm> as *const (), 0),
         ],

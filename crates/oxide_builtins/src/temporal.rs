@@ -7,8 +7,10 @@ use oxide_types::value::JsValue;
 
 // Temporal 命名空间的最小实现子集：Temporal.Now / Temporal.Instant /
 // Temporal.PlainDate / Temporal.PlainTime。内部数据按对象类型存入 prop 槽：
-// Instant 存纪元纳秒（f64，prop 0）、PlainDate 存年/月/日（prop 0-2）、
+// Instant 存纪元纳秒（BigInt，prop 0）、PlainDate 存年/月/日（prop 0-2）、
 // PlainTime 存午夜后纳秒（f64，prop 0）。
+
+const MAX_INSTANT_NS: i128 = 8_640_000_000_000_000_000_000;
 
 macro_rules! native_try {
     ($expr:expr) => {
@@ -26,6 +28,17 @@ fn get_double_prop(obj: &JsObject, pos: usize) -> f64 {
     } else {
         f64::NAN
     }
+}
+
+fn get_instant_epoch_ns(obj: &JsObject) -> Option<i128> {
+    let value = obj.get_prop_at(0);
+    if value.is_bigint() {
+        return Some(unsafe { oxide_runtime_api::bigint_data(value) });
+    }
+    if value.is_int() || value.is_double() {
+        return Some(to_number(value) as i128);
+    }
+    None
 }
 
 fn ensure_instant<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<(), JsValue> {
@@ -85,28 +98,319 @@ fn is_ctor_call<H: VmHost>(vm: &mut H, args: &[u8], proto_ptr: *const JsObject) 
 
 fn make_instant<H: VmHost>(vm: &mut H, epoch_ns: i128) -> NativeResult {
     let proto = JsValue::from_js_object(vm.session().builtin_world().instant_proto.as_ptr() as *mut JsObject);
+    let epoch_value = vm.new_bigint(epoch_ns);
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
     obj.type_tag = JsObject::OBJ_TYPE_INSTANT;
-    obj.set_prop_at(0, JsValue::float(epoch_ns as f64));
+    obj.set_prop_at(0, epoch_value);
     NativeResult::Ok(JsValue::from_js_object(vm.alloc_object(obj)))
 }
 
 /// 把 epoch 纳秒拆成秒 + 亚秒纳秒（供 chrono 时间转换）。
-fn ns_to_datetime(epoch_ns: f64) -> Option<DateTime<Utc>> {
-    if !epoch_ns.is_finite() {
-        return None;
-    }
-    let secs = (epoch_ns / 1e9).trunc() as i64;
-    let sub_ns = (epoch_ns - (epoch_ns / 1e9).trunc() * 1e9).round() as u32;
+fn ns_to_datetime(epoch_ns: i128) -> Option<DateTime<Utc>> {
+    let secs = i64::try_from(epoch_ns.div_euclid(1_000_000_000)).ok()?;
+    let sub_ns = epoch_ns.rem_euclid(1_000_000_000) as u32;
     DateTime::from_timestamp(secs, sub_ns)
 }
 
-/// 解析 `YYYY-MM-DDTHH:MM:SS[.fff](Z|±HH:MM)` 形式的 ISO 字符串到纪元纳秒。
+fn parse_digits(bytes: &[u8], cursor: &mut usize, count: usize) -> Option<i128> {
+    let end = cursor.checked_add(count)?;
+    let digits = bytes.get(*cursor..end)?;
+    if !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    *cursor = end;
+    digits
+        .iter()
+        .try_fold(0_i128, |value, digit| value.checked_mul(10)?.checked_add((digit - b'0') as i128))
+}
+
+fn is_leap_year(year: i128) -> bool {
+    year.rem_euclid(4) == 0 && (year.rem_euclid(100) != 0 || year.rem_euclid(400) == 0)
+}
+
+fn days_in_month(year: i128, month: i128) -> Option<i128> {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => Some(31),
+        4 | 6 | 9 | 11 => Some(30),
+        2 => Some(if is_leap_year(year) { 29 } else { 28 }),
+        _ => None,
+    }
+}
+
+fn days_from_civil(mut year: i128, month: i128, day: i128) -> i128 {
+    year -= i128::from(month <= 2);
+    let era = year.div_euclid(400);
+    let year_of_era = year - era * 400;
+    let shifted_month = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * shifted_month + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
+fn instant_string_without_annotations(input: &str) -> Option<&str> {
+    let Some(first_annotation) = input.find('[') else {
+        return Some(input);
+    };
+    let mut rest = &input[first_annotation..];
+    let mut saw_calendar = false;
+    let mut saw_critical_calendar = false;
+    let mut saw_time_zone = false;
+    while !rest.is_empty() {
+        let body_start = rest.strip_prefix('[')?;
+        let close = body_start.find(']')?;
+        let body = &body_start[..close];
+        rest = &body_start[close + 1..];
+        if body.is_empty() || (!rest.is_empty() && !rest.starts_with('[')) {
+            return None;
+        }
+        let (critical, annotation) = match body.strip_prefix('!') {
+            Some(value) => (true, value),
+            None => (false, body),
+        };
+        if let Some((key, _value)) = annotation.split_once('=') {
+            if key.is_empty()
+                || !key
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_'))
+            {
+                return None;
+            }
+            if key == "u-ca" {
+                if saw_calendar && (critical || saw_critical_calendar) {
+                    return None;
+                }
+                saw_calendar = true;
+                saw_critical_calendar |= critical;
+            } else if critical {
+                return None;
+            }
+        } else {
+            if saw_time_zone || annotation.is_empty() {
+                return None;
+            }
+            if matches!(annotation.as_bytes().first(), Some(b'+' | b'-')) {
+                let bytes = annotation.as_bytes();
+                let hour_only = bytes.len() == 3 && bytes[1..3].iter().all(u8::is_ascii_digit);
+                let hour_minute = bytes.len() == 6
+                    && bytes[3] == b':'
+                    && bytes[1..3].iter().all(u8::is_ascii_digit)
+                    && bytes[4..6].iter().all(u8::is_ascii_digit);
+                if !hour_only && !hour_minute {
+                    return None;
+                }
+                let hour = (bytes[1] - b'0') * 10 + bytes[2] - b'0';
+                let minute = if hour_minute { (bytes[4] - b'0') * 10 + bytes[5] - b'0' } else { 0 };
+                if hour > 23 || minute > 59 {
+                    return None;
+                }
+            }
+            saw_time_zone = true;
+        }
+    }
+    Some(&input[..first_annotation])
+}
+
+/// 解析带 UTC 标识或数值偏移的 Temporal ISO 日期时间到纪元纳秒。
+///
+/// # 边界与前提
+/// - 支持扩展年份、compact 格式、annotation 和亚分钟 offset。
+/// - 闰秒按前一秒解释；超出 Instant 范围或语法无效时返回 `None`。
 fn parse_instant_string(s: &str) -> Option<i128> {
-    let t = s.trim();
-    let dt = DateTime::parse_from_rfc3339(t).ok()?;
-    let utc = dt.with_timezone(&Utc);
-    Some(utc.timestamp() as i128 * 1_000_000_000 + utc.timestamp_subsec_nanos() as i128)
+    let input = s.trim();
+    let bytes = instant_string_without_annotations(input)?.as_bytes();
+
+    // 解析公历日期；带符号年份固定为六位，负零扩展年份无效。
+    let mut cursor = 0usize;
+    let negative_extended_year = bytes.first() == Some(&b'-');
+    let year_sign = match bytes.first().copied() {
+        Some(b'+') => {
+            cursor += 1;
+            1_i128
+        }
+        Some(b'-') => {
+            cursor += 1;
+            -1_i128
+        }
+        _ => 1_i128,
+    };
+    let year_digits = if cursor == 0 { 4 } else { 6 };
+    let year_magnitude = parse_digits(bytes, &mut cursor, year_digits)?;
+    if negative_extended_year && year_magnitude == 0 {
+        return None;
+    }
+    let year = year_sign * year_magnitude;
+    let separated_date = bytes.get(cursor) == Some(&b'-');
+    if separated_date {
+        cursor += 1;
+    }
+    let month = parse_digits(bytes, &mut cursor, 2)?;
+    if separated_date {
+        if bytes.get(cursor) != Some(&b'-') {
+            return None;
+        }
+        cursor += 1;
+    }
+    let day = parse_digits(bytes, &mut cursor, 2)?;
+
+    // 时间允许小时、分钟或秒精度，日期与时间可用 T、t 或空格分隔。
+    if !matches!(bytes.get(cursor), Some(b'T' | b't' | b' ')) {
+        return None;
+    }
+    cursor += 1;
+    let hour = parse_digits(bytes, &mut cursor, 2)?;
+    let colon_time = bytes.get(cursor) == Some(&b':');
+    let minute = if colon_time {
+        cursor += 1;
+        parse_digits(bytes, &mut cursor, 2)?
+    } else if matches!(bytes.get(cursor), Some(byte) if byte.is_ascii_digit()) {
+        parse_digits(bytes, &mut cursor, 2)?
+    } else {
+        0
+    };
+    let (second, has_second) = if bytes.get(cursor) == Some(&b':') {
+        cursor += 1;
+        (parse_digits(bytes, &mut cursor, 2)?, true)
+    } else if !colon_time && matches!(bytes.get(cursor), Some(byte) if byte.is_ascii_digit()) {
+        (parse_digits(bytes, &mut cursor, 2)?, true)
+    } else {
+        (0, false)
+    };
+
+    let mut subsecond_ns = 0_i128;
+    if matches!(bytes.get(cursor), Some(b'.' | b',')) {
+        if !has_second {
+            return None;
+        }
+        cursor += 1;
+        let fraction_start = cursor;
+        while matches!(bytes.get(cursor), Some(byte) if byte.is_ascii_digit()) {
+            cursor += 1;
+        }
+        let fraction_len = cursor - fraction_start;
+        if fraction_len == 0 || fraction_len > 9 {
+            return None;
+        }
+        let mut fraction_cursor = fraction_start;
+        subsecond_ns = parse_digits(bytes, &mut fraction_cursor, fraction_len)?;
+        subsecond_ns *= 10_i128.pow((9 - fraction_len) as u32);
+    }
+
+    // 数值 offset 支持 basic/extended 形式及秒以下精度。
+    let offset_ns = match bytes.get(cursor).copied() {
+        Some(b'Z' | b'z') => {
+            cursor += 1;
+            0_i128
+        }
+        Some(sign @ (b'+' | b'-')) => {
+            cursor += 1;
+            let offset_hour = parse_digits(bytes, &mut cursor, 2)?;
+            let colon_format = bytes.get(cursor) == Some(&b':');
+            let offset_minute = if colon_format {
+                cursor += 1;
+                parse_digits(bytes, &mut cursor, 2)?
+            } else if matches!(bytes.get(cursor), Some(byte) if byte.is_ascii_digit()) {
+                parse_digits(bytes, &mut cursor, 2)?
+            } else {
+                0
+            };
+            let (offset_second, has_offset_second) = if colon_format && bytes.get(cursor) == Some(&b':') {
+                cursor += 1;
+                (parse_digits(bytes, &mut cursor, 2)?, true)
+            } else if !colon_format && matches!(bytes.get(cursor), Some(byte) if byte.is_ascii_digit()) {
+                (parse_digits(bytes, &mut cursor, 2)?, true)
+            } else {
+                (0, false)
+            };
+            let mut offset_subsecond_ns = 0_i128;
+            if matches!(bytes.get(cursor), Some(b'.' | b',')) {
+                if !has_offset_second {
+                    return None;
+                }
+                cursor += 1;
+                let fraction_start = cursor;
+                while matches!(bytes.get(cursor), Some(byte) if byte.is_ascii_digit()) {
+                    cursor += 1;
+                }
+                let fraction_len = cursor - fraction_start;
+                if fraction_len == 0 || fraction_len > 9 {
+                    return None;
+                }
+                let mut fraction_cursor = fraction_start;
+                offset_subsecond_ns = parse_digits(bytes, &mut fraction_cursor, fraction_len)?;
+                offset_subsecond_ns *= 10_i128.pow((9 - fraction_len) as u32);
+            }
+            if offset_hour > 23 || offset_minute > 59 || offset_second > 59 {
+                return None;
+            }
+            let magnitude =
+                (offset_hour * 3_600 + offset_minute * 60 + offset_second) * 1_000_000_000 + offset_subsecond_ns;
+            if sign == b'-' {
+                -magnitude
+            } else {
+                magnitude
+            }
+        }
+        _ => return None,
+    };
+    if cursor != bytes.len() || hour > 23 || minute > 59 || second > 60 || day == 0 || day > days_in_month(year, month)?
+    {
+        return None;
+    }
+
+    // 使用 proleptic Gregorian 日数精确换算，并在纳秒层应用 offset。
+    let epoch_seconds = days_from_civil(year, month, day)
+        .checked_mul(86_400)?
+        .checked_add(hour * 3_600 + minute * 60 + second.min(59))?;
+    let epoch_ns = epoch_seconds
+        .checked_mul(1_000_000_000)?
+        .checked_add(subsecond_ns)?
+        .checked_sub(offset_ns)?;
+    (epoch_ns.unsigned_abs() <= MAX_INSTANT_NS as u128).then_some(epoch_ns)
+}
+
+fn native_engine_error<H: VmHost>(vm: &mut H, error: &str) -> JsValue {
+    vm.take_uncaught_value()
+        .unwrap_or_else(|| crate::error::create_from_text(vm, error))
+}
+
+fn primitive_to_bigint<H: VmHost>(vm: &mut H, raw: JsValue) -> Result<i128, JsValue> {
+    let primitive = oxide_runtime_api::to_primitive(raw, oxide_runtime_api::ToPrimitiveHint::Number, vm)
+        .map_err(|error| native_engine_error(vm, &error))?;
+    if primitive.is_bigint() {
+        return Ok(vm.bigint_value(primitive));
+    }
+    if primitive.is_bool() {
+        return Ok(i128::from(primitive.as_bool()));
+    }
+    if primitive.is_string() {
+        let input = to_string(primitive);
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return Ok(0);
+        }
+        return trimmed.parse::<i128>().map_err(|_| {
+            crate::error::create_syntax_error(vm, "Cannot convert string to BigInt: invalid integer literal")
+        });
+    }
+    Err(crate::error::create_type_error(vm, "Cannot convert value to a BigInt"))
+}
+
+fn instant_like_epoch_ns<H: VmHost>(vm: &mut H, value: JsValue) -> Result<i128, JsValue> {
+    if value.is_object() {
+        let ptr = value.as_js_object_ptr();
+        if !ptr.is_null() {
+            let obj = unsafe { &*ptr };
+            if obj.is_instant_obj() {
+                return get_instant_epoch_ns(obj)
+                    .ok_or_else(|| crate::error::create_range_error(vm, "invalid Instant"));
+            }
+            if obj.is_function() {
+                return Err(crate::error::create_range_error(vm, "invalid ISO 8601 string"));
+            }
+        }
+    }
+    let input = oxide_runtime_api::to_string_full(value, vm).map_err(|error| native_engine_error(vm, &error))?;
+    parse_instant_string(&input).ok_or_else(|| crate::error::create_range_error(vm, "invalid ISO 8601 string"))
 }
 
 /// `Temporal.Now.instant()`：返回当前时刻的 Temporal.Instant。
@@ -121,7 +425,7 @@ pub fn now_time_zone_id<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string("UTC"))
 }
 
-/// `Temporal.Instant` 构造器：接受一个数值（纪元纳秒，BigInt 未实现故按 number 处理）。
+/// `Temporal.Instant` 构造器：把参数按 ToBigInt 转换为纪元纳秒。
 pub fn instant_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ctor_proto = vm.session().builtin_world().instant_proto.as_ptr();
     if !is_ctor_call(vm, args, ctor_proto) {
@@ -130,46 +434,60 @@ pub fn instant_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             "Class constructor Temporal.Instant cannot be invoked without 'new'",
         ));
     }
-    let epoch_ns = if args.len() < 2 { 0.0 } else { to_number(vm.reg(args[1])) };
-    make_instant(vm, epoch_ns as i128)
+    let raw = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
+    let epoch_ns = native_try!(primitive_to_bigint(vm, raw));
+    if epoch_ns.unsigned_abs() > MAX_INSTANT_NS as u128 {
+        return NativeResult::Err(crate::error::create_range_error(vm, "Instant outside supported range"));
+    }
+    make_instant(vm, epoch_ns)
 }
 
-/// `Temporal.Instant.from(value)`：接受 ISO 字符串、数值（纪元纳秒）或
-/// 带 `epochMilliseconds`/`epochNanoseconds` 数值字段的对象。
+/// `Temporal.Instant.from(value)`：接受 Instant、ISO 字符串或可转换为字符串的对象。
 pub fn instant_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
-    let epoch_ns = if val.is_string() {
-        let s = to_string(val);
-        match parse_instant_string(&s) {
-            Some(ns) => ns,
-            None => {
-                return NativeResult::Err(crate::error::create_range_error(vm, "invalid ISO 8601 string"));
-            }
-        }
-    } else if val.is_int() || val.is_double() {
-        to_number(val) as i128
-    } else if val.is_object() && {
-        let ptr = val.as_js_object_ptr();
-        !ptr.is_null() && unsafe { &*ptr }.is_instant_obj()
-    } {
-        let obj = unsafe { &*val.as_js_object_ptr() };
-        get_double_prop(obj, 0) as i128
-    } else if val.is_object() {
-        let obj = unsafe { &*val.as_js_object_ptr() };
-        let obj_val = val;
-        let ms = read_prop_number(vm, obj, obj_val, "epochMilliseconds");
-        let ns = read_prop_number(vm, obj, obj_val, "epochNanoseconds");
-        if !ns.is_nan() {
-            ns as i128
-        } else if !ms.is_nan() {
-            (ms * 1e6) as i128
-        } else {
-            return NativeResult::Err(crate::error::create_type_error(vm, "cannot convert object to Instant"));
-        }
-    } else {
-        return NativeResult::Err(crate::error::create_type_error(vm, "cannot convert value to Instant"));
-    };
+    let epoch_ns = native_try!(instant_like_epoch_ns(vm, val));
     make_instant(vm, epoch_ns)
+}
+
+/// `Temporal.Instant.fromEpochMilliseconds(epochMilliseconds)`：从整数毫秒创建 Instant。
+pub fn instant_from_epoch_milliseconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let raw = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
+    let primitive = match oxide_runtime_api::to_primitive(raw, oxide_runtime_api::ToPrimitiveHint::Number, vm) {
+        Ok(value) => value,
+        Err(error) => return NativeResult::Err(native_engine_error(vm, &error)),
+    };
+    if primitive.is_bigint() || primitive.is_symbol() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a number"));
+    }
+    let epoch_ms = to_number(primitive);
+    if !epoch_ms.is_finite() || epoch_ms.fract() != 0.0 || epoch_ms.abs() > 8_640_000_000_000_000.0 {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid epoch milliseconds"));
+    }
+    make_instant(vm, (epoch_ms as i128) * 1_000_000)
+}
+
+/// `Temporal.Instant.fromEpochNanoseconds(epochNanoseconds)`：从 BigInt 纳秒创建 Instant。
+pub fn instant_from_epoch_nanoseconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let raw = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
+    let epoch_ns = native_try!(primitive_to_bigint(vm, raw));
+    if epoch_ns.unsigned_abs() > MAX_INSTANT_NS as u128 {
+        return NativeResult::Err(crate::error::create_range_error(vm, "Instant outside supported range"));
+    }
+    make_instant(vm, epoch_ns)
+}
+
+/// `Temporal.Instant.compare(one, two)`：按纪元纳秒返回 -1、0 或 1。
+pub fn instant_compare<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let one = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
+    let two = if args.len() < 3 { JsValue::undefined() } else { vm.reg(args[2]) };
+    let one_ns = native_try!(instant_like_epoch_ns(vm, one));
+    let two_ns = native_try!(instant_like_epoch_ns(vm, two));
+    let result = match one_ns.cmp(&two_ns) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    };
+    NativeResult::Ok(JsValue::int(result))
 }
 
 /// 读对象的数值字段（普通对象访问器 getter 路径）。
@@ -184,7 +502,11 @@ pub fn instant_epoch_seconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     let ptr = native_try!(receiver_obj(vm, args));
     let obj = unsafe { &*ptr };
     native_try!(ensure_instant(vm, obj));
-    NativeResult::Ok(JsValue::float((get_double_prop(obj, 0) / 1e9).trunc()))
+    let epoch_ns = match get_instant_epoch_ns(obj) {
+        Some(value) => value,
+        None => return NativeResult::Err(crate::error::create_range_error(vm, "invalid Instant")),
+    };
+    NativeResult::Ok(JsValue::float(epoch_ns.div_euclid(1_000_000_000) as f64))
 }
 
 /// `Temporal.Instant.prototype.epochMilliseconds` getter。
@@ -192,7 +514,11 @@ pub fn instant_epoch_milliseconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeR
     let ptr = native_try!(receiver_obj(vm, args));
     let obj = unsafe { &*ptr };
     native_try!(ensure_instant(vm, obj));
-    NativeResult::Ok(JsValue::float((get_double_prop(obj, 0) / 1e6).trunc()))
+    let epoch_ns = match get_instant_epoch_ns(obj) {
+        Some(value) => value,
+        None => return NativeResult::Err(crate::error::create_range_error(vm, "invalid Instant")),
+    };
+    NativeResult::Ok(JsValue::float(epoch_ns.div_euclid(1_000_000) as f64))
 }
 
 /// `Temporal.Instant.prototype.epochMicroseconds` getter。
@@ -200,15 +526,41 @@ pub fn instant_epoch_microseconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeR
     let ptr = native_try!(receiver_obj(vm, args));
     let obj = unsafe { &*ptr };
     native_try!(ensure_instant(vm, obj));
-    NativeResult::Ok(JsValue::float((get_double_prop(obj, 0) / 1e3).trunc()))
+    let epoch_ns = match get_instant_epoch_ns(obj) {
+        Some(value) => value,
+        None => return NativeResult::Err(crate::error::create_range_error(vm, "invalid Instant")),
+    };
+    NativeResult::Ok(JsValue::float(epoch_ns.div_euclid(1_000) as f64))
 }
 
-/// `Temporal.Instant.prototype.epochNanoseconds` getter：BigInt 未实现，返回 number 近似。
+/// `Temporal.Instant.prototype.epochNanoseconds` getter：返回精确 BigInt。
 pub fn instant_epoch_nanoseconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ptr = native_try!(receiver_obj(vm, args));
     let obj = unsafe { &*ptr };
     native_try!(ensure_instant(vm, obj));
-    NativeResult::Ok(JsValue::float(get_double_prop(obj, 0)))
+    let value = obj.get_prop_at(0);
+    if value.is_bigint() {
+        NativeResult::Ok(value)
+    } else {
+        match get_instant_epoch_ns(obj) {
+            Some(epoch_ns) => NativeResult::Ok(vm.new_bigint(epoch_ns)),
+            None => NativeResult::Err(crate::error::create_range_error(vm, "invalid Instant")),
+        }
+    }
+}
+
+/// `Temporal.Instant.prototype.equals(other)`：比较两个 Instant 的纪元纳秒。
+pub fn instant_equals<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_instant(vm, obj));
+    let Some(epoch_ns) = get_instant_epoch_ns(obj) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid Instant"));
+    };
+
+    let other = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
+    let other_ns = native_try!(instant_like_epoch_ns(vm, other));
+    NativeResult::Ok(JsValue::bool(epoch_ns == other_ns))
 }
 
 /// `Temporal.Instant.prototype.toString()`：输出 ISO 8601 UTC（如 `2024-01-01T00:00:00Z`）。
@@ -216,7 +568,11 @@ pub fn instant_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ptr = native_try!(receiver_obj(vm, args));
     let obj = unsafe { &*ptr };
     native_try!(ensure_instant(vm, obj));
-    match ns_to_datetime(get_double_prop(obj, 0)) {
+    let epoch_ns = match get_instant_epoch_ns(obj) {
+        Some(value) => value,
+        None => return NativeResult::Err(crate::error::create_range_error(vm, "invalid Instant")),
+    };
+    match ns_to_datetime(epoch_ns) {
         Some(dt) => {
             let s = dt.to_rfc3339_opts(SecondsFormat::AutoSi, true);
             NativeResult::Ok(vm.new_string(&s))
@@ -376,11 +732,6 @@ const DURATION_FIELD_ORDER: [(&str, usize); 10] = [
     ("years", 0),
 ];
 
-fn duration_engine_error<H: VmHost>(vm: &mut H, error: &str) -> JsValue {
-    vm.take_uncaught_value()
-        .unwrap_or_else(|| crate::error::create_from_text(vm, error))
-}
-
 fn duration_field_number<H: VmHost>(
     vm: &mut H, obj: &JsObject, receiver: JsValue, name: &str,
 ) -> Result<Option<f64>, JsValue> {
@@ -388,14 +739,14 @@ fn duration_field_number<H: VmHost>(
     let si = vm.property_key_si(key_val);
     let raw = match vm.ordinary_get(obj, si, receiver) {
         Ok(value) => value,
-        Err(error) => return Err(duration_engine_error(vm, &error)),
+        Err(error) => return Err(native_engine_error(vm, &error)),
     };
     if raw.is_undefined() {
         return Ok(None);
     }
     let primitive = match oxide_runtime_api::to_primitive(raw, oxide_runtime_api::ToPrimitiveHint::Number, vm) {
         Ok(value) => value,
-        Err(error) => return Err(duration_engine_error(vm, &error)),
+        Err(error) => return Err(native_engine_error(vm, &error)),
     };
     if primitive.is_symbol() || primitive.is_bigint() {
         return Err(crate::error::create_type_error(vm, "cannot convert duration field to number"));
