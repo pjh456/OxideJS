@@ -242,7 +242,7 @@ impl ParamSpec<'_> {
 enum ConstantKey {
     Number(u64),
     Int(i32),
-    BigInt(i128),
+    BigInt(num_bigint::BigInt),
     String(String),
     Boolean(bool),
     Null,
@@ -643,7 +643,7 @@ impl ConstantKey {
         match value {
             Constant::Number(v) => Some(Self::Number(v.to_bits())),
             Constant::Int(v) => Some(Self::Int(*v)),
-            Constant::BigInt(v) => Some(Self::BigInt(*v)),
+            Constant::BigInt(v) => Some(Self::BigInt(v.clone())),
             Constant::String(v) => Some(Self::String(v.clone())),
             Constant::Boolean(v) => Some(Self::Boolean(*v)),
             Constant::Null => Some(Self::Null),
@@ -673,12 +673,7 @@ impl Emitter {
         let msg_idx = ctx.add_constant(Constant::String(msg.to_string()));
         ctx.inst(Inst::load_const(Operand::Reg(msg_reg), msg_idx));
         let exc_reg = ctx.alloc_reg();
-        ctx.inst(Inst::new_expression(
-            Operand::Reg(exc_reg),
-            Operand::Reg(ctor),
-            Operand::Reg(msg_reg),
-            1,
-        ));
+        ctx.inst(Inst::new_expression(Operand::Reg(exc_reg), Operand::Reg(ctor), Operand::Reg(msg_reg), 1));
         ctx.inst(Inst::new(OpCode::THROW, Operand::Reg(exc_reg), Operand::None, Operand::None));
         let dummy = ctx.alloc_reg();
         let undef_idx = ctx.add_constant(Constant::Undefined);

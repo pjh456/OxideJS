@@ -13,10 +13,10 @@ use std::collections::HashMap;
 
 use rustc_hash::FxBuildHasher;
 
-use oxide_types::object::{JsObject, JsString};
-use oxide_types::value::JsValue;
 use crate::session_gc::SessionGc;
 use crate::vm::ForInIter;
+use oxide_types::object::{JsObject, JsString};
+use oxide_types::value::JsValue;
 
 /// session arena 与 GC 簿记。
 ///
@@ -32,7 +32,7 @@ pub(crate) struct GcState {
     /// BigInt 堆 box（`Box<i128>`）追踪表。`RefCell` 使 `&self` 的
     /// `convert_immutables` 也能登记新 box。与字符串不同，BigInt 不参与
     /// mark/sweep 回收（值量少），只在 full_reset 统一释放。
-    pub(crate) session_bigint_ptrs: RefCell<Vec<*mut i128>>,
+    pub(crate) session_bigint_ptrs: RefCell<Vec<*mut num_bigint::BigInt>>,
     pub(crate) session_bytes_allocated: usize,
     pub(crate) forwarding: HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>,
 }

@@ -13,4 +13,5 @@ oxide_ir = { path = "../oxide_ir" }
 oxide_log = { path = "../oxide_log" }
 regex.workspace = true
 regress.workspace = true
+num-bigint = "0.4"
 

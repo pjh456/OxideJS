@@ -37,10 +37,12 @@ impl Emitter {
     fn emit_bigint_literal_expression(
         &self, b: &oxide_parser::BigIntLiteral, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
-        let value = b
-            .value
-            .parse::<i128>()
-            .map_err(|_| format!("BigInt literal out of range: {}", b.value))?;
+        let value = if let Ok(v) = b.value.parse::<i128>() {
+            num_bigint::BigInt::from(v)
+        } else {
+            num_bigint::BigInt::parse_bytes(b.value.as_bytes(), 10)
+                .ok_or_else(|| format!("BigInt literal out of range: {}", b.value))?
+        };
         let idx = ctx.add_constant(Constant::BigInt(value));
         let r = ctx.alloc_reg();
         ctx.inst(Inst::load_const(Operand::Reg(r), idx));

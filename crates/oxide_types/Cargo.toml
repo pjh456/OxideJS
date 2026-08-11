@@ -11,6 +11,7 @@ bumpalo.workspace = true
 hashbrown.workspace = true
 oxide_log = { path = "../oxide_log" }
 rustc-hash.workspace = true
+num-bigint = "0.4"
 
 [dev-dependencies]
 proptest.workspace = true

@@ -26,6 +26,8 @@ indexmap.workspace = true
 smallvec.workspace = true
 unicode-normalization.workspace = true
 rustc-hash.workspace = true
+num-bigint = "0.4"
+num-traits = "0.2"
 
 [dev-dependencies]
 proptest.workspace = true

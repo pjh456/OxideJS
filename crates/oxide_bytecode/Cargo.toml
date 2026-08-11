@@ -8,3 +8,4 @@ description = "OxideJS - Shared bytecode protocol and compiled module ABI"
 
 [dependencies]
 oxide_log = { path = "../oxide_log" }
+num-bigint = "0.4"

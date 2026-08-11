@@ -16,7 +16,7 @@ use crate::opcode::{self, OpCode};
 pub enum Constant {
     Number(f64),
     Int(i32),
-    BigInt(i128),
+    BigInt(num_bigint::BigInt),
     String(String),
     Boolean(bool),
     Null,

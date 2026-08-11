@@ -3,6 +3,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, OnceLock};
 
+use num_traits::Zero;
 use oxide_bytecode::module::{CompiledModule, Constant};
 use oxide_bytecode::opcode::{self, OpCode};
 use smallvec::SmallVec;
@@ -85,9 +86,9 @@ macro_rules! binary_arith {
         if lv.is_int() && rv.is_int() {
             $self.regs[$rd] = JsValue::float(lv.as_int() as f64 $op rv.as_int() as f64);
         } else if lv.is_bigint() && rv.is_bigint() {
-            let l = $self.bigint_value(lv);
-            let r = $self.bigint_value(rv);
-            if r == 0 {
+            let l = $self.bigint_value(lv).clone();
+            let r = $self.bigint_value(rv).clone();
+            if r.is_zero() {
                 // BigInt 除/模零：规范要求 RangeError（Number 路径走 f64 inf/NaN）。
                 $self.raise_error_kind("RangeError", "Division by zero")?;
                 $self.regs[$rd] = JsValue::undefined();
@@ -101,9 +102,9 @@ macro_rules! binary_arith {
             let r = $self.coerce_primitive_bounded(rv, false)?;
             if l.is_bigint() && r.is_bigint() {
                 // 包装对象 coerce 后暴露双 BigInt（如 Object(2n) / 2n）。
-                let lv = $self.bigint_value(l);
-                let rv = $self.bigint_value(r);
-                if rv == 0 {
+                let lv = $self.bigint_value(l).clone();
+                let rv = $self.bigint_value(r).clone();
+                if rv.is_zero() {
                     $self.raise_error_kind("RangeError", "Division by zero")?;
                     $self.regs[$rd] = JsValue::undefined();
                 } else {
@@ -1781,10 +1782,10 @@ impl oxide_runtime_api::VmHost for Vm {
     fn new_string(&mut self, s: &str) -> JsValue {
         self.new_string(s)
     }
-    fn new_bigint(&mut self, v: i128) -> JsValue {
+    fn new_bigint(&mut self, v: num_bigint::BigInt) -> JsValue {
         Vm::new_bigint(self, v)
     }
-    fn bigint_value(&mut self, val: JsValue) -> i128 {
+    fn bigint_value(&mut self, val: JsValue) -> &num_bigint::BigInt {
         Vm::bigint_value(self, val)
     }
     fn kernel_core(&self) -> &Arc<KernelCore> {
@@ -1983,11 +1984,11 @@ fn rehome_subtree(module: &CompiledModule, base: u32, out: &mut Vec<Arc<Compiled
 #[cfg(test)]
 mod tests {
     use super::{opcode, JsValue, TryHandler, Vm};
-    use std::sync::Arc;
     use oxide_bytecode::module::CompiledModule;
     use oxide_runtime_api::NativeResult;
     use oxide_types::object::NativeFnPtr;
     use oxide_types::object::{JsObject, PropAttributes};
+    use std::sync::Arc;
 
     fn native_return_7(_vm: &mut Vm, _args: &[u8]) -> NativeResult {
         NativeResult::Ok(JsValue::int(7))

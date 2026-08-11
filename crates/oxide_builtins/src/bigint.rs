@@ -1,3 +1,4 @@
+use num_bigint::BigInt;
 use oxide_runtime_api::{to_primitive, NativeResult, ToPrimitiveHint, VmHost};
 use oxide_types::value::JsValue;
 
@@ -10,15 +11,12 @@ pub fn bigint_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let this_val = vm.reg(args[0]);
         if this_val.is_object() {
             // new 语义：BigInt 不可 new，抛 TypeError。
-            return NativeResult::Err(crate::error::create_type_error(
-                vm,
-                "BigInt is not a constructor",
-            ));
+            return NativeResult::Err(crate::error::create_type_error(vm, "BigInt is not a constructor"));
         }
     }
     // 无参 BigInt() → 0n（注意 BigInt(undefined) 必须抛 TypeError）。
     if args.len() <= 1 {
-        return NativeResult::Ok(vm.new_bigint(0));
+        return NativeResult::Ok(vm.new_bigint(BigInt::from(0)));
     }
     let val = vm.reg(args[1]);
     // ToPrimitive(value, number)：对象先出盒，用户 @@toPrimitive/valueOf/toString
@@ -29,15 +27,12 @@ pub fn bigint_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             if let Some(exc) = vm.take_uncaught_value() {
                 return NativeResult::Err(exc);
             }
-            return NativeResult::Err(crate::error::create_type_error(
-                vm,
-                "Cannot convert value to a BigInt",
-            ));
+            return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a BigInt"));
         }
     };
     // 步骤 3：Type(prim) 为 Number → NumberToBigInt。
     if prim.is_int() {
-        return NativeResult::Ok(vm.new_bigint(prim.as_int() as i128));
+        return NativeResult::Ok(vm.new_bigint(BigInt::from(prim.as_int())));
     }
     if prim.is_double() {
         let d = prim.as_double();
@@ -47,14 +42,7 @@ pub fn bigint_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                 "The number cannot be converted to a BigInt because it is not an integer",
             ));
         }
-        // i128 暂存上限：超出范围的整数后续由任意精度表示补齐。
-        if d < i128::MIN as f64 || d > i128::MAX as f64 {
-            return NativeResult::Err(crate::error::create_range_error(
-                vm,
-                "The number is too large to be converted to a BigInt",
-            ));
-        }
-        return NativeResult::Ok(vm.new_bigint(d.trunc() as i128));
+        return NativeResult::Ok(vm.new_bigint(BigInt::from(d.trunc() as i128)));
     }
     // 步骤 4：其它原始类型走 ToBigInt。
     match to_bigint(vm, prim) {
@@ -99,7 +87,7 @@ pub fn bigint_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     } else {
         10u32
     };
-    let text = i128_to_radix_string(vm.bigint_value(v), radix);
+    let text = vm.bigint_value(v).to_str_radix(radix);
     NativeResult::Ok(vm.new_string(&text))
 }
 
@@ -131,20 +119,16 @@ pub fn bigint_as_int_n<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     let v = vm.bigint_value(val);
     if bits == 0 {
-        return NativeResult::Ok(vm.new_bigint(0));
+        return NativeResult::Ok(vm.new_bigint(BigInt::from(0)));
     }
-    if bits >= 127 {
-        // i128 表示范围内 `2^bits` 恒大于 |v|：取模后符号位折叠回原值。
-        return NativeResult::Ok(val);
-    }
-    let modulus = 1i128 << bits;
-    let half = 1i128 << (bits - 1);
-    let mut m = v % modulus;
-    if m < 0 {
-        m += modulus;
+    let modulus = BigInt::from(1) << bits;
+    let half = BigInt::from(1) << (bits - 1);
+    let mut m = v % &modulus;
+    if m.sign() == num_bigint::Sign::Minus {
+        m += &modulus;
     }
     if m >= half {
-        m -= modulus;
+        return NativeResult::Ok(vm.new_bigint(m - modulus));
     }
     NativeResult::Ok(vm.new_bigint(m))
 }
@@ -162,16 +146,12 @@ pub fn bigint_as_uint_n<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     let v = vm.bigint_value(val);
     if bits == 0 {
-        return NativeResult::Ok(vm.new_bigint(0));
+        return NativeResult::Ok(vm.new_bigint(BigInt::from(0)));
     }
-    if bits >= 128 {
-        // i128 上限：非负值取模不变；负值结果超出表示范围，待任意精度补齐。
-        return NativeResult::Ok(val);
-    }
-    let modulus = 1i128 << bits;
-    let mut m = v % modulus;
-    if m < 0 {
-        m += modulus;
+    let modulus = BigInt::from(1) << bits;
+    let mut m = v % &modulus;
+    if m.sign() == num_bigint::Sign::Minus {
+        m += &modulus;
     }
     NativeResult::Ok(vm.new_bigint(m))
 }
@@ -216,10 +196,7 @@ fn coerce_number_or_throw<H: VmHost>(vm: &mut H, value: JsValue) -> Result<f64, 
         }
     };
     if prim.is_symbol() || prim.is_bigint() {
-        return Err(crate::error::create_type_error(
-            vm,
-            "Cannot convert a Symbol or BigInt value to a number",
-        ));
+        return Err(crate::error::create_type_error(vm, "Cannot convert a Symbol or BigInt value to a number"));
     }
     Ok(oxide_runtime_api::to_number(prim))
 }
@@ -233,7 +210,13 @@ fn to_index<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<usize, JsValue> {
         return Ok(0);
     }
     // ToIntegerOrInfinity 先截断（-0.9 → -0，不越界）；再检查有限且 [0, 2^53-1]。
-    let int = if n == 0.0 { 0.0 } else if n.is_infinite() { n } else { n.trunc() };
+    let int = if n == 0.0 {
+        0.0
+    } else if n.is_infinite() {
+        n
+    } else {
+        n.trunc()
+    };
     if !(0.0..=9007199254740991.0).contains(&int) {
         return Err(crate::error::create_range_error(vm, "Invalid index"));
     }
@@ -256,21 +239,15 @@ fn to_bigint<H: VmHost>(vm: &mut H, val: JsValue) -> Result<JsValue, JsValue> {
         return Ok(val);
     }
     if val.is_bool() {
-        return Ok(vm.new_bigint(if val.as_bool() { 1 } else { 0 }));
+        return Ok(vm.new_bigint(BigInt::from(if val.as_bool() { 1 } else { 0 })));
     }
     if val.is_int() {
         // ToBigInt(Number) 抛 TypeError（与构造器不同：构造器先 ToPrimitive 再
         // NumberToBigInt；ToBigInt 直接拒绝 Number）。
-        return Err(crate::error::create_type_error(
-            vm,
-            "Cannot convert a Number value to a BigInt",
-        ));
+        return Err(crate::error::create_type_error(vm, "Cannot convert a Number value to a BigInt"));
     }
     if val.is_double() {
-        return Err(crate::error::create_type_error(
-            vm,
-            "Cannot convert a Number value to a BigInt",
-        ));
+        return Err(crate::error::create_type_error(vm, "Cannot convert a Number value to a BigInt"));
     }
     if val.is_string() {
         let s = unsafe { oxide_runtime_api::string_data(val) }.to_string();
@@ -286,19 +263,13 @@ fn to_bigint<H: VmHost>(vm: &mut H, val: JsValue) -> Result<JsValue, JsValue> {
                 if let Some(exc) = vm.take_uncaught_value() {
                     return Err(exc);
                 }
-                return Err(crate::error::create_type_error(
-                    vm,
-                    "Cannot convert value to a BigInt",
-                ));
+                return Err(crate::error::create_type_error(vm, "Cannot convert value to a BigInt"));
             }
         };
         return to_bigint(vm, prim);
     }
     // undefined / null / symbol。
-    Err(crate::error::create_type_error(
-        vm,
-        "Cannot convert value to a BigInt",
-    ))
+    Err(crate::error::create_type_error(vm, "Cannot convert value to a BigInt"))
 }
 
 /// StringToBigInt（§7.1.14 步骤）：去首尾空白，可选 +/- 号与 0x/0o/0b 前缀；
@@ -306,7 +277,7 @@ fn to_bigint<H: VmHost>(vm: &mut H, val: JsValue) -> Result<JsValue, JsValue> {
 fn string_to_bigint<H: VmHost>(vm: &mut H, s: &str) -> Result<JsValue, JsValue> {
     let trimmed = s.trim();
     if trimmed.is_empty() {
-        return Ok(vm.new_bigint(0));
+        return Ok(vm.new_bigint(BigInt::from(0)));
     }
     let (neg, rest) = if let Some(r) = trimmed.strip_prefix('-') {
         (true, r)
@@ -350,35 +321,8 @@ fn string_to_bigint<H: VmHost>(vm: &mut H, s: &str) -> Result<JsValue, JsValue> 
             "Cannot convert string to BigInt: invalid integer literal",
         ));
     }
-    match i128::from_str_radix(digits, radix) {
-        Ok(m) => Ok(vm.new_bigint(if neg { -m } else { m })),
-        Err(_) => Err(crate::error::create_syntax_error(
-            vm,
-            "Cannot convert string to BigInt: invalid integer literal",
-        )),
-    }
-}
-
-/// 把 i128 按 radix 转成字符串（含负号前缀）。
-fn i128_to_radix_string(value: i128, radix: u32) -> String {
-    let neg = value < 0;
-    let mut mag = value.unsigned_abs();
-    let chars = b"0123456789abcdefghijklmnopqrstuvwxyz";
-    let mut result = String::new();
-    if mag == 0 {
-        result.push('0');
-    } else {
-        let mut digits = Vec::new();
-        while mag > 0 {
-            digits.push(chars[(mag % radix as u128) as usize] as char);
-            mag /= radix as u128;
-        }
-        for ch in digits.iter().rev() {
-            result.push(*ch);
-        }
-    }
-    if neg {
-        result.insert(0, '-');
-    }
-    result
+    let m = BigInt::parse_bytes(digits.as_bytes(), radix).ok_or_else(|| {
+        crate::error::create_syntax_error(vm, "Cannot convert string to BigInt: invalid integer literal")
+    })?;
+    Ok(vm.new_bigint(if neg { -m } else { m }))
 }

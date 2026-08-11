@@ -1101,6 +1101,8 @@ dependencies = [
  "fast-float",
  "indexmap",
  "memchr",
+ "num-bigint",
+ "num-traits",
  "oxide_compiler",
  "oxide_kernel",
  "oxide_log",
@@ -1119,6 +1121,7 @@ dependencies = [
 name = "oxide_bytecode"
 version = "0.1.0"
 dependencies = [
+ "num-bigint",
  "oxide_log",
 ]
 
@@ -1198,6 +1201,7 @@ dependencies = [
 name = "oxide_emit"
 version = "0.1.0"
 dependencies = [
+ "num-bigint",
  "oxide_bytecode",
  "oxide_ir",
  "oxide_log",
@@ -1285,6 +1289,8 @@ dependencies = [
 name = "oxide_runtime_api"
 version = "0.1.0"
 dependencies = [
+ "num-bigint",
+ "num-traits",
  "oxide_kernel",
  "oxide_log",
  "oxide_types",
@@ -1313,6 +1319,7 @@ version = "0.1.0"
 dependencies = [
  "bumpalo",
  "hashbrown 0.14.5",
+ "num-bigint",
  "oxide_log",
  "proptest",
  "rustc-hash",
@@ -1328,6 +1335,8 @@ dependencies = [
  "fast-float",
  "indexmap",
  "memchr",
+ "num-bigint",
+ "num-traits",
  "oxide_builtins",
  "oxide_bytecode",
  "oxide_compiler",

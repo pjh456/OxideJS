@@ -3,6 +3,11 @@ use crate::vm_trace;
 use oxide_runtime_api as coercion;
 use oxide_types::value::JsValue;
 
+/// 判断 JsValue 是否为 BigInt 且值为 0（num_bigint 零值判断）。
+fn bigint_is_zero(v: &num_bigint::BigInt) -> bool {
+    num_traits::Zero::is_zero(v)
+}
+
 impl Vm {
     #[inline(always)]
     pub(crate) fn dispatch_add(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
@@ -22,34 +27,41 @@ impl Vm {
         // 必须放在 coerce 之后。
         let lhs = self.coerce_primitive_bounded(lv, false)?;
         let rhs = self.coerce_primitive_bounded(rv, false)?;
+        if lhs.is_string() || rhs.is_string() {
+            self.regs[rd] = self.concat_strings(lhs, rhs);
+            return Ok(());
+        }
         if lhs.is_bigint() && rhs.is_bigint() {
-            // 包装对象 coerce 后暴露双 BigInt（如 Object(2n) + 2n）。
             self.regs[rd] = self.new_bigint(self.bigint_value(lhs) + self.bigint_value(rhs));
             return Ok(());
         }
         if lhs.is_bigint() != rhs.is_bigint() {
-            // 包装对象 coerce 后暴露 BigInt：与另一非 BigInt 操作数混合加法必须抛
-            // TypeError（规范不允许 BigInt 与 Number/String 相加）。
+            // 包装对象 coerce 后暴露 BigInt：与另一非 BigInt 非字符串操作数混合加法
+            // 必须抛 TypeError（规范只允许 String + BigInt 走字符串拼接）。
             return self.raise_type_error("Cannot mix BigInt and other types, use explicit conversions");
         }
-        if lhs.is_string() || rhs.is_string() {
-            let lbytes = if lhs.is_string() { unsafe { (*lhs.as_string_ptr()).len() } } else { 0 };
-            let rbytes = if rhs.is_string() { unsafe { (*rhs.as_string_ptr()).len() } } else { 0 };
-            // 预分配精确容量：字符串操作数 O(1) 取字节长，一次分配写齐，免 push_str
-            // 几何 realloc 的二次拷贝（字符串拼接热路径的主要额外成本）。
-            // 32 字节余量覆盖数字/布尔等格式化文本（f64 文本最长约 24 字节），
-            // 避免追加非字符串操作数时二次扩容。
-            let mut buf = String::with_capacity(lbytes + rbytes + 32);
-            coercion::push_to_string(lhs, &mut buf);
-            coercion::push_to_string(rhs, &mut buf);
-            let result = self.new_string_owned(buf);
-            self.regs[rd] = result;
-        } else {
-            let ln = coercion::to_number(lhs);
-            let rn = coercion::to_number(rhs);
-            self.regs[rd] = JsValue::float(ln + rn);
-        }
+        let ln = coercion::to_number(lhs);
+        let rn = coercion::to_number(rhs);
+        self.regs[rd] = JsValue::float(ln + rn);
         Ok(())
+    }
+
+    /// 字符串拼接热路径：一次预分配写齐两个操作数的 ToString 文本。
+    ///
+    /// # 步骤
+    /// 1. 按字符串操作数字节长预分配容量（余量覆盖数字/布尔等格式化文本）。
+    /// 2. 两个操作数依次走 push_to_string（BigInt 输出十进制，Symbol 由调用方先行拒绝）。
+    /// 3. 生成会话字符串写入目标寄存器。
+    ///
+    /// # 副作用
+    /// 新建一个会话字符串，登记到 session 生命周期。
+    fn concat_strings(&mut self, lhs: JsValue, rhs: JsValue) -> JsValue {
+        let lbytes = if lhs.is_string() { unsafe { (*lhs.as_string_ptr()).len() } } else { 0 };
+        let rbytes = if rhs.is_string() { unsafe { (*rhs.as_string_ptr()).len() } } else { 0 };
+        let mut buf = String::with_capacity(lbytes + rbytes + 32);
+        coercion::push_to_string(lhs, &mut buf);
+        coercion::push_to_string(rhs, &mut buf);
+        self.new_string_owned(buf)
     }
 
     #[inline(always)]
@@ -69,12 +81,14 @@ impl Vm {
     pub(crate) fn dispatch_unary_plus(&mut self, rd: usize, a: usize) -> Result<(), String> {
         vm_trace!("UNARY_PLUS rd={} r{}={:?}", rd, a, self.regs[a]);
         let v = self.regs[a];
-        if v.is_bigint() {
-            // 一元 + 对 BigInt 必须抛 TypeError（ToNumber(BigInt) 在隐式路径禁止）。
+        // ToPrimitive 先解盒（BigInt 包装对象如 Object(1n) 的 valueOf 返回 BigInt），
+        // 解盒后是 BigInt 才抛 TypeError——用户覆盖 valueOf/toString 的普通对象不受影响。
+        let prim = self.coerce_primitive_bounded(v, false)?;
+        if prim.is_bigint() {
             return self.raise_type_error("Cannot convert a BigInt value to a number");
         }
-        let v = self.coerce_number_bounded(v)?;
-        self.regs[rd] = JsValue::float(v);
+        let n = coercion::to_number(prim);
+        self.regs[rd] = JsValue::float(n);
         Ok(())
     }
 
@@ -92,30 +106,22 @@ impl Vm {
         }
         let lhs = self.coerce_primitive_bounded(lv, false)?;
         let rhs = self.coerce_primitive_bounded(rv, false)?;
+        if lhs.is_string() || rhs.is_string() {
+            self.regs[rd] = self.concat_strings(lhs, rhs);
+            return Ok(());
+        }
         if lhs.is_bigint() && rhs.is_bigint() {
             self.regs[rd] = self.new_bigint(self.bigint_value(lhs) + self.bigint_value(rhs));
             return Ok(());
         }
         if lhs.is_bigint() != rhs.is_bigint() {
+            // 包装对象 coerce 后暴露 BigInt：与另一非 BigInt 非字符串操作数混合加法
+            // 必须抛 TypeError（规范只允许 String + BigInt 走字符串拼接）。
             return self.raise_type_error("Cannot mix BigInt and other types, use explicit conversions");
         }
-        if lhs.is_string() || rhs.is_string() {
-            let lbytes = if lhs.is_string() { unsafe { (*lhs.as_string_ptr()).len() } } else { 0 };
-            let rbytes = if rhs.is_string() { unsafe { (*rhs.as_string_ptr()).len() } } else { 0 };
-            // 预分配精确容量：字符串操作数 O(1) 取字节长，一次分配写齐，免 push_str
-            // 几何 realloc 的二次拷贝（字符串拼接热路径的主要额外成本）。
-            // 32 字节余量覆盖数字/布尔等格式化文本（f64 文本最长约 24 字节），
-            // 避免追加非字符串操作数时二次扩容。
-            let mut buf = String::with_capacity(lbytes + rbytes + 32);
-            coercion::push_to_string(lhs, &mut buf);
-            coercion::push_to_string(rhs, &mut buf);
-            let result = self.new_string_owned(buf);
-            self.regs[rd] = result;
-        } else {
-            let ln = coercion::to_number(lhs);
-            let rn = coercion::to_number(rhs);
-            self.regs[rd] = JsValue::float(ln + rn);
-        }
+        let ln = coercion::to_number(lhs);
+        let rn = coercion::to_number(rhs);
+        self.regs[rd] = JsValue::float(ln + rn);
         Ok(())
     }
 
@@ -186,7 +192,7 @@ impl Vm {
         }
         if lv.is_bigint() && rv.is_bigint() {
             let r = self.bigint_value(rv);
-            if r == 0 {
+            if bigint_is_zero(r) {
                 return self.raise_error_kind("RangeError", "Division by zero");
             }
             self.regs[rd] = self.new_bigint(self.bigint_value(lv) / r);
@@ -196,7 +202,7 @@ impl Vm {
         let r = self.coerce_primitive_bounded(rv, false)?;
         if l.is_bigint() && r.is_bigint() {
             let rv = self.bigint_value(r);
-            if rv == 0 {
+            if bigint_is_zero(rv) {
                 return self.raise_error_kind("RangeError", "Division by zero");
             }
             self.regs[rd] = self.new_bigint(self.bigint_value(l) / rv);
@@ -222,7 +228,7 @@ impl Vm {
         }
         if lv.is_bigint() && rv.is_bigint() {
             let r = self.bigint_value(rv);
-            if r == 0 {
+            if bigint_is_zero(r) {
                 return self.raise_error_kind("RangeError", "Division by zero");
             }
             self.regs[rd] = self.new_bigint(self.bigint_value(lv) % r);
@@ -232,7 +238,7 @@ impl Vm {
         let r = self.coerce_primitive_bounded(rv, false)?;
         if l.is_bigint() && r.is_bigint() {
             let rv = self.bigint_value(r);
-            if rv == 0 {
+            if bigint_is_zero(rv) {
                 return self.raise_error_kind("RangeError", "Division by zero");
             }
             self.regs[rd] = self.new_bigint(self.bigint_value(l) % rv);
@@ -265,6 +271,13 @@ impl Vm {
     #[inline(always)]
     pub(crate) fn dispatch_inc_pre(&mut self, rd: usize, a: usize) -> Result<(), String> {
         vm_trace!("INC_PRE rd={} a={}", rd, a);
+        if self.regs[rd].is_bigint() {
+            let v = self.bigint_value(self.regs[rd]) + 1;
+            let result = self.new_bigint(v);
+            self.regs[rd] = result;
+            self.regs[a] = result;
+            return Ok(());
+        }
         let n = self.coerce_number_bounded(self.regs[rd])?;
         let result = JsValue::float(n + 1.0);
         self.regs[rd] = result;
@@ -275,6 +288,12 @@ impl Vm {
     #[inline(always)]
     pub(crate) fn dispatch_inc_post(&mut self, rd: usize, a: usize) -> Result<(), String> {
         vm_trace!("INC_POST rd={} a={}", rd, a);
+        if self.regs[rd].is_bigint() {
+            let v = self.bigint_value(self.regs[rd]).clone();
+            self.regs[a] = self.regs[rd];
+            self.regs[rd] = self.new_bigint(v + 1);
+            return Ok(());
+        }
         let n = self.coerce_number_bounded(self.regs[rd])?;
         self.regs[a] = JsValue::float(n);
         self.regs[rd] = JsValue::float(n + 1.0);
@@ -284,6 +303,13 @@ impl Vm {
     #[inline(always)]
     pub(crate) fn dispatch_dec_pre(&mut self, rd: usize, a: usize) -> Result<(), String> {
         vm_trace!("DEC_PRE rd={} a={}", rd, a);
+        if self.regs[rd].is_bigint() {
+            let v = self.bigint_value(self.regs[rd]).clone() - 1;
+            let result = self.new_bigint(v);
+            self.regs[rd] = result;
+            self.regs[a] = result;
+            return Ok(());
+        }
         let n = self.coerce_number_bounded(self.regs[rd])?;
         let result = JsValue::float(n - 1.0);
         self.regs[rd] = result;
@@ -294,6 +320,12 @@ impl Vm {
     #[inline(always)]
     pub(crate) fn dispatch_dec_post(&mut self, rd: usize, a: usize) -> Result<(), String> {
         vm_trace!("DEC_POST rd={} a={}", rd, a);
+        if self.regs[rd].is_bigint() {
+            let v = self.bigint_value(self.regs[rd]).clone();
+            self.regs[a] = self.regs[rd];
+            self.regs[rd] = self.new_bigint(v - 1);
+            return Ok(());
+        }
         let n = self.coerce_number_bounded(self.regs[rd])?;
         self.regs[a] = JsValue::float(n);
         self.regs[rd] = JsValue::float(n - 1.0);

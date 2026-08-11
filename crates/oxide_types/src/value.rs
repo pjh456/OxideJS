@@ -8,6 +8,7 @@
 use std::fmt;
 
 use crate::object::{JsObject, JsString};
+use num_bigint::BigInt;
 
 /// 静默 NaN 前缀——bits 63-51 = sign(1) + exponent(0x7FF) + quiet_bit(1)
 const QNAN_PREFIX: u64 = 0xFFF8_0000_0000_0000;
@@ -308,7 +309,7 @@ impl JsValue {
     /// 与 JsString 同机制：i128 本体存于 VM 管理的堆 box，这里携带指针。
     /// tag 7 原为 NaN 规范化编码，NaN 已改用普通 quiet NaN 位模式，故 tag 7
     /// 空出给 BigInt。
-    pub fn bigint(ptr: *const i128) -> Self {
+    pub fn bigint(ptr: *const BigInt) -> Self {
         let addr = ptr as u64;
         debug_assert!(addr <= PTR_MASK, "bigint pointer must fit in 48 bits");
         Self(make_tag(TAG_BIGINT) | addr)
@@ -320,9 +321,9 @@ impl JsValue {
     }
 
     /// 解出 BigInt 底层指针；调用方须先保证 [`is_bigint`](JsValue::is_bigint)。
-    pub fn as_bigint_ptr(&self) -> *const i128 {
+    pub fn as_bigint_ptr(&self) -> *const BigInt {
         debug_assert!(self.is_bigint());
-        (self.0 & PTR_MASK) as *const i128
+        (self.0 & PTR_MASK) as *const BigInt
     }
 }
 
@@ -365,7 +366,7 @@ impl fmt::Display for JsValue {
             write!(f, "Symbol(idx={})", self.as_symbol_index())
         } else if self.is_bigint() {
             // SAFETY: bigint 指针指向存活的 i128。
-            write!(f, "BigInt({})", unsafe { *self.as_bigint_ptr() })
+            write!(f, "BigInt({})", unsafe { &*self.as_bigint_ptr() })
         } else {
             write!(f, "{{unknown}}")
         }
@@ -397,7 +398,7 @@ impl fmt::Debug for JsValue {
             write!(f, "JsValue(Symbol(idx={}))", self.as_symbol_index())
         } else if self.is_bigint() {
             // SAFETY: bigint 指针指向存活的 i128。
-            write!(f, "JsValue(BigInt({}))", unsafe { *self.as_bigint_ptr() })
+            write!(f, "JsValue(BigInt({}))", unsafe { &*self.as_bigint_ptr() })
         } else {
             write!(f, "JsValue(Unknown)")
         }
@@ -407,6 +408,7 @@ impl fmt::Debug for JsValue {
 #[cfg(test)]
 mod tests {
     use super::JsValue;
+    use num_bigint::BigInt;
     use proptest::prelude::*;
     use proptest::test_runner::TestRunner;
 
@@ -534,27 +536,27 @@ mod tests {
 
     #[test]
     fn bigint_pointer_roundtrip() {
-        let boxed = Box::new(123_i128);
-        let ptr: *const i128 = &*boxed;
+        let boxed = Box::new(BigInt::from(123));
+        let ptr: *const BigInt = &*boxed;
         let val = JsValue::bigint(ptr);
         assert!(val.is_bigint());
         assert_eq!(val.as_bigint_ptr(), ptr);
-        assert_eq!(unsafe { *val.as_bigint_ptr() }, 123);
+        assert_eq!(unsafe { &*val.as_bigint_ptr() }, &BigInt::from(123));
         assert!(!val.is_double());
         assert!(!val.is_int());
     }
 
     #[test]
     fn bigint_value_equality_by_value() {
-        let a = JsValue::bigint(Box::into_raw(Box::new(7_i128)));
-        let b = JsValue::bigint(Box::into_raw(Box::new(7_i128)));
-        let c = JsValue::bigint(Box::into_raw(Box::new(8_i128)));
+        let a = JsValue::bigint(Box::into_raw(Box::new(BigInt::from(7))));
+        let b = JsValue::bigint(Box::into_raw(Box::new(BigInt::from(7))));
+        let c = JsValue::bigint(Box::into_raw(Box::new(BigInt::from(8))));
         assert_eq!(a, b);
         assert_ne!(a, c);
         unsafe {
-            drop(Box::from_raw(a.as_bigint_ptr() as *mut i128));
-            drop(Box::from_raw(b.as_bigint_ptr() as *mut i128));
-            drop(Box::from_raw(c.as_bigint_ptr() as *mut i128));
+            drop(Box::from_raw(a.as_bigint_ptr() as *mut BigInt));
+            drop(Box::from_raw(b.as_bigint_ptr() as *mut BigInt));
+            drop(Box::from_raw(c.as_bigint_ptr() as *mut BigInt));
         }
     }
 }

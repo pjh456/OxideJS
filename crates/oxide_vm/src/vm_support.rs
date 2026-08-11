@@ -484,23 +484,23 @@ impl Vm {
     ///
     /// box 指针登记进 `gc_state.session_bigint_ptrs`，在 `full_reset` 统一释放。
     /// `&self` 使 `convert_immutables`（常量池 → JsValue）也能分配。
-    pub fn new_bigint(&self, v: i128) -> JsValue {
+    pub fn new_bigint(&self, v: num_bigint::BigInt) -> JsValue {
         let ptr = Box::into_raw(Box::new(v));
         self.gc_state.session_bigint_ptrs.borrow_mut().push(ptr);
         JsValue::bigint(ptr)
     }
 
     /// 读取 BigInt 值；调用方须保证 `val.is_bigint()`。
-    pub fn bigint_value(&self, val: JsValue) -> i128 {
+    pub fn bigint_value(&self, val: JsValue) -> &num_bigint::BigInt {
         // SAFETY: bigint 指针由 new_bigint 经 Box::into_raw 产生，存活至 full_reset。
-        unsafe { *val.as_bigint_ptr() }
+        unsafe { &*val.as_bigint_ptr() }
     }
 
-    /// 释放全部 session 堆 `i128` box。仅在完全隔离重置（`full_reset`）时调用，
+    /// 释放全部 session 堆 BigInt box。仅在完全隔离重置（`full_reset`）时调用，
     /// 此时没有存活的 session 对象/寄存器会引用它们。
     fn free_session_bigint_heap_data(&mut self) {
         for ptr in self.gc_state.session_bigint_ptrs.borrow_mut().drain(..) {
-            // SAFETY: 每个指针来自 new_bigint 的 Box::into_raw(Box::new(i128))，
+            // SAFETY: 每个指针来自 new_bigint 的 Box::into_raw(Box::new(BigInt))，
             // 且只在这里恰好释放一次。
             unsafe {
                 drop(Box::from_raw(ptr));
@@ -512,7 +512,7 @@ impl Vm {
         match constant {
             Constant::Number(v) => JsValue::float(*v),
             Constant::Int(v) => JsValue::int(*v),
-            Constant::BigInt(v) => self.new_bigint(*v),
+            Constant::BigInt(v) => self.new_bigint(v.clone()),
             Constant::String(s) => self.perm_string(s),
             Constant::Boolean(b) => JsValue::bool(*b),
             Constant::Null => JsValue::null(),
@@ -835,10 +835,10 @@ mod tests {
         let mut vm = Vm::new();
         let result = run_source(&mut vm, "100n + 23n");
         assert!(result.is_bigint());
-        assert_eq!(vm.bigint_value(result), 123);
+        assert_eq!(vm.bigint_value(result), &num_bigint::BigInt::from(123));
         vm.reset();
         // reset 保留 session 字符串/bigint box：值仍可读。
-        assert_eq!(vm.bigint_value(result), 123);
+        assert_eq!(vm.bigint_value(result), &num_bigint::BigInt::from(123));
     }
 
     #[test]

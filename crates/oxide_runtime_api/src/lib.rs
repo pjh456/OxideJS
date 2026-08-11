@@ -15,6 +15,7 @@ mod runtime_api_log;
 use std::cmp::Ordering;
 use std::sync::Arc;
 
+use num_traits::{ToPrimitive, Zero};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::mem::{Epoch, P};
 use oxide_types::object::{JsObject, PropAttributes};
@@ -74,10 +75,10 @@ pub trait VmHost {
     // 对象分配 / 字符串创建
     fn alloc_object(&mut self, obj: JsObject) -> *mut JsObject;
     fn new_string(&mut self, s: &str) -> JsValue;
-    /// 分配 BigInt 值（`i128` box 登记到 VM，返回携带指针的 `JsValue`）。
-    fn new_bigint(&mut self, v: i128) -> JsValue;
+    /// 分配 BigInt 值（num_bigint::BigInt box 登记到 VM，返回携带指针的 `JsValue`）。
+    fn new_bigint(&mut self, v: num_bigint::BigInt) -> JsValue;
     /// 读取 BigInt 值；调用方须保证 `val.is_bigint()`。
-    fn bigint_value(&mut self, val: JsValue) -> i128;
+    fn bigint_value(&mut self, val: JsValue) -> &num_bigint::BigInt;
 
     // 内核访问器
     fn kernel_core(&self) -> &Arc<KernelCore>;
@@ -167,20 +168,29 @@ pub fn string_value_eq(a: JsValue, b: JsValue) -> bool {
     sa.data == sb.data
 }
 
+/// BigInt 转 f64 的近似转换（连续整数用 to_u64，大数用 Display 解析）。
+#[inline]
+pub fn bigint_to_f64(v: &num_bigint::BigInt) -> f64 {
+    if let Some(u) = v.to_u64() {
+        return u as f64;
+    }
+    v.to_string().parse::<f64>().unwrap_or(f64::INFINITY)
+}
+
 /// 借出 BigInt 值。
 ///
 /// # Safety
-/// `val` 必须是 BigInt `JsValue`，且其 `i128` box 存活（VM 在 full_reset 前保证）。
+/// `val` 必须是 BigInt `JsValue`，且其 `num_bigint::BigInt` box 存活（VM 在 full_reset 前保证）。
 #[inline]
-pub unsafe fn bigint_data(val: JsValue) -> i128 {
-    *val.as_bigint_ptr()
+pub unsafe fn bigint_data(val: JsValue) -> &'static num_bigint::BigInt {
+    &*val.as_bigint_ptr()
 }
 
-/// BigInt 的十进制字符串表示（`i128` → 十进制）。
+/// BigInt 的十进制字符串表示（num_bigint::BigInt → 十进制）。
 ///
 /// 与 ECMA-262 `Number::toString` 无关：BigInt 恒以十进制输出，负号前缀。
 #[inline]
-pub fn bigint_to_string(v: i128) -> String {
+pub fn bigint_to_string(v: &num_bigint::BigInt) -> String {
     v.to_string()
 }
 
@@ -211,7 +221,7 @@ pub fn to_number(val: JsValue) -> f64 {
     if val.is_bigint() {
         // BigInt → Number 近似转换：i128 超出 f64 精度时舍入为近似值。
         // 规范路径（显式 Number(bigint) / 位运算）在 builtins / dispatch 层精确处理。
-        return unsafe { bigint_data(val) } as f64;
+        return bigint_to_f64(unsafe { bigint_data(val) });
     }
     if val.is_object() {
         return f64::NAN;
@@ -443,7 +453,7 @@ pub fn to_string(val: JsValue) -> String {
         return unsafe { string_data(val) }.to_string();
     }
     if val.is_bigint() {
-        return unsafe { bigint_data(val) }.to_string();
+        return bigint_to_string(unsafe { bigint_data(val) });
     }
     if val.is_object() {
         return "[object]".to_string();
@@ -470,7 +480,7 @@ pub fn to_boolean(val: JsValue) -> bool {
         return !unsafe { (*val.as_string_ptr()).is_empty() };
     }
     if val.is_bigint() {
-        return unsafe { bigint_data(val) } != 0;
+        return !unsafe { bigint_data(val) }.is_zero();
     }
     if val.is_object() {
         return true;
@@ -529,19 +539,19 @@ pub fn abstract_eq<H: VmHost>(lhs: JsValue, rhs: JsValue, host: &mut H) -> Resul
     }
     // BigInt 与 Number：转 f64 比较（精度内精确；超出精度近似）。
     if lhs.is_bigint() && (rhs.is_int() || rhs.is_double()) {
-        return Ok(unsafe { bigint_data(lhs) } as f64 == to_number(rhs));
+        return Ok(bigint_to_f64(unsafe { bigint_data(lhs) }) == to_number(rhs));
     }
     if (lhs.is_int() || lhs.is_double()) && rhs.is_bigint() {
-        return Ok(to_number(lhs) == unsafe { bigint_data(rhs) } as f64);
+        return Ok(to_number(lhs) == bigint_to_f64(unsafe { bigint_data(rhs) }));
     }
     // BigInt 与 String：字符串解析为数字后比较。
     if lhs.is_bigint() && rhs.is_string() {
         let r = parse_js_number(unsafe { string_data(rhs) });
-        return Ok(unsafe { bigint_data(lhs) } as f64 == r);
+        return Ok(bigint_to_f64(unsafe { bigint_data(lhs) }) == r);
     }
     if lhs.is_string() && rhs.is_bigint() {
         let l = parse_js_number(unsafe { string_data(lhs) });
-        return Ok(l == unsafe { bigint_data(rhs) } as f64);
+        return Ok(l == bigint_to_f64(unsafe { bigint_data(rhs) }));
     }
     // 步骤 5-6：Number 与 String。
     if (lhs.is_int() || lhs.is_double()) && rhs.is_string() {
@@ -685,14 +695,18 @@ fn to_f64(val: JsValue) -> f64 {
 
 /// BigInt 与 Number 的序比较：Number 为整数且落于 i128 范围时精确比较，
 /// 否则退化为 f64 近似比较（非有限/超出 i128 范围时）。
-fn bigint_cmp_number(big: i128, num: JsValue) -> Ordering {
+fn bigint_cmp_number(big: &num_bigint::BigInt, num: JsValue) -> Ordering {
     number_cmp_bigint(num, big).reverse()
 }
 
 /// Number 与 BigInt 的序比较（`num` 与 `big` 的 `<`/`=`/`>`）。
-fn number_cmp_bigint(num: JsValue, big: i128) -> Ordering {
+fn number_cmp_bigint(num: JsValue, big: &num_bigint::BigInt) -> Ordering {
     if num.is_int() {
-        return (num.as_int() as i128).cmp(&big);
+        return (num.as_int() as i128).cmp(&big.to_i128().unwrap_or(if big.sign() == num_bigint::Sign::Minus {
+            i128::MIN
+        } else {
+            i128::MAX
+        }));
     }
     let d = num.as_double();
     if d.is_nan() {
@@ -703,9 +717,13 @@ fn number_cmp_bigint(num: JsValue, big: i128) -> Ordering {
     }
     let truncated = d.trunc();
     if truncated != d || truncated.abs() > i128::MAX as f64 {
-        return (d).partial_cmp(&(big as f64)).unwrap_or(Ordering::Equal);
+        return (d).partial_cmp(&bigint_to_f64(big)).unwrap_or(Ordering::Equal);
     }
-    (truncated as i128).cmp(&big)
+    (truncated as i128).cmp(&big.to_i128().unwrap_or(if big.sign() == num_bigint::Sign::Minus {
+        i128::MIN
+    } else {
+        i128::MAX
+    }))
 }
 
 /// SameValue(x, y)（ECMA-262 §7.2.9）：与 `===` 的区别在于 NaN 视为相等、+0/-0 视为不同。
@@ -820,6 +838,8 @@ pub fn to_object<H: VmHost>(val: JsValue, host: &mut H) -> Result<JsValue, Strin
         (P::as_ptr(&world.boolean_proto) as *mut JsObject, JsObject::OBJ_TYPE_BOOLEAN_OBJ)
     } else if val.is_bigint() {
         (P::as_ptr(&world.bigint_proto) as *mut JsObject, JsObject::OBJ_TYPE_PLAIN)
+    } else if val.is_symbol() {
+        (P::as_ptr(&world.symbol_proto) as *mut JsObject, JsObject::OBJ_TYPE_SYMBOL_OBJ)
     } else {
         (P::as_ptr(&world.object_proto) as *mut JsObject, JsObject::OBJ_TYPE_PLAIN)
     };

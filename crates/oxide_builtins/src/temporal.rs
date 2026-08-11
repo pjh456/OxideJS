@@ -1,5 +1,6 @@
 use chrono::{Datelike, Days, NaiveDate, Utc};
 
+use num_traits::ToPrimitive;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::{to_number, to_string, NativeResult, VmHost};
 use oxide_types::object::JsObject;
@@ -35,7 +36,7 @@ fn get_double_prop(obj: &JsObject, pos: usize) -> f64 {
 fn get_instant_epoch_ns(obj: &JsObject) -> Option<i128> {
     let value = obj.get_prop_at(0);
     if value.is_bigint() {
-        return Some(unsafe { oxide_runtime_api::bigint_data(value) });
+        return Some(unsafe { oxide_runtime_api::bigint_data(value) }.to_i128().unwrap_or(i128::MAX));
     }
     if value.is_int() || value.is_double() {
         return Some(to_number(value) as i128);
@@ -136,7 +137,7 @@ fn is_ctor_call<H: VmHost>(vm: &mut H, args: &[u8], proto_ptr: *const JsObject) 
 
 fn make_instant<H: VmHost>(vm: &mut H, epoch_ns: i128) -> NativeResult {
     let proto = JsValue::from_js_object(vm.session().builtin_world().instant_proto.as_ptr() as *mut JsObject);
-    let epoch_value = vm.new_bigint(epoch_ns);
+    let epoch_value = vm.new_bigint(num_bigint::BigInt::from(epoch_ns));
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
     obj.type_tag = JsObject::OBJ_TYPE_INSTANT;
     obj.set_prop_at(0, epoch_value);
@@ -145,7 +146,7 @@ fn make_instant<H: VmHost>(vm: &mut H, epoch_ns: i128) -> NativeResult {
 
 fn make_zoned_date_time<H: VmHost>(vm: &mut H, epoch_ns: i128, time_zone_id: &str) -> NativeResult {
     let proto = JsValue::from_js_object(vm.session().builtin_world().zoned_date_time_proto.as_ptr() as *mut JsObject);
-    let epoch_value = vm.new_bigint(epoch_ns);
+    let epoch_value = vm.new_bigint(num_bigint::BigInt::from(epoch_ns));
     let time_zone_value = vm.new_string(time_zone_id);
     let calendar_value = vm.new_string("iso8601");
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
@@ -421,7 +422,7 @@ fn primitive_to_bigint<H: VmHost>(vm: &mut H, raw: JsValue) -> Result<i128, JsVa
     let primitive = oxide_runtime_api::to_primitive(raw, oxide_runtime_api::ToPrimitiveHint::Number, vm)
         .map_err(|error| native_engine_error(vm, &error))?;
     if primitive.is_bigint() {
-        return Ok(vm.bigint_value(primitive));
+        return Ok(vm.bigint_value(primitive).to_i128().unwrap_or(i128::MAX));
     }
     if primitive.is_bool() {
         return Ok(i128::from(primitive.as_bool()));
@@ -483,7 +484,7 @@ pub fn instant_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if epoch_ns.unsigned_abs() > MAX_INSTANT_NS as u128 {
         return NativeResult::Err(crate::error::create_range_error(vm, "Instant outside supported range"));
     }
-    let epoch_value = vm.new_bigint(epoch_ns);
+    let epoch_value = vm.new_bigint(num_bigint::BigInt::from(epoch_ns));
     initialize_temporal_receiver(vm, args, JsObject::OBJ_TYPE_INSTANT, [epoch_value])
 }
 
@@ -588,7 +589,7 @@ pub fn instant_epoch_nanoseconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRe
         NativeResult::Ok(value)
     } else {
         match get_instant_epoch_ns(obj) {
-            Some(epoch_ns) => NativeResult::Ok(vm.new_bigint(epoch_ns)),
+            Some(epoch_ns) => NativeResult::Ok(vm.new_bigint(num_bigint::BigInt::from(epoch_ns))),
             None => NativeResult::Err(crate::error::create_range_error(vm, "invalid Instant")),
         }
     }
@@ -1290,7 +1291,7 @@ pub fn zoned_date_time_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
             return NativeResult::Err(crate::error::create_range_error(vm, "invalid calendar"));
         }
     }
-    let epoch_value = vm.new_bigint(epoch_ns);
+    let epoch_value = vm.new_bigint(num_bigint::BigInt::from(epoch_ns));
     let time_zone_value = vm.new_string(&time_zone_id);
     let calendar_value = vm.new_string("iso8601");
     initialize_temporal_receiver(
