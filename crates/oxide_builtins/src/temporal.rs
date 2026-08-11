@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, Days, NaiveDate, SecondsFormat, Utc};
+use chrono::{Datelike, Days, NaiveDate, Utc};
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::{to_number, to_string, NativeResult, VmHost};
@@ -125,13 +125,6 @@ fn make_instant<H: VmHost>(vm: &mut H, epoch_ns: i128) -> NativeResult {
     obj.type_tag = JsObject::OBJ_TYPE_INSTANT;
     obj.set_prop_at(0, epoch_value);
     NativeResult::Ok(JsValue::from_js_object(vm.alloc_object(obj)))
-}
-
-/// 把 epoch 纳秒拆成秒 + 亚秒纳秒（供 chrono 时间转换）。
-fn ns_to_datetime(epoch_ns: i128) -> Option<DateTime<Utc>> {
-    let secs = i64::try_from(epoch_ns.div_euclid(1_000_000_000)).ok()?;
-    let sub_ns = epoch_ns.rem_euclid(1_000_000_000) as u32;
-    DateTime::from_timestamp(secs, sub_ns)
 }
 
 fn parse_digits(bytes: &[u8], cursor: &mut usize, count: usize) -> Option<i128> {
@@ -951,7 +944,167 @@ pub fn instant_since<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     instant_difference(vm, args, true)
 }
 
-/// `Temporal.Instant.prototype.toString()`：输出 ISO 8601 UTC（如 `2024-01-01T00:00:00Z`）。
+enum FractionalSecondDigitsInput {
+    Auto,
+    Number(f64),
+    String(String),
+}
+
+fn parse_fractional_second_digits<H: VmHost>(
+    vm: &mut H, input: FractionalSecondDigitsInput,
+) -> Result<Option<usize>, JsValue> {
+    match input {
+        FractionalSecondDigitsInput::Auto => Ok(None),
+        FractionalSecondDigitsInput::String(value) if value == "auto" => Ok(None),
+        FractionalSecondDigitsInput::String(_) => {
+            Err(crate::error::create_range_error(vm, "invalid fractionalSecondDigits"))
+        }
+        FractionalSecondDigitsInput::Number(value) => {
+            let digits = value.floor();
+            if !digits.is_finite() || !(0.0..=9.0).contains(&digits) {
+                return Err(crate::error::create_range_error(vm, "invalid fractionalSecondDigits"));
+            }
+            Ok(Some(digits as usize))
+        }
+    }
+}
+
+fn parse_offset_minutes(value: &str) -> Option<i32> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 6 || !matches!(bytes[0], b'+' | b'-') || bytes[3] != b':' {
+        return None;
+    }
+    if !bytes[1..3].iter().all(u8::is_ascii_digit) || !bytes[4..6].iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let hours = i32::from(bytes[1] - b'0') * 10 + i32::from(bytes[2] - b'0');
+    let minutes = i32::from(bytes[4] - b'0') * 10 + i32::from(bytes[5] - b'0');
+    if hours > 23 || minutes > 59 {
+        return None;
+    }
+    let magnitude = hours * 60 + minutes;
+    Some(if bytes[0] == b'-' { -magnitude } else { magnitude })
+}
+
+fn instant_time_zone_offset(value: &str) -> Option<i32> {
+    let input = value.trim();
+    if input.eq_ignore_ascii_case("UTC") || input.eq_ignore_ascii_case("Z") {
+        return Some(0);
+    }
+    if let Some(offset) = parse_offset_minutes(input) {
+        return Some(offset);
+    }
+    if input.starts_with("-000000") {
+        return None;
+    }
+
+    // 带 annotation 的日期时间以最后一个方括号内标识符为准。
+    if let Some(open) = input.rfind('[') {
+        if !input.ends_with(']') || open + 2 > input.len() {
+            return None;
+        }
+        let annotation = &input[open + 1..input.len() - 1];
+        if annotation.eq_ignore_ascii_case("UTC") {
+            return Some(0);
+        }
+        return parse_offset_minutes(annotation);
+    }
+
+    let time_start = input.find(['T', 't', ' '])?;
+    let time = &input[time_start + 1..];
+    if time.ends_with(['Z', 'z']) {
+        return Some(0);
+    }
+    let offset_start = time
+        .char_indices()
+        .rev()
+        .find_map(|(index, ch)| matches!(ch, '+' | '-').then_some(index))?;
+    parse_offset_minutes(&time[offset_start..])
+}
+
+fn civil_from_days(days: i128) -> (i128, i128, i128) {
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era = (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    year += i128::from(month <= 2);
+    (year, month, day)
+}
+
+fn format_iso_year(year: i128) -> String {
+    if (0..=9_999).contains(&year) {
+        format!("{year:04}")
+    } else if year >= 0 {
+        format!("+{year:06}")
+    } else {
+        format!("-{:06}", -year)
+    }
+}
+
+fn format_instant_iso(
+    epoch_ns: i128, offset_minutes: Option<i32>, include_seconds: bool, fractional_digits: Option<usize>,
+) -> Option<String> {
+    const DAY_NS: i128 = 86_400_000_000_000;
+    let offset_ns = i128::from(offset_minutes.unwrap_or(0)).checked_mul(60_000_000_000)?;
+    let local_ns = epoch_ns.checked_add(offset_ns)?;
+    let days = local_ns.div_euclid(DAY_NS);
+    let mut time_ns = local_ns.rem_euclid(DAY_NS);
+    let hour = time_ns / 3_600_000_000_000;
+    time_ns %= 3_600_000_000_000;
+    let minute = time_ns / 60_000_000_000;
+    time_ns %= 60_000_000_000;
+    let second = time_ns / 1_000_000_000;
+    let subsecond = time_ns % 1_000_000_000;
+    let (year, month, day) = civil_from_days(days);
+
+    let mut output = format!("{}-{month:02}-{day:02}T{hour:02}:{minute:02}", format_iso_year(year));
+    if include_seconds {
+        output.push_str(&format!(":{second:02}"));
+        match fractional_digits {
+            Some(0) => {}
+            Some(digits) => {
+                let fraction = format!("{subsecond:09}");
+                output.push('.');
+                output.push_str(&fraction[..digits]);
+            }
+            None if subsecond != 0 => {
+                let fraction = format!("{subsecond:09}").trim_end_matches('0').to_string();
+                output.push('.');
+                output.push_str(&fraction);
+            }
+            None => {}
+        }
+    }
+
+    if let Some(offset) = offset_minutes {
+        let sign = if offset < 0 { '-' } else { '+' };
+        let magnitude = offset.abs();
+        output.push_str(&format!("{sign}{:02}:{:02}", magnitude / 60, magnitude % 60));
+    } else {
+        output.push('Z');
+    }
+    Some(output)
+}
+
+fn instant_default_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_instant(vm, obj));
+    let Some(epoch_ns) = get_instant_epoch_ns(obj) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid Instant"));
+    };
+    match format_instant_iso(epoch_ns, None, true, None) {
+        Some(output) => NativeResult::Ok(vm.new_string(&output)),
+        None => NativeResult::Err(crate::error::create_range_error(vm, "invalid Instant")),
+    }
+}
+
+/// `Temporal.Instant.prototype.toString(options)`：按精度、舍入模式和时区输出 ISO 8601。
 pub fn instant_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ptr = native_try!(receiver_obj(vm, args));
     let obj = unsafe { &*ptr };
@@ -960,13 +1113,90 @@ pub fn instant_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Some(value) => value,
         None => return NativeResult::Err(crate::error::create_range_error(vm, "invalid Instant")),
     };
-    match ns_to_datetime(epoch_ns) {
-        Some(dt) => {
-            let s = dt.to_rfc3339_opts(SecondsFormat::AutoSi, true);
-            NativeResult::Ok(vm.new_string(&s))
+    let options_value = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
+    let (fractional_input, mode_value, smallest_value, time_zone_raw) = if options_value.is_undefined() {
+        (FractionalSecondDigitsInput::Auto, "trunc".to_string(), None, JsValue::undefined())
+    } else {
+        if !options_value.is_object() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "options must be an object"));
         }
+        let options_ptr = options_value.as_js_object_ptr();
+        if options_ptr.is_null() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "options must be an object"));
+        }
+        let options = unsafe { &*options_ptr };
+        let fractional_raw = native_try!(temporal_option_value(vm, options, options_value, "fractionalSecondDigits"));
+        let fractional = if fractional_raw.is_undefined() {
+            FractionalSecondDigitsInput::Auto
+        } else if fractional_raw.is_int() || fractional_raw.is_double() {
+            FractionalSecondDigitsInput::Number(to_number(fractional_raw))
+        } else {
+            FractionalSecondDigitsInput::String(native_try!(temporal_option_string(vm, fractional_raw)))
+        };
+        let mode_raw = native_try!(temporal_option_value(vm, options, options_value, "roundingMode"));
+        let mode = if mode_raw.is_undefined() {
+            "trunc".to_string()
+        } else {
+            native_try!(temporal_option_string(vm, mode_raw))
+        };
+        let smallest_raw = native_try!(temporal_option_value(vm, options, options_value, "smallestUnit"));
+        let smallest = if smallest_raw.is_undefined() {
+            None
+        } else {
+            Some(native_try!(temporal_option_string(vm, smallest_raw)))
+        };
+        let time_zone = native_try!(temporal_option_value(vm, options, options_value, "timeZone"));
+        (fractional, mode, smallest, time_zone)
+    };
+
+    let fractional_digits = native_try!(parse_fractional_second_digits(vm, fractional_input));
+    let Some(mode) = instant_rounding_mode(&mode_value) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding mode"));
+    };
+    let (quantum_ns, include_seconds, output_digits) = match smallest_value.as_deref() {
+        Some("minute" | "minutes") => (60_000_000_000, false, Some(0)),
+        Some("second" | "seconds") => (1_000_000_000, true, Some(0)),
+        Some("millisecond" | "milliseconds") => (1_000_000, true, Some(3)),
+        Some("microsecond" | "microseconds") => (1_000, true, Some(6)),
+        Some("nanosecond" | "nanoseconds") => (1, true, Some(9)),
+        Some(_) => return NativeResult::Err(crate::error::create_range_error(vm, "invalid smallest unit")),
+        None => match fractional_digits {
+            Some(digits) => (10_i128.pow((9 - digits) as u32), true, Some(digits)),
+            None => (1, true, None),
+        },
+    };
+    let offset_minutes = if time_zone_raw.is_undefined() {
+        None
+    } else {
+        if !time_zone_raw.is_string() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "invalid time zone"));
+        }
+        let time_zone = to_string(time_zone_raw);
+        match instant_time_zone_offset(&time_zone) {
+            Some(offset) => Some(offset),
+            None => return NativeResult::Err(crate::error::create_range_error(vm, "invalid time zone")),
+        }
+    };
+    let Some(rounded_ns) = round_instant_ns(epoch_ns, quantum_ns, mode) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "Instant outside supported range"));
+    };
+    if rounded_ns.unsigned_abs() > MAX_INSTANT_NS as u128 {
+        return NativeResult::Err(crate::error::create_range_error(vm, "Instant outside supported range"));
+    }
+    match format_instant_iso(rounded_ns, offset_minutes, include_seconds, output_digits) {
+        Some(output) => NativeResult::Ok(vm.new_string(&output)),
         None => NativeResult::Err(crate::error::create_range_error(vm, "invalid Instant")),
     }
+}
+
+/// `Temporal.Instant.prototype.toJSON()`：输出默认 UTC ISO 字符串，忽略参数。
+pub fn instant_to_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    instant_default_string(vm, args)
+}
+
+/// `Temporal.Instant.prototype.toLocaleString()`：当前使用稳定的 UTC ISO 表示。
+pub fn instant_to_locale_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    instant_default_string(vm, args)
 }
 
 /// `Temporal.Instant.prototype.valueOf()`：Temporal 对象禁止转原始值。

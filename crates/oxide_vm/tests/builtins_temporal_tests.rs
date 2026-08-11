@@ -296,6 +296,34 @@ fn instant_difference_rounds_signed_values_and_validates_units() {
 }
 
 #[test]
+fn instant_to_string_supports_precision_rounding_and_offsets() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "let instant = new Temporal.Instant(1000000000123987500n);
+         instant.toString({smallestUnit:'microsecond', roundingMode:'halfEven'}) === '2001-09-09T01:46:40.123988Z'
+           && instant.toString({fractionalSecondDigits:3}) === '2001-09-09T01:46:40.123Z'
+           && new Temporal.Instant(0n).toString({timeZone:'-05:00'}) === '1969-12-31T19:00:00-05:00'
+           && new Temporal.Instant(999999960000000000n).toString({smallestUnit:'minute'}) === '2001-09-09T01:46Z'",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn instant_json_and_locale_string_use_default_iso_output() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "let instant = new Temporal.Instant(30123400000n);
+         instant.toJSON({get ignored(){throw new Error()}}) === '1970-01-01T00:00:30.1234Z'
+           && typeof instant.toLocaleString('en', {dateStyle:'short'}) === 'string'",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
 fn instant_epoch_factories_validate_input_and_range() {
     let mut vm = Vm::new();
     let r = eval(

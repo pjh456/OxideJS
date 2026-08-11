@@ -91,6 +91,12 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
             ("round", oxide_builtins::temporal::instant_round::<crate::vm::Vm> as *const (), 1),
             ("since", oxide_builtins::temporal::instant_since::<crate::vm::Vm> as *const (), 1),
             ("subtract", oxide_builtins::temporal::instant_subtract::<crate::vm::Vm> as *const (), 1),
+            ("toJSON", oxide_builtins::temporal::instant_to_json::<crate::vm::Vm> as *const (), 0),
+            (
+                "toLocaleString",
+                oxide_builtins::temporal::instant_to_locale_string::<crate::vm::Vm> as *const (),
+                0,
+            ),
             ("toString", oxide_builtins::temporal::instant_to_string::<crate::vm::Vm> as *const (), 0),
             ("until", oxide_builtins::temporal::instant_until::<crate::vm::Vm> as *const (), 1),
             ("valueOf", oxide_builtins::temporal::instant_value_of::<crate::vm::Vm> as *const (), 0),
