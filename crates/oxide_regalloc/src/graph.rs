@@ -95,30 +95,10 @@ pub(super) fn collect_real_vregs(f: &IRFunction) -> BTreeSet<u32> {
 pub(super) fn build(
     f: &IRFunction, live: &LiveInfo, spill_set: &BTreeSet<u32>, fresh: &[FreshVreg],
 ) -> InterferenceGraph {
-    let real = collect_real_vregs(f);
+    let mut real = collect_real_vregs(f);
     // inst_live_before 长度 = 指令数（逐指令活集索引）
     let inst_count = live.inst_live_before.len();
 
-    // ── 预着色 ──
-    let mut pre_colors: BTreeMap<u32, u32> = BTreeMap::new();
-    // 参数段：VM 调用写 regs[param_base+i]，钉死不可动（调用契约）
-    let pl = f.param_layout;
-    if pl.count > 0 {
-        for i in 0..pl.count {
-            let v = pl.base + i;
-            pre_colors.insert(v, v);
-        }
-    }
-    // escaped：递归 nested 收集 LOAD_VAR.a / STORE_VAR.rd 直引的父槽
-    let mut escaped_colors: Vec<u32> = Vec::new();
-    collect_escaped(&f.nested, &mut pre_colors, &mut escaped_colors);
-    // 对称缺口：子模块自身引用的父槽也必须预着色恒等。父侧 collect_escaped 只保证父不
-    // 移动槽；但子模块 alloc 时，它引用父槽的 LOAD_VAR.a / STORE_VAR.rd 会被当作子模块
-    // 自己的 vreg 参与染色而移走 → 子模块读错物理槽。分界线 = param_layout.base
-    // （emit 的 inherited_reg_start 继承机制：子模块 vreg ≥ base，父槽引用 < base）。
-    collect_own_escaped(f, &mut pre_colors, &mut escaped_colors);
-
-    // ── 可分配色集 ──
     // 窗口只为参数连续性 MOV 桥预留；spread 调用实参经 ext 逐个读寄存器，无连续性要求。
     let max_nargs = f
         .insts
@@ -128,6 +108,68 @@ pub(super) fn build(
         .max()
         .unwrap_or(0);
     let arg_window_base = 254u32.saturating_sub(max_nargs);
+
+    // ── 预着色 ──
+    let mut pre_colors: BTreeMap<u32, u32> = BTreeMap::new();
+    // 当前函数读取的父槽已经是父函数分配后的物理号，必须恒等保护。
+    let mut escaped_colors: Vec<u32> = Vec::new();
+    collect_own_escaped(f, &mut pre_colors, &mut escaped_colors);
+
+    // 被子函数捕获的当前函数槽需要固定颜色，但高虚拟槽不能恒等映射到 254+。
+    // 父函数完成分配后，alloc 会把选定物理色同步到整个 nested 树的父槽引用。
+    let mut nested_escaped = Vec::new();
+    collect_escaped(&f.nested, &mut nested_escaped);
+    let param_end = f.param_layout.base.saturating_add(f.param_layout.count);
+    for vreg in nested_escaped {
+        if !real.contains(&vreg) || (f.param_layout.base..param_end).contains(&vreg) {
+            continue;
+        }
+        let identity_available =
+            vreg >= 1 && vreg < arg_window_base && !pre_colors.values().any(|color| *color == vreg);
+        let physical = if identity_available {
+            vreg
+        } else {
+            (1..arg_window_base)
+                .find(|color| !pre_colors.values().any(|existing| existing == color))
+                .unwrap_or_else(|| {
+                    debug_assert!(false, "escaped 槽无自由色（vreg={vreg}）");
+                    1
+                })
+        };
+        pre_colors.insert(vreg, physical);
+        escaped_colors.push(physical);
+    }
+    escaped_colors.sort_unstable();
+    escaped_colors.dedup();
+
+    // 参数段必须连续。继承父上下文后虚拟段可能高于 253，此时选择不与 escaped 槽
+    // 冲突的低位连续物理段；finish 按首参数颜色同步回写 param_layout.base。
+    let pl = f.param_layout;
+    if pl.count > 0 {
+        let identity_end = pl.base.saturating_add(pl.count);
+        let identity_available = pl.base >= 1
+            && identity_end <= arg_window_base
+            && (pl.base..identity_end).all(|color| !escaped_colors.contains(&color));
+        let physical_base = if identity_available {
+            pl.base
+        } else {
+            (1..=arg_window_base.saturating_sub(pl.count))
+                .find(|base| {
+                    (*base..*base + pl.count).all(|color| {
+                        !pre_colors.values().any(|existing| *existing == color) && !escaped_colors.contains(&color)
+                    })
+                })
+                .unwrap_or_else(|| {
+                    debug_assert!(false, "参数段无连续自由色（base={}, count={}）", pl.base, pl.count);
+                    1
+                })
+        };
+        for i in 0..pl.count {
+            let vreg = pl.base + i;
+            real.insert(vreg);
+            pre_colors.insert(vreg, physical_base + i);
+        }
+    }
 
     // ── builtin 槽 ──
     // VM 帧推入时写 regs[slot]=全局值（无指令 def 却活到入口），物理号须恒定且排除出
@@ -166,7 +208,7 @@ pub(super) fn build(
 
     let mut allocatable: Vec<u32> = Vec::new();
     for c in 1u32..=253 {
-        if pre_colors.contains_key(&c) || escaped_colors.contains(&c) || c >= arg_window_base {
+        if pre_colors.values().any(|color| *color == c) || escaped_colors.contains(&c) || c >= arg_window_base {
             continue;
         }
         allocatable.push(c);
@@ -249,9 +291,8 @@ pub(super) fn build(
     }
 }
 
-/// 递归收集 nested 树中变量槽引用（LOAD_VAR.a 读槽、STORE_VAR.rd 写槽），
-/// 注入 pre_colors 并记录 escaped 色列表（可分配集排除 + spill 候选排除）。
-fn collect_escaped(nested: &[IRFunction], pre_colors: &mut BTreeMap<u32, u32>, out: &mut Vec<u32>) {
+/// 递归收集 nested 树中的父槽虚拟号（LOAD_VAR.a 读槽、STORE_VAR.rd 写槽）。
+fn collect_escaped(nested: &[IRFunction], out: &mut Vec<u32>) {
     for sub in nested {
         for inst in &sub.insts {
             let slot = match inst.op {
@@ -260,13 +301,12 @@ fn collect_escaped(nested: &[IRFunction], pre_colors: &mut BTreeMap<u32, u32>, o
                 _ => Operand::None,
             };
             if let Operand::Reg(r) = slot {
-                pre_colors.entry(r).or_insert(r);
                 if !out.contains(&r) {
                     out.push(r);
                 }
             }
         }
-        collect_escaped(&sub.nested, pre_colors, out);
+        collect_escaped(&sub.nested, out);
     }
     out.sort_unstable();
 }
@@ -377,6 +417,23 @@ mod tests {
         let g = build_graph(&f);
         assert_eq!(g.nodes[&3].pre_color, Some(3), "escaped 槽 r3 预着色");
         assert!(!g.allocatable.contains(&3), "escaped 色排除");
+    }
+
+    #[test]
+    fn high_escaped_slot_uses_encodable_color() {
+        let mut f = empty_function();
+        f.insts.push(Inst::load_const(Operand::Reg(254), 0));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(254), Operand::None, Operand::None));
+        let mut sub = empty_function();
+        sub.param_layout = oxide_ir::ParamLayout { base: 300, count: 0 };
+        sub.insts
+            .push(Inst::new(OpCode::LOAD_VAR, Operand::Reg(301), Operand::Reg(254), Operand::None));
+        f.nested.push(sub);
+        let g = build_graph(&f);
+        let color = g.nodes[&254].pre_color.expect("escaped 槽应预着色");
+        assert!((1..=253).contains(&color));
+        assert_ne!(color, 254);
     }
 
     #[test]

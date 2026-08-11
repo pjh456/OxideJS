@@ -47,7 +47,7 @@ pub struct AllocMap {
     pub map: BTreeMap<u32, Alloc>,
     /// spill 决策表（按 vreg 升序）
     pub spills: Vec<SpillPlan>,
-    /// 物理峰值（finish 回写 n_registers，≤253）
+    /// 物理窗口大小（finish 回写 n_registers，最高槽 253 对应值 254）。
     pub phys_peak: u32,
     /// 参数窗口基址（调用点 MOV 补位，max_nargs=0 时 = 254 无窗口）
     pub arg_window_base: u32,

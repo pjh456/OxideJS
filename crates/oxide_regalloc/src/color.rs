@@ -17,7 +17,12 @@ use crate::graph::{self, InterferenceGraph};
 
 /// 主染色循环：产出 AllocMap。
 pub(super) fn run(f: &IRFunction, live: &LiveInfo) -> Result<AllocMap, String> {
-    let max_real = graph::collect_real_vregs(f).into_iter().max().unwrap_or(0);
+    let max_param = if f.param_layout.count == 0 {
+        0
+    } else {
+        f.param_layout.base + f.param_layout.count - 1
+    };
+    let max_real = graph::collect_real_vregs(f).into_iter().max().unwrap_or(0).max(max_param);
     let mut next_fresh_id = max_real + 1;
     let mut next_slot: u16 = 0;
     let mut spill_set: BTreeSet<u32> = BTreeSet::new();
@@ -64,7 +69,7 @@ pub(super) fn run(f: &IRFunction, live: &LiveInfo) -> Result<AllocMap, String> {
         debug_assert!(iters < max_real as usize * 2 + fresh.len() + 8, "RegAlloc 染色疑似不收敛");
     };
 
-    assemble(f, colors, spill_set, fresh, slot_for_vreg, arg_window_base)
+    assemble(colors, spill_set, fresh, slot_for_vreg, arg_window_base)
 }
 
 /// def 点：`def_reg(insts[i]) == Some(v)` 的指令下标。
@@ -154,8 +159,8 @@ fn kemp_and_select(graph: &InterferenceGraph) -> (BTreeMap<u32, u32>, Vec<u32>) 
 
 /// 装配 AllocMap：map（真实 + fresh）+ spills 决策表 + phys_peak + arg_window_base。
 fn assemble(
-    f: &IRFunction, colors: BTreeMap<u32, u32>, spill_set: BTreeSet<u32>, fresh: Vec<FreshVreg>,
-    slot_for_vreg: BTreeMap<u32, u16>, arg_window_base: u32,
+    colors: BTreeMap<u32, u32>, spill_set: BTreeSet<u32>, fresh: Vec<FreshVreg>, slot_for_vreg: BTreeMap<u32, u16>,
+    arg_window_base: u32,
 ) -> Result<AllocMap, String> {
     let mut map = BTreeMap::new();
     // 已染色 vreg（含 fresh）→ Phys
@@ -184,7 +189,6 @@ fn assemble(
     let phys_peak = colors
         .values()
         .copied()
-        .chain(std::iter::once(f.param_layout.base + f.param_layout.count))
         .chain(std::iter::once(1))
         .max()
         .unwrap_or(1)
@@ -300,6 +304,19 @@ mod tests {
     }
 
     #[test]
+    fn highest_legal_color_uses_254_register_window() {
+        let mut f = empty_function();
+        f.builtin_reg_map = vec![("late".to_string(), 253)];
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(253), Operand::None, Operand::None));
+        let cfg = oxide_cfg::build_cfg(&f);
+        let live = oxide_liveness::liveness(&f, &cfg);
+        let map = crate::color(&f, &live).unwrap();
+        assert_eq!(map.map[&253], Alloc::Phys(253));
+        assert_eq!(map.phys_peak, 254);
+    }
+
+    #[test]
     fn coloring_is_deterministic() {
         let src_insts = vec![
             Inst::new(OpCode::ADD, Operand::Reg(2), Operand::Reg(0), Operand::Reg(1)),
@@ -325,7 +342,7 @@ mod tests {
         let m = color_of(insts, oxide_ir::ParamLayout { base: 0, count: 0 }, Vec::new()).unwrap();
         assert!(!m.spills.is_empty(), "长活 L 应被 spill");
         assert!(m.spills.iter().any(|s| s.vreg == 1000), "spill 的是 L");
-        assert!(m.phys_peak <= 253, "phys_peak ≤ 253");
+        assert!(m.phys_peak <= 254, "phys_peak ≤ 254");
         // 全部 fresh 应有 Phys 分配
         let fresh_phys: Vec<&Alloc> = m.map.values().filter(|a| matches!(a, Alloc::Phys(_))).collect();
         assert!(!fresh_phys.is_empty(), "fresh vreg 应着色为 Phys");

@@ -1,9 +1,10 @@
 //! 元数据回写：n_registers / builtin_reg_map / param_layout / upvalue_captures。
 //!
-//! - n_registers = map.phys_peak（≤253；不含参数窗口——窗口是调用点暂存槽，
+//! - n_registers = map.phys_peak（≤254；最高合法物理槽 253 对应窗口大小 254；
+//!   不含参数窗口——窗口是调用点暂存槽，
 //!   CALL handler 在 push 前收集 args 进 Vec，n_registers 只控 save_stack 窗口）
 //! - builtin_reg_map：Phys → 新号；Spill → spilled_builtin_bindings 的自由色 R（与 rewrite 同源）
-//! - param_layout 不动（参数段 pre-colored 恒等）；upvalue_captures 不动（escaped 预着色恒等）
+//! - param_layout 按参数首槽物理色回写；upvalue_captures 不动（escaped 预着色恒等）
 
 use crate::alloc_map::{Alloc, AllocMap};
 use crate::rewrite::spilled_builtin_bindings;
@@ -12,36 +13,44 @@ use oxide_ir::IRFunction;
 /// 回写 IRFunction 元数据（不动 insts——rewrite 已完成改写）。
 pub(super) fn run(f: &mut IRFunction, map: &AllocMap) {
     // (a) n_registers = phys_peak
-    debug_assert!(map.phys_peak <= 253, "phys_peak 超 253");
+    debug_assert!(map.phys_peak <= 254, "phys_peak 超 254");
     f.n_registers = map.phys_peak;
 
     // (b) builtin_reg_map 回写
     let spilled = spilled_builtin_bindings(f, map);
-    for (name, vreg) in &mut f.builtin_reg_map {
+    let mut rewritten_builtins = Vec::with_capacity(f.builtin_reg_map.len());
+    for (name, vreg) in &f.builtin_reg_map {
         let v = *vreg;
         match map.map.get(&v) {
             Some(Alloc::Phys(p)) => {
-                *vreg = *p;
+                rewritten_builtins.push((name.clone(), *p));
             }
             Some(Alloc::Spill(_)) => {
                 if let Some((_, r, _)) = spilled.iter().find(|(n, _, _)| n == name) {
                     debug_assert!(*r <= 253);
-                    *vreg = *r;
+                    rewritten_builtins.push((name.clone(), *r));
                 } else {
                     debug_assert!(false, "spilled builtin {name} 无对应入口 SPILL");
                 }
             }
-            None => {
-                // 未使用的 builtin（引用被 DCE 删除，vreg 不在 AllocMap）。
-                // builtin 槽是预注册低号，保持原值无害（VM 入口写入，无读取者）。
-                // 保持原项（*vreg 不变）。
-            }
+            None => {}
         }
     }
+    f.builtin_reg_map = rewritten_builtins;
 
-    // (c) param_layout 不动（参数段预着色恒等；窗口与参数段重叠仅参数段贴 254 的罕见情形）
+    // (c) 参数段保持连续，但继承父上下文产生的高虚拟段会整体移动到低位物理段。
     let pl = f.param_layout;
-    debug_assert!(pl.base + pl.count <= map.arg_window_base || map.arg_window_base == 254);
+    if pl.count > 0 {
+        if let Some(Alloc::Phys(base)) = map.map.get(&pl.base) {
+            for i in 0..pl.count {
+                debug_assert_eq!(map.map.get(&(pl.base + i)), Some(&Alloc::Phys(base + i)));
+            }
+            f.param_layout.base = *base;
+        }
+        debug_assert!(f.param_layout.base + f.param_layout.count <= map.arg_window_base || map.arg_window_base == 254);
+    } else {
+        f.param_layout.base = 0;
+    }
 
     // (d) upvalue_captures 不动。enclosing_reg 是编译期产物（MAKE_CELL 定位用），VM 运行时
     // 不读（CREATE_CLOSURE 走 cell_idx，cell 捕获后值在 cell 中）——无需跨函数同步。
@@ -102,6 +111,18 @@ mod tests {
     }
 
     #[test]
+    fn unused_builtin_is_removed_from_frame_metadata() {
+        let mut f = IRFunction::new();
+        f.builtin_reg_map = vec![("late".to_string(), 426)];
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(1), Operand::None, Operand::None));
+        let mut map = AllocMap::new();
+        map.map.insert(1, Alloc::Phys(1));
+        run(&mut f, &map);
+        assert!(f.builtin_reg_map.is_empty());
+    }
+
+    #[test]
     fn param_layout_untouched() {
         let mut f = IRFunction::new();
         f.param_layout = oxide_ir::ParamLayout { base: 1, count: 2 };
@@ -109,6 +130,15 @@ mod tests {
         run(&mut f, &map);
         assert_eq!(f.param_layout.base, 1);
         assert_eq!(f.param_layout.count, 2);
+    }
+
+    #[test]
+    fn zero_parameter_layout_discards_compile_time_boundary() {
+        let mut f = IRFunction::new();
+        f.param_layout = oxide_ir::ParamLayout { base: 426, count: 0 };
+        let map = AllocMap::new();
+        run(&mut f, &map);
+        assert_eq!(f.param_layout, oxide_ir::ParamLayout { base: 0, count: 0 });
     }
 
     #[test]

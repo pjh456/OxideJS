@@ -46,7 +46,7 @@ fn smoke(src: &str) {
     for s in &m.spills {
         assert!(slots.insert(s.slot), "spill slot {} 重复", s.slot);
     }
-    assert!(m.phys_peak <= 253, "phys_peak {} 超 253", m.phys_peak);
+    assert!(m.phys_peak <= 254, "phys_peak {} 超 254", m.phys_peak);
 }
 
 fn is_precolored(ir: &oxide_ir::IRFunction, c: u32) -> bool {

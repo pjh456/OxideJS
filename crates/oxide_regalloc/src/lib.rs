@@ -54,12 +54,34 @@ pub fn alloc(f: &mut IRFunction, live: &LiveInfo) -> Result<(), String> {
     regalloc_debug!("alloc: {} vregs -> {} phys", map.map.len(), map.phys_peak);
     rewrite::run(f, &map);
     finish::run(f, &map);
+    remap_nested_parent_slots(&mut f.nested, &map);
     for child in &mut f.nested {
         let cfg = oxide_cfg::build_cfg(child);
         let l = oxide_liveness::liveness(child, &cfg);
         alloc(child, &l)?;
     }
     Ok(())
+}
+
+fn remap_nested_parent_slots(nested: &mut [IRFunction], map: &AllocMap) {
+    for child in nested {
+        let inherited_limit = child.param_layout.base;
+        for inst in &mut child.insts {
+            let slot = match inst.op {
+                oxide_bytecode::opcode::OpCode::LOAD_VAR => &mut inst.a,
+                oxide_bytecode::opcode::OpCode::STORE_VAR => &mut inst.rd,
+                _ => continue,
+            };
+            if let oxide_ir::operand::Operand::Reg(vreg) = slot {
+                if *vreg < inherited_limit {
+                    if let Some(Alloc::Phys(physical)) = map.map.get(vreg) {
+                        *vreg = *physical;
+                    }
+                }
+            }
+        }
+        remap_nested_parent_slots(&mut child.nested, map);
+    }
 }
 
 #[cfg(test)]
@@ -93,6 +115,67 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn alloc_remaps_high_parameter_segment() {
+        let mut f = IRFunction::new();
+        f.param_layout = oxide_ir::ParamLayout { base: 300, count: 1 };
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(300), Operand::None, Operand::None));
+        let cfg = oxide_cfg::build_cfg(&f);
+        let live = oxide_liveness::liveness(&f, &cfg);
+        alloc(&mut f, &live).unwrap();
+        assert_eq!(f.param_layout, oxide_ir::ParamLayout { base: 1, count: 1 });
+        assert!(matches!(f.insts[0].rd, Operand::Reg(1)));
+        assert_eq!(f.n_registers, 2);
+    }
+
+    #[test]
+    fn alloc_propagates_moved_parameter_to_nested_slot_reads() {
+        let mut f = IRFunction::new();
+        f.param_layout = oxide_ir::ParamLayout { base: 300, count: 1 };
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(300), Operand::None, Operand::None));
+        let mut child = IRFunction::new();
+        child.param_layout = oxide_ir::ParamLayout { base: 301, count: 0 };
+        child
+            .insts
+            .push(Inst::new(OpCode::LOAD_VAR, Operand::Reg(302), Operand::Reg(300), Operand::None));
+        child
+            .insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(302), Operand::None, Operand::None));
+        f.nested.push(child);
+        let cfg = oxide_cfg::build_cfg(&f);
+        let live = oxide_liveness::liveness(&f, &cfg);
+        alloc(&mut f, &live).unwrap();
+        assert!(matches!(f.nested[0].insts[0].a, Operand::Reg(1)));
+    }
+
+    #[test]
+    fn alloc_propagates_high_escaped_slot_to_nested_reads() {
+        let mut f = IRFunction::new();
+        f.insts.push(Inst::load_const(Operand::Reg(254), 0));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(254), Operand::None, Operand::None));
+        let mut child = IRFunction::new();
+        child.param_layout = oxide_ir::ParamLayout { base: 300, count: 0 };
+        child
+            .insts
+            .push(Inst::new(OpCode::LOAD_VAR, Operand::Reg(301), Operand::Reg(254), Operand::None));
+        child
+            .insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(301), Operand::None, Operand::None));
+        f.nested.push(child);
+        let cfg = oxide_cfg::build_cfg(&f);
+        let live = oxide_liveness::liveness(&f, &cfg);
+        alloc(&mut f, &live).unwrap();
+        let physical = match f.insts[0].rd {
+            Operand::Reg(reg) => reg,
+            _ => panic!("LOAD_CONST 目标应为寄存器"),
+        };
+        assert!((1..=253).contains(&physical));
+        assert!(matches!(f.nested[0].insts[0].a, Operand::Reg(reg) if reg == physical));
     }
 
     #[test]
