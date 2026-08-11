@@ -1675,27 +1675,157 @@ pub fn duration_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     make_duration(vm, values)
 }
 
-/// `Temporal.Duration.prototype.total("seconds")`，汇总不含日历大单位的总秒数。
+/// `Temporal.Duration.prototype.total(totalOf)`：按单位汇总时长。
+/// 日历单位（year/month/week）需要 relativeTo（PlainDateTime/PlainDate）。
 pub fn duration_total<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ptr = native_try!(receiver_obj(vm, args));
     let obj = unsafe { &*ptr };
     native_try!(ensure_duration(vm, obj));
-    let unit_value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    if !unit_value.is_string() || !to_string(unit_value).eq_ignore_ascii_case("seconds") {
-        return NativeResult::Err(crate::error::create_range_error(vm, "only seconds total is supported"));
+    let total_of = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    if total_of.is_undefined() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "options argument is required"));
     }
-    let values = duration_values(obj);
-    if values[..3].iter().any(|value| *value != 0.0) {
-        return NativeResult::Err(crate::error::create_range_error(
-            vm,
-            "a relativeTo option is required for calendar units",
-        ));
-    }
-    let total = match duration_time_nanoseconds(&values) {
-        Some(value) => value,
-        None => return NativeResult::Err(crate::error::create_range_error(vm, "duration is out of range")),
+    let (unit_raw, relative_raw) = if total_of.is_string() {
+        (to_string(total_of), JsValue::undefined())
+    } else {
+        if !total_of.is_object() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "options must be an object"));
+        }
+        let options_ptr = total_of.as_js_object_ptr();
+        if options_ptr.is_null() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "options must be an object"));
+        }
+        let options = unsafe { &*options_ptr };
+        let relative_raw = match temporal_option_value(vm, options, total_of, "relativeTo") {
+            Ok(raw) => raw,
+            Err(error) => return NativeResult::Err(error),
+        };
+        let unit_raw = match temporal_option_value(vm, options, total_of, "unit") {
+            Ok(raw) => match temporal_option_string(vm, raw) {
+                Ok(value) => value,
+                Err(error) => return NativeResult::Err(error),
+            },
+            Err(error) => return NativeResult::Err(error),
+        };
+        (unit_raw, relative_raw)
     };
-    NativeResult::Ok(JsValue::float(total as f64 / 1_000_000_000.0))
+    let unit_index = match plain_date_time_unit_index(&unit_raw) {
+        Some(index) => index,
+        None => return NativeResult::Err(crate::error::create_range_error(vm, "invalid unit")),
+    };
+    let values = duration_values(obj);
+
+    // relativeTo：支持 PlainDateTime / PlainDate，取日期分量（时间按午夜计算，对齐 polyfill）。
+    let relative_date = if relative_raw.is_object() {
+        let rel_ptr = relative_raw.as_js_object_ptr();
+        if rel_ptr.is_null() {
+            None
+        } else {
+            let rel = unsafe { &*rel_ptr };
+            if rel.is_plain_date_time_obj() || rel.is_plain_date_obj() {
+                Some((
+                    i128::from(get_double_prop(rel, 0) as i32),
+                    i128::from(get_double_prop(rel, 1) as u32),
+                    i128::from(get_double_prop(rel, 2) as u32),
+                ))
+            } else {
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    const UNIT_NS: [i128; 6] = [3_600_000_000_000, 60_000_000_000, 1_000_000_000, 1_000_000, 1_000, 1];
+    if unit_index <= 2 {
+        // 日历单位：需要 relativeTo，用纪元纳秒窗口计算分数总量。
+        let Some(rel_date) = relative_date else {
+            return NativeResult::Err(crate::error::create_range_error(
+                vm,
+                &format!("a starting point is required for {} total", unit_raw),
+            ));
+        };
+        let Some(time_ns_base) = duration_time_nanoseconds(&values) else {
+            return NativeResult::Err(crate::error::create_range_error(vm, "duration is out of range"));
+        };
+        // days 并入时间（24 小时/天），整日回填到日期分量。
+        // duration_time_nanoseconds 已包含 days 分量（24 小时/天），直接取整日。
+        let time_ns_total = time_ns_base;
+        let delta_days = time_ns_total / DAY_NS;
+        let target_time = time_ns_total % DAY_NS;
+        let mut date_parts = [0.0; 10];
+        date_parts[0] = values[0];
+        date_parts[1] = values[1];
+        date_parts[2] = values[2];
+        date_parts[3] = delta_days as f64;
+        let target_date = add_date_duration(rel_date, &date_parts);
+
+        // DifferenceISODateTime：date1=relativeTo（午夜）、date2=target。
+        let date1 = rel_date;
+        let mut date2 = target_date;
+        let mut time_ns = target_time;
+        let time_sign = if time_ns > 0 {
+            1_i128
+        } else if time_ns < 0 {
+            -1_i128
+        } else {
+            0
+        };
+        let date_sign = compare_iso_date(date1, date2);
+        if date_sign != 0 && date_sign == time_sign {
+            date2 = add_days_iso(date2, time_sign);
+            time_ns -= time_sign * DAY_NS;
+        }
+        let date_values = date_until_iso(date1, date2, unit_index);
+        let sign = {
+            let ds = date_duration_sign(&date_values);
+            if ds != 0 {
+                ds
+            } else if time_ns > 0 {
+                1
+            } else if time_ns < 0 {
+                -1
+            } else {
+                1
+            }
+        };
+        let origin_epoch = days_from_civil(date1.0, date1.1, date1.2) * DAY_NS;
+        let dest_epoch = days_from_civil(target_date.0, target_date.1, target_date.2) * DAY_NS + target_time;
+        let (r1, _, start_dur, end_dur) = nudge_window(sign, &date_values, date1, 1, unit_index, false);
+        let epoch_of = |dur: &[f64; 10]| -> Option<i128> {
+            if date_duration_sign(dur) == 0 {
+                return Some(origin_epoch);
+            }
+            let date = add_date_duration(date1, dur);
+            let days = days_from_civil(date.0, date.1, date.2);
+            if days.abs() > MAX_ISO_DAY {
+                return None;
+            }
+            Some(days * DAY_NS)
+        };
+        let Some(start_epoch) = epoch_of(&start_dur) else {
+            return NativeResult::Err(crate::error::create_range_error(vm, "duration is out of range"));
+        };
+        let Some(end_epoch) = epoch_of(&end_dur) else {
+            return NativeResult::Err(crate::error::create_range_error(vm, "duration is out of range"));
+        };
+        let numerator = dest_epoch - start_epoch;
+        let denominator = end_epoch - start_epoch;
+        if denominator == 0 {
+            return NativeResult::Err(crate::error::create_range_error(vm, "duration is out of range"));
+        }
+        let total = (denominator as f64 * r1 as f64 + numerator as f64 * sign as f64) / denominator as f64;
+        return NativeResult::Ok(JsValue::float(total));
+    }
+
+    // 均匀长度单位（day..nanosecond）：直接按纳秒汇总。
+    let Some(time_ns_base) = duration_time_nanoseconds(&values) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "duration is out of range"));
+    };
+    // duration_time_nanoseconds 已包含 days 分量。
+    let total_ns = time_ns_base;
+    let scale = if unit_index == 3 { DAY_NS } else { UNIT_NS[unit_index - 4] };
+    NativeResult::Ok(JsValue::float(total_ns as f64 / scale as f64))
 }
 
 /// `Temporal.Duration.prototype.toString()` 的 ISO 8601 表示。
@@ -2049,6 +2179,19 @@ pub fn plain_time_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
 }
 
 /// 拆解午夜后纳秒为各分量。
+/// 带符号分解午夜后纳秒为时/分/秒/毫秒/微秒/纳秒（各分量向零截断，保持同号）。
+fn plain_time_components_signed(total_ns: i128) -> [i128; 6] {
+    const SCALES: [i128; 5] = [3_600_000_000_000, 60_000_000_000, 1_000_000_000, 1_000_000, 1_000];
+    let mut values = [0_i128; 6];
+    let mut remainder = total_ns;
+    for (index, scale) in SCALES.iter().enumerate() {
+        values[index] = remainder / scale;
+        remainder %= scale;
+    }
+    values[5] = remainder;
+    values
+}
+
 fn plain_time_components(total_ns: f64) -> (u32, u32, u32, u32, u32, u32) {
     let total = total_ns as u64;
     let ns = total % 1_000;
@@ -3016,6 +3159,672 @@ fn plain_date_time_apply_duration<H: VmHost>(vm: &mut H, args: &[u8], sign: i64)
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid date-time"));
     }
     make_plain_date_time(vm, yy as i32, mm as u32, dd as u32, new_time_ns as f64)
+}
+
+/// PlainDateTime 差值单位层级：year=0 … nanosecond=9；"auto" 仅限 largestUnit。
+fn plain_date_time_unit_index(value: &str) -> Option<usize> {
+    match value {
+        "year" | "years" => Some(0),
+        "month" | "months" => Some(1),
+        "week" | "weeks" => Some(2),
+        "day" | "days" => Some(3),
+        "hour" | "hours" => Some(4),
+        "minute" | "minutes" => Some(5),
+        "second" | "seconds" => Some(6),
+        "millisecond" | "milliseconds" => Some(7),
+        "microsecond" | "microseconds" => Some(8),
+        "nanosecond" | "nanoseconds" => Some(9),
+        _ => None,
+    }
+}
+
+const DAY_NS: i128 = 86_400_000_000_000;
+
+const MAX_ISO_DAY: i128 = 100_000_000;
+
+/// 比较两个 ISO 日期，返回 -1/0/+1。
+fn compare_iso_date(a: (i128, i128, i128), b: (i128, i128, i128)) -> i128 {
+    if a.0 != b.0 {
+        return if a.0 < b.0 { -1 } else { 1 };
+    }
+    if a.1 != b.1 {
+        return if a.1 < b.1 { -1 } else { 1 };
+    }
+    if a.2 != b.2 {
+        return if a.2 < b.2 { -1 } else { 1 };
+    }
+    0
+}
+
+/// 候选日期（日以 day_override 参与比较）是否在 sign 方向上越过终点。
+fn surpasses_with_day(sign: i128, candidate: (i128, i128, i128), day_override: i128, end: (i128, i128, i128)) -> bool {
+    let cmp = compare_iso_date((candidate.0, candidate.1, day_override), end);
+    if sign > 0 {
+        cmp > 0
+    } else {
+        cmp < 0
+    }
+}
+
+/// 日期加天数。
+fn add_days_iso(date: (i128, i128, i128), days: i128) -> (i128, i128, i128) {
+    let (y, m, d) = civil_from_days(days_from_civil(date.0, date.1, date.2) + days);
+    (y, m, d)
+}
+
+/// ISO8601 日期差分解，对齐 polyfill 的 dateUntil/untilCalendar。
+/// largest：0=year 1=month 2=week 3=day。
+fn date_until_iso(start: (i128, i128, i128), end: (i128, i128, i128), largest: usize) -> [f64; 10] {
+    let mut values = [0.0; 10];
+    if largest >= 2 {
+        let mut days = days_from_civil(end.0, end.1, end.2) - days_from_civil(start.0, start.1, start.2);
+        if largest == 2 {
+            values[2] = (days / 7) as f64;
+            days %= 7;
+        }
+        values[3] = days as f64;
+        return values;
+    }
+    let sign = compare_iso_date(end, start);
+    if sign == 0 {
+        return values;
+    }
+    let diff_years = end.0 - start.0;
+    let diff_days = end.2 - start.2;
+    let diff_in_year_sign = if end.1 > start.1 {
+        1
+    } else if end.1 < start.1 {
+        -1
+    } else if diff_days > 0 {
+        1
+    } else if diff_days < 0 {
+        -1
+    } else {
+        0
+    };
+    // 终点的月-日早于起点的月-日时，年份差需沿 sign 方向修正 1。
+    let mut years = if diff_in_year_sign * sign < 0 { diff_years - sign } else { diff_years };
+    let mut months = 0_i128;
+    if largest == 1 {
+        months = years * 12;
+        years = 0;
+    }
+    let intermediate = add_months_i128(start.0, start.1, start.2, years * 12 + months);
+    // 闰日校正：intermediate 已越过终点时年份回退 1。
+    if surpasses_with_day(sign, intermediate, start.2, end) {
+        years -= sign;
+    }
+    let mut current: (i128, i128, i128);
+    let mut next = add_months_i128(start.0, start.1, start.2, years * 12 + months);
+    loop {
+        months += sign;
+        current = next;
+        next = add_months_i128(current.0, current.1, current.2, sign);
+        next.2 = start.2;
+        if surpasses_with_day(sign, next, start.2, end) {
+            break;
+        }
+    }
+    months -= sign;
+    let days = days_from_civil(end.0, end.1, end.2) - days_from_civil(current.0, current.1, current.2);
+    values[0] = years as f64;
+    values[1] = months as f64;
+    values[3] = days as f64;
+    values
+}
+
+/// 向零截断到 increment 的倍数。
+fn round_to_increment_trunc(value: i128, increment: i128) -> i128 {
+    (value / increment) * increment
+}
+
+/// 时长日期部分符号（首个非零分量决定）。
+fn date_duration_sign(values: &[f64; 10]) -> i128 {
+    for value in values[0..4].iter().copied() {
+        if value != 0.0 {
+            return if value > 0.0 { 1 } else { -1 };
+        }
+    }
+    0
+}
+
+/// 在日期上叠加时长（年/月/周/日）。
+fn add_date_duration(date: (i128, i128, i128), values: &[f64; 10]) -> (i128, i128, i128) {
+    let years = values[0] as i128;
+    let months = values[1] as i128;
+    let weeks = values[2] as i128;
+    let days = values[3] as i128;
+    let d = add_months_i128(date.0, date.1, date.2, years * 12 + months);
+    add_days_iso(d, weeks * 7 + days)
+}
+
+/// 无符号舍入模式（ApplyUnsignedRoundingMode 用的模式集合）。
+#[derive(Clone, Copy)]
+enum UnsignedMode {
+    Zero,
+    Infinity,
+    HalfEven,
+    HalfInfinity,
+    HalfZero,
+}
+
+/// ApplyUnsignedRoundingMode：在 r1/r2 间选择（均为非负量）。
+fn apply_unsigned_rounding(
+    r1: i128, r2: i128, cmp: std::cmp::Ordering, even: bool, mode: InstantRoundingMode, negative: bool,
+) -> i128 {
+    let unsigned_mode = match mode {
+        InstantRoundingMode::Ceil => {
+            if negative {
+                UnsignedMode::Zero
+            } else {
+                UnsignedMode::Infinity
+            }
+        }
+        InstantRoundingMode::Floor => {
+            if negative {
+                UnsignedMode::Infinity
+            } else {
+                UnsignedMode::Zero
+            }
+        }
+        InstantRoundingMode::Expand => UnsignedMode::Infinity,
+        InstantRoundingMode::Trunc => UnsignedMode::Zero,
+        InstantRoundingMode::HalfCeil => {
+            if negative {
+                UnsignedMode::HalfZero
+            } else {
+                UnsignedMode::HalfInfinity
+            }
+        }
+        InstantRoundingMode::HalfFloor => {
+            if negative {
+                UnsignedMode::HalfInfinity
+            } else {
+                UnsignedMode::HalfZero
+            }
+        }
+        InstantRoundingMode::HalfEven => UnsignedMode::HalfEven,
+        InstantRoundingMode::HalfExpand => UnsignedMode::HalfInfinity,
+        InstantRoundingMode::HalfTrunc => UnsignedMode::HalfZero,
+    };
+    match unsigned_mode {
+        UnsignedMode::Zero => r1,
+        UnsignedMode::Infinity => r2,
+        UnsignedMode::HalfEven => match cmp {
+            std::cmp::Ordering::Less => r1,
+            std::cmp::Ordering::Equal => {
+                if even {
+                    r1
+                } else {
+                    r2
+                }
+            }
+            std::cmp::Ordering::Greater => r2,
+        },
+        UnsignedMode::HalfInfinity => {
+            if cmp == std::cmp::Ordering::Less {
+                r1
+            } else {
+                r2
+            }
+        }
+        UnsignedMode::HalfZero => {
+            if cmp == std::cmp::Ordering::Greater {
+                r2
+            } else {
+                r1
+            }
+        }
+    }
+}
+
+/// ComputeNudgeWindow：smallestUnit 为 day/week/month/year 时的舍入窗口。
+/// unit：0=year 1=month 2=week 3=day。
+fn nudge_window(
+    sign: i128, values: &[f64; 10], date1: (i128, i128, i128), increment: i128, unit: usize, shift: bool,
+) -> (i128, i128, [f64; 10], [f64; 10]) {
+    let years = values[0] as i128;
+    let months = values[1] as i128;
+    let weeks = values[2] as i128;
+    let days = values[3] as i128;
+    let (r1, r2) = match unit {
+        0 => {
+            let y = round_to_increment_trunc(years, increment);
+            let r1 = if !shift { y } else { y + increment * sign };
+            (r1, r1 + increment * sign)
+        }
+        1 => {
+            let m = round_to_increment_trunc(months, increment);
+            let r1 = if !shift { m } else { m + increment * sign };
+            (r1, r1 + increment * sign)
+        }
+        2 => {
+            let weeks_start = add_months_i128(date1.0, date1.1, date1.2, years * 12 + months);
+            let weeks_end = add_days_iso(weeks_start, days);
+            let w = date_until_iso(weeks_start, weeks_end, 2)[2] as i128;
+            let total = weeks + w;
+            let r1 = round_to_increment_trunc(total, increment);
+            let r1 = if !shift { r1 } else { r1 + increment * sign };
+            (r1, r1 + increment * sign)
+        }
+        _ => {
+            let d = round_to_increment_trunc(days, increment);
+            let r1 = if !shift { d } else { d + increment * sign };
+            (r1, r1 + increment * sign)
+        }
+    };
+    let mut start = [0.0; 10];
+    let mut end = [0.0; 10];
+    match unit {
+        0 => {
+            start[0] = r1 as f64;
+            end[0] = r2 as f64;
+        }
+        1 => {
+            start[0] = years as f64;
+            start[1] = r1 as f64;
+            end[0] = years as f64;
+            end[1] = r2 as f64;
+        }
+        2 => {
+            start[0] = years as f64;
+            start[1] = months as f64;
+            start[2] = r1 as f64;
+            end[0] = years as f64;
+            end[1] = months as f64;
+            end[2] = r2 as f64;
+        }
+        _ => {
+            start[0] = years as f64;
+            start[1] = months as f64;
+            start[2] = weeks as f64;
+            start[3] = r1 as f64;
+            end[0] = years as f64;
+            end[1] = months as f64;
+            end[2] = weeks as f64;
+            end[3] = r2 as f64;
+        }
+    }
+    (r1, r2, start, end)
+}
+
+/// NudgeToCalendarUnit：日历单位用纪元纳秒边界取整。
+#[allow(clippy::too_many_arguments)]
+fn nudge_to_calendar_unit(
+    sign: i128, values: &[f64; 10], origin_epoch: i128, dest_epoch: i128, date1: (i128, i128, i128), time1_ns: i128,
+    increment: i128, unit: usize, mode: InstantRoundingMode,
+) -> Result<([f64; 10], i128, bool), ()> {
+    let epoch_of = |dur: &[f64; 10]| -> Result<i128, ()> {
+        if date_duration_sign(dur) == 0 {
+            return Ok(origin_epoch);
+        }
+        let date = add_date_duration(date1, dur);
+        let days = days_from_civil(date.0, date.1, date.2);
+        if days.abs() > MAX_ISO_DAY {
+            return Err(());
+        }
+        Ok(days * DAY_NS + time1_ns)
+    };
+    let mut did_expand = false;
+    let (mut r1, mut r2, mut start_dur, mut end_dur) = nudge_window(sign, values, date1, increment, unit, false);
+    let mut start_epoch = epoch_of(&start_dur)?;
+    let mut end_epoch = epoch_of(&end_dur)?;
+    let in_window = if sign > 0 {
+        dest_epoch >= start_epoch && dest_epoch <= end_epoch
+    } else {
+        dest_epoch <= start_epoch && dest_epoch >= end_epoch
+    };
+    if !in_window {
+        (r1, r2, start_dur, end_dur) = nudge_window(sign, values, date1, increment, unit, true);
+        start_epoch = epoch_of(&start_dur)?;
+        end_epoch = epoch_of(&end_dur)?;
+        did_expand = true;
+        let in_window = if sign > 0 {
+            dest_epoch >= start_epoch && dest_epoch <= end_epoch
+        } else {
+            dest_epoch <= start_epoch && dest_epoch >= end_epoch
+        };
+        if !in_window {
+            return Err(());
+        }
+    }
+    let numerator = dest_epoch - start_epoch;
+    let denominator = end_epoch - start_epoch;
+    let even = (r1.abs() / increment) % 2 == 0;
+    let rounded_unit = if numerator == 0 {
+        r1.abs()
+    } else if numerator == denominator {
+        r2.abs()
+    } else {
+        let cmp = (numerator * 2).abs().cmp(&denominator.abs());
+        apply_unsigned_rounding(r1.abs(), r2.abs(), cmp, even, mode, sign < 0)
+    };
+    did_expand = did_expand || rounded_unit == r2.abs();
+    let duration = if rounded_unit == r2.abs() { end_dur } else { start_dur };
+    let nudged = if did_expand { end_epoch } else { start_epoch };
+    Ok((duration, nudged, did_expand))
+}
+
+/// BubbleRelativeDuration：舍入越过小单位边界时向更大单位进位（到 largest 为止）。
+fn bubble_relative_duration(
+    sign: i128, mut values: [f64; 10], nudged_epoch: i128, date1: (i128, i128, i128), time1_ns: i128, largest: usize,
+    start_unit: usize,
+) -> Result<[f64; 10], ()> {
+    if start_unit == 0 {
+        return Ok(values);
+    }
+    let mut unit = start_unit - 1;
+    loop {
+        if unit >= largest {
+            if unit == 2 && largest != 2 {
+                // weeks 不向 months 进位，跳过。
+                if unit == 0 {
+                    return Ok(values);
+                }
+                unit -= 1;
+                continue;
+            }
+            let mut end_dur = values;
+            match unit {
+                0 => {
+                    end_dur[0] = (values[0] as i128 + sign) as f64;
+                    end_dur[1] = 0.0;
+                    end_dur[2] = 0.0;
+                    end_dur[3] = 0.0;
+                }
+                1 => {
+                    end_dur[1] = (values[1] as i128 + sign) as f64;
+                    end_dur[2] = 0.0;
+                    end_dur[3] = 0.0;
+                }
+                2 => {
+                    end_dur[2] = (values[2] as i128 + sign) as f64;
+                    end_dur[3] = 0.0;
+                }
+                _ => unreachable!(),
+            }
+            end_dur[4..10].fill(0.0);
+            let end_date = add_date_duration(date1, &end_dur);
+            // Bubble 边界只用于比较，不做 ISO 范围校验（对齐 bugzilla 2036259）。
+            let end_epoch = days_from_civil(end_date.0, end_date.1, end_date.2) * DAY_NS + time1_ns;
+            let reached_end = if sign > 0 { nudged_epoch >= end_epoch } else { nudged_epoch <= end_epoch };
+            if reached_end {
+                values = end_dur;
+            } else {
+                return Ok(values);
+            }
+            if unit == 0 {
+                return Ok(values);
+            }
+            unit -= 1;
+        } else {
+            return Ok(values);
+        }
+    }
+}
+
+/// 在年月上推进指定月数并保持日（超出目标月末时截断）。
+fn add_months_i128(year: i128, month: i128, day: i128, months: i128) -> (i128, i128, i128) {
+    let total = year * 12 + (month - 1) + months;
+    let ny = total.div_euclid(12);
+    let nm = total.rem_euclid(12) + 1;
+    let max_day = days_in_month(ny, nm).unwrap_or(31);
+    (ny, nm, day.min(max_day))
+}
+
+/// `Temporal.PlainDateTime.prototype.until/since(other, options)`：按最大/最小单位
+/// 计算差值并舍入。until 返回 other 减 receiver，since 返回反向。
+fn plain_date_time_difference<H: VmHost>(vm: &mut H, args: &[u8], since: bool) -> NativeResult {
+    let (sy, sm, sd, st) = match plain_date_time_parts(vm, args) {
+        Ok(parts) => parts,
+        Err(error) => return NativeResult::Err(error),
+    };
+    let other = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let (oy, om, od, ot) = match plain_date_time_like_parts(vm, other, true) {
+        Ok(parts) => parts,
+        Err(error) => return NativeResult::Err(error),
+    };
+    let options_value = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+
+    let (largest_raw, increment_value, mode_value, smallest_raw) = if options_value.is_undefined() {
+        (None, 1.0, "trunc".to_string(), "nanosecond".to_string())
+    } else {
+        if !options_value.is_object() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "options must be an object"));
+        }
+        let options_ptr = options_value.as_js_object_ptr();
+        if options_ptr.is_null() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "options must be an object"));
+        }
+        let options = unsafe { &*options_ptr };
+        // 读取顺序对齐 GetDifferenceSettings：largestUnit → roundingIncrement → roundingMode → smallestUnit。
+        let largest_raw = match temporal_option_value(vm, options, options_value, "largestUnit") {
+            Ok(raw) if raw.is_undefined() => None,
+            Ok(raw) => match temporal_option_string(vm, raw) {
+                Ok(value) => Some(value),
+                Err(error) => return NativeResult::Err(error),
+            },
+            Err(error) => return NativeResult::Err(error),
+        };
+        let increment_raw = match temporal_option_value(vm, options, options_value, "roundingIncrement") {
+            Ok(raw) if raw.is_undefined() => 1.0,
+            Ok(raw) => match temporal_option_number(vm, raw) {
+                Ok(value) => value,
+                Err(error) => return NativeResult::Err(error),
+            },
+            Err(error) => return NativeResult::Err(error),
+        };
+        let mode_raw = match temporal_option_value(vm, options, options_value, "roundingMode") {
+            Ok(raw) if raw.is_undefined() => "trunc".to_string(),
+            Ok(raw) => match temporal_option_string(vm, raw) {
+                Ok(value) => value,
+                Err(error) => return NativeResult::Err(error),
+            },
+            Err(error) => return NativeResult::Err(error),
+        };
+        let smallest_raw = match temporal_option_value(vm, options, options_value, "smallestUnit") {
+            Ok(raw) if raw.is_undefined() => "nanosecond".to_string(),
+            Ok(raw) => match temporal_option_string(vm, raw) {
+                Ok(value) => value,
+                Err(error) => return NativeResult::Err(error),
+            },
+            Err(error) => return NativeResult::Err(error),
+        };
+        (largest_raw, increment_raw, mode_raw, smallest_raw)
+    };
+
+    let smallest_index = match plain_date_time_unit_index(&smallest_raw) {
+        Some(index) => index,
+        None => return NativeResult::Err(crate::error::create_range_error(vm, "invalid smallestUnit")),
+    };
+    // auto/缺省：LargerOfTwoTemporalUnits('day', smallestUnit)。
+    // 索引 0=year…3=day…9=nanosecond，更大单位取更小索引，故为 min(3, smallest)。
+    let largest_index = match largest_raw {
+        Some(value) if value == "auto" => smallest_index.min(3),
+        Some(value) => match plain_date_time_unit_index(&value) {
+            Some(index) => index,
+            None => return NativeResult::Err(crate::error::create_range_error(vm, "invalid largestUnit")),
+        },
+        None => smallest_index.min(3),
+    };
+    if largest_index > smallest_index {
+        return NativeResult::Err(crate::error::create_range_error(vm, "smallestUnit exceeds largestUnit"));
+    }
+    let Some(mut mode) = instant_rounding_mode(&mode_value) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid roundingMode"));
+    };
+    if since {
+        mode = match mode {
+            InstantRoundingMode::Ceil => InstantRoundingMode::Floor,
+            InstantRoundingMode::Floor => InstantRoundingMode::Ceil,
+            InstantRoundingMode::HalfCeil => InstantRoundingMode::HalfFloor,
+            InstantRoundingMode::HalfFloor => InstantRoundingMode::HalfCeil,
+            other => other,
+        };
+    }
+    if !increment_value.is_finite() {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid roundingIncrement"));
+    }
+    let increment = increment_value.trunc();
+    if !(1.0..=1_000_000_000.0).contains(&increment) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid roundingIncrement"));
+    }
+    let increment = increment as i128;
+    const UNIT_LIMITS: [i128; 6] = [24, 60, 60, 1_000, 1_000, 1_000];
+    if smallest_index >= 4 {
+        let limit = UNIT_LIMITS[smallest_index - 4];
+        if increment >= limit || limit % increment != 0 {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid roundingIncrement"));
+        }
+    }
+    const UNIT_NS: [i128; 6] = [3_600_000_000_000, 60_000_000_000, 1_000_000_000, 1_000_000, 1_000, 1];
+    const DAY_NS: i128 = 86_400_000_000_000;
+
+    // 规范语义：internal = other - receiver；since 用 NegateRoundingMode 的舍入模式，最后整体取反。
+    // 不调换两端（调换会改变 0.5 边界所在的年长，破坏对称性）。
+    let origin_epoch = days_from_civil(i128::from(sy), i128::from(sm), i128::from(sd)) * DAY_NS + st as i128;
+    let dest_epoch = days_from_civil(i128::from(oy), i128::from(om), i128::from(od)) * DAY_NS + ot as i128;
+
+    let date1 = (i128::from(sy), i128::from(sm), i128::from(sd));
+    let time1_ns = st as i128;
+    let mut date2 = (i128::from(oy), i128::from(om), i128::from(od));
+    let mut time_ns = ot as i128 - time1_ns;
+    let time_sign = if time_ns > 0 {
+        1_i128
+    } else if time_ns < 0 {
+        -1_i128
+    } else {
+        0
+    };
+    let date_sign = compare_iso_date(date1, date2);
+    // 日期差与时间差符号一致时，从日期差借一天给时间差，使时间落回一天内。
+    if date_sign != 0 && date_sign == time_sign {
+        date2 = add_days_iso(date2, time_sign);
+        time_ns -= time_sign * DAY_NS;
+    }
+
+    // 日期部分：largestUnit 为时间单位时按 day 分解，再把 days 并入时间。
+    let date_largest = largest_index.min(3);
+    let mut date_values = date_until_iso(date1, date2, date_largest);
+    let mut date_days = date_values[3] as i128;
+    if largest_index >= 4 {
+        time_ns += date_days * DAY_NS;
+        date_values[3] = 0.0;
+        date_days = 0;
+    }
+
+    let sign = {
+        let date_sign = date_duration_sign(&date_values);
+        if date_sign != 0 {
+            date_sign
+        } else if time_ns > 0 {
+            1
+        } else if time_ns < 0 {
+            -1
+        } else {
+            1
+        }
+    };
+
+    let mut values = if smallest_index == 9 && increment == 1 {
+        // 不要求舍入：时间按最大单位拆回。
+        let mut values = date_values;
+        if largest_index >= 4 {
+            let Some(time_values) = balance_instant_difference(time_ns, largest_index - 4) else {
+                return NativeResult::Err(crate::error::create_range_error(vm, "difference is out of range"));
+            };
+            values[4..10].copy_from_slice(&time_values[4..10]);
+        } else {
+            let day_part = time_ns / DAY_NS;
+            let rem = time_ns % DAY_NS;
+            values[3] += day_part as f64;
+            let time_values = plain_time_components_signed(rem);
+            for i in 0..6 {
+                values[4 + i] = time_values[i] as f64;
+            }
+        }
+        values
+    } else if smallest_index >= 3 {
+        // NudgeToDayOrTime：合并天与时间为总纳秒后按单位取整（day 为均匀单位，同样走此路径）。
+        let total_ns = time_ns + date_days * DAY_NS;
+        let quantum = if smallest_index == 3 {
+            DAY_NS * increment
+        } else {
+            UNIT_NS[smallest_index - 4] * increment
+        };
+        let Some(rounded_ns) = round_instant_difference(total_ns, quantum, mode) else {
+            return NativeResult::Err(crate::error::create_range_error(vm, "difference is out of range"));
+        };
+        let whole_days = rounded_ns / DAY_NS;
+        let rem = rounded_ns % DAY_NS;
+        let old_whole = total_ns / DAY_NS;
+        let did_expand_days = (whole_days - old_whole).signum() == total_ns.signum();
+        let mut values = date_values;
+        if largest_index >= 4 {
+            let Some(time_values) = balance_instant_difference(rounded_ns, largest_index - 4) else {
+                return NativeResult::Err(crate::error::create_range_error(vm, "difference is out of range"));
+            };
+            values[4..10].copy_from_slice(&time_values[4..10]);
+        } else {
+            values[3] = whole_days as f64;
+            let time_values = plain_time_components_signed(rem);
+            for i in 0..6 {
+                values[4 + i] = time_values[i] as f64;
+            }
+        }
+        if did_expand_days {
+            let nudged = dest_epoch + (rounded_ns - total_ns);
+            match bubble_relative_duration(sign, values, nudged, date1, time1_ns, largest_index, 3) {
+                Ok(bubbled) => values = bubbled,
+                Err(()) => {
+                    return NativeResult::Err(crate::error::create_range_error(vm, "difference is out of range"))
+                }
+            }
+        }
+        values
+    } else {
+        // NudgeToCalendarUnit：year/month/week 用纪元纳秒窗口取整。
+        let (mut values, nudged_epoch, did_expand) = match nudge_to_calendar_unit(
+            sign,
+            &date_values,
+            origin_epoch,
+            dest_epoch,
+            date1,
+            time1_ns,
+            increment,
+            smallest_index,
+            mode,
+        ) {
+            Ok(result) => result,
+            Err(()) => return NativeResult::Err(crate::error::create_range_error(vm, "difference is out of range")),
+        };
+        if did_expand && smallest_index != 2 {
+            match bubble_relative_duration(sign, values, nudged_epoch, date1, time1_ns, largest_index, smallest_index) {
+                Ok(bubbled) => values = bubbled,
+                Err(()) => {
+                    return NativeResult::Err(crate::error::create_range_error(vm, "difference is out of range"))
+                }
+            }
+        }
+        values
+    };
+    if since {
+        for value in &mut values {
+            if *value != 0.0 {
+                *value = -*value;
+            }
+        }
+    }
+    make_duration(vm, values)
+}
+/// `Temporal.PlainDateTime.prototype.until(other, options)`。
+pub fn plain_date_time_until<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_date_time_difference(vm, args, false)
+}
+
+/// `Temporal.PlainDateTime.prototype.since(other, options)`。
+pub fn plain_date_time_since<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_date_time_difference(vm, args, true)
 }
 
 /// `Temporal.PlainDateTime.prototype.add(durationLike, options)`。
