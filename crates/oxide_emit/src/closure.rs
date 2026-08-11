@@ -589,8 +589,16 @@ impl Emitter {
             }
             Expression::ObjectExpression(o) => {
                 for prop in &o.properties {
-                    if let oxide_parser::ObjectPropertyKind::ObjectProperty(p) = prop {
-                        self.collect_capture_names_expr(&p.value, ref_set, shadow, out);
+                    match prop {
+                        oxide_parser::ObjectPropertyKind::ObjectProperty(p) => {
+                            if p.computed {
+                                self.collect_capture_names_expr(p.key.to_expression(), ref_set, shadow, out);
+                            }
+                            self.collect_capture_names_expr(&p.value, ref_set, shadow, out);
+                        }
+                        oxide_parser::ObjectPropertyKind::SpreadProperty(spread) => {
+                            self.collect_capture_names_expr(&spread.argument, ref_set, shadow, out);
+                        }
                     }
                 }
             }
@@ -884,8 +892,16 @@ impl Emitter {
             }
             Expression::ObjectExpression(o) => {
                 for prop in &o.properties {
-                    if let oxide_parser::ObjectPropertyKind::ObjectProperty(p) = prop {
-                        self.collect_captured_expr(&p.value, own, out);
+                    match prop {
+                        oxide_parser::ObjectPropertyKind::ObjectProperty(p) => {
+                            if p.computed {
+                                self.collect_captured_expr(p.key.to_expression(), own, out);
+                            }
+                            self.collect_captured_expr(&p.value, own, out);
+                        }
+                        oxide_parser::ObjectPropertyKind::SpreadProperty(spread) => {
+                            self.collect_captured_expr(&spread.argument, own, out);
+                        }
                     }
                 }
             }

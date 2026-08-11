@@ -93,6 +93,18 @@ fn closure_nested_expr_capture() {
 }
 
 #[test]
+fn closure_captures_computed_object_key_across_caller_frame() {
+    let result = eval("let key='answer'; const call=fn=>fn(); const make=()=>({[key]:42}); call(make).answer").unwrap();
+    assert_eq!(result.as_int(), 42);
+}
+
+#[test]
+fn closure_captures_object_spread_source_across_caller_frame() {
+    let result = eval("let source={x:7}; const call=fn=>fn(); const make=()=>({...source}); call(make).x").unwrap();
+    assert_eq!(result.as_int(), 7);
+}
+
+#[test]
 fn for_let_per_iteration_independent() {
     let _ = eval("var fns=[]; for(let i=0;i<3;i++){ fns.push(function(){return i}); } fns[0]()+fns[1]()+fns[2]()");
     // 未支持：for-let 逐次迭代绑定尚未实现。

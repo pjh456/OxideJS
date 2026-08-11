@@ -187,11 +187,16 @@ impl Emitter {
             }
             Expression::ObjectExpression(obj) => {
                 for prop in &obj.properties {
-                    if let oxide_parser::ObjectPropertyKind::ObjectProperty(p) = prop {
-                        if p.computed {
-                            self.pre_scan_builtin_expr(p.key.to_expression(), ctx);
+                    match prop {
+                        oxide_parser::ObjectPropertyKind::ObjectProperty(p) => {
+                            if p.computed {
+                                self.pre_scan_builtin_expr(p.key.to_expression(), ctx);
+                            }
+                            self.pre_scan_builtin_expr(&p.value, ctx);
                         }
-                        self.pre_scan_builtin_expr(&p.value, ctx);
+                        oxide_parser::ObjectPropertyKind::SpreadProperty(spread) => {
+                            self.pre_scan_builtin_expr(&spread.argument, ctx);
+                        }
                     }
                 }
             }

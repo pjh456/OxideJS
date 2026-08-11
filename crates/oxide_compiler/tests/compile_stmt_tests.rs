@@ -406,6 +406,14 @@ fn compile_closure_capture_arrow_emits_make_cell() {
 }
 
 #[test]
+fn compile_adjacent_for_of_lexical_bindings_in_distinct_scopes() {
+    let module = compile_source(
+        "for (const [arg, descr] of [[1, 'a']]) { descr; } for (const [arg, descr] of [[2, 'b']]) { descr; }",
+    );
+    assert!(!module.bytecode.is_empty());
+}
+
+#[test]
 fn compile_compound_assignment_complement_ops() {
     let module = compile_source("let x = 10; x -= 1; x *= 2; x /= 3; x %= 4;");
     assert!(

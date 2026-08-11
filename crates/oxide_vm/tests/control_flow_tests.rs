@@ -195,6 +195,14 @@ fn eval_for_in_let_scoping() {
 }
 
 #[test]
+fn eval_adjacent_for_of_lexical_bindings_do_not_conflict() {
+    assert_eq!(
+        eval("let out=0; for (const [arg, descr] of [[1, 'a']]) out += arg; for (const [arg, descr] of [[2, 'b']]) out += arg; out"),
+        "3"
+    );
+}
+
+#[test]
 fn eval_switch_basic_match() {
     assert_eq!(eval("var x=0;switch(2){case 1:x=10;case 2:x=20;break;default:x=30;}x"), "20");
 }

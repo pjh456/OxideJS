@@ -23,6 +23,7 @@ impl Emitter {
     }
 
     fn emit_sync_for_of_statement(&self, fo: &ForOfStatement, ctx: &mut CompileCtx) -> Result<Option<u32>, String> {
+        ctx.push_scope();
         let start_label = ctx.next_label_id();
         let end_label = ctx.next_label_id();
         let iter_src_reg = self.emit_expression(&fo.right, ctx)?;
@@ -42,6 +43,7 @@ impl Emitter {
         ctx.inst(Inst::new(OpCode::FOR_OF_CLOSE, Operand::None, Operand::None, Operand::None));
         ctx.pop_label_scopes(n_labeled);
         ctx.pop_loop();
+        ctx.pop_scope();
         Ok(None)
     }
 
@@ -51,10 +53,16 @@ impl Emitter {
     /// 挂起（恢复值经 reg 0 交付）→ LOAD_VAR 拷贝为结果对象 → DONE 检查 done →
     /// FOR_OF_NEXT 读 value → 绑定左侧 → 循环体 → CLOSE 异步收尾。
     fn emit_for_await_of_statement(&self, fo: &ForOfStatement, ctx: &mut CompileCtx) -> Result<Option<u32>, String> {
+        ctx.push_scope();
         let start_label = ctx.next_label_id();
         let end_label = ctx.next_label_id();
         let iter_src_reg = self.emit_expression(&fo.right, ctx)?;
-        ctx.inst(Inst::new(OpCode::FOR_AWAIT_OF_INIT, Operand::None, Operand::Reg(iter_src_reg), Operand::None));
+        ctx.inst(Inst::new(
+            OpCode::FOR_AWAIT_OF_INIT,
+            Operand::None,
+            Operand::Reg(iter_src_reg),
+            Operand::None,
+        ));
         ctx.labels.set_label_pos(start_label, ctx.insts.len());
         ctx.push_loop(end_label, start_label);
         let n_labeled = ctx.take_pending_loop_labels(end_label, start_label);
@@ -80,6 +88,7 @@ impl Emitter {
         ctx.inst(Inst::new(OpCode::FOR_AWAIT_OF_CLOSE, Operand::None, Operand::None, Operand::None));
         ctx.pop_label_scopes(n_labeled);
         ctx.pop_loop();
+        ctx.pop_scope();
         Ok(None)
     }
 

@@ -11,6 +11,7 @@ impl Emitter {
         let Statement::ForInStatement(fi) = stmt else {
             return Ok(None);
         };
+        ctx.push_scope();
         let start_label = ctx.next_label_id();
         let end_label = ctx.next_label_id();
         let obj_reg = self.emit_expression(&fi.right, ctx)?;
@@ -40,7 +41,12 @@ impl Emitter {
                             ctx.declare(name, var_reg, decl.kind, is_const)?;
                             if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
                                 let op = if fresh_cell { OpCode::MAKE_CELL_FRESH } else { OpCode::MAKE_CELL };
-                                ctx.inst(Inst::new(op, Operand::Reg(key_reg), Operand::Imm(cell_idx as u16), Operand::None));
+                                ctx.inst(Inst::new(
+                                    op,
+                                    Operand::Reg(key_reg),
+                                    Operand::Imm(cell_idx as u16),
+                                    Operand::None,
+                                ));
                             } else {
                                 ctx.inst(Inst::new(
                                     OpCode::STORE_VAR,
@@ -68,6 +74,7 @@ impl Emitter {
         ctx.inst(Inst::new(OpCode::FOR_IN_CLEANUP, Operand::None, Operand::None, Operand::None));
         ctx.pop_label_scopes(n_labeled);
         ctx.pop_loop();
+        ctx.pop_scope();
         Ok(None)
     }
 }

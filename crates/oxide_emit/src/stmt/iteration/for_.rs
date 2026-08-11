@@ -36,6 +36,7 @@ impl Emitter {
         let Statement::ForStatement(fr) = stmt else {
             return Ok(None);
         };
+        ctx.push_scope();
         let start_label = ctx.next_label_id();
         let update_label = ctx.next_label_id();
         let end_label = ctx.next_label_id();
@@ -135,6 +136,7 @@ impl Emitter {
         ctx.labels.set_label_pos(end_label, ctx.insts.len());
         ctx.pop_label_scopes(n_labeled);
         ctx.pop_loop();
+        ctx.pop_scope();
         Ok(None)
     }
 }
