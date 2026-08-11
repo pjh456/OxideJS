@@ -229,8 +229,11 @@ impl Emitter {
             if is_derived {
                 module.insts.clear();
                 module.constants.clear();
-                module.n_registers = 1;
-                module.insts.push(Inst::super_call(Operand::None, Operand::None, 0));
+                module.n_registers = 2;
+                // 隐式派生构造器等价于 `constructor(...args) { super(...args); }`：
+                // 收集全部实参为数组，再展开传给 super。
+                module.insts.push(Inst::create_rest_array(Operand::Reg(1), 0));
+                module.insts.push(Inst::super_call_spread(Operand::Reg(0), &[0x8000_0000 | 1]));
                 // 字段初始化直接重发：构造器 upvalue/内置槽引用须与首轮编译产物对齐。
                 let mut field_ctx = CompileCtx::new();
                 field_ctx.scopes.private_name_map =

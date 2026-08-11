@@ -720,6 +720,81 @@ fn plain_date_time_compare_uses_internal_slots() {
 }
 
 #[test]
+fn plain_date_time_from_accepts_variants_and_full_range() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "const lower = Temporal.PlainDateTime.from('1976-11-18t15:23').toString();
+         const space = Temporal.PlainDateTime.from('1976-11-18 15:23').toString();
+         const offset = Temporal.PlainDateTime.from('1976-11-18T15:23+00:00:00,0[UTC]').toString();
+         const criticalZone = Temporal.PlainDateTime.from('1976-11-18T15:23[!Europe/Vienna]').toString();
+         const secondCalendar = Temporal.PlainDateTime.from('1976-11-18T15:23[u-ca=iso8601][u-ca=discord]').toString();
+         const minOk = Temporal.PlainDateTime.from('-271821-04-19T00:00:00.000000001').toString();
+         const maxOk = Temporal.PlainDateTime.from('+275760-09-13').toString();
+         const minBad = (() => { try { Temporal.PlainDateTime.from('-271821-04-19T00:00'); return false }
+             catch (e) { return e instanceof RangeError } })();
+         const maxBad = (() => { try { Temporal.PlainDateTime.from('+275760-09-14'); return false }
+             catch (e) { return e instanceof RangeError } })();
+         const dateOffsetBad = (() => { try { Temporal.PlainDateTime.from('2022-09-15+00:00'); return false }
+             catch (e) { return e instanceof RangeError } })();
+         const badCalendar = (() => { try { Temporal.PlainDateTime.from('1997-12-04[u-ca=notacal]'); return false }
+             catch (e) { return e instanceof RangeError } })();
+         const duplicateCritical = (() => { try { Temporal.PlainDateTime.from('1970-01-01[u-ca=iso8601][!u-ca=iso8601]'); return false }
+             catch (e) { return e instanceof RangeError } })();
+         [lower, space, offset, criticalZone, secondCalendar, minOk, maxOk,
+           minBad, maxBad, dateOffsetBad, badCalendar, duplicateCritical].join('|')",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        concat!(
+            "1976-11-18T15:23:00|1976-11-18T15:23:00|1976-11-18T15:23:00|",
+            "1976-11-18T15:23:00|1976-11-18T15:23:00|-271821-04-19T00:00:00.000000001|",
+            "+275760-09-13T00:00:00|true|true|true|true|true"
+        )
+    );
+}
+#[test]
+fn plain_date_time_to_string_honors_options() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const dt = new Temporal.PlainDateTime(2000, 5, 2, 12, 34, 56, 987, 650, 0);
+           const minute = dt.toString({ smallestUnit: 'minute' });
+           const seconds = dt.toString({ smallestUnit: 'second' });
+           const micros = dt.toString({ smallestUnit: 'microsecond' });
+           const two = dt.toString({ fractionalSecondDigits: 2.5 });
+           const nine = dt.toString({ fractionalSecondDigits: 9.7 });
+           const midnight = new Temporal.PlainDateTime(1999, 12, 31, 23, 59, 59, 999, 999, 999)
+             .toString({ fractionalSecondDigits: 8, roundingMode: 'ceil' });
+           const always = dt.toString({ calendarName: 'always' });
+           const critical = dt.toString({ calendarName: 'critical' });
+           const never = dt.toString({ calendarName: 'never' });
+           const badCalendar = (() => { try { dt.toString({ calendarName: 'ALWAYS' }); return false }
+             catch (e) { return e instanceof RangeError } })();
+           const badUnit = (() => { try { dt.toString({ smallestUnit: 'hour' }); return false }
+             catch (e) { return e instanceof RangeError } })();
+           const badDigits = (() => { try { dt.toString({ fractionalSecondDigits: -0.6 }); return false }
+             catch (e) { return e instanceof RangeError } })();
+           const badOptions = (() => { try { dt.toString(null); return false }
+             catch (e) { return e instanceof TypeError } })();
+           return [minute, seconds, micros, two, nine, midnight, always, critical, never,
+             badCalendar, badUnit, badDigits, badOptions].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        concat!(
+            "2000-05-02T12:34|2000-05-02T12:34:56|2000-05-02T12:34:56.987650|",
+            "2000-05-02T12:34:56.98|2000-05-02T12:34:56.987650000|2000-01-01T00:00:00.00000000|",
+            "2000-05-02T12:34:56.98765[u-ca=iso8601]|2000-05-02T12:34:56.98765[!u-ca=iso8601]|",
+            "2000-05-02T12:34:56.98765|true|true|true|true"
+        )
+    );
+}
+#[test]
 fn plain_date_time_serializes_extended_years() {
     let mut vm = Vm::new();
     let r = eval(
@@ -729,4 +804,20 @@ fn plain_date_time_serializes_extended_years() {
     )
     .unwrap();
     assert_eq!(str_val(&vm, r), "-000001-08-07T06:54:32.1,+010000-06-07T08:09:10.987");
+}
+
+#[test]
+fn zdt_subclass_compare_debug() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "class AvoidGettersDateTime extends Temporal.PlainDateTime {
+           get year() { throw new Error('getter'); }
+         }
+         const one = new AvoidGettersDateTime(2000, 5, 2, 12, 34, 56, 987, 654, 321);
+         const two = new AvoidGettersDateTime(2006, 3, 25, 6, 54, 32, 123, 456, 789);
+         typeof Temporal.PlainDateTime.compare(one, two) + ':' + Temporal.PlainDateTime.compare(one, two)",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "number:-1");
 }

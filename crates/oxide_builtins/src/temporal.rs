@@ -1791,9 +1791,28 @@ duration_getter!(duration_milliseconds, 7);
 duration_getter!(duration_microseconds, 8);
 duration_getter!(duration_nanoseconds, 9);
 
-/// 校验 ISO 日期分量（month 1-12、day 按月份与闰年）。
+/// 校验 ISO 日期分量（month 1-12、day 按月份与闰年，不依赖 chrono 年份范围）。
 fn valid_iso_date(year: i32, month: u32, day: u32) -> bool {
-    NaiveDate::from_ymd_opt(year, month, day).is_some()
+    match days_in_month(i128::from(year), i128::from(month)) {
+        Some(days) => day != 0 && day as i128 <= days,
+        None => false,
+    }
+}
+
+/// 计算 ISO 日期时间的纪元纳秒；分量须已通过 `valid_iso_date`。
+fn iso_date_time_epoch_ns(year: i32, month: u32, day: u32, time_ns: f64) -> Option<i128> {
+    let days = days_from_civil(i128::from(year), i128::from(month), i128::from(day));
+    days.checked_mul(86_400_000_000_000)?.checked_add(time_ns as i128)
+}
+
+/// 校验日期时间落在 PlainDateTime 表示范围（约 ±(10^8 + 1) 天，边界互斥）。
+fn valid_plain_date_time_range(year: i32, month: u32, day: u32, time_ns: f64) -> bool {
+    const MAX_ISO_DAY: i128 = 100_000_000;
+    let limit = (MAX_ISO_DAY + 1) * 86_400_000_000_000;
+    match iso_date_time_epoch_ns(year, month, day, time_ns) {
+        Some(epoch_ns) => epoch_ns > -limit && epoch_ns < limit,
+        None => false,
+    }
 }
 
 /// 读两位数字（basic 格式的月/日等紧凑分量）。
@@ -1879,7 +1898,7 @@ fn parse_iso_date(s: &str) -> Result<(i32, u32, u32), String> {
     };
     let rest = &t[i..];
     if !rest.is_empty() {
-        let ok = rest.starts_with(['T', 't', '[', '+', '-', 'Z', 'z']);
+        let ok = rest.starts_with(['T', 't', '[']);
         if !ok {
             return Err("invalid trailing content".into());
         }
@@ -2177,6 +2196,9 @@ pub fn plain_date_time_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
         + millisecond as f64 * 1_000_000.0
         + microsecond as f64 * 1_000.0
         + nanosecond as f64;
+    if !valid_plain_date_time_range(year, month, day, total_ns) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid date-time component"));
+    }
     initialize_temporal_receiver(
         vm,
         args,
@@ -2192,6 +2214,7 @@ pub fn plain_date_time_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
 
 fn validate_temporal_annotation_suffix(mut suffix: &str) -> Result<(), String> {
     let mut calendar_seen = false;
+    let mut saw_critical_calendar = false;
     let mut time_zone_seen = false;
     while !suffix.is_empty() {
         if !suffix.starts_with('[') {
@@ -2210,15 +2233,21 @@ fn validate_temporal_annotation_suffix(mut suffix: &str) -> Result<(), String> {
                 return Err("annotation keys must be lowercase".into());
             }
             if key == "u-ca" {
-                if calendar_seen || !value.eq_ignore_ascii_case("iso8601") {
+                if calendar_seen {
+                    if critical || saw_critical_calendar {
+                        return Err("invalid calendar annotation".into());
+                    }
+                } else if !value.eq_ignore_ascii_case("iso8601") {
                     return Err("invalid calendar annotation".into());
+                } else {
+                    calendar_seen = true;
+                    saw_critical_calendar = critical;
                 }
-                calendar_seen = true;
             } else if critical {
                 return Err("unknown critical annotation".into());
             }
         } else {
-            if critical || time_zone_seen {
+            if time_zone_seen {
                 return Err("invalid time-zone annotation".into());
             }
             time_zone_seen = true;
@@ -2226,6 +2255,78 @@ fn validate_temporal_annotation_suffix(mut suffix: &str) -> Result<(), String> {
         suffix = &suffix[end + 1..];
     }
     Ok(())
+}
+
+/// 剥离 ISO 偏移（±HH、±HHMM、±HH:MM、±HHMMSS、±HH:MM:SS，秒可带小数），返回剩余部分。
+fn strip_iso_offset(input: &str) -> Result<&str, String> {
+    let bytes = input.as_bytes();
+    if bytes.len() < 3 || !matches!(bytes[0], b'+' | b'-') {
+        return Err("invalid ISO offset".into());
+    }
+    let colon = bytes.len() > 3 && bytes[3] == b':';
+    let mut i = 1usize;
+    let take_digits = |count: usize, cursor: &mut usize| -> Result<(), String> {
+        if *cursor + count > bytes.len() || !bytes[*cursor..*cursor + count].iter().all(u8::is_ascii_digit) {
+            return Err("invalid ISO offset".into());
+        }
+        *cursor += count;
+        Ok(())
+    };
+    take_digits(2, &mut i)?;
+    if i < bytes.len() {
+        if colon {
+            if bytes[i] != b':' {
+                return Err("invalid ISO offset".into());
+            }
+            i += 1;
+        }
+        if i + 2 <= bytes.len() && bytes[i..i + 2].iter().all(u8::is_ascii_digit) {
+            i += 2;
+            if i < bytes.len() {
+                if colon {
+                    if bytes[i] != b':' {
+                        return Err("invalid ISO offset".into());
+                    }
+                    i += 1;
+                }
+                if i + 2 <= bytes.len() && bytes[i..i + 2].iter().all(u8::is_ascii_digit) {
+                    i += 2;
+                    if i < bytes.len() && matches!(bytes[i], b'.' | b',') {
+                        i += 1;
+                        let start = i;
+                        while i < bytes.len() && bytes[i].is_ascii_digit() {
+                            i += 1;
+                        }
+                        if i == start {
+                            return Err("invalid ISO offset fraction".into());
+                        }
+                        if i - start > 9 {
+                            return Err("invalid ISO offset fraction".into());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let digits: String = input[1..i].chars().filter(|ch| ch.is_ascii_digit()).take(6).collect();
+    if digits.len() < 2 {
+        return Err("invalid ISO offset".into());
+    }
+    let hour: u32 = digits[..2].parse().map_err(|_| "invalid ISO offset".to_string())?;
+    let minute: u32 = if digits.len() >= 4 {
+        digits[2..4].parse().map_err(|_| "invalid ISO offset".to_string())?
+    } else {
+        0
+    };
+    let second: u32 = if digits.len() >= 6 {
+        digits[4..6].parse().map_err(|_| "invalid ISO offset".to_string())?
+    } else {
+        0
+    };
+    if hour > 23 || minute > 59 || second > 59 {
+        return Err("invalid ISO offset".into());
+    }
+    Ok(&input[i..])
 }
 
 fn parse_plain_date_time_string(input: &str) -> Result<(i32, u32, u32, f64), String> {
@@ -2240,13 +2341,14 @@ fn parse_plain_date_time_string(input: &str) -> Result<(i32, u32, u32, f64), Str
     if text.contains('Z') || text.contains('z') {
         return Err("UTC designator is not valid for PlainDateTime".into());
     }
-    let (year, month, day) = parse_iso_date(text)?;
     let separator = text.find(['T', 't', ' ']);
+    let date_part = match separator {
+        Some(index) => &text[..index],
+        None => text,
+    };
+    let (year, month, day) = parse_iso_date(date_part)?;
     let Some(separator) = separator else {
-        if text.contains('+') {
-            return Err("offset without time is not valid for PlainDateTime".into());
-        }
-        if !valid_iso_date(year, month, day) {
+        if !valid_iso_date(year, month, day) || !valid_plain_date_time_range(year, month, day, 0.0) {
             return Err("invalid ISO date".into());
         }
         return Ok((year, month, day, 0.0));
@@ -2255,30 +2357,10 @@ fn parse_plain_date_time_string(input: &str) -> Result<(i32, u32, u32, f64), Str
     let time_and_suffix = &text[separator + 1..];
     let time_end = time_and_suffix
         .char_indices()
-        .find_map(|(index, ch)| matches!(ch, '+' | '-' | '[').then_some(index))
+        .find_map(|(index, ch)| matches!(ch, '+' | '-').then_some(index))
         .unwrap_or(time_and_suffix.len());
-    if time_end < time_and_suffix.len() {
-        let suffix = &time_and_suffix[time_end..];
-        let annotations = if suffix.starts_with('[') {
-            suffix
-        } else {
-            let offset_end = if suffix.len() >= 6 && suffix.as_bytes().get(3) == Some(&b':') {
-                6
-            } else if suffix.len() >= 5 {
-                5
-            } else if suffix.len() >= 3 {
-                3
-            } else {
-                0
-            };
-            if offset_end == 0 {
-                return Err("invalid ISO offset".into());
-            }
-            &suffix[offset_end..]
-        };
-        if annotations.starts_with(':') || validate_temporal_annotation_suffix(annotations).is_err() {
-            return Err("invalid ISO offset".into());
-        }
+    if time_end < time_and_suffix.len() && !strip_iso_offset(&time_and_suffix[time_end..])?.is_empty() {
+        return Err("invalid ISO offset".into());
     }
     let time = &time_and_suffix[..time_end];
     if time.is_empty() {
@@ -2334,13 +2416,13 @@ fn parse_plain_date_time_string(input: &str) -> Result<(i32, u32, u32, f64), Str
     if !valid_plain_time(hour, minute, second, millisecond, microsecond, nanosecond) {
         return Err("invalid ISO time".into());
     }
-    if !valid_iso_date(year, month, day) {
-        return Err("invalid ISO date".into());
-    }
     let total_ns = hour as f64 * 3_600_000_000_000.0
         + minute as f64 * 60_000_000_000.0
         + second as f64 * 1_000_000_000.0
         + subsecond as f64;
+    if !valid_iso_date(year, month, day) || !valid_plain_date_time_range(year, month, day, total_ns) {
+        return Err("invalid ISO date".into());
+    }
     Ok((year, month, day, total_ns))
 }
 
@@ -2352,59 +2434,106 @@ fn plain_date_time_object_parts<H: VmHost>(
         return Err(crate::error::create_range_error(vm, "unsupported calendar"));
     }
 
-    let (day, hour, microsecond, millisecond, minute, month) = {
-        let mut number_field = |name: &str| -> Result<Option<f64>, JsValue> {
-            let raw = temporal_option_value(vm, obj, value, name)?;
-            if raw.is_undefined() {
-                Ok(None)
-            } else {
-                temporal_option_number(vm, raw).map(|number| Some(number.trunc()))
-            }
-        };
-        (
-            number_field("day")?,
-            number_field("hour")?.unwrap_or(0.0),
-            number_field("microsecond")?.unwrap_or(0.0),
-            number_field("millisecond")?.unwrap_or(0.0),
-            number_field("minute")?.unwrap_or(0.0),
-            number_field("month")?,
-        )
-    };
-    let month_code_raw = temporal_option_value(vm, obj, value, "monthCode")?;
+    // 先按规范顺序读取全部原始字段，暂不转换类型。
+    let (
+        day_raw,
+        hour_raw,
+        microsecond_raw,
+        millisecond_raw,
+        minute_raw,
+        month_raw,
+        month_code_raw,
+        nanosecond_raw,
+        second_raw,
+        year_raw,
+    ) = (
+        temporal_option_value(vm, obj, value, "day")?,
+        temporal_option_value(vm, obj, value, "hour")?,
+        temporal_option_value(vm, obj, value, "microsecond")?,
+        temporal_option_value(vm, obj, value, "millisecond")?,
+        temporal_option_value(vm, obj, value, "minute")?,
+        temporal_option_value(vm, obj, value, "month")?,
+        temporal_option_value(vm, obj, value, "monthCode")?,
+        temporal_option_value(vm, obj, value, "nanosecond")?,
+        temporal_option_value(vm, obj, value, "second")?,
+        temporal_option_value(vm, obj, value, "year")?,
+    );
+
+    // 缺失必填字段先抛 TypeError（先于任何 RangeError 值校验）。
+    if day_raw.is_undefined() {
+        return Err(crate::error::create_type_error(vm, "day is required"));
+    }
+    if year_raw.is_undefined() {
+        return Err(crate::error::create_type_error(vm, "year is required"));
+    }
+    if month_raw.is_undefined() && month_code_raw.is_undefined() {
+        return Err(crate::error::create_type_error(vm, "month is required"));
+    }
+
+    // monthCode 必须是 string 类型，否则 TypeError。
     let month_code = if month_code_raw.is_undefined() {
         None
     } else {
-        let code = temporal_option_string(vm, month_code_raw)?;
-        let parsed = code
-            .strip_prefix('M')
-            .filter(|digits| digits.len() == 2)
-            .and_then(|digits| digits.parse::<u32>().ok())
-            .filter(|number| (1..=12).contains(number))
-            .ok_or_else(|| crate::error::create_range_error(vm, "invalid monthCode"))?;
-        Some(parsed as f64)
+        if !month_code_raw.is_string() {
+            return Err(crate::error::create_type_error(vm, "monthCode must be a string"));
+        }
+        let code = to_string(month_code_raw);
+        // 语法（well-formed）：M 后两位数字，可选 L 后缀。
+        let digits_ok =
+            code.len() >= 3 && code.starts_with('M') && code.as_bytes()[1..3].iter().all(u8::is_ascii_digit);
+        let well_formed = digits_ok && (code.len() == 3 || (code.len() == 4 && code.ends_with('L')));
+        if !well_formed {
+            return Err(crate::error::create_range_error(vm, "invalid monthCode"));
+        }
+        Some((code.clone(), code.ends_with('L')))
     };
-    let mut number_field = |name: &str| -> Result<Option<f64>, JsValue> {
-        let raw = temporal_option_value(vm, obj, value, name)?;
+
+    // 数值字段类型转换：Symbol/BigInt 抛 TypeError。
+    let mut convert_number = |_name: &str, raw: JsValue| -> Result<Option<f64>, JsValue> {
         if raw.is_undefined() {
             Ok(None)
         } else {
             temporal_option_number(vm, raw).map(|number| Some(number.trunc()))
         }
     };
-    let nanosecond = number_field("nanosecond")?.unwrap_or(0.0);
-    let second = number_field("second")?.unwrap_or(0.0);
-    let year = number_field("year")?;
+    let (day, hour, microsecond, millisecond, minute, month, nanosecond, second, year) = (
+        convert_number("day", day_raw)?,
+        convert_number("hour", hour_raw)?.unwrap_or(0.0),
+        convert_number("microsecond", microsecond_raw)?.unwrap_or(0.0),
+        convert_number("millisecond", millisecond_raw)?.unwrap_or(0.0),
+        convert_number("minute", minute_raw)?.unwrap_or(0.0),
+        convert_number("month", month_raw)?,
+        convert_number("nanosecond", nanosecond_raw)?.unwrap_or(0.0),
+        convert_number("second", second_raw)?.unwrap_or(0.0),
+        convert_number("year", year_raw)?,
+    );
 
-    let day = day.ok_or_else(|| crate::error::create_type_error(vm, "day is required"))?;
-    let year = year.ok_or_else(|| crate::error::create_type_error(vm, "year is required"))?;
+    // monthCode 适配 ISO 日历：仅 M01-M12，L 后缀不支持；无效抛 RangeError。
+    let month_code = match month_code {
+        Some((code, leap)) => {
+            if leap {
+                return Err(crate::error::create_range_error(vm, "monthCode is not valid for ISO calendar"));
+            }
+            let number = code[1..3]
+                .parse::<f64>()
+                .map_err(|_| crate::error::create_range_error(vm, "invalid monthCode"))?;
+            if !(1.0..=12.0).contains(&number) {
+                return Err(crate::error::create_range_error(vm, "monthCode is not valid for ISO calendar"));
+            }
+            Some(number)
+        }
+        None => None,
+    };
     let month = match (month, month_code) {
         (Some(month), Some(code)) if month != code => {
             return Err(crate::error::create_range_error(vm, "month and monthCode disagree"));
         }
         (Some(month), _) => month,
         (None, Some(code)) => code,
-        (None, None) => return Err(crate::error::create_type_error(vm, "month is required")),
+        (None, None) => unreachable!(),
     };
+    let day = day.ok_or_else(|| crate::error::create_type_error(vm, "day is required"))?;
+    let year = year.ok_or_else(|| crate::error::create_type_error(vm, "year is required"))?;
     let mut values = [year, month, day, hour, minute, second, millisecond, microsecond, nanosecond];
     if values.iter().any(|number| !number.is_finite()) || values[1..].iter().any(|number| *number < 0.0) {
         return Err(crate::error::create_range_error(vm, "invalid date-time component"));
@@ -2434,7 +2563,30 @@ fn plain_date_time_object_parts<H: VmHost>(
         + millisecond as f64 * 1_000_000.0
         + microsecond as f64 * 1_000.0
         + nanosecond as f64;
+    if !valid_plain_date_time_range(year, month, day, total_ns) {
+        return Err(crate::error::create_range_error(vm, "invalid date-time component"));
+    }
     Ok((year, month, day, total_ns))
+}
+
+/// 将 ZonedDateTime 按时区偏移转换为本地 PlainDateTime 分量。
+fn zoned_date_time_plain_parts<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<(i32, u32, u32, f64), JsValue> {
+    let Some(epoch_ns) = get_instant_epoch_ns(obj) else {
+        return Err(crate::error::create_range_error(vm, "invalid ZonedDateTime"));
+    };
+    let time_zone_id = to_string(obj.get_prop_at(1));
+    let Some(offset_minutes) = instant_time_zone_offset(&time_zone_id) else {
+        return Err(crate::error::create_range_error(vm, "invalid time zone"));
+    };
+    const DAY_NS: i128 = 86_400_000_000_000;
+    let local_ns = epoch_ns + i128::from(offset_minutes) * 60_000_000_000;
+    let days = local_ns.div_euclid(DAY_NS);
+    let time_ns = local_ns.rem_euclid(DAY_NS) as f64;
+    let (year, month, day) = civil_from_days(days);
+    if !valid_plain_date_time_range(year as i32, month as u32, day as u32, time_ns) {
+        return Err(crate::error::create_range_error(vm, "invalid date-time"));
+    }
+    Ok((year as i32, month as u32, day as u32, time_ns))
 }
 
 fn plain_date_time_like_parts<H: VmHost>(
@@ -2467,6 +2619,9 @@ fn plain_date_time_like_parts<H: VmHost>(
             get_double_prop(obj, 2) as u32,
             0.0,
         ));
+    }
+    if obj.is_zoned_date_time_obj() {
+        return zoned_date_time_plain_parts(vm, obj);
     }
     plain_date_time_object_parts(vm, value, obj, constrain)
 }
@@ -2680,28 +2835,131 @@ pub fn plain_date_time_value_of<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeRe
     NativeResult::Err(crate::error::create_type_error(vm, "Temporal.PlainDateTime has no valueOf"))
 }
 
+/// 格式化 PlainDateTime 本地 ISO 日期时间（无偏移），可裁秒与小数位并追加日历注解。
+fn format_plain_date_time_iso(
+    year: i32, month: u32, day: u32, time_ns: i128, include_seconds: bool, fractional_digits: Option<usize>,
+    calendar_name: &str,
+) -> String {
+    let hour = time_ns / 3_600_000_000_000;
+    let minute = time_ns / 60_000_000_000 % 60;
+    let second = time_ns / 1_000_000_000 % 60;
+    let subsecond = time_ns % 1_000_000_000;
+    let mut output = format!("{}-{month:02}-{day:02}T{hour:02}:{minute:02}", format_iso_year(i128::from(year)));
+    if include_seconds {
+        output.push_str(&format!(":{second:02}"));
+        match fractional_digits {
+            Some(0) => {}
+            Some(digits) => {
+                let fraction = format!("{subsecond:09}");
+                output.push('.');
+                output.push_str(&fraction[..digits]);
+            }
+            None if subsecond != 0 => {
+                output.push('.');
+                output.push_str(format!("{subsecond:09}").trim_end_matches('0'));
+            }
+            None => {}
+        }
+    }
+    match calendar_name {
+        "always" => output.push_str("[u-ca=iso8601]"),
+        "critical" => output.push_str("[!u-ca=iso8601]"),
+        _ => {}
+    }
+    output
+}
+
 fn plain_date_time_iso_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (year, month, day, total_ns) = native_try!(plain_date_time_parts(vm, args));
-    let (hour, minute, second, millisecond, microsecond, nanosecond) = plain_time_components(total_ns);
-    let fraction = millisecond as u64 * 1_000_000 + microsecond as u64 * 1_000 + nanosecond as u64;
-    let mut output = format!("{}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}", format_iso_year(year as i128));
-    if fraction != 0 {
-        let mut digits = format!("{fraction:09}");
-        while digits.ends_with('0') {
-            digits.pop();
-        }
-        output.push('.');
-        output.push_str(&digits);
-    }
+    let output = format_plain_date_time_iso(year, month, day, total_ns as i128, true, None, "never");
     NativeResult::Ok(vm.new_string(&output))
 }
 
-/// `Temporal.PlainDateTime.prototype.toString()`：输出本地 ISO 日期时间。
+/// `Temporal.PlainDateTime.prototype.toString(options)`：按精度、舍入模式与日历显示输出 ISO 8601。
 pub fn plain_date_time_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    if args.len() > 1 && !vm.reg(args[1]).is_undefined() && !vm.reg(args[1]).is_object() {
-        return NativeResult::Err(crate::error::create_type_error(vm, "options must be an object"));
+    let (year, month, day, total_ns) = native_try!(plain_date_time_parts(vm, args));
+    let options_value = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
+    let (calendar_name, fractional_input, mode_value, smallest_value) = if options_value.is_undefined() {
+        ("auto".to_string(), FractionalSecondDigitsInput::Auto, "trunc".to_string(), None)
+    } else {
+        if !options_value.is_object() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "options must be an object"));
+        }
+        let options_ptr = options_value.as_js_object_ptr();
+        if options_ptr.is_null() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "options must be an object"));
+        }
+        let options = unsafe { &*options_ptr };
+        let calendar_raw = native_try!(temporal_option_value(vm, options, options_value, "calendarName"));
+        let calendar_name = if calendar_raw.is_undefined() {
+            "auto".to_string()
+        } else {
+            native_try!(temporal_option_string(vm, calendar_raw))
+        };
+        let fractional_raw = native_try!(temporal_option_value(vm, options, options_value, "fractionalSecondDigits"));
+        let fractional_input = if fractional_raw.is_undefined() {
+            FractionalSecondDigitsInput::Auto
+        } else if fractional_raw.is_int() || fractional_raw.is_double() {
+            FractionalSecondDigitsInput::Number(to_number(fractional_raw))
+        } else {
+            FractionalSecondDigitsInput::String(native_try!(temporal_option_string(vm, fractional_raw)))
+        };
+        let mode_raw = native_try!(temporal_option_value(vm, options, options_value, "roundingMode"));
+        let mode_value = if mode_raw.is_undefined() {
+            "trunc".to_string()
+        } else {
+            native_try!(temporal_option_string(vm, mode_raw))
+        };
+        let smallest_raw = native_try!(temporal_option_value(vm, options, options_value, "smallestUnit"));
+        let smallest_value = if smallest_raw.is_undefined() {
+            None
+        } else {
+            Some(native_try!(temporal_option_string(vm, smallest_raw)))
+        };
+        (calendar_name, fractional_input, mode_value, smallest_value)
+    };
+
+    match calendar_name.as_str() {
+        "auto" | "always" | "never" | "critical" => {}
+        _ => return NativeResult::Err(crate::error::create_range_error(vm, "invalid calendarName")),
     }
-    plain_date_time_iso_string(vm, args)
+    let fractional_digits = native_try!(parse_fractional_second_digits(vm, fractional_input));
+    let Some(mode) = instant_rounding_mode(&mode_value) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding mode"));
+    };
+    let (quantum_ns, include_seconds, output_digits) = match smallest_value.as_deref() {
+        Some("minute" | "minutes") => (60_000_000_000, false, Some(0)),
+        Some("second" | "seconds") => (1_000_000_000, true, Some(0)),
+        Some("millisecond" | "milliseconds") => (1_000_000, true, Some(3)),
+        Some("microsecond" | "microseconds") => (1_000, true, Some(6)),
+        Some("nanosecond" | "nanoseconds") => (1, true, Some(9)),
+        Some(_) => return NativeResult::Err(crate::error::create_range_error(vm, "invalid smallest unit")),
+        None => match fractional_digits {
+            Some(digits) => (10_i128.pow((9 - digits) as u32), true, Some(digits)),
+            None => (1, true, None),
+        },
+    };
+    const DAY_NS: i128 = 86_400_000_000_000;
+    let Some(rounded_ns) = round_instant_ns(total_ns as i128, quantum_ns, mode) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid date-time"));
+    };
+    let extra_days = rounded_ns / DAY_NS;
+    let time_ns = rounded_ns % DAY_NS;
+    let total_days = days_from_civil(i128::from(year), i128::from(month), i128::from(day)) + extra_days;
+    let (year, month, day) = civil_from_days(total_days);
+    if !valid_plain_date_time_range(year as i32, month as u32, day as u32, time_ns as f64) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid date-time"));
+    }
+    let output = format_plain_date_time_iso(
+        year as i32,
+        month as u32,
+        day as u32,
+        time_ns,
+        include_seconds,
+        output_digits,
+        &calendar_name,
+    );
+    NativeResult::Ok(vm.new_string(&output))
 }
 
 /// `Temporal.PlainDateTime.prototype.toJSON()`：输出默认 ISO 日期时间。
