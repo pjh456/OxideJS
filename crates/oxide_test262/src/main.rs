@@ -400,7 +400,6 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
     // （"too many registers"、"not yet implemented" 等）判定失败。
     let excluded_features = [
         "Proxy",
-        "BigInt",
         "Intl",
         "module",
         "Atomics",
