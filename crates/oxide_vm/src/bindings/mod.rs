@@ -222,6 +222,18 @@ pub(crate) fn bind_well_known_method_alias(
     proto.bump_generation();
 }
 
+/// 在对象上按 well-known symbol 键绑定数据属性。
+pub(crate) fn bind_well_known_data_property(
+    core: &Arc<KernelCore>, target: &mut JsObject, well_known_id: u32, value: JsValue, attributes: PropAttributes,
+) {
+    let key = oxide_types::private_key::make_well_known_symbol_key(well_known_id);
+    let new_shape = core.shape_forge().make_shape(target.shape_id(), key);
+    target.set_shape_id(new_shape);
+    let pos = target.push_prop(value);
+    target.set_data_meta(pos, attributes);
+    target.bump_generation();
+}
+
 pub(crate) fn bind_global_value(core: &Arc<KernelCore>, global: &mut JsObject, name: &str, value: JsValue) {
     let si = core.perm_interner().intern(name).0;
     let shape = core.shape_forge().make_shape(global.shape_id(), si);

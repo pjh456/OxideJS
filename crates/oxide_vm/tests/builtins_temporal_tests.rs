@@ -324,6 +324,43 @@ fn instant_json_and_locale_string_use_default_iso_output() {
 }
 
 #[test]
+fn instant_to_string_tag_has_temporal_descriptor() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "let descriptor = Object.getOwnPropertyDescriptor(Temporal.Instant.prototype, Symbol.toStringTag);
+         Object.prototype.toString.call(Temporal.Instant.prototype) === '[object Temporal.Instant]'
+           && descriptor.value === 'Temporal.Instant'
+           && descriptor.writable === false
+           && descriptor.enumerable === false
+           && descriptor.configurable === true",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn instant_to_zoned_date_time_iso_preserves_epoch_and_time_zone() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "let instant = new Temporal.Instant(1000000000000000000n);
+         let utc = instant.toZonedDateTimeISO('uTc');
+         let offset = instant.toZonedDateTimeISO('2021-08-19T17:30-07:00');
+         let constructed = new Temporal.ZonedDateTime(0n, '+01:30');
+         utc.epochNanoseconds === instant.epochNanoseconds
+           && utc.timeZoneId === 'UTC'
+           && utc.calendarId === 'iso8601'
+           && offset.timeZoneId === '-07:00'
+           && constructed.epochNanoseconds === 0n
+           && constructed.timeZoneId === '+01:30'
+           && Object.prototype.toString.call(constructed) === '[object Temporal.ZonedDateTime]'",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
 fn instant_epoch_factories_validate_input_and_range() {
     let mut vm = Vm::new();
     let r = eval(

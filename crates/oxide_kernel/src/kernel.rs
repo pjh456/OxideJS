@@ -225,7 +225,7 @@ pub struct KernelSession {
 /// 维护注意：每个新增的 `BuiltinWorld` 对象字段都必须加到这里以及
 /// `KernelSession::dirty_since_snapshot()`，以便选择性重置重建正确的
 /// builtin 家族。
-pub const NUM_BUILTINS: usize = 80;
+pub const NUM_BUILTINS: usize = 83;
 
 /// 内置对象枚举 id，与 `BuiltinWorld` 中的存储槽一一对应。
 ///
@@ -314,6 +314,9 @@ pub enum BuiltinId {
     BigIntProto = 77,
     DurationConstructor = 78,
     DurationProto = 79,
+    SymToStringTag = 80,
+    ZonedDateTimeConstructor = 81,
+    ZonedDateTimeProto = 82,
 }
 
 impl BuiltinId {
@@ -399,6 +402,9 @@ impl BuiltinId {
         BuiltinId::BigIntProto,
         BuiltinId::DurationConstructor,
         BuiltinId::DurationProto,
+        BuiltinId::SymToStringTag,
+        BuiltinId::ZonedDateTimeConstructor,
+        BuiltinId::ZonedDateTimeProto,
     ];
 }
 
@@ -586,7 +592,8 @@ impl KernelSession {
                 || gen(BuiltinId::SymToPrimitive) != snap(BuiltinId::SymToPrimitive)
                 || gen(BuiltinId::SymHasInstance) != snap(BuiltinId::SymHasInstance)
                 || gen(BuiltinId::SymMatchAll) != snap(BuiltinId::SymMatchAll)
-                || gen(BuiltinId::SymAsyncIterator) != snap(BuiltinId::SymAsyncIterator),
+                || gen(BuiltinId::SymAsyncIterator) != snap(BuiltinId::SymAsyncIterator)
+                || gen(BuiltinId::SymToStringTag) != snap(BuiltinId::SymToStringTag),
             math: gen(BuiltinId::MathObject) != snap(BuiltinId::MathObject),
             json: gen(BuiltinId::JsonObject) != snap(BuiltinId::JsonObject),
             date: gen(BuiltinId::DateConstructor) != snap(BuiltinId::DateConstructor)
@@ -633,7 +640,9 @@ impl KernelSession {
                 || gen(BuiltinId::PlainTimeConstructor) != snap(BuiltinId::PlainTimeConstructor)
                 || gen(BuiltinId::PlainTimeProto) != snap(BuiltinId::PlainTimeProto)
                 || gen(BuiltinId::DurationConstructor) != snap(BuiltinId::DurationConstructor)
-                || gen(BuiltinId::DurationProto) != snap(BuiltinId::DurationProto),
+                || gen(BuiltinId::DurationProto) != snap(BuiltinId::DurationProto)
+                || gen(BuiltinId::ZonedDateTimeConstructor) != snap(BuiltinId::ZonedDateTimeConstructor)
+                || gen(BuiltinId::ZonedDateTimeProto) != snap(BuiltinId::ZonedDateTimeProto),
             stubs: world.stub_objects.len() != snapshot.stub_objects_len
                 || stub_generations_dirty
                 || gen(BuiltinId::BigIntConstructor) != snap(BuiltinId::BigIntConstructor)

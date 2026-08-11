@@ -2,7 +2,8 @@ use oxide_kernel::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use oxide_kernel::string_forge::PermInterner;
 use oxide_types::object::{JsObject, PropAttributes, PropMetaEntry};
 use oxide_types::private_key::{
-    is_private_name_key, is_symbol_key, symbol_index_from_key, well_known_symbol_id_from_key,
+    is_private_name_key, is_symbol_key, make_well_known_symbol_key, symbol_index_from_key,
+    well_known_symbol_id_from_key,
 };
 use oxide_types::value::JsValue;
 
@@ -110,7 +111,8 @@ fn decode_symbol_key<H: VmHost>(vm: &H, key: u32) -> JsValue {
             5 => world.sym_to_primitive.as_ptr(),
             6 => world.sym_has_instance.as_ptr(),
             7 => world.sym_match_all.as_ptr(),
-            _ => world.sym_async_iterator.as_ptr(),
+            8 => world.sym_async_iterator.as_ptr(),
+            _ => world.sym_to_string_tag.as_ptr(),
         };
         return JsValue::from_js_object(ptr as *mut JsObject);
     }
@@ -643,29 +645,13 @@ pub fn object_get_own_property_descriptor<H: VmHost>(vm: &mut H, args: &[u8]) ->
         Err(msg) => return NativeResult::Err(crate::error::create_type_error(vm, &msg)),
     };
     let obj_ptr = obj_val.as_js_object_ptr();
-    let prop_name_str = oxide_runtime_api::to_string(vm.reg(args[2]));
-    let si = vm.kernel_core().perm_interner().intern(&prop_name_str).0;
-
-    let (found_value, found_meta, found) = {
-        let obj = unsafe { &*obj_ptr };
-        let keys = walk_own_keys(vm, obj);
-        let mut found_value = JsValue::undefined();
-        let mut found_meta = None;
-        let mut found = false;
-        for (prop_si, offset) in keys {
-            if prop_si == si {
-                found_value = obj.get_prop_at(offset);
-                found_meta = obj.prop_meta_at(offset);
-                found = true;
-                break;
-            }
-        }
-        (found_value, found_meta, found)
-    };
-
-    if !found {
+    let key = vm.property_key_si(vm.reg(args[2]));
+    let obj = unsafe { &*obj_ptr };
+    let Some(offset) = vm.get_own_property_slot(obj, key) else {
         return NativeResult::Ok(JsValue::undefined());
-    }
+    };
+    let found_value = obj.get_prop_at(offset);
+    let found_meta = obj.prop_meta_at(offset);
 
     let sf_ptr = vm.kernel_core().perm_interner().as_ref() as *const PermInterner;
     let sh_ptr = vm.kernel_core().shape_forge().as_ref() as *const ShapeForge;
@@ -1029,8 +1015,16 @@ pub fn object_proto_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
                 "Object"
             };
             // @@toStringTag 为字符串时覆盖内置标签；getter 抛错透传原异常。
-            let tag_si = vm.kernel_core().perm_interner().intern("@@toStringTag").0;
-            match vm.ordinary_get(obj, tag_si, this_val) {
+            let tag_key = make_well_known_symbol_key(9);
+            let tag_value = match vm.ordinary_get(obj, tag_key, this_val) {
+                Ok(value) if !value.is_undefined() => Ok(value),
+                Ok(_) => {
+                    let legacy_key = vm.kernel_core().perm_interner().intern("@@toStringTag").0;
+                    vm.ordinary_get(obj, legacy_key, this_val)
+                }
+                Err(err) => Err(err),
+            };
+            match tag_value {
                 Ok(v) => match vm.lookup_str(v) {
                     Some(s) => return NativeResult::Ok(vm.new_string(&format!("[object {s}]"))),
                     None => builtin,

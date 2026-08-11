@@ -243,6 +243,7 @@ pub struct BuiltinWorld {
     pub sym_has_instance: P<JsObject>,
     pub sym_match_all: P<JsObject>,
     pub sym_async_iterator: P<JsObject>,
+    pub sym_to_string_tag: P<JsObject>,
     pub temporal_object: P<JsObject>,
     pub temporal_now_object: P<JsObject>,
     pub instant_constructor: P<JsObject>,
@@ -253,6 +254,8 @@ pub struct BuiltinWorld {
     pub plain_time_proto: P<JsObject>,
     pub duration_constructor: P<JsObject>,
     pub duration_proto: P<JsObject>,
+    pub zoned_date_time_constructor: P<JsObject>,
+    pub zoned_date_time_proto: P<JsObject>,
     pub bigint_constructor: P<JsObject>,
     pub bigint_proto: P<JsObject>,
     pub stub_objects: Vec<P<JsObject>>,
@@ -507,10 +510,11 @@ fn wire_builtin_world_links(world: &BuiltinWorld) {
     wire_ctor_proto(&world.plain_date_constructor, &world.plain_date_proto);
     wire_ctor_proto(&world.plain_time_constructor, &world.plain_time_proto);
     wire_ctor_proto(&world.duration_constructor, &world.duration_proto);
+    wire_ctor_proto(&world.zoned_date_time_constructor, &world.zoned_date_time_proto);
     wire_ctor_proto(&world.bigint_constructor, &world.bigint_proto);
 
     let obj_proto_val = JsValue::from_js_object(world.object_proto.as_ptr() as *mut JsObject);
-    let non_object_protos: [&P<JsObject>; 19] = [
+    let non_object_protos: [&P<JsObject>; 20] = [
         &world.array_proto,
         &world.function_proto,
         &world.string_proto,
@@ -529,6 +533,7 @@ fn wire_builtin_world_links(world: &BuiltinWorld) {
         &world.plain_date_proto,
         &world.plain_time_proto,
         &world.duration_proto,
+        &world.zoned_date_time_proto,
         &world.bigint_proto,
     ];
     for proto in &non_object_protos {
@@ -656,6 +661,7 @@ impl BuiltinWorld {
             BuiltinId::SymHasInstance => &self.sym_has_instance,
             BuiltinId::SymMatchAll => &self.sym_match_all,
             BuiltinId::SymAsyncIterator => &self.sym_async_iterator,
+            BuiltinId::SymToStringTag => &self.sym_to_string_tag,
             BuiltinId::TemporalObject => &self.temporal_object,
             BuiltinId::TemporalNowObject => &self.temporal_now_object,
             BuiltinId::InstantConstructor => &self.instant_constructor,
@@ -666,6 +672,8 @@ impl BuiltinWorld {
             BuiltinId::PlainTimeProto => &self.plain_time_proto,
             BuiltinId::DurationConstructor => &self.duration_constructor,
             BuiltinId::DurationProto => &self.duration_proto,
+            BuiltinId::ZonedDateTimeConstructor => &self.zoned_date_time_constructor,
+            BuiltinId::ZonedDateTimeProto => &self.zoned_date_time_proto,
             BuiltinId::BigIntConstructor => &self.bigint_constructor,
             BuiltinId::BigIntProto => &self.bigint_proto,
         }
@@ -709,6 +717,7 @@ impl BuiltinWorld {
         let sym_has_instance = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let sym_match_all = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let sym_async_iterator = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let sym_to_string_tag = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let temporal_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let temporal_now_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let (instant_proto, instant_constructor) = make_named_pair(string_forge, shape_forge, labels, "Instant");
@@ -717,6 +726,8 @@ impl BuiltinWorld {
         let (plain_time_proto, plain_time_constructor) =
             make_named_pair(string_forge, shape_forge, labels, "PlainTime");
         let (duration_proto, duration_constructor) = make_named_pair(string_forge, shape_forge, labels, "Duration");
+        let (zoned_date_time_proto, zoned_date_time_constructor) =
+            make_named_pair(string_forge, shape_forge, labels, "ZonedDateTime");
         let (bigint_proto, bigint_constructor) = make_named_pair(string_forge, shape_forge, labels, "BigInt");
         let stub_objects = Vec::new();
 
@@ -790,6 +801,7 @@ impl BuiltinWorld {
             sym_has_instance,
             sym_match_all,
             sym_async_iterator,
+            sym_to_string_tag,
             temporal_object,
             temporal_now_object,
             instant_constructor,
@@ -800,6 +812,8 @@ impl BuiltinWorld {
             plain_time_proto,
             duration_constructor,
             duration_proto,
+            zoned_date_time_constructor,
+            zoned_date_time_proto,
             bigint_constructor,
             bigint_proto,
             stub_objects,
@@ -875,11 +889,13 @@ impl BuiltinWorld {
             sym_has_instance,
             sym_match_all,
             sym_async_iterator,
+            sym_to_string_tag,
         ) = if dirty.symbol_family {
             let (symbol_proto, symbol_constructor) = make_named_pair(string_forge, shape_forge, labels, "Symbol");
             (
                 symbol_proto,
                 symbol_constructor,
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
                 P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
                 P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
                 P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
@@ -903,6 +919,7 @@ impl BuiltinWorld {
                 current.sym_has_instance.clone(),
                 current.sym_match_all.clone(),
                 current.sym_async_iterator.clone(),
+                current.sym_to_string_tag.clone(),
             )
         };
 
@@ -987,6 +1004,8 @@ impl BuiltinWorld {
             plain_time_constructor,
             duration_proto,
             duration_constructor,
+            zoned_date_time_proto,
+            zoned_date_time_constructor,
         ) = if dirty.temporal {
             let (instant_proto, instant_constructor) = make_named_pair(string_forge, shape_forge, labels, "Instant");
             let (plain_date_proto, plain_date_constructor) =
@@ -994,6 +1013,8 @@ impl BuiltinWorld {
             let (plain_time_proto, plain_time_constructor) =
                 make_named_pair(string_forge, shape_forge, labels, "PlainTime");
             let (duration_proto, duration_constructor) = make_named_pair(string_forge, shape_forge, labels, "Duration");
+            let (zoned_date_time_proto, zoned_date_time_constructor) =
+                make_named_pair(string_forge, shape_forge, labels, "ZonedDateTime");
             (
                 P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
                 P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
@@ -1005,6 +1026,8 @@ impl BuiltinWorld {
                 plain_time_constructor,
                 duration_proto,
                 duration_constructor,
+                zoned_date_time_proto,
+                zoned_date_time_constructor,
             )
         } else {
             (
@@ -1018,6 +1041,8 @@ impl BuiltinWorld {
                 current.plain_time_constructor.clone(),
                 current.duration_proto.clone(),
                 current.duration_constructor.clone(),
+                current.zoned_date_time_proto.clone(),
+                current.zoned_date_time_constructor.clone(),
             )
         };
         let (bigint_proto, bigint_constructor) = if dirty.stubs {
@@ -1097,6 +1122,7 @@ impl BuiltinWorld {
             sym_has_instance,
             sym_match_all,
             sym_async_iterator,
+            sym_to_string_tag,
             temporal_object,
             temporal_now_object,
             instant_constructor,
@@ -1107,6 +1133,8 @@ impl BuiltinWorld {
             plain_time_proto,
             duration_constructor,
             duration_proto,
+            zoned_date_time_constructor,
+            zoned_date_time_proto,
             bigint_constructor,
             bigint_proto,
             stub_objects,

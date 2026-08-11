@@ -905,6 +905,8 @@ impl Vm {
                 Some(7)
             } else if std::ptr::eq(ptr, world.sym_async_iterator.as_ptr()) {
                 Some(8)
+            } else if std::ptr::eq(ptr, world.sym_to_string_tag.as_ptr()) {
+                Some(9)
             } else {
                 None
             };
@@ -985,7 +987,7 @@ impl Vm {
                     // 数组属性存储索引 = array_prop_count + shape 槽位（与元素区分）。
                     let idx = obj.array_prop_count as usize + pos as usize;
                     let val = obj.get_prop_at(idx);
-                    if !val.is_undefined() {
+                    if !val.is_undefined() || obj.prop_vec_len() > idx {
                         Some(idx as u32)
                     } else {
                         None

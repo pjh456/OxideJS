@@ -17,7 +17,7 @@ pub const PRIVATE_NAME_BASE: u32 = 0x8000_0000;
 pub const SYMBOL_KEY_BASE: u32 = 0xA000_0000;
 
 /// 保留给 well-known symbol 的键槽位数（位于 Symbol 键区间最低端）。
-pub const WELL_KNOWN_SYMBOL_COUNT: u32 = 9;
+pub const WELL_KNOWN_SYMBOL_COUNT: u32 = 10;
 
 /// 用户 symbol 下标的保留位掩码（低 28 位）。
 const SYMBOL_INDEX_MASK: u32 = 0x0FFF_FFFF;

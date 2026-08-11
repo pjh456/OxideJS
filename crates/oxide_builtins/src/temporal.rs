@@ -6,9 +6,9 @@ use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
 // Temporal 命名空间的最小实现子集：Temporal.Now / Temporal.Instant /
-// Temporal.PlainDate / Temporal.PlainTime。内部数据按对象类型存入 prop 槽：
+// Temporal.PlainDate / Temporal.PlainTime / Temporal.ZonedDateTime。内部数据按对象类型存入 prop 槽：
 // Instant 存纪元纳秒（BigInt，prop 0）、PlainDate 存年/月/日（prop 0-2）、
-// PlainTime 存午夜后纳秒（f64，prop 0）。
+// PlainTime 存午夜后纳秒（f64，prop 0），ZonedDateTime 存纪元纳秒、时区 ID、日历 ID（prop 0-2）。
 
 const MAX_INSTANT_NS: i128 = 8_640_000_000_000_000_000_000;
 
@@ -69,6 +69,13 @@ fn ensure_duration<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<(), JsValue>
     Ok(())
 }
 
+fn ensure_zoned_date_time<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<(), JsValue> {
+    if !obj.is_zoned_date_time_obj() {
+        return Err(crate::error::create_type_error(vm, "called on incompatible receiver"));
+    }
+    Ok(())
+}
+
 fn receiver_obj<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<*mut JsObject, JsValue> {
     let raw = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if !raw.is_object() {
@@ -124,6 +131,19 @@ fn make_instant<H: VmHost>(vm: &mut H, epoch_ns: i128) -> NativeResult {
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
     obj.type_tag = JsObject::OBJ_TYPE_INSTANT;
     obj.set_prop_at(0, epoch_value);
+    NativeResult::Ok(JsValue::from_js_object(vm.alloc_object(obj)))
+}
+
+fn make_zoned_date_time<H: VmHost>(vm: &mut H, epoch_ns: i128, time_zone_id: &str) -> NativeResult {
+    let proto = JsValue::from_js_object(vm.session().builtin_world().zoned_date_time_proto.as_ptr() as *mut JsObject);
+    let epoch_value = vm.new_bigint(epoch_ns);
+    let time_zone_value = vm.new_string(time_zone_id);
+    let calendar_value = vm.new_string("iso8601");
+    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
+    obj.type_tag = JsObject::OBJ_TYPE_ZONED_DATE_TIME;
+    obj.set_prop_at(0, epoch_value);
+    obj.set_prop_at(1, time_zone_value);
+    obj.set_prop_at(2, calendar_value);
     NativeResult::Ok(JsValue::from_js_object(vm.alloc_object(obj)))
 }
 
@@ -986,13 +1006,13 @@ fn parse_offset_minutes(value: &str) -> Option<i32> {
     Some(if bytes[0] == b'-' { -magnitude } else { magnitude })
 }
 
-fn instant_time_zone_offset(value: &str) -> Option<i32> {
+fn canonical_time_zone(value: &str) -> Option<(String, i32)> {
     let input = value.trim();
     if input.eq_ignore_ascii_case("UTC") || input.eq_ignore_ascii_case("Z") {
-        return Some(0);
+        return Some(("UTC".to_string(), 0));
     }
     if let Some(offset) = parse_offset_minutes(input) {
-        return Some(offset);
+        return Some((input.to_string(), offset));
     }
     if input.starts_with("-000000") {
         return None;
@@ -1005,21 +1025,26 @@ fn instant_time_zone_offset(value: &str) -> Option<i32> {
         }
         let annotation = &input[open + 1..input.len() - 1];
         if annotation.eq_ignore_ascii_case("UTC") {
-            return Some(0);
+            return Some(("UTC".to_string(), 0));
         }
-        return parse_offset_minutes(annotation);
+        return parse_offset_minutes(annotation).map(|offset| (annotation.to_string(), offset));
     }
 
     let time_start = input.find(['T', 't', ' '])?;
     let time = &input[time_start + 1..];
     if time.ends_with(['Z', 'z']) {
-        return Some(0);
+        return Some(("UTC".to_string(), 0));
     }
     let offset_start = time
         .char_indices()
         .rev()
         .find_map(|(index, ch)| matches!(ch, '+' | '-').then_some(index))?;
-    parse_offset_minutes(&time[offset_start..])
+    let offset_id = &time[offset_start..];
+    parse_offset_minutes(offset_id).map(|offset| (offset_id.to_string(), offset))
+}
+
+fn instant_time_zone_offset(value: &str) -> Option<i32> {
+    canonical_time_zone(value).map(|(_, offset)| offset)
 }
 
 fn civil_from_days(days: i128) -> (i128, i128, i128) {
@@ -1199,9 +1224,96 @@ pub fn instant_to_locale_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
     instant_default_string(vm, args)
 }
 
+/// `Temporal.Instant.prototype.toZonedDateTimeISO(timeZone)`：以同一纪元纳秒创建 ISO 日历 ZonedDateTime。
+pub fn instant_to_zoned_date_time_iso<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_instant(vm, obj));
+    let Some(epoch_ns) = get_instant_epoch_ns(obj) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid Instant"));
+    };
+    if args.len() < 2 {
+        return NativeResult::Err(crate::error::create_type_error(vm, "timeZone is required"));
+    }
+    let raw = vm.reg(args[1]);
+    if !raw.is_string() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "invalid time zone"));
+    }
+    let input = to_string(raw);
+    let Some((time_zone_id, _)) = canonical_time_zone(&input) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid time zone"));
+    };
+    make_zoned_date_time(vm, epoch_ns, &time_zone_id)
+}
+
 /// `Temporal.Instant.prototype.valueOf()`：Temporal 对象禁止转原始值。
 pub fn instant_value_of<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     NativeResult::Err(crate::error::create_type_error(vm, "Temporal.Instant has no valueOf"))
+}
+
+/// `Temporal.ZonedDateTime` 构造器：保存纪元纳秒、固定偏移或 UTC 时区以及 ISO 日历。
+pub fn zoned_date_time_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ctor_proto = vm.session().builtin_world().zoned_date_time_proto.as_ptr();
+    if !is_ctor_call(vm, args, ctor_proto) {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Class constructor Temporal.ZonedDateTime cannot be invoked without 'new'",
+        ));
+    }
+    let epoch_raw = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
+    let epoch_ns = native_try!(primitive_to_bigint(vm, epoch_raw));
+    if epoch_ns.unsigned_abs() > MAX_INSTANT_NS as u128 {
+        return NativeResult::Err(crate::error::create_range_error(vm, "ZonedDateTime outside supported range"));
+    }
+    if args.len() < 3 || !vm.reg(args[2]).is_string() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "invalid time zone"));
+    }
+    let time_zone_input = to_string(vm.reg(args[2]));
+    let Some((time_zone_id, _)) = canonical_time_zone(&time_zone_input) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid time zone"));
+    };
+    if args.len() >= 4 && !vm.reg(args[3]).is_undefined() {
+        let calendar = vm.reg(args[3]);
+        if !calendar.is_string() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "invalid calendar"));
+        }
+        if !to_string(calendar).eq_ignore_ascii_case("iso8601") {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid calendar"));
+        }
+    }
+    let epoch_value = vm.new_bigint(epoch_ns);
+    let time_zone_value = vm.new_string(&time_zone_id);
+    let calendar_value = vm.new_string("iso8601");
+    initialize_temporal_receiver(
+        vm,
+        args,
+        JsObject::OBJ_TYPE_ZONED_DATE_TIME,
+        [epoch_value, time_zone_value, calendar_value],
+    )
+}
+
+/// `Temporal.ZonedDateTime.prototype.epochNanoseconds`：返回精确纪元纳秒。
+pub fn zoned_date_time_epoch_nanoseconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_zoned_date_time(vm, obj));
+    NativeResult::Ok(obj.get_prop_at(0))
+}
+
+/// `Temporal.ZonedDateTime.prototype.timeZoneId`：返回规范化时区标识符。
+pub fn zoned_date_time_time_zone_id<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_zoned_date_time(vm, obj));
+    NativeResult::Ok(obj.get_prop_at(1))
+}
+
+/// `Temporal.ZonedDateTime.prototype.calendarId`：最小实现固定返回 ISO 8601 日历。
+pub fn zoned_date_time_calendar_id<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_zoned_date_time(vm, obj));
+    NativeResult::Ok(obj.get_prop_at(2))
 }
 
 fn make_plain_date<H: VmHost>(vm: &mut H, year: i32, month: u32, day: u32) -> NativeResult {

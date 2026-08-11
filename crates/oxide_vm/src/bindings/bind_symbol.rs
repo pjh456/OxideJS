@@ -70,6 +70,10 @@ pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             "asyncIterator",
             JsValue::from_js_object(session.builtin_world().sym_async_iterator.as_ptr() as *mut JsObject),
         ),
+        (
+            "toStringTag",
+            JsValue::from_js_object(session.builtin_world().sym_to_string_tag.as_ptr() as *mut JsObject),
+        ),
     ] {
         bind_well_known_symbol(core, ctor, name, val);
     }

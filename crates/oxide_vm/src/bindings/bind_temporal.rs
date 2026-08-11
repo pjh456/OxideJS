@@ -1,8 +1,11 @@
 use std::sync::Arc;
 
-use crate::bindings::{apply_binding_table, bind_accessor_getter, bind_global_value, configure_native_constructor};
+use crate::bindings::{
+    apply_binding_table, bind_accessor_getter, bind_global_value, bind_well_known_data_property,
+    configure_native_constructor,
+};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
-use oxide_types::object::JsObject;
+use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
 /// 把 Temporal 命名空间及其子对象绑定到 global。
@@ -98,9 +101,66 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
                 0,
             ),
             ("toString", oxide_builtins::temporal::instant_to_string::<crate::vm::Vm> as *const (), 0),
+            (
+                "toZonedDateTimeISO",
+                oxide_builtins::temporal::instant_to_zoned_date_time_iso::<crate::vm::Vm> as *const (),
+                1,
+            ),
             ("until", oxide_builtins::temporal::instant_until::<crate::vm::Vm> as *const (), 1),
             ("valueOf", oxide_builtins::temporal::instant_value_of::<crate::vm::Vm> as *const (), 0),
         ],
+    );
+    bind_well_known_data_property(
+        core,
+        instant_proto,
+        9,
+        JsValue::perm_string(
+            core.perm_interner()
+                .string_ptr(core.perm_interner().intern("Temporal.Instant").0),
+        ),
+        PropAttributes::new(false, false, true),
+    );
+
+    // Temporal.ZonedDateTime：最小构造器与三个稳定内部槽 getter。
+    let zoned_date_time_ctor_ptr = world.zoned_date_time_constructor.as_ptr() as *mut JsObject;
+    let zoned_date_time_ctor = unsafe { &mut *zoned_date_time_ctor_ptr };
+    configure_native_constructor(
+        zoned_date_time_ctor,
+        oxide_builtins::temporal::zoned_date_time_constructor::<crate::vm::Vm> as *const (),
+        2,
+    );
+    let zoned_date_time_proto_ptr = world.zoned_date_time_proto.as_ptr() as *mut JsObject;
+    let zoned_date_time_proto = unsafe { &mut *zoned_date_time_proto_ptr };
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "epochNanoseconds",
+        oxide_builtins::temporal::zoned_date_time_epoch_nanoseconds::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "timeZoneId",
+        oxide_builtins::temporal::zoned_date_time_time_zone_id::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "calendarId",
+        oxide_builtins::temporal::zoned_date_time_calendar_id::<crate::vm::Vm> as *const (),
+    );
+    bind_well_known_data_property(
+        core,
+        zoned_date_time_proto,
+        9,
+        JsValue::perm_string(
+            core.perm_interner()
+                .string_ptr(core.perm_interner().intern("Temporal.ZonedDateTime").0),
+        ),
+        PropAttributes::new(false, false, true),
     );
 
     // Temporal.PlainDate：构造器 + from 静态方法 + year/month/day getter 与 toString。
@@ -376,5 +436,6 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
     bind_global_value(core, temporal, "PlainDate", JsValue::from_js_object(plain_date_ctor_ptr));
     bind_global_value(core, temporal, "PlainTime", JsValue::from_js_object(plain_time_ctor_ptr));
     bind_global_value(core, temporal, "Duration", JsValue::from_js_object(duration_ctor_ptr));
+    bind_global_value(core, temporal, "ZonedDateTime", JsValue::from_js_object(zoned_date_time_ctor_ptr));
     bind_global_value(core, global, "Temporal", JsValue::from_js_object(temporal_ptr));
 }

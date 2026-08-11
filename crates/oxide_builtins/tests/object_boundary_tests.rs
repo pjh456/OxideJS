@@ -227,6 +227,30 @@ fn test_get_own_property_descriptor_no_args_type_error() {
 }
 
 #[test]
+fn test_get_own_property_descriptor_supports_symbol_keys() {
+    let (_vm, result) = eval(
+        "var key = Symbol('key');
+         var object = {};
+         Object.defineProperty(object, key, { value: 7, writable: false });
+         var descriptor = Object.getOwnPropertyDescriptor(object, key);
+         descriptor.value === 7 && descriptor.writable === false",
+    )
+    .unwrap();
+    assert!(result.is_bool() && result.as_bool());
+}
+
+#[test]
+fn test_get_own_property_descriptor_keeps_undefined_array_properties() {
+    let (_vm, result) = eval(
+        "var array = [];
+         Object.defineProperty(array, 'named', { value: undefined });
+         Object.getOwnPropertyDescriptor(array, 'named').value === undefined",
+    )
+    .unwrap();
+    assert!(result.is_bool() && result.as_bool());
+}
+
+#[test]
 fn test_has_own_property_boxes_primitive_this() {
     // ToObject 装箱 this：原始值上 hasOwnProperty 返回 false 而非抛错。
     let (_vm, result) = eval("Object.prototype.hasOwnProperty.call(42, 'x')").unwrap();
