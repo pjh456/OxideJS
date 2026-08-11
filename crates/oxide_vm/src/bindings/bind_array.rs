@@ -42,6 +42,13 @@ pub fn bind_array(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         reduce_right: oxide_builtins::array::array_reduce_right::<crate::vm::Vm> as *const (),
         sort: oxide_builtins::array::array_sort::<crate::vm::Vm> as *const (),
         values: oxide_builtins::array::array_values::<crate::vm::Vm> as *const (),
+        entries: oxide_builtins::array::array_entries::<crate::vm::Vm> as *const (),
+        keys: oxide_builtins::array::array_keys::<crate::vm::Vm> as *const (),
+        find_last_index: oxide_builtins::array::array_find_last_index::<crate::vm::Vm> as *const (),
+        to_sorted: oxide_builtins::array::array_to_sorted::<crate::vm::Vm> as *const (),
+        to_reversed: oxide_builtins::array::array_to_reversed::<crate::vm::Vm> as *const (),
+        to_spliced: oxide_builtins::array::array_to_spliced::<crate::vm::Vm> as *const (),
+        with_method: oxide_builtins::array::array_with::<crate::vm::Vm> as *const (),
     };
 
     session.builtin_world().bind_array_methods(

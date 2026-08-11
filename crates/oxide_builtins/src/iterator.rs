@@ -366,7 +366,7 @@ pub fn make_iter_result<H: VmHost>(vm: &mut H, value: JsValue, done: bool) -> Js
     JsValue::from_js_object(obj)
 }
 
-fn make_native_function<H: VmHost>(vm: &mut H, name: &str, native_fn: *const (), arg_count: u8) -> JsValue {
+pub(crate) fn make_native_function<H: VmHost>(vm: &mut H, name: &str, native_fn: *const (), arg_count: u8) -> JsValue {
     let function_proto = vm.session().builtin_world().function_proto.as_ptr() as *mut JsObject;
     let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(function_proto));
     func.set_function(true);

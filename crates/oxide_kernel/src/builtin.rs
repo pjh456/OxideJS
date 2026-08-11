@@ -102,6 +102,13 @@ pub struct ArrayMethods {
     pub reduce_right: *const (),
     pub sort: *const (),
     pub values: *const (),
+    pub entries: *const (),
+    pub keys: *const (),
+    pub find_last_index: *const (),
+    pub to_sorted: *const (),
+    pub to_reversed: *const (),
+    pub to_spliced: *const (),
+    pub with_method: *const (),
 }
 
 /// Error 家族（含各子类型）构造器与原型方法的 native 函数指针集合，由 [`BuiltinWorld::bind_error_methods`] 安装。
@@ -1291,6 +1298,13 @@ impl BuiltinWorld {
             ("reduceRight", methods.reduce_right, 1),
             ("sort", methods.sort, 0),
             ("values", methods.values, 0),
+            ("entries", methods.entries, 0),
+            ("keys", methods.keys, 0),
+            ("findLastIndex", methods.find_last_index, 1),
+            ("toSorted", methods.to_sorted, 1),
+            ("toReversed", methods.to_reversed, 0),
+            ("toSpliced", methods.to_spliced, 2),
+            ("with", methods.with_method, 2),
         );
 
         let iterator_key = make_well_known_symbol_key(0);
