@@ -88,6 +88,17 @@ fn function_and_method_parameter_destructuring() {
     assert_num(result, 10.0);
 }
 
+#[test]
+fn destructured_callback_parameters_shadow_outer_bindings() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "let expected=100, result=0; [[1,2]].forEach(([value, expected]) => { result=value+expected; }); result",
+    )
+    .unwrap();
+    assert_num(result, 3.0);
+}
+
 // 回归：赋值目标含嵌套 rest 模式（rest 元素本身是模式，如 `[...[x]]`）的 for-of
 // 曾无限循环 / 报错，因为计数器相对 emitter 少计了 rest 目标的指令，破坏了循环跳转
 // 偏移。（对象 rest 嵌套目标按规范是语法错误，故不测。）

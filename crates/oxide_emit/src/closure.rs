@@ -15,21 +15,19 @@ impl Emitter {
     fn collect_fn_param_names(&self, params: &oxide_parser::FormalParameters) -> HashSet<String> {
         let mut names = HashSet::new();
         for p in &params.items {
-            if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &p.pattern {
-                names.insert(bi.name.to_string());
-            }
+            self.collect_binding_pattern_names(&p.pattern, &mut names);
         }
         // rest 形参也是本函数作用域绑定，遮蔽外层同名变量。
         if let Some(rest) = &params.rest {
-            if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &rest.rest.argument {
-                names.insert(bi.name.to_string());
-            }
+            self.collect_binding_pattern_names(&rest.rest.argument, &mut names);
         }
         names
     }
 
     /// 递归收集 binding pattern 内全部绑定标识符名（解构 `[a, b]` / `{x: y}` 嵌套）。
-    fn collect_binding_pattern_names(&self, pattern: &oxide_parser::BindingPattern, out: &mut HashSet<String>) {
+    pub(crate) fn collect_binding_pattern_names(
+        &self, pattern: &oxide_parser::BindingPattern, out: &mut HashSet<String>,
+    ) {
         match pattern {
             oxide_parser::BindingPattern::BindingIdentifier(bi) => {
                 out.insert(bi.name.to_string());

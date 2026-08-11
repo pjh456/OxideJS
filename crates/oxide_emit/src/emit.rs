@@ -1100,6 +1100,11 @@ impl Emitter {
             }
         }
         ctx.own_bindings = self.collect_own_binding_names(&param_names, body_stmts);
+        for spec in param_specs {
+            if let ParamSpec::Pattern { pattern, .. } = spec {
+                self.collect_binding_pattern_names(pattern, &mut ctx.own_bindings);
+            }
+        }
 
         // 自动声明 arguments 绑定（非箭头函数，且用户未显式声明同名标识符）。
         // 先登记符号并纳入 own_bindings，使嵌套箭头引用 arguments 被识别为本函数
