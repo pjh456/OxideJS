@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::bindings::{apply_binding_table, bind_global_value, configure_native_constructor};
+use crate::bindings::{apply_binding_table, bind_global_value, bind_well_known_data_property, configure_native_constructor};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
@@ -43,10 +43,19 @@ pub fn bind_bigint(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         core,
         &[
             ("toString", oxide_builtins::bigint::bigint_to_string::<crate::vm::Vm> as *const (), 0),
-            ("toLocaleString", oxide_builtins::bigint::bigint_to_locale_string::<crate::vm::Vm> as *const (), 0),
+            (
+                "toLocaleString",
+                oxide_builtins::bigint::bigint_to_locale_string::<crate::vm::Vm> as *const (),
+                0,
+            ),
             ("valueOf", oxide_builtins::bigint::bigint_value_of::<crate::vm::Vm> as *const (), 0),
         ],
     );
+
+    // BigInt.prototype[@@toStringTag] = "BigInt"，属性 { writable:false, enumerable:false, configurable:true }。
+    let tag_si = core.perm_interner().intern("BigInt").0;
+    let tag_value = JsValue::perm_string(core.perm_interner().string_ptr(tag_si));
+    bind_well_known_data_property(core, proto, 9, tag_value, PropAttributes::new(false, false, true));
 
     bind_global_value(core, global, "BigInt", JsValue::from_js_object(ctor_ptr));
     // 全局 BigInt 属性描述符：{ writable: true, enumerable: false, configurable: true }。
