@@ -64,8 +64,19 @@ pub fn alloc(f: &mut IRFunction, live: &LiveInfo) -> Result<(), String> {
 }
 
 fn remap_nested_parent_slots(nested: &mut [IRFunction], map: &AllocMap) {
+    remap_nested_parent_slots_below(nested, map, u32::MAX);
+}
+
+fn remap_nested_parent_slots_below(nested: &mut [IRFunction], map: &AllocMap, ancestor_limit: u32) {
     for child in nested {
-        let inherited_limit = child.param_layout.base;
+        let inherited_limit = child.param_layout.base.min(ancestor_limit);
+        for (_, slot) in &mut child.builtin_reg_map {
+            if *slot < inherited_limit {
+                if let Some(Alloc::Phys(physical)) = map.map.get(slot) {
+                    *slot = *physical;
+                }
+            }
+        }
         for inst in &mut child.insts {
             let slot = match inst.op {
                 oxide_bytecode::opcode::OpCode::LOAD_VAR => &mut inst.a,
@@ -80,7 +91,9 @@ fn remap_nested_parent_slots(nested: &mut [IRFunction], map: &AllocMap) {
                 }
             }
         }
-        remap_nested_parent_slots(&mut child.nested, map);
+
+        // 子函数自身 vreg 从 param_layout.base 起分配；祖先 map 不得改写同号的后代局部槽。
+        remap_nested_parent_slots_below(&mut child.nested, map, inherited_limit);
     }
 }
 
@@ -176,6 +189,34 @@ mod tests {
         };
         assert!((1..=253).contains(&physical));
         assert!(matches!(f.nested[0].insts[0].a, Operand::Reg(reg) if reg == physical));
+    }
+
+    #[test]
+    fn ancestor_remap_preserves_descendant_vreg_collision() {
+        let mut child = IRFunction::new();
+        child.param_layout = oxide_ir::ParamLayout { base: 200, count: 0 };
+        child.builtin_reg_map.push(("root".to_string(), 100));
+        let mut grandchild = IRFunction::new();
+        grandchild.param_layout = oxide_ir::ParamLayout { base: 400, count: 0 };
+        grandchild.builtin_reg_map.push(("root".to_string(), 100));
+        grandchild.builtin_reg_map.push(("child".to_string(), 300));
+        grandchild
+            .insts
+            .push(Inst::new(OpCode::LOAD_VAR, Operand::Reg(401), Operand::Reg(100), Operand::None));
+        grandchild
+            .insts
+            .push(Inst::new(OpCode::LOAD_VAR, Operand::Reg(402), Operand::Reg(300), Operand::None));
+        child.nested.push(grandchild);
+
+        let mut map = AllocMap::new();
+        map.map.insert(100, Alloc::Phys(7));
+        map.map.insert(300, Alloc::Phys(8));
+        remap_nested_parent_slots(std::slice::from_mut(&mut child), &map);
+
+        assert_eq!(child.builtin_reg_map, vec![("root".to_string(), 7)]);
+        assert_eq!(child.nested[0].builtin_reg_map, vec![("root".to_string(), 7), ("child".to_string(), 300)]);
+        assert_eq!(child.nested[0].insts[0].a, Operand::Reg(7));
+        assert_eq!(child.nested[0].insts[1].a, Operand::Reg(300));
     }
 
     #[test]
