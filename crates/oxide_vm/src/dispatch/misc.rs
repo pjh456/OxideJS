@@ -168,6 +168,7 @@ impl Vm {
         let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
         let obj_ptr = self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
         let obj = unsafe { &mut *obj_ptr };
+        obj.type_tag = JsObject::OBJ_TYPE_ARGUMENTS;
 
         // 索引属性：按实参下标写入 shape 槽，属性描述符为默认（可写/可枚举/可配置）。
         for i in 0..count as usize {
@@ -216,12 +217,8 @@ impl Vm {
         let rest_len = n.saturating_sub(fixed_count);
         let proto_ptr = self.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
         let bump = self.epoch.bump();
-        let obj_ptr = self.alloc_object(JsObject::new_array(
-            EMPTY_SHAPE_ID,
-            JsValue::from_js_object(proto_ptr),
-            rest_len,
-            bump,
-        ));
+        let obj_ptr =
+            self.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr), rest_len, bump));
         let obj = unsafe { &mut *obj_ptr };
         for i in 0..rest_len {
             let val = self

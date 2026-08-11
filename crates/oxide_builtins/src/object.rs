@@ -1011,6 +1011,12 @@ pub fn object_proto_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
                 "TypedArray"
             } else if obj.is_array_buffer_obj() {
                 "ArrayBuffer"
+            } else if obj.is_arguments_obj() {
+                "Arguments"
+            } else if std::ptr::eq(ptr, vm.session().builtin_world().math_object.as_ptr()) {
+                "Math"
+            } else if std::ptr::eq(ptr, vm.session().builtin_world().json_object.as_ptr()) {
+                "JSON"
             } else {
                 "Object"
             };
