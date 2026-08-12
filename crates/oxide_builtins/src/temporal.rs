@@ -1900,6 +1900,98 @@ pub fn duration_negated<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     make_duration(vm, values)
 }
 
+/// `Temporal.Duration.prototype.add(other)`：分量相加并按规范平衡时间单位；
+/// 任一侧含日历单位（years/months/weeks）时抛 RangeError（无 relativeTo 支持）。
+pub fn duration_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_duration(vm, obj));
+    let other_val = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
+    let other = native_try!(duration_like_values(vm, other_val));
+    let receiver = duration_values(obj);
+    if receiver[..3].iter().any(|value| *value != 0.0) || other[..3].iter().any(|value| *value != 0.0) {
+        return NativeResult::Err(crate::error::create_range_error(
+            vm,
+            "cannot add durations with calendar units",
+        ));
+    }
+    // 最大单位取 receiver 与参数中最大的非零时间单位（days=3 最大，ns=9 最小）。
+    let mut largest = 9_usize;
+    for index in 3..10 {
+        if receiver[index] != 0.0 || other[index] != 0.0 {
+            largest = index;
+            break;
+        }
+    }
+    if largest == 9 && receiver[9] + other[9] == 0.0 {
+        return make_duration(vm, [0.0; 10]);
+    }
+    // 分量按精确整数求和（f64 分量是精确整数；超过 2^53 的和需在 i128 上保持精确，规范按数学值计算）。
+    let mut total_ns = 0_i128;
+    const SUM_SCALES: [i128; 7] = [
+        86_400_000_000_000,
+        3_600_000_000_000,
+        60_000_000_000,
+        1_000_000_000,
+        1_000_000,
+        1_000,
+        1,
+    ];
+    for (index, scale) in (3..10).zip(SUM_SCALES) {
+        let Some(a) = duration_component_integer(receiver[index]) else {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid duration"));
+        };
+        let Some(b) = duration_component_integer(other[index]) else {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid duration"));
+        };
+        let Some(component) = a.checked_add(b).and_then(|value| value.checked_mul(scale)) else {
+            return NativeResult::Err(crate::error::create_range_error(vm, "duration is out of range"));
+        };
+        let Some(updated) = total_ns.checked_add(component) else {
+            return NativeResult::Err(crate::error::create_range_error(vm, "duration is out of range"));
+        };
+        total_ns = updated;
+    }
+    // 从总纳秒向下按截断除法分解，进位到 largest 为止（largest 单位可无界）。
+    let mut values = [0.0; 10];
+    let mut rem = total_ns;
+    let mut unit = 9_usize;
+    loop {
+        if unit == largest {
+            values[unit] = rem as f64;
+            break;
+        }
+        let base = match unit {
+            9 | 8 | 7 => 1_000,
+            6 | 5 => 60,
+            _ => 24,
+        };
+        values[unit] = (rem % base) as f64;
+        rem /= base;
+        unit -= 1;
+    }
+    // 范围校验：对 𝔽 舍入后的每个分量按其纳秒刻度检查是否达到 2^53 秒上限。
+    const MAX_TIME_NANOSECONDS: f64 = (1_i128 << 53) as f64 * 1_000_000_000.0;
+    const UNIT_SCALES: [f64; 7] = [
+        86_400_000_000_000.0,
+        3_600_000_000_000.0,
+        60_000_000_000.0,
+        1_000_000_000.0,
+        1_000_000.0,
+        1_000.0,
+        1.0,
+    ];
+    for (index, scale) in (3..10).zip(UNIT_SCALES) {
+        if values[index] != 0.0 && values[index].abs() * scale >= MAX_TIME_NANOSECONDS {
+            return NativeResult::Err(crate::error::create_range_error(
+                vm,
+                "duration time fields are out of range",
+            ));
+        }
+    }
+    make_duration(vm, values)
+}
+
 macro_rules! duration_getter {
     ($name:ident, $index:expr) => {
         pub fn $name<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
