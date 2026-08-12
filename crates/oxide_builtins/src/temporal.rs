@@ -1991,6 +1991,221 @@ pub fn duration_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     make_duration(vm, values)
 }
+/// `Temporal.Duration.prototype.round(roundTo)`锛氭寜鏈€灏忓崟浣嶈垗鍏ュ苟鎸夋渶澶у崟浣嶅钩琛°€?
+/// 绗竴鐗堟敮鎸佹棤鏃ュ巻鍗曚綅锛坹ear/month/week 闈為浂鎴栫洰鏍囦负鏃ュ巻鍗曚綅鏃惰姹?relativeTo锛屾殏鎶?RangeError锛夛紱
+/// 绾弒鏃堕棿璺緞鎸?24 灏忔椂/澶╁鐞嗭紝涓?polyfill 鐨?24h-day 璇箟涓€鑷淬€?
+pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_duration(vm, obj));
+    let round_to = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
+    if round_to.is_undefined() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "options parameter is required"));
+    }
+
+    let values = duration_values(obj);
+    // 鐜版湁鏈€澶у崟浣嶏細棣栦釜闈為浂鍒嗛噺锛涘叏闆舵椂瑙嗕负 nanosecond銆?
+    let mut existing_largest = 9_usize;
+    for (index, value) in values.iter().enumerate() {
+        if *value != 0.0 {
+            existing_largest = index;
+            break;
+        }
+    }
+
+    // roundTo 瀛楃涓?=> { smallestUnit: 瀛楃涓?}锛涘惁鍒欏繀椤讳负瀵硅薄銆?
+    let (largest_raw, _relative_raw, increment_raw, mode_raw, smallest_raw) = if round_to.is_string() {
+        (
+            JsValue::undefined(),
+            JsValue::undefined(),
+            JsValue::undefined(),
+            JsValue::undefined(),
+            round_to,
+        )
+    } else {
+        if !round_to.is_object() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "roundTo must be an object"));
+        }
+        let options_ptr = round_to.as_js_object_ptr();
+        if options_ptr.is_null() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "roundTo must be an object"));
+        }
+        let options = unsafe { &*options_ptr };
+        let largest_raw = native_try!(temporal_option_value(vm, options, round_to, "largestUnit"));
+        let relative_raw = native_try!(temporal_option_value(vm, options, round_to, "relativeTo"));
+        let increment_raw = native_try!(temporal_option_value(vm, options, round_to, "roundingIncrement"));
+        let mode_raw = native_try!(temporal_option_value(vm, options, round_to, "roundingMode"));
+        let smallest_raw = native_try!(temporal_option_value(vm, options, round_to, "smallestUnit"));
+        (largest_raw, relative_raw, increment_raw, mode_raw, smallest_raw)
+    };
+
+    // largestUnit锛氬厑璁?auto"锛涚己鐪?/undefined 瑙嗕负鏈彁渚涖€?
+    let largest_provided = !largest_raw.is_undefined();
+    let largest_index = if largest_raw.is_undefined() {
+        None
+    } else {
+        let unit = native_try!(temporal_option_string(vm, largest_raw));
+        if unit == "auto" {
+            None
+        } else {
+            match plain_date_time_unit_index(&unit) {
+                Some(index) => Some(index),
+                None => {
+                    return NativeResult::Err(crate::error::create_range_error(vm, "invalid largestUnit"));
+                }
+            }
+        }
+    };
+
+    // roundingIncrement锛歍oIntegerOrInfinity 鑸嶅叆鍚庨渶鍦?[1, 10^9] 鍐呫€?
+    let increment_value = if increment_raw.is_undefined() {
+        1.0
+    } else {
+        native_try!(temporal_option_number(vm, increment_raw))
+    };
+    let increment = increment_value.trunc();
+    if !increment.is_finite() || increment < 1.0 || increment > 1_000_000_000.0 {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
+    }
+    let increment = increment as i128;
+
+    // roundingMode锛氱己鐪?halfExpand銆?
+    let mode = if mode_raw.is_undefined() {
+        InstantRoundingMode::HalfExpand
+    } else {
+        let mode_string = native_try!(temporal_option_string(vm, mode_raw));
+        match instant_rounding_mode(&mode_string) {
+            Some(mode) => mode,
+            None => {
+                return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding mode"));
+            }
+        }
+    };
+
+    // smallestUnit锛氱己鐪?nanosecond銆?
+    let smallest_provided = !smallest_raw.is_undefined();
+    let smallest_index = if smallest_raw.is_undefined() {
+        9
+    } else {
+        let unit = native_try!(temporal_option_string(vm, smallest_raw));
+        match plain_date_time_unit_index(&unit) {
+            Some(index) => index,
+            None => {
+                return NativeResult::Err(crate::error::create_range_error(vm, "invalid smallestUnit"));
+            }
+        }
+    };
+
+    // 榛樿鏈€澶у崟浣嶏細鐜版湁鏈€澶у崟浣嶄笌鏈€灏忓崟浣嶄腑杈冨ぇ鐨勯偅涓€€?
+    let default_largest = if existing_largest < smallest_index {
+        existing_largest
+    } else {
+        smallest_index
+    };
+    let largest = largest_index.unwrap_or(default_largest);
+
+    // 鑷冲皯涓€涓崟浣嶉渶瑕佹樉寮忔彁渚涳紱largest 涓嶈兘灏忎簬 smallest銆?
+    if !smallest_provided && !largest_provided {
+        return NativeResult::Err(crate::error::create_range_error(
+            vm,
+            "at least one of smallestUnit or largestUnit is required",
+        ));
+    }
+    if smallest_index < largest {
+        return NativeResult::Err(crate::error::create_range_error(
+            vm,
+            "largestUnit cannot be smaller than smallestUnit",
+        ));
+    }
+
+    // 鑸嶅叆澧為噺涓婇檺锛氬崟浣嶈秺灏忓彲闄ら櫎涓婁竴绾э紱鏃ュ巻鍗曚綅锛坹ear/month/week/day锛夋棤鏁撮櫎绾︽潫銆?
+    const MAX_INCREMENT: [i128; 10] = [0, 0, 0, 0, 24, 60, 60, 1000, 1000, 1000];
+    let max_increment = MAX_INCREMENT[smallest_index];
+    if max_increment != 0 && (increment >= max_increment || max_increment % increment != 0) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
+    }
+
+    // 鏃ュ巻鍗曚綅锛坹ear/month/week锛夛細鏈増瑕佹眰 relativeTo锛屾殏鎶?RangeError銆?
+    if values[..3].iter().any(|value| *value != 0.0) {
+        return NativeResult::Err(crate::error::create_range_error(
+            vm,
+            "a starting point is required for balancing calendar units",
+        ));
+    }
+    if largest < 3 || smallest_index < 3 {
+        return NativeResult::Err(crate::error::create_range_error(
+            vm,
+            "a starting point is required for calendar units",
+        ));
+    }
+    if increment > 1 && smallest_index == 3 && largest != smallest_index {
+        return NativeResult::Err(crate::error::create_range_error(
+            vm,
+            "rounding increments of calendar units require largestUnit to equal smallestUnit",
+        ));
+    }
+
+    // 绾弒鏃堕棿璺緞锛氭寜 24 灏忔椂/澶╁皢 days..nanoseconds 姹囨€讳负绾崇锛屾寜 smallest 鑸嶅叆鍚庡钩琛″埌 largest銆?
+    let Some(time_ns) = duration_time_nanoseconds(&values) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "duration is out of range"));
+    };
+    const UNIT_NS: [i128; 7] = [
+        86_400_000_000_000,
+        3_600_000_000_000,
+        60_000_000_000,
+        1_000_000_000,
+        1_000_000,
+        1_000,
+        1,
+    ];
+    let quantum = if smallest_index == 3 {
+        increment * UNIT_NS[0]
+    } else {
+        increment * UNIT_NS[smallest_index - 3]
+    };
+    let Some(rounded) = round_instant_difference(time_ns, quantum, mode) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "duration is out of range"));
+    };
+    let mut result = [0.0; 10];
+    if smallest_index == 3 {
+        result[3] = (rounded / UNIT_NS[0]) as f64;
+    } else {
+        // 涓?duration_add 鐩稿悓鐨勫悓鍙锋ā鍒嗚В锛氫粠 ns 鍚?largest 杩涗綅銆?
+        let mut rem = rounded;
+        let mut unit = 9_usize;
+        loop {
+            if unit == largest {
+                result[unit] = rem as f64;
+                break;
+            }
+            let base = match unit {
+                9 | 8 | 7 => 1_000,
+                6 | 5 => 60,
+                _ => 24,
+            };
+            result[unit] = (rem % base) as f64;
+            rem /= base;
+            unit -= 1;
+        }
+    }
+    // 鑼冨洿鏍￠獙锛氬姣忎釜鏃堕棿鍒嗛噺鎸夊叾绾崇鍒诲害妫€鏌ユ槸鍚﹁揪鍒?2^53 绉掍笂闄愩€?
+    const MAX_TIME_NANOSECONDS: f64 = (1_i128 << 53) as f64 * 1_000_000_000.0;
+    const UNIT_SCALES: [f64; 7] = [
+        86_400_000_000_000.0,
+        3_600_000_000_000.0,
+        60_000_000_000.0,
+        1_000_000_000.0,
+        1_000_000.0,
+        1_000.0,
+        1.0,
+    ];
+    for (index, scale) in (3..10).zip(UNIT_SCALES) {
+        if result[index] != 0.0 && result[index].abs() * scale >= MAX_TIME_NANOSECONDS {
+            return NativeResult::Err(crate::error::create_range_error(vm, "duration time fields are out of range"));
+        }
+    }
+    make_duration(vm, result)
+}
 
 macro_rules! duration_getter {
     ($name:ident, $index:expr) => {
