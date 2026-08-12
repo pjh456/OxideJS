@@ -536,13 +536,6 @@ pub fn instant_compare<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::int(result))
 }
 
-/// 读对象的数值字段（普通对象访问器 getter 路径）。
-fn read_prop_number<H: VmHost>(vm: &mut H, obj: &JsObject, receiver: JsValue, name: &str) -> f64 {
-    let key_val = vm.new_string(name);
-    let si = vm.property_key_si(key_val);
-    vm.ordinary_get(obj, si, receiver).map(to_number).unwrap_or(f64::NAN)
-}
-
 /// `Temporal.Instant.prototype.epochSeconds` getter。
 pub fn instant_epoch_seconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ptr = native_try!(receiver_obj(vm, args));
@@ -2070,34 +2063,17 @@ pub fn plain_date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
 pub fn plain_date_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
     let (year, month, day) = if val.is_string() {
-        let s = to_string(val);
-        match parse_iso_date(&s) {
+        match parse_plain_date_string(&to_string(val)) {
             Ok(ymd) => ymd,
             Err(_) => {
                 return NativeResult::Err(crate::error::create_range_error(vm, "invalid ISO 8601 date"));
             }
         }
-    } else if val.is_object() && {
-        let ptr = val.as_js_object_ptr();
-        !ptr.is_null() && unsafe { &*ptr }.is_plain_date_obj()
-    } {
-        let obj = unsafe { &*val.as_js_object_ptr() };
-        (
-            get_double_prop(obj, 0) as i32,
-            get_double_prop(obj, 1) as u32,
-            get_double_prop(obj, 2) as u32,
-        )
-    } else if val.is_object() {
-        let obj = unsafe { &*val.as_js_object_ptr() };
-        let y = read_prop_number(vm, obj, val, "year");
-        let m = read_prop_number(vm, obj, val, "month");
-        let d = read_prop_number(vm, obj, val, "day");
-        if y.is_nan() || m.is_nan() || d.is_nan() {
-            return NativeResult::Err(crate::error::create_type_error(vm, "cannot convert object to PlainDate"));
-        }
-        (y.trunc() as i32, m.trunc() as u32, d.trunc() as u32)
     } else {
-        return NativeResult::Err(crate::error::create_type_error(vm, "cannot convert value to PlainDate"));
+        match object_date_ymd(vm, val) {
+            Ok(ymd) => ymd,
+            Err(error) => return NativeResult::Err(error),
+        }
     };
     if !valid_iso_date(year, month, day) {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid ISO date"));
@@ -2474,6 +2450,18 @@ fn strip_iso_offset(input: &str) -> Result<&str, String> {
 }
 
 fn parse_plain_date_time_string(input: &str) -> Result<(i32, u32, u32, f64), String> {
+    parse_temporal_string_impl(input, true)
+}
+
+/// ParseTemporalDateString：PlainDate 字符串（时间部分可选且被忽略，仅按日期做范围校验）。
+fn parse_plain_date_string(input: &str) -> Result<(i32, u32, u32), String> {
+    parse_temporal_string_impl(input, false).map(|(year, month, day, _)| (year, month, day))
+}
+
+fn parse_temporal_string_impl(
+    input: &str,
+    enforce_date_time_range: bool,
+) -> Result<(i32, u32, u32, f64), String> {
     let trimmed = input.trim();
     if trimmed.contains('\u{2212}') {
         return Err("variant minus sign is not valid for PlainDateTime".into());
@@ -2492,7 +2480,9 @@ fn parse_plain_date_time_string(input: &str) -> Result<(i32, u32, u32, f64), Str
     };
     let (year, month, day) = parse_iso_date(date_part)?;
     let Some(separator) = separator else {
-        if !valid_iso_date(year, month, day) || !valid_plain_date_time_range(year, month, day, 0.0) {
+        if !valid_iso_date(year, month, day)
+            || (enforce_date_time_range && !valid_plain_date_time_range(year, month, day, 0.0))
+        {
             return Err("invalid ISO date".into());
         }
         return Ok((year, month, day, 0.0));
@@ -2564,19 +2554,129 @@ fn parse_plain_date_time_string(input: &str) -> Result<(i32, u32, u32, f64), Str
         + minute as f64 * 60_000_000_000.0
         + second as f64 * 1_000_000_000.0
         + subsecond as f64;
-    if !valid_iso_date(year, month, day) || !valid_plain_date_time_range(year, month, day, total_ns) {
+    if !valid_iso_date(year, month, day)
+        || (enforce_date_time_range && !valid_plain_date_time_range(year, month, day, total_ns))
+    {
         return Err("invalid ISO date".into());
     }
     Ok((year, month, day, total_ns))
+}
+
+/// ParseTemporalCalendarString：日历标识符 = "iso8601"（ASCII 大小写不敏感）或合法 ISO
+/// 日期(-时间)字符串（含部分日期 YYYY-MM / MM-DD，可选时间、偏移、注解）。
+fn parse_temporal_calendar_string(input: &str) -> Result<(), String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("invalid calendar".into());
+    }
+    if trimmed.eq_ignore_ascii_case("iso8601") {
+        return Ok(());
+    }
+    if trimmed.contains('\u{2212}') {
+        return Err("variant minus sign is not valid for calendar".into());
+    }
+    // 完整日期时间字符串（含注解校验），例如 2020-01-01T00:00:00.000000000[u-ca=iso8601]
+    if parse_plain_date_time_string(trimmed).is_ok() {
+        return Ok(());
+    }
+    // 部分日期：YYYY-MM 或 MM-DD（可带注解）
+    let text = trimmed.to_owned();
+    let annotation_start = text.find('[').unwrap_or(text.len());
+    validate_temporal_annotation_suffix(&text[annotation_start..])?;
+    let text = &text[..annotation_start];
+    if text.contains(['Z', 'z']) {
+        return Err("UTC designator is not valid for calendar".into());
+    }
+    parse_partial_calendar_date(text)
+}
+
+/// 部分 ISO 日期（无时间）：YYYY[-MM[-DD]] 或 MM-DD；校验月份/日期基本范围并拒绝负零年。
+fn parse_partial_calendar_date(input: &str) -> Result<(), String> {
+    let bytes = input.as_bytes();
+    let mut i = 0usize;
+    let signed = i < bytes.len() && matches!(bytes[i], b'+' | b'-');
+    let negative = signed && bytes[i] == b'-';
+    if signed {
+        i += 1;
+    }
+    let start = i;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    let digits = &input[start..i];
+    let rest = &input[i..];
+    if digits.is_empty() {
+        return Err("invalid calendar date".into());
+    }
+    // MM-DD 形式（无年份）
+    if digits.len() == 2 {
+        if !rest.starts_with('-') {
+            return Err("invalid calendar date".into());
+        }
+        let day_part = &rest[1..];
+        if day_part.len() != 2 || !day_part.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err("invalid calendar day".into());
+        }
+        let month: u32 = digits.parse().map_err(|_| "invalid calendar month".to_string())?;
+        let day: u32 = day_part.parse().map_err(|_| "invalid calendar day".to_string())?;
+        if month == 0 || month > 12 || day == 0 || day > 31 {
+            return Err("invalid calendar date".into());
+        }
+        return Ok(());
+    }
+    if !(4..=6).contains(&digits.len()) {
+        return Err("invalid calendar year".into());
+    }
+    if negative && digits.bytes().all(|byte| byte == b'0') {
+        return Err("invalid calendar negative zero year".into());
+    }
+    let mut rest2 = rest;
+    let mut month: Option<u32> = None;
+    let mut day: Option<u32> = None;
+    if rest2.starts_with('-') {
+        rest2 = &rest2[1..];
+        if rest2.len() < 2 || !rest2.as_bytes()[..2].iter().all(u8::is_ascii_digit) {
+            return Err("invalid calendar month".into());
+        }
+        month = Some(rest2[..2].parse().map_err(|_| "invalid calendar month".to_string())?);
+        rest2 = &rest2[2..];
+        if rest2.starts_with('-') {
+            rest2 = &rest2[1..];
+            if rest2.len() != 2 || !rest2.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err("invalid calendar day".into());
+            }
+            day = Some(rest2.parse().map_err(|_| "invalid calendar day".to_string())?);
+            rest2 = "";
+        }
+    }
+    if !rest2.is_empty() {
+        return Err("invalid trailing calendar content".into());
+    }
+    if month.is_some_and(|m| m == 0 || m > 12) || day.is_some_and(|d| d == 0 || d > 31) {
+        return Err("invalid calendar date".into());
+    }
+    Ok(())
+}
+
+/// ToTemporalCalendar 校验：非 string 抛 TypeError；字符串必须通过 ParseTemporalCalendarString。
+fn temporal_calendar_check<H: VmHost>(vm: &mut H, value: JsValue) -> Result<(), JsValue> {
+    if value.is_undefined() {
+        return Ok(());
+    }
+    if !value.is_string() {
+        return Err(crate::error::create_type_error(vm, "invalid calendar"));
+    }
+    if parse_temporal_calendar_string(&to_string(value)).is_err() {
+        return Err(crate::error::create_range_error(vm, "invalid calendar"));
+    }
+    Ok(())
 }
 
 fn plain_date_time_object_parts<H: VmHost>(
     vm: &mut H, value: JsValue, obj: &JsObject, constrain: bool,
 ) -> Result<(i32, u32, u32, f64), JsValue> {
     let calendar = temporal_option_value(vm, obj, value, "calendar")?;
-    if !calendar.is_undefined() && !temporal_option_string(vm, calendar)?.eq_ignore_ascii_case("iso8601") {
-        return Err(crate::error::create_range_error(vm, "unsupported calendar"));
-    }
+    temporal_calendar_check(vm, calendar)?;
 
     // 先按规范顺序读取全部原始字段，暂不转换类型。
     let (
@@ -3941,36 +4041,32 @@ fn plain_date_ymd_checked<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<(i32, u3
 
 /// 从对象式日期字段（`{year, month, day}`）读三字段；PlainDate 对象直接读内部槽；
 /// 缺字段返回 None。
-fn object_ymd<H: VmHost>(vm: &mut H, val: JsValue) -> Option<(i32, u32, u32)> {
+fn object_date_ymd<H: VmHost>(vm: &mut H, val: JsValue) -> Result<(i32, u32, u32), JsValue> {
     if !val.is_object() {
-        return None;
+        return Err(crate::error::create_type_error(vm, "cannot convert to PlainDate"));
     }
     let ptr = val.as_js_object_ptr();
     if ptr.is_null() {
-        return None;
+        return Err(crate::error::create_type_error(vm, "cannot convert to PlainDate"));
     }
     let obj = unsafe { &*ptr };
     if obj.is_plain_date_obj() {
-        return Some((
+        return Ok((
             get_double_prop(obj, 0) as i32,
             get_double_prop(obj, 1) as u32,
             get_double_prop(obj, 2) as u32,
         ));
     }
-    let y = read_prop_number(vm, obj, val, "year");
-    let m = read_prop_number(vm, obj, val, "month");
-    let d = read_prop_number(vm, obj, val, "day");
-    if y.is_nan() || m.is_nan() || d.is_nan() {
-        return None;
-    }
-    Some((y.trunc() as i32, m.trunc() as u32, d.trunc() as u32))
+    let (year, month, day, _) = plain_date_time_object_parts(vm, val, obj, true)?;
+    Ok((year, month, day))
 }
 
 fn date_like_ymd<H: VmHost>(vm: &mut H, val: JsValue) -> Result<(i32, u32, u32), JsValue> {
     let ymd = if val.is_string() {
-        parse_iso_date(&to_string(val)).map_err(|_| crate::error::create_range_error(vm, "invalid ISO 8601 date"))?
+        parse_plain_date_string(&to_string(val))
+            .map_err(|_| crate::error::create_range_error(vm, "invalid ISO 8601 date"))?
     } else {
-        object_ymd(vm, val).ok_or_else(|| crate::error::create_type_error(vm, "cannot convert to PlainDate"))?
+        object_date_ymd(vm, val)?
     };
     if !valid_iso_date(ymd.0, ymd.1, ymd.2) {
         return Err(crate::error::create_range_error(vm, "invalid ISO date"));
