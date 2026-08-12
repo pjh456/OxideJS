@@ -4118,10 +4118,11 @@ pub fn plain_date_equals<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Err(e) => return NativeResult::Err(e),
     };
     let other_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let equal = match object_ymd(vm, other_val) {
-        Some((oy, om, od)) => oy as f64 == y && om as f64 == m && od as f64 == d,
-        None => false,
+    let other = match date_like_ymd(vm, other_val) {
+        Ok(x) => x,
+        Err(e) => return NativeResult::Err(e),
     };
+    let equal = other.0 as f64 == y && other.1 as f64 == m && other.2 as f64 == d;
     NativeResult::Ok(JsValue::bool(equal))
 }
 
@@ -4129,17 +4130,13 @@ pub fn plain_date_equals<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn plain_date_compare<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let a_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let b_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    let a = match object_ymd(vm, a_val) {
-        Some(x) => x,
-        None => {
-            return NativeResult::Err(crate::error::create_type_error(vm, "cannot convert to PlainDate"));
-        }
+    let a = match date_like_ymd(vm, a_val) {
+        Ok(x) => x,
+        Err(e) => return NativeResult::Err(e),
     };
-    let b = match object_ymd(vm, b_val) {
-        Some(x) => x,
-        None => {
-            return NativeResult::Err(crate::error::create_type_error(vm, "cannot convert to PlainDate"));
-        }
+    let b = match date_like_ymd(vm, b_val) {
+        Ok(x) => x,
+        Err(e) => return NativeResult::Err(e),
     };
     let cmp = (a.0, a.1, a.2).cmp(&(b.0, b.1, b.2));
     NativeResult::Ok(JsValue::float(match cmp {
