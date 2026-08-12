@@ -35,6 +35,16 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         oxide_builtins::temporal::instant_constructor::<crate::vm::Vm> as *const (),
         1,
     );
+    let length_si = core.perm_interner().intern("length").0;
+    let length_shape = core.shape_forge().make_shape(instant_ctor.shape_id(), length_si);
+    instant_ctor.set_shape_id(length_shape);
+    instant_ctor.ensure_hash_props().push(JsValue::int(1));
+    let length_pos = instant_ctor
+        .hash_props_vec()
+        .map_or(0, |props| props.len() as u32)
+        .saturating_sub(1);
+    instant_ctor.set_data_meta(length_pos, PropAttributes::new(false, false, true));
+
     apply_binding_table(
         world,
         instant_ctor,
@@ -129,6 +139,16 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         oxide_builtins::temporal::zoned_date_time_constructor::<crate::vm::Vm> as *const (),
         2,
     );
+    let length_si = core.perm_interner().intern("length").0;
+    let length_shape = core.shape_forge().make_shape(zoned_date_time_ctor.shape_id(), length_si);
+    zoned_date_time_ctor.set_shape_id(length_shape);
+    zoned_date_time_ctor.ensure_hash_props().push(JsValue::int(2));
+    let length_pos = zoned_date_time_ctor
+        .hash_props_vec()
+        .map_or(0, |props| props.len() as u32)
+        .saturating_sub(1);
+    zoned_date_time_ctor.set_data_meta(length_pos, PropAttributes::new(false, false, true));
+
     let zoned_date_time_proto_ptr = world.zoned_date_time_proto.as_ptr() as *mut JsObject;
     let zoned_date_time_proto = unsafe { &mut *zoned_date_time_proto_ptr };
     bind_accessor_getter(
@@ -171,6 +191,16 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         oxide_builtins::temporal::plain_date_constructor::<crate::vm::Vm> as *const (),
         3,
     );
+    let length_si = core.perm_interner().intern("length").0;
+    let length_shape = core.shape_forge().make_shape(plain_date_ctor.shape_id(), length_si);
+    plain_date_ctor.set_shape_id(length_shape);
+    plain_date_ctor.ensure_hash_props().push(JsValue::int(3));
+    let length_pos = plain_date_ctor
+        .hash_props_vec()
+        .map_or(0, |props| props.len() as u32)
+        .saturating_sub(1);
+    plain_date_ctor.set_data_meta(length_pos, PropAttributes::new(false, false, true));
+
     apply_binding_table(
         world,
         plain_date_ctor,
@@ -322,6 +352,16 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         oxide_builtins::temporal::plain_time_constructor::<crate::vm::Vm> as *const (),
         6,
     );
+    let length_si = core.perm_interner().intern("length").0;
+    let length_shape = core.shape_forge().make_shape(plain_time_ctor.shape_id(), length_si);
+    plain_time_ctor.set_shape_id(length_shape);
+    plain_time_ctor.ensure_hash_props().push(JsValue::int(0));
+    let length_pos = plain_time_ctor
+        .hash_props_vec()
+        .map_or(0, |props| props.len() as u32)
+        .saturating_sub(1);
+    plain_time_ctor.set_data_meta(length_pos, PropAttributes::new(false, false, true));
+
     let plain_time_proto_ptr = world.plain_time_proto.as_ptr() as *mut JsObject;
     let plain_time_proto = unsafe { &mut *plain_time_proto_ptr };
     bind_accessor_getter(
@@ -556,6 +596,16 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         oxide_builtins::temporal::duration_constructor::<crate::vm::Vm> as *const (),
         10,
     );
+    let length_si = core.perm_interner().intern("length").0;
+    let length_shape = core.shape_forge().make_shape(duration_ctor.shape_id(), length_si);
+    duration_ctor.set_shape_id(length_shape);
+    duration_ctor.ensure_hash_props().push(JsValue::int(0));
+    let length_pos = duration_ctor
+        .hash_props_vec()
+        .map_or(0, |props| props.len() as u32)
+        .saturating_sub(1);
+    duration_ctor.set_data_meta(length_pos, PropAttributes::new(false, false, true));
+
     apply_binding_table(
         world,
         duration_ctor,
