@@ -1,5 +1,6 @@
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, PropAttributes, MAX_DENSE_PROPS};
+use oxide_types::private_key::make_well_known_symbol_key;
 use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{NativeResult, VmHost};
@@ -79,35 +80,97 @@ fn get_this_arraylike<H: VmHost>(vm: &mut H, val: JsValue) -> Result<(*mut JsObj
         return Err(array_type_error(vm, "Array.prototype method called on null or undefined"));
     }
     let obj = unsafe { &*ptr };
-    if obj.is_array() {
-        return Ok((ptr, obj.prop_count() as usize, true));
-    }
-    // 读取 length 属性
+    let is_array = obj.is_array();
+    // 读取 length 属性（按规范 Get 语义，getter 抛错需向上传播）。
+    // 真数组也走 Get：`arr.length = N` 已由 ordinary_set 的数组分支同步元素区，
+    // 直接 prop_count() 会漏掉 length 赋值。
     let length_key = vm.new_string("length");
     let length_si = vm.property_key_si(length_key);
-    let len_val = vm.ordinary_get(unsafe { &*ptr }, length_si, val).unwrap_or(JsValue::int(0));
-    let len_num = vm.coerce_number_bounded(len_val).unwrap_or(0.0);
-    let len = if !len_num.is_finite() || len_num <= 0.0 {
+    let len_val = match vm.ordinary_get(unsafe { &*ptr }, length_si, val) {
+        Ok(v) => v,
+        Err(msg) => return Err(from_engine_error(vm, &msg)),
+    };
+    if len_val.is_symbol() {
+        return Err(array_type_error(vm, "Cannot convert a Symbol value to a number"));
+    }
+    let len_num = match vm.coerce_number_bounded(len_val) {
+        Ok(v) => v,
+        Err(msg) => return Err(from_engine_error(vm, &msg)),
+    };
+    // ToLength：min(max(0, ToIntegerOrInfinity(len)), 2**53-1)
+    let len = if len_num.is_nan() || len_num <= 0.0 {
         0
     } else {
-        (len_num as usize).min(MAX_DENSE_PROPS)
+        len_num.min(9_007_199_254_740_991.0) as usize
     };
-    Ok((ptr, len, false))
+    Ok((ptr, len, is_array))
 }
 
-/// 从 arraylike 读取 index 位置元素
+/// 从 arraylike 读取 index 位置元素（按规范 Get：访问器/原型链/异常完整传播）。
 #[inline(always)]
-fn arraylike_get<H: VmHost>(vm: &mut H, ptr: *mut JsObject, is_array: bool, i: usize) -> JsValue {
-    if is_array {
-        unsafe { (*ptr).get_prop_at(i) }
-    } else {
-        let key_str = vm.new_string(&i.to_string());
-        let key_si = vm.property_key_si(key_str);
-        let recv = JsValue::from_js_object(ptr);
-        vm.ordinary_get(unsafe { &*ptr }, key_si, recv).unwrap_or(JsValue::undefined())
+fn arraylike_get<H: VmHost>(vm: &mut H, ptr: *mut JsObject, i: usize) -> Result<JsValue, JsValue> {
+    let key_str = vm.new_string(&i.to_string());
+    let key_si = vm.property_key_si(key_str);
+    let recv = JsValue::from_js_object(ptr);
+    match vm.ordinary_get(unsafe { &*ptr }, key_si, recv) {
+        Ok(v) => Ok(v),
+        Err(msg) => Err(from_engine_error(vm, &msg)),
     }
 }
 
+/// 元素读取失败时直接把异常作为 NativeResult::Err 返回。
+macro_rules! arraylike_get_or_err {
+    ($vm:expr, $ptr:expr, $i:expr) => {
+        match arraylike_get($vm, $ptr, $i) {
+            Ok(v) => v,
+            Err(err) => return NativeResult::Err(err),
+        }
+    };
+}
+
+/// 数组下标转 JsValue：超出 i32 范围时用 double 精确表示。
+#[inline(always)]
+fn js_array_index(i: usize) -> JsValue {
+    if i <= i32::MAX as usize {
+        JsValue::int(i as i32)
+    } else {
+        JsValue::float(i as f64)
+    }
+}
+
+/// ToIntegerOrInfinity 的 builtins 版本：对象经 ToPrimitive(number) 后取整，
+/// NaN/±0 → 0，±Inf 保留；转换异常向上传播。
+fn to_integer_or_infinity_bounded<H: VmHost>(vm: &mut H, val: JsValue) -> Result<f64, JsValue> {
+    let n = match vm.coerce_number_bounded(val) {
+        Ok(v) => v,
+        Err(msg) => return Err(from_engine_error(vm, &msg)),
+    };
+    Ok(if n.is_nan() || n == 0.0 { 0.0 } else { n.trunc() })
+}
+
+/// 把 ToIntegerOrInfinity 结果夹到 [0, len]：负数按 len+rel，正无穷取 len。
+#[inline(always)]
+fn clamp_relative(rel: f64, n_f: f64, n: usize) -> usize {
+    if rel.is_infinite() {
+        if rel < 0.0 { 0 } else { n }
+    } else if rel < 0.0 {
+        (n_f + rel).max(0.0) as usize
+    } else {
+        rel.min(n_f) as usize
+    }
+}
+
+/// IsConstructor 的近似判定（与 construct_array_from_result 保持一致）。
+#[inline]
+fn is_constructor_value(c: JsValue) -> bool {
+    if !c.is_object() {
+        return false;
+    }
+    let c_obj = unsafe { &*c.as_js_object_ptr() };
+    c_obj.is_function()
+        && !c_obj.is_arrow()
+        && !(c_obj.native_fn().is_some() && c_obj.type_tag != JsObject::OBJ_TYPE_CONSTRUCTOR)
+}
 pub(crate) fn require_callback<H: VmHost>(vm: &mut H, callback_val: JsValue) -> Result<JsValue, JsValue> {
     if !callback_val.is_object() {
         return Err(array_type_error(vm, "callback is not a function"));
@@ -127,6 +190,14 @@ fn create_new_array<H: VmHost>(vm: &mut H, n: usize) -> *mut JsObject {
         n.min(MAX_DENSE_PROPS),
         vm.epoch().bump(),
     ))
+}
+
+/// ArrayCreate ?????length > 2**32 - 1 ? RangeError??????/???????
+fn check_array_create_len<H: VmHost>(vm: &mut H, n: usize) -> Result<(), JsValue> {
+    if n > u32::MAX as usize {
+        return Err(crate::error::create_range_error(vm, "Invalid array length"));
+    }
+    Ok(())
 }
 
 fn array_length_arg<H: VmHost>(vm: &mut H, value: JsValue) -> Result<usize, JsValue> {
@@ -361,7 +432,11 @@ pub fn array_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             Ok(v) => v,
             Err(err) => return NativeResult::Err(from_engine_error(vm, &err)),
         };
-        let len = oxide_runtime_api::to_length(len_val).min(MAX_DENSE_PROPS as u64) as usize;
+        let len_u64 = oxide_runtime_api::to_length(len_val);
+        if len_u64 > u32::MAX as u64 {
+            return NativeResult::Err(crate::error::create_range_error(vm, "Invalid array length"));
+        }
+        let len = len_u64.min(MAX_DENSE_PROPS as u64) as usize;
 
         a_ptr = match construct_array_from_result(vm, c, &[JsValue::int(len as i32)]) {
             Ok((ptr, is_arr)) => {
@@ -371,9 +446,9 @@ pub fn array_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             Err(err) => return NativeResult::Err(err),
         };
         for i in 0..len {
-            let elem = arraylike_get(vm, obj_ptr, false, i);
+            let elem = arraylike_get_or_err!(vm, obj_ptr, i);
             let mapped = match mapping {
-                Some(cb) => match invoke_native_callback(vm, cb, this_arg, &[elem, JsValue::int(i as i32)]) {
+                Some(cb) => match invoke_native_callback(vm, cb, this_arg, &[elem, js_array_index(i)]) {
                     NativeResult::Ok(m) => m,
                     NativeResult::Err(err) => return NativeResult::Err(err),
                     NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
@@ -448,6 +523,44 @@ fn construct_array_from_result<H: VmHost>(
         }
         Ok(_) => Ok((this_ptr, false)),
         Err(err) => Err(from_engine_error(vm, &err)),
+    }
+}
+
+/// ArraySpeciesCreate(originalArray, length)：真数组读取 constructor / @@species
+/// 并构造目标对象；array-like（非数组）直接 ArrayCreate(length)。
+fn array_species_create<H: VmHost>(
+    vm: &mut H, o_val: JsValue, is_array: bool, count: usize,
+) -> Result<*mut JsObject, JsValue> {
+    if !is_array {
+        return Ok(create_new_array(vm, count));
+    }
+    let o_ptr = o_val.as_js_object_ptr();
+    let o_obj = unsafe { &*o_ptr };
+    let ctor_key = vm.kernel_core().perm_interner().intern("constructor").0;
+    let mut c = match vm.ordinary_get(o_obj, ctor_key, o_val) {
+        Ok(v) => v,
+        Err(msg) => return Err(from_engine_error(vm, &msg)),
+    };
+    if !is_constructor_value(c) {
+        if !c.is_object() {
+            return Err(crate::error::create_type_error(vm, "Species constructor not a constructor"));
+        }
+        let species_key = make_well_known_symbol_key(10);
+        let s = match vm.ordinary_get(unsafe { &*c.as_js_object_ptr() }, species_key, c) {
+            Ok(v) => v,
+            Err(msg) => return Err(from_engine_error(vm, &msg)),
+        };
+        c = if s.is_null() { JsValue::undefined() } else { s };
+    }
+    if c.is_undefined() {
+        return Ok(create_new_array(vm, count));
+    }
+    if !is_constructor_value(c) {
+        return Err(crate::error::create_type_error(vm, "Species constructor not a constructor"));
+    }
+    match construct_array_from_result(vm, c, &[js_array_index(count)]) {
+        Ok((ptr, _)) => Ok(ptr),
+        Err(err) => Err(err),
     }
 }
 
@@ -552,32 +665,61 @@ pub fn array_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Ok(v) => v,
         Err(e) => return NativeResult::Err(e),
     };
-    let n_isize = n as isize;
+    let n_f = n as f64;
+    // ToIntegerOrInfinity(start)，缺省 0；对象经 ToPrimitive(number)。
     let rel_start = if args.len() > 1 {
-        oxide_runtime_api::to_integer_or_infinity(vm.reg(args[1])) as isize
-    } else {
-        0
-    };
-    let rel_end = if args.len() > 2 {
-        oxide_runtime_api::to_integer_or_infinity(vm.reg(args[2])) as isize
-    } else {
-        n_isize
-    };
-    let start = if rel_start < 0 {
-        (n_isize + rel_start).max(0)
-    } else {
-        rel_start.min(n_isize)
-    } as usize;
-    let end = if rel_end < 0 { (n_isize + rel_end).max(0) } else { rel_end.min(n_isize) } as usize;
-    let count = end.saturating_sub(start);
-    let new_arr = create_new_array(vm, count);
-    unsafe {
-        for i in 0..count {
-            (*new_arr).set_prop_at(i, arraylike_get(vm, arr_ptr, is_array, start + i));
+        match to_integer_or_infinity_bounded(vm, vm.reg(args[1])) {
+            Ok(v) => v,
+            Err(e) => return NativeResult::Err(e),
         }
-        (*new_arr).set_prop_count(count);
+    } else {
+        0.0
+    };
+    // 规范：end 为 undefined 时使用 len；其余走 ToIntegerOrInfinity。
+    let rel_end = if args.len() > 2 && !vm.reg(args[2]).is_undefined() {
+        match to_integer_or_infinity_bounded(vm, vm.reg(args[2])) {
+            Ok(v) => v,
+            Err(e) => return NativeResult::Err(e),
+        }
+    } else {
+        n_f
+    };
+    let start = clamp_relative(rel_start, n_f, n);
+    let end = clamp_relative(rel_end, n_f, n);
+    let count = end.saturating_sub(start);
+    if let Err(err) = check_array_create_len(vm, count) {
+        return NativeResult::Err(err);
     }
-    NativeResult::Ok(JsValue::from_js_object(new_arr))
+    // ArraySpeciesCreate(O, count)：真数组按 constructor/@@species 构造目标。
+    let a_ptr = match array_species_create(vm, this_val, is_array, count) {
+        Ok(p) => p,
+        Err(err) => return NativeResult::Err(err),
+    };
+    // HasProperty + Get + CreateDataPropertyOrThrow 逐元素拷贝。
+    let mut k = start;
+    let mut out_idx = 0usize;
+    while k < end {
+        let key_str = vm.new_string(&k.to_string());
+        let key_si = vm.property_key_si(key_str);
+        if vm.resolve_property(unsafe { &*arr_ptr }, key_si).is_some() {
+            let elem = arraylike_get_or_err!(vm, arr_ptr, k);
+            let out_key = vm.new_string(&out_idx.to_string());
+            let out_key_si = vm.property_key_si(out_key);
+            if let Err(err) = create_data_property_or_throw(vm, unsafe { &mut *a_ptr }, out_key_si, elem) {
+                return NativeResult::Err(err);
+            }
+            out_idx += 1;
+        }
+        k += 1;
+    }
+    // 收尾 Set(A, "length", final)：普通 Set 语义（可触发继承 setter/异常）。
+    let a_val = JsValue::from_js_object(a_ptr);
+    let length_key = vm.new_string("length");
+    let length_si = vm.property_key_si(length_key);
+    if let Err(err) = vm.ordinary_set(unsafe { &mut *a_ptr }, length_si, js_array_index(out_idx), a_val) {
+        return NativeResult::Err(from_engine_error(vm, &err));
+    }
+    NativeResult::Ok(JsValue::from_js_object(a_ptr))
 }
 
 /// `Array.prototype.splice(start, deleteCount, ...items)`：删除并/或插入元素，
@@ -649,13 +791,16 @@ pub fn array_splice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn array_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.concat called with {} args", args.len());
     let this_val = vm.reg(args[0]);
-    let (arr_ptr, n, is_array) = match get_this_arraylike(vm, this_val) {
+    let (arr_ptr, n, _is_array) = match get_this_arraylike(vm, this_val) {
         Ok(v) => v,
         Err(e) => return NativeResult::Err(e),
     };
     let mut all: Vec<JsValue> = Vec::new();
+    if let Err(err) = check_array_create_len(vm, n) {
+        return NativeResult::Err(err);
+    }
     for i in 0..n {
-        all.push(arraylike_get(vm, arr_ptr, is_array, i));
+        all.push(arraylike_get_or_err!(vm, arr_ptr, i));
     }
     for &arg_reg in args.iter().skip(1) {
         let val = vm.reg(arg_reg);
@@ -689,7 +834,7 @@ pub fn array_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn array_join<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.join called with {} args", args.len());
     let this_val = vm.reg(args[0]);
-    let (arr_ptr, n, is_array) = match get_this_arraylike(vm, this_val) {
+    let (arr_ptr, n, _is_array) = match get_this_arraylike(vm, this_val) {
         Ok(v) => v,
         Err(e) => return NativeResult::Err(e),
     };
@@ -698,16 +843,20 @@ pub fn array_join<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     } else {
         ",".to_string()
     };
-    let parts: Vec<String> = (0..n)
+    let parts: Vec<String> = match (0..n)
         .map(|i| {
-            let v = arraylike_get(vm, arr_ptr, is_array, i);
+            let v = arraylike_get(vm, arr_ptr, i)?;
             if v.is_undefined() || v.is_null() {
-                String::new()
+                Ok(String::new())
             } else {
-                oxide_runtime_api::to_string(v)
+                Ok(oxide_runtime_api::to_string(v))
             }
         })
-        .collect();
+        .collect::<Result<Vec<String>, JsValue>>()
+    {
+        Ok(v) => v,
+        Err(err) => return NativeResult::Err(err),
+    };
     let joined = parts.join(&sep);
     NativeResult::Ok(vm.new_string(&joined))
 }
@@ -723,7 +872,7 @@ pub fn array_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn array_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.indexOf called with {} args", args.len());
     let this_val = vm.reg(args[0]);
-    let (ptr, n, is_array) = match get_this_arraylike(vm, this_val) {
+    let (ptr, n, _is_array) = match get_this_arraylike(vm, this_val) {
         Ok(v) => v,
         Err(e) => return NativeResult::Err(e),
     };
@@ -750,9 +899,9 @@ pub fn array_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         0
     };
     for i in from_index..n {
-        let elem = arraylike_get(vm, ptr, is_array, i);
+        let elem = arraylike_get_or_err!(vm, ptr, i);
         if oxide_runtime_api::strict_eq(elem, target) {
-            return NativeResult::Ok(JsValue::int(i as i32));
+            return NativeResult::Ok(js_array_index(i));
         }
     }
     NativeResult::Ok(JsValue::int(-1))
@@ -763,7 +912,7 @@ pub fn array_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn array_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.includes called with {} args", args.len());
     let this_val = vm.reg(args[0]);
-    let (ptr, n, is_array) = match get_this_arraylike(vm, this_val) {
+    let (ptr, n, _is_array) = match get_this_arraylike(vm, this_val) {
         Ok(v) => v,
         Err(e) => return NativeResult::Err(e),
     };
@@ -789,7 +938,7 @@ pub fn array_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         0
     };
     for i in from_index..n {
-        let elem = arraylike_get(vm, ptr, is_array, i);
+        let elem = arraylike_get_or_err!(vm, ptr, i);
         // SameValueZero：NaN 视为相等、+0 与 -0 视为相同。
         if same_value_zero(elem, target) {
             return NativeResult::Ok(JsValue::bool(true));
@@ -893,7 +1042,7 @@ pub fn array_flat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `Array.prototype.forEach(callback, thisArg)`：对每个元素调用 callback，返回 undefined。
 pub fn array_for_each<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.forEach called with {} args", args.len());
-    let (arr_ptr, n, is_array) = array_ptr_len3!(vm, args);
+    let (arr_ptr, n, _is_array) = array_ptr_len3!(vm, args);
     let o_val = vm.reg(args[0]);
     if args.len() < 2 {
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
@@ -904,8 +1053,8 @@ pub fn array_for_each<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     for i in 0..n {
-        let elem = arraylike_get(vm, arr_ptr, is_array, i);
-        match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i as i32), o_val]) {
+        let elem = arraylike_get_or_err!(vm, arr_ptr, i);
+        match invoke_native_callback(vm, callback_val, this_val, &[elem, js_array_index(i), o_val]) {
             NativeResult::Ok(_) => {}
             NativeResult::Err(err) => return NativeResult::Err(err),
             NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
@@ -917,7 +1066,7 @@ pub fn array_for_each<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `Array.prototype.map(callback, thisArg)`：对每个元素调用 callback 生成新数组。
 pub fn array_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.map called with {} args", args.len());
-    let (arr_ptr, n, is_array) = array_ptr_len3!(vm, args);
+    let (arr_ptr, n, _is_array) = array_ptr_len3!(vm, args);
     let o_val = vm.reg(args[0]);
     if args.len() < 2 {
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
@@ -928,9 +1077,12 @@ pub fn array_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     let new_arr = create_new_array(vm, n);
+    if let Err(err) = check_array_create_len(vm, n) {
+        return NativeResult::Err(err);
+    }
     for i in 0..n {
-        let elem = arraylike_get(vm, arr_ptr, is_array, i);
-        match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i as i32), o_val]) {
+        let elem = arraylike_get_or_err!(vm, arr_ptr, i);
+        match invoke_native_callback(vm, callback_val, this_val, &[elem, js_array_index(i), o_val]) {
             NativeResult::Ok(mapped) => unsafe {
                 (*new_arr).set_prop_at(i, mapped);
             },
@@ -947,7 +1099,7 @@ pub fn array_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `Array.prototype.filter(callback, thisArg)`：保留 callback 返回真值的元素形成新数组。
 pub fn array_filter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.filter called with {} args", args.len());
-    let (arr_ptr, n, is_array) = array_ptr_len3!(vm, args);
+    let (arr_ptr, n, _is_array) = array_ptr_len3!(vm, args);
     let o_val = vm.reg(args[0]);
     if args.len() < 2 {
         builtins_error!("Array.prototype.filter: invalid receiver");
@@ -962,9 +1114,12 @@ pub fn array_filter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     let mut kept: Vec<JsValue> = Vec::new();
+    if let Err(err) = check_array_create_len(vm, n) {
+        return NativeResult::Err(err);
+    }
     for i in 0..n {
-        let elem = arraylike_get(vm, arr_ptr, is_array, i);
-        match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i as i32), o_val]) {
+        let elem = arraylike_get_or_err!(vm, arr_ptr, i);
+        match invoke_native_callback(vm, callback_val, this_val, &[elem, js_array_index(i), o_val]) {
             NativeResult::Ok(result_val) => {
                 if oxide_runtime_api::to_boolean(result_val) {
                     kept.push(elem);
@@ -988,7 +1143,7 @@ pub fn array_filter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// 空数组且无初始值抛 TypeError。
 pub fn array_reduce<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.reduce called with {} args", args.len());
-    let (arr_ptr, n, is_array) = array_ptr_len3!(vm, args);
+    let (arr_ptr, n, _is_array) = array_ptr_len3!(vm, args);
     let o_val = vm.reg(args[0]);
     if n == 0 && args.len() < 3 {
         builtins_error!("Array.prototype.reduce: invalid receiver");
@@ -1012,18 +1167,13 @@ pub fn array_reduce<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         accumulator = vm.reg(args[2]);
         start_idx = 0;
     } else {
-        accumulator = arraylike_get(vm, arr_ptr, is_array, 0);
+        accumulator = arraylike_get_or_err!(vm, arr_ptr, 0);
         start_idx = 1;
     }
     let this_val = JsValue::undefined();
     for i in start_idx..n {
-        let elem = arraylike_get(vm, arr_ptr, is_array, i);
-        match invoke_native_callback(
-            vm,
-            callback_val,
-            this_val,
-            &[accumulator, elem, JsValue::int(i as i32), o_val],
-        ) {
+        let elem = arraylike_get_or_err!(vm, arr_ptr, i);
+        match invoke_native_callback(vm, callback_val, this_val, &[accumulator, elem, js_array_index(i), o_val]) {
             NativeResult::Ok(result) => accumulator = result,
             NativeResult::Err(err) => {
                 builtins_error!("Array.prototype.reduce: invalid receiver");
@@ -1041,7 +1191,7 @@ pub fn array_reduce<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `Array.prototype.find(callback, thisArg)`：返回首个 callback 为真的元素，否则 undefined。
 pub fn array_find<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.find called with {} args", args.len());
-    let (arr_ptr, n, is_array) = array_ptr_len3!(vm, args);
+    let (arr_ptr, n, _is_array) = array_ptr_len3!(vm, args);
     let o_val = vm.reg(args[0]);
     if args.len() < 2 {
         builtins_error!("Array.prototype.find: invalid receiver");
@@ -1056,8 +1206,8 @@ pub fn array_find<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     for i in 0..n {
-        let elem = arraylike_get(vm, arr_ptr, is_array, i);
-        match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i as i32), o_val]) {
+        let elem = arraylike_get_or_err!(vm, arr_ptr, i);
+        match invoke_native_callback(vm, callback_val, this_val, &[elem, js_array_index(i), o_val]) {
             NativeResult::Ok(result_val) => {
                 if oxide_runtime_api::to_boolean(result_val) {
                     return NativeResult::Ok(elem);
@@ -1079,7 +1229,7 @@ pub fn array_find<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `Array.prototype.some(callback, thisArg)`：任一元素满足 callback 返回 true。
 pub fn array_some<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.some called with {} args", args.len());
-    let (arr_ptr, n, is_array) = array_ptr_len3!(vm, args);
+    let (arr_ptr, n, _is_array) = array_ptr_len3!(vm, args);
     let o_val = vm.reg(args[0]);
     if args.len() < 2 {
         builtins_error!("Array.prototype.some: invalid receiver");
@@ -1094,8 +1244,8 @@ pub fn array_some<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     for i in 0..n {
-        let elem = arraylike_get(vm, arr_ptr, is_array, i);
-        match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i as i32), o_val]) {
+        let elem = arraylike_get_or_err!(vm, arr_ptr, i);
+        match invoke_native_callback(vm, callback_val, this_val, &[elem, js_array_index(i), o_val]) {
             NativeResult::Ok(result_val) => {
                 if oxide_runtime_api::to_boolean(result_val) {
                     return NativeResult::Ok(JsValue::bool(true));
@@ -1117,7 +1267,7 @@ pub fn array_some<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `Array.prototype.every(callback, thisArg)`：所有元素满足 callback 才返回 true。
 pub fn array_every<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.every called with {} args", args.len());
-    let (arr_ptr, n, is_array) = array_ptr_len3!(vm, args);
+    let (arr_ptr, n, _is_array) = array_ptr_len3!(vm, args);
     let o_val = vm.reg(args[0]);
     if args.len() < 2 {
         builtins_error!("Array.prototype.every: invalid receiver");
@@ -1132,8 +1282,8 @@ pub fn array_every<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     for i in 0..n {
-        let elem = arraylike_get(vm, arr_ptr, is_array, i);
-        match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i as i32), o_val]) {
+        let elem = arraylike_get_or_err!(vm, arr_ptr, i);
+        match invoke_native_callback(vm, callback_val, this_val, &[elem, js_array_index(i), o_val]) {
             NativeResult::Ok(result_val) => {
                 if !oxide_runtime_api::to_boolean(result_val) {
                     return NativeResult::Ok(JsValue::bool(false));
@@ -1155,7 +1305,7 @@ pub fn array_every<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `Array.prototype.flatMap(callback, thisArg)`：map 后把返回的数组展开一层。
 pub fn array_flat_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.flatMap called with {} args", args.len());
-    let (arr_ptr, n, is_array) = array_ptr_len3!(vm, args);
+    let (arr_ptr, n, _is_array) = array_ptr_len3!(vm, args);
     let o_val = vm.reg(args[0]);
     if args.len() < 2 {
         builtins_error!("Array.prototype.flatMap: invalid receiver");
@@ -1170,9 +1320,12 @@ pub fn array_flat_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     let mut flat: Vec<JsValue> = Vec::new();
+    if let Err(err) = check_array_create_len(vm, n) {
+        return NativeResult::Err(err);
+    }
     for i in 0..n {
-        let elem = arraylike_get(vm, arr_ptr, is_array, i);
-        match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i as i32), o_val]) {
+        let elem = arraylike_get_or_err!(vm, arr_ptr, i);
+        match invoke_native_callback(vm, callback_val, this_val, &[elem, js_array_index(i), o_val]) {
             NativeResult::Ok(result) => {
                 if result.is_object() {
                     let r_ptr = result.as_js_object_ptr();
@@ -1333,7 +1486,7 @@ pub fn array_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn array_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.lastIndexOf called with {} args", args.len());
     let this_val = vm.reg(args[0]);
-    let (ptr, n, is_array) = match get_this_arraylike(vm, this_val) {
+    let (ptr, n, _is_array) = match get_this_arraylike(vm, this_val) {
         Ok(v) => v,
         Err(e) => return NativeResult::Err(e),
     };
@@ -1361,9 +1514,9 @@ pub fn array_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(JsValue::int(-1));
     }
     for i in (0..=from_index_isize as usize).rev() {
-        let elem = arraylike_get(vm, ptr, is_array, i);
+        let elem = arraylike_get_or_err!(vm, ptr, i);
         if oxide_runtime_api::strict_eq(elem, search) {
-            return NativeResult::Ok(JsValue::int(i as i32));
+            return NativeResult::Ok(js_array_index(i));
         }
     }
     NativeResult::Ok(JsValue::int(-1))
@@ -1372,7 +1525,7 @@ pub fn array_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `Array.prototype.findIndex(callback, thisArg)`：返回首个 callback 为真的索引，否则 -1。
 pub fn array_find_index<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.findIndex called with {} args", args.len());
-    let (arr_ptr, n, is_array) = array_ptr_len3!(vm, args);
+    let (arr_ptr, n, _is_array) = array_ptr_len3!(vm, args);
     let o_val = vm.reg(args[0]);
     if args.len() < 2 {
         builtins_error!("Array.prototype.findIndex: invalid receiver");
@@ -1387,11 +1540,11 @@ pub fn array_find_index<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     for i in 0..n {
-        let elem = arraylike_get(vm, arr_ptr, is_array, i);
-        match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i as i32), o_val]) {
+        let elem = arraylike_get_or_err!(vm, arr_ptr, i);
+        match invoke_native_callback(vm, callback_val, this_val, &[elem, js_array_index(i), o_val]) {
             NativeResult::Ok(r) => {
                 if oxide_runtime_api::to_boolean(r) {
-                    return NativeResult::Ok(JsValue::int(i as i32));
+                    return NativeResult::Ok(js_array_index(i));
                 }
             }
             NativeResult::Err(err) => {
@@ -1475,12 +1628,7 @@ pub fn array_reduce_right<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     for i in (0..=start_idx).rev() {
         let elem = unsafe { (*arr_ptr).get_prop_at(i as usize) };
-        match invoke_native_callback(
-            vm,
-            callback_val,
-            JsValue::undefined(),
-            &[acc, elem, JsValue::int(i), o_val],
-        ) {
+        match invoke_native_callback(vm, callback_val, JsValue::undefined(), &[acc, elem, JsValue::int(i), o_val]) {
             NativeResult::Ok(r) => acc = r,
             NativeResult::Err(err) => {
                 builtins_error!("Array.prototype.reduceRight: invalid receiver");
@@ -1499,9 +1647,7 @@ pub fn array_reduce_right<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// 提供比较函数时按其返回值（<0/=0/>0）排序，回调抛错则中止。
 /// 对元素向量执行 Array.prototype.sort 的比较语义（原地）。
 /// 比较回调抛错时中止并把异常返回；默认按字符串字典序。
-fn sort_values_inner<H: VmHost>(
-    vm: &mut H, vals: &mut Vec<JsValue>, comparator: Option<JsValue>,
-) -> Result<(), JsValue> {
+fn sort_values_inner<H: VmHost>(vm: &mut H, vals: &mut [JsValue], comparator: Option<JsValue>) -> Result<(), JsValue> {
     let mut sort_error = None;
     vals.sort_by(|a, b| {
         if sort_error.is_some() {
@@ -1682,12 +1828,12 @@ pub fn array_iterator_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let len = if !len_num.is_finite() || len_num <= 0.0 { 0 } else { len_num as usize };
 
     if (index as usize) >= len {
-        let _ = vm.set_or_create_prop_value(iter, target_si, JsValue::undefined());
+        vm.set_or_create_prop_value(iter, target_si, JsValue::undefined());
         return NativeResult::Ok(crate::iterator::make_iter_result(vm, JsValue::undefined(), true));
     }
 
-    let is_array = target_obj.is_array();
-    let element = arraylike_get(vm, target.as_js_object_ptr(), is_array, index as usize);
+    let _ = target_obj.is_array();
+    let element = arraylike_get_or_err!(vm, target.as_js_object_ptr(), index as usize);
     let value = match kind {
         ARRAY_ITER_KIND_KEYS => JsValue::int(index),
         ARRAY_ITER_KIND_ENTRIES => {
@@ -1708,7 +1854,7 @@ pub fn array_iterator_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// Array.prototype.findLastIndex(callback, thisArg)：从后往前返回首个 callback 为真的下标。
 pub fn array_find_last_index<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.findLastIndex called with {} args", args.len());
-    let (arr_ptr, n, is_array) = array_ptr_len3!(vm, args);
+    let (arr_ptr, n, _is_array) = array_ptr_len3!(vm, args);
     let o_val = vm.reg(args[0]);
     if args.len() < 2 {
         builtins_error!("Array.prototype.findLastIndex: invalid receiver");
@@ -1723,11 +1869,11 @@ pub fn array_find_last_index<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     for i in (0..n).rev() {
-        let elem = arraylike_get(vm, arr_ptr, is_array, i);
-        match invoke_native_callback(vm, callback_val, this_val, &[elem, JsValue::int(i as i32), o_val]) {
+        let elem = arraylike_get_or_err!(vm, arr_ptr, i);
+        match invoke_native_callback(vm, callback_val, this_val, &[elem, js_array_index(i), o_val]) {
             NativeResult::Ok(r) => {
                 if oxide_runtime_api::to_boolean(r) {
-                    return NativeResult::Ok(JsValue::int(i as i32));
+                    return NativeResult::Ok(js_array_index(i));
                 }
             }
             NativeResult::Err(err) => {
@@ -1747,13 +1893,17 @@ pub fn array_find_last_index<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
 pub fn array_to_reversed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.toReversed called with {} args", args.len());
     let this_val = vm.reg(args[0]);
-    let (arr_ptr, n, is_array) = match get_this_arraylike(vm, this_val) {
+    let (arr_ptr, n, _is_array) = match get_this_arraylike(vm, this_val) {
         Ok(v) => v,
         Err(err) => return NativeResult::Err(err),
     };
     let new_arr = create_new_array(vm, n);
-    for i in 0..n {
-        let elem = arraylike_get(vm, arr_ptr, is_array, i);
+    if let Err(err) = check_array_create_len(vm, n) {
+        return NativeResult::Err(err);
+    }
+    // ????????????????getter ???????????
+    for i in (0..n).rev() {
+        let elem = arraylike_get_or_err!(vm, arr_ptr, i);
         unsafe {
             (*new_arr).set_prop_at(n - 1 - i, elem);
         }
@@ -1765,38 +1915,39 @@ pub fn array_to_reversed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn array_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.with called with {} args", args.len());
     let this_val = vm.reg(args[0]);
-    let (arr_ptr, n, is_array) = match get_this_arraylike(vm, this_val) {
+    let (arr_ptr, n, _is_array) = match get_this_arraylike(vm, this_val) {
         Ok(v) => v,
         Err(err) => return NativeResult::Err(err),
     };
     let index_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let idx = vm.coerce_number_bounded(index_val).unwrap_or(f64::NAN);
-    if !idx.is_finite() || idx.fract() != 0.0 || idx < 0.0 || idx >= n as f64 {
+    let idx = match vm.coerce_number_bounded(index_val) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
+    };
+    // ToIntegerOrInfinity：NaN/-0/+0 -> 0，其余截断。
+    let rel = if idx.is_nan() || idx == 0.0 { 0.0 } else { idx.trunc() };
+    let actual = if rel < 0.0 { n as f64 + rel } else { rel };
+    if actual < 0.0 || actual >= n as f64 {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid index for Array.prototype.with"));
     }
+    let actual_idx = actual as usize;
     let value = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    if let Err(err) = check_array_create_len(vm, n) {
+        return NativeResult::Err(err);
+    }
     let new_arr = create_new_array(vm, n);
     for i in 0..n {
-        let elem = arraylike_get(vm, arr_ptr, is_array, i);
+        // 规范：被替换位置不执行 Get。
+        let elem = if i == actual_idx { value } else { arraylike_get_or_err!(vm, arr_ptr, i) };
         unsafe {
             (*new_arr).set_prop_at(i, elem);
         }
     }
-    unsafe {
-        (*new_arr).set_prop_at(idx as usize, value);
-    }
     NativeResult::Ok(JsValue::from_js_object(new_arr))
 }
-
-/// Array.prototype.toSorted(compareFn)：返回排序后的新数组，原数组不变。
 pub fn array_to_sorted<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.toSorted called with {} args", args.len());
-    let this_val = vm.reg(args[0]);
-    let (arr_ptr, n, is_array) = match get_this_arraylike(vm, this_val) {
-        Ok(v) => v,
-        Err(err) => return NativeResult::Err(err),
-    };
-    let mut vals: Vec<JsValue> = (0..n).map(|i| arraylike_get(vm, arr_ptr, is_array, i)).collect();
+    // 规范先校验 compareFn 可调用，再读取 this/length。
     let comparator = if args.len() > 1 {
         match parse_sort_comparator(vm, vm.reg(args[1])) {
             Ok(c) => c,
@@ -1804,6 +1955,21 @@ pub fn array_to_sorted<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
     } else {
         None
+    };
+    let this_val = vm.reg(args[0]);
+    let (arr_ptr, n, _is_array) = match get_this_arraylike(vm, this_val) {
+        Ok(v) => v,
+        Err(err) => return NativeResult::Err(err),
+    };
+    if let Err(err) = check_array_create_len(vm, n) {
+        return NativeResult::Err(err);
+    }
+    let mut vals: Vec<JsValue> = match (0..n)
+        .map(|i| arraylike_get(vm, arr_ptr, i))
+        .collect::<Result<Vec<JsValue>, JsValue>>()
+    {
+        Ok(v) => v,
+        Err(err) => return NativeResult::Err(err),
     };
     if let Err(err) = sort_values_inner(vm, &mut vals, comparator) {
         return NativeResult::Err(err);
@@ -1816,39 +1982,72 @@ pub fn array_to_sorted<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     NativeResult::Ok(JsValue::from_js_object(new_arr))
 }
-
-/// Array.prototype.toSpliced(start, deleteCount, ...items)：返回删除/插入后的新数组，原数组不变。
 pub fn array_to_spliced<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.toSpliced called with {} args", args.len());
     let this_val = vm.reg(args[0]);
-    let (arr_ptr, n, is_array) = match get_this_arraylike(vm, this_val) {
+    let (arr_ptr, n, _is_array) = match get_this_arraylike(vm, this_val) {
         Ok(v) => v,
         Err(err) => return NativeResult::Err(err),
     };
-    let start = if args.len() > 1 {
-        let v = vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN);
-        let s = v as i32;
-        if s < 0 {
-            (n as i32 + s).max(0) as usize
-        } else {
-            (s as usize).min(n)
+    let relative_start = if args.len() > 1 {
+        match vm.coerce_number_bounded(vm.reg(args[1])) {
+            Ok(v) => v,
+            Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
         }
     } else {
-        0
+        0.0
     };
-    let delete_count = if args.len() > 2 {
-        let v = vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN);
-        (v as usize).min(n - start)
+    let relative_start = if relative_start.is_nan() { 0.0 } else { relative_start.trunc() };
+    let actual_start = if relative_start < 0.0 {
+        (n as f64 + relative_start).max(0.0) as usize
     } else {
-        n - start
+        relative_start.min(n as f64) as usize
+    };
+    // 缺省规则：start 与 deleteCount 都缺省 -> 拷贝；仅缺省 deleteCount -> 删到末尾。
+    let delete_count = if args.len() <= 1 {
+        0
+    } else if args.len() == 2 {
+        n - actual_start
+    } else {
+        let dc = match vm.coerce_number_bounded(vm.reg(args[2])) {
+            Ok(v) => v,
+            Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
+        };
+        let dc = if dc.is_nan() || dc <= 0.0 { 0 } else { dc.trunc() as usize };
+        dc.min(n - actual_start)
     };
     let insert_count = if args.len() > 3 { args.len() - 3 } else { 0 };
-    let mut out: Vec<JsValue> = Vec::with_capacity(n + insert_count.saturating_sub(delete_count));
-    out.extend((0..start).map(|i| arraylike_get(vm, arr_ptr, is_array, i)));
+    // ???newLen = len + insertCount - actualDeleteCount?> 2**53-1 ? TypeError?
+    // ArrayCreate(newLen) ? 2**32-1 ? RangeError??????/???????
+    let new_len = n.saturating_add(insert_count).saturating_sub(delete_count);
+    if new_len > 9_007_199_254_740_991 {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Invalid array length"));
+    }
+    if let Err(err) = check_array_create_len(vm, new_len) {
+        return NativeResult::Err(err);
+    }
+    let mut out: Vec<JsValue> = Vec::with_capacity(new_len);
+    out.extend(
+        match (0..actual_start)
+            .map(|i| arraylike_get(vm, arr_ptr, i))
+            .collect::<Result<Vec<JsValue>, JsValue>>()
+        {
+            Ok(v) => v,
+            Err(err) => return NativeResult::Err(err),
+        },
+    );
     for k in 0..insert_count {
         out.push(vm.reg(args[3 + k]));
     }
-    out.extend((start + delete_count..n).map(|i| arraylike_get(vm, arr_ptr, is_array, i)));
+    out.extend(
+        match (actual_start + delete_count..n)
+            .map(|i| arraylike_get(vm, arr_ptr, i))
+            .collect::<Result<Vec<JsValue>, JsValue>>()
+        {
+            Ok(v) => v,
+            Err(err) => return NativeResult::Err(err),
+        },
+    );
     let new_arr = create_new_array(vm, out.len());
     for (i, &v) in out.iter().enumerate() {
         unsafe {

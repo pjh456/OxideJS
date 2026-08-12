@@ -22,6 +22,12 @@ impl Emitter {
             ctx.inst(Inst::new(OpCode::NEW_ARRAY, Operand::Reg(arr_reg), Operand::Imm(n), Operand::None));
             for (i, elem) in arr.elements.iter().enumerate() {
                 let Some(e) = elem.as_expression() else {
+                    // hole?????????????????????????
+                    // ??? delete ?????? hole meta?length ????
+                    let scratch = ctx.alloc_reg();
+                    ctx.inst(Inst::inst_mov(Operand::Reg(scratch), Operand::Reg(arr_reg)));
+                    let idx = ctx.add_constant(Constant::Int(i as i32));
+                    ctx.inst(Inst::delete_prop_static(Operand::Reg(scratch), idx as u32));
                     continue;
                 };
                 let val_reg = self.emit_expression(e, ctx)?;
