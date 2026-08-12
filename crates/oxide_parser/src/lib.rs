@@ -17,11 +17,11 @@ pub use oxc_span::Span;
 /// 使用 oxc 默认 `SourceType`（严格模式由语法自身决定）。返回 `Ok(program)`
 /// 或 `Err`（收集全部解析错误，按源码顺序排列）；若 oxc 内部 panic（不可恢复
 /// 语法错误）则返回单个通用错误。
-pub fn parse<'a>(allocator: &'a Allocator, source: &'a str) -> Result<Program<'a>, Vec<OxideError>> {
+fn parse_with_source_type<'a>(
+    allocator: &'a Allocator, source: &'a str, source_type: oxc_span::SourceType,
+) -> Result<Program<'a>, Vec<OxideError>> {
     use oxc_parser::Parser;
-    use oxc_span::SourceType;
 
-    let source_type = SourceType::unambiguous();
     let ret = Parser::new(allocator, source, source_type).parse();
 
     if ret.panicked {
@@ -45,4 +45,21 @@ pub fn parse<'a>(allocator: &'a Allocator, source: &'a str) -> Result<Program<'a
     }
 
     Ok(ret.program)
+}
+
+/// 将 `source` 解析为 AST 根节点 `Program`（脚本/模块由语法内容自动判定）。
+///
+/// 使用 oxc 的 `unambiguous` SourceType：代码含顶层 import/export 时按模块解析，
+/// 否则按脚本解析。返回 `Ok(program)` 或 `Err`（收集全部解析错误）。
+pub fn parse<'a>(allocator: &'a Allocator, source: &'a str) -> Result<Program<'a>, Vec<OxideError>> {
+    parse_with_source_type(allocator, source, oxc_span::SourceType::unambiguous())
+}
+
+/// 将 `source` 强制按 ES module 解析为 AST 根节点 `Program`。
+///
+/// 与 [`parse`] 的唯一区别是 SourceType 固定为模块（`SourceType::mjs`）：
+/// 即使源码没有 import/export 也会按模块文法解析（如 `await` 保留字、
+/// module-only early errors 等），用于 test262 `flags: [module]` 用例。
+pub fn parse_module<'a>(allocator: &'a Allocator, source: &'a str) -> Result<Program<'a>, Vec<OxideError>> {
+    parse_with_source_type(allocator, source, oxc_span::SourceType::mjs())
 }

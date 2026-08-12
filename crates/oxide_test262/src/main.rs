@@ -387,12 +387,10 @@ impl RunConfig {
 /// 按测试元数据的 flags/features 判断是否应跳过，返回跳过原因（None 表示不跳过）。
 fn is_skipped(meta: &TestMeta) -> Option<String> {
     for flag in &meta.flags {
-        match flag.as_str() {
-            "module" => return Some("module tests excluded".into()),
-            "raw" => return Some("raw tests excluded".into()),
-            // noStrict 测试放行——很多在严格模式下仍可通过；运行时跳过逻辑会捕获失败。
-            _ => {}
+        if flag.as_str() == "raw" {
+            return Some("raw tests excluded".into());
         }
+        // noStrict 测试放行——很多在严格模式下仍可通过；运行时跳过逻辑会捕获失败。
     }
 
     // 保持大范围已实现 feature tag 可运行；只排除真正未实现的子特性。
@@ -401,7 +399,6 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
     let excluded_features = [
         "Proxy",
         "Intl",
-        "module",
         "Atomics",
         "SharedArrayBuffer",
         "cross-realm",
@@ -449,6 +446,7 @@ fn run_test_inner(
     let start = std::time::Instant::now();
 
     let is_async = meta.flags.iter().any(|f| f == "async");
+    let is_module = meta.flags.iter().any(|f| f == "module");
 
     let code = match get_harness_prefix(meta, harness, harness_cache) {
         Ok(prefix) => {
@@ -480,7 +478,11 @@ fn run_test_inner(
     };
 
     let alloc = oxide_parser::Allocator::default();
-    let program = match oxide_parser::parse(&alloc, &code) {
+    let program = match if is_module {
+        oxide_parser::parse_module(&alloc, &code)
+    } else {
+        oxide_parser::parse(&alloc, &code)
+    } {
         Ok(p) => p,
         Err(errs) => {
             let dur = start.elapsed().as_millis() as u64;
@@ -572,13 +574,13 @@ fn judge_async_result(
     }
 
     if output.contains("Test262:AsyncTestComplete") {
-        if meta.negative.is_some() {
+        if let Some(neg) = meta.negative.as_ref() {
             return TestResult::fail(
                 path.to_path_buf(),
                 dur,
                 format!(
                     "expected runtime error ({}), got: async complete",
-                    meta.negative.as_ref().unwrap().error_type
+                    neg.error_type
                 ),
             );
         }
