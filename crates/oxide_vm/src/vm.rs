@@ -1459,6 +1459,20 @@ impl Vm {
                     self.dispatch_define_global_prop(rd, a, b)?;
                 }
 
+
+                OpCode::DEFINE_PROP_ATTRS => {
+                    let attrs = self.bytecode[self.pc] as u8;
+                    self.pc += 1;
+                    self.dispatch_define_prop_attrs(rd, a, b, attrs)?;
+                }
+
+                OpCode::DEFINE_ACCESSOR_ATTRS => {
+                    let key_word = self.bytecode[self.pc];
+                    let attrs = self.bytecode[self.pc + 1] as u8;
+                    self.pc += 2;
+                    self.dispatch_define_accessor_attrs(rd, a, b, key_word, attrs)?;
+                }
+
                 OpCode::RETURN => match self.dispatch_return(rd) {
                     Ok(Some(result)) => return Ok(result),
                     Ok(None) => {}

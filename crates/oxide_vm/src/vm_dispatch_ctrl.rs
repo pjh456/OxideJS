@@ -195,6 +195,50 @@ impl Vm {
         }
     }
 
+    /// define 数据属性并指定描述符：ext 字为 attrs（bit0=writable, bit1=enumerable, bit2=configurable，与 PropAttributes 位一致）。
+    pub(crate) fn dispatch_define_prop_attrs(&mut self, rd: usize, a: usize, b: usize, attrs: u8) -> Result<(), String> {
+        vm_trace!("DEFINE_PROP_ATTRS rd={} value={} key={} attrs={:#04b}", rd, a, b, attrs);
+        let obj_val = self.regs[rd];
+        if !obj_val.is_object() {
+            return self.raise_type_error("DEFINE_PROP_ATTRS target is not object");
+        }
+        let prop_name_si = self.property_key_si(self.regs[b])?;
+        let value = self.regs[a];
+        let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
+        match self.define_data_property(obj, prop_name_si, value, PropAttributes(attrs)) {
+            Ok(()) => Ok(()),
+            Err(msg) => self.raise_error_kind("TypeError", &msg),
+        }
+    }
+
+    /// 定义访问器属性并指定描述符：ext = [key 常量下标, attrs]，key 编码同 DEFINE_ACCESSOR。
+    pub(crate) fn dispatch_define_accessor_attrs(
+        &mut self, rd: usize, a: usize, b: usize, key_word: u32, attrs: u8,
+    ) -> Result<(), String> {
+        vm_trace!("DEFINE_ACCESSOR_ATTRS rd={} getter={} setter={} attrs={:#04b}", rd, a, b, attrs);
+        let prop_idx = key_word as usize;
+        if prop_idx >= self.immutables().len() {
+            return self.raise_type_error("DEFINE_ACCESSOR_ATTRS constant index out of bounds");
+        }
+        let key_val = self.immutables()[prop_idx];
+        let prop_name_si = if key_val.is_int() {
+            make_private_name_id(key_val.as_int().max(0) as u32)
+        } else {
+            self.property_key_si(key_val)?
+        };
+        let obj_val = self.regs[rd];
+        if !obj_val.is_object() {
+            return self.raise_type_error("DEFINE_ACCESSOR_ATTRS target is not object");
+        }
+        let getter = self.regs[a];
+        let setter = self.regs[b];
+        let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
+        match self.define_accessor_property(obj, prop_name_si, getter, setter, PropAttributes(attrs)) {
+            Ok(()) => Ok(()),
+            Err(msg) => self.raise_error_kind("TypeError", &msg),
+        }
+    }
+
     /// 定义全局 var 绑定数据属性：rd=全局对象，a=值，b=键。
     /// 属性可写/可枚举/不可配置（CreateGlobalVarBinding 的属性描述符）。
     ///

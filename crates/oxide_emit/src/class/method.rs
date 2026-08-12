@@ -8,6 +8,9 @@ use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
 use oxide_parser::{ClassElement, MethodDefinitionKind, PropertyKey};
 
+/// class 方法/访问器属性描述符：writable + configurable，enumerable = false（规范 DefineMethod）。
+const CLASS_METHOD_ATTRS: u32 = 0b101;
+
 impl Emitter {
     pub(crate) fn emit_class_methods(
         &self, elements: &[ClassElement], ctor_reg: u32, proto_reg: u32, self_binding: &[(&str, u32)],
@@ -39,21 +42,13 @@ impl Emitter {
                     self.emit_class_method_function(method, &method_name, Operand::Reg(home_reg), ctx, self_binding)?;
                 match method.kind {
                     MethodDefinitionKind::Method => {
-                        if method.computed {
-                            ctx.inst(Inst::new(
-                                OpCode::SET_PROP_DYNAMIC,
-                                Operand::Reg(home_reg),
-                                Operand::Reg(key_reg),
-                                Operand::Reg(accessor_reg),
-                            ));
-                        } else {
-                            ctx.inst(Inst::new(
-                                OpCode::SET_PROP,
-                                Operand::Reg(home_reg),
-                                Operand::Reg(accessor_reg),
-                                Operand::Reg(key_reg),
-                            ));
-                        }
+                        // class 方法按规范为非枚举数据属性（DefineMethod：writable/configurable，enumerable=false）。
+                        ctx.inst(Inst::define_prop_attrs(
+                            Operand::Reg(home_reg),
+                            Operand::Reg(accessor_reg),
+                            Operand::Reg(key_reg),
+                            CLASS_METHOD_ATTRS,
+                        ));
                     }
                     MethodDefinitionKind::Get | MethodDefinitionKind::Set => {
                         if method.computed {
@@ -67,11 +62,12 @@ impl Emitter {
                         };
                         let key_name = self.class_property_name(&method.key)?;
                         let key_idx = ctx.add_constant(Constant::String(key_name));
-                        ctx.inst(Inst::define_accessor(
+                        ctx.inst(Inst::define_accessor_attrs(
                             Operand::Reg(home_reg),
                             Operand::Reg(get_reg),
                             Operand::Reg(set_reg),
                             key_idx as u32,
+                            CLASS_METHOD_ATTRS,
                         ));
                     }
                     MethodDefinitionKind::Constructor => continue,

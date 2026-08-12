@@ -42,20 +42,22 @@ impl Emitter {
         let ctor_key_idx = ctx.add_constant(Constant::String("constructor".to_string()));
         let ctor_key_reg = ctx.alloc_reg();
         ctx.inst(Inst::load_const(Operand::Reg(ctor_key_reg), ctor_key_idx));
-        ctx.inst(Inst::new(
-            OpCode::SET_PROP,
+        // Class.prototype.constructor：writable/configurable，enumerable = false。
+        ctx.inst(Inst::define_prop_attrs(
             Operand::Reg(proto_reg),
             Operand::Reg(ctor_reg),
             Operand::Reg(ctor_key_reg),
+            0b101,
         ));
         let proto_key_idx = ctx.add_constant(Constant::String("prototype".to_string()));
         let proto_key_reg = ctx.alloc_reg();
         ctx.inst(Inst::load_const(Operand::Reg(proto_key_reg), proto_key_idx));
-        ctx.inst(Inst::new(
-            OpCode::SET_PROP,
+        // 类构造器 .prototype 属性：writable/enumerable/configurable 全 false（MakeConstructor）。
+        ctx.inst(Inst::define_prop_attrs(
             Operand::Reg(ctor_reg),
             Operand::Reg(proto_reg),
             Operand::Reg(proto_key_reg),
+            0b000,
         ));
         Ok(())
     }

@@ -486,6 +486,15 @@ define_opcodes! {
         def = None, uses = [SlotSpec::Slot(Slot::Rd), SlotSpec::Slot(Slot::A), SlotSpec::Slot(Slot::B)],
         pure = false, jump = false, term = false, ic = false,
 
+    // define 数据/访问器属性并指定描述符：ext 字存放 attrs（bit0=writable, bit1=enumerable, bit2=configurable，与 PropAttributes 位一致）。
+    // class 方法/constructor/prototype 需要非枚举或不可写描述符，普通 SET_PROP/DEFINE_PROP 无法表达。
+    DEFINE_PROP_ATTRS = 0x90 => "DEFINE_PROP_ATTRS",
+        def = None, uses = [SlotSpec::Slot(Slot::Rd), SlotSpec::Slot(Slot::A), SlotSpec::Slot(Slot::B)],
+        pure = false, jump = false, term = false, ic = false,
+    DEFINE_ACCESSOR_ATTRS = 0x91 => "DEFINE_ACCESSOR_ATTRS",
+        def = None, uses = [SlotSpec::Slot(Slot::Rd), SlotSpec::Slot(Slot::A), SlotSpec::Slot(Slot::B)],
+        pure = false, jump = false, term = false, ic = false,
+
     // ── 成员复合赋值：位/移位 (0x64-0x69) ──
     COMPOUND_MEMBER_BIT_AND = 0x64 => "COMPOUND_MEMBER_BIT_AND",
         def = Some(SlotSpec::Slot(Slot::A)), uses = [SlotSpec::Slot(Slot::Rd), SlotSpec::Slot(Slot::A), SlotSpec::Slot(Slot::B)],

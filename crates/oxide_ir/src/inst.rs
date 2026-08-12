@@ -199,6 +199,11 @@ impl Inst {
         Self::with_ext(OpCode::DEFINE_ACCESSOR, home, get, set, &[key_idx])
     }
 
+
+    /// 定义访问器属性并指定描述符：ext = [key_idx, attrs]（attrs 位同 DEFINE_PROP_ATTRS）。
+    pub fn define_accessor_attrs(home: Operand, get: Operand, set: Operand, key_idx: u32, attrs: u32) -> Self {
+        Self::with_ext(OpCode::DEFINE_ACCESSOR_ATTRS, home, get, set, &[key_idx, attrs])
+    }
     /// 定义访问器属性（运行时计算键）：home 为宿主对象，get/set 为访问器函数寄存器，
     /// key_reg 为键值寄存器（编码进 ext[0]，高位标记 `0x8000_0000 | key_reg`）。
     pub fn define_accessor_dynamic(home: Operand, get: Operand, set: Operand, key_reg: u32) -> Self {
@@ -211,6 +216,12 @@ impl Inst {
         Self::new(OpCode::DEFINE_PROP, target, value, key)
     }
 
+
+    /// define 数据属性并指定描述符：ext = [attrs]（bit0=writable, bit1=enumerable, bit2=configurable，
+    /// 与 PropAttributes 位一致）；class 方法/constructor/prototype 需要非枚举或不可写描述符。
+    pub fn define_prop_attrs(target: Operand, value: Operand, key: Operand, attrs: u32) -> Self {
+        Self::with_ext(OpCode::DEFINE_PROP_ATTRS, target, value, key, &[attrs])
+    }
     /// 定义全局 var 绑定数据属性：target 为全局对象，value/key 为寄存器。
     /// 属性可写/可枚举/不可配置（脚本顶层 var/function 声明的属性描述符）。
     pub fn define_global_prop(target: Operand, value: Operand, key: Operand) -> Self {
