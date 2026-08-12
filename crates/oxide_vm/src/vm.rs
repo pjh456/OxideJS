@@ -411,8 +411,8 @@ impl Vm {
         if !exotic.is_undefined() && !exotic.is_null() {
             let exotic_ptr = exotic.as_js_object_ptr();
             if !exotic.is_object() || exotic_ptr.is_null() || !unsafe { &*exotic_ptr }.is_function() {
-                // 抛可捕获的 JS 异常（dispatch 层 try/catch 可捕获），与下方 method 不可调用路径一致。
-                self.raise_error_kind("TypeError", "Symbol.toPrimitive is not a function")?;
+                // 抛可捕获的 JS 异常（dispatch 层 try/catch 可捕获），见 conversion_error。
+                self.conversion_error("Symbol.toPrimitive is not a function")?;
                 return Ok(JsValue::undefined());
             }
             let hint_val = self.new_string(if prefer_string { "string" } else { "number" });
@@ -421,7 +421,7 @@ impl Vm {
                 Err(err) => return self.raise_call_error(&err),
             };
             if result.is_object() {
-                self.raise_error_kind("TypeError", "Cannot convert object to primitive value")?;
+                self.conversion_error("Cannot convert object to primitive value")?;
                 return Ok(JsValue::undefined());
             }
             return Ok(result);
@@ -438,14 +438,14 @@ impl Vm {
             if method.is_undefined() || method.is_null() {
                 continue;
             }
+            // OrdinaryToPrimitive：valueOf/toString 不可调用时跳过（IsCallable == false
+            // 则 continue），不抛错；仅 @@toPrimitive 不可调用时抛 TypeError。
             if !method.is_object() {
-                self.raise_error_kind("TypeError", &format!("{method_name} is not callable"))?;
-                return Ok(JsValue::undefined());
+                continue;
             }
             let method_ptr = method.as_js_object_ptr();
             if method_ptr.is_null() || !unsafe { &*method_ptr }.is_function() {
-                self.raise_error_kind("TypeError", &format!("{method_name} is not callable"))?;
-                return Ok(JsValue::undefined());
+                continue;
             }
 
             let result = match self.call_function_sync(method, value, &[]) {
@@ -457,10 +457,24 @@ impl Vm {
             }
         }
 
-        // 同样抛可捕获异常而非裸 Err：dispatch 二元运算/移位中对象无法转原始值时，
-        // 必须让外围 JS try/catch 能捕获（裸 Err 会变成不可捕获的引擎错误）。
-        self.raise_error_kind("TypeError", "Cannot convert object to primitive value")?;
+        // 主 dispatch 抛可捕获异常（外围 JS try/catch 可捕获）；原生 builtin 内部
+        // 只传播格式化 Err，由其调用边界恢复为异常对象（见 conversion_error）。
+        self.conversion_error("Cannot convert object to primitive value")?;
         Ok(JsValue::undefined())
+    }
+
+    /// 对象转原始值失败时的统一出口：主 dispatch（native_call_depth == 0）下抛可捕获
+    /// 的 JS 异常并就地展开到外围 try/catch；原生 builtin 内部（depth > 0）不得就地
+    /// 展开（展开会消费 try 处理器，builtin 却继续执行并可能产生二次错误），改为返回
+    /// 格式化 Err，由原生调用边界（call_function_sync → dispatch_native_call）恢复为
+    /// 原始异常对象。
+    #[inline(always)]
+    fn conversion_error(&mut self, msg: &str) -> Result<(), String> {
+        if self.native_call_depth == 0 {
+            self.raise_error_kind("TypeError", msg)
+        } else {
+            Err(self.error_message_text("TypeError", msg))
+        }
     }
 
     /// 把 `call_function_sync` 返回的调用错误恢复为原始异常值并走异常展开，
