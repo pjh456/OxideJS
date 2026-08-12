@@ -2051,6 +2051,11 @@ pub fn plain_date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     if !valid_iso_date(year, month, day) {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid ISO date"));
     }
+    // 表示范围（ISODateWithinLimits）：-271821-04-19 … +275760-09-13。
+    let day_count = days_from_civil(i128::from(year), i128::from(month), i128::from(day));
+    if !(-100_000_001..=100_000_000).contains(&day_count) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "ISO date is out of range"));
+    }
     initialize_temporal_receiver(
         vm,
         args,
@@ -2059,24 +2064,33 @@ pub fn plain_date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     )
 }
 
-/// `Temporal.PlainDate.from(value)`：接受 ISO 日期字符串或 `{year, month, day}` 对象。
+/// `Temporal.PlainDate.from(value, options)`：接受 ISO 日期字符串或 `{year, month, day}` 对象。
 pub fn plain_date_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
     let (year, month, day) = if val.is_string() {
-        match parse_plain_date_string(&to_string(val)) {
+        // 规范顺序：先 ParseTemporalDateString，再 ToTemporalOverflow(options)。
+        let ymd = match parse_plain_date_string(&to_string(val)) {
             Ok(ymd) => ymd,
             Err(_) => {
                 return NativeResult::Err(crate::error::create_range_error(vm, "invalid ISO 8601 date"));
             }
-        }
+        };
+        native_try!(temporal_overflow(vm, args));
+        ymd
     } else {
-        match object_date_ymd(vm, val) {
+        let constrain = native_try!(temporal_overflow(vm, args));
+        match object_date_ymd(vm, val, constrain) {
             Ok(ymd) => ymd,
             Err(error) => return NativeResult::Err(error),
         }
     };
     if !valid_iso_date(year, month, day) {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid ISO date"));
+    }
+    // 表示范围（ISODateWithinLimits）：-271821-04-19 … +275760-09-13。
+    let day_count = days_from_civil(i128::from(year), i128::from(month), i128::from(day));
+    if !(-100_000_001..=100_000_000).contains(&day_count) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "ISO date is out of range"));
     }
     make_plain_date(vm, year, month, day)
 }
@@ -2673,12 +2687,12 @@ fn temporal_calendar_check<H: VmHost>(vm: &mut H, value: JsValue) -> Result<(), 
 }
 
 fn plain_date_time_object_parts<H: VmHost>(
-    vm: &mut H, value: JsValue, obj: &JsObject, constrain: bool,
+    vm: &mut H, value: JsValue, obj: &JsObject, constrain: bool, ignore_time: bool,
 ) -> Result<(i32, u32, u32, f64), JsValue> {
     let calendar = temporal_option_value(vm, obj, value, "calendar")?;
     temporal_calendar_check(vm, calendar)?;
 
-    // 先按规范顺序读取全部原始字段，暂不转换类型。
+    // 先按规范顺序读取全部原始字段，暂不转换类型；PlainDate 路径忽略时间字段。
     let (
         day_raw,
         hour_raw,
@@ -2690,18 +2704,33 @@ fn plain_date_time_object_parts<H: VmHost>(
         nanosecond_raw,
         second_raw,
         year_raw,
-    ) = (
-        temporal_option_value(vm, obj, value, "day")?,
-        temporal_option_value(vm, obj, value, "hour")?,
-        temporal_option_value(vm, obj, value, "microsecond")?,
-        temporal_option_value(vm, obj, value, "millisecond")?,
-        temporal_option_value(vm, obj, value, "minute")?,
-        temporal_option_value(vm, obj, value, "month")?,
-        temporal_option_value(vm, obj, value, "monthCode")?,
-        temporal_option_value(vm, obj, value, "nanosecond")?,
-        temporal_option_value(vm, obj, value, "second")?,
-        temporal_option_value(vm, obj, value, "year")?,
-    );
+    ) = if ignore_time {
+        (
+            temporal_option_value(vm, obj, value, "day")?,
+            JsValue::undefined(),
+            JsValue::undefined(),
+            JsValue::undefined(),
+            JsValue::undefined(),
+            temporal_option_value(vm, obj, value, "month")?,
+            temporal_option_value(vm, obj, value, "monthCode")?,
+            JsValue::undefined(),
+            JsValue::undefined(),
+            temporal_option_value(vm, obj, value, "year")?,
+        )
+    } else {
+        (
+            temporal_option_value(vm, obj, value, "day")?,
+            temporal_option_value(vm, obj, value, "hour")?,
+            temporal_option_value(vm, obj, value, "microsecond")?,
+            temporal_option_value(vm, obj, value, "millisecond")?,
+            temporal_option_value(vm, obj, value, "minute")?,
+            temporal_option_value(vm, obj, value, "month")?,
+            temporal_option_value(vm, obj, value, "monthCode")?,
+            temporal_option_value(vm, obj, value, "nanosecond")?,
+            temporal_option_value(vm, obj, value, "second")?,
+            temporal_option_value(vm, obj, value, "year")?,
+        )
+    };
 
     // 缺失必填字段先抛 TypeError（先于任何 RangeError 值校验）。
     if day_raw.is_undefined() {
@@ -2783,6 +2812,9 @@ fn plain_date_time_object_parts<H: VmHost>(
         return Err(crate::error::create_range_error(vm, "invalid date-time component"));
     }
     if constrain {
+        if values[1] < 1.0 || values[2] < 1.0 {
+            return Err(crate::error::create_range_error(vm, "invalid date-time component"));
+        }
         values[1] = values[1].clamp(1.0, 12.0);
         values[2] = values[2].clamp(1.0, days_in_month(values[0] as i128, values[1] as i128).unwrap_or(31) as f64);
         values[3] = values[3].clamp(0.0, 23.0);
@@ -2797,7 +2829,8 @@ fn plain_date_time_object_parts<H: VmHost>(
     let (hour, minute, second) = (hour as u32, minute as u32, second as u32);
     let (millisecond, microsecond, nanosecond) = (millisecond as u32, microsecond as u32, nanosecond as u32);
     if !valid_iso_date(year, month, day)
-        || !valid_plain_time(hour, minute, second, millisecond, microsecond, nanosecond)
+        || (!ignore_time
+            && !valid_plain_time(hour, minute, second, millisecond, microsecond, nanosecond))
     {
         return Err(crate::error::create_range_error(vm, "invalid date-time component"));
     }
@@ -2807,7 +2840,7 @@ fn plain_date_time_object_parts<H: VmHost>(
         + millisecond as f64 * 1_000_000.0
         + microsecond as f64 * 1_000.0
         + nanosecond as f64;
-    if !valid_plain_date_time_range(year, month, day, total_ns) {
+    if !ignore_time && !valid_plain_date_time_range(year, month, day, total_ns) {
         return Err(crate::error::create_range_error(vm, "invalid date-time component"));
     }
     Ok((year, month, day, total_ns))
@@ -2867,10 +2900,10 @@ fn plain_date_time_like_parts<H: VmHost>(
     if obj.is_zoned_date_time_obj() {
         return zoned_date_time_plain_parts(vm, obj);
     }
-    plain_date_time_object_parts(vm, value, obj, constrain)
+    plain_date_time_object_parts(vm, value, obj, constrain, false)
 }
 
-fn plain_date_time_overflow<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<bool, JsValue> {
+fn temporal_overflow<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<bool, JsValue> {
     let options = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     if options.is_undefined() {
         return Ok(true);
@@ -2897,9 +2930,21 @@ fn plain_date_time_overflow<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<bool, 
 /// `Temporal.PlainDateTime.from(item)`：从实例、ISO 字符串或字段对象创建副本。
 pub fn plain_date_time_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let constrain = native_try!(plain_date_time_overflow(vm, args));
-    let (year, month, day, total_ns) = native_try!(plain_date_time_like_parts(vm, value, constrain));
-    make_plain_date_time(vm, year, month, day, total_ns)
+    if value.is_string() {
+        // 规范顺序：先 ParseTemporalDateTimeString，再 ToTemporalOverflow(options)。
+        let (year, month, day, total_ns) = match parse_plain_date_time_string(&to_string(value)) {
+            Ok(parts) => parts,
+            Err(_) => {
+                return NativeResult::Err(crate::error::create_range_error(vm, "invalid ISO 8601 date-time"));
+            }
+        };
+        native_try!(temporal_overflow(vm, args));
+        make_plain_date_time(vm, year, month, day, total_ns)
+    } else {
+        let constrain = native_try!(temporal_overflow(vm, args));
+        let (year, month, day, total_ns) = native_try!(plain_date_time_like_parts(vm, value, constrain));
+        make_plain_date_time(vm, year, month, day, total_ns)
+    }
 }
 
 /// `Temporal.PlainDateTime.compare(one, two)`：按 ISO 日期时间字段做字典序比较。
@@ -3218,7 +3263,7 @@ fn plain_date_time_apply_duration<H: VmHost>(vm: &mut H, args: &[u8], sign: i64)
         Ok(values) => values,
         Err(error) => return NativeResult::Err(error),
     };
-    let constrain = match plain_date_time_overflow(vm, args) {
+    let constrain = match temporal_overflow(vm, args) {
         Ok(constrain) => constrain,
         Err(error) => return NativeResult::Err(error),
     };
@@ -4041,7 +4086,7 @@ fn plain_date_ymd_checked<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<(i32, u3
 
 /// 从对象式日期字段（`{year, month, day}`）读三字段；PlainDate 对象直接读内部槽；
 /// 缺字段返回 None。
-fn object_date_ymd<H: VmHost>(vm: &mut H, val: JsValue) -> Result<(i32, u32, u32), JsValue> {
+fn object_date_ymd<H: VmHost>(vm: &mut H, val: JsValue, constrain: bool) -> Result<(i32, u32, u32), JsValue> {
     if !val.is_object() {
         return Err(crate::error::create_type_error(vm, "cannot convert to PlainDate"));
     }
@@ -4050,14 +4095,18 @@ fn object_date_ymd<H: VmHost>(vm: &mut H, val: JsValue) -> Result<(i32, u32, u32
         return Err(crate::error::create_type_error(vm, "cannot convert to PlainDate"));
     }
     let obj = unsafe { &*ptr };
-    if obj.is_plain_date_obj() {
+    if obj.is_plain_date_obj() || obj.is_plain_date_time_obj() {
         return Ok((
             get_double_prop(obj, 0) as i32,
             get_double_prop(obj, 1) as u32,
             get_double_prop(obj, 2) as u32,
         ));
     }
-    let (year, month, day, _) = plain_date_time_object_parts(vm, val, obj, true)?;
+    if obj.is_zoned_date_time_obj() {
+        let (year, month, day, _) = zoned_date_time_plain_parts(vm, obj)?;
+        return Ok((year, month, day));
+    }
+    let (year, month, day, _) = plain_date_time_object_parts(vm, val, obj, constrain, true)?;
     Ok((year, month, day))
 }
 
@@ -4066,7 +4115,7 @@ fn date_like_ymd<H: VmHost>(vm: &mut H, val: JsValue) -> Result<(i32, u32, u32),
         parse_plain_date_string(&to_string(val))
             .map_err(|_| crate::error::create_range_error(vm, "invalid ISO 8601 date"))?
     } else {
-        object_date_ymd(vm, val)?
+        object_date_ymd(vm, val, true)?
     };
     if !valid_iso_date(ymd.0, ymd.1, ymd.2) {
         return Err(crate::error::create_range_error(vm, "invalid ISO date"));
