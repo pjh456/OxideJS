@@ -2961,6 +2961,21 @@ pub fn plain_date_time_compare<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     }))
 }
 
+/// `Temporal.PlainDateTime.prototype.equals(other)`：比较日期时间分量是否相等。
+pub fn plain_date_time_equals<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let (y, m, d, ns) = match plain_date_time_parts(vm, args) {
+        Ok(parts) => parts,
+        Err(e) => return NativeResult::Err(e),
+    };
+    let other_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let other = match plain_date_time_like_parts(vm, other_val, true) {
+        Ok(parts) => parts,
+        Err(e) => return NativeResult::Err(e),
+    };
+    let equal = other.0 == y && other.1 == m && other.2 == d && other.3 as u64 == ns as u64;
+    NativeResult::Ok(JsValue::bool(equal))
+}
+
 fn plain_date_time_parts<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<(i32, u32, u32, f64), JsValue> {
     let ptr = receiver_obj(vm, args)?;
     let obj = unsafe { &*ptr };
