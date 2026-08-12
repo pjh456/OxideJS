@@ -46,7 +46,10 @@ impl Vm {
                                     }
                                     Ok(self.regs[tr as usize])
                                 } else {
-                                    self.call_function_sync(meta.get, receiver, &[])
+                                    match self.call_function_sync(meta.get, receiver, &[]) {
+                                        Ok(v) => Ok(v),
+                                        Err(err) => Ok(self.raise_call_error(&err)?),
+                                    }
                                 };
                             }
                         }
@@ -72,7 +75,10 @@ impl Vm {
                             }
                             Ok(self.regs[tr as usize])
                         } else {
-                            self.call_function_sync(meta.get, receiver, &[])
+                            match self.call_function_sync(meta.get, receiver, &[]) {
+                                Ok(v) => Ok(v),
+                                Err(err) => Ok(self.raise_call_error(&err)?),
+                            }
                         };
                     }
                 }
