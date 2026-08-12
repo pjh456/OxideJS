@@ -3255,16 +3255,18 @@ fn date_until_iso(start: (i128, i128, i128), end: (i128, i128, i128), largest: u
     if surpasses_with_day(sign, intermediate, start.2, end) {
         years -= sign;
     }
-    let mut current: (i128, i128, i128);
-    let mut next = add_months_i128(start.0, start.1, start.2, years * 12 + months);
+    // 从 start 按锚定日逐月推进（月末钳制）；current 始终是未越界的真实日期，
+    // 锚定日覆盖只用于越界比较，避免伪日期（如 2 月 29 日）污染天数计算。
+    let mut current = add_months_i128(start.0, start.1, start.2, years * 12 + months);
     loop {
         months += sign;
-        current = next;
-        next = add_months_i128(current.0, current.1, current.2, sign);
-        next.2 = start.2;
-        if surpasses_with_day(sign, next, start.2, end) {
+        let candidate = add_months_i128(start.0, start.1, start.2, years * 12 + months);
+        let mut cmp = candidate;
+        cmp.2 = start.2;
+        if surpasses_with_day(sign, cmp, start.2, end) {
             break;
         }
+        current = candidate;
     }
     months -= sign;
     let days = days_from_civil(end.0, end.1, end.2) - days_from_civil(current.0, current.1, current.2);
