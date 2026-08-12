@@ -116,8 +116,8 @@ impl Emitter {
     /// 静态标识符写入：upvalue / 被捕获 cell / 普通槽（含 const guard）。
     ///
     /// # 边界与前提
-    /// - `const_flag` 为 1 时走 STORE_VAR 运行时 const guard（对 const 再赋值报错）。
-    /// - upvalue 与 cell 写穿共享单元，不设 guard。
+    /// - `const_flag` 为 1 时走 STORE_VAR / STORE_UPVALUE 运行时 const guard（对 const 再赋值报错）。
+    /// - cell 写穿共享单元，不设 guard（类名/闭包捕获的初始化写入路径）；upvalue 按 const_flag 设 guard。
     pub(crate) fn emit_identifier_store(&self, name: &str, val_reg: u32, const_flag: u16, ctx: &mut CompileCtx) {
         // 循环 update 段：被捕获绑定走寄存器而非 cell（C 风格 for 每迭代 fresh，
         // update 写寄存器供下一迭代 fresh 拷贝，不污染本迭代闭包捕获的 cell）。
@@ -136,7 +136,7 @@ impl Emitter {
         if let Some(uv_idx) = ctx.current_upvalue_captures.iter().position(|u| u.name == name) {
             ctx.inst(Inst::new(
                 OpCode::STORE_UPVALUE,
-                Operand::None,
+                Operand::Imm(const_flag),
                 Operand::Reg(val_reg),
                 Operand::Imm(uv_idx as u16),
             ));

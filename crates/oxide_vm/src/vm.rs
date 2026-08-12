@@ -1244,7 +1244,7 @@ impl Vm {
                     self.dispatch_load_upvalue(rd, instr)?;
                 }
                 OpCode::STORE_UPVALUE => {
-                    self.dispatch_store_upvalue(a, b)?;
+                    self.dispatch_store_upvalue(rd, a, b)?;
                 }
                 OpCode::CREATE_REGEXP => match self.dispatch_create_regexp(rd, a, b) {
                     Ok(Some(result)) => return Ok(result),

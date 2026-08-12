@@ -12,9 +12,10 @@ use oxide_parser::{ClassElement, MethodDefinitionKind, PropertyKey};
 const CLASS_METHOD_ATTRS: u32 = 0b101;
 
 impl Emitter {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn emit_class_methods(
         &self, elements: &[ClassElement], ctor_reg: u32, proto_reg: u32, self_binding: &[(&str, u32)],
-        key_slots: &[Option<u8>], ctx: &mut CompileCtx,
+        class_self_cell: Option<u8>, key_slots: &[Option<u8>], ctx: &mut CompileCtx,
     ) -> Result<(), String> {
         for (element, &key_slot) in elements.iter().zip(key_slots) {
             if let ClassElement::MethodDefinition(method) = element {
@@ -24,7 +25,7 @@ impl Emitter {
                 }
                 if matches!(method.key, PropertyKey::PrivateIdentifier(_)) {
                     let home_reg = if method.r#static { ctor_reg } else { proto_reg };
-                    self.emit_private_method_init(Operand::Reg(home_reg), method, Operand::Reg(home_reg), ctx)?;
+                    self.emit_private_method_init(Operand::Reg(home_reg), method, Operand::Reg(home_reg), self_binding, class_self_cell, ctx)?;
                     continue;
                 }
                 let home_reg = if method.r#static { ctor_reg } else { proto_reg };
@@ -39,7 +40,7 @@ impl Emitter {
                     self.class_property_name(&method.key)?
                 };
                 let accessor_reg =
-                    self.emit_class_method_function(method, &method_name, Operand::Reg(home_reg), ctx, self_binding)?;
+                    self.emit_class_method_function(method, &method_name, Operand::Reg(home_reg), ctx, self_binding, class_self_cell)?;
                 match method.kind {
                     MethodDefinitionKind::Method => {
                         // class 方法按规范为非枚举数据属性（DefineMethod：writable/configurable，enumerable=false）。
@@ -79,7 +80,7 @@ impl Emitter {
 
     pub(crate) fn emit_class_method_function(
         &self, method: &oxide_parser::MethodDefinition, method_name: &str, home_reg: Operand, ctx: &mut CompileCtx,
-        self_binding: &[(&str, u32)],
+        self_binding: &[(&str, u32)], class_self_cell: Option<u8>,
     ) -> Result<u32, String> {
         let (param_names, body_stmts) = self.extract_function_parts(method.value.as_ref())?;
         let saved_instance = ctx.in_instance_method;
@@ -88,12 +89,15 @@ impl Emitter {
         ctx.in_static_method = method.r#static;
         // 私有方法/访问器访问需对接收者做 brand 检查：方法函数捕获类 brand 对象
         // （@@class_brand upvalue，值 = 类原型）。
-        let extra_uv: Vec<(&str, u8)> = ctx
+        let mut extra_uv: Vec<(&str, u8)> = ctx
             .captured_bindings
             .get("@@class_brand")
             .map(|c| ("@@class_brand", *c))
             .into_iter()
             .collect();
+        if let (Some((name, _)), Some(c)) = (self_binding.first(), class_self_cell) {
+            extra_uv.push((name, c));
+        }
         let method_value = method.value.as_ref();
         let mut method_module = if method_value.r#async {
             self.compile_function_body_with_field_hooks_gen(

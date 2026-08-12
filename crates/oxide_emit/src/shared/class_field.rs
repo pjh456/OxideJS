@@ -66,13 +66,14 @@ impl Emitter {
     }
 
     pub(crate) fn emit_private_method_init(
-        &self, target: Operand, method: &oxide_parser::MethodDefinition, home_reg: Operand, ctx: &mut CompileCtx,
+        &self, target: Operand, method: &oxide_parser::MethodDefinition, home_reg: Operand,
+        self_binding: &[(&str, u32)], class_self_cell: Option<u8>, ctx: &mut CompileCtx,
     ) -> Result<(), String> {
         let PropertyKey::PrivateIdentifier(private) = &method.key else {
             return Err("expected private method key".into());
         };
         let name = private.name.as_str();
-        let method_reg = self.emit_class_method_function(method, name, home_reg, ctx, &[])?;
+        let method_reg = self.emit_class_method_function(method, name, home_reg, ctx, self_binding, class_self_cell)?;
         match method.kind {
             MethodDefinitionKind::Method => {
                 let key_reg = self.emit_private_id_reg(name, ctx)?;

@@ -122,6 +122,22 @@ impl Emitter {
 
         let (ctor_reg, proto_reg, super_reg) = self.emit_class_header(class, ctx)?;
         let self_binding = ctor_name.as_deref().map(|name| vec![(name, binding_reg)]).unwrap_or_default();
+        // Class-name binding cell: class elements (ctor/method/field) that reference the
+        // class name capture it through this dedicated cell. Reads inside the class then
+        // resolve via LOAD_UPVALUE (same cell as the binding), so identity with other
+        // references survives epoch promotion (which rewrites cell values) and inline
+        // accessor calls (which clear the register file). The synthetic key keeps user
+        // bindings with the same name (outer scopes) untouched.
+        let class_self_cell: Option<u8> = ctor_name.as_deref().map(|_| {
+            let cell_idx = ctx
+                .captured_bindings
+                .values()
+                .copied()
+                .max()
+                .map_or(0, |m| m.saturating_add(1));
+            ctx.captured_bindings.insert(format!("@@class_self_{cell_idx}"), cell_idx);
+            cell_idx
+        });
 
         let saved_derived = ctx.in_derived_constructor;
         let saved_private_names = ctx.scopes.private_name_map.clone();
@@ -177,6 +193,9 @@ impl Emitter {
             field_key_cell.map(|c| ("@@field_keys", c)).into_iter().collect();
         if let Some(c) = brand_cell {
             extra_upvalue_names.push(("@@class_brand", c));
+        }
+        if let (Some(name), Some(c)) = (ctor_name.as_deref(), class_self_cell) {
+            extra_upvalue_names.push((name, c));
         }
 
         let emit_instance_fields = |compiler: &Emitter, field_ctx: &mut CompileCtx| -> Result<(), String> {
@@ -358,7 +377,7 @@ impl Emitter {
                 Operand::None,
             ));
         }
-        self.emit_class_methods(&class.body.body, ctor_reg, proto_reg, &self_binding, &key_slots, ctx)?;
+        self.emit_class_methods(&class.body.body, ctor_reg, proto_reg, &self_binding, class_self_cell, &key_slots, ctx)?;
         self.emit_class_static_elements(&class.body.body, ctor_reg, &key_slots, ctx)?;
 
 
@@ -371,6 +390,16 @@ impl Emitter {
                 Operand::Reg(ctor_reg),
                 Operand::None,
             ));
+            if let Some(cell_idx) = class_self_cell {
+                // Initialize the class-name cell with the constructor and release TDZ
+                // (the placeholder cell was created by the element closures at hoist time).
+                ctx.inst(Inst::new(
+                    OpCode::MAKE_CELL,
+                    Operand::Reg(binding_reg),
+                    Operand::Imm(cell_idx as u16),
+                    Operand::None,
+                ));
+            }
         }
 
         if pushed_scope {

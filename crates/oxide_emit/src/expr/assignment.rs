@@ -28,6 +28,7 @@ impl Emitter {
         }
         let uv_idx = ctx.current_upvalue_captures.iter().position(|u| u.name == name);
         let captured_cell = ctx.captured_bindings.get(name).copied();
+        let const_flag = if ctx.lookup_const_flag(name) { 1 } else { 0 };
         if let Some(uv) = uv_idx {
             let val_reg = ctx.alloc_reg();
             ctx.inst(Inst::new(
@@ -39,7 +40,7 @@ impl Emitter {
             ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(rhs), Operand::None));
             ctx.inst(Inst::new(
                 OpCode::STORE_UPVALUE,
-                Operand::None,
+                Operand::Imm(const_flag),
                 Operand::Reg(val_reg),
                 Operand::Imm(uv as u16),
             ));
@@ -266,10 +267,11 @@ impl Emitter {
                     self.emit_logical_assign_test(logical_op, result_reg, store_label, end_label, ctx)?;
                     ctx.labels.set_label_pos(store_label, ctx.insts.len());
                     let val_reg = self.emit_expression(&assign.right, ctx)?;
+                    let const_flag = if ctx.lookup_const_flag(name) { 1 } else { 0 };
                     if let Some(uv) = uv_idx {
                         ctx.inst(Inst::new(
                             OpCode::STORE_UPVALUE,
-                            Operand::None,
+                            Operand::Imm(const_flag),
                             Operand::Reg(val_reg),
                             Operand::Imm(uv as u16),
                         ));

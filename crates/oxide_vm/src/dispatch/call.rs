@@ -323,7 +323,8 @@ impl Vm {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn dispatch_store_upvalue(&mut self, a: usize, b: usize) -> Result<(), String> {
+    pub(crate) fn dispatch_store_upvalue(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        let const_flag = rd;
         let uv_idx = b;
         let src_val = self.regs[a];
         if let Some(callee) = self.current_callee() {
@@ -334,6 +335,10 @@ impl Vm {
                     if !upvals[uv_idx].is_null() {
                         unsafe {
                             let cell = &mut *upvals[uv_idx];
+                            if const_flag != 0 && !cell.value.is_undefined() {
+                                self.raise_error_kind("TypeError", "Assignment to constant variable")?;
+                                return Ok(());
+                            }
                             cell.value = src_val;
                             cell.set_initialized(true);
                         }

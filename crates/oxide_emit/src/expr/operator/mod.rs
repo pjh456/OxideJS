@@ -455,9 +455,10 @@ impl Emitter {
             };
             let new_reg = ctx.alloc_reg();
             ctx.inst(Inst::new(op, Operand::Reg(new_reg), Operand::Reg(old_reg), Operand::Reg(one_reg)));
+            let const_flag = if ctx.lookup_const_flag(name) { 1 } else { 0 };
             ctx.inst(Inst::new(
                 OpCode::STORE_UPVALUE,
-                Operand::None,
+                Operand::Imm(const_flag),
                 Operand::Reg(new_reg),
                 Operand::Imm(uv as u16),
             ));

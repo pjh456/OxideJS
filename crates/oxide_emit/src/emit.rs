@@ -1130,7 +1130,7 @@ impl Emitter {
             );
             // 类字段 computed key 数组等合成捕获：直接追加 upvalue（cell_idx 由父分配）。
             for (name, cell_idx) in extra_upvalue_names {
-                if !ctx.current_upvalue_captures.iter().any(|u| u.name == *name) {
+                if !ctx.own_bindings.contains(*name) && !ctx.current_upvalue_captures.iter().any(|u| u.name == *name) {
                     ctx.current_upvalue_captures.push(UpvalueCapture {
                         name: (*name).to_string(),
                         enclosing_reg: 0,
