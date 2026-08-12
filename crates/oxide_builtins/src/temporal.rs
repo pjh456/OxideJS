@@ -1715,30 +1715,54 @@ pub fn duration_total<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         None => return NativeResult::Err(crate::error::create_range_error(vm, "invalid unit")),
     };
     let values = duration_values(obj);
+    // 含日历单位（year/month/week）时，days 及以上的 total 必须走 relativeTo 日历路径。
+    let has_calendar_units = values[0] != 0.0 || values[1] != 0.0 || values[2] != 0.0;
 
     // relativeTo：支持 PlainDateTime / PlainDate，取日期分量（时间按午夜计算，对齐 polyfill）。
-    let relative_date = if relative_raw.is_object() {
-        let rel_ptr = relative_raw.as_js_object_ptr();
-        if rel_ptr.is_null() {
-            None
-        } else {
-            let rel = unsafe { &*rel_ptr };
-            if rel.is_plain_date_time_obj() || rel.is_plain_date_obj() {
-                Some((
-                    i128::from(get_double_prop(rel, 0) as i32),
-                    i128::from(get_double_prop(rel, 1) as u32),
-                    i128::from(get_double_prop(rel, 2) as u32),
-                ))
-            } else {
-                None
+    // relativeTo: supports PlainDateTime / PlainDate objects; strings follow the
+    // ToRelativeTemporalObject path (PlainDateTime first, falling back to PlainDate),
+    // invalid/out-of-range strings throw RangeError, and non-string primitives
+    // (number/boolean/bigint/symbol/null) throw TypeError per test262.
+    let relative_date = if relative_raw.is_string() {
+        let text = to_string(relative_raw);
+        match parse_plain_date_time_string(&text)
+            .or_else(|_| parse_plain_date_string(&text).map(|(y, m, d)| (y, m, d, 0.0)))
+        {
+            Ok((year, month, day, _time_ns)) => Some((
+                i128::from(year),
+                i128::from(month),
+                i128::from(day),
+            )),
+            Err(_) => {
+                return NativeResult::Err(crate::error::create_range_error(
+                    vm,
+                    "invalid relativeTo string",
+                ));
             }
         }
-    } else {
+    } else if relative_raw.is_object() {
+        let rel_ptr = relative_raw.as_js_object_ptr();
+        if rel_ptr.is_null() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "invalid relativeTo"));
+        }
+        let rel = unsafe { &*rel_ptr };
+        if rel.is_plain_date_time_obj() || rel.is_plain_date_obj() {
+            Some((
+                i128::from(get_double_prop(rel, 0) as i32),
+                i128::from(get_double_prop(rel, 1) as u32),
+                i128::from(get_double_prop(rel, 2) as u32),
+            ))
+        } else {
+            None
+        }
+    } else if relative_raw.is_undefined() {
         None
+    } else {
+        return NativeResult::Err(crate::error::create_type_error(vm, "invalid relativeTo"));
     };
 
     const UNIT_NS: [i128; 6] = [3_600_000_000_000, 60_000_000_000, 1_000_000_000, 1_000_000, 1_000, 1];
-    if unit_index <= 2 {
+    if unit_index <= 2 || (unit_index == 3 && has_calendar_units) {
         // 日历单位：需要 relativeTo，用纪元纳秒窗口计算分数总量。
         let Some(rel_date) = relative_date else {
             return NativeResult::Err(crate::error::create_range_error(
