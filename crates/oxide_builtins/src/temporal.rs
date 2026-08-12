@@ -453,8 +453,15 @@ fn instant_like_epoch_ns<H: VmHost>(vm: &mut H, value: JsValue) -> Result<i128, 
                 return Err(crate::error::create_range_error(vm, "invalid ISO 8601 string"));
             }
         }
+        // 对象按规范走 ToString -> ParseTemporalInstantString（解析失败 RangeError）。
+        let input = oxide_runtime_api::to_string_full(value, vm).map_err(|error| native_engine_error(vm, &error))?;
+        return parse_instant_string(&input).ok_or_else(|| crate::error::create_range_error(vm, "invalid ISO 8601 string"));
     }
-    let input = oxide_runtime_api::to_string_full(value, vm).map_err(|error| native_engine_error(vm, &error))?;
+    // 非字符串原始值（undefined/null/boolean/number/bigint/symbol）按规范直接抛 TypeError。
+    if !value.is_string() {
+        return Err(crate::error::create_type_error(vm, "cannot convert to Instant"));
+    }
+    let input = to_string(value);
     parse_instant_string(&input).ok_or_else(|| crate::error::create_range_error(vm, "invalid ISO 8601 string"))
 }
 
