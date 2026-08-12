@@ -506,9 +506,14 @@ fn define_from_descriptor<H: VmHost>(
         let obj = unsafe { &*obj_ptr };
         vm.get_own_property_slot(obj, key_si)
     };
-    let existing_meta = existing_pos.and_then(|pos| {
+    let existing_meta = existing_pos.map(|pos| {
         let obj = unsafe { &*obj_ptr };
-        obj.prop_meta_at(pos)
+        // 已有属性无显式 meta（普通数据属性/数组元素）时按默认属性回填：
+        // 描述符缺省字段保持现有值（writable/enumerable/configurable 均 true），
+        // 而非按新属性处理为 false（Object.defineProperty 省略字段不改已有属性）。
+        obj.prop_meta_at(pos).unwrap_or_else(|| {
+            oxide_types::object::PropMetaEntry::data(PropAttributes::DEFAULT_DATA)
+        })
     });
 
     // 修改已有属性时缺省字段回填现有值，仅定义新属性时缺省才为 false。

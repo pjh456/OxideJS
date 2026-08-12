@@ -182,7 +182,14 @@ impl Vm {
         // prop_count/迭代/内置方法看到的长度不一致。
         let length_si = self.kernel_core.perm_interner().intern("length").0;
         if obj.is_array() && prop_name_si == length_si {
+            let pc_before = self.pc;
             let number_len = self.coerce_number_bounded(val)?;
+            // ToPrimitive 抛错（valueOf/toString throw）已被 unwind 定向到外围 catch 时
+            // pc 指向 catch 入口：主 dispatch 约定异常后 opcode 不得继续 raise，直接
+            // 返回由 dispatch 继续执行 catch，避免二次抛错覆盖原异常。
+            if self.pc != pc_before {
+                return Ok(());
+            }
             let raw_new_len = if number_len == 0.0 || !number_len.is_finite() {
                 0
             } else {
@@ -192,7 +199,19 @@ impl Vm {
             if raw_new_len as f64 != number_len {
                 return self.raise_error_kind("RangeError", "Invalid array length");
             }
+            let old_logical = obj.logical_len() as usize;
             let old_count = obj.array_prop_count as usize;
+            // ArraySetLength：收缩时若 [newLen, oldLen) 内存在不可配置元素，整个收缩
+            // 失败且不做任何修改（sloppy 赋值静默失败；VM 未实现 strict 标志，统一按 no-op）。
+            if raw_new_len < old_logical {
+                for idx in raw_new_len..old_count {
+                    if let Some(meta) = obj.prop_meta_at(idx) {
+                        if !meta.attributes.configurable() {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
             // Dense storage caps at MAX_DENSE_PROPS; larger lengths stay at the cap.
             let new_len_u = raw_new_len.min(oxide_types::object::MAX_DENSE_PROPS);
             obj.set_prop_count(new_len_u);
