@@ -204,8 +204,13 @@ pub fn delete_own_property<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u3
         }
     }
 
+    // walk_own_keys 只返回字符串键；Symbol 键（well-known/用户）需另行定位。
     let keys = walk_own_keys(vm, obj);
-    let Some((_, delete_pos)) = keys.iter().find(|(si, _)| *si == key_si).copied() else {
+    let mut all_keys = keys;
+    if is_symbol_key(key_si) {
+        all_keys.extend(walk_own_symbol_keys(vm, obj));
+    }
+    let Some(delete_pos) = all_keys.iter().find(|(si, _)| *si == key_si).map(|(_, pos)| *pos) else {
         return true;
     };
     // delete_pos 是 shape 槽位；数组对象存储索引 = 元素数 + 槽位。
@@ -230,7 +235,7 @@ pub fn delete_own_property<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u3
         None
     };
 
-    let retained: Vec<(u32, JsValue, Option<PropMetaEntry>)> = keys
+    let retained: Vec<(u32, JsValue, Option<PropMetaEntry>)> = all_keys
         .into_iter()
         .filter(|(_, pos)| *pos != delete_pos)
         .map(|(si, pos)| {
@@ -309,6 +314,14 @@ pub fn object_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)));
         let obj_ref = unsafe { &mut *obj };
         obj_ref.type_tag = JsObject::OBJ_TYPE_BOOLEAN_OBJ;
+        obj_ref.set_prop_at(0, val);
+        return NativeResult::Ok(JsValue::from_js_object(obj));
+    }
+    if val.is_symbol() {
+        let proto = vm.session().builtin_world().symbol_proto.as_ptr() as *mut JsObject;
+        let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)));
+        let obj_ref = unsafe { &mut *obj };
+        obj_ref.type_tag = JsObject::OBJ_TYPE_SYMBOL_OBJ;
         obj_ref.set_prop_at(0, val);
         return NativeResult::Ok(JsValue::from_js_object(obj));
     }

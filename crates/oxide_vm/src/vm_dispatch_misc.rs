@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::native::NativeFn;
 use crate::vm::{native_fn_ptr_to_fn, CallFrame, ForInIter, FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
 use crate::vm_trace;
-use oxide_runtime_api::{to_boolean, NativeResult};
+use oxide_runtime_api::{to_boolean, to_string_full, NativeResult};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::{is_private_name_key, is_symbol_key};
 use oxide_types::value::JsValue;
@@ -187,7 +187,7 @@ impl Vm {
         }
     }
 
-    pub(crate) fn dispatch_template_str(&mut self, rd: usize) {
+    pub(crate) fn dispatch_template_str(&mut self, rd: usize) -> Result<(), String> {
         vm_trace!("TEMPLATE_STR rd={}", rd);
         let header = self.bytecode[self.pc];
         self.pc += 1;
@@ -205,7 +205,7 @@ impl Vm {
                     // SAFETY: val 是字符串值。
                     unsafe { (*val.as_string_ptr()).data.clone() }
                 } else {
-                    format!("{}", val)
+                    to_string_full(val, self)?
                 };
                 result.push_str(&s);
             } else {
@@ -222,6 +222,7 @@ impl Vm {
             }
         }
         self.regs[rd] = self.new_string(&result);
+        Ok(())
     }
 
     pub(crate) fn dispatch_instanceof(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
@@ -235,7 +236,7 @@ impl Vm {
 
         let has_instance_ptr = self.session.builtin_world().sym_has_instance.as_ptr() as *mut JsObject;
         let has_instance_key = JsValue::from_js_object(has_instance_ptr);
-        let has_instance_si = self.property_key_si(has_instance_key);
+        let has_instance_si = self.property_key_si(has_instance_key)?;
 
         let ctor_obj = unsafe { &*rhs_val.as_js_object_ptr() };
         let has_instance_val = self.ordinary_get(ctor_obj, has_instance_si, rhs_val)?;
@@ -298,7 +299,7 @@ impl Vm {
             return self.raise_type_error("IN right-hand side is not an object");
         }
         let obj = unsafe { &*obj_ptr };
-        let prop_name_si = self.property_key_si(key_val);
+        let prop_name_si = self.property_key_si(key_val)?;
         let found = self.resolve_property(obj, prop_name_si).is_some();
         self.regs[rd] = JsValue::bool(found);
         Ok(())
@@ -769,7 +770,7 @@ impl Vm {
                 if arr_obj.is_array() {
                     for i in 0..arr_obj.array_prop_count {
                         let v = arr_obj.get_prop_at(i);
-                        let si = self.property_key_si(v);
+                        let si = self.property_key_si(v)?;
                         excluded.insert(si);
                     }
                 }

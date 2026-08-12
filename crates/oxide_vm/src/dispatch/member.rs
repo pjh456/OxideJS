@@ -115,7 +115,7 @@ impl Vm {
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], error_msg)? else {
             return Err(String::new());
         };
-        let prop_name_si = self.property_key_si(self.regs[b]);
+        let prop_name_si = self.property_key_si(self.regs[b])?;
         Ok((obj_ptr, prop_name_si))
     }
 
@@ -156,7 +156,7 @@ impl Vm {
         };
         let receiver = self.regs[rd];
         let obj = unsafe { &mut *obj_ptr };
-        let prop_name_si = self.property_key_si(self.regs[a]);
+        let prop_name_si = self.property_key_si(self.regs[a])?;
         let prop_val = self.ordinary_get(obj, prop_name_si, receiver)?;
         let n = self.coerce_number_bounded(prop_val)?;
         let new_val = JsValue::float(n + 1.0);
@@ -172,7 +172,7 @@ impl Vm {
         };
         let receiver = self.regs[rd];
         let obj = unsafe { &mut *obj_ptr };
-        let prop_name_si = self.property_key_si(self.regs[a]);
+        let prop_name_si = self.property_key_si(self.regs[a])?;
         let prop_val = self.ordinary_get(obj, prop_name_si, receiver)?;
         let n = self.coerce_number_bounded(prop_val)?;
         let new_val = JsValue::float(n - 1.0);

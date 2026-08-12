@@ -450,6 +450,8 @@ impl JsObject {
     /// Temporal.PlainDateTime 对象：ISO 年/月/日与午夜后纳秒存于 prop 0-3。
     pub const OBJ_TYPE_PLAIN_DATE_TIME: u8 = 19;
     /// Arguments 对象：`Object.prototype.toString` 返回 `[object Arguments]`。
+    /// 装箱 Symbol 对象类型标签。
+    pub const OBJ_TYPE_SYMBOL_OBJ: u8 = 21;
     pub const OBJ_TYPE_ARGUMENTS: u8 = 20;
     /// `is_session_epoch` 字段中的 session 标记位。
     pub const SESSION_EPOCH_BIT: u8 = 0x01;
@@ -480,6 +482,12 @@ impl JsObject {
     #[inline]
     pub fn is_string_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_STRING_OBJ
+    }
+
+    /// 是否装箱 Symbol 对象。
+    #[inline]
+    pub fn is_symbol_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_SYMBOL_OBJ
     }
     /// 是否 ArrayBuffer 对象。
     #[inline]

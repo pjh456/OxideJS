@@ -403,7 +403,7 @@ impl Vm {
             let sym_ptr = self.session.builtin_world().sym_to_primitive.as_ptr() as *mut JsObject;
             JsValue::from_js_object(sym_ptr)
         };
-        let sym_si = self.property_key_si(sym_key);
+        let sym_si = self.property_key_si(sym_key)?;
         let exotic = {
             let obj = unsafe { &*obj_ptr };
             self.ordinary_get(obj, sym_si, value)?
@@ -411,7 +411,9 @@ impl Vm {
         if !exotic.is_undefined() && !exotic.is_null() {
             let exotic_ptr = exotic.as_js_object_ptr();
             if !exotic.is_object() || exotic_ptr.is_null() || !unsafe { &*exotic_ptr }.is_function() {
-                return Err(self.error_message_text("TypeError", "Symbol.toPrimitive is not a function"));
+                // 抛可捕获的 JS 异常（dispatch 层 try/catch 可捕获），与下方 method 不可调用路径一致。
+                self.raise_error_kind("TypeError", "Symbol.toPrimitive is not a function")?;
+                return Ok(JsValue::undefined());
             }
             let hint_val = self.new_string(if prefer_string { "string" } else { "number" });
             let result = match self.call_function_sync(exotic, value, &[hint_val]) {
@@ -419,7 +421,8 @@ impl Vm {
                 Err(err) => return self.raise_call_error(&err),
             };
             if result.is_object() {
-                return Err(self.error_message_text("TypeError", "Cannot convert object to primitive value"));
+                self.raise_error_kind("TypeError", "Cannot convert object to primitive value")?;
+                return Ok(JsValue::undefined());
             }
             return Ok(result);
         }
@@ -454,7 +457,10 @@ impl Vm {
             }
         }
 
-        Err(self.error_message_text("TypeError", "Cannot convert object to primitive value"))
+        // 同样抛可捕获异常而非裸 Err：dispatch 二元运算/移位中对象无法转原始值时，
+        // 必须让外围 JS try/catch 能捕获（裸 Err 会变成不可捕获的引擎错误）。
+        self.raise_error_kind("TypeError", "Cannot convert object to primitive value")?;
+        Ok(JsValue::undefined())
     }
 
     /// 把 `call_function_sync` 返回的调用错误恢复为原始异常值并走异常展开，
@@ -874,50 +880,32 @@ impl Vm {
         }
     }
 
-    pub(crate) fn property_key_si(&mut self, val: JsValue) -> u32 {
+    pub(crate) fn property_key_si(&mut self, val: JsValue) -> Result<u32, String> {
         if val.is_string() {
             // SAFETY: val 是字符串值，把其内容桥接为永久 key id。
             let s = unsafe { &(*val.as_string_ptr()).data };
-            return self.kernel_core.perm_interner().intern(s).0;
+            return Ok(self.kernel_core.perm_interner().intern(s).0);
         }
         // Symbol 值直接编码为 Symbol 键（不进字符串 interner，键相互独立）。
         if val.is_symbol() {
-            return make_symbol_key(val.as_symbol_index());
+            return Ok(make_symbol_key(val.as_symbol_index()));
         }
         // well-known symbol 是空对象：按指针比对映射到各自的 well-known Symbol 键，
         // 避免全部塌缩成同一个键。
         if val.is_object() {
-            let world = self.session.builtin_world();
-            let ptr = val.as_js_object_ptr();
-            let well_known_id = if std::ptr::eq(ptr, world.sym_iterator.as_ptr()) {
-                Some(0)
-            } else if std::ptr::eq(ptr, world.sym_match.as_ptr()) {
-                Some(1)
-            } else if std::ptr::eq(ptr, world.sym_replace.as_ptr()) {
-                Some(2)
-            } else if std::ptr::eq(ptr, world.sym_search.as_ptr()) {
-                Some(3)
-            } else if std::ptr::eq(ptr, world.sym_split.as_ptr()) {
-                Some(4)
-            } else if std::ptr::eq(ptr, world.sym_to_primitive.as_ptr()) {
-                Some(5)
-            } else if std::ptr::eq(ptr, world.sym_has_instance.as_ptr()) {
-                Some(6)
-            } else if std::ptr::eq(ptr, world.sym_match_all.as_ptr()) {
-                Some(7)
-            } else if std::ptr::eq(ptr, world.sym_async_iterator.as_ptr()) {
-                Some(8)
-            } else if std::ptr::eq(ptr, world.sym_to_string_tag.as_ptr()) {
-                Some(9)
-            } else {
-                None
-            };
-            if let Some(id) = well_known_id {
-                return make_well_known_symbol_key(id);
+            if let Some(id) = oxide_runtime_api::well_known_symbol_id(self, val.as_js_object_ptr()) {
+                return Ok(make_well_known_symbol_key(id));
             }
+            // ToPropertyKey：对象经 ToPrimitive(string hint)，结果为 Symbol 时直接作键。
+            let prim = coercion::to_primitive(val, coercion::ToPrimitiveHint::String, self)?;
+            if prim.is_symbol() {
+                return Ok(make_symbol_key(prim.as_symbol_index()));
+            }
+            let key = coercion::to_string(prim);
+            return Ok(self.kernel_core.perm_interner().intern(&key).0);
         }
         let key = coercion::to_string(val);
-        self.kernel_core.perm_interner().intern(&key).0
+        Ok(self.kernel_core.perm_interner().intern(&key).0)
     }
 
     pub(crate) fn array_index_from_property_key(&self, prop_name_si: u32) -> Option<u32> {
@@ -1555,7 +1543,7 @@ impl Vm {
                 }
 
                 OpCode::TEMPLATE_STR => {
-                    self.dispatch_template_str(rd);
+                    self.dispatch_template_str(rd)?;
                 }
 
                 OpCode::DELETE_PROP_STATIC => match self.dispatch_delete_prop_static(rd) {
@@ -1802,7 +1790,11 @@ impl oxide_runtime_api::VmHost for Vm {
         self.last_uncaught_value.take()
     }
     fn property_key_si(&mut self, val: JsValue) -> u32 {
+        // Object-key conversion (to_string_full) failures degrade to the empty key here:
+        // this trait path is used by Reflect/Object builtins; computed property access
+        // uses the inherent Result-returning version to preserve the full exception.
         self.property_key_si(val)
+            .unwrap_or_else(|_| self.kernel_core.perm_interner().intern("").0)
     }
     fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
         self.resolve_property(obj, prop_name_si)
@@ -1883,7 +1875,7 @@ impl oxide_runtime_api::VmHost for Vm {
     fn create_dynamic_function(&mut self, params: &[String], body: &str) -> Result<JsValue, String> {
         self.create_dynamic_function(params, body)
     }
-    fn symbol_intern(&mut self, desc: String) -> u32 {
+    fn symbol_intern(&mut self, desc: Option<String>) -> u32 {
         self.symbols.intern(desc)
     }
     fn symbol_description(&self, idx: u32) -> Option<&str> {
@@ -2118,7 +2110,7 @@ mod tests {
     #[test]
     fn full_reset_clears_symbol_state() {
         let mut vm = Vm::new();
-        vm.symbols.intern("shared".to_string());
+        vm.symbols.intern(Some("shared".to_string()));
 
         vm.full_reset();
 

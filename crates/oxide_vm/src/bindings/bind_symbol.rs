@@ -30,7 +30,10 @@ pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         session.builtin_world(),
         proto,
         core,
-        &[("toString", oxide_builtins::symbol::symbol_to_string::<crate::vm::Vm> as *const (), 0)],
+        &[
+            ("toString", oxide_builtins::symbol::symbol_to_string::<crate::vm::Vm> as *const (), 0),
+            ("valueOf", oxide_builtins::symbol::symbol_value_of::<crate::vm::Vm> as *const (), 0),
+        ],
     );
 
     for (name, val) in [

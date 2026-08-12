@@ -128,7 +128,8 @@ pub trait VmHost {
     /// 动态编译一个函数体（`Function` 构造器用）：把参数列表与函数体编译为可调用
     /// 函数对象。编译或解析失败返回 `Err`，由调用方转为 `SyntaxError`。
     fn create_dynamic_function(&mut self, params: &[String], body: &str) -> Result<JsValue, String>;
-    fn symbol_intern(&mut self, desc: String) -> u32;
+    /// `None` 表示无描述（`Symbol()`/`Symbol(undefined)`），`Some(desc)` 为字符串描述。
+    fn symbol_intern(&mut self, desc: Option<String>) -> u32;
     fn symbol_description(&self, idx: u32) -> Option<&str>;
     fn symbol_lookup_global(&self, key: &str) -> Option<u32>;
     fn symbol_register_global(&mut self, key: String, idx: u32);
@@ -569,12 +570,12 @@ pub fn abstract_eq<H: VmHost>(lhs: JsValue, rhs: JsValue, host: &mut H) -> Resul
         return abstract_eq(lhs, JsValue::float(to_number(rhs)), host);
     }
     // 步骤 11：x 为 Number/String，y 为 Object → ToPrimitive(y)。
-    if (lhs.is_int() || lhs.is_double() || lhs.is_string()) && rhs.is_object() {
+    if (lhs.is_int() || lhs.is_double() || lhs.is_string() || lhs.is_bigint() || lhs.is_symbol()) && rhs.is_object() {
         let prim = to_primitive(rhs, ToPrimitiveHint::Default, host)?;
         return abstract_eq(lhs, prim, host);
     }
     // 步骤 12：x 为 Object，y 为 Number/String → ToPrimitive(x)。
-    if lhs.is_object() && (rhs.is_int() || rhs.is_double() || rhs.is_string()) {
+    if lhs.is_object() && (rhs.is_int() || rhs.is_double() || rhs.is_string() || rhs.is_bigint() || rhs.is_symbol()) {
         let prim = to_primitive(lhs, ToPrimitiveHint::Default, host)?;
         return abstract_eq(prim, rhs, host);
     }
@@ -893,10 +894,81 @@ pub fn to_number_full<H: VmHost>(val: JsValue, host: &mut H) -> Result<f64, Stri
     Ok(to_number(primitive))
 }
 
-/// 带完整对象强制转换的 ToString(input)：对象经 ToPrimitive（string hint）处理。
+/// 带完整对象强制转换的 ToString(input)：对象经 ToPrimitive（string hint）处理；
+/// Symbol 值按规范（§7.1.17）抛 TypeError。
 pub fn to_string_full<H: VmHost>(val: JsValue, host: &mut H) -> Result<String, String> {
     let primitive = to_primitive(val, ToPrimitiveHint::String, host)?;
+    if primitive.is_symbol() {
+        return Err(host.error_message_text("TypeError", "Cannot convert a Symbol value to a string"));
+    }
     Ok(to_string(primitive))
+}
+
+/// `String()` 构造器的字符串转换（§21.1.1.1）：Symbol 值（及本引擎以空对象表示的
+/// well-known symbol）返回描述串 `Symbol(desc)`；其余走完整 ToString。
+pub fn to_string_for_string_constructor<H: VmHost>(val: JsValue, host: &mut H) -> Result<String, String> {
+    if val.is_object() {
+        if let Some(id) = well_known_symbol_id(host, val.as_js_object_ptr()) {
+            if let Some(name) = well_known_symbol_name(id) {
+                return Ok(format!("Symbol({name})"));
+            }
+        }
+    }
+    let primitive = to_primitive(val, ToPrimitiveHint::String, host)?;
+    if primitive.is_symbol() {
+        let desc = host.symbol_description(primitive.as_symbol_index()).unwrap_or("");
+        return Ok(format!("Symbol({desc})"));
+    }
+    Ok(to_string(primitive))
+}
+
+/// Well-known symbols are stored as empty objects in the builtin world; map an object
+/// pointer back to its well-known symbol id (0..WELL_KNOWN_SYMBOL_COUNT) if it is one.
+pub fn well_known_symbol_id<H: VmHost + ?Sized>(host: &H, ptr: *mut JsObject) -> Option<u32> {
+    if ptr.is_null() {
+        return None;
+    }
+    let world = host.session().builtin_world();
+    if std::ptr::eq(ptr, world.sym_iterator.as_ptr()) {
+        Some(0)
+    } else if std::ptr::eq(ptr, world.sym_match.as_ptr()) {
+        Some(1)
+    } else if std::ptr::eq(ptr, world.sym_replace.as_ptr()) {
+        Some(2)
+    } else if std::ptr::eq(ptr, world.sym_search.as_ptr()) {
+        Some(3)
+    } else if std::ptr::eq(ptr, world.sym_split.as_ptr()) {
+        Some(4)
+    } else if std::ptr::eq(ptr, world.sym_to_primitive.as_ptr()) {
+        Some(5)
+    } else if std::ptr::eq(ptr, world.sym_has_instance.as_ptr()) {
+        Some(6)
+    } else if std::ptr::eq(ptr, world.sym_match_all.as_ptr()) {
+        Some(7)
+    } else if std::ptr::eq(ptr, world.sym_async_iterator.as_ptr()) {
+        Some(8)
+    } else if std::ptr::eq(ptr, world.sym_to_string_tag.as_ptr()) {
+        Some(9)
+    } else {
+        None
+    }
+}
+
+/// Descriptive name of a well-known symbol id, e.g. `Symbol.toStringTag` for id 9.
+pub fn well_known_symbol_name(id: u32) -> Option<&'static str> {
+    Some(match id {
+        0 => "Symbol.iterator",
+        1 => "Symbol.match",
+        2 => "Symbol.replace",
+        3 => "Symbol.search",
+        4 => "Symbol.split",
+        5 => "Symbol.toPrimitive",
+        6 => "Symbol.hasInstance",
+        7 => "Symbol.matchAll",
+        8 => "Symbol.asyncIterator",
+        9 => "Symbol.toStringTag",
+        _ => return None,
+    })
 }
 
 #[cfg(test)]

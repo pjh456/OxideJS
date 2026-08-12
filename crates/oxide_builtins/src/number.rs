@@ -6,7 +6,16 @@ use oxide_runtime_api::{NativeResult, VmHost};
 /// 普通调用返回原始 number（整数走 int 表示）；new 语义返回 `[[NumberData]]` 包装对象。
 pub fn number_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let n = if args.len() > 1 {
-        vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN)
+        match vm.coerce_number_bounded(vm.reg(args[1])) {
+            Ok(n) => n,
+            Err(_) => {
+                // ToNumber on an object may throw via toString/valueOf; propagate the original exception.
+                if let Some(exc) = vm.take_uncaught_value() {
+                    return NativeResult::Err(exc);
+                }
+                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a number"));
+            }
+        }
     } else {
         0.0
     };

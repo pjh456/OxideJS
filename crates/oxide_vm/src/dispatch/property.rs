@@ -292,7 +292,7 @@ impl Vm {
         let val = self.regs[a];
         let obj_ptr = val.as_object_ptr() as *mut JsObject;
         if obj_ptr.is_null() {
-            let prop_name_si = self.property_key_si(self.regs[b]);
+            let prop_name_si = self.property_key_si(self.regs[b])?;
             if let Some(resolved) = self.primitive_property_get(val, prop_name_si)? {
                 self.regs[a] = resolved;
                 self.pc += 3;
@@ -308,7 +308,7 @@ impl Vm {
         }
 
         let obj = unsafe { &*obj_ptr };
-        let prop_name_si = self.property_key_si(self.regs[b]);
+        let prop_name_si = self.property_key_si(self.regs[b])?;
         let (cached_shape_id, cached_slot, cached_depth) = ic_helper::read_ic_entry(&self.bytecode, &mut self.pc);
         let ic_pc = self.pc;
         if obj.has_prop_meta() {
@@ -390,7 +390,7 @@ impl Vm {
             return Ok(());
         };
 
-        let prop_name_si = self.property_key_si(self.regs[b]);
+        let prop_name_si = self.property_key_si(self.regs[b])?;
         if self.kernel_core.perm_interner().lookup(prop_name_si) == Some("__proto__") {
             let proto_value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
             if self.is_object_prototype(obj_ptr) && !proto_value.is_null() {
@@ -450,7 +450,7 @@ impl Vm {
 
     fn dispatch_get_prop(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
         vm_trace!("GET_PROP rd={} a={} b={}", rd, a, b);
-        let prop_name_si = self.property_key_si(self.regs[b]);
+        let prop_name_si = self.property_key_si(self.regs[b])?;
         if let Some(value) = self.primitive_property_get(self.regs[rd], prop_name_si)? {
             self.regs[a] = value;
             return Ok(());
@@ -471,7 +471,7 @@ impl Vm {
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "Cannot create property on non-object")? else {
             return Ok(());
         };
-        let prop_name_si = self.property_key_si(self.regs[b]);
+        let prop_name_si = self.property_key_si(self.regs[b])?;
         if self.kernel_core.perm_interner().lookup(prop_name_si) == Some("__proto__") {
             let proto_value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
             if self.is_object_prototype(obj_ptr) && !proto_value.is_null() {
@@ -490,7 +490,7 @@ impl Vm {
 
     fn dispatch_get_prop_dynamic(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
         vm_trace!("GET_PROP_DYNAMIC rd={} a={} b={}", rd, a, b);
-        let prop_name_si = self.property_key_si(self.regs[a]);
+        let prop_name_si = self.property_key_si(self.regs[a])?;
         if let Some(value) = self.primitive_property_get(self.regs[rd], prop_name_si)? {
             self.regs[b] = value;
             return Ok(());
@@ -511,7 +511,7 @@ impl Vm {
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "Cannot create property on non-object")? else {
             return Ok(());
         };
-        let prop_name_si = self.property_key_si(self.regs[a]);
+        let prop_name_si = self.property_key_si(self.regs[a])?;
         if self.kernel_core.perm_interner().lookup(prop_name_si) == Some("__proto__") {
             let proto_value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[b]);
             if self.is_object_prototype(obj_ptr) && !proto_value.is_null() {
@@ -553,7 +553,7 @@ impl Vm {
         let prop_idx = self.bytecode[self.pc] as usize;
         self.pc += 1;
         let key_val = self.immutables().get(prop_idx).copied().unwrap_or_else(JsValue::undefined);
-        let prop_name_si = self.property_key_si(key_val);
+        let prop_name_si = self.property_key_si(key_val)?;
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "delete on non-object")? else {
             self.regs[rd] = JsValue::bool(true);
             return Ok(false);
@@ -567,7 +567,7 @@ impl Vm {
 
     pub(crate) fn dispatch_delete_prop_dynamic(&mut self, rd: usize, b: usize) -> Result<bool, String> {
         vm_trace!("DELETE_PROP_DYNAMIC rd={}", rd);
-        let prop_name_si = self.property_key_si(self.regs[b]);
+        let prop_name_si = self.property_key_si(self.regs[b])?;
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "delete on non-object")? else {
             self.regs[rd] = JsValue::bool(true);
             return Ok(false);

@@ -223,7 +223,7 @@ fn regression_bounded_object_numeric_coercion() {
     assert_eq!(eval("+({ toString: function() { return '9'; } })"), "9");
     assert_eq!(
         eval("+({ valueOf: function() { return {}; }, toString: function() { return {}; } })"),
-        "vm error: TypeError: Cannot convert object to primitive value"
+        "vm error: uncaught TypeError: Cannot convert object to primitive value"
     );
     assert_eq!(
         eval("+({ valueOf: function() { throw new RangeError('coerce'); } })"),

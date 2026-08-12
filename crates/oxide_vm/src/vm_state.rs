@@ -46,7 +46,7 @@ impl GcState {
 /// Symbol 的 intern 状态。
 pub(crate) struct SymbolState {
     pub(crate) symbol_counter: u32,
-    pub(crate) symbol_descriptions: Vec<String>,
+    pub(crate) symbol_descriptions: Vec<Option<String>>,
     pub(crate) symbol_registry: HashMap<String, u32>,
 }
 
@@ -57,7 +57,7 @@ impl SymbolState {
         self.symbol_registry.clear();
     }
 
-    pub(crate) fn intern(&mut self, description: String) -> u32 {
+    pub(crate) fn intern(&mut self, description: Option<String>) -> u32 {
         self.symbol_counter = self.symbol_counter.wrapping_add(1);
         let idx = self.symbol_descriptions.len() as u32;
         self.symbol_descriptions.push(description);
@@ -73,7 +73,7 @@ impl SymbolState {
     }
 
     pub(crate) fn description(&self, id: u32) -> Option<&str> {
-        self.symbol_descriptions.get(id as usize).map(|s| s.as_str())
+        self.symbol_descriptions.get(id as usize).and_then(|s| s.as_deref())
     }
 
     pub(crate) fn key_for_id(&self, id: u32) -> Option<String> {

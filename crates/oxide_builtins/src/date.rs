@@ -190,7 +190,16 @@ pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             let obj = unsafe { &*val.as_js_object_ptr() };
             get_timestamp(obj)
         } else {
-            f64::NAN
+            match oxide_runtime_api::to_number_full(val, vm) {
+                Ok(n) => n,
+                Err(_) => {
+                    // ToNumber on an object may throw via toString/valueOf; propagate the original exception.
+                    if let Some(exc) = vm.take_uncaught_value() {
+                        return NativeResult::Err(exc);
+                    }
+                    return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a number"));
+                }
+            }
         }
     };
 

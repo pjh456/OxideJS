@@ -570,7 +570,7 @@ impl Vm {
     pub(crate) fn dispatch_super_get_prop(&mut self, rd: usize, a: usize, b: usize) -> Result<bool, String> {
         vm_trace!("SUPER_GET_PROP rd={} a={} b={}", rd, a, b);
         let key_val = self.regs[b];
-        let prop_name_si = self.property_key_si(key_val);
+        let prop_name_si = self.property_key_si(key_val)?;
         let Some(frame) = self.frames.last() else {
             self.raise_error_kind("ReferenceError", "super property used outside function")?;
             return Ok(true);

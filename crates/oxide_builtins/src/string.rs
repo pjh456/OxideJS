@@ -114,9 +114,15 @@ pub fn string_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn string_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let s = if args.len() > 1 {
         // 对象参数须经 ToPrimitive/ToString 完整转换（数组 → join，对象 → toString）。
-        match oxide_runtime_api::to_string_full(vm.reg(args[1]), vm) {
+        match oxide_runtime_api::to_string_for_string_constructor(vm.reg(args[1]), vm) {
             Ok(s) => s,
-            Err(e) => return NativeResult::Err(crate::error::create_error(vm, &e)),
+            Err(_) => {
+                // ToString on an object may throw via toString/valueOf; propagate the original exception.
+                if let Some(exc) = vm.take_uncaught_value() {
+                    return NativeResult::Err(exc);
+                }
+                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a string"));
+            }
         }
     } else {
         String::new()
@@ -490,7 +496,16 @@ pub fn string_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.concat called with {} args", args.len());
     let mut result = try_string!(this_string(vm, args));
     for &arg_reg in args.iter().skip(1) {
-        result.push_str(&oxide_runtime_api::to_string(vm.reg(arg_reg)));
+        match oxide_runtime_api::to_string_full(vm.reg(arg_reg), vm) {
+            Ok(s) => result.push_str(&s),
+            Err(_) => {
+                // ToString on an object may throw via toString/valueOf; propagate the original exception.
+                if let Some(exc) = vm.take_uncaught_value() {
+                    return NativeResult::Err(exc);
+                }
+                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a string"));
+            }
+        }
     }
     NativeResult::Ok(vm.new_string(&result))
 }

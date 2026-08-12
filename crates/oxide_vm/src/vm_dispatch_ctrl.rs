@@ -132,7 +132,7 @@ impl Vm {
         let prop_name_si = if key_val.is_int() {
             make_private_name_id(key_val.as_int().max(0) as u32)
         } else {
-            self.property_key_si(key_val)
+            self.property_key_si(key_val)?
         };
         self.dispatch_define_accessor_common(rd, a, b, prop_name_si)
     }
@@ -143,7 +143,7 @@ impl Vm {
         let key_word = self.bytecode[self.pc];
         self.pc += 1;
         let key_reg = (key_word & 0x7FFF_FFFF) as usize;
-        let prop_name_si = self.property_key_si(self.regs[key_reg]);
+        let prop_name_si = self.property_key_si(self.regs[key_reg])?;
         self.dispatch_define_accessor_common(rd, a, b, prop_name_si)
     }
 
@@ -186,7 +186,7 @@ impl Vm {
         if !obj_val.is_object() {
             return self.raise_type_error("DEFINE_PROP target is not object");
         }
-        let prop_name_si = self.property_key_si(self.regs[b]);
+        let prop_name_si = self.property_key_si(self.regs[b])?;
         let value = self.regs[a];
         let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
         match self.define_data_property(obj, prop_name_si, value, PropAttributes::DEFAULT_DATA) {
@@ -208,7 +208,7 @@ impl Vm {
         if !obj_val.is_object() {
             return Ok(());
         }
-        let prop_name_si = self.property_key_si(self.regs[b]);
+        let prop_name_si = self.property_key_si(self.regs[b])?;
         let value = self.regs[a];
         let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
         let _ = self.define_data_property(obj, prop_name_si, value, PropAttributes::new(true, true, false));
