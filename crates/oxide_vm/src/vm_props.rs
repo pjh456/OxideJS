@@ -26,7 +26,7 @@ impl Vm {
         let mut depth = 0usize;
         while let Some(obj) = current {
             if obj.is_array() && prop_name_si == length_si {
-                return Ok(JsValue::int(obj.prop_count() as i32));
+                return Ok(obj.logical_len_value());
             }
             if obj.is_array() {
                 if let Some(index) = self.array_index_from_property_key(prop_name_si) {
@@ -176,6 +176,44 @@ impl Vm {
                 }
                 return oxide_builtins::typed_array::typed_array_element_set(self, obj, index, val);
             }
+        }
+        // 数组 length 赋值：ArraySetLength 语义（ToUint32 + 调整元素区）。
+        // 旧行为会把 length 存成影子命名属性，导致 `arr.length = N` 后
+        // prop_count/迭代/内置方法看到的长度不一致。
+        let length_si = self.kernel_core.perm_interner().intern("length").0;
+        if obj.is_array() && prop_name_si == length_si {
+            let number_len = self.coerce_number_bounded(val)?;
+            let raw_new_len = if number_len == 0.0 || !number_len.is_finite() {
+                0
+            } else {
+                number_len.trunc().rem_euclid(4_294_967_296.0) as u32 as usize
+            };
+            // ToUint32 != ToNumber (e.g. 1.5 / NaN / Infinity / negative / 2**32) -> RangeError.
+            if raw_new_len as f64 != number_len {
+                return self.raise_error_kind("RangeError", "Invalid array length");
+            }
+            let old_count = obj.array_prop_count as usize;
+            // Dense storage caps at MAX_DENSE_PROPS; larger lengths stay at the cap.
+            let new_len_u = raw_new_len.min(oxide_types::object::MAX_DENSE_PROPS);
+            obj.set_prop_count(new_len_u);
+            // Grown slots are sparse holes: HasProperty / prototype reads must treat
+            // them as absent.
+            for idx in old_count..new_len_u {
+                obj.mark_hole_at(idx);
+            }
+            // Logical length override: lengths beyond the dense cap are recorded
+            // separately so `a.length` reads return the real value.
+            if raw_new_len > oxide_types::object::MAX_DENSE_PROPS {
+                obj.set_array_len_override(raw_new_len as u32);
+            } else {
+                obj.clear_array_len_override();
+            }
+            // 同步旧版可能残留的影子 length 属性（shape 槽），保证 IC 快路径读到新值。
+            if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), length_si) {
+                let store_idx = obj.array_prop_count as usize + pos as usize;
+                obj.set_prop_storage(store_idx, obj.logical_len_value());
+            }
+            return Ok(());
         }
         if let Some(pos) = self.get_own_property_slot(obj, prop_name_si) {
             if let Some(meta) = obj.prop_meta_at(pos) {

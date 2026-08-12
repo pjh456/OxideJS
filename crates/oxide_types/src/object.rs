@@ -399,6 +399,10 @@ pub struct JsObject {
     /// 数组元素数（数组对象）。普通对象恒 0。命名属性存储在 `hash_props`
     /// （与元素区分，JS 数组命名属性不影响 length）。
     pub array_prop_count: u32,
+    /// 数组逻辑长度覆盖：仅当 length 超出 dense 存储上限 `MAX_DENSE_PROPS` 时非 0。
+    /// `arr.length = 4294967295` 等超大长度时，元素区仍以 `MAX_DENSE_PROPS` 封顶，
+    /// 超出部分视为稀疏空洞，逻辑长度单独记录供 `a.length` 读取。
+    array_len_override: u32,
     native_fn: Option<NativeFnPtr>,
     sub_module_index: u32,
     _pad3: [u8; 4],
@@ -576,6 +580,7 @@ impl JsObject {
             proto,
             generation: 1,
             array_prop_count: 0,
+            array_len_override: 0,
             native_fn: None,
             sub_module_index: 0,
             _pad3: [0; 4],
@@ -601,6 +606,7 @@ impl JsObject {
             proto,
             generation: 1,
             array_prop_count: 0,
+            array_len_override: 0,
             native_fn: None,
             sub_module_index: 0,
             _pad3: [0; 4],
@@ -611,6 +617,8 @@ impl JsObject {
         let vec = Box::new(vec![JsValue::undefined(); n_elements.min(MAX_DENSE_PROPS)]);
         obj.array_elements = Box::into_raw(vec) as *mut u8;
         obj.array_prop_count = n_elements.min(MAX_DENSE_PROPS) as u32;
+        // 逻辑长度单独记录（超过 dense 上限时），供 a.length 读取。
+        obj.array_len_override = if n_elements > MAX_DENSE_PROPS { n_elements as u32 } else { 0 };
         obj
     }
 
@@ -681,6 +689,7 @@ impl JsObject {
             proto: self.proto,
             generation: self.generation,
             array_prop_count: self.array_prop_count,
+            array_len_override: self.array_len_override,
             native_fn: self.native_fn,
             sub_module_index: self.sub_module_index,
             _pad3: self._pad3,
@@ -834,6 +843,36 @@ impl JsObject {
             // 由 Box<Vec<JsValue>> 创建并归本对象所有。
             let vec = unsafe { &*(self.hash_props as *const Vec<JsValue>) };
             vec.len() as u32
+        }
+    }
+
+    /// 数组逻辑长度：`a.length` 读取语义（含超出 dense 上限的覆盖值）。
+    #[inline]
+    pub fn logical_len(&self) -> u32 {
+        if self.array_len_override != 0 {
+            self.array_len_override
+        } else {
+            self.array_prop_count
+        }
+    }
+
+    /// 设置数组逻辑长度覆盖（仅在 length > `MAX_DENSE_PROPS` 时使用）。
+    pub fn set_array_len_override(&mut self, len: u32) {
+        self.array_len_override = len;
+    }
+
+    /// 清除数组逻辑长度覆盖，恢复以 `array_prop_count` 为 length。
+    pub fn clear_array_len_override(&mut self) {
+        self.array_len_override = 0;
+    }
+
+    /// 数组 length 属性值（`a.length` 读取结果）。
+    pub fn logical_len_value(&self) -> JsValue {
+        let l = self.logical_len();
+        if l <= i32::MAX as u32 {
+            JsValue::int(l as i32)
+        } else {
+            JsValue::float(l as f64)
         }
     }
 

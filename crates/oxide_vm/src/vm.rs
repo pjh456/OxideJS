@@ -934,7 +934,7 @@ impl Vm {
         vm_trace!("resolve_property: shape_id={} prop_name_si={}", obj.shape_id(), prop_name_si);
         let length_si = self.kernel_core.perm_interner().intern("length").0;
         if obj.is_array() && prop_name_si == length_si {
-            return Some(JsValue::int(obj.prop_count() as i32));
+            return Some(obj.logical_len_value());
         }
         if obj.is_array() {
             if let Some(index) = self.array_index_from_property_key(prop_name_si) {
