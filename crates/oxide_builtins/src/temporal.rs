@@ -3852,6 +3852,25 @@ fn plain_date_naive<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<NaiveDate, JsV
         .ok_or_else(|| crate::error::create_range_error(vm, "invalid date"))
 }
 
+/// 从 PlainDate receiver 读 year/month/day 并按 ISO 范围校验，不依赖 chrono 年份范围。
+fn plain_date_ymd_checked<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<(i32, u32, u32), JsValue> {
+    let (y, m, d) = plain_date_ymd(vm, args)?;
+    if y.is_nan() || m.is_nan() || d.is_nan() {
+        return Err(crate::error::create_type_error(vm, "called on incompatible receiver"));
+    }
+    let ymd = (y.trunc() as i32, m.trunc() as u32, d.trunc() as u32);
+    if !valid_iso_date(ymd.0, ymd.1, ymd.2) {
+        return Err(crate::error::create_range_error(vm, "invalid ISO date"));
+    }
+    // 表示范围（PlainDate）：-271821-04-19（第 -100,000,001 天）… +275760-09-13（第 +100,000,000 天），
+    // 超出 chrono NaiveDate 年份范围（约 ±26 万年）的日期也在此被拒绝而非后续 panic。
+    let day_count = days_from_civil(i128::from(ymd.0), i128::from(ymd.1), i128::from(ymd.2));
+    if !(-100_000_001..=100_000_000).contains(&day_count) {
+        return Err(crate::error::create_range_error(vm, "ISO date is out of range"));
+    }
+    Ok(ymd)
+}
+
 /// 从对象式日期字段（`{year, month, day}`）读三字段；PlainDate 对象直接读内部槽；
 /// 缺字段返回 None。
 fn object_ymd<H: VmHost>(vm: &mut H, val: JsValue) -> Option<(i32, u32, u32)> {
@@ -3887,6 +3906,12 @@ fn date_like_ymd<H: VmHost>(vm: &mut H, val: JsValue) -> Result<(i32, u32, u32),
     };
     if !valid_iso_date(ymd.0, ymd.1, ymd.2) {
         return Err(crate::error::create_range_error(vm, "invalid ISO date"));
+    }
+    // 表示范围（PlainDate）：-271821-04-19（第 -100,000,001 天）… +275760-09-13（第 +100,000,000 天），
+    // 超出 chrono NaiveDate 年份范围（约 ±26 万年）的日期也在此被拒绝而非后续 panic。
+    let day_count = days_from_civil(i128::from(ymd.0), i128::from(ymd.1), i128::from(ymd.2));
+    if !(-100_000_001..=100_000_000).contains(&day_count) {
+        return Err(crate::error::create_range_error(vm, "ISO date is out of range"));
     }
     Ok(ymd)
 }
@@ -3925,8 +3950,12 @@ fn largest_unit<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<String, JsValue> {
     }
 }
 
-fn date_difference(start: NaiveDate, end: NaiveDate, unit: &str) -> [f64; 10] {
-    let total_days = end.signed_duration_since(start).num_days();
+/// 两个 ISO 日期（全表示范围）的差值，语义与原 chrono 版本一致，
+/// 但基于 civil 日计数，支持 PlainDate 全范围（-271821-04-19 … +275760-09-13，超出 chrono NaiveDate）。
+fn date_difference_civil(start: (i32, u32, u32), end: (i32, u32, u32), unit: &str) -> [f64; 10] {
+    let start_days = days_from_civil(i128::from(start.0), i128::from(start.1), i128::from(start.2));
+    let end_days = days_from_civil(i128::from(end.0), i128::from(end.1), i128::from(end.2));
+    let total_days = end_days - start_days;
     if unit == "day" {
         return [0.0, 0.0, 0.0, total_days as f64, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
     }
@@ -3934,14 +3963,17 @@ fn date_difference(start: NaiveDate, end: NaiveDate, unit: &str) -> [f64; 10] {
         return [0.0, 0.0, (total_days / 7) as f64, (total_days % 7) as f64, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
     }
 
-    let direction = if end >= start { 1_i64 } else { -1_i64 };
-    let mut total_months = (end.year() as i64 - start.year() as i64) * 12 + end.month0() as i64 - start.month0() as i64;
-    let mut candidate = add_signed_months(start, total_months).unwrap_or(start);
-    if (direction > 0 && candidate > end) || (direction < 0 && candidate < end) {
-        total_months -= direction;
-        candidate = add_signed_months(start, total_months).unwrap_or(start);
+    let direction = if end_days >= start_days { 1_i64 } else { -1_i64 };
+    let mut total_months =
+        (i128::from(end.0) - i128::from(start.0)) * 12 + i128::from(end.1 - 1) - i128::from(start.1 - 1);
+    let mut candidate = add_signed_months_civil(start, total_months as i64);
+    let mut candidate_days = days_from_civil(i128::from(candidate.0), i128::from(candidate.1), i128::from(candidate.2));
+    if (direction > 0 && candidate_days > end_days) || (direction < 0 && candidate_days < end_days) {
+        total_months -= i128::from(direction);
+        candidate = add_signed_months_civil(start, total_months as i64);
+        candidate_days = days_from_civil(i128::from(candidate.0), i128::from(candidate.1), i128::from(candidate.2));
     }
-    let remainder_days = end.signed_duration_since(candidate).num_days();
+    let remainder_days = end_days - candidate_days;
     let (years, months) = if unit == "year" {
         (total_months / 12, total_months % 12)
     } else {
@@ -4201,42 +4233,50 @@ fn add_signed_months(date: NaiveDate, months: i64) -> Option<NaiveDate> {
     NaiveDate::from_ymd_opt(year, month, day)
 }
 
+/// 在 ISO 日期（分量式）上加减月数：天钳制到月末，支持超出 chrono 的宽年份。
+fn add_signed_months_civil(date: (i32, u32, u32), months: i64) -> (i32, u32, u32) {
+    let total = i128::from(date.0) * 12 + i128::from(date.1 - 1) + i128::from(months);
+    let year = total.div_euclid(12);
+    let month = total.rem_euclid(12) as u32 + 1;
+    let year = year.clamp(i128::from(i32::MIN), i128::from(i32::MAX)) as i32;
+    let max_day = days_in_month(i128::from(year), i128::from(month)).unwrap_or(31) as u32;
+    (year, month, date.2.min(max_day))
+}
+
 /// `Temporal.PlainDate.prototype.until(other)`，按默认天单位返回差值。
 pub fn plain_date_until<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let start = match plain_date_naive(vm, args) {
+    let start = match plain_date_ymd_checked(vm, args) {
         Ok(date) => date,
         Err(error) => return NativeResult::Err(error),
     };
     let other_value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let (year, month, day) = match date_like_ymd(vm, other_value) {
+    let other = match date_like_ymd(vm, other_value) {
         Ok(value) => value,
         Err(error) => return NativeResult::Err(error),
     };
-    let other = NaiveDate::from_ymd_opt(year, month, day).expect("date_like_ymd validates ISO date");
     let unit = match largest_unit(vm, args) {
         Ok(unit) => unit,
         Err(error) => return NativeResult::Err(error),
     };
-    make_duration(vm, date_difference(start, other, &unit))
+    make_duration(vm, date_difference_civil(start, other, &unit))
 }
 
 /// `Temporal.PlainDate.prototype.since(other)`，按默认天单位返回差值。
 pub fn plain_date_since<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let start = match plain_date_naive(vm, args) {
+    let start = match plain_date_ymd_checked(vm, args) {
         Ok(date) => date,
         Err(error) => return NativeResult::Err(error),
     };
     let other_value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let (year, month, day) = match date_like_ymd(vm, other_value) {
+    let other = match date_like_ymd(vm, other_value) {
         Ok(value) => value,
         Err(error) => return NativeResult::Err(error),
     };
-    let other = NaiveDate::from_ymd_opt(year, month, day).expect("date_like_ymd validates ISO date");
     let unit = match largest_unit(vm, args) {
         Ok(unit) => unit,
         Err(error) => return NativeResult::Err(error),
     };
-    let mut values = date_difference(start, other, &unit);
+    let mut values = date_difference_civil(start, other, &unit);
     for value in &mut values {
         if *value != 0.0 {
             *value = -*value;
