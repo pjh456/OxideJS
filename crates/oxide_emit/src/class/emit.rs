@@ -2,15 +2,49 @@
 //!
 //! 函数：`emit_class`。
 
-use crate::{CompileCtx, Emitter, FunctionBodyContext};
+use crate::{symbol_table::ScopeKind, CompileCtx, Emitter, FunctionBodyContext};
 use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
-use oxide_parser::{Class, ClassElement, Expression, MethodDefinitionKind, PropertyKey};
+use oxide_parser::{Class, ClassElement, Expression, MethodDefinitionKind, PropertyKey, VariableDeclarationKind};
 
 impl Emitter {
     pub(crate) fn emit_class(&self, class: &Class, ctx: &mut CompileCtx) -> Result<u32, String> {
+        // 类表达式：类名在类体内为 const 绑定；不向调用方复用寄存器时，
+        // 由 emit_class_with_binding 新建块作用域声明（TDZ），类构建完成后
+        // STORE_VAR 初始化再弹出作用域，类名不泄漏到外层。
+        self.emit_class_with_binding(class, ctx, None)
+    }
+
+    /// 类名绑定可复用调用方寄存器的类整体 emit。
+    ///
+    /// 类声明由调用方先在外层声明绑定（未初始化），`binding_reg` 复用该槽；
+    /// 类表达式无外部槽时，在独立块作用域声明 const 绑定（未初始化）。
+    /// 无论哪种形态，绑定都在 `extends` 求值前建立：extends 引用类名按规范
+    /// 抛 TDZ ReferenceError；类构建完成后 `init_var` + `STORE_VAR` 初始化。
+    pub(crate) fn emit_class_with_binding(
+        &self, class: &Class, ctx: &mut CompileCtx, binding_reg: Option<u32>,
+    ) -> Result<u32, String> {
+        let ctor_name = class.id.as_ref().map(|id| id.name.to_string());
+        let mut pushed_scope = false;
+        let binding_reg = if let Some(name) = ctor_name.as_deref() {
+            match binding_reg {
+                Some(reg) => {
+                    pushed_scope = false;
+                    reg
+                }
+                None => {
+                    let reg = ctx.alloc_reg();
+                    ctx.push_scope_with_kind(ScopeKind::BlockScope);
+                    ctx.declare(name, reg, VariableDeclarationKind::Const, true)?;
+                    pushed_scope = true;
+                    reg
+                }
+            }
+        } else {
+            0
+        };
         let elements = &class.body.body;
         let mut constructor_method = None;
         let mut instance_field_indices = Vec::new();
@@ -87,8 +121,8 @@ impl Emitter {
         let any_computed = computed_slot > 0;
 
         let (ctor_reg, proto_reg, super_reg) = self.emit_class_header(class, ctx)?;
-        let ctor_name = class.id.as_ref().map(|id| id.name.to_string());
-        let self_binding = ctor_name.as_deref().map(|name| vec![(name, ctor_reg)]).unwrap_or_default();
+        let self_binding = ctor_name.as_deref().map(|name| vec![(name, binding_reg)]).unwrap_or_default();
+
         let saved_derived = ctx.in_derived_constructor;
         let saved_private_names = ctx.scopes.private_name_map.clone();
         let saved_private_kinds = ctx.scopes.private_element_kinds.clone();
@@ -327,6 +361,21 @@ impl Emitter {
         self.emit_class_methods(&class.body.body, ctor_reg, proto_reg, &self_binding, &key_slots, ctx)?;
         self.emit_class_static_elements(&class.body.body, ctor_reg, &key_slots, ctx)?;
 
+
+        // 类构建完成：初始化类名绑定并写入类构造器（类内方法引用该寄存器/捕获）。
+        if let Some(name) = ctor_name.as_deref() {
+            ctx.init_var(name);
+            ctx.inst(Inst::new(
+                OpCode::STORE_VAR,
+                Operand::Reg(binding_reg),
+                Operand::Reg(ctor_reg),
+                Operand::None,
+            ));
+        }
+
+        if pushed_scope {
+            ctx.pop_scope();
+        }
         ctx.scopes.private_name_map = saved_private_names;
         ctx.scopes.private_element_kinds = saved_private_kinds;
         ctx.scopes.private_brand_id = saved_brand_id;
