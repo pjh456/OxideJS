@@ -86,6 +86,60 @@ impl Emitter {
                         out.insert(id.name.to_string());
                     }
                 }
+                // import 绑定是模块作用域 const 绑定，须计入 own_bindings 供
+                // 嵌套函数 cell 捕获。
+                Statement::ImportDeclaration(imp) => {
+                    if let Some(specifiers) = &imp.specifiers {
+                        for sp in specifiers {
+                            match sp {
+                                oxide_parser::ImportDeclarationSpecifier::ImportSpecifier(s) => {
+                                    out.insert(s.local.name.to_string());
+                                }
+                                oxide_parser::ImportDeclarationSpecifier::ImportDefaultSpecifier(s) => {
+                                    out.insert(s.local.name.to_string());
+                                }
+                                oxide_parser::ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) => {
+                                    out.insert(s.local.name.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                Statement::ExportNamedDeclaration(exp) => {
+                    if let Some(decl) = &exp.declaration {
+                        match decl {
+                            oxide_parser::Declaration::VariableDeclaration(vd) => {
+                                for d in &vd.declarations {
+                                    self.collect_binding_pattern_names(&d.id, out);
+                                }
+                            }
+                            oxide_parser::Declaration::FunctionDeclaration(fd) => {
+                                if let Some(id) = &fd.id {
+                                    out.insert(id.name.to_string());
+                                }
+                            }
+                            oxide_parser::Declaration::ClassDeclaration(cd) => {
+                                if let Some(id) = &cd.id {
+                                    out.insert(id.name.to_string());
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Statement::ExportDefaultDeclaration(exp) => match &exp.declaration {
+                    oxide_parser::ExportDefaultDeclarationKind::FunctionDeclaration(fd) => {
+                        if let Some(id) = &fd.id {
+                            out.insert(id.name.to_string());
+                        }
+                    }
+                    oxide_parser::ExportDefaultDeclarationKind::ClassDeclaration(cd) => {
+                        if let Some(id) = &cd.id {
+                            out.insert(id.name.to_string());
+                        }
+                    }
+                    _ => {}
+                },
                 Statement::BlockStatement(b) => self.collect_decl_names_stmt(&b.body, out),
                 Statement::IfStatement(is) => {
                     self.collect_decl_names_stmt(std::slice::from_ref(&is.consequent), out);
@@ -259,6 +313,58 @@ impl Emitter {
                     }
                 }
             }
+            Statement::ExportNamedDeclaration(exp) => {
+                if let Some(decl) = &exp.declaration {
+                    match decl {
+                        oxide_parser::Declaration::VariableDeclaration(vd) => {
+                            for d in &vd.declarations {
+                                if let Some(init) = &d.init {
+                                    self.collect_capture_names_expr(init, ref_set, shadow, out);
+                                }
+                            }
+                        }
+                        oxide_parser::Declaration::FunctionDeclaration(fd) => {
+                            let body: &[Statement] =
+                                fd.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
+                            let mut inner = shadow.clone();
+                            inner.extend(self.collect_fn_param_names(&fd.params));
+                            inner.extend(self.collect_own_binding_names(&[], body));
+                            self.collect_fn_default_names(&fd.params, ref_set, shadow, out);
+                            self.collect_capture_names_shadowed(body, ref_set, &inner, out);
+                        }
+                        oxide_parser::Declaration::ClassDeclaration(cd) => {
+                            let mut class_shadow = shadow.clone();
+                            if let Some(id) = &cd.id {
+                                class_shadow.insert(id.name.as_str().to_string());
+                            }
+                            self.collect_class_capture_names(&cd.body, ref_set, &class_shadow, out);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Statement::ExportDefaultDeclaration(exp) => match &exp.declaration {
+                oxide_parser::ExportDefaultDeclarationKind::FunctionDeclaration(fd) => {
+                    let body: &[Statement] = fd.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
+                    let mut inner = shadow.clone();
+                    inner.extend(self.collect_fn_param_names(&fd.params));
+                    inner.extend(self.collect_own_binding_names(&[], body));
+                    self.collect_fn_default_names(&fd.params, ref_set, shadow, out);
+                    self.collect_capture_names_shadowed(body, ref_set, &inner, out);
+                }
+                oxide_parser::ExportDefaultDeclarationKind::ClassDeclaration(cd) => {
+                    let mut class_shadow = shadow.clone();
+                    if let Some(id) = &cd.id {
+                        class_shadow.insert(id.name.as_str().to_string());
+                    }
+                    self.collect_class_capture_names(&cd.body, ref_set, &class_shadow, out);
+                }
+                other => {
+                    if let Some(e) = other.as_expression() {
+                        self.collect_capture_names_expr(e, ref_set, shadow, out);
+                    }
+                }
+            },
             Statement::ThrowStatement(ts) => self.collect_capture_names_expr(&ts.argument, ref_set, shadow, out),
             Statement::SwitchStatement(sw) => {
                 self.collect_capture_names_expr(&sw.discriminant, ref_set, shadow, out);

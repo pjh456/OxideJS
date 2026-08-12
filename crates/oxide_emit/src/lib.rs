@@ -7,6 +7,7 @@
 
 pub mod class;
 pub mod closure;
+pub mod module;
 pub mod emit;
 mod emit_log;
 pub mod emit_ctx;

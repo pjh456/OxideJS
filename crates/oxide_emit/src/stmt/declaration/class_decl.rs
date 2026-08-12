@@ -10,6 +10,13 @@ impl Emitter {
         let Statement::ClassDeclaration(class) = stmt else {
             return Err("ClassDeclaration without name".into());
         };
+        self.emit_class_declaration(class, ctx)
+    }
+
+    /// 类声明本体：供 export 声明复用（导出声明先按普通声明 emit，再就地注册导出值）。
+    pub(crate) fn emit_class_declaration(
+        &self, class: &oxide_parser::Class, ctx: &mut CompileCtx,
+    ) -> Result<Option<u32>, String> {
         let name = class
             .id
             .as_ref()

@@ -198,6 +198,14 @@ pub struct CompileCtx {
     /// let/const 循环变量每迭代 fresh cell，update 写寄存器（不污染本迭代闭包
     /// 捕获的 cell），下一迭代 fresh 从寄存器拷入新 cell。
     pub(crate) register_update_names: Vec<String>,
+    /// 模块编译上下文：当前模块命名空间对象寄存器（`__moduleObject` 返回值）。
+    pub(crate) module_ns_reg: Option<u32>,
+    /// 已求值依赖模块的命名空间对象寄存器（按 import/export source 字符串索引）。
+    pub(crate) module_dep_ns_regs: HashMap<String, u32>,
+    /// 自导入（import from 自身）的 source 字符串集合：绑定走别名语义，不能链接期快照。
+    pub(crate) module_self_import_specs: HashSet<String>,
+    /// 自导入别名：导出名 → 本地绑定槽寄存器（export 语句执行时回写绑定值）。
+    pub(crate) module_self_aliases: HashMap<String, u32>,
 }
 
 /// 函数体编译上下文：决定 `this`/`super` 绑定与参数前导（prologue）形态。
@@ -295,6 +303,10 @@ impl CompileCtx {
             with_stack: Vec::new(),
             open_try_handlers: Vec::new(),
             register_update_names: Vec::new(),
+            module_ns_reg: None,
+            module_dep_ns_regs: HashMap::new(),
+            module_self_import_specs: HashSet::new(),
+            module_self_aliases: HashMap::new(),
         }
     }
 
@@ -596,7 +608,7 @@ impl CompileCtx {
 
     /// 组装 IRFunction（两出口共用），take 走编译产物状态。
     /// `parent_ctx` 用于补全 upvalue_captures 的 enclosing_reg（父符号表在父 emit 完成后完整）。
-    fn assemble_ir(&mut self, param_layout: oxide_ir::ParamLayout, parent_ctx: Option<&CompileCtx>) -> IRFunction {
+    pub(crate) fn assemble_ir(&mut self, param_layout: oxide_ir::ParamLayout, parent_ctx: Option<&CompileCtx>) -> IRFunction {
         let upvalue_captures = self
             .current_upvalue_captures
             .iter()
@@ -1250,6 +1262,9 @@ impl Emitter {
             Statement::ContinueStatement(c) => self.emit_continue_statement(c, ctx),
             Statement::LabeledStatement(ls) => self.emit_labeled_statement(ls, ctx),
             Statement::WithStatement(_) => self.emit_with_domain(stmt, ctx),
+            Statement::ExportNamedDeclaration(_)
+            | Statement::ExportDefaultDeclaration(_)
+            | Statement::ExportAllDeclaration(_) => self.emit_module_export_domain(stmt, ctx),
             _ => Ok(None),
         }
     }

@@ -50,7 +50,7 @@ impl Emitter {
 
     /// 绑定单个标识符到槽位。`fresh_cell` 为 true 时对被捕获绑定用 MAKE_CELL_FRESH
     /// （循环每迭代绑定：无条件新建 cell，本迭代闭包捕获新 cell）。
-    fn emit_bind_target(
+    pub(crate) fn emit_bind_target(
         &self, name: &str, src_reg: u32, kind: VariableDeclarationKind, is_const: bool, fresh_cell: bool,
         ctx: &mut CompileCtx,
     ) -> Result<(), String> {

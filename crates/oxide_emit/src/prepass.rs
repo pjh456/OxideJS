@@ -5,7 +5,7 @@
 //! 支持提升语义。
 
 use crate::{CompileCtx, Emitter};
-use oxide_parser::{BindingPattern, Expression, Statement, VariableDeclarationKind};
+use oxide_parser::{BindingPattern, Declaration, ExportDefaultDeclarationKind, Expression, Statement, VariableDeclarationKind};
 
 impl Emitter {
     /// 在临时寄存器池之前分配 builtin 槽位。
@@ -115,6 +115,20 @@ impl Emitter {
             Statement::ClassDeclaration(cd) => {
                 if let Some(super_class) = &cd.super_class {
                     self.pre_scan_builtin_expr(super_class, ctx);
+                }
+            }
+            Statement::ExportNamedDeclaration(exp) => {
+                if let Some(Declaration::VariableDeclaration(vd)) = &exp.declaration {
+                    for d in &vd.declarations {
+                        if let Some(init) = &d.init {
+                            self.pre_scan_builtin_expr(init, ctx);
+                        }
+                    }
+                }
+            }
+            Statement::ExportDefaultDeclaration(exp) => {
+                if let Some(e) = exp.declaration.as_expression() {
+                    self.pre_scan_builtin_expr(e, ctx);
                 }
             }
             Statement::FunctionDeclaration(_) | Statement::BreakStatement(_) | Statement::ContinueStatement(_) => {}
@@ -283,8 +297,15 @@ impl Emitter {
 
     pub(crate) fn predeclare_function_declarations(&self, statements: &[Statement], ctx: &mut CompileCtx) {
         for statement in statements {
-            let Statement::FunctionDeclaration(function) = statement else {
-                continue;
+            let function = match statement {
+                Statement::FunctionDeclaration(f) => f,
+                Statement::ExportNamedDeclaration(exp) => match &exp.declaration {
+                    Some(Declaration::FunctionDeclaration(f)) => f,
+                    _ => continue,
+                },
+                // export default function foo(){}：foo 绑定由 lexical predeclare 以
+                // Const 预声明（emit 侧 emit_bind_target(Const) 消费预登记槽）。
+                _ => continue,
             };
             let Some(identifier) = &function.id else {
                 continue;
@@ -361,6 +382,24 @@ impl Emitter {
                 Statement::WithStatement(ws) => {
                     self.predeclare_var_declarations(std::slice::from_ref(&ws.body), ctx);
                 }
+                Statement::ExportNamedDeclaration(exp) => {
+                    if let Some(Declaration::VariableDeclaration(decl)) = &exp.declaration {
+                        if !matches!(decl.kind, VariableDeclarationKind::Var) {
+                            continue;
+                        }
+                        for d in &decl.declarations {
+                            if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
+                                let reg = ctx.alloc_reg();
+                                let _ = ctx.declare_initialized(
+                                    bi.name.as_str(),
+                                    reg,
+                                    VariableDeclarationKind::Var,
+                                    false,
+                                );
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -398,6 +437,60 @@ impl Emitter {
                         for s in &case.consequent {
                             self.predeclare_lexical_stmt(s, ctx);
                         }
+                    }
+                }
+                Statement::ExportNamedDeclaration(exp) => {
+                    if let Some(decl) = &exp.declaration {
+                        match decl {
+                            Declaration::VariableDeclaration(vd) => {
+                                if matches!(vd.kind, VariableDeclarationKind::Var) {
+                                    continue;
+                                }
+                                let is_const = matches!(vd.kind, VariableDeclarationKind::Const);
+                                for d in &vd.declarations {
+                                    self.predeclare_lexical_pattern(&d.id, is_const, ctx);
+                                }
+                            }
+                            Declaration::ClassDeclaration(cd) => {
+                                if let Some(id) = &cd.id {
+                                    let reg = ctx.alloc_reg();
+                                    let _ = ctx.declare_predeclared(
+                                        id.name.as_str(),
+                                        reg,
+                                        VariableDeclarationKind::Const,
+                                        true,
+                                    );
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Statement::ExportDefaultDeclaration(exp) => {
+                    match &exp.declaration {
+                        ExportDefaultDeclarationKind::ClassDeclaration(cd) => {
+                            if let Some(id) = &cd.id {
+                                let reg = ctx.alloc_reg();
+                                let _ = ctx.declare_predeclared(
+                                    id.name.as_str(),
+                                    reg,
+                                    VariableDeclarationKind::Const,
+                                    true,
+                                );
+                            }
+                        }
+                        ExportDefaultDeclarationKind::FunctionDeclaration(fd) => {
+                            if let Some(id) = &fd.id {
+                                let reg = ctx.alloc_reg();
+                                let _ = ctx.declare_predeclared(
+                                    id.name.as_str(),
+                                    reg,
+                                    VariableDeclarationKind::Const,
+                                    true,
+                                );
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 _ => {}

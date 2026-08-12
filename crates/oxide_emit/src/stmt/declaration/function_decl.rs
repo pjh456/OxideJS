@@ -13,6 +13,13 @@ impl Emitter {
         let Statement::FunctionDeclaration(fd) = stmt else {
             return Err("FunctionDeclaration without name".into());
         };
+        self.emit_function_declaration(fd, ctx)
+    }
+
+    /// 函数声明本体：供 export 声明复用（导出声明先按普通声明 emit，再就地注册导出值）。
+    pub(crate) fn emit_function_declaration(
+        &self, fd: &oxide_parser::Function, ctx: &mut CompileCtx,
+    ) -> Result<Option<u32>, String> {
         let name = if let Some(id) = &fd.id {
             id.name.to_string()
         } else {

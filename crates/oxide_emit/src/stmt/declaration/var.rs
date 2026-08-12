@@ -5,7 +5,7 @@ use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
-use oxide_parser::{BindingPattern, Statement, VariableDeclarationKind};
+use oxide_parser::{BindingPattern, Statement, VariableDeclaration, VariableDeclarationKind};
 
 impl Emitter {
     pub(crate) fn emit_variable_declaration_statement(
@@ -14,6 +14,13 @@ impl Emitter {
         let Statement::VariableDeclaration(decl) = stmt else {
             return Ok(None);
         };
+        self.emit_variable_declaration(decl, ctx)
+    }
+
+    /// 变量声明本体：供 export 声明复用（导出声明需先按普通声明 emit，再就地注册导出值）。
+    pub(crate) fn emit_variable_declaration(
+        &self, decl: &VariableDeclaration, ctx: &mut CompileCtx,
+    ) -> Result<Option<u32>, String> {
         let mut r = None;
         for d in &decl.declarations {
             let is_const = matches!(decl.kind, VariableDeclarationKind::Const);
