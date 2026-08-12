@@ -949,6 +949,8 @@ pub fn well_known_symbol_id<H: VmHost + ?Sized>(host: &H, ptr: *mut JsObject) ->
         Some(8)
     } else if std::ptr::eq(ptr, world.sym_to_string_tag.as_ptr()) {
         Some(9)
+    } else if std::ptr::eq(ptr, world.sym_species.as_ptr()) {
+        Some(10)
     } else {
         None
     }
@@ -967,6 +969,7 @@ pub fn well_known_symbol_name(id: u32) -> Option<&'static str> {
         7 => "Symbol.matchAll",
         8 => "Symbol.asyncIterator",
         9 => "Symbol.toStringTag",
+        10 => "Symbol.species",
         _ => return None,
     })
 }

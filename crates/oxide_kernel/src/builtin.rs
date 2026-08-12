@@ -251,6 +251,7 @@ pub struct BuiltinWorld {
     pub sym_match_all: P<JsObject>,
     pub sym_async_iterator: P<JsObject>,
     pub sym_to_string_tag: P<JsObject>,
+    pub sym_species: P<JsObject>,
     pub temporal_object: P<JsObject>,
     pub temporal_now_object: P<JsObject>,
     pub instant_constructor: P<JsObject>,
@@ -702,6 +703,7 @@ impl BuiltinWorld {
             BuiltinId::SymMatchAll => &self.sym_match_all,
             BuiltinId::SymAsyncIterator => &self.sym_async_iterator,
             BuiltinId::SymToStringTag => &self.sym_to_string_tag,
+            BuiltinId::SymSpecies => &self.sym_species,
             BuiltinId::TemporalObject => &self.temporal_object,
             BuiltinId::TemporalNowObject => &self.temporal_now_object,
             BuiltinId::InstantConstructor => &self.instant_constructor,
@@ -760,6 +762,7 @@ impl BuiltinWorld {
         let sym_match_all = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let sym_async_iterator = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let sym_to_string_tag = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let sym_species = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let temporal_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let temporal_now_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let (instant_proto, instant_constructor) = make_named_pair(string_forge, shape_forge, labels, "Instant");
@@ -846,6 +849,7 @@ impl BuiltinWorld {
             sym_match_all,
             sym_async_iterator,
             sym_to_string_tag,
+            sym_species,
             temporal_object,
             temporal_now_object,
             instant_constructor,
@@ -936,11 +940,13 @@ impl BuiltinWorld {
             sym_match_all,
             sym_async_iterator,
             sym_to_string_tag,
+            sym_species,
         ) = if dirty.symbol_family {
             let (symbol_proto, symbol_constructor) = make_named_pair(string_forge, shape_forge, labels, "Symbol");
             (
                 symbol_proto,
                 symbol_constructor,
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
                 P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
                 P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
                 P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
@@ -966,6 +972,7 @@ impl BuiltinWorld {
                 current.sym_match_all.clone(),
                 current.sym_async_iterator.clone(),
                 current.sym_to_string_tag.clone(),
+                current.sym_species.clone(),
             )
         };
 
@@ -1177,6 +1184,7 @@ impl BuiltinWorld {
             sym_match_all,
             sym_async_iterator,
             sym_to_string_tag,
+            sym_species,
             temporal_object,
             temporal_now_object,
             instant_constructor,

@@ -77,6 +77,10 @@ pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             "toStringTag",
             JsValue::from_js_object(session.builtin_world().sym_to_string_tag.as_ptr() as *mut JsObject),
         ),
+        (
+            "species",
+            JsValue::from_js_object(session.builtin_world().sym_species.as_ptr() as *mut JsObject),
+        ),
     ] {
         bind_well_known_symbol(core, ctor, name, val);
     }
