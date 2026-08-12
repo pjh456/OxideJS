@@ -3574,86 +3574,138 @@ fn add_months_i128(year: i128, month: i128, day: i128, months: i128) -> (i128, i
 }
 
 /// `Temporal.PlainDateTime.prototype.until/since(other, options)`：按最大/最小单位
-/// 计算差值并舍入。until 返回 other 减 receiver，since 返回反向。
-fn plain_date_time_difference<H: VmHost>(vm: &mut H, args: &[u8], since: bool) -> NativeResult {
-    let (sy, sm, sd, st) = match plain_date_time_parts(vm, args) {
-        Ok(parts) => parts,
-        Err(error) => return NativeResult::Err(error),
-    };
-    let other = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let (oy, om, od, ot) = match plain_date_time_like_parts(vm, other, true) {
-        Ok(parts) => parts,
-        Err(error) => return NativeResult::Err(error),
-    };
-    let options_value = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+/// 差值设置（GetDifferenceSettings 产物：单位层级、增量、舍入模式）。
+struct DifferenceSettings {
+    largest_index: usize,
+    smallest_index: usize,
+    increment: i128,
+    mode: InstantRoundingMode,
+}
 
+/// PlainDate 差值单位层级：0=year 1=month 2=week 3=day（不含时间单位）。
+fn plain_date_unit_index(value: &str) -> Option<usize> {
+    match value {
+        "year" | "years" => Some(0),
+        "month" | "months" => Some(1),
+        "week" | "weeks" => Some(2),
+        "day" | "days" => Some(3),
+        _ => None,
+    }
+}
+
+/// 解析差值选项（对齐 GetDifferenceSettings）：读取顺序 largestUnit →
+/// roundingIncrement → roundingMode → smallestUnit。date_only 时单位限定
+/// year/month/week/day，smallestUnit 缺省 "day"（含时间时缺省 "nanosecond"）。
+fn parse_difference_settings<H: VmHost>(
+    vm: &mut H,
+    options_value: JsValue,
+    date_only: bool,
+) -> Result<DifferenceSettings, JsValue> {
+    let unit_index = |value: &str| -> Option<usize> {
+        if date_only {
+            plain_date_unit_index(value)
+        } else {
+            plain_date_time_unit_index(value)
+        }
+    };
+    let default_smallest = if date_only { "day" } else { "nanosecond" };
     let (largest_raw, increment_value, mode_value, smallest_raw) = if options_value.is_undefined() {
-        (None, 1.0, "trunc".to_string(), "nanosecond".to_string())
+        (None, 1.0, "trunc".to_string(), default_smallest.to_string())
     } else {
         if !options_value.is_object() {
-            return NativeResult::Err(crate::error::create_type_error(vm, "options must be an object"));
+            return Err(crate::error::create_type_error(vm, "options must be an object"));
         }
         let options_ptr = options_value.as_js_object_ptr();
         if options_ptr.is_null() {
-            return NativeResult::Err(crate::error::create_type_error(vm, "options must be an object"));
+            return Err(crate::error::create_type_error(vm, "options must be an object"));
         }
         let options = unsafe { &*options_ptr };
-        // 读取顺序对齐 GetDifferenceSettings：largestUnit → roundingIncrement → roundingMode → smallestUnit。
         let largest_raw = match temporal_option_value(vm, options, options_value, "largestUnit") {
             Ok(raw) if raw.is_undefined() => None,
             Ok(raw) => match temporal_option_string(vm, raw) {
                 Ok(value) => Some(value),
-                Err(error) => return NativeResult::Err(error),
+                Err(error) => return Err(error),
             },
-            Err(error) => return NativeResult::Err(error),
+            Err(error) => return Err(error),
         };
         let increment_raw = match temporal_option_value(vm, options, options_value, "roundingIncrement") {
             Ok(raw) if raw.is_undefined() => 1.0,
             Ok(raw) => match temporal_option_number(vm, raw) {
                 Ok(value) => value,
-                Err(error) => return NativeResult::Err(error),
+                Err(error) => return Err(error),
             },
-            Err(error) => return NativeResult::Err(error),
+            Err(error) => return Err(error),
         };
         let mode_raw = match temporal_option_value(vm, options, options_value, "roundingMode") {
             Ok(raw) if raw.is_undefined() => "trunc".to_string(),
             Ok(raw) => match temporal_option_string(vm, raw) {
                 Ok(value) => value,
-                Err(error) => return NativeResult::Err(error),
+                Err(error) => return Err(error),
             },
-            Err(error) => return NativeResult::Err(error),
+            Err(error) => return Err(error),
         };
         let smallest_raw = match temporal_option_value(vm, options, options_value, "smallestUnit") {
-            Ok(raw) if raw.is_undefined() => "nanosecond".to_string(),
+            Ok(raw) if raw.is_undefined() => default_smallest.to_string(),
             Ok(raw) => match temporal_option_string(vm, raw) {
                 Ok(value) => value,
-                Err(error) => return NativeResult::Err(error),
+                Err(error) => return Err(error),
             },
-            Err(error) => return NativeResult::Err(error),
+            Err(error) => return Err(error),
         };
         (largest_raw, increment_raw, mode_raw, smallest_raw)
     };
 
-    let smallest_index = match plain_date_time_unit_index(&smallest_raw) {
+    let smallest_index = match unit_index(&smallest_raw) {
         Some(index) => index,
-        None => return NativeResult::Err(crate::error::create_range_error(vm, "invalid smallestUnit")),
+        None => return Err(crate::error::create_range_error(vm, "invalid smallestUnit")),
     };
     // auto/缺省：LargerOfTwoTemporalUnits('day', smallestUnit)。
     // 索引 0=year…3=day…9=nanosecond，更大单位取更小索引，故为 min(3, smallest)。
     let largest_index = match largest_raw {
         Some(value) if value == "auto" => smallest_index.min(3),
-        Some(value) => match plain_date_time_unit_index(&value) {
+        Some(value) => match unit_index(&value) {
             Some(index) => index,
-            None => return NativeResult::Err(crate::error::create_range_error(vm, "invalid largestUnit")),
+            None => return Err(crate::error::create_range_error(vm, "invalid largestUnit")),
         },
         None => smallest_index.min(3),
     };
     if largest_index > smallest_index {
-        return NativeResult::Err(crate::error::create_range_error(vm, "smallestUnit exceeds largestUnit"));
+        return Err(crate::error::create_range_error(vm, "smallestUnit exceeds largestUnit"));
     }
-    let Some(mut mode) = instant_rounding_mode(&mode_value) else {
-        return NativeResult::Err(crate::error::create_range_error(vm, "invalid roundingMode"));
+    let Some(mode) = instant_rounding_mode(&mode_value) else {
+        return Err(crate::error::create_range_error(vm, "invalid roundingMode"));
     };
+    if !increment_value.is_finite() {
+        return Err(crate::error::create_range_error(vm, "invalid roundingIncrement"));
+    }
+    let increment = increment_value.trunc();
+    if !(1.0..=1_000_000_000.0).contains(&increment) {
+        return Err(crate::error::create_range_error(vm, "invalid roundingIncrement"));
+    }
+    let increment = increment as i128;
+    const UNIT_LIMITS: [i128; 6] = [24, 60, 60, 1_000, 1_000, 1_000];
+    if smallest_index >= 4 {
+        let limit = UNIT_LIMITS[smallest_index - 4];
+        if increment >= limit || limit % increment != 0 {
+            return Err(crate::error::create_range_error(vm, "invalid roundingIncrement"));
+        }
+    }
+    Ok(DifferenceSettings { largest_index, smallest_index, increment, mode })
+}
+
+/// 差值核心：internal = end - start，按设置取整；since 用 NegateRoundingMode
+/// 的舍入模式并在最后整体取反（不调换两端，调换会改变 0.5 边界所在的年长）。
+#[allow(clippy::too_many_arguments)]
+fn difference_core<H: VmHost>(
+    vm: &mut H,
+    start: (i128, i128, i128),
+    start_time_ns: i128,
+    end: (i128, i128, i128),
+    end_time_ns: i128,
+    settings: DifferenceSettings,
+    since: bool,
+) -> NativeResult {
+    let DifferenceSettings { largest_index, smallest_index, increment, mut mode } = settings;
     if since {
         mode = match mode {
             InstantRoundingMode::Ceil => InstantRoundingMode::Floor,
@@ -3663,33 +3715,18 @@ fn plain_date_time_difference<H: VmHost>(vm: &mut H, args: &[u8], since: bool) -
             other => other,
         };
     }
-    if !increment_value.is_finite() {
-        return NativeResult::Err(crate::error::create_range_error(vm, "invalid roundingIncrement"));
-    }
-    let increment = increment_value.trunc();
-    if !(1.0..=1_000_000_000.0).contains(&increment) {
-        return NativeResult::Err(crate::error::create_range_error(vm, "invalid roundingIncrement"));
-    }
-    let increment = increment as i128;
-    const UNIT_LIMITS: [i128; 6] = [24, 60, 60, 1_000, 1_000, 1_000];
-    if smallest_index >= 4 {
-        let limit = UNIT_LIMITS[smallest_index - 4];
-        if increment >= limit || limit % increment != 0 {
-            return NativeResult::Err(crate::error::create_range_error(vm, "invalid roundingIncrement"));
-        }
-    }
     const UNIT_NS: [i128; 6] = [3_600_000_000_000, 60_000_000_000, 1_000_000_000, 1_000_000, 1_000, 1];
     const DAY_NS: i128 = 86_400_000_000_000;
 
     // 规范语义：internal = other - receiver；since 用 NegateRoundingMode 的舍入模式，最后整体取反。
     // 不调换两端（调换会改变 0.5 边界所在的年长，破坏对称性）。
-    let origin_epoch = days_from_civil(i128::from(sy), i128::from(sm), i128::from(sd)) * DAY_NS + st as i128;
-    let dest_epoch = days_from_civil(i128::from(oy), i128::from(om), i128::from(od)) * DAY_NS + ot as i128;
+    let origin_epoch = days_from_civil(start.0, start.1, start.2) * DAY_NS + start_time_ns;
+    let dest_epoch = days_from_civil(end.0, end.1, end.2) * DAY_NS + end_time_ns;
 
-    let date1 = (i128::from(sy), i128::from(sm), i128::from(sd));
-    let time1_ns = st as i128;
-    let mut date2 = (i128::from(oy), i128::from(om), i128::from(od));
-    let mut time_ns = ot as i128 - time1_ns;
+    let date1 = start;
+    let time1_ns = start_time_ns;
+    let mut date2 = end;
+    let mut time_ns = end_time_ns - time1_ns;
     let time_sign = if time_ns > 0 {
         1_i128
     } else if time_ns < 0 {
@@ -3818,6 +3855,34 @@ fn plain_date_time_difference<H: VmHost>(vm: &mut H, args: &[u8], since: bool) -
     }
     make_duration(vm, values)
 }
+
+/// 计算差值并舍入。until 返回 other 减 receiver，since 返回反向。
+fn plain_date_time_difference<H: VmHost>(vm: &mut H, args: &[u8], since: bool) -> NativeResult {
+    let (sy, sm, sd, st) = match plain_date_time_parts(vm, args) {
+        Ok(parts) => parts,
+        Err(error) => return NativeResult::Err(error),
+    };
+    let other = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let (oy, om, od, ot) = match plain_date_time_like_parts(vm, other, true) {
+        Ok(parts) => parts,
+        Err(error) => return NativeResult::Err(error),
+    };
+    let options_value = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let settings = match parse_difference_settings(vm, options_value, false) {
+        Ok(settings) => settings,
+        Err(error) => return NativeResult::Err(error),
+    };
+    difference_core(
+        vm,
+        (i128::from(sy), i128::from(sm), i128::from(sd)),
+        st as i128,
+        (i128::from(oy), i128::from(om), i128::from(od)),
+        ot as i128,
+        settings,
+        since,
+    )
+}
+
 /// `Temporal.PlainDateTime.prototype.until(other, options)`。
 pub fn plain_date_time_until<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     plain_date_time_difference(vm, args, false)
@@ -3827,6 +3892,7 @@ pub fn plain_date_time_until<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
 pub fn plain_date_time_since<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     plain_date_time_difference(vm, args, true)
 }
+
 
 /// `Temporal.PlainDateTime.prototype.add(durationLike, options)`。
 pub fn plain_date_time_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -3916,71 +3982,6 @@ fn date_like_ymd<H: VmHost>(vm: &mut H, val: JsValue) -> Result<(i32, u32, u32),
     Ok(ymd)
 }
 
-fn read_prop_text<H: VmHost>(vm: &mut H, obj: &JsObject, receiver: JsValue, name: &str) -> Option<String> {
-    let key_val = vm.new_string(name);
-    let si = vm.property_key_si(key_val);
-    vm.ordinary_get(obj, si, receiver)
-        .ok()
-        .filter(|value| value.is_string())
-        .map(to_string)
-}
-
-fn largest_unit<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<String, JsValue> {
-    if args.len() <= 2 {
-        return Ok("days".to_string());
-    }
-    let options = vm.reg(args[2]);
-    if options.is_nullish() {
-        return Ok("days".to_string());
-    }
-    if !options.is_object() {
-        return Err(crate::error::create_type_error(vm, "options must be an object"));
-    }
-    let ptr = options.as_js_object_ptr();
-    if ptr.is_null() {
-        return Err(crate::error::create_type_error(vm, "options must be an object"));
-    }
-    let unit = read_prop_text(vm, unsafe { &*ptr }, options, "largestUnit").unwrap_or_else(|| "days".to_string());
-    let unit = unit.to_ascii_lowercase();
-    let unit = unit.strip_suffix('s').unwrap_or(&unit);
-    match unit {
-        "year" | "month" | "week" | "day" => Ok(unit.to_string()),
-        "auto" => Ok("day".to_string()),
-        _ => Err(crate::error::create_range_error(vm, "invalid largestUnit")),
-    }
-}
-
-/// 两个 ISO 日期（全表示范围）的差值，语义与原 chrono 版本一致，
-/// 但基于 civil 日计数，支持 PlainDate 全范围（-271821-04-19 … +275760-09-13，超出 chrono NaiveDate）。
-fn date_difference_civil(start: (i32, u32, u32), end: (i32, u32, u32), unit: &str) -> [f64; 10] {
-    let start_days = days_from_civil(i128::from(start.0), i128::from(start.1), i128::from(start.2));
-    let end_days = days_from_civil(i128::from(end.0), i128::from(end.1), i128::from(end.2));
-    let total_days = end_days - start_days;
-    if unit == "day" {
-        return [0.0, 0.0, 0.0, total_days as f64, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-    }
-    if unit == "week" {
-        return [0.0, 0.0, (total_days / 7) as f64, (total_days % 7) as f64, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-    }
-
-    let direction = if end_days >= start_days { 1_i64 } else { -1_i64 };
-    let mut total_months =
-        (i128::from(end.0) - i128::from(start.0)) * 12 + i128::from(end.1 - 1) - i128::from(start.1 - 1);
-    let mut candidate = add_signed_months_civil(start, total_months as i64);
-    let mut candidate_days = days_from_civil(i128::from(candidate.0), i128::from(candidate.1), i128::from(candidate.2));
-    if (direction > 0 && candidate_days > end_days) || (direction < 0 && candidate_days < end_days) {
-        total_months -= i128::from(direction);
-        candidate = add_signed_months_civil(start, total_months as i64);
-        candidate_days = days_from_civil(i128::from(candidate.0), i128::from(candidate.1), i128::from(candidate.2));
-    }
-    let remainder_days = end_days - candidate_days;
-    let (years, months) = if unit == "year" {
-        (total_months / 12, total_months % 12)
-    } else {
-        (0, total_months)
-    };
-    [years as f64, months as f64, 0.0, remainder_days as f64, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-}
 
 /// `Temporal.PlainDate.prototype.dayOfWeek` getter：ISO 周几（周一 1 … 周日 7）。
 pub fn plain_date_day_of_week<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -4230,17 +4231,9 @@ fn add_signed_months(date: NaiveDate, months: i64) -> Option<NaiveDate> {
     NaiveDate::from_ymd_opt(year, month, day)
 }
 
-/// 在 ISO 日期（分量式）上加减月数：天钳制到月末，支持超出 chrono 的宽年份。
-fn add_signed_months_civil(date: (i32, u32, u32), months: i64) -> (i32, u32, u32) {
-    let total = i128::from(date.0) * 12 + i128::from(date.1 - 1) + i128::from(months);
-    let year = total.div_euclid(12);
-    let month = total.rem_euclid(12) as u32 + 1;
-    let year = year.clamp(i128::from(i32::MIN), i128::from(i32::MAX)) as i32;
-    let max_day = days_in_month(i128::from(year), i128::from(month)).unwrap_or(31) as u32;
-    (year, month, date.2.min(max_day))
-}
 
-/// `Temporal.PlainDate.prototype.until(other)`，按默认天单位返回差值。
+/// `Temporal.PlainDate.prototype.until(other, options)`：date-only 单位
+/// （year/month/week/day）差值 + 舍入语义。
 pub fn plain_date_until<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let start = match plain_date_ymd_checked(vm, args) {
         Ok(date) => date,
@@ -4251,14 +4244,23 @@ pub fn plain_date_until<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Ok(value) => value,
         Err(error) => return NativeResult::Err(error),
     };
-    let unit = match largest_unit(vm, args) {
-        Ok(unit) => unit,
+    let options_value = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let settings = match parse_difference_settings(vm, options_value, true) {
+        Ok(settings) => settings,
         Err(error) => return NativeResult::Err(error),
     };
-    make_duration(vm, date_difference_civil(start, other, &unit))
+    difference_core(
+        vm,
+        (i128::from(start.0), i128::from(start.1), i128::from(start.2)),
+        0,
+        (i128::from(other.0), i128::from(other.1), i128::from(other.2)),
+        0,
+        settings,
+        false,
+    )
 }
 
-/// `Temporal.PlainDate.prototype.since(other)`，按默认天单位返回差值。
+/// `Temporal.PlainDate.prototype.since(other, options)`：date-only 单位差值 + 舍入。
 pub fn plain_date_since<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let start = match plain_date_ymd_checked(vm, args) {
         Ok(date) => date,
@@ -4269,15 +4271,18 @@ pub fn plain_date_since<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Ok(value) => value,
         Err(error) => return NativeResult::Err(error),
     };
-    let unit = match largest_unit(vm, args) {
-        Ok(unit) => unit,
+    let options_value = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let settings = match parse_difference_settings(vm, options_value, true) {
+        Ok(settings) => settings,
         Err(error) => return NativeResult::Err(error),
     };
-    let mut values = date_difference_civil(start, other, &unit);
-    for value in &mut values {
-        if *value != 0.0 {
-            *value = -*value;
-        }
-    }
-    make_duration(vm, values)
+    difference_core(
+        vm,
+        (i128::from(start.0), i128::from(start.1), i128::from(start.2)),
+        0,
+        (i128::from(other.0), i128::from(other.1), i128::from(other.2)),
+        0,
+        settings,
+        true,
+    )
 }
