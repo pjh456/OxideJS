@@ -35,6 +35,8 @@ pub mod json;
 pub mod map;
 /// Math 内置对象实现（数学函数）。
 pub mod math;
+/// 模块命名空间与求值辅助（import 实现内部用）。
+pub mod module;
 /// Number 内置对象实现（constructor 与 toFixed/isInteger 等）。
 pub mod number;
 /// Object 内置对象实现（keys/create/assign/defineProperty 等静态方法）。
