@@ -79,6 +79,9 @@ pub struct CompiledModule {
     /// 全局扁平模块 id：编译末端 flatten 阶段分配（顶层 0，子模块 DFS 递增）。
     /// `CREATE_CLOSURE` 的 imm16 在 flatten 后即此 id，运行时以它为平表下标。
     pub flat_id: u32,
+    /// 是否为 ES module 顶层：VM 据此把顶层 `this` 绑定为 undefined
+    /// （模块环境记录 GetThisBinding 返回 undefined，区别于脚本全局 this）。
+    pub is_es_module: bool,
 }
 
 impl CompiledModule {
@@ -104,6 +107,7 @@ impl CompiledModule {
             upvalue_captures: Vec::new(),
             cells_needed: 0,
             flat_id: 0,
+            is_es_module: false,
         }
     }
 }
@@ -136,6 +140,7 @@ impl Clone for CompiledModule {
             upvalue_captures: self.upvalue_captures.clone(),
             cells_needed: self.cells_needed,
             flat_id: self.flat_id,
+            is_es_module: self.is_es_module,
         }
     }
 }

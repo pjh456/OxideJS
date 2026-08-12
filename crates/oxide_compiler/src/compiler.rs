@@ -38,12 +38,31 @@ impl Compiler {
         }
     }
 
-    /// 编译整个 program：AST → IR（`Emitter::emit_program`）→（可选 DCE）→（可选
-    /// liveness/精确 DCE/RegAlloc）→ bytecode（`lower`）。
+    /// 编译整个 script program：AST → IR（`Emitter::emit_program`）→ 统一 IR 管线。
     pub fn compile(&self, program: &oxide_parser::Program) -> Result<CompiledModule, String> {
         crate::compiler_debug!("compile: starting...");
-        let mut ir = Emitter::new().emit_program(program)?;
-        crate::compiler_debug!("compile: after emit {} insts", ir.insts.len());
+        let ir = Emitter::new().emit_program(program)?;
+        self.compile_ir(ir)
+    }
+
+    /// 编译 ES module：AST → IR（`Emitter::emit_program_module`，含依赖模块链接）→ 统一 IR 管线。
+    /// `module_path` 为模块文件的规范路径（依赖解析基准 = 其父目录），依赖加载经
+    /// `loader` 解析。
+    pub fn compile_module(
+        &self, program: &oxide_parser::Program, module_path: &str,
+        loader: &mut dyn oxide_emit::module::ModuleSourceLoader,
+    ) -> Result<CompiledModule, String> {
+        crate::compiler_debug!("compile_module: starting...");
+        let ir = Emitter::new().emit_program_module(program, module_path, loader)?;
+        let mut module = self.compile_ir(ir)?;
+        module.is_es_module = true;
+        Ok(module)
+    }
+
+    /// 统一 IR 后处理管线：（可选 DCE）→（可选 liveness/精确 DCE/RegAlloc）→
+    /// bytecode（`lower`）→ 子模块拍平。
+    fn compile_ir(&self, mut ir: oxide_ir::IRFunction) -> Result<CompiledModule, String> {
+        crate::compiler_debug!("compile_ir: after emit {} insts", ir.insts.len());
         if self.enable_dce {
             oxide_dce::dce(&mut ir); // 顶层函数；nested 不递归
             crate::compiler_debug!("compile: after DCE {} insts", ir.insts.len());

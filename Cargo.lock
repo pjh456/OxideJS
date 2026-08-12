@@ -1202,6 +1202,7 @@ name = "oxide_emit"
 version = "0.1.0"
 dependencies = [
  "num-bigint",
+ "oxc_allocator",
  "oxide_bytecode",
  "oxide_ir",
  "oxide_log",
@@ -1303,6 +1304,7 @@ version = "0.1.0"
 dependencies = [
  "oxide_bytecode",
  "oxide_compiler",
+ "oxide_emit",
  "oxide_kernel",
  "oxide_log",
  "oxide_parser",

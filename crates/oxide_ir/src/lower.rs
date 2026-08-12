@@ -97,6 +97,7 @@ pub fn lower(f: &IRFunction) -> Result<CompiledModule, String> {
         upvalue_captures: f.upvalue_captures.clone(),
         cells_needed: f.cells_needed,
         flat_id: 0,
+        is_es_module: false,
     })
 }
 

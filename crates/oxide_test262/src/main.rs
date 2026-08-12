@@ -436,6 +436,44 @@ fn run_test(
     }
 }
 
+/// test262 模块用例的依赖加载器：以测试文件父目录为基准解析相对导入，
+/// 读取磁盘上的 fixture 源码；json/text/bytes 经 import attributes 判定。
+struct Test262ModuleLoader;
+
+impl oxide_emit::module::ModuleSourceLoader for Test262ModuleLoader {
+    fn resolve(
+        &mut self, base_dir: &str, specifier: &str, attributes: &[(&str, &str)],
+    ) -> Result<oxide_emit::module::ResolvedModule, String> {
+        use oxide_emit::module::{ModuleKind, ResolvedModule};
+        let kind = attributes
+            .iter()
+            .find(|(k, _)| *k == "type")
+            .map(|(_, v)| match *v {
+                "json" => ModuleKind::Json,
+                "text" => ModuleKind::Text,
+                "bytes" => ModuleKind::Bytes,
+                _ => ModuleKind::Js,
+            })
+            .unwrap_or(ModuleKind::Js);
+        let base = Path::new(base_dir);
+        let full = if specifier.starts_with('/') {
+            PathBuf::from(specifier.trim_start_matches('/'))
+        } else {
+            base.join(specifier)
+        };
+        let canonical = full
+            .canonicalize()
+            .map_err(|e| format!("cannot resolve module {specifier}: {e}"))?;
+        let content = std::fs::read_to_string(&canonical)
+            .map_err(|e| format!("cannot read module {specifier}: {e}"))?;
+        Ok(ResolvedModule {
+            source: content,
+            path: canonical.to_string_lossy().to_string(),
+            kind,
+        })
+    }
+}
+
 /// 单测执行主流程：拼 harness 前缀 → parse → compile → run；
 /// 依据 `negative` 元数据校验期望错误，未实现特性按 no_skip 选择跳过或失败。
 #[expect(clippy::too_many_arguments)]
@@ -495,7 +533,12 @@ fn run_test_inner(
     };
 
     let compiler = if no_regalloc { Compiler::new().with_regalloc(false) } else { Compiler::new() };
-    let module = match compiler.compile(&program) {
+    let module = match if is_module {
+        let mut loader = Test262ModuleLoader;
+        compiler.compile_module(&program, &path.to_string_lossy().to_string(), &mut loader)
+    } else {
+        compiler.compile(&program)
+    } {
         Ok(m) => m,
         Err(e) => {
             let dur = start.elapsed().as_millis() as u64;

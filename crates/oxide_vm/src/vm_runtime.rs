@@ -333,9 +333,14 @@ impl Vm {
             }
         }
 
-        // 全局代码的 this 绑定为全局对象（ECMA-262 全局执行上下文）。
+        // 顶层 this：脚本为全局对象（ECMA-262 全局执行上下文）；
+        // ES module 顶层环境 GetThisBinding 返回 undefined。
         let global = self.session.global_object();
-        self.regs[254] = JsValue::from_js_object(global.as_ptr() as *mut JsObject);
+        self.regs[254] = if module.is_es_module {
+            JsValue::undefined()
+        } else {
+            JsValue::from_js_object(global.as_ptr() as *mut JsObject)
+        };
 
         let result = self.dispatch();
         // 顶层执行结束后 drain 微任务队列：Promise reactions 与 thenable 委托在此执行。
