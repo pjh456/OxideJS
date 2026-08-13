@@ -7,6 +7,8 @@ use oxide_runtime_api::{to_object, NativeResult, VmHost};
 
 const INNER_PROP: &str = "__inner__";
 const INDEX_PROP: &str = "__index__";
+/// 字符串迭代的字节游标（`next` 增量推进的当前位置），避免每步整串复制 + 从头重扫。
+const BYTEOFF_PROP: &str = "__byteoff__";
 
 /// 占位构造函数：`Iterator` 不是构造函数，任何调用都抛 TypeError。
 pub fn iterator_constructor<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
@@ -304,9 +306,12 @@ fn next_array_like<H: VmHost>(
 
     if inner.is_string() {
         let index = current_index(vm, wrapper, index_si);
-        let source = oxide_runtime_api::to_string(inner);
-        let mut chars = source.chars();
-        if let Some(ch) = chars.nth(index) {
+        let byteoff_si = vm.kernel_core().perm_interner().intern(BYTEOFF_PROP).0;
+        let byteoff = current_index(vm, wrapper, byteoff_si);
+        let source = unsafe { &*inner.as_string_ptr() }.as_str();
+        let rest = &source[byteoff..];
+        if let Some(ch) = rest.chars().next() {
+            vm.set_or_create_prop_value(wrapper, byteoff_si, JsValue::int((byteoff + ch.len_utf8()) as i32));
             vm.set_or_create_prop_value(wrapper, index_si, JsValue::int((index + 1) as i32));
             let value = vm.new_string(&ch.to_string());
             return Ok(Some(make_iter_result(vm, value, false)));
