@@ -87,8 +87,8 @@ fn reflect_apply_calls_function() {
         &mut vm,
         "function add(a, b) { return this.base + a + b; } var receiver = {base: 10}; var args = [1, 2]; Reflect.apply(add, receiver, args)",
     )
-    .unwrap();
-    assert_eq!(result.as_double(), 13.0);
+      .unwrap();
+    assert_eq!(result.as_int(), 13, "this.base 10 + 1 + 2 = 13");
 }
 
 #[test]

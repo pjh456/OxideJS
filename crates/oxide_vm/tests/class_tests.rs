@@ -323,9 +323,10 @@ fn private_class_fields_are_hidden_from_reflection_and_string_access() {
 #[test]
 fn private_class_fields_are_hidden_from_for_in() {
     let mut vm = Vm::new();
+    // 公有字段 y 可枚举（计数 1），私有 #x 不可见：若 #x 泄漏则计数为 2。
     let result = eval(
         &mut vm,
-        "class C { #x = 1; } var o = new C(); var n = 0; for (var k in o) { n = n + 1; } n",
+        "class C { #x = 1; y = 2; } var o = new C(); var n = 0; for (var k in o) { n = n + 1; } n",
     )
     .unwrap();
     assert_num(result, 1.0);

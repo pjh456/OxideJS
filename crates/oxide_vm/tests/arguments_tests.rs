@@ -89,7 +89,7 @@ fn arguments_frame_boundary_across_nested_calls() {
     // 子调用返回后父函数的 arguments 实参区仍完好（帧恢复截断不越界）。
     let mut vm = Vm::new();
     let result = eval(&mut vm, "function g(){return 1} function f(){return arguments.length + g()}; f(4,5,6)").unwrap();
-    assert!((result.as_double() - 4.0).abs() < 0.0001);
+    assert_eq!(result.as_int(), 4, "arguments.length 3 + g() 1 = 4");
 }
 
 #[test]

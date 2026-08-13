@@ -9,6 +9,12 @@ fn eval(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
     vm.run(&module)
 }
 
+/// 数值断言：整数运算保 int，容忍 int/double 两种表示。
+fn assert_num(result: JsValue, expected: f64) {
+    let actual = if result.is_int() { result.as_int() as f64 } else { result.as_double() };
+    assert!((actual - expected).abs() < 0.0001, "expected {expected}, got {actual}");
+}
+
 // --- Function Declaration Basics ---
 
 #[test]
@@ -36,7 +42,7 @@ fn fd_hoisting() {
 fn fd_with_params() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "function add(a,b) { return a + b; } add(2, 3)").unwrap();
-    assert!((result.as_double() - 5.0).abs() < 0.0001);
+    assert_num(result, 5.0);
 }
 
 #[test]
@@ -68,15 +74,14 @@ fn fe_with_params() {
 fn cross_func_call() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "function a() { return 1; } function b() { return a() + 2; } b()").unwrap();
-    assert!((result.as_double() - 3.0).abs() < 0.0001);
+    assert_num(result, 3.0);
 }
 
 #[test]
 fn two_funcs_called_from_global() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "function a() { return 1; } function b() { return 2; } a() + b()").unwrap();
-    assert!(result.is_double(), "expected double, got: {:?}", result);
-    assert!((result.as_double() - 3.0).abs() < 0.0001);
+    assert_num(result, 3.0);
 }
 
 #[test]
@@ -87,7 +92,7 @@ fn call_preserves_previous_call_result_register() {
         "function g() { return 10; } function h() { return 20; } function f() { return g() + h(); } f()",
     )
     .unwrap();
-    assert!((result.as_double() - 30.0).abs() < 0.0001);
+    assert_num(result, 30.0);
 }
 
 #[test]
@@ -98,7 +103,7 @@ fn call_preserves_local_across_nested_bytecode_call() {
         "function g() { return 10; } function h() { return 20; } function f() { var x = g(); return x + h(); } f()",
     )
     .unwrap();
-    assert!((result.as_double() - 30.0).abs() < 0.0001);
+    assert_num(result, 30.0);
 }
 
 // --- Builtins inside functions ---

@@ -89,7 +89,7 @@ fn closure_write_upvalue() {
 #[test]
 fn closure_nested_expr_capture() {
     let result = eval("function outer(){ var x=1; return function(){return x+1}()} outer()").unwrap();
-    assert_eq!(result.as_double(), 2.0);
+    assert_eq!(result.as_int(), 2);
 }
 
 #[test]

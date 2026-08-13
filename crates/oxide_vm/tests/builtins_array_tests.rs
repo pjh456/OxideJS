@@ -58,7 +58,7 @@ fn array_push_preserves_slots_beyond_255() {
     let obj = unsafe { &*result.as_js_object_ptr() };
     assert_eq!(obj.prop_count(), 257);
     let tail = obj.get_prop_at(256);
-    assert_eq!(tail.as_double(), 256.0);
+    assert_eq!(tail.as_int(), 256, "push 循环末尾值保持 int 表示");
 }
 
 #[test]

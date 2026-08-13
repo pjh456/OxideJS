@@ -9,6 +9,12 @@ fn eval(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
     vm.run(&module)
 }
 
+/// 数值断言：整数运算保 int，容忍 int/double 两种表示。
+fn assert_num(result: JsValue, expected: f64) {
+    let actual = if result.is_int() { result.as_int() as f64 } else { result.as_double() };
+    assert!((actual - expected).abs() < 0.0001, "expected {expected}, got {actual}");
+}
+
 #[test]
 fn function_call_changes_this() {
     let mut vm = Vm::new();
@@ -53,21 +59,21 @@ fn function_call_bind_supports_uncurried_native_methods() {
 fn function_call_invokes_bytecode_function() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "function add(a, b) { return a + b; } add.call(null, 2, 3)").unwrap();
-    assert!((result.as_double() - 5.0).abs() < 0.0001);
+    assert_num(result, 5.0);
 }
 
 #[test]
 fn function_apply_invokes_bytecode_function() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "function add(a, b) { return a + b; } add.apply(null, [2, 3])").unwrap();
-    assert!((result.as_double() - 5.0).abs() < 0.0001);
+    assert_num(result, 5.0);
 }
 
 #[test]
 fn function_bind_invokes_bytecode_function() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "function add1(a) { return a + 1; } var bound = add1.bind(null); bound(2)").unwrap();
-    assert!((result.as_double() - 3.0).abs() < 0.0001);
+    assert_num(result, 3.0);
 }
 
 #[test]
@@ -107,7 +113,7 @@ fn function_call_returns_object_stays_valid() {
 fn function_apply_returns_object_stays_valid() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "function f(a) { return {v: a + 1}; } f.apply(null, [9]).v").unwrap();
-    assert!((result.as_double() - 10.0).abs() < 0.0001);
+    assert_num(result, 10.0);
 }
 
 #[test]
