@@ -565,7 +565,7 @@ fn compile_class_expression_emits_constructor_value() {
         module
             .bytecode
             .iter()
-            .filter(|&&i| opcode::opcode(i) == OpCode::SET_PROP)
+            .filter(|&&i| opcode::opcode(i) == OpCode::DEFINE_PROP_ATTRS)
             .count()
             >= 3,
         "class expression should wire method/constructor/prototype properties"
@@ -594,7 +594,9 @@ fn compile_large_pure_expression_reuses_temp_registers() {
 
 #[test]
 fn compile_builtin_globals_are_registered_lazily() {
-    let module = compile_source("Object; Array; Math; JSON");
+    // 数组字面量内全部 4 个引用均为活代码（结果即脚本值），DCE 不可删；
+    // 未被引用的其它内置全局不得占用槽位。
+    let module = compile_source("[Object, Array, Math, JSON]");
     assert_eq!(module.builtin_reg_map.len(), 4, "only referenced builtins should allocate registers");
 }
 

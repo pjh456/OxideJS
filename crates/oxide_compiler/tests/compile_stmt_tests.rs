@@ -277,7 +277,7 @@ fn compile_class_declaration_emits_constructor_and_prototype_setup() {
         module
             .bytecode
             .iter()
-            .filter(|&&i| opcode::opcode(i) == OpCode::SET_PROP)
+            .filter(|&&i| opcode::opcode(i) == OpCode::DEFINE_PROP_ATTRS)
             .count()
             >= 3,
         "class should assign method, constructor, and prototype properties"
@@ -304,8 +304,11 @@ fn compile_class_declaration_default_constructor_creates_submodule() {
 fn compile_class_instance_getter_emits_define_accessor() {
     let module = compile_source("class A { get x() { return 1; } }");
     assert!(
-        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::DEFINE_ACCESSOR),
-        "class getter should emit DEFINE_ACCESSOR"
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::DEFINE_ACCESSOR_ATTRS),
+        "class getter should emit DEFINE_ACCESSOR_ATTRS"
     );
 }
 
@@ -313,8 +316,11 @@ fn compile_class_instance_getter_emits_define_accessor() {
 fn compile_class_static_setter_emits_define_accessor() {
     let module = compile_source("class A { static set x(v) { this.y = v; } }");
     assert!(
-        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::DEFINE_ACCESSOR),
-        "static class setter should emit DEFINE_ACCESSOR"
+        module
+            .bytecode
+            .iter()
+            .any(|&i| opcode::opcode(i) == OpCode::DEFINE_ACCESSOR_ATTRS),
+        "static class setter should emit DEFINE_ACCESSOR_ATTRS"
     );
 }
 
