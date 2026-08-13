@@ -196,7 +196,9 @@ impl Vm {
     }
 
     /// define 数据属性并指定描述符：ext 字为 attrs（bit0=writable, bit1=enumerable, bit2=configurable，与 PropAttributes 位一致）。
-    pub(crate) fn dispatch_define_prop_attrs(&mut self, rd: usize, a: usize, b: usize, attrs: u8) -> Result<(), String> {
+    pub(crate) fn dispatch_define_prop_attrs(
+        &mut self, rd: usize, a: usize, b: usize, attrs: u8,
+    ) -> Result<(), String> {
         vm_trace!("DEFINE_PROP_ATTRS rd={} value={} key={} attrs={:#04b}", rd, a, b, attrs);
         let obj_val = self.regs[rd];
         if !obj_val.is_object() {
@@ -233,7 +235,23 @@ impl Vm {
         let getter = self.regs[a];
         let setter = self.regs[b];
         let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
-        match self.define_accessor_property(obj, prop_name_si, getter, setter, PropAttributes(attrs)) {
+        // 类内 get x 与 set x 分两条指令定义同一属性：第二次到达时已存在访问器，
+        // 未提供的半边（undefined）须继承既有值，否则后定义覆盖前定义的 get/set。
+        let existing = self
+            .get_own_property_slot(obj, prop_name_si)
+            .and_then(|pos| obj.prop_meta_at(pos))
+            .filter(|meta| meta.is_accessor);
+        let get = if getter.is_undefined() {
+            existing.map(|meta| meta.get).unwrap_or(JsValue::undefined())
+        } else {
+            getter
+        };
+        let set = if setter.is_undefined() {
+            existing.map(|meta| meta.set).unwrap_or(JsValue::undefined())
+        } else {
+            setter
+        };
+        match self.define_accessor_property(obj, prop_name_si, get, set, PropAttributes(attrs)) {
             Ok(()) => Ok(()),
             Err(msg) => self.raise_error_kind("TypeError", &msg),
         }
