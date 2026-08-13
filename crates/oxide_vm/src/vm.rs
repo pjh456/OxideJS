@@ -1095,7 +1095,14 @@ impl Vm {
                 self.raise_error_kind("RangeError", "Maximum call stack size exceeded")?;
                 return Ok(JsValue::undefined());
             }
-            let saved_regs = self.regs;
+            // native 回调只写 regs[0..args.len()] 实参区 + regs[253]/[254]（receiver/callee），
+            // 窗口 = 调用方活动寄存器 ∪ 实参写入区；窗口外槽回调不触碰，无需保存。
+            let window = (self.active_reg_limit as usize).max(args.len() + 3).min(253);
+            let mut saved_window = self.inline_reg_pool.take().unwrap_or_default();
+            saved_window.clear();
+            saved_window.extend_from_slice(&self.regs[..window]);
+            let saved_r253 = self.regs[253];
+            let saved_r254 = self.regs[254];
             let arg_regs = self.pack_sync_native_call_args(receiver, callee, args);
             // SAFETY: native_fn 经 set_native_fn 以合法 NativeFn 指针设置；
             // native_fn_ptr_to_fn 是 NativeFnPtr → NativeFn 的唯一强制转换点。
@@ -1103,7 +1110,11 @@ impl Vm {
             self.native_call_depth += 1;
             let result = func(self, &arg_regs);
             self.native_call_depth -= 1;
-            self.regs = saved_regs;
+            // 窗口回拷 + regs[253]/[254] 单回，缓冲归还池复用。
+            self.regs[..window].copy_from_slice(&saved_window);
+            self.regs[253] = saved_r253;
+            self.regs[254] = saved_r254;
+            self.inline_reg_pool = Some(saved_window);
             return match result {
                 NativeResult::Ok(val) => Ok(val),
                 NativeResult::Err(err) => {
