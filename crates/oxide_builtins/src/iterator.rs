@@ -308,9 +308,10 @@ fn next_array_like<H: VmHost>(
         let index = current_index(vm, wrapper, index_si);
         let byteoff_si = vm.kernel_core().perm_interner().intern(BYTEOFF_PROP).0;
         let byteoff = current_index(vm, wrapper, byteoff_si);
-        let source = unsafe { &*inner.as_string_ptr() }.as_str();
-        let rest = &source[byteoff..];
-        if let Some(ch) = rest.chars().next() {
+        // 源串裸指针借用压缩到单个表达式：ch 是 Copy 的 char，不携带借用，
+        // 之后对 VM 状态的可变访问不再与源串借用共存。
+        let ch = unsafe { &*inner.as_string_ptr() }.as_str()[byteoff..].chars().next();
+        if let Some(ch) = ch {
             vm.set_or_create_prop_value(wrapper, byteoff_si, JsValue::int((byteoff + ch.len_utf8()) as i32));
             vm.set_or_create_prop_value(wrapper, index_si, JsValue::int((index + 1) as i32));
             let value = vm.new_string(&ch.to_string());

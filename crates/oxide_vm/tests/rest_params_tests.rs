@@ -28,7 +28,7 @@ fn eval_int(source: &str) -> i32 {
 fn eval_str(source: &str) -> String {
     let v = eval(source);
     if v.is_string() {
-        unsafe { oxide_runtime_api::string_data(v) }.to_string()
+        oxide_runtime_api::to_string(v)
     } else {
         format!("{v}")
     }

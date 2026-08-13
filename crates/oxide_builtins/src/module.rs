@@ -192,7 +192,7 @@ pub fn module_data<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if !kind_val.is_string() || !content_val.is_string() {
         return type_error(vm, "__moduleData: kind/content must be strings");
     }
-    let kind = unsafe { oxide_runtime_api::string_data(kind_val) }.to_string();
+    let kind = oxide_runtime_api::to_string(kind_val);
     let default_val = match kind.as_str() {
         "json" => {
             // 复用 JSON.parse 的 serde 管线：args[1] 即内容字符串。
@@ -204,8 +204,9 @@ pub fn module_data<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             }
         }
         "text" => {
-            let text = unsafe { oxide_runtime_api::string_data(content_val) };
-            vm.new_string(text)
+            // 经借用路径拷贝出 owned String 后再入堆，避免借用跨过 new_string 分配点。
+            let text = vm.string_ref(content_val).to_string();
+            vm.new_string_owned(text)
         }
         _ => return type_error(vm, "__moduleData: unsupported data kind"),
     };

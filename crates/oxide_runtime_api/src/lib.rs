@@ -77,6 +77,13 @@ pub trait VmHost {
     fn new_string(&mut self, s: &str) -> JsValue;
     /// move 接收 `String` 创建会话字符串，避免一次整串克隆。
     fn new_string_owned(&mut self, s: String) -> JsValue;
+    /// 借出字符串值的文本内容，生命周期绑定到 `&self` 借用。
+    ///
+    /// perm 字符串由内核持有、永不释放；session 字符串只在 `&mut self` 路径
+    /// （`new_string`/`new_string_owned`/`maybe_collect_session_gc`）释放，`&self`
+    /// 借用与 `&mut` 互斥由编译器强制，借用期内该字符串不会回收。实现内部
+    /// `unsafe` 解引用，调用方须保证 `val` 为字符串值。
+    fn string_ref(&self, val: JsValue) -> &str;
     /// 分配 BigInt 值（num_bigint::BigInt box 登记到 VM，返回携带指针的 `JsValue`）。
     fn new_bigint(&mut self, v: num_bigint::BigInt) -> JsValue;
     /// 读取 BigInt 值；调用方须保证 `val.is_bigint()`。
@@ -149,12 +156,15 @@ pub fn format_error_message(name: &str, msg: &str) -> String {
     }
 }
 
-/// 借出字符串值的文本内容。
+/// 借出字符串值的文本内容，生命周期为 `'static`。仅限同一函数内即时消费。
 ///
 /// # Safety
-/// `val` 必须是字符串 `JsValue`，且其 `JsString` 指针存活。
+/// 调用方必须保证：从取用返回值到最后一次使用之间，不发生任何可能释放该字符串
+/// 的操作（分配、GC、`full_reset`）——session 字符串在执行期 GC 或 reset 时会被
+/// 释放，跨分配点持有引用即悬垂。需要跨分配点消费的场景改用 [`VmHost::string_ref`]
+/// 或公开的 [`to_string`] owned 路径。
 #[inline]
-pub unsafe fn string_data(val: JsValue) -> &'static str {
+pub(crate) unsafe fn string_data(val: JsValue) -> &'static str {
     (*val.as_string_ptr()).as_str()
 }
 

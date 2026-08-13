@@ -250,7 +250,7 @@ fn to_bigint<H: VmHost>(vm: &mut H, val: JsValue) -> Result<JsValue, JsValue> {
         return Err(crate::error::create_type_error(vm, "Cannot convert a Number value to a BigInt"));
     }
     if val.is_string() {
-        let s = unsafe { oxide_runtime_api::string_data(val) }.to_string();
+        let s = oxide_runtime_api::to_string(val);
         return match string_to_bigint(vm, &s) {
             Ok(v) => Ok(v),
             Err(e) => Err(e),

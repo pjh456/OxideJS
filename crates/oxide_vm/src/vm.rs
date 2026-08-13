@@ -1808,6 +1808,12 @@ impl oxide_runtime_api::VmHost for Vm {
     fn new_string_owned(&mut self, s: String) -> JsValue {
         Vm::new_string_owned(self, s)
     }
+    fn string_ref(&self, val: JsValue) -> &str {
+        // SAFETY: 调用方保证 val 为字符串值。perm 串由内核持有永不释放；session
+        // 串仅经 &mut self 路径（new_string/new_string_owned/GC）释放，此处 &self
+        // 借用期间编译器强制不存在 &mut 存续，字符串不会在借用期内回收。
+        unsafe { (*val.as_string_ptr()).as_str() }
+    }
     fn new_bigint(&mut self, v: num_bigint::BigInt) -> JsValue {
         Vm::new_bigint(self, v)
     }
