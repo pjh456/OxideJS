@@ -46,17 +46,13 @@ pub fn run_js_stress_bench(config: &BenchConfig, kernel: &Arc<KernelCore>, pool:
 
     for path in &files {
         let test_name = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
-        let mut js = match fs::read_to_string(path) {
+        let js = match fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Failed to read {:?}: {}", path, e);
                 continue;
             }
         };
-
-        if config.iterations > 0 {
-            js = override_iterations(&js, config.iterations);
-        }
 
         let allocator = Allocator::default();
         let program = match oxide_parser::parse(&allocator, &js) {
@@ -196,15 +192,3 @@ fn average_metrics(metrics: &[MetricCollection]) -> MetricCollection {
     }
 }
 
-fn override_iterations(js: &str, iters: u32) -> String {
-    js.lines()
-        .map(|line| {
-            if line.trim_start().starts_with("var ITERATIONS ") {
-                format!("var ITERATIONS = {};", iters)
-            } else {
-                line.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
