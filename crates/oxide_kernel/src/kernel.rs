@@ -323,7 +323,9 @@ pub enum BuiltinId {
 }
 
 impl BuiltinId {
-    /// 全部 66 个内置对象的 id 常量表，供快照/脏检查按序遍历。
+    /// 全部 86 个内置对象的 id 常量表，供快照/脏检查按序遍历。
+    /// 顺序必须与枚举判别值一致（`ALL[i]` 的 `u8` 值 == `i`）：
+    /// 快照数组按下标填充，脏检查按下标回读，错位会误判 builtin 家族永久脏。
     pub const ALL: [BuiltinId; NUM_BUILTINS] = [
         BuiltinId::ObjectProto,
         BuiltinId::ArrayProto,
@@ -406,11 +408,11 @@ impl BuiltinId {
         BuiltinId::DurationConstructor,
         BuiltinId::DurationProto,
         BuiltinId::SymToStringTag,
-        BuiltinId::SymSpecies,
         BuiltinId::ZonedDateTimeConstructor,
         BuiltinId::ZonedDateTimeProto,
         BuiltinId::PlainDateTimeConstructor,
         BuiltinId::PlainDateTimeProto,
+        BuiltinId::SymSpecies,
     ];
 }
 
