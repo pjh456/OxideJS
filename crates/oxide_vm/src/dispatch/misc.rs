@@ -144,14 +144,50 @@ impl Vm {
         Ok(())
     }
 
+    /// 创建空对象；带键常量表时（a 槽 = 属性数 ≤255，ext = 每键常量池下标）按纯静态
+    /// 数据键前缀批量构造：单次链式 `make_shape` 预建整条 shape、预分配全部数据槽，
+    /// 后续属性值经 SET_PROP_BATCH 纯槽写。
+    ///
+    /// # 步骤
+    /// 1. 逐个键常量取 perm string → `property_key_si`（与逐属性 SET_PROP 路径
+    ///    逐字节同键），链式 `make_shape` 累加 shape。
+    /// 2. 分配对象、预填充 `nprops` 个数据槽、`generation += nprops`（与逐属性路径终值一致）。
+    ///
+    /// # 边界与前提
+    /// - `nprops = 0` 时退化为普通空对象（无 ext 键表）。
+    /// - 键常量越界取 undefined 防御（emit 保证合法下标）。
     #[inline(always)]
-    pub(crate) fn dispatch_new_object(&mut self, rd: usize) {
-        vm_trace!("NEW_OBJECT rd={}", rd);
+    pub(crate) fn dispatch_new_object(&mut self, rd: usize, instr: u32) -> Result<(), String> {
+        let nprops = opcode::a(instr) as usize;
+        vm_trace!("NEW_OBJECT rd={} nprops={}", rd, nprops);
         let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
+        let mut shape_id = EMPTY_SHAPE_ID;
+        if nprops > 0 {
+            // 先把键常量值拷出（immutables 借 self，property_key_si 需 &mut self）。
+            let key_vals: Vec<JsValue> = {
+                let imm = self.immutables();
+                self.bytecode[self.pc..self.pc + nprops]
+                    .iter()
+                    .map(|w| imm.get(*w as usize).copied().unwrap_or(JsValue::undefined()))
+                    .collect()
+            };
+            self.pc += nprops;
+            for key_val in key_vals {
+                let si = self.property_key_si(key_val)?;
+                shape_id = self.kernel_core.shape_forge().make_shape(shape_id, si);
+            }
+        }
         let obj = self
             .epoch
-            .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
+            .alloc(JsObject::new_empty(shape_id, JsValue::from_js_object(proto_ptr)));
+        // 预分配数据槽并同步 generation：批量一次性 +nprops，与逐属性路径的终值一致。
+        let obj_ref = unsafe { &mut *obj };
+        for _ in 0..nprops {
+            obj_ref.push_prop(JsValue::undefined());
+            obj_ref.bump_generation();
+        }
         self.regs[rd] = JsValue::object(obj as *mut u8);
+        Ok(())
     }
 
     /// 创建 arguments 对象：索引属性取当前帧（或 inline 同步调用）的完整实参，

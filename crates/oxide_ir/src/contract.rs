@@ -756,6 +756,8 @@ mod tests {
         assert_contract(OpCode::IC_GET_PROP, Some(1), &[1, 2], false);
         assert_contract(OpCode::SET_PROP, None, &[1, 2, 3], false);
         assert_contract(OpCode::SET_PROP_DYNAMIC, None, &[1, 2, 3], false);
+        // SET_PROP_BATCH：b 槽是 Imm(slot) 非寄存器，canonical 构造下仍按槽位读。
+        assert_contract(OpCode::SET_PROP_BATCH, None, &[1, 2, 3], false);
         assert_contract(OpCode::IC_SET_PROP, None, &[1, 2, 3], false);
         assert_contract(OpCode::SET_ELEM, None, &[1, 2, 3], false);
         assert_group(&[OpCode::NEW_OBJECT, OpCode::NEW_ARRAY], Some(1), &[], true);

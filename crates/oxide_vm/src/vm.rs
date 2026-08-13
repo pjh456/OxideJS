@@ -1560,6 +1560,7 @@ impl Vm {
                 | OpCode::IC_SET_PROP
                 | OpCode::GET_PROP
                 | OpCode::SET_PROP
+                | OpCode::SET_PROP_BATCH
                 | OpCode::GET_PROP_DYNAMIC
                 | OpCode::SET_PROP_DYNAMIC
                 | OpCode::SET_ELEM
@@ -1571,7 +1572,7 @@ impl Vm {
                 }
 
                 OpCode::NEW_OBJECT => {
-                    self.dispatch_new_object(rd);
+                    self.dispatch_new_object(rd, instr)?;
                 }
 
                 OpCode::CREATE_ARGUMENTS => {

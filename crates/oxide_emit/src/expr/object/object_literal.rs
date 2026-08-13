@@ -12,18 +12,83 @@ impl Emitter {
         &self, obj: &oxide_parser::ObjectExpression, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
         let obj_reg = ctx.alloc_reg();
-        ctx.inst(Inst::new(OpCode::NEW_OBJECT, Operand::Reg(obj_reg), Operand::None, Operand::None));
-        for prop in &obj.properties {
-            let ObjectPropertyKind::SpreadProperty(spread) = prop else {
-                self.emit_object_property(obj_reg, prop, ctx)?;
-                continue;
-            };
-            // spread 展开：把源表达式的可枚举自有属性写入目标对象（原地改）。
-            // 顺序语义：{...b, a:1} 在 spread 之后定义 a，后者覆盖前者（从左到右求值）。
-            let src_reg = self.emit_expression(&spread.argument, ctx)?;
-            ctx.inst(Inst::spread_object(Operand::Reg(obj_reg), Operand::Reg(src_reg)));
+        // 预扫可批前缀：前导连续段内全部为纯静态数据键（Init、非计算键、非 __proto__、
+        // 无重复键、≤255 个）。命中则 NEW_OBJECT 携带键常量表一次链式预建 shape，
+        // 逐属性改发 SET_PROP_BATCH 纯槽写（省 checked/intern/__proto__/promote 全套）。
+        // 否则整字面量回退逐属性 SET_PROP 慢路径。
+        let batch_n = self.batchable_prefix_len(obj)?;
+        if batch_n > 0 {
+            let key_idxs: Vec<u32> = obj.properties[..batch_n]
+                .iter()
+                .map(|prop| {
+                    let ObjectPropertyKind::ObjectProperty(p) = prop else {
+                        unreachable!("批量前缀必为 ObjectProperty");
+                    };
+                    let name = self.class_property_name(&p.key).expect("批量前缀键为静态名");
+                    u32::from(ctx.add_constant(Constant::String(name)))
+                })
+                .collect();
+            ctx.inst(Inst::new_object(Operand::Reg(obj_reg), batch_n as u32, &key_idxs));
+        } else {
+            ctx.inst(Inst::new(OpCode::NEW_OBJECT, Operand::Reg(obj_reg), Operand::None, Operand::None));
+        }
+        for (i, prop) in obj.properties.iter().enumerate() {
+            if i < batch_n {
+                let ObjectPropertyKind::ObjectProperty(p) = prop else {
+                    unreachable!("批量前缀必为 ObjectProperty");
+                };
+                let val_reg = self.emit_expression(&p.value, ctx)?;
+                if crate::is_anonymous_function_definition(&p.value) {
+                    if let Some(sub_mod) = ctx.nested.last_mut() {
+                        sub_mod.function_name = Some(self.class_property_name(&p.key).expect("批量前缀键为静态名"));
+                    }
+                }
+                ctx.inst(Inst::set_prop_batch(Operand::Reg(obj_reg), Operand::Reg(val_reg), i as u16));
+            } else {
+                let ObjectPropertyKind::SpreadProperty(spread) = prop else {
+                    self.emit_object_property(obj_reg, prop, ctx)?;
+                    continue;
+                };
+                // spread 展开：把源表达式的可枚举自有属性写入目标对象（原地改）。
+                // 顺序语义：{...b, a:1} 在 spread 之后定义 a，后者覆盖前者（从左到右求值）。
+                let src_reg = self.emit_expression(&spread.argument, ctx)?;
+                ctx.inst(Inst::spread_object(Operand::Reg(obj_reg), Operand::Reg(src_reg)));
+            }
         }
         Ok(obj_reg)
+    }
+
+    /// 计算对象字面量可批前缀长度：前导连续段内全部为 `ObjectProperty::Init` 且键为
+    /// 纯静态字符串（非计算、非 `__proto__`），段内无重复键，且总个数 ≤ 255。
+    ///
+    /// # 边界与前提
+    /// - 段内出现重复键或超 255 个时整字面量回退（返回 0）：批量会为重复键建第二个槽，
+    ///   破坏 `Object.keys` 的单键语义；超限则 b 槽无法编码。
+    /// - computed/accessor/spread/`__proto__` 键仅终止批段，后续属性仍走现路径。
+    fn batchable_prefix_len(&self, obj: &oxide_parser::ObjectExpression) -> Result<usize, String> {
+        let mut n = 0usize;
+        let mut seen: Vec<String> = Vec::new();
+        for prop in &obj.properties {
+            let ObjectPropertyKind::ObjectProperty(p) = prop else {
+                break;
+            };
+            if p.computed || p.kind != PropertyKind::Init {
+                break;
+            }
+            let name = self.class_property_name(&p.key)?;
+            if name == "__proto__" {
+                break;
+            }
+            if seen.contains(&name) {
+                return Ok(0);
+            }
+            if n == 255 {
+                return Ok(0);
+            }
+            seen.push(name);
+            n += 1;
+        }
+        Ok(n)
     }
 
     fn emit_object_property(

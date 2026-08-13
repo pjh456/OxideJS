@@ -247,6 +247,19 @@ impl Inst {
         Self::new(OpCode::SPREAD_OBJECT, target, src, Operand::None)
     }
 
+    /// 对象字面量批量构造：`dst` 为新对象，a 槽编码纯静态数据键前缀的属性数（≤255），
+    /// ext 为每键的常量池下标（`Constant::String`）。运行时按键序链式预建 shape，
+    /// 后续逐个 `SET_PROP_BATCH` 纯槽写。
+    pub fn new_object(dst: Operand, nprops: u32, key_idxs: &[u32]) -> Self {
+        Self::with_ext(OpCode::NEW_OBJECT, dst, Operand::Imm(nprops as u16), Operand::None, key_idxs)
+    }
+
+    /// 对象字面量批量构造的纯槽写：`target[slot] = value`。slot 对应键序预建 shape 的槽位，
+    /// 不做键解析/形状变更。
+    pub fn set_prop_batch(target: Operand, value: Operand, slot: u16) -> Self {
+        Self::new(OpCode::SET_PROP_BATCH, target, value, Operand::Imm(slot))
+    }
+
     /// TEMPLATE_STR：变长 ext。首字打包 `(segment_count<<16) | total_len_hint`，
     /// 后续每 quasi 一项 `quasi_const_idx & 0x7FFF_FFFF`，其后若跟表达式再一项 `0x8000_0000 | expr_reg`。
     pub fn template_str(dst: Operand, segment_count: u32, total_len_hint: u16, parts: &[u32]) -> Self {

@@ -186,3 +186,57 @@ fn object_literal_spread_string_indexes_and_getters() {
     assert_eq!(eval("({...{get x(){return 5}}}).x"), "5");
     assert_eq!(eval_string("JSON.stringify({...[],a:1})"), r#"{"a":1}"#);
 }
+
+#[test]
+fn object_literal_batch_slot_writes_keep_key_order() {
+    assert_eq!(eval_string("JSON.stringify({a:1,b:2,c:3})"), r#"{"a":1,"b":2,"c":3}"#);
+    assert_eq!(eval("({a:1,b:2,c:3}).b"), "2");
+}
+
+#[test]
+fn object_literal_batch_integer_and_string_keys_are_equivalent() {
+    assert_eq!(eval_string("({0:'a',1:'b'})[0]"), "a");
+    assert_eq!(eval_string("({0:'a'})['0']"), "a");
+    assert_eq!(eval_string("({1:'x',2:'y'})['2']"), "y");
+}
+
+#[test]
+fn object_literal_batch_proto_key_still_sets_prototype() {
+    assert_eq!(eval("Object.getPrototypeOf({__proto__:null})"), "null");
+    assert_eq!(eval("({a:1,__proto__:{x:5}}).x"), "5");
+    assert_eq!(eval("({__proto__:{x:1}}).x"), "1");
+}
+
+#[test]
+fn object_literal_batch_duplicate_key_falls_back() {
+    assert_eq!(eval("({a:1,a:2}).a"), "2");
+    assert_eq!(eval_string("JSON.stringify({a:1,a:2})"), r#"{"a":2}"#);
+}
+
+#[test]
+fn object_literal_batch_accessor_after_prefix() {
+    assert_eq!(eval("({a:1,get b(){return 2}}).b"), "2");
+    assert_eq!(eval("var o={a:1,set b(v){this.c=v}}; o.b=9; o.c"), "9");
+}
+
+#[test]
+fn object_literal_batch_nested_and_gc_survival() {
+    // 嵌套字面量内层也走批；外层对象经 GC 后嵌套值仍存活。
+    assert_eq!(eval("({a:{b:1}}).a.b"), "1");
+    assert_eq!(eval_string("JSON.stringify({x:{y:{z:1}},n:0})"), r#"{"x":{"y":{"z":1}},"n":0}"#);
+    assert_eq!(eval("var h=[]; for(var i=0;i<50;i++) h.push({a:{b:i}}); h[49].a.b"), "49");
+}
+
+#[test]
+fn object_literal_batch_value_expr_throw_is_caught() {
+    assert_eq!(eval("var g; try { ({a:(()=>{throw 1})(),b:2}); } catch(e) { g=e; } g"), "1");
+}
+
+#[test]
+fn object_literal_batch_mixed_computed_spread_order() {
+    assert_eq!(
+        eval_string("var k='k',s={m:3}; JSON.stringify({a:1,[k]:2,...s})"),
+        r#"{"a":1,"k":2,"m":3}"#
+    );
+    assert_eq!(eval("var k='k',s={m:3}; ({a:1,[k]:2,...s}).k"), "2");
+}

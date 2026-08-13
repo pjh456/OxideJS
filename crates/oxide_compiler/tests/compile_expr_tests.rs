@@ -110,6 +110,104 @@ fn compile_object_literal_setter_emits_define_accessor() {
 }
 
 #[test]
+fn compile_object_literal_pure_data_keys_emit_batch_construction() {
+    let module = compile_source("var o = { a: 1, b: 2 };");
+    let new_obj: Vec<u32> = module
+        .bytecode
+        .iter()
+        .copied()
+        .filter(|&i| opcode::opcode(i) == OpCode::NEW_OBJECT)
+        .collect();
+    assert_eq!(new_obj.len(), 1, "exactly one NEW_OBJECT");
+    assert_eq!(opcode::a(new_obj[0]), 2, "NEW_OBJECT a 槽编码属性数");
+    let batch_writes = module
+        .bytecode
+        .iter()
+        .filter(|&&i| opcode::opcode(i) == OpCode::SET_PROP_BATCH)
+        .count();
+    assert_eq!(batch_writes, 2, "批量前缀逐属性发 SET_PROP_BATCH");
+    let slow_writes = module
+        .bytecode
+        .iter()
+        .filter(|&&i| opcode::opcode(i) == OpCode::SET_PROP)
+        .count();
+    assert_eq!(slow_writes, 0, "纯数据键字面量不应再发慢路径 SET_PROP");
+}
+
+#[test]
+fn compile_object_literal_computed_key_terminates_batch_prefix() {
+    let module = compile_source("var o = { a: 1, [k]: 2 };");
+    let new_obj: Vec<u32> = module
+        .bytecode
+        .iter()
+        .copied()
+        .filter(|&i| opcode::opcode(i) == OpCode::NEW_OBJECT)
+        .collect();
+    assert_eq!(opcode::a(new_obj[0]), 1, "computed 键终止批段，前缀仅 a");
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::SET_PROP_BATCH),
+        "前缀属性仍走批量槽写"
+    );
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::SET_PROP_DYNAMIC),
+        "computed 键后续走动态路径"
+    );
+}
+
+#[test]
+fn compile_object_literal_duplicate_key_falls_back_whole_literal() {
+    let module = compile_source("var o = { a: 1, a: 2 };");
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::SET_PROP),
+        "重复键整字面量回退慢路径"
+    );
+    assert!(module.bytecode.iter().all(|&i| opcode::opcode(i) != OpCode::SET_PROP_BATCH), "重复键不批");
+}
+
+#[test]
+fn compile_object_literal_proto_key_falls_back() {
+    let module = compile_source("var o = { a: 1, __proto__: null };");
+    let new_obj: Vec<u32> = module
+        .bytecode
+        .iter()
+        .copied()
+        .filter(|&i| opcode::opcode(i) == OpCode::NEW_OBJECT)
+        .collect();
+    assert_eq!(opcode::a(new_obj[0]), 1, "__proto__ 终止批段，前缀仅 a");
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::SET_PROP),
+        "__proto__ 键走慢路径拦截"
+    );
+}
+
+#[test]
+fn compile_object_literal_accessor_not_batched() {
+    let module = compile_source("var o = { a: 1, get b() { return 2; } };");
+    let new_obj: Vec<u32> = module
+        .bytecode
+        .iter()
+        .copied()
+        .filter(|&i| opcode::opcode(i) == OpCode::NEW_OBJECT)
+        .collect();
+    assert_eq!(opcode::a(new_obj[0]), 1, "accessor 终止批段");
+    assert!(
+        module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::DEFINE_ACCESSOR),
+        "accessor 后续走访问器定义路径"
+    );
+}
+
+#[test]
+fn compile_nested_object_literals_both_batch() {
+    let module = compile_source("var o = { a: { b: 1 } };");
+    let batch_objects = module
+        .bytecode
+        .iter()
+        .filter(|&&i| opcode::opcode(i) == OpCode::NEW_OBJECT && opcode::a(i) > 0)
+        .count();
+    assert_eq!(batch_objects, 2, "内外层字面量都走批量构造");
+}
+
+#[test]
 fn compile_binary_ops() {
     let tests = [
         ("3 * 4", OpCode::MUL),

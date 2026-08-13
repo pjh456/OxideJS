@@ -9,7 +9,7 @@
 //!   ext2 = proto_depth（u8，0 = 接收者自身属性）
 
 use crate::vm_trace;
-use oxide_bytecode::opcode::{self, Instr};
+use oxide_bytecode::opcode::{self, Instr, OpCode};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
@@ -33,21 +33,58 @@ pub(crate) fn write_ic_back(bytecode: &mut [Instr], pc: usize, shape_id: u32, sl
     bytecode[pc - 1] = proto_depth as u32;
 }
 
+/// 计算 `pc` 处指令之后的扩展字个数（按 opcode 语义推进，逐指令字节序一致）。
+///
+/// 定长族返回固定字数；变长族依指令内容：spread 调用从首字读 nstatic|nspread、
+/// TEMPLATE_STR 从首字读 segment_count、NEW_OBJECT 从 a 槽读属性数（键表）。
+/// `clear_ic_caches` 依赖此函数逐指令定位，任何新增变长 ext opcode 必须在此登记。
+fn ext_word_count(bytecode: &[Instr], pc: usize) -> usize {
+    let op = opcode::opcode(bytecode[pc]);
+    // IC 系固定 3 扩展字（shape/slot/proto）。
+    if op.has_ic_ext_words() {
+        return 3;
+    }
+    match op {
+        OpCode::SPILL
+        | OpCode::UNSPILL
+        | OpCode::CALL
+        | OpCode::CALL_NATIVE
+        | OpCode::NEW_EXPRESSION
+        | OpCode::SUPER_CALL
+        | OpCode::DEFINE_ACCESSOR
+        | OpCode::DEFINE_ACCESSOR_DYNAMIC
+        | OpCode::DEFINE_PROP_ATTRS
+        | OpCode::DELETE_PROP_STATIC
+        | OpCode::REST_OBJECT
+        | OpCode::INIT_PRIVATE => 1,
+        OpCode::DEFINE_ACCESSOR_ATTRS | OpCode::GET_PRIVATE | OpCode::SET_PRIVATE | OpCode::PRIVATE_BRAND_IN => 2,
+        OpCode::CALL_SPREAD | OpCode::NEW_EXPRESSION_SPREAD | OpCode::SUPER_CALL_SPREAD => {
+            let header = bytecode.get(pc + 1).copied().unwrap_or(0);
+            1 + (header & 0xFF) as usize + ((header >> 8) & 0xFF) as usize
+        }
+        OpCode::TEMPLATE_STR => {
+            let header = bytecode.get(pc + 1).copied().unwrap_or(0);
+            1 + ((header >> 16) & 0xFFFF) as usize
+        }
+        OpCode::NEW_OBJECT => opcode::a(bytecode[pc]) as usize,
+        _ => 0,
+    }
+}
+
 /// 把流中所有 IC 扩展字清零，使全部缓存 shape 失效。
+///
+/// 逐指令按 opcode 的 ext 字数推进，避开变长 ext opcode（CALL_SPREAD/TEMPLATE_STR/
+/// NEW_OBJECT 键表）导致的字节错位——错位会把非 IC 指令误当 IC 扩展字清零。
 pub(crate) fn clear_ic_caches(bytecode: &mut [Instr]) {
     let mut i = 0;
     while i < bytecode.len() {
         let op = opcode::opcode(bytecode[i]);
-        if op.has_ic_ext_words() {
-            if i + 3 < bytecode.len() {
-                bytecode[i + 1] = 0;
-                bytecode[i + 2] = 0;
-                bytecode[i + 3] = 0;
-            }
-            i += 4;
-        } else {
-            i += 1;
+        if op.has_ic_ext_words() && i + 3 < bytecode.len() {
+            bytecode[i + 1] = 0;
+            bytecode[i + 2] = 0;
+            bytecode[i + 3] = 0;
         }
+        i += 1 + ext_word_count(bytecode, i);
     }
 }
 

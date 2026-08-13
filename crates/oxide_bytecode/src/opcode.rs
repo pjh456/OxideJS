@@ -425,6 +425,8 @@ define_opcodes! {
     SET_PROP_DYNAMIC = 0x55 => "SET_PROP_DYNAMIC",
         def = None, uses = [SlotSpec::Slot(Slot::Rd), SlotSpec::Slot(Slot::A), SlotSpec::Slot(Slot::B)],
         pure = false, jump = false, term = false, ic = false,
+    // a 槽编码纯静态数据键前缀的属性数（≤255），ext 为每键的常量池下标；
+    // 运行时按键序链式预建 shape，后续 SET_PROP_BATCH 纯槽写。
     NEW_OBJECT = 0x56 => "NEW_OBJECT",
         def = Some(SlotSpec::Slot(Slot::Rd)), uses = [],
         pure = true, jump = false, term = false, ic = false,
@@ -432,6 +434,11 @@ define_opcodes! {
         def = Some(SlotSpec::Slot(Slot::Rd)), uses = [],
         pure = true, jump = false, term = false, ic = false,
     SET_ELEM = 0x58 => "SET_ELEM",
+        def = None, uses = [SlotSpec::Slot(Slot::Rd), SlotSpec::Slot(Slot::A), SlotSpec::Slot(Slot::B)],
+        pure = false, jump = false, term = false, ic = false,
+    // 对象字面量批量构造的纯槽写：rd=对象，a=值，b=Imm(slot)。键序预建的 shape 槽，
+    // 不做任何键解析/形状变更，仅写数据槽。
+    SET_PROP_BATCH = 0x92 => "SET_PROP_BATCH",
         def = None, uses = [SlotSpec::Slot(Slot::Rd), SlotSpec::Slot(Slot::A), SlotSpec::Slot(Slot::B)],
         pure = false, jump = false, term = false, ic = false,
 
@@ -766,6 +773,7 @@ mod tests {
         assert_eq!(OpCode::CREATE_ARGUMENTS as u8, 0x63);
         assert_eq!(OpCode::CREATE_REST_ARRAY as u8, 0x6E);
         assert_eq!(OpCode::DEFINE_ACCESSOR_DYNAMIC as u8, 0x7F);
+        assert_eq!(OpCode::SET_PROP_BATCH as u8, 0x92);
         assert_eq!(OpCode::ADD.to_string(), "ADD");
         assert_eq!(OpCode::COMPOUND_MEMBER_EXP.to_string(), "COMPOUND_MEMBER_EXP");
         assert_eq!(OpCode::MOV.to_string(), "MOV");

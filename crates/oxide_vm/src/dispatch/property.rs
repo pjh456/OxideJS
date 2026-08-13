@@ -20,6 +20,7 @@ impl Vm {
             OpCode::IC_SET_PROP => self.dispatch_ic_set_prop(rd, a, b),
             OpCode::GET_PROP => self.dispatch_get_prop(rd, a, b),
             OpCode::SET_PROP => self.dispatch_set_prop(rd, a, b),
+            OpCode::SET_PROP_BATCH => self.dispatch_set_prop_batch(rd, a, b),
             OpCode::GET_PROP_DYNAMIC => self.dispatch_get_prop_dynamic(rd, a, b),
             OpCode::SET_PROP_DYNAMIC => self.dispatch_set_prop_dynamic(rd, a, b),
             OpCode::SET_ELEM => self.dispatch_set_elem(rd, a, b),
@@ -497,6 +498,24 @@ impl Vm {
         let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
         let obj = unsafe { &mut *obj_ptr };
         self.ordinary_set_dispatch(obj, prop_name_si, value, self.regs[rd])?;
+        Ok(())
+    }
+
+    /// 对象字面量批量构造的纯槽写：把值写入键序预建 shape 的 `slot` 槽。
+    /// 不做键解析/`__proto__` 拦截/promote 之外的任何形状变更——键与槽位由
+    /// NEW_OBJECT 的键常量表一次性建好。
+    ///
+    /// # 边界与前提
+    /// - `slot` 必须 < NEW_OBJECT 预分配的槽数（emit 保证 ≤255）。
+    /// - 值仍需 promote（对象值可能来自 session epoch 且目标是逃逸根）。
+    fn dispatch_set_prop_batch(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("SET_PROP_BATCH rd={} slot={}", rd, b);
+        let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "Cannot create property on non-object")? else {
+            return Ok(());
+        };
+        let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
+        let obj = unsafe { &mut *obj_ptr };
+        obj.set_prop_storage(b, value);
         Ok(())
     }
 

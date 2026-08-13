@@ -307,3 +307,41 @@ fn operand_this_is_semantic_not_physical_index() {
     assert_eq!(Operand::This, Operand::This);
     assert_eq!(Operand::NewTarget, Operand::NewTarget);
 }
+
+#[test]
+fn new_object_batch_carries_nprops_and_key_table() {
+    // NEW_OBJECT(a=Imm(2)) → 2 个键常量 ext 字；键序即 shape 槽序。
+    let mut f = base_module();
+    f.insts.push(Inst::new_object(Operand::Reg(1), 2, &[10, 11]));
+    let m = lower_ok(&f);
+    assert_eq!(m.bytecode.len(), 3);
+    assert_eq!(opcode::opcode(m.bytecode[0]), OpCode::NEW_OBJECT);
+    assert_eq!(opcode::rd(m.bytecode[0]), 1);
+    assert_eq!(opcode::a(m.bytecode[0]), 2, "a 槽编码属性数");
+    assert_eq!(opcode::b(m.bytecode[0]), 0, "nprops ≤255 时高字节为 0");
+    assert_eq!(m.bytecode[1], 10);
+    assert_eq!(m.bytecode[2], 11);
+}
+
+#[test]
+fn new_object_zero_props_has_no_ext_words() {
+    // 空字面量 {} 仍发 0 属性数 NEW_OBJECT，无键表。
+    let mut f = base_module();
+    f.insts.push(Inst::new_object(Operand::Reg(1), 0, &[]));
+    let m = lower_ok(&f);
+    assert_eq!(m.bytecode.len(), 1);
+    assert_eq!(opcode::opcode(m.bytecode[0]), OpCode::NEW_OBJECT);
+    assert_eq!(opcode::a(m.bytecode[0]), 0);
+}
+
+#[test]
+fn set_prop_batch_encodes_slot_imm_in_b() {
+    let mut f = base_module();
+    f.insts.push(Inst::set_prop_batch(Operand::Reg(1), Operand::Reg(2), 3));
+    let m = lower_ok(&f);
+    assert_eq!(m.bytecode.len(), 1);
+    assert_eq!(opcode::opcode(m.bytecode[0]), OpCode::SET_PROP_BATCH);
+    assert_eq!(opcode::rd(m.bytecode[0]), 1);
+    assert_eq!(opcode::a(m.bytecode[0]), 2);
+    assert_eq!(opcode::b(m.bytecode[0]), 3, "slot 编码进 b 槽");
+}
