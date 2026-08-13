@@ -121,7 +121,7 @@ impl Vm {
     /// 3. 挂起则快照；完成则 resolve capability；异常则 reject。恢复调用方状态。
     fn start_async(&mut self, ctx_val: JsValue) -> Result<(), String> {
         let state_ptr = self.async_state_ptr(ctx_val);
-        let saved = self.save_inline_state();
+        let saved = self.save_inline_state(256);
         self.async_suspended = false;
         let prev_ctx = self.async_context.take();
         let prev_dispatch = self.async_dispatch;
@@ -184,7 +184,7 @@ impl Vm {
     /// 4. 挂起则快照新状态；完成/异常则结算 capability。恢复调用方状态。
     pub(crate) fn resume_async(&mut self, ctx_val: JsValue, mode: AsyncResumeMode) -> Result<(), String> {
         let state_ptr = self.async_state_ptr(ctx_val);
-        let saved = self.save_inline_state();
+        let saved = self.save_inline_state(256);
         self.async_suspended = false;
         let prev_ctx = self.async_context.take();
         let prev_dispatch = self.async_dispatch;

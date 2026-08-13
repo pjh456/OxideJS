@@ -62,6 +62,7 @@ impl Vm {
             inline_args_count: 0,
             accessor_frame_target_reg: None,
             inline_callee: None,
+            inline_reg_pool: None,
             generator_suspended: None,
             delegated_iterator: None,
             generator_dispatch: false,
@@ -155,6 +156,7 @@ impl Vm {
             inline_args_count: 0,
             accessor_frame_target_reg: None,
             inline_callee: None,
+            inline_reg_pool: None,
             generator_suspended: None,
             delegated_iterator: None,
             generator_dispatch: false,
@@ -327,6 +329,8 @@ impl Vm {
         self.async_gen_dispatch = false;
         self.async_gen_suspended = false;
         self.native_call_depth = 0;
+        // inline 窗口缓冲池内容为已废弃快照，跨 run/reset 不保留。
+        self.inline_reg_pool = None;
         // 微任务队列是执行期状态：跨 run 不保留。
         self.job_queue.clear();
     }

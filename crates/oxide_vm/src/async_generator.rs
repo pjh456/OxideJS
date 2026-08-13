@@ -131,7 +131,7 @@ impl Vm {
     /// - 参数默认值的副作用、`arguments` 创建、解构的迭代副作用在调用时刻完成。
     fn initialize_async_generator(&mut self, gen_val: JsValue) -> Result<(), String> {
         let state_ptr = self.async_gen_state_ptr(gen_val);
-        let saved = self.save_inline_state();
+        let saved = self.save_inline_state(256);
         self.generator_suspended = None;
         // 嵌套生成器创建（参数默认值里调用其它 generator）会改写 init 标志，须保存恢复。
         let prev_init_step = self.generator_init_step;
@@ -288,7 +288,7 @@ impl Vm {
     /// - 嵌套 dispatch 期间 VM 完全被异步生成器状态占据。
     pub(crate) fn resume_async_generator(&mut self, gen_val: JsValue) -> Result<(), String> {
         let state_ptr = self.async_gen_state_ptr(gen_val);
-        let saved = self.save_inline_state();
+        let saved = self.save_inline_state(256);
         self.generator_suspended = None;
         self.async_gen_suspended = false;
         let prev_ctx = self.async_context.take();

@@ -31,36 +31,45 @@ fn place_flat(module: &Arc<CompiledModule>, out: &mut Vec<Option<Arc<CompiledMod
 }
 
 /// save 方向的字段取值表达式（字段名由调用方以 ident 位置提供，本宏只产出值）。
+/// `regs` 取窗口副本：值来自 `save_inline_state` 预填充的 `window_regs` 局部缓冲
+/// （经宏参数注入，绕开 macro hygiene），从池中取出后即 move 进 `InlineSyncState`。
 macro_rules! inline_save_field {
-    ($recv:ident, regs, boxed_array) => { Box::new($recv.regs) };
-    ($recv:ident, pc, copy) => { $recv.pc };
-    ($recv:ident, bytecode, move_field) => { std::mem::take(&mut $recv.bytecode) };
-    ($recv:ident, active_immutables, copy) => { $recv.active_immutables };
-    ($recv:ident, active_reg_limit, copy) => { $recv.active_reg_limit };
-    ($recv:ident, root_reg_limit, copy) => { $recv.root_reg_limit };
-    ($recv:ident, try_stack, move_field) => { std::mem::take(&mut $recv.try_stack) };
-    ($recv:ident, frames, frames_values) => { std::mem::take(&mut $recv.frames) };
-    ($recv:ident, exception_value, opt_take) => { $recv.exception_value.take() };
-    ($recv:ident, pending_exception, opt_take) => { $recv.pending_exception.take() };
-    ($recv:ident, pending_error_kind, opt_take) => { $recv.pending_error_kind.take() };
-    ($recv:ident, pending_completion, opt_copy) => { $recv.pending_completion };
-    ($recv:ident, for_in_iters, for_in_keys) => { std::mem::take(&mut $recv.iters.for_in_iters) };
-    ($recv:ident, for_of_iters, iter_take) => { std::mem::take(&mut $recv.iters.for_of_iters) };
-    ($recv:ident, last_for_of_result, iter_copy) => { $recv.iters.last_for_of_result };
-    ($recv:ident, saved_bytecode_stack, move_field) => { std::mem::take(&mut $recv.saved_bytecode_stack) };
-    ($recv:ident, saved_immutables_stack, move_field) => { std::mem::take(&mut $recv.saved_immutables_stack) };
-    ($recv:ident, save_stack, move_field) => { std::mem::take(&mut $recv.save_stack) };
-    ($recv:ident, spill_stack, move_field) => { std::mem::take(&mut $recv.spill_stack) };
-    ($recv:ident, cell_stack, move_field) => { std::mem::take(&mut $recv.cell_stack) };
-    ($recv:ident, inline_callee, opt_copy) => { $recv.inline_callee };
-    ($recv:ident, inline_args_base, copy) => { $recv.inline_args_base };
-    ($recv:ident, inline_args_count, copy) => { $recv.inline_args_count };
-    ($recv:ident, accessor_frame_target_reg, copy) => { $recv.accessor_frame_target_reg };
+    ($recv:ident, $window_regs:ident, regs, boxed_window) => { std::mem::take(&mut $window_regs).into_boxed_slice() };
+    ($recv:ident, $window_regs:ident, saved_this, copy) => { $recv.regs[254] };
+    ($recv:ident, $window_regs:ident, saved_new_target, copy) => { $recv.regs[255] };
+    ($recv:ident, $window_regs:ident, pc, copy) => { $recv.pc };
+    ($recv:ident, $window_regs:ident, bytecode, move_field) => { std::mem::take(&mut $recv.bytecode) };
+    ($recv:ident, $window_regs:ident, active_immutables, copy) => { $recv.active_immutables };
+    ($recv:ident, $window_regs:ident, active_reg_limit, copy) => { $recv.active_reg_limit };
+    ($recv:ident, $window_regs:ident, root_reg_limit, copy) => { $recv.root_reg_limit };
+    ($recv:ident, $window_regs:ident, try_stack, move_field) => { std::mem::take(&mut $recv.try_stack) };
+    ($recv:ident, $window_regs:ident, frames, frames_values) => { std::mem::take(&mut $recv.frames) };
+    ($recv:ident, $window_regs:ident, exception_value, opt_take) => { $recv.exception_value.take() };
+    ($recv:ident, $window_regs:ident, pending_exception, opt_take) => { $recv.pending_exception.take() };
+    ($recv:ident, $window_regs:ident, pending_error_kind, opt_take) => { $recv.pending_error_kind.take() };
+    ($recv:ident, $window_regs:ident, pending_completion, opt_copy) => { $recv.pending_completion };
+    ($recv:ident, $window_regs:ident, for_in_iters, for_in_keys) => { std::mem::take(&mut $recv.iters.for_in_iters) };
+    ($recv:ident, $window_regs:ident, for_of_iters, iter_take) => { std::mem::take(&mut $recv.iters.for_of_iters) };
+    ($recv:ident, $window_regs:ident, last_for_of_result, iter_copy) => { $recv.iters.last_for_of_result };
+    ($recv:ident, $window_regs:ident, saved_bytecode_stack, move_field) => { std::mem::take(&mut $recv.saved_bytecode_stack) };
+    ($recv:ident, $window_regs:ident, saved_immutables_stack, move_field) => { std::mem::take(&mut $recv.saved_immutables_stack) };
+    ($recv:ident, $window_regs:ident, save_stack, move_field) => { std::mem::take(&mut $recv.save_stack) };
+    ($recv:ident, $window_regs:ident, spill_stack, move_field) => { std::mem::take(&mut $recv.spill_stack) };
+    ($recv:ident, $window_regs:ident, cell_stack, move_field) => { std::mem::take(&mut $recv.cell_stack) };
+    ($recv:ident, $window_regs:ident, inline_callee, opt_copy) => { $recv.inline_callee };
+    ($recv:ident, $window_regs:ident, inline_args_base, copy) => { $recv.inline_args_base };
+    ($recv:ident, $window_regs:ident, inline_args_count, copy) => { $recv.inline_args_count };
+    ($recv:ident, $window_regs:ident, accessor_frame_target_reg, copy) => { $recv.accessor_frame_target_reg };
 }
 
-/// restore 方向的字段写回语句。
+/// restore 方向的字段写回语句。`regs` 只回拷窗口并把缓冲归还池。
 macro_rules! inline_restore_field {
-    ($recv:ident, $saved:ident, regs, boxed_array) => { $recv.regs = *$saved.regs };
+    ($recv:ident, $saved:ident, regs, boxed_window) => {
+        $recv.regs[..$saved.regs.len()].copy_from_slice(&$saved.regs);
+        $recv.inline_reg_pool = Some($saved.regs.into_vec());
+    };
+    ($recv:ident, $saved:ident, saved_this, copy) => { $recv.regs[254] = $saved.saved_this };
+    ($recv:ident, $saved:ident, saved_new_target, copy) => { $recv.regs[255] = $saved.saved_new_target };
     ($recv:ident, $saved:ident, pc, copy) => { $recv.pc = $saved.pc };
     ($recv:ident, $saved:ident, bytecode, move_field) => { $recv.bytecode = $saved.bytecode };
     ($recv:ident, $saved:ident, active_immutables, copy) => { $recv.active_immutables = $saved.active_immutables };
@@ -88,10 +97,13 @@ macro_rules! inline_restore_field {
 
 /// 内联同步调用可搬移执行核心字段的单一登记表。save/restore 双向由本宏展开；
 /// 新增字段只加一行（字段名, 操作符）。注释 = 该字段语义（M 搬移 / V 含 JsValue）。
+/// `$window_regs` 只在 save 方向被 `regs` 字段消费。
 macro_rules! inline_core_fields {
-    ($recv:ident, $saved:ident, $ops:ident) => {
-        $ops!($recv, $saved,
-            (regs, boxed_array), // V M
+    ($recv:ident, $saved:ident, $ops:ident, $window_regs:ident) => {
+        $ops!($recv, $saved, $window_regs,
+            (regs, boxed_window), // V M
+            (saved_this, copy), // V
+            (saved_new_target, copy), // V
             (pc, copy), // M
             (bytecode, move_field), // V M
             (active_immutables, copy), // M
@@ -122,33 +134,48 @@ macro_rules! inline_core_fields {
 /// 把字段表展开为 `InlineSyncState` 结构体字面量（字段名在 ident 位置，值由
 /// `inline_save_field` 产出）。
 macro_rules! inline_save {
-    ($recv:ident, $saved:ident, $(($field:ident, $op:ident)),* $(,)?) => {
+    ($recv:ident, $saved:ident, $window_regs:ident, $(($field:ident, $op:ident)),* $(,)?) => {
         InlineSyncState {
-            $($field: inline_save_field!($recv, $field, $op)),*
+            $($field: inline_save_field!($recv, $window_regs, $field, $op)),*
         }
     };
 }
 
 /// 把字段表展开为写回语句序列。
 macro_rules! inline_restore {
-    ($recv:ident, $saved:ident, $(($field:ident, $op:ident)),* $(,)?) => {
+    ($recv:ident, $saved:ident, $window_regs:ident, $(($field:ident, $op:ident)),* $(,)?) => {
         { $(inline_restore_field!($recv, $saved, $field, $op);)* }
     };
 }
 
 impl Vm {
-    /// 保存当前完整 VM 执行状态到堆上（内联同步调用与生成器恢复共用）。
-    pub(crate) fn save_inline_state(&mut self) -> Box<InlineSyncState> {
+    /// 保存当前 VM 执行状态到堆上（内联同步调用与生成器恢复共用）。
+    ///
+    /// 寄存器只保存窗口 `regs[0..min(regs_end, 253)]` 的副本，`regs[254]/[255]`
+    /// 单独存入 `saved_this`/`saved_new_target`。窗口缓冲取自 `inline_reg_pool`
+    /// 复用，热回调循环内零分配；嵌套时池为空则新分配。
+    ///
+    /// # 边界与前提
+    /// - `regs_end` ≤ 253 表示窗口化保存；传 256（全量）等价于保存全部寄存器
+    ///   （253 个通用槽 + 254/255 单独存）。
+    /// - 调用方保证 `regs_end ≤ 256`；窗口截断到 253 是 callee 写入集上限。
+    pub(crate) fn save_inline_state(&mut self, regs_end: usize) -> Box<InlineSyncState> {
         vm_trace!("save_inline_state: pc={} depth={}", self.pc, self.frames.len());
+        let window = regs_end.min(253);
+        let mut window_regs = self.inline_reg_pool.take().unwrap_or_default();
+        window_regs.clear();
+        window_regs.extend_from_slice(&self.regs[..window]);
         let vm = self;
-        Box::new(inline_core_fields!(vm, vm, inline_save))
+        Box::new(inline_core_fields!(vm, vm, inline_save, window_regs))
     }
 
-    /// 把 [`save_inline_state`] 保存的状态完整恢复回 VM。
+    /// 把 [`save_inline_state`] 保存的状态恢复回 VM。窗口回拷 + `regs[254]/[255]`
+    /// 单回，窗口外寄存器 callee 未触碰无需恢复。
     pub(crate) fn restore_inline_state(&mut self, saved: Box<InlineSyncState>) {
         vm_trace!("restore_inline_state: pc={}", saved.pc);
         let vm = self;
-        inline_core_fields!(vm, saved, inline_restore);
+        let _window_regs: Vec<JsValue> = Vec::new();
+        inline_core_fields!(vm, saved, inline_restore, _window_regs);
     }
 
     /// 首次执行的 VM 就绪：清空执行核心（regs/pc/bytecode/各栈段/迭代器/内联态），
@@ -223,9 +250,16 @@ impl Vm {
         let sub = &subs[sub_idx];
 
         vm_trace!("call_bytecode: saving state pc={} depth={}", self.pc, self.frames.len());
-        let saved = self.save_inline_state();
+        // 窗口 = max(调用方活跃寄存器, callee 寄存器数)：restore 只回拷窗口，正好
+        // 覆盖 callee 写入区（regs[0..n_registers] + 254/255）与调用方活动区。
+        let window = self.active_reg_limit.max(sub.n_registers).max(1) as usize;
+        let saved = self.save_inline_state(window);
 
-        self.regs = [JsValue::undefined(); 256];
+        // 只零填 callee 读区 regs[0..n_registers]；高位残留调用方旧值无害
+        // （callee 字节码只访问自身 n_registers 内）。
+        for r in 0..sub.n_registers as usize {
+            self.regs[r] = JsValue::undefined();
+        }
         self.pc = 0;
         self.bytecode = Arc::clone(&sub.bytecode);
         self.activate_immutables(sub_idx, &sub.constants);
@@ -422,6 +456,8 @@ mod tests {
         // 构造带哨兵的 VM → save → 恢复 → 断言全部字段逐字往返（含 accessor_frame_target_reg）。
         let mut vm = Vm::new();
         vm.regs[3] = JsValue::float(1.0);
+        vm.regs[254] = JsValue::float(254.0);
+        vm.regs[255] = JsValue::float(255.0);
         vm.pc = 7;
         vm.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
         vm.active_reg_limit = 4;
@@ -441,12 +477,14 @@ mod tests {
         vm.inline_args_count = 3;
         vm.accessor_frame_target_reg = Some(9);
 
-        let saved = vm.save_inline_state();
+        let saved = vm.save_inline_state(256);
         vm.regs[3] = JsValue::float(99.0);
         vm.accessor_frame_target_reg = None;
         vm.restore_inline_state(saved);
 
         assert_eq!(vm.regs[3], JsValue::float(1.0));
+        assert_eq!(vm.regs[254], JsValue::float(254.0));
+        assert_eq!(vm.regs[255], JsValue::float(255.0));
         assert_eq!(vm.pc, 7);
         assert_eq!(vm.active_reg_limit, 4);
         assert_eq!(vm.root_reg_limit, 5);

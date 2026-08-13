@@ -255,7 +255,11 @@ impl Completion {
 /// 放在堆上避免 JS 代码链式同步字节码调用（如 sort 比较器、accessor）时
 /// 耗尽 Rust 栈。
 pub(crate) struct InlineSyncState {
-    pub(crate) regs: Box<[JsValue; 256]>,
+    /// 寄存器窗口副本：`regs[0..len]`，len ≤ 253。`regs[254]/[255]` 不在此列，
+    /// 由 `saved_this`/`saved_new_target` 单独保存（callee 也会重写这两个槽）。
+    pub(crate) regs: Box<[JsValue]>,
+    pub(crate) saved_this: JsValue,
+    pub(crate) saved_new_target: JsValue,
     pub(crate) pc: usize,
     pub(crate) bytecode: Arc<[opcode::Instr]>,
     pub(crate) active_immutables: *const [JsValue],
@@ -367,6 +371,10 @@ pub struct Vm {
     /// frames 为空（inline 隔离状态）时由此取闭包 upvalues。嵌套 inline 由
     /// InlineSyncState 保存/恢复。
     pub(crate) inline_callee: Option<JsValue>,
+    /// inline 同步调用寄存器窗口缓冲池：`save_inline_state` 取出复用、
+    /// `restore_inline_state` 归还。热回调循环内 save/restore 反复使用同一块
+    /// 缓冲，只在嵌套（池已被外层取走）时新分配。
+    pub(crate) inline_reg_pool: Option<Vec<JsValue>>,
     /// 生成器体 `dispatch()` 让出时的信号：YIELD 置 Some(让出值)，恢复方（
     /// generator 内嵌 dispatch 循环）取走并判定挂起。None = 正常返回/异常。
     pub(crate) generator_suspended: Option<JsValue>,
@@ -1517,7 +1525,6 @@ impl Vm {
                 OpCode::DEFINE_GLOBAL_PROP => {
                     self.dispatch_define_global_prop(rd, a, b)?;
                 }
-
 
                 OpCode::DEFINE_PROP_ATTRS => {
                     let attrs = self.bytecode[self.pc] as u8;
