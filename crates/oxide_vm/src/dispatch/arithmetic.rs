@@ -8,6 +8,33 @@ fn bigint_is_zero(v: &num_bigint::BigInt) -> bool {
     num_traits::Zero::is_zero(v)
 }
 
+/// int+int 加法：结果落在 i32 范围则保 int，否则升 double。
+#[inline(always)]
+fn int_add(a: i32, b: i32) -> JsValue {
+    match a.checked_add(b) {
+        Some(v) => JsValue::int(v),
+        None => JsValue::float(a as f64 + b as f64),
+    }
+}
+
+/// int+int 减法：结果落在 i32 范围则保 int，否则升 double。
+#[inline(always)]
+fn int_sub(a: i32, b: i32) -> JsValue {
+    match a.checked_sub(b) {
+        Some(v) => JsValue::int(v),
+        None => JsValue::float(a as f64 - b as f64),
+    }
+}
+
+/// int+int 乘法：结果落在 i32 范围则保 int，否则升 double。
+#[inline(always)]
+fn int_mul(a: i32, b: i32) -> JsValue {
+    match a.checked_mul(b) {
+        Some(v) => JsValue::int(v),
+        None => JsValue::float(a as f64 * b as f64),
+    }
+}
+
 impl Vm {
     #[inline(always)]
     pub(crate) fn dispatch_add(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
@@ -15,7 +42,11 @@ impl Vm {
         let lv = self.regs[a];
         let rv = self.regs[b];
         if lv.is_int() && rv.is_int() {
-            self.regs[rd] = JsValue::float(lv.as_int() as f64 + rv.as_int() as f64);
+            self.regs[rd] = int_add(lv.as_int(), rv.as_int());
+            return Ok(());
+        }
+        if lv.is_double() && rv.is_double() {
+            self.regs[rd] = JsValue::float(lv.as_double() + rv.as_double());
             return Ok(());
         }
         if lv.is_bigint() && rv.is_bigint() {
@@ -97,7 +128,11 @@ impl Vm {
         let lv = self.regs[rd];
         let rv = self.regs[a];
         if lv.is_int() && rv.is_int() {
-            self.regs[rd] = JsValue::float(lv.as_int() as f64 + rv.as_int() as f64);
+            self.regs[rd] = int_add(lv.as_int(), rv.as_int());
+            return Ok(());
+        }
+        if lv.is_double() && rv.is_double() {
+            self.regs[rd] = JsValue::float(lv.as_double() + rv.as_double());
             return Ok(());
         }
         if lv.is_bigint() && rv.is_bigint() {
@@ -131,7 +166,11 @@ impl Vm {
         let lv = self.regs[rd];
         let rv = self.regs[a];
         if lv.is_int() && rv.is_int() {
-            self.regs[rd] = JsValue::float(lv.as_int() as f64 - rv.as_int() as f64);
+            self.regs[rd] = int_sub(lv.as_int(), rv.as_int());
+            return Ok(());
+        }
+        if lv.is_double() && rv.is_double() {
+            self.regs[rd] = JsValue::float(lv.as_double() - rv.as_double());
             return Ok(());
         }
         if lv.is_bigint() && rv.is_bigint() {
@@ -159,7 +198,11 @@ impl Vm {
         let lv = self.regs[rd];
         let rv = self.regs[a];
         if lv.is_int() && rv.is_int() {
-            self.regs[rd] = JsValue::float(lv.as_int() as f64 * rv.as_int() as f64);
+            self.regs[rd] = int_mul(lv.as_int(), rv.as_int());
+            return Ok(());
+        }
+        if lv.is_double() && rv.is_double() {
+            self.regs[rd] = JsValue::float(lv.as_double() * rv.as_double());
             return Ok(());
         }
         if lv.is_bigint() && rv.is_bigint() {
@@ -188,6 +231,10 @@ impl Vm {
         let rv = self.regs[a];
         if lv.is_int() && rv.is_int() {
             self.regs[rd] = JsValue::float(lv.as_int() as f64 / rv.as_int() as f64);
+            return Ok(());
+        }
+        if lv.is_double() && rv.is_double() {
+            self.regs[rd] = JsValue::float(lv.as_double() / rv.as_double());
             return Ok(());
         }
         if lv.is_bigint() && rv.is_bigint() {
@@ -223,7 +270,22 @@ impl Vm {
         let lv = self.regs[rd];
         let rv = self.regs[a];
         if lv.is_int() && rv.is_int() {
-            self.regs[rd] = JsValue::float(lv.as_int() as f64 % rv.as_int() as f64);
+            let a = lv.as_int();
+            let b = rv.as_int();
+            if b != 0 {
+                match a.checked_rem(b) {
+                    Some(v) => {
+                        self.regs[rd] = JsValue::int(v);
+                        return Ok(());
+                    }
+                    None => {}
+                }
+            }
+            self.regs[rd] = JsValue::float(a as f64 % b as f64);
+            return Ok(());
+        }
+        if lv.is_double() && rv.is_double() {
+            self.regs[rd] = JsValue::float(lv.as_double() % rv.as_double());
             return Ok(());
         }
         if lv.is_bigint() && rv.is_bigint() {
