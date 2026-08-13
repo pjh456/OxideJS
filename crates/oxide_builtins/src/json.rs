@@ -281,7 +281,7 @@ pub fn json_stringify<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     {
         return NativeResult::Err(crate::error::create_type_error(vm, "Converting circular structure to JSON"));
     };
-    NativeResult::Ok(vm.new_string(&output))
+    NativeResult::Ok(vm.new_string_owned(output))
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -1134,7 +1134,7 @@ fn instant_default_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid Instant"));
     };
     match format_instant_iso(epoch_ns, None, true, None) {
-        Some(output) => NativeResult::Ok(vm.new_string(&output)),
+        Some(output) => NativeResult::Ok(vm.new_string_owned(output)),
         None => NativeResult::Err(crate::error::create_range_error(vm, "invalid Instant")),
     }
 }
@@ -1219,7 +1219,7 @@ pub fn instant_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Err(crate::error::create_range_error(vm, "Instant outside supported range"));
     }
     match format_instant_iso(rounded_ns, offset_minutes, include_seconds, output_digits) {
-        Some(output) => NativeResult::Ok(vm.new_string(&output)),
+        Some(output) => NativeResult::Ok(vm.new_string_owned(output)),
         None => NativeResult::Err(crate::error::create_range_error(vm, "invalid Instant")),
     }
 }
@@ -1890,7 +1890,7 @@ pub fn duration_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             output.push_str("0S");
         }
     }
-    NativeResult::Ok(vm.new_string(&output))
+    NativeResult::Ok(vm.new_string_owned(output))
 }
 
 /// `Temporal.Duration.prototype.valueOf()` 始终拒绝隐式数值转换。
@@ -3514,7 +3514,7 @@ fn format_plain_date_time_iso(
 fn plain_date_time_iso_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (year, month, day, total_ns) = native_try!(plain_date_time_parts(vm, args));
     let output = format_plain_date_time_iso(year, month, day, total_ns as i128, true, None, "never");
-    NativeResult::Ok(vm.new_string(&output))
+    NativeResult::Ok(vm.new_string_owned(output))
 }
 
 /// `Temporal.PlainDateTime.prototype.toString(options)`：按精度、舍入模式与日历显示输出 ISO 8601。
@@ -3601,7 +3601,7 @@ pub fn plain_date_time_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRe
         output_digits,
         &calendar_name,
     );
-    NativeResult::Ok(vm.new_string(&output))
+    NativeResult::Ok(vm.new_string_owned(output))
 }
 
 /// 按 duration-like 分量对 PlainDateTime 做加减：先平衡时间（溢出为天），

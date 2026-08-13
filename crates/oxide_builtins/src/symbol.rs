@@ -85,7 +85,7 @@ pub fn symbol_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let idx = sym.as_symbol_index();
     let desc = vm.symbol_description(idx).unwrap_or("").to_string();
     let result = format!("Symbol({})", desc);
-    NativeResult::Ok(vm.new_string(&result))
+    NativeResult::Ok(vm.new_string_owned(result))
 }
 
 /// `Symbol.prototype.valueOf`：Symbol 原样返回；包装对象解盒返回其原始 Symbol。

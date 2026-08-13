@@ -211,7 +211,7 @@ pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         } else {
             "Invalid Date".to_string()
         };
-        return NativeResult::Ok(vm.new_string(&s));
+        return NativeResult::Ok(vm.new_string_owned(s));
     }
 
     let mut obj = JsObject::new_empty(
@@ -866,7 +866,7 @@ fn date_to_string_inner<H: VmHost>(vm: &mut H, args: &[u8], format_str: &str, in
         Some(dt) => dt.format(format_str).to_string(),
         None => invalid.to_string(),
     };
-    NativeResult::Ok(vm.new_string(&s))
+    NativeResult::Ok(vm.new_string_owned(s))
 }
 
 /// `Date.prototype.toISOString()`：输出 ISO 8601 格式（`YYYY-MM-DDTHH:MM:SS.mmmZ`）。
@@ -885,7 +885,7 @@ pub fn date_to_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Some(dt) => dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
         None => return NativeResult::Ok(JsValue::null()),
     };
-    NativeResult::Ok(vm.new_string(&s))
+    NativeResult::Ok(vm.new_string_owned(s))
 }
 
 /// `Date.prototype.toString()`：本地时间完整字符串（如 `Wed Aug 05 2026 12:00:00 GMT+0000`）。

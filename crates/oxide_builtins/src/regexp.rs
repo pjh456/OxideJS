@@ -275,7 +275,7 @@ pub fn regexp_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         vm.lookup_str(val).unwrap_or_default()
     };
     let result = format!("/{}/{}", source, flags);
-    NativeResult::Ok(vm.new_string(&result))
+    NativeResult::Ok(vm.new_string_owned(result))
 }
 
 // RegExp 对象 hash 槽中属性的固定下标（构造顺序：lastIndex/source/flags/global/...）。

@@ -274,5 +274,5 @@ pub fn function_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     } else {
         format!("function {name}() {{ {body} }}")
     };
-    NativeResult::Ok(vm.new_string(&result))
+    NativeResult::Ok(vm.new_string_owned(result))
 }

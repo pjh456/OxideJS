@@ -1805,6 +1805,9 @@ impl oxide_runtime_api::VmHost for Vm {
     fn new_string(&mut self, s: &str) -> JsValue {
         self.new_string(s)
     }
+    fn new_string_owned(&mut self, s: String) -> JsValue {
+        Vm::new_string_owned(self, s)
+    }
     fn new_bigint(&mut self, v: num_bigint::BigInt) -> JsValue {
         Vm::new_bigint(self, v)
     }

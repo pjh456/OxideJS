@@ -75,6 +75,8 @@ pub trait VmHost {
     // 对象分配 / 字符串创建
     fn alloc_object(&mut self, obj: JsObject) -> *mut JsObject;
     fn new_string(&mut self, s: &str) -> JsValue;
+    /// move 接收 `String` 创建会话字符串，避免一次整串克隆。
+    fn new_string_owned(&mut self, s: String) -> JsValue;
     /// 分配 BigInt 值（num_bigint::BigInt box 登记到 VM，返回携带指针的 `JsValue`）。
     fn new_bigint(&mut self, v: num_bigint::BigInt) -> JsValue;
     /// 读取 BigInt 值；调用方须保证 `val.is_bigint()`。

@@ -51,7 +51,7 @@ pub fn string_from_char_code<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
             out.push('\u{FFFD}');
         }
     }
-    NativeResult::Ok(vm.new_string(&out))
+    NativeResult::Ok(vm.new_string_owned(out))
 }
 
 /// `String.fromCodePoint(...codes)`：把各参数按 ToNumber 语义转成 code point
@@ -84,7 +84,7 @@ pub fn string_from_code_point<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
             out.push(char::from_u32(code).unwrap());
         }
     }
-    NativeResult::Ok(vm.new_string(&out))
+    NativeResult::Ok(vm.new_string_owned(out))
 }
 
 /// `String.prototype.valueOf`：返回包装对象的原始字符串；其它 this 抛 TypeError。
@@ -127,7 +127,7 @@ pub fn string_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     } else {
         String::new()
     };
-    let str_val = vm.new_string(&s);
+    let str_val = vm.new_string_owned(s);
 
     let string_proto = vm.session().builtin_world().string_proto.as_ptr() as *mut JsObject;
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
@@ -309,7 +309,7 @@ pub(crate) fn regex_replace_fn<H: VmHost>(
         last_end = range.end;
     }
     out.push_str(&text[last_end..]);
-    NativeResult::Ok(vm.new_string(&out))
+    NativeResult::Ok(vm.new_string_owned(out))
 }
 
 /// 字符串模式 + 函数 replacer：all 全替换否则替换首个。回调参数
@@ -351,7 +351,7 @@ fn string_replace_fn<H: VmHost>(vm: &mut H, text: &str, pattern: &str, replacer:
         last_end = p + search_length;
     }
     out.push_str(&text[last_end..]);
-    NativeResult::Ok(vm.new_string(&out))
+    NativeResult::Ok(vm.new_string_owned(out))
 }
 
 fn char_len(s: &str) -> usize {
@@ -507,7 +507,7 @@ pub fn string_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             }
         }
     }
-    NativeResult::Ok(vm.new_string(&result))
+    NativeResult::Ok(vm.new_string_owned(result))
 }
 
 /// `String.prototype.slice(start, end)`：按字符区间（支持负索引）取子串。
@@ -594,7 +594,7 @@ pub fn string_substr<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         len as usize - start
     };
     let result = take_chars(&s[byte_index_at_char(&s, start)..], length.min(len as usize - start));
-    NativeResult::Ok(vm.new_string(&result))
+    NativeResult::Ok(vm.new_string_owned(result))
 }
 
 /// `String.prototype.at(index)`：按字符索引取字符（支持负索引）；越界返回 undefined。
@@ -658,14 +658,14 @@ pub fn string_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
 pub fn string_to_upper_case<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.toUpperCase called with {} args", args.len());
     let s = try_string!(this_string(vm, args));
-    NativeResult::Ok(vm.new_string(&s.to_uppercase()))
+    NativeResult::Ok(vm.new_string_owned(s.to_uppercase()))
 }
 
 /// `String.prototype.toLowerCase`：全小写转换。
 pub fn string_to_lower_case<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.toLowerCase called with {} args", args.len());
     let s = try_string!(this_string(vm, args));
-    NativeResult::Ok(vm.new_string(&s.to_lowercase()))
+    NativeResult::Ok(vm.new_string_owned(s.to_lowercase()))
 }
 
 /// `String.prototype.trim`：去除两端空白。
@@ -684,7 +684,7 @@ pub fn string_repeat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     } else {
         1
     };
-    NativeResult::Ok(vm.new_string(&s.repeat(n)))
+    NativeResult::Ok(vm.new_string_owned(s.repeat(n)))
 }
 
 /// `String.prototype.padStart(targetLength, padString)`：在头部补足 padString 到目标长度。
@@ -703,14 +703,14 @@ pub fn string_pad_start<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let pad = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { " ".to_string() };
     if s_len >= target || pad.is_empty() {
-        return NativeResult::Ok(vm.new_string(&s));
+        return NativeResult::Ok(vm.new_string_owned(s));
     }
     let needed = target - s_len;
     let pad_len = char_len(&pad).max(1);
     let reps = needed.div_ceil(pad_len);
     let mut out = take_chars(&pad.repeat(reps), needed);
     out.push_str(&s);
-    NativeResult::Ok(vm.new_string(&out))
+    NativeResult::Ok(vm.new_string_owned(out))
 }
 
 /// `String.prototype.padEnd(targetLength, padString)`：在尾部补足 padString 到目标长度。
@@ -729,14 +729,14 @@ pub fn string_pad_end<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let pad = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { " ".to_string() };
     if s_len >= target || pad.is_empty() {
-        return NativeResult::Ok(vm.new_string(&s));
+        return NativeResult::Ok(vm.new_string_owned(s));
     }
     let needed = target - s_len;
     let pad_len = char_len(&pad).max(1);
     let reps = needed.div_ceil(pad_len);
     let mut out = s;
     out.push_str(&take_chars(&pad.repeat(reps), needed));
-    NativeResult::Ok(vm.new_string(&out))
+    NativeResult::Ok(vm.new_string_owned(out))
 }
 
 /// `String.prototype.startsWith(searchString, position)`：是否以指定子串开头。
@@ -846,7 +846,7 @@ pub fn string_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.replace called with {} args", args.len());
     let s = try_string!(this_string(vm, args));
     if args.len() < 2 {
-        return NativeResult::Ok(vm.new_string(&s));
+        return NativeResult::Ok(vm.new_string_owned(s));
     }
     let pattern_val = vm.reg(args[1]);
 
@@ -870,7 +870,7 @@ pub fn string_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             let replacement = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { String::new() };
             // 手动展开 $ 引用（regress 的 replace 对 $n 展开为空）。
             let result = regex_replace_manual(regex, &s, &replacement, is_global);
-            return NativeResult::Ok(vm.new_string(&result));
+            return NativeResult::Ok(vm.new_string_owned(result));
         }
         // 无原生正则的类正则对象回退到字符串路径。
     }
@@ -887,7 +887,7 @@ pub fn string_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let replacement = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { String::new() };
     let result = s.replacen(&pattern, &replacement, 1);
-    NativeResult::Ok(vm.new_string(&result))
+    NativeResult::Ok(vm.new_string_owned(result))
 }
 
 /// `String.prototype.match(pattern)`：按 RegExp 匹配；global 返回全部匹配数组，
@@ -1059,7 +1059,7 @@ pub fn string_to_well_formed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
             out.push(c);
         }
     }
-    NativeResult::Ok(vm.new_string(&out))
+    NativeResult::Ok(vm.new_string_owned(out))
 }
 
 /// `String.prototype.normalize(form)`：按 NFC/NFD/NFKC/NFKD 规范化为 Unicode 规范形式。
@@ -1074,7 +1074,7 @@ pub fn string_normalize<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         "NFKD" => s.nfkd().collect(),
         _ => s.nfc().collect(),
     };
-    NativeResult::Ok(vm.new_string(&result))
+    NativeResult::Ok(vm.new_string_owned(result))
 }
 
 pub(crate) const MALL_INPUT: &str = "__mal_input__";
@@ -1234,7 +1234,7 @@ pub fn string_replace_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.replaceAll called with {} args", args.len());
     let s = try_string!(this_string(vm, args));
     if args.len() < 2 {
-        return NativeResult::Ok(vm.new_string(&s));
+        return NativeResult::Ok(vm.new_string_owned(s));
     }
     let pattern_val = vm.reg(args[1]);
     if is_regexp_obj(pattern_val, vm) {
@@ -1242,7 +1242,7 @@ pub fn string_replace_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let re = unsafe { &*re_ptr };
         let fn_ptr = match re.native_fn() {
             Some(p) => p,
-            None => return NativeResult::Ok(vm.new_string(&s)),
+            None => return NativeResult::Ok(vm.new_string_owned(s)),
         };
         // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regress::Regex>` 指针。
         let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
@@ -1257,7 +1257,7 @@ pub fn string_replace_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
         let replacement = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { String::new() };
         let result = regex_replace_manual(regex, &s, &replacement, true);
-        return NativeResult::Ok(vm.new_string(&result));
+        return NativeResult::Ok(vm.new_string_owned(result));
     }
     let pattern = as_string(vm, pattern_val);
     if args.len() > 2 {
@@ -1271,5 +1271,5 @@ pub fn string_replace_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let replacement = if args.len() > 2 { as_string(vm, vm.reg(args[2])) } else { String::new() };
     let result = s.replace(&pattern, &replacement);
-    NativeResult::Ok(vm.new_string(&result))
+    NativeResult::Ok(vm.new_string_owned(result))
 }

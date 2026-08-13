@@ -213,7 +213,7 @@ pub fn number_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if neg {
         result.insert(0, '-');
     }
-    NativeResult::Ok(vm.new_string(&result))
+    NativeResult::Ok(vm.new_string_owned(result))
 }
 
 /// `Number.prototype.toFixed(digits)`：固定小数位数（0..100）输出字符串，
@@ -330,7 +330,7 @@ pub fn number_to_exponential<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
             }
         }
         let result = format!("{}{}", sign_prefix, s);
-        return NativeResult::Ok(vm.new_string(&result));
+        return NativeResult::Ok(vm.new_string_owned(result));
     }
     let raw = oxide_runtime_api::to_integer_or_infinity(vm.reg(args[1]));
     if !(0.0..=100.0).contains(&raw) {
