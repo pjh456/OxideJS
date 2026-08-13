@@ -8,6 +8,8 @@
 
 # Local Agent
 .planning/
+.w1mer/
+w1mer.yaml
 AGENTS.md
 .claude/
 
