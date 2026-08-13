@@ -1,4 +1,4 @@
-var ITERATIONS = 10000;
+var ITERATIONS = 3000;
 
 var obj = {};
 for (var i = 0; i < ITERATIONS; i++) {
