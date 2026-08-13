@@ -109,10 +109,18 @@ fn get_this_arraylike<H: VmHost>(vm: &mut H, val: JsValue) -> Result<(*mut JsObj
 /// 从 arraylike 读取 index 位置元素（按规范 Get：访问器/原型链/异常完整传播）。
 #[inline(always)]
 fn arraylike_get<H: VmHost>(vm: &mut H, ptr: *mut JsObject, i: usize) -> Result<JsValue, JsValue> {
+    // 真数组密集直读快路径：无元素 meta（无 hole / accessor，O(1) 空指针判定）且
+    // 索引在元素区内时，直接读数据槽，免每元素构造数字串 + 属性键转换。
+    // 语义与 ordinary_get 一致：`array_elements_meta_vec().is_none()` 保证该索引
+    // 恒为数据属性（见 vm_props.rs ordinary_get_inner 数组分支）。
+    let obj = unsafe { &*ptr };
+    if obj.is_array() && obj.array_elements_meta_vec().is_none() && i < obj.array_prop_count as usize {
+        return Ok(obj.get_prop_at(i));
+    }
     let key_str = vm.new_string(&i.to_string());
     let key_si = vm.property_key_si(key_str);
     let recv = JsValue::from_js_object(ptr);
-    match vm.ordinary_get(unsafe { &*ptr }, key_si, recv) {
+    match vm.ordinary_get(obj, key_si, recv) {
         Ok(v) => Ok(v),
         Err(msg) => Err(from_engine_error(vm, &msg)),
     }

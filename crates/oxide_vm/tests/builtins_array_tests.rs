@@ -354,3 +354,54 @@ fn array_fill_single() {
     let obj = unsafe { &*result.as_js_object_ptr() };
     assert_eq!(obj.get_prop_at(0).as_int(), 0);
 }
+
+#[test]
+fn array_iteration_hole_reads_undefined() {
+    // 稀疏数组（字面量空洞 / delete）元素读取落到 undefined：引擎对 hole 不跳过
+    // 回调而是读 undefined（pre-existing 语义，直读 fast path 与慢路径一致）。
+    let (vm, result) = eval("[10,,30].map(x=>x*2).join(',')").unwrap();
+    assert_eq!(to_str(&vm, result), "20,NaN,60");
+
+    // delete 产生的 hole 经 map 读 undefined，不残留洞前值。
+    let (vm, result) = eval("var a=[1,2,3]; delete a[1]; a.map(x=>x+1).join(',')").unwrap();
+    assert_eq!(to_str(&vm, result), "2,NaN,4");
+
+    // reduce 对 hole 累加 undefined。
+    let (vm, result) = eval("var a=[1,,3]; a.reduce((s,x)=>s+','+x,'')").unwrap();
+    assert_eq!(to_str(&vm, result), ",1,undefined,3");
+}
+
+#[test]
+fn array_iteration_element_accessor_still_invoked() {
+    // 数组索引定义 getter 后，map/find 等每元素读取必须触发访问器而非直读数据槽。
+    let (vm, result) =
+        eval("var a=[1,2]; Object.defineProperty(a,0,{get:()=>99, configurable:true}); a.map(x=>x*10).join(',')")
+            .unwrap();
+    assert_eq!(to_str(&vm, result), "990,20");
+}
+
+#[test]
+fn array_iteration_arraylike_receiver_non_array() {
+    // Array.prototype 方法在非真数组（arraylike）上调用的 receiver 差异：走属性键慢路径。
+    let (vm, result) = eval("Array.prototype.map.call({0:'a',1:'b',length:2}, x=>x+x).join(',')").unwrap();
+    assert_eq!(to_str(&vm, result), "aa,bb");
+
+    let (vm, result) = eval("Array.prototype.join.call({0:'a',1:'b',length:2}, '-')").unwrap();
+    assert_eq!(to_str(&vm, result), "a-b");
+}
+
+#[test]
+fn array_iteration_dense_elements_read_correct() {
+    // 真数组密集直读 fast path 覆盖各迭代方法的基本取值。
+    let (vm, result) = eval("[10,20,30].map(x=>x*2).join(',')").unwrap();
+    assert_eq!(to_str(&vm, result), "20,40,60");
+
+    let (_vm, result) = eval("[1,2].includes(2)").unwrap();
+    assert_eq!(result, JsValue::bool(true));
+
+    let (_vm, result) = eval("[1,2].indexOf(1)").unwrap();
+    assert_num_eq(result, 0.0);
+
+    let (vm, result) = eval("[1,2,3].slice(1).join(',')").unwrap();
+    assert_eq!(to_str(&vm, result), "2,3");
+}
