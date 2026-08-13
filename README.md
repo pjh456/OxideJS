@@ -7,7 +7,7 @@
     <img alt="Rust" src="https://img.shields.io/badge/Rust-1.80%2B-orange?style=for-the-badge&logo=rust" />
     <img alt="Platform" src="https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows%20And%20More-blue?style=for-the-badge" />
     <img alt="Engine" src="https://img.shields.io/badge/JS%20Engine-Non--Wrapper-success?style=for-the-badge" />
-    <img alt="test262" src="https://img.shields.io/badge/test262-69.6%25-purple?style=for-the-badge" />
+    <img alt="test262" src="https://img.shields.io/badge/test262-72.5%25-purple?style=for-the-badge" />
   </p>
 </div>
 
