@@ -355,7 +355,7 @@ pub fn regexp_symbol_match<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if matches.is_empty() {
         return NativeResult::Ok(JsValue::null());
     }
-    NativeResult::Ok(crate::string::make_string_array(vm, &matches))
+    NativeResult::Ok(crate::string::make_string_array(vm, matches))
 }
 
 /// `RegExp.prototype[Symbol.replace](string, replacement)`：按匹配替换。
@@ -473,7 +473,7 @@ pub fn regexp_symbol_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if last_end <= haystack.len() && parts.len() < limit {
         parts.push(haystack[last_end..].to_string());
     }
-    NativeResult::Ok(crate::string::make_string_array(vm, &parts))
+    NativeResult::Ok(crate::string::make_string_array(vm, parts))
 }
 
 /// `RegExp.prototype[Symbol.matchAll](string)`：返回按 global 语义逐个产出
