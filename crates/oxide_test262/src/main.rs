@@ -535,7 +535,7 @@ fn run_test_inner(
     let compiler = if no_regalloc { Compiler::new().with_regalloc(false) } else { Compiler::new() };
     let module = match if is_module {
         let mut loader = Test262ModuleLoader;
-        compiler.compile_module(&program, &path.to_string_lossy().to_string(), &mut loader)
+        compiler.compile_module(&program, path.to_string_lossy().as_ref(), &mut loader)
     } else {
         compiler.compile(&program)
     } {
