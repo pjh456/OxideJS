@@ -505,6 +505,9 @@ impl Vm {
     }
 
     pub(crate) fn coerce_int32_bounded(&mut self, value: JsValue) -> Result<i32, String> {
+        if value.is_int() {
+            return Ok(value.as_int());
+        }
         let n = self.coerce_number_bounded(value)?;
         if n == 0.0 || !n.is_finite() {
             return Ok(0);
@@ -518,6 +521,9 @@ impl Vm {
     }
 
     pub(crate) fn coerce_uint32_bounded(&mut self, value: JsValue) -> Result<u32, String> {
+        if value.is_int() {
+            return Ok(value.as_int() as u32);
+        }
         let n = self.coerce_number_bounded(value)?;
         if n == 0.0 || !n.is_finite() {
             return Ok(0);

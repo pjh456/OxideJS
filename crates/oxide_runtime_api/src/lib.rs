@@ -245,15 +245,16 @@ fn parse_js_number(s: &str) -> f64 {
     if t.is_empty() {
         return 0.0;
     }
-    let lower = t.to_ascii_lowercase();
-    if let Some(digits) = lower.strip_prefix("0x") {
-        return parse_radix_int(digits, 16);
+    let b = t.as_bytes();
+    // 前缀探测按字节直接比较（ASCII 大小写不敏感），避免每次转换分配 lowercase。
+    if b.len() >= 2 && b[0] == b'0' && (b[1] == b'x' || b[1] == b'X') {
+        return parse_radix_int(&t[2..], 16);
     }
-    if let Some(digits) = lower.strip_prefix("0o") {
-        return parse_radix_int(digits, 8);
+    if b.len() >= 2 && b[0] == b'0' && (b[1] == b'o' || b[1] == b'O') {
+        return parse_radix_int(&t[2..], 8);
     }
-    if let Some(digits) = lower.strip_prefix("0b") {
-        return parse_radix_int(digits, 2);
+    if b.len() >= 2 && b[0] == b'0' && (b[1] == b'b' || b[1] == b'B') {
+        return parse_radix_int(&t[2..], 2);
     }
     if t == "Infinity" || t == "+Infinity" {
         return f64::INFINITY;
@@ -263,9 +264,9 @@ fn parse_js_number(s: &str) -> f64 {
     }
     // 十进制语法仅允许数字、符号、小数点与指数 e；含其它字符的令牌（如
     // inf/nan 变体）不是合法 StringNumericLiteral，一律 NaN。
-    if !t
-        .chars()
-        .all(|c| c.is_ascii_digit() || c == '+' || c == '-' || c == '.' || c == 'e' || c == 'E')
+    if !b
+        .iter()
+        .all(|&c| c.is_ascii_digit() || c == b'+' || c == b'-' || c == b'.' || c == b'e' || c == b'E')
     {
         return f64::NAN;
     }
