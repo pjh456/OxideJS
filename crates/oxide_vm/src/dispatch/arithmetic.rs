@@ -273,12 +273,9 @@ impl Vm {
             let a = lv.as_int();
             let b = rv.as_int();
             if b != 0 {
-                match a.checked_rem(b) {
-                    Some(v) => {
-                        self.regs[rd] = JsValue::int(v);
-                        return Ok(());
-                    }
-                    None => {}
+                if let Some(v) = a.checked_rem(b) {
+                    self.regs[rd] = JsValue::int(v);
+                    return Ok(());
                 }
             }
             self.regs[rd] = JsValue::float(a as f64 % b as f64);

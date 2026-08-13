@@ -610,7 +610,7 @@ fn async_gen_await_resume_closure(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let role_si = vm.kernel_core.perm_interner().intern(AG_REJECT_PROP).0;
     let is_reject = vm
         .resolve_property(callee_obj, role_si)
-        .map_or(false, oxide_runtime_api::to_boolean);
+        .is_some_and(oxide_runtime_api::to_boolean);
     let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     // 把 await 结果写入当前请求的注入模式，resume 时按角色恢复。
     if ctx.is_object() {
@@ -649,11 +649,11 @@ fn async_gen_yield_unwrap_closure(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let raw_si = vm.kernel_core.perm_interner().intern(AG_YIELD_RAW_PROP).0;
     let raw = vm
         .resolve_property(callee_obj, raw_si)
-        .map_or(false, oxide_runtime_api::to_boolean);
+        .is_some_and(oxide_runtime_api::to_boolean);
     let role_si = vm.kernel_core.perm_interner().intern(AG_REJECT_PROP).0;
     let is_reject = vm
         .resolve_property(callee_obj, role_si)
-        .map_or(false, oxide_runtime_api::to_boolean);
+        .is_some_and(oxide_runtime_api::to_boolean);
     let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     if is_reject {
         // yield 值被拒：next() 的 promise reject，且生成器关闭（后续 next 直接 done）。
@@ -817,6 +817,7 @@ fn async_generator_function_stub(vm: &mut Vm, _args: &[u8]) -> NativeResult {
 
 // ── session GC 支撑：状态快照中的 JsValues 作为异步生成器对象边追踪 ──
 
+#[expect(clippy::mut_from_ref)]
 fn async_gen_state_mut(obj: &JsObject) -> Option<&mut AsyncGeneratorState> {
     let ptr = obj.native_data() as *mut AsyncGeneratorState;
     if ptr.is_null() {

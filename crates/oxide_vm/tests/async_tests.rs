@@ -36,7 +36,7 @@ fn format_value(vm: &Vm, val: oxide_vm::JsValue) -> String {
                 None => "<pending>".to_string(),
             }
         } else if obj.is_array() {
-            format!("[array]")
+            "[array]".to_string()
         } else {
             "[object]".to_string()
         }

@@ -177,7 +177,7 @@ impl Vm {
         // receiver 非 TA 时按规范把写入落到 receiver 对象，不碰 TA buffer。
         if obj.is_typed_array_obj() {
             if let Some(index) = self.array_index_from_property_key(prop_name_si) {
-                if receiver.as_js_object_ptr() != obj as *const JsObject as *mut JsObject {
+                if !std::ptr::eq(receiver.as_js_object_ptr(), obj as *mut JsObject) {
                     return self.set_to_receiver(obj, prop_name_si, val, receiver, index as usize, use_frame_push);
                 }
                 return oxide_builtins::typed_array::typed_array_element_set(self, obj, index, val);
@@ -547,6 +547,7 @@ impl Vm {
 
     /// 数组索引属性（`"0"`~`"4294967294"`）的 define 路径：存入元素区并维护
     /// `array_prop_count`（length 随最高索引增长），meta 与元素槽对齐。
+    #[allow(clippy::too_many_arguments)]
     fn define_array_index_element(
         &mut self, obj: &mut JsObject, index: u32, val: JsValue, attributes: PropAttributes, is_accessor: bool,
         get: JsValue, set: JsValue,

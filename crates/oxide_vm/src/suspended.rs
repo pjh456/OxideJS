@@ -80,7 +80,7 @@ impl SuspendedFrame {
     pub fn save_from(&mut self, vm: &mut Vm, callee: JsValue) -> Result<(), String> {
         let frame = vm.frames.pop().ok_or_else(|| "frame missing on suspend".to_string())?;
         self.frame = Some(frame);
-        self.regs = Box::new(vm.regs);
+        *self.regs = vm.regs;
         self.pc = vm.pc;
         self.bytecode = std::mem::take(&mut vm.bytecode);
         self.sub_idx = if callee.is_object() {

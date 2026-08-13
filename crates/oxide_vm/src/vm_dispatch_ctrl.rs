@@ -315,9 +315,7 @@ impl Vm {
                 return None;
             }
             let (frame_depth, finally_pc, finally_active) = {
-                let Some(h) = self.try_stack.last() else {
-                    return None;
-                };
+                let h = self.try_stack.last()?;
                 (h.frame_depth, h.finally_pc, h.finally_active)
             };
             if frame_depth != depth {
@@ -524,9 +522,7 @@ impl Vm {
         let depth = self.frames.len();
         loop {
             let (frame_depth, finally_pc, finally_active) = {
-                let Some(h) = self.try_stack.last() else {
-                    return None;
-                };
+                let h = self.try_stack.last()?;
                 (h.frame_depth, h.finally_pc, h.finally_active)
             };
             if frame_depth != depth {

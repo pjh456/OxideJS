@@ -415,7 +415,7 @@ impl Vm {
         // std Vec 建完后迁入 bump 区，避免枚举循环期间对 self 的 &mut 借用
         // 与 bump 借用冲突。
         let keys_bump: bumpalo::collections::Vec<(JsValue, u32)> =
-            bumpalo::collections::Vec::from_iter_in(keys_vec.into_iter(), self.epoch.bump());
+            bumpalo::collections::Vec::from_iter_in(keys_vec, self.epoch.bump());
         let iter = self.epoch.alloc(ForInIter { keys: keys_bump, index: 0 });
         self.iters.push_for_in(iter.cast::<ForInIter<'static>>());
         Ok(())
@@ -555,20 +555,14 @@ impl Vm {
         }
         let iter_obj = unsafe { &*iterator.as_js_object_ptr() };
         let return_si = self.kernel_core.perm_interner().intern("return").0;
-        let return_fn = match self.ordinary_get(iter_obj, return_si, iterator) {
-            Ok(v) => v,
-            Err(e) => return Err(e),
-        };
+        let return_fn = self.ordinary_get(iter_obj, return_si, iterator)?;
         if !return_fn.is_object() {
             return Ok(());
         }
         if !unsafe { &*return_fn.as_js_object_ptr() }.is_function() {
             return Ok(());
         }
-        let inner = match self.call_function_sync(return_fn, iterator, &[]) {
-            Ok(v) => v,
-            Err(e) => return Err(e),
-        };
+        let inner = self.call_function_sync(return_fn, iterator, &[])?;
         if !inner.is_object() {
             return self.raise_type_error("iterator return() result is not an object");
         }

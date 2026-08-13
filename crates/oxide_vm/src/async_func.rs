@@ -381,7 +381,7 @@ fn async_await_resume_closure(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let ctx_si = vm.kernel_core.perm_interner().intern(ASYNC_CTX_PROP).0;
     let ctx = vm.resolve_property(callee_obj, ctx_si).unwrap_or(JsValue::undefined());
     let role_si = vm.kernel_core.perm_interner().intern(ASYNC_REJECT_PROP).0;
-    let is_reject = vm.resolve_property(callee_obj, role_si).map_or(false, to_boolean);
+    let is_reject = vm.resolve_property(callee_obj, role_si).is_some_and(to_boolean);
     let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let mode = if is_reject {
         AsyncResumeMode::Throw(value)
@@ -445,6 +445,7 @@ fn async_function_stub(vm: &mut Vm, _args: &[u8]) -> NativeResult {
 
 // ── session GC 支撑：状态快照中的 JsValues 作为异步上下文对象边追踪 ──
 
+#[expect(clippy::mut_from_ref)]
 fn async_state_mut(obj: &JsObject) -> Option<&mut AsyncState> {
     let ptr = obj.native_data() as *mut AsyncState;
     if ptr.is_null() {

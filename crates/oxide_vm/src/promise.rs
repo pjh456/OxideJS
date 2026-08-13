@@ -1069,7 +1069,7 @@ fn promise_finally_handler(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let rj_si = vm.kernel_core.perm_interner().intern(FINALLY_REJECT_PROP).0;
     let is_reject = vm
         .resolve_property(callee_obj, rj_si)
-        .map_or(false, oxide_runtime_api::to_boolean);
+        .is_some_and(oxide_runtime_api::to_boolean);
     let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     match vm.call_function_sync(on_finally, JsValue::undefined(), &[]) {
         Ok(_) => {
@@ -1366,7 +1366,7 @@ fn agg_element_state(vm: &mut Vm) -> Option<(JsValue, i32)> {
     let al_si = vm.kernel_core.perm_interner().intern(AGG_ALREADY_PROP).0;
     // SAFETY: callee 是当前调用的存活函数对象。
     let callee_ref = unsafe { &*callee_ptr };
-    if vm.resolve_property(callee_ref, al_si).map_or(false, oxide_runtime_api::to_boolean) {
+    if vm.resolve_property(callee_ref, al_si).is_some_and(oxide_runtime_api::to_boolean) {
         return None;
     }
     let record = vm.resolve_property(callee_ref, rec_si).unwrap_or(JsValue::undefined());
@@ -1464,7 +1464,7 @@ fn promise_all_resolve_element(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::undefined())
 }
 
-/// `Promise.race` 使用能力 resolve/reject 直连，无独立元素函数。
+// `Promise.race` 使用能力 resolve/reject 直连，无独立元素函数。
 
 /// `Promise.allSettled` resolve 元素：写 `{status:'fulfilled', value}` 记录。
 fn promise_all_settled_resolve_element(vm: &mut Vm, args: &[u8]) -> NativeResult {
@@ -1587,8 +1587,8 @@ fn capability_executor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let obj = unsafe { &*callee.as_js_object_ptr() };
     let res_si = vm.kernel_core.perm_interner().intern(CAP_RESOLVE_PROP).0;
     let rej_si = vm.kernel_core.perm_interner().intern(CAP_REJECT_PROP).0;
-    let held = vm.resolve_property(obj, res_si).map_or(false, |v| !v.is_undefined())
-        || vm.resolve_property(obj, rej_si).map_or(false, |v| !v.is_undefined());
+    let held = vm.resolve_property(obj, res_si).is_some_and(|v| !v.is_undefined())
+        || vm.resolve_property(obj, rej_si).is_some_and(|v| !v.is_undefined());
     if held {
         return NativeResult::Err(oxide_builtins::error::create_type_error(
             vm,
@@ -1615,6 +1615,7 @@ fn promise_state_ref(obj: &JsObject) -> Option<&PromiseState> {
     }
 }
 
+#[expect(clippy::mut_from_ref)]
 fn promise_state_mut(obj: &JsObject) -> Option<&mut PromiseState> {
     let ptr = obj.native_data() as *mut PromiseState;
     if ptr.is_null() {

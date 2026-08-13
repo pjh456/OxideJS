@@ -797,6 +797,7 @@ fn generator_function_stub(vm: &mut Vm, _args: &[u8]) -> NativeResult {
 
 // ── session GC 支撑：状态快照中的 JsValues 作为生成器对象边追踪 ──
 
+#[expect(clippy::mut_from_ref)]
 fn generator_state_mut(obj: &JsObject) -> Option<&mut GeneratorState> {
     let ptr = obj.native_data() as *mut GeneratorState;
     if ptr.is_null() {

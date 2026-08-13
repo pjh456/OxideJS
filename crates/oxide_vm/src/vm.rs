@@ -755,7 +755,7 @@ impl Vm {
         if !global_ptr.is_null() {
             // SAFETY: KernelSession 在 VM 生命周期内拥有 global_object。
             unsafe {
-                (*global_ptr).rewrite_object_values(|value| rewrite(value));
+                (*global_ptr).rewrite_object_values(rewrite);
             }
         }
     }

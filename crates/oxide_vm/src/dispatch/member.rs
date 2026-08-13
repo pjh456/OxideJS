@@ -256,6 +256,7 @@ impl Vm {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn dispatch_compound_member_shift(
         &mut self, op_name: &str, rd: usize, a: usize, b: usize, error_msg: &str, is_right: bool, is_unsigned: bool,
     ) -> Result<(), String> {

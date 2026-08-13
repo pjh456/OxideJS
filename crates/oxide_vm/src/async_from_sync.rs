@@ -294,7 +294,7 @@ fn async_from_sync_unwrap(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let done_si = vm.kernel_core.perm_interner().intern(ASFS_DONE_PROP).0;
     let done = vm
         .resolve_property(callee_obj, done_si)
-        .map_or(false, oxide_runtime_api::to_boolean);
+        .is_some_and(oxide_runtime_api::to_boolean);
     let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let result = make_iter_result(vm, value, done);
     let _ = vm.call_function_sync(resolve, JsValue::undefined(), &[result]);

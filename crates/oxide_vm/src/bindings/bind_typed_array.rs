@@ -79,7 +79,7 @@ fn set_bypes_per_element(core: &Arc<KernelCore>, ctor_ptr: *mut JsObject, proto_
     let proto_shape = core.shape_forge().make_shape(proto.shape_id(), bpe_si);
     proto.set_shape_id(proto_shape);
     let proto_pos = proto.push_prop(bpe_val);
-    proto.set_data_meta(proto_pos as u32, attrs);
+    proto.set_data_meta(proto_pos, attrs);
     proto.bump_generation();
 }
 
