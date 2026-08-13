@@ -1986,7 +1986,7 @@ pub fn duration_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             break;
         }
         let base = match unit {
-            9 | 8 | 7 => 1_000,
+             7..=9 => 1_000,
             6 | 5 => 60,
             _ => 24,
         };
@@ -2088,7 +2088,7 @@ pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         native_try!(temporal_option_number(vm, increment_raw))
     };
     let increment = increment_value.trunc();
-    if !increment.is_finite() || increment < 1.0 || increment > 1_000_000_000.0 {
+    if !increment.is_finite() || !(1.0..=1_000_000_000.0).contains(&increment) {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
     }
     let increment = increment as i128;
@@ -2203,7 +2203,7 @@ pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                 break;
             }
             let base = match unit {
-                9 | 8 | 7 => 1_000,
+                7..=9 => 1_000,
                 6 | 5 => 60,
                 _ => 24,
             };
@@ -4122,34 +4122,22 @@ fn parse_difference_settings<H: VmHost>(
         let options = unsafe { &*options_ptr };
         let largest_raw = match temporal_option_value(vm, options, options_value, "largestUnit") {
             Ok(raw) if raw.is_undefined() => None,
-            Ok(raw) => match temporal_option_string(vm, raw) {
-                Ok(value) => Some(value),
-                Err(error) => return Err(error),
-            },
+            Ok(raw) => Some(temporal_option_string(vm, raw)?),
             Err(error) => return Err(error),
         };
         let increment_raw = match temporal_option_value(vm, options, options_value, "roundingIncrement") {
             Ok(raw) if raw.is_undefined() => 1.0,
-            Ok(raw) => match temporal_option_number(vm, raw) {
-                Ok(value) => value,
-                Err(error) => return Err(error),
-            },
+            Ok(raw) => temporal_option_number(vm, raw)?,
             Err(error) => return Err(error),
         };
         let mode_raw = match temporal_option_value(vm, options, options_value, "roundingMode") {
             Ok(raw) if raw.is_undefined() => "trunc".to_string(),
-            Ok(raw) => match temporal_option_string(vm, raw) {
-                Ok(value) => value,
-                Err(error) => return Err(error),
-            },
+            Ok(raw) => temporal_option_string(vm, raw)?,
             Err(error) => return Err(error),
         };
         let smallest_raw = match temporal_option_value(vm, options, options_value, "smallestUnit") {
             Ok(raw) if raw.is_undefined() => default_smallest.to_string(),
-            Ok(raw) => match temporal_option_string(vm, raw) {
-                Ok(value) => value,
-                Err(error) => return Err(error),
-            },
+            Ok(raw) => temporal_option_string(vm, raw)?,
             Err(error) => return Err(error),
         };
         (largest_raw, increment_raw, mode_raw, smallest_raw)
