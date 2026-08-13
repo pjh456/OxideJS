@@ -20,10 +20,38 @@ use oxide_runtime_api::NativeResult;
 use oxide_types::error::{JsError, JsErrorKind};
 use oxide_types::mem::{Epoch, P};
 use oxide_types::object::{Cell, JsObject, NativeFnPtr, PropAttributes};
-use oxide_types::private_key::{make_symbol_key, make_well_known_symbol_key};
+use oxide_types::private_key::{
+    int_key_value, is_int_key, make_int_key, make_symbol_key, make_well_known_symbol_key, INT_KEY_COUNT,
+};
 use oxide_types::value::{JsValue, PTR_MASK};
 
 pub(crate) const MAX_PROTO_CHAIN_DEPTH: usize = 1024;
+
+/// 判定字符串是否为规范数组下标（无前导零的纯数字串），并反解其值。
+///
+/// 命中则把该字符串键与对应整数键合并为同一键（`obj["5"]` == `obj[5]`）。
+/// 只覆盖 `[0, INT_KEY_COUNT)`，更大的数字串（含 2^32 边界）走普通字符串键。
+fn canonical_index_of(s: &str) -> Option<u32> {
+    if s.is_empty() {
+        return None;
+    }
+    let b = s.as_bytes();
+    if !b[0].is_ascii_digit() {
+        return None;
+    }
+    if b.len() > 1 && b[0] == b'0' {
+        return None;
+    }
+    if !b.iter().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let v: u32 = s.parse().ok()?;
+    if v < INT_KEY_COUNT {
+        Some(v)
+    } else {
+        None
+    }
+}
 
 /// 将 [`NativeFnPtr`] 转换为可调用的 [`NativeFn`]。
 ///
@@ -900,10 +928,32 @@ impl Vm {
         }
     }
 
+    /// 把 `JsValue` 转为属性键 si（`u32`）。
+    ///
+    /// 非负小整数（含整值 double）直接编码到整数键区间，免 to_string + intern；
+    /// 字符串中形如数组下标的规范数字串（`"5"`）映射到同一整数键，保证
+    /// `obj["5"]` 与 `obj[5]` 键等价。
+    ///
+    /// # 边界与前提
+    /// - 索引超 `INT_KEY_COUNT`（2^30）时回退字符串键路径（intern + 反查仍正确）
+    /// - 负数与小数不进入整数键区间（`arr[-1]`/`arr[1.5]` 是普通字符串键）
     pub(crate) fn property_key_si(&mut self, val: JsValue) -> Result<u32, String> {
-        if val.is_string() {
+        if val.is_int() {
+            let i = val.as_int();
+            if i >= 0 && (i as u32) < INT_KEY_COUNT {
+                return Ok(make_int_key(i as u32));
+            }
+        } else if val.is_double() {
+            let d = val.as_double();
+            if d >= 0.0 && d.fract() == 0.0 && d < INT_KEY_COUNT as f64 {
+                return Ok(make_int_key(d as u32));
+            }
+        } else if val.is_string() {
             // SAFETY: val 是字符串值，把其内容桥接为永久 key id。
             let s = unsafe { &(*val.as_string_ptr()).data };
+            if let Some(i) = canonical_index_of(s) {
+                return Ok(make_int_key(i));
+            }
             return Ok(self.kernel_core.perm_interner().intern(s).0);
         }
         // Symbol 值直接编码为 Symbol 键（不进字符串 interner，键相互独立）。
@@ -929,6 +979,9 @@ impl Vm {
     }
 
     pub(crate) fn array_index_from_property_key(&self, prop_name_si: u32) -> Option<u32> {
+        if is_int_key(prop_name_si) {
+            return Some(int_key_value(prop_name_si));
+        }
         let key = self.kernel_core.perm_interner().lookup(prop_name_si)?;
         if key.is_empty() || (key.len() > 1 && key.starts_with('0')) {
             return None;

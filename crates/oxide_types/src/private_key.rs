@@ -1,17 +1,50 @@
-//! 私有名（private name）与 Symbol 属性键编码。
+//! 私有名（private name）、Symbol 与整数属性键编码。
 //!
 //! ECMAScript 私有字段（`#x`）与 `Symbol` 使用全局注册符号以外的独立命名空间。
 //! 本模块用 `u32` 键的高半区表示它们，与普通属性名区分，避免与用户可见的字符串键冲突：
+//! - 整数键：`[INT_KEY_BASE, PRIVATE_NAME_BASE)`，`make_int_key` 生成（非负小整数
+//!   属性键直接编码，免字符串转换与 intern）；
 //! - 私有名键：`[PRIVATE_NAME_BASE, SYMBOL_KEY_BASE)`，`make_private_name_id` 生成；
 //! - Symbol 键：`>= SYMBOL_KEY_BASE`，其中最低 `WELL_KNOWN_SYMBOL_COUNT` 个槽位
 //!   保留给 well-known symbol，其余编码用户 symbol 的 VM 内下标。
 //!
-//! Symbol 键不被字符串 interner 收录，枚举路径须按 `is_symbol_key` 显式跳过。
+//! Symbol 键与整数键不被字符串 interner 收录，枚举路径须按 `is_symbol_key` /
+//! `is_int_key` 显式跳过或物化文本。
 
 /// 私有名键区间的起始值。
 ///
 /// 键值 `>= PRIVATE_NAME_BASE` 一律视为私有名。
 pub const PRIVATE_NAME_BASE: u32 = 0x8000_0000;
+
+/// 整数键区间的起始值。
+///
+/// 整数键编码 `INT_KEY_BASE + i`（`i < INT_KEY_COUNT`），落在
+/// `[INT_KEY_BASE, PRIVATE_NAME_BASE)` 空档——与字符串 interner id
+/// （自 0 递增，实际值远小于该起点）及 private/symbol 区间互不重叠。
+pub const INT_KEY_BASE: u32 = 0x4000_0000;
+
+/// 整数键可覆盖的索引个数（`2^30`，远大于 dense 数组上限）。
+pub const INT_KEY_COUNT: u32 = 0x4000_0000;
+
+/// 把非负小整数索引编码为整数属性键（与 [`int_key_value`] 互逆）。
+///
+/// 调用方须保证 `i < INT_KEY_COUNT`，否则溢出到 private 区间。
+#[inline]
+pub const fn make_int_key(i: u32) -> u32 {
+    INT_KEY_BASE + i
+}
+
+/// 判断键是否为整数键（位于整数键区间）。
+#[inline]
+pub const fn is_int_key(key: u32) -> bool {
+    key >= INT_KEY_BASE && key < PRIVATE_NAME_BASE
+}
+
+/// 从整数键反解原索引（与 [`make_int_key`] 互逆）。
+#[inline]
+pub const fn int_key_value(key: u32) -> u32 {
+    key - INT_KEY_BASE
+}
 
 /// Symbol 键区间的起始值，避开私有名区间。
 pub const SYMBOL_KEY_BASE: u32 = 0xA000_0000;
@@ -132,5 +165,27 @@ mod tests {
         let key = make_symbol_key(SYMBOL_INDEX_MASK);
         assert_eq!(symbol_index_from_key(key), SYMBOL_INDEX_MASK);
         assert!(is_symbol_key(key));
+    }
+
+    #[test]
+    fn int_keys_stay_in_own_band() {
+        assert_eq!(make_int_key(0), INT_KEY_BASE);
+        assert_eq!(int_key_value(INT_KEY_BASE), 0);
+        assert_eq!(int_key_value(make_int_key(123)), 123);
+        assert!(is_int_key(make_int_key(0)));
+        assert!(!is_int_key(0));
+        assert!(!is_int_key(PRIVATE_NAME_BASE));
+        assert!(!is_private_name_key(make_int_key(0)));
+        assert!(!is_symbol_key(make_int_key(0)));
+        assert_ne!(make_int_key(5), make_private_name_id(5));
+        assert_ne!(make_int_key(5), make_symbol_key(5));
+    }
+
+    #[test]
+    fn int_key_roundtrip_max() {
+        let key = make_int_key(INT_KEY_COUNT - 1);
+        assert!(is_int_key(key));
+        assert!(key < PRIVATE_NAME_BASE);
+        assert_eq!(int_key_value(key), INT_KEY_COUNT - 1);
     }
 }

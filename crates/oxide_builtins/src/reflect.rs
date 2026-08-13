@@ -3,7 +3,7 @@ use oxide_types::mem::P;
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
-use crate::object::{delete_own_property, walk_own_keys};
+use crate::object::{delete_own_property, key_si_to_string, walk_own_keys};
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
@@ -193,7 +193,7 @@ pub fn reflect_own_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target = unsafe { &*target_ptr };
     let key_names: Vec<String> = walk_own_keys(vm, target)
         .into_iter()
-        .map(|(si, _)| vm.kernel_core().perm_interner().lookup(si).unwrap_or("").to_string())
+        .map(|(si, _)| key_si_to_string(vm, si))
         .collect();
     NativeResult::Ok(make_string_array(vm, &key_names))
 }

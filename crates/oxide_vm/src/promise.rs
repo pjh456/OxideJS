@@ -11,6 +11,7 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::NativeResult;
 use oxide_types::mem::P;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
+use oxide_types::private_key::make_int_key;
 use oxide_types::value::JsValue;
 
 use crate::native::NativeFn;
@@ -1451,7 +1452,7 @@ fn promise_all_resolve_element(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let values = agg_record_val(vm, record, AGG_VALUES_PROP);
     if values.is_object() {
-        let key_si = vm.kernel_core.perm_interner().intern(&index.to_string()).0;
+        let key_si = make_int_key(index as u32);
         // SAFETY: values 是存活数组对象；直写元素区不触发数组 setter。
         vm.set_or_create_prop_value(unsafe { &mut *values.as_js_object_ptr() }, key_si, value);
     }
@@ -1474,7 +1475,7 @@ fn promise_all_settled_resolve_element(vm: &mut Vm, args: &[u8]) -> NativeResult
     let values = agg_record_val(vm, record, AGG_VALUES_PROP);
     if values.is_object() {
         let settled = vm.make_settled_record("fulfilled", "value", value);
-        let key_si = vm.kernel_core.perm_interner().intern(&index.to_string()).0;
+        let key_si = make_int_key(index as u32);
         // SAFETY: values 是存活数组对象。
         vm.set_or_create_prop_value(unsafe { &mut *values.as_js_object_ptr() }, key_si, settled);
     }
@@ -1495,7 +1496,7 @@ fn promise_all_settled_reject_element(vm: &mut Vm, args: &[u8]) -> NativeResult 
     let values = agg_record_val(vm, record, AGG_VALUES_PROP);
     if values.is_object() {
         let settled = vm.make_settled_record("rejected", "reason", reason);
-        let key_si = vm.kernel_core.perm_interner().intern(&index.to_string()).0;
+        let key_si = make_int_key(index as u32);
         // SAFETY: values 是存活数组对象。
         vm.set_or_create_prop_value(unsafe { &mut *values.as_js_object_ptr() }, key_si, settled);
     }
@@ -1515,7 +1516,7 @@ fn promise_any_reject_element(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let reason = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let errors = agg_record_val(vm, record, AGG_VALUES_PROP);
     if errors.is_object() {
-        let key_si = vm.kernel_core.perm_interner().intern(&index.to_string()).0;
+        let key_si = make_int_key(index as u32);
         // SAFETY: errors 是存活数组对象。
         vm.set_or_create_prop_value(unsafe { &mut *errors.as_js_object_ptr() }, key_si, reason);
     }

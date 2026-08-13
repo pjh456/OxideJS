@@ -5,7 +5,7 @@ use crate::vm::{native_fn_ptr_to_fn, CallFrame, ForInIter, FrameContinuation, Vm
 use crate::vm_trace;
 use oxide_runtime_api::{to_boolean, to_string_full, NativeResult};
 use oxide_types::object::{JsObject, PropAttributes};
-use oxide_types::private_key::{is_private_name_key, is_symbol_key};
+use oxide_types::private_key::{int_key_value, is_int_key, is_private_name_key, is_symbol_key, make_int_key};
 use oxide_types::value::JsValue;
 
 impl Vm {
@@ -321,8 +321,7 @@ impl Vm {
             return self.raise_type_error("for-in right-hand side is not an object");
         }
 
-        let mut keys_vec: bumpalo::collections::Vec<(JsValue, u32)> =
-            bumpalo::collections::Vec::new_in(self.epoch.bump());
+        let mut keys_vec: Vec<(JsValue, u32)> = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let mut current = obj_val;
 
@@ -341,8 +340,11 @@ impl Vm {
                         .map(|m| m.attributes.enumerable())
                         .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable());
                     if is_enum {
-                        let idx = self.kernel_core.perm_interner().intern(&i.to_string()).0;
-                        keys_vec.push((JsValue::perm_string(self.kernel_core.perm_interner().string_ptr(idx)), idx));
+                        // 整数下标编码为整数键（免 intern + 防永久泄漏）；枚举值
+                        // 物化为数字字符串，排序时由 array_index_from_property_key
+                        // 直接反解。
+                        let idx = make_int_key(i);
+                        keys_vec.push((self.new_string(&i.to_string()), idx));
                     }
                 }
             }
@@ -380,10 +382,13 @@ impl Vm {
                             .map(|meta| meta.attributes.enumerable())
                             .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable());
                         if enumerable {
-                            keys_vec.push((
-                                JsValue::perm_string(self.kernel_core.perm_interner().string_ptr(shape.property_name)),
-                                shape.property_name,
-                            ));
+                            // 整数键不在 interner：物化为数字字符串；其余键取永久串。
+                            let key_val = if is_int_key(shape.property_name) {
+                                self.new_string(&int_key_value(shape.property_name).to_string())
+                            } else {
+                                JsValue::perm_string(self.kernel_core.perm_interner().string_ptr(shape.property_name))
+                            };
+                            keys_vec.push((key_val, shape.property_name));
                         }
                     }
                     cursor = shape.parent;
@@ -407,7 +412,11 @@ impl Vm {
             }
         });
 
-        let iter = self.epoch.alloc(ForInIter { keys: keys_vec, index: 0 });
+        // std Vec 建完后迁入 bump 区，避免枚举循环期间对 self 的 &mut 借用
+        // 与 bump 借用冲突。
+        let keys_bump: bumpalo::collections::Vec<(JsValue, u32)> =
+            bumpalo::collections::Vec::from_iter_in(keys_vec.into_iter(), self.epoch.bump());
+        let iter = self.epoch.alloc(ForInIter { keys: keys_bump, index: 0 });
         self.iters.push_for_in(iter.cast::<ForInIter<'static>>());
         Ok(())
     }
@@ -736,7 +745,7 @@ impl Vm {
                 let code_units: Vec<u16> = unsafe { (*src.as_string_ptr()).data.encode_utf16().collect() };
                 for (i, unit) in code_units.iter().enumerate() {
                     let s = char::from_u32(*unit as u32).map(|c| c.to_string()).unwrap_or_default();
-                    let si = self.kernel_core.perm_interner().intern(&i.to_string()).0;
+                    let si = make_int_key(i as u32);
                     let ch_val = self.new_string(&s);
                     let rest = unsafe { &mut *rest_ptr };
                     self.set_or_create_prop_value(rest, si, ch_val);
@@ -790,7 +799,7 @@ impl Vm {
             let code_units: Vec<u16> = s.encode_utf16().collect();
             for (i, unit) in code_units.iter().enumerate() {
                 let ch = char::from_u32(*unit as u32).map(|c| c.to_string()).unwrap_or_default();
-                let si = self.kernel_core.perm_interner().intern(&i.to_string()).0;
+                let si = make_int_key(i as u32);
                 assignments.push((si, self.new_string(&ch)));
             }
         }
@@ -806,7 +815,7 @@ impl Vm {
                     .map(|m| m.attributes.enumerable())
                     .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable());
                 if enumerable {
-                    let si = self.kernel_core.perm_interner().intern(&i.to_string()).0;
+                    let si = make_int_key(i);
                     let val = match self.ordinary_get(src_obj, si, src) {
                         Ok(v) => v,
                         Err(e) => return self.raise_call_error(&e).map(|_| ()),
@@ -885,7 +894,7 @@ impl Vm {
             let code_units: Vec<u16> = unsafe { (*src.as_string_ptr()).data.encode_utf16().collect() };
             for (i, unit) in code_units.iter().enumerate() {
                 let s = char::from_u32(*unit as u32).map(|c| c.to_string()).unwrap_or_default();
-                let si = self.kernel_core.perm_interner().intern(&i.to_string()).0;
+                let si = make_int_key(i as u32);
                 let ch_val = self.new_string(&s);
                 self.set_or_create_prop_value(target, si, ch_val);
             }
@@ -914,7 +923,7 @@ impl Vm {
                     .map(|m| m.attributes.enumerable())
                     .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable());
                 if enumerable {
-                    let si = self.kernel_core.perm_interner().intern(&i.to_string()).0;
+                    let si = make_int_key(i);
                     let val = self.ordinary_get(src_obj, si, src)?;
                     assignments.push((si, val));
                 }

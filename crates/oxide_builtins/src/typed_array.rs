@@ -1,5 +1,6 @@
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr, TypedArrayKind};
+use oxide_types::private_key::{int_key_value, is_int_key};
 use oxide_types::value::JsValue;
 
 use crate::array_buffer::{array_buffer_data_ptr, new_array_buffer, MAX_ARRAY_BUFFER_LENGTH};
@@ -214,11 +215,15 @@ pub fn typed_array_integer_index<H: VmHost>(vm: &mut H, obj: &JsObject, prop_nam
         return None;
     }
     let view = unsafe { *ptr };
-    let key = vm.kernel_core().perm_interner().lookup(prop_name_si)?;
-    if key.is_empty() || (key.len() > 1 && key.starts_with('0')) {
-        return None;
-    }
-    let index = key.parse::<u32>().ok()?;
+    let index = if is_int_key(prop_name_si) {
+        int_key_value(prop_name_si)
+    } else {
+        let key = vm.kernel_core().perm_interner().lookup(prop_name_si)?;
+        if key.is_empty() || (key.len() > 1 && key.starts_with('0')) {
+            return None;
+        }
+        key.parse::<u32>().ok()?
+    };
     Some((index as usize, view.length))
 }
 

@@ -1,6 +1,6 @@
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::JsObject;
-use oxide_types::private_key::make_well_known_symbol_key;
+use oxide_types::private_key::{make_int_key, make_well_known_symbol_key};
 use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{to_object, NativeResult, VmHost};
@@ -289,8 +289,8 @@ fn next_array_like<H: VmHost>(
         let arr = unsafe { &*inner.as_js_object_ptr() };
         if index < arr.prop_count() as usize {
             // 数组元素读取走 GetValue：普通数据属性返回槽值，访问器属性
-            // （defineProperty getter）触发 getter 并透传异常。
-            let key_si = vm.kernel_core().perm_interner().intern(&index.to_string()).0;
+            // （defineProperty getter）触发 getter 并透传异常。整数键免 intern。
+            let key_si = make_int_key(index as u32);
             let value = match vm.ordinary_get(arr, key_si, inner) {
                 Ok(v) => v,
                 Err(err) => {

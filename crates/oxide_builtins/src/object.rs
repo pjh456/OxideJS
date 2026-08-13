@@ -2,7 +2,7 @@ use oxide_kernel::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use oxide_kernel::string_forge::PermInterner;
 use oxide_types::object::{JsObject, PropAttributes, PropMetaEntry};
 use oxide_types::private_key::{
-    is_private_name_key, is_symbol_key, make_well_known_symbol_key, symbol_index_from_key,
+    int_key_value, is_int_key, is_private_name_key, is_symbol_key, make_well_known_symbol_key, symbol_index_from_key,
     well_known_symbol_id_from_key,
 };
 use oxide_types::value::JsValue;
@@ -53,16 +53,35 @@ pub fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
         pos += 1;
     }
     keys.sort_by(|(a_si, _), (b_si, _)| {
-        let a_str = vm.kernel_core().perm_interner().lookup(*a_si).unwrap_or("");
-        let b_str = vm.kernel_core().perm_interner().lookup(*b_si).unwrap_or("");
-        match (is_integer_index(a_str), is_integer_index(b_str)) {
-            (true, true) => a_str.parse::<u32>().unwrap().cmp(&b_str.parse::<u32>().unwrap()),
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            (false, false) => std::cmp::Ordering::Equal,
+        // 整数键（含 INT 区间键）以数值升序排在普通字符串键之前。
+        let a_idx = int_or_string_index(vm, *a_si);
+        let b_idx = int_or_string_index(vm, *b_si);
+        match (a_idx, b_idx) {
+            (Some(ai), Some(bi)) => ai.cmp(&bi),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
         }
     });
     keys
+}
+
+/// 键 si 的数组下标值：整数键直接反解，字符串键查 interner 后判是否规范数字串。
+fn int_or_string_index<H: VmHost>(vm: &H, si: u32) -> Option<u32> {
+    if is_int_key(si) {
+        return Some(int_key_value(si));
+    }
+    let key = vm.kernel_core().perm_interner().lookup(si)?;
+    is_integer_index(key).then(|| key.parse::<u32>().unwrap())
+}
+
+/// 键 si 物化为字符串文本：整数键反解数字串，其余查 interner。
+pub fn key_si_to_string<H: VmHost>(vm: &H, si: u32) -> String {
+    if is_int_key(si) {
+        int_key_value(si).to_string()
+    } else {
+        vm.kernel_core().perm_interner().lookup(si).unwrap_or("").to_string()
+    }
 }
 
 /// 收集对象自身全部 Symbol 键（shape 链），按键序排列（根→叶，即插入序）。
@@ -156,6 +175,9 @@ pub fn object_get_own_property_symbols<H: VmHost>(vm: &mut H, args: &[u8]) -> Na
 
 /// 字符串键是否为数组下标（"0"~"4294967294"，无前导零）。
 fn array_index_of<H: VmHost>(vm: &H, key_si: u32) -> Option<u32> {
+    if is_int_key(key_si) {
+        return Some(int_key_value(key_si));
+    }
     let key = vm.kernel_core().perm_interner().lookup(key_si)?;
     if key.is_empty() || (key.len() > 1 && key.starts_with('0')) {
         return None;
@@ -356,10 +378,7 @@ pub fn object_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                     .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable())
             })
             .collect();
-        key_names = owned_keys
-            .iter()
-            .map(|(si, _offset)| vm.kernel_core().perm_interner().lookup(*si).unwrap_or("").to_string())
-            .collect();
+        key_names = owned_keys.iter().map(|(si, _offset)| key_si_to_string(vm, *si)).collect();
     }
     let n = key_names.len();
     let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
@@ -883,9 +902,7 @@ pub fn object_get_own_property_names<H: VmHost>(vm: &mut H, args: &[u8]) -> Nati
     let key_names: Vec<String> = {
         let obj = unsafe { &*obj_ptr };
         let keys = walk_own_keys(vm, obj);
-        keys.iter()
-            .map(|(si, _)| vm.kernel_core().perm_interner().lookup(*si).unwrap_or("").to_string())
-            .collect()
+        keys.iter().map(|(si, _)| key_si_to_string(vm, *si)).collect()
     };
 
     let n = key_names.len();
@@ -1128,8 +1145,8 @@ pub fn object_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         vm.epoch().bump(),
     ));
     for (i, (si, offset)) in owned_keys.iter().enumerate() {
-        let key_str = vm.kernel_core().perm_interner().lookup(*si).unwrap_or_default();
-        let key_val = vm.new_string(key_str);
+        let key_str = key_si_to_string(vm, *si);
+        let key_val = vm.new_string(&key_str);
         let val = obj.get_prop_at(*offset);
         let pair = vm.alloc_object(JsObject::new_array(
             EMPTY_SHAPE_ID,

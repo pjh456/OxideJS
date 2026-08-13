@@ -3,6 +3,7 @@ use crate::{vm_error, vm_trace};
 use oxide_bytecode::opcode;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, PropAttributes};
+use oxide_types::private_key::make_int_key;
 use oxide_types::value::JsValue;
 
 impl Vm {
@@ -171,8 +172,9 @@ impl Vm {
         obj.type_tag = JsObject::OBJ_TYPE_ARGUMENTS;
 
         // 索引属性：按实参下标写入 shape 槽，属性描述符为默认（可写/可枚举/可配置）。
+        // 下标走整数键，保证 `arguments[0]`（property_key_si(int 0)）键等价命中。
         for i in 0..count as usize {
-            let si = self.kernel_core.perm_interner().intern(&i.to_string()).0;
+            let si = make_int_key(i as u32);
             let val = self.spill_stack.get(base as usize + i).copied().unwrap_or(JsValue::undefined());
             self.set_or_create_prop_value(obj, si, val);
         }

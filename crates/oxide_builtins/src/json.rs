@@ -3,9 +3,10 @@ use std::fmt::Write;
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::JsObject;
+use oxide_types::private_key::make_int_key;
 use oxide_types::value::JsValue;
 
-use crate::object::walk_own_keys;
+use crate::object::{key_si_to_string, walk_own_keys};
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
@@ -74,8 +75,7 @@ fn walk_reviver<H: VmHost>(
             if obj.is_array() {
                 let len = obj.prop_count() as usize;
                 for i in 0..len {
-                    let index_str = i.to_string();
-                    let child_si = vm.kernel_core().perm_interner().intern(&index_str).0;
+                    let child_si = make_int_key(i as u32);
                     walk_reviver(vm, obj_ptr, child_si, reviver)?;
                 }
                 // 子节点可能已改写父级，重新读取当前值。
@@ -92,9 +92,8 @@ fn walk_reviver<H: VmHost>(
     }
 
     // 对当前值调用 reviver，用返回值覆盖属性槽。
-    let kc = vm.kernel_core().clone();
-    let key_str = kc.perm_interner().lookup(key_si).unwrap_or("");
-    let key_val = vm.new_string(key_str);
+    let key_str = key_si_to_string(vm, key_si);
+    let key_val = vm.new_string(&key_str);
     let holder_val = JsValue::from_js_object(holder_ptr);
     match vm.call_function_sync(reviver, holder_val, &[key_val, val]) {
         Ok(new_val) => {
@@ -362,12 +361,10 @@ fn stringify_object<H: VmHost>(
 
     let keys = walk_own_keys(vm, obj);
     // 预计算 (名称, 槽位) 对，并应用白名单过滤。
-    let kc = vm.kernel_core().clone();
-    let perm_interner = kc.perm_interner();
     let entries: Vec<(String, u32)> = keys
         .into_iter()
         .filter_map(|(si, pos)| {
-            let name = perm_interner.lookup(si).unwrap_or("").to_string();
+            let name = key_si_to_string(vm, si);
             if let Some(whitelist) = replacer_whitelist {
                 if !whitelist.contains(&name) {
                     return None;
