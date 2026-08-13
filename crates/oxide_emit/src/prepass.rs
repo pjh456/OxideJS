@@ -537,10 +537,8 @@ impl Emitter {
                 );
             }
             BindingPattern::ArrayPattern(ap) => {
-                for elem in &ap.elements {
-                    if let Some(e) = elem {
-                        self.predeclare_lexical_pattern(e, is_const, ctx);
-                    }
+                for e in ap.elements.iter().flatten() {
+                    self.predeclare_lexical_pattern(e, is_const, ctx);
                 }
                 if let Some(rest) = &ap.rest {
                     self.predeclare_lexical_pattern(&rest.argument, is_const, ctx);

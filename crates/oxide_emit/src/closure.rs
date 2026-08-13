@@ -426,10 +426,8 @@ impl Emitter {
                 catch_shadow.insert(bi.name.as_str().to_string());
             }
             oxide_parser::BindingPattern::ArrayPattern(ap) => {
-                for elem in &ap.elements {
-                    if let Some(p) = elem {
-                        self.collect_capture_names_binding_pattern(p, ref_set, shadow, out, catch_shadow);
-                    }
+                for p in ap.elements.iter().flatten() {
+                    self.collect_capture_names_binding_pattern(p, ref_set, shadow, out, catch_shadow);
                 }
                 if let Some(rest) = &ap.rest {
                     self.collect_capture_names_binding_pattern(&rest.argument, ref_set, shadow, out, catch_shadow);
@@ -470,10 +468,8 @@ impl Emitter {
                 self.collect_capture_names_expr(&m.expression, ref_set, shadow, out);
             }
             oxide_parser::AssignmentTarget::ArrayAssignmentTarget(a) => {
-                for elem in &a.elements {
-                    if let Some(e) = elem {
-                        self.collect_capture_names_maybe_default_target(e, ref_set, shadow, out);
-                    }
+                for e in a.elements.iter().flatten() {
+                    self.collect_capture_names_maybe_default_target(e, ref_set, shadow, out);
                 }
                 if let Some(rest) = &a.rest {
                     self.collect_capture_names_assign_target(&rest.target, ref_set, shadow, out);
@@ -528,10 +524,8 @@ impl Emitter {
                 self.collect_capture_names_expr(&m.expression, ref_set, shadow, out);
             }
             MaybeDefault::ArrayAssignmentTarget(a) => {
-                for elem in &a.elements {
-                    if let Some(e) = elem {
-                        self.collect_capture_names_maybe_default_target(e, ref_set, shadow, out);
-                    }
+                for e in a.elements.iter().flatten() {
+                    self.collect_capture_names_maybe_default_target(e, ref_set, shadow, out);
                 }
             }
             MaybeDefault::ObjectAssignmentTarget(o) => {
@@ -909,10 +903,8 @@ impl Emitter {
         match pattern {
             oxide_parser::BindingPattern::BindingIdentifier(_) => {}
             oxide_parser::BindingPattern::ArrayPattern(ap) => {
-                for elem in &ap.elements {
-                    if let Some(p) = elem {
-                        self.collect_captured_binding_pattern(p, own, out);
-                    }
+                for p in ap.elements.iter().flatten() {
+                    self.collect_captured_binding_pattern(p, own, out);
                 }
                 if let Some(rest) = &ap.rest {
                     self.collect_captured_binding_pattern(&rest.argument, own, out);

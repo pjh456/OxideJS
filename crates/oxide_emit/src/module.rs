@@ -200,7 +200,7 @@ impl Emitter {
                 // 自导入：读自身命名空间（依赖即本模块，勿递归）。
                 ns_reg
             } else {
-                if path_stack.iter().any(|p| *p == resolved.path) {
+                if path_stack.contains(&resolved.path) {
                     return Err(format!("circular module import not supported: {}", resolved.path));
                 }
                 path_stack.push(resolved.path.clone());

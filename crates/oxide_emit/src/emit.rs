@@ -704,10 +704,8 @@ impl Emitter {
                 self.collect_pattern_default_exprs(&ap.left, out);
             }
             BindingPattern::ArrayPattern(ap) => {
-                for elem in &ap.elements {
-                    if let Some(p) = elem {
-                        self.collect_pattern_default_exprs(p, out);
-                    }
+                for p in ap.elements.iter().flatten() {
+                    self.collect_pattern_default_exprs(p, out);
                 }
                 if let Some(rest) = &ap.rest {
                     self.collect_pattern_default_exprs(&rest.argument, out);
@@ -822,6 +820,7 @@ impl Emitter {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn compile_function_body_with_flags<'a>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, is_arrow: bool, is_generator: bool, is_async: bool,
@@ -1069,6 +1068,7 @@ impl Emitter {
     }
 
     /// 参数 prologue：函数作用域 + 参数声明/解构 + 闭包捕获与 upvalue 分析。返回 param_base。
+    #[allow(clippy::too_many_arguments)]
     fn emit_params_prologue<'a>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         ctx: &mut CompileCtx, body_context: FunctionBodyContext, extra_capture_exprs: &[&'a Expression<'a>],
