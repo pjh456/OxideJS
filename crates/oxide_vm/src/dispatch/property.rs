@@ -308,10 +308,11 @@ impl Vm {
         }
 
         let obj = unsafe { &*obj_ptr };
-        let prop_name_si = self.property_key_si(self.regs[b])?;
         let (cached_shape_id, cached_slot, cached_depth) = ic_helper::read_ic_entry(&self.bytecode, &mut self.pc);
         let ic_pc = self.pc;
         if obj.has_prop_meta() {
+            // meta 对象整对象走慢路径，此时才解析键。
+            let prop_name_si = self.property_key_si(self.regs[b])?;
             let val = self.ordinary_get_with_target(obj, prop_name_si, val, a as u8)?;
             if self.accessor_frame_target_reg.take().is_none() {
                 self.regs[a] = val;
@@ -320,66 +321,73 @@ impl Vm {
         }
 
         if let Some(value) = ic_get_hit(obj, cached_shape_id, cached_slot, cached_depth) {
+            // 命中路径只比对 shape_id，不解析键。
             self.regs[a] = value;
             self.profiling.record_ic_hit();
             ic_trace!("IC_GET hit shape={} slot={} depth={}", cached_shape_id, cached_slot, cached_depth);
-        } else if let Some(template) = self.kernel_core.prop_forge().get_template(obj.shape_id()) {
-            self.profiling.record_ic_miss();
-            prop_cache_miss();
-            if template.prop_name == prop_name_si {
-                if template.position < obj.prop_vec_len() as u32 {
-                    ic_helper::write_ic_back(self.bytecode_mut(), ic_pc, obj.shape_id(), template.position, 0);
-                    ic_debug!(
-                        "IC_GET propforge hit shape={} prop={} slot={}",
-                        obj.shape_id(),
-                        prop_name_si,
-                        template.position
-                    );
-                    self.regs[a] = obj.get_prop_shape(template.position);
+        } else {
+            // miss 分支才解析键（IC 站点键恒为编译期字符串常量，延后解析无 ToPrimitive 副作用）。
+            let prop_name_si = self.property_key_si(self.regs[b])?;
+            if let Some(template) = self.kernel_core.prop_forge().get_template(obj.shape_id()) {
+                self.profiling.record_ic_miss();
+                prop_cache_miss();
+                if template.prop_name == prop_name_si {
+                    if template.position < obj.prop_vec_len() as u32 {
+                        ic_helper::write_ic_back(self.bytecode_mut(), ic_pc, obj.shape_id(), template.position, 0);
+                        ic_debug!(
+                            "IC_GET propforge hit shape={} prop={} slot={}",
+                            obj.shape_id(),
+                            prop_name_si,
+                            template.position
+                        );
+                        self.regs[a] = obj.get_prop_shape(template.position);
+                    } else {
+                        ic_debug!("IC_GET miss shape={} prop={}", obj.shape_id(), prop_name_si);
+                        self.regs[a] = self.ordinary_get(obj, prop_name_si, val)?;
+                    }
                 } else {
                     ic_debug!("IC_GET miss shape={} prop={}", obj.shape_id(), prop_name_si);
                     self.regs[a] = self.ordinary_get(obj, prop_name_si, val)?;
                 }
             } else {
+                prop_cache_miss();
                 ic_debug!("IC_GET miss shape={} prop={}", obj.shape_id(), prop_name_si);
-                self.regs[a] = self.ordinary_get(obj, prop_name_si, val)?;
-            }
-        } else {
-            prop_cache_miss();
-            ic_debug!("IC_GET miss shape={} prop={}", obj.shape_id(), prop_name_si);
-            let resolved = self.ordinary_get(obj, prop_name_si, val)?;
-            // 先试自身属性（快路径，depth=0）。
-            if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
-                if !obj.is_accessor_meta(pos) {
-                    ic_helper::write_ic_back(self.bytecode_mut(), ic_pc, obj.shape_id(), pos, 0);
-                    ic_debug!("IC_GET write-back own shape={} slot={}", obj.shape_id(), pos);
-                }
-            } else {
-                // 沿原型链查找真正拥有该属性的对象。
-                let mut cursor = obj.proto().as_js_object_ptr();
-                let mut depth = 1u8;
-                while !cursor.is_null() {
-                    let co_ref = unsafe { &*cursor };
-                    if let Some(pos) = self.kernel_core.shape_forge().lookup_position(co_ref.shape_id(), prop_name_si) {
-                        if !co_ref.is_accessor_meta(pos) {
-                            ic_helper::write_ic_back(self.bytecode_mut(), ic_pc, co_ref.shape_id(), pos, depth);
-                            ic_debug!(
-                                "IC_GET write-back proto shape={} slot={} depth={}",
-                                co_ref.shape_id(),
-                                pos,
-                                depth
-                            );
+                let resolved = self.ordinary_get(obj, prop_name_si, val)?;
+                // 先试自身属性（快路径，depth=0）。
+                if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+                    if !obj.is_accessor_meta(pos) {
+                        ic_helper::write_ic_back(self.bytecode_mut(), ic_pc, obj.shape_id(), pos, 0);
+                        ic_debug!("IC_GET write-back own shape={} slot={}", obj.shape_id(), pos);
+                    }
+                } else {
+                    // 沿原型链查找真正拥有该属性的对象。
+                    let mut cursor = obj.proto().as_js_object_ptr();
+                    let mut depth = 1u8;
+                    while !cursor.is_null() {
+                        let co_ref = unsafe { &*cursor };
+                        if let Some(pos) =
+                            self.kernel_core.shape_forge().lookup_position(co_ref.shape_id(), prop_name_si)
+                        {
+                            if !co_ref.is_accessor_meta(pos) {
+                                ic_helper::write_ic_back(self.bytecode_mut(), ic_pc, co_ref.shape_id(), pos, depth);
+                                ic_debug!(
+                                    "IC_GET write-back proto shape={} slot={} depth={}",
+                                    co_ref.shape_id(),
+                                    pos,
+                                    depth
+                                );
+                            }
+                            break;
                         }
-                        break;
+                        if !co_ref.proto().is_object() {
+                            break;
+                        }
+                        cursor = co_ref.proto().as_js_object_ptr();
+                        depth += 1;
                     }
-                    if !co_ref.proto().is_object() {
-                        break;
-                    }
-                    cursor = co_ref.proto().as_js_object_ptr();
-                    depth += 1;
                 }
+                self.regs[a] = resolved;
             }
-            self.regs[a] = resolved;
         }
 
         Ok(())
@@ -390,34 +398,38 @@ impl Vm {
             return Ok(());
         };
 
-        let prop_name_si = self.property_key_si(self.regs[b])?;
-        if self.kernel_core.perm_interner().lookup(prop_name_si) == Some("__proto__") {
-            let proto_value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
-            if self.is_object_prototype(obj_ptr) && !proto_value.is_null() {
-                self.raise_type_error("Object.prototype.__proto__ is immutable")?;
-                self.pc += 3;
-                return Ok(());
-            }
-            let obj = unsafe { &mut *obj_ptr };
-            obj.set_proto(proto_value).map_err(|e| e.to_string())?;
-            self.pc += 3;
-            return Ok(());
-        }
-
+        // read_ic_entry 先消费 3 扩展字，命中路径无需解析键。
         let (cached_shape_id, cached_slot, cached_depth) = ic_helper::read_ic_entry(&self.bytecode, &mut self.pc);
         let ic_pc = self.pc;
         let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
         let receiver = self.regs[rd];
         let obj = unsafe { &mut *obj_ptr };
+
+        // 命中路径零键零拦截：__proto__ 赋值从不写 IC，缓存槽必为数据槽。
+        if !obj.has_prop_meta() && ic_set_hit(obj, cached_shape_id, cached_slot, cached_depth, value) {
+            self.profiling.record_ic_hit();
+            ic_trace!("IC_SET hit shape={} slot={} depth={}", cached_shape_id, cached_slot, cached_depth);
+            return Ok(());
+        }
+
+        // 慢路径（has_prop_meta / miss）才解析键并拦截 __proto__ 赋值，须先于写槽，
+        // 防 __proto__ 落入数据槽。
+        let prop_name_si = self.property_key_si(self.regs[b])?;
+        if self.kernel_core.perm_interner().lookup(prop_name_si) == Some("__proto__") {
+            if self.is_object_prototype(obj_ptr) && !value.is_null() {
+                self.raise_type_error("Object.prototype.__proto__ is immutable")?;
+                return Ok(());
+            }
+            obj.set_proto(value).map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+
         if obj.has_prop_meta() {
             self.ordinary_set_dispatch(obj, prop_name_si, value, receiver)?;
             return Ok(());
         }
 
-        if ic_set_hit(obj, cached_shape_id, cached_slot, cached_depth, value) {
-            self.profiling.record_ic_hit();
-            ic_trace!("IC_SET hit shape={} slot={} depth={}", cached_shape_id, cached_slot, cached_depth);
-        } else if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+        if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             self.profiling.record_ic_miss();
             prop_cache_miss();
             obj.set_prop_shape(pos, value);
