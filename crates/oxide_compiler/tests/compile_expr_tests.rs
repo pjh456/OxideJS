@@ -737,9 +737,13 @@ fn compile_computed_member_numeric_and_index_keys_stay_dynamic() {
 
 #[test]
 fn compile_computed_member_compound_and_update_fold_to_ic() {
+    // 复合赋值折叠为 ic_get → op → ic_set 三指令序列（保规范求值序），不再用单指令 RMW。
     let module = compile_source("let obj = { a: 1 }; obj[\"a\"] += 1; obj[\"b\"]++;");
     let ops = scan_opcodes(&module);
-    assert!(ops.contains(&OpCode::COMPOUND_MEMBER_ADD), "obj[\"a\"] += 应折叠为 COMPOUND_MEMBER_ADD");
+    assert!(ops.contains(&OpCode::IC_GET_PROP), "obj[\"a\"] += 应先 ic_get 读属性");
+    assert!(ops.contains(&OpCode::IC_SET_PROP), "obj[\"a\"] += 应 ic_set 写回");
+    assert!(ops.contains(&OpCode::ADD), "obj[\"a\"] += 应发 ADD 运算");
+    assert!(!ops.contains(&OpCode::COMPOUND_MEMBER_ADD), "复合赋值不应发 COMPOUND_MEMBER_ADD 单指令");
     assert!(ops.contains(&OpCode::MEMBER_INC), "obj[\"b\"]++ 应折叠为 MEMBER_INC");
     assert!(!ops.contains(&OpCode::GET_PROP_DYNAMIC), "常量键复合赋值不应发 GET_PROP_DYNAMIC");
 }

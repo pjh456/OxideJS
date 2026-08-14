@@ -167,31 +167,46 @@ impl Emitter {
                     return Ok(result_reg);
                 }
                 let obj_reg = self.emit_expression(&member.object, ctx)?;
-                let val_reg = self.emit_expression(&assign.right, ctx)?;
                 let idx = ctx.add_constant(Constant::String(key));
                 let key_reg = ctx.alloc_reg();
                 ctx.inst(Inst::load_const(Operand::Reg(key_reg), idx));
                 if assign.operator != AssignmentOperator::Assign {
-                    let obj = Operand::Reg(obj_reg);
-                    let val = Operand::Reg(val_reg);
-                    let key = Operand::Reg(key_reg);
-                    match assign.operator {
-                        AssignmentOperator::Addition => ctx.inst(Inst::compound_member_add(obj, val, key)),
-                        AssignmentOperator::Subtraction => ctx.inst(Inst::compound_member_sub(obj, val, key)),
-                        AssignmentOperator::Multiplication => ctx.inst(Inst::compound_member_mul(obj, val, key)),
-                        AssignmentOperator::Division => ctx.inst(Inst::compound_member_div(obj, val, key)),
-                        AssignmentOperator::Remainder => ctx.inst(Inst::compound_member_mod(obj, val, key)),
-                        AssignmentOperator::Exponential => ctx.inst(Inst::compound_member_exp(obj, val, key)),
-                        AssignmentOperator::BitwiseAnd => ctx.inst(Inst::compound_member_bit_and(obj, val, key)),
-                        AssignmentOperator::BitwiseOR => ctx.inst(Inst::compound_member_bit_or(obj, val, key)),
-                        AssignmentOperator::BitwiseXOR => ctx.inst(Inst::compound_member_bit_xor(obj, val, key)),
-                        AssignmentOperator::ShiftLeft => ctx.inst(Inst::compound_member_shl(obj, val, key)),
-                        AssignmentOperator::ShiftRight => ctx.inst(Inst::compound_member_shr(obj, val, key)),
-                        AssignmentOperator::ShiftRightZeroFill => ctx.inst(Inst::compound_member_ushr(obj, val, key)),
+                    // 复合赋值保规范求值序：先读属性（ic_get）再求值 RHS——RHS 副作用
+                    // 可能改写同一属性，后求值才能读到旧值。
+                    let val_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::new(
+                        OpCode::LOAD_VAR,
+                        Operand::Reg(val_reg),
+                        Operand::Reg(obj_reg),
+                        Operand::None,
+                    ));
+                    ctx.inst(Inst::ic_get(Operand::Reg(val_reg), Operand::Reg(key_reg)));
+                    let rhs = self.emit_expression(&assign.right, ctx)?;
+                    let op = match assign.operator {
+                        AssignmentOperator::Addition => OpCode::ADD,
+                        AssignmentOperator::Subtraction => OpCode::SUB,
+                        AssignmentOperator::Multiplication => OpCode::MUL,
+                        AssignmentOperator::Division => OpCode::DIV,
+                        AssignmentOperator::Remainder => OpCode::MOD,
+                        AssignmentOperator::Exponential => OpCode::COMPOUND_EXP,
+                        AssignmentOperator::BitwiseAnd => OpCode::BIT_AND,
+                        AssignmentOperator::BitwiseOR => OpCode::BIT_OR,
+                        AssignmentOperator::BitwiseXOR => OpCode::BIT_XOR,
+                        AssignmentOperator::ShiftLeft => OpCode::SHL,
+                        AssignmentOperator::ShiftRight => OpCode::SHR,
+                        AssignmentOperator::ShiftRightZeroFill => OpCode::USHR,
                         _ => return Err(format!("compound assignment operator {:?} not supported", assign.operator)),
+                    };
+                    if assign.operator == AssignmentOperator::Exponential {
+                        // 指数无独立二元指令，COMPOUND_EXP 语义 rd=rd^a：rhs 放 a 槽。
+                        ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(rhs), Operand::None));
+                    } else {
+                        ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(val_reg), Operand::Reg(rhs)));
                     }
+                    ctx.inst(Inst::ic_set(Operand::Reg(obj_reg), Operand::Reg(val_reg), Operand::Reg(key_reg)));
                     Ok(val_reg)
                 } else {
+                    let val_reg = self.emit_expression(&assign.right, ctx)?;
                     ctx.inst(Inst::ic_set(Operand::Reg(obj_reg), Operand::Reg(val_reg), Operand::Reg(key_reg)));
                     Ok(val_reg)
                 }

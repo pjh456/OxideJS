@@ -66,6 +66,54 @@ fn eval_computed_const_key_dynamic_keys_stay_dynamic() {
 }
 
 #[test]
+fn eval_computed_compound_assign_preserves_read_before_rhs() {
+    // 复合赋值保规范求值序：先读属性再求值 RHS，RHS 副作用改写属性不影响被加的旧值。
+    assert_eq!(eval("var o={a:1}; function f(){o.a=100; return 1;} o[\"a\"]+=f()"), "2");
+    assert_eq!(eval("var o={a:5}; o[\"a\"]-=1, o.a"), "4");
+    assert_eq!(eval("var o={a:5}; o[\"a\"]*=2, o.a"), "10");
+    assert_eq!(eval("var o={a:5}; o[\"a\"]/=2, o.a"), "2.5");
+    assert_eq!(eval("var o={a:5}; o[\"a\"]%=3, o.a"), "2");
+    assert_eq!(eval("var o={a:5}; o[\"a\"]**=2, o.a"), "25");
+    assert_eq!(eval("var o={a:5}; o[\"a\"]&=3, o.a"), "1");
+    assert_eq!(eval("var o={a:5}; o[\"a\"]|=8, o.a"), "13");
+    assert_eq!(eval("var o={a:5}; o[\"a\"]^=1, o.a"), "4");
+    assert_eq!(eval("var o={a:5}; o[\"a\"]<<=1, o.a"), "10");
+    assert_eq!(eval("var o={a:5}; o[\"a\"]>>=1, o.a"), "2");
+    assert_eq!(eval("var o={a:5}; o[\"a\"]>>>=1, o.a"), "2");
+    // 逻辑赋值同为读→短路→RHS→写：truthy 时写 RHS 值，falsy 短路 RHS 不求值。
+    assert_eq!(eval("var o={a:5}; function g(){o.a=7; return 2;} o[\"a\"]&&=g(), o.a"), "2");
+    assert_eq!(eval("var o={a:0}; o[\"a\"]&&=99, o.a"), "0");
+    assert_eq!(eval("var o={a:5}; var hit=0; o[\"a\"]||=(hit=1), hit"), "0");
+    assert_eq!(eval("var o={a:5}; var hit=0; o[\"a\"]??=(hit=1), hit"), "0");
+    assert_eq!(eval("var p={a:null}; p[\"a\"]??=5, p.a"), "5");
+    assert_eq!(eval("var q={a:0}; q[\"a\"]||=9, q.a"), "9");
+    // 静态成员复合赋值行为不变（pre-existing 求值序偏差不在本次修复范围）。
+    assert_eq!(eval("var o={a:5}; o.a += 1, o.a"), "6");
+}
+
+#[test]
+fn eval_computed_compound_assign_getter_order() {
+    // getter 场景：先触发 getter 读取，再求值 RHS。
+    assert_eq!(eval("var g={get a(){return 2}, set a(v){}}; g[\"a\"] += 1"), "3");
+    // 求值序严格验证：RHS 观察到 getter 已先行（seen=1），否则 RHS 取 100。
+    // 结果 v*10+seen：规范序 101，RHS 先行 1001。
+    assert_eq!(
+        eval("var seen=0, v=0; var g={get a(){seen=1; return v}, set a(x){v=x}}; g[\"a\"] += (seen===0?100:10); v*10+seen"),
+        "101"
+    );
+}
+
+#[test]
+fn eval_computed_compound_assign_read_error_skips_rhs() {
+    // 读取抛错时 RHS 不求值，其副作用不泄漏。
+    assert_eq!(eval("var h={get a(){throw 1}}; try{h[\"a\"]+=1}catch(e){e}"), "1");
+    assert_eq!(
+        eval("var side=0; var h={get a(){throw 1}}; try{h[\"a\"]+=(side=99)}catch(e){} side"),
+        "0"
+    );
+}
+
+#[test]
 fn eval_computed_const_key_method_call_keeps_this() {
     // 方法调用接收者折叠：this 绑定保留。
     assert_eq!(eval("var o={m(){return this.x}, x:5}; o[\"m\"]()"), "5");
