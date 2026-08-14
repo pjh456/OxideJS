@@ -1013,8 +1013,8 @@ pub fn string_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 ///   （`s.replace()` 全缺省等价于把 "undefined" 替换为 "undefined"，结果与
 ///   原串一致；`s.replace("b")` 得到 "aundefinedc" 而非 "ac"）。
 /// - replaceAll 遇非 global 正则抛 TypeError；类正则对象（proto 恒等
-///   RegExp.prototype 但无编译正则）replaceAll 返回原串、replace 按 ToString
-///   文本走字符串路径。
+///   RegExp.prototype 但无编译正则）replace/replaceAll 统一按 ToString 文本走
+///   字符串路径。
 ///
 /// # 注意事项
 /// - 分支 B 的 `&H` 共享借用与 `&mut` 互斥由编译器强制，三 `&str` 同源可共存
@@ -1066,13 +1066,8 @@ fn string_replace_impl<H: VmHost>(vm: &mut H, args: &[u8], all: bool) -> NativeR
         None
     };
 
-    // 类正则对象无编译正则：replaceAll 按现状返回原串（receiver 转换先行保错误次序）。
-    if all && is_re && !has_native_re {
-        let s = try_string!(this_string(vm, args)).into_owned();
-        return NativeResult::Ok(vm.new_string_owned(s));
-    }
-
     // replaceAll 要求正则带 global：非 global 正则直接抛 TypeError（规范 flags 检查）。
+    // 类正则对象（无编译正则）无 flags 概念，统一走 as_string 文本路径，不在此检查。
     if all && has_native_re && !is_global {
         return NativeResult::Err(crate::error::create_type_error(
             vm,

@@ -398,7 +398,9 @@ fn string_replace_all_nonglobal_regex_throws() {
 #[test]
 fn string_replace_regex_proto_subclass_fallback() {
     // 类正则对象（proto 恒等 RegExp.prototype 但无编译正则）：
-    // replace 走字符串文本路径，replaceAll 返回原串。
+    // replace/replaceAll 统一按 ToString 文本走字符串路径；默认 toString
+    // 不命中源串，故此处断言结果与原串一致（判别性用例见
+    // string_replace_regex_proto_subclass_custom_tostring）。
     let mut vm = Vm::new();
     let s = eval(&mut vm, "var sp = Object.create(RegExp.prototype); 'aXb'.replace(sp, 'Y')").unwrap();
     assert_eq!(to_str(&vm, s), "aXb");
@@ -410,6 +412,37 @@ fn string_replace_regex_proto_subclass_fallback() {
     )
     .unwrap();
     assert_eq!(to_str(&vm, s), "aXb");
+}
+
+#[test]
+fn string_replace_regex_proto_subclass_custom_tostring() {
+    // 判别性回归：自定义 toString 命中源串的类正则对象，replace/replaceAll
+    // 均按 ToString 文本替换（不返回原串、不抛 TypeError），两入口对称。
+    let mut vm = Vm::new();
+    let s = eval(
+        &mut vm,
+        "var sp = Object.create(RegExp.prototype); sp.toString = function(){ return 'X' }; 'aXb'.replace(sp, 'Y')",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, s), "aYb");
+    let s = eval(
+        &mut vm,
+        "var sp = Object.create(RegExp.prototype); sp.toString = function(){ return 'X' }; 'aXb'.replaceAll(sp, 'Y')",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, s), "aYb");
+    let s = eval(
+        &mut vm,
+        "var sp = Object.create(RegExp.prototype); sp.toString = function(){ return 'X' }; 'aXb'.replace(sp, function(){ return 'Z' })",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, s), "aZb");
+    let s = eval(
+        &mut vm,
+        "var sp = Object.create(RegExp.prototype); sp.toString = function(){ return 'X' }; 'aXb'.replaceAll(sp, function(){ return 'Z' })",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, s), "aZb");
 }
 
 #[test]
@@ -432,6 +465,34 @@ fn string_replace_astral_and_empty_pattern() {
     assert_eq!(to_str(&vm, s), "-abc");
     let s = eval(&mut vm, "'abc'.replaceAll('', '-')").unwrap();
     assert_eq!(to_str(&vm, s), "-a-b-c-");
+}
+
+#[test]
+fn string_replace_numeric_pattern() {
+    // 数字 pattern 经 ToString 文本替换（"1"），replace/replaceAll 均走字符串路径。
+    let mut vm = Vm::new();
+    let s = eval(&mut vm, "'a1b'.replace(1, 'X')").unwrap();
+    assert_eq!(to_str(&vm, s), "aXb");
+    let s = eval(&mut vm, "'a1b1c'.replaceAll(1, 'X')").unwrap();
+    assert_eq!(to_str(&vm, s), "aXbXc");
+}
+
+#[test]
+fn string_replace_all_boxed_string_pattern() {
+    // boxed String pattern 经 ToString 文本替换。
+    let mut vm = Vm::new();
+    let s = eval(&mut vm, "'abc'.replaceAll(new String('b'), 'X')").unwrap();
+    assert_eq!(to_str(&vm, s), "aXc");
+}
+
+#[test]
+fn string_replace_empty_receiver() {
+    // 空串 receiver + 空 pattern：仅位置 0 一次匹配。
+    let mut vm = Vm::new();
+    let s = eval(&mut vm, "''.replace('', 'x')").unwrap();
+    assert_eq!(to_str(&vm, s), "x");
+    let s = eval(&mut vm, "''.replaceAll('', 'x')").unwrap();
+    assert_eq!(to_str(&vm, s), "x");
 }
 
 // ── split 测试 ──
