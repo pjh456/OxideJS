@@ -400,6 +400,35 @@ impl Emitter {
             }
             SimpleAssignmentTarget::ComputedMemberExpression(member) => {
                 let obj_reg = self.emit_expression(&member.object, ctx)?;
+                // 常量字符串键折叠为 IC 静态路径：MEMBER_INC/DEC 携带 IC 扩展字。
+                if let Some(key) = crate::expr::member::computed_const_key(&member.expression) {
+                    let idx = ctx.add_constant(Constant::String(key));
+                    let key_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::load_const(Operand::Reg(key_reg), idx));
+                    let val_reg = ctx.alloc_reg();
+                    let op = match update.operator {
+                        UpdateOperator::Increment => OpCode::MEMBER_INC,
+                        UpdateOperator::Decrement => OpCode::MEMBER_DEC,
+                    };
+                    match op {
+                        OpCode::MEMBER_INC => {
+                            ctx.inst(Inst::member_inc(
+                                Operand::Reg(obj_reg),
+                                Operand::Reg(val_reg),
+                                Operand::Reg(key_reg),
+                            ));
+                        }
+                        OpCode::MEMBER_DEC => {
+                            ctx.inst(Inst::member_dec(
+                                Operand::Reg(obj_reg),
+                                Operand::Reg(val_reg),
+                                Operand::Reg(key_reg),
+                            ));
+                        }
+                        _ => unreachable!(),
+                    }
+                    return Ok(val_reg);
+                }
                 let key_reg = self.emit_expression(&member.expression, ctx)?;
                 let val_reg = ctx.alloc_reg();
                 let op = match update.operator {

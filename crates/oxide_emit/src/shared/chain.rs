@@ -2,6 +2,7 @@
 //! 函数：`emit_chainable_expression`、`emit_optional_guard`、`emit_chain_call` 等。
 
 use crate::expr::call::pack_arg_regs;
+use crate::expr::member::is_array_index_str;
 use crate::{CompileCtx, Emitter};
 use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
@@ -43,6 +44,16 @@ impl Emitter {
             if let Some(label) = short_label {
                 self.emit_optional_guard(obj_reg, label, ctx)?;
             }
+        }
+        // 常量字符串键折叠为 IC 静态路径：value 独立寄存器，base 保留供 this 绑定。
+        if let Some(key) = crate::expr::member::computed_const_key(&member.expression) {
+            let idx = ctx.add_constant(Constant::String(key));
+            let key_reg = ctx.alloc_reg();
+            ctx.inst(Inst::load_const(Operand::Reg(key_reg), idx));
+            let value_reg = ctx.alloc_reg();
+            ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(value_reg), Operand::Reg(obj_reg), Operand::None));
+            ctx.inst(Inst::ic_get(Operand::Reg(value_reg), Operand::Reg(key_reg)));
+            return Ok((value_reg, obj_reg));
         }
         let key_reg = self.emit_expression(&member.expression, ctx)?;
         let value_reg = ctx.alloc_reg();
@@ -289,6 +300,17 @@ impl Emitter {
         }
         let prop_reg = ctx.alloc_reg();
         ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(prop_reg), Operand::Reg(src_reg), Operand::None));
+        // 字符串字面量计算键折叠为 IC 静态路径；标识符/数字键走 DYNAMIC。
+        if let PropertyKey::StringLiteral(s) = key {
+            let key_str = s.value.to_string();
+            if !is_array_index_str(&key_str) {
+                let key_idx = ctx.add_constant(Constant::String(key_str));
+                let key_reg = ctx.alloc_reg();
+                ctx.inst(Inst::load_const(Operand::Reg(key_reg), key_idx));
+                ctx.inst(Inst::ic_get(Operand::Reg(prop_reg), Operand::Reg(key_reg)));
+                return Ok((prop_reg, None, Some(key_reg)));
+            }
+        }
         let key_reg = self.emit_property_key_expression(key, ctx)?;
         let val_reg = ctx.alloc_reg();
         ctx.inst(Inst::new(

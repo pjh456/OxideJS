@@ -136,80 +136,68 @@ impl Emitter {
                 Ok(val_reg)
             }
         } else if let oxide_parser::AssignmentTarget::ComputedMemberExpression(member) = &assign.left {
-            if let Some(logical_op) = assign.operator.to_logical_operator() {
-                let store_label = ctx.next_label_id();
-                let end_label = ctx.next_label_id();
+            // 常量字符串键折叠为 IC 静态路径，与 StaticMemberExpression 分支同构。
+            if let Some(key) = crate::expr::member::computed_const_key(&member.expression) {
+                if let Some(logical_op) = assign.operator.to_logical_operator() {
+                    let store_label = ctx.next_label_id();
+                    let end_label = ctx.next_label_id();
+                    let obj_reg = self.emit_expression(&member.object, ctx)?;
+                    let idx = ctx.add_constant(Constant::String(key));
+                    let key_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::load_const(Operand::Reg(key_reg), idx));
+                    let result_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::new(
+                        OpCode::LOAD_VAR,
+                        Operand::Reg(result_reg),
+                        Operand::Reg(obj_reg),
+                        Operand::None,
+                    ));
+                    ctx.inst(Inst::ic_get(Operand::Reg(result_reg), Operand::Reg(key_reg)));
+                    self.emit_logical_assign_test(logical_op, result_reg, store_label, end_label, ctx)?;
+                    ctx.labels.set_label_pos(store_label, ctx.insts.len());
+                    let val_reg = self.emit_expression(&assign.right, ctx)?;
+                    ctx.inst(Inst::ic_set(Operand::Reg(obj_reg), Operand::Reg(val_reg), Operand::Reg(key_reg)));
+                    ctx.inst(Inst::new(
+                        OpCode::LOAD_VAR,
+                        Operand::Reg(result_reg),
+                        Operand::Reg(val_reg),
+                        Operand::None,
+                    ));
+                    ctx.labels.set_label_pos(end_label, ctx.insts.len());
+                    return Ok(result_reg);
+                }
                 let obj_reg = self.emit_expression(&member.object, ctx)?;
-                let key_reg = self.emit_expression(&member.expression, ctx)?;
-                let result_reg = ctx.alloc_reg();
-                ctx.inst(Inst::new(
-                    OpCode::GET_PROP_DYNAMIC,
-                    Operand::Reg(obj_reg),
-                    Operand::Reg(key_reg),
-                    Operand::Reg(result_reg),
-                ));
-                self.emit_logical_assign_test(logical_op, result_reg, store_label, end_label, ctx)?;
-                ctx.labels.set_label_pos(store_label, ctx.insts.len());
                 let val_reg = self.emit_expression(&assign.right, ctx)?;
-                ctx.inst(Inst::new(
-                    OpCode::SET_PROP_DYNAMIC,
-                    Operand::Reg(obj_reg),
-                    Operand::Reg(key_reg),
-                    Operand::Reg(val_reg),
-                ));
-                ctx.inst(Inst::new(
-                    OpCode::LOAD_VAR,
-                    Operand::Reg(result_reg),
-                    Operand::Reg(val_reg),
-                    Operand::None,
-                ));
-                ctx.labels.set_label_pos(end_label, ctx.insts.len());
-                return Ok(result_reg);
+                let idx = ctx.add_constant(Constant::String(key));
+                let key_reg = ctx.alloc_reg();
+                ctx.inst(Inst::load_const(Operand::Reg(key_reg), idx));
+                if assign.operator != AssignmentOperator::Assign {
+                    let obj = Operand::Reg(obj_reg);
+                    let val = Operand::Reg(val_reg);
+                    let key = Operand::Reg(key_reg);
+                    match assign.operator {
+                        AssignmentOperator::Addition => ctx.inst(Inst::compound_member_add(obj, val, key)),
+                        AssignmentOperator::Subtraction => ctx.inst(Inst::compound_member_sub(obj, val, key)),
+                        AssignmentOperator::Multiplication => ctx.inst(Inst::compound_member_mul(obj, val, key)),
+                        AssignmentOperator::Division => ctx.inst(Inst::compound_member_div(obj, val, key)),
+                        AssignmentOperator::Remainder => ctx.inst(Inst::compound_member_mod(obj, val, key)),
+                        AssignmentOperator::Exponential => ctx.inst(Inst::compound_member_exp(obj, val, key)),
+                        AssignmentOperator::BitwiseAnd => ctx.inst(Inst::compound_member_bit_and(obj, val, key)),
+                        AssignmentOperator::BitwiseOR => ctx.inst(Inst::compound_member_bit_or(obj, val, key)),
+                        AssignmentOperator::BitwiseXOR => ctx.inst(Inst::compound_member_bit_xor(obj, val, key)),
+                        AssignmentOperator::ShiftLeft => ctx.inst(Inst::compound_member_shl(obj, val, key)),
+                        AssignmentOperator::ShiftRight => ctx.inst(Inst::compound_member_shr(obj, val, key)),
+                        AssignmentOperator::ShiftRightZeroFill => ctx.inst(Inst::compound_member_ushr(obj, val, key)),
+                        _ => return Err(format!("compound assignment operator {:?} not supported", assign.operator)),
+                    }
+                    Ok(val_reg)
+                } else {
+                    ctx.inst(Inst::ic_set(Operand::Reg(obj_reg), Operand::Reg(val_reg), Operand::Reg(key_reg)));
+                    Ok(val_reg)
+                }
+            } else {
+                self.emit_computed_member_dynamic(assign, member, ctx)
             }
-            let obj_reg = self.emit_expression(&member.object, ctx)?;
-            let key_reg = self.emit_expression(&member.expression, ctx)?;
-            if assign.operator != AssignmentOperator::Assign {
-                // 复合赋值：读属性 → 运算 → 写回。val_reg 同时承载旧值与新值。
-                let val_reg = ctx.alloc_reg();
-                ctx.inst(Inst::new(
-                    OpCode::GET_PROP_DYNAMIC,
-                    Operand::Reg(obj_reg),
-                    Operand::Reg(key_reg),
-                    Operand::Reg(val_reg),
-                ));
-                let rhs = self.emit_expression(&assign.right, ctx)?;
-                let op = match assign.operator {
-                    AssignmentOperator::Addition => OpCode::ADD,
-                    AssignmentOperator::Subtraction => OpCode::SUB,
-                    AssignmentOperator::Multiplication => OpCode::MUL,
-                    AssignmentOperator::Division => OpCode::DIV,
-                    AssignmentOperator::Remainder => OpCode::MOD,
-                    AssignmentOperator::Exponential => OpCode::COMPOUND_EXP,
-                    AssignmentOperator::BitwiseAnd => OpCode::BIT_AND,
-                    AssignmentOperator::BitwiseOR => OpCode::BIT_OR,
-                    AssignmentOperator::BitwiseXOR => OpCode::BIT_XOR,
-                    AssignmentOperator::ShiftLeft => OpCode::SHL,
-                    AssignmentOperator::ShiftRight => OpCode::SHR,
-                    AssignmentOperator::ShiftRightZeroFill => OpCode::USHR,
-                    _ => return Err(format!("compound assignment operator {:?} not supported", assign.operator)),
-                };
-                ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(val_reg), Operand::Reg(rhs)));
-                ctx.inst(Inst::new(
-                    OpCode::SET_PROP_DYNAMIC,
-                    Operand::Reg(obj_reg),
-                    Operand::Reg(key_reg),
-                    Operand::Reg(val_reg),
-                ));
-                return Ok(val_reg);
-            }
-            let val_reg = self.emit_expression(&assign.right, ctx)?;
-            ctx.inst(Inst::new(
-                OpCode::SET_PROP_DYNAMIC,
-                Operand::Reg(obj_reg),
-                Operand::Reg(key_reg),
-                Operand::Reg(val_reg),
-            ));
-            Ok(val_reg)
         } else if let oxide_parser::AssignmentTarget::PrivateFieldExpression(member) = &assign.left {
             if assign.operator != AssignmentOperator::Assign {
                 return Err("compound assignment to private fields not supported".into());
@@ -420,5 +408,94 @@ impl Emitter {
         } else {
             Err("assignment target not supported".into())
         }
+    }
+
+    /// 计算成员赋值的动态键路径：键运行期求值（非常量键）时经 DYNAMIC 指令读写。
+    ///
+    /// # 步骤
+    /// 1. 求值对象与键表达式到寄存器。
+    /// 2. 逻辑赋值：读属性 → 短路测试 → 条件写回；复合赋值：读 → 运算 → 写回；
+    ///    普通赋值直接写回。
+    ///
+    /// # 注意事项
+    /// - 键表达式有 ToPropertyKey 副作用或非常量时才调用（常量字符串键走 IC 折叠路径）。
+    fn emit_computed_member_dynamic(
+        &self, assign: &oxide_parser::AssignmentExpression, member: &oxide_parser::ComputedMemberExpression,
+        ctx: &mut CompileCtx,
+    ) -> Result<u32, String> {
+        if let Some(logical_op) = assign.operator.to_logical_operator() {
+            let store_label = ctx.next_label_id();
+            let end_label = ctx.next_label_id();
+            let obj_reg = self.emit_expression(&member.object, ctx)?;
+            let key_reg = self.emit_expression(&member.expression, ctx)?;
+            let result_reg = ctx.alloc_reg();
+            ctx.inst(Inst::new(
+                OpCode::GET_PROP_DYNAMIC,
+                Operand::Reg(obj_reg),
+                Operand::Reg(key_reg),
+                Operand::Reg(result_reg),
+            ));
+            self.emit_logical_assign_test(logical_op, result_reg, store_label, end_label, ctx)?;
+            ctx.labels.set_label_pos(store_label, ctx.insts.len());
+            let val_reg = self.emit_expression(&assign.right, ctx)?;
+            ctx.inst(Inst::new(
+                OpCode::SET_PROP_DYNAMIC,
+                Operand::Reg(obj_reg),
+                Operand::Reg(key_reg),
+                Operand::Reg(val_reg),
+            ));
+            ctx.inst(Inst::new(
+                OpCode::LOAD_VAR,
+                Operand::Reg(result_reg),
+                Operand::Reg(val_reg),
+                Operand::None,
+            ));
+            ctx.labels.set_label_pos(end_label, ctx.insts.len());
+            return Ok(result_reg);
+        }
+        let obj_reg = self.emit_expression(&member.object, ctx)?;
+        let key_reg = self.emit_expression(&member.expression, ctx)?;
+        if assign.operator != AssignmentOperator::Assign {
+            // 复合赋值：读属性 → 运算 → 写回。val_reg 同时承载旧值与新值。
+            let val_reg = ctx.alloc_reg();
+            ctx.inst(Inst::new(
+                OpCode::GET_PROP_DYNAMIC,
+                Operand::Reg(obj_reg),
+                Operand::Reg(key_reg),
+                Operand::Reg(val_reg),
+            ));
+            let rhs = self.emit_expression(&assign.right, ctx)?;
+            let op = match assign.operator {
+                AssignmentOperator::Addition => OpCode::ADD,
+                AssignmentOperator::Subtraction => OpCode::SUB,
+                AssignmentOperator::Multiplication => OpCode::MUL,
+                AssignmentOperator::Division => OpCode::DIV,
+                AssignmentOperator::Remainder => OpCode::MOD,
+                AssignmentOperator::Exponential => OpCode::COMPOUND_EXP,
+                AssignmentOperator::BitwiseAnd => OpCode::BIT_AND,
+                AssignmentOperator::BitwiseOR => OpCode::BIT_OR,
+                AssignmentOperator::BitwiseXOR => OpCode::BIT_XOR,
+                AssignmentOperator::ShiftLeft => OpCode::SHL,
+                AssignmentOperator::ShiftRight => OpCode::SHR,
+                AssignmentOperator::ShiftRightZeroFill => OpCode::USHR,
+                _ => return Err(format!("compound assignment operator {:?} not supported", assign.operator)),
+            };
+            ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(val_reg), Operand::Reg(rhs)));
+            ctx.inst(Inst::new(
+                OpCode::SET_PROP_DYNAMIC,
+                Operand::Reg(obj_reg),
+                Operand::Reg(key_reg),
+                Operand::Reg(val_reg),
+            ));
+            return Ok(val_reg);
+        }
+        let val_reg = self.emit_expression(&assign.right, ctx)?;
+        ctx.inst(Inst::new(
+            OpCode::SET_PROP_DYNAMIC,
+            Operand::Reg(obj_reg),
+            Operand::Reg(key_reg),
+            Operand::Reg(val_reg),
+        ));
+        Ok(val_reg)
     }
 }

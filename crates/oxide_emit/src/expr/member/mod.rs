@@ -44,6 +44,15 @@ impl Emitter {
     fn emit_computed_member_expression(
         &self, member: &oxide_parser::ComputedMemberExpression, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
+        // 常量字符串键折叠为 IC 静态路径：免去运行期键 interning 与慢路径 ordinary_get。
+        if let Some(key) = computed_const_key(&member.expression) {
+            let obj_reg = self.emit_expression(&member.object, ctx)?;
+            let idx = ctx.add_constant(Constant::String(key));
+            let key_reg = ctx.alloc_reg();
+            ctx.inst(Inst::load_const(Operand::Reg(key_reg), idx));
+            ctx.inst(Inst::ic_get(Operand::Reg(obj_reg), Operand::Reg(key_reg)));
+            return Ok(obj_reg);
+        }
         let obj_reg = self.emit_expression(&member.object, ctx)?;
         let key_reg = self.emit_expression(&member.expression, ctx)?;
         let r = ctx.alloc_reg();
@@ -103,5 +112,36 @@ impl Emitter {
             Expression::ChainExpression(chain) => self.emit_chain_expression(chain, ctx),
             _ => self.emit_unsupported_expression(expr, ctx),
         }
+    }
+}
+
+/// 判断字符串是否为规范数组下标键（无前导零的纯数字串，可解析为 u32）。
+///
+/// 数组元素区独立于 shape 槽：此类键经 `set_or_create_prop_value` 写入元素区，
+/// 不进 shape 链，IC 判定 `slot < prop_vec_len` 永不命中——折叠零收益且多付探试开销，
+/// 故排除。规则与 VM `array_index_from_property_key` 一致。
+pub(crate) fn is_array_index_str(s: &str) -> bool {
+    if s.is_empty() || (s.len() > 1 && s.starts_with('0')) {
+        return false;
+    }
+    s.parse::<u32>().is_ok()
+}
+
+/// 提取计算成员表达式的常量字符串键（可折叠为 IC 静态路径）。
+///
+/// 只接受字符串字面量与无插值模板（单段、无表达式）；数字字面量、含插值模板
+/// （运行期非常量 / 键求值有副作用）与规范数组下标串返回 `None`，维持 DYNAMIC 路径。
+pub(crate) fn computed_const_key(expr: &Expression) -> Option<String> {
+    let key = match expr {
+        Expression::StringLiteral(s) => s.value.to_string(),
+        Expression::TemplateLiteral(tl) if tl.expressions.is_empty() && tl.quasis.len() == 1 => {
+            tl.quasis[0].value.cooked.as_ref().map(|c| c.to_string()).unwrap_or_default()
+        }
+        _ => return None,
+    };
+    if is_array_index_str(&key) {
+        None
+    } else {
+        Some(key)
     }
 }

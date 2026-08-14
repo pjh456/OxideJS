@@ -89,15 +89,31 @@ impl Emitter {
             }
             Expression::ComputedMemberExpression(member) => {
                 let obj_reg = self.emit_expression(&member.object, ctx)?;
-                let key_reg = self.emit_expression(&member.expression, ctx)?;
-                let callee_reg = ctx.alloc_reg();
-                ctx.inst(Inst::new(
-                    OpCode::GET_PROP_DYNAMIC,
-                    Operand::Reg(obj_reg),
-                    Operand::Reg(key_reg),
-                    Operand::Reg(callee_reg),
-                ));
-                (callee_reg, obj_reg)
+                // 常量字符串键折叠为 IC 静态路径：callee 寄存器独立于对象，this 保留对象。
+                if let Some(key) = crate::expr::member::computed_const_key(&member.expression) {
+                    let idx = ctx.add_constant(Constant::String(key));
+                    let key_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::load_const(Operand::Reg(key_reg), idx));
+                    let callee_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::new(
+                        OpCode::LOAD_VAR,
+                        Operand::Reg(callee_reg),
+                        Operand::Reg(obj_reg),
+                        Operand::None,
+                    ));
+                    ctx.inst(Inst::ic_get(Operand::Reg(callee_reg), Operand::Reg(key_reg)));
+                    (callee_reg, obj_reg)
+                } else {
+                    let key_reg = self.emit_expression(&member.expression, ctx)?;
+                    let callee_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::new(
+                        OpCode::GET_PROP_DYNAMIC,
+                        Operand::Reg(obj_reg),
+                        Operand::Reg(key_reg),
+                        Operand::Reg(callee_reg),
+                    ));
+                    (callee_reg, obj_reg)
+                }
             }
             _ => {
                 let callee_reg = self.emit_expression(&call.callee, ctx)?;

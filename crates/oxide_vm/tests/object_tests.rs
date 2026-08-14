@@ -44,6 +44,40 @@ fn eval_object_missing_property() {
 }
 
 #[test]
+fn eval_computed_const_string_key_folds_to_ic() {
+    // 常量字符串键折叠为 IC 静态路径：读写/复合/模板键/链式访问语义不变。
+    assert_eq!(eval("var o={a:1}; o[\"a\"]"), "1");
+    assert_eq!(eval("var o={a:1}; o[\"a\"]=2, o.a"), "2");
+    assert_eq!(eval("var o={a:1}; o[\"a\"] += 1, o.a"), "2");
+    assert_eq!(eval("var o={a:1}; o[`a`]"), "1");
+    assert_eq!(eval("var o={a:{b:4}}; o[\"a\"][\"b\"]"), "4");
+    assert_eq!(eval("var o={a:2}; o?.[\"a\"]"), "2");
+    assert_eq!(eval("var o={a:1}; o[\"a\"]++, o.a"), "2");
+    assert_eq!(eval("var o={a:1}; o[\"a\"] &&= 5, o.a"), "5");
+    assert_eq!(eval("var p={a:null}; p[\"a\"] ??= 5, p.a"), "5");
+}
+
+#[test]
+fn eval_computed_const_key_dynamic_keys_stay_dynamic() {
+    // 动态变量键 / 数字键维持 DYNAMIC 路径，语义一致。
+    assert_eq!(eval("var s=\"a\", o={a:9}; o[s]"), "9");
+    assert_eq!(eval("var arr=[1,2]; arr[\"0\"]"), "1");
+    assert_eq!(eval("var arr=[1,2]; arr[0]=7, arr[0]"), "7");
+}
+
+#[test]
+fn eval_computed_const_key_method_call_keeps_this() {
+    // 方法调用接收者折叠：this 绑定保留。
+    assert_eq!(eval("var o={m(){return this.x}, x:5}; o[\"m\"]()"), "5");
+}
+
+#[test]
+fn eval_computed_const_key_proto_write() {
+    // 写 __proto__ 键走拦截路径，原型语义不变。
+    assert_eq!(eval("var o={}; o[\"__proto__\"]={b:3}, o.b"), "3");
+}
+
+#[test]
 fn eval_member_inc_post() {
     assert_eq!(eval("var obj={x:1}; obj.x++; obj.x"), "2");
 }

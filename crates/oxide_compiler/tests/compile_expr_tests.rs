@@ -668,6 +668,98 @@ fn compile_dynamic_member_ops() {
     );
 }
 
+/// 收集字节码指令序列，跳过 IC 扩展字（3 字）与其它扩展字，逐指令定位。
+fn scan_opcodes(module: &CompiledModule) -> Vec<OpCode> {
+    let mut ops = Vec::new();
+    let mut i = 0;
+    while i < module.bytecode.len() {
+        let op = opcode::opcode(module.bytecode[i]);
+        ops.push(op);
+        i += 1 + if op.has_ic_ext_words() {
+            3
+        } else {
+            match op {
+                OpCode::SPILL
+                | OpCode::UNSPILL
+                | OpCode::CALL
+                | OpCode::CALL_NATIVE
+                | OpCode::NEW_EXPRESSION
+                | OpCode::SUPER_CALL
+                | OpCode::DEFINE_ACCESSOR
+                | OpCode::DEFINE_ACCESSOR_DYNAMIC
+                | OpCode::DEFINE_PROP_ATTRS
+                | OpCode::DELETE_PROP_STATIC
+                | OpCode::REST_OBJECT
+                | OpCode::INIT_PRIVATE => 1,
+                OpCode::DEFINE_ACCESSOR_ATTRS
+                | OpCode::GET_PRIVATE
+                | OpCode::SET_PRIVATE
+                | OpCode::PRIVATE_BRAND_IN => 2,
+                _ => 0,
+            }
+        };
+    }
+    ops
+}
+
+#[test]
+fn compile_computed_member_const_string_key_folds_to_ic() {
+    let module = compile_source("let obj = { a: 1 }; obj[\"a\"]; obj[\"a\"] = 2;");
+    let ops = scan_opcodes(&module);
+    assert!(ops.contains(&OpCode::IC_GET_PROP), "obj[\"a\"] 应折叠为 IC_GET_PROP");
+    assert!(ops.contains(&OpCode::IC_SET_PROP), "obj[\"a\"] = 应折叠为 IC_SET_PROP");
+    assert!(!ops.contains(&OpCode::GET_PROP_DYNAMIC), "常量字符串键读不应发 GET_PROP_DYNAMIC");
+    assert!(!ops.contains(&OpCode::SET_PROP_DYNAMIC), "常量字符串键写不应发 SET_PROP_DYNAMIC");
+}
+
+#[test]
+fn compile_computed_member_template_key_folds_to_ic() {
+    let module = compile_source("let obj = { a: 1 }; obj[`a`];");
+    let ops = scan_opcodes(&module);
+    assert!(ops.contains(&OpCode::IC_GET_PROP), "无插值模板键应折叠为 IC_GET_PROP");
+    assert!(!ops.contains(&OpCode::GET_PROP_DYNAMIC), "无插值模板键不应发 GET_PROP_DYNAMIC");
+    // 含插值模板保持 DYNAMIC（运行期键非常量）
+    let interp = compile_source("let obj = {}, k = 'a'; obj[`${k}`];");
+    assert!(
+        scan_opcodes(&interp).contains(&OpCode::GET_PROP_DYNAMIC),
+        "含插值模板键应保持 GET_PROP_DYNAMIC"
+    );
+}
+
+#[test]
+fn compile_computed_member_numeric_and_index_keys_stay_dynamic() {
+    // 数字键（obj[0] / arr[\"0\"]）不折叠：数组元素区 IC 永不命中。
+    let module = compile_source("let obj = {}, arr = [1]; obj[0]; arr[\"0\"];");
+    let ops = scan_opcodes(&module);
+    assert!(ops.contains(&OpCode::GET_PROP_DYNAMIC), "数字/数组下标键应保持 GET_PROP_DYNAMIC");
+    assert!(!ops.contains(&OpCode::IC_GET_PROP), "数字/数组下标键不应折叠为 IC_GET_PROP");
+}
+
+#[test]
+fn compile_computed_member_compound_and_update_fold_to_ic() {
+    let module = compile_source("let obj = { a: 1 }; obj[\"a\"] += 1; obj[\"b\"]++;");
+    let ops = scan_opcodes(&module);
+    assert!(ops.contains(&OpCode::COMPOUND_MEMBER_ADD), "obj[\"a\"] += 应折叠为 COMPOUND_MEMBER_ADD");
+    assert!(ops.contains(&OpCode::MEMBER_INC), "obj[\"b\"]++ 应折叠为 MEMBER_INC");
+    assert!(!ops.contains(&OpCode::GET_PROP_DYNAMIC), "常量键复合赋值不应发 GET_PROP_DYNAMIC");
+}
+
+#[test]
+fn compile_computed_member_call_receiver_folds_to_ic() {
+    let module = compile_source("let obj = { m() { return 1 } }; obj[\"m\"]();");
+    let ops = scan_opcodes(&module);
+    assert!(ops.contains(&OpCode::IC_GET_PROP), "obj[\"m\"]() 接收者应折叠为 IC_GET_PROP");
+    assert!(!ops.contains(&OpCode::GET_PROP_DYNAMIC), "常量键方法调用不应发 GET_PROP_DYNAMIC");
+}
+
+#[test]
+fn compile_computed_member_chain_folds_to_ic() {
+    let module = compile_source("let obj = { a: 1 }; obj?.[\"a\"];");
+    let ops = scan_opcodes(&module);
+    assert!(ops.contains(&OpCode::IC_GET_PROP), "可选链 obj?.[\"a\"] 应折叠为 IC_GET_PROP");
+    assert!(!ops.contains(&OpCode::GET_PROP_DYNAMIC), "常量键可选链不应发 GET_PROP_DYNAMIC");
+}
+
 #[test]
 fn compile_delete_new_instanceof_in() {
     let module =
