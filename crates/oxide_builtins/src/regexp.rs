@@ -384,7 +384,11 @@ pub fn regexp_symbol_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         if replacer_val.is_object() {
             let o = unsafe { &*replacer_val.as_js_object_ptr() };
             if o.is_function() {
-                crate::string::regex_replace_fn(vm, regex, &haystack, replacer_val, is_global)
+                // 回调第 4 参（原字符串）预构一次：原始字符串参数直接复用零拷贝，
+                // 对象参数复用已转换的 haystack 建单个会话串（原每匹配整串复制）。
+                let text_val = vm.reg(if args.len() > 1 { args[1] } else { args[0] });
+                let text_arg = if text_val.is_string() { text_val } else { vm.new_string(&haystack) };
+                crate::string::regex_replace_fn(vm, regex, &haystack, replacer_val, is_global, text_arg)
             } else {
                 let replacement = oxide_runtime_api::to_string(replacer_val);
                 NativeResult::Ok(vm.new_string(&crate::string::regex_replace_manual(

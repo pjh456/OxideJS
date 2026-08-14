@@ -306,8 +306,9 @@ fn call_replacer<H: VmHost>(vm: &mut H, replacer: JsValue, cb_args: &[JsValue]) 
 }
 
 /// 函数 replacer 的回调参数：匹配串、各捕获组（未匹配为 undefined）、position、原字符串。
-/// position 按字符索引（非字节偏移）。
-fn replacer_cb_args<H: VmHost>(vm: &mut H, text: &str, m: &regress::Match) -> Vec<JsValue> {
+/// position 按字符索引（非字节偏移）。原字符串参数由调用方预构传入（`text_arg`），
+/// 避免每匹配复制整个源串——字符串不可变，同一 `JsValue` 可安全复用。
+fn replacer_cb_args<H: VmHost>(vm: &mut H, text: &str, m: &regress::Match, text_arg: JsValue) -> Vec<JsValue> {
     let range = m.range();
     let mut cb_args: Vec<JsValue> = Vec::with_capacity(m.captures.len() + 2);
     cb_args.push(vm.new_string(&text[range.start..range.end]));
@@ -318,14 +319,15 @@ fn replacer_cb_args<H: VmHost>(vm: &mut H, text: &str, m: &regress::Match) -> Ve
         }
     }
     cb_args.push(JsValue::int(text[..range.start].chars().count() as i32));
-    cb_args.push(vm.new_string(text));
+    cb_args.push(text_arg);
     cb_args
 }
 
 /// 正则模式 + 函数 replacer：global 全替换否则替换首个，逐匹配调用回调，
-/// 返回值 ToString 作为替换文本（不展开 `$` 引用）。
+/// 返回值 ToString 作为替换文本（不展开 `$` 引用）。`text_arg` 为回调第 4 参
+/// （原字符串），调用方预构一次，回调期按值复用。
 pub(crate) fn regex_replace_fn<H: VmHost>(
-    vm: &mut H, regex: &regress::Regex, text: &str, replacer: JsValue, global: bool,
+    vm: &mut H, regex: &regress::Regex, text: &str, replacer: JsValue, global: bool, text_arg: JsValue,
 ) -> NativeResult {
     let matches: Vec<regress::Match> = if global {
         regex.find_iter(text).collect()
@@ -337,7 +339,7 @@ pub(crate) fn regex_replace_fn<H: VmHost>(
     for m in matches {
         let range = m.range();
         out.push_str(&text[last_end..range.start]);
-        let cb_args = replacer_cb_args(vm, text, &m);
+        let cb_args = replacer_cb_args(vm, text, &m, text_arg);
         let repl = try_string!(call_replacer(vm, replacer, &cb_args));
         out.push_str(&repl);
         last_end = range.end;
@@ -348,7 +350,10 @@ pub(crate) fn regex_replace_fn<H: VmHost>(
 
 /// 字符串模式 + 函数 replacer：all 全替换否则替换首个。回调参数
 /// `(match, position, string)`（无捕获组）。空模式在每个字符边界匹配一次。
-fn string_replace_fn<H: VmHost>(vm: &mut H, text: &str, pattern: &str, replacer: JsValue, all: bool) -> NativeResult {
+/// `text_arg` 为回调第 4 参（原字符串），调用方预构一次。
+fn string_replace_fn<H: VmHost>(
+    vm: &mut H, text: &str, pattern: &str, replacer: JsValue, all: bool, text_arg: JsValue,
+) -> NativeResult {
     let search_length = pattern.len();
     let mut positions: Vec<usize> = Vec::new();
     if search_length == 0 {
@@ -378,7 +383,7 @@ fn string_replace_fn<H: VmHost>(vm: &mut H, text: &str, pattern: &str, replacer:
         let cb_args = [
             vm.new_string(&text[p..p + search_length]),
             JsValue::int(text[..p].chars().count() as i32),
-            vm.new_string(text),
+            text_arg,
         ];
         let repl = try_string!(call_replacer(vm, replacer, &cb_args));
         out.push_str(&repl);
@@ -1079,16 +1084,19 @@ fn string_replace_impl<H: VmHost>(vm: &mut H, args: &[u8], all: bool) -> NativeR
     // 会 E0499，receiver 必须 owned 本地 String（跨回调的硬约束）。
     if let Some(replacer_val) = replacer_val {
         let s = try_string!(this_string(vm, args)).into_owned();
+        // 回调第 4 参（原字符串）预构一次：原始字符串 receiver 直接复用
+        // this_val 零拷贝，对象 receiver 提升为单次会话串（原每匹配整串复制）。
+        let text_arg = if this_val.is_string() { this_val } else { vm.new_string(&s) };
         if has_native_re {
             let re_ptr = pattern_val.as_js_object_ptr();
             let re = unsafe { &*re_ptr };
             let fn_ptr = re.native_fn().unwrap();
             // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regress::Regex>` 指针。
             let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
-            return regex_replace_fn(vm, regex, &s, replacer_val, is_global);
+            return regex_replace_fn(vm, regex, &s, replacer_val, is_global, text_arg);
         }
         let pattern = as_string(vm, pattern_val).into_owned();
-        return string_replace_fn(vm, &s, &pattern, replacer_val, all);
+        return string_replace_fn(vm, &s, &pattern, replacer_val, all, text_arg);
     }
 
     let replacement_is_string = args.len() <= 2 || replacement_val.is_string();

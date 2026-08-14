@@ -334,6 +334,28 @@ fn string_replace_function_replacer_string_pattern() {
 }
 
 #[test]
+fn string_replace_function_replacer_string_arg() {
+    // 回调第 4 参为原字符串：原始 receiver 直接传值（=== 原串），
+    // 对象 receiver 传 ToString 内容；字符串/正则 pattern、replace/replaceAll 全覆盖。
+    let mut vm = Vm::new();
+    let s = eval(&mut vm, "'abc'.replace('b', function(m, o, str){ return str })").unwrap();
+    assert_eq!(to_str(&vm, s), "aabcc");
+    let s = eval(&mut vm, "'abc'.replace(/b/, function(m, o, str){ return str })").unwrap();
+    assert_eq!(to_str(&vm, s), "aabcc");
+    let s = eval(&mut vm, "'abc'.replaceAll('b', function(m, o, str){ return str })").unwrap();
+    assert_eq!(to_str(&vm, s), "aabcc");
+    // 第 4 参与原始字符串按内容恒等（=== 对字符串按值比较）。
+    let s = eval(&mut vm, "var str='abc'; str.replace('b', function(m, o, str2){ return str2 === str })").unwrap();
+    assert_eq!(to_str(&vm, s), "atruec");
+    // boxed receiver 走对象 ToString 路径，第 4 参为解箱后内容。
+    let s = eval(&mut vm, "new String('abc').replace('b', function(m, o, str){ return str })").unwrap();
+    assert_eq!(to_str(&vm, s), "aabcc");
+    // RegExp.prototype[Symbol.replace] 直调路径（非 String.prototype.replace 快路径）。
+    let s = eval(&mut vm, "/b/[Symbol.replace]('abc', function(m, o, str){ return str })").unwrap();
+    assert_eq!(to_str(&vm, s), "aabcc");
+}
+
+#[test]
 fn string_replace_missing_replacement_is_undefined_string() {
     // 缺失 replaceValue 按 ToString(undefined)="undefined" 替换（非空串）。
     let mut vm = Vm::new();
