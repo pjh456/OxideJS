@@ -651,3 +651,54 @@ fn string_slice_astral_character_indices() {
     let s = eval(&mut vm, "'\\u{1F600}'.padStart(3, 'x')").unwrap();
     assert_eq!(to_str(&vm, s), "xx\u{1F600}");
 }
+
+#[test]
+fn string_char_at_ascii_and_astral() {
+    // charAt 产出：ASCII 走单字符缓存，astral 按标量整体返回，越界空串，
+    // 缺省参数取首字符。
+    let mut vm = Vm::new();
+    let s = eval(&mut vm, "'abc'.charAt(1)").unwrap();
+    assert_eq!(to_str(&vm, s), "b");
+    let s = eval(&mut vm, "'\\u{1F600}ab'.charAt(0)").unwrap();
+    assert_eq!(to_str(&vm, s), "\u{1F600}");
+    let s = eval(&mut vm, "'ab'.charAt(5)").unwrap();
+    assert_eq!(to_str(&vm, s), "");
+    let s = eval(&mut vm, "'xy'.charAt()").unwrap();
+    assert_eq!(to_str(&vm, s), "x");
+}
+
+#[test]
+fn string_char_at_eq_perm_string() {
+    // charAt 产出与字面量比较：内容相等（缓存串与字面量 perm 串）。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "'abc'.charAt(1) === 'b'").unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn string_split_empty_separator_chars() {
+    // 空分隔 split 逐字符产出：ASCII 走单字符缓存，混合 astral 按标量切分。
+    let mut vm = Vm::new();
+    let s = eval(&mut vm, "'abc'.split('').join('-')").unwrap();
+    assert_eq!(to_str(&vm, s), "a-b-c");
+    let result = eval(&mut vm, "'\\u{1F600}a'.split('').length").unwrap();
+    assert_eq!(result.as_int(), 2);
+    let result = eval(&mut vm, "'\\u{1F600}a'.split('')[1]").unwrap();
+    assert_eq!(to_str(&vm, result), "a");
+}
+
+#[test]
+fn string_spread_object_chars() {
+    // 对象展开字符串源：索引字符为可枚举自有属性。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "const o = {...'ab'}; o['0'] + o['1']").unwrap();
+    assert_eq!(to_str(&vm, result), "ab");
+}
+
+#[test]
+fn string_rest_destructure_chars() {
+    // rest 解构字符串源：索引字符收集到 rest 对象。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "const {...r} = 'ab'; r['0'] + r['1']").unwrap();
+    assert_eq!(to_str(&vm, result), "ab");
+}

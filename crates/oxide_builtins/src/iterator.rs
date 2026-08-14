@@ -7,8 +7,6 @@ use oxide_runtime_api::{to_object, NativeResult, VmHost};
 
 const INNER_PROP: &str = "__inner__";
 const INDEX_PROP: &str = "__index__";
-/// 字符串迭代的字节游标（`next` 增量推进的当前位置），避免每步整串复制 + 从头重扫。
-const BYTEOFF_PROP: &str = "__byteoff__";
 
 /// 占位构造函数：`Iterator` 不是构造函数，任何调用都抛 TypeError。
 pub fn iterator_constructor<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
@@ -305,16 +303,19 @@ fn next_array_like<H: VmHost>(
     }
 
     if inner.is_string() {
-        let index = current_index(vm, wrapper, index_si);
-        let byteoff_si = vm.kernel_core().perm_interner().intern(BYTEOFF_PROP).0;
-        let byteoff = current_index(vm, wrapper, byteoff_si);
+        // index 槽在字符串分支存字节游标（每步推进一个 char 的 UTF-8 宽度）而非
+        // 元素序号：该槽只被 next 内部读写、无外部消费者，包装器创建后类型固定
+        // 不跨类型复用，故可安全借用语义（字符串=字节偏移）。
+        let byteoff = current_index(vm, wrapper, index_si);
         // 源串裸指针借用压缩到单个表达式：ch 是 Copy 的 char，不携带借用，
         // 之后对 VM 状态的可变访问不再与源串借用共存。
         let ch = unsafe { &*inner.as_string_ptr() }.as_str()[byteoff..].chars().next();
         if let Some(ch) = ch {
-            vm.set_or_create_prop_value(wrapper, byteoff_si, JsValue::int((byteoff + ch.len_utf8()) as i32));
-            vm.set_or_create_prop_value(wrapper, index_si, JsValue::int((index + 1) as i32));
-            let value = vm.new_string(&ch.to_string());
+            vm.set_or_create_prop_value(wrapper, index_si, JsValue::int((byteoff + ch.len_utf8()) as i32));
+            let value = match vm.single_char(ch) {
+                Some(v) => v,
+                None => vm.new_string(&ch.to_string()),
+            };
             return Ok(Some(make_iter_result(vm, value, false)));
         }
         return Ok(Some(make_iter_result(vm, JsValue::undefined(), true)));

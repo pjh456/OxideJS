@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::native::NativeFn;
 use crate::vm::{native_fn_ptr_to_fn, CallFrame, ForInIter, FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
 use crate::vm_trace;
-use oxide_runtime_api::{to_boolean, to_string_full, NativeResult};
+use oxide_runtime_api::{to_boolean, to_string_full, NativeResult, VmHost};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::{int_key_value, is_int_key, is_private_name_key, is_symbol_key, make_int_key};
 use oxide_types::value::JsValue;
@@ -738,9 +738,14 @@ impl Vm {
             if src.is_string() {
                 let code_units: Vec<u16> = unsafe { (*src.as_string_ptr()).data.encode_utf16().collect() };
                 for (i, unit) in code_units.iter().enumerate() {
-                    let s = char::from_u32(*unit as u32).map(|c| c.to_string()).unwrap_or_default();
                     let si = make_int_key(i as u32);
-                    let ch_val = self.new_string(&s);
+                    let ch_val = match char::from_u32(*unit as u32) {
+                        Some(c) => match self.single_char(c) {
+                            Some(v) => v,
+                            None => self.new_string(&c.to_string()),
+                        },
+                        None => self.new_string(""),
+                    };
                     let rest = unsafe { &mut *rest_ptr };
                     self.set_or_create_prop_value(rest, si, ch_val);
                 }
@@ -792,9 +797,15 @@ impl Vm {
             let s = unsafe { (*raw.as_string_ptr()).data.clone() };
             let code_units: Vec<u16> = s.encode_utf16().collect();
             for (i, unit) in code_units.iter().enumerate() {
-                let ch = char::from_u32(*unit as u32).map(|c| c.to_string()).unwrap_or_default();
                 let si = make_int_key(i as u32);
-                assignments.push((si, self.new_string(&ch)));
+                let ch_val = match char::from_u32(*unit as u32) {
+                    Some(c) => match self.single_char(c) {
+                        Some(v) => v,
+                        None => self.new_string(&c.to_string()),
+                    },
+                    None => self.new_string(""),
+                };
+                assignments.push((si, ch_val));
             }
         }
 
@@ -887,9 +898,14 @@ impl Vm {
             let target = unsafe { &mut *target_val.as_js_object_ptr() };
             let code_units: Vec<u16> = unsafe { (*src.as_string_ptr()).data.encode_utf16().collect() };
             for (i, unit) in code_units.iter().enumerate() {
-                let s = char::from_u32(*unit as u32).map(|c| c.to_string()).unwrap_or_default();
                 let si = make_int_key(i as u32);
-                let ch_val = self.new_string(&s);
+                let ch_val = match char::from_u32(*unit as u32) {
+                    Some(c) => match self.single_char(c) {
+                        Some(v) => v,
+                        None => self.new_string(&c.to_string()),
+                    },
+                    None => self.new_string(""),
+                };
                 self.set_or_create_prop_value(target, si, ch_val);
             }
             return Ok(());

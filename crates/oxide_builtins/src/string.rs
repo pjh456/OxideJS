@@ -201,6 +201,23 @@ pub(crate) fn make_string_array<H: VmHost>(vm: &mut H, parts: Vec<String>) -> Js
     JsValue::from_js_object(arr)
 }
 
+/// 以已构造的字符串值构建字符串数组（元素零拷贝落地），供逐字符产出路径
+/// （空分隔 split）复用，跳过 `Vec<String>` 中间层。
+pub(crate) fn make_string_array_values<H: VmHost>(vm: &mut H, parts: Vec<JsValue>) -> JsValue {
+    let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let n = parts.len();
+    let arr =
+        vm.epoch()
+            .alloc(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto), n, vm.epoch().bump()));
+    unsafe {
+        for (i, sv) in parts.into_iter().enumerate() {
+            (*arr).set_prop_at(i, sv);
+        }
+        (*arr).set_prop_count(n);
+    }
+    JsValue::from_js_object(arr)
+}
+
 /// 取参数字符串内容：原始字符串零拷贝借用，其余经完整 ToString（对象 ToPrimitive）。
 /// 返回借用绑定本次 `&mut` 借用；需与 `this_string` 借用并存时先 `into_owned` 落地。
 fn as_string<'a, H: VmHost>(vm: &'a mut H, val: JsValue) -> Cow<'a, str> {
@@ -500,14 +517,24 @@ pub fn string_char_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         if s.is_empty() {
             return NativeResult::Ok(vm.new_string(""));
         }
-        let first = take_chars(&s, 1);
-        return NativeResult::Ok(vm.new_string(&first));
+        let first = s.chars().next().unwrap();
+        // ASCII 走单字符缓存零分配，其余回落普通创建（借用已随 char 提取结束）。
+        return match vm.single_char(first) {
+            Some(v) => NativeResult::Ok(v),
+            None => NativeResult::Ok(vm.new_string(&first.to_string())),
+        };
     }
     if idx < 0 || idx as usize >= char_len(&s) {
         return NativeResult::Ok(vm.new_string(""));
     }
-    let ch = s.chars().nth(idx as usize).map(|c| c.to_string()).unwrap_or_default();
-    NativeResult::Ok(vm.new_string(&ch))
+    let ch = s.chars().nth(idx as usize);
+    match ch {
+        Some(c) => match vm.single_char(c) {
+            Some(v) => NativeResult::Ok(v),
+            None => NativeResult::Ok(vm.new_string(&c.to_string())),
+        },
+        None => NativeResult::Ok(vm.new_string("")),
+    }
 }
 
 /// `String.prototype.charCodeAt(index)`：返回指定位置字符的 UTF-16 code unit；越界返回 NaN。
@@ -950,11 +977,20 @@ pub fn string_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
         // 无原生正则的类正则对象回退到字符串路径。
     }
-    let parts: Vec<String> = if sep.is_empty() {
-        s.chars().map(|c| c.to_string()).take(limit).collect()
-    } else {
-        s.split(&sep).map(|p| p.to_string()).take(limit).collect()
-    };
+    if sep.is_empty() {
+        // 两段式：先借 this 收集字符（Copy），借用结束后再逐字符产出——
+        // ASCII 走单字符缓存零分配，其余回落普通创建。
+        let chars: Vec<char> = s.chars().take(limit).collect();
+        let mut values = Vec::with_capacity(chars.len());
+        for c in chars {
+            values.push(match vm.single_char(c) {
+                Some(v) => v,
+                None => vm.new_string(&c.to_string()),
+            });
+        }
+        return NativeResult::Ok(make_string_array_values(vm, values));
+    }
+    let parts: Vec<String> = s.split(&sep).map(|p| p.to_string()).take(limit).collect();
     NativeResult::Ok(make_string_array(vm, parts))
 }
 

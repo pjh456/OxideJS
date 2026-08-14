@@ -58,3 +58,40 @@ fn new_iterator_throws_type_error() {
     let result = eval(&mut vm, "try { new Iterator() } catch (e) { e instanceof TypeError }").unwrap();
     assert!(result.as_bool());
 }
+
+#[test]
+fn iterator_from_string_full_sequence() {
+    // 手动 next 逐字符取完全部 ASCII 字符后 done（游标推进路径）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var it = Iterator.from('ab'); \
+         var r = []; var x; while (!(x = it.next()).done) r.push(x.value); \
+         r.join('')",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "ab");
+}
+
+#[test]
+fn iterator_from_string_astral_scalar() {
+    // 字符串迭代按 Unicode 标量推进：astral 字符整体产出（标量语义未动）。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var it = Iterator.from('\\u{1F600}'); it.next().value").unwrap();
+    assert_eq!(to_str(&vm, result), "\u{1F600}");
+}
+
+#[test]
+fn iterator_from_string_empty_done() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Iterator.from('').next().done").unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn for_of_string_chars() {
+    // for-of 字符串循环产出逐字符（走字节游标 + 单字符缓存）。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var out = []; for (const c of 'abc') out.push(c); out.join('')").unwrap();
+    assert_eq!(to_str(&vm, result), "abc");
+}

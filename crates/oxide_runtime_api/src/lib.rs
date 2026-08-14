@@ -77,6 +77,19 @@ pub trait VmHost {
     fn new_string(&mut self, s: &str) -> JsValue;
     /// move 接收 `String` 创建会话字符串，避免一次整串克隆。
     fn new_string_owned(&mut self, s: String) -> JsValue;
+    /// 取 ASCII 单字符的永久字符串值：命中返回共享 perm 串（零分配、可指针
+    /// 短路比较），非 ASCII 返回 `None` 由调用方回落普通字符串创建。
+    ///
+    /// # 注意事项
+    /// `&self` 可借用期调用；`None` 回落 `new_string` 是 `&mut` 路径，须先结束
+    /// 本次 `&self` 借用（返回值即时消费即可）。
+    fn single_char(&self, ch: char) -> Option<JsValue> {
+        if ch.is_ascii() {
+            Some(JsValue::string(oxide_kernel::string_forge::single_char_ptr(ch as u8)))
+        } else {
+            None
+        }
+    }
     /// 借出字符串值的文本内容，生命周期绑定到 `&self` 借用。
     ///
     /// perm 字符串由内核持有、永不释放；session 字符串只在 `&mut self` 路径

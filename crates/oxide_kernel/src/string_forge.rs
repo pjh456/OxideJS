@@ -1,5 +1,5 @@
 use std::hash::{Hash, Hasher};
-use std::sync::RwLock;
+use std::sync::{OnceLock, RwLock};
 
 use dashmap::DashMap;
 use oxide_types::object::JsString;
@@ -142,6 +142,39 @@ impl Default for PermInterner {
     }
 }
 
+/// 指向永久 `JsString` 的指针包装，供静态表存储。`JsString` 内容线程安全
+/// （`String` + `AtomicU32`）且永久存活、只读共享，裸指针跨线程传递安全。
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+struct StringPtr(*const JsString);
+unsafe impl Send for StringPtr {}
+unsafe impl Sync for StringPtr {}
+
+/// ASCII 单字符永久 `JsString` 指针表：以字节值（0..=127）为下标，
+/// 首用惰性物化 `Box::into_raw` 永久泄漏，之后恒复用同一地址。
+/// 泄漏面严格有界：≤128 条目 × 单字符内容（≈8KB），进程生命周期内不释放。
+static SINGLE_CHAR_TABLE: [OnceLock<StringPtr>; 128] = [const { OnceLock::new() }; 128];
+
+/// 取 ASCII 单字符的永久 `JsString` 指针，惰性物化一次后恒返回同一地址。
+/// 供迭代器/charAt/空分隔 split/字符串展开等高频字符产出路径零分配复用；
+/// 并发首用竞态下仍保证全局唯一指针（后者回收本线程副本）。
+pub fn single_char_ptr(ch: u8) -> *const JsString {
+    let slot = &SINGLE_CHAR_TABLE[ch as usize];
+    if let Some(ptr) = slot.get() {
+        return ptr.0;
+    }
+    let ptr = Box::into_raw(Box::new(JsString::new((ch as char).to_string())));
+    match slot.set(StringPtr(ptr)) {
+        Ok(()) => ptr,
+        Err(existing) => {
+            // 并发首用竞态：另一线程已物化，本线程指针尚未暴露给调用方，恰好释放一次。
+            // SAFETY: ptr 来自本线程的 Box::into_raw，无任何外部引用。
+            unsafe { drop(Box::from_raw(ptr)) };
+            existing.0
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,5 +238,22 @@ mod tests {
         assert_eq!(unsafe { (*ptr).as_str() }, "perm");
         // 二次调用返回同一稳定指针（仅物化一次）。
         assert_eq!(interner.string_ptr(id), ptr);
+    }
+
+    #[test]
+    fn single_char_ptr_idempotent() {
+        let a = single_char_ptr(b'a');
+        assert_eq!(unsafe { (*a).as_str() }, "a");
+        // 二次调用返回同一稳定指针（仅物化一次）。
+        assert_eq!(single_char_ptr(b'a'), a);
+    }
+
+    #[test]
+    fn single_char_table_full_ascii() {
+        // 全表 128 条目均可物化且内容为对应的单字符文本。
+        for b in 0u8..=127 {
+            let ptr = single_char_ptr(b);
+            assert_eq!(unsafe { (*ptr).as_str() }, (b as char).to_string());
+        }
     }
 }
