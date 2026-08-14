@@ -206,6 +206,24 @@ fn eval_numeric_property_key_roundtrip() {
 }
 
 #[test]
+fn eval_object_primitive_hint_key_unifies_with_numeric_key() {
+    // 对象经 ToPropertyKey 的字符串结果必须走规范化：`{toString(){return "5"}}`
+    // 作为键与 `o[5]`/`o["5"]` 同键，不得 intern 出分裂的字符串键。
+    assert_eq!(eval("var o={}; o[{toString(){return \"5\"}}]=7; o[\"5\"]"), "7");
+    assert_eq!(eval("var o={}; o[{toString(){return \"5\"}}]=7; o[5]"), "7");
+    assert_eq!(eval("var o={}; o[\"5\"]=7; o[{toString(){return \"5\"}}]"), "7");
+    // 字符串值 Display 为 {string}，键等价语义与数值哨兵一致。
+    assert_eq!(eval("var o={}; o[{toString(){return \"5\"}}]='a'; o[\"5\"]"), "{string}");
+}
+
+#[test]
+fn eval_bigint_key_unifies_with_numeric_key() {
+    // 兜底原始值键（BigInt）同样走规范化：`o[5n]` 与 `o["5"]`/`o[5]` 同键。
+    assert_eq!(eval("var o={}; o[5n]=7; o[\"5\"]"), "7");
+    assert_eq!(eval("var o={}; o[5n]=7; o[5]"), "7");
+}
+
+#[test]
 fn eval_numeric_dynamic_property_key_roundtrip() {
     assert_eq!(eval("var o={}; var k=1; o[k]=42; o['1']"), "42");
 }

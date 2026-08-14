@@ -975,16 +975,19 @@ impl Vm {
             if let Some(id) = oxide_runtime_api::well_known_symbol_id(self, val.as_js_object_ptr()) {
                 return Ok(make_well_known_symbol_key(id));
             }
-            // ToPropertyKey：对象经 ToPrimitive(string hint)，结果为 Symbol 时直接作键。
+            // ToPropertyKey：对象经 ToPrimitive(string hint)，结果为 Symbol 时直接作键；
+            // 其余字符串经规范化（规范数字串映射整数键）与字符串分支统一口径。
             let prim = coercion::to_primitive(val, coercion::ToPrimitiveHint::String, self)?;
             if prim.is_symbol() {
                 return Ok(make_symbol_key(prim.as_symbol_index()));
             }
             let key = coercion::to_string(prim);
-            return Ok(self.kernel_core.perm_interner().intern(&key).0);
+            return Ok(oxide_runtime_api::VmHost::string_key_si(self, &key));
         }
+        // 其它原始值（BigInt 等）：ToPropertyKey 一律转字符串并走规范化，避免与
+        // 数字键区间分裂（`o[5n]` 与 `o["5"]`/`o[5]` 必须同键）。
         let key = coercion::to_string(val);
-        Ok(self.kernel_core.perm_interner().intern(&key).0)
+        Ok(oxide_runtime_api::VmHost::string_key_si(self, &key))
     }
 
     pub(crate) fn array_index_from_property_key(&self, prop_name_si: u32) -> Option<u32> {
