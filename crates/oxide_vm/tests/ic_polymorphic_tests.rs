@@ -169,3 +169,15 @@ fn member_compound_polymorphic_read_side_hits() {
     assert_eq!(r, "10003", "两对象 x 各自增 5000 次（从 1/2 起）");
     assert!(misses < 5000, "读侧 4 槽缓存使 miss 远低于迭代数（实际 {misses}，写侧新属性路径不计入）");
 }
+
+/// 非对象 receiver（字符串）经 IC primitive 分支：手动跳越全部扩展字后语义正确。
+#[test]
+fn primitive_receiver_skips_ic_ext_words() {
+    let (r, _hits, _misses) = run_once(
+        r#"var s = "abc";
+           var total = 0;
+           for (var i = 0; i < 100; i++) { total += s.length; }
+           total + s.length"#,
+    );
+    assert_eq!(r, "303", "字符串 length 经 primitive 分支返回 3，扩展字跳越无错位");
+}
