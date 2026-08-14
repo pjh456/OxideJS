@@ -668,7 +668,7 @@ fn compile_dynamic_member_ops() {
     );
 }
 
-/// 收集字节码指令序列，跳过 IC 扩展字（3 字）与其它扩展字，逐指令定位。
+/// 收集字节码指令序列，跳过 IC 扩展字（IC_EXT_WORDS 字）与其它扩展字，逐指令定位。
 fn scan_opcodes(module: &CompiledModule) -> Vec<OpCode> {
     let mut ops = Vec::new();
     let mut i = 0;
@@ -676,7 +676,7 @@ fn scan_opcodes(module: &CompiledModule) -> Vec<OpCode> {
         let op = opcode::opcode(module.bytecode[i]);
         ops.push(op);
         i += 1 + if op.has_ic_ext_words() {
-            3
+            opcode::IC_EXT_WORDS
         } else {
             match op {
                 OpCode::SPILL

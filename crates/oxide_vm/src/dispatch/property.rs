@@ -1,5 +1,5 @@
 use crate::{ic_debug, ic_trace, vm_trace};
-use oxide_bytecode::opcode::OpCode;
+use oxide_bytecode::opcode::{OpCode, IC_EXT_WORDS};
 use oxide_kernel::prop_forge::PropTemplate;
 use oxide_runtime_api as coercion;
 use oxide_types::object::JsObject;
@@ -296,7 +296,7 @@ impl Vm {
             let prop_name_si = self.property_key_si(self.regs[b])?;
             if let Some(resolved) = self.primitive_property_get(val, prop_name_si)? {
                 self.regs[a] = resolved;
-                self.pc += 3;
+                self.pc += IC_EXT_WORDS;
                 return Ok(());
             }
             self.raise_type_error("IC_GET_PROP on non-object")?;
@@ -309,7 +309,7 @@ impl Vm {
         }
 
         let obj = unsafe { &*obj_ptr };
-        let (cached_shape_id, cached_slot, cached_depth) = ic_helper::read_ic_entry(&self.bytecode, &mut self.pc);
+        let (cached_shape_id, cached_slot, cached_depth) = ic_helper::read_ic_slot0(&self.bytecode, &mut self.pc);
         let ic_pc = self.pc;
         if obj.has_prop_meta() {
             // meta 对象整对象走慢路径，此时才解析键。
@@ -322,36 +322,38 @@ impl Vm {
         }
 
         if let Some(value) = ic_get_hit(obj, cached_shape_id, cached_slot, cached_depth) {
-            // 命中路径只比对 shape_id，不解析键。
+            // 槽 0 单态命中：只比对 shape_id，不解析键。
             self.regs[a] = value;
             self.profiling.record_ic_hit();
             ic_trace!("IC_GET hit shape={} slot={} depth={}", cached_shape_id, cached_slot, cached_depth);
+        } else if let Some(value) = ic_helper::ic_get_hit_poly(obj, &self.bytecode, ic_pc - IC_EXT_WORDS) {
+            // 多态槽（1..3）命中。
+            self.regs[a] = value;
+            self.profiling.record_ic_hit();
+            ic_trace!("IC_GET poly hit pc={} shape={}", ic_pc, obj.shape_id());
         } else {
             // miss 分支才解析键（IC 站点键恒为编译期字符串常量，延后解析无 ToPrimitive 副作用）。
             let prop_name_si = self.property_key_si(self.regs[b])?;
+            self.profiling.record_ic_miss();
+            prop_cache_miss();
+            // 模板快路径：prop_forge 只缓存每 shape 最后新增的属性，恰好覆盖该属性时直取槽位。
             if let Some(template) = self.kernel_core.prop_forge().get_template(obj.shape_id()) {
-                self.profiling.record_ic_miss();
-                prop_cache_miss();
-                if template.prop_name == prop_name_si {
-                    if template.position < obj.prop_vec_len() as u32 {
-                        ic_helper::write_ic_back(self.bytecode_mut(), ic_pc, obj.shape_id(), template.position, 0);
-                        ic_debug!(
-                            "IC_GET propforge hit shape={} prop={} slot={}",
-                            obj.shape_id(),
-                            prop_name_si,
-                            template.position
-                        );
-                        self.regs[a] = obj.get_prop_shape(template.position);
-                    } else {
-                        ic_debug!("IC_GET miss shape={} prop={}", obj.shape_id(), prop_name_si);
-                        self.regs[a] = self.ordinary_get(obj, prop_name_si, val)?;
-                    }
+                if template.prop_name == prop_name_si && template.position < obj.prop_vec_len() as u32 {
+                    ic_helper::write_ic_back(self.bytecode_mut(), ic_pc, obj.shape_id(), template.position, 0);
+                    ic_debug!(
+                        "IC_GET propforge hit shape={} prop={} slot={}",
+                        obj.shape_id(),
+                        prop_name_si,
+                        template.position
+                    );
+                    self.regs[a] = obj.get_prop_shape(template.position);
                 } else {
+                    // 模板不覆盖该属性（读非末位属性）：走通用 miss 路径并写回，
+                    // 否则该 shape 的缓存条目永远学不到。
                     ic_debug!("IC_GET miss shape={} prop={}", obj.shape_id(), prop_name_si);
-                    self.regs[a] = self.ordinary_get(obj, prop_name_si, val)?;
+                    self.regs[a] = self.proto_chain_ic_get(obj, prop_name_si, val)?;
                 }
             } else {
-                prop_cache_miss();
                 ic_debug!("IC_GET miss shape={} prop={}", obj.shape_id(), prop_name_si);
                 let resolved = self.ordinary_get(obj, prop_name_si, val)?;
                 // 先试自身属性（快路径，depth=0）。
@@ -399,15 +401,18 @@ impl Vm {
             return Ok(());
         };
 
-        // read_ic_entry 先消费 3 扩展字，命中路径无需解析键。
-        let (cached_shape_id, cached_slot, cached_depth) = ic_helper::read_ic_entry(&self.bytecode, &mut self.pc);
+        // read_ic_slot0 先消费全部扩展字，命中路径无需解析键。
+        let (cached_shape_id, cached_slot, cached_depth) = ic_helper::read_ic_slot0(&self.bytecode, &mut self.pc);
         let ic_pc = self.pc;
         let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
         let receiver = self.regs[rd];
         let obj = unsafe { &mut *obj_ptr };
 
         // 命中路径零键零拦截：__proto__ 赋值从不写 IC，缓存槽必为数据槽。
-        if !obj.has_prop_meta() && ic_set_hit(obj, cached_shape_id, cached_slot, cached_depth, value) {
+        if !obj.has_prop_meta()
+            && (ic_set_hit(obj, cached_shape_id, cached_slot, cached_depth, value)
+                || ic_helper::ic_set_hit_poly(obj, &self.bytecode, ic_pc - IC_EXT_WORDS, value))
+        {
             self.profiling.record_ic_hit();
             ic_trace!("IC_SET hit shape={} slot={} depth={}", cached_shape_id, cached_slot, cached_depth);
             return Ok(());
@@ -438,7 +443,6 @@ impl Vm {
             ic_debug!("IC_SET write-back shape={} slot={}", obj.shape_id(), pos);
         } else {
             self.profiling.record_ic_miss();
-            prop_cache_miss();
             let old_shape = obj.shape_id();
             self.ordinary_set_dispatch(obj, prop_name_si, value, receiver)?;
             if old_shape != obj.shape_id() {

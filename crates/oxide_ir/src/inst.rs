@@ -4,7 +4,7 @@
 //! 全部由 `inst_*` 构造 API 保证——emit 代码不直接触碰 `ext` 字段。
 //! 寄存器 def/use 契约与副作用判定在 `contract` 模块（`impl Inst`，DCE/liveness 共用）。
 
-use oxide_bytecode::opcode::OpCode;
+use oxide_bytecode::opcode::{OpCode, IC_EXT_WORDS};
 use smallvec::SmallVec;
 
 use crate::operand::{LabelId, Operand};
@@ -42,86 +42,86 @@ impl Inst {
         }
     }
 
-    // ── IC 系：ext = [0, 0, 0]（shape/slot/proto 占位字，VM 运行时回填）──
+    // ── IC 系：ext = [0; IC_EXT_WORDS]（IC_SLOTS 组 shape/slot/proto 占位字，VM 运行时回填）──
 
     /// 内联缓存读属性：结果写入 `dst`，属性键为 `key`。
     pub fn ic_get(dst: Operand, key: Operand) -> Self {
-        Self::with_ext(OpCode::IC_GET_PROP, Operand::None, dst, key, &[0, 0, 0])
+        Self::with_ext(OpCode::IC_GET_PROP, Operand::None, dst, key, &[0; IC_EXT_WORDS])
     }
 
     /// 内联缓存写属性：`obj[key] = value`。
     pub fn ic_set(obj: Operand, value: Operand, key: Operand) -> Self {
-        Self::with_ext(OpCode::IC_SET_PROP, obj, value, key, &[0, 0, 0])
+        Self::with_ext(OpCode::IC_SET_PROP, obj, value, key, &[0; IC_EXT_WORDS])
     }
 
     /// 成员自增：`obj[key]++`，val 为当前值寄存器。
     pub fn member_inc(obj: Operand, val: Operand, key: Operand) -> Self {
-        Self::with_ext(OpCode::MEMBER_INC, obj, val, key, &[0, 0, 0])
+        Self::with_ext(OpCode::MEMBER_INC, obj, val, key, &[0; IC_EXT_WORDS])
     }
 
     /// 成员自减：`obj[key]--`，val 为当前值寄存器。
     pub fn member_dec(obj: Operand, val: Operand, key: Operand) -> Self {
-        Self::with_ext(OpCode::MEMBER_DEC, obj, val, key, &[0, 0, 0])
+        Self::with_ext(OpCode::MEMBER_DEC, obj, val, key, &[0; IC_EXT_WORDS])
     }
 
     /// 成员复合赋值加法：`obj[key] += val`。
     pub fn compound_member_add(obj: Operand, val: Operand, key: Operand) -> Self {
-        Self::with_ext(OpCode::COMPOUND_MEMBER_ADD, obj, val, key, &[0, 0, 0])
+        Self::with_ext(OpCode::COMPOUND_MEMBER_ADD, obj, val, key, &[0; IC_EXT_WORDS])
     }
 
     /// 成员复合赋值减法：`obj[key] -= val`。
     pub fn compound_member_sub(obj: Operand, val: Operand, key: Operand) -> Self {
-        Self::with_ext(OpCode::COMPOUND_MEMBER_SUB, obj, val, key, &[0, 0, 0])
+        Self::with_ext(OpCode::COMPOUND_MEMBER_SUB, obj, val, key, &[0; IC_EXT_WORDS])
     }
 
     /// 成员复合赋值乘法：`obj[key] *= val`。
     pub fn compound_member_mul(obj: Operand, val: Operand, key: Operand) -> Self {
-        Self::with_ext(OpCode::COMPOUND_MEMBER_MUL, obj, val, key, &[0, 0, 0])
+        Self::with_ext(OpCode::COMPOUND_MEMBER_MUL, obj, val, key, &[0; IC_EXT_WORDS])
     }
 
     /// 成员复合赋值除法：`obj[key] /= val`。
     pub fn compound_member_div(obj: Operand, val: Operand, key: Operand) -> Self {
-        Self::with_ext(OpCode::COMPOUND_MEMBER_DIV, obj, val, key, &[0, 0, 0])
+        Self::with_ext(OpCode::COMPOUND_MEMBER_DIV, obj, val, key, &[0; IC_EXT_WORDS])
     }
 
     /// 成员复合赋值取模：`obj[key] %= val`。
     pub fn compound_member_mod(obj: Operand, val: Operand, key: Operand) -> Self {
-        Self::with_ext(OpCode::COMPOUND_MEMBER_MOD, obj, val, key, &[0, 0, 0])
+        Self::with_ext(OpCode::COMPOUND_MEMBER_MOD, obj, val, key, &[0; IC_EXT_WORDS])
     }
 
     /// 成员复合赋值指数：`obj[key] **= val`。
     pub fn compound_member_exp(obj: Operand, val: Operand, key: Operand) -> Self {
-        Self::with_ext(OpCode::COMPOUND_MEMBER_EXP, obj, val, key, &[0, 0, 0])
+        Self::with_ext(OpCode::COMPOUND_MEMBER_EXP, obj, val, key, &[0; IC_EXT_WORDS])
     }
 
     /// 成员复合赋值按位与：`obj[key] &= val`。
     pub fn compound_member_bit_and(obj: Operand, val: Operand, key: Operand) -> Self {
-        Self::with_ext(OpCode::COMPOUND_MEMBER_BIT_AND, obj, val, key, &[0, 0, 0])
+        Self::with_ext(OpCode::COMPOUND_MEMBER_BIT_AND, obj, val, key, &[0; IC_EXT_WORDS])
     }
 
     /// 成员复合赋值按位或：`obj[key] |= val`。
     pub fn compound_member_bit_or(obj: Operand, val: Operand, key: Operand) -> Self {
-        Self::with_ext(OpCode::COMPOUND_MEMBER_BIT_OR, obj, val, key, &[0, 0, 0])
+        Self::with_ext(OpCode::COMPOUND_MEMBER_BIT_OR, obj, val, key, &[0; IC_EXT_WORDS])
     }
 
     /// 成员复合赋值按位异或：`obj[key] ^= val`。
     pub fn compound_member_bit_xor(obj: Operand, val: Operand, key: Operand) -> Self {
-        Self::with_ext(OpCode::COMPOUND_MEMBER_BIT_XOR, obj, val, key, &[0, 0, 0])
+        Self::with_ext(OpCode::COMPOUND_MEMBER_BIT_XOR, obj, val, key, &[0; IC_EXT_WORDS])
     }
 
     /// 成员复合赋值左移：`obj[key] <<= val`。
     pub fn compound_member_shl(obj: Operand, val: Operand, key: Operand) -> Self {
-        Self::with_ext(OpCode::COMPOUND_MEMBER_SHL, obj, val, key, &[0, 0, 0])
+        Self::with_ext(OpCode::COMPOUND_MEMBER_SHL, obj, val, key, &[0; IC_EXT_WORDS])
     }
 
     /// 成员复合赋值右移：`obj[key] >>= val`。
     pub fn compound_member_shr(obj: Operand, val: Operand, key: Operand) -> Self {
-        Self::with_ext(OpCode::COMPOUND_MEMBER_SHR, obj, val, key, &[0, 0, 0])
+        Self::with_ext(OpCode::COMPOUND_MEMBER_SHR, obj, val, key, &[0; IC_EXT_WORDS])
     }
 
     /// 成员复合赋值无符号右移：`obj[key] >>>= val`。
     pub fn compound_member_ushr(obj: Operand, val: Operand, key: Operand) -> Self {
-        Self::with_ext(OpCode::COMPOUND_MEMBER_USHR, obj, val, key, &[0, 0, 0])
+        Self::with_ext(OpCode::COMPOUND_MEMBER_USHR, obj, val, key, &[0; IC_EXT_WORDS])
     }
 
     // ── Call 系：ext = [nargs] ──
@@ -199,7 +199,6 @@ impl Inst {
         Self::with_ext(OpCode::DEFINE_ACCESSOR, home, get, set, &[key_idx])
     }
 
-
     /// 定义访问器属性并指定描述符：ext = [key_idx, attrs]（attrs 位同 DEFINE_PROP_ATTRS）。
     pub fn define_accessor_attrs(home: Operand, get: Operand, set: Operand, key_idx: u32, attrs: u32) -> Self {
         Self::with_ext(OpCode::DEFINE_ACCESSOR_ATTRS, home, get, set, &[key_idx, attrs])
@@ -215,7 +214,6 @@ impl Inst {
     pub fn define_prop(target: Operand, value: Operand, key: Operand) -> Self {
         Self::new(OpCode::DEFINE_PROP, target, value, key)
     }
-
 
     /// define 数据属性并指定描述符：ext = [attrs]（bit0=writable, bit1=enumerable, bit2=configurable，
     /// 与 PropAttributes 位一致）；class 方法/constructor/prototype 需要非枚举或不可写描述符。
@@ -409,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn ic_instructions_carry_three_zero_ext_words() {
+    fn ic_instructions_carry_ic_slots_zero_ext_words() {
         let insts = [
             Inst::ic_get(Operand::Reg(1), Operand::Reg(2)),
             Inst::ic_set(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)),
@@ -421,10 +419,21 @@ mod tests {
             Inst::compound_member_div(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)),
             Inst::compound_member_mod(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)),
             Inst::compound_member_exp(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)),
+            Inst::compound_member_bit_and(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)),
+            Inst::compound_member_bit_or(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)),
+            Inst::compound_member_bit_xor(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)),
+            Inst::compound_member_shl(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)),
+            Inst::compound_member_shr(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)),
+            Inst::compound_member_ushr(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)),
         ];
         for inst in &insts {
-            assert_eq!(inst.ext.as_slice(), &[0, 0, 0], "IC op {} must carry 3 zero ext words", inst.op);
-            assert!(inst.ext.len() == 3);
+            assert_eq!(
+                inst.ext.as_slice(),
+                &[0; IC_EXT_WORDS],
+                "IC op {} must carry {IC_EXT_WORDS} zero ext words",
+                inst.op
+            );
+            assert_eq!(inst.ext.len(), IC_EXT_WORDS);
         }
     }
 

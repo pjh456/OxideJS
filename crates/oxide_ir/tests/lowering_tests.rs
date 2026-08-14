@@ -87,7 +87,7 @@ fn backward_jump_encodes_negative_offset() {
 
 #[test]
 fn jump_offset_counts_ext_words_in_target() {
-    // jmp(0) → ic_get（1 + 3 ext = 4 instr）→ ADD（instr 5）
+    // jmp(0) → ic_get（1 + 8 ext = 9 instr）→ ADD（instr 10）
     let mut f = base_module();
     f.insts.push(Inst::jmp(0));
     f.insts.push(Inst::ic_get(Operand::Reg(1), Operand::Reg(2)));
@@ -96,21 +96,21 @@ fn jump_offset_counts_ext_words_in_target() {
     f.label_pos = vec![Some(2)];
     f.label_count = 1;
     let m = lower_ok(&f);
-    assert_eq!(m.bytecode.len(), 1 + 4 + 1);
-    assert_eq!(opcode::offset16(m.bytecode[0]), 5);
+    assert_eq!(m.bytecode.len(), 1 + 9 + 1);
+    assert_eq!(opcode::offset16(m.bytecode[0]), 10);
 }
 
 #[test]
-fn ic_get_carries_three_zero_ext_words() {
+fn ic_get_carries_ic_slots_zero_ext_words() {
     let mut f = base_module();
     f.insts.push(Inst::ic_get(Operand::Reg(1), Operand::Reg(2)));
     let m = lower_ok(&f);
-    assert_eq!(m.bytecode.len(), 4);
+    assert_eq!(m.bytecode.len(), 9);
     assert_eq!(opcode::opcode(m.bytecode[0]), OpCode::IC_GET_PROP);
     assert_eq!(opcode::rd(m.bytecode[0]), 0);
     assert_eq!(opcode::a(m.bytecode[0]), 1);
     assert_eq!(opcode::b(m.bytecode[0]), 2);
-    assert_eq!(m.bytecode[1..], [0, 0, 0]);
+    assert_eq!(m.bytecode[1..], [0; oxide_bytecode::opcode::IC_EXT_WORDS]);
 }
 
 #[test]

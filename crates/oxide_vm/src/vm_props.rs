@@ -337,19 +337,18 @@ impl Vm {
         &mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue,
     ) -> Result<JsValue, String> {
         vm_trace!("read_member_prop: shape_id={} prop_name_si={}", obj.shape_id(), prop_name_si);
-        let ext0 = self.bytecode[self.pc];
-        let ext1 = self.bytecode[self.pc + 1];
-        let ext2 = self.bytecode[self.pc + 2];
-        self.pc += 3;
+        let (cached_shape_id, cached_slot, cached_depth) =
+            crate::ic_helper::read_ic_slot0(&self.bytecode, &mut self.pc);
         let ic_pc = self.pc;
         if obj.has_prop_meta() {
             return self.ordinary_get(obj, prop_name_si, receiver);
         }
-        let cached_shape_id = ext0 & 0x00FF_FFFF;
-        let cached_slot = ext1;
-        let cached_depth = (ext2 & 0xFF) as u8;
 
         let val = if let Some(v) = crate::ic_helper::ic_get_hit(obj, cached_shape_id, cached_slot, cached_depth) {
+            v
+        } else if let Some(v) =
+            crate::ic_helper::ic_get_hit_poly(obj, &self.bytecode, ic_pc - oxide_bytecode::opcode::IC_EXT_WORDS)
+        {
             v
         } else if let Some(template) = self.kernel_core.prop_forge().get_template(obj.shape_id()) {
             if template.prop_name != prop_name_si {
@@ -366,8 +365,10 @@ impl Vm {
         Ok(val)
     }
 
-    /// 执行 ordinary_get 并把 IC 按原型链深度写回。
-    fn proto_chain_ic_get(&mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue) -> Result<JsValue, String> {
+    /// 执行 ordinary_get 并把 IC 按原型链深度写回（own 属性 depth=0，原型链按层计数）。
+    pub(crate) fn proto_chain_ic_get(
+        &mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue,
+    ) -> Result<JsValue, String> {
         let ic_pc = self.pc;
         let resolved = self.ordinary_get(obj, prop_name_si, receiver)?;
         // 快路径：自身属性（depth=0）。

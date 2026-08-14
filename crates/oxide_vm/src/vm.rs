@@ -2285,25 +2285,40 @@ mod tests {
     }
 
     #[test]
-    fn write_ic_back_updates_three_extension_words() {
+    fn write_ic_back_updates_slot_zero_ext_words() {
         let mut vm = Vm::new();
-        vm.bytecode = Arc::from(vec![0, 0, 0]);
-        vm.pc = 3;
+        vm.bytecode = Arc::from(vec![0; oxide_bytecode::opcode::IC_EXT_WORDS]);
+        vm.pc = oxide_bytecode::opcode::IC_EXT_WORDS;
         crate::ic_helper::write_ic_back(Arc::make_mut(&mut vm.bytecode), vm.pc, 0x1234_5678, 7, 0);
         assert_eq!(vm.bytecode[0], 0x0034_5678);
         assert_eq!(vm.bytecode[1], 7);
-        assert_eq!(vm.bytecode[2], 0);
     }
 
     #[test]
-    fn write_ic_back_stores_proto_depth() {
+    fn write_ic_back_rolls_fifo_and_drops_oldest_slot() {
         let mut vm = Vm::new();
-        vm.bytecode = Arc::from(vec![0, 0, 0]);
-        vm.pc = 3;
-        crate::ic_helper::write_ic_back(Arc::make_mut(&mut vm.bytecode), vm.pc, 0xAAAA_BBBB, 42, 2);
-        assert_eq!(vm.bytecode[0], 0x00AA_BBBB);
-        assert_eq!(vm.bytecode[1], 42);
-        assert_eq!(vm.bytecode[2], 2);
+        // 预置 8 字四槽（2 字/槽）：槽 0=(0xA1,1,0)、槽 1=(0xA2,2,1)、槽 2=(0xA3,3,0)、槽 3=(0xA4,4,0)。
+        let mut bc = vec![0u32; oxide_bytecode::opcode::IC_EXT_WORDS];
+        bc[0] = 0xA1;
+        bc[1] = 1;
+        bc[2] = 0xA2 | (1 << 24);
+        bc[3] = 2;
+        bc[4] = 0xA3;
+        bc[5] = 3;
+        bc[6] = 0xA4;
+        bc[7] = 4;
+        vm.bytecode = Arc::from(bc);
+        vm.pc = oxide_bytecode::opcode::IC_EXT_WORDS;
+        crate::ic_helper::write_ic_back(Arc::make_mut(&mut vm.bytecode), vm.pc, 0xB0, 9, 2);
+        // 新条目进槽 0；原槽 0..2 顺移到槽 1..3；最老槽 3 丢弃。
+        assert_eq!(vm.bytecode[0], 0xB0 | (2 << 24));
+        assert_eq!(vm.bytecode[1], 9);
+        assert_eq!(vm.bytecode[2], 0xA1);
+        assert_eq!(vm.bytecode[3], 1);
+        assert_eq!(vm.bytecode[4], 0xA2 | (1 << 24));
+        assert_eq!(vm.bytecode[5], 2);
+        assert_eq!(vm.bytecode[6], 0xA3);
+        assert_eq!(vm.bytecode[7], 3);
     }
 
     #[test]

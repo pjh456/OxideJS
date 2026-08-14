@@ -63,9 +63,15 @@ pub struct OpSemantics {
     pub is_jump: bool,
     /// CFG 块尾终结（= cfg is_terminator）。
     pub is_terminator: bool,
-    /// 3 个 IC 扩展字（= has_ic_ext_words）。
+    /// IC 扩展字（= has_ic_ext_words）：每条 IC 指令带 IC_EXT_WORDS 个扩展字。
     pub ic_ext: bool,
 }
+
+/// IC 每站点的缓存槽数：多态化支持同一访问点最多缓存该数量的 shape。
+pub const IC_SLOTS: usize = 4;
+
+/// 每条 IC 指令的扩展字总数（每槽两个字：shape_id|proto_depth 打包字 + slot 字）。
+pub const IC_EXT_WORDS: usize = IC_SLOTS * 2;
 
 /// 从单张表生成 [`OpCode`] 枚举、`TryFrom<u8>`、`Display` 与语义访问器。
 ///
@@ -802,24 +808,18 @@ mod tests {
             "is_terminator 集合（跳转族去 TRY_* 加 RETURN/HALT/THROW）"
         );
 
-        let ic_set: Vec<u8> = all_opcodes()
-            .filter(|op| op.has_ic_ext_words())
-            .map(|op| op as u8)
-            .collect();
+        let ic_set: Vec<u8> = all_opcodes().filter(|op| op.has_ic_ext_words()).map(|op| op as u8).collect();
         assert_eq!(ic_set.len(), 16, "ic_ext 恰 16 个");
+        const _: () = assert!(IC_EXT_WORDS == IC_SLOTS * 2 && IC_SLOTS >= 2);
     }
 
     /// 表驱动 ic_ext 与迁移前硬编码 16 集合逐项相等（旧表并存期的迁移校验）。
     #[test]
     fn semantics_ic_ext_matches_legacy_list() {
         let legacy = [
-            0x50, 0x51, 0x59, 0x5A, 0x5D, 0x5E, 0x5F, 0x60, 0x61, 0x62, 0x64, 0x65, 0x66, 0x67, 0x68,
-            0x69,
+            0x50, 0x51, 0x59, 0x5A, 0x5D, 0x5E, 0x5F, 0x60, 0x61, 0x62, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69,
         ];
-        let tbl: Vec<u8> = all_opcodes()
-            .filter(|op| op.has_ic_ext_words())
-            .map(|op| op as u8)
-            .collect();
+        let tbl: Vec<u8> = all_opcodes().filter(|op| op.has_ic_ext_words()).map(|op| op as u8).collect();
         assert_eq!(tbl, legacy);
     }
 }
