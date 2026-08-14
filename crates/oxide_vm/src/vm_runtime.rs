@@ -151,17 +151,18 @@ macro_rules! inline_restore {
 impl Vm {
     /// 保存当前 VM 执行状态到堆上（内联同步调用与生成器恢复共用）。
     ///
-    /// 寄存器只保存窗口 `regs[0..min(regs_end, 253)]` 的副本，`regs[254]/[255]`
+    /// 寄存器只保存窗口 `regs[0..min(regs_end, 254)]` 的副本，`regs[254]/[255]`
     /// 单独存入 `saved_this`/`saved_new_target`。窗口缓冲取自 `inline_reg_pool`
     /// 复用，热回调循环内零分配；嵌套时池为空则新分配。
     ///
     /// # 边界与前提
-    /// - `regs_end` ≤ 253 表示窗口化保存；传 256（全量）等价于保存全部寄存器
-    ///   （253 个通用槽 + 254/255 单独存）。
-    /// - 调用方保证 `regs_end ≤ 256`；窗口截断到 253 是 callee 写入集上限。
+    /// - `regs_end` ≤ 254 表示窗口化保存；传 256（全量）等价于保存全部寄存器
+    ///   （254 个通用槽 0..=253 + 254/255 单独存）。
+    /// - 调用方保证 `regs_end ≤ 256`；窗口上限 254 覆盖 callee 写入集
+    ///   （`n_registers ≤ 254`，含 RegAlloc 最高合法物理槽 253）。
     pub(crate) fn save_inline_state(&mut self, regs_end: usize) -> Box<InlineSyncState> {
         vm_trace!("save_inline_state: pc={} depth={}", self.pc, self.frames.len());
-        let window = regs_end.min(253);
+        let window = regs_end.min(254);
         let mut window_regs = self.inline_reg_pool.take().unwrap_or_default();
         window_regs.clear();
         window_regs.extend_from_slice(&self.regs[..window]);
@@ -502,5 +503,26 @@ mod tests {
         assert_eq!(vm.inline_args_base, 2);
         assert_eq!(vm.inline_args_count, 3);
         assert_eq!(vm.accessor_frame_target_reg, Some(9));
+    }
+
+    #[test]
+    fn save_restore_inline_window_254_preserves_r253() {
+        // 窗口化路径边界：调用方 active_reg_limit = 254 时窗口覆盖物理槽 253
+        // （RegAlloc 最高合法色），save/restore 必须往返 regs[253]，且与 254/255
+        // 单存槽位互不重叠。
+        let mut vm = Vm::new();
+        vm.regs[253] = JsValue::float(253.0);
+        vm.regs[254] = JsValue::float(254.0);
+        vm.regs[255] = JsValue::float(255.0);
+
+        let saved = vm.save_inline_state(254);
+        vm.regs[253] = JsValue::float(99.0);
+        vm.regs[254] = JsValue::float(98.0);
+        vm.regs[255] = JsValue::float(97.0);
+        vm.restore_inline_state(saved);
+
+        assert_eq!(vm.regs[253], JsValue::float(253.0));
+        assert_eq!(vm.regs[254], JsValue::float(254.0));
+        assert_eq!(vm.regs[255], JsValue::float(255.0));
     }
 }

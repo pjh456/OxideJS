@@ -255,8 +255,9 @@ impl Completion {
 /// 放在堆上避免 JS 代码链式同步字节码调用（如 sort 比较器、accessor）时
 /// 耗尽 Rust 栈。
 pub(crate) struct InlineSyncState {
-    /// 寄存器窗口副本：`regs[0..len]`，len ≤ 253。`regs[254]/[255]` 不在此列，
-    /// 由 `saved_this`/`saved_new_target` 单独保存（callee 也会重写这两个槽）。
+    /// 寄存器窗口副本：`regs[0..len]`，len ≤ 254（含 RegAlloc 最高合法物理槽
+    /// 253）。`regs[254]/[255]` 不在此列，由 `saved_this`/`saved_new_target`
+    /// 单独保存（callee 也会重写这两个槽）。
     pub(crate) regs: Box<[JsValue]>,
     pub(crate) saved_this: JsValue,
     pub(crate) saved_new_target: JsValue,
@@ -2103,7 +2104,7 @@ mod tests {
     use oxide_runtime_api::NativeResult;
     use oxide_types::object::NativeFnPtr;
     use oxide_types::object::{JsObject, PropAttributes};
-    use std::sync::Arc;
+    use std::sync::{Arc, OnceLock};
 
     fn native_return_7(_vm: &mut Vm, _args: &[u8]) -> NativeResult {
         NativeResult::Ok(JsValue::int(7))
@@ -2138,6 +2139,23 @@ mod tests {
 
     fn native_return_arg_count(_vm: &mut Vm, args: &[u8]) -> NativeResult {
         NativeResult::Ok(JsValue::int(args.len().saturating_sub(1) as i32))
+    }
+
+    fn native_nested_inline_254(vm: &mut Vm, args: &[u8]) -> NativeResult {
+        // 外层 native 回调：receiver 落 regs[253]（native 分支单存槽），内嵌执行
+        // n_registers=254 的 inline 字节码回调后，receiver 槽必须保持外层值。
+        let receiver = vm.reg(args[0]);
+        let callee = vm.reg(args[1]);
+        let callee_obj = unsafe { &*callee.as_js_object_ptr() };
+        let mut call_args = Vec::with_capacity(args.len().saturating_sub(2));
+        for &r in &args[2..] {
+            call_args.push(vm.reg(r));
+        }
+        let kept = match vm.call_bytecode_function_inline(callee, callee_obj, receiver, &call_args) {
+            Ok(_) => vm.regs[253] == receiver,
+            Err(_) => false,
+        };
+        NativeResult::Ok(JsValue::int(if kept { 1 } else { 0 }))
     }
 
     fn native_function(vm: &mut Vm, f: crate::native::NativeFn) -> JsValue {
@@ -2446,5 +2464,64 @@ mod tests {
         assert_eq!(vm.reg(253), JsValue::int(11));
         assert_eq!(vm.reg(254), JsValue::int(12));
         assert_eq!(vm.reg(255), JsValue::int(13));
+    }
+
+    /// 构造 `n_registers = 254` 的子模块：RegAlloc 合法产物（builtin 槽落 253 或
+    /// 高活度着色），其函数体写物理槽 253 后返回。
+    fn sub_module_254_with_r253_write() -> CompiledModule {
+        CompiledModule {
+            bytecode: Arc::from(vec![
+                opcode::encode(opcode::OpCode::MOV, 253, 0, 0),
+                opcode::encode(opcode::OpCode::HALT, 0, 0, 0),
+            ]),
+            n_registers: 254,
+            ..CompiledModule::new()
+        }
+    }
+
+    #[test]
+    fn inline_callee_254_registers_preserves_caller_active_r253() {
+        // 窗口化边界回归：inline 回调 callee 的 n_registers = 254（写物理槽 253）
+        // 且调用方 active_reg_limit = 254（regs[253] 为活动值）时，调用后
+        // regs[253] 必须恢复为调用方值，不得被 callee 写值覆盖。
+        let mut vm = Vm::new();
+        vm.sub_modules = Arc::new(vec![Arc::new(CompiledModule::new()), Arc::new(sub_module_254_with_r253_write())]);
+        vm.immutables_cache
+            .extend((0..vm.sub_modules.len().saturating_sub(vm.immutables_cache.len())).map(|_| OnceLock::new()));
+        vm.active_reg_limit = 254;
+        vm.regs[253] = JsValue::int(42);
+
+        let callee = vm.create_function_object(1, false, false, false, false);
+        let callee_obj = unsafe { &*callee.as_js_object_ptr() };
+        let result = vm
+            .call_bytecode_function_inline(callee, callee_obj, JsValue::undefined(), &[])
+            .expect("inline call should succeed");
+
+        assert_eq!(result, JsValue::undefined());
+        assert_eq!(vm.regs[253], JsValue::int(42), "调用方 regs[253] 活动值不得被 callee 覆盖");
+        assert_eq!(vm.active_reg_limit, 254, "restore 应还原调用方活动寄存器上限");
+    }
+
+    #[test]
+    fn native_callback_nested_254_register_inline_callee_keeps_receiver() {
+        // 嵌套回归防线：native 回调体（receiver 落 regs[253]）内嵌 n_registers=254
+        // 的 inline 字节码回调时，内层写 regs[253] 不得污染外层 receiver 槽。
+        let mut vm = Vm::new();
+        vm.sub_modules = Arc::new(vec![Arc::new(CompiledModule::new()), Arc::new(sub_module_254_with_r253_write())]);
+        vm.immutables_cache
+            .extend((0..vm.sub_modules.len().saturating_sub(vm.immutables_cache.len())).map(|_| OnceLock::new()));
+        vm.active_reg_limit = 254;
+        vm.regs[253] = JsValue::int(7);
+        vm.regs[254] = JsValue::int(8);
+
+        let inner_callee = vm.create_function_object(1, false, false, false, false);
+        let outer_native = native_function(&mut vm, native_nested_inline_254);
+        let result = vm
+            .call_function_sync(outer_native, JsValue::int(99), &[inner_callee])
+            .expect("native callback should succeed");
+
+        assert_eq!(result, JsValue::int(1), "内嵌 inline 回调后外层 receiver 槽必须保持原值");
+        assert_eq!(vm.regs[253], JsValue::int(7), "native 分支恢复后调用方 regs[253] 保持");
+        assert_eq!(vm.regs[254], JsValue::int(8), "native 分支恢复后调用方 regs[254] 保持");
     }
 }
