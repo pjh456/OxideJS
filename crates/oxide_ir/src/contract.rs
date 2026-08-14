@@ -674,6 +674,7 @@ mod tests {
                 OpCode::TRY_BEGIN,
                 OpCode::TRY_END,
                 OpCode::TRY_FINALLY_BEGIN,
+                OpCode::TRY_FINALLY_ENTER,
                 OpCode::TRY_FINALLY_END,
                 OpCode::FOR_IN_CLEANUP,
                 OpCode::FOR_OF_CLOSE,

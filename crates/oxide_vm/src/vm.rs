@@ -1811,6 +1811,10 @@ impl Vm {
                     self.dispatch_try_finally_begin(instr);
                 }
 
+                OpCode::TRY_FINALLY_ENTER => {
+                    self.dispatch_try_finally_enter();
+                }
+
                 OpCode::TRY_FINALLY_END => match self.dispatch_try_finally_end() {
                     Ok(Some(result)) => return Ok(result),
                     Ok(None) => {}

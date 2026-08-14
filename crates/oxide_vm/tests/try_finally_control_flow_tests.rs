@@ -393,3 +393,74 @@ fn inline_sort_comparator_throw_primitive_kept() {
         "13"
     );
 }
+
+// ── finally 体直落进入回归（catch 体正常结束）──
+// catch 体结束后指令直落入 finally 体（无 JMP），此前 finally_active 未被置位，
+// finally 内 break/continue/return/throw 会触发"未进入"分支重入 finally 体、
+// 副作用翻倍。专用入口标记统一置位后，以下断言得期望值（修复前为 buggy 值）。
+
+#[test]
+fn fallthrough_finally_return_runs_once() {
+    assert_eq!(
+        eval("var fin=0; function f(){ try { throw 1; } catch(e){} finally { fin=fin+1; return 2; } } var r=f(); r*10+fin"),
+        "21"
+    );
+}
+
+#[test]
+fn fallthrough_finally_break_runs_once() {
+    assert_eq!(
+        eval("var fin=0; for(var i=0;i<2;i++){ try { throw 1; } catch(e){} finally { fin=fin+1; break; } } fin"),
+        "1"
+    );
+}
+
+#[test]
+fn fallthrough_finally_continue_runs_once_per_iteration() {
+    assert_eq!(
+        eval("var fin=0; for(var i=0;i<5;i++){ try { throw 1; } catch(e){} finally { fin=fin+1; continue; } } fin"),
+        "5"
+    );
+}
+
+#[test]
+fn fallthrough_finally_return_keeps_value() {
+    assert_eq!(
+        eval("var fin=0; function f(){ try { throw 1; } catch(e){} finally { fin++; return 7; } } var r=f(); r*10+fin"),
+        "71"
+    );
+}
+
+#[test]
+fn fallthrough_finally_break_crosses_two_layers_once_each() {
+    // 内层 finally 直落进入后 break outer 穿越两层，两层各执行一次不重复。
+    assert_eq!(
+        eval("var log=0; outer: for(var i=0;i<2;i++){ try { try { throw 1; } catch(e){} finally { log=log*10+1; break outer; } } finally { log=log*10+2; } } log"),
+        "12"
+    );
+}
+
+#[test]
+fn fallthrough_finally_throw_does_not_reenter_finally() {
+    // finally 内 throw：置位保证 unwind 判定"新异常在 finally 体内"不重入，
+    // 异常交外层 catch，finally 只执行一次。
+    assert_eq!(
+        eval("var fin=0; function f(){ try { throw 1; } catch(e){} finally { fin=fin+1; throw 9; } } try { f(); } catch(e){ fin=fin*10+e; } fin"),
+        "19"
+    );
+}
+
+#[test]
+fn fallthrough_finally_nested_finally_return_runs_once_each() {
+    // finally 内嵌套 finally + return：两层各执行一次，return 值不受影响。
+    assert_eq!(
+        eval("var fin=0; function f(){ try { throw 1; } catch(e){} finally { try { } finally { fin++; } return 7; } } var r=f(); r*10+fin"),
+        "71"
+    );
+}
+
+#[test]
+fn fallthrough_finally_normal_completion_guard() {
+    // 直落本身非缺陷：无完成语义时 finally 只执行一次（守卫用例）。
+    assert_eq!(eval("var fin=0; try { throw 1; } catch(e){} finally { fin=fin+1; } fin"), "1");
+}

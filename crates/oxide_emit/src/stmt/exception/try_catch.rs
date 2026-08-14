@@ -80,6 +80,11 @@ impl Emitter {
         }
         if has_finally {
             ctx.labels.set_label_pos(finally_label, ctx.insts.len());
+            // finally 体入口标记：运行时置位栈顶 handler 的 finally_active。所有进入
+            // 路径（try/catch 体 JMP、catch 体直落、unwind、完成穿越、挂起恢复）都
+            // 落到 finally_label 起始的这条标记，统一完成置位；catch 体直落路径此前
+            // 无任何置位，finally 内 break/continue/return/throw 会重入 finally 体。
+            ctx.inst(Inst::try_finally_enter());
             let mut last_finally_result: Option<u32> = None;
             // finally block 同为独立块作用域，lexical 声明互不泄漏。
             ctx.push_scope();

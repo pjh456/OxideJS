@@ -382,6 +382,11 @@ impl Inst {
     pub fn try_finally_begin(label: LabelId) -> Self {
         Self::new(OpCode::TRY_FINALLY_BEGIN, Operand::None, Operand::None, Operand::Label(label))
     }
+
+    /// finally 体入口标记：运行时置位对应 try handler 的 `finally_active`。
+    pub fn try_finally_enter() -> Self {
+        Self::new(OpCode::TRY_FINALLY_ENTER, Operand::None, Operand::None, Operand::None)
+    }
 }
 
 /// spread 调用系 ext 构造：首字打包 `nstatic | (nspread << 8)`，后续按源码求值序排列

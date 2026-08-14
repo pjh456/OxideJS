@@ -300,7 +300,7 @@ define_opcodes! {
         def = None, uses = [],
         pure = false, jump = false, term = false, ic = false,
 
-    // ── 异常 (0x2E-0x2F, 0x33-0x35) ──
+    // ── 异常 (0x2E-0x2F, 0x33-0x35；TRY_FINALLY_ENTER 用 0x1B 空槽) ──
     THROW = 0x2E => "THROW",
         def = None, uses = [SlotSpec::Slot(Slot::Rd)],
         pure = false, jump = false, term = true, ic = false,
@@ -313,6 +313,9 @@ define_opcodes! {
     TRY_FINALLY_BEGIN = 0x34 => "TRY_FINALLY_BEGIN",
         def = None, uses = [],
         pure = false, jump = true, term = false, ic = false,
+    TRY_FINALLY_ENTER = 0x1B => "TRY_FINALLY_ENTER",
+        def = None, uses = [],
+        pure = false, jump = false, term = false, ic = false,
     TRY_FINALLY_END = 0x35 => "TRY_FINALLY_END",
         def = None, uses = [],
         pure = false, jump = false, term = false, ic = false,
@@ -787,7 +790,7 @@ mod tests {
         assert_eq!(OpCode::UNSPILL.to_string(), "UNSPILL");
         assert_eq!(OpCode::SPREAD_OBJECT.to_string(), "SPREAD_OBJECT");
 
-        assert!(OpCode::try_from(0x1B).is_err());
+        assert!(OpCode::try_from(0xFA).is_err());
         assert!(OpCode::try_from(0xFF).is_err());
     }
 

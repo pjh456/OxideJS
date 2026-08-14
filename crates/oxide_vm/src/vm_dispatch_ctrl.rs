@@ -495,6 +495,20 @@ impl Vm {
         });
     }
 
+    /// finally 体入口标记：置位栈顶 try handler 的 `finally_active`。
+    ///
+    /// # 注意事项
+    /// - 所有进入 finally 体的路径（try/catch 体 JMP、catch 体直落、异常 unwind、
+    ///   完成穿越、生成器/async 恢复）都先执行本指令，统一完成置位，消除对跳转
+    ///   目标匹配的依赖。栈顶在标记执行时必然是本 finally 的 handler。
+    /// - 幂等：finally 体已置位（unwind/完成穿越路径先行置位）时重复置 true 无害。
+    pub(crate) fn dispatch_try_finally_enter(&mut self) {
+        vm_trace!("TRY_FINALLY_ENTER");
+        if let Some(h) = self.try_stack.last_mut() {
+            h.finally_active = true;
+        }
+    }
+
     /// finally 完成分发点：弹出当前 handler 后统一恢复在途异常或控制流完成。
     ///
     /// # 步骤
