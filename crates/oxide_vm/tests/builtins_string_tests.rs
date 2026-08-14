@@ -197,6 +197,47 @@ fn string_search_not_found() {
 }
 
 #[test]
+fn string_search_no_args_returns_minus_one() {
+    // 无参调用缺省 searchString：args 仅含 this 槽，守卫返回 -1，不越界 panic。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "'abc'.search()").unwrap();
+    assert_eq!(result.as_int(), -1);
+}
+
+#[test]
+fn string_search_undefined_arg_returns_minus_one() {
+    // 显式 undefined 参数：ToString(undefined)="undefined"，在 "abc" 中无匹配返回 -1。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "'abc'.search(undefined)").unwrap();
+    assert_eq!(result.as_int(), -1);
+}
+
+#[test]
+fn string_search_empty_pattern_returns_zero() {
+    // 空串 pattern：find("") 命中串头，返回 0。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "'abc'.search('')").unwrap();
+    assert_eq!(result.as_int(), 0);
+}
+
+#[test]
+fn string_no_arg_guard_family_consistent() {
+    // 家族无参守卫对照：search/indexOf 返回 -1，includes/startsWith/endsWith 返回 false，
+    // charAt 取首字符——search 与同批方法守卫位置一致、行为家族化。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "'abc'.search()").unwrap();
+    assert_eq!(result.as_int(), -1);
+    let result = eval(&mut vm, "'abc'.indexOf()").unwrap();
+    assert_eq!(result.as_int(), -1);
+    let result = eval(&mut vm, "'abc'.includes()").unwrap();
+    assert!(!result.as_bool());
+    let result = eval(&mut vm, "'abc'.startsWith()").unwrap();
+    assert!(!result.as_bool());
+    let result = eval(&mut vm, "'abc'.endsWith()").unwrap();
+    assert!(!result.as_bool());
+}
+
+#[test]
 fn string_trim_start() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "'  hi  '.trimStart()").unwrap();

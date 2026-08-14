@@ -1245,7 +1245,9 @@ pub fn string_match_fn<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `String.prototype.search(pattern)`：返回首个匹配位置，无匹配返回 -1。
 pub fn string_search<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.search called with {} args", args.len());
-    let pattern_val = vm.reg(args[1]);
+    // 参数读取守卫先行：无参调用缺省 searchString 为 undefined（args 仅含 this 槽）。
+    let pattern_val = if args.len() >= 2 { vm.reg(args[1]) } else { JsValue::undefined() };
+
     // 正则判定与参数转换先行（&mut 路径），后借 this 扫描。
     let is_re = args.len() >= 2 && is_regexp_obj(pattern_val, vm);
     let pattern = if args.len() >= 2 && !is_re {
