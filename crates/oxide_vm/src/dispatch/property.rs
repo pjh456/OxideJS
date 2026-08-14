@@ -3,7 +3,7 @@ use oxide_bytecode::opcode::OpCode;
 use oxide_kernel::prop_forge::PropTemplate;
 use oxide_runtime_api as coercion;
 use oxide_types::object::JsObject;
-use oxide_types::private_key::make_private_name_id;
+use oxide_types::private_key::{int_key_value, is_int_key, make_private_name_id};
 use oxide_types::value::JsValue;
 
 use crate::ic_helper::{self, ic_get_hit, ic_set_hit};
@@ -46,7 +46,7 @@ impl Vm {
 
     fn primitive_property_get(&mut self, val: JsValue, prop_name_si: u32) -> Result<Option<JsValue>, String> {
         if val.is_string() {
-            let length_si = self.kernel_core.perm_interner().intern("length").0;
+            let length_si = self.length_si;
             if prop_name_si == length_si {
                 // SAFETY: val 是字符串值。utf16_len 构造时缓存，O(1) 读取。
                 let len = unsafe { (*val.as_string_ptr()).utf16_len() };
@@ -522,15 +522,33 @@ impl Vm {
     fn dispatch_get_prop_dynamic(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
         vm_trace!("GET_PROP_DYNAMIC rd={} a={} b={}", rd, a, b);
         let prop_name_si = self.property_key_si(self.regs[a])?;
-        if let Some(value) = self.primitive_property_get(self.regs[rd], prop_name_si)? {
+        let receiver = self.regs[rd];
+        // 数组元素 fast path：整数键 + 真数组 + 无元素 meta（无 hole/accessor/描述符）
+        // + 界内 → 直读元素区，免 primitive_property_get / checked_object_ptr /
+        // ordinary_get 调用链。判定条件与 ordinary_get_inner 数组分支严格等价。
+        // 非对象 receiver（如 `"abc"[0]`）须先 is_object 快检再 checked_object_ptr，
+        // 否则该检查会误抛 TypeError（原路径对原始值走 primitive_property_get 不抛）。
+        if is_int_key(prop_name_si) && receiver.is_object() {
+            if let Some(obj_ptr) = self.checked_object_ptr(receiver, "GET_PROP_DYNAMIC on non-object")? {
+                let obj = unsafe { &*obj_ptr };
+                if obj.is_array() && obj.array_elements_meta_vec().is_none() {
+                    let idx = int_key_value(prop_name_si);
+                    if idx < obj.array_prop_count {
+                        self.regs[b] = obj.get_prop_at(idx);
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        if let Some(value) = self.primitive_property_get(receiver, prop_name_si)? {
             self.regs[b] = value;
             return Ok(());
         }
-        let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "GET_PROP_DYNAMIC on non-object")? else {
+        let Some(obj_ptr) = self.checked_object_ptr(receiver, "GET_PROP_DYNAMIC on non-object")? else {
             return Ok(());
         };
         let obj = unsafe { &*obj_ptr };
-        let val = self.ordinary_get_with_target(obj, prop_name_si, self.regs[rd], b as u8)?;
+        let val = self.ordinary_get_with_target(obj, prop_name_si, receiver, b as u8)?;
         if self.accessor_frame_target_reg.take().is_none() {
             self.regs[b] = val;
         }
@@ -543,7 +561,28 @@ impl Vm {
             return Ok(());
         };
         let prop_name_si = self.property_key_si(self.regs[a])?;
-        if self.kernel_core.perm_interner().lookup(prop_name_si) == Some("__proto__") {
+        // 数组元素 fast path：整数键 + 真数组 + 无 meta + 界内 → 直写元素区，
+        // 免 __proto__ 查询 / ordinary_set_dispatch / get_own_property_slot 调用链。
+        // 与 ordinary_set_inner 数组分支等价（界内写不触发 length 扩展、无 shadow
+        // 同步）。越界写必须走原路径（CreateDataProperty + length 扩展），绝不可
+        // 直写——set_prop_storage 对越界下标会落到 hash_props 属性区。
+        if is_int_key(prop_name_si) {
+            let obj = unsafe { &*obj_ptr };
+            if obj.is_array() && obj.array_elements_meta_vec().is_none() {
+                let idx = int_key_value(prop_name_si);
+                if idx < obj.array_prop_count {
+                    // promote 必须保留：obj 是 session 根、写入值可能是 epoch 对象，
+                    // 不 promote 下轮 GC 会悬垂。
+                    let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[b]);
+                    let obj = unsafe { &mut *obj_ptr };
+                    obj.set_prop_storage(idx as usize, value);
+                    return Ok(());
+                }
+            }
+        }
+        // 整数键恒不可能等于 "__proto__"（字符串 intern id 远小于整数键区间），
+        // 短路免去每次 set 的 RwLock 查询。
+        if !is_int_key(prop_name_si) && self.kernel_core.perm_interner().lookup(prop_name_si) == Some("__proto__") {
             let proto_value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[b]);
             if self.is_object_prototype(obj_ptr) && !proto_value.is_null() {
                 self.raise_type_error("Object.prototype.__proto__ is immutable")?;

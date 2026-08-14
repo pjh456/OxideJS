@@ -216,7 +216,7 @@ impl Vm {
         }
 
         // length：实参个数，可写、不可枚举、可配置。
-        let length_si = self.kernel_core.perm_interner().intern("length").0;
+        let length_si = self.length_si;
         if let Err(msg) = self.define_data_property(
             obj,
             length_si,

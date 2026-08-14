@@ -308,6 +308,10 @@ pub struct Vm {
     pub(crate) frames: SmallVec<[CallFrame; 16]>,
     pub(crate) kernel_core: Arc<KernelCore>,
     pub(crate) session: KernelSession,
+    /// `"length"` 属性键的 intern id 缓存：进程内稳定（PermInterner append-only、
+    /// KernelCore 不重建），属性 get/set 热路径免每次 intern（hash64 + DashMap +
+    /// RwLock 读锁）。
+    pub(crate) length_si: u32,
     pub epoch: Epoch,
     pub object_prototype: P<JsObject>,
     /// `%GeneratorPrototype%`：生成器实例的原型（next/return/throw 方法挂此）。
@@ -1003,7 +1007,7 @@ impl Vm {
 
     pub(crate) fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
         vm_trace!("resolve_property: shape_id={} prop_name_si={}", obj.shape_id(), prop_name_si);
-        let length_si = self.kernel_core.perm_interner().intern("length").0;
+        let length_si = self.length_si;
         if obj.is_array() && prop_name_si == length_si {
             return Some(obj.logical_len_value());
         }
@@ -1042,7 +1046,7 @@ impl Vm {
     }
 
     pub(crate) fn get_own_property_slot(&self, obj: &JsObject, prop_name_si: u32) -> Option<u32> {
-        let length_si = self.kernel_core.perm_interner().intern("length").0;
+        let length_si = self.length_si;
         if obj.is_array() && prop_name_si == length_si {
             return None;
         }

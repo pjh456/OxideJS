@@ -21,6 +21,9 @@ impl Vm {
         let core = KernelCore::new(KernelConfig::minimal());
         let mut session = KernelSession::new(&core);
         bindings::init_kernel_builtins(&core, &mut session);
+        // 在 builtin 绑定之后取 id：绑定过程已 intern "length"，此处命中缓存得到
+        // 非 0 的稳定 id（保持枚举层"id 0 哨兵"的既有约定，见 walk_own_keys）。
+        let length_si = core.perm_interner().intern("length").0;
         let obj_proto = P::clone(&session.builtin_world().object_proto);
         let mut vm = Self {
             regs: [JsValue::undefined(); 256],
@@ -31,6 +34,7 @@ impl Vm {
             frames: smallvec::SmallVec::new(),
             kernel_core: core,
             session,
+            length_si,
             epoch: Epoch::new(),
             object_prototype: obj_proto,
             generator_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
@@ -115,6 +119,9 @@ impl Vm {
     pub fn with_kernel_core(core: Arc<KernelCore>) -> Self {
         let mut session = KernelSession::new(&core);
         bindings::init_kernel_builtins(&core, &mut session);
+        // 在 builtin 绑定之后取 id：绑定过程已 intern "length"，此处命中缓存得到
+        // 非 0 的稳定 id（保持枚举层"id 0 哨兵"的既有约定，见 walk_own_keys）。
+        let length_si = core.perm_interner().intern("length").0;
         let obj_proto = P::clone(&session.builtin_world().object_proto);
         let mut vm = Self {
             regs: [JsValue::undefined(); 256],
@@ -125,6 +132,7 @@ impl Vm {
             frames: smallvec::SmallVec::new(),
             kernel_core: core,
             session,
+            length_si,
             epoch: Epoch::new(),
             object_prototype: obj_proto,
             generator_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
@@ -637,10 +645,7 @@ mod tests {
         // wrapper 是跨重置存活对象，其原型链必须仍能解析出 call/apply/bind：
         // 任何一条路径失效都说明 wrapper 原型指向了已释放的旧 Function 原型。
         assert_eq!(run_source(&mut vm, "Array.prototype.push.call([1], 2)"), JsValue::int(2));
-        assert_eq!(
-            run_source(&mut vm, "Array.prototype.push.apply([], [1, 2, 3])"),
-            JsValue::int(3)
-        );
+        assert_eq!(run_source(&mut vm, "Array.prototype.push.apply([], [1, 2, 3])"), JsValue::int(3));
         let replaced = run_source(&mut vm, "String.prototype.replace.call('a', 'a', 'b')");
         assert_eq!(vm.lookup_str(replaced).as_deref(), Some("b"));
         let has = run_source(&mut vm, "Object.prototype.hasOwnProperty.call({x: 1}, 'x')");

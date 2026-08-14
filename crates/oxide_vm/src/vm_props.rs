@@ -21,7 +21,7 @@ impl Vm {
         &mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue, target_reg: Option<u8>,
     ) -> Result<JsValue, String> {
         vm_trace!("ordinary_get_inner: shape={} prop_si={}", obj.shape_id(), prop_name_si);
-        let length_si = self.kernel_core.perm_interner().intern("length").0;
+        let length_si = self.length_si;
         let mut current = Some(obj);
         let mut depth = 0usize;
         while let Some(obj) = current {
@@ -186,7 +186,7 @@ impl Vm {
         // 数组 length 赋值：ArraySetLength 语义（ToUint32 + 调整元素区）。
         // 旧行为会把 length 存成影子命名属性，导致 `arr.length = N` 后
         // prop_count/迭代/内置方法看到的长度不一致。
-        let length_si = self.kernel_core.perm_interner().intern("length").0;
+        let length_si = self.length_si;
         if obj.is_array() && prop_name_si == length_si {
             let pc_before = self.pc;
             let number_len = self.coerce_number_bounded(val)?;

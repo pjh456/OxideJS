@@ -131,7 +131,7 @@ impl Vm {
         );
         // 函数名推断：emit 端在变量声明/对象属性赋值点设置 function_name。
         let func_obj = unsafe { &mut *result.as_js_object_ptr() };
-        let length_si = self.kernel_core.perm_interner().intern("length").0;
+        let length_si = self.length_si;
         let name_si = self.kernel_core.perm_interner().intern("name").0;
         // length/name 描述符均为不可写、不可枚举、可配置（SetFunctionLength /
         // SetFunctionName 语义）；length 先于 name 定义保证属性序 [prototype, length, name]。
