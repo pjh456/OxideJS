@@ -305,6 +305,113 @@ fn string_replace_string_pattern() {
     assert_eq!(to_str(&vm, s), "heLlo");
 }
 
+#[test]
+fn string_replace_string_pattern_only_first() {
+    // 字符串 pattern 只替换首个匹配。
+    let mut vm = Vm::new();
+    let s = eval(&mut vm, "'aba'.replace('a', 'c')").unwrap();
+    assert_eq!(to_str(&vm, s), "cba");
+}
+
+#[test]
+fn string_replace_regex_global_all() {
+    // 正则 global 全替换，非 global 只替换首个。
+    let mut vm = Vm::new();
+    let s = eval(&mut vm, "'hello'.replace(/l/g, 'L')").unwrap();
+    assert_eq!(to_str(&vm, s), "heLLo");
+    let s = eval(&mut vm, "'hello'.replace(/l/, 'L')").unwrap();
+    assert_eq!(to_str(&vm, s), "heLlo");
+}
+
+#[test]
+fn string_replace_function_replacer_string_pattern() {
+    // 函数 replacer + 字符串 pattern：回调参数 (match, position, string)。
+    let mut vm = Vm::new();
+    let s = eval(&mut vm, "'ab'.replace('a', function(m){ return m.toUpperCase() })").unwrap();
+    assert_eq!(to_str(&vm, s), "Ab");
+    let s = eval(&mut vm, "'abc'.replace('b', function(m, o){ return o })").unwrap();
+    assert_eq!(to_str(&vm, s), "a1c");
+}
+
+#[test]
+fn string_replace_missing_replacement_is_undefined_string() {
+    // 缺失 replaceValue 按 ToString(undefined)="undefined" 替换（非空串）。
+    let mut vm = Vm::new();
+    let s = eval(&mut vm, "'abc'.replace('b')").unwrap();
+    assert_eq!(to_str(&vm, s), "aundefinedc");
+    let s = eval(&mut vm, "'abc'.replaceAll('b')").unwrap();
+    assert_eq!(to_str(&vm, s), "aundefinedc");
+    let s = eval(&mut vm, "'abc'.replace('b', undefined)").unwrap();
+    assert_eq!(to_str(&vm, s), "aundefinedc");
+}
+
+#[test]
+fn string_replace_missing_args_replace_undefined_pattern() {
+    // 缺失 searchValue 按 "undefined" 文本替换（找不到则原串不变）。
+    let mut vm = Vm::new();
+    let s = eval(&mut vm, "'xundefinedy'.replace()").unwrap();
+    assert_eq!(to_str(&vm, s), "xundefinedy");
+    let s = eval(&mut vm, "'xundefinedy'.replaceAll()").unwrap();
+    assert_eq!(to_str(&vm, s), "xundefinedy");
+    let s = eval(&mut vm, "'abc'.replace()").unwrap();
+    assert_eq!(to_str(&vm, s), "abc");
+}
+
+#[test]
+fn string_replace_all_nonglobal_regex_throws() {
+    // replaceAll 遇非 global 正则抛 TypeError。
+    let mut vm = Vm::new();
+    for src in [
+        "'abc'.replaceAll(/b/, 'X')",
+        "'abc'.replaceAll(/b/, function(){ return 'X' })",
+        "String.prototype.replaceAll.call('abc', /b/)",
+    ] {
+        let err = eval(&mut vm, src).unwrap_err();
+        assert!(err.contains("TypeError"), "{src} 应抛 TypeError，实际: {err}");
+    }
+    let s = eval(&mut vm, "'abc'.replaceAll(/b/g, 'X')").unwrap();
+    assert_eq!(to_str(&vm, s), "aXc");
+}
+
+#[test]
+fn string_replace_regex_proto_subclass_fallback() {
+    // 类正则对象（proto 恒等 RegExp.prototype 但无编译正则）：
+    // replace 走字符串文本路径，replaceAll 返回原串。
+    let mut vm = Vm::new();
+    let s = eval(&mut vm, "var sp = Object.create(RegExp.prototype); 'aXb'.replace(sp, 'Y')").unwrap();
+    assert_eq!(to_str(&vm, s), "aXb");
+    let s = eval(&mut vm, "var sp = Object.create(RegExp.prototype); 'aXb'.replaceAll(sp, 'Y')").unwrap();
+    assert_eq!(to_str(&vm, s), "aXb");
+    let s = eval(
+        &mut vm,
+        "var sp = Object.create(RegExp.prototype); 'aXb'.replace(sp, function(m){ return 'Z' })",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, s), "aXb");
+}
+
+#[test]
+fn string_replace_boxed_receiver_and_replacement() {
+    // boxed receiver 走对象 ToString 路径，boxed replacement 走 ToString 转换。
+    let mut vm = Vm::new();
+    let s = eval(&mut vm, "new String('abc').replace('b', 'X')").unwrap();
+    assert_eq!(to_str(&vm, s), "aXc");
+    let s = eval(&mut vm, "'abc'.replace('b', new String('X'))").unwrap();
+    assert_eq!(to_str(&vm, s), "aXc");
+}
+
+#[test]
+fn string_replace_astral_and_empty_pattern() {
+    // astral 串走零拷贝快路径不破坏代理对；空 pattern 语义保持。
+    let mut vm = Vm::new();
+    let s = eval(&mut vm, "'\\u{1F600}x\\u{1F600}'.replace('x', 'Y')").unwrap();
+    assert_eq!(to_str(&vm, s), "\u{1F600}Y\u{1F600}");
+    let s = eval(&mut vm, "'abc'.replace('', '-')").unwrap();
+    assert_eq!(to_str(&vm, s), "-abc");
+    let s = eval(&mut vm, "'abc'.replaceAll('', '-')").unwrap();
+    assert_eq!(to_str(&vm, s), "-a-b-c-");
+}
+
 // ── split 测试 ──
 
 #[test]

@@ -994,62 +994,198 @@ pub fn string_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(make_string_array(vm, parts))
 }
 
+/// `replace`/`replaceAll` 共用的分叉实现：按 replacer 类型与参数形态选择路径，
+/// 全原始字符串场景零拷贝（共享借用三提取），函数 replacer 场景 receiver 走
+/// owned（回调跨 `&mut` 的硬约束）。
+///
+/// # 步骤
+/// 1. receiver 前置校验（RequireObjectCoercible，纯 is_* 读取）。
+/// 2. 纯对象头读取判定分叉：正则身份/编译正则/global 标志/函数 replacer。
+/// 3. 按分支执行替换。
+///
+/// # 边界与前提
+/// - 缺省 searchValue/replaceValue 均按 ToString(undefined)="undefined" 处理
+///   （`s.replace()` 全缺省等价于把 "undefined" 替换为 "undefined"，结果与
+///   原串一致；`s.replace("b")` 得到 "aundefinedc" 而非 "ac"）。
+/// - replaceAll 遇非 global 正则抛 TypeError；类正则对象（proto 恒等
+///   RegExp.prototype 但无编译正则）replaceAll 返回原串、replace 按 ToString
+///   文本走字符串路径。
+///
+/// # 注意事项
+/// - 分支 B 的 `&H` 共享借用与 `&mut` 互斥由编译器强制，三 `&str` 同源可共存
+///   （E0499 仅发生在 `&mut` 派生 Cow 并存）。
+/// - 函数 replacer 分支 receiver 必须 owned：`call_function_sync` 是 `&mut`，
+///   文本若借自 vm 会 E0499。
+fn string_replace_impl<H: VmHost>(vm: &mut H, args: &[u8], all: bool) -> NativeResult {
+    let this_val = vm.reg(args[0]);
+
+    // receiver 前置校验：null/undefined/symbol 抛 TypeError（规范第 1 步
+    // RequireObjectCoercible，纯 is_* 读取无用户代码，先于一切分叉）。
+    if this_val.is_null() || this_val.is_undefined() {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "String.prototype method called on null or undefined",
+        ));
+    }
+    if this_val.is_symbol() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert a Symbol value to a string"));
+    }
+
+    let pattern_val = if args.len() >= 2 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let replacement_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+
+    // 分叉判定（全部纯读取/纯对象头读，无用户代码）：正则对象身份、是否持有
+    // 编译正则、global 标志、replacer 是否为函数。
+    let is_re = is_regexp_obj(pattern_val, vm);
+    let (has_native_re, is_global) = if is_re {
+        let re_ptr = pattern_val.as_js_object_ptr();
+        // SAFETY: is_re 已保证 pattern_val 为非空对象且 proto 恒等 RegExp.prototype。
+        let re = unsafe { &*re_ptr };
+        if re.native_fn().is_some() {
+            let g = re.hash_props_vec().and_then(|v| v.get(3)).map(|v| v.as_bool()).unwrap_or(false);
+            (true, g)
+        } else {
+            (false, false)
+        }
+    } else {
+        (false, false)
+    };
+    let replacer_val = if replacement_val.is_object() {
+        let o = unsafe { &*replacement_val.as_js_object_ptr() };
+        if o.is_function() {
+            Some(replacement_val)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // 类正则对象无编译正则：replaceAll 按现状返回原串（receiver 转换先行保错误次序）。
+    if all && is_re && !has_native_re {
+        let s = try_string!(this_string(vm, args)).into_owned();
+        return NativeResult::Ok(vm.new_string_owned(s));
+    }
+
+    // replaceAll 要求正则带 global：非 global 正则直接抛 TypeError（规范 flags 检查）。
+    if all && has_native_re && !is_global {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "String.prototype.replaceAll called with a non-global RegExp",
+        ));
+    }
+
+    // 分支 A：函数 replacer。回调经 call_function_sync（&mut），文本若借自 vm
+    // 会 E0499，receiver 必须 owned 本地 String（跨回调的硬约束）。
+    if let Some(replacer_val) = replacer_val {
+        let s = try_string!(this_string(vm, args)).into_owned();
+        if has_native_re {
+            let re_ptr = pattern_val.as_js_object_ptr();
+            let re = unsafe { &*re_ptr };
+            let fn_ptr = re.native_fn().unwrap();
+            // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regress::Regex>` 指针。
+            let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
+            return regex_replace_fn(vm, regex, &s, replacer_val, is_global);
+        }
+        let pattern = as_string(vm, pattern_val).into_owned();
+        return string_replace_fn(vm, &s, &pattern, replacer_val, all);
+    }
+
+    let replacement_is_string = args.len() <= 2 || replacement_val.is_string();
+
+    // 分支 B：全原始字符串快路径——共享借用三提取，receiver/pattern/replacement
+    // 零拷贝（`&H` 共享借用派生多个 `&str` 可共存，E0499 只发生在 `&mut` 派生）。
+    if this_val.is_string() && pattern_val.is_string() && replacement_is_string {
+        let h = &*vm;
+        let s = h.string_ref(this_val);
+        let p = h.string_ref(pattern_val);
+        let r: &str = if replacement_val.is_string() {
+            h.string_ref(replacement_val)
+        } else {
+            "undefined"
+        };
+        let result = if all { s.replace(p, r) } else { s.replacen(p, r, 1) };
+        return NativeResult::Ok(vm.new_string_owned(result));
+    }
+
+    // 分支 B2：正则 pattern 快路径——regex 为对象内裸指针（不占 vm 借用），
+    // receiver/replacement 共享借用零拷贝。
+    if this_val.is_string() && has_native_re && replacement_is_string {
+        let re_ptr = pattern_val.as_js_object_ptr();
+        let re = unsafe { &*re_ptr };
+        let fn_ptr = re.native_fn().unwrap();
+        // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regress::Regex>` 指针。
+        let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
+        let h = &*vm;
+        let s = h.string_ref(this_val);
+        let r: &str = if replacement_val.is_string() {
+            h.string_ref(replacement_val)
+        } else {
+            "undefined"
+        };
+        let result = regex_replace_manual(regex, s, r, is_global);
+        return NativeResult::Ok(vm.new_string_owned(result));
+    }
+
+    // 分支 C：一般路径（对象参与转换）。
+    // 原始字符串 receiver：参数转换前置（&mut 路径）再借 receiver 零拷贝扫描；
+    // 对象 receiver：先 ToString 得 owned（into_owned 即结束借用），转换顺序与
+    // 改造前一致。
+    let (s, pattern, replacement) = if this_val.is_string() {
+        let pattern = if has_native_re {
+            String::new()
+        } else if args.len() < 2 {
+            "undefined".to_string()
+        } else {
+            as_string(vm, pattern_val).into_owned()
+        };
+        let replacement = if args.len() > 2 {
+            as_string(vm, replacement_val).into_owned()
+        } else {
+            "undefined".to_string()
+        };
+        let s = try_string!(this_string(vm, args));
+        (s, pattern, replacement)
+    } else {
+        let s = try_string!(this_string(vm, args)).into_owned();
+        let pattern = if has_native_re {
+            String::new()
+        } else if args.len() < 2 {
+            "undefined".to_string()
+        } else {
+            as_string(vm, pattern_val).into_owned()
+        };
+        let replacement = if args.len() > 2 {
+            as_string(vm, replacement_val).into_owned()
+        } else {
+            "undefined".to_string()
+        };
+        (Cow::Owned(s), pattern, replacement)
+    };
+
+    // 统一扫描：命中编译正则走手动 $ 展开，否则字符串子串替换。
+    if has_native_re {
+        let re_ptr = pattern_val.as_js_object_ptr();
+        let re = unsafe { &*re_ptr };
+        let fn_ptr = re.native_fn().unwrap();
+        // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regress::Regex>` 指针。
+        let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
+        let result = regex_replace_manual(regex, &s, &replacement, is_global);
+        return NativeResult::Ok(vm.new_string_owned(result));
+    }
+    let result = if all {
+        s.replace(&pattern, &replacement)
+    } else {
+        s.replacen(&pattern, &replacement, 1)
+    };
+    NativeResult::Ok(vm.new_string_owned(result))
+}
+
 /// `String.prototype.replace(pattern, replacement)`：替换首个匹配；
 /// 支持 RegExp（global 全替换）、字符串以及函数替换器。
 pub fn string_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.replace called with {} args", args.len());
-    let s = try_string!(this_string(vm, args)).into_owned();
-    if args.len() < 2 {
-        return NativeResult::Ok(vm.new_string_owned(s));
-    }
-    let pattern_val = vm.reg(args[1]);
-
-    if is_regexp_obj(pattern_val, vm) {
-        let re_ptr = pattern_val.as_js_object_ptr();
-        let re = unsafe { &*re_ptr };
-        if let Some(fn_ptr) = re.native_fn() {
-            let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
-            let is_global = re.hash_props_vec().and_then(|v| v.get(3)).map(|v| v.as_bool()).unwrap_or(false);
-
-            if args.len() > 2 {
-                let replacer_val = vm.reg(args[2]);
-                if replacer_val.is_object() {
-                    let o = unsafe { &*replacer_val.as_js_object_ptr() };
-                    if o.is_function() {
-                        return regex_replace_fn(vm, regex, &s, replacer_val, is_global);
-                    }
-                }
-            }
-
-            let replacement = if args.len() > 2 {
-                as_string(vm, vm.reg(args[2])).into_owned()
-            } else {
-                String::new()
-            };
-            // 手动展开 $ 引用（regress 的 replace 对 $n 展开为空）。
-            let result = regex_replace_manual(regex, &s, &replacement, is_global);
-            return NativeResult::Ok(vm.new_string_owned(result));
-        }
-        // 无原生正则的类正则对象回退到字符串路径。
-    }
-
-    let pattern = as_string(vm, pattern_val).into_owned();
-    if args.len() > 2 {
-        let replacer_val = vm.reg(args[2]);
-        if replacer_val.is_object() {
-            let o = unsafe { &*replacer_val.as_js_object_ptr() };
-            if o.is_function() {
-                return string_replace_fn(vm, &s, &pattern, replacer_val, false);
-            }
-        }
-    }
-    let replacement = if args.len() > 2 {
-        as_string(vm, vm.reg(args[2])).into_owned()
-    } else {
-        String::new()
-    };
-    let result = s.replacen(&pattern, &replacement, 1);
-    NativeResult::Ok(vm.new_string_owned(result))
+    string_replace_impl(vm, args, false)
 }
 
 /// `String.prototype.match(pattern)`：按 RegExp 匹配；global 返回全部匹配数组，
@@ -1411,52 +1547,5 @@ fn make_match_done_result<H: VmHost>(vm: &mut H, value: JsValue) -> NativeResult
 /// （RegExp 或字符串模式）。
 pub fn string_replace_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.replaceAll called with {} args", args.len());
-    let s = try_string!(this_string(vm, args)).into_owned();
-    if args.len() < 2 {
-        return NativeResult::Ok(vm.new_string_owned(s));
-    }
-    let pattern_val = vm.reg(args[1]);
-    if is_regexp_obj(pattern_val, vm) {
-        let re_ptr = pattern_val.as_js_object_ptr();
-        let re = unsafe { &*re_ptr };
-        let fn_ptr = match re.native_fn() {
-            Some(p) => p,
-            None => return NativeResult::Ok(vm.new_string_owned(s)),
-        };
-        // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regress::Regex>` 指针。
-        let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
-        if args.len() > 2 {
-            let replacer_val = vm.reg(args[2]);
-            if replacer_val.is_object() {
-                let o = unsafe { &*replacer_val.as_js_object_ptr() };
-                if o.is_function() {
-                    return regex_replace_fn(vm, regex, &s, replacer_val, true);
-                }
-            }
-        }
-        let replacement = if args.len() > 2 {
-            as_string(vm, vm.reg(args[2])).into_owned()
-        } else {
-            String::new()
-        };
-        let result = regex_replace_manual(regex, &s, &replacement, true);
-        return NativeResult::Ok(vm.new_string_owned(result));
-    }
-    let pattern = as_string(vm, pattern_val).into_owned();
-    if args.len() > 2 {
-        let replacer_val = vm.reg(args[2]);
-        if replacer_val.is_object() {
-            let o = unsafe { &*replacer_val.as_js_object_ptr() };
-            if o.is_function() {
-                return string_replace_fn(vm, &s, &pattern, replacer_val, true);
-            }
-        }
-    }
-    let replacement = if args.len() > 2 {
-        as_string(vm, vm.reg(args[2])).into_owned()
-    } else {
-        String::new()
-    };
-    let result = s.replace(&pattern, &replacement);
-    NativeResult::Ok(vm.new_string_owned(result))
+    string_replace_impl(vm, args, true)
 }
