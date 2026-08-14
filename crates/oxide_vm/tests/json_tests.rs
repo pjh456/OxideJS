@@ -274,3 +274,30 @@ fn json_stringify_cycle_throws_type_error() {
     let err = eval(&mut vm, "var a = {}; a.self = a; JSON.stringify(a)");
     assert!(err.is_err());
 }
+
+// -- 数字键对象（P1-2 回归防线） --
+
+#[test]
+fn json_parse_numeric_object_key_reads_via_index() {
+    // JSON 键 "5" 经字符串规范化映射整数键：o[5] 与 o["5"] 命中同一键。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "JSON.parse('{\"5\":1}')[5]").unwrap();
+    assert!((result.as_double() - 1.0).abs() < 0.0001);
+}
+
+#[test]
+fn json_parse_numeric_keys_do_not_clash_between_keys() {
+    // 多个数字键各自独立：{"0":7,"2024":8} 的 0 与 2024 不互相覆盖。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var o = JSON.parse('{\"0\":7,\"2024\":8}'); o[0] + o[2024]").unwrap();
+    assert!((result.as_double() - 15.0).abs() < 0.0001);
+}
+
+#[test]
+fn json_parse_numeric_keys_stringify_roundtrip() {
+    // 数字键对象经 stringify 后键名保持 "5"（键字符串化语义）。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "JSON.stringify(JSON.parse('{\"5\":1}'))").unwrap();
+    let s = string_value(&vm, result);
+    assert_eq!(s, "{\"5\":1}");
+}

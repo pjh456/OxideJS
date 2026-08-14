@@ -210,8 +210,10 @@ pub fn map_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             if !crate::iterator::is_callable(adder) {
                 return NativeResult::Err(crate::error::create_type_error(vm, "Map.set is not callable"));
             }
-            let key_si = vm.kernel_core().perm_interner().intern("0").0;
-            let value_si = vm.kernel_core().perm_interner().intern("1").0;
+            // entry 读取键按 ToPropertyKey 规范化：数组 entry 的元素区与对象 entry
+            // 的 shape 链都走整数键，保证 `[k,v]` 与 `{0:k,1:v}` 两种形态都命中。
+            let key_si = vm.property_key_si(JsValue::int(0));
+            let value_si = vm.property_key_si(JsValue::int(1));
             if let Err(err) = crate::iterator::iterate_elements(vm, iterable, |vm, item| {
                 if !item.is_object() {
                     return Err(crate::error::create_type_error(vm, "iterator value is not an entry object"));

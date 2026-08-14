@@ -130,3 +130,33 @@ fn standalone_nested_rest_assignment() {
     let result = eval(&mut vm, "var x; [...[x]]=[1,2,3]; x").unwrap();
     assert_num(result, 1.0);
 }
+
+#[test]
+fn object_rest_excludes_numeric_bound_key_from_array_source() {
+    // 数组元素区整数键：pattern 绑定 "0" 后 rest 不得再包含 "0"。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "const {0:x, ...r} = [1,2,3]; Object.keys(r).length").unwrap();
+    assert_eq!(result.as_int(), 2);
+    let result = eval(&mut vm, "const {0:x, ...r} = [1,2,3]; x === 1").unwrap();
+    assert!(result.as_bool());
+    // rest 从 1 开始：r[1] 是源元素 2，r[0] 已被排除为 undefined。
+    let result = eval(&mut vm, "const {0:x, ...r} = [1,2,3]; r[1] + r[2]").unwrap();
+    assert_eq!(result.as_int(), 5);
+}
+
+#[test]
+fn object_rest_excludes_multiple_numeric_keys() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "const {0:x, 1:y, ...r} = [1,2,3,4]; Object.keys(r).join(',')").unwrap();
+    let s = unsafe { &*result.as_string_ptr() }.as_str().to_string();
+    assert_eq!(s, "2,3");
+}
+
+#[test]
+fn object_rest_keeps_numeric_key_from_shape_source() {
+    // 对象源数字键（shape 链整数键）同样排除。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "const {0:x, ...r} = {0:'a',1:'b',2:'c'}; Object.keys(r).join(',')").unwrap();
+    let s = unsafe { &*result.as_string_ptr() }.as_str().to_string();
+    assert_eq!(s, "1,2");
+}

@@ -768,7 +768,7 @@ impl Vm {
         let mut excluded: std::collections::HashSet<u32> = excluded_const
             .split('\0')
             .filter(|s| !s.is_empty())
-            .map(|s| self.kernel_core.perm_interner().intern(s).0)
+            .map(|s| self.string_key_si(s))
             .collect();
         // 运行时 excluded：b 槽数组（computed key 求值结果）的元素 ToPropertyKey 后排除。
         if b != 0 {
@@ -798,6 +798,9 @@ impl Vm {
             let code_units: Vec<u16> = s.encode_utf16().collect();
             for (i, unit) in code_units.iter().enumerate() {
                 let si = make_int_key(i as u32);
+                if excluded.contains(&si) {
+                    continue;
+                }
                 let ch_val = match char::from_u32(*unit as u32) {
                     Some(c) => match self.single_char(c) {
                         Some(v) => v,
@@ -809,7 +812,7 @@ impl Vm {
             }
         }
 
-        // 数组元素区：整数下标可枚举元素（hole 跳过）。
+        // 数组元素区：整数下标可枚举元素（hole 跳过），排除 pattern 已绑定的键。
         if src_obj.is_array() {
             for i in 0..src_obj.array_prop_count {
                 if src_obj.prop_meta_at(i).is_some_and(|m| m.is_hole()) {
@@ -821,6 +824,9 @@ impl Vm {
                     .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable());
                 if enumerable {
                     let si = make_int_key(i);
+                    if excluded.contains(&si) {
+                        continue;
+                    }
                     let val = match self.ordinary_get(src_obj, si, src) {
                         Ok(v) => v,
                         Err(e) => return self.raise_call_error(&e).map(|_| ()),

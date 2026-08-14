@@ -113,3 +113,19 @@ fn map_new_delete() {
     let r = eval(&mut vm, "var m = new Map(); m.set('x', 10); m.delete('x'); m.has('x')").unwrap();
     assert!(!r.as_bool());
 }
+
+#[test]
+fn map_new_object_entry_pair_reads_key_and_value() {
+    // 对象 entry（{0:'k',1:'v'}）的数字键是整数键：读取须经 ToPropertyKey 规范化。
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "var m = new Map([{0:'k',1:'v'}]); m.get('k')").unwrap();
+    assert_eq!(str_val(&vm, r), "v");
+}
+
+#[test]
+fn map_new_mixed_array_and_object_entries() {
+    // 数组 entry 与对象 entry 两种形态混合可共存。
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "var m = new Map([['a',1],{0:'b',1:2}]); m.get('a') + '/' + m.get('b')").unwrap();
+    assert_eq!(str_val(&vm, r), "1/2");
+}

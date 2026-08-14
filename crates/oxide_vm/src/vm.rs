@@ -1911,6 +1911,13 @@ impl oxide_runtime_api::VmHost for Vm {
         self.property_key_si(val)
             .unwrap_or_else(|_| self.kernel_core.perm_interner().intern("").0)
     }
+    fn string_key_si(&mut self, s: &str) -> u32 {
+        if let Some(i) = canonical_index_of(s) {
+            make_int_key(i)
+        } else {
+            self.kernel_core.perm_interner().intern(s).0
+        }
+    }
     fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
         self.resolve_property(obj, prop_name_si)
     }

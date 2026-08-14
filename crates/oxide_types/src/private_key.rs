@@ -28,9 +28,10 @@ pub const INT_KEY_COUNT: u32 = 0x4000_0000;
 
 /// 把非负小整数索引编码为整数属性键（与 [`int_key_value`] 互逆）。
 ///
-/// 调用方须保证 `i < INT_KEY_COUNT`，否则溢出到 private 区间。
+/// 调用方须保证 `i < INT_KEY_COUNT`，否则溢出到 private 区间（debug 构建断言兜底）。
 #[inline]
 pub const fn make_int_key(i: u32) -> u32 {
+    debug_assert!(i < INT_KEY_COUNT, "整数键索引超出 INT_KEY_COUNT");
     INT_KEY_BASE + i
 }
 

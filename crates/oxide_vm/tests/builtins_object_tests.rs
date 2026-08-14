@@ -185,3 +185,33 @@ fn object_values_returns_array() {
     let obj = unsafe { &*result.as_js_object_ptr() };
     assert_eq!(obj.prop_count(), 2);
 }
+
+// -- Object.fromEntries --
+
+#[test]
+fn from_entries_numeric_key_normalized_to_int_key() {
+    // 数字键 entry 走 ToPropertyKey 规范化：fromEntries 产出的 "5" 键与 o[5] 同一键。
+    let (_vm, result) = eval("Object.fromEntries([[5,'a']])[5]").unwrap();
+    assert!(result.is_string() && unsafe { &*result.as_string_ptr() }.as_str() == "a");
+}
+
+#[test]
+fn from_entries_string_index_key_reads_via_numeric_access() {
+    // 字符串 "5" 键是规范数组下标，读 o[5] 命中同一整数键。
+    let (_vm, result) = eval("Object.fromEntries([['5','a']])[5]").unwrap();
+    assert!(result.is_string() && unsafe { &*result.as_string_ptr() }.as_str() == "a");
+}
+
+#[test]
+fn from_entries_numeric_key_write_keeps_single_key() {
+    // 再写 o[5] 不产生第二个 "5" 键（键唯一）。
+    let (_vm, result) =
+        eval("var o = Object.fromEntries([[5,'a']]); o[5]='x'; Object.getOwnPropertyNames(o).join(',')").unwrap();
+    assert!(result.is_string() && unsafe { &*result.as_string_ptr() }.as_str() == "5");
+}
+
+#[test]
+fn from_entries_multiple_pairs_roundtrip() {
+    let (_vm, result) = eval("var o = Object.fromEntries([[1,'a'],[2,'b']]); o[1] + o[2]").unwrap();
+    assert!(result.is_string() && unsafe { &*result.as_string_ptr() }.as_str() == "ab");
+}

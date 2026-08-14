@@ -962,7 +962,8 @@ pub fn object_from_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         JsValue::from_js_object(vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject),
     ));
     let target_val = JsValue::from_js_object(obj);
-    let n: usize = unsafe { (*entries_ptr).prop_vec_len() };
+    // entry 数组的元素存元素区（元素区之外才是命名属性区），按元素区长度迭代。
+    let n: usize = unsafe { (*entries_ptr).array_prop_count } as usize;
     for i in 0..n {
         let pair_val = unsafe { (*entries_ptr).get_prop_at(i) };
         if !pair_val.is_object() {
@@ -975,8 +976,8 @@ pub fn object_from_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let pair = unsafe { &*pair_ptr };
         let key_val = pair.get_prop_at(0);
         let value_val = pair.get_prop_at(1);
-        let key_str = oxide_runtime_api::to_string(key_val);
-        let si = vm.kernel_core().perm_interner().intern(&key_str).0;
+        // ToPropertyKey 语义建键：int/规范数字串/symbol 统一映射，避免数字键分裂。
+        let si = vm.property_key_si(key_val);
         let promoted = vm.promote_if_needed_for_write_ptr(obj, value_val);
         let _ = vm.ordinary_set(unsafe { &mut *obj }, si, promoted, target_val);
     }

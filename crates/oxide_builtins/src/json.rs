@@ -139,7 +139,8 @@ fn value_to_jsvalue<H: VmHost>(vm: &mut H, val: &serde_json::Value) -> JsValue {
             let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
             let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto));
             for (key, val) in map {
-                let si = vm.kernel_core().perm_interner().intern(key).0;
+                // 键经字符串规范化：规范数字串（"0"/"5"）映射整数键，与属性访问统一。
+                let si = vm.string_key_si(key);
                 let jsv = value_to_jsvalue(vm, val);
                 let new_shape = vm.kernel_core().shape_forge().make_shape(obj.shape_id(), si);
                 obj.set_shape_id(new_shape);

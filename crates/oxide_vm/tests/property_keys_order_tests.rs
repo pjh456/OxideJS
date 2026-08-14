@@ -110,3 +110,15 @@ fn keys_with_leading_zero_not_integer_index() {
     let idx_1 = keys.iter().position(|k| k == "1").unwrap();
     assert!(idx_1 < idx_01, "integer '1' should come before string '01'");
 }
+
+// ── 对象字面量数字键字符串化 ──
+#[test]
+fn numeric_literal_key_materializes_as_string() {
+    // `{5:1}` 的键是字符串 "5"（键经 ToPropertyKey 字符串化），读 o[5]/o["5"] 同一键。
+    let r = eval_str("var o={5:1}; Object.getOwnPropertyNames(o)[0]").unwrap();
+    assert!(r.is_string());
+    let s = unsafe { &*r.as_string_ptr() }.data.clone();
+    assert_eq!(s, "5");
+    let r = eval_str("var o={5:1}; o[5] + o['5']").unwrap();
+    assert!(r.is_int() && r.as_int() == 2);
+}

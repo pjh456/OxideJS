@@ -109,6 +109,9 @@ pub trait VmHost {
 
     // 属性解析
     fn property_key_si(&mut self, val: JsValue) -> u32;
+    /// 字符串→键规范化：规范数字串（`"5"`）映射整数键，其余 intern 字符串键。
+    /// 供建键入口（fromEntries/json/rest excluded）与 `property_key_si` 的字符串分支统一口径。
+    fn string_key_si(&mut self, s: &str) -> u32;
     fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue>;
     fn get_own_property_slot(&self, obj: &JsObject, prop_name_si: u32) -> Option<u32>;
 
