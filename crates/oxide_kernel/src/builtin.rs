@@ -879,6 +879,18 @@ impl BuiltinWorld {
     ) -> BuiltinWorld {
         let labels = builtin_labels(string_forge);
 
+        // 方法 wrapper（Box::into_raw 永久泄漏）的 proto 持有旧 function_proto 裸指针，
+        // 旧 function_proto 又经 proto/constructor 引用旧 object 家族。function/object
+        // 重建时这 4 个对象若随 Arc 归零释放，保留 wrapper 会沿悬垂原型链
+        // use-after-free：泄漏保活旧家族对，与 wrapper 的永久泄漏同一约定
+        // （每次 dirty rebuild 至多泄漏 4 个对象，低频可接受）。
+        if dirty.function || dirty.object {
+            std::mem::forget(current.function_proto.clone());
+            std::mem::forget(current.function_constructor.clone());
+            std::mem::forget(current.object_proto.clone());
+            std::mem::forget(current.object_constructor.clone());
+        }
+
         let (object_proto, object_constructor) = if dirty.object {
             make_named_pair(string_forge, shape_forge, labels, "Object")
         } else {
