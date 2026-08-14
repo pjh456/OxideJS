@@ -53,19 +53,11 @@ impl Vm {
                 Ok(())
             }
             NativeResult::Err(err_val) => {
-                let (error, kind) = if err_val.is_object() {
-                    (err_val, self.thrown_error_kind(err_val))
-                } else {
-                    let msg = if err_val.is_string() {
-                        // SAFETY: err_val 是字符串值。
-                        unsafe { (*err_val.as_string_ptr()).data.clone() }
-                    } else {
-                        format!("{err_val}")
-                    };
-                    builtins_debug!("native_call err={}", msg);
-                    (oxide_builtins::error::create_error(self, &msg), "Error")
-                };
-                self.exception_value = Some(error);
+                // 异常值原样保留：native 内部错误均为 Error 对象（走上方分支），
+                // 非对象值来自用户回调 throw 的原始异常（经 last_uncaught_value
+                // 恢复），按 ECMAScript 语义 catch 须收到原值，不得包装成 Error。
+                let kind = self.thrown_error_kind(err_val);
+                self.exception_value = Some(err_val);
                 self.pending_error_kind = Some(kind);
                 self.unwind()
             }

@@ -298,6 +298,40 @@ fn array_callback_exceptions_propagate() {
 }
 
 #[test]
+fn array_callback_throw_primitive_keeps_original_value() {
+    // inline 回调抛原始值（number/string/null/undefined/boolean）时，catch
+    // 必须收到原值而非被包装的 Error 对象（ECMAScript throw 任意值语义）。
+    let (_vm, result) = eval("try{[1].map(()=>{throw 2})}catch(e){e}").unwrap();
+    assert_num_eq(result, 2.0);
+
+    let (vm, result) = eval("try{[1].forEach(()=>{throw 's'})}catch(e){typeof e}").unwrap();
+    assert_eq!(to_str(&vm, result), "string");
+
+    let (_vm, result) = eval("try{[1].filter(()=>{throw null})}catch(e){e === null ? 1 : 0}").unwrap();
+    assert_num_eq(result, 1.0);
+
+    let (_vm, result) = eval("try{[1].map(()=>{throw undefined})}catch(e){e === undefined ? 1 : 0}").unwrap();
+    assert_num_eq(result, 1.0);
+
+    let (_vm, result) = eval("try{[1].map(()=>{throw false})}catch(e){e === false ? 1 : 0}").unwrap();
+    assert_num_eq(result, 1.0);
+}
+
+#[test]
+fn array_callback_throw_primitive_not_rewrapped_on_nested_call() {
+    // 嵌套 inline 回调链（外层 map 内再 map）抛原始值，顶层 catch 仍收到原值。
+    let (_vm, result) = eval("try{[1].map(()=>{[1].map(()=>{throw 5})})}catch(e){e === 5 ? 1 : 0}").unwrap();
+    assert_num_eq(result, 1.0);
+
+    // 外层 finally + 内层 throw：finally 先执行，异常原值传给调用方 catch。
+    let (_vm, result) = eval(
+        "var fin = 0; try { try { [1].map(()=>{throw 6}); } finally { fin = 1; } } catch(e) { fin * 10 + (e === 6 ? 1 : 0) }",
+    )
+    .unwrap();
+    assert_num_eq(result, 11.0);
+}
+
+#[test]
 fn array_sort_uses_user_comparator() {
     let (vm, result) = eval("[3,1,2].sort((a,b)=>a-b).join(',')").unwrap();
     assert_eq!(to_str(&vm, result), "1,2,3");

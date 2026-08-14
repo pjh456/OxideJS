@@ -272,3 +272,124 @@ fn leaked_nested_handler_then_exception_is_caught() {
         "1"
     );
 }
+
+// ── inline 同步回调 × 异常 unwind 回归 ──
+// inline 调用（数组回调/replacer/getter）不 push 帧，callee 抛出的异常经
+// dispatch_native_call 边界回到调用方 try/catch。以下断言保证：最小复现得
+// 预期值、抛出的原始值不被包装成 Error 对象、嵌套/多级回调与 finally
+// 组合的展开路径正确。
+
+#[test]
+fn inline_callback_throw_caught_by_caller_returns_expected() {
+    assert_eq!(eval("try { [1].map(function(){ throw 1; }); } catch(e) { 42 }"), "42");
+}
+
+#[test]
+fn inline_callback_throw_primitive_value_kept_original() {
+    // throw 原始值经 inline 边界传播，catch 须收到原值而非包装的 Error 对象。
+    assert_eq!(eval("var r = 0; try { [1].map(function(){ throw 2; }); } catch(e) { r = e; } r"), "2");
+    assert_eq!(eval("var r = 0; try { [1].forEach(function(){ throw 's'; }); } catch(e) { r = (typeof e === 'string') ? 1 : 0; } r"), "1");
+    assert_eq!(
+        eval("var r = 0; try { [1].filter(function(){ throw null; }); } catch(e) { r = (e === null) ? 1 : 0; } r"),
+        "1"
+    );
+    assert_eq!(
+        eval(
+            "var r = 0; try { [1].map(function(){ throw undefined; }); } catch(e) { r = (e === undefined) ? 1 : 0; } r"
+        ),
+        "1"
+    );
+    assert_eq!(
+        eval("var r = 0; try { [1].map(function(){ throw false; }); } catch(e) { r = (e === false) ? 1 : 0; } r"),
+        "1"
+    );
+}
+
+#[test]
+fn inline_callback_throw_error_object_kept_reference() {
+    // Error 对象作为异常值传播时保持同一引用，catch 可读 message。
+    assert_eq!(
+        eval("try { [1].map(function(){ throw new Error('myerr'); }); } catch(e) { (e.message === 'myerr') ? 1 : 0 }"),
+        "1"
+    );
+}
+
+#[test]
+fn nested_inline_callback_throw_caught_by_outer_catch() {
+    assert_eq!(
+        eval("var r = 0; try { [1].map(function(){ [1].map(function(){ throw 5; }); }); } catch(e) { r = e; } r"),
+        "5"
+    );
+}
+
+#[test]
+fn multi_level_inline_chain_throw_caught_by_top_catch() {
+    assert_eq!(
+        eval("var r = 0; try { [1].map(function(){ [1].map(function(){ [1].map(function(){ throw 3; }); }); }); } catch(e) { r = e; } r"),
+        "3"
+    );
+}
+
+#[test]
+fn inline_callback_inner_catch_normal_capture_continues() {
+    assert_eq!(
+        eval("var r = [1,2,3].map(function(x){ try { if (x == 2) throw 9; return x; } catch(e) { return 100; } }); r.length * 1000 + r[0] * 100 + r[1] * 10 + r[2]"),
+        "4103"
+    );
+}
+#[test]
+fn inline_callback_inner_finally_runs_before_outer_catch() {
+    // inline callee 内 finally 先执行，异常再传播给调用方 catch。
+    assert_eq!(
+        eval("var fin = 0; var r = 0; try { [1].map(function(){ try { throw 1; } finally { fin = 5; } }); } catch(e) { r = fin + 1; } r"),
+        "6"
+    );
+}
+
+#[test]
+fn inline_callback_finally_throw_overrides_pending() {
+    assert_eq!(
+        eval("var r = 0; try { [1].map(function(){ try { throw 1; } finally { throw 2; } }); } catch(e) { r = e; } r"),
+        "2"
+    );
+}
+
+#[test]
+fn inline_callback_throw_crosses_outer_finally_to_catch() {
+    assert_eq!(
+        eval("var log = []; try { try { [1].map(function(){ throw 1; }); } finally { log.push('f'); } } catch(e) { log.push('c'); } log.length"),
+        "2"
+    );
+}
+
+#[test]
+fn inline_callback_throw_caught_by_inner_catch_rethrow_to_outer() {
+    assert_eq!(
+        eval("var r = 0; try { try { [1].map(function(){ throw 1; }); } catch(e) { r = 49; throw e; } } catch(e) { r = r * 10 + 50; } r"),
+        "540"
+    );
+}
+
+#[test]
+fn inline_replace_replacer_throw_primitive_kept() {
+    assert_eq!(
+        eval("var r = 0; try { 'a'.replace(/a/, function(){ throw 8; }); } catch(e) { r = e; } r"),
+        "8"
+    );
+}
+
+#[test]
+fn inline_getter_throw_primitive_kept() {
+    assert_eq!(
+        eval("var r = 0; var o = { get g() { throw 7; } }; try { var x = o.g; } catch(e) { r = e; } r"),
+        "7"
+    );
+}
+
+#[test]
+fn inline_sort_comparator_throw_primitive_kept() {
+    assert_eq!(
+        eval("var r = 0; try { [2,1].sort(function(a,b){ [1].map(function(){ throw 13; }); return a - b; }); } catch(e) { r = e; } r"),
+        "13"
+    );
+}
