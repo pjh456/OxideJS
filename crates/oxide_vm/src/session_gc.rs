@@ -814,21 +814,29 @@ mod tests {
             (*arr).set_prop_at(0, JsValue::from_js_object(live_elem));
             (*arr).set_prop_at(1, JsValue::from_js_object(dead_elem));
         }
-        // 仅元素 0 的对象作为 GC 根：元素 1 的对象应被回收。
+        // 晋升数组会把元素对象一并带入 session；随后断开元素 1 的引用，使其成为
+        // mark 不可达的死对象，供 sweep 回收。
         let arr_session = vm.promote_object(arr);
+        unsafe {
+            (*arr_session).set_prop_at(1, JsValue::undefined());
+        }
         vm.regs[0] = JsValue::from_js_object(arr_session);
-        vm.regs[1] = JsValue::from_js_object(live_elem);
 
         let mut gc = std::mem::take(&mut vm.gc_state.session_gc);
         gc.mark(&vm);
         let _ = gc.sweep(&mut vm);
         vm.gc_state.session_gc = gc;
 
-        // 存活对象经克隆 + rewrite：数组元素 0 指向晋升后的 live_elem。
-        let live_session = unsafe { (*arr_session).get_prop_at(0).as_js_object_ptr() };
+        // sweep 复制存活对象并把 VM 根改写为新 arena 指针：regs[0] 是数组的新地址，
+        // 旧指针已随旧 arena 释放，不可再用。
+        let arr_new = vm.regs[0].as_js_object_ptr();
+        let live_session = unsafe { (*arr_new).get_prop_at(0).as_js_object_ptr() };
         assert_eq!(unsafe { (*live_session).prop_count() }, 0);
-        assert_eq!(unsafe { (*arr_session).prop_count() }, 2);
-        assert_eq!(unsafe { (*arr_session).get_prop_at(0).as_js_object_ptr() }, live_session);
+        assert_eq!(unsafe { (*arr_new).prop_count() }, 2);
+        assert_eq!(unsafe { (*arr_new).get_prop_at(0).as_js_object_ptr() }, live_session);
+        // 元素 1 引用已断开：死元素对象被回收，存活集合只剩数组与元素 0 的对象。
+        assert_eq!(unsafe { (*arr_new).get_prop_at(1) }, JsValue::undefined());
+        assert_eq!(vm.gc_state.session_object_ptrs.len(), 2);
     }
 
     #[test]
