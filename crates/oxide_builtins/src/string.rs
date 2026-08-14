@@ -885,7 +885,16 @@ pub fn string_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Some(v) if !v.is_undefined() => is_regexp_obj(v, vm),
         _ => false,
     };
-    let sep = if is_undefined_sep || is_re {
+    // 类正则对象是否持有编译正则：native_fn 存在才是真 RegExp 实例，命中正则切分路径；
+    // 无编译正则的类正则对象（如 Object.create(RegExp.prototype)）回退字符串路径，
+    // 须按 ToString 文本切分，且转换（&mut 路径）须先于 this 借用完成。
+    let has_native_re = is_re && {
+        let re_ptr = sep_val.unwrap().as_js_object_ptr();
+        // SAFETY: is_re 已保证 sep_val 为非空对象且 proto 恒等 RegExp.prototype。
+        let re = unsafe { &*re_ptr };
+        re.native_fn().is_some()
+    };
+    let sep = if is_undefined_sep || has_native_re {
         String::new()
     } else {
         as_string(vm, sep_val.unwrap()).into_owned()

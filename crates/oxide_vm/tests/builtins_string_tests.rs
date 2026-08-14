@@ -348,6 +348,51 @@ fn string_split_string_separator() {
     assert_eq!(obj.prop_count(), 3);
 }
 
+#[test]
+fn string_split_regex_proto_subclass_fallback() {
+    // 类正则对象（proto 恒等 RegExp.prototype 但无编译正则）回退字符串路径，
+    // 按 ToString 文本（"[object]"）切分，不落入逐字符切分。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var sp = Object.create(RegExp.prototype); 'aXb'.split(sp)").unwrap();
+    let obj = unsafe { &*result.as_js_object_ptr() };
+    assert_eq!(obj.prop_count(), 1);
+    assert_eq!(to_str(&vm, obj.get_prop_at(0)), "aXb");
+}
+
+#[test]
+fn string_split_empty_string_separator() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "'abc'.split('')").unwrap();
+    let obj = unsafe { &*result.as_js_object_ptr() };
+    assert_eq!(obj.prop_count(), 3);
+    assert_eq!(to_str(&vm, obj.get_prop_at(0)), "a");
+    assert_eq!(to_str(&vm, obj.get_prop_at(2)), "c");
+
+    let empty = eval(&mut vm, "''.split('')").unwrap();
+    let obj = unsafe { &*empty.as_js_object_ptr() };
+    assert_eq!(obj.prop_count(), 0);
+}
+
+#[test]
+fn string_split_undefined_separator_returns_single() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "'a-b'.split(undefined)").unwrap();
+    let obj = unsafe { &*result.as_js_object_ptr() };
+    assert_eq!(obj.prop_count(), 1);
+    assert_eq!(to_str(&vm, obj.get_prop_at(0)), "a-b");
+}
+
+#[test]
+fn string_split_real_regex_still_regex_path() {
+    // 真 RegExp 实例（native_fn 存在）仍走正则切分，含尾部空串。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "'ab'.split(/b/)").unwrap();
+    let obj = unsafe { &*result.as_js_object_ptr() };
+    assert_eq!(obj.prop_count(), 2);
+    assert_eq!(to_str(&vm, obj.get_prop_at(0)), "a");
+    assert_eq!(to_str(&vm, obj.get_prop_at(1)), "");
+}
+
 // ── match 测试 ──
 
 #[test]
@@ -522,4 +567,87 @@ fn string_last_index_of_empty_with_position() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "'hello'.lastIndexOf('', 3)").unwrap();
     assert_eq!(result.as_int(), 3);
+}
+
+#[test]
+fn string_pad_start_target_not_exceeding_fast_path() {
+    // targetLength 不大于原串长度时快速返回原串。
+    let mut vm = Vm::new();
+    let s = eval(&mut vm, "'abc'.padStart(2)").unwrap();
+    assert_eq!(to_str(&vm, s), "abc");
+    let s = eval(&mut vm, "'abc'.padStart(3, 'x')").unwrap();
+    assert_eq!(to_str(&vm, s), "abc");
+}
+
+#[test]
+fn string_pad_empty_pad_string_fast_path() {
+    // padString 为空串时快速返回原串。
+    let mut vm = Vm::new();
+    let s = eval(&mut vm, "'ab'.padStart(4, '')").unwrap();
+    assert_eq!(to_str(&vm, s), "ab");
+    let s = eval(&mut vm, "'ab'.padEnd(4, '')").unwrap();
+    assert_eq!(to_str(&vm, s), "ab");
+}
+
+#[test]
+fn string_to_well_formed_ascii() {
+    let mut vm = Vm::new();
+    let s = eval(&mut vm, "'abc'.toWellFormed()").unwrap();
+    assert_eq!(to_str(&vm, s), "abc");
+    let b = eval(&mut vm, "'abc'.isWellFormed()").unwrap();
+    assert!(b.as_bool());
+}
+
+#[test]
+fn string_normalize_decomposed_and_composed() {
+    let mut vm = Vm::new();
+    let s = eval(&mut vm, "'\\u00E9'.normalize('NFD')").unwrap();
+    assert_eq!(to_str(&vm, s), "e\u{0301}");
+    let s = eval(&mut vm, "'e\\u0301'.normalize('NFC')").unwrap();
+    assert_eq!(to_str(&vm, s), "\u{00E9}");
+}
+
+#[test]
+fn boxed_string_receiver_methods() {
+    // boxed String 对象作为 receiver 时取内部原始串执行方法。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "new String('abc').split('')").unwrap();
+    let obj = unsafe { &*result.as_js_object_ptr() };
+    assert_eq!(obj.prop_count(), 3);
+    assert_eq!(to_str(&vm, obj.get_prop_at(0)), "a");
+    let s = eval(&mut vm, "new String('abc').padStart(5, 'x')").unwrap();
+    assert_eq!(to_str(&vm, s), "xxabc");
+    let s = eval(&mut vm, "new String('abc').toWellFormed()").unwrap();
+    assert_eq!(to_str(&vm, s), "abc");
+}
+
+#[test]
+fn string_methods_null_receiver_throw_type_error() {
+    // null receiver 在构造类方法上统一抛 TypeError。
+    let mut vm = Vm::new();
+    for src in [
+        "String.prototype.split.call(null, ',')",
+        "String.prototype.padStart.call(null, 5)",
+        "String.prototype.slice.call(null)",
+        "String.prototype.normalize.call(null)",
+        "String.prototype.toWellFormed.call(null)",
+        "String.prototype.repeat.call(null, 2)",
+        "String.prototype.trim.call(null)",
+        "String.prototype.codePointAt.call(null, 0)",
+    ] {
+        let err = eval(&mut vm, src).unwrap_err();
+        assert!(err.contains("TypeError"), "{src} 应抛 TypeError，实际: {err}");
+    }
+}
+
+#[test]
+fn string_slice_astral_character_indices() {
+    // 字符索引语义：astral 字符按单字符计位，切片不截断代理对。
+    let mut vm = Vm::new();
+    let s = eval(&mut vm, "'\\u{1F600}ab'.slice(1, 3)").unwrap();
+    assert_eq!(to_str(&vm, s), "ab");
+    let s = eval(&mut vm, "'\\u{1F600}ab'.slice(0, 1)").unwrap();
+    assert_eq!(to_str(&vm, s), "\u{1F600}");
+    let s = eval(&mut vm, "'\\u{1F600}'.padStart(3, 'x')").unwrap();
+    assert_eq!(to_str(&vm, s), "xx\u{1F600}");
 }
