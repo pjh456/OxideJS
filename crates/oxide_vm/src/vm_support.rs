@@ -633,8 +633,24 @@ mod tests {
 
         vm.full_reset();
 
-        let result = run_source(&mut vm, "Array.prototype.push.call([1], 2)");
-        assert_eq!(result, JsValue::int(2));
+        // Function 原型家族重建后，未重建家族（array/string/object/map 等）的方法
+        // wrapper 是跨重置存活对象，其原型链必须仍能解析出 call/apply/bind：
+        // 任何一条路径失效都说明 wrapper 原型指向了已释放的旧 Function 原型。
+        assert_eq!(run_source(&mut vm, "Array.prototype.push.call([1], 2)"), JsValue::int(2));
+        assert_eq!(
+            run_source(&mut vm, "Array.prototype.push.apply([], [1, 2, 3])"),
+            JsValue::int(3)
+        );
+        let replaced = run_source(&mut vm, "String.prototype.replace.call('a', 'a', 'b')");
+        assert_eq!(vm.lookup_str(replaced).as_deref(), Some("b"));
+        let has = run_source(&mut vm, "Object.prototype.hasOwnProperty.call({x: 1}, 'x')");
+        assert_eq!(has, JsValue::bool(true));
+        let fixed = run_source(&mut vm, "Number.prototype.toFixed.call(1.5, 1)");
+        assert_eq!(vm.lookup_str(fixed).as_deref(), Some("1.5"));
+        let in_map = run_source(&mut vm, "Map.prototype.has.call(new Map([[1, 2]]), 1)");
+        assert_eq!(in_map, JsValue::bool(true));
+        let mapped = run_source(&mut vm, "Array.prototype.map.call([1, 2], function(x){ return x + 1; }).join(',')");
+        assert_eq!(vm.lookup_str(mapped).as_deref(), Some("2,3"));
         assert!(!vm.session.is_dirty_since_snapshot());
     }
 
