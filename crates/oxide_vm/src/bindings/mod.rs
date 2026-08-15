@@ -251,11 +251,94 @@ pub(crate) fn bind_iterator_function_prototype(
 }
 
 /// 在集合迭代器原型上绑定 `next` 方法（规范形状：next 挂原型，wrapper 不设 own）。
+///
+/// `next` 键已存在时跳过：保留原型在 dirty reset 重复经过时不再追加重复属性槽。
 pub(crate) fn bind_iterator_proto_next(
     core: &Arc<KernelCore>, session: &KernelSession, proto: *mut JsObject, func: *const (),
 ) {
     let proto = unsafe { &mut *proto };
+    let si_next = core.perm_interner().intern("next").0;
+    if core.shape_forge().lookup_position(proto.shape_id(), si_next).is_some() {
+        return;
+    }
     apply_binding_table(session.builtin_world(), proto, core, &[("next", func, 0)]);
+}
+
+/// 把迭代器原型方法安装到当前 builtin world 的迭代器原型上：
+/// `%IteratorPrototype%` 的 `@@iterator`（返回 this）与 Array/Map/Set/
+/// RegExpString 四个集合原型的 `next`。
+///
+/// 在迭代器原型全新重建后调用（object 家族 dirty 或全量初始化）；各绑定点
+/// 自带幂等检查，保留原型重复经过时安全跳过。
+fn bind_iterator_protos(core: &Arc<KernelCore>, session: &KernelSession) {
+    let world = session.builtin_world();
+
+    // %IteratorPrototype% 自身可迭代：@@iterator 返回 this，经原型链被全部
+    // 集合迭代器继承（it[Symbol.iterator]() === it 恒等）。
+    let iter_proto_ptr = world.iterator_proto.as_ptr() as *mut JsObject;
+    let iter_proto = unsafe { &mut *iter_proto_ptr };
+    let sym_iter = oxide_types::private_key::make_well_known_symbol_key(0);
+    if core.shape_forge().lookup_position(iter_proto.shape_id(), sym_iter).is_none() {
+        bind_well_known_method(
+            world,
+            core,
+            iter_proto,
+            0,
+            "iterator",
+            oxide_builtins::iterator::iterator_symbol_iterator::<crate::vm::Vm> as *const (),
+            0,
+        );
+    }
+
+    // %ArrayIteratorPrototype% 服务 Array/TA 两族；Map/Set 共用按 `__mode__`
+    // 分发的实现；%RegExpStringIteratorPrototype% 供 matchAll。
+    bind_iterator_proto_next(
+        core,
+        session,
+        world.array_iterator_proto.as_ptr() as *mut JsObject,
+        oxide_builtins::array::array_iterator_next::<crate::vm::Vm> as *const (),
+    );
+    bind_iterator_proto_next(
+        core,
+        session,
+        world.map_iterator_proto.as_ptr() as *mut JsObject,
+        oxide_builtins::iterator::map_set_iterator_next::<crate::vm::Vm> as *const (),
+    );
+    bind_iterator_proto_next(
+        core,
+        session,
+        world.set_iterator_proto.as_ptr() as *mut JsObject,
+        oxide_builtins::iterator::map_set_iterator_next::<crate::vm::Vm> as *const (),
+    );
+    bind_iterator_proto_next(
+        core,
+        session,
+        world.regexp_string_iterator_proto.as_ptr() as *mut JsObject,
+        oxide_builtins::string::string_match_all_next::<crate::vm::Vm> as *const (),
+    );
+}
+
+/// 对齐保留 global 上 `Iterator` 函数对象的 `prototype` 属性：object 家族重建会
+/// 产生新的 `%IteratorPrototype%`，保留的 Iterator 函数对象须指向新原型。
+///
+/// global 同时重建（global dirty）或初始化时无 `Iterator` 属性，直接跳过——
+/// 彼时由 `bind_iterator_global` 以新原型创建函数对象。
+fn sync_iterator_function_prototype(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
+    let si_iterator = core.perm_interner().intern("Iterator").0;
+    let Some(pos) = core.shape_forge().lookup_position(global.shape_id(), si_iterator) else {
+        return;
+    };
+    let iterator_val = global.get_prop_at(pos);
+    if !iterator_val.is_object() {
+        return;
+    }
+    let iterator = unsafe { &mut *iterator_val.as_js_object_ptr() };
+    let si_prototype = core.perm_interner().intern("prototype").0;
+    let Some(proto_pos) = core.shape_forge().lookup_position(iterator.shape_id(), si_prototype) else {
+        return;
+    };
+    let new_proto = JsValue::from_js_object(session.builtin_world().iterator_proto.as_ptr() as *mut JsObject);
+    iterator.set_prop_at(proto_pos, new_proto);
 }
 
 pub(crate) fn bind_global_value(core: &Arc<KernelCore>, global: &mut JsObject, name: &str, value: JsValue) {
@@ -405,47 +488,9 @@ fn bind_iterator_global(core: &Arc<KernelCore>, session: &KernelSession, global:
         &[("from", oxide_builtins::iterator::iterator_from::<crate::vm::Vm> as *const (), 1)],
     );
     bind_existing_global(core, global, "Iterator", JsValue::from_js_object(Box::into_raw(iterator)));
-
-    // %IteratorPrototype% 自身可迭代（@@iterator 返回 this，经原型链被全部集合迭代器继承）。
-    let iter_proto_ptr = session.builtin_world().iterator_proto.as_ptr() as *mut JsObject;
-    let iter_proto = unsafe { &mut *iter_proto_ptr };
-    bind_well_known_method(
-        session.builtin_world(),
-        core,
-        iter_proto,
-        0,
-        "iterator",
-        oxide_builtins::iterator::iterator_symbol_iterator::<crate::vm::Vm> as *const (),
-        0,
-    );
-
-    // 集合迭代器原型各自安装 next（%ArrayIteratorPrototype% 服务 Array/TA 两族；
-    // Map/Set 共用按 `__mode__` 分发的实现；%RegExpStringIteratorPrototype% 供 matchAll）。
-    let world = session.builtin_world();
-    bind_iterator_proto_next(
-        core,
-        session,
-        world.array_iterator_proto.as_ptr() as *mut JsObject,
-        oxide_builtins::array::array_iterator_next::<crate::vm::Vm> as *const (),
-    );
-    bind_iterator_proto_next(
-        core,
-        session,
-        world.map_iterator_proto.as_ptr() as *mut JsObject,
-        oxide_builtins::iterator::map_set_iterator_next::<crate::vm::Vm> as *const (),
-    );
-    bind_iterator_proto_next(
-        core,
-        session,
-        world.set_iterator_proto.as_ptr() as *mut JsObject,
-        oxide_builtins::iterator::map_set_iterator_next::<crate::vm::Vm> as *const (),
-    );
-    bind_iterator_proto_next(
-        core,
-        session,
-        world.regexp_string_iterator_proto.as_ptr() as *mut JsObject,
-        oxide_builtins::string::string_match_all_next::<crate::vm::Vm> as *const (),
-    );
+    // 迭代器原型方法（%IteratorPrototype% 的 @@iterator 与各集合原型 next）由
+    // `bind_iterator_protos` 在 object 家族重建时统一安装，这里不重复绑定，
+    // 避免保留原型经 dirty reset 时属性槽膨胀。
 }
 
 fn bind_stub_globals(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
@@ -699,6 +744,10 @@ pub fn rebind_dirty_builtins(core: &Arc<KernelCore>, session: &mut KernelSession
 
     if dirty.map_or(true, |d| d.object) {
         bind_object::bind_object(core, session, global);
+        // object 家族重建连带重建 6 个迭代器原型（其链到新 Object.prototype），
+        // 须同步安装原型方法并让保留 global 上的 Iterator 指向新 %IteratorPrototype%。
+        bind_iterator_protos(core, session);
+        sync_iterator_function_prototype(core, session, global);
     }
     if dirty.map_or(true, |d| d.array) {
         bind_array::bind_array(core, session, global);

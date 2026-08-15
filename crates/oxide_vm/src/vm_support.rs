@@ -1005,6 +1005,83 @@ mod tests {
     }
 
     #[test]
+    fn full_reset_object_dirty_rebinds_iterator_family() {
+        let mut vm = Vm::new();
+        let old_object_proto = vm.session.builtin_world().object_proto.as_ptr();
+        let old_iterator_proto = vm.session.builtin_world().iterator_proto.as_ptr();
+        // 用户修改 Object.prototype：object 家族世代递增，global 未动。
+        unsafe { &mut *(old_object_proto as *mut JsObject) }.bump_generation();
+
+        vm.full_reset();
+
+        // object 家族与迭代器原型全部重建（新原型链到新 Object.prototype）。
+        assert!(!std::ptr::eq(old_object_proto, vm.session.builtin_world().object_proto.as_ptr()));
+        assert!(!std::ptr::eq(old_iterator_proto, vm.session.builtin_world().iterator_proto.as_ptr()));
+        // global 保留（dirty.global=false）：其 Iterator 函数对象的 prototype
+        // 属性须对齐到重建后的 %IteratorPrototype%。
+        let iter_val = global_prop(&vm, "Iterator");
+        let si_prototype = vm.kernel_core.perm_interner().intern("prototype").0;
+        let iter_obj = unsafe { &*iter_val.as_js_object_ptr() };
+        let proto_pos = vm
+            .kernel_core
+            .shape_forge()
+            .lookup_position(iter_obj.shape_id(), si_prototype)
+            .expect("Iterator should have prototype slot");
+        assert!(std::ptr::eq(
+            iter_obj.get_prop_at(proto_pos).as_js_object_ptr(),
+            vm.session.builtin_world().iterator_proto.as_ptr() as *mut JsObject
+        ));
+        // full_reset 后 session 干净；此后 run_source 执行才重新累积世代变化。
+        assert!(!vm.session.is_dirty_since_snapshot());
+        // 迭代器家族功能完整：原型 next 就位，for-of/spread/Array.from/Iterator.from/
+        // Map/Set/String/yield* 全部可用，原型链与 Iterator.prototype 一致。
+        let r = run_source(&mut vm, "[...[1,2,3]].join(',')");
+        assert_eq!(vm.lookup_str(r).as_deref(), Some("1,2,3"));
+        let r = run_source(&mut vm, "Array.from([1,2]).join(',')");
+        assert_eq!(vm.lookup_str(r).as_deref(), Some("1,2"));
+        let r = run_source(&mut vm, "Iterator.from({next:function(){return {value:42,done:false}}}).next().value");
+        assert_eq!(r, JsValue::int(42));
+        let r = run_source(&mut vm, "[...new Map([[1,2],[3,4]])].map(function(x){return x.join(':')}).join(';')");
+        assert_eq!(vm.lookup_str(r).as_deref(), Some("1:2;3:4"));
+        let r = run_source(&mut vm, "[...new Set([1,2,3])].join(',')");
+        assert_eq!(vm.lookup_str(r).as_deref(), Some("1,2,3"));
+        let r = run_source(&mut vm, "[...'ab'].join(',')");
+        assert_eq!(vm.lookup_str(r).as_deref(), Some("a,b"));
+        let r = run_source(&mut vm, "function* g(){yield* [1,2]} [...g()].join(',')");
+        assert_eq!(vm.lookup_str(r).as_deref(), Some("1,2"));
+        let r = run_source(
+            &mut vm,
+            "Object.getPrototypeOf(Object.getPrototypeOf([].values())) === Iterator.prototype",
+        );
+        assert_eq!(r, JsValue::bool(true));
+        let r = run_source(&mut vm, "var it=[].values(); it[Symbol.iterator]()===it");
+        assert_eq!(r, JsValue::bool(true));
+    }
+
+    #[test]
+    fn full_reset_global_dirty_keeps_iterator_proto_slots_stable() {
+        let mut vm = Vm::new();
+        let arr_iter_proto = vm.session.builtin_world().array_iterator_proto.as_ptr() as *mut JsObject;
+        let slots_before = unsafe { &*arr_iter_proto }.hash_props_vec().map_or(0, |v| v.len());
+        // global 世代递增（用户写 global），builtin 家族未动。
+        unsafe { &mut *(vm.session.global_object.as_ptr() as *mut JsObject) }.bump_generation();
+
+        vm.full_reset();
+
+        // builtin 未脏 → 迭代器原型保留原对象且属性槽不膨胀（重复 full_reset 不再追加）。
+        let arr_iter_proto_after = vm.session.builtin_world().array_iterator_proto.as_ptr() as *mut JsObject;
+        assert!(std::ptr::eq(arr_iter_proto, arr_iter_proto_after));
+        let slots_after = unsafe { &*arr_iter_proto_after }.hash_props_vec().map_or(0, |v| v.len());
+        assert_eq!(slots_before, slots_after);
+        assert!(!vm.session.is_dirty_since_snapshot());
+        // 迭代器功能经保留原型仍完整（run_source 起再次累积世代变化）。
+        let r = run_source(&mut vm, "[...[1,2,3]].join(',')");
+        assert_eq!(vm.lookup_str(r).as_deref(), Some("1,2,3"));
+        let r = run_source(&mut vm, "var it=new Set([1]).values(); it[Symbol.iterator]()===it");
+        assert_eq!(r, JsValue::bool(true));
+    }
+
+    #[test]
     fn bigint_literal_arithmetic_and_comparison() {
         let mut vm = Vm::new();
         assert_eq!(run_source(&mut vm, "100n + 23n"), run_source(&mut vm, "123n"));
