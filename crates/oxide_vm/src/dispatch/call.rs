@@ -416,7 +416,7 @@ impl Vm {
             self.raise_error_kind("ReferenceError", "super() used outside derived constructor")?;
             return Ok(true);
         }
-        if !self.regs[254].is_undefined() {
+        if frame.super_called {
             self.raise_error_kind("ReferenceError", "super() called more than once")?;
             return Ok(true);
         }
@@ -424,6 +424,7 @@ impl Vm {
             self.raise_error_kind("ReferenceError", "super() without derived this")?;
             return Ok(true);
         };
+        let callee = frame.callee;
 
         let new_target = self.regs[255];
         if !new_target.is_object() {
@@ -431,7 +432,15 @@ impl Vm {
             return Ok(true);
         }
         let new_target_obj = unsafe { &*new_target.as_js_object_ptr() };
-        let super_ctor = new_target_obj.proto();
+        // super 构造器取当前帧 callee（执行中的 derived 构造器）的原型，而非 newTarget：
+        // newTarget 跨 SUPER_CALL 压帧保持为最外层类，取其原型在中间 derived 层会
+        // 解析回同一父类，导致父帧被反复压入（多层继承栈溢出）。
+        if !callee.is_object() {
+            self.raise_error_kind("TypeError", "super() without constructor callee")?;
+            return Ok(true);
+        }
+        let callee_obj = unsafe { &*callee.as_js_object_ptr() };
+        let super_ctor = callee_obj.proto();
         if !super_ctor.is_object() {
             self.raise_error_kind("TypeError", "super constructor is not an object")?;
             return Ok(true);
@@ -459,6 +468,7 @@ impl Vm {
                     }
                     self.regs[254] = instance;
                     self.regs[rd] = self.regs[254];
+                    self.mark_super_called();
                 }
                 NativeResult::Err(err_val) => {
                     self.exception_value = Some(err_val);
@@ -479,6 +489,7 @@ impl Vm {
                             }
                             self.regs[254] = instance;
                             self.regs[rd] = self.regs[254];
+                            self.mark_super_called();
                         }
                         Err(e) => return Err(e),
                     }
@@ -526,6 +537,16 @@ impl Vm {
             }
         }
         Ok(())
+    }
+
+    /// 置位当前 derived 帧的 super_called：native super 构造器同步返回后标记
+    /// super() 已成功调用（字节码父构造器路径由 do_return 在返回时置位）。
+    fn mark_super_called(&mut self) {
+        if let Some(frame) = self.frames.last_mut() {
+            if frame.is_derived_constructor {
+                frame.super_called = true;
+            }
+        }
     }
 
     pub(crate) fn dispatch_super_get_prop(&mut self, rd: usize, a: usize, b: usize) -> Result<bool, String> {
@@ -891,7 +912,7 @@ impl Vm {
             self.raise_error_kind("ReferenceError", "super() used outside derived constructor")?;
             return Ok(true);
         }
-        if !self.regs[254].is_undefined() {
+        if frame.super_called {
             self.raise_error_kind("ReferenceError", "super() called more than once")?;
             return Ok(true);
         }
@@ -899,13 +920,22 @@ impl Vm {
             self.raise_error_kind("ReferenceError", "super() without derived this")?;
             return Ok(true);
         };
+        let callee = frame.callee;
+
         let new_target = self.regs[255];
         if !new_target.is_object() {
             self.raise_error_kind("TypeError", "super() new.target is not an object")?;
             return Ok(true);
         }
         let new_target_obj = unsafe { &*new_target.as_js_object_ptr() };
-        let super_ctor = new_target_obj.proto();
+        // 同 dispatch_super_call：super 构造器取当前帧 callee 的原型（newTarget
+        // 保持为最外层类，取其原型在中间 derived 层会反复压入同一父帧）。
+        if !callee.is_object() {
+            self.raise_error_kind("TypeError", "super() without constructor callee")?;
+            return Ok(true);
+        }
+        let callee_obj = unsafe { &*callee.as_js_object_ptr() };
+        let super_ctor = callee_obj.proto();
         if !super_ctor.is_object() {
             self.raise_error_kind("TypeError", "super constructor is not an object")?;
             return Ok(true);
@@ -931,6 +961,7 @@ impl Vm {
                     }
                     self.regs[254] = instance;
                     self.regs[rd] = instance;
+                    self.mark_super_called();
                 }
                 Err(_) => {
                     let exc = self

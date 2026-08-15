@@ -125,6 +125,100 @@ fn derived_constructor_this_before_super_throws_reference_error() {
 }
 
 #[test]
+fn three_level_inheritance_super_chain_constructs_normally() {
+    // 多层继承（≥3 层）：中间 derived 帧由 SUPER_CALL 压入，合法 super() 不得误报
+    // more-than-once，构造链须逐层完成。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class A { constructor(){ this.v = 1; } } class B extends A { constructor(){ super(); this.w = 2; } } class C extends B { constructor(){ super(); this.u = 3; } } var c = new C(); c.v + c.w + c.u",
+    )
+    .unwrap();
+    assert_num(result, 6.0);
+}
+
+#[test]
+fn intermediate_derived_returning_without_super_throws() {
+    // 中间 derived 构造器未调 super 直接 return：须抛 ReferenceError（此前
+    // regs[254] 值判定因 this 为外层构造对象而漏检）。
+    let mut vm = Vm::new();
+    let err = eval(
+        &mut vm,
+        "class A{} class B extends A{ constructor(){ return; } } class C extends B{} new C()",
+    )
+    .unwrap_err();
+    assert!(err.contains("ReferenceError"), "expected ReferenceError, got: {err}");
+}
+
+#[test]
+fn derived_returning_without_super_throws_reference_error() {
+    let mut vm = Vm::new();
+    let err = eval(&mut vm, "class A{} class B extends A{ constructor(){ return; } } new B()").unwrap_err();
+    assert!(err.contains("ReferenceError"), "expected ReferenceError, got: {err}");
+}
+
+#[test]
+fn intermediate_derived_this_before_super_throws() {
+    // 中间 derived 帧由 SUPER_CALL 压入后 super() 前读 this：须抛 ReferenceError。
+    let mut vm = Vm::new();
+    let err = eval(
+        &mut vm,
+        "class A{} class B extends A{ constructor(){ this.x = 1; super(); } } class C extends B{ constructor(){ super(); } } new C()",
+    )
+    .unwrap_err();
+    assert!(err.contains("ReferenceError"), "expected ReferenceError, got: {err}");
+}
+
+#[test]
+fn intermediate_derived_double_super_throws() {
+    // 中间 derived 帧二次调用 super()：须抛 more-than-once（字节码父构造器返回后
+    // 置位 super_called 生效）。
+    let mut vm = Vm::new();
+    let err = eval(
+        &mut vm,
+        "class A{} class B extends A{ constructor(){ super(); super(); } } class C extends B{} new C()",
+    )
+    .unwrap_err();
+    assert!(err.contains("ReferenceError"), "expected ReferenceError, got: {err}");
+}
+
+#[test]
+fn derived_constructor_returning_primitive_without_super_throws() {
+    // 规范 §9.2.2.2：derived 返回非对象值（42/null）且未调 super → ReferenceError，
+    // 而非静默回退构造 this。
+    let mut vm = Vm::new();
+    let err = eval(&mut vm, "class A{} class B extends A{ constructor(){ return 42; } } new B()").unwrap_err();
+    assert!(err.contains("ReferenceError"), "expected ReferenceError, got: {err}");
+}
+
+#[test]
+fn derived_constructor_returning_null_without_super_throws() {
+    let mut vm = Vm::new();
+    let err = eval(&mut vm, "class A{} class B extends A{ constructor(){ return null; } } new B()").unwrap_err();
+    assert!(err.contains("ReferenceError"), "expected ReferenceError, got: {err}");
+}
+
+#[test]
+fn derived_constructor_returning_object_overrides_instance() {
+    // derived 返回对象值：直接作为构造结果，不校验 super。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "class A{} class B extends A{ constructor(){ return { x: 1 }; } } new B().x").unwrap();
+    assert_eq!(result.as_int(), 1);
+}
+
+#[test]
+fn derived_constructor_primitive_return_after_super_preserves_this() {
+    // derived 调过 super 后返回原始值：回退构造 this，实例字段保留。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class A{ constructor(){ this.v = 5; } } class B extends A{ constructor(){ super(); return 42; } } new B().v",
+    )
+    .unwrap();
+    assert_num(result, 5.0);
+}
+
+#[test]
 fn derived_method_super_call_uses_current_receiver() {
     let mut vm = Vm::new();
     let result = eval(

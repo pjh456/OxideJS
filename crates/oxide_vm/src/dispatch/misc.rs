@@ -119,9 +119,13 @@ impl Vm {
 
     pub(crate) fn dispatch_load_var(&mut self, rd: usize, a: usize) -> Result<bool, String> {
         vm_trace!("LOAD_VAR rd={} r{}={:?}", rd, a, self.regs[a]);
+        // a==254 即读 this：derived 构造帧在 super() 成功前读 this 抛 ReferenceError。
         if a == 254
-            && self.frames.last().map(|frame| frame.is_derived_constructor).unwrap_or(false)
-            && self.regs[a].is_undefined()
+            && self
+                .frames
+                .last()
+                .map(|frame| frame.is_derived_constructor && !frame.super_called)
+                .unwrap_or(false)
         {
             self.raise_error_kind("ReferenceError", "must call super constructor before using 'this'")?;
             return Ok(true);

@@ -423,12 +423,14 @@ impl Vm {
             let construct_result_reg = frame.construct_result_reg;
             let constructed_this = frame.constructed_this;
             let is_derived_constructor = frame.is_derived_constructor;
+            let super_called = frame.super_called;
             let continuation = frame.continuation;
-            let callee_this = self.regs[254];
             vm_trace!("RETURN frame: continuation={:?}, derived={}", continuation, is_derived_constructor);
             self.restore_frame(frame);
             if let (Some(target_reg), Some(constructed_this)) = (construct_result_reg, constructed_this) {
-                if is_derived_constructor && result.is_undefined() && callee_this.is_undefined() {
+                // 规范 §9.2.2.2：derived 构造器返回非对象值（含 undefined/null/原始值）
+                // 且未调用 super() 时抛 ReferenceError；调过 super() 则回退构造 this。
+                if is_derived_constructor && !result.is_object() && !super_called {
                     self.raise_error_kind("ReferenceError", "derived constructor must call super()")?;
                     return Ok(None);
                 }
@@ -444,6 +446,17 @@ impl Vm {
                     }
                     FrameContinuation::AccessorSet => {
                         vm_trace!("RETURN accessor_set");
+                    }
+                }
+            }
+            // 父构造器正常返回：super() 调用完成，置位调用方 derived 帧的 super_called。
+            // 识别依据：construct_result_reg == Some(254) 仅 SUPER_CALL 压帧产生（emit
+            // 从寄存器 ≥1 分配，254 保留给 this）；父构造器抛错走 unwind 弹帧不进
+            // 本函数，不置位——后续 this 访问 / 再调 super 仍按未初始化报错。
+            if construct_result_reg == Some(254) {
+                if let Some(caller) = self.frames.last_mut() {
+                    if caller.is_derived_constructor {
+                        caller.super_called = true;
                     }
                 }
             }

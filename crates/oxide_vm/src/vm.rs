@@ -212,6 +212,14 @@ pub struct CallFrame {
     pub construct_result_reg: Option<u8>,
     pub constructed_this: Option<JsValue>,
     pub is_derived_constructor: bool,
+    /// derived 构造帧是否已成功调用 super()（父构造器正常返回后置位）。
+    ///
+    /// 置位识别依赖 ABI 不变量：`construct_result_reg == Some(254)` 仅 SUPER_CALL
+    /// 压帧产生（emit 从寄存器 ≥1 分配，254 保留给 this）；父构造器抛错走 unwind
+    /// 弹帧不进 do_return，不置位。此标志取代依赖 regs[254] 值判定 super 状态的
+    /// 旧方案——多层继承时中间 derived 帧由 SUPER_CALL 以构造 this 压入，
+    /// regs[254] 恒非 undefined，值判定三重失效。
+    pub super_called: bool,
     pub continuation: FrameContinuation,
 }
 
@@ -1317,6 +1325,7 @@ impl Vm {
             construct_result_reg,
             constructed_this,
             is_derived_constructor: obj.is_derived_constructor(),
+            super_called: false,
             continuation,
         });
 
@@ -2365,6 +2374,7 @@ mod tests {
             construct_result_reg: None,
             constructed_this: None,
             is_derived_constructor: false,
+            super_called: false,
             continuation: super::FrameContinuation::None,
         });
         vm.save_stack.push(JsValue::undefined());

@@ -831,6 +831,7 @@ mod tests {
             construct_result_reg: None,
             constructed_this: Some(JsValue::from_js_object(child_session)),
             is_derived_constructor: false,
+            super_called: false,
             continuation: FrameContinuation::None,
         });
         vm.save_stack.push(JsValue::from_js_object(frame_session));
