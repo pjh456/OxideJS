@@ -132,6 +132,84 @@ fn replace_replacer_args_survive_runtime_gc() {
     assert!(vm.session_gc_stats().total_collections > 0, "执行期应触发字符串 GC");
 }
 
+/// 嵌套 dispatch（map 回调经 call_function_sync → 内联字节码执行）内分配超水位时，
+/// 调用方寄存器窗口（`save_inline_state` 存入 inline 状态，非 GC 根）持的 session
+/// 串不得被执行期回收：回调期间触发收集会把它当死串释放，回拷后成悬垂。
+/// `held` 经 middle 参数位于低号寄存器，恰落在回调写寄存器区（0..n_registers），
+/// 修复前回调内触发收集即把它释放并复用（结果变垃圾串），修复后回调期间不回收。
+#[test]
+fn map_callback_caller_reg_strings_survive_nested_dispatch() {
+    let mut vm = vm_with_threshold(512);
+    let module = compile(
+        "var g = {}; for (var i = 0; i < 20; i++) { g['k' + i] = 'v'.repeat(64); } \
+         function middle(held) { \
+           var r = [1, 2, 3].map(function(x) { var t; for (var j = 0; j < 300; j++) { t = 'z' + j; } return x * 2; }); \
+           return held; } \
+         var out = middle('mid' + 'str'); out",
+    );
+    let result = vm.run(&module).expect("run");
+    let text = vm.lookup_str(result).expect("held 应为字符串").to_string();
+    assert_eq!(text, "midstr");
+    assert!(vm.session_gc_stats().total_collections > 0, "执行期应触发字符串 GC");
+}
+
+/// 函数 replacer 回调同样重入嵌套 dispatch：调用方 regs 持串跨回调存活，
+/// 回调体内分配不回收调用方窗口中的串。
+#[test]
+fn replace_replacer_caller_reg_strings_survive_nested_dispatch() {
+    let mut vm = vm_with_threshold(512);
+    let module = compile(
+        "var g = {}; for (var i = 0; i < 20; i++) { g['k' + i] = 'v'.repeat(64); } \
+         function middle(held) { \
+           var out = 'a-b-c'.replace(/-/g, function(m, pos, str) { var t; for (var j = 0; j < 300; j++) { t = 'y' + j; } return '[' + m + ']'; }); \
+           return held + '|' + out; } \
+         var out = middle('repl' + 'acer'); out",
+    );
+    let result = vm.run(&module).expect("run");
+    let text = vm.lookup_str(result).expect("结果应为字符串").to_string();
+    assert_eq!(text, "replacer|a[-]b[-]c");
+    assert!(vm.session_gc_stats().total_collections > 0, "执行期应触发字符串 GC");
+}
+
+/// generator.next() 经生成器恢复重入嵌套 dispatch：调用方 regs（参数串与累加器）
+/// 在生成器体执行期间不得被回收。修复前该场景直接段错误（悬垂指针解引用）。
+#[test]
+fn generator_next_loop_caller_reg_strings_survive_nested_dispatch() {
+    let mut vm = vm_with_threshold(512);
+    let module = compile(
+        "var g = {}; for (var i = 0; i < 20; i++) { g['k' + i] = 'v'.repeat(64); } \
+         function middle(held) { \
+           function* gen() { for (var i = 0; i < 5; i++) { var t; for (var j = 0; j < 200; j++) { t = 'g' + j; } yield i; } } \
+           var it = gen(); var acc = 0; for (var i = 0; i < 5; i++) { acc += it.next().value; } \
+           return held + '|' + acc; } \
+         var out = middle('gen' + 'str'); out",
+    );
+    let result = vm.run(&module).expect("run");
+    let text = vm.lookup_str(result).expect("结果应为字符串").to_string();
+    assert_eq!(text, "genstr|10");
+    assert!(vm.session_gc_stats().total_collections > 0, "执行期应触发字符串 GC");
+}
+
+/// 嵌套回调组合（map 回调内再调 map）：两层内联 dispatch 叠加，任一层指令边界
+/// 触发收集都不回收调用方窗口中的串。
+#[test]
+fn nested_inline_callbacks_caller_reg_strings_survive_runtime_gc() {
+    let mut vm = vm_with_threshold(512);
+    let module = compile(
+        "var g = {}; for (var i = 0; i < 20; i++) { g['k' + i] = 'v'.repeat(64); } \
+         function middle(held) { \
+           var r = [1, 2].map(function(x) { \
+             var inner = [10, 20].map(function(y) { var t; for (var j = 0; j < 200; j++) { t = 'n' + j; } return y; }); \
+             return inner[0] + inner[1] + x; }); \
+           return held + '|' + r.join(','); } \
+         var out = middle('nest' + 'ed'); out",
+    );
+    let result = vm.run(&module).expect("run");
+    let text = vm.lookup_str(result).expect("结果应为字符串").to_string();
+    assert_eq!(text, "nested|31,32");
+    assert!(vm.session_gc_stats().total_collections > 0, "执行期应触发字符串 GC");
+}
+
 /// full_reset 清空 session 内存：执行期回收释放过的死串不与完全重置的
 /// 整体释放路径重复释放（无双重释放崩溃），重置后引擎可继续运行。
 #[test]

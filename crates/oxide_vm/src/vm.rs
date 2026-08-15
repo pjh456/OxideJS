@@ -1320,10 +1320,14 @@ impl Vm {
         let mut steps: u64 = 0;
         loop {
             steps += 1;
-            // 执行期字符串 GC 安全点：指令边界上无 builtin 局部活值（分配点触发
-            // 会释放仅存于 Rust 局部/构造中未登记对象的串），此处触发保证回收
-            // 时所有存活串都已落地为执行根。账目未超水位时仅 2 次字段比较。
-            if self.gc_state.session_bytes_allocated >= self.gc_state.string_gc_watermark {
+            // 执行期字符串 GC 安全点：仅在顶层 dispatch（native_call_depth == 0）
+            // 的指令边界触发——嵌套 dispatch（builtin 经 call_function_sync 重入
+            // 执行 JS 回调、generator/async 恢复）期间，调用方寄存器窗口副本存于
+            // inline 状态（非 GC 根），此时回收会把调用方 regs 中的活串当死串释放。
+            // 返回顶层后检查恢复，存活串此时已回拷为执行根。账目未超水位时仅
+            // 3 次字段比较。
+            if self.native_call_depth == 0 && self.gc_state.session_bytes_allocated >= self.gc_state.string_gc_watermark
+            {
                 self.maybe_collect_session_strings();
             }
             if let Some(max_steps) = max_steps {
