@@ -183,20 +183,6 @@ impl FrameArgs<'_> {
             FrameArgs::RegRange { count, .. } => *count,
         }
     }
-
-    /// 取第 `i` 个实参；超出实参范围返回 undefined（与切片 `get(i)` 语义一致）。
-    pub(crate) fn get(&self, vm: &Vm, i: usize) -> JsValue {
-        match self {
-            FrameArgs::Slice(s) => s.get(i).copied().unwrap_or(JsValue::undefined()),
-            FrameArgs::RegRange { first, count } => {
-                if i < *count {
-                    vm.regs[first.wrapping_add(i as u8) as usize]
-                } else {
-                    JsValue::undefined()
-                }
-            }
-        }
-    }
 }
 
 /// 一次函数调用的调用帧：记录返回地址、调用方寄存器窗口与 `this`/`new.target`。
@@ -1240,8 +1226,29 @@ impl Vm {
         let saved_this = self.regs[254];
         let saved_new_target = self.regs[255];
 
+        // 完整实参先写入 spill 栈实参区（在帧的 spill 区之前）：CREATE_ARGUMENTS 据此
+        // 构建 arguments 对象，帧恢复时随 spill 区截断一起丢弃。spill 在前、形参在后，
+        // 且形参源改读 spill 区——实参源区间与形参写入区在共享寄存器文件内重叠时
+        // 不会先写后读串值（nested callee identity 高位 param_base 可落入实参区间）。
+        let args_base = self.spill_stack.len() as u32;
+        match args {
+            FrameArgs::Slice(s) => self.spill_stack.extend_from_slice(s),
+            FrameArgs::RegRange { first, count } => {
+                for i in 0..count {
+                    self.spill_stack.push(self.regs[first.wrapping_add(i as u8) as usize]);
+                }
+            }
+        }
+        let args_count = args.len().min(u16::MAX as usize) as u16;
+
+        // 形参拷贝：源为 spill 实参区（与调用方寄存器隔离），实参不足补 undefined。
         for i in 0..sub_n_args {
-            self.regs[sub_param_base + i] = args.get(self, i);
+            let v = if i < args_count as usize {
+                self.spill_stack[args_base as usize + i]
+            } else {
+                JsValue::undefined()
+            };
+            self.regs[sub_param_base + i] = v;
         }
         self.regs[254] = if sub_is_arrow { obj.captured_this() } else { this_value };
         self.regs[255] = new_target;
@@ -1254,19 +1261,6 @@ impl Vm {
             .as_deref()
             .map(|name| self.kernel_core.perm_interner().intern(name).0)
             .unwrap_or(0);
-
-        // 完整实参写入 spill 栈实参区（在帧的 spill 区之前）：CREATE_ARGUMENTS 据此
-        // 构建 arguments 对象，帧恢复时随 spill 区截断一起丢弃。
-        let args_base = self.spill_stack.len() as u32;
-        match args {
-            FrameArgs::Slice(s) => self.spill_stack.extend_from_slice(s),
-            FrameArgs::RegRange { first, count } => {
-                for i in 0..count {
-                    self.spill_stack.push(self.regs[first.wrapping_add(i as u8) as usize]);
-                }
-            }
-        }
-        let args_count = args.len().min(u16::MAX as usize) as u16;
 
         self.frames.push(CallFrame {
             return_addr: self.pc,
@@ -2622,5 +2616,47 @@ mod tests {
         assert_eq!(result, JsValue::int(1), "内嵌 inline 回调后外层 receiver 槽必须保持原值");
         assert_eq!(vm.regs[253], JsValue::int(7), "native 分支恢复后调用方 regs[253] 保持");
         assert_eq!(vm.regs[254], JsValue::int(8), "native 分支恢复后调用方 regs[254] 保持");
+    }
+
+    #[test]
+    fn push_bytecode_frame_param_overlap_reads_spill_first() {
+        // 实参源区间 regs[1..3) 与 callee 形参写入区 regs[2..4) 重叠（first < param_base）：
+        // 压帧必须先拷 spill 实参区、形参再从 spill 区取源，避免边写形参边读实参
+        // 造成先写后读串值（形参 b 与 spill 实参区都取错）。
+        let mut vm = Vm::new();
+        // sub_modules[1] = callee：2 个形参，param_base=2（与调用方实参槽 2 重叠）
+        let mut callee_mod = CompiledModule::new();
+        callee_mod.n_args = 2;
+        callee_mod.param_base = 2;
+        callee_mod.n_registers = 5;
+        callee_mod.bytecode = Arc::from(vec![opcode::encode(opcode::OpCode::RETURN, 0, 0, 0)]);
+        vm.sub_modules = Arc::new(vec![Arc::new(CompiledModule::new()), Arc::new(callee_mod)]);
+        vm.immutables_cache
+            .extend((0..vm.sub_modules.len().saturating_sub(vm.immutables_cache.len())).map(|_| OnceLock::new()));
+        vm.active_reg_limit = 8;
+        // 调用方实参区 regs[1..3)：arg0=10, arg1=20；regs[2] 同时是 callee 形参槽（param_base=2）
+        vm.regs[1] = JsValue::int(10);
+        vm.regs[2] = JsValue::int(20);
+
+        let callee = vm.create_function_object(1, false, false, false, false);
+        vm.push_bytecode_frame(
+            callee,
+            JsValue::undefined(),
+            super::FrameArgs::RegRange { first: 1, count: 2 },
+            None,
+            None,
+            JsValue::undefined(),
+            super::FrameContinuation::None,
+            0,
+        )
+        .expect("压帧成功");
+        // 形参从 spill 实参区取源：regs[2]=arg0=10，regs[3]=arg1=20（不得被先写覆盖）
+        assert_eq!(vm.regs[2], JsValue::int(10), "形参 a 应为实参 arg0");
+        assert_eq!(vm.regs[3], JsValue::int(20), "形参 b 应为实参 arg1（不受先写覆盖）");
+        // spill 实参区（arguments 对象源）保持原实参值
+        let frame = vm.frames.last().expect("压帧后应有帧");
+        let base = frame.arguments_base as usize;
+        assert_eq!(vm.spill_stack[base], JsValue::int(10), "spill 实参区 arg0");
+        assert_eq!(vm.spill_stack[base + 1], JsValue::int(20), "spill 实参区 arg1");
     }
 }
