@@ -44,6 +44,10 @@ impl Emitter {
         let n_labeled = ctx.take_pending_loop_labels(end_label, update_label);
         // 循环头声明中被嵌套函数捕获的 let/const 绑定：每迭代 fresh cell。
         let mut fresh_bindings: Vec<(String, u8)> = Vec::new();
+        // 循环头 let/const 声明名：update 段是 per-iteration 可变绑定
+        // （规范 §14.7.4.4 CreatePerIterationEnvironment 用 CreateMutableBinding），
+        // 编译期 const 写检查对 update 段豁免，故记录全部声明名（含未被捕获者）。
+        let mut update_names: Vec<String> = Vec::new();
         if let Some(init) = &fr.init {
             if let Some(expr) = init.as_expression() {
                 self.emit_expression(expr, ctx)?;
@@ -91,11 +95,13 @@ impl Emitter {
                         ));
                         ctx.init_var(bi.name.as_str());
                     }
-                    // 记录被捕获的 let/const 声明（解构 pattern 递归收集绑定名）。
+                    // 记录 let/const 循环头声明名（update 段写豁免所需）与被捕获的绑定
+                    // （解构 pattern 递归收集绑定名，被捕获者每迭代 fresh cell）。
                     if !matches!(decl.kind, VariableDeclarationKind::Var) {
                         let mut names = Vec::new();
                         self.collect_pattern_binding_names(&d.id, &mut names);
                         for name in &names {
+                            update_names.push(name.clone());
                             if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
                                 fresh_bindings.push((name.clone(), cell_idx));
                             }
@@ -124,11 +130,11 @@ impl Emitter {
         self.emit_statement(&fr.body, ctx)?;
         ctx.labels.set_label_pos(update_label, ctx.insts.len());
         if let Some(update) = &fr.update {
-            // 被捕获的 let/const 循环变量在 update 段写寄存器（而非 cell），
-            // 供下一迭代 fresh 拷贝——否则 CELL_SET 会污染本迭代闭包捕获的 cell。
+            // update 段写寄存器（而非 cell）：被捕获的 let/const 循环变量每迭代 fresh，
+            // update 写寄存器供下一迭代 fresh 拷贝——否则 CELL_SET 会污染本迭代闭包
+            // 捕获的 cell。未捕获者本就走寄存器，一并登记以豁免 update 段的 const 检查。
             let prev = std::mem::take(&mut ctx.register_update_names);
-            let names: Vec<String> = fresh_bindings.iter().map(|(n, _)| n.clone()).collect();
-            ctx.register_update_names = names;
+            ctx.register_update_names = update_names;
             self.emit_expression(update, ctx)?;
             ctx.register_update_names = prev;
         }

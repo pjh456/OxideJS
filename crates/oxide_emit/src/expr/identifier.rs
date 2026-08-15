@@ -120,21 +120,19 @@ impl Emitter {
     ///   不发射写指令（THROW 后不可达）。
     /// - cell 写穿共享单元，无运行时 guard；const 拦截由本入口编译期完成。
     pub(crate) fn emit_identifier_store(&self, name: &str, val_reg: u32, const_flag: u16, ctx: &mut CompileCtx) {
+        // 循环 update 段的 let/const 循环变量是 per-iteration 可变绑定（CreateMutableBinding），
+        // 写寄存器而非 cell，且豁免 const 检查（register_update_names 覆盖全部循环头声明名）。
+        let in_loop_update = ctx.register_update_names.iter().any(|n| n == name);
         // const 再赋值编译期抛 TypeError：赋值路径（含闭包捕获 const 写 cell）统一拦截。
-        if const_flag != 0 {
+        if const_flag != 0 && !in_loop_update {
             let _ = self.emit_throw_error("TypeError", "Assignment to constant variable", ctx);
             return;
         }
         // 循环 update 段：被捕获绑定走寄存器而非 cell（C 风格 for 每迭代 fresh，
         // update 写寄存器供下一迭代 fresh 拷贝，不污染本迭代闭包捕获的 cell）。
-        if ctx.register_update_names.iter().any(|n| n == name) {
+        if in_loop_update {
             if let Some(reg) = ctx.scopes.symbols.lookup_any(name) {
-                ctx.inst(Inst::new(
-                    OpCode::STORE_VAR,
-                    Operand::Reg(reg),
-                    Operand::Reg(val_reg),
-                    Operand::Imm(const_flag),
-                ));
+                ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(reg), Operand::Reg(val_reg), Operand::Imm(0)));
                 return;
             }
         }

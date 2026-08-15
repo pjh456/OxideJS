@@ -111,3 +111,17 @@ fn const_logical_assign_write_throws() {
     let out = eval("const x = 0; x ||= 5");
     assert!(out.contains("Assignment to constant variable"), "got: {out}");
 }
+
+// for-const 循环 update 段写 per-iteration 可变绑定：不抛（规范 §14.7.4.4）。
+#[test]
+fn for_const_update_does_not_throw() {
+    // 数字聚合验证 update 段正常推进：0+1+2 = 3，若误抛则返回 vm error。
+    assert_eq!(eval("let s=0; for (const i = 0; i < 3; i++) s += i; s"), "3");
+}
+
+// for-const 循环体内（非 update 段）对 const 绑定写仍必须抛。
+#[test]
+fn for_const_body_write_still_throws() {
+    let out = eval("for (const i = 0; i < 1; i++) { i = 5; }");
+    assert!(out.contains("Assignment to constant variable"), "got: {out}");
+}

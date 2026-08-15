@@ -27,9 +27,35 @@ fn c_style_for_let_captures_per_iteration() {
 }
 
 #[test]
+fn c_style_for_const_update_writes_per_iteration() {
+    // for-const 的 update 段写 per-iteration 可变绑定（CreateMutableBinding），
+    // 不得抛 "Assignment to constant variable"（V8 输出 0 1 2）。
+    let (vm, result) = eval("let out=[]; for (const i = 0; i < 3; i++) out.push(i); out.join(',')").unwrap();
+    assert_eq!(to_str(&vm, result), "0,1,2");
+}
+
+#[test]
+fn c_style_for_const_captures_per_iteration() {
+    // for-const 循环变量被闭包捕获：每迭代 fresh，update 段写寄存器不污染本迭代 cell。
+    let (vm, result) =
+        eval("let fns = []; for (const i = 0; i < 3; i++) fns.push(() => i); [fns[0](), fns[1](), fns[2]()].join(',')")
+            .unwrap();
+    assert_eq!(to_str(&vm, result), "0,1,2");
+}
+
+#[test]
+fn c_style_for_const_compound_update_writes_per_iteration() {
+    // 复合赋值形态的 update 同样合法（i += 2 是 update 段的 per-iteration 可变写）。
+    let (vm, result) = eval("let out=[]; for (const i = 0; i < 6; i += 2) out.push(i); out.join(',')").unwrap();
+    assert_eq!(to_str(&vm, result), "0,2,4");
+}
+
+#[test]
 fn c_style_for_let_captures_after_multiple_updates() {
-    let (vm, result) = eval("let fns = []; for (let i = 0; i < 5; i += 2) fns.push(() => i); [fns[0](), fns[1](), fns[2]()].join(',')")
-        .unwrap();
+    let (vm, result) = eval(
+        "let fns = []; for (let i = 0; i < 5; i += 2) fns.push(() => i); [fns[0](), fns[1](), fns[2]()].join(',')",
+    )
+    .unwrap();
     assert_eq!(to_str(&vm, result), "0,2,4");
 }
 
@@ -44,23 +70,26 @@ fn c_style_for_var_remains_single_binding() {
 
 #[test]
 fn for_of_const_captures_per_iteration() {
-    let (vm, result) = eval("let fns = []; for (const a of [1, 2]) fns.push(() => a); [fns[0](), fns[1]()].join(',')").unwrap();
+    let (vm, result) =
+        eval("let fns = []; for (const a of [1, 2]) fns.push(() => a); [fns[0](), fns[1]()].join(',')").unwrap();
     assert_eq!(to_str(&vm, result), "1,2");
 }
 
 #[test]
 fn for_of_let_captures_per_iteration() {
     let (vm, result) =
-        eval("let fns = []; for (let a of [10, 20, 30]) fns.push(() => a); [fns[0](), fns[1](), fns[2]()].join(',')").unwrap();
+        eval("let fns = []; for (let a of [10, 20, 30]) fns.push(() => a); [fns[0](), fns[1](), fns[2]()].join(',')")
+            .unwrap();
     assert_eq!(to_str(&vm, result), "10,20,30");
 }
 
 #[test]
 fn for_of_destructuring_captures_per_iteration() {
     // P2：解构 + 闭包捕获不再产出垃圾值。
-    let (vm, result) =
-        eval("let fns = []; for (const [a, b] of [[1, 2], [3, 4]]) fns.push(() => a + b); [fns[0](), fns[1]()].join(',')")
-            .unwrap();
+    let (vm, result) = eval(
+        "let fns = []; for (const [a, b] of [[1, 2], [3, 4]]) fns.push(() => a + b); [fns[0](), fns[1]()].join(',')",
+    )
+    .unwrap();
     assert_eq!(to_str(&vm, result), "3,7");
 }
 
@@ -74,7 +103,8 @@ fn for_of_object_destructuring_captures_per_iteration() {
 
 #[test]
 fn for_in_const_captures_per_iteration() {
-    let (vm, result) = eval("let fns = []; for (const k in {a:1,b:2}) fns.push(() => k); [fns[0](), fns[1]()].join(',')").unwrap();
+    let (vm, result) =
+        eval("let fns = []; for (const k in {a:1,b:2}) fns.push(() => k); [fns[0](), fns[1]()].join(',')").unwrap();
     assert_eq!(to_str(&vm, result), "a,b");
 }
 

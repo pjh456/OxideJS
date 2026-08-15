@@ -467,8 +467,12 @@ impl Emitter {
         &self, name: &str, update: &oxide_parser::UpdateExpression, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
         // 自增/自减先解析赋值引用：TDZ 绑定抛 ReferenceError；const 抛 TypeError（编译期拦截）。
+        // 循环 update 段的 let/const 循环变量是 per-iteration 可变绑定（CreateMutableBinding），
+        // 规范允许写，故豁免 const 检查（register_update_names 覆盖全部循环头声明名）。
         self.emit_identifier_tdz_guard(name, ctx)?;
-        self.emit_const_write_guard(name, ctx)?;
+        if !ctx.register_update_names.iter().any(|n| n == name) {
+            self.emit_const_write_guard(name, ctx)?;
+        }
         let uv_idx = ctx.current_upvalue_captures.iter().position(|u| u.name == name);
         let captured_cell = ctx.captured_bindings.get(name).copied();
         // 循环 update 段：被捕获绑定走寄存器 INC/DEC（C 风格 for 每迭代 fresh，

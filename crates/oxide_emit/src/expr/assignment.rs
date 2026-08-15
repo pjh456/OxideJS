@@ -19,7 +19,10 @@ impl Emitter {
         &self, name: &str, op: OpCode, rhs: u32, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
         // const 复合赋值恒抛 TypeError（编译期拦截，值无关）；检查在读旧值之前。
-        self.emit_const_write_guard(name, ctx)?;
+        // 循环 update 段的 let/const 循环变量是 per-iteration 可变绑定，复合写同样合法，豁免。
+        if !ctx.register_update_names.iter().any(|n| n == name) {
+            self.emit_const_write_guard(name, ctx)?;
+        }
         // 循环 update 段：被捕获绑定走寄存器 RMW（C 风格 for 每迭代 fresh，
         // update 写寄存器供下一迭代 fresh 拷贝，不污染本迭代闭包捕获的 cell）。
         if ctx.register_update_names.iter().any(|n| n == name) {
@@ -176,12 +179,7 @@ impl Emitter {
                     // 复合赋值保规范求值序：先读属性（ic_get）再求值 RHS——RHS 副作用
                     // 可能改写同一属性，后求值才能读到旧值。
                     let val_reg = ctx.alloc_reg();
-                    ctx.inst(Inst::new(
-                        OpCode::LOAD_VAR,
-                        Operand::Reg(val_reg),
-                        Operand::Reg(obj_reg),
-                        Operand::None,
-                    ));
+                    ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(val_reg), Operand::Reg(obj_reg), Operand::None));
                     ctx.inst(Inst::ic_get(Operand::Reg(val_reg), Operand::Reg(key_reg)));
                     let rhs = self.emit_expression(&assign.right, ctx)?;
                     let op = match assign.operator {
