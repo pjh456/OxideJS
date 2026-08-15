@@ -84,6 +84,62 @@ fn naive_from_ms(ms: f64) -> Option<NaiveDateTime> {
     dt_from_ms(ms).map(|dt| dt.naive_utc())
 }
 
+/// MakeDay + MakeTime 语义组合本地时间戳：月/日/时/分/秒/毫秒分量越界时滚动进位，
+/// 再按本地时区映射到真实 UTC 时刻。
+///
+/// # 边界与前提
+/// - 调用方保证各分量已 ToNumber 且非 NaN（任一 NaN 由调用方短路）。
+/// - 分量按 ToIntegerOrInfinity 截断；组合时刻超出 chrono 可表示范围返回 NaN。
+fn make_local_timestamp(y: f64, m: f64, d: f64, h: f64, min: f64, sec: f64, ms: f64) -> f64 {
+    // 月溢出归一到 [0, 12)，商进位到年份（负月同样成立）。
+    let m_norm = m.trunc().rem_euclid(12.0);
+    let y_carry = (m.trunc() / 12.0).floor();
+
+    // 基准取当月 1 号零点，日偏移与全日毫秒统一折算（日可为负或越界）。
+    let base = match NaiveDate::from_ymd_opt((y.trunc() + y_carry) as i32, m_norm as u32 + 1, 1)
+        .and_then(|nd| nd.and_hms_opt(0, 0, 0))
+    {
+        Some(ndt) => ndt,
+        None => return f64::NAN,
+    };
+    let day_ms = base.and_utc().timestamp_millis() as f64;
+    let time_ms = h.trunc() * 3_600_000.0 + min.trunc() * 60_000.0 + sec.trunc() * 1_000.0 + ms.trunc();
+    let naive_ms = day_ms + (d.trunc() - 1.0) * 86_400_000.0 + time_ms;
+
+    // naive 时刻按本地时区解释（DST 歧义取最早），得到真实 UTC 时间戳。
+    match DateTime::from_timestamp_millis(naive_ms as i64) {
+        Some(dt) => dt
+            .naive_utc()
+            .and_local_timezone(Local)
+            .earliest()
+            .map(|dt| dt.timestamp_millis() as f64)
+            .unwrap_or(f64::NAN),
+        None => f64::NAN,
+    }
+}
+
+/// 解析 ISO 8601 日期时间字符串（含时区偏移），返回 UTC 毫秒时间戳；无法解析返回 NaN。
+///
+/// # 边界与前提
+/// - 偏移形态 `Z` / `+hh:mm` / `+hhmm` 均折算为 UTC；无偏移完整时间按 UTC；纯日期按 UTC 零点。
+fn parse_iso_timestamp(s: &str) -> f64 {
+    // 带偏移（含 Z）：DateTime 保留偏移直接折算 UTC。
+    if let Ok(dt) = chrono::DateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f%#z") {
+        return dt.timestamp_millis() as f64;
+    }
+    // 无偏移完整时间按 UTC。
+    if let Ok(ndt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f") {
+        return ndt.and_utc().timestamp_millis() as f64;
+    }
+    // 纯日期按 UTC 零点。
+    if let Ok(nd) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        if let Some(ndt) = nd.and_hms_opt(0, 0, 0) {
+            return ndt.and_utc().timestamp_millis() as f64;
+        }
+    }
+    f64::NAN
+}
+
 /// JS `Date()` 构造逻辑：无参取当前时间；单参支持时间戳/字符串/Date 对象；
 /// 多参按本地时间字段（年/月/日/时/分/秒/毫秒）组合。非构造调用返回日期字符串。
 pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -111,68 +167,31 @@ pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let timestamp = if args.len() < 2 {
         Utc::now().timestamp_millis() as f64
     } else if args.len() > 2 {
-        let now = chrono::Local::now();
         let y_val = oxide_runtime_api::to_number(vm.reg(args[1]));
         let m_val = oxide_runtime_api::to_number(vm.reg(args[2]));
-        if y_val.is_nan() || m_val.is_nan() {
+        let d_val = if args.len() > 3 { oxide_runtime_api::to_number(vm.reg(args[3])) } else { 1.0 };
+        let h_val = if args.len() > 4 { oxide_runtime_api::to_number(vm.reg(args[4])) } else { 0.0 };
+        let min_val = if args.len() > 5 { oxide_runtime_api::to_number(vm.reg(args[5])) } else { 0.0 };
+        let sec_val = if args.len() > 6 { oxide_runtime_api::to_number(vm.reg(args[6])) } else { 0.0 };
+        let ms_val = if args.len() > 7 { oxide_runtime_api::to_number(vm.reg(args[7])) } else { 0.0 };
+        if y_val.is_nan()
+            || m_val.is_nan()
+            || d_val.is_nan()
+            || h_val.is_nan()
+            || min_val.is_nan()
+            || sec_val.is_nan()
+            || ms_val.is_nan()
+        {
             f64::NAN
         } else {
-            let y = y_val.trunc() as i32;
-            let m = m_val.trunc() as u32;
-            let d = if args.len() > 3 {
-                oxide_runtime_api::to_number(vm.reg(args[3])).trunc() as u32
-            } else {
-                now.day()
-            };
-            let h = if args.len() > 4 {
-                oxide_runtime_api::to_number(vm.reg(args[4])).trunc() as u32
-            } else {
-                now.hour()
-            };
-            let min = if args.len() > 5 {
-                oxide_runtime_api::to_number(vm.reg(args[5])).trunc() as u32
-            } else {
-                now.minute()
-            };
-            let sec = if args.len() > 6 {
-                oxide_runtime_api::to_number(vm.reg(args[6])).trunc() as u32
-            } else {
-                now.second()
-            };
-            let ms = if args.len() > 7 {
-                oxide_runtime_api::to_number(vm.reg(args[7])).trunc() as u32
-            } else {
-                now.timestamp_subsec_millis()
-            };
-            NaiveDate::from_ymd_opt(y, m + 1, d)
-                .and_then(|nd| {
-                    nd.and_hms_milli_opt(h, min, sec, ms)
-                        .and_then(|ndt| ndt.and_local_timezone(Local).earliest())
-                })
-                .map(|dt| dt.timestamp_millis() as f64)
-                .unwrap_or(f64::NAN)
+            make_local_timestamp(y_val, m_val, d_val, h_val, min_val, sec_val, ms_val)
         }
     } else {
         let val = vm.reg(args[1]);
         if val.is_string() {
             // SAFETY: val 已确认是字符串值。
             let s = unsafe { (*val.as_string_ptr()).to_owned_string() };
-            let formats = ["%Y-%m-%dT%H:%M:%S%.fZ", "%Y-%m-%dT%H:%M:%S%.f"];
-            let mut ts = f64::NAN;
-            for fmt in &formats {
-                if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, fmt) {
-                    ts = ndt.and_utc().timestamp_millis() as f64;
-                    break;
-                }
-            }
-            if ts.is_nan() {
-                if let Ok(nd) = NaiveDate::parse_from_str(&s, "%Y-%m-%d") {
-                    if let Some(ndt) = nd.and_hms_opt(0, 0, 0).and_then(|n| n.and_local_timezone(Utc).earliest()) {
-                        ts = ndt.timestamp_millis() as f64;
-                    }
-                }
-            }
-            ts
+            parse_iso_timestamp(&s)
         } else if val.is_int() || val.is_double() {
             if val.is_int() {
                 val.as_int() as f64
@@ -247,25 +266,7 @@ pub fn date_parse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         ts = dt.timestamp_millis() as f64;
     }
     if ts.is_nan() {
-        let formats = [
-            "%Y-%m-%dT%H:%M:%S%.fZ",
-            "%Y-%m-%dT%H:%M:%S%.f",
-            "%Y-%m-%dT%H:%M:%S%.f%:z",
-            "%Y-%m-%dT%H:%M:%S%.f%#z",
-        ];
-        for fmt in &formats {
-            if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, fmt) {
-                ts = ndt.and_utc().timestamp_millis() as f64;
-                break;
-            }
-        }
-    }
-    if ts.is_nan() {
-        if let Ok(nd) = NaiveDate::parse_from_str(&s, "%Y-%m-%d") {
-            if let Some(ndt) = nd.and_hms_opt(0, 0, 0).and_then(|n| n.and_local_timezone(Utc).earliest()) {
-                ts = ndt.timestamp_millis() as f64;
-            }
-        }
+        ts = parse_iso_timestamp(&s);
     }
     if ts.is_nan() {
         if let Ok(nd) = NaiveDate::parse_from_str(&s, "%Y/%m/%d") {

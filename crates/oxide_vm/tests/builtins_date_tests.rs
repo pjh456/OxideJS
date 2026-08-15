@@ -35,6 +35,20 @@ fn date_parse_invalid() {
     assert!(r.as_double().is_nan());
 }
 
+#[test]
+fn date_parse_iso_with_offset() {
+    let mut vm = Vm::new();
+    // 带偏移按偏移折算 UTC：+08:00 → 2019-12-31T16:00:00Z。
+    let r = eval(&mut vm, "Date.parse('2020-01-01T00:00:00+08:00')").unwrap();
+    assert_eq!(r.as_double(), 1577808000000.0);
+    // 负偏移同样折算：-05:00 → 2020-01-01T05:00:00Z。
+    let r = eval(&mut vm, "Date.parse('2020-01-01T00:00:00-05:00')").unwrap();
+    assert_eq!(r.as_double(), 1577854800000.0);
+    // Z 后缀保持 UTC。
+    let r = eval(&mut vm, "Date.parse('2020-01-01T00:00:00Z')").unwrap();
+    assert_eq!(r.as_double(), 1577836800000.0);
+}
+
 // ── 经 JS 调用 new Date() 构造器 ──
 
 #[test]
@@ -107,6 +121,19 @@ fn date_to_iso_string() {
 }
 
 #[test]
+fn date_constructor_string_with_offset() {
+    let mut vm = Vm::new();
+    // 单参字符串带时区偏移：+08:00 的午夜等于前一日 16:00 UTC。
+    let r = eval(&mut vm, "new Date('2020-01-01T00:00:00+08:00').getTime()").unwrap();
+    assert_eq!(r.as_double(), 1577808000000.0);
+    let r = eval(&mut vm, "new Date('2020-01-01T00:00:00-05:00').getTime()").unwrap();
+    assert_eq!(r.as_double(), 1577854800000.0);
+    // 无偏移完整时间按 UTC。
+    let r = eval(&mut vm, "new Date('2020-01-01T00:00:00').getTime()").unwrap();
+    assert_eq!(r.as_double(), 1577836800000.0);
+}
+
+#[test]
 fn date_to_json() {
     let mut vm = Vm::new();
     // 解析显式 ISO UTC 字符串，避免时区依赖。
@@ -165,13 +192,75 @@ fn date_constructor_uses_local_timezone() {
 }
 
 #[test]
-fn date_constructor_defaults_from_current_time() {
+fn date_constructor_missing_fields_default_fixed() {
     let mut vm = Vm::new();
-    // 缺省参数回退到当前时间分量。
+    // 缺省日/时分秒毫秒取固定值（日=1、时分秒毫秒=0），不随当前时刻漂移。
     let r = eval(&mut vm, "var d = new Date(2020, 5); d.getMonth()").unwrap();
     assert_eq!(r.as_double(), 5.0);
-    let r = eval(&mut vm, "new Date(2020, 5).getDate()").unwrap();
-    assert!(r.as_double() >= 1.0 && r.as_double() <= 31.0);
+    let r = eval(&mut vm, "var d = new Date(2020, 5); d.getDate()").unwrap();
+    assert_eq!(r.as_double(), 1.0);
+    let r = eval(&mut vm, "var d = new Date(2020, 5); d.getHours()").unwrap();
+    assert_eq!(r.as_double(), 0.0);
+    let r = eval(&mut vm, "var d = new Date(2020, 5); d.getMinutes()").unwrap();
+    assert_eq!(r.as_double(), 0.0);
+    let r = eval(&mut vm, "var d = new Date(2020, 5); d.getSeconds()").unwrap();
+    assert_eq!(r.as_double(), 0.0);
+    let r = eval(&mut vm, "var d = new Date(2020, 5); d.getMilliseconds()").unwrap();
+    assert_eq!(r.as_double(), 0.0);
+}
+
+#[test]
+fn date_constructor_month_overflow_rolls_year() {
+    let mut vm = Vm::new();
+    // 月分量越界滚动到下一年（MakeDay 语义）。
+    let r = eval(
+        &mut vm,
+        "var d = new Date(2020, 12, 1); [d.getFullYear(), d.getMonth(), d.getDate()].join(',')",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "2021,0,1");
+    // 多月越界同样进位。
+    let r = eval(
+        &mut vm,
+        "var d = new Date(2020, 24, 1); [d.getFullYear(), d.getMonth(), d.getDate()].join(',')",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "2022,0,1");
+}
+
+#[test]
+fn date_constructor_zero_date_rolls_back() {
+    let mut vm = Vm::new();
+    // 日为 0 回退到上月末。
+    let r = eval(
+        &mut vm,
+        "var d = new Date(2020, 0, 0); [d.getFullYear(), d.getMonth(), d.getDate()].join(',')",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "2019,11,31");
+}
+
+#[test]
+fn date_constructor_negative_month_rolls_back() {
+    let mut vm = Vm::new();
+    // 负月回退到上一年。
+    let r = eval(
+        &mut vm,
+        "var d = new Date(2020, -1, 1); [d.getFullYear(), d.getMonth(), d.getDate()].join(',')",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "2019,11,1");
+}
+
+#[test]
+fn date_constructor_time_overflow_rolls_day() {
+    let mut vm = Vm::new();
+    // 小时越界滚动到下一天。
+    let r = eval(&mut vm, "var d = new Date(2020, 0, 1, 24); d.getDate()").unwrap();
+    assert_eq!(r.as_double(), 2.0);
+    // 秒越界同样滚动。
+    let r = eval(&mut vm, "var d = new Date(2020, 0, 1, 0, 0, 60); d.getMinutes()").unwrap();
+    assert_eq!(r.as_double(), 1.0);
 }
 
 #[test]
