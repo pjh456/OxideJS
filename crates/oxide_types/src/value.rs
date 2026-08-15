@@ -47,6 +47,40 @@ fn get_tag(bits: u64) -> u64 {
     (bits & TAG_MASK) >> TAG_SHIFT
 }
 
+/// ECMAScript 语言类型分类（`typeof` 与相等/强转的分派粒度）。
+///
+/// Number 内部两种表示（int/double）分列两个变体；需按"都是 Number"
+/// 合并判断时用 [`JsType::is_number`]。
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum JsType {
+    /// 32 位整数表示（tag 0）。
+    Int,
+    /// 普通双精度位模式（非 NaN-box，含 ±Infinity 与规范 NaN）。
+    Double,
+    /// 布尔值。
+    Bool,
+    /// `null`。
+    Null,
+    /// `undefined`。
+    Undefined,
+    /// 对象引用（48 位指针）。
+    Object,
+    /// 字符串引用（48 位指针）。
+    String,
+    /// 符号值（payload 为符号表下标）。
+    Symbol,
+    /// BigInt 指针（48 位指针，tag 7）。
+    BigInt,
+}
+
+impl JsType {
+    /// 是否为 ECMAScript Number（int 或 double 表示）。
+    #[inline]
+    pub fn is_number(self) -> bool {
+        matches!(self, JsType::Int | JsType::Double)
+    }
+}
+
 /// 统一 ECMAScript 值：一个 NaN-boxed 的 64 位字。
 ///
 /// `repr(transparent)` 包裹单个 `u64`。double 原样编码；非 double 类型
@@ -106,6 +140,42 @@ impl JsValue {
     #[inline(always)]
     pub fn to_bits(self) -> u64 {
         self.0
+    }
+
+    /// 单次提取 ECMAScript 语言类型：一次范围判断 + 掩码位移，替代多个
+    /// `is_*` 串联判断。
+    ///
+    /// # 边界与前提
+    /// - 非 NaN-box 位模式（含规范 NaN 与 ±Infinity）一律归为 `Double`
+    /// - NaN-box 内按 tag 位映射（bits 50-48 三比特全被占用，无遗漏）
+    ///
+    /// # 注意事项
+    /// int 与 double 是两种表示；按"都是 Number"判断用 [`JsType::is_number`]。
+    #[inline]
+    pub fn js_type(self) -> JsType {
+        let prefix = (self.0 >> TAG_SHIFT) as u16;
+        if !(0xFFF8..=0xFFFF).contains(&prefix) {
+            return JsType::Double;
+        }
+        match get_tag(self.0) {
+            TAG_INT => JsType::Int,
+            TAG_BOOL => JsType::Bool,
+            TAG_NULL => JsType::Null,
+            TAG_UNDEFINED => JsType::Undefined,
+            TAG_OBJECT => JsType::Object,
+            TAG_STRING => JsType::String,
+            TAG_SYMBOL => JsType::Symbol,
+            // tag 7 = BigInt（NaN 规范化编码已改用普通 quiet NaN，见 [`JsValue::float`]）。
+            TAG_BIGINT => JsType::BigInt,
+            // 3 位 tag 全被占用，该分支不可达（仅满足类型系统穷尽性）。
+            _ => JsType::Double,
+        }
+    }
+
+    /// 是否为 ECMAScript Number（int 或 double 表示）。
+    #[inline]
+    pub fn is_number(self) -> bool {
+        matches!(self.js_type(), JsType::Int | JsType::Double)
     }
 
     /// 构造 32 位整数（tag = int，payload 为 `i32` 位模式）。
@@ -407,7 +477,7 @@ impl fmt::Debug for JsValue {
 
 #[cfg(test)]
 mod tests {
-    use super::JsValue;
+    use super::{JsType, JsValue};
     use num_bigint::BigInt;
     use proptest::prelude::*;
     use proptest::test_runner::TestRunner;
@@ -472,6 +542,40 @@ mod tests {
                 ];
                 let count = matched.iter().filter(|&&x| x).count();
                 assert_eq!(count, 1, "bits={bits:#018x} matched {count} types");
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn js_type_matches_tag_checks() {
+        let mut runner = TestRunner::default();
+        runner
+            .run(&any::<u64>(), |bits| {
+                let val = JsValue::from_bits(bits);
+                let t = val.js_type();
+                // 随机位模式上 js_type 与 9 个 is_* 检查 1:1 对拍。
+                let expected = if val.is_double() {
+                    JsType::Double
+                } else if val.is_int() {
+                    JsType::Int
+                } else if val.is_bool() {
+                    JsType::Bool
+                } else if val.is_null() {
+                    JsType::Null
+                } else if val.is_undefined() {
+                    JsType::Undefined
+                } else if val.is_object() {
+                    JsType::Object
+                } else if val.is_string() {
+                    JsType::String
+                } else if val.is_symbol() {
+                    JsType::Symbol
+                } else {
+                    JsType::BigInt
+                };
+                assert_eq!(t, expected, "bits={bits:#018x} js_type={t:?}");
+                assert_eq!(t.is_number(), val.is_int() || val.is_double(), "bits={bits:#018x}");
                 Ok(())
             })
             .unwrap();

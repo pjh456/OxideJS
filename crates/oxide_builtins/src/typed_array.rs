@@ -989,7 +989,7 @@ pub fn typed_array_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     };
     for i in from_index..view.length {
         let elem = native_try!(ta_read(vm, view, i));
-        if oxide_runtime_api::strict_eq(elem, target) {
+        if oxide_runtime_api::strict_equality(elem, target) {
             return NativeResult::Ok(JsValue::int(i as i32));
         }
     }
@@ -1027,7 +1027,7 @@ pub fn typed_array_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRe
     }
     for i in (0..=from_index as usize).rev() {
         let elem = native_try!(ta_read(vm, view, i));
-        if oxide_runtime_api::strict_eq(elem, target) {
+        if oxide_runtime_api::strict_equality(elem, target) {
             return NativeResult::Ok(JsValue::int(i as i32));
         }
     }

@@ -20,7 +20,7 @@ use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::mem::{Epoch, P};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::shape::EMPTY_SHAPE_ID;
-use oxide_types::value::JsValue;
+use oxide_types::value::{JsType, JsValue};
 
 /// 每个 builtin native 函数的返回值。
 pub enum NativeResult {
@@ -230,34 +230,29 @@ pub fn bigint_to_string(v: &num_bigint::BigInt) -> String {
 /// Number/String/Boolean/null 按规范转换；undefined 与不可解析字符串为 `NaN`；
 /// Object 与 Symbol 不在此处理，返回 `NaN`（对象需走 [`to_number_full`]）。
 pub fn to_number(val: JsValue) -> f64 {
-    if val.is_int() {
-        return val.as_int() as f64;
+    match val.js_type() {
+        JsType::Int => val.as_int() as f64,
+        JsType::Double => val.as_double(),
+        JsType::Bool => {
+            if val.as_bool() {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        JsType::Null => 0.0,
+        JsType::Undefined => f64::NAN,
+        JsType::String => {
+            let s = unsafe { string_data(val) };
+            parse_js_number(s)
+        }
+        JsType::BigInt => {
+            // BigInt → Number 近似转换：i128 超出 f64 精度时舍入为近似值。
+            // 规范路径（显式 Number(bigint) / 位运算）在 builtins / dispatch 层精确处理。
+            bigint_to_f64(unsafe { bigint_data(val) })
+        }
+        JsType::Object | JsType::Symbol => f64::NAN,
     }
-    if val.is_double() {
-        return val.as_double();
-    }
-    if val.is_bool() {
-        return if val.as_bool() { 1.0 } else { 0.0 };
-    }
-    if val.is_null() {
-        return 0.0;
-    }
-    if val.is_undefined() {
-        return f64::NAN;
-    }
-    if val.is_string() {
-        let s = unsafe { string_data(val) };
-        return parse_js_number(s);
-    }
-    if val.is_bigint() {
-        // BigInt → Number 近似转换：i128 超出 f64 精度时舍入为近似值。
-        // 规范路径（显式 Number(bigint) / 位运算）在 builtins / dispatch 层精确处理。
-        return bigint_to_f64(unsafe { bigint_data(val) });
-    }
-    if val.is_object() {
-        return f64::NAN;
-    }
-    f64::NAN
 }
 
 /// 按 ECMA-262 ToNumber 的 StringNumericLiteral 语法解析字符串。
@@ -557,133 +552,61 @@ pub fn to_boolean(val: JsValue) -> bool {
     false
 }
 
-/// 两个值是否共享同一 ECMAScript 语言类型。Number 把 int 与 double tag 的值
-/// 视为同一类型（都是 Number）。
-fn same_type(a: JsValue, b: JsValue) -> bool {
-    if a.is_string() && b.is_string() {
-        return true;
-    }
-    if (a.is_int() || a.is_double()) && (b.is_int() || b.is_double()) {
-        return true;
-    }
-    if a.is_bool() && b.is_bool() {
-        return true;
-    }
-    if a.is_null() && b.is_null() {
-        return true;
-    }
-    if a.is_undefined() && b.is_undefined() {
-        return true;
-    }
-    if a.is_object() && b.is_object() {
-        return true;
-    }
-    if a.is_symbol() && b.is_symbol() {
-        return true;
-    }
-    if a.is_bigint() && b.is_bigint() {
-        return true;
-    }
-    false
-}
-
 /// IsLooselyEqual(x, y) — ECMA-262 §7.2.15（`==`）。
 ///
-/// 省略 BigInt 步骤（引擎剪除 BigInt）。对象操作数经 ToPrimitive 强制转换，
-/// 可能调用用户 `valueOf` / `toString` / `@@toPrimitive`；因此需要 `VmHost`
-/// 参数与 `Result`（这些回调抛出的 TypeError 以 `Err` 传播）。
-/// 注意：`Object == Symbol` 不触发 ToPrimitive（规范步骤 11/12 只覆盖
-/// Number/String），直接落到 `false`。
+/// 同类型委托严格相等；null 与 undefined 互等；BigInt/Number/String 两两
+/// 转数值比较；Boolean 操作数先 ToNumber；原始值 vs Object 经 ToPrimitive
+/// 强制转换后重入（Symbol 与 Object 同样触发，规范步骤 10-11）。对象路径
+/// 可能调用用户 `valueOf` / `toString` / `@@toPrimitive`，因此需要 `VmHost`
+/// 参数与 `Result`（回调抛出的 TypeError 以 `Err` 传播）。
 pub fn abstract_eq<H: VmHost>(lhs: JsValue, rhs: JsValue, host: &mut H) -> Result<bool, String> {
-    // 步骤 1：同类型 → 严格相等。
-    if same_type(lhs, rhs) {
+    let tl = lhs.js_type();
+    let tr = rhs.js_type();
+    // 同类型 → 严格相等。
+    if tl == tr {
         return Ok(strict_equality(lhs, rhs));
     }
-    // 步骤 2-3：null 与 undefined 互等。
-    if (lhs.is_null() && rhs.is_undefined()) || (lhs.is_undefined() && rhs.is_null()) {
-        return Ok(true);
+    match (tl, tr) {
+        // null 与 undefined 互等。
+        (JsType::Null, JsType::Undefined) | (JsType::Undefined, JsType::Null) => Ok(true),
+        // Number 混合表示（int vs double）：同属 ECMAScript Number，按严格相等。
+        (JsType::Int | JsType::Double, JsType::Int | JsType::Double) => Ok(strict_equality(lhs, rhs)),
+        // BigInt 与 Number：转 f64 比较（精度内精确；超出精度近似）。
+        (JsType::BigInt, JsType::Int | JsType::Double) => {
+            Ok(bigint_to_f64(unsafe { bigint_data(lhs) }) == to_number(rhs))
+        }
+        (JsType::Int | JsType::Double, JsType::BigInt) => {
+            Ok(to_number(lhs) == bigint_to_f64(unsafe { bigint_data(rhs) }))
+        }
+        // BigInt 与 String：字符串解析为数字后比较。
+        (JsType::BigInt, JsType::String) => {
+            let r = parse_js_number(unsafe { string_data(rhs) });
+            Ok(bigint_to_f64(unsafe { bigint_data(lhs) }) == r)
+        }
+        (JsType::String, JsType::BigInt) => {
+            let l = parse_js_number(unsafe { string_data(lhs) });
+            Ok(l == bigint_to_f64(unsafe { bigint_data(rhs) }))
+        }
+        // Number 与 String：字符串经 ToNumber 后按严格数值比较。
+        (JsType::Int | JsType::Double, JsType::String) | (JsType::String, JsType::Int | JsType::Double) => {
+            Ok(strict_double_eq(to_number(lhs), to_number(rhs)))
+        }
+        // Boolean 操作数：先 ToNumber 再重入。int(0/1) 轻量编码，省 float
+        // 装箱与 to_number 链；int 属于 Number，重入后各数值分支全部认。
+        (JsType::Bool, _) => abstract_eq(JsValue::int(lhs.as_bool() as i32), rhs, host),
+        (_, JsType::Bool) => abstract_eq(lhs, JsValue::int(rhs.as_bool() as i32), host),
+        // Object 与原始值（Number/String/BigInt/Symbol）：ToPrimitive 后重入。
+        (JsType::Object, JsType::Int | JsType::Double | JsType::String | JsType::BigInt | JsType::Symbol) => {
+            let prim = to_primitive(lhs, ToPrimitiveHint::Default, host)?;
+            abstract_eq(prim, rhs, host)
+        }
+        (JsType::Int | JsType::Double | JsType::String | JsType::BigInt | JsType::Symbol, JsType::Object) => {
+            let prim = to_primitive(rhs, ToPrimitiveHint::Default, host)?;
+            abstract_eq(lhs, prim, host)
+        }
+        // 其余组合不相等（含 null/undefined 与其它类型、Object/Object 已由同类型分支处理）。
+        _ => Ok(false),
     }
-    // BigInt 与 Number：转 f64 比较（精度内精确；超出精度近似）。
-    if lhs.is_bigint() && (rhs.is_int() || rhs.is_double()) {
-        return Ok(bigint_to_f64(unsafe { bigint_data(lhs) }) == to_number(rhs));
-    }
-    if (lhs.is_int() || lhs.is_double()) && rhs.is_bigint() {
-        return Ok(to_number(lhs) == bigint_to_f64(unsafe { bigint_data(rhs) }));
-    }
-    // BigInt 与 String：字符串解析为数字后比较。
-    if lhs.is_bigint() && rhs.is_string() {
-        let r = parse_js_number(unsafe { string_data(rhs) });
-        return Ok(bigint_to_f64(unsafe { bigint_data(lhs) }) == r);
-    }
-    if lhs.is_string() && rhs.is_bigint() {
-        let l = parse_js_number(unsafe { string_data(lhs) });
-        return Ok(l == bigint_to_f64(unsafe { bigint_data(rhs) }));
-    }
-    // 步骤 5-6：Number 与 String。
-    if (lhs.is_int() || lhs.is_double()) && rhs.is_string() {
-        return Ok(strict_double_eq(to_number(lhs), to_number(rhs)));
-    }
-    if lhs.is_string() && (rhs.is_int() || rhs.is_double()) {
-        return Ok(strict_double_eq(to_number(lhs), to_number(rhs)));
-    }
-    // 步骤 9：x 为 Boolean → 比较 ToNumber(x)。
-    if lhs.is_bool() {
-        return abstract_eq(JsValue::float(to_number(lhs)), rhs, host);
-    }
-    // 步骤 10：y 为 Boolean → 比较 ToNumber(y)。
-    if rhs.is_bool() {
-        return abstract_eq(lhs, JsValue::float(to_number(rhs)), host);
-    }
-    // 步骤 11：x 为 Number/String，y 为 Object → ToPrimitive(y)。
-    if (lhs.is_int() || lhs.is_double() || lhs.is_string() || lhs.is_bigint() || lhs.is_symbol()) && rhs.is_object() {
-        let prim = to_primitive(rhs, ToPrimitiveHint::Default, host)?;
-        return abstract_eq(lhs, prim, host);
-    }
-    // 步骤 12：x 为 Object，y 为 Number/String → ToPrimitive(x)。
-    if lhs.is_object() && (rhs.is_int() || rhs.is_double() || rhs.is_string() || rhs.is_bigint() || rhs.is_symbol()) {
-        let prim = to_primitive(lhs, ToPrimitiveHint::Default, host)?;
-        return abstract_eq(prim, rhs, host);
-    }
-    // 步骤 14：否则不相等。
-    Ok(false)
-}
-
-/// Strict Equality Comparison（`===`，ECMA-262 §7.2.14）。
-///
-/// 类型不同直接为 false；同类型下 Object 按指针、其余按值比较。
-pub fn strict_eq(lhs: JsValue, rhs: JsValue) -> bool {
-    if lhs.is_int() && rhs.is_int() {
-        return lhs.as_int() == rhs.as_int();
-    }
-    // Number 跨 int/double 表示比较：`42 === 42.0` 按 SameValue 语义应相等。
-    if (lhs.is_int() || lhs.is_double()) && (rhs.is_int() || rhs.is_double()) {
-        return strict_double_eq(to_f64(lhs), to_f64(rhs));
-    }
-    if lhs.is_double() && rhs.is_double() {
-        return strict_double_eq(lhs.as_double(), rhs.as_double());
-    }
-    if lhs.is_bool() && rhs.is_bool() {
-        return lhs.as_bool() == rhs.as_bool();
-    }
-    if lhs.is_null() && rhs.is_null() {
-        return true;
-    }
-    if lhs.is_undefined() && rhs.is_undefined() {
-        return true;
-    }
-    if lhs.is_string() && rhs.is_string() {
-        return string_value_eq(lhs, rhs);
-    }
-    if lhs.is_object() && rhs.is_object() {
-        return lhs.as_ptr() == rhs.as_ptr();
-    }
-    if lhs.is_symbol() && rhs.is_symbol() {
-        return lhs.as_symbol_index() == rhs.as_symbol_index();
-    }
-    if lhs.is_bigint() && rhs.is_bigint() {
-        return unsafe { bigint_data(lhs) } == unsafe { bigint_data(rhs) };
-    }
-    false
 }
 
 fn strict_double_eq(a: f64, b: f64) -> bool {
@@ -794,55 +717,41 @@ fn number_cmp_bigint(num: JsValue, big: &num_bigint::BigInt) -> Ordering {
 
 /// SameValue(x, y)（ECMA-262 §7.2.9）：与 `===` 的区别在于 NaN 视为相等、+0/-0 视为不同。
 pub fn same_value(lhs: JsValue, rhs: JsValue) -> bool {
-    if lhs.is_double() && rhs.is_double() {
-        let a = lhs.as_double();
-        let b = rhs.as_double();
-        if a.is_nan() && b.is_nan() {
-            return true;
+    match (lhs.js_type(), rhs.js_type()) {
+        (JsType::Double, JsType::Double) => {
+            let a = lhs.as_double();
+            let b = rhs.as_double();
+            if a.is_nan() && b.is_nan() {
+                return true;
+            }
+            if a == 0.0 && b == 0.0 {
+                return a.is_sign_negative() == b.is_sign_negative();
+            }
+            a == b
         }
-        if a == 0.0 && b == 0.0 {
-            let a_neg = a.is_sign_negative();
-            let b_neg = b.is_sign_negative();
-            return a_neg == b_neg;
+        (JsType::Int, JsType::Int) => lhs.as_int() == rhs.as_int(),
+        // Number 混合表示（int vs double）：SameValue 的 ±0/NaN 特判原样保留。
+        (JsType::Int | JsType::Double, JsType::Int | JsType::Double) => {
+            let a = to_f64(lhs);
+            let b = to_f64(rhs);
+            if a.is_nan() && b.is_nan() {
+                return true;
+            }
+            if a == 0.0 && b == 0.0 {
+                return a.is_sign_negative() == b.is_sign_negative();
+            }
+            a == b
         }
-        return a == b;
+        (JsType::Bool, JsType::Bool) => lhs.as_bool() == rhs.as_bool(),
+        (JsType::Null, JsType::Null) => true,
+        (JsType::Undefined, JsType::Undefined) => true,
+        (JsType::String, JsType::String) => string_value_eq(lhs, rhs),
+        (JsType::Object, JsType::Object) => lhs.as_ptr() == rhs.as_ptr(),
+        (JsType::Symbol, JsType::Symbol) => lhs.as_symbol_index() == rhs.as_symbol_index(),
+        // SAFETY: bigint 指针由 JsValue::bigint 构造，指向 VM 登记的存活 box。
+        (JsType::BigInt, JsType::BigInt) => unsafe { bigint_data(lhs) == bigint_data(rhs) },
+        _ => false,
     }
-    if lhs.is_int() && rhs.is_int() {
-        return lhs.as_int() == rhs.as_int();
-    }
-    if (lhs.is_int() || lhs.is_double()) && (rhs.is_int() || rhs.is_double()) {
-        let a = to_f64(lhs);
-        let b = to_f64(rhs);
-        if a.is_nan() && b.is_nan() {
-            return true;
-        }
-        if a == 0.0 && b == 0.0 {
-            return a.is_sign_negative() == b.is_sign_negative();
-        }
-        return a == b;
-    }
-    if lhs.is_bool() && rhs.is_bool() {
-        return lhs.as_bool() == rhs.as_bool();
-    }
-    if lhs.is_null() && rhs.is_null() {
-        return true;
-    }
-    if lhs.is_undefined() && rhs.is_undefined() {
-        return true;
-    }
-    if lhs.is_string() && rhs.is_string() {
-        return string_value_eq(lhs, rhs);
-    }
-    if lhs.is_object() && rhs.is_object() {
-        return lhs.as_ptr() == rhs.as_ptr();
-    }
-    if lhs.is_symbol() && rhs.is_symbol() {
-        return lhs.as_symbol_index() == rhs.as_symbol_index();
-    }
-    if lhs.is_bigint() && rhs.is_bigint() {
-        return unsafe { bigint_data(lhs) } == unsafe { bigint_data(rhs) };
-    }
-    false
 }
 
 /// ToIntegerOrInfinity(argument) — ECMA-262 §7.1.4.
@@ -866,23 +775,50 @@ pub fn to_length(val: JsValue) -> u64 {
 
 /// SameValueZero(x, y) — ECMA-262 §7.2.11.
 pub fn same_value_zero(lhs: JsValue, rhs: JsValue) -> bool {
-    if (lhs.is_double() || lhs.is_int()) && (rhs.is_double() || rhs.is_int()) {
-        let a = to_f64(lhs);
-        let b = to_f64(rhs);
-        if a.is_nan() && b.is_nan() {
-            return true;
+    match (lhs.js_type(), rhs.js_type()) {
+        (JsType::Int, JsType::Int) => lhs.as_int() == rhs.as_int(),
+        (JsType::Double, JsType::Double) => {
+            let a = lhs.as_double();
+            let b = rhs.as_double();
+            if a.is_nan() && b.is_nan() {
+                return true;
+            }
+            a == b
         }
-        return a == b;
+        // Number 混合表示：NaN 视为相等，+0/-0 相等（Rust f64 中 +0 == -0）。
+        (JsType::Int | JsType::Double, JsType::Int | JsType::Double) => {
+            let a = to_f64(lhs);
+            let b = to_f64(rhs);
+            if a.is_nan() && b.is_nan() {
+                return true;
+            }
+            a == b
+        }
+        _ => same_value(lhs, rhs),
     }
-    same_value(lhs, rhs)
 }
 
-/// 与 [`strict_eq`] 等价的规范层实现：双浮点走 NaN 安全比较，其余复用 [`same_value`]。
+/// Strict Equality Comparison（`===`，ECMA-262 §7.2.14）。
+///
+/// 类型不同直接为 false；同类型下 Number（int/double 两种表示）按数值
+/// 比较（NaN 恒 false、+0/-0 相等，含 int/double 混合——`0 === -0` 为 true），
+/// Object 按指针、其余按值比较。
 pub fn strict_equality(lhs: JsValue, rhs: JsValue) -> bool {
-    if lhs.is_double() && rhs.is_double() {
-        return strict_double_eq(lhs.as_double(), rhs.as_double());
+    match (lhs.js_type(), rhs.js_type()) {
+        (JsType::Int, JsType::Int) => lhs.as_int() == rhs.as_int(),
+        (JsType::Double, JsType::Double) => strict_double_eq(lhs.as_double(), rhs.as_double()),
+        // Number 跨 int/double 表示：`42 === 42.0`、`0 === -0` 均按数值语义。
+        (JsType::Int | JsType::Double, JsType::Int | JsType::Double) => strict_double_eq(to_f64(lhs), to_f64(rhs)),
+        (JsType::Bool, JsType::Bool) => lhs.as_bool() == rhs.as_bool(),
+        (JsType::Null, JsType::Null) => true,
+        (JsType::Undefined, JsType::Undefined) => true,
+        (JsType::String, JsType::String) => string_value_eq(lhs, rhs),
+        (JsType::Object, JsType::Object) => lhs.as_ptr() == rhs.as_ptr(),
+        (JsType::Symbol, JsType::Symbol) => lhs.as_symbol_index() == rhs.as_symbol_index(),
+        // SAFETY: bigint 指针由 JsValue::bigint 构造，指向 VM 登记的存活 box。
+        (JsType::BigInt, JsType::BigInt) => unsafe { bigint_data(lhs) == bigint_data(rhs) },
+        _ => false,
     }
-    same_value(lhs, rhs)
 }
 
 /// ToObject（ECMA-262 §7.1.13）：null/undefined 抛 TypeError，其余原始值包装为对应包装对象。

@@ -201,6 +201,57 @@ fn strict_eq_nan_eval() {
     assert_eq!(eval("NaN === NaN"), "false");
 }
 
+// 严格相等：int 0 与 double -0.0 混合表示按数值语义相等（=== 的 ±0 修复）。
+#[test]
+fn strict_equality_int_zero_vs_float_neg_zero() {
+    assert!(coercion::strict_equality(JsValue::int(0), JsValue::float(-0.0)));
+    assert!(coercion::strict_equality(JsValue::int(0), JsValue::float(0.0)));
+    assert!(!coercion::strict_equality(JsValue::int(1), JsValue::float(-0.0)));
+}
+
+// 严格相等：字面量 0（int）与 -0（double）跨表示 === 为 true。
+#[test]
+fn eval_int_zero_vs_neg_zero_strict() {
+    assert_eq!(eval("0 === -0"), "true");
+    assert_eq!(eval("-0 === -0"), "true");
+    assert_eq!(eval("0 !== -0"), "false");
+    assert_eq!(eval("42 === 42.0"), "true");
+}
+
+// 抽象相等：0 == -0 跨表示按数值相等。
+#[test]
+fn eval_int_zero_vs_neg_zero_loose() {
+    assert_eq!(eval("0 == -0"), "true");
+    assert_eq!(eval("0 != -0"), "false");
+}
+
+// SameValue：int 0 与 double -0.0 视为不同（Object.is 依赖）。
+#[test]
+fn same_value_int_zero_vs_float_neg_zero() {
+    assert!(!coercion::same_value(JsValue::int(0), JsValue::float(-0.0)));
+    assert!(coercion::same_value(JsValue::int(0), JsValue::float(0.0)));
+}
+
+// SameValueZero：int 0 与 double -0.0 视为相同（includes 依赖）。
+#[test]
+fn same_value_zero_int_zero_vs_float_neg_zero() {
+    assert!(coercion::same_value_zero(JsValue::int(0), JsValue::float(-0.0)));
+    assert!(coercion::same_value_zero(JsValue::float(f64::NAN), JsValue::float(f64::NAN)));
+    assert!(coercion::same_value_zero(JsValue::float(f64::NAN), JsValue::float(-f64::NAN)));
+    assert!(!coercion::same_value_zero(JsValue::int(1), JsValue::float(2.0)));
+}
+
+// eval 实况：Object.is / indexOf / includes 的 ±0 与 NaN 语义。
+#[test]
+fn eval_signed_zero_object_is_and_array_methods() {
+    assert_eq!(eval("Object.is(0, -0)"), "false");
+    assert_eq!(eval("Object.is(0, 0)"), "true");
+    assert_eq!(eval("[0].indexOf(-0)"), "0");
+    assert_eq!(eval("[0].includes(-0)"), "true");
+    assert_eq!(eval("[NaN].indexOf(NaN)"), "-1");
+    assert_eq!(eval("[NaN].includes(NaN)"), "true");
+}
+
 // 算术 +：对象操作数经 valueOf 强转。
 #[test]
 fn add_object_valueof_coercion() {

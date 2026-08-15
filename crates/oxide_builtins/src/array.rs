@@ -160,7 +160,11 @@ fn to_integer_or_infinity_bounded<H: VmHost>(vm: &mut H, val: JsValue) -> Result
 #[inline(always)]
 fn clamp_relative(rel: f64, n_f: f64, n: usize) -> usize {
     if rel.is_infinite() {
-        if rel < 0.0 { 0 } else { n }
+        if rel < 0.0 {
+            0
+        } else {
+            n
+        }
     } else if rel < 0.0 {
         (n_f + rel).max(0.0) as usize
     } else {
@@ -908,7 +912,7 @@ pub fn array_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     for i in from_index..n {
         let elem = arraylike_get_or_err!(vm, ptr, i);
-        if oxide_runtime_api::strict_eq(elem, target) {
+        if oxide_runtime_api::strict_equality(elem, target) {
             return NativeResult::Ok(js_array_index(i));
         }
     }
@@ -948,27 +952,11 @@ pub fn array_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     for i in from_index..n {
         let elem = arraylike_get_or_err!(vm, ptr, i);
         // SameValueZero：NaN 视为相等、+0 与 -0 视为相同。
-        if same_value_zero(elem, target) {
+        if oxide_runtime_api::same_value_zero(elem, target) {
             return NativeResult::Ok(JsValue::bool(true));
         }
     }
     NativeResult::Ok(JsValue::bool(false))
-}
-
-/// SameValueZero（ES2015 §7.2.10）：NaN 视为相等、+0 与 -0 视为相同。
-fn same_value_zero(a: JsValue, b: JsValue) -> bool {
-    // 双数字时特殊处理。
-    let a_is_num = a.is_int() || a.is_double();
-    let b_is_num = b.is_int() || b.is_double();
-    if a_is_num && b_is_num {
-        let av = if a.is_int() { a.as_int() as f64 } else { a.as_double() };
-        let bv = if b.is_int() { b.as_int() as f64 } else { b.as_double() };
-        if av.is_nan() && bv.is_nan() {
-            return true;
-        }
-        return av == bv; // Rust f64 中 +0 == -0。
-    }
-    oxide_runtime_api::strict_equality(a, b)
 }
 
 /// `Array.prototype.reverse()`：原地反转元素顺序，返回 this。
@@ -1523,7 +1511,7 @@ pub fn array_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     for i in (0..=from_index_isize as usize).rev() {
         let elem = arraylike_get_or_err!(vm, ptr, i);
-        if oxide_runtime_api::strict_eq(elem, search) {
+        if oxide_runtime_api::strict_equality(elem, search) {
             return NativeResult::Ok(js_array_index(i));
         }
     }
