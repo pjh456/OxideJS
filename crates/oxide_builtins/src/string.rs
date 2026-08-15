@@ -1613,7 +1613,18 @@ pub fn string_match_all_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
                 None => parts.push(String::new()),
             }
         }
-        idx = range.end;
+        // 空匹配（range.start == range.end）必须推进至少一个 UTF-8 字符，否则同一
+        // 位置反复空匹配死循环；空匹配落在串尾时把游标推到串尾之后，保证下一轮
+        // 直接耗尽（与 regress find_iter 的 next_right_pos 推进语义一致）。
+        idx = if range.end > range.start {
+            range.end
+        } else {
+            range.end
+                + input_str
+                    .get(range.end..)
+                    .and_then(|s| s.chars().next())
+                    .map_or(1, char::len_utf8)
+        };
         vm.set_or_create_prop_value(wrapper, index_si, JsValue::int(idx as i32));
         let arr_val = make_string_array(vm, parts);
         make_match_done_result(vm, arr_val)

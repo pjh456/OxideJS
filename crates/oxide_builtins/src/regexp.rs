@@ -146,6 +146,26 @@ pub fn drop_regexp_native(obj: &mut JsObject) -> u64 {
     std::mem::size_of::<regress::Regex>() as u64
 }
 
+/// 深拷贝已编译正则到新对象（GC 搬移 / 晋升流程用）。
+///
+/// 与 drop 配对：新对象获得独立的 `Box<regress::Regex>`，源对象保留自己的指针，
+/// 两侧各自释放恰好一次，杜绝跨 arena 克隆后的指针别名双释放。
+pub fn clone_regexp_native(old_obj: &JsObject, new_obj: &mut JsObject) {
+    if !old_obj.is_regexp_obj() {
+        return;
+    }
+    let Some(ptr) = old_obj.native_fn() else {
+        return;
+    };
+    let regex_ptr = ptr.as_ptr() as *const regress::Regex;
+    if regex_ptr.is_null() {
+        return;
+    }
+    // SAFETY: old_obj 的 native_fn 槽存 `Box<regress::Regex>` 指针，对象存活期间有效。
+    let cloned_ptr = Box::into_raw(Box::new(unsafe { (&*regex_ptr).clone() }));
+    new_obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(cloned_ptr as *const ()) }));
+}
+
 /// `RegExp.prototype.test(string)`：判断是否匹配。global 模式下从 lastIndex 开始匹配。
 pub fn regexp_test<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let re_ptr = match get_regexp_ptr(vm, args) {

@@ -696,6 +696,25 @@ fn string_match_all_next_exhausted() {
     assert!(done);
 }
 
+#[test]
+fn string_match_all_empty_match_advances() {
+    // 回归：空匹配（range.start == range.end）后游标不前进会在同位置反复
+    // 产出空匹配死循环；每位置应恰好一个空匹配后在有限步内耗尽。
+    let mut vm = Vm::new();
+    let result =
+        eval(&mut vm, "var it = 'abc'.matchAll(/(?:)/g); var c = 0; while (!it.next().done) { c++; } c").unwrap();
+    assert_num_eq(result, 4.0);
+}
+
+#[test]
+fn string_match_all_star_empty_advances() {
+    // /a*/g 在 'baaab' 上：空匹配（首尾）+ 长匹配混合，须在有限步内耗尽。
+    let mut vm = Vm::new();
+    let result =
+        eval(&mut vm, "var it = 'baaab'.matchAll(/a*/g); var c = 0; while (!it.next().done) { c++; } c").unwrap();
+    assert_num_eq(result, 4.0);
+}
+
 // ── substring 测试 ──
 
 #[test]

@@ -13,6 +13,23 @@ fn to_str(vm: &Vm, val: JsValue) -> String {
     vm.lookup_str(val).unwrap_or_default()
 }
 
+#[test]
+fn regexp_survives_gc_and_still_matches() {
+    // 回归：正则存入全局对象触发晋升/GC 搬移后，native_fn 槽的已编译 Box
+    // 必须深拷贝到新对象（而非共享指针），否则 epoch 释放与 teardown 双重释放。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var r = /ab+c/g; globalThis.r = r; r.test('xxabbcx')").unwrap();
+    assert!(result.as_bool());
+
+    // 触发完整收集：存活正则克隆进新 arena，旧 Box 由 sweep 释放。
+    vm.reset();
+
+    let result = eval(&mut vm, "globalThis.r.test('xxabbcx')").unwrap();
+    assert!(result.as_bool(), "GC 后正则应仍可匹配");
+    let result = eval(&mut vm, "globalThis.r.exec('xabbbcx')[0]").unwrap();
+    assert_eq!(to_str(&vm, result), "abbbc");
+}
+
 // --- RegExp constructor ---
 
 #[test]
