@@ -258,27 +258,19 @@ fn call_window_try_branch_call_finally_preserves_live_vars() {
 }
 
 #[test]
-fn call_window_nested_callee_param_overlap_arguments() {
-    // 回归锚点：嵌套 callee 调用路径（含 arguments 实参区）在压帧拷贝顺序调整后
-    // 值保持正确。真 bug（实参区与形参写入区重叠串值）由 vm 单元测试
-    // push_bytecode_frame_param_overlap_reads_spill_first 直接构造验证。
-    let src = "function outer(){ \
-                 var x = 5; \
-                 function inner(a, b){ return a*10 + b; } \
-                 var r = inner(x, 7); \
-                 return r; } \
-               outer()";
-    assert_eq!(eval(src), "57");
+fn call_window_new_expression_with_arguments() {
+    // NEW 路径 + 多实参 + arguments 对象：压帧 RegRange 实参进 spill 实参区、
+    // arguments 对象取值正确。该组合（构造路径读 arguments）此前无覆盖。
+    let src = "function P(a,b,c,d){ this.s = a+b+c+d + arguments[3]; } \
+               var p = new P(1,2,3,4); p.s";
+    assert_eq!(eval(src), "14");
 }
 
 #[test]
-fn call_window_nested_callee_param_overlap_with_arguments_object() {
-    // 同回归锚点，加 arguments 对象：spill 实参区构建的 arguments 对象值正确。
-    let src = "function outer(){ \
-                 var x = 5; \
-                 function inner(a, b){ return a*10 + b + arguments[1]; } \
-                 var r = inner(x, 7); \
-                 return r; } \
-               outer()";
-    assert_eq!(eval(src), "64");
+fn call_window_new_expression_many_args_arguments() {
+    // NEW 宽实参窗口（8 实参）+ arguments：spill 实参区构建的 arguments 对象
+    // 逐槽取值正确，形参与 arguments 不因窗口截断/重叠错值。
+    let src = "function P(a,b,c,d,e,f,g,h){ this.s = a+b+c+d+e+f+g+h + arguments[7]; } \
+               var p = new P(1,2,3,4,5,6,7,8); p.s";
+    assert_eq!(eval(src), "44");
 }
