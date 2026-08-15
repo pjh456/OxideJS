@@ -839,8 +839,10 @@ mod tests {
         vm.regs[1] = JsValue::from_js_object(child_session);
         vm.exception_value = Some(JsValue::from_js_object(root_session));
         vm.pending_exception = Some(JsValue::from_js_object(child_session));
-        vm.iters.for_of_iters.push(JsValue::from_js_object(child_session));
-        vm.iters.last_for_of_result = JsValue::from_js_object(root_session);
+        vm.iters.for_of_iters.push(crate::vm_state::ForOfEntry {
+            iterator: JsValue::from_js_object(child_session),
+            last_result: JsValue::from_js_object(root_session),
+        });
 
         let mut roots = Vec::new();
         vm.for_each_root(|v| roots.push(v));

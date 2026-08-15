@@ -538,7 +538,6 @@ impl Vm {
         match oxide_builtins::iterator::make_iterator_for_value(self, iterable) {
             Ok(iterator) => {
                 self.iters.push_for_of(iterator);
-                self.iters.clear_last_for_of_result();
                 Ok(())
             }
             Err(err) => {
@@ -557,7 +556,6 @@ impl Vm {
         match crate::async_from_sync::make_async_iterator(self, iterable) {
             Ok(iterator) => {
                 self.iters.push_for_of(iterator);
-                self.iters.clear_last_for_of_result();
                 Ok(())
             }
             Err(err) => {
@@ -594,14 +592,14 @@ impl Vm {
     }
 
     /// for-await-of 步进完成检查：读取 `AWAIT` 恢复值（a 槽，即迭代器结果对象）的
-    /// `done`，写入 last_for_of_result 并把 `!done` 写 rd（供 JMP_IF_FALSE 分支）。
+    /// `done`，写入本迭代器条目结果并把 `!done` 写 rd（供 JMP_IF_FALSE 分支）。
     pub(crate) fn dispatch_for_await_of_done(&mut self, rd: usize, a: usize) -> Result<(), String> {
         vm_trace!("FOR_AWAIT_OF_DONE rd={} r{}={:?}", rd, a, self.regs[a]);
         let result = self.regs[a];
         if !result.is_object() {
             return self.raise_type_error("iterator result is not an object");
         }
-        self.iters.set_last_for_of_result(result);
+        self.iters.set_last_result(result);
         let result_obj = unsafe { &*result.as_js_object_ptr() };
         let done_si = self.kernel_core.perm_interner().intern("done").0;
         let done_val = match self.ordinary_get(result_obj, done_si, result) {
@@ -616,10 +614,11 @@ impl Vm {
     /// 调用 `return()`，其返回的 promise 经 await 挂起，恢复后继续循环后的指令。
     pub(crate) fn dispatch_for_await_of_close(&mut self) -> Result<(), String> {
         vm_trace!("FOR_AWAIT_OF_CLOSE");
-        let Some(iterator) = self.iters.pop_for_of() else {
+        let Some(entry) = self.iters.pop_for_of() else {
             return Ok(());
         };
-        let result = self.iters.last_for_of_result();
+        let iterator = entry.iterator;
+        let result = entry.last_result;
         if result.is_object() {
             let result_obj = unsafe { &*result.as_js_object_ptr() };
             let done_si = self.kernel_core.perm_interner().intern("done").0;
@@ -678,7 +677,7 @@ impl Vm {
             Err(e) => return self.throw_for_of_error(e),
         };
         let done = to_boolean(done_val);
-        self.iters.set_last_for_of_result(result);
+        self.iters.set_last_result(result);
         self.regs[rd] = JsValue::bool(!done);
         Ok(())
     }
@@ -686,7 +685,7 @@ impl Vm {
     pub(crate) fn dispatch_for_of_next(&mut self, rd: usize) -> Result<(), String> {
         vm_trace!("FOR_OF_NEXT rd={}", rd);
         self.last_uncaught_value = None;
-        let result = self.iters.last_for_of_result();
+        let result = self.iters.last_result();
         if !result.is_object() {
             self.regs[rd] = JsValue::undefined();
             return Ok(());
@@ -716,12 +715,13 @@ impl Vm {
 
     pub(crate) fn dispatch_for_of_close(&mut self) -> Result<(), String> {
         vm_trace!("FOR_OF_CLOSE");
-        let Some(iterator) = self.iters.pop_for_of() else {
+        let Some(entry) = self.iters.pop_for_of() else {
             return Ok(());
         };
+        let iterator = entry.iterator;
+        let result = entry.last_result;
         // 迭代已自然结束（最后一次 next 返回 done:true）时不调 return()；
         // 仅当元素耗尽但迭代器未 done（提前退出）才执行 IteratorClose。
-        let result = self.iters.last_for_of_result();
         if result.is_object() {
             let result_obj = unsafe { &*result.as_js_object_ptr() };
             let done_si = self.kernel_core.perm_interner().intern("done").0;
@@ -789,10 +789,10 @@ impl Vm {
     /// 路径（它已弹出自己的迭代器）。
     pub(crate) fn close_for_of_above(&mut self, depth: usize) {
         while self.iters.for_of_iters.len() > depth {
-            let Some(iterator) = self.iters.pop_for_of() else {
+            let Some(entry) = self.iters.pop_for_of() else {
                 break;
             };
-            let _ = self.close_for_of_iterator(iterator, true);
+            let _ = self.close_for_of_iterator(entry.iterator, true);
         }
     }
 

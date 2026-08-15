@@ -108,7 +108,6 @@ impl Vm {
             iters: IterState {
                 for_in_iters: Vec::new(),
                 for_of_iters: Vec::new(),
-                last_for_of_result: JsValue::undefined(),
             },
             profiling: ProfilingState {
                 ic_hits: std::cell::Cell::new(0),
@@ -213,7 +212,6 @@ impl Vm {
             iters: IterState {
                 for_in_iters: Vec::new(),
                 for_of_iters: Vec::new(),
-                last_for_of_result: JsValue::undefined(),
             },
             profiling: ProfilingState {
                 ic_hits: std::cell::Cell::new(0),

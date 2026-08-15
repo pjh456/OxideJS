@@ -13,6 +13,7 @@ use oxide_types::object::Cell;
 use oxide_types::value::JsValue;
 
 use crate::vm::{CallFrame, Completion, ForInIter, TryHandler, Vm};
+use crate::vm_state::ForOfEntry;
 
 /// 挂起执行上下文快照（三份状态结构体共享的执行核心）。
 pub(crate) struct SuspendedFrame {
@@ -30,8 +31,7 @@ pub(crate) struct SuspendedFrame {
     pub cell_stack: Vec<Vec<*mut Cell>>,
     pub try_stack: Vec<TryHandler>,
     pub for_in_iters: Vec<*mut ForInIter<'static>>,
-    pub for_of_iters: Vec<JsValue>,
-    pub last_for_of_result: JsValue,
+    pub for_of_iters: Vec<ForOfEntry>,
     /// `yield*` 委托中的内层迭代器；异步函数恒为 None。
     pub delegated_iterator: Option<JsValue>,
     pub saved_bytecode_stack: Vec<Arc<[opcode::Instr]>>,
@@ -58,7 +58,6 @@ impl SuspendedFrame {
             try_stack: Vec::new(),
             for_in_iters: Vec::new(),
             for_of_iters: Vec::new(),
-            last_for_of_result: JsValue::undefined(),
             delegated_iterator: None,
             saved_bytecode_stack: Vec::new(),
             saved_immutables_stack: Vec::new(),
@@ -96,7 +95,6 @@ impl SuspendedFrame {
         self.try_stack = std::mem::take(&mut vm.try_stack);
         self.for_in_iters = std::mem::take(&mut vm.iters.for_in_iters);
         self.for_of_iters = std::mem::take(&mut vm.iters.for_of_iters);
-        self.last_for_of_result = vm.iters.last_for_of_result;
         self.delegated_iterator = std::mem::take(&mut vm.delegated_iterator);
         self.saved_bytecode_stack = std::mem::take(&mut vm.saved_bytecode_stack);
         self.saved_immutables_stack = std::mem::take(&mut vm.saved_immutables_stack);
@@ -134,7 +132,6 @@ impl SuspendedFrame {
         vm.try_stack = std::mem::take(&mut self.try_stack);
         vm.iters.for_in_iters = std::mem::take(&mut self.for_in_iters);
         vm.iters.for_of_iters = std::mem::take(&mut self.for_of_iters);
-        vm.iters.last_for_of_result = self.last_for_of_result;
         vm.delegated_iterator = std::mem::take(&mut self.delegated_iterator);
         vm.saved_bytecode_stack = std::mem::take(&mut self.saved_bytecode_stack);
         vm.saved_immutables_stack = std::mem::take(&mut self.saved_immutables_stack);
@@ -174,10 +171,10 @@ impl SuspendedFrame {
                 f(unsafe { &*p }.value);
             }
         }
-        for v in &self.for_of_iters {
-            f(*v);
+        for entry in &self.for_of_iters {
+            f(entry.iterator);
+            f(entry.last_result);
         }
-        f(self.last_for_of_result);
         if let Some(it) = self.delegated_iterator {
             f(it);
         }
@@ -228,10 +225,10 @@ impl SuspendedFrame {
                 cell.value = rewrite(cell.value);
             }
         }
-        for v in &mut self.for_of_iters {
-            *v = rewrite(*v);
+        for entry in &mut self.for_of_iters {
+            entry.iterator = rewrite(entry.iterator);
+            entry.last_result = rewrite(entry.last_result);
         }
-        self.last_for_of_result = rewrite(self.last_for_of_result);
         self.delegated_iterator = self.delegated_iterator.map(&mut rewrite);
         self.exception_value = self.exception_value.map(&mut rewrite);
         self.pending_exception = self.pending_exception.map(&mut rewrite);
@@ -291,8 +288,15 @@ impl SuspendedFrame {
             cell_stack: self.cell_stack.clone(),
             try_stack: self.try_stack.clone(),
             for_in_iters: self.for_in_iters.clone(),
-            for_of_iters: self.for_of_iters.iter().copied().map(&mut rewrite).collect(),
-            last_for_of_result: rewrite(self.last_for_of_result),
+            for_of_iters: self
+                .for_of_iters
+                .iter()
+                .copied()
+                .map(|entry| ForOfEntry {
+                    iterator: rewrite(entry.iterator),
+                    last_result: rewrite(entry.last_result),
+                })
+                .collect(),
             delegated_iterator: self.delegated_iterator.map(&mut rewrite),
             saved_bytecode_stack: self.saved_bytecode_stack.clone(),
             saved_immutables_stack: self.saved_immutables_stack.clone(),
@@ -314,7 +318,7 @@ impl SuspendedFrame {
         self.bytecode.len() as u64 * std::mem::size_of::<opcode::Instr>() as u64
             + self.spill_stack.capacity() as u64 * std::mem::size_of::<JsValue>() as u64
             + self.save_stack.capacity() as u64 * std::mem::size_of::<JsValue>() as u64
-            + self.for_of_iters.capacity() as u64 * std::mem::size_of::<JsValue>() as u64
+            + self.for_of_iters.capacity() as u64 * std::mem::size_of::<ForOfEntry>() as u64
     }
 }
 
@@ -368,8 +372,10 @@ mod tests {
             frame_depth: 0,
             for_of_depth: 0,
         });
-        frame.for_of_iters.push(JsValue::float(6.0));
-        frame.last_for_of_result = JsValue::float(7.0);
+        frame.for_of_iters.push(ForOfEntry {
+            iterator: JsValue::float(6.0),
+            last_result: JsValue::float(7.0),
+        });
         frame.delegated_iterator = Some(JsValue::float(8.0));
         frame.saved_bytecode_stack.push(Arc::from(vec![0u32]));
         frame.saved_immutables_stack.push(std::ptr::slice_from_raw_parts(std::ptr::null(), 0));

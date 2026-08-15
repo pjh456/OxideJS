@@ -12,7 +12,7 @@ use smallvec::SmallVec;
 pub use crate::bindings::init_kernel_builtins;
 use crate::native::NativeFn;
 use crate::session_gc::SessionGc;
-use crate::vm_state::{GcState, IterState, ProfilingState, SymbolState};
+use crate::vm_state::{ForOfEntry, GcState, IterState, ProfilingState, SymbolState};
 use crate::{vm_debug, vm_error, vm_trace, vm_warn};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_runtime_api as coercion;
@@ -309,8 +309,7 @@ pub(crate) struct InlineSyncState {
     pub(crate) pending_error_kind: Option<&'static str>,
     pub(crate) pending_completion: Option<Completion>,
     pub(crate) for_in_iters: Vec<*mut ForInIter<'static>>,
-    pub(crate) for_of_iters: Vec<JsValue>,
-    pub(crate) last_for_of_result: JsValue,
+    pub(crate) for_of_iters: Vec<ForOfEntry>,
     pub(crate) saved_bytecode_stack: Vec<Arc<[opcode::Instr]>>,
     pub(crate) saved_immutables_stack: Vec<*const [JsValue]>,
     pub(crate) save_stack: Vec<JsValue>,
@@ -727,10 +726,10 @@ impl Vm {
         f(self.async_context.unwrap_or(JsValue::undefined()));
         f(self.async_gen_context.unwrap_or(JsValue::undefined()));
         f(self.inline_callee.unwrap_or(JsValue::undefined()));
-        for &v in &self.iters.for_of_iters {
-            f(v);
+        for &entry in &self.iters.for_of_iters {
+            f(entry.iterator);
+            f(entry.last_result);
         }
-        f(self.iters.last_for_of_result);
         // 微任务队列中的处理器/能力/值都是 GC 根。
         for job in &self.job_queue {
             crate::promise::for_each_job_value(job, &mut f);
@@ -791,10 +790,10 @@ impl Vm {
         self.async_context = self.async_context.map(&mut rewrite);
         self.async_gen_context = self.async_gen_context.map(&mut rewrite);
         self.inline_callee = self.inline_callee.map(&mut rewrite);
-        for v in &mut self.iters.for_of_iters {
-            *v = rewrite(*v);
+        for entry in &mut self.iters.for_of_iters {
+            entry.iterator = rewrite(entry.iterator);
+            entry.last_result = rewrite(entry.last_result);
         }
-        self.iters.last_for_of_result = rewrite(self.iters.last_for_of_result);
         // 微任务队列中的值随 sweep 重写。
         for job in &mut self.job_queue {
             crate::promise::rewrite_job_values(job, &mut rewrite);
@@ -2255,7 +2254,7 @@ fn rehome_subtree(module: &CompiledModule, base: u32, out: &mut Vec<Arc<Compiled
 
 #[cfg(test)]
 mod tests {
-    use super::{opcode, JsValue, TryHandler, Vm};
+    use super::{opcode, ForOfEntry, JsValue, TryHandler, Vm};
     use oxide_bytecode::module::CompiledModule;
     use oxide_runtime_api::{NativeResult, VmHost};
     use oxide_types::object::NativeFnPtr;
@@ -2381,7 +2380,10 @@ mod tests {
         vm.iters
             .for_in_iters
             .push(std::ptr::dangling_mut::<super::ForInIter<'static>>());
-        vm.iters.for_of_iters.push(JsValue::undefined());
+        vm.iters.for_of_iters.push(ForOfEntry {
+            iterator: JsValue::undefined(),
+            last_result: JsValue::undefined(),
+        });
         vm.saved_bytecode_stack
             .push(Arc::from(vec![opcode::encode(opcode::OpCode::HALT, 0, 0, 0)]));
         vm.saved_immutables_stack
@@ -2437,7 +2439,10 @@ mod tests {
             ..CompiledModule::new()
         };
         let mut vm = Vm::new();
-        vm.iters.for_of_iters.push(JsValue::undefined());
+        vm.iters.for_of_iters.push(ForOfEntry {
+            iterator: JsValue::undefined(),
+            last_result: JsValue::undefined(),
+        });
 
         vm.run(&module).expect("FOR_OF_CLOSE should tolerate non-object sentinel");
 

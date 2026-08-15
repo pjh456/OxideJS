@@ -159,3 +159,48 @@ fn async_gen_yield_then_next_continues() {
         "\"1,2,true\""
     );
 }
+
+#[test]
+fn for_await_of_break_closes_iterator() {
+    // 数组解构的 DONE 结果不得覆盖外层 for-await-of 迭代器的结果：break 提前
+    // 退出时 CLOSE 按自身条目判 done，须调用 return() 关闭迭代器。
+    assert_eq!(
+        eval(
+            "let closed=false;\
+             const iter={[Symbol.asyncIterator](){return{next(){return Promise.resolve({value:1,done:false})},return(){closed=true;return Promise.resolve({done:true})}}}};\
+             (async()=>{ for await (const [a,b] of iter) { break; } })();\
+             Promise.resolve().then(()=>closed)"
+        ),
+        "true"
+    );
+}
+
+#[test]
+fn for_await_of_natural_done_skips_return() {
+    // for-await-of 迭代自然结束（next 返回 done:true）时不调用 return()。
+    assert_eq!(
+        eval(
+            "let closed=false;\
+             const iter={[Symbol.asyncIterator](){return{next(){return Promise.resolve({value:1,done:true})},return(){closed=true;return Promise.resolve({done:true})}}}};\
+             (async()=>{ for await (const x of iter) { } })();\
+             Promise.resolve().then(()=>closed)"
+        ),
+        "false"
+    );
+}
+
+#[test]
+fn for_await_of_nested_sync_for_of_break_close_respective() {
+    // for-await-of 内嵌同步 for-of：内层 break 只关内层同步迭代器，外层异步
+    // 迭代器保持打开（条目配对，互不覆盖结果）。
+    assert_eq!(
+        eval(
+            "let log=[];\
+             const sync={[Symbol.iterator](){return{next(){return{value:1,done:false}},return(){log.push('s');return{}}}}};\
+             const asyncIter={[Symbol.asyncIterator](){return{next(){return Promise.resolve({value:1,done:false})},return(){log.push('a');return Promise.resolve({done:true})}}}};\
+             (async()=>{ for await (const x of asyncIter) { for (const y of sync) { break; } break; } })();\
+             Promise.resolve().then(()=>log.join(','))"
+        ),
+        "\"s,a\""
+    );
+}

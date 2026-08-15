@@ -50,7 +50,6 @@ macro_rules! inline_save_field {
     ($recv:ident, $window_regs:ident, pending_completion, opt_copy) => { $recv.pending_completion };
     ($recv:ident, $window_regs:ident, for_in_iters, for_in_keys) => { std::mem::take(&mut $recv.iters.for_in_iters) };
     ($recv:ident, $window_regs:ident, for_of_iters, iter_take) => { std::mem::take(&mut $recv.iters.for_of_iters) };
-    ($recv:ident, $window_regs:ident, last_for_of_result, iter_copy) => { $recv.iters.last_for_of_result };
     ($recv:ident, $window_regs:ident, saved_bytecode_stack, move_field) => { std::mem::take(&mut $recv.saved_bytecode_stack) };
     ($recv:ident, $window_regs:ident, saved_immutables_stack, move_field) => { std::mem::take(&mut $recv.saved_immutables_stack) };
     ($recv:ident, $window_regs:ident, save_stack, move_field) => { std::mem::take(&mut $recv.save_stack) };
@@ -83,7 +82,6 @@ macro_rules! inline_restore_field {
     ($recv:ident, $saved:ident, pending_completion, opt_copy) => { $recv.pending_completion = $saved.pending_completion };
     ($recv:ident, $saved:ident, for_in_iters, for_in_keys) => { $recv.iters.for_in_iters = $saved.for_in_iters };
     ($recv:ident, $saved:ident, for_of_iters, iter_take) => { $recv.iters.for_of_iters = $saved.for_of_iters };
-    ($recv:ident, $saved:ident, last_for_of_result, iter_copy) => { $recv.iters.last_for_of_result = $saved.last_for_of_result };
     ($recv:ident, $saved:ident, saved_bytecode_stack, move_field) => { $recv.saved_bytecode_stack = $saved.saved_bytecode_stack };
     ($recv:ident, $saved:ident, saved_immutables_stack, move_field) => { $recv.saved_immutables_stack = $saved.saved_immutables_stack };
     ($recv:ident, $saved:ident, save_stack, move_field) => { $recv.save_stack = $saved.save_stack };
@@ -117,7 +115,6 @@ macro_rules! inline_core_fields {
             (pending_completion, opt_copy), // V M
             (for_in_iters, for_in_keys), // V M
             (for_of_iters, iter_take), // V M
-            (last_for_of_result, iter_copy), // V M
             (saved_bytecode_stack, move_field), // M
             (saved_immutables_stack, move_field), // M
             (save_stack, move_field), // V M
@@ -195,7 +192,6 @@ impl Vm {
         self.try_stack.clear();
         self.iters.for_in_iters.clear();
         self.iters.for_of_iters.clear();
-        self.iters.last_for_of_result = JsValue::undefined();
         self.spill_stack.clear();
         self.save_stack.clear();
         self.saved_bytecode_stack.clear();
@@ -480,7 +476,10 @@ mod tests {
             value: JsValue::float(8.0),
             remaining_finally: 1,
         });
-        vm.iters.last_for_of_result = JsValue::float(9.0);
+        vm.iters.for_of_iters.push(crate::vm_state::ForOfEntry {
+            iterator: JsValue::float(8.5),
+            last_result: JsValue::float(9.0),
+        });
         vm.spill_stack.push(JsValue::float(10.0));
         vm.save_stack.push(JsValue::float(11.0));
         vm.inline_callee = Some(JsValue::float(12.0));
@@ -506,7 +505,9 @@ mod tests {
             vm.pending_completion,
             Some(Completion::Return { value, remaining_finally: 1 }) if value == JsValue::float(8.0)
         ));
-        assert_eq!(vm.iters.last_for_of_result, JsValue::float(9.0));
+        assert_eq!(vm.iters.for_of_iters.len(), 1);
+        assert_eq!(vm.iters.for_of_iters[0].iterator, JsValue::float(8.5));
+        assert_eq!(vm.iters.for_of_iters[0].last_result, JsValue::float(9.0));
         assert_eq!(vm.spill_stack, vec![JsValue::float(10.0)]);
         assert_eq!(vm.save_stack, vec![JsValue::float(11.0)]);
         assert_eq!(vm.inline_callee, Some(JsValue::float(12.0)));

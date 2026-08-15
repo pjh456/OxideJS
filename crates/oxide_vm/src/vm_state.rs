@@ -116,18 +116,29 @@ impl SymbolState {
     }
 }
 
+/// for-of 迭代器栈条目：迭代器对象与其最近一次 `next()` 结果对象配对存放。
+///
+/// `last_result` 只属于本迭代器（嵌套 for-of / 数组解构 / spread 各自持有自己的
+/// 结果），`FOR_OF_CLOSE`/`FOR_AWAIT_OF_CLOSE` 据此判定本迭代器是否自然 done，
+/// 避免共享单槽被其它迭代器覆盖导致漏调/多调 `return()`。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ForOfEntry {
+    /// 迭代器对象（同步迭代器 / 异步迭代器 / AsyncFromSyncIterator 包装）。
+    pub(crate) iterator: JsValue,
+    /// 本迭代器最近一次 DONE 返回的结果对象（CLOSE 判 done 用）。
+    pub(crate) last_result: JsValue,
+}
+
 /// for-in / for-of 的活跃迭代器状态。
 pub(crate) struct IterState {
     pub(crate) for_in_iters: Vec<*mut ForInIter<'static>>,
-    pub(crate) for_of_iters: Vec<JsValue>,
-    pub(crate) last_for_of_result: JsValue,
+    pub(crate) for_of_iters: Vec<ForOfEntry>,
 }
 
 impl IterState {
     pub(crate) fn reset(&mut self) {
         self.for_in_iters.clear();
         self.for_of_iters.clear();
-        self.last_for_of_result = JsValue::undefined();
     }
 
     pub(crate) fn push_for_in(&mut self, iter: *mut ForInIter<'static>) {
@@ -142,28 +153,32 @@ impl IterState {
         self.for_in_iters.last().copied().unwrap_or(std::ptr::null_mut())
     }
 
-    pub(crate) fn push_for_of(&mut self, val: JsValue) {
-        self.for_of_iters.push(val);
+    /// 压入新迭代器条目：`last_result` 初始为 undefined（尚未执行任何 next()）。
+    pub(crate) fn push_for_of(&mut self, iterator: JsValue) {
+        self.for_of_iters.push(ForOfEntry {
+            iterator,
+            last_result: JsValue::undefined(),
+        });
     }
 
     pub(crate) fn last_for_of(&self) -> Option<JsValue> {
-        self.for_of_iters.last().copied()
+        self.for_of_iters.last().map(|e| e.iterator)
     }
 
-    pub(crate) fn pop_for_of(&mut self) -> Option<JsValue> {
+    pub(crate) fn pop_for_of(&mut self) -> Option<ForOfEntry> {
         self.for_of_iters.pop()
     }
 
-    pub(crate) fn last_for_of_result(&self) -> JsValue {
-        self.last_for_of_result
+    /// 栈顶条目最近一次 DONE 结果；栈空时返回 undefined（防御）。
+    pub(crate) fn last_result(&self) -> JsValue {
+        self.for_of_iters.last().map(|e| e.last_result).unwrap_or(JsValue::undefined())
     }
 
-    pub(crate) fn set_last_for_of_result(&mut self, val: JsValue) {
-        self.last_for_of_result = val;
-    }
-
-    pub(crate) fn clear_last_for_of_result(&mut self) {
-        self.last_for_of_result = JsValue::undefined();
+    /// 写入栈顶条目的 DONE 结果（本迭代器自身的结果，不跨迭代器覆盖）。
+    pub(crate) fn set_last_result(&mut self, val: JsValue) {
+        if let Some(entry) = self.for_of_iters.last_mut() {
+            entry.last_result = val;
+        }
     }
 }
 

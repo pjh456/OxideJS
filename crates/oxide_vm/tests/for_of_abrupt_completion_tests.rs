@@ -124,3 +124,32 @@ fn for_of_array_regression_still_iterates() {
 fn for_of_string_regression_still_iterates() {
     assert_eq!(eval("var r=0;for(var c of 'abc'){r=r+1;}r===3"), "true");
 }
+
+#[test]
+fn for_of_destructuring_break_calls_return_on_outer_iterator() {
+    // 数组解构在循环体内复用 FOR_OF_* 指令：解构自己的 DONE 结果不得覆盖外层
+    // 迭代器的结果（按迭代器配对），否则 CLOSE 误判外层已自然结束而漏调 return()。
+    assert_eq!(
+        eval(
+            "var closed=0;\
+             var it={[Symbol.iterator](){return{next(){return{value:[1],done:false}},return(){closed++;return{}}}}};\
+             for (const [a,b] of it) { break; }closed===1"
+        ),
+        "true"
+    );
+}
+
+#[test]
+fn for_of_nested_iterators_break_close_inner_only() {
+    // 嵌套 for-of 提前退出：内层 break 只关内层迭代器（各自条目结果配对），
+    // 外层迭代器保持打开继续下一轮。
+    assert_eq!(
+        eval(
+            "var log=[];\
+             var inner={[Symbol.iterator](){return{next(){return{value:1,done:false}},return(){log.push('i');return{}}}}};\
+             var outer={[Symbol.iterator](){return{next(){return{value:1,done:false}},return(){log.push('o');return{}}}}};\
+             for (var a of outer) { for (var b of inner) { break; } break; }log.join(',')==='i,o'"
+        ),
+        "true"
+    );
+}
