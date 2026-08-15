@@ -596,6 +596,8 @@ impl SessionGc {
         self.mark(vm);
 
         // debug 兜底：存活对象的字符串边必须已登记，否则串清扫将释放活串。
+        // cfg 守卫与定义一致：release 下断言体剥离，调用点同步剥离。
+        #[cfg(debug_assertions)]
         self.debug_assert_marked_object_strings_live(vm);
 
         // 扣减字符串账目（保留对象账目），再补回存活串字节。
