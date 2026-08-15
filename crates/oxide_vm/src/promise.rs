@@ -15,7 +15,7 @@ use oxide_types::private_key::make_int_key;
 use oxide_types::value::JsValue;
 
 use crate::native::NativeFn;
-use crate::vm::Vm;
+use crate::vm::{FrameArgs, FrameContinuation, Vm};
 use crate::vm_warn;
 
 /// Promise 的 settled 状态。
@@ -188,28 +188,86 @@ impl Vm {
         JsValue::from_js_object(ptr)
     }
 
-    /// 构造调用：分配 proto = ctor.prototype（缺省 Object.prototype）的 this 后以
-    /// 普通调用执行 ctor，返回值非对象时回退到 this（与 Reflect.construct 同路径）。
+    /// 构造调用（Construct(C, args)）：native 构造器值传递调用，bytecode 构造器
+    /// 压构造帧执行（含 derived 构造器 super() 语义），返回值非对象时回退到新对象。
     fn construct_ctor(&mut self, ctor: JsValue, args: &[JsValue]) -> Result<JsValue, JsValue> {
-        if !oxide_builtins::iterator::is_callable(ctor) {
-            return Err(oxide_builtins::error::create_type_error(self, "constructor is not callable"));
-        }
-        let ctor_obj = unsafe { &*ctor.as_js_object_ptr() };
-        if ctor_obj.is_arrow()
-            || (ctor_obj.native_fn().is_some() && ctor_obj.type_tag != JsObject::OBJ_TYPE_CONSTRUCTOR)
-        {
+        // IsConstructor 校验：arrow / 非构造 native / 普通值拒绝。
+        if !is_constructor_value(ctor) {
             return Err(oxide_builtins::error::create_type_error(self, "constructor is not a constructor"));
         }
+        let ctor_obj = unsafe { &*ctor.as_js_object_ptr() };
+        // native 构造器：receiver 为新对象，值传递调用（%Promise% 主路径）。
+        if ctor_obj.native_fn().is_some() {
+            let this_ptr = self.alloc_ctor_this(ctor_obj)?;
+            let this_val = JsValue::from_js_object(this_ptr);
+            return match self.call_function_sync(ctor, this_val, args) {
+                Ok(ret) if ret.is_object() => Ok(ret),
+                Ok(_) => Ok(this_val),
+                Err(e) => Err(self
+                    .last_uncaught_value
+                    .take()
+                    .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e))),
+            };
+        }
+        self.call_constructor_bytecode_inline(ctor, ctor_obj, args)
+    }
+
+    /// 分配构造 this：proto = ctor.prototype（缺省 Object.prototype）。
+    fn alloc_ctor_this(&mut self, ctor_obj: &JsObject) -> Result<*mut JsObject, JsValue> {
         let proto_si = self.kernel_core.perm_interner().intern("prototype").0;
         let proto_val = match self.resolve_property(ctor_obj, proto_si) {
             Some(p) if p.is_object() => p,
             _ => JsValue::from_js_object(self.session.builtin_world().object_proto.as_ptr() as *mut JsObject),
         };
-        let this_ptr = self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
-        let this_val = JsValue::from_js_object(this_ptr);
-        match self.call_function_sync(ctor, this_val, args) {
-            Ok(ret) if ret.is_object() => Ok(ret),
-            Ok(_) => Ok(this_val),
+        Ok(self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val)))
+    }
+
+    /// bytecode 构造器构造调用：压构造帧内嵌 dispatch 执行（derived 构造器
+    /// super() 前 this = undefined，new.target = ctor），结果经 `do_return` 交付
+    /// regs[0]（非对象回退构造 this）。
+    ///
+    /// # 副作用
+    /// - 经 `save_inline_state` / `restore_inline_state` 保存恢复调用方执行状态。
+    /// - `construct_dispatch` 标志令构造帧弹出时交付结果而非继续执行。
+    fn call_constructor_bytecode_inline(
+        &mut self, ctor: JsValue, ctor_obj: &JsObject, args: &[JsValue],
+    ) -> Result<JsValue, JsValue> {
+        let sub_idx = ctor_obj.sub_module_index() as usize;
+        if sub_idx == 0 || sub_idx >= self.sub_modules.len() {
+            return Err(oxide_builtins::error::create_type_error(self, "constructor is not a constructor"));
+        }
+        // 生成器/异步函数不是构造器。
+        if self.sub_modules[sub_idx].is_generator || self.sub_modules[sub_idx].is_async {
+            return Err(oxide_builtins::error::create_type_error(self, "constructor is not a constructor"));
+        }
+        let new_obj_ptr = self.alloc_ctor_this(ctor_obj)?;
+        let new_obj_val = JsValue::from_js_object(new_obj_ptr);
+        // derived 构造器 super() 前 this 为 undefined，基类 this = 新对象。
+        let this_value = if ctor_obj.is_derived_constructor() {
+            JsValue::undefined()
+        } else {
+            new_obj_val
+        };
+        let window = self.active_reg_limit.max(self.sub_modules[sub_idx].n_registers).max(1) as usize;
+        let saved = self.save_inline_state(window);
+        let prev_construct = self.construct_dispatch;
+        self.construct_dispatch = true;
+        let result = self
+            .push_bytecode_frame(
+                ctor,
+                this_value,
+                FrameArgs::Slice(args),
+                Some(0),
+                Some(new_obj_val),
+                ctor,
+                FrameContinuation::None,
+                0,
+            )
+            .and_then(|_| self.dispatch());
+        self.construct_dispatch = prev_construct;
+        self.restore_inline_state(saved);
+        match result {
+            Ok(v) => Ok(v),
             Err(e) => Err(self
                 .last_uncaught_value
                 .take()
@@ -261,7 +319,9 @@ impl Vm {
         }
         let obj = unsafe { &*callee.as_js_object_ptr() };
         let si = self.kernel_core.perm_interner().intern(DELEGATED_PROP).0;
-        self.resolve_property(obj, si).map(|v| v.is_bool() && v.as_bool()).unwrap_or(false)
+        self.resolve_property(obj, si)
+            .map(|v| v.is_bool() && v.as_bool())
+            .unwrap_or(false)
     }
 
     /// 取出 Promise 状态盒指针（调用方须先校验 `is_promise_value`）。
@@ -436,9 +496,23 @@ impl Vm {
         Ok(promise)
     }
 
-    /// `PerformPromiseThen` 核心：注册 fulfill/reject 两条反应；已 settle 则直接入队。
+    /// `PerformPromiseThen` 入口（内置能力）：注册 fulfill/reject 反应并返回派生
+    /// promise。能力恒为 `%Promise%`——供引擎内部 await 机制（async /
+    /// async generator / AsyncFromSync）使用，规范上这些路径由调用方提供能力，
+    /// 不读 `this.constructor`，避免 await 子类 promise 时意外经子类构造器派生。
     pub(crate) fn perform_promise_then(
         &mut self, this_val: JsValue, on_fulfilled: JsValue, on_rejected: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let capability = self.new_promise_capability();
+        self.perform_promise_then_cap(this_val, on_fulfilled, on_rejected, capability)
+    }
+
+    /// `PerformPromiseThen` 核心：以调用方给定能力注册 fulfill/reject 两条反应；
+    /// 已 settle 则直接入队。能力三元组由调用方提供——`promise_then_species`
+    /// 传 species 派生能力，内部 await 路径经薄包装传内置能力。
+    fn perform_promise_then_cap(
+        &mut self, this_val: JsValue, on_fulfilled: JsValue, on_rejected: JsValue,
+        capability: (JsValue, JsValue, JsValue),
     ) -> Result<JsValue, JsValue> {
         if !self.is_promise_value(this_val) {
             return Err(oxide_builtins::error::create_type_error(
@@ -456,7 +530,7 @@ impl Vm {
         } else {
             JsValue::undefined()
         };
-        let (new_promise, resolve, reject) = self.new_promise_capability();
+        let (new_promise, resolve, reject) = capability;
         let state_ptr = self.promise_state_ptr(this_val);
         let (kind, result) = {
             let state = unsafe { &mut *state_ptr };
@@ -500,6 +574,56 @@ impl Vm {
             }
         }
         Ok(new_promise)
+    }
+
+    /// `Promise.prototype.then` 的派生入口：IsPromise 校验后按 `this.constructor`
+    /// 选派生构造器（SpeciesConstructor 的 constructor 语义），建能力并注册反应。
+    fn promise_then_species(
+        &mut self, this_val: JsValue, on_fulfilled: JsValue, on_rejected: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        if !self.is_promise_value(this_val) {
+            return Err(oxide_builtins::error::create_type_error(
+                self,
+                "Method Promise.prototype.then called on incompatible receiver",
+            ));
+        }
+        let ctor = self.species_constructor(this_val)?;
+        let capability = self.new_promise_capability_with_ctor(ctor)?;
+        self.perform_promise_then_cap(this_val, on_fulfilled, on_rejected, capability)
+    }
+
+    /// 读 `promise.constructor` 选派生构造器（SpeciesConstructor 的 constructor
+    /// 语义）：constructor 为 undefined 时退回内置 `%Promise%`，非可构造函数抛
+    /// TypeError。constructor getter 抛错时透传原异常值。
+    ///
+    /// # 边界与前提
+    /// - 调用方已做 IsPromise 校验，`promise` 必为 Promise 对象。
+    /// - constructor 为 null/非对象/非构造器均抛 TypeError。
+    ///
+    /// # 注意事项
+    /// - 不读 `@@species`：`%Promise%` 未注册 species getter，子类经原型链读到
+    ///   undefined 会错误退回内置；`@@species` 改写支持待补
+    ///   `Promise[Symbol.species]` getter 时一并落地。
+    fn species_constructor(&mut self, promise: JsValue) -> Result<JsValue, JsValue> {
+        let obj = unsafe { &*promise.as_js_object_ptr() };
+        let ctor_si = self.kernel_core.perm_interner().intern("constructor").0;
+        let ctor = match self.ordinary_get(obj, ctor_si, promise) {
+            Ok(c) => c,
+            Err(e) => {
+                let exc = self
+                    .last_uncaught_value
+                    .take()
+                    .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e));
+                return Err(exc);
+            }
+        };
+        if ctor.is_undefined() {
+            return Ok(JsValue::from_js_object(self.promise_constructor.as_ptr() as *mut JsObject));
+        }
+        if !is_constructor_value(ctor) {
+            return Err(oxide_builtins::error::create_type_error(self, "Species constructor is not a constructor"));
+        }
+        Ok(ctor)
     }
 
     /// drain 微任务队列：FIFO 逐条处理直到清空或达到上限。
@@ -672,6 +796,18 @@ impl Vm {
     }
 }
 
+/// IsConstructor 近似判定：可调用、非 arrow，且 native 函数须带构造器 tag
+/// （与 `construct_ctor` 的校验一致）。
+fn is_constructor_value(c: JsValue) -> bool {
+    if !c.is_object() {
+        return false;
+    }
+    let c_obj = unsafe { &*c.as_js_object_ptr() };
+    c_obj.is_function()
+        && !c_obj.is_arrow()
+        && !(c_obj.native_fn().is_some() && c_obj.type_tag != JsObject::OBJ_TYPE_CONSTRUCTOR)
+}
+
 /// 读取 Promise 的 settled 值（CLI 格式化用）：`Some((is_fulfilled, value))`，
 /// Pending 返回 `None`。
 pub fn promise_settled_value(obj: &JsObject) -> Option<(bool, JsValue)> {
@@ -768,12 +904,13 @@ fn promise_reject_closure(vm: &mut Vm, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::undefined())
 }
 
-/// `Promise.prototype.then(onFulfilled, onRejected)`：注册反应并返回派生 promise。
+/// `Promise.prototype.then(onFulfilled, onRejected)`：按 `this.constructor` 派生
+/// 并注册反应，返回派生 promise（子类实例走子类构造器）。
 fn promise_then(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let on_fulfilled = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let on_rejected = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    match vm.perform_promise_then(this_val, on_fulfilled, on_rejected) {
+    match vm.promise_then_species(this_val, on_fulfilled, on_rejected) {
         Ok(promise) => NativeResult::Ok(promise),
         Err(err) => NativeResult::Err(err),
     }
@@ -986,7 +1123,8 @@ impl Vm {
         let sf = self.kernel_core.perm_interner().as_ref();
         let sh = self.kernel_core.shape_forge().as_ref();
         let fn_proto_val = self.session.builtin_world().fn_proto_val();
-        let error_proto_val = JsValue::from_js_object(self.session.builtin_world().error_proto.as_ptr() as *mut JsObject);
+        let error_proto_val =
+            JsValue::from_js_object(self.session.builtin_world().error_proto.as_ptr() as *mut JsObject);
 
         // %AggregateError.prototype%：proto = %Error.prototype%，constructor/name/message 数据属性。
         let mut proto = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val));
@@ -1033,10 +1171,8 @@ impl Vm {
         self.aggregate_error_proto = P::new(*proto);
         self.aggregate_error_constructor = P::new(*ctor);
         let proto_mut = unsafe { &mut *self.aggregate_error_proto.as_mut_ptr() };
-        proto_mut.set_prop_at(
-            0u32,
-            JsValue::from_js_object(self.aggregate_error_constructor.as_ptr() as *mut JsObject),
-        );
+        proto_mut
+            .set_prop_at(0u32, JsValue::from_js_object(self.aggregate_error_constructor.as_ptr() as *mut JsObject));
         let ctor_mut = unsafe { &mut *self.aggregate_error_constructor.as_mut_ptr() };
         ctor_mut.set_prop_at(2u32, JsValue::from_js_object(self.aggregate_error_proto.as_ptr() as *mut JsObject));
 
@@ -1322,7 +1458,8 @@ fn perform_promise_combine(
         Ok(()) => {
             // 迭代完成：哨兵 1 递减；为 0 时结算（race 无计数语义）。
             let remaining = agg_read_remaining(vm, record) - 1;
-            agg_write_remaining(vm, record, remaining);            match kind {
+            agg_write_remaining(vm, record, remaining);
+            match kind {
                 AggregateKind::All | AggregateKind::AllSettled => {
                     if remaining == 0 {
                         let values = agg_record_val(vm, record, AGG_VALUES_PROP);
@@ -1366,7 +1503,10 @@ fn agg_element_state(vm: &mut Vm) -> Option<(JsValue, i32)> {
     let al_si = vm.kernel_core.perm_interner().intern(AGG_ALREADY_PROP).0;
     // SAFETY: callee 是当前调用的存活函数对象。
     let callee_ref = unsafe { &*callee_ptr };
-    if vm.resolve_property(callee_ref, al_si).is_some_and(oxide_runtime_api::to_boolean) {
+    if vm
+        .resolve_property(callee_ref, al_si)
+        .is_some_and(oxide_runtime_api::to_boolean)
+    {
         return None;
     }
     let record = vm.resolve_property(callee_ref, rec_si).unwrap_or(JsValue::undefined());
@@ -1556,24 +1696,14 @@ fn aggregate_error_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let msg_si = vm.kernel_core.perm_interner().intern("message").0;
         let msg_val = vm.new_string(&msg_str);
         // SAFETY: this 是本次构造的存活对象。
-        let _ = vm.define_data_property(
-            unsafe { &mut *this },
-            msg_si,
-            msg_val,
-            PropAttributes::new(true, false, true),
-        );
+        let _ = vm.define_data_property(unsafe { &mut *this }, msg_si, msg_val, PropAttributes::new(true, false, true));
     }
     let errors_list = match vm.aggregate_errors_to_list(errors) {
         Ok(list) => list,
         Err(err) => return NativeResult::Err(err),
     };
     let err_si = vm.kernel_core.perm_interner().intern("errors").0;
-    let _ = vm.define_data_property(
-        unsafe { &mut *this },
-        err_si,
-        errors_list,
-        PropAttributes::new(true, false, true),
-    );
+    let _ = vm.define_data_property(unsafe { &mut *this }, err_si, errors_list, PropAttributes::new(true, false, true));
     NativeResult::Ok(JsValue::from_js_object(this))
 }
 

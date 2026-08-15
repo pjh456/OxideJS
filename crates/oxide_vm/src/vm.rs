@@ -436,6 +436,10 @@ pub struct Vm {
     /// 当前是否处于异步函数内嵌 dispatch 循环：异步帧弹出且 frames 清空时，
     /// `do_return` 据此把结果交付给恢复方（与 generator_dispatch 同语义）。
     pub(crate) async_dispatch: bool,
+    /// 当前是否处于构造器内嵌 dispatch 循环（`call_constructor_bytecode_inline`）：
+    /// 构造帧弹出且 frames 清空时，`do_return` 据此把构造结果（regs[0]，
+    /// 已做非对象回退 this）交付给恢复方（与 generator_dispatch 同语义）。
+    pub(crate) construct_dispatch: bool,
     /// 当前正在执行的异步生成器上下文对象（`OBJ_TYPE_ASYNC_GENERATOR`，持有
     /// `AsyncGeneratorState` 快照）。AWAIT dispatch 据此登记异步生成器恢复反应；
     /// 跨嵌套 async 调用保存/恢复（与 `async_context` 同生命周期，二者互斥占用）。

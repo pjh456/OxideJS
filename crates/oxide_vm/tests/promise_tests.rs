@@ -123,7 +123,10 @@ fn double_resolve_second_noop() {
 #[test]
 fn reject_then_resolve_keeps_rejected() {
     let mut vm = Vm::new();
-    let (ok, val) = settled(&mut vm, "new Promise((res, rej) => { rej('e'); res(1); }).then(v => v, e => 'rejected:' + e)");
+    let (ok, val) = settled(
+        &mut vm,
+        "new Promise((res, rej) => { rej('e'); res(1); }).then(v => v, e => 'rejected:' + e)",
+    );
     assert!(ok);
     assert_eq!(vm.lookup_str(val).as_deref(), Some("rejected:e"));
 }
@@ -150,4 +153,146 @@ fn thenable_chain_after_already_resolved_noop() {
     );
     assert!(ok);
     assert_eq!(val.as_int(), 5);
+}
+
+#[test]
+fn subclass_then_derives_subclass_instance() {
+    // 子类 then 派生：class P extends Promise {}，p.then 返回 P 实例（经子类构造器）。
+    // 单次 eval 完成断言：跨 eval 时旧 module 的 bytecode 函数对象随 sub_modules
+    // 替换失效（引擎既有局限），故不拆分执行。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var P = class extends Promise {}; var d = new P(r => r(1)).then(v => v); d.constructor === P",
+    )
+    .unwrap();
+    assert_eq!(result.as_bool(), true, "subclass then should derive via subclass ctor");
+}
+
+#[test]
+fn subclass_catch_finally_derive_subclass() {
+    // catch/finally 经 this.then 调用，自动获得子类派生语义。
+    // 每次 eval 独立定义 P：跨 eval 复用旧 module 函数对象会随 sub_modules 替换失效。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var P = class extends Promise {}; var d = new P(r => r(1)).catch(()=>{}); d.constructor === P",
+    )
+    .unwrap();
+    assert_eq!(result.as_bool(), true);
+    let result = eval(
+        &mut vm,
+        "var Q = class extends Promise {}; var f = new Q(r => r(1)).finally(()=>{}); f.constructor === Q",
+    )
+    .unwrap();
+    assert_eq!(result.as_bool(), true);
+}
+
+#[test]
+fn subclass_chain_keeps_subclass_ctor() {
+    // 链式 then 每次派生均保持子类构造器。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var P = class extends Promise {}; var d = new P(r => r(1)).then(v => v + 1).then(v => v); d.constructor === P",
+    )
+    .unwrap();
+    assert_eq!(result.as_bool(), true);
+}
+
+#[test]
+fn rewritten_prototype_constructor_used_for_derivation() {
+    // P.prototype.constructor 改写后，then 用改写值派生。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var P = class extends Promise {}; function Alt(exec) { exec(function(){}, function(){}); } \
+         P.prototype.constructor = Alt; var d = new P(r => r(1)).then(v => v); d.constructor === Alt",
+    )
+    .unwrap();
+    assert_eq!(result.as_bool(), true);
+}
+
+#[test]
+fn constructor_undefined_uses_intrinsic() {
+    // constructor 为 undefined → 退回内置 %Promise% 派生。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var q = new Promise(r => r(1)); Object.defineProperty(q, 'constructor', { value: undefined }); \
+         var d = q.then(v => v); d.constructor === Promise",
+    )
+    .unwrap();
+    assert_eq!(result.as_bool(), true);
+}
+
+#[test]
+fn constructor_non_object_throws_type_error() {
+    // constructor 非对象 → then 抛 TypeError。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var r = new Promise(res => res(1)); Object.defineProperty(r, 'constructor', { value: 42 }); \
+         try { r.then(()=>{}); 'no-throw' } catch (e) { e.name }",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).as_deref(), Some("TypeError"));
+}
+
+#[test]
+fn constructor_getter_throw_preserves_original_value() {
+    // constructor getter 抛错 → 透传原异常对象（catch 收到同一引用）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var boom = new Error('boom'); var r = new Promise(res => res(1)); \
+         Object.defineProperty(r, 'constructor', { get() { throw boom; } }); \
+         try { r.then(()=>{}); 'no-throw' } catch (e) { e === boom }",
+    )
+    .unwrap();
+    assert_eq!(result.as_bool(), true);
+}
+
+#[test]
+fn intrinsic_promise_then_regression() {
+    // 回归：内置 promise 的 then 派生路径不变。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var d = new Promise(r => r(1)).then(v => v); d.constructor === Promise").unwrap();
+    assert_eq!(result.as_bool(), true);
+}
+
+#[test]
+fn await_subclass_promise_resumes_with_value() {
+    // async function 内 await 子类 promise：值正确，额外派生仅来自 thenable
+    // 委托（await 机制自身的能力恒为内置，不额外调用子类构造器）。
+    let mut vm = Vm::new();
+    let (ok, val) = settled(
+        &mut vm,
+        "var ctorCalls = 0; var P = class extends Promise { constructor(exec) { ctorCalls++; super(exec); } }; \
+         async function f() { return await new P(r => r(1)); } \
+         f().then(v => [v, ctorCalls])",
+    );
+    assert!(ok);
+    let obj = unsafe { &*val.as_js_object_ptr() };
+    assert_eq!(obj.prop_count(), 2);
+    assert_eq!(obj.get_prop_at(0).as_int(), 1, "await value should pass through");
+    assert_eq!(obj.get_prop_at(1).as_int(), 2, "ctor calls: new once + thenable delegation once");
+}
+
+#[test]
+fn async_gen_yield_subclass_promise_skips_species() {
+    // 内部 await 能力不走 species：async generator yield 子类 promise 时，
+    // yield 包装（await 展开）不得再经子类构造器派生。
+    let mut vm = Vm::new();
+    let (ok, val) = settled(
+        &mut vm,
+        "var ctorCalls = 0; var P = class extends Promise { constructor(exec) { ctorCalls++; super(exec); } }; \
+         async function* g() { yield new P(r => r(1)); } \
+         var it = g(); it.next().then(r => [r.value, ctorCalls])",
+    );
+    assert!(ok);
+    let obj = unsafe { &*val.as_js_object_ptr() };
+    assert_eq!(obj.prop_count(), 2);
+    assert_eq!(obj.get_prop_at(0).as_int(), 1, "yield value should pass through");
+    assert_eq!(obj.get_prop_at(1).as_int(), 1, "internal await must not derive via subclass ctor");
 }

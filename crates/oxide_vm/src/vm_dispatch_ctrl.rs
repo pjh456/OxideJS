@@ -447,9 +447,11 @@ impl Vm {
                     }
                 }
             }
-            // 生成器/异步内嵌 dispatch：帧全部弹出后把结果交付恢复方，而非继续执行。
-            if self.frames.is_empty() && (self.generator_dispatch || self.async_dispatch) {
-                return Ok(Some(result));
+            // 生成器/异步/构造内嵌 dispatch：帧全部弹出后把结果交付恢复方，而非继续执行。
+            if self.frames.is_empty() && (self.generator_dispatch || self.async_dispatch || self.construct_dispatch) {
+                // 构造内嵌：弹帧已把构造结果（非对象回退 this）写入 regs[0]，直接交付。
+                let delivered = if self.construct_dispatch { self.regs[0] } else { result };
+                return Ok(Some(delivered));
             }
             Ok(None)
         } else {
