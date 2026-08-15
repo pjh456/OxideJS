@@ -833,9 +833,6 @@ impl Vm {
             {
                 return self.raise_type_error("g is not a constructor").map(|_| true);
             }
-            if self.frames.len() >= self.kernel_core.config.max_call_depth {
-                return Err(self.error_message_text("RangeError", "Maximum call stack size exceeded"));
-            }
             let this_value = if ctor_obj.is_derived_constructor() {
                 JsValue::undefined()
             } else {
@@ -926,9 +923,6 @@ impl Vm {
             }
             Ok(false)
         } else if super_obj.sub_module_index() > 0 {
-            if self.frames.len() >= self.kernel_core.config.max_call_depth {
-                return Err(self.error_message_text("RangeError", "Maximum call stack size exceeded"));
-            }
             self.push_bytecode_frame(
                 super_ctor,
                 derived_this,

@@ -179,6 +179,48 @@ fn test_recursive_getter_throws_range_error() {
     );
 }
 
+/// 浅调用深度配置下执行源码：NEW/NEW_SPREAD 深递归无需堆满默认 1024 层即可命中
+/// 深度上限，输出与 `eval` 同构（字符串结果取其内容）。
+fn eval_shallow(source: &str, depth: usize) -> String {
+    let allocator = Allocator::default();
+    let program = oxide_parser::parse(&allocator, source).unwrap();
+    let module = Compiler::new().compile(&program).unwrap();
+    let mut cfg = KernelConfig::minimal();
+    cfg.max_call_depth = depth;
+    let mut vm = Vm::with_kernel_core(KernelCore::new(cfg));
+    match vm.run(&module) {
+        Ok(val) => {
+            if val.is_string() {
+                vm.lookup_str(val).unwrap_or_default().to_string()
+            } else {
+                format!("{val}")
+            }
+        }
+        Err(e) => format!("vm error: {e}"),
+    }
+}
+
+#[test]
+fn test_new_deep_recursion_throws_catchable_range_error() {
+    // NEW 深递归经统一压帧入口抛可捕获 RangeError：try/catch 能接住（非引擎错误）。
+    let result = eval_shallow(
+        "function f(){ return new f(); } try { f(); 'no-throw'; } catch(e){ 'caught:'+e.name; }",
+        8,
+    );
+    assert_eq!(result, "caught:RangeError", "NEW 深递归应可捕获，got: {result}");
+}
+
+#[test]
+fn test_new_spread_deep_recursion_throws_catchable_range_error() {
+    // NEW_SPREAD 深递归与普通 NEW 同构：构造路径统一收敛到压帧入口的深度检查，
+    // 不得再走显式引擎 Err（不可捕获）。spread 变体与普通路径行为须一致。
+    let result = eval_shallow(
+        "function f(){ return new f(...[1]); } try { f(); 'no-throw'; } catch(e){ 'caught:'+e.name; }",
+        8,
+    );
+    assert_eq!(result, "caught:RangeError", "NEW_SPREAD 深递归应可捕获，got: {result}");
+}
+
 #[test]
 fn test_array_length_range_error() {
     let result = eval("new Array(4294967295)");
