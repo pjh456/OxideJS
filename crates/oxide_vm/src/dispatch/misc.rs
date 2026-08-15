@@ -227,9 +227,7 @@ impl Vm {
                 shape_id = self.kernel_core.shape_forge().make_shape(shape_id, si);
             }
         }
-        let obj = self
-            .epoch
-            .alloc(JsObject::new_empty(shape_id, JsValue::from_js_object(proto_ptr)));
+        let obj = self.alloc_object(JsObject::new_empty(shape_id, JsValue::from_js_object(proto_ptr)));
         // 预分配数据槽并同步 generation：批量一次性 +nprops，与逐属性路径的终值一致。
         let obj_ref = unsafe { &mut *obj };
         for _ in 0..nprops {
