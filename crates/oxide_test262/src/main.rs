@@ -55,7 +55,7 @@ struct TestMeta {
 }
 
 /// 单个测试的判定结果：通过 / 失败 / 跳过（各带说明消息）。
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 #[allow(dead_code)]
 enum TestOutcome {
     Pass(String),
@@ -650,22 +650,36 @@ fn read_async_output(vm: &Vm) -> String {
     vm.lookup_str(val).unwrap_or_default()
 }
 
-/// 运行期错误的判定（negative 匹配 + 未实现特性跳过分类）。
+/// 运行期错误的判定（negative 匹配优先 + 未实现特性跳过分类）。
 fn judge_vm_error(path: &Path, e: &str, meta: &TestMeta, dur: u64, no_skip: bool) -> TestResult {
-    if let Some(neg) = meta.negative.as_ref() {
+    match classify_vm_error(e, meta.negative.as_ref(), no_skip) {
+        TestOutcome::Pass(msg) => TestResult::pass(path.to_path_buf(), dur, msg),
+        TestOutcome::Fail(msg) => TestResult::fail(path.to_path_buf(), dur, msg),
+        TestOutcome::Skip(msg) => TestResult::skip(path.to_path_buf(), msg),
+    }
+}
+
+/// 判定运行期错误结果：negative 期望匹配 → Pass；能力未实现形态 → Skip
+/// （`--no-skip` 下为 Fail）；其余一律 Fail。
+///
+/// # 边界与前提
+/// - receiver 校验、栈溢出、不可调用、ToPrimitive 缺口等错误是引擎语义与测试
+///   期望不符的真实失败，不再被 skip 子串吞没（引擎做对了反而计 skip 属误判）。
+fn classify_vm_error(e: &str, neg: Option<&Negative>, no_skip: bool) -> TestOutcome {
+    if let Some(neg) = neg {
         if e.contains("TypeError") && neg.error_type == "TypeError" {
-            return TestResult::pass(path.to_path_buf(), dur, format!("expected: {e}"));
+            return TestOutcome::Pass(format!("expected: {e}"));
         }
         if e.contains("ReferenceError") && neg.error_type == "ReferenceError" {
-            return TestResult::pass(path.to_path_buf(), dur, format!("expected: {e}"));
+            return TestOutcome::Pass(format!("expected: {e}"));
         }
         if e.contains("SyntaxError") && neg.error_type == "SyntaxError" {
-            return TestResult::pass(path.to_path_buf(), dur, format!("expected: {e}"));
+            return TestOutcome::Pass(format!("expected: {e}"));
         }
         if e.contains(&neg.error_type) {
-            return TestResult::pass(path.to_path_buf(), dur, format!("expected: {e}"));
+            return TestOutcome::Pass(format!("expected: {e}"));
         }
-        return TestResult::fail(path.to_path_buf(), dur, format!("expected {} error, got: {e}", neg.error_type));
+        return TestOutcome::Fail(format!("expected {} error, got: {e}", neg.error_type));
     }
     if e.contains("not yet implemented")
         || e.contains("not yet supported")
@@ -679,28 +693,18 @@ fn judge_vm_error(path: &Path, e: &str, meta: &TestMeta, dur: u64, no_skip: bool
         || e.contains("SET_PROP_DYNAMIC on non-object")
         || e.contains("private field brand check")
         || e.contains("CALL_NATIVE target")
-        || e.contains("call stack size exceeded")
         || e.contains("is not implemented")
         || e.contains("unexpected tail call")
-        || e.contains("not callable")
-        || e.contains("Cannot convert object to primitive")
-        || e.contains("Cannot create property on non-object")
-        || e.contains("Property description must be an object")
-        || e.contains("method called on incompatible")
-        || e.contains("called on non-Set")
-        || e.contains("called on non-Map")
-        || e.contains("called on non-ArrayBuffer")
-        || e.contains("called on non-TypedArray")
-        || e.contains("Array.prototype method called on null")
         || e.contains("__proto__ must be an object")
     // 私有字段未实现。
     {
         if no_skip {
-            return TestResult::fail(path.to_path_buf(), dur, format!("vm error: {e}"));
+            TestOutcome::Fail(format!("vm error: {e}"))
+        } else {
+            TestOutcome::Skip(format!("vm: {e}"))
         }
-        TestResult::skip(path.to_path_buf(), format!("vm: {e}"))
     } else {
-        TestResult::fail(path.to_path_buf(), dur, format!("vm error: {e}"))
+        TestOutcome::Fail(format!("vm error: {e}"))
     }
 }
 
@@ -1496,4 +1500,94 @@ fn run_tests() -> bool {
         return false;
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 便捷构造：按预期判定构造 Negative 元数据。
+    fn neg(error_type: &str) -> Negative {
+        Negative { phase: "runtime".into(), error_type: error_type.into() }
+    }
+
+    /// 断言 classify_vm_error 对给定错误消息返回指定结果变体。
+    fn assert_outcome(e: &str, neg: Option<&Negative>, no_skip: bool, want: &TestOutcome) {
+        let got = classify_vm_error(e, neg, no_skip);
+        let same = match (want, &got) {
+            (TestOutcome::Pass(_), TestOutcome::Pass(_))
+            | (TestOutcome::Fail(_), TestOutcome::Fail(_))
+            | (TestOutcome::Skip(_), TestOutcome::Skip(_)) => true,
+            _ => false,
+        };
+        assert!(same, "error `{e}` (neg={:?}, no_skip={no_skip}) 期望 {:?}，实际 {got:?}", neg, want);
+    }
+
+    /// receiver 校验类错误：引擎已实现 receiver 检查并正确抛错，非 negative 测试
+    /// 抛此错即真实失败，不得计入 skip。
+    #[test]
+    fn receiver_validation_errors_are_real_failures() {
+        for e in [
+            "TypeError: Array.prototype.map method called on null",
+            "TypeError: method called on incompatible receiver",
+            "TypeError: called on non-Set object",
+            "TypeError: called on non-Map object",
+            "TypeError: called on non-ArrayBuffer object",
+            "TypeError: called on non-TypedArray object",
+        ] {
+            assert_outcome(e, None, false, &TestOutcome::Fail("".into()));
+        }
+    }
+
+    /// 真实 bug 形态（栈溢出 / 不可调用 / ToPrimitive / 属性写入缺口）：语义与
+    /// 测试期望不符，移出 skip 列表后按真实失败计入。
+    #[test]
+    fn engine_bug_shape_errors_are_real_failures() {
+        for e in [
+            "RangeError: Maximum call stack size exceeded",
+            "TypeError: x is not callable",
+            "TypeError: Cannot convert object to primitive value",
+            "TypeError: Cannot create property on non-object",
+            "TypeError: Property description must be an object",
+        ] {
+            assert_outcome(e, None, false, &TestOutcome::Fail("".into()));
+        }
+    }
+
+    /// 能力未实现形态保留 skip；`--no-skip` 下转 fail。
+    #[test]
+    fn unimplemented_shapes_stay_skipped() {
+        for e in [
+            "not yet implemented: Proxy",
+            "feature is not supported",
+            "unsupported syntax",
+            "vm error: NEW_EXPRESSION not supported",
+            "IC_GET_PROP on non-object",
+            "GET_PROP_DYNAMIC on non-object",
+            "SET_PROP_DYNAMIC on non-object",
+            "private field brand check",
+            "CALL_NATIVE target is null",
+            "is not implemented",
+            "unexpected tail call",
+            "__proto__ must be an object",
+        ] {
+            assert_outcome(e, None, false, &TestOutcome::Skip("".into()));
+            assert_outcome(e, None, true, &TestOutcome::Fail("".into()));
+        }
+    }
+
+    /// 非 negative 且不含能力缺失标记的错误 → 真实失败。
+    #[test]
+    fn unrelated_runtime_errors_are_failures() {
+        assert_outcome("TypeError: value out of range", None, false, &TestOutcome::Fail("".into()));
+        assert_outcome("ReferenceError: unexpected token", None, false, &TestOutcome::Fail("".into()));
+    }
+
+    /// negative 期望匹配 → Pass；不匹配 → Fail。
+    #[test]
+    fn negative_meta_matching_wins_over_skip() {
+        assert_outcome("TypeError: boom", Some(&neg("TypeError")), false, &TestOutcome::Pass("".into()));
+        assert_outcome("ReferenceError: boom", Some(&neg("ReferenceError")), false, &TestOutcome::Pass("".into()));
+        assert_outcome("TypeError: boom", Some(&neg("RangeError")), false, &TestOutcome::Fail("".into()));
+    }
 }
