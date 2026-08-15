@@ -271,6 +271,7 @@ impl Vm {
             unsafe { (*state_ptr).args = args };
             if let Err(e) = push_res {
                 self.restore_inline_state(saved);
+                self.native_call_depth -= 1;
                 return Err(e);
             }
             unsafe { (*state_ptr).phase = GeneratorPhase::Running };
@@ -281,6 +282,7 @@ impl Vm {
             if restore_res.is_err() {
                 // 挂起状态跨 run：sub_modules 已重建，无法恢复（与动态函数同限制）。
                 self.restore_inline_state(saved);
+                self.native_call_depth -= 1;
                 return Err("generator suspended across runs is no longer valid".into());
             }
             state.phase = GeneratorPhase::Running;
