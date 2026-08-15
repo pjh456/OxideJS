@@ -109,9 +109,18 @@ fn iterator_proto_chain_and_self_iteration() {
         ("var it = 'ab'.matchAll(/a/g); it[Symbol.iterator]() === it", true),
         // Array/TA 共享 %ArrayIteratorPrototype%；Map/Set 各自原型内部共享。
         ("Object.getPrototypeOf([].values()) === Object.getPrototypeOf([].entries())", true),
-        ("Object.getPrototypeOf(new Uint8Array(0).values()) === Object.getPrototypeOf([].values())", true),
-        ("Object.getPrototypeOf(new Map().values()) === Object.getPrototypeOf(new Map().keys())", true),
-        ("Object.getPrototypeOf(new Set().values()) === Object.getPrototypeOf(new Set().entries())", true),
+        (
+            "Object.getPrototypeOf(new Uint8Array(0).values()) === Object.getPrototypeOf([].values())",
+            true,
+        ),
+        (
+            "Object.getPrototypeOf(new Map().values()) === Object.getPrototypeOf(new Map().keys())",
+            true,
+        ),
+        (
+            "Object.getPrototypeOf(new Set().values()) === Object.getPrototypeOf(new Set().entries())",
+            true,
+        ),
         // %IteratorPrototype% 自身可迭代：其 @@iterator 返回 this。
         (
             "var P = Object.getPrototypeOf(Object.getPrototypeOf([].values())); P[Symbol.iterator]() === P",
@@ -175,4 +184,108 @@ fn iterator_proto_object_proto_parent() {
     )
     .unwrap();
     assert!(result.as_bool());
+}
+
+#[test]
+fn iterator_function_prototype_property() {
+    // Iterator.prototype 属性绑定：=== %IteratorPrototype%（[].values() 原型链中继），
+    // 且 %IteratorPrototype% 自身可迭代。
+    let mut vm = Vm::new();
+    let cases = [
+        ("Iterator.prototype !== undefined", true),
+        ("Object.getPrototypeOf(Object.getPrototypeOf([].values())) === Iterator.prototype", true),
+        (
+            "Object.getPrototypeOf(Object.getPrototypeOf(new Map().values())) === Iterator.prototype",
+            true,
+        ),
+        ("Iterator.prototype[Symbol.iterator]() === Iterator.prototype", true),
+    ];
+    for (src, expected) in cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn string_iterator_proto_layer() {
+    // String 迭代器挂 %StringIteratorPrototype% 中继层：与 Array 迭代器原型不同，
+    // 且经链到 %IteratorPrototype%（Iterator.prototype）。
+    let mut vm = Vm::new();
+    let cases = [
+        (
+            "Object.getPrototypeOf(Object.getPrototypeOf('a'[Symbol.iterator]())) === Iterator.prototype",
+            true,
+        ),
+        (
+            "Object.getPrototypeOf('a'[Symbol.iterator]()) !== Object.getPrototypeOf([].values())",
+            true,
+        ),
+    ];
+    for (src, expected) in cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+    let out = eval(&mut vm, "[...'abc'].join('')").unwrap();
+    assert_eq!(to_str(&vm, out), "abc");
+}
+
+#[test]
+fn iterator_next_on_prototypes() {
+    // next 挂集合迭代器原型（%ArrayIteratorPrototype%.next 等），wrapper 无 own next。
+    let mut vm = Vm::new();
+    let cases = [
+        ("typeof Object.getPrototypeOf([].values()).next === 'function'", true),
+        ("Object.getPrototypeOf([].values()).hasOwnProperty('next')", true),
+        ("[].values().hasOwnProperty('next') === false", true),
+        ("typeof Object.getPrototypeOf(new Map().values()).next === 'function'", true),
+        ("new Map().values().hasOwnProperty('next') === false", true),
+        ("typeof Object.getPrototypeOf(new Set().values()).next === 'function'", true),
+        ("new Set().values().hasOwnProperty('next') === false", true),
+        ("typeof Object.getPrototypeOf(new Uint8Array([1]).values()).next === 'function'", true),
+        ("new Uint8Array([1]).values().hasOwnProperty('next') === false", true),
+        ("typeof Object.getPrototypeOf('ab'.matchAll(/a/g)).next === 'function'", true),
+        ("'ab'.matchAll(/a/g).hasOwnProperty('next') === false", true),
+    ];
+    for (src, expected) in cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_proto_next_consumption_unchanged() {
+    // 行为回归：next 移上原型后各家族消费路径不变（迭代协议经原型链解析）。
+    let mut vm = Vm::new();
+    let str_cases = [
+        ("[...[1,2,3]].join(',')", "1,2,3"),
+        ("var it = [1,2].values(); it.next().value + ',' + it.next().value", "1,2"),
+        ("var it = ['x','y'].entries(); it.next().value.join(':')", "0:x"),
+        ("[...new Map([['a',1]])][0].join(':')", "a:1"),
+        ("var mk = new Map([['k',9]]); mk.keys().next().value", "k"),
+        ("var se = new Set([7]); se.entries().next().value.join(':')", "7:7"),
+        ("new Uint8Array([9]).entries().next().value.join(',')", "0,9"),
+        ("[...'ab'].join('')", "ab"),
+        ("'a\\u{1F600}b'[Symbol.iterator]().next().value", "a"),
+        ("var mm = 'ab'.matchAll(/b/g); mm.next().value[0]", "b"),
+    ];
+    for (src, expected) in str_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(to_str(&vm, result), expected, "for {}", src);
+    }
+    // 数值结果（含 int 0）用恒等比较断言，避免格式化路径差异。
+    let num_cases = [
+        ("[10,20].keys().next().value === 0", true),
+        ("[1,2].values().next().value === 1", true),
+        ("new Map([['a',1]]).values().next().value === 1", true),
+        ("new Set([5,6]).keys().next().value === 5", true),
+        ("new Uint8Array([5]).values().next().value === 5", true),
+        ("new Uint8Array([7]).entries().next().value[1] === 7", true),
+    ];
+    for (src, expected) in num_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+    // TA 迭代耗尽后恒 done（数组路径 target 置 undefined 防复活）。
+    let done = eval(&mut vm, "var it = new Uint8Array([1]).values(); it.next(); it.next().done").unwrap();
+    assert!(done.as_bool());
 }

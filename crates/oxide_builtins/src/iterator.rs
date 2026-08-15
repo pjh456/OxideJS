@@ -7,6 +7,7 @@ use oxide_runtime_api::{to_object, NativeResult, VmHost};
 
 const INNER_PROP: &str = "__inner__";
 const INDEX_PROP: &str = "__index__";
+const MODE_PROP: &str = "__mode__";
 
 /// 占位构造函数：`Iterator` 不是构造函数，任何调用都抛 TypeError。
 pub fn iterator_constructor<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
@@ -52,6 +53,18 @@ pub fn make_iterator_for_value_without_return<H: VmHost>(vm: &mut H, value: JsVa
     }
 }
 
+/// 同 [`make_iterator_for_value`]，但包装器原型指向调用方指定的原型
+/// （`String.prototype[@@iterator]` 用 %StringIteratorPrototype%）。
+pub(crate) fn make_iterator_for_value_with_proto<H: VmHost>(
+    vm: &mut H, value: JsValue, wrapper_proto: *mut JsObject,
+) -> Result<JsValue, JsValue> {
+    match try_make_iterator_inner_proto(vm, value, true, Some(wrapper_proto)) {
+        Ok(Some(iterator)) => Ok(iterator),
+        Ok(None) => Err(crate::error::create_type_error(vm, "value is not iterable")),
+        Err(err) => Err(err),
+    }
+}
+
 /// 尝试创建迭代器包装对象，把"不可迭代"与"真异常"区分返回。
 ///
 /// # 步骤
@@ -68,13 +81,25 @@ pub fn make_iterator_for_value_without_return<H: VmHost>(vm: &mut H, value: JsVa
 pub(crate) fn try_make_iterator_inner<H: VmHost>(
     vm: &mut H, value: JsValue, bind_return: bool,
 ) -> Result<Option<JsValue>, JsValue> {
+    try_make_iterator_inner_proto(vm, value, bind_return, None)
+}
+
+/// 同 [`try_make_iterator_inner`]，但允许调用方指定包装器原型
+/// （String 迭代器挂 %StringIteratorPrototype%，其余默认 %IteratorPrototype%）。
+pub(crate) fn try_make_iterator_inner_proto<H: VmHost>(
+    vm: &mut H, value: JsValue, bind_return: bool, wrapper_proto: Option<*mut JsObject>,
+) -> Result<Option<JsValue>, JsValue> {
     let inner = match get_iterator(vm, value) {
         Ok(Some(inner)) => inner,
         Ok(None) => return Ok(None),
         Err(err) => return Err(err),
     };
-    // 通用包装器挂 %IteratorPrototype%：经原型链获得 @@iterator（返回自身）。
-    let iterator_proto = vm.session().builtin_world().iterator_proto.as_ptr() as *mut JsObject;
+    // 通用包装器默认挂 %IteratorPrototype%（经原型链获得 @@iterator 返回自身）；
+    // 调用方指定原型时优先（如 String 迭代器的 %StringIteratorPrototype%）。
+    let iterator_proto = match wrapper_proto {
+        Some(proto) => proto,
+        None => vm.session().builtin_world().iterator_proto.as_ptr() as *mut JsObject,
+    };
     let wrapper = vm
         .epoch()
         .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(iterator_proto)));
@@ -536,13 +561,30 @@ fn make_map_set_pair<H: VmHost>(vm: &mut H, a: JsValue, b: JsValue) -> JsValue {
     JsValue::from_js_object(pair)
 }
 
+/// Map/Set 迭代器模式编码：创建时存 wrapper `__mode__` 槽，%MapIteratorPrototype%/
+/// %SetIteratorPrototype% 的单一 next 读槽后按模式推进（值含家族区分，
+/// 分发不依赖具体原型）。判别值稳定，改动须同步 `from_i32`。
 #[derive(Clone, Copy)]
-enum MapSetMode {
-    MapEntries,
-    MapValues,
-    MapKeys,
-    SetEntries,
-    SetValues,
+#[repr(i32)]
+pub(crate) enum MapSetMode {
+    MapEntries = 0,
+    MapValues = 1,
+    MapKeys = 2,
+    SetValues = 3,
+    SetEntries = 4,
+}
+
+impl MapSetMode {
+    fn from_i32(value: i32) -> Self {
+        match value {
+            0 => Self::MapEntries,
+            1 => Self::MapValues,
+            2 => Self::MapKeys,
+            3 => Self::SetValues,
+            4 => Self::SetEntries,
+            _ => Self::MapEntries,
+        }
+    }
 }
 
 /// 把 Map/Set 迭代器包装器推进一步，按指定模式产出 `{value, done}` 结果。
@@ -593,7 +635,11 @@ fn map_set_step<H: VmHost>(
     }
 }
 
-fn map_set_next_dispatch<H: VmHost>(vm: &mut H, args: &[u8], mode: MapSetMode) -> NativeResult {
+/// Map/Set 迭代器 `next`：模式从 wrapper `__mode__` 槽读取后按模式推进。
+///
+/// %MapIteratorPrototype%/%SetIteratorPrototype% 绑定同一实现——家族与模式
+/// 在创建时编码进 `__mode__` 槽，`next` 挂在原型上（wrapper 不设 own next）。
+pub fn map_set_iterator_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if !this_val.is_object() {
         return NativeResult::Err(crate::error::create_type_error(vm, "iterator next called on non-object"));
@@ -601,110 +647,40 @@ fn map_set_next_dispatch<H: VmHost>(vm: &mut H, args: &[u8], mode: MapSetMode) -
     let wrapper = unsafe { &mut *this_val.as_js_object_ptr() };
     let inner_si = vm.kernel_core().perm_interner().intern(INNER_PROP).0;
     let index_si = vm.kernel_core().perm_interner().intern(INDEX_PROP).0;
+    let mode_si = vm.kernel_core().perm_interner().intern(MODE_PROP).0;
     let inner = match vm.ordinary_get(wrapper, inner_si, this_val) {
         Ok(inner) if !inner.is_undefined() => inner,
         _ => return NativeResult::Err(crate::error::create_type_error(vm, "iterator has no inner collection")),
     };
+    let mode = vm
+        .ordinary_get(wrapper, mode_si, this_val)
+        .ok()
+        .and_then(|v| if v.is_int() { Some(MapSetMode::from_i32(v.as_int())) } else { None })
+        .unwrap_or(MapSetMode::MapEntries);
     NativeResult::Ok(map_set_step(vm, wrapper, inner, index_si, mode))
 }
 
-pub(crate) fn map_entries_iter_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    map_set_next_dispatch::<H>(vm, args, MapSetMode::MapEntries)
-}
-
-pub(crate) fn map_values_iter_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    map_set_next_dispatch::<H>(vm, args, MapSetMode::MapValues)
-}
-
-pub(crate) fn map_keys_iter_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    map_set_next_dispatch::<H>(vm, args, MapSetMode::MapKeys)
-}
-
-pub(crate) fn set_values_iter_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    map_set_next_dispatch::<H>(vm, args, MapSetMode::SetValues)
-}
-
-pub(crate) fn set_entries_iter_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    map_set_next_dispatch::<H>(vm, args, MapSetMode::SetEntries)
-}
-
-#[derive(Clone, Copy)]
-enum TypedArrayMode {
-    Values,
-    Keys,
-    Entries,
-}
-
-/// 按模式让 TypedArray 迭代器包装器推进一步：values 产出元素，keys 产出索引，
-/// entries 产出 `[index, element]` 对；耗尽后把下标推进到哨兵值防止"复活"。
-fn typed_array_step<H: VmHost>(
-    vm: &mut H, wrapper: &mut JsObject, inner: JsValue, index_si: u32, mode: TypedArrayMode,
-) -> Result<JsValue, JsValue> {
-    let index = current_index(vm, wrapper, index_si);
-    let view = crate::typed_array::get_typed_array_data(vm, inner)?;
-    if index >= view.length {
-        vm.set_or_create_prop_value(wrapper, index_si, JsValue::int(i32::MAX));
-        return Ok(make_iter_result(vm, JsValue::undefined(), true));
-    }
-    let elem = crate::typed_array::typed_array_element_get(vm, unsafe { &*inner.as_js_object_ptr() }, index as u32)
-        .map_err(|e| crate::error::create_type_error(vm, &e))?;
-    vm.set_or_create_prop_value(wrapper, index_si, JsValue::int((index + 1) as i32));
-    let value = match mode {
-        TypedArrayMode::Values => elem,
-        TypedArrayMode::Keys => JsValue::int(index as i32),
-        TypedArrayMode::Entries => make_map_set_pair(vm, JsValue::int(index as i32), elem),
-    };
-    Ok(make_iter_result(vm, value, false))
-}
-
-/// TypedArray 模式迭代器 `next` 的分发：校验包装器后按模式推进。
-fn typed_array_next_dispatch<H: VmHost>(vm: &mut H, args: &[u8], mode: TypedArrayMode) -> NativeResult {
-    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
-    if !this_val.is_object() {
-        return NativeResult::Err(crate::error::create_type_error(vm, "iterator next called on non-object"));
-    }
-    let wrapper = unsafe { &mut *this_val.as_js_object_ptr() };
-    let inner_si = vm.kernel_core().perm_interner().intern(INNER_PROP).0;
-    let index_si = vm.kernel_core().perm_interner().intern(INDEX_PROP).0;
-    let inner = match vm.ordinary_get(wrapper, inner_si, this_val) {
-        Ok(inner) if !inner.is_undefined() => inner,
-        _ => return NativeResult::Err(crate::error::create_type_error(vm, "iterator has no inner typed array")),
-    };
-    match typed_array_step(vm, wrapper, inner, index_si, mode) {
-        Ok(result) => NativeResult::Ok(result),
-        Err(err) => NativeResult::Err(err),
-    }
-}
-
-pub(crate) fn typed_array_values_iter_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    typed_array_next_dispatch::<H>(vm, args, TypedArrayMode::Values)
-}
-
-pub(crate) fn typed_array_keys_iter_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    typed_array_next_dispatch::<H>(vm, args, TypedArrayMode::Keys)
-}
-
-pub(crate) fn typed_array_entries_iter_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    typed_array_next_dispatch::<H>(vm, args, TypedArrayMode::Entries)
-}
-
-/// 构造迭代器包装器，其 `next` 委托给调用方指定的按模式分发的 native 函数。
-/// 与 `make_iterator_for_value` 一致，但允许 Map/Set/TA 原型方法选择
-/// values/keys/entries 变体，并挂到各自的集合迭代器原型上。
-pub(crate) fn make_mode_iterator<H: VmHost>(
-    vm: &mut H, inner: JsValue, proto_val: JsValue, next_fn: *const (),
+/// 构造 Map/Set 迭代器包装器：`__inner__`/`__index__`/`__mode__` 三槽记录状态。
+///
+/// `next` 不挂实例 own——由 %MapIteratorPrototype%/%SetIteratorPrototype% 上的
+/// 单一 next（读 `__mode__` 分发）经原型链提供，符合规范原型形状。
+pub(crate) fn make_collection_iterator<H: VmHost>(
+    vm: &mut H, inner: JsValue, proto_val: JsValue, mode: MapSetMode,
 ) -> JsValue {
-    let proto_ptr = if proto_val.is_object() { proto_val.as_js_object_ptr() } else { std::ptr::null_mut() };
+    let proto_ptr = if proto_val.is_object() {
+        proto_val.as_js_object_ptr()
+    } else {
+        std::ptr::null_mut()
+    };
     let wrapper = vm
         .epoch()
         .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
     let inner_si = vm.kernel_core().perm_interner().intern(INNER_PROP).0;
     let index_si = vm.kernel_core().perm_interner().intern(INDEX_PROP).0;
-    let next_si = vm.kernel_core().perm_interner().intern("next").0;
+    let mode_si = vm.kernel_core().perm_interner().intern(MODE_PROP).0;
     let wrapper_obj = unsafe { &mut *wrapper };
     vm.set_or_create_prop_value(wrapper_obj, inner_si, inner);
     vm.set_or_create_prop_value(wrapper_obj, index_si, JsValue::int(0));
-    let next = make_native_function(vm, "next", next_fn, 0);
-    vm.set_or_create_prop_value(wrapper_obj, next_si, next);
+    vm.set_or_create_prop_value(wrapper_obj, mode_si, JsValue::int(mode as i32));
     JsValue::from_js_object(wrapper)
 }

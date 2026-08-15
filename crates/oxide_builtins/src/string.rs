@@ -1535,7 +1535,8 @@ pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 fn builder_wrapper<H: VmHost>(vm: &mut H, input: &str, re_obj: JsValue) -> NativeResult {
-    // matchAll 迭代器挂 %RegExpStringIteratorPrototype%（链到 %IteratorPrototype%）。
+    // matchAll 迭代器挂 %RegExpStringIteratorPrototype%（链到 %IteratorPrototype%），
+    // next 由原型提供（不挂实例 own）。
     let regexp_iter_proto = vm.session().builtin_world().regexp_string_iterator_proto.as_ptr() as *mut JsObject;
     let wrapper = vm
         .epoch()
@@ -1545,15 +1546,11 @@ fn builder_wrapper<H: VmHost>(vm: &mut H, input: &str, re_obj: JsValue) -> Nativ
     let input_si = vm.kernel_core().perm_interner().intern(MALL_INPUT).0;
     let index_si = vm.kernel_core().perm_interner().intern(MALL_INDEX).0;
     let re_si = vm.kernel_core().perm_interner().intern(MALL_RE).0;
-    let next_si = vm.kernel_core().perm_interner().intern("next").0;
 
     let input_val = vm.new_string(input);
     vm.set_or_create_prop_value(wrapper_obj, input_si, input_val);
     vm.set_or_create_prop_value(wrapper_obj, index_si, JsValue::int(0));
     vm.set_or_create_prop_value(wrapper_obj, re_si, re_obj);
-
-    let next_fn = make_public_native_fn(vm, "next", string_match_all_next::<H> as *const (), 0);
-    vm.set_or_create_prop_value(wrapper_obj, next_si, next_fn);
 
     NativeResult::Ok(JsValue::from_js_object(wrapper))
 }
@@ -1587,24 +1584,13 @@ pub fn string_symbol_iterator<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
         }
     };
     let s_val = vm.new_string_owned(s);
-    match crate::iterator::make_iterator_for_value(vm, s_val) {
+    // String 迭代器挂 %StringIteratorPrototype%（链到 %IteratorPrototype%）：
+    // 包装机制复用通用路径，仅替换原型为中继层。
+    let string_iter_proto = vm.session().builtin_world().string_iterator_proto.as_ptr() as *mut JsObject;
+    match crate::iterator::make_iterator_for_value_with_proto(vm, s_val, string_iter_proto) {
         Ok(iterator) => NativeResult::Ok(iterator),
         Err(err) => NativeResult::Err(err),
     }
-}
-
-pub(crate) fn make_public_native_fn<H: VmHost>(vm: &mut H, name: &str, native_fn: *const (), arg_count: u8) -> JsValue {
-    let function_proto = vm.session().builtin_world().function_proto.as_ptr() as *mut JsObject;
-    let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(function_proto));
-    func.set_function(true);
-    func.set_native_fn(Some(unsafe { oxide_types::object::NativeFnPtr::from_raw(native_fn) }));
-    func.set_native_arg_count(arg_count);
-    let func = vm.alloc_object(func);
-    let name_si = vm.kernel_core().perm_interner().intern("name").0;
-    let value = vm.new_string(name);
-    let func_ref = unsafe { &mut *func };
-    vm.set_or_create_prop_value(func_ref, name_si, value);
-    JsValue::from_js_object(func)
 }
 
 /// `matchAll` 迭代器的 `next`：返回 `{value: 匹配数组, done}`，耗尽后 done 为 true。

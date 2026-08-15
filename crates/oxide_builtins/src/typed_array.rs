@@ -1171,36 +1171,32 @@ pub fn typed_array_join<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn typed_array_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     native_try!(get_typed_array_data(vm, this_val));
-    NativeResult::Ok(crate::iterator::make_mode_iterator(
-        vm,
-        this_val,
-        JsValue::from_js_object(vm.session().builtin_world().array_iterator_proto.as_ptr() as *mut JsObject),
-        crate::iterator::typed_array_values_iter_next::<H> as *const (),
-    ))
+    // TA 迭代器与 Array 共享 %ArrayIteratorPrototype%（规范 CreateArrayIterator
+    // 同族），next 由原型提供；接收者合法性已在上方校验。
+    match crate::array::make_array_iterator(vm, this_val, crate::array::ARRAY_ITER_KIND_VALUES) {
+        Ok(iter) => NativeResult::Ok(iter),
+        Err(err) => NativeResult::Err(err),
+    }
 }
 
 /// `%TypedArray%.prototype.keys()`：返回迭代元素索引的迭代器。
 pub fn typed_array_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     native_try!(get_typed_array_data(vm, this_val));
-    NativeResult::Ok(crate::iterator::make_mode_iterator(
-        vm,
-        this_val,
-        JsValue::from_js_object(vm.session().builtin_world().array_iterator_proto.as_ptr() as *mut JsObject),
-        crate::iterator::typed_array_keys_iter_next::<H> as *const (),
-    ))
+    match crate::array::make_array_iterator(vm, this_val, crate::array::ARRAY_ITER_KIND_KEYS) {
+        Ok(iter) => NativeResult::Ok(iter),
+        Err(err) => NativeResult::Err(err),
+    }
 }
 
 /// `%TypedArray%.prototype.entries()`：返回迭代 `[index, element]` 对的迭代器。
 pub fn typed_array_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     native_try!(get_typed_array_data(vm, this_val));
-    NativeResult::Ok(crate::iterator::make_mode_iterator(
-        vm,
-        this_val,
-        JsValue::from_js_object(vm.session().builtin_world().array_iterator_proto.as_ptr() as *mut JsObject),
-        crate::iterator::typed_array_entries_iter_next::<H> as *const (),
-    ))
+    match crate::array::make_array_iterator(vm, this_val, crate::array::ARRAY_ITER_KIND_ENTRIES) {
+        Ok(iter) => NativeResult::Ok(iter),
+        Err(err) => NativeResult::Err(err),
+    }
 }
 
 /// 默认数值排序比较：NaN 视为最大排到末尾，其余按数值升序。

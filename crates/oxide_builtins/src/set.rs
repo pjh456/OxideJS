@@ -337,11 +337,11 @@ pub fn set_size<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn set_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let _inner = native_try!(get_set_inner(vm, this_val));
-    NativeResult::Ok(crate::iterator::make_mode_iterator(
+    NativeResult::Ok(crate::iterator::make_collection_iterator(
         vm,
         this_val,
         JsValue::from_js_object(vm.session().builtin_world().set_iterator_proto.as_ptr() as *mut JsObject),
-        crate::iterator::set_entries_iter_next::<H> as *const (),
+        crate::iterator::MapSetMode::SetEntries,
     ))
 }
 
@@ -349,11 +349,11 @@ pub fn set_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn set_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let _inner = native_try!(get_set_inner(vm, this_val));
-    NativeResult::Ok(crate::iterator::make_mode_iterator(
+    NativeResult::Ok(crate::iterator::make_collection_iterator(
         vm,
         this_val,
         JsValue::from_js_object(vm.session().builtin_world().set_iterator_proto.as_ptr() as *mut JsObject),
-        crate::iterator::set_values_iter_next::<H> as *const (),
+        crate::iterator::MapSetMode::SetValues,
     ))
 }
 
@@ -362,11 +362,11 @@ pub fn set_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let _inner = native_try!(get_set_inner(vm, this_val));
     // Set 的 keys() 是 values() 的别名——返回同样的逐元素迭代器。
-    NativeResult::Ok(crate::iterator::make_mode_iterator(
+    NativeResult::Ok(crate::iterator::make_collection_iterator(
         vm,
         this_val,
         JsValue::from_js_object(vm.session().builtin_world().set_iterator_proto.as_ptr() as *mut JsObject),
-        crate::iterator::set_values_iter_next::<H> as *const (),
+        crate::iterator::MapSetMode::SetValues,
     ))
 }
 

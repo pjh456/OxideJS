@@ -1734,17 +1734,19 @@ pub fn array_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 /// Array Iterator 的内部 kind 编码：0=values，1=keys，2=entries。
-const ARRAY_ITER_KIND_VALUES: i32 = 0;
-const ARRAY_ITER_KIND_KEYS: i32 = 1;
-const ARRAY_ITER_KIND_ENTRIES: i32 = 2;
+/// TypedArray 迭代器复用同一编码与 %ArrayIteratorPrototype%（规范同族）。
+pub(crate) const ARRAY_ITER_KIND_VALUES: i32 = 0;
+pub(crate) const ARRAY_ITER_KIND_KEYS: i32 = 1;
+pub(crate) const ARRAY_ITER_KIND_ENTRIES: i32 = 2;
 
 const ARRAY_ITER_TARGET_PROP: &str = "__target__";
 const ARRAY_ITER_INDEX_PROP: &str = "__index__";
 const ARRAY_ITER_KIND_PROP: &str = "__kind__";
 
-/// 创建 Array Iterator 对象：记录目标、当前下标与迭代种类，原型挂
-/// `%ArrayIteratorPrototype%`（链到 `%IteratorPrototype%`，与 TA 迭代器共享）。
-fn make_array_iterator<H: VmHost>(vm: &mut H, this_val: JsValue, kind: i32) -> Result<JsValue, JsValue> {
+/// 创建 Array/TA Iterator 对象：记录目标、当前下标与迭代种类，原型挂
+/// `%ArrayIteratorPrototype%`（链到 `%IteratorPrototype%`，Array 与 TA 共享）。
+/// `next` 不挂实例 own——由原型提供。
+pub(crate) fn make_array_iterator<H: VmHost>(vm: &mut H, this_val: JsValue, kind: i32) -> Result<JsValue, JsValue> {
     let target = match oxide_runtime_api::to_object(this_val, vm) {
         Ok(v) => v,
         Err(msg) => return Err(array_type_error(vm, &msg)),
@@ -1756,13 +1758,10 @@ fn make_array_iterator<H: VmHost>(vm: &mut H, this_val: JsValue, kind: i32) -> R
     let target_si = vm.kernel_core().perm_interner().intern(ARRAY_ITER_TARGET_PROP).0;
     let index_si = vm.kernel_core().perm_interner().intern(ARRAY_ITER_INDEX_PROP).0;
     let kind_si = vm.kernel_core().perm_interner().intern(ARRAY_ITER_KIND_PROP).0;
-    let next_si = vm.kernel_core().perm_interner().intern("next").0;
     let iter_ref = unsafe { &mut *iter };
     vm.set_or_create_prop_value(iter_ref, target_si, target);
     vm.set_or_create_prop_value(iter_ref, index_si, JsValue::int(0));
     vm.set_or_create_prop_value(iter_ref, kind_si, JsValue::int(kind));
-    let next_fn = crate::iterator::make_native_function(vm, "next", array_iterator_next::<H> as *const (), 0);
-    vm.set_or_create_prop_value(iter_ref, next_si, next_fn);
     Ok(JsValue::from_js_object(iter))
 }
 
@@ -1815,6 +1814,38 @@ pub fn array_iterator_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         .unwrap_or(ARRAY_ITER_KIND_VALUES);
 
     let target_obj = unsafe { &*target.as_js_object_ptr() };
+    // TypedArray 目标走底层 buffer 读取（元素非普通属性，length 语义不同）：
+    // 与 Array 共享 %ArrayIteratorPrototype%，须在此分支区分两种取数路径。
+    if target_obj.is_typed_array_obj() {
+        let view = match crate::typed_array::get_typed_array_data(vm, target) {
+            Ok(view) => view,
+            Err(err) => return NativeResult::Err(err),
+        };
+        if (index as usize) >= view.length {
+            vm.set_or_create_prop_value(iter, target_si, JsValue::undefined());
+            return NativeResult::Ok(crate::iterator::make_iter_result(vm, JsValue::undefined(), true));
+        }
+        let element = match crate::typed_array::typed_array_element_get(vm, target_obj, index as u32) {
+            Ok(v) => v,
+            Err(e) => return NativeResult::Err(crate::error::create_type_error(vm, &e)),
+        };
+        let value = match kind {
+            ARRAY_ITER_KIND_KEYS => JsValue::int(index),
+            ARRAY_ITER_KIND_ENTRIES => {
+                let pair = create_new_array(vm, 2);
+                let pair_ref = unsafe { &mut *pair };
+                pair_ref.set_prop_at(0, JsValue::int(index));
+                pair_ref.set_prop_at(1, element);
+                JsValue::from_js_object(pair)
+            }
+            _ => element,
+        };
+        if let Err(msg) = vm.ordinary_set(iter, index_si, JsValue::int(index + 1), this_val) {
+            return NativeResult::Err(crate::error::create_error(vm, &msg));
+        }
+        return NativeResult::Ok(crate::iterator::make_iter_result(vm, value, false));
+    }
+
     let length_key = vm.new_string("length");
     let length_si = vm.property_key_si(length_key);
     let len_val = match vm.ordinary_get(target_obj, length_si, target) {

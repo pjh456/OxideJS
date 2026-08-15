@@ -234,6 +234,30 @@ pub(crate) fn bind_well_known_data_property(
     target.bump_generation();
 }
 
+/// 在 Iterator 函数对象上绑定 `prototype` 属性 = %IteratorPrototype%（规范形状：
+/// 构造器函数带 prototype 属性；描述符不可写/不可枚举/不可配置）。
+pub(crate) fn bind_iterator_function_prototype(
+    core: &Arc<KernelCore>, session: &KernelSession, iterator: &mut JsObject,
+) {
+    let iter_proto_ptr = session.builtin_world().iterator_proto.as_ptr() as *mut JsObject;
+    let sf = core.perm_interner().as_ref();
+    let sh = core.shape_forge().as_ref();
+    let si_prototype = sf.intern("prototype").0;
+    let iterator_shape = sh.make_shape(iterator.shape_id(), si_prototype);
+    iterator.set_shape_id(iterator_shape);
+    let pos = iterator.ensure_hash_props().len() as u32;
+    iterator.ensure_hash_props().push(JsValue::from_js_object(iter_proto_ptr));
+    iterator.set_data_meta(pos, PropAttributes::new(false, false, false));
+}
+
+/// 在集合迭代器原型上绑定 `next` 方法（规范形状：next 挂原型，wrapper 不设 own）。
+pub(crate) fn bind_iterator_proto_next(
+    core: &Arc<KernelCore>, session: &KernelSession, proto: *mut JsObject, func: *const (),
+) {
+    let proto = unsafe { &mut *proto };
+    apply_binding_table(session.builtin_world(), proto, core, &[("next", func, 0)]);
+}
+
 pub(crate) fn bind_global_value(core: &Arc<KernelCore>, global: &mut JsObject, name: &str, value: JsValue) {
     let si = core.perm_interner().intern(name).0;
     let shape = core.shape_forge().make_shape(global.shape_id(), si);
@@ -373,6 +397,7 @@ fn bind_iterator_global(core: &Arc<KernelCore>, session: &KernelSession, global:
         oxide_builtins::iterator::iterator_constructor::<crate::vm::Vm> as *const (),
         0,
     );
+    bind_iterator_function_prototype(core, session, &mut iterator);
     apply_binding_table(
         session.builtin_world(),
         &mut iterator,
@@ -392,6 +417,34 @@ fn bind_iterator_global(core: &Arc<KernelCore>, session: &KernelSession, global:
         "iterator",
         oxide_builtins::iterator::iterator_symbol_iterator::<crate::vm::Vm> as *const (),
         0,
+    );
+
+    // 集合迭代器原型各自安装 next（%ArrayIteratorPrototype% 服务 Array/TA 两族；
+    // Map/Set 共用按 `__mode__` 分发的实现；%RegExpStringIteratorPrototype% 供 matchAll）。
+    let world = session.builtin_world();
+    bind_iterator_proto_next(
+        core,
+        session,
+        world.array_iterator_proto.as_ptr() as *mut JsObject,
+        oxide_builtins::array::array_iterator_next::<crate::vm::Vm> as *const (),
+    );
+    bind_iterator_proto_next(
+        core,
+        session,
+        world.map_iterator_proto.as_ptr() as *mut JsObject,
+        oxide_builtins::iterator::map_set_iterator_next::<crate::vm::Vm> as *const (),
+    );
+    bind_iterator_proto_next(
+        core,
+        session,
+        world.set_iterator_proto.as_ptr() as *mut JsObject,
+        oxide_builtins::iterator::map_set_iterator_next::<crate::vm::Vm> as *const (),
+    );
+    bind_iterator_proto_next(
+        core,
+        session,
+        world.regexp_string_iterator_proto.as_ptr() as *mut JsObject,
+        oxide_builtins::string::string_match_all_next::<crate::vm::Vm> as *const (),
     );
 }
 

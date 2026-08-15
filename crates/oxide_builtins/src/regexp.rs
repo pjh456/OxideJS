@@ -547,8 +547,8 @@ pub fn regexp_symbol_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
         JsValue::from_js_object(vm.alloc_object(stub))
     };
 
-    // 复用 String.prototype.matchAll 的迭代器包装（next 经 string_match_all_next 推进），
-    // 原型挂 %RegExpStringIteratorPrototype%（链到 %IteratorPrototype%）。
+    // 复用 String.prototype.matchAll 的迭代器包装（next 经 string_match_all_next 推进，
+    // 挂 %RegExpStringIteratorPrototype% 原型，不设实例 own next）。
     let regexp_iter_proto = vm.session().builtin_world().regexp_string_iterator_proto.as_ptr() as *mut JsObject;
     let wrapper = vm
         .epoch()
@@ -557,13 +557,9 @@ pub fn regexp_symbol_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     let input_si = vm.kernel_core().perm_interner().intern(crate::string::MALL_INPUT).0;
     let index_si = vm.kernel_core().perm_interner().intern(crate::string::MALL_INDEX).0;
     let re_si = vm.kernel_core().perm_interner().intern(crate::string::MALL_RE).0;
-    let next_si = vm.kernel_core().perm_interner().intern("next").0;
     let input_val = vm.new_string(&haystack);
     vm.set_or_create_prop_value(wrapper_obj, input_si, input_val);
     vm.set_or_create_prop_value(wrapper_obj, index_si, JsValue::int(last_index as i32));
     vm.set_or_create_prop_value(wrapper_obj, re_si, iter_re);
-    let next_fn =
-        crate::string::make_public_native_fn(vm, "next", crate::string::string_match_all_next::<H> as *const (), 0);
-    vm.set_or_create_prop_value(wrapper_obj, next_si, next_fn);
     NativeResult::Ok(JsValue::from_js_object(wrapper))
 }
