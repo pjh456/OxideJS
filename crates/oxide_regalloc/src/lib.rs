@@ -7,6 +7,7 @@
 //! （元数据回写）。`alloc()` 是完整改写 pass 入口，`color()` 只产决策。
 
 mod alloc_map;
+mod call_window;
 mod color;
 mod finish;
 mod graph;
@@ -14,6 +15,7 @@ mod regalloc_log;
 mod rewrite;
 
 pub use alloc_map::{Alloc, AllocMap, FreshKind, FreshVreg, SpillPlan};
+pub use call_window::encode_call_window;
 
 use oxide_ir::IRFunction;
 use oxide_liveness::LiveInfo;

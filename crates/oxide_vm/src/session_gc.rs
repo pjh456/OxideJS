@@ -667,6 +667,7 @@ mod tests {
             return_addr: 0,
             function_name: 0,
             caller_reg_limit: 1,
+            caller_active_reg_limit: 1,
             saved_reg_offset: 0,
             spill_offset: 0,
             arguments_base: 0,

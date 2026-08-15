@@ -170,7 +170,13 @@ pub enum FrameContinuation {
 pub struct CallFrame {
     pub return_addr: usize,
     pub function_name: u32,
+    /// 压帧保存的调用方寄存器窗口长度（= save_stack 中本帧段大小）。
+    /// 普通字节码调用按调用点存活上界截断；运行时发起（accessor/内联）为
+    /// 调用方 `active_reg_limit` 全量。
     pub caller_reg_limit: u8,
+    /// 压帧时刻调用方 `active_reg_limit`（真实值）：帧恢复时据此还原，与
+    /// `caller_reg_limit`（可能被存活上界截断的窗口）解耦。
+    pub caller_active_reg_limit: u8,
     pub saved_reg_offset: u32,
     /// 记录本帧 spill 栈起始长度，作为 SPILL/UNSPILL 的帧边界基址（push 时快照）。
     pub spill_offset: u32,
@@ -1139,10 +1145,24 @@ impl Vm {
         self.call_bytecode_function_inline(callee, callee_obj, receiver, args)
     }
 
+    /// 压帧窗口上界：调用方活动寄存器与调用点存活上界取 min。
+    ///
+    /// # 边界与前提
+    /// - `call_window` 为 CALL ext 高 8 位编码的存活上界；0 = 未编码（回退全量）。
+    /// - 窗口至少为 1（reg 0 恒为调用结果槽）。
+    pub(crate) fn call_window_limit(&self, caller_active_reg_limit: u8, call_window: u8) -> u8 {
+        if call_window == 0 {
+            caller_active_reg_limit
+        } else {
+            caller_active_reg_limit.min(call_window)
+        }
+        .max(1)
+    }
+
     #[expect(clippy::too_many_arguments)]
     pub(crate) fn push_bytecode_frame(
         &mut self, callee: JsValue, this_value: JsValue, args: &[JsValue], construct_result_reg: Option<u8>,
-        constructed_this: Option<JsValue>, new_target: JsValue, continuation: FrameContinuation,
+        constructed_this: Option<JsValue>, new_target: JsValue, continuation: FrameContinuation, call_window: u8,
     ) -> Result<(), String> {
         vm_trace!(
             "push_bytecode_frame: depth={}, args={}, continuation={:?}",
@@ -1174,7 +1194,11 @@ impl Vm {
         let sub_n_registers = self.sub_modules[sub_idx].n_registers;
         let sub_param_base = self.sub_modules[sub_idx].param_base as usize;
         let sub_is_arrow = self.sub_modules[sub_idx].is_arrow;
-        let caller_reg_limit = self.active_reg_limit.max(1);
+        // 窗口 = min(调用方活动寄存器, 存活上界)；call_window=0 表示调用方全量
+        // （运行时发起路径 / 未编码的旧模块）。恢复按窗口回拷，active_reg_limit
+        // 仍还原为调用方真实值（caller_active_reg_limit）。
+        let caller_active_reg_limit = self.active_reg_limit.max(1);
+        let caller_reg_limit = self.call_window_limit(caller_active_reg_limit, call_window);
         let saved_reg_offset = self.save_stack.len() as u32;
         self.save_stack.extend_from_slice(&self.regs[..caller_reg_limit as usize]);
         let saved_this = self.regs[254];
@@ -1205,6 +1229,7 @@ impl Vm {
             return_addr: self.pc,
             function_name,
             caller_reg_limit,
+            caller_active_reg_limit,
             saved_reg_offset,
             spill_offset: self.spill_stack.len() as u32,
             arguments_base: args_base,
@@ -2213,6 +2238,7 @@ mod tests {
             return_addr: 1,
             function_name: 0,
             caller_reg_limit: 2,
+            caller_active_reg_limit: 2,
             saved_reg_offset: 0,
             spill_offset: 0,
             arguments_base: 0,

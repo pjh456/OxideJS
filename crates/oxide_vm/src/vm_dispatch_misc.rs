@@ -43,6 +43,8 @@ impl Vm {
         let ext = self.bytecode[self.pc];
         self.pc += 1;
         let arg_count = (ext & 0xFF) as usize;
+        // ext 高 8 位 = 调用点存活上界（0 = 未编码/全量），压帧窗口按此截断。
+        let call_window = (ext >> 8) as u8;
 
         let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
         let new_obj = self.alloc_object(JsObject::new_empty(
@@ -113,7 +115,8 @@ impl Vm {
             let sub_n_args = self.sub_modules[sub_idx].n_args as usize;
             let sub_n_registers = self.sub_modules[sub_idx].n_registers;
             let sub_param_base = self.sub_modules[sub_idx].param_base as usize;
-            let caller_reg_limit = self.active_reg_limit.max(1);
+            let caller_active_reg_limit = self.active_reg_limit.max(1);
+            let caller_reg_limit = self.call_window_limit(caller_active_reg_limit, call_window);
             let saved_reg_offset = self.save_stack.len() as u32;
             self.save_stack.extend_from_slice(&self.regs[..caller_reg_limit as usize]);
             let saved_this = self.regs[254];
@@ -149,6 +152,7 @@ impl Vm {
                     .map(|name| self.kernel_core.perm_interner().intern(name).0)
                     .unwrap_or(0),
                 caller_reg_limit,
+                caller_active_reg_limit,
                 saved_reg_offset,
                 spill_offset: self.spill_stack.len() as u32,
                 arguments_base: args_base,

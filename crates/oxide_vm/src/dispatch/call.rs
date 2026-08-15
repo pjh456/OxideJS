@@ -87,7 +87,16 @@ impl Vm {
                         }
                     }
                 }
-                self.push_bytecode_frame(callee, this, &args, None, None, JsValue::undefined(), FrameContinuation::None)
+                self.push_bytecode_frame(
+                    callee,
+                    this,
+                    &args,
+                    None,
+                    None,
+                    JsValue::undefined(),
+                    FrameContinuation::None,
+                    0,
+                )
             }
         }
     }
@@ -389,6 +398,8 @@ impl Vm {
         let ext = self.bytecode[self.pc];
         self.pc += 1;
         let arg_count = (ext & 0xFF) as usize;
+        // ext 高 8 位 = 调用点存活上界（0 = 未编码/全量），压帧窗口按此截断。
+        let call_window = (ext >> 8) as u8;
 
         let Some(frame) = self.frames.last() else {
             self.raise_error_kind("ReferenceError", "super() used outside class constructor")?;
@@ -483,7 +494,8 @@ impl Vm {
             let sub_n_args = self.sub_modules[sub_idx].n_args as usize;
             let sub_n_registers = self.sub_modules[sub_idx].n_registers;
             let sub_param_base = self.sub_modules[sub_idx].param_base as usize;
-            let caller_reg_limit = self.active_reg_limit.max(1);
+            let caller_active_reg_limit = self.active_reg_limit.max(1);
+            let caller_reg_limit = self.call_window_limit(caller_active_reg_limit, call_window);
             let saved_reg_offset = self.save_stack.len() as u32;
             self.save_stack.extend_from_slice(&self.regs[..caller_reg_limit as usize]);
             let saved_this = self.regs[254];
@@ -517,6 +529,7 @@ impl Vm {
                 return_addr: self.pc,
                 function_name,
                 caller_reg_limit,
+                caller_active_reg_limit,
                 saved_reg_offset,
                 spill_offset: self.spill_stack.len() as u32,
                 arguments_base: args_base,
@@ -786,6 +799,7 @@ impl Vm {
                             None,
                             JsValue::undefined(),
                             FrameContinuation::None,
+                            0,
                         )?;
                         return Ok(true);
                     }
@@ -892,6 +906,7 @@ impl Vm {
                 Some(new_obj_val),
                 constructor,
                 FrameContinuation::None,
+                0,
             )?;
             Ok(true)
         } else {
@@ -979,6 +994,7 @@ impl Vm {
                 Some(derived_this),
                 new_target,
                 FrameContinuation::None,
+                0,
             )?;
             Ok(true)
         } else {

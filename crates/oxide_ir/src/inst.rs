@@ -124,9 +124,12 @@ impl Inst {
         Self::with_ext(OpCode::COMPOUND_MEMBER_USHR, obj, val, key, &[0; IC_EXT_WORDS])
     }
 
-    // ── Call 系：ext = [nargs] ──
+    // ── Call 系：ext = [nargs | (存活上界 << 8)] ──
+    // 低 8 位 nargs；高 8 位由 RegAlloc 后 `encode_call_window` 回填调用点存活
+    // 上界（窗口 regs[0..上界]，0 = 全量）。emit 构造时高 8 位恒 0。
 
-    /// 普通函数调用：rd=callee，a=this，b=首参，ext=\[nargs\]。参数从 `first_arg` 起连续占 nargs 个寄存器。
+    /// 普通函数调用：rd=callee，a=this，b=首参，ext=[nargs|(上界<<8)]。
+    /// 参数从 `first_arg` 起连续占 nargs 个寄存器。
     pub fn call(callee: Operand, this: Operand, first_arg: Operand, nargs: u8) -> Self {
         Self::with_ext(OpCode::CALL, callee, this, first_arg, &[nargs as u32])
     }
@@ -136,12 +139,12 @@ impl Inst {
         Self::with_ext(OpCode::CALL_NATIVE, callee, this, first_arg, &[nargs as u32])
     }
 
-    /// `new` 表达式：结果写入 `result`，构造函数为 `constructor`。
+    /// `new` 表达式：结果写入 `result`，构造函数为 `constructor`。ext 编码同 `call`。
     pub fn new_expression(result: Operand, constructor: Operand, first_arg: Operand, nargs: u8) -> Self {
         Self::with_ext(OpCode::NEW_EXPRESSION, result, constructor, first_arg, &[nargs as u32])
     }
 
-    /// 派生类构造中的 `super(...)`：结果写入 `result`。
+    /// 派生类构造中的 `super(...)`：结果写入 `result`。ext 编码同 `call`。
     pub fn super_call(result: Operand, first_arg: Operand, nargs: u8) -> Self {
         Self::with_ext(OpCode::SUPER_CALL, result, first_arg, Operand::None, &[nargs as u32])
     }

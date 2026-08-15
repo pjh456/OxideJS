@@ -77,6 +77,11 @@ impl Compiler {
             let cfg2 = oxide_cfg::build_cfg(&ir); // 精确 DCE 删指令后 inst 下标位移，CFG 重建
             let live2 = oxide_liveness::liveness(&ir, &cfg2); // 重算，绝不用过期 live
             oxide_regalloc::alloc(&mut ir, &live2)?; // 无可行染色 → RangeError 上抛
+                                                     // RegAlloc 改写（vreg→phys + spill 插入）后补第三次 liveness：为调用点
+                                                     // 存活上界提供物理级活集（改写过后的 LiveInfo 已过期，必须重算）。
+            let cfg3 = oxide_cfg::build_cfg(&ir);
+            let live3 = oxide_liveness::liveness(&ir, &cfg3);
+            oxide_regalloc::encode_call_window(&mut ir, &live3);
             crate::compiler_debug!("compile: after regalloc {} insts", ir.insts.len());
         }
         crate::compiler_debug!("compile: done, {} instructions", ir.insts.len());

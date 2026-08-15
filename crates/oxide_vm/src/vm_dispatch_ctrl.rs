@@ -25,6 +25,8 @@ impl Vm {
                     let ext = self.bytecode[self.pc];
                     self.pc += 1;
                     let arg_count = (ext & 0xFF) as usize;
+                    // ext 高 8 位 = 调用点存活上界（0 = 未编码/全量），压帧窗口按此截断。
+                    let call_window = (ext >> 8) as u8;
                     crate::vm_debug!("CALL rd={} this={} args={} depth={}", rd, this_reg, arg_count, self.frames.len());
 
                     if obj.native_fn().is_some() {
@@ -65,6 +67,7 @@ impl Vm {
                             None,
                             JsValue::undefined(),
                             FrameContinuation::None,
+                            call_window,
                         )?;
                         return Ok(true);
                     }

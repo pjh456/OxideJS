@@ -131,6 +131,7 @@ impl Vm {
             None,
             JsValue::undefined(),
             FrameContinuation::AccessorGet { target_reg },
+            0,
         )?;
         self.accessor_frame_target_reg = Some(target_reg);
         Ok(true)
@@ -330,6 +331,7 @@ impl Vm {
             None,
             JsValue::undefined(),
             FrameContinuation::AccessorSet,
+            0,
         )?;
         Ok(())
     }

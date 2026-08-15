@@ -202,7 +202,16 @@ impl Vm {
         self.saved_immutables_stack.clear();
         self.cell_stack.clear();
         self.inline_callee = None;
-        self.push_bytecode_frame(callee, this_value, args, None, None, JsValue::undefined(), FrameContinuation::None)
+        self.push_bytecode_frame(
+            callee,
+            this_value,
+            args,
+            None,
+            None,
+            JsValue::undefined(),
+            FrameContinuation::None,
+            0,
+        )
     }
 
     pub(crate) fn call_bytecode_function_inline(
@@ -331,7 +340,8 @@ impl Vm {
         self.spill_stack.truncate(frame.spill_offset as usize);
         self.regs[254] = frame.saved_this;
         self.regs[255] = frame.saved_new_target;
-        self.active_reg_limit = frame.caller_reg_limit;
+        // active_reg_limit 还原为调用方真实值（caller_reg_limit 可能被存活上界截断）。
+        self.active_reg_limit = frame.caller_active_reg_limit;
         self.pc = frame.return_addr;
     }
 
