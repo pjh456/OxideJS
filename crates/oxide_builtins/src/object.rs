@@ -1096,6 +1096,25 @@ pub fn object_proto_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     NativeResult::Ok(vm.reg(args[0]))
 }
 
+/// 沿原型链判断是否为 Error 家族对象：对象自身带 `OBJ_TYPE_ERROR` 标签，或原型链上
+/// 含 Error.prototype（等价 [[ErrorData]] 内部槽语义，覆盖 Error 用户子类）。
+fn is_error_family<H: VmHost>(vm: &H, ptr: *mut JsObject) -> bool {
+    let error_proto_ptr = vm.session().builtin_world().error_proto.as_ptr() as *mut JsObject;
+    let mut cur = ptr;
+    while !cur.is_null() {
+        if std::ptr::eq(cur, error_proto_ptr) {
+            return true;
+        }
+        // SAFETY: cur 沿原型链遍历，链上每个节点都是合法 JsObject（proto 非对象时为空指针终止）。
+        let o = unsafe { &*cur };
+        if o.is_error_obj() {
+            return true;
+        }
+        cur = o.proto().as_js_object_ptr();
+    }
+    false
+}
+
 /// `Object.prototype.toString`：返回 `[object Tag]`。对象路径先按内置类型判定标签，
 /// 再读 `@@toStringTag`——为字符串时覆盖内置标签（TypedArray 依赖它区分具体类型）。
 pub fn object_proto_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -1138,6 +1157,8 @@ pub fn object_proto_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
                 "ArrayBuffer"
             } else if obj.is_arguments_obj() {
                 "Arguments"
+            } else if is_error_family(vm, ptr) {
+                "Error"
             } else if std::ptr::eq(ptr, vm.session().builtin_world().math_object.as_ptr()) {
                 "Math"
             } else if std::ptr::eq(ptr, vm.session().builtin_world().json_object.as_ptr()) {

@@ -650,6 +650,9 @@ impl JsObject {
     /// 装箱 Symbol 对象类型标签。
     pub const OBJ_TYPE_SYMBOL_OBJ: u8 = 21;
     pub const OBJ_TYPE_ARGUMENTS: u8 = 20;
+    /// Error 家族对象（Error 及 NativeError 实例）：`Object.prototype.toString` 返回
+    /// `[object Error]`，与 [[ErrorData]] 内部槽对应。
+    pub const OBJ_TYPE_ERROR: u8 = 22;
     /// `is_session_epoch` 字段中的 session 标记位。
     pub const SESSION_EPOCH_BIT: u8 = 0x01;
     /// `is_session_epoch` 字段中的 GC 标记位。
@@ -755,6 +758,12 @@ impl JsObject {
     #[inline]
     pub fn is_arguments_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_ARGUMENTS
+    }
+
+    /// 是否 Error 家族对象（含 NativeError 实例）。
+    #[inline]
+    pub fn is_error_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_ERROR
     }
 
     /// 构造无属性、可扩展的空对象（`new Object()` 的基础对象）。

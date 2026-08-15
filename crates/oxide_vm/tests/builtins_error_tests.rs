@@ -327,6 +327,79 @@ fn error_to_string_non_object_throws() {
     }
 }
 
+// ── 错误对象语义修复测试 ──
+
+#[test]
+fn error_message_property_non_enumerable() {
+    let mut vm = make_vm();
+    // message 描述符 enumerable=false（规范 CreateNonEnumerableDataPropertyOrThrow）。
+    assert_eq!(
+        format!(
+            "{}",
+            eval_in(&mut vm, "Object.getOwnPropertyDescriptor(new Error('msg'), 'message').enumerable").unwrap()
+        ),
+        "false"
+    );
+    // 可枚举自身键为空：Object.keys / JSON.stringify 不再泄漏 message。
+    assert_eq!(format!("{}", eval_in(&mut vm, "Object.keys(new Error('msg')).length").unwrap()), "0");
+    let r = eval_in(&mut vm, "JSON.stringify(new Error('secret'))").unwrap();
+    assert_eq!(vm.lookup_str(r), Some("{}".to_string()));
+    // Error.prototype 的 name/message 同样非枚举。
+    assert_eq!(format!("{}", eval_in(&mut vm, "Object.keys(Error.prototype).length").unwrap()), "0");
+    // 子类型原型上的 name/constructor 非枚举，for-in 不泄漏。
+    assert_eq!(
+        format!(
+            "{}",
+            eval_in(&mut vm, "var s=[]; for (var k in new TypeError('t')) s.push(k); s.length").unwrap()
+        ),
+        "0"
+    );
+}
+
+#[test]
+fn error_to_string_tag_is_error() {
+    let mut vm = make_vm();
+    // Error 家族（含子类型与用户子类）经 Object.prototype.toString 得 `[object Error]`。
+    let r = eval_in(&mut vm, "Object.prototype.toString.call(new Error('x'))").unwrap();
+    assert_eq!(vm.lookup_str(r), Some("[object Error]".to_string()));
+    let r = eval_in(&mut vm, "Object.prototype.toString.call(new TypeError('x'))").unwrap();
+    assert_eq!(vm.lookup_str(r), Some("[object Error]".to_string()));
+    let r = eval_in(
+        &mut vm,
+        "class MyError extends Error {}; Object.prototype.toString.call(new MyError('x'))",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(r), Some("[object Error]".to_string()));
+    // Error.prototype 自身同样判定为 Error。
+    let r = eval_in(&mut vm, "Object.prototype.toString.call(Error.prototype)").unwrap();
+    assert_eq!(vm.lookup_str(r), Some("[object Error]".to_string()));
+}
+
+#[test]
+fn error_to_string_primitive_this_throws() {
+    let mut vm = make_vm();
+    // 规范：Error.prototype.toString 对非对象 this 抛 TypeError（不兜底为 "Error"）。
+    let r = eval_in(&mut vm, "try { Error.prototype.toString.call(1); 'no-throw' } catch (e) { e.name }").unwrap();
+    assert_eq!(vm.lookup_str(r), Some("TypeError".to_string()));
+}
+
+#[test]
+fn error_constructor_length_is_one() {
+    let mut vm = make_vm();
+    assert_eq!(format!("{}", eval_in(&mut vm, "Error.length").unwrap()), "1");
+    assert_eq!(format!("{}", eval_in(&mut vm, "TypeError.length").unwrap()), "1");
+    assert_eq!(format!("{}", eval_in(&mut vm, "EvalError.length").unwrap()), "1");
+}
+
+#[test]
+fn error_ctor_as_function_call_creates_new_object() {
+    let mut vm = make_vm();
+    // Error.call(obj) 忽略传入 this，总是返回新 Error 对象。
+    assert_eq!(format!("{}", eval_in(&mut vm, "var o = {x:1}; Error.call(o) === o").unwrap()), "false");
+    let r = eval_in(&mut vm, "var o = {x:1}; TypeError.call(o).name").unwrap();
+    assert_eq!(vm.lookup_str(r), Some("TypeError".to_string()));
+}
+
 // ── format_error_message 测试 ──
 
 #[test]

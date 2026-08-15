@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fmt::Write;
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_types::object::JsObject;
+use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::make_int_key;
 use oxide_types::value::JsValue;
 
@@ -361,9 +361,14 @@ fn stringify_object<H: VmHost>(
     out.push('{');
 
     let keys = walk_own_keys(vm, obj);
-    // 预计算 (名称, 槽位) 对，并应用白名单过滤。
+    // 仅序列化可枚举自身属性（规范 EnumerableOwnPropertyNames）。
     let entries: Vec<(String, u32)> = keys
         .into_iter()
+        .filter(|(_si, pos)| {
+            obj.prop_meta_at(*pos)
+                .map(|m| m.attributes.enumerable())
+                .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable())
+        })
         .filter_map(|(si, pos)| {
             let name = key_si_to_string(vm, si);
             if let Some(whitelist) = replacer_whitelist {

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::{to_string, NativeResult, VmHost};
 use oxide_types::mem::P;
-use oxide_types::object::JsObject;
+use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
 fn set_own_message<H: VmHost>(host: &mut H, this: *mut JsObject, args: &[u8]) {
@@ -22,7 +22,9 @@ fn set_own_message<H: VmHost>(host: &mut H, this: *mut JsObject, args: &[u8]) {
     let perm_val = host.new_string(&msg_str);
     unsafe {
         (*this).set_shape_id(new_shape);
-        (*this).push_prop(perm_val);
+        let pos = (*this).push_prop(perm_val);
+        // message 按规范为非枚举数据属性（CreateNonEnumerableDataPropertyOrThrow）。
+        (*this).set_data_meta(pos, PropAttributes::new(true, false, true));
     }
 }
 
@@ -49,8 +51,14 @@ pub fn create_kind_error<H: VmHost>(host: &mut H, kind: &str, msg: &str) -> JsVa
         let msg_val = host.new_string(msg);
         unsafe {
             (*obj).set_shape_id(shape);
-            (*obj).push_prop(msg_val);
+            let pos = (*obj).push_prop(msg_val);
+            // message 按规范为非枚举数据属性，避免泄漏进 Object.keys/for-in/JSON。
+            (*obj).set_data_meta(pos, PropAttributes::new(true, false, true));
         }
+    }
+    // 标记 Error 家族标签：Object.prototype.toString 据此输出 `[object Error]`。
+    unsafe {
+        (*obj).type_tag = JsObject::OBJ_TYPE_ERROR;
     }
     JsValue::from_js_object(obj)
 }
@@ -115,15 +123,15 @@ macro_rules! error_ctor {
     ($name:ident, $proto_field:ident) => {
         /// 对应 Error 子类（如 `TypeError`）的构造函数：接收第一个实参作为 message，
         /// 返回原型链指向对应 prototype 的 Error 对象。
+        ///
+        /// # 注意事项
+        /// 无论以 `new` 还是普通函数调用（如 `TypeError.call(obj)`）都新建对象，
+        /// 忽略调用方传入的 this——与规范构造器语义一致。
         pub fn $name<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
-            let this_val = host.reg(255);
-            let this = if this_val.is_object() {
-                this_val.as_js_object_ptr()
-            } else {
-                let proto_ptr = P::as_ptr(&host.session().builtin_world().$proto_field) as *mut JsObject;
-                host.epoch()
-                    .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)))
-            };
+            let proto_ptr = P::as_ptr(&host.session().builtin_world().$proto_field) as *mut JsObject;
+            let this = host
+                .epoch()
+                .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
             set_own_message(host, this, args);
             NativeResult::Ok(JsValue::from_js_object(this))
         }

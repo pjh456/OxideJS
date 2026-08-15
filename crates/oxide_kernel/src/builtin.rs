@@ -1378,14 +1378,17 @@ impl BuiltinWorld {
         let error_name_val = JsValue::perm_string(string_forge.string_ptr(error_si));
         let name_shape = shape_forge.make_shape(proto.shape_id(), si_name);
         proto.set_shape_id(name_shape);
-        proto.ensure_hash_props().push(error_name_val);
+        let name_pos = proto.push_prop(error_name_val);
+        // 原型上的 name/message 按规范为非枚举数据属性，避免泄漏进 Object.keys/for-in。
+        proto.set_data_meta(name_pos, oxide_types::object::PropAttributes::new(true, false, true));
 
         let si_message = string_forge.intern("message").0;
         let empty_si = string_forge.intern("").0;
         let empty_val = JsValue::perm_string(string_forge.string_ptr(empty_si));
         let msg_shape = shape_forge.make_shape(proto.shape_id(), si_message);
         proto.set_shape_id(msg_shape);
-        proto.ensure_hash_props().push(empty_val);
+        let msg_pos = proto.push_prop(empty_val);
+        proto.set_data_meta(msg_pos, oxide_types::object::PropAttributes::new(true, false, true));
 
         self.set_subtype_proto_name(string_forge, shape_forge, &self.type_error_proto, "TypeError", si_name);
         self.set_subtype_proto_name(string_forge, shape_forge, &self.reference_error_proto, "ReferenceError", si_name);
@@ -1404,7 +1407,9 @@ impl BuiltinWorld {
         let name_val = JsValue::perm_string(string_forge.string_ptr(name_si));
         let name_shape = shape_forge.make_shape(proto.shape_id(), si_name);
         proto.set_shape_id(name_shape);
-        proto.ensure_hash_props().push(name_val);
+        let name_pos = proto.push_prop(name_val);
+        // 子类型原型上的 name 同 Error.prototype.name：非枚举数据属性。
+        proto.set_data_meta(name_pos, oxide_types::object::PropAttributes::new(true, false, true));
     }
 
     /// 把 String 家族方法安装到 String 构造器与原型上。

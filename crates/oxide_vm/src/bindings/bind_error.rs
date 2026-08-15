@@ -3,7 +3,7 @@ use std::sync::Arc;
 use oxide_kernel::builtin::ErrorMethods;
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_types::object::{JsObject, NativeFnPtr};
+use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
 fn bind_error_subtype_constructor(
@@ -24,13 +24,18 @@ fn bind_error_subtype_constructor(
 
     let si_prototype = sf.intern("prototype").0;
     let si_name = sf.intern("name").0;
+    let si_length = sf.intern("length").0;
     let name_si = sf.intern(name).0;
 
     let ctor_shape1 = sh.make_shape(EMPTY_SHAPE_ID, si_prototype);
     let ctor_shape2 = sh.make_shape(ctor_shape1, si_name);
-    ctor.set_shape_id(ctor_shape2);
+    let ctor_shape3 = sh.make_shape(ctor_shape2, si_length);
+    ctor.set_shape_id(ctor_shape3);
     ctor.ensure_hash_props().push(JsValue::from_js_object(proto_ptr));
     ctor.ensure_hash_props().push(JsValue::perm_string(sf.string_ptr(name_si)));
+    ctor.ensure_hash_props().push(JsValue::int(1));
+    // 构造器 length 按规范为不可写不可枚举（Function.length 属性描述符约定）。
+    ctor.set_data_meta(2u32, PropAttributes::new(false, false, true));
 
     let ctor_ptr = Box::into_raw(ctor);
 
@@ -38,6 +43,9 @@ fn bind_error_subtype_constructor(
     let proto_ctor_shape = sh.make_shape(proto.shape_id(), sf.intern("constructor").0);
     proto.set_shape_id(proto_ctor_shape);
     proto.ensure_hash_props().push(JsValue::from_js_object(ctor_ptr));
+    // 原型上的 constructor 按规范为非枚举数据属性（与 Error.prototype.constructor 一致）。
+    let ctor_pos = proto.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+    proto.set_data_meta(ctor_pos, PropAttributes::new(true, false, true));
 
     let global_shape = sh.make_shape(global.shape_id(), name_si);
     global.set_shape_id(global_shape);
@@ -128,5 +136,14 @@ pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         err_ctor.set_native_fn(Some(unsafe {
             NativeFnPtr::from_raw(oxide_builtins::error::error_constructor::<crate::vm::Vm> as *const ())
         }));
+        // 主 Error 构造器补 length 槽（值 1，与子类型构造器一致）。
+        let sf = core.perm_interner().as_ref();
+        let sh = core.shape_forge().as_ref();
+        let si_length = sf.intern("length").0;
+        let length_shape = sh.make_shape(err_ctor.shape_id(), si_length);
+        err_ctor.set_shape_id(length_shape);
+        err_ctor.ensure_hash_props().push(JsValue::int(1));
+        let length_pos = err_ctor.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+        err_ctor.set_data_meta(length_pos, PropAttributes::new(false, false, true));
     }
 }
