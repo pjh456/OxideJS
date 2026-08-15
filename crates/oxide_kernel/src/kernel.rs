@@ -513,17 +513,31 @@ impl KernelSession {
         let si_undef = core.perm_interner.intern("undefined").0;
         let si_infinity = core.perm_interner.intern("Infinity").0;
 
+        // 全局三常量描述符：{ writable:false, enumerable:false, configurable:false }，
+        // 规范要求不可写不可枚举不可配置，否则会泄漏进 Object.keys(globalThis)。
         let nan_shape = core.shape_forge.make_shape(EMPTY_SHAPE_ID, si_nan);
         global_obj.set_shape_id(nan_shape);
         global_obj.ensure_hash_props().push(JsValue::float(f64::NAN));
+        global_obj.set_data_meta(
+            global_obj.prop_vec_len().saturating_sub(1) as u32,
+            oxide_types::object::PropAttributes::new(false, false, false),
+        );
 
         let undef_shape = core.shape_forge.make_shape(nan_shape, si_undef);
         global_obj.set_shape_id(undef_shape);
         global_obj.ensure_hash_props().push(JsValue::undefined());
+        global_obj.set_data_meta(
+            global_obj.prop_vec_len().saturating_sub(1) as u32,
+            oxide_types::object::PropAttributes::new(false, false, false),
+        );
 
         let inf_shape = core.shape_forge.make_shape(undef_shape, si_infinity);
         global_obj.set_shape_id(inf_shape);
         global_obj.ensure_hash_props().push(JsValue::float(f64::INFINITY));
+        global_obj.set_data_meta(
+            global_obj.prop_vec_len().saturating_sub(1) as u32,
+            oxide_types::object::PropAttributes::new(false, false, false),
+        );
 
         P::new(global_obj)
     }

@@ -50,6 +50,9 @@ fn bind_error_subtype_constructor(
     let global_shape = sh.make_shape(global.shape_id(), name_si);
     global.set_shape_id(global_shape);
     global.ensure_hash_props().push(JsValue::from_js_object(ctor_ptr));
+    // 全局子类型构造器槽位非枚举（规范全局构造器描述符约定）。
+    let global_pos = global.prop_vec_len().saturating_sub(1) as u32;
+    global.set_data_meta(global_pos, PropAttributes::new(true, false, true));
     global.bump_generation();
 }
 
@@ -77,6 +80,9 @@ pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
     let err_val = JsValue::from_js_object(session.builtin_world().error_constructor.as_ptr() as *mut JsObject);
     global.set_shape_id(err_shape);
     global.ensure_hash_props().push(err_val);
+    // 全局 Error 构造器槽位非枚举（规范 { writable:true, enumerable:false, configurable:true }）。
+    let err_pos = global.prop_vec_len().saturating_sub(1) as u32;
+    global.set_data_meta(err_pos, PropAttributes::new(true, false, true));
     global.bump_generation();
 
     bind_error_subtype_constructor(

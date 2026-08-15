@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::bindings::{apply_binding_table, configure_native_constructor};
 use oxide_kernel::builtin::StringMethods;
 use oxide_kernel::kernel::{KernelCore, KernelSession};
-use oxide_types::object::JsObject;
+use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
 /// 把 String 构造器与原型方法绑定到 global。
@@ -77,5 +77,8 @@ pub fn bind_string(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
     let str_val = JsValue::from_js_object(session.builtin_world().string_constructor.as_ptr() as *mut JsObject);
     global.set_shape_id(str_shape);
     global.ensure_hash_props().push(str_val);
+    // 全局构造器槽位非枚举（规范 { writable:true, enumerable:false, configurable:true }）。
+    let pos = global.prop_vec_len().saturating_sub(1) as u32;
+    global.set_data_meta(pos, PropAttributes::new(true, false, true));
     global.bump_generation();
 }

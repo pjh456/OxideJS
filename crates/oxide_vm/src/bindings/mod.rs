@@ -74,6 +74,10 @@ macro_rules! bind_constructor {
         } else {
             $global.push_prop(val);
         }
+        // 全局构造器槽位：规范描述符 { writable:true, enumerable:false, configurable:true }，
+        // 不设 meta 时默认全枚举会泄漏进 Object.keys(globalThis) / for-in。
+        let global_pos = $global.prop_vec_len().saturating_sub(1) as u32;
+        $global.set_data_meta(global_pos, oxide_types::object::PropAttributes::new(true, false, true));
         let ctor = unsafe { &mut *$ctor_ptr };
         let ptr: *const () = ($ctor_fn as fn(&mut $crate::vm::Vm, &[u8]) -> oxide_runtime_api::NativeResult) as *const ();
         ctor.set_native_fn(Some(unsafe { oxide_types::object::NativeFnPtr::from_raw(ptr) }));
@@ -346,6 +350,10 @@ pub(crate) fn bind_global_value(core: &Arc<KernelCore>, global: &mut JsObject, n
     let shape = core.shape_forge().make_shape(global.shape_id(), si);
     global.set_shape_id(shape);
     global.ensure_hash_props().push(value);
+    // 内置全局值统一非枚举：描述符 { writable:true, enumerable:false, configurable:true }，
+    // 与构造器/命名空间对象（Math/JSON/Reflect/Temporal 等）规范一致。
+    let pos = global.prop_vec_len().saturating_sub(1) as u32;
+    global.set_data_meta(pos, PropAttributes::new(true, false, true));
     global.bump_generation();
 }
 

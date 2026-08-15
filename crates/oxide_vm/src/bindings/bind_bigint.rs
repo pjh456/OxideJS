@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use crate::bindings::{apply_binding_table, bind_global_value, bind_well_known_data_property, configure_native_constructor};
+use crate::bindings::{
+    apply_binding_table, bind_global_value, bind_well_known_data_property, configure_native_constructor,
+};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
@@ -58,9 +60,4 @@ pub fn bind_bigint(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
     bind_well_known_data_property(core, proto, 9, tag_value, PropAttributes::new(false, false, true));
 
     bind_global_value(core, global, "BigInt", JsValue::from_js_object(ctor_ptr));
-    // 全局 BigInt 属性描述符：{ writable: true, enumerable: false, configurable: true }。
-    let bigint_si = core.perm_interner().intern("BigInt").0;
-    if let Some(pos) = core.shape_forge().lookup_position(global.shape_id(), bigint_si) {
-        global.set_data_meta(pos, PropAttributes::new(true, false, true));
-    }
 }

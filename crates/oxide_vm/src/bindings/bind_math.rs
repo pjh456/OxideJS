@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use oxide_kernel::bind_methods;
 use oxide_kernel::kernel::{KernelCore, KernelSession};
-use oxide_types::object::JsObject;
+use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
 /// 把 Math 单例对象及其方法（abs/floor/max/random 等）绑定到 global。
@@ -70,6 +70,10 @@ pub fn bind_math(core: &Arc<KernelCore>, session: &KernelSession, global: &mut J
         let sh_c = core.shape_forge().as_ref().make_shape(math.shape_id(), si);
         math.set_shape_id(sh_c);
         math.ensure_hash_props().push(JsValue::float(val));
+        // Math 常量描述符：{ writable:false, enumerable:false, configurable:false }，
+        // 保证 Object.keys(Math) 为空（与 Number 常量同款收口）。
+        let pos = math.prop_vec_len().saturating_sub(1) as u32;
+        math.set_data_meta(pos, PropAttributes::new(false, false, false));
     }
 
     let si_m = core.perm_interner().intern("Math").0;
@@ -77,5 +81,8 @@ pub fn bind_math(core: &Arc<KernelCore>, session: &KernelSession, global: &mut J
     let m_val = JsValue::from_js_object(session.builtin_world().math_object.as_ptr() as *mut JsObject);
     global.set_shape_id(m_shape);
     global.ensure_hash_props().push(m_val);
+    // 全局 Math 槽位非枚举（规范全局命名空间对象属性均 enumerable:false）。
+    let pos = global.prop_vec_len().saturating_sub(1) as u32;
+    global.set_data_meta(pos, PropAttributes::new(true, false, true));
     global.bump_generation();
 }
