@@ -2,6 +2,9 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
+use num_bigint::BigInt;
+use num_traits::ToPrimitive;
+
 use crate::array_buffer::array_buffer_data_ptr;
 
 use oxide_runtime_api::{NativeResult, VmHost};
@@ -323,7 +326,8 @@ pub fn data_view_get_float64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     NativeResult::Ok(JsValue::float(n))
 }
 
-/// `DataView.prototype.getBigInt64(byteOffset, littleEndian)`：读取 8 字节有符号 64 位整数。
+/// `DataView.prototype.getBigInt64(byteOffset, littleEndian)`：读取 8 字节有符号 64 位
+/// 整数并返回 BigInt 值。
 pub fn data_view_get_big_int64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let bytes = native_try!(read_bytes::<8, H>(vm, args));
     let n = if is_little_endian(vm, args, 2) {
@@ -331,10 +335,11 @@ pub fn data_view_get_big_int64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     } else {
         i64::from_be_bytes(bytes)
     };
-    NativeResult::Ok(JsValue::float(n as f64))
+    NativeResult::Ok(vm.new_bigint(BigInt::from(n)))
 }
 
-/// `DataView.prototype.getBigUint64(byteOffset, littleEndian)`：读取 8 字节无符号 64 位整数。
+/// `DataView.prototype.getBigUint64(byteOffset, littleEndian)`：读取 8 字节无符号
+/// 64 位整数并返回 BigInt 值。
 pub fn data_view_get_big_uint64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let bytes = native_try!(read_bytes::<8, H>(vm, args));
     let n = if is_little_endian(vm, args, 2) {
@@ -342,7 +347,7 @@ pub fn data_view_get_big_uint64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
     } else {
         u64::from_be_bytes(bytes)
     };
-    NativeResult::Ok(JsValue::float(n as f64))
+    NativeResult::Ok(vm.new_bigint(BigInt::from(n)))
 }
 
 /// `DataView.prototype.setInt8(byteOffset, value)`：写入 1 字节有符号整数。
@@ -431,28 +436,44 @@ pub fn data_view_set_float64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     NativeResult::Ok(JsValue::undefined())
 }
 
-/// `DataView.prototype.setBigInt64(byteOffset, value, littleEndian)`：写入 8 字节有符号 64 位整数。
+/// `DataView.prototype.setBigInt64(byteOffset, value, littleEndian)`：按 ToBigInt
+/// 语义接收值（Number 入参抛 TypeError），取低 64 位位模式写入 8 字节有符号整数。
 pub fn data_view_set_big_int64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let value = numeric_arg(vm, args, 2) as i64;
+    let value = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let b =
+        native_try!(oxide_runtime_api::to_bigint_full(value, vm).map_err(|e| crate::iterator::engine_error(vm, &e)));
+    let low = low64(vm, b) as i64;
     let bytes = if is_little_endian(vm, args, 3) {
-        value.to_le_bytes()
+        low.to_le_bytes()
     } else {
-        value.to_be_bytes()
+        low.to_be_bytes()
     };
     native_try!(write_bytes(vm, args, bytes));
     NativeResult::Ok(JsValue::undefined())
 }
 
-/// `DataView.prototype.setBigUint64(byteOffset, value, littleEndian)`：写入 8 字节无符号 64 位整数。
+/// `DataView.prototype.setBigUint64(byteOffset, value, littleEndian)`：按 ToBigInt
+/// 语义接收值（Number 入参抛 TypeError），取低 64 位位模式写入 8 字节无符号整数。
 pub fn data_view_set_big_uint64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let value = numeric_arg(vm, args, 2) as u64;
+    let value = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let b =
+        native_try!(oxide_runtime_api::to_bigint_full(value, vm).map_err(|e| crate::iterator::engine_error(vm, &e)));
+    let low = low64(vm, b);
     let bytes = if is_little_endian(vm, args, 3) {
-        value.to_le_bytes()
+        low.to_le_bytes()
     } else {
-        value.to_be_bytes()
+        low.to_be_bytes()
     };
     native_try!(write_bytes(vm, args, bytes));
     NativeResult::Ok(JsValue::undefined())
+}
+
+/// 取 BigInt 值低 64 位位模式：与 2^64-1 掩码后恒非负且可转 u64。
+fn low64<H: VmHost>(vm: &mut H, val: JsValue) -> u64 {
+    let v = vm.bigint_value(val);
+    (v & (BigInt::from(u64::MAX)))
+        .to_u64()
+        .expect("与 u64::MAX 掩码后恒在 u64 范围")
 }
 
 /// `DataView.prototype.toString`：校验 receiver 后返回 `[object DataView]`。

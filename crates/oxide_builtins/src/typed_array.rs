@@ -1,3 +1,5 @@
+use num_bigint::BigInt;
+use num_traits::ToPrimitive;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr, TypedArrayKind};
 use oxide_types::private_key::{int_key_value, is_int_key};
@@ -204,7 +206,7 @@ pub fn typed_array_element_get<H: VmHost>(vm: &mut H, obj: &JsObject, index: u32
     }
     let buffer_ptr = array_buffer_data_ptr(vm, view.buffer).map_err(|e| format!("{e}"))?;
     let buffer = unsafe { &*buffer_ptr };
-    Ok(read_element(view.kind, buffer, absolute_byte_offset(view, index as usize)))
+    Ok(read_element(vm, view.kind, buffer, absolute_byte_offset(view, index as usize)))
 }
 
 /// 若对象是 TypedArray 且属性键是整数索引，返回 `(索引, 视图长度)`；否则 `None`。
@@ -260,19 +262,29 @@ pub fn typed_array_element_define<H: VmHost>(
 fn write_typed_array_element<H: VmHost>(
     vm: &mut H, view: TypedArrayData, index: u32, value: JsValue,
 ) -> Result<(), String> {
-    // 先 ToNumber（valueOf 副作用先于越界判定触发），越界再静默忽略。
-    let n = numeric_value(vm, value);
+    // 先按元素类型转换（valueOf 副作用先于越界判定触发），越界再静默忽略。
+    let elem = match ta_element_value(vm, view.kind, value) {
+        Ok(v) => v,
+        Err(err) => {
+            // 转换失败恢复为可捕获的 JS 异常：主 dispatch 下就地展开到外围 catch，
+            // builtin 内部展开到调用方 try 处理器；uncaught 时以文本上抛。
+            let text = element_error_text(vm, err);
+            return vm.raise_type_error(&text);
+        }
+    };
     if index as usize >= view.length {
         return Ok(());
     }
     let buffer_ptr = array_buffer_data_ptr(vm, view.buffer).map_err(|e| format!("{e}"))?;
     // SAFETY: buffer_ptr 经 array_buffer_data_ptr 校验为合法 ArrayBuffer。
     let buffer = unsafe { &mut *buffer_ptr };
-    write_element(view.kind, buffer, absolute_byte_offset(view, index as usize), n);
+    write_element(vm, view.kind, buffer, absolute_byte_offset(view, index as usize), elem);
     Ok(())
 }
 
-fn read_element(kind: TypedArrayKind, bytes: &[u8], offset: usize) -> JsValue {
+/// 读 TypedArray 元素并转为对应 JS 值：BigInt 类型读为 BigInt 值（i64/u64 位模式
+/// 原样搬运，无精度损失），数值类型按位模式读为 Number。
+fn read_element<H: VmHost>(vm: &mut H, kind: TypedArrayKind, bytes: &[u8], offset: usize) -> JsValue {
     match kind {
         TypedArrayKind::Int8 => JsValue::int(bytes[offset] as i8 as i32),
         TypedArrayKind::Uint8 | TypedArrayKind::Uint8Clamped => JsValue::int(bytes[offset] as i32),
@@ -289,31 +301,95 @@ fn read_element(kind: TypedArrayKind, bytes: &[u8], offset: usize) -> JsValue {
         }
         TypedArrayKind::Float64 => JsValue::float(f64::from_ne_bytes(bytes[offset..offset + 8].try_into().unwrap())),
         TypedArrayKind::BigInt64 => {
-            JsValue::float(i64::from_ne_bytes(bytes[offset..offset + 8].try_into().unwrap()) as f64)
+            let n = i64::from_ne_bytes(bytes[offset..offset + 8].try_into().unwrap());
+            vm.new_bigint(BigInt::from(n))
         }
         TypedArrayKind::BigUint64 => {
-            JsValue::float(u64::from_ne_bytes(bytes[offset..offset + 8].try_into().unwrap()) as f64)
+            let n = u64::from_ne_bytes(bytes[offset..offset + 8].try_into().unwrap());
+            vm.new_bigint(BigInt::from(n))
         }
     }
 }
 
-fn numeric_value<H: VmHost>(vm: &mut H, value: JsValue) -> f64 {
-    vm.coerce_number_bounded(value).unwrap_or(f64::NAN)
+/// 元素写入统一转换入口：BigInt 类型走 ToBigInt，数值类型走 ToNumber。
+///
+/// 数值类型显式拒绝 BigInt 值（规范 ToNumber(BigInt) 抛 TypeError），避免
+/// 经 f64 近似的静默精度丢失。
+fn ta_element_value<H: VmHost>(vm: &mut H, kind: TypedArrayKind, value: JsValue) -> Result<JsValue, JsValue> {
+    if is_bigint_kind(kind) {
+        return oxide_runtime_api::to_bigint_full(value, vm).map_err(|e| crate::iterator::engine_error(vm, &e));
+    }
+    let prim = oxide_runtime_api::to_primitive(value, oxide_runtime_api::ToPrimitiveHint::Number, vm)
+        .map_err(|e| crate::iterator::engine_error(vm, &e))?;
+    if prim.is_bigint() {
+        return Err(type_error(vm, "Cannot convert a BigInt value to a number"));
+    }
+    let n = oxide_runtime_api::to_number_full(prim, vm).map_err(|e| crate::iterator::engine_error(vm, &e))?;
+    Ok(JsValue::float(n))
 }
 
-fn write_element(kind: TypedArrayKind, bytes: &mut [u8], offset: usize, value: f64) {
+/// 元素类型是否为 BigInt 语义（BigInt64/BigUint64）。
+fn is_bigint_kind(kind: TypedArrayKind) -> bool {
+    matches!(kind, TypedArrayKind::BigInt64 | TypedArrayKind::BigUint64)
+}
+
+/// 把异常 JsValue 格式化为 `Kind: message` 文本（属性写路径的 String 错误契约用）。
+fn element_error_text<H: VmHost>(vm: &mut H, err: JsValue) -> String {
+    if let Some(s) = vm.lookup_str(err) {
+        return s;
+    }
+    if err.is_object() {
+        let obj = unsafe { &*err.as_js_object_ptr() };
+        let name_si = vm.kernel_core().perm_interner().intern("name").0;
+        let message_si = vm.kernel_core().perm_interner().intern("message").0;
+        let name = vm
+            .resolve_property(obj, name_si)
+            .and_then(|v| vm.lookup_str(v))
+            .unwrap_or_else(|| "Error".to_string());
+        let message = vm
+            .resolve_property(obj, message_si)
+            .and_then(|v| vm.lookup_str(v))
+            .unwrap_or_default();
+        if name.is_empty() {
+            message
+        } else if message.is_empty() {
+            name
+        } else {
+            format!("{name}: {message}")
+        }
+    } else {
+        format!("{err}")
+    }
+}
+
+/// 把已按元素类型转换的值（数值 kind 为 Number、BigInt kind 为 BigInt）按位模式
+/// 截断写入底层 buffer。转换由调用方 [`ta_element_value`] 完成，本函数无副作用。
+fn write_element<H: VmHost>(vm: &mut H, kind: TypedArrayKind, bytes: &mut [u8], offset: usize, value: JsValue) {
+    let n = oxide_runtime_api::to_number(value);
     match kind {
-        TypedArrayKind::Int8 => bytes[offset] = value as i32 as u8 as i8 as u8,
-        TypedArrayKind::Uint8 => bytes[offset] = value as i32 as u8,
-        TypedArrayKind::Uint8Clamped => bytes[offset] = value.clamp(0.0, 255.0).round() as u8,
-        TypedArrayKind::Int16 => bytes[offset..offset + 2].copy_from_slice(&(value as i32 as u16 as i16).to_ne_bytes()),
-        TypedArrayKind::Uint16 => bytes[offset..offset + 2].copy_from_slice(&(value as i32 as u16).to_ne_bytes()),
-        TypedArrayKind::Int32 => bytes[offset..offset + 4].copy_from_slice(&(value as i32).to_ne_bytes()),
-        TypedArrayKind::Uint32 => bytes[offset..offset + 4].copy_from_slice(&(value as u32).to_ne_bytes()),
-        TypedArrayKind::Float32 => bytes[offset..offset + 4].copy_from_slice(&(value as f32).to_ne_bytes()),
-        TypedArrayKind::Float64 => bytes[offset..offset + 8].copy_from_slice(&value.to_ne_bytes()),
-        TypedArrayKind::BigInt64 => bytes[offset..offset + 8].copy_from_slice(&(value as i64).to_ne_bytes()),
-        TypedArrayKind::BigUint64 => bytes[offset..offset + 8].copy_from_slice(&(value as u64).to_ne_bytes()),
+        TypedArrayKind::Int8 => bytes[offset] = n as i32 as u8 as i8 as u8,
+        TypedArrayKind::Uint8 => bytes[offset] = n as i32 as u8,
+        TypedArrayKind::Uint8Clamped => bytes[offset] = n.clamp(0.0, 255.0).round() as u8,
+        TypedArrayKind::Int16 => bytes[offset..offset + 2].copy_from_slice(&(n as i32 as u16 as i16).to_ne_bytes()),
+        TypedArrayKind::Uint16 => bytes[offset..offset + 2].copy_from_slice(&(n as i32 as u16).to_ne_bytes()),
+        TypedArrayKind::Int32 => bytes[offset..offset + 4].copy_from_slice(&(n as i32).to_ne_bytes()),
+        TypedArrayKind::Uint32 => bytes[offset..offset + 4].copy_from_slice(&(n as u32).to_ne_bytes()),
+        TypedArrayKind::Float32 => bytes[offset..offset + 4].copy_from_slice(&(n as f32).to_ne_bytes()),
+        TypedArrayKind::Float64 => bytes[offset..offset + 8].copy_from_slice(&n.to_ne_bytes()),
+        TypedArrayKind::BigInt64 | TypedArrayKind::BigUint64 => {
+            // 取低 64 位位模式：与 2^64-1 掩码后恒非负且可转 u64，BigInt64 按位
+            // 模式重解释为 i64（二进制补码）。
+            let v = vm.bigint_value(value);
+            let low = (v & (BigInt::from(u64::MAX)))
+                .to_u64()
+                .expect("与 u64::MAX 掩码后恒在 u64 范围");
+            let bytes64 = if matches!(kind, TypedArrayKind::BigInt64) {
+                (low as i64).to_ne_bytes()
+            } else {
+                low.to_ne_bytes()
+            };
+            bytes[offset..offset + 8].copy_from_slice(&bytes64);
+        }
     }
 }
 
@@ -335,7 +411,7 @@ fn collect_array_like<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Vec<JsVal
         let buffer_ptr = array_buffer_data_ptr(vm, view.buffer)?;
         let buffer = unsafe { &*buffer_ptr };
         return Ok((0..view.length)
-            .map(|i| read_element(view.kind, buffer, absolute_byte_offset(view, i)))
+            .map(|i| read_element(vm, view.kind, buffer, absolute_byte_offset(view, i)))
             .collect());
     }
 
@@ -380,17 +456,7 @@ fn typed_array_new<H: VmHost>(vm: &mut H, args: &[u8], kind: TypedArrayKind) -> 
     let first = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::int(0) };
     let bpe = kind.bytes_per_element();
 
-    let (buffer, byte_offset, length) = if first.is_int() || first.is_double() || first.is_undefined() {
-        let len = native_try!(to_index(vm, first, "invalid TypedArray length"));
-        let Some(byte_len) = len.checked_mul(bpe) else {
-            return NativeResult::Err(range_error(vm, "invalid TypedArray length"));
-        };
-        if byte_len > MAX_ARRAY_BUFFER_LENGTH {
-            return NativeResult::Err(range_error(vm, "invalid TypedArray length"));
-        }
-        let buffer = JsValue::from_js_object(new_array_buffer(vm, vec![0; byte_len]));
-        (buffer, 0, len)
-    } else if first.is_object() {
+    let (buffer, byte_offset, length) = if first.is_object() {
         let first_ptr = first.as_js_object_ptr();
         let first_obj = unsafe { &*first_ptr };
         if first_obj.is_array_buffer_obj() {
@@ -424,13 +490,26 @@ fn typed_array_new<H: VmHost>(vm: &mut H, args: &[u8], kind: TypedArrayKind) -> 
             let buffer_ptr = native_try!(array_buffer_data_ptr(vm, buffer));
             let buffer_ref = unsafe { &mut *buffer_ptr };
             for (idx, value) in values.into_iter().enumerate() {
-                let n = numeric_value(vm, value);
-                write_element(kind, buffer_ref, idx * bpe, n);
+                let elem = native_try!(ta_element_value(vm, kind, value));
+                write_element(vm, kind, buffer_ref, idx * bpe, elem);
             }
             (buffer, 0, byte_len / bpe)
         }
     } else {
-        return NativeResult::Err(type_error(vm, "invalid TypedArray constructor argument"));
+        // 非对象第一参数统一按 ToIndex 语义处理（bool→0/1、null→0、BigInt→数值、
+        // 字符串→解析、undefined→0）；Symbol 按规范抛 TypeError。
+        if first.is_symbol() {
+            return NativeResult::Err(type_error(vm, "invalid TypedArray length"));
+        }
+        let len = native_try!(to_index(vm, first, "invalid TypedArray length"));
+        let Some(byte_len) = len.checked_mul(bpe) else {
+            return NativeResult::Err(range_error(vm, "invalid TypedArray length"));
+        };
+        if byte_len > MAX_ARRAY_BUFFER_LENGTH {
+            return NativeResult::Err(range_error(vm, "invalid TypedArray length"));
+        }
+        let buffer = JsValue::from_js_object(new_array_buffer(vm, vec![0; byte_len]));
+        (buffer, 0, len)
     };
 
     NativeResult::Ok(JsValue::from_js_object(create_typed_array(vm, kind, buffer, byte_offset, length)))
@@ -473,7 +552,7 @@ pub fn typed_array_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let buffer_ptr = native_try!(array_buffer_data_ptr(vm, view.buffer));
     let buffer = unsafe { &*buffer_ptr };
-    NativeResult::Ok(read_element(view.kind, buffer, absolute_byte_offset(view, idx as usize)))
+    NativeResult::Ok(read_element(vm, view.kind, buffer, absolute_byte_offset(view, idx as usize)))
 }
 
 /// `TypedArray.prototype.fill(value, start, end)`：用给定值填充区间，返回 this。
@@ -481,7 +560,8 @@ pub fn typed_array_fill<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
     let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let n = native_try!(ta_to_number(vm, value));
+    // 值只转换一次（valueOf 副作用一次），转换结果写入每个目标元素。
+    let elem = native_try!(ta_element_value(vm, view.kind, value));
     let start = if args.len() > 2 {
         native_try!(normalize_index(vm, vm.reg(args[2]), view.length))
     } else {
@@ -495,7 +575,7 @@ pub fn typed_array_fill<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let buffer_ptr = native_try!(array_buffer_data_ptr(vm, view.buffer));
     let buffer = unsafe { &mut *buffer_ptr };
     for idx in start..end.max(start) {
-        write_element(view.kind, buffer, absolute_byte_offset(view, idx), n);
+        write_element(vm, view.kind, buffer, absolute_byte_offset(view, idx), elem);
     }
     NativeResult::Ok(this_val)
 }
@@ -569,11 +649,14 @@ pub fn typed_array_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if offset > view.length || values.len() > view.length - offset {
         return NativeResult::Err(range_error(vm, "TypedArray.set offset out of bounds"));
     }
-    let numbers: Vec<f64> = values.into_iter().map(|v| numeric_value(vm, v)).collect();
+    let mut converted = Vec::with_capacity(values.len());
+    for v in values {
+        converted.push(native_try!(ta_element_value(vm, view.kind, v)));
+    }
     let buffer_ptr = native_try!(array_buffer_data_ptr(vm, view.buffer));
     let buffer = unsafe { &mut *buffer_ptr };
-    for (i, n) in numbers.into_iter().enumerate() {
-        write_element(view.kind, buffer, absolute_byte_offset(view, offset + i), n);
+    for (i, elem) in converted.into_iter().enumerate() {
+        write_element(vm, view.kind, buffer, absolute_byte_offset(view, offset + i), elem);
     }
     NativeResult::Ok(JsValue::undefined())
 }
@@ -648,12 +731,18 @@ fn allocate_typed_array<H: VmHost>(vm: &mut H, c: JsValue, len: usize) -> Result
     Ok(result)
 }
 
-/// 按 IntegerIndexedElementSet 语义把元素写入 TypedArray：先 ToNumber（symbol 等
-/// 不可转换值抛 TypeError），越界索引静默忽略。
+/// 按 IntegerIndexedElementSet 语义把元素写入 TypedArray：先按元素类型转换
+/// （BigInt 类型走 ToBigInt、数值类型走 ToNumber，symbol 等不可转换值抛 TypeError）。
 fn set_typed_array_element<H: VmHost>(vm: &mut H, ta: JsValue, index: usize, value: JsValue) -> Result<(), JsValue> {
-    let n = oxide_runtime_api::to_number_full(value, vm).map_err(|e| crate::iterator::engine_error(vm, &e))?;
-    let obj = unsafe { &*ta.as_js_object_ptr() };
-    typed_array_element_set(vm, obj, index as u32, JsValue::float(n)).map_err(|e| crate::iterator::engine_error(vm, &e))
+    let view = get_typed_array_data(vm, ta)?;
+    if index >= view.length {
+        return Ok(());
+    }
+    let elem = ta_element_value(vm, view.kind, value)?;
+    let buffer_ptr = array_buffer_data_ptr(vm, view.buffer)?;
+    let buffer = unsafe { &mut *buffer_ptr };
+    write_element(vm, view.kind, buffer, absolute_byte_offset(view, index), elem);
+    Ok(())
 }
 
 /// `%TypedArray%.of(...items)`：以实参为元素构造一个以 `this`（构造器 C）为类型的
@@ -682,28 +771,29 @@ fn ta_read<H: VmHost>(vm: &mut H, view: TypedArrayData, index: usize) -> Result<
     }
     let buffer_ptr = array_buffer_data_ptr(vm, view.buffer)?;
     let buffer = unsafe { &*buffer_ptr };
-    Ok(read_element(view.kind, buffer, absolute_byte_offset(view, index)))
+    Ok(read_element(vm, view.kind, buffer, absolute_byte_offset(view, index)))
 }
 
-/// 把数值写入 TypedArray 指定索引（视图 data 已取出的形式，供原型方法内部使用）。
-fn ta_write<H: VmHost>(vm: &mut H, view: TypedArrayData, index: usize, value: f64) -> Result<(), JsValue> {
+/// 把已转换的值写入 TypedArray 指定索引（视图 data 已取出的形式，供原型方法内部使用）。
+fn ta_write<H: VmHost>(vm: &mut H, view: TypedArrayData, index: usize, value: JsValue) -> Result<(), JsValue> {
     let buffer_ptr = array_buffer_data_ptr(vm, view.buffer)?;
     let buffer = unsafe { &mut *buffer_ptr };
-    write_element(view.kind, buffer, absolute_byte_offset(view, index), value);
+    write_element(vm, view.kind, buffer, absolute_byte_offset(view, index), value);
     Ok(())
 }
 
-/// 把一组数值写成同类型的新 TypedArray（map/filter/toReversed/toSorted/with 共用）。
-fn create_ta_from_numbers<H: VmHost>(
-    vm: &mut H, kind: TypedArrayKind, numbers: Vec<f64>,
+/// 把一组已按元素类型转换的值写成同类型的新 TypedArray
+/// （map/filter/toReversed/toSorted/with 共用）。
+fn create_ta_from_values<H: VmHost>(
+    vm: &mut H, kind: TypedArrayKind, values: Vec<JsValue>,
 ) -> Result<*mut JsObject, JsValue> {
     let bpe = kind.bytes_per_element();
-    let len = numbers.len();
+    let len = values.len();
     let buffer = JsValue::from_js_object(new_array_buffer(vm, vec![0; len * bpe]));
     let buffer_ptr = array_buffer_data_ptr(vm, buffer)?;
     let buffer_ref = unsafe { &mut *buffer_ptr };
-    for (idx, n) in numbers.into_iter().enumerate() {
-        write_element(kind, buffer_ref, idx * bpe, n);
+    for (idx, v) in values.into_iter().enumerate() {
+        write_element(vm, kind, buffer_ref, idx * bpe, v);
     }
     Ok(create_typed_array(vm, kind, buffer, 0, len))
 }
@@ -717,7 +807,8 @@ fn invoke_cb<H: VmHost>(vm: &mut H, cb: JsValue, this_arg: JsValue, cb_args: &[J
     }
 }
 
-/// ToNumber 并恢复引擎错误为原始异常值。
+/// ToNumber 并恢复引擎错误为原始异常值（索引类参数转换用；元素转换走
+/// [`ta_element_value`] 按类型分流）。
 fn ta_to_number<H: VmHost>(vm: &mut H, value: JsValue) -> Result<f64, JsValue> {
     oxide_runtime_api::to_number_full(value, vm).map_err(|e| crate::iterator::engine_error(vm, &e))
 }
@@ -739,7 +830,7 @@ pub fn typed_array_for_each<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
 }
 
 /// `%TypedArray%.prototype.map(callback, thisArg)`：对每个元素调用 callback，
-/// 结果 ToNumber 后写入同类型的新 TypedArray。
+/// 结果按元素类型转换后写入同类型的新 TypedArray。
 pub fn typed_array_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
@@ -748,13 +839,13 @@ pub fn typed_array_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
     let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    let mut numbers = Vec::with_capacity(view.length);
+    let mut values = Vec::with_capacity(view.length);
     for i in 0..view.length {
         let elem = native_try!(ta_read(vm, view, i));
         let mapped = native_try!(invoke_cb(vm, callback, this_arg, &[elem, JsValue::int(i as i32), this_val]));
-        numbers.push(native_try!(ta_to_number(vm, mapped)));
+        values.push(native_try!(ta_element_value(vm, view.kind, mapped)));
     }
-    let new_obj = native_try!(create_ta_from_numbers(vm, view.kind, numbers));
+    let new_obj = native_try!(create_ta_from_values(vm, view.kind, values));
     NativeResult::Ok(JsValue::from_js_object(new_obj))
 }
 
@@ -768,15 +859,15 @@ pub fn typed_array_filter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
     let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    let mut numbers = Vec::new();
+    let mut values = Vec::new();
     for i in 0..view.length {
         let elem = native_try!(ta_read(vm, view, i));
         let result = native_try!(invoke_cb(vm, callback, this_arg, &[elem, JsValue::int(i as i32), this_val]));
         if oxide_runtime_api::to_boolean(result) {
-            numbers.push(native_try!(ta_to_number(vm, elem)));
+            values.push(elem);
         }
     }
-    let new_obj = native_try!(create_ta_from_numbers(vm, view.kind, numbers));
+    let new_obj = native_try!(create_ta_from_values(vm, view.kind, values));
     NativeResult::Ok(JsValue::from_js_object(new_obj))
 }
 
@@ -1122,7 +1213,9 @@ fn default_ta_order(a: f64, b: f64) -> std::cmp::Ordering {
     }
 }
 
-/// `%TypedArray%.prototype.sort(comparefn)`：原地排序，默认按数值升序（NaN 排末尾）。
+/// `%TypedArray%.prototype.sort(comparefn)`：原地排序，默认按数值升序（NaN 排末尾；
+/// BigInt 类型按 BigInt 值升序）。比较器回调收到的是元素原值（BigInt 类型为
+/// BigInt，数值类型为 Number）。
 pub fn typed_array_sort<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
@@ -1136,10 +1229,9 @@ pub fn typed_array_sort<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     } else {
         None
     };
-    let mut vals: Vec<f64> = Vec::with_capacity(view.length);
+    let mut vals: Vec<JsValue> = Vec::with_capacity(view.length);
     for i in 0..view.length {
-        let elem = native_try!(ta_read(vm, view, i));
-        vals.push(native_try!(ta_to_number(vm, elem)));
+        vals.push(native_try!(ta_read(vm, view, i)));
     }
     let mut sort_error = None;
     vals.sort_by(|a, b| {
@@ -1147,12 +1239,7 @@ pub fn typed_array_sort<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             return std::cmp::Ordering::Equal;
         }
         if let Some(cb) = comparator {
-            match crate::array::invoke_native_callback(
-                vm,
-                cb,
-                JsValue::undefined(),
-                &[JsValue::float(*a), JsValue::float(*b)],
-            ) {
+            match crate::array::invoke_native_callback(vm, cb, JsValue::undefined(), &[*a, *b]) {
                 NativeResult::Ok(r) => {
                     let n = oxide_runtime_api::to_number(r);
                     if n.is_nan() || n == 0.0 {
@@ -1173,15 +1260,25 @@ pub fn typed_array_sort<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                     std::cmp::Ordering::Equal
                 }
             }
+        } else if view.kind == TypedArrayKind::BigInt64 {
+            // BigInt64 元素恒在 i64 范围（写入按 mod 2^64 截断为有符号位模式），按有符号序比较。
+            let a_int = vm.bigint_value(*a).to_i64().unwrap_or(0);
+            let b_int = vm.bigint_value(*b).to_i64().unwrap_or(0);
+            a_int.cmp(&b_int)
+        } else if is_bigint_kind(view.kind) {
+            // BigUint64 元素恒在 u64 范围，按数值序比较。
+            let a_uint = vm.bigint_value(*a).to_u64().unwrap_or(0);
+            let b_uint = vm.bigint_value(*b).to_u64().unwrap_or(0);
+            a_uint.cmp(&b_uint)
         } else {
-            default_ta_order(*a, *b)
+            default_ta_order(oxide_runtime_api::to_number(*a), oxide_runtime_api::to_number(*b))
         }
     });
     if let Some(err) = sort_error {
         return NativeResult::Err(err);
     }
-    for (i, n) in vals.into_iter().enumerate() {
-        native_try!(ta_write(vm, view, i, n));
+    for (i, v) in vals.into_iter().enumerate() {
+        native_try!(ta_write(vm, view, i, v));
     }
     NativeResult::Ok(this_val)
 }
@@ -1194,11 +1291,9 @@ pub fn typed_array_reverse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let mut j = view.length.saturating_sub(1);
     while i < j {
         let tmp = native_try!(ta_read(vm, view, i));
-        let n = native_try!(ta_to_number(vm, tmp));
         let jtmp = native_try!(ta_read(vm, view, j));
-        let jv = native_try!(ta_to_number(vm, jtmp));
-        native_try!(ta_write(vm, view, j, n));
-        native_try!(ta_write(vm, view, i, jv));
+        native_try!(ta_write(vm, view, j, tmp));
+        native_try!(ta_write(vm, view, i, jtmp));
         i += 1;
         j = j.saturating_sub(1);
     }
@@ -1234,8 +1329,7 @@ pub fn typed_array_copy_within<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     };
     for _ in 0..count {
         let elem = native_try!(ta_read(vm, view, from));
-        let v = native_try!(ta_to_number(vm, elem));
-        native_try!(ta_write(vm, view, to, v));
+        native_try!(ta_write(vm, view, to, elem));
         from = (from as isize + direction) as usize;
         to = (to as isize + direction) as usize;
     }
@@ -1284,12 +1378,11 @@ pub fn typed_array_to_locale_string<H: VmHost>(vm: &mut H, args: &[u8]) -> Nativ
 pub fn typed_array_to_reversed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
-    let mut numbers = Vec::with_capacity(view.length);
+    let mut values = Vec::with_capacity(view.length);
     for i in (0..view.length).rev() {
-        let elem = native_try!(ta_read(vm, view, i));
-        numbers.push(native_try!(ta_to_number(vm, elem)));
+        values.push(native_try!(ta_read(vm, view, i)));
     }
-    let new_obj = native_try!(create_ta_from_numbers(vm, view.kind, numbers));
+    let new_obj = native_try!(create_ta_from_values(vm, view.kind, values));
     NativeResult::Ok(JsValue::from_js_object(new_obj))
 }
 
@@ -1308,10 +1401,9 @@ pub fn typed_array_to_sorted<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     } else {
         None
     };
-    let mut vals: Vec<f64> = Vec::with_capacity(view.length);
+    let mut vals: Vec<JsValue> = Vec::with_capacity(view.length);
     for i in 0..view.length {
-        let elem = native_try!(ta_read(vm, view, i));
-        vals.push(native_try!(ta_to_number(vm, elem)));
+        vals.push(native_try!(ta_read(vm, view, i)));
     }
     let mut sort_error = None;
     vals.sort_by(|a, b| {
@@ -1319,12 +1411,7 @@ pub fn typed_array_to_sorted<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
             return std::cmp::Ordering::Equal;
         }
         if let Some(cb) = comparator {
-            match crate::array::invoke_native_callback(
-                vm,
-                cb,
-                JsValue::undefined(),
-                &[JsValue::float(*a), JsValue::float(*b)],
-            ) {
+            match crate::array::invoke_native_callback(vm, cb, JsValue::undefined(), &[*a, *b]) {
                 NativeResult::Ok(r) => {
                     let n = oxide_runtime_api::to_number(r);
                     if n.is_nan() || n == 0.0 {
@@ -1345,14 +1432,22 @@ pub fn typed_array_to_sorted<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
                     std::cmp::Ordering::Equal
                 }
             }
+        } else if view.kind == TypedArrayKind::BigInt64 {
+            let a_int = vm.bigint_value(*a).to_i64().unwrap_or(0);
+            let b_int = vm.bigint_value(*b).to_i64().unwrap_or(0);
+            a_int.cmp(&b_int)
+        } else if is_bigint_kind(view.kind) {
+            let a_uint = vm.bigint_value(*a).to_u64().unwrap_or(0);
+            let b_uint = vm.bigint_value(*b).to_u64().unwrap_or(0);
+            a_uint.cmp(&b_uint)
         } else {
-            default_ta_order(*a, *b)
+            default_ta_order(oxide_runtime_api::to_number(*a), oxide_runtime_api::to_number(*b))
         }
     });
     if let Some(err) = sort_error {
         return NativeResult::Err(err);
     }
-    let new_obj = native_try!(create_ta_from_numbers(vm, view.kind, vals));
+    let new_obj = native_try!(create_ta_from_values(vm, view.kind, vals));
     NativeResult::Ok(JsValue::from_js_object(new_obj))
 }
 
@@ -1378,29 +1473,28 @@ pub fn typed_array_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     } else {
         view.length as f64 + relative_index
     };
-    // 先 ToNumber(value)（可触发副作用/抛错），再做索引范围校验。
+    // 先按元素类型转换 value（可触发副作用/抛错），再做索引范围校验。
     let value = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    let replacement = native_try!(ta_to_number(vm, value));
+    let replacement = native_try!(ta_element_value(vm, view.kind, value));
     if actual_index.is_nan() || actual_index < 0.0 || actual_index >= view.length as f64 {
         return NativeResult::Err(range_error(vm, "Invalid typed array index"));
     }
     let index = actual_index as usize;
-    let mut numbers = Vec::with_capacity(view.length);
+    let mut values = Vec::with_capacity(view.length);
     for i in 0..view.length {
         if i == index {
-            numbers.push(replacement);
+            values.push(replacement);
             continue;
         }
-        let elem = native_try!(ta_read(vm, view, i));
-        numbers.push(native_try!(ta_to_number(vm, elem)));
+        values.push(native_try!(ta_read(vm, view, i)));
     }
-    let new_obj = native_try!(create_ta_from_numbers(vm, view.kind, numbers));
+    let new_obj = native_try!(create_ta_from_values(vm, view.kind, values));
     NativeResult::Ok(JsValue::from_js_object(new_obj))
 }
 
 /// `%TypedArray%.from(source, mapfn?, thisArg?)`：从可迭代对象或 array-like 构造
 /// 以 `this`（构造器 C）为类型的 TypedArray；`mapfn` 逐元素映射（`thisArg` 作回调
-/// this），元素经 ToNumber 写入。
+/// this），元素按结果类型转换（BigInt 类型走 ToBigInt、数值类型走 ToNumber）写入。
 ///
 /// # 步骤
 /// 1. `source` 为 null/undefined 抛 TypeError；`mapfn` 非 undefined 时须可调用。

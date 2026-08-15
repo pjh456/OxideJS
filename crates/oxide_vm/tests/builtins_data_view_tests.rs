@@ -128,3 +128,74 @@ fn data_view_to_string_is_identifiable() {
     let result = eval(&mut vm, "var dv = new DataView(new ArrayBuffer(1)); dv.toString()").unwrap();
     assert_eq!(to_str(&vm, result), "[object DataView]");
 }
+
+#[test]
+fn data_view_get_big_int64_returns_bigint() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "new DataView(new ArrayBuffer(8)).getBigInt64(0)").unwrap();
+    assert!(result.is_bigint());
+}
+
+#[test]
+fn data_view_set_big_int64_with_number_throws() {
+    let mut vm = Vm::new();
+    // ToBigInt 语义：Number 入参抛 TypeError。
+    let result = eval(
+        &mut vm,
+        "try { new DataView(new ArrayBuffer(8)).setBigInt64(0, 1); false } catch (e) { e instanceof TypeError }",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn data_view_big_int64_precision_roundtrip() {
+    let mut vm = Vm::new();
+    // 2^63-1（i64::MAX）超出 f64 精确范围，真 BigInt 语义读回必须原值。
+    let result = eval(
+        &mut vm,
+        "var dv = new DataView(new ArrayBuffer(8)); \
+         dv.setBigInt64(0, 9223372036854775807n); dv.getBigInt64(0) === 9223372036854775807n",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn data_view_big_uint64_precision_roundtrip() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var dv = new DataView(new ArrayBuffer(8)); \
+         dv.setBigUint64(0, 18446744073709551615n, true); dv.getBigUint64(0, true) === 18446744073709551615n",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn data_view_big_int64_little_endian_byte_order() {
+    let mut vm = Vm::new();
+    // 小端写入后首字节为低字节；同一字节序读回原值。
+    let result = eval(
+        &mut vm,
+        "var dv = new DataView(new ArrayBuffer(8)); \
+         dv.setBigInt64(0, 0x0102030405060708n, true); \
+         dv.getUint8(0) === 8 && dv.getBigInt64(0, true) === 0x0102030405060708n",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn data_view_set_big_int64_mod_2_64_truncation() {
+    let mut vm = Vm::new();
+    // 超 64 位值按 mod 2^64 截断写入。
+    let result = eval(
+        &mut vm,
+        "var dv = new DataView(new ArrayBuffer(8)); \
+         dv.setBigInt64(0, 1180591620717411303429n); dv.getBigInt64(0) === 5n",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}

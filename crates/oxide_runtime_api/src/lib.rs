@@ -890,6 +890,77 @@ pub fn to_string_full<H: VmHost>(val: JsValue, host: &mut H) -> Result<String, S
     Ok(to_string(primitive))
 }
 
+/// 带完整对象强制转换的 ToBigInt(input)（§7.1.14）：BigInt 原样；Boolean → 0/1；
+/// String 走 StringToBigInt；Number/Symbol/undefined/null → TypeError；对象经
+/// ToPrimitive（default hint）后递归处理。
+pub fn to_bigint_full<H: VmHost>(val: JsValue, host: &mut H) -> Result<JsValue, String> {
+    let primitive = to_primitive(val, ToPrimitiveHint::Default, host)?;
+    if primitive.is_bigint() {
+        return Ok(primitive);
+    }
+    if primitive.is_bool() {
+        let v = if primitive.as_bool() { 1 } else { 0 };
+        return Ok(host.new_bigint(num_bigint::BigInt::from(v)));
+    }
+    if primitive.is_int() || primitive.is_double() {
+        return Err(host.error_message_text("TypeError", "Cannot convert a Number value to a BigInt"));
+    }
+    if primitive.is_string() {
+        return string_to_bigint_full(host, &to_string(primitive));
+    }
+    // undefined / null / symbol。
+    Err(host.error_message_text("TypeError", "Cannot convert value to a BigInt"))
+}
+
+/// StringToBigInt（§7.1.14 步骤）：去首尾空白，可选 +/- 号与 0x/0o/0b 前缀；
+/// 空串 → 0n；非法 → SyntaxError。
+fn string_to_bigint_full<H: VmHost>(host: &mut H, s: &str) -> Result<JsValue, String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Ok(host.new_bigint(num_bigint::BigInt::from(0)));
+    }
+    let (neg, rest) = if let Some(r) = trimmed.strip_prefix('-') {
+        (true, r)
+    } else if let Some(r) = trimmed.strip_prefix('+') {
+        (false, r)
+    } else {
+        (false, trimmed)
+    };
+    // StringIntegerLiteral：符号只允许出现在纯十进制前；0x/0o/0b 前缀前带
+    // +/-（如 "-0x1"）属于非法语法。
+    let (radix, digits) = if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
+        if neg {
+            return Err(
+                host.error_message_text("SyntaxError", "Cannot convert string to BigInt: invalid integer literal")
+            );
+        }
+        (16u32, hex)
+    } else if let Some(oct) = rest.strip_prefix("0o").or_else(|| rest.strip_prefix("0O")) {
+        if neg {
+            return Err(
+                host.error_message_text("SyntaxError", "Cannot convert string to BigInt: invalid integer literal")
+            );
+        }
+        (8u32, oct)
+    } else if let Some(bin) = rest.strip_prefix("0b").or_else(|| rest.strip_prefix("0B")) {
+        if neg {
+            return Err(
+                host.error_message_text("SyntaxError", "Cannot convert string to BigInt: invalid integer literal")
+            );
+        }
+        (2u32, bin)
+    } else {
+        (10u32, rest)
+    };
+    if digits.is_empty() {
+        return Err(host.error_message_text("SyntaxError", "Cannot convert string to BigInt: invalid integer literal"));
+    }
+    let m = num_bigint::BigInt::parse_bytes(digits.as_bytes(), radix).ok_or_else(|| {
+        host.error_message_text("SyntaxError", "Cannot convert string to BigInt: invalid integer literal")
+    })?;
+    Ok(host.new_bigint(if neg { -m } else { m }))
+}
+
 /// `String()` 构造器的字符串转换（§21.1.1.1）：Symbol 值（及本引擎以空对象表示的
 /// well-known symbol）返回描述串 `Symbol(desc)`；其余走完整 ToString。
 pub fn to_string_for_string_constructor<H: VmHost>(val: JsValue, host: &mut H) -> Result<String, String> {

@@ -234,95 +234,14 @@ fn bigint_arg<H: VmHost>(vm: &mut H, args: &[u8]) -> JsValue {
 
 /// ToBigInt 抽象操作（§7.1.14）：BigInt 原样；String → StringToBigInt；
 /// Boolean → 0/1；Number/Symbol/undefined/null → TypeError；对象先 ToPrimitive 再递归。
+///
+/// 语义主体在 `oxide_runtime_api::to_bigint_full`，此处只把 String 错误恢复为
+/// 对应 kind 的异常对象（用户回调抛出的原始值经 last_uncaught_value 透传）。
 fn to_bigint<H: VmHost>(vm: &mut H, val: JsValue) -> Result<JsValue, JsValue> {
-    if val.is_bigint() {
-        return Ok(val);
+    match oxide_runtime_api::to_bigint_full(val, vm) {
+        Ok(v) => Ok(v),
+        Err(e) => Err(vm
+            .take_uncaught_value()
+            .unwrap_or_else(|| crate::error::create_from_text(vm, &e))),
     }
-    if val.is_bool() {
-        return Ok(vm.new_bigint(BigInt::from(if val.as_bool() { 1 } else { 0 })));
-    }
-    if val.is_int() {
-        // ToBigInt(Number) 抛 TypeError（与构造器不同：构造器先 ToPrimitive 再
-        // NumberToBigInt；ToBigInt 直接拒绝 Number）。
-        return Err(crate::error::create_type_error(vm, "Cannot convert a Number value to a BigInt"));
-    }
-    if val.is_double() {
-        return Err(crate::error::create_type_error(vm, "Cannot convert a Number value to a BigInt"));
-    }
-    if val.is_string() {
-        let s = oxide_runtime_api::to_string(val);
-        return match string_to_bigint(vm, &s) {
-            Ok(v) => Ok(v),
-            Err(e) => Err(e),
-        };
-    }
-    if val.is_object() {
-        let prim = match to_primitive(val, ToPrimitiveHint::Default, vm) {
-            Ok(p) => p,
-            Err(_) => {
-                if let Some(exc) = vm.take_uncaught_value() {
-                    return Err(exc);
-                }
-                return Err(crate::error::create_type_error(vm, "Cannot convert value to a BigInt"));
-            }
-        };
-        return to_bigint(vm, prim);
-    }
-    // undefined / null / symbol。
-    Err(crate::error::create_type_error(vm, "Cannot convert value to a BigInt"))
-}
-
-/// StringToBigInt（§7.1.14 步骤）：去首尾空白，可选 +/- 号与 0x/0o/0b 前缀；
-/// 空串 → 0n；非法 → SyntaxError。
-fn string_to_bigint<H: VmHost>(vm: &mut H, s: &str) -> Result<JsValue, JsValue> {
-    let trimmed = s.trim();
-    if trimmed.is_empty() {
-        return Ok(vm.new_bigint(BigInt::from(0)));
-    }
-    let (neg, rest) = if let Some(r) = trimmed.strip_prefix('-') {
-        (true, r)
-    } else if let Some(r) = trimmed.strip_prefix('+') {
-        (false, r)
-    } else {
-        (false, trimmed)
-    };
-    // StringIntegerLiteral：符号只允许出现在纯十进制前；0x/0o/0b 前缀前带
-    // +/-（如 "-0x1"）属于非法语法（test262 constructor-from-string-syntax-errors）。
-    let (radix, digits) = if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
-        if neg {
-            return Err(crate::error::create_syntax_error(
-                vm,
-                "Cannot convert string to BigInt: invalid integer literal",
-            ));
-        }
-        (16u32, hex)
-    } else if let Some(oct) = rest.strip_prefix("0o").or_else(|| rest.strip_prefix("0O")) {
-        if neg {
-            return Err(crate::error::create_syntax_error(
-                vm,
-                "Cannot convert string to BigInt: invalid integer literal",
-            ));
-        }
-        (8u32, oct)
-    } else if let Some(bin) = rest.strip_prefix("0b").or_else(|| rest.strip_prefix("0B")) {
-        if neg {
-            return Err(crate::error::create_syntax_error(
-                vm,
-                "Cannot convert string to BigInt: invalid integer literal",
-            ));
-        }
-        (2u32, bin)
-    } else {
-        (10u32, rest)
-    };
-    if digits.is_empty() {
-        return Err(crate::error::create_syntax_error(
-            vm,
-            "Cannot convert string to BigInt: invalid integer literal",
-        ));
-    }
-    let m = BigInt::parse_bytes(digits.as_bytes(), radix).ok_or_else(|| {
-        crate::error::create_syntax_error(vm, "Cannot convert string to BigInt: invalid integer literal")
-    })?;
-    Ok(vm.new_bigint(if neg { -m } else { m }))
 }
