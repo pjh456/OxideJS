@@ -534,6 +534,56 @@ impl SessionGc {
         }
     }
 
+    /// 仅回收 session 字符串：完整 mark（对象只置位不搬移）→ 按存活集清扫字符串。
+    ///
+    /// 刻意跳过对象 sweep 搬移——builtin/dispatch 层持有跨分配点的 session 对象
+    /// 裸指针，移动式 sweep 会使其悬垂；对象执行期回收仍只在 reset 统一进行。
+    /// 字符串每串独立 Box、地址稳定，清扫无需 forwarding 与根重写。
+    ///
+    /// # 副作用
+    /// - 清空全部对象 mark 位；按存活集释放死串；累计 `total_collections` 与时长统计。
+    ///
+    /// # 注意事项
+    /// - mark 的 DFS 以 `is_gc_marked` 短路，残留 true 会导致后续完整收集漏标，
+    ///   本路径不跑对象 sweep（sweep 内清位不会执行），必须先 `clear_all_marks`。
+    /// - 不搬移对象，`session_bytes_allocated` 保持对象账目，手动扣掉字符串账目后
+    ///   由 `sweep_session_strings` 补回存活串字节，与完整收集的最终账目一致。
+    pub(crate) fn collect_strings_only(&mut self, vm: &mut Vm) {
+        let start = Instant::now();
+
+        vm_info!("[GC] strings-only cycle #{} start", self.total_collections + 1);
+
+        // 清残留 mark 位：防止本次字符串 mark 因历史 true 短路而漏标。
+        self.clear_all_marks(vm);
+
+        // 完整 mark：复用现有实现，产出 live_strings；对象仅置位、不搬移。
+        self.mark(vm);
+
+        // 扣减字符串账目（保留对象账目），再补回存活串字节。
+        let object_bytes = vm.gc_state.session_object_ptrs.len() * size_of::<JsObject>();
+        vm.gc_state.session_bytes_allocated = object_bytes;
+        let freed_bytes = self.sweep_session_strings(vm);
+
+        let elapsed = start.elapsed();
+        self.total_collections += 1;
+        self.last_collection_duration_us = elapsed.as_micros() as u64;
+        self.max_collection_duration_us = self.max_collection_duration_us.max(self.last_collection_duration_us);
+        self.min_collection_duration_us = self.min_collection_duration_us.min(self.last_collection_duration_us);
+
+        vm_info!(
+            "[GC] strings-only cycle #{} end: {} bytes freed, {:.1}ms",
+            self.total_collections,
+            freed_bytes,
+            elapsed.as_secs_f64() * 1000.0,
+        );
+    }
+
+    pub(crate) fn maybe_collect_strings_only(&mut self, vm: &mut Vm) {
+        if self.should_collect(vm) {
+            self.collect_strings_only(vm);
+        }
+    }
+
     pub(crate) fn maybe_collect(&mut self, vm: &mut Vm) {
         if self.should_collect(vm) {
             self.collect(vm);
@@ -647,7 +697,8 @@ mod tests {
     }
 
     #[test]
-    fn gc_roots_contains_registers_frames_and_root_roots() {        let mut vm = Vm::new();
+    fn gc_roots_contains_registers_frames_and_root_roots() {
+        let mut vm = Vm::new();
         let root = plain_object(&mut vm);
         let frame_obj = plain_object(&mut vm);
         let saved_this = plain_object(&mut vm);
@@ -746,7 +797,8 @@ mod tests {
     }
 
     #[test]
-    fn mark_phase_reaches_cycles_and_unreachable_are_unmarked() {        let mut vm = Vm::new();
+    fn mark_phase_reaches_cycles_and_unreachable_are_unmarked() {
+        let mut vm = Vm::new();
         let root = plain_object(&mut vm);
         let reachable = plain_object(&mut vm);
         let unreachable = plain_object(&mut vm);
@@ -1200,5 +1252,138 @@ mod tests {
         vm.gc_state.session_gc = gc;
 
         assert!(after >= before + expected);
+    }
+
+    fn vm_with_threshold(bytes: usize) -> Vm {
+        let mut cfg = KernelConfig::minimal();
+        cfg.set_session_gc_threshold(bytes);
+        let core = KernelCore::new(cfg);
+        Vm::with_kernel_core(core)
+    }
+
+    #[test]
+    fn runtime_threshold_triggers_strings_only_collection() {
+        let mut vm = vm_with_threshold(1);
+        // 第一次分配不触发（累计 0 < 阈值），登记后超阈值；后续每次分配前先回收。
+        let seed = vm.new_string_owned("seed".repeat(16));
+        let seed_ptr = seed.as_string_ptr_mut();
+        assert!(vm.gc_state.session_string_ptrs.contains(&seed_ptr));
+
+        // 分配前触发回收：seed 无根引用 → 判死释放，返回值本身存活（登记前 GC 不触碰它）。
+        let returned = vm.new_string_owned("returned".repeat(16));
+        let returned_ptr = returned.as_string_ptr_mut();
+
+        assert!(vm.gc_state.session_gc.total_collections >= 1);
+        assert!(!vm.gc_state.session_string_ptrs.contains(&seed_ptr));
+        assert!(vm.gc_state.session_string_ptrs.contains(&returned_ptr));
+    }
+
+    #[test]
+    fn strings_only_collection_preserves_all_root_kinds() {
+        // 阈值 1：每次 new_string_owned 分配前自动触发回收，逐步验证各类根的保护。
+        let mut vm = vm_with_threshold(1);
+        // 寄存器根：直接持有 session 串。
+        let reg_str = vm.new_string_owned("reg-root".repeat(16));
+        vm.regs[0] = reg_str;
+        // 存活对象属性根：session 对象经 promote 后持有 session 串（分配即触发回收，
+        // reg_str 仍在寄存器，prop_str 挂到对象后才被下次回收看到）。
+        let obj = plain_object(&mut vm);
+        let prop_str = vm.new_string_owned("prop-root".repeat(16));
+        unsafe {
+            (*obj).set_prop_at(0, prop_str);
+        }
+        let obj_session = vm.promote_object(obj);
+        vm.regs[1] = JsValue::from_js_object(obj_session);
+        // 非 session 根对象属性：epoch 根对象（在寄存器）持有 session 串，mark 走
+        // 非 session 根扫描路径保护。
+        let epoch_obj = plain_object(&mut vm);
+        let epoch_str = vm.new_string_owned("epoch-root".repeat(16));
+        unsafe {
+            (*epoch_obj).set_prop_at(0, epoch_str);
+        }
+        vm.regs[2] = JsValue::from_js_object(epoch_obj);
+        // 死串：无任何根引用，最后手动触发一轮回收它。
+        let dead = vm.new_string_owned("dead".repeat(16));
+        let dead_ptr = dead.as_string_ptr_mut();
+
+        vm.maybe_collect_session_strings();
+
+        assert!(vm.gc_state.session_string_ptrs.contains(&reg_str.as_string_ptr_mut()));
+        assert!(vm.gc_state.session_string_ptrs.contains(&prop_str.as_string_ptr_mut()));
+        assert!(vm.gc_state.session_string_ptrs.contains(&epoch_str.as_string_ptr_mut()));
+        assert!(!vm.gc_state.session_string_ptrs.contains(&dead_ptr));
+        // 存活串内容可读，地址稳定。
+        assert_eq!(unsafe { (*reg_str.as_string_ptr_mut()).as_str() }, "reg-root".repeat(16));
+        assert_eq!(unsafe { (*prop_str.as_string_ptr_mut()).as_str() }, "prop-root".repeat(16));
+        assert_eq!(unsafe { (*epoch_str.as_string_ptr_mut()).as_str() }, "epoch-root".repeat(16));
+    }
+
+    #[test]
+    fn strings_only_collection_does_not_move_objects() {
+        let mut vm = vm_with_threshold(1);
+        let obj = plain_object(&mut vm);
+        let obj_session = vm.promote_object(obj);
+        vm.regs[0] = JsValue::from_js_object(obj_session);
+        let before: Vec<_> = vm.gc_state.session_object_ptrs.clone();
+
+        let s = vm.new_string_owned("x".repeat(64));
+        vm.regs[1] = s;
+
+        // 对象指针逐一相同：不搬移、不重写根。
+        assert_eq!(vm.gc_state.session_object_ptrs, before);
+        assert_eq!(vm.regs[0].as_js_object_ptr(), obj_session);
+        assert_eq!(vm.session_object_count(), 1);
+    }
+
+    #[test]
+    fn multiple_strings_only_cycles_keep_objects_alive() {
+        let mut vm = vm_with_threshold(1);
+        let obj = plain_object(&mut vm);
+        let obj_session = vm.promote_object(obj);
+        let live = vm.new_string_owned("keep".repeat(32));
+        unsafe {
+            (*obj_session).set_prop_at(0, live);
+        }
+        vm.regs[0] = JsValue::from_js_object(obj_session);
+
+        // 连续多轮触发字符串回收：对象 mark 残留位被显式清理，对象与挂载串持续存活。
+        for _ in 0..5 {
+            for _ in 0..8 {
+                let _ = vm.new_string_owned("dead".repeat(64));
+            }
+            assert!(vm.gc_state.session_object_ptrs.contains(&obj_session));
+            assert_eq!(unsafe { (*obj_session).get_prop_at(0) }, live);
+        }
+        assert!(vm.gc_state.session_string_ptrs.contains(&live.as_string_ptr_mut()));
+    }
+
+    #[test]
+    fn strings_only_collection_byte_accounting_matches_survivors() {
+        let mut vm = vm_with_threshold(1);
+        let obj = plain_object(&mut vm);
+        let obj_session = vm.promote_object(obj);
+        vm.regs[0] = JsValue::from_js_object(obj_session);
+        let live = vm.new_string_owned("live".repeat(8));
+        let live_ptr = live.as_string_ptr_mut();
+        vm.regs[1] = live;
+        let dead = vm.new_string_owned("dead".repeat(8));
+        let _ = dead.as_string_ptr_mut();
+
+        vm.maybe_collect_session_strings();
+
+        // 账目 = 对象头 + 存活串（size_of::<JsString>() + len），死串不再计入。
+        let expected = size_of::<JsObject>() + (size_of::<JsString>() + unsafe { (*live_ptr).len() });
+        assert_eq!(vm.gc_state.session_bytes_allocated, expected);
+        assert!(!vm.gc_state.session_string_ptrs.contains(&dead.as_string_ptr_mut()));
+    }
+
+    #[test]
+    fn runtime_collection_below_threshold_is_noop() {
+        let mut vm = Vm::new();
+        let s = vm.new_string_owned("small".repeat(4));
+        vm.regs[0] = s;
+
+        assert_eq!(vm.gc_state.session_gc.total_collections, 0);
+        assert!(vm.gc_state.session_string_ptrs.contains(&s.as_string_ptr_mut()));
     }
 }

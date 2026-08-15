@@ -804,6 +804,14 @@ impl Vm {
         self.gc_state.session_gc = session_gc;
     }
 
+    /// 执行期字符串阈值回收：仅回收 session 字符串（跳过对象搬移）。热路径只在
+    /// 超阈值后进入，`mem::take` 不承担每次分配的开销。
+    pub(crate) fn maybe_collect_session_strings(&mut self) {
+        let mut session_gc = std::mem::take(&mut self.gc_state.session_gc);
+        session_gc.maybe_collect_strings_only(self);
+        self.gc_state.session_gc = session_gc;
+    }
+
     /// 只读访问 session GC 的统计（回收次数、存活/死亡对象数、释放字节等）。
     pub fn session_gc_stats(&self) -> &SessionGc {
         &self.gc_state.session_gc

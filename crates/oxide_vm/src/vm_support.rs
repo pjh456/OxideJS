@@ -363,8 +363,19 @@ impl Vm {
     }
 
     /// 同 `new_string`，但以 move 接收 `String`，避免一次克隆。
+    ///
+    /// # 副作用
+    /// - 累计 session 字符串字节超阈值时，触发一次仅字符串的 GC（对象不搬移）。
+    ///
+    /// # 注意事项
+    /// - 触发检查在登记之前：返回值尚未写入任何执行根，若登记后回收会被本次 GC
+    ///   判死并释放，返回即悬垂；此时 `s` 仍在栈上、未被登记，GC 不会触碰它。
+    /// - 热路径仅 1 次 usize 比较 + 阈值读取，超限才进回收路径。
     pub fn new_string_owned(&mut self, s: String) -> JsValue {
         let len = s.len();
+        if self.gc_state.session_bytes_allocated >= self.kernel_core.config().session_gc_threshold {
+            self.maybe_collect_session_strings();
+        }
         let ptr = Box::into_raw(Box::new(JsString::new(s)));
         self.gc_state.session_string_ptrs.push(ptr);
         self.gc_state.session_bytes_allocated += std::mem::size_of::<JsString>() + len;
