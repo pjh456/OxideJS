@@ -62,6 +62,24 @@ fn reset_preserves_session_strings_after_runtime_gc() {
     assert_eq!(text, "xy");
 }
 
+/// strings-only 收集后 reset 完整收集：global 子树中 session 对象属性里的串
+/// 跨两次收集存活（strings-only 残留 mark 位不得短路完整收集的 mark DFS）。
+#[test]
+fn strings_only_then_reset_keeps_global_subtree_strings() {
+    let mut vm = vm_with_threshold(4096);
+    let first = compile(
+        "globalThis.kept = { s: 'he' + 'llo' }; var t; for (var i = 0; i < 500000; i++) { t = 'x' + i; } 0",
+    );
+    vm.run(&first).expect("run1");
+    assert!(vm.session_gc_stats().total_collections > 0, "run1 应触发执行期字符串 GC");
+    vm.reset();
+
+    let second = compile("globalThis.kept.s");
+    let result = vm.run(&second).expect("run2");
+    let text = vm.lookup_str(result).expect("kept.s 应为字符串").to_string();
+    assert_eq!(text, "hello");
+}
+
 /// full_reset 清空 session 内存：执行期回收释放过的死串不与完全重置的
 /// 整体释放路径重复释放（无双重释放崩溃），重置后引擎可继续运行。
 #[test]

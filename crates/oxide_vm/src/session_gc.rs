@@ -564,6 +564,11 @@ impl SessionGc {
         vm.gc_state.session_bytes_allocated = object_bytes;
         let freed_bytes = self.sweep_session_strings(vm);
 
+        // 恢复 mark 位不变量：mark 之后必由清位收尾（与 sweep 末尾同点清位）。
+        // 残留 marked 对象会让下一次完整收集（reset 路径）的 mark DFS 短路漏标，
+        // 其字符串边不进 live_strings → 存活串被误释放 → 存活对象持悬垂指针。
+        self.clear_all_marks(vm);
+
         let elapsed = start.elapsed();
         self.total_collections += 1;
         self.last_collection_duration_us = elapsed.as_micros() as u64;
@@ -1355,6 +1360,35 @@ mod tests {
             assert_eq!(unsafe { (*obj_session).get_prop_at(0) }, live);
         }
         assert!(vm.gc_state.session_string_ptrs.contains(&live.as_string_ptr_mut()));
+    }
+
+    #[test]
+    fn strings_only_then_full_collect_keeps_object_strings_live() {
+        // strings-only 收集后接完整收集（reset 路径）：strings-only 残留的 mark 位
+        // 不得使完整收集的 mark DFS 短路漏标，存活对象属性中的串须跨收集存活。
+        let mut vm = vm_with_threshold(1);
+        let obj = plain_object(&mut vm);
+        let s = vm.new_string_owned("kept".repeat(8));
+        let s_ptr = s.as_string_ptr_mut();
+        unsafe {
+            (*obj).set_prop_at(0, s);
+        }
+        let obj_session = vm.promote_object(obj);
+        vm.regs[0] = JsValue::from_js_object(obj_session);
+
+        // 第一轮 strings-only：对象被 mark 置位，修复前该位残留至完整收集。
+        vm.maybe_collect_session_strings();
+        assert!(vm.gc_state.session_string_ptrs.contains(&s_ptr));
+
+        // 完整收集（reset 的 maybe_collect 路径）：对象搬移、字符串地址稳定。
+        let mut gc = std::mem::take(&mut vm.gc_state.session_gc);
+        gc.collect(&mut vm);
+        vm.gc_state.session_gc = gc;
+
+        // 存活对象经重写仍可达其串：串未被误释放，内容可读。
+        assert!(vm.gc_state.session_string_ptrs.contains(&s_ptr));
+        assert_eq!(unsafe { (*s_ptr).as_str() }, "kept".repeat(8));
+        assert_eq!(unsafe { (*vm.regs[0].as_js_object_ptr()).get_prop_at(0) }, s);
     }
 
     #[test]
