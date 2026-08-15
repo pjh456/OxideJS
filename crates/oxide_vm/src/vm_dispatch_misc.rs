@@ -151,7 +151,7 @@ impl Vm {
                 let val = self.regs[reg];
                 let s = if val.is_string() {
                     // SAFETY: val 是字符串值。
-                    unsafe { (*val.as_string_ptr()).data.clone() }
+                    unsafe { (*val.as_string_ptr()).to_owned_string() }
                 } else {
                     to_string_full(val, self)?
                 };
@@ -163,7 +163,7 @@ impl Vm {
                     let val = imm[const_idx];
                     if val.is_string() {
                         // SAFETY: val 是字符串值。
-                        let s = unsafe { (*val.as_string_ptr()).data.clone() };
+                        let s = unsafe { (*val.as_string_ptr()).to_owned_string() };
                         result.push_str(&s);
                     }
                 }
@@ -684,7 +684,7 @@ impl Vm {
                 JsValue::from_js_object(proto_ptr),
             ));
             if src.is_string() {
-                let code_units: Vec<u16> = unsafe { (*src.as_string_ptr()).data.encode_utf16().collect() };
+                let code_units: Vec<u16> = unsafe { (*src.as_string_ptr()).as_str().encode_utf16().collect() };
                 for (i, unit) in code_units.iter().enumerate() {
                     let si = make_int_key(i as u32);
                     let ch_val = match char::from_u32(*unit as u32) {
@@ -707,7 +707,7 @@ impl Vm {
             .and_then(|v| {
                 if v.is_string() {
                     // SAFETY: v 是字符串常量值。
-                    Some(unsafe { (*v.as_string_ptr()).data.clone() })
+                    Some(unsafe { (*v.as_string_ptr()).to_owned_string() })
                 } else {
                     None
                 }
@@ -742,7 +742,7 @@ impl Vm {
         // 字符串包装对象：索引字符是可枚举自有属性（ToObject("str") 的 0..len-1）。
         if src_obj.type_tag == JsObject::OBJ_TYPE_STRING_OBJ {
             let raw = src_obj.get_prop_at(0);
-            let s = unsafe { (*raw.as_string_ptr()).data.clone() };
+            let s = unsafe { (*raw.as_string_ptr()).to_owned_string() };
             let code_units: Vec<u16> = s.encode_utf16().collect();
             for (i, unit) in code_units.iter().enumerate() {
                 let si = make_int_key(i as u32);
@@ -850,7 +850,7 @@ impl Vm {
         // 字符串源：按索引复制字符（可枚举索引属性）。
         if src.is_string() {
             let target = unsafe { &mut *target_val.as_js_object_ptr() };
-            let code_units: Vec<u16> = unsafe { (*src.as_string_ptr()).data.encode_utf16().collect() };
+            let code_units: Vec<u16> = unsafe { (*src.as_string_ptr()).as_str().encode_utf16().collect() };
             for (i, unit) in code_units.iter().enumerate() {
                 let si = make_int_key(i as u32);
                 let ch_val = match char::from_u32(*unit as u32) {

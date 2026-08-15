@@ -950,7 +950,7 @@ impl Vm {
             return None;
         }
         // SAFETY: val 是字符串值，其 JsString 指针在生命周期内有效。
-        Some(unsafe { (*val.as_string_ptr()).data.clone() })
+        Some(unsafe { (*val.as_string_ptr()).to_owned_string() })
     }
 
     pub(crate) fn thrown_error_kind(&self, val: JsValue) -> &'static str {
@@ -998,8 +998,8 @@ impl Vm {
                 return Ok(make_int_key(d as u32));
             }
         } else if val.is_string() {
-            // SAFETY: val 是字符串值，把其内容桥接为永久 key id。
-            let s = unsafe { &(*val.as_string_ptr()).data };
+            // SAFETY: val 是字符串值，把其内容桥接为永久 key id（rope 经惰性扁平化）。
+            let s = unsafe { (*val.as_string_ptr()).as_str() };
             if let Some(i) = canonical_index_of(s) {
                 return Ok(make_int_key(i));
             }

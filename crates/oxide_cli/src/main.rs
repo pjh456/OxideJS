@@ -195,7 +195,7 @@ fn format_js_value(
 ) -> String {
     if val.is_string() {
         // SAFETY: val 已确认是字符串值。
-        let s = unsafe { (*val.as_string_ptr()).data.clone() };
+        let s = unsafe { (*val.as_string_ptr()).to_owned_string() };
         format!("\"{s}\"")
     } else if val.is_bigint() {
         format!("{}", vm.bigint_value(val))

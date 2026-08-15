@@ -8,13 +8,31 @@
 
 use crate::value::JsValue;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::OnceLock;
 
 /// 堆分配的 JS 字符串值。
 ///
 /// 字符串*值*以 48 位指针（指向 `JsString`）NaN-box（见 `JsValue::string`）。
+///
+/// 两种变体：
+/// - `Flat`：整块 UTF-8 文本（String，保留容量）。字面量、方法结果与 CONCAT_N
+///   产物保持此形态；
+/// - `Cons`（rope）：指向 [`ConsNode`] 载荷（左右子裸指针 + O(1) 字节长 +
+///   惰性扁平化缓存）。二元 `+`/`+=` 拼接 O(1) 链接不拷贝文本，整块文本在
+///   首次消费时扁平化并原子发布。
+///
+/// 结构体大小恒为 40B（`Flat(String)` 24B + utf16_len 4B + tag），较 rope 前的
+/// 32B 大一个分配 bin 级，但换来 `String` 原样存储（零 realloc 收缩）；Cons
+/// 专属状态（子节点/产物缓存）独立分配在 [`ConsNode`]，仅大链持有。
+///
+/// 生命周期约定：
+/// - `Cons` 子节点各自独立登记 session 字符串表（或为 perm 串），由 GC 的
+///   mark 传播闭包保证随父存活；扁平化产物只挂在 `ConsNode::flat_cache`、不进
+///   session 主表，随本节点连带释放。
+/// - 地址稳定不搬移（Box 堆分配），GC 无需 forwarding / rewrite。
 #[derive(Debug)]
 pub struct JsString {
-    pub data: String,
+    kind: StringKind,
     /// JS 语义的字符串长度（UTF-16 code unit 数）懒缓存。
     ///
     /// 构造是热路径（拼接/格式化），长度查询少见，故不预付 O(n) 扫描；首次
@@ -23,44 +41,219 @@ pub struct JsString {
     utf16_len: AtomicU32,
 }
 
+/// 字符串内容变体。
+#[derive(Debug)]
+enum StringKind {
+    Flat(String),
+    Cons(*const ConsNode),
+}
+
+/// Cons（rope）节点的载荷：左右子节点指针 + O(1) 拼接字节长 + 扁平化产物缓存。
+///
+/// 独立于 `JsString` 分配，使 Flat 路径的 `JsString` 保持与 rope 前相同的 32B
+/// 结构；仅超过字节阈值的拼接（`Vm::new_cons_string`）才创建本节点。
+///
+/// 生命周期约定：节点由 `Box::into_raw` 分配，只经 [`JsString::drop_cons_node`]
+/// 释放（连带扁平化产物）；`left`/`right` 由 GC 传播闭包保证随父存活。
+#[derive(Debug)]
+pub struct ConsNode {
+    left: *const JsString,
+    right: *const JsString,
+    /// 拼接字节长：构造时 = left.len() + right.len()（各 O(1)），免递归求长。
+    byte_len: u32,
+    /// 扁平化产物缓存：首次文本消费时分配整块 Flat 产物并原子发布（OnceLock）。
+    /// 产物不进 session 主表，生命周期挂本节点——GC 传播保证其随父存活，
+    /// 释放节点时连带释放。
+    flat_cache: OnceLock<*const JsString>,
+}
+
 /// `utf16_len` 未计算的哨兵值（有效长度不可能为 u32::MAX）。
 const UTF16_LEN_UNSET: u32 = u32::MAX;
 
 impl JsString {
-    /// 用 UTF-8 数据构造字符串。
+    /// 用 UTF-8 数据构造 Flat 字符串。
     pub fn new(data: String) -> Self {
         Self {
-            data,
+            kind: StringKind::Flat(data),
             utf16_len: AtomicU32::new(UTF16_LEN_UNSET),
         }
     }
 
-    /// 字符串的字节长度（非字符数）。
+    /// 以左右子节点构造 Cons（rope）节点，O(1) 链接不拷贝文本。
+    ///
+    /// # Safety
+    /// `left`/`right` 必须指向存活的 `JsString`（session 或 perm），且由 GC
+    /// 传播保证随本节点存活——调用方（`Vm::new_cons_string`）负责登记。
+    pub unsafe fn new_cons(left: *const JsString, right: *const JsString) -> Self {
+        let byte_len = ((*left).len() + (*right).len()) as u32;
+        let node = Box::into_raw(Box::new(ConsNode {
+            left,
+            right,
+            byte_len,
+            flat_cache: OnceLock::new(),
+        }));
+        Self {
+            kind: StringKind::Cons(node),
+            utf16_len: AtomicU32::new(UTF16_LEN_UNSET),
+        }
+    }
+
+    /// Cons 载荷节点指针（Flat 返回 null）。仅供释放路径使用。
+    pub fn cons_node_ptr(&self) -> *mut ConsNode {
+        match &self.kind {
+            StringKind::Flat(_) => std::ptr::null_mut(),
+            StringKind::Cons(node) => *node as *mut ConsNode,
+        }
+    }
+
+    /// 释放 Cons 载荷节点（连带扁平化产物）。须在所属 `JsString` 的
+    /// `Box::from_raw` 之前调用且恰好一次；Flat 串传 null 无操作。
+    ///
+    /// # Safety
+    /// `node` 必须是 [`JsString::new_cons`] 经 `Box::into_raw` 产生的指针，且
+    /// 尚未被释放。
+    pub unsafe fn drop_cons_node(node: *mut ConsNode) {
+        if node.is_null() {
+            return;
+        }
+        let flat = (*node).flat_cache.get().copied().unwrap_or(std::ptr::null());
+        if !flat.is_null() {
+            // SAFETY: 产物由本节点 Box::into_raw 创建，且只随本节点释放一次。
+            drop(Box::from_raw(flat as *mut JsString));
+        }
+        drop(Box::from_raw(node));
+    }
+
+    /// 字符串的字节长度（非字符数）。Flat 直读；Cons O(1) 取构造时缓存。
     pub fn len(&self) -> usize {
-        self.data.len()
+        match &self.kind {
+            StringKind::Flat(data) => data.len(),
+            StringKind::Cons(node) => {
+                // SAFETY: node 由 new_cons 创建且存活期覆盖本借用。
+                unsafe { (**node).byte_len as usize }
+            }
+        }
     }
 
     /// JS 字符串长度（UTF-16 code unit 数）。首次访问计算并缓存，此后 O(1)。
+    /// Cons 首次访问触发扁平化（见 [`Self::flat_str`]），取产物长度缓存。
     pub fn utf16_len(&self) -> u32 {
         let cached = self.utf16_len.load(Ordering::Relaxed);
         if cached != UTF16_LEN_UNSET {
             return cached;
         }
-        let len = self.data.encode_utf16().count() as u32;
+        let len = self.flat_str().encode_utf16().count() as u32;
         self.utf16_len.store(len, Ordering::Relaxed);
         len
     }
 
     /// 是否为空字符串。
     pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
+        self.len() == 0
     }
 
-    /// 底层 UTF-8 切片。
+    /// 整块 UTF-8 文本的借用。Cons 未扁平化时惰性扁平化并发布缓存后返回产物文本；
+    /// 返回的 `&str` 借用期 = `&self` 借用期（产物随本节点存活）。
     pub fn as_str(&self) -> &str {
-        self.data.as_str()
+        self.flat_str()
+    }
+
+    /// 整块文本的借用（`as_str` 的显式别名）：Flat 直读零开销；Cons 读
+    /// `flat_cache`，未命中则迭代展开扁平化（显式栈防深链爆栈）后原子发布。
+    pub fn flat_str(&self) -> &str {
+        match &self.kind {
+            StringKind::Flat(data) => data.as_str(),
+            StringKind::Cons(node) => {
+                // SAFETY: node 由 new_cons 创建且存活期覆盖本借用。
+                let node = unsafe { &**node };
+                if let Some(flat) = node.flat_cache.get() {
+                    // SAFETY: 产物由本节点 Box::into_raw 创建且只随本节点释放，
+                    // 存活期覆盖本次 &self 借用。
+                    let flat = unsafe { &**flat };
+                    return match &flat.kind {
+                        StringKind::Flat(data) => data.as_str(),
+                        StringKind::Cons(_) => unreachable!("扁平化产物恒为 Flat"),
+                    };
+                }
+                let text = self.flatten_text();
+                let flat_ptr = Box::into_raw(Box::new(JsString::new(text)));
+                if node.flat_cache.set(flat_ptr).is_err() {
+                    // 并发首用竞态：另一线程已发布，本线程产物未暴露给任何调用方，
+                    // 恰好释放一次。
+                    // SAFETY: flat_ptr 来自本线程的 Box::into_raw，无外部引用。
+                    unsafe { drop(Box::from_raw(flat_ptr)) };
+                }
+                // SAFETY: 上述 set 后缓存必已发布（本线程或他线程）。
+                let flat = unsafe { &**node.flat_cache.get().unwrap() };
+                match &flat.kind {
+                    StringKind::Flat(data) => data.as_str(),
+                    StringKind::Cons(_) => unreachable!("扁平化产物恒为 Flat"),
+                }
+            }
+        }
+    }
+
+    /// 整块文本的 owned 副本（低频路径：错误消息 / 格式化 / 属性键桥接）。
+    pub fn to_owned_string(&self) -> String {
+        self.flat_str().to_string()
+    }
+
+    /// 是否为 Cons（rope）节点。
+    pub fn is_cons(&self) -> bool {
+        matches!(self.kind, StringKind::Cons(_))
+    }
+
+    /// Cons 左右子节点指针对（Flat 返回双 null）。仅供 GC 传播闭包使用。
+    pub fn cons_children(&self) -> [*const JsString; 2] {
+        match &self.kind {
+            StringKind::Flat(_) => [std::ptr::null(), std::ptr::null()],
+            StringKind::Cons(node) => {
+                // SAFETY: node 由 new_cons 创建且存活期覆盖本借用。
+                let node = unsafe { &**node };
+                [node.left, node.right]
+            }
+        }
+    }
+
+    /// 扁平化产物指针（未扁平化返回 null）。仅供 GC 传播与释放路径使用。
+    pub fn flat_cache_ptr(&self) -> *const JsString {
+        match &self.kind {
+            StringKind::Flat(_) => std::ptr::null(),
+            StringKind::Cons(node) => {
+                // SAFETY: node 由 new_cons 创建且存活期覆盖本借用。
+                unsafe { (**node).flat_cache.get().copied().unwrap_or(std::ptr::null()) }
+            }
+        }
+    }
+
+    /// 迭代展开 Cons 子树为整块文本（显式栈中序收集，防深链递归爆栈）。
+    fn flatten_text(&self) -> String {
+        let mut stack = Vec::with_capacity(8);
+        stack.push(self as *const JsString);
+        let mut buf = String::with_capacity(self.len());
+        while let Some(ptr) = stack.pop() {
+            // SAFETY: 树内节点由 GC 传播保证随本节点存活；展开期子树无并发修改。
+            let node = unsafe { &*ptr };
+            match &node.kind {
+                StringKind::Flat(data) => buf.push_str(data.as_str()),
+                StringKind::Cons(child) => {
+                    // 右子先入栈、左子后入，保证左子先出（中序顺序）。
+                    // SAFETY: child 由 new_cons 创建且随父存活。
+                    let child = unsafe { &**child };
+                    stack.push(child.right);
+                    stack.push(child.left);
+                }
+            }
+        }
+        buf
     }
 }
+
+// SAFETY: 与 `StringPtr`（string_forge.rs）同款论证——Cons 节点只存在于单线程
+// session VM 内；跨线程共享的 perm 串恒为 Flat，且其 flat_cache 永不写入
+// （perm 串只读共享，无任何可变路径）。裸指针字段不引入跨线程数据竞争。
+unsafe impl Send for JsString {}
+unsafe impl Sync for JsString {}
 
 /// 原生函数指针的类型安全不透明包装。
 ///
@@ -1613,6 +1806,55 @@ mod tests {
     fn object_size_bounds() {
         let sz = std::mem::size_of::<JsObject>();
         assert!(sz <= 256, "JsObject grew unexpectedly: {sz}B");
+    }
+
+    #[test]
+    fn js_string_cons_basic() {
+        // 左右子 Flat 构造 Cons：len/utf16_len/is_empty/flat 全部按拼接语义。
+        let left = Box::new(JsString::new("ab".to_string()));
+        let right = Box::new(JsString::new("cd".to_string()));
+        let cons = Box::new(unsafe { JsString::new_cons(&*left, &*right) });
+        assert_eq!(cons.len(), 4);
+        assert!(!cons.is_empty());
+        assert_eq!(cons.utf16_len(), 4);
+        assert_eq!(cons.flat_str(), "abcd");
+        assert_eq!(cons.as_str(), "abcd");
+        assert_eq!(cons.to_owned_string(), "abcd");
+        assert!(cons.is_cons());
+        // 扁平化产物缓存命中：内容仍一致。
+        assert_eq!(cons.flat_str(), "abcd");
+    }
+
+    #[test]
+    fn js_string_cons_deep_chain_flattens_iteratively() {
+        // 2000 层左倾链：显式栈展开不爆栈，产物与逐段拼接一致。
+        let mut nodes: Vec<Box<JsString>> = Vec::new();
+        nodes.push(Box::new(JsString::new("x".to_string())));
+        for _ in 0..2000 {
+            nodes.push(Box::new(JsString::new("y".to_string())));
+        }
+        let mut chain_ptr = nodes[0].as_ref() as *const JsString;
+        for i in 1..nodes.len() {
+            let cons = Box::new(unsafe { JsString::new_cons(chain_ptr, nodes[i].as_ref() as *const JsString) });
+            chain_ptr = cons.as_ref() as *const JsString;
+            nodes.push(cons);
+        }
+        let text = nodes.last().unwrap().flat_str();
+        assert_eq!(text.len(), 1 + 2000);
+        assert!(text.starts_with('x'));
+        assert!(text.ends_with('y'));
+    }
+
+    #[test]
+    fn js_string_cons_empty_parts() {
+        // 双空串 Cons：空判定与长度均为 0，扁平化为空文本。
+        let left = Box::new(JsString::new(String::new()));
+        let right = Box::new(JsString::new(String::new()));
+        let cons = Box::new(unsafe { JsString::new_cons(&*left, &*right) });
+        assert!(cons.is_empty());
+        assert_eq!(cons.len(), 0);
+        assert_eq!(cons.flat_str(), "");
+        assert_eq!(cons.utf16_len(), 0);
     }
 
     #[test]

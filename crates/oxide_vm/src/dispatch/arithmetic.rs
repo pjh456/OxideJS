@@ -78,22 +78,57 @@ impl Vm {
         Ok(())
     }
 
-    /// 字符串拼接热路径：一次预分配写齐两个操作数的 ToString 文本。
+    /// 字符串拼接接线点（二元 `+`/`+=` 共用）：O(1) 链接为 Cons（rope）节点，
+    /// 消除逐次整串重拷贝。文本在消费时（`.length`/`==`/string_ref 等）惰性扁平化。
     ///
     /// # 步骤
-    /// 1. 按字符串操作数字节长预分配容量（余量覆盖数字/布尔等格式化文本）。
-    /// 2. 两个操作数依次走 push_to_string（BigInt 输出十进制，Symbol 由调用方先行拒绝）。
-    /// 3. 生成会话字符串写入目标寄存器。
+    /// 1. 非字符串操作数先转成叶子字符串（`push_to_string` 同文本语义；小整数走
+    ///    永久缓存零分配，其余 `to_string` + owned）。
+    /// 2. 两个字符串经 `new_cons_string` 链接（每链接 1 次节点分配，对比原 O(n)
+    ///    拷贝 + 结果串分配）。
     ///
     /// # 副作用
-    /// 新建一个会话字符串，登记到 session 生命周期。
+    /// - 新建 Cons 节点 + 可能的数字叶子，登记到 session 生命周期。回收点仅在
+    ///   dispatch 指令边界（结果已写寄存器后检查），链接期子节点天然安全，
+    ///   无需在途保护。
     fn concat_strings(&mut self, lhs: JsValue, rhs: JsValue) -> JsValue {
+        // 小链急切扁平（与 rope 前同款实现）：总字节长 ≤ 阈值时单次预分配
+        // 写齐，零叶子转换 / Cons 节点 / 惰性扁平化开销——拼接即消费的小串
+        // 场景与基线逐字节等价（该场景 rope 的 O(1) 链接收益低于其固定开销）。
         let lbytes = if lhs.is_string() { unsafe { (*lhs.as_string_ptr()).len() } } else { 0 };
         let rbytes = if rhs.is_string() { unsafe { (*rhs.as_string_ptr()).len() } } else { 0 };
-        let mut buf = String::with_capacity(lbytes + rbytes + 32);
-        coercion::push_to_string(lhs, &mut buf);
-        coercion::push_to_string(rhs, &mut buf);
-        self.new_string_owned(buf)
+        if lbytes + rbytes <= Self::CONS_FLATTEN_BYTES {
+            let mut buf = String::with_capacity(lbytes + rbytes + 32);
+            coercion::push_to_string(lhs, &mut buf);
+            coercion::push_to_string(rhs, &mut buf);
+            return self.new_string_owned(buf);
+        }
+        // 大链走 Cons rope：非字符串操作数先转叶子，再 O(1) 链接（文本惰性扁平化）。
+        let lv = if lhs.is_string() {
+            lhs
+        } else {
+            self.string_leaf(lhs)
+        };
+        let rv = if rhs.is_string() {
+            rhs
+        } else {
+            self.string_leaf(rhs)
+        };
+        self.new_cons_string(lv, rv)
+    }
+
+    /// 把非字符串原语转为叶子字符串：0..=99 小整数命中永久缓存（零分配），
+    /// 其余走 `to_string` + `new_string_owned`（语义与 `push_to_string` 一致）。
+    fn string_leaf(&mut self, v: JsValue) -> JsValue {
+        if v.is_int() {
+            let n = v.as_int();
+            if n >= 0 {
+                if let Some(ptr) = oxide_kernel::string_forge::small_int_ptr(n as u32) {
+                    return JsValue::string(ptr);
+                }
+            }
+        }
+        self.new_string_owned(coercion::to_string(v))
     }
 
     /// CONCAT_N：多操作数拼接（连续 `+` 左结合链摊平）的两阶段 dispatch。

@@ -175,6 +175,33 @@ pub fn single_char_ptr(ch: u8) -> *const JsString {
     }
 }
 
+/// 小整数（0..=99）永久 `JsString` 指针表：`s += j` 等数字叶子拼接的高频命中路径，
+/// 免每次 `to_string` + 登记 2 次分配。泄漏面严格有界：100 条目 ≈ 4KB，进程生命
+/// 期内不释放（同 `SINGLE_CHAR_TABLE` 论证）。
+static SMALL_INT_TABLE: [OnceLock<StringPtr>; 100] = [const { OnceLock::new() }; 100];
+
+/// 取 0..=99 小整数的永久 `JsString` 指针，惰性物化一次后恒返回同一地址。
+/// 超出范围返回 `None`，由调用方回落普通字符串创建。
+pub fn small_int_ptr(n: u32) -> Option<*const JsString> {
+    if n >= 100 {
+        return None;
+    }
+    let slot = &SMALL_INT_TABLE[n as usize];
+    if let Some(ptr) = slot.get() {
+        return Some(ptr.0);
+    }
+    let ptr = Box::into_raw(Box::new(JsString::new(n.to_string())));
+    match slot.set(StringPtr(ptr)) {
+        Ok(()) => Some(ptr),
+        Err(existing) => {
+            // 并发首用竞态：与 single_char_ptr 同款处置，本线程产物恰好释放一次。
+            // SAFETY: ptr 来自本线程的 Box::into_raw，无任何外部引用。
+            unsafe { drop(Box::from_raw(ptr)) };
+            Some(existing.0)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

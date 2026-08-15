@@ -23,7 +23,7 @@ fn to_str(vm: &Vm, val: JsValue) -> String {
 fn fmt(vm: &Vm, val: JsValue) -> String {
     if val.is_string() {
         // SAFETY: val 已确认是字符串值。
-        unsafe { (*val.as_string_ptr()).data.clone() }
+        unsafe { (*val.as_string_ptr()).to_owned_string() }
     } else if val.is_bigint() {
         format!("{}", vm.bigint_value(val))
     } else {

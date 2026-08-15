@@ -127,6 +127,53 @@ impl SessionGc {
         edges
     }
 
+    /// 把字符串指针标记为存活并传播 rope 闭包：Cons 迭代传播左右子节点与
+    /// 扁平化产物（显式栈防深链爆栈）。perm 指针进表无害——sweep 只遍历
+    /// `session_string_ptrs`。遗漏子节点 = 子节点被 sweep 释放 → 悬垂 UB，
+    /// 全部字符串 insert 点必须收口此入口。
+    fn mark_string_live(live: &mut HashSet<*mut JsString, FxBuildHasher>, root: *mut JsString) {
+        if root.is_null() {
+            return;
+        }
+        let mut stack = vec![root];
+        while let Some(ptr) = stack.pop() {
+            if ptr.is_null() || !live.insert(ptr) {
+                continue;
+            }
+            // SAFETY: ptr 是合法 JsString 指针（session 或 perm），mark 期存活。
+            let node = unsafe { &*ptr };
+            if node.is_cons() {
+                for child in node.cons_children() {
+                    // 子节点与父同属一个 JsString 堆对象族，const 转 mut 仅用于
+                    // 集合统一，不引入写操作。
+                    stack.push(child as *mut JsString);
+                }
+                let flat = node.flat_cache_ptr();
+                if !flat.is_null() {
+                    stack.push(flat as *mut JsString);
+                }
+            }
+        }
+    }
+
+    /// 释放一个 session `JsString`（`Box::into_raw` 分配），连带释放 rope
+    /// 扁平化产物。**不递归子节点**——子节点独立登记主表、各自判定存活，
+    /// 递归即 double-free。
+    ///
+    /// # Safety
+    /// `ptr` 必须是 `new_string`/`new_cons_string` 中 `Box::into_raw` 产生的非空
+    /// 指针，仍登记在 session 字符串表（或由 full_reset 统一清表），且恰好
+    /// 释放一次。
+    pub(crate) unsafe fn drop_session_string_box(ptr: *mut JsString) {
+        if ptr.is_null() {
+            return;
+        }
+        // 连带释放 rope 载荷（ConsNode 与其扁平化产物）；Flat 串无载荷。
+        // SAFETY: cons_node_ptr 由 new_cons 产生，本指针恰好释放一次。
+        JsString::drop_cons_node((*ptr).cons_node_ptr());
+        drop(Box::from_raw(ptr));
+    }
+
     /// 把 `obj` 直接持有的 session 字符串值记入 `live`。JsString 不持有 GC 引用，
     /// 因此"到达"一个字符串就等于标记它——不存在字符串 DFS 栈。永久字符串也会被
     /// 无害地记录；sweep 只遍历 `session_string_ptrs`，`live` 中的非 session 指针
@@ -135,22 +182,22 @@ impl SessionGc {
         if let Some(elements) = obj.array_elements_vec() {
             for value in elements.iter() {
                 if value.is_string() {
-                    live.insert(value.as_string_ptr_mut());
+                    Self::mark_string_live(live, value.as_string_ptr_mut());
                 }
             }
         }
         if let Some(props) = obj.hash_props_vec() {
             for value in props.iter() {
                 if value.is_string() {
-                    live.insert(value.as_string_ptr_mut());
+                    Self::mark_string_live(live, value.as_string_ptr_mut());
                 }
             }
         }
         if obj.captured_this().is_string() {
-            live.insert(obj.captured_this().as_string_ptr_mut());
+            Self::mark_string_live(live, obj.captured_this().as_string_ptr_mut());
         }
         if obj.home_object().is_string() {
-            live.insert(obj.home_object().as_string_ptr_mut());
+            Self::mark_string_live(live, obj.home_object().as_string_ptr_mut());
         }
         // 扫描 upvalue cell 中的字符串引用。
         for cell_ptr in obj.upvalues_slice() {
@@ -159,43 +206,43 @@ impl SessionGc {
             }
             let cell = unsafe { &**cell_ptr };
             if cell.value.is_string() {
-                live.insert(cell.value.as_string_ptr_mut());
+                Self::mark_string_live(live, cell.value.as_string_ptr_mut());
             }
         }
         if obj.is_map() {
             for value in map::map_native_edges(obj) {
                 if value.is_string() {
-                    live.insert(value.as_string_ptr_mut());
+                    Self::mark_string_live(live, value.as_string_ptr_mut());
                 }
             }
         }
         if obj.is_set() {
             for value in set::set_native_edges(obj) {
                 if value.is_string() {
-                    live.insert(value.as_string_ptr_mut());
+                    Self::mark_string_live(live, value.as_string_ptr_mut());
                 }
             }
         }
         if obj.is_generator_obj() {
             for ptr in crate::generator::generator_native_string_edges(obj) {
-                live.insert(ptr);
+                Self::mark_string_live(live, ptr);
             }
         }
         if obj.is_promise_obj() {
             for value in crate::promise::promise_native_edges(obj) {
                 if value.is_string() {
-                    live.insert(value.as_string_ptr_mut());
+                    Self::mark_string_live(live, value.as_string_ptr_mut());
                 }
             }
         }
         if obj.is_async_obj() {
             for ptr in crate::async_func::async_native_string_edges(obj) {
-                live.insert(ptr);
+                Self::mark_string_live(live, ptr);
             }
         }
         if obj.is_async_generator_obj() {
             for ptr in crate::async_generator::async_generator_native_string_edges(obj) {
-                live.insert(ptr);
+                Self::mark_string_live(live, ptr);
             }
         }
     }
@@ -220,9 +267,7 @@ impl SessionGc {
         stack.clear();
         live_strings.clear();
         for ptr in string_seeds {
-            if !ptr.is_null() {
-                live_strings.insert(ptr);
-            }
+            Self::mark_string_live(live_strings, ptr);
         }
 
         for ptr in seeds {
@@ -339,16 +384,17 @@ impl SessionGc {
         Self::drop_session_object_heap_data(obj_ptr) + size_of::<JsObject>() as u64
     }
 
-    /// 释放一个已死 session `JsString`（由 `Vm::new_string` 经 `Box::into_raw` 分配），
-    /// 返回释放的字节数。与 `Vm::free_session_string_heap_data` 的释放一致，但只
-    /// 选择性作用于单个已死指针。
+    /// 释放一个已死 session `JsString`（由 `Vm::new_string`/`new_cons_string`
+    /// 经 `Box::into_raw` 分配），返回释放的字节数（含 rope 扁平化产物）。
+    /// 与 `Vm::free_session_string_heap_data` 的释放一致，但只选择性作用于
+    /// 单个已死指针。
     ///
     /// # Safety
-    /// `ptr` 必须是 `Vm::new_string` 中 `Box::into_raw(Box::new(JsString))` 产生的
-    /// 非空指针，仍存在于 `session_string_ptrs`，且恰好释放一次。
+    /// `ptr` 必须是 `Box::into_raw(Box::new(JsString))` 产生的非空指针，仍存在
+    /// 于 `session_string_ptrs`，且恰好释放一次。
     unsafe fn drop_dead_session_string(ptr: *mut JsString) -> u64 {
         let bytes = (size_of::<JsString>() + (*ptr).len()) as u64;
-        drop(Box::from_raw(ptr));
+        Self::drop_session_string_box(ptr);
         bytes
     }
 
@@ -1472,5 +1518,113 @@ mod tests {
 
         assert_eq!(vm.gc_state.session_gc.total_collections, 0);
         assert!(vm.gc_state.session_string_ptrs.contains(&s.as_string_ptr_mut()));
+    }
+
+    // ── rope（Cons）GC 传播闭包 ──
+
+    /// 构造 `left + right` 的 Cons 节点（返回 (父, 左, 右) 三指针）。
+    fn make_cons_pair(vm: &mut Vm, l: &str, r: &str) -> (JsValue, *mut JsString, *mut JsString) {
+        let left = vm.new_string(l);
+        let right = vm.new_string(r);
+        let parent = vm.new_cons_string(left, right);
+        (parent, left.as_string_ptr_mut(), right.as_string_ptr_mut())
+    }
+
+    #[test]
+    fn rope_survives_collection_with_children_propagated() {
+        let mut vm = Vm::new();
+        let (parent, l_ptr, r_ptr) = make_cons_pair(&mut vm, "left-part", "right-part");
+        vm.regs[0] = parent;
+
+        collect(&mut vm);
+
+        // 父（寄存器根）+ 子节点（经传播闭包）全部存活，内容可读。
+        let parent_ptr = parent.as_string_ptr_mut();
+        assert!(vm.gc_state.session_string_ptrs.contains(&parent_ptr));
+        assert!(vm.gc_state.session_string_ptrs.contains(&l_ptr));
+        assert!(vm.gc_state.session_string_ptrs.contains(&r_ptr));
+        assert_eq!(unsafe { (*parent_ptr).as_str() }, "left-partright-part");
+    }
+
+    #[test]
+    fn rope_children_swept_when_parent_dead() {
+        let mut vm = Vm::new();
+        let (parent, l_ptr, r_ptr) = make_cons_pair(&mut vm, "left", "right");
+        let parent_ptr = parent.as_string_ptr_mut();
+        assert!(vm.gc_state.session_string_ptrs.contains(&parent_ptr));
+
+        // 父与子均无根引用 → 整树回收。
+        collect(&mut vm);
+
+        assert!(!vm.gc_state.session_string_ptrs.contains(&parent_ptr));
+        assert!(!vm.gc_state.session_string_ptrs.contains(&l_ptr));
+        assert!(!vm.gc_state.session_string_ptrs.contains(&r_ptr));
+    }
+
+    #[test]
+    fn rope_product_freed_with_parent() {
+        let mut vm = Vm::new();
+        let (parent, _, _) = make_cons_pair(&mut vm, "left-part", "right-part");
+        let parent_ptr = parent.as_string_ptr_mut();
+        // 触发扁平化：产物发布到 flat_cache。
+        assert_eq!(unsafe { (*parent_ptr).flat_str() }, "left-partright-part");
+        let flat_ptr = unsafe { (*parent_ptr).flat_cache_ptr() };
+        assert!(!flat_ptr.is_null());
+
+        collect(&mut vm);
+
+        // 父死 → 连带释放产物（不 double-free、不泄漏；产物从不进 session 表）。
+        let flat_mut = flat_ptr as *mut JsString;
+        assert!(!vm.gc_state.session_string_ptrs.contains(&parent_ptr));
+        assert!(!vm.gc_state.session_string_ptrs.contains(&flat_mut));
+    }
+
+    #[test]
+    fn rope_deep_chain_mark_iterative() {
+        let mut vm = Vm::new();
+        // 1024 层左倾链：mark 传播用显式栈，不爆栈、不遗漏子节点。
+        let mut chain = vm.new_string("root");
+        for _ in 0..1024 {
+            let leaf = vm.new_string("x");
+            chain = vm.new_cons_string(chain, leaf);
+        }
+        vm.regs[0] = chain;
+        let chain_ptr = chain.as_string_ptr_mut();
+
+        collect(&mut vm);
+
+        assert!(vm.gc_state.session_string_ptrs.contains(&chain_ptr));
+        assert_eq!(unsafe { (*chain_ptr).as_str() }, format!("root{}", "x".repeat(1024)));
+    }
+
+    #[test]
+    fn rope_perm_child_untouched_by_sweep() {
+        let mut vm = Vm::new();
+        let perm = vm.perm_string("perm-leaf");
+        let perm_ptr = perm.as_string_ptr_mut();
+        let session = vm.new_string("session-leaf");
+        let session_ptr = session.as_string_ptr_mut();
+        let parent = vm.new_cons_string(perm, session);
+        vm.regs[0] = parent;
+
+        collect(&mut vm);
+
+        // perm 子节点永不释放（不在 session 表）；session 子节点随父存活。
+        assert!(!vm.gc_state.session_string_ptrs.contains(&perm_ptr));
+        assert!(vm.gc_state.session_string_ptrs.contains(&session_ptr));
+        assert_eq!(unsafe { (*parent.as_string_ptr_mut()).as_str() }, "perm-leafsession-leaf");
+    }
+
+    #[test]
+    fn full_reset_frees_rope_and_product() {
+        let mut vm = Vm::new();
+        let (parent, _, _) = make_cons_pair(&mut vm, "left-part", "right-part");
+        // 触发扁平化（产物挂在父上）。
+        assert_eq!(unsafe { (*parent.as_string_ptr_mut()).flat_str() }, "left-partright-part");
+        vm.regs[0] = parent;
+
+        // full_reset 清空全部 session 字符串（连带产物）：无泄漏、无 double-free。
+        vm.full_reset();
+        assert!(vm.gc_state.session_string_ptrs.is_empty());
     }
 }

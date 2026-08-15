@@ -16,6 +16,11 @@ use oxide_types::object::{JsObject, JsString, PropAttributes};
 use oxide_types::value::JsValue;
 
 impl Vm {
+    /// Cons（rope）节点保留的字节阈值：拼接总长 ≤ 该值时急切扁平为 Flat。
+    /// 小链的"链接 + 首次消费扁平化"双重分配高于直接拷贝，直接扁平更优；
+    /// 超过阈值后 O(n²) 拷贝成本超过节点开销，Cons 的 O(1) 链接才值得。
+    pub(crate) const CONS_FLATTEN_BYTES: usize = 128;
+
     /// 以最小配置创建独立 VM：新建 `KernelCore` + `KernelSession` 并初始化内置对象。
     pub fn new() -> Self {
         let core = KernelCore::new(KernelConfig::minimal());
@@ -383,9 +388,51 @@ impl Vm {
     pub fn new_string_owned(&mut self, s: String) -> JsValue {
         let len = s.len();
         let ptr = Box::into_raw(Box::new(JsString::new(s)));
+        self.register_session_string(ptr, len)
+    }
+
+    /// 登记一个 session 字符串并记账（`new_string_owned` 与 `new_cons_string`
+    /// 共用），返回字符串值。
+    ///
+    /// # 步骤
+    /// 1. 登记指针到 session 字符串表。
+    /// 2. 记账 `size_of::<JsString>() + bytes`。
+    ///
+    /// # 注意事项
+    /// - 本方法**不触发**回收：执行期字符串 GC 统一在 dispatch 指令边界检查
+    ///   水位触发（此时 builtin 局部值已落地为执行根，分配点触发会误释放
+    ///   仅存于局部/构造中的活串）。
+    fn register_session_string(&mut self, ptr: *mut JsString, bytes: usize) -> JsValue {
         self.gc_state.session_string_ptrs.push(ptr);
-        self.gc_state.session_bytes_allocated += std::mem::size_of::<JsString>() + len;
+        self.gc_state.session_bytes_allocated += std::mem::size_of::<JsString>() + bytes;
         JsValue::string(ptr)
+    }
+
+    /// 分配 Cons（rope）节点：左右子节点 O(1) 链接，不拷贝文本。
+    ///
+    /// # 边界与前提
+    /// - `left`/`right` 必须均为字符串值；仅在 `+`/`+=` 的 `concat_strings`
+    ///   接线点调用（CONCAT_N 保持急切扁平，不经此路径）。
+    ///
+    /// # 副作用
+    /// - 登记节点到 session 字符串表（账目 = `size_of::<JsString>() + byte_len`）。
+    ///
+    /// # 注意事项
+    /// - 调用方须保证 `left`/`right` 在调用期间存活：子节点（coerce 新鲜字符串 /
+    ///   新建叶子）要么已是执行根，要么在写入根前不被任何回收点触达——当前
+    ///   回收点仅在指令边界，链接结果写寄存器先于下一次检查，天然满足。
+    /// - 调用方（`concat_strings`）已按字节阈值过滤：仅大链（总长 >
+    ///   [`Self::CONS_FLATTEN_BYTES`]）进入本方法，小链由其急切扁平。
+    #[inline]
+    pub fn new_cons_string(&mut self, left: JsValue, right: JsValue) -> JsValue {
+        debug_assert!(left.is_string() && right.is_string(), "new_cons_string 只接收字符串操作数");
+        let left_ptr = left.as_string_ptr_mut();
+        let right_ptr = right.as_string_ptr_mut();
+        // SAFETY: 两指针指向存活的 JsString（调用方保证），len() 各为 O(1)。
+        let byte_len = unsafe { (*left_ptr).len() + (*right_ptr).len() };
+        // SAFETY: new_cons 的调用方（本函数）负责保证子节点随节点存活。
+        let ptr = Box::into_raw(Box::new(unsafe { JsString::new_cons(left_ptr, right_ptr) }));
+        self.register_session_string(ptr, byte_len)
     }
 
     /// 把字符串 intern 为永久 key id（属性名/方法名），进程生命周期内稳定。
@@ -407,10 +454,10 @@ impl Vm {
     /// 会引用它们。较轻量的 `reset()` 刻意保留它们，与 session 对象跨 eval 存活一致。
     fn free_session_string_heap_data(&mut self) {
         for ptr in self.gc_state.session_string_ptrs.drain(..) {
-            // SAFETY: 每个指针来自 new_string 中的 Box::into_raw(Box::new(JsString))，
-            // 且只在这里恰好释放一次。
+            // SAFETY: 每个指针来自 new_string/new_cons_string 的 Box::into_raw，
+            // 且只在这里（或 sweep）恰好释放一次；内部连带释放 rope 扁平化产物。
             unsafe {
-                drop(Box::from_raw(ptr));
+                crate::session_gc::SessionGc::drop_session_string_box(ptr);
             }
         }
     }

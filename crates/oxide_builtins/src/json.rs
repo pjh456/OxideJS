@@ -22,7 +22,7 @@ pub fn json_parse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let text = {
         // SAFETY: val 已确认是字符串值。
-        unsafe { (*val.as_string_ptr()).data.clone() }
+        unsafe { (*val.as_string_ptr()).to_owned_string() }
     };
 
     let parsed: serde_json::Value = match serde_json::from_str(&text) {
@@ -172,7 +172,7 @@ fn process_space(val: JsValue) -> String {
         let clamped = (n as usize).min(10);
         " ".repeat(clamped)
     } else if val.is_string() {
-        let s = unsafe { (*val.as_string_ptr()).data.clone() };
+        let s = unsafe { (*val.as_string_ptr()).to_owned_string() };
         s.chars().take(10).collect()
     } else {
         let s = oxide_runtime_api::to_string(val);
@@ -305,7 +305,7 @@ fn jsvalue_to_json<H: VmHost>(
             out.push_str(&oxide_runtime_api::js_number_to_string(n));
         }
     } else if val.is_string() {
-        let s = unsafe { (*val.as_string_ptr()).data.clone() };
+        let s = unsafe { (*val.as_string_ptr()).to_owned_string() };
         stringify_string(&s, out);
     } else if val.is_object() {
         let obj_ptr = val.as_js_object_ptr();

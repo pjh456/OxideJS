@@ -13,7 +13,7 @@ fn eval(source: &str) -> Result<(Vm, JsValue), String> {
 
 fn stringify_val(val: &JsValue) -> String {
     if val.is_string() {
-        unsafe { (*val.as_string_ptr()).data.clone() }
+        unsafe { (*val.as_string_ptr()).to_owned_string() }
     } else {
         format!("{:?}", val)
     }

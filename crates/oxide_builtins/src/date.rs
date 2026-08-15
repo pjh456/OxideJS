@@ -156,7 +156,7 @@ pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let val = vm.reg(args[1]);
         if val.is_string() {
             // SAFETY: val 已确认是字符串值。
-            let s = unsafe { (*val.as_string_ptr()).data.clone() };
+            let s = unsafe { (*val.as_string_ptr()).to_owned_string() };
             let formats = ["%Y-%m-%dT%H:%M:%S%.fZ", "%Y-%m-%dT%H:%M:%S%.f"];
             let mut ts = f64::NAN;
             for fmt in &formats {
@@ -241,7 +241,7 @@ pub fn date_parse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
     // SAFETY: val 已确认是字符串值。
-    let s = unsafe { (*val.as_string_ptr()).data.clone() };
+    let s = unsafe { (*val.as_string_ptr()).to_owned_string() };
     let mut ts = f64::NAN;
     if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(&s) {
         ts = dt.timestamp_millis() as f64;

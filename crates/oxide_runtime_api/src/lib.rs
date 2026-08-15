@@ -186,7 +186,9 @@ pub(crate) unsafe fn string_data(val: JsValue) -> &'static str {
 
 /// 按内容比较两个字符串 `JsValue` 是否相等。
 ///
-/// 先做指针级短路（同一 interned 字符串必等），否则逐字节比较 `JsString` 内容。
+/// 先做指针级短路（同一 interned 字符串必等），否则比较 `JsString` 的整块文本
+/// （rope 未扁平化时经 `as_str` 惰性扁平化；内容比较对"rope vs 同内容不同指针"
+/// 也正确）。
 #[inline]
 pub fn string_value_eq(a: JsValue, b: JsValue) -> bool {
     if a.as_string_ptr() == b.as_string_ptr() {
@@ -194,7 +196,7 @@ pub fn string_value_eq(a: JsValue, b: JsValue) -> bool {
     }
     let sa = unsafe { &*a.as_string_ptr() };
     let sb = unsafe { &*b.as_string_ptr() };
-    sa.data == sb.data
+    sa.as_str() == sb.as_str()
 }
 
 /// BigInt 转 f64 的近似转换（连续整数用 to_u64，大数用 Display 解析）。
