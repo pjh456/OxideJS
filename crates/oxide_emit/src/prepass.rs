@@ -405,6 +405,87 @@ impl Emitter {
         }
     }
 
+    /// 预声明当前块直接子树中的函数声明（ES2015 块级绑定，kind=Let 落当前块），
+    /// 使块内声明点之前的引用在编译期可见。递归进入嵌套块时压/弹作用域，
+    /// 与 emit 阶段嵌套块 push_scope 的时机对齐。
+    ///
+    /// # 边界与前提
+    /// - 只处理块内函数声明；switch 不推 scope（其 case 内函数声明随 switch
+    ///   作用域修复一并处理）；export 声明不可能出现在块内。
+    /// - 与 lexical 预声明的顺序：本函数在前，`{ let g; function g(){} }` 时
+    ///   lexical 的 `declare_predeclared` 命中已存在的函数绑定自然报重复声明错，
+    ///   避免函数预声明被 lexical 占位静默覆盖而破坏 let 的 TDZ。
+    /// - var 与函数同名（`{ var g; function g(){} }`）：var 落函数作用域、
+    ///   函数落当前块，不同 scope 互不冲突。
+    pub(crate) fn predeclare_block_function_declarations(&self, statements: &[Statement], ctx: &mut CompileCtx) {
+        for statement in statements {
+            match statement {
+                Statement::FunctionDeclaration(f) => {
+                    let Some(identifier) = &f.id else {
+                        continue;
+                    };
+                    let reg = ctx.alloc_reg();
+                    let _ = ctx.declare_initialized(identifier.name.as_str(), reg, VariableDeclarationKind::Let, false);
+                }
+                Statement::BlockStatement(bs) => {
+                    ctx.push_scope();
+                    self.predeclare_block_function_declarations(&bs.body, ctx);
+                    ctx.pop_scope();
+                }
+                Statement::IfStatement(is) => {
+                    self.predeclare_block_function_declarations(std::slice::from_ref(&is.consequent), ctx);
+                    if let Some(alt) = &is.alternate {
+                        self.predeclare_block_function_declarations(std::slice::from_ref(alt), ctx);
+                    }
+                }
+                Statement::WhileStatement(wh) => {
+                    self.predeclare_block_function_declarations(std::slice::from_ref(&wh.body), ctx);
+                }
+                Statement::DoWhileStatement(dw) => {
+                    self.predeclare_block_function_declarations(std::slice::from_ref(&dw.body), ctx);
+                }
+                Statement::ForStatement(fs) => {
+                    // 循环推独立作用域（头声明所在），函数声明落该作用域与 emit 对齐。
+                    ctx.push_scope();
+                    self.predeclare_block_function_declarations(std::slice::from_ref(&fs.body), ctx);
+                    ctx.pop_scope();
+                }
+                Statement::ForInStatement(fi) => {
+                    ctx.push_scope();
+                    self.predeclare_block_function_declarations(std::slice::from_ref(&fi.body), ctx);
+                    ctx.pop_scope();
+                }
+                Statement::ForOfStatement(fo) => {
+                    ctx.push_scope();
+                    self.predeclare_block_function_declarations(std::slice::from_ref(&fo.body), ctx);
+                    ctx.pop_scope();
+                }
+                Statement::TryStatement(ts) => {
+                    ctx.push_scope();
+                    self.predeclare_block_function_declarations(&ts.block.body, ctx);
+                    ctx.pop_scope();
+                    if let Some(handler) = &ts.handler {
+                        ctx.push_scope();
+                        self.predeclare_block_function_declarations(&handler.body.body, ctx);
+                        ctx.pop_scope();
+                    }
+                    if let Some(finalizer) = &ts.finalizer {
+                        ctx.push_scope();
+                        self.predeclare_block_function_declarations(&finalizer.body, ctx);
+                        ctx.pop_scope();
+                    }
+                }
+                Statement::LabeledStatement(ls) => {
+                    self.predeclare_block_function_declarations(std::slice::from_ref(&ls.body), ctx);
+                }
+                Statement::WithStatement(ws) => {
+                    self.predeclare_block_function_declarations(std::slice::from_ref(&ws.body), ctx);
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// 预声明当前作用域直接子语句中的 `let`/`const`/`class` 绑定（未初始化，
     /// 建立 TDZ 占位）。使声明点之前的读取在编译期可分辨为 TDZ 而非隐式全局，
     /// 声明点复用预登记槽位。
