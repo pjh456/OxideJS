@@ -245,8 +245,7 @@ pub fn regexp_exec<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let n = 1 + group_count;
         let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
         let arr =
-            vm.epoch()
-                .alloc(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto), n, vm.epoch().bump()));
+            vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto), n, vm.epoch().bump()));
         unsafe {
             (*arr).set_prop_at(0, vm.new_string(&haystack[range.start..range.end]));
             // 捕获组：未参与匹配的组为 undefined。

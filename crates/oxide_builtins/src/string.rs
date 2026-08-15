@@ -192,8 +192,7 @@ pub(crate) fn make_string_array<H: VmHost>(vm: &mut H, parts: Vec<String>) -> Js
     let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let n = parts.len();
     let arr =
-        vm.epoch()
-            .alloc(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto), n, vm.epoch().bump()));
+        vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto), n, vm.epoch().bump()));
     unsafe {
         for (i, s) in parts.into_iter().enumerate() {
             let sv = vm.new_string_owned(s);
@@ -210,8 +209,7 @@ pub(crate) fn make_string_array_values<H: VmHost>(vm: &mut H, parts: Vec<JsValue
     let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let n = parts.len();
     let arr =
-        vm.epoch()
-            .alloc(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto), n, vm.epoch().bump()));
+        vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto), n, vm.epoch().bump()));
     unsafe {
         for (i, sv) in parts.into_iter().enumerate() {
             (*arr).set_prop_at(i, sv);

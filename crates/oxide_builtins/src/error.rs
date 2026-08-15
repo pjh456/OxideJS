@@ -40,9 +40,7 @@ pub fn create_kind_error<H: VmHost>(host: &mut H, kind: &str, msg: &str) -> JsVa
         "EvalError" => P::as_ptr(&host.session().builtin_world().eval_error_proto) as *mut JsObject,
         _ => P::as_ptr(&host.session().builtin_world().error_proto) as *mut JsObject,
     };
-    let obj = host
-        .epoch()
-        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
+    let obj = host.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
     let sf = Arc::clone(host.kernel_core().perm_interner());
     let sh = Arc::clone(host.kernel_core().shape_forge());
     if !msg.is_empty() {
@@ -129,9 +127,7 @@ macro_rules! error_ctor {
         /// 忽略调用方传入的 this——与规范构造器语义一致。
         pub fn $name<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
             let proto_ptr = P::as_ptr(&host.session().builtin_world().$proto_field) as *mut JsObject;
-            let this = host
-                .epoch()
-                .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
+            let this = host.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
             set_own_message(host, this, args);
             NativeResult::Ok(JsValue::from_js_object(this))
         }

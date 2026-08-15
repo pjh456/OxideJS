@@ -127,8 +127,99 @@ fn new_object_literal_freed_by_full_reset() {
     vm.full_reset();
     assert_eq!(vm.epoch_object_count(), 0, "full_reset 后 epoch 追踪表应清空");
     assert_eq!(vm.session_object_count(), 0, "full_reset 后 session 追踪表应清空");
-    assert!(
-        run_source(&mut vm, "globalThis.keep").is_undefined(),
-        "full_reset 后逃逸对象不可再访问"
+    assert!(run_source(&mut vm, "globalThis.keep").is_undefined(), "full_reset 后逃逸对象不可再访问");
+}
+
+/// regexp exec 结果数组必须登记 epoch 追踪表：数组元素区 Box 与 index/input 命名
+/// 属性 hash_props Box 随 reset 统一释放；未登记则每次 exec/Symbol.match 泄漏。
+#[test]
+fn regexp_exec_result_array_tracked_and_freed_on_reset() {
+    let mut vm = Vm::new();
+    let result = run_source(
+        &mut vm,
+        "for (var i = 0; i < 20; i++) { /a(b)?/.exec('ab'); } \
+         var r = /a(b)?/.exec('ab'); r.length",
     );
+    assert_eq!(format!("{}", result), "2", "exec 结果数组长度应正常");
+    assert!(vm.epoch_object_count() > 0, "exec 结果数组应登记 epoch 追踪表");
+
+    let freed_before = vm.session_gc_stats().total_bytes_freed;
+    vm.reset();
+    assert!(
+        vm.session_gc_stats().total_bytes_freed > freed_before,
+        "reset 应释放 exec 结果数组的元素区与命名属性堆数据"
+    );
+    assert_eq!(vm.epoch_object_count(), 0, "reset 后追踪表应清空");
+}
+
+/// split/match 结果数组必须登记 epoch 追踪表：元素区 Box 随 reset 统一释放；
+/// 未登记则每次 split/match 泄漏一个 Box。
+#[test]
+fn string_split_match_result_array_tracked_and_freed_on_reset() {
+    let mut vm = Vm::new();
+    let result = run_source(
+        &mut vm,
+        "for (var i = 0; i < 20; i++) { 'a,b,c'.split(','); 'ab'.match(/a/); } \
+         'a,b,c'.split(',').length",
+    );
+    assert_eq!(format!("{}", result), "3", "split 结果数组长度应正常");
+    assert!(vm.epoch_object_count() > 0, "split/match 结果数组应登记 epoch 追踪表");
+
+    let freed_before = vm.session_gc_stats().total_bytes_freed;
+    vm.reset();
+    assert!(
+        vm.session_gc_stats().total_bytes_freed > freed_before,
+        "reset 应释放 split/match 结果数组的元素区堆数据"
+    );
+    assert_eq!(vm.epoch_object_count(), 0, "reset 后追踪表应清空");
+}
+
+/// 错误对象必须登记 epoch 追踪表：message 非空时 push_prop 分配 hash_props Box，
+/// 随 reset 统一释放；未登记则每次抛错（全引擎最频繁路径）泄漏一个 Box。
+/// 同时覆盖构造器路径（`new TypeError`）与内部抛错路径（builtin 内 create_type_error）。
+#[test]
+fn error_object_tracked_and_freed_on_reset() {
+    let mut vm = Vm::new();
+    let result = run_source(
+        &mut vm,
+        "for (var i = 0; i < 20; i++) { \
+           try { throw new TypeError('boom'); } catch (e) {} \
+           try { Error.prototype.toString.call(1); } catch (e) {} \
+         } \
+         try { throw new TypeError('boom'); } catch (e) { e.message }",
+    );
+    assert_eq!(vm.lookup_str(result).unwrap_or_default(), "boom", "错误对象 message 应正常");
+    assert!(vm.epoch_object_count() > 0, "错误对象应登记 epoch 追踪表");
+
+    let freed_before = vm.session_gc_stats().total_bytes_freed;
+    vm.reset();
+    assert!(
+        vm.session_gc_stats().total_bytes_freed > freed_before,
+        "reset 应释放错误对象的 message 属性堆数据"
+    );
+    assert_eq!(vm.epoch_object_count(), 0, "reset 后追踪表应清空");
+}
+
+/// gOPD/Reflect 描述符对象必须登记 epoch 追踪表：4 个描述符属性 push 分配
+/// hash_props Box，随 reset 统一释放；未登记则每次 getOwnPropertyDescriptor 泄漏。
+#[test]
+fn gopd_descriptor_tracked_and_freed_on_reset() {
+    let mut vm = Vm::new();
+    let result = run_source(
+        &mut vm,
+        "for (var i = 0; i < 20; i++) { \
+           Object.getOwnPropertyDescriptor({x:1,y:2,z:3,w:4}, 'x'); \
+         } \
+         Object.getOwnPropertyDescriptor({x:5}, 'x').value",
+    );
+    assert_eq!(format!("{}", result), "5", "gOPD 描述符值应正常");
+    assert!(vm.epoch_object_count() > 0, "描述符对象应登记 epoch 追踪表");
+
+    let freed_before = vm.session_gc_stats().total_bytes_freed;
+    vm.reset();
+    assert!(
+        vm.session_gc_stats().total_bytes_freed > freed_before,
+        "reset 应释放描述符对象的 hash_props 堆数据"
+    );
+    assert_eq!(vm.epoch_object_count(), 0, "reset 后追踪表应清空");
 }

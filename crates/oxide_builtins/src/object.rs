@@ -717,9 +717,7 @@ pub fn object_get_own_property_descriptor<H: VmHost>(vm: &mut H, args: &[u8]) ->
     let sf_ptr = vm.kernel_core().perm_interner().as_ref() as *const PermInterner;
     let sh_ptr = vm.kernel_core().shape_forge().as_ref() as *const ShapeForge;
     let desc_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
-    let desc = vm
-        .epoch()
-        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(desc_proto)));
+    let desc = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(desc_proto)));
     let sf = unsafe { &*sf_ptr };
     let sh = unsafe { &*sh_ptr };
 
