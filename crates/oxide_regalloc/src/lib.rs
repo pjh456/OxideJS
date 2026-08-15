@@ -17,6 +17,8 @@ mod rewrite;
 pub use alloc_map::{Alloc, AllocMap, FreshKind, FreshVreg, SpillPlan};
 pub use call_window::encode_call_window;
 
+use std::borrow::Cow;
+
 use oxide_ir::IRFunction;
 use oxide_liveness::LiveInfo;
 
@@ -45,12 +47,14 @@ pub fn alloc(f: &mut IRFunction, live: &LiveInfo) -> Result<(), String> {
     if f.insts.is_empty() && f.nested.is_empty() {
         return Ok(());
     }
-    // LiveInfo 维度守卫：删改后的过期 LiveInfo 索引错位会误删活指令
+    // LiveInfo 维度守卫：删改后的过期 LiveInfo 索引错位会误删活指令。
+    // 维度匹配时借用而非复制——LiveInfo 是稠密 bitset 矩阵（大函数可达数百 MB），
+    // 全量 clone 白白复制一次只读数据。
     let live = if live.inst_live_before.len() == f.insts.len() && !f.insts.is_empty() {
-        live.clone()
+        Cow::Borrowed(live)
     } else {
         let cfg = oxide_cfg::build_cfg(f);
-        oxide_liveness::liveness(f, &cfg)
+        Cow::Owned(oxide_liveness::liveness(f, &cfg))
     };
     let map = color(f, &live)?;
     regalloc_debug!("alloc: {} vregs -> {} phys", map.map.len(), map.phys_peak);

@@ -8,6 +8,8 @@
 //! 指令的函数同样不编码——异常 handler 的存活集不经分支/循环内调用点传播，
 //! 截断窗口会丢仅 handler 存活的槽（见 `encode_call_window` 内 has_try 说明）。
 
+use std::borrow::Cow;
+
 use oxide_bytecode::opcode::OpCode;
 use oxide_ir::IRFunction;
 use oxide_liveness::LiveInfo;
@@ -30,12 +32,13 @@ pub fn encode_call_window(f: &mut IRFunction, live: &LiveInfo) {
         .insts
         .iter()
         .any(|i| matches!(i.op, OpCode::TRY_BEGIN | OpCode::TRY_FINALLY_BEGIN));
-    // LiveInfo 维度守卫：与 alloc 相同纪律，过期则重算。
+    // LiveInfo 维度守卫：与 alloc 相同纪律，过期则重算。维度匹配时借用而非复制
+    // （LiveInfo 稠密矩阵全量 clone 只读数据无收益）。
     let live = if live.inst_live_before.len() == f.insts.len() && !f.insts.is_empty() {
-        live.clone()
+        Cow::Borrowed(live)
     } else {
         let cfg = oxide_cfg::build_cfg(f);
-        oxide_liveness::liveness(f, &cfg)
+        Cow::Owned(oxide_liveness::liveness(f, &cfg))
     };
     // 生成器 / 异步函数体 + 含 try 的函数：调用点保持全量窗口（挂起恢复按全量
     // 寄存器快照搬移；异常 handler 存活集经截断窗口会丢值）。
