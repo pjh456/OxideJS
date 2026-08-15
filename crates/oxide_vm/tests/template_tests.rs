@@ -93,6 +93,27 @@ fn template_numeric_expression() {
 }
 
 #[test]
+fn template_with_double_bigint_and_bool() {
+    // 原始值段走直写路径，输出与 ToString 一致。
+    let (vm, result) = eval_val("`a${1.5}b${123n}c${true}d`");
+    assert_eq!(to_str(&vm, result.unwrap()), "a1.5b123ctrued");
+}
+
+#[test]
+fn template_with_object_uses_tostring() {
+    // 对象段保留完整 ToString（ToPrimitive 触发用户 toString）。
+    let (vm, result) = eval_val("var o = { toString: function () { return 'T'; } }; `x${o}y`");
+    assert_eq!(to_str(&vm, result.unwrap()), "xTy");
+}
+
+#[test]
+fn template_with_symbol_throws_type_error() {
+    // Symbol 段经 to_string_full 抛 TypeError，不静默输出空段。
+    let result = eval("`${Symbol('x')}`");
+    assert!(result.contains("TypeError"), "模板串中的 Symbol 应抛 TypeError，got: {result}");
+}
+
+#[test]
 fn template_expression_reads_physical_register_above_127() {
     let mut ir = IRFunction::new();
     ir.constants = vec![Constant::String("value".to_string()), Constant::String(String::new())];

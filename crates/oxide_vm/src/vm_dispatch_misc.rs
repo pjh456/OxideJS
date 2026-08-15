@@ -1,7 +1,7 @@
 use crate::native::NativeFn;
 use crate::vm::{native_fn_ptr_to_fn, ForInIter, FrameArgs, FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
 use crate::vm_trace;
-use oxide_runtime_api::{to_boolean, to_string_full, NativeResult, VmHost};
+use oxide_runtime_api::{push_to_string, to_boolean, to_string_full, NativeResult, VmHost};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::{int_key_value, is_int_key, is_private_name_key, is_symbol_key, make_int_key};
 use oxide_types::value::JsValue;
@@ -149,27 +149,33 @@ impl Vm {
             if (seg >> 31) == 1 {
                 let reg = (seg & 0x7FFF_FFFF) as usize;
                 let val = self.regs[reg];
-                let s = if val.is_string() {
-                    // SAFETY: val 是字符串值。
-                    unsafe { (*val.as_string_ptr()).to_owned_string() }
+                if val.is_string() {
+                    // SAFETY: val 是字符串值；借用仅在本次 push 内消费，不跨分配点。
+                    let s = unsafe { (*val.as_string_ptr()).as_str() };
+                    result.push_str(s);
+                } else if val.is_object() || val.is_symbol() {
+                    // 对象走完整 ToString（ToPrimitive 副作用顺序）；Symbol 由
+                    // to_string_full 抛 TypeError（push_to_string 无 symbol 分支）。
+                    let s = to_string_full(val, self)?;
+                    result.push_str(&s);
                 } else {
-                    to_string_full(val, self)?
-                };
-                result.push_str(&s);
+                    // 原始值直写结果缓冲，免中间 String。
+                    push_to_string(val, &mut result);
+                }
             } else {
                 let const_idx = (seg & 0x7FFF_FFFF) as usize;
                 let imm = self.immutables();
                 if const_idx < imm.len() {
                     let val = imm[const_idx];
                     if val.is_string() {
-                        // SAFETY: val 是字符串值。
-                        let s = unsafe { (*val.as_string_ptr()).to_owned_string() };
-                        result.push_str(&s);
+                        // SAFETY: val 是字符串值；借用仅在本次 push 内消费，不跨分配点。
+                        let s = unsafe { (*val.as_string_ptr()).as_str() };
+                        result.push_str(s);
                     }
                 }
             }
         }
-        self.regs[rd] = self.new_string(&result);
+        self.regs[rd] = self.new_string_owned(result);
         Ok(())
     }
 
