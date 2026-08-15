@@ -33,8 +33,11 @@ impl Vm {
                 .raise_type_error("arrow functions cannot be used as constructors")
                 .map(|_| true);
         }
-        // native 方法（非构造器）不可 new。
-        if ctor_obj.native_fn().is_some() && ctor_obj.type_tag != oxide_types::object::JsObject::OBJ_TYPE_CONSTRUCTOR {
+        // native 方法（非构造器）不可 new；bound 包装除外（其构造语义转发到 target）。
+        if ctor_obj.native_fn().is_some()
+            && ctor_obj.type_tag != oxide_types::object::JsObject::OBJ_TYPE_CONSTRUCTOR
+            && ctor_obj.type_tag != oxide_types::object::JsObject::OBJ_TYPE_BOUND
+        {
             return self.raise_type_error("object is not a constructor").map(|_| true);
         }
 
@@ -43,6 +46,20 @@ impl Vm {
         let arg_count = (ext & 0xFF) as usize;
         // ext 高 8 位 = 调用点存活上界（0 = 未编码/全量），压帧窗口按此截断。
         let call_window = (ext >> 8) as u8;
+
+        // bound 包装：解包链后转发到最内层 target（[[Construct]] 语义）。
+        if ctor_obj.type_tag == oxide_types::object::JsObject::OBJ_TYPE_BOUND {
+            let mut args = Vec::with_capacity(arg_count);
+            for i in 0..arg_count.min(256) {
+                args.push(self.regs[first_arg_reg.wrapping_add(i as u8) as usize]);
+            }
+            let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
+            let new_obj = self.alloc_object(JsObject::new_empty(
+                oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
+                JsValue::from_js_object(proto_ptr),
+            ));
+            return self.dispatch_new_bound(rd, constructor, new_obj, args, call_window);
+        }
 
         let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
         let new_obj = self.alloc_object(JsObject::new_empty(
@@ -132,6 +149,114 @@ impl Vm {
             self.exception_value = Some(error);
             self.pending_error_kind = Some(self.thrown_error_kind(error));
             self.unwind().map(|_| true)
+        }
+    }
+
+    /// bound 函数构造分支：按 bound [[Construct]] 语义解包链后转发到最内层 target。
+    ///
+    /// # 步骤
+    /// 1. 逐层解包 [[BoundTargetFunction]]：每层绑定实参（dense 槽 6+）拼到调用
+    ///    实参之前（外层先解包 → 最终顺序为内层绑定实参先、外层后、调用实参尾）
+    /// 2. 校验最内层 target 可构造（native 须 CONSTRUCTOR 标记；字节码须非
+    ///    arrow/async/generator），否则抛 TypeError
+    /// 3. 新对象原型取 target.prototype（new 表达式路径 newTarget 恒等于构造器，
+    ///    规范 SameValue 替换后 newTarget = target）
+    /// 4. 构造调用：native target 值传递（receiver = 新对象）；字节码 target 压
+    ///    构造帧（this = 新对象，派生 target 为 undefined，new.target = target）
+    ///
+    /// # 边界与前提
+    /// - `call_args` 为调用点实参（寄存器连续区或 spread 物化），绑定实参前置拼接
+    /// - 原型属性非对象时保持 object_proto 默认（OrdinaryCreateFromConstructor 回退）
+    pub(crate) fn dispatch_new_bound(
+        &mut self, rd: usize, wrapper_val: JsValue, new_obj: *mut JsObject, mut call_args: Vec<JsValue>,
+        call_window: u8,
+    ) -> Result<bool, String> {
+        // 逐层解包 bound 链，绑定实参前置拼接。
+        let mut target_val = wrapper_val;
+        loop {
+            let wrapper_obj = unsafe { &*target_val.as_js_object_ptr() };
+            let props = wrapper_obj.hash_props_vec().cloned().unwrap_or_default();
+            let target = props.get(4).copied().unwrap_or(JsValue::undefined());
+            let mut combined: Vec<JsValue> = props.iter().skip(6).copied().collect();
+            combined.extend_from_slice(&call_args);
+            call_args = combined;
+            let is_bound = target.is_object()
+                && !target.as_js_object_ptr().is_null()
+                && unsafe { &*target.as_js_object_ptr() }.type_tag == JsObject::OBJ_TYPE_BOUND;
+            target_val = target;
+            if !is_bound {
+                break;
+            }
+        }
+
+        // 校验最内层 target 可构造。
+        if !target_val.is_object() || target_val.as_js_object_ptr().is_null() {
+            return self.raise_type_error("object is not a constructor").map(|_| true);
+        }
+        let target_obj = unsafe { &*target_val.as_js_object_ptr() };
+        if !target_obj.is_function() || target_obj.is_arrow() {
+            return self.raise_type_error("object is not a constructor").map(|_| true);
+        }
+        if target_obj.native_fn().is_some() && target_obj.type_tag != JsObject::OBJ_TYPE_CONSTRUCTOR {
+            return self.raise_type_error("object is not a constructor").map(|_| true);
+        }
+        let sub_idx = target_obj.sub_module_index() as usize;
+        if sub_idx > 0 && sub_idx < self.sub_modules.len() {
+            let sub = &self.sub_modules[sub_idx];
+            if sub.is_generator || sub.is_async {
+                return self.raise_type_error("object is not a constructor").map(|_| true);
+            }
+        }
+
+        // 新对象原型取最内层 target 的 prototype（bound 包装自身无 prototype）。
+        let proto_si = self.kernel_core.perm_interner().intern("prototype").0;
+        if let Some(proto_val) = self.resolve_property(target_obj, proto_si) {
+            if proto_val.is_object() {
+                let new_obj_mut = unsafe { &mut *new_obj };
+                let proto_obj_ptr = proto_val.as_js_object_ptr();
+                let _ = new_obj_mut.set_proto(JsValue::from_js_object(proto_obj_ptr));
+            }
+        }
+        let new_obj_val = JsValue::object(new_obj as *mut u8);
+
+        if target_obj.native_fn().is_some() {
+            // native 构造器：receiver = 新对象，值传递调用（错误原值恢复后展开）。
+            match self.call_function_sync(target_val, new_obj_val, &call_args) {
+                Ok(v) => {
+                    self.regs[rd] = if v.is_object() { v } else { new_obj_val };
+                    Ok(false)
+                }
+                Err(_) => {
+                    let exc = self
+                        .last_uncaught_value
+                        .take()
+                        .unwrap_or_else(|| oxide_builtins::error::create_error(self, "constructor call failed"));
+                    self.exception_value = Some(exc);
+                    self.pending_error_kind = Some(self.thrown_error_kind(exc));
+                    self.unwind().map(|_| true)
+                }
+            }
+        } else if sub_idx > 0 {
+            // 字节码构造器：this = 新对象（派生 target 为 undefined，super() 装配），
+            // new.target = 最内层 target。
+            let this_value = if target_obj.is_derived_constructor() {
+                JsValue::undefined()
+            } else {
+                new_obj_val
+            };
+            self.push_bytecode_frame(
+                target_val,
+                this_value,
+                FrameArgs::Slice(&call_args),
+                Some(rd as u8),
+                Some(new_obj_val),
+                target_val,
+                FrameContinuation::None,
+                call_window,
+            )?;
+            Ok(true)
+        } else {
+            self.raise_type_error("object is not a constructor").map(|_| true)
         }
     }
 

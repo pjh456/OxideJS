@@ -785,8 +785,11 @@ impl Vm {
                 .raise_type_error("arrow functions cannot be used as constructors")
                 .map(|_| true);
         }
-        // native 方法（非构造器）不可 new。
-        if ctor_obj.native_fn().is_some() && ctor_obj.type_tag != oxide_types::object::JsObject::OBJ_TYPE_CONSTRUCTOR {
+        // native 方法（非构造器）不可 new；bound 包装除外（其构造语义转发到 target）。
+        if ctor_obj.native_fn().is_some()
+            && ctor_obj.type_tag != oxide_types::object::JsObject::OBJ_TYPE_CONSTRUCTOR
+            && ctor_obj.type_tag != oxide_types::object::JsObject::OBJ_TYPE_BOUND
+        {
             return self.raise_type_error("object is not a constructor").map(|_| true);
         }
 
@@ -795,6 +798,16 @@ impl Vm {
             Some(args) => args,
             None => return Ok(true),
         };
+
+        // bound 包装：解包链后转发到最内层 target（[[Construct]] 语义）。
+        if ctor_obj.type_tag == oxide_types::object::JsObject::OBJ_TYPE_BOUND {
+            let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
+            let new_obj = self.alloc_object(JsObject::new_empty(
+                oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
+                JsValue::from_js_object(proto_ptr),
+            ));
+            return self.dispatch_new_bound(rd, constructor, new_obj, args, 0);
+        }
 
         let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
         let new_obj = self.alloc_object(JsObject::new_empty(

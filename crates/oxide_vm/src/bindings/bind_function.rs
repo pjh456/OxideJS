@@ -15,6 +15,7 @@ pub fn bind_function(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         apply: oxide_builtins::function::function_apply::<crate::vm::Vm> as *const (),
         bind: oxide_builtins::function::function_bind::<crate::vm::Vm> as *const (),
         to_string: oxide_builtins::function::function_to_string::<crate::vm::Vm> as *const (),
+        has_instance: oxide_builtins::function::function_symbol_has_instance::<crate::vm::Vm> as *const (),
     };
     session.builtin_world().bind_function_methods(
         &function_methods,

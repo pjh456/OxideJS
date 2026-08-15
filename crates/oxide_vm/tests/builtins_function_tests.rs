@@ -161,3 +161,89 @@ fn getter_returns_object_stays_valid() {
     let result = eval(&mut vm, "var o = { get p() { return {z: 7}; } }; o.p.z").unwrap();
     assert_eq!(result, JsValue::int(7));
 }
+
+#[test]
+fn function_symbol_has_instance_bound() {
+    let mut vm = Vm::new();
+    // @@hasInstance 已绑定在 Function.prototype 上且可调用。
+    let result = eval(&mut vm, "typeof Function.prototype[Symbol.hasInstance]").unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap_or_default(), "function");
+    // 非对象 / 非可调用 this → false（不抛）。
+    let cases = [
+        ("Function.prototype[Symbol.hasInstance].call(42, {})", false),
+        ("Function.prototype[Symbol.hasInstance].call({}, {})", false),
+        ("Function.prototype[Symbol.hasInstance].call()", false),
+        // 左操作数非对象 → false。
+        ("(function(){}).constructor[Symbol.hasInstance](42)", false),
+        // 原型链命中 / 未命中。
+        ("var f = function(){}; var o = new f(); f[Symbol.hasInstance](o)", true),
+        ("var f = function(){}; f[Symbol.hasInstance]({})", false),
+        ("var f = function(){}; var o = Object.create(new f()); f[Symbol.hasInstance](o)", true),
+        // bound 递归到 target。
+        ("var BC = function(){}; var bc = new BC(); BC.bind()[Symbol.hasInstance](bc)", true),
+        ("function C(){} C.bind(null)[Symbol.hasInstance]({})", false),
+    ];
+    for (src, expected) in cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn function_symbol_has_instance_poisoned_prototype_throws() {
+    let mut vm = Vm::new();
+    // 可调用但 prototype 非对象 → TypeError（OrdinaryHasInstance 唯一抛错点）。
+    let err = eval(&mut vm, "var f = function(){}; f.prototype = 1; try { f[Symbol.hasInstance]({}) } catch (e) { e }").unwrap();
+    let name = eval(&mut vm, "var f = function(){}; f.prototype = null; try { f[Symbol.hasInstance]({}) } catch (e) { e.name }").unwrap();
+    let _ = err;
+    assert_eq!(vm.lookup_str(name).unwrap_or_default(), "TypeError");
+}
+
+#[test]
+fn bound_function_construct_semantics() {
+    let mut vm = Vm::new();
+    let num_cases = [
+        // 绑定实参 + 新对象 this。
+        ("function C(v){ this.v = v; } var B = C.bind({}, 1); new B().v", 1.0),
+        ("function C(v){ this.v = v; } var B = C.bind({}, 1); new B(2).v", 1.0),
+        ("function C(a, b){ this.s = a + b; } var B = C.bind(null, 2); new B(3).s", 5.0),
+        // 多层 bound 链：绑定实参按 内层先、外层后 拼接。
+        ("function C(v){ this.v = v; } var B = C.bind({}, 1); var D = B.bind({}, 2); new D().v", 1.0),
+        // native 构造器 target。
+        ("var arr = Array.bind(null); new arr(3).length", 3.0),
+    ];
+    for (src, expected) in num_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_num(result, expected);
+    }
+    let bool_cases = [
+        // 构造实例原型链指向 target.prototype（new.target 替换为 target）。
+        ("function C(){} var B = C.bind({}); new B() instanceof C", true),
+        // instanceof bound 递归到 target：newB 链含 C.prototype，故对 B 也为 true。
+        ("function C(){} var B = C.bind({}); new B() instanceof B", true),
+        ("function C(){} var B = C.bind({}); B instanceof Function", true),
+        // native 构造器 target。
+        ("var arr = Array.bind(null); new arr(3) instanceof Array", true),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn bound_function_construct_errors() {
+    let mut vm = Vm::new();
+    // 不可构造 target（arrow / native 方法）经 bound 构造 → TypeError。
+    let err = eval(&mut vm, "var a = (()=>{}).bind(null); try { new a() } catch (e) { e.name }").unwrap();
+    assert_eq!(vm.lookup_str(err).unwrap_or_default(), "TypeError");
+    let err = eval(&mut vm, "var m = Math.max.bind(null); try { new m() } catch (e) { e.name }").unwrap();
+    assert_eq!(vm.lookup_str(err).unwrap_or_default(), "TypeError");
+    // 派生类构造器经 bound 构造：super() 装配 this，实例属派生类。
+    let result = eval(
+        &mut vm,
+        "class A { constructor(v){ this.v = v; } } class D extends A { constructor(){ super(9); } } var B = D.bind({}); new B().v",
+    )
+    .unwrap();
+    assert_num(result, 9.0);
+}

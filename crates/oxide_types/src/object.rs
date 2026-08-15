@@ -653,6 +653,10 @@ impl JsObject {
     /// Error 家族对象（Error 及 NativeError 实例）：`Object.prototype.toString` 返回
     /// `[object Error]`，与 [[ErrorData]] 内部槽对应。
     pub const OBJ_TYPE_ERROR: u8 = 22;
+    /// bound 函数包装（`Function.prototype.bind` 产物）：[[BoundTargetFunction]] /
+    /// [[BoundThis]] / [[BoundArguments]] 存于 dense 槽 4/5/6+，构造与 instanceof
+    /// 语义转发到 target。
+    pub const OBJ_TYPE_BOUND: u8 = 23;
     /// `is_session_epoch` 字段中的 session 标记位。
     pub const SESSION_EPOCH_BIT: u8 = 0x01;
     /// `is_session_epoch` 字段中的 GC 标记位。

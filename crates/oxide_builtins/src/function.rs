@@ -54,6 +54,84 @@ fn to_string_error_value<H: VmHost>(vm: &mut H, msg: &str) -> JsValue {
         .unwrap_or_else(|| crate::error::create_type_error(vm, msg))
 }
 
+/// `Function.prototype[Symbol.hasInstance]`：OrdinaryHasInstance 语义，供
+/// `instanceof` 运算符经 @@hasInstance 属性调用。
+///
+/// # 步骤
+/// 1. this（C）非可调用 → false（非对象或非函数对象，不抛）
+/// 2. C 是 bound 包装 → 逐层解包 [[BoundTargetFunction]]，按最内层 target 判定
+/// 3. 实参（O）非对象 → false
+/// 4. C.prototype 不是对象 → TypeError
+/// 5. 沿 O 原型链与 C.prototype 指针比对（深度上限防环）
+///
+/// # 边界与前提
+/// - 唯一抛错点：C 可调用但其 `prototype` 属性非对象（含无 prototype 的 native 方法）
+/// - bound 链解包后 prototype 取最内层 target 的（bound 包装自身无 prototype）
+/// - 无实参调用（O 缺失）视为 undefined → false
+pub fn function_symbol_has_instance<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let c_val = if args.is_empty() { JsValue::undefined() } else { vm.reg(args[0]) };
+    let o_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+
+    // 非对象 / 非函数 this：OrdinaryHasInstance 返回 false（不抛 TypeError）。
+    if !c_val.is_object() || c_val.as_js_object_ptr().is_null() {
+        return NativeResult::Ok(JsValue::bool(false));
+    }
+    let mut c = c_val;
+    let mut c_obj = unsafe { &*c.as_js_object_ptr() };
+    if !c_obj.is_function() {
+        return NativeResult::Ok(JsValue::bool(false));
+    }
+
+    // bound 包装：[[BoundTargetFunction]] 递归到最内层 target 判定
+    // （InstanceofOperator 语义，target 链上的 @@hasInstance 解析到本函数）。
+    while c_obj.type_tag == oxide_types::object::JsObject::OBJ_TYPE_BOUND {
+        let props = c_obj.hash_props_vec().cloned().unwrap_or_default();
+        let target = props.get(4).copied().unwrap_or(JsValue::undefined());
+        if !target.is_object()
+            || target.as_js_object_ptr().is_null()
+            || !unsafe { &*target.as_js_object_ptr() }.is_function()
+        {
+            return NativeResult::Ok(JsValue::bool(false));
+        }
+        c = target;
+        c_obj = unsafe { &*c.as_js_object_ptr() };
+    }
+
+    // 左操作数非对象 → false。
+    if !o_val.is_object() {
+        return NativeResult::Ok(JsValue::bool(false));
+    }
+
+    // prototype 非对象 → TypeError（OrdinaryHasInstance 唯一抛错点）。
+    let proto_si = vm.kernel_core().perm_interner().intern("prototype").0;
+    let Some(proto_val) = vm.resolve_property(c_obj, proto_si) else {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Function has non-object prototype in instanceof check",
+        ));
+    };
+    if !proto_val.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Function has non-object prototype in instanceof check",
+        ));
+    }
+    let proto_ptr = proto_val.as_js_object_ptr();
+
+    // 沿 O 原型链与 C.prototype 比对；深度上限防止原型环死循环。
+    let mut cur = unsafe { &*o_val.as_js_object_ptr() }.proto();
+    for _ in 0..1024 {
+        if !cur.is_object() {
+            return NativeResult::Ok(JsValue::bool(false));
+        }
+        if cur.as_js_object_ptr() == proto_ptr {
+            return NativeResult::Ok(JsValue::bool(true));
+        }
+        cur = unsafe { &*cur.as_js_object_ptr() }.proto();
+    }
+    NativeResult::Ok(JsValue::bool(false))
+}
+
 fn bind_dispatcher<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let wrapper_val = vm.reg(254);
     let wrapper = unsafe { &*wrapper_val.as_js_object_ptr() };
@@ -149,6 +227,9 @@ pub fn function_bind<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let wrapper = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
     unsafe {
         (*wrapper).set_function(true);
+        // type_tag 标记 bound 包装：构造路径（dispatch_new_expression）与
+        // instanceof 路径（@@hasInstance）据此识别并转发到 target。
+        (*wrapper).type_tag = JsObject::OBJ_TYPE_BOUND;
         (*wrapper).set_native_fn(Some(NativeFnPtr::from_raw(bind_dispatcher::<H> as *const ())));
         // 绑定实参个数记入 native_arg_count，与 Function.length 语义一致。
         (*wrapper).set_native_arg_count(bound_arg_count as u8);

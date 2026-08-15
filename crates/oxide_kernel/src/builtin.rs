@@ -174,6 +174,8 @@ pub struct FunctionMethods {
     pub apply: *const (),
     pub bind: *const (),
     pub to_string: *const (),
+    /// `@@hasInstance`（well-known symbol id 6）：instanceof 运算符的默认判定。
+    pub has_instance: *const (),
 }
 
 /// 全部内置对象（原型、构造器、全局单例 Math/JSON、well-known symbol 与 stub 对象）的持有者。
@@ -1482,6 +1484,18 @@ impl BuiltinWorld {
             ("apply", methods.apply, 2),
             ("bind", methods.bind, 1),
             ("toString", methods.to_string, 0),
+        );
+        // @@hasInstance 走 well-known symbol 键（id 6）：instanceof 运算符经
+        // dispatch_instanceof 读该属性调用，绑定后属性存在性测试与全局改写生效。
+        let _ = Self::bind_method_key_static(
+            proto,
+            shape_forge,
+            string_forge,
+            make_well_known_symbol_key(6),
+            "[Symbol.hasInstance]",
+            unsafe { NativeFnPtr::from_raw(methods.has_instance) },
+            1,
+            fp,
         );
     }
 
