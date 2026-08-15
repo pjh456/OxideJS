@@ -117,7 +117,17 @@ pub fn number_parse_int<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-    let s = oxide_runtime_api::to_string(vm.reg(args[1]));
+    // 参数按 ToString 完整转换：对象经 ToPrimitive(string hint)，Symbol 抛
+    // TypeError；对象方法抛出的原生异常原样传播。
+    let s = match oxide_runtime_api::to_string_full(vm.reg(args[1]), vm) {
+        Ok(s) => s,
+        Err(_) => {
+            if let Some(exc) = vm.take_uncaught_value() {
+                return NativeResult::Err(exc);
+            }
+            return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a string"));
+        }
+    };
     let s = s.trim_start_matches(is_js_ws).trim_end_matches(is_js_ws);
 
     // radix 经 ToInt32：缺省参数视为 undefined（ToInt32 → 0）。
@@ -212,7 +222,17 @@ pub fn number_parse_float<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-    let s = oxide_runtime_api::to_string(vm.reg(args[1]));
+    // 参数按 ToString 完整转换：对象经 ToPrimitive(string hint)，Symbol 抛
+    // TypeError；对象方法抛出的原生异常原样传播。
+    let s = match oxide_runtime_api::to_string_full(vm.reg(args[1]), vm) {
+        Ok(s) => s,
+        Err(_) => {
+            if let Some(exc) = vm.take_uncaught_value() {
+                return NativeResult::Err(exc);
+            }
+            return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a string"));
+        }
+    };
     let s = s.trim_start_matches(is_js_ws).trim_end_matches(is_js_ws);
 
     // 读符号；`Infinity` 大小写敏感，其后可带任意后缀（取最长合法前缀）。

@@ -146,6 +146,26 @@ fn parse_float_prefix_semantics() {
 }
 
 #[test]
+fn parse_parse_int_object_arg_tostring() {
+    let mut vm = Vm::new();
+    // 对象参数经 ToString 完整转换：取 toString 结果再解析。
+    let result = eval(&mut vm, "parseInt({toString: () => '42'})").unwrap();
+    assert_eq!(result.as_int(), 42);
+    #[allow(clippy::approx_constant)]
+    let expected = 3.14;
+    let result = eval(&mut vm, "parseFloat({toString: () => '3.14abc'})").unwrap();
+    assert!((result.as_double() - expected).abs() < 0.001);
+    // Symbol 参数按规范抛 TypeError。
+    let err = eval(&mut vm, "parseInt(Symbol())").unwrap_err();
+    assert!(err.contains("TypeError"), "got: {}", err);
+    let err = eval(&mut vm, "parseFloat(Symbol('x'))").unwrap_err();
+    assert!(err.contains("TypeError"), "got: {}", err);
+    // 对象 toString 抛出的原始异常原样传播（保留异常对象）。
+    let err = eval(&mut vm, "try { parseInt({toString(){ throw 42 }}) } catch (e) { e }").unwrap();
+    assert_eq!(err.as_int(), 42);
+}
+
+#[test]
 fn number_constructor() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "Number('42')").unwrap();
