@@ -873,10 +873,11 @@ fn string_methods_null_receiver_throw_type_error() {
 
 #[test]
 fn string_slice_astral_character_indices() {
-    // 字符索引语义：astral 字符按单字符计位，切片不截断代理对。
+    // UTF-16 单元索引语义：astral 字符占 2 单元，切片边界落在代理对中间时
+    // 保留所在 astral 字符（孤立代理无法在 UTF-8 表示，见架构限制）。
     let mut vm = Vm::new();
     let s = eval(&mut vm, "'\\u{1F600}ab'.slice(1, 3)").unwrap();
-    assert_eq!(to_str(&vm, s), "ab");
+    assert_eq!(to_str(&vm, s), "\u{1F600}a");
     let s = eval(&mut vm, "'\\u{1F600}ab'.slice(0, 1)").unwrap();
     assert_eq!(to_str(&vm, s), "\u{1F600}");
     let s = eval(&mut vm, "'\\u{1F600}'.padStart(3, 'x')").unwrap();
@@ -885,8 +886,8 @@ fn string_slice_astral_character_indices() {
 
 #[test]
 fn string_char_at_ascii_and_astral() {
-    // charAt 产出：ASCII 走单字符缓存，astral 按标量整体返回，越界空串，
-    // 缺省参数取首字符。
+    // charAt 产出：ASCII 走单字符缓存，astral 按 UTF-16 单元定位（落在代理对
+    // 中间时返回所在 astral 字符，架构限制），越界空串，缺省参数取首字符。
     let mut vm = Vm::new();
     let s = eval(&mut vm, "'abc'.charAt(1)").unwrap();
     assert_eq!(to_str(&vm, s), "b");
@@ -932,4 +933,123 @@ fn string_rest_destructure_chars() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "const {...r} = 'ab'; r['0'] + r['1']").unwrap();
     assert_eq!(to_str(&vm, result), "ab");
+}
+
+// ── UTF-16 索引体系回归（astral 字符）──
+
+#[test]
+fn string_utf16_length_char_at_code_at() {
+    // astral 字符（U+1F600）占 2 个 UTF-16 单元：length/charCodeAt 精确，
+    // charAt 按单元定位（代理对中间返回所在 astral 字符）。
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "'\\u{1F600}ab'.length").unwrap();
+    assert_num_eq(r, 4.0);
+    let r = eval(&mut vm, "'\\u{1F600}'.charCodeAt(0)").unwrap();
+    assert_eq!(r.as_int(), 0xD83D);
+    let r = eval(&mut vm, "'\\u{1F600}'.charCodeAt(1)").unwrap();
+    assert_eq!(r.as_int(), 0xDE00);
+    let r = eval(&mut vm, "'\\u{1F600}a'.charCodeAt(2)").unwrap();
+    assert_eq!(r.as_int(), 0x61);
+    let r = eval(&mut vm, "'\\u{1F600}ab'.charAt(2)").unwrap();
+    assert_eq!(to_str(&vm, r), "a");
+    let r = eval(&mut vm, "'\\u{1F600}ab'.charAt(1)").unwrap();
+    assert_eq!(to_str(&vm, r), "\u{1F600}");
+    let r = eval(&mut vm, "'\\u{1F600}ab'.charAt(4)").unwrap();
+    assert_eq!(to_str(&vm, r), "");
+}
+
+#[test]
+fn string_utf16_at() {
+    // at 按 UTF-16 单元定位：正/负索引与越界。
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "'\\u{1F600}ab'.at(2)").unwrap();
+    assert_eq!(to_str(&vm, r), "a");
+    let r = eval(&mut vm, "'\\u{1F600}ab'.at(-1)").unwrap();
+    assert_eq!(to_str(&vm, r), "b");
+    let r = eval(&mut vm, "'\\u{1F600}ab'.at(-2)").unwrap();
+    assert_eq!(to_str(&vm, r), "a");
+    let r = eval(&mut vm, "'\\u{1F600}ab'.at(4)").unwrap();
+    assert!(r.is_undefined());
+}
+
+#[test]
+fn string_utf16_slice_substring_substr() {
+    // 切片族按 UTF-16 单元计数：边界落在代理对中间时保留所在 astral 字符。
+    let mut vm = Vm::new();
+    let s = eval(&mut vm, "'\\u{1F600}ab'.slice(2)").unwrap();
+    assert_eq!(to_str(&vm, s), "ab");
+    let s = eval(&mut vm, "'\\u{1F600}ab'.slice(0, 2)").unwrap();
+    assert_eq!(to_str(&vm, s), "\u{1F600}");
+    let s = eval(&mut vm, "'\\u{1F600}ab'.slice(-2)").unwrap();
+    assert_eq!(to_str(&vm, s), "ab");
+    let s = eval(&mut vm, "'\\u{1F600}ab'.substring(2)").unwrap();
+    assert_eq!(to_str(&vm, s), "ab");
+    let s = eval(&mut vm, "'\\u{1F600}ab'.substring(0, 2)").unwrap();
+    assert_eq!(to_str(&vm, s), "\u{1F600}");
+    let s = eval(&mut vm, "'\\u{1F600}ab'.substr(2, 2)").unwrap();
+    assert_eq!(to_str(&vm, s), "ab");
+    let s = eval(&mut vm, "'\\u{1F600}ab'.substr(1, 2)").unwrap();
+    assert_eq!(to_str(&vm, s), "\u{1F600}a");
+}
+
+#[test]
+fn string_utf16_index_of_last_index_of() {
+    // 查找返回值与 position 参数均按 UTF-16 单元计数。
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "'\\u{1F600}ab'.indexOf('a')").unwrap();
+    assert_eq!(r.as_int(), 2);
+    let r = eval(&mut vm, "'\\u{1F600}ab'.indexOf('b', 1)").unwrap();
+    assert_eq!(r.as_int(), 3);
+    let r = eval(&mut vm, "'\\u{1F600}ab'.indexOf('\\u{1F600}', 1)").unwrap();
+    assert_eq!(r.as_int(), -1);
+    let r = eval(&mut vm, "'\\u{1F600}ab'.lastIndexOf('a')").unwrap();
+    assert_eq!(r.as_int(), 2);
+    let r = eval(&mut vm, "'\\u{1F600}ab'.lastIndexOf('b', 2)").unwrap();
+    assert_eq!(r.as_int(), -1);
+    let r = eval(&mut vm, "'\\u{1F600}ab'.lastIndexOf('')").unwrap();
+    assert_eq!(r.as_int(), 4);
+}
+
+#[test]
+fn string_utf16_includes_starts_ends() {
+    // position/endPosition 按 UTF-16 单元；代理对中间的位置无 well-formed 子串可匹配。
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "'\\u{1F600}ab'.includes('ab', 2)").unwrap();
+    assert!(r.as_bool());
+    let r = eval(&mut vm, "'\\u{1F600}ab'.includes('\\u{1F600}', 1)").unwrap();
+    assert!(!r.as_bool());
+    let r = eval(&mut vm, "'\\u{1F600}ab'.startsWith('a', 2)").unwrap();
+    assert!(r.as_bool());
+    let r = eval(&mut vm, "'\\u{1F600}ab'.startsWith('\\u{1F600}', 1)").unwrap();
+    assert!(!r.as_bool());
+    let r = eval(&mut vm, "'\\u{1F600}ab'.endsWith('ab')").unwrap();
+    assert!(r.as_bool());
+    let r = eval(&mut vm, "'\\u{1F600}ab'.endsWith('\\u{1F600}', 1)").unwrap();
+    assert!(!r.as_bool());
+    let r = eval(&mut vm, "'\\u{1F600}ab'.endsWith('', 1)").unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn string_utf16_search_offset() {
+    // search 返回值按 UTF-16 单元（正则与字符串路径均非字节偏移）。
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "'\\u{1F600}ab'.search('b')").unwrap();
+    assert_eq!(r.as_int(), 3);
+    let r = eval(&mut vm, "'\\u{1F600}ab'.search(/b/)").unwrap();
+    assert_eq!(r.as_int(), 3);
+    let r = eval(&mut vm, "'\\u{1F600}ab'.search('\\u{1F600}')").unwrap();
+    assert_eq!(r.as_int(), 0);
+}
+
+#[test]
+fn string_utf16_replace_position_callback() {
+    // 函数 replacer 的 position 参数按 UTF-16 单元计数（正则与字符串模式）。
+    let mut vm = Vm::new();
+    let s = eval(&mut vm, "'\\u{1F600}ab'.replace('b', function(m, o){ return o })").unwrap();
+    assert_eq!(to_str(&vm, s), "\u{1F600}a3");
+    let s = eval(&mut vm, "'\\u{1F600}ab'.replace(/b/, function(m, o){ return o })").unwrap();
+    assert_eq!(to_str(&vm, s), "\u{1F600}a3");
+    let s = eval(&mut vm, "'\\u{1F600}ab'.replaceAll('a', function(m, o){ return o })").unwrap();
+    assert_eq!(to_str(&vm, s), "\u{1F600}2b");
 }

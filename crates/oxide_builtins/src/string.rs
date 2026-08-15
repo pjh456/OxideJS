@@ -306,7 +306,7 @@ fn call_replacer<H: VmHost>(vm: &mut H, replacer: JsValue, cb_args: &[JsValue]) 
 }
 
 /// 函数 replacer 的回调参数：匹配串、各捕获组（未匹配为 undefined）、position、原字符串。
-/// position 按字符索引（非字节偏移）。原字符串参数由调用方预构传入（`text_arg`），
+/// position 按 UTF-16 单元计数（非字节偏移）。原字符串参数由调用方预构传入（`text_arg`），
 /// 避免每匹配复制整个源串——字符串不可变，同一 `JsValue` 可安全复用。
 fn replacer_cb_args<H: VmHost>(vm: &mut H, text: &str, m: &regress::Match, text_arg: JsValue) -> Vec<JsValue> {
     let range = m.range();
@@ -318,7 +318,7 @@ fn replacer_cb_args<H: VmHost>(vm: &mut H, text: &str, m: &regress::Match, text_
             None => cb_args.push(JsValue::undefined()),
         }
     }
-    cb_args.push(JsValue::int(text[..range.start].chars().count() as i32));
+    cb_args.push(JsValue::int(byte_to_unit(text, range.start) as i32));
     cb_args.push(text_arg);
     cb_args
 }
@@ -382,7 +382,7 @@ fn string_replace_fn<H: VmHost>(
         out.push_str(&text[last_end..p]);
         let cb_args = [
             vm.new_string(&text[p..p + search_length]),
-            JsValue::int(text[..p].chars().count() as i32),
+            JsValue::int(byte_to_unit(text, p) as i32),
             text_arg,
         ];
         let repl = try_string!(call_replacer(vm, replacer, &cb_args));
@@ -393,25 +393,92 @@ fn string_replace_fn<H: VmHost>(
     NativeResult::Ok(vm.new_string_owned(out))
 }
 
+/// Unicode 标量数（供 pad 族按字符计数；索引/切片族须用 [`utf16_len`]）。
 fn char_len(s: &str) -> usize {
     s.chars().count()
 }
 
-fn byte_index_at_char(s: &str, char_pos: usize) -> usize {
-    if char_pos == 0 {
-        return 0;
-    }
-    s.char_indices().nth(char_pos).map(|(idx, _)| idx).unwrap_or(s.len())
-}
-
-fn char_slice(s: &str, start: usize, end: usize) -> &str {
-    let start_byte = byte_index_at_char(s, start);
-    let end_byte = byte_index_at_char(s, end);
-    &s[start_byte..end_byte]
-}
-
+/// 取串头 count 个 Unicode 标量（供 pad 族填充计数）。
 fn take_chars(s: &str, count: usize) -> String {
     s.chars().take(count).collect()
+}
+
+/// UTF-16 code unit 数：astral 字符计 2 单元；ASCII 串与字节数一致直接短路。
+fn utf16_len(s: &str) -> usize {
+    if s.is_ascii() {
+        s.len()
+    } else {
+        s.encode_utf16().count()
+    }
+}
+
+/// 字节偏移前缀的 UTF-16 单元数（索引型返回值统一换算入口）。
+/// 调用方须保证 `byte` 落在字符边界（well-formed 匹配恒对齐边界）。
+fn byte_to_unit(s: &str, byte: usize) -> usize {
+    if s.is_ascii() {
+        byte
+    } else {
+        s[..byte].encode_utf16().count()
+    }
+}
+
+/// UTF-16 单元位置所在字符的起始字节偏移（字符访问/切片起点定位：位置在
+/// 字符边界时即该边界，落在代理对中间时取所在 astral 字符起始）。
+fn unit_to_char_start(s: &str, unit: usize) -> usize {
+    if s.is_ascii() {
+        return unit.min(s.len());
+    }
+    let mut acc = 0usize;
+    for (byte, ch) in s.char_indices() {
+        if unit < acc + ch.len_utf16() {
+            return byte;
+        }
+        acc += ch.len_utf16();
+    }
+    s.len()
+}
+
+/// UTF-16 单元位置起最近的字符边界字节偏移（查找窗口起点：位置在边界时
+/// 即该边界，落在代理对中间时取所在字符末尾——well-formed 匹配不可能从
+/// 代理对内部起始）。
+fn unit_to_next_boundary(s: &str, unit: usize) -> usize {
+    if s.is_ascii() {
+        return unit.min(s.len());
+    }
+    let mut acc = 0usize;
+    for (byte, ch) in s.char_indices() {
+        let next = acc + ch.len_utf16();
+        if unit <= next {
+            return if unit <= acc { byte } else { byte + ch.len_utf8() };
+        }
+        acc = next;
+    }
+    s.len()
+}
+
+/// UTF-16 单元位置是否为字符边界（返回该边界的字节偏移）；落在代理对
+/// 中间时返回 None（该位置无法对齐任何 well-formed 子串边界）。
+fn unit_to_boundary(s: &str, unit: usize) -> Option<usize> {
+    if s.is_ascii() {
+        return Some(unit.min(s.len()));
+    }
+    let mut acc = 0usize;
+    for (byte, ch) in s.char_indices() {
+        if unit == acc {
+            return Some(byte);
+        }
+        acc += ch.len_utf16();
+    }
+    (unit == acc).then_some(s.len())
+}
+
+/// 按 UTF-16 单元区间取子串：起点取所在字符起始、终点取最近字符边界，
+/// 保证结果恒为 well-formed（代理对整体保留）。
+fn unit_slice(s: &str, start: usize, end: usize) -> &str {
+    if start >= end {
+        return "";
+    }
+    &s[unit_to_char_start(s, start)..unit_to_next_boundary(s, end)]
 }
 
 fn is_regexp_obj<H: VmHost>(val: JsValue, vm: &H) -> bool {
@@ -435,7 +502,7 @@ fn is_regexp_obj<H: VmHost>(val: JsValue, vm: &H) -> bool {
     std::ptr::eq(proto_ptr, rp)
 }
 
-/// `String.prototype.indexOf(searchString, position)`：按字符索引查找首次出现位置。
+/// `String.prototype.indexOf(searchString, position)`：按 UTF-16 单元查找首次出现位置。
 pub fn string_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.indexOf called with {} args", args.len());
     // 参数转换先行：search 与 position 均可能触发对象 ToString/ToNumber（&mut 路径）。
@@ -454,23 +521,23 @@ pub fn string_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::int(-1));
     }
-    let n = char_len(&s);
+    let n = utf16_len(&s);
     let pos = pos_raw.min(n);
 
     if search.is_empty() {
         return NativeResult::Ok(JsValue::int(pos as i32));
     }
 
-    let start_byte = byte_index_at_char(&s, pos);
+    let start_byte = unit_to_next_boundary(&s, pos);
     let haystack = &s[start_byte..];
     if search.len() == 1 {
         if let Some(idx) = memchr(search.as_bytes()[0], haystack.as_bytes()) {
             let matched_byte = start_byte + idx;
-            return NativeResult::Ok(JsValue::int(char_len(&s[..matched_byte]) as i32));
+            return NativeResult::Ok(JsValue::int(byte_to_unit(&s, matched_byte) as i32));
         }
     } else if let Some(idx) = haystack.find(&search) {
         let matched_byte = start_byte + idx;
-        return NativeResult::Ok(JsValue::int(char_len(&s[..matched_byte]) as i32));
+        return NativeResult::Ok(JsValue::int(byte_to_unit(&s, matched_byte) as i32));
     }
     NativeResult::Ok(JsValue::int(-1))
 }
@@ -493,14 +560,14 @@ pub fn string_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::bool(false));
     }
-    let n = char_len(&s);
+    let n = utf16_len(&s);
     let pos = pos_raw.min(n);
 
     if search.is_empty() {
         return NativeResult::Ok(JsValue::bool(true));
     }
 
-    let haystack = &s[byte_index_at_char(&s, pos)..];
+    let haystack = &s[unit_to_next_boundary(&s, pos)..];
     if search.len() == 1 {
         NativeResult::Ok(JsValue::bool(memchr(search.as_bytes()[0], haystack.as_bytes()).is_some()))
     } else {
@@ -508,7 +575,7 @@ pub fn string_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
-/// `String.prototype.charAt(index)`：返回指定位置的单字符；越界返回空串。
+/// `String.prototype.charAt(index)`：返回指定 UTF-16 单元位置的单字符；越界返回空串。
 pub fn string_char_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.charAt called with {} args", args.len());
     // index 可能触发对象 ToNumber（&mut 路径），先行转换。
@@ -529,20 +596,20 @@ pub fn string_char_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             None => NativeResult::Ok(vm.new_string(&first.to_string())),
         };
     }
-    if idx < 0 || idx as usize >= char_len(&s) {
+    if idx < 0 || idx as usize >= utf16_len(&s) {
         return NativeResult::Ok(vm.new_string(""));
     }
-    let ch = s.chars().nth(idx as usize);
-    match ch {
-        Some(c) => match vm.single_char(c) {
-            Some(v) => NativeResult::Ok(v),
-            None => NativeResult::Ok(vm.new_string(&c.to_string())),
-        },
-        None => NativeResult::Ok(vm.new_string("")),
+    // 按 UTF-16 单元定位；落在代理对中间时返回所在 astral 字符（孤立代理
+    // 无法在 UTF-8 表示，见架构限制）。
+    let byte = unit_to_char_start(&s, idx as usize);
+    let ch = s[byte..].chars().next().unwrap();
+    match vm.single_char(ch) {
+        Some(v) => NativeResult::Ok(v),
+        None => NativeResult::Ok(vm.new_string(&ch.to_string())),
     }
 }
 
-/// `String.prototype.charCodeAt(index)`：返回指定位置字符的 UTF-16 code unit；越界返回 NaN。
+/// `String.prototype.charCodeAt(index)`：返回指定 UTF-16 单元位置的 code unit；越界返回 NaN。
 pub fn string_char_code_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.charCodeAt called with {} args", args.len());
     // index 可能触发对象 ToNumber（&mut 路径），先行转换。
@@ -556,12 +623,15 @@ pub fn string_char_code_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         if s.is_empty() {
             return NativeResult::Ok(JsValue::float(f64::NAN));
         }
-        return NativeResult::Ok(JsValue::int(s.chars().next().unwrap() as i32));
+        // 缺省 index=0：返回首单元（astral 首字符为高代理）。
+        return NativeResult::Ok(JsValue::int(s.encode_utf16().next().unwrap() as i32));
     }
-    if idx < 0 || idx as usize >= char_len(&s) {
+    if idx < 0 || idx as usize >= utf16_len(&s) {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-    NativeResult::Ok(JsValue::int(s.chars().nth(idx as usize).unwrap() as i32))
+    // 按 UTF-16 单元展开取码元：astral 字符的高/低代理分别精确返回。
+    let unit = s.encode_utf16().nth(idx as usize).unwrap();
+    NativeResult::Ok(JsValue::int(unit as i32))
 }
 
 /// `String.prototype.concat(...strings)`：拼接 this 与各参数返回新字符串。
@@ -583,7 +653,7 @@ pub fn string_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string_owned(result))
 }
 
-/// `String.prototype.slice(start, end)`：按字符区间（支持负索引）取子串。
+/// `String.prototype.slice(start, end)`：按 UTF-16 单元区间（支持负索引）取子串。
 pub fn string_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.slice called with {} args", args.len());
     // 位置参数先行（&mut 转换），后借 this 取子串。
@@ -598,7 +668,7 @@ pub fn string_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         None
     };
     let s = try_string!(this_string(vm, args));
-    let n = char_len(&s) as i32;
+    let n = utf16_len(&s) as i32;
     let start = match start_raw {
         Some(v) => {
             if v < 0 {
@@ -619,7 +689,7 @@ pub fn string_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
         None => n,
     };
-    let result = if start < end { char_slice(&s, start as usize, end as usize) } else { "" };
+    let result = if start < end { unit_slice(&s, start as usize, end as usize) } else { "" };
     let owned = result.to_string();
     NativeResult::Ok(vm.new_string_owned(owned))
 }
@@ -631,7 +701,7 @@ pub fn string_substring<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let start_arg = if args.len() > 1 { Some(vm.reg(args[1])) } else { None };
     let end_arg = if args.len() > 2 { Some(vm.reg(args[2])) } else { None };
     let s = try_string!(this_string(vm, args));
-    let n = char_len(&s) as i32;
+    let n = utf16_len(&s) as i32;
     let mut start = match start_arg {
         Some(v) => {
             let v = oxide_runtime_api::to_integer_or_infinity(v);
@@ -657,19 +727,20 @@ pub fn string_substring<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if start > end {
         std::mem::swap(&mut start, &mut end);
     }
-    let result = char_slice(&s, start as usize, end as usize);
+    let result = unit_slice(&s, start as usize, end as usize);
     let owned = result.to_string();
     NativeResult::Ok(vm.new_string_owned(owned))
 }
 
-/// `String.prototype.substr(start, length)`：从 start 取 length 个字符（Annex B，支持负 start）。
+/// `String.prototype.substr(start, length)`：从 start 起取 length 个 UTF-16 单元
+/// （Annex B，支持负 start）。
 pub fn string_substr<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.substr called with {} args", args.len());
     // 寄存器取值先行（纯函数），后借 this 截取。
     let start_arg = if args.len() > 1 { Some(vm.reg(args[1])) } else { None };
     let length_arg = if args.len() > 2 { Some(vm.reg(args[2])) } else { None };
     let s = try_string!(this_string(vm, args));
-    let len = char_len(&s) as isize;
+    let len = utf16_len(&s) as isize;
     let start = match start_arg {
         Some(v) => {
             let n = oxide_runtime_api::to_integer_or_infinity(v) as isize;
@@ -685,11 +756,15 @@ pub fn string_substr<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Some(v) => (oxide_runtime_api::to_integer_or_infinity(v) as isize).max(0) as usize,
         None => len as usize - start,
     };
-    let result = take_chars(&s[byte_index_at_char(&s, start)..], length.min(len as usize - start));
-    NativeResult::Ok(vm.new_string_owned(result))
+    // 起点按 UTF-16 单元定位取窗口（起点落在代理对中间时取所在 astral 字符，
+    // 孤立代理无法在 UTF-8 表示，见架构限制）。
+    let count = length.min(len as usize - start);
+    let result = unit_slice(&s, start, start + count);
+    let owned = result.to_string();
+    NativeResult::Ok(vm.new_string_owned(owned))
 }
 
-/// `String.prototype.at(index)`：按字符索引取字符（支持负索引）；越界返回 undefined。
+/// `String.prototype.at(index)`：按 UTF-16 单元索引取字符（支持负索引）；越界返回 undefined。
 pub fn string_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.at called with {} args", args.len());
     let idx = if args.len() > 1 {
@@ -698,12 +773,14 @@ pub fn string_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         0
     };
     let s = try_string!(this_string(vm, args));
-    let len = char_len(&s) as i32;
+    let len = utf16_len(&s) as i32;
     let idx = if idx < 0 { len + idx } else { idx };
     if idx < 0 || idx >= len {
         return NativeResult::Ok(JsValue::undefined());
     }
-    let ch = s.chars().nth(idx as usize).unwrap().to_string();
+    // 按 UTF-16 单元定位；落在代理对中间时返回所在 astral 字符（架构限制）。
+    let byte = unit_to_char_start(&s, idx as usize);
+    let ch = s[byte..].chars().next().unwrap().to_string();
     NativeResult::Ok(vm.new_string(&ch))
 }
 
@@ -730,7 +807,7 @@ pub fn string_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::int(-1));
     }
-    let n = char_len(&s);
+    let n = utf16_len(&s);
     let pos = match pos_raw {
         Some(p) => p.min(n),
         None => n,
@@ -740,17 +817,15 @@ pub fn string_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         return NativeResult::Ok(JsValue::int(pos as i32));
     }
 
-    let end_byte = byte_index_at_char(&s, (pos + 1).min(n));
+    let end_byte = unit_to_next_boundary(&s, (pos + 1).min(n));
     let haystack = &s[..end_byte];
 
     if search.len() == 1 {
         if let Some(idx) = memchr::memrchr(search.as_bytes()[0], haystack.as_bytes()) {
-            let result = char_len(&s[..idx]);
-            return NativeResult::Ok(JsValue::int(result as i32));
+            return NativeResult::Ok(JsValue::int(byte_to_unit(&s, idx) as i32));
         }
     } else if let Some(idx) = haystack.rfind(&search) {
-        let result = char_len(&s[..idx]);
-        return NativeResult::Ok(JsValue::int(result as i32));
+        return NativeResult::Ok(JsValue::int(byte_to_unit(&s, idx) as i32));
     }
     NativeResult::Ok(JsValue::int(-1))
 }
@@ -877,9 +952,14 @@ pub fn string_starts_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::bool(false));
     }
-    let n = char_len(&s);
+    let n = utf16_len(&s);
     let pos = pos_raw.min(n);
-    NativeResult::Ok(JsValue::bool(s[byte_index_at_char(&s, pos)..].starts_with(&search)))
+    // 位置须对齐字符边界才有 well-formed 前缀可比；落在代理对中间时仅空串可匹配。
+    let result = match unit_to_boundary(&s, pos) {
+        Some(byte) => s[byte..].starts_with(&search),
+        None => search.is_empty(),
+    };
+    NativeResult::Ok(JsValue::bool(result))
 }
 
 /// `String.prototype.endsWith(searchString, endPosition)`：是否以指定子串结尾。
@@ -900,9 +980,14 @@ pub fn string_ends_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::bool(false));
     }
-    let n = char_len(&s);
+    let n = utf16_len(&s);
     let end_pos = end_pos_raw.min(n);
-    NativeResult::Ok(JsValue::bool(s[..byte_index_at_char(&s, end_pos)].ends_with(&search)))
+    // 截断位置须对齐字符边界才有 well-formed 后缀可比；落在代理对中间时仅空串可匹配。
+    let result = match unit_to_boundary(&s, end_pos) {
+        Some(byte) => s[..byte].ends_with(&search),
+        None => search.is_empty(),
+    };
+    NativeResult::Ok(JsValue::bool(result))
 }
 
 /// `String.prototype.split(separator, limit)`：按分隔符拆分为字符串数组；
@@ -1242,7 +1327,7 @@ pub fn string_match_fn<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::null())
 }
 
-/// `String.prototype.search(pattern)`：返回首个匹配位置，无匹配返回 -1。
+/// `String.prototype.search(pattern)`：返回首个匹配位置（UTF-16 单元），无匹配返回 -1。
 pub fn string_search<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.search called with {} args", args.len());
     // 参数读取守卫先行：无参调用缺省 searchString 为 undefined（args 仅含 this 槽）。
@@ -1269,12 +1354,12 @@ pub fn string_search<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regress::Regex>` 指针。
         let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
         if let Some(m) = regex.find(&s) {
-            return NativeResult::Ok(JsValue::int(m.range().start as i32));
+            return NativeResult::Ok(JsValue::int(byte_to_unit(&s, m.range().start) as i32));
         }
         return NativeResult::Ok(JsValue::int(-1));
     }
     if let Some(pos) = s.find(&pattern) {
-        return NativeResult::Ok(JsValue::int(pos as i32));
+        return NativeResult::Ok(JsValue::int(byte_to_unit(&s, pos) as i32));
     }
     NativeResult::Ok(JsValue::int(-1))
 }
