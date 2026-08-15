@@ -253,6 +253,13 @@ impl Vm {
     ///
     /// 用于在多次 JS 执行之间达到完全隔离：session 内未被污染的 builtin 保留原指针。
     pub fn full_reset(&mut self) {
+        // session 对象只能来自用户写 + promote，跨 full_reset 若保留 global 会悬垂：
+        // 覆盖既有 global 槽的写入不递增 generation（脏检测依赖 generation 对比），
+        // 此处强制 bump 使带 session 对象时 global 必然重建。
+        if !self.gc_state.session_object_ptrs.is_empty() {
+            let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;
+            unsafe { &mut *global_ptr }.bump_generation();
+        }
         let dirty = self.session.selective_reset(&self.kernel_core);
         if dirty.any_builtin_dirty() {
             bindings::rebind_dirty_builtins(&self.kernel_core, &mut self.session, Some(&dirty));
@@ -634,6 +641,26 @@ mod tests {
     }
 
     #[test]
+    fn full_reset_with_session_objects_forces_global_rebuild() {
+        let mut vm = Vm::new();
+        // 池路径场景：`globalThis.Array = {}` 覆盖既有 global 槽（不递增 generation），
+        // 新值 `{}` 经 promote 进入 session——global 保留时该指针将悬垂。
+        let _ = run_source(&mut vm, "globalThis.Array = {}; 0");
+        assert!(!vm.gc_state.session_object_ptrs.is_empty(), "覆盖写应触发 promote 进入 session");
+        let old_global = vm.session.global_object.as_ptr();
+
+        vm.full_reset();
+
+        // global 必须重建：旧 global 与其 session 对象随 epoch 释放，Array 恢复内置构造器。
+        assert!(!std::ptr::eq(old_global, vm.session.global_object.as_ptr()));
+        assert!(std::ptr::eq(
+            global_prop(&vm, "Array").as_js_object_ptr(),
+            vm.session.builtin_world().array_constructor.as_ptr() as *mut JsObject
+        ));
+        assert!(!vm.session.is_dirty_since_snapshot());
+    }
+
+    #[test]
     fn full_reset_clean_keeps_session_objects() {
         let mut vm = Vm::new();
         let world_ptr = Arc::as_ptr(&vm.session.builtin_world);
@@ -952,3 +979,4 @@ mod tests {
         assert_eq!(vm.lookup_str(te).as_deref(), Some("TypeError"));
     }
 }
+
