@@ -218,3 +218,67 @@ fn call_window_upper_bound_encoded_into_bytecode() {
         module.n_registers
     );
 }
+
+#[test]
+fn call_window_try_branch_call_preserves_catch_live_vars() {
+    // try 体内分支中的调用点（CALL 与 TRY_BEGIN 不同 BB，异常边不反向传播）：
+    // catch 读 try 前的存活变量。截断窗口若不含这些槽，callee 抛错展开时
+    // restore_frame 只回拷窗口，catch 读到 callee 残留垃圾值。
+    // boom 的局部变量值（百位档）与 keep 期望值（1..10）刻意错开，覆盖必现错值。
+    let src = "function boom(){ \
+                 var a1=100,a2=200,a3=300,a4=400,a5=500,a6=600,a7=700,a8=800,a9=900,a10=1000, \
+                     a11=1100,a12=1200,a13=1300,a14=1400,a15=1500,a16=1600,a17=1700,a18=1800,a19=1900,a20=2000, \
+                     a21=2100,a22=2200,a23=2300,a24=2400,a25=2500; \
+                 if (a1+a2+a3+a4+a5+a6+a7+a8+a9+a10+a11+a12+a13+a14+a15+a16+a17+a18+a19+a20+a21+a22+a23+a24+a25) throw 'err'; } \
+               function caller(x){ \
+                 var keep1=1,keep2=2,keep3=3,keep4=4,keep5=5,keep6=6,keep7=7,keep8=8,keep9=9,keep10=10; \
+                 try { if (x) { boom(); } } \
+                 catch(e) { return keep1+keep2+keep3+keep4+keep5+keep6+keep7+keep8+keep9+keep10; } \
+                 return -1; } \
+               caller(true)";
+    assert_eq!(eval(src), "55");
+}
+
+#[test]
+fn call_window_try_branch_call_finally_preserves_live_vars() {
+    // 回归锚点：finally 沿正常边进入，其活集经正常 CFG 传播到分支内调用点，
+    // 窗口机制须保持该场景正确（finally 读 try 前变量不丢值）。
+    let src = "function boom(){ \
+                 var a1=100,a2=200,a3=300,a4=400,a5=500,a6=600,a7=700,a8=800,a9=900,a10=1000, \
+                     a11=1100,a12=1200,a13=1300,a14=1400,a15=1500,a16=1600,a17=1700,a18=1800,a19=1900,a20=2000, \
+                     a21=2100,a22=2200,a23=2300,a24=2400,a25=2500; \
+                 return a1+a2+a3+a4+a5+a6+a7+a8+a9+a10+a11+a12+a13+a14+a15+a16+a17+a18+a19+a20+a21+a22+a23+a24+a25; } \
+               function caller(x){ \
+                 var keep = 99; \
+                 try { if (x) { boom(); } } \
+                 finally { keep = keep + 1; } \
+                 return keep; } \
+               caller(true)";
+    assert_eq!(eval(src), "100");
+}
+
+#[test]
+fn call_window_nested_callee_param_overlap_arguments() {
+    // 回归锚点：嵌套 callee 调用路径（含 arguments 实参区）在压帧拷贝顺序调整后
+    // 值保持正确。真 bug（实参区与形参写入区重叠串值）由 vm 单元测试
+    // push_bytecode_frame_param_overlap_reads_spill_first 直接构造验证。
+    let src = "function outer(){ \
+                 var x = 5; \
+                 function inner(a, b){ return a*10 + b; } \
+                 var r = inner(x, 7); \
+                 return r; } \
+               outer()";
+    assert_eq!(eval(src), "57");
+}
+
+#[test]
+fn call_window_nested_callee_param_overlap_with_arguments_object() {
+    // 同回归锚点，加 arguments 对象：spill 实参区构建的 arguments 对象值正确。
+    let src = "function outer(){ \
+                 var x = 5; \
+                 function inner(a, b){ return a*10 + b + arguments[1]; } \
+                 var r = inner(x, 7); \
+                 return r; } \
+               outer()";
+    assert_eq!(eval(src), "64");
+}
