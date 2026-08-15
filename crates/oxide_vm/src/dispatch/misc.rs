@@ -4,7 +4,7 @@ use oxide_bytecode::opcode;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::make_int_key;
-use oxide_types::value::JsValue;
+use oxide_types::value::{JsType, JsValue};
 
 impl Vm {
     #[inline(always)]
@@ -25,31 +25,27 @@ impl Vm {
     pub(crate) fn dispatch_typeof(&mut self, rd: usize, a: usize) {
         vm_trace!("TYPEOF rd={} r{}={:?}", rd, a, self.regs[a]);
         let val = self.regs[a];
-        let result = if val.is_undefined() {
-            "undefined"
-        } else if val.is_null() {
-            "object"
-        } else if val.is_bool() {
-            "boolean"
-        } else if val.is_int() || val.is_double() {
-            "number"
-        } else if val.is_string() {
-            "string"
-        } else if val.is_symbol() {
-            "symbol"
-        } else if val.is_bigint() {
-            "bigint"
-        } else if val.is_object() {
-            let obj = unsafe { &*val.as_js_object_ptr() };
-            if obj.is_function() {
-                "function"
-            } else {
-                "object"
+        let kind = match val.js_type() {
+            JsType::Undefined => 0,
+            JsType::Null => 1,
+            JsType::Bool => 2,
+            JsType::Int | JsType::Double => 3,
+            JsType::String => 4,
+            JsType::Symbol => 5,
+            JsType::BigInt => 6,
+            JsType::Object => {
+                // 函数对象归为 "function"（语言类型是 object，typeof 有专属分支）。
+                let obj = unsafe { &*val.as_js_object_ptr() };
+                if obj.is_function() {
+                    7
+                } else {
+                    1
+                }
             }
-        } else {
-            "undefined"
         };
-        self.regs[rd] = self.new_string(result);
+        // 结果字符串复用进程级静态表（零分配、无锁、跨 VM 共享），
+        // 避免每次 typeof 新建 session 字符串。
+        self.regs[rd] = JsValue::string(oxide_kernel::string_forge::typeof_string_ptr(kind));
     }
 
     /// ToObject：rd 原地转换。对象直接返回；null/undefined 抛 TypeError；

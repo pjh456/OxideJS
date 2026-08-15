@@ -343,8 +343,12 @@ fn format_error_message_empty_name() {
 
 #[test]
 fn error_stack_is_string() {
-    let result = eval("typeof new Error().stack()").unwrap();
-    let vm = make_vm();
+    let allocator = oxide_parser::Allocator::default();
+    let program = oxide_parser::parse(&allocator, "typeof new Error().stack()").unwrap();
+    let module = Compiler::new().compile(&program).unwrap();
+    let mut vm = make_vm();
+    let result = vm.run(&module).unwrap();
+    // typeof 结果复用进程级静态串，同 VM 上读取（跨 VM 指针存活由实现保证，不做假设）。
     let s = vm.lookup_str(result);
     assert_eq!(s, Some("string".to_string()));
 }

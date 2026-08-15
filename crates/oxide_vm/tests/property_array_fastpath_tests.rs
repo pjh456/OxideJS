@@ -16,9 +16,10 @@ fn eval(source: &str) -> Result<(Vm, JsValue), String> {
 }
 
 fn eval_str(source: &str) -> Result<String, String> {
-    let (_vm, v) = eval(source)?;
+    let (vm, v) = eval(source)?;
+    // 字符串结果须在同一 VM 上读：perm 串指向 VM 私有内核，VM drop 后指针悬垂。
     if v.is_string() {
-        Ok(oxide_runtime_api::to_string(v))
+        Ok(vm.lookup_str(v).unwrap_or_default())
     } else {
         Ok(format!("{v}"))
     }

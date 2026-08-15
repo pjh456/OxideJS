@@ -252,6 +252,40 @@ fn eval_signed_zero_object_is_and_array_methods() {
     assert_eq!(eval("[NaN].includes(NaN)"), "true");
 }
 
+// typeof 结果断言需要真实字符串内容，单独用 (Vm, JsValue) 形态的辅助。
+fn eval_ty(source: &str) -> Result<(Vm, JsValue), String> {
+    let allocator = oxide_parser::Allocator::default();
+    let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
+    let module = Compiler::new().compile(&program).map_err(|e| format!("Compile error: {}", e))?;
+    let mut vm = Vm::new();
+    let result = vm.run(&module)?;
+    Ok((vm, result))
+}
+
+// typeof：js_type 分派 + perm_string 的结果与语言类型一一对应。
+#[test]
+fn eval_typeof_all_kinds() {
+    let cases: &[(&str, &str)] = &[
+        ("typeof 1", "number"),
+        ("typeof 1.5", "number"),
+        ("typeof NaN", "number"),
+        ("typeof 's'", "string"),
+        ("typeof true", "boolean"),
+        ("typeof null", "object"),
+        ("typeof undefined", "undefined"),
+        ("typeof function(){}", "function"),
+        ("typeof Symbol('x')", "symbol"),
+        ("typeof 1n", "bigint"),
+        ("typeof {}", "object"),
+        ("typeof []", "object"),
+    ];
+    for (src, expected) in cases {
+        let (vm, result) = eval_ty(src).unwrap_or_else(|e| panic!("{src} failed: {e}"));
+        let actual = vm.lookup_str(result).unwrap_or_default();
+        assert_eq!(actual, *expected, "{src} 的 typeof 结果不符");
+    }
+}
+
 // 算术 +：对象操作数经 valueOf 强转。
 #[test]
 fn add_object_valueof_coercion() {

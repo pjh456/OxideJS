@@ -202,6 +202,34 @@ pub fn small_int_ptr(n: u32) -> Option<*const JsString> {
     }
 }
 
+/// typeof 结果文本表（下标见 [`typeof_string_ptr`]），进程生命周期内不释放。
+const TYPEOF_TEXTS: [&str; 8] = ["undefined", "object", "boolean", "number", "string", "symbol", "bigint", "function"];
+
+/// typeof 结果永久 `JsString` 指针表：typeof 是高频分支产出（typeof_ops 每迭代 4 次），
+/// 复用静态表免每次 session 分配与 interner 锁查。泄漏面严格有界：8 条目 ≈ 数百字节。
+static TYPEOF_TABLE: [OnceLock<StringPtr>; 8] = [const { OnceLock::new() }; 8];
+
+/// 取 typeof 结果串的永久 `JsString` 指针，惰性物化一次后恒返回同一地址。
+///
+/// 下标约定：0=undefined、1=object、2=boolean、3=number、4=string、
+/// 5=symbol、6=bigint、7=function。调用方按 `JsValue::js_type()` 映射。
+pub fn typeof_string_ptr(kind: u8) -> *const JsString {
+    let slot = &TYPEOF_TABLE[kind as usize];
+    if let Some(ptr) = slot.get() {
+        return ptr.0;
+    }
+    let ptr = Box::into_raw(Box::new(JsString::new(TYPEOF_TEXTS[kind as usize].to_string())));
+    match slot.set(StringPtr(ptr)) {
+        Ok(()) => ptr,
+        Err(existing) => {
+            // 并发首用竞态：与 single_char_ptr 同款处置，本线程产物恰好释放一次。
+            // SAFETY: ptr 来自本线程的 Box::into_raw，无任何外部引用。
+            unsafe { drop(Box::from_raw(ptr)) };
+            existing.0
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,6 +309,17 @@ mod tests {
         for b in 0u8..=127 {
             let ptr = single_char_ptr(b);
             assert_eq!(unsafe { (*ptr).as_str() }, (b as char).to_string());
+        }
+    }
+
+    #[test]
+    fn typeof_table_content_and_stability() {
+        // 8 个 typeof 结果串与下标约定一一对应，且二次调用返回同一稳定指针。
+        let texts = ["undefined", "object", "boolean", "number", "string", "symbol", "bigint", "function"];
+        for (i, t) in texts.iter().enumerate() {
+            let ptr = typeof_string_ptr(i as u8);
+            assert_eq!(unsafe { (*ptr).as_str() }, *t);
+            assert_eq!(typeof_string_ptr(i as u8), ptr, "下标 {i} 二次调用应返回同一指针");
         }
     }
 }

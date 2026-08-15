@@ -26,9 +26,14 @@ fn eval_int(source: &str) -> i32 {
 }
 
 fn eval_str(source: &str) -> String {
-    let v = eval(source);
+    let allocator = Allocator::default();
+    let program = oxide_parser::parse(&allocator, source).expect("parse failed");
+    let module = Compiler::new().compile(&program).expect("compile failed");
+    let mut vm = Vm::new();
+    let v = vm.run(&module).expect("vm run failed");
+    // 字符串结果须在同一 VM 上读：perm 串指向 VM 私有内核，VM drop 后指针悬垂。
     if v.is_string() {
-        oxide_runtime_api::to_string(v)
+        vm.lookup_str(v).unwrap_or_default()
     } else {
         format!("{v}")
     }

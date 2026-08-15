@@ -524,32 +524,19 @@ pub fn to_string(val: JsValue) -> String {
 
 /// ToBoolean（ECMA-262 §7.1.2）：falsy 值仅限 undefined/null/false/±0/NaN/空串，其余为 true。
 pub fn to_boolean(val: JsValue) -> bool {
-    if val.is_undefined() || val.is_null() {
-        return false;
+    match val.js_type() {
+        JsType::Undefined | JsType::Null => false,
+        JsType::Bool => val.as_bool(),
+        JsType::Int => val.as_int() != 0,
+        JsType::Double => {
+            let d = val.as_double();
+            // ±0 与 NaN 均为 falsy（IEEE 中 0.0 == -0.0，符号位无需单独判断）。
+            !(d == 0.0 || d.is_nan())
+        }
+        JsType::String => !unsafe { (*val.as_string_ptr()).is_empty() },
+        JsType::BigInt => !unsafe { bigint_data(val) }.is_zero(),
+        JsType::Object | JsType::Symbol => true,
     }
-    if val.is_bool() {
-        return val.as_bool();
-    }
-    if val.is_int() {
-        return val.as_int() != 0;
-    }
-    if val.is_double() {
-        let d = val.as_double();
-        return !(d == 0.0 || d == -0.0 || d.is_nan());
-    }
-    if val.is_string() {
-        return !unsafe { (*val.as_string_ptr()).is_empty() };
-    }
-    if val.is_bigint() {
-        return !unsafe { bigint_data(val) }.is_zero();
-    }
-    if val.is_object() {
-        return true;
-    }
-    if val.is_symbol() {
-        return true;
-    }
-    false
 }
 
 /// IsLooselyEqual(x, y) — ECMA-262 §7.2.15（`==`）。
