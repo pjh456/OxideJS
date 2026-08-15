@@ -126,10 +126,10 @@ impl Vm {
         };
         let receiver = self.regs[rd];
         let obj = unsafe { &mut *obj_ptr };
-        let prop_val = self.read_member_prop(obj, prop_name_si, receiver)?;
+        let (prop_val, ext_pc) = self.read_member_prop(obj, prop_name_si, receiver)?;
         let n = self.coerce_number_bounded(prop_val)?;
         let new_val = JsValue::float(n + 1.0);
-        self.set_member_prop(obj, prop_name_si, new_val, receiver)?;
+        self.set_member_prop(obj, prop_name_si, new_val, receiver, ext_pc)?;
         self.regs[a] = new_val;
         Ok(())
     }
@@ -141,10 +141,10 @@ impl Vm {
         };
         let receiver = self.regs[rd];
         let obj = unsafe { &mut *obj_ptr };
-        let prop_val = self.read_member_prop(obj, prop_name_si, receiver)?;
+        let (prop_val, ext_pc) = self.read_member_prop(obj, prop_name_si, receiver)?;
         let n = self.coerce_number_bounded(prop_val)?;
         let new_val = JsValue::float(n - 1.0);
-        self.set_member_prop(obj, prop_name_si, new_val, receiver)?;
+        self.set_member_prop(obj, prop_name_si, new_val, receiver, ext_pc)?;
         self.regs[a] = new_val;
         Ok(())
     }
@@ -187,7 +187,7 @@ impl Vm {
             return Ok(());
         };
         let receiver = self.regs[rd];
-        let prop_raw = {
+        let (prop_raw, ext_pc) = {
             let obj = unsafe { &mut *obj_ptr };
             self.read_member_prop(obj, prop_name_si, receiver)?
         };
@@ -203,7 +203,7 @@ impl Vm {
             JsValue::float(ln + rn)
         };
         let obj = unsafe { &mut *obj_ptr };
-        self.set_member_prop(obj, prop_name_si, new_val, receiver)?;
+        self.set_member_prop(obj, prop_name_si, new_val, receiver, ext_pc)?;
         self.regs[a] = new_val;
         Ok(())
     }
@@ -219,16 +219,16 @@ impl Vm {
             return Ok(());
         };
         let receiver = self.regs[rd];
-        let ln = {
+        let (ln, ext_pc) = {
             let obj = unsafe { &mut *obj_ptr };
-            let prop_val = self.read_member_prop(obj, prop_name_si, receiver)?;
-            self.coerce_number_bounded(prop_val)?
+            let (prop_val, ext_pc) = self.read_member_prop(obj, prop_name_si, receiver)?;
+            (self.coerce_number_bounded(prop_val)?, ext_pc)
         };
         let rn = self.coerce_number_bounded(self.regs[a])?;
         let new_val = JsValue::float(op(ln, rn));
         self.regs[a] = new_val;
         let obj = unsafe { &mut *obj_ptr };
-        self.set_member_prop(obj, prop_name_si, new_val, receiver)?;
+        self.set_member_prop(obj, prop_name_si, new_val, receiver, ext_pc)?;
         Ok(())
     }
 
@@ -243,16 +243,16 @@ impl Vm {
             return Ok(());
         };
         let receiver = self.regs[rd];
-        let ln = {
+        let (ln, ext_pc) = {
             let obj = unsafe { &mut *obj_ptr };
-            let prop_val = self.read_member_prop(obj, prop_name_si, receiver)?;
-            self.coerce_int32_bounded(prop_val)?
+            let (prop_val, ext_pc) = self.read_member_prop(obj, prop_name_si, receiver)?;
+            (self.coerce_int32_bounded(prop_val)?, ext_pc)
         };
         let rn = self.coerce_int32_bounded(self.regs[a])?;
         let new_val = JsValue::int(op(ln, rn));
         self.regs[a] = new_val;
         let obj = unsafe { &mut *obj_ptr };
-        self.set_member_prop(obj, prop_name_si, new_val, receiver)?;
+        self.set_member_prop(obj, prop_name_si, new_val, receiver, ext_pc)?;
         Ok(())
     }
 
@@ -265,10 +265,10 @@ impl Vm {
             return Ok(());
         };
         let receiver = self.regs[rd];
-        let ln = {
+        let (ln, ext_pc) = {
             let obj = unsafe { &mut *obj_ptr };
-            let prop_val = self.read_member_prop(obj, prop_name_si, receiver)?;
-            self.coerce_int32_bounded(prop_val)?
+            let (prop_val, ext_pc) = self.read_member_prop(obj, prop_name_si, receiver)?;
+            (self.coerce_int32_bounded(prop_val)?, ext_pc)
         };
         let shift = self.coerce_uint32_bounded(self.regs[a])? & 0x1F;
         let new_val = if !is_right {
@@ -285,7 +285,7 @@ impl Vm {
         };
         self.regs[a] = new_val;
         let obj = unsafe { &mut *obj_ptr };
-        self.set_member_prop(obj, prop_name_si, new_val, receiver)?;
+        self.set_member_prop(obj, prop_name_si, new_val, receiver, ext_pc)?;
         Ok(())
     }
 }

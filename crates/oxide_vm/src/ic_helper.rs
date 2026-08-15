@@ -239,3 +239,51 @@ pub(crate) fn ic_set_hit_poly(obj: &mut JsObject, bytecode: &[Instr], ext_pc: us
     }
     false
 }
+
+/// member 复合写（读改写共用同一扩展字组）的写侧命中判定：顺序遍历 4 槽，只接受
+/// depth==0 的数据槽并直写。
+///
+/// 读侧会把继承属性解析结果以 depth>0 条目写回同一扩展字组；写侧若命中这些条目
+/// 会把新值直写原型对象（原型污染，规范要求 shadow 到接收者 own 属性）——因此
+/// 原型条目一律跳过，落到慢路径走完整 [[Set]] 语义。
+///
+/// `pc` 为越过该 IC 指令全部扩展字后的位置（与 [`write_ic_back`] 同一约定），
+/// 命中遍历从 `pc - IC_EXT_WORDS` 起的扩展字开始。
+#[inline(always)]
+pub(crate) fn ic_set_hit_own(obj: &mut JsObject, bytecode: &[Instr], pc: usize, value: JsValue) -> bool {
+    let base = pc - IC_EXT_WORDS;
+    let shape_id = bytecode[base] & 0x00FF_FFFF;
+    if shape_id == 0 {
+        return false;
+    }
+    let proto_depth = (bytecode[base] >> 24) as u8;
+    let slot_index = bytecode[base + 1];
+    if proto_depth == 0 && obj.shape_id() == shape_id && slot_index < obj.prop_vec_len() as u32 {
+        obj.set_prop_shape(slot_index, value);
+        return true;
+    }
+    ic_set_hit_own_poly(obj, bytecode, base, value)
+}
+
+/// 写侧多态槽（1..3）遍历，depth==0 only；`inline(never)` 防主循环代码膨胀。
+/// `ext_pc` 为扩展字起始位置（首个扩展字处）。
+#[inline(never)]
+fn ic_set_hit_own_poly(obj: &mut JsObject, bytecode: &[Instr], ext_pc: usize, value: JsValue) -> bool {
+    for i in 1..IC_SLOTS {
+        let base = ext_pc + i * 2;
+        let shape_id = bytecode[base] & 0x00FF_FFFF;
+        if shape_id == 0 {
+            break;
+        }
+        let proto_depth = (bytecode[base] >> 24) as u8;
+        if proto_depth != 0 {
+            continue;
+        }
+        let slot_index = bytecode[base + 1];
+        if obj.shape_id() == shape_id && slot_index < obj.prop_vec_len() as u32 {
+            obj.set_prop_shape(slot_index, value);
+            return true;
+        }
+    }
+    false
+}

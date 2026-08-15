@@ -1,6 +1,5 @@
 use crate::{ic_debug, ic_trace, vm_trace};
 use oxide_bytecode::opcode::{OpCode, IC_EXT_WORDS};
-use oxide_kernel::prop_forge::PropTemplate;
 use oxide_runtime_api as coercion;
 use oxide_types::object::JsObject;
 use oxide_types::private_key::{int_key_value, is_int_key, make_private_name_id};
@@ -443,23 +442,14 @@ impl Vm {
             ic_debug!("IC_SET write-back shape={} slot={}", obj.shape_id(), pos);
         } else {
             self.profiling.record_ic_miss();
-            let old_shape = obj.shape_id();
-            self.ordinary_set_dispatch(obj, prop_name_si, value, receiver)?;
-            if old_shape != obj.shape_id() {
-                if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
-                    ic_helper::write_ic_back(self.bytecode_mut(), ic_pc, obj.shape_id(), pos, 0);
-                    ic_debug!("IC_SET write-back shape={} slot={}", obj.shape_id(), pos);
-                    self.kernel_core.prop_forge().upsert(
-                        obj.shape_id(),
-                        PropTemplate {
-                            shape_id: obj.shape_id(),
-                            prop_name: prop_name_si,
-                            position: pos,
-                            generation: obj.generation(),
-                        },
-                    );
-                }
+            prop_cache_miss();
+            // 写新属性（shape 转换）：数组 length / 整数索引键仍走完整
+            // ordinary_set_dispatch 语义，其余走 CreateDataProperty 快路径。
+            if self.named_prop_create_needs_ordinary_set(obj, prop_name_si) {
+                self.ordinary_set_dispatch(obj, prop_name_si, value, receiver)?;
+                return Ok(());
             }
+            self.create_named_prop_fast(obj, prop_name_si, value, receiver, ic_pc, true)?;
         }
 
         Ok(())

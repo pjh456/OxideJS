@@ -154,10 +154,10 @@ fn rerun_clears_polymorphic_slots() {
     );
 }
 
-/// member 读侧（obj.x++）多 shape 轮换：read_member_prop 多态命中，
-/// 写侧（set_member_prop）暂不接命中——本任务只验证格式同步不错位。
+/// member 复合写（obj.x++）多 shape 轮换：读侧与写侧都经 4 槽缓存命中，
+/// 每 shape 仅读侧学习 1 次 miss（写侧复用读侧条目直写）。
 #[test]
-fn member_compound_polymorphic_read_side_hits() {
+fn member_compound_polymorphic_read_write_hits() {
     let (r, _hits, misses) = run_once(
         r#"var a = { x: 1 }, b = { x: 2, y: 3 };
            for (var i = 0; i < 10000; i++) {
@@ -167,7 +167,7 @@ fn member_compound_polymorphic_read_side_hits() {
            a.x + b.x"#,
     );
     assert_eq!(r, "10003", "两对象 x 各自增 5000 次（从 1/2 起）");
-    assert!(misses < 5000, "读侧 4 槽缓存使 miss 远低于迭代数（实际 {misses}，写侧新属性路径不计入）");
+    assert_eq!(misses, 2, "两 shape 各 1 次读侧学习 miss，写侧全命中");
 }
 
 /// 非对象 receiver（字符串）经 IC primitive 分支：手动跳越全部扩展字后语义正确。
