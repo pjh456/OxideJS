@@ -112,6 +112,49 @@ fn for_let_per_iteration_independent() {
 
 #[test]
 fn tdz_access_before_init_throws() {
-    let _ = eval("x; let x=1");
-    // 未支持：精确 TDZ 尚未实现。
+    // 块级预声明后声明点前读取：TDZ 读抛 ReferenceError。
+    let err = eval("x; let x=1").unwrap_err();
+    assert!(err.contains("ReferenceError"), "got: {}", err);
+}
+
+#[test]
+fn tdz_write_throws() {
+    // TDZ 写：赋值引用解析先于 RHS，`x=1; let x;` 抛 ReferenceError。
+    let err = eval("x=1; let x;").unwrap_err();
+    assert!(err.contains("ReferenceError"), "got: {}", err);
+}
+
+#[test]
+fn tdz_compound_write_throws() {
+    // 复合赋值路径 TDZ：`x += 1` 在读旧值前解析赋值引用。
+    let err = eval("{ x += 1; let x; }").unwrap_err();
+    assert!(err.contains("ReferenceError"), "got: {}", err);
+}
+
+#[test]
+fn tdz_update_throws() {
+    // 自增/自减路径 TDZ：`x++` 同样抛 ReferenceError。
+    let err = eval("{ x++; let x; }").unwrap_err();
+    assert!(err.contains("ReferenceError"), "got: {}", err);
+}
+
+#[test]
+fn tdz_destructuring_throws() {
+    // 解构赋值目标 TDZ：`[a]=[1]` 写未初始化 a 抛 ReferenceError。
+    let err = eval("[a]=[1]; let a;").unwrap_err();
+    assert!(err.contains("ReferenceError"), "got: {}", err);
+}
+
+#[test]
+fn tdz_write_rhs_side_effect_not_evaluated() {
+    // 检查点顺序：TDZ 检查在 RHS 求值之前，RHS 副作用不执行（s 保持 0）。
+    let result = eval("var s=0; try{ x=(s=1); let x; }catch(e){} s").unwrap();
+    assert_eq!(result.as_int(), 0);
+}
+
+#[test]
+fn typeof_tdz_throws() {
+    // typeof 对 TDZ 绑定抛 ReferenceError（非 "undefined"）。
+    let err = eval("typeof x; let x;").unwrap_err();
+    assert!(err.contains("ReferenceError"), "got: {}", err);
 }

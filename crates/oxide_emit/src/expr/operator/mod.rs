@@ -466,6 +466,9 @@ impl Emitter {
     fn emit_identifier_update_static(
         &self, name: &str, update: &oxide_parser::UpdateExpression, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
+        // 自增/自减先解析赋值引用：TDZ 绑定抛 ReferenceError；const 抛 TypeError（编译期拦截）。
+        self.emit_identifier_tdz_guard(name, ctx)?;
+        self.emit_const_write_guard(name, ctx)?;
         let uv_idx = ctx.current_upvalue_captures.iter().position(|u| u.name == name);
         let captured_cell = ctx.captured_bindings.get(name).copied();
         // 循环 update 段：被捕获绑定走寄存器 INC/DEC（C 风格 for 每迭代 fresh，

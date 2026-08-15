@@ -50,3 +50,64 @@ fn block_scoped_const_shadowing_independent() {
 fn const_destructuring_declaration_works() {
     assert_eq!(eval("const { a } = { a: 7 }; a"), "7");
 }
+
+// const 初始化为 undefined 时再赋值也必须抛（guard 不能依赖槽值）。
+#[test]
+fn const_undefined_reassignment_throws() {
+    let out = eval("const x = undefined; x = 5");
+    assert!(out.contains("Assignment to constant variable"), "got: {out}");
+}
+
+// const 初始化为 undefined 时读取不受影响。
+#[test]
+fn const_undefined_read_ok() {
+    assert_eq!(eval("const x = undefined; x"), "undefined");
+}
+
+// 闭包捕获 const 赋值抛（cell 写路径编译期拦截）。
+#[test]
+fn const_captured_write_throws() {
+    let out = eval("const x = 1; (()=>x=2)()");
+    assert!(out.contains("Assignment to constant variable"), "got: {out}");
+}
+
+// 函数体内 const 被嵌套函数捕获（upvalue 路径）写同样抛。
+#[test]
+fn const_upvalue_write_throws() {
+    let out = eval("function outer(){ const x=1; function inner(){ x=2; } inner(); } outer()");
+    assert!(out.contains("Assignment to constant variable"), "got: {out}");
+}
+
+// 自增/自减路径 const 赋值抛。
+#[test]
+fn const_update_throws() {
+    let out = eval("const x = 1; x++");
+    assert!(out.contains("Assignment to constant variable"), "got: {out}");
+}
+
+// 复合赋值路径 const 抛。
+#[test]
+fn const_compound_throws() {
+    let out = eval("const x = 1; x += 1");
+    assert!(out.contains("Assignment to constant variable"), "got: {out}");
+}
+
+// 解构赋值目标 const 抛。
+#[test]
+fn const_destructuring_assignment_throws() {
+    let out = eval("const [a] = [1]; a = 5");
+    assert!(out.contains("Assignment to constant variable"), "got: {out}");
+}
+
+// 逻辑赋值短路场景：const truthy 时 ||= 不写不抛。
+#[test]
+fn const_logical_assign_short_circuit_ok() {
+    assert_eq!(eval("const x = 1; x ||= 5; x"), "1");
+}
+
+// 逻辑赋值非短路场景：const falsy 时 ||= 写抛。
+#[test]
+fn const_logical_assign_write_throws() {
+    let out = eval("const x = 0; x ||= 5");
+    assert!(out.contains("Assignment to constant variable"), "got: {out}");
+}

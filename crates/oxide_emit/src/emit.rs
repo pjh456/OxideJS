@@ -183,6 +183,9 @@ pub struct CompileCtx {
     /// 捕获判断（MAKE_CELL / CELL_GET / CELL_SET）与子函数 upvalue cell_idx 统一查此映射，
     /// 消除符号表时序依赖与 cell 索引错位。
     pub(crate) captured_bindings: BTreeMap<String, u8>,
+    /// 本函数从父函数捕获的 const 绑定名：子 ctx 不继承父函数作用域符号表，
+    /// 捕获 const 信息随 upvalue 收集一并快照，供 const 写检查（编译期拦截）使用。
+    pub(crate) upvalue_const_flags: HashSet<String>,
     /// 函数 `length` 属性值：首个带默认值形参之前的形参数（rest 不计）。
     /// emit_params_prologue 前由编译入口从 param_specs 计算。
     pub(crate) function_length: u32,
@@ -298,6 +301,7 @@ impl CompileCtx {
             current_upvalue_captures: Vec::new(),
             own_bindings: HashSet::new(),
             captured_bindings: BTreeMap::new(),
+            upvalue_const_flags: HashSet::new(),
             function_length: 0,
             const_overflow: false,
             with_stack: Vec::new(),
@@ -424,7 +428,8 @@ impl CompileCtx {
     }
 
     pub(crate) fn lookup_const_flag(&self, name: &str) -> bool {
-        self.scopes.symbols.lookup_is_const(name)
+        // upvalue 捕获的 const：子 ctx 符号表不含父函数作用域绑定，查快照标志。
+        self.scopes.symbols.lookup_is_const(name) || self.upvalue_const_flags.contains(name)
     }
 
     pub(crate) fn init_var(&mut self, name: &str) {
@@ -670,15 +675,18 @@ impl Emitter {
         Self
     }
 
-    /// 生成运行时抛 ReferenceError 的指令序列，返回一个未定义 dummy 寄存器
+    /// 生成运行时抛 `kind` 类型错误的指令序列，返回一个未定义 dummy 寄存器
     /// 保证 THROW 后不可达控制流的寄存器良定义。
     ///
     /// # 步骤
-    /// 1. 取全局 ReferenceError 构造器并 LOAD。
-    /// 2. 加载错误消息常量，`new ReferenceError(msg)` 构造错误对象。
+    /// 1. 取全局错误构造器并 LOAD。
+    /// 2. 加载错误消息常量，`new {kind}(msg)` 构造错误对象。
     /// 3. THROW 抛出；尾接 dummy 值保持后续读引用有确定寄存器。
-    pub(crate) fn emit_tdz_throw(&self, msg: &str, ctx: &mut CompileCtx) -> Result<u32, String> {
-        let ctor_reg = ctx.lookup_or_builtin("ReferenceError")?;
+    ///
+    /// # 边界与前提
+    /// - `kind` 必须是已注册的全局构造器名（如 "ReferenceError"/"TypeError"）。
+    pub(crate) fn emit_throw_error(&self, kind: &str, msg: &str, ctx: &mut CompileCtx) -> Result<u32, String> {
+        let ctor_reg = ctx.lookup_or_builtin(kind)?;
         let ctor = ctx.alloc_reg();
         ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(ctor), Operand::Reg(ctor_reg), Operand::None));
         let msg_reg = ctx.alloc_reg();
@@ -691,6 +699,37 @@ impl Emitter {
         let undef_idx = ctx.add_constant(Constant::Undefined);
         ctx.inst(Inst::load_const(Operand::Reg(dummy), undef_idx));
         Ok(dummy)
+    }
+
+    /// 生成运行时抛 ReferenceError 的指令序列（TDZ 访问专用，语义见 [`emit_throw_error`]）。
+    pub(crate) fn emit_tdz_throw(&self, msg: &str, ctx: &mut CompileCtx) -> Result<u32, String> {
+        self.emit_throw_error("ReferenceError", msg, ctx)
+    }
+
+    /// 赋值目标 TDZ 检查：未初始化绑定在赋值引用解析时抛 ReferenceError。
+    /// 须在 RHS 求值之前调用（规范：赋值 LHS 的 ResolveBinding 先于 RHS 副作用）。
+    ///
+    /// # 副作用
+    /// - TDZ 命中时发射 THROW 指令序列，其后指令不可达但保持寄存器良定义。
+    pub(crate) fn emit_identifier_tdz_guard(&self, name: &str, ctx: &mut CompileCtx) -> Result<(), String> {
+        if let Some((binding, _)) = ctx.scopes.symbols.lookup_any_binding(name) {
+            if !binding.initialized {
+                let _ = self.emit_tdz_throw(&format!("Cannot access '{name}' before initialization"), ctx)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// const 写检查：已初始化的 const 绑定再赋值编译期抛 TypeError（与槽值无关）。
+    /// 简单赋值在 RHS 求值之后、复合/更新在读旧值之前调用；解构赋值在写目标时调用。
+    ///
+    /// # 副作用
+    /// - const 命中时发射 THROW 指令序列，其后写指令不可达但保持寄存器良定义。
+    pub(crate) fn emit_const_write_guard(&self, name: &str, ctx: &mut CompileCtx) -> Result<(), String> {
+        if ctx.lookup_const_flag(name) {
+            let _ = self.emit_throw_error("TypeError", "Assignment to constant variable", ctx)?;
+        }
+        Ok(())
     }
 
     /// 遍历解构 pattern 收集内嵌默认值表达式（AssignmentPattern.right）。
@@ -1140,6 +1179,22 @@ impl Emitter {
                 &parent_ctx.current_upvalue_captures,
                 &ctx.own_bindings,
             );
+            // 捕获 const 信息快照：父作用域符号表此时完整（预声明已完成），
+            // 直接查绑定 is_const（不依赖初始化状态，TDZ 中 const 也须拦截）。
+            ctx.upvalue_const_flags = ctx
+                .current_upvalue_captures
+                .iter()
+                .filter(|u| u.parent_uv_idx.is_none())
+                .filter(|u| {
+                    parent_ctx
+                        .scopes
+                        .symbols
+                        .lookup_any_binding(u.name.as_str())
+                        .map(|(b, _)| b.is_const)
+                        .unwrap_or(false)
+                })
+                .map(|u| u.name.clone())
+                .collect();
             // 类字段 computed key 数组等合成捕获：直接追加 upvalue（cell_idx 由父分配）。
             for (name, cell_idx) in extra_upvalue_names {
                 if !ctx.own_bindings.contains(*name) && !ctx.current_upvalue_captures.iter().any(|u| u.name == *name) {

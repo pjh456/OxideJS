@@ -18,6 +18,8 @@ impl Emitter {
     fn emit_compound_identifier_static(
         &self, name: &str, op: OpCode, rhs: u32, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
+        // const 复合赋值恒抛 TypeError（编译期拦截，值无关）；检查在读旧值之前。
+        self.emit_const_write_guard(name, ctx)?;
         // 循环 update 段：被捕获绑定走寄存器 RMW（C 风格 for 每迭代 fresh，
         // update 写寄存器供下一迭代 fresh 拷贝，不污染本迭代闭包捕获的 cell）。
         if ctx.register_update_names.iter().any(|n| n == name) {
@@ -236,6 +238,8 @@ impl Emitter {
                     let store_label = ctx.next_label_id();
                     let end_label = ctx.next_label_id();
                     let name = id_ref.name.as_str();
+                    // 逻辑赋值先解析赋值引用：TDZ 绑定在读旧值前抛 ReferenceError。
+                    self.emit_identifier_tdz_guard(name, ctx)?;
                     // 目标判定：upvalue / 被捕获 cell / 普通槽，读与写须穿透共享单元。
                     let uv_idx = ctx.current_upvalue_captures.iter().position(|u| u.name == name);
                     let captured_cell = ctx.captured_bindings.get(name).copied();
@@ -270,6 +274,8 @@ impl Emitter {
                     self.emit_logical_assign_test(logical_op, result_reg, store_label, end_label, ctx)?;
                     ctx.labels.set_label_pos(store_label, ctx.insts.len());
                     let val_reg = self.emit_expression(&assign.right, ctx)?;
+                    // 短路未通过才写：const 目标在此抛 TypeError（编译期拦截，值无关）。
+                    self.emit_const_write_guard(name, ctx)?;
                     let const_flag = if ctx.lookup_const_flag(name) { 1 } else { 0 };
                     if let Some(uv) = uv_idx {
                         ctx.inst(Inst::new(
@@ -317,8 +323,14 @@ impl Emitter {
                     || assign.operator == AssignmentOperator::ShiftRight
                     || assign.operator == AssignmentOperator::ShiftRightZeroFill
                 {
-                    let rhs = self.emit_expression(&assign.right, ctx)?;
                     let name = id_ref.name.as_str();
+                    // with 体内自由标识符的复合赋值由运行时对象遮蔽判定，不静态检查；
+                    // 其余路径 TDZ 检查在 RHS 求值之前（规范：赋值引用解析先于 RHS 副作用）。
+                    let with_dynamic = !ctx.with_stack.is_empty() && !ctx.is_with_internal_binding(name);
+                    if !with_dynamic {
+                        self.emit_identifier_tdz_guard(name, ctx)?;
+                    }
+                    let rhs = self.emit_expression(&assign.right, ctx)?;
                     let op = match assign.operator {
                         AssignmentOperator::Addition => OpCode::COMPOUND_ADD,
                         AssignmentOperator::Subtraction => OpCode::COMPOUND_SUB,
@@ -336,7 +348,7 @@ impl Emitter {
                     };
                     // with 体内自由标识符的复合赋值走动态路径：对象有属性则读对象、
                     // 运算后写回对象，否则回退外层静态复合。
-                    if !ctx.with_stack.is_empty() && !ctx.is_with_internal_binding(name) {
+                    if with_dynamic {
                         let obj_reg = ctx.innermost_with_obj().expect("with stack non-empty");
                         let key_idx = ctx.add_constant(Constant::String(name.to_string()));
                         let key_reg = ctx.alloc_reg();
@@ -387,8 +399,14 @@ impl Emitter {
                     Err(format!("compound assignment operator {:?} not supported", assign.operator))
                 }
             } else {
-                let val_reg = self.emit_expression(&assign.right, ctx)?;
                 let name = id_ref.name.as_str();
+                // with 体内自由标识符走动态写（对象属性运行时遮蔽判定，不静态检查 TDZ）；
+                // 其余路径 TDZ 检查在 RHS 求值之前（规范：赋值引用解析先于 RHS 副作用）。
+                let with_dynamic = !ctx.with_stack.is_empty() && !ctx.is_with_internal_binding(name);
+                if !with_dynamic {
+                    self.emit_identifier_tdz_guard(name, ctx)?;
+                }
+                let val_reg = self.emit_expression(&assign.right, ctx)?;
                 // 赋值函数/箭头/class 表达式 → 推断 name。
                 if crate::is_anonymous_function_definition(&assign.right) {
                     if let Some(sub_mod) = ctx.nested.last_mut() {
@@ -397,8 +415,7 @@ impl Emitter {
                         }
                     }
                 }
-                // with 体内的自由标识符走动态写：对象有属性则写对象，否则写外层。
-                if !ctx.with_stack.is_empty() && !ctx.is_with_internal_binding(name) {
+                if with_dynamic {
                     let is_const = ctx.lookup_const_flag(name);
                     let const_flag: u16 = if is_const { 1 } else { 0 };
                     self.emit_with_dynamic_write(name, val_reg, const_flag, ctx);

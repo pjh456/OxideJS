@@ -112,6 +112,9 @@ impl Emitter {
         match target {
             AssignmentTarget::AssignmentTargetIdentifier(id) => {
                 let name = id.name.as_str();
+                // 解构赋值目标：TDZ 写抛 ReferenceError，const 写抛 TypeError（编译期拦截）。
+                self.emit_identifier_tdz_guard(name, ctx)?;
+                self.emit_const_write_guard(name, ctx)?;
                 let var_reg = ctx.lookup_or_global(name);
                 ctx.inst(Inst::new(
                     OpCode::STORE_VAR,
@@ -294,6 +297,9 @@ impl Emitter {
             AssignmentTargetMaybeDefault::ObjectAssignmentTarget(op) => self.emit_object_assignment(op, src_reg, ctx),
             AssignmentTargetMaybeDefault::AssignmentTargetIdentifier(id) => {
                 let name = id.name.as_str();
+                // 解构赋值目标：TDZ 写抛 ReferenceError，const 写抛 TypeError（编译期拦截）。
+                self.emit_identifier_tdz_guard(name, ctx)?;
+                self.emit_const_write_guard(name, ctx)?;
                 let var_reg = ctx.lookup_or_global(name);
                 ctx.inst(Inst::new(
                     OpCode::STORE_VAR,
@@ -358,6 +364,9 @@ impl Emitter {
                         prop_reg = self.emit_default_if_undefined(prop_reg, default_expr, Some(name), ctx)?;
                     }
                     let name = id.binding.name.as_str();
+                    // 解构赋值目标：TDZ 写抛 ReferenceError，const 写抛 TypeError（编译期拦截）。
+                    self.emit_identifier_tdz_guard(name, ctx)?;
+                    self.emit_const_write_guard(name, ctx)?;
                     let var_reg = ctx.lookup_or_global(name);
                     ctx.inst(Inst::new(
                         OpCode::STORE_VAR,

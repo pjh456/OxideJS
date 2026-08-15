@@ -252,6 +252,10 @@ impl Vm {
         }
         unsafe {
             let cell = &mut *cell_ptr;
+            // TDZ 写检查：cell 未初始化（捕获绑定声明点前）写抛 ReferenceError。
+            if !cell.is_initialized() {
+                return self.raise_error_kind("ReferenceError", "Cannot access variable before initialization");
+            }
             cell.value = src_val;
             cell.set_initialized(true);
         }
@@ -330,7 +334,17 @@ impl Vm {
                     if !upvals[uv_idx].is_null() {
                         unsafe {
                             let cell = &mut *upvals[uv_idx];
-                            if const_flag != 0 && !cell.value.is_undefined() {
+                            // TDZ 写检查：cell 未初始化（捕获绑定声明点前）写抛 ReferenceError。
+                            if !cell.is_initialized() {
+                                self.raise_error_kind(
+                                    "ReferenceError",
+                                    "Cannot access variable before initialization",
+                                )?;
+                                return Ok(());
+                            }
+                            // const guard：TDZ 检查后 cell 必已初始化（存在性判定，与值无关），
+                            // const 初始值为 undefined 时再赋值同样抛。
+                            if const_flag != 0 {
                                 self.raise_error_kind("TypeError", "Assignment to constant variable")?;
                                 return Ok(());
                             }
