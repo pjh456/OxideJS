@@ -47,10 +47,17 @@ pub fn encode_call_window(f: &mut IRFunction, live: &LiveInfo) {
             if matches!(inst.op, OpCode::CALL | OpCode::NEW_EXPRESSION | OpCode::SUPER_CALL) {
                 let after = &live.inst_live_after[i];
                 // 存活上界 = 最大存活槽号 + 1；254/255 由帧单独保存，不进窗口。
+                // 按 u64 位集逐字取置位（活集小，仅遍历实际存活的槽）。
                 let mut upper = 0u32;
-                for (reg, &alive) in after.iter().enumerate().take(254) {
-                    if alive {
-                        upper = (reg + 1) as u32;
+                for (word_idx, word) in after.iter().enumerate() {
+                    let mut bits = *word;
+                    while bits != 0 {
+                        let bit = bits.trailing_zeros() as usize;
+                        let reg = word_idx * 64 + bit;
+                        if reg < 254 {
+                            upper = (reg + 1) as u32;
+                        }
+                        bits &= bits - 1;
                     }
                 }
                 if upper > 0 {

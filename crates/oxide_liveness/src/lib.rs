@@ -10,7 +10,7 @@ mod live_info;
 mod liveness_log;
 mod ranges;
 
-pub use live_info::LiveInfo;
+pub use live_info::{bitset_get, LiveInfo};
 
 use oxide_cfg::Cfg;
 use oxide_ir::IRFunction;

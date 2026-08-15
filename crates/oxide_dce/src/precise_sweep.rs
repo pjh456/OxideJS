@@ -39,7 +39,7 @@ pub(super) fn pass_dead_with_liveness(f: &IRFunction, live: &LiveInfo, keep: &mu
             continue;
         }
         let after = &live.inst_live_after[i];
-        let not_live_after = |r: u32| !after.get(r as usize).copied().unwrap_or(false);
+        let not_live_after = |r: u32| !oxide_liveness::bitset_get(after, r as usize);
         // 通用规则：纯指令结果不被后续使用 → 删（is_pure=false 已防 CALL/SPILL/UNSPILL）
         if let Some(r) = inst.def_reg() {
             if not_live_after(r) && inst.is_pure(f) {
@@ -72,14 +72,15 @@ mod tests {
     use crate::dce_precise;
     use oxide_ir::inst::Inst;
 
-    /// helper：稀疏号集 → bitset live_after。
-    fn live_sets(after: &[&[u32]], reg_count: usize) -> Vec<Vec<bool>> {
+    /// helper：稀疏号集 → u64 位集 live_after。
+    fn live_sets(after: &[&[u32]], reg_count: usize) -> Vec<Vec<u64>> {
+        let words = (reg_count + 1).div_ceil(64);
         after
             .iter()
             .map(|set| {
-                let mut v = vec![false; reg_count + 1];
+                let mut v = vec![0u64; words];
                 for &r in *set {
-                    v[r as usize] = true;
+                    v[(r as usize) >> 6] |= 1u64 << ((r as usize) & 63);
                 }
                 v
             })

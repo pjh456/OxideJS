@@ -4,13 +4,18 @@
 //! None→0 / This→254 / NewTarget→255 / CALL 隐式 reg0 全内置，不重复建。
 //! Exception 边当普通边参与迭代；Exception 目标块入口 reg 0 隐式 def
 //! （异常展开写 regs[0]，vm_runtime.rs:204-205）在此建模：gen.remove(0)+kill.insert(0)。
+//!
+//! 位集为 `u64` 压缩（1 字 64 位，密度为 `Vec<bool>` 的 8 倍）；不动点迭代
+//! 复用 out/input 两块缓冲（clear + 覆盖），不逐块逐迭代分配。
 
 use oxide_cfg::{Cfg, EdgeKind};
 use oxide_ir::IRFunction;
 
+use crate::live_info::{bitset_clear, bitset_set};
+
 /// 块级 liveness：返回 (block_live_in, block_live_out, reg_count)。
-/// reg_count = 全部 def/use 最大 reg 号（bitset 长度 = reg_count+1）。
-pub(super) fn block_liveness(f: &IRFunction, cfg: &Cfg) -> (Vec<Vec<bool>>, Vec<Vec<bool>>, usize) {
+/// reg_count = 全部 def/use 最大 reg 号（bitset 容量 = reg_count+1）。
+pub(super) fn block_liveness(f: &IRFunction, cfg: &Cfg) -> (Vec<Vec<u64>>, Vec<Vec<u64>>, usize) {
     // 1. reg_count 上界扫描（不信任 f.n_registers，动态求上界，照 iter_sweep 先例）
     let mut reg_count = 255usize; // 兜底 This/NewTarget 254/255
     for inst in &f.insts {
@@ -22,23 +27,23 @@ pub(super) fn block_liveness(f: &IRFunction, cfg: &Cfg) -> (Vec<Vec<bool>>, Vec<
         }
     }
 
-    let bits = reg_count + 1;
+    let words = (reg_count + 1).div_ceil(64);
     let n = cfg.blocks.len();
 
     // 2. 每块 gen/kill
-    let mut gen: Vec<Vec<bool>> = vec![vec![false; bits]; n];
-    let mut kill: Vec<Vec<bool>> = vec![vec![false; bits]; n];
+    let mut gen: Vec<Vec<u64>> = vec![vec![0u64; words]; n];
+    let mut kill: Vec<Vec<u64>> = vec![vec![0u64; words]; n];
     for (b, block) in cfg.blocks.iter().enumerate() {
         // gen：块内反向扫描，kill 先于 gen（`live = (live − def) ∪ use`）。
         // 顺序理由：COMPOUND_ADD 等读-写同寄存器指令 use 含 rd（contract.rs:137），
         // gen 先于 kill 会把 rd 旧值从 live_before 错误剔除。
-        let mut live = vec![false; bits];
+        let mut live = vec![0u64; words];
         for i in block.inst_range.clone().rev() {
             if let Some(d) = f.insts[i].def_reg() {
-                live[d as usize] = false;
+                bitset_clear(&mut live, d as usize);
             }
             for u in f.insts[i].use_regs() {
-                live[u as usize] = true;
+                bitset_set(&mut live, u as usize);
             }
         }
         gen[b] = live;
@@ -46,7 +51,7 @@ pub(super) fn block_liveness(f: &IRFunction, cfg: &Cfg) -> (Vec<Vec<bool>>, Vec<
         // kill：块内正向扫描，def_reg 非 None 即插入
         for i in block.inst_range.clone() {
             if let Some(d) = f.insts[i].def_reg() {
-                kill[b][d as usize] = true;
+                bitset_set(&mut kill[b], d as usize);
             }
         }
 
@@ -58,39 +63,39 @@ pub(super) fn block_liveness(f: &IRFunction, cfg: &Cfg) -> (Vec<Vec<bool>>, Vec<
             .iter()
             .any(|src| src.succs.iter().any(|&(dst, k)| dst == b && k == EdgeKind::Exception));
         if is_exception_target {
-            gen[b][0] = false;
-            kill[b][0] = true;
+            bitset_clear(&mut gen[b], 0);
+            bitset_set(&mut kill[b], 0);
         }
     }
 
     // 3. reverse_postorder（确定性，禁 HashMap 迭代序）
     let rpo = reverse_postorder(cfg);
 
-    // 4. 不动点迭代
-    let mut live_in = vec![vec![false; bits]; n];
-    let mut live_out = vec![vec![false; bits]; n];
+    // 4. 不动点迭代：out/input 缓冲循环外分配复用，clear + 覆盖免逐迭代分配
+    let mut live_in = vec![vec![0u64; words]; n];
+    let mut live_out = vec![vec![0u64; words]; n];
+    let mut out = vec![0u64; words];
+    let mut input = vec![0u64; words];
     let mut iters = 0usize;
     loop {
         let mut changed = false;
         for &b in &rpo {
             // live_out[b] = ∪ live_in[s]（全部 succs，含 Exception 边当普通边）
-            let mut out = vec![false; bits];
+            out.fill(0);
             for &(succ, _kind) in &cfg.blocks[b].succs {
-                for (r, &v) in live_in[succ].iter().enumerate() {
-                    if v {
-                        out[r] = true;
-                    }
+                let si = &live_in[succ];
+                for (w, word) in out.iter_mut().enumerate() {
+                    *word |= si[w];
                 }
             }
             // live_in[b] = gen[b] | (live_out[b] − kill[b])
-            let mut input = vec![false; bits];
-            for r in 0..bits {
-                input[r] = gen[b][r] || (out[r] && !kill[b][r]);
+            for w in 0..words {
+                input[w] = gen[b][w] | (out[w] & !kill[b][w]);
             }
             if input != live_in[b] || out != live_out[b] {
                 changed = true;
-                live_in[b] = input;
-                live_out[b] = out;
+                live_in[b].copy_from_slice(&input);
+                live_out[b].copy_from_slice(&out);
             }
         }
         if !changed {
@@ -135,8 +140,8 @@ mod tests {
     use oxide_ir::inst::Inst;
     use oxide_ir::operand::Operand;
 
-    fn set(v: &[bool], regs: &[u32]) -> bool {
-        regs.iter().all(|&r| v[r as usize])
+    fn set(v: &[u64], regs: &[u32]) -> bool {
+        regs.iter().all(|&r| crate::live_info::bitset_get(v, r as usize))
     }
 
     fn empty_function() -> IRFunction {
@@ -154,12 +159,12 @@ mod tests {
         let (live_in, live_out, reg_count) = block_liveness(&f, &cfg);
         assert!(reg_count >= 2);
         assert!(set(&live_in[0], &[0, 1]), "entry liveIn 应含 0、1");
-        assert!(!live_in[0][2], "r2 是 def 不应在 liveIn");
+        assert!(!crate::live_info::bitset_get(&live_in[0], 2), "r2 是 def 不应在 liveIn");
         assert!(set(&live_out[0], &[]), "live_out 空");
         // exit 哨兵为空块，live 全空
         let exit = cfg.exit;
-        assert!(live_in[exit].iter().all(|&v| !v));
-        assert!(live_out[exit].iter().all(|&v| !v));
+        assert!(live_in[exit].iter().all(|&w| w == 0));
+        assert!(live_out[exit].iter().all(|&w| w == 0));
     }
 
     #[test]
@@ -187,15 +192,15 @@ mod tests {
         let (live_in, _, _) = block_liveness(&f, &cfg);
         // join 块（NOP 所在块）liveIn 含 6（RETURN 用）
         let join = cfg.blocks.iter().position(|b| b.inst_range == (4..6usize)).unwrap();
-        assert!(live_in[join][6], "join 块 liveIn 应含 r6");
+        assert!(crate::live_info::bitset_get(&live_in[join], 6), "join 块 liveIn 应含 r6");
         // then 分支块 liveIn 含 2、3，不含 5
         let then = cfg.blocks.iter().position(|b| b.inst_range == (1..3usize)).unwrap();
         assert!(set(&live_in[then], &[2, 3]));
-        assert!(!live_in[then][5]);
+        assert!(!crate::live_info::bitset_get(&live_in[then], 5));
         // else 分支块 liveIn 含 4、5，不含 2
         let els = cfg.blocks.iter().position(|b| b.inst_range == (3..4usize)).unwrap();
         assert!(set(&live_in[els], &[4, 5]));
-        assert!(!live_in[els][2]);
+        assert!(!crate::live_info::bitset_get(&live_in[els], 2));
     }
 
     #[test]
@@ -219,11 +224,11 @@ mod tests {
         let cfg = oxide_cfg::build_cfg(&f);
         let (live_in, _, _) = block_liveness(&f, &cfg);
         // header 块（含 inst 0）liveIn 含 2（r2 跨回边存活）与 1（cond）
-        assert!(live_in[0][1], "header liveIn 应含 cond r1");
-        assert!(live_in[0][2], "header liveIn 应含 r2（跨回边存活）");
+        assert!(crate::live_info::bitset_get(&live_in[0], 1), "header liveIn 应含 cond r1");
+        assert!(crate::live_info::bitset_get(&live_in[0], 2), "header liveIn 应含 r2（跨回边存活）");
         // body 块 liveIn 含 2
         let body = cfg.blocks.iter().position(|b| b.inst_range == (1..3usize)).unwrap();
-        assert!(live_in[body][2]);
+        assert!(crate::live_info::bitset_get(&live_in[body], 2));
         // 测试通过本身即不动点收敛证明
     }
 
@@ -250,11 +255,11 @@ mod tests {
         let (live_in, _, _) = block_liveness(&f, &cfg);
         // catch 块 liveIn 不含 0（隐式 def 截断）
         let catch = cfg.blocks.iter().position(|b| b.inst_range == (3..5usize)).unwrap();
-        assert!(!live_in[catch][0], "catch 块入口 reg0 应被隐式 def 截断");
+        assert!(!crate::live_info::bitset_get(&live_in[catch], 0), "catch 块入口 reg0 应被隐式 def 截断");
         // try 块（entry）liveIn 不含 0（未污染入口）
-        assert!(!live_in[0][0], "reg0 use 不得污染函数入口");
+        assert!(!crate::live_info::bitset_get(&live_in[0], 0), "reg0 use 不得污染函数入口");
         // try 块 liveIn 含 2（正常变量照常存活）
-        assert!(live_in[0][2], "try 块 liveIn 应含 r2");
+        assert!(crate::live_info::bitset_get(&live_in[0], 2), "try 块 liveIn 应含 r2");
     }
 
     #[test]
@@ -268,6 +273,6 @@ mod tests {
             .push(Inst::new(OpCode::HALT, Operand::None, Operand::None, Operand::None));
         let cfg = oxide_cfg::build_cfg(&f);
         let (live_in, _, _) = block_liveness(&f, &cfg);
-        assert!(live_in[0][0], "None→0 映射由 contract.rs 消费生效");
+        assert!(crate::live_info::bitset_get(&live_in[0], 0), "None→0 映射由 contract.rs 消费生效");
     }
 }

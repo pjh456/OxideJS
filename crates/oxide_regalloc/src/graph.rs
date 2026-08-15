@@ -253,7 +253,7 @@ pub(super) fn build(
     for i in 0..inst_count {
         let mut at_i: Vec<u32> = Vec::new();
         for &v in &node_ids {
-            if live.inst_live_before[i].get(v as usize).copied().unwrap_or(false) {
+            if oxide_liveness::bitset_get(&live.inst_live_before[i], v as usize) {
                 at_i.push(v);
             }
         }
@@ -279,7 +279,7 @@ pub(super) fn build(
                     if v == d {
                         continue;
                     }
-                    if live.inst_live_after[i].get(v as usize).copied().unwrap_or(false) {
+                    if oxide_liveness::bitset_get(&live.inst_live_after[i], v as usize) {
                         adj_sets.entry(d).or_default().insert(v);
                         adj_sets.entry(v).or_default().insert(d);
                     }
