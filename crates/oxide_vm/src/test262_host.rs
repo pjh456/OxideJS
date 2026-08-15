@@ -48,10 +48,7 @@ pub fn eval_script(vm: &mut Vm, args: &[u8]) -> NativeResult {
                 Err(e) => NativeResult::Err(oxide_builtins::error::create_from_text(vm, &e)),
             }
         }
-        Err(e) => NativeResult::Err(oxide_builtins::error::create_from_text(
-            vm,
-            &format!("SyntaxError: {e}"),
-        )),
+        Err(e) => NativeResult::Err(oxide_builtins::error::create_from_text(vm, &format!("SyntaxError: {e}"))),
     }
 }
 

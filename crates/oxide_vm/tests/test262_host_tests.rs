@@ -56,7 +56,8 @@ fn eval_script_syntax_error_is_catchable() {
 /// 未实现方法抛能力缺失错误（消息带 `not supported`），不抛 ReferenceError。
 #[test]
 fn unsupported_methods_throw_not_supported() {
-    let r = eval("try { $262.detachArrayBuffer(new ArrayBuffer(8)); 'no-throw' } catch (e) { e.name + ':' + e.message }");
+    let r =
+        eval("try { $262.detachArrayBuffer(new ArrayBuffer(8)); 'no-throw' } catch (e) { e.name + ':' + e.message }");
     assert!(r.contains("TypeError"), "期望 TypeError，实际 {r}");
     assert!(r.contains("not supported"), "期望能力缺失消息，实际 {r}");
 

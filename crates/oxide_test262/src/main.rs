@@ -842,38 +842,86 @@ fn run_chunked(args: &[String], skip_until: usize, end_index: usize, chunk_size:
 /// 监督模式下子进程写入、父进程轮询的一条心跳记录。
 /// `index` 是子进程即将运行的全局测试下标（`START`）或其完成窗口的
 /// 结束下标（`DONE`）；计数始终覆盖 `index` *之前* 已完成的测试，
-/// 因此进行中的测试不会被计入。
+/// 因此进行中的测试不会被计入。`categories` 为子进程失败分类计数快照
+/// （首行之后按 `类别\t计数` 逐行写出），使父进程在 supervise 下也能按
+/// 根因拆分失败。
 struct Heartbeat {
     phase: String,
     index: usize,
     pass: usize,
     fail: usize,
     skip: usize,
+    categories: HashMap<String, usize>,
 }
 
-/// 用单行内容覆写心跳文件。错误被忽略：漏写心跳只是把停滞检测推迟一个
-/// 轮询间隔。假定单 worker（监督器强制 `OXIDE_TEST262_WORKERS=1`）；
+/// 用单行心跳头 + 失败类别行覆写心跳文件。错误被忽略：漏写心跳只是把停滞
+/// 检测推迟一个轮询间隔。假定单 worker（监督器强制 `OXIDE_TEST262_WORKERS=1`）；
 /// 多 worker 时运行下标有歧义且文件存在竞争。
-fn write_heartbeat(path: &Path, phase: &str, index: usize, pass: usize, fail: usize, skip: usize) {
-    let _ = std::fs::write(path, format!("{phase} {index} {pass} {fail} {skip}\n"));
+fn write_heartbeat(
+    path: &Path, phase: &str, index: usize, pass: usize, fail: usize, skip: usize, categories: &HashMap<String, usize>,
+) {
+    let mut content = format!("{phase} {index} {pass} {fail} {skip}\n");
+    for (cat, count) in categories {
+        // 类别文本内的制表符/换行会破坏行格式，写盘前压平。
+        let cat = cat.replace(['\t', '\n', '\r'], " ");
+        content.push_str(&format!("{cat}\t{count}\n"));
+    }
+    let _ = std::fs::write(path, content);
 }
 
-/// 读取最新心跳。任何缺失/残缺/畸形内容均返回 `None`，使轮询循环可直接
-/// 在下一拍重试。
+/// 读取最新心跳（含失败类别行）。任何缺失/残缺/畸形内容均返回 `None`，
+/// 使轮询循环可直接在下一拍重试。
 fn read_heartbeat(path: &Path) -> Option<Heartbeat> {
     let content = std::fs::read_to_string(path).ok()?;
-    let line = content.lines().next()?;
+    let mut lines = content.lines();
+    let line = lines.next()?;
     let mut parts = line.split_whitespace();
     let phase = parts.next()?.to_string();
     let index = parts.next()?.parse().ok()?;
     let pass = parts.next()?.parse().ok()?;
     let fail = parts.next()?.parse().ok()?;
     let skip = parts.next()?.parse().ok()?;
-    Some(Heartbeat { phase, index, pass, fail, skip })
+    let mut categories = HashMap::new();
+    for l in lines {
+        if let Some((cat, count)) = l.split_once('\t') {
+            if let Ok(c) = count.trim().parse() {
+                categories.insert(cat.to_string(), c);
+            }
+        }
+    }
+    Some(Heartbeat {
+        phase,
+        index,
+        pass,
+        fail,
+        skip,
+        categories,
+    })
+}
+
+/// 把心跳快照并入累计统计（含失败类别）。
+fn merge_heartbeat(stats: &mut RunStats, hb: &Heartbeat) {
+    stats.pass += hb.pass;
+    stats.fail += hb.fail;
+    stats.skip += hb.skip;
+    for (cat, count) in &hb.categories {
+        *stats.fail_categories.entry(cat.clone()).or_insert(0) += count;
+    }
+}
+
+/// 记一笔超时/崩溃结果：默认计入 skip，`--no-skip` 下计入 fail（归入
+/// `timeout/crash` 类别，父进程无法进一步拆分根因）。
+fn record_timeout_or_crash(stats: &mut RunStats, no_skip: bool) {
+    if no_skip {
+        stats.fail += 1;
+        *stats.fail_categories.entry("timeout/crash".into()).or_insert(0) += 1;
+    } else {
+        stats.skip += 1;
+    }
 }
 
 /// 在监督下运行一个窗口 `[wstart, wend)`，返回经过多次子进程重启
-/// 聚合的 `(pass, fail, skip)`。
+/// 聚合的 `RunStats`（含失败类别）。
 ///
 /// 单 worker 子进程运行常规 in-process 路径（预热 kernel + harness 前缀缓存）
 /// 并在每个测试前发出心跳。若运行下标停滞超过 `timeout`，子进程被杀死、
@@ -883,8 +931,8 @@ fn read_heartbeat(path: &Path) -> Option<Heartbeat> {
 fn supervise_window(
     exe: &Path, args: &[String], no_skip: bool, wstart: usize, wend: usize, timeout: Duration, startup_grace: Duration,
     paths: &[PathBuf], window_id: usize,
-) -> (usize, usize, usize) {
-    let (mut pass, mut fail, mut skip) = (0usize, 0usize, 0usize);
+) -> RunStats {
+    let mut stats = RunStats::default();
     let mut cur = wstart;
     let hb_path = std::env::temp_dir().join(format!("oxide_t262_hb_{}_{}.txt", std::process::id(), window_id));
 
@@ -915,11 +963,7 @@ fn supervise_window(
             Ok(child) => child,
             Err(err) => {
                 eprintln!("  window {window_id}: failed to spawn child at index {cur}: {err}");
-                if no_skip {
-                    fail += 1;
-                } else {
-                    skip += 1;
-                }
+                record_timeout_or_crash(&mut stats, no_skip);
                 cur += 1;
                 continue;
             }
@@ -934,36 +978,24 @@ fn supervise_window(
                 Ok(Some(status)) => {
                     match read_heartbeat(&hb_path) {
                         Some(hb) if hb.phase == "DONE" => {
-                            pass += hb.pass;
-                            fail += hb.fail;
-                            skip += hb.skip;
+                            merge_heartbeat(&mut stats, &hb);
                             cur = wend;
                         }
                         Some(hb) => {
-                            pass += hb.pass;
-                            fail += hb.fail;
-                            skip += hb.skip;
+                            merge_heartbeat(&mut stats, &hb);
                             eprintln!(
                                 "  [warn] window {window_id}: child exited ({status}) mid-test #{}: {}",
                                 hb.index,
                                 describe(hb.index)
                             );
-                            if no_skip {
-                                fail += 1;
-                            } else {
-                                skip += 1;
-                            }
+                            record_timeout_or_crash(&mut stats, no_skip);
                             cur = hb.index + 1;
                         }
                         None => {
                             eprintln!(
                                 "  [warn] window {window_id}: child exited ({status}) with no heartbeat at index {cur}; skipping one"
                             );
-                            if no_skip {
-                                fail += 1;
-                            } else {
-                                skip += 1;
-                            }
+                            record_timeout_or_crash(&mut stats, no_skip);
                             cur += 1;
                         }
                     }
@@ -996,9 +1028,7 @@ fn supervise_window(
                 let hb = read_heartbeat(&hb_path);
                 let culprit = hb.as_ref().map(|h| h.index).unwrap_or(cur);
                 if let Some(h) = &hb {
-                    pass += h.pass;
-                    fail += h.fail;
-                    skip += h.skip;
+                    merge_heartbeat(&mut stats, h);
                 }
                 eprintln!(
                     "  [timeout] window {window_id}: TIMEOUT ({}s) on test #{culprit}: {}",
@@ -1007,11 +1037,7 @@ fn supervise_window(
                 );
                 let _ = child.kill();
                 let _ = child.wait();
-                if no_skip {
-                    fail += 1;
-                } else {
-                    skip += 1;
-                }
+                record_timeout_or_crash(&mut stats, no_skip);
                 cur = culprit + 1;
                 break;
             }
@@ -1021,7 +1047,7 @@ fn supervise_window(
     }
 
     let _ = std::fs::remove_file(&hb_path);
-    (pass, fail, skip)
+    stats
 }
 
 /// 编排一次监督式全量运行：把 `[skip_until, end_index)` 切分为窗口，至多
@@ -1084,18 +1110,18 @@ fn run_supervised(args: &[String], skip_until: usize, end_index: usize, no_skip:
     let windows = &windows;
     let exe = &exe;
 
-    let partials: Vec<(usize, usize, usize)> = std::thread::scope(|scope| {
+    let partials: Vec<RunStats> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..supervisors)
             .map(|_| {
                 scope.spawn(move || {
-                    let (mut pass, mut fail, mut skip) = (0usize, 0usize, 0usize);
+                    let mut stats = RunStats::default();
                     loop {
                         let wi = next.fetch_add(1, Ordering::Relaxed);
                         if wi >= windows.len() {
                             break;
                         }
                         let (window_id, wstart, wend) = windows[wi];
-                        let (p, f, s) = supervise_window(
+                        let window_stats = supervise_window(
                             exe,
                             args,
                             no_skip,
@@ -1106,11 +1132,9 @@ fn run_supervised(args: &[String], skip_until: usize, end_index: usize, no_skip:
                             paths,
                             window_id,
                         );
-                        pass += p;
-                        fail += f;
-                        skip += s;
+                        stats.merge(window_stats);
                     }
-                    (pass, fail, skip)
+                    stats
                 })
             })
             .collect();
@@ -1120,25 +1144,27 @@ fn run_supervised(args: &[String], skip_until: usize, end_index: usize, no_skip:
             .collect()
     });
 
-    let (mut pass, mut fail, mut skip) = (0usize, 0usize, 0usize);
-    for (p, f, s) in partials {
-        pass += p;
-        fail += f;
-        skip += s;
+    let mut stats = RunStats::default();
+    for partial_stats in partials {
+        stats.merge(partial_stats);
     }
 
-    let total = pass + fail + skip;
+    let total = stats.pass + stats.fail + stats.skip;
     println!();
     println!("═══════════════════════════════════════");
     println!("  test262 supervised aggregate");
     println!("═══════════════════════════════════════");
     println!("  total  : {total}");
-    println!("  pass   : {pass}");
-    println!("  fail   : {fail}");
-    println!("  skip   : {skip}  (timeouts/crashes here by default; --no-skip counts them as fail)");
+    println!("  pass   : {}", stats.pass);
+    println!("  fail   : {}", stats.fail);
+    println!(
+        "  skip   : {}  (timeouts/crashes here by default; --no-skip counts them as fail)",
+        stats.skip
+    );
+    print_fail_categories(&stats);
     println!("═══════════════════════════════════════");
 
-    fail == 0
+    stats.fail == 0
 }
 
 /// 串行与并行执行路径共享的每测试管线：
@@ -1279,6 +1305,19 @@ fn main() {
 
     if !result {
         std::process::exit(1);
+    }
+}
+
+/// 按失败类别计数降序打印 `--- FAIL categories ---` 段（无类别时静默）。
+fn print_fail_categories(stats: &RunStats) {
+    if stats.fail_categories.is_empty() {
+        return;
+    }
+    println!("  --- FAIL categories ---");
+    let mut cats: Vec<_> = stats.fail_categories.iter().collect();
+    cats.sort_by_key(|(_, c)| -(**c as isize));
+    for (cat, count) in cats {
+        println!("    {:>4}  {}", count, cat);
     }
 }
 
@@ -1449,7 +1488,15 @@ fn run_tests() -> bool {
                                 eprintln!("  [{tid:?}] running: {path_str}");
                             }
                             if let Some(hb) = heartbeat_ref {
-                                write_heartbeat(hb, "START", i, stats.pass, stats.fail, stats.skip);
+                                write_heartbeat(
+                                    hb,
+                                    "START",
+                                    i,
+                                    stats.pass,
+                                    stats.fail,
+                                    stats.skip,
+                                    &stats.fail_categories,
+                                );
                             }
 
                             let result = process_path(
@@ -1505,7 +1552,7 @@ fn run_tests() -> bool {
     }
 
     if let Some(hb) = &heartbeat_path {
-        write_heartbeat(hb, "DONE", end_index, stats.pass, stats.fail, stats.skip);
+        write_heartbeat(hb, "DONE", end_index, stats.pass, stats.fail, stats.skip, &stats.fail_categories);
     }
 
     eprintln!();
@@ -1528,14 +1575,7 @@ fn run_tests() -> bool {
         stats.pass as f64 / total * 100.0,
         if ran > 0 { stats.pass as f64 / ran as f64 * 100.0 } else { 0.0 }
     );
-    if !stats.fail_categories.is_empty() {
-        println!("  --- FAIL categories ---");
-        let mut cats: Vec<_> = stats.fail_categories.iter().collect();
-        cats.sort_by_key(|(_, c)| -(**c as isize));
-        for (cat, count) in cats {
-            println!("    {:>4}  {}", count, cat);
-        }
-    }
+    print_fail_categories(&stats);
     println!("═══════════════════════════════════════");
 
     if stats.fail > 0 && !allow_fail_exit {
@@ -1550,19 +1590,22 @@ mod tests {
 
     /// 便捷构造：按预期判定构造 Negative 元数据。
     fn neg(error_type: &str) -> Negative {
-        Negative { phase: "runtime".into(), error_type: error_type.into() }
+        Negative {
+            phase: "runtime".into(),
+            error_type: error_type.into(),
+        }
     }
 
     /// 断言 classify_vm_error 对给定错误消息返回指定结果变体。
     fn assert_outcome(e: &str, neg: Option<&Negative>, no_skip: bool, want: &TestOutcome) {
         let got = classify_vm_error(e, neg, no_skip);
-        let same = match (want, &got) {
+        let same = matches!(
+            (want, &got),
             (TestOutcome::Pass(_), TestOutcome::Pass(_))
-            | (TestOutcome::Fail(_), TestOutcome::Fail(_))
-            | (TestOutcome::Skip(_), TestOutcome::Skip(_)) => true,
-            _ => false,
-        };
-        assert!(same, "error `{e}` (neg={:?}, no_skip={no_skip}) 期望 {:?}，实际 {got:?}", neg, want);
+                | (TestOutcome::Fail(_), TestOutcome::Fail(_))
+                | (TestOutcome::Skip(_), TestOutcome::Skip(_))
+        );
+        assert!(same, "error `{e}` (neg={neg:?}, no_skip={no_skip}) 期望 {want:?}，实际 {got:?}");
     }
 
     /// receiver 校验类错误：引擎已实现 receiver 检查并正确抛错，非 negative 测试
@@ -1643,7 +1686,10 @@ mod tests {
             parse_undefined_ident("compile error: Identifier 'structuredClone' is not defined"),
             Some("structuredClone")
         );
-        assert_eq!(parse_undefined_ident("Identifier 'queueMicrotask' is not defined"), Some("queueMicrotask"));
+        assert_eq!(
+            parse_undefined_ident("Identifier 'queueMicrotask' is not defined"),
+            Some("queueMicrotask")
+        );
         assert_eq!(parse_undefined_ident("TypeError: x is not callable"), None);
         assert_eq!(parse_undefined_ident("uncaught ReferenceError: boom"), None);
     }
@@ -1671,5 +1717,42 @@ mod tests {
         ] {
             assert_outcome(e, None, false, &TestOutcome::Fail("".into()));
         }
+    }
+
+    /// 心跳写读往返：类别行随心跳头一起持久化并完整还原（含制表符/换行压平）。
+    #[test]
+    fn heartbeat_round_trips_categories() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("oxide_t262_hb_test_{}.txt", std::process::id()));
+        let mut categories = HashMap::new();
+        categories.insert("vm: not defined".to_string(), 3);
+        categories.insert("compile: unsupported".to_string(), 1);
+        write_heartbeat(&path, "DONE", 42, 30, 4, 8, &categories);
+        let hb = read_heartbeat(&path).expect("心跳应可读回");
+        assert_eq!(hb.phase, "DONE");
+        assert_eq!(hb.index, 42);
+        assert_eq!(hb.pass, 30);
+        assert_eq!(hb.fail, 4);
+        assert_eq!(hb.skip, 8);
+        assert_eq!(hb.categories.get("vm: not defined"), Some(&3));
+        assert_eq!(hb.categories.get("compile: unsupported"), Some(&1));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 类别文本含制表符/换行时写入压平，读取不破坏行结构。
+    #[test]
+    fn heartbeat_flattens_category_separators() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("oxide_t262_hb_test2_{}.txt", std::process::id()));
+        let mut categories = HashMap::new();
+        categories.insert("vm: other (multi\nline\tmessage)".to_string(), 2);
+        write_heartbeat(&path, "START", 7, 1, 2, 3, &categories);
+        let hb = read_heartbeat(&path).expect("心跳应可读回");
+        assert_eq!(hb.fail, 2);
+        assert_eq!(hb.categories.len(), 1);
+        let key = hb.categories.keys().next().unwrap();
+        assert!(!key.contains('\t') && !key.contains('\n'), "类别键应已压平，实际 {key:?}");
+        assert_eq!(hb.categories.get(key), Some(&2));
+        let _ = std::fs::remove_file(&path);
     }
 }
