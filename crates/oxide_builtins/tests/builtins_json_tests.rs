@@ -23,13 +23,13 @@ fn stringify_val(val: &JsValue) -> String {
 
 #[test]
 fn replacer_array_filters_properties() {
-    let (_, result) = eval(r#"JSON.stringify({a:1,b:2,c:3}, ['a','c'])"#).unwrap();
+    let (_vm, result) = eval(r#"JSON.stringify({a:1,b:2,c:3}, ['a','c'])"#).unwrap();
     assert_eq!(stringify_val(&result), r#"{"a":1,"c":3}"#);
 }
 
 #[test]
 fn replacer_array_numeric_keys() {
-    let (_, result) = eval(r#"JSON.stringify({a:1,b:2}, ['b'])"#).unwrap();
+    let (_vm, result) = eval(r#"JSON.stringify({a:1,b:2}, ['b'])"#).unwrap();
     assert_eq!(stringify_val(&result), r#"{"b":2}"#);
 }
 
@@ -37,20 +37,20 @@ fn replacer_array_numeric_keys() {
 
 #[test]
 fn replacer_function_skip_property() {
-    let (_, result) =
+    let (_vm, result) =
         eval(r#"JSON.stringify({a:1,b:2}, function(k,v){if(k==='a')return undefined;return v})"#).unwrap();
     assert_eq!(stringify_val(&result), r#"{"b":2}"#);
 }
 
 #[test]
 fn replacer_function_array_null() {
-    let (_, result) = eval(r#"JSON.stringify([1,2,3], function(k,v){if(k==='1')return undefined;return v})"#).unwrap();
+    let (_vm, result) = eval(r#"JSON.stringify([1,2,3], function(k,v){if(k==='1')return undefined;return v})"#).unwrap();
     assert_eq!(stringify_val(&result), "[1,null,3]");
 }
 
 #[test]
 fn replacer_function_transform() {
-    let (_, result) =
+    let (_vm, result) =
         eval(r#"JSON.stringify({a:1}, function(k,v){if(typeof v==='number')return v*2;return v})"#).unwrap();
     assert_eq!(stringify_val(&result), r#"{"a":2}"#);
 }
@@ -59,7 +59,7 @@ fn replacer_function_transform() {
 
 #[test]
 fn space_number_indent() {
-    let (_, result) = eval(r#"JSON.stringify({a:1}, null, 2)"#).unwrap();
+    let (_vm, result) = eval(r#"JSON.stringify({a:1}, null, 2)"#).unwrap();
     let s = stringify_val(&result);
     assert!(s.len() > 5, "expected indented output, got: {}", s);
     assert!(s.starts_with('{'), "should start with brace");
@@ -67,7 +67,7 @@ fn space_number_indent() {
 
 #[test]
 fn space_negative_clamped() {
-    let (_, result) = eval(r#"JSON.stringify({a:1}, null, -5)"#).unwrap();
+    let (_vm, result) = eval(r#"JSON.stringify({a:1}, null, -5)"#).unwrap();
     assert_eq!(stringify_val(&result), r#"{"a":1}"#);
 }
 
@@ -75,13 +75,13 @@ fn space_negative_clamped() {
 
 #[test]
 fn tojson_called_before_serialize() {
-    let (_, result) = eval(r#"JSON.stringify({toJSON:function(){return {x:1}}})"#).unwrap();
+    let (_vm, result) = eval(r#"JSON.stringify({toJSON:function(){return {x:1}}})"#).unwrap();
     assert_eq!(stringify_val(&result), r#"{"x":1}"#);
 }
 
 #[test]
 fn tojson_non_callable_ignored() {
-    let (_, result) = eval(r#"JSON.stringify({toJSON:'not-a-function', a:1})"#).unwrap();
+    let (_vm, result) = eval(r#"JSON.stringify({toJSON:'not-a-function', a:1})"#).unwrap();
     // toJSON 属性是字符串，应按普通属性序列化。
     assert!(stringify_val(&result).contains("toJSON"));
     assert!(stringify_val(&result).contains(r#""a":1"#));
@@ -100,7 +100,7 @@ fn cycle_throws_type_error() {
 
 #[test]
 fn no_cycle_distinct_objects_ok() {
-    let (_, result) = eval(r#"JSON.stringify([{a:1},{a:1}])"#).unwrap();
+    let (_vm, result) = eval(r#"JSON.stringify([{a:1},{a:1}])"#).unwrap();
     assert_eq!(stringify_val(&result), r#"[{"a":1},{"a":1}]"#);
 }
 
@@ -108,14 +108,14 @@ fn no_cycle_distinct_objects_ok() {
 
 #[test]
 fn reviver_transform_values() {
-    let (_, result) =
+    let (_vm, result) =
         eval(r#"JSON.parse('{"a":1,"b":2}', function(k,v){if(typeof v==='number')return v*2;return v})"#).unwrap();
     assert!(result.is_object());
 }
 
 #[test]
 fn reviver_delete_property() {
-    let (_, result) =
+    let (_vm, result) =
         eval(r#"JSON.parse('{"a":1,"b":2}', function(k,v){if(k==='a')return undefined;return v})"#).unwrap();
     // 属性被软删除（置为 undefined）。
     // 为 test262 兼容，stringify 应省略 undefined 属性。
@@ -124,7 +124,7 @@ fn reviver_delete_property() {
 
 #[test]
 fn reviver_root_key_empty_string() {
-    let (_, result) = eval(r#"JSON.parse('42', function(k,v){return v+1})"#).unwrap();
+    let (_vm, result) = eval(r#"JSON.parse('42', function(k,v){return v+1})"#).unwrap();
     assert!(result.is_int() || result.is_double(), "expected number");
     if result.is_int() {
         assert_eq!(result.as_int(), 43);
@@ -135,6 +135,6 @@ fn reviver_root_key_empty_string() {
 
 #[test]
 fn reviver_no_reviver_works() {
-    let (_, result) = eval(r#"JSON.parse('{"a":1}')"#).unwrap();
+    let (_vm, result) = eval(r#"JSON.parse('{"a":1}')"#).unwrap();
     assert!(result.is_object());
 }
