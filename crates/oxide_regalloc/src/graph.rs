@@ -86,6 +86,16 @@ pub(super) fn collect_real_vregs(f: &IRFunction) -> BTreeSet<u32> {
                 real.insert(r);
             }
         }
+        // CONCAT_N：ext[1..] 每个字是完整操作数 vreg（无高位标记）——漏收集则
+        // RegAlloc 不分配该 vreg，物理号冲突 → 错值。
+        if inst.op == OpCode::CONCAT_N {
+            for &w in inst.ext.iter().skip(1) {
+                let r = w & 0x7FFF_FFFF;
+                if r != 0 {
+                    real.insert(r);
+                }
+            }
+        }
     }
     real
 }
@@ -473,5 +483,22 @@ mod tests {
         let g = build_graph(&f);
         assert!(g.nodes.contains_key(&254), "vreg 254 建节点");
         assert_eq!(g.nodes[&254].pre_color, None, "254 非预着色");
+    }
+
+    #[test]
+    fn concat_n_ext_operands_collected_as_real() {
+        // CONCAT_N 的 ext 操作数 vreg 必须进入真实集合（漏收集 → 未染色 → 错值）
+        let mut f = empty_function();
+        f.insts.push(Inst::concat_n(Operand::Reg(1), &[2, 5, 9, 300]));
+        f.insts
+            .push(Inst::new(OpCode::RETURN, Operand::Reg(1), Operand::None, Operand::None));
+        let real = collect_real_vregs(&f);
+        for r in [1u32, 2, 5, 9, 300] {
+            assert!(real.contains(&r), "vreg {r} 应被 CONCAT_N 收集");
+        }
+        let g = build_graph(&f);
+        for r in [1u32, 2, 5, 9, 300] {
+            assert!(g.nodes.contains_key(&r), "vreg {r} 建节点");
+        }
     }
 }

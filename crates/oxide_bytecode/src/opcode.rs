@@ -450,6 +450,12 @@ define_opcodes! {
     SET_PROP_BATCH = 0x92 => "SET_PROP_BATCH",
         def = None, uses = [SlotSpec::Slot(Slot::Rd), SlotSpec::Slot(Slot::A), SlotSpec::Slot(Slot::B)],
         pure = false, jump = false, term = false, ic = false,
+    // 多操作数拼接（连续 `+` 左结合链摊平）：rd=结果，a=首操作数，ext=[n, op2..opn]，
+    // n=操作数总数，ext 字数 = 1+(n-1) = n；op 字无高位标记（纯 vreg，≤255），
+    // SpreadArgs 直接解析。与 ADD 同标纯（含 ToPrimitive 副作用仍静态可删，语义同 ADD）。
+    CONCAT_N = 0x93 => "CONCAT_N",
+        def = Some(SlotSpec::Slot(Slot::Rd)), uses = [SlotSpec::Slot(Slot::A), SlotSpec::SpreadArgs],
+        pure = true, jump = false, term = false, ic = false,
 
     // ── 成员更新 (0x59-0x62) ──
     MEMBER_INC = 0x59 => "MEMBER_INC", // 结果写 a 槽（val 槽原地更新）
@@ -783,6 +789,7 @@ mod tests {
         assert_eq!(OpCode::CREATE_REST_ARRAY as u8, 0x6E);
         assert_eq!(OpCode::DEFINE_ACCESSOR_DYNAMIC as u8, 0x7F);
         assert_eq!(OpCode::SET_PROP_BATCH as u8, 0x92);
+        assert_eq!(OpCode::CONCAT_N as u8, 0x93);
         assert_eq!(OpCode::ADD.to_string(), "ADD");
         assert_eq!(OpCode::COMPOUND_MEMBER_EXP.to_string(), "COMPOUND_MEMBER_EXP");
         assert_eq!(OpCode::MOV.to_string(), "MOV");

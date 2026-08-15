@@ -78,6 +78,8 @@ fn ext_word_count(bytecode: &[Instr], pc: usize) -> usize {
             let header = bytecode.get(pc + 1).copied().unwrap_or(0);
             1 + ((header >> 16) & 0xFFFF) as usize
         }
+        // CONCAT_N：ext[0]=n=操作数总数，ext 字数 = 1+(n-1) = n。
+        OpCode::CONCAT_N => bytecode.get(pc + 1).copied().unwrap_or(0) as usize,
         OpCode::NEW_OBJECT => opcode::a(bytecode[pc]) as usize,
         _ => 0,
     }
@@ -286,4 +288,22 @@ fn ic_set_hit_own_poly(obj: &mut JsObject, bytecode: &[Instr], ext_pc: usize, va
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn concat_n_ext_word_count_advances_by_n() {
+        // CONCAT_N rd=1, a=2, ext=[3, 5, 9]：ext[0]=n=3，总 ext 字数 = 3
+        let mut bytecode = vec![opcode::encode(OpCode::CONCAT_N, 1, 2, 0), 3, 5, 9];
+        assert_eq!(ext_word_count(&bytecode, 0), 3, "ext 字数 = n");
+
+        // clear_ic_caches 跳过 CONCAT_N 扩展字，不误当 IC 字清零
+        bytecode.push(opcode::encode(OpCode::NOP, 0, 0, 0));
+        clear_ic_caches(&mut bytecode);
+        assert_eq!(bytecode[1..4], [3, 5, 9], "CONCAT_N ext 字保持原值");
+        assert_eq!(bytecode.len(), 5, "CONCAT_N 指令 + 3 ext + NOP");
+    }
 }

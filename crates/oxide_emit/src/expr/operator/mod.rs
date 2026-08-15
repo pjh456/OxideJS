@@ -30,6 +30,25 @@ impl Emitter {
     fn emit_binary_expression(
         &self, bin: &oxide_parser::BinaryExpression, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
+        // Addition 左结合链摊平：≥3 操作数合并为单条 CONCAT_N（单趟预分配拼接，
+        // 消除 N-2 次中间串分配）。只下钻 left 链、right 括号不拆（a+(b+c) 退化 ADD），
+        // 保 f64 结合性与源码求值序。
+        if bin.operator == BinaryOperator::Addition {
+            let mut operands = Vec::new();
+            collect_add_operands(&bin.left, &mut operands);
+            operands.push(&bin.right);
+            // 上限防寄存器压力：CONCAT_N 单点读全部操作数（须同时存活），超长链回退
+            // 左结合 ADD（寄存器随链复用，纯表达式寄存器占用有界）。
+            if operands.len() >= 3 && operands.len() <= MAX_CONCAT_N_OPERANDS {
+                let mut regs = Vec::with_capacity(operands.len());
+                for op in &operands {
+                    regs.push(self.emit_expression(op, ctx)?);
+                }
+                let result_reg = ctx.alloc_reg();
+                ctx.inst(Inst::concat_n(Operand::Reg(result_reg), &regs));
+                return Ok(result_reg);
+            }
+        }
         let left = self.emit_expression(&bin.left, ctx)?;
         let right = self.emit_expression(&bin.right, ctx)?;
         let op = match bin.operator {
@@ -553,4 +572,21 @@ impl Emitter {
             _ => self.emit_unsupported_expression(expr, ctx),
         }
     }
+}
+
+/// CONCAT_N 摊平的操作数上限：CONCAT_N 单点读全部操作数（须同时存活），寄存器占用
+/// = 操作数 + 结果 ≤ 15；超过上限回退左结合 ADD（超长链保持寄存器随链复用属性）。
+const MAX_CONCAT_N_OPERANDS: usize = 14;
+
+/// 收集 Addition 左结合链的操作数（源码求值序）：只下钻 left 链，right 恒为单个
+/// 操作数（即使自身是 Addition 也不拆——括号右结合保持 f64 结合性不引入偏差）。
+fn collect_add_operands<'expr, 'r>(expr: &'r Expression<'expr>, out: &mut Vec<&'r Expression<'expr>>) {
+    if let Expression::BinaryExpression(bin) = expr {
+        if bin.operator == BinaryOperator::Addition {
+            collect_add_operands(&bin.left, out);
+            out.push(&bin.right);
+            return;
+        }
+    }
+    out.push(expr);
 }

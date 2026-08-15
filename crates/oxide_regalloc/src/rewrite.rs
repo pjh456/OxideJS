@@ -246,6 +246,15 @@ fn rewrite_inst(
             }
             ext
         }
+        // CONCAT_N：ext[1..] 每个字是完整操作数 vreg（无高位标记），直接重映射，
+        // 否则 RegAlloc 后读旧 vreg 号对应物理槽（错值）。
+        OpCode::CONCAT_N => {
+            let mut ext = inst.ext.clone();
+            for seg in ext.iter_mut().skip(1) {
+                *seg = remap_ext_reg(*seg, slot_color, map);
+            }
+            ext
+        }
         _ => inst.ext.clone(),
     };
     // 调用点首参槽改指 arg_window_base（桥接后）
@@ -455,6 +464,23 @@ mod tests {
 
         assert_eq!(f.insts[0].rd, Operand::Reg(2));
         assert_eq!(f.insts[0].ext.as_slice(), &[3 << 16, 0, 0x8000_0000 | 200, 1]);
+    }
+
+    #[test]
+    fn concat_n_ext_operands_remapped() {
+        // CONCAT_N ext[1..] 操作数 vreg 必须重映射到物理号（含 spill use 点 fresh 色）
+        let inst = Inst::concat_n(Operand::Reg(1), &[2, 300, 9]);
+        let mut map = AllocMap::new();
+        map.map.insert(1, Alloc::Phys(2));
+        map.map.insert(2, Alloc::Phys(3));
+        map.map.insert(300, Alloc::Phys(200));
+        map.map.insert(9, Alloc::Phys(11));
+        let f = rewrite_with_map(vec![inst], map);
+
+        assert_eq!(f.insts[0].op, OpCode::CONCAT_N);
+        assert_eq!(f.insts[0].rd, Operand::Reg(2));
+        assert_eq!(f.insts[0].a, Operand::Reg(3));
+        assert_eq!(f.insts[0].ext.as_slice(), &[3, 200, 11]);
     }
 
     #[test]

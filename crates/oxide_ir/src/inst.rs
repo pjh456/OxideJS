@@ -258,6 +258,23 @@ impl Inst {
         Self::new(OpCode::SET_PROP_BATCH, target, value, Operand::Imm(slot))
     }
 
+    /// 多操作数拼接（连续 `+` 表达式摊平）：rd=结果，首操作数放 a 槽，
+    /// ext=[n, op2..opn]（n=操作数总数，ext 字数 = 1+(n-1) = n）。
+    /// 操作数按源码求值序排列，emit 层保证 ≥3 个（<3 退化 ADD）；op 字无高位标记。
+    pub fn concat_n(dst: Operand, operands: &[u32]) -> Self {
+        debug_assert!(operands.len() >= 3, "CONCAT_N 仅用于 ≥3 操作数摊平");
+        let mut ext = SmallVec::with_capacity(operands.len());
+        ext.push(operands.len() as u32);
+        ext.extend_from_slice(&operands[1..]);
+        Self {
+            op: OpCode::CONCAT_N,
+            rd: dst,
+            a: Operand::Reg(operands[0]),
+            b: Operand::None,
+            ext,
+        }
+    }
+
     /// TEMPLATE_STR：变长 ext。首字打包 `(segment_count<<16) | total_len_hint`，
     /// 后续每 quasi 一项 `quasi_const_idx & 0x7FFF_FFFF`，其后若跟表达式再一项 `0x8000_0000 | expr_reg`。
     pub fn template_str(dst: Operand, segment_count: u32, total_len_hint: u16, parts: &[u32]) -> Self {
@@ -590,5 +607,16 @@ mod tests {
         assert_eq!(inst.ext[0], (3 << 16) | 10);
         assert_eq!(inst.ext[1], 0x1234);
         assert_eq!(inst.ext[2], 0x8000_0000 | 5);
+    }
+
+    #[test]
+    fn concat_n_packs_n_header_and_operand_regs() {
+        // 6 操作数：a 槽=op1，ext=[6, op2..op6]
+        let inst = Inst::concat_n(Operand::Reg(1), &[2, 5, 9, 12, 300, 7]);
+        assert_eq!(inst.op, OpCode::CONCAT_N);
+        assert_eq!(inst.rd, Operand::Reg(1));
+        assert_eq!(inst.a, Operand::Reg(2));
+        assert_eq!(inst.b, Operand::None);
+        assert_eq!(inst.ext.as_slice(), &[6, 5, 9, 12, 300, 7]);
     }
 }

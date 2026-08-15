@@ -556,6 +556,7 @@ mod tests {
                 Inst::compound_member_ushr(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
             }
             OpCode::TEMPLATE_STR => Inst::template_str(Operand::Reg(1), 2, 10, &[0x1234, 0x8000_0000 | 5]),
+            OpCode::CONCAT_N => Inst::concat_n(Operand::Reg(1), &[2, 5, 9]),
             OpCode::GET_PRIVATE => {
                 Inst::get_private(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 7, 99)
             }
@@ -723,6 +724,8 @@ mod tests {
         assert_contract(OpCode::HALT, None, &[0], false);
         // 模板字符串：表达式寄存器来自 ext
         assert_contract(OpCode::TEMPLATE_STR, Some(1), &[5], true);
+        // 多操作数拼接：a 槽首操作数 + ext[1..] 后续操作数（SpreadArgs 解析）
+        assert_contract(OpCode::CONCAT_N, Some(1), &[2, 5, 9], true);
         // 小语言特性
         assert_contract(OpCode::DELETE_PROP_STATIC, None, &[1], false);
         assert_contract(OpCode::DELETE_PROP_DYNAMIC, None, &[1, 3], false);

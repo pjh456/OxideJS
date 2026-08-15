@@ -1342,6 +1342,10 @@ impl Vm {
                     self.dispatch_add(rd, a, b)?;
                 }
 
+                OpCode::CONCAT_N => {
+                    self.dispatch_concat_n(rd, a)?;
+                }
+
                 OpCode::SUB => {
                     binary_arith!(self, a, b, rd, -, false);
                 }
