@@ -106,6 +106,19 @@ fn to_string_scientific_boundaries() {
         ("(-1e21).toString()", "-1e+21"),
         ("JSON.stringify(1e21)", "1e+21"),
         ("JSON.stringify(1e20)", "100000000000000000000"),
+        // 整数 double 快路径（2^53 内直写）。
+        ("(42.0).toString()", "42"),
+        ("(1e10).toString()", "10000000000"),
+        ("String(-42.0)", "-42"),
+        ("(-0).toString()", "0"),
+        ("JSON.stringify(1.5)", "1.5"),
+        ("JSON.stringify(-0)", "0"),
+        // 2^53 边界与 1e22：超出快路径范围仍输出规范形态。
+        ("Math.pow(2,53).toString()", "9007199254740992"),
+        ("Math.pow(2,63).toString()", "9223372036854776000"),
+        ("(1e22).toString()", "1e+22"),
+        ("(1.5e20).toString()", "150000000000000000000"),
+        ("(9999999999999999).toString()", "10000000000000000"),
     ];
     for (src, expected) in cases {
         let result = eval(&mut vm, src).unwrap();

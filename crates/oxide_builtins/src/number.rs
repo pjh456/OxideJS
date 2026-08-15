@@ -181,7 +181,7 @@ pub fn number_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
 
     if radix == 10 {
-        return NativeResult::Ok(vm.new_string(&oxide_runtime_api::js_number_to_string(n)));
+        return NativeResult::Ok(vm.new_string_owned(oxide_runtime_api::js_number_to_string(n)));
     }
 
     if n.is_nan() {
@@ -192,7 +192,7 @@ pub fn number_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     if n.abs() >= u128::MAX as f64 {
         // 超出 u128 可精确表示的整数范围，退化为十进制近似。
-        return NativeResult::Ok(vm.new_string(&oxide_runtime_api::js_number_to_string(n)));
+        return NativeResult::Ok(vm.new_string_owned(oxide_runtime_api::js_number_to_string(n)));
     }
     let neg = n.is_sign_negative();
     let mut value = n.abs().trunc() as u128;

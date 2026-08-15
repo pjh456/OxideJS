@@ -322,41 +322,79 @@ fn parse_radix_int(s: &str, radix: u32) -> f64 {
 
 /// 把 f64 格式化为 ECMA-262 Number::toString 的字符串（含 NaN/±Infinity 专名）。
 ///
-/// 对有限非零数，先经 ryu 最短表示取出有效数字与十进制指数（`format_finite`
-/// 输出形如 `"123.45"` / `"1e21"` / `"0.001"`），再按规范分段重建：指数
-/// `-6 < n <= 21` 时用定点表示，其余用科学计数法 `d.ddde±e`。替代原先
-/// `(d as i64)` 直接转换——后者对 `>= 2^63` 的数值溢出。
-///
-/// # 步骤
-/// 1. 取绝对值经 ryu `format_finite` 得最短表示 `s`
-/// 2. 含 `e` 时解析出有效数字与指数，按四段规则重建（整数/带小数点/纯小数/科学计数）
-/// 3. 不含 `e` 的定点形式仅需去掉整数末尾的 `.0` 后缀
+/// 直接调用 [`write_number_into`] 写入 32 字节预分配的缓冲区（ryu 输出上界
+/// ~24 字节 + 负号），单次分配无扩容。
 ///
 /// # 边界与前提
 /// - NaN → "NaN"，±∞ → "±Infinity"，±0 → "0"
-/// - 负数先格式化绝对值再加 "-" 前缀
+/// - 32 字节容量恒够：最长输出 `-1.7976931348623157e+308`（25 字节）。
 pub fn js_number_to_string(d: f64) -> String {
+    let mut out = String::with_capacity(32);
+    write_number_into(d, &mut out);
+    out
+}
+
+/// 把 f64 格式化为 ECMA-262 Number::toString 的文本，追加到 `out`。
+///
+/// 对有限非零数，先经 ryu 最短表示取出有效数字与十进制指数（`format_finite`
+/// 输出形如 `"123.45"` / `"1e21"` / `"1000000000000000.0"`），再按规范分段
+/// 重建：指数 `-6 < n <= 21` 时用定点表示，其余用科学计数法 `d.ddde±e`。
+///
+/// # 步骤
+/// 1. NaN/±∞/±0 直接写静态串；负数先写 `-`。
+/// 2. 整数 double 快路径：`fract()==0` 且 `|d| < 2^53` 时整数直写（i64 itoa），
+///    跳过 ryu 与重建。
+/// 3. 含 `e` 时按字节解析有效数字与指数（ryu 输出全 ASCII，指数不带 `+`），
+///    有效数字收栈上数组后按四段规则一次写齐。
+/// 4. 不含 `e` 的定点形式仅需去掉整数末尾的 `.0` 后缀。
+///
+/// # 边界与前提
+/// - 整数快路径上限取 2^53 而非 1e21：2^53 内整数在 f64 中精确且十进制有效
+///   位数 ≤ 16，整数直写与最短表示一致；[2^53, 1e21) 的整数 double 精确值
+///   可能与规范最短表示分歧（如 2^55 精确值 36028797018963968，规范输出
+///   36028797018963970），故该区间保留 ryu 路径。1e21/1e22 等自然被排除。
+/// - ryu 输出全 ASCII 且指数无 `+`；有效数字 ≤ 17 位，栈缓冲 24 字节恒够。
+///
+/// # 副作用
+/// - 追加到 `out`，不新建中间字符串、不做堆分配（`out` 扩容除外）。
+pub fn write_number_into(d: f64, out: &mut String) {
     if d.is_nan() {
-        return "NaN".to_string();
+        out.push_str("NaN");
+        return;
     }
     if d.is_infinite() {
-        return if d.is_sign_positive() {
-            "Infinity".to_string()
-        } else {
-            "-Infinity".to_string()
-        };
+        out.push_str(if d.is_sign_positive() { "Infinity" } else { "-Infinity" });
+        return;
     }
     if d == 0.0 {
-        return "0".to_string();
+        out.push('0');
+        return;
     }
     let neg = d.is_sign_negative();
+    let abs = d.abs();
+    // 整数 double 快路径：无小数部分且在 2^53 内（精确整数，直写与最短表示一致）。
+    if abs.fract() == 0.0 && abs < 9_007_199_254_740_992.0 {
+        if neg {
+            out.push('-');
+        }
+        use std::fmt::Write;
+        let _ = write!(out, "{}", abs as i64);
+        return;
+    }
     let mut buf = ryu::Buffer::new();
-    let s = buf.format_finite(d.abs());
-    let mut out = String::new();
+    let s = buf.format_finite(abs);
     if let Some(e_pos) = s.find('e') {
-        let digits: Vec<char> = s[..e_pos].chars().filter(|c| *c != '.').collect();
+        // 有效数字收栈上数组（ryu 输出全 ASCII），跳过 '.' 逐字节拷贝。
+        let mut digits = [0u8; 24];
+        let mut k = 0usize;
+        for &b in s.as_bytes()[..e_pos].iter() {
+            if b != b'.' {
+                digits[k] = b;
+                k += 1;
+            }
+        }
+        debug_assert!(k <= 24, "ryu 有效数字不超过 24 字节");
         let exp: i32 = s[e_pos + 1..].parse().unwrap_or(0);
-        let k = digits.len() as i32;
         let n = exp + 1;
         if n > -6 && n <= 21 {
             // 定点：ryu 在此范围输出指数形式但 JS 要求十进制。
@@ -365,29 +403,30 @@ pub fn js_number_to_string(d: f64) -> String {
                 for _ in 0..(-n) {
                     out.push('0');
                 }
-                out.extend(digits.iter());
-            } else if k <= n {
-                out.extend(digits.iter());
-                for _ in 0..(n - k) {
+                out.push_str(std::str::from_utf8(&digits[..k]).expect("有效数字恒为 ASCII"));
+            } else if k as i32 <= n {
+                out.push_str(std::str::from_utf8(&digits[..k]).expect("有效数字恒为 ASCII"));
+                for _ in 0..(n - k as i32) {
                     out.push('0');
                 }
             } else {
-                out.extend(digits[..n as usize].iter());
+                out.push_str(std::str::from_utf8(&digits[..n as usize]).expect("有效数字恒为 ASCII"));
                 out.push('.');
-                out.extend(digits[n as usize..].iter());
+                out.push_str(std::str::from_utf8(&digits[n as usize..k]).expect("有效数字恒为 ASCII"));
             }
         } else {
-            // 科学计数：首位 + (可选 "." + 剩余) + e[+/-]指数。
-            out.push(digits[0]);
+            // 科学计数：首位 + (可选 "." + 剩余) + e[+/-]指数。指数 ≤ 3 位，write! 直写。
+            out.push(digits[0] as char);
             if k > 1 {
                 out.push('.');
-                out.extend(digits[1..].iter());
+                out.push_str(std::str::from_utf8(&digits[1..k]).expect("有效数字恒为 ASCII"));
             }
             out.push('e');
             if n > 1 {
                 out.push('+');
             }
-            out.push_str(&(n - 1).to_string());
+            use std::fmt::Write;
+            let _ = write!(out, "{}", n - 1);
         }
     } else if let Some(stripped) = s.strip_suffix(".0") {
         out.push_str(stripped);
@@ -395,12 +434,7 @@ pub fn js_number_to_string(d: f64) -> String {
         out.push_str(s);
     }
     if neg {
-        let mut res = String::with_capacity(out.len() + 1);
-        res.push('-');
-        res.push_str(&out);
-        res
-    } else {
-        out
+        out.insert(0, '-');
     }
 }
 
@@ -432,7 +466,7 @@ pub fn push_to_string(val: JsValue, buf: &mut String) {
         return;
     }
     if val.is_double() {
-        buf.push_str(&js_number_to_string(val.as_double()));
+        write_number_into(val.as_double(), buf);
         return;
     }
     if val.is_bool() {
@@ -1016,6 +1050,7 @@ mod tests {
     #[test]
     fn number_to_string_boundaries() {
         assert_eq!(fmt(1e21), "1e+21");
+        assert_eq!(fmt(1e22), "1e+22");
         assert_eq!(fmt(1e20), "100000000000000000000");
         assert_eq!(fmt(123.45), "123.45");
         assert_eq!(fmt(0.000001), "0.000001");
@@ -1033,6 +1068,54 @@ mod tests {
         assert_eq!(fmt(f64::NAN), "NaN");
         assert_eq!(fmt(f64::INFINITY), "Infinity");
         assert_eq!(fmt(f64::NEG_INFINITY), "-Infinity");
+        // 整数 double 快路径：2^53 内直写（与最短表示一致）。
+        assert_eq!(fmt(42.0), "42");
+        assert_eq!(fmt(-42.0), "-42");
+        assert_eq!(fmt(123.0), "123");
+        assert_eq!(fmt(2.0), "2");
+        assert_eq!(fmt(1000000.0), "1000000");
+        assert_eq!(fmt(-1000000.0), "-1000000");
+        // 2^53 边界：等于 2^53 落 ryu 路径，输出仍为定点。
+        assert_eq!(fmt(9_007_199_254_740_992.0), "9007199254740992");
+        // 2^63：精确值 9223372036854775808 的最短表示为 17 位舍入
+        // "9223372036854776000"（规范输出，非精确值）。
+        assert_eq!(fmt(2f64.powi(63)), "9223372036854776000");
+    }
+
+    #[test]
+    fn push_to_string_matches_to_string() {
+        let samples: Vec<f64> = vec![
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            42.0,
+            -42.0,
+            std::f64::consts::PI,
+            1e15,
+            1e16,
+            1e20,
+            1e21,
+            1e22,
+            9_007_199_254_740_992.0,
+            2f64.powi(63),
+            f64::MAX,
+            5e-324,
+            0.1 + 0.2,
+            123.45,
+            -123.45,
+            1e-7,
+            0.000001,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ];
+        for &d in &samples {
+            let mut buf = String::new();
+            push_to_string(JsValue::float(d), &mut buf);
+            assert_eq!(buf, to_string(JsValue::float(d)), "double {d} 的 push/to_string 输出不一致");
+            assert_eq!(buf, js_number_to_string(d), "double {d} 的 push/js_number_to_string 输出不一致");
+        }
     }
 
     #[test]

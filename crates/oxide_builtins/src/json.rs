@@ -302,7 +302,7 @@ fn jsvalue_to_json<H: VmHost>(
         if !n.is_finite() {
             out.push_str("null");
         } else {
-            out.push_str(&oxide_runtime_api::js_number_to_string(n));
+            oxide_runtime_api::write_number_into(n, out);
         }
     } else if val.is_string() {
         let s = unsafe { (*val.as_string_ptr()).to_owned_string() };
