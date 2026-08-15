@@ -90,7 +90,7 @@ pub fn function_call<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 /// `Function.prototype.apply(thisArg, argsArray)`：以指定 this 和参数数组调用目标函数。
-/// 数组元素拷入寄存器（上限受寄存器空间限制，最多 55 个参数）。
+/// 数组元素直接物化为实参切片经 TailCall 下发（帧参数区），不受寄存器窗口限制。
 pub fn function_apply<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Err(JsValue::undefined());
@@ -98,7 +98,7 @@ pub fn function_apply<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = vm.reg(args[0]);
     let this_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
 
-    let arg_regs: Vec<u8>;
+    let mut call_args: Vec<JsValue> = Vec::new();
     if args.len() > 2 {
         let arr_val = vm.reg(args[2]);
         if arr_val.is_object() {
@@ -106,27 +106,20 @@ pub fn function_apply<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             if !arr_ptr.is_null() {
                 let arr = unsafe { &*arr_ptr };
                 if arr.is_array() {
-                    let max_args = 55usize; // base=200，255 号寄存器之前的安全上限。
                     let n = arr.prop_count() as usize;
-                    let n = n.min(max_args);
-                    let base = 200u8;
-                    arg_regs = (0..n).map(|i| base + i as u8).collect();
+                    call_args.reserve(n);
                     for i in 0..n {
-                        vm.set_reg(base + i as u8, arr.get_prop_at(i));
+                        call_args.push(arr.get_prop_at(i));
                     }
-                } else {
-                    arg_regs = Vec::new();
                 }
-            } else {
-                arg_regs = Vec::new();
             }
-        } else {
-            arg_regs = Vec::new();
         }
-    } else {
-        arg_regs = Vec::new();
     }
-    invoke_target(vm, target_val, this_val, &arg_regs)
+    NativeResult::TailCall {
+        callee: target_val,
+        this: this_val,
+        args: call_args,
+    }
 }
 
 /// `Function.prototype.bind(thisArg, ...args)`：返回绑定 this 与前置实参的新包装函数，

@@ -379,6 +379,12 @@ pub struct Vm {
     /// VM 级 spill 栈。`CallFrame.spill_offset` 定位本帧区：调用子函数时从边界后分配，
     /// 帧恢复时截断到边界，子函数 spill 数据随帧丢弃。
     pub(crate) spill_stack: Vec<JsValue>,
+    /// 本次 native 调用的 spill 溢出实参区：`spill_stack[base..base+count)`。
+    /// 实参数超过寄存器窗口（253）时，窗口外的实参转存 spill 栈（GC 根），
+    /// native 侧经 `VmHost::native_arg_count`/`native_arg_at` 读取。仅在一次
+    /// native 调用期间有效，调用返回前截断回收。
+    pub(crate) native_overflow_base: usize,
+    pub(crate) native_overflow_count: usize,
     pub(crate) try_stack: Vec<TryHandler>,
     pub(crate) exception_value: Option<JsValue>,
     /// 同步调用抛出的原始 JsValue 侧通道：`call_function_sync`/`unwind` 把错误展平为
@@ -1143,9 +1149,16 @@ impl Vm {
                 self.raise_error_kind("RangeError", "Maximum call stack size exceeded")?;
                 return Ok(JsValue::undefined());
             }
+            // 大实参集（超过寄存器窗口）：窗口外的实参转存 spill 栈溢出区（GC 根），
+            // native 侧经 native_arg_count/native_arg_at 读取；窗口内仍按寄存器
+            // 协议打包，保证未迁移的 builtin 行为不变。
+            let overflow_base = self.spill_stack.len();
+            let saved_overflow_base = self.native_overflow_base;
+            let saved_overflow_count = self.native_overflow_count;
             if args.len() > Self::SYNC_NATIVE_ARG_LIMIT {
-                self.raise_error_kind("RangeError", "Maximum call stack size exceeded")?;
-                return Ok(JsValue::undefined());
+                self.spill_stack.extend_from_slice(&args[Self::SYNC_NATIVE_ARG_LIMIT..]);
+                self.native_overflow_base = overflow_base;
+                self.native_overflow_count = args.len() - Self::SYNC_NATIVE_ARG_LIMIT;
             }
             // native 回调只写 regs[0..args.len()] 实参区 + regs[253]/[254]（receiver/callee），
             // 窗口 = 调用方活动寄存器 ∪ 实参写入区；窗口外槽回调不触碰，无需保存。
@@ -1155,13 +1168,20 @@ impl Vm {
             saved_window.extend_from_slice(&self.regs[..window]);
             let saved_r253 = self.regs[253];
             let saved_r254 = self.regs[254];
-            let arg_regs = self.pack_sync_native_call_args(receiver, callee, args);
+            let pack_limit = args.len().min(Self::SYNC_NATIVE_ARG_LIMIT);
+            let arg_regs = self.pack_sync_native_call_args(receiver, callee, &args[..pack_limit]);
             // SAFETY: native_fn 经 set_native_fn 以合法 NativeFn 指针设置；
             // native_fn_ptr_to_fn 是 NativeFnPtr → NativeFn 的唯一强制转换点。
             let func: NativeFn = unsafe { native_fn_ptr_to_fn(native_fn) };
             self.native_call_depth += 1;
             let result = func(self, &arg_regs);
             self.native_call_depth -= 1;
+            // 溢出区随本次调用结束截断回收，并还原外层的溢出区描述（嵌套调用安全）。
+            if args.len() > Self::SYNC_NATIVE_ARG_LIMIT {
+                self.spill_stack.truncate(overflow_base);
+            }
+            self.native_overflow_base = saved_overflow_base;
+            self.native_overflow_count = saved_overflow_count;
             // 窗口回拷 + regs[253]/[254] 单回，缓冲归还池复用。
             self.regs[..window].copy_from_slice(&saved_window);
             self.regs[253] = saved_r253;
@@ -1975,6 +1995,12 @@ impl oxide_runtime_api::VmHost for Vm {
     fn set_reg(&mut self, idx: u8, val: JsValue) {
         self.set_reg(idx, val);
     }
+    fn native_overflow_count(&self) -> usize {
+        self.native_overflow_count
+    }
+    fn native_overflow_at(&self, i: usize) -> JsValue {
+        self.spill_stack[self.native_overflow_base + i]
+    }
     fn alloc_object(&mut self, obj: JsObject) -> *mut JsObject {
         self.alloc_object(obj)
     }
@@ -2204,7 +2230,7 @@ fn rehome_subtree(module: &CompiledModule, base: u32, out: &mut Vec<Arc<Compiled
 mod tests {
     use super::{opcode, JsValue, TryHandler, Vm};
     use oxide_bytecode::module::CompiledModule;
-    use oxide_runtime_api::NativeResult;
+    use oxide_runtime_api::{NativeResult, VmHost};
     use oxide_types::object::NativeFnPtr;
     use oxide_types::object::{JsObject, PropAttributes};
     use std::sync::{Arc, OnceLock};
@@ -2242,6 +2268,15 @@ mod tests {
 
     fn native_return_arg_count(_vm: &mut Vm, args: &[u8]) -> NativeResult {
         NativeResult::Ok(JsValue::int(args.len().saturating_sub(1) as i32))
+    }
+
+    fn native_return_full_arg_count(vm: &mut Vm, args: &[u8]) -> NativeResult {
+        NativeResult::Ok(JsValue::int(vm.native_arg_count(args) as i32))
+    }
+
+    fn native_return_last_full_arg(vm: &mut Vm, args: &[u8]) -> NativeResult {
+        let n = vm.native_arg_count(args);
+        NativeResult::Ok(vm.native_arg_at(args, n - 1))
     }
 
     fn native_nested_inline_254(vm: &mut Vm, args: &[u8]) -> NativeResult {
@@ -2565,24 +2600,35 @@ mod tests {
     }
 
     #[test]
-    fn call_function_sync_rejects_unrepresentable_native_arity_without_register_corruption() {
+    fn call_function_sync_overflow_preserves_large_native_arity_and_registers() {
+        // 大实参集（超寄存器窗口 253）经 spill 溢出区完整送达 native：
+        // 全量计数与末位实参都可读，且调用方寄存器不被打包过程污染。
         let mut vm = Vm::new();
-        let callee = native_function(&mut vm, native_return_arg_count);
+        let callee = native_function(&mut vm, native_return_full_arg_count);
         vm.set_reg(1, JsValue::int(7));
         vm.set_reg(253, JsValue::int(11));
         vm.set_reg(254, JsValue::int(12));
         vm.set_reg(255, JsValue::int(13));
 
-        let args = vec![JsValue::undefined(); Vm::SYNC_NATIVE_ARG_LIMIT + 1];
-        let err = vm
+        let args: Vec<JsValue> = (0..(Vm::SYNC_NATIVE_ARG_LIMIT + 100)).map(|i| JsValue::int(i as i32)).collect();
+        let count = vm
             .call_function_sync(callee, JsValue::undefined(), &args)
-            .expect_err("too many args should fail cleanly");
+            .expect("大实参集应经 spill 溢出区完整送达 native");
+        assert_eq!(count, JsValue::int(args.len() as i32));
 
-        assert!(err.contains("Maximum call stack size exceeded"), "unexpected error: {err}");
+        let last_callee = native_function(&mut vm, native_return_last_full_arg);
+        let last = vm
+            .call_function_sync(last_callee, JsValue::undefined(), &args)
+            .expect("溢出区末位实参应可读");
+        assert_eq!(last, JsValue::int((args.len() - 1) as i32));
+
         assert_eq!(vm.reg(1), JsValue::int(7));
         assert_eq!(vm.reg(253), JsValue::int(11));
         assert_eq!(vm.reg(254), JsValue::int(12));
         assert_eq!(vm.reg(255), JsValue::int(13));
+        // 溢出区随调用结束截断回收，不残留 spill 增长。
+        assert!(vm.spill_stack.is_empty(), "溢出区应已回收: {:?}", vm.spill_stack);
+        assert_eq!(vm.native_overflow_count, 0);
     }
 
     /// 构造 `n_registers = 254` 的子模块：RegAlloc 合法产物（builtin 槽落 253 或

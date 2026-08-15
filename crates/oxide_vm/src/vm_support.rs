@@ -60,6 +60,8 @@ impl Vm {
             saved_immutables_stack: Vec::new(),
             save_stack: Vec::new(),
             spill_stack: Vec::new(),
+            native_overflow_base: 0,
+            native_overflow_count: 0,
             try_stack: Vec::new(),
             exception_value: None,
             last_uncaught_value: None,
@@ -162,6 +164,8 @@ impl Vm {
             saved_immutables_stack: Vec::new(),
             save_stack: Vec::new(),
             spill_stack: Vec::new(),
+            native_overflow_base: 0,
+            native_overflow_count: 0,
             try_stack: Vec::new(),
             exception_value: None,
             last_uncaught_value: None,
@@ -353,6 +357,8 @@ impl Vm {
         self.saved_immutables_stack.clear();
         self.save_stack.clear();
         self.spill_stack.clear();
+        self.native_overflow_base = 0;
+        self.native_overflow_count = 0;
         self.cell_stack.clear();
         self.try_stack.clear();
         self.exception_value = None;

@@ -72,6 +72,36 @@ pub trait VmHost {
     fn reg(&self, idx: u8) -> JsValue;
     fn set_reg(&mut self, idx: u8, val: JsValue);
 
+    /// 当前 native 调用 spill 溢出区的实参个数（寄存器窗口 253 之外的部分）。
+    ///
+    /// # 边界与前提
+    /// - 仅在 native 实现内部、实参仍有效时读取；无溢出时为 0。
+    fn native_overflow_count(&self) -> usize;
+    /// 读 spill 溢出区第 `i` 个实参（0 基，相对溢出区起点）。
+    ///
+    /// # 边界与前提
+    /// - `i` 必须小于 [`Self::native_overflow_count`]。
+    fn native_overflow_at(&self, i: usize) -> JsValue;
+    /// 当前 native 调用的完整实参个数（寄存器窗口 + spill 溢出区，不含 receiver）。
+    ///
+    /// 供支持大实参集的 builtin（如 `String.fromCodePoint`）遍历全部实参；
+    /// 未迁移的 builtin 仍按 `args` 索引读寄存器，行为不变。
+    fn native_arg_count(&self, args: &[u8]) -> usize {
+        args.len().saturating_sub(1) + self.native_overflow_count()
+    }
+    /// 第 `idx` 个实参（0 基，不含 receiver）：窗口内读寄存器，窗口外读 spill 溢出区。
+    ///
+    /// # 边界与前提
+    /// - `idx` 必须小于 [`Self::native_arg_count`]。
+    fn native_arg_at(&self, args: &[u8], idx: usize) -> JsValue {
+        let window = args.len().saturating_sub(1);
+        if idx < window {
+            self.reg(args[idx + 1])
+        } else {
+            self.native_overflow_at(idx - window)
+        }
+    }
+
     // 对象分配 / 字符串创建
     fn alloc_object(&mut self, obj: JsObject) -> *mut JsObject;
     fn new_string(&mut self, s: &str) -> JsValue;

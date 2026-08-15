@@ -72,8 +72,11 @@ pub fn string_from_char_code<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
 pub fn string_from_code_point<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.fromCodePoint called with {} args", args.len());
     let mut out = String::new();
-    for &arg_reg in args.iter().skip(1) {
-        let n = match oxide_runtime_api::to_number_full(vm.reg(arg_reg), vm) {
+    // 经 native_arg_count/native_arg_at 读取：大实参集（如 harness 的
+    // `String.fromCodePoint.apply(null, codePoints)` 每块 10000 码位）在寄存器
+    // 窗口外走 spill 溢出区，小实参集与既有寄存器路径一致。
+    for i in 0..vm.native_arg_count(args) {
+        let n = match oxide_runtime_api::to_number_full(vm.native_arg_at(args, i), vm) {
             Ok(n) => n,
             Err(_) => {
                 // ToNumber 触发对象 valueOf/toString 抛出的原生异常须原样传播，

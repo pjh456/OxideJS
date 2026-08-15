@@ -117,6 +117,43 @@ fn function_apply_returns_object_stays_valid() {
 }
 
 #[test]
+fn function_apply_passes_large_arg_array_to_bytecode_target() {
+    // 回归：apply 曾把实参数组静默截断到 55 个；大参数集必须完整到达目标函数。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var a = []; for (var i = 0; i < 1000; i++) { a[i] = i; } (function(){ return arguments.length; }).apply(null, a)",
+    )
+    .unwrap();
+    assert_eq!(result, JsValue::int(1000));
+}
+
+#[test]
+fn function_apply_large_args_reach_last_element() {
+    // 大参数集经 spill 溢出区送达后，末位实参可被目标读取（不止计数正确）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var a = []; for (var i = 0; i < 300; i++) { a[i] = i; } (function(){ return arguments[299]; }).apply(null, a)",
+    )
+    .unwrap();
+    assert_num(result, 299.0);
+}
+
+#[test]
+fn function_apply_large_args_to_native_from_code_point() {
+    // native 目标（String.fromCodePoint）接收大实参集：整串完整拼接，验证
+    // harness `String.fromCodePoint.apply(null, codePoints)` 不再截断。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var a = []; for (var i = 0; i < 1000; i++) { a[i] = 65 + (i % 26); } String.fromCodePoint.apply(null, a).length",
+    )
+    .unwrap();
+    assert_eq!(result, JsValue::int(1000));
+}
+
+#[test]
 fn getter_returns_object_stays_valid() {
     // 同类 bug：字节码 accessor 经 ordinary_get 同步路径（target_reg=None）在子 VM
     // 中运行，返回对象在子 VM 销毁后被释放。
