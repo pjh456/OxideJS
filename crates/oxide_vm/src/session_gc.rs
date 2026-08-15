@@ -578,10 +578,7 @@ impl SessionGc {
             live.clear();
             Self::record_object_string_edges(&mut live, obj);
             for s_ptr in live.drain() {
-                assert!(
-                    self.live_strings.contains(&s_ptr),
-                    "存活对象持有未登记的 session 字符串边"
-                );
+                assert!(self.live_strings.contains(&s_ptr), "存活对象持有未登记的 session 字符串边");
             }
         }
     }

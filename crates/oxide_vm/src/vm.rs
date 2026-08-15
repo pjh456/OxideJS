@@ -451,6 +451,14 @@ pub struct Vm {
     pub(crate) cell_stack: Vec<Vec<*mut Cell>>,
 }
 
+impl Drop for Vm {
+    fn drop(&mut self) {
+        // 直接 drop（test262 每测试新建即弃）不经 reset/full_reset 路径：
+        // 统一收尾释放全部 session 堆数据，防逐测试累积泄漏。
+        self.teardown_session_heap_data();
+    }
+}
+
 impl Vm {
     const SYNC_NATIVE_ARG_BASE: usize = 0;
     const SYNC_NATIVE_ARG_LIMIT: usize = 253;

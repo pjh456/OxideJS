@@ -18,8 +18,10 @@ fn compile(source: &str) -> oxide_bytecode::module::CompiledModule {
 #[test]
 fn generator_promoted_to_global_survives_full_reset_cleanly() {
     let mut vm = Vm::new();
-    vm.run(&compile("function* g(){ yield 1; yield 2; } globalThis.it = g(); globalThis.it.next(); 0"))
-        .expect("run1");
+    vm.run(&compile(
+        "function* g(){ yield 1; yield 2; } globalThis.it = g(); globalThis.it.next(); 0",
+    ))
+    .expect("run1");
     assert!(vm.session_object_count() > 0, "生成器挂 global 应被 promote 进 session");
 
     // global 含 session 对象即强制重建：旧 global 丢弃、it 槽不存在，全程无悬垂访问
@@ -31,6 +33,8 @@ fn generator_promoted_to_global_survives_full_reset_cleanly() {
     let text = vm.lookup_str(result).expect("typeof 应返回字符串").to_string();
     assert_eq!(text, "undefined");
     // 新会话可正常创建并推进生成器。
-    let ok = vm.run(&compile("function* h(){ yield 9; } var it2 = h(); it2.next().value")).expect("run3");
+    let ok = vm
+        .run(&compile("function* h(){ yield 9; } var it2 = h(); it2.next().value"))
+        .expect("run3");
     assert_eq!(format!("{ok}"), "9");
 }

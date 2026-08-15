@@ -16,6 +16,14 @@ fn eval(source: &str) -> Result<JsValue, String> {
     vm.run(&module)
 }
 
+/// 在既有 Vm 内编译执行：结果字符串须在同一 Vm 上下文解析（session 串随 Vm 释放）。
+fn eval_in(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
+    let allocator = oxide_parser::Allocator::default();
+    let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse: {:?}", e))?;
+    let module = Compiler::new().compile(&program).map_err(|e| format!("Compile: {}", e))?;
+    vm.run(&module)
+}
+
 #[test]
 fn error_constructor_creates_object() {
     let mut vm = make_vm();
@@ -286,24 +294,24 @@ fn error_to_string_basic() {
 
 #[test]
 fn error_to_string_empty_message() {
-    let result = eval("new Error().toString()").unwrap();
-    let vm = make_vm();
+    let mut vm = make_vm();
+    let result = eval_in(&mut vm, "new Error().toString()").unwrap();
     let s = vm.lookup_str(result);
     assert_eq!(s, Some("Error".to_string()));
 }
 
 #[test]
 fn error_to_string_type_error() {
-    let result = eval("new TypeError('bad').toString()").unwrap();
-    let vm = make_vm();
+    let mut vm = make_vm();
+    let result = eval_in(&mut vm, "new TypeError('bad').toString()").unwrap();
     let s = vm.lookup_str(result);
     assert_eq!(s, Some("TypeError: bad".to_string()));
 }
 
 #[test]
 fn error_to_string_name_only() {
-    let result = eval("Error.prototype.toString.call({name: 'E'})").unwrap();
-    let vm = make_vm();
+    let mut vm = make_vm();
+    let result = eval_in(&mut vm, "Error.prototype.toString.call({name: 'E'})").unwrap();
     let s = vm.lookup_str(result);
     assert_eq!(s, Some("E".to_string()));
 }
@@ -355,16 +363,16 @@ fn error_stack_is_string() {
 
 #[test]
 fn error_stack_starts_with_header() {
-    let result = eval("new Error().stack()").unwrap();
-    let vm = make_vm();
+    let mut vm = make_vm();
+    let result = eval_in(&mut vm, "new Error().stack()").unwrap();
     let s = vm.lookup_str(result).unwrap();
     assert!(s.starts_with("Error"), "stack should start with 'Error', got: {}", s);
 }
 
 #[test]
 fn error_stack_frame_format() {
-    let result = eval("(function foo() { return new Error('boom').stack(); })()").unwrap();
-    let vm = make_vm();
+    let mut vm = make_vm();
+    let result = eval_in(&mut vm, "(function foo() { return new Error('boom').stack(); })()").unwrap();
     let s = vm.lookup_str(result).unwrap();
     assert!(s.contains("    at "), "stack should have 4-space indent, got: {}", s);
 }

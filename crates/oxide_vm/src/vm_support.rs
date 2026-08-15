@@ -299,30 +299,32 @@ impl Vm {
         self.bytecode = Arc::default();
         self.immutables_cache.clear();
         self.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
-        self.free_epoch_object_heap_data();
+        self.teardown_session_heap_data();
         self.epoch.reset();
         self.gc_state.epoch_object_ptrs.clear();
-        // 先释放 session 对象堆数据（属性向量 + 各原生盒），再重置 arena：
-        // 原生盒在 GC 搬移/晋升时已深拷贝为单所有权，此处恰好释放一次。
-        let mut freed = 0u64;
-        for ptr in self.gc_state.session_object_ptrs.drain(..) {
-            freed += crate::session_gc::SessionGc::drop_object_heap_data(ptr, true);
-        }
-        if freed > 0 {
-            self.gc_state.session_gc.total_bytes_freed =
-                self.gc_state.session_gc.total_bytes_freed.saturating_add(freed);
-            self.gc_state.session_gc.last_collection_bytes_freed = freed;
-        }
         self.gc_state.session_epoch.reset();
         self.gc_state.session_bytes_allocated = 0;
         self.gc_state.string_gc_watermark = self.kernel_core.config().session_gc_threshold;
         self.gc_state.session_gc = crate::session_gc::SessionGc::new();
-        self.free_session_string_heap_data();
-        self.free_session_bigint_heap_data();
-        self.gc_state.free_cells();
         self.symbols.reset();
         self.root_reg_limit = 0;
         self.active_reg_limit = 0;
+    }
+
+    /// 释放全部 session 堆数据：epoch 对象堆数据 + session 对象堆数据 + session 串 +
+    /// BigInt box + upvalue cell box。
+    ///
+    /// 供 `full_reset` 与 `Drop` 共用——对象本体（bumpalo arena / epoch bump）由调用方
+    /// 重置，本函数只释放手工管理的 Box 指针（属性向量、各原生盒、串、BigInt、cell）。
+    /// 原生盒在 GC 搬移/晋升时已深拷贝为单所有权，此处恰好释放一次。
+    pub(crate) fn teardown_session_heap_data(&mut self) {
+        self.free_epoch_object_heap_data();
+        for ptr in self.gc_state.session_object_ptrs.drain(..) {
+            crate::session_gc::SessionGc::drop_object_heap_data(ptr, true);
+        }
+        self.free_session_string_heap_data();
+        self.free_session_bigint_heap_data();
+        self.gc_state.free_cells();
     }
 
     fn free_epoch_object_heap_data(&mut self) {
@@ -682,11 +684,14 @@ mod tests {
         match vm.resume_generator(gen, crate::generator::GeneratorResumeMode::Next(JsValue::undefined())) {
             Ok(crate::generator::GeneratorStep::Suspended { value }) => value,
             Ok(crate::generator::GeneratorStep::Completed { value }) => value,
-            Ok(other) => panic!("unexpected step: {:?}", match other {
-                crate::generator::GeneratorStep::Thrown { value } => format!("Thrown({value})"),
-                crate::generator::GeneratorStep::SuspendedRaw { value } => format!("SuspendedRaw({value})"),
-                _ => String::new(),
-            }),
+            Ok(other) => panic!(
+                "unexpected step: {:?}",
+                match other {
+                    crate::generator::GeneratorStep::Thrown { value } => format!("Thrown({value})"),
+                    crate::generator::GeneratorStep::SuspendedRaw { value } => format!("SuspendedRaw({value})"),
+                    _ => String::new(),
+                }
+            ),
             Err(e) => panic!("resume failed: {e}"),
         }
     }
@@ -694,10 +699,7 @@ mod tests {
     #[test]
     fn generator_survives_object_sweep_and_resumes() {
         let mut vm = vm_with_low_threshold();
-        let _ = run_source(
-            &mut vm,
-            "function* g(){ yield 1; yield 2; } globalThis.it = g(); globalThis.it.next(); 0",
-        );
+        let _ = run_source(&mut vm, "function* g(){ yield 1; yield 2; } globalThis.it = g(); globalThis.it.next(); 0");
 
         // 直接触发完整收集（保留执行上下文）：存活生成器克隆进新 arena，
         // 状态盒深拷贝为新 Box（reset 会清空模块表使恢复不可行，走收集入口等价验证）。
@@ -1069,4 +1071,3 @@ mod tests {
         assert_eq!(vm.lookup_str(te).as_deref(), Some("TypeError"));
     }
 }
-
