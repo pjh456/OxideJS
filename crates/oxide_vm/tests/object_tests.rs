@@ -92,6 +92,24 @@ fn eval_computed_compound_assign_preserves_read_before_rhs() {
 }
 
 #[test]
+fn eval_dynamic_key_compound_exp_uses_rhs() {
+    // 非常量键走 DYNAMIC 路径：`**=` 的指数取 RHS（EXP 读 [A,B]，旧值 a 槽、rhs b 槽）。
+    assert_eq!(eval("var o={a:5}; var k='a'; o[k]**=2, o.a"), "25");
+    assert_eq!(eval("var o={a:5}; var k='a'; o[k]**=2"), "25");
+    // 负 number 指数：5 ** -1 = 0.2。
+    assert_eq!(eval("var o={a:5}; var k='a'; o[k]**=-1, o.a"), "0.2");
+    // BigInt：结果保持 BigInt。
+    assert_eq!(eval("var o={a:5n}; var k='a'; o[k]**=3n, o.a"), "BigInt(125)");
+    // 负 BigInt 指数抛 RangeError；BigInt/Number 混合抛 TypeError。
+    let err = eval("var o={a:5n}; var k='a'; o[k]**=-1n");
+    assert!(err.contains("RangeError"), "expected RangeError, got: {err}");
+    let err2 = eval("var o={a:5}; var k='a'; o[k]**=2n");
+    assert!(err2.contains("TypeError"), "expected TypeError, got: {err2}");
+    // 求值序：先读旧值再求值 RHS——RHS 副作用改写属性不影响被求幂的旧值。
+    assert_eq!(eval("var o={a:5}; var k='a'; function f(){o.a=100; return 2;} o[k]**=f(), o.a"), "25");
+}
+
+#[test]
 fn eval_computed_compound_assign_getter_order() {
     // getter 场景：先触发 getter 读取，再求值 RHS。
     assert_eq!(eval("var g={get a(){return 2}, set a(v){}}; g[\"a\"] += 1"), "3");

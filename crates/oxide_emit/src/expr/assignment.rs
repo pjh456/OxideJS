@@ -501,7 +501,9 @@ impl Emitter {
                 AssignmentOperator::Multiplication => OpCode::MUL,
                 AssignmentOperator::Division => OpCode::DIV,
                 AssignmentOperator::Remainder => OpCode::MOD,
-                AssignmentOperator::Exponential => OpCode::COMPOUND_EXP,
+                // 指数无 COMPOUND_* 对应（COMPOUND_EXP 只读 [Rd,A] 会忽略 rhs）：
+                // 走三寄存器 EXP，旧值在 a 槽（val_reg 兼 rd/a）、rhs 在 b 槽。
+                AssignmentOperator::Exponential => OpCode::EXP,
                 AssignmentOperator::BitwiseAnd => OpCode::BIT_AND,
                 AssignmentOperator::BitwiseOR => OpCode::BIT_OR,
                 AssignmentOperator::BitwiseXOR => OpCode::BIT_XOR,
