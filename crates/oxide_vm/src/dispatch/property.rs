@@ -2,7 +2,7 @@ use crate::{ic_debug, ic_trace, vm_trace};
 use oxide_bytecode::opcode::{OpCode, IC_EXT_WORDS};
 use oxide_runtime_api as coercion;
 use oxide_types::object::JsObject;
-use oxide_types::private_key::{int_key_value, is_int_key, make_private_name_id};
+use oxide_types::private_key::{int_key_value, is_int_key, make_int_key, make_private_name_id};
 use oxide_types::value::JsValue;
 
 use crate::ic_helper::{self, ic_get_hit, ic_set_hit};
@@ -606,6 +606,19 @@ impl Vm {
         };
         let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[b]);
         let obj = unsafe { &mut *obj_ptr };
+        // 有属性 meta（freeze/seal 逐属性写 meta 后恒 true，含 accessor 元素/描述符
+        // 元素）：回落 ordinary_set 走完整 writable/accessor/extensible 检查，防止
+        // 直写绕过冻结语义。
+        if obj.has_prop_meta() {
+            let si = make_int_key(idx);
+            return self.ordinary_set_dispatch(obj, si, value, self.regs[rd]);
+        }
+        // 无 meta 快路径：不可扩展对象禁止新增元素（越界下标）；已有元素直写不受限
+        // （无 meta 即默认可写）。
+        if !obj.is_extensible() && idx >= obj.array_prop_count {
+            self.raise_type_error("object is not extensible")?;
+            return Ok(());
+        }
         obj.set_prop_at(idx, value);
         Ok(())
     }

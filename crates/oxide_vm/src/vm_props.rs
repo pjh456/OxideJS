@@ -190,6 +190,11 @@ impl Vm {
         // prop_count/迭代/内置方法看到的长度不一致。
         let length_si = self.length_si;
         if obj.is_array() && prop_name_si == length_si {
+            // 冻结数组的 length 属性不可写（writable=false），赋值直接失败。
+            // sloppy/strict 差异未实现，与其它只读属性写一致统一抛 TypeError。
+            if obj.is_frozen() {
+                return self.raise_type_error("Cannot assign to read only property 'length'");
+            }
             let pc_before = self.pc;
             let number_len = self.coerce_number_bounded(val)?;
             // ToPrimitive 抛错（valueOf/toString throw）已被 unwind 定向到外围 catch 时
@@ -209,6 +214,11 @@ impl Vm {
             }
             let old_logical = obj.logical_len() as usize;
             let old_count = obj.array_prop_count as usize;
+            // ArraySetLength：增长（newLen > oldLen）要求对象可扩展，不可扩展时
+            // 整个赋值失败且不修改（sloppy 静默失败；VM 未实现 strict 标志）。
+            if raw_new_len > old_logical && !obj.is_extensible() {
+                return Ok(());
+            }
             // ArraySetLength：收缩时若 [newLen, oldLen) 内存在不可配置元素，整个收缩
             // 失败且不做任何修改（sloppy 赋值静默失败；VM 未实现 strict 标志，统一按 no-op）。
             if raw_new_len < old_logical {
@@ -271,6 +281,11 @@ impl Vm {
             }
         }
 
+        // 新属性（自身与原型链均无同名）：须对象可扩展（OrdinarySet 的 extensible
+        // 检查），不可扩展时赋值失败。
+        if !obj.is_extensible() {
+            return self.raise_type_error("object is not extensible");
+        }
         self.set_or_create_prop_value(obj, prop_name_si, val);
         Ok(())
     }
@@ -461,6 +476,10 @@ impl Vm {
                 return self.raise_type_error("cannot assign to read-only property");
             }
         }
+        // 新属性创建要求对象可扩展（规范 extensible 检查在原型链 setter/只读判定之后）。
+        if !obj.is_extensible() {
+            return self.raise_type_error("object is not extensible");
+        }
         // 新 shape 槽位 = 追加前命名属性数（与 push_prop 的追加位置一致）。
         let slot = obj.prop_vec_len() as u32;
         let new_shape_id = self.kernel_core.shape_forge().make_shape(obj.shape_id(), prop_name_si);
@@ -501,6 +520,13 @@ impl Vm {
         // 数组下标键写入元素区（维护 array_prop_count），不进入 shape 链。
         if obj.is_array() {
             if let Some(index) = self.array_index_from_property_key(prop_name_si) {
+                // 新元素（越界或 hole 空洞）要求对象可扩展；已有元素覆盖不受限制。
+                // 常规入口（ordinary_set）已预先拦截，此处为 REST/SPREAD/builtin
+                // 内部等直调方的兜底。
+                let is_new = index >= obj.array_prop_count || obj.prop_meta_at(index).is_some_and(|m| m.is_hole());
+                if is_new && !obj.is_extensible() {
+                    return;
+                }
                 obj.set_prop_at(index, val);
                 return;
             }
@@ -508,6 +534,10 @@ impl Vm {
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             obj.set_prop_shape(pos, val);
         } else {
+            // 不可扩展对象禁止新增命名属性（兜底路径，常规入口已拦截）。
+            if !obj.is_extensible() {
+                return;
+            }
             let new_shape_id = self.kernel_core.shape_forge().make_shape(obj.shape_id(), prop_name_si);
             obj.set_shape_id(new_shape_id);
             // 数组对象：属性追加到 hash_props 属性区（元素之后），array_prop_count 不变。
@@ -540,6 +570,17 @@ impl Vm {
                     JsValue::undefined(),
                 );
             }
+        }
+        // 新命名属性（shape 链 lookup miss）且对象不可扩展 → 拒绝定义
+        // （Object.defineProperty 抛 TypeError；Reflect.defineProperty 自动转 false）。
+        if self
+            .kernel_core
+            .shape_forge()
+            .lookup_position(obj.shape_id(), prop_name_si)
+            .is_none()
+            && !obj.is_extensible()
+        {
+            return Err("object is not extensible".to_string());
         }
         let pos = if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             // shape 槽位 → 存储索引（数组属性在元素区之后）。
@@ -589,6 +630,16 @@ impl Vm {
                 return self.define_array_index_element(obj, index, JsValue::undefined(), attributes, true, get, set);
             }
         }
+        // 新命名属性（shape 链 lookup miss）且对象不可扩展 → 拒绝定义。
+        if self
+            .kernel_core
+            .shape_forge()
+            .lookup_position(obj.shape_id(), prop_name_si)
+            .is_none()
+            && !obj.is_extensible()
+        {
+            return Err("object is not extensible".to_string());
+        }
         let pos = if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             // shape 槽位 → 存储索引（数组属性在元素区之后）。
             if obj.is_array() {
@@ -628,6 +679,12 @@ impl Vm {
         let pos = index as usize;
         if pos > oxide_types::object::MAX_DENSE_PROPS {
             return Err("array index out of dense range".to_string());
+        }
+        // 新元素（越界或 hole 空洞）要求对象可扩展；已有元素重定义不受限（走下方
+        // non-configurable 校验）。
+        let is_new = pos >= obj.array_prop_count as usize || obj.prop_meta_at(pos).is_some_and(|m| m.is_hole());
+        if is_new && !obj.is_extensible() {
+            return Err("object is not extensible".to_string());
         }
         let pos = pos as u32;
         if let Some(current) = obj.prop_meta_at(pos) {

@@ -10,6 +10,17 @@ fn eval(source: &str) -> Result<JsValue, String> {
     vm.run(&module)
 }
 
+// 返回保活的 Vm：结果可能含对象指针（数组/描述符），读取前必须保持 Vm 存活，
+// 否则 epoch arena 随 drop 释放后指针悬垂（use-after-free）。
+fn eval_keep_vm(source: &str) -> Result<(Vm, JsValue), String> {
+    let allocator = oxide_parser::Allocator::default();
+    let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
+    let module = Compiler::new().compile(&program).map_err(|e| format!("Compile error: {}", e))?;
+    let mut vm = Vm::new();
+    let result = vm.run(&module)?;
+    Ok((vm, result))
+}
+
 fn eval_many(lines: &[&str]) -> Result<JsValue, String> {
     let source = lines.join("; ");
     eval(&source)
@@ -70,4 +81,154 @@ fn assign_non_writable_proto_configurable_prop_throws() {
         "child.x = 99",
     ]);
     assert_err_contains(result, "read-only");
+}
+
+// ── Object.freeze 后写已有属性抛 TypeError ──
+#[test]
+fn frozen_write_existing_prop_throws() {
+    let result = eval_many(&["var o = Object.freeze({a: 1})", "o.a = 2"]);
+    assert_err_contains(result, "read-only");
+}
+
+// ── Object.freeze 后写新属性抛 TypeError ──
+#[test]
+fn frozen_write_new_prop_throws() {
+    let result = eval_many(&["var o = Object.freeze({a: 1})", "o.b = 2"]);
+    assert_err_contains(result, "not extensible");
+}
+
+// ── Object.freeze 后 defineProperty 抛 TypeError ──
+#[test]
+fn frozen_define_property_throws() {
+    let result = eval_many(&["var o = Object.freeze({})", "Object.defineProperty(o, 'x', {value: 1})"]);
+    assert_err_contains(result, "not extensible");
+}
+
+// ── Object.seal 后写新属性抛错、删属性返回 false、改值生效 ──
+#[test]
+fn sealed_semantics() {
+    let (_vm, r) = eval_keep_vm(
+        &[
+            "var o = Object.seal({a: 1})",
+            "var new_throws = false; try { o.b = 2 } catch (e) { new_throws = true }",
+            "var del = delete o.a",
+            "o.a = 5",
+            "[new_throws, del, o.a, o.hasOwnProperty('a')]",
+        ]
+        .join("; "),
+    )
+    .unwrap();
+    let arr = unsafe { &*r.as_js_object_ptr() };
+    assert!(
+        arr.get_prop_at(0).is_bool() && arr.get_prop_at(0).as_bool(),
+        "new prop write should throw"
+    );
+    assert!(arr.get_prop_at(1).is_bool() && !arr.get_prop_at(1).as_bool(), "delete should be false");
+    assert!(arr.get_prop_at(2).is_int() && arr.get_prop_at(2).as_int() == 5, "value write should work");
+    assert!(arr.get_prop_at(3).is_bool() && arr.get_prop_at(3).as_bool(), "prop should remain own");
+}
+
+// ── Object.preventExtensions 后新属性不生效（sloppy 抛错），已有属性可写 ──
+#[test]
+fn prevent_extensions_semantics() {
+    let (_vm, r) = eval_keep_vm(
+        &[
+            "var o = Object.preventExtensions({a: 1})",
+            "var new_throws = false; try { o.b = 3 } catch (e) { new_throws = true }",
+            "o.a = 2",
+            "[new_throws, o.a, o.b === undefined]",
+        ]
+        .join("; "),
+    )
+    .unwrap();
+    let arr = unsafe { &*r.as_js_object_ptr() };
+    assert!(
+        arr.get_prop_at(0).is_bool() && arr.get_prop_at(0).as_bool(),
+        "new prop write should throw"
+    );
+    assert!(
+        arr.get_prop_at(1).is_int() && arr.get_prop_at(1).as_int() == 2,
+        "existing prop write should work"
+    );
+    assert!(arr.get_prop_at(2).is_bool() && arr.get_prop_at(2).as_bool(), "new prop should be absent");
+}
+
+// ── Object.freeze 数组：元素写与 length 收缩均被拦截 ──
+#[test]
+fn frozen_array_write_and_length_throws() {
+    let (_vm, r) = eval_keep_vm(
+        &[
+            "var a = Object.freeze([1, 2])",
+            "var e1 = false, e2 = false",
+            "try { a[0] = 9 } catch (e) { e1 = true }",
+            "try { a.length = 0 } catch (e) { e2 = true }",
+            "[e1, e2, a[0], a.length, Object.getOwnPropertyDescriptor(a, '0').writable]",
+        ]
+        .join("; "),
+    )
+    .unwrap();
+    let arr = unsafe { &*r.as_js_object_ptr() };
+    assert!(arr.get_prop_at(0).is_bool() && arr.get_prop_at(0).as_bool(), "element write should throw");
+    assert!(arr.get_prop_at(1).is_bool() && arr.get_prop_at(1).as_bool(), "length shrink should throw");
+    assert!(arr.get_prop_at(2).is_int() && arr.get_prop_at(2).as_int() == 1, "element value unchanged");
+    assert!(arr.get_prop_at(3).is_int() && arr.get_prop_at(3).as_int() == 2, "length unchanged");
+    assert!(
+        arr.get_prop_at(4).is_bool() && !arr.get_prop_at(4).as_bool(),
+        "descriptor writable should be false"
+    );
+}
+
+// ── isFrozen/isSealed：手动 defineProperty 全部冻结（未调 freeze）也应判 true ──
+#[test]
+fn is_frozen_manual_define_props() {
+    let r = eval_many(&[
+        "var o = {a: 1}",
+        "Object.defineProperty(o, 'a', {writable: false, configurable: false})",
+        "Object.preventExtensions(o)",
+        "Object.isFrozen(o)",
+    ])
+    .unwrap();
+    assert!(r.is_bool() && r.as_bool(), "manually frozen object should be isFrozen");
+}
+
+// ── Reflect.set / Reflect.defineProperty 对 frozen 对象返回 false ──
+#[test]
+fn reflect_ops_on_frozen_return_false() {
+    let (_vm, r) = eval_keep_vm(
+        &[
+            "var f = Object.freeze({a: 1})",
+            "[Reflect.set(f, 'a', 2), Reflect.set(f, 'b', 2), Reflect.defineProperty(f, 'x', {value: 1})]",
+        ]
+        .join("; "),
+    )
+    .unwrap();
+    let arr = unsafe { &*r.as_js_object_ptr() };
+    for i in 0..3 {
+        assert!(
+            arr.get_prop_at(i).is_bool() && !arr.get_prop_at(i).as_bool(),
+            "reflect op {} should be false",
+            i
+        );
+    }
+}
+
+// ── freeze/seal 后 IC 直写路径失效：循环写仍被拦截 ──
+#[test]
+fn frozen_ic_path_still_blocks_write() {
+    let r = eval_many(&[
+        "var o = Object.freeze({a: 1})",
+        "var threw = false",
+        "for (var i = 0; i < 3; i++) { try { o.a = i } catch (e) { threw = true } }",
+        "threw",
+    ])
+    .unwrap();
+    assert!(r.is_bool() && r.as_bool(), "IC path should still throw on frozen write");
+}
+
+// ── sealed 对象 IC 路径：已有属性写正常 ──
+#[test]
+fn sealed_ic_path_allows_existing_write() {
+    let r = eval_many(&["var o = Object.seal({a: 1})", "for (var i = 0; i < 3; i++) { o.a = i }", "o.a"]).unwrap();
+    let ok = (r.is_int() && r.as_int() == 2) || (r.is_double() && r.as_double() == 2.0);
+    assert!(ok, "sealed existing prop write should work via IC, got {:?}", r);
 }

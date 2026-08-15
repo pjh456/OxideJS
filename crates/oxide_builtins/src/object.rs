@@ -530,9 +530,8 @@ fn define_from_descriptor<H: VmHost>(
         // 已有属性无显式 meta（普通数据属性/数组元素）时按默认属性回填：
         // 描述符缺省字段保持现有值（writable/enumerable/configurable 均 true），
         // 而非按新属性处理为 false（Object.defineProperty 省略字段不改已有属性）。
-        obj.prop_meta_at(pos).unwrap_or_else(|| {
-            oxide_types::object::PropMetaEntry::data(PropAttributes::DEFAULT_DATA)
-        })
+        obj.prop_meta_at(pos)
+            .unwrap_or_else(|| oxide_types::object::PropMetaEntry::data(PropAttributes::DEFAULT_DATA))
     });
 
     // 修改已有属性时缺省字段回填现有值，仅定义新属性时缺省才为 false。
@@ -759,7 +758,40 @@ macro_rules! native_try {
     };
 }
 
+/// 把指定存储下标的 own 属性 meta 改写为冻结形态：数据属性 writable=false +
+/// configurable=false，访问器属性 configurable=false（writable 不适用），
+/// enumerable 保留原值。
+fn freeze_own_prop_meta(obj: &mut JsObject, store: u32) {
+    let meta = obj
+        .prop_meta_at(store)
+        .unwrap_or_else(|| PropMetaEntry::data(PropAttributes::DEFAULT_DATA));
+    let attrs = PropAttributes::new(false, meta.attributes.enumerable(), false);
+    if meta.is_accessor {
+        obj.set_accessor_meta(store, meta.get, meta.set, attrs);
+    } else {
+        obj.set_data_meta(store, attrs);
+    }
+}
+
+/// 把指定存储下标的 own 属性 meta 改写为密封形态：configurable=false，
+/// writable/enumerable 与访问器形态保留原值。
+fn seal_own_prop_meta(obj: &mut JsObject, store: u32) {
+    let meta = obj
+        .prop_meta_at(store)
+        .unwrap_or_else(|| PropMetaEntry::data(PropAttributes::DEFAULT_DATA));
+    let attrs = PropAttributes::new(meta.attributes.writable(), meta.attributes.enumerable(), false);
+    if meta.is_accessor {
+        obj.set_accessor_meta(store, meta.get, meta.set, attrs);
+    } else {
+        obj.set_data_meta(store, attrs);
+    }
+}
+
 /// `Object.freeze(obj)`：冻结对象（不可扩展 + 全部属性不可配置/不可写），返回原对象。
+///
+/// # 副作用
+/// - 逐属性写 meta 使 `has_prop_meta()` 恒 true，IC 直写路径自动失效，后续
+///   写/define 一律回落 ordinary_set / define 检查（writable/configurable 判定）
 pub fn object_freeze<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Err(crate::error::create_type_error(vm, "Object.freeze called on non-object"));
@@ -769,14 +801,34 @@ pub fn object_freeze<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(val);
     }
     let obj_ptr = val.as_js_object_ptr();
-    unsafe {
-        (*obj_ptr).set_frozen(true);
-        (*obj_ptr).set_extensible(false);
+    {
+        let obj = unsafe { &mut *obj_ptr };
+        // 命名属性：shape 链（数组对象存储索引 = 元素数 + 槽位）。
+        let keys = walk_own_keys(vm, obj);
+        for (_si, pos) in keys {
+            let store = if obj.is_array() { obj.array_prop_count + pos } else { pos };
+            freeze_own_prop_meta(obj, store);
+        }
+        // 数组元素区独立于 shape 链（hole 非 own 属性，跳过）。
+        if obj.is_array() {
+            for i in 0..obj.array_prop_count {
+                if obj.prop_meta_at(i).is_some_and(|m| m.is_hole()) {
+                    continue;
+                }
+                freeze_own_prop_meta(obj, i);
+            }
+        }
+        obj.set_frozen(true);
+        obj.set_extensible(false);
     }
     NativeResult::Ok(val)
 }
 
 /// `Object.seal(obj)`：密封对象（不可扩展 + 全部属性不可配置），返回原对象。
+///
+/// # 副作用
+/// - 逐属性写 meta 使 `has_prop_meta()` 恒 true，IC 直写路径自动失效，后续
+///   define 回落 non-configurable 检查（已有属性写仍可正常进行）
 pub fn object_seal<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Err(crate::error::create_type_error(vm, "Object.seal called on non-object"));
@@ -786,9 +838,23 @@ pub fn object_seal<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(val);
     }
     let obj_ptr = val.as_js_object_ptr();
-    unsafe {
-        (*obj_ptr).set_sealed(true);
-        (*obj_ptr).set_extensible(false);
+    {
+        let obj = unsafe { &mut *obj_ptr };
+        let keys = walk_own_keys(vm, obj);
+        for (_si, pos) in keys {
+            let store = if obj.is_array() { obj.array_prop_count + pos } else { pos };
+            seal_own_prop_meta(obj, store);
+        }
+        if obj.is_array() {
+            for i in 0..obj.array_prop_count {
+                if obj.prop_meta_at(i).is_some_and(|m| m.is_hole()) {
+                    continue;
+                }
+                seal_own_prop_meta(obj, i);
+            }
+        }
+        obj.set_sealed(true);
+        obj.set_extensible(false);
     }
     NativeResult::Ok(val)
 }
