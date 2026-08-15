@@ -1535,10 +1535,11 @@ pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 fn builder_wrapper<H: VmHost>(vm: &mut H, input: &str, re_obj: JsValue) -> NativeResult {
-    let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    // matchAll 迭代器挂 %RegExpStringIteratorPrototype%（链到 %IteratorPrototype%）。
+    let regexp_iter_proto = vm.session().builtin_world().regexp_string_iterator_proto.as_ptr() as *mut JsObject;
     let wrapper = vm
         .epoch()
-        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
+        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(regexp_iter_proto)));
 
     let wrapper_obj = unsafe { &mut *wrapper };
     let input_si = vm.kernel_core().perm_interner().intern(MALL_INPUT).0;
@@ -1555,6 +1556,41 @@ fn builder_wrapper<H: VmHost>(vm: &mut H, input: &str, re_obj: JsValue) -> Nativ
     vm.set_or_create_prop_value(wrapper_obj, next_si, next_fn);
 
     NativeResult::Ok(JsValue::from_js_object(wrapper))
+}
+
+/// `String.prototype[Symbol.iterator]()`：返回按 Unicode code point 迭代字符的迭代器。
+///
+/// # 步骤
+/// 1. null/undefined 抛 TypeError（RequireObjectCoercible）
+/// 2. this 经 ToString 完整转换（对象取 toString 结果，Symbol 抛 TypeError）
+/// 3. 包成统一迭代器包装（next 逐 code point 产出，耗尽后 done）
+///
+/// # 边界与前提
+/// - 对象 toString 抛出的原始异常原样传播
+/// - 包装器挂 `%StringIteratorPrototype%` → `%IteratorPrototype%` 链
+pub fn string_symbol_iterator<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    if this_val.is_null() || this_val.is_undefined() {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "String.prototype[Symbol.iterator] called on null or undefined",
+        ));
+    }
+    let s = match oxide_runtime_api::to_string_full(this_val, vm) {
+        Ok(s) => s,
+        Err(_) => {
+            // ToString 触发对象 toString/valueOf 抛出的原生异常须原样传播。
+            if let Some(exc) = vm.take_uncaught_value() {
+                return NativeResult::Err(exc);
+            }
+            return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a string"));
+        }
+    };
+    let s_val = vm.new_string_owned(s);
+    match crate::iterator::make_iterator_for_value(vm, s_val) {
+        Ok(iterator) => NativeResult::Ok(iterator),
+        Err(err) => NativeResult::Err(err),
+    }
 }
 
 pub(crate) fn make_public_native_fn<H: VmHost>(vm: &mut H, name: &str, native_fn: *const (), arg_count: u8) -> JsValue {

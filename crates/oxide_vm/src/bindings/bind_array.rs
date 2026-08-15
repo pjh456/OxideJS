@@ -70,6 +70,8 @@ pub fn bind_array(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
     if let Some(pos) = core.shape_forge().lookup_position(array_proto.shape_id(), si) {
         array_proto.set_data_meta(pos, PropAttributes::new(true, false, true));
     }
+    // Array.prototype[@@iterator] 与 values 共享同一函数对象。
+    super::bind_well_known_method_alias(core, array_proto, "values", 0);
 
     let ctor_ptr = session.builtin_world().array_constructor.as_ptr() as *mut JsObject;
     bind_constructor!(core, global, "Array", ctor_ptr, oxide_builtins::array::array_constructor::<crate::vm::Vm>, 1, hash: true);

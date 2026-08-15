@@ -61,6 +61,16 @@ pub fn bind_string(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         core,
         &[("toString", oxide_builtins::string::string_to_string::<crate::vm::Vm> as *const (), 0)],
     );
+    // String.prototype[@@iterator]：逐 code point 迭代字符。
+    super::bind_well_known_method(
+        session.builtin_world(),
+        core,
+        proto,
+        0,
+        "iterator",
+        oxide_builtins::string::string_symbol_iterator::<crate::vm::Vm> as *const (),
+        0,
+    );
 
     let si_str = core.perm_interner().intern("String").0;
     let str_shape = core.shape_forge().make_shape(global.shape_id(), si_str);

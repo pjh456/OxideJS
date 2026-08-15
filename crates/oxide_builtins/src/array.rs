@@ -1720,11 +1720,11 @@ pub fn array_sort<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.reg(args[0]))
 }
 
-/// `Array.prototype.values()`：返回迭代数组元素的迭代器。
+/// `Array.prototype.values()`：返回迭代数组元素的迭代器（%ArrayIteratorPrototype%）。
 pub fn array_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.values called with {} args", args.len());
-    let this_val = vm.reg(args[0]);
-    match crate::iterator::make_iterator_for_value(vm, this_val) {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    match make_array_iterator(vm, this_val, ARRAY_ITER_KIND_VALUES) {
         Ok(iterator) => NativeResult::Ok(iterator),
         Err(err) => {
             builtins_error!("Array.prototype.values: invalid receiver");
@@ -1742,16 +1742,17 @@ const ARRAY_ITER_TARGET_PROP: &str = "__target__";
 const ARRAY_ITER_INDEX_PROP: &str = "__index__";
 const ARRAY_ITER_KIND_PROP: &str = "__kind__";
 
-/// 创建 Array Iterator 对象：记录目标、当前下标与迭代种类。
+/// 创建 Array Iterator 对象：记录目标、当前下标与迭代种类，原型挂
+/// `%ArrayIteratorPrototype%`（链到 `%IteratorPrototype%`，与 TA 迭代器共享）。
 fn make_array_iterator<H: VmHost>(vm: &mut H, this_val: JsValue, kind: i32) -> Result<JsValue, JsValue> {
     let target = match oxide_runtime_api::to_object(this_val, vm) {
         Ok(v) => v,
         Err(msg) => return Err(array_type_error(vm, &msg)),
     };
-    let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let array_iter_proto = vm.session().builtin_world().array_iterator_proto.as_ptr() as *mut JsObject;
     let iter = vm
         .epoch()
-        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
+        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(array_iter_proto)));
     let target_si = vm.kernel_core().perm_interner().intern(ARRAY_ITER_TARGET_PROP).0;
     let index_si = vm.kernel_core().perm_interner().intern(ARRAY_ITER_INDEX_PROP).0;
     let kind_si = vm.kernel_core().perm_interner().intern(ARRAY_ITER_KIND_PROP).0;

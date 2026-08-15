@@ -326,6 +326,7 @@ pub fn map_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(crate::iterator::make_mode_iterator(
         vm,
         this_val,
+        JsValue::from_js_object(vm.session().builtin_world().map_iterator_proto.as_ptr() as *mut JsObject),
         crate::iterator::map_entries_iter_next::<H> as *const (),
     ))
 }
@@ -337,6 +338,7 @@ pub fn map_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(crate::iterator::make_mode_iterator(
         vm,
         this_val,
+        JsValue::from_js_object(vm.session().builtin_world().map_iterator_proto.as_ptr() as *mut JsObject),
         crate::iterator::map_values_iter_next::<H> as *const (),
     ))
 }
@@ -348,6 +350,7 @@ pub fn map_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(crate::iterator::make_mode_iterator(
         vm,
         this_val,
+        JsValue::from_js_object(vm.session().builtin_world().map_iterator_proto.as_ptr() as *mut JsObject),
         crate::iterator::map_keys_iter_next::<H> as *const (),
     ))
 }

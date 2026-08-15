@@ -1174,6 +1174,7 @@ pub fn typed_array_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(crate::iterator::make_mode_iterator(
         vm,
         this_val,
+        JsValue::from_js_object(vm.session().builtin_world().array_iterator_proto.as_ptr() as *mut JsObject),
         crate::iterator::typed_array_values_iter_next::<H> as *const (),
     ))
 }
@@ -1185,6 +1186,7 @@ pub fn typed_array_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(crate::iterator::make_mode_iterator(
         vm,
         this_val,
+        JsValue::from_js_object(vm.session().builtin_world().array_iterator_proto.as_ptr() as *mut JsObject),
         crate::iterator::typed_array_keys_iter_next::<H> as *const (),
     ))
 }
@@ -1196,6 +1198,7 @@ pub fn typed_array_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(crate::iterator::make_mode_iterator(
         vm,
         this_val,
+        JsValue::from_js_object(vm.session().builtin_world().array_iterator_proto.as_ptr() as *mut JsObject),
         crate::iterator::typed_array_entries_iter_next::<H> as *const (),
     ))
 }

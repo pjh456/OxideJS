@@ -270,6 +270,18 @@ pub struct BuiltinWorld {
     pub plain_date_time_proto: P<JsObject>,
     pub bigint_constructor: P<JsObject>,
     pub bigint_proto: P<JsObject>,
+    /// `%IteratorPrototype%`：各集合迭代器原型的公共祖先，持有 `@@iterator`（返回自身）。
+    pub iterator_proto: P<JsObject>,
+    /// `%ArrayIteratorPrototype%`：Array 与 TypedArray 迭代器共享（`next` 挂其上）。
+    pub array_iterator_proto: P<JsObject>,
+    /// `%MapIteratorPrototype%`：Map 的 values/keys/entries 迭代器共享。
+    pub map_iterator_proto: P<JsObject>,
+    /// `%SetIteratorPrototype%`：Set 的 values/keys/entries 迭代器共享。
+    pub set_iterator_proto: P<JsObject>,
+    /// `%StringIteratorPrototype%`：String.prototype[@@iterator] 返回的迭代器。
+    pub string_iterator_proto: P<JsObject>,
+    /// `%RegExpStringIteratorPrototype%`：matchAll 返回的迭代器。
+    pub regexp_string_iterator_proto: P<JsObject>,
     pub stub_objects: Vec<P<JsObject>>,
 }
 
@@ -587,6 +599,21 @@ fn wire_builtin_world_links(world: &BuiltinWorld) {
     set_proto_if_changed(&world.temporal_object, obj_proto_val);
     set_proto_if_changed(&world.temporal_now_object, obj_proto_val);
 
+    // 迭代器原型链：%IteratorPrototype% → Object.prototype；各集合迭代器原型
+    // → %IteratorPrototype%（next/@@iterator 方法由绑定层安装到对应原型）。
+    set_proto_if_changed(&world.iterator_proto, obj_proto_val);
+    let iterator_proto_val = JsValue::from_js_object(world.iterator_proto.as_ptr() as *mut JsObject);
+    let iterator_protos: [&P<JsObject>; 5] = [
+        &world.array_iterator_proto,
+        &world.map_iterator_proto,
+        &world.set_iterator_proto,
+        &world.string_iterator_proto,
+        &world.regexp_string_iterator_proto,
+    ];
+    for proto in &iterator_protos {
+        set_proto_if_changed(proto, iterator_proto_val);
+    }
+
     let typed_array_proto_val = JsValue::from_js_object(world.typed_array_proto.as_ptr() as *mut JsObject);
     let typed_array_protos: [&P<JsObject>; 11] = [
         &world.int8array_proto,
@@ -780,6 +807,15 @@ impl BuiltinWorld {
         let (bigint_proto, bigint_constructor) = make_named_pair(string_forge, shape_forge, labels, "BigInt");
         let stub_objects = Vec::new();
 
+        // 迭代器原型家族：链关系（→ %IteratorPrototype% → Object.prototype）在
+        // wire_builtin_world_links 中建立，next/@@iterator 方法由绑定层安装。
+        let iterator_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let array_iterator_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let map_iterator_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let set_iterator_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let string_iterator_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let regexp_string_iterator_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+
         let world = Self {
             object_proto,
             array_proto,
@@ -868,6 +904,12 @@ impl BuiltinWorld {
             plain_date_time_proto,
             bigint_constructor,
             bigint_proto,
+            iterator_proto,
+            array_iterator_proto,
+            map_iterator_proto,
+            set_iterator_proto,
+            string_iterator_proto,
+            regexp_string_iterator_proto,
             stub_objects,
         };
         wire_builtin_world_links(&world);
@@ -1127,6 +1169,35 @@ impl BuiltinWorld {
         };
         let stub_objects = if dirty.stubs { Vec::new() } else { current.stub_objects.clone() };
 
+        // 迭代器原型依赖 Object.prototype（链到其上）：object 家族重建时一并重建，
+        // 否则旧原型链指向已释放的 object_proto。
+        let (
+            iterator_proto,
+            array_iterator_proto,
+            map_iterator_proto,
+            set_iterator_proto,
+            string_iterator_proto,
+            regexp_string_iterator_proto,
+        ) = if dirty.object {
+            (
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+            )
+        } else {
+            (
+                current.iterator_proto.clone(),
+                current.array_iterator_proto.clone(),
+                current.map_iterator_proto.clone(),
+                current.set_iterator_proto.clone(),
+                current.string_iterator_proto.clone(),
+                current.regexp_string_iterator_proto.clone(),
+            )
+        };
+
         let world = BuiltinWorld {
             object_proto,
             array_proto,
@@ -1215,6 +1286,12 @@ impl BuiltinWorld {
             plain_date_time_proto,
             bigint_constructor,
             bigint_proto,
+            iterator_proto,
+            array_iterator_proto,
+            map_iterator_proto,
+            set_iterator_proto,
+            string_iterator_proto,
+            regexp_string_iterator_proto,
             stub_objects,
         };
         wire_builtin_world_links(&world);

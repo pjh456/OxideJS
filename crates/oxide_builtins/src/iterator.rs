@@ -13,6 +13,15 @@ pub fn iterator_constructor<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult
     NativeResult::Err(crate::error::create_type_error(vm, "Iterator is not a constructor"))
 }
 
+/// `%IteratorPrototype%[@@iterator]`：返回 this（迭代器对象自迭代）。
+///
+/// 挂在 `%IteratorPrototype%` 上，所有集合迭代器经原型链继承，保证
+/// `it[Symbol.iterator]() === it` 恒等成立；this 为任意值（含原始值）时原样返回。
+pub fn iterator_symbol_iterator<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = if args.is_empty() { JsValue::undefined() } else { vm.reg(args[0]) };
+    NativeResult::Ok(this_val)
+}
+
 /// `Iterator.from(iterable)`：为任意可迭代值包装一个迭代器对象。
 /// 包装器带 `next` 与 `return`（用于 for-of 提前退出时的 IteratorClose 清理）。
 pub fn iterator_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -64,10 +73,11 @@ pub(crate) fn try_make_iterator_inner<H: VmHost>(
         Ok(None) => return Ok(None),
         Err(err) => return Err(err),
     };
-    let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    // 通用包装器挂 %IteratorPrototype%：经原型链获得 @@iterator（返回自身）。
+    let iterator_proto = vm.session().builtin_world().iterator_proto.as_ptr() as *mut JsObject;
     let wrapper = vm
         .epoch()
-        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
+        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(iterator_proto)));
 
     let inner_si = vm.kernel_core().perm_interner().intern(INNER_PROP).0;
     let index_si = vm.kernel_core().perm_interner().intern(INDEX_PROP).0;
@@ -679,13 +689,15 @@ pub(crate) fn typed_array_entries_iter_next<H: VmHost>(vm: &mut H, args: &[u8]) 
 }
 
 /// 构造迭代器包装器，其 `next` 委托给调用方指定的按模式分发的 native 函数。
-/// 与 `make_iterator_for_value` 一致，但允许 Map/Set 原型方法选择
-/// values/keys/entries 变体。
-pub(crate) fn make_mode_iterator<H: VmHost>(vm: &mut H, inner: JsValue, next_fn: *const ()) -> JsValue {
-    let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+/// 与 `make_iterator_for_value` 一致，但允许 Map/Set/TA 原型方法选择
+/// values/keys/entries 变体，并挂到各自的集合迭代器原型上。
+pub(crate) fn make_mode_iterator<H: VmHost>(
+    vm: &mut H, inner: JsValue, proto_val: JsValue, next_fn: *const (),
+) -> JsValue {
+    let proto_ptr = if proto_val.is_object() { proto_val.as_js_object_ptr() } else { std::ptr::null_mut() };
     let wrapper = vm
         .epoch()
-        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
+        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
     let inner_si = vm.kernel_core().perm_interner().intern(INNER_PROP).0;
     let index_si = vm.kernel_core().perm_interner().intern(INDEX_PROP).0;
     let next_si = vm.kernel_core().perm_interner().intern("next").0;

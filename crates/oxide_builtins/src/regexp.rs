@@ -547,11 +547,12 @@ pub fn regexp_symbol_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
         JsValue::from_js_object(vm.alloc_object(stub))
     };
 
-    // 复用 String.prototype.matchAll 的迭代器包装（next 经 string_match_all_next 推进）。
-    let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    // 复用 String.prototype.matchAll 的迭代器包装（next 经 string_match_all_next 推进），
+    // 原型挂 %RegExpStringIteratorPrototype%（链到 %IteratorPrototype%）。
+    let regexp_iter_proto = vm.session().builtin_world().regexp_string_iterator_proto.as_ptr() as *mut JsObject;
     let wrapper = vm
         .epoch()
-        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
+        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(regexp_iter_proto)));
     let wrapper_obj = unsafe { &mut *wrapper };
     let input_si = vm.kernel_core().perm_interner().intern(crate::string::MALL_INPUT).0;
     let index_si = vm.kernel_core().perm_interner().intern(crate::string::MALL_INDEX).0;

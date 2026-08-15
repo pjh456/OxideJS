@@ -340,6 +340,7 @@ pub fn set_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(crate::iterator::make_mode_iterator(
         vm,
         this_val,
+        JsValue::from_js_object(vm.session().builtin_world().set_iterator_proto.as_ptr() as *mut JsObject),
         crate::iterator::set_entries_iter_next::<H> as *const (),
     ))
 }
@@ -351,6 +352,7 @@ pub fn set_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(crate::iterator::make_mode_iterator(
         vm,
         this_val,
+        JsValue::from_js_object(vm.session().builtin_world().set_iterator_proto.as_ptr() as *mut JsObject),
         crate::iterator::set_values_iter_next::<H> as *const (),
     ))
 }
@@ -363,6 +365,7 @@ pub fn set_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(crate::iterator::make_mode_iterator(
         vm,
         this_val,
+        JsValue::from_js_object(vm.session().builtin_world().set_iterator_proto.as_ptr() as *mut JsObject),
         crate::iterator::set_values_iter_next::<H> as *const (),
     ))
 }

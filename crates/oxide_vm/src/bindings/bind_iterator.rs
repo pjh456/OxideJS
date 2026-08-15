@@ -26,4 +26,18 @@ pub fn bind_iterator(core: &Arc<KernelCore>, session: &KernelSession, global: &m
     );
 
     bind_global_value(core, global, "Iterator", JsValue::from_js_object(Box::into_raw(iterator)));
+
+    // %IteratorPrototype% 自身可迭代：@@iterator 返回 this，经原型链被所有
+    // 集合迭代器继承（it[Symbol.iterator]() === it 恒等）。
+    let iter_proto_ptr = session.builtin_world().iterator_proto.as_ptr() as *mut JsObject;
+    let iter_proto = unsafe { &mut *iter_proto_ptr };
+    crate::bindings::bind_well_known_method(
+        session.builtin_world(),
+        core,
+        iter_proto,
+        0,
+        "iterator",
+        oxide_builtins::iterator::iterator_symbol_iterator::<crate::vm::Vm> as *const (),
+        0,
+    );
 }

@@ -95,3 +95,84 @@ fn for_of_string_chars() {
     let result = eval(&mut vm, "var out = []; for (const c of 'abc') out.push(c); out.join('')").unwrap();
     assert_eq!(to_str(&vm, result), "abc");
 }
+
+#[test]
+fn iterator_proto_chain_and_self_iteration() {
+    let mut vm = Vm::new();
+    let cases = [
+        // 各家族迭代器自迭代恒等（%IteratorPrototype% 的 @@iterator 返回 this）。
+        ("var it = [1,2].values(); it[Symbol.iterator]() === it", true),
+        ("var it = new Map([['a',1]]).values(); it[Symbol.iterator]() === it", true),
+        ("var it = new Set([1]).values(); it[Symbol.iterator]() === it", true),
+        ("var it = new Uint8Array([1]).values(); it[Symbol.iterator]() === it", true),
+        ("var it = 'abc'[Symbol.iterator](); it[Symbol.iterator]() === it", true),
+        ("var it = 'ab'.matchAll(/a/g); it[Symbol.iterator]() === it", true),
+        // Array/TA 共享 %ArrayIteratorPrototype%；Map/Set 各自原型内部共享。
+        ("Object.getPrototypeOf([].values()) === Object.getPrototypeOf([].entries())", true),
+        ("Object.getPrototypeOf(new Uint8Array(0).values()) === Object.getPrototypeOf([].values())", true),
+        ("Object.getPrototypeOf(new Map().values()) === Object.getPrototypeOf(new Map().keys())", true),
+        ("Object.getPrototypeOf(new Set().values()) === Object.getPrototypeOf(new Set().entries())", true),
+        // %IteratorPrototype% 自身可迭代：其 @@iterator 返回 this。
+        (
+            "var P = Object.getPrototypeOf(Object.getPrototypeOf([].values())); P[Symbol.iterator]() === P",
+            true,
+        ),
+        // 原型链：%ArrayIteratorPrototype% → %IteratorPrototype% → Object.prototype。
+        (
+            "Object.getPrototypeOf(Object.getPrototypeOf([].values())) === \
+             Object.getPrototypeOf(Object.getPrototypeOf(Object.getPrototypeOf([].values())))",
+            false,
+        ),
+        (
+            "Object.getPrototypeOf(Object.getPrototypeOf([].values()))[Symbol.iterator] === \
+             Object.getPrototypeOf(new Map().values())[Symbol.iterator]",
+            true,
+        ),
+    ];
+    for (src, expected) in cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn array_string_symbol_iterator_bound() {
+    let mut vm = Vm::new();
+    // G4 别名：Array/String 的 @@iterator 属性存在且可迭代。
+    let bool_cases = [
+        ("[][Symbol.iterator] === [].values", true),
+        ("var out = []; for (const c of 'a\\u{1F600}b') out.push(c); out.length === 3", true),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+    let str_cases = [
+        ("typeof 'abc'[Symbol.iterator]", "function"),
+        ("[...'ab'].join('')", "ab"),
+        ("Array.from('ab').join('')", "ab"),
+        ("[...[1,2,3]].join(',')", "1,2,3"),
+        ("Array.from([1,2]).join(',')", "1,2"),
+    ];
+    for (src, expected) in str_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(to_str(&vm, result), expected, "for {}", src);
+    }
+    // String 迭代器语义：null/undefined 抛 TypeError，对象走 ToString。
+    let err = eval(&mut vm, "try { String.prototype[Symbol.iterator].call(null) } catch (e) { e.name }").unwrap();
+    assert_eq!(to_str(&vm, err), "TypeError");
+    let result = eval(&mut vm, "[...String.prototype[Symbol.iterator].call({toString: () => 'xy'})].join('')").unwrap();
+    assert_eq!(to_str(&vm, result), "xy");
+}
+
+#[test]
+fn iterator_proto_object_proto_parent() {
+    // 链：values() → %ArrayIteratorPrototype% → %IteratorPrototype% → Object.prototype。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "Object.getPrototypeOf(Object.getPrototypeOf(Object.getPrototypeOf([].values()))) === Object.prototype",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
