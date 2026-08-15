@@ -194,8 +194,8 @@ impl Vm {
     /// 附 length / callee 属性。第一版为 unmapped（非严格）语义，索引与形参不同步。
     ///
     /// # 边界与前提
-    /// - 实参区由 `push_bytecode_frame` / `dispatch_super_call` / `dispatch_new_expression`
-    ///   在推帧时写入 spill 栈；frames 为空（inline 同步调用）时读 `inline_args_*`。
+    /// - 实参区由统一压帧入口 `push_bytecode_frame` 在推帧时写入 spill 栈；
+    ///   frames 为空（inline 同步调用）时读 `inline_args_*`。
     /// - 索引属性用 shape 槽存储（普通对象），length/callee 为不可枚举数据属性。
     pub(crate) fn dispatch_create_arguments(&mut self, rd: usize) -> Result<(), String> {
         let (base, count) = match self.frames.last() {
@@ -244,7 +244,7 @@ impl Vm {
     /// 2. 实参个数超出固定形参数的部分作为数组元素写入。
     ///
     /// # 边界与前提
-    /// - 实参来源与 CREATE_ARGUMENTS 相同（push_bytecode_frame / inline 路径写入 spill 栈）。
+    /// - 实参来源与 CREATE_ARGUMENTS 相同（统一压帧入口 `push_bytecode_frame` 写入 spill 栈）。
     /// - 实参不足 `fixed_count` 时数组为空。
     pub(crate) fn dispatch_create_rest_array(&mut self, rd: usize, fixed_count: usize) -> Result<(), String> {
         let (base, count) = match self.frames.last() {

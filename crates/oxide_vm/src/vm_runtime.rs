@@ -2,7 +2,7 @@ use std::sync::{Arc, OnceLock};
 
 use oxide_bytecode::module::CompiledModule;
 
-use crate::vm::{CallFrame, FrameContinuation, InlineSyncState, Vm};
+use crate::vm::{CallFrame, FrameArgs, FrameContinuation, InlineSyncState, Vm};
 use crate::{vm_debug, vm_info, vm_trace, vm_warn};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
@@ -205,7 +205,7 @@ impl Vm {
         self.push_bytecode_frame(
             callee,
             this_value,
-            args,
+            FrameArgs::Slice(args),
             None,
             None,
             JsValue::undefined(),

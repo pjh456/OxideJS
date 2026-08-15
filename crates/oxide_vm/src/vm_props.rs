@@ -1,4 +1,4 @@
-use crate::vm::{FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
+use crate::vm::{FrameArgs, FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
 use crate::{ic_trace, vm_trace};
 use oxide_kernel::prop_forge::PropTemplate;
 use oxide_runtime_api as coercion;
@@ -126,7 +126,7 @@ impl Vm {
         self.push_bytecode_frame(
             getter,
             receiver,
-            &[],
+            FrameArgs::Slice(&[]),
             None,
             None,
             JsValue::undefined(),
@@ -326,7 +326,7 @@ impl Vm {
         self.push_bytecode_frame(
             setter,
             receiver,
-            &[val],
+            FrameArgs::Slice(&[val]),
             None,
             None,
             JsValue::undefined(),

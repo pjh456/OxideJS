@@ -1,5 +1,5 @@
 use crate::native::NativeFn;
-use crate::vm::{native_fn_ptr_to_fn, CallFrame, FrameContinuation, Vm};
+use crate::vm::{native_fn_ptr_to_fn, FrameArgs, FrameContinuation, Vm};
 use crate::{vm_debug, vm_trace};
 use oxide_builtins::iterator::make_iterator_for_value;
 use oxide_builtins::{builtins_debug, builtins_trace};
@@ -7,7 +7,6 @@ use oxide_bytecode::opcode;
 use oxide_runtime_api::{to_boolean, NativeResult};
 use oxide_types::object::{Cell, JsObject, PropAttributes};
 use oxide_types::value::JsValue;
-use std::sync::Arc;
 
 impl Vm {
     #[inline(always)]
@@ -90,7 +89,7 @@ impl Vm {
                 self.push_bytecode_frame(
                     callee,
                     this,
-                    &args,
+                    FrameArgs::Slice(&args),
                     None,
                     None,
                     JsValue::undefined(),
@@ -486,77 +485,21 @@ impl Vm {
                     self.sub_modules.len()
                 ));
             }
-            if self.frames.len() >= self.kernel_core.config.max_call_depth {
-                return Err(self.error_message_text("RangeError", "Maximum call stack size exceeded"));
-            }
-
-            let sub_bytecode = Arc::clone(&self.sub_modules[sub_idx].bytecode);
-            let sub_n_args = self.sub_modules[sub_idx].n_args as usize;
-            let sub_n_registers = self.sub_modules[sub_idx].n_registers;
-            let sub_param_base = self.sub_modules[sub_idx].param_base as usize;
-            let caller_active_reg_limit = self.active_reg_limit.max(1);
-            let caller_reg_limit = self.call_window_limit(caller_active_reg_limit, call_window);
-            let saved_reg_offset = self.save_stack.len() as u32;
-            self.save_stack.extend_from_slice(&self.regs[..caller_reg_limit as usize]);
-            let saved_this = self.regs[254];
-            let saved_new_target = self.regs[255];
-
-            // 完整实参写入 spill 栈实参区（在帧的 spill 区之前），供 CREATE_ARGUMENTS 使用。
-            let args_base = self.spill_stack.len() as u32;
-            for i in 0..arg_count {
-                let src_reg = first_arg_reg.wrapping_add(i as u8) as usize;
-                self.spill_stack.push(self.regs[src_reg]);
-            }
-            let args_count = arg_count.min(u16::MAX as usize) as u16;
-
-            for i in 0..sub_n_args {
-                let src_reg = first_arg_reg.wrapping_add(i as u8) as usize;
-                self.regs[sub_param_base + i] = self.regs[src_reg];
-            }
-            self.regs[254] = derived_this;
-            self.regs[255] = new_target;
-
-            self.saved_bytecode_stack.push(std::mem::take(&mut self.bytecode));
-            self.saved_immutables_stack.push(self.active_immutables);
-
-            let function_name = self.sub_modules[sub_idx]
-                .function_name
-                .as_deref()
-                .map(|name| self.kernel_core.perm_interner().intern(name).0)
-                .unwrap_or(0);
-
-            self.frames.push(CallFrame {
-                return_addr: self.pc,
-                function_name,
-                caller_reg_limit,
-                caller_active_reg_limit,
-                saved_reg_offset,
-                spill_offset: self.spill_stack.len() as u32,
-                arguments_base: args_base,
-                arguments_count: args_count,
-                saved_this,
-                saved_new_target,
-                callee: super_ctor,
-                construct_result_reg: Some(254),
-                constructed_this: Some(derived_this),
-                is_derived_constructor: super_obj.is_derived_constructor(),
-                continuation: FrameContinuation::None,
-            });
-
-            self.bytecode = sub_bytecode;
-            let subs = Arc::clone(&self.sub_modules);
-            self.activate_immutables(sub_idx, &subs[sub_idx].constants);
-            self.cell_stack.push(Vec::with_capacity(subs[sub_idx].cells_needed as usize));
-            for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map.clone() {
-                let si = self.kernel_core.perm_interner().intern(name.as_str()).0;
-                let global = self.session.global_object();
-                if let Some(pos) = self.kernel_core.shape_forge().lookup_position(global.shape_id(), si) {
-                    self.regs[*reg as usize] = global.get_prop_at(pos);
-                }
-            }
-
-            self.active_reg_limit = sub_n_registers.max(1);
-            self.pc = 0;
+            // 收敛到统一压帧入口：this = derived_this（super() 把实例交予父构造器），
+            // new.target 保持外层类；构造结果写回 regs[254]。
+            self.push_bytecode_frame(
+                super_ctor,
+                derived_this,
+                FrameArgs::RegRange {
+                    first: first_arg_reg,
+                    count: arg_count,
+                },
+                Some(254),
+                Some(derived_this),
+                new_target,
+                FrameContinuation::None,
+                call_window,
+            )?;
             return Ok(true);
         } else {
             self.raise_error_kind("TypeError", "super constructor is not callable")?;
@@ -794,7 +737,7 @@ impl Vm {
                         self.push_bytecode_frame(
                             callee,
                             this_value,
-                            &args,
+                            FrameArgs::Slice(&args),
                             None,
                             None,
                             JsValue::undefined(),
@@ -901,7 +844,7 @@ impl Vm {
             self.push_bytecode_frame(
                 constructor,
                 this_value,
-                &args,
+                FrameArgs::Slice(&args),
                 Some(rd as u8),
                 Some(new_obj_val),
                 constructor,
@@ -989,7 +932,7 @@ impl Vm {
             self.push_bytecode_frame(
                 super_ctor,
                 derived_this,
-                &args,
+                FrameArgs::Slice(&args),
                 Some(254),
                 Some(derived_this),
                 new_target,

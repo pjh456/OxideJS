@@ -1,7 +1,5 @@
-use std::sync::Arc;
-
 use crate::native::NativeFn;
-use crate::vm::{native_fn_ptr_to_fn, CallFrame, ForInIter, FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
+use crate::vm::{native_fn_ptr_to_fn, ForInIter, FrameArgs, FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
 use crate::vm_trace;
 use oxide_runtime_api::{to_boolean, to_string_full, NativeResult, VmHost};
 use oxide_types::object::{JsObject, PropAttributes};
@@ -106,81 +104,27 @@ impl Vm {
                 return self.raise_type_error("g is not a constructor").map(|_| true);
             }
 
-            if self.frames.len() >= self.kernel_core.config.max_call_depth {
-                return Err(self.error_message_text("RangeError", "Maximum call stack size exceeded"));
-            }
-
             let new_obj_val = JsValue::object(new_obj as *mut u8);
-            let sub_bytecode = Arc::clone(&self.sub_modules[sub_idx].bytecode);
-            let sub_n_args = self.sub_modules[sub_idx].n_args as usize;
-            let sub_n_registers = self.sub_modules[sub_idx].n_registers;
-            let sub_param_base = self.sub_modules[sub_idx].param_base as usize;
-            let caller_active_reg_limit = self.active_reg_limit.max(1);
-            let caller_reg_limit = self.call_window_limit(caller_active_reg_limit, call_window);
-            let saved_reg_offset = self.save_stack.len() as u32;
-            self.save_stack.extend_from_slice(&self.regs[..caller_reg_limit as usize]);
-            let saved_this = self.regs[254];
-            let saved_new_target = self.regs[255];
-
-            // 完整实参写入 spill 栈实参区（在帧的 spill 区之前），供 CREATE_ARGUMENTS 使用。
-            let args_base = self.spill_stack.len() as u32;
-            for i in 0..arg_count {
-                let src_reg = first_arg_reg.wrapping_add(i as u8) as usize;
-                self.spill_stack.push(self.regs[src_reg]);
-            }
-            let args_count = arg_count.min(u16::MAX as usize) as u16;
-
-            for i in 0..sub_n_args {
-                let src_reg = first_arg_reg.wrapping_add(i as u8) as usize;
-                self.regs[sub_param_base + i] = self.regs[src_reg];
-            }
-            self.regs[254] = if ctor_obj.is_derived_constructor() {
+            // 收敛到统一压帧入口：derived 构造器在 super() 前 this 为 undefined，
+            // 基类构造器 this = 新对象；new.target = 构造器本身。
+            let this_value = if ctor_obj.is_derived_constructor() {
                 JsValue::undefined()
             } else {
                 new_obj_val
             };
-            self.regs[255] = constructor;
-
-            self.saved_bytecode_stack.push(std::mem::take(&mut self.bytecode));
-            self.saved_immutables_stack.push(self.active_immutables);
-
-            self.frames.push(CallFrame {
-                return_addr: self.pc,
-                function_name: self.sub_modules[sub_idx]
-                    .function_name
-                    .as_deref()
-                    .map(|name| self.kernel_core.perm_interner().intern(name).0)
-                    .unwrap_or(0),
-                caller_reg_limit,
-                caller_active_reg_limit,
-                saved_reg_offset,
-                spill_offset: self.spill_stack.len() as u32,
-                arguments_base: args_base,
-                arguments_count: args_count,
-                saved_this,
-                saved_new_target,
-                callee: constructor,
-                construct_result_reg: Some(rd as u8),
-                constructed_this: Some(new_obj_val),
-                is_derived_constructor: ctor_obj.is_derived_constructor(),
-                continuation: FrameContinuation::None,
-            });
-
-            self.bytecode = sub_bytecode;
-            let subs = Arc::clone(&self.sub_modules);
-            self.activate_immutables(sub_idx, &subs[sub_idx].constants);
-            self.cell_stack.push(Vec::with_capacity(subs[sub_idx].cells_needed as usize));
-
-            for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map {
-                let si = self.kernel_core.perm_interner().intern(name.as_str()).0;
-                let global = self.session.global_object();
-                if let Some(pos) = self.kernel_core.shape_forge().lookup_position(global.shape_id(), si) {
-                    self.regs[*reg as usize] = global.get_prop_at(pos);
-                }
-            }
-
-            self.active_reg_limit = sub_n_registers.max(1);
-            self.pc = 0;
+            self.push_bytecode_frame(
+                constructor,
+                this_value,
+                FrameArgs::RegRange {
+                    first: first_arg_reg,
+                    count: arg_count,
+                },
+                Some(rd as u8),
+                Some(new_obj_val),
+                constructor,
+                FrameContinuation::None,
+                call_window,
+            )?;
             Ok(true)
         } else {
             let error =

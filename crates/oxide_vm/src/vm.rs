@@ -163,6 +163,42 @@ pub enum FrameContinuation {
     AccessorSet,
 }
 
+/// 压帧实参来源：已物化切片或寄存器连续区间。
+///
+/// `RegRange` 直接引用调用方寄存器文件（CALL/NEW/SUPER_CALL 的实参在寄存器中
+/// 天然连续排列），免去临时堆 `Vec<JsValue>` 物化，每次调用省 1 次分配/释放。
+#[derive(Clone, Copy)]
+pub(crate) enum FrameArgs<'a> {
+    /// 已物化实参：spread 展开、TailCall、accessor 与初始执行路径。
+    Slice(&'a [JsValue]),
+    /// 寄存器连续区间 `regs[first .. first+count)`。
+    RegRange { first: u8, count: usize },
+}
+
+impl FrameArgs<'_> {
+    /// 实参总数。
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            FrameArgs::Slice(s) => s.len(),
+            FrameArgs::RegRange { count, .. } => *count,
+        }
+    }
+
+    /// 取第 `i` 个实参；超出实参范围返回 undefined（与切片 `get(i)` 语义一致）。
+    pub(crate) fn get(&self, vm: &Vm, i: usize) -> JsValue {
+        match self {
+            FrameArgs::Slice(s) => s.get(i).copied().unwrap_or(JsValue::undefined()),
+            FrameArgs::RegRange { first, count } => {
+                if i < *count {
+                    vm.regs[first.wrapping_add(i as u8) as usize]
+                } else {
+                    JsValue::undefined()
+                }
+            }
+        }
+    }
+}
+
 /// 一次函数调用的调用帧：记录返回地址、调用方寄存器窗口与 `this`/`new.target`。
 ///
 /// 调用方寄存器窗口在 `save_stack` 中按 `saved_reg_offset` 保存，返回时由
@@ -1161,7 +1197,7 @@ impl Vm {
 
     #[expect(clippy::too_many_arguments)]
     pub(crate) fn push_bytecode_frame(
-        &mut self, callee: JsValue, this_value: JsValue, args: &[JsValue], construct_result_reg: Option<u8>,
+        &mut self, callee: JsValue, this_value: JsValue, args: FrameArgs, construct_result_reg: Option<u8>,
         constructed_this: Option<JsValue>, new_target: JsValue, continuation: FrameContinuation, call_window: u8,
     ) -> Result<(), String> {
         vm_trace!(
@@ -1205,7 +1241,7 @@ impl Vm {
         let saved_new_target = self.regs[255];
 
         for i in 0..sub_n_args {
-            self.regs[sub_param_base + i] = args.get(i).copied().unwrap_or(JsValue::undefined());
+            self.regs[sub_param_base + i] = args.get(self, i);
         }
         self.regs[254] = if sub_is_arrow { obj.captured_this() } else { this_value };
         self.regs[255] = new_target;
@@ -1222,7 +1258,14 @@ impl Vm {
         // 完整实参写入 spill 栈实参区（在帧的 spill 区之前）：CREATE_ARGUMENTS 据此
         // 构建 arguments 对象，帧恢复时随 spill 区截断一起丢弃。
         let args_base = self.spill_stack.len() as u32;
-        self.spill_stack.extend_from_slice(args);
+        match args {
+            FrameArgs::Slice(s) => self.spill_stack.extend_from_slice(s),
+            FrameArgs::RegRange { first, count } => {
+                for i in 0..count {
+                    self.spill_stack.push(self.regs[first.wrapping_add(i as u8) as usize]);
+                }
+            }
+        }
         let args_count = args.len().min(u16::MAX as usize) as u16;
 
         self.frames.push(CallFrame {

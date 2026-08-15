@@ -1,4 +1,4 @@
-use crate::vm::{Completion, FrameContinuation, TryHandler, Vm};
+use crate::vm::{Completion, FrameArgs, FrameContinuation, TryHandler, Vm};
 use crate::vm_trace;
 use oxide_bytecode::opcode;
 use oxide_types::object::PropAttributes;
@@ -34,35 +34,39 @@ impl Vm {
                         return Ok(true);
                     } else if obj.sub_module_index() > 0 {
                         let sub_idx = obj.sub_module_index() as usize;
-                        let args: Vec<JsValue> = (0..arg_count)
-                            .map(|i| self.regs[first_arg_reg.wrapping_add(i as u8) as usize])
-                            .collect();
-                        // 异步生成器函数调用返回异步生成器迭代器对象。
-                        if sub_idx < self.sub_modules.len()
-                            && self.sub_modules[sub_idx].is_generator
-                            && self.sub_modules[sub_idx].is_async
-                        {
-                            let gen =
-                                self.create_async_generator_object(callee, self.regs[this_reg as usize], &args)?;
-                            self.regs[0] = gen;
-                            return Ok(false);
-                        }
-                        // 生成器函数调用返回迭代器对象，不执行函数体。
-                        if sub_idx < self.sub_modules.len() && self.sub_modules[sub_idx].is_generator {
-                            let gen = self.create_generator_object(callee, self.regs[this_reg as usize], &args)?;
-                            self.regs[0] = gen;
-                            return Ok(false);
-                        }
-                        // 异步函数调用返回 capability promise，立即同步执行 body 到首个 await。
-                        if sub_idx < self.sub_modules.len() && self.sub_modules[sub_idx].is_async {
-                            let promise = self.create_async_object(callee, self.regs[this_reg as usize], &args)?;
+                        let this_value = self.regs[this_reg as usize];
+                        let is_generator = sub_idx < self.sub_modules.len() && self.sub_modules[sub_idx].is_generator;
+                        let is_async = sub_idx < self.sub_modules.len() && self.sub_modules[sub_idx].is_async;
+                        // 生成器/异步路径需把实参物化存进状态盒；普通字节码调用直接
+                        // 引用寄存器连续区间，免临时堆 Vec（每次调用省 1 次分配）。
+                        if is_generator || is_async {
+                            let args: Vec<JsValue> = (0..arg_count)
+                                .map(|i| self.regs[first_arg_reg.wrapping_add(i as u8) as usize])
+                                .collect();
+                            // 异步生成器函数调用返回异步生成器迭代器对象。
+                            if is_generator && is_async {
+                                let gen = self.create_async_generator_object(callee, this_value, &args)?;
+                                self.regs[0] = gen;
+                                return Ok(false);
+                            }
+                            // 生成器函数调用返回迭代器对象，不执行函数体。
+                            if is_generator {
+                                let gen = self.create_generator_object(callee, this_value, &args)?;
+                                self.regs[0] = gen;
+                                return Ok(false);
+                            }
+                            // 异步函数调用返回 capability promise，立即同步执行 body 到首个 await。
+                            let promise = self.create_async_object(callee, this_value, &args)?;
                             self.regs[0] = promise;
                             return Ok(false);
                         }
                         self.push_bytecode_frame(
                             callee,
-                            self.regs[this_reg as usize],
-                            &args,
+                            this_value,
+                            FrameArgs::RegRange {
+                                first: first_arg_reg,
+                                count: arg_count,
+                            },
                             None,
                             None,
                             JsValue::undefined(),
