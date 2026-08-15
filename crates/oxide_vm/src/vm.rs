@@ -1470,6 +1470,10 @@ impl Vm {
                     binary_arith!(self, a, b, rd, %, true);
                 }
 
+                OpCode::EXP => {
+                    self.dispatch_exp(rd, a, b)?;
+                }
+
                 OpCode::NEG => {
                     self.dispatch_neg(rd, a)?;
                 }

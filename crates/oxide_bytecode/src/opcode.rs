@@ -193,6 +193,10 @@ define_opcodes! {
     COMPOUND_EXP = 0x0B => "COMPOUND_EXP",
         def = Some(SlotSpec::Slot(Slot::Rd)), uses = [SlotSpec::Slot(Slot::Rd), SlotSpec::Slot(Slot::A)],
         pure = false, jump = false, term = false, ic = false,
+    // 二元幂运算 `a ** b`（三寄存器，与 SUB/MUL 同族；0x00-0x0F 已满，值用空闲槽 0x94）。
+    EXP = 0x94 => "EXP",
+        def = Some(SlotSpec::Slot(Slot::Rd)), uses = [SlotSpec::Slot(Slot::A), SlotSpec::Slot(Slot::B)],
+        pure = true, jump = false, term = false, ic = false,
     MOV = 0x0C => "MOV", // rd=dst, a=src（寄存器复制，区间拆分搬值）
         def = Some(SlotSpec::Slot(Slot::Rd)), uses = [SlotSpec::Slot(Slot::A)],
         pure = true, jump = false, term = false, ic = false,

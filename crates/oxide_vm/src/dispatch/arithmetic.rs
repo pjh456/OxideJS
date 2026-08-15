@@ -462,18 +462,77 @@ impl Vm {
         Ok(())
     }
 
+    /// 幂运算核心：`base ** exponent` 的 Number/BigInt 双语义，二元 `**` 与复合
+    /// `**=` 共用（避免两套实现漂移）。int/double 快路径与混合转数值路径都经
+    /// IEEE-754 `powf`（`(-2) ** 0.5` → NaN、`0 ** 0` → 1、负底数整数指数等
+    /// 边界由 libm pow 保证与规范一致）。
+    ///
+    /// # 边界与前提
+    /// - BigInt 指数为负或超 u32：抛 RangeError（BigInt::exponentiate 禁止负指数，
+    ///   超 u32 指数会分配不可控内存，同样拒绝）。
+    /// - 混合 BigInt/Number → TypeError（ToNumeric 类型不一致）。
+    /// - 对象操作数先 ToPrimitive（coerce 后判定，包装对象如 Object(2n) 参与 BigInt 运算）。
+    ///
+    /// # 副作用
+    /// - 可能新建 BigInt 会话值（new_bigint）。
+    fn exp_result(&mut self, lv: JsValue, rv: JsValue) -> Result<JsValue, String> {
+        if lv.is_int() && rv.is_int() {
+            return Ok(JsValue::float((lv.as_int() as f64).powf(rv.as_int() as f64)));
+        }
+        if lv.is_double() && rv.is_double() {
+            return Ok(JsValue::float(lv.as_double().powf(rv.as_double())));
+        }
+        if lv.is_bigint() && rv.is_bigint() {
+            let base = self.bigint_value(lv).clone();
+            let exp = self.bigint_value(rv).clone();
+            return self.bigint_exp(&base, &exp);
+        }
+        let l = self.coerce_primitive_bounded(lv, false)?;
+        let r = self.coerce_primitive_bounded(rv, false)?;
+        if l.is_bigint() && r.is_bigint() {
+            let base = self.bigint_value(l).clone();
+            let exp = self.bigint_value(r).clone();
+            return self.bigint_exp(&base, &exp);
+        }
+        if l.is_bigint() != r.is_bigint() {
+            // 包装对象 coerce 后暴露 BigInt：与另一非 BigInt 操作数混合必须抛
+            // TypeError（同 ADD/SUB 抛点）。
+            self.raise_type_error("Cannot mix BigInt and other types, use explicit conversions")?;
+            return Ok(JsValue::undefined());
+        }
+        let ln = coercion::to_number(l);
+        let rn = coercion::to_number(r);
+        Ok(JsValue::float(ln.powf(rn)))
+    }
+
+    /// BigInt 幂：负指数或超 u32 抛 RangeError，否则 `base.pow(exp)`。
+    fn bigint_exp(&mut self, base: &num_bigint::BigInt, exp: &num_bigint::BigInt) -> Result<JsValue, String> {
+        let exp_u32 = match u32::try_from(exp) {
+            Ok(e) => e,
+            Err(_) => {
+                self.raise_error_kind("RangeError", "Exponent must be positive")?;
+                return Ok(JsValue::undefined());
+            }
+        };
+        Ok(self.new_bigint(base.pow(exp_u32)))
+    }
+
+    /// 二元幂运算：`regs[rd] = regs[a] ** regs[b]`。
+    #[inline(always)]
+    pub(crate) fn dispatch_exp(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("EXP rd={} r{}={:?} r{}={:?}", rd, a, self.regs[a], b, self.regs[b]);
+        let lv = self.regs[a];
+        let rv = self.regs[b];
+        self.regs[rd] = self.exp_result(lv, rv)?;
+        Ok(())
+    }
+
     #[inline(always)]
     pub(crate) fn dispatch_compound_exp(&mut self, rd: usize, a: usize) -> Result<(), String> {
         vm_trace!("COMPOUND_EXP rd={} r{}={:?}", rd, a, self.regs[a]);
         let lv = self.regs[rd];
         let rv = self.regs[a];
-        if lv.is_int() && rv.is_int() {
-            self.regs[rd] = JsValue::float((lv.as_int() as f64).powf(rv.as_int() as f64));
-            return Ok(());
-        }
-        let l = self.coerce_number_bounded(lv)?;
-        let r = self.coerce_number_bounded(rv)?;
-        self.regs[rd] = JsValue::float(l.powf(r));
+        self.regs[rd] = self.exp_result(lv, rv)?;
         Ok(())
     }
 

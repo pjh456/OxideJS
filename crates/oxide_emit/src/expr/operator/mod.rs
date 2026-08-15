@@ -57,6 +57,7 @@ impl Emitter {
             BinaryOperator::Multiplication => OpCode::MUL,
             BinaryOperator::Division => OpCode::DIV,
             BinaryOperator::Remainder => OpCode::MOD,
+            BinaryOperator::Exponential => OpCode::EXP,
             BinaryOperator::BitwiseAnd => OpCode::BIT_AND,
             BinaryOperator::BitwiseOR => OpCode::BIT_OR,
             BinaryOperator::BitwiseXOR => OpCode::BIT_XOR,
@@ -73,7 +74,6 @@ impl Emitter {
             BinaryOperator::Instanceof => OpCode::INSTANCEOF,
             BinaryOperator::StrictEquality => OpCode::STRICT_EQ,
             BinaryOperator::StrictInequality => OpCode::STRICT_NEQ,
-            _ => return Err(format!("unsupported binary operator: {:?}", bin.operator)),
         };
         ctx.inst(Inst::new(op, Operand::Reg(left), Operand::Reg(left), Operand::Reg(right)));
         Ok(left)

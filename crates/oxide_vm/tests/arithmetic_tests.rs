@@ -121,6 +121,56 @@ fn eval_compound_exp() {
 }
 
 #[test]
+fn eval_binary_exp() {
+    assert_eq!(eval("2 ** 3"), "8");
+    assert_eq!(eval("2 ** 10"), "1024");
+    assert_eq!(eval("2 ** -1"), "0.5");
+    assert_eq!(eval("4 ** 0.5"), "2");
+}
+
+#[test]
+fn eval_exp_edge_cases() {
+    assert_eq!(eval("0 ** 0"), "1");
+    assert_eq!(eval("(-2) ** 3"), "-8");
+    assert_eq!(eval("(-2) ** 2"), "4");
+    assert_eq!(eval("(-2) ** 0.5"), "NaN");
+    assert_eq!(eval("NaN ** 0"), "1");
+    assert_eq!(eval("2 ** Infinity"), "Infinity");
+    assert_eq!(eval("2.5 ** 2"), "6.25");
+}
+
+#[test]
+fn eval_exp_bigint() {
+    assert_eq!(eval("2n ** 3n"), "BigInt(8)");
+    assert_eq!(eval("2n ** 0n"), "BigInt(1)");
+    assert_eq!(eval("0n ** 0n"), "BigInt(1)");
+}
+
+#[test]
+fn eval_exp_bigint_negative_exponent_throws() {
+    // BigInt::exponentiate 禁止负指数，抛 RangeError（规范 §6.1.6.1.19）。
+    let err = eval("2n ** -1n");
+    assert!(err.contains("RangeError"), "expected RangeError, got: {err}");
+}
+
+#[test]
+fn eval_exp_mixed_bigint_number_throws() {
+    // ToNumeric 类型不一致：Number 与 BigInt 混合幂抛 TypeError（与 ADD/SUB 同）。
+    let err = eval("2 ** 2n");
+    assert!(err.contains("TypeError"), "expected TypeError, got: {err}");
+    let err2 = eval("2n ** 2");
+    assert!(err2.contains("TypeError"), "expected TypeError, got: {err2}");
+}
+
+#[test]
+fn eval_exp_compound_bigint() {
+    // 复合 **= 与二元 ** 共享幂语义（BigInt 结果保持 BigInt，不再降 f64）。
+    assert_eq!(eval("var x = 2n; x **= 3n; x"), "BigInt(8)");
+    let err = eval("var x = 2n; x **= 3; x");
+    assert!(err.contains("TypeError"), "expected TypeError, got: {err}");
+}
+
+#[test]
 fn eval_compound_add_expr_value() {
     assert_eq!(eval("var x=5; x+=3"), "8");
 }
