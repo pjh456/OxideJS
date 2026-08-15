@@ -66,8 +66,8 @@ impl Vm {
                 self.promote_value_if_epoch_object(value, forwarding)
             });
         } else if src_ref.is_generator_obj() {
-            // 生成器状态盒为堆分配、promote 后与源共享同一盒：就地改写其 JsValue。
-            crate::generator::rewrite_generator_native(dst_ref, |value| {
+            // 生成器状态盒深拷贝到新对象：源盒随 epoch 释放，互不共享。
+            crate::generator::clone_generator_native_with_rewrite(src_ref, dst_ref, |value| {
                 self.promote_value_if_epoch_object(value, forwarding)
             });
         } else if src_ref.is_promise_obj() {

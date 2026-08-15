@@ -434,6 +434,8 @@ impl SessionGc {
                     crate::async_func::clone_async_native_with_rewrite(old_ref, new_ref, |value| value);
                 } else if old_ref.is_async_generator_obj() {
                     crate::async_generator::clone_async_generator_native_with_rewrite(old_ref, new_ref, |value| value);
+                } else if old_ref.is_generator_obj() {
+                    crate::generator::clone_generator_native_with_rewrite(old_ref, new_ref, |value| value);
                 }
                 forwarding.insert(old_ptr, new_ptr);
                 freed_bytes += Self::drop_session_object_heap_data(old_ptr);

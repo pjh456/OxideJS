@@ -872,6 +872,24 @@ pub(crate) fn rewrite_generator_native(obj: &JsObject, mut rewrite: impl FnMut(J
     state.suspended.rewrite_values(rewrite);
 }
 
+/// 深拷贝状态盒到新对象（promote / sweep 用）：新对象持独立 Box，源盒可安全释放。
+pub(crate) fn clone_generator_native_with_rewrite(
+    old: &JsObject, new: &mut JsObject, mut rewrite: impl FnMut(JsValue) -> JsValue,
+) {
+    let Some(state) = generator_state_mut(old) else {
+        return;
+    };
+    let cloned = GeneratorState {
+        phase: state.phase,
+        callee: rewrite(state.callee),
+        args: state.args.iter().copied().map(&mut rewrite).collect(),
+        this_value: state.this_value,
+        result: rewrite(state.result),
+        suspended: state.suspended.clone_with_rewrite(rewrite),
+    };
+    new.set_native_data(Box::into_raw(Box::new(cloned)) as *mut u8);
+}
+
 /// 释放生成器状态盒（对象被 GC 回收时），返回释放字节数。
 pub(crate) fn drop_generator_native(obj: &JsObject) -> u64 {
     if !obj.is_generator_obj() {

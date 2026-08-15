@@ -302,8 +302,18 @@ impl Vm {
         self.free_epoch_object_heap_data();
         self.epoch.reset();
         self.gc_state.epoch_object_ptrs.clear();
+        // 先释放 session 对象堆数据（属性向量 + 各原生盒），再重置 arena：
+        // 原生盒在 GC 搬移/晋升时已深拷贝为单所有权，此处恰好释放一次。
+        let mut freed = 0u64;
+        for ptr in self.gc_state.session_object_ptrs.drain(..) {
+            freed += crate::session_gc::SessionGc::drop_object_heap_data(ptr, true);
+        }
+        if freed > 0 {
+            self.gc_state.session_gc.total_bytes_freed =
+                self.gc_state.session_gc.total_bytes_freed.saturating_add(freed);
+            self.gc_state.session_gc.last_collection_bytes_freed = freed;
+        }
         self.gc_state.session_epoch.reset();
-        self.gc_state.session_object_ptrs.clear();
         self.gc_state.session_bytes_allocated = 0;
         self.gc_state.string_gc_watermark = self.kernel_core.config().session_gc_threshold;
         self.gc_state.session_gc = crate::session_gc::SessionGc::new();
@@ -658,6 +668,86 @@ mod tests {
             vm.session.builtin_world().array_constructor.as_ptr() as *mut JsObject
         ));
         assert!(!vm.session.is_dirty_since_snapshot());
+    }
+
+    fn vm_with_low_threshold() -> Vm {
+        let mut cfg = KernelConfig::minimal();
+        cfg.set_session_gc_threshold(1);
+        Vm::with_kernel_core(KernelCore::new(cfg))
+    }
+
+    /// 直接恢复生成器一步：等价 `it.next()`，但避免跨 run（sub_modules 重建会使
+    /// 挂起帧失效）——回归聚焦 GC 搬移后的状态盒有效性。
+    fn resume_one_step(vm: &mut Vm, gen: JsValue) -> JsValue {
+        match vm.resume_generator(gen, crate::generator::GeneratorResumeMode::Next(JsValue::undefined())) {
+            Ok(crate::generator::GeneratorStep::Suspended { value }) => value,
+            Ok(crate::generator::GeneratorStep::Completed { value }) => value,
+            Ok(other) => panic!("unexpected step: {:?}", match other {
+                crate::generator::GeneratorStep::Thrown { value } => format!("Thrown({value})"),
+                crate::generator::GeneratorStep::SuspendedRaw { value } => format!("SuspendedRaw({value})"),
+                _ => String::new(),
+            }),
+            Err(e) => panic!("resume failed: {e}"),
+        }
+    }
+
+    #[test]
+    fn generator_survives_object_sweep_and_resumes() {
+        let mut vm = vm_with_low_threshold();
+        let _ = run_source(
+            &mut vm,
+            "function* g(){ yield 1; yield 2; } globalThis.it = g(); globalThis.it.next(); 0",
+        );
+
+        // 直接触发完整收集（保留执行上下文）：存活生成器克隆进新 arena，
+        // 状态盒深拷贝为新 Box（reset 会清空模块表使恢复不可行，走收集入口等价验证）。
+        vm.maybe_collect_session_gc();
+        assert!(vm.session_gc_stats().total_collections > 0, "应触发对象收集");
+
+        // 从 global 取 sweep 重写后的生成器（sub_modules/immutables 未重建，可恢复）。
+        let it = global_prop(&vm, "it");
+        assert_eq!(resume_one_step(&mut vm, it), JsValue::int(2), "sweep 后应恢复第二次 yield");
+    }
+
+    #[test]
+    fn generator_captured_upvalue_survives_sweep() {
+        let mut vm = vm_with_low_threshold();
+        let _ = run_source(
+            &mut vm,
+            "var x = 0; function* g(){ x++; yield x; x++; yield x; } globalThis.it = g(); globalThis.it.next(); 0",
+        );
+
+        vm.maybe_collect_session_gc();
+        assert!(vm.session_gc_stats().total_collections > 0, "应触发对象收集");
+
+        // 挂起帧 cell_stack 与闭包 upvalues 中的 cell 独立堆分配（地址稳定），
+        // 恢复后继续读写捕获变量。
+        let it = global_prop(&vm, "it");
+        assert_eq!(resume_one_step(&mut vm, it), JsValue::int(2), "sweep 后应恢复捕获变量读写");
+    }
+
+    #[test]
+    fn generator_promoted_clone_owns_independent_state_box() {
+        let mut vm = Vm::new();
+        // `var it = g(); it.next(); it`：it 为 epoch 生成器对象（未逃逸不 promote）。
+        let it = run_source(&mut vm, "function* g(){ yield 1; yield 2; } var it = g(); it.next(); it");
+        assert!(it.is_object());
+        let epoch_ptr = it.as_js_object_ptr();
+        let epoch_box = unsafe { (*epoch_ptr).native_data() };
+
+        // 手动 promote：克隆应深拷贝状态盒（新 Box），与源盒互不共享。
+        let promoted = vm.promote_object(epoch_ptr);
+        assert!(!std::ptr::eq(promoted, epoch_ptr));
+        let promoted_box = unsafe { (*promoted).native_data() };
+        assert!(!std::ptr::eq(epoch_box, promoted_box), "promote 应深拷贝生成器状态盒");
+
+        // 模拟 full_reset 的 epoch 侧释放：源对象与其状态盒随 epoch 回收，
+        // 并从追踪表移除登记（克隆的后续回收仍由 VM 统一处理）。
+        let _ = crate::session_gc::SessionGc::drop_object_heap_data(epoch_ptr, false);
+        vm.gc_state.epoch_object_ptrs.retain(|&p| !std::ptr::eq(p, epoch_ptr));
+
+        // 克隆直接恢复执行：读新盒中的挂起状态，不得悬垂。
+        assert_eq!(resume_one_step(&mut vm, JsValue::from_js_object(promoted)), JsValue::int(2));
     }
 
     #[test]
