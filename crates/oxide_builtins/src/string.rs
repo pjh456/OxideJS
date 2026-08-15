@@ -222,12 +222,27 @@ pub(crate) fn make_string_array_values<H: VmHost>(vm: &mut H, parts: Vec<JsValue
 }
 
 /// 取参数字符串内容：原始字符串零拷贝借用，其余经完整 ToString（对象 ToPrimitive）。
+/// Symbol 与其余转换失败按规范抛 TypeError；对象 ToString 抛出的原生异常原样传播。
+///
+/// # 边界与前提
+/// - 失败返回异常值，调用方经 `try_string!` 原样抛出。
+///
+/// # 注意事项
 /// 返回借用绑定本次 `&mut` 借用；需与 `this_string` 借用并存时先 `into_owned` 落地。
-fn as_string<'a, H: VmHost>(vm: &'a mut H, val: JsValue) -> Cow<'a, str> {
+fn as_string<'a, H: VmHost>(vm: &'a mut H, val: JsValue) -> Result<Cow<'a, str>, JsValue> {
     if val.is_string() {
-        Cow::Borrowed(vm.string_ref(val))
-    } else {
-        Cow::Owned(oxide_runtime_api::to_string_full(val, vm).unwrap_or_else(|_| oxide_runtime_api::to_string(val)))
+        return Ok(Cow::Borrowed(vm.string_ref(val)));
+    }
+    match oxide_runtime_api::to_string_full(val, vm) {
+        Ok(s) => Ok(Cow::Owned(s)),
+        Err(_) => {
+            // ToString 触发对象 toString/valueOf 抛出的原生异常须原样传播，
+            // 否则会被展平为普通 Error 丢失原始异常对象。
+            if let Some(exc) = vm.take_uncaught_value() {
+                return Err(exc);
+            }
+            Err(crate::error::create_type_error(vm, "Cannot convert a Symbol value to a string"))
+        }
     }
 }
 
@@ -508,12 +523,10 @@ fn is_regexp_obj<H: VmHost>(val: JsValue, vm: &H) -> bool {
 /// `String.prototype.indexOf(searchString, position)`：按 UTF-16 单元查找首次出现位置。
 pub fn string_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.indexOf called with {} args", args.len());
-    // 参数转换先行：search 与 position 均可能触发对象 ToString/ToNumber（&mut 路径）。
-    let search = if args.len() >= 2 {
-        as_string(vm, vm.reg(args[1])).into_owned()
-    } else {
-        String::new()
-    };
+    // 参数转换先行：search 缺省为 undefined（经 ToString 得 "undefined" 参与查找），
+    // position 缺省 0；均可能触发对象 ToString/ToNumber（&mut 路径）。
+    let search_val = if args.len() >= 2 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let search = try_string!(as_string(vm, search_val)).into_owned();
     let pos_raw = if args.len() > 2 {
         vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as usize
     } else {
@@ -521,9 +534,6 @@ pub fn string_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     // 借用 this 原始字符串零拷贝，扫描期内不再有 &mut 调用。
     let s = try_string!(this_string(vm, args));
-    if args.len() < 2 {
-        return NativeResult::Ok(JsValue::int(-1));
-    }
     let n = utf16_len(&s);
     let pos = pos_raw.min(n);
 
@@ -548,21 +558,15 @@ pub fn string_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `String.prototype.includes(searchString, position)`：是否包含子串。
 pub fn string_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.includes called with {} args", args.len());
-    // 参数转换先行（&mut 路径），后借 this 扫描。
-    let search = if args.len() >= 2 {
-        as_string(vm, vm.reg(args[1])).into_owned()
-    } else {
-        String::new()
-    };
+    // 参数转换先行（&mut 路径）：search 缺省为 undefined（经 ToString 得 "undefined"）。
+    let search_val = if args.len() >= 2 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let search = try_string!(as_string(vm, search_val)).into_owned();
     let pos_raw = if args.len() > 2 {
         vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as usize
     } else {
         0
     };
     let s = try_string!(this_string(vm, args));
-    if args.len() < 2 {
-        return NativeResult::Ok(JsValue::bool(false));
-    }
     let n = utf16_len(&s);
     let pos = pos_raw.min(n);
 
@@ -790,12 +794,9 @@ pub fn string_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `String.prototype.lastIndexOf(searchString, position)`：从后往前查找首次出现位置。
 pub fn string_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.lastIndexOf called with {} args", args.len());
-    // 参数转换先行（&mut 路径），后借 this 扫描。
-    let search = if args.len() >= 2 {
-        as_string(vm, vm.reg(args[1])).into_owned()
-    } else {
-        String::new()
-    };
+    // 参数转换先行（&mut 路径）：search 缺省为 undefined（经 ToString 得 "undefined"）。
+    let search_val = if args.len() >= 2 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let search = try_string!(as_string(vm, search_val)).into_owned();
     let pos_raw = if args.len() > 2 {
         let p = oxide_runtime_api::to_integer_or_infinity(vm.reg(args[2]));
         if p.is_nan() {
@@ -807,9 +808,6 @@ pub fn string_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         None
     };
     let s = try_string!(this_string(vm, args));
-    if args.len() < 2 {
-        return NativeResult::Ok(JsValue::int(-1));
-    }
     let n = utf16_len(&s);
     let pos = match pos_raw {
         Some(p) => p.min(n),
@@ -881,7 +879,7 @@ pub fn string_pad_start<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         None
     };
     let pad = if args.len() > 2 {
-        as_string(vm, vm.reg(args[2])).into_owned()
+        try_string!(as_string(vm, vm.reg(args[2]))).into_owned()
     } else {
         " ".to_string()
     };
@@ -914,7 +912,7 @@ pub fn string_pad_end<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         None
     };
     let pad = if args.len() > 2 {
-        as_string(vm, vm.reg(args[2])).into_owned()
+        try_string!(as_string(vm, vm.reg(args[2]))).into_owned()
     } else {
         " ".to_string()
     };
@@ -940,21 +938,15 @@ pub fn string_pad_end<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `String.prototype.startsWith(searchString, position)`：是否以指定子串开头。
 pub fn string_starts_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.startsWith called with {} args", args.len());
-    // 参数转换先行（&mut 路径），后借 this 扫描。
-    let search = if args.len() >= 2 {
-        as_string(vm, vm.reg(args[1])).into_owned()
-    } else {
-        String::new()
-    };
+    // 参数转换先行（&mut 路径）：search 缺省为 undefined（经 ToString 得 "undefined"）。
+    let search_val = if args.len() >= 2 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let search = try_string!(as_string(vm, search_val)).into_owned();
     let pos_raw = if args.len() > 2 {
         vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as usize
     } else {
         0
     };
     let s = try_string!(this_string(vm, args));
-    if args.len() < 2 {
-        return NativeResult::Ok(JsValue::bool(false));
-    }
     let n = utf16_len(&s);
     let pos = pos_raw.min(n);
     // 位置须对齐字符边界才有 well-formed 前缀可比；落在代理对中间时仅空串可匹配。
@@ -968,21 +960,15 @@ pub fn string_starts_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `String.prototype.endsWith(searchString, endPosition)`：是否以指定子串结尾。
 pub fn string_ends_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.endsWith called with {} args", args.len());
-    // 参数转换先行（&mut 路径），后借 this 扫描。
-    let search = if args.len() >= 2 {
-        as_string(vm, vm.reg(args[1])).into_owned()
-    } else {
-        String::new()
-    };
+    // 参数转换先行（&mut 路径）：search 缺省为 undefined（经 ToString 得 "undefined"）。
+    let search_val = if args.len() >= 2 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let search = try_string!(as_string(vm, search_val)).into_owned();
     let end_pos_raw = if args.len() > 2 {
         vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as usize
     } else {
         usize::MAX
     };
     let s = try_string!(this_string(vm, args));
-    if args.len() < 2 {
-        return NativeResult::Ok(JsValue::bool(false));
-    }
     let n = utf16_len(&s);
     let end_pos = end_pos_raw.min(n);
     // 截断位置须对齐字符边界才有 well-formed 后缀可比；落在代理对中间时仅空串可匹配。
@@ -1017,7 +1003,7 @@ pub fn string_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let sep = if is_undefined_sep || has_native_re {
         String::new()
     } else {
-        as_string(vm, sep_val.unwrap()).into_owned()
+        try_string!(as_string(vm, sep_val.unwrap())).into_owned()
     };
     // ToUint32(limit)，缺省为 2^32-1。
     let limit = if args.len() > 2 {
@@ -1178,7 +1164,7 @@ fn string_replace_impl<H: VmHost>(vm: &mut H, args: &[u8], all: bool) -> NativeR
             let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
             return regex_replace_fn(vm, regex, &s, replacer_val, is_global, text_arg);
         }
-        let pattern = as_string(vm, pattern_val).into_owned();
+        let pattern = try_string!(as_string(vm, pattern_val)).into_owned();
         return string_replace_fn(vm, &s, &pattern, replacer_val, all, text_arg);
     }
 
@@ -1228,10 +1214,10 @@ fn string_replace_impl<H: VmHost>(vm: &mut H, args: &[u8], all: bool) -> NativeR
         } else if args.len() < 2 {
             "undefined".to_string()
         } else {
-            as_string(vm, pattern_val).into_owned()
+            try_string!(as_string(vm, pattern_val)).into_owned()
         };
         let replacement = if args.len() > 2 {
-            as_string(vm, replacement_val).into_owned()
+            try_string!(as_string(vm, replacement_val)).into_owned()
         } else {
             "undefined".to_string()
         };
@@ -1244,10 +1230,10 @@ fn string_replace_impl<H: VmHost>(vm: &mut H, args: &[u8], all: bool) -> NativeR
         } else if args.len() < 2 {
             "undefined".to_string()
         } else {
-            as_string(vm, pattern_val).into_owned()
+            try_string!(as_string(vm, pattern_val)).into_owned()
         };
         let replacement = if args.len() > 2 {
-            as_string(vm, replacement_val).into_owned()
+            try_string!(as_string(vm, replacement_val)).into_owned()
         } else {
             "undefined".to_string()
         };
@@ -1287,7 +1273,7 @@ pub fn string_match_fn<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let pattern_val = if args.len() >= 2 { Some(vm.reg(args[1])) } else { None };
     let is_re = pattern_val.map(|v| is_regexp_obj(v, vm)).unwrap_or(false);
     let pattern = match pattern_val {
-        Some(v) if !is_re => as_string(vm, v).into_owned(),
+        Some(v) if !is_re => try_string!(as_string(vm, v)).into_owned(),
         _ => String::new(),
     };
     let s = try_string!(this_string(vm, args));
@@ -1339,7 +1325,7 @@ pub fn string_search<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // 正则判定与参数转换先行（&mut 路径），后借 this 扫描。
     let is_re = args.len() >= 2 && is_regexp_obj(pattern_val, vm);
     let pattern = if args.len() >= 2 && !is_re {
-        as_string(vm, pattern_val).into_owned()
+        try_string!(as_string(vm, pattern_val)).into_owned()
     } else {
         String::new()
     };
@@ -1471,7 +1457,7 @@ pub fn string_normalize<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.normalize called with {} args", args.len());
     use unicode_normalization::UnicodeNormalization;
     let form = if args.len() > 1 {
-        as_string(vm, vm.reg(args[1])).into_owned()
+        try_string!(as_string(vm, vm.reg(args[1]))).into_owned()
     } else {
         "NFC".to_string()
     };
@@ -1512,7 +1498,7 @@ pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
         pattern_val
     } else {
-        let pattern_str = as_string(vm, pattern_val);
+        let pattern_str = try_string!(as_string(vm, pattern_val));
         let escaped = regress::escape(pattern_str.as_ref());
         let rx_str = if escaped.is_empty() { String::from("(?:)") } else { format!("({})", escaped) };
         let compiled = match regress::Regex::new(&rx_str) {

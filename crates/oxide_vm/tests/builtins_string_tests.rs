@@ -222,8 +222,10 @@ fn string_search_empty_pattern_returns_zero() {
 
 #[test]
 fn string_no_arg_guard_family_consistent() {
-    // 家族无参守卫对照：search/indexOf 返回 -1，includes/startsWith/endsWith 返回 false，
-    // charAt 取首字符——search 与同批方法守卫位置一致、行为家族化。
+    // 缺参时 searchString 按 ToString(undefined)="undefined" 参与查找——'abc'
+    // 不含 "undefined"，indexOf 得 -1、includes/startsWith/endsWith 得 false
+    // （"undefined" 命中的判别断言见 string_missing_arg_searches_undefined）；
+    // search 缺参仍走旧守卫返回 -1。
     let mut vm = Vm::new();
     let result = eval(&mut vm, "'abc'.search()").unwrap();
     assert_eq!(result.as_int(), -1);
@@ -235,6 +237,53 @@ fn string_no_arg_guard_family_consistent() {
     assert!(!result.as_bool());
     let result = eval(&mut vm, "'abc'.endsWith()").unwrap();
     assert!(!result.as_bool());
+}
+
+#[test]
+fn string_missing_arg_searches_undefined() {
+    // 缺参 searchString 按 ToString(undefined)="undefined" 参与查找（非固定结果短路）。
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "'undefined'.indexOf()").unwrap();
+    assert_eq!(r.as_int(), 0);
+    let r = eval(&mut vm, "'abc'.indexOf()").unwrap();
+    assert_eq!(r.as_int(), -1);
+    let r = eval(&mut vm, "'undefined'.lastIndexOf()").unwrap();
+    assert_eq!(r.as_int(), 0);
+    let r = eval(&mut vm, "'undefined'.includes()").unwrap();
+    assert!(r.as_bool());
+    let r = eval(&mut vm, "''.includes()").unwrap();
+    assert!(!r.as_bool());
+    let r = eval(&mut vm, "'undefined'.startsWith()").unwrap();
+    assert!(r.as_bool());
+    let r = eval(&mut vm, "'undefined'.endsWith()").unwrap();
+    assert!(r.as_bool());
+    // 显式传 undefined 与缺参等价（同走 "undefined" 查找）。
+    let r = eval(&mut vm, "'undefined'.indexOf(undefined)").unwrap();
+    assert_eq!(r.as_int(), 0);
+}
+
+#[test]
+fn string_symbol_argument_throws_type_error() {
+    // Symbol 参数经 as_string 抛 TypeError（不静默降级为文本查找）。
+    let mut vm = Vm::new();
+    for src in [
+        "'abc'.indexOf(Symbol('x'))",
+        "'abc'.lastIndexOf(Symbol('x'))",
+        "'abc'.includes(Symbol('x'))",
+        "'abc'.startsWith(Symbol('x'))",
+        "'abc'.endsWith(Symbol('x'))",
+        "'abc'.replace('a', Symbol('x'))",
+        "'abc'.replaceAll('a', Symbol('x'))",
+        "'abc'.split(Symbol('x'))",
+        "'abc'.search(Symbol('x'))",
+        "'abc'.match(Symbol('x'))",
+        "'abc'.padStart(5, Symbol('x'))",
+        "'abc'.padEnd(5, Symbol('x'))",
+        "'abc'.normalize(Symbol('x'))",
+    ] {
+        let err = eval(&mut vm, src).unwrap_err();
+        assert!(err.contains("TypeError"), "{src} 应抛 TypeError，实际: {err}");
+    }
 }
 
 #[test]
@@ -438,21 +487,19 @@ fn string_replace_all_nonglobal_regex_throws() {
 
 #[test]
 fn string_replace_regex_proto_subclass_fallback() {
-    // 类正则对象（proto 恒等 RegExp.prototype 但无编译正则）：
-    // replace/replaceAll 统一按 ToString 文本走字符串路径；默认 toString
-    // 不命中源串，故此处断言结果与原串一致（判别性用例见
-    // string_replace_regex_proto_subclass_custom_tostring）。
+    // 类正则对象（proto 恒等 RegExp.prototype 但无编译正则）的默认 toString 是
+    // RegExp.prototype.toString，对非 RegExp receiver 抛 TypeError——对象 ToString
+    // 异常按规范原样传播，不吞错降级为文本替换；自定义 toString 的判别性用例见
+    // string_replace_regex_proto_subclass_custom_tostring。
     let mut vm = Vm::new();
-    let s = eval(&mut vm, "var sp = Object.create(RegExp.prototype); 'aXb'.replace(sp, 'Y')").unwrap();
-    assert_eq!(to_str(&vm, s), "aXb");
-    let s = eval(&mut vm, "var sp = Object.create(RegExp.prototype); 'aXb'.replaceAll(sp, 'Y')").unwrap();
-    assert_eq!(to_str(&vm, s), "aXb");
-    let s = eval(
-        &mut vm,
+    for src in [
+        "var sp = Object.create(RegExp.prototype); 'aXb'.replace(sp, 'Y')",
+        "var sp = Object.create(RegExp.prototype); 'aXb'.replaceAll(sp, 'Y')",
         "var sp = Object.create(RegExp.prototype); 'aXb'.replace(sp, function(m){ return 'Z' })",
-    )
-    .unwrap();
-    assert_eq!(to_str(&vm, s), "aXb");
+    ] {
+        let err = eval(&mut vm, src).unwrap_err();
+        assert!(err.contains("TypeError"), "{src} 应抛 TypeError，实际: {err}");
+    }
 }
 
 #[test]
@@ -581,13 +628,11 @@ fn string_split_string_separator() {
 
 #[test]
 fn string_split_regex_proto_subclass_fallback() {
-    // 类正则对象（proto 恒等 RegExp.prototype 但无编译正则）回退字符串路径，
-    // 按 ToString 文本（"[object]"）切分，不落入逐字符切分。
+    // 类正则对象（proto 恒等 RegExp.prototype 但无编译正则）的默认 toString 抛
+    // TypeError（RegExp.prototype.toString 校验 receiver），split 按规范传播异常。
     let mut vm = Vm::new();
-    let result = eval(&mut vm, "var sp = Object.create(RegExp.prototype); 'aXb'.split(sp)").unwrap();
-    let obj = unsafe { &*result.as_js_object_ptr() };
-    assert_eq!(obj.prop_count(), 1);
-    assert_eq!(to_str(&vm, obj.get_prop_at(0)), "aXb");
+    let err = eval(&mut vm, "var sp = Object.create(RegExp.prototype); 'aXb'.split(sp)").unwrap_err();
+    assert!(err.contains("TypeError"), "类正则分隔符应抛 TypeError，实际: {err}");
 }
 
 #[test]
