@@ -738,6 +738,8 @@ mod tests {
         assert_contract(OpCode::LOAD_VAR, Some(1), &[2], true);
         assert_contract(OpCode::STORE_VAR, Some(1), &[2], false);
         assert_contract(OpCode::LOAD_CONST, Some(1), &[], true);
+        assert_contract(OpCode::LOAD_GLOBAL, Some(1), &[], false);
+        assert_contract(OpCode::LOAD_GLOBAL_TYPEOF, Some(1), &[], false);
         assert_contract(OpCode::LOAD_UPVALUE, Some(1), &[], true);
         assert_contract(OpCode::CREATE_CLOSURE, Some(1), &[], true);
         assert_contract(OpCode::STORE_UPVALUE, None, &[2], false);

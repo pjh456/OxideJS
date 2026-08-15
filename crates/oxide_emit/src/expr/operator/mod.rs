@@ -209,7 +209,11 @@ impl Emitter {
                 _ => Err("invalid delete target".into()),
             };
         }
-        let arg = self.emit_expression(&un.argument, ctx)?;
+        let arg = if matches!(un.operator, UnaryOperator::Typeof) {
+            self.emit_typeof_operand(&un.argument, ctx)?
+        } else {
+            self.emit_expression(&un.argument, ctx)?
+        };
         match un.operator {
             UnaryOperator::UnaryNegation => {
                 ctx.inst(Inst::new(OpCode::NEG, Operand::Reg(arg), Operand::Reg(arg), Operand::None));
@@ -237,6 +241,45 @@ impl Emitter {
             }
             UnaryOperator::Delete => Err("invalid delete target".into()),
         }
+    }
+
+    /// typeof 操作数求值：未声明标识符特判为 "undefined"。
+    ///
+    /// # 步骤
+    /// 1. 剥括号后若为标识符且不在任何作用域/闭包捕获中、非 with 动态解析，
+    ///    发射 LOAD_GLOBAL_TYPEOF：运行期查 global object 属性，命中取真实值
+    ///    （含不在 BUILTIN_GLOBALS 名单的真实全局，如 Temporal），缺失求值
+    ///    undefined（IsUnresolvableReference 语义）。
+    /// 2. 其余（TDZ 绑定、已声明、with 内）走正常求值：TDZ 抛 ReferenceError、
+    ///    with 动态回退未定义、已声明读真实值。
+    ///
+    /// # 边界与前提
+    /// - 未声明标识符不能走 LOAD_GLOBAL（读未声明抛 ReferenceError），故必须在此特判；
+    /// - `typeof x; var x;` / `typeof x; let x;` 分别由 var 预声明（已初始化→undefined）
+    ///   与 TDZ 占位（未初始化→抛）覆盖，不落本分支。
+    fn emit_typeof_operand(&self, argument: &Expression, ctx: &mut CompileCtx) -> Result<u32, String> {
+        let mut arg_expr = argument;
+        while let Expression::ParenthesizedExpression(p) = arg_expr {
+            arg_expr = &p.expression;
+        }
+        if let Expression::Identifier(ident) = arg_expr {
+            let name = ident.name.as_str();
+            let in_with_dynamic = !ctx.with_stack.is_empty() && !ctx.is_with_internal_binding(name);
+            let captured =
+                ctx.current_upvalue_captures.iter().any(|u| u.name == name) || ctx.captured_bindings.contains_key(name);
+            if !in_with_dynamic && !captured && ctx.scopes.symbols.lookup_any_binding(name).is_none() {
+                let key_idx = ctx.add_constant(Constant::String(name.to_string()));
+                let r = ctx.alloc_reg();
+                ctx.inst(Inst::new(
+                    OpCode::LOAD_GLOBAL_TYPEOF,
+                    Operand::Reg(r),
+                    Operand::Const(key_idx),
+                    Operand::None,
+                ));
+                return Ok(r);
+            }
+        }
+        self.emit_expression(argument, ctx)
     }
 
     fn emit_conditional_expression(

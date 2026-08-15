@@ -1423,6 +1423,16 @@ impl Vm {
                     self.dispatch_load_const(rd, instr)?;
                 }
 
+                OpCode::LOAD_GLOBAL => match self.dispatch_load_global(rd, instr) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(e) => return Err(e),
+                },
+
+                OpCode::LOAD_GLOBAL_TYPEOF => {
+                    self.dispatch_load_global_typeof(rd, instr)?;
+                }
+
                 OpCode::CREATE_CLOSURE => {
                     self.dispatch_create_closure(rd, instr)?;
                 }

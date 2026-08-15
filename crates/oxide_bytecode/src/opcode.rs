@@ -368,6 +368,17 @@ define_opcodes! {
     LOAD_CONST = 0x32 => "LOAD_CONST",
         def = Some(SlotSpec::Slot(Slot::Rd)), uses = [],
         pure = true, jump = false, term = false, ic = false,
+    // 未声明标识符读：rd=目标，a/b=常量池 key 下标（imm16，与 LOAD_CONST 同构），
+    // 运行期查 global object 属性存在性，缺失抛 ReferenceError（热路径零开销：
+    // 已声明/内置标识符仍走 LOAD_VAR，本指令只命中真正未声明的读）。
+    LOAD_GLOBAL = 0x95 => "LOAD_GLOBAL",
+        def = Some(SlotSpec::Slot(Slot::Rd)), uses = [],
+        pure = false, jump = false, term = false, ic = false,
+    // typeof 未声明标识符特判：同 LOAD_GLOBAL 查 global object 属性，但缺失时
+    // 求值为 undefined 而非抛 ReferenceError（IsUnresolvableReference 语义）。
+    LOAD_GLOBAL_TYPEOF = 0x96 => "LOAD_GLOBAL_TYPEOF",
+        def = Some(SlotSpec::Slot(Slot::Rd)), uses = [],
+        pure = false, jump = false, term = false, ic = false,
 
     // ── 调用 (0x40-0x4F) ──
     CALL = 0x40 => "CALL", // 结果隐式写 reg 0；rd=callee, a=this, b=首参, ext[0]=nargs

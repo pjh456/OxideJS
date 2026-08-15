@@ -186,6 +186,11 @@ pub struct CompileCtx {
     /// 本函数从父函数捕获的 const 绑定名：子 ctx 不继承父函数作用域符号表，
     /// 捕获 const 信息随 upvalue 收集一并快照，供 const 写检查（编译期拦截）使用。
     pub(crate) upvalue_const_flags: HashSet<String>,
+    /// 未声明标识符读所分配的全局槽寄存器集合：标识符首次读未命中任何作用域时，
+    /// `lookup_or_builtin` 按隐式全局登记并记录其寄存器，后续读取据此发射
+    /// LOAD_GLOBAL（运行期查 global object 属性，缺失抛 ReferenceError）。
+    /// 按寄存器而非名字记录：块作用域同名新绑定持不同槽位，不会被误判为隐式全局。
+    pub(crate) implicit_global_reads: HashSet<u32>,
     /// 函数 `length` 属性值：首个带默认值形参之前的形参数（rest 不计）。
     /// emit_params_prologue 前由编译入口从 param_specs 计算。
     pub(crate) function_length: u32,
@@ -302,6 +307,7 @@ impl CompileCtx {
             own_bindings: HashSet::new(),
             captured_bindings: BTreeMap::new(),
             upvalue_const_flags: HashSet::new(),
+            implicit_global_reads: HashSet::new(),
             function_length: 0,
             const_overflow: false,
             with_stack: Vec::new(),
@@ -407,12 +413,18 @@ impl CompileCtx {
     pub(crate) fn lookup_or_builtin(&mut self, name: &str) -> Result<u32, String> {
         match self.scopes.symbols.lookup(name) {
             Ok(reg) => Ok(reg),
-            // 未声明标识符按全局处理：`typeof X` 守卫等合法 JS 应在运行期判定
-            // 未定义（读取未定义全局返回 undefined），而非编译期报错。
+            // 未声明标识符按隐式全局登记：读取语义（读未声明应抛 ReferenceError）由
+            // 发射端按 implicit_global_reads 择 LOAD_GLOBAL 实现；`typeof X` 守卫等
+            // 合法 JS 在运行期判定未定义（typeof 特判走 LOAD_GLOBAL_TYPEOF）。
             Err(err) if err.contains("is not defined") => {
                 let reg = self.alloc_reg();
                 self.scopes.symbols.pre_register_global(name, reg);
                 self.scopes.builtin_reg_map.push((name.to_string(), reg));
+                // 内置名（预扫描阶段在空符号表上登记）不是用户未声明读，不标记——
+                // 否则内置标识符读取全部改走 LOAD_GLOBAL（热路径退化 + 槽位被修剪）。
+                if !Self::is_known_builtin(name) {
+                    self.implicit_global_reads.insert(reg);
+                }
                 Ok(reg)
             }
             Err(err) => Err(err),

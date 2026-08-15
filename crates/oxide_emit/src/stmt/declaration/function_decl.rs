@@ -67,8 +67,9 @@ impl Emitter {
         } else {
             ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(var_reg), Operand::Reg(var_reg), Operand::None));
         }
-        // 脚本顶层函数声明：同步写全局对象，使 globalThis 可反射函数名。
-        if ctx.is_global_scope {
+        // 脚本顶层（非块内）函数声明：同步写全局对象，使 globalThis 可反射函数名。
+        // 块内函数声明是块级绑定，不得落全局对象（作用域隔离，块外不可见）。
+        if ctx.is_global_scope && ctx.scopes.symbols.scopes.len() == 1 {
             self.emit_global_prop_write(&name, var_reg, ctx);
         }
         Ok(None)

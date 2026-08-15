@@ -21,6 +21,56 @@ impl Vm {
         }
     }
 
+    /// 未声明标识符读：查 global object 属性存在性，命中取属性值，未命中抛 ReferenceError。
+    ///
+    /// # 步骤
+    /// 1. imm16 取常量池 key（标识符名字符串），解析为属性键 si。
+    /// 2. `resolve_property` 沿 shape 链 + 原型链解析 global 属性（覆盖全部属性存储）。
+    /// 3. 命中写 rd；未命中 raise ReferenceError（`{name} is not defined`）。
+    ///
+    /// # 边界与前提
+    /// - key 常量必须是字符串（emit 侧保证）；非字符串按错误返回。
+    /// - 属性存在但值为 undefined（显式赋 undefined）时返回 undefined，不抛。
+    pub(crate) fn dispatch_load_global(&mut self, rd: usize, instr: u32) -> Result<bool, String> {
+        let idx = (instr >> 16) as usize;
+        vm_trace!("LOAD_GLOBAL rd={} idx={}", rd, idx);
+        let key_val = self.immutables().get(idx).copied().unwrap_or(JsValue::undefined());
+        if !key_val.is_string() {
+            return Err(format!("LOAD_GLOBAL constant index {idx} is not a string key"));
+        }
+        let si = self.property_key_si(key_val)?;
+        let global = self.session.global_object();
+        if let Some(val) = self.resolve_property(global, si) {
+            self.regs[rd] = val;
+            Ok(false)
+        } else {
+            // SAFETY: key_val 已校验为字符串值，as_str 桥接 JsString 内容。
+            let name = unsafe { (*key_val.as_string_ptr()).as_str() };
+            self.raise_error_kind("ReferenceError", &format!("{name} is not defined"))?;
+            Ok(true)
+        }
+    }
+
+    /// typeof 未声明标识符读：同 [`dispatch_load_global`] 查 global object 属性，
+    /// 但未命中求值为 undefined（IsUnresolvableReference）而非抛 ReferenceError。
+    ///
+    /// # 步骤
+    /// 1. imm16 取常量池 key（标识符名字符串），解析为属性键 si。
+    /// 2. `resolve_property` 沿 shape 链 + 原型链解析 global 属性。
+    /// 3. 命中写 rd；未命中写 undefined。
+    pub(crate) fn dispatch_load_global_typeof(&mut self, rd: usize, instr: u32) -> Result<(), String> {
+        let idx = (instr >> 16) as usize;
+        vm_trace!("LOAD_GLOBAL_TYPEOF rd={} idx={}", rd, idx);
+        let key_val = self.immutables().get(idx).copied().unwrap_or(JsValue::undefined());
+        if !key_val.is_string() {
+            return Err(format!("LOAD_GLOBAL_TYPEOF constant index {idx} is not a string key"));
+        }
+        let si = self.property_key_si(key_val)?;
+        let global = self.session.global_object();
+        self.regs[rd] = self.resolve_property(global, si).unwrap_or(JsValue::undefined());
+        Ok(())
+    }
+
     #[inline(always)]
     pub(crate) fn dispatch_typeof(&mut self, rd: usize, a: usize) {
         vm_trace!("TYPEOF rd={} r{}={:?}", rd, a, self.regs[a]);

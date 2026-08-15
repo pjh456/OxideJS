@@ -45,7 +45,14 @@ impl Emitter {
             Err(err) => return Err(err),
         };
         let r = ctx.alloc_reg();
-        ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(r), Operand::Reg(var_reg), Operand::None));
+        if ctx.implicit_global_reads.contains(&var_reg) {
+            // 未声明标识符读：运行期查 global object 属性存在性，缺失抛
+            // ReferenceError（sloppy 写先登记全局槽的读不在此集合，仍走 LOAD_VAR）。
+            let key_idx = ctx.add_constant(Constant::String(name.to_string()));
+            ctx.inst(Inst::new(OpCode::LOAD_GLOBAL, Operand::Reg(r), Operand::Const(key_idx), Operand::None));
+        } else {
+            ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(r), Operand::Reg(var_reg), Operand::None));
+        }
         Ok(r)
     }
 
