@@ -165,8 +165,7 @@ impl Vm {
                         if current_cells[cell_idx].is_null() {
                             // 占位 Cell 保持未初始化（TDZ）直到 MAKE_CELL 置位；
                             // 若绑定为 var 则其初始化 MAKE_CELL 在函数序言先于任何读取执行。
-                            let cell = self.gc_state.session_epoch.alloc(Cell::new(JsValue::undefined(), false));
-                            current_cells[cell_idx] = cell as *mut Cell;
+                            current_cells[cell_idx] = self.gc_state.alloc_cell(JsValue::undefined(), false);
                         }
                         current_cells[cell_idx]
                     };
@@ -190,8 +189,7 @@ impl Vm {
         }
         if current[cell_idx].is_null() {
             // 无占位 cell：新建。
-            let cell = self.gc_state.session_epoch.alloc(Cell::new(value, true));
-            current[cell_idx] = cell as *mut Cell;
+            current[cell_idx] = self.gc_state.alloc_cell(value, true);
         } else {
             // 更新占位 cell（CREATE_CLOSURE 已建），使闭包 upvalue 指向的
             // cell 值跟随初始化；赋值即解除 TDZ。
@@ -217,8 +215,7 @@ impl Vm {
         while current.len() <= cell_idx {
             current.push(std::ptr::null_mut());
         }
-        let cell = self.gc_state.session_epoch.alloc(Cell::new(value, true));
-        current[cell_idx] = cell as *mut Cell;
+        current[cell_idx] = self.gc_state.alloc_cell(value, true);
         Ok(())
     }
 
@@ -231,8 +228,7 @@ impl Vm {
         }
         if current[cell_idx].is_null() {
             let val = self.regs[a];
-            let cell = self.gc_state.session_epoch.alloc(Cell::new(val, true));
-            current[cell_idx] = cell as *mut Cell;
+            current[cell_idx] = self.gc_state.alloc_cell(val, true);
         }
         let c = unsafe { &*current[cell_idx] };
         if !c.is_initialized() {
@@ -311,9 +307,8 @@ impl Vm {
                     } else {
                         self.regs[rd]
                     };
-                    let cell = self.gc_state.session_epoch.alloc(Cell::new(val, true));
-                    upvals[uv_idx] = cell as *mut Cell;
-                    self.regs[rd] = cell.value;
+                    upvals[uv_idx] = self.gc_state.alloc_cell(val, true);
+                    self.regs[rd] = unsafe { (*upvals[uv_idx]).value };
                     return Ok(());
                 }
             }
@@ -344,8 +339,7 @@ impl Vm {
                         }
                         vm_debug!("STORE_UPVALUE len={} wrote existing", upvals.len());
                     } else {
-                        let cell = self.gc_state.session_epoch.alloc(Cell::new(src_val, true));
-                        upvals[uv_idx] = cell as *mut Cell;
+                        upvals[uv_idx] = self.gc_state.alloc_cell(src_val, true);
                     }
                 }
             }

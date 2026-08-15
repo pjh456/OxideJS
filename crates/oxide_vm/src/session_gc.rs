@@ -741,8 +741,11 @@ fn rewrite_vm_roots(vm: &mut Vm, forwarding: &HashMap<*mut JsObject, *mut JsObje
 
 #[cfg(test)]
 mod tests {
+    use oxide_compiler::compiler::Compiler;
     use oxide_kernel::kernel::{KernelConfig, KernelCore};
+    use oxide_parser::Allocator;
     use oxide_types::object::JsObject;
+    use oxide_types::value::JsValue;
 
     use super::*;
     use crate::vm::{CallFrame, FrameContinuation};
@@ -1356,6 +1359,89 @@ mod tests {
         cfg.set_session_gc_threshold(bytes);
         let core = KernelCore::new(cfg);
         Vm::with_kernel_core(core)
+    }
+
+    // ── upvalue cell 独立堆分配：跨对象 sweep 存活 ─────────────────────────
+
+    fn compile(source: &str) -> oxide_bytecode::module::CompiledModule {
+        let allocator = Allocator::default();
+        let program = oxide_parser::parse(&allocator, source).expect("parse");
+        Compiler::new().compile(&program).expect("compile")
+    }
+
+    fn global_prop_opt(vm: &Vm, name: &str) -> Option<JsValue> {
+        let global = vm.session.global_object();
+        let si = vm.kernel_core().perm_interner().intern(name).0;
+        vm.resolve_property(global, si)
+    }
+
+    /// 闭包捕获变量跨对象 sweep 存活：reset 触发完整收集（session_epoch 替换），
+    /// 修复前 cell 分配于旧 arena、随 Bump drop 悬垂；修复后独立堆分配、
+    /// 地址稳定，sweep 只重写 cell.value 中的对象引用，值跨搬移保留。
+    #[test]
+    fn closure_cell_survives_object_sweep() {
+        let mut vm = vm_with_threshold(1);
+        vm.run(&compile("var counter = 0; function inc() { return ++counter; } globalThis.inc = inc; 0"))
+            .expect("run1");
+        assert!(!vm.gc_state.session_cell_ptrs.borrow().is_empty(), "run1 应分配 upvalue cell");
+
+        // reset 触发对象 sweep：存活对象搬到新 arena，旧 arena 释放。
+        vm.reset();
+        assert!(vm.session_gc_stats().total_collections > 0, "reset 应触发对象收集");
+
+        // 跨搬移后从 global 重新取 inc 函数对象：upvalue cell 指针稳定、值保留。
+        let inc_val = global_prop_opt(&vm, "inc").expect("inc 应挂在 global 上");
+        let obj = unsafe { &*inc_val.as_js_object_ptr() };
+        let cells = obj.upvalues_slice();
+        assert_eq!(cells.len(), 1, "inc 应捕获 counter 一个 cell");
+        let cell = unsafe { &*cells[0] };
+        assert_eq!(cell.value, JsValue::int(0), "sweep 后 cell 值应保留为 counter 初值");
+        assert!(cell.is_initialized(), "sweep 后 cell 初始化位应保留");
+    }
+
+    /// 私有字段类的 brand cell 跨对象 sweep 存活：`@@class_brand` upvalue cell
+    /// 存类 brand 对象，sweep 后其值经 forwarding 重写为搬移后的新对象地址，
+    /// cell 指针仍稳定（修复前 cell 悬垂、值被复用覆盖）。
+    #[test]
+    fn private_brand_cell_survives_object_sweep() {
+        let mut vm = vm_with_threshold(1);
+        vm.run(&compile(
+            "class C { #x = 0; set(v){ this.#x = v; } get(){ return this.#x; } } \
+             globalThis.c = new C(); globalThis.c.set(4); 0",
+        ))
+        .expect("run1");
+
+        vm.reset();
+        assert!(vm.session_gc_stats().total_collections > 0, "reset 应触发对象收集");
+
+        // 实例 c 的方法 get（类原型上）捕获 @@class_brand cell：值须仍为对象。
+        let c_val = global_prop_opt(&vm, "c").expect("c 应挂在 global 上");
+        let c_obj = unsafe { &*c_val.as_js_object_ptr() };
+        let proto_ptr = c_obj.proto().as_js_object_ptr();
+        let get_val = vm
+            .resolve_property(unsafe { &*proto_ptr }, vm.kernel_core().perm_interner().intern("get").0)
+            .expect("类原型应有 get 方法");
+        let get_obj = unsafe { &*get_val.as_js_object_ptr() };
+        let cells = get_obj.upvalues_slice();
+        assert!(!cells.is_empty(), "get 应捕获 @@class_brand cell");
+        let brand = unsafe { &*cells[0] }.value;
+        assert!(brand.is_object(), "sweep 后 brand cell 值应仍为 brand 对象");
+    }
+
+    /// full_reset 统一释放全部 cell box 且可重新分配：追踪表清空（无 double-free），
+    /// 重置后新闭包正常建立新 cell。
+    #[test]
+    fn cells_freed_by_full_reset_and_reallocatable() {
+        let mut vm = Vm::new();
+        vm.run(&compile("var x = 1; function f() { return x; } globalThis.f = f; f()"))
+            .expect("run1");
+        assert!(!vm.gc_state.session_cell_ptrs.borrow().is_empty());
+
+        vm.full_reset();
+        assert!(vm.gc_state.session_cell_ptrs.borrow().is_empty(), "full_reset 应释放全部 cell");
+
+        let result = vm.run(&compile("var y = 2; function g() { return y; } g()")).expect("run2");
+        assert_eq!(format!("{result}"), "2", "重置后新 cell 应正常分配与读取");
     }
 
     #[test]

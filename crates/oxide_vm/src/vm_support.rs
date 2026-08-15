@@ -92,6 +92,7 @@ impl Vm {
                 session_object_ptrs: Vec::new(),
                 session_string_ptrs: Vec::new(),
                 session_bigint_ptrs: std::cell::RefCell::new(Vec::new()),
+                session_cell_ptrs: std::cell::RefCell::new(Vec::new()),
                 session_bytes_allocated: 0,
                 string_gc_watermark: gc_threshold,
                 forwarding: std::collections::HashMap::with_hasher(rustc_hash::FxBuildHasher),
@@ -193,6 +194,7 @@ impl Vm {
                 session_object_ptrs: Vec::new(),
                 session_string_ptrs: Vec::new(),
                 session_bigint_ptrs: std::cell::RefCell::new(Vec::new()),
+                session_cell_ptrs: std::cell::RefCell::new(Vec::new()),
                 session_bytes_allocated: 0,
                 string_gc_watermark: gc_threshold,
                 forwarding: std::collections::HashMap::with_hasher(rustc_hash::FxBuildHasher),
@@ -300,6 +302,7 @@ impl Vm {
         self.gc_state.session_gc = crate::session_gc::SessionGc::new();
         self.free_session_string_heap_data();
         self.free_session_bigint_heap_data();
+        self.gc_state.free_cells();
         self.symbols.reset();
         self.root_reg_limit = 0;
         self.active_reg_limit = 0;

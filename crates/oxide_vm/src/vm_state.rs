@@ -15,7 +15,7 @@ use rustc_hash::FxBuildHasher;
 
 use crate::session_gc::SessionGc;
 use crate::vm::ForInIter;
-use oxide_types::object::{JsObject, JsString};
+use oxide_types::object::{Cell as UpvalueCell, JsObject, JsString};
 use oxide_types::value::JsValue;
 
 /// session arena 与 GC 簿记。
@@ -33,6 +33,10 @@ pub(crate) struct GcState {
     /// `convert_immutables` 也能登记新 box。与字符串不同，BigInt 不参与
     /// mark/sweep 回收（值量少），只在 full_reset 统一释放。
     pub(crate) session_bigint_ptrs: RefCell<Vec<*mut num_bigint::BigInt>>,
+    /// upvalue cell（`Box<Cell>`）追踪表。`RefCell` 使 `&self` 的分配入口也能
+    /// 登记新 box。cell 独立堆分配、地址稳定，不参与对象搬移（sweep 只重写
+    /// `cell.value` 中的对象引用），只在 full_reset 统一释放。
+    pub(crate) session_cell_ptrs: RefCell<Vec<*mut UpvalueCell>>,
     pub(crate) session_bytes_allocated: usize,
     /// 执行期字符串 GC 的触发水位：本次收集后的存活字节 + 阈值增量。
     /// 仅当账目超过水位才在指令边界触发回收——活串超阈值时不会每指令重复
@@ -44,6 +48,29 @@ pub(crate) struct GcState {
 impl GcState {
     pub(crate) fn track_epoch_object(&mut self, ptr: *mut JsObject) {
         self.epoch_object_ptrs.push(ptr);
+    }
+
+    /// 分配一个 upvalue cell：独立堆分配并返回裸指针，脱离 session arena 生命周期。
+    ///
+    /// cell 指针登记进 `session_cell_ptrs`，在 `full_reset` 统一释放。对象 sweep
+    /// 搬移不触碰 cell 结构体（地址稳定），只重写 `cell.value` 中的对象引用。
+    /// `&self` 使调用方可与 `cell_stack` 等其它字段的借用并存（分字段借用）。
+    pub(crate) fn alloc_cell(&self, value: JsValue, initialized: bool) -> *mut UpvalueCell {
+        let ptr = Box::into_raw(Box::new(UpvalueCell::new(value, initialized)));
+        self.session_cell_ptrs.borrow_mut().push(ptr);
+        ptr
+    }
+
+    /// 释放全部 session 堆 upvalue cell box。仅在完全隔离重置（`full_reset`）时调用，
+    /// 此时没有存活的 cell_stack / 函数对象 upvalues 会引用它们。
+    pub(crate) fn free_cells(&mut self) {
+        for ptr in self.session_cell_ptrs.borrow_mut().drain(..) {
+            // SAFETY: 每个指针来自 alloc_cell 的 Box::into_raw(Box::new(Cell))，
+            // 且只在这里恰好释放一次。
+            unsafe {
+                drop(Box::from_raw(ptr));
+            }
+        }
     }
 }
 

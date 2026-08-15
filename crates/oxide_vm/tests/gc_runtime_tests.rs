@@ -227,3 +227,20 @@ fn full_reset_clears_session_after_runtime_gc() {
     let text = vm.lookup_str(result).expect("拼接结果应为字符串").to_string();
     assert_eq!(text, "ok!");
 }
+
+/// full_reset 统一释放执行期分配过的 upvalue cell 无 double-free：重置后引擎
+/// 可继续运行并重建新闭包（cell 独立堆分配，随 full_reset 恰好释放一次）。
+#[test]
+fn closure_cells_freed_by_full_reset_without_double_free() {
+    let mut vm = vm_with_threshold(1);
+    let first = compile("var x = 1; function f() { return x; } globalThis.f = f; f()");
+    let result = vm.run(&first).expect("run1");
+    assert_eq!(format!("{}", result), "1");
+
+    vm.full_reset();
+
+    let second = compile("'ok' + '!'");
+    let result = vm.run(&second).expect("run2");
+    let text = vm.lookup_str(result).expect("拼接结果应为字符串").to_string();
+    assert_eq!(text, "ok!");
+}
