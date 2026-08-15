@@ -75,63 +75,194 @@ pub fn number_is_finite<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(n.is_finite()))
 }
 
-/// `parseInt(string, radix)`：按指定进制解析整数前缀；支持 `0x` 前缀，
-/// 空串或非法前缀返回 NaN。radix 为 0 或缺省时按 10 进制（`0x` 前缀除外）。
+/// ECMA-262 WhiteSpace / LineTerminator 判定（TrimString 用）。
+///
+/// 与 Rust `char::is_whitespace` 的差异：规范集合不含 U+0085（NEL），手工
+/// 按白名单匹配避免误剥。
+fn is_js_ws(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0009}' | '\u{000B}' | '\u{000C}' | '\u{0020}' | '\u{00A0}' | '\u{1680}' | '\u{2000}'
+            ..='\u{200A}'
+                | '\u{202F}'
+                | '\u{205F}'
+                | '\u{3000}'
+                | '\u{FEFF}'
+                | '\u{000A}'
+                | '\u{000D}'
+                | '\u{2028}'
+                | '\u{2029}'
+    )
+}
+
+/// ECMA-262 ToInt32（§7.1.6）：f64 → mod 2^32 回绕的有符号 i32。
+///
+/// NaN/±0/±∞ 归 0；先截断再对 2^32 取余（余数非负），保证超大输入
+/// （如 2^40 → 0）按回绕而非饱和。
+fn to_int32(n: f64) -> i32 {
+    if n.is_nan() || n.is_infinite() || n == 0.0 {
+        return 0;
+    }
+    (n.trunc().rem_euclid(4294967296.0) as u32) as i32
+}
+
+/// `parseInt(string, radix)`：按 ECMA-262 §19.2.5 前缀解析。
+///
+/// 规范白名单 trim 后读 `+`/`-` 符号；radix 经 ToInt32（mod 2^32 回绕，
+/// NaN/undefined → 0），R≠0 且不在 [2,36] 返回 NaN；仅当原 R 为 0 或 16 时
+/// `0x`/`0X` 前缀按十六进制剥除。随后按进制收集最长连续有效数字前缀并转
+/// f64（十进制正确舍入、其余进制数学累加，均允许超 2^53 舍入），无有效
+/// 数字返回 NaN，结果在 i32 域内用 int 表示，`-0` 保留负零。
 pub fn number_parse_int<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
     let s = oxide_runtime_api::to_string(vm.reg(args[1]));
-    let s = s.trim();
+    let s = s.trim_start_matches(is_js_ws).trim_end_matches(is_js_ws);
 
-    if s.is_empty() {
+    // radix 经 ToInt32：缺省参数视为 undefined（ToInt32 → 0）。
+    let raw = if args.len() > 2 {
+        match vm.coerce_number_bounded(vm.reg(args[2])) {
+            Ok(n) => n,
+            Err(_) => {
+                // coercion 触发用户 valueOf/toString 抛出的异常经
+                // last_uncaught_value 恢复后原样重新抛出。
+                if let Some(exc) = vm.take_uncaught_value() {
+                    return NativeResult::Err(exc);
+                }
+                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert radix to a number"));
+            }
+        }
+    } else {
+        f64::NAN
+    };
+    let r = to_int32(raw);
+
+    // 读符号并跳过；R≠0 且越出 [2,36] 直接 NaN（保留 0 参与后续 0x 判定）。
+    let (neg, rest) = match s.as_bytes().first() {
+        Some(b'-') => (true, &s[1..]),
+        Some(b'+') => (false, &s[1..]),
+        _ => (false, s),
+    };
+    let radix_default: u32 = if r == 0 {
+        10
+    } else if (2..=36).contains(&r) {
+        r as u32
+    } else {
+        return NativeResult::Ok(JsValue::float(f64::NAN));
+    };
+
+    // 0x/0X 前缀：仅当原 R 为 0（缺省/undefined/NaN/0）或 16 时剥前缀转十六进制。
+    let (digits, radix) = if (r == 0 || r == 16)
+        && rest.len() >= 2
+        && rest.as_bytes()[0] == b'0'
+        && (rest.as_bytes()[1] == b'x' || rest.as_bytes()[1] == b'X')
+    {
+        (&rest[2..], 16u32)
+    } else {
+        (rest, radix_default)
+    };
+
+    // 按进制收集最长连续有效数字前缀；十进制交 Rust 正确舍入解析
+    // （逐位 f64 累加对 20+ 位数字会产生 1 ulp 级偏差），其余进制
+    // 数学累加（2 的幂进制在 53 位内精确，超出按规范允许近似舍入）。
+    let mut end = 0usize;
+    for (i, c) in digits.char_indices() {
+        if c.to_digit(radix).is_none() {
+            break;
+        }
+        end = i + c.len_utf8();
+    }
+    if end == 0 {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-
-    let radix = if args.len() > 2 {
-        let r = vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as i32;
-        if r == 0 {
-            10
-        } else {
-            r.clamp(2, 36)
+    let prefix = &digits[..end];
+    let acc = if radix == 10 {
+        match prefix.parse::<f64>() {
+            Ok(v) => v,
+            Err(_) => return NativeResult::Ok(JsValue::float(f64::NAN)),
         }
     } else {
-        10
-    };
-
-    let (rest, hex) = if s.starts_with("0x") || s.starts_with("0X") {
-        if radix == 16 || radix == 0 || (args.len() <= 2) {
-            (s[2..].to_string(), true)
-        } else {
-            (s.to_string(), false)
+        let mut acc = 0.0f64;
+        for c in prefix.chars() {
+            acc = acc * radix as f64 + c.to_digit(radix).unwrap() as f64;
         }
-    } else {
-        (s.to_string(), false)
+        acc
     };
 
-    let actual_radix = if hex { 16u32 } else { radix as u32 };
-
-    if let Ok(n) = i32::from_str_radix(&rest, actual_radix) {
-        return NativeResult::Ok(JsValue::int(n));
+    let acc = if neg { -acc } else { acc };
+    if acc == 0.0 {
+        // 负零保留符号（parseInt("-0") → -0）。
+        return NativeResult::Ok(JsValue::float(if neg { -0.0 } else { 0.0 }));
     }
-
-    NativeResult::Ok(JsValue::float(f64::NAN))
+    if acc.fract() == 0.0 && acc >= i32::MIN as f64 && acc <= i32::MAX as f64 {
+        NativeResult::Ok(JsValue::int(acc as i32))
+    } else {
+        NativeResult::Ok(JsValue::float(acc))
+    }
 }
 
-/// `parseFloat(string)`：解析尽可能长的十进制浮点前缀；无法解析返回 NaN。
+/// `parseFloat(string)`：按 ECMA-262 §19.2.4 前缀解析。
+///
+/// 规范白名单 trim 后读 `+`/`-` 符号，特判精确大小写的 `Infinity`；随后按
+/// StrDecimalLiteral 文法扫描最长合法十进制前缀（整数 + 可选小数 + 可选
+/// 指数，`0x10` 在 'x' 处停止得 0，`1.2.3` 得 1.2），前缀子串交给
+/// fast_float 解析（溢出归 ±Infinity），无合法前缀返回 NaN。
 pub fn number_parse_float<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
     let s = oxide_runtime_api::to_string(vm.reg(args[1]));
-    let s = s.trim();
+    let s = s.trim_start_matches(is_js_ws).trim_end_matches(is_js_ws);
 
-    if s.is_empty() {
+    // 读符号；`Infinity` 大小写敏感，其后可带任意后缀（取最长合法前缀）。
+    let (neg, rest) = match s.as_bytes().first() {
+        Some(b'-') => (true, &s[1..]),
+        Some(b'+') => (false, &s[1..]),
+        _ => (false, s),
+    };
+    if rest.starts_with("Infinity") {
+        return NativeResult::Ok(JsValue::float(if neg { f64::NEG_INFINITY } else { f64::INFINITY }));
+    }
+
+    // 扫描 mantissa：数字与至多一个 '.'（'.' 后必须有数字，整数部分可为空）。
+    let b = rest.as_bytes();
+    let mut i = 0usize;
+    let mut dot = false;
+    let mut mantissa_digits = 0usize;
+    let mut end = 0usize;
+    while i < b.len() {
+        let c = b[i];
+        if c.is_ascii_digit() {
+            mantissa_digits += 1;
+            end = i + 1;
+            i += 1;
+        } else if c == b'.' && !dot {
+            dot = true;
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    // 指数部分：e/E [+/-] 数字，且 mantissa 必须先有数字；指数无数字则不含 'e'。
+    if i < b.len() && (b[i] == b'e' || b[i] == b'E') && mantissa_digits > 0 {
+        let mut j = i + 1;
+        if j < b.len() && (b[j] == b'+' || b[j] == b'-') {
+            j += 1;
+        }
+        if j < b.len() && b[j].is_ascii_digit() {
+            while j < b.len() && b[j].is_ascii_digit() {
+                j += 1;
+            }
+            end = j;
+        }
+    }
+    if mantissa_digits == 0 {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
 
-    match fast_float::parse::<f64, _>(&s) {
-        Ok(v) => NativeResult::Ok(JsValue::float(v)),
+    match fast_float::parse::<f64, _>(&rest[..end]) {
+        Ok(v) => NativeResult::Ok(JsValue::float(if neg { -v } else { v })),
         Err(_) => NativeResult::Ok(JsValue::float(f64::NAN)),
     }
 }

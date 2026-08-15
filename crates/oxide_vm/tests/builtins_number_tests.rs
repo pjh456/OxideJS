@@ -68,6 +68,84 @@ fn parse_float_invalid() {
 }
 
 #[test]
+fn parse_int_prefix_and_radix_semantics() {
+    let mut vm = Vm::new();
+    let cases = [
+        // 前缀解析：遇非法字符停止，取最长合法数字前缀。
+        ("parseInt('123abc') === 123", true),
+        // +/- 符号前缀。
+        ("parseInt('+42') === 42", true),
+        ("parseInt('-42') === -42", true),
+        // radix 显式时不触发 0x；缺省/0/16 时触发。
+        ("parseInt('0x10', 10) === 0", true),
+        ("parseInt('0x10') === 16", true),
+        ("parseInt('0x10', 0) === 16", true),
+        ("parseInt('0x10', 16) === 16", true),
+        ("parseInt('+0x10') === 16", true),
+        ("parseInt('0XFF') === 255", true),
+        // 超 i32 用 f64 近似（允许舍入），i32 域内保持精确。
+        ("parseInt('99999999999999999999') === 1e20", true),
+        ("parseInt('9007199254740993') === 9007199254740992", true),
+        ("parseInt('2147483647') === 2147483647", true),
+        ("parseInt('2147483648') === 2147483648", true),
+        // radix 有效字符过滤与空白处理。
+        ("parseInt('10', 2) === 2", true),
+        ("parseInt('1a', 2) === 1", true),
+        ("parseInt('  -42  ') === -42", true),
+        // 负零保留符号。
+        ("1 / parseInt('-0') === -Infinity", true),
+        // 无有效数字 / radix 越界 / 超大 radix 经 ToInt32 回绕。
+        ("isNaN(parseInt(''))", true),
+        ("isNaN(parseInt('0x'))", true),
+        ("isNaN(parseInt('0xG'))", true),
+        ("isNaN(parseInt('z'))", true),
+        ("isNaN(parseInt('10', 1))", true),
+        ("isNaN(parseInt('10', 37))", true),
+        ("isNaN(parseInt('z', 2 ** 40))", true),
+    ];
+    for (src, expected) in cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn parse_float_prefix_semantics() {
+    let mut vm = Vm::new();
+    let cases = [
+        // 前缀解析：取最长合法 StrDecimalLiteral。
+        ("parseFloat('3.14abc') === 3.14", true),
+        ("parseFloat('1.2.3') === 1.2", true),
+        ("parseFloat('1e5') === 100000", true),
+        ("parseFloat('1e+5') === 100000", true),
+        ("parseFloat('.5') === 0.5", true),
+        ("parseFloat('  3.14  ') === 3.14", true),
+        // Infinity 大小写敏感，可带符号与后缀。
+        ("parseFloat('Infinity') === Infinity", true),
+        ("parseFloat('+Infinity') === Infinity", true),
+        ("parseFloat('-Infinity') === -Infinity", true),
+        ("parseFloat('Infinityx') === Infinity", true),
+        ("isNaN(parseFloat('-infinity'))", true),
+        // 十六进制不解析，十进制前缀在 'x' 处停止；溢出归 Infinity。
+        ("parseFloat('0x10') === 0", true),
+        ("parseFloat('1e400') === Infinity", true),
+        ("parseFloat('-1e400') === -Infinity", true),
+        // 无合法前缀。
+        ("isNaN(parseFloat(''))", true),
+        ("isNaN(parseFloat('.'))", true),
+        ("isNaN(parseFloat('.e5'))", true),
+        ("isNaN(parseFloat('abc'))", true),
+        // 指数后无数字：'e' 不构成 ExponentPart，最长合法前缀为整数部分。
+        ("parseFloat('1e') === 1", true),
+        ("parseFloat('1e+') === 1", true),
+    ];
+    for (src, expected) in cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
 fn number_constructor() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "Number('42')").unwrap();
