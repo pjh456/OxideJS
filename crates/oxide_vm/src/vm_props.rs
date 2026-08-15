@@ -425,6 +425,10 @@ impl Vm {
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             obj.set_prop_shape(pos, val);
             crate::ic_helper::write_ic_back(self.bytecode_mut(), ext_pc, obj.shape_id(), pos, 0);
+        } else if self.named_prop_create_needs_ordinary_set(obj, prop_name_si) {
+            // 数组 length / 整数索引键写新属性：分流回 ordinary_set（ArraySetLength /
+            // 元素区写），与 dispatch_ic_set_prop 对称，防快路径建影子槽破坏数组语义。
+            self.ordinary_set(obj, prop_name_si, val, receiver)?;
         } else {
             self.create_named_prop_fast(obj, prop_name_si, val, receiver, ext_pc, false)?;
         }

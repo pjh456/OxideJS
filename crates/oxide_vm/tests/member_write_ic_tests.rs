@@ -186,3 +186,58 @@ fn proto_assignment_then_compound_shadow() {
     );
     assert_eq!(r, "2:1", "__proto__ 赋值建链后复合写 shadow 到 o，p 不被污染");
 }
+
+/// 数组 length 复合写分流 ordinary_set（ArraySetLength）：`arr.length += 1` 更新逻辑
+/// 长度而非建影子槽，后续 push / 索引写读正常（P1-1 回归锚定）。
+#[test]
+fn array_length_compound_write_uses_array_set_length() {
+    let (r, _hits, _misses) = run_once(
+        r#"var arr = [1, 2, 3];
+           arr.length += 1;
+           var l1 = arr.length;
+           arr.push(5);
+           arr[1] = 9;
+           l1 + ":" + arr.length + ":" + arr.join(",")"#,
+    );
+    assert_eq!(r, "4:5:1,9,3,,5", "length 复合写后 l1=4，push 后 length=5，元素区正确");
+}
+
+/// 数组 length 复合写后再直接赋值 `arr.length = N`：两写路径均走 ArraySetLength，
+/// 元素区按新长度伸缩，不残留影子槽（P1-1 双路径对称回归锚定）。
+#[test]
+fn array_length_compound_then_direct_assign() {
+    let (r, _hits, _misses) = run_once(
+        r#"var arr = [1, 2, 3];
+           arr.length += 1;
+           arr.length = 5;
+           var l = arr.length;
+           arr[4] = 7;
+           l + ":" + arr.join(",")"#,
+    );
+    assert_eq!(r, "5:1,2,3,,7", "length=5 后逻辑长度与元素区同步伸缩");
+}
+
+/// 数组写新命名属性（IC_SET 快路径建 shape 槽）：命名槽在元素区之后，元素写入不错位。
+#[test]
+fn array_named_prop_create_then_element_write() {
+    let (r, _hits, _misses) = run_once(
+        r#"var arr = [1];
+           arr.foo = 1;
+           arr[0] = 9;
+           arr.foo"#,
+    );
+    assert_eq!(r, "1", "元素区写入后命名属性 foo 不错位（槽在元素区之后）");
+}
+
+/// 数组命名属性 member 复合写命中 shadow 槽 + 元素增长后读回正确（P2-1）。
+#[test]
+fn array_named_prop_compound_hit_after_element_growth() {
+    let (r, _hits, _misses) = run_once(
+        r#"var arr = [1];
+           arr.foo = 2;
+           arr.foo += 3;
+           arr[0] = 9;
+           arr.foo"#,
+    );
+    assert_eq!(r, "5", "member 复合写命中 shadow 槽（2+3=5），元素增长后仍不错位");
+}
