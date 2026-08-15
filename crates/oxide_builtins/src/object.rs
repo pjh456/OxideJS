@@ -2,8 +2,8 @@ use oxide_kernel::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use oxide_kernel::string_forge::PermInterner;
 use oxide_types::object::{JsObject, PropAttributes, PropMetaEntry};
 use oxide_types::private_key::{
-    int_key_value, is_int_key, is_private_name_key, is_symbol_key, make_well_known_symbol_key, symbol_index_from_key,
-    well_known_symbol_id_from_key,
+    int_key_value, is_int_key, is_private_name_key, is_symbol_key, make_int_key, make_well_known_symbol_key,
+    symbol_index_from_key, well_known_symbol_id_from_key,
 };
 use oxide_types::value::JsValue;
 
@@ -16,10 +16,20 @@ fn is_integer_index(key: &str) -> bool {
     key.bytes().all(|b| b.is_ascii_digit()) && key.parse::<u64>().unwrap_or(u64::MAX) < (1u64 << 32) - 1
 }
 
-/// 收集对象全部自身属性（shape 链），按规范顺序排列：整数索引在前升序，其余保持插入序。
-/// 数组元素区（整数下标）不在此列，调用方需另行枚举。
+/// 收集对象全部自身属性（数组元素区 + shape 链），按规范顺序排列：整数索引在前
+/// 升序，其余保持插入序。返回 `(属性键 si, 绝对存储索引)`：数组对象元素区索引即
+/// 绝对下标，命名属性 = `array_prop_count + shape 槽位`；普通对象即 shape 槽位。
 pub fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
     let mut keys: Vec<(u32, u32)> = Vec::new();
+    // 数组元素区：整数下标是可枚举自身属性（hole 视为不存在），排在命名属性之前。
+    if obj.is_array() {
+        for i in 0..obj.array_prop_count {
+            if obj.prop_meta_at(i).is_some_and(|m| m.is_hole()) {
+                continue;
+            }
+            keys.push((make_int_key(i), i));
+        }
+    }
     let shape_id = obj.shape_id();
     let mut pos: u32 = 0;
     let mut shape_ids = Vec::new();
@@ -30,11 +40,9 @@ pub fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
         }
         if let Some(shape) = vm.kernel_core().shape_forge().get_shape(id) {
             cursor = shape.parent;
-            // Symbol 键/私有名键非字符串属性名，排除在字符串枚举之外。
-            if shape.property_name != u32::MAX
-                && !is_symbol_key(shape.property_name)
-                && !is_private_name_key(shape.property_name)
-            {
+            // Symbol 键/私有名键非字符串属性名，排除在字符串枚举之外（但仍占 shape
+            // 槽位，pos 计数须含它们才能与物理存储对齐）。
+            if shape.property_name != u32::MAX {
                 shape_ids.push(id);
             }
         } else {
@@ -47,7 +55,9 @@ pub fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
                 && !is_symbol_key(shape.property_name)
                 && !is_private_name_key(shape.property_name)
             {
-                keys.push((shape.property_name, pos));
+                // 绝对存储索引：数组命名属性位于元素区之后。
+                let store = if obj.is_array() { obj.array_prop_count + pos } else { pos };
+                keys.push((shape.property_name, store));
             }
         }
         pos += 1;
@@ -236,10 +246,9 @@ pub fn delete_own_property<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u3
     let Some(delete_pos) = all_keys.iter().find(|(si, _)| *si == key_si).map(|(_, pos)| *pos) else {
         return true;
     };
-    // delete_pos 是 shape 槽位；数组对象存储索引 = 元素数 + 槽位。
-    let delete_store = if obj.is_array() { obj.array_prop_count + delete_pos } else { delete_pos };
+    // walk_own_keys 已返回绝对存储索引（数组含元素区偏移），直接使用。
     if obj
-        .prop_meta_at(delete_store)
+        .prop_meta_at(delete_pos)
         .map(|meta| !meta.attributes.configurable())
         .unwrap_or(false)
     {
@@ -260,11 +269,9 @@ pub fn delete_own_property<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u3
 
     let retained: Vec<(u32, JsValue, Option<PropMetaEntry>)> = all_keys
         .into_iter()
-        .filter(|(_, pos)| *pos != delete_pos)
-        .map(|(si, pos)| {
-            let store = if obj.is_array() { obj.array_prop_count + pos } else { pos };
-            (si, obj.get_prop_at(store), obj.prop_meta_at(store))
-        })
+        // 数组元素区由下方独立保存/恢复，此处只重建命名属性（元素键绝对下标 < 元素数）。
+        .filter(|(_, pos)| *pos != delete_pos && !(obj.is_array() && *pos < obj.array_prop_count))
+        .map(|(si, pos)| (si, obj.get_prop_at(pos), obj.prop_meta_at(pos)))
         .collect();
 
     // 重建 shape 链与属性表（数组先清空，含元素区，随后恢复）。
@@ -446,7 +453,7 @@ pub fn object_assign<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(target_val);
     }
 
-    let mut all_assignments: Vec<(u32, JsValue, JsValue)> = Vec::new();
+    let mut all_assignments: Vec<(u32, JsValue)> = Vec::new();
     for &arg_reg in args.iter().skip(2) {
         let source_val = vm.reg(arg_reg);
         if !source_val.is_object() {
@@ -459,18 +466,35 @@ pub fn object_assign<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let source_keys: Vec<(u32, u32)> = {
             let source = unsafe { &*source_ptr };
             walk_own_keys(vm, source)
+                .into_iter()
+                // CopyDataProperties：只拷贝可枚举自身属性（无显式 meta 视为可枚举）。
+                .filter(|(_si, offset)| {
+                    source
+                        .prop_meta_at(*offset)
+                        .map(|m| m.attributes.enumerable())
+                        .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable())
+                })
+                .collect()
         };
-        for (si, offset) in source_keys {
+        for (si, _offset) in source_keys {
             let source = unsafe { &*source_ptr };
-            let val = source.get_prop_at(offset);
-            all_assignments.push((si, source_val, val));
+            // ordinary_get 取值（receiver = 源对象）：数据属性等价直读，访问器属性
+            // 触发 getter；getter 抛错按规范中断整个 assign。
+            let val = match vm.ordinary_get(source, si, source_val) {
+                Ok(v) => v,
+                Err(err) => return NativeResult::Err(crate::error::create_type_error(vm, &err)),
+            };
+            all_assignments.push((si, val));
         }
     }
 
     let target = unsafe { &mut *target_ptr };
-    for (si, source_val, val) in all_assignments {
+    for (si, val) in all_assignments {
         let promoted = vm.promote_if_needed_for_write_ptr(target_ptr, val);
-        let _ = vm.ordinary_set(target, si, promoted, source_val);
+        // Set(to, key, value, true)：receiver 为目标对象（目标同名 setter 的 this 指向 target）。
+        if let Err(err) = vm.ordinary_set(target, si, promoted, target_val) {
+            return NativeResult::Err(crate::error::create_type_error(vm, &err));
+        }
     }
     NativeResult::Ok(target_val)
 }
@@ -803,11 +827,10 @@ pub fn object_freeze<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj_ptr = val.as_js_object_ptr();
     {
         let obj = unsafe { &mut *obj_ptr };
-        // 命名属性：shape 链（数组对象存储索引 = 元素数 + 槽位）。
+        // 命名属性：walk_own_keys 返回绝对存储索引（数组含元素区偏移）。
         let keys = walk_own_keys(vm, obj);
         for (_si, pos) in keys {
-            let store = if obj.is_array() { obj.array_prop_count + pos } else { pos };
-            freeze_own_prop_meta(obj, store);
+            freeze_own_prop_meta(obj, pos);
         }
         // 数组元素区独立于 shape 链（hole 非 own 属性，跳过）。
         if obj.is_array() {
@@ -842,8 +865,7 @@ pub fn object_seal<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let obj = unsafe { &mut *obj_ptr };
         let keys = walk_own_keys(vm, obj);
         for (_si, pos) in keys {
-            let store = if obj.is_array() { obj.array_prop_count + pos } else { pos };
-            seal_own_prop_meta(obj, store);
+            seal_own_prop_meta(obj, pos);
         }
         if obj.is_array() {
             for i in 0..obj.array_prop_count {

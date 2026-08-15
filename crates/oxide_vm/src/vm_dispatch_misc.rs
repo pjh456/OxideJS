@@ -766,36 +766,12 @@ impl Vm {
             }
         }
 
-        // 数组元素区：整数下标可枚举元素（hole 跳过），排除 pattern 已绑定的键。
-        if src_obj.is_array() {
-            for i in 0..src_obj.array_prop_count {
-                if src_obj.prop_meta_at(i).is_some_and(|m| m.is_hole()) {
-                    continue;
-                }
-                let enumerable = src_obj
-                    .prop_meta_at(i)
-                    .map(|m| m.attributes.enumerable())
-                    .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable());
-                if enumerable {
-                    let si = make_int_key(i);
-                    if excluded.contains(&si) {
-                        continue;
-                    }
-                    let val = match self.ordinary_get(src_obj, si, src) {
-                        Ok(v) => v,
-                        Err(e) => return self.raise_call_error(&e).map(|_| ()),
-                    };
-                    assignments.push((si, val));
-                }
-            }
-        }
-
-        // 命名属性：shape 链（walk_own_keys 规范顺序），仅可枚举，跳过 pattern 已绑定的键。
+        // 自身属性：walk_own_keys 已合并数组元素区（hole 跳过）并返回绝对存储索引，
+        // 仅可枚举，跳过 pattern 已绑定的键。
         let keys = oxide_builtins::object::walk_own_keys(self, src_obj);
         for (si, pos) in keys {
-            let store = if src_obj.is_array() { src_obj.array_prop_count + pos } else { pos };
             let enumerable = src_obj
-                .prop_meta_at(store)
+                .prop_meta_at(pos)
                 .map(|m| m.attributes.enumerable())
                 .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable());
             if !enumerable {
@@ -882,30 +858,12 @@ impl Vm {
         // 再统一写目标，避免提交写与取值互相交错。
         let mut assignments: Vec<(u32, JsValue)> = Vec::new();
 
-        // 数组元素区：整数下标可枚举元素（hole 跳过）。
-        if src_obj.is_array() {
-            for i in 0..src_obj.array_prop_count {
-                if src_obj.prop_meta_at(i).is_some_and(|m| m.is_hole()) {
-                    continue;
-                }
-                let enumerable = src_obj
-                    .prop_meta_at(i)
-                    .map(|m| m.attributes.enumerable())
-                    .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable());
-                if enumerable {
-                    let si = make_int_key(i);
-                    let val = self.ordinary_get(src_obj, si, src)?;
-                    assignments.push((si, val));
-                }
-            }
-        }
-
-        // 命名属性：shape 链（walk_own_keys 规范顺序），仅可枚举。
+        // 自身属性：walk_own_keys 已合并数组元素区（hole 跳过）并返回绝对存储索引，
+        // 仅可枚举；取值经 ordinary_get 触发访问器 getter。
         let keys = oxide_builtins::object::walk_own_keys(self, src_obj);
         for (si, pos) in keys {
-            let store = if src_obj.is_array() { src_obj.array_prop_count + pos } else { pos };
             let enumerable = src_obj
-                .prop_meta_at(store)
+                .prop_meta_at(pos)
                 .map(|m| m.attributes.enumerable())
                 .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable());
             if !enumerable {

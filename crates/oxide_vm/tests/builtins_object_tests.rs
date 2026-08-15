@@ -215,3 +215,114 @@ fn from_entries_multiple_pairs_roundtrip() {
     let (_vm, result) = eval("var o = Object.fromEntries([[1,'a'],[2,'b']]); o[1] + o[2]").unwrap();
     assert!(result.is_string() && unsafe { &*result.as_string_ptr() }.as_str() == "ab");
 }
+
+// -- Object.keys/values/entries 数组元素区 --
+
+#[test]
+fn keys_array_includes_integer_elements() {
+    let (_vm, result) = eval("Object.keys([1,2]).join(',')").unwrap();
+    let s = unsafe { &*result.as_string_ptr() }.to_owned_string();
+    assert_eq!(s, "0,1");
+}
+
+#[test]
+fn keys_array_skips_holes() {
+    let (_vm, result) = eval("Object.keys([1,,3]).join(',')").unwrap();
+    let s = unsafe { &*result.as_string_ptr() }.to_owned_string();
+    assert_eq!(s, "0,2");
+}
+
+#[test]
+fn entries_array_reads_element_values() {
+    let (_vm, result) = eval("var e = Object.entries([1,2]); e[1][1]").unwrap();
+    assert!(
+        result.is_int() && result.as_int() == 2,
+        "second entry value should be 2, got {:?}",
+        result
+    );
+}
+
+#[test]
+fn keys_array_mixed_named_prop_order() {
+    // 整数下标升序在前，命名属性按插入序随后（无重复键）。
+    let (_vm, result) = eval("var a = [10]; a.foo = 1; Object.keys(a).join(',')").unwrap();
+    let s = unsafe { &*result.as_string_ptr() }.to_owned_string();
+    assert_eq!(s, "0,foo");
+}
+
+#[test]
+fn keys_array_non_enumerable_element_filtered() {
+    // defineProperty 把元素改为不可枚举后 keys 应省略（values/entries 同理）。
+    let (_vm, result) =
+        eval("var a = [1, 2]; Object.defineProperty(a, '1', {enumerable: false}); Object.keys(a).join(',')").unwrap();
+    let s = unsafe { &*result.as_string_ptr() }.to_owned_string();
+    assert_eq!(s, "0");
+}
+
+// -- Object.assign --
+
+#[test]
+fn assign_filters_non_enumerable_source() {
+    let (_vm, result) = eval(
+        "var src = Object.defineProperty({}, 'x', {value: 1, enumerable: false}); JSON.stringify(Object.assign({}, src))",
+    )
+    .unwrap();
+    let s = unsafe { &*result.as_string_ptr() }.to_owned_string();
+    assert_eq!(s, "{}");
+}
+
+#[test]
+fn assign_triggers_source_getter() {
+    let (_vm, result) = eval("var n = 0; var t = Object.assign({}, {get b(){ n++; return 2 }}); [t.b, n]").unwrap();
+    let obj = unsafe { &*result.as_js_object_ptr() };
+    assert!(
+        obj.get_prop_at(0).is_int() && obj.get_prop_at(0).as_int() == 2,
+        "getter value should be copied"
+    );
+    assert!(
+        obj.get_prop_at(1).is_int() && obj.get_prop_at(1).as_int() == 1,
+        "getter should run exactly once"
+    );
+}
+
+#[test]
+fn assign_from_array_source() {
+    let (_vm, result) = eval("var t = Object.assign({}, [1, 2]); [t['0'], t['1']]").unwrap();
+    let obj = unsafe { &*result.as_js_object_ptr() };
+    assert!(obj.get_prop_at(0).is_int() && obj.get_prop_at(0).as_int() == 1);
+    assert!(obj.get_prop_at(1).is_int() && obj.get_prop_at(1).as_int() == 2);
+}
+
+#[test]
+fn assign_target_setter_receives_target() {
+    // 规范 Set(to, key, value, true)：target 同名 setter 的 this 是 target。
+    let (_vm, result) = eval(
+        "var recv = null; var t = {}; Object.defineProperty(t, 'x', {set: function(v){ recv = this; }, configurable: true}); Object.assign(t, {x: 1}); recv === t",
+    )
+    .unwrap();
+    assert!(result.is_bool() && result.as_bool(), "target setter should receive target as this");
+}
+
+#[test]
+fn assign_to_frozen_target_throws() {
+    let err = match eval("var t = Object.freeze({a: 1}); Object.assign(t, {b: 2});") {
+        Ok(_) => panic!("assign to frozen target should fail"),
+        Err(err) => err,
+    };
+    assert!(err.contains("extensible"), "unexpected error: {err}");
+}
+
+// -- Symbol 键错位回归（shape 槽位计数含 symbol 键） --
+
+#[test]
+fn entries_values_with_interleaved_symbol_key() {
+    let (_vm, result) = eval(
+        "var s = Symbol(); var o = {a: 1, [s]: 2, b: 3}; [JSON.stringify(Object.entries(o)), JSON.stringify(Object.values(o))]",
+    )
+    .unwrap();
+    let obj = unsafe { &*result.as_js_object_ptr() };
+    let s0 = unsafe { &*obj.get_prop_at(0).as_string_ptr() }.to_owned_string();
+    let s1 = unsafe { &*obj.get_prop_at(1).as_string_ptr() }.to_owned_string();
+    assert_eq!(s0, "[[\"a\",1],[\"b\",3]]");
+    assert_eq!(s1, "[1,3]");
+}
