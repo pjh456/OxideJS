@@ -126,6 +126,8 @@ const BUILTIN_GLOBALS: &[&str] = &[
     "decodeURI",
     "encodeURIComponent",
     "decodeURIComponent",
+    // test262 宿主对象：编译期按已知全局解析，运行期由 VM 绑定（详见 bind_test262_host）。
+    "$262",
 ];
 
 pub(crate) struct FieldBuffer {

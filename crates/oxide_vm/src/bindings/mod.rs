@@ -737,6 +737,7 @@ pub fn bind_global_builtin_slots(core: &Arc<KernelCore>, session: &KernelSession
     bind_stub_globals(core, session, global);
     bind_bigint::bind_bigint(core, session, global);
     bind_global_functions(core, session, global);
+    crate::test262_host::bind_test262_host(core, session, global);
     let global_this = JsValue::from_js_object(global as *mut JsObject);
     bind_existing_global(core, global, "globalThis", global_this);
 }
@@ -825,5 +826,6 @@ pub fn init_kernel_builtins(core: &Arc<KernelCore>, session: &mut KernelSession)
     bind_reflect::bind_reflect(core, session, global);
     bind_global::bind_global(core, session, global);
     bind_global_value(core, global, "globalThis", JsValue::from_js_object(global_ptr));
+    crate::test262_host::bind_test262_host(core, session, global);
     session.record_snapshot();
 }

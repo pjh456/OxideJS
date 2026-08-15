@@ -23,6 +23,8 @@ mod session_arena;
 /// session 级 mark-sweep GC：标记-清扫 session arena 对象与 session 字符串。
 pub mod session_gc;
 mod suspended;
+/// test262 宿主对象 `$262` 的最小实现（非标准全局，供 test262 套件使用）。
+pub mod test262_host;
 /// 寄存器 VM 主类型（[`vm::Vm`]）与其执行状态定义。
 pub mod vm;
 mod vm_dispatch_ctrl;

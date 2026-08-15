@@ -543,25 +543,11 @@ fn run_test_inner(
         Err(e) => {
             let dur = start.elapsed().as_millis() as u64;
             let msg = format!("compile error: {e}");
-            if meta.negative.is_some() {
-                return TestResult::pass(path.to_path_buf(), dur, msg);
+            match classify_compile_error(&msg, meta.negative.is_some(), no_skip) {
+                TestOutcome::Pass(m) => return TestResult::pass(path.to_path_buf(), dur, m),
+                TestOutcome::Fail(m) => return TestResult::fail(path.to_path_buf(), dur, m),
+                TestOutcome::Skip(m) => return TestResult::skip(path.to_path_buf(), m),
             }
-            if e.contains("not yet implemented")
-                || e.contains("not yet supported")
-                || e.contains("not supported")
-                || e.contains("unsupported")
-                || e.contains("is not defined")
-                || e.contains("SpreadElement")
-                || e.contains("already been declared")
-                || e.contains("parser panicked")
-                || e.contains("too many registers")
-            {
-                if no_skip {
-                    return TestResult::fail(path.to_path_buf(), dur, msg);
-                }
-                return TestResult::skip(path.to_path_buf(), msg);
-            }
-            return TestResult::fail(path.to_path_buf(), dur, msg);
         }
     };
 
@@ -659,12 +645,68 @@ fn judge_vm_error(path: &Path, e: &str, meta: &TestMeta, dur: u64, no_skip: bool
     }
 }
 
+/// 从 `is not defined` 错误消息中解析未绑定标识符名。
+///
+/// # 边界与前提
+/// - 运行期形态：`uncaught ReferenceError: {name} is not defined`
+/// - 编译期形态：`Identifier '{name}' is not defined`（可带 `compile error: ` 前缀）
+/// - 两种形态都不匹配返回 `None`（不属未绑定标识符错误）。
+fn parse_undefined_ident(e: &str) -> Option<&str> {
+    let e = e.strip_prefix("compile error: ").unwrap_or(e);
+    let e = e.strip_prefix("uncaught ").unwrap_or(e);
+    if let Some(rest) = e.strip_prefix("ReferenceError: ") {
+        if let Some(ident) = rest.strip_suffix(" is not defined") {
+            let ident = ident.trim();
+            return (!ident.is_empty()).then_some(ident);
+        }
+    }
+    if let Some(rest) = e.strip_prefix("Identifier '") {
+        if let Some(ident) = rest.strip_suffix("' is not defined") {
+            let ident = ident.trim();
+            return (!ident.is_empty()).then_some(ident);
+        }
+    }
+    None
+}
+
+/// 已知缺失的宿主/标准全局白名单：这些标识符未绑定是能力缺失（skip），
+/// 其它 `is not defined` 是引擎回归或语义缺口（fail）。
+const KNOWN_MISSING_GLOBALS: &[&str] = &["$262", "structuredClone", "queueMicrotask"];
+
+/// 判定编译期错误结果：compile 错误无条件放行 negative；能力未实现形态
+/// （含白名单内的未绑定标识符）→ Skip（`--no-skip` 下为 Fail）；其余一律 Fail。
+fn classify_compile_error(e: &str, has_negative: bool, no_skip: bool) -> TestOutcome {
+    if has_negative {
+        return TestOutcome::Pass(format!("compile error: {e}"));
+    }
+    let unimplemented = e.contains("not yet implemented")
+        || e.contains("not yet supported")
+        || e.contains("not supported")
+        || e.contains("unsupported")
+        || e.contains("SpreadElement")
+        || e.contains("already been declared")
+        || e.contains("parser panicked")
+        || e.contains("too many registers");
+    // `is not defined` 仅当标识符在缺失全局白名单内才 skip；其余（引擎该有
+    // 而未提供的标识符、回归）按真实失败计入，保证修复可见性。
+    let whitelisted_undefined =
+        e.contains("is not defined") && parse_undefined_ident(e).is_some_and(|i| KNOWN_MISSING_GLOBALS.contains(&i));
+    if unimplemented || whitelisted_undefined {
+        if no_skip {
+            return TestOutcome::Fail(format!("compile error: {e}"));
+        }
+        return TestOutcome::Skip(format!("compile error: {e}"));
+    }
+    TestOutcome::Fail(format!("compile error: {e}"))
+}
+
 /// 判定运行期错误结果：negative 期望匹配 → Pass；能力未实现形态 → Skip
 /// （`--no-skip` 下为 Fail）；其余一律 Fail。
 ///
 /// # 边界与前提
 /// - receiver 校验、栈溢出、不可调用、ToPrimitive 缺口等错误是引擎语义与测试
 ///   期望不符的真实失败，不再被 skip 子串吞没（引擎做对了反而计 skip 属误判）。
+/// - `is not defined` 是否 skip 由标识符白名单判定（见 [`parse_undefined_ident`]）。
 fn classify_vm_error(e: &str, neg: Option<&Negative>, no_skip: bool) -> TestOutcome {
     if let Some(neg) = neg {
         if e.contains("TypeError") && neg.error_type == "TypeError" {
@@ -681,12 +723,11 @@ fn classify_vm_error(e: &str, neg: Option<&Negative>, no_skip: bool) -> TestOutc
         }
         return TestOutcome::Fail(format!("expected {} error, got: {e}", neg.error_type));
     }
-    if e.contains("not yet implemented")
+    let unimplemented = e.contains("not yet implemented")
         || e.contains("not yet supported")
         || e.contains("not supported")
         || e.contains("unsupported")
         || e.contains("step limit")
-        || e.contains("is not defined")
         || e.contains("NEW_EXPRESSION")
         || e.contains("IC_GET_PROP on non-object")
         || e.contains("GET_PROP_DYNAMIC on non-object")
@@ -695,17 +736,18 @@ fn classify_vm_error(e: &str, neg: Option<&Negative>, no_skip: bool) -> TestOutc
         || e.contains("CALL_NATIVE target")
         || e.contains("is not implemented")
         || e.contains("unexpected tail call")
-        || e.contains("__proto__ must be an object")
-    // 私有字段未实现。
-    {
+        || e.contains("__proto__ must be an object");
+    // `is not defined` 不再一票吞 skip：仅在标识符属缺失全局白名单时按能力
+    // 缺失跳过；否则是真实 ReferenceError（含修复后应转 PASS 的回归）。
+    let whitelisted_undefined =
+        e.contains("is not defined") && parse_undefined_ident(e).is_some_and(|i| KNOWN_MISSING_GLOBALS.contains(&i));
+    if unimplemented || whitelisted_undefined {
         if no_skip {
-            TestOutcome::Fail(format!("vm error: {e}"))
-        } else {
-            TestOutcome::Skip(format!("vm: {e}"))
+            return TestOutcome::Fail(format!("vm error: {e}"));
         }
-    } else {
-        TestOutcome::Fail(format!("vm error: {e}"))
+        return TestOutcome::Skip(format!("vm: {e}"));
     }
+    TestOutcome::Fail(format!("vm error: {e}"))
 }
 
 /// 递归发现 test262 根目录下全部 `.js` 测试文件（排序后返回）。
@@ -1589,5 +1631,45 @@ mod tests {
         assert_outcome("TypeError: boom", Some(&neg("TypeError")), false, &TestOutcome::Pass("".into()));
         assert_outcome("ReferenceError: boom", Some(&neg("ReferenceError")), false, &TestOutcome::Pass("".into()));
         assert_outcome("TypeError: boom", Some(&neg("RangeError")), false, &TestOutcome::Fail("".into()));
+    }
+
+    /// `is not defined` 标识符解析：运行期 `uncaught` 前缀、编译期 `Identifier '..'`
+    /// 两种形态都能取出标识符名；非该形态返回 None。
+    #[test]
+    fn parse_undefined_ident_extracts_name() {
+        assert_eq!(parse_undefined_ident("uncaught ReferenceError: $262 is not defined"), Some("$262"));
+        assert_eq!(parse_undefined_ident("ReferenceError: foo is not defined"), Some("foo"));
+        assert_eq!(
+            parse_undefined_ident("compile error: Identifier 'structuredClone' is not defined"),
+            Some("structuredClone")
+        );
+        assert_eq!(parse_undefined_ident("Identifier 'queueMicrotask' is not defined"), Some("queueMicrotask"));
+        assert_eq!(parse_undefined_ident("TypeError: x is not callable"), None);
+        assert_eq!(parse_undefined_ident("uncaught ReferenceError: boom"), None);
+    }
+
+    /// `is not defined` 白名单化：白名单内标识符（缺失全局）→ skip；白名单外 →
+    /// 真实失败（保证修复后应转 PASS 的测试可见）。
+    #[test]
+    fn undefined_identifier_whitelisted_skip() {
+        for e in [
+            "uncaught ReferenceError: $262 is not defined",
+            "compile error: Identifier '$262' is not defined",
+            "uncaught ReferenceError: structuredClone is not defined",
+            "compile error: Identifier 'queueMicrotask' is not defined",
+        ] {
+            assert_outcome(e, None, false, &TestOutcome::Skip("".into()));
+            assert_outcome(e, None, true, &TestOutcome::Fail("".into()));
+        }
+    }
+
+    #[test]
+    fn undefined_identifier_outside_whitelist_is_failure() {
+        for e in [
+            "uncaught ReferenceError: foo is not defined",
+            "compile error: Identifier 'whatever' is not defined",
+        ] {
+            assert_outcome(e, None, false, &TestOutcome::Fail("".into()));
+        }
     }
 }
