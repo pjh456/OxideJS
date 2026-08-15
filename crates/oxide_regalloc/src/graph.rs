@@ -251,10 +251,20 @@ pub(super) fn build(
         adj_sets.entry(v).or_default();
     }
     for i in 0..inst_count {
+        // 只遍历该指令活集中置位的 vreg（u64 位集逐字 trailing_zeros 升序），
+        // 替代逐 node 全扫描——活集小（典型 2-4）时每指令从 O(nodes) 降到 O(live)。
+        // 升序遍历保证加边顺序与原 node 表升序扫描逐字节一致（确定性不漂移）。
         let mut at_i: Vec<u32> = Vec::new();
-        for &v in &node_ids {
-            if oxide_liveness::bitset_get(&live.inst_live_before[i], v as usize) {
-                at_i.push(v);
+        let before = &live.inst_live_before[i];
+        for (word_idx, word) in before.iter().enumerate() {
+            let mut bits = *word;
+            while bits != 0 {
+                let bit = bits.trailing_zeros() as usize;
+                let v = (word_idx * 64 + bit) as u32;
+                if nodes.contains_key(&v) {
+                    at_i.push(v);
+                }
+                bits &= bits - 1;
             }
         }
         for fr in fresh {
@@ -275,13 +285,17 @@ pub(super) fn build(
         // 寄存器同色会覆盖其值（elision 解构返回值被覆盖），须补此干涉边。
         if let Some(d) = f.insts[i].def_reg() {
             if nodes.contains_key(&d) {
-                for &v in &node_ids {
-                    if v == d {
-                        continue;
-                    }
-                    if oxide_liveness::bitset_get(&live.inst_live_after[i], v as usize) {
-                        adj_sets.entry(d).or_default().insert(v);
-                        adj_sets.entry(v).or_default().insert(d);
+                let after = &live.inst_live_after[i];
+                for (word_idx, word) in after.iter().enumerate() {
+                    let mut bits = *word;
+                    while bits != 0 {
+                        let bit = bits.trailing_zeros() as usize;
+                        let v = (word_idx * 64 + bit) as u32;
+                        if v != d && nodes.contains_key(&v) {
+                            adj_sets.entry(d).or_default().insert(v);
+                            adj_sets.entry(v).or_default().insert(d);
+                        }
+                        bits &= bits - 1;
                     }
                 }
             }

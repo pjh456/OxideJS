@@ -22,10 +22,12 @@ use crate::alloc_map::{Alloc, AllocMap};
 /// 就地改写 f.insts + f.label_pos。
 pub(super) fn run(f: &mut IRFunction, map: &AllocMap) {
     // ── 1. spill 查询表 ──
-    // defs_at: (inst, vreg) → def-fresh 色；uses_at: (inst, vreg) → use-fresh 色；spill_slot: vreg → slot
+    // defs_at: (inst, vreg) → def-fresh 色；spill_slot: vreg → slot。
+    // use 点按 inst 分组（use_spill_pts[inst]），主循环只取本 inst 的 use 点——
+    // 全表扫描会构成 O(insts × spills) 二次方（大函数数千 spill 点 × 数万指令）。
     let mut defs_at: BTreeMap<(usize, u32), u32> = BTreeMap::new();
-    let mut uses_at: BTreeMap<(usize, u32), u32> = BTreeMap::new();
     let mut spill_slot: BTreeMap<u32, u16> = BTreeMap::new();
+    let mut use_spill_pts: Vec<Vec<(u32, u32)>> = vec![Vec::new(); f.insts.len()];
     for sp in &map.spills {
         spill_slot.insert(sp.vreg, sp.slot);
         for &(inst, fresh_id) in &sp.defs {
@@ -35,7 +37,7 @@ pub(super) fn run(f: &mut IRFunction, map: &AllocMap) {
         }
         for &(inst, fresh_id) in &sp.uses {
             if let Some(Alloc::Phys(c)) = map.map.get(&fresh_id) {
-                uses_at.insert((inst, sp.vreg), *c);
+                use_spill_pts[inst].push((sp.vreg, *c));
             }
         }
     }
@@ -56,12 +58,12 @@ pub(super) fn run(f: &mut IRFunction, map: &AllocMap) {
         // RMW 判定：inst 同时 def 且 use 同一 spilled vreg
         let rmw_v = inst
             .def_reg()
-            .filter(|d| uses_at.contains_key(&(i, *d)) && spill_slot.contains_key(d));
+            .filter(|d| spill_slot.contains_key(d) && use_spill_pts[i].iter().any(|(v, _)| *v == *d));
 
-        // before-插入：非 RMW 的 use 点 UNSPILL
+        // before-插入：非 RMW 的 use 点 UNSPILL（取本 inst 分组的 use 点）
         let mut use_unspills: Vec<(u32, u32)> = Vec::new(); // (vreg, fresh 色)
-        for (&(inst_at, vreg), &color) in &uses_at {
-            if inst_at == i && rmw_v != Some(vreg) {
+        for &(vreg, color) in &use_spill_pts[i] {
+            if rmw_v != Some(vreg) {
                 use_unspills.push((vreg, color));
             }
         }
