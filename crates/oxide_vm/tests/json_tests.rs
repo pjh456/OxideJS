@@ -116,6 +116,16 @@ fn json_stringify_array() {
 }
 
 #[test]
+fn json_stringify_array_with_negative_double() {
+    // 数组内负 double：out 已含 "[1,"，负号必须追加在当前数前（ryu 路径）。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "JSON.stringify([1,-1.5])").unwrap();
+    assert!(result.is_string());
+    let s = string_value(&vm, result);
+    assert_eq!(s, "[1,-1.5]");
+}
+
+#[test]
 fn json_stringify_string() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "JSON.stringify('hello')").unwrap();

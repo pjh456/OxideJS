@@ -100,6 +100,13 @@ fn template_with_double_bigint_and_bool() {
 }
 
 #[test]
+fn template_with_negative_double_appends() {
+    // 原语段负 double：result 已含 "x"，负号必须追加在当前数前（ryu 路径）。
+    let (vm, result) = eval_val("`x${-1.5}`");
+    assert_eq!(to_str(&vm, result.unwrap()), "x-1.5");
+}
+
+#[test]
 fn template_with_object_uses_tostring() {
     // 对象段保留完整 ToString（ToPrimitive 触发用户 toString）。
     let (vm, result) = eval_val("var o = { toString: function () { return 'T'; } }; `x${o}y`");

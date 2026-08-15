@@ -367,11 +367,12 @@ pub fn write_number_into(d: f64, out: &mut String) {
     }
     let neg = d.is_sign_negative();
     let abs = d.abs();
+    // 有限非零负数先追加负号（追加语义：插到当前数值之前，不扰动 out 已有前缀）。
+    if neg {
+        out.push('-');
+    }
     // 整数 double 快路径：无小数部分且在 2^53 内（精确整数，直写与最短表示一致）。
     if abs.fract() == 0.0 && abs < 9_007_199_254_740_992.0 {
-        if neg {
-            out.push('-');
-        }
         use std::fmt::Write;
         let _ = write!(out, "{}", abs as i64);
         return;
@@ -427,9 +428,6 @@ pub fn write_number_into(d: f64, out: &mut String) {
         out.push_str(stripped);
     } else {
         out.push_str(s);
-    }
-    if neg {
-        out.insert(0, '-');
     }
 }
 
@@ -1038,6 +1036,28 @@ mod tests {
             push_to_string(JsValue::float(d), &mut buf);
             assert_eq!(buf, to_string(JsValue::float(d)), "double {d} 的 push/to_string 输出不一致");
             assert_eq!(buf, js_number_to_string(d), "double {d} 的 push/js_number_to_string 输出不一致");
+        }
+    }
+
+    #[test]
+    fn push_to_string_negative_double_appends_to_nonempty_buffer() {
+        // 追加语义回归：非空前缀下负数 double 的负号必须紧跟当前数值，不能插到
+        // 整个缓冲最前。覆盖整数快路径、ryu 定点（≥2^53）、ryu 科学计数与边界值。
+        let samples: Vec<f64> = vec![
+            -42.0,                    // 整数快路径
+            -1.5,                     // ryu 定点
+            -9_007_199_254_740_994.0, // 2^53+2：≥2^53 可精确表示整数，落 ryu 路径
+            -2f64.powi(63),           // ryu 科学计数（规范最短表示）
+            -1e21,                    // ryu 科学计数
+            -1e-7,                    // ryu 科学计数（小指数）
+            -f64::MAX,
+            -5e-324,
+        ];
+        for &d in &samples {
+            let mut buf = String::from("pre");
+            push_to_string(JsValue::float(d), &mut buf);
+            let expected = format!("pre{}", js_number_to_string(d));
+            assert_eq!(buf, expected, "非空前缀 + double {d} 的追加语义破坏，实际 {buf}");
         }
     }
 

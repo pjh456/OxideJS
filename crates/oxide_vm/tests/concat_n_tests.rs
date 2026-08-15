@@ -111,6 +111,15 @@ fn concat_n_right_parentheses_not_flattened() {
 }
 
 #[test]
+fn concat_n_negative_double_appends() {
+    // CONCAT_N 单趟拼接（≥3 操作数）：非空缓冲 + 负 double，负号追加在当前数前。
+    assert_eq!(eval_str("'a' + 'b' + (-1.5)"), "ab-1.5");
+    assert_eq!(eval_str("'a' + 'b' + (-1e21)"), "ab-1e+21");
+    // ≥2^53 可精确表示整数负数（2^53+2）落 ryu 定点路径，追加语义保持一致。
+    assert_eq!(eval_str("'a' + 'b' + (-9007199254740994)"), "ab-9007199254740994");
+}
+
+#[test]
 fn concat_n_two_and_multi_operand_equivalence() {
     // 同一语义表达式以 2 操作数（ADD）与 3+ 操作数（CONCAT_N）两种写法输出一致。
     assert_eq!(eval_str("1 + 2 + 3"), eval_str("(1 + 2) + 3"));

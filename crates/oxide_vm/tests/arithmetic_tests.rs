@@ -19,6 +19,20 @@ fn eval(source: &str) -> String {
     }
 }
 
+/// 求值并取字符串结果内容（字符串值走 lookup_str，非字符串走 Display）。
+fn eval_str(source: &str) -> String {
+    let allocator = Allocator::default();
+    let program = oxide_parser::parse(&allocator, source).expect("parse ok");
+    let module = Compiler::new().compile(&program).expect("compile ok");
+    let mut vm = Vm::new();
+    let val = vm.run(&module).expect("run ok");
+    if val.is_string() {
+        vm.lookup_str(val).unwrap_or_default()
+    } else {
+        format!("{val}")
+    }
+}
+
 #[test]
 fn eval_arithmetic_add() {
     assert_eq!(eval("1 + 2"), "3");
@@ -62,6 +76,18 @@ fn eval_division_by_zero() {
 #[test]
 fn eval_string_concat() {
     assert_eq!(eval("1 + 2 + 3"), "6");
+}
+
+#[test]
+fn eval_string_concat_negative_double_appends() {
+    // 非空缓冲 + ryu 路径负数：负号紧跟当前数值追加，不插到整个结果最前。
+    assert_eq!(eval_str("\"a\" + -1.5"), "a-1.5");
+    assert_eq!(eval_str("\"a\" + (-1e21)"), "a-1e+21");
+    // 整数负数（int 直写）与整数 double 快路径负数同样追加正确。
+    assert_eq!(eval_str("\"a\" + -42"), "a-42");
+    assert_eq!(eval_str("\"a\" + (-42.0)"), "a-42");
+    // ≥2^53 可精确表示整数负数（2^53+2）落 ryu 定点路径，追加语义保持一致。
+    assert_eq!(eval_str("\"a\" + -9007199254740994"), "a-9007199254740994");
 }
 
 #[test]
