@@ -80,6 +80,58 @@ fn strings_only_then_reset_keeps_global_subtree_strings() {
     assert_eq!(text, "hello");
 }
 
+/// 低阈值执行期字符串 GC 下 builtin 构造期局部串跨分配点安全（触发点
+/// 在指令边界，native 调用内不回收）：RegExp exec 写入构造中数组的匹配串/
+/// 捕获组串不被后续分配回收，返回数组内容正确。
+#[test]
+fn regexp_exec_strings_survive_runtime_gc() {
+    let mut vm = vm_with_threshold(512);
+    let module = compile(
+        "var text = 'a'.repeat(500) + 'b'.repeat(500); var m = /(a+)(b+)/.exec(text); \
+         m[0] + '|' + m[1] + '|' + m[2]",
+    );
+    let result = vm.run(&module).expect("run");
+    let text = vm.lookup_str(result).expect("exec 结果应为字符串").to_string();
+    let expected = format!(
+        "{}|{}|{}",
+        "a".repeat(500) + &"b".repeat(500),
+        "a".repeat(500),
+        "b".repeat(500)
+    );
+    assert_eq!(text, expected);
+    assert!(vm.session_gc_stats().total_collections > 0, "执行期应触发字符串 GC");
+}
+
+/// 低阈值下 Temporal.ZonedDateTime 构造的局部串（timeZone/calendar 槽）跨
+/// 分配安全：对象槽不因执行期回收而悬垂，getter 返回原内容。
+#[test]
+fn temporal_zoned_date_time_strings_survive_runtime_gc() {
+    let mut vm = vm_with_threshold(512);
+    let module = compile(
+        "var g = {}; for (var i = 0; i < 20; i++) { g['k' + i] = 'v'.repeat(64); } \
+         var z = new Temporal.ZonedDateTime(0n, 'UTC'); z.timeZoneId + '|' + z.calendarId",
+    );
+    let result = vm.run(&module).expect("run");
+    let text = vm.lookup_str(result).expect("ZDT 槽应为字符串").to_string();
+    assert_eq!(text, "UTC|iso8601");
+    assert!(vm.session_gc_stats().total_collections > 0, "执行期应触发字符串 GC");
+}
+
+/// 低阈值下 replace 函数 replacer 的回调参数 Vec（局部逐项分配）跨分配安全：
+/// 回调内拼接正确，说明参数串未被执行期回收释放。
+#[test]
+fn replace_replacer_args_survive_runtime_gc() {
+    let mut vm = vm_with_threshold(512);
+    let module = compile(
+        "var g = {}; for (var i = 0; i < 20; i++) { g['k' + i] = 'v'.repeat(64); } \
+         'a-b-c'.replace(/(a)-(b)-(c)/g, function(m, p1, p2, p3, pos, s) { return p1 + p2 + p3; })",
+    );
+    let result = vm.run(&module).expect("run");
+    let text = vm.lookup_str(result).expect("replace 结果应为字符串").to_string();
+    assert_eq!(text, "abc");
+    assert!(vm.session_gc_stats().total_collections > 0, "执行期应触发字符串 GC");
+}
+
 /// full_reset 清空 session 内存：执行期回收释放过的死串不与完全重置的
 /// 整体释放路径重复释放（无双重释放崩溃），重置后引擎可继续运行。
 #[test]

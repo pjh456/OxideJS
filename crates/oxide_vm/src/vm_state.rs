@@ -34,6 +34,10 @@ pub(crate) struct GcState {
     /// mark/sweep 回收（值量少），只在 full_reset 统一释放。
     pub(crate) session_bigint_ptrs: RefCell<Vec<*mut num_bigint::BigInt>>,
     pub(crate) session_bytes_allocated: usize,
+    /// 执行期字符串 GC 的触发水位：本次收集后的存活字节 + 阈值增量。
+    /// 仅当账目超过水位才在指令边界触发回收——活串超阈值时不会每指令重复
+    /// 触发无死串可回收的白跑，且保证触发点恒在无 builtin 局部活值的边界。
+    pub(crate) string_gc_watermark: usize,
     pub(crate) forwarding: HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>,
 }
 

@@ -1320,6 +1320,12 @@ impl Vm {
         let mut steps: u64 = 0;
         loop {
             steps += 1;
+            // 执行期字符串 GC 安全点：指令边界上无 builtin 局部活值（分配点触发
+            // 会释放仅存于 Rust 局部/构造中未登记对象的串），此处触发保证回收
+            // 时所有存活串都已落地为执行根。账目未超水位时仅 2 次字段比较。
+            if self.gc_state.session_bytes_allocated >= self.gc_state.string_gc_watermark {
+                self.maybe_collect_session_strings();
+            }
             if let Some(max_steps) = max_steps {
                 if steps > max_steps {
                     vm_warn!("dispatch: step limit {} exceeded at pc={}", max_steps, self.pc);

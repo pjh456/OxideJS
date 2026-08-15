@@ -504,6 +504,40 @@ impl SessionGc {
             && vm.gc_state.session_bytes_allocated >= vm.kernel_core().config().session_gc_threshold
     }
 
+    /// 执行期字符串回收的触发判断：账目须超过水位（上次收集后的存活字节 +
+    /// 阈值增量）。完整收集（reset）仍用 [`Self::should_collect`] 的阈值直接比较，
+    /// 保证死对象超阈值即被 reset 回收；执行期走增量水位，活串超阈值时不每指令
+    /// 重复触发无死串可回收的白跑。
+    pub(crate) fn should_collect_strings(&self, vm: &Vm) -> bool {
+        (!vm.gc_state.session_object_ptrs.is_empty() || !vm.gc_state.session_string_ptrs.is_empty())
+            && vm.gc_state.session_bytes_allocated >= vm.gc_state.string_gc_watermark
+    }
+
+    /// debug 兜底：mark 之后断言所有存活对象持有的字符串边都已登记进
+    /// `live_strings`——捕获"对象边漏登记 → 存活串被误释放"的静默悬垂。
+    #[cfg(debug_assertions)]
+    fn debug_assert_marked_object_strings_live(&self, vm: &Vm) {
+        let mut live = HashSet::with_hasher(FxBuildHasher);
+        for &ptr in &vm.gc_state.session_object_ptrs {
+            if ptr.is_null() {
+                continue;
+            }
+            // SAFETY: session_object_ptrs 归 VM 所有，指针在 arena 存活期有效。
+            let obj = unsafe { &*ptr };
+            if !obj.is_gc_marked() {
+                continue;
+            }
+            live.clear();
+            Self::record_object_string_edges(&mut live, obj);
+            for s_ptr in live.drain() {
+                assert!(
+                    self.live_strings.contains(&s_ptr),
+                    "存活对象持有未登记的 session 字符串边"
+                );
+            }
+        }
+    }
+
     pub(crate) fn collect(&mut self, vm: &mut Vm) {
         let start = Instant::now();
 
@@ -541,11 +575,13 @@ impl SessionGc {
     /// 字符串每串独立 Box、地址稳定，清扫无需 forwarding 与根重写。
     ///
     /// # 副作用
-    /// - 清空全部对象 mark 位；按存活集释放死串；累计 `total_collections` 与时长统计。
+    /// - 清空全部对象 mark 位；按存活集释放死串；累计 `total_collections` 与时长统计；
+    ///   抬高 `string_gc_watermark`（存活字节 + 阈值增量）供下次执行期触发。
     ///
     /// # 注意事项
     /// - mark 的 DFS 以 `is_gc_marked` 短路，残留 true 会导致后续完整收集漏标，
-    ///   本路径不跑对象 sweep（sweep 内清位不会执行），必须先 `clear_all_marks`。
+    ///   本路径不跑对象 sweep（sweep 内清位不会执行），故开头与结尾都清位——
+    ///   维持"mark 之后必由清位收尾"的不变量，strings-only 结束不留残留。
     /// - 不搬移对象，`session_bytes_allocated` 保持对象账目，手动扣掉字符串账目后
     ///   由 `sweep_session_strings` 补回存活串字节，与完整收集的最终账目一致。
     pub(crate) fn collect_strings_only(&mut self, vm: &mut Vm) {
@@ -559,6 +595,9 @@ impl SessionGc {
         // 完整 mark：复用现有实现，产出 live_strings；对象仅置位、不搬移。
         self.mark(vm);
 
+        // debug 兜底：存活对象的字符串边必须已登记，否则串清扫将释放活串。
+        self.debug_assert_marked_object_strings_live(vm);
+
         // 扣减字符串账目（保留对象账目），再补回存活串字节。
         let object_bytes = vm.gc_state.session_object_ptrs.len() * size_of::<JsObject>();
         vm.gc_state.session_bytes_allocated = object_bytes;
@@ -568,6 +607,11 @@ impl SessionGc {
         // 残留 marked 对象会让下一次完整收集（reset 路径）的 mark DFS 短路漏标，
         // 其字符串边不进 live_strings → 存活串被误释放 → 存活对象持悬垂指针。
         self.clear_all_marks(vm);
+
+        // 抬高下次触发水位：本次存活字节 + 阈值增量，避免活串超阈值时每指令重复
+        // 触发无死串可回收的完整 mark + 串清扫。
+        let threshold = vm.kernel_core().config().session_gc_threshold;
+        vm.gc_state.string_gc_watermark = vm.gc_state.session_bytes_allocated.saturating_add(threshold);
 
         let elapsed = start.elapsed();
         self.total_collections += 1;
@@ -584,7 +628,7 @@ impl SessionGc {
     }
 
     pub(crate) fn maybe_collect_strings_only(&mut self, vm: &mut Vm) {
-        if self.should_collect(vm) {
+        if self.should_collect_strings(vm) {
             self.collect_strings_only(vm);
         }
     }
@@ -1267,20 +1311,23 @@ mod tests {
     }
 
     #[test]
-    fn runtime_threshold_triggers_strings_only_collection() {
+    fn allocation_does_not_trigger_gc_before_safe_point() {
         let mut vm = vm_with_threshold(1);
-        // 第一次分配不触发（累计 0 < 阈值），登记后超阈值；后续每次分配前先回收。
+        // 分配点不触发回收：触发已移到 dispatch 指令边界，局部持有跨分配点安全。
         let seed = vm.new_string_owned("seed".repeat(16));
         let seed_ptr = seed.as_string_ptr_mut();
-        assert!(vm.gc_state.session_string_ptrs.contains(&seed_ptr));
-
-        // 分配前触发回收：seed 无根引用 → 判死释放，返回值本身存活（登记前 GC 不触碰它）。
         let returned = vm.new_string_owned("returned".repeat(16));
-        let returned_ptr = returned.as_string_ptr_mut();
 
+        assert_eq!(vm.gc_state.session_gc.total_collections, 0);
+        assert!(vm.gc_state.session_string_ptrs.contains(&seed_ptr));
+        assert!(vm.gc_state.session_string_ptrs.contains(&returned.as_string_ptr_mut()));
+
+        // 显式触发后：无根引用的 seed 被回收，入根的 returned 存活（安全点语义）。
+        vm.regs[0] = returned;
+        vm.maybe_collect_session_strings();
         assert!(vm.gc_state.session_gc.total_collections >= 1);
         assert!(!vm.gc_state.session_string_ptrs.contains(&seed_ptr));
-        assert!(vm.gc_state.session_string_ptrs.contains(&returned_ptr));
+        assert!(vm.gc_state.session_string_ptrs.contains(&returned.as_string_ptr_mut()));
     }
 
     #[test]
@@ -1333,6 +1380,8 @@ mod tests {
 
         let s = vm.new_string_owned("x".repeat(64));
         vm.regs[1] = s;
+        // 分配不自动触发（安全点语义），显式触发一轮验证对象不搬移。
+        vm.maybe_collect_session_strings();
 
         // 对象指针逐一相同：不搬移、不重写根。
         assert_eq!(vm.gc_state.session_object_ptrs, before);
@@ -1356,6 +1405,8 @@ mod tests {
             for _ in 0..8 {
                 let _ = vm.new_string_owned("dead".repeat(64));
             }
+            // 分配不自动触发，每轮显式触发一次回收。
+            vm.maybe_collect_session_strings();
             assert!(vm.gc_state.session_object_ptrs.contains(&obj_session));
             assert_eq!(unsafe { (*obj_session).get_prop_at(0) }, live);
         }

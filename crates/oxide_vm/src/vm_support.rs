@@ -25,6 +25,8 @@ impl Vm {
         // 非 0 的稳定 id（保持枚举层"id 0 哨兵"的既有约定，见 walk_own_keys）。
         let length_si = core.perm_interner().intern("length").0;
         let obj_proto = P::clone(&session.builtin_world().object_proto);
+        // 提前缓存执行期字符串 GC 初始水位（构造后 config 不再变化）。
+        let gc_threshold = core.config().session_gc_threshold;
         let mut vm = Self {
             regs: [JsValue::undefined(); 256],
             pc: 0,
@@ -86,6 +88,7 @@ impl Vm {
                 session_string_ptrs: Vec::new(),
                 session_bigint_ptrs: std::cell::RefCell::new(Vec::new()),
                 session_bytes_allocated: 0,
+                string_gc_watermark: gc_threshold,
                 forwarding: std::collections::HashMap::with_hasher(rustc_hash::FxBuildHasher),
             },
             symbols: SymbolState {
@@ -123,6 +126,8 @@ impl Vm {
         // 非 0 的稳定 id（保持枚举层"id 0 哨兵"的既有约定，见 walk_own_keys）。
         let length_si = core.perm_interner().intern("length").0;
         let obj_proto = P::clone(&session.builtin_world().object_proto);
+        // 提前缓存执行期字符串 GC 初始水位（构造后 config 不再变化）。
+        let gc_threshold = core.config().session_gc_threshold;
         let mut vm = Self {
             regs: [JsValue::undefined(); 256],
             pc: 0,
@@ -184,6 +189,7 @@ impl Vm {
                 session_string_ptrs: Vec::new(),
                 session_bigint_ptrs: std::cell::RefCell::new(Vec::new()),
                 session_bytes_allocated: 0,
+                string_gc_watermark: gc_threshold,
                 forwarding: std::collections::HashMap::with_hasher(rustc_hash::FxBuildHasher),
             },
             symbols: SymbolState {
@@ -285,6 +291,7 @@ impl Vm {
         self.gc_state.session_epoch.reset();
         self.gc_state.session_object_ptrs.clear();
         self.gc_state.session_bytes_allocated = 0;
+        self.gc_state.string_gc_watermark = self.kernel_core.config().session_gc_threshold;
         self.gc_state.session_gc = crate::session_gc::SessionGc::new();
         self.free_session_string_heap_data();
         self.free_session_bigint_heap_data();
@@ -365,17 +372,16 @@ impl Vm {
     /// 同 `new_string`，但以 move 接收 `String`，避免一次克隆。
     ///
     /// # 副作用
-    /// - 累计 session 字符串字节超阈值时，触发一次仅字符串的 GC（对象不搬移）。
+    /// - 累计 session 字符串字节账目；回收不在分配点触发（见注意事项）。
     ///
     /// # 注意事项
-    /// - 触发检查在登记之前：返回值尚未写入任何执行根，若登记后回收会被本次 GC
-    ///   判死并释放，返回即悬垂；此时 `s` 仍在栈上、未被登记，GC 不会触碰它。
-    /// - 热路径仅 1 次 usize 比较 + 阈值读取，超限才进回收路径。
+    /// - 分配点不触发 GC：builtin 函数栈上的局部 `JsValue` 与构造中对象不在
+    ///   mark 根清单内，分配前触发会释放"仅存于局部/构造中"的活串（悬垂）。
+    ///   回收统一在 dispatch 指令边界检查水位触发——此时 builtin 局部值已落地
+    ///   为执行根，任何分配点的局部持有跨分配点均安全。
+    /// - 热路径仅 1 次字节账目累加，无阈值读取与分支。
     pub fn new_string_owned(&mut self, s: String) -> JsValue {
         let len = s.len();
-        if self.gc_state.session_bytes_allocated >= self.kernel_core.config().session_gc_threshold {
-            self.maybe_collect_session_strings();
-        }
         let ptr = Box::into_raw(Box::new(JsString::new(s)));
         self.gc_state.session_string_ptrs.push(ptr);
         self.gc_state.session_bytes_allocated += std::mem::size_of::<JsString>() + len;
