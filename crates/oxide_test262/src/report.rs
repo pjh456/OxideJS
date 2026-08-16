@@ -2,7 +2,7 @@
 //! 全部为纯函数/String builder（可单测），不持有全局状态。
 
 use crate::RunStats;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// 单条失败记录：路径用全局测试数组下标（8 字节），类别用 RunStats 内 id 表下标。
 /// 消息完整保留（单条 2 KiB cap + 全局 64 MiB cap），不截断到类别桶。
@@ -29,8 +29,7 @@ pub fn first_line(s: &str) -> &str {
     s.lines().next().unwrap_or("")
 }
 
-/// 压平 \t \n \r 为空格（后续 fail-log / 心跳旁路行的可解析保证）。
-#[cfg_attr(not(test), expect(dead_code))] // 心跳旁路行接入后使用
+/// 压平 \t \n \r 为空格（fail-log / 心跳旁路行 / 类别行的可解析保证）。
 pub fn escape_log_field(s: &str) -> String {
     s.replace(['\t', '\n', '\r'], " ")
 }
@@ -93,6 +92,42 @@ pub fn format_fail_list(stats: &RunStats, paths: &[PathBuf]) -> String {
         if rest > 0 {
             out.push_str(&format!("    (+{rest} more in {cat})\n"));
         }
+    }
+    out
+}
+
+/// 把一条失败记录追加到 supervise 旁路文件（子进程 → 父进程通道）。
+/// 行格式 `index\tcategory\tsubkey\tmessage`，字段经 escape_log_field 压平。
+///
+/// # 注意事项
+/// - 追加写不做原子性：父进程只在子进程死亡后才读取，半写尾行由
+///   [`parse_fail_log`] 防御性跳过。
+pub fn append_fail_log(path: &Path, index: usize, category: &str, subkey: &str, message: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    writeln!(
+        f,
+        "{}\t{}\t{}\t{}",
+        index,
+        escape_log_field(category),
+        escape_log_field(subkey),
+        escape_log_field(message)
+    )
+}
+
+/// 解析旁路失败行文件为 `(index, category, subkey, message)` 列表。
+///
+/// # 边界与前提
+/// - 残缺尾行（子进程被杀时半写）与畸形行（字段数不足 / index 非数字）静默跳过。
+pub fn parse_fail_log(content: &str) -> Vec<(usize, String, String, String)> {
+    let mut out = Vec::new();
+    for line in content.lines() {
+        let mut it = line.splitn(4, '\t');
+        let (Some(index), Some(cat), Some(subkey), Some(message)) = (it.next(), it.next(), it.next(), it.next()) else {
+            continue;
+        };
+        let Ok(index) = index.parse::<usize>() else { continue };
+        out.push((index, cat.to_string(), subkey.to_string(), message.to_string()));
     }
     out
 }
