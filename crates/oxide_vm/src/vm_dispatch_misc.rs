@@ -1,7 +1,6 @@
-use crate::native::NativeFn;
-use crate::vm::{native_fn_ptr_to_fn, ForInIter, FrameArgs, FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
+use crate::vm::{ForInIter, FrameArgs, FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
 use crate::vm_trace;
-use oxide_runtime_api::{push_to_string, to_boolean, to_string_full, NativeResult, VmHost};
+use oxide_runtime_api::{push_to_string, to_boolean, to_string_full, VmHost};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::{int_key_value, is_int_key, is_private_name_key, is_symbol_key, make_int_key};
 use oxide_types::value::JsValue;
@@ -78,29 +77,27 @@ impl Vm {
 
         if ctor_obj.native_fn().is_some() {
             let new_obj_val = JsValue::object(new_obj as *mut u8);
-            self.regs[255] = new_obj_val;
-
-            let mut args_buf = [0u8; 257];
-            args_buf[0] = 255u8;
+            let mut args = Vec::with_capacity(arg_count);
             for i in 0..arg_count.min(256) {
-                args_buf[i + 1] = first_arg_reg.wrapping_add(i as u8);
+                args.push(self.regs[first_arg_reg.wrapping_add(i as u8) as usize]);
             }
-            let args_slice = &args_buf[..arg_count + 1];
-
-            let func: NativeFn = unsafe { native_fn_ptr_to_fn(ctor_obj.native_fn().unwrap()) };
-            self.regs[254] = constructor;
-            match func(self, args_slice) {
-                NativeResult::Ok(val) => {
-                    self.regs[rd] = if val.is_object() { val } else { new_obj_val };
+            // native 构造器：收口到 call_function_sync（与 spread / bound 变体一致）。
+            // 该入口统一保存/恢复调用窗口与 253/254 槽且不触碰 255，调用方
+            // new.target 与 this 跨 native 构造不被污染；receiver 经 arg0 打包，
+            // native 侧经 reg(args[0]) 读取，构造语义不变。
+            match self.call_function_sync(constructor, new_obj_val, &args) {
+                Ok(v) => {
+                    self.regs[rd] = if v.is_object() { v } else { new_obj_val };
                     Ok(false)
                 }
-                NativeResult::Err(err_val) => {
-                    self.exception_value = Some(err_val);
-                    self.pending_error_kind = Some(self.thrown_error_kind(err_val));
+                Err(_) => {
+                    let exc = self
+                        .last_uncaught_value
+                        .take()
+                        .unwrap_or_else(|| oxide_builtins::error::create_error(self, "constructor call failed"));
+                    self.exception_value = Some(exc);
+                    self.pending_error_kind = Some(self.thrown_error_kind(exc));
                     self.unwind().map(|_| true)
-                }
-                NativeResult::TailCall { .. } => {
-                    self.raise_type_error("constructor tail call not supported").map(|_| true)
                 }
             }
         } else if ctor_obj.sub_module_index() > 0 {

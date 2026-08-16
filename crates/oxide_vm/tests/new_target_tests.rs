@@ -102,3 +102,44 @@ fn import_meta_is_explicit_error() {
     };
     assert!(err.contains("import.meta not yet supported"), "unexpected compile error: {err}");
 }
+
+#[test]
+fn native_construct_does_not_pollute_new_target() {
+    // native 构造（非 spread）不污染调用方 new.target：`new Date()` 后构造器
+    // 返回 `new.target` 应仍为外层构造目标 f（255 槽随调用恢复，返回 f 自身）。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "function f(){ new Date(); return new.target; } (new f()) === f").unwrap();
+    assert_bool(result, true);
+}
+
+#[test]
+fn native_construct_does_not_pollute_this() {
+    // native 构造后同帧 this 保持外层构造的新对象：receiver 槽随调用保存/恢复（254 同修）。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "function f(){ new Date(); this.t = this instanceof f; } new f().t").unwrap();
+    assert_bool(result, true);
+}
+
+#[test]
+fn native_construct_spread_does_not_pollute_new_target() {
+    // spread 构造变体与普通构造一致：`new Date(...[])` 后 new.target 不被污染。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "function f(){ new Date(...[]); return new.target; } (new f()) === f").unwrap();
+    assert_bool(result, true);
+}
+
+#[test]
+fn native_construct_then_plain_call_new_target_is_undefined() {
+    // 普通调用帧内 native 构造后，new.target 仍为 undefined（帧语义不受构造调用干扰）。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "function f(){ new Date(); return new.target === undefined; } f()").unwrap();
+    assert_bool(result, true);
+}
+
+#[test]
+fn native_construct_keeps_instance_semantics() {
+    // 收口 call_function_sync 后 native 构造语义不变：返回真实实例且原型链正确。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "(function(){ var d = new Date(0); return d instanceof Date; })()").unwrap();
+    assert_bool(result, true);
+}
