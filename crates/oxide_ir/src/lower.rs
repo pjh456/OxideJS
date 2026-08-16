@@ -86,6 +86,7 @@ pub fn lower(f: &IRFunction) -> Result<CompiledModule, String> {
         builtin_reg_map: f.builtin_reg_map.clone(),
         sub_modules,
         is_arrow: f.is_arrow,
+        is_strict: f.is_strict,
         captured_this_const_idx: f.captured_this_const_idx,
         function_name: f.function_name.clone(),
         function_length: f.function_length,

@@ -26,6 +26,10 @@ impl Emitter {
     pub(crate) fn emit_class_with_binding(
         &self, class: &Class, ctx: &mut CompileCtx, binding_reg: Option<u32>,
     ) -> Result<u32, String> {
+        // 类定义体是严格模式代码：字段初始化/静态块/extends 表达式内嵌套函数以
+        // 本 ctx 为父 ctx，类编译期间强制 strict（函数末尾恢复外层标志）。
+        let saved_strict = ctx.is_strict;
+        ctx.is_strict = true;
         let ctor_name = class.id.as_ref().map(|id| id.name.to_string());
         // 类声明由调用方提供外层绑定槽（binding_reg=Some），类表达式无外部槽
         // （None，类名是类体内独立 const 绑定）。真实名 cell 仅声明路径指向
@@ -264,6 +268,7 @@ impl Emitter {
                 is_derived,
                 &field_value_exprs,
                 &extra_upvalue_names,
+                true,
             )?
         } else {
             let mut module = self.compile_function_body_with_field_hooks(
@@ -277,6 +282,7 @@ impl Emitter {
                 is_derived,
                 &field_value_exprs,
                 &extra_upvalue_names,
+                true,
             )?;
             if is_derived {
                 module.insts.clear();
@@ -288,6 +294,8 @@ impl Emitter {
                 module.insts.push(Inst::super_call_spread(Operand::Reg(0), &[0x8000_0000 | 1]));
                 // 字段初始化直接重发：构造器 upvalue/内置槽引用须与首轮编译产物对齐。
                 let mut field_ctx = CompileCtx::new();
+                // 字段表达式运行于构造器帧，构造器恒 strict，字段 ctx 同步置位。
+                field_ctx.is_strict = true;
                 field_ctx.scopes.private_name_map =
                     private_names.iter().map(|(n, id, _, _)| (n.clone(), *id)).collect();
                 field_ctx.scopes.builtin_reg_map = module.builtin_reg_map.clone();
@@ -427,6 +435,8 @@ impl Emitter {
         ctx.scopes.private_name_map = saved_private_names;
         ctx.scopes.private_element_kinds = saved_private_kinds;
         ctx.scopes.private_brand_id = saved_brand_id;
+        // 类编译结束恢复外层 strict 标志：类在 sloppy 上下文时不得泄漏 strict 到类后代码。
+        ctx.is_strict = saved_strict;
         Ok(ctor_reg)
     }
 }

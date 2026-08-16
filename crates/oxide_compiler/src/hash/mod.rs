@@ -56,6 +56,12 @@ fn hash_program(program: &oxide_parser::Program, include_binding_names: bool) ->
         statement::hash_statement(stmt, &mut h, include_binding_names);
     }
 
+    // directives 决定脚本/函数严格模式：不纳入 hash 时 `"use strict"; f()`
+    // 与 `f()` 缓存键相同，复用错误字节码（严格标志随缓存命中错配）。
+    for directive in &program.directives {
+        directive.directive.as_str().hash(&mut h);
+    }
+
     h.finish()
 }
 

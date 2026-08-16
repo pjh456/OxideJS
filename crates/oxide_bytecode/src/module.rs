@@ -58,6 +58,8 @@ pub struct CompiledModule {
     pub sub_modules: Vec<Arc<CompiledModule>>,
     /// 是否为箭头函数体（箭头函数从外围作用域词法捕获 `this`）。
     pub is_arrow: bool,
+    /// 是否为严格模式函数体：VM 帧入口据其判定 sloppy `this` 替换。
+    pub is_strict: bool,
     /// 捕获 `this` 的 JsValue 在常量池中的下标；0 表示未捕获，使用标准 this 绑定。
     pub captured_this_const_idx: u16,
     /// 由赋值上下文推断的函数名，在变量声明 / 对象属性赋值点设置。
@@ -96,6 +98,7 @@ impl CompiledModule {
             builtin_reg_map: Vec::new(),
             sub_modules: Vec::new(),
             is_arrow: false,
+            is_strict: false,
             captured_this_const_idx: 0,
             function_name: None,
             function_length: 0,
@@ -129,6 +132,7 @@ impl Clone for CompiledModule {
             builtin_reg_map: self.builtin_reg_map.clone(),
             sub_modules: self.sub_modules.clone(),
             is_arrow: self.is_arrow,
+            is_strict: self.is_strict,
             captured_this_const_idx: self.captured_this_const_idx,
             function_name: self.function_name.clone(),
             function_length: self.function_length,

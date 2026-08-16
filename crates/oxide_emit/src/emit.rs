@@ -172,6 +172,9 @@ pub struct CompileCtx {
     pub(crate) is_generator: bool,
     /// 本函数是否为异步函数体（`async function` / async 箭头），`assemble_ir` 回写到 IR。
     pub(crate) is_async: bool,
+    /// 本函数是否为严格模式函数体：自身 directive ‖ 外层严格继承（编译入口设置 +
+    /// 嵌套继承，见 compile_function_body_with_field_hooks_gen），`assemble_ir` 回写到 IR。
+    pub(crate) is_strict: bool,
     /// 是否为脚本顶层模块（emit_program 的根上下文）。顶层 var/function 声明需
     /// 同步写全局对象属性（脚本环境记录的 var 可经 globalThis 反射）；函数体为 false。
     pub(crate) is_global_scope: bool,
@@ -306,6 +309,7 @@ impl CompileCtx {
             in_static_method: false,
             is_generator: false,
             is_async: false,
+            is_strict: false,
             is_global_scope: false,
             static_block_this_reg: None,
             field_buffer: None,
@@ -701,6 +705,7 @@ impl CompileCtx {
             needs_home_object: false,
             is_generator: self.is_generator,
             is_async: self.is_async,
+            is_strict: self.is_strict,
             captured_this_const_idx: 0,
             function_name: None,
             function_length: self.function_length,
@@ -874,7 +879,7 @@ impl Emitter {
     /// 继承外层 super，普通函数重置 super 作用域。
     pub(crate) fn compile_function_body<'a>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
-        is_expression_body: bool, is_arrow: bool,
+        is_expression_body: bool, is_arrow: bool, own_strict: bool,
     ) -> Result<IRFunction, String> {
         self.compile_function_body_with_flags(
             param_specs,
@@ -884,30 +889,40 @@ impl Emitter {
             is_arrow,
             false,
             false,
+            own_strict,
         )
     }
 
     /// 编译函数体并显式指定生成器标志（`function*` 走此入口）。
     pub(crate) fn compile_generator_body<'a>(
-        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
+        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx, own_strict: bool,
     ) -> Result<IRFunction, String> {
-        self.compile_function_body_with_flags(param_specs, body_stmts, parent_ctx, false, false, true, false)
+        self.compile_function_body_with_flags(
+            param_specs,
+            body_stmts,
+            parent_ctx,
+            false,
+            false,
+            true,
+            false,
+            own_strict,
+        )
     }
 
     /// 编译异步生成器函数体（`async function*` / async 生成器表达式走此入口）：
     /// 同时标记 `is_generator` 与 `is_async`，VM 调用时按异步生成器协议执行
     /// （next 返回 Promise，yield 挂起与 await 挂起共存）。
     pub(crate) fn compile_async_generator_body<'a>(
-        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
+        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx, own_strict: bool,
     ) -> Result<IRFunction, String> {
-        self.compile_function_body_with_flags(param_specs, body_stmts, parent_ctx, false, false, true, true)
+        self.compile_function_body_with_flags(param_specs, body_stmts, parent_ctx, false, false, true, true, own_strict)
     }
 
     /// 编译异步函数体（`async function` / async 箭头走此入口）：`is_async` 使
     /// `assemble_ir` 标记模块，VM 调用时按异步函数协议执行。
     pub(crate) fn compile_async_body<'a>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
-        is_expression_body: bool, is_arrow: bool,
+        is_expression_body: bool, is_arrow: bool, own_strict: bool,
     ) -> Result<IRFunction, String> {
         self.compile_function_body_with_flags(
             param_specs,
@@ -917,13 +932,14 @@ impl Emitter {
             is_arrow,
             false,
             true,
+            own_strict,
         )
     }
 
     #[allow(clippy::too_many_arguments)]
     fn compile_function_body_with_flags<'a>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
-        is_expression_body: bool, is_arrow: bool, is_generator: bool, is_async: bool,
+        is_expression_body: bool, is_arrow: bool, is_generator: bool, is_async: bool, own_strict: bool,
     ) -> Result<IRFunction, String> {
         let body_context = if is_arrow {
             FunctionBodyContext::Arrow
@@ -939,6 +955,7 @@ impl Emitter {
             body_context,
             is_generator,
             is_async,
+            own_strict,
         )
     }
 
@@ -946,7 +963,7 @@ impl Emitter {
     pub(crate) fn compile_function_body_with_bindings_gen<'a>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, extra_bindings: &[(&str, u32)], body_context: FunctionBodyContext,
-        is_generator: bool, is_async: bool,
+        is_generator: bool, is_async: bool, own_strict: bool,
     ) -> Result<IRFunction, String> {
         self.compile_function_body_with_field_hooks_gen(
             param_specs,
@@ -961,6 +978,7 @@ impl Emitter {
             &[],
             is_generator,
             is_async,
+            own_strict,
         )
     }
 
@@ -976,7 +994,7 @@ impl Emitter {
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, extra_bindings: &[(&str, u32)], body_context: FunctionBodyContext,
         emit_fields: Option<E>, fields_after_super: bool, extra_capture_exprs: &[&'a Expression<'a>],
-        extra_upvalue_names: &[(&str, u8)],
+        extra_upvalue_names: &[(&str, u8)], own_strict: bool,
     ) -> Result<IRFunction, String>
     where
         E: FnMut(&Emitter, &mut CompileCtx) -> Result<(), String>,
@@ -994,6 +1012,7 @@ impl Emitter {
             extra_upvalue_names,
             false,
             false,
+            own_strict,
         )
     }
 
@@ -1002,7 +1021,7 @@ impl Emitter {
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, extra_bindings: &[(&str, u32)], body_context: FunctionBodyContext,
         mut emit_fields: Option<E>, fields_after_super: bool, extra_capture_exprs: &[&'a Expression<'a>],
-        extra_upvalue_names: &[(&str, u8)], is_generator: bool, is_async: bool,
+        extra_upvalue_names: &[(&str, u8)], is_generator: bool, is_async: bool, own_strict: bool,
     ) -> Result<IRFunction, String>
     where
         E: FnMut(&Emitter, &mut CompileCtx) -> Result<(), String>,
@@ -1010,6 +1029,9 @@ impl Emitter {
         let mut ctx = CompileCtx::new();
         ctx.is_generator = is_generator;
         ctx.is_async = is_async;
+        // 函数 strict = 自身 directive ‖ 外层严格（规范不可解除）；
+        // 类元素方法/构造器恒 strict（ClassBody 是严格模式代码）。
+        ctx.is_strict = own_strict || matches!(body_context, FunctionBodyContext::ClassElement) || parent_ctx.is_strict;
 
         // length = 第一个带默认值形参之前的形参数（解构默认与标识符默认同规则）；
         // rest 参数不计入 length（以 0 结尾即止）。
@@ -1475,6 +1497,8 @@ impl Emitter {
         let mut ctx = CompileCtx::new();
         // 脚本顶层：var/function 声明需落到全局对象，let/const/class 不进全局。
         ctx.is_global_scope = true;
+        // 脚本顶层严格模式由源码 "use strict" directive 决定（嵌套函数经父 ctx 继承）。
+        ctx.is_strict = program.has_use_strict_directive();
         self.predeclare_function_declarations(&program.body, &mut ctx);
 
         // 预注册 builtin 引用（先于任何临时寄存器），builtin 槽不进入临时寄存器池。

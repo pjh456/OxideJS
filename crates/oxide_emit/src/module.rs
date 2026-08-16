@@ -136,6 +136,8 @@ impl Emitter {
         let mut ctx = CompileCtx::new();
         // 模块顶层 var/function 不写全局对象（模块作用域绑定）。
         ctx.is_global_scope = false;
+        // ES module 顶层恒严格模式（模块代码是严格模式代码，嵌套函数经父 ctx 继承）。
+        ctx.is_strict = true;
         let mut path_stack = vec![module_path.to_string()];
         self.emit_module_into_ctx(program, module_path, loader, &mut path_stack, &mut ctx)?;
         Ok(ctx.assemble_ir(ParamLayout { base: 0, count: 0 }, None))
@@ -387,6 +389,8 @@ impl Emitter {
         })?;
         let mut ctx = CompileCtx::new();
         ctx.is_global_scope = false;
+        // 依赖模块经 parse_module 解析，顶层恒严格模式。
+        ctx.is_strict = true;
         self.emit_module_into_ctx(&program, &resolved.path, loader, path_stack, &mut ctx)?;
         Ok(ctx.assemble_ir(ParamLayout { base: 0, count: 0 }, None))
     }
