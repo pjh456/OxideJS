@@ -1334,3 +1334,155 @@ fn zoned_date_time_equals_receiver_branding_and_non_zoned_arg() {
     .unwrap();
     assert_eq!(str_val(&vm, r), "true|false|false");
 }
+
+#[test]
+fn zoned_date_time_from_string_wall_and_exact_time() {
+    let mut vm = Vm::new();
+    // 无偏移注解：墙钟按注解时区换算；带偏移与注解一致：精确时刻（墙钟 - 偏移）。
+    let r = eval(
+        &mut vm,
+        "Temporal.ZonedDateTime.from('1976-11-18T15:23:30[UTC]').toString() + '|' +
+         Temporal.ZonedDateTime.from('1976-11-18T15:23:30[+01:00]').epochNanoseconds + '|' +
+         Temporal.ZonedDateTime.from('1976-11-18T15:23:30+01:00[+01:00]').epochNanoseconds + '|' +
+         Temporal.ZonedDateTime.from('1976-11-18T15:23:30+01:00[+01:00]').timeZoneId",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "1976-11-18T15:23:30+00:00[UTC]|217175010000000000|217175010000000000|+01:00"
+    );
+}
+
+#[test]
+fn zoned_date_time_from_string_utc_designator_pins_exact_time() {
+    let mut vm = Vm::new();
+    // Z 使 offsetBehaviour 为 exact：epoch 恒为墙钟时刻，注解时区只改 timeZoneId。
+    let r = eval(
+        &mut vm,
+        "Temporal.ZonedDateTime.from('1970-01-01T00:00Z[+01:00]').epochNanoseconds + '|' +
+         Temporal.ZonedDateTime.from('1970-01-01T00:00Z[+01:00]').timeZoneId + '|' +
+         Temporal.ZonedDateTime.from('1970-01-01T00:00Z[+01:00]').toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "0|+01:00|1970-01-01T01:00:00+01:00[+01:00]");
+}
+
+#[test]
+fn zoned_date_time_from_string_requires_time_zone_annotation() {
+    let mut vm = Vm::new();
+    // 无时区注解（裸日期时间 / Z / 纯偏移）均抛 RangeError。
+    let r = eval(
+        &mut vm,
+        "['1970-01-01T00:00', '1970-01-01T00:00Z', '1970-01-01T00:00+01:00'].every(
+           s => { try { Temporal.ZonedDateTime.from(s); return false; }
+                 catch (e) { return e instanceof RangeError; } })",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn zoned_date_time_from_string_offset_options() {
+    let mut vm = Vm::new();
+    // offset 选项覆盖 critical 标记：use 保留字符串偏移、ignore/prefer 保留墙钟。
+    let r = eval(
+        &mut vm,
+        "const s = '2022-10-07T18:37-07:00[!UTC]';
+         Temporal.ZonedDateTime.from(s, { offset: 'use' }).epochNanoseconds + '|' +
+         Temporal.ZonedDateTime.from(s, { offset: 'ignore' }).epochNanoseconds + '|' +
+         Temporal.ZonedDateTime.from(s, { offset: 'prefer' }).epochNanoseconds + '|' +
+         (() => { try { Temporal.ZonedDateTime.from(s); return 'no-throw'; }
+                 catch (e) { return e instanceof RangeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "1665193020000000000|1665167820000000000|1665167820000000000|true");
+}
+
+#[test]
+fn zoned_date_time_from_property_bag() {
+    let mut vm = Vm::new();
+    // 纯日期 bag 与完整分量 bag 的墙钟换算与 toString 对拍。
+    let r = eval(
+        &mut vm,
+        "Temporal.ZonedDateTime.from({ year: 2000, month: 5, day: 2, timeZone: 'UTC' }).toString() + '|' +
+         Temporal.ZonedDateTime.from({
+           year: 2000, month: 5, day: 2, hour: 12, minute: 34, second: 56,
+           millisecond: 987, microsecond: 654, nanosecond: 321, timeZone: 'UTC'
+         }).toString() + '|' +
+         Temporal.ZonedDateTime.from({ year: 2000, month: 5, day: 2, hour: 12, timeZone: '-05:00' }).toString()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "2000-05-02T00:00:00+00:00[UTC]|2000-05-02T12:34:56.987654321+00:00[UTC]|2000-05-02T12:00:00-05:00[-05:00]"
+    );
+}
+
+#[test]
+fn zoned_date_time_from_property_bag_offset_conflict() {
+    let mut vm = Vm::new();
+    // bag 内 offset 与 timeZone 不一致：默认与显式 reject 均抛 RangeError。
+    let r = eval(
+        &mut vm,
+        "const props = { year: 2021, month: 10, day: 28, offset: '-07:00', timeZone: '+01:00' };
+         (() => { try { Temporal.ZonedDateTime.from(props); return 'no-throw'; }
+                 catch (e) { return e instanceof RangeError; } })() + '|' +
+         (() => { try { Temporal.ZonedDateTime.from(props, { offset: 'reject' }); return 'no-throw'; }
+                 catch (e) { return e instanceof RangeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true");
+}
+
+#[test]
+fn zoned_date_time_from_zdt_object_copies_slots() {
+    let mut vm = Vm::new();
+    // 复制 ZDT 对象：三槽相等且返回新对象；非法选项值校验仍执行。
+    let r = eval(
+        &mut vm,
+        "const z = new Temporal.ZonedDateTime(217175010123456789n, '+01:00', 'hebrew');
+         const c = Temporal.ZonedDateTime.from(z);
+         (c !== z) + '|' + c.epochNanoseconds + '|' + c.timeZoneId + '|' + c.calendarId + '|' +
+         (() => { try { Temporal.ZonedDateTime.from(z, { offset: 'bad' }); return 'no-throw'; }
+                 catch (e) { return e instanceof RangeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|217175010123456789|+01:00|hebrew|true");
+}
+
+#[test]
+fn zoned_date_time_from_error_paths() {
+    let mut vm = Vm::new();
+    // 缺 timeZone 的 bag / 非字符串原始值 → TypeError；越界日期 → RangeError。
+    let r = eval(
+        &mut vm,
+        "( () => { try { Temporal.ZonedDateTime.from({ year: 2000, month: 5, day: 2 }); return 'no-throw'; }
+                   catch (e) { return e instanceof TypeError; } })() + '|' +
+         [123, null, undefined, 1n].every(v => {
+           try { Temporal.ZonedDateTime.from(v); return false; }
+           catch (e) { return e instanceof TypeError; }
+         }) + '|' +
+         (() => { try { Temporal.ZonedDateTime.from({ year: -271821, month: 4, day: 19, timeZone: 'UTC' }); return 'no-throw'; }
+                 catch (e) { return e instanceof RangeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true|true");
+}
+
+#[test]
+fn zoned_date_time_from_options_validation() {
+    let mut vm = Vm::new();
+    // offset/disambiguation 非法 → RangeError；options 非对象 → TypeError。
+    let r = eval(
+        &mut vm,
+        "const s = '1970-01-01T00:00[UTC]';
+         (() => { try { Temporal.ZonedDateTime.from(s, { offset: 'garbage' }); return 'no-throw'; }
+                 catch (e) { return e instanceof RangeError; } })() + '|' +
+         (() => { try { Temporal.ZonedDateTime.from(s, { disambiguation: 'garbage' }); return 'no-throw'; }
+                 catch (e) { return e instanceof RangeError; } })() + '|' +
+         (() => { try { Temporal.ZonedDateTime.from(s, null); return 'no-throw'; }
+                 catch (e) { return e instanceof TypeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true|true");
+}
