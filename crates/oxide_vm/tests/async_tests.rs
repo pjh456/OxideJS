@@ -285,3 +285,60 @@ fn object_async_generator_method_yields() {
         "\"5:true\""
     );
 }
+
+// ── upvalue cell 运行时 TDZ 误报（判别测试） ──
+
+// T1（根因 A）：class 声明在前、async 函数在后。hoisting 使 async 体先编译，
+// 若 class 名未进 captured_bindings → 编译期 THROW（命名错），期望经 cell 读到构造器。
+#[test]
+fn async_body_reads_top_level_class_after_decl() {
+    assert_eq!(
+        eval(
+            "class E {} var r; var p = (async function(){ return E; })().then(function(v){ r = v.name; });\
+             p; Promise.resolve().then(function(){ return r; })"
+        ),
+        "\"E\""
+    );
+}
+
+// T1-sync（根因 A 对照）：普通函数读其后声明的 class，应与 async 同因失败。
+#[test]
+fn hoisted_sync_fn_reads_later_class() {
+    assert_eq!(eval("function f(){ return C; } class C {} f().name"), "\"C\"");
+}
+
+// T2（根因 B）：提升的闭包在 var 声明语句执行前被调用。规范上 var 入口实例化
+// 为 undefined，声明语句只是赋值；若语句点才初始化 cell → 运行时通用错误报。
+#[test]
+fn closure_reads_var_before_declaration_statement_returns_undefined() {
+    assert_eq!(eval("var log; function f(){ return x; } log = f(); var x = 1; log"), "undefined");
+}
+
+// T3（根因 C）：async-gen 参数默认值内 IIFE 读文件级 var（var 全在 f 之前，
+// 理论上捕获 cell 已初始化）。期望 body 断言通过（initCount==1, iterCount==0）。
+#[test]
+fn async_gen_param_default_closure_reads_file_var() {
+    assert_eq!(
+        eval(
+            "var initCount=0; var iterCount=0; var iter=function*(){iterCount+=1;}(); var callCount=0; var f;\
+             f=async function*([[]=function(){initCount+=1; return iter;}()]){ callCount+=1; };\
+             var r; var p=f([]).next().then(function(){r=[initCount,iterCount,callCount].join(',');});\
+             p; Promise.resolve().then(function(){return r;})"
+        ),
+        "\"1,0,1\""
+    );
+}
+
+// T4（根因 C 链式）：async-gen 参数默认值内 IIFE 闭包读两个不同位置的文件级
+// var，验证链式 parent_uv_idx 取父 upvalue cell 的序与值。
+#[test]
+fn async_gen_param_default_iife_chained_upvalue() {
+    assert_eq!(
+        eval(
+            "var a=1; var b=2; var f;\
+             f=async function*(x=(function(){return a+b;})()){ yield x; };\
+             (async function(){ var g=f(); var r=await g.next(); return r.value; })()"
+        ),
+        "3"
+    );
+}
