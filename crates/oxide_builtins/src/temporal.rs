@@ -1037,6 +1037,19 @@ fn canonical_time_zone(value: &str) -> Option<(String, i32)> {
     if let Some(offset) = parse_offset_minutes(input) {
         return Some((input.to_string(), offset));
     }
+
+    // ±HH 基本偏移（"+01" / "-05"）：3 字符，hour ≤ 23，分钟恒 0。仅放宽构造器时区接受面。
+    if input.len() == 3
+        && matches!(input.as_bytes()[0], b'+' | b'-')
+        && input.as_bytes()[1..3].iter().all(u8::is_ascii_digit)
+    {
+        let hour = (input.as_bytes()[1] - b'0') as i32 * 10 + (input.as_bytes()[2] - b'0') as i32;
+        if hour <= 23 {
+            let sign = if input.as_bytes()[0] == b'-' { -1 } else { 1 };
+            return Some((input.to_string(), sign * hour * 60));
+        }
+        return None;
+    }
     if input.starts_with("-000000") {
         return None;
     }
