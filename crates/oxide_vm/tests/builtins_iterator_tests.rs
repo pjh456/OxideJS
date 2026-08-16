@@ -1013,3 +1013,1034 @@ fn iterator_terminal_rebound_after_full_reset() {
         assert_eq!(result.as_bool(), expected, "for {}", src);
     }
 }
+
+// ── 返回迭代器 5 方法（map/filter/take/drop/flatMap）+ helper 状态机 ──
+
+#[test]
+fn iterator_helper_map_filter_basic() {
+    // map/filter 正常路径：产出、counter 实参、回调 this 为 undefined。
+    let mut vm = Vm::new();
+    let str_cases = [
+        ("[...Iterator.from([1, 2, 3]).map(function (v) { return v * 2; })].join(',')", "2,4,6"),
+        // 数组迭代器（非 from 包装）同样可消费。
+        ("[...[1, 2, 3].values().map(function (v) { return v + 10; })].join(',')", "11,12,13"),
+        // filter 只产出 truthy 元素。
+        (
+            "[...Iterator.from([1, 2, 3, 4]).filter(function (v) { return v % 2 === 0; })].join(',')",
+            "2,4",
+        ),
+        // 谓词返回值被 ToBoolean 化。
+        ("[...Iterator.from([0, 1, 2]).filter(function (v) { return v; })].join(',')", "1,2"),
+        // map 回调收 (value, counter)。
+        (
+            "var pairs = []; \
+             var it = Iterator.from(['a', 'b']).map(function (v, i) { pairs.push(v + i); return v; }); \
+             var x; \
+             while (!(x = it.next()).done) {} \
+             pairs.join(',')",
+            "a0,b1",
+        ),
+        // filter 计数含被过滤元素（0 被过滤但占用计数 0，命中元素用计数 1）。
+        (
+            "var pairs = []; \
+             var it = Iterator.from([0, 1, 2]).filter(function (v, i) { pairs.push(i); return v > 0; }); \
+             var x; \
+             while (!(x = it.next()).done) {} \
+             pairs.join(',')",
+            "0,1,2",
+        ),
+    ];
+    for (src, expected) in str_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(to_str(&vm, result), expected, "for {}", src);
+    }
+    let bool_cases = [
+        // 回调 this 为 undefined。
+        (
+            "var captured; Iterator.from([1]).map(function () { captured = this; return 1; }).next(); \
+             captured === undefined",
+            true,
+        ),
+        // 空迭代立即 done。
+        ("Iterator.from([]).map(function (v) { return v; }).next().done", true),
+        // 方法 length 均为 1。
+        ("Iterator.prototype.map.length === 1 && Iterator.prototype.filter.length === 1", true),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_helper_take_drop_basic() {
+    // take/drop 正常路径：计数边界、limit 校验、自然耗尽。
+    let mut vm = Vm::new();
+    let str_cases = [
+        ("[...Iterator.from([1, 2, 3]).take(2)].join(',')", "1,2"),
+        ("[...Iterator.from([1, 2, 3]).take(5)].join(',')", "1,2,3"),
+        ("[...Iterator.from([1, 2, 3]).take(0)].join(',')", ""),
+        ("[...Iterator.from([1, 2, 3]).take(Infinity)].join(',')", "1,2,3"),
+        ("[...Iterator.from([1, 2, 3]).drop(2)].join(',')", "3"),
+        ("[...Iterator.from([1, 2, 3]).drop(0)].join(',')", "1,2,3"),
+        ("[...Iterator.from([1, 2, 3]).drop(10)].join(',')", ""),
+        ("[...Iterator.from([1, 2, 3]).drop(Infinity)].join(',')", ""),
+        // 链式组合。
+        ("[...Iterator.from([1, 2, 3, 4, 5]).drop(1).take(3)].join(',')", "2,3,4"),
+    ];
+    for (src, expected) in str_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(to_str(&vm, result), expected, "for {}", src);
+    }
+    let bool_cases = [
+        // -0.5 → trunc(-0) 合法；null → 0 合法。
+        ("[...Iterator.from([1]).take(-0.5)].join(',') === ''", true),
+        ("[...Iterator.from([1, 2]).take(null)].join(',') === ''", true),
+        ("[...Iterator.from([1, 2]).drop(null)].join(',') === '1,2'", true),
+        // limit 经 valueOf/toString 强制转换。
+        (
+            "var n = { valueOf: function () { return 1; } }; \
+             [...Iterator.from([1, 2]).take(n)].join(',') === '1'",
+            true,
+        ),
+        (
+            "var n = { toString: function () { return '1'; } }; \
+             [...Iterator.from([1, 2]).drop(n)].join(',') === '2'",
+            true,
+        ),
+        // 方法 length 均为 1。
+        ("Iterator.prototype.take.length === 1 && Iterator.prototype.drop.length === 1", true),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_helper_take_drop_limit_validation() {
+    // NaN/负值/缺失 limit → RangeError 且关底层；ToNumber 抛错原值透传且关底层；
+    // next getter 在 limit 校验前不被读取。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        // take()/take(undefined)/NaN/-1 → RangeError。
+        (
+            "var closed = 0; \
+             var c = { __proto__: Iterator.prototype, get next() { throw new RangeError('read'); }, \
+                       return() { closed++; return {}; } }; \
+             var ok = false; \
+             try { c.take(); } catch (e) { ok = e instanceof RangeError; } \
+             ok && closed === 1",
+            true,
+        ),
+        (
+            "var closed = 0; \
+             var c = { __proto__: Iterator.prototype, get next() { throw new RangeError('read'); }, \
+                       return() { closed++; return {}; } }; \
+             var ok = false; \
+             try { c.take(NaN); } catch (e) { ok = e instanceof RangeError; } \
+             ok && closed === 1",
+            true,
+        ),
+        (
+            "var closed = 0; \
+             var c = { __proto__: Iterator.prototype, get next() { throw new RangeError('read'); }, \
+                       return() { closed++; return {}; } }; \
+             var ok = false; \
+             try { c.drop(-1); } catch (e) { ok = e instanceof RangeError; } \
+             ok && closed === 1",
+            true,
+        ),
+        // limit valueOf 抛错：原异常透传且关底层。
+        (
+            "var closed = 0; \
+             var c = { __proto__: Iterator.prototype, get next() { throw new RangeError('read'); }, \
+                       return() { closed++; return {}; } }; \
+             var boom = new RangeError('boom'); \
+             var ok = false; \
+             try { c.take({ valueOf: function () { throw boom; } }); } catch (e) { ok = e === boom; } \
+             ok && closed === 1",
+            true,
+        ),
+        // 校验失败不读 next（getter 抛错也不触发）。
+        (
+            "var closed = 0; var read = false; \
+             var c = { __proto__: Iterator.prototype, \
+                       get next() { read = true; return function () {}; }, \
+                       return() { closed++; return {}; } }; \
+             var ok = false; \
+             try { c.take(-1); } catch (e) { ok = e instanceof RangeError; } \
+             ok && closed === 1 && read === false",
+            true,
+        ),
+        // this 非对象：直接 TypeError，不读 limit/不关。
+        (
+            "var ok = false; \
+             try { Iterator.prototype.take.call(1, 0); } catch (e) { ok = e instanceof TypeError; } \
+             ok",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_helper_take_exhaustion_closes() {
+    // take 达标即关底层（return 被调用）；自然耗尽不关；关后再调 next 全短路。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        // take(0)：首个 next 即关底层（return 抛错传播）。
+        (
+            "var closed = 0; \
+             class CI extends Iterator { \
+               next() { return { done: false, value: 1 }; } \
+               return() { closed++; throw new RangeError('boom'); } \
+             } \
+             var it = new CI().take(0); \
+             var threw = false; \
+             try { it.next(); } catch (e) { threw = e instanceof RangeError; } \
+             it.next().done && threw && closed === 1",
+            true,
+        ),
+        // take(1)：取 1 个后第二次 next 关底层。
+        (
+            "var closed = 0; \
+             class CI extends Iterator { \
+               next() { return { done: false, value: 1 }; } \
+               return() { closed++; return {}; } \
+             } \
+             var it = new CI().take(1); \
+             it.next().value === 1 && it.next().done && closed === 1",
+            true,
+        ),
+        // take(5) 但底层 3 个：自然耗尽不关底层。
+        (
+            "var closed = 0; \
+             var i = 0; \
+             class CI extends Iterator { \
+               next() { i++; return i <= 3 ? { done: false, value: i } : { done: true, value: undefined }; } \
+               return() { closed++; return {}; } \
+             } \
+             var out = 0; \
+             var it = new CI().take(5); \
+             var x; \
+             while (!(x = it.next()).done) out += x.value; \
+             out === 6 && closed === 0",
+            true,
+        ),
+        // return 方法转发：显式 return() 关底层且只关一次。
+        (
+            "var closed = 0; \
+             class CI extends Iterator { \
+               next() { return { done: false, value: 1 }; } \
+               return() { closed++; return {}; } \
+             } \
+             var it = new CI().take(100); \
+             it.return(); it.return(); \
+             closed === 1",
+            true,
+        ),
+        // return getter 抛错：return() 时该错误胜出。
+        (
+            "class CI extends Iterator { \
+               next() { return { done: false, value: 1 }; } \
+               get return() { throw new RangeError('boom'); } \
+             } \
+             var it = new CI().take(1); \
+             it.next(); \
+             var threw = false; \
+             try { it.return(); } catch (e) { threw = e instanceof RangeError; } \
+             threw",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_helper_drop_exhaustion_no_close() {
+    // drop 耗尽/跳过永不主动关底层；return() 转发仍生效。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        // drop(10) 消耗 3 个元素后自然耗尽，return 不被调用。
+        (
+            "var closed = 0; \
+             var i = 0; \
+             class CI extends Iterator { \
+               next() { i++; return i <= 3 ? { done: false, value: i } : { done: true, value: undefined }; } \
+               return() { closed++; return {}; } \
+             } \
+             var it = new CI().drop(10); \
+             var x; \
+             while (!(x = it.next()).done) {} \
+             closed === 0",
+            true,
+        ),
+        // 显式 return() 关底层且只关一次。
+        (
+            "var closed = 0; \
+             class CI extends Iterator { \
+               next() { return { done: false, value: 1 }; } \
+               return() { closed++; return {}; } \
+             } \
+             var it = new CI().drop(1); \
+             it.return(); it.return(); \
+             closed === 1",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_helper_flat_map_semantics() {
+    // flatMap 正常路径：数组/生成器/纯 next 对象展开、回退路径、原始值拒绝。
+    let mut vm = Vm::new();
+    let str_cases = [
+        // mapper 返回数组：经 @@iterator 展开。
+        ("[...Iterator.from([1, 2]).flatMap(function (v) { return [v, v * 10]; })].join(',')", "1,10,2,20"),
+        // mapper 返回生成器。
+        (
+            "[...Iterator.from([1, 2]).flatMap(function (v) { return (function* () { yield v; yield v + 1; })(); })].join(',')",
+            "1,2,2,3",
+        ),
+        // mapper 返回纯 next 对象（无 @@iterator，回退鸭子 next）。
+        (
+            "function* h() { yield 0; yield 1; yield 2; } \
+             var it = Iterator.from([1]).flatMap(function () { \
+               var n = h(); \
+               return { [Symbol.iterator]: null, next: function () { return n.next(); } }; \
+             }); \
+             [...it].join(',')",
+            "0,1,2",
+        ),
+        // 空数组内层：跳过并继续外层。
+        ("[...Iterator.from([1, 2]).flatMap(function () { return []; })].join(',')", ""),
+        // counter 只按外层元素递增。
+        (
+            "var pairs = []; \
+             var it = Iterator.from(['a', 'b']).flatMap(function (v, i) { pairs.push(v + i); return [v]; }); \
+             var x; \
+             while (!(x = it.next()).done) {} \
+             pairs.join(',')",
+            "a0,b1",
+        ),
+        // 字符串包装对象可展开（对象走 @@iterator）。
+        ("[...Iterator.from([1]).flatMap(function () { return new String('ab'); })].join(',')", "a,b"),
+    ];
+    for (src, expected) in str_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(to_str(&vm, result), expected, "for {}", src);
+    }
+    let bool_cases = [
+        // 已关闭的生成器作内层：首次 next 即 done，直接回到外层。
+        (
+            "function* g() { yield 0; yield 1; yield 2; } \
+             var closed = g(); \
+             closed.return(); \
+             closed.return = function () { throw new RangeError('boom'); }; \
+             var it = g().flatMap(function (v) { return closed; }); \
+             it.next().done",
+            true,
+        ),
+        // mapper 返回原始值（含字符串）→ TypeError。
+        (
+            "var it = Iterator.from([1]).flatMap(function () { return 5; }); \
+             var ok = false; \
+             try { it.next(); } catch (e) { ok = e instanceof TypeError; } \
+             ok",
+            true,
+        ),
+        (
+            "var it = Iterator.from([1]).flatMap(function () { return 'str'; }); \
+             var ok = false; \
+             try { it.next(); } catch (e) { ok = e instanceof TypeError; } \
+             ok",
+            true,
+        ),
+        // @@iterator 非 null/undefined 且不可调用 → TypeError。
+        (
+            "var it = Iterator.from([1]).flatMap(function () { return { [Symbol.iterator]: 0, next: function () {} }; }); \
+             var ok = false; \
+             try { it.next(); } catch (e) { ok = e instanceof TypeError; } \
+             ok",
+            true,
+        ),
+        // @@iterator 结果非对象 → TypeError。
+        (
+            "var it = Iterator.from([1]).flatMap(function () { return { [Symbol.iterator]: function () { return 5; } }; }); \
+             var ok = false; \
+             try { it.next(); } catch (e) { ok = e instanceof TypeError; } \
+             ok",
+            true,
+        ),
+        // 方法 length 为 1。
+        ("Iterator.prototype.flatMap.length === 1", true),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_helper_wrapper_proto_and_shape() {
+    // wrapper 挂 %IteratorHelperPrototype%：instanceof Iterator、原型链、
+    // 三方法 + @@toStringTag、无 own next。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        ("Iterator.from([1]).map(function (x) { return x; }) instanceof Iterator", true),
+        (
+            "var it = Iterator.from([1]).filter(function () { return true; }); \
+             Object.getPrototypeOf(it)[Symbol.toStringTag] === 'Iterator Helper'",
+            true,
+        ),
+        (
+            "var it = Iterator.from([1]).take(1); \
+             Object.getPrototypeOf(it) !== Iterator.prototype \
+             && Object.getPrototypeOf(Object.getPrototypeOf(it)) === Iterator.prototype",
+            true,
+        ),
+        (
+            "var p = Object.getPrototypeOf(Iterator.from([1]).map(function (x) { return x; })); \
+             typeof p.next === 'function' && typeof p.return === 'function' && typeof p.throw === 'function'",
+            true,
+        ),
+        // next/return length 0，throw length 1。
+        (
+            "var p = Object.getPrototypeOf(Iterator.from([1]).map(function (x) { return x; })); \
+             p.next.length === 0 && p.return.length === 0 && p.throw.length === 1",
+            true,
+        ),
+        // helper 原型经原型链可迭代（%IteratorPrototype% 的 @@iterator）。
+        (
+            "var p = Object.getPrototypeOf(Iterator.from([1]).map(function (x) { return x; })); \
+             p[Symbol.iterator]() === p",
+            true,
+        ),
+        // 5 方法 name/描述符。
+        (
+            "Iterator.prototype.map.name === 'map' && Iterator.prototype.filter.name === 'filter' \
+             && Iterator.prototype.take.name === 'take' && Iterator.prototype.drop.name === 'drop' \
+             && Iterator.prototype.flatMap.name === 'flatMap'",
+            true,
+        ),
+        (
+            "var d = Object.getOwnPropertyDescriptor(Iterator.prototype, 'map'); \
+             d.writable === true && d.enumerable === false && d.configurable === true",
+            true,
+        ),
+        // this 非对象 → TypeError。
+        (
+            "try { Iterator.prototype.map.call(1, function () {}); false } \
+             catch (e) { e instanceof TypeError }",
+            true,
+        ),
+        // 非 helper 对象调用原型 next → TypeError。
+        (
+            "var p = Object.getPrototypeOf(Iterator.from([1]).map(function (x) { return x; })); \
+             var ok = false; \
+             try { p.next.call({}); } catch (e) { ok = e instanceof TypeError; } \
+             ok",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_helper_return_throw_state_machine() {
+    // return/throw 三方法状态机：转发、完成态短路、错误胜出。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        // return 转发底层且只关一次。
+        (
+            "var closed = 0; \
+             class CI extends Iterator { \
+               next() { return { done: false, value: 1 }; } \
+               return() { closed++; return {}; } \
+             } \
+             var it = new CI().map(function (x) { return x; }); \
+             it.next(); \
+             it.return(); it.return(); \
+             closed === 1 && it.next().done",
+            true,
+        ),
+        // 自然耗尽后 return 不转发。
+        (
+            "var closed = 0; \
+             class CI extends Iterator { \
+               next() { return { done: true, value: undefined }; } \
+               return() { closed++; return {}; } \
+             } \
+             var it = new CI().map(function (x) { return x; }); \
+             it.next(); \
+             it.return(); \
+             closed === 0",
+            true,
+        ),
+        // 底层 return 抛错：return() 传播该错误，此后 next 全 done。
+        (
+            "class CI extends Iterator { \
+               next() { return { done: false, value: 1 }; } \
+               return() { throw new RangeError('boom'); } \
+             } \
+             var it = new CI().map(function (x) { return x; }); \
+             var threw = false; \
+             try { it.return(); } catch (e) { threw = e instanceof RangeError; } \
+             threw && it.next().done && it.return().done",
+            true,
+        ),
+        // throw 注入：置完成 + 关底层 + 原值传播。
+        (
+            "var closed = 0; \
+             class CI extends Iterator { \
+               next() { return { done: false, value: 1 }; } \
+               return() { closed++; return {}; } \
+             } \
+             var it = new CI().map(function (x) { return x; }); \
+             var ok = false; \
+             try { it.throw(42); } catch (e) { ok = e === 42; } \
+             ok && closed === 1 && it.next().done",
+            true,
+        ),
+        // 完成态 throw：直接抛值（不关底层）。
+        (
+            "var closed = 0; \
+             class CI extends Iterator { \
+               next() { return { done: true, value: undefined }; } \
+               return() { closed++; return {}; } \
+             } \
+             var it = new CI().map(function (x) { return x; }); \
+             it.next(); \
+             var ok = false; \
+             try { it.throw(7); } catch (e) { ok = e === 7; } \
+             ok && closed === 0",
+            true,
+        ),
+        // throw 时底层 return 也抛错：原值胜出。
+        (
+            "class CI extends Iterator { \
+               next() { return { done: false, value: 1 }; } \
+               return() { throw new RangeError('close'); } \
+             } \
+             var it = new CI().map(function (x) { return x; }); \
+             var ok = false; \
+             try { it.throw(42); } catch (e) { ok = e === 42; } \
+             ok",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_helper_flat_map_return_closes_inner_then_outer() {
+    // flatMap 内层活跃时 return：先关内层再关外层；内层 return 错误优先胜出。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        (
+            "var innerClosed = 0; var outerClosed = 0; \
+             var it = Iterator.from([1]).flatMap(function (v) { \
+               return { next: function () { return { done: false, value: 1 }; }, \
+                        return: function () { innerClosed++; return {}; } }; \
+             }); \
+             it.next(); \
+             it.return(); \
+             innerClosed === 1",
+            true,
+        ),
+        // 外层 return 错误传播（内层正常关闭后）。
+        (
+            "var outerClosed = 0; \
+             class CI extends Iterator { \
+               next() { return { done: false, value: 1 }; } \
+               return() { outerClosed++; throw new RangeError('boom'); } \
+             } \
+             var it = new CI().flatMap(function (v) { \
+               return { next: function () { return { done: false, value: 1 }; }, \
+                        return: function () { return {}; } }; \
+             }); \
+             it.next(); \
+             var threw = false; \
+             try { it.return(); } catch (e) { threw = e instanceof RangeError; } \
+             threw && outerClosed === 1",
+            true,
+        ),
+        // 内层 return 错误优先于外层。
+        (
+            "var innerClosed = 0; \
+             class CI extends Iterator { \
+               next() { return { done: false, value: 1 }; } \
+               return() { return {}; } \
+             } \
+             var it = new CI().flatMap(function (v) { \
+               return { next: function () { return { done: false, value: 1 }; }, \
+                        return: function () { innerClosed++; throw new RangeError('inner'); } }; \
+             }); \
+             it.next(); \
+             var ok = false; \
+             try { it.return(); } catch (e) { ok = e instanceof RangeError; } \
+             ok && innerClosed === 1",
+            true,
+        ),
+        // 内层未起步（未 next）时 return 只关外层。
+        (
+            "var outerClosed = 0; \
+             class CI extends Iterator { \
+               next() { return { done: false, value: 1 }; } \
+               return() { outerClosed++; return {}; } \
+             } \
+             var it = new CI().flatMap(function (v) { return [v]; }); \
+             it.return(); \
+             outerClosed === 1",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_helper_reentrancy_guard() {
+    // 5 方法重入守卫：推进期间再调 next → TypeError，且底层不被二次推进。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        // map：mapper 内重入。
+        (
+            "var enterCount = 0; \
+             var gen = (function* () { yield 1; })(); \
+             var it = gen.map(function (v) { enterCount++; it.next(); return v; }); \
+             var ok = false; \
+             try { it.next(); } catch (e) { ok = e instanceof TypeError; } \
+             ok && enterCount === 1",
+            true,
+        ),
+        // filter：谓词内重入。
+        (
+            "var enterCount = 0; \
+             var gen = (function* () { yield 1; })(); \
+             var it = gen.filter(function (v) { enterCount++; it.next(); return true; }); \
+             var ok = false; \
+             try { it.next(); } catch (e) { ok = e instanceof TypeError; } \
+             ok && enterCount === 1",
+            true,
+        ),
+        // take：底层 next 内重入。
+        (
+            "var enterCount = 0; \
+             class CI extends Iterator { \
+               next() { enterCount++; it.next(); return { done: false, value: 1 }; } \
+             } \
+             var it = new CI().take(100); \
+             var ok = false; \
+             try { it.next(); } catch (e) { ok = e instanceof TypeError; } \
+             ok && enterCount === 1",
+            true,
+        ),
+        // drop：底层 next 内重入。
+        (
+            "var enterCount = 0; \
+             class CI extends Iterator { \
+               next() { enterCount++; it.next(); return { done: false, value: 1 }; } \
+             } \
+             var it = new CI().drop(0); \
+             var ok = false; \
+             try { it.next(); } catch (e) { ok = e instanceof TypeError; } \
+             ok && enterCount === 1",
+            true,
+        ),
+        // flatMap：mapper 内重入。
+        (
+            "var enterCount = 0; \
+             var gen = (function* () { yield 1; })(); \
+             var it = gen.flatMap(function (v) { enterCount++; it.next(); return [v]; }); \
+             var ok = false; \
+             try { it.next(); } catch (e) { ok = e instanceof TypeError; } \
+             ok && enterCount === 1",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_helper_callback_error_passthrough() {
+    // 回调抛错：原值透传（任意类型不二次包装），且关底层。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        // 非 Error 原值 42 透传。
+        (
+            "var closed = 0; \
+             class CI extends Iterator { \
+               next() { return { done: false, value: 1 }; } \
+               return() { closed++; return {}; } \
+             } \
+             var it = new CI().map(function () { throw 42; }); \
+             var ok = false; \
+             try { it.next(); } catch (e) { ok = e === 42; } \
+             ok && closed === 1",
+            true,
+        ),
+        // filter 谓词抛错同样处理。
+        (
+            "var sentinel = new RangeError('boom'); \
+             class CI extends Iterator { \
+               next() { return { done: false, value: 1 }; } \
+               return() { return {}; } \
+             } \
+             var it = new CI().filter(function () { throw sentinel; }); \
+             var ok = false; \
+             try { it.next(); } catch (e) { ok = e === sentinel; } \
+             ok",
+            true,
+        ),
+        // 回调抛错且底层 return 也抛错：原错误胜出。
+        (
+            "class CI extends Iterator { \
+               next() { return { done: false, value: 1 }; } \
+               return() { throw new RangeError('close'); } \
+             } \
+             var it = new CI().map(function () { throw 42; }); \
+             var ok = false; \
+             try { it.next(); } catch (e) { ok = e === 42; } \
+             ok",
+            true,
+        ),
+        // 回调抛错后 helper 完成：再调 next 全 done。
+        (
+            "class CI extends Iterator { \
+               next() { return { done: false, value: 1 }; } \
+               return() { return {}; } \
+             } \
+             var it = new CI().map(function () { throw 42; }); \
+             var ok = false; \
+             try { it.next(); } catch (e) { ok = e === 42; } \
+             ok && it.next().done",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_helper_validation_failure_closes() {
+    // 回调不可调用：抛 TypeError 且关底层，且不读 next（2024 规范更新）。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        (
+            "var closed = 0; \
+             var c = { __proto__: Iterator.prototype, get next() { throw new RangeError('read'); }, \
+                       return() { closed++; return {}; } }; \
+             var ok = false; \
+             try { c.map(); } catch (e) { ok = e instanceof TypeError; } \
+             ok && closed === 1",
+            true,
+        ),
+        (
+            "var closed = 0; \
+             var c = { __proto__: Iterator.prototype, get next() { throw new RangeError('read'); }, \
+                       return() { closed++; return {}; } }; \
+             var ok = false; \
+             try { c.flatMap({}); } catch (e) { ok = e instanceof TypeError; } \
+             ok && closed === 1",
+            true,
+        ),
+        (
+            "var closed = 0; var read = false; \
+             var c = { __proto__: Iterator.prototype, \
+                       get next() { read = true; return function () {}; }, \
+                       return() { closed++; return {}; } }; \
+             var ok = false; \
+             try { c.filter(null); } catch (e) { ok = e instanceof TypeError; } \
+             ok && closed === 1 && read === false",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_helper_get_next_only_once_and_parallel() {
+    // next getter 只在建 wrapper 时读一次；底层可被并行推进（共享同一底层）。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        // 5 方法各自只读一次 next。
+        (
+            "var gets = 0; \
+             class C extends Iterator { \
+               get next() { gets++; return function () { return { done: true, value: undefined }; }; } \
+             } \
+             new C().map(function (x) { return x; }); \
+             new C().filter(function () { return true; }); \
+             new C().take(1); \
+             new C().drop(1); \
+             new C().flatMap(function () { return []; }); \
+             gets === 5",
+            true,
+        ),
+        // 底层直接推进后 helper 从当前位置继续。
+        (
+            "var it = (function* () { for (var i = 0; i < 5; ++i) yield i; })(); \
+             var mapped = it.map(function (x) { return x; }); \
+             it.next(); \
+             mapped.next().value === 1 && mapped.next().value === 2",
+            true,
+        ),
+        // 底层提前关闭后 helper 立即 done。
+        (
+            "var it = (function* () { for (var i = 0; i < 5; ++i) yield i; })(); \
+             var mapped = it.map(function (x) { return x; }); \
+             it.return(); \
+             mapped.next().done",
+            true,
+        ),
+        // 底层 next 返回非对象：helper next 抛 TypeError（不关底层）。
+        (
+            "class CI extends Iterator { \
+               next() { return null; } \
+               return() { throw new RangeError('boom'); } \
+             } \
+             var it = new CI().map(function (x) { return x; }); \
+             var ok = false; \
+             try { it.next(); } catch (e) { ok = e instanceof TypeError; } \
+             ok",
+            true,
+        ),
+        // flatMap 内层 next 抛错：关外层不关内层。
+        (
+            "var outerClosed = 0; \
+             class CI extends Iterator { \
+               next() { return { done: false, value: 1 }; } \
+               return() { outerClosed++; return {}; } \
+             } \
+             var innerClosed = 0; \
+             var it = new CI().flatMap(function (v) { \
+               return { next: function () { throw new RangeError('inner'); }, \
+                        return: function () { innerClosed++; return {}; } }; \
+             }); \
+             var ok = false; \
+             try { it.next(); } catch (e) { ok = e instanceof RangeError; } \
+             ok && outerClosed === 1 && innerClosed === 0",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_helper_generator_proto_chain() {
+    // %GeneratorPrototype% 链到 %IteratorPrototype%：生成器可调用全部 helper。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        (
+            "Object.getPrototypeOf(Object.getPrototypeOf(function* () {}.prototype)) === Iterator.prototype",
+            true,
+        ),
+        (
+            "var gen = (function* () { yield 1; yield 2; })(); \
+             Object.getPrototypeOf(Object.getPrototypeOf(Object.getPrototypeOf(gen))) === Iterator.prototype",
+            true,
+        ),
+        // 生成器实例直接可用 5 helper。
+        (
+            "var g = (function* () { yield 1; yield 2; yield 3; })(); \
+             [...g.map(function (x) { return x * 2; })].join(',') === '2,4,6'",
+            true,
+        ),
+        (
+            "var g = (function* () { yield 1; yield 2; yield 3; })(); \
+             [...g.filter(function (x) { return x > 1; })].join(',') === '2,3'",
+            true,
+        ),
+        (
+            "var g = (function* () { yield 1; yield 2; yield 3; })(); \
+             [...g.take(2)].join(',') === '1,2'",
+            true,
+        ),
+        (
+            "var g = (function* () { yield 1; yield 2; yield 3; })(); \
+             [...g.drop(1)].join(',') === '2,3'",
+            true,
+        ),
+        (
+            "var g = (function* () { yield 1; })(); \
+             [...g.flatMap(function (x) { return [x, x]; })].join(',') === '1,1'",
+            true,
+        ),
+        // 生成器结果对象是 Iterator。
+        ("(function* () {})().map(function (x) { return x; }) instanceof Iterator", true),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_helper_plain_call_and_edge_cases() {
+    // 非 Iterator 子类但实现迭代协议的 this（.call 路径）、已耗尽底层、
+    // next getter 抛错、非可调用底层 next。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        // .call 在纯 next 对象上可用（this-plain-iterator）。
+        (
+            "var it = { next: function () { var i = 0; return function () { i++; \
+               return i <= 2 ? { done: false, value: i } : { done: true }; }; }() }; \
+             var m = Iterator.prototype.map.call(it, function (x) { return x * 2; }); \
+             var out = []; \
+             var x; \
+             while (!(x = m.next()).done) out.push(x.value); \
+             out.join(',') === '2,4'",
+            true,
+        ),
+        // 已耗尽底层：map 结果首个 next 即 done。
+        (
+            "var it = (function* () {})(); \
+             it.next(); \
+             it.map(function (x) { return x; }).next().done",
+            true,
+        ),
+        // next getter 在方法调用时抛错：原错误透传（回调合法时读 next）。
+        (
+            "class TI extends Iterator { get next() { throw new RangeError('boom'); } } \
+             var ok = false; \
+             try { new TI().map(function (x) { return x; }); } catch (e) { ok = e instanceof RangeError; } \
+             ok",
+            true,
+        ),
+        // 底层 next 非可调用：建 wrapper 成功，首个 helper next 抛 TypeError。
+        (
+            "var it = Iterator.prototype.map.call({ next: 0 }, function (x) { return x; }); \
+             var ok = false; \
+             try { it.next(); } catch (e) { ok = e instanceof TypeError; } \
+             ok",
+            true,
+        ),
+        // 底层在 map 之前被关闭：helper next 立即 done。
+        (
+            "var it = (function* () { yield 1; })(); \
+             it.return(); \
+             var m = it.map(function (x) { return x; }); \
+             m.next().done",
+            true,
+        ),
+        // 链式 map×3 的 return 逐层关闭到底层。
+        (
+            "var closed = 0; \
+             class CI extends Iterator { \
+               next() { return { done: false, value: 1 }; } \
+               return() { closed++; throw new RangeError('boom'); } \
+             } \
+             var it = new CI().map(function (x) { return x; }).map(function (x) { return x; }); \
+             var threw = false; \
+             try { it.return(); } catch (e) { threw = e instanceof RangeError; } \
+             threw && closed === 1",
+            true,
+        ),
+        // flatMap 内层返回 [Symbol.iterator]: 0（不可调用）→ TypeError 且关外层。
+        (
+            "var outerClosed = 0; \
+             class CI extends Iterator { \
+               next() { return { done: false, value: 1 }; } \
+               return() { outerClosed++; return {}; } \
+             } \
+             var it = new CI().flatMap(function () { return { [Symbol.iterator]: 0, next: function () {} }; }); \
+             var ok = false; \
+             try { it.next(); } catch (e) { ok = e instanceof TypeError; } \
+             ok && outerClosed === 1",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_helper_rebound_after_full_reset() {
+    // dirty reset 后 5 返回迭代器方法 + helper 原型三方法重绑正确。
+    let mut vm = Vm::new();
+    unsafe { &mut *(vm.session().builtin_world().iterator_proto.as_ptr() as *mut JsObject) }.bump_generation();
+    vm.full_reset();
+    let bool_cases = [
+        (
+            "var out = []; \
+             var it = Iterator.from([1, 2, 3]).map(function (v) { return v * 2; }); \
+             var x; \
+             while (!(x = it.next()).done) out.push(x.value); \
+             out.join(',') === '2,4,6'",
+            true,
+        ),
+        (
+            "var it = Iterator.from([1, 2, 3]).filter(function (v) { return v % 2 === 1; }); \
+             [...it].join(',') === '1,3'",
+            true,
+        ),
+        (
+            "var it = Iterator.from([1, 2, 3]).take(2); \
+             [...it].join(',') === '1,2'",
+            true,
+        ),
+        (
+            "var it = Iterator.from([1, 2, 3]).drop(1); \
+             [...it].join(',') === '2,3'",
+            true,
+        ),
+        (
+            "var it = Iterator.from([1, 2]).flatMap(function (v) { return [v, v]; }); \
+             [...it].join(',') === '1,1,2,2'",
+            true,
+        ),
+        (
+            "var it = Iterator.from([1]).map(function (x) { return x; }); \
+             Object.getPrototypeOf(it)[Symbol.toStringTag] === 'Iterator Helper'",
+            true,
+        ),
+        // 生成器原型链在 reset 后仍指向新 %IteratorPrototype%。
+        (
+            "Object.getPrototypeOf(Object.getPrototypeOf(function* () {}.prototype)) === Iterator.prototype",
+            true,
+        ),
+        // helper 三方法可用。
+        (
+            "var it = Iterator.from([1, 2]).map(function (x) { return x; }); \
+             it.return().done === true",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}

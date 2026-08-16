@@ -458,6 +458,56 @@ fn bind_iterator_protos(core: &Arc<KernelCore>, session: &KernelSession) {
         );
     }
 
+    // %IteratorPrototype% 的 5 个返回迭代器方法（建 wrapper 挂
+    // %IteratorHelperPrototype%）：map/filter/take/drop/flatMap，length 均为 1。
+    let si_map = core.perm_interner().intern("map").0;
+    if core.shape_forge().lookup_position(iter_proto.shape_id(), si_map).is_none() {
+        apply_binding_table(
+            world,
+            iter_proto,
+            core,
+            &[
+                ("map", oxide_builtins::iterator::iterator_map::<crate::vm::Vm> as *const (), 1),
+                ("filter", oxide_builtins::iterator::iterator_filter::<crate::vm::Vm> as *const (), 1),
+                ("take", oxide_builtins::iterator::iterator_take::<crate::vm::Vm> as *const (), 1),
+                ("drop", oxide_builtins::iterator::iterator_drop::<crate::vm::Vm> as *const (), 1),
+                ("flatMap", oxide_builtins::iterator::iterator_flat_map::<crate::vm::Vm> as *const (), 1),
+            ],
+        );
+    }
+
+    // %IteratorHelperPrototype%：wrapper 结果对象的共享原型（链到
+    // %IteratorPrototype%），绑 next/return/throw 三方法（throw length=1，
+    // next/return 为 0）+ @@toStringTag 数据属性 "Iterator Helper"。
+    let helper_proto_ptr = world.iterator_helper_proto.as_ptr() as *mut JsObject;
+    let helper_proto = unsafe { &mut *helper_proto_ptr };
+    let si_next = core.perm_interner().intern("next").0;
+    if core.shape_forge().lookup_position(helper_proto.shape_id(), si_next).is_none() {
+        apply_binding_table(
+            world,
+            helper_proto,
+            core,
+            &[
+                ("next", oxide_builtins::iterator::iterator_helper_next::<crate::vm::Vm> as *const (), 0),
+                (
+                    "return",
+                    oxide_builtins::iterator::iterator_helper_return::<crate::vm::Vm> as *const (),
+                    0,
+                ),
+                ("throw", oxide_builtins::iterator::iterator_helper_throw::<crate::vm::Vm> as *const (), 1),
+            ],
+        );
+    }
+    if core
+        .shape_forge()
+        .lookup_position(helper_proto.shape_id(), sym_to_string_tag)
+        .is_none()
+    {
+        let sf = core.perm_interner().as_ref();
+        let tag = JsValue::perm_string(sf.string_ptr(sf.intern("Iterator Helper").0));
+        bind_well_known_data_property(core, helper_proto, 9, tag, PropAttributes::new(false, false, true));
+    }
+
     // %ArrayIteratorPrototype% 服务 Array/TA 两族；Map/Set 共用按 `__mode__`
     // 分发的实现；%RegExpStringIteratorPrototype% 供 matchAll。
     bind_iterator_proto_next(

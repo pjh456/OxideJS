@@ -8,6 +8,13 @@ use oxide_runtime_api::{to_object, NativeResult, VmHost};
 const INNER_PROP: &str = "__inner__";
 const INDEX_PROP: &str = "__index__";
 const MODE_PROP: &str = "__mode__";
+const NEXT_CACHE_PROP: &str = "__next__";
+const KIND_PROP: &str = "__kind__";
+const STATE_PROP: &str = "__state__";
+const COUNTER_PROP: &str = "__counter__";
+const CALLBACK_PROP: &str = "__callback__";
+const INNER_ITER_PROP: &str = "__inner_iter__";
+const INNER_NEXT_PROP: &str = "__inner_next__";
 
 /// `Iterator` 构造逻辑：不是构造函数，`new Iterator()` / `Iterator()` 均抛 TypeError；
 /// subclass `super()` 路径放行并返回 undefined（原型由调用方按 newTarget 设置）。
@@ -284,6 +291,190 @@ fn counter_number(counter: i64) -> JsValue {
     }
 }
 
+// ── 返回迭代器 5 方法（map/filter/take/drop/flatMap）──
+
+/// Iterator helper 的 kind 编码：wrapper `__kind__` 槽存枚举值，
+/// `%IteratorHelperPrototype%` 的单一 next/return/throw 读槽后按 kind 分发
+/// （复用 Map/Set 迭代器 `__mode__` 分发模式）。判别值稳定，改动须同步 `from_i32`。
+#[derive(Clone, Copy, PartialEq)]
+#[repr(i32)]
+pub(crate) enum IteratorHelperKind {
+    Map = 0,
+    Filter = 1,
+    Take = 2,
+    Drop = 3,
+    FlatMap = 4,
+}
+
+impl IteratorHelperKind {
+    fn from_i32(value: i32) -> Self {
+        match value {
+            0 => Self::Map,
+            1 => Self::Filter,
+            2 => Self::Take,
+            3 => Self::Drop,
+            4 => Self::FlatMap,
+            _ => Self::Map,
+        }
+    }
+}
+
+/// 读 wrapper 整型槽；槽缺失或类型不符时返回 `fallback`。
+fn read_slot_int<H: VmHost>(vm: &mut H, obj: &JsObject, si: u32, fallback: i32) -> i32 {
+    match vm.ordinary_get(obj, si, JsValue::undefined()) {
+        Ok(v) if v.is_int() => v.as_int(),
+        Ok(v) if v.is_double() => v.as_double() as i32,
+        _ => fallback,
+    }
+}
+
+/// 读 wrapper 浮点槽（take/drop 的 remaining）；槽缺失时返回 `fallback`。
+fn read_slot_double<H: VmHost>(vm: &mut H, obj: &JsObject, si: u32, fallback: f64) -> f64 {
+    match vm.ordinary_get(obj, si, JsValue::undefined()) {
+        Ok(v) if v.is_double() => v.as_double(),
+        Ok(v) if v.is_int() => v.as_int() as f64,
+        _ => fallback,
+    }
+}
+
+/// 读 wrapper 计数器槽为 i64（map/filter/flatMap 的元素计数，可能溢出 i32）。
+fn read_counter<H: VmHost>(vm: &mut H, obj: &JsObject, si: u32) -> i64 {
+    match vm.ordinary_get(obj, si, JsValue::undefined()) {
+        Ok(v) if v.is_int() => v.as_int() as i64,
+        Ok(v) if v.is_double() => v.as_double() as i64,
+        _ => 0,
+    }
+}
+
+/// ToIntegerOrInfinity 近似：ToNumber 后向零截断，保留 ±∞；NaN 判定由调用方
+/// 在截断前语义等价地做（`trunc(NaN)` 仍为 NaN）。ToNumber 抛错透传原异常值。
+fn to_integer_or_infinity<H: VmHost>(vm: &mut H, value: JsValue) -> Result<f64, JsValue> {
+    let num = vm.coerce_number_bounded(value).map_err(|e| engine_error(vm, &e))?;
+    Ok(num.trunc())
+}
+
+/// take/drop 的共享前置：`this` 非对象 → TypeError；limit 经 ToIntegerOrInfinity
+/// 校验（NaN/负值 → RangeError，ToNumber 抛错透传），校验失败均先关底层
+/// （2024 规范更新：参数校验失败也执行 IteratorClose，且不读 next）。
+///
+/// # 返回
+/// - `Ok((iterated, next, int_limit))`：GetIteratorDirect 结果 + 截断后的 limit
+///   （±∞ 用 f64 哨兵表示）。
+fn validate_limit_and_get_direct<H: VmHost>(
+    vm: &mut H, this_val: JsValue, limit: JsValue,
+) -> Result<(JsValue, JsValue, f64), JsValue> {
+    if !this_val.is_object() {
+        return Err(crate::error::create_type_error(vm, "Iterator.prototype method called on non-object"));
+    }
+    let int_limit = match to_integer_or_infinity(vm, limit) {
+        Ok(n) => n,
+        Err(v) => {
+            let _ = iterator_close_record(vm, this_val, Some(v));
+            return Err(v);
+        }
+    };
+    if int_limit.is_nan() || int_limit < 0.0 {
+        let err = crate::error::create_range_error(vm, "Iterator.prototype method requires a non-negative limit");
+        let _ = iterator_close_record(vm, this_val, Some(err));
+        return Err(err);
+    }
+    get_iterator_direct(vm, this_val).map(|(iterated, next)| (iterated, next, int_limit))
+}
+
+/// GetIteratorFlattenable（reject-primitives）：把 flatMap 的 mapper 返回值解析为
+/// 内层迭代器记录（对象 + 缓存 next）。
+///
+/// 不能复用 [`get_iterator`]：后者对 Array 等内建集合直接返回原值、不走
+/// `@@iterator`，而 flattenable 要求数组经 `@@iterator` 产出内层迭代器。
+///
+/// # 步骤
+/// 1. 非对象 → TypeError（原始值一律拒绝，含字符串）。
+/// 2. `@@iterator` 可调用 → 调用，结果非对象 → TypeError；getter/call 抛错透传。
+/// 3. `@@iterator` 为 null/undefined → 回退原对象自身作迭代器（鸭子 next）。
+/// 4. `@@iterator` 为其它不可调用值 → TypeError。
+///
+/// # 返回
+/// - `Ok((iter, next))`：内层迭代器 + GetIteratorDirect 缓存的 next。
+fn get_iterator_flattenable<H: VmHost>(vm: &mut H, value: JsValue) -> Result<(JsValue, JsValue), JsValue> {
+    if !value.is_object() {
+        return Err(crate::error::create_type_error(vm, "iterator mapper result is not an object"));
+    }
+    let obj = unsafe { &*value.as_js_object_ptr() };
+    let sym_iter_si = make_well_known_symbol_key(0);
+    let method = match vm.ordinary_get(obj, sym_iter_si, value) {
+        Ok(m) => m,
+        Err(err) => return Err(engine_error(vm, &err)),
+    };
+    let inner = if is_callable(method) {
+        let it = vm.call_function_sync(method, value, &[]).map_err(|e| engine_error(vm, &e))?;
+        if !it.is_object() {
+            return Err(crate::error::create_type_error(
+                vm,
+                "iterator mapper result @@iterator returned a non-object",
+            ));
+        }
+        it
+    } else if method.is_undefined() || method.is_null() {
+        value
+    } else {
+        return Err(crate::error::create_type_error(vm, "iterator mapper result @@iterator is not callable"));
+    };
+    get_iterator_direct(vm, inner)
+}
+
+/// 创建 Iterator helper 结果对象：空对象挂 `%IteratorHelperPrototype%`，写
+/// `__inner__`/`__next__`/`__kind__`/`__state__`/`__counter__`/`__callback__`
+/// 槽；flatMap 的内层槽初始为 undefined。next/return/throw 挂在共享原型上，
+/// wrapper 不设 own 方法（与集合迭代器 wrapper 同构，GC 经 shape 属性槽自动遍历）。
+///
+/// # 参数
+/// - `counter`：map/filter/flatMap 传 `0`（int 计数），take/drop 传
+///   `float(int_limit)`（f64 remaining，`+∞` 为哨兵）。
+fn make_iterator_helper<H: VmHost>(
+    vm: &mut H, inner: JsValue, next: JsValue, kind: IteratorHelperKind, callback: JsValue, counter: JsValue,
+) -> JsValue {
+    let helper_proto = vm.session().builtin_world().iterator_helper_proto.as_ptr() as *mut JsObject;
+    let wrapper = vm
+        .epoch()
+        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(helper_proto)));
+    let wrapper_obj = unsafe { &mut *wrapper };
+    let inner_si = vm.kernel_core().perm_interner().intern(INNER_PROP).0;
+    let next_si = vm.kernel_core().perm_interner().intern(NEXT_CACHE_PROP).0;
+    let kind_si = vm.kernel_core().perm_interner().intern(KIND_PROP).0;
+    let state_si = vm.kernel_core().perm_interner().intern(STATE_PROP).0;
+    let counter_si = vm.kernel_core().perm_interner().intern(COUNTER_PROP).0;
+    let callback_si = vm.kernel_core().perm_interner().intern(CALLBACK_PROP).0;
+    let inner_iter_si = vm.kernel_core().perm_interner().intern(INNER_ITER_PROP).0;
+    let inner_next_si = vm.kernel_core().perm_interner().intern(INNER_NEXT_PROP).0;
+    vm.set_or_create_prop_value(wrapper_obj, inner_si, inner);
+    vm.set_or_create_prop_value(wrapper_obj, next_si, next);
+    vm.set_or_create_prop_value(wrapper_obj, kind_si, JsValue::int(kind as i32));
+    vm.set_or_create_prop_value(wrapper_obj, state_si, JsValue::int(0));
+    vm.set_or_create_prop_value(wrapper_obj, counter_si, counter);
+    vm.set_or_create_prop_value(wrapper_obj, callback_si, callback);
+    vm.set_or_create_prop_value(wrapper_obj, inner_iter_si, JsValue::undefined());
+    vm.set_or_create_prop_value(wrapper_obj, inner_next_si, JsValue::undefined());
+    JsValue::from_js_object(wrapper)
+}
+
+/// 校验 wrapper 对象形态：`this` 非对象或非 helper wrapper（无 `__inner__` 槽）
+/// → TypeError，等价规范的 RequireInternalSlot 检查。
+///
+/// # 返回
+/// - `Ok(inner)`：底层迭代器值（wrapper `__inner__` 槽）。
+fn validate_helper_this<H: VmHost>(vm: &mut H, this_val: JsValue, method: &str) -> Result<JsValue, JsValue> {
+    if !this_val.is_object() {
+        return Err(crate::error::create_type_error(vm, &format!("{method} called on non-object")));
+    }
+    let obj = unsafe { &*this_val.as_js_object_ptr() };
+    let inner_si = vm.kernel_core().perm_interner().intern(INNER_PROP).0;
+    let inner = vm.ordinary_get(obj, inner_si, this_val).map_err(|e| engine_error(vm, &e))?;
+    if !inner.is_object() {
+        return Err(crate::error::create_type_error(vm, &format!("{method} called on non-iterator-helper")));
+    }
+    Ok(inner)
+}
+
 // ── 终端 6 方法 ──
 
 /// `%Iterator.prototype%.forEach(procedure)`：消费全部元素，逐个调用 procedure。
@@ -533,6 +724,425 @@ fn make_array_from_list<H: VmHost>(vm: &mut H, items: &[JsValue]) -> JsValue {
         (*arr).set_prop_count(items.len());
     }
     JsValue::from_js_object(arr)
+}
+
+// ── 返回迭代器 5 方法 + %IteratorHelperPrototype% 状态机 ──
+
+/// `%Iterator.prototype%.map(mapper)`：逐元素 `mapper(value, counter)`，产出
+/// helper wrapper。
+///
+/// # 步骤
+/// 1. 共享前置：`this` 对象校验 + 回调可调用校验（失败关底层）+ GetIteratorDirect。
+/// 2. 建 Map wrapper（`__kind__`=0，回调存 `__callback__` 槽，计数从 0 起）。
+pub fn iterator_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let callback = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let (iterated, next) = match validate_terminal_and_get_direct(vm, this_val, callback) {
+        Ok(pair) => pair,
+        Err(v) => return NativeResult::Err(v),
+    };
+    NativeResult::Ok(make_iterator_helper(
+        vm,
+        iterated,
+        next,
+        IteratorHelperKind::Map,
+        callback,
+        JsValue::int(0),
+    ))
+}
+
+/// `%Iterator.prototype%.filter(predicate)`：谓词 truthy 的元素才产出，
+/// 计数每元素 +1（含被过滤元素）。
+///
+/// # 步骤
+/// 1. 共享前置：`this` 对象校验 + 谓词可调用校验（失败关底层）+ GetIteratorDirect。
+/// 2. 建 Filter wrapper（`__kind__`=1）。
+pub fn iterator_filter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let callback = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let (iterated, next) = match validate_terminal_and_get_direct(vm, this_val, callback) {
+        Ok(pair) => pair,
+        Err(v) => return NativeResult::Err(v),
+    };
+    NativeResult::Ok(make_iterator_helper(
+        vm,
+        iterated,
+        next,
+        IteratorHelperKind::Filter,
+        callback,
+        JsValue::int(0),
+    ))
+}
+
+/// `%Iterator.prototype%.take(limit)`：最多产出 limit 个元素，达标即关底层。
+///
+/// # 步骤
+/// 1. limit 经 ToIntegerOrInfinity 校验（NaN/负值 → RangeError 且关底层）。
+/// 2. 建 Take wrapper（`__counter__` 槽存 f64 remaining，+∞ 哨兵）。
+/// 3. next：remaining 为 0 → 关底层返回 done；否则递减后逐元素产出。
+pub fn iterator_take<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let limit = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let (iterated, next, int_limit) = match validate_limit_and_get_direct(vm, this_val, limit) {
+        Ok(triple) => triple,
+        Err(v) => return NativeResult::Err(v),
+    };
+    NativeResult::Ok(make_iterator_helper(
+        vm,
+        iterated,
+        next,
+        IteratorHelperKind::Take,
+        JsValue::undefined(),
+        JsValue::float(int_limit),
+    ))
+}
+
+/// `%Iterator.prototype%.drop(limit)`：跳过 limit 个元素后透传，永不主动关底层。
+///
+/// # 步骤
+/// 1. limit 经 ToIntegerOrInfinity 校验（NaN/负值 → RangeError 且关底层）。
+/// 2. 建 Drop wrapper（`__counter__` 槽存 f64 remaining，+∞ 哨兵）。
+/// 3. next：remaining>0 时循环跳过（耗尽不关底层），之后直通底层。
+pub fn iterator_drop<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let limit = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let (iterated, next, int_limit) = match validate_limit_and_get_direct(vm, this_val, limit) {
+        Ok(triple) => triple,
+        Err(v) => return NativeResult::Err(v),
+    };
+    NativeResult::Ok(make_iterator_helper(
+        vm,
+        iterated,
+        next,
+        IteratorHelperKind::Drop,
+        JsValue::undefined(),
+        JsValue::float(int_limit),
+    ))
+}
+
+/// `%Iterator.prototype%.flatMap(mapper)`：mapper 返回值经 GetIteratorFlattenable
+/// 展开为内层迭代器，逐元素产出后再取外层下一元素。
+///
+/// # 步骤
+/// 1. 共享前置：`this` 对象校验 + 回调可调用校验（失败关底层）+ GetIteratorDirect。
+/// 2. 建 FlatMap wrapper（`__kind__`=4，内层槽初始为 undefined）。
+/// 3. next：内层活跃 → 步内层产出；内层耗尽 → 清槽后步外层 → mapper →
+///    GetIteratorFlattenable 建新内层。
+pub fn iterator_flat_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let callback = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let (iterated, next) = match validate_terminal_and_get_direct(vm, this_val, callback) {
+        Ok(pair) => pair,
+        Err(v) => return NativeResult::Err(v),
+    };
+    NativeResult::Ok(make_iterator_helper(
+        vm,
+        iterated,
+        next,
+        IteratorHelperKind::FlatMap,
+        callback,
+        JsValue::int(0),
+    ))
+}
+
+/// `%IteratorHelperPrototype%.next`：读 wrapper `__kind__` 分发 5 种推进循环，
+/// 统一完成态短路与重入守卫。
+///
+/// # 步骤
+/// 1. `__state__`=2（完成）→ 直接返回 `{undefined, true}`（return 不再转发）。
+/// 2. `__state__`=1（重入）→ TypeError（等价 GeneratorValidate 的 executing 检查）。
+/// 3. 置 1 后按 kind 推进：产出值 → 置回 0 返回 `{value, false}`；耗尽/错误 → 置 2
+///    后返回 done / 透传异常（规范生成器 body 终止即 completed，后续调用短路）。
+pub fn iterator_helper_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let inner = match validate_helper_this(vm, this_val, "Iterator helper next") {
+        Ok(v) => v,
+        Err(v) => return NativeResult::Err(v),
+    };
+    let helper = unsafe { &mut *this_val.as_js_object_ptr() };
+    let state_si = vm.kernel_core().perm_interner().intern(STATE_PROP).0;
+    let state = read_slot_int(vm, helper, state_si, 2);
+    if state == 2 {
+        return NativeResult::Ok(make_iter_result(vm, JsValue::undefined(), true));
+    }
+    if state == 1 {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Iterator helper is already executing"));
+    }
+    let kind_si = vm.kernel_core().perm_interner().intern(KIND_PROP).0;
+    let kind = IteratorHelperKind::from_i32(read_slot_int(vm, helper, kind_si, 0));
+    vm.set_or_create_prop_value(helper, state_si, JsValue::int(1));
+    let next_si = vm.kernel_core().perm_interner().intern(NEXT_CACHE_PROP).0;
+    let next = vm.ordinary_get(helper, next_si, this_val).unwrap_or(JsValue::undefined());
+    let step = match kind {
+        IteratorHelperKind::Map => helper_step_map(vm, this_val, helper, inner, next),
+        IteratorHelperKind::Filter => helper_step_filter(vm, this_val, helper, inner, next),
+        IteratorHelperKind::Take => helper_step_take(vm, helper, inner, next),
+        IteratorHelperKind::Drop => helper_step_drop(vm, helper, inner, next),
+        IteratorHelperKind::FlatMap => helper_step_flat_map(vm, this_val, helper, inner, next),
+    };
+    match step {
+        Ok(Some(value)) => {
+            vm.set_or_create_prop_value(helper, state_si, JsValue::int(0));
+            NativeResult::Ok(make_iter_result(vm, value, false))
+        }
+        Ok(None) => {
+            vm.set_or_create_prop_value(helper, state_si, JsValue::int(2));
+            NativeResult::Ok(make_iter_result(vm, JsValue::undefined(), true))
+        }
+        Err(exc) => {
+            vm.set_or_create_prop_value(helper, state_si, JsValue::int(2));
+            NativeResult::Err(exc)
+        }
+    }
+}
+
+/// `%IteratorHelperPrototype%.return`：关闭底层迭代器后置完成，返回
+/// `{undefined, true}`。
+///
+/// # 步骤
+/// 1. 完成态 → 直接返回 done（return 不重复转发）。
+/// 2. 重入（执行中）→ TypeError。
+/// 3. 置完成；flatMap 先关内层（return 语义：内层关闭错误优先于外层）再关外层；
+///    关闭抛错 → 传播，此后 next/return/throw 全部短路。
+pub fn iterator_helper_return<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let inner = match validate_helper_this(vm, this_val, "Iterator helper return") {
+        Ok(v) => v,
+        Err(v) => return NativeResult::Err(v),
+    };
+    let helper = unsafe { &mut *this_val.as_js_object_ptr() };
+    let state_si = vm.kernel_core().perm_interner().intern(STATE_PROP).0;
+    let state = read_slot_int(vm, helper, state_si, 2);
+    if state == 2 {
+        return NativeResult::Ok(make_iter_result(vm, JsValue::undefined(), true));
+    }
+    if state == 1 {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Iterator helper is already executing"));
+    }
+    vm.set_or_create_prop_value(helper, state_si, JsValue::int(2));
+    let kind_si = vm.kernel_core().perm_interner().intern(KIND_PROP).0;
+    if IteratorHelperKind::from_i32(read_slot_int(vm, helper, kind_si, 0)) == IteratorHelperKind::FlatMap {
+        let inner_iter_si = vm.kernel_core().perm_interner().intern(INNER_ITER_PROP).0;
+        if let Ok(inner_iter) = vm.ordinary_get(helper, inner_iter_si, this_val) {
+            if inner_iter.is_object() {
+                // 内层关闭出错：以该错误关外层（外层 return 错误被吞），传播内层错误。
+                if let Err(inner_err) = iterator_close_record(vm, inner_iter, None) {
+                    let _ = iterator_close_record(vm, inner, Some(inner_err));
+                    return NativeResult::Err(inner_err);
+                }
+            }
+        }
+    }
+    match iterator_close_record(vm, inner, None) {
+        Ok(()) => NativeResult::Ok(make_iter_result(vm, JsValue::undefined(), true)),
+        Err(v) => NativeResult::Err(v),
+    }
+}
+
+/// `%IteratorHelperPrototype%.throw(value)`：把 value 作为异常注入 helper。
+///
+/// # 步骤
+/// 1. 完成态 → 直接抛 value（GeneratorResumeAbrupt 的 completed 分支）。
+/// 2. 重入（执行中）→ TypeError。
+/// 3. 置完成；flatMap 先内层后外层关底层（原值恒胜出），再抛 value。
+pub fn iterator_helper_throw<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let inner = match validate_helper_this(vm, this_val, "Iterator helper throw") {
+        Ok(v) => v,
+        Err(v) => return NativeResult::Err(v),
+    };
+    let helper = unsafe { &mut *this_val.as_js_object_ptr() };
+    let state_si = vm.kernel_core().perm_interner().intern(STATE_PROP).0;
+    let state = read_slot_int(vm, helper, state_si, 2);
+    if state == 2 {
+        return NativeResult::Err(value);
+    }
+    if state == 1 {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Iterator helper is already executing"));
+    }
+    vm.set_or_create_prop_value(helper, state_si, JsValue::int(2));
+    let kind_si = vm.kernel_core().perm_interner().intern(KIND_PROP).0;
+    if IteratorHelperKind::from_i32(read_slot_int(vm, helper, kind_si, 0)) == IteratorHelperKind::FlatMap {
+        let inner_iter_si = vm.kernel_core().perm_interner().intern(INNER_ITER_PROP).0;
+        if let Ok(inner_iter) = vm.ordinary_get(helper, inner_iter_si, this_val) {
+            if inner_iter.is_object() {
+                // throw 语义：原值胜出，内层/外层关闭错误均被吞。
+                let _ = iterator_close_record(vm, inner_iter, Some(value));
+            }
+        }
+    }
+    let _ = iterator_close_record(vm, inner, Some(value));
+    NativeResult::Err(value)
+}
+
+/// Map 推进：底层 step → `mapper(value, counter)` → 产出 mapped。mapper 抛错
+/// 关底层后透传原值；底层 step 错误不关（规范 IteratorStepValue 字面）。
+fn helper_step_map<H: VmHost>(
+    vm: &mut H, this_val: JsValue, helper: &mut JsObject, inner: JsValue, next: JsValue,
+) -> Result<Option<JsValue>, JsValue> {
+    let counter_si = vm.kernel_core().perm_interner().intern(COUNTER_PROP).0;
+    let callback_si = vm.kernel_core().perm_interner().intern(CALLBACK_PROP).0;
+    let mapper = vm.ordinary_get(helper, callback_si, this_val).unwrap_or(JsValue::undefined());
+    let counter = read_counter(vm, helper, counter_si);
+    let value = match iterator_record_step(vm, next, inner) {
+        Ok(Some(v)) => v,
+        Ok(None) => return Ok(None),
+        Err(v) => return Err(v),
+    };
+    let cb_args = [value, counter_number(counter)];
+    match vm.call_function_sync(mapper, JsValue::undefined(), &cb_args) {
+        Ok(mapped) => {
+            vm.set_or_create_prop_value(helper, counter_si, counter_number(counter + 1));
+            Ok(Some(mapped))
+        }
+        Err(err) => {
+            let exc = engine_error(vm, &err);
+            let _ = iterator_close_record(vm, inner, Some(exc));
+            Err(exc)
+        }
+    }
+}
+
+/// Filter 推进：底层 step → `predicate(value, counter)`；truthy 产出 value，
+/// falsy 继续。counter 每元素 +1（含被过滤元素）；谓词抛错关底层后透传原值。
+fn helper_step_filter<H: VmHost>(
+    vm: &mut H, this_val: JsValue, helper: &mut JsObject, inner: JsValue, next: JsValue,
+) -> Result<Option<JsValue>, JsValue> {
+    let counter_si = vm.kernel_core().perm_interner().intern(COUNTER_PROP).0;
+    let callback_si = vm.kernel_core().perm_interner().intern(CALLBACK_PROP).0;
+    let predicate = vm.ordinary_get(helper, callback_si, this_val).unwrap_or(JsValue::undefined());
+    let mut counter = read_counter(vm, helper, counter_si);
+    loop {
+        let value = match iterator_record_step(vm, next, inner) {
+            Ok(Some(v)) => v,
+            Ok(None) => return Ok(None),
+            Err(v) => return Err(v),
+        };
+        let cb_args = [value, counter_number(counter)];
+        match vm.call_function_sync(predicate, JsValue::undefined(), &cb_args) {
+            Ok(selected) => {
+                counter += 1;
+                vm.set_or_create_prop_value(helper, counter_si, counter_number(counter));
+                if oxide_runtime_api::to_boolean(selected) {
+                    return Ok(Some(value));
+                }
+            }
+            Err(err) => {
+                let exc = engine_error(vm, &err);
+                let _ = iterator_close_record(vm, inner, Some(exc));
+                return Err(exc);
+            }
+        }
+    }
+}
+
+/// Take 推进：`__counter__` 槽存 f64 remaining；为 0 时关底层返回 done，
+/// 否则递减后逐元素产出。自然耗尽或 limit 达标后的完成态短路使 return 不再转发。
+fn helper_step_take<H: VmHost>(
+    vm: &mut H, helper: &mut JsObject, inner: JsValue, next: JsValue,
+) -> Result<Option<JsValue>, JsValue> {
+    let counter_si = vm.kernel_core().perm_interner().intern(COUNTER_PROP).0;
+    let remaining = read_slot_double(vm, helper, counter_si, f64::INFINITY);
+    if remaining == 0.0 {
+        // remaining 归零：正常完成形态关底层（return 错误胜出）。
+        return match iterator_close_record(vm, inner, None) {
+            Ok(()) => Ok(None),
+            Err(v) => Err(v),
+        };
+    }
+    let remaining = if remaining == f64::INFINITY { f64::INFINITY } else { remaining - 1.0 };
+    let value = match iterator_record_step(vm, next, inner) {
+        Ok(Some(v)) => v,
+        Ok(None) => return Ok(None),
+        Err(v) => return Err(v),
+    };
+    vm.set_or_create_prop_value(helper, counter_si, JsValue::float(remaining));
+    Ok(Some(value))
+}
+
+/// Drop 推进：先跳过 remaining 个元素（耗尽不关底层），随后直通底层产出。
+fn helper_step_drop<H: VmHost>(
+    vm: &mut H, helper: &mut JsObject, inner: JsValue, next: JsValue,
+) -> Result<Option<JsValue>, JsValue> {
+    let counter_si = vm.kernel_core().perm_interner().intern(COUNTER_PROP).0;
+    let mut remaining = read_slot_double(vm, helper, counter_si, 0.0);
+    while remaining > 0.0 {
+        if remaining != f64::INFINITY {
+            remaining -= 1.0;
+        }
+        match iterator_record_step(vm, next, inner) {
+            Ok(Some(_)) => {}
+            Ok(None) => return Ok(None),
+            Err(v) => return Err(v),
+        }
+    }
+    // 跳过完成：remaining 归 0，之后每次 next 直通底层。
+    vm.set_or_create_prop_value(helper, counter_si, JsValue::float(0.0));
+    let value = match iterator_record_step(vm, next, inner) {
+        Ok(Some(v)) => v,
+        Ok(None) => return Ok(None),
+        Err(v) => return Err(v),
+    };
+    Ok(Some(value))
+}
+
+/// FlatMap 推进：内层活跃则步内层产出；内层耗尽则清槽回外层取下一映射。
+/// 内层步错只关外层（规范 IfAbruptCloseIterator(innerValue, iterated)），
+/// 外层步错不关；mapper/flattenable 抛错关外层后透传原值。
+fn helper_step_flat_map<H: VmHost>(
+    vm: &mut H, this_val: JsValue, helper: &mut JsObject, outer: JsValue, outer_next: JsValue,
+) -> Result<Option<JsValue>, JsValue> {
+    let counter_si = vm.kernel_core().perm_interner().intern(COUNTER_PROP).0;
+    let callback_si = vm.kernel_core().perm_interner().intern(CALLBACK_PROP).0;
+    let inner_iter_si = vm.kernel_core().perm_interner().intern(INNER_ITER_PROP).0;
+    let inner_next_si = vm.kernel_core().perm_interner().intern(INNER_NEXT_PROP).0;
+    let mapper = vm.ordinary_get(helper, callback_si, this_val).unwrap_or(JsValue::undefined());
+    let mut counter = read_counter(vm, helper, counter_si);
+    loop {
+        let inner_iter = vm.ordinary_get(helper, inner_iter_si, this_val).unwrap_or(JsValue::undefined());
+        if inner_iter.is_object() {
+            let inner_next = vm.ordinary_get(helper, inner_next_si, this_val).unwrap_or(JsValue::undefined());
+            match iterator_record_step(vm, inner_next, inner_iter) {
+                Ok(Some(v)) => return Ok(Some(v)),
+                Ok(None) => {
+                    // 内层自然耗尽：不关内层（规范只置 innerAlive=false），清槽回外层。
+                    vm.set_or_create_prop_value(helper, inner_iter_si, JsValue::undefined());
+                    vm.set_or_create_prop_value(helper, inner_next_si, JsValue::undefined());
+                    continue;
+                }
+                Err(v) => {
+                    let _ = iterator_close_record(vm, outer, Some(v));
+                    return Err(v);
+                }
+            }
+        }
+        let value = match iterator_record_step(vm, outer_next, outer) {
+            Ok(Some(v)) => v,
+            Ok(None) => return Ok(None),
+            Err(v) => return Err(v),
+        };
+        let cb_args = [value, counter_number(counter)];
+        let mapped = match vm.call_function_sync(mapper, JsValue::undefined(), &cb_args) {
+            Ok(m) => m,
+            Err(err) => {
+                let exc = engine_error(vm, &err);
+                let _ = iterator_close_record(vm, outer, Some(exc));
+                return Err(exc);
+            }
+        };
+        let (inner_it, inner_next_fn) = match get_iterator_flattenable(vm, mapped) {
+            Ok(pair) => pair,
+            Err(v) => {
+                let _ = iterator_close_record(vm, outer, Some(v));
+                return Err(v);
+            }
+        };
+        counter += 1;
+        vm.set_or_create_prop_value(helper, counter_si, counter_number(counter));
+        vm.set_or_create_prop_value(helper, inner_iter_si, inner_it);
+        vm.set_or_create_prop_value(helper, inner_next_si, inner_next_fn);
+    }
 }
 
 /// `%IteratorPrototype%[@@iterator]`：返回 this（迭代器对象自迭代）。

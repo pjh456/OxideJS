@@ -728,10 +728,11 @@ pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
     let sf = vm.kernel_core.perm_interner().as_ref();
     let sh = vm.kernel_core.shape_forge().as_ref();
     let fn_proto_val = vm.session.builtin_world().fn_proto_val();
-    let object_proto_val = JsValue::from_js_object(vm.session.builtin_world().object_proto.as_ptr() as *mut JsObject);
-
-    // %GeneratorPrototype%：proto = Object.prototype，方法 next/return/throw/@@iterator。
-    let mut gen_proto = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, object_proto_val));
+    // %GeneratorPrototype%：proto = %IteratorPrototype%（生成器是迭代器，继承
+    // @@iterator 与 Iterator helper 方法），方法 next/return/throw。
+    let iterator_proto_val =
+        JsValue::from_js_object(vm.session.builtin_world().iterator_proto.as_ptr() as *mut JsObject);
+    let mut gen_proto = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, iterator_proto_val));
     oxide_kernel::bind_methods_static!(
         &mut gen_proto,
         sf,
