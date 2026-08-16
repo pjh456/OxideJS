@@ -214,22 +214,97 @@ impl Emitter {
                 self.emit_computed_member_dynamic(assign, member, ctx)
             }
         } else if let oxide_parser::AssignmentTarget::PrivateFieldExpression(member) = &assign.left {
-            if assign.operator != AssignmentOperator::Assign {
-                return Err("compound assignment to private fields not supported".into());
+            let name = member.field.name.as_str();
+            // 逻辑赋值：GET_PRIVATE 读旧值（brand 检查在读时执行）→ 短路测试 →
+            // 通过才求值 RHS 并 SET_PRIVATE 写回，结果统一为旧值或新值。
+            if let Some(logical_op) = assign.operator.to_logical_operator() {
+                let store_label = ctx.next_label_id();
+                let end_label = ctx.next_label_id();
+                let obj_reg = self.emit_expression(&member.object, ctx)?;
+                let (brand_reg, brand_id) = self.private_access_brand(obj_reg, name, ctx)?;
+                let key_reg = self.emit_private_id_reg(name, ctx)?;
+                let result_reg = ctx.alloc_reg();
+                ctx.inst(Inst::get_private(
+                    Operand::Reg(result_reg),
+                    Operand::Reg(obj_reg),
+                    Operand::Reg(key_reg),
+                    brand_reg,
+                    brand_id,
+                ));
+                self.emit_logical_assign_test(logical_op, result_reg, store_label, end_label, ctx)?;
+                ctx.labels.set_label_pos(store_label, ctx.insts.len());
+                let val_reg = self.emit_expression(&assign.right, ctx)?;
+                ctx.inst(Inst::set_private(
+                    Operand::Reg(obj_reg),
+                    Operand::Reg(val_reg),
+                    Operand::Reg(key_reg),
+                    brand_reg,
+                    brand_id,
+                ));
+                ctx.inst(Inst::new(
+                    OpCode::LOAD_VAR,
+                    Operand::Reg(result_reg),
+                    Operand::Reg(val_reg),
+                    Operand::None,
+                ));
+                ctx.labels.set_label_pos(end_label, ctx.insts.len());
+                return Ok(result_reg);
             }
             let obj_reg = self.emit_expression(&member.object, ctx)?;
-            let val_reg = self.emit_expression(&assign.right, ctx)?;
-            let name = member.field.name.as_str();
             let (brand_reg, brand_id) = self.private_access_brand(obj_reg, name, ctx)?;
             let key_reg = self.emit_private_id_reg(name, ctx)?;
-            ctx.inst(Inst::set_private(
-                Operand::Reg(obj_reg),
-                Operand::Reg(val_reg),
-                Operand::Reg(key_reg),
-                brand_reg,
-                brand_id,
-            ));
-            Ok(val_reg)
+            if assign.operator != AssignmentOperator::Assign {
+                // 复合赋值保规范求值序：先 GET_PRIVATE 读旧值（brand 检查先于 RHS 副作用），
+                // 再求值 RHS，运算后 SET_PRIVATE 写回。
+                let val_reg = ctx.alloc_reg();
+                ctx.inst(Inst::get_private(
+                    Operand::Reg(val_reg),
+                    Operand::Reg(obj_reg),
+                    Operand::Reg(key_reg),
+                    brand_reg,
+                    brand_id,
+                ));
+                let rhs = self.emit_expression(&assign.right, ctx)?;
+                let op = match assign.operator {
+                    AssignmentOperator::Addition => OpCode::ADD,
+                    AssignmentOperator::Subtraction => OpCode::SUB,
+                    AssignmentOperator::Multiplication => OpCode::MUL,
+                    AssignmentOperator::Division => OpCode::DIV,
+                    AssignmentOperator::Remainder => OpCode::MOD,
+                    AssignmentOperator::Exponential => OpCode::COMPOUND_EXP,
+                    AssignmentOperator::BitwiseAnd => OpCode::BIT_AND,
+                    AssignmentOperator::BitwiseOR => OpCode::BIT_OR,
+                    AssignmentOperator::BitwiseXOR => OpCode::BIT_XOR,
+                    AssignmentOperator::ShiftLeft => OpCode::SHL,
+                    AssignmentOperator::ShiftRight => OpCode::SHR,
+                    AssignmentOperator::ShiftRightZeroFill => OpCode::USHR,
+                    _ => return Err(format!("compound assignment operator {:?} not supported", assign.operator)),
+                };
+                if assign.operator == AssignmentOperator::Exponential {
+                    // 指数无独立二元指令，COMPOUND_EXP 语义 rd=rd^a：rhs 放 a 槽。
+                    ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(rhs), Operand::None));
+                } else {
+                    ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(val_reg), Operand::Reg(rhs)));
+                }
+                ctx.inst(Inst::set_private(
+                    Operand::Reg(obj_reg),
+                    Operand::Reg(val_reg),
+                    Operand::Reg(key_reg),
+                    brand_reg,
+                    brand_id,
+                ));
+                Ok(val_reg)
+            } else {
+                let val_reg = self.emit_expression(&assign.right, ctx)?;
+                ctx.inst(Inst::set_private(
+                    Operand::Reg(obj_reg),
+                    Operand::Reg(val_reg),
+                    Operand::Reg(key_reg),
+                    brand_reg,
+                    brand_id,
+                ));
+                Ok(val_reg)
+            }
         } else if let oxide_parser::AssignmentTarget::AssignmentTargetIdentifier(id_ref) = &assign.left {
             if assign.operator != AssignmentOperator::Assign {
                 if let Some(logical_op) = assign.operator.to_logical_operator() {

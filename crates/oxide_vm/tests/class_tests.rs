@@ -637,3 +637,176 @@ fn class_generator_method_return_closes_with_value() {
     .unwrap();
     assert_eq!(vm.lookup_str(result).unwrap(), "1,99,true");
 }
+
+// ── 私有字段复合赋值（+= 等）与逻辑赋值（&&= ||= ??=）──
+
+// data 字段复合赋值：旧值读取 → 运算 → 写回，表达式结果与后续读取一致。
+#[test]
+fn private_field_compound_assignment_writes_back() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class C { #x = 1; m(){ return this.#x += 2; } get(){ return this.#x; } } var c = new C(); c.m()*10 + c.get()",
+    )
+    .unwrap();
+    assert_num(result, 33.0);
+}
+
+// 复合赋值先读旧值再求值 RHS：RHS 改写同一字段时仍以旧值参与运算。
+#[test]
+fn private_field_compound_assignment_reads_old_value_before_rhs() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class C { #x = 1; m(){ return this.#x += (this.#x = 5); } get(){ return this.#x; } } var c = new C(); c.m()*10 + c.get()",
+    )
+    .unwrap();
+    // 旧值 1 先读，RHS 把 #x 写为 5，1+5=6 再写回 → 结果 6。
+    assert_num(result, 66.0);
+}
+
+// 减法/乘法/除法复合赋值序列，验证三操作数二元运算路径。
+#[test]
+fn private_field_compound_assignment_arithmetic_operators() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class C { #x = 10; a(){ return this.#x -= 3; } b(){ return this.#x *= 2; } c(){ return this.#x /= 4; } } var c = new C(); c.a()*10000 + c.b()*100 + c.c()",
+    )
+    .unwrap();
+    assert_num(result, 7.0 * 10000.0 + 14.0 * 100.0 + 3.5);
+}
+
+// 位与/左移/位或复合赋值序列。
+#[test]
+fn private_field_compound_assignment_bitwise_and_shift() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class C { #x = 0b1010; a(){ return this.#x &= 0b1100; } b(){ return this.#x <<= 1; } c(){ return this.#x |= 0b1; } } var c = new C(); c.a()*100 + c.b()*10 + c.c()",
+    )
+    .unwrap();
+    assert_num(result, 8.0 * 100.0 + 16.0 * 10.0 + 17.0);
+}
+
+// 指数复合赋值走 COMPOUND_EXP（rhs 在 a 槽）。
+#[test]
+fn private_field_exponential_compound_assignment() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "class C { #x = 2; m(){ return this.#x **= 3; } } new C().m()").unwrap();
+    assert_num(result, 8.0);
+}
+
+// 私有访问器复合赋值：getter 读旧值、setter 写新值。
+#[test]
+fn private_accessor_compound_assignment_uses_getter_setter() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class C { static get #x(){ return this._v; } static set #x(v){ this._v = v; } static m(){ this.#x = 1; return this.#x += 2; } static get(){ return this._v; } } C.m()*10 + C.get()",
+    )
+    .unwrap();
+    assert_num(result, 33.0);
+}
+
+// readonly-accessor 复合赋值：无 setter 抛 TypeError。
+#[test]
+fn private_readonly_accessor_compound_assignment_throws_type_error() {
+    let mut vm = Vm::new();
+    let err = eval(
+        &mut vm,
+        "class C { static get #x(){ return 1; } static m(){ return this.#x += 1; } } C.m()",
+    )
+    .unwrap_err();
+    assert!(err.contains("TypeError"), "expected TypeError, got: {err}");
+}
+
+// 私有方法槽复合赋值：写方法槽抛 TypeError。
+#[test]
+fn private_method_compound_assignment_throws_type_error() {
+    let mut vm = Vm::new();
+    let err = eval(&mut vm, "class C { #m(){ return 1; } m(){ return this.#m += 1; } } new C().m()").unwrap_err();
+    assert!(err.contains("TypeError"), "expected TypeError, got: {err}");
+}
+
+// 私有方法槽逻辑赋值（&&= 走写回路径）同样抛 TypeError。
+#[test]
+fn private_method_logical_assignment_throws_type_error() {
+    let mut vm = Vm::new();
+    let err = eval(&mut vm, "class C { #m(){ return 1; } m(){ return this.#m &&= 2; } } new C().m()").unwrap_err();
+    assert!(err.contains("TypeError"), "expected TypeError, got: {err}");
+}
+
+// ||= 对 truthy 旧值短路：RHS 副作用不执行，字段保持原值。
+#[test]
+fn private_field_logical_or_keeps_truthy_value_and_short_circuits() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class C { #x = 1; m(){ var n = 0; var r = this.#x ||= ++n; return r*10 + n; } } new C().m()",
+    )
+    .unwrap();
+    // #x=1 为 truthy → 短路，RHS 不执行，结果保持 1。
+    assert_num(result, 10.0);
+}
+
+// ||= 对 falsy 旧值写回 RHS 值。
+#[test]
+fn private_field_logical_or_assigns_when_falsy() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class C { #x = 0; m(){ return this.#x ||= 5; } get(){ return this.#x; } } var c = new C(); c.m()*10 + c.get()",
+    )
+    .unwrap();
+    assert_num(result, 55.0);
+}
+
+// &&= 对 truthy 旧值写回 RHS 值。
+#[test]
+fn private_field_logical_and_assigns_when_truthy() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class C { #x = 1; m(){ return this.#x &&= 2; } get(){ return this.#x; } } var c = new C(); c.m()*10 + c.get()",
+    )
+    .unwrap();
+    assert_num(result, 22.0);
+}
+
+// &&= 对 falsy 旧值短路：RHS 副作用不执行，字段保持原值。
+#[test]
+fn private_field_logical_and_short_circuits_on_falsy() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class C { #x = 0; m(){ var n = 0; var r = this.#x &&= ++n; return r*10 + n; } } new C().m()",
+    )
+    .unwrap();
+    // #x=0 为 falsy → 短路，RHS 不执行，结果保持 0。
+    assert_num(result, 0.0);
+}
+
+// ??= 对 nullish（未初始化字段为 undefined）写回 RHS 值。
+#[test]
+fn private_field_nullish_coalesce_assigns_when_nullish() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class C { #x; m(){ return this.#x ??= 7; } get(){ return this.#x; } } var c = new C(); c.m()*10 + c.get()",
+    )
+    .unwrap();
+    assert_num(result, 77.0);
+}
+
+// ??= 对已定义旧值短路：RHS 副作用不执行。
+#[test]
+fn private_field_nullish_coalesce_short_circuits_on_defined() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class C { #x = 1; m(){ var n = 0; var r = this.#x ??= ++n; return r*10 + n; } } new C().m()",
+    )
+    .unwrap();
+    assert_num(result, 10.0);
+}
