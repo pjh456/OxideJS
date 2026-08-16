@@ -1919,3 +1919,127 @@ fn zoned_date_time_with_family_branding() {
     .unwrap();
     assert_eq!(str_val(&vm, r), "true|true|true");
 }
+
+#[test]
+fn zoned_date_time_add_duration_object() {
+    let mut vm = Vm::new();
+    // add-duration.js 对拍：240h + 800ns 叠加到负 epoch。
+    let r = eval(
+        &mut vm,
+        "const z = new Temporal.ZonedDateTime(-560174321098766n, 'UTC');
+         z.add(new Temporal.Duration(0, 0, 0, 0, 240, 0, 0, 0, 0, 800)).epochNanoseconds === 303825678902034n",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn zoned_date_time_add_constrain_and_month_boundary() {
+    let mut vm = Vm::new();
+    // 月末 + 1 月 constrain 钳制到 2 月 28；reject 抛 RangeError；月份/日叠加顺序一致。
+    let r = eval(
+        &mut vm,
+        "const z = new Temporal.ZonedDateTime(0n, 'UTC');
+         z.with({ day: 31 }).add({ months: 1 }).toString() + '|' +
+         (() => { try { z.with({ day: 31 }).add({ months: 1 }, { overflow: 'reject' }); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })() + '|' +
+         (z.add({ months: 1 }).add({ days: 1 }).epochNanoseconds === z.add({ months: 1, days: 1 }).epochNanoseconds)",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "1970-02-28T00:00:00+00:00[UTC]|true|true");
+}
+
+#[test]
+fn zoned_date_time_add_subtract_are_inverse() {
+    let mut vm = Vm::new();
+    // 同一 duration 符号反转互逆；blank duration 返回等值对象。
+    let r = eval(
+        &mut vm,
+        "const z = new Temporal.ZonedDateTime(1_700_000_000_123_456_789n, '+05:30');
+         (z.add({ days: 5, hours: 3 }).subtract({ days: 5, hours: 3 }).epochNanoseconds === z.epochNanoseconds) + '|' +
+         (z.subtract({ months: 1 }).add({ months: 1 }).epochNanoseconds === z.epochNanoseconds) + '|' +
+         (z.add(new Temporal.Duration()).epochNanoseconds === z.epochNanoseconds) + '|' +
+         (z.add('PT0S').toString() === z.toString())",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true|true|true");
+}
+
+#[test]
+fn zoned_date_time_add_subtract_intermediate_check() {
+    let mut vm = Vm::new();
+    // ±MAX instant 的 {days:∓1}：中间日期越 PlainDateTime 范围 → RangeError。
+    let r = eval(
+        &mut vm,
+        "const min = new Temporal.ZonedDateTime(-8640000000000000000000n, 'UTC');
+         const max = new Temporal.ZonedDateTime(8640000000000000000000n, 'UTC');
+         (() => { try { min.add({ days: -1 }); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })() + '|' +
+         (() => { try { min.subtract({ days: 1 }); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })() + '|' +
+         (() => { try { max.add({ days: 1 }); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })() + '|' +
+         (() => { try { max.subtract({ days: -1 }); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true|true|true");
+}
+
+#[test]
+fn zoned_date_time_add_slots_preserved() {
+    let mut vm = Vm::new();
+    // 运算结果保留 receiver 时区/日历槽。
+    let r = eval(
+        &mut vm,
+        "const z = new Temporal.ZonedDateTime(0n, 'UTC', 'gregory');
+         const a = z.add({ years: 1 });
+         (a.timeZoneId === 'UTC') + '|' +
+         (a.calendarId === 'gregory') + '|' +
+         (a.toString() === '1971-01-01T00:00:00+00:00[UTC]') + '|' +
+         (z.subtract({ years: 1 }).toString() === '1969-01-01T00:00:00+00:00[UTC]')",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true|true|true");
+}
+
+#[test]
+fn zoned_date_time_add_string_and_time_fields() {
+    let mut vm = Vm::new();
+    // duration 字符串与时间各字段（含跨天进位）合成正确。
+    let r = eval(
+        &mut vm,
+        "const z = new Temporal.ZonedDateTime(0n, 'UTC');
+         z.add('PT2H30M').toString() + '|' +
+         z.add({ hours: 24, minutes: 30 }).toString() + '|' +
+         z.add({ milliseconds: 1500, microseconds: 2, nanoseconds: 3 }).toString() + '|' +
+         z.subtract('PT1H').toString()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "1970-01-01T02:30:00+00:00[UTC]|1970-01-02T00:30:00+00:00[UTC]|1970-01-01T00:00:01.500002003+00:00[UTC]|1969-12-31T23:00:00+00:00[UTC]"
+    );
+}
+
+#[test]
+fn zoned_date_time_add_error_paths() {
+    let mut vm = Vm::new();
+    // 缺参 TypeError、混合符号 duration RangeError、epoch 越界 RangeError、branding TypeError。
+    let r = eval(
+        &mut vm,
+        "const z = new Temporal.ZonedDateTime(0n, 'UTC');
+         (() => { try { z.add(); return 'no-throw'; }
+                  catch (e) { return e instanceof TypeError; } })() + '|' +
+         (() => { try { z.add({ days: 1, hours: -1 }); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })() + '|' +
+         (() => { try { new Temporal.ZonedDateTime(8640000000000000000000n, 'UTC').add({ hours: 1 }); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })() + '|' +
+         (() => { try { Temporal.ZonedDateTime.prototype.add.call({}, {}); return 'no-throw'; }
+                  catch (e) { return e instanceof TypeError; } })() + '|' +
+         (() => { try { Temporal.ZonedDateTime.prototype.subtract.call({}, {}); return 'no-throw'; }
+                  catch (e) { return e instanceof TypeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true|true|true|true");
+}

@@ -425,6 +425,12 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
                 oxide_builtins::temporal::zoned_date_time_with_plain_time::<crate::vm::Vm> as *const (),
                 1,
             ),
+            ("add", oxide_builtins::temporal::zoned_date_time_add::<crate::vm::Vm> as *const (), 1),
+            (
+                "subtract",
+                oxide_builtins::temporal::zoned_date_time_subtract::<crate::vm::Vm> as *const (),
+                1,
+            ),
         ],
     );
 

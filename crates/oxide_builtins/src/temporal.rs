@@ -6162,6 +6162,102 @@ pub fn plain_date_time_subtract<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
     plain_date_time_apply_duration(vm, args, -1)
 }
 
+/// ZDT add/subtract 核心：本地分量叠加 duration（复用 plain_date_time_apply_duration 算法），
+/// 先做中间日期检查（AddZonedDateTime 的中间日期越界校验），再经 local_to_epoch_ns 转回。
+///
+/// # 步骤
+/// 1. branding + receiver 本地分量 + 时区偏移。
+/// 2. duration_like_values 归一 + temporal_overflow 解析（读序：duration → options）。
+/// 3. 时间增量（hours 起）与日期增量（y/m/w/d）分别按 sign 取反；时间部分
+///    div_euclid/rem_euclid 拆出 extra_days/new_time_ns。
+/// 4. 日期部分月份/日钳制叠加后先验中间日期（+ 原 time_ns 须在 PlainDateTime 范围）→ RangeError。
+/// 5. 时间进位合并 → 最终 (yy, mm, dd, new_time_ns) → valid_plain_date_time_range 校验。
+/// 6. local_to_epoch_ns + MAX_INSTANT_NS 校验 → make_zoned_date_time 保时区/日历槽。
+///
+/// # 边界与前提
+/// - duration 全 0 → 值不变的新对象（blank-duration 语义）。
+/// - 固定偏移下"中间 epoch + 时间增量"与"合并后 local_to_epoch_ns"严格相等，无需分步换算。
+fn zoned_date_time_apply_duration<H: VmHost>(vm: &mut H, args: &[u8], sign: i64) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_zoned_date_time(vm, obj));
+    let time_zone_id = to_string(obj.get_prop_at(1));
+    let offset_minutes = native_try!(zoned_date_time_offset_minutes(vm, obj));
+    let (year, month, day, time_ns) = match zoned_date_time_plain_parts(vm, obj) {
+        Ok(parts) => parts,
+        Err(error) => return NativeResult::Err(error),
+    };
+    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let values = match duration_like_values(vm, val) {
+        Ok(values) => values,
+        Err(error) => return NativeResult::Err(error),
+    };
+    let constrain = match temporal_overflow(vm, args) {
+        Ok(constrain) => constrain,
+        Err(error) => return NativeResult::Err(error),
+    };
+    const DAY_NS: i128 = 86_400_000_000_000;
+    // 时间字段（hours 起）单独换算纳秒；days 由日期部分处理，避免重复计入。
+    let [_, _, _, _, h, min, s, ms, us, ns] = values;
+    let time_delta = duration_component_integer(h).unwrap_or(0) * 3_600_000_000_000
+        + duration_component_integer(min).unwrap_or(0) * 60_000_000_000
+        + duration_component_integer(s).unwrap_or(0) * 1_000_000_000
+        + duration_component_integer(ms).unwrap_or(0) * 1_000_000
+        + duration_component_integer(us).unwrap_or(0) * 1_000
+        + duration_component_integer(ns).unwrap_or(0);
+    let total_ns = time_ns as i128 + time_delta * sign as i128;
+    let extra_days = total_ns.div_euclid(DAY_NS);
+    let new_time_ns = total_ns.rem_euclid(DAY_NS);
+
+    let [y, m, w, d, ..] = values;
+    let months =
+        (duration_component_integer(y).unwrap_or(0) * 12 + duration_component_integer(m).unwrap_or(0)) * sign as i128;
+    let total_month = i128::from(year) * 12 + i128::from(month) - 1 + months;
+    let ny = total_month.div_euclid(12);
+    let nm = total_month.rem_euclid(12) + 1;
+    let Some(max_day) = days_in_month(ny, nm) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid date"));
+    };
+    let day = i128::from(day);
+    let new_day = if day > max_day {
+        if !constrain {
+            return NativeResult::Err(crate::error::create_range_error(vm, "day out of range"));
+        }
+        max_day
+    } else {
+        day
+    };
+    let day_delta = duration_component_integer(w).unwrap_or(0) * 7 + duration_component_integer(d).unwrap_or(0);
+    // 中间检查：CalendarDateAdd 后的日期 + 原 time_ns 须在 PlainDateTime 范围
+    // （±MAX instant 的 {days:∓1} 在此拦截）。
+    let added_days = days_from_civil(ny, nm, new_day) + day_delta * sign as i128;
+    let (iy, im, id) = civil_from_days(added_days);
+    if !valid_plain_date_time_range(iy as i32, im as u32, id as u32, time_ns) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid date-time"));
+    }
+    let total_days = added_days + extra_days;
+    let (yy, mm, dd) = civil_from_days(total_days);
+    if !valid_plain_date_time_range(yy as i32, mm as u32, dd as u32, new_time_ns as f64) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid date-time"));
+    }
+    let epoch_ns = match local_to_epoch_ns(yy as i32, mm as u32, dd as u32, new_time_ns as f64, offset_minutes) {
+        Some(epoch_ns) if epoch_ns.unsigned_abs() <= MAX_INSTANT_NS as u128 => epoch_ns,
+        _ => return NativeResult::Err(crate::error::create_range_error(vm, "ZonedDateTime outside supported range")),
+    };
+    let calendar_id = get_calendar_id(obj, 2);
+    make_zoned_date_time(vm, epoch_ns, &time_zone_id, &calendar_id)
+}
+
+/// `Temporal.ZonedDateTime.prototype.add(durationLike, options)`。
+pub fn zoned_date_time_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    zoned_date_time_apply_duration(vm, args, 1)
+}
+
+/// `Temporal.ZonedDateTime.prototype.subtract(durationLike, options)`。
+pub fn zoned_date_time_subtract<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    zoned_date_time_apply_duration(vm, args, -1)
+}
+
 /// `Temporal.PlainDateTime.prototype.toJSON()`：输出默认 ISO 日期时间。
 pub fn plain_date_time_to_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     plain_date_time_iso_string(vm, args)
