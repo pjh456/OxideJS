@@ -140,8 +140,9 @@ fn parse_iso_timestamp(s: &str) -> f64 {
     f64::NAN
 }
 
-/// JS `Date()` 构造逻辑：无参取当前时间；单参支持时间戳/字符串/Date 对象；
-/// 多参按本地时间字段（年/月/日/时/分/秒/毫秒）组合。非构造调用返回日期字符串。
+/// JS `Date()` 构造逻辑：构造调用无参取当前时间、单参支持时间戳/字符串/Date 对象、
+/// 多参按本地时间字段（年/月/日/时/分/秒/毫秒）组合；普通调用忽略全部参数，
+/// 返回当前时刻的日期字符串（与 `new Date().toString()` 同格式）。
 pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let is_ctor_call = this_val.is_object() && {
@@ -163,6 +164,16 @@ pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             }
         }
     };
+
+    if !is_ctor_call {
+        // 普通调用：忽略全部参数（不做任何强制转换），返回当前时刻字符串。
+        let ms = Utc::now().timestamp_millis() as f64;
+        let s = match dt_from_ms(ms) {
+            Some(dt) => dt.format("%a %b %d %Y %H:%M:%S %Z %z").to_string(),
+            None => "Invalid Date".to_string(),
+        };
+        return NativeResult::Ok(vm.new_string_owned(s));
+    }
 
     let timestamp = if args.len() < 2 {
         Utc::now().timestamp_millis() as f64
@@ -221,17 +232,6 @@ pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             }
         }
     };
-
-    if !is_ctor_call {
-        let s = if timestamp.is_finite() {
-            dt_from_ms(timestamp)
-                .map(|dt| dt.to_rfc2822())
-                .unwrap_or_else(|| "Invalid Date".to_string())
-        } else {
-            "Invalid Date".to_string()
-        };
-        return NativeResult::Ok(vm.new_string_owned(s));
-    }
 
     let mut obj = JsObject::new_empty(
         EMPTY_SHAPE_ID,

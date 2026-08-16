@@ -49,6 +49,59 @@ fn date_parse_iso_with_offset() {
     assert_eq!(r.as_double(), 1577836800000.0);
 }
 
+// ── Date() 普通调用（非构造，S15.9.2.1）──
+
+#[test]
+fn date_call_returns_current_time_string() {
+    let mut vm = Vm::new();
+    // 无参与多参均返回当前时刻字符串，参数被完全忽略。
+    let r = eval(&mut vm, "Date()").unwrap();
+    assert!(r.is_string());
+    let r = eval(&mut vm, "Date(0, 0, 0)").unwrap();
+    assert!(r.is_string());
+    // 参数不做 ToNumber：toString 抛错的对象也不触发异常。
+    let r = eval(&mut vm, "Date({ toString() { throw 1; } })").unwrap();
+    assert!(r.is_string());
+}
+
+#[test]
+fn date_call_via_bind_no_panic() {
+    let mut vm = Vm::new();
+    // bind 转发后 this=null 落入普通调用路径；0,0,0 被忽略，不得按参数推导
+    // 时间戳（此前非 UTC+0 时区 year 0 回绕成负年触发 RFC2822 panic）。
+    let r = eval(&mut vm, "Date.bind(null)(0, 0, 0)").unwrap();
+    assert!(r.is_string());
+}
+
+#[test]
+fn date_call_output_matches_to_string() {
+    let mut vm = Vm::new();
+    // 普通调用输出与 new Date().toString() 同格式同内容（S15.9.2.1_A2）。
+    // 两次取当前时刻可能跨毫秒边界，故比较固定宽度的日期前缀段 `Www Mmm DD YYYY`
+    // （仅跨日才变）并以长度一致锁定整体格式。
+    let r = eval(
+        &mut vm,
+        concat!(
+            "var a = Date(); var b = (new Date()).toString(); ",
+            "(a.slice(0, 15) === b.slice(0, 15) && a.length === b.length) ? 1 : 0"
+        ),
+    )
+    .unwrap();
+    assert_eq!(r.as_int(), 1);
+}
+
+#[test]
+fn date_constructor_path_unaffected() {
+    let mut vm = Vm::new();
+    // 构造路径分派不受影响：仍返回 Date 对象且时间戳语义不变。
+    let r = eval(&mut vm, "typeof new Date()").unwrap();
+    assert_eq!(str_val(&vm, r), "object");
+    let r = eval(&mut vm, "new Date(0).getTime()").unwrap();
+    assert_eq!(r.as_double(), 0.0);
+    let r = eval(&mut vm, "new Date(2020, 0, 15).getFullYear()").unwrap();
+    assert_eq!(r.as_double(), 2020.0);
+}
+
 // ── 经 JS 调用 new Date() 构造器 ──
 
 #[test]
