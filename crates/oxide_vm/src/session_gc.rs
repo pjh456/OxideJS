@@ -8,7 +8,7 @@ use oxide_types::value::JsValue;
 use rustc_hash::FxBuildHasher;
 
 use crate::vm::Vm;
-use oxide_builtins::{array_buffer, data_view, map, regexp, set, typed_array};
+use oxide_builtins::{array_buffer, data_view, disposable_stack, map, regexp, set, typed_array};
 
 /// session 级 mark-sweep GC 的状态与统计。
 ///
@@ -95,6 +95,9 @@ impl SessionGc {
         }
         if obj.is_set() {
             edges.extend(set::set_native_edges(obj));
+        }
+        if obj.is_disposable_stack_obj() || obj.is_async_disposable_stack_obj() {
+            edges.extend(disposable_stack::dispose_edges(obj));
         }
         if obj.is_typed_array_obj() {
             edges.extend(typed_array::typed_array_native_edges(obj));
@@ -218,6 +221,13 @@ impl SessionGc {
         }
         if obj.is_set() {
             for value in set::set_native_edges(obj) {
+                if value.is_string() {
+                    Self::mark_string_live(live, value.as_string_ptr_mut());
+                }
+            }
+        }
+        if obj.is_disposable_stack_obj() || obj.is_async_disposable_stack_obj() {
+            for value in disposable_stack::dispose_edges(obj) {
                 if value.is_string() {
                     Self::mark_string_live(live, value.as_string_ptr_mut());
                 }
@@ -363,6 +373,7 @@ impl SessionGc {
 
             freed_bytes += map::drop_map_native(obj);
             freed_bytes += set::drop_set_native(obj);
+            freed_bytes += disposable_stack::drop_dispose_native(obj);
             freed_bytes += array_buffer::drop_array_buffer_native(obj);
             freed_bytes += regexp::drop_regexp_native(obj);
             freed_bytes += typed_array::drop_typed_array_native(obj);
@@ -422,6 +433,8 @@ impl SessionGc {
                     map::clone_map_native_with_rewrite(old_ref, new_ref, |value| value);
                 } else if old_ref.is_set() {
                     set::clone_set_native_with_rewrite(old_ref, new_ref, |value| value);
+                } else if old_ref.is_disposable_stack_obj() || old_ref.is_async_disposable_stack_obj() {
+                    disposable_stack::clone_dispose_native_with_rewrite(old_ref, new_ref, |value| value);
                 } else if old_ref.is_array_buffer_obj() {
                     array_buffer::clone_array_buffer_native(old_ref, new_ref);
                 } else if old_ref.is_typed_array_obj() {
@@ -464,6 +477,8 @@ impl SessionGc {
                 map::rewrite_map_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
             } else if obj.is_set() {
                 set::rewrite_set_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
+            } else if obj.is_disposable_stack_obj() || obj.is_async_disposable_stack_obj() {
+                disposable_stack::rewrite_dispose_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
             } else if obj.is_typed_array_obj() {
                 typed_array::rewrite_typed_array_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
             } else if obj.is_data_view_obj() {

@@ -14,6 +14,8 @@ pub mod bind_boolean;
 pub mod bind_data_view;
 /// Date 构造器与原型的 native 方法绑定。
 pub mod bind_date;
+/// DisposableStack 构造器与原型的 native 方法绑定（含 dirty reset 同步）。
+pub mod bind_disposable_stack;
 /// Error 家族构造器与原型的 native 方法绑定（含各子类型构造器创建）。
 pub mod bind_error;
 /// Function 构造器与原型的 native 方法绑定。
@@ -972,6 +974,7 @@ pub fn bind_global_builtin_slots(core: &Arc<KernelCore>, session: &KernelSession
 
     bind_reflect_global(core, session, global);
     bind_iterator_global(core, session, global);
+    bind_disposable_stack::bind_disposable_stack(core, session, global);
     bind_stub_globals(core, session, global);
     bind_bigint::bind_bigint(core, session, global);
     bind_global_functions(core, session, global);
@@ -991,10 +994,12 @@ pub fn rebind_dirty_builtins(core: &Arc<KernelCore>, session: &mut KernelSession
 
     if dirty.map_or(true, |d| d.object) {
         bind_object::bind_object(core, session, global);
-        // object 家族重建连带重建 6 个迭代器原型（其链到新 Object.prototype），
-        // 须同步安装原型方法并让保留 global 上的 Iterator 指向新 %IteratorPrototype%。
+        // object 家族重建连带重建 6 个迭代器原型与两资源栈原型（其链到新
+        // Object.prototype），须同步安装原型方法并让保留的 global 构造器指向新原型。
         bind_iterator_protos(core, session);
         sync_iterator_function_prototype(core, session, global);
+        bind_disposable_stack::bind_disposable_stack_protos(core, session);
+        bind_disposable_stack::sync_disposable_stack_ctor(core, session, global);
     }
     if dirty.map_or(true, |d| d.array) {
         bind_array::bind_array(core, session, global);
@@ -1061,6 +1066,7 @@ pub fn init_kernel_builtins(core: &Arc<KernelCore>, session: &mut KernelSession)
     let global_ptr = session.global_object().as_ptr() as *mut oxide_types::object::JsObject;
     let global = unsafe { &mut *global_ptr };
     bind_iterator::bind_iterator(core, session, global);
+    bind_disposable_stack::bind_disposable_stack(core, session, global);
     bind_reflect::bind_reflect(core, session, global);
     bind_global::bind_global(core, session, global);
     bind_global_value(core, global, "globalThis", JsValue::from_js_object(global_ptr));

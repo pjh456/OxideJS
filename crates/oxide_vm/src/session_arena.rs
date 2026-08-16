@@ -6,7 +6,7 @@ use oxide_types::value::JsValue;
 use rustc_hash::FxBuildHasher;
 
 use crate::vm::Vm;
-use oxide_builtins::{array_buffer, data_view, map, regexp, set, typed_array};
+use oxide_builtins::{array_buffer, data_view, disposable_stack, map, regexp, set, typed_array};
 
 impl Vm {
     pub(crate) fn is_session_escape_root_ptr(&self, target_ptr: *mut JsObject) -> bool {
@@ -55,6 +55,11 @@ impl Vm {
             });
         } else if src_ref.is_set() {
             set::clone_set_native_with_rewrite(src_ref, dst_ref, |value| {
+                self.promote_value_if_epoch_object(value, forwarding)
+            });
+        } else if src_ref.is_disposable_stack_obj() || src_ref.is_async_disposable_stack_obj() {
+            // 资源栈状态盒深拷贝到新对象：源盒随 epoch 释放，互不共享。
+            disposable_stack::clone_dispose_native_with_rewrite(src_ref, dst_ref, |value| {
                 self.promote_value_if_epoch_object(value, forwarding)
             });
         } else if src_ref.is_typed_array_obj() {
