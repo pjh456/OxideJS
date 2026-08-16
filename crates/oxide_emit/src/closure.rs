@@ -557,9 +557,9 @@ impl Emitter {
         }
     }
 
-    /// 遍历绑定 pattern 的计算键表达式（`{[k]: a}` 的键）中的引用：模式键是运行时
-    /// 求值的表达式，嵌套函数引用外层绑定时须纳入捕获（与赋值侧/对象字面量/类字段
-    /// 键遍历同口径）。
+    /// 遍历绑定 pattern 的运行时求值表达式引用：计算键（`{[k]: a}` 的键）与内嵌
+    /// 默认值（`{a = x}` 的 x）都是模式内求值的表达式，嵌套函数引用外层绑定时须
+    /// 纳入捕获（与赋值侧/对象字面量/类字段键遍历同口径）。
     fn collect_capture_names_binding_keys(
         &self, pattern: &oxide_parser::BindingPattern, ref_set: &HashSet<String>, shadow: &HashSet<String>,
         out: &mut HashSet<String>,
@@ -586,6 +586,9 @@ impl Emitter {
                 }
             }
             oxide_parser::BindingPattern::AssignmentPattern(ap) => {
+                // 内嵌默认值表达式引用外层绑定须捕获（与 binding_pattern/赋值侧
+                // maybe_default 的 init 扫描同口径）；left 继续递归模式键。
+                self.collect_capture_names_expr(&ap.right, ref_set, shadow, out);
                 self.collect_capture_names_binding_keys(&ap.left, ref_set, shadow, out);
             }
         }
@@ -1131,8 +1134,9 @@ impl Emitter {
         }
     }
 
-    /// 遍历绑定 pattern 的计算键表达式（`{[k]: a}` 的键）中的引用，供父层捕获判定
-    /// （声明语句/for 头的模式键与 catch/默认值路径同口径）。
+    /// 遍历绑定 pattern 的运行时求值表达式引用：计算键（`{[k]: a}` 的键）与内嵌
+    /// 默认值（`{a = x}` 的 x），供父层捕获判定（声明语句/for 头的模式与 catch/
+    /// 默认值路径同口径）。
     fn collect_captured_binding_keys(
         &self, pattern: &oxide_parser::BindingPattern, own: &HashSet<String>, out: &mut HashSet<String>,
     ) {
@@ -1158,6 +1162,9 @@ impl Emitter {
                 }
             }
             oxide_parser::BindingPattern::AssignmentPattern(ap) => {
+                // 内嵌默认值表达式引用外层绑定须建 cell（与 captured_binding_pattern
+                // 同口径）；left 继续递归模式键。
+                self.collect_captured_expr(&ap.right, own, out);
                 self.collect_captured_binding_keys(&ap.left, own, out);
             }
         }

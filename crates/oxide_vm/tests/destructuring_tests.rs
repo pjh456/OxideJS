@@ -349,3 +349,60 @@ fn computed_key_binding_undeclared_key_throws_reference_error() {
     let err = eval(&mut vm, "const {[undeclaredKey]: a} = {x:1};").unwrap_err();
     assert!(err.contains("ReferenceError"), "expected ReferenceError, got {err:?}");
 }
+
+// 跨作用域：声明语句模式内嵌默认值引用外层绑定须走闭包捕获（修复前默认值 right
+// 不扫 → x 落 LOAD_GLOBAL 兜底——无全局 x 抛 ReferenceError / 有全局 x 读错值）。
+#[test]
+fn binding_default_captures_outer_in_declaration() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "function f(){ let x=42; return function(){ const {a = x} = {}; return a; }; } f()()",
+    )
+    .unwrap();
+    assert_num(result, 42.0);
+}
+
+#[test]
+fn binding_default_captures_outer_with_iife() {
+    // 内嵌默认值含 IIFE：默认值表达式整体在模式求值语境，IIFE 内引用同样须捕获。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "function f(){ let x=42; return function(){ const {a = (()=>x)()} = {}; return a; }; } f()()",
+    )
+    .unwrap();
+    assert_num(result, 42.0);
+}
+
+#[test]
+fn binding_default_captures_outer_in_for_of_left() {
+    // for-of left 解构模式的内嵌默认值引用外层绑定。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "function f(){ let x=42; return function(){ let r; for (const {a = x} of [{}]) { r = a; } return r; }; } f()()",
+    )
+    .unwrap();
+    assert_num(result, 42.0);
+}
+
+#[test]
+fn binding_default_captures_outer_in_array_element() {
+    // 数组解构元素的内嵌默认值引用外层绑定（ArrayPattern 元素同走 AssignmentPattern 分支）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "function f(){ let x=42; return function(){ const [a = x] = []; return a; }; } f()()",
+    )
+    .unwrap();
+    assert_num(result, 42.0);
+}
+
+#[test]
+fn binding_default_same_scope_not_regress() {
+    // 同作用域内嵌默认值走局部寄存器读，不依赖捕获，验证不误捕获/不破坏。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "const x=7; const {a = x} = {}; a").unwrap();
+    assert_num(result, 7.0);
+}
