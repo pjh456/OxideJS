@@ -179,6 +179,12 @@ pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Utc::now().timestamp_millis() as f64
     } else if args.len() > 2 {
         let y_val = oxide_runtime_api::to_number(vm.reg(args[1]));
+        // 年 0..99 按规范映射到 1900..1999（ToInteger 截断后判断）。
+        let y_val = if (0.0..=99.0).contains(&y_val.trunc()) {
+            y_val.trunc() + 1900.0
+        } else {
+            y_val
+        };
         let m_val = oxide_runtime_api::to_number(vm.reg(args[2]));
         let d_val = if args.len() > 3 { oxide_runtime_api::to_number(vm.reg(args[3])) } else { 1.0 };
         let h_val = if args.len() > 4 { oxide_runtime_api::to_number(vm.reg(args[4])) } else { 0.0 };

@@ -327,6 +327,18 @@ fn date_constructor_truncation() {
 }
 
 #[test]
+fn date_constructor_two_digit_year_maps_to_1900s() {
+    let mut vm = Vm::new();
+    // 多参构造年 0..99 按规范映射到 1900..1999；100 起不再调整。
+    let r = eval(&mut vm, "new Date(0, 0).getFullYear()").unwrap();
+    assert_eq!(r.as_double(), 1900.0);
+    let r = eval(&mut vm, "new Date(99, 0).getFullYear()").unwrap();
+    assert_eq!(r.as_double(), 1999.0);
+    let r = eval(&mut vm, "new Date(100, 0).getFullYear()").unwrap();
+    assert_eq!(r.as_double(), 100.0);
+}
+
+#[test]
 fn date_setters_return_timestamp() {
     let mut vm = Vm::new();
     // setter 返回修改后的时间戳。
