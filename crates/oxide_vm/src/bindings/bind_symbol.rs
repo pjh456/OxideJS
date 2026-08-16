@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::bindings::{apply_binding_table, configure_native_constructor};
+use crate::bindings::{apply_binding_table, bind_accessor_getter, configure_native_constructor};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
@@ -34,6 +34,15 @@ pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             ("toString", oxide_builtins::symbol::symbol_to_string::<crate::vm::Vm> as *const (), 0),
             ("valueOf", oxide_builtins::symbol::symbol_value_of::<crate::vm::Vm> as *const (), 0),
         ],
+    );
+
+    // description 是访问器 getter（Symbol 原始值成员访问经 Symbol.prototype 链命中）。
+    bind_accessor_getter(
+        core,
+        session,
+        proto,
+        "description",
+        oxide_builtins::symbol::symbol_description_getter::<crate::vm::Vm> as *const (),
     );
 
     for (name, val) in [

@@ -729,7 +729,6 @@ fn classify_vm_error(e: &str, neg: Option<&Negative>, no_skip: bool) -> TestOutc
         || e.contains("unsupported")
         || e.contains("step limit")
         || e.contains("NEW_EXPRESSION")
-        || e.contains("IC_GET_PROP on non-object")
         || e.contains("GET_PROP_DYNAMIC on non-object")
         || e.contains("SET_PROP_DYNAMIC on non-object")
         || e.contains("private field brand check")
@@ -1634,6 +1633,7 @@ mod tests {
             "TypeError: Cannot convert object to primitive value",
             "TypeError: Cannot create property on non-object",
             "TypeError: Property description must be an object",
+            "IC_GET_PROP on non-object",
         ] {
             assert_outcome(e, None, false, &TestOutcome::Fail("".into()));
         }
@@ -1647,7 +1647,6 @@ mod tests {
             "feature is not supported",
             "unsupported syntax",
             "vm error: NEW_EXPRESSION not supported",
-            "IC_GET_PROP on non-object",
             "GET_PROP_DYNAMIC on non-object",
             "SET_PROP_DYNAMIC on non-object",
             "private field brand check",

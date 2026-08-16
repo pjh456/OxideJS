@@ -24,23 +24,30 @@ pub fn symbol_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
     }
 
-    // 描述符按规范 ToString(description)：对象经 ToPrimitive(string hint) 强制转换，
-    // Symbol 抛 TypeError，对象方法抛出的原始异常原样传播。
+    // 描述符按规范 ToString(description)：缺省参数与 undefined 对应无描述
+    // （[[Description]] 为 undefined，`symbol.description` 返回 undefined）；
+    // 对象经 ToPrimitive(string hint) 强制转换，Symbol 抛 TypeError，
+    // 对象方法抛出的原始异常原样传播。
     let description = if args.len() > 1 {
-        match oxide_runtime_api::to_string_full(vm.reg(args[1]), vm) {
-            Ok(s) => s,
-            Err(_) => {
-                if let Some(exc) = vm.take_uncaught_value() {
-                    return NativeResult::Err(exc);
+        let desc_val = vm.reg(args[1]);
+        if desc_val.is_undefined() {
+            None
+        } else {
+            match oxide_runtime_api::to_string_full(desc_val, vm) {
+                Ok(s) => Some(s),
+                Err(_) => {
+                    if let Some(exc) = vm.take_uncaught_value() {
+                        return NativeResult::Err(exc);
+                    }
+                    return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a string"));
                 }
-                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a string"));
             }
         }
     } else {
-        String::new()
+        None
     };
 
-    let idx = vm.symbol_intern(Some(description));
+    let idx = vm.symbol_intern(description);
     NativeResult::Ok(JsValue::symbol(idx))
 }
 
@@ -93,6 +100,22 @@ pub fn symbol_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     match this_symbol_value(vm, vm.reg(args[0])) {
         Ok(v) => NativeResult::Ok(v),
         Err(e) => NativeResult::Err(e),
+    }
+}
+
+/// `Symbol.prototype.description` getter：返回该 Symbol 的 description 字符串；
+/// 无 description 的 Symbol 返回 undefined。this 必须是 Symbol 或 Symbol 包装对象，
+/// 否则抛 TypeError（规范 `SymbolDescriptiveString` 的 thisSymbolValue 校验）。
+pub fn symbol_description_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let sym = match this_symbol_value(vm, this_val) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
+    let idx = sym.as_symbol_index();
+    match vm.symbol_description(idx) {
+        Some(desc) => NativeResult::Ok(vm.new_string_owned(desc.to_string())),
+        None => NativeResult::Ok(JsValue::undefined()),
     }
 }
 

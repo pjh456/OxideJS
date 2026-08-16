@@ -181,3 +181,18 @@ fn primitive_receiver_skips_ic_ext_words() {
     );
     assert_eq!(r, "303", "字符串 length 经 primitive 分支返回 3，扩展字跳越无错位");
 }
+
+/// 非对象 receiver（symbol）经 IC primitive 分支走 Symbol.prototype 链：
+/// toString/description 均经原型解析，扩展字跳越无错位。
+#[test]
+fn symbol_primitive_receiver_walks_symbol_proto() {
+    let (r, _hits, _misses) = run_once(
+        r#"var s = Symbol('x');
+           var ok = 0;
+           for (var i = 0; i < 100; i++) {
+             ok += (s.toString() === 'Symbol(x)') ? 1 : 0;
+           }
+           ok + ((s.description === 'x') ? 1 : 0)"#,
+    );
+    assert_eq!(r, "101", "symbol 原始值 toString/description 经 Symbol.prototype 解析");
+}

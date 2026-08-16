@@ -283,3 +283,69 @@ fn symbol_key_read_via_get_own_property_symbols_index() {
     .unwrap();
     assert!(result.as_bool());
 }
+
+// --- Symbol 原始值成员访问走 Symbol.prototype 链 ---
+
+#[test]
+fn symbol_primitive_to_string_via_symbol_proto() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Symbol('66').toString()").unwrap();
+    assert_eq!(to_str(&vm, result), "Symbol(66)");
+}
+
+#[test]
+fn symbol_primitive_value_of_via_symbol_proto() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var s = Symbol('x'); s.valueOf() === s").unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn symbol_primitive_chain_reaches_object_proto_method() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Symbol('x').hasOwnProperty('description')").unwrap();
+    assert!(!result.as_bool());
+}
+
+#[test]
+fn symbol_primitive_description_getter() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Symbol('desc').description").unwrap();
+    assert_eq!(to_str(&vm, result), "desc");
+}
+
+#[test]
+fn symbol_without_description_returns_undefined() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Symbol().description").unwrap();
+    assert!(result.is_undefined());
+}
+
+#[test]
+fn symbol_wrapper_object_description_unboxes() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Object(Symbol('w')).description").unwrap();
+    assert_eq!(to_str(&vm, result), "w");
+}
+
+#[test]
+fn symbol_description_non_symbol_receiver_throws_type_error() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "try { Object.getOwnPropertyDescriptor(Symbol.prototype, 'description').get.call(42); false } catch (e) { e instanceof TypeError }",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn symbol_proto_direct_description_access_throws_type_error() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "try { Symbol.prototype.description; false } catch (e) { e instanceof TypeError }",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
