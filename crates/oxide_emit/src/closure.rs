@@ -101,14 +101,20 @@ impl Emitter {
                     self.collect_var_names_stmt(std::slice::from_ref(&f.body), out);
                 }
                 Statement::ForInStatement(fi) => {
-                    if let oxide_parser::ForStatementLeft::VariableDeclaration(_) = &fi.left {
-                        self.collect_for_left_decl_names(&fi.left, out);
+                    if let oxide_parser::ForStatementLeft::VariableDeclaration(vd) = &fi.left {
+                        // 仅 var 头名提升到函数作用域，let/const 头名是迭代级绑定。
+                        if matches!(vd.kind, VariableDeclarationKind::Var) {
+                            self.collect_for_left_decl_names(&fi.left, out);
+                        }
                     }
                     self.collect_var_names_stmt(std::slice::from_ref(&fi.body), out);
                 }
                 Statement::ForOfStatement(fo) => {
-                    if let oxide_parser::ForStatementLeft::VariableDeclaration(_) = &fo.left {
-                        self.collect_for_left_decl_names(&fo.left, out);
+                    if let oxide_parser::ForStatementLeft::VariableDeclaration(vd) = &fo.left {
+                        // 仅 var 头名提升到函数作用域，let/const 头名是迭代级绑定。
+                        if matches!(vd.kind, VariableDeclarationKind::Var) {
+                            self.collect_for_left_decl_names(&fo.left, out);
+                        }
                     }
                     self.collect_var_names_stmt(std::slice::from_ref(&fo.body), out);
                 }
