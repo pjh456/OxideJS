@@ -414,6 +414,17 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
             ),
             ("until", oxide_builtins::temporal::zoned_date_time_until::<crate::vm::Vm> as *const (), 1),
             ("since", oxide_builtins::temporal::zoned_date_time_since::<crate::vm::Vm> as *const (), 1),
+            ("with", oxide_builtins::temporal::zoned_date_time_with::<crate::vm::Vm> as *const (), 1),
+            (
+                "withCalendar",
+                oxide_builtins::temporal::zoned_date_time_with_calendar::<crate::vm::Vm> as *const (),
+                1,
+            ),
+            (
+                "withPlainTime",
+                oxide_builtins::temporal::zoned_date_time_with_plain_time::<crate::vm::Vm> as *const (),
+                1,
+            ),
         ],
     );
 

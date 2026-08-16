@@ -1645,3 +1645,277 @@ fn zoned_date_time_until_bag_default_time_zone() {
     .unwrap();
     assert_eq!(str_val(&vm, r), "PT1H|true");
 }
+
+// -- ZonedDateTime.prototype.with / withCalendar / withPlainTime --
+
+#[test]
+fn zoned_date_time_with_partial_merge() {
+    let mut vm = Vm::new();
+    // 单字段覆盖与多字段合并：未给字段沿用 receiver 本地分量。
+    let r = eval(
+        &mut vm,
+        "const z = new Temporal.ZonedDateTime(0n, 'UTC');
+         z.with({ year: 2019 }).toString() + '|' +
+         z.with({ hour: 12, minute: 34, nanosecond: 5 }).toString() + '|' +
+         z.with({ month: 5, second: 15 }).toString()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "2019-01-01T00:00:00+00:00[UTC]|1970-01-01T12:34:00.000000005+00:00[UTC]|1970-05-01T00:00:15+00:00[UTC]"
+    );
+}
+
+#[test]
+fn zoned_date_time_with_undefined_fields_not_copied() {
+    let mut vm = Vm::new();
+    // year: undefined 不覆盖，其余字段覆盖（copy-properties-not-undefined 语义）。
+    let r = eval(
+        &mut vm,
+        "const d1 = new Temporal.ZonedDateTime(1_000_000_000_000_000_789n, 'UTC');
+         const d2 = d1.with({ day: 1, hour: 10, year: undefined });
+         d2.year === 2001 && d2.month === 9 && d2.day === 1 && d2.hour === 10 &&
+         d2.minute === 46 && d2.second === 40 && d2.nanosecond === 789",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn zoned_date_time_with_rejects_calendar_time_zone_and_temporal_objects() {
+    let mut vm = Vm::new();
+    // calendar/timeZone 字段、Temporal 实例参数、字符串参数均 TypeError。
+    let r = eval(
+        &mut vm,
+        "const z = new Temporal.ZonedDateTime(0n, 'UTC');
+         (() => { try { z.with({ month: 2, calendar: 'iso8601' }); return 'no-throw'; }
+                  catch (e) { return e instanceof TypeError; } })() + '|' +
+         (() => { try { z.with({ month: 2, timeZone: 'UTC' }); return 'no-throw'; }
+                  catch (e) { return e instanceof TypeError; } })() + '|' +
+         (() => { try { z.with(new Temporal.PlainDate(1976, 11, 18)); return 'no-throw'; }
+                  catch (e) { return e instanceof TypeError; } })() + '|' +
+         (() => { try { z.with('1976-11-18T12:00+00:00[UTC]'); return 'no-throw'; }
+                  catch (e) { return e instanceof TypeError; } })() + '|' +
+         (() => { try { z.with({}); return 'no-throw'; }
+                  catch (e) { return e instanceof TypeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true|true|true|true");
+}
+
+#[test]
+fn zoned_date_time_with_offset_option() {
+    let mut vm = Vm::new();
+    // offset 默认 prefer；use 用 bag 偏移；reject 冲突 RangeError；非法值各类型错误。
+    let r = eval(
+        &mut vm,
+        "const z = new Temporal.ZonedDateTime(0n, 'UTC');
+         const dt = new Temporal.ZonedDateTime(1572757201_000_000_000n, '-03:30');
+         (dt.with({ minute: 31 }).epochNanoseconds === 1572757261_000_000_000n) + '|' +
+         (dt.with({ minute: 31 }, {}).epochNanoseconds === 1572757261_000_000_000n) + '|' +
+         (z.with({ offset: '+01:00' }, { offset: 'use' }).epochNanoseconds === -3_600_000_000_000n) + '|' +
+         (z.with({ offset: '+01:00' }, { offset: 'prefer' }).epochNanoseconds === 0n) + '|' +
+         (() => { try { z.with({ offset: '+01:00' }, { offset: 'reject' }); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })() + '|' +
+         (() => { try { z.with({ offset: 0 }); return 'no-throw'; }
+                  catch (e) { return e instanceof TypeError; } })() + '|' +
+         (() => { try { z.with({ offset: '00:00' }); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true|true|true|true|true|true");
+}
+
+#[test]
+fn zoned_date_time_with_overflow_constrain_and_reject() {
+    let mut vm = Vm::new();
+    // constrain 钳制月/日/时/亚秒；reject 越界 RangeError；monthCode 冲突/闰月 RangeError。
+    let r = eval(
+        &mut vm,
+        "const z = new Temporal.ZonedDateTime(0n, 'UTC');
+         z.with({ month: 29 }).toString() + '|' +
+         z.with({ hour: 29 }).toString() + '|' +
+         z.with({ nanosecond: 9000 }).toString() + '|' +
+         (() => { try { z.with({ month: 29 }, { overflow: 'reject' }); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })() + '|' +
+         (() => { try { z.with({ month: 5, monthCode: 'M06' }); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })() + '|' +
+         (() => { try { z.with({ monthCode: 'M08L' }); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })() + '|' +
+         (z.with({ monthCode: 'M05' }).toString() === '1970-05-01T00:00:00+00:00[UTC]')",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+         "1970-12-01T00:00:00+00:00[UTC]|1970-01-01T23:00:00+00:00[UTC]|1970-01-01T00:00:00.000000999+00:00[UTC]|true|true|true|true"
+    );
+}
+
+#[test]
+fn zoned_date_time_with_month_code_constrain_day() {
+    let mut vm = Vm::new();
+    // monthCode 换月后日钳制：1 月 31 日 → 2 月 28 日（constrain）；reject → RangeError。
+    let r = eval(
+        &mut vm,
+        "const z = Temporal.ZonedDateTime.from({ year: 2019, monthCode: 'M01', day: 31, hour: 12, minute: 34, timeZone: 'UTC' });
+         z.with({ monthCode: 'M02' }).toString() + '|' +
+         (() => { try { z.with({ monthCode: 'M02' }, { overflow: 'reject' }); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "2019-02-28T12:34:00+00:00[UTC]|true");
+}
+
+#[test]
+fn zoned_date_time_with_range_errors_and_options_order() {
+    let mut vm = Vm::new();
+    // 越界墙钟 / offset use 越界 → RangeError；字段先于 options 校验。
+    let r = eval(
+        &mut vm,
+        "( () => { try { new Temporal.ZonedDateTime(0n, 'UTC').with({ year: -271821, month: 4, day: 19, hour: 1 }); return 'no-throw'; }
+                   catch (e) { return e instanceof RangeError; } })() + '|' +
+         ( () => { try { new Temporal.ZonedDateTime(-864n * 10n**19n, 'UTC').with({ offset: '+01' }, { offset: 'use' }); return 'no-throw'; }
+                   catch (e) { return e instanceof RangeError; } })() + '|' +
+         ( () => { try { new Temporal.ZonedDateTime(0n, 'UTC').with({ day: 5 }, null); return 'no-throw'; }
+                   catch (e) { return e instanceof TypeError; } })() + '|' +
+         ( () => { try { new Temporal.ZonedDateTime(0n, 'UTC').with({ day: -1 }, null); return 'no-throw'; }
+                   catch (e) { return e instanceof RangeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true|true|true");
+}
+
+#[test]
+fn zoned_date_time_with_calendar_swaps_calendar_slot() {
+    let mut vm = Vm::new();
+    // 换日历槽：epoch/时区不变、返回新对象；大小写不敏感；ISO 串与时间串接受。
+    let r = eval(
+        &mut vm,
+        "const c = new Temporal.ZonedDateTime(0n, 'UTC', 'hebrew');
+         const w = c.withCalendar('iso8601');
+         (w !== c) + '|' + w.calendarId + '|' + w.epochNanoseconds + '|' + w.timeZoneId + '|' +
+         c.withCalendar('iSo8601').calendarId + '|' +
+         c.withCalendar('2020-01-01').calendarId + '|' +
+         c.withCalendar('15:23').calendarId + '|' +
+         c.withCalendar(new Temporal.ZonedDateTime(0n, 'UTC', 'japanese')).calendarId",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|iso8601|0|UTC|iso8601|iso8601|iso8601|japanese");
+}
+
+#[test]
+fn zoned_date_time_with_calendar_errors() {
+    let mut vm = Vm::new();
+    // 缺参/undefined/非字符串非对象 → TypeError；非法串 → RangeError。
+    let r = eval(
+        &mut vm,
+        "const c = new Temporal.ZonedDateTime(0n, 'UTC');
+         (() => { try { c.withCalendar(); return 'no-throw'; }
+                  catch (e) { return e instanceof TypeError; } })() + '|' +
+         (() => { try { c.withCalendar(undefined); return 'no-throw'; }
+                  catch (e) { return e instanceof TypeError; } })() + '|' +
+         (() => { try { c.withCalendar(42); return 'no-throw'; }
+                  catch (e) { return e instanceof TypeError; } })() + '|' +
+         (() => { try { c.withCalendar('notacal'); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true|true|true");
+}
+
+#[test]
+fn zoned_date_time_with_plain_time_defaults_and_bag() {
+    let mut vm = Vm::new();
+    // undefined → 午夜；bag 缺省字段为 0；second=60 按 59 钳制。
+    let r = eval(
+        &mut vm,
+        "const p = new Temporal.ZonedDateTime(957270896_987_654_321n, 'UTC');
+         p.withPlainTime().toString() + '|' +
+         p.withPlainTime(undefined).toString() + '|' +
+         p.withPlainTime({ minute: 30 }).toString() + '|' +
+         p.withPlainTime({ hour: 23, minute: 59, second: 60 }).toString() + '|' +
+         p.withPlainTime(new Temporal.PlainTime(11, 22)).hour",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "2000-05-02T00:00:00+00:00[UTC]|2000-05-02T00:00:00+00:00[UTC]|2000-05-02T00:30:00+00:00[UTC]|2000-05-02T23:59:59+00:00[UTC]|11"
+    );
+}
+
+#[test]
+fn zoned_date_time_with_plain_time_strings() {
+    let mut vm = Vm::new();
+    // 时间串 / 日期+时间 / 歧义串须 T 前缀 / Z 与纯日期拒绝 / offset 忽略。
+    let r = eval(
+        &mut vm,
+        "const p = new Temporal.ZonedDateTime(957270896_987_654_321n, 'UTC');
+         p.withPlainTime('12:34').toString() + '|' +
+         p.withPlainTime('1976-11-18T15:23:30.123456789+00:00').toString() + '|' +
+         p.withPlainTime('T2021-12').hour + '|' +
+         (() => { try { p.withPlainTime('2021-12'); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })() + '|' +
+         (() => { try { p.withPlainTime('09:00:00Z'); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })() + '|' +
+         (() => { try { p.withPlainTime('2019-10-01'); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })() + '|' +
+         (() => { try { p.withPlainTime({}); return 'no-throw'; }
+                  catch (e) { return e instanceof TypeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "2000-05-02T12:34:00+00:00[UTC]|2000-05-02T15:23:30.123456789+00:00[UTC]|20|true|true|true|true"
+    );
+}
+
+#[test]
+fn zoned_date_time_with_plain_time_zoned_date_time_argument() {
+    let mut vm = Vm::new();
+    // ZDT 参数用其自身时区取本地时间（负偏移平衡负时间单位）；负 epoch 模运算正确。
+    let r = eval(
+        &mut vm,
+        "const dtz = new Temporal.ZonedDateTime(3661_001_001_001n, '-00:02');
+         const r1 = new Temporal.ZonedDateTime(86400_000_000_000n, 'UTC').withPlainTime(dtz);
+         (r1.hour === 0 && r1.minute === 59) + '|' +
+         (new Temporal.ZonedDateTime(0n, 'UTC')
+           .withPlainTime(new Temporal.ZonedDateTime(-13849764_999_999_999n, 'UTC'))
+           .epochNanoseconds === 60635_000_000_001n)",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true");
+}
+
+#[test]
+fn zoned_date_time_with_plain_time_out_of_range() {
+    let mut vm = Vm::new();
+    // 本地分量越界（±MAX 边界）→ RangeError（start-of-day 与 epoch 越界两条路径）。
+    let r = eval(
+        &mut vm,
+        "( () => { try { new Temporal.ZonedDateTime(-864n * 10n**19n, '-01').withPlainTime(); return 'no-throw'; }
+                   catch (e) { return e instanceof RangeError; } })() + '|' +
+         ( () => { try { new Temporal.ZonedDateTime(-864n * 10n**19n, '+01').withPlainTime('00:00'); return 'no-throw'; }
+                   catch (e) { return e instanceof RangeError; } })() + '|' +
+         ( () => { try { new Temporal.ZonedDateTime(864n * 10n**19n, 'UTC').withPlainTime('01:00'); return 'no-throw'; }
+                   catch (e) { return e instanceof RangeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true|true");
+}
+
+#[test]
+fn zoned_date_time_with_family_branding() {
+    let mut vm = Vm::new();
+    // 非 ZDT receiver 调三个方法均 TypeError。
+    let r = eval(
+        &mut vm,
+        "( () => { try { Temporal.ZonedDateTime.prototype.with.call({}, { year: 2019 }); return 'no-throw'; }
+                   catch (e) { return e instanceof TypeError; } })() + '|' +
+         ( () => { try { Temporal.ZonedDateTime.prototype.withCalendar.call({}, 'iso8601'); return 'no-throw'; }
+                   catch (e) { return e instanceof TypeError; } })() + '|' +
+         ( () => { try { Temporal.ZonedDateTime.prototype.withPlainTime.call({}); return 'no-throw'; }
+                   catch (e) { return e instanceof TypeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true|true");
+}

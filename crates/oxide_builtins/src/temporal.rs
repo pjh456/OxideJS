@@ -1432,15 +1432,21 @@ fn is_time_zone_annotation_value(annotation: &str) -> bool {
     false
 }
 
-/// 读 ZonedDateTime.from 的 options（disambiguation → offset 顺序），先 Get 后统一白名单校验。
+/// 读 ZonedDateTime 的 options（disambiguation → offset 顺序），逐项 Get/转换/白名单校验。
+///
+/// # 步骤
+/// 1. options 为 undefined 时返回默认（offset=default_offset，disambiguation=compatible）。
+/// 2. 先 Get disambiguation 并立即转换 + 校验，再 Get offset 并立即转换 + 校验。
 ///
 /// # 边界与前提
-/// - options 为 undefined 时返回默认（offset=reject，disambiguation=compatible）。
+/// - default_offset 由调用方决定（from 用 reject，with 用 prefer）。
 /// - options 为非对象原始值抛 TypeError；选项值不在白名单抛 RangeError。
-fn zoned_date_time_options<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<(String, String), JsValue> {
+fn zoned_date_time_options<H: VmHost>(
+    vm: &mut H, args: &[u8], default_offset: &str,
+) -> Result<(String, String), JsValue> {
     let options = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     if options.is_undefined() {
-        return Ok(("reject".to_string(), "compatible".to_string()));
+        return Ok((default_offset.to_string(), "compatible".to_string()));
     }
     if !options.is_object() {
         return Err(crate::error::create_type_error(vm, "options must be an object"));
@@ -1451,25 +1457,28 @@ fn zoned_date_time_options<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<(String
     }
     let options_obj = unsafe { &*ptr };
 
-    // 先 Get 再校验：disambiguation 在前，offset 在后。
+    // 逐个选项处理：Get → ToString → 白名单，保证用户代码可观察的读序为
+    // disambiguation 完整处理完后再处理 offset。
     let disambiguation_raw = temporal_option_value(vm, options_obj, options, "disambiguation")?;
-    let offset_raw = temporal_option_value(vm, options_obj, options, "offset")?;
     let disambiguation = if disambiguation_raw.is_undefined() {
         "compatible".to_string()
     } else {
-        temporal_option_string(vm, disambiguation_raw)?
+        let value = temporal_option_string(vm, disambiguation_raw)?;
+        if !matches!(value.as_str(), "compatible" | "earlier" | "later" | "reject") {
+            return Err(crate::error::create_range_error(vm, "invalid disambiguation"));
+        }
+        value
     };
+    let offset_raw = temporal_option_value(vm, options_obj, options, "offset")?;
     let offset = if offset_raw.is_undefined() {
-        "reject".to_string()
+        default_offset.to_string()
     } else {
-        temporal_option_string(vm, offset_raw)?
+        let value = temporal_option_string(vm, offset_raw)?;
+        if !matches!(value.as_str(), "prefer" | "use" | "ignore" | "reject") {
+            return Err(crate::error::create_range_error(vm, "invalid offset"));
+        }
+        value
     };
-    if !matches!(offset.as_str(), "prefer" | "use" | "ignore" | "reject") {
-        return Err(crate::error::create_range_error(vm, "invalid offset"));
-    }
-    if !matches!(disambiguation.as_str(), "compatible" | "earlier" | "later" | "reject") {
-        return Err(crate::error::create_range_error(vm, "invalid disambiguation"));
-    }
     Ok((offset, disambiguation))
 }
 
@@ -1719,7 +1728,7 @@ fn zoned_date_time_bag_parts<H: VmHost>(
 /// - disambiguation 本批仅做选项值校验，固定偏移时区下四个取值算法等价。
 pub fn zoned_date_time_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let (offset_mode, disambiguation) = native_try!(zoned_date_time_options(vm, args));
+    let (offset_mode, disambiguation) = native_try!(zoned_date_time_options(vm, args, "reject"));
     let (epoch_ns, time_zone_id, calendar_id) =
         native_try!(zoned_date_time_like_epoch_ns(vm, value, &offset_mode, &disambiguation));
     make_zoned_date_time(vm, epoch_ns, &time_zone_id, &calendar_id)
@@ -2012,6 +2021,649 @@ pub fn zoned_date_time_equals<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     let zone_equal = to_string(obj.get_prop_at(1)) == to_string(other_obj.get_prop_at(1));
     let calendar_equal = get_calendar_id(obj, 2) == get_calendar_id(other_obj, 2);
     NativeResult::Ok(JsValue::bool(epoch_equal && zone_equal && calendar_equal))
+}
+
+/// with 字段合并的中间结果：未钳制的合并分量 + partial month/monthCode + bag offset。
+struct ZdtMergedFields {
+    year: i32,
+    month: Option<f64>,
+    day: f64,
+    hour: f64,
+    minute: f64,
+    second: f64,
+    millisecond: f64,
+    microsecond: f64,
+    nanosecond: f64,
+    month_code: Option<(f64, bool)>,
+    bag_offset: Option<i32>,
+}
+
+/// ToPrimitive(String) 后要求结果为字符串，否则 TypeError（ParseMonthCode/ToOffsetString 语义）。
+fn temporal_string_strict<H: VmHost>(vm: &mut H, value: JsValue) -> Result<String, JsValue> {
+    let primitive = oxide_runtime_api::to_primitive(value, oxide_runtime_api::ToPrimitiveHint::String, vm)
+        .map_err(|error| native_engine_error(vm, &error))?;
+    if !primitive.is_string() {
+        return Err(crate::error::create_type_error(vm, "expected a string"));
+    }
+    Ok(to_string(primitive))
+}
+
+/// RejectObjectWithCalendarOrTimeZone：非对象 / Temporal 实例 / calendar、timeZone 非 undefined
+/// 均返回 TypeError（with 的 partial 参数校验）。
+///
+/// # 边界与前提
+/// - Temporal 内部槽检查先于 calendar/timeZone 的 Get（IsPartialTemporalObject 步骤序）。
+/// - 参数校验通过后调用方才能读字段。
+fn reject_partial_object_with_calendar_or_time_zone<H: VmHost>(vm: &mut H, value: JsValue) -> Result<(), JsValue> {
+    if !value.is_object() {
+        return Err(crate::error::create_type_error(vm, "invalid argument"));
+    }
+    let ptr = value.as_js_object_ptr();
+    if ptr.is_null() {
+        return Err(crate::error::create_type_error(vm, "invalid argument"));
+    }
+    let obj = unsafe { &*ptr };
+    if obj.is_plain_date_obj()
+        || obj.is_plain_date_time_obj()
+        || obj.is_plain_time_obj()
+        || obj.is_zoned_date_time_obj()
+    {
+        return Err(crate::error::create_type_error(vm, "invalid argument"));
+    }
+    let calendar = temporal_option_value(vm, obj, value, "calendar")?;
+    if !calendar.is_undefined() {
+        return Err(crate::error::create_type_error(vm, "invalid argument"));
+    }
+    let time_zone = temporal_option_value(vm, obj, value, "timeZone")?;
+    if !time_zone.is_undefined() {
+        return Err(crate::error::create_type_error(vm, "invalid argument"));
+    }
+    Ok(())
+}
+
+/// with 的部分字段读取与合并：按字典序读 bag 字段，与 receiver 默认分量合并。
+///
+/// # 步骤
+/// 1. 数值字段 ToNumber→trunc（NaN/±Inf RangeError，day 额外拒绝 <1）；monthCode/offset 走 ToString。
+/// 2. undefined 不覆盖；至少一个字段有定义否则 TypeError。
+/// 3. 返回合并后的原始分量（未钳制）+ monthCode 解析 + bag offset 分钟。
+///
+/// # 边界与前提
+/// - 调用方须先完成 RejectObjectWithCalendarOrTimeZone（calendar/timeZone 已拒绝）。
+/// - monthCode 的闰月/超界/与 month 冲突校验延迟到选项解析后（对齐 spec 读序）。
+/// - offset 经 ToOffsetString：非字符串 TypeError、坏格式 RangeError。
+fn zoned_date_time_with_fields<H: VmHost>(
+    vm: &mut H, value: JsValue, defaults: (i32, u32, u32, f64),
+) -> Result<ZdtMergedFields, JsValue> {
+    let ptr = value.as_js_object_ptr();
+    if ptr.is_null() {
+        return Err(crate::error::create_type_error(vm, "invalid argument"));
+    }
+    let obj = unsafe { &*ptr };
+
+    // 读序（字典序）：day → hour → microsecond → millisecond → minute → month →
+    // monthCode → nanosecond → offset → second → year。
+    let day_raw = temporal_option_value(vm, obj, value, "day")?;
+    let hour_raw = temporal_option_value(vm, obj, value, "hour")?;
+    let microsecond_raw = temporal_option_value(vm, obj, value, "microsecond")?;
+    let millisecond_raw = temporal_option_value(vm, obj, value, "millisecond")?;
+    let minute_raw = temporal_option_value(vm, obj, value, "minute")?;
+    let month_raw = temporal_option_value(vm, obj, value, "month")?;
+    let month_code_raw = temporal_option_value(vm, obj, value, "monthCode")?;
+    let nanosecond_raw = temporal_option_value(vm, obj, value, "nanosecond")?;
+    let offset_raw = temporal_option_value(vm, obj, value, "offset")?;
+    let second_raw = temporal_option_value(vm, obj, value, "second")?;
+    let year_raw = temporal_option_value(vm, obj, value, "year")?;
+
+    // 至少一个字段有定义，否则 TypeError（object-must-contain-at-least-one-property）。
+    if [
+        day_raw,
+        hour_raw,
+        microsecond_raw,
+        millisecond_raw,
+        minute_raw,
+        month_raw,
+        month_code_raw,
+        nanosecond_raw,
+        offset_raw,
+        second_raw,
+        year_raw,
+    ]
+    .iter()
+    .all(|raw| raw.is_undefined())
+    {
+        return Err(crate::error::create_type_error(vm, "no properties present"));
+    }
+
+    // 数值字段：ToNumber→trunc；NaN/±Inf RangeError；day 额外要求 ≥1。
+    let convert_integer = |vm: &mut H, raw: JsValue| -> Result<Option<f64>, JsValue> {
+        if raw.is_undefined() {
+            Ok(None)
+        } else {
+            let number = temporal_option_number(vm, raw)?;
+            if !number.is_finite() {
+                return Err(crate::error::create_range_error(vm, "invalid date-time component"));
+            }
+            Ok(Some(number.trunc()))
+        }
+    };
+    let day = convert_integer(vm, day_raw)?;
+    let hour = convert_integer(vm, hour_raw)?;
+    let microsecond = convert_integer(vm, microsecond_raw)?;
+    let millisecond = convert_integer(vm, millisecond_raw)?;
+    let minute = convert_integer(vm, minute_raw)?;
+    let month = convert_integer(vm, month_raw)?;
+    let nanosecond = convert_integer(vm, nanosecond_raw)?;
+    let second = convert_integer(vm, second_raw)?;
+    let year = convert_integer(vm, year_raw)?;
+    if let Some(day) = day {
+        if day < 1.0 {
+            return Err(crate::error::create_range_error(vm, "invalid date-time component"));
+        }
+    }
+
+    // monthCode：ToString 后格式校验（M + 两位数字 + 可选 L），闰月/超界留到解析阶段。
+    let month_code = if month_code_raw.is_undefined() {
+        None
+    } else {
+        let code = temporal_string_strict(vm, month_code_raw)?;
+        let digits_ok =
+            code.len() >= 3 && code.starts_with('M') && code.as_bytes()[1..3].iter().all(u8::is_ascii_digit);
+        let well_formed = digits_ok && (code.len() == 3 || (code.len() == 4 && code.ends_with('L')));
+        if !well_formed {
+            return Err(crate::error::create_range_error(vm, "invalid monthCode"));
+        }
+        let number = code[1..3]
+            .parse::<f64>()
+            .map_err(|_| crate::error::create_range_error(vm, "invalid monthCode"))?;
+        Some((number, code.ends_with('L')))
+    };
+
+    // offset：ToString → 字符串语法校验（小数秒 ≤9 位），分钟数供 offset 选项决策。
+    let bag_offset = if offset_raw.is_undefined() {
+        None
+    } else {
+        let offset_input = temporal_string_strict(vm, offset_raw)?;
+        let minutes = parse_any_offset_minutes(&offset_input)
+            .ok_or_else(|| crate::error::create_range_error(vm, "invalid offset"))?;
+        if !valid_offset_fraction(&offset_input) {
+            return Err(crate::error::create_range_error(vm, "invalid offset"));
+        }
+        Some(minutes)
+    };
+
+    let (receiver_year, _receiver_month, receiver_day, receiver_time_ns) = defaults;
+    let (rh, rm, rs, rms, rus, rns) = plain_time_components(receiver_time_ns);
+    Ok(ZdtMergedFields {
+        year: year.unwrap_or(receiver_year as f64) as i32,
+        month,
+        day: day.unwrap_or(receiver_day as f64),
+        hour: hour.unwrap_or(rh as f64),
+        minute: minute.unwrap_or(rm as f64),
+        second: second.unwrap_or(rs as f64),
+        millisecond: millisecond.unwrap_or(rms as f64),
+        microsecond: microsecond.unwrap_or(rus as f64),
+        nanosecond: nanosecond.unwrap_or(rns as f64),
+        month_code,
+        bag_offset,
+    })
+}
+
+/// `Temporal.ZonedDateTime.prototype.with(temporalZonedDateTimeLike, options)`。
+///
+/// # 步骤
+/// 1. branding + IsPartialTemporalObject（calendar/timeZone/Temporal 实例 → TypeError）。
+/// 2. receiver 本地分量与偏移；zoned_date_time_with_fields 读字段合并。
+/// 3. options：disambiguation → offset（默认 prefer）→ overflow（逐项 Get/校验）。
+/// 4. monthCode 闰月/超界/冲突校验 + constrain/reject 钳制 + PlainDateTime 范围校验。
+/// 5. offset 选项决策 → local_to_epoch_ns → Instant 范围校验 → make_zoned_date_time。
+///
+/// # 边界与前提
+/// - 字段读取先于 options 解析（options-wrong-type 先报字段错误）。
+/// - 选项解析先于 monthCode 算法校验（options-read-before-algorithmic-validation）。
+/// - disambiguation 在固定偏移时区下四取值算法等价，仅做白名单校验。
+pub fn zoned_date_time_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_zoned_date_time(vm, obj));
+    let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    native_try!(reject_partial_object_with_calendar_or_time_zone(vm, value));
+
+    let time_zone_id = to_string(obj.get_prop_at(1));
+    let offset_minutes = native_try!(zoned_date_time_offset_minutes(vm, obj));
+    let (year, month, day, time_ns) = native_try!(zoned_date_time_plain_parts(vm, obj));
+    let merged = native_try!(zoned_date_time_with_fields(vm, value, (year, month, day, time_ns)));
+
+    // options：字段读取完成后解析（disambiguation → offset → overflow）。
+    let (offset_mode, _disambiguation) = native_try!(zoned_date_time_options(vm, args, "prefer"));
+    let constrain = native_try!(temporal_overflow(vm, args));
+
+    // CalendarResolveFields（ISO）：partial 的 monthCode 闰月 / 超 12 拒绝；month 与
+    // monthCode 冲突仅在两者都来自 partial 时校验（partial 有 monthCode 时 receiver
+    // 的 month 被覆盖，不参与比较）。
+    let receiver_month_f = month as f64;
+    let merged_month = match (merged.month, merged.month_code) {
+        (_, Some((_, true))) => {
+            return NativeResult::Err(crate::error::create_range_error(vm, "monthCode is not valid for ISO calendar"));
+        }
+        (Some(month), Some((code, false))) => {
+            if code > 12.0 {
+                return NativeResult::Err(crate::error::create_range_error(
+                    vm,
+                    "monthCode is not valid for ISO calendar",
+                ));
+            }
+            if month != code {
+                return NativeResult::Err(crate::error::create_range_error(vm, "month and monthCode disagree"));
+            }
+            code
+        }
+        (None, Some((code, false))) => {
+            if code > 12.0 {
+                return NativeResult::Err(crate::error::create_range_error(
+                    vm,
+                    "monthCode is not valid for ISO calendar",
+                ));
+            }
+            code
+        }
+        (Some(month), None) => month,
+        (None, None) => receiver_month_f,
+    };
+
+    // RegulateISODate：constrain 钳制月/日，reject 直接校验。
+    let (year, month, day) = if constrain {
+        let month = merged_month.clamp(1.0, 12.0);
+        let max_day = days_in_month(i128::from(merged.year), month as i128).unwrap_or(31) as f64;
+        (merged.year, month, merged.day.clamp(1.0, max_day))
+    } else {
+        if !valid_iso_date(merged.year, merged_month as u32, merged.day as u32) {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid date-time component"));
+        }
+        (merged.year, merged_month, merged.day)
+    };
+
+    // RegulateTime：constrain 钳制时/分/秒/亚秒，reject 直接校验。
+    let (hour, minute, second, millisecond, microsecond, nanosecond) = if constrain {
+        (
+            merged.hour.clamp(0.0, 23.0),
+            merged.minute.clamp(0.0, 59.0),
+            merged.second.clamp(0.0, 59.0),
+            merged.millisecond.clamp(0.0, 999.0),
+            merged.microsecond.clamp(0.0, 999.0),
+            merged.nanosecond.clamp(0.0, 999.0),
+        )
+    } else {
+        let values = [
+            merged.hour,
+            merged.minute,
+            merged.second,
+            merged.millisecond,
+            merged.microsecond,
+            merged.nanosecond,
+        ];
+        if !valid_plain_time(
+            values[0] as u32,
+            values[1] as u32,
+            values[2] as u32,
+            values[3] as u32,
+            values[4] as u32,
+            values[5] as u32,
+        ) {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid time component"));
+        }
+        (values[0], values[1], values[2], values[3], values[4], values[5])
+    };
+    let (year, month, day) = (year, month as u32, day as u32);
+    let total_ns = hour * 3_600_000_000_000.0
+        + minute * 60_000_000_000.0
+        + second * 1_000_000_000.0
+        + millisecond * 1_000_000.0
+        + microsecond * 1_000.0
+        + nanosecond;
+    if !valid_plain_date_time_range(year, month, day, total_ns) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "date-time out of range"));
+    }
+
+    // InterpretISODateTimeOffset（固定偏移简化）：按 offset 选项在 bag 偏移与时区偏移间选择。
+    let epoch_ns = match (merged.bag_offset, offset_mode.as_str()) {
+        (None, _) => local_to_epoch_ns(year, month, day, total_ns, offset_minutes),
+        (Some(offset), "use") => local_to_epoch_ns(year, month, day, total_ns, offset),
+        (Some(_), "ignore") => local_to_epoch_ns(year, month, day, total_ns, offset_minutes),
+        (Some(offset), "prefer") => {
+            if offset == offset_minutes {
+                local_to_epoch_ns(year, month, day, total_ns, offset)
+            } else {
+                local_to_epoch_ns(year, month, day, total_ns, offset_minutes)
+            }
+        }
+        (Some(offset), "reject") => {
+            if offset == offset_minutes {
+                local_to_epoch_ns(year, month, day, total_ns, offset)
+            } else {
+                return NativeResult::Err(crate::error::create_range_error(vm, "offset and time zone disagree"));
+            }
+        }
+        _ => unreachable!(),
+    }
+    .ok_or_else(|| crate::error::create_range_error(vm, "invalid date-time"));
+    let epoch_ns = native_try!(epoch_ns);
+    if epoch_ns.unsigned_abs() > MAX_INSTANT_NS as u128 {
+        return NativeResult::Err(crate::error::create_range_error(vm, "ZonedDateTime outside supported range"));
+    }
+    let calendar_id = get_calendar_id(obj, 2);
+    make_zoned_date_time(vm, epoch_ns, &time_zone_id, &calendar_id)
+}
+
+/// `Temporal.ZonedDateTime.prototype.withCalendar(calendar)`：换日历槽，epoch/时区不变。
+///
+/// # 步骤
+/// 1. branding 校验 receiver 为 ZDT。
+/// 2. 参数经 temporal_calendar_id（宽松版）解析：字符串白名单/ISO 串 → ID，
+///    PlainDate/PDT/ZDT 对象读日历槽（不触发 getter）。
+/// 3. make_zoned_date_time 重建对象，仅替换日历槽。
+///
+/// # 边界与前提
+/// - 缺参 / undefined → TypeError；非字符串非对象（number/null 等）→ TypeError。
+/// - 非法日历串 → RangeError；日历 ID 大小写不敏感。
+pub fn zoned_date_time_with_calendar<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_zoned_date_time(vm, obj));
+    let calendar_value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    if calendar_value.is_undefined() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "calendar is required"));
+    }
+    let calendar = native_try!(temporal_calendar_id(vm, calendar_value)).unwrap_or_else(|| "iso8601".to_string());
+    let Some(epoch_ns) = get_instant_epoch_ns(obj) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid ZonedDateTime"));
+    };
+    let time_zone_id = to_string(obj.get_prop_at(1));
+    make_zoned_date_time(vm, epoch_ns, &time_zone_id, &calendar)
+}
+
+/// 校验 offset 串的小数秒位数 ≤9（parse_any_offset_minutes 不限制位数，此处补查）。
+fn valid_offset_fraction(value: &str) -> bool {
+    let Some(dot) = value.find(['.', ',']) else {
+        return true;
+    };
+    let fraction = &value[dot + 1..];
+    fraction.len() <= 9 && fraction.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// 时间串的日期歧义判定：形如 YYYY-MM / MMDD / YYYYMM / MM-DD 且作为日期合法 → 歧义。
+///
+/// # 边界与前提
+/// - 2 月按闰年处理（0229 判歧义、0230 不判）。
+/// - 月/日非法（13、00、2 月 30 日等）不算歧义，按时间解析。
+fn is_ambiguous_date_string(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    let all_digits = |range: std::ops::Range<usize>| {
+        bytes.get(range.clone()).is_some_and(|part| part.iter().all(u8::is_ascii_digit))
+    };
+    let two_digits = |at: usize| -> Option<i32> {
+        if at + 1 >= bytes.len() {
+            None
+        } else {
+            Some((bytes[at] - b'0') as i32 * 10 + (bytes[at + 1] - b'0') as i32)
+        }
+    };
+    let day_in_month = |month: i32, day: i32| -> bool {
+        // 2 月按闰年（29 天）判定歧义。
+        let max = match month {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            2 => 29,
+            _ => return false,
+        };
+        day >= 1 && day <= max
+    };
+    match s.len() {
+        4 if all_digits(0..4) => {
+            let (month, day) = (two_digits(0).unwrap(), two_digits(2).unwrap());
+            day_in_month(month, day)
+        }
+        6 if all_digits(0..6) => (1..=12).contains(&two_digits(4).unwrap()),
+        5 if bytes[2] == b'-' && all_digits(0..2) && all_digits(3..5) => {
+            let (month, day) = (two_digits(0).unwrap(), two_digits(3).unwrap());
+            day_in_month(month, day)
+        }
+        7 if bytes[4] == b'-' && all_digits(0..4) && all_digits(5..7) => (1..=12).contains(&two_digits(5).unwrap()),
+        _ => false,
+    }
+}
+
+/// 解析时间主体（时[:分[:秒[.小数]]] 或 HHMM / HHMMSS），闰秒按前一秒。
+fn parse_plain_clock(clock: &str) -> Option<f64> {
+    let (clock, fraction) = match clock.find(['.', ',']) {
+        Some(index) => (&clock[..index], Some(&clock[index + 1..])),
+        None => (clock, None),
+    };
+    let subsecond = match fraction {
+        Some(digits) => {
+            if digits.is_empty() || digits.len() > 9 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+                return None;
+            }
+            let mut padded = digits.to_string();
+            padded.extend(std::iter::repeat('0').take(9 - digits.len()));
+            padded.parse::<u32>().ok()?
+        }
+        None => 0,
+    };
+    let (hour, minute, second) = if clock.contains(':') {
+        let fields: Vec<&str> = clock.split(':').collect();
+        if fields.is_empty()
+            || fields.len() > 3
+            || fields
+                .iter()
+                .any(|field| field.len() != 2 || !field.bytes().all(|byte| byte.is_ascii_digit()))
+        {
+            return None;
+        }
+        if fraction.is_some() && fields.len() < 3 {
+            return None;
+        }
+        (
+            fields[0].parse::<u32>().ok()?,
+            fields.get(1).map_or(Ok(0), |field| field.parse()).ok()?,
+            fields.get(2).map_or(Ok(0), |field| field.parse()).ok()?,
+        )
+    } else {
+        if !clock.bytes().all(|byte| byte.is_ascii_digit())
+            || clock.len() % 2 != 0
+            || clock.len() > 6
+            || clock.is_empty()
+        {
+            return None;
+        }
+        if fraction.is_some() && clock.len() < 6 {
+            return None;
+        }
+        let read2 = |at: usize| (clock.as_bytes()[at] - b'0') as u32 * 10 + (clock.as_bytes()[at + 1] - b'0') as u32;
+        (
+            read2(0),
+            if clock.len() >= 4 { read2(2) } else { 0 },
+            if clock.len() >= 6 { read2(4) } else { 0 },
+        )
+    };
+    let second = if second == 60 { 59 } else { second };
+    if hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    Some(
+        hour as f64 * 3_600_000_000_000.0
+            + minute as f64 * 60_000_000_000.0
+            + second as f64 * 1_000_000_000.0
+            + subsecond as f64,
+    )
+}
+
+/// ParseTemporalTimeString：时间串 → 当日纳秒（offset/注解被忽略、Z 拒绝）。
+///
+/// # 边界与前提
+/// - Z/z designator → None；纯日期串 → None（不隐式午夜）。
+/// - 日期+时间（"1976-11-18T12:34..."）→ 取 T 后时间部分；空格分隔需带日期部分。
+/// - 无 T 的数字/连字符形式先做日期歧义判定：日期合法 → None（须 T 前缀）；
+///   日期非法 → 按时间解析（HHMM-UU 形式，offset 被忽略）。
+/// - 小数秒 ≤9 位；offset 小数秒 ≤9 位；闰秒按前一秒。
+fn parse_plain_time_string(input: &str) -> Option<f64> {
+    let text = input.trim();
+    if text.contains('\u{2212}') {
+        return None;
+    }
+    let body = instant_string_without_annotations(text)?;
+    if body.contains(['Z', 'z']) {
+        return None;
+    }
+    let sep = body.find(['T', 't', ' ']);
+    let (date_part, time_part, has_t) = match sep {
+        Some(0) => ("", &body[1..], matches!(body.as_bytes().first(), Some(b'T' | b't'))),
+        Some(index) => (&body[..index], &body[index + 1..], matches!(body.as_bytes()[index], b'T' | b't')),
+        None => ("", body, false),
+    };
+    if !has_t && sep == Some(0) {
+        // 前导空格不能替代 T 前缀（无日期部分的时间串）。
+        return None;
+    }
+    if !date_part.is_empty() {
+        // 完整日期部分必须可解析（负零年等由 parse_iso_date 拒绝）。
+        if parse_iso_date(date_part).is_err() {
+            return None;
+        }
+        return parse_plain_time_spec(time_part);
+    }
+    if !has_t && !time_part.contains(':') && is_ambiguous_date_string(time_part) {
+        return None;
+    }
+    parse_plain_time_spec(time_part)
+}
+
+/// 时间主体 + 尾部 offset（剥离并忽略）：offset 语法非法返回 None。
+fn parse_plain_time_spec(s: &str) -> Option<f64> {
+    let offset_start = s
+        .char_indices()
+        .rev()
+        .find_map(|(index, ch)| matches!(ch, '+' | '-').then_some(index));
+    let (clock, offset) = match offset_start {
+        Some(index) => (&s[..index], &s[index..]),
+        None => (s, ""),
+    };
+    if !offset.is_empty() && (parse_any_offset_minutes(offset).is_none() || !valid_offset_fraction(offset)) {
+        return None;
+    }
+    parse_plain_clock(clock)
+}
+
+/// ToTemporalTime：PlainTime 对象 / ZDT / PlainDateTime / 字符串 / property bag → 当日纳秒。
+///
+/// # 步骤
+/// 1. undefined → 0（午夜）；字符串走 parse_plain_time_string（失败 RangeError）。
+/// 2. PlainTime 读槽 0；ZDT 用其自身时区取本地时间；PlainDateTime 读时间槽。
+/// 3. 其余对象按 ToTemporalTimeRecord 读时间字段（无字段 TypeError）。
+///
+/// # 边界与前提
+/// - 非字符串原始值（number/bigint/null/boolean）→ TypeError；Symbol → TypeError。
+/// - bag 字段缺省 0（完整模式），越界值按 constrain 钳制（second=60 → 59）。
+fn plain_time_like_ns<H: VmHost>(vm: &mut H, value: JsValue) -> Result<f64, JsValue> {
+    if value.is_undefined() {
+        return Ok(0.0);
+    }
+    if value.is_string() {
+        return parse_plain_time_string(&to_string(value))
+            .ok_or_else(|| crate::error::create_range_error(vm, "invalid ISO 8601 time"));
+    }
+    if value.is_object() {
+        let ptr = value.as_js_object_ptr();
+        if !ptr.is_null() {
+            let obj = unsafe { &*ptr };
+            if obj.is_plain_time_obj() {
+                return Ok(get_double_prop(obj, 0));
+            }
+            if obj.is_zoned_date_time_obj() {
+                return zoned_date_time_plain_parts(vm, obj).map(|(_, _, _, time_ns)| time_ns);
+            }
+            if obj.is_plain_date_time_obj() {
+                return Ok(get_double_prop(obj, 3));
+            }
+            return plain_time_bag_ns(vm, value, obj);
+        }
+    }
+    Err(crate::error::create_type_error(vm, "cannot convert to PlainTime"))
+}
+
+/// ToTemporalTimeRecord（完整模式）：按字母序读时间字段，缺省 0，无字段 TypeError。
+fn plain_time_bag_ns<H: VmHost>(vm: &mut H, value: JsValue, obj: &JsObject) -> Result<f64, JsValue> {
+    let hour_raw = temporal_option_value(vm, obj, value, "hour")?;
+    let microsecond_raw = temporal_option_value(vm, obj, value, "microsecond")?;
+    let millisecond_raw = temporal_option_value(vm, obj, value, "millisecond")?;
+    let minute_raw = temporal_option_value(vm, obj, value, "minute")?;
+    let nanosecond_raw = temporal_option_value(vm, obj, value, "nanosecond")?;
+    let second_raw = temporal_option_value(vm, obj, value, "second")?;
+    if [hour_raw, microsecond_raw, millisecond_raw, minute_raw, nanosecond_raw, second_raw]
+        .iter()
+        .all(|raw| raw.is_undefined())
+    {
+        return Err(crate::error::create_type_error(vm, "no time units present"));
+    }
+    let mut convert = |raw: JsValue| -> Result<f64, JsValue> {
+        if raw.is_undefined() {
+            Ok(0.0)
+        } else {
+            let number = temporal_option_number(vm, raw)?;
+            if !number.is_finite() {
+                return Err(crate::error::create_range_error(vm, "invalid time component"));
+            }
+            Ok(number.trunc())
+        }
+    };
+    let hour = convert(hour_raw)?;
+    let microsecond = convert(microsecond_raw)?;
+    let millisecond = convert(millisecond_raw)?;
+    let minute = convert(minute_raw)?;
+    let nanosecond = convert(nanosecond_raw)?;
+    let second = convert(second_raw)?;
+    // RegulateTime（constrain）：越界钳制（second=60 → 59）。
+    let hour = hour.clamp(0.0, 23.0);
+    let minute = minute.clamp(0.0, 59.0);
+    let second = second.clamp(0.0, 59.0);
+    let millisecond = millisecond.clamp(0.0, 999.0);
+    let microsecond = microsecond.clamp(0.0, 999.0);
+    let nanosecond = nanosecond.clamp(0.0, 999.0);
+    Ok(hour * 3_600_000_000_000.0
+        + minute * 60_000_000_000.0
+        + second * 1_000_000_000.0
+        + millisecond * 1_000_000.0
+        + microsecond * 1_000.0
+        + nanosecond)
+}
+
+/// `Temporal.ZonedDateTime.prototype.withPlainTime(plainTimeLike)`。
+///
+/// # 步骤
+/// 1. branding + receiver 本地分量与偏移。
+/// 2. plain_time_like_ns 取当日纳秒（undefined → 午夜）。
+/// 3. local_to_epoch_ns 换算 + Instant 范围校验 → make_zoned_date_time（保时区/日历槽）。
+///
+/// # 边界与前提
+/// - 本地分量越 PlainDateTime 范围 / epoch 越 Instant 界 → RangeError。
+/// - ZDT 参数用其自身时区取本地时间（不用 receiver 时区）。
+pub fn zoned_date_time_with_plain_time<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_zoned_date_time(vm, obj));
+    let (year, month, day, _) = native_try!(zoned_date_time_plain_parts(vm, obj));
+    let offset_minutes = native_try!(zoned_date_time_offset_minutes(vm, obj));
+    let plain_time_like = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let time_ns = native_try!(plain_time_like_ns(vm, plain_time_like));
+    let epoch_ns = local_to_epoch_ns(year, month, day, time_ns, offset_minutes)
+        .ok_or_else(|| crate::error::create_range_error(vm, "invalid date-time"));
+    let epoch_ns = native_try!(epoch_ns);
+    if epoch_ns.unsigned_abs() > MAX_INSTANT_NS as u128 {
+        return NativeResult::Err(crate::error::create_range_error(vm, "ZonedDateTime outside supported range"));
+    }
+    let time_zone_id = to_string(obj.get_prop_at(1));
+    let calendar_id = get_calendar_id(obj, 2);
+    make_zoned_date_time(vm, epoch_ns, &time_zone_id, &calendar_id)
 }
 
 /// until/since 的 other 转换（ToTemporalZonedDateTime 语义，仅取 epoch 参与差值）。
@@ -3977,6 +4629,10 @@ fn parse_temporal_calendar_string(input: &str) -> Result<String, String> {
     }
     // 完整日期时间字符串（含注解校验），例如 2020-01-01T00:00:00.000000000[u-ca=iso8601]
     if parse_plain_date_time_string(trimmed).is_ok() {
+        return Ok("iso8601".to_string());
+    }
+    // 纯时间字符串（TemporalTimeString），例如 "15:23" / "T0030" / "152330.1-08"。
+    if parse_plain_time_string(trimmed).is_some() {
         return Ok("iso8601".to_string());
     }
     // 部分日期：YYYY-MM 或 MM-DD（可带注解）
@@ -6087,5 +6743,56 @@ mod tests {
         assert_eq!(extract_time_zone_annotation("1976-11-18T15:23:30Z"), None);
         assert_eq!(extract_time_zone_annotation("1976-11-18T15:23:30[+24:00]"), None);
         assert_eq!(extract_time_zone_annotation("1976-11-18T15:23:30[]"), None);
+    }
+
+    #[test]
+    fn parse_plain_time_string_cases() {
+        // 明确时间：T 前缀 / 冒号 / 非法日期数字串 / 带 offset 与注解。
+        assert_eq!(parse_plain_time_string("T00:30"), Some(1_800_000_000_000.0));
+        assert_eq!(parse_plain_time_string("T0030"), Some(1_800_000_000_000.0));
+        assert_eq!(parse_plain_time_string("12:34:56.987654321+00:00"), Some(45_296_987_654_321.0));
+        assert_eq!(parse_plain_time_string("12:34:56.987654321+00:00[UTC]"), Some(45_296_987_654_321.0));
+        assert_eq!(parse_plain_time_string("1976-11-18T12:34:56.987654321+00:00"), Some(45_296_987_654_321.0));
+        assert_eq!(parse_plain_time_string("1976-11-18 12:34:56.987654321"), Some(45_296_987_654_321.0));
+        assert_eq!(parse_plain_time_string("1314"), Some(47_640_000_000_000.0)); // 13:14
+        assert_eq!(parse_plain_time_string("0631"), Some(23_460_000_000_000.0)); // 06:31
+        assert_eq!(parse_plain_time_string("2021-13"), Some(73_260_000_000_000.0)); // 20:21 + offset -13 忽略
+                                                                                    // 歧义日期 → None（须 T 前缀）。
+        assert_eq!(parse_plain_time_string("2019-10-01"), None);
+        assert_eq!(parse_plain_time_string("1214"), None); // MMDD 合法
+        assert_eq!(parse_plain_time_string("0229"), None); // 闰年 2 月 29 判歧义
+        assert_eq!(parse_plain_time_string("1130"), None);
+        assert_eq!(parse_plain_time_string("12-14"), None); // MM-DD 合法
+        assert_eq!(parse_plain_time_string("202112"), None); // YYYYMM 合法
+        assert_eq!(parse_plain_time_string("2021-12"), None); // YYYY-MM 合法
+        assert_eq!(parse_plain_time_string("2021-12[-12:00]"), None);
+        assert_eq!(parse_plain_time_string("202112[UTC]"), None);
+        assert_eq!(parse_plain_time_string("1214[u-ca=iso8601]"), None);
+        // T 前缀后歧义消除；空格不能替代 T。
+        assert!(parse_plain_time_string("T2021-12").is_some());
+        assert_eq!(parse_plain_time_string(" 2021-12"), None);
+        // Z designator / 越界 / 多小数 / 负零年。
+        assert_eq!(parse_plain_time_string("09:00:00Z"), None);
+        assert_eq!(parse_plain_time_string("2019-10-01T09:00:00Z"), None);
+        assert_eq!(parse_plain_time_string("24:00"), None);
+        assert_eq!(parse_plain_time_string("12:34:56.1234567890"), None);
+        assert_eq!(parse_plain_time_string("-000000-12-07T03:24:30"), None);
+        // 闰秒按前一秒。
+        assert_eq!(parse_plain_time_string("2016-12-31T23:59:60"), Some(86_399_000_000_000.0));
+    }
+
+    #[test]
+    fn parse_plain_time_string_offsets_and_fractions() {
+        // offset 小数秒 ≤9 位合法，>9 位拒绝；逗号小数接受。
+        assert_eq!(
+            parse_plain_time_string("12:34:56.987654321+00:00:00.000000000"),
+            Some(45_296_987_654_321.0)
+        );
+        assert_eq!(parse_plain_time_string("12:34:56.987654321+00:00:00,0"), Some(45_296_987_654_321.0));
+        assert_eq!(parse_plain_time_string("00:00:00.1234567891"), None);
+        assert_eq!(parse_plain_time_string("00+00:00:00.1234567891"), None);
+        // 日期+offset 但无时间部分 → 拒绝。
+        assert_eq!(parse_plain_time_string("2022-09-15Z"), None);
+        assert_eq!(parse_plain_time_string("2022-09-15+00:00"), None);
     }
 }
