@@ -153,7 +153,18 @@ impl Vm {
                 let mut upvals = Box::new(Vec::with_capacity(upvalue_captures.len()));
                 for capture in &upvalue_captures {
                     let cell_ptr = if let Some(puv) = capture.parent_uv_idx {
-                        parent_upvalues.get(puv as usize).copied().unwrap_or(std::ptr::null_mut())
+                        match parent_upvalues.get(puv as usize) {
+                            Some(&ptr) => ptr,
+                            // parent_uv_idx 由编译期按父 upvalue 表位置计算，越界即
+                            // 捕获编码错位——Err 早暴露，避免落惰性路径读到错层 cell。
+                            None => {
+                                return Err(format!(
+                                    "CREATE_CLOSURE: parent upvalue index {} out of bounds (parent has {})",
+                                    puv,
+                                    parent_upvalues.len()
+                                ));
+                            }
+                        }
                     } else {
                         let cell_idx = capture.cell_idx as usize;
                         if cell_idx >= current_cells.len() {
