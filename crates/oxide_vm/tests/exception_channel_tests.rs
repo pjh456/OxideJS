@@ -228,3 +228,54 @@ fn nested_inline_map_rest_poisoned_throws() {
         "true"
     );
 }
+
+/// 复现 AsyncFromSyncIterator 的 valueWrapper reject 结算路径（close_sync_iterator
+/// 调用户 return() 抛真值）：return() 的抛错被忽略后其值不得残留进槽——异常逃逸
+/// 出异步帧（resume_async 经槽恢复原值时取到残留 `true`）拒绝原因被污染。
+/// return() 只在 reject-close 第一次调用时抛错，IteratorClose 转发不抛，
+/// 保证残留之后没有新写槽覆盖。
+#[test]
+fn sync_iterator_return_throw_no_slot_pollution() {
+    assert_eq!(
+        eval(
+            "var threw = false;\
+             var inner = {\
+             next() { throw 'x'; },\
+             return() { if (!threw) { threw = true; throw true; } return { done: true }; } };\
+             var iterable = { [Symbol.iterator]() { return inner; } };\
+             async function f() { for await (var y of iterable) {} }\
+             f()"
+        ),
+        "<rejected \"x\">"
+    );
+}
+
+/// 回归：聚合迭代器关闭（close_agg_iterator）遇迭代抛错时调用户 return() 抛真值，
+/// 拒绝原因保持迭代抛出的原异常，不得被 return() 的 `true` 替换。
+#[test]
+fn agg_iterator_return_throw_no_slot_pollution() {
+    assert_eq!(
+        eval(
+            "var inner = { next() { throw 'x'; }, return() { throw true; } };\
+             var iterable = { [Symbol.iterator]() { return inner; } };\
+             Promise.all(iterable).then(function () {}, function (e) { return e === true ? 'polluted:true' : e; })"
+        ),
+        "\"x\""
+    );
+}
+
+/// 回归：Array.from 迭代输入抛错时 close_iterator 仍调用 return()（记录日志），
+/// 且迭代抛出的原异常优先于 return() 的返回值。
+#[test]
+fn array_from_iterator_close_original_error_wins() {
+    assert_eq!(
+        eval(
+            "var log = '';\
+             var inner = { next() { throw 'x'; }, return() { log += 'closed'; return {}; } };\
+             var iterable = { [Symbol.iterator]() { return inner; } };\
+             try { Array.from(iterable); } catch (e) { log += ':' + e; }\
+             log"
+        ),
+        "\"closed:x\""
+    );
+}

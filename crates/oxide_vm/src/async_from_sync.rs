@@ -145,7 +145,9 @@ const ASFS_INNER_PROP: &str = "__oxide_asfs_inner__";
 /// # 参数
 /// - `inner`：内层同步迭代器（关闭目标）。
 /// - `result`：内层同步方法调用结果（`Err` 为调用抛出的字符串展平文本）。
-fn continue_async_from_sync(vm: &mut Vm, inner: JsValue, result: Result<JsValue, String>, close_on_rejection: bool) -> NativeResult {
+fn continue_async_from_sync(
+    vm: &mut Vm, inner: JsValue, result: Result<JsValue, String>, close_on_rejection: bool,
+) -> NativeResult {
     let (promise, resolve, reject) = vm.new_promise_capability();
     let reject_with = |vm: &mut Vm, exc: JsValue| {
         if close_on_rejection {
@@ -224,7 +226,10 @@ fn close_sync_iterator(vm: &mut Vm, inner: JsValue) {
         Err(_) => return,
     };
     if oxide_builtins::iterator::is_callable(return_fn) {
+        // return() 的抛错被忽略，其值不得外泄进槽覆盖在途异常。
+        let saved_uncaught = vm.last_uncaught_value.take();
         let _ = vm.call_function_sync(return_fn, inner, &[]);
+        vm.last_uncaught_value = saved_uncaught;
     }
 }
 
