@@ -706,6 +706,56 @@ fn plain_time_until_since_options_and_direction() {
     assert_eq!(str_val(&vm, r), "PT1H");
 }
 
+#[test]
+fn plain_time_add_subtract_normal() {
+    let mut vm = Vm::new();
+    // 同日内小时加/减与跨分钟进位。
+    let r = eval(&mut vm, "new Temporal.PlainTime(12, 30).add({ hours: 1, minutes: 5 }).toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "13:35:00");
+    let r = eval(&mut vm, "new Temporal.PlainTime(12, 30).subtract({ hours: 1, minutes: 5 }).toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "11:25:00");
+    // 亚秒进位：秒进位到分钟。
+    let r = eval(&mut vm, "new Temporal.PlainTime(12, 30, 59, 500).add({ milliseconds: 500 }).toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "12:31:00");
+}
+
+#[test]
+fn plain_time_add_subtract_cross_midnight() {
+    let mut vm = Vm::new();
+    // 时间溢出跨午夜：rem_euclid 回 0-24 域。
+    let r = eval(&mut vm, "new Temporal.PlainTime(23, 30).add({ hours: 1 }).toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "00:30:00");
+    let r = eval(&mut vm, "new Temporal.PlainTime(00, 30).subtract({ hours: 1 }).toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "23:30:00");
+    // 多天增量同样折叠回当日。
+    let r = eval(&mut vm, "new Temporal.PlainTime(12, 30).add({ hours: 26 }).toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "14:30:00");
+}
+
+#[test]
+fn plain_time_add_subtract_ignores_date_units_and_blank() {
+    let mut vm = Vm::new();
+    // 日期字段（days 及以上）对 PlainTime 忽略，不报错。
+    let r = eval(&mut vm, "new Temporal.PlainTime(12, 30).add({ days: 3, hours: 1 }).toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "13:30:00");
+    // blank duration（Duration 对象全零）：值不变的新对象。
+    let r = eval(&mut vm, "new Temporal.PlainTime(12, 30).add(new Temporal.Duration()).toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "12:30:00");
+    let r = eval(&mut vm, "new Temporal.PlainTime(12, 30).subtract(new Temporal.Duration()).toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "12:30:00");
+    // 空对象无 duration 字段 → TypeError（符合 duration-like 字段要求）。
+    let r = eval(&mut vm, "try { new Temporal.PlainTime(12, 30).add({}) } catch (e) { e.constructor.name }").unwrap();
+    assert_eq!(str_val(&vm, r), "TypeError");
+}
+
+#[test]
+fn plain_time_add_subtract_invalid_argument() {
+    let mut vm = Vm::new();
+    // 非 duration-like 原始值抛 TypeError。
+    let r = eval(&mut vm, "try { new Temporal.PlainTime(12).add(42) } catch (e) { e.constructor.name }").unwrap();
+    assert_eq!(str_val(&vm, r), "TypeError");
+}
+
 // -- Temporal.PlainDateTime --
 
 #[test]

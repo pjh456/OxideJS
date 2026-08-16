@@ -4636,6 +4636,61 @@ pub fn plain_time_since<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     plain_time_difference(vm, args, true)
 }
 
+// ───────────────────── PlainTime add / subtract ─────────────────────
+
+/// add/subtract 核心：receiver 午夜后纳秒叠加时长的"时间域"增量。
+///
+/// # 步骤
+/// 1. branding receiver 取槽 0 ns。
+/// 2. `duration_like_values` 归一 duration，`temporal_overflow` 解析 options（读序：duration → options）。
+/// 3. 仅取 hours 起的时间字段换算纳秒增量（日期字段 days 及以上规范忽略）。
+/// 4. 按 sign 叠加后 `rem_euclid(DAY_NS)` 保持 0-24 域 → `make_plain_time`。
+///
+/// # 边界与前提
+/// - duration 全 0 → 值不变的新对象（blank-duration 语义）。
+/// - duration 含日期字段（y/m/w/d）不报错，规范对 PlainTime 直接忽略。
+fn plain_time_apply_duration<H: VmHost>(vm: &mut H, args: &[u8], sign: i64) -> NativeResult {
+    let ptr = match receiver_obj(vm, args) {
+        Ok(p) => p,
+        Err(error) => return NativeResult::Err(error),
+    };
+    let obj = unsafe { &*ptr };
+    if let Err(error) = ensure_plain_time(vm, obj) {
+        return NativeResult::Err(error);
+    }
+    let time_ns = get_double_prop(obj, 0) as i128;
+    let duration_like = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let values = match duration_like_values(vm, duration_like) {
+        Ok(values) => values,
+        Err(error) => return NativeResult::Err(error),
+    };
+    if let Err(error) = temporal_overflow(vm, args) {
+        return NativeResult::Err(error);
+    }
+    const DAY_NS: i128 = 86_400_000_000_000;
+    // 时间字段（hours 起）单独换算纳秒；日期字段 days 及以上对 PlainTime 无意义直接忽略。
+    let [_, _, _, _, h, min, s, ms, us, ns] = values;
+    let time_delta = duration_component_integer(h).unwrap_or(0) * 3_600_000_000_000
+        + duration_component_integer(min).unwrap_or(0) * 60_000_000_000
+        + duration_component_integer(s).unwrap_or(0) * 1_000_000_000
+        + duration_component_integer(ms).unwrap_or(0) * 1_000_000
+        + duration_component_integer(us).unwrap_or(0) * 1_000
+        + duration_component_integer(ns).unwrap_or(0);
+    // 时间溢出跨午夜：rem_euclid 保持 0-24 域。
+    let new_time_ns = (time_ns + time_delta * sign as i128).rem_euclid(DAY_NS);
+    make_plain_time(vm, new_time_ns as f64)
+}
+
+/// `Temporal.PlainTime.prototype.add(durationLike, options)`。
+pub fn plain_time_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_time_apply_duration(vm, args, 1)
+}
+
+/// `Temporal.PlainTime.prototype.subtract(durationLike, options)`。
+pub fn plain_time_subtract<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_time_apply_duration(vm, args, -1)
+}
+
 // ───────────────────── PlainDateTime 基础方法 ─────────────────────
 
 /// `Temporal.PlainDateTime` 构造器：保存 ISO 日期与午夜后纳秒。
@@ -7339,5 +7394,19 @@ mod tests {
         const DAY_NS: i128 = 86_400_000_000_000;
         assert_eq!(rounded.rem_euclid(DAY_NS), 0);
         assert_eq!(format_plain_time_iso(rounded.rem_euclid(DAY_NS), true, Some(0)), "00:00:00");
+    }
+
+    #[test]
+    fn plain_time_apply_duration_ignores_date_units() {
+        // 时间域加总仅取 hours 起字段；days 及以上对 PlainTime 忽略（与 instant_round 日期单位报错不同）。
+        let mut values = [0.0; 10];
+        values[3] = 5.0; // days
+        values[4] = 2.0; // hours
+        values[5] = 30.0; // minutes
+        let time_delta = duration_component_integer(values[4]).unwrap() * 3_600_000_000_000
+            + duration_component_integer(values[5]).unwrap() * 60_000_000_000;
+        assert_eq!(time_delta, 9_000_000_000_000); // 2h30m
+                                                   // 忽略 days：time_delta 不含 DAY_NS 分量。
+        assert_eq!(time_delta % 86_400_000_000_000, 9_000_000_000_000);
     }
 }
