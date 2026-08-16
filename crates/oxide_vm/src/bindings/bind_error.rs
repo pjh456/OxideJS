@@ -12,9 +12,10 @@ fn bind_error_subtype_constructor(
 ) {
     let sf = core.perm_interner().as_ref();
     let sh = core.shape_forge().as_ref();
-    let function_proto_ptr = session.builtin_world().function_proto.as_ptr() as *mut JsObject;
-
-    let mut ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(function_proto_ptr)));
+    // 子类型构造器 [[Prototype]] 指向 Error 构造器（规范：NativeError 构造器继承 Error
+    // 构造器，而非直接继承 Function.prototype；instanceof 走 @@hasInstance 不受影响）。
+    let error_ctor_ptr = session.builtin_world().error_constructor.as_ptr() as *mut JsObject;
+    let mut ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(error_ctor_ptr)));
     ctor.set_function(true);
     // Error 子类型须标记可构造：new TypeError(...) 走 NEW_EXPRESSION 校验。
     ctor.type_tag = JsObject::OBJ_TYPE_CONSTRUCTOR;
@@ -34,6 +35,10 @@ fn bind_error_subtype_constructor(
     ctor.ensure_hash_props().push(JsValue::from_js_object(proto_ptr));
     ctor.ensure_hash_props().push(JsValue::perm_string(sf.string_ptr(name_si)));
     ctor.ensure_hash_props().push(JsValue::int(arg_count as i32));
+    // 构造器 prototype 槽按规范 { writable:false, enumerable:false, configurable:false }。
+    ctor.set_data_meta(0u32, PropAttributes::new(false, false, false));
+    // 构造器 name 槽按规范 { writable:false, enumerable:false, configurable:true }。
+    ctor.set_data_meta(1u32, PropAttributes::new(false, false, true));
     // 构造器 length 按规范为不可写不可枚举（Function.length 属性描述符约定）。
     ctor.set_data_meta(2u32, PropAttributes::new(false, false, true));
 

@@ -588,8 +588,10 @@ fn bind_error_subtype_global(
         }
     }
 
-    let function_proto_ptr = session.builtin_world().function_proto.as_ptr() as *mut JsObject;
-    let mut ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(function_proto_ptr)));
+    // fallback 自建路径与 bind_error 的 Box 自建路径保持同一形态：[[Prototype]] 指向
+    // Error 构造器（NativeError 构造器继承 Error 构造器），prototype/name 描述符按规范。
+    let error_ctor_ptr = session.builtin_world().error_constructor.as_ptr() as *mut JsObject;
+    let mut ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(error_ctor_ptr)));
     ctor.set_function(true);
     configure_native_constructor(&mut ctor, ctor_fn, arg_count);
 
@@ -604,6 +606,9 @@ fn bind_error_subtype_global(
     ctor.ensure_hash_props()
         .push(JsValue::from_js_object(proto.as_ptr() as *mut JsObject));
     ctor.ensure_hash_props().push(JsValue::perm_string(sf.string_ptr(name_si)));
+    // prototype/name 描述符与 Box 自建路径一致：{f,f,f} / {f,f,t}。
+    ctor.set_data_meta(0u32, PropAttributes::new(false, false, false));
+    ctor.set_data_meta(1u32, PropAttributes::new(false, false, true));
 
     let ctor_ptr = Box::into_raw(ctor);
     bind_existing_global(core, global, name, JsValue::from_js_object(ctor_ptr));

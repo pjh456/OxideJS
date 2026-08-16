@@ -1,6 +1,7 @@
 use oxide_builtins::error;
 use oxide_compiler::compiler::Compiler;
 use oxide_types::mem::P;
+use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
 
@@ -574,4 +575,83 @@ fn create_suppressed_error_direct_call() {
     let err_pos = sh.lookup_position(obj.shape_id(), si_error).unwrap();
     let meta = obj.prop_meta_at(err_pos).unwrap();
     assert!(!meta.attributes.enumerable(), "error 槽应非枚举");
+}
+
+// ── 子类型构造器描述符与原型链测试 ──
+
+#[test]
+fn error_subtype_constructor_descriptors() {
+    let mut vm = make_vm();
+    // 构造器 prototype 槽描述符 {f,f,f}（子类型与 SuppressedError 同规）。
+    let r = eval_in(
+        &mut vm,
+        "var d = Object.getOwnPropertyDescriptor(TypeError, 'prototype'); [d.writable, d.enumerable, d.configurable].join(',')",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(r), Some("false,false,false".to_string()));
+    // name 槽描述符 {f,f,t}。
+    let r = eval_in(
+        &mut vm,
+        "var d = Object.getOwnPropertyDescriptor(SuppressedError, 'name'); [d.writable, d.enumerable, d.configurable].join(',')",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(r), Some("false,false,true".to_string()));
+    // length 槽描述符 {f,f,t}。
+    let r = eval_in(
+        &mut vm,
+        "var d = Object.getOwnPropertyDescriptor(TypeError, 'length'); [d.writable, d.enumerable, d.configurable].join(',')",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(r), Some("false,false,true".to_string()));
+}
+
+#[test]
+fn error_subtype_constructor_proto_is_error_ctor() {
+    let mut vm = make_vm();
+    // NativeError 子类型构造器 [[Prototype]] === Error 构造器（instanceof 走 @@hasInstance 不受影响）。
+    let r = eval_in(&mut vm, "Object.getPrototypeOf(TypeError) === Error").unwrap();
+    assert_eq!(format!("{}", r), "true");
+    let r = eval_in(&mut vm, "Object.getPrototypeOf(SuppressedError) === Error").unwrap();
+    assert_eq!(format!("{}", r), "true");
+    let r = eval_in(&mut vm, "new TypeError('x') instanceof TypeError").unwrap();
+    assert_eq!(format!("{}", r), "true");
+}
+
+// ── full_reset 重建路径测试 ──
+
+#[test]
+fn suppressed_error_survives_error_family_reset() {
+    let mut vm = make_vm();
+    // error_family 脏：suppressed_error_proto 与构造器整体重建。
+    let proto_ptr = P::as_ptr(&vm.session().builtin_world().suppressed_error_proto) as *mut JsObject;
+    unsafe { (&mut *proto_ptr).bump_generation() };
+    vm.full_reset();
+
+    // 重建后 length=3、构造器 [[Prototype]]=Error、原型链到 Error.prototype 均不回落。
+    let r = eval_in(&mut vm, "SuppressedError.length").unwrap();
+    assert_eq!(format!("{}", r), "3");
+    let r = eval_in(&mut vm, "Object.getPrototypeOf(SuppressedError) === Error").unwrap();
+    assert_eq!(format!("{}", r), "true");
+    let r = eval_in(&mut vm, "Object.getPrototypeOf(SuppressedError.prototype) === Error.prototype").unwrap();
+    assert_eq!(format!("{}", r), "true");
+    let r = eval_in(&mut vm, "new SuppressedError('e','s','m').message").unwrap();
+    assert_eq!(vm.lookup_str(r), Some("m".to_string()));
+    assert!(!vm.session().is_dirty_since_snapshot());
+}
+
+#[test]
+fn suppressed_error_length_kept_after_global_only_reset() {
+    let mut vm = make_vm();
+    // 仅 global 脏（error_family 干净）：fallback 自建构造器分支须保留 length=3。
+    let g_ptr = vm.session().global_object().as_ptr() as *mut JsObject;
+    unsafe { (&mut *g_ptr).bump_generation() };
+    vm.full_reset();
+
+    let r = eval_in(&mut vm, "SuppressedError.length").unwrap();
+    assert_eq!(format!("{}", r), "3");
+    let r = eval_in(&mut vm, "Object.getPrototypeOf(SuppressedError) === Error").unwrap();
+    assert_eq!(format!("{}", r), "true");
+    let r = eval_in(&mut vm, "new SuppressedError('e','s').error").unwrap();
+    assert_eq!(vm.lookup_str(r), Some("e".to_string()));
+    assert!(!vm.session().is_dirty_since_snapshot());
 }
