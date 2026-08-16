@@ -371,6 +371,33 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         ),
         PropAttributes::new(false, false, true),
     );
+    apply_binding_table(
+        world,
+        zoned_date_time_proto,
+        core,
+        &[
+            (
+                "toJSON",
+                oxide_builtins::temporal::zoned_date_time_to_json::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "toLocaleString",
+                oxide_builtins::temporal::zoned_date_time_to_locale_string::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "toString",
+                oxide_builtins::temporal::zoned_date_time_to_string::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "valueOf",
+                oxide_builtins::temporal::zoned_date_time_value_of::<crate::vm::Vm> as *const (),
+                0,
+            ),
+        ],
+    );
 
     // Temporal.PlainDate：构造器 + from 静态方法 + year/month/day getter 与 toString。
     let plain_date_ctor_ptr = world.plain_date_constructor.as_ptr() as *mut JsObject;

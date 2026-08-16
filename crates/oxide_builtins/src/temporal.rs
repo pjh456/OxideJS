@@ -1348,6 +1348,234 @@ pub fn zoned_date_time_calendar_id<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
     NativeResult::Ok(obj.get_prop_at(2))
 }
 
+/// 时区注解文本：命名区原样返回，偏移区规范化为 `±HH:MM` 带冒号；critical 时 `!` 置于括号内。
+fn format_time_zone_annotation(time_zone_id: &str, critical: bool) -> String {
+    let inner = if matches!(time_zone_id.as_bytes().first(), Some(b'+') | Some(b'-')) {
+        let offset_minutes = instant_time_zone_offset(time_zone_id).unwrap_or(0);
+        let sign = if offset_minutes < 0 { '-' } else { '+' };
+        let magnitude = offset_minutes.abs();
+        format!("{sign}{:02}:{:02}", magnitude / 60, magnitude % 60)
+    } else {
+        time_zone_id.to_string()
+    };
+    if critical {
+        format!("[!{inner}]")
+    } else {
+        format!("[{inner}]")
+    }
+}
+
+/// ZDT 字符串化核心：epoch 域已舍入后按偏移与注解选项拼 `{date}T{time}.fff{offset}[{tz}][{ca}]`。
+///
+/// # 边界与前提
+/// - epoch_ns 须已按 quantum 舍入（调用方保证），此处仅做本地墙钟分解。
+/// - offset_name/time_zone_name 取 auto/never/critical，calendar_name 取 auto/never/always/critical。
+/// - 偏移段恒 `±HH:MM` 带冒号；时区注解命名区原样、偏移区规范化。
+#[expect(clippy::too_many_arguments)]
+fn format_zoned_date_time_iso(
+    epoch_ns: i128, offset_minutes: i32, time_zone_id: &str, calendar_id: &str, include_seconds: bool,
+    output_digits: Option<usize>, offset_name: &str, time_zone_name: &str, calendar_name: &str,
+) -> Option<String> {
+    const DAY_NS: i128 = 86_400_000_000_000;
+    let offset_ns = i128::from(offset_minutes).checked_mul(60_000_000_000)?;
+    let local_ns = epoch_ns.checked_add(offset_ns)?;
+    let days = local_ns.div_euclid(DAY_NS);
+    let mut time_ns = local_ns.rem_euclid(DAY_NS);
+    let hour = time_ns / 3_600_000_000_000;
+    time_ns %= 3_600_000_000_000;
+    let minute = time_ns / 60_000_000_000;
+    time_ns %= 60_000_000_000;
+    let second = time_ns / 1_000_000_000;
+    let subsecond = time_ns % 1_000_000_000;
+    let (year, month, day) = civil_from_days(days);
+
+    let mut output = format!("{}-{month:02}-{day:02}T{hour:02}:{minute:02}", format_iso_year(year));
+    if include_seconds {
+        output.push_str(&format!(":{second:02}"));
+        match output_digits {
+            Some(0) => {}
+            Some(digits) => {
+                let fraction = format!("{subsecond:09}");
+                output.push('.');
+                output.push_str(&fraction[..digits]);
+            }
+            None if subsecond != 0 => {
+                let fraction = format!("{subsecond:09}").trim_end_matches('0').to_string();
+                output.push('.');
+                output.push_str(&fraction);
+            }
+            None => {}
+        }
+    }
+
+    // offset 段：auto/always 显示，never 省略，critical 段前加 !。
+    if offset_name != "never" {
+        let sign = if offset_minutes < 0 { '-' } else { '+' };
+        let magnitude = offset_minutes.abs();
+        if offset_name == "critical" {
+            output.push('!');
+        }
+        output.push_str(&format!("{sign}{:02}:{:02}", magnitude / 60, magnitude % 60));
+    }
+
+    // timeZoneName 注解：auto 显示，never 省略，critical 时 `!` 置于括号内。
+    if time_zone_name != "never" {
+        output.push_str(&format_time_zone_annotation(time_zone_id, time_zone_name == "critical"));
+    }
+
+    // calendarName 注解：always/critical 显示，auto/never 省略，critical 时 `!` 置于括号内。
+    if calendar_name == "always" || calendar_name == "critical" {
+        if calendar_name == "critical" {
+            output.push_str(&format!("[!u-ca={calendar_id}]"));
+        } else {
+            output.push_str(&format!("[u-ca={calendar_id}]"));
+        }
+    }
+    Some(output)
+}
+
+/// `Temporal.ZonedDateTime.prototype.toString(options)`：epoch 域舍入后按六项 options 输出 ISO 8601。
+pub fn zoned_date_time_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_zoned_date_time(vm, obj));
+    let Some(epoch_ns) = get_instant_epoch_ns(obj) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid ZonedDateTime"));
+    };
+    let time_zone_id = to_string(obj.get_prop_at(1));
+    let offset_minutes = native_try!(zoned_date_time_offset_minutes(vm, obj));
+    let calendar_id = get_calendar_id(obj, 2);
+    let options_value = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
+
+    // 六项 options 按规范顺序先全部 Get：calendarName → timeZoneName → offset →
+    // fractionalSecondDigits → roundingMode → smallestUnit。
+    let (calendar_name, time_zone_name, offset_name, fractional_input, mode_value, smallest_value) = if options_value
+        .is_undefined()
+    {
+        (
+            "auto".to_string(),
+            "auto".to_string(),
+            "auto".to_string(),
+            FractionalSecondDigitsInput::Auto,
+            "trunc".to_string(),
+            None,
+        )
+    } else {
+        if !options_value.is_object() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "options must be an object"));
+        }
+        let options_ptr = options_value.as_js_object_ptr();
+        if options_ptr.is_null() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "options must be an object"));
+        }
+        let options = unsafe { &*options_ptr };
+        let calendar_raw = native_try!(temporal_option_value(vm, options, options_value, "calendarName"));
+        let calendar = if calendar_raw.is_undefined() {
+            "auto".to_string()
+        } else {
+            native_try!(temporal_option_string(vm, calendar_raw))
+        };
+        let tz_raw = native_try!(temporal_option_value(vm, options, options_value, "timeZoneName"));
+        let tz_name = if tz_raw.is_undefined() {
+            "auto".to_string()
+        } else {
+            native_try!(temporal_option_string(vm, tz_raw))
+        };
+        let offset_raw = native_try!(temporal_option_value(vm, options, options_value, "offset"));
+        let offset_name = if offset_raw.is_undefined() {
+            "auto".to_string()
+        } else {
+            native_try!(temporal_option_string(vm, offset_raw))
+        };
+        let fractional_raw = native_try!(temporal_option_value(vm, options, options_value, "fractionalSecondDigits"));
+        let fractional = if fractional_raw.is_undefined() {
+            FractionalSecondDigitsInput::Auto
+        } else if fractional_raw.is_int() || fractional_raw.is_double() {
+            FractionalSecondDigitsInput::Number(to_number(fractional_raw))
+        } else {
+            FractionalSecondDigitsInput::String(native_try!(temporal_option_string(vm, fractional_raw)))
+        };
+        let mode_raw = native_try!(temporal_option_value(vm, options, options_value, "roundingMode"));
+        let mode = if mode_raw.is_undefined() {
+            "trunc".to_string()
+        } else {
+            native_try!(temporal_option_string(vm, mode_raw))
+        };
+        let smallest_raw = native_try!(temporal_option_value(vm, options, options_value, "smallestUnit"));
+        let smallest = if smallest_raw.is_undefined() {
+            None
+        } else {
+            Some(native_try!(temporal_option_string(vm, smallest_raw)))
+        };
+        (calendar, tz_name, offset_name, fractional, mode, smallest)
+    };
+
+    // 白名单校验（全部 Get 完成后统一校验）。
+    if !matches!(offset_name.as_str(), "auto" | "never" | "always" | "critical") {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid offset option"));
+    }
+    if !matches!(time_zone_name.as_str(), "auto" | "never" | "critical") {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid timeZoneName option"));
+    }
+    if !matches!(calendar_name.as_str(), "auto" | "never" | "always" | "critical") {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid calendarName option"));
+    }
+
+    let fractional_digits = native_try!(parse_fractional_second_digits(vm, fractional_input));
+    let Some(mode) = instant_rounding_mode(&mode_value) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding mode"));
+    };
+    let (quantum_ns, include_seconds, output_digits) = match smallest_value.as_deref() {
+        Some("minute" | "minutes") => (60_000_000_000, false, Some(0)),
+        Some("second" | "seconds") => (1_000_000_000, true, Some(0)),
+        Some("millisecond" | "milliseconds") => (1_000_000, true, Some(3)),
+        Some("microsecond" | "microseconds") => (1_000, true, Some(6)),
+        Some("nanosecond" | "nanoseconds") => (1, true, Some(9)),
+        Some(_) => return NativeResult::Err(crate::error::create_range_error(vm, "invalid smallest unit")),
+        None => match fractional_digits {
+            Some(digits) => (10_i128.pow((9 - digits) as u32), true, Some(digits)),
+            None => (1, true, None),
+        },
+    };
+    let Some(rounded_ns) = round_instant_ns(epoch_ns, quantum_ns, mode) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "ZonedDateTime outside supported range"));
+    };
+    if rounded_ns.unsigned_abs() > MAX_INSTANT_NS as u128 {
+        return NativeResult::Err(crate::error::create_range_error(vm, "ZonedDateTime outside supported range"));
+    }
+    match format_zoned_date_time_iso(
+        rounded_ns,
+        offset_minutes,
+        &time_zone_id,
+        &calendar_id,
+        include_seconds,
+        output_digits,
+        &offset_name,
+        &time_zone_name,
+        &calendar_name,
+    ) {
+        Some(output) => NativeResult::Ok(vm.new_string_owned(output)),
+        None => NativeResult::Err(crate::error::create_range_error(vm, "invalid ZonedDateTime")),
+    }
+}
+
+/// `Temporal.ZonedDateTime.prototype.toJSON()`：输出默认 toString 字符串，忽略参数。
+pub fn zoned_date_time_to_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let receiver = args.first().copied().unwrap_or(0);
+    zoned_date_time_to_string(vm, &[receiver])
+}
+
+/// `Temporal.ZonedDateTime.prototype.toLocaleString()`：当前使用稳定的默认 ISO 表示。
+pub fn zoned_date_time_to_locale_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let receiver = args.first().copied().unwrap_or(0);
+    zoned_date_time_to_string(vm, &[receiver])
+}
+
+/// `Temporal.ZonedDateTime.prototype.valueOf()`：Temporal 对象禁止转原始值。
+pub fn zoned_date_time_value_of<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
+    NativeResult::Err(crate::error::create_type_error(vm, "Temporal.ZonedDateTime has no valueOf"))
+}
+
 /// ZDT 字段 getter 宏：branding 后读本地分量，按选择函数取字段。
 macro_rules! zoned_date_time_parts_getter {
     ($name:ident, $select:expr) => {
@@ -5109,5 +5337,45 @@ mod tests {
         // 正常日期返回当地午夜。
         assert_eq!(start_of_day_epoch_ns(1970, 1, 1, 0), Some(0));
         assert_eq!(start_of_day_epoch_ns(1970, 1, 1, 60), Some(-3_600_000_000_000));
+    }
+
+    #[test]
+    fn format_time_zone_annotation_normalizes_offset() {
+        // 命名区原样；偏移区规范化为 ±HH:MM 带冒号；critical 时 `!` 置于括号内。
+        assert_eq!(format_time_zone_annotation("UTC", false), "[UTC]");
+        assert_eq!(format_time_zone_annotation("+01:00", false), "[+01:00]");
+        assert_eq!(format_time_zone_annotation("+01", false), "[+01:00]");
+        assert_eq!(format_time_zone_annotation("-05:00", false), "[-05:00]");
+        assert_eq!(format_time_zone_annotation("UTC", true), "[!UTC]");
+        assert_eq!(format_time_zone_annotation("+01", true), "[!+01:00]");
+    }
+
+    #[test]
+    fn format_zoned_date_time_iso_annotations() {
+        // 偏移/时区/日历注解各取值组合，验证段序 `{offset}[{tz}][{ca}]` 与 critical 前缀。
+        let base = format_zoned_date_time_iso(0, 60, "+01:00", "iso8601", true, None, "auto", "auto", "auto");
+        assert_eq!(base, Some("1970-01-01T01:00:00+01:00[+01:00]".to_string()));
+        // offset never 省略偏移段，时区注解仍显示。
+        let no_offset = format_zoned_date_time_iso(0, 60, "+01:00", "iso8601", true, None, "never", "auto", "auto");
+        assert_eq!(no_offset, Some("1970-01-01T01:00:00[+01:00]".to_string()));
+        // calendarName always 追加日历注解。
+        let ca_always = format_zoned_date_time_iso(0, 60, "+01:00", "iso8601", true, None, "auto", "auto", "always");
+        assert_eq!(ca_always, Some("1970-01-01T01:00:00+01:00[+01:00][u-ca=iso8601]".to_string()));
+        // timeZoneName/calendarName critical 均 `!` 置于括号内。
+        let critical =
+            format_zoned_date_time_iso(0, 60, "+01:00", "iso8601", true, None, "auto", "critical", "critical");
+        assert_eq!(critical, Some("1970-01-01T01:00:00+01:00[!+01:00][!u-ca=iso8601]".to_string()));
+        // offset critical 偏移段前加 !。
+        let offset_critical =
+            format_zoned_date_time_iso(0, 60, "+01:00", "iso8601", true, None, "critical", "auto", "auto");
+        assert_eq!(offset_critical, Some("1970-01-01T01:00:00!+01:00[+01:00]".to_string()));
+    }
+
+    #[test]
+    fn format_zoned_date_time_iso_epoch_rounding_cross_midnight() {
+        // 2000-01-01 前 1ns 已舍入到 2000-01-01 整点，8 位小数输出。
+        let rounded = round_instant_ns(946_684_799_999_999_999, 100, InstantRoundingMode::HalfExpand).unwrap();
+        let output = format_zoned_date_time_iso(rounded, 0, "UTC", "iso8601", true, Some(8), "auto", "auto", "auto");
+        assert_eq!(output, Some("2000-01-01T00:00:00.00000000+00:00[UTC]".to_string()));
     }
 }

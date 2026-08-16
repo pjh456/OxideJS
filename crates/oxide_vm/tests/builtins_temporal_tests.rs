@@ -1140,3 +1140,132 @@ fn plain_date_brand_only_getters_require_plain_date_receiver() {
     .unwrap();
     assert_eq!(str_val(&vm, r), "7,12,true,true");
 }
+
+#[test]
+fn zoned_date_time_to_string_default() {
+    let mut vm = Vm::new();
+    // 默认无参输出：offset 恒显示 + timeZoneName auto 显示，calendarName auto 省略。
+    let r = eval(
+        &mut vm,
+        "new Temporal.ZonedDateTime(0n, 'UTC').toString() + ',' +
+         new Temporal.ZonedDateTime(0n, '+01:00').toString() + ',' +
+         new Temporal.ZonedDateTime(0n, '-05:00').toString()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "1970-01-01T00:00:00+00:00[UTC],1970-01-01T01:00:00+01:00[+01:00],1969-12-31T19:00:00-05:00[-05:00]"
+    );
+}
+
+#[test]
+fn zoned_date_time_to_string_options() {
+    let mut vm = Vm::new();
+    // 各 options 组合：offset 省略 / calendarName always / timeZoneName never / critical 前缀。
+    let r = eval(
+        &mut vm,
+        "const z = new Temporal.ZonedDateTime(0n, '+01:00');
+         z.toString({timeZoneName:'never'}) + '|' +
+         z.toString({calendarName:'always'}) + '|' +
+         z.toString({timeZoneName:'critical'}) + '|' +
+         z.toString({calendarName:'critical'}) + '|' +
+         z.toString({offset:'never'}) + '|' +
+         z.toString({offset:'critical'}) + '|' +
+         z.toString({timeZoneName:'never', calendarName:'never', offset:'never'})",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "1970-01-01T01:00:00+01:00|1970-01-01T01:00:00+01:00[+01:00][u-ca=iso8601]|1970-01-01T01:00:00+01:00[!+01:00]|1970-01-01T01:00:00+01:00[+01:00][!u-ca=iso8601]|1970-01-01T01:00:00[+01:00]|1970-01-01T01:00:00!+01:00[+01:00]|1970-01-01T01:00:00"
+    );
+}
+
+#[test]
+fn zoned_date_time_to_string_epoch_rounding_cross_midnight() {
+    let mut vm = Vm::new();
+    // 舍入在 epoch 域：2000-01-01 前 1ns + fractionalSecondDigits:8 + halfExpand → 跨午夜进位。
+    let r = eval(
+        &mut vm,
+        "new Temporal.ZonedDateTime(946_684_799_999_999_999n, 'UTC')
+            .toString({fractionalSecondDigits:8, roundingMode:'halfExpand'})",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "2000-01-01T00:00:00.00000000+00:00[UTC]");
+}
+
+#[test]
+fn zoned_date_time_to_string_negative_epoch_rounding() {
+    let mut vm = Vm::new();
+    // 负 epoch 舍入：halfCeil 上取整到毫秒。
+    let r = eval(
+        &mut vm,
+        "new Temporal.ZonedDateTime(-999999999999999990n, 'UTC')
+            .toString({smallestUnit:'millisecond', roundingMode:'halfCeil'})",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "1938-04-24T22:13:20.000+00:00[UTC]");
+}
+
+#[test]
+fn zoned_date_time_to_string_smallest_unit() {
+    let mut vm = Vm::new();
+    // smallestUnit minute 省略秒段。
+    let r = eval(
+        &mut vm,
+        "new Temporal.ZonedDateTime(3661_000_000_000n, 'UTC').toString({smallestUnit:'minute'})",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "1970-01-01T01:01+00:00[UTC]");
+}
+
+#[test]
+fn zoned_date_time_to_json_and_locale_and_value_of() {
+    let mut vm = Vm::new();
+    // toJSON === toString()；toLocaleString === toString()；valueOf 抛 TypeError。
+    let r = eval(
+        &mut vm,
+        "const z = new Temporal.ZonedDateTime(0n, '+01:00');
+         z.toJSON() + '|' + z.toLocaleString() + '|' +
+         (z.toJSON() === z.toString()) + '|' +
+         (() => { try { z.valueOf(); return 'no-throw'; } catch (e) { return e instanceof TypeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "1970-01-01T01:00:00+01:00[+01:00]|1970-01-01T01:00:00+01:00[+01:00]|true|true"
+    );
+}
+
+#[test]
+fn zoned_date_time_to_string_tag_and_branding() {
+    let mut vm = Vm::new();
+    // @@toStringTag 数据属性 + 非 ZDT receiver 调 toString 抛 TypeError。
+    let r = eval(
+        &mut vm,
+        "Object.prototype.toString.call(new Temporal.ZonedDateTime(0n, 'UTC')) + '|' +
+         (() => { try { Temporal.ZonedDateTime.prototype.toString.call({}); return 'no-throw'; }
+                  catch (e) { return e instanceof TypeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "[object Temporal.ZonedDateTime]|true");
+}
+
+#[test]
+fn zoned_date_time_to_string_options_validation() {
+    let mut vm = Vm::new();
+    // 非法 options 值抛 RangeError；options 非对象抛 TypeError。
+    let r = eval(
+        &mut vm,
+        "const z = new Temporal.ZonedDateTime(0n, 'UTC');
+         (() => { try { z.toString({offset:'bad'}); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })() + '|' +
+         (() => { try { z.toString({timeZoneName:'always'}); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })() + '|' +
+         (() => { try { z.toString({calendarName:'bad'}); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })() + '|' +
+         (() => { try { z.toString(42); return 'no-throw'; }
+                  catch (e) { return e instanceof TypeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true|true|true");
+}
