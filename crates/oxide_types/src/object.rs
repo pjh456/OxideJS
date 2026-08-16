@@ -657,6 +657,10 @@ impl JsObject {
     /// [[BoundThis]] / [[BoundArguments]] 存于 dense 槽 4/5/6+，构造与 instanceof
     /// 语义转发到 target。
     pub const OBJ_TYPE_BOUND: u8 = 23;
+    /// DisposableStack 对象：状态盒（Pending/Disposed + entries）存于 `native_data`。
+    pub const OBJ_TYPE_DISPOSABLE_STACK: u8 = 24;
+    /// AsyncDisposableStack 对象（步3 用）：状态盒与同步栈同构，预留 type_tag。
+    pub const OBJ_TYPE_ASYNC_DISPOSABLE_STACK: u8 = 25;
     /// `is_session_epoch` 字段中的 session 标记位。
     pub const SESSION_EPOCH_BIT: u8 = 0x01;
     /// `is_session_epoch` 字段中的 GC 标记位。
@@ -768,6 +772,18 @@ impl JsObject {
     #[inline]
     pub fn is_error_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_ERROR
+    }
+
+    /// 是否 DisposableStack 对象（同步资源栈）。
+    #[inline]
+    pub fn is_disposable_stack_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_DISPOSABLE_STACK
+    }
+
+    /// 是否 AsyncDisposableStack 对象（异步资源栈，步3 用）。
+    #[inline]
+    pub fn is_async_disposable_stack_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_ASYNC_DISPOSABLE_STACK
     }
 
     /// 构造无属性、可扩展的空对象（`new Object()` 的基础对象）。

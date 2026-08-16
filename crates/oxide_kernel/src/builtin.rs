@@ -288,6 +288,11 @@ pub struct BuiltinWorld {
     pub regexp_string_iterator_proto: P<JsObject>,
     /// `%IteratorHelperPrototype%`：Iterator helpers 结果对象的共享原型，链到 %IteratorPrototype%。
     pub iterator_helper_proto: P<JsObject>,
+    /// `DisposableStack.prototype`：同步资源栈原型（链到 Object.prototype），
+    /// 方法/别名/@@toStringTag 由绑定层安装。
+    pub disposable_stack_proto: P<JsObject>,
+    /// `AsyncDisposableStack.prototype`：异步资源栈原型（步3 用，形状与同步栈一致）。
+    pub async_disposable_stack_proto: P<JsObject>,
     pub stub_objects: Vec<P<JsObject>>,
 }
 
@@ -576,7 +581,7 @@ fn wire_builtin_world_links(world: &BuiltinWorld) {
     }
 
     let obj_proto_val = JsValue::from_js_object(world.object_proto.as_ptr() as *mut JsObject);
-    let non_object_protos: [&P<JsObject>; 21] = [
+    let non_object_protos: [&P<JsObject>; 23] = [
         &world.array_proto,
         &world.function_proto,
         &world.string_proto,
@@ -598,6 +603,8 @@ fn wire_builtin_world_links(world: &BuiltinWorld) {
         &world.zoned_date_time_proto,
         &world.plain_date_time_proto,
         &world.bigint_proto,
+        &world.disposable_stack_proto,
+        &world.async_disposable_stack_proto,
     ];
     for proto in &non_object_protos {
         set_proto_if_changed(proto, obj_proto_val);
@@ -830,6 +837,8 @@ impl BuiltinWorld {
         let string_iterator_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let regexp_string_iterator_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let iterator_helper_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let disposable_stack_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let async_disposable_stack_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
 
         let world = Self {
             object_proto,
@@ -929,6 +938,8 @@ impl BuiltinWorld {
             string_iterator_proto,
             regexp_string_iterator_proto,
             iterator_helper_proto,
+            disposable_stack_proto,
+            async_disposable_stack_proto,
             stub_objects,
         };
         wire_builtin_world_links(&world);
@@ -1195,8 +1206,8 @@ impl BuiltinWorld {
         };
         let stub_objects = if dirty.stubs { Vec::new() } else { current.stub_objects.clone() };
 
-        // 迭代器原型依赖 Object.prototype（链到其上）：object 家族重建时一并重建，
-        // 否则旧原型链指向已释放的 object_proto。
+        // 迭代器原型与资源栈原型依赖 Object.prototype（链到其上）：object 家族重建时
+        // 一并重建，否则旧原型链指向已释放的 object_proto。
         let (
             iterator_proto,
             array_iterator_proto,
@@ -1205,8 +1216,12 @@ impl BuiltinWorld {
             string_iterator_proto,
             regexp_string_iterator_proto,
             iterator_helper_proto,
+            disposable_stack_proto,
+            async_disposable_stack_proto,
         ) = if dirty.object {
             (
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
                 P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
                 P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
                 P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
@@ -1224,6 +1239,8 @@ impl BuiltinWorld {
                 current.string_iterator_proto.clone(),
                 current.regexp_string_iterator_proto.clone(),
                 current.iterator_helper_proto.clone(),
+                current.disposable_stack_proto.clone(),
+                current.async_disposable_stack_proto.clone(),
             )
         };
 
@@ -1325,6 +1342,8 @@ impl BuiltinWorld {
             string_iterator_proto,
             regexp_string_iterator_proto,
             iterator_helper_proto,
+            disposable_stack_proto,
+            async_disposable_stack_proto,
             stub_objects,
         };
         wire_builtin_world_links(&world);
