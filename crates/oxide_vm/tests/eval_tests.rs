@@ -19,26 +19,27 @@ fn assert_num(result: JsValue, expected: f64) {
 #[test]
 fn eval_string_expression_completion_value() {
     let mut vm = Vm::new();
-    // 档 1 函数模式：body 包装为语句体匿名函数，隐式返回 undefined，完成值不保留。
-    // 档 2 脚本模式（create_dynamic_script）后 `eval('1+2')` 返回 3。
+    // 脚本模式完成值保留：`eval('1+2')` 返回 3（档 2 起，不再被函数模式 body wrap 吞掉）。
     let result = eval(&mut vm, "eval('1+2')").unwrap();
-    assert_eq!(result, JsValue::undefined());
+    assert_num(result, 3.0);
 }
 
 #[test]
 fn eval_string_number_completion_value() {
     let mut vm = Vm::new();
-    // 同档 1 函数模式上限：完成值不保留。
+    // 脚本模式完成值保留：`eval('42')` 返回 42。
     let result = eval(&mut vm, "eval('42')").unwrap();
-    assert_eq!(result, JsValue::undefined());
+    assert_num(result, 42.0);
 }
 
 #[test]
 fn eval_string_var_declaration_inside() {
     let mut vm = Vm::new();
-    // 档 1：eval 内 var 声明只存在于匿名函数作用域，完成值不保留、不泄漏外层。
+    // 档 2：eval 内 var 声明落全局对象，完成值保留为末表达式值。
     let result = eval(&mut vm, "eval('var y = 1; y')").unwrap();
-    assert_eq!(result, JsValue::undefined());
+    assert_num(result, 1.0);
+    let result = eval(&mut vm, "eval('var y = 1; y') && this.y === 1").unwrap();
+    assert_eq!(result, JsValue::bool(true));
 }
 
 #[test]
@@ -149,4 +150,75 @@ fn eval_survives_full_reset_rebuild() {
     let result = eval(&mut vm, "eval(123)").unwrap();
     assert_num(result, 123.0);
     assert!(!vm.session().is_dirty_since_snapshot());
+}
+
+#[test]
+fn eval_script_var_lands_on_global() {
+    let mut vm = Vm::new();
+    // 间接 eval 脚本模式：var 声明落全局对象，外层 this 可见。
+    let result = eval(&mut vm, "(0,eval)('var q = 9'); this.q === 9").unwrap();
+    assert_eq!(result, JsValue::bool(true));
+}
+
+#[test]
+fn eval_script_function_decl_lands_on_global() {
+    let mut vm = Vm::new();
+    // 脚本模式：顶层函数声明落全局对象。
+    let result = eval(&mut vm, "(0,eval)('function f(){}'); typeof f === 'function'").unwrap();
+    assert_eq!(result, JsValue::bool(true));
+}
+
+#[test]
+fn eval_script_let_is_isolated() {
+    let mut vm = Vm::new();
+    // let/const 词法隔离：不落全局，不泄漏到外层。
+    let result = eval(&mut vm, "(0,eval)('let z = 1'); typeof z === 'undefined'").unwrap();
+    assert_eq!(result, JsValue::bool(true));
+    // 词法声明自身仍参与脚本完成值。
+    let result = eval(&mut vm, "(0,eval)('let z2 = 2; z2')").unwrap();
+    assert_num(result, 2.0);
+}
+
+#[test]
+fn eval_script_this_is_global() {
+    let mut vm = Vm::new();
+    // 脚本模式：this 与 globalThis 恒等（inline 调用 receiver 传 global）。
+    let result = eval(&mut vm, "(0,eval)('this === globalThis')").unwrap();
+    assert_eq!(result, JsValue::bool(true));
+}
+
+#[test]
+fn eval_nested_eval() {
+    let mut vm = Vm::new();
+    // 嵌套 eval：内层完成值透传为外层脚本值。
+    let result = eval(&mut vm, "eval(\"eval('1+1')\")").unwrap();
+    assert_num(result, 2.0);
+}
+
+#[test]
+fn eval_script_completion_value() {
+    let mut vm = Vm::new();
+    // 间接 eval 脚本模式完成值：var 初始化 + 表达式。
+    let result = eval(&mut vm, "(0,eval)('var a = 1; a')").unwrap();
+    assert_num(result, 1.0);
+    let result = eval(&mut vm, "(0,eval)('1 + 2')").unwrap();
+    assert_num(result, 3.0);
+}
+
+#[test]
+fn eval_script_empty_and_decl_only() {
+    let mut vm = Vm::new();
+    // 空脚本 / 纯声明脚本：完成值为 undefined。
+    let result = eval(&mut vm, "eval('') === undefined").unwrap();
+    assert_eq!(result, JsValue::bool(true));
+    let result = eval(&mut vm, "eval('var x;') === undefined").unwrap();
+    assert_eq!(result, JsValue::bool(true));
+}
+
+#[test]
+fn eval_script_throw_still_rethrows() {
+    let mut vm = Vm::new();
+    // 脚本模式异常路径回归：eval 内 throw 原始值，外层 catch 捕获同一值。
+    let result = eval(&mut vm, "try { (0,eval)('throw 5') } catch(e) { e }").unwrap();
+    assert_num(result, 5.0);
 }

@@ -2228,6 +2228,9 @@ impl oxide_runtime_api::VmHost for Vm {
     fn create_dynamic_function(&mut self, params: &[String], body: &str) -> Result<JsValue, String> {
         self.create_dynamic_function(params, body)
     }
+    fn create_dynamic_script(&mut self, code: &str) -> Result<JsValue, String> {
+        self.create_dynamic_script(code)
+    }
     fn symbol_intern(&mut self, desc: Option<String>) -> u32 {
         self.symbols.intern(desc)
     }
@@ -2297,6 +2300,37 @@ impl Vm {
         self.define_data_property(func_obj, length_si, length_val, attrs)?;
         self.define_data_property(func_obj, name_si, name_val, attrs)?;
         Ok(func_val)
+    }
+
+    /// 动态编译脚本（eval 脚本模式）：把源码按脚本模式编译，var/函数声明落全局对象。
+    ///
+    /// # 步骤
+    /// 1. parse（脚本模式）→ compile（emit_program 置 is_global_scope=true）。
+    /// 2. 整棵模块树（根 flat_id=0 + 嵌套函数）追加进平表：`rehome_subtree(&module, base+1)`，
+    ///    使根落 base、子函数 old→base+old，CREATE_CLOSURE imm16 同步重写。
+    /// 3. 扩容 immutables_cache，建函数对象（sub_module_index = base）返回。
+    ///
+    /// # 边界与前提
+    /// - 顶层 return 不报 SyntaxError（emit 无此检查，与 CLI 脚本路径一致）——已知偏差。
+    /// - 动态模块只在本次 run() 内有效（同 create_dynamic_function）。
+    /// - 返回函数对象仅供内部同步调用，不设 name/length（用户不可见）。
+    ///
+    /// # 副作用
+    /// - 修改 `self.sub_modules` 与 `self.immutables_cache`。
+    pub fn create_dynamic_script(&mut self, code: &str) -> Result<JsValue, String> {
+        let allocator = oxide_parser::Allocator::default();
+        let program = oxide_parser::parse(&allocator, code)
+            .map_err(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>().join("\n"))?;
+        let module = oxide_compiler::compiler::Compiler::new().compile(&program)?;
+        let base = self.sub_modules.len() as u32;
+        let mut added = Vec::new();
+        // 根模块 flat_id=0 传 base+1，重编号后落 base（避开 sub_module_index()==0 守卫）。
+        rehome_subtree(&module, base + 1, &mut added);
+        Arc::make_mut(&mut self.sub_modules).extend(added);
+        // 平表变长后同步扩容常量缓存，否则激活新模块常量时越界 panic。
+        self.immutables_cache
+            .extend((0..self.sub_modules.len().saturating_sub(self.immutables_cache.len())).map(|_| OnceLock::new()));
+        Ok(self.create_function_object(base, false, false, false, false))
     }
 }
 

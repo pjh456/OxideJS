@@ -189,6 +189,9 @@ pub trait VmHost {
     /// 动态编译一个函数体（`Function` 构造器用）：把参数列表与函数体编译为可调用
     /// 函数对象。编译或解析失败返回 `Err`，由调用方转为 `SyntaxError`。
     fn create_dynamic_function(&mut self, params: &[String], body: &str) -> Result<JsValue, String>;
+    /// 动态编译脚本（`eval` 字符串模式）：按脚本模式编译，var/函数声明落全局对象。
+    /// 编译或解析失败返回 `Err`，由调用方转为 `SyntaxError`。
+    fn create_dynamic_script(&mut self, code: &str) -> Result<JsValue, String>;
     /// `None` 表示无描述（`Symbol()`/`Symbol(undefined)`），`Some(desc)` 为字符串描述。
     fn symbol_intern(&mut self, desc: Option<String>) -> u32;
     fn symbol_description(&self, idx: u32) -> Option<&str>;
