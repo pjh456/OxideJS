@@ -1,21 +1,26 @@
-//! DisposableStack（同步资源栈）内置对象实现。
+//! DisposableStack（同步资源栈）与 AsyncDisposableStack（异步资源栈）内置对象实现。
 //!
 //! 状态盒 `DisposeCapability` 以 `Box::into_raw` 存入对象 `native_data`：`state`
 //! 记录栈状态，`entries` 按入栈序存待释放资源。同步栈 dispose 只用
-//! Pending/Disposed 两态；Disposing 为异步资源栈 disposeAsync 预留。GC 四函数
+//! Pending/Disposed 两态；Disposing 为异步资源栈 disposeAsync 执行期标记
+//! （当前状态机只置 Disposed，变体语义预留）。两栈共用本模块：方法按
+//! `type_tag`（24 同步 / 25 异步）区分接收者，`hint` 记录条目释放语义
+//! （0=sync-dispose，1=async-dispose），`wrap_sync` 标记 async 栈 use 落回
+//! `@@dispose` 的条目（返回值丢弃、异常异步化）。GC 四函数
 //! （edges/rewrite/clone/drop）供 session 层跨 epoch 追踪，签名与 Map/Promise
 //! 状态盒同构。
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::JsObject;
+use oxide_types::private_key::make_well_known_symbol_key;
 use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
-/// 分配空状态盒并存入新 DisposableStack 对象（proto 固定为 world 字段）。
-fn alloc_disposable_stack<H: VmHost>(vm: &mut H, proto_val: JsValue) -> *mut JsObject {
+/// 分配空状态盒并存入新资源栈对象（proto 与 type_tag 按栈类型传入）。
+fn alloc_disposable_stack<H: VmHost>(vm: &mut H, proto_val: JsValue, type_tag: u8) -> *mut JsObject {
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto_val);
-    obj.type_tag = JsObject::OBJ_TYPE_DISPOSABLE_STACK;
+    obj.type_tag = type_tag;
     obj.set_native_data(Box::into_raw(Box::new(DisposeCapability {
         state: DisposeState::Pending,
         entries: Vec::new(),
@@ -38,7 +43,9 @@ macro_rules! native_try {
 /// - this 非对象 → TypeError；
 /// - type_tag 非 24/25 → TypeError（无槽对象）；
 /// - native_data 为空 → TypeError（防御，正常构造路径不会出现）。
-fn require_dispose_capability<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<*mut DisposeCapability, JsValue> {
+pub fn require_dispose_capability<H: VmHost>(
+    vm: &mut H, this_val: JsValue, type_tag: u8,
+) -> Result<*mut DisposeCapability, JsValue> {
     if !this_val.is_object() {
         return Err(crate::error::create_type_error(vm, "called on non-DisposableStack object"));
     }
@@ -48,7 +55,7 @@ fn require_dispose_capability<H: VmHost>(vm: &mut H, this_val: JsValue) -> Resul
     }
     // SAFETY: obj_ptr 是当前 epoch 分配的 JsObject 非空指针；native 执行期间 epoch 不重置。
     let obj = unsafe { &*obj_ptr };
-    if !obj.is_disposable_stack_obj() && !obj.is_async_disposable_stack_obj() {
+    if obj.type_tag != type_tag {
         return Err(crate::error::create_type_error(
             vm,
             "DisposableStack.prototype method called on incompatible receiver",
@@ -65,17 +72,16 @@ fn disposed_reference_error<H: VmHost>(vm: &mut H) -> JsValue {
     crate::error::create_reference_error(vm, "DisposableStack has been disposed")
 }
 
-/// `DisposableStack` 构造函数：创建带空状态盒的 DisposableStack 对象。
+/// 资源栈构造器公共实现：校验 NewTarget 原型链后建带空状态盒的栈对象。
 ///
 /// # 步骤
-/// 1. 校验 NewTarget：`this` 的原型链须命中 DisposableStack.prototype
-///    （`new DisposableStack()` 直接命中，子类 `super()` 经子类原型链命中；
-///    普通调用抛 TypeError）。
-/// 2. 建空状态盒对象，proto 固定为 world.disposable_stack_proto。
-pub fn disposable_stack_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+/// 1. 校验 NewTarget：`this` 的原型链须命中对应栈的 prototype
+///    （`new X()` 直接命中，子类 `super()` 经子类原型链命中；普通调用抛 TypeError）。
+/// 2. 建空状态盒对象，proto 与 type_tag 按栈类型传入。
+fn stack_constructor_impl<H: VmHost>(vm: &mut H, args: &[u8], proto_val: JsValue, type_tag: u8) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let is_new_call = this_val.is_object() && {
-        let stack_proto = vm.session().builtin_world().disposable_stack_proto.as_ptr() as *mut JsObject;
+        let stack_proto = proto_val.as_js_object_ptr();
         let this_ptr = this_val.as_js_object_ptr();
         if this_ptr.is_null() {
             false
@@ -102,10 +108,22 @@ pub fn disposable_stack_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> Nativ
     if !is_new_call {
         return NativeResult::Err(crate::error::create_type_error(vm, "DisposableStack must be called with new"));
     }
+    let stack = alloc_disposable_stack(vm, proto_val, type_tag);
+    NativeResult::Ok(JsValue::from_js_object(stack))
+}
+
+/// `DisposableStack` 构造函数：创建带空状态盒的 DisposableStack 对象。
+pub fn disposable_stack_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let proto_val =
         JsValue::from_js_object(vm.session().builtin_world().disposable_stack_proto.as_ptr() as *mut JsObject);
-    let stack = alloc_disposable_stack(vm, proto_val);
-    NativeResult::Ok(JsValue::from_js_object(stack))
+    stack_constructor_impl(vm, args, proto_val, JsObject::OBJ_TYPE_DISPOSABLE_STACK)
+}
+
+/// `AsyncDisposableStack` 构造函数：创建带空状态盒的 AsyncDisposableStack 对象。
+pub fn async_disposable_stack_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let proto_val =
+        JsValue::from_js_object(vm.session().builtin_world().async_disposable_stack_proto.as_ptr() as *mut JsObject);
+    stack_constructor_impl(vm, args, proto_val, JsObject::OBJ_TYPE_ASYNC_DISPOSABLE_STACK)
 }
 
 /// `DisposableStack.prototype.use(value)`：把资源的 `value[@@dispose]` 方法入栈。
@@ -119,7 +137,7 @@ pub fn disposable_stack_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> Nativ
 /// 5. 入栈 `{value, method, sync, receiver 模式}`，返回 value。
 pub fn disposable_stack_use<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
-    let cap = native_try!(require_dispose_capability(vm, this_val));
+    let cap = native_try!(require_dispose_capability(vm, this_val, JsObject::OBJ_TYPE_DISPOSABLE_STACK));
     // SAFETY: cap 由 require 校验，native 执行期间对象存活。
     let cap_ref = unsafe { &mut *cap };
     if cap_ref.state != DisposeState::Pending {
@@ -146,6 +164,7 @@ pub fn disposable_stack_use<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         method,
         hint: 0,
         arg_style: false,
+        wrap_sync: false,
     });
     NativeResult::Ok(value)
 }
@@ -159,7 +178,7 @@ pub fn disposable_stack_use<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
 ///    返回 value。
 pub fn disposable_stack_adopt<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
-    let cap = native_try!(require_dispose_capability(vm, this_val));
+    let cap = native_try!(require_dispose_capability(vm, this_val, JsObject::OBJ_TYPE_DISPOSABLE_STACK));
     // SAFETY: cap 由 require 校验，native 执行期间对象存活。
     let cap_ref = unsafe { &mut *cap };
     if cap_ref.state != DisposeState::Pending {
@@ -175,8 +194,149 @@ pub fn disposable_stack_adopt<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
         method: on_dispose,
         hint: 0,
         arg_style: true,
+        wrap_sync: false,
     });
     NativeResult::Ok(value)
+}
+
+/// `AsyncDisposableStack.prototype.use(value)`：把资源的 `value[@@asyncDispose]`
+/// 方法入栈（缺失时回落 `@@dispose`）。
+///
+/// # 步骤
+/// 1. 校验栈对象（type_tag=25）与状态；Disposed 抛 ReferenceError。
+/// 2. value 为 null/undefined → 入栈 method=undefined 的 async 条目并返回原值
+///    （与同步栈相反：须记录资源求值，保证 disposeAsync 仍执行 Await）。
+/// 3. value 非对象 → TypeError。
+/// 4. 读 `value[@@asyncDispose]`（键 11，getter 抛错透传原值）；结果缺失
+///    （null/undefined）→ 回落读 `value[@@dispose]`（键 12）；两者均缺 →
+///    TypeError；任一读取结果非 callable → TypeError（不回落）。
+/// 5. 键 11 得 callable → 入栈 `{value, method, async, receiver 模式, wrap_sync=false}`；
+///    键 12 得 callable → 入栈 `{value, method, async, receiver 模式, wrap_sync=true}`
+///    （同步方法返回值丢弃、异常异步化）。返回 value。
+pub fn async_disposable_stack_use<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let cap = native_try!(require_dispose_capability(vm, this_val, JsObject::OBJ_TYPE_ASYNC_DISPOSABLE_STACK));
+    // SAFETY: cap 由 require 校验，native 执行期间对象存活。
+    let cap_ref = unsafe { &mut *cap };
+    if cap_ref.state != DisposeState::Pending {
+        return NativeResult::Err(disposed_reference_error(vm));
+    }
+    let value = vm.reg(if args.len() > 1 { args[1] } else { 0 });
+    if value.is_null() || value.is_undefined() {
+        cap_ref.entries.push(DisposeEntry {
+            value,
+            method: JsValue::undefined(),
+            hint: 1,
+            arg_style: false,
+            wrap_sync: false,
+        });
+        return NativeResult::Ok(value);
+    }
+    if !value.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "value is not an Object"));
+    }
+    let value_obj = unsafe { &*value.as_js_object_ptr() };
+    let async_dispose_key = make_well_known_symbol_key(11);
+    let method = match vm.ordinary_get(value_obj, async_dispose_key, value) {
+        Ok(m) => m,
+        Err(err) => return NativeResult::Err(crate::iterator::engine_error(vm, &err)),
+    };
+    if method.is_null() || method.is_undefined() {
+        // 键 11 缺失：回落读 @@dispose（读取顺序测试断言键 11 先、键 12 后）。
+        let dispose_key = make_well_known_symbol_key(12);
+        let sync_method = match vm.ordinary_get(value_obj, dispose_key, value) {
+            Ok(m) => m,
+            Err(err) => return NativeResult::Err(crate::iterator::engine_error(vm, &err)),
+        };
+        if sync_method.is_null() || sync_method.is_undefined() {
+            return NativeResult::Err(crate::error::create_type_error(
+                vm,
+                "value has no callable Symbol.asyncDispose or Symbol.dispose method",
+            ));
+        }
+        if !crate::iterator::is_callable(sync_method) {
+            return NativeResult::Err(crate::error::create_type_error(vm, "value[Symbol.dispose] is not callable"));
+        }
+        cap_ref.entries.push(DisposeEntry {
+            value,
+            method: sync_method,
+            hint: 1,
+            arg_style: false,
+            wrap_sync: true,
+        });
+        return NativeResult::Ok(value);
+    }
+    if !crate::iterator::is_callable(method) {
+        return NativeResult::Err(crate::error::create_type_error(vm, "value[Symbol.asyncDispose] is not callable"));
+    }
+    cap_ref.entries.push(DisposeEntry {
+        value,
+        method,
+        hint: 1,
+        arg_style: false,
+        wrap_sync: false,
+    });
+    NativeResult::Ok(value)
+}
+
+/// `AsyncDisposableStack.prototype.adopt(value, onDisposeAsync)`：把 value 与其
+/// 异步释放回调入栈。
+///
+/// # 步骤
+/// 1. 校验栈对象（type_tag=25）与状态；Disposed 抛 ReferenceError。
+/// 2. onDisposeAsync 非 callable → TypeError。
+/// 3. 入栈 `{value, onDisposeAsync, async, arg-style}`（dispose 时
+///    `Call(onDisposeAsync, undefined, «value»)`），返回 value。
+pub fn async_disposable_stack_adopt<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let cap = native_try!(require_dispose_capability(vm, this_val, JsObject::OBJ_TYPE_ASYNC_DISPOSABLE_STACK));
+    // SAFETY: cap 由 require 校验，native 执行期间对象存活。
+    let cap_ref = unsafe { &mut *cap };
+    if cap_ref.state != DisposeState::Pending {
+        return NativeResult::Err(disposed_reference_error(vm));
+    }
+    let value = vm.reg(if args.len() > 1 { args[1] } else { 0 });
+    let on_dispose = vm.reg(if args.len() > 2 { args[2] } else { 0 });
+    if !crate::iterator::is_callable(on_dispose) {
+        return NativeResult::Err(crate::error::create_type_error(vm, "onDisposeAsync is not callable"));
+    }
+    cap_ref.entries.push(DisposeEntry {
+        value,
+        method: on_dispose,
+        hint: 1,
+        arg_style: true,
+        wrap_sync: false,
+    });
+    NativeResult::Ok(value)
+}
+
+/// `AsyncDisposableStack.prototype.defer(onDisposeAsync)`：把无参数异步释放回调入栈。
+///
+/// # 步骤
+/// 1. 校验栈对象（type_tag=25）与状态；Disposed 抛 ReferenceError。
+/// 2. onDisposeAsync 非 callable → TypeError。
+/// 3. 入栈 `{undefined, onDisposeAsync, async, receiver 模式}`（dispose 时
+///    `Call(onDisposeAsync, undefined, «»)`），返回 undefined。
+pub fn async_disposable_stack_defer<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let cap = native_try!(require_dispose_capability(vm, this_val, JsObject::OBJ_TYPE_ASYNC_DISPOSABLE_STACK));
+    // SAFETY: cap 由 require 校验，native 执行期间对象存活。
+    let cap_ref = unsafe { &mut *cap };
+    if cap_ref.state != DisposeState::Pending {
+        return NativeResult::Err(disposed_reference_error(vm));
+    }
+    let on_dispose = vm.reg(if args.len() > 1 { args[1] } else { 0 });
+    if !crate::iterator::is_callable(on_dispose) {
+        return NativeResult::Err(crate::error::create_type_error(vm, "onDisposeAsync is not callable"));
+    }
+    cap_ref.entries.push(DisposeEntry {
+        value: JsValue::undefined(),
+        method: on_dispose,
+        hint: 1,
+        arg_style: false,
+        wrap_sync: false,
+    });
+    NativeResult::Ok(JsValue::undefined())
 }
 
 /// `DisposableStack.prototype.defer(onDispose)`：把无参数释放回调入栈。
@@ -188,7 +348,7 @@ pub fn disposable_stack_adopt<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
 ///    返回 undefined。
 pub fn disposable_stack_defer<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
-    let cap = native_try!(require_dispose_capability(vm, this_val));
+    let cap = native_try!(require_dispose_capability(vm, this_val, JsObject::OBJ_TYPE_DISPOSABLE_STACK));
     // SAFETY: cap 由 require 校验，native 执行期间对象存活。
     let cap_ref = unsafe { &mut *cap };
     if cap_ref.state != DisposeState::Pending {
@@ -203,6 +363,7 @@ pub fn disposable_stack_defer<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
         method: on_dispose,
         hint: 0,
         arg_style: false,
+        wrap_sync: false,
     });
     NativeResult::Ok(JsValue::undefined())
 }
@@ -222,7 +383,7 @@ pub fn disposable_stack_defer<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
 /// - 无 uncaught 时回退按错误文本建普通 Error。
 pub fn disposable_stack_dispose<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
-    let cap = native_try!(require_dispose_capability(vm, this_val));
+    let cap = native_try!(require_dispose_capability(vm, this_val, JsObject::OBJ_TYPE_DISPOSABLE_STACK));
     // SAFETY: cap 由 require 校验，native 执行期间对象存活。
     let cap_ref = unsafe { &mut *cap };
     if cap_ref.state != DisposeState::Pending {
@@ -235,20 +396,8 @@ pub fn disposable_stack_dispose<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
         if entry.method.is_undefined() {
             continue;
         }
-        let call_result = if entry.arg_style {
-            vm.call_function_sync(entry.method, JsValue::undefined(), &[entry.value])
-        } else {
-            vm.call_function_sync(entry.method, entry.value, &[])
-        };
-        if let Err(err) = call_result {
-            // 恢复本次回调抛出的原始异常值；无 uncaught 时按错误文本建普通 Error。
-            let err_val = vm
-                .take_uncaught_value()
-                .unwrap_or_else(|| crate::error::create_kind_error(vm, "Error", &err));
-            completion = Some(match completion {
-                None => err_val,
-                Some(prev) => crate::error::create_suppressed_error(vm, err_val, prev),
-            });
+        if let Err(err_val) = call_entry_method(vm, entry) {
+            completion = merge_dispose_error(vm, completion, err_val);
         }
     }
     // 条目逐条执行完毕，清空释放引用（规范 DisposeResources 逐条移除）。
@@ -259,25 +408,22 @@ pub fn disposable_stack_dispose<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
     }
 }
 
-/// `DisposableStack.prototype.move()`：把全部 entries 转移到新 DisposableStack。
+/// move 公共实现：把全部 entries 转移到新资源栈。
 ///
 /// # 步骤
 /// 1. 校验栈对象；state 非 Pending → ReferenceError。
-/// 2. `mem::take` 转移 entries；建新栈（proto 固定为 DisposableStack.prototype，
-///    非子类原型）并装入转移的 entries。
+/// 2. `mem::take` 转移 entries；建新栈（proto 固定为栈类型原型，非子类原型）
+///    并装入转移的 entries。
 /// 3. 源栈置 Disposed（不再执行任何释放）。
-pub fn disposable_stack_move<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
-    let cap = native_try!(require_dispose_capability(vm, this_val));
+fn stack_move_impl<H: VmHost>(vm: &mut H, this_val: JsValue, proto_val: JsValue, type_tag: u8) -> NativeResult {
+    let cap = native_try!(require_dispose_capability(vm, this_val, type_tag));
     // SAFETY: cap 由 require 校验，native 执行期间对象存活。
     let cap_ref = unsafe { &mut *cap };
     if cap_ref.state != DisposeState::Pending {
         return NativeResult::Err(disposed_reference_error(vm));
     }
     let taken = std::mem::take(&mut cap_ref.entries);
-    let proto_val =
-        JsValue::from_js_object(vm.session().builtin_world().disposable_stack_proto.as_ptr() as *mut JsObject);
-    let new_stack = alloc_disposable_stack(vm, proto_val);
+    let new_stack = alloc_disposable_stack(vm, proto_val, type_tag);
     // SAFETY: alloc_disposable_stack 刚分配的对象，native_data 为新建空状态盒。
     unsafe {
         let new_obj = &mut *new_stack;
@@ -288,45 +434,102 @@ pub fn disposable_stack_move<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     NativeResult::Ok(JsValue::from_js_object(new_stack))
 }
 
+/// `DisposableStack.prototype.move()`：把全部 entries 转移到新 DisposableStack。
+pub fn disposable_stack_move<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let proto_val =
+        JsValue::from_js_object(vm.session().builtin_world().disposable_stack_proto.as_ptr() as *mut JsObject);
+    stack_move_impl(vm, this_val, proto_val, JsObject::OBJ_TYPE_DISPOSABLE_STACK)
+}
+
+/// `AsyncDisposableStack.prototype.move()`：把全部 entries 转移到新
+/// AsyncDisposableStack（proto 固定为 AsyncDisposableStack.prototype，非子类）。
+pub fn async_disposable_stack_move<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let proto_val =
+        JsValue::from_js_object(vm.session().builtin_world().async_disposable_stack_proto.as_ptr() as *mut JsObject);
+    stack_move_impl(vm, this_val, proto_val, JsObject::OBJ_TYPE_ASYNC_DISPOSABLE_STACK)
+}
+
 /// `get DisposableStack.prototype.disposed`：栈是否已 dispose/move。
 pub fn disposable_stack_disposed_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
-    let cap = native_try!(require_dispose_capability(vm, this_val));
+    let cap = native_try!(require_dispose_capability(vm, this_val, JsObject::OBJ_TYPE_DISPOSABLE_STACK));
     // SAFETY: cap 由 require 校验，native 执行期间对象存活。
     let state = unsafe { (*cap).state };
     NativeResult::Ok(JsValue::bool(state != DisposeState::Pending))
 }
 
+/// `get AsyncDisposableStack.prototype.disposed`：栈是否已 disposeAsync/move。
+pub fn async_disposable_stack_disposed_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let cap = native_try!(require_dispose_capability(vm, this_val, JsObject::OBJ_TYPE_ASYNC_DISPOSABLE_STACK));
+    // SAFETY: cap 由 require 校验，native 执行期间对象存活。
+    let state = unsafe { (*cap).state };
+    NativeResult::Ok(JsValue::bool(state != DisposeState::Pending))
+}
+
+/// 按条目调用约定执行释放回调，失败时恢复本次回调抛出的原始异常值。
+///
+/// # 边界与前提
+/// - `arg_style` 走 `Call(method, undefined, «value»)`，否则 `Call(method, value, «»)`；
+/// - 无 uncaught 时回退按错误文本建普通 Error。
+pub fn call_entry_method<H: VmHost>(vm: &mut H, entry: &DisposeEntry) -> Result<JsValue, JsValue> {
+    let call_result = if entry.arg_style {
+        vm.call_function_sync(entry.method, JsValue::undefined(), &[entry.value])
+    } else {
+        vm.call_function_sync(entry.method, entry.value, &[])
+    };
+    call_result.map_err(|err| {
+        vm.take_uncaught_value()
+            .unwrap_or_else(|| crate::error::create_kind_error(vm, "Error", &err))
+    })
+}
+
+/// 把本次释放错误合并进完成记录：空 → 原样；已有错误 → SuppressedError 链
+/// （error=后抛、suppressed=前值，逆序处理中后处理者=更早入栈者）。
+pub fn merge_dispose_error<H: VmHost>(vm: &mut H, completion: Option<JsValue>, err: JsValue) -> Option<JsValue> {
+    Some(match completion {
+        None => err,
+        Some(prev) => crate::error::create_suppressed_error(vm, err, prev),
+    })
+}
+
 /// 栈生命周期状态：Pending 可入栈，Disposed 后所有操作抛 ReferenceError；
-/// Disposing 为异步资源栈 disposeAsync 执行期标记（当前未构造，语义预留）。
+/// Disposing 为异步资源栈 disposeAsync 执行期标记（当前状态机只置 Disposed，
+/// 变体语义预留）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum DisposeState {
+pub enum DisposeState {
     Pending,
     #[allow(dead_code)]
     Disposing,
     Disposed,
 }
 
-/// 单条待释放资源：dispose 时按 `arg_style` 选择调用约定。
-pub(crate) struct DisposeEntry {
+/// 单条待释放资源：dispose 时按 `arg_style` 选择调用约定，按 `hint`/`wrap_sync`
+/// 决定异步语义（disposeAsync 状态机消费）。
+#[derive(Clone, Copy)]
+pub struct DisposeEntry {
     /// use() 的资源值（dispose 时作 receiver）；adopt() 的资源值（作参数）；defer() 恒 undefined。
     pub value: JsValue,
-    /// 释放方法：use() 为 @@dispose 函数；adopt()/defer() 为用户回调。
+    /// 释放方法：use() 为 @@asyncDispose/@@dispose 函数；adopt()/defer() 为用户回调。
     pub method: JsValue,
     /// 0=sync-dispose，1=async-dispose（异步资源栈用）。
     pub hint: u8,
     /// true=adopt 闭包语义（`Call(method, undefined, «value»)`）；
     /// false=use/defer（`Call(method, value, «»)`）。
     pub arg_style: bool,
+    /// true=方法取自 @@dispose（async 栈 use 回落）：返回值丢弃、异常异步化。
+    pub wrap_sync: bool,
 }
 
 /// 状态盒：栈状态 + 按入栈序的资源条目。
-pub(crate) struct DisposeCapability {
+pub struct DisposeCapability {
     pub state: DisposeState,
     pub entries: Vec<DisposeEntry>,
 }
 
-fn get_capability_ptr(obj: &JsObject) -> *mut DisposeCapability {
+pub fn get_capability_ptr(obj: &JsObject) -> *mut DisposeCapability {
     obj.native_data() as *mut DisposeCapability
 }
 
@@ -377,6 +580,7 @@ where
                 method: if entry.method.is_object() { rewrite(entry.method) } else { entry.method },
                 hint: entry.hint,
                 arg_style: entry.arg_style,
+                wrap_sync: entry.wrap_sync,
             })
             .collect(),
     };
