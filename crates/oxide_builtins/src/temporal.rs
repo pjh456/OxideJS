@@ -1295,18 +1295,14 @@ pub fn zoned_date_time_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
     let Some((time_zone_id, _)) = canonical_time_zone(&time_zone_input) else {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid time zone"));
     };
-    if args.len() >= 4 && !vm.reg(args[3]).is_undefined() {
-        let calendar = vm.reg(args[3]);
-        if !calendar.is_string() {
-            return NativeResult::Err(crate::error::create_type_error(vm, "invalid calendar"));
-        }
-        if !to_string(calendar).eq_ignore_ascii_case("iso8601") {
-            return NativeResult::Err(crate::error::create_range_error(vm, "invalid calendar"));
-        }
-    }
+    let calendar = if args.len() >= 4 && !vm.reg(args[3]).is_undefined() {
+        native_try!(temporal_calendar_id_strict(vm, vm.reg(args[3]))).unwrap_or_else(|| "iso8601".to_string())
+    } else {
+        "iso8601".to_string()
+    };
     let epoch_value = vm.new_bigint(num_bigint::BigInt::from(epoch_ns));
     let time_zone_value = vm.new_string(&time_zone_id);
-    let calendar_value = vm.new_string("iso8601");
+    let calendar_value = vm.new_string(&calendar);
     initialize_temporal_receiver(
         vm,
         args,
@@ -2384,18 +2380,29 @@ pub fn plain_date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     if !(-100_000_001..=100_000_000).contains(&day_count) {
         return NativeResult::Err(crate::error::create_range_error(vm, "ISO date is out of range"));
     }
+    let calendar = if args.len() > 4 && !vm.reg(args[4]).is_undefined() {
+        native_try!(temporal_calendar_id_strict(vm, vm.reg(args[4]))).unwrap_or_else(|| "iso8601".to_string())
+    } else {
+        "iso8601".to_string()
+    };
+    let calendar_value = vm.new_string(&calendar);
     initialize_temporal_receiver(
         vm,
         args,
         JsObject::OBJ_TYPE_PLAIN_DATE,
-        [JsValue::float(year as f64), JsValue::float(month as f64), JsValue::float(day as f64)],
+        [
+            JsValue::float(year as f64),
+            JsValue::float(month as f64),
+            JsValue::float(day as f64),
+            calendar_value,
+        ],
     )
 }
 
 /// `Temporal.PlainDate.from(value, options)`：接受 ISO 日期字符串或 `{year, month, day}` 对象。
 pub fn plain_date_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
-    let (year, month, day) = if val.is_string() {
+    let (year, month, day, calendar) = if val.is_string() {
         // 规范顺序：先 ParseTemporalDateString，再 ToTemporalOverflow(options)。
         let ymd = match parse_plain_date_string(&to_string(val)) {
             Ok(ymd) => ymd,
@@ -2404,7 +2411,7 @@ pub fn plain_date_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             }
         };
         native_try!(temporal_overflow(vm, args));
-        ymd
+        (ymd.0, ymd.1, ymd.2, None)
     } else {
         let constrain = native_try!(temporal_overflow(vm, args));
         match object_date_ymd(vm, val, constrain) {
@@ -2420,7 +2427,7 @@ pub fn plain_date_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if !(-100_000_001..=100_000_000).contains(&day_count) {
         return NativeResult::Err(crate::error::create_range_error(vm, "ISO date is out of range"));
     }
-    make_plain_date(vm, year, month, day, "iso8601")
+    make_plain_date(vm, year, month, day, calendar.as_deref().unwrap_or("iso8601"))
 }
 
 fn plain_date_ymd<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<(f64, f64, f64), JsValue> {
@@ -2644,13 +2651,11 @@ pub fn plain_date_time_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid date-time component"));
     }
 
-    if args.len() > 10 && !vm.reg(args[10]).is_undefined() {
-        let calendar = vm.reg(args[10]);
-        let calendar = native_try!(temporal_option_string(vm, calendar));
-        if !calendar.eq_ignore_ascii_case("iso8601") {
-            return NativeResult::Err(crate::error::create_range_error(vm, "unsupported calendar"));
-        }
-    }
+    let calendar = if args.len() > 10 && !vm.reg(args[10]).is_undefined() {
+        native_try!(temporal_calendar_id_strict(vm, vm.reg(args[10]))).unwrap_or_else(|| "iso8601".to_string())
+    } else {
+        "iso8601".to_string()
+    };
 
     let total_ns = hour as f64 * 3_600_000_000_000.0
         + minute as f64 * 60_000_000_000.0
@@ -2661,6 +2666,7 @@ pub fn plain_date_time_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
     if !valid_plain_date_time_range(year, month, day, total_ns) {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid date-time component"));
     }
+    let calendar_value = vm.new_string(&calendar);
     initialize_temporal_receiver(
         vm,
         args,
@@ -2670,6 +2676,7 @@ pub fn plain_date_time_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
             JsValue::float(month as f64),
             JsValue::float(day as f64),
             JsValue::float(total_ns),
+            calendar_value,
         ],
     )
 }
@@ -3037,8 +3044,8 @@ fn parse_partial_calendar_date(input: &str) -> Result<(), String> {
 }
 
 /// ToTemporalCalendar（宽松版，property bag 路径用）：undefined → None；
-/// string → 宽松解析（白名单 ID 或 ISO 串）；其他类型 → TypeError。
-/// 日历对象的内部槽 fast path 在日历槽接入后补充。
+/// string → 宽松解析（白名单 ID 或 ISO 串）；Temporal 实例 → 读日历槽（不触发属性 getter）；
+/// 其他类型 → TypeError。
 fn temporal_calendar_id<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<String>, JsValue> {
     if value.is_undefined() {
         return Ok(None);
@@ -3048,12 +3055,26 @@ fn temporal_calendar_id<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<
             .map(Some)
             .map_err(|_| crate::error::create_range_error(vm, "invalid calendar"));
     }
+    if value.is_object() {
+        let ptr = value.as_js_object_ptr();
+        if !ptr.is_null() {
+            let obj = unsafe { &*ptr };
+            if obj.is_plain_date_obj() {
+                return Ok(Some(get_calendar_id(obj, 3)));
+            }
+            if obj.is_plain_date_time_obj() {
+                return Ok(Some(get_calendar_id(obj, 4)));
+            }
+            if obj.is_zoned_date_time_obj() {
+                return Ok(Some(get_calendar_id(obj, 2)));
+            }
+        }
+    }
     Err(crate::error::create_type_error(vm, "invalid calendar"))
 }
 
 /// ToTemporalCalendar 严格版（构造器日历参数用）：字符串只走 18 项白名单，拒绝 ISO 串；
 /// undefined / 其他分支与宽松版一致。
-#[expect(dead_code)] // 构造器日历参数接入前的预留入口
 fn temporal_calendar_id_strict<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<String>, JsValue> {
     if value.is_string() {
         return parse_temporal_calendar_id_strict(&to_string(value))
@@ -3264,7 +3285,7 @@ fn plain_date_time_like_parts<H: VmHost>(
             get_double_prop(obj, 1) as u32,
             get_double_prop(obj, 2) as u32,
             get_double_prop(obj, 3),
-            None, // 实例日历传播在日历槽接入后补齐
+            Some(get_calendar_id(obj, 4)),
         ));
     }
     if obj.is_plain_date_obj() {
@@ -3273,12 +3294,12 @@ fn plain_date_time_like_parts<H: VmHost>(
             get_double_prop(obj, 1) as u32,
             get_double_prop(obj, 2) as u32,
             0.0,
-            None, // 实例日历传播在日历槽接入后补齐
+            Some(get_calendar_id(obj, 3)),
         ));
     }
     if obj.is_zoned_date_time_obj() {
         return zoned_date_time_plain_parts(vm, obj)
-            .map(|(year, month, day, total_ns)| (year, month, day, total_ns, None));
+            .map(|(year, month, day, total_ns)| (year, month, day, total_ns, Some(get_calendar_id(obj, 2))));
     }
     plain_date_time_object_parts(vm, value, obj, constrain, false)
 }
@@ -3322,8 +3343,8 @@ pub fn plain_date_time_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         make_plain_date_time(vm, year, month, day, total_ns, "iso8601")
     } else {
         let constrain = native_try!(temporal_overflow(vm, args));
-        let (year, month, day, total_ns, _) = native_try!(plain_date_time_like_parts(vm, value, constrain));
-        make_plain_date_time(vm, year, month, day, total_ns, "iso8601")
+        let (year, month, day, total_ns, calendar) = native_try!(plain_date_time_like_parts(vm, value, constrain));
+        make_plain_date_time(vm, year, month, day, total_ns, calendar.as_deref().unwrap_or("iso8601"))
     }
 }
 
@@ -3504,10 +3525,12 @@ pub fn plain_date_time_calendar_id<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
     NativeResult::Ok(vm.new_string(&get_calendar_id(obj, 4)))
 }
 
-/// 返回仅保留日期分量的新 `Temporal.PlainDate`。
+/// 返回仅保留日期分量的新 `Temporal.PlainDate`，日历从 receiver 槽继承。
 pub fn plain_date_time_to_plain_date<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
     let (year, month, day, _) = native_try!(plain_date_time_parts(vm, args));
-    make_plain_date(vm, year, month, day, "iso8601")
+    make_plain_date(vm, year, month, day, &get_calendar_id(obj, 4))
 }
 
 /// 返回仅保留时间分量的新 `Temporal.PlainTime`。
@@ -3651,6 +3674,8 @@ pub fn plain_date_time_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRe
 /// 按 duration-like 分量对 PlainDateTime 做加减：先平衡时间（溢出为天），
 /// 再按年/月/周/日推进日期，最后校验范围。
 fn plain_date_time_apply_duration<H: VmHost>(vm: &mut H, args: &[u8], sign: i64) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
     let (year, month, day, time_ns) = match plain_date_time_parts(vm, args) {
         Ok(parts) => parts,
         Err(error) => return NativeResult::Err(error),
@@ -3701,7 +3726,7 @@ fn plain_date_time_apply_duration<H: VmHost>(vm: &mut H, args: &[u8], sign: i64)
     if !valid_plain_date_time_range(yy as i32, mm as u32, dd as u32, new_time_ns as f64) {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid date-time"));
     }
-    make_plain_date_time(vm, yy as i32, mm as u32, dd as u32, new_time_ns as f64, "iso8601")
+    make_plain_date_time(vm, yy as i32, mm as u32, dd as u32, new_time_ns as f64, &get_calendar_id(obj, 4))
 }
 
 /// PlainDateTime 差值单位层级：year=0 … nanosecond=9；"auto" 仅限 largestUnit。
@@ -4471,9 +4496,11 @@ fn plain_date_ymd_checked<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<(i32, u3
     Ok(ymd)
 }
 
-/// 从对象式日期字段（`{year, month, day}`）读三字段；PlainDate 对象直接读内部槽；
-/// 缺字段返回 None。
-fn object_date_ymd<H: VmHost>(vm: &mut H, val: JsValue, constrain: bool) -> Result<(i32, u32, u32), JsValue> {
+/// 从对象式日期字段（`{year, month, day}`）读三字段与日历；PlainDate/PlainDateTime 实例
+/// 直接读内部槽；缺字段返回 None。
+fn object_date_ymd<H: VmHost>(
+    vm: &mut H, val: JsValue, constrain: bool,
+) -> Result<(i32, u32, u32, Option<String>), JsValue> {
     if !val.is_object() {
         return Err(crate::error::create_type_error(vm, "cannot convert to PlainDate"));
     }
@@ -4482,25 +4509,35 @@ fn object_date_ymd<H: VmHost>(vm: &mut H, val: JsValue, constrain: bool) -> Resu
         return Err(crate::error::create_type_error(vm, "cannot convert to PlainDate"));
     }
     let obj = unsafe { &*ptr };
-    if obj.is_plain_date_obj() || obj.is_plain_date_time_obj() {
+    if obj.is_plain_date_time_obj() {
         return Ok((
             get_double_prop(obj, 0) as i32,
             get_double_prop(obj, 1) as u32,
             get_double_prop(obj, 2) as u32,
+            Some(get_calendar_id(obj, 4)),
+        ));
+    }
+    if obj.is_plain_date_obj() {
+        return Ok((
+            get_double_prop(obj, 0) as i32,
+            get_double_prop(obj, 1) as u32,
+            get_double_prop(obj, 2) as u32,
+            Some(get_calendar_id(obj, 3)),
         ));
     }
     if obj.is_zoned_date_time_obj() {
         let (year, month, day, _) = zoned_date_time_plain_parts(vm, obj)?;
-        return Ok((year, month, day));
+        return Ok((year, month, day, Some(get_calendar_id(obj, 2))));
     }
-    let (year, month, day, _, _) = plain_date_time_object_parts(vm, val, obj, constrain, true)?;
-    Ok((year, month, day))
+    let (year, month, day, _, calendar) = plain_date_time_object_parts(vm, val, obj, constrain, true)?;
+    Ok((year, month, day, calendar))
 }
 
-fn date_like_ymd<H: VmHost>(vm: &mut H, val: JsValue) -> Result<(i32, u32, u32), JsValue> {
+fn date_like_ymd<H: VmHost>(vm: &mut H, val: JsValue) -> Result<(i32, u32, u32, Option<String>), JsValue> {
     let ymd = if val.is_string() {
-        parse_plain_date_string(&to_string(val))
-            .map_err(|_| crate::error::create_range_error(vm, "invalid ISO 8601 date"))?
+        let (y, m, d) = parse_plain_date_string(&to_string(val))
+            .map_err(|_| crate::error::create_range_error(vm, "invalid ISO 8601 date"))?;
+        (y, m, d, None)
     } else {
         object_date_ymd(vm, val, true)?
     };
@@ -4702,6 +4739,8 @@ pub fn plain_date_to_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
 /// 按 duration-like 日期字段对日期做加减（Temporal 大单位运算，月份不足日时取月末）。
 fn date_apply_duration<H: VmHost>(vm: &mut H, args: &[u8], sign: i64) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
     let date = match plain_date_naive(vm, args) {
         Ok(d) => d,
         Err(e) => return NativeResult::Err(e),
@@ -4741,7 +4780,7 @@ fn date_apply_duration<H: VmHost>(vm: &mut H, args: &[u8], sign: i64) -> NativeR
             return NativeResult::Err(crate::error::create_range_error(vm, "date out of range"));
         }
     }
-    make_plain_date(vm, result.year(), result.month(), result.day(), "iso8601")
+    make_plain_date(vm, result.year(), result.month(), result.day(), &get_calendar_id(obj, 3))
 }
 
 /// `Temporal.PlainDate.prototype.add(durationLike)`。
@@ -4881,5 +4920,15 @@ mod tests {
         // 第二及后续 u-ca 注解被忽略，不参与校验；含关键标记的重复日历报错。
         assert!(validate_temporal_annotation_suffix("[u-ca=iso8601][u-ca=discord]").is_ok());
         assert!(validate_temporal_annotation_suffix("[u-ca=iso8601][!u-ca=iso8601]").is_err());
+    }
+
+    #[test]
+    fn calendar_id_slot_fallback() {
+        // 字符串槽原值返回由 VM 层构造器/getter 测试覆盖；此处验证 undefined 与非 string 槽兜底 iso8601。
+        let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined());
+        obj.set_prop_at(3, JsValue::undefined());
+        assert_eq!(get_calendar_id(&obj, 3), "iso8601");
+        obj.set_prop_at(3, JsValue::int(7));
+        assert_eq!(get_calendar_id(&obj, 3), "iso8601");
     }
 }

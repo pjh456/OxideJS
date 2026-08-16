@@ -844,3 +844,124 @@ fn plain_date_time_add_balances_months_days_and_time() {
     .unwrap();
     assert_eq!(str_val(&vm, r), "2001:6:18:12:34:0:3:0:1997:11:30:2:29:true");
 }
+
+#[test]
+fn plain_date_constructor_stores_real_calendar() {
+    let mut vm = Vm::new();
+    // 规范日历 ID 存槽：大小写折叠为规范小写。
+    let r = eval(
+        &mut vm,
+        "new Temporal.PlainDate(2000, 5, 2, 'gregory').calendarId + ',' +
+         new Temporal.PlainDate(2000, 5, 2, 'iSo8601').calendarId + ',' +
+         new Temporal.PlainDate(2000, 5, 2).calendarId",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "gregory,iso8601,iso8601");
+}
+
+#[test]
+fn plain_date_constructor_rejects_invalid_calendar() {
+    let mut vm = Vm::new();
+    // 未在白名单 → RangeError；ISO 串拒绝；对象（非 Temporal 实例）→ TypeError。
+    let r = eval(
+        &mut vm,
+        "(() => { try { new Temporal.PlainDate(2000, 5, 2, 'notacal'); return false; }
+           catch (e) { return e instanceof RangeError; } })() + ',' +
+         (() => { try { new Temporal.PlainDate(2000, 5, 2, '1997-12-04[u-ca=iso8601]'); return false; }
+           catch (e) { return e instanceof RangeError; } })() + ',' +
+         (() => { try { new Temporal.PlainDate(2000, 5, 2, {}); return false; }
+           catch (e) { return e instanceof TypeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true,true,true");
+}
+
+#[test]
+fn plain_date_time_constructor_stores_real_calendar() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "new Temporal.PlainDateTime(2000, 5, 2, 12, 0, 0, 0, 0, 0, 'hebrew').calendarId + ',' +
+         new Temporal.PlainDateTime(2000, 5, 2).calendarId",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "hebrew,iso8601");
+}
+
+#[test]
+fn plain_date_time_constructor_wrong_calendar_is_type_error() {
+    let mut vm = Vm::new();
+    // 规范要求 `{}` 日历 → TypeError（strict 走日历 ID 校验而非宽松 to-option-string）。
+    let r = eval(
+        &mut vm,
+        "(() => { try { new Temporal.PlainDateTime(2000, 5, 2, 12, 0, 0, 0, 0, 0, {}); return false; }
+           catch (e) { return e instanceof TypeError; } })()",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn zoned_date_time_constructor_stores_real_calendar() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "new Temporal.ZonedDateTime(0n, 'UTC', 'hebrew').calendarId + ',' +
+         new Temporal.ZonedDateTime(0n, 'UTC').calendarId",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "hebrew,iso8601");
+}
+
+#[test]
+fn zoned_date_time_constructor_wrong_calendar_is_type_error() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "(() => { try { new Temporal.ZonedDateTime(0n, 'UTC', {}); return false; }
+           catch (e) { return e instanceof TypeError; } })()",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn temporal_instance_as_calendar_fast_path_reads_slot() {
+    let mut vm = Vm::new();
+    // Temporal 实例作 property bag 的 calendar：直接读内部槽，不触发 calendar 属性 getter。
+    let r = eval(
+        &mut vm,
+        "const pd = new Temporal.PlainDate(2000, 5, 2, 'gregory');
+         const pdt = new Temporal.PlainDateTime(2000, 5, 2, 12, 0, 0, 0, 0, 0, 'hebrew');
+         const zdt = new Temporal.ZonedDateTime(0n, 'UTC', 'japanese');
+         Object.defineProperty(pd, 'calendar', { get() { throw new Error('getter'); } });
+         Object.defineProperty(pdt, 'calendar', { get() { throw new Error('getter'); } });
+         Object.defineProperty(zdt, 'calendar', { get() { throw new Error('getter'); } });
+         const a = Temporal.PlainDate.from({ year: 2000, month: 5, day: 2, calendar: pd }).calendarId;
+         const b = Temporal.PlainDateTime.from({ year: 2000, month: 5, day: 2, hour: 12, calendar: pdt }).calendarId;
+         const c = Temporal.PlainDateTime.from({ year: 2000, month: 5, day: 2, hour: 12, calendar: zdt }).calendarId;
+         a + ',' + b + ',' + c",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "gregory,hebrew,japanese");
+}
+
+#[test]
+fn plain_date_from_instance_preserves_calendar() {
+    let mut vm = Vm::new();
+    // from(实例) 复制日历槽；add/subtract 与 toPlainDate 传播日历。
+    let r = eval(
+        &mut vm,
+        "const pd = new Temporal.PlainDate(2000, 5, 2, 'gregory');
+         const pdt = new Temporal.PlainDateTime(2000, 5, 2, 12, 0, 0, 0, 0, 0, 'hebrew');
+         Temporal.PlainDate.from(pd).calendarId + ',' +
+         Temporal.PlainDateTime.from(pd).calendarId + ',' +
+         Temporal.PlainDateTime.from(pdt).calendarId + ',' +
+         pdt.toPlainDate().calendarId + ',' +
+         pd.add({ days: 1 }).calendarId + ',' +
+         pd.subtract({ days: 1 }).calendarId + ',' +
+         pdt.add({ days: 1 }).calendarId",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "gregory,gregory,hebrew,hebrew,gregory,gregory,hebrew");
+}
