@@ -13,6 +13,7 @@ pub mod function;
 pub mod identifier;
 pub mod literal;
 pub mod member;
+pub mod meta_property;
 pub mod object;
 pub mod operator;
 pub mod parenthesized;

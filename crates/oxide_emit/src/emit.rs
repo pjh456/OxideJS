@@ -1440,6 +1440,7 @@ impl Emitter {
             Expression::ThisExpression(_) => self.emit_this_expression(ctx),
             Expression::SequenceExpression(seq) => self.emit_sequence_expression(seq, ctx),
             Expression::ParenthesizedExpression(p) => self.emit_parenthesized_expression(p, ctx),
+            Expression::MetaProperty(mp) => self.emit_meta_property_expression(mp, ctx),
             _ => self.emit_unsupported_expression(expr, ctx),
         }
     }
