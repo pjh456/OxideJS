@@ -624,7 +624,10 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         world,
         plain_time_ctor,
         core,
-        &[("from", oxide_builtins::temporal::plain_time_from::<crate::vm::Vm> as *const (), 1)],
+        &[
+            ("from", oxide_builtins::temporal::plain_time_from::<crate::vm::Vm> as *const (), 1),
+            ("compare", oxide_builtins::temporal::plain_time_compare::<crate::vm::Vm> as *const (), 2),
+        ],
     );
 
     let plain_time_proto_ptr = world.plain_time_proto.as_ptr() as *mut JsObject;
@@ -688,6 +691,7 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
                 0,
             ),
             ("valueOf", oxide_builtins::temporal::plain_time_value_of::<crate::vm::Vm> as *const (), 0),
+            ("equals", oxide_builtins::temporal::plain_time_equals::<crate::vm::Vm> as *const (), 1),
         ],
     );
     bind_well_known_data_property(

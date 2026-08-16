@@ -4550,6 +4550,48 @@ pub fn plain_time_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
+/// `Temporal.PlainTime.prototype.equals(other)`：各分量全等返回 true，否则 false。
+///
+/// # 边界与前提
+/// - other 经 `plain_time_like_ns` 归一（实例/字符串/property bag），无法转换抛 TypeError/RangeError。
+pub fn plain_time_equals<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = match receiver_obj(vm, args) {
+        Ok(p) => p,
+        Err(error) => return NativeResult::Err(error),
+    };
+    let obj = unsafe { &*ptr };
+    if let Err(error) = ensure_plain_time(vm, obj) {
+        return NativeResult::Err(error);
+    }
+    let receiver_ns = get_double_prop(obj, 0);
+    let other_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let other_ns = match plain_time_like_ns(vm, other_val) {
+        Ok(ns) => ns,
+        Err(error) => return NativeResult::Err(error),
+    };
+    NativeResult::Ok(JsValue::bool(receiver_ns as i128 == other_ns as i128))
+}
+
+/// `Temporal.PlainTime.compare(one, two)`：静态比较，按午夜后纳秒返回 -1、0 或 1。
+pub fn plain_time_compare<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let one = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let two = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let one_ns = match plain_time_like_ns(vm, one) {
+        Ok(ns) => ns,
+        Err(error) => return NativeResult::Err(error),
+    };
+    let two_ns = match plain_time_like_ns(vm, two) {
+        Ok(ns) => ns,
+        Err(error) => return NativeResult::Err(error),
+    };
+    let result = match (one_ns as i128).cmp(&(two_ns as i128)) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    };
+    NativeResult::Ok(JsValue::int(result))
+}
+
 // ───────────────────── PlainDateTime 基础方法 ─────────────────────
 
 /// `Temporal.PlainDateTime` 构造器：保存 ISO 日期与午夜后纳秒。

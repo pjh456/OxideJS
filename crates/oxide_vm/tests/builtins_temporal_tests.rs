@@ -617,6 +617,57 @@ fn plain_time_range_validation() {
     assert_eq!(str_val(&vm, r), "RangeError");
 }
 
+#[test]
+fn plain_time_equals_same_and_different_fields() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "new Temporal.PlainTime(12, 30, 5).equals(new Temporal.PlainTime(12, 30, 5))").unwrap();
+    assert!(r.as_bool());
+    let r = eval(&mut vm, "new Temporal.PlainTime(12, 30, 5).equals(new Temporal.PlainTime(12, 30, 6))").unwrap();
+    assert!(!r.as_bool());
+    let r = eval(&mut vm, "new Temporal.PlainTime(12, 30, 5).equals('12:30:05')").unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn plain_time_equals_invalid_argument_throws() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "try { new Temporal.PlainTime(12).equals(42) } catch (e) { e.constructor.name }").unwrap();
+    assert_eq!(str_val(&vm, r), "TypeError");
+    let r = eval(
+        &mut vm,
+        "try { Temporal.PlainTime.prototype.equals.call({}) } catch (e) { e.constructor.name }",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "TypeError");
+}
+
+#[test]
+fn plain_time_compare_epoch_order() {
+    let mut vm = Vm::new();
+    assert_eq!(
+        num(
+            &mut vm,
+            "Temporal.PlainTime.compare(new Temporal.PlainTime(12, 30), new Temporal.PlainTime(13, 30))"
+        ),
+        -1.0
+    );
+    assert_eq!(
+        num(
+            &mut vm,
+            "Temporal.PlainTime.compare(new Temporal.PlainTime(12, 30), new Temporal.PlainTime(12, 30))"
+        ),
+        0.0
+    );
+    assert_eq!(
+        num(
+            &mut vm,
+            "Temporal.PlainTime.compare(new Temporal.PlainTime(13, 30), new Temporal.PlainTime(12, 30))"
+        ),
+        1.0
+    );
+    assert_eq!(num(&mut vm, "Temporal.PlainTime.compare('23:59', '00:00')"), 1.0);
+}
+
 // -- Temporal.PlainDateTime --
 
 #[test]
