@@ -9,9 +9,47 @@ const INNER_PROP: &str = "__inner__";
 const INDEX_PROP: &str = "__index__";
 const MODE_PROP: &str = "__mode__";
 
-/// 占位构造函数：`Iterator` 不是构造函数，任何调用都抛 TypeError。
-pub fn iterator_constructor<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
-    NativeResult::Err(crate::error::create_type_error(vm, "Iterator is not a constructor"))
+/// `Iterator` 构造逻辑：不是构造函数，`new Iterator()` / `Iterator()` 均抛 TypeError；
+/// subclass `super()` 路径放行并返回 undefined（原型由调用方按 newTarget 设置）。
+///
+/// 引擎无 native [[Construct]]/newTarget 通道，用与 `Symbol` 构造器同款的启发式
+/// 判别调用形态：
+///
+/// # 步骤
+/// 1. `this` 非对象 → TypeError（普通调用 `Iterator()`：emit 以 undefined 作 this）。
+/// 2. `this.proto === %IteratorPrototype%` → TypeError（`new Iterator()`：调用方以
+///    ctor.prototype 为原型建新对象传入）。
+/// 3. newTarget 槽（regs[255]）非对象 → TypeError（`Iterator.call(x)` 顶层调用，
+///    顶层 newTarget 初始化为 undefined）。
+/// 4. 否则返回 undefined（subclass `super()`：调用方随后按 new.target.prototype
+///    设置实例原型）。
+///
+/// # 注意事项
+/// 类构造器内调用 `Iterator.call(x)` 时 regs[255] 为类对象会被放行（规范外罕见
+/// 场景，与 `Symbol` 构造器同款已知边界）。
+pub fn iterator_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    if !this_val.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Iterator is not a constructor"));
+    }
+    let ptr = this_val.as_js_object_ptr();
+    if !ptr.is_null() {
+        let obj = unsafe { &*ptr };
+        let proto = obj.proto();
+        if proto.is_object() {
+            let proto_ptr = proto.as_js_object_ptr();
+            if !proto_ptr.is_null() {
+                let home = vm.session().builtin_world().iterator_proto.as_ptr() as *mut JsObject;
+                if std::ptr::eq(proto_ptr, home) {
+                    return NativeResult::Err(crate::error::create_type_error(vm, "Iterator is not a constructor"));
+                }
+            }
+        }
+    }
+    if !vm.reg(255).is_object() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Iterator is not a constructor"));
+    }
+    NativeResult::Ok(JsValue::undefined())
 }
 
 /// `%IteratorPrototype%` 上 `constructor` 访问器的 getter：返回当前 global 上的

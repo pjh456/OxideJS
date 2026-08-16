@@ -515,6 +515,92 @@ fn iterator_helper_prototype_links_to_iterator_proto() {
 }
 
 #[test]
+fn iterator_constructor_plain_call_throws() {
+    let mut vm = Vm::new();
+    // 普通调用 `Iterator()` 抛 TypeError（emit 以 undefined 作 this）。
+    let bool_cases = [
+        ("try { Iterator(); false } catch (e) { e instanceof TypeError }", true),
+        // call/apply 显式传对象 this 顶层调用同样抛（newTarget 槽为 undefined）。
+        ("try { Iterator.call({}); false } catch (e) { e instanceof TypeError }", true),
+        ("try { Iterator.apply({}, []); false } catch (e) { e instanceof TypeError }", true),
+        // 以 %IteratorPrototype% 为原型的对象顶层调用也抛（home 形态误判保护）。
+        (
+            "try { Iterator.call(Object.create(Iterator.prototype)); false } \
+             catch (e) { e instanceof TypeError }",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_constructor_subclassable() {
+    let mut vm = Vm::new();
+    // `class X extends Iterator {}` 的 super() 经放行路径返回 undefined，
+    // 实例原型按 newTarget 设为 X.prototype。
+    let bool_cases = [
+        (
+            "class TestIterator extends Iterator {} \
+             var it = new TestIterator(); \
+             it instanceof TestIterator && it instanceof Iterator",
+            true,
+        ),
+        (
+            "class TestIterator extends Iterator {} \
+             Object.getPrototypeOf(new TestIterator()) === TestIterator.prototype",
+            true,
+        ),
+        (
+            "class TestIterator extends Iterator {} \
+             Object.getPrototypeOf(TestIterator.prototype) === Iterator.prototype",
+            true,
+        ),
+        // 显式 constructor 内 super() 与隐式等价。
+        (
+            "class TestIterator extends Iterator { constructor() { super(); } } \
+             new TestIterator() instanceof Iterator",
+            true,
+        ),
+        // 多层继承：newTarget 跨层保持为最外层类。
+        (
+            "class A extends Iterator {} class B extends A {} \
+             var b = new B(); \
+             b instanceof B && b instanceof A && b instanceof Iterator",
+            true,
+        ),
+        // 构造器 name 不受影响。
+        ("class TestIterator extends Iterator {} TestIterator.name === 'TestIterator'", true),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_constructor_subclass_still_rejects_new_after_reset() {
+    let mut vm = Vm::new();
+    // dirty reset 后构造器经 bind_iterator_global 重绑，本体与 subclass 路径不变。
+    unsafe { &mut *(vm.session().builtin_world().iterator_proto.as_ptr() as *mut JsObject) }.bump_generation();
+    vm.full_reset();
+    let bool_cases = [
+        ("try { new Iterator(); false } catch (e) { e instanceof TypeError }", true),
+        (
+            "class TestIterator extends Iterator {} \
+             new TestIterator() instanceof Iterator",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
 fn iterator_prototype_rebound_after_full_reset() {
     let mut vm = Vm::new();
     // 用户改写 %IteratorPrototype%：object 家族世代递增（global 未动）。
