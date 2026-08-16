@@ -29,11 +29,31 @@ pub fn bind_disposable_stack_protos(core: &Arc<KernelCore>, session: &KernelSess
         proto,
         core,
         &[
-            ("use", oxide_builtins::disposable_stack::disposable_stack_use::<crate::vm::Vm> as *const (), 1),
-            ("adopt", oxide_builtins::disposable_stack::disposable_stack_adopt::<crate::vm::Vm> as *const (), 2),
-            ("defer", oxide_builtins::disposable_stack::disposable_stack_defer::<crate::vm::Vm> as *const (), 1),
-            ("dispose", oxide_builtins::disposable_stack::disposable_stack_dispose::<crate::vm::Vm> as *const (), 0),
-            ("move", oxide_builtins::disposable_stack::disposable_stack_move::<crate::vm::Vm> as *const (), 0),
+            (
+                "use",
+                oxide_builtins::disposable_stack::disposable_stack_use::<crate::vm::Vm> as *const (),
+                1,
+            ),
+            (
+                "adopt",
+                oxide_builtins::disposable_stack::disposable_stack_adopt::<crate::vm::Vm> as *const (),
+                2,
+            ),
+            (
+                "defer",
+                oxide_builtins::disposable_stack::disposable_stack_defer::<crate::vm::Vm> as *const (),
+                1,
+            ),
+            (
+                "dispose",
+                oxide_builtins::disposable_stack::disposable_stack_dispose::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "move",
+                oxide_builtins::disposable_stack::disposable_stack_move::<crate::vm::Vm> as *const (),
+                0,
+            ),
         ],
     );
     bind_accessor_getter(
@@ -109,7 +129,8 @@ pub fn bind_disposable_stack(core: &Arc<KernelCore>, session: &KernelSession, gl
         ctor.set_shape_id(ctor_shape3);
         ctor.ensure_hash_props()
             .push(JsValue::from_js_object(world.disposable_stack_proto.as_ptr() as *mut JsObject));
-        ctor.ensure_hash_props().push(JsValue::perm_string(sf.string_ptr(sf.intern("DisposableStack").0)));
+        ctor.ensure_hash_props()
+            .push(JsValue::perm_string(sf.string_ptr(sf.intern("DisposableStack").0)));
         ctor.ensure_hash_props().push(JsValue::int(0));
         ctor.set_data_meta(0u32, PropAttributes::new(false, false, false));
         ctor.set_data_meta(1u32, PropAttributes::new(false, false, true));

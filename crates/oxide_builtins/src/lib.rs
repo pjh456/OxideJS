@@ -19,10 +19,10 @@ pub mod boolean;
 pub mod builtins_log;
 /// DataView 内置对象实现（对 ArrayBuffer 的定点读写视图）。
 pub mod data_view;
-/// DisposableStack/AsyncDisposableStack 内置对象实现（资源栈状态盒与 GC 追踪）。
-pub mod disposable_stack;
 /// Date 内置对象实现（时间戳存取、get/set 系列与 to*String 系列）。
 pub mod date;
+/// DisposableStack/AsyncDisposableStack 内置对象实现（资源栈状态盒与 GC 追踪）。
+pub mod disposable_stack;
 /// Error 内置对象实现（各类 Error 构造函数与 stack/toString）。
 pub mod error;
 /// Function 内置对象实现（call/apply/bind/toString）。

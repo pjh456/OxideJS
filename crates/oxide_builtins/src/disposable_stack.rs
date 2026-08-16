@@ -141,7 +141,12 @@ pub fn disposable_stack_use<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     if method.is_null() || method.is_undefined() || !crate::iterator::is_callable(method) {
         return NativeResult::Err(crate::error::create_type_error(vm, "value[Symbol.dispose] is not callable"));
     }
-    cap_ref.entries.push(DisposeEntry { value, method, hint: 0, arg_style: false });
+    cap_ref.entries.push(DisposeEntry {
+        value,
+        method,
+        hint: 0,
+        arg_style: false,
+    });
     NativeResult::Ok(value)
 }
 
@@ -165,7 +170,12 @@ pub fn disposable_stack_adopt<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     if !crate::iterator::is_callable(on_dispose) {
         return NativeResult::Err(crate::error::create_type_error(vm, "onDispose is not callable"));
     }
-    cap_ref.entries.push(DisposeEntry { value, method: on_dispose, hint: 0, arg_style: true });
+    cap_ref.entries.push(DisposeEntry {
+        value,
+        method: on_dispose,
+        hint: 0,
+        arg_style: true,
+    });
     NativeResult::Ok(value)
 }
 
@@ -188,9 +198,12 @@ pub fn disposable_stack_defer<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     if !crate::iterator::is_callable(on_dispose) {
         return NativeResult::Err(crate::error::create_type_error(vm, "onDispose is not callable"));
     }
-    cap_ref
-        .entries
-        .push(DisposeEntry { value: JsValue::undefined(), method: on_dispose, hint: 0, arg_style: false });
+    cap_ref.entries.push(DisposeEntry {
+        value: JsValue::undefined(),
+        method: on_dispose,
+        hint: 0,
+        arg_style: false,
+    });
     NativeResult::Ok(JsValue::undefined())
 }
 
@@ -217,7 +230,8 @@ pub fn disposable_stack_dispose<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
     }
     // 先置位再执行：执行中调用 use/adopt/defer 一律命中 Disposed 分支。
     cap_ref.state = DisposeState::Disposed;
-    let mut completion: Option<JsValue> = None;    for entry in cap_ref.entries.iter().rev() {
+    let mut completion: Option<JsValue> = None;
+    for entry in cap_ref.entries.iter().rev() {
         if entry.method.is_undefined() {
             continue;
         }
@@ -282,7 +296,6 @@ pub fn disposable_stack_disposed_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> N
     let state = unsafe { (*cap).state };
     NativeResult::Ok(JsValue::bool(state != DisposeState::Pending))
 }
-
 
 /// 栈生命周期状态：Pending 可入栈，Disposed 后所有操作抛 ReferenceError；
 /// Disposing 为异步资源栈 disposeAsync 执行期标记（当前未构造，语义预留）。
