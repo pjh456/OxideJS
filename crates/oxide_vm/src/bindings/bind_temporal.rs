@@ -172,6 +172,195 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         "calendarId",
         oxide_builtins::temporal::zoned_date_time_calendar_id::<crate::vm::Vm> as *const (),
     );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "epochSeconds",
+        oxide_builtins::temporal::zoned_date_time_epoch_seconds::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "epochMilliseconds",
+        oxide_builtins::temporal::zoned_date_time_epoch_milliseconds::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "epochMicroseconds",
+        oxide_builtins::temporal::zoned_date_time_epoch_microseconds::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "offset",
+        oxide_builtins::temporal::zoned_date_time_offset::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "offsetNanoseconds",
+        oxide_builtins::temporal::zoned_date_time_offset_nanoseconds::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "year",
+        oxide_builtins::temporal::zoned_date_time_year::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "month",
+        oxide_builtins::temporal::zoned_date_time_month::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "day",
+        oxide_builtins::temporal::zoned_date_time_day::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "hour",
+        oxide_builtins::temporal::zoned_date_time_hour::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "minute",
+        oxide_builtins::temporal::zoned_date_time_minute::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "second",
+        oxide_builtins::temporal::zoned_date_time_second::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "millisecond",
+        oxide_builtins::temporal::zoned_date_time_millisecond::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "microsecond",
+        oxide_builtins::temporal::zoned_date_time_microsecond::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "nanosecond",
+        oxide_builtins::temporal::zoned_date_time_nanosecond::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "dayOfWeek",
+        oxide_builtins::temporal::zoned_date_time_day_of_week::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "dayOfYear",
+        oxide_builtins::temporal::zoned_date_time_day_of_year::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "weekOfYear",
+        oxide_builtins::temporal::zoned_date_time_week_of_year::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "yearOfWeek",
+        oxide_builtins::temporal::zoned_date_time_year_of_week::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "monthCode",
+        oxide_builtins::temporal::zoned_date_time_month_code::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "daysInMonth",
+        oxide_builtins::temporal::zoned_date_time_days_in_month::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "daysInWeek",
+        oxide_builtins::temporal::zoned_date_time_days_in_week::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "daysInYear",
+        oxide_builtins::temporal::zoned_date_time_days_in_year::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "monthsInYear",
+        oxide_builtins::temporal::zoned_date_time_months_in_year::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "inLeapYear",
+        oxide_builtins::temporal::zoned_date_time_in_leap_year::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "era",
+        oxide_builtins::temporal::zoned_date_time_era::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "eraYear",
+        oxide_builtins::temporal::zoned_date_time_era_year::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        zoned_date_time_proto,
+        "hoursInDay",
+        oxide_builtins::temporal::zoned_date_time_hours_in_day::<crate::vm::Vm> as *const (),
+    );
     bind_well_known_data_property(
         core,
         zoned_date_time_proto,

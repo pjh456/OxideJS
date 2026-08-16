@@ -1348,6 +1348,155 @@ pub fn zoned_date_time_calendar_id<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
     NativeResult::Ok(obj.get_prop_at(2))
 }
 
+/// ZDT 字段 getter 宏：branding 后读本地分量，按选择函数取字段。
+macro_rules! zoned_date_time_parts_getter {
+    ($name:ident, $select:expr) => {
+        pub fn $name<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+            let ptr = native_try!(receiver_obj(vm, args));
+            let obj = unsafe { &*ptr };
+            native_try!(ensure_zoned_date_time(vm, obj));
+            let (year, month, day, time_ns) = native_try!(zoned_date_time_plain_parts(vm, obj));
+            NativeResult::Ok(JsValue::float($select(year, month, day, time_ns) as f64))
+        }
+    };
+}
+
+/// ZDT epoch 除法 getter 宏：槽 0 按除数向下取整（负值 floor，仿 instant_epoch_*）。
+macro_rules! zoned_date_time_epoch_getter {
+    ($name:ident, $divisor:expr) => {
+        pub fn $name<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+            let ptr = native_try!(receiver_obj(vm, args));
+            let obj = unsafe { &*ptr };
+            native_try!(ensure_zoned_date_time(vm, obj));
+            let Some(epoch_ns) = get_instant_epoch_ns(obj) else {
+                return NativeResult::Err(crate::error::create_range_error(vm, "invalid ZonedDateTime"));
+            };
+            NativeResult::Ok(JsValue::float(epoch_ns.div_euclid($divisor) as f64))
+        }
+    };
+}
+
+/// ZDT 日期派生 getter 宏：本地日期转 chrono NaiveDate 后按闭包取值。
+macro_rules! zoned_date_time_naive_getter {
+    ($name:ident, $body:expr) => {
+        pub fn $name<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+            let ptr = native_try!(receiver_obj(vm, args));
+            let obj = unsafe { &*ptr };
+            native_try!(ensure_zoned_date_time(vm, obj));
+            let (year, month, day, _) = native_try!(zoned_date_time_plain_parts(vm, obj));
+            let Some(date) = NaiveDate::from_ymd_opt(year, month, day) else {
+                return NativeResult::Err(crate::error::create_range_error(vm, "invalid date"));
+            };
+            NativeResult::Ok($body(&date))
+        }
+    };
+}
+
+/// ZDT 常量 getter 宏：仅做 branding，返回固定值。
+macro_rules! zoned_date_time_brand_only_getter {
+    ($name:ident, $value:expr) => {
+        pub fn $name<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+            let ptr = native_try!(receiver_obj(vm, args));
+            let obj = unsafe { &*ptr };
+            native_try!(ensure_zoned_date_time(vm, obj));
+            NativeResult::Ok($value)
+        }
+    };
+}
+
+// 墙钟字段 getter：本地日期分量直读。
+zoned_date_time_parts_getter!(zoned_date_time_year, |y, _, _, _| y as f64);
+zoned_date_time_parts_getter!(zoned_date_time_month, |_, m, _, _| m as f64);
+zoned_date_time_parts_getter!(zoned_date_time_day, |_, _, d, _| d as f64);
+zoned_date_time_parts_getter!(zoned_date_time_hour, |_, _, _, t| plain_time_components(t).0 as f64);
+zoned_date_time_parts_getter!(zoned_date_time_minute, |_, _, _, t| plain_time_components(t).1 as f64);
+zoned_date_time_parts_getter!(zoned_date_time_second, |_, _, _, t| plain_time_components(t).2 as f64);
+zoned_date_time_parts_getter!(zoned_date_time_millisecond, |_, _, _, t| plain_time_components(t).3 as f64);
+zoned_date_time_parts_getter!(zoned_date_time_microsecond, |_, _, _, t| plain_time_components(t).4 as f64);
+zoned_date_time_parts_getter!(zoned_date_time_nanosecond, |_, _, _, t| plain_time_components(t).5 as f64);
+
+// epoch 除法 getter：BigInt 除以秒/毫秒/微秒，负值向下取整。
+zoned_date_time_epoch_getter!(zoned_date_time_epoch_seconds, 1_000_000_000);
+zoned_date_time_epoch_getter!(zoned_date_time_epoch_milliseconds, 1_000_000);
+zoned_date_time_epoch_getter!(zoned_date_time_epoch_microseconds, 1_000);
+
+// 日期派生 getter：本地日期经 chrono NaiveDate 取周/年/月属性。
+zoned_date_time_naive_getter!(zoned_date_time_day_of_week, |d: &NaiveDate| {
+    JsValue::float((d.weekday().num_days_from_monday() + 1) as f64)
+});
+zoned_date_time_naive_getter!(zoned_date_time_day_of_year, |d: &NaiveDate| { JsValue::float(d.ordinal() as f64) });
+zoned_date_time_naive_getter!(zoned_date_time_week_of_year, |d: &NaiveDate| {
+    JsValue::float(d.iso_week().week() as f64)
+});
+zoned_date_time_naive_getter!(zoned_date_time_year_of_week, |d: &NaiveDate| {
+    JsValue::float(d.iso_week().year() as f64)
+});
+zoned_date_time_naive_getter!(zoned_date_time_days_in_month, |d: &NaiveDate| {
+    JsValue::float(days_in_month_iso(d.year(), d.month()) as f64)
+});
+zoned_date_time_naive_getter!(zoned_date_time_days_in_year, |d: &NaiveDate| {
+    JsValue::float(if is_leap_year_iso(d.year()) { 366.0 } else { 365.0 })
+});
+zoned_date_time_naive_getter!(zoned_date_time_in_leap_year, |d: &NaiveDate| {
+    JsValue::bool(is_leap_year_iso(d.year()))
+});
+
+// 常量 getter：ISO 日历下固定值，仅做 branding。
+zoned_date_time_brand_only_getter!(zoned_date_time_days_in_week, JsValue::float(7.0));
+zoned_date_time_brand_only_getter!(zoned_date_time_months_in_year, JsValue::float(12.0));
+zoned_date_time_brand_only_getter!(zoned_date_time_era, JsValue::undefined());
+zoned_date_time_brand_only_getter!(zoned_date_time_era_year, JsValue::undefined());
+
+/// 读 ZDT 时区偏移（分钟）；槽 1 解析失败返回 RangeError。调用方须先 ensure_zoned_date_time。
+fn zoned_date_time_offset_minutes<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<i32, JsValue> {
+    let time_zone_id = to_string(obj.get_prop_at(1));
+    instant_time_zone_offset(&time_zone_id).ok_or_else(|| crate::error::create_range_error(vm, "invalid time zone"))
+}
+
+/// `Temporal.ZonedDateTime.prototype.offset`：由偏移分钟数规范化为 ±HH:MM 字符串。
+pub fn zoned_date_time_offset<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_zoned_date_time(vm, obj));
+    let offset_minutes = native_try!(zoned_date_time_offset_minutes(vm, obj));
+    let sign = if offset_minutes < 0 { '-' } else { '+' };
+    let magnitude = offset_minutes.abs();
+    NativeResult::Ok(vm.new_string(&format!("{sign}{:02}:{:02}", magnitude / 60, magnitude % 60)))
+}
+
+/// `Temporal.ZonedDateTime.prototype.offsetNanoseconds`：偏移分钟数换算纳秒（f64 精确域内）。
+pub fn zoned_date_time_offset_nanoseconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_zoned_date_time(vm, obj));
+    let offset_minutes = native_try!(zoned_date_time_offset_minutes(vm, obj));
+    NativeResult::Ok(JsValue::float(offset_minutes as f64 * 60_000_000_000.0))
+}
+
+/// `Temporal.ZonedDateTime.prototype.monthCode`：ISO 日历下恒为 `M{month:02}` 补零格式。
+pub fn zoned_date_time_month_code<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_zoned_date_time(vm, obj));
+    let (_, month, _, _) = native_try!(zoned_date_time_plain_parts(vm, obj));
+    NativeResult::Ok(vm.new_string(&format!("M{month:02}")))
+}
+
+/// `Temporal.ZonedDateTime.prototype.hoursInDay`：当日与次日当地午夜差 / 小时，含 Instant 范围校验。
+pub fn zoned_date_time_hours_in_day<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_zoned_date_time(vm, obj));
+    let (year, month, day, _) = native_try!(zoned_date_time_plain_parts(vm, obj));
+    let offset_minutes = native_try!(zoned_date_time_offset_minutes(vm, obj));
+    let today = native_try!(start_of_day_epoch_ns(year, month, day, offset_minutes)
+        .ok_or_else(|| crate::error::create_range_error(vm, "invalid date")));
+    let days = days_from_civil(i128::from(year), i128::from(month), i128::from(day));
+    let tomorrow = native_try!(start_of_day_epoch_ns_by_days(days + 1, offset_minutes)
+        .ok_or_else(|| crate::error::create_range_error(vm, "invalid date")));
+    NativeResult::Ok(JsValue::float((tomorrow - today) as f64 / 3_600_000_000_000.0))
+}
+
 fn make_plain_date<H: VmHost>(vm: &mut H, year: i32, month: u32, day: u32, calendar: &str) -> NativeResult {
     let proto = JsValue::from_js_object(vm.session().builtin_world().plain_date_proto.as_ptr() as *mut JsObject);
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
@@ -3276,6 +3425,19 @@ fn zoned_date_time_plain_parts<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<
     Ok((year as i32, month as u32, day as u32, time_ns))
 }
 
+/// 当地午夜纪元纳秒（含 Instant 范围校验，spec GetStartOfDay 语义）；越界返回 None。
+fn start_of_day_epoch_ns(year: i32, month: u32, day: u32, offset_minutes: i32) -> Option<i128> {
+    start_of_day_epoch_ns_by_days(days_from_civil(i128::from(year), i128::from(month), i128::from(day)), offset_minutes)
+}
+
+/// 按日数直接算当地午夜（hoursInDay 的明日边界复用：days+1 不经 civil 回填）。
+fn start_of_day_epoch_ns_by_days(days: i128, offset_minutes: i32) -> Option<i128> {
+    let start = days
+        .checked_mul(86_400_000_000_000)?
+        .checked_sub(i128::from(offset_minutes) * 60_000_000_000)?;
+    (start.unsigned_abs() <= MAX_INSTANT_NS as u128).then_some(start)
+}
+
 fn plain_date_time_like_parts<H: VmHost>(
     vm: &mut H, value: JsValue, constrain: bool,
 ) -> Result<(i32, u32, u32, f64, Option<String>), JsValue> {
@@ -4931,5 +5093,21 @@ mod tests {
         assert_eq!(get_calendar_id(&obj, 3), "iso8601");
         obj.set_prop_at(3, JsValue::int(7));
         assert_eq!(get_calendar_id(&obj, 3), "iso8601");
+    }
+
+    #[test]
+    fn start_of_day_epoch_ns_instant_range() {
+        // 当地午夜回推 epoch 越 Instant 界（±MAX）返回 None，供 startOfDay/hoursInDay RangeError 依据。
+        // -100000001 天 + 1h < -MAX → 越界。
+        assert_eq!(start_of_day_epoch_ns(-271_821, 4, 19, -60), None);
+        // -100000000 天（-271821-04-20）UTC 当地午夜恰为 -MAX，在边界内。
+        assert_eq!(start_of_day_epoch_ns(-271_821, 4, 20, 0), Some(-8_640_000_000_000_000_000_000));
+        // 同日期 +1h 偏移使当地午夜 -MAX - 1h 越界。
+        assert_eq!(start_of_day_epoch_ns(-271_821, 4, 20, 60), None);
+        // 明日边界越界：+100000001 天（UTC）。
+        assert_eq!(start_of_day_epoch_ns_by_days(100_000_001, 0), None);
+        // 正常日期返回当地午夜。
+        assert_eq!(start_of_day_epoch_ns(1970, 1, 1, 0), Some(0));
+        assert_eq!(start_of_day_epoch_ns(1970, 1, 1, 60), Some(-3_600_000_000_000));
     }
 }
