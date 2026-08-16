@@ -291,7 +291,7 @@ pub struct BuiltinWorld {
     /// `DisposableStack.prototype`：同步资源栈原型（链到 Object.prototype），
     /// 方法/别名/@@toStringTag 由绑定层安装。
     pub disposable_stack_proto: P<JsObject>,
-    /// `AsyncDisposableStack.prototype`：异步资源栈原型（步3 用，形状与同步栈一致）。
+    /// `AsyncDisposableStack.prototype`：异步资源栈原型（形状与同步栈一致）。
     pub async_disposable_stack_proto: P<JsObject>,
     pub stub_objects: Vec<P<JsObject>>,
 }

@@ -659,7 +659,7 @@ impl JsObject {
     pub const OBJ_TYPE_BOUND: u8 = 23;
     /// DisposableStack 对象：状态盒（Pending/Disposed + entries）存于 `native_data`。
     pub const OBJ_TYPE_DISPOSABLE_STACK: u8 = 24;
-    /// AsyncDisposableStack 对象（步3 用）：状态盒与同步栈同构，预留 type_tag。
+    /// AsyncDisposableStack 对象（异步资源栈）：状态盒与同步栈同构，预留 type_tag。
     pub const OBJ_TYPE_ASYNC_DISPOSABLE_STACK: u8 = 25;
     /// `is_session_epoch` 字段中的 session 标记位。
     pub const SESSION_EPOCH_BIT: u8 = 0x01;
@@ -780,7 +780,7 @@ impl JsObject {
         self.type_tag == Self::OBJ_TYPE_DISPOSABLE_STACK
     }
 
-    /// 是否 AsyncDisposableStack 对象（异步资源栈，步3 用）。
+    /// 是否 AsyncDisposableStack 对象（异步资源栈）。
     #[inline]
     pub fn is_async_disposable_stack_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_ASYNC_DISPOSABLE_STACK
