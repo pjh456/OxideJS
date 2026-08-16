@@ -4691,6 +4691,109 @@ pub fn plain_time_subtract<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     plain_time_apply_duration(vm, args, -1)
 }
 
+// ───────────────────── PlainTime round ─────────────────────
+
+/// PlainTime round 的最小单位表：小时..纳秒（不含 day）。
+/// 返回 (单位纳秒, 最大增量)。最大增量 = MaximumTemporalDurationRoundingIncrement：
+/// hour→24、minute→60、second→60、millisecond→1000、microsecond→1000、nanosecond→1000。
+fn plain_time_round_unit(value: &str) -> Option<(i128, i128)> {
+    match value {
+        "hour" | "hours" => Some((3_600_000_000_000, 24)),
+        "minute" | "minutes" => Some((60_000_000_000, 60)),
+        "second" | "seconds" => Some((1_000_000_000, 60)),
+        "millisecond" | "milliseconds" => Some((1_000_000, 1_000)),
+        "microsecond" | "microseconds" => Some((1_000, 1_000)),
+        "nanosecond" | "nanoseconds" => Some((1, 1_000)),
+        _ => None,
+    }
+}
+
+/// `Temporal.PlainTime.prototype.round(roundTo)`：按最小单位、增量和模式在"当日"域内舍入。
+///
+/// # 步骤
+/// 1. roundTo 解析：undefined → TypeError；字符串 → {smallestUnit: 串}；对象 → 依次 Get
+///    roundingIncrement → roundingMode → smallestUnit（读序对齐 order-of-operations）。
+/// 2. branding receiver 取槽 0 ns。
+/// 3. 单位表查 smallestUnit（hour..nanosecond；None → RangeError "invalid smallest unit"）。
+/// 4. roundingIncrement 校验：1..=1e9 且 **真因子**（increment < max_increment 且
+///    max_increment % increment == 0，否则 RangeError）。
+/// 5. mode = instant_rounding_mode（None → RangeError）；缺省 "halfExpand"。
+/// 6. round_instant_ns(time_ns, unit_ns*increment, mode)，结果 rem_euclid(DAY_NS) 保持 0-24 域。
+///
+/// # 边界与前提
+/// - 舍入跨午夜（如 23:59:59.9 舍入到秒）→ 取模回 00:00，符合 rounding-cross-midnight 语义。
+pub fn plain_time_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let round_to = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let (increment_value, mode_value, unit_value) = if round_to.is_string() {
+        (1.0, "halfExpand".to_string(), Some(to_string(round_to)))
+    } else {
+        if !round_to.is_object() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "roundTo must be a string or object"));
+        }
+        let options_ptr = round_to.as_js_object_ptr();
+        if options_ptr.is_null() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "roundTo must be a string or object"));
+        }
+        let options = unsafe { &*options_ptr };
+        let increment_raw = native_try!(temporal_option_value(vm, options, round_to, "roundingIncrement"));
+        let increment = if increment_raw.is_undefined() {
+            1.0
+        } else {
+            native_try!(temporal_option_number(vm, increment_raw))
+        };
+        let mode_raw = native_try!(temporal_option_value(vm, options, round_to, "roundingMode"));
+        let mode = if mode_raw.is_undefined() {
+            "halfExpand".to_string()
+        } else {
+            native_try!(temporal_option_string(vm, mode_raw))
+        };
+        let unit_raw = native_try!(temporal_option_value(vm, options, round_to, "smallestUnit"));
+        let unit = if unit_raw.is_undefined() {
+            None
+        } else {
+            Some(native_try!(temporal_option_string(vm, unit_raw)))
+        };
+        (increment, mode, unit)
+    };
+
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_time(vm, obj));
+    let time_ns = get_double_prop(obj, 0) as i128;
+
+    let Some(mode) = instant_rounding_mode(&mode_value) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding mode"));
+    };
+    let Some(unit_value) = unit_value else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "smallestUnit is required"));
+    };
+    let Some((unit_ns, max_increment)) = plain_time_round_unit(&unit_value) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid smallest unit"));
+    };
+    if !increment_value.is_finite() {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
+    }
+    let increment = increment_value.trunc();
+    if !(1.0..=1_000_000_000.0).contains(&increment) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
+    }
+    let increment = increment as i128;
+    // 真因子校验：增量须严格小于最大增量且能整除（MaximumTemporalDurationRoundingIncrement
+    // 语义；instant_round 只查 % 的缺陷不在此沿用）。
+    if increment >= max_increment || max_increment % increment != 0 {
+        return NativeResult::Err(crate::error::create_range_error(vm, "rounding increment must divide a day"));
+    }
+    let Some(quantum_ns) = unit_ns.checked_mul(increment) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
+    };
+    let Some(rounded_ns) = round_instant_ns(time_ns, quantum_ns, mode) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid time"));
+    };
+    const DAY_NS: i128 = 86_400_000_000_000;
+    let time_ns = rounded_ns.rem_euclid(DAY_NS);
+    make_plain_time(vm, time_ns as f64)
+}
+
 // ───────────────────── PlainDateTime 基础方法 ─────────────────────
 
 /// `Temporal.PlainDateTime` 构造器：保存 ISO 日期与午夜后纳秒。
@@ -7394,6 +7497,33 @@ mod tests {
         const DAY_NS: i128 = 86_400_000_000_000;
         assert_eq!(rounded.rem_euclid(DAY_NS), 0);
         assert_eq!(format_plain_time_iso(rounded.rem_euclid(DAY_NS), true, Some(0)), "00:00:00");
+    }
+
+    #[test]
+    fn plain_time_round_increment_real_factor() {
+        // 真因子校验：增量须严格小于最大增量且能整除（MaximumTemporalDurationRoundingIncrement）。
+        // hour 合法增量：[1,2,3,4,6,8,12]，24（= 最大增量）与 11（不整除）均拒。
+        let (_, max_increment) = plain_time_round_unit("hour").unwrap();
+        for increment in [1, 2, 3, 4, 6, 8, 12] {
+            assert!(increment < max_increment && max_increment % increment == 0, "hour {increment} 应合法");
+        }
+        for increment in [11, 24] {
+            assert!(increment >= max_increment || max_increment % increment != 0, "hour {increment} 应拒绝");
+        }
+        // minute 合法增量：整除 60 且严格小于 60；60（= 最大增量）与 29（不整除）均拒。
+        let (_, max_increment) = plain_time_round_unit("minute").unwrap();
+        for increment in [1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30] {
+            assert!(increment < max_increment && max_increment % increment == 0, "minute {increment} 应合法");
+        }
+        for increment in [29, 60] {
+            assert!(increment >= max_increment || max_increment % increment != 0, "minute {increment} 应拒绝");
+        }
+        // millisecond 最大增量 1000：1000 拒，29 拒。
+        let (_, max_increment) = plain_time_round_unit("millisecond").unwrap();
+        assert!(max_increment == 1000);
+        for increment in [29, 1000] {
+            assert!(increment >= max_increment || max_increment % increment != 0, "ms {increment} 应拒绝");
+        }
     }
 
     #[test]

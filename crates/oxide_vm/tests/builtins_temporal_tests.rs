@@ -756,6 +756,85 @@ fn plain_time_add_subtract_invalid_argument() {
     assert_eq!(str_val(&vm, r), "TypeError");
 }
 
+#[test]
+fn plain_time_round_units() {
+    let mut vm = Vm::new();
+    // 亚秒舍入到秒（halfExpand 默认）。
+    let r = eval(
+        &mut vm,
+        "new Temporal.PlainTime(12, 30, 5, 800).round({ smallestUnit: 'second' }).toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "12:30:06");
+    // 舍入到分钟：30:59 进位到 31。
+    let r = eval(&mut vm, "new Temporal.PlainTime(12, 30, 59).round({ smallestUnit: 'minute' }).toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "12:31:00");
+    // 舍入到小时：30:30 进位到 13。
+    let r = eval(&mut vm, "new Temporal.PlainTime(12, 30, 30).round({ smallestUnit: 'hour' }).toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "13:00:00");
+    // 字符串简写形式同效。
+    let r = eval(&mut vm, "new Temporal.PlainTime(12, 30, 30).round('hour').toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "13:00:00");
+}
+
+#[test]
+fn plain_time_round_cross_midnight() {
+    let mut vm = Vm::new();
+    // 23:59:59.9 舍入到秒 → 24:00:00 → 取模回 00:00:00。
+    let r = eval(
+        &mut vm,
+        "new Temporal.PlainTime(23, 59, 59, 900).round({ smallestUnit: 'second' }).toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "00:00:00");
+    // 23:30 舍入到小时 → 24:00 → 00:00。
+    let r = eval(&mut vm, "new Temporal.PlainTime(23, 30).round({ smallestUnit: 'hour' }).toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "00:00:00");
+}
+
+#[test]
+fn plain_time_round_increment_and_mode() {
+    let mut vm = Vm::new();
+    // 15 分钟增量舍入：23:07:30 → 23:00（floor）。
+    let r = eval(
+        &mut vm,
+        "new Temporal.PlainTime(23, 7, 30).round({ smallestUnit: 'minute', roundingIncrement: 15, roundingMode: 'floor' }).toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "23:00:00");
+    // 真因子校验：increment 必须整除最大增量且严格小于之。
+    let r = eval(
+        &mut vm,
+        "try { new Temporal.PlainTime(12).round({ smallestUnit: 'minute', roundingIncrement: 60 }) } catch (e) { e.constructor.name }",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "RangeError");
+    let r = eval(
+        &mut vm,
+        "try { new Temporal.PlainTime(12).round({ smallestUnit: 'hour', roundingIncrement: 24 }) } catch (e) { e.constructor.name }",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "RangeError");
+}
+
+#[test]
+fn plain_time_round_invalid_round_to() {
+    let mut vm = Vm::new();
+    // roundTo undefined → TypeError。
+    let r = eval(&mut vm, "try { new Temporal.PlainTime(12).round() } catch (e) { e.constructor.name }").unwrap();
+    assert_eq!(str_val(&vm, r), "TypeError");
+    // 对象缺 smallestUnit → RangeError。
+    let r = eval(&mut vm, "try { new Temporal.PlainTime(12).round({}) } catch (e) { e.constructor.name }").unwrap();
+    assert_eq!(str_val(&vm, r), "RangeError");
+    // 非法最小单位 → RangeError。
+    let r = eval(
+        &mut vm,
+        "try { new Temporal.PlainTime(12).round({ smallestUnit: 'day' }) } catch (e) { e.constructor.name }",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "RangeError");
+}
+
 // -- Temporal.PlainDateTime --
 
 #[test]
