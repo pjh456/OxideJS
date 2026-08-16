@@ -160,3 +160,93 @@ fn object_rest_keeps_numeric_key_from_shape_source() {
     let s = unsafe { &*result.as_string_ptr() }.as_str().to_string();
     assert_eq!(s, "1,2");
 }
+
+// computed 解构键通用 fallback：CallExpression / Template / BigInt 等键表达式
+// 走既有 emit 全域，键值运行时求值后经 ToPropertyKey 读属性。
+#[test]
+fn computed_key_call_expression_binding() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "function f() { return 'x'; } const { [f()]: a } = {x: 42}; a").unwrap();
+    assert_num(result, 42.0);
+}
+
+#[test]
+fn computed_key_call_expression_throw_propagates() {
+    // 键求值抛错在属性读与绑定前抛出，错误透传不吞。
+    let mut vm = Vm::new();
+    let err = eval(
+        &mut vm,
+        "function thrower() { throw new TypeError('boom'); } const { [thrower()]: a } = {};",
+    )
+    .unwrap_err();
+    assert!(err.contains("boom"), "expected thrown error, got {err:?}");
+}
+
+#[test]
+fn computed_key_template_literal_binding() {
+    // 无插值模板键折叠不可用，仍须正确求值（DYNAMIC 路径语义等价）。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "const { [`x`]: a } = {x: 5}; a").unwrap();
+    assert_num(result, 5.0);
+    let result = eval(&mut vm, "const { [`x${'y'}`]: a } = {xy: 3}; a").unwrap();
+    assert_num(result, 3.0);
+}
+
+#[test]
+fn computed_key_bigint_binding() {
+    // 1n 经 ToPropertyKey 转 "1"，命中对象数字键。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "const { [1n]: a } = {1: 9}; a").unwrap();
+    assert_num(result, 9.0);
+}
+
+#[test]
+fn computed_key_call_expression_rest_excludes() {
+    // rest 排除数组收集运行时键值，computed 键与 rest 语义正确。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "function k() { return 'x'; } const { [k()]: a, ...rest } = {x:1,y:2}; a + rest.y",
+    )
+    .unwrap();
+    assert_num(result, 3.0);
+}
+
+#[test]
+fn computed_key_assignment_target() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "let a; function k() { return 'x'; } ({ [k()]: a } = {x: 7}); a").unwrap();
+    assert_num(result, 7.0);
+}
+
+#[test]
+fn computed_key_nested_pattern() {
+    // 嵌套解构的 computed 键逐层求值。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "function k1() { return 'x'; } function k2() { return 'y'; } const { [k1()]: { [k2()]: b } } = {x: {y: 3}}; b",
+    )
+    .unwrap();
+    assert_num(result, 3.0);
+}
+
+#[test]
+fn computed_key_evaluated_before_default_and_getter() {
+    // 求值序：键先于默认值（键未命中才走默认值）；getter 副作用发生在键求值之后。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "const log = []; function k() { log.push('k'); return 'x'; } const { [k()]: a = (log.push('d'), 99) } = {}; log.join(',')",
+    )
+    .unwrap();
+    let s = unsafe { &*result.as_string_ptr() }.as_str().to_string();
+    assert_eq!(s, "k,d");
+    let result = eval(
+        &mut vm,
+        "let order=[]; function k() { order.push('key'); return 'x'; } const o = { get x() { order.push('get'); return 5; } }; const { [k()]: a } = o; a + ':' + order.join(',')",
+    )
+    .unwrap();
+    let s = unsafe { &*result.as_string_ptr() }.as_str().to_string();
+    assert_eq!(s, "5:key,get");
+}

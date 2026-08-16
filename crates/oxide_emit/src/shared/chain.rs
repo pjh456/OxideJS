@@ -286,7 +286,9 @@ impl Emitter {
                 ctx.inst(Inst::load_const(Operand::Reg(key_reg), key_idx));
                 Ok(key_reg)
             }
-            _ => Err("computed destructuring key expression not supported".into()),
+            // 其余键形态（CallExpression/Template/BigInt/RegExp 等）：转回 Expression
+            // 走通用 emit 分发，键值运行时求值后由 GET_PROP_DYNAMIC 做 ToPropertyKey。
+            _ => self.emit_expression(key.to_expression(), ctx),
         }
     }
 
