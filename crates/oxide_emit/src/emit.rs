@@ -1329,6 +1329,31 @@ impl Emitter {
             ));
         }
 
+        // var 绑定函数入口实例化：被捕获的 var 名统一 MAKE_CELL(undefined)。
+        // 规范上 var 在函数入口即初始化为 undefined（HoistDeclaration），声明语句
+        // 只是赋值；否则声明语句前创建的闭包读取占位 cell → TDZ 误报。参数与
+        // arguments 已在上方初始化（跳过以免覆盖参数值）；let/const/class 保持
+        // TDZ 语义不动。声明语句的 MAKE_CELL 按占位更新语义覆盖此初值。
+        let var_names: Vec<String> = self
+            .collect_var_binding_names(body_stmts)
+            .into_iter()
+            .filter(|n| !param_names.contains(&n.as_str()) && n != "arguments")
+            .filter(|n| ctx.captured_bindings.contains_key(n))
+            .collect();
+        if !var_names.is_empty() {
+            let undef_reg = self.emit_undefined(ctx);
+            for name in var_names {
+                if let Some(&cell_idx) = ctx.captured_bindings.get(&name) {
+                    ctx.inst(Inst::new(
+                        OpCode::MAKE_CELL,
+                        Operand::Reg(undef_reg),
+                        Operand::Imm(cell_idx as u16),
+                        Operand::None,
+                    ));
+                }
+            }
+        }
+
         Ok(param_base)
     }
 
@@ -1458,6 +1483,28 @@ impl Emitter {
         // 闭包捕获分析（AST 级，emit 前确定）
         ctx.own_bindings = self.collect_own_binding_names(&[], &program.body);
         ctx.captured_bindings = self.collect_captured_bindings(&program.body, &[], &ctx.own_bindings);
+
+        // 顶层 var 入口实例化：被捕获的 var 名统一 MAKE_CELL(undefined)，使 var
+        // 声明语句执行前创建的闭包读取到 undefined（脚本 GlobalDeclarationInstantiation
+        // 语义），而非占位 cell 的 TDZ 误报。声明语句的 MAKE_CELL 覆盖此初值。
+        let var_names: Vec<String> = self
+            .collect_var_binding_names(&program.body)
+            .into_iter()
+            .filter(|n| ctx.captured_bindings.contains_key(n))
+            .collect();
+        if !var_names.is_empty() {
+            let undef_reg = self.emit_undefined(&mut ctx);
+            for name in var_names {
+                if let Some(&cell_idx) = ctx.captured_bindings.get(&name) {
+                    ctx.inst(Inst::new(
+                        OpCode::MAKE_CELL,
+                        Operand::Reg(undef_reg),
+                        Operand::Imm(cell_idx as u16),
+                        Operand::None,
+                    ));
+                }
+            }
+        }
 
         // 首个 sub-pass：发函数声明（hoisting），保证任何代码运行前函数对象已就绪。
         for stmt in &program.body {

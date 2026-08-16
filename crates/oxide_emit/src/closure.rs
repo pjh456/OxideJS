@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use oxide_bytecode::module::UpvalueCapture;
-use oxide_parser::{ClassBody, ClassElement, Expression, Statement};
+use oxide_parser::{ClassBody, ClassElement, Expression, Statement, VariableDeclarationKind};
 
 use crate::Emitter;
 
@@ -59,6 +59,85 @@ impl Emitter {
         if let oxide_parser::ForStatementLeft::VariableDeclaration(vd) = left {
             for d in &vd.declarations {
                 self.collect_binding_pattern_names(&d.id, out);
+            }
+        }
+    }
+
+    /// 收集语句树中全部 `var` 声明名（var 提升到函数/程序作用域，递归进嵌套块）。
+    /// 供函数/程序入口批量 MAKE_CELL(undefined) 使用（var 入口实例化语义）。
+    pub(crate) fn collect_var_binding_names(&self, stmts: &[Statement]) -> HashSet<String> {
+        let mut names = HashSet::new();
+        self.collect_var_names_stmt(stmts, &mut names);
+        names
+    }
+
+    fn collect_var_names_stmt(&self, stmts: &[Statement], out: &mut HashSet<String>) {
+        for stmt in stmts {
+            match stmt {
+                Statement::VariableDeclaration(vd) => {
+                    if matches!(vd.kind, VariableDeclarationKind::Var) {
+                        for d in &vd.declarations {
+                            self.collect_binding_pattern_names(&d.id, out);
+                        }
+                    }
+                }
+                Statement::BlockStatement(b) => self.collect_var_names_stmt(&b.body, out),
+                Statement::IfStatement(is) => {
+                    self.collect_var_names_stmt(std::slice::from_ref(&is.consequent), out);
+                    if let Some(alt) = &is.alternate {
+                        self.collect_var_names_stmt(std::slice::from_ref(alt), out);
+                    }
+                }
+                Statement::WhileStatement(w) => self.collect_var_names_stmt(std::slice::from_ref(&w.body), out),
+                Statement::DoWhileStatement(d) => self.collect_var_names_stmt(std::slice::from_ref(&d.body), out),
+                Statement::ForStatement(f) => {
+                    if let Some(oxide_parser::ForStatementInit::VariableDeclaration(vd)) = &f.init {
+                        if matches!(vd.kind, VariableDeclarationKind::Var) {
+                            for d in &vd.declarations {
+                                self.collect_binding_pattern_names(&d.id, out);
+                            }
+                        }
+                    }
+                    self.collect_var_names_stmt(std::slice::from_ref(&f.body), out);
+                }
+                Statement::ForInStatement(fi) => {
+                    if let oxide_parser::ForStatementLeft::VariableDeclaration(_) = &fi.left {
+                        self.collect_for_left_decl_names(&fi.left, out);
+                    }
+                    self.collect_var_names_stmt(std::slice::from_ref(&fi.body), out);
+                }
+                Statement::ForOfStatement(fo) => {
+                    if let oxide_parser::ForStatementLeft::VariableDeclaration(_) = &fo.left {
+                        self.collect_for_left_decl_names(&fo.left, out);
+                    }
+                    self.collect_var_names_stmt(std::slice::from_ref(&fo.body), out);
+                }
+                Statement::SwitchStatement(sw) => {
+                    for case in &sw.cases {
+                        self.collect_var_names_stmt(&case.consequent, out);
+                    }
+                }
+                Statement::TryStatement(ts) => {
+                    self.collect_var_names_stmt(&ts.block.body, out);
+                    if let Some(h) = &ts.handler {
+                        self.collect_var_names_stmt(&h.body.body, out);
+                    }
+                    if let Some(f) = &ts.finalizer {
+                        self.collect_var_names_stmt(&f.body, out);
+                    }
+                }
+                Statement::LabeledStatement(ls) => self.collect_var_names_stmt(std::slice::from_ref(&ls.body), out),
+                Statement::WithStatement(ws) => self.collect_var_names_stmt(std::slice::from_ref(&ws.body), out),
+                Statement::ExportNamedDeclaration(exp) => {
+                    if let Some(oxide_parser::Declaration::VariableDeclaration(vd)) = &exp.declaration {
+                        if matches!(vd.kind, VariableDeclarationKind::Var) {
+                            for d in &vd.declarations {
+                                self.collect_binding_pattern_names(&d.id, out);
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
