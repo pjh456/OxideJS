@@ -1362,6 +1362,77 @@ pub fn zoned_date_time_calendar_id<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
     NativeResult::Ok(obj.get_prop_at(2))
 }
 
+/// 与 instant_string_without_annotations 同一次扫描并行提取末尾时区注解（不剥离）。
+///
+/// # 步骤
+/// 1. 仿 instant_string_without_annotations 的注解扫描循环，跳过带 `=` 的 key 注解。
+/// 2. 首个无 `=` 的注解按时间区形式校验（UTC 大小写 / ±HH / ±HH:MM / ±HHMM），命中即返回。
+///
+/// # 边界与前提
+/// - 无时区注解或注解形式非法返回 None；critical（`!` 前缀）注解同样返回（带标记）。
+/// - 不修改 instant_string_without_annotations 的返回；剥离与提取各自独立扫描。
+/// - IANA 命名区（如 America/New_York）通过本函数校验，由调用方 canonical_time_zone 裁决。
+#[allow(dead_code)]
+fn extract_time_zone_annotation(input: &str) -> Option<(String, bool)> {
+    let first_annotation = input.find('[')?;
+    let mut rest = &input[first_annotation..];
+    while !rest.is_empty() {
+        let body_start = rest.strip_prefix('[')?;
+        let close = body_start.find(']')?;
+        let body = &body_start[..close];
+        rest = &body_start[close + 1..];
+        if body.is_empty() || (!rest.is_empty() && !rest.starts_with('[')) {
+            return None;
+        }
+        let (critical, annotation) = match body.strip_prefix('!') {
+            Some(value) => (true, value),
+            None => (false, body),
+        };
+
+        // 带 `=` 的是 key 注解（u-ca 等），跳过继续扫描。
+        if annotation.contains('=') {
+            continue;
+        }
+        if !is_time_zone_annotation_value(annotation) {
+            return None;
+        }
+        return Some((annotation.to_string(), critical));
+    }
+    None
+}
+
+/// 校验时区注解值：UTC/Z 大小写折叠、±HH / ±HH:MM / ±HHMM 数值偏移。
+/// 非数值形式（IANA 命名区）原样放行，交由 canonical_time_zone 裁决。
+fn is_time_zone_annotation_value(annotation: &str) -> bool {
+    if annotation.eq_ignore_ascii_case("UTC") || annotation.eq_ignore_ascii_case("Z") {
+        return true;
+    }
+    if !matches!(annotation.as_bytes().first(), Some(b'+' | b'-')) {
+        return true;
+    }
+    let bytes = annotation.as_bytes();
+    let hour_only = bytes.len() == 3 && bytes[1..3].iter().all(u8::is_ascii_digit);
+    let hour_minute = bytes.len() == 6
+        && bytes[3] == b':'
+        && bytes[1..3].iter().all(u8::is_ascii_digit)
+        && bytes[4..6].iter().all(u8::is_ascii_digit);
+    let hour_minute_compact = bytes.len() == 5 && bytes[1..5].iter().all(u8::is_ascii_digit);
+    if hour_only {
+        return (bytes[1] - b'0') * 10 + bytes[2] - b'0' <= 23;
+    }
+    if hour_minute {
+        let hour = (bytes[1] - b'0') * 10 + bytes[2] - b'0';
+        let minute = (bytes[4] - b'0') * 10 + bytes[5] - b'0';
+        return hour <= 23 && minute <= 59;
+    }
+    if hour_minute_compact {
+        let hour = (bytes[1] - b'0') * 10 + bytes[2] - b'0';
+        let minute = (bytes[3] - b'0') * 10 + bytes[4] - b'0';
+        return hour <= 23 && minute <= 59;
+    }
+    false
+}
+
 /// 时区注解文本：命名区原样返回，偏移区规范化为 `±HH:MM` 带冒号；critical 时 `!` 置于括号内。
 fn format_time_zone_annotation(time_zone_id: &str, critical: bool) -> String {
     let inner = if matches!(time_zone_id.as_bytes().first(), Some(b'+') | Some(b'-')) {
@@ -5492,5 +5563,33 @@ mod tests {
         assert_eq!(canonical_time_zone("+2400"), None);
         assert_eq!(canonical_time_zone("+0060"), None);
         assert_eq!(canonical_time_zone("+123"), None); // 长度不符
+    }
+
+    #[test]
+    fn extract_time_zone_annotation_forms() {
+        // UTC / critical / 数值偏移各形式提取；u-ca 注解跳过，时区注解在前后均能取到。
+        assert_eq!(extract_time_zone_annotation("1976-11-18T15:23:30[UTC]"), Some(("UTC".to_string(), false)));
+        assert_eq!(extract_time_zone_annotation("1976-11-18T15:23:30[!UTC]"), Some(("UTC".to_string(), true)));
+        assert_eq!(
+            extract_time_zone_annotation("1976-11-18T15:23:30+01:00[+01:00]"),
+            Some(("+01:00".to_string(), false))
+        );
+        assert_eq!(extract_time_zone_annotation("1976-11-18T15:23:30[+01]"), Some(("+01".to_string(), false)));
+        assert_eq!(
+            extract_time_zone_annotation("1976-11-18T15:23:30[+0100]"),
+            Some(("+0100".to_string(), false))
+        );
+        assert_eq!(
+            extract_time_zone_annotation("1976-11-18T15:23:30[u-ca=iso8601][UTC]"),
+            Some(("UTC".to_string(), false))
+        );
+        assert_eq!(
+            extract_time_zone_annotation("1976-11-18T15:23:30[UTC][u-ca=iso8601]"),
+            Some(("UTC".to_string(), false))
+        );
+        // 无注解 / 非法偏移注解返回 None。
+        assert_eq!(extract_time_zone_annotation("1976-11-18T15:23:30Z"), None);
+        assert_eq!(extract_time_zone_annotation("1976-11-18T15:23:30[+24:00]"), None);
+        assert_eq!(extract_time_zone_annotation("1976-11-18T15:23:30[]"), None);
     }
 }
