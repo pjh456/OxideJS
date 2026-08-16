@@ -2873,6 +2873,6 @@ mod tests {
             frame.constructed_this.is_some_and(|v| v.is_object()),
             "基类构造路径 constructed_this 应为新对象"
         );
-        assert_eq!(frame.is_derived_constructor, false, "普通函数非 derived 构造器");
+        assert!(!frame.is_derived_constructor, "普通函数非 derived 构造器");
     }
 }

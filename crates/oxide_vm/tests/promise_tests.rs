@@ -166,7 +166,7 @@ fn subclass_then_derives_subclass_instance() {
         "var P = class extends Promise {}; var d = new P(r => r(1)).then(v => v); d.constructor === P",
     )
     .unwrap();
-    assert_eq!(result.as_bool(), true, "subclass then should derive via subclass ctor");
+    assert!(result.as_bool(), "subclass then should derive via subclass ctor");
 }
 
 #[test]
@@ -179,13 +179,13 @@ fn subclass_catch_finally_derive_subclass() {
         "var P = class extends Promise {}; var d = new P(r => r(1)).catch(()=>{}); d.constructor === P",
     )
     .unwrap();
-    assert_eq!(result.as_bool(), true);
+    assert!(result.as_bool());
     let result = eval(
         &mut vm,
         "var Q = class extends Promise {}; var f = new Q(r => r(1)).finally(()=>{}); f.constructor === Q",
     )
     .unwrap();
-    assert_eq!(result.as_bool(), true);
+    assert!(result.as_bool());
 }
 
 #[test]
@@ -197,7 +197,7 @@ fn subclass_chain_keeps_subclass_ctor() {
         "var P = class extends Promise {}; var d = new P(r => r(1)).then(v => v + 1).then(v => v); d.constructor === P",
     )
     .unwrap();
-    assert_eq!(result.as_bool(), true);
+    assert!(result.as_bool());
 }
 
 #[test]
@@ -210,7 +210,7 @@ fn rewritten_prototype_constructor_used_for_derivation() {
          P.prototype.constructor = Alt; var d = new P(r => r(1)).then(v => v); d.constructor === Alt",
     )
     .unwrap();
-    assert_eq!(result.as_bool(), true);
+    assert!(result.as_bool());
 }
 
 #[test]
@@ -223,7 +223,7 @@ fn constructor_undefined_uses_intrinsic() {
          var d = q.then(v => v); d.constructor === Promise",
     )
     .unwrap();
-    assert_eq!(result.as_bool(), true);
+    assert!(result.as_bool());
 }
 
 #[test]
@@ -250,7 +250,7 @@ fn constructor_getter_throw_preserves_original_value() {
          try { r.then(()=>{}); 'no-throw' } catch (e) { e === boom }",
     )
     .unwrap();
-    assert_eq!(result.as_bool(), true);
+    assert!(result.as_bool());
 }
 
 #[test]
@@ -258,7 +258,7 @@ fn intrinsic_promise_then_regression() {
     // 回归：内置 promise 的 then 派生路径不变。
     let mut vm = Vm::new();
     let result = eval(&mut vm, "var d = new Promise(r => r(1)).then(v => v); d.constructor === Promise").unwrap();
-    assert_eq!(result.as_bool(), true);
+    assert!(result.as_bool());
 }
 
 #[test]
