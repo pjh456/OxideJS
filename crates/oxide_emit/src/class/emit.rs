@@ -400,6 +400,16 @@ impl Emitter {
                     Operand::None,
                 ));
             }
+            // 类名被外层嵌套函数捕获时，真实名 cell 同样须初始化（类元素自引用走
+            // @@class_self_* 合成 cell，二者 cell_idx 不同则各发一次）。
+            if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
+                ctx.inst(Inst::new(
+                    OpCode::MAKE_CELL,
+                    Operand::Reg(binding_reg),
+                    Operand::Imm(cell_idx as u16),
+                    Operand::None,
+                ));
+            }
         }
 
         if pushed_scope {

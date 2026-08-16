@@ -86,6 +86,13 @@ impl Emitter {
                         out.insert(id.name.to_string());
                     }
                 }
+                // class 名是本作用域 const 绑定：须计入 own_bindings，否则嵌套函数
+                // 引用类名时捕获分析缺失 → 落符号表兜底（TDZ 误报或读父寄存器残留）。
+                Statement::ClassDeclaration(cd) => {
+                    if let Some(id) = &cd.id {
+                        out.insert(id.name.to_string());
+                    }
+                }
                 // import 绑定是模块作用域 const 绑定，须计入 own_bindings 供
                 // 嵌套函数 cell 捕获。
                 Statement::ImportDeclaration(imp) => {
