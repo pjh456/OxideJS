@@ -620,6 +620,12 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         .map_or(0, |props| props.len() as u32)
         .saturating_sub(1);
     plain_time_ctor.set_data_meta(length_pos, PropAttributes::new(false, false, true));
+    apply_binding_table(
+        world,
+        plain_time_ctor,
+        core,
+        &[("from", oxide_builtins::temporal::plain_time_from::<crate::vm::Vm> as *const (), 1)],
+    );
 
     let plain_time_proto_ptr = world.plain_time_proto.as_ptr() as *mut JsObject;
     let plain_time_proto = unsafe { &mut *plain_time_proto_ptr };

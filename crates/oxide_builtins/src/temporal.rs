@@ -4529,6 +4529,27 @@ pub fn plain_time_value_of<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult 
     NativeResult::Err(crate::error::create_type_error(vm, "Temporal.PlainTime has no valueOf"))
 }
 
+/// `Temporal.PlainTime.from(item, options)`：从字符串、PlainTime/ZDT/PlainDateTime 实例或 property bag 构造。
+pub fn plain_time_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    if value.is_string() {
+        // 规范顺序：先 ParseTemporalTimeString，再 ToTemporalOverflow(options)。
+        let total_ns = match parse_plain_time_string(&to_string(value)) {
+            Some(ns) => ns,
+            None => {
+                return NativeResult::Err(crate::error::create_range_error(vm, "invalid ISO 8601 time"));
+            }
+        };
+        native_try!(temporal_overflow(vm, args));
+        make_plain_time(vm, total_ns)
+    } else {
+        // 对象分支：实例复制 / property bag 统一走 plain_time_like_ns（含缺省 0 与约束钳制）。
+        native_try!(temporal_overflow(vm, args));
+        let total_ns = native_try!(plain_time_like_ns(vm, value));
+        make_plain_time(vm, total_ns)
+    }
+}
+
 // ───────────────────── PlainDateTime 基础方法 ─────────────────────
 
 /// `Temporal.PlainDateTime` 构造器：保存 ISO 日期与午夜后纳秒。
