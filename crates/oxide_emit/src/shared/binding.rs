@@ -76,12 +76,7 @@ impl Emitter {
         };
         if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
             let op = if fresh_cell { OpCode::MAKE_CELL_FRESH } else { OpCode::MAKE_CELL };
-            ctx.inst(Inst::new(
-                op,
-                Operand::Reg(src_reg),
-                Operand::Imm(cell_idx as u16),
-                Operand::None,
-            ));
+            ctx.inst(Inst::new(op, Operand::Reg(src_reg), Operand::Imm(cell_idx as u16), Operand::None));
         } else if !ctx.with_stack.is_empty() && !ctx.is_with_internal_binding(name) {
             // with 内 var 初始化：对象有该属性则写对象，否则写提升槽（动态解析）。
             // ponytail: with 内顶层 var 不写全局对象属性，with 语句本身已是稀见用例。
@@ -131,8 +126,8 @@ impl Emitter {
     }
 
     pub(crate) fn emit_binding_pattern(
-        &self, pattern: &BindingPattern, src_reg: u32, kind: VariableDeclarationKind, is_const: bool,
-        fresh_cell: bool, ctx: &mut CompileCtx,
+        &self, pattern: &BindingPattern, src_reg: u32, kind: VariableDeclarationKind, is_const: bool, fresh_cell: bool,
+        ctx: &mut CompileCtx,
     ) -> Result<(), String> {
         match pattern {
             BindingPattern::BindingIdentifier(bi) => {

@@ -125,10 +125,7 @@ fn eval_computed_compound_assign_getter_order() {
 fn eval_computed_compound_assign_read_error_skips_rhs() {
     // 读取抛错时 RHS 不求值，其副作用不泄漏。
     assert_eq!(eval("var h={get a(){throw 1}}; try{h[\"a\"]+=1}catch(e){e}"), "1");
-    assert_eq!(
-        eval("var side=0; var h={get a(){throw 1}}; try{h[\"a\"]+=(side=99)}catch(e){} side"),
-        "0"
-    );
+    assert_eq!(eval("var side=0; var h={get a(){throw 1}}; try{h[\"a\"]+=(side=99)}catch(e){} side"), "0");
 }
 
 #[test]

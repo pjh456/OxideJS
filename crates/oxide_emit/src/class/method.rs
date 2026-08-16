@@ -25,7 +25,14 @@ impl Emitter {
                 }
                 if matches!(method.key, PropertyKey::PrivateIdentifier(_)) {
                     let home_reg = if method.r#static { ctor_reg } else { proto_reg };
-                    self.emit_private_method_init(Operand::Reg(home_reg), method, Operand::Reg(home_reg), self_binding, class_self_cell, ctx)?;
+                    self.emit_private_method_init(
+                        Operand::Reg(home_reg),
+                        method,
+                        Operand::Reg(home_reg),
+                        self_binding,
+                        class_self_cell,
+                        ctx,
+                    )?;
                     continue;
                 }
                 let home_reg = if method.r#static { ctor_reg } else { proto_reg };
@@ -39,8 +46,14 @@ impl Emitter {
                 } else {
                     self.class_property_name(&method.key)?
                 };
-                let accessor_reg =
-                    self.emit_class_method_function(method, &method_name, Operand::Reg(home_reg), ctx, self_binding, class_self_cell)?;
+                let accessor_reg = self.emit_class_method_function(
+                    method,
+                    &method_name,
+                    Operand::Reg(home_reg),
+                    ctx,
+                    self_binding,
+                    class_self_cell,
+                )?;
                 match method.kind {
                     MethodDefinitionKind::Method => {
                         // class 方法按规范为非枚举数据属性（DefineMethod：writable/configurable，enumerable=false）。

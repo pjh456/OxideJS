@@ -56,14 +56,13 @@ impl Emitter {
                 } else {
                     // let/const 无初始化器：复用本块预声明槽位，否则新声明
                     // （for 头等未预声明路径）。
-                    let var_reg =
-                        if let Some(reg) = ctx.scopes.symbols.consume_predeclared_slot(bi.name.as_str()) {
-                            reg
-                        } else {
-                            let r = ctx.alloc_reg();
-                            ctx.declare(bi.name.as_str(), r, decl.kind, is_const)?;
-                            r
-                        };
+                    let var_reg = if let Some(reg) = ctx.scopes.symbols.consume_predeclared_slot(bi.name.as_str()) {
+                        reg
+                    } else {
+                        let r = ctx.alloc_reg();
+                        ctx.declare(bi.name.as_str(), r, decl.kind, is_const)?;
+                        r
+                    };
                     var_reg
                 };
                 if let Some(&cell_idx) = ctx.captured_bindings.get(bi.name.as_str()) {

@@ -104,16 +104,8 @@ impl Vm {
             return self.new_string_owned(buf);
         }
         // 大链走 Cons rope：非字符串操作数先转叶子，再 O(1) 链接（文本惰性扁平化）。
-        let lv = if lhs.is_string() {
-            lhs
-        } else {
-            self.string_leaf(lhs)
-        };
-        let rv = if rhs.is_string() {
-            rhs
-        } else {
-            self.string_leaf(rhs)
-        };
+        let lv = if lhs.is_string() { lhs } else { self.string_leaf(lhs) };
+        let rv = if rhs.is_string() { rhs } else { self.string_leaf(rhs) };
         self.new_cons_string(lv, rv)
     }
 

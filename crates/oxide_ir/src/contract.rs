@@ -423,7 +423,9 @@ mod tests {
         assert!(!Inst::new(OpCode::SET_PROP, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
         assert!(!Inst::new(OpCode::SUPER_GET_PROP, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
         assert!(!Inst::new(OpCode::DEFINE_ACCESSOR, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
-        assert!(!Inst::new(OpCode::DEFINE_ACCESSOR_DYNAMIC, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f));
+        assert!(
+            !Inst::new(OpCode::DEFINE_ACCESSOR_DYNAMIC, Operand::Reg(0), Operand::Reg(1), Operand::Reg(2)).is_pure(&f)
+        );
         assert!(!Inst::new(OpCode::DELETE_PROP_STATIC, Operand::Reg(0), Operand::Reg(0), Operand::None).is_pure(&f));
         assert!(!Inst::new(OpCode::DELETE_PROP_DYNAMIC, Operand::Reg(0), Operand::None, Operand::Reg(2)).is_pure(&f));
         // 调用 / 异常 / 控制流
@@ -495,48 +497,24 @@ mod tests {
     /// 每个 opcode 构造一条规范指令：rd/a/b 置 Reg(1/2/3)，ext 按族填真实布局。
     fn canonical_inst(op: OpCode) -> Inst {
         match op {
-            OpCode::CALL | OpCode::CALL_NATIVE => {
-                Inst::call(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 2)
-            }
-            OpCode::NEW_EXPRESSION => {
-                Inst::new_expression(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 2)
-            }
+            OpCode::CALL | OpCode::CALL_NATIVE => Inst::call(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 2),
+            OpCode::NEW_EXPRESSION => Inst::new_expression(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 2),
             OpCode::SUPER_CALL => Inst::super_call(Operand::Reg(1), Operand::Reg(2), 2),
-            OpCode::CALL_SPREAD => {
-                Inst::call_spread(Operand::Reg(1), Operand::Reg(2), &[5, 0x8000_0000 | 9])
-            }
+            OpCode::CALL_SPREAD => Inst::call_spread(Operand::Reg(1), Operand::Reg(2), &[5, 0x8000_0000 | 9]),
             OpCode::NEW_EXPRESSION_SPREAD => {
                 Inst::new_expression_spread(Operand::Reg(1), Operand::Reg(2), &[5, 0x8000_0000 | 9])
             }
-            OpCode::SUPER_CALL_SPREAD => {
-                Inst::super_call_spread(Operand::Reg(1), &[5, 0x8000_0000 | 9])
-            }
+            OpCode::SUPER_CALL_SPREAD => Inst::super_call_spread(Operand::Reg(1), &[5, 0x8000_0000 | 9]),
             OpCode::IC_GET_PROP => Inst::ic_get(Operand::Reg(1), Operand::Reg(2)),
             OpCode::IC_SET_PROP => Inst::ic_set(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3)),
-            OpCode::MEMBER_INC => {
-                Inst::member_inc(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
-            }
-            OpCode::MEMBER_DEC => {
-                Inst::member_dec(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
-            }
-            OpCode::COMPOUND_MEMBER_ADD => {
-                Inst::compound_member_add(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
-            }
-            OpCode::COMPOUND_MEMBER_SUB => {
-                Inst::compound_member_sub(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
-            }
-            OpCode::COMPOUND_MEMBER_MUL => {
-                Inst::compound_member_mul(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
-            }
-            OpCode::COMPOUND_MEMBER_DIV => {
-                Inst::compound_member_div(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
-            }
-            OpCode::COMPOUND_MEMBER_MOD => {
-                Inst::compound_member_mod(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
-            }
-            OpCode::COMPOUND_MEMBER_EXP => {
-                Inst::compound_member_exp(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
-            }
+            OpCode::MEMBER_INC => Inst::member_inc(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3)),
+            OpCode::MEMBER_DEC => Inst::member_dec(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3)),
+            OpCode::COMPOUND_MEMBER_ADD => Inst::compound_member_add(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3)),
+            OpCode::COMPOUND_MEMBER_SUB => Inst::compound_member_sub(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3)),
+            OpCode::COMPOUND_MEMBER_MUL => Inst::compound_member_mul(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3)),
+            OpCode::COMPOUND_MEMBER_DIV => Inst::compound_member_div(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3)),
+            OpCode::COMPOUND_MEMBER_MOD => Inst::compound_member_mod(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3)),
+            OpCode::COMPOUND_MEMBER_EXP => Inst::compound_member_exp(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3)),
             OpCode::COMPOUND_MEMBER_BIT_AND => {
                 Inst::compound_member_bit_and(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
             }
@@ -546,35 +524,23 @@ mod tests {
             OpCode::COMPOUND_MEMBER_BIT_XOR => {
                 Inst::compound_member_bit_xor(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
             }
-            OpCode::COMPOUND_MEMBER_SHL => {
-                Inst::compound_member_shl(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
-            }
-            OpCode::COMPOUND_MEMBER_SHR => {
-                Inst::compound_member_shr(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
-            }
+            OpCode::COMPOUND_MEMBER_SHL => Inst::compound_member_shl(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3)),
+            OpCode::COMPOUND_MEMBER_SHR => Inst::compound_member_shr(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3)),
             OpCode::COMPOUND_MEMBER_USHR => {
                 Inst::compound_member_ushr(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3))
             }
             OpCode::TEMPLATE_STR => Inst::template_str(Operand::Reg(1), 2, 10, &[0x1234, 0x8000_0000 | 5]),
             OpCode::CONCAT_N => Inst::concat_n(Operand::Reg(1), &[2, 5, 9]),
-            OpCode::GET_PRIVATE => {
-                Inst::get_private(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 7, 99)
-            }
-            OpCode::SET_PRIVATE => {
-                Inst::set_private(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 7, 99)
-            }
-            OpCode::INIT_PRIVATE => {
-                Inst::init_private(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), true)
-            }
+            OpCode::GET_PRIVATE => Inst::get_private(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 7, 99),
+            OpCode::SET_PRIVATE => Inst::set_private(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 7, 99),
+            OpCode::INIT_PRIVATE => Inst::init_private(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), true),
             OpCode::PRIVATE_BRAND_IN => {
                 Inst::private_brand_in(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 7, 99)
             }
             OpCode::SPILL => Inst::inst_spill(Operand::Reg(1), 42),
             OpCode::UNSPILL => Inst::inst_unspill(Operand::Reg(1), 42),
             OpCode::REST_OBJECT => Inst::rest_object(Operand::Reg(1), Operand::Reg(2), 7, None),
-            OpCode::DEFINE_ACCESSOR => {
-                Inst::define_accessor(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 42)
-            }
+            OpCode::DEFINE_ACCESSOR => Inst::define_accessor(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 42),
             OpCode::DEFINE_ACCESSOR_DYNAMIC => {
                 Inst::define_accessor_dynamic(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 7)
             }
@@ -703,7 +669,12 @@ mod tests {
         );
         assert_contract(OpCode::FOR_AWAIT_OF_DONE, Some(1), &[2], false);
         // 自增/自减：def=rd, uses=[rd]
-        assert_group(&[OpCode::INC_PRE, OpCode::INC_POST, OpCode::DEC_PRE, OpCode::DEC_POST], Some(1), &[1], false);
+        assert_group(
+            &[OpCode::INC_PRE, OpCode::INC_POST, OpCode::DEC_PRE, OpCode::DEC_POST],
+            Some(1),
+            &[1],
+            false,
+        );
         // 占位 opcode：def=rd 保守，不可删
         assert_group(
             &[

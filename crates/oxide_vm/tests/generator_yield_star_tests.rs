@@ -108,4 +108,3 @@ fn yield_star_inner_without_return() {
         "1,9,true"
     );
 }
-

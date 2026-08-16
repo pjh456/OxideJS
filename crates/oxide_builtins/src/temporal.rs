@@ -455,7 +455,8 @@ fn instant_like_epoch_ns<H: VmHost>(vm: &mut H, value: JsValue) -> Result<i128, 
         }
         // 对象按规范走 ToString -> ParseTemporalInstantString（解析失败 RangeError）。
         let input = oxide_runtime_api::to_string_full(value, vm).map_err(|error| native_engine_error(vm, &error))?;
-        return parse_instant_string(&input).ok_or_else(|| crate::error::create_range_error(vm, "invalid ISO 8601 string"));
+        return parse_instant_string(&input)
+            .ok_or_else(|| crate::error::create_range_error(vm, "invalid ISO 8601 string"));
     }
     // 非字符串原始值（undefined/null/boolean/number/bigint/symbol）按规范直接抛 TypeError。
     if !value.is_string() {
@@ -1728,16 +1729,9 @@ pub fn duration_total<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         match parse_plain_date_time_string(&text)
             .or_else(|_| parse_plain_date_string(&text).map(|(y, m, d)| (y, m, d, 0.0)))
         {
-            Ok((year, month, day, _time_ns)) => Some((
-                i128::from(year),
-                i128::from(month),
-                i128::from(day),
-            )),
+            Ok((year, month, day, _time_ns)) => Some((i128::from(year), i128::from(month), i128::from(day))),
             Err(_) => {
-                return NativeResult::Err(crate::error::create_range_error(
-                    vm,
-                    "invalid relativeTo string",
-                ));
+                return NativeResult::Err(crate::error::create_range_error(vm, "invalid relativeTo string"));
             }
         }
     } else if relative_raw.is_object() {
@@ -1934,10 +1928,7 @@ pub fn duration_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let other = native_try!(duration_like_values(vm, other_val));
     let receiver = duration_values(obj);
     if receiver[..3].iter().any(|value| *value != 0.0) || other[..3].iter().any(|value| *value != 0.0) {
-        return NativeResult::Err(crate::error::create_range_error(
-            vm,
-            "cannot add durations with calendar units",
-        ));
+        return NativeResult::Err(crate::error::create_range_error(vm, "cannot add durations with calendar units"));
     }
     // 最大单位取 receiver 与参数中最大的非零时间单位（days=3 最大，ns=9 最小）。
     let mut largest = 9_usize;
@@ -1952,15 +1943,8 @@ pub fn duration_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     // 分量按精确整数求和（f64 分量是精确整数；超过 2^53 的和需在 i128 上保持精确，规范按数学值计算）。
     let mut total_ns = 0_i128;
-    const SUM_SCALES: [i128; 7] = [
-        86_400_000_000_000,
-        3_600_000_000_000,
-        60_000_000_000,
-        1_000_000_000,
-        1_000_000,
-        1_000,
-        1,
-    ];
+    const SUM_SCALES: [i128; 7] =
+        [86_400_000_000_000, 3_600_000_000_000, 60_000_000_000, 1_000_000_000, 1_000_000, 1_000, 1];
     for (index, scale) in (3..10).zip(SUM_SCALES) {
         let Some(a) = duration_component_integer(receiver[index]) else {
             return NativeResult::Err(crate::error::create_range_error(vm, "invalid duration"));
@@ -1986,7 +1970,7 @@ pub fn duration_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             break;
         }
         let base = match unit {
-             7..=9 => 1_000,
+            7..=9 => 1_000,
             6 | 5 => 60,
             _ => 24,
         };
@@ -2007,10 +1991,7 @@ pub fn duration_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     ];
     for (index, scale) in (3..10).zip(UNIT_SCALES) {
         if values[index] != 0.0 && values[index].abs() * scale >= MAX_TIME_NANOSECONDS {
-            return NativeResult::Err(crate::error::create_range_error(
-                vm,
-                "duration time fields are out of range",
-            ));
+            return NativeResult::Err(crate::error::create_range_error(vm, "duration time fields are out of range"));
         }
     }
     make_duration(vm, values)
@@ -2173,15 +2154,8 @@ pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let Some(time_ns) = duration_time_nanoseconds(&values) else {
         return NativeResult::Err(crate::error::create_range_error(vm, "duration is out of range"));
     };
-    const UNIT_NS: [i128; 7] = [
-        86_400_000_000_000,
-        3_600_000_000_000,
-        60_000_000_000,
-        1_000_000_000,
-        1_000_000,
-        1_000,
-        1,
-    ];
+    const UNIT_NS: [i128; 7] =
+        [86_400_000_000_000, 3_600_000_000_000, 60_000_000_000, 1_000_000_000, 1_000_000, 1_000, 1];
     let quantum = if smallest_index == 3 {
         increment * UNIT_NS[0]
     } else {
@@ -2810,10 +2784,7 @@ fn parse_plain_date_string(input: &str) -> Result<(i32, u32, u32), String> {
     parse_temporal_string_impl(input, false).map(|(year, month, day, _)| (year, month, day))
 }
 
-fn parse_temporal_string_impl(
-    input: &str,
-    enforce_date_time_range: bool,
-) -> Result<(i32, u32, u32, f64), String> {
+fn parse_temporal_string_impl(input: &str, enforce_date_time_range: bool) -> Result<(i32, u32, u32, f64), String> {
     let trimmed = input.trim();
     if trimmed.contains('\u{2212}') {
         return Err("variant minus sign is not valid for PlainDateTime".into());
@@ -3167,8 +3138,7 @@ fn plain_date_time_object_parts<H: VmHost>(
     let (hour, minute, second) = (hour as u32, minute as u32, second as u32);
     let (millisecond, microsecond, nanosecond) = (millisecond as u32, microsecond as u32, nanosecond as u32);
     if !valid_iso_date(year, month, day)
-        || (!ignore_time
-            && !valid_plain_time(hour, minute, second, millisecond, microsecond, nanosecond))
+        || (!ignore_time && !valid_plain_time(hour, minute, second, millisecond, microsecond, nanosecond))
     {
         return Err(crate::error::create_range_error(vm, "invalid date-time component"));
     }
@@ -4097,9 +4067,7 @@ fn plain_date_unit_index(value: &str) -> Option<usize> {
 /// roundingIncrement → roundingMode → smallestUnit。date_only 时单位限定
 /// year/month/week/day，smallestUnit 缺省 "day"（含时间时缺省 "nanosecond"）。
 fn parse_difference_settings<H: VmHost>(
-    vm: &mut H,
-    options_value: JsValue,
-    date_only: bool,
+    vm: &mut H, options_value: JsValue, date_only: bool,
 ) -> Result<DifferenceSettings, JsValue> {
     let unit_index = |value: &str| -> Option<usize> {
         if date_only {
@@ -4178,22 +4146,27 @@ fn parse_difference_settings<H: VmHost>(
             return Err(crate::error::create_range_error(vm, "invalid roundingIncrement"));
         }
     }
-    Ok(DifferenceSettings { largest_index, smallest_index, increment, mode })
+    Ok(DifferenceSettings {
+        largest_index,
+        smallest_index,
+        increment,
+        mode,
+    })
 }
 
 /// 差值核心：internal = end - start，按设置取整；since 用 NegateRoundingMode
 /// 的舍入模式并在最后整体取反（不调换两端，调换会改变 0.5 边界所在的年长）。
 #[allow(clippy::too_many_arguments)]
 fn difference_core<H: VmHost>(
-    vm: &mut H,
-    start: (i128, i128, i128),
-    start_time_ns: i128,
-    end: (i128, i128, i128),
-    end_time_ns: i128,
-    settings: DifferenceSettings,
-    since: bool,
+    vm: &mut H, start: (i128, i128, i128), start_time_ns: i128, end: (i128, i128, i128), end_time_ns: i128,
+    settings: DifferenceSettings, since: bool,
 ) -> NativeResult {
-    let DifferenceSettings { largest_index, smallest_index, increment, mut mode } = settings;
+    let DifferenceSettings {
+        largest_index,
+        smallest_index,
+        increment,
+        mut mode,
+    } = settings;
     if since {
         mode = match mode {
             InstantRoundingMode::Ceil => InstantRoundingMode::Floor,
@@ -4381,7 +4354,6 @@ pub fn plain_date_time_since<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     plain_date_time_difference(vm, args, true)
 }
 
-
 /// `Temporal.PlainDateTime.prototype.add(durationLike, options)`。
 pub fn plain_date_time_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     plain_date_time_apply_duration(vm, args, 1)
@@ -4469,7 +4441,6 @@ fn date_like_ymd<H: VmHost>(vm: &mut H, val: JsValue) -> Result<(i32, u32, u32),
     }
     Ok(ymd)
 }
-
 
 /// `Temporal.PlainDate.prototype.dayOfWeek` getter：ISO 周几（周一 1 … 周日 7）。
 pub fn plain_date_day_of_week<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -4718,7 +4689,6 @@ fn add_signed_months(date: NaiveDate, months: i64) -> Option<NaiveDate> {
     let day = date.day().min(days_in_month_iso(year, month));
     NaiveDate::from_ymd_opt(year, month, day)
 }
-
 
 /// `Temporal.PlainDate.prototype.until(other, options)`：date-only 单位
 /// （year/month/week/day）差值 + 舍入语义。

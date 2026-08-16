@@ -193,8 +193,16 @@ fn function_symbol_has_instance_bound() {
 fn function_symbol_has_instance_poisoned_prototype_throws() {
     let mut vm = Vm::new();
     // 可调用但 prototype 非对象 → TypeError（OrdinaryHasInstance 唯一抛错点）。
-    let err = eval(&mut vm, "var f = function(){}; f.prototype = 1; try { f[Symbol.hasInstance]({}) } catch (e) { e }").unwrap();
-    let name = eval(&mut vm, "var f = function(){}; f.prototype = null; try { f[Symbol.hasInstance]({}) } catch (e) { e.name }").unwrap();
+    let err = eval(
+        &mut vm,
+        "var f = function(){}; f.prototype = 1; try { f[Symbol.hasInstance]({}) } catch (e) { e }",
+    )
+    .unwrap();
+    let name = eval(
+        &mut vm,
+        "var f = function(){}; f.prototype = null; try { f[Symbol.hasInstance]({}) } catch (e) { e.name }",
+    )
+    .unwrap();
     let _ = err;
     assert_eq!(vm.lookup_str(name).unwrap_or_default(), "TypeError");
 }
@@ -208,7 +216,10 @@ fn bound_function_construct_semantics() {
         ("function C(v){ this.v = v; } var B = C.bind({}, 1); new B(2).v", 1.0),
         ("function C(a, b){ this.s = a + b; } var B = C.bind(null, 2); new B(3).s", 5.0),
         // 多层 bound 链：绑定实参按 内层先、外层后 拼接。
-        ("function C(v){ this.v = v; } var B = C.bind({}, 1); var D = B.bind({}, 2); new D().v", 1.0),
+        (
+            "function C(v){ this.v = v; } var B = C.bind({}, 1); var D = B.bind({}, 2); new D().v",
+            1.0,
+        ),
         // native 构造器 target。
         ("var arr = Array.bind(null); new arr(3).length", 3.0),
     ];

@@ -7,11 +7,11 @@
 
 pub mod class;
 pub mod closure;
-pub mod module;
 pub mod emit;
-mod emit_log;
 pub mod emit_ctx;
+mod emit_log;
 pub mod expr;
+pub mod module;
 pub mod prepass;
 pub mod shared;
 pub mod stmt;

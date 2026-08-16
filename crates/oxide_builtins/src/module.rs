@@ -25,12 +25,7 @@ pub fn module_object<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     let tag_si = vm.kernel_core().perm_interner().intern("@@toStringTag").0;
     let tag_val = vm.new_string("Module");
     let obj_ref = unsafe { &mut *obj };
-    if let Err(e) = vm.define_data_property(
-        obj_ref,
-        tag_si,
-        tag_val,
-        PropAttributes::new(false, false, false),
-    ) {
+    if let Err(e) = vm.define_data_property(obj_ref, tag_si, tag_val, PropAttributes::new(false, false, false)) {
         return NativeResult::Err(crate::error::create_error(vm, &e));
     }
     NativeResult::Ok(JsValue::from_js_object(obj))
@@ -98,10 +93,7 @@ pub fn module_link_get<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let name_si = vm.property_key_si(name_val);
     let obj = unsafe { &*ns_ptr };
     if vm.get_own_property_slot(obj, name_si).is_none() {
-        return NativeResult::Err(crate::error::create_syntax_error(
-            vm,
-            "requested module export is not exported",
-        ));
+        return NativeResult::Err(crate::error::create_syntax_error(vm, "requested module export is not exported"));
     }
     match vm.ordinary_get(obj, name_si, ns_val) {
         Ok(v) => NativeResult::Ok(v),

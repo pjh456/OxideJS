@@ -464,8 +464,8 @@ impl oxide_emit::module::ModuleSourceLoader for Test262ModuleLoader {
         let canonical = full
             .canonicalize()
             .map_err(|e| format!("cannot resolve module {specifier}: {e}"))?;
-        let content = std::fs::read_to_string(&canonical)
-            .map_err(|e| format!("cannot read module {specifier}: {e}"))?;
+        let content =
+            std::fs::read_to_string(&canonical).map_err(|e| format!("cannot read module {specifier}: {e}"))?;
         Ok(ResolvedModule {
             source: content,
             path: canonical.to_string_lossy().to_string(),
@@ -607,10 +607,7 @@ fn judge_async_result(
             return TestResult::fail(
                 path.to_path_buf(),
                 dur,
-                format!(
-                    "expected runtime error ({}), got: async complete",
-                    neg.error_type
-                ),
+                format!("expected runtime error ({}), got: async complete", neg.error_type),
             );
         }
         return TestResult::pass(path.to_path_buf(), dur, "async ok");

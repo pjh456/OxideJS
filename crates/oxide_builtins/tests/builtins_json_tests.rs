@@ -44,7 +44,8 @@ fn replacer_function_skip_property() {
 
 #[test]
 fn replacer_function_array_null() {
-    let (_vm, result) = eval(r#"JSON.stringify([1,2,3], function(k,v){if(k==='1')return undefined;return v})"#).unwrap();
+    let (_vm, result) =
+        eval(r#"JSON.stringify([1,2,3], function(k,v){if(k==='1')return undefined;return v})"#).unwrap();
     assert_eq!(stringify_val(&result), "[1,null,3]");
 }
 

@@ -55,7 +55,9 @@ impl Emitter {
         Ok(r)
     }
 
-    pub(crate) fn emit_function_expression(&self, fe: &oxide_parser::Function, ctx: &mut CompileCtx) -> Result<u32, String> {
+    pub(crate) fn emit_function_expression(
+        &self, fe: &oxide_parser::Function, ctx: &mut CompileCtx,
+    ) -> Result<u32, String> {
         // 函数表达式：编译函数体为子模块，create_closure 实例化闭包
         let mut param_names = Vec::new();
         for (idx, param) in fe.params.items.iter().enumerate() {

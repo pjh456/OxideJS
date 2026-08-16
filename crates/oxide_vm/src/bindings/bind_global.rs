@@ -30,7 +30,11 @@ pub fn bind_global(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             ("__moduleObject", oxide_builtins::module::module_object::<crate::vm::Vm> as *const (), 0),
             ("__moduleSet", oxide_builtins::module::module_set::<crate::vm::Vm> as *const (), 3),
             ("__moduleGet", oxide_builtins::module::module_get::<crate::vm::Vm> as *const (), 2),
-            ("__moduleLinkGet", oxide_builtins::module::module_link_get::<crate::vm::Vm> as *const (), 2),
+            (
+                "__moduleLinkGet",
+                oxide_builtins::module::module_link_get::<crate::vm::Vm> as *const (),
+                2,
+            ),
             ("__moduleStar", oxide_builtins::module::module_star::<crate::vm::Vm> as *const (), 2),
             ("__moduleSeal", oxide_builtins::module::module_seal::<crate::vm::Vm> as *const (), 1),
             ("__moduleEval", oxide_builtins::module::module_eval::<crate::vm::Vm> as *const (), 1),

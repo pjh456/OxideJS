@@ -211,7 +211,8 @@ fn has_instance_preserves_ordinary_has_instance() {
 #[test]
 fn symbol_keys_stay_distinct() {
     let mut vm = Vm::new();
-    let result = eval(&mut vm, "var s1=Symbol('a'), s2=Symbol('b'); var o={}; o[s1]=1; o[s2]=2; [o[s1],o[s2]]").unwrap();
+    let result =
+        eval(&mut vm, "var s1=Symbol('a'), s2=Symbol('b'); var o={}; o[s1]=1; o[s2]=2; [o[s1],o[s2]]").unwrap();
     let arr = unsafe { &*result.as_js_object_ptr() };
     assert_eq!(arr.get_prop_at(0).as_int(), 1);
     assert_eq!(arr.get_prop_at(1).as_int(), 2);
@@ -248,7 +249,11 @@ fn symbol_keys_excluded_from_for_in() {
 #[test]
 fn get_own_property_symbols_roundtrip() {
     let mut vm = Vm::new();
-    let result = eval(&mut vm, "var s=Symbol('x'); var o={}; o[s]=7; var k=Object.getOwnPropertySymbols(o)[0]; o[k]").unwrap();
+    let result = eval(
+        &mut vm,
+        "var s=Symbol('x'); var o={}; o[s]=7; var k=Object.getOwnPropertySymbols(o)[0]; o[k]",
+    )
+    .unwrap();
     assert_eq!(result.as_int(), 7);
 }
 

@@ -67,9 +67,8 @@ fn reset_preserves_session_strings_after_runtime_gc() {
 #[test]
 fn strings_only_then_reset_keeps_global_subtree_strings() {
     let mut vm = vm_with_threshold(4096);
-    let first = compile(
-        "globalThis.kept = { s: 'he' + 'llo' }; var t; for (var i = 0; i < 500000; i++) { t = 'x' + i; } 0",
-    );
+    let first =
+        compile("globalThis.kept = { s: 'he' + 'llo' }; var t; for (var i = 0; i < 500000; i++) { t = 'x' + i; } 0");
     vm.run(&first).expect("run1");
     assert!(vm.session_gc_stats().total_collections > 0, "run1 应触发执行期字符串 GC");
     vm.reset();
@@ -92,12 +91,7 @@ fn regexp_exec_strings_survive_runtime_gc() {
     );
     let result = vm.run(&module).expect("run");
     let text = vm.lookup_str(result).expect("exec 结果应为字符串").to_string();
-    let expected = format!(
-        "{}|{}|{}",
-        "a".repeat(500) + &"b".repeat(500),
-        "a".repeat(500),
-        "b".repeat(500)
-    );
+    let expected = format!("{}|{}|{}", "a".repeat(500) + &"b".repeat(500), "a".repeat(500), "b".repeat(500));
     assert_eq!(text, expected);
     assert!(vm.session_gc_stats().total_collections > 0, "执行期应触发字符串 GC");
 }

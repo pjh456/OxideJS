@@ -5,7 +5,9 @@
 //! 支持提升语义。
 
 use crate::{CompileCtx, Emitter};
-use oxide_parser::{BindingPattern, Declaration, ExportDefaultDeclarationKind, Expression, Statement, VariableDeclarationKind};
+use oxide_parser::{
+    BindingPattern, Declaration, ExportDefaultDeclarationKind, Expression, Statement, VariableDeclarationKind,
+};
 
 impl Emitter {
     /// 在临时寄存器池之前分配 builtin 槽位。
@@ -390,12 +392,8 @@ impl Emitter {
                         for d in &decl.declarations {
                             if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
                                 let reg = ctx.alloc_reg();
-                                let _ = ctx.declare_initialized(
-                                    bi.name.as_str(),
-                                    reg,
-                                    VariableDeclarationKind::Var,
-                                    false,
-                                );
+                                let _ =
+                                    ctx.declare_initialized(bi.name.as_str(), reg, VariableDeclarationKind::Var, false);
                             }
                         }
                     }
@@ -547,33 +545,23 @@ impl Emitter {
                         }
                     }
                 }
-                Statement::ExportDefaultDeclaration(exp) => {
-                    match &exp.declaration {
-                        ExportDefaultDeclarationKind::ClassDeclaration(cd) => {
-                            if let Some(id) = &cd.id {
-                                let reg = ctx.alloc_reg();
-                                let _ = ctx.declare_predeclared(
-                                    id.name.as_str(),
-                                    reg,
-                                    VariableDeclarationKind::Const,
-                                    true,
-                                );
-                            }
+                Statement::ExportDefaultDeclaration(exp) => match &exp.declaration {
+                    ExportDefaultDeclarationKind::ClassDeclaration(cd) => {
+                        if let Some(id) = &cd.id {
+                            let reg = ctx.alloc_reg();
+                            let _ =
+                                ctx.declare_predeclared(id.name.as_str(), reg, VariableDeclarationKind::Const, true);
                         }
-                        ExportDefaultDeclarationKind::FunctionDeclaration(fd) => {
-                            if let Some(id) = &fd.id {
-                                let reg = ctx.alloc_reg();
-                                let _ = ctx.declare_predeclared(
-                                    id.name.as_str(),
-                                    reg,
-                                    VariableDeclarationKind::Const,
-                                    true,
-                                );
-                            }
-                        }
-                        _ => {}
                     }
-                }
+                    ExportDefaultDeclarationKind::FunctionDeclaration(fd) => {
+                        if let Some(id) = &fd.id {
+                            let reg = ctx.alloc_reg();
+                            let _ =
+                                ctx.declare_predeclared(id.name.as_str(), reg, VariableDeclarationKind::Const, true);
+                        }
+                    }
+                    _ => {}
+                },
                 _ => {}
             }
         }

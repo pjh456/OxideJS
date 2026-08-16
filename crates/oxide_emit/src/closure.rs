@@ -410,8 +410,7 @@ impl Emitter {
                             }
                         }
                         oxide_parser::Declaration::FunctionDeclaration(fd) => {
-                            let body: &[Statement] =
-                                fd.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
+                            let body: &[Statement] = fd.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
                             let mut inner = shadow.clone();
                             inner.extend(self.collect_fn_param_names(&fd.params));
                             inner.extend(self.collect_own_binding_names(&[], body));

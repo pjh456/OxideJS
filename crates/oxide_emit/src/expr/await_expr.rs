@@ -7,9 +7,7 @@ use oxide_ir::operand::Operand;
 use oxide_parser::AwaitExpression;
 
 impl Emitter {
-    pub(crate) fn emit_await_expression(
-        &self, ae: &AwaitExpression, ctx: &mut CompileCtx,
-    ) -> Result<u32, String> {
+    pub(crate) fn emit_await_expression(&self, ae: &AwaitExpression, ctx: &mut CompileCtx) -> Result<u32, String> {
         // 求值被等待的值（`await undefined` 时求值 undefined）。
         let value_reg = self.emit_expression(&ae.argument, ctx)?;
         ctx.inst(Inst::await_expr(Operand::Reg(value_reg)));

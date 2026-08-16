@@ -60,7 +60,11 @@ fn await_yield_plain_distinguished() {
 fn object_literals_distinguished() {
     assert_ne!(compiled("var o = { a: 1 }"), compiled("var o = { a: 2 }"));
     assert_ne!(compiled("var o = { a: 1 }"), compiled("var o = { b: 1 }"));
-    assert_ne!(compiled("var o = { a: 1 }"), compiled("var o = { a: 1, b: 2 }"), "property count must be hashed");
+    assert_ne!(
+        compiled("var o = { a: 1 }"),
+        compiled("var o = { a: 1, b: 2 }"),
+        "property count must be hashed"
+    );
 }
 
 #[test]

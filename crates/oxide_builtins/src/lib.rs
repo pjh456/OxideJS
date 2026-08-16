@@ -11,10 +11,10 @@
 pub mod array;
 /// ArrayBuffer 内置对象实现（字节缓冲区与 byteLength/slice/isView）。
 pub mod array_buffer;
-/// Boolean 内置对象实现（constructor 与 prototype 的 valueOf/toString）。
-pub mod boolean;
 /// BigInt 内置对象实现（constructor 与 prototype 的 toString）。
 pub mod bigint;
+/// Boolean 内置对象实现（constructor 与 prototype 的 valueOf/toString）。
+pub mod boolean;
 /// builtins 层日志宏（`builtins_error`/`builtins_info` 等），target 为 `oxide::builtins`。
 pub mod builtins_log;
 /// DataView 内置对象实现（对 ArrayBuffer 的定点读写视图）。

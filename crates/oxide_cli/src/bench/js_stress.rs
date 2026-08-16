@@ -191,4 +191,3 @@ fn average_metrics(metrics: &[MetricCollection]) -> MetricCollection {
         ic_misses: (metrics.iter().map(|m| m.ic_misses as f64).sum::<f64>() / n) as u64,
     }
 }
-
