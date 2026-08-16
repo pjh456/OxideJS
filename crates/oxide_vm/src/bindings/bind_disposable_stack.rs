@@ -71,7 +71,7 @@ pub fn bind_disposable_stack_protos(core: &Arc<KernelCore>, session: &KernelSess
 }
 
 /// 在 proto 上写 `constructor` 数据属性（非枚举，描述符 {t,f,t}）。
-fn write_proto_constructor(core: &Arc<KernelCore>, proto: &mut JsObject, ctor_val: JsValue) {
+pub(crate) fn write_proto_constructor(core: &Arc<KernelCore>, proto: &mut JsObject, ctor_val: JsValue) {
     let sf = core.perm_interner().as_ref();
     let sh = core.shape_forge().as_ref();
     let si_constructor = sf.intern("constructor").0;

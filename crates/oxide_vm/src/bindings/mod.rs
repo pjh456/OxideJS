@@ -6,6 +6,8 @@
 pub mod bind_array;
 /// ArrayBuffer 构造器与原型的 native 方法绑定。
 pub mod bind_array_buffer;
+/// AsyncDisposableStack 构造器与原型的 native 方法绑定（含 dirty reset 同步）。
+pub mod bind_async_disposable_stack;
 /// BigInt 构造器与原型的 native 方法绑定。
 pub mod bind_bigint;
 /// Boolean 构造器与原型的 native 方法绑定。
@@ -975,6 +977,7 @@ pub fn bind_global_builtin_slots(core: &Arc<KernelCore>, session: &KernelSession
     bind_reflect_global(core, session, global);
     bind_iterator_global(core, session, global);
     bind_disposable_stack::bind_disposable_stack(core, session, global);
+    bind_async_disposable_stack::bind_async_disposable_stack(core, session, global);
     bind_stub_globals(core, session, global);
     bind_bigint::bind_bigint(core, session, global);
     bind_global_functions(core, session, global);
@@ -1000,6 +1003,8 @@ pub fn rebind_dirty_builtins(core: &Arc<KernelCore>, session: &mut KernelSession
         sync_iterator_function_prototype(core, session, global);
         bind_disposable_stack::bind_disposable_stack_protos(core, session);
         bind_disposable_stack::sync_disposable_stack_ctor(core, session, global);
+        bind_async_disposable_stack::bind_async_disposable_stack_protos(core, session);
+        bind_async_disposable_stack::sync_async_disposable_stack_ctor(core, session, global);
     }
     if dirty.map_or(true, |d| d.array) {
         bind_array::bind_array(core, session, global);
@@ -1067,6 +1072,7 @@ pub fn init_kernel_builtins(core: &Arc<KernelCore>, session: &mut KernelSession)
     let global = unsafe { &mut *global_ptr };
     bind_iterator::bind_iterator(core, session, global);
     bind_disposable_stack::bind_disposable_stack(core, session, global);
+    bind_async_disposable_stack::bind_async_disposable_stack(core, session, global);
     bind_reflect::bind_reflect(core, session, global);
     bind_global::bind_global(core, session, global);
     bind_global_value(core, global, "globalThis", JsValue::from_js_object(global_ptr));
