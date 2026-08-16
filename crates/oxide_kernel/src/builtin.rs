@@ -120,6 +120,7 @@ pub struct ErrorMethods {
     pub syntax_error: *const (),
     pub uri_error: *const (),
     pub eval_error: *const (),
+    pub suppressed_error: *const (),
     pub to_string: *const (),
     pub stack: *const (),
 }
@@ -205,6 +206,7 @@ pub struct BuiltinWorld {
     pub syntax_error_proto: P<JsObject>,
     pub uri_error_proto: P<JsObject>,
     pub eval_error_proto: P<JsObject>,
+    pub suppressed_error_proto: P<JsObject>,
     pub math_object: P<JsObject>,
     pub json_object: P<JsObject>,
     pub date_constructor: P<JsObject>,
@@ -362,6 +364,7 @@ fn make_error_subtypes(error_proto: &P<JsObject>) -> ErrorSubtypeProtos {
         syntax_error_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val)),
         uri_error_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val)),
         eval_error_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val)),
+        suppressed_error_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_proto_val)),
     }
 }
 
@@ -372,6 +375,7 @@ struct ErrorSubtypeProtos {
     syntax_error_proto: P<JsObject>,
     uri_error_proto: P<JsObject>,
     eval_error_proto: P<JsObject>,
+    suppressed_error_proto: P<JsObject>,
 }
 
 struct TypedArrayFamily {
@@ -690,6 +694,7 @@ impl BuiltinWorld {
             BuiltinId::SyntaxErrorProto => &self.syntax_error_proto,
             BuiltinId::UriErrorProto => &self.uri_error_proto,
             BuiltinId::EvalErrorProto => &self.eval_error_proto,
+            BuiltinId::SuppressedErrorProto => &self.suppressed_error_proto,
             BuiltinId::MathObject => &self.math_object,
             BuiltinId::JsonObject => &self.json_object,
             BuiltinId::DateConstructor => &self.date_constructor,
@@ -849,6 +854,7 @@ impl BuiltinWorld {
             syntax_error_proto: error_subtypes.syntax_error_proto,
             uri_error_proto: error_subtypes.uri_error_proto,
             eval_error_proto: error_subtypes.eval_error_proto,
+            suppressed_error_proto: error_subtypes.suppressed_error_proto,
             math_object,
             json_object,
             date_constructor,
@@ -993,6 +999,7 @@ impl BuiltinWorld {
                     syntax_error_proto: current.syntax_error_proto.clone(),
                     uri_error_proto: current.uri_error_proto.clone(),
                     eval_error_proto: current.eval_error_proto.clone(),
+                    suppressed_error_proto: current.suppressed_error_proto.clone(),
                 },
             )
         };
@@ -1243,6 +1250,7 @@ impl BuiltinWorld {
             syntax_error_proto: error_subtypes.syntax_error_proto,
             uri_error_proto: error_subtypes.uri_error_proto,
             eval_error_proto: error_subtypes.eval_error_proto,
+            suppressed_error_proto: error_subtypes.suppressed_error_proto,
             math_object,
             json_object,
             date_constructor,
@@ -1464,6 +1472,7 @@ impl BuiltinWorld {
             ("SyntaxError", methods.syntax_error, 1),
             ("URIError", methods.uri_error, 1),
             ("EvalError", methods.eval_error, 1),
+            ("SuppressedError", methods.suppressed_error, 3),
         );
 
         let proto_ptr = P::as_ptr(&self.error_proto) as *mut JsObject;
@@ -1500,6 +1509,13 @@ impl BuiltinWorld {
         self.set_subtype_proto_name(string_forge, shape_forge, &self.syntax_error_proto, "SyntaxError", si_name);
         self.set_subtype_proto_name(string_forge, shape_forge, &self.uri_error_proto, "URIError", si_name);
         self.set_subtype_proto_name(string_forge, shape_forge, &self.eval_error_proto, "EvalError", si_name);
+        self.set_subtype_proto_name(
+            string_forge,
+            shape_forge,
+            &self.suppressed_error_proto,
+            "SuppressedError",
+            si_name,
+        );
     }
 
     fn set_subtype_proto_name(

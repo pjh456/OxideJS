@@ -449,3 +449,129 @@ fn error_stack_frame_format() {
     let s = vm.lookup_str(result).unwrap();
     assert!(s.contains("    at "), "stack should have 4-space indent, got: {}", s);
 }
+
+// ── SuppressedError 测试 ──
+
+#[test]
+fn suppressed_error_property_order_message_error_suppressed() {
+    let mut vm = make_vm();
+    // 三字段属性创建顺序：message → error → suppressed（order-of-args-evaluation 断言紧邻）。
+    let r = eval_in(&mut vm, "Object.getOwnPropertyNames(new SuppressedError('e', 's', 'm')).join(',')").unwrap();
+    let names_str = vm.lookup_str(r).unwrap();
+    let names: Vec<&str> = names_str.split(',').collect();
+    let pos = |n: &str| names.iter().position(|x| *x == n).expect(n);
+    assert!(pos("message") < pos("error"), "message 应排在 error 前, got: {:?}", names);
+    assert!(pos("error") < pos("suppressed"), "error 应排在 suppressed 前, got: {:?}", names);
+}
+
+#[test]
+fn suppressed_error_message_undefined_omits_property() {
+    let mut vm = make_vm();
+    // message 缺参时不建 message 自有属性。
+    let r = eval_in(&mut vm, "Object.getOwnPropertyNames(new SuppressedError([])).join(',')").unwrap();
+    assert_eq!(vm.lookup_str(r), Some("error".to_string()));
+    // message 显式 undefined 同样省略。
+    let r = eval_in(&mut vm, "Object.getOwnPropertyNames(new SuppressedError('e', 's', undefined)).join(',')").unwrap();
+    assert_eq!(vm.lookup_str(r), Some("error,suppressed".to_string()));
+}
+
+#[test]
+fn suppressed_error_message_to_string_coercion() {
+    let mut vm = make_vm();
+    // 三参 message 走完整 ToString 强制转换：42 → "42"、false → "false"、null → "null"。
+    let r = eval_in(&mut vm, "new SuppressedError('e','s',42).message").unwrap();
+    assert_eq!(vm.lookup_str(r), Some("42".to_string()));
+    let r = eval_in(&mut vm, "new SuppressedError('e','s',false).message").unwrap();
+    assert_eq!(vm.lookup_str(r), Some("false".to_string()));
+    let r = eval_in(&mut vm, "new SuppressedError('e','s',null).message").unwrap();
+    assert_eq!(vm.lookup_str(r), Some("null".to_string()));
+    // 对象经 ToPrimitive(string hint) 调用 toString。
+    let r = eval_in(&mut vm, "new SuppressedError('e','s',{toString:function(){return 'custom';}}).message").unwrap();
+    assert_eq!(vm.lookup_str(r), Some("custom".to_string()));
+}
+
+#[test]
+fn suppressed_error_message_tostring_abrupt() {
+    let mut vm = make_vm();
+    // Symbol → TypeError（ToString 规范不可转换路径）。
+    let r = eval_in(&mut vm, "try { new SuppressedError('e','s',Symbol('x')); 'no' } catch (e) { e.name }").unwrap();
+    assert_eq!(vm.lookup_str(r), Some("TypeError".to_string()));
+    // 用户 toString 抛出的异常原样传播，不塌缩成 TypeError。
+    let r = eval_in(
+        &mut vm,
+        "try { new SuppressedError('e','s',{toString:function(){throw new RangeError('boom');}}); 'no' } catch (e) { e.name }",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(r), Some("RangeError".to_string()));
+}
+
+#[test]
+fn suppressed_error_call_without_new_creates_object() {
+    let mut vm = make_vm();
+    // 普通调用（newtarget-is-undefined）同样建对象，原型指向 SuppressedError.prototype。
+    let r = eval_in(&mut vm, "Object.getPrototypeOf(SuppressedError()) === SuppressedError.prototype").unwrap();
+    assert_eq!(format!("{}", r), "true");
+}
+
+#[test]
+fn suppressed_error_prototype_chain_and_shape() {
+    let mut vm = make_vm();
+    // 原型仅挂 constructor/name（name 与既有子类型一致排在 constructor 前），无 error/suppressed。
+    let r = eval_in(&mut vm, "Object.getOwnPropertyNames(SuppressedError.prototype).join(',')").unwrap();
+    assert_eq!(vm.lookup_str(r), Some("name,constructor".to_string()));
+    // instanceof Error 走原型链，原型 [[Prototype]] = Error.prototype。
+    assert_eq!(
+        format!("{}", eval_in(&mut vm, "new SuppressedError('e','s') instanceof Error").unwrap()),
+        "true"
+    );
+    let r = eval_in(&mut vm, "Object.getPrototypeOf(SuppressedError.prototype) === Error.prototype").unwrap();
+    assert_eq!(format!("{}", r), "true");
+    // name 为 "SuppressedError"，message 沿 Error.prototype 链为 ""。
+    let r = eval_in(&mut vm, "SuppressedError.prototype.name").unwrap();
+    assert_eq!(vm.lookup_str(r), Some("SuppressedError".to_string()));
+    let r = eval_in(&mut vm, "SuppressedError.prototype.message").unwrap();
+    assert_eq!(vm.lookup_str(r), Some("".to_string()));
+}
+
+#[test]
+fn suppressed_error_constructor_metadata() {
+    let mut vm = make_vm();
+    // 三参构造器 length=3（不可写不可枚举）。
+    assert_eq!(format!("{}", eval_in(&mut vm, "SuppressedError.length").unwrap()), "3");
+    // 构造器 name 属性。
+    let r = eval_in(&mut vm, "SuppressedError.name").unwrap();
+    assert_eq!(vm.lookup_str(r), Some("SuppressedError".to_string()));
+    // 全局槽描述符 { writable:true, enumerable:false, configurable:true }。
+    let r = eval_in(
+        &mut vm,
+        "var d = Object.getOwnPropertyDescriptor(globalThis, 'SuppressedError'); [d.writable, d.enumerable, d.configurable].join(',')",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(r), Some("true,false,true".to_string()));
+}
+
+#[test]
+fn create_suppressed_error_direct_call() {
+    let mut vm = make_vm();
+    // dispose 合并路径直调：仅 error/suppressed 两个自有属性、无 message、原型链到 Error。
+    let err_val = vm.new_string("err");
+    let sup_val = vm.new_string("sup");
+    let result = error::create_suppressed_error(&mut vm, err_val, sup_val);
+    assert!(result.is_object());
+    let obj = unsafe { &*result.as_js_object_ptr() };
+    assert_eq!(obj.prop_count(), 2);
+    let sf = vm.kernel_core().perm_interner();
+    let sh = vm.kernel_core().shape_forge();
+    let si_error = sf.intern("error").0;
+    let si_suppressed = sf.intern("suppressed").0;
+    let si_message = sf.intern("message").0;
+    assert!(sh.lookup_position(obj.shape_id(), si_error).is_some(), "应有 error 槽");
+    assert!(sh.lookup_position(obj.shape_id(), si_suppressed).is_some(), "应有 suppressed 槽");
+    assert!(sh.lookup_position(obj.shape_id(), si_message).is_none(), "不应有 message 槽");
+    // 原型链：suppressed_error_proto → Error.prototype，instanceof Error 成立。
+    assert!(obj.proto().is_object(), "proto 应为 suppressed_error_proto");
+    // 非枚举：属性不进入 Object.keys（与 JS 侧 new 路径同一实现，此处校验 meta）。
+    let err_pos = sh.lookup_position(obj.shape_id(), si_error).unwrap();
+    let meta = obj.prop_meta_at(err_pos).unwrap();
+    assert!(!meta.attributes.enumerable(), "error 槽应非枚举");
+}

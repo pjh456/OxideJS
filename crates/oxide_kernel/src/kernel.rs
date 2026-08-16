@@ -225,12 +225,13 @@ pub struct KernelSession {
 /// 维护注意：每个新增的 `BuiltinWorld` 对象字段都必须加到这里以及
 /// `KernelSession::dirty_since_snapshot()`，以便选择性重置重建正确的
 /// builtin 家族。
-pub const NUM_BUILTINS: usize = 88;
+pub const NUM_BUILTINS: usize = 89;
 
 /// 内置对象枚举 id，与 `BuiltinWorld` 中的存储槽一一对应。
 ///
-/// 覆盖各构造器/原型、Error 家族、集合类型、TypedArray 家族与 well-known symbols；
-/// `repr(u8)` 使其可直接作为数组下标（`u8` 值即下标）。
+/// 覆盖各构造器/原型、Error 家族（含 SuppressedError 原型）、集合类型、
+/// TypedArray 家族与 well-known symbols；`repr(u8)` 使其可直接作为数组下标
+/// （`u8` 值即下标）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum BuiltinId {
@@ -322,10 +323,11 @@ pub enum BuiltinId {
     PlainDateTimeProto = 84,
     SymAsyncDispose = 86,
     SymDispose = 87,
+    SuppressedErrorProto = 88,
 }
 
 impl BuiltinId {
-    /// 全部 86 个内置对象的 id 常量表，供快照/脏检查按序遍历。
+    /// 全部内置对象的 id 常量表，供快照/脏检查按序遍历。
     /// 顺序必须与枚举判别值一致（`ALL[i]` 的 `u8` 值 == `i`）：
     /// 快照数组按下标填充，脏检查按下标回读，错位会误判 builtin 家族永久脏。
     pub const ALL: [BuiltinId; NUM_BUILTINS] = [
@@ -417,6 +419,7 @@ impl BuiltinId {
         BuiltinId::SymSpecies,
         BuiltinId::SymAsyncDispose,
         BuiltinId::SymDispose,
+        BuiltinId::SuppressedErrorProto,
     ];
 }
 
@@ -607,7 +610,8 @@ impl KernelSession {
                 || gen(BuiltinId::RangeErrorProto) != snap(BuiltinId::RangeErrorProto)
                 || gen(BuiltinId::SyntaxErrorProto) != snap(BuiltinId::SyntaxErrorProto)
                 || gen(BuiltinId::UriErrorProto) != snap(BuiltinId::UriErrorProto)
-                || gen(BuiltinId::EvalErrorProto) != snap(BuiltinId::EvalErrorProto),
+                || gen(BuiltinId::EvalErrorProto) != snap(BuiltinId::EvalErrorProto)
+                || gen(BuiltinId::SuppressedErrorProto) != snap(BuiltinId::SuppressedErrorProto),
             symbol_family: gen(BuiltinId::SymbolProto) != snap(BuiltinId::SymbolProto)
                 || gen(BuiltinId::SymbolConstructor) != snap(BuiltinId::SymbolConstructor)
                 || gen(BuiltinId::SymMatch) != snap(BuiltinId::SymMatch)

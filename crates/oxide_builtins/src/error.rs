@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_runtime_api::{to_string, NativeResult, VmHost};
+use oxide_runtime_api::{to_string, to_string_full, NativeResult, VmHost};
 use oxide_types::mem::P;
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
@@ -141,6 +141,82 @@ error_ctor!(range_error_constructor, range_error_proto);
 error_ctor!(syntax_error_constructor, syntax_error_proto);
 error_ctor!(uri_error_constructor, uri_error_proto);
 error_ctor!(eval_error_constructor, eval_error_proto);
+
+/// 在对象上追加一个非枚举数据属性（writable/configurable=true，enumerable=false），
+/// 与 `CreateNonEnumerableDataPropertyOrThrow` 语义一致。
+fn set_own_data_prop<H: VmHost>(host: &mut H, obj: *mut JsObject, key: &str, val: JsValue) {
+    let sf = Arc::clone(host.kernel_core().perm_interner());
+    let sh = Arc::clone(host.kernel_core().shape_forge());
+    let si = sf.intern(key).0;
+    let new_shape = sh.make_shape(unsafe { (*obj).shape_id() }, si);
+    unsafe {
+        (*obj).set_shape_id(new_shape);
+        let pos = (*obj).push_prop(val);
+        (*obj).set_data_meta(pos, PropAttributes::new(true, false, true));
+    }
+}
+
+/// `SuppressedError(error, suppressed, message)` 构造器：三参，length=3。
+///
+/// 以规范 CreateSuppressedError 语义建对象，三字段属性创建顺序为
+/// message → error → suppressed（order-of-args-evaluation 严格断言），
+/// message 为 undefined 时省略；三者均非枚举数据属性。
+///
+/// # 边界与前提
+/// - args[0]=this 被忽略：普通调用（无 new）同样新建对象，与既有 Error 子类型一致；
+/// - args[1]=error、args[2]=suppressed 原样存储不转换；
+/// - args[3]=message 走完整 ToString 强制转换：对象经 ToPrimitive（string hint），
+///   Symbol 抛 TypeError；用户 toString 抛出的异常原样传播。
+pub fn suppressed_error_constructor<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
+    let proto_ptr = P::as_ptr(&host.session().builtin_world().suppressed_error_proto) as *mut JsObject;
+    let obj = host.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
+
+    // message（args[3]）非 undefined 时做完整 ToString 转换并先写属性。
+    if args.len() > 3 && !host.reg(args[3]).is_undefined() {
+        let msg_str = match to_string_full(host.reg(args[3]), host) {
+            Ok(s) => s,
+            Err(_) => {
+                // 对象 toString 抛出的用户异常经 last_uncaught_value 恢复后原样重新抛出；
+                // Symbol 等不可转换场景由调用方构造 TypeError。
+                if let Some(exc) = host.take_uncaught_value() {
+                    return NativeResult::Err(exc);
+                }
+                return NativeResult::Err(create_type_error(host, "Cannot convert value to a string"));
+            }
+        };
+        let msg_val = host.new_string(&msg_str);
+        set_own_data_prop(host, obj, "message", msg_val);
+    }
+
+    // error / suppressed 依次写非枚举数据属性（原值，不转换）。
+    if args.len() > 1 {
+        set_own_data_prop(host, obj, "error", host.reg(args[1]));
+    }
+    if args.len() > 2 {
+        set_own_data_prop(host, obj, "suppressed", host.reg(args[2]));
+    }
+    unsafe {
+        (*obj).type_tag = JsObject::OBJ_TYPE_ERROR;
+    }
+    NativeResult::Ok(JsValue::from_js_object(obj))
+}
+
+/// dispose 合并路径用：仅 error/suppressed 两个非枚举自有属性（无 message，
+/// 对应规范 DisposeResources 分支的 CreateSuppressedError 调用）。
+///
+/// # 边界与前提
+/// - 错误值/suppressed 值原样存储，不做任何转换；
+/// - 返回对象 proto = suppressed_error_proto，标记 OBJ_TYPE_ERROR。
+pub fn create_suppressed_error<H: VmHost>(host: &mut H, error_val: JsValue, suppressed_val: JsValue) -> JsValue {
+    let proto_ptr = P::as_ptr(&host.session().builtin_world().suppressed_error_proto) as *mut JsObject;
+    let obj = host.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
+    set_own_data_prop(host, obj, "error", error_val);
+    set_own_data_prop(host, obj, "suppressed", suppressed_val);
+    unsafe {
+        (*obj).type_tag = JsObject::OBJ_TYPE_ERROR;
+    }
+    JsValue::from_js_object(obj)
+}
 
 /// `Error.prototype.toString`：按 `name: message` 拼接字符串；
 /// 缺少 name/message 时按规范回退到 `"Error"` 或空串。

@@ -8,7 +8,7 @@ use oxide_types::value::JsValue;
 
 fn bind_error_subtype_constructor(
     core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, name: &str, proto_ptr: *mut JsObject,
-    ctor_fn: *const (),
+    ctor_fn: *const (), arg_count: u8,
 ) {
     let sf = core.perm_interner().as_ref();
     let sh = core.shape_forge().as_ref();
@@ -20,7 +20,7 @@ fn bind_error_subtype_constructor(
     ctor.type_tag = JsObject::OBJ_TYPE_CONSTRUCTOR;
     // SAFETY: ctor_fn 是调用方转成 *const () 的 NativeFn 函数项指针。
     ctor.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(ctor_fn) }));
-    ctor.set_native_arg_count(1);
+    ctor.set_native_arg_count(arg_count);
 
     let si_prototype = sf.intern("prototype").0;
     let si_name = sf.intern("name").0;
@@ -33,7 +33,7 @@ fn bind_error_subtype_constructor(
     ctor.set_shape_id(ctor_shape3);
     ctor.ensure_hash_props().push(JsValue::from_js_object(proto_ptr));
     ctor.ensure_hash_props().push(JsValue::perm_string(sf.string_ptr(name_si)));
-    ctor.ensure_hash_props().push(JsValue::int(1));
+    ctor.ensure_hash_props().push(JsValue::int(arg_count as i32));
     // 构造器 length 按规范为不可写不可枚举（Function.length 属性描述符约定）。
     ctor.set_data_meta(2u32, PropAttributes::new(false, false, true));
 
@@ -66,6 +66,7 @@ pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         syntax_error: oxide_builtins::error::syntax_error_constructor::<crate::vm::Vm> as *const (),
         uri_error: oxide_builtins::error::uri_error_constructor::<crate::vm::Vm> as *const (),
         eval_error: oxide_builtins::error::eval_error_constructor::<crate::vm::Vm> as *const (),
+        suppressed_error: oxide_builtins::error::suppressed_error_constructor::<crate::vm::Vm> as *const (),
         to_string: oxide_builtins::error::error_to_string::<crate::vm::Vm> as *const (),
         stack: oxide_builtins::error::error_stack_getter::<crate::vm::Vm> as *const (),
     };
@@ -92,6 +93,7 @@ pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         "TypeError",
         session.builtin_world().type_error_proto.as_ptr() as *mut JsObject,
         oxide_builtins::error::type_error_constructor::<crate::vm::Vm> as *const (),
+        1,
     );
     bind_error_subtype_constructor(
         core,
@@ -100,6 +102,7 @@ pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         "ReferenceError",
         session.builtin_world().reference_error_proto.as_ptr() as *mut JsObject,
         oxide_builtins::error::reference_error_constructor::<crate::vm::Vm> as *const (),
+        1,
     );
     bind_error_subtype_constructor(
         core,
@@ -108,6 +111,7 @@ pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         "RangeError",
         session.builtin_world().range_error_proto.as_ptr() as *mut JsObject,
         oxide_builtins::error::range_error_constructor::<crate::vm::Vm> as *const (),
+        1,
     );
     bind_error_subtype_constructor(
         core,
@@ -116,6 +120,7 @@ pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         "SyntaxError",
         session.builtin_world().syntax_error_proto.as_ptr() as *mut JsObject,
         oxide_builtins::error::syntax_error_constructor::<crate::vm::Vm> as *const (),
+        1,
     );
     bind_error_subtype_constructor(
         core,
@@ -124,6 +129,7 @@ pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         "URIError",
         session.builtin_world().uri_error_proto.as_ptr() as *mut JsObject,
         oxide_builtins::error::uri_error_constructor::<crate::vm::Vm> as *const (),
+        1,
     );
     bind_error_subtype_constructor(
         core,
@@ -132,6 +138,18 @@ pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         "EvalError",
         session.builtin_world().eval_error_proto.as_ptr() as *mut JsObject,
         oxide_builtins::error::eval_error_constructor::<crate::vm::Vm> as *const (),
+        1,
+    );
+
+    // SuppressedError 为三参构造器（error, suppressed, message），length=3。
+    bind_error_subtype_constructor(
+        core,
+        session,
+        global,
+        "SuppressedError",
+        session.builtin_world().suppressed_error_proto.as_ptr() as *mut JsObject,
+        oxide_builtins::error::suppressed_error_constructor::<crate::vm::Vm> as *const (),
+        3,
     );
 
     {

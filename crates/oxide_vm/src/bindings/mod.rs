@@ -577,7 +577,7 @@ fn bind_existing_global(core: &Arc<KernelCore>, global: &mut JsObject, name: &st
 
 fn bind_error_subtype_global(
     core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, name: &str, proto: &P<JsObject>,
-    ctor_fn: *const (),
+    ctor_fn: *const (), arg_count: u8,
 ) {
     let constructor_si = core.perm_interner().intern("constructor").0;
     if let Some(pos) = core.shape_forge().lookup_position(proto.shape_id(), constructor_si) {
@@ -591,7 +591,7 @@ fn bind_error_subtype_global(
     let function_proto_ptr = session.builtin_world().function_proto.as_ptr() as *mut JsObject;
     let mut ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(function_proto_ptr)));
     ctor.set_function(true);
-    configure_native_constructor(&mut ctor, ctor_fn, 1);
+    configure_native_constructor(&mut ctor, ctor_fn, arg_count);
 
     let sf = core.perm_interner().as_ref();
     let sh = core.shape_forge().as_ref();
@@ -905,6 +905,7 @@ pub fn bind_global_builtin_slots(core: &Arc<KernelCore>, session: &KernelSession
         "TypeError",
         &world.type_error_proto,
         oxide_builtins::error::type_error_constructor::<crate::vm::Vm> as *const (),
+        1,
     );
     bind_error_subtype_global(
         core,
@@ -913,6 +914,7 @@ pub fn bind_global_builtin_slots(core: &Arc<KernelCore>, session: &KernelSession
         "ReferenceError",
         &world.reference_error_proto,
         oxide_builtins::error::reference_error_constructor::<crate::vm::Vm> as *const (),
+        1,
     );
     bind_error_subtype_global(
         core,
@@ -921,6 +923,7 @@ pub fn bind_global_builtin_slots(core: &Arc<KernelCore>, session: &KernelSession
         "RangeError",
         &world.range_error_proto,
         oxide_builtins::error::range_error_constructor::<crate::vm::Vm> as *const (),
+        1,
     );
     bind_error_subtype_global(
         core,
@@ -929,6 +932,7 @@ pub fn bind_global_builtin_slots(core: &Arc<KernelCore>, session: &KernelSession
         "SyntaxError",
         &world.syntax_error_proto,
         oxide_builtins::error::syntax_error_constructor::<crate::vm::Vm> as *const (),
+        1,
     );
     bind_error_subtype_global(
         core,
@@ -937,6 +941,7 @@ pub fn bind_global_builtin_slots(core: &Arc<KernelCore>, session: &KernelSession
         "URIError",
         &world.uri_error_proto,
         oxide_builtins::error::uri_error_constructor::<crate::vm::Vm> as *const (),
+        1,
     );
     bind_error_subtype_global(
         core,
@@ -945,6 +950,19 @@ pub fn bind_global_builtin_slots(core: &Arc<KernelCore>, session: &KernelSession
         "EvalError",
         &world.eval_error_proto,
         oxide_builtins::error::eval_error_constructor::<crate::vm::Vm> as *const (),
+        1,
+    );
+
+    // SuppressedError 为三参构造器（error, suppressed, message），length=3；
+    // 与 bind_error 的 Box 自建路径参数一致，保证 reset 重建后 length 不回落。
+    bind_error_subtype_global(
+        core,
+        session,
+        global,
+        "SuppressedError",
+        &world.suppressed_error_proto,
+        oxide_builtins::error::suppressed_error_constructor::<crate::vm::Vm> as *const (),
+        3,
     );
 
     bind_reflect_global(core, session, global);
