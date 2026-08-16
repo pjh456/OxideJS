@@ -208,9 +208,7 @@ fn hash_function_declaration(fd: &Function<'_>, h: &mut rustc_hash::FxHasher, in
         }
     }
     if let Some(body) = &fd.body {
-        for s in &body.statements {
-            hash_statement(s, h, include_binding_names);
-        }
+        hash_function_body(body, h, include_binding_names);
     }
 }
 

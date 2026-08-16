@@ -88,9 +88,7 @@ pub(super) fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher, i
                     hash_binding_pattern(&param.pattern, h);
                 }
             }
-            for s in &arrow.body.statements {
-                statement::hash_statement(s, h, include_binding_names);
-            }
+            hash_function_body(&arrow.body, h, include_binding_names);
         }
         Expression::FunctionExpression(fe) => {
             (fe.params.items.len() as u32).hash(h);
@@ -103,9 +101,7 @@ pub(super) fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher, i
                 }
             }
             if let Some(body) = &fe.body {
-                for s in &body.statements {
-                    statement::hash_statement(s, h, include_binding_names);
-                }
+                hash_function_body(body, h, include_binding_names);
             }
         }
         Expression::ClassExpression(class) => {

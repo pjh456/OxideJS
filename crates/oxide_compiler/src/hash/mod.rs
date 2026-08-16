@@ -70,3 +70,18 @@ fn hash_binding_pattern(pattern: &BindingPattern, h: &mut rustc_hash::FxHasher) 
         ident.name.as_str().hash(h);
     }
 }
+
+/// 函数体哈希：statements 之后追加 directives。
+///
+/// directives 决定函数体严格模式（`"use strict"` 等），不纳入 hash 时嵌套
+/// 函数/方法体 strict 标志随缓存键错配复用错误字节码（this 绑定语义漂移）。
+fn hash_function_body(
+    body: &oxide_parser::FunctionBody<'_>, h: &mut rustc_hash::FxHasher, include_binding_names: bool,
+) {
+    for stmt in &body.statements {
+        statement::hash_statement(stmt, h, include_binding_names);
+    }
+    for directive in &body.directives {
+        directive.directive.as_str().hash(h);
+    }
+}

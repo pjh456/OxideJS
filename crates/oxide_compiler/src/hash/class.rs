@@ -19,9 +19,7 @@ pub(super) fn hash_class_element(element: &ClassElement, h: &mut rustc_hash::FxH
                 }
             }
             if let Some(body) = &method.value.body {
-                for stmt in &body.statements {
-                    statement::hash_statement(stmt, h, include_binding_names);
-                }
+                hash_function_body(body, h, include_binding_names);
             }
         }
         ClassElement::PropertyDefinition(prop) => {

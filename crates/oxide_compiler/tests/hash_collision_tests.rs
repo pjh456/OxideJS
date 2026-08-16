@@ -94,3 +94,39 @@ fn structural_hash_ignores_binding_names() {
     // 编译模块哈希纳入绑定名：改名的程序哈希不等。
     assert_ne!(compiled("function f(x){ return x }"), compiled("function f(y){ return y }"));
 }
+
+#[test]
+fn function_body_directives_distinguished() {
+    // 嵌套函数体 directives 决定其严格模式：不入 hash 时 strict 标志随缓存键错配。
+    assert_ne!(
+        compiled("function f(){ 'use strict'; return 1 }"),
+        compiled("function f(){ return 1 }"),
+        "function declaration body directive must be part of the hash"
+    );
+    assert_ne!(
+        compiled("var f = function(){ 'use strict'; return 1 }"),
+        compiled("var f = function(){ return 1 }"),
+        "function expression body directive must be part of the hash"
+    );
+    assert_ne!(
+        compiled("var f = () => { 'use strict'; return 1 }"),
+        compiled("var f = () => { return 1 }"),
+        "arrow function body directive must be part of the hash"
+    );
+    assert_ne!(
+        compiled("class A { m(){ 'use strict'; return 1 } }"),
+        compiled("class A { m(){ return 1 } }"),
+        "class method body directive must be part of the hash"
+    );
+    assert_ne!(
+        compiled("var o = { m(){ 'use strict'; return 1 } }"),
+        compiled("var o = { m(){ return 1 } }"),
+        "object literal method body directive must be part of the hash"
+    );
+    // 非 prologue 位置的字符串字面量是普通语句，不构成 directive，哈希不混同。
+    assert_eq!(
+        compiled("function f(){ 'not-a-directive'; return 1 }"),
+        compiled("function f(){ 'not-a-directive'; return 1 }"),
+        "identical sources must hash equally"
+    );
+}
