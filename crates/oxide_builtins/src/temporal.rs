@@ -1576,6 +1576,67 @@ pub fn zoned_date_time_value_of<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeRe
     NativeResult::Err(crate::error::create_type_error(vm, "Temporal.ZonedDateTime has no valueOf"))
 }
 
+/// `Temporal.ZonedDateTime.prototype.withTimeZone(timeZone)`：返回同一 instant 换时区槽的新 ZDT。
+///
+/// # 步骤
+/// 1. branding 校验 receiver 为 ZDT。
+/// 2. 读槽 0 epoch 与槽 2 calendar（保不变），参数经 canonical_time_zone 解析新时区。
+/// 3. make_zoned_date_time 重建对象，仅替换时区槽。
+///
+/// # 边界与前提
+/// - 参数须为字符串；非字符串抛 TypeError。无法解析的时区串抛 RangeError。
+/// - epoch 与 calendar 槽原样保留，仅时区 ID 变化。
+pub fn zoned_date_time_with_time_zone<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_zoned_date_time(vm, obj));
+    let Some(epoch_ns) = get_instant_epoch_ns(obj) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid ZonedDateTime"));
+    };
+    let calendar_id = get_calendar_id(obj, 2);
+    if args.len() < 2 {
+        return NativeResult::Err(crate::error::create_type_error(vm, "timeZone is required"));
+    }
+    let raw = vm.reg(args[1]);
+    if !raw.is_string() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "invalid time zone"));
+    }
+    let input = to_string(raw);
+    let Some((time_zone_id, _)) = canonical_time_zone(&input) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid time zone"));
+    };
+    make_zoned_date_time(vm, epoch_ns, &time_zone_id, &calendar_id)
+}
+
+/// `Temporal.ZonedDateTime.prototype.equals(other)`：与另一 ZDT 按 epoch/时区/日历三槽比较。
+///
+/// # 边界与前提
+/// - receiver 须为 ZDT，否则 TypeError。
+/// - 参数仅支持 ZDT 对象：三槽（epoch/时区/日历）全等才返回 true。
+/// - 非 ZDT 对象或非对象参数：S3 基础范围外，返回 false（完整比较语义待后续）。
+pub fn zoned_date_time_equals<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_zoned_date_time(vm, obj));
+
+    let other = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
+    if !other.is_object() {
+        return NativeResult::Ok(JsValue::bool(false));
+    }
+    let other_ptr = other.as_js_object_ptr();
+    if other_ptr.is_null() {
+        return NativeResult::Ok(JsValue::bool(false));
+    }
+    let other_obj = unsafe { &*other_ptr };
+    if !other_obj.is_zoned_date_time_obj() {
+        return NativeResult::Ok(JsValue::bool(false));
+    }
+    let epoch_equal = get_instant_epoch_ns(obj) == get_instant_epoch_ns(other_obj);
+    let zone_equal = to_string(obj.get_prop_at(1)) == to_string(other_obj.get_prop_at(1));
+    let calendar_equal = get_calendar_id(obj, 2) == get_calendar_id(other_obj, 2);
+    NativeResult::Ok(JsValue::bool(epoch_equal && zone_equal && calendar_equal))
+}
+
 /// ZDT 字段 getter 宏：branding 后读本地分量，按选择函数取字段。
 macro_rules! zoned_date_time_parts_getter {
     ($name:ident, $select:expr) => {

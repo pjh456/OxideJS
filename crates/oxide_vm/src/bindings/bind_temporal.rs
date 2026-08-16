@@ -396,6 +396,16 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
                 oxide_builtins::temporal::zoned_date_time_value_of::<crate::vm::Vm> as *const (),
                 0,
             ),
+            (
+                "withTimeZone",
+                oxide_builtins::temporal::zoned_date_time_with_time_zone::<crate::vm::Vm> as *const (),
+                1,
+            ),
+            (
+                "equals",
+                oxide_builtins::temporal::zoned_date_time_equals::<crate::vm::Vm> as *const (),
+                1,
+            ),
         ],
     );
 

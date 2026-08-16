@@ -1269,3 +1269,68 @@ fn zoned_date_time_to_string_options_validation() {
     .unwrap();
     assert_eq!(str_val(&vm, r), "true|true|true|true");
 }
+
+#[test]
+fn zoned_date_time_with_time_zone_swaps_zone_keeps_instant() {
+    let mut vm = Vm::new();
+    // 换时区后 instant 保留、返回新对象、timeZoneId 更新；大小写不敏感 + ±HH 均可用。
+    let r = eval(
+        &mut vm,
+        "const z = new Temporal.ZonedDateTime(0n, 'UTC');
+         const w = z.withTimeZone('+01:00');
+         w.timeZoneId + '|' + w.epochNanoseconds + '|' +
+         (w !== z) + '|' + z.timeZoneId + '|' +
+         new Temporal.ZonedDateTime(0n, 'uTc').withTimeZone('+01').timeZoneId",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "+01:00|0|true|UTC|+01");
+}
+
+#[test]
+fn zoned_date_time_with_time_zone_bad_receiver_or_zone() {
+    let mut vm = Vm::new();
+    // 非 ZDT receiver 抛 TypeError；非法时区串抛 RangeError；非字符串抛 TypeError。
+    let r = eval(
+        &mut vm,
+        "( () => { try { Temporal.ZonedDateTime.prototype.withTimeZone.call({}, 'UTC'); return 'no-throw'; }
+                   catch (e) { return e instanceof TypeError; } })() + '|' +
+         ( () => { try { new Temporal.ZonedDateTime(0n, 'UTC').withTimeZone('Not/AZone'); return 'no-throw'; }
+                   catch (e) { return e instanceof RangeError; } })() + '|' +
+         ( () => { try { new Temporal.ZonedDateTime(0n, 'UTC').withTimeZone(42); return 'no-throw'; }
+                   catch (e) { return e instanceof TypeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true|true");
+}
+
+#[test]
+fn zoned_date_time_equals_compares_epoch_zone_calendar() {
+    let mut vm = Vm::new();
+    // 同 instant/时区/日历 true；异 instant false；异时区 false；异日历 false。
+    let r = eval(
+        &mut vm,
+        "const a = new Temporal.ZonedDateTime(0n, 'UTC');
+         const b = new Temporal.ZonedDateTime(0n, 'UTC');
+         const c = new Temporal.ZonedDateTime(1n, 'UTC');
+         const d = new Temporal.ZonedDateTime(0n, '-05:00');
+         const e = new Temporal.ZonedDateTime(0n, 'UTC', 'japanese');
+         a.equals(b) + '|' + a.equals(c) + '|' + a.equals(d) + '|' + a.equals(e)",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|false|false|false");
+}
+
+#[test]
+fn zoned_date_time_equals_receiver_branding_and_non_zoned_arg() {
+    let mut vm = Vm::new();
+    // 非 ZDT receiver 抛 TypeError；非 ZDT 对象参数返回 false。
+    let r = eval(
+        &mut vm,
+        "( () => { try { Temporal.ZonedDateTime.prototype.equals.call({}, new Temporal.ZonedDateTime(0n, 'UTC')); return 'no-throw'; }
+                   catch (e) { return e instanceof TypeError; } })() + '|' +
+         new Temporal.ZonedDateTime(0n, 'UTC').equals({}) + '|' +
+         new Temporal.ZonedDateTime(0n, 'UTC').equals('2021-01-01T00:00:00+00:00[UTC]')",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|false|false");
+}
