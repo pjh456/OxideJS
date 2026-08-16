@@ -1050,6 +1050,20 @@ fn canonical_time_zone(value: &str) -> Option<(String, i32)> {
         }
         return None;
     }
+
+    // ±HHMM 基本偏移（"+0000" / "-0530"）：5 字符，无冒号，分钟位可选非零。4 位无冒号归一形式。
+    if input.len() == 5
+        && matches!(input.as_bytes()[0], b'+' | b'-')
+        && input.as_bytes()[1..5].iter().all(u8::is_ascii_digit)
+    {
+        let hour = (input.as_bytes()[1] - b'0') as i32 * 10 + (input.as_bytes()[2] - b'0') as i32;
+        let minute = (input.as_bytes()[3] - b'0') as i32 * 10 + (input.as_bytes()[4] - b'0') as i32;
+        if hour <= 23 && minute <= 59 {
+            let sign = if input.as_bytes()[0] == b'-' { -1 } else { 1 };
+            return Some((input.to_string(), sign * (hour * 60 + minute)));
+        }
+        return None;
+    }
     if input.starts_with("-000000") {
         return None;
     }
@@ -3727,6 +3741,19 @@ fn start_of_day_epoch_ns_by_days(days: i128, offset_minutes: i32) -> Option<i128
     (start.unsigned_abs() <= MAX_INSTANT_NS as u128).then_some(start)
 }
 
+/// 本地墙钟分量 + 时区偏移（分钟）→ 纪元纳秒（zoned_date_time_plain_parts 的逆）。
+///
+/// # 边界与前提
+/// - (year, month, day, time_ns) 须已通过 valid_iso_date / valid_plain_time 校验（调用方保证）。
+/// - 仅做 checked 溢出防护，Instant 范围校验由调用方按需执行。
+#[allow(dead_code)]
+fn local_to_epoch_ns(year: i32, month: u32, day: u32, time_ns: f64, offset_minutes: i32) -> Option<i128> {
+    let days = days_from_civil(i128::from(year), i128::from(month), i128::from(day));
+    days.checked_mul(86_400_000_000_000)?
+        .checked_add(time_ns as i128)?
+        .checked_sub(i128::from(offset_minutes) * 60_000_000_000)
+}
+
 fn plain_date_time_like_parts<H: VmHost>(
     vm: &mut H, value: JsValue, constrain: bool,
 ) -> Result<(i32, u32, u32, f64, Option<String>), JsValue> {
@@ -5438,5 +5465,32 @@ mod tests {
         let rounded = round_instant_ns(946_684_799_999_999_999, 100, InstantRoundingMode::HalfExpand).unwrap();
         let output = format_zoned_date_time_iso(rounded, 0, "UTC", "iso8601", true, Some(8), "auto", "auto", "auto");
         assert_eq!(output, Some("2000-01-01T00:00:00.00000000+00:00[UTC]".to_string()));
+    }
+
+    #[test]
+    fn local_to_epoch_ns_roundtrip() {
+        // 与 parse_instant_string 互逆对拍：同一时刻的本地分量 + 偏移换算回 epoch 一致。
+        assert_eq!(parse_instant_string("2024-01-01T00:00:00+01:00"), local_to_epoch_ns(2024, 1, 1, 0.0, 60),);
+        assert_eq!(
+            parse_instant_string("1969-07-16T13:32:01.234567891Z"),
+            local_to_epoch_ns(1969, 7, 16, 48_721_234_567_891.0, 0),
+        );
+        // startOfDay 最小边界：-271821-04-20 加 1h 再回推 1h 偏移回到 -MAX。
+        assert_eq!(
+            local_to_epoch_ns(-271821, 4, 20, 3_600_000_000_000.0, 60),
+            Some(-8_640_000_000_000_000_000_000),
+        );
+    }
+
+    #[test]
+    fn canonical_time_zone_4_digit_offset() {
+        // ±HHMM 无冒号形式归一：ID 保留原串，offset 分钟数正确换算。
+        assert_eq!(canonical_time_zone("+0000"), Some(("+0000".to_string(), 0)));
+        assert_eq!(canonical_time_zone("-0530"), Some(("-0530".to_string(), -330)));
+        assert_eq!(canonical_time_zone("+2330"), Some(("+2330".to_string(), 1410)));
+        // 非法分钟/小时拒绝。
+        assert_eq!(canonical_time_zone("+2400"), None);
+        assert_eq!(canonical_time_zone("+0060"), None);
+        assert_eq!(canonical_time_zone("+123"), None); // 长度不符
     }
 }
