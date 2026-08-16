@@ -163,21 +163,25 @@ fn fd_returns_new_array() {
 fn this_in_function_reads_value() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "function f() { return this; } f()").unwrap();
-    assert!(result.is_undefined(), "expected undefined in strict-mode call, got: {:?}", result);
+    // sloppy 普通调用 this 绑定全局对象（ECMA-262 10.4.3）。
+    let global = vm.session().global_object().as_ptr() as *mut oxide_types::object::JsObject as usize;
+    assert_eq!(result.as_js_object_ptr() as usize, global, "expected global object, got: {:?}", result);
 }
 
 #[test]
 fn this_in_function_assign_member() {
     let mut vm = Vm::new();
-    let err = eval(&mut vm, "function f(m) { this.message = m; } f('hello'); 1").unwrap_err();
-    assert!(err.contains("TypeError"), "expected TypeError, got: {err}");
+    // sloppy this 为全局对象：成员写入落到全局，不抛错。
+    let result = eval(&mut vm, "function f(m) { this.message = m; } f('hello'); 1").unwrap();
+    assert_eq!(result.as_int(), 1);
 }
 
 #[test]
 fn this_member_access() {
     let mut vm = Vm::new();
-    let err = eval(&mut vm, "function f() { this.x = 42; return this.x; } f()").unwrap_err();
-    assert!(err.contains("TypeError"), "expected TypeError, got: {err}");
+    // sloppy this 为全局对象：读写的成员落在全局，返回写入值。
+    let result = eval(&mut vm, "function f() { this.x = 42; return this.x; } f()").unwrap();
+    assert_eq!(result.as_int(), 42);
 }
 
 #[test]

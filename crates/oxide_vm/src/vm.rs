@@ -1326,6 +1326,7 @@ impl Vm {
         let sub_n_registers = self.sub_modules[sub_idx].n_registers;
         let sub_param_base = self.sub_modules[sub_idx].param_base as usize;
         let sub_is_arrow = self.sub_modules[sub_idx].is_arrow;
+        let sub_is_strict = self.sub_modules[sub_idx].is_strict;
         // 窗口 = min(调用方活动寄存器, 存活上界)；call_window=0 表示调用方全量
         // （运行时发起路径 / 未编码的旧模块）。恢复按窗口回拷，active_reg_limit
         // 仍还原为调用方真实值（caller_active_reg_limit）。
@@ -1360,7 +1361,15 @@ impl Vm {
             };
             self.regs[sub_param_base + i] = v;
         }
-        self.regs[254] = if sub_is_arrow { obj.captured_this() } else { this_value };
+        // this 绑定：箭头函数恒用词法捕获；sloppy 普通函数 this 为 null/undefined 时
+        // 替换为全局对象（ECMA-262 10.4.3）；严格模式与显式方法/构造 this 原样保留。
+        self.regs[254] = if sub_is_arrow {
+            obj.captured_this()
+        } else if !sub_is_strict && this_value.is_nullish() {
+            JsValue::from_js_object(self.session.global_object().as_ptr() as *mut JsObject)
+        } else {
+            this_value
+        };
         self.regs[255] = new_target;
 
         self.saved_bytecode_stack.push(std::mem::take(&mut self.bytecode));

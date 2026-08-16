@@ -656,10 +656,10 @@ fn iterator_terminal_for_each_basic() {
         ("var out = 0; [1, 2, 3].values().forEach(function (v) { out += v; }); out === 6", true),
         // 空迭代立即返回 undefined。
         ("Iterator.from([]).forEach(function () {}) === undefined", true),
-        // 回调 this 为 undefined（规范 Call(procedure, undefined, ...)）。
+        // 回调 this：规范 Call(procedure, undefined) 对 sloppy 回调仍替换为全局对象。
         (
             "var captured; Iterator.from([1]).forEach(function () { captured = this; }); \
-             captured === undefined",
+             captured === globalThis",
             true,
         ),
     ];
@@ -1055,10 +1055,10 @@ fn iterator_helper_map_filter_basic() {
         assert_eq!(to_str(&vm, result), expected, "for {}", src);
     }
     let bool_cases = [
-        // 回调 this 为 undefined。
+        // 回调 this：规范 Call(procedure, undefined) 对 sloppy 回调仍替换为全局对象。
         (
             "var captured; Iterator.from([1]).map(function () { captured = this; return 1; }).next(); \
-             captured === undefined",
+             captured === globalThis",
             true,
         ),
         // 空迭代立即 done。
