@@ -2876,6 +2876,153 @@ pub fn zoned_date_time_since<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     zoned_date_time_difference(vm, args, true)
 }
 
+/// ZDT round 的最小单位表：day + 6 个时间单位（不含 year/month/week）。
+/// 返回 (单位纳秒, 每更高一级单位的数量)；day 的"更高一级数量"= 1（增量仅 1 合法）。
+fn zoned_date_time_round_unit(value: &str) -> Option<(i128, i128)> {
+    match value {
+        "day" | "days" => Some((86_400_000_000_000, 1)),
+        "hour" | "hours" => Some((3_600_000_000_000, 24)),
+        "minute" | "minutes" => Some((60_000_000_000, 60)),
+        "second" | "seconds" => Some((1_000_000_000, 60)),
+        "millisecond" | "milliseconds" => Some((1_000_000, 1_000)),
+        "microsecond" | "microseconds" => Some((1_000, 1_000)),
+        "nanosecond" | "nanoseconds" => Some((1, 1_000)),
+        _ => None,
+    }
+}
+
+/// `Temporal.ZonedDateTime.prototype.round(roundTo)`：按 smallestUnit 在"本地日"域内舍入。
+///
+/// # 步骤
+/// 1. roundTo 解析：undefined → TypeError；字符串 → {smallestUnit: 串}；对象 → 依次 Get
+///    roundingIncrement → roundingMode → smallestUnit，全部读完再统一校验。
+/// 2. receiver：ensure_zoned_date_time → epoch_r；instant_time_zone_offset(tz) 得 offset_min；
+///    zoned_date_time_plain_parts 得 (y, m, d, time_ns)。
+/// 3. 单位表查 smallestUnit（None → RangeError "invalid smallest unit"）。
+/// 4. roundingIncrement 校验：1..=1e9 且真因子（increment < units_per_day 且
+///    units_per_day % increment == 0，否则 RangeError）。day 仅 increment=1 合法。
+/// 5. mode = instant_rounding_mode（None → RangeError）；缺省 "halfExpand"。
+/// 6. day 路径（smallestUnit = day）：startNs/endNs 双算（越界 → RangeError），
+///    dayProgress = epoch_r − startNs，rounded = round_instant_ns(dayProgress, DAY*increment)，
+///    result = startNs + rounded。
+/// 7. else 路径（时间单位）：rounded_time = round_instant_ns(time_ns, unit_ns*increment)
+///    （可进位到 DAY → 本地墙钟自动跨日），result = local_to_epoch_ns(y, m, d, rounded_time)。
+/// 8. 范围校验：|result| > MAX_INSTANT_NS → RangeError。
+/// 9. make_zoned_date_time(vm, result, tz_id, cal_id)（保时区/日历槽）。
+pub fn zoned_date_time_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_zoned_date_time(vm, obj));
+    let Some(epoch_r) = get_instant_epoch_ns(obj) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid ZonedDateTime"));
+    };
+    let time_zone_id = to_string(obj.get_prop_at(1));
+    let Some(offset_min) = instant_time_zone_offset(&time_zone_id) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid time zone"));
+    };
+    let calendar_id = get_calendar_id(obj, 2);
+    let (y, m, d, time_ns) = native_try!(zoned_date_time_plain_parts(vm, obj));
+
+    // roundTo 解析：字符串简写或对象选项，读序对齐 order-of-operations。
+    let round_to = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
+    let (increment_value, mode_value, unit_value) = if round_to.is_string() {
+        (1.0, "halfExpand".to_string(), Some(to_string(round_to)))
+    } else {
+        if !round_to.is_object() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "roundTo must be a string or object"));
+        }
+        let options_ptr = round_to.as_js_object_ptr();
+        if options_ptr.is_null() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "roundTo must be a string or object"));
+        }
+        let options = unsafe { &*options_ptr };
+        let increment_raw = native_try!(temporal_option_value(vm, options, round_to, "roundingIncrement"));
+        let increment = if increment_raw.is_undefined() {
+            1.0
+        } else {
+            native_try!(temporal_option_number(vm, increment_raw))
+        };
+        let mode_raw = native_try!(temporal_option_value(vm, options, round_to, "roundingMode"));
+        let mode = if mode_raw.is_undefined() {
+            "halfExpand".to_string()
+        } else {
+            native_try!(temporal_option_string(vm, mode_raw))
+        };
+        let unit_raw = native_try!(temporal_option_value(vm, options, round_to, "smallestUnit"));
+        let unit = if unit_raw.is_undefined() {
+            None
+        } else {
+            Some(native_try!(temporal_option_string(vm, unit_raw)))
+        };
+        (increment, mode, unit)
+    };
+
+    let Some(mode) = instant_rounding_mode(&mode_value) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding mode"));
+    };
+    let Some(unit_value) = unit_value else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "smallestUnit is required"));
+    };
+    let Some((unit_ns, units_per_day)) = zoned_date_time_round_unit(&unit_value) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid smallest unit"));
+    };
+    if !increment_value.is_finite() {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
+    }
+    let increment = increment_value.trunc();
+    if !(1.0..=1_000_000_000.0).contains(&increment) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
+    }
+    let increment = increment as i128;
+    // 真因子校验：时间单位增量须小于更高一级单位数量且整除（hour/24、minute/60、second/60 拒绝）；
+    // day 特殊：更高一级数量=1，仅 increment==1 合法。
+    let increment_valid = if unit_ns == DAY_NS {
+        increment == 1
+    } else {
+        increment < units_per_day && units_per_day % increment == 0
+    };
+    if !increment_valid {
+        return NativeResult::Err(crate::error::create_range_error(vm, "rounding increment must divide a day"));
+    }
+
+    const DAY_NS: i128 = 86_400_000_000_000;
+    let result_ns = if unit_ns == DAY_NS {
+        // day 路径：startNs/endNs 双算（越界 → RangeError），dayProgress 固定偏移下 ∈ [0, DAY)。
+        let start_ns = native_try!(start_of_day_epoch_ns(y, m, d, offset_min)
+            .ok_or_else(|| crate::error::create_range_error(vm, "invalid start of day")));
+        native_try!(start_of_day_epoch_ns_by_days(
+            days_from_civil(i128::from(y), i128::from(m), i128::from(d)) + 1,
+            offset_min,
+        )
+        .ok_or_else(|| crate::error::create_range_error(vm, "invalid start of day")));
+        let day_progress = epoch_r - start_ns;
+        let Some(quantum_ns) = DAY_NS.checked_mul(increment) else {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
+        };
+        let Some(rounded) = round_instant_ns(day_progress, quantum_ns, mode) else {
+            return NativeResult::Err(crate::error::create_range_error(vm, "ZonedDateTime outside supported range"));
+        };
+        start_ns + rounded
+    } else {
+        // else 路径：本地墙钟时间舍入（可进位到 DAY → 自动跨日），再换算回 epoch。
+        let Some(quantum_ns) = unit_ns.checked_mul(increment) else {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
+        };
+        let Some(rounded_time) = round_instant_ns(time_ns as i128, quantum_ns, mode) else {
+            return NativeResult::Err(crate::error::create_range_error(vm, "ZonedDateTime outside supported range"));
+        };
+        let Some(result) = local_to_epoch_ns(y, m, d, rounded_time as f64, offset_min) else {
+            return NativeResult::Err(crate::error::create_range_error(vm, "ZonedDateTime outside supported range"));
+        };
+        result
+    };
+
+    if result_ns.unsigned_abs() > MAX_INSTANT_NS as u128 {
+        return NativeResult::Err(crate::error::create_range_error(vm, "ZonedDateTime outside supported range"));
+    }
+    make_zoned_date_time(vm, result_ns, &time_zone_id, &calendar_id)
+}
+
 /// ZDT 字段 getter 宏：branding 后读本地分量，按选择函数取字段。
 macro_rules! zoned_date_time_parts_getter {
     ($name:ident, $select:expr) => {
@@ -6912,5 +7059,46 @@ mod tests {
         // 日期+offset 但无时间部分 → 拒绝。
         assert_eq!(parse_plain_time_string("2022-09-15Z"), None);
         assert_eq!(parse_plain_time_string("2022-09-15+00:00"), None);
+    }
+
+    #[test]
+    fn zoned_date_time_round_unit_table() {
+        // day 含独立条目，每单位 (ns, 更高一级数量) 与 spec 对齐；day 更高一级数量为 1。
+        assert_eq!(zoned_date_time_round_unit("day"), Some((86_400_000_000_000, 1)));
+        assert_eq!(zoned_date_time_round_unit("days"), Some((86_400_000_000_000, 1)));
+        assert_eq!(zoned_date_time_round_unit("hour"), Some((3_600_000_000_000, 24)));
+        assert_eq!(zoned_date_time_round_unit("minute"), Some((60_000_000_000, 60)));
+        assert_eq!(zoned_date_time_round_unit("second"), Some((1_000_000_000, 60)));
+        assert_eq!(zoned_date_time_round_unit("millisecond"), Some((1_000_000, 1_000)));
+        assert_eq!(zoned_date_time_round_unit("microsecond"), Some((1_000, 1_000)));
+        assert_eq!(zoned_date_time_round_unit("nanosecond"), Some((1, 1_000)));
+        // year/month/week 及拼写错误不在单位表。
+        assert_eq!(zoned_date_time_round_unit("years"), None);
+        assert_eq!(zoned_date_time_round_unit("months"), None);
+        assert_eq!(zoned_date_time_round_unit("weeks"), None);
+        assert_eq!(zoned_date_time_round_unit("hourz"), None);
+    }
+
+    #[test]
+    fn zoned_date_time_round_else_path_epoch() {
+        // 217175010123456789n +01:00：本地 time_ns = 55_410_123_456_789。
+        // hour/4 quantum 14_400e9 → rounded_time 57_600e9 → local_to_epoch_ns 回推 217177200000000000。
+        let quantum = 3_600_000_000_000 * 4;
+        let rounded = round_instant_ns(55_410_123_456_789, quantum, InstantRoundingMode::HalfExpand).unwrap();
+        assert_eq!(rounded, 57_600_000_000_000);
+        // 本地墙钟日回推：offset 60 分，local_to_epoch_ns 得目标 epoch。
+        let epoch = local_to_epoch_ns(1976, 11, 18, rounded as f64, 60).unwrap();
+        assert_eq!(epoch, 217_177_200_000_000_000);
+    }
+
+    #[test]
+    fn zoned_date_time_round_day_path_epoch() {
+        // 同日本地午夜 startNs（2513 天，offset 60 分），dayProgress 舍到次日 → 217206000000000000。
+        let start_ns = start_of_day_epoch_ns(1976, 11, 18, 60).unwrap();
+        assert_eq!(start_ns, 217_119_600_000_000_000);
+        let day_progress = 217_175_010_123_456_789 - start_ns;
+        let rounded = round_instant_ns(day_progress, 86_400_000_000_000, InstantRoundingMode::HalfExpand).unwrap();
+        assert_eq!(rounded, 86_400_000_000_000);
+        assert_eq!(start_ns + rounded, 217_206_000_000_000_000);
     }
 }

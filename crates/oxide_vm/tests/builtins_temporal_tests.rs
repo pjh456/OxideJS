@@ -2091,6 +2091,112 @@ fn zoned_date_time_add_string_and_time_fields() {
 }
 
 #[test]
+fn zoned_date_time_round_hour_increment() {
+    let mut vm = Vm::new();
+    // 217175010123456789n +01:00 本地 15:23:30.123456789，hour/4 舍到 16:00
+    // （rounding-increments.js 期望 epoch 217177200000000000n）。
+    let r = eval(
+        &mut vm,
+        "const z = new Temporal.ZonedDateTime(217175010123456789n, '+01:00');
+         z.round({ smallestUnit: 'hour', roundingIncrement: 4 }).toString() + '|' +
+         z.round({ smallestUnit: 'hour', roundingIncrement: 4 }).epochNanoseconds",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "1976-11-18T16:00:00+01:00[+01:00]|217177200000000000");
+}
+
+#[test]
+fn zoned_date_time_round_day_path_cross_midnight() {
+    let mut vm = Vm::new();
+    // day 双路径：23:59:59.999999999 本地舍到次日 00:00（对象与字符串简写同效）。
+    let r = eval(
+        &mut vm,
+        "const z = Temporal.ZonedDateTime.from('1976-11-18T23:59:59.999999999+01:00[+01:00]');
+         z.round({ smallestUnit: 'day' }).toString() + '|' +
+         z.round('day').toString() + '|' +
+         Temporal.ZonedDateTime.from('1976-11-18T11:59:59.999999999+01:00[+01:00]').round('day').toString()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "1976-11-19T00:00:00+01:00[+01:00]|1976-11-19T00:00:00+01:00[+01:00]|1976-11-18T00:00:00+01:00[+01:00]"
+    );
+}
+
+#[test]
+fn zoned_date_time_round_time_unit_epoch_values() {
+    let mut vm = Vm::new();
+    // minute/15 与 nanosecond 舍入的 epoch 对拍（rounding-increments.js 合法表）。
+    let r = eval(
+        &mut vm,
+        "const z = new Temporal.ZonedDateTime(217175010123456789n, '+01:00');
+         z.round({ smallestUnit: 'minute', roundingIncrement: 15 }).epochNanoseconds + '|' +
+         z.round({ smallestUnit: 'nanosecond' }).epochNanoseconds + '|' +
+         z.round({ smallestUnit: 'hour', roundingIncrement: 12 }).epochNanoseconds",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "217175400000000000|217175010123456789|217162800000000000");
+}
+
+#[test]
+fn zoned_date_time_round_true_factor_increment_validation() {
+    let mut vm = Vm::new();
+    // 真因子校验：increment==units_per_day（hour/24、minute/60）与 day>1 均 RangeError；
+    // 合法因子放行（hour/12、minute/15、day/1）。
+    let r = eval(
+        &mut vm,
+        "const z = new Temporal.ZonedDateTime(0n, 'UTC');
+         const tryRound = (o) => { try { z.round(o); return 'ok'; } catch (e) { return e instanceof RangeError; } };
+         tryRound({ smallestUnit: 'hour', roundingIncrement: 24 }) + '|' +
+         tryRound({ smallestUnit: 'minute', roundingIncrement: 60 }) + '|' +
+         tryRound({ smallestUnit: 'day', roundingIncrement: 2 }) + '|' +
+         tryRound({ smallestUnit: 'hour', roundingIncrement: 12 }) + '|' +
+         tryRound({ smallestUnit: 'minute', roundingIncrement: 15 }) + '|' +
+         tryRound({ smallestUnit: 'day' })",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true|true|ok|ok|ok");
+}
+
+#[test]
+fn zoned_date_time_round_out_of_range_errors() {
+    let mut vm = Vm::new();
+    // 越界三例：day 路径 startNs/endNs 越 MAX，else 路径进位越 MAX，均 RangeError。
+    let r = eval(
+        &mut vm,
+        "const tryR = (z, o) => { try { z.round(o); return 'ok'; } catch (e) { return e instanceof RangeError; } };
+         tryR(new Temporal.ZonedDateTime(-8640000000000000000000n, '-01:00'), { smallestUnit: 'days' }) + '|' +
+         tryR(new Temporal.ZonedDateTime(8640000000000000000000n, 'UTC'), { smallestUnit: 'day' }) + '|' +
+         tryR(new Temporal.ZonedDateTime(8640000000000000000000n, '+23:59'), { smallestUnit: 'minutes', roundingIncrement: 10, roundingMode: 'ceil' })",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true|true");
+}
+
+#[test]
+fn zoned_date_time_round_branding_and_arg_validation() {
+    let mut vm = Vm::new();
+    // branding TypeError、round() 无参 TypeError、对象无 smallestUnit RangeError、
+    // 非法单位串 RangeError、非法舍入模式 RangeError。
+    let r = eval(
+        &mut vm,
+        "const z = new Temporal.ZonedDateTime(0n, 'UTC');
+         (() => { try { Temporal.ZonedDateTime.prototype.round.call({}, { smallestUnit: 'day' }); return 'no-throw'; }
+                  catch (e) { return e instanceof TypeError; } })() + '|' +
+         (() => { try { z.round(); return 'no-throw'; }
+                  catch (e) { return e instanceof TypeError; } })() + '|' +
+         (() => { try { z.round({}); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })() + '|' +
+         (() => { try { z.round({ smallestUnit: 'years' }); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })() + '|' +
+         (() => { try { z.round({ smallestUnit: 'hour', roundingMode: 'bogus' }); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true|true|true|true");
+}
+
+#[test]
 fn zoned_date_time_add_error_paths() {
     let mut vm = Vm::new();
     // 缺参 TypeError、混合符号 duration RangeError、epoch 越界 RangeError、branding TypeError。
