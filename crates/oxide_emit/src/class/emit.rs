@@ -27,6 +27,10 @@ impl Emitter {
         &self, class: &Class, ctx: &mut CompileCtx, binding_reg: Option<u32>,
     ) -> Result<u32, String> {
         let ctor_name = class.id.as_ref().map(|id| id.name.to_string());
+        // 类声明由调用方提供外层绑定槽（binding_reg=Some），类表达式无外部槽
+        // （None，类名是类体内独立 const 绑定）。真实名 cell 仅声明路径指向
+        // 本作用域绑定；表达式路径按名查 captured_bindings 会命中外层同名绑定。
+        let is_class_decl = binding_reg.is_some();
         let mut pushed_scope = false;
         let binding_reg = if let Some(name) = ctor_name.as_deref() {
             match binding_reg {
@@ -402,13 +406,18 @@ impl Emitter {
             }
             // 类名被外层嵌套函数捕获时，真实名 cell 同样须初始化（类元素自引用走
             // @@class_self_* 合成 cell，二者 cell_idx 不同则各发一次）。
-            if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
-                ctx.inst(Inst::new(
-                    OpCode::MAKE_CELL,
-                    Operand::Reg(binding_reg),
-                    Operand::Imm(cell_idx as u16),
-                    Operand::None,
-                ));
+            // 仅类声明：类名是本作用域绑定，captured_bindings 按名命中的才是
+            // 它的 cell；类表达式名是类体内独立 const 绑定，按名查询只会命中
+            // 外层同名绑定 cell，MAKE_CELL 会把类值误写进外层绑定。
+            if is_class_decl {
+                if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
+                    ctx.inst(Inst::new(
+                        OpCode::MAKE_CELL,
+                        Operand::Reg(binding_reg),
+                        Operand::Imm(cell_idx as u16),
+                        Operand::None,
+                    ));
+                }
             }
         }
 

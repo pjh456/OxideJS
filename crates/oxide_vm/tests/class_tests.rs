@@ -810,3 +810,44 @@ fn private_field_nullish_coalesce_short_circuits_on_defined() {
     .unwrap();
     assert_num(result, 10.0);
 }
+
+// ── 类表达式真实名 cell 边界：类名绑定不触碰外层同名绑定 ──
+
+// 类表达式名是类体内独立 const 绑定：真实名 cell 初始化不得按名命中外层
+// 同名绑定 cell 并覆盖之。外层 var E 被嵌套函数捕获时，读 E 应仍是原值。
+#[test]
+fn class_expression_inner_name_does_not_clobber_outer_binding() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var E = 1; var h = class E { m() { return E; } }; function g() { return E; } g()",
+    )
+    .unwrap();
+    assert_eq!(result.as_int(), 1);
+}
+
+// 类表达式名不得破坏外层同名 let 的 TDZ：提前调用的捕获函数读该名仍抛
+// ReferenceError，而非读到被类值污染的 cell。
+#[test]
+fn class_expression_inner_name_preserves_outer_let_tdz() {
+    let mut vm = Vm::new();
+    let err = eval(
+        &mut vm,
+        "function g(){ return E; } var h = class E { m(){ return E; } }; var r = g(); let E = 5; r",
+    )
+    .unwrap_err();
+    assert!(err.contains("ReferenceError"), "expected ReferenceError, got: {err}");
+}
+
+// 类声明路径不回归：真实名 cell 仍须初始化（嵌套函数经 cell 读类值），
+// 且外层同名 var 不被类声明覆盖。
+#[test]
+fn class_declaration_captured_name_cell_still_initialized() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var E = 1; function mk(){ class E { static n(){ return 5; } } return function(){ return E.n(); }; } var f = mk(); f()*10 + E",
+    )
+    .unwrap();
+    assert_num(result, 51.0);
+}
