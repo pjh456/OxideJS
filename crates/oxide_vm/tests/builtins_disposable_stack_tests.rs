@@ -432,3 +432,23 @@ fn drop_accounts_capability_bytes() {
     let after = vm.session_gc_stats().total_bytes_freed;
     assert!(after > before, "reset 应回收栈对象状态盒，before={before} after={after}");
 }
+
+/// full_reset（dirty 重建）：global 与 object 家族重建后 DisposableStack 仍完整可用
+/// —— 全局槽、proto.constructor、原型方法、instanceof 与原型链全部存活。
+#[test]
+fn full_reset_rebuilds_disposable_stack() {
+    let mut vm = make_vm();
+    eval_in(&mut vm, "new DisposableStack().dispose(); 0").expect("run1");
+    vm.full_reset();
+    let text = eval_str(
+        &mut vm,
+        "var s = new DisposableStack(); var log = []; \
+         s.defer(function() { log.push('A'); }); \
+         s.dispose(); \
+         (s instanceof DisposableStack) + '|' + (DisposableStack.prototype.constructor === DisposableStack) + '|' + \
+         (DisposableStack.prototype[Symbol.dispose] === DisposableStack.prototype.dispose) + '|' + \
+         (DisposableStack.prototype[Symbol.toStringTag] === 'DisposableStack') + '|' + \
+         log.join(',')",
+    );
+    assert_eq!(text, "true|true|true|true|A");
+}
