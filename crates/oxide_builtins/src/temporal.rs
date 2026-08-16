@@ -1598,6 +1598,12 @@ fn zoned_date_time_string_parts<H: VmHost>(
             .map_err(|_| crate::error::create_range_error(vm, "invalid ISO 8601 date-time"))?;
         (None, (year, month, day, total_ns))
     };
+    // 墙钟日范围校验（CheckISODaysRange）：本地日期超出 ±10^8 天直接拒绝，
+    // 即使换算回 epoch 仍在 Instant 界内（offset 能把越界墙钟拉回界内）。
+    if days_from_civil(i128::from(wall_parts.0), i128::from(wall_parts.1), i128::from(wall_parts.2)).abs() > MAX_ISO_DAY
+    {
+        return Err(crate::error::create_range_error(vm, "date-time out of range"));
+    }
     let wall_epoch =
         |offset_minutes: i32| local_to_epoch_ns(wall_parts.0, wall_parts.1, wall_parts.2, wall_parts.3, offset_minutes);
 
@@ -2006,6 +2012,194 @@ pub fn zoned_date_time_equals<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     let zone_equal = to_string(obj.get_prop_at(1)) == to_string(other_obj.get_prop_at(1));
     let calendar_equal = get_calendar_id(obj, 2) == get_calendar_id(other_obj, 2);
     NativeResult::Ok(JsValue::bool(epoch_equal && zone_equal && calendar_equal))
+}
+
+/// until/since 的 other 转换（ToTemporalZonedDateTime 语义，仅取 epoch 参与差值）。
+///
+/// # 步骤
+/// 1. ZDT 对象直读槽 0 epoch；Instant 对象读 epoch（忽略自身时区/日历，仅 epoch 参与差值）。
+/// 2. 字符串须带时区注解：注解时区 + 字符串内偏移按 reject 决策（Z→exact、无偏移→wall）。
+/// 3. PlainDate/PlainDateTime/PlainTime 对象读字段，按 receiver 时区解释为墙钟。
+/// 4. 其他对象按字段 bag 解析：timeZone 缺省 receiver 时区，offset 与 timeZone 冲突 RangeError。
+/// 5. 其他原始值（undefined/null/boolean/number/bigint/symbol）TypeError。
+///
+/// # 边界与前提
+/// - 字符串无注解 / epoch 越 Instant 界 / offset 冲突均抛 RangeError。
+/// - bag 的 timeZone 非字符串抛 TypeError、解析失败抛 RangeError；offset 同理。
+/// - PlainTime 无日期字段，以其墙钟时间落在 receiver 本地日期上。
+fn zoned_date_time_other_epoch_ns<H: VmHost>(
+    vm: &mut H, value: JsValue, default_tz_id: &str, default_wall: (i32, u32, u32),
+) -> Result<i128, JsValue> {
+    if value.is_object() {
+        let ptr = value.as_js_object_ptr();
+        if !ptr.is_null() {
+            let obj = unsafe { &*ptr };
+            if obj.is_zoned_date_time_obj() {
+                return get_instant_epoch_ns(obj)
+                    .ok_or_else(|| crate::error::create_range_error(vm, "invalid ZonedDateTime"));
+            }
+            if obj.is_instant_obj() {
+                return get_instant_epoch_ns(obj)
+                    .ok_or_else(|| crate::error::create_range_error(vm, "invalid Instant"));
+            }
+            if obj.is_plain_date_time_obj() {
+                return zoned_date_time_other_wall_epoch_ns(
+                    vm,
+                    get_double_prop(obj, 0) as i32,
+                    get_double_prop(obj, 1) as u32,
+                    get_double_prop(obj, 2) as u32,
+                    get_double_prop(obj, 3),
+                    default_tz_id,
+                );
+            }
+            if obj.is_plain_date_obj() {
+                return zoned_date_time_other_wall_epoch_ns(
+                    vm,
+                    get_double_prop(obj, 0) as i32,
+                    get_double_prop(obj, 1) as u32,
+                    get_double_prop(obj, 2) as u32,
+                    0.0,
+                    default_tz_id,
+                );
+            }
+            if obj.is_plain_time_obj() {
+                return zoned_date_time_other_wall_epoch_ns(
+                    vm,
+                    default_wall.0,
+                    default_wall.1,
+                    default_wall.2,
+                    get_double_prop(obj, 0),
+                    default_tz_id,
+                );
+            }
+            return zoned_date_time_other_bag_epoch_ns(vm, value, obj, default_tz_id);
+        }
+    }
+    if value.is_string() {
+        return zoned_date_time_string_parts(vm, &to_string(value), "reject").map(|(epoch_ns, _, _)| epoch_ns);
+    }
+    Err(crate::error::create_type_error(vm, "cannot convert to ZonedDateTime"))
+}
+
+/// 本地墙钟分量 + receiver 时区偏移 → epoch（PlainDate/PlainTime 系对象的 other 路径）。
+fn zoned_date_time_other_wall_epoch_ns<H: VmHost>(
+    vm: &mut H, year: i32, month: u32, day: u32, total_ns: f64, default_tz_id: &str,
+) -> Result<i128, JsValue> {
+    if !valid_iso_date(year, month, day) || !total_ns.is_finite() || !(0.0..86_400_000_000_000.0).contains(&total_ns) {
+        return Err(crate::error::create_range_error(vm, "invalid date-time component"));
+    }
+    let offset_minutes = instant_time_zone_offset(default_tz_id)
+        .ok_or_else(|| crate::error::create_range_error(vm, "invalid time zone"))?;
+    local_to_epoch_ns(year, month, day, total_ns, offset_minutes)
+        .ok_or_else(|| crate::error::create_range_error(vm, "invalid date-time"))
+}
+
+/// property bag 路径：timeZone 缺省 receiver 时区，offset 与 timeZone 冲突 RangeError。
+///
+/// # 步骤
+/// 1. timeZone 可选：缺省取 receiver 时区；显式时非字符串 TypeError、解析失败 RangeError。
+/// 2. offset 可选：非字符串 TypeError、坏格式 RangeError。
+/// 3. plain_date_time_object_parts 读年月日时分秒字段，offset 与 timeZone 偏移比对（冲突 RangeError）。
+/// 4. local_to_epoch_ns 换算并校验 Instant 范围。
+fn zoned_date_time_other_bag_epoch_ns<H: VmHost>(
+    vm: &mut H, value: JsValue, obj: &JsObject, default_tz_id: &str,
+) -> Result<i128, JsValue> {
+    let time_zone_raw = temporal_option_value(vm, obj, value, "timeZone")?;
+    let time_zone_offset = if time_zone_raw.is_undefined() {
+        instant_time_zone_offset(default_tz_id)
+            .ok_or_else(|| crate::error::create_range_error(vm, "invalid time zone"))?
+    } else {
+        if !time_zone_raw.is_string() {
+            return Err(crate::error::create_type_error(vm, "invalid time zone"));
+        }
+        let input = to_string(time_zone_raw);
+        instant_time_zone_offset(&input).ok_or_else(|| crate::error::create_range_error(vm, "invalid time zone"))?
+    };
+
+    let offset_raw = temporal_option_value(vm, obj, value, "offset")?;
+    let bag_offset_minutes = if offset_raw.is_undefined() {
+        None
+    } else {
+        if !offset_raw.is_string() {
+            return Err(crate::error::create_type_error(vm, "invalid offset"));
+        }
+        let offset_input = to_string(offset_raw);
+        Some(
+            instant_time_zone_offset(&offset_input)
+                .ok_or_else(|| crate::error::create_range_error(vm, "invalid offset"))?,
+        )
+    };
+
+    let (year, month, day, total_ns, _calendar) = plain_date_time_object_parts(vm, value, obj, false, false)?;
+    if let Some(offset) = bag_offset_minutes {
+        if offset != time_zone_offset {
+            return Err(crate::error::create_range_error(vm, "offset and time zone disagree"));
+        }
+    }
+    let epoch_ns = local_to_epoch_ns(year, month, day, total_ns, time_zone_offset)
+        .ok_or_else(|| crate::error::create_range_error(vm, "invalid date-time"))?;
+    if epoch_ns.unsigned_abs() > MAX_INSTANT_NS as u128 {
+        return Err(crate::error::create_range_error(vm, "ZonedDateTime outside supported range"));
+    }
+    Ok(epoch_ns)
+}
+
+/// ZDT 差值核心：两 ZDT 的 epoch 差 → receiver 时区下的本地墙钟分量差 → difference_core。
+///
+/// # 步骤
+/// 1. receiver 三槽读取：epoch、offset 分钟、时区 ID，本地分量经 zoned_date_time_plain_parts。
+/// 2. other → epoch（zoned_date_time_other_epoch_ns，receiver 时区作 bag 默认）。
+/// 3. epoch 相等快速路径：先于任何分量计算返回全零时长。
+/// 4. other 本地分量：epoch + offset → div_euclid/rem_euclid 拆墙钟（receiver 时区）。
+/// 5. settings = parse_difference_settings(…, default_largest = 4)（ZDT 默认 largest 为 hour）。
+/// 6. difference_core(vm, receiver, other, settings, since)。
+fn zoned_date_time_difference<H: VmHost>(vm: &mut H, args: &[u8], since: bool) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_zoned_date_time(vm, obj));
+    let Some(epoch_r) = get_instant_epoch_ns(obj) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid ZonedDateTime"));
+    };
+    let offset_min_r = native_try!(zoned_date_time_offset_minutes(vm, obj));
+    let time_zone_id = to_string(obj.get_prop_at(1));
+    let (y_r, m_r, d_r, time_ns_r) = native_try!(zoned_date_time_plain_parts(vm, obj));
+
+    let other = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let epoch_o = native_try!(zoned_date_time_other_epoch_ns(vm, other, &time_zone_id, (y_r, m_r, d_r)));
+
+    // epoch 相等 → 空时长：先于任何分量计算（同 epoch 不同 tz 本地分量不同，规范要求空结果）。
+    if epoch_r == epoch_o {
+        return make_duration(vm, [0.0; 10]);
+    }
+
+    // other 按 receiver 时区偏移拆本地墙钟（负 epoch 用 div_euclid/rem_euclid 保持非负余数）。
+    const DAY_NS: i128 = 86_400_000_000_000;
+    let local_ns_o = epoch_o + i128::from(offset_min_r) * 60_000_000_000;
+    let days_o = local_ns_o.div_euclid(DAY_NS);
+    let (y_o, m_o, d_o) = civil_from_days(days_o);
+    let time_ns_o = local_ns_o.rem_euclid(DAY_NS);
+
+    let options_value = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let settings = native_try!(parse_difference_settings(vm, options_value, false, 4));
+    difference_core(
+        vm,
+        (i128::from(y_r), i128::from(m_r), i128::from(d_r)),
+        time_ns_r as i128,
+        (y_o, m_o, d_o),
+        time_ns_o,
+        settings,
+        since,
+    )
+}
+
+/// `Temporal.ZonedDateTime.prototype.until(other, options)`：other 减 receiver 的差值时长。
+pub fn zoned_date_time_until<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    zoned_date_time_difference(vm, args, false)
+}
+
+/// `Temporal.ZonedDateTime.prototype.since(other, options)`：receiver 减 other 的差值时长。
+pub fn zoned_date_time_since<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    zoned_date_time_difference(vm, args, true)
 }
 
 /// ZDT 字段 getter 宏：branding 后读本地分量，按选择函数取字段。
@@ -5012,8 +5206,10 @@ fn plain_date_unit_index(value: &str) -> Option<usize> {
 /// 解析差值选项（对齐 GetDifferenceSettings）：读取顺序 largestUnit →
 /// roundingIncrement → roundingMode → smallestUnit。date_only 时单位限定
 /// year/month/week/day，smallestUnit 缺省 "day"（含时间时缺省 "nanosecond"）。
+/// default_largest 为 largestUnit 缺省/auto 时相对 smallestUnit 的取小上限
+/// （PDT/PD 传 3=day，ZDT 传 4=hour）。
 fn parse_difference_settings<H: VmHost>(
-    vm: &mut H, options_value: JsValue, date_only: bool,
+    vm: &mut H, options_value: JsValue, date_only: bool, default_largest: usize,
 ) -> Result<DifferenceSettings, JsValue> {
     let unit_index = |value: &str| -> Option<usize> {
         if date_only {
@@ -5061,15 +5257,15 @@ fn parse_difference_settings<H: VmHost>(
         Some(index) => index,
         None => return Err(crate::error::create_range_error(vm, "invalid smallestUnit")),
     };
-    // auto/缺省：LargerOfTwoTemporalUnits('day', smallestUnit)。
-    // 索引 0=year…3=day…9=nanosecond，更大单位取更小索引，故为 min(3, smallest)。
+    // auto/缺省：LargerOfTwoTemporalUnits(default_largest, smallestUnit)。
+    // 索引 0=year…3=day…9=nanosecond，更大单位取更小索引，故为 min(default_largest, smallest)。
     let largest_index = match largest_raw {
-        Some(value) if value == "auto" => smallest_index.min(3),
+        Some(value) if value == "auto" => smallest_index.min(default_largest),
         Some(value) => match unit_index(&value) {
             Some(index) => index,
             None => return Err(crate::error::create_range_error(vm, "invalid largestUnit")),
         },
-        None => smallest_index.min(3),
+        None => smallest_index.min(default_largest),
     };
     if largest_index > smallest_index {
         return Err(crate::error::create_range_error(vm, "smallestUnit exceeds largestUnit"));
@@ -5275,7 +5471,7 @@ fn plain_date_time_difference<H: VmHost>(vm: &mut H, args: &[u8], since: bool) -
         Err(error) => return NativeResult::Err(error),
     };
     let options_value = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    let settings = match parse_difference_settings(vm, options_value, false) {
+    let settings = match parse_difference_settings(vm, options_value, false, 3) {
         Ok(settings) => settings,
         Err(error) => return NativeResult::Err(error),
     };
@@ -5650,7 +5846,7 @@ pub fn plain_date_until<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Err(error) => return NativeResult::Err(error),
     };
     let options_value = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    let settings = match parse_difference_settings(vm, options_value, true) {
+    let settings = match parse_difference_settings(vm, options_value, true, 3) {
         Ok(settings) => settings,
         Err(error) => return NativeResult::Err(error),
     };
@@ -5677,7 +5873,7 @@ pub fn plain_date_since<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Err(error) => return NativeResult::Err(error),
     };
     let options_value = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    let settings = match parse_difference_settings(vm, options_value, true) {
+    let settings = match parse_difference_settings(vm, options_value, true, 3) {
         Ok(settings) => settings,
         Err(error) => return NativeResult::Err(error),
     };
@@ -5835,6 +6031,21 @@ mod tests {
         assert_eq!(
             local_to_epoch_ns(-271821, 4, 20, 3_600_000_000_000.0, 60),
             Some(-8_640_000_000_000_000_000_000),
+        );
+    }
+
+    #[test]
+    fn zoned_date_time_string_wall_day_range_boundary() {
+        // ZDT 字符串的墙钟日范围（CheckISODaysRange）边界：±10^8 天内合法，
+        // 第 ±100000001 天（-271821-04-19 / +275760-09-14）即使 epoch 换算回界内也拒绝。
+        assert!(days_from_civil(-271_821, 4, 19).abs() > 100_000_000);
+        assert!(days_from_civil(-271_821, 4, 20).abs() <= 100_000_000);
+        assert!(days_from_civil(275_760, 9, 14).abs() > 100_000_000);
+        assert!(days_from_civil(275_760, 9, 13).abs() <= 100_000_000);
+        // 解析路径一致性：边界内字符串可解析，越界墙钟经偏移拉回界内也不放行。
+        assert_eq!(
+            parse_instant_string("+275760-09-13T01:00+01:00[+01:00]"),
+            Some(8_640_000_000_000_000_000_000),
         );
     }
 

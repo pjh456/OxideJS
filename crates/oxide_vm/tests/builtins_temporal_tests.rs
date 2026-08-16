@@ -1486,3 +1486,162 @@ fn zoned_date_time_from_options_validation() {
     .unwrap();
     assert_eq!(str_val(&vm, r), "true|true|true");
 }
+
+#[test]
+fn zoned_date_time_until_defaults_to_hours() {
+    let mut vm = Vm::new();
+    // 默认 largest = hour：epoch 差 217175010123456789n 分解为 60326h 23m 30.123456789s。
+    let r = eval(
+        &mut vm,
+        "const a = new Temporal.ZonedDateTime(0n, 'UTC');
+         const b = new Temporal.ZonedDateTime(217175010123456789n, 'UTC');
+         a.until(b).toString() + '|' + a.until(b).hours + '|' +
+         a.until(b, { largestUnit: 'auto' }).toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "PT60326H23M30.123456789S|60326|PT60326H23M30.123456789S");
+}
+
+#[test]
+fn zoned_date_time_until_since_are_negatives() {
+    let mut vm = Vm::new();
+    // since 为 until 的精确取反（同 tz 下对称）。
+    let r = eval(
+        &mut vm,
+        "const a = new Temporal.ZonedDateTime(0n, '+01:00');
+         const b = new Temporal.ZonedDateTime(217175010123456789n, '+01:00');
+         b.until(a).toString() + '|' + a.since(b).toString() + '|' + b.since(a).toString()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "-PT60326H23M30.123456789S|-PT60326H23M30.123456789S|PT60326H23M30.123456789S"
+    );
+}
+
+#[test]
+fn zoned_date_time_until_same_epoch_blank() {
+    let mut vm = Vm::new();
+    // 同 epoch 不同 tz：epoch 相等快速路径返回空时长。
+    let r = eval(
+        &mut vm,
+        "const a = new Temporal.ZonedDateTime(0n, 'UTC');
+         const b = new Temporal.ZonedDateTime(0n, '+01:00');
+         (a.until(b).toString() === 'PT0S') + '|' + a.until(b).toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|PT0S");
+}
+
+#[test]
+fn zoned_date_time_until_largest_unit_days() {
+    let mut vm = Vm::new();
+    // 显式 largestUnit：90 天 + 1 小时 1 秒按 days / years 分解。
+    let r = eval(
+        &mut vm,
+        "const a = new Temporal.ZonedDateTime(0n, 'UTC');
+         const b = new Temporal.ZonedDateTime(7779601000000000n, 'UTC');
+         a.until(b, { largestUnit: 'days' }).toString() + '|' +
+         a.until(b, { largestUnit: 'years' }).toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "P90DT1H1S|P3MT1H1S");
+}
+
+#[test]
+fn zoned_date_time_until_casts_argument() {
+    let mut vm = Vm::new();
+    // bag 缺时分秒字段默认 0；字符串带注解；均按 +01:00 墙钟换算 epoch（对拍 casts-argument.js）。
+    let r = eval(
+        &mut vm,
+        "const zdt = Temporal.ZonedDateTime.from('1976-11-18T15:23:30.123456789+01:00[+01:00]');
+         zdt.until({ year: 2019, month: 10, day: 29, hour: 10, timeZone: '+01:00' }).toString() + '|' +
+         zdt.until('2019-10-29T10:46:38.271986102+01:00[+01:00]').toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "PT376434H36M29.876543211S|PT376435H23M8.148529313S");
+}
+
+#[test]
+fn zoned_date_time_until_string_annotation_wall_and_exact() {
+    let mut vm = Vm::new();
+    // 注解无偏移 → 墙钟按注解时区；Z → exact；偏移与注解一致 → 精确时刻（对拍 zoneddatetime-string.js）。
+    let r = eval(
+        &mut vm,
+        "const instance = new Temporal.ZonedDateTime(0n, 'UTC');
+         instance.until('1970-01-01T00:00[+01:00]').toString() + '|' +
+         instance.until('1970-01-01T00:00Z[+01:00]').toString() + '|' +
+         instance.until('1970-01-01T00:00+01:00[+01:00]').toString() + '|' +
+         (instance.until('1970-01-01T00:00[UTC]').toString() === 'PT0S')",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "-PT1H|PT0S|-PT1H|true");
+}
+
+#[test]
+fn zoned_date_time_until_rounding_options() {
+    let mut vm = Vm::new();
+    // roundingMode/roundingIncrement/smallestUnit 生效；非法增量抛 RangeError。
+    let r = eval(
+        &mut vm,
+        "const a = new Temporal.ZonedDateTime(0n, 'UTC');
+         const b = new Temporal.ZonedDateTime(3601000000000n, 'UTC');
+         a.until(b, { smallestUnit: 'hours', roundingMode: 'ceil' }).toString() + '|' +
+         a.until(b, { smallestUnit: 'hours', roundingMode: 'floor' }).toString() + '|' +
+         a.until(b, { smallestUnit: 'hours', roundingIncrement: 2, roundingMode: 'halfExpand' }).toString() + '|' +
+         (() => { try { a.until(b, { smallestUnit: 'hours', roundingIncrement: 24 }); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })() + '|' +
+         (() => { try { a.until(b, { smallestUnit: 'hours', roundingIncrement: 11 }); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "PT2H|PT1H|PT2H|true|true");
+}
+
+#[test]
+fn zoned_date_time_until_error_paths() {
+    let mut vm = Vm::new();
+    // 裸日期时间/纯偏移字符串 RangeError；空对象 TypeError；bag offset 冲突 RangeError。
+    let r = eval(
+        &mut vm,
+        "const instance = new Temporal.ZonedDateTime(0n, 'UTC');
+         ['1970-01-01T00:00', '1970-01-01T00:00Z', '1970-01-01T00:00+01:00', '-271821-04-19T23:00-01:00[-01:00]']
+           .every(s => { try { instance.until(s); return false; } catch (e) { return e instanceof RangeError; } }) + '|' +
+         (() => { try { instance.until({}); return 'no-throw'; } catch (e) { return e instanceof TypeError; } })() + '|' +
+         (() => { try { instance.until({ year: 2021, month: 10, day: 28, offset: '-07:00', timeZone: '+01:00' }); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true|true");
+}
+
+#[test]
+fn zoned_date_time_until_string_limits() {
+    let mut vm = Vm::new();
+    // 边界字符串：Instant 界内通过，墙钟日越界 / epoch 越界抛 RangeError（argument-string-limits.js）。
+    let r = eval(
+        &mut vm,
+        "const instance = new Temporal.ZonedDateTime(0n, 'UTC');
+         ['-271821-04-20T00:00Z[UTC]', '+275760-09-13T00:00Z[UTC]', '+275760-09-13T01:00+01:00[+01:00]']
+           .every(s => { try { instance.until(s); return true; } catch (e) { return false; } }) + '|' +
+         ['-271821-04-19T23:59:59.999999999Z[UTC]', '+275760-09-14T00:00+23:59[+23:59]', '+275760-09-13T00:00:00.000000001Z[UTC]']
+           .every(s => { try { instance.until(s); return false; } catch (e) { return e instanceof RangeError; } })",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true");
+}
+
+#[test]
+fn zoned_date_time_until_bag_default_time_zone() {
+    let mut vm = Vm::new();
+    // bag 缺 timeZone → 按 receiver 时区解释墙钟（+01:00 下 02:00 本地 = 01:00 UTC）；timeZone 非字符串 → TypeError。
+    let r = eval(
+        &mut vm,
+        "const instance = new Temporal.ZonedDateTime(0n, '+01:00');
+         instance.until({ year: 1970, month: 1, day: 1, hour: 2 }).toString() + '|' +
+         (() => { try { instance.until({ year: 2021, month: 10, day: 28, timeZone: 42 }); return 'no-throw'; }
+                  catch (e) { return e instanceof TypeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "PT1H|true");
+}
