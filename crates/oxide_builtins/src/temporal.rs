@@ -2683,7 +2683,7 @@ fn validate_temporal_annotation_suffix(mut suffix: &str) -> Result<(), String> {
                     if critical || saw_critical_calendar {
                         return Err("invalid calendar annotation".into());
                     }
-                } else if !value.eq_ignore_ascii_case("iso8601") {
+                } else if is_builtin_calendar_id(value).is_none() {
                     return Err("invalid calendar annotation".into());
                 } else {
                     calendar_seen = true;
@@ -2885,22 +2885,60 @@ fn parse_temporal_string_impl(input: &str, enforce_date_time_range: bool) -> Res
     Ok((year, month, day, total_ns))
 }
 
-/// ParseTemporalCalendarString：日历标识符 = "iso8601"（ASCII 大小写不敏感）或合法 ISO
-/// 日期(-时间)字符串（含部分日期 YYYY-MM / MM-DD，可选时间、偏移、注解）。
-fn parse_temporal_calendar_string(input: &str) -> Result<(), String> {
+/// 规范 BuiltinCalendarID 全集（18 项）。匹配用 eq_ignore_ascii_case（ASCII 折叠，
+/// 禁 to_lowercase：U+0130 点 I 会被 Unicode 折叠成 i+组合符，误判为 iso8601）。
+const CALENDAR_ID_WHITELIST: [&str; 18] = [
+    "buddhist",
+    "chinese",
+    "coptic",
+    "dangi",
+    "ethioaa",
+    "ethiopic",
+    "gregory",
+    "hebrew",
+    "indian",
+    "islamic",
+    "islamic-civil",
+    "islamic-rcy",
+    "islamic-tbla",
+    "islamic-umalqura",
+    "iso8601",
+    "japanese",
+    "persian",
+    "roc",
+];
+
+/// 严格白名单匹配：命中返回规范小写形式，未命中返回 None。
+fn is_builtin_calendar_id(value: &str) -> Option<&'static str> {
+    CALENDAR_ID_WHITELIST.iter().find(|id| value.eq_ignore_ascii_case(id)).copied()
+}
+
+/// 严格日历 ID 解析：只走 18 项白名单，拒绝 ISO 串（含注解/compact/extended/空串）。
+/// 供构造器日历参数与注解值判定使用。
+fn parse_temporal_calendar_id_strict(input: &str) -> Result<String, String> {
+    let trimmed = input.trim();
+    is_builtin_calendar_id(trimmed)
+        .map(str::to_string)
+        .ok_or_else(|| "invalid calendar".to_string())
+}
+
+/// ParseTemporalCalendarString：日历标识符 = 18 项内置日历 ID（ASCII 大小写不敏感）
+/// 或合法 ISO 日期(-时间)字符串（含部分日期 YYYY-MM / MM-DD，可选时间、偏移、注解）。
+/// 返回规范化日历 ID：白名单命中返回规范小写，ISO 串路径恒为 "iso8601"。
+fn parse_temporal_calendar_string(input: &str) -> Result<String, String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Err("invalid calendar".into());
     }
-    if trimmed.eq_ignore_ascii_case("iso8601") {
-        return Ok(());
+    if let Some(id) = is_builtin_calendar_id(trimmed) {
+        return Ok(id.to_string());
     }
     if trimmed.contains('\u{2212}') {
         return Err("variant minus sign is not valid for calendar".into());
     }
     // 完整日期时间字符串（含注解校验），例如 2020-01-01T00:00:00.000000000[u-ca=iso8601]
     if parse_plain_date_time_string(trimmed).is_ok() {
-        return Ok(());
+        return Ok("iso8601".to_string());
     }
     // 部分日期：YYYY-MM 或 MM-DD（可带注解）
     let text = trimmed.to_owned();
@@ -2910,7 +2948,8 @@ fn parse_temporal_calendar_string(input: &str) -> Result<(), String> {
     if text.contains(['Z', 'z']) {
         return Err("UTC designator is not valid for calendar".into());
     }
-    parse_partial_calendar_date(text)
+    parse_partial_calendar_date(text)?;
+    Ok("iso8601".to_string())
 }
 
 /// 部分 ISO 日期（无时间）：YYYY[-MM[-DD]] 或 MM-DD；校验月份/日期基本范围并拒绝负零年。
@@ -2981,25 +3020,38 @@ fn parse_partial_calendar_date(input: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// ToTemporalCalendar 校验：非 string 抛 TypeError；字符串必须通过 ParseTemporalCalendarString。
-fn temporal_calendar_check<H: VmHost>(vm: &mut H, value: JsValue) -> Result<(), JsValue> {
+/// ToTemporalCalendar（宽松版，property bag 路径用）：undefined → None；
+/// string → 宽松解析（白名单 ID 或 ISO 串）；其他类型 → TypeError。
+/// 日历对象的内部槽 fast path 在日历槽接入后补充。
+fn temporal_calendar_id<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<String>, JsValue> {
     if value.is_undefined() {
-        return Ok(());
+        return Ok(None);
     }
-    if !value.is_string() {
-        return Err(crate::error::create_type_error(vm, "invalid calendar"));
+    if value.is_string() {
+        return parse_temporal_calendar_string(&to_string(value))
+            .map(Some)
+            .map_err(|_| crate::error::create_range_error(vm, "invalid calendar"));
     }
-    if parse_temporal_calendar_string(&to_string(value)).is_err() {
-        return Err(crate::error::create_range_error(vm, "invalid calendar"));
+    Err(crate::error::create_type_error(vm, "invalid calendar"))
+}
+
+/// ToTemporalCalendar 严格版（构造器日历参数用）：字符串只走 18 项白名单，拒绝 ISO 串；
+/// undefined / 其他分支与宽松版一致。
+#[expect(dead_code)] // 构造器日历参数接入前的预留入口
+fn temporal_calendar_id_strict<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<String>, JsValue> {
+    if value.is_string() {
+        return parse_temporal_calendar_id_strict(&to_string(value))
+            .map(Some)
+            .map_err(|_| crate::error::create_range_error(vm, "invalid calendar"));
     }
-    Ok(())
+    temporal_calendar_id(vm, value)
 }
 
 fn plain_date_time_object_parts<H: VmHost>(
     vm: &mut H, value: JsValue, obj: &JsObject, constrain: bool, ignore_time: bool,
-) -> Result<(i32, u32, u32, f64), JsValue> {
-    let calendar = temporal_option_value(vm, obj, value, "calendar")?;
-    temporal_calendar_check(vm, calendar)?;
+) -> Result<(i32, u32, u32, f64, Option<String>), JsValue> {
+    let calendar_raw = temporal_option_value(vm, obj, value, "calendar")?;
+    let calendar = temporal_calendar_id(vm, calendar_raw)?;
 
     // 先按规范顺序读取全部原始字段，暂不转换类型；PlainDate 路径忽略时间字段。
     let (
@@ -3151,7 +3203,7 @@ fn plain_date_time_object_parts<H: VmHost>(
     if !ignore_time && !valid_plain_date_time_range(year, month, day, total_ns) {
         return Err(crate::error::create_range_error(vm, "invalid date-time component"));
     }
-    Ok((year, month, day, total_ns))
+    Ok((year, month, day, total_ns, calendar))
 }
 
 /// 将 ZonedDateTime 按时区偏移转换为本地 PlainDateTime 分量。
@@ -3176,9 +3228,10 @@ fn zoned_date_time_plain_parts<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<
 
 fn plain_date_time_like_parts<H: VmHost>(
     vm: &mut H, value: JsValue, constrain: bool,
-) -> Result<(i32, u32, u32, f64), JsValue> {
+) -> Result<(i32, u32, u32, f64, Option<String>), JsValue> {
     if value.is_string() {
         return parse_plain_date_time_string(&to_string(value))
+            .map(|(year, month, day, total_ns)| (year, month, day, total_ns, None))
             .map_err(|_| crate::error::create_range_error(vm, "invalid ISO 8601 date-time"));
     }
     if !value.is_object() {
@@ -3195,6 +3248,7 @@ fn plain_date_time_like_parts<H: VmHost>(
             get_double_prop(obj, 1) as u32,
             get_double_prop(obj, 2) as u32,
             get_double_prop(obj, 3),
+            None, // 实例日历传播在日历槽接入后补齐
         ));
     }
     if obj.is_plain_date_obj() {
@@ -3203,10 +3257,12 @@ fn plain_date_time_like_parts<H: VmHost>(
             get_double_prop(obj, 1) as u32,
             get_double_prop(obj, 2) as u32,
             0.0,
+            None, // 实例日历传播在日历槽接入后补齐
         ));
     }
     if obj.is_zoned_date_time_obj() {
-        return zoned_date_time_plain_parts(vm, obj);
+        return zoned_date_time_plain_parts(vm, obj)
+            .map(|(year, month, day, total_ns)| (year, month, day, total_ns, None));
     }
     plain_date_time_object_parts(vm, value, obj, constrain, false)
 }
@@ -3250,7 +3306,7 @@ pub fn plain_date_time_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         make_plain_date_time(vm, year, month, day, total_ns)
     } else {
         let constrain = native_try!(temporal_overflow(vm, args));
-        let (year, month, day, total_ns) = native_try!(plain_date_time_like_parts(vm, value, constrain));
+        let (year, month, day, total_ns, _) = native_try!(plain_date_time_like_parts(vm, value, constrain));
         make_plain_date_time(vm, year, month, day, total_ns)
     }
 }
@@ -4324,7 +4380,7 @@ fn plain_date_time_difference<H: VmHost>(vm: &mut H, args: &[u8], since: bool) -
         Err(error) => return NativeResult::Err(error),
     };
     let other = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let (oy, om, od, ot) = match plain_date_time_like_parts(vm, other, true) {
+    let (oy, om, od, ot, _) = match plain_date_time_like_parts(vm, other, true) {
         Ok(parts) => parts,
         Err(error) => return NativeResult::Err(error),
     };
@@ -4419,7 +4475,7 @@ fn object_date_ymd<H: VmHost>(vm: &mut H, val: JsValue, constrain: bool) -> Resu
         let (year, month, day, _) = zoned_date_time_plain_parts(vm, obj)?;
         return Ok((year, month, day));
     }
-    let (year, month, day, _) = plain_date_time_object_parts(vm, val, obj, constrain, true)?;
+    let (year, month, day, _, _) = plain_date_time_object_parts(vm, val, obj, constrain, true)?;
     Ok((year, month, day))
 }
 
@@ -4743,4 +4799,70 @@ pub fn plain_date_since<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         settings,
         true,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_calendar_id_whitelist() {
+        // 18 项白名单全部命中且返回规范小写形式。
+        for id in CALENDAR_ID_WHITELIST {
+            assert_eq!(is_builtin_calendar_id(id), Some(id), "白名单项 {id} 应命中自身");
+        }
+        // ASCII 大小写折叠：仅首字母大写与全大写变体命中。
+        assert_eq!(is_builtin_calendar_id("IsO8601"), Some("iso8601"));
+        assert_eq!(is_builtin_calendar_id("HEBREW"), Some("hebrew"));
+        assert_eq!(is_builtin_calendar_id("Gregory"), Some("gregory"));
+        // 点 I（U+0130）不属于 ASCII 折叠域，必须拒绝，否则误判为 iso8601。
+        assert_eq!(is_builtin_calendar_id("\u{0130}SO8601"), None);
+        // 白名单外与类日期串拒绝。
+        assert_eq!(is_builtin_calendar_id("notacal"), None);
+        assert_eq!(is_builtin_calendar_id("1111-11-11"), None);
+        assert_eq!(is_builtin_calendar_id("11111111"), None);
+    }
+
+    #[test]
+    fn strict_calendar_id_parser() {
+        // 严格解析：只收白名单 ID，ISO 串 / 未知值 / 空串全拒。
+        assert_eq!(parse_temporal_calendar_id_strict("hebrew"), Ok("hebrew".to_string()));
+        assert_eq!(parse_temporal_calendar_id_strict("IsO8601"), Ok("iso8601".to_string()));
+        assert_eq!(parse_temporal_calendar_id_strict(" gregory "), Ok("gregory".to_string()));
+        assert_eq!(
+            parse_temporal_calendar_id_strict("1997-12-04[u-ca=iso8601]"),
+            Err("invalid calendar".to_string())
+        );
+        assert_eq!(parse_temporal_calendar_id_strict("11111111"), Err("invalid calendar".to_string()));
+        assert_eq!(parse_temporal_calendar_id_strict("\u{0130}SO8601"), Err("invalid calendar".to_string()));
+        assert_eq!(parse_temporal_calendar_id_strict(""), Err("invalid calendar".to_string()));
+    }
+
+    #[test]
+    fn loose_calendar_string_parser() {
+        // 宽松解析（property bag 路径）：白名单 ID 返回规范小写，ISO 串路径恒为 iso8601。
+        assert_eq!(parse_temporal_calendar_string("gregory"), Ok("gregory".to_string()));
+        assert_eq!(parse_temporal_calendar_string("iSo8601"), Ok("iso8601".to_string()));
+        assert_eq!(parse_temporal_calendar_string("1997-12-04"), Ok("iso8601".to_string()));
+        assert_eq!(parse_temporal_calendar_string("1997-12-04[u-ca=iso8601]"), Ok("iso8601".to_string()));
+        assert_eq!(parse_temporal_calendar_string(""), Err("invalid calendar".to_string()));
+        // 注解值未过白名单 / 裸未知标识符，两种路径都拒绝。
+        assert!(parse_temporal_calendar_string("[u-ca=notacal]").is_err());
+        assert!(parse_temporal_calendar_string("notacal").is_err());
+    }
+
+    #[test]
+    fn annotation_suffix_calendar_whitelist() {
+        // 首个 u-ca 注解值过 18 项白名单：白名单内放行（含关键标记），白名单外拒绝。
+        assert!(validate_temporal_annotation_suffix("[u-ca=hebrew]").is_ok());
+        assert!(validate_temporal_annotation_suffix("[!u-ca=hebrew]").is_ok());
+        assert!(validate_temporal_annotation_suffix("[u-ca=iSo8601]").is_ok());
+        assert!(validate_temporal_annotation_suffix("[u-ca=notacal]").is_err());
+        assert!(validate_temporal_annotation_suffix("[u-ca=1111-11-11]").is_err());
+        // 点 I 变体不做 Unicode 折叠，拒绝。
+        assert!(validate_temporal_annotation_suffix("[u-ca=\u{0130}SO8601]").is_err());
+        // 第二及后续 u-ca 注解被忽略，不参与校验；含关键标记的重复日历报错。
+        assert!(validate_temporal_annotation_suffix("[u-ca=iso8601][u-ca=discord]").is_ok());
+        assert!(validate_temporal_annotation_suffix("[u-ca=iso8601][!u-ca=iso8601]").is_err());
+    }
 }
