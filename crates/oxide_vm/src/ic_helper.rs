@@ -70,6 +70,10 @@ fn ext_word_count(bytecode: &[Instr], pc: usize) -> usize {
         | OpCode::REST_OBJECT
         | OpCode::INIT_PRIVATE => 1,
         OpCode::DEFINE_ACCESSOR_ATTRS | OpCode::GET_PRIVATE | OpCode::SET_PRIVATE | OpCode::PRIVATE_BRAND_IN => 2,
+        // 逃出计数 ext：BREAK/CONTINUE/RETURN 恒带 1 个 pack_escape_counts 字
+        // （for-of/for-in 逃出层数打包）；lower 对这三条无条件落 ext 字，
+        // dispatch 经 read_escape_counts 消费，扫描必须同步跳过以免错位。
+        OpCode::BREAK | OpCode::CONTINUE | OpCode::RETURN => 1,
         OpCode::CALL_SPREAD | OpCode::NEW_EXPRESSION_SPREAD | OpCode::SUPER_CALL_SPREAD => {
             let header = bytecode.get(pc + 1).copied().unwrap_or(0);
             1 + (header & 0xFF) as usize + ((header >> 8) & 0xFF) as usize
@@ -305,5 +309,41 @@ mod tests {
         clear_ic_caches(&mut bytecode);
         assert_eq!(bytecode[1..4], [3, 5, 9], "CONCAT_N ext 字保持原值");
         assert_eq!(bytecode.len(), 5, "CONCAT_N 指令 + 3 ext + NOP");
+    }
+
+    #[test]
+    fn break_ret_ext_word_count_is_one() {
+        // BREAK/CONTINUE/RETURN 恒带 1 个逃出计数 ext 字（pack_escape_counts）。
+        let bytecode = vec![
+            opcode::encode(OpCode::BREAK, 0, 0, 0),
+            0x0000_0040,
+            opcode::encode(OpCode::RETURN, 1, 0, 0),
+            0x1234_5678,
+        ];
+        assert_eq!(ext_word_count(&bytecode, 0), 1, "BREAK ext 字数 = 1");
+        assert_eq!(ext_word_count(&bytecode, 2), 1, "RETURN ext 字数 = 1");
+    }
+
+    #[test]
+    fn clear_ic_caches_skips_break_ext_word() {
+        // BREAK 的逃出计数 ext 字必须原样保留；其低 8 位 = for_of_count，取 0x40
+        // （CALL 指令号，带 ext）——未登记时扫描会把它当 CALL 指令解析，越过后续
+        // IC 指令导致扩展字漏清，本用例可抓住该错位。
+        let mut bytecode = vec![
+            opcode::encode(OpCode::BREAK, 0, 0, 0),
+            0x0000_0040,
+            opcode::encode(OpCode::IC_GET_PROP, 1, 2, 3),
+            0xAAAA_AAAA,
+            0xBBBB_BBBB,
+            0xCCCC_CCCC,
+            0xDDDD_DDDD,
+            0xEEEE_EEEE,
+            0xFFFF_FFFF,
+            0x1111_1111,
+            0x2222_2222,
+        ];
+        clear_ic_caches(&mut bytecode);
+        assert_eq!(bytecode[1], 0x0000_0040, "BREAK ext 字保持原值");
+        assert_eq!(&bytecode[3..=10], &[0; 8], "后续 IC 扩展字被清零");
     }
 }
