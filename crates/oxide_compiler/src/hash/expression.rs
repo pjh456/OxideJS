@@ -82,6 +82,7 @@ pub(super) fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher, i
             }
         }
         Expression::ArrowFunctionExpression(arrow) => {
+            arrow.r#async.hash(h);
             (arrow.params.items.len() as u32).hash(h);
             if include_binding_names {
                 for param in &arrow.params.items {
@@ -91,6 +92,8 @@ pub(super) fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher, i
             hash_function_body(&arrow.body, h, include_binding_names);
         }
         Expression::FunctionExpression(fe) => {
+            fe.r#async.hash(h);
+            fe.generator.hash(h);
             (fe.params.items.len() as u32).hash(h);
             if include_binding_names {
                 if let Some(id) = &fe.id {

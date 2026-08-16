@@ -8,6 +8,8 @@ pub(super) fn hash_class_element(element: &ClassElement, h: &mut rustc_hash::FxH
             method.r#static.hash(h);
             method.computed.hash(h);
             std::mem::discriminant(&method.kind).hash(h);
+            method.value.r#async.hash(h);
+            method.value.generator.hash(h);
             property::hash_property_key(&method.key, h, include_binding_names);
             if method.computed {
                 property::hash_property_key(&method.key, h, include_binding_names);

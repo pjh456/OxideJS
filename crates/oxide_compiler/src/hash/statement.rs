@@ -194,6 +194,8 @@ fn hash_for_statement(fr: &oxide_parser::ForStatement<'_>, h: &mut rustc_hash::F
 }
 
 fn hash_function_declaration(fd: &Function<'_>, h: &mut rustc_hash::FxHasher, include_binding_names: bool) {
+    fd.r#async.hash(h);
+    fd.generator.hash(h);
     if include_binding_names {
         if let Some(id) = &fd.id {
             id.name.as_str().hash(h);

@@ -130,3 +130,49 @@ fn function_body_directives_distinguished() {
         "identical sources must hash equally"
     );
 }
+
+#[test]
+fn function_async_generator_flags_distinguished() {
+    // 函数声明四形态：body 结构相同（return 1），仅标志不同，键必须互异。
+    // 修复前 async/generator 不入 hash → 四键全同 → 下方 assert_ne 全红。
+    let sync = compiled("function f(){ return 1 }");
+    let async_fn = compiled("async function f(){ return 1 }");
+    let gen = compiled("function* f(){ return 1 }");
+    let async_gen = compiled("async function* f(){ return 1 }");
+    assert_ne!(sync, async_fn, "sync vs async function declaration");
+    assert_ne!(sync, gen, "sync vs generator declaration");
+    assert_ne!(sync, async_gen, "sync vs async generator declaration");
+    assert_ne!(async_fn, gen, "async vs generator declaration");
+    assert_ne!(async_fn, async_gen, "async vs async generator declaration");
+    assert_ne!(gen, async_gen, "generator vs async generator declaration");
+
+    // 函数表达式（含对象字面量方法经 FunctionExpression 分支的覆盖路径）
+    assert_ne!(
+        compiled("var f = function(){ return 1 }"),
+        compiled("var f = async function(){ return 1 }"),
+        "function expression async flag"
+    );
+    assert_ne!(
+        compiled("var f = function(){ return 1 }"),
+        compiled("var f = function*(){ return 1 }"),
+        "function expression generator flag"
+    );
+
+    // 箭头函数（仅 async 标志；箭头无 generator）
+    assert_ne!(compiled("var f = () => 1"), compiled("var f = async () => 1"), "arrow async flag");
+
+    // 类方法（kind 已入 hash，但 async/generator 与 kind 正交）
+    assert_ne!(compiled("class A { m(){ return 1 } }"), compiled("class A { async m(){ return 1 } }"));
+    assert_ne!(compiled("class A { m(){ return 1 } }"), compiled("class A { *m(){ return 1 } }"));
+    assert_ne!(compiled("class A { m(){ return 1 } }"), compiled("class A { async *m(){ return 1 } }"));
+
+    // 对象字面量方法
+    assert_ne!(
+        compiled("var o = { m(){ return 1 } }"),
+        compiled("var o = { async m(){ return 1 } }"),
+        "object literal method async flag"
+    );
+
+    // 同源等价回归
+    assert_eq!(compiled("async function f(){ return 1 }"), compiled("async function f(){ return 1 }"));
+}
