@@ -13,8 +13,12 @@ use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 use walkdir::WalkDir;
 
+mod report;
 mod test262_log;
 use oxide_log::{Level, LogConfig, Output, SUBSYSTEM_COUNT};
+use report::{
+    first_line, format_fail_categories, format_fail_list, FailRecord, MAX_FAIL_MSG_CHARS, MAX_FAIL_RECORD_BYTES,
+};
 
 // 记录当前正在执行的测试路径（thread-local）；每个测试执行前写入，
 // panic hook 据此定位崩溃所在的测试文件。
@@ -120,19 +124,24 @@ fn strip_meta(source: &str) -> &str {
     source
 }
 
-/// 全部已运行测试的累计统计：通过/失败/跳过计数、总耗时与失败原因分类。
+/// 全部已运行测试的累计统计：通过/失败/跳过计数、总耗时、失败原因分类
+/// 与逐路径失败记录（fail_records，供汇总区聚合报告）。
 #[derive(Default)]
 struct RunStats {
     pass: usize,
     fail: usize,
     skip: usize,
     total_ms: u64,
-    fail_categories: HashMap<String, usize>,
+    fail_categories: HashMap<String, usize>, // 计数口径不变（兼容心跳序列化与既有基线对比）
+    // ↓ 新增 ↓
+    categories: Vec<String>, // 类别 id 表（FailRecord.category_id 索引）
+    fail_records: Vec<FailRecord>,
+    fail_record_bytes: usize, // 累计 message 字节（OOM cap）
 }
 
 impl RunStats {
     /// 把另一个 worker 的部分统计并入本对象。用于并行执行后把各 worker 的
-    /// 结果合并回单一总计。
+    /// 结果合并回单一总计。失败记录的类别 id 按本表重映射（两侧类别表独立编号）。
     fn merge(&mut self, other: RunStats) {
         self.pass += other.pass;
         self.fail += other.fail;
@@ -141,20 +150,59 @@ impl RunStats {
         for (cat, count) in other.fail_categories {
             *self.fail_categories.entry(cat).or_insert(0) += count;
         }
+        for rec in other.fail_records {
+            let name = other.categories[rec.category_id as usize].clone();
+            let id = self.category_id_of(&name);
+            self.fail_records.push(FailRecord { category_id: id, ..rec });
+        }
+        self.fail_record_bytes += other.fail_record_bytes;
     }
 
-    /// 把单个测试结果记入运行累计。
-    fn record(&mut self, result: &TestResult) {
+    /// 把单个测试结果记入运行累计；失败同时追加逐路径失败记录（含类别）。
+    fn record(&mut self, index: usize, result: &TestResult) {
         match &result.outcome {
             TestOutcome::Pass(_) => self.pass += 1,
             TestOutcome::Fail(msg) => {
                 let cat = categorize_fail(msg);
-                *self.fail_categories.entry(cat).or_insert(0) += 1;
+                *self.fail_categories.entry(cat.clone()).or_insert(0) += 1;
+                self.push_fail_record(index, cat, String::new(), msg.clone());
                 self.fail += 1;
             }
             TestOutcome::Skip(_) => self.skip += 1,
         }
         self.total_ms += result.duration_ms;
+    }
+
+    /// 取得类别名在 categories 表中的 id（不存在则追加）。
+    fn category_id_of(&mut self, name: &str) -> u16 {
+        debug_assert!(self.categories.len() < u16::MAX as usize, "categories 表超出 u16 容量");
+        if let Some(pos) = self.categories.iter().position(|c| c == name) {
+            return pos as u16;
+        }
+        self.categories.push(name.to_string());
+        (self.categories.len() - 1) as u16
+    }
+
+    /// 追加一条失败记录：单条消息截断到 2 KiB；累计字节超 64 MiB 后本条
+    /// 降级为消息首行摘要且不再累计字节，防止 OOM。
+    fn push_fail_record(&mut self, index: usize, category: String, subkey: String, message: String) {
+        let message = message.chars().take(MAX_FAIL_MSG_CHARS).collect::<String>();
+        let bytes = message.len();
+        let category_id = self.category_id_of(&category);
+        let message = if self.fail_record_bytes + bytes <= MAX_FAIL_RECORD_BYTES {
+            self.fail_record_bytes += bytes;
+            message
+        } else {
+            // 累计超上限：本条降级为消息首行摘要，不再累计字节。
+            first_line(&message).chars().take(120).collect::<String>()
+        };
+        self.fail_records.push(FailRecord {
+            index,
+            category_id,
+            subkey,
+            message,
+            scenario: 0,
+        });
     }
 }
 
@@ -171,6 +219,8 @@ struct RunConfig {
     no_regalloc: bool,
     /// 逐测试打印 PASS/FAIL/SKIP（on/off 结果集合对比用）。
     verbose: bool,
+    /// 汇总尾部不打印 FAIL 清单。
+    no_fail_list: bool,
 }
 
 /// 内嵌的 test262 harness 辅助脚本注册表（编译期 include_str! 打包）。
@@ -325,6 +375,7 @@ impl RunConfig {
             leak_check_interval: 1000,
             no_regalloc: false,
             verbose: false,
+            no_fail_list: false,
         }
     }
 
@@ -340,6 +391,7 @@ impl RunConfig {
                 "--verbose" => config.verbose = true,
                 "--supervise" => config.supervise = true,
                 "--leak-check" => config.leak_check = true,
+                "--no-fail-list" => config.no_fail_list = true,
                 "--help" | "-h" => return Err(Self::usage()),
                 _ if arg.starts_with("--leak-check-interval=") => {
                     config.leak_check_interval =
@@ -370,6 +422,7 @@ impl RunConfig {
          --no-skip    Run capability-excluded tests and count unsupported compile/runtime results as failures.\n\
          --no-regalloc  Disable the liveness/precise-DCE/RegAlloc compiler chain (vregs stay as physical numbers).\n\
          --verbose    Print one PASS/FAIL/SKIP line per test (for on/off result-set comparison).\n\
+         --no-fail-list  Do not print the per-path FAIL list at the end of the run.\n\
          --supervise  Run the suite as single-worker child-process windows with a hard per-test timeout and\n\
          \x20            automatic resume past any hanging/crashing test. A hang or crash is reported by path.\n\
          --leak-check Monitor session_object_ptrs, session_bytes, code_forge.len(), symbol_registry.len() every\n\
@@ -429,11 +482,23 @@ fn run_test(
 
     match result {
         Ok(r) => r,
-        Err(_panic) => {
+        Err(panic) => {
             let dur = start.elapsed().as_millis() as u64;
-            TestResult::fail(path.to_path_buf(), dur, "engine panic (unsupported feature)")
+            TestResult::fail(path.to_path_buf(), dur, panic_payload_str(&panic))
         }
     }
+}
+
+/// 从 catch_unwind 的 panic payload 提取可读文本：`&str` 与 `String` 两种
+/// 常见形态，其余返回占位文本。
+fn panic_payload_str(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        return format!("engine panic: {s}");
+    }
+    if let Some(s) = payload.downcast_ref::<String>() {
+        return format!("engine panic: {s}");
+    }
+    "engine panic (non-string payload)".into()
 }
 
 /// test262 模块用例的依赖加载器：以测试文件父目录为基准解析相对导入，
@@ -1157,7 +1222,11 @@ fn run_supervised(args: &[String], skip_until: usize, end_index: usize, no_skip:
         "  skip   : {}  (timeouts/crashes here by default; --no-skip counts them as fail)",
         stats.skip
     );
-    print_fail_categories(&stats);
+    print_fail_categories(&stats, paths);
+    let fail_list = format_fail_list(&stats, paths);
+    if !fail_list.is_empty() {
+        print!("{fail_list}");
+    }
     println!("═══════════════════════════════════════");
 
     stats.fail == 0
@@ -1304,16 +1373,11 @@ fn main() {
     }
 }
 
-/// 按失败类别计数降序打印 `--- FAIL categories ---` 段（无类别时静默）。
-fn print_fail_categories(stats: &RunStats) {
-    if stats.fail_categories.is_empty() {
-        return;
-    }
-    println!("  --- FAIL categories ---");
-    let mut cats: Vec<_> = stats.fail_categories.iter().collect();
-    cats.sort_by_key(|(_, c)| -(**c as isize));
-    for (cat, count) in cats {
-        println!("    {:>4}  {}", count, cat);
+/// 打印 `--- FAIL categories ---` 段（无类别时静默）；格式委托 report 模块。
+fn print_fail_categories(stats: &RunStats, paths: &[PathBuf]) {
+    let out = format_fail_categories(stats, paths);
+    if !out.is_empty() {
+        print!("{out}");
     }
 }
 
@@ -1504,14 +1568,16 @@ fn run_tests() -> bool {
                                 harness_sources,
                                 &harness_cache,
                             );
-                            stats.record(&result);
+                            stats.record(i, &result);
                             if verbose {
-                                let tag = match &result.outcome {
-                                    TestOutcome::Pass(_) => "PASS",
-                                    TestOutcome::Fail(_) => "FAIL",
-                                    TestOutcome::Skip(_) => "SKIP",
-                                };
-                                println!("{tag} {}", paths_ref[i].display());
+                                match &result.outcome {
+                                    TestOutcome::Pass(_) => println!("PASS {}", paths_ref[i].display()),
+                                    TestOutcome::Fail(msg) => {
+                                        let cat = categorize_fail(msg);
+                                        println!("FAIL {} [{}] {}", paths_ref[i].display(), cat, first_line(msg));
+                                    }
+                                    TestOutcome::Skip(_) => println!("SKIP {}", paths_ref[i].display()),
+                                }
                             }
                             tests_since_kernel_reset += 1;
 
@@ -1571,7 +1637,13 @@ fn run_tests() -> bool {
         stats.pass as f64 / total * 100.0,
         if ran > 0 { stats.pass as f64 / ran as f64 * 100.0 } else { 0.0 }
     );
-    print_fail_categories(&stats);
+    print_fail_categories(&stats, &paths);
+    if !config.no_fail_list {
+        let fail_list = format_fail_list(&stats, &paths);
+        if !fail_list.is_empty() {
+            print!("{fail_list}");
+        }
+    }
     println!("═══════════════════════════════════════");
 
     if stats.fail > 0 && !allow_fail_exit {
@@ -1750,5 +1822,91 @@ mod tests {
         assert!(!key.contains('\t') && !key.contains('\n'), "类别键应已压平，实际 {key:?}");
         assert_eq!(hb.categories.get(key), Some(&2));
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// record 追加失败记录：index 透传、类别正确、消息完整保留。
+    #[test]
+    fn runstats_record_appends_fail_record() {
+        let mut stats = RunStats::default();
+        let result = TestResult::fail(PathBuf::from("a.js"), 7, "vm error: x is not callable");
+        stats.record(5, &result);
+        assert_eq!(stats.fail, 1);
+        assert_eq!(stats.fail_records.len(), 1);
+        assert_eq!(stats.fail_records[0].index, 5);
+        let cat = &stats.categories[stats.fail_records[0].category_id as usize];
+        assert_eq!(cat, "vm: not callable");
+        assert_eq!(stats.fail_records[0].message, "vm error: x is not callable");
+    }
+
+    /// 超长失败消息按字符截断到单条上限。
+    #[test]
+    fn runstats_record_caps_message_length() {
+        let mut stats = RunStats::default();
+        let result = TestResult::fail(PathBuf::from("b.js"), 1, "x".repeat(5000));
+        stats.record(0, &result);
+        assert!(stats.fail_records[0].message.chars().count() <= MAX_FAIL_MSG_CHARS);
+    }
+
+    /// merge 拼接失败记录并重映射类别 id：同类别共享一个 id，字节计数为各侧之和。
+    #[test]
+    fn runstats_merge_concats_fail_records_with_id_remap() {
+        let mut a = RunStats::default();
+        a.record(0, &TestResult::fail(PathBuf::from("x.js"), 1, "vm error: a is not callable"));
+        a.record(1, &TestResult::fail(PathBuf::from("y.js"), 1, "vm error: b is not callable"));
+        let mut b = RunStats::default();
+        b.record(2, &TestResult::fail(PathBuf::from("z.js"), 1, "vm error: c is not callable"));
+        a.merge(b);
+        assert_eq!(a.fail, 3);
+        assert_eq!(a.fail_records.len(), 3);
+        let id0 = a.fail_records[0].category_id;
+        assert_eq!(a.fail_records[1].category_id, id0);
+        assert_eq!(a.fail_records[2].category_id, id0);
+        assert_eq!(a.categories[id0 as usize], "vm: not callable");
+        assert_eq!(a.fail_record_bytes, a.fail_records.iter().map(|r| r.message.len()).sum::<usize>());
+    }
+
+    /// FAIL 清单每类别只列样本条数，其余按折叠行计数。
+    #[test]
+    fn format_fail_list_folds_over_limit() {
+        let mut stats = RunStats::default();
+        let paths: Vec<PathBuf> = (0..7).map(|i| PathBuf::from(format!("p{i}.js"))).collect();
+        for (i, p) in paths.iter().enumerate() {
+            stats.record(i, &TestResult::fail(p.clone(), 1, "vm error: x is not callable"));
+        }
+        let out = format_fail_list(&stats, &paths);
+        let fail_lines = out.lines().filter(|l| l.starts_with("    FAIL ")).count();
+        assert_eq!(fail_lines, 5);
+        assert!(out.contains("(+2 more in vm: not callable)"), "应含折叠行，实际:\n{out}");
+    }
+
+    /// 碎片桶附样本行：路径 + 消息首行，类别带截断尾巴也能前缀匹配。
+    #[test]
+    fn format_fail_categories_attaches_other_bucket_samples() {
+        let mut stats = RunStats::default();
+        let paths = vec![PathBuf::from("p.js")];
+        stats.record(0, &TestResult::fail(paths[0].clone(), 1, "vm error: weird message one two"));
+        let out = format_fail_categories(&stats, &paths);
+        assert!(out.contains("sample:"), "应含样本行，实际:\n{out}");
+        assert!(out.contains("weird message one"), "样本应含消息首行，实际:\n{out}");
+    }
+
+    /// 无失败记录时 FAIL 清单段为空串（调用处静默）。
+    #[test]
+    fn format_fail_list_empty_without_records() {
+        let stats = RunStats::default();
+        let paths: Vec<PathBuf> = Vec::new();
+        assert_eq!(format_fail_list(&stats, &paths), "");
+        assert_eq!(format_fail_categories(&stats, &paths), "");
+    }
+
+    /// panic payload 三类形态：&str / String / 其它类型占位文本。
+    #[test]
+    fn panic_payload_str_extracts_string_and_str() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new("boom");
+        assert_eq!(panic_payload_str(&payload), "engine panic: boom");
+        let payload: Box<dyn std::any::Any + Send> = Box::new("boom".to_string());
+        assert_eq!(panic_payload_str(&payload), "engine panic: boom");
+        let payload: Box<dyn std::any::Any + Send> = Box::new(42u32);
+        assert_eq!(panic_payload_str(&payload), "engine panic (non-string payload)");
     }
 }
