@@ -788,7 +788,9 @@ impl Emitter {
         Ok(())
     }
 
-    /// 遍历解构 pattern 收集内嵌默认值表达式（AssignmentPattern.right）。
+    /// 遍历解构 pattern 收集内嵌默认值表达式（AssignmentPattern.right）与
+    /// 计算键表达式（`{[k]: a}` 的键，运行时求值）——二者都会在参数绑定期被
+    /// 内部闭包引用，须一并纳入捕获分析。
     fn collect_pattern_default_exprs<'a>(
         &self, pattern: &'a oxide_parser::BindingPattern<'a>, out: &mut Vec<&'a oxide_parser::Expression<'a>>,
     ) {
@@ -808,6 +810,9 @@ impl Emitter {
             }
             BindingPattern::ObjectPattern(op) => {
                 for prop in &op.properties {
+                    if prop.computed {
+                        out.push(prop.key.to_expression());
+                    }
                     self.collect_pattern_default_exprs(&prop.value, out);
                 }
                 if let Some(rest) = &op.rest {

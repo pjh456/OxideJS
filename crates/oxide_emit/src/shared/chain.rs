@@ -261,13 +261,11 @@ impl Emitter {
 
     fn emit_property_key_expression(&self, key: &PropertyKey, ctx: &mut CompileCtx) -> Result<u32, String> {
         match key {
-            PropertyKey::Identifier(ident) => {
-                let name = ident.name.as_str();
-                let var_reg = ctx.lookup_or_builtin(name)?;
-                let key_reg = ctx.alloc_reg();
-                ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(key_reg), Operand::Reg(var_reg), Operand::None));
-                Ok(key_reg)
-            }
+            // 标识符计算键（`{[k]: a}`）走通用表达式分发：经 emit_static_identifier_read
+            // 正确解析 upvalue/被捕获 cell/with 动态与未声明标识符读（LOAD_GLOBAL 抛
+            // ReferenceError），与对象字面量/类字段计算键同口径；直接 lookup_or_builtin
+            // 只读局部符号表，嵌套函数引用外层绑定会静默回退读全局。
+            PropertyKey::Identifier(_) => self.emit_expression(key.to_expression(), ctx),
             PropertyKey::StringLiteral(s) => {
                 let key_idx = ctx.add_constant(Constant::String(s.value.to_string()));
                 let key_reg = ctx.alloc_reg();

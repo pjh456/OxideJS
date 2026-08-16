@@ -306,6 +306,8 @@ impl Emitter {
             }
             Statement::VariableDeclaration(vd) => {
                 for d in &vd.declarations {
+                    // 绑定 pattern 的计算键是运行时求值表达式，其引用须纳入捕获。
+                    self.collect_capture_names_binding_keys(&d.id, ref_set, shadow, out);
                     if let Some(init) = &d.init {
                         self.collect_capture_names_expr(init, ref_set, shadow, out);
                     }
@@ -342,6 +344,7 @@ impl Emitter {
                     }
                     if let oxide_parser::ForStatementInit::VariableDeclaration(vd) = init {
                         for d in &vd.declarations {
+                            self.collect_capture_names_binding_keys(&d.id, ref_set, shadow, out);
                             if let Some(i) = &d.init {
                                 self.collect_capture_names_expr(i, ref_set, shadow, out);
                             }
@@ -369,12 +372,22 @@ impl Emitter {
                 // left 的 var 声明遮蔽外层同名绑定，body 内引用不视为捕获外层。
                 let mut for_shadow = shadow.clone();
                 self.collect_for_left_decl_names(&fi.left, &mut for_shadow);
+                if let oxide_parser::ForStatementLeft::VariableDeclaration(vd) = &fi.left {
+                    for d in &vd.declarations {
+                        self.collect_capture_names_binding_keys(&d.id, ref_set, shadow, out);
+                    }
+                }
                 self.collect_capture_names_shadowed(std::slice::from_ref(&fi.body), ref_set, &for_shadow, out);
             }
             Statement::ForOfStatement(fo) => {
                 self.collect_capture_names_expr(&fo.right, ref_set, shadow, out);
                 let mut for_shadow = shadow.clone();
                 self.collect_for_left_decl_names(&fo.left, &mut for_shadow);
+                if let oxide_parser::ForStatementLeft::VariableDeclaration(vd) = &fo.left {
+                    for d in &vd.declarations {
+                        self.collect_capture_names_binding_keys(&d.id, ref_set, shadow, out);
+                    }
+                }
                 self.collect_capture_names_shadowed(std::slice::from_ref(&fo.body), ref_set, &for_shadow, out);
             }
             Statement::BlockStatement(b) => self.collect_capture_names_shadowed(&b.body, ref_set, shadow, out),
@@ -410,6 +423,7 @@ impl Emitter {
                     match decl {
                         oxide_parser::Declaration::VariableDeclaration(vd) => {
                             for d in &vd.declarations {
+                                self.collect_capture_names_binding_keys(&d.id, ref_set, shadow, out);
                                 if let Some(init) = &d.init {
                                     self.collect_capture_names_expr(init, ref_set, shadow, out);
                                 }
@@ -526,6 +540,10 @@ impl Emitter {
             }
             oxide_parser::BindingPattern::ObjectPattern(op) => {
                 for prop in &op.properties {
+                    // 计算键是运行时求值表达式，其引用须纳入捕获。
+                    if prop.computed {
+                        self.collect_capture_names_expr(prop.key.to_expression(), ref_set, shadow, out);
+                    }
                     self.collect_capture_names_binding_pattern(&prop.value, ref_set, shadow, out, catch_shadow);
                 }
                 if let Some(rest) = &op.rest {
@@ -535,6 +553,40 @@ impl Emitter {
             oxide_parser::BindingPattern::AssignmentPattern(ap) => {
                 self.collect_capture_names_expr(&ap.right, ref_set, shadow, out);
                 self.collect_capture_names_binding_pattern(&ap.left, ref_set, shadow, out, catch_shadow);
+            }
+        }
+    }
+
+    /// 遍历绑定 pattern 的计算键表达式（`{[k]: a}` 的键）中的引用：模式键是运行时
+    /// 求值的表达式，嵌套函数引用外层绑定时须纳入捕获（与赋值侧/对象字面量/类字段
+    /// 键遍历同口径）。
+    fn collect_capture_names_binding_keys(
+        &self, pattern: &oxide_parser::BindingPattern, ref_set: &HashSet<String>, shadow: &HashSet<String>,
+        out: &mut HashSet<String>,
+    ) {
+        match pattern {
+            oxide_parser::BindingPattern::BindingIdentifier(_) => {}
+            oxide_parser::BindingPattern::ArrayPattern(ap) => {
+                for p in ap.elements.iter().flatten() {
+                    self.collect_capture_names_binding_keys(p, ref_set, shadow, out);
+                }
+                if let Some(rest) = &ap.rest {
+                    self.collect_capture_names_binding_keys(&rest.argument, ref_set, shadow, out);
+                }
+            }
+            oxide_parser::BindingPattern::ObjectPattern(op) => {
+                for prop in &op.properties {
+                    if prop.computed {
+                        self.collect_capture_names_expr(prop.key.to_expression(), ref_set, shadow, out);
+                    }
+                    self.collect_capture_names_binding_keys(&prop.value, ref_set, shadow, out);
+                }
+                if let Some(rest) = &op.rest {
+                    self.collect_capture_names_binding_keys(&rest.argument, ref_set, shadow, out);
+                }
+            }
+            oxide_parser::BindingPattern::AssignmentPattern(ap) => {
+                self.collect_capture_names_binding_keys(&ap.left, ref_set, shadow, out);
             }
         }
     }
@@ -868,11 +920,49 @@ impl Emitter {
     fn collect_fn_default_captured(
         &self, params: &oxide_parser::FormalParameters, own: &HashSet<String>, out: &mut HashSet<String>,
     ) {
+        let empty_shadow = HashSet::new();
         for p in &params.items {
             if let Some(init) = &p.initializer {
-                self.collect_captured_expr(init, own, out);
+                self.collect_capture_names_expr(init, own, &empty_shadow, out);
             }
-            self.collect_captured_binding_pattern(&p.pattern, own, out);
+            // 形参模式的运行时求值表达式（计算键/内嵌默认值）在子作用域求值，
+            // 其标识符引用须纳入父层 MAKE_CELL 判定。
+            self.collect_captured_pattern_runtime_exprs(&p.pattern, own, out);
+        }
+    }
+
+    /// 遍历绑定 pattern 内全部运行时求值表达式（计算键与 AssignmentPattern 默认值）：
+    /// 这些表达式在子作用域（嵌套函数形参绑定时）求值，引用的父层绑定须建 cell 供
+    /// 子函数 upvalue 读取——与 `collect_capture_names_expr` 同口径（标识符比对）。
+    fn collect_captured_pattern_runtime_exprs(
+        &self, pattern: &oxide_parser::BindingPattern, own: &HashSet<String>, out: &mut HashSet<String>,
+    ) {
+        let empty_shadow = HashSet::new();
+        match pattern {
+            oxide_parser::BindingPattern::BindingIdentifier(_) => {}
+            oxide_parser::BindingPattern::ArrayPattern(ap) => {
+                for p in ap.elements.iter().flatten() {
+                    self.collect_captured_pattern_runtime_exprs(p, own, out);
+                }
+                if let Some(rest) = &ap.rest {
+                    self.collect_captured_pattern_runtime_exprs(&rest.argument, own, out);
+                }
+            }
+            oxide_parser::BindingPattern::ObjectPattern(op) => {
+                for prop in &op.properties {
+                    if prop.computed {
+                        self.collect_capture_names_expr(prop.key.to_expression(), own, &empty_shadow, out);
+                    }
+                    self.collect_captured_pattern_runtime_exprs(&prop.value, own, out);
+                }
+                if let Some(rest) = &op.rest {
+                    self.collect_captured_pattern_runtime_exprs(&rest.argument, own, out);
+                }
+            }
+            oxide_parser::BindingPattern::AssignmentPattern(ap) => {
+                self.collect_capture_names_expr(&ap.right, own, &empty_shadow, out);
+                self.collect_captured_pattern_runtime_exprs(&ap.left, own, out);
+            }
         }
     }
 
@@ -904,6 +994,8 @@ impl Emitter {
             }
             Statement::VariableDeclaration(vd) => {
                 for d in &vd.declarations {
+                    // 绑定 pattern 的计算键是运行时求值表达式，其引用须纳入捕获判定。
+                    self.collect_captured_binding_keys(&d.id, own, out);
                     if let Some(init) = &d.init {
                         self.collect_captured_expr(init, own, out);
                     }
@@ -920,6 +1012,14 @@ impl Emitter {
                 if let Some(init) = &fs.init {
                     if let Some(e) = init.as_expression() {
                         self.collect_captured_expr(e, own, out);
+                    }
+                    if let oxide_parser::ForStatementInit::VariableDeclaration(vd) = init {
+                        for d in &vd.declarations {
+                            self.collect_captured_binding_keys(&d.id, own, out);
+                            if let Some(i) = &d.init {
+                                self.collect_captured_expr(i, own, out);
+                            }
+                        }
                     }
                 }
                 if let Some(t) = &fs.test {
@@ -940,10 +1040,20 @@ impl Emitter {
             }
             Statement::ForInStatement(fi) => {
                 self.collect_captured_expr(&fi.right, own, out);
+                if let oxide_parser::ForStatementLeft::VariableDeclaration(vd) = &fi.left {
+                    for d in &vd.declarations {
+                        self.collect_captured_binding_keys(&d.id, own, out);
+                    }
+                }
                 self.collect_captured_stmt(&fi.body, own, out);
             }
             Statement::ForOfStatement(fo) => {
                 self.collect_captured_expr(&fo.right, own, out);
+                if let oxide_parser::ForStatementLeft::VariableDeclaration(vd) = &fo.left {
+                    for d in &vd.declarations {
+                        self.collect_captured_binding_keys(&d.id, own, out);
+                    }
+                }
                 self.collect_captured_stmt(&fo.body, own, out);
             }
             Statement::BlockStatement(b) => {
@@ -1003,6 +1113,11 @@ impl Emitter {
             }
             oxide_parser::BindingPattern::ObjectPattern(op) => {
                 for prop in &op.properties {
+                    // 计算键表达式（本作用域 catch 参数求值，含 IIFE 等嵌套函数）引用
+                    // 本函数绑定走寄存器，只须扫描键内嵌套函数表达式。
+                    if prop.computed {
+                        self.collect_captured_expr(prop.key.to_expression(), own, out);
+                    }
                     self.collect_captured_binding_pattern(&prop.value, own, out);
                 }
                 if let Some(rest) = &op.rest {
@@ -1012,6 +1127,38 @@ impl Emitter {
             oxide_parser::BindingPattern::AssignmentPattern(ap) => {
                 self.collect_captured_expr(&ap.right, own, out);
                 self.collect_captured_binding_pattern(&ap.left, own, out);
+            }
+        }
+    }
+
+    /// 遍历绑定 pattern 的计算键表达式（`{[k]: a}` 的键）中的引用，供父层捕获判定
+    /// （声明语句/for 头的模式键与 catch/默认值路径同口径）。
+    fn collect_captured_binding_keys(
+        &self, pattern: &oxide_parser::BindingPattern, own: &HashSet<String>, out: &mut HashSet<String>,
+    ) {
+        match pattern {
+            oxide_parser::BindingPattern::BindingIdentifier(_) => {}
+            oxide_parser::BindingPattern::ArrayPattern(ap) => {
+                for p in ap.elements.iter().flatten() {
+                    self.collect_captured_binding_keys(p, own, out);
+                }
+                if let Some(rest) = &ap.rest {
+                    self.collect_captured_binding_keys(&rest.argument, own, out);
+                }
+            }
+            oxide_parser::BindingPattern::ObjectPattern(op) => {
+                for prop in &op.properties {
+                    if prop.computed {
+                        self.collect_captured_expr(prop.key.to_expression(), own, out);
+                    }
+                    self.collect_captured_binding_keys(&prop.value, own, out);
+                }
+                if let Some(rest) = &op.rest {
+                    self.collect_captured_binding_keys(&rest.argument, own, out);
+                }
+            }
+            oxide_parser::BindingPattern::AssignmentPattern(ap) => {
+                self.collect_captured_binding_keys(&ap.left, own, out);
             }
         }
     }

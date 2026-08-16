@@ -250,3 +250,102 @@ fn computed_key_evaluated_before_default_and_getter() {
     let s = unsafe { &*result.as_string_ptr() }.as_str().to_string();
     assert_eq!(s, "5:key,get");
 }
+
+// 跨作用域：绑定侧计算键引用外层绑定须走闭包捕获（修复前键引用落 LOAD_GLOBAL
+// 兜底——读全局错值或 ReferenceError）。
+#[test]
+fn computed_key_binding_captures_outer_identifier_key() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "function f(){ let k='x'; return function(){ const {[k]: a}={x:1}; return a; }; } f()()",
+    )
+    .unwrap();
+    assert_num(result, 1.0);
+}
+
+#[test]
+fn computed_key_binding_captures_outer_const_key() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "function f(){ const k='x'; return function(){ const {[k]: a}={x:2}; return a; }; } f()()",
+    )
+    .unwrap();
+    assert_num(result, 2.0);
+}
+
+#[test]
+fn computed_key_binding_captures_outer_call_key() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "function f(){ function k(){return 'x'} return function(){ const {[k()]: a}={x:1}; return a; }; } f()()",
+    )
+    .unwrap();
+    assert_num(result, 1.0);
+}
+
+#[test]
+fn computed_key_binding_captures_outer_template_key() {
+    // 模板插值键引用外层绑定同样须捕获。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "function f(){ let k='x'; return function(){ const {[`${k}`]: a}={x:3}; return a; }; } f()()",
+    )
+    .unwrap();
+    assert_num(result, 3.0);
+}
+
+#[test]
+fn computed_key_binding_captures_outer_nested_pattern_key() {
+    // 嵌套解构的内层计算键引用外层绑定。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "function f(){ function k(){return 'x'} return function(){ const {a: {[k()]: b}}={a:{x:4}}; return b; }; } f()()",
+    )
+    .unwrap();
+    assert_num(result, 4.0);
+}
+
+#[test]
+fn computed_key_binding_captures_outer_in_catch_pattern() {
+    // catch 参数解构模式的计算键引用外层绑定。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "function f(){ function k(){return 'x'} return function(){ try { throw {x:5}; } catch ({[k()]: a}) { return a; } }; } f()()",
+    )
+    .unwrap();
+    assert_num(result, 5.0);
+}
+
+#[test]
+fn computed_key_binding_captures_outer_in_fn_default_pattern() {
+    // 函数形参解构默认值的计算键引用外层绑定。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "function f(){ function k(){return 'x'} return function g({[k()]: a} = {x:6}) { return a; }; } f()()",
+    )
+    .unwrap();
+    assert_num(result, 6.0);
+}
+
+#[test]
+fn computed_key_binding_same_scope_identifier_key() {
+    // 同作用域标识符键（无外层绑定）不回归，仍走局部符号表。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "const key='x'; const {[key]: a}={x:9}; a").unwrap();
+    assert_num(result, 9.0);
+}
+
+#[test]
+fn computed_key_binding_undeclared_key_throws_reference_error() {
+    // 未声明标识符计算键：读取抛 ReferenceError，而非静默读全局槽错值。
+    let mut vm = Vm::new();
+    let err = eval(&mut vm, "const {[undeclaredKey]: a} = {x:1};").unwrap_err();
+    assert!(err.contains("ReferenceError"), "expected ReferenceError, got {err:?}");
+}

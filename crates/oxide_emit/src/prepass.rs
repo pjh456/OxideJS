@@ -22,6 +22,7 @@ impl Emitter {
             Statement::ExpressionStatement(es) => self.pre_scan_builtin_expr(&es.expression, ctx),
             Statement::VariableDeclaration(vd) => {
                 for d in &vd.declarations {
+                    self.pre_scan_builtin_pattern(&d.id, ctx);
                     if let Some(init) = &d.init {
                         self.pre_scan_builtin_expr(init, ctx);
                     }
@@ -53,6 +54,7 @@ impl Emitter {
                         self.pre_scan_builtin_expr(e, ctx);
                     } else if let oxide_parser::ForStatementInit::VariableDeclaration(decl) = init {
                         for d in &decl.declarations {
+                            self.pre_scan_builtin_pattern(&d.id, ctx);
                             if let Some(init_expr) = &d.init {
                                 self.pre_scan_builtin_expr(init_expr, ctx);
                             }
@@ -68,10 +70,20 @@ impl Emitter {
                 self.pre_scan_builtin_stmt(&fs.body, ctx);
             }
             Statement::ForInStatement(fi) => {
+                if let oxide_parser::ForStatementLeft::VariableDeclaration(vd) = &fi.left {
+                    for d in &vd.declarations {
+                        self.pre_scan_builtin_pattern(&d.id, ctx);
+                    }
+                }
                 self.pre_scan_builtin_expr(&fi.right, ctx);
                 self.pre_scan_builtin_stmt(&fi.body, ctx);
             }
             Statement::ForOfStatement(fo) => {
+                if let oxide_parser::ForStatementLeft::VariableDeclaration(vd) = &fo.left {
+                    for d in &vd.declarations {
+                        self.pre_scan_builtin_pattern(&d.id, ctx);
+                    }
+                }
                 self.pre_scan_builtin_expr(&fo.right, ctx);
                 self.pre_scan_builtin_stmt(&fo.body, ctx);
             }
@@ -94,6 +106,9 @@ impl Emitter {
                     self.pre_scan_builtin_stmt(s, ctx);
                 }
                 if let Some(handler) = &ts.handler {
+                    if let Some(param) = &handler.param {
+                        self.pre_scan_builtin_pattern(&param.pattern, ctx);
+                    }
                     for s in &handler.body.body {
                         self.pre_scan_builtin_stmt(s, ctx);
                     }
@@ -122,6 +137,7 @@ impl Emitter {
             Statement::ExportNamedDeclaration(exp) => {
                 if let Some(Declaration::VariableDeclaration(vd)) = &exp.declaration {
                     for d in &vd.declarations {
+                        self.pre_scan_builtin_pattern(&d.id, ctx);
                         if let Some(init) = &d.init {
                             self.pre_scan_builtin_expr(init, ctx);
                         }
@@ -294,6 +310,37 @@ impl Emitter {
             self.pre_scan_builtin_expr(e, ctx);
         } else if let oxide_parser::Argument::SpreadElement(sp) = arg {
             self.pre_scan_builtin_expr(&sp.argument, ctx);
+        }
+    }
+
+    /// 遍历绑定 pattern 的计算键表达式（`{[k]: a}` 的键）里的 builtin 引用：
+    /// 模式键是运行时求值表达式，键内 builtin 标识符须预先登记固定槽位
+    /// （与对象字面量计算键预扫描同口径）。
+    fn pre_scan_builtin_pattern(&self, pattern: &BindingPattern, ctx: &mut CompileCtx) {
+        match pattern {
+            BindingPattern::BindingIdentifier(_) => {}
+            BindingPattern::ArrayPattern(ap) => {
+                for e in ap.elements.iter().flatten() {
+                    self.pre_scan_builtin_pattern(e, ctx);
+                }
+                if let Some(rest) = &ap.rest {
+                    self.pre_scan_builtin_pattern(&rest.argument, ctx);
+                }
+            }
+            BindingPattern::ObjectPattern(op) => {
+                for prop in &op.properties {
+                    if prop.computed {
+                        self.pre_scan_builtin_expr(prop.key.to_expression(), ctx);
+                    }
+                    self.pre_scan_builtin_pattern(&prop.value, ctx);
+                }
+                if let Some(rest) = &op.rest {
+                    self.pre_scan_builtin_pattern(&rest.argument, ctx);
+                }
+            }
+            BindingPattern::AssignmentPattern(ap) => {
+                self.pre_scan_builtin_pattern(&ap.left, ctx);
+            }
         }
     }
 
