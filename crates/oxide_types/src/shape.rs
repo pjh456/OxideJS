@@ -105,16 +105,12 @@ impl ShapeStore {
         let mut step: u32 = 0;
         cursor = Some(shape_id);
         while let Some(id) = cursor {
-            match self.get_shape(id) {
-                Some(s) => {
-                    if s.property_name == prop_name && s.property_name != EMPTY_SENTINEL {
-                        return Some(total_depth - step - 1);
-                    }
-                    cursor = s.parent;
-                    step += 1;
-                }
-                None => return None,
+            let s = self.get_shape(id)?;
+            if s.property_name == prop_name && s.property_name != EMPTY_SENTINEL {
+                return Some(total_depth - step - 1);
             }
+            cursor = s.parent;
+            step += 1;
         }
         None
     }

@@ -492,18 +492,14 @@ impl Vm {
                 NativeResult::TailCall { callee, this, args } => {
                     // 如 bound 函数：解析尾调用，用其返回值作为构造实例
                     // （或回退到 derived_this）。
-                    match self.call_function_sync(callee, this, &args) {
-                        Ok(val) => {
-                            let instance = if val.is_object() { val } else { derived_this };
-                            if instance.is_object() {
-                                self.set_constructed_proto(instance, new_target_obj)?;
-                            }
-                            self.regs[254] = instance;
-                            self.regs[rd] = self.regs[254];
-                            self.mark_super_called();
-                        }
-                        Err(e) => return Err(e),
+                    let val = self.call_function_sync(callee, this, &args)?;
+                    let instance = if val.is_object() { val } else { derived_this };
+                    if instance.is_object() {
+                        self.set_constructed_proto(instance, new_target_obj)?;
                     }
+                    self.regs[254] = instance;
+                    self.regs[rd] = self.regs[254];
+                    self.mark_super_called();
                 }
             }
         } else if super_obj.sub_module_index() > 0 {

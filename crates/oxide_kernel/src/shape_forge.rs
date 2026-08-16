@@ -185,21 +185,17 @@ impl ShapeForge {
         let mut prop_steps: u32 = 0;
         let mut cursor = Some(shape_id);
         while let Some(id) = cursor {
-            match shapes.get((id - 1) as usize).and_then(|s| s.clone()) {
-                Some(s) => {
-                    if s.property_name != EMPTY_SENTINEL {
-                        if s.property_name == prop_name {
-                            let pos = total_depth.checked_sub(prop_steps + 1)?;
-                            drop(shapes);
-                            self.positions.insert(cache_key, pos);
-                            return Some(pos);
-                        }
-                        prop_steps += 1;
-                    }
-                    cursor = s.parent;
+            let s = shapes.get((id - 1) as usize).and_then(|s| s.clone())?;
+            if s.property_name != EMPTY_SENTINEL {
+                if s.property_name == prop_name {
+                    let pos = total_depth.checked_sub(prop_steps + 1)?;
+                    drop(shapes);
+                    self.positions.insert(cache_key, pos);
+                    return Some(pos);
                 }
-                None => return None,
+                prop_steps += 1;
             }
+            cursor = s.parent;
         }
         None
     }
