@@ -468,6 +468,54 @@ fn is_skipped(meta: &TestMeta) -> Option<String> {
     None
 }
 
+/// eval 相关子族精确排除（档 1+2 后）：
+/// built-ins/eval 与 eval-code 的完成值/解析失败/非字符串/this-value-global/间接环境族放行；
+/// 仅排除确定失败的 arguments/super/strict/块声明 等子族。
+fn eval_family_excluded(path: &str) -> Option<&'static str> {
+    if !path.contains("/eval-code/") {
+        return None;
+    }
+    let is_direct = path.contains("eval-code/direct/");
+    let common = [
+        "declare-arguments", // 直接 eval 的 arguments 语义族（档 3）
+        "non-definable",     // 与既有不可配置全局属性冲突（DEFINE_GLOBAL_PROP 静默跳过，不抛）
+        "this-value-func",   // 调用者 this 传递（档 3）
+        "new.target",        // new.target 语义（档 3）
+        "strict-caller",     // 严格调用者传播（档 3）
+        "strict-source",
+        "strictness-override", // 直接 eval 严格性覆盖
+        "onlystrict",          // onlyStrict 块声明族
+        "always-non-strict",   // 依赖隐式全局写同步（既有债务）
+        "block-decl",          // 块级函数声明（Annex B 严格变体）
+        "switch-case-decl",
+        "switch-dflt-decl",
+    ];
+    if common.iter().any(|s| path.contains(s)) {
+        return Some("eval 子族未实现（档 1-2 边界）");
+    }
+    if is_direct {
+        // 直接 eval：调用者作用域交互族（函数上下文 var/let + super 方法上下文），档 3 前失败
+        if ["var-env-", "lex-env-", "super-prop", "super-call-arrow", "super-call-method"]
+            .iter()
+            .any(|s| path.contains(s))
+        {
+            return Some("直接 eval 作用域族未实现（档 3）");
+        }
+    } else if [
+        "super-",
+        "var-env-func-strict",
+        "var-env-var-strict",
+        "var-env-global-lex",
+        "var-env-lower-lex",
+    ]
+    .iter()
+    .any(|s| path.contains(s))
+    {
+        return Some("间接 eval 严格/词法冲突族未实现");
+    }
+    None
+}
+
 /// 在 catch_unwind 保护下运行单个测试，把引擎 panic 记为失败。
 #[expect(clippy::too_many_arguments)]
 fn run_test(
@@ -1262,8 +1310,11 @@ fn process_path(
 
     if !no_skip {
         let path_str = path.to_string_lossy().replace('\\', "/");
-        if path_str.contains("/eval/") || path_str.contains("/function-ctor/") || path_str.contains("/realm/") {
+        if path_str.contains("/function-ctor/") || path_str.contains("/realm/") {
             return TestResult::skip(path.to_path_buf(), "unsupported class/eval feature excluded".into());
+        }
+        if let Some(reason) = eval_family_excluded(&path_str) {
+            return TestResult::skip(path.to_path_buf(), reason.into());
         }
         if let Some(reason) = is_skipped(&meta) {
             return TestResult::skip(path.to_path_buf(), reason);

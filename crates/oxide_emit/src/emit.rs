@@ -83,6 +83,7 @@ const BUILTIN_GLOBALS: &[&str] = &[
     "SyntaxError",
     "URIError",
     "EvalError",
+    "eval",
     "SuppressedError",
     "DisposableStack",
     "AsyncDisposableStack",

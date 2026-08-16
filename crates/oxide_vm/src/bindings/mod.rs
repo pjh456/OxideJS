@@ -642,6 +642,7 @@ fn bind_global_functions(core: &Arc<KernelCore>, session: &KernelSession, global
                 oxide_builtins::global::decode_uri_component::<crate::vm::Vm> as *const (),
                 1,
             ),
+            ("eval", oxide_builtins::eval::eval::<crate::vm::Vm> as *const (), 1),
         ],
     );
 }

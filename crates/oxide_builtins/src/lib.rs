@@ -25,6 +25,8 @@ pub mod date;
 pub mod disposable_stack;
 /// Error 内置对象实现（各类 Error 构造函数与 stack/toString）。
 pub mod error;
+/// eval 全局函数实现（动态编译执行脚本/表达式）。
+pub mod eval;
 /// Function 内置对象实现（call/apply/bind/toString）。
 pub mod function;
 /// 全局函数模块（URI 编解码与 Annex B 的 escape/unescape）。
