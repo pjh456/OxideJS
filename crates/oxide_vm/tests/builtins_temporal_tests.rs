@@ -926,6 +926,154 @@ fn zoned_date_time_constructor_wrong_calendar_is_type_error() {
 }
 
 #[test]
+fn zoned_date_time_epoch_getters() {
+    let mut vm = Vm::new();
+    // 正负 epoch 的秒/毫秒/微秒除法：负值向下取整（floor）。
+    let r = eval(
+        &mut vm,
+        "const z = new Temporal.ZonedDateTime(217175010123456789n, 'UTC');
+         const n = new Temporal.ZonedDateTime(-217175010876543211n, 'UTC');
+         z.epochSeconds + ',' + z.epochMilliseconds + ',' + z.epochMicroseconds + ',' +
+         n.epochSeconds + ',' + n.epochMilliseconds + ',' + n.epochMicroseconds",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "217175010,217175010123,217175010123456,-217175011,-217175010877,-217175010876544"
+    );
+}
+
+#[test]
+fn zoned_date_time_calendar_getters() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "const z = new Temporal.ZonedDateTime(0n, 'UTC');
+         z.year + ',' + z.month + ',' + z.day + ',' + z.hour + ',' + z.minute + ',' +
+         z.second + ',' + z.millisecond + ',' + z.microsecond + ',' + z.nanosecond",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "1970,1,1,0,0,0,0,0,0");
+}
+
+#[test]
+fn zoned_date_time_offset_balance_negative_time_units() {
+    let mut vm = Vm::new();
+    // 负偏移跨日：60_000_000_001n + "-00:02" → 本地 23:59:00.000000001。
+    let r = eval(
+        &mut vm,
+        "const z = new Temporal.ZonedDateTime(60_000_000_001n, '-00:02');
+         z.minute + ',' + z.second + ',' + z.millisecond + ',' + z.microsecond + ',' + z.nanosecond",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "59,0,0,0,1");
+}
+
+#[test]
+fn zoned_date_time_balance_negative_day() {
+    let mut vm = Vm::new();
+    // 负偏移跨日到前一天：86_400_000_000_001n + "-00:02" → day 1（1970-01-01）/ 23:58。
+    let r = eval(
+        &mut vm,
+        "const z = new Temporal.ZonedDateTime(86_400_000_000_001n, '-00:02');
+         z.day + ',' + z.hour + ',' + z.minute",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "1,23,58");
+}
+
+#[test]
+fn zoned_date_time_negative_epoch_millisecond() {
+    let mut vm = Vm::new();
+    // 负 epoch floor 语义（镜像 epochMilliseconds/basic.js）→ 本地时分使 ms 为 0。
+    let r = eval(&mut vm, "new Temporal.ZonedDateTime(-13_849_764_999_999_999n, 'UTC').millisecond === 0").unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn zoned_date_time_week_fields() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "const a = new Temporal.ZonedDateTime(217178610123456789n, 'UTC');
+         const z = new Temporal.ZonedDateTime(0n, 'UTC');
+         const y = new Temporal.ZonedDateTime(-4n*864000000000000n, 'UTC');
+         a.dayOfWeek + ',' + a.dayOfYear + ',' + a.daysInMonth + ',' + a.inLeapYear + ',' +
+         z.weekOfYear + ',' + z.yearOfWeek + ',' + y.yearOfWeek",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "4,323,30,true,1,1970,1969");
+}
+
+#[test]
+fn zoned_date_time_offset_and_offset_nanoseconds() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "new Temporal.ZonedDateTime(0n, '+01:00').offset + ',' +
+         new Temporal.ZonedDateTime(0n, 'UTC').offset + ',' +
+         new Temporal.ZonedDateTime(0n, '-05:00').offset + ',' +
+         new Temporal.ZonedDateTime(0n, '+01:00').offsetNanoseconds + ',' +
+         new Temporal.ZonedDateTime(0n, '-05:00').offsetNanoseconds",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "+01:00,+00:00,-05:00,3600000000000,-18000000000000");
+}
+
+#[test]
+fn zoned_date_time_constants_and_month_code() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "const z = new Temporal.ZonedDateTime(0n, 'UTC');
+         z.era + ',' + z.eraYear + ',' + z.monthCode + ',' + z.daysInWeek + ',' + z.monthsInYear",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "undefined,undefined,M01,7,12");
+}
+
+#[test]
+fn zoned_date_time_m0_plus_hh_offset_and_hours_in_day() {
+    let mut vm = Vm::new();
+    // M0：+01 基本偏移可构造，且 offset 仍规范化、hoursInDay 恒 24。
+    let r = eval(
+        &mut vm,
+        "const z = new Temporal.ZonedDateTime(0n, '+01');
+         z.timeZoneId + ',' + z.offset + ',' + z.hoursInDay",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "+01,+01:00,24");
+}
+
+#[test]
+fn zoned_date_time_hours_in_day_out_of_range() {
+    let mut vm = Vm::new();
+    // 今日/明日当地午夜越 Instant 界 → hoursInDay 抛 RangeError。
+    let r = eval(
+        &mut vm,
+        "(() => { try { new Temporal.ZonedDateTime(-864n*10n**19n, '-01').hoursInDay; return false; }
+           catch (e) { return e instanceof RangeError; } })()
+         && (() => { try { new Temporal.ZonedDateTime(864n*10n**19n, 'UTC').hoursInDay; return false; }
+           catch (e) { return e instanceof RangeError; } })()",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn zoned_date_time_getters_branding_type_error() {
+    let mut vm = Vm::new();
+    // 非 ZDT receiver 调 getter 一律抛 TypeError（branding）。
+    let r = eval(
+        &mut vm,
+        "(() => { try { Temporal.ZonedDateTime.prototype.year.call({}); return false; }
+           catch (e) { return e instanceof TypeError; } })()",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
 fn temporal_instance_as_calendar_fast_path_reads_slot() {
     let mut vm = Vm::new();
     // Temporal 实例作 property bag 的 calendar：直接读内部槽，不触发 calendar 属性 getter。
