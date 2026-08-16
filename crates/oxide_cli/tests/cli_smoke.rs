@@ -2,8 +2,8 @@ use std::process::Command;
 
 #[test]
 fn eval_simple_expression() {
-    let output = Command::new("cargo")
-        .args(["run", "--", "eval", "1 + 2"])
+    let output = Command::new(env!("CARGO_BIN_EXE_oxide"))
+        .args(["eval", "1 + 2"])
         .output()
         .expect("failed to run oxide eval");
 
@@ -14,8 +14,8 @@ fn eval_simple_expression() {
 
 #[test]
 fn eval_syntax_error() {
-    let output = Command::new("cargo")
-        .args(["run", "--", "eval", "function("])
+    let output = Command::new(env!("CARGO_BIN_EXE_oxide"))
+        .args(["eval", "function("])
         .output()
         .expect("failed to run oxide eval");
 
@@ -27,8 +27,8 @@ fn eval_syntax_error() {
 #[test]
 fn run_file() {
     let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/hello.js");
-    let output = Command::new("cargo")
-        .args(["run", "--", "run", fixture])
+    let output = Command::new(env!("CARGO_BIN_EXE_oxide"))
+        .args(["run", fixture])
         .output()
         .expect("failed to run oxide run");
 
@@ -39,8 +39,8 @@ fn run_file() {
 
 #[test]
 fn bench_help() {
-    let output = Command::new("cargo")
-        .args(["run", "--", "bench", "--help"])
+    let output = Command::new(env!("CARGO_BIN_EXE_oxide"))
+        .args(["bench", "--help"])
         .output()
         .expect("failed to run oxide bench --help");
 

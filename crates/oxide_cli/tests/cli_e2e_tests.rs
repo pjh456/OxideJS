@@ -1,8 +1,8 @@
 use std::process::Command;
 
 fn run_eval(js: &str) -> std::process::Output {
-    Command::new("cargo")
-        .args(["run", "--", "eval", js])
+    Command::new(env!("CARGO_BIN_EXE_oxide"))
+        .args(["eval", js])
         .output()
         .expect("failed to run oxide eval")
 }
