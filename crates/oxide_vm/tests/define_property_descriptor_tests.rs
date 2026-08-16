@@ -53,7 +53,8 @@ fn define_property_partial_enumerable_only_preserves_value() {
 // ── getOwnPropertyDescriptor 返回数据字段（无 get/set）──
 #[test]
 fn get_own_property_descriptor_data_fields() {
-    let r = eval_str(
+    // 返回值是数组对象，Vm 需存活到断言结束（对象值为指向会话内存的裸指针）。
+    let (_vm, r) = eval(
         "var obj={x:1}; var d=Object.getOwnPropertyDescriptor(obj,'x'); [d.value,d.writable,d.enumerable,d.configurable,d.get,d.set]",
     )
     .unwrap();
@@ -73,7 +74,8 @@ fn get_own_property_descriptor_data_fields() {
 // ── getOwnPropertyDescriptor 返回访问器字段（无 value/writable）──
 #[test]
 fn get_own_property_descriptor_accessor_fields() {
-    let r = eval_str(
+    // 返回值是数组对象，Vm 需存活到断言结束（对象值为指向会话内存的裸指针）。
+    let (_vm, r) = eval(
         "var obj={}; Object.defineProperty(obj,'x',{get:function(){return 1;},enumerable:true,configurable:true}); var d=Object.getOwnPropertyDescriptor(obj,'x'); [d.get!==undefined,d.set===undefined,d.enumerable,d.configurable,d.value===undefined,d.writable===undefined]",
     )
     .unwrap();
@@ -106,7 +108,8 @@ fn define_property_new_attributes_only_defaults_value_undefined() {
 // ── 既有属性的部分 configurable 更新保留既有值 ──
 #[test]
 fn define_property_partial_configurable_preserves_value() {
-    let r = eval_str("var obj={}; obj.x=1; Object.defineProperty(obj,'x',{configurable:false}); [obj.x]").unwrap();
+    // 返回值是数组对象，Vm 需存活到断言结束（对象值为指向会话内存的裸指针）。
+    let (_vm, r) = eval("var obj={}; obj.x=1; Object.defineProperty(obj,'x',{configurable:false}); [obj.x]").unwrap();
     let arr = unsafe { &*r.as_js_object_ptr() };
     assert!(arr.get_prop_at(0).is_int() && arr.get_prop_at(0).as_int() == 1, "value should be 1");
 }

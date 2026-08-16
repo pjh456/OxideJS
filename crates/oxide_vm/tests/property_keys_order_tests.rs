@@ -115,7 +115,8 @@ fn keys_with_leading_zero_not_integer_index() {
 #[test]
 fn numeric_literal_key_materializes_as_string() {
     // `{5:1}` 的键是字符串 "5"（键经 ToPropertyKey 字符串化），读 o[5]/o["5"] 同一键。
-    let r = eval_str("var o={5:1}; Object.getOwnPropertyNames(o)[0]").unwrap();
+    // 字符串值是会话内存裸指针，Vm 需存活到拷贝结束。
+    let (_vm, r) = eval("var o={5:1}; Object.getOwnPropertyNames(o)[0]").unwrap();
     assert!(r.is_string());
     let s = unsafe { &*r.as_string_ptr() }.to_owned_string();
     assert_eq!(s, "5");
