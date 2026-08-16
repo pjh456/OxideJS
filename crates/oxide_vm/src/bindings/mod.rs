@@ -438,6 +438,26 @@ fn bind_iterator_protos(core: &Arc<KernelCore>, session: &KernelSession) {
         );
     }
 
+    // %IteratorPrototype% 的 6 个终端方法（就地消费底层迭代器，无 wrapper）：
+    // forEach/every/some/find/reduce 带回调校验（失败也关底层），toArray 无参。
+    // length：前 5 个为 1，toArray 为 0（规范 length/name 描述符由 bind_method 设置）。
+    let si_for_each = core.perm_interner().intern("forEach").0;
+    if core.shape_forge().lookup_position(iter_proto.shape_id(), si_for_each).is_none() {
+        apply_binding_table(
+            world,
+            iter_proto,
+            core,
+            &[
+                ("forEach", oxide_builtins::iterator::iterator_for_each::<crate::vm::Vm> as *const (), 1),
+                ("every", oxide_builtins::iterator::iterator_every::<crate::vm::Vm> as *const (), 1),
+                ("some", oxide_builtins::iterator::iterator_some::<crate::vm::Vm> as *const (), 1),
+                ("find", oxide_builtins::iterator::iterator_find::<crate::vm::Vm> as *const (), 1),
+                ("reduce", oxide_builtins::iterator::iterator_reduce::<crate::vm::Vm> as *const (), 1),
+                ("toArray", oxide_builtins::iterator::iterator_to_array::<crate::vm::Vm> as *const (), 0),
+            ],
+        );
+    }
+
     // %ArrayIteratorPrototype% 服务 Array/TA 两族；Map/Set 共用按 `__mode__`
     // 分发的实现；%RegExpStringIteratorPrototype% 供 matchAll。
     bind_iterator_proto_next(

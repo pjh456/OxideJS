@@ -636,3 +636,380 @@ fn iterator_prototype_rebound_after_full_reset() {
     .unwrap();
     assert!(r.is_undefined());
 }
+
+// ── 终端 6 方法（forEach/every/some/find/reduce/toArray）──
+
+#[test]
+fn iterator_terminal_for_each_basic() {
+    // forEach 耗尽全部元素，回调收 (value, counter)，返回 undefined。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var out = []; \
+         var r = Iterator.from([10, 20, 30]).forEach(function (v, i) { out.push(v + i); }); \
+         out.join(',') + '|' + (r === undefined)",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "10,21,32|true");
+    let bool_cases = [
+        // 普通数组迭代器（非 from 包装）同样可消费。
+        ("var out = 0; [1, 2, 3].values().forEach(function (v) { out += v; }); out === 6", true),
+        // 空迭代立即返回 undefined。
+        ("Iterator.from([]).forEach(function () {}) === undefined", true),
+        // 回调 this 为 undefined（规范 Call(procedure, undefined, ...)）。
+        (
+            "var captured; Iterator.from([1]).forEach(function () { captured = this; }); \
+             captured === undefined",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_terminal_every_some_find_basic() {
+    // every/some/find 正常路径：全真/短路/命中值与未命中。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        ("Iterator.from([1, 2, 3]).every(function (v) { return v > 0; }) === true", true),
+        ("Iterator.from([1, 2, 3]).every(function (v) { return v > 1; }) === false", true),
+        ("Iterator.from([1, 2, 3]).some(function (v) { return v > 2; }) === true", true),
+        ("Iterator.from([1, 2, 3]).some(function (v) { return v > 9; }) === false", true),
+        ("Iterator.from([1, 2, 3]).find(function (v) { return v > 1; }) === 2", true),
+        ("Iterator.from([1, 2, 3]).find(function (v) { return v > 9; }) === undefined", true),
+        // 空迭代：every/some 恒为相反端点值，find 为 undefined。
+        ("Iterator.from([]).every(function () { return false; }) === true", true),
+        ("Iterator.from([]).some(function () { return true; }) === false", true),
+        ("Iterator.from([]).find(function () { return true; }) === undefined", true),
+        // 谓词回调收 (value, counter)。
+        (
+            "var pairs = []; \
+             Iterator.from(['a', 'b']).every(function (v, i) { pairs.push(v + i); return true; }); \
+             pairs.join(',') === 'a0,b1'",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_terminal_short_circuit_closes() {
+    // 短路路径关底层：only 消费到命中点，return 方法被调用。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        // some 命中后不再消费剩余元素，且底层 return 被调用。
+        (
+            "var reads = 0; var closed = false; \
+             class CI extends Iterator { \
+               next() { reads++; return reads === 1 ? { done: false, value: 1 } : { done: true, value: undefined }; } \
+               return() { closed = true; return {}; } \
+             } \
+             var r = new CI().some(function () { return true; }); \
+             r === true && closed === true && reads === 1",
+            true,
+        ),
+        // every 首个 falsy 即短路关底层。
+        (
+            "var reads = 0; var closed = false; \
+             class CI extends Iterator { \
+               next() { reads++; return reads === 1 ? { done: false, value: 1 } : { done: true, value: undefined }; } \
+               return() { closed = true; return {}; } \
+             } \
+             var r = new CI().every(function () { return false; }); \
+             r === false && closed === true && reads === 1",
+            true,
+        ),
+        // find 命中返回对应 value 且关底层。
+        (
+            "var closed = false; \
+             class CI extends Iterator { \
+               next() { return { done: false, value: 7 }; } \
+               return() { closed = true; return {}; } \
+             } \
+             var r = new CI().find(function () { return true; }); \
+             r === 7 && closed === true",
+            true,
+        ),
+        // 自然耗尽（done=true）不调 return。
+        (
+            "var closed = false; \
+             class CI extends Iterator { \
+               next() { return { done: true, value: undefined }; } \
+               return() { closed = true; return {}; } \
+             } \
+             new CI().every(function () { return true; }) === true && closed === false",
+            true,
+        ),
+        // 短路 close 时 return getter 抛错 → 该错误胜出（正常完成形态）。
+        (
+            "class CI extends Iterator { \
+               next() { return { done: false, value: 1 }; } \
+               get return() { throw new RangeError('close'); } \
+             } \
+             try { new CI().some(function () { return true; }); false } \
+             catch (e) { e instanceof RangeError }",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_terminal_reduce_basic() {
+    // reduce：有/无初始值、单元素、空迭代 + 初始值、counter 语义。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        ("Iterator.from([1, 2, 3]).reduce(function (a, b) { return a + b; }) === 6", true),
+        ("Iterator.from([1, 2, 3]).reduce(function (a, b) { return a + b; }, 10) === 16", true),
+        ("Iterator.from([1]).reduce(function (a, b) { return a + b; }) === 1", true),
+        ("Iterator.from([]).reduce(function (a, b) { return a + b; }, 99) === 99", true),
+        // 无初始值：首元素作 accumulator，counter 从 1 起。
+        (
+            "var pairs = []; \
+             Iterator.from(['a', 'b', 'c']).reduce(function (acc, v, i) { pairs.push(i); return acc; }); \
+             pairs.join(',') === '1,2'",
+            true,
+        ),
+        // 有初始值：counter 从 0 起。
+        (
+            "var pairs = []; \
+             Iterator.from(['a', 'b']).reduce(function (acc, v, i) { pairs.push(i); return acc; }, 'x'); \
+             pairs.join(',') === '0,1'",
+            true,
+        ),
+        // accumulator 可为任意类型（含对象引用延续）。
+        (
+            "var acc = []; \
+             Iterator.from([1, 2]).reduce(function (a, v) { a.push(v); return a; }, acc) === acc \
+             && acc.join(',') === '1,2'",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_terminal_reduce_empty_no_initial_throws() {
+    // 空迭代无初始值 → TypeError，且不关底层（规范字面：首步 done 直接抛）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var closed = false; \
+         class CI extends Iterator { \
+           next() { return { done: true, value: undefined }; } \
+           return() { closed = true; return {}; } \
+         } \
+         var ok = false; \
+         try { new CI().reduce(function (a, b) { return a + b; }); } \
+         catch (e) { ok = e instanceof TypeError; } \
+         ok && closed === false",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn iterator_terminal_to_array() {
+    // toArray 消费全部元素返回普通数组。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        (
+            "var a = Iterator.from([1, 2, 3]).toArray(); \
+             a instanceof Array && a.length === 3 && a[0] === 1 && a[2] === 3",
+            true,
+        ),
+        (
+            "var a = Iterator.from((function* () { yield 'x'; yield 'y'; })()).toArray(); \
+             a instanceof Array && a.length === 2 && a[0] === 'x' && a[1] === 'y'",
+            true,
+        ),
+        (
+            "Iterator.from([]).toArray() instanceof Array && Iterator.from([]).toArray().length === 0",
+            true,
+        ),
+        // 数组迭代器（Array.prototype.values）同样可收集。
+        ("var a = [1, 2].values().toArray(); a instanceof Array && a.length === 2", true),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_terminal_callback_error_passthrough() {
+    // 回调抛错：原值透传（任意类型不二次包装），且关底层。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        // 非 Error 原值 42 透传。
+        (
+            "try { Iterator.from([1]).forEach(function () { throw 42; }); 'no' } \
+             catch (e) { e === 42 }",
+            true,
+        ),
+        // Error 对象身份保留（不重包）。
+        (
+            "var sentinel = new RangeError('boom'); \
+             try { Iterator.from([1]).every(function () { throw sentinel; }); 'no' } \
+             catch (e) { e === sentinel }",
+            true,
+        ),
+        // 回调抛错后底层 return 被调用，原错误仍胜出。
+        (
+            "var closed = false; \
+             class CI extends Iterator { \
+               next() { return { done: false, value: 1 }; } \
+               return() { closed = true; throw new RangeError('close'); } \
+             } \
+             var ok = false; \
+             try { new CI().find(function () { throw 42; }); } \
+             catch (e) { ok = e === 42; } \
+             ok && closed === true",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_terminal_callback_validation_closes() {
+    // 回调不可调用：抛 TypeError 且关底层，且不读 next（2024 规范更新）。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        // 无参调用（回调为 undefined）也关底层。
+        (
+            "var closed = false; \
+             class CI extends Iterator { \
+               next() { return { done: true, value: undefined }; } \
+               return() { closed = true; return {}; } \
+             } \
+             var ok = false; \
+             try { new CI().forEach(); } catch (e) { ok = e instanceof TypeError; } \
+             ok && closed === true",
+            true,
+        ),
+        // 非可调用对象同样关底层；next getter 不被读取。
+        (
+            "var closed = false; var read = false; \
+             var it = Object.create(Iterator.prototype); \
+             Object.defineProperty(it, 'next', { get: function () { read = true; return function () {}; } }); \
+             it.return = function () { closed = true; return {}; }; \
+             var ok = false; \
+             try { it.forEach({}); } catch (e) { ok = e instanceof TypeError; } \
+             ok && closed === true && read === false",
+            true,
+        ),
+        // 回调校验失败关底层对 every/some/find/reduce 一致生效。
+        (
+            "var closed = false; \
+             class CI extends Iterator { \
+               next() { return { done: true, value: undefined }; } \
+               return() { closed = true; return {}; } \
+             } \
+             var all = false; \
+             try { new CI().some(null); } catch (e) { all = e instanceof TypeError; } \
+             all && closed === true",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_terminal_reentrancy_guard() {
+    // 终端方法消费期间底层生成器被重入（body 执行中再取 next）：生成器重入守卫
+    // 抛 TypeError，经终端方法干净透传（不吞错、不损坏生成器状态）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var caught = null; \
+         var gen = (function* () { \
+           yield 1; \
+           try { Iterator.from(gen).forEach(function (v) { gen.next(); }); } \
+           catch (e) { caught = e; } \
+         })(); \
+         gen.next(); gen.next(); \
+         caught !== null && caught instanceof TypeError",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn iterator_terminal_method_shape() {
+    // 6 方法 length/name 与绑定位置（挂 %IteratorPrototype% 原型）。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        (
+            "Iterator.prototype.forEach.length === 1 && Iterator.prototype.every.length === 1 \
+             && Iterator.prototype.some.length === 1 && Iterator.prototype.find.length === 1 \
+             && Iterator.prototype.reduce.length === 1 && Iterator.prototype.toArray.length === 0",
+            true,
+        ),
+        (
+            "Iterator.prototype.forEach.name === 'forEach' && Iterator.prototype.every.name === 'every' \
+             && Iterator.prototype.some.name === 'some' && Iterator.prototype.find.name === 'find' \
+             && Iterator.prototype.reduce.name === 'reduce' && Iterator.prototype.toArray.name === 'toArray'",
+            true,
+        ),
+        // 方法经原型链对普通对象可用（this 为任意对象即可）。
+        (
+            "var it = { next: function () { return { done: true, value: undefined }; } }; \
+             Iterator.prototype.toArray.call(it) instanceof Array",
+            true,
+        ),
+        // this 非对象 → TypeError。
+        (
+            "try { Iterator.prototype.forEach.call(1, function () {}); false } \
+             catch (e) { e instanceof TypeError }",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_terminal_rebound_after_full_reset() {
+    // dirty reset 后 6 终端方法随 %IteratorPrototype% 重建重绑，功能完好。
+    let mut vm = Vm::new();
+    unsafe { &mut *(vm.session().builtin_world().iterator_proto.as_ptr() as *mut JsObject) }.bump_generation();
+    vm.full_reset();
+    let bool_cases = [
+        ("Iterator.from([1, 2, 3]).forEach(function () {}) === undefined", true),
+        (
+            "var out = []; \
+             Iterator.from(['a', 'b']).forEach(function (v) { out.push(v); }); out.join('') === 'ab'",
+            true,
+        ),
+        ("Iterator.from([1, 2]).reduce(function (a, b) { return a + b; }, 0) === 3", true),
+        ("Iterator.from([1, 2]).toArray().length === 2", true),
+        ("Iterator.from([1]).some(function () { return true; }) === true", true),
+        ("Iterator.from([1]).every(function () { return true; }) === true", true),
+        ("Iterator.from([1]).find(function () { return true; }) === 1", true),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}

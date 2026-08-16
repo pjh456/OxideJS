@@ -155,6 +155,386 @@ pub fn iterator_dispose<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::undefined())
 }
 
+// ── 终端方法共享工具（forEach/every/some/find/reduce/toArray 共用）──
+
+/// 终端方法的统一前置校验：`this` 非对象 → TypeError；回调不可调用 → 关底层后抛
+/// TypeError（2024 规范更新：参数校验失败也执行 IteratorClose，且此时不读 next）。
+///
+/// # 步骤
+/// 1. `this` 非对象 → TypeError（原始值直接抛，不读 next）。
+/// 2. 回调不可调用 → 以 `{Iterator: this, NextMethod: undefined}` 构造记录并
+///    IteratorClose（延迟 GetMethod return 并调用），随后抛 TypeError。
+/// 3. GetIteratorDirect：读 `next` 一次并缓存（getter 抛错透传原值）。
+///
+/// # 返回值
+/// - `Ok((iterated, next))`：可进入循环；`Err` 为透传的异常值。
+pub(crate) fn validate_terminal_and_get_direct<H: VmHost>(
+    vm: &mut H, this_val: JsValue, callback: JsValue,
+) -> Result<(JsValue, JsValue), JsValue> {
+    if !this_val.is_object() {
+        return Err(crate::error::create_type_error(vm, "Iterator.prototype method called on non-object"));
+    }
+    if !is_callable(callback) {
+        // 校验失败仍关底层：NextMethod 未读，IteratorClose 只经 return 方法关闭。
+        let err = crate::error::create_type_error(vm, "Iterator.prototype method requires a callable callback");
+        let _ = iterator_close_record(vm, this_val, Some(err));
+        return Err(err);
+    }
+    get_iterator_direct(vm, this_val)
+}
+
+/// GetIteratorDirect：读 `next` 一次并缓存，返回 `(iterated, next)` 对。
+///
+/// # 边界与前提
+/// - `this_val` 必须是对象（调用方已校验）。
+/// - `next` getter 抛错时透传原异常值。
+pub(crate) fn get_iterator_direct<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<(JsValue, JsValue), JsValue> {
+    let iter_obj = unsafe { &*this_val.as_js_object_ptr() };
+    let next_si = vm.kernel_core().perm_interner().intern("next").0;
+    let next = vm.ordinary_get(iter_obj, next_si, this_val).map_err(|e| engine_error(vm, &e))?;
+    Ok((this_val, next))
+}
+
+/// IteratorStepValue：调缓存 next 取一步，读结果对象 `done`/`value`。
+///
+/// # 返回值
+/// - `Ok(Some(value))`：有元素产出；
+/// - `Ok(None)`：迭代完成（done=true，不读 value getter）；
+/// - `Err`：next 抛错 / 结果非对象 / done/value getter 抛错（透传原值，不关底层）。
+pub(crate) fn iterator_record_step<H: VmHost>(
+    vm: &mut H, next: JsValue, iterated: JsValue,
+) -> Result<Option<JsValue>, JsValue> {
+    let result = vm.call_function_sync(next, iterated, &[]).map_err(|e| engine_error(vm, &e))?;
+    if !result.is_object() {
+        return Err(crate::error::create_type_error(vm, "iterator result is not an object"));
+    }
+    let result_obj = unsafe { &*result.as_js_object_ptr() };
+    let done_si = vm.kernel_core().perm_interner().intern("done").0;
+    let done = vm.ordinary_get(result_obj, done_si, result).map_err(|e| engine_error(vm, &e))?;
+    if oxide_runtime_api::to_boolean(done) {
+        return Ok(None);
+    }
+    let value_si = vm.kernel_core().perm_interner().intern("value").0;
+    let value = vm
+        .ordinary_get(result_obj, value_si, result)
+        .map_err(|e| engine_error(vm, &e))?;
+    Ok(Some(value))
+}
+
+/// IteratorClose：延迟 GetMethod(iterator, "return") 并调用，按 completion 形态决定
+/// 错误胜者（throw → 原错误胜出；正常 → return 相关错误胜出）。
+///
+/// # 参数
+/// - `completion_err`：`Some(v)` 表示在途异常（completion 为 throw，v 为原异常值）；
+///   `None` 表示正常完成。
+///
+/// # 返回值
+/// - 正常完成时 `Ok(())` 表示关闭成功，`Err` 为 return 相关错误；
+/// - throw completion 时恒返回 `Err(v)`（原异常胜出，return 错误被吞）。
+pub(crate) fn iterator_close_record<H: VmHost>(
+    vm: &mut H, iterated: JsValue, completion_err: Option<JsValue>,
+) -> Result<(), JsValue> {
+    let iter_obj = unsafe { &*iterated.as_js_object_ptr() };
+    let return_si = vm.kernel_core().perm_interner().intern("return").0;
+    let return_fn = match vm.ordinary_get(iter_obj, return_si, iterated) {
+        Ok(f) if is_callable(f) => f,
+        Ok(_) => {
+            // 无 return 方法（或不可调用）：GetMethod 返回 undefined，直接收尾。
+            return match completion_err {
+                Some(v) => Err(v),
+                None => Ok(()),
+            };
+        }
+        Err(err) => {
+            let exc = engine_error(vm, &err);
+            return match completion_err {
+                Some(v) => Err(v),
+                None => Err(exc),
+            };
+        }
+    };
+    match vm.call_function_sync(return_fn, iterated, &[]) {
+        Ok(result) => match completion_err {
+            // throw completion：原异常胜出，不检查 return 结果形态。
+            Some(v) => Err(v),
+            // 正常完成：return 结果须为对象，否则 TypeError。
+            None => {
+                if !result.is_object() {
+                    return Err(crate::error::create_type_error(vm, "iterator return() result is not an object"));
+                }
+                Ok(())
+            }
+        },
+        Err(err) => {
+            let exc = engine_error(vm, &err);
+            match completion_err {
+                Some(v) => Err(v),
+                None => Err(exc),
+            }
+        }
+    }
+}
+
+/// 计数器转 Number 值：int 区间用 int 表示，越界回落 float（规范 `𝔽(counter)`）。
+fn counter_number(counter: i64) -> JsValue {
+    if counter >= i32::MIN as i64 && counter <= i32::MAX as i64 {
+        JsValue::int(counter as i32)
+    } else {
+        JsValue::float(counter as f64)
+    }
+}
+
+// ── 终端 6 方法 ──
+
+/// `%Iterator.prototype%.forEach(procedure)`：消费全部元素，逐个调用 procedure。
+///
+/// # 步骤
+/// 1. 校验 this/回调并取底层迭代器（共享前置）。
+/// 2. 循环取元素，每个元素 `Call(procedure, undefined, «value, counter»)`。
+/// 3. 回调抛错 → IteratorClose 后透传原值；耗尽返回 undefined。
+pub fn iterator_for_each<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let callback = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let (iterated, next) = match validate_terminal_and_get_direct(vm, this_val, callback) {
+        Ok(pair) => pair,
+        Err(v) => return NativeResult::Err(v),
+    };
+    let mut counter: i64 = 0;
+    loop {
+        let value = match iterator_record_step(vm, next, iterated) {
+            Ok(Some(v)) => v,
+            Ok(None) => return NativeResult::Ok(JsValue::undefined()),
+            Err(v) => return NativeResult::Err(v),
+        };
+        let cb_args = [value, counter_number(counter)];
+        if let Err(err) = vm.call_function_sync(callback, JsValue::undefined(), &cb_args) {
+            let exc = engine_error(vm, &err);
+            let _ = iterator_close_record(vm, iterated, Some(exc));
+            return NativeResult::Err(exc);
+        }
+        counter += 1;
+    }
+}
+
+/// `%Iterator.prototype%.every(predicate)`：谓词全真返回 true，首个 falsy 关底层返 false。
+///
+/// # 步骤
+/// 1. 校验 this/回调并取底层迭代器（共享前置）。
+/// 2. 循环取元素，每个元素 `Call(predicate, undefined, «value, counter»)`。
+/// 3. 谓词 falsy → IteratorClose（正常完成，return 错误胜出）后返回 false；耗尽返回 true。
+pub fn iterator_every<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let callback = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let (iterated, next) = match validate_terminal_and_get_direct(vm, this_val, callback) {
+        Ok(pair) => pair,
+        Err(v) => return NativeResult::Err(v),
+    };
+    let mut counter: i64 = 0;
+    loop {
+        let value = match iterator_record_step(vm, next, iterated) {
+            Ok(Some(v)) => v,
+            Ok(None) => return NativeResult::Ok(JsValue::bool(true)),
+            Err(v) => return NativeResult::Err(v),
+        };
+        let cb_args = [value, counter_number(counter)];
+        let result = match vm.call_function_sync(callback, JsValue::undefined(), &cb_args) {
+            Ok(r) => r,
+            Err(err) => {
+                let exc = engine_error(vm, &err);
+                let _ = iterator_close_record(vm, iterated, Some(exc));
+                return NativeResult::Err(exc);
+            }
+        };
+        if !oxide_runtime_api::to_boolean(result) {
+            return match iterator_close_record(vm, iterated, None) {
+                Ok(()) => NativeResult::Ok(JsValue::bool(false)),
+                Err(v) => NativeResult::Err(v),
+            };
+        }
+        counter += 1;
+    }
+}
+
+/// `%Iterator.prototype%.some(predicate)`：谓词首个 truthy 关底层返回 true，耗尽返 false。
+///
+/// # 步骤
+/// 1. 校验 this/回调并取底层迭代器（共享前置）。
+/// 2. 循环取元素，每个元素 `Call(predicate, undefined, «value, counter»)`。
+/// 3. 谓词 truthy → IteratorClose（正常完成，return 错误胜出）后返回 true；耗尽返回 false。
+pub fn iterator_some<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let callback = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let (iterated, next) = match validate_terminal_and_get_direct(vm, this_val, callback) {
+        Ok(pair) => pair,
+        Err(v) => return NativeResult::Err(v),
+    };
+    let mut counter: i64 = 0;
+    loop {
+        let value = match iterator_record_step(vm, next, iterated) {
+            Ok(Some(v)) => v,
+            Ok(None) => return NativeResult::Ok(JsValue::bool(false)),
+            Err(v) => return NativeResult::Err(v),
+        };
+        let cb_args = [value, counter_number(counter)];
+        let result = match vm.call_function_sync(callback, JsValue::undefined(), &cb_args) {
+            Ok(r) => r,
+            Err(err) => {
+                let exc = engine_error(vm, &err);
+                let _ = iterator_close_record(vm, iterated, Some(exc));
+                return NativeResult::Err(exc);
+            }
+        };
+        if oxide_runtime_api::to_boolean(result) {
+            return match iterator_close_record(vm, iterated, None) {
+                Ok(()) => NativeResult::Ok(JsValue::bool(true)),
+                Err(v) => NativeResult::Err(v),
+            };
+        }
+        counter += 1;
+    }
+}
+
+/// `%Iterator.prototype%.find(predicate)`：谓词首个 truthy 关底层返回对应 value，耗尽
+/// 返回 undefined。
+///
+/// # 步骤
+/// 1. 校验 this/回调并取底层迭代器（共享前置）。
+/// 2. 循环取元素，每个元素 `Call(predicate, undefined, «value, counter»)`。
+/// 3. 谓词 truthy → IteratorClose（正常完成，return 错误胜出）后返回 value；耗尽 undefined。
+pub fn iterator_find<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let callback = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let (iterated, next) = match validate_terminal_and_get_direct(vm, this_val, callback) {
+        Ok(pair) => pair,
+        Err(v) => return NativeResult::Err(v),
+    };
+    let mut counter: i64 = 0;
+    loop {
+        let value = match iterator_record_step(vm, next, iterated) {
+            Ok(Some(v)) => v,
+            Ok(None) => return NativeResult::Ok(JsValue::undefined()),
+            Err(v) => return NativeResult::Err(v),
+        };
+        let cb_args = [value, counter_number(counter)];
+        let result = match vm.call_function_sync(callback, JsValue::undefined(), &cb_args) {
+            Ok(r) => r,
+            Err(err) => {
+                let exc = engine_error(vm, &err);
+                let _ = iterator_close_record(vm, iterated, Some(exc));
+                return NativeResult::Err(exc);
+            }
+        };
+        if oxide_runtime_api::to_boolean(result) {
+            return match iterator_close_record(vm, iterated, None) {
+                Ok(()) => NativeResult::Ok(value),
+                Err(v) => NativeResult::Err(v),
+            };
+        }
+        counter += 1;
+    }
+}
+
+/// `%Iterator.prototype%.reduce(reducer, initialValue?)`：归约全部元素。
+///
+/// # 步骤
+/// 1. 校验 this/回调并取底层迭代器（共享前置）。
+/// 2. 无 initialValue：首元素作 accumulator（首步即 done → TypeError，不关底层）；
+///    有 initialValue：直接作 accumulator。
+/// 3. 循环取元素，`Call(reducer, undefined, «accumulator, value, counter»)` 结果续作
+///    accumulator；回调抛错 → IteratorClose 后透传原值。
+/// 4. 耗尽返回 accumulator。
+pub fn iterator_reduce<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let callback = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let has_initial = args.len() > 2;
+    let (iterated, next) = match validate_terminal_and_get_direct(vm, this_val, callback) {
+        Ok(pair) => pair,
+        Err(v) => return NativeResult::Err(v),
+    };
+    // 无初始值：首元素直接作 accumulator（首步 done 抛 TypeError，规范不关底层）。
+    let (mut accumulator, mut counter): (JsValue, i64) = if has_initial {
+        (vm.reg(args[2]), 0)
+    } else {
+        match iterator_record_step(vm, next, iterated) {
+            Ok(Some(first)) => (first, 1),
+            Ok(None) => {
+                return NativeResult::Err(crate::error::create_type_error(
+                    vm,
+                    "Reduce of empty iterator with no initial value",
+                ))
+            }
+            Err(v) => return NativeResult::Err(v),
+        }
+    };
+    loop {
+        let value = match iterator_record_step(vm, next, iterated) {
+            Ok(Some(v)) => v,
+            Ok(None) => return NativeResult::Ok(accumulator),
+            Err(v) => return NativeResult::Err(v),
+        };
+        let cb_args = [accumulator, value, counter_number(counter)];
+        match vm.call_function_sync(callback, JsValue::undefined(), &cb_args) {
+            Ok(result) => accumulator = result,
+            Err(err) => {
+                let exc = engine_error(vm, &err);
+                let _ = iterator_close_record(vm, iterated, Some(exc));
+                return NativeResult::Err(exc);
+            }
+        }
+        counter += 1;
+    }
+}
+
+/// `%Iterator.prototype%.toArray()`：消费全部元素，返回普通数组。
+///
+/// # 步骤
+/// 1. `this` 非对象 → TypeError；GetIteratorDirect 取底层迭代器。
+/// 2. 循环收集元素到列表，耗尽后构造数组返回。
+pub fn iterator_to_array<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    if !this_val.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Iterator.prototype method called on non-object",
+        ));
+    }
+    let (iterated, next) = match get_iterator_direct(vm, this_val) {
+        Ok(pair) => pair,
+        Err(v) => return NativeResult::Err(v),
+    };
+    let mut items: Vec<JsValue> = Vec::new();
+    loop {
+        match iterator_record_step(vm, next, iterated) {
+            Ok(Some(value)) => items.push(value),
+            Ok(None) => return NativeResult::Ok(make_array_from_list(vm, &items)),
+            Err(v) => return NativeResult::Err(v),
+        }
+    }
+}
+
+/// CreateArrayFromList：按元素列表构造普通数组（Array.prototype 为原型）。
+fn make_array_from_list<H: VmHost>(vm: &mut H, items: &[JsValue]) -> JsValue {
+    let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let arr = vm.alloc_object(JsObject::new_array(
+        EMPTY_SHAPE_ID,
+        JsValue::from_js_object(array_proto),
+        items.len().min(oxide_types::object::MAX_DENSE_PROPS),
+        vm.epoch().bump(),
+    ));
+    // 逐元素写入数组元素区，最后统一 set_prop_count（new_array 预分配不足时自动扩容）。
+    for (i, item) in items.iter().enumerate() {
+        // SAFETY: arr 是当前 epoch 新分配数组对象，元素区已就绪。
+        unsafe {
+            (*arr).set_prop_at(i, *item);
+        }
+    }
+    // SAFETY: 与 new_array 同 epoch，写入后按实际元素数设 prop_count。
+    unsafe {
+        (*arr).set_prop_count(items.len());
+    }
+    JsValue::from_js_object(arr)
+}
+
 /// `%IteratorPrototype%[@@iterator]`：返回 this（迭代器对象自迭代）。
 ///
 /// 挂在 `%IteratorPrototype%` 上，所有集合迭代器经原型链继承，保证
