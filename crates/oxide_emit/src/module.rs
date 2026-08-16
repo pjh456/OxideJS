@@ -130,8 +130,7 @@ impl Emitter {
     /// 编译 ES module：顶层 body + 递归依赖。
     /// `module_path` 为模块文件的规范路径（依赖解析基准 = 其父目录）。
     pub fn emit_program_module(
-        &self, program: &oxide_parser::Program, module_path: &str,
-        loader: &mut dyn ModuleSourceLoader,
+        &self, program: &oxide_parser::Program, module_path: &str, loader: &mut dyn ModuleSourceLoader,
     ) -> Result<IRFunction, String> {
         crate::emit_debug!("emit_program_module: {} stmts", program.body.len());
         let mut ctx = CompileCtx::new();
@@ -145,8 +144,8 @@ impl Emitter {
     /// 模块体 emit（顶层与依赖模块共用入口）。
     #[allow(clippy::too_many_arguments)]
     fn emit_module_into_ctx(
-        &self, program: &oxide_parser::Program, module_path: &str,
-        loader: &mut dyn ModuleSourceLoader, path_stack: &mut Vec<String>, ctx: &mut CompileCtx,
+        &self, program: &oxide_parser::Program, module_path: &str, loader: &mut dyn ModuleSourceLoader,
+        path_stack: &mut Vec<String>, ctx: &mut CompileCtx,
     ) -> Result<(), String> {
         let body = &program.body;
 
@@ -249,16 +248,18 @@ impl Emitter {
                                 let imported = module_export_name_str(&s.imported);
                                 if is_self {
                                     if !own_export_names.contains(&imported) && !has_unnamed_star {
-                                        return Err(format!(
-                                            "requested module export is not exported: {imported}"
-                                        ));
+                                        return Err(format!("requested module export is not exported: {imported}"));
                                     }
                                     let undef_idx = ctx.add_constant(Constant::Undefined);
                                     let undef_reg = ctx.alloc_reg();
                                     ctx.inst(Inst::load_const(Operand::Reg(undef_reg), undef_idx));
                                     self.emit_bind_target(
-                                        s.local.name.as_str(), undef_reg, VariableDeclarationKind::Const, true,
-                                        false, ctx,
+                                        s.local.name.as_str(),
+                                        undef_reg,
+                                        VariableDeclarationKind::Const,
+                                        true,
+                                        false,
+                                        ctx,
                                     )?;
                                     if let Ok(reg) = ctx.lookup(s.local.name.as_str()) {
                                         ctx.module_self_aliases.insert(imported, reg);
@@ -268,7 +269,11 @@ impl Emitter {
                                     let val_reg =
                                         self.emit_module_call(ctx, "__moduleLinkGet", &[dep_ns_reg, name_reg])?;
                                     self.emit_bind_target(
-                                        s.local.name.as_str(), val_reg, VariableDeclarationKind::Const, true, false,
+                                        s.local.name.as_str(),
+                                        val_reg,
+                                        VariableDeclarationKind::Const,
+                                        true,
+                                        false,
                                         ctx,
                                     )?;
                                 }
@@ -282,8 +287,12 @@ impl Emitter {
                                     let undef_reg = ctx.alloc_reg();
                                     ctx.inst(Inst::load_const(Operand::Reg(undef_reg), undef_idx));
                                     self.emit_bind_target(
-                                        s.local.name.as_str(), undef_reg, VariableDeclarationKind::Const, true,
-                                        false, ctx,
+                                        s.local.name.as_str(),
+                                        undef_reg,
+                                        VariableDeclarationKind::Const,
+                                        true,
+                                        false,
+                                        ctx,
                                     )?;
                                     if let Ok(reg) = ctx.lookup(s.local.name.as_str()) {
                                         ctx.module_self_aliases.insert("default".to_string(), reg);
@@ -293,7 +302,11 @@ impl Emitter {
                                     let val_reg =
                                         self.emit_module_call(ctx, "__moduleLinkGet", &[dep_ns_reg, name_reg])?;
                                     self.emit_bind_target(
-                                        s.local.name.as_str(), val_reg, VariableDeclarationKind::Const, true, false,
+                                        s.local.name.as_str(),
+                                        val_reg,
+                                        VariableDeclarationKind::Const,
+                                        true,
+                                        false,
                                         ctx,
                                     )?;
                                 }
@@ -302,7 +315,11 @@ impl Emitter {
                                 // 命名空间绑定引用 ns 对象本身：自导入时同一对象，
                                 // body 执行后导出自然可见。
                                 self.emit_bind_target(
-                                    s.local.name.as_str(), dep_ns_reg, VariableDeclarationKind::Const, true, false,
+                                    s.local.name.as_str(),
+                                    dep_ns_reg,
+                                    VariableDeclarationKind::Const,
+                                    true,
+                                    false,
                                     ctx,
                                 )?;
                             }
@@ -353,14 +370,13 @@ impl Emitter {
 
         // —— 收尾：封冻命名空间并返回（顶层 RETURN 亦终止 run）——
         self.emit_module_call(ctx, "__moduleSeal", &[ns_reg])?;
-        ctx.inst(Inst::new(OpCode::RETURN, Operand::Reg(ns_reg), Operand::None, Operand::None));
+        ctx.inst(Inst::ret(Operand::Reg(ns_reg), 0, 0));
         Ok(())
     }
 
     /// 编译 JS 依赖模块（递归）。
     fn compile_js_dep(
-        &self, resolved: &ResolvedModule, loader: &mut dyn ModuleSourceLoader,
-        path_stack: &mut Vec<String>,
+        &self, resolved: &ResolvedModule, loader: &mut dyn ModuleSourceLoader, path_stack: &mut Vec<String>,
     ) -> Result<IRFunction, String> {
         let alloc = oxide_parser::Allocator::default();
         let program = oxide_parser::parse_module(&alloc, &resolved.source).map_err(|errs| {
@@ -381,25 +397,19 @@ impl Emitter {
         let kind_reg = self.load_string_const(kind, &mut ctx);
         let content_reg = self.load_string_const(content, &mut ctx);
         let val_reg = self.emit_module_call(&mut ctx, "__moduleData", &[kind_reg, content_reg])?;
-        ctx.inst(Inst::new(OpCode::RETURN, Operand::Reg(val_reg), Operand::None, Operand::None));
+        ctx.inst(Inst::ret(Operand::Reg(val_reg), 0, 0));
         Ok(ctx.assemble_ir(ParamLayout { base: 0, count: 0 }, None))
     }
 
     /// 内部辅助调用：CALL_NATIVE 到全局 native（__module*），返回结果寄存器。
-    pub(crate) fn emit_module_call(
-        &self, ctx: &mut CompileCtx, name: &str, arg_regs: &[u32],
-    ) -> Result<u32, String> {
+    pub(crate) fn emit_module_call(&self, ctx: &mut CompileCtx, name: &str, arg_regs: &[u32]) -> Result<u32, String> {
         let callee_reg = ctx.lookup_or_builtin(name)?;
         let this_reg = ctx.alloc_reg();
         let undef_idx = ctx.add_constant(Constant::Undefined);
         ctx.inst(Inst::load_const(Operand::Reg(this_reg), undef_idx));
         // CALL_NATIVE 按 regs[first_arg + i] 连续读参数：把非连续 vreg 打包为连续块。
         let mut packed = arg_regs.to_vec();
-        let first_arg_reg = if packed.is_empty() {
-            this_reg
-        } else {
-            pack_arg_regs(&mut packed, ctx)
-        };
+        let first_arg_reg = if packed.is_empty() { this_reg } else { pack_arg_regs(&mut packed, ctx) };
         ctx.inst(Inst::call_native(
             Operand::Reg(callee_reg),
             Operand::Reg(this_reg),
@@ -448,9 +458,7 @@ impl Emitter {
     pub(crate) fn emit_module_export_domain(
         &self, stmt: &Statement, ctx: &mut CompileCtx,
     ) -> Result<Option<u32>, String> {
-        let ns_reg = ctx
-            .module_ns_reg
-            .ok_or_else(|| "export outside module context".to_string())?;
+        let ns_reg = ctx.module_ns_reg.ok_or_else(|| "export outside module context".to_string())?;
         match stmt {
             Statement::ExportNamedDeclaration(exp) => {
                 if let Some(decl) = &exp.declaration {
@@ -487,9 +495,10 @@ impl Emitter {
                         _ => return Err("unsupported export declaration".into()),
                     }
                 } else {
-                    let dep_ns_opt = exp.source.as_ref().map(|src| {
-                        ctx.module_dep_ns_regs.get(src.value.as_str()).copied()
-                    });
+                    let dep_ns_opt = exp
+                        .source
+                        .as_ref()
+                        .map(|src| ctx.module_dep_ns_regs.get(src.value.as_str()).copied());
                     for spec in &exp.specifiers {
                         let local_name = module_export_name_str(&spec.local);
                         let exported_name = module_export_name_str(&spec.exported);
@@ -516,7 +525,12 @@ impl Emitter {
                         let reg = self.emit_function_expression(fd, ctx)?;
                         if let Some(id) = &fd.id {
                             self.emit_bind_target(
-                                id.name.as_str(), reg, VariableDeclarationKind::Const, true, false, ctx,
+                                id.name.as_str(),
+                                reg,
+                                VariableDeclarationKind::Const,
+                                true,
+                                false,
+                                ctx,
                             )?;
                         }
                         reg
@@ -525,7 +539,12 @@ impl Emitter {
                         let reg = self.emit_class_expression(cl, ctx)?;
                         if let Some(id) = &cl.id {
                             self.emit_bind_target(
-                                id.name.as_str(), reg, VariableDeclarationKind::Const, true, false, ctx,
+                                id.name.as_str(),
+                                reg,
+                                VariableDeclarationKind::Const,
+                                true,
+                                false,
+                                ctx,
                             )?;
                         }
                         reg

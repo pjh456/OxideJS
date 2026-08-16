@@ -11,6 +11,9 @@ impl Emitter {
         let Statement::ReturnStatement(ret) = stmt else {
             return Ok(None);
         };
+        // return 逃出全部打开的迭代循环：for-of 需 IteratorClose，for-in 弹出迭代器。
+        let for_of_count = ctx.labels.for_of_depth;
+        let for_in_count = ctx.labels.for_in_depth;
         match &ret.argument {
             Some(expr) => {
                 let r = self.emit_expression(expr, ctx)?;
@@ -18,12 +21,18 @@ impl Emitter {
                 // 弹出连续纯 catch handler（finally handler 走运行时完成穿越逐个
                 // 执行）。否则 return 跳过 TRY_END 会让 handler 残留在 try_stack，
                 // 后续异常 unwind 会跳回已返回函数的 catch 形成死循环。
-                self.emit_return_try_cleanup(ctx);
-                ctx.inst(Inst::new(OpCode::RETURN, Operand::Reg(r), Operand::None, Operand::None));
+                // 逃出迭代器时（close_count>0）保留 handler：return() 抛错须经
+                // unwind 被外围 catch 捕获（新错误替代完成值），弹出后无法展开。
+                if for_of_count == 0 && for_in_count == 0 {
+                    self.emit_return_try_cleanup(ctx);
+                }
+                ctx.inst(Inst::ret(Operand::Reg(r), for_of_count, for_in_count));
             }
             None => {
-                self.emit_return_try_cleanup(ctx);
-                ctx.inst(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None));
+                if for_of_count == 0 && for_in_count == 0 {
+                    self.emit_return_try_cleanup(ctx);
+                }
+                ctx.inst(Inst::ret(Operand::None, for_of_count, for_in_count));
             }
         }
         Ok(None)

@@ -104,7 +104,10 @@ fn async_throw_rejects_promise() {
 
 #[test]
 fn async_is_not_constructor() {
-    assert!(eval("new (async function(){})").starts_with("vm error") || eval("new (async function(){})").contains("not a constructor"));
+    assert!(
+        eval("new (async function(){})").starts_with("vm error")
+            || eval("new (async function(){})").contains("not a constructor")
+    );
 }
 
 #[test]
@@ -201,6 +204,35 @@ fn for_await_of_nested_sync_for_of_break_close_respective() {
              (async()=>{ for await (const x of asyncIter) { for (const y of sync) { break; } break; } })();\
              Promise.resolve().then(()=>log.join(','))"
         ),
-        "\"s,a\""
+         "\"s,a\""
+    );
+}
+
+#[test]
+fn for_await_of_body_throw_closes_and_original_error_wins() {
+    // for-await-of 循环体抛错：先调 return() 关闭迭代器，原错误优先传播给 catch。
+    assert_eq!(
+        eval(
+            "let log=[];\
+             const it={[Symbol.asyncIterator](){return{next(){return Promise.resolve({value:1,done:false})},return(){log.push('r');return Promise.resolve({done:true})}}}};\
+             (async()=>{ try { for await (const x of it) { throw 'orig'; } } catch(e) { log.push('c:'+e); } return log.join(','); })()"
+        ),
+        "\"r,c:orig\""
+    );
+}
+
+#[test]
+fn for_await_of_return_escape_defers_async_close() {
+    // return 逃出 for-await-of：异步迭代器 return() 的 promise 须 await 后结算，
+    // 走异步关闭机制（后续阶段）；阶段 1 同步逃出路径不得同步调用异步 return()。
+    // 断言循环体已执行且没有同步副作用泄露。
+    assert_eq!(
+        eval(
+            "let log=[];\
+             const it={[Symbol.asyncIterator](){return{next(){return Promise.resolve({value:1,done:false})},return(){log.push('close');return Promise.resolve({done:true})}}}};\
+             (async()=>{ for await (const x of it) { log.push('body'); return 1; } })();\
+             Promise.resolve().then(()=>log.join(','))"
+        ),
+        "\"body\""
     );
 }

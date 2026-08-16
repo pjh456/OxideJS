@@ -24,7 +24,7 @@ pub fn is_anonymous_function_definition(expr: &oxide_parser::Expression) -> bool
     }
 }
 
-use crate::emit_ctx::{LabelCtx, ScopeCtx};
+use crate::emit_ctx::{LabelCtx, LoopEntry, LoopKind, ScopeCtx};
 use crate::symbol_table::{Binding, ScopeKind, SymbolTable};
 
 /// 常量池项（bytecode module 类型）re-export，供调用方构造常量。
@@ -144,6 +144,10 @@ pub struct LabelScope {
     pub(crate) continue_label: Option<LabelId>,
     /// 标签打开时嵌套的 finally 域数：break/continue 跨越 finally 的计数依据。
     pub(crate) finally_depth_at_open: usize,
+    /// 标签打开时已打开的 for-of 循环数：break/continue 逃出计数依据。
+    pub(crate) for_of_depth_at_open: usize,
+    /// 标签打开时已打开的 for-in 循环数。
+    pub(crate) for_in_depth_at_open: usize,
 }
 
 /// 单函数编译上下文：执行流 + 作用域 + 闭包捕获的聚合状态。
@@ -283,6 +287,8 @@ impl CompileCtx {
                 label_scopes: Vec::new(),
                 pending_loop_labels: Vec::new(),
                 finally_depth: 0,
+                for_of_depth: 0,
+                for_in_depth: 0,
                 label_counter: 0,
             },
             scopes: ScopeCtx {
@@ -456,29 +462,55 @@ impl CompileCtx {
         id
     }
 
-    pub(crate) fn push_loop(&mut self, break_label: LabelId, continue_label: LabelId) {
+    pub(crate) fn push_loop(&mut self, break_label: LabelId, continue_label: LabelId, kind: LoopKind) {
         let fd = self.labels.finally_depth;
-        self.labels.loop_stack.push((break_label, continue_label, fd));
+        // 深度计数先递增再快照：条目记录"打开后（含自身）"的深度，与
+        // take_pending_loop_labels 的标签作用域快照一致，逃出计数才能对齐。
+        if kind.is_for_of() {
+            self.labels.for_of_depth += 1;
+        }
+        if kind.is_for_in() {
+            self.labels.for_in_depth += 1;
+        }
+        let fod = self.labels.for_of_depth;
+        let fid = self.labels.for_in_depth;
+        self.labels.loop_stack.push(LoopEntry {
+            break_label,
+            continue_label,
+            finally_depth_at_open: fd,
+            for_of_depth_at_open: fod,
+            for_in_depth_at_open: fid,
+            kind,
+        });
     }
 
     pub(crate) fn pop_loop(&mut self) {
-        self.labels.loop_stack.pop();
+        if let Some(entry) = self.labels.loop_stack.pop() {
+            if entry.kind.is_for_of() {
+                self.labels.for_of_depth -= 1;
+            }
+            if entry.kind.is_for_in() {
+                self.labels.for_in_depth -= 1;
+            }
+        }
     }
 
-    pub(crate) fn current_loop(&self) -> Option<&(LabelId, LabelId, usize)> {
+    pub(crate) fn current_loop(&self) -> Option<&LoopEntry> {
         self.labels.loop_stack.last()
     }
 
     pub(crate) fn push_switch(&mut self, break_label: LabelId) {
         let fd = self.labels.finally_depth;
-        self.labels.switch_stack.push((break_label, fd));
+        let fod = self.labels.for_of_depth;
+        let fid = self.labels.for_in_depth;
+        self.labels.switch_stack.push((break_label, fd, fod, fid));
     }
 
     pub(crate) fn pop_switch(&mut self) {
         self.labels.switch_stack.pop();
     }
 
-    pub(crate) fn current_switch(&self) -> Option<&(LabelId, usize)> {
+    pub(crate) fn current_switch(&self) -> Option<&(LabelId, usize, usize, usize)> {
         self.labels.switch_stack.last()
     }
 
@@ -521,11 +553,15 @@ impl CompileCtx {
             return Err(format!("SyntaxError: Label '{name}' has already been declared"));
         }
         let fd = self.labels.finally_depth;
+        let fod = self.labels.for_of_depth;
+        let fid = self.labels.for_in_depth;
         self.labels.label_scopes.push(LabelScope {
             name: name.to_string(),
             break_label,
             continue_label,
             finally_depth_at_open: fd,
+            for_of_depth_at_open: fod,
+            for_in_depth_at_open: fid,
         });
         Ok(())
     }
@@ -556,12 +592,16 @@ impl CompileCtx {
         let names = std::mem::take(&mut self.labels.pending_loop_labels);
         let count = names.len();
         let fd = self.labels.finally_depth;
+        let fod = self.labels.for_of_depth;
+        let fid = self.labels.for_in_depth;
         for name in names {
             self.labels.label_scopes.push(LabelScope {
                 name,
                 break_label,
                 continue_label: Some(continue_label),
                 finally_depth_at_open: fd,
+                for_of_depth_at_open: fod,
+                for_in_depth_at_open: fid,
             });
         }
         count
@@ -627,7 +667,9 @@ impl CompileCtx {
 
     /// 组装 IRFunction（两出口共用），take 走编译产物状态。
     /// `parent_ctx` 用于补全 upvalue_captures 的 enclosing_reg（父符号表在父 emit 完成后完整）。
-    pub(crate) fn assemble_ir(&mut self, param_layout: oxide_ir::ParamLayout, parent_ctx: Option<&CompileCtx>) -> IRFunction {
+    pub(crate) fn assemble_ir(
+        &mut self, param_layout: oxide_ir::ParamLayout, parent_ctx: Option<&CompileCtx>,
+    ) -> IRFunction {
         let upvalue_captures = self
             .current_upvalue_captures
             .iter()
@@ -1089,20 +1131,21 @@ impl Emitter {
         let last_result_reg = self.emit_body_stmts(body_stmts, &mut ctx)?;
 
         // 隐式 RETURN：表达式体返回最后表达式，语句体返回 undefined。
+        // 函数尾词法上不在任何循环内，迭代器逃出计数恒 0。
         if is_expression_body {
             if let Some(reg) = last_result_reg {
-                ctx.inst(Inst::new(OpCode::RETURN, Operand::Reg(reg), Operand::None, Operand::None));
+                ctx.inst(Inst::ret(Operand::Reg(reg), 0, 0));
             } else {
                 let undef_idx = ctx.add_constant(Constant::Undefined);
                 let undef_reg = ctx.alloc_reg();
                 ctx.inst(Inst::load_const(Operand::Reg(undef_reg), undef_idx));
-                ctx.inst(Inst::new(OpCode::RETURN, Operand::Reg(undef_reg), Operand::None, Operand::None));
+                ctx.inst(Inst::ret(Operand::Reg(undef_reg), 0, 0));
             }
         } else {
             let undef_idx = ctx.add_constant(Constant::Undefined);
             let undef_reg = ctx.alloc_reg();
             ctx.inst(Inst::load_const(Operand::Reg(undef_reg), undef_idx));
-            ctx.inst(Inst::new(OpCode::RETURN, Operand::Reg(undef_reg), Operand::None, Operand::None));
+            ctx.inst(Inst::ret(Operand::Reg(undef_reg), 0, 0));
         }
 
         // 调用契约参数段只含固定形参：rest 是函数体内普通变量，不在 VM 实参传递区。

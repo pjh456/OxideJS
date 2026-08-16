@@ -40,7 +40,7 @@ impl Emitter {
         let start_label = ctx.next_label_id();
         let update_label = ctx.next_label_id();
         let end_label = ctx.next_label_id();
-        ctx.push_loop(end_label, update_label);
+        ctx.push_loop(end_label, update_label, crate::emit_ctx::LoopKind::Plain);
         let n_labeled = ctx.take_pending_loop_labels(end_label, update_label);
         // 循环头声明中被嵌套函数捕获的 let/const 绑定：每迭代 fresh cell。
         let mut fresh_bindings: Vec<(String, u8)> = Vec::new();

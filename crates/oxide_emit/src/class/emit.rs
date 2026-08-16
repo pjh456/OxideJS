@@ -129,12 +129,7 @@ impl Emitter {
         // accessor calls (which clear the register file). The synthetic key keeps user
         // bindings with the same name (outer scopes) untouched.
         let class_self_cell: Option<u8> = ctor_name.as_deref().map(|_| {
-            let cell_idx = ctx
-                .captured_bindings
-                .values()
-                .copied()
-                .max()
-                .map_or(0, |m| m.saturating_add(1));
+            let cell_idx = ctx.captured_bindings.values().copied().max().map_or(0, |m| m.saturating_add(1));
             ctx.captured_bindings.insert(format!("@@class_self_{cell_idx}"), cell_idx);
             cell_idx
         });
@@ -302,9 +297,7 @@ impl Emitter {
                 module.insts.extend(field_ctx.insts);
                 module.constants = field_ctx.constants;
                 module.n_registers = field_ctx.max_regs.max(1);
-                module
-                    .insts
-                    .push(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None));
+                module.insts.push(Inst::ret(Operand::None, 0, 0));
             }
             module
         };
@@ -377,9 +370,16 @@ impl Emitter {
                 Operand::None,
             ));
         }
-        self.emit_class_methods(&class.body.body, ctor_reg, proto_reg, &self_binding, class_self_cell, &key_slots, ctx)?;
+        self.emit_class_methods(
+            &class.body.body,
+            ctor_reg,
+            proto_reg,
+            &self_binding,
+            class_self_cell,
+            &key_slots,
+            ctx,
+        )?;
         self.emit_class_static_elements(&class.body.body, ctor_reg, &key_slots, ctx)?;
-
 
         // 类构建完成：初始化类名绑定并写入类构造器（类内方法引用该寄存器/捕获）。
         if let Some(name) = ctor_name.as_deref() {

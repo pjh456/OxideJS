@@ -12,7 +12,7 @@ impl Emitter {
         let start_label = ctx.next_label_id();
         let end_label = ctx.next_label_id();
         ctx.labels.set_label_pos(start_label, ctx.insts.len());
-        ctx.push_loop(end_label, start_label);
+        ctx.push_loop(end_label, start_label, crate::emit_ctx::LoopKind::Plain);
         let n_labeled = ctx.take_pending_loop_labels(end_label, start_label);
         let test_reg = self.emit_expression(&wh.test, ctx)?;
         ctx.inst(Inst::jmp_if_false(test_reg, end_label));

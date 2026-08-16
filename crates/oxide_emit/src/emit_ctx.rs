@@ -10,20 +10,64 @@ use crate::LabelScope;
 use oxide_ir::operand::LabelId;
 use oxide_parser::MethodDefinitionKind;
 
+/// 循环语句类别：决定逃出计数是否计入 for-of / for-in 迭代器关闭。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LoopKind {
+    /// while / do-while / C 风格 for：无迭代器关闭语义。
+    Plain,
+    ForOf,
+    ForAwaitOf,
+    ForIn,
+}
+
+impl LoopKind {
+    /// 是否计入 for-of 逃出关闭计数。for-await-of 的逃出（labeled break /
+    /// continue / return）需要异步 await 迭代器 return() 的 promise，走
+    /// 异步挂起机制另行实现——此处只计同步 for-of，避免运行时同步调用异步
+    /// 迭代器的 return()。
+    pub(crate) fn is_for_of(self) -> bool {
+        matches!(self, LoopKind::ForOf)
+    }
+
+    pub(crate) fn is_for_in(self) -> bool {
+        matches!(self, LoopKind::ForIn)
+    }
+}
+
+/// 循环打开时的词法快照：break/continue/return 逃出时据此计算需关闭的迭代器层数。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LoopEntry {
+    pub(crate) break_label: LabelId,
+    pub(crate) continue_label: LabelId,
+    /// 循环打开时嵌套的 finally 域数（finally 逃出计数用）。
+    pub(crate) finally_depth_at_open: usize,
+    /// 循环打开时已打开的 for-of/for-await-of 循环数。
+    pub(crate) for_of_depth_at_open: usize,
+    /// 循环打开时已打开的 for-in 循环数。
+    pub(crate) for_in_depth_at_open: usize,
+    pub(crate) kind: LoopKind,
+}
+
 /// 跳转目标 / 标签语句解析状态。
 pub(crate) struct LabelCtx {
     /// label id → 指令下标。id 连续递增，Vec 索引即 id；写入前须扩容。
     pub(crate) label_pos: Vec<Option<usize>>,
-    /// 每个条目记录循环打开时嵌套的 finally 域数（break/continue 跨越 finally 计数用）。
-    pub(crate) loop_stack: Vec<(LabelId, LabelId, usize)>,
-    /// 每个条目记录 switch 打开时嵌套的 finally 域数。
-    pub(crate) switch_stack: Vec<(LabelId, usize)>,
+    /// 每个条目记录循环打开时的词法快照（finally/for-of/for-in 深度）。
+    pub(crate) loop_stack: Vec<LoopEntry>,
+    /// 每个条目记录 switch 打开时的词法快照（finally/for-of/for-in 深度）：
+    /// switch 内 break 的逃出计数以打开点为准，switch 之前已打开的迭代器
+    /// 不属于本次逃出。
+    pub(crate) switch_stack: Vec<(LabelId, usize, usize, usize)>,
     /// 活动标签语句作用域（解析 `break label` / `continue label`）。
     pub(crate) label_scopes: Vec<LabelScope>,
     /// 等待绑定到下一个循环 continue 目标的标签名。
     pub(crate) pending_loop_labels: Vec<String>,
     /// 当前打开（正在 emit）的 try/finally 域数。
     pub(crate) finally_depth: usize,
+    /// 当前打开的 for-of/for-await-of 循环数（逃出计数基数）。
+    pub(crate) for_of_depth: usize,
+    /// 当前打开的 for-in 循环数（逃出计数基数）。
+    pub(crate) for_in_depth: usize,
     pub(crate) label_counter: u32,
 }
 

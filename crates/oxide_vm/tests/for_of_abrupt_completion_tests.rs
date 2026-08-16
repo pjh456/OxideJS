@@ -153,3 +153,158 @@ fn for_of_nested_iterators_break_close_inner_only() {
         "true"
     );
 }
+
+#[test]
+fn for_of_return_escape_closes_iterator() {
+    // return 逃出 for-of：跳转前执行 IteratorClose（当前实现此前完全漏调）。
+    assert_eq!(
+        eval(
+            "var closed=0;\
+             var it={[Symbol.iterator](){return{next(){return{value:1,done:false}},return(){closed++;return{}}}}};\
+             function f(){ for (const x of it) { return 1; } } f();closed===1"
+        ),
+        "true"
+    );
+}
+
+#[test]
+fn for_of_labeled_break_escapes_all_in_lifo_order() {
+    // labeled break 逃出两层：按嵌套逆序（内层先）逐层关闭。
+    assert_eq!(
+        eval(
+            "var log=[];\
+             var mk=(n)=>({[Symbol.iterator](){return{next(){return{value:n,done:false}},return(){log.push(n);return{}}}}});\
+             var it1=mk(1), it2=mk(2);\
+             outer: for (const a of it1) { for (const b of it2) { break outer; } }\
+             log.join(',')==='2,1'"
+        ),
+        "true"
+    );
+}
+
+#[test]
+fn for_of_labeled_continue_closes_inner_only() {
+    // labeled continue 逃出：内层每轮关闭，外层循环继续迭代不关闭。
+    assert_eq!(
+        eval(
+            "var log=[];\
+             var mk=(n)=>({[Symbol.iterator](){return{next(){return{value:n,done:false}},return(){log.push(n);return{}}}}});\
+             var it2=mk(2);\
+             outer: for (const a of [1,2]) { for (const b of it2) { continue outer; } }\
+             log.join(',')==='2,2'"
+        ),
+        "true"
+    );
+}
+
+#[test]
+fn for_of_escape_finally_runs_before_close() {
+    // 规范顺序：循环体完成值（含内部 try-finally 处理）之后才执行 IteratorClose。
+    assert_eq!(
+        eval(
+            "var log=[];\
+             var it={[Symbol.iterator](){return{next(){return{value:1,done:false}},return(){log.push('close');return{}}}}};\
+             function f(){ try { for (const x of it) { log.push('ret'); return 1; } } finally { log.push('finally'); } }\
+             f();log.join(',')==='ret,finally,close'"
+        ),
+        "true"
+    );
+}
+
+#[test]
+fn for_of_escape_return_error_supersedes_and_closes_rest() {
+    // 逃出时 return() 抛错：新错误替代完成值被外围 catch 捕获，剩余迭代器
+    // （外层）仍被关闭（unwind 兜底，错误优先）。
+    assert_eq!(
+        eval(
+            "var log=[];\
+             var it={[Symbol.iterator](){return{next(){return{value:1,done:false}},return(){log.push('c1');return{}}}}};\
+             var it2={[Symbol.iterator](){return{next(){return{value:1,done:false}},return(){log.push('c2');throw new Error('B');return{}}}}};\
+             function f(){ try { for (var a of it) { for (var b of it2) { return 1; } } } catch(e) { log.push(e.message); } }\
+             f();log.join(',')==='c2,c1,B'"
+        ),
+        "true"
+    );
+}
+
+#[test]
+fn for_of_generator_return_escape_closes_iterators() {
+    // 生成器 .return() 注入时关闭挂起点打开的全部迭代器。
+    assert_eq!(
+        eval(
+            "var closed=0;\
+             var it={[Symbol.iterator](){return{next(){return{value:1,done:false}},return(){closed++;return{}}}}};\
+             function* g(){ for (const x of it) { yield 1; return 2; } }\
+             var gen=g();gen.next();gen.return(9);closed===1"
+        ),
+        "true"
+    );
+}
+
+#[test]
+fn for_in_labeled_break_pops_iterator_stack() {
+    // labeled break 逃出 for-in：弹出内层迭代器，后续 for-in 从干净栈开始迭代
+    // （此前逃出会使 for_in_iters 残留，后续 FOR_IN_DONE 读错 keys）。
+    assert_eq!(
+        eval(
+            "var seen=[];\
+             outer: for (var k in {a:1,b:2}) { for (var j in {c:3}) { break outer; } }\
+             for (var m in {d:4}) { seen.push(m); }seen.join(',')==='d'"
+        ),
+        "true"
+    );
+}
+
+#[test]
+fn for_of_while_break_keeps_outer_iterator() {
+    // while 内 break 不逃出外层 for-of：外层迭代器不被关闭（计数按词法深度对齐）。
+    assert_eq!(
+        eval(
+            "var closed=0;\
+             var it={[Symbol.iterator](){return{next(){return{value:1,done:false}},return(){closed++;return{}}}}};\
+             for (var a of it) { while (true) { break; } break; }closed===1"
+        ),
+        "true"
+    );
+}
+
+#[test]
+fn for_of_switch_break_keeps_outer_iterator() {
+    // switch 内 break 不逃出外层 for-of：只关当前循环自身。
+    assert_eq!(
+        eval(
+            "var closed=0;\
+             var it={[Symbol.iterator](){return{next(){return{value:1,done:false}},return(){closed++;return{}}}}};\
+             for (var a of it) { switch (a) { case 1: break; } break; }closed===1"
+        ),
+        "true"
+    );
+}
+
+#[test]
+fn for_of_switch_break_continues_body_then_closes_once() {
+    // switch 内 break 只跳出 switch：循环体后续语句继续执行，迭代器保持打开，
+    // 直到循环收尾 CLOSE 才关闭一次（此前误在 switch 出口处提前关闭）。
+    assert_eq!(
+        eval(
+            "var log=[];\
+             var it={[Symbol.iterator](){return{next(){return{value:1,done:false}},return(){log.push('close');return{}}}}};\
+             for (var a of it) { switch (a) { case 1: break; } log.push('body'); break; }\
+             log.join(',')==='body,close'"
+        ),
+        "true"
+    );
+}
+
+#[test]
+fn for_of_labeled_block_break_closes_all() {
+    // label 包裹非循环语句：break 逃出整个 label 域，全部 for-of 关闭。
+    assert_eq!(
+        eval(
+            "var closed=0;\
+             var it={[Symbol.iterator](){return{next(){return{value:1,done:false}},return(){closed++;return{}}}}};\
+             outer: { for (var a of it) { break outer; } }closed===1"
+        ),
+        "true"
+    );
+}

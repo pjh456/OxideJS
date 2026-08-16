@@ -142,6 +142,9 @@ fn encode_inst(inst: &Inst, instrs: &mut Vec<u32>, jumps: &mut Vec<(usize, u32)>
             _ => unreachable!("is_jump_op mismatch"),
         };
         instrs.push(instr);
+        // BREAK/CONTINUE 携带逃出迭代器层数的 ext 字；offset 回填只改写首条指令，
+        // ext 字随指令长度计入后续偏移（inst_to_instr 已含 ext）。
+        instrs.extend_from_slice(&inst.ext);
         jumps.push((start, label));
         return Ok(());
     }

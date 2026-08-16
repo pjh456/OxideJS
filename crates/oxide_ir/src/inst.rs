@@ -368,14 +368,40 @@ impl Inst {
 
     /// break 完成：label 指向循环/switch 出口，`crossed` 为逃出的 finally 域数
     /// （emit 词法计算，运行时据此逐个穿越 finally；0 表示未逃出，不产生完成语义）。
-    /// 编码：rd 槽放 crossed（≤255），label 放 b 槽。
-    pub fn brk(label: LabelId, crossed: u16) -> Self {
-        Self::new(OpCode::BREAK, Operand::Imm(crossed), Operand::None, Operand::Label(label))
+    /// `for_of_count`/`for_in_count` 为逃出的迭代器层数，编码进 ext 字——
+    /// BREAK/CONTINUE 的 a/b 槽被跳转 offset 占用，无空闲位。
+    /// 编码：rd 槽放 crossed（≤255），label 放 b 槽，ext[0] 打包两个逃出计数。
+    pub fn brk(label: LabelId, crossed: u16, for_of_count: usize, for_in_count: usize) -> Self {
+        Self::with_ext(
+            OpCode::BREAK,
+            Operand::Imm(crossed),
+            Operand::None,
+            Operand::Label(label),
+            &[pack_escape_counts(for_of_count, for_in_count)],
+        )
     }
 
     /// continue 完成：同 break，label 指向循环继续目标。
-    pub fn cont(label: LabelId, crossed: u16) -> Self {
-        Self::new(OpCode::CONTINUE, Operand::Imm(crossed), Operand::None, Operand::Label(label))
+    pub fn cont(label: LabelId, crossed: u16, for_of_count: usize, for_in_count: usize) -> Self {
+        Self::with_ext(
+            OpCode::CONTINUE,
+            Operand::Imm(crossed),
+            Operand::None,
+            Operand::Label(label),
+            &[pack_escape_counts(for_of_count, for_in_count)],
+        )
+    }
+
+    /// return 完成：`src` 为返回值寄存器（None = 隐式 undefined，reg 0）。
+    /// `for_of_count`/`for_in_count` 为逃出的迭代器层数，编码进 ext 字。
+    pub fn ret(src: Operand, for_of_count: usize, for_in_count: usize) -> Self {
+        Self::with_ext(
+            OpCode::RETURN,
+            src,
+            Operand::None,
+            Operand::None,
+            &[pack_escape_counts(for_of_count, for_in_count)],
+        )
     }
 
     /// 条件寄存器为 false 时跳转。
@@ -407,6 +433,12 @@ impl Inst {
     pub fn try_finally_enter() -> Self {
         Self::new(OpCode::TRY_FINALLY_ENTER, Operand::None, Operand::None, Operand::None)
     }
+}
+
+/// 把逃出的 for-of / for-in 层数打包进一个 ext 字：低 16 位 for-of，高 16 位 for-in。
+/// 层数受寄存器上限约束（每层循环消耗若干 vreg），16 位覆盖远超实际可能。
+fn pack_escape_counts(for_of_count: usize, for_in_count: usize) -> u32 {
+    ((for_in_count.min(0xFFFF) as u32) << 16) | (for_of_count.min(0xFFFF) as u32)
 }
 
 /// spread 调用系 ext 构造：首字打包 `nstatic | (nspread << 8)`，后续按源码求值序排列

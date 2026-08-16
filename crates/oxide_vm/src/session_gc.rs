@@ -842,6 +842,7 @@ mod tests {
         vm.iters.for_of_iters.push(crate::vm_state::ForOfEntry {
             iterator: JsValue::from_js_object(child_session),
             last_result: JsValue::from_js_object(root_session),
+            is_async: false,
         });
 
         let mut roots = Vec::new();
@@ -876,6 +877,8 @@ mod tests {
         vm.pending_completion = Some(crate::vm::Completion::Return {
             value: JsValue::from_js_object(session),
             remaining_finally: 0,
+            for_of_count: 0,
+            for_in_count: 0,
         });
 
         let mut forwarding = std::collections::HashMap::new();

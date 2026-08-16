@@ -127,6 +127,10 @@ pub(crate) struct ForOfEntry {
     pub(crate) iterator: JsValue,
     /// 本迭代器最近一次 DONE 返回的结果对象（CLOSE 判 done 用）。
     pub(crate) last_result: JsValue,
+    /// 是否为 for-await-of 的异步迭代器：异步逃出关闭须 await return() 的
+    /// promise（独立异步机制），同步逃出路径（break/continue/return 计数关闭）
+    /// 不得同步调用其 return()。
+    pub(crate) is_async: bool,
 }
 
 /// for-in / for-of 的活跃迭代器状态。
@@ -154,10 +158,12 @@ impl IterState {
     }
 
     /// 压入新迭代器条目：`last_result` 初始为 undefined（尚未执行任何 next()）。
-    pub(crate) fn push_for_of(&mut self, iterator: JsValue) {
+    /// `is_async` 标记 for-await-of 的异步迭代器（异步逃出关闭走独立机制）。
+    pub(crate) fn push_for_of(&mut self, iterator: JsValue, is_async: bool) {
         self.for_of_iters.push(ForOfEntry {
             iterator,
             last_result: JsValue::undefined(),
+            is_async,
         });
     }
 

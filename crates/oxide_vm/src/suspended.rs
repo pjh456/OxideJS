@@ -44,7 +44,8 @@ pub(crate) struct SuspendedFrame {
 
 impl SuspendedFrame {
     /// 全空帧（New 阶段构造状态盒时用）。
-    pub fn new_empty() -> Self {        SuspendedFrame {
+    pub fn new_empty() -> Self {
+        SuspendedFrame {
             regs: Box::new([JsValue::undefined(); 256]),
             pc: 0,
             bytecode: Arc::default(),
@@ -233,9 +234,16 @@ impl SuspendedFrame {
         self.exception_value = self.exception_value.map(&mut rewrite);
         self.pending_exception = self.pending_exception.map(&mut rewrite);
         self.pending_completion = self.pending_completion.map(|completion| match completion {
-            Completion::Return { value, remaining_finally } => Completion::Return {
+            Completion::Return {
+                value,
+                remaining_finally,
+                for_of_count,
+                for_in_count,
+            } => Completion::Return {
                 value: rewrite(value),
                 remaining_finally,
+                for_of_count,
+                for_in_count,
             },
             other => other,
         });
@@ -295,6 +303,7 @@ impl SuspendedFrame {
                 .map(|entry| ForOfEntry {
                     iterator: rewrite(entry.iterator),
                     last_result: rewrite(entry.last_result),
+                    is_async: entry.is_async,
                 })
                 .collect(),
             delegated_iterator: self.delegated_iterator.map(&mut rewrite),
@@ -304,9 +313,16 @@ impl SuspendedFrame {
             pending_exception: self.pending_exception.map(&mut rewrite),
             pending_error_kind: self.pending_error_kind,
             pending_completion: self.pending_completion.map(|completion| match completion {
-                Completion::Return { value, remaining_finally } => Completion::Return {
+                Completion::Return {
+                    value,
+                    remaining_finally,
+                    for_of_count,
+                    for_in_count,
+                } => Completion::Return {
                     value: rewrite(value),
                     remaining_finally,
+                    for_of_count,
+                    for_in_count,
                 },
                 other => other,
             }),
@@ -375,16 +391,21 @@ mod tests {
         frame.for_of_iters.push(ForOfEntry {
             iterator: JsValue::float(6.0),
             last_result: JsValue::float(7.0),
+            is_async: false,
         });
         frame.delegated_iterator = Some(JsValue::float(8.0));
         frame.saved_bytecode_stack.push(Arc::from(vec![0u32]));
-        frame.saved_immutables_stack.push(std::ptr::slice_from_raw_parts(std::ptr::null(), 0));
+        frame
+            .saved_immutables_stack
+            .push(std::ptr::slice_from_raw_parts(std::ptr::null(), 0));
         frame.exception_value = Some(JsValue::float(9.0));
         frame.pending_exception = Some(JsValue::float(10.0));
         frame.pending_error_kind = Some("Error");
         frame.pending_completion = Some(Completion::Return {
             value: JsValue::float(11.0),
             remaining_finally: 0,
+            for_of_count: 0,
+            for_in_count: 0,
         });
     }
 
@@ -426,6 +447,8 @@ mod tests {
         machine.pending_completion = Some(Completion::Return {
             value: JsValue::float(46.0),
             remaining_finally: 1,
+            for_of_count: 0,
+            for_in_count: 0,
         });
 
         let mut frame = SuspendedFrame::new_empty();
@@ -435,7 +458,7 @@ mod tests {
         assert_eq!(frame.delegated_iterator, Some(JsValue::float(45.0)));
         assert!(matches!(
             frame.pending_completion,
-            Some(Completion::Return { value, remaining_finally: 1 }) if value == JsValue::float(46.0)
+            Some(Completion::Return { value, remaining_finally: 1, .. }) if value == JsValue::float(46.0)
         ));
 
         // sub_modules 为空表：恢复应报"跨 run"错（保持现有三处行为）。

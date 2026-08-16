@@ -14,7 +14,7 @@ impl Emitter {
         let start_label = ctx.next_label_id();
         let end_label = ctx.next_label_id();
         ctx.labels.set_label_pos(start_label, ctx.insts.len());
-        ctx.push_loop(end_label, start_label);
+        ctx.push_loop(end_label, start_label, crate::emit_ctx::LoopKind::Plain);
         let n_labeled = ctx.take_pending_loop_labels(end_label, start_label);
         self.emit_statement(&dw.body, ctx)?;
         let test_reg = self.emit_expression(&dw.test, ctx)?;

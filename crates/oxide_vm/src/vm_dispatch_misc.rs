@@ -537,7 +537,7 @@ impl Vm {
         let iterable = self.regs[a];
         match oxide_builtins::iterator::make_iterator_for_value(self, iterable) {
             Ok(iterator) => {
-                self.iters.push_for_of(iterator);
+                self.iters.push_for_of(iterator, false);
                 Ok(())
             }
             Err(err) => {
@@ -555,7 +555,7 @@ impl Vm {
         let iterable = self.regs[a];
         match crate::async_from_sync::make_async_iterator(self, iterable) {
             Ok(iterator) => {
-                self.iters.push_for_of(iterator);
+                self.iters.push_for_of(iterator, true);
                 Ok(())
             }
             Err(err) => {

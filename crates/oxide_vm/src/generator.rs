@@ -647,21 +647,33 @@ impl Vm {
     /// - `Ok(Some(value))`：直接完成，无需再 dispatch（`value` 为返回值）；
     /// - `Ok(None)`：进入 finally 穿越，调用方须继续 `dispatch()`。
     pub(crate) fn complete_generator_return(&mut self, value: JsValue) -> Result<Option<JsValue>, String> {
-        self.pop_frame_catch_handlers();
+        // 纯 catch handler 的清理延后到完成消费处：record_completion 在 finally
+        // 穿越路径弹出逃出的 catch-only handler；无 finally 时 do_return 弹帧前
+        // 兜底清理。若提前弹出，return() 抛错经 unwind 展开时将找不到外围 catch。
         let crossed = self
             .try_stack
             .iter()
             .filter(|h| h.frame_depth == self.frames.len() && h.finally_pc.is_some())
             .count();
+        // .return()/.throw() 注入时生成器挂起快照中打开的全部迭代器一并逃出
+        // （栈上迭代器属于本生成器），完成恢复处统一关闭。
+        let for_of_count = self.iters.for_of_iters.len();
+        let for_in_count = self.iters.for_in_iters.len();
         if let Some(finally_pc) = self.record_completion(crate::vm::Completion::Return {
             value,
             remaining_finally: crossed,
+            for_of_count,
+            for_in_count,
         }) {
             self.pc = finally_pc;
             return Ok(None);
         }
-        // 无 finally：直接交付返回（弹出生成器帧后 frames 为空 → Some(value)）。
-        self.do_return(value)
+        // 无 finally：关闭逃出迭代器后直接交付返回（弹出生成器帧后 frames 为空 → Some(value)）。
+        match self.close_escaped_iters(for_of_count, for_in_count) {
+            Ok(true) => self.do_return(value),
+            Ok(false) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 }
 

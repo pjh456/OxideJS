@@ -29,7 +29,7 @@ impl Emitter {
         let iter_src_reg = self.emit_expression(&fo.right, ctx)?;
         ctx.inst(Inst::new(OpCode::FOR_OF_INIT, Operand::None, Operand::Reg(iter_src_reg), Operand::None));
         ctx.labels.set_label_pos(start_label, ctx.insts.len());
-        ctx.push_loop(end_label, start_label);
+        ctx.push_loop(end_label, start_label, crate::emit_ctx::LoopKind::ForOf);
         let n_labeled = ctx.take_pending_loop_labels(end_label, start_label);
         let has_reg = ctx.alloc_reg();
         ctx.inst(Inst::new(OpCode::FOR_OF_DONE, Operand::Reg(has_reg), Operand::None, Operand::None));
@@ -64,7 +64,7 @@ impl Emitter {
             Operand::None,
         ));
         ctx.labels.set_label_pos(start_label, ctx.insts.len());
-        ctx.push_loop(end_label, start_label);
+        ctx.push_loop(end_label, start_label, crate::emit_ctx::LoopKind::ForAwaitOf);
         let n_labeled = ctx.take_pending_loop_labels(end_label, start_label);
         let next_reg = ctx.alloc_reg();
         ctx.inst(Inst::new(OpCode::FOR_AWAIT_OF_NEXT, Operand::Reg(next_reg), Operand::None, Operand::None));

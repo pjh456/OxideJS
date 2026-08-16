@@ -286,33 +286,63 @@ impl Vm {
 
     /// break 完成：`crossed`（rd 槽）为 emit 词法算出的逃出 finally 域数。
     /// 逐个穿越 finally 后跳转到目标；crossed 为 0 时直接跳转。
-    pub(crate) fn dispatch_break(&mut self, instr: u32) {
+    /// ext 字携带逃出的迭代器层数：无 finally 穿越时立即关闭后跳转，有 finally
+    /// 时计数随 Completion 悬挂，由 TRY_FINALLY_END 在穿越完成后消费。
+    pub(crate) fn dispatch_break(&mut self, instr: u32) -> Result<(), String> {
+        let (for_of_count, for_in_count) = self.read_escape_counts();
         let offset = opcode::offset16(instr) as isize;
         let target_pc = ((self.pc as isize) + offset - 1) as usize;
         let crossed = opcode::rd(instr) as usize;
         if let Some(finally_pc) = self.record_completion(Completion::Break {
             target_pc,
             remaining_finally: crossed,
+            for_of_count,
+            for_in_count,
         }) {
             self.pc = finally_pc;
         } else {
-            self.pc = target_pc;
+            // 无 finally 穿越：关闭逃出迭代器后跳转；return() 抛错被接管时
+            // unwind 已设 pc，跳过跳转。
+            match self.close_escaped_iters(for_of_count, for_in_count) {
+                Ok(true) => self.pc = target_pc,
+                Ok(false) => {}
+                Err(e) => return Err(e),
+            }
         }
+        Ok(())
     }
 
     /// continue 完成：同 break，目标为循环继续位置。
-    pub(crate) fn dispatch_continue(&mut self, instr: u32) {
+    pub(crate) fn dispatch_continue(&mut self, instr: u32) -> Result<(), String> {
+        let (for_of_count, for_in_count) = self.read_escape_counts();
         let offset = opcode::offset16(instr) as isize;
         let target_pc = ((self.pc as isize) + offset - 1) as usize;
         let crossed = opcode::rd(instr) as usize;
         if let Some(finally_pc) = self.record_completion(Completion::Continue {
             target_pc,
             remaining_finally: crossed,
+            for_of_count,
+            for_in_count,
         }) {
             self.pc = finally_pc;
         } else {
-            self.pc = target_pc;
+            // 无 finally 穿越：关闭逃出迭代器后跳转；return() 抛错被接管时
+            // unwind 已设 pc，跳过跳转。
+            match self.close_escaped_iters(for_of_count, for_in_count) {
+                Ok(true) => self.pc = target_pc,
+                Ok(false) => {}
+                Err(e) => return Err(e),
+            }
         }
+        Ok(())
+    }
+
+    /// 读取 BREAK/CONTINUE/RETURN 的 ext 字逃出计数（低 16 位 for-of，高 16 位
+    /// for-in）。调用时机：主循环已把 pc 推进到 ext 字位置；两条跳转/返回路径
+    /// 都会覆盖 pc，此处无需再推进。
+    fn read_escape_counts(&self) -> (usize, usize) {
+        let packed = self.bytecode[self.pc];
+        ((packed & 0xFFFF) as usize, (packed >> 16) as usize)
     }
 
     /// 记录一次控制流完成：穿越 `remaining_finally` 个 finally 体后执行完成本身。
@@ -365,19 +395,20 @@ impl Vm {
 
     /// return 完成：`crossed` = 当前帧深度内全部 finally handler 数（return 逃出整个
     /// 函数，途中被覆盖的 finally 体也在内），穿越后实际返回。
-    pub(crate) fn dispatch_return(&mut self, rd: usize) -> Result<Option<JsValue>, String> {
+    /// ext 字携带逃出的迭代器层数，由 TRY_FINALLY_END 在穿越完成后关闭。
+    pub(crate) fn dispatch_return(&mut self, instr: u32) -> Result<Option<JsValue>, String> {
+        let rd = opcode::rd(instr) as usize;
         let result = self.regs[rd];
+        let (for_of_count, for_in_count) = self.read_escape_counts();
         crate::vm_debug!(
             "RETURN depth={} saved_pc={}",
             self.frames.len(),
             self.frames.last().map(|f| f.return_addr).unwrap_or(0)
         );
-        // return 逃出整个函数：当前帧残留的纯 catch handler 一律弹出（return 不被
-        // catch 捕获），finally handler 保留给下方完成穿越逐个执行。即使 emit 侧已
-        // 从栈顶弹出连续 catch，这里仍扫描兜底——finally 之下的 catch 无法由
-        // TRY_END 直接弹出。防 handler 泄漏到已返回函数，导致后续异常 unwind
-        // 跳回死函数的 catch 形成死循环。
-        self.pop_frame_catch_handlers();
+        // 纯 catch handler 的清理延后到完成消费处：record_completion 在 finally
+        // 穿越路径弹出逃出的 catch-only handler；无 finally 时 do_return 弹帧前
+        // 兜底清理。若在此提前弹出，return() 抛错经 unwind 展开时将找不到
+        // 外围 catch（规范要求新错误替代完成值继续被捕获）。
         let crossed = self
             .try_stack
             .iter()
@@ -386,11 +417,19 @@ impl Vm {
         if let Some(finally_pc) = self.record_completion(Completion::Return {
             value: result,
             remaining_finally: crossed,
+            for_of_count,
+            for_in_count,
         }) {
             self.pc = finally_pc;
             return Ok(None);
         }
-        self.do_return(result)
+        // 无 finally 穿越：关闭逃出迭代器后返回；return() 抛错被接管时原完成值
+        // 被新错误替代，跳过实际返回。
+        match self.close_escaped_iters(for_of_count, for_in_count) {
+            Ok(true) => self.do_return(result),
+            Ok(false) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     /// 弹出当前帧内所有残留的纯 catch handler（无 finally 域），供 return 逃出
@@ -562,12 +601,77 @@ impl Vm {
             }
         }
         match c {
-            Completion::Break { target_pc, .. } | Completion::Continue { target_pc, .. } => {
-                self.pc = target_pc;
+            Completion::Break {
+                target_pc,
+                for_of_count,
+                for_in_count,
+                ..
+            }
+            | Completion::Continue {
+                target_pc,
+                for_of_count,
+                for_in_count,
+                ..
+            } => {
+                // 全部 finally 穿越完成、真正跳转前关闭逃出迭代器——与规范顺序
+                // （循环体完成值已含内部 try-finally 处理，IteratorClose 在后）一致。
+                // return() 抛错被接管时 unwind 已设 pc，跳过跳转。
+                match self.close_escaped_iters(for_of_count, for_in_count) {
+                    Ok(true) => self.pc = target_pc,
+                    Ok(false) => {}
+                    Err(e) => return Err(e),
+                }
                 Ok(None)
             }
-            Completion::Return { value, .. } => self.do_return(value),
+            Completion::Return {
+                value,
+                for_of_count,
+                for_in_count,
+                ..
+            } => match self.close_escaped_iters(for_of_count, for_in_count) {
+                Ok(true) => self.do_return(value),
+                Ok(false) => Ok(None),
+                Err(e) => Err(e),
+            },
         }
+    }
+
+    /// 逃出关闭：按 LIFO 弹出逃出的 for-in 迭代器（无 return() 语义），再关闭逃出的
+    /// for-of 迭代器。异步迭代器条目（for-await-of）跳过——其 return() 返回 promise
+    /// 须 await 后结算，走独立异步关闭机制。逃出路径非 suppress：return() 抛错经
+    /// raise_call_error 展开，剩余迭代器由 unwind 的 close_for_of_above 以 suppress
+    /// 继续关闭——新错误替代原完成值向外传播。
+    ///
+    /// # 返回值
+    /// `Ok(true)` = 全部关闭完成，调用方继续跳转/返回动作；`Ok(false)` = return()
+    /// 抛错且异常已被外围 catch/finally 接管（unwind 已改写 pc），调用方须丢弃
+    /// 原完成动作；`Err` = 无处理器，异常逃逸。
+    pub(crate) fn close_escaped_iters(&mut self, for_of_count: usize, for_in_count: usize) -> Result<bool, String> {
+        for _ in 0..for_in_count {
+            self.iters.pop_for_in();
+        }
+        for _ in 0..for_of_count {
+            let Some(entry) = self.iters.pop_for_of() else {
+                break;
+            };
+            // 异步迭代器不在此关闭：for-await-of 的逃出（labeled/return）由
+            // 异步关闭机制处理，此处同步关闭会跳过 return() promise 的等待。
+            if entry.is_async {
+                continue;
+            }
+            let pc_before = self.pc;
+            match self.close_for_of_iterator(entry.iterator, false) {
+                Ok(()) => {}
+                Err(e) => return Err(e),
+            }
+            // return() 抛错被接管：unwind 把 pc 改写为 catch/finally 入口，或挂起
+            // 在途异常等 finally 穿越。正常关闭时 pc 不变（call_function_sync 保存
+            // 并恢复调用方 pc）。
+            if self.pc != pc_before || self.pending_exception.is_some() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// 找下一个未被覆盖的包裹 finally 并进入（resume 路径用）：弹出途中被逃出的

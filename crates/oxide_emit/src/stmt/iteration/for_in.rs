@@ -17,7 +17,7 @@ impl Emitter {
         let obj_reg = self.emit_expression(&fi.right, ctx)?;
         ctx.inst(Inst::new(OpCode::FOR_IN_INIT, Operand::None, Operand::Reg(obj_reg), Operand::None));
         ctx.labels.set_label_pos(start_label, ctx.insts.len());
-        ctx.push_loop(end_label, start_label);
+        ctx.push_loop(end_label, start_label, crate::emit_ctx::LoopKind::ForIn);
         let n_labeled = ctx.take_pending_loop_labels(end_label, start_label);
         let done_reg = ctx.alloc_reg();
         ctx.inst(Inst::new(OpCode::FOR_IN_DONE, Operand::Reg(done_reg), Operand::None, Operand::None));

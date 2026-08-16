@@ -251,11 +251,28 @@ pub struct TryHandler {
 ///
 /// 仿 `pending_exception` 的侧通道：finally 执行期间悬挂在此，由 TRY_FINALLY_END
 /// 逐个恢复（`remaining_finally` 为仍需穿越的 finally 体数，进入一个递减一个）。
+/// `for_of_count`/`for_in_count` 为逃出时需关闭的迭代器层数：在全部 finally 穿越
+/// 之后、跳转/返回之前执行（规范 §13.7.5.4 的 IteratorClose 在完成值之后）。
 #[derive(Debug, Clone, Copy)]
 pub enum Completion {
-    Break { target_pc: usize, remaining_finally: usize },
-    Continue { target_pc: usize, remaining_finally: usize },
-    Return { value: JsValue, remaining_finally: usize },
+    Break {
+        target_pc: usize,
+        remaining_finally: usize,
+        for_of_count: usize,
+        for_in_count: usize,
+    },
+    Continue {
+        target_pc: usize,
+        remaining_finally: usize,
+        for_of_count: usize,
+        for_in_count: usize,
+    },
+    Return {
+        value: JsValue,
+        remaining_finally: usize,
+        for_of_count: usize,
+        for_in_count: usize,
+    },
 }
 
 impl Completion {
@@ -268,20 +285,59 @@ impl Completion {
         }
     }
 
+    /// 逃出时需关闭的 for-of 迭代器层数。
+    pub fn for_of_count(&self) -> usize {
+        match *self {
+            Completion::Break { for_of_count, .. }
+            | Completion::Continue { for_of_count, .. }
+            | Completion::Return { for_of_count, .. } => for_of_count,
+        }
+    }
+
+    /// 逃出时需弹出的 for-in 迭代器层数。
+    pub fn for_in_count(&self) -> usize {
+        match *self {
+            Completion::Break { for_in_count, .. }
+            | Completion::Continue { for_in_count, .. }
+            | Completion::Return { for_in_count, .. } => for_in_count,
+        }
+    }
+
     /// 复制并改写剩余 finally 计数（进入一个 finally 后递减）。
     pub fn with_remaining(&self, remaining: usize) -> Completion {
         match *self {
-            Completion::Break { target_pc, .. } => Completion::Break {
+            Completion::Break {
+                target_pc,
+                for_of_count,
+                for_in_count,
+                ..
+            } => Completion::Break {
                 target_pc,
                 remaining_finally: remaining,
+                for_of_count,
+                for_in_count,
             },
-            Completion::Continue { target_pc, .. } => Completion::Continue {
+            Completion::Continue {
+                target_pc,
+                for_of_count,
+                for_in_count,
+                ..
+            } => Completion::Continue {
                 target_pc,
                 remaining_finally: remaining,
+                for_of_count,
+                for_in_count,
             },
-            Completion::Return { value, .. } => Completion::Return {
+            Completion::Return {
+                value,
+                for_of_count,
+                for_in_count,
+                ..
+            } => Completion::Return {
                 value,
                 remaining_finally: remaining,
+                for_of_count,
+                for_in_count,
             },
         }
     }
@@ -779,9 +835,16 @@ impl Vm {
         self.pending_exception = self.pending_exception.map(&mut rewrite);
         self.last_uncaught_value = self.last_uncaught_value.map(&mut rewrite);
         self.pending_completion = self.pending_completion.map(|completion| match completion {
-            Completion::Return { value, remaining_finally } => Completion::Return {
+            Completion::Return {
+                value,
+                remaining_finally,
+                for_of_count,
+                for_in_count,
+            } => Completion::Return {
                 value: rewrite(value),
                 remaining_finally,
+                for_of_count,
+                for_in_count,
             },
             other => other,
         });
@@ -1569,11 +1632,11 @@ impl Vm {
                 }
 
                 OpCode::BREAK => {
-                    self.dispatch_break(instr);
+                    self.dispatch_break(instr)?;
                 }
 
                 OpCode::CONTINUE => {
-                    self.dispatch_continue(instr);
+                    self.dispatch_continue(instr)?;
                 }
 
                 OpCode::JMP_IF_FALSE => {
@@ -1696,7 +1759,7 @@ impl Vm {
                     self.dispatch_define_accessor_attrs(rd, a, b, key_word, attrs)?;
                 }
 
-                OpCode::RETURN => match self.dispatch_return(rd) {
+                OpCode::RETURN => match self.dispatch_return(instr) {
                     Ok(Some(result)) => return Ok(result),
                     Ok(None) => {}
                     Err(e) => return Err(e),
@@ -2383,6 +2446,7 @@ mod tests {
         vm.iters.for_of_iters.push(ForOfEntry {
             iterator: JsValue::undefined(),
             last_result: JsValue::undefined(),
+            is_async: false,
         });
         vm.saved_bytecode_stack
             .push(Arc::from(vec![opcode::encode(opcode::OpCode::HALT, 0, 0, 0)]));
@@ -2442,6 +2506,7 @@ mod tests {
         vm.iters.for_of_iters.push(ForOfEntry {
             iterator: JsValue::undefined(),
             last_result: JsValue::undefined(),
+            is_async: false,
         });
 
         vm.run(&module).expect("FOR_OF_CLOSE should tolerate non-object sentinel");

@@ -34,31 +34,81 @@ fn place_flat(module: &Arc<CompiledModule>, out: &mut Vec<Option<Arc<CompiledMod
 /// `regs` 取窗口副本：值来自 `save_inline_state` 预填充的 `window_regs` 局部缓冲
 /// （经宏参数注入，绕开 macro hygiene），从池中取出后即 move 进 `InlineSyncState`。
 macro_rules! inline_save_field {
-    ($recv:ident, $window_regs:ident, regs, boxed_window) => { std::mem::take(&mut $window_regs).into_boxed_slice() };
-    ($recv:ident, $window_regs:ident, saved_this, copy) => { $recv.regs[254] };
-    ($recv:ident, $window_regs:ident, saved_new_target, copy) => { $recv.regs[255] };
-    ($recv:ident, $window_regs:ident, pc, copy) => { $recv.pc };
-    ($recv:ident, $window_regs:ident, bytecode, move_field) => { std::mem::take(&mut $recv.bytecode) };
-    ($recv:ident, $window_regs:ident, active_immutables, copy) => { $recv.active_immutables };
-    ($recv:ident, $window_regs:ident, active_reg_limit, copy) => { $recv.active_reg_limit };
-    ($recv:ident, $window_regs:ident, root_reg_limit, copy) => { $recv.root_reg_limit };
-    ($recv:ident, $window_regs:ident, try_stack, move_field) => { std::mem::take(&mut $recv.try_stack) };
-    ($recv:ident, $window_regs:ident, frames, frames_values) => { std::mem::take(&mut $recv.frames) };
-    ($recv:ident, $window_regs:ident, exception_value, opt_take) => { $recv.exception_value.take() };
-    ($recv:ident, $window_regs:ident, pending_exception, opt_take) => { $recv.pending_exception.take() };
-    ($recv:ident, $window_regs:ident, pending_error_kind, opt_take) => { $recv.pending_error_kind.take() };
-    ($recv:ident, $window_regs:ident, pending_completion, opt_copy) => { $recv.pending_completion };
-    ($recv:ident, $window_regs:ident, for_in_iters, for_in_keys) => { std::mem::take(&mut $recv.iters.for_in_iters) };
-    ($recv:ident, $window_regs:ident, for_of_iters, iter_take) => { std::mem::take(&mut $recv.iters.for_of_iters) };
-    ($recv:ident, $window_regs:ident, saved_bytecode_stack, move_field) => { std::mem::take(&mut $recv.saved_bytecode_stack) };
-    ($recv:ident, $window_regs:ident, saved_immutables_stack, move_field) => { std::mem::take(&mut $recv.saved_immutables_stack) };
-    ($recv:ident, $window_regs:ident, save_stack, move_field) => { std::mem::take(&mut $recv.save_stack) };
-    ($recv:ident, $window_regs:ident, spill_stack, move_field) => { std::mem::take(&mut $recv.spill_stack) };
-    ($recv:ident, $window_regs:ident, cell_stack, move_field) => { std::mem::take(&mut $recv.cell_stack) };
-    ($recv:ident, $window_regs:ident, inline_callee, opt_copy) => { $recv.inline_callee };
-    ($recv:ident, $window_regs:ident, inline_args_base, copy) => { $recv.inline_args_base };
-    ($recv:ident, $window_regs:ident, inline_args_count, copy) => { $recv.inline_args_count };
-    ($recv:ident, $window_regs:ident, accessor_frame_target_reg, copy) => { $recv.accessor_frame_target_reg };
+    ($recv:ident, $window_regs:ident, regs, boxed_window) => {
+        std::mem::take(&mut $window_regs).into_boxed_slice()
+    };
+    ($recv:ident, $window_regs:ident, saved_this, copy) => {
+        $recv.regs[254]
+    };
+    ($recv:ident, $window_regs:ident, saved_new_target, copy) => {
+        $recv.regs[255]
+    };
+    ($recv:ident, $window_regs:ident, pc, copy) => {
+        $recv.pc
+    };
+    ($recv:ident, $window_regs:ident, bytecode, move_field) => {
+        std::mem::take(&mut $recv.bytecode)
+    };
+    ($recv:ident, $window_regs:ident, active_immutables, copy) => {
+        $recv.active_immutables
+    };
+    ($recv:ident, $window_regs:ident, active_reg_limit, copy) => {
+        $recv.active_reg_limit
+    };
+    ($recv:ident, $window_regs:ident, root_reg_limit, copy) => {
+        $recv.root_reg_limit
+    };
+    ($recv:ident, $window_regs:ident, try_stack, move_field) => {
+        std::mem::take(&mut $recv.try_stack)
+    };
+    ($recv:ident, $window_regs:ident, frames, frames_values) => {
+        std::mem::take(&mut $recv.frames)
+    };
+    ($recv:ident, $window_regs:ident, exception_value, opt_take) => {
+        $recv.exception_value.take()
+    };
+    ($recv:ident, $window_regs:ident, pending_exception, opt_take) => {
+        $recv.pending_exception.take()
+    };
+    ($recv:ident, $window_regs:ident, pending_error_kind, opt_take) => {
+        $recv.pending_error_kind.take()
+    };
+    ($recv:ident, $window_regs:ident, pending_completion, opt_copy) => {
+        $recv.pending_completion
+    };
+    ($recv:ident, $window_regs:ident, for_in_iters, for_in_keys) => {
+        std::mem::take(&mut $recv.iters.for_in_iters)
+    };
+    ($recv:ident, $window_regs:ident, for_of_iters, iter_take) => {
+        std::mem::take(&mut $recv.iters.for_of_iters)
+    };
+    ($recv:ident, $window_regs:ident, saved_bytecode_stack, move_field) => {
+        std::mem::take(&mut $recv.saved_bytecode_stack)
+    };
+    ($recv:ident, $window_regs:ident, saved_immutables_stack, move_field) => {
+        std::mem::take(&mut $recv.saved_immutables_stack)
+    };
+    ($recv:ident, $window_regs:ident, save_stack, move_field) => {
+        std::mem::take(&mut $recv.save_stack)
+    };
+    ($recv:ident, $window_regs:ident, spill_stack, move_field) => {
+        std::mem::take(&mut $recv.spill_stack)
+    };
+    ($recv:ident, $window_regs:ident, cell_stack, move_field) => {
+        std::mem::take(&mut $recv.cell_stack)
+    };
+    ($recv:ident, $window_regs:ident, inline_callee, opt_copy) => {
+        $recv.inline_callee
+    };
+    ($recv:ident, $window_regs:ident, inline_args_base, copy) => {
+        $recv.inline_args_base
+    };
+    ($recv:ident, $window_regs:ident, inline_args_count, copy) => {
+        $recv.inline_args_count
+    };
+    ($recv:ident, $window_regs:ident, accessor_frame_target_reg, copy) => {
+        $recv.accessor_frame_target_reg
+    };
 }
 
 /// restore 方向的字段写回语句。`regs` 只回拷窗口并把缓冲归还池。
@@ -67,30 +117,78 @@ macro_rules! inline_restore_field {
         $recv.regs[..$saved.regs.len()].copy_from_slice(&$saved.regs);
         $recv.inline_reg_pool = Some($saved.regs.into_vec());
     };
-    ($recv:ident, $saved:ident, saved_this, copy) => { $recv.regs[254] = $saved.saved_this };
-    ($recv:ident, $saved:ident, saved_new_target, copy) => { $recv.regs[255] = $saved.saved_new_target };
-    ($recv:ident, $saved:ident, pc, copy) => { $recv.pc = $saved.pc };
-    ($recv:ident, $saved:ident, bytecode, move_field) => { $recv.bytecode = $saved.bytecode };
-    ($recv:ident, $saved:ident, active_immutables, copy) => { $recv.active_immutables = $saved.active_immutables };
-    ($recv:ident, $saved:ident, active_reg_limit, copy) => { $recv.active_reg_limit = $saved.active_reg_limit };
-    ($recv:ident, $saved:ident, root_reg_limit, copy) => { $recv.root_reg_limit = $saved.root_reg_limit };
-    ($recv:ident, $saved:ident, try_stack, move_field) => { $recv.try_stack = $saved.try_stack };
-    ($recv:ident, $saved:ident, frames, frames_values) => { $recv.frames = $saved.frames };
-    ($recv:ident, $saved:ident, exception_value, opt_take) => { $recv.exception_value = $saved.exception_value };
-    ($recv:ident, $saved:ident, pending_exception, opt_take) => { $recv.pending_exception = $saved.pending_exception };
-    ($recv:ident, $saved:ident, pending_error_kind, opt_take) => { $recv.pending_error_kind = $saved.pending_error_kind };
-    ($recv:ident, $saved:ident, pending_completion, opt_copy) => { $recv.pending_completion = $saved.pending_completion };
-    ($recv:ident, $saved:ident, for_in_iters, for_in_keys) => { $recv.iters.for_in_iters = $saved.for_in_iters };
-    ($recv:ident, $saved:ident, for_of_iters, iter_take) => { $recv.iters.for_of_iters = $saved.for_of_iters };
-    ($recv:ident, $saved:ident, saved_bytecode_stack, move_field) => { $recv.saved_bytecode_stack = $saved.saved_bytecode_stack };
-    ($recv:ident, $saved:ident, saved_immutables_stack, move_field) => { $recv.saved_immutables_stack = $saved.saved_immutables_stack };
-    ($recv:ident, $saved:ident, save_stack, move_field) => { $recv.save_stack = $saved.save_stack };
-    ($recv:ident, $saved:ident, spill_stack, move_field) => { $recv.spill_stack = $saved.spill_stack };
-    ($recv:ident, $saved:ident, cell_stack, move_field) => { $recv.cell_stack = $saved.cell_stack };
-    ($recv:ident, $saved:ident, inline_callee, opt_copy) => { $recv.inline_callee = $saved.inline_callee };
-    ($recv:ident, $saved:ident, inline_args_base, copy) => { $recv.inline_args_base = $saved.inline_args_base };
-    ($recv:ident, $saved:ident, inline_args_count, copy) => { $recv.inline_args_count = $saved.inline_args_count };
-    ($recv:ident, $saved:ident, accessor_frame_target_reg, copy) => { $recv.accessor_frame_target_reg = $saved.accessor_frame_target_reg };
+    ($recv:ident, $saved:ident, saved_this, copy) => {
+        $recv.regs[254] = $saved.saved_this
+    };
+    ($recv:ident, $saved:ident, saved_new_target, copy) => {
+        $recv.regs[255] = $saved.saved_new_target
+    };
+    ($recv:ident, $saved:ident, pc, copy) => {
+        $recv.pc = $saved.pc
+    };
+    ($recv:ident, $saved:ident, bytecode, move_field) => {
+        $recv.bytecode = $saved.bytecode
+    };
+    ($recv:ident, $saved:ident, active_immutables, copy) => {
+        $recv.active_immutables = $saved.active_immutables
+    };
+    ($recv:ident, $saved:ident, active_reg_limit, copy) => {
+        $recv.active_reg_limit = $saved.active_reg_limit
+    };
+    ($recv:ident, $saved:ident, root_reg_limit, copy) => {
+        $recv.root_reg_limit = $saved.root_reg_limit
+    };
+    ($recv:ident, $saved:ident, try_stack, move_field) => {
+        $recv.try_stack = $saved.try_stack
+    };
+    ($recv:ident, $saved:ident, frames, frames_values) => {
+        $recv.frames = $saved.frames
+    };
+    ($recv:ident, $saved:ident, exception_value, opt_take) => {
+        $recv.exception_value = $saved.exception_value
+    };
+    ($recv:ident, $saved:ident, pending_exception, opt_take) => {
+        $recv.pending_exception = $saved.pending_exception
+    };
+    ($recv:ident, $saved:ident, pending_error_kind, opt_take) => {
+        $recv.pending_error_kind = $saved.pending_error_kind
+    };
+    ($recv:ident, $saved:ident, pending_completion, opt_copy) => {
+        $recv.pending_completion = $saved.pending_completion
+    };
+    ($recv:ident, $saved:ident, for_in_iters, for_in_keys) => {
+        $recv.iters.for_in_iters = $saved.for_in_iters
+    };
+    ($recv:ident, $saved:ident, for_of_iters, iter_take) => {
+        $recv.iters.for_of_iters = $saved.for_of_iters
+    };
+    ($recv:ident, $saved:ident, saved_bytecode_stack, move_field) => {
+        $recv.saved_bytecode_stack = $saved.saved_bytecode_stack
+    };
+    ($recv:ident, $saved:ident, saved_immutables_stack, move_field) => {
+        $recv.saved_immutables_stack = $saved.saved_immutables_stack
+    };
+    ($recv:ident, $saved:ident, save_stack, move_field) => {
+        $recv.save_stack = $saved.save_stack
+    };
+    ($recv:ident, $saved:ident, spill_stack, move_field) => {
+        $recv.spill_stack = $saved.spill_stack
+    };
+    ($recv:ident, $saved:ident, cell_stack, move_field) => {
+        $recv.cell_stack = $saved.cell_stack
+    };
+    ($recv:ident, $saved:ident, inline_callee, opt_copy) => {
+        $recv.inline_callee = $saved.inline_callee
+    };
+    ($recv:ident, $saved:ident, inline_args_base, copy) => {
+        $recv.inline_args_base = $saved.inline_args_base
+    };
+    ($recv:ident, $saved:ident, inline_args_count, copy) => {
+        $recv.inline_args_count = $saved.inline_args_count
+    };
+    ($recv:ident, $saved:ident, accessor_frame_target_reg, copy) => {
+        $recv.accessor_frame_target_reg = $saved.accessor_frame_target_reg
+    };
 }
 
 /// 内联同步调用可搬移执行核心字段的单一登记表。save/restore 双向由本宏展开；
@@ -98,32 +196,35 @@ macro_rules! inline_restore_field {
 /// `$window_regs` 只在 save 方向被 `regs` 字段消费。
 macro_rules! inline_core_fields {
     ($recv:ident, $saved:ident, $ops:ident, $window_regs:ident) => {
-        $ops!($recv, $saved, $window_regs,
-            (regs, boxed_window), // V M
-            (saved_this, copy), // V
-            (saved_new_target, copy), // V
-            (pc, copy), // M
-            (bytecode, move_field), // V M
-            (active_immutables, copy), // M
-            (active_reg_limit, copy), // M
-            (root_reg_limit, copy), // M
-            (try_stack, move_field), // M
-            (frames, frames_values), // V M
-            (exception_value, opt_take), // V M
-            (pending_exception, opt_take), // V M
-            (pending_error_kind, opt_take), // M
-            (pending_completion, opt_copy), // V M
-            (for_in_iters, for_in_keys), // V M
-            (for_of_iters, iter_take), // V M
-            (saved_bytecode_stack, move_field), // M
+        $ops!(
+            $recv,
+            $saved,
+            $window_regs,
+            (regs, boxed_window),                 // V M
+            (saved_this, copy),                   // V
+            (saved_new_target, copy),             // V
+            (pc, copy),                           // M
+            (bytecode, move_field),               // V M
+            (active_immutables, copy),            // M
+            (active_reg_limit, copy),             // M
+            (root_reg_limit, copy),               // M
+            (try_stack, move_field),              // M
+            (frames, frames_values),              // V M
+            (exception_value, opt_take),          // V M
+            (pending_exception, opt_take),        // V M
+            (pending_error_kind, opt_take),       // M
+            (pending_completion, opt_copy),       // V M
+            (for_in_iters, for_in_keys),          // V M
+            (for_of_iters, iter_take),            // V M
+            (saved_bytecode_stack, move_field),   // M
             (saved_immutables_stack, move_field), // M
-            (save_stack, move_field), // V M
-            (spill_stack, move_field), // V M
-            (cell_stack, move_field), // V M
-            (inline_callee, opt_copy), // V M
-            (inline_args_base, copy), // M
-            (inline_args_count, copy), // M
-            (accessor_frame_target_reg, copy), // M
+            (save_stack, move_field),             // V M
+            (spill_stack, move_field),            // V M
+            (cell_stack, move_field),             // V M
+            (inline_callee, opt_copy),            // V M
+            (inline_args_base, copy),             // M
+            (inline_args_count, copy),            // M
+            (accessor_frame_target_reg, copy),    // M
         )
     };
 }
@@ -475,10 +576,13 @@ mod tests {
         vm.pending_completion = Some(Completion::Return {
             value: JsValue::float(8.0),
             remaining_finally: 1,
+            for_of_count: 0,
+            for_in_count: 0,
         });
         vm.iters.for_of_iters.push(crate::vm_state::ForOfEntry {
             iterator: JsValue::float(8.5),
             last_result: JsValue::float(9.0),
+            is_async: false,
         });
         vm.spill_stack.push(JsValue::float(10.0));
         vm.save_stack.push(JsValue::float(11.0));
@@ -503,7 +607,7 @@ mod tests {
         assert_eq!(vm.pending_error_kind, Some("TypeError"));
         assert!(matches!(
             vm.pending_completion,
-            Some(Completion::Return { value, remaining_finally: 1 }) if value == JsValue::float(8.0)
+            Some(Completion::Return { value, remaining_finally: 1, .. }) if value == JsValue::float(8.0)
         ));
         assert_eq!(vm.iters.for_of_iters.len(), 1);
         assert_eq!(vm.iters.for_of_iters[0].iterator, JsValue::float(8.5));
