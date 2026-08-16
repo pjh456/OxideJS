@@ -350,7 +350,14 @@ impl Vm {
     /// 读取 BREAK/CONTINUE/RETURN 的 ext 字逃出计数（低 16 位 for-of，高 16 位
     /// for-in）。调用时机：主循环已把 pc 推进到 ext 字位置；两条跳转/返回路径
     /// 都会覆盖 pc，此处无需再推进。
+    ///
+    /// # 边界与前提
+    /// - 手工构造的 IR 可能让 RETURN/BREAK/CONTINUE 落在末位且无 ext 字（pc == len），
+    ///   此时按 (0, 0) 处理：无迭代器逃出，语义正确。
     fn read_escape_counts(&self) -> (usize, usize) {
+        if self.pc >= self.bytecode.len() {
+            return (0, 0);
+        }
         let packed = self.bytecode[self.pc];
         ((packed & 0xFFFF) as usize, (packed >> 16) as usize)
     }

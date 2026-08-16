@@ -62,10 +62,7 @@ fn spill_unspill_roundtrip() {
 #[test]
 fn frame_boundary_parent_spill_survives_call() {
     let child = int_module(
-        vec![
-            Inst::load_const(Operand::Reg(3), 0),
-            Inst::new(OpCode::RETURN, Operand::Reg(3), Operand::None, Operand::None),
-        ],
+        vec![Inst::load_const(Operand::Reg(3), 0), Inst::ret(Operand::Reg(3), 0, 0)],
         99,
         4,
         Vec::new(),
@@ -90,7 +87,7 @@ fn nested_call_both_spill() {
         vec![
             Inst::load_const(Operand::Reg(3), 0),
             Inst::inst_spill(Operand::Reg(3), 0),
-            Inst::new(OpCode::RETURN, Operand::Reg(3), Operand::None, Operand::None),
+            Inst::ret(Operand::Reg(3), 0, 0),
         ],
         99,
         4,
