@@ -236,3 +236,52 @@ fn for_await_of_return_escape_defers_async_close() {
         "\"body\""
     );
 }
+
+// ── class/object 生成器方法（异步） ──
+
+// class async 生成器方法：yield 顺序与 done 收敛。顶层 then 链驱动
+// （普通回调帧内读取类绑定不触发 upvalue cell 误报）。
+#[test]
+fn class_async_generator_method_yields_in_order() {
+    assert_eq!(
+        eval(
+            "class E { async *ag() { yield 1; yield 2; } }\
+             var it = new E().ag(); var a, b, c;\
+             var p = it.next().then(function (r) { a = r.value; return it.next(); })\
+                      .then(function (r) { b = r.value; return it.next(); })\
+                      .then(function (r) { c = r.done; return a + ',' + b + ',' + c; });\
+             p"
+        ),
+        "\"1,2,true\""
+    );
+}
+
+// class async 生成器方法 throw：异常进挂起点，被 body 内 catch 拦截后继续 yield。
+#[test]
+fn class_async_generator_method_throw_reaches_inner_catch() {
+    assert_eq!(
+        eval(
+            "class F { async *t() { try { yield 1; } catch (e) { yield 'caught:' + e; } } }\
+             var it = new F().t();\
+             var p = it.next().then(function (r) { return it.throw('boom'); })\
+                      .then(function (r) { return r.value; });\
+             p"
+        ),
+        "\"caught:boom\""
+    );
+}
+
+// object async 生成器方法：方法形态的 async generator 语义与函数式一致。
+#[test]
+fn object_async_generator_method_yields() {
+    assert_eq!(
+        eval(
+            "var o = { async *gen() { yield 5; } };\
+             var it = o.gen(); var a, d;\
+             var p = it.next().then(function (r) { a = r.value; return it.next(); })\
+                      .then(function (r) { d = r.done; return a + ':' + d; });\
+             p"
+        ),
+        "\"5:true\""
+    );
+}

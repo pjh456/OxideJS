@@ -99,35 +99,23 @@ impl Emitter {
             extra_uv.push((name, c));
         }
         let method_value = method.value.as_ref();
-        let mut method_module = if method_value.r#async {
-            self.compile_function_body_with_field_hooks_gen(
-                &param_names,
-                body_stmts,
-                ctx,
-                false,
-                self_binding,
-                FunctionBodyContext::ClassElement,
-                None::<fn(&Emitter, &mut CompileCtx) -> Result<(), String>>,
-                false,
-                &[],
-                &extra_uv,
-                false,
-                true,
-            )?
-        } else {
-            self.compile_function_body_with_field_hooks(
-                &param_names,
-                body_stmts,
-                ctx,
-                false,
-                self_binding,
-                FunctionBodyContext::ClassElement,
-                None::<fn(&Emitter, &mut CompileCtx) -> Result<(), String>>,
-                false,
-                &[],
-                &extra_uv,
-            )?
-        };
+        // 生成器/异步/异步生成器方法与普通方法统一走带标志入口：`*m` 置 is_generator，
+        // `async *m` 同时置 is_generator 与 is_async，VM 据此按生成器协议创建对象并
+        // 处理 body 内 SUSPEND/YIELD/异常边界。
+        let mut method_module = self.compile_function_body_with_field_hooks_gen(
+            &param_names,
+            body_stmts,
+            ctx,
+            false,
+            self_binding,
+            FunctionBodyContext::ClassElement,
+            None::<fn(&Emitter, &mut CompileCtx) -> Result<(), String>>,
+            false,
+            &[],
+            &extra_uv,
+            method_value.generator,
+            method_value.r#async,
+        )?;
         ctx.in_instance_method = saved_instance;
         ctx.in_static_method = saved_static;
         // 访问器函数名带 "get "/"set " 前缀（SetFunctionName 语义），普通方法裸属性名。

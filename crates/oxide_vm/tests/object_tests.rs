@@ -358,3 +358,23 @@ fn object_literal_batch_mixed_computed_spread_order() {
     );
     assert_eq!(eval("var k='k',s={m:3}; ({a:1,[k]:2,...s}).k"), "2");
 }
+
+// ── object 生成器方法 ──
+
+// 对象字面量生成器方法：yield 顺序与 done 收敛。
+#[test]
+fn object_generator_method_yields_in_order() {
+    assert_eq!(
+        eval_string("var o = { *gen() { yield 1; yield 2; } }; var it = o.gen(); [it.next().value, it.next().value, it.next().done].join(',')"),
+        "1,2,true"
+    );
+}
+
+// 对象字面量生成器方法 throw：异常进挂起点，被 body 内 catch 拦截后继续 yield。
+#[test]
+fn object_generator_method_throw_reaches_inner_catch() {
+    assert_eq!(
+        eval_string("var o = { *t() { try { yield 1; } catch (e) { yield 'caught'; } } }; var it = o.t(); var r1 = it.next(); var r2 = it.throw(new Error('x')); [r1.value, r2.value].join(',')"),
+        "1,caught"
+    );
+}

@@ -567,3 +567,73 @@ fn postfix_increment_on_captured_cell_returns_old_value() {
     .unwrap();
     assert_num(result, 112.0);
 }
+
+// ── class 生成器方法 ──
+
+// 实例生成器方法：yield 顺序与 done 收敛，生成器对象经 next 驱动。
+#[test]
+fn class_generator_method_yields_in_order() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class C { *g() { yield 10; yield 20; } } var it = new C().g(); [it.next().value, it.next().value, it.next().done].join(',')",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "10,20,true");
+}
+
+// 静态生成器方法：挂在构造函数上，调用形态与实例方法一致。
+#[test]
+fn class_static_generator_method_yields() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class D { static *sg() { yield 30; } } var it = D.sg(); [it.next().value, it.next().done].join(',')",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "30,true");
+}
+
+// 生成器方法 throw 传播：throw 进挂起点，异常可被 body 内 catch 拦截。
+#[test]
+fn class_generator_method_throw_reaches_inner_catch() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class F { *t() { try { yield 1; } catch (e) { yield 'caught'; } } } var it = new F().t(); var r1 = it.next(); var r2 = it.throw(new Error('x')); [r1.value, r2.value].join(',')",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "1,caught");
+}
+
+// 生成器方法 next(arg)：参数作为 yield 表达式结果传入 body。
+#[test]
+fn class_generator_method_next_arg_feeds_yield_expression() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class G { *a() { var v = yield 1; yield v * 2; } } var it = new G().a(); var r1 = it.next(); var r2 = it.next(21); [r1.value, r2.value].join(',')",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "1,42");
+}
+
+// 生成器方法 yield* 委托：与函数式生成器一致的委托序列。
+#[test]
+fn class_generator_method_yield_star_delegates() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "class H { *ys() { yield* [1, 2, 3]; } } Array.from(new H().ys()).join(',')").unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "1,2,3");
+}
+
+// 生成器方法 return()：提前关闭生成器并携带返回值。
+#[test]
+fn class_generator_method_return_closes_with_value() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class I { *rt() { yield 1; yield 2; } } var it = new I().rt(); var r1 = it.next(); var r2 = it.return(99); [r1.value, r2.value, r2.done].join(',')",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "1,99,true");
+}
