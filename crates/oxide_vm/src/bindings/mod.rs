@@ -165,6 +165,98 @@ pub(crate) fn bind_accessor_getter(
     proto.bump_generation();
 }
 
+/// 在原型上绑定一个原生访问器属性（getter + setter 成对），键可为字符串 intern 键
+/// 或 well-known symbol 键（shape 键直接传入，不要求字符串 intern）。
+///
+/// # 步骤
+/// 1. 构造 getter 函数对象（name = `getter_name`，length 0）与 setter 函数对象
+///    （name = `setter_name`，length 1）。
+/// 2. 为键开 shape 槽位并写入访问器 meta（enumerable=false, configurable=true）。
+///
+/// # 注意事项
+/// getter/setter 函数对象经 `Box::into_raw` 持有，与 `bind_accessor_getter` 的
+/// 方法 wrapper 同一生命周期约定（内置对象在 session 生命周期内不被回收）。
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn bind_accessor_getset(
+    core: &Arc<KernelCore>, session: &KernelSession, proto: &mut JsObject, key: u32, getter_name: &str,
+    setter_name: &str, getter_fn: *const (), setter_fn: *const (),
+) {
+    let shape_forge = core.shape_forge().as_ref();
+    let string_forge = core.perm_interner().as_ref();
+    let fn_proto_val = JsValue::from_js_object(session.builtin_world().function_proto.as_ptr() as *mut JsObject);
+
+    let mut getter = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
+    getter.set_function(true);
+    // SAFETY: getter_fn 是转成 *const () 的 NativeFn 函数项指针。
+    getter.set_native_fn(Some(unsafe { oxide_types::object::NativeFnPtr::from_raw(getter_fn) }));
+    getter.set_native_arg_count(0);
+    // 给函数对象开 name/length 槽位（描述符均 { writable:false, enumerable:false, configurable:true }）。
+    let si_name = string_forge.intern("name").0;
+    let name_shape = shape_forge.make_shape(getter.shape_id(), si_name);
+    getter.set_shape_id(name_shape);
+    getter
+        .ensure_hash_props()
+        .push(JsValue::perm_string(string_forge.string_ptr(string_forge.intern(getter_name).0)));
+    let name_pos = getter.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+    getter.set_data_meta(name_pos, PropAttributes::new(false, false, true));
+    let si_length = string_forge.intern("length").0;
+    let length_shape = shape_forge.make_shape(getter.shape_id(), si_length);
+    getter.set_shape_id(length_shape);
+    getter.ensure_hash_props().push(JsValue::int(0));
+    let length_pos = getter.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+    getter.set_data_meta(length_pos, PropAttributes::new(false, false, true));
+    let getter_val = JsValue::from_js_object(Box::into_raw(getter));
+
+    let mut setter = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
+    setter.set_function(true);
+    // SAFETY: setter_fn 是转成 *const () 的 NativeFn 函数项指针。
+    setter.set_native_fn(Some(unsafe { oxide_types::object::NativeFnPtr::from_raw(setter_fn) }));
+    setter.set_native_arg_count(1);
+    let name_shape = shape_forge.make_shape(setter.shape_id(), si_name);
+    setter.set_shape_id(name_shape);
+    setter
+        .ensure_hash_props()
+        .push(JsValue::perm_string(string_forge.string_ptr(string_forge.intern(setter_name).0)));
+    let name_pos = setter.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+    setter.set_data_meta(name_pos, PropAttributes::new(false, false, true));
+    let length_shape = shape_forge.make_shape(setter.shape_id(), si_length);
+    setter.set_shape_id(length_shape);
+    setter.ensure_hash_props().push(JsValue::int(1));
+    let length_pos = setter.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+    setter.set_data_meta(length_pos, PropAttributes::new(false, false, true));
+    let setter_val = JsValue::from_js_object(Box::into_raw(setter));
+
+    // 访问器属性槽：enumerable=false、configurable=true（get/set 函数对象已持有）。
+    let new_shape = shape_forge.make_shape(proto.shape_id(), key);
+    proto.set_shape_id(new_shape);
+    let pos = proto.push_prop(JsValue::undefined());
+    proto.set_accessor_meta(pos, getter_val, setter_val, PropAttributes::new(true, false, true));
+    proto.bump_generation();
+}
+
+/// 为 `Iterator` 构造器绑定 `length`=0 与 `name`="Iterator" 属性（规范描述符均
+/// { writable:false, enumerable:false, configurable:true }）。
+///
+/// `bind_iterator`（初始化路径）与 `bind_iterator_global`（dirty reset 路径）共用，
+/// 防两处漂移导致 dirty reset 后 `Iterator.length`/`Iterator.name` 消失。
+pub(crate) fn bind_iterator_ctor_identity(core: &Arc<KernelCore>, ctor: &mut JsObject) {
+    let shape_forge = core.shape_forge().as_ref();
+    let string_forge = core.perm_interner().as_ref();
+    let si_length = string_forge.intern("length").0;
+    let length_shape = shape_forge.make_shape(ctor.shape_id(), si_length);
+    ctor.set_shape_id(length_shape);
+    ctor.ensure_hash_props().push(JsValue::int(0));
+    let length_pos = ctor.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+    ctor.set_data_meta(length_pos, PropAttributes::new(false, false, true));
+    let si_name = string_forge.intern("name").0;
+    let name_shape = shape_forge.make_shape(ctor.shape_id(), si_name);
+    ctor.set_shape_id(name_shape);
+    ctor.ensure_hash_props()
+        .push(JsValue::perm_string(string_forge.string_ptr(string_forge.intern("Iterator").0)));
+    let name_pos = ctor.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+    ctor.set_data_meta(name_pos, PropAttributes::new(false, false, true));
+}
+
 /// 把原型上 `source` 属性已绑定的函数值复制到 `alias` 名下（共享同一函数对象）。
 ///
 /// 用于规范要求的方法别名（如 Set 的 `keys`/`@@iterator` 与 `values` 同一函数对象）。
@@ -290,6 +382,58 @@ fn bind_iterator_protos(core: &Arc<KernelCore>, session: &KernelSession) {
             0,
             "iterator",
             oxide_builtins::iterator::iterator_symbol_iterator::<crate::vm::Vm> as *const (),
+            0,
+        );
+    }
+
+    // %IteratorPrototype% 的 constructor / @@toStringTag 访问器：getter 动态读
+    // global（dirty reset 后 global 重建，不能缓存指针），setter 实现
+    // SetterThatIgnoresPrototypeProperties（home 赋值抛 TypeError）。
+    let si_constructor = core.perm_interner().intern("constructor").0;
+    if core
+        .shape_forge()
+        .lookup_position(iter_proto.shape_id(), si_constructor)
+        .is_none()
+    {
+        bind_accessor_getset(
+            core,
+            session,
+            iter_proto,
+            si_constructor,
+            "get constructor",
+            "set constructor",
+            oxide_builtins::iterator::iterator_constructor_getter::<crate::vm::Vm> as *const (),
+            oxide_builtins::iterator::iterator_constructor_setter::<crate::vm::Vm> as *const (),
+        );
+    }
+    let sym_to_string_tag = oxide_types::private_key::make_well_known_symbol_key(9);
+    if core
+        .shape_forge()
+        .lookup_position(iter_proto.shape_id(), sym_to_string_tag)
+        .is_none()
+    {
+        bind_accessor_getset(
+            core,
+            session,
+            iter_proto,
+            sym_to_string_tag,
+            "get [Symbol.toStringTag]",
+            "set [Symbol.toStringTag]",
+            oxide_builtins::iterator::iterator_to_string_tag_getter::<crate::vm::Vm> as *const (),
+            oxide_builtins::iterator::iterator_to_string_tag_setter::<crate::vm::Vm> as *const (),
+        );
+    }
+
+    // %IteratorPrototype% 的 @@dispose：显式资源管理下用 return 关闭迭代器。
+    let sym_dispose = oxide_types::private_key::make_well_known_symbol_key(12);
+    if core.shape_forge().lookup_position(iter_proto.shape_id(), sym_dispose).is_none() {
+        bind_well_known_method(
+            world,
+            core,
+            iter_proto,
+            12,
+            "[Symbol.dispose]",
+            oxide_builtins::iterator::iterator_dispose::<crate::vm::Vm> as *const (),
             0,
         );
     }
@@ -488,6 +632,7 @@ fn bind_iterator_global(core: &Arc<KernelCore>, session: &KernelSession, global:
         oxide_builtins::iterator::iterator_constructor::<crate::vm::Vm> as *const (),
         0,
     );
+    bind_iterator_ctor_identity(core, &mut iterator);
     bind_iterator_function_prototype(core, session, &mut iterator);
     apply_binding_table(
         session.builtin_world(),

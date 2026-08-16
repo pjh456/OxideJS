@@ -51,7 +51,10 @@ pub const fn int_key_value(key: u32) -> u32 {
 pub const SYMBOL_KEY_BASE: u32 = 0xA000_0000;
 
 /// 保留给 well-known symbol 的键槽位数（位于 Symbol 键区间最低端）。
-pub const WELL_KNOWN_SYMBOL_COUNT: u32 = 11;
+///
+/// 键序与 TC39 well-known symbol 表一致：0-10 为既有项，11/12 分别为
+/// `Symbol.asyncDispose` 与 `Symbol.dispose`（显式资源管理提案）。
+pub const WELL_KNOWN_SYMBOL_COUNT: u32 = 13;
 
 /// 用户 symbol 下标的保留位掩码（低 28 位）。
 const SYMBOL_INDEX_MASK: u32 = 0x0FFF_FFFF;

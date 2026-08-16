@@ -254,6 +254,8 @@ pub struct BuiltinWorld {
     pub sym_async_iterator: P<JsObject>,
     pub sym_to_string_tag: P<JsObject>,
     pub sym_species: P<JsObject>,
+    pub sym_async_dispose: P<JsObject>,
+    pub sym_dispose: P<JsObject>,
     pub temporal_object: P<JsObject>,
     pub temporal_now_object: P<JsObject>,
     pub instant_constructor: P<JsObject>,
@@ -282,6 +284,8 @@ pub struct BuiltinWorld {
     pub string_iterator_proto: P<JsObject>,
     /// `%RegExpStringIteratorPrototype%`：matchAll 返回的迭代器。
     pub regexp_string_iterator_proto: P<JsObject>,
+    /// `%IteratorHelperPrototype%`：Iterator helpers 结果对象的共享原型，链到 %IteratorPrototype%。
+    pub iterator_helper_proto: P<JsObject>,
     pub stub_objects: Vec<P<JsObject>>,
 }
 
@@ -603,12 +607,13 @@ fn wire_builtin_world_links(world: &BuiltinWorld) {
     // → %IteratorPrototype%（next/@@iterator 方法由绑定层安装到对应原型）。
     set_proto_if_changed(&world.iterator_proto, obj_proto_val);
     let iterator_proto_val = JsValue::from_js_object(world.iterator_proto.as_ptr() as *mut JsObject);
-    let iterator_protos: [&P<JsObject>; 5] = [
+    let iterator_protos: [&P<JsObject>; 6] = [
         &world.array_iterator_proto,
         &world.map_iterator_proto,
         &world.set_iterator_proto,
         &world.string_iterator_proto,
         &world.regexp_string_iterator_proto,
+        &world.iterator_helper_proto,
     ];
     for proto in &iterator_protos {
         set_proto_if_changed(proto, iterator_proto_val);
@@ -733,6 +738,8 @@ impl BuiltinWorld {
             BuiltinId::SymAsyncIterator => &self.sym_async_iterator,
             BuiltinId::SymToStringTag => &self.sym_to_string_tag,
             BuiltinId::SymSpecies => &self.sym_species,
+            BuiltinId::SymAsyncDispose => &self.sym_async_dispose,
+            BuiltinId::SymDispose => &self.sym_dispose,
             BuiltinId::TemporalObject => &self.temporal_object,
             BuiltinId::TemporalNowObject => &self.temporal_now_object,
             BuiltinId::InstantConstructor => &self.instant_constructor,
@@ -792,6 +799,8 @@ impl BuiltinWorld {
         let sym_async_iterator = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let sym_to_string_tag = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let sym_species = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let sym_async_dispose = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let sym_dispose = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let temporal_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let temporal_now_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let (instant_proto, instant_constructor) = make_named_pair(string_forge, shape_forge, labels, "Instant");
@@ -815,6 +824,7 @@ impl BuiltinWorld {
         let set_iterator_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let string_iterator_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let regexp_string_iterator_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let iterator_helper_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
 
         let world = Self {
             object_proto,
@@ -888,6 +898,8 @@ impl BuiltinWorld {
             sym_async_iterator,
             sym_to_string_tag,
             sym_species,
+            sym_async_dispose,
+            sym_dispose,
             temporal_object,
             temporal_now_object,
             instant_constructor,
@@ -910,6 +922,7 @@ impl BuiltinWorld {
             set_iterator_proto,
             string_iterator_proto,
             regexp_string_iterator_proto,
+            iterator_helper_proto,
             stub_objects,
         };
         wire_builtin_world_links(&world);
@@ -997,11 +1010,15 @@ impl BuiltinWorld {
             sym_async_iterator,
             sym_to_string_tag,
             sym_species,
+            sym_async_dispose,
+            sym_dispose,
         ) = if dirty.symbol_family {
             let (symbol_proto, symbol_constructor) = make_named_pair(string_forge, shape_forge, labels, "Symbol");
             (
                 symbol_proto,
                 symbol_constructor,
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
                 P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
                 P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
                 P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
@@ -1029,6 +1046,8 @@ impl BuiltinWorld {
                 current.sym_async_iterator.clone(),
                 current.sym_to_string_tag.clone(),
                 current.sym_species.clone(),
+                current.sym_async_dispose.clone(),
+                current.sym_dispose.clone(),
             )
         };
 
@@ -1178,8 +1197,10 @@ impl BuiltinWorld {
             set_iterator_proto,
             string_iterator_proto,
             regexp_string_iterator_proto,
+            iterator_helper_proto,
         ) = if dirty.object {
             (
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
                 P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
                 P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
                 P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
@@ -1195,6 +1216,7 @@ impl BuiltinWorld {
                 current.set_iterator_proto.clone(),
                 current.string_iterator_proto.clone(),
                 current.regexp_string_iterator_proto.clone(),
+                current.iterator_helper_proto.clone(),
             )
         };
 
@@ -1270,6 +1292,8 @@ impl BuiltinWorld {
             sym_async_iterator,
             sym_to_string_tag,
             sym_species,
+            sym_async_dispose,
+            sym_dispose,
             temporal_object,
             temporal_now_object,
             instant_constructor,
@@ -1292,6 +1316,7 @@ impl BuiltinWorld {
             set_iterator_proto,
             string_iterator_proto,
             regexp_string_iterator_proto,
+            iterator_helper_proto,
             stub_objects,
         };
         wire_builtin_world_links(&world);

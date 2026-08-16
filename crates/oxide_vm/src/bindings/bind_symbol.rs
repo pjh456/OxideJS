@@ -90,6 +90,14 @@ pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             "species",
             JsValue::from_js_object(session.builtin_world().sym_species.as_ptr() as *mut JsObject),
         ),
+        (
+            "asyncDispose",
+            JsValue::from_js_object(session.builtin_world().sym_async_dispose.as_ptr() as *mut JsObject),
+        ),
+        (
+            "dispose",
+            JsValue::from_js_object(session.builtin_world().sym_dispose.as_ptr() as *mut JsObject),
+        ),
     ] {
         bind_well_known_symbol(core, ctor, name, val);
     }

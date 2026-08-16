@@ -1044,6 +1044,10 @@ pub fn well_known_symbol_id<H: VmHost + ?Sized>(host: &H, ptr: *mut JsObject) ->
         Some(9)
     } else if std::ptr::eq(ptr, world.sym_species.as_ptr()) {
         Some(10)
+    } else if std::ptr::eq(ptr, world.sym_async_dispose.as_ptr()) {
+        Some(11)
+    } else if std::ptr::eq(ptr, world.sym_dispose.as_ptr()) {
+        Some(12)
     } else {
         None
     }
@@ -1063,6 +1067,8 @@ pub fn well_known_symbol_name(id: u32) -> Option<&'static str> {
         8 => "Symbol.asyncIterator",
         9 => "Symbol.toStringTag",
         10 => "Symbol.species",
+        11 => "Symbol.asyncDispose",
+        12 => "Symbol.dispose",
         _ => return None,
     })
 }

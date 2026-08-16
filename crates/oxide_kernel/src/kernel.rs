@@ -225,7 +225,7 @@ pub struct KernelSession {
 /// 维护注意：每个新增的 `BuiltinWorld` 对象字段都必须加到这里以及
 /// `KernelSession::dirty_since_snapshot()`，以便选择性重置重建正确的
 /// builtin 家族。
-pub const NUM_BUILTINS: usize = 86;
+pub const NUM_BUILTINS: usize = 88;
 
 /// 内置对象枚举 id，与 `BuiltinWorld` 中的存储槽一一对应。
 ///
@@ -320,6 +320,8 @@ pub enum BuiltinId {
     ZonedDateTimeProto = 82,
     PlainDateTimeConstructor = 83,
     PlainDateTimeProto = 84,
+    SymAsyncDispose = 86,
+    SymDispose = 87,
 }
 
 impl BuiltinId {
@@ -413,6 +415,8 @@ impl BuiltinId {
         BuiltinId::PlainDateTimeConstructor,
         BuiltinId::PlainDateTimeProto,
         BuiltinId::SymSpecies,
+        BuiltinId::SymAsyncDispose,
+        BuiltinId::SymDispose,
     ];
 }
 
@@ -616,7 +620,9 @@ impl KernelSession {
                 || gen(BuiltinId::SymMatchAll) != snap(BuiltinId::SymMatchAll)
                 || gen(BuiltinId::SymAsyncIterator) != snap(BuiltinId::SymAsyncIterator)
                 || gen(BuiltinId::SymToStringTag) != snap(BuiltinId::SymToStringTag)
-                || gen(BuiltinId::SymSpecies) != snap(BuiltinId::SymSpecies),
+                || gen(BuiltinId::SymSpecies) != snap(BuiltinId::SymSpecies)
+                || gen(BuiltinId::SymAsyncDispose) != snap(BuiltinId::SymAsyncDispose)
+                || gen(BuiltinId::SymDispose) != snap(BuiltinId::SymDispose),
             math: gen(BuiltinId::MathObject) != snap(BuiltinId::MathObject),
             json: gen(BuiltinId::JsonObject) != snap(BuiltinId::JsonObject),
             date: gen(BuiltinId::DateConstructor) != snap(BuiltinId::DateConstructor)

@@ -6,7 +6,8 @@ use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
 use crate::bindings::{
-    apply_binding_table, bind_global_value, bind_iterator_function_prototype, configure_native_constructor,
+    apply_binding_table, bind_global_value, bind_iterator_ctor_identity, bind_iterator_function_prototype,
+    configure_native_constructor,
 };
 
 /// 绑定 `Iterator` 全局构造器（`prototype` = %IteratorPrototype%、`from` 方法）。
@@ -23,6 +24,7 @@ pub fn bind_iterator(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         oxide_builtins::iterator::iterator_constructor::<crate::vm::Vm> as *const (),
         0,
     );
+    bind_iterator_ctor_identity(core, &mut iterator);
     bind_iterator_function_prototype(core, session, &mut iterator);
 
     apply_binding_table(

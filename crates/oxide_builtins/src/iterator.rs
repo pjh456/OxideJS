@@ -1,5 +1,5 @@
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_types::object::JsObject;
+use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::{make_int_key, make_well_known_symbol_key};
 use oxide_types::value::JsValue;
 
@@ -12,6 +12,109 @@ const MODE_PROP: &str = "__mode__";
 /// 占位构造函数：`Iterator` 不是构造函数，任何调用都抛 TypeError。
 pub fn iterator_constructor<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     NativeResult::Err(crate::error::create_type_error(vm, "Iterator is not a constructor"))
+}
+
+/// `%IteratorPrototype%` 上 `constructor` 访问器的 getter：返回当前 global 上的
+/// `Iterator` 构造器。
+///
+/// 动态查 global（shape 槽查找）而非缓存指针：dirty reset 重建 global 时会换新的
+/// `Iterator` 函数对象，缓存旧指针会指向已释放对象。lookup 失败（极端：global 无
+/// `Iterator`）返回 undefined，不 panic。
+pub fn iterator_constructor_getter<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
+    let global = vm.session().global_object();
+    let si = vm.kernel_core().perm_interner().intern("Iterator").0;
+    let Some(pos) = vm.kernel_core().shape_forge().lookup_position(global.shape_id(), si) else {
+        return NativeResult::Ok(JsValue::undefined());
+    };
+    NativeResult::Ok(global.get_prop_at(pos))
+}
+
+/// `%IteratorPrototype%` 上 `Symbol.toStringTag` 访问器的 getter：返回 `"Iterator"`。
+pub fn iterator_to_string_tag_getter<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
+    let sf = vm.kernel_core().perm_interner().as_ref();
+    NativeResult::Ok(JsValue::perm_string(sf.string_ptr(sf.intern("Iterator").0)))
+}
+
+/// SetterThatIgnoresPrototypeProperties 的共享实现：`%IteratorPrototype%` 的
+/// `constructor` 与 `Symbol.toStringTag` 访问器共用同一语义，仅属性键不同。
+///
+/// # 步骤
+/// 1. `this` 非对象 → TypeError（原始值直接抛，不建 own 属性）。
+/// 2. `this` 为 `%IteratorPrototype%`（home 对象）→ TypeError（模拟对 home 不可写
+///    数据属性的严格模式赋值）。
+/// 3. `this` 无 own 指定键属性 → CreateDataPropertyOrThrow（写全可写可枚举）。
+/// 4. 有 own 属性 → 普通 Set（继承访问器时在此被调用的场景）。
+fn iterator_setter_ignore_proto_props<H: VmHost>(vm: &mut H, args: &[u8], key: u32) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    if !this_val.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Iterator property setter called on non-object"));
+    }
+    let home = vm.session().builtin_world().iterator_proto.as_ptr() as *mut JsObject;
+    if std::ptr::eq(this_val.as_js_object_ptr(), home) {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Cannot assign to read only property of Iterator prototype",
+        ));
+    }
+    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let this_obj = unsafe { &mut *this_val.as_js_object_ptr() };
+    if vm
+        .kernel_core()
+        .shape_forge()
+        .lookup_position(this_obj.shape_id(), key)
+        .is_none()
+    {
+        match vm.define_data_property(this_obj, key, val, PropAttributes::new(true, true, true)) {
+            Ok(()) => NativeResult::Ok(JsValue::undefined()),
+            Err(err) => NativeResult::Err(crate::error::create_type_error(vm, &err)),
+        }
+    } else {
+        match vm.ordinary_set(this_obj, key, val, this_val) {
+            Ok(()) => NativeResult::Ok(JsValue::undefined()),
+            Err(err) => NativeResult::Err(crate::error::create_type_error(vm, &err)),
+        }
+    }
+}
+
+/// `constructor` 访问器的 setter（键 = "constructor"）。
+pub fn iterator_constructor_setter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let key = vm.kernel_core().perm_interner().intern("constructor").0;
+    iterator_setter_ignore_proto_props(vm, args, key)
+}
+
+/// `Symbol.toStringTag` 访问器的 setter（键 = well-known symbol 9）。
+pub fn iterator_to_string_tag_setter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    iterator_setter_ignore_proto_props(vm, args, make_well_known_symbol_key(9))
+}
+
+/// `%IteratorPrototype%[@@dispose]`：GetMethod(this, "return")，有则调用并返回
+/// undefined。
+///
+/// # 步骤
+/// 1. `this` 非对象 → TypeError（GetMethod 的 GetV 语义要求对象）。
+/// 2. 读 `return` 方法：不可调用（undefined/null）则跳过；getter 抛错透传原值。
+/// 3. 调用 `return()` 成功/抛错均最终返回 undefined 或透传原异常。
+pub fn iterator_dispose<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    if !this_val.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "%IteratorPrototype%[@@dispose] called on non-object",
+        ));
+    }
+    let obj = unsafe { &*this_val.as_js_object_ptr() };
+    let return_si = vm.kernel_core().perm_interner().intern("return").0;
+    let return_fn = match vm.ordinary_get(obj, return_si, this_val) {
+        Ok(f) if is_callable(f) => f,
+        Ok(_) => JsValue::undefined(),
+        Err(err) => return NativeResult::Err(engine_error(vm, &err)),
+    };
+    if !return_fn.is_undefined() {
+        if let Err(err) = vm.call_function_sync(return_fn, this_val, &[]) {
+            return NativeResult::Err(engine_error(vm, &err));
+        }
+    }
+    NativeResult::Ok(JsValue::undefined())
 }
 
 /// `%IteratorPrototype%[@@iterator]`：返回 this（迭代器对象自迭代）。

@@ -1,4 +1,5 @@
 use oxide_compiler::compiler::Compiler;
+use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
 
@@ -288,4 +289,264 @@ fn iterator_proto_next_consumption_unchanged() {
     // TA 迭代耗尽后恒 done（数组路径 target 置 undefined 防复活）。
     let done = eval(&mut vm, "var it = new Uint8Array([1]).values(); it.next(); it.next().done").unwrap();
     assert!(done.as_bool());
+}
+
+#[test]
+fn iterator_function_name_length() {
+    let mut vm = Vm::new();
+    let bool_cases = [
+        ("Iterator.name === 'Iterator'", true),
+        ("Iterator.length === 0", true),
+        ("Object.getOwnPropertyDescriptor(Iterator, 'name').writable === false", true),
+        ("Object.getOwnPropertyDescriptor(Iterator, 'name').enumerable === false", true),
+        ("Object.getOwnPropertyDescriptor(Iterator, 'name').configurable === true", true),
+        ("Object.getOwnPropertyDescriptor(Iterator, 'length').writable === false", true),
+        ("Object.getOwnPropertyDescriptor(Iterator, 'length').enumerable === false", true),
+        ("Object.getOwnPropertyDescriptor(Iterator, 'length').configurable === true", true),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_prototype_constructor_accessor() {
+    let mut vm = Vm::new();
+    let bool_cases = [
+        // getter 动态读 global 上的 Iterator 构造器。
+        ("Iterator.prototype.constructor === Iterator", true),
+        (
+            "typeof Object.getOwnPropertyDescriptor(Iterator.prototype, 'constructor').get === 'function'",
+            true,
+        ),
+        (
+            "typeof Object.getOwnPropertyDescriptor(Iterator.prototype, 'constructor').set === 'function'",
+            true,
+        ),
+        (
+            "Object.getOwnPropertyDescriptor(Iterator.prototype, 'constructor').enumerable === false",
+            true,
+        ),
+        (
+            "Object.getOwnPropertyDescriptor(Iterator.prototype, 'constructor').configurable === true",
+            true,
+        ),
+        // getter 无参调用（this=undefined）仍返回 Iterator。
+        (
+            "Object.getOwnPropertyDescriptor(Iterator.prototype, 'constructor').get.call() === Iterator",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_prototype_constructor_setter_semantics() {
+    let mut vm = Vm::new();
+    // home 对象赋值与原始值 this 抛 TypeError（SetterThatIgnoresPrototypeProperties）。
+    let throws = [
+        (
+            "try { Iterator.prototype.constructor = 'x'; false } catch (e) { e instanceof TypeError }",
+            true,
+        ),
+        (
+            "try { var d = Object.getOwnPropertyDescriptor(Iterator.prototype, 'constructor'); \
+             d.set.call(undefined, 'x'); false } catch (e) { e instanceof TypeError }",
+            true,
+        ),
+        (
+            "try { var d = Object.getOwnPropertyDescriptor(Iterator.prototype, 'constructor'); \
+             d.set.call(null, 'x'); false } catch (e) { e instanceof TypeError }",
+            true,
+        ),
+        (
+            "try { var d = Object.getOwnPropertyDescriptor(Iterator.prototype, 'constructor'); \
+             d.set.call(true, 'x'); false } catch (e) { e instanceof TypeError }",
+            true,
+        ),
+    ];
+    for (src, expected) in throws {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+    // 非 home 对象：无 own 属性建 own，有 own 属性走 Set 覆盖。
+    let ok_cases = [
+        (
+            "var o = {}; var d = Object.getOwnPropertyDescriptor(Iterator.prototype, 'constructor'); \
+             d.set.call(o, 42); o.constructor === 42 && o.hasOwnProperty('constructor')",
+            true,
+        ),
+        (
+            "var o = { constructor: 1 }; var d = Object.getOwnPropertyDescriptor(Iterator.prototype, 'constructor'); \
+             d.set.call(o, 2); o.constructor === 2",
+            true,
+        ),
+        // home 不受污染。
+        ("Iterator.prototype.constructor === Iterator", true),
+    ];
+    for (src, expected) in ok_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_prototype_to_string_tag_accessor() {
+    let mut vm = Vm::new();
+    let bool_cases = [
+        ("Iterator.prototype[Symbol.toStringTag] === 'Iterator'", true),
+        (
+            "typeof Object.getOwnPropertyDescriptor(Iterator.prototype, Symbol.toStringTag).get === 'function'",
+            true,
+        ),
+        (
+            "typeof Object.getOwnPropertyDescriptor(Iterator.prototype, Symbol.toStringTag).set === 'function'",
+            true,
+        ),
+        (
+            "Object.getOwnPropertyDescriptor(Iterator.prototype, Symbol.toStringTag).enumerable === false",
+            true,
+        ),
+        (
+            "Object.getOwnPropertyDescriptor(Iterator.prototype, Symbol.toStringTag).configurable === true",
+            true,
+        ),
+        (
+            "Object.getOwnPropertyDescriptor(Iterator.prototype, Symbol.toStringTag).get.call() === 'Iterator'",
+            true,
+        ),
+        // home 赋值抛 TypeError。
+        (
+            "try { Iterator.prototype[Symbol.toStringTag] = 'x'; false } catch (e) { e instanceof TypeError }",
+            true,
+        ),
+        // 普通对象 setter 建 own Symbol.toStringTag。
+        (
+            "var o = {}; var d = Object.getOwnPropertyDescriptor(Iterator.prototype, Symbol.toStringTag); \
+             d.set.call(o, 'tag'); o[Symbol.toStringTag] === 'tag'",
+            true,
+        ),
+        // 原型继承场景：非 home 子对象赋值落到自身 own 属性（不污染祖先）。
+        (
+            "var p = Object.create(Iterator.prototype); p[Symbol.toStringTag] = 'sub'; \
+             p[Symbol.toStringTag] === 'sub' && Iterator.prototype[Symbol.toStringTag] === 'Iterator'",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn symbol_dispose_and_async_dispose_registered() {
+    let mut vm = Vm::new();
+    // well-known symbol 以空对象表示，typeof 为 object；两符号互不相同。
+    let bool_cases = [
+        ("typeof Symbol.dispose === 'object'", true),
+        ("typeof Symbol.asyncDispose === 'object'", true),
+        ("Symbol.dispose !== Symbol.asyncDispose", true),
+        ("Symbol.dispose !== Symbol.iterator", true),
+        // 键可作属性名使用（well-known 键映射一致）。
+        ("({ [Symbol.dispose]: 1 })[Symbol.dispose] === 1", true),
+        // getOwnPropertySymbols 能反解出同一符号对象。
+        ("Object.getOwnPropertySymbols({ [Symbol.dispose]: 1 })[0] === Symbol.dispose", true),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+    // 描述性名称经 String 构造器反射（well_known_symbol_name 表）。
+    let desc = eval(&mut vm, "String(Symbol.dispose)").unwrap();
+    assert_eq!(to_str(&vm, desc), "Symbol(Symbol.dispose)");
+}
+
+#[test]
+fn iterator_prototype_symbol_dispose() {
+    let mut vm = Vm::new();
+    // @@dispose 调用 this 的 return 方法并返回 undefined。
+    let bool_cases = [
+        ("typeof Iterator.prototype[Symbol.dispose] === 'function'", true),
+        ("Iterator.prototype[Symbol.dispose].length === 0", true),
+        ("Iterator.prototype[Symbol.dispose].name === '[Symbol.dispose]'", true),
+        (
+            "var called = false; var it = { return: function() { called = true; return { done: true }; } }; \
+             var r = Iterator.prototype[Symbol.dispose].call(it); r === undefined && called === true",
+            true,
+        ),
+        // 无 return 方法：GetMethod 返回 undefined，跳过调用。
+        ("Iterator.prototype[Symbol.dispose].call({ next: function() {} }) === undefined", true),
+        // return 返回任意值不影响 @@dispose 的 undefined 返回值。
+        (
+            "var it = { return: function() { return 42; } }; \
+             Iterator.prototype[Symbol.dispose].call(it) === undefined",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+    // return 抛错经 @@dispose 透传（原值，不二次包装）。
+    let thrown = eval(
+        &mut vm,
+        "try { var it = { return: function() { throw new RangeError('boom'); } }; \
+         Iterator.prototype[Symbol.dispose].call(it); false } catch (e) { e instanceof RangeError }",
+    )
+    .unwrap();
+    assert!(thrown.as_bool());
+}
+
+#[test]
+fn iterator_helper_prototype_links_to_iterator_proto() {
+    let vm = Vm::new();
+    // %IteratorHelperPrototype% 已建且链到 %IteratorPrototype%（链：
+    // helper → %IteratorPrototype% → Object.prototype）。
+    let helper_ptr = vm.session().builtin_world().iterator_helper_proto.as_ptr() as *mut JsObject;
+    let helper_proto_val = unsafe { &*helper_ptr }.proto();
+    let iter_ptr = vm.session().builtin_world().iterator_proto.as_ptr() as *mut JsObject;
+    assert!(helper_proto_val.is_object());
+    assert!(std::ptr::eq(helper_proto_val.as_js_object_ptr(), iter_ptr));
+}
+
+#[test]
+fn iterator_prototype_rebound_after_full_reset() {
+    let mut vm = Vm::new();
+    // 用户改写 %IteratorPrototype%：object 家族世代递增（global 未动）。
+    let old_iter_proto = vm.session().builtin_world().iterator_proto.as_ptr();
+    unsafe { &mut *(old_iter_proto as *mut JsObject) }.bump_generation();
+
+    vm.full_reset();
+
+    // %IteratorPrototype% 重建后访问器 / @@dispose 重绑正确，构造器 identity 保留。
+    let cases = [
+        ("Iterator.prototype.constructor === Iterator", true),
+        ("Iterator.prototype[Symbol.toStringTag] === 'Iterator'", true),
+        ("typeof Iterator.prototype[Symbol.dispose] === 'function'", true),
+        ("Iterator.name === 'Iterator'", true),
+        ("Iterator.length === 0", true),
+        ("typeof Symbol.dispose === 'object'", true),
+        ("typeof Symbol.asyncDispose === 'object'", true),
+    ];
+    for (src, expected) in cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+    // helper 原型随 object 家族重建并链到新 %IteratorPrototype%。
+    let helper_ptr = vm.session().builtin_world().iterator_helper_proto.as_ptr() as *mut JsObject;
+    let helper_proto_val = unsafe { &*helper_ptr }.proto();
+    let new_iter_ptr = vm.session().builtin_world().iterator_proto.as_ptr() as *mut JsObject;
+    assert!(std::ptr::eq(helper_proto_val.as_js_object_ptr(), new_iter_ptr));
+    // 迭代器家族整体功能完好。
+    let r = eval(
+        &mut vm,
+        "Iterator.prototype[Symbol.dispose].call({return: function(){return {done:true}}})",
+    )
+    .unwrap();
+    assert!(r.is_undefined());
 }
