@@ -4409,22 +4409,124 @@ pub fn plain_time_nanosecond<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     plain_time_get(vm, args, |_, _, _, _, _, ns| ns)
 }
 
-/// `Temporal.PlainTime.prototype.toString()`：`HH:MM:SS`，亚秒部分按需输出。
+/// 按是否含秒与小数位格式化当日纳秒为 `HH:MM:SS[.frac]`。
+///
+/// # 边界与前提
+/// - `include_seconds=false` 时忽略小数位，仅输出 `HH:MM`。
+/// - `Some(0)` 不输出小数；`Some(digits)` 固定补足位数；`None` 按实际非零亚秒去尾零。
+fn format_plain_time_iso(time_ns: i128, include_seconds: bool, fractional_digits: Option<usize>) -> String {
+    let hour = time_ns / 3_600_000_000_000;
+    let minute = time_ns / 60_000_000_000 % 60;
+    let second = time_ns / 1_000_000_000 % 60;
+    let subsecond = time_ns % 1_000_000_000;
+    let mut output = format!("{hour:02}:{minute:02}");
+    if include_seconds {
+        output.push_str(&format!(":{second:02}"));
+        match fractional_digits {
+            Some(0) => {}
+            Some(digits) => {
+                let fraction = format!("{subsecond:09}");
+                output.push('.');
+                output.push_str(&fraction[..digits]);
+            }
+            None if subsecond != 0 => {
+                output.push('.');
+                output.push_str(format!("{subsecond:09}").trim_end_matches('0'));
+            }
+            None => {}
+        }
+    }
+    output
+}
+
+/// `Temporal.PlainTime.prototype.toString(options)`：按精度、舍入模式与最小单位输出 ISO 8601 时间。
 pub fn plain_time_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ptr = native_try!(receiver_obj(vm, args));
     let obj = unsafe { &*ptr };
     native_try!(ensure_plain_time(vm, obj));
-    let (h, m, s, ms, us, ns) = plain_time_components(get_double_prop(obj, 0));
-    let frac = ms as u64 * 1_000_000 + us as u64 * 1_000 + ns as u64;
-    if frac == 0 {
-        NativeResult::Ok(vm.new_string(&format!("{h:02}:{m:02}:{s:02}")))
+    let total_ns = get_double_prop(obj, 0) as i128;
+    let options_value = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
+    let (fractional_input, mode_value, smallest_value) = if options_value.is_undefined() {
+        (FractionalSecondDigitsInput::Auto, "trunc".to_string(), None)
     } else {
-        let mut digits = format!("{frac:09}");
-        while digits.ends_with('0') {
-            digits.pop();
+        if !options_value.is_object() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "options must be an object"));
         }
-        NativeResult::Ok(vm.new_string(&format!("{h:02}:{m:02}:{s:02}.{digits}")))
-    }
+        let options_ptr = options_value.as_js_object_ptr();
+        if options_ptr.is_null() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "options must be an object"));
+        }
+        let options = unsafe { &*options_ptr };
+        let fractional_raw = native_try!(temporal_option_value(vm, options, options_value, "fractionalSecondDigits"));
+        let fractional = if fractional_raw.is_undefined() {
+            FractionalSecondDigitsInput::Auto
+        } else if fractional_raw.is_int() || fractional_raw.is_double() {
+            FractionalSecondDigitsInput::Number(to_number(fractional_raw))
+        } else {
+            FractionalSecondDigitsInput::String(native_try!(temporal_option_string(vm, fractional_raw)))
+        };
+        let mode_raw = native_try!(temporal_option_value(vm, options, options_value, "roundingMode"));
+        let mode = if mode_raw.is_undefined() {
+            "trunc".to_string()
+        } else {
+            native_try!(temporal_option_string(vm, mode_raw))
+        };
+        let smallest_raw = native_try!(temporal_option_value(vm, options, options_value, "smallestUnit"));
+        let smallest = if smallest_raw.is_undefined() {
+            None
+        } else {
+            Some(native_try!(temporal_option_string(vm, smallest_raw)))
+        };
+        (fractional, mode, smallest)
+    };
+    let fractional_digits = native_try!(parse_fractional_second_digits(vm, fractional_input));
+    let Some(mode) = instant_rounding_mode(&mode_value) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding mode"));
+    };
+    let (quantum_ns, include_seconds, output_digits) = match smallest_value.as_deref() {
+        Some("minute" | "minutes") => (60_000_000_000, false, Some(0)),
+        Some("second" | "seconds") => (1_000_000_000, true, Some(0)),
+        Some("millisecond" | "milliseconds") => (1_000_000, true, Some(3)),
+        Some("microsecond" | "microseconds") => (1_000, true, Some(6)),
+        Some("nanosecond" | "nanoseconds") => (1, true, Some(9)),
+        Some(_) => return NativeResult::Err(crate::error::create_range_error(vm, "invalid smallest unit")),
+        None => match fractional_digits {
+            Some(digits) => (10_i128.pow((9 - digits) as u32), true, Some(digits)),
+            None => (1, true, None),
+        },
+    };
+    // 舍入后可能跨到次日（rounding-cross-midnight），取模保持 0-24 域。
+    const DAY_NS: i128 = 86_400_000_000_000;
+    let Some(rounded_ns) = round_instant_ns(total_ns, quantum_ns, mode) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid time"));
+    };
+    let time_ns = rounded_ns.rem_euclid(DAY_NS);
+    let output = format_plain_time_iso(time_ns, include_seconds, output_digits);
+    NativeResult::Ok(vm.new_string_owned(output))
+}
+
+/// `Temporal.PlainTime.prototype.toJSON()`：输出默认 ISO 时间字符串，忽略参数。
+pub fn plain_time_to_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_time_default_string(vm, args)
+}
+
+/// `Temporal.PlainTime.prototype.toLocaleString()`：当前使用稳定的默认 ISO 时间表示。
+pub fn plain_time_to_locale_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_time_default_string(vm, args)
+}
+
+/// 输出无 options 的默认 PlainTime 串（全秒 + 非零亚秒）。
+fn plain_time_default_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_time(vm, obj));
+    let total_ns = get_double_prop(obj, 0) as i128;
+    NativeResult::Ok(vm.new_string_owned(format_plain_time_iso(total_ns, true, None)))
+}
+
+/// `Temporal.PlainTime.prototype.valueOf()`：Temporal 对象禁止转原始值。
+pub fn plain_time_value_of<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
+    NativeResult::Err(crate::error::create_type_error(vm, "Temporal.PlainTime has no valueOf"))
 }
 
 // ───────────────────── PlainDateTime 基础方法 ─────────────────────
@@ -7100,5 +7202,35 @@ mod tests {
         let rounded = round_instant_ns(day_progress, 86_400_000_000_000, InstantRoundingMode::HalfExpand).unwrap();
         assert_eq!(rounded, 86_400_000_000_000);
         assert_eq!(start_ns + rounded, 217_206_000_000_000_000);
+    }
+
+    #[test]
+    fn format_plain_time_iso_seconds_and_fractions() {
+        // 无小数（亚秒为 0）：仅 HH:MM:SS。
+        assert_eq!(format_plain_time_iso(45_296_000_000_000, true, None), "12:34:56");
+        // 固定小数位补足 9 位。
+        assert_eq!(format_plain_time_iso(45_296_987_654_321, true, Some(9)), "12:34:56.987654321");
+        // 固定 3 位截断亚秒。
+        assert_eq!(format_plain_time_iso(45_296_987_654_321, true, Some(3)), "12:34:56.987");
+        // 固定 0 位不输出小数。
+        assert_eq!(format_plain_time_iso(45_296_987_654_321, true, Some(0)), "12:34:56");
+        // 自动模式去尾零（.500 归一为 .5，整秒无小数）。
+        assert_eq!(format_plain_time_iso(45_296_500_000_000, true, None), "12:34:56.5");
+        assert_eq!(format_plain_time_iso(45_296_000_000_000, true, None), "12:34:56");
+        // 不含秒：仅 HH:MM。
+        assert_eq!(format_plain_time_iso(45_296_000_000_000, false, Some(0)), "12:34");
+        assert_eq!(format_plain_time_iso(45_296_987_654_321, false, None), "12:34");
+    }
+
+    #[test]
+    fn plain_time_rounding_cross_midnight() {
+        // 23:59:59.9 以 second 舍入（halfExpand）→ 24:00:00 → 取模回 00:00:00。
+        let total_ns = 86_399_900_000_000_i128;
+        let quantum = 1_000_000_000_i128;
+        let rounded = round_instant_ns(total_ns, quantum, InstantRoundingMode::HalfExpand).unwrap();
+        assert_eq!(rounded, 86_400_000_000_000);
+        const DAY_NS: i128 = 86_400_000_000_000;
+        assert_eq!(rounded.rem_euclid(DAY_NS), 0);
+        assert_eq!(format_plain_time_iso(rounded.rem_euclid(DAY_NS), true, Some(0)), "00:00:00");
     }
 }

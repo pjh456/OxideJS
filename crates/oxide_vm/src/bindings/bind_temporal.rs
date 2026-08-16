@@ -669,11 +669,30 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         world,
         plain_time_proto,
         core,
-        &[(
-            "toString",
-            oxide_builtins::temporal::plain_time_to_string::<crate::vm::Vm> as *const (),
-            0,
-        )],
+        &[
+            (
+                "toString",
+                oxide_builtins::temporal::plain_time_to_string::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            ("toJSON", oxide_builtins::temporal::plain_time_to_json::<crate::vm::Vm> as *const (), 0),
+            (
+                "toLocaleString",
+                oxide_builtins::temporal::plain_time_to_locale_string::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            ("valueOf", oxide_builtins::temporal::plain_time_value_of::<crate::vm::Vm> as *const (), 0),
+        ],
+    );
+    bind_well_known_data_property(
+        core,
+        plain_time_proto,
+        9,
+        JsValue::perm_string(
+            core.perm_interner()
+                .string_ptr(core.perm_interner().intern("Temporal.PlainTime").0),
+        ),
+        PropAttributes::new(false, false, true),
     );
 
     // Temporal.PlainDateTime：ISO 日期时间分量、拆分转换与禁止隐式原始值转换。
