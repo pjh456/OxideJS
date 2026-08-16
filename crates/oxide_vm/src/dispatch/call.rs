@@ -747,14 +747,24 @@ impl Vm {
                             && self.sub_modules[sub_idx].is_generator
                             && self.sub_modules[sub_idx].is_async
                         {
+                            let gen_pc = self.pc;
                             let gen = self.create_async_generator_object(callee, this_value, &args)?;
-                            self.regs[0] = gen;
+                            // 参数初始化抛错已就地展开（unwind 改写 pc 至 catch）：异常值已
+                            // 写入 catch 参数，再写结果寄存器会覆盖之——仅在初始化成功（pc 未动）
+                            // 时交付生成器对象。
+                            if self.pc == gen_pc {
+                                self.regs[0] = gen;
+                            }
                             return Ok(false);
                         }
                         // 生成器函数调用返回迭代器对象，不执行函数体。
                         if sub_idx < self.sub_modules.len() && self.sub_modules[sub_idx].is_generator {
+                            let gen_pc = self.pc;
                             let gen = self.create_generator_object(callee, this_value, &args)?;
-                            self.regs[0] = gen;
+                            // 参数初始化抛错已就地展开时不得覆盖 catch 参数（同上）。
+                            if self.pc == gen_pc {
+                                self.regs[0] = gen;
+                            }
                             return Ok(false);
                         }
                         // 异步函数调用返回 capability promise，立即同步执行 body 到首个 await。

@@ -1579,7 +1579,10 @@ fn close_agg_iterator(vm: &mut Vm, iterator: JsValue) {
     let iter_obj = unsafe { &*iterator.as_js_object_ptr() };
     if let Ok(ret) = vm.ordinary_get(iter_obj, return_si, iterator) {
         if oxide_builtins::iterator::is_callable(ret) {
+            // return() 的抛错被忽略，其值不得外泄进槽覆盖在途异常。
+            let saved_uncaught = vm.last_uncaught_value.take();
             let _ = vm.call_function_sync(ret, iterator, &[]);
+            vm.last_uncaught_value = saved_uncaught;
         }
     }
 }

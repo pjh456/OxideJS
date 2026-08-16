@@ -635,7 +635,10 @@ fn close_iterator<H: VmHost>(vm: &mut H, iterator: JsValue) {
     let return_si = vm.kernel_core().perm_interner().intern("return").0;
     if let Ok(ret) = vm.ordinary_get(iter_obj, return_si, iterator) {
         if ret.is_object() && unsafe { &*ret.as_js_object_ptr() }.is_function() {
+            // return() 的抛错被忽略，其值不得外泄进槽覆盖在途异常。
+            let saved_uncaught = vm.take_uncaught_value();
             let _ = vm.call_function_sync(ret, iterator, &[]);
+            vm.restore_uncaught_value(saved_uncaught);
         }
     }
 }

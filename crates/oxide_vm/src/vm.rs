@@ -2123,6 +2123,9 @@ impl oxide_runtime_api::VmHost for Vm {
     fn take_uncaught_value(&mut self) -> Option<JsValue> {
         self.last_uncaught_value.take()
     }
+    fn restore_uncaught_value(&mut self, value: Option<JsValue>) {
+        self.last_uncaught_value = value;
+    }
     fn property_key_si(&mut self, val: JsValue) -> u32 {
         // Object-key conversion (to_string_full) failures degrade to the empty key here:
         // this trait path is used by Reflect/Object builtins; computed property access

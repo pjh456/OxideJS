@@ -170,6 +170,12 @@ pub trait VmHost {
     /// 取回在 String 展平调用边界上保留下来的原始抛出 JsValue，
     /// 使迭代器包装器能重新抛出原错误而非二次包装。
     fn take_uncaught_value(&mut self) -> Option<JsValue>;
+    /// 恢复被忽略调用暂存的原始抛出值（与 [`Self::take_uncaught_value`] 配对）。
+    ///
+    /// # 注意事项
+    /// 忽略调用（如 IteratorClose 的 `return()`）抛错时不得让自身值覆盖槽——
+    /// 调用前暂存、调用后恢复，保证在途异常值跨忽略调用存活。
+    fn restore_uncaught_value(&mut self, value: Option<JsValue>);
 
     // 错误处理
     fn checked_object_ptr(&mut self, val: JsValue, error_msg: &str) -> Result<Option<*mut JsObject>, String>;

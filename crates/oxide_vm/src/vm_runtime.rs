@@ -522,6 +522,8 @@ impl Vm {
                 handler.finally_active = true;
                 self.try_stack.push(handler);
                 self.pc = finally_pc;
+                // 在途异常已进入 finally 处理流程：槽作废，防残留值被后续 take 误取。
+                self.last_uncaught_value = None;
                 return Ok(());
             }
             if let Some(catch_pc) = handler.catch_pc {
@@ -529,6 +531,8 @@ impl Vm {
                 let exc = self.exception_value.take().unwrap_or(JsValue::undefined());
                 self.regs[0] = exc;
                 self.pc = catch_pc;
+                // 在途异常已写入 catch 参数：槽作废，防残留值被后续 take 误取。
+                self.last_uncaught_value = None;
                 return Ok(());
             }
         }

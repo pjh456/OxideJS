@@ -656,11 +656,14 @@ impl Vm {
             return Err("FOR_OF_DONE iterator is not an object".into());
         }
 
+        // 调用 next()/读 done 前清空异常值槽：跨调用残留不得污染本指令的取槽。
         self.last_uncaught_value = None;
         let iter_obj = unsafe { &*iterator.as_js_object_ptr() };
         let next_si = self.kernel_core.perm_interner().intern("next").0;
         let next_fn = match self.ordinary_get(iter_obj, next_si, iterator) {
             Ok(v) => v,
+            // 错误路径只经 throw_for_of_error 传播，不写 rd（rd 保持循环决策位，
+            // 异常展开后指令流离开循环，残留值无效）。
             Err(e) => return self.throw_for_of_error(e),
         };
         let result = match self.call_function_sync(next_fn, iterator, &[]) {
@@ -694,6 +697,7 @@ impl Vm {
         let value_si = self.kernel_core.perm_interner().intern("value").0;
         self.regs[rd] = match self.ordinary_get(result_obj, value_si, result) {
             Ok(v) => v,
+            // 错误路径只经 throw_for_of_error 传播，不写 rd（同上）。
             Err(e) => return self.throw_for_of_error(e),
         };
         Ok(())
@@ -710,6 +714,8 @@ impl Vm {
         };
         self.exception_value = Some(exc);
         self.pending_error_kind = Some(self.thrown_error_kind(exc));
+        // 无论取到原值还是重建错误对象，异常必须展开传播，不得静默返回 Ok——
+        // 否则 for-of 循环继续推进形成不终止。
         self.unwind()
     }
 
@@ -764,9 +770,13 @@ impl Vm {
                 if suppress_return_error {
                     let saved_exc = self.exception_value;
                     let saved_kind = self.pending_error_kind;
+                    // 忽略调用期间的原始异常值一并暂存：return() 自身抛错按契约被在途
+                    // 异常替代，其值不得外泄进槽供后续 take 误取。
+                    let saved_uncaught = self.last_uncaught_value.take();
                     let _ = self.call_function_sync(return_fn, iterator, &[]);
                     self.exception_value = saved_exc;
                     self.pending_error_kind = saved_kind;
+                    self.last_uncaught_value = saved_uncaught;
                 } else {
                     let inner = match self.call_function_sync(return_fn, iterator, &[]) {
                         Ok(v) => v,
