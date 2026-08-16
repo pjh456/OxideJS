@@ -4590,10 +4590,7 @@ pub fn plain_date_days_in_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
 
 /// `Temporal.PlainDate.prototype.daysInWeek` getter：恒 7。
 pub fn plain_date_days_in_week<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let _ = match receiver_obj(vm, args) {
-        Ok(p) => p,
-        Err(e) => return NativeResult::Err(e),
-    };
+    let _ = native_try!(plain_date_ymd(vm, args));
     NativeResult::Ok(JsValue::float(7.0))
 }
 
@@ -4612,10 +4609,7 @@ pub fn plain_date_days_in_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
 
 /// `Temporal.PlainDate.prototype.monthsInYear` getter：恒 12（ISO 日历）。
 pub fn plain_date_months_in_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let _ = match receiver_obj(vm, args) {
-        Ok(p) => p,
-        Err(e) => return NativeResult::Err(e),
-    };
+    let _ = native_try!(plain_date_ymd(vm, args));
     NativeResult::Ok(JsValue::float(12.0))
 }
 
@@ -4657,19 +4651,13 @@ pub fn plain_date_month_code<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
 
 /// `Temporal.PlainDate.prototype.era` getter：ISO 日历无纪元，恒 undefined。
 pub fn plain_date_era<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let _ = match receiver_obj(vm, args) {
-        Ok(p) => p,
-        Err(e) => return NativeResult::Err(e),
-    };
+    let _ = native_try!(plain_date_ymd(vm, args));
     NativeResult::Ok(JsValue::undefined())
 }
 
 /// `Temporal.PlainDate.prototype.eraYear` getter：ISO 日历无纪元，恒 undefined。
 pub fn plain_date_era_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let _ = match receiver_obj(vm, args) {
-        Ok(p) => p,
-        Err(e) => return NativeResult::Err(e),
-    };
+    let _ = native_try!(plain_date_ymd(vm, args));
     NativeResult::Ok(JsValue::undefined())
 }
 

@@ -965,3 +965,30 @@ fn plain_date_from_instance_preserves_calendar() {
     .unwrap();
     assert_eq!(str_val(&vm, r), "gregory,gregory,hebrew,hebrew,gregory,gregory,hebrew");
 }
+
+#[test]
+fn plain_date_brand_only_getters_require_plain_date_receiver() {
+    let mut vm = Vm::new();
+    // 4 个品牌-only getter 对普通对象 receiver 必须抛 TypeError。
+    // 经 property descriptor 取真实 getter 函数（原型上的 `.get` 访问不可靠，
+    // 会拿到 undefined），修复前只查 is_object 不查品牌 → 返回常量不抛，断言失败。
+    for getter in ["daysInWeek", "monthsInYear", "era", "eraYear"] {
+        let r = eval(
+            &mut vm,
+            &format!(
+                "var g = Object.getOwnPropertyDescriptor(Temporal.PlainDate.prototype, '{getter}').get; \
+                 try {{ g.call({{}}); 'no-throw' }} catch (e) {{ e.constructor.name }}"
+            ),
+        )
+        .unwrap();
+        assert_eq!(str_val(&vm, r), "TypeError", "{getter} on plain object must throw");
+    }
+    // 正常 PlainDate receiver 不回归。
+    let r = eval(
+        &mut vm,
+        "var p = new Temporal.PlainDate(2000, 5, 2); \
+         [p.daysInWeek, p.monthsInYear, p.era === undefined, p.eraYear === undefined].join(',')",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "7,12,true,true");
+}
