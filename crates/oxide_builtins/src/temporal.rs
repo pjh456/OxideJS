@@ -4592,6 +4592,50 @@ pub fn plain_time_compare<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::int(result))
 }
 
+// ───────────────────── PlainTime until / since ─────────────────────
+
+/// until/since 核心：receiver 与 other 归一为午夜后纳秒，经 `difference_core` 计算差值。
+///
+/// # 步骤
+/// 1. branding receiver 取槽 0 ns，other 经 `plain_time_like_ns` 归一。
+/// 2. `parse_difference_settings` 解析 options（default_largest=4=hour）。
+/// 3. 日期固定为 epoch（0,0,0），调 `difference_core` 输出 Duration。
+///
+/// # 边界与前提
+/// - since 复用 same 语义并整体取反（difference_core 内部处理），不调换两端。
+fn plain_time_difference<H: VmHost>(vm: &mut H, args: &[u8], since: bool) -> NativeResult {
+    let ptr = match receiver_obj(vm, args) {
+        Ok(p) => p,
+        Err(error) => return NativeResult::Err(error),
+    };
+    let obj = unsafe { &*ptr };
+    if let Err(error) = ensure_plain_time(vm, obj) {
+        return NativeResult::Err(error);
+    }
+    let receiver_ns = get_double_prop(obj, 0);
+    let other_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let other_ns = match plain_time_like_ns(vm, other_val) {
+        Ok(ns) => ns,
+        Err(error) => return NativeResult::Err(error),
+    };
+    let options_value = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let settings = match parse_difference_settings(vm, options_value, false, 4) {
+        Ok(settings) => settings,
+        Err(error) => return NativeResult::Err(error),
+    };
+    difference_core(vm, (0, 0, 0), receiver_ns as i128, (0, 0, 0), other_ns as i128, settings, since)
+}
+
+/// `Temporal.PlainTime.prototype.until(other, options)`。
+pub fn plain_time_until<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_time_difference(vm, args, false)
+}
+
+/// `Temporal.PlainTime.prototype.since(other, options)`。
+pub fn plain_time_since<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_time_difference(vm, args, true)
+}
+
 // ───────────────────── PlainDateTime 基础方法 ─────────────────────
 
 /// `Temporal.PlainDateTime` 构造器：保存 ISO 日期与午夜后纳秒。

@@ -692,6 +692,8 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
             ),
             ("valueOf", oxide_builtins::temporal::plain_time_value_of::<crate::vm::Vm> as *const (), 0),
             ("equals", oxide_builtins::temporal::plain_time_equals::<crate::vm::Vm> as *const (), 1),
+            ("until", oxide_builtins::temporal::plain_time_until::<crate::vm::Vm> as *const (), 1),
+            ("since", oxide_builtins::temporal::plain_time_since::<crate::vm::Vm> as *const (), 1),
         ],
     );
     bind_well_known_data_property(

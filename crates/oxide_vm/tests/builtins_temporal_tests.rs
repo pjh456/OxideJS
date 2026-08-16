@@ -668,6 +668,44 @@ fn plain_time_compare_epoch_order() {
     assert_eq!(num(&mut vm, "Temporal.PlainTime.compare('23:59', '00:00')"), 1.0);
 }
 
+#[test]
+fn plain_time_until_since_normal() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "new Temporal.PlainTime(12, 30).until(new Temporal.PlainTime(13, 30)).toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "PT1H");
+    let r = eval(&mut vm, "new Temporal.PlainTime(13, 30).since(new Temporal.PlainTime(12, 30)).toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "PT1H");
+    let r = eval(
+        &mut vm,
+        "new Temporal.PlainTime(12, 30).until(new Temporal.PlainTime(13, 30, 5, 500)).toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "PT1H5.5S");
+}
+
+#[test]
+fn plain_time_until_since_options_and_direction() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "new Temporal.PlainTime(12, 30).until(new Temporal.PlainTime(13, 35), { largestUnit: 'minute' }).toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "PT65M");
+    let r = eval(
+        &mut vm,
+        "new Temporal.PlainTime(12, 30).since(new Temporal.PlainTime(13, 35), { largestUnit: 'minute' }).toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "-PT65M");
+    let r = eval(
+        &mut vm,
+        "new Temporal.PlainTime(12, 30).until(new Temporal.PlainTime(13, 30), { smallestUnit: 'hour' }).toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "PT1H");
+}
+
 // -- Temporal.PlainDateTime --
 
 #[test]
