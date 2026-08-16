@@ -152,7 +152,14 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         world,
         zoned_date_time_ctor,
         core,
-        &[("from", oxide_builtins::temporal::zoned_date_time_from::<crate::vm::Vm> as *const (), 1)],
+        &[
+            ("from", oxide_builtins::temporal::zoned_date_time_from::<crate::vm::Vm> as *const (), 1),
+            (
+                "compare",
+                oxide_builtins::temporal::zoned_date_time_compare::<crate::vm::Vm> as *const (),
+                2,
+            ),
+        ],
     );
 
     let zoned_date_time_proto_ptr = world.zoned_date_time_proto.as_ptr() as *mut JsObject;

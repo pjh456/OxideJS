@@ -1734,6 +1734,28 @@ pub fn zoned_date_time_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     make_zoned_date_time(vm, epoch_ns, &time_zone_id, &calendar_id)
 }
 
+/// `Temporal.ZonedDateTime.compare(one, two)`：按纪元纳秒比较两 ZDT，忽略时区 ID 与日历。
+///
+/// # 步骤
+/// 1. 两参数各经 zoned_date_time_like_epoch_ns 解析（默认 offset=reject + disambiguation=compatible）。
+/// 2. 仅比较 epoch 纳秒，返回 -1/0/1。
+///
+/// # 边界与前提
+/// - 参数可为 ZDT 对象 / ISO 字符串 / property bag；解析失败抛错。
+/// - 同 epoch 不同时区或日历恒相等（比较不读时区/日历槽）。
+pub fn zoned_date_time_compare<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let one = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let two = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let one = native_try!(zoned_date_time_like_epoch_ns(vm, one, "reject", "compatible"));
+    let two = native_try!(zoned_date_time_like_epoch_ns(vm, two, "reject", "compatible"));
+    let ordering = one.0.cmp(&two.0);
+    NativeResult::Ok(JsValue::int(match ordering {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }))
+}
+
 /// 时区注解文本：命名区原样返回，偏移区规范化为 `±HH:MM` 带冒号；critical 时 `!` 置于括号内。
 fn format_time_zone_annotation(time_zone_id: &str, critical: bool) -> String {
     let inner = if matches!(time_zone_id.as_bytes().first(), Some(b'+') | Some(b'-')) {

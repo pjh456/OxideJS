@@ -1488,6 +1488,74 @@ fn zoned_date_time_from_options_validation() {
 }
 
 #[test]
+fn zoned_date_time_compare_orders_by_epoch() {
+    let mut vm = Vm::new();
+    // 按 epoch 大小比较而非墙钟：epoch 大者胜，返回 -1/0/1。
+    let r = eval(
+        &mut vm,
+        "const a = new Temporal.ZonedDateTime(217175010123456789n, 'UTC');
+         const b = new Temporal.ZonedDateTime(217175010223456789n, 'UTC');
+         Temporal.ZonedDateTime.compare(a, a) + '|' +
+         Temporal.ZonedDateTime.compare(a, b) + '|' +
+         Temporal.ZonedDateTime.compare(b, a)",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "0|-1|1");
+}
+
+#[test]
+fn zoned_date_time_compare_ignores_time_zone_and_calendar() {
+    let mut vm = Vm::new();
+    // 同 epoch 不同时区/日历 → 0（只按 epoch 比较）。
+    let r = eval(
+        &mut vm,
+        "const a = new Temporal.ZonedDateTime(0n, '+01:00', 'hebrew');
+         const b = new Temporal.ZonedDateTime(0n, 'UTC');
+         const c = new Temporal.ZonedDateTime(1n, '-05:00');
+         Temporal.ZonedDateTime.compare(a, b) + '|' +
+         Temporal.ZonedDateTime.compare(b, c)",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "0|-1");
+}
+
+#[test]
+fn zoned_date_time_compare_accepts_string_and_bag() {
+    let mut vm = Vm::new();
+    // 字符串 / property bag 参数走 from 解析器归一为 epoch 后比较。
+    let r = eval(
+        &mut vm,
+        "const zdt = new Temporal.ZonedDateTime(0n, 'UTC');
+         Temporal.ZonedDateTime.compare('1970-01-01T00:00Z[UTC]', zdt) + '|' +
+         Temporal.ZonedDateTime.compare(
+           { year: 1969, month: 12, day: 31, hour: 19, minute: 0, timeZone: '-05:00' },
+           zdt) + '|' +
+         Temporal.ZonedDateTime.compare(zdt, '1970-01-01T00:00:01Z[UTC]')",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "0|0|-1");
+}
+
+#[test]
+fn zoned_date_time_compare_error_paths() {
+    let mut vm = Vm::new();
+    // 非法字符串 / 缺 timeZone 的 bag / 非转换原始值均抛错（RangeError/TypeError）。
+    let r = eval(
+        &mut vm,
+        "( () => { try { Temporal.ZonedDateTime.compare('garbage', '1970-01-01T00:00Z[UTC]'); return 'no-throw'; }
+                   catch (e) { return e instanceof RangeError; } })() + '|' +
+         (() => { try { Temporal.ZonedDateTime.compare(
+                          { year: 2000, month: 1, day: 1 },
+                          '1970-01-01T00:00Z[UTC]'); return 'no-throw'; }
+                  catch (e) { return e instanceof TypeError; } })() + '|' +
+         (() => { try { Temporal.ZonedDateTime.compare(123, 456); return 'no-throw'; }
+                  catch (e) { return e instanceof TypeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true|true");
+}
+
+#[test]
 fn zoned_date_time_until_defaults_to_hours() {
     let mut vm = Vm::new();
     // 默认 largest = hour：epoch 差 217175010123456789n 分解为 60326h 23m 30.123456789s。
