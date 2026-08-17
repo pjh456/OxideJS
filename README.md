@@ -7,7 +7,7 @@
     <img alt="Rust" src="https://img.shields.io/badge/Rust-1.80%2B-orange?style=for-the-badge&logo=rust" />
     <img alt="Platform" src="https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows%20And%20More-blue?style=for-the-badge" />
     <img alt="Engine" src="https://img.shields.io/badge/JS%20Engine-Non--Wrapper-success?style=for-the-badge" />
-    <img alt="test262" src="https://img.shields.io/badge/test262-72.5%25-purple?style=for-the-badge" />
+    <img alt="test262" src="https://img.shields.io/badge/test262-83.34%25-purple?style=for-the-badge" />
   </p>
 </div>
 
@@ -28,7 +28,9 @@ OxideJS 是一个基于 Rust 的轻量级 JavaScript 执行引擎，擅长短时
 - **Shape 对象布局**：使用隐藏类思想描述对象属性布局，便于缓存属性偏移。
 - **Inline Cache 方向**：围绕 shape/offset 缓存设计属性访问路径。
 - **共享运行时 Kernel**：`KernelCore` 永久共享 key 驻留 / Shape / 编译缓存 / IC 模板, `KernelSession` 按会话管理 BuiltinWorld 与 global object。
-- **test262 runner**：内置兼容性测试运行器，输出 pass / fail / skip 统计。
+- **多 pass IR 编译管线**：AST -> IR -> CFG/liveness/regalloc/DCE -> 32-bit bytecode，各分析 pass 拆分为独立 crate。
+- **内置对象扩展**：完整 Temporal 族、DisposableStack/AsyncDisposableStack/SuppressedError、Iterator.prototype helpers、eval 支持。
+- **test262 runner**：内置兼容性测试运行器，输出 pass / fail / skip 统计，支持监督式窗口运行与 FAIL 清单。
 
 ## 3. 架构
 
@@ -77,7 +79,7 @@ Per request pipeline:
         |
         v
 +------------------+
-| oxide_compiler   |  AST 编译为寄存器式字节码；可命中 KernelCore.CodeForge
+| oxide_compiler   |  AST -> IR -> 多 pass（CFG/liveness/regalloc/DCE）-> 字节码；可命中 KernelCore.CodeForge
 +------------------+
         |
         v
@@ -105,11 +107,21 @@ project-root/
 ├── README.md
 ├── crates/
 │   ├── oxide_parser/      # JavaScript parser 接入层
-│   ├── oxide_compiler/    # AST -> bytecode 编译器
+│   ├── oxide_emit/        # AST -> IR 代码生成层
+│   ├── oxide_ir/          # IR 中间表示与 bytecode 降级
+│   ├── oxide_cfg/         # CFG 分析 pass
+│   ├── oxide_liveness/    # liveness 分析 pass
+│   ├── oxide_dce/         # 死代码消除 pass
+│   ├── oxide_regalloc/    # 寄存器分配 pass
+│   ├── oxide_bytecode/    # 共享字节码协议与编译产物 ABI
+│   ├── oxide_code_cache/  # 编译结果缓存 (CodeForge)
+│   ├── oxide_compiler/    # 编译入口，编排各 IR pass
 │   ├── oxide_types/       # JsValue、JsObject、Shape、内存基础类型
-│   ├── oxide_kernel/      # 共享运行时状态和内置对象注册
+│   ├── oxide_kernel/      # 共享运行时状态
+│   ├── oxide_runtime_api/ # builtins 与 VM 的抽象接口 (VmHost)
+│   ├── oxide_builtins/    # 内置对象实现
 │   ├── oxide_vm/          # 字节码 VM 和运行时执行逻辑
-│   ├── oxide_api/         # 嵌入式 API 预留层
+│   ├── oxide_log/         # 基于 tracing 的统一日志
 │   ├── oxide_cli/         # 命令行工具
 │   └── oxide_test262/     # test262 兼容性测试运行器
 └── tests/
@@ -176,7 +188,8 @@ runner 会输出：
 - pass / fail / skip 数量；
 - 全量通过率；
 - 实际执行样本通过率；
-- 失败类别统计；
+- 失败类别统计与 FAIL 清单（按测试文件路径）；
+- 监督式窗口运行（`--supervise`）：心跳文件断点续跑、单测超时判定；
 - 按目录拆分的结果（取决于 runner 版本）。
 
 兼容性数字属于开发过程指标。发布正式 benchmark 或兼容性结论前，应基于当前 checkout 的 test262 版本重新生成结果。
