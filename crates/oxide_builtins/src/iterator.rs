@@ -1458,7 +1458,7 @@ fn next_array_like<H: VmHost>(
             let value = match vm.ordinary_get(arr, key_si, inner) {
                 Ok(v) => v,
                 Err(err) => {
-                    let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_error(vm, &err));
+                    let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_from_text(vm, &err));
                     return Err(exc);
                 }
             };
@@ -1583,7 +1583,7 @@ pub fn is_callable(value: JsValue) -> bool {
 /// 无保留的 uncaught 值时回退为普通 TypeError。
 pub(crate) fn engine_error<H: VmHost>(vm: &mut H, err: &str) -> JsValue {
     vm.take_uncaught_value()
-        .unwrap_or_else(|| crate::error::create_type_error(vm, err))
+        .unwrap_or_else(|| crate::error::create_from_text(vm, err))
 }
 
 /// IteratorClose：异常退出时调用迭代器包装器的 `return()`（转发给内层迭代器），

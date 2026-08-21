@@ -1844,7 +1844,7 @@ pub fn array_iterator_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             _ => element,
         };
         if let Err(msg) = vm.ordinary_set(iter, index_si, JsValue::int(index + 1), this_val) {
-            return NativeResult::Err(crate::error::create_error(vm, &msg));
+            return NativeResult::Err(crate::error::create_from_text(vm, &msg));
         }
         return NativeResult::Ok(crate::iterator::make_iter_result(vm, value, false));
     }
@@ -1853,7 +1853,7 @@ pub fn array_iterator_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let length_si = vm.property_key_si(length_key);
     let len_val = match vm.ordinary_get(target_obj, length_si, target) {
         Ok(v) => v,
-        Err(err) => return NativeResult::Err(crate::error::create_error(vm, &err)),
+        Err(err) => return NativeResult::Err(crate::error::create_from_text(vm, &err)),
     };
     let len_num = vm.coerce_number_bounded(len_val).unwrap_or(0.0);
     let len = if !len_num.is_finite() || len_num <= 0.0 { 0 } else { len_num as usize };
@@ -1877,7 +1877,7 @@ pub fn array_iterator_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         _ => element,
     };
     if let Err(msg) = vm.ordinary_set(iter, index_si, JsValue::int(index + 1), this_val) {
-        return NativeResult::Err(crate::error::create_error(vm, &msg));
+        return NativeResult::Err(crate::error::create_from_text(vm, &msg));
     }
     NativeResult::Ok(crate::iterator::make_iter_result(vm, value, false))
 }

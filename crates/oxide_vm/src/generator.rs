@@ -186,7 +186,7 @@ impl Vm {
 
         // 参数初始化抛错/异常结束：恢复调用方上下文后重新抛出。
         let exc = self.last_uncaught_value.take().unwrap_or_else(|| match result {
-            Ok(v) => oxide_builtins::error::create_error(self, &format!("generator initialization failed: {v:?}")),
+            Ok(v) => oxide_builtins::error::create_from_text(self, &format!("generator initialization failed: {v:?}")),
             Err(e) => oxide_builtins::error::create_from_text(self, &e),
         });
         let kind = self.thrown_error_kind(exc);

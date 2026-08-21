@@ -94,7 +94,7 @@ impl Vm {
                     let exc = self
                         .last_uncaught_value
                         .take()
-                        .unwrap_or_else(|| oxide_builtins::error::create_error(self, "constructor call failed"));
+                        .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, "constructor call failed"));
                     self.exception_value = Some(exc);
                     self.pending_error_kind = Some(self.thrown_error_kind(exc));
                     self.unwind().map(|_| true)
@@ -142,7 +142,7 @@ impl Vm {
             Ok(true)
         } else {
             let error =
-                oxide_builtins::error::create_error(self, "NEW_EXPRESSION: bytecode constructors not yet supported");
+                oxide_builtins::error::create_from_text(self, "NEW_EXPRESSION: bytecode constructors not yet supported");
             self.exception_value = Some(error);
             self.pending_error_kind = Some(self.thrown_error_kind(error));
             self.unwind().map(|_| true)
@@ -227,7 +227,7 @@ impl Vm {
                     let exc = self
                         .last_uncaught_value
                         .take()
-                        .unwrap_or_else(|| oxide_builtins::error::create_error(self, "constructor call failed"));
+                        .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, "constructor call failed"));
                     self.exception_value = Some(exc);
                     self.pending_error_kind = Some(self.thrown_error_kind(exc));
                     self.unwind().map(|_| true)
@@ -707,7 +707,7 @@ impl Vm {
         self.iters.pop_for_of();
         let exc = match self.last_uncaught_value.take() {
             Some(v) => v,
-            None => oxide_builtins::error::create_error(self, &msg),
+            None => oxide_builtins::error::create_from_text(self, &msg),
         };
         self.exception_value = Some(exc);
         self.pending_error_kind = Some(self.thrown_error_kind(exc));
