@@ -19,6 +19,7 @@ use oxide_types::object::JsObject;
 use oxide_vm::vm_error;
 use oxide_vm::vm_pool::VmPool;
 use oxide_vm::JsValue;
+use oxide_vm::vm::Vm;
 
 mod bench;
 
@@ -363,15 +364,14 @@ fn repl() -> ExitCode {
     };
 
     let kernel = make_kernel(false, false);
-    let pool = make_pool(&kernel);
-    let mut source = String::new();
+    let mut vm = Vm::with_kernel_core(Arc::clone(&kernel));
     let mut input_buf = String::new();
 
     loop {
         let prompt = if input_buf.is_empty() { "oxide> " } else { "...> " };
         match rl.readline(prompt) {
             Ok(line) => {
-                let trimmed = line.trim();
+                let trimmed = line.trim().to_string();
                 if trimmed.is_empty() {
                     continue;
                 }
@@ -379,29 +379,23 @@ fn repl() -> ExitCode {
                     println!("exit");
                     return ExitCode::SUCCESS;
                 }
-                rl.add_history_entry(trimmed).ok();
+                rl.add_history_entry(&trimmed).ok();
 
                 if !input_buf.is_empty() {
                     input_buf.push('\n');
                 }
-                input_buf.push_str(trimmed);
+                input_buf.push_str(&trimmed);
 
                 let balance = bracket_balance(&input_buf);
                 if balance > 0 {
                     continue;
                 }
 
-                let mut full_code = source.clone();
-                if !full_code.is_empty() {
-                    full_code.push(';');
-                }
-                full_code.push_str(&input_buf);
-
-                let result = eval(&full_code, &kernel, &pool);
+                let result = eval_repl(&input_buf, &kernel, &mut vm);
                 input_buf.clear();
 
-                if result == ExitCode::SUCCESS {
-                    source = full_code;
+                if result == ExitCode::FAILURE {
+                    // eval_repl already printed error; keep buffer cleared.
                 }
             }
             Err(ReadlineError::Interrupted) => {
@@ -417,6 +411,43 @@ fn repl() -> ExitCode {
                 eprintln!("{}", Red.paint(format!("REPL error: {err}")));
                 return ExitCode::FAILURE;
             }
+        }
+    }
+}
+
+fn eval_repl(code: &str, kernel: &Arc<KernelCore>, vm: &mut Vm) -> ExitCode {
+    let allocator = Allocator::default();
+    let program = match oxide_parser::parse(&allocator, code) {
+        Ok(p) => p,
+        Err(errors) => {
+            for err in &errors {
+                compiler_error!("parse error: {}", err);
+                eprintln!("{}", Red.paint(err.to_string()));
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let compiler = Compiler::new();
+    let hash = compiled_module_hash(&program);
+    let module = match kernel.code_forge().get_or_insert_with(hash, || compiler.compile(&program)) {
+        Ok(m) => m,
+        Err(err) => {
+            compiler_error!("compile error: {}", err);
+            eprintln!("{}", Red.paint(err));
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match vm.run(&module) {
+        Ok(result) => {
+            format_result(vm, kernel.perm_interner().as_ref(), kernel.shape_forge().as_ref(), result);
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            vm_error!("runtime error: {}", err);
+            eprintln!("{}", Red.paint(err));
+            ExitCode::FAILURE
         }
     }
 }
