@@ -294,6 +294,7 @@ pub struct BuiltinWorld {
     /// `AsyncDisposableStack.prototype`：异步资源栈原型（形状与同步栈一致）。
     pub async_disposable_stack_proto: P<JsObject>,
     pub stub_objects: Vec<P<JsObject>>,
+    pub console_object: P<JsObject>,
 }
 
 fn intern_label(string_forge: &PermInterner, label: &str) -> u32 {
@@ -614,6 +615,9 @@ fn wire_builtin_world_links(world: &BuiltinWorld) {
     set_proto_if_changed(&world.temporal_object, obj_proto_val);
     set_proto_if_changed(&world.temporal_now_object, obj_proto_val);
 
+    // Console 对象（单例命名空间）继承 Object.prototype。
+    set_proto_if_changed(&world.console_object, obj_proto_val);
+
     // 迭代器原型链：%IteratorPrototype% → Object.prototype；各集合迭代器原型
     // → %IteratorPrototype%（next/@@iterator 方法由绑定层安装到对应原型）。
     set_proto_if_changed(&world.iterator_proto, obj_proto_val);
@@ -768,6 +772,7 @@ impl BuiltinWorld {
             BuiltinId::PlainDateTimeProto => &self.plain_date_time_proto,
             BuiltinId::BigIntConstructor => &self.bigint_constructor,
             BuiltinId::BigIntProto => &self.bigint_proto,
+            BuiltinId::Console => &self.console_object,
         }
     }
 
@@ -790,6 +795,8 @@ impl BuiltinWorld {
         let math_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
 
         let json_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+
+        let console_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
 
         let (date_proto, date_constructor) = make_named_pair(string_forge, shape_forge, labels, "Date");
         let (set_proto, set_constructor) = make_named_pair(string_forge, shape_forge, labels, "Set");
@@ -941,6 +948,7 @@ impl BuiltinWorld {
             disposable_stack_proto,
             async_disposable_stack_proto,
             stub_objects,
+            console_object,
         };
         wire_builtin_world_links(&world);
         kernel_info!("BuiltinWorld initialized");
@@ -1205,6 +1213,11 @@ impl BuiltinWorld {
             (current.bigint_proto.clone(), current.bigint_constructor.clone())
         };
         let stub_objects = if dirty.stubs { Vec::new() } else { current.stub_objects.clone() };
+        let console_object = if dirty.console {
+            P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()))
+        } else {
+            current.console_object.clone()
+        };
 
         // 迭代器原型与资源栈原型依赖 Object.prototype（链到其上）：object 家族重建时
         // 一并重建，否则旧原型链指向已释放的 object_proto。
@@ -1345,6 +1358,7 @@ impl BuiltinWorld {
             disposable_stack_proto,
             async_disposable_stack_proto,
             stub_objects,
+            console_object,
         };
         wire_builtin_world_links(&world);
         world

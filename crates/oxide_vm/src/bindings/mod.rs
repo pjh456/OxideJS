@@ -52,6 +52,8 @@ pub mod bind_symbol;
 pub mod bind_temporal;
 /// 各 TypedArray 构造器与共享原型的 native 方法绑定。
 pub mod bind_typed_array;
+/// Console 单例对象及其方法绑定。
+pub mod bind_console;
 
 use std::sync::Arc;
 
@@ -1064,6 +1066,9 @@ pub fn rebind_dirty_builtins(core: &Arc<KernelCore>, session: &mut KernelSession
     if dirty.map_or(true, |d| d.stubs) {
         bind_bigint::bind_bigint(core, session, global);
     }
+    if dirty.map_or(true, |d| d.console) {
+        bind_console::bind_console(core, session, global);
+    }
 }
 
 /// 完整初始化一个 session 的内置对象（全量绑定 + `globalThis` + 快照记录）。
@@ -1077,6 +1082,7 @@ pub fn init_kernel_builtins(core: &Arc<KernelCore>, session: &mut KernelSession)
     bind_reflect::bind_reflect(core, session, global);
     bind_global::bind_global(core, session, global);
     bind_global_value(core, global, "globalThis", JsValue::from_js_object(global_ptr));
+    bind_console::bind_console(core, session, global);
     crate::test262_host::bind_test262_host(core, session, global);
     session.record_snapshot();
 }

@@ -17,6 +17,8 @@ pub mod bigint;
 pub mod boolean;
 /// builtins 层日志宏（`builtins_error`/`builtins_info` 等），target 为 `oxide::builtins`。
 pub mod builtins_log;
+/// Console 全局对象实现（log/warn/error/info/debug/trace 方法）。
+pub mod console;
 /// DataView 内置对象实现（对 ArrayBuffer 的定点读写视图）。
 pub mod data_view;
 /// Date 内置对象实现（时间戳存取、get/set 系列与 to*String 系列）。

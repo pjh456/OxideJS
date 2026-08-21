@@ -225,7 +225,7 @@ pub struct KernelSession {
 /// 维护注意：每个新增的 `BuiltinWorld` 对象字段都必须加到这里以及
 /// `KernelSession::dirty_since_snapshot()`，以便选择性重置重建正确的
 /// builtin 家族。
-pub const NUM_BUILTINS: usize = 89;
+pub const NUM_BUILTINS: usize = 90;
 
 /// 内置对象枚举 id，与 `BuiltinWorld` 中的存储槽一一对应。
 ///
@@ -324,6 +324,7 @@ pub enum BuiltinId {
     SymAsyncDispose = 86,
     SymDispose = 87,
     SuppressedErrorProto = 88,
+    Console = 89,
 }
 
 impl BuiltinId {
@@ -420,6 +421,7 @@ impl BuiltinId {
         BuiltinId::SymAsyncDispose,
         BuiltinId::SymDispose,
         BuiltinId::SuppressedErrorProto,
+        BuiltinId::Console,
     ];
 }
 
@@ -480,6 +482,7 @@ pub struct BuiltinDirtySet {
     pub temporal: bool,
     pub stubs: bool,
     pub global: bool,
+    pub console: bool,
 }
 
 impl BuiltinDirtySet {
@@ -504,6 +507,7 @@ impl BuiltinDirtySet {
             || self.typed_array_family
             || self.temporal
             || self.stubs
+            || self.console
     }
 
     /// 是否存在任何污染（builtin world 或 global object）。
@@ -683,6 +687,7 @@ impl KernelSession {
                 || gen(BuiltinId::BigIntConstructor) != snap(BuiltinId::BigIntConstructor)
                 || gen(BuiltinId::BigIntProto) != snap(BuiltinId::BigIntProto),
             global: BuiltinSnapshot::gen(&self.global_object) != snapshot.global_object_generation,
+            console: gen(BuiltinId::Console) != snap(BuiltinId::Console),
         }
     }
 
