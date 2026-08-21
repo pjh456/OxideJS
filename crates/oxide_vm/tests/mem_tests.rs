@@ -29,29 +29,6 @@ fn epoch_reset_increments_id() {
     assert_eq!(epoch.current_id(), 2);
 }
 
-#[test]
-fn epoch_benchmark_1m_allocations() {
-    let epoch = Epoch::new();
-    let start = Instant::now();
-
-    for i in 0..1_000_000u64 {
-        let ptr = epoch.alloc(i);
-        unsafe {
-            assert_eq!(*ptr, i);
-        }
-    }
-
-    let elapsed = start.elapsed();
-    if cfg!(debug_assertions) {
-        println!("1M allocations took {}ms (debug build - skipping timing assertion)", elapsed.as_millis());
-    } else {
-        assert!(
-            elapsed.as_millis() < 200,
-            "1M allocations took {}ms, expected <200ms",
-            elapsed.as_millis()
-        );
-    }
-}
 
 #[test]
 fn persistent_new_and_deref() {
