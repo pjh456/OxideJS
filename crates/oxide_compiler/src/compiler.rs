@@ -7,21 +7,24 @@ use oxide_ir::lower::lower;
 /// 结构哈希 / 编译模块哈希 re-export（供编译缓存作键）。
 pub use crate::hash::{compiled_module_hash, structural_hash};
 
-/// 编译入口：状态 = DCE 开关 + RegAlloc 开关，编译其余状态在 emit/lower 内部。
+/// 编译入口：状态 = DCE 开关 + RegAlloc 开关 + REPL 持久开关，编译其余状态在 emit/lower 内部。
 pub struct Compiler {
     /// 是否在 emit 与 lower 之间运行死代码消除（默认开启）。
     enable_dce: bool,
     /// 是否在保守 DCE 后运行 liveness→精确 DCE→RegAlloc 链（默认开启）。
     /// 关闭时 vreg 原样当物理号走 lower 降级路径（>253 → RangeError）。
     enable_regalloc: bool,
+    /// 是否为 REPL 持久模式：脚本顶层 let/const 也写全局对象属性。
+    repl_persist: bool,
 }
 
 impl Compiler {
-    /// 构造 `Compiler`：默认开启 DCE 与 RegAlloc。
+    /// 构造 `Compiler`：默认开启 DCE 与 RegAlloc，不开启 REPL 持久。
     pub fn new() -> Self {
         Self {
             enable_dce: true,
             enable_regalloc: true,
+            repl_persist: false,
         }
     }
 
@@ -38,10 +41,15 @@ impl Compiler {
         }
     }
 
+    /// 启用 REPL 持久模式（脚本顶层 let/const 也写全局对象）。
+    pub fn with_repl_persist(self, enable: bool) -> Self {
+        Self { repl_persist: enable, ..self }
+    }
+
     /// 编译整个 script program：AST → IR（`Emitter::emit_program`）→ 统一 IR 管线。
     pub fn compile(&self, program: &oxide_parser::Program) -> Result<CompiledModule, String> {
         crate::compiler_debug!("compile: starting...");
-        let ir = Emitter::new().emit_program(program)?;
+        let ir = Emitter::new().emit_program(program, self.repl_persist)?;
         self.compile_ir(ir)
     }
 

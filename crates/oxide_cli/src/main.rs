@@ -428,7 +428,7 @@ fn eval_repl(code: &str, kernel: &Arc<KernelCore>, vm: &mut Vm) -> ExitCode {
         }
     };
 
-    let compiler = Compiler::new();
+    let compiler = Compiler::new().with_repl_persist(true);
     let hash = compiled_module_hash(&program);
     let module = match kernel.code_forge().get_or_insert_with(hash, || compiler.compile(&program)) {
         Ok(m) => m,

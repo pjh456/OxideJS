@@ -98,6 +98,10 @@ impl Emitter {
         if ctx.is_global_scope && matches!(kind, VariableDeclarationKind::Var) {
             self.emit_global_prop_write(name, src_reg, ctx);
         }
+        // REPL 持久模式：let/const 也写全局对象属性，使跨轮次读取可见。
+        if ctx.repl_persist && ctx.is_global_scope && !matches!(kind, VariableDeclarationKind::Var) {
+            self.emit_global_prop_write(name, src_reg, ctx);
+        }
         Ok(())
     }
 

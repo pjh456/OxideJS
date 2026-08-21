@@ -182,6 +182,9 @@ pub struct CompileCtx {
     /// 是否为脚本顶层模块（emit_program 的根上下文）。顶层 var/function 声明需
     /// 同步写全局对象属性（脚本环境记录的 var 可经 globalThis 反射）；函数体为 false。
     pub(crate) is_global_scope: bool,
+    /// 是否为 REPL 持久模式：脚本顶层 let/const 也写全局对象属性，使跨轮次
+    /// 读取（LOAD_GLOBAL）可见变量绑定。仅 `eval_repl` 设置。
+    pub(crate) repl_persist: bool,
     pub(crate) static_block_this_reg: Option<u8>,
     pub(crate) field_buffer: Option<FieldBuffer>,
     /// 类构造器模块中 `@@field_keys` upvalue 下标（实例字段 computed key 数组）。
@@ -315,6 +318,7 @@ impl CompileCtx {
             is_async: false,
             is_strict: false,
             is_global_scope: false,
+            repl_persist: false,
             static_block_this_reg: None,
             field_buffer: None,
             field_keys_uv: None,
@@ -1496,11 +1500,13 @@ impl Emitter {
     ///
     /// 调用方为 `oxide_compiler::Compiler::compile`：本函数完成 emit 半程，
     /// 随后由 `oxide_ir::lower::lower` 降为字节码。
-    pub fn emit_program(&self, program: &oxide_parser::Program) -> Result<IRFunction, String> {
+    /// `repl_persist` 为 true 时脚本顶层 let/const 也写全局对象（REPL 跨轮次持久）。
+    pub fn emit_program(&self, program: &oxide_parser::Program, repl_persist: bool) -> Result<IRFunction, String> {
         crate::emit_debug!("emit_program: {} stmts", program.body.len());
         let mut ctx = CompileCtx::new();
         // 脚本顶层：var/function 声明需落到全局对象，let/const/class 不进全局。
         ctx.is_global_scope = true;
+        ctx.repl_persist = repl_persist;
         // 脚本顶层严格模式由源码 "use strict" directive 决定（嵌套函数经父 ctx 继承）。
         ctx.is_strict = program.has_use_strict_directive();
         self.predeclare_function_declarations(&program.body, &mut ctx);
