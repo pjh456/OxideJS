@@ -172,6 +172,9 @@ impl SessionGc {
             for value in crate::generator::generator_native_edges(obj) {
                 Self::process_edge(value, vm, stack, live_strings, live_bigints);
             }
+            for ptr in crate::generator::generator_native_string_edges(obj) {
+                Self::mark_string_live(live_strings, ptr);
+            }
         }
         if obj.is_promise_obj() {
             for value in crate::promise::promise_native_edges(obj) {
@@ -182,10 +185,16 @@ impl SessionGc {
             for value in crate::async_func::async_native_edges(obj) {
                 Self::process_edge(value, vm, stack, live_strings, live_bigints);
             }
+            for ptr in crate::async_func::async_native_string_edges(obj) {
+                Self::mark_string_live(live_strings, ptr);
+            }
         }
         if obj.is_async_generator_obj() {
             for value in crate::async_generator::async_generator_native_edges(obj) {
                 Self::process_edge(value, vm, stack, live_strings, live_bigints);
+            }
+            for ptr in crate::async_generator::async_generator_native_string_edges(obj) {
+                Self::mark_string_live(live_strings, ptr);
             }
         }
         // 遍历 upvalue cell 中的引用。
