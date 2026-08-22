@@ -173,8 +173,9 @@ where
     }
 }
 
-/// 释放 Set 的 native 数据（IndexSet），返回释放的字节数供泄漏统计。
-pub fn drop_set_native(obj: &mut JsObject) -> u64 {
+/// 只读核算 Set 的 native 数据字节（不释放）。
+/// 与 `drop_set_native` 释放口径一致（capacity），供 GC 账目核算。
+pub fn set_native_size(obj: &JsObject) -> u64 {
     if !obj.is_set() {
         return 0;
     }
@@ -183,12 +184,23 @@ pub fn drop_set_native(obj: &mut JsObject) -> u64 {
         return 0;
     }
     unsafe {
-        let boxed: Box<SetInner> = Box::from_raw(inner);
-        let bytes = std::mem::size_of::<SetInner>() + boxed.capacity() * std::mem::size_of::<SetKey>();
-        drop(boxed);
-        obj.set_native_data(std::ptr::null_mut());
-        bytes as u64
+        (std::mem::size_of::<SetInner>() + (*inner).capacity() * std::mem::size_of::<SetKey>()) as u64
     }
+}
+
+/// 释放 Set 的 native 数据（IndexSet），返回释放的字节数供泄漏统计。
+pub fn drop_set_native(obj: &mut JsObject) -> u64 {
+    let bytes = set_native_size(obj);
+    if bytes == 0 {
+        return 0;
+    }
+    let inner = obj.native_data() as *mut SetInner;
+    // SAFETY: inner 非空（set_native_size 已验证），Box::from_raw 恰好释放一次。
+    unsafe {
+        drop(Box::from_raw(inner));
+    }
+    obj.set_native_data(std::ptr::null_mut());
+    bytes
 }
 
 /// `Set` 构造函数：创建带空 IndexSet native 数据的 Set 对象，若提供可迭代实参

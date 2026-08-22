@@ -1826,8 +1826,8 @@ pub(crate) fn clone_promise_native_with_rewrite(
     new.set_native_data(Box::into_raw(Box::new(cloned)) as *mut u8);
 }
 
-/// 释放 Promise 状态盒（对象被回收时），返回释放字节数。
-pub(crate) fn drop_promise_native(obj: &JsObject) -> u64 {
+/// 只读核算 Promise 状态盒字节（不释放），供 GC 账目核算。
+pub(crate) fn promise_native_size(obj: &JsObject) -> u64 {
     if !obj.is_promise_obj() {
         return 0;
     }
@@ -1835,10 +1835,23 @@ pub(crate) fn drop_promise_native(obj: &JsObject) -> u64 {
     if ptr.is_null() {
         return 0;
     }
-    // SAFETY: 指针来自 Box::into_raw，只在对象被回收时释放一次。
+    unsafe {
+        std::mem::size_of::<PromiseState>() as u64
+            + (*ptr).reactions.capacity() as u64 * std::mem::size_of::<PromiseReaction>() as u64
+    }
+}
+
+/// 释放 Promise 状态盒（对象被回收时），返回释放字节数。
+pub(crate) fn drop_promise_native(obj: &JsObject) -> u64 {
+    let bytes = promise_native_size(obj);
+    if bytes == 0 {
+        return 0;
+    }
+    let ptr = obj.native_data() as *mut PromiseState;
+    // SAFETY: ptr 非空（promise_native_size 已验证），Box::from_raw 恰好释放一次。
     let state = unsafe { Box::from_raw(ptr) };
-    std::mem::size_of::<PromiseState>() as u64
-        + state.reactions.capacity() as u64 * std::mem::size_of::<PromiseReaction>() as u64
+    drop(state);
+    bytes
 }
 
 /// 供外部遍历微任务队列（GC mark/rewrite 用）。

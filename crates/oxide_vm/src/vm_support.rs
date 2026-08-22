@@ -98,6 +98,8 @@ impl Vm {
                 session_cell_ptrs: std::cell::RefCell::new(Vec::new()),
                 session_bytes_allocated: 0,
                 string_gc_watermark: gc_threshold,
+                gc_threshold_cached: gc_threshold,
+                gc_watermark: gc_threshold,
                 forwarding: std::collections::HashMap::with_hasher(rustc_hash::FxBuildHasher),
             },
             symbols: SymbolState {
@@ -202,6 +204,8 @@ impl Vm {
                 session_cell_ptrs: std::cell::RefCell::new(Vec::new()),
                 session_bytes_allocated: 0,
                 string_gc_watermark: gc_threshold,
+                gc_threshold_cached: gc_threshold,
+                gc_watermark: gc_threshold,
                 forwarding: std::collections::HashMap::with_hasher(rustc_hash::FxBuildHasher),
             },
             symbols: SymbolState {

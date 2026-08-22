@@ -42,11 +42,22 @@ pub(crate) struct GcState {
     /// 仅当账目超过水位才在指令边界触发回收——活串超阈值时不会每指令重复
     /// 触发无死串可回收的白跑，且保证触发点恒在无 builtin 局部活值的边界。
     pub(crate) string_gc_watermark: usize,
+    /// 缓存的 GC 阈值（从 config 读一次），热路径只做 usize 比较，免 Arc 解引用。
+    /// 预留给 17.3b（对象侧执行期触发）安全点审计后使用。
+    #[allow(dead_code)]
+    pub(crate) gc_threshold_cached: usize,
+    /// 执行期完整 GC（对象+字符串）的触发水位：本次收集后的存活字节 + 阈值增量。
+    /// 仅当账目超过水位才在指令边界触发完整回收——存活对象超阈值时不每指令重复
+    /// 触发无死对象可回收的白跑。预留给 17.3b 安全点审计后使用。
+    #[allow(dead_code)]
+    pub(crate) gc_watermark: usize,
     pub(crate) forwarding: HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>,
 }
 
 impl GcState {
     pub(crate) fn track_epoch_object(&mut self, ptr: *mut JsObject) {
+        // SAFETY: 调用方保证 ptr 是刚 alloc 的 epoch JsObject，登记期存活。
+        unsafe { (*ptr).set_is_epoch(true) };
         self.epoch_object_ptrs.push(ptr);
     }
 

@@ -235,17 +235,30 @@ where
     }
 }
 
-/// 释放 DataView 视图数据（`Box<DataViewData>`），返回释放字节数。
-pub fn drop_data_view_native(obj: &mut JsObject) -> u64 {
+/// 只读核算 DataView 视图数据字节（不释放）。
+pub fn data_view_native_size(obj: &JsObject) -> u64 {
     let Some(ptr) = data_view_data_ptr(obj) else {
         return 0;
     };
     if ptr.is_null() {
         return 0;
     }
+    std::mem::size_of::<DataViewData>() as u64
+}
+
+/// 释放 DataView 视图数据（`Box<DataViewData>`），返回释放字节数。
+pub fn drop_data_view_native(obj: &mut JsObject) -> u64 {
+    let bytes = data_view_native_size(obj);
+    if bytes == 0 {
+        return 0;
+    }
+    let Some(ptr) = data_view_data_ptr(obj) else {
+        return 0;
+    };
+    // SAFETY: ptr 非空（data_view_native_size 已验证），Box::from_raw 恰好释放一次。
     unsafe { drop(Box::from_raw(ptr)) };
     obj.set_native_fn(None);
-    std::mem::size_of::<DataViewData>() as u64
+    bytes
 }
 
 /// `DataView.prototype.getInt8(byteOffset)`：读取 1 字节有符号整数。

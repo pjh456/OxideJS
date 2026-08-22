@@ -608,8 +608,8 @@ where
     }
 }
 
-/// 释放状态盒（对象被回收时），返回释放的字节数供泄漏统计。
-pub fn drop_dispose_native(obj: &mut JsObject) -> u64 {
+/// 只读核算 DisposableStack 状态盒字节（不释放）。
+pub fn disposable_stack_native_size(obj: &JsObject) -> u64 {
     if !obj.is_disposable_stack_obj() && !obj.is_async_disposable_stack_obj() {
         return 0;
     }
@@ -617,13 +617,24 @@ pub fn drop_dispose_native(obj: &mut JsObject) -> u64 {
     if ptr.is_null() {
         return 0;
     }
-    // SAFETY: 指针来自 Box::into_raw，只在对象被回收时释放一次。
+    unsafe {
+        (std::mem::size_of::<DisposeCapability>()
+            + (*ptr).entries.capacity() * std::mem::size_of::<DisposeEntry>()) as u64
+    }
+}
+
+/// 释放状态盒（对象被回收时），返回释放的字节数供泄漏统计。
+pub fn drop_dispose_native(obj: &mut JsObject) -> u64 {
+    let bytes = disposable_stack_native_size(obj);
+    if bytes == 0 {
+        return 0;
+    }
+    let ptr = get_capability_ptr(obj);
+    // SAFETY: ptr 非空（disposable_stack_native_size 已验证），Box::from_raw 恰好释放一次。
     unsafe {
         let cap = Box::from_raw(ptr);
-        let bytes =
-            std::mem::size_of::<DisposeCapability>() + cap.entries.capacity() * std::mem::size_of::<DisposeEntry>();
         drop(cap);
         obj.set_native_data(std::ptr::null_mut());
-        bytes as u64
     }
+    bytes
 }

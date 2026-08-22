@@ -87,19 +87,33 @@ pub fn clone_array_buffer_native(old_obj: &JsObject, new_obj: &mut JsObject) {
     new_obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(cloned_ptr as *const ()) }));
 }
 
-/// 释放 ArrayBuffer 的字节缓冲（native_fn 槽中的 `Box<Vec<u8>>`），返回字节数。
-pub fn drop_array_buffer_native(obj: &mut JsObject) -> u64 {
+/// 只读核算 ArrayBuffer 字节缓冲字节（不释放）。
+pub fn array_buffer_native_size(obj: &JsObject) -> u64 {
     let Some(data_ptr) = array_buffer_vec_ptr(obj) else {
         return 0;
     };
     if data_ptr.is_null() {
         return 0;
     }
-    // SAFETY: ArrayBuffer 在 native_fn 槽中存 `Box<Vec<u8>>`。
+    unsafe {
+        (std::mem::size_of::<Vec<u8>>() + (*data_ptr).capacity()) as u64
+    }
+}
+
+/// 释放 ArrayBuffer 的字节缓冲（native_fn 槽中的 `Box<Vec<u8>>`），返回字节数。
+pub fn drop_array_buffer_native(obj: &mut JsObject) -> u64 {
+    let bytes = array_buffer_native_size(obj);
+    if bytes == 0 {
+        return 0;
+    }
+    let Some(data_ptr) = array_buffer_vec_ptr(obj) else {
+        return 0;
+    };
+    // SAFETY: data_ptr 非空（array_buffer_native_size 已验证），Box::from_raw 恰好释放一次。
     let data = unsafe { Box::from_raw(data_ptr) };
-    let bytes = std::mem::size_of::<Vec<u8>>() + data.capacity();
+    drop(data);
     obj.set_native_fn(None);
-    bytes as u64
+    bytes
 }
 
 pub(crate) fn array_buffer_data_ptr<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<*mut Vec<u8>, JsValue> {

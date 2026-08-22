@@ -157,17 +157,30 @@ where
     }
 }
 
-/// 释放 TypedArray 的视图数据（`Box<TypedArrayData>`），返回释放字节数。
-pub fn drop_typed_array_native(obj: &mut JsObject) -> u64 {
+/// 只读核算 TypedArray 视图数据字节（不释放）。
+pub fn typed_array_native_size(obj: &JsObject) -> u64 {
     let Some(ptr) = typed_array_data_ptr(obj) else {
         return 0;
     };
     if ptr.is_null() {
         return 0;
     }
+    std::mem::size_of::<TypedArrayData>() as u64
+}
+
+/// 释放 TypedArray 的视图数据（`Box<TypedArrayData>`），返回释放字节数。
+pub fn drop_typed_array_native(obj: &mut JsObject) -> u64 {
+    let bytes = typed_array_native_size(obj);
+    if bytes == 0 {
+        return 0;
+    }
+    let Some(ptr) = typed_array_data_ptr(obj) else {
+        return 0;
+    };
+    // SAFETY: ptr 非空（typed_array_native_size 已验证），Box::from_raw 恰好释放一次。
     unsafe { drop(Box::from_raw(ptr)) };
     obj.set_native_fn(None);
-    std::mem::size_of::<TypedArrayData>() as u64
+    bytes
 }
 
 pub(crate) fn get_typed_array_data<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<TypedArrayData, JsValue> {

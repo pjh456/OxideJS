@@ -903,8 +903,8 @@ pub(crate) fn clone_generator_native_with_rewrite(
     new.set_native_data(Box::into_raw(Box::new(cloned)) as *mut u8);
 }
 
-/// 释放生成器状态盒（对象被 GC 回收时），返回释放字节数。
-pub(crate) fn drop_generator_native(obj: &JsObject) -> u64 {
+/// 只读核算生成器状态盒字节（不释放），供 GC 账目核算。
+pub(crate) fn generator_native_size(obj: &JsObject) -> u64 {
     if !obj.is_generator_obj() {
         return 0;
     }
@@ -912,9 +912,23 @@ pub(crate) fn drop_generator_native(obj: &JsObject) -> u64 {
     if ptr.is_null() {
         return 0;
     }
-    // SAFETY: 指针来自 create_generator_object 的 Box::into_raw，只在 GC 回收时释放一次。
+    // SAFETY: 通过裸指针读取 capacity 字段，不解引用整个 Box（不移动/释放）。
+    unsafe {
+        std::mem::size_of::<GeneratorState>() as u64
+            + (*ptr).suspended.heap_bytes()
+            + (*ptr).args.capacity() as u64 * std::mem::size_of::<JsValue>() as u64
+    }
+}
+
+/// 释放生成器状态盒（对象被 GC 回收时），返回释放字节数。
+pub(crate) fn drop_generator_native(obj: &JsObject) -> u64 {
+    let bytes = generator_native_size(obj);
+    if bytes == 0 {
+        return 0;
+    }
+    let ptr = obj.native_data() as *mut GeneratorState;
+    // SAFETY: ptr 非空（generator_native_size 已验证），Box::from_raw 恰好释放一次。
     let state = unsafe { Box::from_raw(ptr) };
-    std::mem::size_of::<GeneratorState>() as u64
-        + state.suspended.heap_bytes()
-        + state.args.capacity() as u64 * std::mem::size_of::<JsValue>() as u64
+    drop(state);
+    bytes
 }

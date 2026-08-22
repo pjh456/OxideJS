@@ -900,6 +900,16 @@ impl Vm {
         self.gc_state.session_gc = session_gc;
     }
 
+    /// 执行期完整 GC（对象+字符串）的 dispatch 安全点入口：按水位判定触发。
+    /// 仅在 native_call_depth == 0 的指令边界调用——此时无 builtin 局部裸指针，
+    /// 对象搬移安全。预留给 17.3b（对象侧执行期触发）安全点审计后使用。
+    #[allow(dead_code)]
+    pub(crate) fn maybe_collect_session_gc_at_dispatch(&mut self) {
+        let mut session_gc = std::mem::take(&mut self.gc_state.session_gc);
+        session_gc.maybe_collect_gc(self);
+        self.gc_state.session_gc = session_gc;
+    }
+
     /// 只读访问 session GC 的统计（回收次数、存活/死亡对象数、释放字节等）。
     pub fn session_gc_stats(&self) -> &SessionGc {
         &self.gc_state.session_gc
@@ -1432,12 +1442,12 @@ impl Vm {
         let mut steps: u64 = 0;
         loop {
             steps += 1;
-            // 执行期字符串 GC 安全点：仅在顶层 dispatch（native_call_depth == 0）
+            // 执行期 GC 安全点：仅在顶层 dispatch（native_call_depth == 0）
             // 的指令边界触发——嵌套 dispatch（builtin 经 call_function_sync 重入
             // 执行 JS 回调、generator/async 恢复）期间，调用方寄存器窗口副本存于
-            // inline 状态（非 GC 根），此时回收会把调用方 regs 中的活串当死串释放。
-            // 返回顶层后检查恢复，存活串此时已回拷为执行根。账目未超水位时仅
-            // 3 次字段比较。
+            // inline 状态（非 GC 根），此时回收会把调用方 regs 中的活值当死值释放。
+            // 返回顶层后检查恢复，存活值此时已回拷为执行根。账目未超水位时仅
+            // 少量字段比较。
             if self.native_call_depth == 0 && self.gc_state.session_bytes_allocated >= self.gc_state.string_gc_watermark
             {
                 self.maybe_collect_session_strings();

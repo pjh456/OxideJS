@@ -53,6 +53,58 @@ impl SessionGc {
         }
     }
 
+    /// 只读核算 session 对象的堆数据字节（属性/元素/meta Vec capacity + native 状态盒）。
+    /// 与 `drop_object_heap_data` 释放口径一致（capacity），不释放、不置空任何指针。
+    pub(crate) fn object_heap_data_bytes(obj: &JsObject) -> u64 {
+        let mut bytes = 0u64;
+
+        let elems_ptr = obj.array_elements_raw() as *const Vec<JsValue>;
+        if !elems_ptr.is_null() {
+            unsafe {
+                bytes += size_of::<Vec<JsValue>>() as u64
+                    + ((*elems_ptr).capacity() * size_of::<JsValue>()) as u64;
+            }
+        }
+
+        let elems_meta_ptr = obj.array_elements_meta_raw() as *const Vec<Option<PropMetaEntry>>;
+        if !elems_meta_ptr.is_null() {
+            unsafe {
+                bytes += size_of::<Vec<Option<PropMetaEntry>>>() as u64
+                    + ((*elems_meta_ptr).capacity() * size_of::<Option<PropMetaEntry>>()) as u64;
+            }
+        }
+
+        let hash_ptr = obj.hash_props_raw() as *const Vec<JsValue>;
+        if !hash_ptr.is_null() {
+            unsafe {
+                bytes += size_of::<Vec<JsValue>>() as u64
+                    + ((*hash_ptr).capacity() * size_of::<JsValue>()) as u64;
+            }
+        }
+
+        let meta_ptr = obj.prop_meta_raw() as *const Vec<Option<PropMetaEntry>>;
+        if !meta_ptr.is_null() {
+            unsafe {
+                bytes += size_of::<Vec<Option<PropMetaEntry>>>() as u64
+                    + ((*meta_ptr).capacity() * size_of::<Option<PropMetaEntry>>()) as u64;
+            }
+        }
+
+        bytes += map::map_native_size(obj);
+        bytes += set::set_native_size(obj);
+        bytes += disposable_stack::disposable_stack_native_size(obj);
+        bytes += array_buffer::array_buffer_native_size(obj);
+        bytes += regexp::regexp_native_size(obj);
+        bytes += typed_array::typed_array_native_size(obj);
+        bytes += data_view::data_view_native_size(obj);
+        bytes += crate::generator::generator_native_size(obj);
+        bytes += crate::promise::promise_native_size(obj);
+        bytes += crate::async_func::async_native_size(obj);
+        bytes += crate::async_generator::async_generator_native_size(obj);
+
+        bytes
+    }
+
     fn object_edges(obj: &JsObject) -> Vec<JsValue> {
         let mut edges = Vec::new();
         if let Some(elements) = obj.array_elements_vec() {
@@ -502,7 +554,15 @@ impl SessionGc {
         forwarding.clear();
         vm.gc_state.forwarding = forwarding;
         vm.gc_state.session_epoch = new_arena;
-        vm.gc_state.session_bytes_allocated = vm.gc_state.session_object_ptrs.len() * size_of::<JsObject>();
+        vm.gc_state.session_bytes_allocated = vm.gc_state
+            .session_object_ptrs
+            .iter()
+            .filter(|&&ptr| !ptr.is_null())
+            .map(|&ptr| {
+                let obj = unsafe { &*ptr };
+                size_of::<JsObject>() as u64 + Self::object_heap_data_bytes(obj)
+            })
+            .sum::<u64>() as usize;
 
         self.clear_all_marks(vm);
 
@@ -568,6 +628,16 @@ impl SessionGc {
     pub(crate) fn should_collect(&self, vm: &Vm) -> bool {
         (!vm.gc_state.session_object_ptrs.is_empty() || !vm.gc_state.session_string_ptrs.is_empty())
             && vm.gc_state.session_bytes_allocated >= vm.kernel_core().config().session_gc_threshold
+    }
+
+    /// 执行期完整 GC 的触发判断：账目须超过水位（上次收集后的存活字节 +
+    /// 阈值增量）。与 `should_collect`（reset 路径用）不同，本方法走增量水位，
+    /// 防止存活对象超阈值时每指令重复触发无死对象可回收的白跑。
+    /// 预留给 17.3b（对象侧执行期触发）安全点审计后使用。
+    #[allow(dead_code)]
+    pub(crate) fn should_collect_gc(&self, vm: &Vm) -> bool {
+        (!vm.gc_state.session_object_ptrs.is_empty() || !vm.gc_state.session_string_ptrs.is_empty())
+            && vm.gc_state.session_bytes_allocated >= vm.gc_state.gc_watermark
     }
 
     /// 执行期字符串回收的触发判断：账目须超过水位（上次收集后的存活字节 +
@@ -664,7 +734,15 @@ impl SessionGc {
         self.debug_assert_marked_object_strings_live(vm);
 
         // 扣减字符串账目（保留对象账目），再补回存活串字节。
-        let object_bytes = vm.gc_state.session_object_ptrs.len() * size_of::<JsObject>();
+        let object_bytes: usize = vm.gc_state
+            .session_object_ptrs
+            .iter()
+            .filter(|&&ptr| !ptr.is_null())
+            .map(|&ptr| {
+                let obj = unsafe { &*ptr };
+                size_of::<JsObject>() as u64 + Self::object_heap_data_bytes(obj)
+            })
+            .sum::<u64>() as usize;
         vm.gc_state.session_bytes_allocated = object_bytes;
         let freed_bytes = self.sweep_session_strings(vm);
 
@@ -701,6 +779,18 @@ impl SessionGc {
     pub(crate) fn maybe_collect(&mut self, vm: &mut Vm) {
         if self.should_collect(vm) {
             self.collect(vm);
+        }
+    }
+
+    /// 执行期完整 GC 入口：按水位判定，触发后抬高水位。
+    /// 预留给 17.3b（对象侧执行期触发）安全点审计后使用。
+    #[allow(dead_code)]
+    pub(crate) fn maybe_collect_gc(&mut self, vm: &mut Vm) {
+        if self.should_collect_gc(vm) {
+            self.collect(vm);
+            // 抬高下次触发水位：存活字节 + 阈值增量，避免活对象超阈值时每指令重复触发。
+            let threshold = vm.gc_state.gc_threshold_cached;
+            vm.gc_state.gc_watermark = vm.gc_state.session_bytes_allocated.saturating_add(threshold);
         }
     }
 
@@ -771,10 +861,13 @@ mod tests {
 
     fn plain_object(vm: &mut Vm) -> *mut JsObject {
         let proto_ptr = vm.session.builtin_world().object_proto.as_ptr() as *mut JsObject;
-        vm.epoch.alloc(JsObject::new_empty(
+        let ptr = vm.epoch.alloc(JsObject::new_empty(
             oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
             JsValue::from_js_object(proto_ptr),
-        ))
+        ));
+        // 测试辅助函数绕过 alloc_object，需手动置位 EPOCH_BIT。
+        unsafe { (*ptr).set_is_epoch(true) };
+        ptr
     }
 
     fn has_ptr(roots: &[JsValue], ptr: *mut JsObject) -> bool {
@@ -984,6 +1077,8 @@ mod tests {
             2,
             vm.epoch.bump(),
         ));
+        // 测试辅助函数绕过 alloc_object，需手动置位 EPOCH_BIT。
+        unsafe { (*arr).set_is_epoch(true) };
         let live_elem = plain_object(&mut vm);
         let dead_elem = plain_object(&mut vm);
         unsafe {
@@ -1058,6 +1153,8 @@ mod tests {
             oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
             JsValue::from_js_object(proto),
         ));
+        // 测试辅助函数绕过 alloc_object，需手动置位 EPOCH_BIT。
+        unsafe { (*obj).set_is_epoch(true) };
         let val = JsValue::from_js_object(obj);
         vm.regs[reg as usize] = val;
         val
@@ -1070,6 +1167,8 @@ mod tests {
             oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
             JsValue::from_js_object(proto),
         ));
+        // 测试辅助函数绕过 alloc_object，需手动置位 EPOCH_BIT。
+        unsafe { (*obj).set_is_epoch(true) };
         let val = JsValue::from_js_object(obj);
         vm.regs[reg as usize] = val;
         val

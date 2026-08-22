@@ -129,8 +129,8 @@ pub fn regexp_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(obj_ptr))
 }
 
-/// 释放 RegExp 对象 native_fn 槽中编译的 `regress::Regex`，返回释放字节数。
-pub fn drop_regexp_native(obj: &mut JsObject) -> u64 {
+/// 只读核算 RegExp 编译正则字节（不释放）。
+pub fn regexp_native_size(obj: &JsObject) -> u64 {
     if !obj.is_regexp_obj() {
         return 0;
     }
@@ -141,9 +141,23 @@ pub fn drop_regexp_native(obj: &mut JsObject) -> u64 {
     if regex_ptr.is_null() {
         return 0;
     }
+    std::mem::size_of::<regress::Regex>() as u64
+}
+
+/// 释放 RegExp 对象 native_fn 槽中编译的 `regress::Regex`，返回释放字节数。
+pub fn drop_regexp_native(obj: &mut JsObject) -> u64 {
+    let bytes = regexp_native_size(obj);
+    if bytes == 0 {
+        return 0;
+    }
+    let Some(ptr) = obj.native_fn() else {
+        return 0;
+    };
+    let regex_ptr = ptr.as_ptr() as *mut regress::Regex;
+    // SAFETY: regex_ptr 非空（regexp_native_size 已验证），Box::from_raw 恰好释放一次。
     unsafe { drop(Box::from_raw(regex_ptr)) };
     obj.set_native_fn(None);
-    std::mem::size_of::<regress::Regex>() as u64
+    bytes
 }
 
 /// 深拷贝已编译正则到新对象（GC 搬移 / 晋升流程用）。

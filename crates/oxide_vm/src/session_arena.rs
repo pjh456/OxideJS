@@ -34,7 +34,7 @@ impl Vm {
             return src;
         }
         let src_ref = unsafe { &*src };
-        if src_ref.is_session_epoch() || !self.epoch.is_epoch_ptr(src.cast::<u8>()) {
+        if src_ref.is_session_epoch() || !src_ref.is_epoch() {
             return src;
         }
         if let Some(dst) = forwarding.get(&src).copied() {
@@ -45,7 +45,6 @@ impl Vm {
         let dst = self.gc_state.session_epoch.alloc(clone) as *mut JsObject;
         forwarding.insert(src, dst);
         self.gc_state.session_object_ptrs.push(dst);
-        self.gc_state.session_bytes_allocated += std::mem::size_of::<JsObject>();
 
         let dst_ref = unsafe { &mut *dst };
         dst_ref.rewrite_object_values(|value| self.promote_value_if_epoch_object(value, forwarding));
@@ -97,6 +96,9 @@ impl Vm {
             // 已编译正则是 Box 深拷贝到新对象：源盒随 epoch 释放，互不共享。
             regexp::clone_regexp_native(src_ref, dst_ref);
         }
+        // 账目计入：对象头 + 堆数据（属性/元素/meta Vec + native 状态盒），用 clone 后的 dst 核算。
+        self.gc_state.session_bytes_allocated += std::mem::size_of::<JsObject>()
+            + crate::session_gc::SessionGc::object_heap_data_bytes(dst_ref) as usize;
         dst
     }
 
@@ -107,7 +109,7 @@ impl Vm {
             return value;
         }
         let ptr = value.as_js_object_ptr();
-        if ptr.is_null() || !self.epoch.is_epoch_ptr(ptr.cast::<u8>()) {
+        if ptr.is_null() || !unsafe { &*ptr }.is_epoch() {
             return value;
         }
         JsValue::from_js_object(self.promote_object_inner(ptr, forwarding))
@@ -118,7 +120,7 @@ impl Vm {
             return value;
         }
         let value_ptr = value.as_js_object_ptr();
-        if value_ptr.is_null() || !self.epoch.is_epoch_ptr(value_ptr.cast::<u8>()) {
+        if value_ptr.is_null() || !unsafe { &*value_ptr }.is_epoch() {
             return value;
         }
         JsValue::from_js_object(self.promote_object(value_ptr))
@@ -133,12 +135,15 @@ mod tests {
 
     fn plain_object(vm: &mut Vm) -> *mut JsObject {
         let proto = vm.session.builtin_world().object_proto.as_ptr() as *mut JsObject;
-        vm.epoch
-            .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)))
+        let ptr = vm.epoch
+            .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)));
+        // 测试辅助函数绕过 alloc_object，需手动置位 EPOCH_BIT。
+        unsafe { (*ptr).set_is_epoch(true) };
+        ptr
     }
 
     fn is_epoch_object(vm: &Vm, value: JsValue) -> bool {
-        value.is_object() && vm.epoch.is_epoch_ptr(value.as_js_object_ptr().cast::<u8>())
+        value.is_object() && unsafe { (&*value.as_js_object_ptr()).is_epoch() }
     }
 
     #[test]
@@ -221,6 +226,8 @@ mod tests {
             2,
             vm.epoch.bump(),
         ));
+        // 测试辅助函数绕过 alloc_object，需手动置位 EPOCH_BIT。
+        unsafe { (*arr).set_is_epoch(true) };
         unsafe {
             (*arr).set_prop_at(0, JsValue::from_js_object(elem_child));
             (*arr).set_accessor_meta(

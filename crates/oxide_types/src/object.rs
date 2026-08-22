@@ -665,6 +665,8 @@ impl JsObject {
     pub const SESSION_EPOCH_BIT: u8 = 0x01;
     /// `is_session_epoch` 字段中的 GC 标记位。
     pub const GC_MARK_BIT: u8 = 0x02;
+    /// `is_session_epoch` 字段中的 epoch 归属标记位。
+    pub const EPOCH_BIT: u8 = 0x04;
 
     /// 是否 Date 外来对象。
     #[inline]
@@ -873,6 +875,22 @@ impl JsObject {
             self.is_session_epoch |= Self::GC_MARK_BIT;
         } else {
             self.is_session_epoch &= !Self::GC_MARK_BIT;
+        }
+    }
+
+    /// 是否为 epoch 分配（非 session）的对象。
+    #[inline]
+    pub fn is_epoch(&self) -> bool {
+        self.is_session_epoch & Self::EPOCH_BIT != 0
+    }
+
+    /// 设置 / 清除 epoch 归属标记。
+    #[inline]
+    pub fn set_is_epoch(&mut self, value: bool) {
+        if value {
+            self.is_session_epoch |= Self::EPOCH_BIT;
+        } else {
+            self.is_session_epoch &= !Self::EPOCH_BIT;
         }
     }
 

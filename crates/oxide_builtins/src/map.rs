@@ -132,8 +132,9 @@ where
     }
 }
 
-/// 释放 Map 的 native 数据（IndexMap），返回释放的字节数供泄漏统计。
-pub fn drop_map_native(obj: &mut JsObject) -> u64 {
+/// 只读核算 Map 的 native 数据字节（不释放）。
+/// 与 `drop_map_native` 释放口径一致（capacity），供 GC 账目核算。
+pub fn map_native_size(obj: &JsObject) -> u64 {
     if !obj.is_map() {
         return 0;
     }
@@ -142,12 +143,23 @@ pub fn drop_map_native(obj: &mut JsObject) -> u64 {
         return 0;
     }
     unsafe {
-        let boxed: Box<MapInner> = Box::from_raw(inner);
-        let bytes = std::mem::size_of::<MapInner>() + boxed.capacity() * std::mem::size_of::<(SetKey, JsValue)>();
-        drop(boxed);
-        obj.set_native_data(std::ptr::null_mut());
-        bytes as u64
+        (std::mem::size_of::<MapInner>() + (*inner).capacity() * std::mem::size_of::<(SetKey, JsValue)>()) as u64
     }
+}
+
+/// 释放 Map 的 native 数据（IndexMap），返回释放的字节数供泄漏统计。
+pub fn drop_map_native(obj: &mut JsObject) -> u64 {
+    let bytes = map_native_size(obj);
+    if bytes == 0 {
+        return 0;
+    }
+    let inner = obj.native_data() as *mut MapInner;
+    // SAFETY: inner 非空（map_native_size 已验证），Box::from_raw 恰好释放一次。
+    unsafe {
+        drop(Box::from_raw(inner));
+    }
+    obj.set_native_data(std::ptr::null_mut());
+    bytes
 }
 
 /// `Map` 构造函数：创建带空 IndexMap native 数据的 Map 对象，若提供可迭代实参
