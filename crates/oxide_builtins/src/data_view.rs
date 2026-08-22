@@ -328,6 +328,17 @@ pub fn data_view_get_float32<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     NativeResult::Ok(JsValue::float(n as f64))
 }
 
+/// `DataView.prototype.getFloat16(byteOffset, littleEndian)`：读取 2 字节半精度浮点。
+pub fn data_view_get_float16<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let bytes = native_try!(read_bytes::<2, H>(vm, args));
+    let bits = if is_little_endian(vm, args, 2) {
+        u16::from_le_bytes(bytes)
+    } else {
+        u16::from_be_bytes(bytes)
+    };
+    NativeResult::Ok(JsValue::float(crate::math::f16_bits_to_f64(bits)))
+}
+
 /// `DataView.prototype.getFloat64(byteOffset, littleEndian)`：读取 8 字节双精度浮点。
 pub fn data_view_get_float64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let bytes = native_try!(read_bytes::<8, H>(vm, args));
@@ -432,6 +443,20 @@ pub fn data_view_set_float32<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         value.to_le_bytes()
     } else {
         value.to_be_bytes()
+    };
+    native_try!(write_bytes(vm, args, bytes));
+    NativeResult::Ok(JsValue::undefined())
+}
+
+/// `DataView.prototype.setFloat16(byteOffset, value, littleEndian)`：按 IEEE 754
+/// binary16 舍入写入 2 字节半精度浮点（NaN 规范化由 `f64_to_f16_bits` 处理）。
+pub fn data_view_set_float16<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let value = numeric_arg(vm, args, 2);
+    let bits = crate::math::f64_to_f16_bits(value);
+    let bytes = if is_little_endian(vm, args, 3) {
+        bits.to_le_bytes()
+    } else {
+        bits.to_be_bytes()
     };
     native_try!(write_bytes(vm, args, bytes));
     NativeResult::Ok(JsValue::undefined())

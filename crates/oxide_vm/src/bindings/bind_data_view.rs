@@ -32,42 +32,47 @@ pub fn bind_data_view(core: &Arc<KernelCore>, session: &KernelSession, global: &
             (
                 "getInt16",
                 oxide_builtins::data_view::data_view_get_int16::<crate::vm::Vm> as *const (),
-                2,
+                1,
             ),
             (
                 "getUint16",
                 oxide_builtins::data_view::data_view_get_uint16::<crate::vm::Vm> as *const (),
-                2,
+                1,
             ),
             (
                 "getInt32",
                 oxide_builtins::data_view::data_view_get_int32::<crate::vm::Vm> as *const (),
-                2,
+                1,
             ),
             (
                 "getUint32",
                 oxide_builtins::data_view::data_view_get_uint32::<crate::vm::Vm> as *const (),
-                2,
+                1,
             ),
             (
                 "getFloat32",
                 oxide_builtins::data_view::data_view_get_float32::<crate::vm::Vm> as *const (),
-                2,
+                1,
+            ),
+            (
+                "getFloat16",
+                oxide_builtins::data_view::data_view_get_float16::<crate::vm::Vm> as *const (),
+                1,
             ),
             (
                 "getFloat64",
                 oxide_builtins::data_view::data_view_get_float64::<crate::vm::Vm> as *const (),
-                2,
+                1,
             ),
             (
                 "getBigInt64",
                 oxide_builtins::data_view::data_view_get_big_int64::<crate::vm::Vm> as *const (),
-                2,
+                1,
             ),
             (
                 "getBigUint64",
                 oxide_builtins::data_view::data_view_get_big_uint64::<crate::vm::Vm> as *const (),
-                2,
+                1,
             ),
             ("setInt8", oxide_builtins::data_view::data_view_set_int8::<crate::vm::Vm> as *const (), 2),
             (
@@ -78,42 +83,47 @@ pub fn bind_data_view(core: &Arc<KernelCore>, session: &KernelSession, global: &
             (
                 "setInt16",
                 oxide_builtins::data_view::data_view_set_int16::<crate::vm::Vm> as *const (),
-                3,
+                2,
             ),
             (
                 "setUint16",
                 oxide_builtins::data_view::data_view_set_uint16::<crate::vm::Vm> as *const (),
-                3,
+                2,
             ),
             (
                 "setInt32",
                 oxide_builtins::data_view::data_view_set_int32::<crate::vm::Vm> as *const (),
-                3,
+                2,
             ),
             (
                 "setUint32",
                 oxide_builtins::data_view::data_view_set_uint32::<crate::vm::Vm> as *const (),
-                3,
+                2,
             ),
             (
                 "setFloat32",
                 oxide_builtins::data_view::data_view_set_float32::<crate::vm::Vm> as *const (),
-                3,
+                2,
+            ),
+            (
+                "setFloat16",
+                oxide_builtins::data_view::data_view_set_float16::<crate::vm::Vm> as *const (),
+                2,
             ),
             (
                 "setFloat64",
                 oxide_builtins::data_view::data_view_set_float64::<crate::vm::Vm> as *const (),
-                3,
+                2,
             ),
             (
                 "setBigInt64",
                 oxide_builtins::data_view::data_view_set_big_int64::<crate::vm::Vm> as *const (),
-                3,
+                2,
             ),
             (
                 "setBigUint64",
                 oxide_builtins::data_view::data_view_set_big_uint64::<crate::vm::Vm> as *const (),
-                3,
+                2,
             ),
             (
                 "toString",

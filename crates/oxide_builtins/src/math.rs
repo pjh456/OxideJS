@@ -119,7 +119,7 @@ pub fn math_fround<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// - 尾数进位溢出到指数后若超出 f16 指数上限 15 → ±Infinity（与规范溢出点一致）
 /// - 输出直接以 f16 的 u16 位模式给出，供 Math.f16round 还原为 f64
 ///   或 DataView setFloat16 写缓冲复用
-fn f64_to_f16_bits(x: f64) -> u16 {
+pub(crate) fn f64_to_f16_bits(x: f64) -> u16 {
     let bits = x.to_bits();
     let sign = ((bits >> 63) & 1) as u16;
     let exp = ((bits >> 52) & 0x7FF) as i32;
@@ -182,7 +182,7 @@ fn f64_to_f16_bits(x: f64) -> u16 {
 
 /// IEEE 754 binary16 → f64 精确还原（f16 有效位 ≤ 11 bit，f64 全可精确表示）。
 /// 供 Math.f16round 与 DataView getFloat16 复用。
-fn f16_bits_to_f64(h: u16) -> f64 {
+pub(crate) fn f16_bits_to_f64(h: u16) -> f64 {
     let sign = ((h >> 15) & 1) as f64;
     let exp = ((h >> 10) & 0x1F) as i32;
     let mant = (h & 0x3FF) as f64;
