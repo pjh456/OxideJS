@@ -6,6 +6,8 @@ use crate::set::SetKey;
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
+use crate::builtins_debug;
+
 macro_rules! native_try {
     ($expr:expr) => {
         match $expr {
@@ -365,4 +367,137 @@ pub fn map_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         JsValue::from_js_object(vm.session().builtin_world().map_iterator_proto.as_ptr() as *mut JsObject),
         crate::iterator::MapSetMode::MapKeys,
     ))
+}
+
+/// `Map.groupBy(items, callbackFn)`：按回调返回的键分组迭代元素到新 Map。
+/// 回调以 `(element, key)` 调用（对数组 items，key 为下标），返回值作为分组键
+/// （SameValueZero 语义，±0 归 +0 由 Map.set 键比较处理）。
+pub fn map_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Map.groupBy called with {} args", args.len());
+    if args.len() < 3 {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Map.groupBy requires 2 arguments"));
+    }
+    let callback_val = vm.reg(args[2]);
+    if !crate::iterator::is_callable(callback_val) {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Map.groupBy: callbackFn is not callable"));
+    }
+    let items_val = vm.reg(args[1]);
+    // 创建新 Map。
+    let map_obj = alloc_map(vm);
+    let map_val = JsValue::from_js_object(map_obj);
+    // 取 @@iterator 方法（items 经 ToObject 装箱，null/undefined 抛 TypeError）。
+    let items_obj = match oxide_runtime_api::to_object(items_val, vm) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(crate::error::create_type_error(vm, &msg)),
+    };
+    let items_ptr = items_obj.as_js_object_ptr();
+    let sym_iter_si = oxide_types::private_key::make_well_known_symbol_key(0);
+    let iter_method = match unsafe { vm.ordinary_get(&*items_ptr, sym_iter_si, items_val) } {
+        Ok(m) => m,
+        Err(e) => return NativeResult::Err(crate::error::create_type_error(vm, &e)),
+    };
+    if !crate::iterator::is_callable(iter_method) {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Map.groupBy: items[Symbol.iterator] is not callable"));
+    }
+    let iter_val = match vm.call_function_sync(iter_method, items_val, &[]) {
+        Ok(v) => v,
+        Err(e) => {
+            let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+            return NativeResult::Err(exc);
+        }
+    };
+    if !iter_val.is_object() || iter_val.as_js_object_ptr().is_null() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Map.groupBy: iterator is not an object"));
+    }
+    let iter_obj = unsafe { &*iter_val.as_js_object_ptr() };
+    let next_si = vm.kernel_core().perm_interner().intern("next").0;
+    let next_fn = match vm.ordinary_get(iter_obj, next_si, iter_val) {
+        Ok(f) => f,
+        Err(e) => return NativeResult::Err(crate::error::create_type_error(vm, &e)),
+    };
+    // 读取 Map.set / Map.get 方法。
+    let map_ref = unsafe { &*map_obj };
+    let set_si = vm.kernel_core().perm_interner().intern("set").0;
+    let adder = match vm.ordinary_get(map_ref, set_si, map_val) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(crate::error::create_type_error(vm, &e)),
+    };
+    let get_si = vm.kernel_core().perm_interner().intern("get").0;
+    let getter = match vm.ordinary_get(map_ref, get_si, map_val) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(crate::error::create_type_error(vm, &e)),
+    };
+    if !crate::iterator::is_callable(adder) || !crate::iterator::is_callable(getter) {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Map.groupBy: Map.set/get is not callable"));
+    }
+    let mut counter: i32 = 0;
+    loop {
+        let next_result = match vm.call_function_sync(next_fn, iter_val, &[]) {
+            Ok(v) => v,
+            Err(e) => {
+                let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+                return NativeResult::Err(exc);
+            }
+        };
+        if !next_result.is_object() || next_result.as_js_object_ptr().is_null() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "Map.groupBy: iterator next() returned non-object"));
+        }
+        let nr = unsafe { &*next_result.as_js_object_ptr() };
+        let done_si = vm.kernel_core().perm_interner().intern("done").0;
+        let done = match vm.ordinary_get(nr, done_si, next_result) {
+            Ok(v) => oxide_runtime_api::to_boolean(v),
+            Err(_) => false,
+        };
+        if done {
+            break;
+        }
+        let value_si = vm.kernel_core().perm_interner().intern("value").0;
+        let element = match vm.ordinary_get(nr, value_si, next_result) {
+            Ok(v) => v,
+            Err(_) => JsValue::undefined(),
+        };
+        // 调用 callbackFn(element, counter)：counter 对数组 items 即元素下标 k。
+        let group_key = match vm.call_function_sync(callback_val, JsValue::undefined(), &[element, JsValue::int(counter)]) {
+            Ok(v) => v,
+            Err(e) => {
+                let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+                return NativeResult::Err(exc);
+            }
+        };
+        // 取该键已有分组数组；无则新建空数组并 set 到 Map，再 push 元素。
+        let existing = match vm.call_function_sync(getter, map_val, &[group_key]) {
+            Ok(v) => v,
+            Err(e) => {
+                let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+                return NativeResult::Err(exc);
+            }
+        };
+        let arr_val = if existing.is_object()
+            && !existing.as_js_object_ptr().is_null()
+            && unsafe { &*existing.as_js_object_ptr() }.is_array()
+        {
+            existing
+        } else {
+            let arr_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+            let arr = vm.alloc_object(JsObject::new_array(
+                EMPTY_SHAPE_ID,
+                JsValue::from_js_object(arr_proto),
+                0,
+                vm.epoch().bump(),
+            ));
+            let new_arr_val = JsValue::from_js_object(arr);
+            if let Err(e) = vm.call_function_sync(adder, map_val, &[group_key, new_arr_val]) {
+                let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+                return NativeResult::Err(exc);
+            }
+            new_arr_val
+        };
+        // push element 到分组数组（写入前 promote，与 Array.prototype.push 同款）。
+        let arr_obj = unsafe { &mut *arr_val.as_js_object_ptr() };
+        let idx = arr_obj.prop_count();
+        let promoted_elem = vm.promote_if_needed_for_write_ptr(arr_val.as_js_object_ptr(), element);
+        arr_obj.set_prop_at(idx, promoted_elem);
+        counter += 1;
+    }
+    NativeResult::Ok(map_val)
 }

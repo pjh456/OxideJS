@@ -42,6 +42,7 @@ pub fn bind_string(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         from_code_point: oxide_builtins::string::string_from_code_point::<crate::vm::Vm> as *const (),
         is_well_formed: oxide_builtins::string::string_is_well_formed::<crate::vm::Vm> as *const (),
         to_well_formed: oxide_builtins::string::string_to_well_formed::<crate::vm::Vm> as *const (),
+        from_raw: oxide_builtins::string::string_raw::<crate::vm::Vm> as *const (),
     };
     session.builtin_world().bind_string_methods(
         &string_methods,

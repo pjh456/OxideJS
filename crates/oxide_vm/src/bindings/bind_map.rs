@@ -38,5 +38,13 @@ pub fn bind_map(core: &Arc<KernelCore>, session: &KernelSession, global: &mut Js
     bind_well_known_method_alias(core, proto, "entries", 0);
     bind_accessor_getter(core, session, proto, "size", oxide_builtins::map::map_size::<crate::vm::Vm> as *const ());
 
+    // Map.groupBy 静态方法。
+    apply_binding_table(
+        session.builtin_world(),
+        ctor,
+        core,
+        &[("groupBy", oxide_builtins::map::map_group_by::<crate::vm::Vm> as *const (), 2)],
+    );
+
     bind_constructor!(core, global, "Map", ctor_ptr, oxide_builtins::map::map_constructor::<crate::vm::Vm>, 1, hash: true);
 }

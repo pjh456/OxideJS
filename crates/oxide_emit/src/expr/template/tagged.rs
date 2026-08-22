@@ -60,13 +60,25 @@ impl Emitter {
             ));
         }
 
+        // 模板对象：按 GetTemplateObject 语义把 raw 数组挂到 cooked 数组的 "raw"
+        // 属性，使标签函数首参为标准模板对象（cooked 数组 + raw 属性）。
+        // String.raw / 模板标签测试依赖 template.raw 存在。
+        let raw_key_idx = ctx.add_constant(Constant::String("raw".to_string()));
+        let raw_key_reg = ctx.alloc_reg();
+        ctx.inst(Inst::load_const(Operand::Reg(raw_key_reg), raw_key_idx));
+        ctx.inst(Inst::new(
+            OpCode::SET_PROP,
+            Operand::Reg(cooked_temp),
+            Operand::Reg(raw_temp),
+            Operand::Reg(raw_key_reg),
+        ));
+
         let mut expr_temps = Vec::new();
         for expr in expressions {
             expr_temps.push(self.emit_expression(expr, ctx)?);
         }
 
         let cooked_slot = ctx.alloc_reg();
-        let raw_slot = ctx.alloc_reg();
         let mut expr_slots = Vec::new();
         for _ in expressions {
             expr_slots.push(ctx.alloc_reg());
@@ -78,7 +90,6 @@ impl Emitter {
             Operand::Reg(cooked_temp),
             Operand::None,
         ));
-        ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(raw_slot), Operand::Reg(raw_temp), Operand::None));
         for (slot, temp) in expr_slots.iter().zip(expr_temps.iter()) {
             ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(*slot), Operand::Reg(*temp), Operand::None));
         }
@@ -87,7 +98,7 @@ impl Emitter {
         let undef_reg = ctx.alloc_reg();
         ctx.inst(Inst::load_const(Operand::Reg(undef_reg), undef_idx));
 
-        let arg_count = 2 + expressions.len();
+        let arg_count = 1 + expressions.len();
         ctx.inst(Inst::call(
             Operand::Reg(tag_reg),
             Operand::Reg(undef_reg),

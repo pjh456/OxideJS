@@ -1659,3 +1659,117 @@ pub fn string_replace_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.replaceAll called with {} args", args.len());
     string_replace_impl(vm, args, true)
 }
+
+/// `String.raw(template, ...substitutions)`：从模板对象的 `raw` 数组元素与
+/// substitutions 交错拼接，返回原始字符串。raw 元素按 ToString 转换，
+/// substitutions 按原始 JS 语义经 ToString 拼接。
+///
+/// # 步骤
+/// 1. 取 template 的 `raw` 属性（必须为对象，否则抛 TypeError）
+/// 2. 取 raw 的 `length` 属性（ToLength）
+/// 3. 逐下标读 raw[i] 拼接；仅在段间（i + 1 < length）追加 substitutions[i]
+///
+/// # 边界与前提
+/// - raw[i] 缺失时视为 undefined（ToString 为 "undefined"）
+/// - substitutions 缺失时段间追加空串，末段后不追加任何内容
+pub fn string_raw<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.raw called with {} args", args.len());
+    // Step 1: 取 template 参数（args[1] 为 this 区域后的首个实参）。
+    if args.len() < 2 {
+        return NativeResult::Err(crate::error::create_type_error(vm, "String.raw: template is required"));
+    }
+    let template_val = vm.reg(args[1]);
+    if !template_val.is_object() || template_val.as_js_object_ptr().is_null() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "String.raw: template must be an object"));
+    }
+    let template_ptr = template_val.as_js_object_ptr();
+
+    // Step 2: 取 template.raw 属性。
+    let raw_si = vm.kernel_core().perm_interner().intern("raw").0;
+    let template_obj = unsafe { &*template_ptr };
+    let raw_val = match vm.ordinary_get(template_obj, raw_si, template_val) {
+        Ok(v) => v,
+        Err(e) => {
+            let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+            return NativeResult::Err(exc);
+        }
+    };
+    if !raw_val.is_object() || raw_val.as_js_object_ptr().is_null() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "String.raw: template.raw must be an object"));
+    }
+    let raw_ptr = raw_val.as_js_object_ptr();
+
+    // Step 3: 取 raw.length（ToLength，Symbol 抛 TypeError）。
+    let length_si = vm.kernel_core().perm_interner().intern("length").0;
+    let raw_obj = unsafe { &*raw_ptr };
+    let raw_len = match vm.ordinary_get(raw_obj, length_si, raw_val) {
+        Ok(v) => {
+            // ToLength：经 to_number_full（Symbol 抛 TypeError / 对象 ToPrimitive 异常
+            // 原样传播），再按 ToLength 归一并截断（防超大 raw 数组导致 OOM）。
+            match oxide_runtime_api::to_number_full(v, vm) {
+                Ok(n) => {
+                    let len = if n.is_nan() || n <= 0.0 {
+                        0.0
+                    } else {
+                        n.min(9_007_199_254_740_991.0)
+                    };
+                    (len.trunc() as u64).min(0x1FFFFF) as usize
+                }
+                Err(msg) => {
+                    let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &msg));
+                    return NativeResult::Err(exc);
+                }
+            }
+        }
+        Err(e) => {
+            let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+            return NativeResult::Err(exc);
+        }
+    };
+
+    // Step 4: 逐下标拼接 raw[i] + substitutions[i]。
+    let mut result = String::new();
+    let raw_obj_ref = unsafe { &*raw_ptr };
+    for i in 0..raw_len {
+        // 读 raw[i]：用 property_key_si 把整数 i 映射为整数键 si，
+        // 再经 ordinary_get 沿原型链查找（触发 getter）。
+        let index_key = vm.property_key_si(JsValue::int(i as i32));
+        let raw_elem = vm.ordinary_get(raw_obj_ref, index_key, raw_val);
+        let raw_str = match raw_elem {
+            // ToString 完整路径：对象经 ToPrimitive（异常原样传播），Symbol 抛 TypeError。
+            Ok(v) => match oxide_runtime_api::to_string_full(v, vm) {
+                Ok(s) => s,
+                Err(msg) => {
+                    let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &msg));
+                    return NativeResult::Err(exc);
+                }
+            },
+            Err(_) => {
+                if let Some(exc) = vm.take_uncaught_value() {
+                    return NativeResult::Err(exc);
+                }
+                "undefined".to_string()
+            }
+        };
+        result.push_str(&raw_str);
+
+        // 段间（i + 1 < length）才追加 substitutions[i]；substitutions 缺失时
+        // 追加空串（spec 24.b.i），末段后不再追加任何内容。
+        if i + 1 < raw_len {
+            let sub_idx = i + 2;
+            if sub_idx < args.len() {
+                let sub_val = vm.reg(args[sub_idx]);
+                // ToString 完整路径：对象 ToPrimitive 异常原样传播，Symbol 抛 TypeError。
+                let sub_str = match oxide_runtime_api::to_string_full(sub_val, vm) {
+                    Ok(s) => s,
+                    Err(msg) => {
+                        let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &msg));
+                        return NativeResult::Err(exc);
+                    }
+                };
+                result.push_str(&sub_str);
+            }
+        }
+    }
+    NativeResult::Ok(vm.new_string_owned(result))
+}

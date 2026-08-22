@@ -34,6 +34,7 @@ pub fn bind_object(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         has_own_property: oxide_builtins::object::object_proto_has_own_property::<crate::vm::Vm> as *const (),
         property_is_enumerable: oxide_builtins::object::object_proto_property_is_enumerable::<crate::vm::Vm>
             as *const (),
+        group_by: oxide_builtins::object::object_group_by::<crate::vm::Vm> as *const (),
     };
     session
         .builtin_world()
@@ -52,10 +53,15 @@ pub fn bind_object(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
                 0,
             ),
             ("valueOf", oxide_builtins::object::object_proto_value_of::<crate::vm::Vm> as *const (), 0),
+            (
+                "__defineGetter__",
+                oxide_builtins::object::object_proto_define_getter::<crate::vm::Vm> as *const (),
+                2,
+            ),
         ],
     );
     // 内置原型方法不可枚举（否则会泄漏进 for-in）。
-    for name in ["toString", "valueOf"] {
+    for name in ["toString", "valueOf", "__defineGetter__"] {
         let si = core.perm_interner().intern(name).0;
         if let Some(pos) = core.shape_forge().lookup_position(object_proto.shape_id(), si) {
             object_proto.set_data_meta(pos, PropAttributes::new(true, false, true));

@@ -764,6 +764,7 @@ impl Vm {
             ("race", promise_static_race as *const (), 1),
             ("allSettled", promise_static_all_settled as *const (), 1),
             ("any", promise_static_any as *const (), 1),
+            ("withResolvers", promise_static_with_resolvers as *const (), 0),
         );
 
         // 固定地址后互相接线：proto.constructor ↔ ctor.prototype。
@@ -1282,6 +1283,37 @@ fn promise_static_reject(vm: &mut Vm, args: &[u8]) -> NativeResult {
             NativeResult::Err(exc)
         }
     }
+}
+
+/// `Promise.withResolvers()`：按 `this` 构造器建能力（非构造器抛 TypeError），
+/// 返回 `{promise, resolve, reject}` 普通对象（proto 为 `%Object.prototype%`）。
+///
+/// # 步骤
+/// 1. 取 `this` 为构造器 C，经 `new_promise_capability_with_ctor` 建能力
+/// 2. 创建普通对象，依次写入 promise / resolve / reject 三个数据属性
+///
+/// # 边界与前提
+/// - C 非构造器（普通值 / arrow / 非构造 native）时抛 TypeError
+/// - 返回值属性为默认数据描述符（writable/enumerable/configurable 均 true）
+fn promise_static_with_resolvers(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let ctor = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let (promise, resolve, reject) = match vm.new_promise_capability_with_ctor(ctor) {
+        Ok(t) => t,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let object_proto =
+        JsValue::from_js_object(vm.session.builtin_world().object_proto.as_ptr() as *mut JsObject);
+    let ptr = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, object_proto));
+    let obj = unsafe { &mut *ptr };
+    let sf = vm.kernel_core.perm_interner().as_ref();
+    let sh = vm.kernel_core.shape_forge().as_ref();
+    for (name, val) in [("promise", promise), ("resolve", resolve), ("reject", reject)] {
+        let si = sf.intern(name).0;
+        let shape = sh.make_shape(obj.shape_id(), si);
+        obj.set_shape_id(shape);
+        obj.push_prop(val);
+    }
+    NativeResult::Ok(JsValue::from_js_object(ptr))
 }
 
 /// `Promise.all(iterable)`：全部元素结算后以结果数组完成，任一拒绝则拒绝。

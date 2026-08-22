@@ -66,6 +66,7 @@ pub struct ObjectMethods {
     pub values: *const (),
     pub has_own_property: *const (),
     pub property_is_enumerable: *const (),
+    pub group_by: *const (),
 }
 
 /// Array 静态方法与原型方法的 native 函数指针集合，由 [`BuiltinWorld::bind_array_methods`] 安装。
@@ -160,6 +161,7 @@ pub struct StringMethods {
     pub from_code_point: *const (),
     pub is_well_formed: *const (),
     pub to_well_formed: *const (),
+    pub from_raw: *const (),
 }
 
 /// RegExp 原型方法的 native 函数指针集合。
@@ -1393,6 +1395,7 @@ impl BuiltinWorld {
             ("hasOwn", methods.has_own, 2),
             ("entries", methods.entries, 1),
             ("values", methods.values, 1),
+            ("groupBy", methods.group_by, 2),
         );
 
         let proto_ptr = P::as_ptr(&self.object_proto) as *mut JsObject;
@@ -1576,6 +1579,7 @@ impl BuiltinWorld {
             shape_forge,
             ("fromCharCode", methods.from_char_code, 1),
             ("fromCodePoint", methods.from_code_point, 1),
+            ("raw", methods.from_raw, 1),
         );
 
         let proto_ptr = P::as_ptr(&self.string_proto) as *mut JsObject;

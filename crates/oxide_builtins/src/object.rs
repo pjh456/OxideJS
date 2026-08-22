@@ -9,6 +9,8 @@ use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
+use crate::builtins_debug;
+
 fn is_integer_index(key: &str) -> bool {
     if key.is_empty() || key.len() > 1 && key.as_bytes()[0] == b'0' {
         return false;
@@ -1233,6 +1235,52 @@ pub fn object_proto_property_is_enumerable<H: VmHost>(vm: &mut H, args: &[u8]) -
     NativeResult::Ok(JsValue::bool(enumerable))
 }
 
+/// `Object.prototype.__defineGetter__(key, getter)`：把 key 定义为访问器属性，
+/// getter 作 `[[Get]]`，描述符 `{ enumerable: true, configurable: true }`。
+///
+/// # 步骤
+/// 1. ToObject 装箱 this（null/undefined 抛 TypeError）
+/// 2. getter 非 callable → TypeError
+/// 3. ToPropertyKey 求键
+/// 4. DefinePropertyOrThrow（复用 `define_accessor_property` 的拒绝语义：
+///    不可扩展对象 / 不可配置属性覆盖均抛 TypeError）
+///
+/// # 副作用
+/// - 修改 this 的 shape 链与属性表；返回 undefined
+pub fn object_proto_define_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    if args.len() < 3 {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Object.prototype.__defineGetter__ requires 2 arguments",
+        ));
+    }
+    let this_val = vm.reg(args[0]);
+    let obj_val = match oxide_runtime_api::to_object(this_val, vm) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(crate::error::create_type_error(vm, &msg)),
+    };
+    let getter = vm.reg(args[2]);
+    if !is_callable(getter) {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Object.prototype.__defineGetter__: getter must be callable",
+        ));
+    }
+    let key_si = match vm.to_property_key_si(vm.reg(args[1])) {
+        Ok(si) => si,
+        Err(e) => {
+            let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+            return NativeResult::Err(exc);
+        }
+    };
+    let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
+    let attrs = PropAttributes::new(false, true, true);
+    if let Err(e) = vm.define_accessor_property(obj, key_si, getter, JsValue::undefined(), attrs) {
+        return NativeResult::Err(crate::error::create_type_error(vm, &e));
+    }
+    NativeResult::Ok(JsValue::undefined())
+}
+
 /// `Object.entries(obj)`：返回可枚举自身属性的 `[key, value]` 对数组。
 pub fn object_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj_ptr = native_try!(require_obj_arg(vm, args, "entries"));
@@ -1275,6 +1323,124 @@ pub fn object_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         (*arr).set_prop_count(n);
     }
     NativeResult::Ok(JsValue::from_js_object(arr))
+}
+
+/// `Object.groupBy(items, callbackFn)`：按回调返回的键分组迭代元素到新对象。
+/// 回调以 `(element, key)` 调用（对数组 items，key 为下标），返回值经
+/// ToPropertyKey 转换后作为分组键；结果对象原型为 null。
+pub fn object_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("Object.groupBy called with {} args", args.len());
+    if args.len() < 3 {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.groupBy requires 2 arguments"));
+    }
+    let callback_val = vm.reg(args[2]);
+    if !is_callable(callback_val) {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.groupBy: callbackFn is not callable"));
+    }
+    let items_val = vm.reg(args[1]);
+    // 取 @@iterator 方法（同步）。
+    let items_obj = match oxide_runtime_api::to_object(items_val, vm) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(crate::error::create_type_error(vm, &msg)),
+    };
+    let items_ptr = items_obj.as_js_object_ptr();
+    let sym_iter_si = make_well_known_symbol_key(0);
+    let iter_method = match unsafe { vm.ordinary_get(&*items_ptr, sym_iter_si, items_val) } {
+        Ok(m) => m,
+        Err(e) => return NativeResult::Err(crate::error::create_type_error(vm, &e)),
+    };
+    if !is_callable(iter_method) {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.groupBy: items[Symbol.iterator] is not callable"));
+    }
+    let iter_val = match vm.call_function_sync(iter_method, items_val, &[]) {
+        Ok(v) => v,
+        Err(e) => {
+            let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+            return NativeResult::Err(exc);
+        }
+    };
+    if !iter_val.is_object() || iter_val.as_js_object_ptr().is_null() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.groupBy: iterator is not an object"));
+    }
+    let iter_obj = unsafe { &*iter_val.as_js_object_ptr() };
+    let next_si = vm.kernel_core().perm_interner().intern("next").0;
+    let next_fn = match vm.ordinary_get(iter_obj, next_si, iter_val) {
+        Ok(f) => f,
+        Err(e) => return NativeResult::Err(crate::error::create_type_error(vm, &e)),
+    };
+    // 创建结果对象（OrdinaryObjectCreate(null)，与 Object.create(null) 同款）。
+    let result = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+    let result_val = JsValue::from_js_object(result);
+    let mut counter: i32 = 0;
+    loop {
+        let next_result = match vm.call_function_sync(next_fn, iter_val, &[]) {
+            Ok(v) => v,
+            Err(e) => {
+                let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+                return NativeResult::Err(exc);
+            }
+        };
+        if !next_result.is_object() || next_result.as_js_object_ptr().is_null() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "Object.groupBy: iterator next() returned non-object"));
+        }
+        let nr = unsafe { &*next_result.as_js_object_ptr() };
+        let done_si = vm.kernel_core().perm_interner().intern("done").0;
+        let done = match vm.ordinary_get(nr, done_si, next_result) {
+            Ok(v) => oxide_runtime_api::to_boolean(v),
+            Err(_) => false,
+        };
+        if done {
+            break;
+        }
+        let value_si = vm.kernel_core().perm_interner().intern("value").0;
+        let element = match vm.ordinary_get(nr, value_si, next_result) {
+            Ok(v) => v,
+            Err(_) => JsValue::undefined(),
+        };
+        // 调用 callbackFn(element, counter)：counter 对数组 items 即元素下标 k。
+        let key = match vm.call_function_sync(callback_val, JsValue::undefined(), &[element, JsValue::int(counter)]) {
+            Ok(v) => v,
+            Err(e) => {
+                let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+                return NativeResult::Err(exc);
+            }
+        };
+        // ToPropertyKey：undefined 归 "undefined" 分组，不跳过；对象转换异常原样传播。
+        let key_si = match vm.to_property_key_si(key) {
+            Ok(si) => si,
+            Err(e) => {
+                let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+                return NativeResult::Err(exc);
+            }
+        };
+        // 检查 result 上是否已有该键的数组分组。
+        let result_ref = unsafe { &*result };
+        let existing = match vm.ordinary_get(result_ref, key_si, result_val) {
+            Ok(v) if v.is_object() && !v.as_js_object_ptr().is_null() => {
+                let arr = unsafe { &*v.as_js_object_ptr() };
+                if arr.is_array() { Some(v) } else { None }
+            }
+            _ => None,
+        };
+        let arr_val = if let Some(existing) = existing {
+            existing
+        } else {
+            let arr_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+            let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(arr_proto), 0, vm.epoch().bump()));
+            let new_arr_val = JsValue::from_js_object(arr);
+            let result_ref_mut = unsafe { &mut *result };
+            let promoted = vm.promote_if_needed_for_write_ptr(result, new_arr_val);
+            let _ = vm.ordinary_set(result_ref_mut, key_si, promoted, result_val);
+            new_arr_val
+        };
+        // push element 到分组数组（写入前 promote，与 Array.prototype.push 同款）。
+        let arr_obj = unsafe { &mut *arr_val.as_js_object_ptr() };
+        let idx = arr_obj.prop_count();
+        let promoted_elem = vm.promote_if_needed_for_write_ptr(arr_val.as_js_object_ptr(), element);
+        arr_obj.set_prop_at(idx, promoted_elem);
+        counter += 1;
+    }
+    NativeResult::Ok(result_val)
 }
 
 /// `Object.values(obj)`：返回可枚举自身属性的值数组。

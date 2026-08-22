@@ -106,6 +106,106 @@ pub fn math_fround<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::float(arg1(vm, args) as f32 as f64))
 }
 
+/// IEEE 754 binary16（float16）舍入：f64 → binary16（round-to-nearest-even）→ 还原为 f64。
+///
+/// # 步骤
+/// 1. 拆 f64 位（符号 / 指数 / 尾数），特殊值（±0 / 无穷 / NaN）直接保位
+/// 2. 正规 f16 路径：53 位有效位收缩到 11 位（丢 42 位）做 RNE，进位溢出则指数 +1
+/// 3. 次正规 f16 路径：指数 < -14 时右移舍入到 10 位尾数（步长 2⁻²⁴），
+///    溢出进位到最小正规 2⁻¹⁴；指数 < -25 时塌缩到 ±0
+///
+/// # 边界与前提
+/// - RNE 半位判定：丢弃部分 > 半位进位；== 半位且保留位末位为 1 进位（round-half-even）
+/// - 尾数进位溢出到指数后若超出 f16 指数上限 15 → ±Infinity（与规范溢出点一致）
+/// - 输出直接以 f16 的 u16 位模式给出，供 Math.f16round 还原为 f64
+///   或 DataView setFloat16 写缓冲复用
+fn f64_to_f16_bits(x: f64) -> u16 {
+    let bits = x.to_bits();
+    let sign = ((bits >> 63) & 1) as u16;
+    let exp = ((bits >> 52) & 0x7FF) as i32;
+    let mant = bits & 0xF_FFFF_FFFF_FFFF;
+
+    // 零与次正规 f64（exp==0）：粒度不足 binary16，直接塌缩到 ±0。
+    if exp == 0 {
+        return sign << 15;
+    }
+    // 无穷 / NaN：exp 字段全 1，NaN 尾数置非零位（保持 NaN 语义）。
+    if exp == 0x7FF {
+        let mant16 = if mant == 0 { 0 } else { 0x200 };
+        return (sign << 15) | 0x7C00 | mant16;
+    }
+
+    let e = exp - 1023; // 真实二进制指数（含隐含位）。
+    let significand = (1u64 << 52) | mant; // 53 位有效位。
+
+    if e > 15 {
+        // 值 ≥ 2¹⁶：必大于溢出舍入阈值（65520 起进 Inf），直接返回 ±Infinity。
+        return (sign << 15) | 0x7C00;
+    }
+    if e >= -14 {
+        // 正规 f16：11 位有效位，收缩 42 位做 RNE。
+        let shift = 42;
+        let dropped = significand & ((1u64 << shift) - 1);
+        let half = 1u64 << (shift - 1);
+        let mut q = significand >> shift;
+        if dropped > half || (dropped == half && (q & 1) == 1) {
+            q += 1;
+        }
+        if q == (1u64 << 11) {
+            // 11 位有效位溢出进位到指数；指数再溢出 → Infinity。
+            let e16 = e + 1;
+            if e16 > 15 {
+                return (sign << 15) | 0x7C00;
+            }
+            return (sign << 15) | (((e16 + 15) as u16) << 10);
+        }
+        return (sign << 15) | (((e + 15) as u16) << 10) | ((q & 0x3FF) as u16);
+    }
+    if e < -25 {
+        // 小于最小次正规一半（2⁻²⁵）→ RNE 塌缩到 ±0。
+        return sign << 15;
+    }
+    // 次正规 f16：值 = 10 位尾数 × 2⁻²⁴，右移 (28 - e) 位做 RNE。
+    let shift = (28 - e) as u32;
+    let dropped = significand & ((1u64 << shift) - 1);
+    let half = 1u64 << (shift - 1);
+    let mut q = significand >> shift;
+    if dropped > half || (dropped == half && (q & 1) == 1) {
+        q += 1;
+    }
+    // q 进位到 1024 → 最小正规 2⁻¹⁴（exp 字段 1，尾数 0）；否则次正规（exp 字段 0）。
+    if q == 1024 {
+        return (sign << 15) | (1 << 10);
+    }
+    (sign << 15) | (q as u16)
+}
+
+/// IEEE 754 binary16 → f64 精确还原（f16 有效位 ≤ 11 bit，f64 全可精确表示）。
+/// 供 Math.f16round 与 DataView getFloat16 复用。
+fn f16_bits_to_f64(h: u16) -> f64 {
+    let sign = ((h >> 15) & 1) as f64;
+    let exp = ((h >> 10) & 0x1F) as i32;
+    let mant = (h & 0x3FF) as f64;
+    let v = if exp == 0 {
+        // 零与次正规：mant × 2⁻²⁴。
+        mant * 2.0f64.powi(-24)
+    } else if exp == 0x1F {
+        if mant == 0.0 {
+            return if sign == 1.0 { f64::NEG_INFINITY } else { f64::INFINITY };
+        }
+        return f64::NAN;
+    } else {
+        // 正规：(1 + mant/2¹⁰) × 2^(exp-15)。
+        (1.0 + mant / 1024.0) * 2.0f64.powi(exp - 15)
+    };
+    if sign == 1.0 { -v } else { v }
+}
+
+/// `Math.f16round`：把 double 舍入到 binary16 精度再还原为 double。
+pub fn math_f16round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    NativeResult::Ok(JsValue::float(f16_bits_to_f64(f64_to_f16_bits(arg1(vm, args)))))
+}
+
 /// `Math.hypot`：返回 sqrt(a²+b²)（当前仅支持两个参数）。
 pub fn math_hypot<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (a, b) = arg2(vm, args);

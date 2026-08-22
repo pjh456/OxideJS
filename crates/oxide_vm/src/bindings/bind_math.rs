@@ -52,6 +52,7 @@ pub fn bind_math(core: &Arc<KernelCore>, session: &KernelSession, global: &mut J
         ("atanh", oxide_builtins::math::math_atanh::<crate::vm::Vm>, 1),
         ("clz32", oxide_builtins::math::math_clz32::<crate::vm::Vm>, 1),
         ("expm1", oxide_builtins::math::math_expm1::<crate::vm::Vm>, 1),
+        ("f16round", oxide_builtins::math::math_f16round::<crate::vm::Vm>, 1),
         ("fround", oxide_builtins::math::math_fround::<crate::vm::Vm>, 1),
         ("log1p", oxide_builtins::math::math_log1p::<crate::vm::Vm>, 1),
     );

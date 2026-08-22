@@ -2161,6 +2161,11 @@ impl oxide_runtime_api::VmHost for Vm {
         self.property_key_si(val)
             .unwrap_or_else(|_| self.kernel_core.perm_interner().intern("").0)
     }
+    fn to_property_key_si(&mut self, val: JsValue) -> Result<u32, String> {
+        // ToPropertyKey 完整路径：转换异常（对象 ToPrimitive 抛错 / Symbol 处理）
+        // 原样返回，供需传播异常的 builtins（groupBy / __defineGetter__ 等）使用。
+        self.property_key_si(val)
+    }
     fn string_key_si(&mut self, s: &str) -> u32 {
         if let Some(i) = canonical_index_of(s) {
             make_int_key(i)
