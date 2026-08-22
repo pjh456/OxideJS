@@ -328,6 +328,59 @@ fn error_to_string_non_object_throws() {
     }
 }
 
+#[test]
+fn error_to_string_name_getter_exception_propagates() {
+    let mut vm = make_vm();
+    // name getter 抛出的用户异常须原样传播，不得被替换成普通 TypeError。
+    let result = eval_in(
+        &mut vm,
+        "try { Error.prototype.toString.call({get name() { throw new RangeError('boom'); }}); 'no-throw' } catch (e) { e.name + ':' + e.message }",
+    )
+    .unwrap();
+    let s = vm.lookup_str(result);
+    assert_eq!(s, Some("RangeError:boom".to_string()));
+}
+
+#[test]
+fn error_to_string_message_getter_exception_propagates() {
+    let mut vm = make_vm();
+    let result = eval_in(
+        &mut vm,
+        "try { Error.prototype.toString.call({get message() { throw new RangeError('boom'); }}); 'no-throw' } catch (e) { e.name + ':' + e.message }",
+    )
+    .unwrap();
+    let s = vm.lookup_str(result);
+    assert_eq!(s, Some("RangeError:boom".to_string()));
+}
+
+#[test]
+fn error_to_string_symbol_name_message_throws_type_error() {
+    let mut vm = make_vm();
+    // name/message 为 Symbol 时 ToString 按规范抛 TypeError。
+    let result = eval_in(
+        &mut vm,
+        "var r1 = (function(){ try { Error.prototype.toString.call({name: Symbol('n')}); return 'no-throw'; } catch (e) { return e.name; } })(); \
+         var r2 = (function(){ try { Error.prototype.toString.call({message: Symbol('m')}); return 'no-throw'; } catch (e) { return e.name; } })(); \
+         r1 + '|' + r2",
+    )
+    .unwrap();
+    let s = vm.lookup_str(result);
+    assert_eq!(s, Some("TypeError|TypeError".to_string()));
+}
+
+#[test]
+fn error_to_string_name_to_primitive_exception_propagates() {
+    let mut vm = make_vm();
+    // name 为带抛错 toString 的对象时传播原异常（不被替换为普通 TypeError）。
+    let result = eval_in(
+        &mut vm,
+        "try { Error.prototype.toString.call({name: {toString: function() { throw new RangeError('bad-name'); }}}); 'no-throw' } catch (e) { e.name + ':' + e.message }",
+    )
+    .unwrap();
+    let s = vm.lookup_str(result);
+    assert_eq!(s, Some("RangeError:bad-name".to_string()));
+}
+
 // ── 错误对象语义修复测试 ──
 
 #[test]

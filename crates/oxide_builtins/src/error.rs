@@ -220,6 +220,17 @@ pub fn create_suppressed_error<H: VmHost>(host: &mut H, error_val: JsValue, supp
 
 /// `Error.prototype.toString`：按 `name: message` 拼接字符串；
 /// 缺少 name/message 时按规范回退到 `"Error"` 或空串。
+///
+/// # 步骤
+/// 1. 非对象 this 直接抛 TypeError（规范 §20.5.3.4 不做 ToObject 装箱）
+/// 2. Get(name)：访问器 getter 触发，抛出的用户异常原样传播
+/// 3. name 非 undefined 时 ToString（Symbol 抛 TypeError，用户转换异常传播）
+/// 4. Get(message) 同 name；message 非 undefined 时 ToString
+/// 5. name/message 任一为空串时只返回另一者，否则 `name: message`
+///
+/// # 边界与前提
+/// - name/message 为 Symbol 时按 §7.1.17 抛 TypeError；
+/// - getter 或 ToPrimitive 抛出的用户异常经 `take_uncaught_value` 原值恢复。
 pub fn error_to_string<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
     let this_val = host.reg(args[0]);
     if !this_val.is_object() {
@@ -231,26 +242,22 @@ pub fn error_to_string<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
     let si_name = sf.intern("name").0;
     let si_msg = sf.intern("message").0;
 
-    let name_str = match host.resolve_property(obj, si_name) {
-        Some(v) if !v.is_undefined() => match host.coerce_primitive_bounded(v, true) {
-            Ok(prim) => to_string(prim),
-            Err(_) => {
-                let err = create_type_error(host, "Cannot convert name to primitive value");
-                return NativeResult::Err(err);
-            }
+    let name_str = match host.ordinary_get(obj, si_name, this_val) {
+        Ok(v) if v.is_undefined() => "Error".to_string(),
+        Ok(v) => match to_string_full(v, host) {
+            Ok(s) => s,
+            Err(e) => return NativeResult::Err(crate::iterator::engine_error(host, &e)),
         },
-        _ => "Error".to_string(),
+        Err(e) => return NativeResult::Err(crate::iterator::engine_error(host, &e)),
     };
 
-    let msg_str = match host.resolve_property(obj, si_msg) {
-        Some(v) if !v.is_undefined() => match host.coerce_primitive_bounded(v, true) {
-            Ok(prim) => to_string(prim),
-            Err(_) => {
-                let err = create_type_error(host, "Cannot convert message to primitive value");
-                return NativeResult::Err(err);
-            }
+    let msg_str = match host.ordinary_get(obj, si_msg, this_val) {
+        Ok(v) if v.is_undefined() => String::new(),
+        Ok(v) => match to_string_full(v, host) {
+            Ok(s) => s,
+            Err(e) => return NativeResult::Err(crate::iterator::engine_error(host, &e)),
         },
-        _ => String::new(),
+        Err(e) => return NativeResult::Err(crate::iterator::engine_error(host, &e)),
     };
 
     let result = if name_str.is_empty() {
