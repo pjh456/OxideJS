@@ -230,6 +230,10 @@ pub struct CompileCtx {
     pub(crate) module_self_import_specs: HashSet<String>,
     /// 自导入别名：导出名 → 本地绑定槽寄存器（export 语句执行时回写绑定值）。
     pub(crate) module_self_aliases: HashMap<String, u32>,
+    /// 标签模板 site 计数器：本编译树内全局唯一（子 ctx 继承父值继续递增）。
+    /// 运行时与模块 flat_id 组成模板对象缓存键，保证同一编译树同 site 恒返回
+    /// 同一对象、不同编译树（eval 每次编译）互不共享。
+    pub(crate) next_template_site: u32,
 }
 
 /// 函数体编译上下文：决定 `this`/`super` 绑定与参数前导（prologue）形态。
@@ -337,6 +341,7 @@ impl CompileCtx {
             module_dep_ns_regs: HashMap::new(),
             module_self_import_specs: HashSet::new(),
             module_self_aliases: HashMap::new(),
+            next_template_site: 0,
         }
     }
 
@@ -1059,6 +1064,9 @@ impl Emitter {
         ctx.scopes.private_element_kinds = parent_ctx.scopes.private_element_kinds.clone();
         ctx.scopes.private_brand_id = parent_ctx.scopes.private_brand_id;
         ctx.scopes.next_private_name_id = parent_ctx.scopes.next_private_name_id;
+        // 标签模板 site 序号继承：整棵编译树全局唯一（跨嵌套函数递增），
+        // 运行时以 (flat_id, site_no) 缓存模板对象，跨函数不冲突。
+        ctx.next_template_site = parent_ctx.next_template_site;
 
         // 传递 enclosing_this_reg：嵌套箭头函数捕获正确的 `this`。
         ctx.enclosing_this_reg = parent_ctx.enclosing_this_reg;

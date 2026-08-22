@@ -394,7 +394,7 @@ pub fn map_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let sym_iter_si = oxide_types::private_key::make_well_known_symbol_key(0);
     let iter_method = match unsafe { vm.ordinary_get(&*items_ptr, sym_iter_si, items_val) } {
         Ok(m) => m,
-        Err(e) => return NativeResult::Err(crate::error::create_type_error(vm, &e)),
+        Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
     };
     if !crate::iterator::is_callable(iter_method) {
         return NativeResult::Err(crate::error::create_type_error(vm, "Map.groupBy: items[Symbol.iterator] is not callable"));
@@ -413,19 +413,19 @@ pub fn map_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let next_si = vm.kernel_core().perm_interner().intern("next").0;
     let next_fn = match vm.ordinary_get(iter_obj, next_si, iter_val) {
         Ok(f) => f,
-        Err(e) => return NativeResult::Err(crate::error::create_type_error(vm, &e)),
+        Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
     };
     // 读取 Map.set / Map.get 方法。
     let map_ref = unsafe { &*map_obj };
     let set_si = vm.kernel_core().perm_interner().intern("set").0;
     let adder = match vm.ordinary_get(map_ref, set_si, map_val) {
         Ok(v) => v,
-        Err(e) => return NativeResult::Err(crate::error::create_type_error(vm, &e)),
+        Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
     };
     let get_si = vm.kernel_core().perm_interner().intern("get").0;
     let getter = match vm.ordinary_get(map_ref, get_si, map_val) {
         Ok(v) => v,
-        Err(e) => return NativeResult::Err(crate::error::create_type_error(vm, &e)),
+        Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
     };
     if !crate::iterator::is_callable(adder) || !crate::iterator::is_callable(getter) {
         return NativeResult::Err(crate::error::create_type_error(vm, "Map.groupBy: Map.set/get is not callable"));
@@ -446,7 +446,7 @@ pub fn map_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let done_si = vm.kernel_core().perm_interner().intern("done").0;
         let done = match vm.ordinary_get(nr, done_si, next_result) {
             Ok(v) => oxide_runtime_api::to_boolean(v),
-            Err(_) => false,
+            Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
         };
         if done {
             break;
@@ -454,7 +454,7 @@ pub fn map_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let value_si = vm.kernel_core().perm_interner().intern("value").0;
         let element = match vm.ordinary_get(nr, value_si, next_result) {
             Ok(v) => v,
-            Err(_) => JsValue::undefined(),
+            Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
         };
         // 调用 callbackFn(element, counter)：counter 对数组 items 即元素下标 k。
         let group_key = match vm.call_function_sync(callback_val, JsValue::undefined(), &[element, JsValue::int(counter)]) {

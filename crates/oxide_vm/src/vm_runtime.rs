@@ -109,6 +109,9 @@ macro_rules! inline_save_field {
     ($recv:ident, $window_regs:ident, accessor_frame_target_reg, copy) => {
         $recv.accessor_frame_target_reg
     };
+    ($recv:ident, $window_regs:ident, active_flat_id, copy) => {
+        $recv.active_flat_id
+    };
 }
 
 /// restore 方向的字段写回语句。`regs` 只回拷窗口并把缓冲归还池。
@@ -189,6 +192,9 @@ macro_rules! inline_restore_field {
     ($recv:ident, $saved:ident, accessor_frame_target_reg, copy) => {
         $recv.accessor_frame_target_reg = $saved.accessor_frame_target_reg
     };
+    ($recv:ident, $saved:ident, active_flat_id, copy) => {
+        $recv.active_flat_id = $saved.active_flat_id
+    };
 }
 
 /// 内联同步调用可搬移执行核心字段的单一登记表。save/restore 双向由本宏展开；
@@ -225,6 +231,7 @@ macro_rules! inline_core_fields {
             (inline_args_base, copy),             // M
             (inline_args_count, copy),            // M
             (accessor_frame_target_reg, copy),    // M
+            (active_flat_id, copy),               // M
         )
     };
 }
@@ -370,6 +377,7 @@ impl Vm {
         self.pc = 0;
         self.bytecode = Arc::clone(&sub.bytecode);
         self.activate_immutables(sub_idx, &sub.constants);
+        self.active_flat_id = sub_idx as u32;
         self.active_reg_limit = sub.n_registers.max(1);
         self.root_reg_limit = self.active_reg_limit;
         self.cell_stack.push(Vec::with_capacity(sub.cells_needed as usize));
@@ -424,6 +432,9 @@ impl Vm {
         if let Some(saved_bc) = self.saved_bytecode_stack.pop() {
             self.bytecode = saved_bc;
         }
+        if let Some(saved_flat) = self.saved_flat_id_stack.pop() {
+            self.active_flat_id = saved_flat;
+        }
         vm_debug!(
             "restore_frame: return_addr={} bc_len={} saved_stack={} fn={:?}",
             frame.return_addr,
@@ -466,6 +477,11 @@ impl Vm {
     pub fn run(&mut self, module: &CompiledModule) -> Result<JsValue, String> {
         vm_debug!("run: starting bytecode execution, {} instructions", module.bytecode.len());
         self.clear_execution_state();
+        // 模板对象缓存按 run 清空：flat_id 每次 run 从 0 重新分配，跨 run 复用会
+        // 让不同编译树的 site 误命中（缓存键 = (flat_id, site_no)）。
+        self.template_objects.clear();
+        self.saved_flat_id_stack.clear();
+        self.active_flat_id = 0;
         self.cell_stack.clear();
         self.cell_stack.push(Vec::new());
         self.sub_modules = Arc::new(collect_flat_modules(module));

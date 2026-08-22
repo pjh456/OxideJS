@@ -293,6 +293,32 @@ impl Inst {
         }
     }
 
+    /// GET_TEMPLATE_OBJECT：构建/取缓存模板对象（GetTemplateObject 语义）。
+    ///
+    /// # ext 布局
+    /// - `ext[0]`：quasis 段数 n；
+    /// - `ext[1..=2n]`：每段交错两个字——cooked 字（`0x8000_0000` 高位标记
+    ///   cooked 为 None（非法转义 → 元素为 undefined），低 31 位是常量池下标）
+    ///   与 raw 字（常量池下标）；
+    /// - `ext[2n+1]`：site 序号（编译树内全局唯一，与模块 flat_id 组成缓存键）。
+    pub fn get_template_object(dst: Operand, site_no: u32, cooked_idx: &[u32], raw_idx: &[u16]) -> Self {
+        let n = cooked_idx.len();
+        let mut ext = SmallVec::with_capacity(2 + 2 * n);
+        ext.push(n as u32);
+        for i in 0..n {
+            ext.push(cooked_idx[i]);
+            ext.push(raw_idx[i] as u32);
+        }
+        ext.push(site_no);
+        Self {
+            op: OpCode::GET_TEMPLATE_OBJECT,
+            rd: dst,
+            a: Operand::None,
+            b: Operand::None,
+            ext,
+        }
+    }
+
     // ── RegAlloc 辅助指令 ──
 
     /// 寄存器复制 rd = a（RegAlloc 区间拆分时搬值）。

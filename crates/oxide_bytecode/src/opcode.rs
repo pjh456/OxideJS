@@ -335,6 +335,14 @@ define_opcodes! {
         def = Some(SlotSpec::Slot(Slot::Rd)), uses = [SlotSpec::TemplateExprs],
         pure = true, jump = false, term = false, ic = false,
 
+    // ── 标签模板对象 (0x97) ──
+    // GetTemplateObject：按 site 缓存模板对象（同一编译树同 site 恒返回同一对象），
+    // 首次构建时冻结 cooked/raw 数组并设置规范描述符。ext 布局见
+    // `Inst::get_template_object`；无寄存器 use（quasis 全为常量池下标）。
+    GET_TEMPLATE_OBJECT = 0x97 => "GET_TEMPLATE_OBJECT",
+        def = Some(SlotSpec::Slot(Slot::Rd)), uses = [],
+        pure = false, jump = false, term = false, ic = false,
+
     // ── 小语言特性 (0x39-0x3B) ──
     DELETE_PROP_STATIC = 0x39 => "DELETE_PROP_STATIC",
         def = None, uses = [SlotSpec::Slot(Slot::Rd)],

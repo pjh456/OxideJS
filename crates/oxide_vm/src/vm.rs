@@ -1,6 +1,6 @@
 #![allow(clippy::arc_with_non_send_sync)]
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, OnceLock};
 
 use num_traits::Zero;
@@ -375,6 +375,7 @@ pub(crate) struct InlineSyncState {
     pub(crate) inline_args_base: u32,
     pub(crate) inline_args_count: u16,
     pub(crate) accessor_frame_target_reg: Option<u8>,
+    pub(crate) active_flat_id: u32,
 }
 
 /// 基于寄存器的 JS 虚拟机：持有执行状态、寄存器文件、调用栈与 session 内存。
@@ -522,6 +523,15 @@ pub struct Vm {
     /// 分组保存 inline cache 与指令计数器。
     pub(crate) profiling: ProfilingState,
     pub(crate) cell_stack: Vec<Vec<*mut Cell>>,
+    /// 标签模板对象缓存（GetTemplateObject）：键 = (模块 flat_id, site 序号)。
+    /// 同一编译树同 site 恒返回同一对象；每次 `run()` 清空（flat_id 复用防误命中）。
+    /// 值为 GC 根（for_each_value/rewrite_values 遍历）。
+    pub(crate) template_objects: HashMap<(u32, u32), JsValue>,
+    /// 当前活动字节码所属模块的 flat_id（顶层 0；帧切换时随 bytecode 换）。
+    /// GET_TEMPLATE_OBJECT 据其区分不同编译树（eval 每次编译独立 site）。
+    pub(crate) active_flat_id: u32,
+    /// 帧切换时暂存调用方 flat_id 的栈（与 saved_bytecode_stack 同步 push/pop）。
+    pub(crate) saved_flat_id_stack: Vec<u32>,
 }
 
 impl Drop for Vm {
@@ -791,6 +801,10 @@ impl Vm {
         f(self.async_context.unwrap_or(JsValue::undefined()));
         f(self.async_gen_context.unwrap_or(JsValue::undefined()));
         f(self.inline_callee.unwrap_or(JsValue::undefined()));
+        // 标签模板对象缓存：命中的模板对象是 GC 根（未根 → sweep 搬移/回收悬垂）。
+        for &cached in self.template_objects.values() {
+            f(cached);
+        }
         for &entry in &self.iters.for_of_iters {
             f(entry.iterator);
             f(entry.last_result);
@@ -843,6 +857,9 @@ impl Vm {
         self.exception_value = self.exception_value.map(&mut rewrite);
         self.pending_exception = self.pending_exception.map(&mut rewrite);
         self.last_uncaught_value = self.last_uncaught_value.map(&mut rewrite);
+        for cached in self.template_objects.values_mut() {
+            *cached = rewrite(*cached);
+        }
         self.pending_completion = self.pending_completion.map(|completion| match completion {
             Completion::Return {
                 value,
@@ -1393,6 +1410,9 @@ impl Vm {
 
         self.saved_bytecode_stack.push(std::mem::take(&mut self.bytecode));
         self.saved_immutables_stack.push(self.active_immutables);
+        // 记录调用方 flat_id，进入被调模块（标签模板 site 缓存按模块隔离）。
+        self.saved_flat_id_stack.push(self.active_flat_id);
+        self.active_flat_id = sub_idx as u32;
 
         let function_name = self.sub_modules[sub_idx]
             .function_name
@@ -1887,6 +1907,10 @@ impl Vm {
 
                 OpCode::TEMPLATE_STR => {
                     self.dispatch_template_str(rd)?;
+                }
+
+                OpCode::GET_TEMPLATE_OBJECT => {
+                    self.dispatch_get_template_object(rd)?;
                 }
 
                 OpCode::DELETE_PROP_STATIC => match self.dispatch_delete_prop_static(rd) {

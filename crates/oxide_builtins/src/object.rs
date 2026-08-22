@@ -712,6 +712,26 @@ pub fn object_get_own_property_descriptor<H: VmHost>(vm: &mut H, args: &[u8]) ->
     let obj_ptr = obj_val.as_js_object_ptr();
     let key = vm.property_key_si(vm.reg(args[2]));
     let obj = unsafe { &*obj_ptr };
+
+    // 数组 length 是虚拟属性（无 shape 槽，ordinary_get 直接返回逻辑长度）：
+    // 描述符 {value: len, writable: !frozen, enumerable: false, configurable: false}。
+    // 冻结数组（含模板对象）writable=false；普通数组 writable=true。
+    let length_si = vm.kernel_core().perm_interner().intern("length").0;
+    if obj.is_array() && key == length_si {
+        let desc_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+        let desc = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(desc_proto)));
+        let sh = vm.kernel_core().shape_forge().as_ref() as *const ShapeForge;
+        let sf = vm.kernel_core().perm_interner().as_ref() as *const PermInterner;
+        let d: &mut JsObject = unsafe { &mut *desc };
+        let sh = unsafe { &*sh };
+        let sf = unsafe { &*sf };
+        push_desc_prop(d, sh, sf.intern("value").0, obj.logical_len_value());
+        push_desc_prop(d, sh, sf.intern("writable").0, JsValue::bool(!obj.is_frozen()));
+        push_desc_prop(d, sh, sf.intern("enumerable").0, JsValue::bool(false));
+        push_desc_prop(d, sh, sf.intern("configurable").0, JsValue::bool(false));
+        return NativeResult::Ok(JsValue::from_js_object(desc));
+    }
+
     let Some(offset) = vm.get_own_property_slot(obj, key) else {
         return NativeResult::Ok(JsValue::undefined());
     };
@@ -1275,7 +1295,15 @@ pub fn object_proto_define_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeR
     };
     let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
     let attrs = PropAttributes::new(false, true, true);
-    if let Err(e) = vm.define_accessor_property(obj, key_si, getter, JsValue::undefined(), attrs) {
+    // DefinePropertyOrThrow 的 desc 无 [[Set]] 键：覆盖既有访问器时保留其 setter
+    // （define_accessor_property 是全量替换，set 缺省须显式传现有值）。
+    let existing_set = vm
+        .get_own_property_slot(obj, key_si)
+        .and_then(|pos| obj.prop_meta_at(pos))
+        .filter(|m| m.is_accessor)
+        .map(|m| m.set)
+        .unwrap_or(JsValue::undefined());
+    if let Err(e) = vm.define_accessor_property(obj, key_si, getter, existing_set, attrs) {
         return NativeResult::Err(crate::error::create_type_error(vm, &e));
     }
     NativeResult::Ok(JsValue::undefined())
@@ -1347,7 +1375,7 @@ pub fn object_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let sym_iter_si = make_well_known_symbol_key(0);
     let iter_method = match unsafe { vm.ordinary_get(&*items_ptr, sym_iter_si, items_val) } {
         Ok(m) => m,
-        Err(e) => return NativeResult::Err(crate::error::create_type_error(vm, &e)),
+        Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
     };
     if !is_callable(iter_method) {
         return NativeResult::Err(crate::error::create_type_error(vm, "Object.groupBy: items[Symbol.iterator] is not callable"));
@@ -1366,7 +1394,7 @@ pub fn object_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let next_si = vm.kernel_core().perm_interner().intern("next").0;
     let next_fn = match vm.ordinary_get(iter_obj, next_si, iter_val) {
         Ok(f) => f,
-        Err(e) => return NativeResult::Err(crate::error::create_type_error(vm, &e)),
+        Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
     };
     // 创建结果对象（OrdinaryObjectCreate(null)，与 Object.create(null) 同款）。
     let result = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
@@ -1387,7 +1415,7 @@ pub fn object_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let done_si = vm.kernel_core().perm_interner().intern("done").0;
         let done = match vm.ordinary_get(nr, done_si, next_result) {
             Ok(v) => oxide_runtime_api::to_boolean(v),
-            Err(_) => false,
+            Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
         };
         if done {
             break;
@@ -1395,7 +1423,7 @@ pub fn object_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let value_si = vm.kernel_core().perm_interner().intern("value").0;
         let element = match vm.ordinary_get(nr, value_si, next_result) {
             Ok(v) => v,
-            Err(_) => JsValue::undefined(),
+            Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
         };
         // 调用 callbackFn(element, counter)：counter 对数组 items 即元素下标 k。
         let key = match vm.call_function_sync(callback_val, JsValue::undefined(), &[element, JsValue::int(counter)]) {

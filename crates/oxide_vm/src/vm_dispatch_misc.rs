@@ -1013,4 +1013,103 @@ impl Vm {
         }
         Ok(())
     }
+
+    /// GET_TEMPLATE_OBJECT：GetTemplateObject 语义——按 (模块 flat_id, site 序号)
+    /// 查缓存，未命中则构建模板对象（cooked/raw 数组 + raw 属性）并冻结。
+    ///
+    /// # ext 布局（紧跟指令后的扩展字）
+    /// - `n`：quasis 段数；
+    /// - 每段两个字：cooked 字（高位 `0x8000_0000` 标记非法转义 → undefined，
+    ///   低 31 位为常量池下标）、raw 字（常量池下标）；
+    /// - 末尾：site 序号。
+    ///
+    /// # 副作用
+    /// - 首次构建时分配 cooked/raw 数组并写入 `template_objects` 缓存（GC 根）；
+    ///   缓存命中时零分配。
+    pub(crate) fn dispatch_get_template_object(&mut self, rd: usize) -> Result<(), String> {
+        vm_trace!("GET_TEMPLATE_OBJECT rd={}", rd);
+        let n = self.bytecode[self.pc] as usize;
+        self.pc += 1;
+        let mut cooked_words = Vec::with_capacity(n);
+        let mut raw_idxs = Vec::with_capacity(n);
+        for _ in 0..n {
+            cooked_words.push(self.bytecode[self.pc]);
+            self.pc += 1;
+            raw_idxs.push(self.bytecode[self.pc]);
+            self.pc += 1;
+        }
+        let site_no = self.bytecode[self.pc];
+        self.pc += 1;
+
+        let key = (self.active_flat_id, site_no);
+        if let Some(&cached) = self.template_objects.get(&key) {
+            self.regs[rd] = cached;
+            return Ok(());
+        }
+
+        let proto_ptr = self.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
+        let proto_val = JsValue::from_js_object(proto_ptr);
+        // 模板对象直接分配为 session 对象：跨 epoch 写入（存进 global/数组）时
+        // 免 promote 搬移——若按 epoch 分配，首次写入 session 根会把对象搬到新
+        // 地址，缓存中的旧指针与新实例分叉，同一 site 两次取值将返回不同对象。
+        let mut alloc_session_array = |n: usize| {
+            let mut clone = JsObject::new_array(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, proto_val, n, self.epoch.bump());
+            // 标记 session 归属：session_epoch 分配的对象须显式置位，GC/释放路径
+            // 据 SESSION_EPOCH_BIT 判定归属（与 promote_object 的 clone 路径一致）。
+            clone.set_session_epoch(true);
+            let ptr = self.gc_state.session_epoch.alloc(clone) as *mut JsObject;
+            self.gc_state.session_object_ptrs.push(ptr);
+            ptr
+        };
+        let cooked = alloc_session_array(n);
+        let raw = alloc_session_array(n);
+        let cooked_val = JsValue::from_js_object(cooked);
+        let raw_val = JsValue::from_js_object(raw);
+
+        // 元素：可枚举、不可写、不可配置（模板对象属性恒只读，禁止改写元素）。
+        let elem_attrs = PropAttributes::new(false, true, false);
+        for i in 0..n {
+            let (c_val, r_val) = {
+                // immutables 借用限于本块：promote 需 &mut self，先取值再放行借用。
+                let imm = self.immutables();
+                let c_val = if cooked_words[i] & 0x8000_0000 != 0 {
+                    JsValue::undefined()
+                } else {
+                    imm.get(cooked_words[i] as usize).copied().unwrap_or(JsValue::undefined())
+                };
+                let r_val = imm.get(raw_idxs[i] as usize).copied().unwrap_or(JsValue::undefined());
+                (c_val, r_val)
+            };
+            let c_promoted = self.promote_if_needed_for_write_ptr(cooked, c_val);
+            let r_promoted = self.promote_if_needed_for_write_ptr(raw, r_val);
+            // SAFETY: cooked/raw 为本函数刚分配的 epoch 对象，借用仅在本循环内消费。
+            unsafe {
+                (*cooked).set_prop_at(i, c_promoted);
+                (*cooked).set_data_meta(i, elem_attrs);
+                (*raw).set_prop_at(i, r_promoted);
+                (*raw).set_data_meta(i, elem_attrs);
+            }
+        }
+
+        // raw 属性：不可枚举、不可写、不可配置（规范 desc 无 writable/enumerable
+        // 键，DefinePropertyOrThrow 默认 false）。先于冻结定义（冻结后不可扩展，
+        // 新增属性会被拒）。
+        let raw_si = self.kernel_core.perm_interner().intern("raw").0;
+// SAFETY: cooked 为本函数分配的 epoch 对象，借用仅在本次 define 内消费。
+        self.define_data_property(unsafe { &mut *cooked }, raw_si, raw_val, PropAttributes::new(false, false, false))?;
+
+        // 冻结两个数组：不可扩展 + length writable=false（is_frozen 使 length
+        // 赋值与元素写入经 ordinary_set 拒绝）；length {e:false,w:false,c:false}
+        // 由 getOwnPropertyDescriptor 的数组 length 特判表达。
+        // SAFETY: cooked/raw 为本函数分配的 session 对象。
+        unsafe {
+            (*cooked).set_frozen(true);
+            (*cooked).set_extensible(false);
+            (*raw).set_frozen(true);
+            (*raw).set_extensible(false);
+        }
+        self.template_objects.insert(key, cooked_val);
+        self.regs[rd] = cooked_val;
+        Ok(())
+    }
 }

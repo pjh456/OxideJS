@@ -117,6 +117,9 @@ impl Vm {
                 instruction_count: 0,
             },
             cell_stack: Vec::new(),
+            template_objects: std::collections::HashMap::new(),
+            active_flat_id: 0,
+            saved_flat_id_stack: Vec::new(),
         };
         vm.init_generator_intrinsics();
         vm.init_promise_intrinsics();
@@ -223,6 +226,9 @@ impl Vm {
                 instruction_count: 0,
             },
             cell_stack: Vec::new(),
+            template_objects: std::collections::HashMap::new(),
+            active_flat_id: 0,
+            saved_flat_id_stack: Vec::new(),
         };
         vm.init_generator_intrinsics();
         vm.init_promise_intrinsics();
@@ -304,6 +310,11 @@ impl Vm {
 
     fn clear_full_reset_state(&mut self) {
         self.clear_execution_state();
+        // 模板对象缓存中的 JsValue 指向将被重建的 session 对象：全量重置后悬垂，
+        // 必须随 session 一并清空。
+        self.template_objects.clear();
+        self.saved_flat_id_stack.clear();
+        self.active_flat_id = 0;
         self.bytecode = Arc::default();
         self.immutables_cache.clear();
         self.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
