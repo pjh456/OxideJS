@@ -105,81 +105,111 @@ impl SessionGc {
         bytes
     }
 
-    fn object_edges(obj: &JsObject) -> Vec<JsValue> {
-        let mut edges = Vec::new();
+    /// 扫描 `obj` 全部引用边，session 对象子节点推入 `stack`，字符串边标记存活。
+    ///
+    /// 单趟替代原 `object_edges` + `record_object_string_edges` 双遍模式：消除每对象
+    /// Vec 分配与重复字段遍历。
+    fn scan_edges_for_mark(
+        obj: &JsObject,
+        vm: &Vm,
+        stack: &mut Vec<*mut JsObject>,
+        live_strings: &mut HashSet<*mut JsString, FxBuildHasher>,
+    ) {
         if let Some(elements) = obj.array_elements_vec() {
-            edges.extend(elements.iter().copied().filter(|val| val.is_object()));
+            for &value in elements.iter() {
+                Self::process_edge(value, vm, stack, live_strings);
+            }
         }
         if let Some(meta) = obj.array_elements_meta_vec() {
             for entry in meta.iter().flatten() {
-                if entry.get.is_object() {
-                    edges.push(entry.get);
-                }
-                if entry.set.is_object() {
-                    edges.push(entry.set);
-                }
+                Self::process_edge(entry.get, vm, stack, live_strings);
+                Self::process_edge(entry.set, vm, stack, live_strings);
             }
         }
         if let Some(props) = obj.hash_props_vec() {
-            edges.extend(props.iter().copied().filter(|val| val.is_object()));
+            for &value in props.iter() {
+                Self::process_edge(value, vm, stack, live_strings);
+            }
         }
         if let Some(meta) = obj.prop_meta_vec() {
             for entry in meta.iter().flatten() {
-                if entry.get.is_object() {
-                    edges.push(entry.get);
-                }
-                if entry.set.is_object() {
-                    edges.push(entry.set);
-                }
+                Self::process_edge(entry.get, vm, stack, live_strings);
+                Self::process_edge(entry.set, vm, stack, live_strings);
             }
         }
-        if obj.proto().is_object() {
-            edges.push(obj.proto());
-        }
-        if obj.captured_this().is_object() {
-            edges.push(obj.captured_this());
-        }
-        if obj.home_object().is_object() {
-            edges.push(obj.home_object());
-        }
+        Self::process_edge(obj.proto(), vm, stack, live_strings);
+        Self::process_edge(obj.captured_this(), vm, stack, live_strings);
+        Self::process_edge(obj.home_object(), vm, stack, live_strings);
         if obj.is_map() {
-            edges.extend(map::map_native_edges(obj));
+            for value in map::map_native_edges(obj) {
+                Self::process_edge(value, vm, stack, live_strings);
+            }
         }
         if obj.is_set() {
-            edges.extend(set::set_native_edges(obj));
+            for value in set::set_native_edges(obj) {
+                Self::process_edge(value, vm, stack, live_strings);
+            }
         }
         if obj.is_disposable_stack_obj() || obj.is_async_disposable_stack_obj() {
-            edges.extend(disposable_stack::dispose_edges(obj));
+            for value in disposable_stack::dispose_edges(obj) {
+                Self::process_edge(value, vm, stack, live_strings);
+            }
         }
         if obj.is_typed_array_obj() {
-            edges.extend(typed_array::typed_array_native_edges(obj));
+            for value in typed_array::typed_array_native_edges(obj) {
+                Self::process_edge(value, vm, stack, live_strings);
+            }
         }
         if obj.is_data_view_obj() {
-            edges.extend(data_view::data_view_native_edges(obj));
+            for value in data_view::data_view_native_edges(obj) {
+                Self::process_edge(value, vm, stack, live_strings);
+            }
         }
         if obj.is_generator_obj() {
-            edges.extend(crate::generator::generator_native_edges(obj));
+            for value in crate::generator::generator_native_edges(obj) {
+                Self::process_edge(value, vm, stack, live_strings);
+            }
         }
         if obj.is_promise_obj() {
-            edges.extend(crate::promise::promise_native_edges(obj));
+            for value in crate::promise::promise_native_edges(obj) {
+                Self::process_edge(value, vm, stack, live_strings);
+            }
         }
         if obj.is_async_obj() {
-            edges.extend(crate::async_func::async_native_edges(obj));
+            for value in crate::async_func::async_native_edges(obj) {
+                Self::process_edge(value, vm, stack, live_strings);
+            }
         }
         if obj.is_async_generator_obj() {
-            edges.extend(crate::async_generator::async_generator_native_edges(obj));
+            for value in crate::async_generator::async_generator_native_edges(obj) {
+                Self::process_edge(value, vm, stack, live_strings);
+            }
         }
-        // 遍历 upvalue cell 中的对象引用。
+        // 遍历 upvalue cell 中的引用。
         for cell_ptr in obj.upvalues_slice() {
             if cell_ptr.is_null() {
                 continue;
             }
             let cell = unsafe { &**cell_ptr };
-            if cell.value.is_object() {
-                edges.push(cell.value);
-            }
+            Self::process_edge(cell.value, vm, stack, live_strings);
         }
-        edges
+    }
+
+    #[inline]
+    fn process_edge(
+        value: JsValue,
+        vm: &Vm,
+        stack: &mut Vec<*mut JsObject>,
+        live_strings: &mut HashSet<*mut JsString, FxBuildHasher>,
+    ) {
+        if value.is_object() {
+            let ptr = value.as_js_object_ptr();
+            if vm.is_session_ptr(ptr) {
+                stack.push(ptr);
+            }
+        } else if value.is_string() {
+            Self::mark_string_live(live_strings, value.as_string_ptr_mut());
+        }
     }
 
     /// 把字符串指针标记为存活并传播 rope 闭包：Cons 迭代传播左右子节点与
@@ -341,15 +371,9 @@ impl SessionGc {
                 continue;
             }
             // SAFETY: 对象根由 VM 自有的字段与 builtin 对象产生。
-            let obj = unsafe { &*ptr };
-            Self::record_object_string_edges(live_strings, obj);
-            for edge in Self::object_edges(obj) {
-                if edge.is_object() {
-                    let edge_ptr = edge.as_js_object_ptr();
-                    if vm.is_session_ptr(edge_ptr) {
-                        stack.push(edge_ptr);
-                    }
-                }
+            unsafe {
+                let obj = &*ptr;
+                Self::scan_edges_for_mark(obj, vm, stack, live_strings);
             }
         }
 
@@ -364,17 +388,7 @@ impl SessionGc {
                     continue;
                 }
                 obj.set_gc_mark(true);
-                Self::record_object_string_edges(live_strings, obj);
-                let edges = Self::object_edges(obj);
-                for edge in edges {
-                    if !edge.is_object() {
-                        continue;
-                    }
-                    let child_ptr = edge.as_js_object_ptr();
-                    if vm.is_session_ptr(child_ptr) {
-                        stack.push(child_ptr);
-                    }
-                }
+                Self::scan_edges_for_mark(obj, vm, stack, live_strings);
             }
         }
     }
@@ -1241,9 +1255,11 @@ mod tests {
 
         assert!(map_obj.hash_props_vec().is_none());
         assert!(!map_obj.native_data().is_null());
-        assert!(!SessionGc::object_edges(map_obj)
-            .iter()
-            .any(|edge| std::ptr::eq(edge.as_js_object_ptr(), native_ptr)));
+        // Verify native storage pointer is not traced as a normal object edge.
+        let mut stack = Vec::new();
+        let mut live = HashSet::with_hasher(FxBuildHasher);
+        SessionGc::scan_edges_for_mark(map_obj, &vm, &mut stack, &mut live);
+        assert!(!stack.iter().any(|&ptr| std::ptr::eq(ptr, native_ptr)));
     }
 
     #[test]
