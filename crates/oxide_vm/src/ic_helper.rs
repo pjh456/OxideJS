@@ -82,6 +82,12 @@ fn ext_word_count(bytecode: &[Instr], pc: usize) -> usize {
             let header = bytecode.get(pc + 1).copied().unwrap_or(0);
             1 + ((header >> 16) & 0xFFFF) as usize
         }
+        // GET_TEMPLATE_OBJECT：ext[0]=quasis 段数 n，随后 2n 个交错 cooked/raw 字，
+        // 末尾 1 个 site 序号——总 ext 字数 = 2+2n，与 dispatch 逐字消费一致。
+        OpCode::GET_TEMPLATE_OBJECT => {
+            let n = bytecode.get(pc + 1).copied().unwrap_or(0) as usize;
+            2 + 2 * n
+        }
         // CONCAT_N：ext[0]=n=操作数总数，ext 字数 = 1+(n-1) = n。
         OpCode::CONCAT_N => bytecode.get(pc + 1).copied().unwrap_or(0) as usize,
         OpCode::NEW_OBJECT => opcode::a(bytecode[pc]) as usize,
@@ -322,6 +328,38 @@ mod tests {
         ];
         assert_eq!(ext_word_count(&bytecode, 0), 1, "BREAK ext 字数 = 1");
         assert_eq!(ext_word_count(&bytecode, 2), 1, "RETURN ext 字数 = 1");
+    }
+
+    #[test]
+    fn get_template_object_ext_word_count_is_2_plus_2n() {
+        // GET_TEMPLATE_OBJECT：ext=[n, cooked, raw, ..., site_no] 共 2+2n 个扩展字
+        // （n=1 时 4 个字）。未登记时 clear_ic_caches 会把 ext 字当指令逐字扫描，
+        // 多跳/误清零导致后续 IC 扩展字漏清或误清，本用例可抓住该错位。
+        let mut bytecode = vec![
+            opcode::encode(OpCode::GET_TEMPLATE_OBJECT, 1, 0, 0),
+            1,
+            0x8000_0000,
+            0x0000_0005,
+            0x0000_0007,
+            opcode::encode(OpCode::IC_GET_PROP, 1, 2, 3),
+            0xAAAA_AAAA,
+            0xBBBB_BBBB,
+            0xCCCC_CCCC,
+            0xDDDD_DDDD,
+            0xEEEE_EEEE,
+            0xFFFF_FFFF,
+            0x1111_1111,
+            0x2222_2222,
+        ];
+        assert_eq!(ext_word_count(&bytecode, 0), 4, "GET_TEMPLATE_OBJECT ext 字数 = 2+2n");
+
+        clear_ic_caches(&mut bytecode);
+        assert_eq!(
+            &bytecode[1..=4],
+            &[1, 0x8000_0000, 0x0000_0005, 0x0000_0007],
+            "GET_TEMPLATE_OBJECT ext 字保持原值"
+        );
+        assert_eq!(&bytecode[6..=13], &[0; 8], "后续 IC 扩展字被清零");
     }
 
     #[test]
