@@ -748,6 +748,15 @@ impl Vm {
         for value in &self.regs {
             f(*value);
         }
+        // immutables 缓存含 session BigInt（new_bigint 分配），未入根则被 sweep 释放
+        // → 常量池加载时悬垂。perm 字符串无害（不在 session 集合中）。
+        for once_lock in &self.immutables_cache {
+            if let Some(immutable_vec) = once_lock.get() {
+                for &value in immutable_vec.iter() {
+                    f(value);
+                }
+            }
+        }
         for frame in &self.frames {
             f(frame.saved_this);
             f(frame.saved_new_target);

@@ -31,6 +31,7 @@ pub struct SessionGc {
     pub min_collection_duration_us: u64,
     pub(crate) mark_stack: Vec<*mut JsObject>,
     pub(crate) live_strings: HashSet<*mut JsString, FxBuildHasher>,
+    pub(crate) live_bigints: HashSet<*mut num_bigint::BigInt, FxBuildHasher>,
 }
 
 impl SessionGc {
@@ -105,7 +106,8 @@ impl SessionGc {
         bytes
     }
 
-    /// 扫描 `obj` 全部引用边，session 对象子节点推入 `stack`，字符串边标记存活。
+    /// 扫描 `obj` 全部引用边，session 对象子节点推入 `stack`，字符串边标记存活，
+    /// BigInt 边标记存活。
     ///
     /// 单趟替代原 `object_edges` + `record_object_string_edges` 双遍模式：消除每对象
     /// Vec 分配与重复字段遍历。
@@ -114,75 +116,76 @@ impl SessionGc {
         vm: &Vm,
         stack: &mut Vec<*mut JsObject>,
         live_strings: &mut HashSet<*mut JsString, FxBuildHasher>,
+        live_bigints: &mut HashSet<*mut num_bigint::BigInt, FxBuildHasher>,
     ) {
         if let Some(elements) = obj.array_elements_vec() {
             for &value in elements.iter() {
-                Self::process_edge(value, vm, stack, live_strings);
+                Self::process_edge(value, vm, stack, live_strings, live_bigints);
             }
         }
         if let Some(meta) = obj.array_elements_meta_vec() {
             for entry in meta.iter().flatten() {
-                Self::process_edge(entry.get, vm, stack, live_strings);
-                Self::process_edge(entry.set, vm, stack, live_strings);
+                Self::process_edge(entry.get, vm, stack, live_strings, live_bigints);
+                Self::process_edge(entry.set, vm, stack, live_strings, live_bigints);
             }
         }
         if let Some(props) = obj.hash_props_vec() {
             for &value in props.iter() {
-                Self::process_edge(value, vm, stack, live_strings);
+                Self::process_edge(value, vm, stack, live_strings, live_bigints);
             }
         }
         if let Some(meta) = obj.prop_meta_vec() {
             for entry in meta.iter().flatten() {
-                Self::process_edge(entry.get, vm, stack, live_strings);
-                Self::process_edge(entry.set, vm, stack, live_strings);
+                Self::process_edge(entry.get, vm, stack, live_strings, live_bigints);
+                Self::process_edge(entry.set, vm, stack, live_strings, live_bigints);
             }
         }
-        Self::process_edge(obj.proto(), vm, stack, live_strings);
-        Self::process_edge(obj.captured_this(), vm, stack, live_strings);
-        Self::process_edge(obj.home_object(), vm, stack, live_strings);
+        Self::process_edge(obj.proto(), vm, stack, live_strings, live_bigints);
+        Self::process_edge(obj.captured_this(), vm, stack, live_strings, live_bigints);
+        Self::process_edge(obj.home_object(), vm, stack, live_strings, live_bigints);
         if obj.is_map() {
             for value in map::map_native_edges(obj) {
-                Self::process_edge(value, vm, stack, live_strings);
+                Self::process_edge(value, vm, stack, live_strings, live_bigints);
             }
         }
         if obj.is_set() {
             for value in set::set_native_edges(obj) {
-                Self::process_edge(value, vm, stack, live_strings);
+                Self::process_edge(value, vm, stack, live_strings, live_bigints);
             }
         }
         if obj.is_disposable_stack_obj() || obj.is_async_disposable_stack_obj() {
             for value in disposable_stack::dispose_edges(obj) {
-                Self::process_edge(value, vm, stack, live_strings);
+                Self::process_edge(value, vm, stack, live_strings, live_bigints);
             }
         }
         if obj.is_typed_array_obj() {
             for value in typed_array::typed_array_native_edges(obj) {
-                Self::process_edge(value, vm, stack, live_strings);
+                Self::process_edge(value, vm, stack, live_strings, live_bigints);
             }
         }
         if obj.is_data_view_obj() {
             for value in data_view::data_view_native_edges(obj) {
-                Self::process_edge(value, vm, stack, live_strings);
+                Self::process_edge(value, vm, stack, live_strings, live_bigints);
             }
         }
         if obj.is_generator_obj() {
             for value in crate::generator::generator_native_edges(obj) {
-                Self::process_edge(value, vm, stack, live_strings);
+                Self::process_edge(value, vm, stack, live_strings, live_bigints);
             }
         }
         if obj.is_promise_obj() {
             for value in crate::promise::promise_native_edges(obj) {
-                Self::process_edge(value, vm, stack, live_strings);
+                Self::process_edge(value, vm, stack, live_strings, live_bigints);
             }
         }
         if obj.is_async_obj() {
             for value in crate::async_func::async_native_edges(obj) {
-                Self::process_edge(value, vm, stack, live_strings);
+                Self::process_edge(value, vm, stack, live_strings, live_bigints);
             }
         }
         if obj.is_async_generator_obj() {
             for value in crate::async_generator::async_generator_native_edges(obj) {
-                Self::process_edge(value, vm, stack, live_strings);
+                Self::process_edge(value, vm, stack, live_strings, live_bigints);
             }
         }
         // 遍历 upvalue cell 中的引用。
@@ -191,7 +194,7 @@ impl SessionGc {
                 continue;
             }
             let cell = unsafe { &**cell_ptr };
-            Self::process_edge(cell.value, vm, stack, live_strings);
+            Self::process_edge(cell.value, vm, stack, live_strings, live_bigints);
         }
     }
 
@@ -201,6 +204,7 @@ impl SessionGc {
         vm: &Vm,
         stack: &mut Vec<*mut JsObject>,
         live_strings: &mut HashSet<*mut JsString, FxBuildHasher>,
+        live_bigints: &mut HashSet<*mut num_bigint::BigInt, FxBuildHasher>,
     ) {
         if value.is_object() {
             let ptr = value.as_js_object_ptr();
@@ -209,6 +213,8 @@ impl SessionGc {
             }
         } else if value.is_string() {
             Self::mark_string_live(live_strings, value.as_string_ptr_mut());
+        } else if value.is_bigint() {
+            live_bigints.insert(value.as_bigint_ptr() as *mut num_bigint::BigInt);
         }
     }
 
@@ -343,23 +349,31 @@ impl SessionGc {
         vm_debug!("[GC] mark phase: {} roots", vm.gc_state.session_object_ptrs.len());
         let mut seeds = Vec::new();
         let mut string_seeds: Vec<*mut JsString> = Vec::new();
+        let mut bigint_seeds: Vec<*mut num_bigint::BigInt> = Vec::new();
         vm.for_each_root(|root| {
             if root.is_object() {
                 seeds.push(root.as_js_object_ptr());
             } else if root.is_string() {
                 string_seeds.push(root.as_string_ptr_mut());
+            } else if root.is_bigint() {
+                bigint_seeds.push(root.as_bigint_ptr() as *mut num_bigint::BigInt);
             }
         });
 
         let Self {
             mark_stack: stack,
             live_strings,
+            live_bigints,
             ..
         } = self;
         stack.clear();
         live_strings.clear();
+        live_bigints.clear();
         for ptr in string_seeds {
             Self::mark_string_live(live_strings, ptr);
+        }
+        for ptr in bigint_seeds {
+            live_bigints.insert(ptr);
         }
 
         for ptr in seeds {
@@ -373,7 +387,7 @@ impl SessionGc {
             // SAFETY: 对象根由 VM 自有的字段与 builtin 对象产生。
             unsafe {
                 let obj = &*ptr;
-                Self::scan_edges_for_mark(obj, vm, stack, live_strings);
+                Self::scan_edges_for_mark(obj, vm, stack, live_strings, live_bigints);
             }
         }
 
@@ -388,7 +402,7 @@ impl SessionGc {
                     continue;
                 }
                 obj.set_gc_mark(true);
-                Self::scan_edges_for_mark(obj, vm, stack, live_strings);
+                Self::scan_edges_for_mark(obj, vm, stack, live_strings, live_bigints);
             }
         }
     }
@@ -639,8 +653,43 @@ impl SessionGc {
         freed
     }
 
+    /// 清扫 session `BigInt`：保留 `mark()` 阶段记为存活的部分，其余经
+    /// `Box::from_raw` 释放。存活 BigInt 不被搬移——Box 地址稳定——因此无需
+    /// forwarding 表与根指针重写。在字符串清扫之后运行。
+    /// 返回释放的字节数。
+    pub(crate) fn sweep_session_bigints(&mut self, vm: &mut Vm) -> u64 {
+        let old = vm.gc_state.session_bigint_ptrs.borrow_mut().drain(..).collect::<Vec<_>>();
+        let mut freed = 0u64;
+        let mut live_bytes = 0usize;
+        let mut live = Vec::with_capacity(old.len());
+        for ptr in old {
+            if ptr.is_null() {
+                continue;
+            }
+            if self.live_bigints.contains(&ptr) {
+                // 存活——地址不变，无需重写。
+                live_bytes += size_of::<num_bigint::BigInt>();
+                live.push(ptr);
+            } else {
+                // SAFETY: ptr 在 session_bigint_ptrs 中但不可达，恰好释放一次。
+                freed += size_of::<num_bigint::BigInt>() as u64;
+                unsafe {
+                    drop(Box::from_raw(ptr));
+                }
+            }
+        }
+        *vm.gc_state.session_bigint_ptrs.borrow_mut() = live;
+        vm.gc_state.session_bytes_allocated = vm.gc_state.session_bytes_allocated.saturating_add(live_bytes);
+
+        self.total_bytes_freed = self.total_bytes_freed.saturating_add(freed);
+        self.last_collection_bytes_freed = self.last_collection_bytes_freed.saturating_add(freed);
+        freed
+    }
+
     pub(crate) fn should_collect(&self, vm: &Vm) -> bool {
-        (!vm.gc_state.session_object_ptrs.is_empty() || !vm.gc_state.session_string_ptrs.is_empty())
+        (!vm.gc_state.session_object_ptrs.is_empty()
+            || !vm.gc_state.session_string_ptrs.is_empty()
+            || !vm.gc_state.session_bigint_ptrs.borrow().is_empty())
             && vm.gc_state.session_bytes_allocated >= vm.kernel_core().config().session_gc_threshold
     }
 
@@ -650,7 +699,9 @@ impl SessionGc {
     /// 预留给 17.3b（对象侧执行期触发）安全点审计后使用。
     #[allow(dead_code)]
     pub(crate) fn should_collect_gc(&self, vm: &Vm) -> bool {
-        (!vm.gc_state.session_object_ptrs.is_empty() || !vm.gc_state.session_string_ptrs.is_empty())
+        (!vm.gc_state.session_object_ptrs.is_empty()
+            || !vm.gc_state.session_string_ptrs.is_empty()
+            || !vm.gc_state.session_bigint_ptrs.borrow().is_empty())
             && vm.gc_state.session_bytes_allocated >= vm.gc_state.gc_watermark
     }
 
@@ -659,7 +710,9 @@ impl SessionGc {
     /// 保证死对象超阈值即被 reset 回收；执行期走增量水位，活串超阈值时不每指令
     /// 重复触发无死串可回收的白跑。
     pub(crate) fn should_collect_strings(&self, vm: &Vm) -> bool {
-        (!vm.gc_state.session_object_ptrs.is_empty() || !vm.gc_state.session_string_ptrs.is_empty())
+        (!vm.gc_state.session_object_ptrs.is_empty()
+            || !vm.gc_state.session_string_ptrs.is_empty()
+            || !vm.gc_state.session_bigint_ptrs.borrow().is_empty())
             && vm.gc_state.session_bytes_allocated >= vm.gc_state.string_gc_watermark
     }
 
@@ -693,6 +746,7 @@ impl SessionGc {
         self.mark(vm);
         let mut freed_bytes = self.sweep(vm);
         freed_bytes += self.sweep_session_strings(vm);
+        freed_bytes += self.sweep_session_bigints(vm);
 
         let elapsed = start.elapsed();
         self.total_collections += 1;
@@ -758,7 +812,8 @@ impl SessionGc {
             })
             .sum::<u64>() as usize;
         vm.gc_state.session_bytes_allocated = object_bytes;
-        let freed_bytes = self.sweep_session_strings(vm);
+        let mut freed_bytes = self.sweep_session_strings(vm);
+        freed_bytes += self.sweep_session_bigints(vm);
 
         // 恢复 mark 位不变量：mark 之后必由清位收尾（与 sweep 末尾同点清位）。
         // 残留 marked 对象会让下一次完整收集（reset 路径）的 mark DFS 短路漏标，
@@ -838,6 +893,7 @@ impl Default for SessionGc {
             min_collection_duration_us: u64::MAX,
             mark_stack: Vec::new(),
             live_strings: HashSet::default(),
+            live_bigints: HashSet::default(),
         }
     }
 }
@@ -1258,7 +1314,8 @@ mod tests {
         // Verify native storage pointer is not traced as a normal object edge.
         let mut stack = Vec::new();
         let mut live = HashSet::with_hasher(FxBuildHasher);
-        SessionGc::scan_edges_for_mark(map_obj, &vm, &mut stack, &mut live);
+        let mut live_bigints = HashSet::with_hasher(FxBuildHasher);
+        SessionGc::scan_edges_for_mark(map_obj, &vm, &mut stack, &mut live, &mut live_bigints);
         assert!(!stack.iter().any(|&ptr| std::ptr::eq(ptr, native_ptr)));
     }
 
