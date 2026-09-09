@@ -268,6 +268,14 @@ impl Emitter {
 
     fn pre_scan_builtin_target(&self, target: &oxide_parser::SimpleAssignmentTarget, ctx: &mut CompileCtx) {
         match target {
+            oxide_parser::SimpleAssignmentTarget::AssignmentTargetIdentifier(id) => {
+                // 标识符目标与表达式位置标识符引用同口径预登记：目标为某内置名的
+                // 唯一出现处（无读侧引用）时缺预登记会解析成隐式全局新槽，旧值读
+                // 与短路判定拿到未预载值。
+                if CompileCtx::is_known_builtin(id.name.as_str()) {
+                    let _ = ctx.lookup_or_builtin(id.name.as_str());
+                }
+            }
             oxide_parser::SimpleAssignmentTarget::StaticMemberExpression(member) => {
                 self.pre_scan_builtin_expr(&member.object, ctx);
             }

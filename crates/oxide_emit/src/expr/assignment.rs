@@ -399,21 +399,29 @@ impl Emitter {
                         let is_const = ctx.lookup_const_flag(name);
                         let const_flag = if is_const { 1 } else { 0 };
                         let var_reg = ctx.lookup_or_global(name);
-                        // 隐式全局判定以寄存器集合为准：读侧（旧值解析）已登记绑定，
-                        // 写侧二次解析命中集合而非"新登记"。
-                        let is_implicit = ctx.implicit_global_writes.contains(&var_reg);
-                        if is_implicit && ctx.is_strict {
-                            // 严格模式未声明写：抛 ReferenceError，后续 LOAD_VAR 不可达。
-                            let _ = self.emit_strict_undeclared_write(name, ctx)?;
-                        } else {
-                            ctx.inst(Inst::new(
-                                OpCode::STORE_VAR,
-                                Operand::Reg(var_reg),
-                                Operand::Reg(val_reg),
-                                Operand::Imm(const_flag),
-                            ));
-                            if is_implicit {
-                                self.emit_implicit_global_write(name, var_reg, ctx);
+                        // 全局不可写内置槽：strict 抛 TypeError（put 失败）；sloppy 跳过槽写，
+                        // 表达式值 = RHS（尾部结果装载取 val_reg）。短路时序与 PutValue 一致：
+                        // 短路未通过不到达此处、不抛错，通过后才在写点拦截。
+                        let readonly_builtin = ctx.targets_readonly_builtin(name, var_reg);
+                        if readonly_builtin && ctx.is_strict {
+                            let _ = self.emit_throw_error("TypeError", "cannot assign to read-only property", ctx)?;
+                        } else if !readonly_builtin {
+                            // 隐式全局判定以寄存器集合为准：读侧（旧值解析）已登记绑定，
+                            // 写侧二次解析命中集合而非"新登记"。
+                            let is_implicit = ctx.implicit_global_writes.contains(&var_reg);
+                            if is_implicit && ctx.is_strict {
+                                // 严格模式未声明写：抛 ReferenceError，后续 LOAD_VAR 不可达。
+                                let _ = self.emit_strict_undeclared_write(name, ctx)?;
+                            } else {
+                                ctx.inst(Inst::new(
+                                    OpCode::STORE_VAR,
+                                    Operand::Reg(var_reg),
+                                    Operand::Reg(val_reg),
+                                    Operand::Imm(const_flag),
+                                ));
+                                if is_implicit {
+                                    self.emit_implicit_global_write(name, var_reg, ctx);
+                                }
                             }
                         }
                     }
