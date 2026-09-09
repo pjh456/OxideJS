@@ -435,7 +435,7 @@ impl Vm {
         }
 
         if obj.has_prop_meta() {
-            self.ordinary_set_dispatch(obj, prop_name_si, value, receiver)?;
+            self.ordinary_set_dispatch(obj, prop_name_si, value, receiver, self.current_strict())?;
             return Ok(());
         }
 
@@ -451,10 +451,10 @@ impl Vm {
             // 写新属性（shape 转换）：数组 length / 整数索引键仍走完整
             // ordinary_set_dispatch 语义，其余走 CreateDataProperty 快路径。
             if self.named_prop_create_needs_ordinary_set(obj, prop_name_si) {
-                self.ordinary_set_dispatch(obj, prop_name_si, value, receiver)?;
+                self.ordinary_set_dispatch(obj, prop_name_si, value, receiver, self.current_strict())?;
                 return Ok(());
             }
-            self.create_named_prop_fast(obj, prop_name_si, value, receiver, ic_pc, true)?;
+            self.create_named_prop_fast(obj, prop_name_si, value, receiver, ic_pc, true, self.current_strict())?;
         }
 
         Ok(())
@@ -496,7 +496,7 @@ impl Vm {
         }
         let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
         let obj = unsafe { &mut *obj_ptr };
-        self.ordinary_set_dispatch(obj, prop_name_si, value, self.regs[rd])?;
+        self.ordinary_set_dispatch(obj, prop_name_si, value, self.regs[rd], self.current_strict())?;
         Ok(())
     }
 
@@ -593,7 +593,7 @@ impl Vm {
         }
         let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[b]);
         let obj = unsafe { &mut *obj_ptr };
-        self.ordinary_set_dispatch(obj, prop_name_si, value, self.regs[rd])?;
+        self.ordinary_set_dispatch(obj, prop_name_si, value, self.regs[rd], self.current_strict())?;
         Ok(())
     }
 
@@ -616,7 +616,7 @@ impl Vm {
         // 直写绕过冻结语义。
         if obj.has_prop_meta() {
             let si = make_int_key(idx);
-            return self.ordinary_set_dispatch(obj, si, value, self.regs[rd]);
+            return self.ordinary_set_dispatch(obj, si, value, self.regs[rd], self.current_strict());
         }
         // 无 meta 快路径：不可扩展对象禁止新增元素（越界下标）；已有元素直写不受限
         // （无 meta 即默认可写）。

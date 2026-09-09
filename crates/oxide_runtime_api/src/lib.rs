@@ -151,8 +151,10 @@ pub trait VmHost {
 
     // 属性访问
     fn ordinary_get(&mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue) -> Result<JsValue, String>;
+    /// `strict` 为写方严格模式：写失败时严格抛错，sloppy 静默 no-op。内置调用方
+    /// 一律传 true（内置写语义恒抛错，与调用上下文模式无关）。
     fn ordinary_set(
-        &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue,
+        &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, strict: bool,
     ) -> Result<(), String>;
 
     // 属性定义

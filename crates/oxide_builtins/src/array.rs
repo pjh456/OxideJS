@@ -619,7 +619,7 @@ fn array_from_set_length<H: VmHost>(vm: &mut H, a: *mut JsObject, is_array: bool
     let length_key = vm.new_string("length");
     let length_si = vm.property_key_si(length_key);
     let a_val = JsValue::from_js_object(a);
-    match vm.ordinary_set(a_obj, length_si, JsValue::int(len as i32), a_val) {
+    match vm.ordinary_set(a_obj, length_si, JsValue::int(len as i32), a_val, true) {
         Ok(()) => Ok(()),
         Err(err) => Err(from_engine_error(vm, &err)),
     }
@@ -731,7 +731,7 @@ pub fn array_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let a_val = JsValue::from_js_object(a_ptr);
     let length_key = vm.new_string("length");
     let length_si = vm.property_key_si(length_key);
-    if let Err(err) = vm.ordinary_set(unsafe { &mut *a_ptr }, length_si, js_array_index(out_idx), a_val) {
+    if let Err(err) = vm.ordinary_set(unsafe { &mut *a_ptr }, length_si, js_array_index(out_idx), a_val, true) {
         return NativeResult::Err(from_engine_error(vm, &err));
     }
     NativeResult::Ok(JsValue::from_js_object(a_ptr))
@@ -1843,7 +1843,7 @@ pub fn array_iterator_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             }
             _ => element,
         };
-        if let Err(msg) = vm.ordinary_set(iter, index_si, JsValue::int(index + 1), this_val) {
+        if let Err(msg) = vm.ordinary_set(iter, index_si, JsValue::int(index + 1), this_val, true) {
             return NativeResult::Err(crate::error::create_from_text(vm, &msg));
         }
         return NativeResult::Ok(crate::iterator::make_iter_result(vm, value, false));
@@ -1876,7 +1876,7 @@ pub fn array_iterator_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
         _ => element,
     };
-    if let Err(msg) = vm.ordinary_set(iter, index_si, JsValue::int(index + 1), this_val) {
+    if let Err(msg) = vm.ordinary_set(iter, index_si, JsValue::int(index + 1), this_val, true) {
         return NativeResult::Err(crate::error::create_from_text(vm, &msg));
     }
     NativeResult::Ok(crate::iterator::make_iter_result(vm, value, false))

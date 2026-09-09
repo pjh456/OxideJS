@@ -289,6 +289,7 @@ impl SuspendedFrame {
                 constructed_this: f.constructed_this.map(&mut rewrite),
                 is_derived_constructor: f.is_derived_constructor,
                 super_called: f.super_called,
+                strict: f.strict,
                 continuation: f.continuation,
             }),
             spill_stack: self.spill_stack.iter().copied().map(&mut rewrite).collect(),
@@ -365,6 +366,7 @@ mod tests {
             constructed_this: Some(tag),
             is_derived_constructor: false,
             super_called: false,
+            strict: false,
             continuation: FrameContinuation::None,
         }
     }

@@ -220,6 +220,9 @@ pub struct CallFrame {
     /// 旧方案——多层继承时中间 derived 帧由 SUPER_CALL 以构造 this 压入，
     /// regs[254] 恒非 undefined，值判定三重失效。
     pub super_called: bool,
+    /// 本帧函数的严格模式标志（来源：模块编译产物 `is_strict`）。
+    /// 属性写失败时据此分派：严格模式抛 TypeError，sloppy 静默 no-op。
+    pub strict: bool,
     pub continuation: FrameContinuation,
 }
 
@@ -372,6 +375,11 @@ pub(crate) struct InlineSyncState {
     pub(crate) spill_stack: Vec<JsValue>,
     pub(crate) cell_stack: Vec<Vec<*mut Cell>>,
     pub(crate) inline_callee: Option<JsValue>,
+    /// inline 目标函数的严格模式标志（内联执行期间写路径的 strict/sloppy 判定
+    /// 来源；嵌套内联时随本快照保存/恢复）。
+    pub(crate) inline_strict: bool,
+    /// inline 起始时 `frames.len()` 基线（嵌套内联时随本快照保存/恢复）。
+    pub(crate) inline_frames_base: usize,
     pub(crate) inline_args_base: u32,
     pub(crate) inline_args_count: u16,
     pub(crate) accessor_frame_target_reg: Option<u8>,
@@ -474,6 +482,16 @@ pub struct Vm {
     /// frames 为空（inline 隔离状态）时由此取闭包 upvalues。嵌套 inline 由
     /// InlineSyncState 保存/恢复。
     pub(crate) inline_callee: Option<JsValue>,
+    /// inline 目标函数的严格模式标志（与 `inline_callee` 同生命周期，
+    /// InlineSyncState 保存/恢复）：内联执行期间帧表被隔离，写路径的
+    /// strict/sloppy 判定取此值而非帧标志。
+    pub(crate) inline_strict: bool,
+    /// inline 起始时 `frames.len()` 基线（随 InlineSyncState 保存/恢复）：
+    /// 内联执行中新压的帧（CALL/accessor）越过该基线，其严格性归帧栈顶。
+    pub(crate) inline_frames_base: usize,
+    /// 本次 run 顶层脚本的严格模式标志（`module.is_strict`，run 时填充）：
+    /// 无帧且无 inline（顶层脚本赋值）时写路径的 strict/sloppy 判定来源。
+    pub(crate) top_level_strict: bool,
     /// inline 同步调用寄存器窗口缓冲池：`save_inline_state` 取出复用、
     /// `restore_inline_state` 归还。热回调循环内 save/restore 反复使用同一块
     /// 缓冲，只在嵌套（池已被外层取走）时新分配。
@@ -1327,6 +1345,27 @@ impl Vm {
         .max(1)
     }
 
+    /// 当前执行上下文的严格模式标志：属性写失败路径据此分派（严格抛
+    /// TypeError，sloppy 静默 no-op）。
+    ///
+    /// # 边界与前提
+    /// - inline 执行期间帧表可能非空（调用方帧隔离在外），须以
+    ///   `inline_frames_base` 为基线区分"inline 前已有帧"与"inline 内新压帧"
+    ///   （CALL/accessor 帧严格性归目标函数，最内层执行上下文即帧栈顶）。
+    /// - 无帧且无 inline 时为顶层脚本执行，取 `top_level_strict`。
+    pub(crate) fn current_strict(&self) -> bool {
+        if self.inline_callee.is_some() {
+            if self.frames.len() > self.inline_frames_base {
+                return self.frames.last().unwrap().strict;
+            }
+            return self.inline_strict;
+        }
+        if let Some(frame) = self.frames.last() {
+            return frame.strict;
+        }
+        self.top_level_strict
+    }
+
     #[expect(clippy::too_many_arguments)]
     pub(crate) fn push_bytecode_frame(
         &mut self, callee: JsValue, this_value: JsValue, args: FrameArgs, construct_result_reg: Option<u8>,
@@ -1436,6 +1475,7 @@ impl Vm {
             constructed_this,
             is_derived_constructor: obj.is_derived_constructor(),
             super_called: false,
+            strict: sub_is_strict,
             continuation,
         });
 
@@ -2207,9 +2247,9 @@ impl oxide_runtime_api::VmHost for Vm {
         self.ordinary_get(obj, prop_name_si, receiver)
     }
     fn ordinary_set(
-        &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue,
+        &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, strict: bool,
     ) -> Result<(), String> {
-        self.ordinary_set(obj, prop_name_si, val, receiver)
+        self.ordinary_set(obj, prop_name_si, val, receiver, strict)
     }
     fn define_data_property(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, attributes: PropAttributes,
@@ -2528,6 +2568,7 @@ mod tests {
             saved_new_target: JsValue::undefined(),
             callee: JsValue::undefined(),
             construct_result_reg: None,
+            strict: false,
             constructed_this: None,
             is_derived_constructor: false,
             super_called: false,
@@ -2682,7 +2723,7 @@ mod tests {
 
         let x_si = vm.kernel_core.perm_interner().intern("x").0;
         let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
-        vm.ordinary_set(obj, x_si, JsValue::int(9), obj_val).expect("setter");
+        vm.ordinary_set(obj, x_si, JsValue::int(9), obj_val, true).expect("setter");
 
         let marker_si = vm.kernel_core.perm_interner().intern("marker").0;
         let obj = unsafe { &*obj_val.as_js_object_ptr() };
@@ -2720,7 +2761,7 @@ mod tests {
 
         let x_si = vm.kernel_core.perm_interner().intern("x").0;
         let child = unsafe { &mut *child_val.as_js_object_ptr() };
-        vm.ordinary_set(child, x_si, JsValue::int(12), child_val).expect("setter");
+        vm.ordinary_set(child, x_si, JsValue::int(12), child_val, true).expect("setter");
 
         let marker_si = vm.kernel_core.perm_interner().intern("marker").0;
         let child = unsafe { &*child_val.as_js_object_ptr() };
@@ -2744,7 +2785,7 @@ mod tests {
 
         let x_si = vm.kernel_core.perm_interner().intern("x").0;
         let child = unsafe { &mut *child_val.as_js_object_ptr() };
-        vm.ordinary_set(child, x_si, JsValue::int(15), child_val).expect("setter");
+        vm.ordinary_set(child, x_si, JsValue::int(15), child_val, true).expect("setter");
 
         let marker_si = vm.kernel_core.perm_interner().intern("marker").0;
         let child = unsafe { &*child_val.as_js_object_ptr() };
@@ -2761,7 +2802,7 @@ mod tests {
         let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
         assert!(!obj.has_prop_meta());
         assert_eq!(vm.ordinary_get(obj, x_si, obj_val).expect("get"), JsValue::int(1));
-        vm.ordinary_set(obj, x_si, JsValue::int(2), obj_val).expect("set");
+        vm.ordinary_set(obj, x_si, JsValue::int(2), obj_val, true).expect("set");
         assert_eq!(vm.ordinary_get(obj, x_si, obj_val).expect("get"), JsValue::int(2));
     }
 

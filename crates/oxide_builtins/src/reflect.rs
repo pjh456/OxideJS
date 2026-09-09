@@ -222,7 +222,7 @@ pub fn reflect_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if !target.is_extensible() && vm.get_own_property_slot(target, key_si).is_none() {
         return NativeResult::Ok(JsValue::bool(false));
     }
-    NativeResult::Ok(JsValue::bool(vm.ordinary_set(target, key_si, value, receiver).is_ok()))
+    NativeResult::Ok(JsValue::bool(vm.ordinary_set(target, key_si, value, receiver, true).is_ok()))
 }
 
 /// `Reflect.setPrototypeOf(target, proto)`：设置 prototype（对象或 null）。

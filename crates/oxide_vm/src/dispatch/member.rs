@@ -160,7 +160,7 @@ impl Vm {
         let prop_val = self.ordinary_get(obj, prop_name_si, receiver)?;
         let n = self.coerce_number_bounded(prop_val)?;
         let new_val = JsValue::float(n + 1.0);
-        self.ordinary_set(obj, prop_name_si, new_val, receiver)?;
+        self.ordinary_set(obj, prop_name_si, new_val, receiver, self.current_strict())?;
         self.regs[b] = new_val;
         Ok(())
     }
@@ -176,7 +176,7 @@ impl Vm {
         let prop_val = self.ordinary_get(obj, prop_name_si, receiver)?;
         let n = self.coerce_number_bounded(prop_val)?;
         let new_val = JsValue::float(n - 1.0);
-        self.ordinary_set(obj, prop_name_si, new_val, receiver)?;
+        self.ordinary_set(obj, prop_name_si, new_val, receiver, self.current_strict())?;
         self.regs[b] = new_val;
         Ok(())
     }

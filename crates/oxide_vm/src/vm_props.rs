@@ -152,22 +152,25 @@ impl Vm {
         None
     }
 
+    /// `strict` 为写方（执行赋值的那个函数/脚本）的严格模式：写失败时严格抛
+    /// TypeError，sloppy 静默 no-op（ECMA-262 OrdinarySetOwnProperty 失败分支）。
     pub(crate) fn ordinary_set(
-        &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue,
+        &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, strict: bool,
     ) -> Result<(), String> {
         let val = self.promote_if_needed_for_write_ptr(obj as *mut JsObject, val);
-        self.ordinary_set_inner(obj, prop_name_si, val, receiver, false)
+        self.ordinary_set_inner(obj, prop_name_si, val, receiver, false, strict)
     }
 
     /// 分发期入口：调用方（dispatch_set_prop 等）已对值做过 promote。
     pub(crate) fn ordinary_set_dispatch(
-        &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue,
+        &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, strict: bool,
     ) -> Result<(), String> {
-        self.ordinary_set_inner(obj, prop_name_si, val, receiver, true)
+        self.ordinary_set_inner(obj, prop_name_si, val, receiver, true, strict)
     }
 
     fn ordinary_set_inner(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, use_frame_push: bool,
+        strict: bool,
     ) -> Result<(), String> {
         vm_trace!(
             "ordinary_set_inner: shape={} prop_si={} frame_push={}",
@@ -180,7 +183,15 @@ impl Vm {
         if obj.is_typed_array_obj() {
             if let Some(index) = self.array_index_from_property_key(prop_name_si) {
                 if !std::ptr::eq(receiver.as_js_object_ptr(), obj as *mut JsObject) {
-                    return self.set_to_receiver(obj, prop_name_si, val, receiver, index as usize, use_frame_push);
+                    return self.set_to_receiver(
+                        obj,
+                        prop_name_si,
+                        val,
+                        receiver,
+                        index as usize,
+                        use_frame_push,
+                        strict,
+                    );
                 }
                 return oxide_builtins::typed_array::typed_array_element_set(self, obj, index, val);
             }
@@ -190,8 +201,8 @@ impl Vm {
         // prop_count/迭代/内置方法看到的长度不一致。
         let length_si = self.length_si;
         if obj.is_array() && prop_name_si == length_si {
-            // 冻结数组的 length 属性不可写（writable=false），赋值直接失败。
-            // sloppy/strict 差异未实现，与其它只读属性写一致统一抛 TypeError。
+            // 冻结数组的 length 属性不可写（writable=false），赋值直接失败；
+            // 两模式统一抛 TypeError（length 冻结检查的 strict/sloppy 差异不在本路径范围）。
             if obj.is_frozen() {
                 return self.raise_type_error("Cannot assign to read only property 'length'");
             }
@@ -215,12 +226,12 @@ impl Vm {
             let old_logical = obj.logical_len() as usize;
             let old_count = obj.array_prop_count as usize;
             // ArraySetLength：增长（newLen > oldLen）要求对象可扩展，不可扩展时
-            // 整个赋值失败且不修改（sloppy 静默失败；VM 未实现 strict 标志）。
+            // 整个赋值失败且不修改（length 失败两模式均静默 no-op，不抛）。
             if raw_new_len > old_logical && !obj.is_extensible() {
                 return Ok(());
             }
             // ArraySetLength：收缩时若 [newLen, oldLen) 内存在不可配置元素，整个收缩
-            // 失败且不做任何修改（sloppy 赋值静默失败；VM 未实现 strict 标志，统一按 no-op）。
+            // 失败且不做任何修改（length 失败两模式均静默 no-op，不抛）。
             if raw_new_len < old_logical {
                 for idx in raw_new_len..old_count {
                     if let Some(meta) = obj.prop_meta_at(idx) {
@@ -256,12 +267,20 @@ impl Vm {
             if let Some(meta) = obj.prop_meta_at(pos) {
                 if meta.is_accessor {
                     if meta.set.is_undefined() {
-                        return self.raise_type_error("property has no setter");
+                        // 无 setter：严格抛错，sloppy 静默 no-op。
+                        if strict {
+                            return self.raise_type_error("property has no setter");
+                        }
+                        return Ok(());
                     }
                     return self.call_or_push_setter(meta.set, receiver, val, use_frame_push);
                 }
                 if !meta.attributes.writable() {
-                    return self.raise_type_error("cannot assign to read-only property");
+                    // 只读数据属性：严格抛错，sloppy 静默 no-op。
+                    if strict {
+                        return self.raise_type_error("cannot assign to read-only property");
+                    }
+                    return Ok(());
                 }
             }
             // pos 是存储索引（get_own_property_slot 对数组已加元素区偏移）。
@@ -272,19 +291,30 @@ impl Vm {
         if let Some(meta) = self.inherited_property_meta(obj, prop_name_si) {
             if meta.is_accessor {
                 if meta.set.is_undefined() {
-                    return self.raise_type_error("property has no setter");
+                    // 继承无 setter：严格抛错，sloppy 静默 no-op。
+                    if strict {
+                        return self.raise_type_error("property has no setter");
+                    }
+                    return Ok(());
                 }
                 return self.call_or_push_setter(meta.set, receiver, val, use_frame_push);
             }
             if !meta.attributes.writable() {
-                return self.raise_type_error("cannot assign to read-only property");
+                // 继承只读数据属性：严格抛错，sloppy 静默 no-op（不遮蔽）。
+                if strict {
+                    return self.raise_type_error("cannot assign to read-only property");
+                }
+                return Ok(());
             }
         }
 
         // 新属性（自身与原型链均无同名）：须对象可扩展（OrdinarySet 的 extensible
-        // 检查），不可扩展时赋值失败。
+        // 检查），不可扩展时赋值失败（严格抛错，sloppy 静默 no-op）。
         if !obj.is_extensible() {
-            return self.raise_type_error("object is not extensible");
+            if strict {
+                return self.raise_type_error("object is not extensible");
+            }
+            return Ok(());
         }
         self.set_or_create_prop_value(obj, prop_name_si, val);
         Ok(())
@@ -293,9 +323,10 @@ impl Vm {
     /// TypedArray 整数索引在 `receiver` ≠ TA 时的 [[Set]] 语义：越界或非对象
     /// receiver 直接返回 true（不写、不 ToNumber）；界内对象 receiver 走普通 set
     /// 把属性落到 receiver 自身。
+    #[allow(clippy::too_many_arguments)]
     fn set_to_receiver(
         &mut self, ta_obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, index: usize,
-        use_frame_push: bool,
+        use_frame_push: bool, strict: bool,
     ) -> Result<(), String> {
         let Some((_, length)) = oxide_builtins::typed_array::typed_array_integer_index(self, ta_obj, prop_name_si)
         else {
@@ -310,7 +341,7 @@ impl Vm {
         }
         let promoted = self.promote_if_needed_for_write_ptr(receiver_ptr, val);
         let receiver_obj = unsafe { &mut *receiver_ptr };
-        self.ordinary_set_inner(receiver_obj, prop_name_si, promoted, receiver, use_frame_push)
+        self.ordinary_set_inner(receiver_obj, prop_name_si, promoted, receiver, use_frame_push, strict)
     }
 
     pub(crate) fn call_or_push_setter(
@@ -430,8 +461,10 @@ impl Vm {
     ) -> Result<(), String> {
         ic_trace!("set_member_prop: shape_id={} prop_name_si={}", obj.shape_id(), prop_name_si);
         let val = self.promote_if_needed_for_write_ptr(obj as *mut JsObject, val);
+        // 写方即当前执行函数（赋值语义），strict/sloppy 判定取当前上下文。
+        let strict = self.current_strict();
         if obj.has_prop_meta() {
-            self.ordinary_set(obj, prop_name_si, val, receiver)?;
+            self.ordinary_set(obj, prop_name_si, val, receiver, strict)?;
             return Ok(());
         }
         if crate::ic_helper::ic_set_hit_own(obj, &self.bytecode, ext_pc, val) {
@@ -445,9 +478,9 @@ impl Vm {
         } else if self.named_prop_create_needs_ordinary_set(obj, prop_name_si) {
             // 数组 length / 整数索引键写新属性：分流回 ordinary_set（ArraySetLength /
             // 元素区写），与 dispatch_ic_set_prop 对称，防快路径建影子槽破坏数组语义。
-            self.ordinary_set(obj, prop_name_si, val, receiver)?;
+            self.ordinary_set(obj, prop_name_si, val, receiver, strict)?;
         } else {
-            self.create_named_prop_fast(obj, prop_name_si, val, receiver, ext_pc, false)?;
+            self.create_named_prop_fast(obj, prop_name_si, val, receiver, ext_pc, false, strict)?;
         }
         Ok(())
     }
@@ -459,26 +492,40 @@ impl Vm {
     /// - 调用方已确认属性不存在于 shape 链（lookup_position miss）。
     /// - 数组 length / 数组与 TA 整数索引键不进入本路径（调用方先分流到 ordinary_set）。
     /// - `use_frame_push` 与 ordinary_set* 入口一致（member 写 false / IC_SET 分发 true）。
+    /// - `strict` 为写方的严格模式：原型链只读/无 setter/不可扩展时严格抛错、sloppy 静默 no-op。
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn create_named_prop_fast(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, ext_pc: usize,
-        use_frame_push: bool,
+        use_frame_push: bool, strict: bool,
     ) -> Result<(), String> {
         // 原型链同名 accessor 须触发 setter、只读 data 须报错（与 ordinary_set 一致），
         // 命中时不得创建 own 属性（规范 [[Set]] shadow 语义）。
         if let Some(meta) = self.inherited_property_meta(obj, prop_name_si) {
             if meta.is_accessor {
                 if meta.set.is_undefined() {
-                    return self.raise_type_error("property has no setter");
+                    // 继承无 setter：严格抛错，sloppy 静默 no-op。
+                    if strict {
+                        return self.raise_type_error("property has no setter");
+                    }
+                    return Ok(());
                 }
                 return self.call_or_push_setter(meta.set, receiver, val, use_frame_push);
             }
             if !meta.attributes.writable() {
-                return self.raise_type_error("cannot assign to read-only property");
+                // 继承只读数据属性：严格抛错，sloppy 静默 no-op（不遮蔽）。
+                if strict {
+                    return self.raise_type_error("cannot assign to read-only property");
+                }
+                return Ok(());
             }
         }
         // 新属性创建要求对象可扩展（规范 extensible 检查在原型链 setter/只读判定之后）。
         if !obj.is_extensible() {
-            return self.raise_type_error("object is not extensible");
+            // 不可扩展：严格抛错，sloppy 静默 no-op。
+            if strict {
+                return self.raise_type_error("object is not extensible");
+            }
+            return Ok(());
         }
         // 新 shape 槽位 = 追加前命名属性数（与 push_prop 的追加位置一致）。
         let slot = obj.prop_vec_len() as u32;

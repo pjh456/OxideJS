@@ -114,7 +114,7 @@ fn iterator_setter_ignore_proto_props<H: VmHost>(vm: &mut H, args: &[u8], key: u
             Err(err) => NativeResult::Err(crate::error::create_type_error(vm, &err)),
         }
     } else {
-        match vm.ordinary_set(this_obj, key, val, this_val) {
+        match vm.ordinary_set(this_obj, key, val, this_val, true) {
             Ok(()) => NativeResult::Ok(JsValue::undefined()),
             Err(err) => NativeResult::Err(crate::error::create_type_error(vm, &err)),
         }

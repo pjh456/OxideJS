@@ -1012,6 +1012,7 @@ mod tests {
             saved_new_target: JsValue::from_js_object(child_session),
             callee: JsValue::from_js_object(child_session),
             construct_result_reg: None,
+            strict: false,
             constructed_this: Some(JsValue::from_js_object(child_session)),
             is_derived_constructor: false,
             super_called: false,

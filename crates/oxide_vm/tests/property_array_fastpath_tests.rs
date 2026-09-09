@@ -89,14 +89,24 @@ fn accessor_getter_and_setter_still_trigger() {
     );
 }
 
-// 非写属性（writable:false）写入：fast path 不命中，走完整协议抛 TypeError。
+// 非写属性（writable:false）写入（严格模式）：fast path 不命中，走完整协议抛 TypeError。
 #[test]
-fn non_writable_index_write_throws() {
+fn non_writable_index_write_throws_in_strict() {
     let r = eval_str(
-        "var a=[1,2,3]; Object.defineProperty(a,0,{writable:false,value:1}); try { a[0]=9; 'no' } catch(e) { e instanceof TypeError ? 'throws' : 'wrong' }"
+        "var a=[1,2,3]; Object.defineProperty(a,0,{writable:false,value:1}); var r='no'; (function(){'use strict'; try { a[0]=9; } catch(e) { r = (e instanceof TypeError ? 'throws' : 'wrong'); } })(); r"
     )
     .unwrap();
     assert_eq!(r, "throws", "expected TypeError, got {r:?}");
+}
+
+// 非写属性（writable:false）写入（sloppy）：静默 no-op，值不变。
+#[test]
+fn non_writable_index_write_silently_fails_in_sloppy() {
+    let r = eval_str(
+        "var a=[1,2,3]; Object.defineProperty(a,0,{writable:false,value:1}); try { a[0]=9; 'no' } catch(e) { 'threw' }; a[0]"
+    )
+    .unwrap();
+    assert_eq!(r, "1", "sloppy 只读元素写应静默 no-op，值保持 1，实际 {r:?}");
 }
 
 // 非规范数字串（前导零）不映射整数键，走字符串键慢路径（不命中 fast path）。

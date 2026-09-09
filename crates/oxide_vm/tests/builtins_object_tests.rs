@@ -124,8 +124,8 @@ fn object_define_property_rejects_mixed_descriptor() {
 }
 
 #[test]
-fn object_define_property_non_writable_assignment_throws() {
-    let err = match eval("var o={}; Object.defineProperty(o,'x',{value:1}); o.x=2") {
+fn object_define_property_non_writable_assignment_throws_in_strict() {
+    let err = match eval("var o={}; Object.defineProperty(o,'x',{value:1}); (function(){'use strict'; o.x=2})()") {
         Ok(_) => panic!("expected assignment to fail"),
         Err(err) => err,
     };

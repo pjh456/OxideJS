@@ -90,22 +90,39 @@ fn proto_setter_called_both_write_paths() {
     assert_eq!(r, "2:0", "setter 被调 2 次（IC_SET 与 member 各 1），o 无 own 属性");
 }
 
-/// 原型只读 data：两条写路径都按 ordinary_set 抛 TypeError。
+/// 严格模式原型只读 data：两条写路径都按 ordinary_set 抛 TypeError。
 #[test]
-fn readonly_inherited_data_raises() {
+fn readonly_inherited_data_raises_in_strict() {
     let (r, _hits, _misses) = run_once(
         r#"var p = {};
            Object.defineProperty(p, 'x', { value: 1, writable: false });
            var o = Object.create(p);
            var msg = '';
-           try { o.x = 5; } catch (e) { msg = e.message; }
-           try { o.x += 1; } catch (e) { msg += '|' + e.message; }
+           (function() { 'use strict';
+             try { o.x = 5; } catch (e) { msg = e.message; }
+             try { o.x += 1; } catch (e) { msg += '|' + e.message; }
+           })();
            msg"#,
     );
     assert_eq!(
         r, "cannot assign to read-only property|cannot assign to read-only property",
         "两条路径都拒绝写只读继承属性"
     );
+}
+
+/// sloppy 原型只读 data：两条写路径都静默 no-op（值不变、不抛）。
+#[test]
+fn readonly_inherited_data_silently_fails_in_sloppy() {
+    let (r, _hits, _misses) = run_once(
+        r#"var p = {};
+           Object.defineProperty(p, 'x', { value: 1, writable: false });
+           var o = Object.create(p);
+           var threw = false;
+           try { o.x = 5; } catch (e) { threw = true; }
+           try { o.x += 1; } catch (e) { threw = true; }
+           threw + ':' + o.x + ':' + o.hasOwnProperty('x')"#,
+    );
+    assert_eq!(r, "false:1:false", "sloppy 只读继承属性写静默失败，值保持 1，不创建 own 属性");
 }
 
 /// 写新属性（shape 转换）：快路径建 shape + 写回，循环内同 shape 写全命中。

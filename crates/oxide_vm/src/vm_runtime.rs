@@ -100,6 +100,12 @@ macro_rules! inline_save_field {
     ($recv:ident, $window_regs:ident, inline_callee, opt_copy) => {
         $recv.inline_callee
     };
+    ($recv:ident, $window_regs:ident, inline_strict, copy) => {
+        $recv.inline_strict
+    };
+    ($recv:ident, $window_regs:ident, inline_frames_base, copy) => {
+        $recv.inline_frames_base
+    };
     ($recv:ident, $window_regs:ident, inline_args_base, copy) => {
         $recv.inline_args_base
     };
@@ -183,6 +189,12 @@ macro_rules! inline_restore_field {
     ($recv:ident, $saved:ident, inline_callee, opt_copy) => {
         $recv.inline_callee = $saved.inline_callee
     };
+    ($recv:ident, $saved:ident, inline_strict, copy) => {
+        $recv.inline_strict = $saved.inline_strict
+    };
+    ($recv:ident, $saved:ident, inline_frames_base, copy) => {
+        $recv.inline_frames_base = $saved.inline_frames_base
+    };
     ($recv:ident, $saved:ident, inline_args_base, copy) => {
         $recv.inline_args_base = $saved.inline_args_base
     };
@@ -228,6 +240,8 @@ macro_rules! inline_core_fields {
             (spill_stack, move_field),            // V M
             (cell_stack, move_field),             // V M
             (inline_callee, opt_copy),            // V M
+            (inline_strict, copy),                // M
+            (inline_frames_base, copy),           // M
             (inline_args_base, copy),             // M
             (inline_args_count, copy),            // M
             (accessor_frame_target_reg, copy),    // M
@@ -382,6 +396,11 @@ impl Vm {
         self.root_reg_limit = self.active_reg_limit;
         self.cell_stack.push(Vec::with_capacity(sub.cells_needed as usize));
         self.inline_callee = Some(callee);
+        // inline 无 CallFrame：目标函数严格模式单独记录，内联执行期间的写路径
+        // strict/sloppy 判定据此分派（嵌套内联时外层值由 InlineSyncState 恢复）。
+        self.inline_strict = sub.is_strict;
+        // 帧基线快照：内联期间新压的帧（CALL/accessor）越过基线，其严格性归帧栈顶。
+        self.inline_frames_base = self.frames.len();
         // inline 同步调用无 CallFrame：完整实参写入 spill 栈实参区，供 CREATE_ARGUMENTS 读取。
         self.inline_args_base = self.spill_stack.len() as u32;
         self.spill_stack.extend_from_slice(args);
@@ -486,6 +505,8 @@ impl Vm {
         self.cell_stack.push(Vec::new());
         self.sub_modules = Arc::new(collect_flat_modules(module));
         self.immutables_cache = (0..self.sub_modules.len()).map(|_| OnceLock::new()).collect();
+        // 顶层脚本严格模式：无帧且无 inline 时写路径的 strict/sloppy 判定来源。
+        self.top_level_strict = module.is_strict;
         self.bytecode = Arc::clone(&module.bytecode);
         self.activate_immutables(0, &module.constants);
         self.root_reg_limit = module.n_registers.max(1);

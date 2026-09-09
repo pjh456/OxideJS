@@ -496,7 +496,7 @@ pub fn object_assign<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     for (si, val) in all_assignments {
         let promoted = vm.promote_if_needed_for_write_ptr(target_ptr, val);
         // Set(to, key, value, true)：receiver 为目标对象（目标同名 setter 的 this 指向 target）。
-        if let Err(err) = vm.ordinary_set(target, si, promoted, target_val) {
+        if let Err(err) = vm.ordinary_set(target, si, promoted, target_val, true) {
             return NativeResult::Err(crate::error::create_type_error(vm, &err));
         }
     }
@@ -1089,7 +1089,7 @@ pub fn object_from_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         // ToPropertyKey 语义建键：int/规范数字串/symbol 统一映射，避免数字键分裂。
         let si = vm.property_key_si(key_val);
         let promoted = vm.promote_if_needed_for_write_ptr(obj, value_val);
-        let _ = vm.ordinary_set(unsafe { &mut *obj }, si, promoted, target_val);
+        let _ = vm.ordinary_set(unsafe { &mut *obj }, si, promoted, target_val, true);
     }
     NativeResult::Ok(target_val)
 }
@@ -1483,7 +1483,7 @@ pub fn object_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             let new_arr_val = JsValue::from_js_object(arr);
             let result_ref_mut = unsafe { &mut *result };
             let promoted = vm.promote_if_needed_for_write_ptr(result, new_arr_val);
-            let _ = vm.ordinary_set(result_ref_mut, key_si, promoted, result_val);
+            let _ = vm.ordinary_set(result_ref_mut, key_si, promoted, result_val, true);
             new_arr_val
         };
         // push element 到分组数组（写入前 promote，与 Array.prototype.push 同款）。
