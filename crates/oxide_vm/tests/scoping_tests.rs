@@ -158,3 +158,40 @@ fn typeof_tdz_throws() {
     let err = eval("typeof x; let x;").unwrap_err();
     assert!(err.contains("ReferenceError"), "got: {}", err);
 }
+
+#[test]
+fn tdz_nested_block_read_throws() {
+    // 嵌套块读：块内声明点前的读命中块级 TDZ 占位，抛 ReferenceError。
+    let err = eval("{ x; let x; }").unwrap_err();
+    assert!(err.contains("ReferenceError"), "got: {}", err);
+}
+
+#[test]
+fn tdz_declaration_self_reference_throws() {
+    // 声明语句自引用：初始化器读 x 时 x 尚未初始化，抛 ReferenceError。
+    let err = eval("let x = x + 1").unwrap_err();
+    assert!(err.contains("ReferenceError"), "got: {}", err);
+}
+
+#[test]
+fn tdz_hoisted_function_reads_later_let_throws() {
+    // hoisted 函数读声明点之后的 let：调用时 x 仍在 TDZ，抛 ReferenceError。
+    let err = eval("function f(){return x} f(); let x;").unwrap_err();
+    assert!(err.contains("ReferenceError"), "got: {}", err);
+}
+
+#[test]
+fn lexical_decl_in_single_statement_body_rejected_at_parse() {
+    // 文法契约：单语句体取 Statement，lexical 声明属 Declaration（非 Statement），
+    // `if (c) let x = 5;` 等无括号控制流体体直属 lexical 是语法错误，解析期即拒绝，
+    // 不会进入 emit——TDZ 窗口读在该形状上不可达。此前提若被未来 parser 变更
+    // 打破（开始接受这些形状），须同步补 lexical 预声明的体递归覆盖。
+    let err = eval("if (true) let x = 5;").unwrap_err();
+    assert!(err.contains("Parse"), "got: {}", err);
+    let err = eval("if (true) const x = 5;").unwrap_err();
+    assert!(err.contains("Parse"), "got: {}", err);
+    let err = eval("for (let i = 0; i < 1; i++) let x = 5;").unwrap_err();
+    assert!(err.contains("Parse"), "got: {}", err);
+    let err = eval("lab: let x = 5;").unwrap_err();
+    assert!(err.contains("Parse"), "got: {}", err);
+}

@@ -537,8 +537,9 @@ impl Emitter {
     ///
     /// # 边界与前提
     /// - 只扫描直接子语句 + 递归 switch case（switch 不推 scope，case 内 lexical
-    ///   声明属于外层作用域）；不递归块/if/for/while body（嵌套块自预声明，
-    ///   单语句 body 不含 lexical 声明）。
+    ///   声明属于外层作用域）；不递归块/if/for/while body（嵌套块自预声明；
+    ///   单语句 body 不接受 lexical 声明——lexical 属 Declaration、非 Statement
+    ///   子产生式，parser 按语法错误直接拒绝，这些形状不会进入 emit）。
     /// - 跳过 for 头声明（循环作用域由 for 分支内联 declare）。
     pub(crate) fn predeclare_lexical_declarations(&self, statements: &[Statement], ctx: &mut CompileCtx) {
         for statement in statements {
