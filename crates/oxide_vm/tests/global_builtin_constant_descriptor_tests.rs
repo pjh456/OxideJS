@@ -186,3 +186,21 @@ fn function_declaration_builtin_name() {
          && d.enumerable === false && d.configurable === true",
     );
 }
+
+#[test]
+fn for_in_var_head_builtin_name_compiles_and_keeps_property() {
+    // 顶层 for-in var 头撞 builtin 名：序言预登记槽复用后可编译，
+    // 迭代键不触及全局属性（Math 对象保）。
+    run_truthy("var m = Math; for (var Math in {a:1,b:2}) {} globalThis.Math === m");
+}
+
+#[test]
+fn for_in_var_head_readonly_builtin_not_clobbered() {
+    // 顶层 for-in var 头撞三常量：迭代键写命中只读内置拦截——
+    // sloppy 静默跳过（镜像槽与声明值均不污染），strict 迭代抛 TypeError。
+    run_truthy("var n = NaN; for (var NaN in {a:1,b:2}) {} Number.isNaN(NaN) && Number.isNaN(n)");
+    run_truthy(
+        "var i = Infinity; for (var Infinity in {a:1,b:2}) {} Infinity === i && Infinity === globalThis.Infinity",
+    );
+    run_truthy("\"use strict\"; try { for (var NaN in {a:1}) {} } catch (e) { e instanceof TypeError }");
+}

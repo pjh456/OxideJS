@@ -79,3 +79,24 @@ fn for_in_still_enumerates_own_keys() {
         "for-in still enumerates the object's own enumerable keys"
     );
 }
+
+#[test]
+fn for_in_var_head_reuses_existing_var_binding() {
+    // var 头命中同 scope 已预声明的 var 绑定：复用既有槽位不重复声明，
+    // 迭代键逐迭代落入该绑定（终值 = 末键）。
+    assert_eq!(
+        eval("var x = 0; for (var x in {a:1,b:2}) {} x === \"b\""),
+        "true",
+        "for-in var head reuses the predeclared same-scope var binding"
+    );
+}
+
+#[test]
+fn for_in_var_head_fresh_name() {
+    // var 头无其他引用：提升的 var 槽接收迭代键。
+    assert_eq!(
+        eval("for (var x in {a:1}) {} x === \"a\""),
+        "true",
+        "for-in var head binds iteration keys into the hoisted var slot"
+    );
+}
