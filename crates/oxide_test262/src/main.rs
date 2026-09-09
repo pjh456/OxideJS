@@ -17,8 +17,8 @@ mod report;
 mod test262_log;
 use oxide_log::{Level, LogConfig, Output, SUBSYSTEM_COUNT};
 use report::{
-    append_fail_log, first_line, format_fail_categories, format_fail_list, parse_fail_log, FailRecord,
-    MAX_FAIL_MSG_CHARS, MAX_FAIL_RECORD_BYTES,
+    append_fail_log, extract_not_callable_subkey, first_line, format_fail_categories, format_fail_groupings,
+    format_fail_list, parse_fail_log, FailRecord, MAX_FAIL_MSG_CHARS, MAX_FAIL_RECORD_BYTES,
 };
 
 // 记录当前正在执行的测试路径（thread-local）；每个测试执行前写入，
@@ -175,9 +175,9 @@ impl RunStats {
         match &result.outcome {
             TestOutcome::Pass(_) => self.pass += 1,
             TestOutcome::Fail(msg) => {
-                let cat = categorize_fail(msg);
+                let (cat, subkey) = categorize_fail(msg);
                 *self.fail_categories.entry(cat.clone()).or_insert(0) += 1;
-                self.push_fail_record(index, cat, String::new(), msg.clone());
+                self.push_fail_record(index, cat, subkey, msg.clone());
                 self.fail += 1;
             }
             TestOutcome::Skip(_) => self.skip += 1,
@@ -1370,6 +1370,10 @@ fn run_supervised(args: &[String], skip_until: usize, end_index: usize, no_skip:
     if !fail_list.is_empty() {
         print!("{fail_list}");
     }
+    let groupings = format_fail_groupings(&stats, paths);
+    if !groupings.is_empty() {
+        print!("{groupings}");
+    }
     let anomalies = stats.spawn_errors + stats.wait_errors + stats.hb_write_errors;
     if anomalies > 0 {
         println!("  --- supervise anomalies ---");
@@ -1464,56 +1468,69 @@ fn build_runner_kernel() -> Arc<KernelCore> {
     KernelCore::new(kernel_config)
 }
 
-/// 把失败消息归类为可聚合的失败类别（compile/vm/parse/harness 等前缀）。
-fn categorize_fail(msg: &str) -> String {
+/// 把失败消息归类为可聚合的失败类别与 subkey，返回 `(category, subkey)`。
+///
+/// # 边界与前提
+/// - 类别大类名口径不变（心跳序列化 / 既有基线对比兼容）；碎片桶
+///   （`compile: other` / `vm: other` / `other`）不再携带消息尾巴
+///   （全文已在 FailRecord.message）。
+/// - subkey 仅 `not callable`（调用点，提取失败归 `(none)`）与
+///   `not defined`（标识符）两类非空，其余恒空串；
+///   `IC_GET_PROP on non-object` 独立成桶且 subkey 恒空（靠目录分组区分）。
+fn categorize_fail(msg: &str) -> (String, String) {
     if msg.contains("compile error:") {
         let reason = msg.trim_start_matches("compile error: ").trim();
         if reason.contains("already been declared") {
-            "compile: already declared".into()
+            ("compile: already declared".into(), String::new())
         } else if reason.contains("not yet implemented") {
-            "compile: not yet implemented".into()
+            ("compile: not yet implemented".into(), String::new())
         } else if reason.contains("not yet supported") {
-            "compile: not yet supported".into()
+            ("compile: not yet supported".into(), String::new())
         } else if reason.contains("unsupported") {
-            "compile: unsupported".into()
+            ("compile: unsupported".into(), String::new())
         } else if reason.contains("is not defined") {
-            "compile: not defined".into()
+            ("compile: not defined".into(), parse_undefined_ident(msg).unwrap_or("").to_string())
         } else {
-            format!("compile: other ({})", reason.chars().take(60).collect::<String>())
+            ("compile: other".into(), String::new())
         }
     } else if msg.contains("parse error:") {
-        "parse error".into()
+        ("parse error".into(), String::new())
     } else if msg.contains("vm error:") {
         let reason = msg.trim_start_matches("vm error: ").trim();
         if reason.contains("CALL_NATIVE target") {
-            "vm: CALL_NATIVE no target".into()
+            ("vm: CALL_NATIVE no target".into(), String::new())
         } else if reason.contains("not callable") {
-            "vm: not callable".into()
+            ("vm: not callable".into(), extract_not_callable_subkey(msg))
+        } else if reason.contains("IC_GET_PROP on non-object") {
+            ("vm: IC_GET_PROP on non-object".into(), String::new())
         } else if reason.contains("not yet implemented") {
-            "vm: not yet implemented".into()
+            ("vm: not yet implemented".into(), String::new())
         } else if reason.contains("step limit") {
-            "vm: step limit".into()
+            ("vm: step limit".into(), String::new())
         } else if reason.contains("not defined") {
-            "vm: not defined".into()
+            ("vm: not defined".into(), parse_undefined_ident(msg).unwrap_or("").to_string())
         } else if reason.contains("unsupported") {
-            "vm: unsupported".into()
+            ("vm: unsupported".into(), String::new())
         } else {
-            format!("vm: other ({})", reason.chars().take(60).collect::<String>())
+            ("vm: other".into(), String::new())
         }
     } else if msg.contains("engine panic") {
-        "engine panic".into()
+        ("engine panic".into(), String::new())
     } else if msg.contains("out-of-scope harness:") {
-        "harness: blacklisted".into()
+        ("harness: blacklisted".into(), String::new())
     } else if msg.contains("unknown harness:") {
-        "harness: unknown".into()
+        ("harness: unknown".into(), String::new())
     } else if msg.contains("harness compile error:") {
-        "harness: compile error".into()
+        ("harness: compile error".into(), String::new())
     } else if msg.contains("harness runtime error:") {
-        "harness: runtime error".into()
+        ("harness: runtime error".into(), String::new())
     } else if msg.contains("expected runtime error") {
-        "expected runtime error".into()
+        ("expected runtime error".into(), String::new())
+    } else if msg.contains("is not defined") {
+        // 无前缀形态的未绑定标识符错误兜底（生产路径均带 vm error: 前缀）。
+        ("vm: not defined".into(), parse_undefined_ident(msg).unwrap_or("").to_string())
     } else {
-        format!("other: {}", msg.chars().take(80).collect::<String>())
+        ("other".into(), String::new())
     }
 }
 
@@ -1747,8 +1764,10 @@ fn run_tests() -> bool {
                                     eprintln!("  [warn] heartbeat write failed at #{i}: {e}");
                                 }
                                 if let TestOutcome::Fail(msg) = &result.outcome {
-                                    let cat = categorize_fail(msg);
-                                    if let Err(e) = append_fail_log(&hb.with_extension("fails"), i, &cat, "", msg) {
+                                    // 旁路行携带真 subkey，父进程并入 fail_records 后直接生效 subkey 分组。
+                                    let (cat, subkey) = categorize_fail(msg);
+                                    if let Err(e) = append_fail_log(&hb.with_extension("fails"), i, &cat, &subkey, msg)
+                                    {
                                         stats.hb_write_errors += 1;
                                         eprintln!("  [warn] fail log append failed at #{i}: {e}");
                                     }
@@ -1758,7 +1777,7 @@ fn run_tests() -> bool {
                                 match &result.outcome {
                                     TestOutcome::Pass(_) => println!("PASS {}", paths_ref[i].display()),
                                     TestOutcome::Fail(msg) => {
-                                        let cat = categorize_fail(msg);
+                                        let (cat, _) = categorize_fail(msg);
                                         println!("FAIL {} [{}] {}", paths_ref[i].display(), cat, first_line(msg));
                                     }
                                     TestOutcome::Skip(_) => println!("SKIP {}", paths_ref[i].display()),
@@ -1840,6 +1859,11 @@ fn run_tests() -> bool {
         if !fail_list.is_empty() {
             print!("{fail_list}");
         }
+    }
+    // 分组是聚合汇总段，恒打印（不受 --no-fail-list 控制）；无 fail 数据时静默。
+    let groupings = format_fail_groupings(&stats, &paths);
+    if !groupings.is_empty() {
+        print!("{groupings}");
     }
     println!("═══════════════════════════════════════");
 
@@ -1982,6 +2006,38 @@ mod tests {
         ] {
             assert_outcome(e, None, false, &TestOutcome::Fail("".into()));
         }
+    }
+
+    /// categorize_fail 双返回：类别大类名口径不变（碎片桶去消息尾巴），
+    /// subkey 仅 not callable / not defined 三类非空，IC_GET_PROP 独立成桶。
+    #[test]
+    fn categorize_fail_returns_category_and_subkey() {
+        let cases = [
+            ("vm error: TypeError: CALL target is not callable", ("vm: not callable", "CALL target")),
+            ("vm error: TypeError: accessor is not callable", ("vm: not callable", "accessor")),
+            ("vm error: TypeError: x is not callable", ("vm: not callable", "x")),
+            ("uncaught ReferenceError: foo is not defined", ("vm: not defined", "foo")),
+            ("compile error: Identifier 'x' is not defined", ("compile: not defined", "x")),
+            ("vm error: IC_GET_PROP on non-object", ("vm: IC_GET_PROP on non-object", "")),
+            ("vm error: TypeError: method called on incompatible receiver", ("vm: other", "")),
+            ("engine panic: boom", ("engine panic", "")),
+            ("random string", ("other", "")),
+        ];
+        for (msg, (want_cat, want_sub)) in cases {
+            assert_eq!(categorize_fail(msg), (want_cat.to_string(), want_sub.to_string()), "消息 {msg}");
+        }
+    }
+
+    /// record 把真 subkey 写入 FailRecord（not callable 调用点透传）。
+    #[test]
+    fn record_stores_real_subkey() {
+        let mut stats = RunStats::default();
+        stats.record(
+            0,
+            &TestResult::fail(PathBuf::from("p.js"), 1, "vm error: TypeError: Map.set is not callable"),
+        );
+        assert_eq!(stats.fail_records.len(), 1);
+        assert_eq!(stats.fail_records[0].subkey, "Map.set");
     }
 
     /// 心跳写读往返：类别行随心跳头一起持久化并完整还原（含制表符/换行压平），

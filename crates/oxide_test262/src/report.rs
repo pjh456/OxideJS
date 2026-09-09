@@ -2,6 +2,7 @@
 //! 全部为纯函数/String builder（可单测），不持有全局状态。
 
 use crate::RunStats;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// 单条失败记录：路径用全局测试数组下标（8 字节），类别用 RunStats 内 id 表下标。
@@ -10,8 +11,7 @@ use std::path::{Path, PathBuf};
 pub struct FailRecord {
     pub index: usize,     // paths[index]
     pub category_id: u16, // RunStats.categories 下标
-    #[expect(dead_code)] // 当前恒空串；subkey 分组读取落地后填充真值
-    pub subkey: String, // not callable 调用点 / not defined 标识符 / 其余空串
+    pub subkey: String,   // not callable 调用点 / not defined 标识符 / 其余空串
     pub message: String,  // 完整错误文本（≤ 2048 字符）
     #[expect(dead_code)] // strict 矩阵预留，当前恒 0；启用后赋值
     pub scenario: u8, // 0 = default（strict 预留）
@@ -96,6 +96,27 @@ pub fn format_fail_list(stats: &RunStats, paths: &[PathBuf]) -> String {
     out
 }
 
+/// 从 `TypeError: <X> is not callable` 提取调用点 X。
+///
+/// 定位首个 `TypeError: ` 前缀，取其后到 ` is not callable` 后缀之间的文本；
+/// 无前缀 / 非该后缀返回 `"(none)"`（不误伤类别判定）。
+///
+/// # 边界与前提
+/// - `msg` 可带 `vm error: ` 等前导前缀，`find("TypeError: ")` 定位不受影响。
+/// - 提取失败（无前缀 / 无后缀 / 中间空）统一归 `"(none)"`，仍落
+///   `vm: not callable` 大类桶，不改变统计口径。
+pub fn extract_not_callable_subkey(msg: &str) -> String {
+    let Some(start) = msg.find("TypeError: ") else { return "(none)".into() };
+    let rest = &msg[start + "TypeError: ".len()..];
+    let Some(end) = rest.find(" is not callable") else { return "(none)".into() };
+    let x = rest[..end].trim();
+    if x.is_empty() {
+        "(none)".into()
+    } else {
+        x.to_string()
+    }
+}
+
 /// 把一条失败记录追加到 supervise 旁路文件（子进程 → 父进程通道）。
 /// 行格式 `index\tcategory\tsubkey\tmessage`，字段经 escape_log_field 压平。
 ///
@@ -132,6 +153,78 @@ pub fn parse_fail_log(content: &str) -> Vec<(usize, String, String, String)> {
     out
 }
 
+/// 目录分组键：`path.parent()` 组件的末 3 级以 `/` 拼接；
+/// 不足 3 级时取全部可用组件（无目录的文件返回空串）。
+fn directory_group_key(path: &Path) -> String {
+    let parent = path.parent().unwrap_or(path);
+    let comps: Vec<String> = parent
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    comps[comps.len().saturating_sub(3)..].join("/")
+}
+
+/// 目录分组 + subkey 子分组聚合打印：目录 top 30 + subkey top 20，超出折叠。
+///
+/// # 步骤
+/// 1. 目录分组：各记录 `path.parent()` 末 3 级组件为键，计数降序取前 30。
+/// 2. subkey 子分组：仅展开 `vm: not callable` / `vm: not defined` /
+///    `compile: not defined` 三类（计数降序取前 20）；`vm: IC_GET_PROP on
+///    non-object` subkey 恒空（靠目录分组区分），不展开；空 subkey 显示为 `(none)`。
+///
+/// # 边界与前提
+/// - 空 fail_records 返回空串；记录下标越出 paths 范围者不参与目录分组。
+/// - 返回串自带尾换行，调用方原样打印。
+pub fn format_fail_groupings(stats: &RunStats, paths: &[PathBuf]) -> String {
+    if stats.fail_records.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    out.push_str("  --- FAIL groupings ---\n");
+
+    // 目录分组：按父路径末 3 级聚合，计数降序、同数按键升序。
+    let mut dirs: HashMap<String, usize> = HashMap::new();
+    for rec in &stats.fail_records {
+        let Some(path) = paths.get(rec.index) else {
+            continue;
+        };
+        *dirs.entry(directory_group_key(path)).or_insert(0) += 1;
+    }
+    let mut dirs: Vec<_> = dirs.into_iter().collect();
+    dirs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    out.push_str(&format!("    directory ({})\n", dirs.len()));
+    for (key, count) in dirs.iter().take(30) {
+        out.push_str(&format!("      {key} : {count}\n"));
+    }
+    let rest = dirs.len().saturating_sub(30);
+    if rest > 0 {
+        out.push_str(&format!("      (+{rest} more directories)\n"));
+    }
+
+    // subkey 子分组：仅展开三类带真 subkey 的类别，空 subkey 显示 (none)。
+    let mut subs: HashMap<(String, String), usize> = HashMap::new();
+    for rec in &stats.fail_records {
+        let Some(cat) = stats.categories.get(rec.category_id as usize) else {
+            continue;
+        };
+        if !matches!(cat.as_str(), "vm: not callable" | "vm: not defined" | "compile: not defined") {
+            continue;
+        }
+        let subkey = if rec.subkey.is_empty() { "(none)".to_string() } else { rec.subkey.clone() };
+        *subs.entry((cat.clone(), subkey)).or_insert(0) += 1;
+    }
+    let mut subs: Vec<_> = subs.into_iter().map(|((cat, subkey), count)| (cat, subkey, count)).collect();
+    subs.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)).then_with(|| a.1.cmp(&b.1)));
+    for (cat, subkey, count) in subs.iter().take(20) {
+        out.push_str(&format!("    subkey: {cat} ({subkey}) : {count}\n"));
+    }
+    let rest = subs.len().saturating_sub(20);
+    if rest > 0 {
+        out.push_str(&format!("    (+{rest} more subkeys)\n"));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +238,61 @@ mod tests {
     #[test]
     fn escape_log_field_flattens_separators() {
         assert_eq!(escape_log_field("a\tb\nc\rd"), "a b c d");
+    }
+
+    /// `not callable` 调用点提取：带/不带 `vm error: ` 前缀均可定位，
+    /// 无前缀 / 无后缀 / 中间空一律回退 `(none)`。
+    #[test]
+    fn extract_not_callable_subkey_extracts_call_site() {
+        assert_eq!(extract_not_callable_subkey("TypeError: CALL target is not callable"), "CALL target");
+        assert_eq!(extract_not_callable_subkey("vm error: TypeError: x is not callable"), "x");
+        assert_eq!(extract_not_callable_subkey("TypeError: not callable"), "(none)");
+        assert_eq!(extract_not_callable_subkey("boom"), "(none)");
+    }
+
+    /// 分组聚合：目录分组（末 3 级键）计数正确、subkey 仅三类展开且按 subkey 分桶、
+    /// IC_GET_PROP 不展开、目录 top N 折叠行出现、空记录返回空串。
+    #[test]
+    fn format_fail_groupings_groups_by_directory_and_subkey() {
+        let mut stats = RunStats::default();
+        let mut paths: Vec<PathBuf> = Vec::new();
+        // 33 个不同目录（超 top-30 上限），每目录一条 not callable 记录，
+        // subkey 交替取两个值，验证按 subkey 分桶。
+        for i in 0..32 {
+            paths.push(PathBuf::from(format!("language/expressions/dir{i:02}/t.js")));
+            let subkey = if i % 2 == 0 { "CALL target" } else { "accessor" };
+            stats.push_fail_record(i, "vm: not callable".into(), subkey.into(), "m".into());
+        }
+        // IC_GET_PROP：subkey 恒空，不应产生 subkey 行。
+        paths.push(PathBuf::from("built-ins/Symbol/prototype/s.js"));
+        stats.push_fail_record(32, "vm: IC_GET_PROP on non-object".into(), String::new(), "m".into());
+        let out = format_fail_groupings(&stats, &paths);
+        assert!(out.contains("language/expressions/dir00 : 1"), "实际:\n{out}");
+        assert!(out.contains("built-ins/Symbol/prototype : 1"), "实际:\n{out}");
+        assert!(out.contains("(+3 more directories)"), "实际:\n{out}");
+        assert!(out.contains("subkey: vm: not callable (CALL target) : 16"), "实际:\n{out}");
+        assert!(out.contains("subkey: vm: not callable (accessor) : 16"), "实际:\n{out}");
+        assert!(!out.contains("IC_GET_PROP"), "IC_GET_PROP 不应展开 subkey 行，实际:\n{out}");
+        // 空 stats 返回空串。
+        assert_eq!(format_fail_groupings(&RunStats::default(), &paths), "");
+    }
+
+    /// 目录键取父路径末 3 级：3 级父路径原样、更深父路径截末 3 级、
+    /// 不足 3 级取全部可用组件（无目录文件为空键）。
+    #[test]
+    fn format_fail_groupings_uses_last_3_parent_components() {
+        let mut stats = RunStats::default();
+        let paths = vec![
+            PathBuf::from("language/expressions/addition/b1.js"),
+            PathBuf::from("a/b/c/d/e.js"),
+            PathBuf::from("top.js"),
+        ];
+        for i in 0..paths.len() {
+            stats.push_fail_record(i, "vm: not defined".into(), "foo".into(), "m".into());
+        }
+        let out = format_fail_groupings(&stats, &paths);
+        assert!(out.lines().any(|l| l.trim_start() == "language/expressions/addition : 1"), "实际:\n{out}");
+        assert!(out.lines().any(|l| l.trim_start() == "b/c/d : 1"), "实际:\n{out}");
+        assert!(out.lines().any(|l| l.trim_start() == ": 1"), "实际:\n{out}");
     }
 }
