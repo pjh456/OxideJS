@@ -408,6 +408,9 @@ impl Vm {
     pub fn reset(&mut self) {
         self.clear_execution_state();
         self.maybe_collect_session_gc();
+        // session 对象可持有 epoch 子引用（函数对象捕获、原生盒直插）：epoch
+        // 重置前把 epoch 子引用原地克隆晋升进 session，避免悬垂指针。
+        self.promote_session_epoch_refs();
         self.bytecode = Arc::default();
         self.immutables_cache.clear();
         self.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
@@ -542,7 +545,12 @@ impl Vm {
             obj.set_arrow(true);
             obj.set_captured_this(self.regs[254]);
         }
-        let obj_ptr = self.alloc_object(obj);
+        // 函数对象直接 session 分配：寿命从调用级延至 session 级（session GC
+        // mark/sweep 回收）。若按 epoch 分配，写入全局等逃逸根时 promote 屏障会
+        // 深克隆进 session，全局属性与局部槽指针分裂、严格相等恒 false。
+        obj.set_session_epoch(true);
+        let obj_ptr = self.gc_state.session_epoch.alloc(obj) as *mut JsObject;
+        self.gc_state.session_object_ptrs.push(obj_ptr);
         let func_val = JsValue::object(obj_ptr as *mut u8);
 
         if !is_arrow {
@@ -554,8 +562,13 @@ impl Vm {
             } else {
                 JsValue::from_js_object(self.session.builtin_world().object_proto.as_ptr() as *mut JsObject)
             };
-            let prototype_obj = self.epoch.alloc(JsObject::new_empty(EMPTY_SHAPE_ID, proto_of_proto));
-            self.gc_state.track_epoch_object(prototype_obj);
+            // prototype 子对象与函数本体同走 session 分配：`f.prototype ===
+            // globalThis.f.prototype` 要求两侧同一对象，epoch 分配会在逃逸写时
+            // 被递归克隆出第二份。
+            let mut prototype = JsObject::new_empty(EMPTY_SHAPE_ID, proto_of_proto);
+            prototype.set_session_epoch(true);
+            let prototype_obj = self.gc_state.session_epoch.alloc(prototype) as *mut JsObject;
+            self.gc_state.session_object_ptrs.push(prototype_obj);
             let prototype_val = JsValue::from_js_object(prototype_obj);
 
             if !is_generator {

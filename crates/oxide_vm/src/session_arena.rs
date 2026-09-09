@@ -102,6 +102,8 @@ impl Vm {
         dst
     }
 
+    /// 克隆改写与 reset 边界晋升共用的单引用改写：epoch 对象克隆晋升进
+    /// session（forwarding 去重共享与环）；其余值原样保留。
     pub(crate) fn promote_value_if_epoch_object(
         &mut self, value: JsValue, forwarding: &mut HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>,
     ) -> JsValue {
@@ -109,21 +111,100 @@ impl Vm {
             return value;
         }
         let ptr = value.as_js_object_ptr();
-        if ptr.is_null() || !unsafe { &*ptr }.is_epoch() {
+        if ptr.is_null() {
             return value;
         }
-        JsValue::from_js_object(self.promote_object_inner(ptr, forwarding))
+        // SAFETY: 执行核心产出的对象值，指针在 session 生命周期内有效。
+        if unsafe { &*ptr }.is_epoch() {
+            return JsValue::from_js_object(self.promote_object_inner(ptr, forwarding));
+        }
+        value
     }
 
+    /// epoch 边界前的 session 原地晋升：遍历全部 session 对象，把仍指向 epoch
+    /// 对象的引用克隆进 session（JS 边 + native 状态盒），消除 epoch 重置后的
+    /// 悬垂指针。
+    ///
+    /// 覆盖两类绕过写屏障的引用来源：函数对象直接 session 分配后捕获的
+    /// `captured_this`/`home_object`/upvalue cell/属性值（SET_HOME_OBJECT 与
+    /// 函数目标豁免均直落 epoch 值）；Map/Set 等原生盒按键值直插 epoch 值。
+    /// `rewrite_object_values` 覆盖元素/meta/属性/proto/captured_this/home_object/
+    /// cell 值；克隆子树经 forwarding 去重，环与共享引用各克隆一次。
+    pub(crate) fn promote_session_epoch_refs(&mut self) {
+        let objects = std::mem::take(&mut self.gc_state.session_object_ptrs);
+        if objects.is_empty() {
+            return;
+        }
+        let mut forwarding = std::mem::take(&mut self.gc_state.forwarding);
+        for &ptr in &objects {
+            if ptr.is_null() {
+                continue;
+            }
+            // SAFETY: ptr 来自 session_epoch.alloc，arena 存活期内有效。
+            unsafe {
+                let obj = &mut *ptr;
+                obj.rewrite_object_values(|value| self.promote_value_if_epoch_object(value, &mut forwarding));
+                if obj.is_map() {
+                    map::rewrite_map_native(obj, |value| self.promote_value_if_epoch_object(value, &mut forwarding));
+                } else if obj.is_set() {
+                    set::rewrite_set_native(obj, |value| self.promote_value_if_epoch_object(value, &mut forwarding));
+                } else if obj.is_disposable_stack_obj() || obj.is_async_disposable_stack_obj() {
+                    disposable_stack::rewrite_dispose_native(obj, |value| {
+                        self.promote_value_if_epoch_object(value, &mut forwarding)
+                    });
+                } else if obj.is_typed_array_obj() {
+                    typed_array::rewrite_typed_array_native(obj, |value| {
+                        self.promote_value_if_epoch_object(value, &mut forwarding)
+                    });
+                } else if obj.is_data_view_obj() {
+                    data_view::rewrite_data_view_native(obj, |value| {
+                        self.promote_value_if_epoch_object(value, &mut forwarding)
+                    });
+                } else if obj.is_generator_obj() {
+                    crate::generator::rewrite_generator_native(obj, |value| {
+                        self.promote_value_if_epoch_object(value, &mut forwarding)
+                    });
+                } else if obj.is_promise_obj() {
+                    crate::promise::rewrite_promise_native(obj, |value| {
+                        self.promote_value_if_epoch_object(value, &mut forwarding)
+                    });
+                } else if obj.is_async_obj() {
+                    crate::async_func::rewrite_async_native(obj, |value| {
+                        self.promote_value_if_epoch_object(value, &mut forwarding)
+                    });
+                } else if obj.is_async_generator_obj() {
+                    crate::async_generator::rewrite_async_generator_native(obj, |value| {
+                        self.promote_value_if_epoch_object(value, &mut forwarding)
+                    });
+                }
+            }
+        }
+        forwarding.clear();
+        self.gc_state.forwarding = forwarding;
+        // 晋升过程新克隆的对象已推入 gc_state 侧的表，拼回旧表保持原序在前。
+        self.gc_state.session_object_ptrs.extend(objects);
+    }
+
+    /// 逃逸写屏障：写向全局/session 对象的对象值不指向 epoch，否则 epoch
+    /// 重置后悬垂。session 函数目标豁免晋升——克隆会令写入侧与字节码持有的
+    /// 原始对象分裂（类构造器在原型上续建方法会落到非克隆体）；函数持有的
+    /// epoch 子引用由 `promote_session_epoch_refs` 在 epoch 边界统一修复。
     pub(crate) fn promote_if_needed_for_write_ptr(&mut self, target_ptr: *mut JsObject, value: JsValue) -> JsValue {
         if !value.is_object() || !self.is_session_escape_root_ptr(target_ptr) {
             return value;
         }
         let value_ptr = value.as_js_object_ptr();
-        if value_ptr.is_null() || !unsafe { &*value_ptr }.is_epoch() {
+        if value_ptr.is_null() {
             return value;
         }
-        JsValue::from_js_object(self.promote_object(value_ptr))
+        // SAFETY: 执行核心产出的对象值，指针在 session 生命周期内有效。
+        if unsafe { &*target_ptr }.is_function() {
+            return value;
+        }
+        if unsafe { &*value_ptr }.is_epoch() {
+            return JsValue::from_js_object(self.promote_object(value_ptr));
+        }
+        value
     }
 }
 

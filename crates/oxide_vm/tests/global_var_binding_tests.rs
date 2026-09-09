@@ -22,6 +22,21 @@ fn eval_string(source: &str) -> String {
     vm.lookup_str(result).unwrap_or_default()
 }
 
+fn compile(source: &str) -> oxide_bytecode::module::CompiledModule {
+    let allocator = Allocator::default();
+    let program = oxide_parser::parse(&allocator, source).expect("parse");
+    Compiler::new().compile(&program).expect("compile")
+}
+
+/// 两阶段执行：phase1 → `reset()`（轻量重置，epoch 清空、session 保留）→ phase2。
+fn eval_two_phases(phase1: &str, phase2: &str) -> bool {
+    let mut vm = Vm::new();
+    vm.run(&compile(phase1)).expect("run1");
+    vm.reset();
+    let result = vm.run(&compile(phase2)).expect("run2");
+    result.is_bool() && result.as_bool()
+}
+
 #[test]
 fn top_level_var_lands_on_global_this() {
     eval_truthy("var x = 5; globalThis.x === 5");
@@ -138,7 +153,91 @@ fn function_callable_before_its_declaration() {
 #[test]
 fn var_no_init_does_not_clobber_function_binding() {
     eval_truthy("function f(){ return 1; } var f; typeof f === 'function' && f() === 1");
-    // 不比较 globalThis.f === f 同一性：属性读路径存在预存 codegen 缺陷，
-    // 行为契约是声明后属性仍为原函数对象（可调用、返回值正确）。
-    eval_truthy("function f(){ return 1; } var f; typeof globalThis.f === 'function' && globalThis.f() === 1");
+    // 无初始化 var 声明不触碰函数绑定：声明后全局属性仍为原函数对象，
+    // 同一性与行为同时保持。
+    eval_truthy("function f(){ return 1; } var f; globalThis.f === f && globalThis.f() === 1");
+}
+
+/// 函数对象写全局不分裂：同一函数值经逃逸写屏障后严格相等保持 true，
+/// 覆盖函数声明、var 初始化、赋值、箭头/生成器/async 函数各形态。
+#[test]
+fn function_written_to_global_keeps_identity() {
+    eval_truthy("function f(){ return 1; } globalThis.f = f; globalThis.f === f");
+    eval_truthy("var g = function(){}; globalThis.g = g; globalThis.g === g");
+    eval_truthy("var h; h = function(){}; globalThis.h = h; globalThis.h === h");
+    eval_truthy("var a = () => 42; globalThis.a = a; globalThis.a === a");
+    eval_truthy("var ge = function*(){ yield 1; }; globalThis.ge = ge; globalThis.ge === ge");
+    eval_truthy("var af = async function(){}; globalThis.af = af; globalThis.af === af");
+}
+
+/// prototype 子对象与函数本体同一：逃逸写后 `f.prototype === globalThis.f.prototype`，
+/// 且经全局别名继续修改 prototype 对局部别名可见。
+#[test]
+fn function_prototype_identity_survives_global_write() {
+    eval_truthy("function f(){} globalThis.f = f; globalThis.f.prototype === f.prototype");
+    eval_truthy("function f(){} globalThis.f = f; globalThis.f.prototype.z = 5; globalThis.f.prototype.z === 5");
+    // 手工替换 prototype：接收者经函数别名重读，函数目标写入不克隆。
+    eval_truthy(
+        "var f = function(){}; f.prototype = {}; f.prototype.m = function(){ return 3; }; f.prototype.m() === 3",
+    );
+    eval_truthy("var f = function(){}; globalThis.f = f; f.prototype.m = function(){ return 3; }; globalThis.f.prototype.m() === 3");
+}
+
+/// 类构造器形状：原型为运行时新建对象，构造器/方法/prototype 链接在逃逸写
+/// 后不分裂——实例方法可调用、constructor 指回类、派生类 super 派发正常。
+#[test]
+fn class_constructor_shape_after_global_write() {
+    eval_truthy("var cc = class { m(){ return 3; } }; cc.prototype.constructor === cc");
+    eval_truthy("var cc = class { m(){ return 3; } }; new cc().m() === 3");
+    eval_truthy("var cc = class { m(){ return 3; } }; typeof cc.prototype.m === 'function'");
+    eval_truthy(
+        "var Base = class { c(){ return 11; } }; \
+         var D = class extends Base { d(){ return super.c(); } }; \
+         new D().d() === 11",
+    );
+}
+
+/// 嵌套闭包写全局：内层函数经外层调用写 globalThis，两侧同一函数对象。
+#[test]
+fn nested_closure_written_to_global_keeps_identity() {
+    eval_truthy("var n = function(){ var m = function(){ return 7; }; globalThis.m = m; return m; }; var m1 = n(); globalThis.m === m1");
+}
+
+/// 同一函数写两个全局槽：两槽指向同一对象。
+#[test]
+fn same_function_written_to_two_globals_is_identical() {
+    eval_truthy("function f(){} globalThis.f = f; globalThis.f2 = f; globalThis.f2 === globalThis.f");
+}
+
+/// 跨 run（reset）契约：函数对象直落 session，其属性持有的 epoch 对象
+/// （prototype 槽）在 epoch 清空前被晋升，run2 经全局别名可读其属性。
+/// 不跨 run 调用存活函数：sub_module_index 指向上一执行期的子模块表，
+/// 跨执行调用是独立缺口（基线即失败，非本次修复范围）。
+#[test]
+fn global_function_survives_reset_with_promoted_property() {
+    assert!(eval_two_phases(
+        "var f = function(){}; globalThis.f = f; f.prototype = {}; f.prototype.q = 7; 0",
+        "typeof globalThis.f === 'function' && globalThis.f.prototype.q === 7",
+    ));
+}
+
+/// 类构造器跨 run：prototype 子对象（运行时 epoch 新建）经 reset 边界晋升，
+/// run2 经全局别名读到方法属性。
+#[test]
+fn class_prototype_link_survives_reset() {
+    assert!(eval_two_phases(
+        "var cc = class { m(){ return 3; } }; globalThis.cc = cc; 0",
+        "typeof globalThis.cc === 'function' && typeof globalThis.cc.prototype.m === 'function'",
+    ));
+}
+
+/// Map 原生盒按键值直插不经写屏障：epoch 值跨 reset 由边界晋升克隆进
+/// session。run2 先分配新 epoch 对象覆写旧内存再读盒内值——未晋升则读到
+/// 覆写后的垃圾。
+#[test]
+fn map_box_value_survives_reset() {
+    assert!(eval_two_phases(
+        "var key = {k: 1}; globalThis.key = key; var val = {v: 2}; globalThis.m = new Map(); globalThis.m.set(globalThis.key, val); 0",
+        "var fill; for (var i = 0; i < 200; i++) { let t = {junk: i, pad: 'x'.repeat(32)}; fill = t; } globalThis.m.get(globalThis.key).v === 2",
+    ));
 }

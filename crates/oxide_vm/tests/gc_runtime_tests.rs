@@ -222,6 +222,27 @@ fn full_reset_clears_session_after_runtime_gc() {
     assert_eq!(text, "ok!");
 }
 
+/// 低阈值下 reset 触发完整对象 sweep（移动式搬移 + 重标）：写全局的函数对象
+/// 不被当死对象释放，run2 仍为可引用的函数值（跨 run 调用受独立的
+/// sub_module_index 缺口限制，不在此断言）。
+#[test]
+fn reset_sweep_preserves_global_function_object() {
+    let mut vm = vm_with_threshold(1024);
+    let first = compile(
+        "function make(){ var o = {v: 9}; globalThis.fn = function(){ return o.v; }; } make(); \
+         for (var i = 0; i < 2000; i++) { var t = 'p' + i + 'q' + i; } \
+         typeof globalThis.fn === 'function'",
+    );
+    let result = vm.run(&first).expect("run1");
+    assert!(result.is_bool() && result.as_bool());
+    assert!(vm.session_gc_stats().total_collections > 0, "低阈值应触发执行期收集");
+    vm.reset();
+
+    let second = compile("typeof globalThis.fn === 'function'");
+    let result = vm.run(&second).expect("run2");
+    assert!(result.is_bool() && result.as_bool());
+}
+
 /// full_reset 统一释放执行期分配过的 upvalue cell 无 double-free：重置后引擎
 /// 可继续运行并重建新闭包（cell 独立堆分配，随 full_reset 恰好释放一次）。
 #[test]
