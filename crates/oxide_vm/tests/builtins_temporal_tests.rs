@@ -2435,3 +2435,179 @@ fn zoned_date_time_add_error_paths() {
     .unwrap();
     assert_eq!(str_val(&vm, r), "true|true|true|true|true");
 }
+
+// -- Temporal.Duration 本体补全（69.2） --
+
+#[test]
+fn duration_compare_time_only_fast_path() {
+    let mut vm = Vm::new();
+    // 纯时间单位无 relativeTo：按归一纳秒比大小（days 折 24h）。
+    assert_eq!(num(&mut vm, "Temporal.Duration.compare('P1D', 'PT24H')"), 0.0);
+    assert_eq!(num(&mut vm, "Temporal.Duration.compare('P1D', 'PT23H')"), 1.0);
+    assert_eq!(num(&mut vm, "Temporal.Duration.compare('PT23H', 'P1D')"), -1.0);
+    assert_eq!(num(&mut vm, "Temporal.Duration.compare('P2D', 'PT48H')"), 0.0);
+    assert_eq!(num(&mut vm, "Temporal.Duration.compare({days:1}, {hours:24})"), 0.0);
+}
+
+#[test]
+fn duration_compare_calendar_units_require_relative() {
+    let mut vm = Vm::new();
+    // 无 relativeTo 且含日历单位 → RangeError。
+    let r = eval(
+        &mut vm,
+        "try { Temporal.Duration.compare({years:1},{months:12}); 'no-throw' } catch (e) { e.constructor.name }",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "RangeError");
+}
+
+#[test]
+fn duration_compare_relative_calendar_units() {
+    let mut vm = Vm::new();
+    // relativeto-month 对拍：P1M vs P30D 取决于相对点所在月份长度。
+    assert_eq!(
+        num(&mut vm, "Temporal.Duration.compare('P1M','P30D',{relativeTo:'2018-04-01'})"),
+        0.0
+    );
+    assert_eq!(
+        num(&mut vm, "Temporal.Duration.compare('P1M','P30D',{relativeTo:'2018-03-01'})"),
+        1.0
+    );
+    assert_eq!(
+        num(&mut vm, "Temporal.Duration.compare('P1M','P30D',{relativeTo:'2018-02-01'})"),
+        -1.0
+    );
+    // string 与 PlainDate 对象等价。
+    assert_eq!(
+        num(
+            &mut vm,
+            "Temporal.Duration.compare('P1M','P30D',{relativeTo: Temporal.PlainDate.from('2018-04-01')})"
+        ),
+        0.0
+    );
+}
+
+#[test]
+fn duration_compare_relative_zdt_and_instant() {
+    let mut vm = Vm::new();
+    // 1970-04-01T00:00Z：P1M（到 5/1 为 30 天）vs P30D → 0。
+    assert_eq!(
+        num(
+            &mut vm,
+            "Temporal.Duration.compare('P1M','P30D',{relativeTo: new Temporal.ZonedDateTime(7776000000000000n,'UTC')})"
+        ),
+        0.0
+    );
+    // Instant relativeTo（UTC 分解）同结果。
+    assert_eq!(
+        num(
+            &mut vm,
+            "Temporal.Duration.compare('P1M','P30D',{relativeTo: Temporal.Instant.fromEpochNanoseconds(7776000000000000n)})"
+        ),
+        0.0
+    );
+}
+
+#[test]
+fn duration_subtract_equals_add_negated() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "const a = new Temporal.Duration(0,0,0,5,3);
+         const b = {days:2,hours:1};
+         a.subtract(b).toString() + '|' + a.add(Temporal.Duration.from(b).negated()).toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "P3DT2H|P3DT2H");
+    // 含日历单位 → RangeError（继承 add 限制）。
+    let r = eval(
+        &mut vm,
+        "try { new Temporal.Duration(1,0,0,0).subtract({days:1}); 'no-throw' } catch (e) { e.constructor.name }",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "RangeError");
+}
+
+#[test]
+fn duration_equals_compares_all_components() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "new Temporal.Duration(1,2,3,4).equals('P1Y2M3W4D') + '|' +
+         new Temporal.Duration(1,2,3,4).equals('P1Y2M3W4DT1S') + '|' +
+         new Temporal.Duration().equals('PT0S') + '|' +
+         (() => { try { Temporal.Duration.prototype.equals.call({}, 'P1D'); return 'no-throw'; }
+                  catch (e) { return e instanceof TypeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|false|true|true");
+}
+
+#[test]
+fn duration_sign_and_blank() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "new Temporal.Duration().sign + '|' + new Temporal.Duration().blank + '|' +
+         new Temporal.Duration(-1,0,0,0).sign + '|' + new Temporal.Duration(-1,0,0,0).blank + '|' +
+         Temporal.Duration.from('PT1H').sign",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "0|true|-1|false|1");
+}
+
+#[test]
+fn duration_to_json_and_locale_string_and_tag() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "const d = new Temporal.Duration(1,2,3,4,5);
+         d.toJSON() + '|' + d.toLocaleString() + '|' + d[Symbol.toStringTag] + '|' +
+         (d.toJSON() === d.toString()) + '|' + (d.toLocaleString('zh', {}) === d.toString())",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "P1Y2M3W4DT5H|P1Y2M3W4DT5H|Temporal.Duration|true|true");
+}
+
+#[test]
+fn duration_round_relative_calendar_units() {
+    let mut vm = Vm::new();
+    // P1M 相对 2018-04-01 舍到 day：4/1 + P1M = 5/1，round day → P1M。
+    // P11M round {largestUnit:'year'}：smallest 默认 nanosecond，无日历舍入 → P11M。
+    // 缺 relativeTo 的日历单位舍入 → RangeError。
+    let r = eval(
+        &mut vm,
+        "Temporal.Duration.from('P1M').round({smallestUnit:'day', relativeTo:'2018-04-01'}).toString() + '|' +
+         Temporal.Duration.from('P11M').round({largestUnit:'year', relativeTo:'2021-01-01'}).toString() + '|' +
+         (() => { try { Temporal.Duration.from('P1M').round({smallestUnit:'day'}); return 'no-throw'; }
+                  catch (e) { return e instanceof RangeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "P1M|P11M|true");
+}
+
+#[test]
+fn duration_round_relative_smallest_calendar_unit() {
+    let mut vm = Vm::new();
+    // P11M round {largestUnit:'year', smallestUnit:'year'}：2021-01-01 下 11 个月 < 1 年，
+    // halfExpand 折 334/365 → 舍到 1 年。
+    let r = eval(
+        &mut vm,
+        "Temporal.Duration.from('P11M').round({largestUnit:'year', smallestUnit:'year', relativeTo:'2021-01-01'}).toString() + '|' +
+         Temporal.Duration.from('P11M').round({largestUnit:'year', smallestUnit:'month', relativeTo:'2021-01-01'}).toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "P1Y|P11M");
+}
+
+#[test]
+fn duration_total_relative_zdt() {
+    let mut vm = Vm::new();
+    // ZDT relativeTo 取本地日期：1970-04-01 下 P1M total months → 1。
+    let r = eval(
+        &mut vm,
+        "Temporal.Duration.from('P1M').total({unit:'months', relativeTo: new Temporal.ZonedDateTime(7776000000000000n,'UTC')})",
+    )
+    .unwrap();
+    assert_eq!(r.as_double(), 1.0);
+}

@@ -3477,6 +3477,94 @@ fn duration_values(obj: &JsObject) -> [f64; 10] {
     std::array::from_fn(|index| get_double_prop(obj, index))
 }
 
+/// 归一 options.relativeTo 为相对日期 `(y, m, d)`。
+///
+/// # 步骤
+/// 1. string → parse_plain_date_time_string，失败回退 parse_plain_date_string（PDT 优先、PD 回退）；失败 RangeError。
+/// 2. PlainDateTime / PlainDate 对象 → 直读 prop 0/1/2。
+/// 3. ZonedDateTime → zoned_date_time_plain_parts 取本地 (y,m,d)。
+/// 4. Instant → epoch 纳秒按 UTC 分解（div_euclid(DAY_NS) → civil_from_days）。
+/// 5. 其他对象按 property bag 解析（ToTemporalDateTime，constrain）。
+/// 6. undefined → None；其余原始值 → TypeError。
+///
+/// # 边界与前提
+/// - 调用方须已把 raw 从 options 取出（读序由调用方保证）。
+/// - 本函数只取日期分量；时间分量由调用方的 duration 分量另行加。
+fn duration_relative_to_date<H: VmHost>(
+    vm: &mut H, relative_raw: JsValue,
+) -> Result<Option<(i128, i128, i128)>, JsValue> {
+    if relative_raw.is_undefined() {
+        return Ok(None);
+    }
+    if relative_raw.is_string() {
+        let text = to_string(relative_raw);
+        // 先按 PlainDateTime/PlainDate 解析（纯日期、日期时间、带 offset/注解的 plain 串）。
+        if let Ok((year, month, day, _time_ns)) = parse_plain_date_time_string(&text) {
+            return Ok(Some((i128::from(year), i128::from(month), i128::from(day))));
+        }
+        // ZonedDateTime-like（含 Z 或时区注解）：按 instant 解析 + 注解时区反推墙钟日期。
+        let (epoch_ns, time_zone_id, _calendar) = zoned_date_time_string_parts(vm, &text, "reject")?;
+        let offset_minutes = instant_time_zone_offset(&time_zone_id).unwrap_or(0);
+        let wall_ns = epoch_ns + i128::from(offset_minutes) * 60_000_000_000;
+        let (year, month, day) = civil_from_days(wall_ns.div_euclid(DAY_NS));
+        return Ok(Some((year, month, day)));
+    }
+    if !relative_raw.is_object() {
+        return Err(crate::error::create_type_error(vm, "invalid relativeTo"));
+    }
+    let ptr = relative_raw.as_js_object_ptr();
+    if ptr.is_null() {
+        return Err(crate::error::create_type_error(vm, "invalid relativeTo"));
+    }
+    let obj = unsafe { &*ptr };
+    if obj.is_plain_date_time_obj() || obj.is_plain_date_obj() {
+        return Ok(Some((
+            i128::from(get_double_prop(obj, 0) as i32),
+            i128::from(get_double_prop(obj, 1) as u32),
+            i128::from(get_double_prop(obj, 2) as u32),
+        )));
+    }
+    if obj.is_zoned_date_time_obj() {
+        let (year, month, day, _time_ns) = zoned_date_time_plain_parts(vm, obj)?;
+        return Ok(Some((i128::from(year), i128::from(month), i128::from(day))));
+    }
+    if obj.is_instant_obj() {
+        let Some(epoch_ns) = get_instant_epoch_ns(obj) else {
+            return Err(crate::error::create_range_error(vm, "invalid Instant"));
+        };
+        let (year, month, day) = civil_from_days(epoch_ns.div_euclid(DAY_NS));
+        return Ok(Some((year, month, day)));
+    }
+    // property bag：按 ToRelativeTemporalObject 依次校验 calendar/timeZone/offset 再读字段。
+    let calendar_raw = temporal_option_value(vm, obj, relative_raw, "calendar")?;
+    if !calendar_raw.is_undefined() {
+        return Err(crate::error::create_type_error(vm, "invalid relativeTo"));
+    }
+    let time_zone_raw = temporal_option_value(vm, obj, relative_raw, "timeZone")?;
+    if !time_zone_raw.is_undefined() {
+        // 非字符串（对象/符号/null/数字）→ TypeError；字符串非合法时区 → RangeError。
+        if !time_zone_raw.is_string() {
+            return Err(crate::error::create_type_error(vm, "invalid time zone"));
+        }
+        if canonical_time_zone(&to_string(time_zone_raw)).is_none() {
+            return Err(crate::error::create_range_error(vm, "invalid time zone"));
+        }
+    }
+    let offset_raw = temporal_option_value(vm, obj, relative_raw, "offset")?;
+    if !offset_raw.is_undefined() {
+        // 非字符串 → TypeError；字符串格式非法（含亚秒偏移）→ RangeError。
+        if !offset_raw.is_string() {
+            return Err(crate::error::create_type_error(vm, "invalid offset"));
+        }
+        let offset_input = to_string(offset_raw);
+        if parse_any_offset_minutes(&offset_input).is_none() || !valid_offset_fraction(&offset_input) {
+            return Err(crate::error::create_range_error(vm, "invalid offset"));
+        }
+    }
+    let (year, month, day, _time_ns, _calendar) = plain_date_time_object_parts(vm, relative_raw, obj, true, false)?;
+    Ok(Some((i128::from(year), i128::from(month), i128::from(day))))
+}
+
 fn format_duration_number(value: f64) -> String {
     format!("{}", value as i64)
 }
@@ -3568,40 +3656,10 @@ pub fn duration_total<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // 含日历单位（year/month/week）时，days 及以上的 total 必须走 relativeTo 日历路径。
     let has_calendar_units = values[0] != 0.0 || values[1] != 0.0 || values[2] != 0.0;
 
-    // relativeTo：支持 PlainDateTime / PlainDate，取日期分量（时间按午夜计算，对齐 polyfill）。
-    // relativeTo: supports PlainDateTime / PlainDate objects; strings follow the
-    // ToRelativeTemporalObject path (PlainDateTime first, falling back to PlainDate),
-    // invalid/out-of-range strings throw RangeError, and non-string primitives
-    // (number/boolean/bigint/symbol/null) throw TypeError per test262.
-    let relative_date = if relative_raw.is_string() {
-        let text = to_string(relative_raw);
-        match parse_plain_date_time_string(&text)
-            .or_else(|_| parse_plain_date_string(&text).map(|(y, m, d)| (y, m, d, 0.0)))
-        {
-            Ok((year, month, day, _time_ns)) => Some((i128::from(year), i128::from(month), i128::from(day))),
-            Err(_) => {
-                return NativeResult::Err(crate::error::create_range_error(vm, "invalid relativeTo string"));
-            }
-        }
-    } else if relative_raw.is_object() {
-        let rel_ptr = relative_raw.as_js_object_ptr();
-        if rel_ptr.is_null() {
-            return NativeResult::Err(crate::error::create_type_error(vm, "invalid relativeTo"));
-        }
-        let rel = unsafe { &*rel_ptr };
-        if rel.is_plain_date_time_obj() || rel.is_plain_date_obj() {
-            Some((
-                i128::from(get_double_prop(rel, 0) as i32),
-                i128::from(get_double_prop(rel, 1) as u32),
-                i128::from(get_double_prop(rel, 2) as u32),
-            ))
-        } else {
-            None
-        }
-    } else if relative_raw.is_undefined() {
-        None
-    } else {
-        return NativeResult::Err(crate::error::create_type_error(vm, "invalid relativeTo"));
+    // relativeTo：统一经 duration_relative_to_date 归一（支持 string/PD/PDT/ZDT/Instant/bag）。
+    let relative_date = match duration_relative_to_date(vm, relative_raw) {
+        Ok(relative) => relative,
+        Err(error) => return NativeResult::Err(error),
     };
 
     const UNIT_NS: [i128; 6] = [3_600_000_000_000, 60_000_000_000, 1_000_000_000, 1_000_000, 1_000, 1];
@@ -3776,8 +3834,26 @@ pub fn duration_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let other_val = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
     let other = native_try!(duration_like_values(vm, other_val));
     let receiver = duration_values(obj);
+    let values = native_try!(add_duration_values(vm, &receiver, &other));
+    make_duration(vm, values)
+}
+
+/// 两个纯时间 duration（无 year/month/week）按分量精确求和并按最大非零单位平衡。
+///
+/// # 步骤
+/// 1. 最大单位取两侧最大的非零时间单位（days=3 最大，ns=9 最小）。
+/// 2. 分量在 i128 上按纳秒精确求和（f64 分量是精确整数，数学值不受 2^53 截断）。
+/// 3. 从总纳秒向下按同号截断分解，进位到最大单位为止。
+/// 4. 逐分量按纳秒刻度校验 2^53 秒上限。
+///
+/// # 边界与前提
+/// - 任一侧含日历单位抛 RangeError（本批无 relativeTo 支持）。
+/// - 全零与 nanosecond 分量和为 0 时直接返回零时长。
+fn add_duration_values<H: VmHost>(
+    vm: &mut H, receiver: &[f64; 10], other: &[f64; 10],
+) -> Result<[f64; 10], JsValue> {
     if receiver[..3].iter().any(|value| *value != 0.0) || other[..3].iter().any(|value| *value != 0.0) {
-        return NativeResult::Err(crate::error::create_range_error(vm, "cannot add durations with calendar units"));
+        return Err(crate::error::create_range_error(vm, "cannot add durations with calendar units"));
     }
     // 最大单位取 receiver 与参数中最大的非零时间单位（days=3 最大，ns=9 最小）。
     let mut largest = 9_usize;
@@ -3788,7 +3864,7 @@ pub fn duration_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
     }
     if largest == 9 && receiver[9] + other[9] == 0.0 {
-        return make_duration(vm, [0.0; 10]);
+        return Ok([0.0; 10]);
     }
     // 分量按精确整数求和（f64 分量是精确整数；超过 2^53 的和需在 i128 上保持精确，规范按数学值计算）。
     let mut total_ns = 0_i128;
@@ -3796,16 +3872,16 @@ pub fn duration_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         [86_400_000_000_000, 3_600_000_000_000, 60_000_000_000, 1_000_000_000, 1_000_000, 1_000, 1];
     for (index, scale) in (3..10).zip(SUM_SCALES) {
         let Some(a) = duration_component_integer(receiver[index]) else {
-            return NativeResult::Err(crate::error::create_range_error(vm, "invalid duration"));
+            return Err(crate::error::create_range_error(vm, "invalid duration"));
         };
         let Some(b) = duration_component_integer(other[index]) else {
-            return NativeResult::Err(crate::error::create_range_error(vm, "invalid duration"));
+            return Err(crate::error::create_range_error(vm, "invalid duration"));
         };
         let Some(component) = a.checked_add(b).and_then(|value| value.checked_mul(scale)) else {
-            return NativeResult::Err(crate::error::create_range_error(vm, "duration is out of range"));
+            return Err(crate::error::create_range_error(vm, "duration is out of range"));
         };
         let Some(updated) = total_ns.checked_add(component) else {
-            return NativeResult::Err(crate::error::create_range_error(vm, "duration is out of range"));
+            return Err(crate::error::create_range_error(vm, "duration is out of range"));
         };
         total_ns = updated;
     }
@@ -3840,14 +3916,199 @@ pub fn duration_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     ];
     for (index, scale) in (3..10).zip(UNIT_SCALES) {
         if values[index] != 0.0 && values[index].abs() * scale >= MAX_TIME_NANOSECONDS {
-            return NativeResult::Err(crate::error::create_range_error(vm, "duration time fields are out of range"));
+            return Err(crate::error::create_range_error(vm, "duration time fields are out of range"));
         }
     }
+    Ok(values)
+}
+
+/// `Temporal.Duration.prototype.subtract(other)`：等于 add(other.negated())。
+///
+/// # 边界与前提
+/// - 继承 add 的无日历单位限制：任一侧含 year/month/week 抛 RangeError。
+/// - 参数归一与 add 一致（字符串/对象/负值均支持）。
+pub fn duration_subtract<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_duration(vm, obj));
+    let other_val = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
+    let other = native_try!(duration_like_values(vm, other_val));
+    let receiver = duration_values(obj);
+    let negated = std::array::from_fn(|index| if other[index] != 0.0 { -other[index] } else { 0.0 });
+    let values = native_try!(add_duration_values(vm, &receiver, &negated));
     make_duration(vm, values)
 }
-/// `Temporal.Duration.prototype.round(roundTo)`锛氭寜鏈€灏忓崟浣嶈垗鍏ュ苟鎸夋渶澶у崟浣嶅钩琛°€?
-/// 绗竴鐗堟敮鎸佹棤鏃ュ巻鍗曚綅锛坹ear/month/week 闈為浂鎴栫洰鏍囦负鏃ュ巻鍗曚綅鏃惰姹?relativeTo锛屾殏鎶?RangeError锛夛紱
-/// 绾弒鏃堕棿璺緞鎸?24 灏忔椂/澶╁鐞嗭紝涓?polyfill 鐨?24h-day 璇箟涓€鑷淬€?
+
+/// `Temporal.Duration.prototype.equals(other)`：逐分量比较两个时长。
+///
+/// # 边界与前提
+/// - receiver 须为 Duration（branding TypeError）。
+/// - 参数经 duration_like_values 归一（无效字符串/混合符号抛 RangeError）。
+/// - 全分量相等返回 true；仅数值相等比较，不涉及日历语义。
+pub fn duration_equals<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_duration(vm, obj));
+    let other_val = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
+    let other = native_try!(duration_like_values(vm, other_val));
+    let receiver = duration_values(obj);
+    let equal = (0..10).all(|index| receiver[index] == other[index]);
+    NativeResult::Ok(JsValue::bool(equal))
+}
+
+/// `Temporal.Duration.prototype.sign`：首个非零分量的符号（-1/0/+1）。
+pub fn duration_sign<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_duration(vm, obj));
+    for value in duration_values(obj) {
+        if value != 0.0 {
+            return NativeResult::Ok(JsValue::int(if value.is_sign_negative() { -1 } else { 1 }));
+        }
+    }
+    NativeResult::Ok(JsValue::int(0))
+}
+
+/// `Temporal.Duration.prototype.blank`：所有分量是否全零。
+pub fn duration_blank<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_duration(vm, obj));
+    NativeResult::Ok(JsValue::bool(duration_values(obj).iter().all(|value| *value == 0.0)))
+}
+
+/// `Temporal.Duration.prototype.toJSON()`：输出默认 ISO 字符串，忽略参数。
+pub fn duration_to_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let receiver = args.first().copied().unwrap_or(0);
+    duration_to_string(vm, &[receiver])
+}
+
+/// `Temporal.Duration.prototype.toLocaleString()`：默认 locale 下返回 ISO 字符串（无 Intl 依赖）。
+pub fn duration_to_locale_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let receiver = args.first().copied().unwrap_or(0);
+    duration_to_string(vm, &[receiver])
+}
+
+/// 把 duration 应用相对点，返回目标 `(date, time_ns)`。
+///
+/// # 步骤
+/// 1. days 及时间分量按 24h/day 汇总为纳秒，跨天部分拆成 delta_days 与一天内 target_time。
+/// 2. 日历分量（year/month/week）与 delta_days 经 add_date_duration 加到相对点。
+///
+/// # 边界与前提
+/// - 时间分量超出 i128 纳秒表示范围时抛 RangeError。
+/// - 返回的 time_ns 带符号（负 duration 时可为负）。
+fn duration_apply_to_relative<H: VmHost>(
+    vm: &mut H, rel: (i128, i128, i128), values: &[f64; 10],
+) -> Result<((i128, i128, i128), i128), JsValue> {
+    let Some(time_ns_total) = duration_time_nanoseconds(values) else {
+        return Err(crate::error::create_range_error(vm, "duration is out of range"));
+    };
+    let delta_days = time_ns_total / DAY_NS;
+    let target_time = time_ns_total % DAY_NS;
+    let mut date_parts = [0.0; 10];
+    date_parts[0] = values[0];
+    date_parts[1] = values[1];
+    date_parts[2] = values[2];
+    date_parts[3] = delta_days as f64;
+    let end = add_date_duration(rel, &date_parts);
+    // 目标日期须落在 ISO 日期范围内（约 ±10^8 天），否则抛 RangeError。
+    if days_from_civil(end.0, end.1, end.2).abs() > MAX_ISO_DAY {
+        return Err(crate::error::create_range_error(vm, "relativeTo plus duration is out of range"));
+    }
+    Ok((end, target_time))
+}
+
+/// `Temporal.Duration.compare(one, two, options)`：按相对点比较两个时长。
+///
+/// # 步骤
+/// 1. one/two 各自 duration_like_values 归一（读序 one → two → options）。
+/// 2. options.relativeTo 经 duration_relative_to_date 归一（含 ZDT/Instant/bag 分支）。
+/// 3. 无 relativeTo 且无日历单位：按 duration_time_nanoseconds 直接比大小（fast path）。
+/// 4. 无 relativeTo 但含日历单位：RangeError（calendar-possibly-required 语义）。
+/// 5. 有 relativeTo：每个 duration 应用相对点得 (date, time)，先比日期再比时间（字典序）。
+///
+/// # 边界与前提
+/// - 含日历单位必须提供 relativeTo，否则 RangeError。
+/// - 时间分量按 24h/day 折算；比较的是应用后目标时刻，非分量数值。
+pub fn duration_compare<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let one_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let two_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let one = native_try!(duration_like_values(vm, one_val));
+    let two = native_try!(duration_like_values(vm, two_val));
+    // 全分量相等直接返回 0（含日历单位时也无需 relativeTo，对齐 instances-identical）。
+    if one == two {
+        return NativeResult::Ok(JsValue::int(0));
+    }
+    let options_value = if args.len() > 3 { vm.reg(args[3]) } else { JsValue::undefined() };
+    let relative_raw = if options_value.is_undefined() {
+        JsValue::undefined()
+    } else {
+        if !options_value.is_object() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "options must be an object"));
+        }
+        let options_ptr = options_value.as_js_object_ptr();
+        if options_ptr.is_null() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "options must be an object"));
+        }
+        let options = unsafe { &*options_ptr };
+        match temporal_option_value(vm, options, options_value, "relativeTo") {
+            Ok(raw) => raw,
+            Err(error) => return NativeResult::Err(error),
+        }
+    };
+    let relative = native_try!(duration_relative_to_date(vm, relative_raw));
+
+    let ordering = match relative {
+        None => {
+            // 无 relativeTo：含日历单位抛 RangeError，否则按归一纳秒比大小。
+            if one[..3].iter().any(|value| *value != 0.0) || two[..3].iter().any(|value| *value != 0.0) {
+                return NativeResult::Err(crate::error::create_range_error(
+                    vm,
+                    "relativeTo is required for calendar units",
+                ));
+            }
+            let one_ns = native_try!(duration_time_nanoseconds(&one).ok_or_else(|| {
+                crate::error::create_range_error(vm, "duration is out of range")
+            }));
+            let two_ns = native_try!(duration_time_nanoseconds(&two).ok_or_else(|| {
+                crate::error::create_range_error(vm, "duration is out of range")
+            }));
+            one_ns.cmp(&two_ns)
+        }
+        Some(rel) => {
+            // 有 relativeTo：各 duration 应用后先比日期再比时间。
+            let (date1, time1) = native_try!(duration_apply_to_relative(vm, rel, &one));
+            let (date2, time2) = native_try!(duration_apply_to_relative(vm, rel, &two));
+            let date_cmp = compare_iso_date(date1, date2);
+            if date_cmp != 0 {
+                if date_cmp > 0 {
+                    std::cmp::Ordering::Greater
+                } else {
+                    std::cmp::Ordering::Less
+                }
+            } else {
+                time1.cmp(&time2)
+            }
+        }
+    };
+    NativeResult::Ok(JsValue::int(match ordering {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }))
+}
+/// `Temporal.Duration.prototype.round(roundTo)`：按最小单位舍入并按最大单位平衡。
+///
+/// # 步骤
+/// 1. 解析 roundTo（字符串简写或对象）→ largestUnit/smallestUnit/roundingIncrement/roundingMode/relativeTo。
+/// 2. relativeTo 经 duration_relative_to_date 归一；仅日历单位路径需要它。
+/// 3. 纯时间路径（无 year/month/week 且 largest/smallest ≥ day）按 24h/day 汇总舍入。
+/// 4. 日历单位路径把 duration 应用 relativeTo 后走 nudge_iso_difference 平衡舍入。
+///
+/// # 边界与前提
+/// - 含日历单位（year/month/week 非零）或目标单位为日历单位时 relativeTo 缺失抛 RangeError。
+/// - 时间分量按 24 小时/天折算，与 polyfill 的 24h-day 语义一致。
 pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ptr = native_try!(receiver_obj(vm, args));
     let obj = unsafe { &*ptr };
@@ -3858,7 +4119,7 @@ pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 
     let values = duration_values(obj);
-    // 鐜版湁鏈€澶у崟浣嶏細棣栦釜闈為浂鍒嗛噺锛涘叏闆舵椂瑙嗕负 nanosecond銆?
+    // 现有最大单位：首个非零分量；全零时视为 nanosecond。
     let mut existing_largest = 9_usize;
     for (index, value) in values.iter().enumerate() {
         if *value != 0.0 {
@@ -3867,8 +4128,8 @@ pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
     }
 
-    // roundTo 瀛楃涓?=> { smallestUnit: 瀛楃涓?}锛涘惁鍒欏繀椤讳负瀵硅薄銆?
-    let (largest_raw, _relative_raw, increment_raw, mode_raw, smallest_raw) = if round_to.is_string() {
+    // roundTo 字符串 => { smallestUnit: 字符串 }；否则必须为对象。
+    let (largest_raw, relative_raw, increment_raw, mode_raw, smallest_raw) = if round_to.is_string() {
         (
             JsValue::undefined(),
             JsValue::undefined(),
@@ -3893,7 +4154,7 @@ pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         (largest_raw, relative_raw, increment_raw, mode_raw, smallest_raw)
     };
 
-    // largestUnit锛氬厑璁?auto"锛涚己鐪?/undefined 瑙嗕负鏈彁渚涖€?
+    // largestUnit：允许 "auto"；缺失/undefined 视为未提供。
     let largest_provided = !largest_raw.is_undefined();
     let largest_index = if largest_raw.is_undefined() {
         None
@@ -3911,7 +4172,7 @@ pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
     };
 
-    // roundingIncrement锛歍oIntegerOrInfinity 鑸嶅叆鍚庨渶鍦?[1, 10^9] 鍐呫€?
+    // roundingIncrement：ToIntegerOrInfinity 舍入后需在 [1, 10^9] 内。
     let increment_value = if increment_raw.is_undefined() {
         1.0
     } else {
@@ -3923,7 +4184,7 @@ pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let increment = increment as i128;
 
-    // roundingMode锛氱己鐪?halfExpand銆?
+    // roundingMode：缺失时 halfExpand。
     let mode = if mode_raw.is_undefined() {
         InstantRoundingMode::HalfExpand
     } else {
@@ -3936,7 +4197,7 @@ pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
     };
 
-    // smallestUnit锛氱己鐪?nanosecond銆?
+    // smallestUnit：缺失时 nanosecond。
     let smallest_provided = !smallest_raw.is_undefined();
     let smallest_index = if smallest_raw.is_undefined() {
         9
@@ -3950,7 +4211,7 @@ pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
     };
 
-    // 榛樿鏈€澶у崟浣嶏細鐜版湁鏈€澶у崟浣嶄笌鏈€灏忓崟浣嶄腑杈冨ぇ鐨勯偅涓€€?
+    // 默认最大单位：现有最大单位与最小单位中较大（索引较小）的那个。
     let default_largest = if existing_largest < smallest_index {
         existing_largest
     } else {
@@ -3958,7 +4219,7 @@ pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     let largest = largest_index.unwrap_or(default_largest);
 
-    // 鑷冲皯涓€涓崟浣嶉渶瑕佹樉寮忔彁渚涳紱largest 涓嶈兘灏忎簬 smallest銆?
+    // 至少一个单位需要显式提供；largest 不能小于 smallest。
     if !smallest_provided && !largest_provided {
         return NativeResult::Err(crate::error::create_range_error(
             vm,
@@ -3972,26 +4233,13 @@ pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         ));
     }
 
-    // 鑸嶅叆澧為噺涓婇檺锛氬崟浣嶈秺灏忓彲闄ら櫎涓婁竴绾э紱鏃ュ巻鍗曚綅锛坹ear/month/week/day锛夋棤鏁撮櫎绾︽潫銆?
+    // 舍入增量上限：单位越小可除以上一级；日历单位（year/month/week/day）无整除约束。
     const MAX_INCREMENT: [i128; 10] = [0, 0, 0, 0, 24, 60, 60, 1000, 1000, 1000];
     let max_increment = MAX_INCREMENT[smallest_index];
     if max_increment != 0 && (increment >= max_increment || max_increment % increment != 0) {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
     }
-
-    // 鏃ュ巻鍗曚綅锛坹ear/month/week锛夛細鏈増瑕佹眰 relativeTo锛屾殏鎶?RangeError銆?
-    if values[..3].iter().any(|value| *value != 0.0) {
-        return NativeResult::Err(crate::error::create_range_error(
-            vm,
-            "a starting point is required for balancing calendar units",
-        ));
-    }
-    if largest < 3 || smallest_index < 3 {
-        return NativeResult::Err(crate::error::create_range_error(
-            vm,
-            "a starting point is required for calendar units",
-        ));
-    }
+    // 日历单位的 increment 要求 largestUnit 与 smallestUnit 相同（防止窗口舍入歧义）。
     if increment > 1 && smallest_index == 3 && largest != smallest_index {
         return NativeResult::Err(crate::error::create_range_error(
             vm,
@@ -3999,58 +4247,98 @@ pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         ));
     }
 
-    // 绾弒鏃堕棿璺緞锛氭寜 24 灏忔椂/澶╁皢 days..nanoseconds 姹囨€讳负绾崇锛屾寜 smallest 鑸嶅叆鍚庡钩琛″埌 largest銆?
-    let Some(time_ns) = duration_time_nanoseconds(&values) else {
-        return NativeResult::Err(crate::error::create_range_error(vm, "duration is out of range"));
+    // relativeTo 仅在日历路径需要时读取（解析失败直接抛错）。
+    let relative_date = match duration_relative_to_date(vm, relative_raw) {
+        Ok(relative) => relative,
+        Err(error) => return NativeResult::Err(error),
     };
-    const UNIT_NS: [i128; 7] =
-        [86_400_000_000_000, 3_600_000_000_000, 60_000_000_000, 1_000_000_000, 1_000_000, 1_000, 1];
-    let quantum = if smallest_index == 3 {
-        increment * UNIT_NS[0]
-    } else {
-        increment * UNIT_NS[smallest_index - 3]
-    };
-    let Some(rounded) = round_instant_difference(time_ns, quantum, mode) else {
-        return NativeResult::Err(crate::error::create_range_error(vm, "duration is out of range"));
-    };
-    let mut result = [0.0; 10];
-    if smallest_index == 3 {
-        result[3] = (rounded / UNIT_NS[0]) as f64;
-    } else {
-        // 涓?duration_add 鐩稿悓鐨勫悓鍙锋ā鍒嗚В锛氫粠 ns 鍚?largest 杩涗綅銆?
-        let mut rem = rounded;
-        let mut unit = 9_usize;
-        loop {
-            if unit == largest {
-                result[unit] = rem as f64;
-                break;
+
+    // 日历单位存在或目标为日历单位时走 relativeTo 路径，否则走纯时间路径。
+    let needs_relative = values[..3].iter().any(|value| *value != 0.0) || largest < 3 || smallest_index < 3;
+    if !needs_relative {
+        // 纯时间路径：按 24 小时/天将 days..nanoseconds 汇总为纳秒，按 smallest 舍入后平衡到 largest。
+        let Some(time_ns) = duration_time_nanoseconds(&values) else {
+            return NativeResult::Err(crate::error::create_range_error(vm, "duration is out of range"));
+        };
+        const UNIT_NS: [i128; 7] =
+            [86_400_000_000_000, 3_600_000_000_000, 60_000_000_000, 1_000_000_000, 1_000_000, 1_000, 1];
+        let quantum = if smallest_index == 3 {
+            increment * UNIT_NS[0]
+        } else {
+            increment * UNIT_NS[smallest_index - 3]
+        };
+        let Some(rounded) = round_instant_difference(time_ns, quantum, mode) else {
+            return NativeResult::Err(crate::error::create_range_error(vm, "duration is out of range"));
+        };
+        let mut result = [0.0; 10];
+        if smallest_index == 3 {
+            result[3] = (rounded / UNIT_NS[0]) as f64;
+        } else {
+            // 与 duration_add 相同的同号模分解：从 ns 向 largest 进位。
+            let mut rem = rounded;
+            let mut unit = 9_usize;
+            loop {
+                if unit == largest {
+                    result[unit] = rem as f64;
+                    break;
+                }
+                let base = match unit {
+                    7..=9 => 1_000,
+                    6 | 5 => 60,
+                    _ => 24,
+                };
+                result[unit] = (rem % base) as f64;
+                rem /= base;
+                unit -= 1;
             }
-            let base = match unit {
-                7..=9 => 1_000,
-                6 | 5 => 60,
-                _ => 24,
-            };
-            result[unit] = (rem % base) as f64;
-            rem /= base;
-            unit -= 1;
         }
-    }
-    // 鑼冨洿鏍￠獙锛氬姣忎釜鏃堕棿鍒嗛噺鎸夊叾绾崇鍒诲害妫€鏌ユ槸鍚﹁揪鍒?2^53 绉掍笂闄愩€?
-    const MAX_TIME_NANOSECONDS: f64 = (1_i128 << 53) as f64 * 1_000_000_000.0;
-    const UNIT_SCALES: [f64; 7] = [
-        86_400_000_000_000.0,
-        3_600_000_000_000.0,
-        60_000_000_000.0,
-        1_000_000_000.0,
-        1_000_000.0,
-        1_000.0,
-        1.0,
-    ];
-    for (index, scale) in (3..10).zip(UNIT_SCALES) {
-        if result[index] != 0.0 && result[index].abs() * scale >= MAX_TIME_NANOSECONDS {
-            return NativeResult::Err(crate::error::create_range_error(vm, "duration time fields are out of range"));
+        // 范围校验：对每个时间分量按纳秒刻度检查是否达到 2^53 秒上限。
+        const MAX_TIME_NANOSECONDS: f64 = (1_i128 << 53) as f64 * 1_000_000_000.0;
+        const UNIT_SCALES: [f64; 7] = [
+            86_400_000_000_000.0,
+            3_600_000_000_000.0,
+            60_000_000_000.0,
+            1_000_000_000.0,
+            1_000_000.0,
+            1_000.0,
+            1.0,
+        ];
+        for (index, scale) in (3..10).zip(UNIT_SCALES) {
+            if result[index] != 0.0 && result[index].abs() * scale >= MAX_TIME_NANOSECONDS {
+                return NativeResult::Err(crate::error::create_range_error(vm, "duration time fields are out of range"));
+            }
         }
+        return make_duration(vm, result);
     }
+
+    // 日历路径：需要 relativeTo，把 duration 应用后按 nudge_iso_difference 舍入平衡。
+    let Some(rel) = relative_date else {
+        return NativeResult::Err(crate::error::create_range_error(
+            vm,
+            "a starting point is required for rounding calendar units",
+        ));
+    };
+    let Some(time_ns_total) = duration_time_nanoseconds(&values) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "duration is out of range"));
+    };
+    let delta_days = time_ns_total / DAY_NS;
+    let target_time = time_ns_total % DAY_NS;
+    let mut date_parts = [0.0; 10];
+    date_parts[0] = values[0];
+    date_parts[1] = values[1];
+    date_parts[2] = values[2];
+    date_parts[3] = delta_days as f64;
+    let end = add_date_duration(rel, &date_parts);
+    let settings = DifferenceSettings {
+        largest_index: largest,
+        smallest_index,
+        increment,
+        mode,
+    };
+    let result = match nudge_iso_difference(vm, rel, 0, end, target_time, settings, false) {
+        Ok(values) => values,
+        Err(error) => return NativeResult::Err(error),
+    };
     make_duration(vm, result)
 }
 
@@ -6495,6 +6783,30 @@ fn difference_core<H: VmHost>(
     vm: &mut H, start: (i128, i128, i128), start_time_ns: i128, end: (i128, i128, i128), end_time_ns: i128,
     settings: DifferenceSettings, since: bool,
 ) -> NativeResult {
+    let values = match nudge_iso_difference(vm, start, start_time_ns, end, end_time_ns, settings, since) {
+        Ok(values) => values,
+        Err(error) => return NativeResult::Err(error),
+    };
+    make_duration(vm, values)
+}
+
+/// 对 `end - start` 的 ISO 日期时间差按设置取整并平衡到最大单位。
+///
+/// # 步骤
+/// 1. 日期差按 largestUnit 分解（时间单位时 days 并入时间）。
+/// 2. 不要求舍入（smallest=nanosecond 且 increment=1）时直接按最大单位拆回。
+/// 3. smallest 为 day/时间单位走 NudgeToDayOrTime；为 year/month/week 走 NudgeToCalendarUnit。
+/// 4. since 用 NegateRoundingMode 舍入并在最后整体取反。
+///
+/// # 边界与前提
+/// - Duration.round 的日历单位路径与本函数共用：round 把 duration 应用 relativeTo 后
+///   以同样的 start/end 差输入本函数，输出即 balance 后的舍入结果。
+/// - 时间分量为带符号 i128；start/end 日与时间各自独立，符号由差值推导。
+#[allow(clippy::too_many_arguments)]
+fn nudge_iso_difference<H: VmHost>(
+    vm: &mut H, start: (i128, i128, i128), start_time_ns: i128, end: (i128, i128, i128), end_time_ns: i128,
+    settings: DifferenceSettings, since: bool,
+) -> Result<[f64; 10], JsValue> {
     let DifferenceSettings {
         largest_index,
         smallest_index,
@@ -6564,7 +6876,7 @@ fn difference_core<H: VmHost>(
         let mut values = date_values;
         if largest_index >= 4 {
             let Some(time_values) = balance_instant_difference(time_ns, largest_index - 4) else {
-                return NativeResult::Err(crate::error::create_range_error(vm, "difference is out of range"));
+                return Err(crate::error::create_range_error(vm, "difference is out of range"));
             };
             values[4..10].copy_from_slice(&time_values[4..10]);
         } else {
@@ -6586,7 +6898,7 @@ fn difference_core<H: VmHost>(
             UNIT_NS[smallest_index - 4] * increment
         };
         let Some(rounded_ns) = round_instant_difference(total_ns, quantum, mode) else {
-            return NativeResult::Err(crate::error::create_range_error(vm, "difference is out of range"));
+            return Err(crate::error::create_range_error(vm, "difference is out of range"));
         };
         let whole_days = rounded_ns / DAY_NS;
         let rem = rounded_ns % DAY_NS;
@@ -6595,7 +6907,7 @@ fn difference_core<H: VmHost>(
         let mut values = date_values;
         if largest_index >= 4 {
             let Some(time_values) = balance_instant_difference(rounded_ns, largest_index - 4) else {
-                return NativeResult::Err(crate::error::create_range_error(vm, "difference is out of range"));
+                return Err(crate::error::create_range_error(vm, "difference is out of range"));
             };
             values[4..10].copy_from_slice(&time_values[4..10]);
         } else {
@@ -6609,9 +6921,7 @@ fn difference_core<H: VmHost>(
             let nudged = dest_epoch + (rounded_ns - total_ns);
             match bubble_relative_duration(sign, values, nudged, date1, time1_ns, largest_index, 3) {
                 Ok(bubbled) => values = bubbled,
-                Err(()) => {
-                    return NativeResult::Err(crate::error::create_range_error(vm, "difference is out of range"))
-                }
+                Err(()) => return Err(crate::error::create_range_error(vm, "difference is out of range")),
             }
         }
         values
@@ -6629,13 +6939,13 @@ fn difference_core<H: VmHost>(
             mode,
         ) {
             Ok(result) => result,
-            Err(()) => return NativeResult::Err(crate::error::create_range_error(vm, "difference is out of range")),
+            Err(()) => return Err(crate::error::create_range_error(vm, "difference is out of range")),
         };
         if did_expand && smallest_index != 2 {
             match bubble_relative_duration(sign, values, nudged_epoch, date1, time1_ns, largest_index, smallest_index) {
                 Ok(bubbled) => values = bubbled,
                 Err(()) => {
-                    return NativeResult::Err(crate::error::create_range_error(vm, "difference is out of range"))
+                    return Err(crate::error::create_range_error(vm, "difference is out of range"))
                 }
             }
         }
@@ -6648,7 +6958,7 @@ fn difference_core<H: VmHost>(
             }
         }
     }
-    make_duration(vm, values)
+    Ok(values)
 }
 
 /// 计算差值并舍入。until 返回 other 减 receiver，since 返回反向。

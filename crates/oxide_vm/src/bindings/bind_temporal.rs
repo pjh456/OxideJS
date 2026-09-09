@@ -891,7 +891,14 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         world,
         duration_ctor,
         core,
-        &[("from", oxide_builtins::temporal::duration_from::<crate::vm::Vm> as *const (), 1)],
+        &[
+            ("from", oxide_builtins::temporal::duration_from::<crate::vm::Vm> as *const (), 1),
+            (
+                "compare",
+                oxide_builtins::temporal::duration_compare::<crate::vm::Vm> as *const (),
+                2,
+            ),
+        ],
     );
     let duration_proto_ptr = world.duration_proto.as_ptr() as *mut JsObject;
     let duration_proto = unsafe { &mut *duration_proto_ptr };
@@ -915,6 +922,8 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
             "nanoseconds",
             oxide_builtins::temporal::duration_nanoseconds::<crate::vm::Vm> as *const (),
         ),
+        ("sign", oxide_builtins::temporal::duration_sign::<crate::vm::Vm> as *const ()),
+        ("blank", oxide_builtins::temporal::duration_blank::<crate::vm::Vm> as *const ()),
     ] {
         bind_accessor_getter(core, session, duration_proto, name, getter);
     }
@@ -926,12 +935,34 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
             ("abs", oxide_builtins::temporal::duration_abs::<crate::vm::Vm> as *const (), 0),
             ("negated", oxide_builtins::temporal::duration_negated::<crate::vm::Vm> as *const (), 0),
             ("add", oxide_builtins::temporal::duration_add::<crate::vm::Vm> as *const (), 1),
+            (
+                "subtract",
+                oxide_builtins::temporal::duration_subtract::<crate::vm::Vm> as *const (),
+                1,
+            ),
+            ("equals", oxide_builtins::temporal::duration_equals::<crate::vm::Vm> as *const (), 1),
             ("round", oxide_builtins::temporal::duration_round::<crate::vm::Vm> as *const (), 1),
             ("with", oxide_builtins::temporal::duration_with::<crate::vm::Vm> as *const (), 1),
             ("total", oxide_builtins::temporal::duration_total::<crate::vm::Vm> as *const (), 1),
             ("toString", oxide_builtins::temporal::duration_to_string::<crate::vm::Vm> as *const (), 0),
+            ("toJSON", oxide_builtins::temporal::duration_to_json::<crate::vm::Vm> as *const (), 0),
+            (
+                "toLocaleString",
+                oxide_builtins::temporal::duration_to_locale_string::<crate::vm::Vm> as *const (),
+                0,
+            ),
             ("valueOf", oxide_builtins::temporal::duration_value_of::<crate::vm::Vm> as *const (), 0),
         ],
+    );
+    bind_well_known_data_property(
+        core,
+        duration_proto,
+        9,
+        JsValue::perm_string(
+            core.perm_interner()
+                .string_ptr(core.perm_interner().intern("Temporal.Duration").0),
+        ),
+        PropAttributes::new(false, false, true),
     );
 
     // 把子对象挂到 Temporal 命名空间对象上，再把 Temporal 挂到 global。
