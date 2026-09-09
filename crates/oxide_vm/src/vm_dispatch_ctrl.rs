@@ -299,10 +299,14 @@ impl Vm {
     /// 不一定是全局对象）。属性可写/可枚举/可配置（未声明标识符 PutValue 与
     /// eval 脚本 var/函数声明的属性描述符）。
     ///
+    /// # 步骤
+    /// 1. 属性已存在：CreateGlobalVarBinding 不改既有描述符——保持原属性只更新
+    ///    值（不可写数据/访问器：strict 抛 TypeError、sloppy 静默 no-op）。
+    /// 2. 属性缺失：新建可写/可枚举/可配置属性；全局对象不可扩展 → TypeError
+    ///    （两模式均抛，CreateGlobalVarBinding 语义）。
+    ///
     /// # 边界与前提
     /// - 键常量必须是字符串（emit 侧保证）；非字符串按错误返回。
-    /// - 全局对象不可扩展且属性缺失 → TypeError（两模式均抛，CreateGlobalVarBinding 语义）；
-    ///   已有不可写属性时 sloppy PutValue 静默 no-op，严格模式抛错。
     pub(crate) fn dispatch_define_global_prop_c(&mut self, a: usize, key_idx: u16) -> Result<(), String> {
         let idx = key_idx as usize;
         vm_trace!("DEFINE_GLOBAL_PROP_C value={} idx={}", a, idx);
@@ -315,18 +319,25 @@ impl Vm {
         let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;
         // SAFETY: 全局对象钉在 session 永久区，指针在 VM 生命周期内有效。
         let obj = unsafe { &mut *global_ptr };
+        // 属性已存在：保持原描述符只更新值，不升级 configurable（规范：
+        // CreateGlobalVarBinding 对既有属性不改描述符）。
+        if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), si) {
+            if let Some(current) = obj.prop_meta_at(pos) {
+                let writable = !current.is_accessor && current.attributes.writable();
+                if !writable {
+                    return if self.current_strict() {
+                        self.raise_error_kind("TypeError", "cannot assign to read-only property")
+                    } else {
+                        Ok(())
+                    };
+                }
+                return self.define_data_property(obj, si, value, current.attributes);
+            }
+        }
+        // 属性缺失：新建；唯一失败面是全局对象不可扩展（两模式均抛 TypeError）。
         match self.define_data_property(obj, si, value, PropAttributes::new(true, true, true)) {
             Ok(()) => Ok(()),
-            Err(msg) => {
-                // 不可扩展 + 新属性：规范两模式均抛；已有不可写属性：sloppy 静默、strict 抛。
-                let non_extensible_new = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), si).is_none()
-                    && !obj.is_extensible();
-                if non_extensible_new || self.current_strict() {
-                    self.raise_error_kind("TypeError", &msg)
-                } else {
-                    Ok(())
-                }
-            }
+            Err(msg) => self.raise_error_kind("TypeError", &msg),
         }
     }
 

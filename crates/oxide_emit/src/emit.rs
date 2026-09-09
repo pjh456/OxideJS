@@ -185,6 +185,9 @@ pub struct CompileCtx {
     /// 是否为 REPL 持久模式：脚本顶层 let/const 也写全局对象属性，使跨轮次
     /// 读取（LOAD_GLOBAL）可见变量绑定。仅 `eval_repl` 设置。
     pub(crate) repl_persist: bool,
+    /// 是否为 eval 脚本：脚本顶层 var/function 声明落全局对象时属性
+    /// configurable:true（普通脚本顶层为 false）。仅动态脚本入口设置。
+    pub(crate) is_eval_script: bool,
     pub(crate) static_block_this_reg: Option<u8>,
     pub(crate) field_buffer: Option<FieldBuffer>,
     /// 类构造器模块中 `@@field_keys` upvalue 下标（实例字段 computed key 数组）。
@@ -328,6 +331,7 @@ impl CompileCtx {
             is_strict: false,
             is_global_scope: false,
             repl_persist: false,
+            is_eval_script: false,
             static_block_this_reg: None,
             field_buffer: None,
             field_keys_uv: None,
@@ -1527,29 +1531,39 @@ impl Emitter {
     /// 可经 `globalThis` 反射（脚本环境记录的 var 绑定全局对象属性）。
     ///
     /// # 边界与前提
-    /// - 仅顶层模块上下文调用：顶层 `this`（物理寄存器 254）恒为全局对象。
+    /// - 仅顶层模块上下文调用。
     /// - let/const/class 不落全局对象，不得调用本函数。
     ///
     /// # 副作用
-    /// - 定义全局对象数据属性（可写/可枚举/不可配置），属性缺失时新建。
+    /// - 普通脚本：定义可写/可枚举/不可配置数据属性（经顶层 `this` = 全局对象）。
+    /// - eval 脚本（`is_eval_script`）：属性可配置（configurable:true），全局对象
+    ///   经 session 解析——eval var 声明允许后续 redefine/delete。
     pub(crate) fn emit_global_prop_write(&self, name: &str, val_reg: u32, ctx: &mut CompileCtx) {
         let idx = ctx.add_constant(Constant::String(name.to_string()));
-        let key_reg = ctx.alloc_reg();
-        ctx.inst(Inst::load_const(Operand::Reg(key_reg), idx));
-        ctx.inst(Inst::define_global_prop(Operand::This, Operand::Reg(val_reg), Operand::Reg(key_reg)));
+        if ctx.is_eval_script {
+            ctx.inst(Inst::define_global_prop_c(Operand::Reg(val_reg), idx));
+        } else {
+            let key_reg = ctx.alloc_reg();
+            ctx.inst(Inst::load_const(Operand::Reg(key_reg), idx));
+            ctx.inst(Inst::define_global_prop(Operand::This, Operand::Reg(val_reg), Operand::Reg(key_reg)));
+        }
     }
 
     /// 把完整程序编译为顶层模块体的 IRFunction。
     ///
     /// 调用方为 `oxide_compiler::Compiler::compile`：本函数完成 emit 半程，
     /// 随后由 `oxide_ir::lower::lower` 降为字节码。
-    /// `repl_persist` 为 true 时脚本顶层 let/const 也写全局对象（REPL 跨轮次持久）。
-    pub fn emit_program(&self, program: &oxide_parser::Program, repl_persist: bool) -> Result<IRFunction, String> {
+    /// `repl_persist` 为 true 时脚本顶层 let/const 也写全局对象（REPL 跨轮次持久）；
+    /// `is_eval_script` 为 true 时顶层 var/function 声明落全局属性 configurable:true。
+    pub fn emit_program(
+        &self, program: &oxide_parser::Program, repl_persist: bool, is_eval_script: bool,
+    ) -> Result<IRFunction, String> {
         crate::emit_debug!("emit_program: {} stmts", program.body.len());
         let mut ctx = CompileCtx::new();
         // 脚本顶层：var/function 声明需落到全局对象，let/const/class 不进全局。
         ctx.is_global_scope = true;
         ctx.repl_persist = repl_persist;
+        ctx.is_eval_script = is_eval_script;
         // 脚本顶层严格模式由源码 "use strict" directive 决定（嵌套函数经父 ctx 继承）。
         ctx.is_strict = program.has_use_strict_directive();
         self.predeclare_function_declarations(&program.body, &mut ctx);

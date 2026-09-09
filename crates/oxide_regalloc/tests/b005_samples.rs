@@ -10,7 +10,9 @@ use oxide_bytecode::module::CompiledModule;
 fn compile_source(src: &str, regalloc: bool) -> Result<CompiledModule, String> {
     let allocator = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&allocator, src).expect("parse failed");
-    let mut ir = oxide_emit::Emitter::new().emit_program(&program, false).expect("emit failed");
+    let mut ir = oxide_emit::Emitter::new()
+        .emit_program(&program, false, false)
+        .expect("emit failed");
     oxide_dce::dce(&mut ir);
     if regalloc {
         let cfg = oxide_cfg::build_cfg(&ir);

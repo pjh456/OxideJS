@@ -12,7 +12,9 @@ use oxide_vm::JsValue;
 fn run_source(src: &str, precise: bool) -> Result<JsValue, String> {
     let allocator = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&allocator, src).expect("parse failed");
-    let mut ir = oxide_emit::Emitter::new().emit_program(&program, false).expect("emit failed");
+    let mut ir = oxide_emit::Emitter::new()
+        .emit_program(&program, false, false)
+        .expect("emit failed");
     oxide_dce::dce(&mut ir); // 保守轮恒定（两跑一致）
     if precise {
         let cfg = oxide_cfg::build_cfg(&ir);
@@ -71,7 +73,9 @@ fn precise_dce_semantics_preserved() {
 fn top_level_store_var_survives_precise() {
     let allocator = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&allocator, "var x = 1; 2;").expect("parse failed");
-    let mut ir = oxide_emit::Emitter::new().emit_program(&program, false).expect("emit failed");
+    let mut ir = oxide_emit::Emitter::new()
+        .emit_program(&program, false, false)
+        .expect("emit failed");
     oxide_dce::dce(&mut ir);
     let cfg = oxide_cfg::build_cfg(&ir);
     let live = oxide_liveness::liveness(&ir, &cfg);
@@ -93,7 +97,9 @@ fn top_level_store_var_survives_precise() {
 fn precise_removes_dead_local_store() {
     let allocator = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&allocator, "function f() { var y = 1; return 5; } f();").expect("parse failed");
-    let ir = oxide_emit::Emitter::new().emit_program(&program, false).expect("emit failed");
+    let ir = oxide_emit::Emitter::new()
+        .emit_program(&program, false, false)
+        .expect("emit failed");
     assert_eq!(ir.nested.len(), 1);
     let mut sub = ir.nested[0].clone();
     oxide_dce::dce(&mut sub);
@@ -108,7 +114,9 @@ fn precise_removes_dead_local_store() {
 fn top_level_flag_filled_by_emit() {
     let allocator = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&allocator, "var x = 1; function g() { return 2; }").expect("parse failed");
-    let ir = oxide_emit::Emitter::new().emit_program(&program, false).expect("emit failed");
+    let ir = oxide_emit::Emitter::new()
+        .emit_program(&program, false, false)
+        .expect("emit failed");
     assert!(ir.is_top_level, "顶层脚本 is_top_level 应为 true");
     assert!(ir.nested.iter().any(|sub| !sub.is_top_level), "嵌套函数 is_top_level 应为 false");
 }

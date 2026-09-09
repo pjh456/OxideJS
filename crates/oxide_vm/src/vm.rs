@@ -2396,10 +2396,12 @@ impl Vm {
         Ok(func_val)
     }
 
-    /// 动态编译脚本（eval 脚本模式）：把源码按脚本模式编译，var/函数声明落全局对象。
+    /// 动态编译脚本（eval 脚本模式）：把源码按脚本模式编译，var/函数声明落全局对象
+    /// （属性 configurable:true，区别于普通脚本顶层的 false）。
     ///
     /// # 步骤
-    /// 1. parse（脚本模式）→ compile（emit_program 置 is_global_scope=true）。
+    /// 1. parse（脚本模式）→ compile（emit_program 置 is_global_scope=true，
+    ///    Compiler 置 is_eval_script=true）。
     /// 2. 整棵模块树（根 flat_id=0 + 嵌套函数）追加进平表：`rehome_subtree(&module, base+1)`，
     ///    使根落 base、子函数 old→base+old，CREATE_CLOSURE imm16 同步重写。
     /// 3. 扩容 immutables_cache，建函数对象（sub_module_index = base）返回。
@@ -2415,7 +2417,10 @@ impl Vm {
         let allocator = oxide_parser::Allocator::default();
         let program = oxide_parser::parse(&allocator, code)
             .map_err(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>().join("\n"))?;
-        let module = oxide_compiler::compiler::Compiler::new().compile(&program)?;
+        // eval 脚本：顶层 var/function 声明落全局属性 configurable:true。
+        let module = oxide_compiler::compiler::Compiler::new()
+            .with_eval_script(true)
+            .compile(&program)?;
         let base = self.sub_modules.len() as u32;
         let mut added = Vec::new();
         // 根模块 flat_id=0 传 base+1，重编号后落 base（避开 sub_module_index()==0 守卫）。

@@ -6,7 +6,7 @@ use oxide_liveness::{liveness, LiveInfo};
 fn run_liveness(src: &str) -> (LiveInfo, oxide_cfg::Cfg, usize) {
     let allocator = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&allocator, src).expect("parse");
-    let ir = oxide_emit::Emitter::new().emit_program(&program, false).expect("emit");
+    let ir = oxide_emit::Emitter::new().emit_program(&program, false, false).expect("emit");
     let cfg = build_cfg(&ir);
     let info = liveness(&ir, &cfg);
     (info, cfg, ir.insts.len())

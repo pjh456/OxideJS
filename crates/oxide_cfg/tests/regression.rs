@@ -9,7 +9,9 @@ use oxide_cfg::EdgeKind;
 fn cfg_from_source(src: &str) -> oxide_cfg::Cfg {
     let allocator = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&allocator, src).expect("parse failed");
-    let ir = oxide_emit::Emitter::new().emit_program(&program, false).expect("emit failed");
+    let ir = oxide_emit::Emitter::new()
+        .emit_program(&program, false, false)
+        .expect("emit failed");
     build_cfg(&ir)
 }
 
@@ -53,7 +55,9 @@ fn nested_function_cfgs_are_independent() {
     let allocator = oxide_parser::Allocator::default();
     let program =
         oxide_parser::parse(&allocator, "function outer(){ var x = 0; while(x<3){x=x+1;} }").expect("parse failed");
-    let ir = oxide_emit::Emitter::new().emit_program(&program, false).expect("emit failed");
+    let ir = oxide_emit::Emitter::new()
+        .emit_program(&program, false, false)
+        .expect("emit failed");
     for nested in &ir.nested {
         let cfg = build_cfg(nested);
         assert!(!cfg.blocks.is_empty());

@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 fn run_color(src: &str) -> (AllocMap, oxide_ir::IRFunction) {
     let allocator = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&allocator, src).expect("parse");
-    let ir = oxide_emit::Emitter::new().emit_program(&program, false).expect("emit");
+    let ir = oxide_emit::Emitter::new().emit_program(&program, false, false).expect("emit");
     let cfg = oxide_cfg::build_cfg(&ir);
     let live = oxide_liveness::liveness(&ir, &cfg);
     let m = oxide_regalloc::color(&ir, &live).expect("color");
