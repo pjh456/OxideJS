@@ -191,6 +191,11 @@ fn strict_chained_write_through_readonly_middle_throws() {
 // ── 顶层脚本 sloppy 赋值只读全局属性（undefined）不抛错 ──
 #[test]
 fn sloppy_top_level_assign_to_readonly_global_no_throw() {
+    // 值保持强断言：写被拦截后 typeof 读回 'undefined'，全局对象属性不被修改。
     let r = eval_many(&["undefined = 1", "typeof undefined"]).unwrap();
     assert!(r.is_string(), "sloppy 顶层对只读全局属性赋值不得抛错，实际 {:?}", r);
+    let s = eval_str("undefined = 1; typeof undefined");
+    assert_eq!(s, "undefined", "sloppy 顶层 undefined 赋值应静默 no-op，typeof 读回 'undefined'");
+    let b = eval("undefined = 1; globalThis.undefined === undefined").unwrap();
+    assert!(b.is_bool() && b.as_bool(), "全局对象 undefined 属性不应被赋值修改，实际 {:?}", b);
 }
