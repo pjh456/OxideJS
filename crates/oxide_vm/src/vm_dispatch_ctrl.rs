@@ -275,12 +275,16 @@ impl Vm {
     }
 
     /// 定义全局 var 绑定数据属性：rd=全局对象，a=值，b=键。
-    /// 属性可写/可枚举/不可配置（CreateGlobalVarBinding 的属性描述符）。
+    ///
+    /// 描述符语义（CreateGlobalVarBinding）：
+    /// - 已有可配置属性：保持原 enumerable/configurable、置 writable、更新值——
+    ///   重复声明不漂移既有描述符（内置属性 enumerable 不泄漏、值语义不变）。
+    /// - 已有不可配置属性：走定义不变量检查（末尾统一路径）——描述符冲突或
+    ///   不可写属性值变更时静默 no-op，否则仅更新值、描述符不变。
+    /// - 属性缺失：新建可写/可枚举/不可配置数据属性。
     ///
     /// # 边界与前提
-    /// - 已有同名不可写属性（NaN/undefined/Infinity 等内置）时静默跳过：规范中
-    ///   var 绑定仍建立（寄存器侧），全局对象属性保持原样，不抛错。
-    /// - 已有同名可写数据属性（重复 var 声明）时按定义更新值。
+    /// - rd 非对象（非对象 this）时按 no-op 处理，不抛错。
     pub(crate) fn dispatch_define_global_prop(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
         vm_trace!("DEFINE_GLOBAL_PROP rd={} value={} key={}", rd, a, b);
         let obj_val = self.regs[rd];
@@ -290,6 +294,20 @@ impl Vm {
         let prop_name_si = self.property_key_si(self.regs[b])?;
         let value = self.regs[a];
         let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
+        // 已有可配置属性：var 绑定描述符不漂移——保 enumerable/configurable，
+        // 置 writable，更新值（三常量与内置对象声明撞名时值语义按规范落槽）。
+        if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+            if let Some(current) = obj.prop_meta_at(pos) {
+                if current.attributes.configurable() {
+                    let attrs =
+                        PropAttributes::new(true, current.attributes.enumerable(), current.attributes.configurable());
+                    let _ = self.define_data_property(obj, prop_name_si, value, attrs);
+                    return Ok(());
+                }
+            }
+        }
+        // 属性缺失或不可配置既有属性：统一走定义，不可配置时由定义侧不变量
+        // 检查决定更新值或静默 no-op。
         let _ = self.define_data_property(obj, prop_name_si, value, PropAttributes::new(true, true, false));
         Ok(())
     }

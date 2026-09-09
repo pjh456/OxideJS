@@ -1627,11 +1627,21 @@ impl Emitter {
         // 全局声明实例化序言：脚本求值前为顶层 var 名创建全局对象属性（值 undefined），
         // 使声明语句执行前的读取（typeof、反射、自引用）可经全局对象见绑定；同名
         // 函数声明的属性由首个 sub-pass 以函数值覆盖，声明语句保持值更新语义。
+        // builtin 名的全局属性运行期预存（session 绑定）：序言值写是单 opcode 值
+        // 混叠，直接写 undefined 会把现存值（NaN 等）抹掉，故以 builtin 镜像槽
+        // （run 起点预载全局属性值）作为写入值——描述符按 CreateGlobalVarBinding
+        // 翻 writable，值幂等保留；裸读走镜像、反射见预存属性。
         let gdi_var_names = self.collect_var_binding_names(&program.body);
         if !gdi_var_names.is_empty() {
             let undef_reg = self.emit_undefined(&mut ctx);
             for name in &gdi_var_names {
-                self.emit_global_prop_write(name, undef_reg, &mut ctx);
+                let value_reg = if CompileCtx::is_known_builtin(name) {
+                    // 镜像槽未预登记时（解构 pattern 名等）就地登记，run 起点预载。
+                    ctx.lookup_or_builtin(name).unwrap_or(undef_reg)
+                } else {
+                    undef_reg
+                };
+                self.emit_global_prop_write(name, value_reg, &mut ctx);
             }
         }
 

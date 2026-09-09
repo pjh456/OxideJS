@@ -372,6 +372,19 @@ impl Emitter {
         }
     }
 
+    /// 预声明单个 `var` 名：仅顶层（全局作用域）的 builtin 名落 builtin 镜像槽
+    /// （run 起点预载全局属性值），使 GDI 序言与声明点同步都用入口原值而非
+    /// fresh undefined 槽，现存值（NaN 等）不被抹；函数体内 builtin 名仍是局部
+    /// var 遮蔽（fresh 槽，不命中只读内置拦截）；其余名 fresh var 槽。
+    fn predeclare_var_name(&self, name: &str, ctx: &mut CompileCtx) {
+        if ctx.is_global_scope && CompileCtx::is_known_builtin(name) {
+            let _ = ctx.lookup_or_builtin(name);
+        } else {
+            let reg = ctx.alloc_reg();
+            let _ = ctx.declare_initialized(name, reg, VariableDeclarationKind::Var, false);
+        }
+    }
+
     /// 预声明语句列表中的全部 `var` 绑定，使先发的提升函数声明能解析它们。
     /// 顶层 `var` 名在编译闭包捕获它的函数体时必须可见。
     pub(crate) fn predeclare_var_declarations(&self, statements: &[Statement], ctx: &mut CompileCtx) {
@@ -383,8 +396,7 @@ impl Emitter {
                     }
                     for d in &decl.declarations {
                         if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
-                            let reg = ctx.alloc_reg();
-                            let _ = ctx.declare_initialized(bi.name.as_str(), reg, VariableDeclarationKind::Var, false);
+                            self.predeclare_var_name(bi.name.as_str(), ctx);
                         }
                     }
                 }
@@ -406,13 +418,7 @@ impl Emitter {
                         if matches!(decl.kind, VariableDeclarationKind::Var) {
                             for d in &decl.declarations {
                                 if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
-                                    let reg = ctx.alloc_reg();
-                                    let _ = ctx.declare_initialized(
-                                        bi.name.as_str(),
-                                        reg,
-                                        VariableDeclarationKind::Var,
-                                        false,
-                                    );
+                                    self.predeclare_var_name(bi.name.as_str(), ctx);
                                 }
                             }
                         }
@@ -446,9 +452,7 @@ impl Emitter {
                         }
                         for d in &decl.declarations {
                             if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
-                                let reg = ctx.alloc_reg();
-                                let _ =
-                                    ctx.declare_initialized(bi.name.as_str(), reg, VariableDeclarationKind::Var, false);
+                                self.predeclare_var_name(bi.name.as_str(), ctx);
                             }
                         }
                     }

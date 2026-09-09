@@ -524,14 +524,16 @@ impl KernelSession {
         let si_undef = core.perm_interner.intern("undefined").0;
         let si_infinity = core.perm_interner.intern("Infinity").0;
 
-        // 全局三常量描述符：{ writable:false, enumerable:false, configurable:false }，
-        // 规范要求不可写不可枚举不可配置，否则会泄漏进 Object.keys(globalThis)。
+        // 全局三常量描述符：{ writable:false, enumerable:false, configurable:true }。
+        // e:false 是枚举面守卫（Object.keys / for-in 由 enumerable 决定）；
+        // c:true 是 delete / defineProperty 可观察的规范值（delete globalThis.undefined
+        // 属性真删、返回 true）。
         let nan_shape = core.shape_forge.make_shape(EMPTY_SHAPE_ID, si_nan);
         global_obj.set_shape_id(nan_shape);
         global_obj.ensure_hash_props().push(JsValue::float(f64::NAN));
         global_obj.set_data_meta(
             global_obj.prop_vec_len().saturating_sub(1) as u32,
-            oxide_types::object::PropAttributes::new(false, false, false),
+            oxide_types::object::PropAttributes::new(false, false, true),
         );
 
         let undef_shape = core.shape_forge.make_shape(nan_shape, si_undef);
@@ -539,7 +541,7 @@ impl KernelSession {
         global_obj.ensure_hash_props().push(JsValue::undefined());
         global_obj.set_data_meta(
             global_obj.prop_vec_len().saturating_sub(1) as u32,
-            oxide_types::object::PropAttributes::new(false, false, false),
+            oxide_types::object::PropAttributes::new(false, false, true),
         );
 
         let inf_shape = core.shape_forge.make_shape(undef_shape, si_infinity);
@@ -547,7 +549,7 @@ impl KernelSession {
         global_obj.ensure_hash_props().push(JsValue::float(f64::INFINITY));
         global_obj.set_data_meta(
             global_obj.prop_vec_len().saturating_sub(1) as u32,
-            oxide_types::object::PropAttributes::new(false, false, false),
+            oxide_types::object::PropAttributes::new(false, false, true),
         );
 
         P::new(global_obj)
