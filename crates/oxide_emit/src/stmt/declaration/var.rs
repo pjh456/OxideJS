@@ -84,9 +84,9 @@ impl Emitter {
                 ctx.init_var(bi.name.as_str());
                 // 脚本顶层 var：全局对象属性同步绑定当前值（首次声明即 undefined，
                 // 先前已写入则保留写入值，声明不是覆盖性赋值）。被捕获绑定的值
-                // 存在 cell 而非槽，从 cell 同步。builtin 名不同步：描述符翻
-                // writable 已由 GDI 序言以镜像值完成，未初始化的槽/cell 是
-                // undefined，再同步会把现存值（NaN 等）抹掉。
+                // 存在 cell 而非槽，从 cell 同步。builtin 名不同步：CreateGlobalVarBinding
+                // 不更新既有数据描述符，GDI 序言已以镜像值同步（幂等），未初始化
+                // 的槽/cell 是 undefined，再同步会把现存值（NaN 等）抹掉。
                 if ctx.is_global_scope
                     && matches!(decl.kind, VariableDeclarationKind::Var)
                     && !CompileCtx::is_known_builtin(bi.name.as_str())

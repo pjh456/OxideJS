@@ -1,9 +1,9 @@
 //! 全局三常量（undefined/NaN/Infinity）描述符与 var 声明交互的回归测试。
 //!
 //! 覆盖规范全局对象属性描述符 { writable:false, enumerable:false, configurable:true }：
-//! 描述符读、delete 真删、delete 后镜像裸读、var 无初始化声明的描述符翻转与值
-//! 保持（NaN/Infinity 不被抹成 undefined）、var 初始化声明的值落槽、枚举面不
-//! 泄漏、任务只读拦截与 strict TypeError、eval 路径、for-in 枚举面。
+//! 描述符读、delete 真删、delete 后镜像裸读、var 无初始化声明的描述符不漂移与值
+//! 保持（writable 不翻位、NaN/Infinity 不被抹成 undefined）、var 初始化声明的值
+//! 落槽、枚举面不泄漏、任务只读拦截与 strict TypeError、eval 路径、for-in 枚举面。
 
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
@@ -72,14 +72,22 @@ fn delete_then_bare_read_via_mirror() {
 }
 
 #[test]
-fn var_no_init_flips_writable_keeps_value() {
-    // #4：var 无初始化声明——CreateGlobalVarBinding 翻 writable、保 enumerable/
-    // configurable，值保持（三常量现值 undefined，幂等）。
-    run_truthy(
-        "var undefined; var d = Object.getOwnPropertyDescriptor(globalThis, 'undefined'); \
-         d.value === undefined && d.writable === true && d.enumerable === false \
-         && d.configurable === true",
-    );
+fn var_no_init_descriptor_unchanged() {
+    // #4：var 无初始化声明——CreateGlobalVarBinding 不更新既有数据描述符
+    // （三常量 writable 保 false 不翻位），值幂等保持 ×3 常量。
+    for name in CONSTANTS {
+        let value_check = match name {
+            "NaN" => "Number.isNaN(d.value)",
+            "Infinity" => "d.value === Infinity",
+            _ => "d.value === undefined",
+        };
+        let src = format!(
+            "var {name}; var d = Object.getOwnPropertyDescriptor(globalThis, '{name}'); \
+             {value_check} && d.writable === false && d.enumerable === false \
+             && d.configurable === true",
+        );
+        run_truthy(&src);
+    }
 }
 
 #[test]
@@ -156,7 +164,7 @@ fn for_in_does_not_enumerate_three_constants() {
     // #13：for-in 仅 enumerable 面——三常量 e:false 不泄漏（不变）。
     run_truthy(
         "var ks = []; for (var k in globalThis) ks.push(k); \
-         ks.includes('undefined') || ks.includes('NaN') || ks.includes('Infinity') === false",
+         (ks.includes('undefined') || ks.includes('NaN') || ks.includes('Infinity')) === false",
     );
 }
 

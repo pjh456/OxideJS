@@ -277,8 +277,10 @@ impl Vm {
     /// 定义全局 var 绑定数据属性：rd=全局对象，a=值，b=键。
     ///
     /// 描述符语义（CreateGlobalVarBinding）：
-    /// - 已有可配置属性：保持原 enumerable/configurable、置 writable、更新值——
-    ///   重复声明不漂移既有描述符（内置属性 enumerable 不泄漏、值语义不变）。
+    /// - 已有可配置数据属性且不可写：no-op 返回——规范不更新既有数据描述符
+    ///   （writable/enumerable/configurable 与值均保持原样）。
+    /// - 已有可配置属性且可写（数据或 accessor）：保 enumerable/configurable、
+    ///   更新值；accessor 形重定义为数据属性（既有行为，不扩面）。
     /// - 已有不可配置属性：走定义不变量检查（末尾统一路径）——描述符冲突或
     ///   不可写属性值变更时静默 no-op，否则仅更新值、描述符不变。
     /// - 属性缺失：新建可写/可枚举/不可配置数据属性。
@@ -294,11 +296,15 @@ impl Vm {
         let prop_name_si = self.property_key_si(self.regs[b])?;
         let value = self.regs[a];
         let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
-        // 已有可配置属性：var 绑定描述符不漂移——保 enumerable/configurable，
-        // 置 writable，更新值（三常量与内置对象声明撞名时值语义按规范落槽）。
+        // 已有可配置属性：CreateGlobalVarBinding 不改既有数据描述符；可写数据
+        // 属性仅更新值（保 e/c），accessor 形重定义为数据属性。
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             if let Some(current) = obj.prop_meta_at(pos) {
                 if current.attributes.configurable() {
+                    // 既有数据属性不可写：不更新描述符也不更新值（规范零修改）。
+                    if !current.is_accessor && !current.attributes.writable() {
+                        return Ok(());
+                    }
                     let attrs =
                         PropAttributes::new(true, current.attributes.enumerable(), current.attributes.configurable());
                     let _ = self.define_data_property(obj, prop_name_si, value, attrs);

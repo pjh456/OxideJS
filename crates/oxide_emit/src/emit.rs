@@ -1629,8 +1629,9 @@ impl Emitter {
         // 函数声明的属性由首个 sub-pass 以函数值覆盖，声明语句保持值更新语义。
         // builtin 名的全局属性运行期预存（session 绑定）：序言值写是单 opcode 值
         // 混叠，直接写 undefined 会把现存值（NaN 等）抹掉，故以 builtin 镜像槽
-        // （run 起点预载全局属性值）作为写入值——描述符按 CreateGlobalVarBinding
-        // 翻 writable，值幂等保留；裸读走镜像、反射见预存属性。
+        // （run 起点预载全局属性值）作为写入值——CreateGlobalVarBinding 不更新
+        // 既有数据描述符（0x6F 不可写分支 no-op），值幂等保留；裸读走镜像、
+        // 反射见预存属性。
         let gdi_var_names = self.collect_var_binding_names(&program.body);
         if !gdi_var_names.is_empty() {
             let undef_reg = self.emit_undefined(&mut ctx);
