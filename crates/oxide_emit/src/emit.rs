@@ -1555,6 +1555,8 @@ impl Emitter {
     /// 随后由 `oxide_ir::lower::lower` 降为字节码。
     /// `repl_persist` 为 true 时脚本顶层 let/const 也写全局对象（REPL 跨轮次持久）；
     /// `is_eval_script` 为 true 时顶层 var/function 声明落全局属性 configurable:true。
+    /// 顶层 var 的全局对象属性在求值开始前统一创建（值 undefined），声明语句
+    /// 保持赋值语义——声明语句出现之前的读取（typeof/反射/自引用）即见绑定。
     pub fn emit_program(
         &self, program: &oxide_parser::Program, repl_persist: bool, is_eval_script: bool,
     ) -> Result<IRFunction, String> {
@@ -1600,6 +1602,17 @@ impl Emitter {
                         Operand::None,
                     ));
                 }
+            }
+        }
+
+        // 全局声明实例化序言：脚本求值前为顶层 var 名创建全局对象属性（值 undefined），
+        // 使声明语句执行前的读取（typeof、反射、自引用）可经全局对象见绑定；同名
+        // 函数声明的属性由首个 sub-pass 以函数值覆盖，声明语句保持值更新语义。
+        let gdi_var_names = self.collect_var_binding_names(&program.body);
+        if !gdi_var_names.is_empty() {
+            let undef_reg = self.emit_undefined(&mut ctx);
+            for name in &gdi_var_names {
+                self.emit_global_prop_write(name, undef_reg, &mut ctx);
             }
         }
 

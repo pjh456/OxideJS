@@ -48,37 +48,66 @@ impl Emitter {
                 let tmp = ctx.alloc_reg();
                 ctx.inst(Inst::load_const(Operand::Reg(tmp), idx));
                 let var_reg = ctx.alloc_reg();
-                let target_reg = if matches!(decl.kind, VariableDeclarationKind::Var) {
+                // 无初始化 var 是纯声明而非赋值：绑定已预先存在（提升引用或先前写入）
+                // 时保留槽值，仅首次声明把 undefined 物化进槽。
+                let (target_reg, already_bound) = if matches!(decl.kind, VariableDeclarationKind::Var) {
                     match ctx.declare(bi.name.as_str(), var_reg, decl.kind, is_const) {
-                        Ok(()) => var_reg,
-                        Err(_) => ctx.lookup(bi.name.as_str()).unwrap_or(var_reg),
+                        Ok(()) => (var_reg, false),
+                        Err(_) => (ctx.lookup(bi.name.as_str()).unwrap_or(var_reg), true),
                     }
                 } else {
                     // let/const 无初始化器：复用本块预声明槽位，否则新声明
                     // （for 头等未预声明路径）。
-                    let var_reg = if let Some(reg) = ctx.scopes.symbols.consume_predeclared_slot(bi.name.as_str()) {
+                    let target = if let Some(reg) = ctx.scopes.symbols.consume_predeclared_slot(bi.name.as_str()) {
                         reg
                     } else {
                         let r = ctx.alloc_reg();
                         ctx.declare(bi.name.as_str(), r, decl.kind, is_const)?;
                         r
                     };
-                    var_reg
+                    (target, false)
                 };
                 if let Some(&cell_idx) = ctx.captured_bindings.get(bi.name.as_str()) {
-                    ctx.inst(Inst::new(
-                        OpCode::MAKE_CELL,
-                        Operand::Reg(tmp),
-                        Operand::Imm(cell_idx as u16),
-                        Operand::None,
-                    ));
-                } else {
+                    // 被捕获绑定的 cell 在函数入口已实例化（undefined）；声明语句
+                    // 不赋值，仅首次声明刷新初值，已绑定的 cell 保留现值。
+                    if !already_bound {
+                        ctx.inst(Inst::new(
+                            OpCode::MAKE_CELL,
+                            Operand::Reg(tmp),
+                            Operand::Imm(cell_idx as u16),
+                            Operand::None,
+                        ));
+                    }
+                } else if !already_bound {
                     ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(target_reg), Operand::Reg(tmp), Operand::None));
                 }
                 ctx.init_var(bi.name.as_str());
-                // 脚本顶层 var 无初始化：仍须写全局对象属性（值为 undefined）。
+                // 脚本顶层 var：全局对象属性同步绑定当前值（首次声明即 undefined，
+                // 先前已写入则保留写入值，声明不是覆盖性赋值）。被捕获绑定的值
+                // 存在 cell 而非槽，从 cell 同步。
                 if ctx.is_global_scope && matches!(decl.kind, VariableDeclarationKind::Var) {
-                    self.emit_global_prop_write(bi.name.as_str(), tmp, ctx);
+                    let src = if let Some(&cell_idx) = ctx.captured_bindings.get(bi.name.as_str()) {
+                        let r = ctx.alloc_reg();
+                        if let Some((binding, _)) = ctx.scopes.symbols.lookup_any_binding(bi.name.as_str()) {
+                            ctx.inst(Inst::new(
+                                OpCode::CELL_GET,
+                                Operand::Reg(r),
+                                Operand::Reg(binding.reg),
+                                Operand::Imm(cell_idx as u16),
+                            ));
+                        } else {
+                            ctx.inst(Inst::new(
+                                OpCode::CELL_GET,
+                                Operand::Reg(r),
+                                Operand::None,
+                                Operand::Imm(cell_idx as u16),
+                            ));
+                        }
+                        r
+                    } else {
+                        target_reg
+                    };
+                    self.emit_global_prop_write(bi.name.as_str(), src, ctx);
                 }
                 r = Some(var_reg);
             }

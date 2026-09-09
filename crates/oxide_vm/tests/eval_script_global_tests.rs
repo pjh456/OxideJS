@@ -80,6 +80,17 @@ fn script_top_level_var_still_configurable_false() {
     assert!(r.is_bool() && r.as_bool(), "脚本顶层 var 应保持 configurable:false，实际 {:?}", r);
 }
 
+// ── eval 路径定时：属性在 eval 体求值开始前创建（configurable:true 描述符） ──
+#[test]
+fn eval_var_property_created_before_eval_body_runs() {
+    let r = eval("eval(\"var d = (function(){ var p = Object.getOwnPropertyDescriptor(globalThis, 'x'); return p !== undefined && p.configurable === true; })(); var x; d\")").unwrap();
+    assert!(
+        r.is_bool() && r.as_bool(),
+        "eval 体内声明语句前全局属性应已存在且 configurable:true，实际 {:?}",
+        r
+    );
+}
+
 // ── 严格 eval：未声明写抛 ReferenceError（Step 2 语义经 eval 路径） ──
 #[test]
 fn strict_eval_undeclared_write_throws_reference_error() {

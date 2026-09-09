@@ -14,7 +14,8 @@ fn compile_source(source: &str) -> CompiledModule {
 fn symbol_table_declare_and_lookup() {
     let module = compile_source("var x = 42;");
     assert!(!module.bytecode.is_empty());
-    assert_eq!(module.constants[0], Constant::Int(42));
+    // 常量池下标不固定（声明实例化序言可能先入池 Undefined），只断言成员存在。
+    assert!(module.constants.contains(&Constant::Int(42)));
 }
 
 #[test]
