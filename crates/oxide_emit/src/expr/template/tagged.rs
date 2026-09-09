@@ -34,12 +34,7 @@ impl Emitter {
         let site_no = ctx.next_template_site;
         ctx.next_template_site += 1;
         let template_reg = ctx.alloc_reg();
-        ctx.inst(Inst::get_template_object(
-            Operand::Reg(template_reg),
-            site_no,
-            &cooked_words,
-            &raw_idxs,
-        ));
+        ctx.inst(Inst::get_template_object(Operand::Reg(template_reg), site_no, &cooked_words, &raw_idxs));
 
         // 表达式实参：求值顺序在模板对象之后（规范 TaggedTemplate 求值序：
         // 标签引用 → GetTemplateObject → 实参表达式）。

@@ -3849,9 +3849,7 @@ pub fn duration_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// # 边界与前提
 /// - 任一侧含日历单位抛 RangeError（本批无 relativeTo 支持）。
 /// - 全零与 nanosecond 分量和为 0 时直接返回零时长。
-fn add_duration_values<H: VmHost>(
-    vm: &mut H, receiver: &[f64; 10], other: &[f64; 10],
-) -> Result<[f64; 10], JsValue> {
+fn add_duration_values<H: VmHost>(vm: &mut H, receiver: &[f64; 10], other: &[f64; 10]) -> Result<[f64; 10], JsValue> {
     if receiver[..3].iter().any(|value| *value != 0.0) || other[..3].iter().any(|value| *value != 0.0) {
         return Err(crate::error::create_range_error(vm, "cannot add durations with calendar units"));
     }
@@ -4068,12 +4066,10 @@ pub fn duration_compare<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                     "relativeTo is required for calendar units",
                 ));
             }
-            let one_ns = native_try!(duration_time_nanoseconds(&one).ok_or_else(|| {
-                crate::error::create_range_error(vm, "duration is out of range")
-            }));
-            let two_ns = native_try!(duration_time_nanoseconds(&two).ok_or_else(|| {
-                crate::error::create_range_error(vm, "duration is out of range")
-            }));
+            let one_ns = native_try!(duration_time_nanoseconds(&one)
+                .ok_or_else(|| { crate::error::create_range_error(vm, "duration is out of range") }));
+            let two_ns = native_try!(duration_time_nanoseconds(&two)
+                .ok_or_else(|| { crate::error::create_range_error(vm, "duration is out of range") }));
             one_ns.cmp(&two_ns)
         }
         Some(rel) => {
@@ -4305,7 +4301,10 @@ pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         ];
         for (index, scale) in (3..10).zip(UNIT_SCALES) {
             if result[index] != 0.0 && result[index].abs() * scale >= MAX_TIME_NANOSECONDS {
-                return NativeResult::Err(crate::error::create_range_error(vm, "duration time fields are out of range"));
+                return NativeResult::Err(crate::error::create_range_error(
+                    vm,
+                    "duration time fields are out of range",
+                ));
             }
         }
         return make_duration(vm, result);
@@ -6944,9 +6943,7 @@ fn nudge_iso_difference<H: VmHost>(
         if did_expand && smallest_index != 2 {
             match bubble_relative_duration(sign, values, nudged_epoch, date1, time1_ns, largest_index, smallest_index) {
                 Ok(bubbled) => values = bubbled,
-                Err(()) => {
-                    return Err(crate::error::create_range_error(vm, "difference is out of range"))
-                }
+                Err(()) => return Err(crate::error::create_range_error(vm, "difference is out of range")),
             }
         }
         values

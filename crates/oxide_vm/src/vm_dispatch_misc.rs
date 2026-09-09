@@ -141,8 +141,10 @@ impl Vm {
             )?;
             Ok(true)
         } else {
-            let error =
-                oxide_builtins::error::create_from_text(self, "NEW_EXPRESSION: bytecode constructors not yet supported");
+            let error = oxide_builtins::error::create_from_text(
+                self,
+                "NEW_EXPRESSION: bytecode constructors not yet supported",
+            );
             self.exception_value = Some(error);
             self.pending_error_kind = Some(self.thrown_error_kind(error));
             self.unwind().map(|_| true)
@@ -1053,7 +1055,8 @@ impl Vm {
         // 免 promote 搬移——若按 epoch 分配，首次写入 session 根会把对象搬到新
         // 地址，缓存中的旧指针与新实例分叉，同一 site 两次取值将返回不同对象。
         let mut alloc_session_array = |n: usize| {
-            let mut clone = JsObject::new_array(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, proto_val, n, self.epoch.bump());
+            let mut clone =
+                JsObject::new_array(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, proto_val, n, self.epoch.bump());
             // 标记 session 归属：session_epoch 分配的对象须显式置位，GC/释放路径
             // 据 SESSION_EPOCH_BIT 判定归属（与 promote_object 的 clone 路径一致）。
             clone.set_session_epoch(true);
@@ -1095,7 +1098,7 @@ impl Vm {
         // 键，DefinePropertyOrThrow 默认 false）。先于冻结定义（冻结后不可扩展，
         // 新增属性会被拒）。
         let raw_si = self.kernel_core.perm_interner().intern("raw").0;
-// SAFETY: cooked 为本函数分配的 epoch 对象，借用仅在本次 define 内消费。
+        // SAFETY: cooked 为本函数分配的 epoch 对象，借用仅在本次 define 内消费。
         self.define_data_property(unsafe { &mut *cooked }, raw_si, raw_val, PropAttributes::new(false, false, false))?;
 
         // 冻结两个数组：不可扩展 + length writable=false（is_frozen 使 length

@@ -198,7 +198,11 @@ pub(crate) fn f16_bits_to_f64(h: u16) -> f64 {
         // 正规：(1 + mant/2¹⁰) × 2^(exp-15)。
         (1.0 + mant / 1024.0) * 2.0f64.powi(exp - 15)
     };
-    if sign == 1.0 { -v } else { v }
+    if sign == 1.0 {
+        -v
+    } else {
+        v
+    }
 }
 
 /// `Math.f16round`：把 double 舍入到 binary16 精度再还原为 double。

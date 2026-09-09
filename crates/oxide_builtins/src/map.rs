@@ -144,9 +144,7 @@ pub fn map_native_size(obj: &JsObject) -> u64 {
     if inner.is_null() {
         return 0;
     }
-    unsafe {
-        (std::mem::size_of::<MapInner>() + (*inner).capacity() * std::mem::size_of::<(SetKey, JsValue)>()) as u64
-    }
+    unsafe { (std::mem::size_of::<MapInner>() + (*inner).capacity() * std::mem::size_of::<(SetKey, JsValue)>()) as u64 }
 }
 
 /// 释放 Map 的 native 数据（IndexMap），返回释放的字节数供泄漏统计。
@@ -397,12 +395,17 @@ pub fn map_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
     };
     if !crate::iterator::is_callable(iter_method) {
-        return NativeResult::Err(crate::error::create_type_error(vm, "Map.groupBy: items[Symbol.iterator] is not callable"));
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Map.groupBy: items[Symbol.iterator] is not callable",
+        ));
     }
     let iter_val = match vm.call_function_sync(iter_method, items_val, &[]) {
         Ok(v) => v,
         Err(e) => {
-            let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+            let exc = vm
+                .take_uncaught_value()
+                .unwrap_or_else(|| crate::error::create_type_error(vm, &e));
             return NativeResult::Err(exc);
         }
     };
@@ -435,12 +438,17 @@ pub fn map_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let next_result = match vm.call_function_sync(next_fn, iter_val, &[]) {
             Ok(v) => v,
             Err(e) => {
-                let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+                let exc = vm
+                    .take_uncaught_value()
+                    .unwrap_or_else(|| crate::error::create_type_error(vm, &e));
                 return NativeResult::Err(exc);
             }
         };
         if !next_result.is_object() || next_result.as_js_object_ptr().is_null() {
-            return NativeResult::Err(crate::error::create_type_error(vm, "Map.groupBy: iterator next() returned non-object"));
+            return NativeResult::Err(crate::error::create_type_error(
+                vm,
+                "Map.groupBy: iterator next() returned non-object",
+            ));
         }
         let nr = unsafe { &*next_result.as_js_object_ptr() };
         let done_si = vm.kernel_core().perm_interner().intern("done").0;
@@ -457,18 +465,23 @@ pub fn map_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
         };
         // 调用 callbackFn(element, counter)：counter 对数组 items 即元素下标 k。
-        let group_key = match vm.call_function_sync(callback_val, JsValue::undefined(), &[element, JsValue::int(counter)]) {
-            Ok(v) => v,
-            Err(e) => {
-                let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &e));
-                return NativeResult::Err(exc);
-            }
-        };
+        let group_key =
+            match vm.call_function_sync(callback_val, JsValue::undefined(), &[element, JsValue::int(counter)]) {
+                Ok(v) => v,
+                Err(e) => {
+                    let exc = vm
+                        .take_uncaught_value()
+                        .unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+                    return NativeResult::Err(exc);
+                }
+            };
         // 取该键已有分组数组；无则新建空数组并 set 到 Map，再 push 元素。
         let existing = match vm.call_function_sync(getter, map_val, &[group_key]) {
             Ok(v) => v,
             Err(e) => {
-                let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+                let exc = vm
+                    .take_uncaught_value()
+                    .unwrap_or_else(|| crate::error::create_type_error(vm, &e));
                 return NativeResult::Err(exc);
             }
         };
@@ -487,7 +500,9 @@ pub fn map_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             ));
             let new_arr_val = JsValue::from_js_object(arr);
             if let Err(e) = vm.call_function_sync(adder, map_val, &[group_key, new_arr_val]) {
-                let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+                let exc = vm
+                    .take_uncaught_value()
+                    .unwrap_or_else(|| crate::error::create_type_error(vm, &e));
                 return NativeResult::Err(exc);
             }
             new_arr_val

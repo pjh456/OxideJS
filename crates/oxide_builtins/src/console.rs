@@ -18,9 +18,8 @@ fn multi_string<H: VmHost>(vm: &mut H, args: &[u8]) -> String {
         let part = if val.is_string() {
             oxide_runtime_api::to_string(val)
         } else {
-            let primitive =
-                oxide_runtime_api::to_primitive(val, oxide_runtime_api::ToPrimitiveHint::String, vm)
-                    .unwrap_or_else(|_| JsValue::undefined());
+            let primitive = oxide_runtime_api::to_primitive(val, oxide_runtime_api::ToPrimitiveHint::String, vm)
+                .unwrap_or_else(|_| JsValue::undefined());
             oxide_runtime_api::to_string(primitive)
         };
         output.push_str(&part);

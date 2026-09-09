@@ -1458,7 +1458,9 @@ fn next_array_like<H: VmHost>(
             let value = match vm.ordinary_get(arr, key_si, inner) {
                 Ok(v) => v,
                 Err(err) => {
-                    let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_from_text(vm, &err));
+                    let exc = vm
+                        .take_uncaught_value()
+                        .unwrap_or_else(|| crate::error::create_from_text(vm, &err));
                     return Err(exc);
                 }
             };

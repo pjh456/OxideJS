@@ -16,10 +16,10 @@ use oxide_kernel::{kernel_error, kernel_info};
 use oxide_log::{Level, SUBSYSTEM_COUNT};
 use oxide_parser::Allocator;
 use oxide_types::object::JsObject;
+use oxide_vm::vm::Vm;
 use oxide_vm::vm_error;
 use oxide_vm::vm_pool::VmPool;
 use oxide_vm::JsValue;
-use oxide_vm::vm::Vm;
 
 mod bench;
 

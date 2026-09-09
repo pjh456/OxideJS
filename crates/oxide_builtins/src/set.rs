@@ -183,9 +183,7 @@ pub fn set_native_size(obj: &JsObject) -> u64 {
     if inner.is_null() {
         return 0;
     }
-    unsafe {
-        (std::mem::size_of::<SetInner>() + (*inner).capacity() * std::mem::size_of::<SetKey>()) as u64
-    }
+    unsafe { (std::mem::size_of::<SetInner>() + (*inner).capacity() * std::mem::size_of::<SetKey>()) as u64 }
 }
 
 /// 释放 Set 的 native 数据（IndexSet），返回释放的字节数供泄漏统计。

@@ -1289,7 +1289,9 @@ pub fn object_proto_define_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeR
     let key_si = match vm.to_property_key_si(vm.reg(args[1])) {
         Ok(si) => si,
         Err(e) => {
-            let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+            let exc = vm
+                .take_uncaught_value()
+                .unwrap_or_else(|| crate::error::create_type_error(vm, &e));
             return NativeResult::Err(exc);
         }
     };
@@ -1378,12 +1380,17 @@ pub fn object_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
     };
     if !is_callable(iter_method) {
-        return NativeResult::Err(crate::error::create_type_error(vm, "Object.groupBy: items[Symbol.iterator] is not callable"));
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Object.groupBy: items[Symbol.iterator] is not callable",
+        ));
     }
     let iter_val = match vm.call_function_sync(iter_method, items_val, &[]) {
         Ok(v) => v,
         Err(e) => {
-            let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+            let exc = vm
+                .take_uncaught_value()
+                .unwrap_or_else(|| crate::error::create_type_error(vm, &e));
             return NativeResult::Err(exc);
         }
     };
@@ -1404,12 +1411,17 @@ pub fn object_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let next_result = match vm.call_function_sync(next_fn, iter_val, &[]) {
             Ok(v) => v,
             Err(e) => {
-                let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+                let exc = vm
+                    .take_uncaught_value()
+                    .unwrap_or_else(|| crate::error::create_type_error(vm, &e));
                 return NativeResult::Err(exc);
             }
         };
         if !next_result.is_object() || next_result.as_js_object_ptr().is_null() {
-            return NativeResult::Err(crate::error::create_type_error(vm, "Object.groupBy: iterator next() returned non-object"));
+            return NativeResult::Err(crate::error::create_type_error(
+                vm,
+                "Object.groupBy: iterator next() returned non-object",
+            ));
         }
         let nr = unsafe { &*next_result.as_js_object_ptr() };
         let done_si = vm.kernel_core().perm_interner().intern("done").0;
@@ -1429,7 +1441,9 @@ pub fn object_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let key = match vm.call_function_sync(callback_val, JsValue::undefined(), &[element, JsValue::int(counter)]) {
             Ok(v) => v,
             Err(e) => {
-                let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+                let exc = vm
+                    .take_uncaught_value()
+                    .unwrap_or_else(|| crate::error::create_type_error(vm, &e));
                 return NativeResult::Err(exc);
             }
         };
@@ -1437,7 +1451,9 @@ pub fn object_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let key_si = match vm.to_property_key_si(key) {
             Ok(si) => si,
             Err(e) => {
-                let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+                let exc = vm
+                    .take_uncaught_value()
+                    .unwrap_or_else(|| crate::error::create_type_error(vm, &e));
                 return NativeResult::Err(exc);
             }
         };
@@ -1446,7 +1462,11 @@ pub fn object_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let existing = match vm.ordinary_get(result_ref, key_si, result_val) {
             Ok(v) if v.is_object() && !v.as_js_object_ptr().is_null() => {
                 let arr = unsafe { &*v.as_js_object_ptr() };
-                if arr.is_array() { Some(v) } else { None }
+                if arr.is_array() {
+                    Some(v)
+                } else {
+                    None
+                }
             }
             _ => None,
         };
@@ -1454,7 +1474,12 @@ pub fn object_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             existing
         } else {
             let arr_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
-            let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(arr_proto), 0, vm.epoch().bump()));
+            let arr = vm.alloc_object(JsObject::new_array(
+                EMPTY_SHAPE_ID,
+                JsValue::from_js_object(arr_proto),
+                0,
+                vm.epoch().bump(),
+            ));
             let new_arr_val = JsValue::from_js_object(arr);
             let result_ref_mut = unsafe { &mut *result };
             let promoted = vm.promote_if_needed_for_write_ptr(result, new_arr_val);

@@ -893,11 +893,7 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         core,
         &[
             ("from", oxide_builtins::temporal::duration_from::<crate::vm::Vm> as *const (), 1),
-            (
-                "compare",
-                oxide_builtins::temporal::duration_compare::<crate::vm::Vm> as *const (),
-                2,
-            ),
+            ("compare", oxide_builtins::temporal::duration_compare::<crate::vm::Vm> as *const (), 2),
         ],
     );
     let duration_proto_ptr = world.duration_proto.as_ptr() as *mut JsObject;
@@ -935,11 +931,7 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
             ("abs", oxide_builtins::temporal::duration_abs::<crate::vm::Vm> as *const (), 0),
             ("negated", oxide_builtins::temporal::duration_negated::<crate::vm::Vm> as *const (), 0),
             ("add", oxide_builtins::temporal::duration_add::<crate::vm::Vm> as *const (), 1),
-            (
-                "subtract",
-                oxide_builtins::temporal::duration_subtract::<crate::vm::Vm> as *const (),
-                1,
-            ),
+            ("subtract", oxide_builtins::temporal::duration_subtract::<crate::vm::Vm> as *const (), 1),
             ("equals", oxide_builtins::temporal::duration_equals::<crate::vm::Vm> as *const (), 1),
             ("round", oxide_builtins::temporal::duration_round::<crate::vm::Vm> as *const (), 1),
             ("with", oxide_builtins::temporal::duration_with::<crate::vm::Vm> as *const (), 1),

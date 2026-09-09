@@ -2465,18 +2465,9 @@ fn duration_compare_calendar_units_require_relative() {
 fn duration_compare_relative_calendar_units() {
     let mut vm = Vm::new();
     // relativeto-month 对拍：P1M vs P30D 取决于相对点所在月份长度。
-    assert_eq!(
-        num(&mut vm, "Temporal.Duration.compare('P1M','P30D',{relativeTo:'2018-04-01'})"),
-        0.0
-    );
-    assert_eq!(
-        num(&mut vm, "Temporal.Duration.compare('P1M','P30D',{relativeTo:'2018-03-01'})"),
-        1.0
-    );
-    assert_eq!(
-        num(&mut vm, "Temporal.Duration.compare('P1M','P30D',{relativeTo:'2018-02-01'})"),
-        -1.0
-    );
+    assert_eq!(num(&mut vm, "Temporal.Duration.compare('P1M','P30D',{relativeTo:'2018-04-01'})"), 0.0);
+    assert_eq!(num(&mut vm, "Temporal.Duration.compare('P1M','P30D',{relativeTo:'2018-03-01'})"), 1.0);
+    assert_eq!(num(&mut vm, "Temporal.Duration.compare('P1M','P30D',{relativeTo:'2018-02-01'})"), -1.0);
     // string 与 PlainDate 对象等价。
     assert_eq!(
         num(

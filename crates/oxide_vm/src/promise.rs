@@ -1301,8 +1301,7 @@ fn promise_static_with_resolvers(vm: &mut Vm, args: &[u8]) -> NativeResult {
         Ok(t) => t,
         Err(err) => return NativeResult::Err(err),
     };
-    let object_proto =
-        JsValue::from_js_object(vm.session.builtin_world().object_proto.as_ptr() as *mut JsObject);
+    let object_proto = JsValue::from_js_object(vm.session.builtin_world().object_proto.as_ptr() as *mut JsObject);
     let ptr = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, object_proto));
     let obj = unsafe { &mut *ptr };
     let sf = vm.kernel_core.perm_interner().as_ref();

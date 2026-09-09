@@ -27,7 +27,6 @@ fn epoch_reset_increments_id() {
     assert_eq!(epoch.current_id(), 2);
 }
 
-
 #[test]
 fn persistent_new_and_deref() {
     let p = P::new(42i32);

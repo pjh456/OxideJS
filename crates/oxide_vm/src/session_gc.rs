@@ -62,8 +62,7 @@ impl SessionGc {
         let elems_ptr = obj.array_elements_raw() as *const Vec<JsValue>;
         if !elems_ptr.is_null() {
             unsafe {
-                bytes += size_of::<Vec<JsValue>>() as u64
-                    + ((*elems_ptr).capacity() * size_of::<JsValue>()) as u64;
+                bytes += size_of::<Vec<JsValue>>() as u64 + ((*elems_ptr).capacity() * size_of::<JsValue>()) as u64;
             }
         }
 
@@ -78,8 +77,7 @@ impl SessionGc {
         let hash_ptr = obj.hash_props_raw() as *const Vec<JsValue>;
         if !hash_ptr.is_null() {
             unsafe {
-                bytes += size_of::<Vec<JsValue>>() as u64
-                    + ((*hash_ptr).capacity() * size_of::<JsValue>()) as u64;
+                bytes += size_of::<Vec<JsValue>>() as u64 + ((*hash_ptr).capacity() * size_of::<JsValue>()) as u64;
             }
         }
 
@@ -112,9 +110,7 @@ impl SessionGc {
     /// 单趟替代原 `object_edges` + `record_object_string_edges` 双遍模式：消除每对象
     /// Vec 分配与重复字段遍历。
     fn scan_edges_for_mark(
-        obj: &JsObject,
-        vm: &Vm,
-        stack: &mut Vec<*mut JsObject>,
+        obj: &JsObject, vm: &Vm, stack: &mut Vec<*mut JsObject>,
         live_strings: &mut HashSet<*mut JsString, FxBuildHasher>,
         live_bigints: &mut HashSet<*mut num_bigint::BigInt, FxBuildHasher>,
     ) {
@@ -209,9 +205,7 @@ impl SessionGc {
 
     #[inline]
     fn process_edge(
-        value: JsValue,
-        vm: &Vm,
-        stack: &mut Vec<*mut JsObject>,
+        value: JsValue, vm: &Vm, stack: &mut Vec<*mut JsObject>,
         live_strings: &mut HashSet<*mut JsString, FxBuildHasher>,
         live_bigints: &mut HashSet<*mut num_bigint::BigInt, FxBuildHasher>,
     ) {
@@ -591,7 +585,8 @@ impl SessionGc {
         forwarding.clear();
         vm.gc_state.forwarding = forwarding;
         vm.gc_state.session_epoch = new_arena;
-        vm.gc_state.session_bytes_allocated = vm.gc_state
+        vm.gc_state.session_bytes_allocated = vm
+            .gc_state
             .session_object_ptrs
             .iter()
             .filter(|&&ptr| !ptr.is_null())
@@ -811,7 +806,8 @@ impl SessionGc {
         self.debug_assert_marked_object_strings_live(vm);
 
         // 扣减字符串账目（保留对象账目），再补回存活串字节。
-        let object_bytes: usize = vm.gc_state
+        let object_bytes: usize = vm
+            .gc_state
             .session_object_ptrs
             .iter()
             .filter(|&&ptr| !ptr.is_null())

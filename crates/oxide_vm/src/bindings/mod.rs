@@ -12,6 +12,8 @@ pub mod bind_async_disposable_stack;
 pub mod bind_bigint;
 /// Boolean 构造器与原型的 native 方法绑定。
 pub mod bind_boolean;
+/// Console 单例对象及其方法绑定。
+pub mod bind_console;
 /// DataView 构造器与原型的 native 方法绑定。
 pub mod bind_data_view;
 /// Date 构造器与原型的 native 方法绑定。
@@ -52,8 +54,6 @@ pub mod bind_symbol;
 pub mod bind_temporal;
 /// 各 TypedArray 构造器与共享原型的 native 方法绑定。
 pub mod bind_typed_array;
-/// Console 单例对象及其方法绑定。
-pub mod bind_console;
 
 use std::sync::Arc;
 

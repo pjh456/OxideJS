@@ -95,9 +95,7 @@ pub fn array_buffer_native_size(obj: &JsObject) -> u64 {
     if data_ptr.is_null() {
         return 0;
     }
-    unsafe {
-        (std::mem::size_of::<Vec<u8>>() + (*data_ptr).capacity()) as u64
-    }
+    unsafe { (std::mem::size_of::<Vec<u8>>() + (*data_ptr).capacity()) as u64 }
 }
 
 /// 释放 ArrayBuffer 的字节缓冲（native_fn 槽中的 `Box<Vec<u8>>`），返回字节数。

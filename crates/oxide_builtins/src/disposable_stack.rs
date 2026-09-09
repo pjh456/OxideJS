@@ -618,8 +618,8 @@ pub fn disposable_stack_native_size(obj: &JsObject) -> u64 {
         return 0;
     }
     unsafe {
-        (std::mem::size_of::<DisposeCapability>()
-            + (*ptr).entries.capacity() * std::mem::size_of::<DisposeEntry>()) as u64
+        (std::mem::size_of::<DisposeCapability>() + (*ptr).entries.capacity() * std::mem::size_of::<DisposeEntry>())
+            as u64
     }
 }
 

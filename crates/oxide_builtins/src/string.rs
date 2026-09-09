@@ -1690,7 +1690,9 @@ pub fn string_raw<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let raw_val = match vm.ordinary_get(template_obj, raw_si, template_val) {
         Ok(v) => v,
         Err(e) => {
-            let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+            let exc = vm
+                .take_uncaught_value()
+                .unwrap_or_else(|| crate::error::create_type_error(vm, &e));
             return NativeResult::Err(exc);
         }
     };
@@ -1708,21 +1710,21 @@ pub fn string_raw<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             // 原样传播），再按 ToLength 归一并截断（防超大 raw 数组导致 OOM）。
             match oxide_runtime_api::to_number_full(v, vm) {
                 Ok(n) => {
-                    let len = if n.is_nan() || n <= 0.0 {
-                        0.0
-                    } else {
-                        n.min(9_007_199_254_740_991.0)
-                    };
+                    let len = if n.is_nan() || n <= 0.0 { 0.0 } else { n.min(9_007_199_254_740_991.0) };
                     (len.trunc() as u64).min(0x1FFFFF) as usize
                 }
                 Err(msg) => {
-                    let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &msg));
+                    let exc = vm
+                        .take_uncaught_value()
+                        .unwrap_or_else(|| crate::error::create_type_error(vm, &msg));
                     return NativeResult::Err(exc);
                 }
             }
         }
         Err(e) => {
-            let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+            let exc = vm
+                .take_uncaught_value()
+                .unwrap_or_else(|| crate::error::create_type_error(vm, &e));
             return NativeResult::Err(exc);
         }
     };
@@ -1740,7 +1742,9 @@ pub fn string_raw<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             Ok(v) => match oxide_runtime_api::to_string_full(v, vm) {
                 Ok(s) => s,
                 Err(msg) => {
-                    let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &msg));
+                    let exc = vm
+                        .take_uncaught_value()
+                        .unwrap_or_else(|| crate::error::create_type_error(vm, &msg));
                     return NativeResult::Err(exc);
                 }
             },
@@ -1763,7 +1767,9 @@ pub fn string_raw<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                 let sub_str = match oxide_runtime_api::to_string_full(sub_val, vm) {
                     Ok(s) => s,
                     Err(msg) => {
-                        let exc = vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_type_error(vm, &msg));
+                        let exc = vm
+                            .take_uncaught_value()
+                            .unwrap_or_else(|| crate::error::create_type_error(vm, &msg));
                         return NativeResult::Err(exc);
                     }
                 };

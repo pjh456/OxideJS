@@ -97,8 +97,8 @@ impl Vm {
             regexp::clone_regexp_native(src_ref, dst_ref);
         }
         // 账目计入：对象头 + 堆数据（属性/元素/meta Vec + native 状态盒），用 clone 后的 dst 核算。
-        self.gc_state.session_bytes_allocated += std::mem::size_of::<JsObject>()
-            + crate::session_gc::SessionGc::object_heap_data_bytes(dst_ref) as usize;
+        self.gc_state.session_bytes_allocated +=
+            std::mem::size_of::<JsObject>() + crate::session_gc::SessionGc::object_heap_data_bytes(dst_ref) as usize;
         dst
     }
 
@@ -135,7 +135,8 @@ mod tests {
 
     fn plain_object(vm: &mut Vm) -> *mut JsObject {
         let proto = vm.session.builtin_world().object_proto.as_ptr() as *mut JsObject;
-        let ptr = vm.epoch
+        let ptr = vm
+            .epoch
             .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)));
         // 测试辅助函数绕过 alloc_object，需手动置位 EPOCH_BIT。
         unsafe { (*ptr).set_is_epoch(true) };
