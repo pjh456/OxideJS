@@ -126,6 +126,8 @@ impl Emitter {
     /// - `const_flag` 为 1 时编译期直接抛 TypeError（值无关），覆盖普通/upvalue/cell 全写路径；
     ///   不发射写指令（THROW 后不可达）。
     /// - cell 写穿共享单元，无运行时 guard；const 拦截由本入口编译期完成。
+    /// - 不可写全局内置（undefined/NaN/Infinity）的全局绑定写在此拦截：sloppy 跳过
+    ///   寄存器写（槽保留入口预载原值），strict 抛 TypeError；局部遮蔽绑定不受影响。
     pub(crate) fn emit_identifier_store(&self, name: &str, val_reg: u32, const_flag: u16, ctx: &mut CompileCtx) {
         // 循环 update 段的 let/const 循环变量是 per-iteration 可变绑定（CreateMutableBinding），
         // 写寄存器而非 cell，且豁免 const 检查（register_update_names 覆盖全部循环头声明名）。
@@ -139,6 +141,13 @@ impl Emitter {
         // update 写寄存器供下一迭代 fresh 拷贝，不污染本迭代闭包捕获的 cell）。
         if in_loop_update {
             if let Some(reg) = ctx.scopes.symbols.lookup_any(name) {
+                if ctx.targets_readonly_builtin(name, reg) {
+                    // 全局不可写内置：put 永不成功——sloppy 静默跳过，strict 抛错。
+                    if ctx.is_strict {
+                        let _ = self.emit_throw_error("TypeError", "cannot assign to read-only property", ctx);
+                    }
+                    return;
+                }
                 ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(reg), Operand::Reg(val_reg), Operand::Imm(0)));
                 return;
             }
@@ -164,6 +173,14 @@ impl Emitter {
             return;
         }
         let var_reg = ctx.lookup_or_global(name);
+        if ctx.targets_readonly_builtin(name, var_reg) {
+            // 全局不可写内置槽：sloppy 跳过寄存器写（槽保留运行入口预载原值，
+            // 静默 no-op）；strict 在 RHS 已求值后抛 TypeError（put 失败）。
+            if ctx.is_strict {
+                let _ = self.emit_throw_error("TypeError", "cannot assign to read-only property", ctx);
+            }
+            return;
+        }
         let is_implicit = ctx.implicit_global_writes.contains(&var_reg);
         if is_implicit && ctx.is_strict {
             // 严格模式未声明写：发射 ReferenceError 抛错，跳过寄存器写（值无关）。

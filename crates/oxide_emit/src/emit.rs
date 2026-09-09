@@ -134,6 +134,11 @@ const BUILTIN_GLOBALS: &[&str] = &[
     "$262",
 ];
 
+/// 不可写全局内置名：全局对象上的数据属性为 {writable:false, configurable:false}，
+/// 对它们的 put 永不成功。写路径命中这些名字的全局绑定（非局部遮蔽）时编译期
+/// 拦截：sloppy 静默丢弃、strict 抛 TypeError；其余内置名属性可写，写路径放行。
+const NON_WRITABLE_GLOBAL_BUILTINS: &[&str] = &["undefined", "NaN", "Infinity"];
+
 pub(crate) struct FieldBuffer {
     pub(crate) insts: Vec<Inst>,
     pub(crate) labels: Vec<(LabelId, usize)>,
@@ -655,6 +660,20 @@ impl CompileCtx {
             return !is_builtin_slot;
         }
         false
+    }
+
+    /// 写目标是否为不可写全局内置（undefined/NaN/Infinity 的全局绑定）。
+    /// 名字在名单内且解析寄存器是全局内置槽（builtin_reg_map 登记），或名字落到
+    /// 全局作用域绑定（顶层 var 预声明/隐式全局，含继承的全局槽）——局部
+    /// var/let/参数遮蔽同名时解析到局部寄存器/局部作用域，两条件均不命中。
+    pub(crate) fn targets_readonly_builtin(&self, name: &str, reg: u32) -> bool {
+        if !NON_WRITABLE_GLOBAL_BUILTINS.contains(&name) {
+            return false;
+        }
+        if self.scopes.builtin_reg_map.iter().any(|(n, r)| n == name && *r == reg) {
+            return true;
+        }
+        matches!(self.scopes.symbols.lookup_any_binding(name), Some((_, 0)))
     }
 
     pub(crate) fn is_known_builtin(name: &str) -> bool {

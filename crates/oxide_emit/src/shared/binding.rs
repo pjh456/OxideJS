@@ -50,6 +50,10 @@ impl Emitter {
 
     /// 绑定单个标识符到槽位。`fresh_cell` 为 true 时对被捕获绑定用 MAKE_CELL_FRESH
     /// （循环每迭代绑定：无条件新建 cell，本迭代闭包捕获新 cell）。
+    ///
+    /// # 边界与前提
+    /// - 声明撞全局不可写内置（undefined/NaN/Infinity）：sloppy 静默跳过写（槽保留
+    ///   入口预载原值），strict 抛 TypeError；局部遮蔽绑定不受影响。
     pub(crate) fn emit_bind_target(
         &self, name: &str, src_reg: u32, kind: VariableDeclarationKind, is_const: bool, fresh_cell: bool,
         ctx: &mut CompileCtx,
@@ -74,6 +78,14 @@ impl Emitter {
                 var_reg
             }
         };
+        if ctx.targets_readonly_builtin(name, target_reg) {
+            // 声明撞全局不可写内置：声明不更新既有全局绑定——sloppy 静默跳过
+            // （槽保留入口预载原值），strict 在初始化求值后抛 TypeError。
+            if ctx.is_strict {
+                self.emit_throw_error("TypeError", "cannot assign to read-only property", ctx)?;
+            }
+            return Ok(());
+        }
         if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
             let op = if fresh_cell { OpCode::MAKE_CELL_FRESH } else { OpCode::MAKE_CELL };
             ctx.inst(Inst::new(op, Operand::Reg(src_reg), Operand::Imm(cell_idx as u16), Operand::None));
@@ -115,6 +127,14 @@ impl Emitter {
                 self.emit_identifier_tdz_guard(name, ctx)?;
                 self.emit_const_write_guard(name, ctx)?;
                 let var_reg = ctx.lookup_or_global(name);
+                if ctx.targets_readonly_builtin(name, var_reg) {
+                    // 全局不可写内置：sloppy 静默跳过写（槽保留入口预载原值）；
+                    // strict 抛 TypeError（put 失败）。
+                    if ctx.is_strict {
+                        self.emit_throw_error("TypeError", "cannot assign to read-only property", ctx)?;
+                    }
+                    return Ok(());
+                }
                 let is_implicit = ctx.implicit_global_writes.contains(&var_reg);
                 if is_implicit && ctx.is_strict {
                     // 严格模式未声明写：抛 ReferenceError，跳过寄存器写（值无关）。
@@ -309,6 +329,14 @@ impl Emitter {
                 self.emit_identifier_tdz_guard(name, ctx)?;
                 self.emit_const_write_guard(name, ctx)?;
                 let var_reg = ctx.lookup_or_global(name);
+                if ctx.targets_readonly_builtin(name, var_reg) {
+                    // 全局不可写内置：sloppy 静默跳过写（槽保留入口预载原值）；
+                    // strict 抛 TypeError（put 失败）。
+                    if ctx.is_strict {
+                        self.emit_throw_error("TypeError", "cannot assign to read-only property", ctx)?;
+                    }
+                    return Ok(());
+                }
                 let is_implicit = ctx.implicit_global_writes.contains(&var_reg);
                 if is_implicit && ctx.is_strict {
                     // 严格模式未声明写：抛 ReferenceError，跳过寄存器写（值无关）。
@@ -385,6 +413,14 @@ impl Emitter {
                     self.emit_identifier_tdz_guard(name, ctx)?;
                     self.emit_const_write_guard(name, ctx)?;
                     let var_reg = ctx.lookup_or_global(name);
+                    if ctx.targets_readonly_builtin(name, var_reg) {
+                        // 全局不可写内置：sloppy 静默跳过该属性写（其余属性继续赋值）；
+                        // strict 抛 TypeError（put 失败）。
+                        if ctx.is_strict {
+                            self.emit_throw_error("TypeError", "cannot assign to read-only property", ctx)?;
+                        }
+                        continue;
+                    }
                     let is_implicit = ctx.implicit_global_writes.contains(&var_reg);
                     if is_implicit && ctx.is_strict {
                         // 严格模式未声明写：抛 ReferenceError，跳过寄存器写（值无关）。

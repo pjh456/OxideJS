@@ -506,6 +506,10 @@ impl Emitter {
 
     /// 标识符自增/自减的静态路径：upvalue / 被捕获 cell 走显式读-增减-写回，
     /// 普通槽用 INC_PRE/POST 或 DEC_PRE/POST。返回结果寄存器。
+    ///
+    /// # 边界与前提
+    /// - 不可写全局内置槽：值照算（前缀返回新值、后缀返回旧值）但跳过槽写；
+    ///   strict 抛 TypeError。局部遮蔽绑定不受影响。
     fn emit_identifier_update_static(
         &self, name: &str, update: &oxide_parser::UpdateExpression, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
@@ -522,13 +526,24 @@ impl Emitter {
         // update 写寄存器供下一迭代 fresh 拷贝，不污染本迭代闭包捕获的 cell）。
         if ctx.register_update_names.iter().any(|n| n == name) {
             if let Some(reg) = ctx.scopes.symbols.lookup_any(name) {
-                let result_reg = ctx.alloc_reg();
                 let op = match (update.operator, update.prefix) {
                     (UpdateOperator::Increment, true) => OpCode::INC_PRE,
                     (UpdateOperator::Increment, false) => OpCode::INC_POST,
                     (UpdateOperator::Decrement, true) => OpCode::DEC_PRE,
                     (UpdateOperator::Decrement, false) => OpCode::DEC_POST,
                 };
+                if ctx.targets_readonly_builtin(name, reg) {
+                    if ctx.is_strict {
+                        return self.emit_throw_error("TypeError", "cannot assign to read-only property", ctx);
+                    }
+                    // 全局不可写内置：值照算（前缀返回新值、后缀返回旧值），跳过槽写。
+                    let tmp_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(tmp_reg), Operand::Reg(reg), Operand::None));
+                    let result_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::new(op, Operand::Reg(tmp_reg), Operand::Reg(result_reg), Operand::Reg(result_reg)));
+                    return Ok(result_reg);
+                }
+                let result_reg = ctx.alloc_reg();
                 ctx.inst(Inst::new(op, Operand::Reg(reg), Operand::Reg(result_reg), Operand::Reg(result_reg)));
                 return Ok(result_reg);
             }
@@ -599,6 +614,24 @@ impl Emitter {
             Ok(if update.prefix { new_reg } else { old_reg })
         } else {
             let var_reg = ctx.lookup_or_global(name);
+            if ctx.targets_readonly_builtin(name, var_reg) {
+                // 全局不可写内置槽：strict 抛 TypeError（put 失败）；sloppy 值照算
+                // （前缀返回新值、后缀返回旧值），跳过槽写。
+                if ctx.is_strict {
+                    return self.emit_throw_error("TypeError", "cannot assign to read-only property", ctx);
+                }
+                let tmp_reg = ctx.alloc_reg();
+                ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(tmp_reg), Operand::Reg(var_reg), Operand::None));
+                let result_reg = ctx.alloc_reg();
+                let op = match (update.operator, update.prefix) {
+                    (UpdateOperator::Increment, true) => OpCode::INC_PRE,
+                    (UpdateOperator::Increment, false) => OpCode::INC_POST,
+                    (UpdateOperator::Decrement, true) => OpCode::DEC_PRE,
+                    (UpdateOperator::Decrement, false) => OpCode::DEC_POST,
+                };
+                ctx.inst(Inst::new(op, Operand::Reg(tmp_reg), Operand::Reg(result_reg), Operand::Reg(result_reg)));
+                return Ok(result_reg);
+            }
             let is_implicit = ctx.implicit_global_writes.contains(&var_reg);
             if is_implicit && ctx.is_strict {
                 // 严格模式未声明更新写：值无关抛 ReferenceError。

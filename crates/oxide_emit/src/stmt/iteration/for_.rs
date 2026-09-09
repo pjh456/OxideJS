@@ -64,12 +64,15 @@ impl Emitter {
                         for name in &names {
                             if ctx.captured_bindings.contains_key(name) {
                                 if let Some(reg) = ctx.scopes.symbols.lookup_any(name) {
-                                    ctx.inst(Inst::new(
-                                        OpCode::STORE_VAR,
-                                        Operand::Reg(reg),
-                                        Operand::Reg(val_reg),
-                                        Operand::None,
-                                    ));
+                                    // 全局不可写内置的捕获写被声明路径拦截，同步写一并跳过。
+                                    if !ctx.targets_readonly_builtin(name, reg) {
+                                        ctx.inst(Inst::new(
+                                            OpCode::STORE_VAR,
+                                            Operand::Reg(reg),
+                                            Operand::Reg(val_reg),
+                                            Operand::None,
+                                        ));
+                                    }
                                 }
                             }
                         }
@@ -78,21 +81,25 @@ impl Emitter {
                         let tmp = ctx.alloc_reg();
                         ctx.inst(Inst::load_const(Operand::Reg(tmp), idx));
                         let var_reg = ctx.alloc_reg();
-                        let target_reg = if matches!(decl.kind, VariableDeclarationKind::Var) {
+                        // 无初始化 var 是纯声明而非赋值：绑定已预先存在（提升引用或
+                        // 先前写入）时保留槽值，仅首次声明把 undefined 物化进槽。
+                        let (target_reg, already_bound) = if matches!(decl.kind, VariableDeclarationKind::Var) {
                             match ctx.declare(bi.name.as_str(), var_reg, decl.kind, is_const) {
-                                Ok(()) => var_reg,
-                                Err(_) => ctx.lookup(bi.name.as_str()).unwrap_or(var_reg),
+                                Ok(()) => (var_reg, false),
+                                Err(_) => (ctx.lookup(bi.name.as_str()).unwrap_or(var_reg), true),
                             }
                         } else {
                             ctx.declare(bi.name.as_str(), var_reg, decl.kind, is_const)?;
-                            var_reg
+                            (var_reg, false)
                         };
-                        ctx.inst(Inst::new(
-                            OpCode::STORE_VAR,
-                            Operand::Reg(target_reg),
-                            Operand::Reg(tmp),
-                            Operand::None,
-                        ));
+                        if !already_bound {
+                            ctx.inst(Inst::new(
+                                OpCode::STORE_VAR,
+                                Operand::Reg(target_reg),
+                                Operand::Reg(tmp),
+                                Operand::None,
+                            ));
+                        }
                         ctx.init_var(bi.name.as_str());
                     }
                     // 记录 let/const 循环头声明名（update 段写豁免所需）与被捕获的绑定
