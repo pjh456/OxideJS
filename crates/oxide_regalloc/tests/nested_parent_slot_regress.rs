@@ -13,7 +13,7 @@ fn run_source(src: &str, regalloc: bool) -> (bool, String) {
         Ok(p) => p,
         Err(e) => return (false, format!("parse error: {}", e[0].message)),
     };
-    let mut ir = match oxide_emit::Emitter::new().emit_program(&program) {
+    let mut ir = match oxide_emit::Emitter::new().emit_program(&program, false) {
         Ok(i) => i,
         Err(e) => return (false, format!("emit error: {e}")),
     };

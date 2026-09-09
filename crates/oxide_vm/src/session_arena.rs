@@ -142,7 +142,7 @@ mod tests {
         ptr
     }
 
-    fn is_epoch_object(vm: &Vm, value: JsValue) -> bool {
+    fn is_epoch_object(_vm: &Vm, value: JsValue) -> bool {
         value.is_object() && unsafe { (&*value.as_js_object_ptr()).is_epoch() }
     }
 

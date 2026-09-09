@@ -3,7 +3,7 @@
 fn n_registers(src: &str, regalloc: bool) -> Result<u8, String> {
     let allocator = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&allocator, src).expect("parse failed");
-    let mut ir = oxide_emit::Emitter::new().emit_program(&program).expect("emit failed");
+    let mut ir = oxide_emit::Emitter::new().emit_program(&program, false).expect("emit failed");
     oxide_dce::dce(&mut ir);
     if regalloc {
         let cfg = oxide_cfg::build_cfg(&ir);

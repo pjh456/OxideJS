@@ -9,12 +9,12 @@ use oxide_types::value::JsValue;
 fn multi_string<H: VmHost>(vm: &mut H, args: &[u8]) -> String {
     let mut output = String::new();
     let mut first = true;
-    for i in 1..args.len() as usize {
+    for &idx in args.iter().skip(1) {
         if !first {
             output.push(' ');
         }
         first = false;
-        let val = vm.reg(args[i]);
+        let val = vm.reg(idx);
         let part = if val.is_string() {
             oxide_runtime_api::to_string(val)
         } else {

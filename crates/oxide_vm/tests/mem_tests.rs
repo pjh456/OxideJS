@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use oxide_types::mem::{Epoch, P};
 
 #[test]

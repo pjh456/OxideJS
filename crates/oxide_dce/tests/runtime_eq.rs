@@ -11,7 +11,7 @@ use oxide_vm::JsValue;
 fn run_source(src: &str, dce: bool) -> Result<JsValue, String> {
     let allocator = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&allocator, src).expect("parse failed");
-    let mut ir = oxide_emit::Emitter::new().emit_program(&program).expect("emit failed");
+    let mut ir = oxide_emit::Emitter::new().emit_program(&program, false).expect("emit failed");
     if dce {
         oxide_dce::dce(&mut ir);
     }
@@ -73,7 +73,7 @@ fn top_level_store_var_kept() {
     let src = "let x = 0; class C { [x = 1]() { return 2; } } new C();";
     let allocator = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&allocator, src).expect("parse failed");
-    let mut ir = oxide_emit::Emitter::new().emit_program(&program).expect("emit failed");
+    let mut ir = oxide_emit::Emitter::new().emit_program(&program, false).expect("emit failed");
     oxide_dce::dce(&mut ir);
     let module = oxide_ir::lower::lower(&ir).expect("lower failed");
     let has_store_var = module
