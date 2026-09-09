@@ -229,6 +229,13 @@ impl Inst {
         Self::new(OpCode::DEFINE_GLOBAL_PROP, target, value, key)
     }
 
+    /// 定义隐式全局数据属性：ext = [key_idx]（键常量池下标），value 放 a 槽。
+    /// 全局对象由 VM 运行期从 session 解析（不依赖 this 寄存器），属性可写/可枚举/
+    /// 可配置（未声明标识符写与 eval 脚本 var/函数声明的属性描述符）。
+    pub fn define_global_prop_c(value: Operand, key_idx: u16) -> Self {
+        Self::with_ext(OpCode::DEFINE_GLOBAL_PROP_C, Operand::None, value, Operand::None, &[key_idx as u32])
+    }
+
     /// 静态删除属性：obj 同时放 rd/a 槽，const_idx 为属性名常量下标。
     pub fn delete_prop_static(obj: Operand, const_idx: u32) -> Self {
         Self::with_ext(OpCode::DELETE_PROP_STATIC, obj, obj, Operand::None, &[const_idx])

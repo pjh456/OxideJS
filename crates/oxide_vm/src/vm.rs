@@ -1834,6 +1834,12 @@ impl Vm {
                     self.dispatch_define_global_prop(rd, a, b)?;
                 }
 
+                OpCode::DEFINE_GLOBAL_PROP_C => {
+                    let key_idx = self.bytecode[self.pc] as u16;
+                    self.pc += 1;
+                    self.dispatch_define_global_prop_c(a, key_idx)?;
+                }
+
                 OpCode::DEFINE_PROP_ATTRS => {
                     let attrs = self.bytecode[self.pc] as u8;
                     self.pc += 1;

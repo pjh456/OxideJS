@@ -115,12 +115,21 @@ impl Emitter {
                 self.emit_identifier_tdz_guard(name, ctx)?;
                 self.emit_const_write_guard(name, ctx)?;
                 let var_reg = ctx.lookup_or_global(name);
+                let is_implicit = ctx.implicit_global_writes.contains(&var_reg);
+                if is_implicit && ctx.is_strict {
+                    // 严格模式未声明写：抛 ReferenceError，跳过寄存器写（值无关）。
+                    self.emit_strict_undeclared_write(name, ctx)?;
+                    return Ok(());
+                }
                 ctx.inst(Inst::new(
                     OpCode::STORE_VAR,
                     Operand::Reg(var_reg),
                     Operand::Reg(src_reg),
                     Operand::Imm(if ctx.lookup_const_flag(name) { 1 } else { 0 }),
                 ));
+                if is_implicit {
+                    self.emit_implicit_global_write(name, var_reg, ctx);
+                }
                 Ok(())
             }
             AssignmentTarget::ArrayAssignmentTarget(ap) => self.emit_array_assignment(ap, src_reg, ctx),
@@ -300,12 +309,21 @@ impl Emitter {
                 self.emit_identifier_tdz_guard(name, ctx)?;
                 self.emit_const_write_guard(name, ctx)?;
                 let var_reg = ctx.lookup_or_global(name);
+                let is_implicit = ctx.implicit_global_writes.contains(&var_reg);
+                if is_implicit && ctx.is_strict {
+                    // 严格模式未声明写：抛 ReferenceError，跳过寄存器写（值无关）。
+                    self.emit_strict_undeclared_write(name, ctx)?;
+                    return Ok(());
+                }
                 ctx.inst(Inst::new(
                     OpCode::STORE_VAR,
                     Operand::Reg(var_reg),
                     Operand::Reg(src_reg),
                     Operand::Imm(if ctx.lookup_const_flag(name) { 1 } else { 0 }),
                 ));
+                if is_implicit {
+                    self.emit_implicit_global_write(name, var_reg, ctx);
+                }
                 Ok(())
             }
             _ => Err("assignment target not supported".into()),
@@ -367,12 +385,21 @@ impl Emitter {
                     self.emit_identifier_tdz_guard(name, ctx)?;
                     self.emit_const_write_guard(name, ctx)?;
                     let var_reg = ctx.lookup_or_global(name);
+                    let is_implicit = ctx.implicit_global_writes.contains(&var_reg);
+                    if is_implicit && ctx.is_strict {
+                        // 严格模式未声明写：抛 ReferenceError，跳过寄存器写（值无关）。
+                        self.emit_strict_undeclared_write(name, ctx)?;
+                        return Ok(());
+                    }
                     ctx.inst(Inst::new(
                         OpCode::STORE_VAR,
                         Operand::Reg(var_reg),
                         Operand::Reg(prop_reg),
                         Operand::Imm(if ctx.lookup_const_flag(name) { 1 } else { 0 }),
                     ));
+                    if is_implicit {
+                        self.emit_implicit_global_write(name, var_reg, ctx);
+                    }
                 }
                 AssignmentTargetProperty::AssignmentTargetPropertyProperty(prop) => {
                     let (prop_reg, static_key, key_reg) =

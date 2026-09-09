@@ -72,7 +72,15 @@ impl Emitter {
             Ok(val_reg)
         } else {
             let var_reg = ctx.lookup_or_global(name);
+            let is_implicit = ctx.implicit_global_writes.contains(&var_reg);
+            if is_implicit && ctx.is_strict {
+                // 严格模式未声明复合写：未解析引用不可 put，值无关抛 ReferenceError。
+                return self.emit_strict_undeclared_write(name, ctx);
+            }
             ctx.inst(Inst::new(op, Operand::Reg(var_reg), Operand::Reg(rhs), Operand::None));
+            if is_implicit {
+                self.emit_implicit_global_write(name, var_reg, ctx);
+            }
             Ok(var_reg)
         }
     }
@@ -368,12 +376,23 @@ impl Emitter {
                         let is_const = ctx.lookup_const_flag(name);
                         let const_flag = if is_const { 1 } else { 0 };
                         let var_reg = ctx.lookup_or_global(name);
-                        ctx.inst(Inst::new(
-                            OpCode::STORE_VAR,
-                            Operand::Reg(var_reg),
-                            Operand::Reg(val_reg),
-                            Operand::Imm(const_flag),
-                        ));
+                        // 隐式全局判定以寄存器集合为准：读侧（旧值解析）已登记绑定，
+                        // 写侧二次解析命中集合而非"新登记"。
+                        let is_implicit = ctx.implicit_global_writes.contains(&var_reg);
+                        if is_implicit && ctx.is_strict {
+                            // 严格模式未声明写：抛 ReferenceError，后续 LOAD_VAR 不可达。
+                            let _ = self.emit_strict_undeclared_write(name, ctx)?;
+                        } else {
+                            ctx.inst(Inst::new(
+                                OpCode::STORE_VAR,
+                                Operand::Reg(var_reg),
+                                Operand::Reg(val_reg),
+                                Operand::Imm(const_flag),
+                            ));
+                            if is_implicit {
+                                self.emit_implicit_global_write(name, var_reg, ctx);
+                            }
+                        }
                     }
                     ctx.inst(Inst::new(
                         OpCode::LOAD_VAR,

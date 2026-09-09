@@ -66,6 +66,7 @@ fn ext_word_count(bytecode: &[Instr], pc: usize) -> usize {
         | OpCode::DEFINE_ACCESSOR
         | OpCode::DEFINE_ACCESSOR_DYNAMIC
         | OpCode::DEFINE_PROP_ATTRS
+        | OpCode::DEFINE_GLOBAL_PROP_C
         | OpCode::DELETE_PROP_STATIC
         | OpCode::REST_OBJECT
         | OpCode::INIT_PRIVATE => 1,

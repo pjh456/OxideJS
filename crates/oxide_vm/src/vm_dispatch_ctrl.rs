@@ -1,7 +1,7 @@
 use crate::vm::{Completion, FrameArgs, FrameContinuation, TryHandler, Vm};
 use crate::vm_trace;
 use oxide_bytecode::opcode;
-use oxide_types::object::PropAttributes;
+use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::make_private_name_id;
 use oxide_types::value::JsValue;
 
@@ -292,6 +292,42 @@ impl Vm {
         let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
         let _ = self.define_data_property(obj, prop_name_si, value, PropAttributes::new(true, true, false));
         Ok(())
+    }
+
+    /// 定义隐式全局数据属性：ext 字 = 键常量池下标（u16），a 槽 = 值寄存器。
+    /// 全局对象由 session 直接解析——函数体内隐式全局写不依赖 this（regs[254]
+    /// 不一定是全局对象）。属性可写/可枚举/可配置（未声明标识符 PutValue 与
+    /// eval 脚本 var/函数声明的属性描述符）。
+    ///
+    /// # 边界与前提
+    /// - 键常量必须是字符串（emit 侧保证）；非字符串按错误返回。
+    /// - 全局对象不可扩展且属性缺失 → TypeError（两模式均抛，CreateGlobalVarBinding 语义）；
+    ///   已有不可写属性时 sloppy PutValue 静默 no-op，严格模式抛错。
+    pub(crate) fn dispatch_define_global_prop_c(&mut self, a: usize, key_idx: u16) -> Result<(), String> {
+        let idx = key_idx as usize;
+        vm_trace!("DEFINE_GLOBAL_PROP_C value={} idx={}", a, idx);
+        let key_val = self.immutables().get(idx).copied().unwrap_or(JsValue::undefined());
+        if !key_val.is_string() {
+            return Err(format!("DEFINE_GLOBAL_PROP_C constant index {idx} is not a string key"));
+        }
+        let si = self.property_key_si(key_val)?;
+        let value = self.regs[a];
+        let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;
+        // SAFETY: 全局对象钉在 session 永久区，指针在 VM 生命周期内有效。
+        let obj = unsafe { &mut *global_ptr };
+        match self.define_data_property(obj, si, value, PropAttributes::new(true, true, true)) {
+            Ok(()) => Ok(()),
+            Err(msg) => {
+                // 不可扩展 + 新属性：规范两模式均抛；已有不可写属性：sloppy 静默、strict 抛。
+                let non_extensible_new = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), si).is_none()
+                    && !obj.is_extensible();
+                if non_extensible_new || self.current_strict() {
+                    self.raise_error_kind("TypeError", &msg)
+                } else {
+                    Ok(())
+                }
+            }
+        }
     }
 
     /// break 完成：`crossed`（rd 槽）为 emit 词法算出的逃出 finally 域数。

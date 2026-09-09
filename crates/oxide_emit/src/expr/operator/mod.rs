@@ -599,6 +599,11 @@ impl Emitter {
             Ok(if update.prefix { new_reg } else { old_reg })
         } else {
             let var_reg = ctx.lookup_or_global(name);
+            let is_implicit = ctx.implicit_global_writes.contains(&var_reg);
+            if is_implicit && ctx.is_strict {
+                // 严格模式未声明更新写：值无关抛 ReferenceError。
+                return self.emit_strict_undeclared_write(name, ctx);
+            }
             let result_reg = ctx.alloc_reg();
             let op = match (update.operator, update.prefix) {
                 (UpdateOperator::Increment, true) => OpCode::INC_PRE,
@@ -607,6 +612,9 @@ impl Emitter {
                 (UpdateOperator::Decrement, false) => OpCode::DEC_POST,
             };
             ctx.inst(Inst::new(op, Operand::Reg(var_reg), Operand::Reg(result_reg), Operand::Reg(result_reg)));
+            if is_implicit {
+                self.emit_implicit_global_write(name, var_reg, ctx);
+            }
             Ok(result_reg)
         }
     }

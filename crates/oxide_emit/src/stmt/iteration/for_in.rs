@@ -64,7 +64,17 @@ impl Emitter {
             ForStatementLeft::AssignmentTargetIdentifier(id_ref) => {
                 let name = id_ref.name.as_str();
                 let var_reg = ctx.lookup_or_global(name);
-                ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(var_reg), Operand::Reg(key_reg), Operand::None));
+                let is_implicit = ctx.implicit_global_writes.contains(&var_reg);
+                // 未声明写仅在本迭代实际产生键后才发生（for-in NEXT 之后），空集合不抛。
+                if is_implicit && ctx.is_strict {
+                    // 严格模式未声明写：抛 ReferenceError，跳过寄存器写（值无关）。
+                    self.emit_strict_undeclared_write(name, ctx)?;
+                } else {
+                    ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(var_reg), Operand::Reg(key_reg), Operand::None));
+                    if is_implicit {
+                        self.emit_implicit_global_write(name, var_reg, ctx);
+                    }
+                }
             }
             _ => return Err("unsupported for-in left-hand side".into()),
         }

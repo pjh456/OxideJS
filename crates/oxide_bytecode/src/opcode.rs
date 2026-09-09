@@ -539,6 +539,13 @@ define_opcodes! {
     DEFINE_ACCESSOR_ATTRS = 0x91 => "DEFINE_ACCESSOR_ATTRS",
         def = None, uses = [SlotSpec::Slot(Slot::Rd), SlotSpec::Slot(Slot::A), SlotSpec::Slot(Slot::B)],
         pure = false, jump = false, term = false, ic = false,
+    // 隐式全局写：ext 字 = 键常量池下标（u16）、a 槽 = 值寄存器；全局对象由 VM 运行期
+    // 从 session 取（不依赖 this——函数体内隐式全局写时 regs[254] 不一定是全局对象）。
+    // 数据属性可写/可枚举/可配置（未声明标识符 PutValue 与 eval 脚本声明共用）；
+    // 全局对象不可扩展时 strict/sloppy 均抛 TypeError。
+    DEFINE_GLOBAL_PROP_C = 0x98 => "DEFINE_GLOBAL_PROP_C",
+        def = None, uses = [SlotSpec::Slot(Slot::A)],
+        pure = false, jump = false, term = false, ic = false,
 
     // ── 成员复合赋值：位/移位 (0x64-0x69) ──
     COMPOUND_MEMBER_BIT_AND = 0x64 => "COMPOUND_MEMBER_BIT_AND",

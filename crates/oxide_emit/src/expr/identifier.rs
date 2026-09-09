@@ -164,12 +164,21 @@ impl Emitter {
             return;
         }
         let var_reg = ctx.lookup_or_global(name);
+        let is_implicit = ctx.implicit_global_writes.contains(&var_reg);
+        if is_implicit && ctx.is_strict {
+            // 严格模式未声明写：发射 ReferenceError 抛错，跳过寄存器写（值无关）。
+            let _ = self.emit_strict_undeclared_write(name, ctx);
+            return;
+        }
         ctx.inst(Inst::new(
             OpCode::STORE_VAR,
             Operand::Reg(var_reg),
             Operand::Reg(val_reg),
             Operand::Imm(const_flag),
         ));
+        if is_implicit {
+            self.emit_implicit_global_write(name, var_reg, ctx);
+        }
     }
 
     /// with 内动态写入：对象有该属性则写对象，否则回退静态写入。

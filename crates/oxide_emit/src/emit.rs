@@ -207,6 +207,11 @@ pub struct CompileCtx {
     /// LOAD_GLOBAL（运行期查 global object 属性，缺失抛 ReferenceError）。
     /// 按寄存器而非名字记录：块作用域同名新绑定持不同槽位，不会被误判为隐式全局。
     pub(crate) implicit_global_reads: HashSet<u32>,
+    /// 未声明标识符写所登记的全局槽寄存器集合：`lookup_or_global` 未命中任何作用域
+    /// 时登记全局作用域绑定并记录其寄存器，写调用点据此补全局对象属性写（sloppy）
+    /// 或抛 ReferenceError（strict）。子函数 ctx 从父继承——继承绑定命中同一寄存器，
+    /// 补写/抛错判定跨嵌套函数一致。
+    pub(crate) implicit_global_writes: HashSet<u32>,
     /// 函数 `length` 属性值：首个带默认值形参之前的形参数（rest 不计）。
     /// emit_params_prologue 前由编译入口从 param_specs 计算。
     pub(crate) function_length: u32,
@@ -332,6 +337,7 @@ impl CompileCtx {
             captured_bindings: BTreeMap::new(),
             upvalue_const_flags: HashSet::new(),
             implicit_global_reads: HashSet::new(),
+            implicit_global_writes: HashSet::new(),
             function_length: 0,
             const_overflow: false,
             with_stack: Vec::new(),
@@ -461,6 +467,9 @@ impl CompileCtx {
             return reg;
         }
         let reg = self.alloc_reg();
+        // 未声明标识符写：登记全局作用域绑定，记录寄存器供写调用点补全局对象属性
+        // 写（sloppy）或抛 ReferenceError（strict）。
+        self.implicit_global_writes.insert(reg);
         self.scopes.symbols.lookup_or_global(name, reg)
     }
 
@@ -1096,6 +1105,9 @@ impl Emitter {
             );
             inherited_reg_start = inherited_reg_start.max(binding.reg.saturating_add(1));
         }
+        // 隐式全局写集合随继承绑定传入：父层未声明写已登记全局作用域，子层解析命中
+        // 继承绑定时须同样补全局对象属性写（或严格模式抛错）。
+        ctx.implicit_global_writes = parent_ctx.implicit_global_writes.clone();
         for (name, reg) in extra_bindings {
             ctx.scopes.symbols.scopes[0].bindings.insert(
                 (*name).to_string(),
@@ -1486,6 +1498,29 @@ impl Emitter {
             Expression::MetaProperty(mp) => self.emit_meta_property_expression(mp, ctx),
             _ => self.emit_unsupported_expression(expr, ctx),
         }
+    }
+
+    /// 隐式全局写（sloppy 未声明标识符写）：把值寄存器写到全局对象可写/可枚举/
+    /// 可配置数据属性（未解析引用上的 PutValue 语义）。全局对象由 VM 运行期从
+    /// session 解析，不依赖 this。
+    ///
+    /// # 边界与前提
+    /// - 仅 `implicit_global_writes` 命中的寄存器调用（未声明标识符写）。
+    ///
+    /// # 副作用
+    /// - 定义全局对象数据属性（可写/可枚举/可配置），属性缺失时新建。
+    pub(crate) fn emit_implicit_global_write(&self, name: &str, val_reg: u32, ctx: &mut CompileCtx) {
+        let idx = ctx.add_constant(Constant::String(name.to_string()));
+        ctx.inst(Inst::define_global_prop_c(Operand::Reg(val_reg), idx));
+    }
+
+    /// 严格模式未声明写：发射 ReferenceError 抛错指令序列（未解析引用不可 put，
+    /// 值无关，编译期拦截）。错误消息格式与读侧 LOAD_GLOBAL 运行期消息一致。
+    ///
+    /// # 副作用
+    /// - 发射 THROW 指令序列，其后控制流不可达，dummy 值保持寄存器良定义。
+    pub(crate) fn emit_strict_undeclared_write(&self, name: &str, ctx: &mut CompileCtx) -> Result<u32, String> {
+        self.emit_throw_error("ReferenceError", &format!("{name} is not defined"), ctx)
     }
 
     /// 把脚本顶层 var/function 绑定的当前值同步写入全局对象属性，使顶层声明

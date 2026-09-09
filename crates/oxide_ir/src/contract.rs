@@ -740,6 +740,7 @@ mod tests {
         assert_group(&[OpCode::NEW_OBJECT, OpCode::NEW_ARRAY], Some(1), &[], true);
         // define 语义属性写入 / arguments / rest
         assert_group(&[OpCode::DEFINE_PROP, OpCode::DEFINE_GLOBAL_PROP], None, &[1, 2, 3], false);
+        assert_contract(OpCode::DEFINE_GLOBAL_PROP_C, None, &[2], false);
         assert_contract(OpCode::DEFINE_PROP_ATTRS, None, &[1, 2, 3], false);
         assert_contract(OpCode::DEFINE_ACCESSOR_ATTRS, None, &[1, 2, 3], false);
         assert_group(&[OpCode::CREATE_ARGUMENTS, OpCode::CREATE_REST_ARRAY], Some(1), &[], false);
