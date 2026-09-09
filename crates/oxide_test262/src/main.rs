@@ -789,9 +789,11 @@ fn judge_vm_error(path: &Path, e: &str, meta: &TestMeta, dur: u64, no_skip: bool
 ///
 /// # 边界与前提
 /// - 运行期形态：`uncaught ReferenceError: {name} is not defined`
+///   （可带 `vm error: ` 前缀，即 runner Fail 消息的生产形态）
 /// - 编译期形态：`Identifier '{name}' is not defined`（可带 `compile error: ` 前缀）
 /// - 两种形态都不匹配返回 `None`（不属未绑定标识符错误）。
 fn parse_undefined_ident(e: &str) -> Option<&str> {
+    let e = e.strip_prefix("vm error: ").unwrap_or(e);
     let e = e.strip_prefix("compile error: ").unwrap_or(e);
     let e = e.strip_prefix("uncaught ").unwrap_or(e);
     if let Some(rest) = e.strip_prefix("ReferenceError: ") {
@@ -1526,9 +1528,11 @@ fn categorize_fail(msg: &str) -> (String, String) {
         ("harness: runtime error".into(), String::new())
     } else if msg.contains("expected runtime error") {
         ("expected runtime error".into(), String::new())
-    } else if msg.contains("is not defined") {
-        // 无前缀形态的未绑定标识符错误兜底（生产路径均带 vm error: 前缀）。
-        ("vm: not defined".into(), parse_undefined_ident(msg).unwrap_or("").to_string())
+    } else if let Some(ident) = parse_undefined_ident(msg) {
+        // 无前缀形态的未绑定标识符错误兜底（生产路径均带 vm error: 前缀走 vm 臂）：
+        // 形态门——parse 出标识符才入 not-defined 桶；negative mismatch 等
+        // 解析不出的含 `is not defined` 形态回落 other，不污染 not-defined 计数。
+        ("vm: not defined".into(), ident.to_string())
     } else {
         ("other".into(), String::new())
     }
@@ -1965,11 +1969,15 @@ mod tests {
         assert_outcome("TypeError: boom", Some(&neg("RangeError")), false, &TestOutcome::Fail("".into()));
     }
 
-    /// `is not defined` 标识符解析：运行期 `uncaught` 前缀、编译期 `Identifier '..'`
-    /// 两种形态都能取出标识符名；非该形态返回 None。
+    /// `is not defined` 标识符解析：运行期 `uncaught` 前缀（含 `vm error: `
+    /// 生产前缀）、编译期 `Identifier '..'` 两种形态都能取出标识符名；非该形态返回 None。
     #[test]
     fn parse_undefined_ident_extracts_name() {
         assert_eq!(parse_undefined_ident("uncaught ReferenceError: $262 is not defined"), Some("$262"));
+        assert_eq!(
+            parse_undefined_ident("vm error: uncaught ReferenceError: foo is not defined"),
+            Some("foo")
+        );
         assert_eq!(parse_undefined_ident("ReferenceError: foo is not defined"), Some("foo"));
         assert_eq!(
             parse_undefined_ident("compile error: Identifier 'structuredClone' is not defined"),
@@ -2010,17 +2018,24 @@ mod tests {
 
     /// categorize_fail 双返回：类别大类名口径不变（碎片桶去消息尾巴），
     /// subkey 仅 not callable / not defined 三类非空，IC_GET_PROP 独立成桶。
+    /// not defined 覆盖 `vm error: ` 生产形态（subkey 非空）与无前缀裸形态
+    /// （形态门：parse 出标识符才入桶）；negative mismatch 形态归 other。
     #[test]
     fn categorize_fail_returns_category_and_subkey() {
         let cases = [
             ("vm error: TypeError: CALL target is not callable", ("vm: not callable", "CALL target")),
             ("vm error: TypeError: accessor is not callable", ("vm: not callable", "accessor")),
             ("vm error: TypeError: x is not callable", ("vm: not callable", "x")),
+            ("vm error: uncaught ReferenceError: foo is not defined", ("vm: not defined", "foo")),
             ("uncaught ReferenceError: foo is not defined", ("vm: not defined", "foo")),
             ("compile error: Identifier 'x' is not defined", ("compile: not defined", "x")),
             ("vm error: IC_GET_PROP on non-object", ("vm: IC_GET_PROP on non-object", "")),
             ("vm error: TypeError: method called on incompatible receiver", ("vm: other", "")),
             ("engine panic: boom", ("engine panic", "")),
+            (
+                "expected TypeError error, got: uncaught ReferenceError: foo is not defined",
+                ("other", ""),
+            ),
             ("random string", ("other", "")),
         ];
         for (msg, (want_cat, want_sub)) in cases {
