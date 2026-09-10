@@ -272,6 +272,7 @@ impl SessionGc {
     /// 因此"到达"一个字符串就等于标记它——不存在字符串 DFS 栈。永久字符串也会被
     /// 无害地记录；sweep 只遍历 `session_string_ptrs`，`live` 中的非 session 指针
     /// 永远不会被查询。
+    #[cfg(debug_assertions)]
     fn record_object_string_edges(live: &mut HashSet<*mut JsString, FxBuildHasher>, obj: &JsObject) {
         if let Some(elements) = obj.array_elements_vec() {
             for value in elements.iter() {
