@@ -19,6 +19,15 @@ pub struct MetricCollection {
     pub ic_hit_rate: f64,
     pub ic_hits: u64,
     pub ic_misses: u64,
+    /// 执行期 session 堆账目的峰值高水位（字节）。旧基线文件无此字段，反序列化补 0。
+    #[serde(default)]
+    pub peak_bytes: u64,
+    /// workload 结束并强制完整 GC 后的 session 存活堆字节（留存内存）。
+    #[serde(default)]
+    pub retained_bytes: u64,
+    /// workload 结束并强制完整 GC 后的 session 存活对象数。
+    #[serde(default)]
+    pub retained_objects: u64,
 }
 
 impl MetricCollection {
@@ -40,6 +49,9 @@ impl MetricCollection {
             ("ic_hit_rate", self.ic_hit_rate),
             ("ic_hits", self.ic_hits as f64),
             ("ic_misses", self.ic_misses as f64),
+            ("peak_bytes", self.peak_bytes as f64),
+            ("retained_bytes", self.retained_bytes as f64),
+            ("retained_objects", self.retained_objects as f64),
         ]
     }
 }

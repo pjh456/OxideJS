@@ -130,7 +130,7 @@ impl Vm {
     /// 函数目标豁免均直落 epoch 值）；Map/Set 等原生盒按键值直插 epoch 值。
     /// `rewrite_object_values` 覆盖元素/meta/属性/proto/captured_this/home_object/
     /// cell 值；克隆子树经 forwarding 去重，环与共享引用各克隆一次。
-    pub(crate) fn promote_session_epoch_refs(&mut self) {
+    pub fn promote_session_epoch_refs(&mut self) {
         let objects = std::mem::take(&mut self.gc_state.session_object_ptrs);
         if objects.is_empty() {
             return;
@@ -183,6 +183,40 @@ impl Vm {
         self.gc_state.forwarding = forwarding;
         // 晋升过程新克隆的对象已推入 gc_state 侧的表，拼回旧表保持原序在前。
         self.gc_state.session_object_ptrs.extend(objects);
+    }
+
+    /// 把根直接持有的 epoch 对象（顶层 var 寄存器、挂起句柄等）晋升进 session，
+    /// 并把根引用改写到克隆体。
+    ///
+    /// # 副作用
+    /// - 每个根 epoch 对象深克隆进 session（含 native 状态盒，子引用递归晋升），
+    ///   账目计入克隆字节；根引用按转发表重写。
+    ///
+    /// # 注意事项
+    /// - 供 workload 后观测点（基准留存测量）使用：本方法之后存活集完全对
+    ///   session 可见，后续完整 GC 的留存账目不再漏"仅驻留 epoch arena 的对象"。
+    /// - 与 `promote_session_epoch_refs` 互补：本方法处理根直接持有的 epoch 对象，
+    ///   后者处理 session 对象持有的 epoch 子引用（闭包捕获等绕过写屏障的来源）。
+    pub fn promote_rooted_epoch_objects(&mut self) {
+        let mut epoch_roots = Vec::new();
+        self.for_each_root(|value| {
+            if value.is_object() {
+                let ptr = value.as_js_object_ptr();
+                if !ptr.is_null() {
+                    // SAFETY: 根上的对象值均为 VM 自有存活 JsObject。
+                    if unsafe { &*ptr }.is_epoch() {
+                        epoch_roots.push(ptr);
+                    }
+                }
+            }
+        });
+        let mut forwarding = std::mem::take(&mut self.gc_state.forwarding);
+        for ptr in epoch_roots {
+            self.promote_object_inner(ptr, &mut forwarding);
+        }
+        crate::session_gc::rewrite_vm_roots(self, &forwarding);
+        forwarding.clear();
+        self.gc_state.forwarding = forwarding;
     }
 
     /// 逃逸写屏障：写向全局/session 对象的对象值不指向 epoch，否则 epoch

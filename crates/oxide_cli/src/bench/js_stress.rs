@@ -91,25 +91,53 @@ pub fn run_js_stress_bench(config: &BenchConfig, kernel: &Arc<KernelCore>, pool:
             let _result = vm.run(&module);
             let exec_time = exec_start.elapsed();
 
+            // 执行期指标须在强制 GC 前读取：GC 会搬移/清扫 session 对象，
+            // 其后读到的计数是存活集而非本执行期的累计量
             let gc_stats = vm.session_gc_stats();
+            let gc_trigger_count = gc_stats.total_collections;
+            let gc_bytes_freed = gc_stats.last_collection_bytes_freed;
+            let gc_objects_scanned = gc_stats.last_collection_objects_scanned;
+            let gc_collection_us = gc_stats.last_collection_duration_us;
+            let session_objects = vm.session_object_count().saturating_sub(pre_session);
+            let session_bytes = vm.session_bytes_allocated();
+            let epoch_objects = vm.epoch_object_count().saturating_sub(pre_epoch);
+            let instruction_count = vm.instruction_count();
+            let ic_hit_rate = vm.ic_hit_rate();
+            let ic_hits = vm.ic_hit_count();
+            let ic_misses = vm.ic_miss_count();
+
+            // 留存口径：先让存活集对 session 完全可见——根直接持有的 epoch 对象
+            // （顶层 var 等）晋升进 session，session 对象持有的 epoch 子引用
+            // （闭包捕获、原生盒直插）同样晋升（均与 epoch 边界同机制）；
+            // 再强制完整 GC 清掉不可达垃圾，清扫后账目即 workload 留存堆
+            vm.promote_rooted_epoch_objects();
+            vm.promote_session_epoch_refs();
+            vm.collect_session_gc();
+            let retained_bytes = vm.session_bytes_allocated();
+            let retained_objects = vm.session_object_count();
+            // 峰值高水位取执行期采样与 GC 后存活字节的较大者（存活集亦属高水位）
+            let peak_bytes = vm.session_bytes_peak().max(retained_bytes);
 
             metrics.push(MetricCollection {
                 test_name: test_name.clone(),
                 wall_time_us: (compile_time + exec_time).as_micros() as u64,
-                session_objects: vm.session_object_count().saturating_sub(pre_session),
-                session_bytes: vm.session_bytes_allocated(),
-                epoch_objects: vm.epoch_object_count().saturating_sub(pre_epoch),
+                session_objects,
+                session_bytes,
+                epoch_objects,
                 epoch_bytes: 0,
-                gc_trigger_count: gc_stats.total_collections,
-                gc_bytes_freed: gc_stats.last_collection_bytes_freed,
-                gc_objects_scanned: gc_stats.last_collection_objects_scanned,
-                gc_collection_us: gc_stats.last_collection_duration_us,
-                instruction_count: vm.instruction_count(),
+                gc_trigger_count,
+                gc_bytes_freed,
+                gc_objects_scanned,
+                gc_collection_us,
+                instruction_count,
                 compile_time_us: compile_time.as_micros() as u64,
                 exec_time_us: exec_time.as_micros() as u64,
-                ic_hit_rate: vm.ic_hit_rate(),
-                ic_hits: vm.ic_hit_count(),
-                ic_misses: vm.ic_miss_count(),
+                ic_hit_rate,
+                ic_hits,
+                ic_misses,
+                peak_bytes: peak_bytes as u64,
+                retained_bytes: retained_bytes as u64,
+                retained_objects: retained_objects as u64,
             });
         }
 
@@ -170,6 +198,9 @@ fn average_metrics(metrics: &[MetricCollection]) -> MetricCollection {
             ic_hit_rate: 0.0,
             ic_hits: 0,
             ic_misses: 0,
+            peak_bytes: 0,
+            retained_bytes: 0,
+            retained_objects: 0,
         });
     }
     MetricCollection {
@@ -189,5 +220,8 @@ fn average_metrics(metrics: &[MetricCollection]) -> MetricCollection {
         ic_hit_rate: metrics.iter().map(|m| m.ic_hit_rate).sum::<f64>() / n,
         ic_hits: (metrics.iter().map(|m| m.ic_hits as f64).sum::<f64>() / n) as u64,
         ic_misses: (metrics.iter().map(|m| m.ic_misses as f64).sum::<f64>() / n) as u64,
+        peak_bytes: (metrics.iter().map(|m| m.peak_bytes as f64).sum::<f64>() / n) as u64,
+        retained_bytes: (metrics.iter().map(|m| m.retained_bytes as f64).sum::<f64>() / n) as u64,
+        retained_objects: (metrics.iter().map(|m| m.retained_objects as f64).sum::<f64>() / n) as u64,
     }
 }

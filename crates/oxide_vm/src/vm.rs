@@ -969,6 +969,26 @@ impl Vm {
         self.gc_state.session_bytes_allocated
     }
 
+    /// 执行期 session 堆账目的峰值高水位（顶层指令边界采样，全量重置清零）。
+    pub fn session_bytes_peak(&self) -> usize {
+        self.gc_state.session_bytes_peak
+    }
+
+    /// 无条件执行一次完整 session GC（mark + 移动式 sweep + 串/BigInt 清扫）。
+    ///
+    /// # 副作用
+    /// - 存活对象复制进新 session arena，全部根与原生盒按转发表重写；
+    ///   `session_bytes_allocated` 重置为清扫后的存活字节。
+    ///
+    /// # 注意事项
+    /// - 须在执行外的安全点调用（无在途 builtin 局部裸指针、dispatch 未重入）；
+    ///   执行期触发仍走水位路径，本入口供事后观测（如基准测 workload 后留存堆）。
+    pub fn collect_session_gc(&mut self) {
+        let mut session_gc = std::mem::take(&mut self.gc_state.session_gc);
+        session_gc.collect(self);
+        self.gc_state.session_gc = session_gc;
+    }
+
     /// 当前 epoch 中已分配并跟踪的对象数量（未晋升到 session 的临时对象）。
     pub fn epoch_object_count(&self) -> usize {
         self.gc_state.epoch_object_ptrs.len()
@@ -1517,9 +1537,15 @@ impl Vm {
             // inline 状态（非 GC 根），此时回收会把调用方 regs 中的活值当死值释放。
             // 返回顶层后检查恢复，存活值此时已回拷为执行根。账目未超水位时仅
             // 少量字段比较。
-            if self.native_call_depth == 0 && self.gc_state.session_bytes_allocated >= self.gc_state.string_gc_watermark
-            {
-                self.maybe_collect_session_strings();
+            if self.native_call_depth == 0 {
+                // 峰值高水位：同一边界采样 session 堆账目上界
+                let bytes = self.gc_state.session_bytes_allocated;
+                if bytes > self.gc_state.session_bytes_peak {
+                    self.gc_state.session_bytes_peak = bytes;
+                }
+                if bytes >= self.gc_state.string_gc_watermark {
+                    self.maybe_collect_session_strings();
+                }
             }
             if let Some(max_steps) = max_steps {
                 if steps > max_steps {

@@ -138,6 +138,9 @@ pub fn run_leak_detect(config: &BenchConfig, kernel: &Arc<KernelCore>, pool: &Ar
                 ic_hit_rate: vm.ic_hit_rate(),
                 ic_hits: vm.ic_hit_count(),
                 ic_misses: vm.ic_miss_count(),
+                peak_bytes: vm.session_bytes_peak() as u64,
+                retained_bytes: vm.session_bytes_allocated() as u64,
+                retained_objects: vm.session_object_count() as u64,
             });
         }
     }

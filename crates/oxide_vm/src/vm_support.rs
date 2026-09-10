@@ -100,6 +100,7 @@ impl Vm {
                 session_bigint_ptrs: std::cell::RefCell::new(Vec::new()),
                 session_cell_ptrs: std::cell::RefCell::new(Vec::new()),
                 session_bytes_allocated: 0,
+                session_bytes_peak: 0,
                 string_gc_watermark: gc_threshold,
                 gc_threshold_cached: gc_threshold,
                 gc_watermark: gc_threshold,
@@ -212,6 +213,7 @@ impl Vm {
                 session_bigint_ptrs: std::cell::RefCell::new(Vec::new()),
                 session_cell_ptrs: std::cell::RefCell::new(Vec::new()),
                 session_bytes_allocated: 0,
+                session_bytes_peak: 0,
                 string_gc_watermark: gc_threshold,
                 gc_threshold_cached: gc_threshold,
                 gc_watermark: gc_threshold,
@@ -329,6 +331,7 @@ impl Vm {
         self.gc_state.epoch_object_ptrs.clear();
         self.gc_state.session_epoch.reset();
         self.gc_state.session_bytes_allocated = 0;
+        self.gc_state.session_bytes_peak = 0;
         self.gc_state.string_gc_watermark = self.kernel_core.config().session_gc_threshold;
         self.gc_state.session_gc = crate::session_gc::SessionGc::new();
         self.symbols.reset();

@@ -915,7 +915,7 @@ fn rewrite_forwarded_value(
         .unwrap_or(value)
 }
 
-fn rewrite_vm_roots(vm: &mut Vm, forwarding: &HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>) {
+pub(crate) fn rewrite_vm_roots(vm: &mut Vm, forwarding: &HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>) {
     vm_debug!("[GC] rewrite_vm_roots: {} forwarded objects", forwarding.len());
     // 统一遍历：与 for_each_value 共用同一字段清单。
     vm.rewrite_values(|value| rewrite_forwarded_value(value, forwarding));

@@ -79,7 +79,7 @@ pub fn compare_baseline(current: &[MetricCollection]) -> Vec<Regression> {
                 let tolerance = match name {
                     "wall_time_us" => 0.10,
                     "gc_trigger_count" | "gc_bytes_freed" | "gc_objects_scanned" | "gc_collection_us" => 0.50,
-                    "session_bytes" => 0.20,
+                    "session_bytes" | "peak_bytes" | "retained_bytes" | "retained_objects" => 0.20,
                     _ => 0.20,
                 };
                 let ratio = cur_val / base_val;
