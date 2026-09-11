@@ -1470,10 +1470,10 @@ fn build_runner_kernel() -> Arc<KernelCore> {
     kernel_config.max_pool_size = Some(1);
     // 单测试分配上限：死循环类测试触步数上限时持续分配，arena 高水位可达 GB
     // 级；多 worker 并发下进程 RSS 包络被各 worker 当前高水位顶起，全量运行
-    // 必然 OOM。正规测试峰值实测约 256MiB（RegExp property-escapes 生成大表，
-    // 余量极小、27 个大表测试微越被顶，待抬 cap 或压大表内存面另行处理）；
+    // 必然 OOM。真合法峰值实测 259.6MiB（含 RegExp property-escapes/
+    // character-class 生成大表），512MiB 上限留 ~252MiB 余量；
     // 主要作用是把失控测试的驻留面封顶到上限本身。
-    kernel_config.max_alloc_bytes = Some(256 * 1024 * 1024);
+    kernel_config.max_alloc_bytes = Some(512 * 1024 * 1024);
     KernelCore::new(kernel_config)
 }
 
@@ -1945,7 +1945,7 @@ mod tests {
     /// 分配上限超限（与步数上限同款运行期限制）：默认 skip，`--no-skip` 下 fail。
     #[test]
     fn memory_limit_errors_skip_by_default() {
-        let e = "vm error: VM memory limit 268435456 exceeded (used 268436480) at pc=14";
+        let e = "vm error: VM memory limit 536870912 exceeded (used 536871936) at pc=14";
         assert_outcome(e, None, false, &TestOutcome::Skip("".into()));
         assert_outcome(e, None, true, &TestOutcome::Fail("".into()));
     }
@@ -2048,7 +2048,7 @@ mod tests {
             ("compile error: Identifier 'x' is not defined", ("compile: not defined", "x")),
             ("vm error: IC_GET_PROP on non-object", ("vm: IC_GET_PROP on non-object", "")),
             (
-                "vm error: VM memory limit 268435456 exceeded (used 268436480) at pc=14",
+                "vm error: VM memory limit 536870912 exceeded (used 536871936) at pc=14",
                 ("vm: memory limit", ""),
             ),
             ("vm error: TypeError: method called on incompatible receiver", ("vm: other", "")),
