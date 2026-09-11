@@ -976,12 +976,13 @@ impl Vm {
     }
 
     /// 本 run 累计分配字节：epoch arena + session 对象 arena + session 手工堆
-    /// 账目（串/BigInt/cell/属性向量）。单次 run 内单调不减（执行期对象不回收、
+    /// 账目（session 串 + session 对象及其属性向量 + GC 后补回的 BigInt）。
+    /// 单次 run 内单调不减（执行期对象不回收、
     /// 串 GC 只降手工堆账目而 arena 不减）；run 边界（reset）后重新起算，
     /// 供单 run 分配上限判定。
     ///
-    /// 注意：手工堆账目只在 promote/字符串分配点更新，执行期对象属性区
-    /// （元素/属性向量扩容）增长对其不可见——上限判定须配合
+    /// 注意：手工堆账目只在 promote/字符串分配/GC 回收点更新，执行期对象
+    /// 属性区（元素/属性向量扩容）增长对其不可见——上限判定须配合
     /// [`Self::run_alloc_bytes_full`] 的深采样层。
     pub(crate) fn run_alloc_bytes(&self) -> usize {
         self.epoch.bump().allocated_bytes()
@@ -989,12 +990,14 @@ impl Vm {
             + self.gc_state.session_bytes_allocated
     }
 
-    /// 本 run 累计分配字节的全量重算版：arena 计数器之外，逐一重算已登记对象
-    /// 的堆数据（属性/元素向量 + upvalue 列表 + native 状态盒）、session 串、
-    /// BigInt 与 upvalue cell 的容量。采样深度高于账目更新点，
-    /// 兜住属性区扩容这类账目盲区。
+    /// 本 run 累计分配字节的全量重算版：base 只取两个 arena 计数器
+    /// （epoch + session 对象 arena），手工堆逐一重算——已登记对象的堆数据
+    /// （属性/元素向量 + upvalue 列表 + native 状态盒）、session 串、BigInt
+    /// 与 upvalue cell 的容量。三分量（arena / 对象堆数据 / 串-BigInt-cell）
+    /// 两两不相交，且不含 session 手工堆账目——无交叠不双计，重算即属性区
+    /// 扩容等账目盲区的兜底。
     pub(crate) fn run_alloc_bytes_full(&self) -> u64 {
-        let mut bytes = self.run_alloc_bytes() as u64;
+        let mut bytes = (self.epoch.bump().allocated_bytes() + self.gc_state.session_epoch.allocated_bytes()) as u64;
         for &ptr in self
             .gc_state
             .epoch_object_ptrs
