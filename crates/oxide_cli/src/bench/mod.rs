@@ -36,7 +36,12 @@ pub fn run_benchmarks(config: BenchConfig, kernel: Arc<KernelCore>, pool: Arc<Vm
     match config.mode.as_str() {
         "js" => js_stress::run_js_stress_bench(&config, &kernel, &pool),
         "rust" => rust_bench::run_rust_bench(config.filter.as_deref()),
-        "leak" => leak_detect::run_leak_detect(&config, &kernel, &pool),
+        // leak 模式内按 case 过滤参数分派校准用例；缺省保持原泄漏检测行为。
+        "leak" => match config.filter.as_deref() {
+            Some("vm_creation") => leak_detect::run_mem_vm_creation_leak(&kernel),
+            Some("dirty_rebuild") => leak_detect::run_mem_dirty_rebuild_leak(&kernel),
+            _ => leak_detect::run_leak_detect(&config, &kernel, &pool),
+        },
         _ => {
             eprintln!("Unknown bench mode: {}. Use: js, rust, or leak", config.mode);
             ExitCode::FAILURE

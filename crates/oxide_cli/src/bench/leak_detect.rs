@@ -6,6 +6,7 @@ use std::time::Instant;
 use oxide_compiler::compiler::{compiled_module_hash, Compiler};
 use oxide_kernel::kernel::KernelCore;
 use oxide_parser::Allocator;
+use oxide_vm::vm::Vm;
 use oxide_vm::vm_pool::VmPool;
 
 use crate::bench::metrics::MetricCollection;
@@ -37,21 +38,8 @@ impl LeakSampler {
         if self.window.len() < 10 {
             return None;
         }
-        let n = self.window.len() as f64;
-        let sum_x: f64 = self.window.iter().map(|(i, _)| *i as f64).sum();
-        let sum_y: f64 = self.window.iter().map(|(_, v)| v).sum();
-        let sum_xy: f64 = self.window.iter().map(|(i, v)| *i as f64 * v).sum();
-        let sum_x2: f64 = self.window.iter().map(|(i, _)| (*i as f64).powi(2)).sum();
-        let slope = (n * sum_xy - sum_x * sum_y) / (n * sum_x2 - sum_x * sum_x);
-        let intercept = (sum_y - slope * sum_x) / n;
-        let y_mean = sum_y / n;
-        let ss_res: f64 = self
-            .window
-            .iter()
-            .map(|(i, v)| (v - (slope * *i as f64 + intercept)).powi(2))
-            .sum();
-        let ss_tot: f64 = self.window.iter().map(|(_, v)| (v - y_mean).powi(2)).sum();
-        let r2 = if ss_tot == 0.0 { 1.0 } else { 1.0 - ss_res / ss_tot };
+        let points: Vec<(usize, f64)> = self.window.iter().copied().collect();
+        let (slope, r2) = linreg(&points);
         if r2 > 0.9 && slope > 0.0 {
             Some(LeakVerdict { slope, r2 })
         } else {
@@ -64,6 +52,44 @@ impl LeakSampler {
 pub struct LeakVerdict {
     pub slope: f64,
     pub r2: f64,
+}
+
+/// 对 `(iteration, value)` 序列做普通最小二乘，返回 `(slope, R²)`。
+///
+/// # 边界与前提
+/// - 序列零方差时 R² 记 1.0（退化为完美拟合，斜率 0 不触发泄漏判定）；
+/// - 少于 2 个样本返回 `(0, 0)`。
+fn linreg(points: &[(usize, f64)]) -> (f64, f64) {
+    let n = points.len() as f64;
+    if n < 2.0 {
+        return (0.0, 0.0);
+    }
+    let sum_x: f64 = points.iter().map(|(i, _)| *i as f64).sum();
+    let sum_y: f64 = points.iter().map(|(_, v)| *v).sum();
+    let sum_xy: f64 = points.iter().map(|(i, v)| *i as f64 * v).sum();
+    let sum_x2: f64 = points.iter().map(|(i, _)| (*i as f64).powi(2)).sum();
+    let slope = (n * sum_xy - sum_x * sum_y) / (n * sum_x2 - sum_x * sum_x);
+    let intercept = (sum_y - slope * sum_x) / n;
+    let y_mean = sum_y / n;
+    let ss_res: f64 = points.iter().map(|(i, v)| (v - (slope * *i as f64 + intercept)).powi(2)).sum();
+    let ss_tot: f64 = points.iter().map(|(_, v)| (v - y_mean).powi(2)).sum();
+    let r2 = if ss_tot == 0.0 { 1.0 } else { 1.0 - ss_res / ss_tot };
+    (slope, r2)
+}
+
+/// 读取当前进程驻留集大小（`/proc/self/status` 的 VmRSS 行，单位 KB）。
+///
+/// # 边界与前提
+/// 读取或解析失败（非 Linux 宿主、status 文件异常）返回 `None`。
+pub fn read_vmrss_kb() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("VmRSS:") {
+            let kb = rest.split_whitespace().next()?;
+            return kb.parse().ok();
+        }
+    }
+    None
 }
 
 /// 反复运行固定 JS 脚本，跟踪 session/code-forge/symbol 等内存指标，
@@ -148,4 +174,183 @@ pub fn run_leak_detect(config: &BenchConfig, kernel: &Arc<KernelCore>, pool: &Ar
     let json = format_json(&results);
     println!("{}", json);
     ExitCode::SUCCESS
+}
+
+/// S1 校准用例：共享 kernel 下循环 3000 次「新建 VM → 跑微源 → drop」，
+/// 每 100 次采一次 VmRSS，度量 VM 创建/销毁路径（含 session 收尾统一
+/// 释放）的内存增量，期望走平。
+///
+/// # 注意事项
+/// 不走 VM 池：池的锁/condvar 噪音与本测面无关；出斜率先查 harness
+/// 污染（allocator 归还 OS 延迟），再疑收尾释放不全。
+pub fn run_mem_vm_creation_leak(kernel: &Arc<KernelCore>) -> ExitCode {
+    const ITERATIONS: usize = 3000;
+    const SAMPLE_EVERY: usize = 100;
+
+    let js = "1 + 1";
+    let allocator = Allocator::default();
+    let program = match oxide_parser::parse(&allocator, js) {
+        Ok(p) => p,
+        Err(_) => return ExitCode::FAILURE,
+    };
+    let compiler = Compiler::new();
+    let hash = compiled_module_hash(&program);
+    let module = match kernel.code_forge().get_or_insert_with(hash, || compiler.compile(&program)) {
+        Ok(m) => m,
+        Err(_) => return ExitCode::FAILURE,
+    };
+
+    let mut sampler = LeakSampler::new(20);
+    let mut series: Vec<(usize, f64)> = Vec::new();
+    for i in 0..ITERATIONS {
+        {
+            let mut vm = Vm::with_kernel_core(Arc::clone(kernel));
+            if let Err(e) = vm.run(&module) {
+                eprintln!("[vm_creation] iteration {i} run failed: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        if i % SAMPLE_EVERY == 0 {
+            if let Some(kb) = read_vmrss_kb() {
+                let v = kb as f64;
+                series.push((i, v));
+                if let Some(verdict) = sampler.add_sample(i, v) {
+                    eprintln!(
+                        "[LEAK] vm_creation rss_kb: slope={:.6} R²={:.4} over {} samples",
+                        verdict.slope, verdict.r2, 20
+                    );
+                }
+            }
+        }
+    }
+    report_series("vm_creation", "iter", &series)
+}
+
+/// S2 校准用例：单 VM 每轮「新键写脏 object/array/string 三家族原型 →
+/// full_reset」，共 3000 轮，每 10 轮采一次 VmRSS，输出选择性重建释放
+/// 路径的每轮内存增量（斜率 + 窗口总增量）。
+///
+/// # 注意事项
+/// 键名逐轮递增保证走新键写入路径（既有槽位写不 bump 世代、不脏家族）；
+/// 修复释放路径后期望走平，残留本体钉在页粒度噪声级。
+pub fn run_mem_dirty_rebuild_leak(kernel: &Arc<KernelCore>) -> ExitCode {
+    const ROUNDS: usize = 3000;
+    const SAMPLE_EVERY: usize = 10;
+
+    let mut vm = Vm::with_kernel_core(Arc::clone(kernel));
+    let compiler = Compiler::new();
+
+    let mut sampler = LeakSampler::new(20);
+    let mut series: Vec<(usize, f64)> = Vec::new();
+    for round in 0..ROUNDS {
+        // 键名逐轮递增：新键写才 bump 原型世代，重建才有脏家族可换。
+        let source = format!(
+            "Object.prototype['d{round}'] = 1; Array.prototype['d{round}'] = 2; String.prototype['d{round}'] = 3;"
+        );
+        let allocator = Allocator::default();
+        let program = match oxide_parser::parse(&allocator, &source) {
+            Ok(p) => p,
+            Err(_) => return ExitCode::FAILURE,
+        };
+        let module = match compiler.compile(&program) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("[dirty_rebuild] round {round} compile failed: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        if let Err(e) = vm.run(&module) {
+            eprintln!("[dirty_rebuild] round {round} run failed: {e}");
+            return ExitCode::FAILURE;
+        }
+        vm.full_reset();
+        if round % SAMPLE_EVERY == 0 {
+            if let Some(kb) = read_vmrss_kb() {
+                let v = kb as f64;
+                series.push((round, v));
+                if let Some(verdict) = sampler.add_sample(round, v) {
+                    eprintln!(
+                        "[LEAK] dirty_rebuild rss_kb: slope={:.6} R²={:.4} over {} samples",
+                        verdict.slope, verdict.r2, 20
+                    );
+                }
+            }
+        }
+    }
+    report_series("dirty_rebuild", "round", &series)
+}
+
+/// 全序列回归报告：打印首末 RSS、全序列斜率/R² 与窗口（末 20 样本）总
+/// 增量；斜率显著为正（R² > 0.9）返回失败，表示泄漏签名。
+fn report_series(case: &str, unit: &str, series: &[(usize, f64)]) -> ExitCode {
+    let Some(&(first_i, first_kb)) = series.first() else {
+        eprintln!("[{case}] no samples");
+        return ExitCode::FAILURE;
+    };
+    let &(last_i, last_kb) = series.last().expect("首样本存在则末样本存在");
+    let (slope, r2) = linreg(series);
+    let window_delta = series
+        .get(series.len().saturating_sub(20))
+        .map(|(_, a)| last_kb - *a)
+        .unwrap_or(0.0);
+    eprintln!(
+        "[{case}] samples={} {}={}..{} rss_kb={}..{} (delta {:+.0}) slope={:.4} kB/{unit} R²={:.4} window_delta={:+.0} kB",
+        series.len(),
+        unit,
+        first_i,
+        last_i,
+        first_kb,
+        last_kb,
+        last_kb - first_kb,
+        slope,
+        r2,
+        window_delta
+    );
+    if slope > 0.0 && r2 > 0.9 {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Linux 宿主 VmRSS 可读且大于 0。
+    #[test]
+    fn vmrss_readable() {
+        assert!(matches!(read_vmrss_kb(), Some(kb) if kb > 0));
+    }
+
+    /// 已知斜率直线：斜率精确、R² 完美拟合。
+    #[test]
+    fn linreg_exact_line() {
+        let pts: Vec<(usize, f64)> = (0..10).map(|i| (i, 2.0 * i as f64 + 1.0)).collect();
+        let (slope, r2) = linreg(&pts);
+        assert!((slope - 2.0).abs() < 1e-9);
+        assert!((r2 - 1.0).abs() < 1e-9);
+    }
+
+    /// 零方差序列：斜率 0、R² 记完美拟合，不触发泄漏判定。
+    #[test]
+    fn linreg_constant_series() {
+        let pts = vec![(0, 100.0), (1, 100.0), (2, 100.0)];
+        let (slope, r2) = linreg(&pts);
+        assert_eq!(slope, 0.0);
+        assert_eq!(r2, 1.0);
+    }
+
+    /// 窗口采样器：正斜率序列出判定且斜率还原正确。
+    #[test]
+    fn sampler_verdict_on_rising_series() {
+        let mut s = LeakSampler::new(20);
+        let mut verdict = None;
+        for i in 0..30 {
+            verdict = s.add_sample(i, 1000.0 + 10.0 * i as f64);
+        }
+        let v = verdict.expect("正斜率高拟合序列应出判定");
+        assert!((v.slope - 10.0).abs() < 1e-6);
+        assert!(v.r2 > 0.9);
+    }
 }
