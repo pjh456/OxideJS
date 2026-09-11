@@ -1470,8 +1470,9 @@ fn build_runner_kernel() -> Arc<KernelCore> {
     kernel_config.max_pool_size = Some(1);
     // 单测试分配上限：死循环类测试触步数上限时持续分配，arena 高水位可达 GB
     // 级；多 worker 并发下进程 RSS 包络被各 worker 当前高水位顶起，全量运行
-    // 必然 OOM。正规测试峰值 ≤132MB（Array 块 p100 实测），256MiB 留有余量
-    // 且把失控测试的驻留面封顶到上限本身。
+    // 必然 OOM。正规测试峰值实测约 256MiB（RegExp property-escapes 生成大表，
+    // 余量极小、27 个大表测试微越被顶，待抬 cap 或压大表内存面另行处理）；
+    // 主要作用是把失控测试的驻留面封顶到上限本身。
     kernel_config.max_alloc_bytes = Some(256 * 1024 * 1024);
     KernelCore::new(kernel_config)
 }
