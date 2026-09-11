@@ -1200,7 +1200,8 @@ pub(crate) fn make_iterator_for_value_with_proto<H: VmHost>(
 ///
 /// # 步骤
 /// 1. 经迭代协议取内层迭代器（String/Array/Map/Set 直接作为内层，其余对象调用
-///    `@@iterator` 或回退可调用的 `next`）。
+///    `@@iterator` 或回退可调用的 `next`；鸭子回退路径把读到的 `next` 闭包
+///    缓存进包装器 `__next__` 槽，消费期不重触发 getter）。
 /// 2. 包装成统一迭代器对象（带 `next` 与可选 `return`），供调用方逐个取元素。
 ///
 /// # 返回值
@@ -1220,8 +1221,8 @@ pub(crate) fn try_make_iterator_inner<H: VmHost>(
 pub(crate) fn try_make_iterator_inner_proto<H: VmHost>(
     vm: &mut H, value: JsValue, bind_return: bool, wrapper_proto: Option<*mut JsObject>,
 ) -> Result<Option<JsValue>, JsValue> {
-    let inner = match get_iterator(vm, value) {
-        Ok(Some(inner)) => inner,
+    let (inner, cached_next) = match get_iterator(vm, value) {
+        Ok(Some(pair)) => pair,
         Ok(None) => return Ok(None),
         Err(err) => return Err(err),
     };
@@ -1242,8 +1243,16 @@ pub(crate) fn try_make_iterator_inner_proto<H: VmHost>(
     vm.set_or_create_prop_value(wrapper_obj, inner_si, inner);
     vm.set_or_create_prop_value(wrapper_obj, index_si, JsValue::int(0));
 
-    let next_fn = make_native_function(vm, "next", iterator_wrapper_next::<H> as *const (), 0);
-    vm.set_or_create_prop_value(wrapper_obj, next_si, next_fn);
+    // 鸭子回退包装器：from() 时读到的 next 闭包缓存进 __next__ 槽（与 helper 包装器
+    // "只读一次"同模式），消费期直读槽不重触发 getter；非鸭子路径无槽，wrapper next
+    // 回退重读内层 next（既有行为）。
+    if let Some(next_fn) = cached_next {
+        let next_cache_si = vm.kernel_core().perm_interner().intern(NEXT_CACHE_PROP).0;
+        vm.set_or_create_prop_value(wrapper_obj, next_cache_si, next_fn);
+    }
+
+    let wrapper_next = make_native_function(vm, "next", iterator_wrapper_next::<H> as *const (), 0);
+    vm.set_or_create_prop_value(wrapper_obj, next_si, wrapper_next);
 
     // for-of/解构的 IteratorClose 需要 return 方法：条件暴露（内层有可调用 return 时）。
     // `yield*` 委托（bind_return=false）不绑定，转发时对内层延迟 GetMethod。
@@ -1291,7 +1300,8 @@ fn iterator_wrapper_return<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 /// 迭代器包装器的 `next` 方法：对 Array/String/Map/Set 直接按索引取值，
-/// 其它对象委托其自身 `next`；底层抛出异常时透传原始值（不做二次包装）。
+/// 其它对象优先用 `__next__` 槽（鸭子回退包装器创建时只读一次缓存的闭包），
+/// 槽缺失时委托内层自身 `next`；底层抛出异常时透传原始值（不做二次包装）。
 pub fn iterator_wrapper_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if !this_val.is_object() {
@@ -1313,16 +1323,34 @@ pub fn iterator_wrapper_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     }
 
     if inner.is_object() {
-        let inner_obj = unsafe { &*inner.as_js_object_ptr() };
-        let next_si = vm.kernel_core().perm_interner().intern("next").0;
-        let next = match vm.ordinary_get(inner_obj, next_si, inner) {
-            Ok(next) => next,
+        // 鸭子回退包装器优先读 `__next__` 槽（from() 时只读一次的缓存闭包，
+        // 消费期不重触发 getter）；槽缺失或不可调用时回退重读内层 next
+        // （非鸭子路径既有行为）。
+        let next_cache_si = vm.kernel_core().perm_interner().intern(NEXT_CACHE_PROP).0;
+        let cached = match vm.ordinary_get(wrapper, next_cache_si, this_val) {
+            Ok(c) => c,
             Err(err) => {
-                // GetMethod 的 next getter 抛错：透传原异常，不重新包装成 TypeError。
+                // `__next__` 槽读取抛错：透传原异常，不重新包装成 TypeError。
                 return match vm.take_uncaught_value() {
                     Some(original) => NativeResult::Err(original),
                     None => NativeResult::Err(crate::error::create_type_error(vm, &err)),
                 };
+            }
+        };
+        let next = if is_callable(cached) {
+            cached
+        } else {
+            let inner_obj = unsafe { &*inner.as_js_object_ptr() };
+            let next_si = vm.kernel_core().perm_interner().intern("next").0;
+            match vm.ordinary_get(inner_obj, next_si, inner) {
+                Ok(n) => n,
+                Err(err) => {
+                    // GetMethod 的 next getter 抛错：透传原异常，不重新包装成 TypeError。
+                    return match vm.take_uncaught_value() {
+                        Some(original) => NativeResult::Err(original),
+                        None => NativeResult::Err(crate::error::create_type_error(vm, &err)),
+                    };
+                }
             }
         };
         // 转发调用实参（`yield*` 委托的 next(v) 语义），缺省为 undefined。
@@ -1382,14 +1410,23 @@ pub(crate) fn peek_iterator_method<H: VmHost>(vm: &mut H, value: JsValue) -> Res
     Ok(false)
 }
 
-fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<JsValue>, JsValue> {
+/// 经迭代协议取内层迭代器：内建集合直接作为内层（无缓存 next），`@@iterator`
+/// 调用结果作为内层（无缓存 next），鸭子回退路径同时回传读到的 `next` 闭包
+/// 供调用方缓存进包装器 `__next__` 槽（消费期不重触发 getter）。
+///
+/// # 返回值
+/// - `Ok(Some((inner, next)))`：`inner` 为内层迭代器；鸭子回退时 `next` 为
+///   读到的闭包，其余路径为 `None`；
+/// - `Ok(None)`：不可迭代；
+/// - `Err`：`@@iterator` 或 `next` getter 抛错，透传原异常值。
+fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<(JsValue, Option<JsValue>)>, JsValue> {
     if value.is_string()
         || is_array_value(value)
         || is_typed_array_value(value)
         || is_map_value(value)
         || is_set_value(value)
     {
-        return Ok(Some(value));
+        return Ok(Some((value, None)));
     }
 
     // 非字符串 primitive（boolean/number/symbol/bigint）：GetIterator 先 ToObject，
@@ -1432,14 +1469,23 @@ fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<JsValue>
                 "Result of the Symbol.iterator method is not an object",
             ));
         }
-        return Ok(Some(iterator));
+        return Ok(Some((iterator, None)));
     }
     // 鸭子回退：对象自身有可调用 next（Map/Set 迭代器包装等既有用法）。
+    // getter 抛错透传原值（不落入"不可迭代"），读到的闭包随 inner 回传供缓存。
     let next_si = vm.kernel_core().perm_interner().intern("next").0;
-    if let Ok(next) = vm.ordinary_get(obj, next_si, obj_value) {
-        if is_callable(next) {
-            return Ok(Some(obj_value));
+    let next = match vm.ordinary_get(obj, next_si, obj_value) {
+        Ok(n) => n,
+        Err(err) => {
+            // GetMethod 取 next 时 getter 抛出：透传原值，不降级为 "not iterable"。
+            let exc = vm
+                .take_uncaught_value()
+                .unwrap_or_else(|| crate::error::create_type_error(vm, &err));
+            return Err(exc);
         }
+    };
+    if is_callable(next) {
+        return Ok(Some((obj_value, Some(next))));
     }
 
     Ok(None)

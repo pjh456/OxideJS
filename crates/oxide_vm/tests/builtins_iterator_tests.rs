@@ -54,6 +54,71 @@ fn iterator_from_iterator_forwards_next() {
 }
 
 #[test]
+fn iterator_from_duck_fallback_next_getter_read_only_once() {
+    // 鸭子回退的 from() 恰读一次 next getter（规范单读语义）：
+    // 包装器缓存 from() 时读到的闭包，消费期直用缓存闭包——getter 不被重触发，
+    // 底层新产的值经同一闭包透出。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        (
+            "var nextGets = 0; \
+             var nextCalls = 0; \
+             var obj = { \
+               get next() { \
+                 ++nextGets; \
+                 var i = 0; \
+                 return function () { \
+                   ++nextCalls; \
+                   return i < 4 ? { value: i++, done: false } : { value: undefined, done: true }; \
+                 }; \
+               }, \
+             }; \
+             var it = Iterator.from(obj); \
+             nextGets === 1 && nextCalls === 0",
+            true,
+        ),
+        (
+            "var nextGets = 0; \
+             var nextCalls = 0; \
+             var obj = { \
+               get next() { \
+                 ++nextGets; \
+                 var i = 0; \
+                 return function () { \
+                   ++nextCalls; \
+                   return i < 4 ? { value: i++, done: false } : { value: undefined, done: true }; \
+                 }; \
+               }, \
+             }; \
+             var it = Iterator.from(obj); \
+             var vals = []; \
+             for (var k = 0; k < 5; ++k) { var r = it.next(); if (!r.done) { vals.push(r.value); } } \
+             nextGets === 1 && nextCalls === 5 && vals.join(',') === '0,1,2,3'",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_from_throwing_next_getter_propagates() {
+    // next getter 抛错经 from() 透传原异常，不降级为 "not iterable" TypeError。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var ok = false; \
+         try { Iterator.from({ get next() { throw new RangeError('read'); } }); } \
+         catch (e) { ok = e instanceof RangeError; } \
+         ok",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
 fn new_iterator_throws_type_error() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "try { new Iterator() } catch (e) { e instanceof TypeError }").unwrap();
