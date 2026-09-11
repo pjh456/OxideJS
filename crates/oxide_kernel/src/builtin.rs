@@ -700,180 +700,109 @@ impl BuiltinWorld {
         self.leaked_objects.borrow_mut().append(&mut from.leaked_objects.borrow_mut());
     }
 
-    /// 释放选择性重建中被替换家族的旧 P 对象属性区。
+    /// 选择性重建收尾：把保留对象（登记表 wrapper + 新旧 world 共用的保留 P
+    /// 字段）的 proto 槽从被替换旧指针重指到新指针，随后逐一释放被替换旧 P
+    /// 对象的属性区（含保活钉住的 Function/Object 四件；本体钉保留，见
+    /// `rebuild_with_dirty` 的保活注记）。
     ///
     /// # 边界与前提
-    /// - 仅覆盖脏标记命中的家族字段（含 `dirty.object` 连带的迭代器原型族、
-    ///   `dirty.stubs` 连带的 BigInt 对）；未替换字段由新 world 沿用同一 Arc，
-    ///   其属性区归 session 收尾（`teardown_heap_data`）释放，此处不碰。
-    /// - Function/Object 对除外：保留方法 wrapper（登记表对象）的原型链仍经
-    ///   裸指针指向旧 function_proto/object_proto，执行期属性查找可达其属性
-    ///   区——该 4 对象已由 `rebuild_with_dirty` 保活（本体与属性区同泄漏），
-    ///   此处不得释放。
-    /// - 须在旧 world 被替换前调用（full_reset 安全点无并发读者）；与登记表
-    ///   对象（wrapper）集不相交，不双放。
+    /// - 须在 `inherit_leaked_objects` 之后、旧 world 换出前调用（登记表完整；
+    ///   full_reset 安全点无并发读者）；重指必须先于释放完成，否则保留对象
+    ///   的原型链读到已释放属性区。
+    /// - 替换集由逐字段新旧指针比较（stubs 按指针集合）判定，与保留集天然
+    ///   不相交：未替换字段新旧 world 沿用同一 Arc，其属性区归 session 收尾
+    ///   （`teardown_heap_data`）释放，此处不碰，不双放。
+    /// - 保活钉住的 4 件本体不经任何路径释放（Arc 计数已被 `mem::forget`
+    ///   抬升）；此处只释放其属性区，漏重指时读者降级为属性静默缺失
+    ///   （zombie 本体）而非 UAF。
+    /// - 只重指 proto 槽；属性值链接由同家族同批替换与绑定层 sync_* 覆盖，
+    ///   不在此重指。
     ///
     /// # 副作用
-    /// 每个被替换 P 对象的属性区四区释放并置空（幂等，重入为 no-op）。
-    pub fn release_replaced_family_heaps(&self, dirty: &BuiltinDirtySet) {
-        let release = |p: &P<JsObject>| {
-            // SAFETY: p 是本 world 的 P 对象，属性区仅此一处释放并置空（幂等）；
-            // full_reset 安全点无并发读者。
-            unsafe {
-                (&mut *p.as_mut_ptr()).release_raw_heap();
+    /// 保留对象 proto 槽重指（generation 递增）；被替换旧 P 对象属性区四区
+    /// 释放并置空（幂等，重入为 no-op）。
+    pub fn retire_replaced(&self, old: &BuiltinWorld) {
+        // 替换映射：逐字段新旧指针比较（stubs 按指针集合），记录被换出的
+        // 旧指针 → 新指针；stub 无继任者记空指针，只进释放集。
+        let old_fields = old.all_p_fields();
+        let new_fields = self.all_p_fields();
+        let mut remap: std::collections::HashMap<*mut JsObject, *mut JsObject> = std::collections::HashMap::new();
+        for (o, n) in old_fields.iter().zip(new_fields.iter()) {
+            let (op, np) = (o.as_ptr() as *mut JsObject, n.as_ptr() as *mut JsObject);
+            if !std::ptr::eq(op, np) {
+                remap.insert(op, np);
             }
+        }
+        for p in &old.stub_objects {
+            let op = p.as_ptr() as *mut JsObject;
+            if !self.stub_objects.iter().any(|q| std::ptr::eq(q.as_ptr() as *mut JsObject, op)) {
+                remap.insert(op, std::ptr::null_mut());
+            }
+        }
+        if remap.is_empty() {
+            return;
+        }
+        // 重指：保留对象（新旧 world 同一指针）proto 槽仍指被替换旧指针的，
+        // 换新指针——与 `wire_builtin_world_links` 的 set_proto_if_changed 同模式。
+        let repoint = |obj: &mut JsObject| {
+            let cur = obj.proto();
+            if !cur.is_object() {
+                return;
+            }
+            let cur_ptr = cur.as_js_object_ptr();
+            let Some(np) = remap.get(&cur_ptr).copied() else {
+                return;
+            };
+            if np.is_null() {
+                return;
+            }
+            // SAFETY: np 是本 world 的 P 对象；full_reset 安全点无并发读者，
+            // 成环检查由 set_proto 内部完成。
+            obj.set_proto(JsValue::from_js_object(np)).ok();
         };
-        if dirty.object {
-            // object 家族重建连带重建迭代器原型族（链于 Object.prototype 之下），
-            // 旧 9 对象一并被替换。
-            for p in [
-                &self.iterator_proto,
-                &self.array_iterator_proto,
-                &self.map_iterator_proto,
-                &self.set_iterator_proto,
-                &self.string_iterator_proto,
-                &self.regexp_string_iterator_proto,
-                &self.iterator_helper_proto,
-                &self.disposable_stack_proto,
-                &self.async_disposable_stack_proto,
-            ] {
-                release(p);
+        for (o, n) in old_fields.iter().zip(new_fields.iter()) {
+            let op = o.as_ptr() as *mut JsObject;
+            let np = n.as_ptr() as *mut JsObject;
+            if std::ptr::eq(op, np) {
+                // SAFETY: op/np 指向同一保留 P 对象，重指安全点无并发读者。
+                unsafe {
+                    repoint(&mut *np);
+                }
             }
         }
-        if dirty.array {
-            release(&self.array_proto);
-            release(&self.array_constructor);
-        }
-        if dirty.string {
-            release(&self.string_proto);
-            release(&self.string_constructor);
-        }
-        if dirty.number {
-            release(&self.number_proto);
-            release(&self.number_constructor);
-        }
-        if dirty.boolean {
-            release(&self.boolean_proto);
-            release(&self.boolean_constructor);
-        }
-        if dirty.error_family {
-            release(&self.error_proto);
-            release(&self.error_constructor);
-            release(&self.type_error_proto);
-            release(&self.reference_error_proto);
-            release(&self.range_error_proto);
-            release(&self.syntax_error_proto);
-            release(&self.uri_error_proto);
-            release(&self.eval_error_proto);
-            release(&self.suppressed_error_proto);
-        }
-        if dirty.symbol_family {
-            release(&self.symbol_proto);
-            release(&self.symbol_constructor);
-            release(&self.sym_match);
-            release(&self.sym_replace);
-            release(&self.sym_search);
-            release(&self.sym_split);
-            release(&self.sym_iterator);
-            release(&self.sym_to_primitive);
-            release(&self.sym_has_instance);
-            release(&self.sym_match_all);
-            release(&self.sym_async_iterator);
-            release(&self.sym_to_string_tag);
-            release(&self.sym_species);
-            release(&self.sym_async_dispose);
-            release(&self.sym_dispose);
-        }
-        if dirty.math {
-            release(&self.math_object);
-        }
-        if dirty.json {
-            release(&self.json_object);
-        }
-        if dirty.date {
-            release(&self.date_proto);
-            release(&self.date_constructor);
-        }
-        if dirty.set {
-            release(&self.set_proto);
-            release(&self.set_constructor);
-        }
-        if dirty.map {
-            release(&self.map_proto);
-            release(&self.map_constructor);
-        }
-        if dirty.regexp {
-            release(&self.regexp_proto);
-            release(&self.regexp_constructor);
-        }
-        if dirty.array_buffer {
-            release(&self.array_buffer_proto);
-            release(&self.array_buffer_constructor);
-        }
-        if dirty.data_view {
-            release(&self.data_view_proto);
-            release(&self.data_view_constructor);
-        }
-        if dirty.typed_array_family {
-            for p in [
-                &self.typed_array_proto,
-                &self.typed_array_constructor,
-                &self.int8array_constructor,
-                &self.int8array_proto,
-                &self.uint8array_constructor,
-                &self.uint8array_proto,
-                &self.uint8clampedarray_constructor,
-                &self.uint8clampedarray_proto,
-                &self.int16array_constructor,
-                &self.int16array_proto,
-                &self.uint16array_constructor,
-                &self.uint16array_proto,
-                &self.int32array_constructor,
-                &self.int32array_proto,
-                &self.uint32array_constructor,
-                &self.uint32array_proto,
-                &self.float32array_constructor,
-                &self.float32array_proto,
-                &self.float64array_constructor,
-                &self.float64array_proto,
-                &self.bigint64array_constructor,
-                &self.bigint64array_proto,
-                &self.biguint64array_constructor,
-                &self.biguint64array_proto,
-            ] {
-                release(p);
+        for &ptr in self.leaked_objects.borrow().iter() {
+            // SAFETY: 登记表指针 session 存活期内有效，重指安全点无并发读者。
+            unsafe {
+                repoint(&mut *ptr);
             }
         }
-        if dirty.temporal {
-            for p in [
-                &self.temporal_object,
-                &self.temporal_now_object,
-                &self.instant_constructor,
-                &self.instant_proto,
-                &self.plain_date_constructor,
-                &self.plain_date_proto,
-                &self.plain_time_constructor,
-                &self.plain_time_proto,
-                &self.duration_constructor,
-                &self.duration_proto,
-                &self.zoned_date_time_constructor,
-                &self.zoned_date_time_proto,
-                &self.plain_date_time_constructor,
-                &self.plain_date_time_proto,
-            ] {
-                release(p);
+        // 守约：重指后保留对象 proto 槽不得残留任何被替换旧指针。
+        for (o, n) in old_fields.iter().zip(new_fields.iter()) {
+            let op = o.as_ptr() as *mut JsObject;
+            let np = n.as_ptr() as *mut JsObject;
+            if std::ptr::eq(op, np) {
+                let cur = unsafe { (*np).proto() };
+                debug_assert!(
+                    !cur.is_object() || !remap.contains_key(&cur.as_js_object_ptr()),
+                    "保留字段 proto 槽不得残留被替换旧指针"
+                );
             }
         }
-        if dirty.stubs {
-            // stubs 家族重建连带重建 BigInt 对。
-            release(&self.bigint_proto);
-            release(&self.bigint_constructor);
-            for p in &self.stub_objects {
-                release(p);
-            }
+        for &ptr in self.leaked_objects.borrow().iter() {
+            let cur = unsafe { (*ptr).proto() };
+            debug_assert!(
+                !cur.is_object() || !remap.contains_key(&cur.as_js_object_ptr()),
+                "登记表 wrapper proto 槽不得残留被替换旧指针"
+            );
         }
-        if dirty.console {
-            release(&self.console_object);
+        // 释放：被替换旧 P 对象属性区逐一恰好释放一次（本体不释放；保活钉住
+        // 的 4 件保留本体钉、属性区同样释放）。
+        for &op in remap.keys() {
+            // SAFETY: op 是旧 world 被换出的 P 对象，属性区仅此一处释放并置空
+            // （幂等）；full_reset 安全点无并发读者。
+            unsafe {
+                (&mut *op).release_raw_heap();
+            }
         }
     }
 
@@ -881,8 +810,9 @@ impl BuiltinWorld {
     /// stub 之外的全部命名空间对象与 console）。
     ///
     /// # 注意事项
-    /// session 收尾（`teardown_heap_data`）的 P 字段枚举唯一入口：`BuiltinWorld`
-    /// 新增 P 字段须在此同步补一行，否则收尾时该字段属性区永久泄漏。
+    /// session 收尾（`teardown_heap_data`）与选择性重建收尾（`retire_replaced`）
+    /// 的 P 字段枚举唯一入口：`BuiltinWorld` 新增 P 字段须在此同步补一行，否则
+    /// 收尾时该字段属性区永久泄漏、重建重指/释放漏掉该字段。
     pub(crate) fn all_p_fields(&self) -> [&P<JsObject>; 100] {
         [
             &self.object_proto,
@@ -1000,9 +930,8 @@ impl BuiltinWorld {
     /// 仅由 session 收尾调用（`KernelSession` 的 `Drop` 与 session 替换前），
     /// 幂等：登记表按值取走，属性区释放后置空。选择性重建（dirty rebuild）
     /// 不走本路径：登记表整体并入新 world（`inherit_leaked_objects`），仍由
-    /// session 收尾统一释放；被替换家族的旧 P 字段属性区在重建点
-    /// （`release_replaced_family_heaps`）恰好释放一次，与本路径对象集不相交，
-    /// 不双放。
+    /// session 收尾统一释放；被替换家族的旧 P 字段属性区在重建收尾
+    /// （`retire_replaced`）恰好释放一次，与本路径对象集不相交，不双放。
     pub fn teardown_heap_data(&self) {
         for ptr in self.leaked_objects.borrow_mut().drain(..) {
             if ptr.is_null() {
@@ -1311,29 +1240,26 @@ impl BuiltinWorld {
     /// # 注意事项
     /// - Function/Object 家族脏时，旧 fn_proto/object_proto 对须先保活再重建：
     ///   释放表统一持有的方法 wrapper 永久泄漏（`Box::into_raw`），其 proto 裸指针
-    ///   指向绑定时的 function_proto，旧 object_proto 又经其 proto/constructor 槽
-    ///   被二层引用——执行期原型链查找（如 `push.call` 沿 wrapper 原型链取 `call`）
-    ///   仍走这些对象，reset 清空执行状态不阻断该路径，旧对 Arc 归零即悬空。
-    ///   保活即泄漏（本体 + 属性区，每次 dirty rebuild 至多 4 个对象），与 wrapper
-    ///   永久泄漏同一约定。
+    ///   指向绑定时的 function_proto——执行期原型链查找（如 `push.call` 沿 wrapper
+    ///   原型链取 `call`）仍走这些对象，reset 清空执行状态不阻断该路径，旧对
+    ///   Arc 归零即悬空。`retire_replaced` 重指完成后旧对无读者；本体钉保留
+    ///   （每次 dirty rebuild 至多 4 个对象本体永久泄漏）作重指遗漏兜底——漏
+    ///   重指时读者降级为属性静默缺失（zombie 本体）而非 UAF，属性区于重指
+    ///   完成时由 `retire_replaced` 释放。
     pub fn rebuild_with_dirty(
         current: &BuiltinWorld, string_forge: &PermInterner, shape_forge: &ShapeForge, dirty: &BuiltinDirtySet,
     ) -> BuiltinWorld {
         let labels = builtin_labels(string_forge);
 
-        // 保活：钉住旧 Function/Object 对的 Arc 计数使其永不归零——保留方法
-        // wrapper 的原型链（旧 fn_proto / 旧 object_proto）执行期仍被读取，
-        // 不得随旧 world 释放。
+        // 保活：钉住旧 Function/Object 对的 Arc 计数使其永不归零——保留对象的
+        // proto 槽重指在 `retire_replaced`（本函数返回后、旧 world 换出前）
+        // 完成，钉住的本体是重指遗漏的兜底，不经任何路径释放。
         if dirty.function || dirty.object {
             std::mem::forget(current.function_proto.clone());
             std::mem::forget(current.function_constructor.clone());
             std::mem::forget(current.object_proto.clone());
             std::mem::forget(current.object_constructor.clone());
         }
-        // 被替换家族的旧 P 字段属性区释放站：本体随旧 world Arc 归零释放，
-        // 属性区无 Drop 口径，须在此恰好释放一次（Function/Object 对除外，
-        // 见上方保活）。
-        current.release_replaced_family_heaps(dirty);
         let (object_proto, object_constructor) = if dirty.object {
             make_named_pair(string_forge, shape_forge, labels, "Object")
         } else {
@@ -2216,8 +2142,9 @@ mod tests {
         assert!(std::ptr::eq(proto_ctor, rebuilt.array_constructor.as_ptr() as *mut JsObject));
     }
 
-    /// 选择性重建的释放面动态自测：被替换家族的旧属性区恰好释放一次（置空可断言），
-    /// 保活家族与未脏家族不释放，登记表并入新 world。
+    /// 选择性重建的释放 + 重指面动态自测：被替换旧 P 对象属性区恰好释放一次
+    /// （置空可断言，含保活钉住对的属性区、本体钉保留），保留字段指针不变且
+    /// proto 槽重指新指针，登记表并入新 world。
     #[test]
     fn selective_reset_releases_replaced_family_heap() {
         use crate::kernel::{KernelConfig, KernelCore, KernelSession};
@@ -2229,14 +2156,16 @@ mod tests {
         let object_proto = old_world.object_proto.as_ptr() as *mut JsObject;
         let fn_proto = old_world.function_proto.as_ptr() as *mut JsObject;
 
-        // 旧原型各造一个命名属性区（绑定后的驻留态），登记表放一个泄漏 wrapper。
+        // 旧原型各造一个命名属性区（绑定后的驻留态）；登记表放一个 proto 槽
+        // 指向旧 fn_proto 的泄漏 wrapper（绑定时固化形态）。
         let wrapper = Box::into_raw(Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())));
-        old_world.track_leaked_object(wrapper);
         unsafe {
+            (*wrapper).set_proto(JsValue::from_js_object(fn_proto)).ok();
             (&mut *array_proto).ensure_hash_props().push(JsValue::int(1));
             (&mut *object_proto).ensure_hash_props().push(JsValue::int(2));
             (&mut *fn_proto).ensure_hash_props().push(JsValue::int(3));
         }
+        old_world.track_leaked_object(wrapper);
 
         unsafe {
             (&mut *array_proto).bump_generation();
@@ -2252,11 +2181,22 @@ mod tests {
         assert!(old_array.array_elements_raw().is_null());
         assert!(old_array.array_elements_meta_raw().is_null());
         assert!(old_array.prop_meta_raw().is_null());
-        // 保活家族（function）：本体与属性区均保活——保留 wrapper 原型链执行期可读。
-        assert!(!unsafe { &*fn_proto }.hash_props_raw().is_null());
-        // 未脏家族（object）：沿用同一对象，属性区不受影响。
+        // 保活钉住对（function）：本体钉保留（仍可读），属性区于重指完成后
+        // 同样释放——重指后旧对无读者。
+        assert!(unsafe { &*fn_proto }.hash_props_raw().is_null());
+        // 未脏家族（object）：沿用同一对象，字段指针与属性区均不受影响。
         assert!(!unsafe { &*object_proto }.hash_props_raw().is_null());
         assert!(std::ptr::eq(object_proto, session.builtin_world.object_proto.as_ptr() as *mut JsObject));
+        // 重指：保留字段（object_constructor）与保留 wrapper 的 proto 槽均换
+        // 到新 fn_proto，无残留旧指针。
+        let new_fn_proto = session.builtin_world.function_proto.as_ptr() as *mut JsObject;
+        let object_ctor = old_world.object_constructor.as_ptr() as *mut JsObject;
+        assert!(std::ptr::eq(
+            object_ctor,
+            session.builtin_world.object_constructor.as_ptr() as *mut JsObject
+        ));
+        assert!(std::ptr::eq(unsafe { (*object_ctor).proto().as_js_object_ptr() }, new_fn_proto));
+        assert!(std::ptr::eq(unsafe { (*wrapper).proto().as_js_object_ptr() }, new_fn_proto));
         // 登记表并入新 world：保留 wrapper 仍须由 session 收尾统一释放。
         assert!(session.builtin_world.leaked_objects.borrow().contains(&wrapper));
     }

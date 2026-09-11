@@ -740,6 +740,10 @@ impl KernelSession {
             // 旧 world 的登记表并入新 world：存活 wrapper（未污染家族别名）仍须在
             // session 收尾统一释放；已弃 wrapper 随之恰好释放一次，不二次持有。
             new_world.inherit_leaked_objects(&old_world);
+            // 重建收尾：保留对象（登记表 wrapper + 共用保留 P 字段）proto 槽
+            // 重指新指针，随后被替换旧对象属性区恰好释放一次（含保活钉住
+            // 对的属性区，本体钉保留）；重指须先于释放、先于换出完成。
+            new_world.retire_replaced(&old_world);
             self.builtin_world = Arc::new(new_world);
         }
         dirty

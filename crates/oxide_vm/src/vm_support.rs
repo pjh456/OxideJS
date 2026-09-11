@@ -1024,6 +1024,60 @@ mod tests {
         assert!(!vm.session.is_dirty_since_snapshot());
     }
 
+    /// Function 家族脏重建：未重建家族的方法 wrapper 是跨重置存活对象，其 proto
+    /// 槽（绑定时固化为旧 fn_proto）必须被重指到新 fn_proto，旧原型链不可再读。
+    #[test]
+    fn full_reset_dirty_function_repoints_retained_wrapper_proto() {
+        let mut vm = Vm::new();
+        let old_fn_proto = vm.session.builtin_world().function_proto.as_ptr() as *mut JsObject;
+        // 保留方法 wrapper：array 家族不重建，wrapper 对象与其 proto 槽跨重置存活。
+        let array_proto = vm.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
+        let push_si = vm.kernel_core.perm_interner().intern("push").0;
+        let push = vm
+            .resolve_property(unsafe { &*array_proto }, push_si)
+            .expect("Array.prototype.push");
+        let push_ptr = push.as_js_object_ptr();
+        assert!(std::ptr::eq(unsafe { (*push_ptr).proto().as_js_object_ptr() }, old_fn_proto));
+
+        unsafe { &mut *old_fn_proto }.bump_generation();
+
+        vm.full_reset();
+
+        let new_fn_proto = vm.session.builtin_world().function_proto.as_ptr() as *mut JsObject;
+        assert!(!std::ptr::eq(new_fn_proto, old_fn_proto));
+        // 保留 wrapper proto 槽已重指新 fn_proto，call 链走新原型。
+        assert!(std::ptr::eq(unsafe { (*push_ptr).proto().as_js_object_ptr() }, new_fn_proto));
+        assert_eq!(run_source(&mut vm, "Array.prototype.push.call([1], 2)"), JsValue::int(2));
+        assert!(!vm.session.is_dirty_since_snapshot());
+    }
+
+    /// 新键写脏 object/array/string/function 四家族（S2 脏源形态）：full_reset 后
+    /// 跨家族读语义保持——保留 wrapper 原型链经重指后取 call、同家族
+    /// constructor/prototype 对自洽、保留原型链指向新 Object.prototype。
+    #[test]
+    fn full_reset_dirty_four_families_cross_family_reads() {
+        let mut vm = Vm::new();
+        run_source(
+            &mut vm,
+            "Object.prototype['d'] = 1; Array.prototype['d'] = 2; String.prototype['d'] = 3; Function.prototype['d'] = 4;",
+        );
+        assert!(vm.session.is_dirty_since_snapshot());
+
+        vm.full_reset();
+
+        assert_eq!(run_source(&mut vm, "Array.prototype.push.call([1], 2)"), JsValue::int(2));
+        let replaced = run_source(&mut vm, "String.prototype.replace.call('a', 'a', 'b')");
+        assert_eq!(vm.lookup_str(replaced).as_deref(), Some("b"));
+        let has = run_source(&mut vm, "Object.prototype.hasOwnProperty.call({x: 1}, 'x')");
+        assert_eq!(has, JsValue::bool(true));
+        assert_eq!(
+            run_source(&mut vm, "Object.getPrototypeOf(Array.prototype) === Object.prototype"),
+            JsValue::bool(true)
+        );
+        assert_eq!(run_source(&mut vm, "Array.prototype.constructor === Array"), JsValue::bool(true));
+        assert!(!vm.session.is_dirty_since_snapshot());
+    }
+
     #[test]
     fn session_epoch_survives_reset() {
         let mut vm = Vm::new();
