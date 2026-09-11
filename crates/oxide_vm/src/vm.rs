@@ -375,6 +375,14 @@ pub(crate) struct InlineSyncState {
     pub(crate) spill_stack: Vec<JsValue>,
     pub(crate) cell_stack: Vec<Vec<*mut Cell>>,
     pub(crate) inline_callee: Option<JsValue>,
+    /// 三个内嵌 dispatch 调度标志（`Vm::generator_dispatch` / `async_dispatch` /
+    /// `construct_dispatch`）的属主快照。save 时记录外层值并清零 VM 侧、restore
+    /// 时写回：嵌套 state-swap 调用不得继承外层调度上下文，否则其内部构造帧
+    /// 弹出后 frames 清空，`do_return` 会把嵌套调用误判为属主内嵌 dispatch 提前
+    /// 交付，跳过被调函数剩余字节码（详见 `do_return` 交付条件注释）。
+    pub(crate) generator_dispatch: bool,
+    pub(crate) async_dispatch: bool,
+    pub(crate) construct_dispatch: bool,
     /// inline 目标函数的严格模式标志（内联执行期间写路径的 strict/sloppy 判定
     /// 来源；嵌套内联时随本快照保存/恢复）。
     pub(crate) inline_strict: bool,
@@ -504,6 +512,8 @@ pub struct Vm {
     pub(crate) delegated_iterator: Option<JsValue>,
     /// 当前是否处于生成器内嵌 dispatch 循环：生成器帧弹出且 frames 清空时，
     /// `do_return` 据此把结果交付给恢复方（而非当作普通顶层返回继续执行）。
+    /// 作用域限定于置位处包裹的那次 `dispatch()`：经 `InlineSyncState` 在
+    /// state-swap 边界保存/清零/恢复，嵌套内联调用不继承本标志。
     pub(crate) generator_dispatch: bool,
     /// 生成器调用时参数初始化步：body 起点标记（SUSPEND_BODY）据此判定"挂起在 body 前"。
     pub(crate) generator_init_step: bool,
@@ -516,11 +526,13 @@ pub struct Vm {
     /// 循环）取走并快照挂起状态。false = 正常返回/异常。
     pub(crate) async_suspended: bool,
     /// 当前是否处于异步函数内嵌 dispatch 循环：异步帧弹出且 frames 清空时，
-    /// `do_return` 据此把结果交付给恢复方（与 generator_dispatch 同语义）。
+    /// `do_return` 据此把结果交付给恢复方（与 generator_dispatch 同语义，
+    /// 同样经 InlineSyncState 限定作用域于属主 dispatch）。
     pub(crate) async_dispatch: bool,
     /// 当前是否处于构造器内嵌 dispatch 循环（`call_constructor_bytecode_inline`）：
     /// 构造帧弹出且 frames 清空时，`do_return` 据此把构造结果（regs[0]，
-    /// 已做非对象回退 this）交付给恢复方（与 generator_dispatch 同语义）。
+    /// 已做非对象回退 this）交付给恢复方（与 generator_dispatch 同语义，
+    /// 同样经 InlineSyncState 限定作用域于属主 dispatch）。
     pub(crate) construct_dispatch: bool,
     /// 当前正在执行的异步生成器上下文对象（`OBJ_TYPE_ASYNC_GENERATOR`，持有
     /// `AsyncGeneratorState` 快照）。AWAIT dispatch 据此登记异步生成器恢复反应；

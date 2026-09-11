@@ -588,6 +588,9 @@ impl Vm {
                 }
             }
             // 生成器/异步/构造内嵌 dispatch：帧全部弹出后把结果交付恢复方，而非继续执行。
+            // 三个调度标志经 InlineSyncState 在 state-swap 边界清零（嵌套内联调用不继承
+            // 外层调度上下文），此处为真当且仅当本 dispatch 循环即标志的属主——嵌套
+            // 调用内的构造帧弹出只会清帧、不触发交付，被调函数剩余字节码照常执行。
             if self.frames.is_empty() && (self.generator_dispatch || self.async_dispatch || self.construct_dispatch) {
                 // 构造内嵌：弹帧已把构造结果（非对象回退 this）写入 regs[0]，直接交付。
                 let delivered = if self.construct_dispatch { self.regs[0] } else { result };

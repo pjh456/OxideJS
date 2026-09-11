@@ -100,6 +100,21 @@ macro_rules! inline_save_field {
     ($recv:ident, $window_regs:ident, inline_callee, opt_copy) => {
         $recv.inline_callee
     };
+    ($recv:ident, $window_regs:ident, generator_dispatch, flag_zero) => {{
+        let prev = $recv.generator_dispatch;
+        $recv.generator_dispatch = false;
+        prev
+    }};
+    ($recv:ident, $window_regs:ident, async_dispatch, flag_zero) => {{
+        let prev = $recv.async_dispatch;
+        $recv.async_dispatch = false;
+        prev
+    }};
+    ($recv:ident, $window_regs:ident, construct_dispatch, flag_zero) => {{
+        let prev = $recv.construct_dispatch;
+        $recv.construct_dispatch = false;
+        prev
+    }};
     ($recv:ident, $window_regs:ident, inline_strict, copy) => {
         $recv.inline_strict
     };
@@ -189,6 +204,15 @@ macro_rules! inline_restore_field {
     ($recv:ident, $saved:ident, inline_callee, opt_copy) => {
         $recv.inline_callee = $saved.inline_callee
     };
+    ($recv:ident, $saved:ident, generator_dispatch, flag_zero) => {
+        $recv.generator_dispatch = $saved.generator_dispatch
+    };
+    ($recv:ident, $saved:ident, async_dispatch, flag_zero) => {
+        $recv.async_dispatch = $saved.async_dispatch
+    };
+    ($recv:ident, $saved:ident, construct_dispatch, flag_zero) => {
+        $recv.construct_dispatch = $saved.construct_dispatch
+    };
     ($recv:ident, $saved:ident, inline_strict, copy) => {
         $recv.inline_strict = $saved.inline_strict
     };
@@ -240,6 +264,9 @@ macro_rules! inline_core_fields {
             (spill_stack, move_field),            // V M
             (cell_stack, move_field),             // V M
             (inline_callee, opt_copy),            // V M
+            (generator_dispatch, flag_zero),      // M 调度标志：快照属主值，嵌套期间清零
+            (async_dispatch, flag_zero),          // M 调度标志：快照属主值，嵌套期间清零
+            (construct_dispatch, flag_zero),      // M 调度标志：快照属主值，嵌套期间清零
             (inline_strict, copy),                // M
             (inline_frames_base, copy),           // M
             (inline_args_base, copy),             // M
