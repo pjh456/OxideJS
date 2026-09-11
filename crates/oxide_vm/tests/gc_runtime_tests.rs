@@ -317,8 +317,7 @@ fn dead_closure_upvalues_freed_by_sweep_without_double_free() {
         assert!(stats.last_collection_objects_dead >= 1, "arrow 闭包应经 sweep 死分支");
         stats.last_collection_bytes_freed
     };
-    let freed_with_captures =
-        collect_freed("var a = 1; var b = 2; var c = 3; globalThis.arrow = () => a + b + c; 0");
+    let freed_with_captures = collect_freed("var a = 1; var b = 2; var c = 3; globalThis.arrow = () => a + b + c; 0");
     let freed_no_captures = collect_freed("globalThis.arrow = () => 7; 0");
     let upvalue_box_min = (std::mem::size_of::<Vec<*mut oxide_types::object::Cell>>()
         + 3 * std::mem::size_of::<*mut oxide_types::object::Cell>()) as u64;
