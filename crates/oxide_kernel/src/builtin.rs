@@ -877,36 +877,14 @@ impl BuiltinWorld {
         }
     }
 
-    /// 释放本 world 拥有的全部手工堆数据。
-    ///
-    /// # 口径
-    /// 1. `Box::into_raw` 持有的函数/宿主对象（登记表）：先释放其堆外属性区，
-    ///    再释放对象本体；
-    /// 2. 全部 P 对象字段（原型/构造器家族、迭代器原型族、stub 族、console）
-    ///    的堆外属性区——对象本体随 Arc 引用归零释放。
+    /// 枚举本 world 全部固定 P 对象字段（按结构体字段序，含迭代器原型族、
+    /// stub 之外的全部命名空间对象与 console）。
     ///
     /// # 注意事项
-    /// 仅由 session 收尾调用（`KernelSession` 的 `Drop` 与 session 替换前），
-    /// 幂等：登记表按值取走，属性区释放后置空。选择性重建（dirty rebuild）
-    /// 不走本路径：登记表整体并入新 world（`inherit_leaked_objects`），仍由
-    /// session 收尾统一释放；被替换家族的旧 P 字段属性区在重建点
-    /// （`release_replaced_family_heaps`）恰好释放一次，与本路径对象集不相交，
-    /// 不双放。
-    pub fn teardown_heap_data(&self) {
-        for ptr in self.leaked_objects.borrow_mut().drain(..) {
-            if ptr.is_null() {
-                continue;
-            }
-            // SAFETY: ptr 是绑定层 Box::into_raw 产物，session 存活期内有效，
-            // 此处恰好释放一次（登记表按值取走，重入时表已空）。
-            unsafe {
-                let obj = &mut *ptr;
-                obj.release_raw_heap();
-                drop(Box::from_raw(ptr));
-            }
-        }
-        // P 字段逐一枚举：新增字段须在此同步补一行，否则收尾时属性区永久泄漏。
-        for p in [
+    /// session 收尾（`teardown_heap_data`）的 P 字段枚举唯一入口：`BuiltinWorld`
+    /// 新增 P 字段须在此同步补一行，否则收尾时该字段属性区永久泄漏。
+    pub(crate) fn all_p_fields(&self) -> [&P<JsObject>; 100] {
+        [
             &self.object_proto,
             &self.array_proto,
             &self.function_proto,
@@ -1007,7 +985,38 @@ impl BuiltinWorld {
             &self.disposable_stack_proto,
             &self.async_disposable_stack_proto,
             &self.console_object,
-        ] {
+        ]
+    }
+
+    /// 释放本 world 拥有的全部手工堆数据。
+    ///
+    /// # 口径
+    /// 1. `Box::into_raw` 持有的函数/宿主对象（登记表）：先释放其堆外属性区，
+    ///    再释放对象本体；
+    /// 2. 全部 P 对象字段（`all_p_fields` 枚举 + stub 族）的堆外属性区——
+    ///    对象本体随 Arc 引用归零释放。
+    ///
+    /// # 注意事项
+    /// 仅由 session 收尾调用（`KernelSession` 的 `Drop` 与 session 替换前），
+    /// 幂等：登记表按值取走，属性区释放后置空。选择性重建（dirty rebuild）
+    /// 不走本路径：登记表整体并入新 world（`inherit_leaked_objects`），仍由
+    /// session 收尾统一释放；被替换家族的旧 P 字段属性区在重建点
+    /// （`release_replaced_family_heaps`）恰好释放一次，与本路径对象集不相交，
+    /// 不双放。
+    pub fn teardown_heap_data(&self) {
+        for ptr in self.leaked_objects.borrow_mut().drain(..) {
+            if ptr.is_null() {
+                continue;
+            }
+            // SAFETY: ptr 是绑定层 Box::into_raw 产物，session 存活期内有效，
+            // 此处恰好释放一次（登记表按值取走，重入时表已空）。
+            unsafe {
+                let obj = &mut *ptr;
+                obj.release_raw_heap();
+                drop(Box::from_raw(ptr));
+            }
+        }
+        for p in self.all_p_fields() {
             // SAFETY: p 是本 world 的 P 对象，属性区仅在此释放并置空（幂等）。
             unsafe {
                 (&mut *p.as_mut_ptr()).release_raw_heap();
