@@ -1242,10 +1242,7 @@ mod tests {
         run_source(&mut vm, "var f = function(){}; 0");
         let delta = vm.session_bytes_allocated() - base;
         let name_len = "f".len();
-        assert_eq!(
-            delta,
-            2 * std::mem::size_of::<JsObject>() + std::mem::size_of::<JsString>() + name_len
-        );
+        assert_eq!(delta, 2 * std::mem::size_of::<JsObject>() + std::mem::size_of::<JsString>() + name_len);
     }
 
     /// 标签模板 cooked/raw 数组直 session 分配计入 session 堆账目：
