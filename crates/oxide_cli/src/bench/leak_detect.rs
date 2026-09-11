@@ -326,7 +326,7 @@ pub fn run_mem_dirty_rebuild_leak(kernel: &Arc<KernelCore>) -> ExitCode {
     report_series("dirty_rebuild", "round", &series)
 }
 
-/// 校准用例：循环「创建 3-upvalue 闭包 → 写 global 临时槽（晋升 session）→
+/// 校准用例：循环「创建 3-upvalue 闭包 → 写 global 临时槽（session 直分，无克隆）→
 /// 撤根引用 → 完整收集（死分支）」，每轮产生一个死闭包，每 500 轮采一次
 /// VmRSS，度量死闭包 upvalue 列表的释放路径，期望斜率走平。
 ///
@@ -639,7 +639,7 @@ pub fn run_mem_kernel_lifetime() -> ExitCode {
         let (slope, r2) = linreg(&series);
         slopes.push(slope);
         eprintln!(
-            "[kernel_lifetime] run={run} threshold={REBUILD_THRESHOLD} pre={rss_pre} post={rss_post} samples={} entries={entries} slope={:.4} kB/entry (~{:.1} B/entry) R²={:.4} materialization≈1/4 (B143) [info: 探索期，不进 report_series 判据]",
+            "[kernel_lifetime] run={run} threshold={REBUILD_THRESHOLD} pre={rss_pre} post={rss_post} samples={} entries={entries} slope={:.4} kB/entry (~{:.1} B/entry) R²={:.4} materialization≈1/4 [info: 探索期，不进 report_series 判据]",
             series.len(),
             slope,
             slope * 1024.0,
