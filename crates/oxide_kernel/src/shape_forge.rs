@@ -159,16 +159,21 @@ impl ShapeForge {
         self.len() == 0
     }
 
-    /// 清空所有非根 shape、transition 与 position 缓存，id 计数器复位。
+    /// 清空所有非根 shape、transition、position 缓存与 overflow 态，id 计数器复位。
     ///
     /// 用于 session 重建：丢弃一次性对象产生的形状，只保留跨 session 共享的根节点。
+    /// overflow 态一并复位（不清则旧 overflow 条目把 key 映射回已被截断的 id，
+    /// 造成静默错深度与去重失效），id 空间完整复位。
     pub fn clear_transient(&self) {
         let mut shapes = self.shapes.write().unwrap();
         if shapes.len() > 1 {
             shapes.truncate(1);
         }
+        drop(shapes);
         self.transitions.clear();
         self.positions.clear();
+        self.overflow_active.store(false, Ordering::Relaxed);
+        self.overflow_map.write().unwrap().clear();
         self.next_id.store(2, Ordering::Relaxed);
     }
 
@@ -318,6 +323,23 @@ mod tests {
         forge.clear_transient();
         // 清理后只剩 EMPTY_SHAPE，其余全部移除。
         assert_eq!(forge.shapes.read().unwrap().len(), 1);
+    }
+
+    /// overflow 态复位钉：曾触发 overflow 后清空，overflow 标志与映射须一并清空，
+    /// 后续 make_shape 从新空间取小 id（而非旧 overflow 映射 id）。
+    #[test]
+    fn clear_transient_resets_overflow_state() {
+        let forge = ShapeForge::new();
+        let key = ShapeForge::pack_key(EMPTY_SHAPE_ID, 1_000_500);
+        forge.overflow_active.store(true, Ordering::Relaxed);
+        forge.overflow_map.write().unwrap().insert(key, 0xDEAD);
+
+        forge.clear_transient();
+
+        assert!(!forge.overflow_active.load(Ordering::Relaxed));
+        assert!(forge.overflow_map.read().unwrap().is_empty());
+        let id = forge.make_shape(EMPTY_SHAPE_ID, 1_000_500);
+        assert_eq!(id, 2);
     }
 
     #[test]

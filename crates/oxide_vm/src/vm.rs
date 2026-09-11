@@ -571,6 +571,8 @@ pub struct Vm {
 
 impl Drop for Vm {
     fn drop(&mut self) {
+        // 边界守卫计数：与构造器登记恰好配对（Rust 所有权保证恰好一次）。
+        self.kernel_core.note_vm_ended();
         // 直接 drop（test262 每测试新建即弃）不经 reset/full_reset 路径：
         // 统一收尾释放全部 session 堆数据与内建原型属性区，防逐测试累积泄漏。
         self.teardown_intrinsic_protos();

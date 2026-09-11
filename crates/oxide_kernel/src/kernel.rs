@@ -1,6 +1,7 @@
 #![allow(clippy::arc_with_non_send_sync)]
 
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use oxide_types::mem::P;
@@ -136,6 +137,10 @@ pub struct KernelCore {
     pub shape_forge: Arc<ShapeForge>,
     pub code_forge: Arc<CodeForge>,
     pub prop_forge: Arc<PropForge>,
+    /// 边界不变量守卫计数：当前持有本 kernel `Arc` 的 Vm 数。
+    /// `Vm` 构造器增、`Drop for Vm` 减（恰好一次），供 sweep / kernel 重建 /
+    /// kernel drop 处断言"无存活 VM"边界。
+    active_vms: AtomicUsize,
 }
 
 impl KernelCore {
@@ -159,6 +164,7 @@ impl KernelCore {
             shape_forge,
             code_forge,
             prop_forge,
+            active_vms: AtomicUsize::new(0),
         });
         kernel_info!("KernelCore initialized: max_cached_modules={}, min_pool={}", max_cached, min_pool);
         core
@@ -221,12 +227,19 @@ impl KernelCore {
     ///
     /// # 边界与前提
     /// - 调用点须无存活 VM：对象头与 IC 词持 shape id，清空使 id 空间复位，跨复位
-    ///   存活的 VM 会因 id 复用碰撞静默错槽；引擎不自动重建也不自动守卫，该前提
-    ///   由宿主契约承担（runner 由循环结构满足：VM 每测试新建即弃，sweep 点在
-    ///   VM 作用域外）。
+    ///   存活的 VM 会因 id 复用碰撞静默错槽；该前提由 debug_assert 守卫（开发期
+    ///   fail-fast），release 构建无断言，宿主可经 [`Self::active_vms`] 自检；
+    /// - 引擎不自动重建：id 空间的另一类复位（kernel 整体重建）由宿主在
+    ///   "无存活 VM" 边界驱动（runner 由循环结构满足：VM 每测试新建即弃，
+    ///   重建/sweep 点都在 VM 作用域外）。
     pub fn sweep_runner_forges(&self) {
+        // id 空间复位在有存活 VM 时是静默错槽隐患，守卫先于阈值判断。
+        debug_assert!(
+            self.active_vms.load(Ordering::Relaxed) == 0,
+            "sweep_runner_forges requires no live VMs (shape id space reset)"
+        );
         // 键 interner 是 append-only（无逐次清理）；仅当瞬时 shape/prop 表超阈值
-        // 时清表（批内兜底），调用点无存活 VM 的前提见文档。
+        // 时清表（批内兜底）。
         if self.shape_forge.len() > 50_000 {
             self.shape_forge.clear_transient();
             self.prop_forge.clear();
@@ -262,6 +275,33 @@ impl KernelCore {
     pub fn should_rebuild_perm(&self) -> Option<u32> {
         let cap = self.config.perm_interner_max_entries?;
         (self.perm_interner.entry_count() > cap).then_some(cap.next_power_of_two().saturating_mul(2))
+    }
+
+    /// 边界不变量守卫计数：登记一个 Vm 出生（`Vm` 两条构造路径完整构造后调用）。
+    pub fn note_vm_started(&self) {
+        self.active_vms.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 边界不变量守卫计数：注销一个 Vm 死亡（`Drop for Vm` 恰好调用一次）。
+    pub fn note_vm_ended(&self) {
+        self.active_vms.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// 读取当前持有本 kernel 的存活 Vm 数；release 宿主可在 id 空间复位边界自检。
+    pub fn active_vms(&self) -> usize {
+        self.active_vms.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for KernelCore {
+    fn drop(&mut self) {
+        // kernel 能 drop 说明持 Arc 的 Vm 已全部归零；计数非零 = 纯计数漂移
+        // （note_vm_started/note_vm_ended 配对挂接回归探测）。
+        debug_assert_eq!(
+            self.active_vms.load(Ordering::Relaxed),
+            0,
+            "KernelCore dropped with live VMs (note_vm_ended counter drift)"
+        );
     }
 }
 

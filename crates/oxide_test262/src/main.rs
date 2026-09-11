@@ -1802,6 +1802,8 @@ fn run_tests() -> bool {
                             if tests_since_kernel_reset >= kernel_batch {
                                 // 重建即全新 forge（结构性必清）：旧核连同其表整体丢弃，
                                 // 先 sweep 是对 doomed 核白做一次 O(50k) 清理。
+                                // 重建边界契约：旧核上无存活 VM（VM 每测试局部，此处作用域外）。
+                                debug_assert!(kernel.active_vms() == 0, "kernel rebuild requires no live VMs");
                                 kernel = build_runner_kernel();
                                 tests_since_kernel_reset = 0;
                             } else if done % 500 == 0 {

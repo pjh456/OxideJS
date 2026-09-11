@@ -145,6 +145,8 @@ impl Vm {
         vm.init_async_generator_intrinsics();
         // Promise 全局绑定发生在快照采集之后，重录快照避免首次 full_reset 误判脏。
         vm.session.record_snapshot();
+        // 边界守卫计数：VM 完整构造后登记，与 `Drop for Vm` 的注销恰好配对。
+        vm.kernel_core.note_vm_started();
         vm_info!("Vm created");
         vm
     }
@@ -260,6 +262,8 @@ impl Vm {
         vm.init_async_generator_intrinsics();
         // Promise 全局绑定发生在快照采集之后，重录快照避免首次 full_reset 误判脏。
         vm.session.record_snapshot();
+        // 边界守卫计数：VM 完整构造后登记，与 `Drop for Vm` 的注销恰好配对。
+        vm.kernel_core.note_vm_started();
         vm_info!("Vm created (pool)");
         vm
     }
@@ -818,6 +822,38 @@ mod tests {
             .compile(&program)
             .expect("compile failed");
         vm.run(&module).expect("vm run failed")
+    }
+
+    /// 计数往返：两条构造路径（独立核/共享核）的登记与 Drop 注销恰好配对，
+    /// 全部 drop 后计数归零，kernel 可干净 drop（Drop 断言无残留）。
+    #[test]
+    fn active_vms_count_roundtrip() {
+        let vm = Vm::new();
+        assert_eq!(vm.kernel_core.active_vms(), 1);
+        drop(vm);
+
+        let core = KernelCore::new(KernelConfig::minimal());
+        assert_eq!(core.active_vms(), 0);
+        let v1 = Vm::with_kernel_core(Arc::clone(&core));
+        let v2 = Vm::with_kernel_core(Arc::clone(&core));
+        let v3 = Vm::with_kernel_core(Arc::clone(&core));
+        assert_eq!(core.active_vms(), 3);
+        drop(v3);
+        assert_eq!(core.active_vms(), 2);
+        drop(v1);
+        drop(v2);
+        assert_eq!(core.active_vms(), 0);
+        drop(core);
+    }
+
+    /// 守卫判别：持活 VM 调 sweep 触发 debug_assert。VM 声明在 kernel 之后，
+    /// panic unwind 时先注销计数再 drop kernel，drop 断言不受干扰。
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "no live VMs"))]
+    fn sweep_runner_forges_rejects_live_vm() {
+        let core = KernelCore::new(KernelConfig::minimal());
+        let _vm = Vm::with_kernel_core(Arc::clone(&core));
+        core.sweep_runner_forges();
     }
 
     #[test]
