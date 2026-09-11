@@ -637,6 +637,49 @@ mod tests {
     use crate::vm::Completion;
     use oxide_types::value::JsValue;
 
+    fn compile(source: &str) -> oxide_bytecode::module::CompiledModule {
+        let allocator = oxide_parser::Allocator::default();
+        let program = oxide_parser::parse(&allocator, source).expect("parse");
+        oxide_compiler::compiler::Compiler::new().compile(&program).expect("compile")
+    }
+
+    #[test]
+    fn top_level_module_entry_shares_host_arc() {
+        // 顶层平表条目 = 宿主模块 Arc 同一实例：run 期零模块克隆，
+        // 克隆会产出不同 Arc，本钉在此情形必失败。
+        let mut vm = Vm::new();
+        let module = Arc::new(compile("var o = { a: 1 }; o.a + o.a"));
+        vm.run(&module).expect("run1");
+        assert!(Arc::ptr_eq(&vm.sub_modules[0], &module), "顶层条目须与宿主 Arc 同一实例");
+        vm.full_reset();
+        vm.run(&module).expect("run2");
+        assert!(Arc::ptr_eq(&vm.sub_modules[0], &module), "full_reset 后二次 run 仍共享");
+    }
+
+    #[test]
+    fn top_level_run_keeps_host_bytecode_ic_words_zero() {
+        // 宿主侧 bytecode 的 IC 扩展字在 run 后恒零：IC 写回只发生在
+        // Vm.bytecode 的 COW 私有拷贝上——dispatch 期平表与 Vm.bytecode 双持
+        // 共享缓冲（refcount ≥ 2），make_mut 必先深拷贝再写，宿主共享缓冲
+        // 结构上不可写。
+        let mut vm = Vm::new();
+        let module = Arc::new(compile("var o = { a: 1 }; o.a + o.a"));
+        vm.run(&module).expect("run");
+        assert!(vm.ic_miss_count() > 0, "源含属性读取，应发生 IC miss 与写回");
+        // 以 clear_ic_caches 的扫描口径作 oracle：IC 扩展字若已全零，清零是 no-op。
+        let original: Vec<oxide_bytecode::opcode::Instr> = module.bytecode.to_vec();
+        let mut probe = original.clone();
+        crate::ic_helper::clear_ic_caches(&mut probe);
+        assert_eq!(probe, original, "宿主侧 IC 扩展字须全零");
+        // 写回未落宿主缓冲：run 末 Vm.bytecode 是 COW 私有拷贝（不同分配），
+        // 而非宿主共享缓冲本身。
+        assert!(
+            !Arc::ptr_eq(&module.bytecode, &vm.bytecode),
+            "Vm.bytecode 须为 COW 私有拷贝，写回不得落宿主缓冲"
+        );
+        assert_eq!(vm.bytecode.len(), module.bytecode.len());
+    }
+
     #[test]
     fn save_restore_inline_round_trip() {
         // 构造带哨兵的 VM → save → 恢复 → 断言全部字段逐字往返（含 accessor_frame_target_reg）。
