@@ -17,13 +17,17 @@ use oxide_log;
 use oxide_log::{Level, SUBSYSTEM_COUNT};
 
 /// kernel 运行配置：VM 池规模、步数/调用深度/单 run 分配上限、session GC 阈值、
-/// 日志级别与内置对象预热开关。由三个预设构造器（[`KernelConfig::minimal`] /
-/// [`KernelConfig::standard`] / [`KernelConfig::full`]）或默认值创建。
+/// perm interner 重建阈值、日志级别与内置对象预热开关。由三个预设构造器
+/// （[`KernelConfig::minimal`] / [`KernelConfig::standard`] / [`KernelConfig::full`]）
+/// 或默认值创建。
 #[derive(Clone)]
 pub struct KernelConfig {
     pub min_pool_size: usize,
     pub max_pool_size: Option<usize>,
-    pub max_dead_strings: Option<usize>,
+    /// perm interner advisory 重建阈值：唯一键数 `entry_count` 达到该值时，
+    /// 宿主应在安全边界（无存活 VM）整体重建 kernel；None = 无阈值（三个预设
+    /// 默认值，行为与无旋钮一致）。见 [`KernelCore::should_rebuild_perm`]。
+    pub perm_interner_max_entries: Option<u32>,
     pub max_steps: Option<u64>,
     /// 单次 run 的分配上限（epoch + session arena + session 堆账目字节）：
     /// 超限的 run 以 `VM memory limit exceeded` 失败，防单测试 arena 高水位
@@ -44,7 +48,7 @@ impl KernelConfig {
         Self {
             min_pool_size: 4,
             max_pool_size: Some(8),
-            max_dead_strings: Some(10_000),
+            perm_interner_max_entries: None,
             max_steps: None,
             max_alloc_bytes: None,
             max_call_depth: 1024,
@@ -62,7 +66,7 @@ impl KernelConfig {
         Self {
             min_pool_size: 8,
             max_pool_size: Some(32),
-            max_dead_strings: Some(10_000),
+            perm_interner_max_entries: None,
             max_steps: None,
             max_alloc_bytes: None,
             max_call_depth: 1024,
@@ -80,7 +84,7 @@ impl KernelConfig {
         Self {
             min_pool_size: 16,
             max_pool_size: None,
-            max_dead_strings: Some(5_000),
+            perm_interner_max_entries: None,
             max_steps: None,
             max_alloc_bytes: None,
             max_call_depth: 1024,
@@ -121,7 +125,9 @@ impl Default for KernelConfig {
 }
 
 /// 不可变、跨所有 VM 实例永久共享的状态。
-/// 构造后从不重建——forge 表为 append-only。
+/// 构造后从不原地重建——forge 表为 append-only；宿主可经
+/// [`KernelCore::should_rebuild_perm`] 阈值在安全边界（无存活 VM）整体
+/// 重建（换 `Arc`，非原地清表）。
 pub struct KernelCore {
     pub config: KernelConfig,
     pub perm_interner: Arc<PermInterner>,
@@ -216,6 +222,33 @@ impl KernelCore {
         } else if self.prop_forge.len() > 50_000 {
             self.prop_forge.clear();
         }
+    }
+
+    /// 宿主是否应整体重建本 kernel（advisory 信号）。
+    ///
+    /// perm interner 唯一键数达到配置的
+    /// [`KernelConfig::perm_interner_max_entries`] 阈值时返回 true。纯
+    /// advisory 契约：引擎不自动重建——重建须由宿主在"无存活 VM"边界驱动：
+    /// 归还全部 `VmGuard`（池排空）→ 旧 `Arc<KernelCore>` 归零整体释放
+    /// （PermInterner/ShapeForge/CodeForge/PropForge，含全部泄漏键文本与
+    /// 物化串）→ 新建 kernel + 新池/VM。存活 VM 的 `immutables_cache` 与
+    /// P 对象持有旧 kernel 的物化串裸指针与 shape id，VM 存活期间重建
+    /// 会使其悬垂。三个预设默认 None = 永不触发（有意裁定：CLI eval/run/
+    /// REPL/bench/test262 宿主均未接重建边界，None 保证零行为漂移）。
+    ///
+    /// # 边界与前提
+    /// - 仅在宿主边界（run 间 / 测试间 / 迭代间）调用，勿入 dispatch 热路径：
+    ///   `entry_count` 为 O(1) 读锁，intern 路径零加码；
+    /// - 仅具备安全重建边界的宿主（test262 runner 批边界、嵌入宿主迭代
+    ///   之间）应启用旋钮；REPL 类宿主（单持久 VM，重建 = 丢失顶层状态）
+    ///   不应启用。
+    ///
+    /// # 副作用
+    /// 无：只读查询。
+    pub fn should_rebuild_perm(&self) -> bool {
+        self.config
+            .perm_interner_max_entries
+            .is_some_and(|n| self.perm_interner.entry_count() >= n)
     }
 }
 
@@ -802,6 +835,37 @@ mod tests {
         assert!(!KernelConfig::minimal().warmup_builtin_ic);
         assert!(KernelConfig::full().warmup_builtin_ic);
         assert_eq!(KernelConfig::full().max_pool_size, None);
+    }
+
+    #[test]
+    fn should_rebuild_perm_default_off() {
+        // 预设默认 None = 无阈值：任意键数下永不触发，钉死零漂移默认面。
+        let core = KernelCore::new(KernelConfig::minimal());
+        for i in 0..10 {
+            core.perm_interner().intern(&format!("key{i}"));
+        }
+        assert!(!core.should_rebuild_perm());
+    }
+
+    #[test]
+    fn should_rebuild_perm_threshold_reached() {
+        let mut config = KernelConfig::minimal();
+        config.perm_interner_max_entries = Some(2);
+        let core = KernelCore::new(config);
+        core.perm_interner().intern("a");
+        assert!(!core.should_rebuild_perm());
+        core.perm_interner().intern("b");
+        assert!(core.should_rebuild_perm());
+    }
+
+    #[test]
+    fn should_rebuild_perm_below_threshold() {
+        let mut config = KernelConfig::minimal();
+        config.perm_interner_max_entries = Some(100);
+        let core = KernelCore::new(config);
+        core.perm_interner().intern("a");
+        core.perm_interner().intern("b");
+        assert!(!core.should_rebuild_perm());
     }
 
     #[test]
