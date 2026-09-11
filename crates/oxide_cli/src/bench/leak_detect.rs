@@ -93,6 +93,25 @@ pub fn read_vmrss_kb() -> Option<u64> {
     None
 }
 
+// glibc 堆归页入口：把堆顶连续空闲页全部还给 OS（碎片化的内部空闲块
+// 不受影响）；仅 Linux/glibc 宿主链接，其余平台空操作。
+#[cfg(target_os = "linux")]
+extern "C" {
+    fn malloc_trim(pad: usize) -> bool;
+}
+
+/// 把上轮校准释放的堆页归还 OS，消除同进程复跑时"上轮残留页被下轮
+/// 增长相复用"导致的第二复跑 RSS 斜率结构性低估。
+fn release_free_heap() {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: 无参无指针状态的 libc 调用，无别名与生命周期问题。
+        unsafe {
+            let _ = malloc_trim(0);
+        }
+    }
+}
+
 /// 反复运行固定 JS 脚本，跟踪 session/code-forge/symbol 等内存指标，
 /// 用 `LeakSampler` 回归检测随迭代次数增长的内存占用。
 pub fn run_leak_detect(config: &BenchConfig, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>) -> ExitCode {
@@ -538,7 +557,9 @@ pub fn run_mem_object_churn_peak(kernel: &Arc<KernelCore>) -> ExitCode {
 /// 面；本 case 全程无存活 VM（JS 段 VM 出作用域即 drop），drop 旧 Arc 即
 /// 整体释放。重建后 RSS 可能不回落至增长前之下（glibc 小对象 free 滞留
 /// 分配器自由链不回 OS），RSS 为次锚仅参考、不进 exit 判据。exit 0/1
-/// 仅由重建相确定性断言驱动。
+/// 仅由重建相确定性断言驱动。第二复跑的增长相可能复用第一复跑的滞留
+/// 页（内部空闲块不随堆顶归页归还 OS），其斜率是热态下界——首测基线
+/// 取第一（冷）复跑；复跑斜率差超阈先按此归因，再疑用例。
 pub fn run_mem_kernel_lifetime() -> ExitCode {
     const JS_OBJECTS: u32 = 8_192; // JS 固定段对象数（每对象一个唯一计算键）
     const TOTAL_STRINGS: u32 = 191_704; // 增长循环唯一键数（与 JS 固定段键不相交）
@@ -648,6 +669,9 @@ pub fn run_mem_kernel_lifetime() -> ExitCode {
         if rebuilt_entries != 0 || rebuilt_knob.is_some() {
             return ExitCode::FAILURE;
         }
+
+        // 复跑边界：本轮回放释放的堆页归还 OS，免残留页计入下轮增长相。
+        release_free_heap();
     }
 
     // 复跑一致性（仅记录不判定）：跨轮斜率差 >10% 先查 harness 污染
