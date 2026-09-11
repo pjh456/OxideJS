@@ -12,11 +12,15 @@ impl Emitter {
             return Ok(None);
         };
         let start_label = ctx.next_label_id();
+        let cont_label = ctx.next_label_id();
         let end_label = ctx.next_label_id();
         ctx.labels.set_label_pos(start_label, ctx.insts.len());
-        ctx.push_loop(end_label, start_label, crate::emit_ctx::LoopKind::Plain);
-        let n_labeled = ctx.take_pending_loop_labels(end_label, start_label);
+        // continue 目标是条件位置：体先执行，continue 须绕过体直接去求值条件，
+        // 不能指回体首（否则条件永不被求值）。
+        ctx.push_loop(end_label, cont_label, crate::emit_ctx::LoopKind::Plain);
+        let n_labeled = ctx.take_pending_loop_labels(end_label, cont_label);
         self.emit_statement(&dw.body, ctx)?;
+        ctx.labels.set_label_pos(cont_label, ctx.insts.len());
         let test_reg = self.emit_expression(&dw.test, ctx)?;
         ctx.inst(Inst::jmp_if_true(test_reg, start_label));
         ctx.labels.set_label_pos(end_label, ctx.insts.len());
