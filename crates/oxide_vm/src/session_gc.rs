@@ -484,8 +484,28 @@ impl SessionGc {
         Self::drop_object_heap_data(obj_ptr, true)
     }
 
+    /// 释放一个死 session 对象：对象本体 + 堆数据 + upvalue 列表，返回释放字节数。
+    ///
+    /// # 注意事项
+    /// 仅 sweep 死分支到达此处：只有存活对象被克隆、克隆与原件共享同一 upvalues
+    /// Box，死对象从不被克隆，其 upvalue 列表 Box 无其他持有者，在此恰好释放
+    /// 一次；存活分支绝不释放（克隆仍引用同一 Box）。释放后置空：死对象已移出
+    /// 对象表，收尾统一释放按表枚举不会再见，置空保证对象侧幂等、无陈旧指针。
     fn drop_dead_session_object(obj_ptr: *mut JsObject) -> u64 {
-        Self::drop_session_object_heap_data(obj_ptr) + size_of::<JsObject>() as u64
+        let mut freed = Self::drop_session_object_heap_data(obj_ptr) + size_of::<JsObject>() as u64;
+        // SAFETY: obj_ptr 来自 session 对象表，sweep 期间仍指向旧 arena 内合法对象；
+        // upvalues Box 仅本对象持有（死对象不克隆），保证恰好释放一次。
+        unsafe {
+            let up = (*obj_ptr).upvalues;
+            if !up.is_null() {
+                let vec = Box::from_raw(up as *mut Vec<*mut oxide_types::object::Cell>);
+                freed += size_of::<Vec<*mut oxide_types::object::Cell>>() as u64
+                    + (vec.capacity() * size_of::<*mut oxide_types::object::Cell>()) as u64;
+                (*obj_ptr).upvalues = std::ptr::null_mut();
+                std::mem::drop(vec);
+            }
+        }
+        freed
     }
 
     /// 释放一个已死 session `JsString`（由 `Vm::new_string`/`new_cons_string`

@@ -306,6 +306,74 @@ pub fn run_mem_dirty_rebuild_leak(kernel: &Arc<KernelCore>) -> ExitCode {
     report_series("dirty_rebuild", "round", &series)
 }
 
+/// 校准用例：循环「创建 3-upvalue 闭包 → 写 global 临时槽（晋升 session）→
+/// 撤根引用 → 完整收集（死分支）」，每轮产生一个死闭包，每 500 轮采一次
+/// VmRSS，度量死闭包 upvalue 列表的释放路径，期望斜率走平。
+///
+/// # 注意事项
+/// 死对象的 upvalue 列表 Box 无其他持有者（仅存活对象被克隆并共享同一 Box
+/// 与原件）：死分支不释放则死亡即永久泄漏——账目/peak/retained 全程无感
+/// （死对象死亡即出表），唯一可观测量是进程 RSS。upvalue cell 的寿命绑定
+/// full_reset，逐轮累积会掩盖斜率，故每窗口换新 VM，窗口边界随 teardown
+/// 统一释放（兼覆盖收尾统一释放的不双放守卫）。
+pub fn run_mem_closure_dead_leak(kernel: &Arc<KernelCore>) -> ExitCode {
+    const ROUNDS_PER_WINDOW: usize = 5000;
+    const WINDOWS: usize = 20;
+    const SAMPLE_EVERY: usize = 500;
+
+    let allocator = Allocator::default();
+    let mut modules = Vec::new();
+    for js in [
+        "globalThis.c = (function() { var a = 1; var b = 2; var c = 3; return function() { return a + b + c; }; })(); 0",
+        "globalThis.c = undefined; 0",
+    ] {
+        let program = match oxide_parser::parse(&allocator, js) {
+            Ok(p) => p,
+            Err(_) => return ExitCode::FAILURE,
+        };
+        let compiler = Compiler::new();
+        let hash = compiled_module_hash(&program);
+        let module = match kernel.code_forge().get_or_insert_with(hash, || compiler.compile(&program)) {
+            Ok(m) => m,
+            Err(_) => return ExitCode::FAILURE,
+        };
+        modules.push(module);
+    }
+    let (create, unroot) = (&modules[0], &modules[1]);
+
+    let mut sampler = LeakSampler::new(20);
+    let mut series: Vec<(usize, f64)> = Vec::new();
+    for window in 0..WINDOWS {
+        let mut vm = Vm::with_kernel_core(Arc::clone(kernel));
+        for round in 0..ROUNDS_PER_WINDOW {
+            if let Err(e) = vm.run(create) {
+                eprintln!("[closure_dead_leak] window {window} round {round} create run failed: {e}");
+                return ExitCode::FAILURE;
+            }
+            vm.collect_session_gc();
+            if let Err(e) = vm.run(unroot) {
+                eprintln!("[closure_dead_leak] window {window} round {round} unroot run failed: {e}");
+                return ExitCode::FAILURE;
+            }
+            vm.collect_session_gc();
+            let i = window * ROUNDS_PER_WINDOW + round;
+            if i % SAMPLE_EVERY == 0 {
+                if let Some(kb) = read_vmrss_kb() {
+                    let v = kb as f64;
+                    series.push((i, v));
+                    if let Some(verdict) = sampler.add_sample(i, v) {
+                        eprintln!(
+                            "[LEAK] closure_dead_leak rss_kb: slope={:.6} R²={:.4} over {} samples",
+                            verdict.slope, verdict.r2, 20
+                        );
+                    }
+                }
+            }
+        }
+    }
+    report_series("closure_dead_leak", "iter", &series)
+}
+
 /// 全序列回归报告：打印首末 RSS、全序列斜率/R² 与窗口（末 20 样本）总
 /// 增量；斜率显著为正（R² > 0.9）返回失败，表示泄漏签名。
 fn report_series(case: &str, unit: &str, series: &[(usize, f64)]) -> ExitCode {

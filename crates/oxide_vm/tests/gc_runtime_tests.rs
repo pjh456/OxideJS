@@ -259,3 +259,47 @@ fn closure_cells_freed_by_full_reset_without_double_free() {
     let text = vm.lookup_str(result).expect("拼接结果应为字符串").to_string();
     assert_eq!(text, "ok!");
 }
+
+/// 死闭包的 upvalue 列表在对象 sweep 死分支释放（死对象不克隆、Box 无其他
+/// 持有者，恰好一次）后，收尾统一释放见已置空字段不双放：full_reset 后引擎
+/// 可继续运行并重建新闭包；存活闭包走存活分支（克隆与原件共享 Box），
+/// 不受死分支影响。
+#[test]
+fn dead_closure_upvalues_freed_by_sweep_without_double_free() {
+    let mut vm = vm_with_threshold(4096);
+    // run1：两个 3-upvalue 闭包逃逸 global（成 session 对象），同 run 内调用
+    // 存活闭包确认 upvalue 语义完好。
+    let first = compile(
+        "var a = 1; var b = 2; var c = 3; \
+         globalThis.dead = function() { return a + b + c; }; \
+         globalThis.live = function() { return a + b + c; }; globalThis.live()",
+    );
+    let result = vm.run(&first).expect("run1");
+    assert_eq!(format!("{}", result), "6");
+
+    // run2：撤销死闭包的根引用（不可达）。
+    let second = compile("globalThis.dead = undefined; 0");
+    vm.run(&second).expect("run2");
+
+    // 完整收集：死闭包走死分支（释放 upvalue 列表），存活闭包走存活分支
+    // （克隆与原件共享 Box，不在死分支释放）。
+    vm.collect_session_gc();
+    assert!(vm.session_gc_stats().last_collection_objects_dead >= 1, "死闭包应经 sweep 死分支");
+
+    // 跨 run 存活核（只读属性；跨 run 调用受 sub_module_index 缺口限制）：
+    // sweep 后存活闭包克隆仍挂在 global 上。
+    let third = compile("typeof globalThis.live === 'function'");
+    let result = vm.run(&third).expect("run3");
+    assert!(result.is_bool() && result.as_bool());
+
+    // 收尾统一 upvalue 释放与死分支不双放（字段已置空、死对象已出表）。
+    vm.full_reset();
+
+    // 重置后引擎健康：重建新 3-upvalue 闭包，同 run 调用语义正确。
+    let fourth = compile(
+        "var x = 10; var y = 20; var z = 30; \
+                           globalThis.f = function() { return x + y + z; }; globalThis.f()",
+    );
+    let result = vm.run(&fourth).expect("run4");
+    assert_eq!(format!("{}", result), "60");
+}
