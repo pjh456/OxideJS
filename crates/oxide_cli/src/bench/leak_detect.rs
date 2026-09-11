@@ -234,9 +234,9 @@ pub fn run_mem_vm_creation_leak(kernel: &Arc<KernelCore>) -> ExitCode {
 /// 键名逐轮递增保证走新键写入路径（既有槽位写不 bump 世代、不脏家族）。
 /// 跨轮继承锚点（登记表对象数 / global 属性槽数）采样自每轮 full_reset
 /// 后：wrapper 复用与槽位原位更新生效时两者应持平，增长即泄漏签名。
-/// RSS 残差模型（post-91.1 裁定）：object/function 家族脏重建每轮钉住 4
-/// 件本体（重指遗漏兜底，不进门）+ 逐轮唯一键在共享内核 shape/perm 缓存
-/// 的追加式增长（append-only 缓存，非 session 数据泄漏）。
+/// RSS 残差模型：object/function 家族脏重建每轮钉住 4 件本体（重指遗漏
+/// 兜底，不进门）+ 逐轮唯一键在共享内核 shape/perm 缓存的追加式增长
+/// （append-only 缓存，非 session 数据泄漏）。
 pub fn run_mem_dirty_rebuild_leak(kernel: &Arc<KernelCore>) -> ExitCode {
     const ROUNDS: usize = 3000;
     const SAMPLE_EVERY: usize = 10;
