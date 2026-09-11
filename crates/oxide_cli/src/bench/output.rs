@@ -16,8 +16,10 @@ const MEMORY_BENCH_NOTES: &str = "\n内存基准用例（mem_*）：\n
   mem_set_retain          原生盒边持有：Set 持 20000 个对象（各带 payload 字符串）
   mem_string_rope         拼接 rope 链留存：重复二元拼接形成深 Cons 链（账目按逻辑长度计，数值高于实际足迹）
 口径：Peak B/Ret B 为 session 堆账目（对象头 + 堆数据 + 存活串/BigInt）；epoch arena
-的临时驻留无字节账目（既有口径，数量见 JSON 的 epoch_objects）。Ret B 为 workload 后
-晋升 + 完整 GC 的真存活集。
+的临时驻留无字节账目（既有口径，数量见 JSON 的 epoch_objects）。Peak B 为顶层指令
+边界采样的 session arena 高水位；单指令内瞬态与 epoch 高水位不计。Ret B 为 workload 后
+晋升 + 完整 GC 的真存活集，至多含一份引擎内部副本：逃逸屏障留 epoch 原件且顶层
+寄存器根不回写时，测量时晋升会把原件再克隆一份（object_graph 见留存锚测试）。
 ";
 
 /// 把结果格式化为对齐的文本表格（供终端打印）。
