@@ -18,12 +18,15 @@ fn hash64(s: &str) -> u64 {
 /// 一条 intern 过的键。`data` 是泄漏的 `&'static str`——永久键从不释放
 /// （按设计 append-only），所以泄漏即存储模型，而非 bug。键 id 与 64 位
 /// 哈希经 `DashMap` 的哈希键→候选 id 表寻址，条目自身不存哈希。
+/// `#[repr(C)]` 把布局钉为连续（指针, 长度）：字段序与对齐由 repr(C)
+/// 保证（非 pack 保证），16B 由下方尺寸断言钉死。
+#[repr(C)]
 #[derive(Clone, Copy)]
 struct PermEntry {
     data: &'static str,
 }
 
-// 布局钉：条目仅泄漏指针 + 长度（16B）；布局漂移即编译失败。
+// 布局钉：repr(C) 保证连续 16B；布局漂移即编译失败。
 const _: () = assert!(std::mem::size_of::<PermEntry>() == 16);
 
 /// 所有 VM 共享的 append-only、永不移动、读无锁的键 interner。
