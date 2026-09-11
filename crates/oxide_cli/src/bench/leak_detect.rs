@@ -6,6 +6,7 @@ use std::time::Instant;
 use oxide_compiler::compiler::{compiled_module_hash, Compiler};
 use oxide_kernel::kernel::KernelCore;
 use oxide_parser::Allocator;
+use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
 use oxide_vm::vm_pool::VmPool;
 
@@ -434,6 +435,90 @@ pub fn run_mem_pool_high_water(kernel: &Arc<KernelCore>) -> ExitCode {
         }
     }
     report_series("pool_high_water", "round", &series)
+}
+
+/// 校准用例：单次 run（无 full_reset）跑 N 轮「闭包 + 对象 + 数组」churn
+/// 源，度量执行期死对象滞留的峰值。主锚 = in-engine 分配包络高水位
+/// （`run_alloc_peak`，dispatch 循环顶 O(1) 采样）；次锚 = RSS 序列
+/// （块边界采样，单 run 内上升即 churn 本体，仅记录形态不做泄漏判定）；
+/// 参考 = session/epoch 对象计数与留存账目。
+///
+/// # 注意事项
+/// 不走 VM 池、不接 full_reset：churn 峰值是 run 内量。源分 CHUNKS 块连续
+/// run（块间无 reset，arena/对象表/账目跨块累积，等价单次 run），RSS 在
+/// 块边界采样以获得序列形态。降幅验收走宿内 pre/post 对照（宿主安静
+/// 时点），跨宿主绝对比较禁止。
+pub fn run_mem_object_churn_peak(kernel: &Arc<KernelCore>) -> ExitCode {
+    const N: usize = 500_000;
+    const CHUNKS: usize = 8;
+    const M: usize = N / CHUNKS;
+    // 每轮对 t 的贡献 = f() + o.a + o.b.length = 2i + 2；Σ(i=0..M) = M² + M。
+    const EXPECTED: u64 = (M as u64) * (M as u64) + (M as u64);
+
+    let js = format!(
+        "var t = 0; for (var i = 0; i < {M}; i++) {{ var f = function() {{ return i; }}; var o = {{ a: i, b: [i, i + 1] }}; t += f() + o.a + o.b.length; }} t === {EXPECTED}"
+    );
+    let allocator = Allocator::default();
+    let program = match oxide_parser::parse(&allocator, &js) {
+        Ok(p) => p,
+        Err(_) => return ExitCode::FAILURE,
+    };
+    let hash = compiled_module_hash(&program);
+    let module = match kernel
+        .code_forge()
+        .get_or_insert_with(hash, || Compiler::new().compile(&program))
+    {
+        Ok(m) => m,
+        Err(_) => return ExitCode::FAILURE,
+    };
+
+    let mut vm = Vm::with_kernel_core(Arc::clone(kernel));
+    let mut series: Vec<(usize, f64)> = Vec::new();
+    if let Some(kb) = read_vmrss_kb() {
+        series.push((0, kb as f64));
+    }
+    for c in 0..CHUNKS {
+        let result = match vm.run(&module) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[object_churn_peak] chunk {c} run failed: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        if result != JsValue::bool(true) {
+            eprintln!("[object_churn_peak] chunk {c} result mismatch: {result:?}");
+            return ExitCode::FAILURE;
+        }
+        if let Some(kb) = read_vmrss_kb() {
+            series.push((c + 1, kb as f64));
+        }
+    }
+
+    let (slope, r2) = linreg(&series);
+    let (rss_first, rss_last) = (series.first().map(|(_, v)| *v), series.last().map(|(_, v)| *v));
+    eprintln!(
+        "[object_churn_peak] N={} chunks={} run_alloc_peak={} bytes (主锚)",
+        N,
+        CHUNKS,
+        vm.run_alloc_peak()
+    );
+    eprintln!(
+        "[object_churn_peak] session_bytes_allocated={} session_bytes_peak={} session_objects={} epoch_objects={} gc_cycles={}",
+        vm.session_bytes_allocated(),
+        vm.session_bytes_peak(),
+        vm.session_object_count(),
+        vm.epoch_object_count(),
+        vm.session_gc_stats().total_collections
+    );
+    eprintln!(
+        "[object_churn_peak] rss_kb={}..{} (delta {:+.0}) slope={:.4} kB/chunk R²={:.4} (单 run 内上升 = churn 本体，不做泄漏判定)",
+        rss_first.unwrap_or(0.0),
+        rss_last.unwrap_or(0.0),
+        rss_last.unwrap_or(0.0) - rss_first.unwrap_or(0.0),
+        slope,
+        r2
+    );
+    ExitCode::SUCCESS
 }
 
 /// 全序列回归报告：打印首末 RSS、全序列斜率/R² 与窗口（末 20 样本）总

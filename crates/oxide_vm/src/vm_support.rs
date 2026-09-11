@@ -114,6 +114,7 @@ impl Vm {
                 session_cell_ptrs: std::cell::RefCell::new(Vec::new()),
                 session_bytes_allocated: 0,
                 session_bytes_peak: 0,
+                run_alloc_peak: 0,
                 string_gc_watermark: gc_threshold,
                 gc_threshold_cached: gc_threshold,
                 gc_watermark: gc_threshold,
@@ -228,6 +229,7 @@ impl Vm {
                 session_cell_ptrs: std::cell::RefCell::new(Vec::new()),
                 session_bytes_allocated: 0,
                 session_bytes_peak: 0,
+                run_alloc_peak: 0,
                 string_gc_watermark: gc_threshold,
                 gc_threshold_cached: gc_threshold,
                 gc_watermark: gc_threshold,
@@ -348,6 +350,7 @@ impl Vm {
         self.gc_state.session_epoch = bumpalo::Bump::new();
         self.gc_state.session_bytes_allocated = 0;
         self.gc_state.session_bytes_peak = 0;
+        self.gc_state.run_alloc_peak = 0;
         self.gc_state.string_gc_watermark = self.kernel_core.config().session_gc_threshold;
         self.gc_state.session_gc = crate::session_gc::SessionGc::new();
         self.symbols.reset();
@@ -499,6 +502,8 @@ impl Vm {
         self.free_epoch_object_heap_data();
         self.epoch.reset();
         self.gc_state.epoch_object_ptrs.clear();
+        // 单 run 分配包络按 run 边界重起算（与 run_alloc_bytes 起算口径同源）。
+        self.gc_state.run_alloc_peak = 0;
         self.root_reg_limit = 0;
         self.active_reg_limit = 0;
     }
@@ -668,6 +673,9 @@ impl Vm {
         obj.set_session_epoch(true);
         let obj_ptr = self.gc_state.session_epoch.alloc(obj) as *mut JsObject;
         self.gc_state.session_object_ptrs.push(obj_ptr);
+        // 直 session 分配计入堆账目（与 promote 同式：对象头 + 对象堆数据）。
+        self.gc_state.session_bytes_allocated += std::mem::size_of::<JsObject>()
+            + crate::session_gc::SessionGc::object_heap_data_bytes(unsafe { &*obj_ptr }) as usize;
         let func_val = JsValue::object(obj_ptr as *mut u8);
 
         if !is_arrow {
@@ -686,6 +694,9 @@ impl Vm {
             prototype.set_session_epoch(true);
             let prototype_obj = self.gc_state.session_epoch.alloc(prototype) as *mut JsObject;
             self.gc_state.session_object_ptrs.push(prototype_obj);
+            // 直 session 分配计入堆账目（与 promote 同式：对象头 + 对象堆数据）。
+            self.gc_state.session_bytes_allocated += std::mem::size_of::<JsObject>()
+                + crate::session_gc::SessionGc::object_heap_data_bytes(unsafe { &*prototype_obj }) as usize;
             let prototype_val = JsValue::from_js_object(prototype_obj);
 
             if !is_generator {
@@ -1218,6 +1229,44 @@ mod tests {
 
         assert_eq!(vm.epoch.bump().allocated_bytes(), 0);
         assert_eq!(vm.gc_state.session_epoch.allocated_bytes(), 0);
+    }
+
+    /// 直 session 分配站（函数对象 + prototype 子对象）计入 session 堆账目：
+    /// 分配点计数 = 对象头（属性区容量扩张属 promote 同口径的既有盲区，不钉）。
+    /// 另含 CREATE_CLOSURE 站将推断函数名物化为 session 串（name 数据属性，
+    /// 既有行为），钉值一并计入。
+    #[test]
+    fn direct_session_alloc_counted_in_session_bytes() {
+        let mut vm = Vm::new();
+        let base = vm.session_bytes_allocated();
+        run_source(&mut vm, "var f = function(){}; 0");
+        let delta = vm.session_bytes_allocated() - base;
+        let name_len = "f".len();
+        assert_eq!(
+            delta,
+            2 * std::mem::size_of::<JsObject>() + std::mem::size_of::<JsString>() + name_len
+        );
+    }
+
+    /// 标签模板 cooked/raw 数组直 session 分配计入 session 堆账目：
+    /// 含模板的 run 账目增量须超出同等函数对象口径（两数组各含对象头 + 元素区）。
+    /// 单 run 内完成（标签函数定义 + 模板调用）：跨 run 调用异模块函数受
+    /// sub_module_index 缺口限制，不在本钉面。
+    #[test]
+    fn tagged_template_object_counted_in_session_bytes() {
+        let mut vm = Vm::new();
+        let base = vm.session_bytes_allocated();
+        // 对照 run：仅函数对象（本体 + prototype 子对象）。
+        run_source(&mut vm, "var tag = function(){ return 0; }; 0");
+        let fn_cost = vm.session_bytes_allocated() - base;
+        // 实验 run：同函数 + 标签模板（cookeD/raw 两数组）。
+        let before = vm.session_bytes_allocated();
+        run_source(&mut vm, "var tag2 = function(){ return 0; }; tag2`a${1}b`; 0");
+        let both_cost = vm.session_bytes_allocated() - before;
+        assert!(
+            both_cost > fn_cost + 2 * std::mem::size_of::<JsObject>(),
+            "模板数组未计入账目: both={both_cost} fn={fn_cost}"
+        );
     }
 
     #[test]

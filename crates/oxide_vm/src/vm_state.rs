@@ -41,6 +41,9 @@ pub(crate) struct GcState {
     /// 执行期 session 堆账目的峰值高水位（`session_bytes_allocated` 的采样上界），
     /// 顶层指令边界采样，全量重置清零。留存内存观测用。
     pub(crate) session_bytes_peak: usize,
+    /// 单 run 分配包络（`run_alloc_bytes`）的高水位：顶层指令边界采样，
+    /// run 边界（reset/full_reset）重起算。留存内存观测锚（churn 峰值主锚）。
+    pub(crate) run_alloc_peak: usize,
     /// 执行期字符串 GC 的触发水位：本次收集后的存活字节 + 阈值增量。
     /// 仅当账目超过水位才在指令边界触发回收——活串超阈值时不会每指令重复
     /// 触发无死串可回收的白跑，且保证触发点恒在无 builtin 局部活值的边界。

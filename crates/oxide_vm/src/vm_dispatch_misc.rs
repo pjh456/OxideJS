@@ -1062,6 +1062,9 @@ impl Vm {
             clone.set_session_epoch(true);
             let ptr = self.gc_state.session_epoch.alloc(clone) as *mut JsObject;
             self.gc_state.session_object_ptrs.push(ptr);
+            // 直 session 分配计入堆账目（与 promote 同式：对象头 + 对象堆数据）。
+            self.gc_state.session_bytes_allocated += std::mem::size_of::<JsObject>()
+                + crate::session_gc::SessionGc::object_heap_data_bytes(unsafe { &*ptr }) as usize;
             ptr
         };
         let cooked = alloc_session_array(n);

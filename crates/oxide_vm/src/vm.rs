@@ -1002,6 +1002,12 @@ impl Vm {
         self.epoch.bump().allocated_bytes() + self.gc_state.session_epoch.allocated_bytes()
     }
 
+    /// 本 run 累计分配字节的高水位：`run_alloc_bytes` 的顶层指令边界
+    /// 采样上界，run 边界（reset/full_reset）重起算。留存内存观测锚。
+    pub fn run_alloc_peak(&self) -> usize {
+        self.gc_state.run_alloc_peak
+    }
+
     /// 本 run 累计分配字节：epoch arena + session 对象 arena + session 手工堆
     /// 账目（session 串 + session 对象及其属性向量 + GC 后补回的 BigInt）。
     /// 单次 run 内单调不减（执行期对象不回收、
@@ -1634,6 +1640,11 @@ impl Vm {
                 let bytes = self.gc_state.session_bytes_allocated;
                 if bytes > self.gc_state.session_bytes_peak {
                     self.gc_state.session_bytes_peak = bytes;
+                }
+                // 单 run 分配包络高水位：O(1) 三计数器读（双 arena + session 账目）。
+                let alloc = self.run_alloc_bytes();
+                if alloc > self.gc_state.run_alloc_peak {
+                    self.gc_state.run_alloc_peak = alloc;
                 }
                 if bytes >= self.gc_state.string_gc_watermark {
                     self.maybe_collect_session_strings();
