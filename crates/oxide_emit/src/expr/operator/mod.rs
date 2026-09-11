@@ -632,10 +632,22 @@ impl Emitter {
                 ctx.inst(Inst::new(op, Operand::Reg(tmp_reg), Operand::Reg(result_reg), Operand::Reg(result_reg)));
                 return Ok(result_reg);
             }
-            let is_implicit = ctx.implicit_global_writes.contains(&var_reg);
+            let is_implicit = ctx.is_implicit_global_reg(var_reg);
             if is_implicit && ctx.is_strict {
                 // 严格模式未声明更新写：值无关抛 ReferenceError。
                 return self.emit_strict_undeclared_write(name, ctx);
+            }
+            // 未声明名槽是入口快照（读侧登记的槽从不被读刷新，同脚本后续写
+            // 可使其脱节）：RMW 前从全局对象属性取旧值，属性缺失按 undefined
+            // （sloppy 未解析引用 GetBaseValue 语义，不抛）。
+            if is_implicit {
+                let key_idx = ctx.add_constant(Constant::String(name.to_string()));
+                ctx.inst(Inst::new(
+                    OpCode::LOAD_GLOBAL_TYPEOF,
+                    Operand::Reg(var_reg),
+                    Operand::Const(key_idx),
+                    Operand::None,
+                ));
             }
             let result_reg = ctx.alloc_reg();
             let op = match (update.operator, update.prefix) {

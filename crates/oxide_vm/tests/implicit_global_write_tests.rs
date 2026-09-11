@@ -161,3 +161,36 @@ fn sloppy_undeclared_write_to_readonly_global_property_silent() {
     .unwrap();
     assert!(r.is_bool() && r.as_bool(), "sloppy 对既有不可写全局属性写应静默 no-op，实际 {:?}", r);
 }
+
+// ── 读写混合解析：未声明名由首次引用侧登记全局槽（读侧 LOAD_GLOBAL 登记，
+// 写侧新建登记），后的写须同样穿透全局对象——先读后写各形态回归钉 ──
+#[test]
+fn undeclared_read_then_assignment_write_reaches_global() {
+    let r = eval_many(&["globalThis.n = 0", "var seen = n", "n = 7", "globalThis.n === 7"]).unwrap();
+    assert!(r.is_bool() && r.as_bool(), "先读后写的未声明名应穿透全局对象，实际 {:?}", r);
+}
+
+#[test]
+fn undeclared_read_then_update_write_reaches_global() {
+    let r = eval_many(&["globalThis.c = 0", "var seen = c", "c++", "globalThis.c === 1"]).unwrap();
+    assert!(r.is_bool() && r.as_bool(), "先读后更新式写应穿透全局对象，实际 {:?}", r);
+}
+
+#[test]
+fn undeclared_read_then_compound_write_reaches_global() {
+    let r = eval_many(&["globalThis.m = 0", "var seen = m", "m += 2", "globalThis.m === 2"]).unwrap();
+    assert!(r.is_bool() && r.as_bool(), "先读后复合赋值应穿透全局对象，实际 {:?}", r);
+}
+
+#[test]
+fn undeclared_read_then_destructuring_write_reaches_global() {
+    let r = eval_many(&["globalThis.d = 0", "var seen = d", "[d] = [9]", "globalThis.d === 9"]).unwrap();
+    assert!(r.is_bool() && r.as_bool(), "先读后解构写应穿透全局对象，实际 {:?}", r);
+}
+
+// ── 严格模式：读侧已登记的全局槽同属未解析引用，后写抛 ReferenceError ──
+#[test]
+fn strict_undeclared_read_then_write_throws_reference() {
+    let result = eval("'use strict'; globalThis.s = 0; var seen = s; s = 5");
+    assert_err_contains(result, "s is not defined");
+}

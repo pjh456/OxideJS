@@ -216,9 +216,9 @@ pub struct CompileCtx {
     /// 按寄存器而非名字记录：块作用域同名新绑定持不同槽位，不会被误判为隐式全局。
     pub(crate) implicit_global_reads: HashSet<u32>,
     /// 未声明标识符写所登记的全局槽寄存器集合：`lookup_or_global` 未命中任何作用域
-    /// 时登记全局作用域绑定并记录其寄存器，写调用点据此补全局对象属性写（sloppy）
-    /// 或抛 ReferenceError（strict）。子函数 ctx 从父继承——继承绑定命中同一寄存器，
-    /// 补写/抛错判定跨嵌套函数一致。
+    /// 时登记全局作用域绑定并记录其寄存器，写调用点据此（经 `is_implicit_global_reg`
+    /// 与读集合取并）补全局对象属性写（sloppy）或抛 ReferenceError（strict）。
+    /// 子函数 ctx 从父继承——继承绑定命中同一寄存器，补写/抛错判定跨嵌套函数一致。
     pub(crate) implicit_global_writes: HashSet<u32>,
     /// 函数 `length` 属性值：首个带默认值形参之前的形参数（rest 不计）。
     /// emit_params_prologue 前由编译入口从 param_specs 计算。
@@ -480,6 +480,13 @@ impl CompileCtx {
         // 写（sloppy）或抛 ReferenceError（strict）。
         self.implicit_global_writes.insert(reg);
         self.scopes.symbols.lookup_or_global(name, reg)
+    }
+
+    /// 寄存器是否承载未声明标识符的全局槽（写调用点据此补全局对象属性写或抛
+    /// ReferenceError）。读写两个登记集合取并：未声明名谁先引用谁登记，读侧登记
+    /// （LOAD_GLOBAL 槽）与写侧登记同属一个全局槽，写都必须穿透到全局对象。
+    pub(crate) fn is_implicit_global_reg(&self, reg: u32) -> bool {
+        self.implicit_global_writes.contains(&reg) || self.implicit_global_reads.contains(&reg)
     }
 
     pub(crate) fn lookup_const_flag(&self, name: &str) -> bool {
@@ -1128,9 +1135,11 @@ impl Emitter {
             );
             inherited_reg_start = inherited_reg_start.max(binding.reg.saturating_add(1));
         }
-        // 隐式全局写集合随继承绑定传入：父层未声明写已登记全局作用域，子层解析命中
-        // 继承绑定时须同样补全局对象属性写（或严格模式抛错）。
+        // 隐式全局登记集合随继承绑定传入：父层未声明名已登记全局作用域，子层解析
+        // 命中继承绑定时须同样补全局对象属性写（或严格模式抛错）。读写两侧登记
+        // 一并继承——读侧登记的全局槽与写侧同属一个槽，写判定跨嵌套函数一致。
         ctx.implicit_global_writes = parent_ctx.implicit_global_writes.clone();
+        ctx.implicit_global_reads = parent_ctx.implicit_global_reads.clone();
         for (name, reg) in extra_bindings {
             ctx.scopes.symbols.scopes[0].bindings.insert(
                 (*name).to_string(),

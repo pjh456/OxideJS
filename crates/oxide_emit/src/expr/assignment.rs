@@ -95,10 +95,22 @@ impl Emitter {
                 ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(rhs), Operand::None));
                 return Ok(val_reg);
             }
-            let is_implicit = ctx.implicit_global_writes.contains(&var_reg);
+            let is_implicit = ctx.is_implicit_global_reg(var_reg);
             if is_implicit && ctx.is_strict {
                 // 严格模式未声明复合写：未解析引用不可 put，值无关抛 ReferenceError。
                 return self.emit_strict_undeclared_write(name, ctx);
+            }
+            // 未声明名槽是入口快照（读侧登记的槽从不被读刷新，同脚本后续写
+            // 可使其脱节）：RMW 前从全局对象属性取旧值，属性缺失按 undefined
+            // （sloppy 未解析引用 GetBaseValue 语义，不抛）。
+            if is_implicit {
+                let key_idx = ctx.add_constant(Constant::String(name.to_string()));
+                ctx.inst(Inst::new(
+                    OpCode::LOAD_GLOBAL_TYPEOF,
+                    Operand::Reg(var_reg),
+                    Operand::Const(key_idx),
+                    Operand::None,
+                ));
             }
             ctx.inst(Inst::new(op, Operand::Reg(var_reg), Operand::Reg(rhs), Operand::None));
             if is_implicit {
@@ -368,6 +380,17 @@ impl Emitter {
                         ));
                     } else {
                         let var_reg = ctx.lookup_or_global(name);
+                        // 未声明名槽是入口快照（读侧登记的槽从不被读刷新）：
+                        // 旧值读前从全局对象属性取当前值，缺失按 undefined（不抛）。
+                        if ctx.is_implicit_global_reg(var_reg) {
+                            let key_idx = ctx.add_constant(Constant::String(name.to_string()));
+                            ctx.inst(Inst::new(
+                                OpCode::LOAD_GLOBAL_TYPEOF,
+                                Operand::Reg(var_reg),
+                                Operand::Const(key_idx),
+                                Operand::None,
+                            ));
+                        }
                         ctx.inst(Inst::new(
                             OpCode::LOAD_VAR,
                             Operand::Reg(result_reg),
@@ -408,7 +431,7 @@ impl Emitter {
                         } else if !readonly_builtin {
                             // 隐式全局判定以寄存器集合为准：读侧（旧值解析）已登记绑定，
                             // 写侧二次解析命中集合而非"新登记"。
-                            let is_implicit = ctx.implicit_global_writes.contains(&var_reg);
+                            let is_implicit = ctx.is_implicit_global_reg(var_reg);
                             if is_implicit && ctx.is_strict {
                                 // 严格模式未声明写：抛 ReferenceError，后续 LOAD_VAR 不可达。
                                 let _ = self.emit_strict_undeclared_write(name, ctx)?;
