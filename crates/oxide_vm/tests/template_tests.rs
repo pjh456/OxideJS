@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
 use oxide_compiler::compiler::Compiler;
@@ -19,7 +21,7 @@ fn eval(source: &str) -> String {
         Err(e) => return format!("compile error: {}", e),
     };
     let mut vm = Vm::new();
-    match vm.run(&module) {
+    match vm.run(&Arc::new(module)) {
         Ok(result) => format!("{}", result),
         Err(e) => format!("vm error: {}", e),
     }
@@ -36,7 +38,7 @@ fn eval_val(source: &str) -> (Vm, Result<JsValue, String>) {
         Err(e) => return (Vm::new(), Err(format!("compile error: {}", e))),
     };
     let mut vm = Vm::new();
-    let result = vm.run(&module);
+    let result = vm.run(&Arc::new(module));
     (vm, result)
 }
 
@@ -134,7 +136,7 @@ fn template_expression_reads_physical_register_above_127() {
 
     let module = oxide_ir::lower::lower(&ir).expect("lower template IR");
     let mut vm = Vm::new();
-    let result = vm.run(&module).expect("run template IR");
+    let result = vm.run(&Arc::new(module)).expect("run template IR");
     assert_eq!(to_str(&vm, result), "value");
 }
 

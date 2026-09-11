@@ -1,6 +1,8 @@
 //! async/await 运行时测试：异步函数调用返回 promise、await 恢复、reject 进 catch、
 //! 多 await 顺序、嵌套 async、微任务执行序。
 
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
 use oxide_vm::promise::promise_settled_value;
@@ -18,7 +20,7 @@ fn eval(source: &str) -> String {
         Err(e) => return format!("compile error: {e}"),
     };
     let mut vm = Vm::new();
-    match vm.run(&module) {
+    match vm.run(&Arc::new(module)) {
         Ok(result) => format_value(&vm, result),
         Err(e) => format!("vm error: {e}"),
     }

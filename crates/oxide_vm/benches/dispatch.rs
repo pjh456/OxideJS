@@ -9,7 +9,7 @@ fn bench_dispatch(c: &mut Criterion) {
     let js = "var x = 0; for (var i = 0; i < 10000; i++) { x = x + i - i * 2 + (i % 3); } x";
     let alloc = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&alloc, js).expect("parse");
-    let module = Compiler::new().compile(&program).expect("compile");
+    let module = Arc::new(Compiler::new().compile(&program).expect("compile"));
 
     c.bench_function("dispatch", |b| {
         b.iter_batched(

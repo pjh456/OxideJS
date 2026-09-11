@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
 use oxide_runtime_api as coercion;
@@ -15,7 +17,7 @@ fn eval(source: &str) -> String {
         Err(e) => return format!("compile error: {e}"),
     };
     let mut vm = Vm::new();
-    match vm.run(&module) {
+    match vm.run(&Arc::new(module)) {
         Ok(result) => format!("{result}"),
         Err(e) => format!("vm error: {e}"),
     }
@@ -258,7 +260,7 @@ fn eval_ty(source: &str) -> Result<(Vm, JsValue), String> {
     let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
     let module = Compiler::new().compile(&program).map_err(|e| format!("Compile error: {}", e))?;
     let mut vm = Vm::new();
-    let result = vm.run(&module)?;
+    let result = vm.run(&Arc::new(module))?;
     Ok((vm, result))
 }
 

@@ -1,6 +1,8 @@
 //! 循环每迭代绑定（CreatePerIterationEnvironment）：for/for-of/for-in 的 let/const
 //! 闭包捕获各自迭代快照。对应 PLAN 06-01（正确性报告 P1/P2）。
 
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
@@ -10,7 +12,7 @@ fn eval(source: &str) -> Result<(Vm, JsValue), String> {
     let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
     let module = Compiler::new().compile(&program).map_err(|e| format!("Compile error: {}", e))?;
     let mut vm = Vm::new();
-    let result = vm.run(&module)?;
+    let result = vm.run(&Arc::new(module))?;
     Ok((vm, result))
 }
 

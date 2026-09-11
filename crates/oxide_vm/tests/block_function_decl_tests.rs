@@ -3,6 +3,8 @@
 //! 覆盖：普通块内函数、块内后续调用、提前调用（阶段 1 现状）、与 let 同名冲突、
 //! 捕获路径、嵌套块作用域隔离、重复声明（Annex B 最后生效）、单语句块体。
 
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
@@ -12,7 +14,7 @@ fn eval(source: &str) -> Result<JsValue, String> {
     let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse: {:?}", e))?;
     let module = Compiler::new().compile(&program).map_err(|e| format!("Compile: {}", e))?;
     let mut vm = Vm::new();
-    vm.run(&module)
+    vm.run(&Arc::new(module))
 }
 
 #[test]

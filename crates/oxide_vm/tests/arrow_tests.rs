@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
 use oxide_types::value::JsValue;
@@ -14,7 +16,7 @@ fn eval(source: &str) -> String {
         Err(e) => return format!("compile error: {}", e),
     };
     let mut vm = Vm::new();
-    match vm.run(&module) {
+    match vm.run(&Arc::new(module)) {
         Ok(result) => format!("{}", result),
         Err(e) => format!("vm error: {}", e),
     }
@@ -31,7 +33,7 @@ fn eval_val(source: &str) -> (Vm, Result<JsValue, String>) {
         Err(e) => return (Vm::new(), Err(format!("compile error: {}", e))),
     };
     let mut vm = Vm::new();
-    let result = vm.run(&module);
+    let result = vm.run(&Arc::new(module));
     (vm, result)
 }
 

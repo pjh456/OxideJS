@@ -5,6 +5,8 @@
 //! 变化，说明双计机制已变——须对照 tests/stress/mem_object_graph.js 的基线
 //! （benchmark_baseline.json）复核后再更新本锚。
 
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
 use oxide_vm::vm::Vm;
@@ -32,7 +34,7 @@ fn run_module(source: &str) -> Vm {
     let program = oxide_parser::parse(&allocator, source).expect("parse");
     let module = Compiler::new().compile(&program).expect("compile");
     let mut vm = Vm::new();
-    let result = vm.run(&module).expect("run");
+    let result = vm.run(&Arc::new(module)).expect("run");
     assert_eq!(result.to_string(), "9", "root.left.id(2) + root.right.right.id(7)");
     vm
 }

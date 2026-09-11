@@ -1,6 +1,8 @@
 //! arguments 对象执行语义测试：实参个数/索引读取、箭头函数词法继承、
 //! 默认参数引用、方法调用、闭包捕获、显式声明屏蔽、嵌套函数调用帧边界。
 
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
@@ -9,7 +11,7 @@ fn eval(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
     let allocator = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
     let module = Compiler::new().compile(&program).map_err(|e| format!("Compile error: {}", e))?;
-    vm.run(&module)
+    vm.run(&Arc::new(module))
 }
 
 #[test]

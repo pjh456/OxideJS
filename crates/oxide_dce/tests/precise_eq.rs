@@ -4,6 +4,8 @@
 //! 对比顶层执行结果。**不经 `Compiler::compile`**（测试层直调底层函数）。顶层赋值 /
 //! escaped 槽样例做字节码/IR 级断言，is_top_level 标志直接断言。
 
+use std::sync::Arc;
+
 use oxide_bytecode::opcode::OpCode;
 use oxide_vm::vm::Vm;
 use oxide_vm::JsValue;
@@ -23,7 +25,7 @@ fn run_source(src: &str, precise: bool) -> Result<JsValue, String> {
     }
     let module = oxide_ir::lower::lower(&ir).expect("lower failed");
     let mut vm = Vm::new();
-    vm.run(&module)
+    vm.run(&Arc::new(module))
 }
 
 /// 结果规约成可断言形态：`(是否 Ok, 字符串化结果或错误消息)`。

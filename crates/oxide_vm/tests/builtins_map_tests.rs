@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use oxide_builtins::map::{map_clear, map_constructor as new_map, map_delete, map_get, map_has, map_set, map_size};
 use oxide_compiler::compiler::Compiler;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
@@ -9,7 +11,7 @@ fn eval(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
     let allocator = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
     let module = Compiler::new().compile(&program).map_err(|e| format!("Compile error: {}", e))?;
-    vm.run(&module)
+    vm.run(&Arc::new(module))
 }
 
 fn str_val(vm: &Vm, val: JsValue) -> String {

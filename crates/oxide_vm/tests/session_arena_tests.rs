@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
 use oxide_types::value::JsValue;
@@ -7,7 +9,7 @@ fn run_source(vm: &mut Vm, source: &str) -> JsValue {
     let allocator = Allocator::default();
     let program = oxide_parser::parse(&allocator, source).expect("parse failed");
     let module = Compiler::new().compile(&program).expect("compile failed");
-    vm.run(&module).expect("vm run failed")
+    vm.run(&Arc::new(module)).expect("vm run failed")
 }
 
 fn global_prop(vm: &Vm, name: &str) -> JsValue {

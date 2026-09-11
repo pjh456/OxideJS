@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_types::value::JsValue;
 use oxide_vm::promise::promise_settled_value;
@@ -7,7 +9,7 @@ fn eval(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
     let allocator = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
     let module = Compiler::new().compile(&program).map_err(|e| format!("Compile error: {}", e))?;
-    vm.run(&module)
+    vm.run(&Arc::new(module))
 }
 
 /// 顶层表达式返回 Promise 时，run() 末尾 drain 已执行微任务，读其结算值。

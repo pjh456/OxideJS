@@ -5,6 +5,8 @@
 //! 保持（writable 不翻位、NaN/Infinity 不被抹成 undefined）、var 初始化声明的值
 //! 落槽、枚举面不泄漏、任务只读拦截与 strict TypeError、eval 路径、for-in 枚举面。
 
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
 use oxide_vm::vm::Vm;
@@ -17,13 +19,13 @@ fn compile(source: &str) -> oxide_bytecode::module::CompiledModule {
 
 fn run_truthy(source: &str) {
     let mut vm = Vm::new();
-    let result = vm.run(&compile(source)).expect("run");
+    let result = vm.run(&Arc::new(compile(source))).expect("run");
     assert!(result.is_bool() && result.as_bool(), "expected true, got: {result:?}\nsource: {source}");
 }
 
 fn run_string(source: &str) -> String {
     let mut vm = Vm::new();
-    let result = vm.run(&compile(source)).expect("run");
+    let result = vm.run(&Arc::new(compile(source))).expect("run");
     if result.is_undefined() {
         return "undefined".to_string();
     }
@@ -33,7 +35,7 @@ fn run_string(source: &str) -> String {
 /// 求值并返回完成值字符串；运行期异常返回错误文本（供 TypeError 断言）。
 fn eval(source: &str) -> String {
     let mut vm = Vm::new();
-    match vm.run(&compile(source)) {
+    match vm.run(&Arc::new(compile(source))) {
         Ok(result) => vm.lookup_str(result).unwrap_or_default(),
         Err(e) => e,
     }

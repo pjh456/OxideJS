@@ -1,6 +1,8 @@
 //! 函数 length/name 属性集成测试：普通字节码函数、箭头函数、bind 包装器、
 //! getter/setter 前缀。每个用例独立编译执行，断言顶层表达式结果。
 
+use std::sync::Arc;
+
 use oxide_bytecode::module::CompiledModule;
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
@@ -10,11 +12,11 @@ use oxide_vm::vm::Vm;
 fn eval(source: &str) -> JsValue {
     let allocator = Allocator::default();
     let program = oxide_parser::parse(&allocator, source).expect("parse failed");
-    let module = Compiler::new().compile(&program).expect("compile failed");
+    let module = Arc::new(Compiler::new().compile(&program).expect("compile failed"));
     run(&module)
 }
 
-fn run(module: &CompiledModule) -> JsValue {
+fn run(module: &Arc<CompiledModule>) -> JsValue {
     let mut vm = Vm::new();
     vm.run(module).expect("vm run failed")
 }
@@ -22,7 +24,7 @@ fn run(module: &CompiledModule) -> JsValue {
 fn eval_str(source: &str) -> String {
     let allocator = Allocator::default();
     let program = oxide_parser::parse(&allocator, source).expect("parse failed");
-    let module = Compiler::new().compile(&program).expect("compile failed");
+    let module = Arc::new(Compiler::new().compile(&program).expect("compile failed"));
     let mut vm = Vm::new();
     let v = vm.run(&module).expect("vm run failed");
     // 字符串结果须在同一 VM 上读：perm 串指向 VM 私有内核，VM drop 后指针悬垂。

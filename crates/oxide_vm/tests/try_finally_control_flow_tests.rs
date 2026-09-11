@@ -4,6 +4,8 @@
 //! 异常路径不回归、嵌套 try/finally、for-of 迭代器关闭、普通循环零开销路径。
 //! 字符串值在此引擎 Display 为 `{string}`，断言一律用数值编码。
 
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
 use oxide_vm::vm::Vm;
@@ -19,7 +21,7 @@ fn eval(source: &str) -> String {
         Err(e) => return format!("compile error: {e}"),
     };
     let mut vm = Vm::new();
-    match vm.run(&module) {
+    match vm.run(&Arc::new(module)) {
         Ok(result) => format!("{result}"),
         Err(e) => format!("vm error: {e}"),
     }

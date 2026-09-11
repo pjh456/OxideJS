@@ -5,6 +5,8 @@
 //! 覆盖的 shape 只产生"每 shape 一次"的学习 miss，超出槽容量的轮换则
 //! 每次访问都 miss（FIFO 逐访问滚动）。
 
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
 use oxide_vm::vm::Vm;
@@ -15,7 +17,7 @@ fn run_once(source: &str) -> (String, u64, u64) {
     let program = oxide_parser::parse(&allocator, source).expect("parse");
     let module = Compiler::new().compile(&program).expect("compile");
     let mut vm = Vm::new();
-    let r = vm.run(&module).expect("run").to_string();
+    let r = vm.run(&Arc::new(module)).expect("run").to_string();
     (r, vm.ic_hit_count(), vm.ic_miss_count())
 }
 
@@ -143,7 +145,7 @@ fn rerun_clears_polymorphic_slots() {
     .expect("parse");
     let module = Compiler::new().compile(&program).expect("compile");
     let mut vm = Vm::new();
-    vm.run(&module).expect("run1");
+    vm.run(&Arc::new(module)).expect("run1");
     let learned = vm.ic_miss_count();
     // run() 每次冷启动，此处直接验证 rerun 的可重入性：清除后仍能正常执行。
     assert_eq!(format!("{}", vm.rerun().expect("rerun")), "1500");

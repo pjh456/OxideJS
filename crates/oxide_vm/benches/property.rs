@@ -9,7 +9,7 @@ fn bench_property(c: &mut Criterion) {
     let js = "var obj = { a: 1, b: 2, c: 3, d: 4, e: 5 }; var sum = 0; for (var i = 0; i < 10000; i++) { sum += obj.a + obj.b + obj.c + obj.d + obj.e; } sum";
     let alloc = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&alloc, js).expect("parse");
-    let module = Compiler::new().compile(&program).expect("compile");
+    let module = Arc::new(Compiler::new().compile(&program).expect("compile"));
 
     c.bench_function("property", |b| {
         b.iter_batched(

@@ -4,6 +4,8 @@
 //! for-of/属性键/模板/JSON/展开）的惰性扁平化正确性、数字/对象叶子混合、CONCAT_N
 //! 产物作 rope 叶子、低 GC 阈值下跨执行期字符串回收的存活与 mark 传播。
 
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_kernel::kernel::{KernelConfig, KernelCore};
 use oxide_types::value::JsValue;
@@ -13,7 +15,7 @@ fn eval(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
     let allocator = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
     let module = Compiler::new().compile(&program).map_err(|e| format!("Compile error: {e}"))?;
-    vm.run(&module)
+    vm.run(&Arc::new(module))
 }
 
 fn eval_str(source: &str) -> String {

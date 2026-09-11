@@ -1,6 +1,8 @@
 //! 调用帧窗口按存活上界拷贝的语义测试：验证压帧窗口缩小后调用方存活寄存器、
 //! this/new.target、spill 区与异常展开在各类调用路径下恢复正确。
 
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
 use oxide_vm::promise::promise_settled_value;
@@ -19,7 +21,7 @@ fn eval(source: &str) -> String {
         Err(e) => return format!("compile error: {e}"),
     };
     let mut vm = Vm::new();
-    match vm.run(&module) {
+    match vm.run(&Arc::new(module)) {
         Ok(result) => format_value(&vm, result),
         Err(e) => format!("vm error: {e}"),
     }

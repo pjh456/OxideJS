@@ -1,6 +1,8 @@
 //! test262 宿主对象 `$262` 的最小绑定验证：对象存在、`global` 指向当前 realm
 //! 全局、evalScript 可执行、未实现方法抛能力缺失错误。
 
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
 use oxide_vm::vm::Vm;
@@ -17,7 +19,7 @@ fn eval(source: &str) -> String {
         Err(e) => return format!("compile error: {e}"),
     };
     let mut vm = Vm::new();
-    match vm.run(&module) {
+    match vm.run(&Arc::new(module)) {
         Ok(result) => vm.lookup_str(result).unwrap_or_else(|| format!("{result}")),
         Err(e) => format!("vm error: {e}"),
     }

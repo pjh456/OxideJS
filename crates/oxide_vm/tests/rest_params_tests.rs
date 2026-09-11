@@ -1,6 +1,8 @@
 //! rest 参数集成测试：实参收集、length 交互、与 spread/箭头/闭包组合。
 //! 每个用例独立编译执行，断言顶层表达式结果。
 
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
 use oxide_types::value::JsValue;
@@ -11,7 +13,7 @@ fn eval(source: &str) -> JsValue {
     let program = oxide_parser::parse(&allocator, source).expect("parse failed");
     let module = Compiler::new().compile(&program).expect("compile failed");
     let mut vm = Vm::new();
-    vm.run(&module).expect("vm run failed")
+    vm.run(&Arc::new(module)).expect("vm run failed")
 }
 
 fn eval_int(source: &str) -> i32 {
@@ -30,7 +32,7 @@ fn eval_str(source: &str) -> String {
     let program = oxide_parser::parse(&allocator, source).expect("parse failed");
     let module = Compiler::new().compile(&program).expect("compile failed");
     let mut vm = Vm::new();
-    let v = vm.run(&module).expect("vm run failed");
+    let v = vm.run(&Arc::new(module)).expect("vm run failed");
     // 字符串结果须在同一 VM 上读：perm 串指向 VM 私有内核，VM drop 后指针悬垂。
     if v.is_string() {
         vm.lookup_str(v).unwrap_or_default()

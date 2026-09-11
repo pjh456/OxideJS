@@ -8,6 +8,8 @@
 //! 覆盖生成器体内 C 侧路径触发的构造后 throw 与取值两种形态；帧边界
 //! （字节码 GET_PROP 压 getter 帧）形态与循环失控形态（test262 族）另行回测。
 
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_vm::vm::Vm;
 
@@ -16,7 +18,7 @@ fn eval_str(source: &str) -> String {
     let program = oxide_parser::parse(&allocator, source).expect("parse");
     let module = Compiler::new().compile(&program).expect("compile");
     let mut vm = Vm::new();
-    let result = vm.run(&module).expect("run");
+    let result = vm.run(&Arc::new(module)).expect("run");
     vm.lookup_str(result).unwrap_or_else(|| format!("{result}"))
 }
 

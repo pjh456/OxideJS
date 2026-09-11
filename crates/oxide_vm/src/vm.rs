@@ -446,8 +446,8 @@ pub struct Vm {
     pub math_rng_state: u64,
     /// 全局扁平模块表：下标 = 模块 `flat_id`（顶层 0，子模块 flatten 后全局唯一）。
     /// 闭包 `sub_module_index` 即 flat_id，逃逸闭包也能自足解析。
-    /// 条目为 `Arc<CompiledModule>`，与调用方模块树共享（`run()` 只做 Arc::clone，
-    /// 不再每次深拷贝整棵子树）。
+    /// 条目为 `Arc<CompiledModule>`，与调用方模块树共享：顶层条目即调用方模块
+    /// Arc 同一实例，`run()` 全程只做 Arc::clone，无深拷贝。
     pub(crate) sub_modules: Arc<Vec<Arc<CompiledModule>>>,
     /// 帧切换时暂存调用方字节码的 Arc 栈（与 `bytecode` 同共享语义）。
     pub(crate) saved_bytecode_stack: Vec<Arc<[opcode::Instr]>>,
@@ -2801,7 +2801,8 @@ mod tests {
             is_async: false,
         });
 
-        vm.run(&module).expect("FOR_OF_CLOSE should tolerate non-object sentinel");
+        vm.run(&Arc::new(module))
+            .expect("FOR_OF_CLOSE should tolerate non-object sentinel");
 
         assert!(vm.iters.for_of_iters.is_empty());
     }
@@ -2854,7 +2855,9 @@ mod tests {
             ..CompiledModule::new()
         };
         let mut vm = Vm::new();
-        let err = vm.run(&module).expect_err("unimplemented opcode should fail explicitly");
+        let err = vm
+            .run(&Arc::new(module))
+            .expect_err("unimplemented opcode should fail explicitly");
         assert_eq!(err, "opcode PROFILE_SHAPE not yet implemented");
     }
 

@@ -959,6 +959,8 @@ mod tests {
     use oxide_types::object::JsObject;
     use oxide_types::value::JsValue;
 
+    use std::sync::Arc;
+
     use super::*;
     use crate::vm::{CallFrame, FrameContinuation};
     use oxide_builtins::{array_buffer, data_view, map, set, typed_array};
@@ -1612,8 +1614,10 @@ mod tests {
     #[test]
     fn closure_cell_survives_object_sweep() {
         let mut vm = vm_with_threshold(1);
-        vm.run(&compile("var counter = 0; function inc() { return ++counter; } globalThis.inc = inc; 0"))
-            .expect("run1");
+        vm.run(&Arc::new(compile(
+            "var counter = 0; function inc() { return ++counter; } globalThis.inc = inc; 0",
+        )))
+        .expect("run1");
         assert!(!vm.gc_state.session_cell_ptrs.borrow().is_empty(), "run1 应分配 upvalue cell");
 
         // reset 触发对象 sweep：存活对象搬到新 arena，旧 arena 释放。
@@ -1636,10 +1640,10 @@ mod tests {
     #[test]
     fn private_brand_cell_survives_object_sweep() {
         let mut vm = vm_with_threshold(1);
-        vm.run(&compile(
+        vm.run(&Arc::new(compile(
             "class C { #x = 0; set(v){ this.#x = v; } get(){ return this.#x; } } \
              globalThis.c = new C(); globalThis.c.set(4); 0",
-        ))
+        )))
         .expect("run1");
 
         vm.reset();
@@ -1664,14 +1668,16 @@ mod tests {
     #[test]
     fn cells_freed_by_full_reset_and_reallocatable() {
         let mut vm = Vm::new();
-        vm.run(&compile("var x = 1; function f() { return x; } globalThis.f = f; f()"))
+        vm.run(&Arc::new(compile("var x = 1; function f() { return x; } globalThis.f = f; f()")))
             .expect("run1");
         assert!(!vm.gc_state.session_cell_ptrs.borrow().is_empty());
 
         vm.full_reset();
         assert!(vm.gc_state.session_cell_ptrs.borrow().is_empty(), "full_reset 应释放全部 cell");
 
-        let result = vm.run(&compile("var y = 2; function g() { return y; } g()")).expect("run2");
+        let result = vm
+            .run(&Arc::new(compile("var y = 2; function g() { return y; } g()")))
+            .expect("run2");
         assert_eq!(format!("{result}"), "2", "重置后新 cell 应正常分配与读取");
     }
 

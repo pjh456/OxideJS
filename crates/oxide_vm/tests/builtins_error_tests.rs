@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use oxide_builtins::error;
 use oxide_compiler::compiler::Compiler;
 use oxide_types::mem::P;
@@ -14,7 +16,7 @@ fn eval(source: &str) -> Result<JsValue, String> {
     let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse: {:?}", e))?;
     let module = Compiler::new().compile(&program).map_err(|e| format!("Compile: {}", e))?;
     let mut vm = make_vm();
-    vm.run(&module)
+    vm.run(&Arc::new(module))
 }
 
 /// 在既有 Vm 内编译执行：结果字符串须在同一 Vm 上下文解析（session 串随 Vm 释放）。
@@ -22,7 +24,7 @@ fn eval_in(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
     let allocator = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse: {:?}", e))?;
     let module = Compiler::new().compile(&program).map_err(|e| format!("Compile: {}", e))?;
-    vm.run(&module)
+    vm.run(&Arc::new(module))
 }
 
 #[test]
@@ -482,7 +484,7 @@ fn error_stack_is_string() {
     let program = oxide_parser::parse(&allocator, "typeof new Error().stack()").unwrap();
     let module = Compiler::new().compile(&program).unwrap();
     let mut vm = make_vm();
-    let result = vm.run(&module).unwrap();
+    let result = vm.run(&Arc::new(module)).unwrap();
     // typeof 结果复用进程级静态串，同 VM 上读取（跨 VM 指针存活由实现保证，不做假设）。
     let s = vm.lookup_str(result);
     assert_eq!(s, Some("string".to_string()));

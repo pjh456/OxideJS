@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_kernel::kernel::{KernelConfig, KernelCore};
 use oxide_parser::Allocator;
@@ -21,7 +23,7 @@ fn vm_with_threshold(bytes: usize) -> Vm {
 fn long_string_loop_triggers_runtime_gc_and_bounds_session() {
     let mut vm = vm_with_threshold(4096);
     let module = compile("var s; for (var i = 0; i < 500000; i++) { s = 'str' + i; } s.length");
-    let result = vm.run(&module).expect("run");
+    let result = vm.run(&Arc::new(module)).expect("run");
 
     assert_eq!(format!("{}", result), "9");
     assert!(vm.session_gc_stats().total_collections > 0, "执行期应触发字符串 GC");
@@ -38,10 +40,10 @@ fn long_string_loop_triggers_runtime_gc_and_bounds_session() {
 fn session_string_survives_across_runs_with_runtime_gc() {
     let mut vm = vm_with_threshold(4096);
     let first = compile("globalThis.kept = 'he' + 'llo'; 0");
-    vm.run(&first).expect("run1");
+    vm.run(&Arc::new(first)).expect("run1");
 
     let second = compile("var s; for (var i = 0; i < 500000; i++) { s = 'y' + i; } globalThis.kept");
-    let result = vm.run(&second).expect("run2");
+    let result = vm.run(&Arc::new(second)).expect("run2");
     let text = vm.lookup_str(result).expect("kept 应为字符串").to_string();
 
     assert_eq!(text, "hello");
@@ -53,11 +55,11 @@ fn session_string_survives_across_runs_with_runtime_gc() {
 fn reset_preserves_session_strings_after_runtime_gc() {
     let mut vm = vm_with_threshold(4096);
     let first = compile("globalThis.kept = 'x' + 'y'; 0");
-    vm.run(&first).expect("run1");
+    vm.run(&Arc::new(first)).expect("run1");
     vm.reset();
 
     let second = compile("globalThis.kept");
-    let result = vm.run(&second).expect("run2");
+    let result = vm.run(&Arc::new(second)).expect("run2");
     let text = vm.lookup_str(result).expect("kept 应为字符串").to_string();
     assert_eq!(text, "xy");
 }
@@ -69,12 +71,12 @@ fn strings_only_then_reset_keeps_global_subtree_strings() {
     let mut vm = vm_with_threshold(4096);
     let first =
         compile("globalThis.kept = { s: 'he' + 'llo' }; var t; for (var i = 0; i < 500000; i++) { t = 'x' + i; } 0");
-    vm.run(&first).expect("run1");
+    vm.run(&Arc::new(first)).expect("run1");
     assert!(vm.session_gc_stats().total_collections > 0, "run1 应触发执行期字符串 GC");
     vm.reset();
 
     let second = compile("globalThis.kept.s");
-    let result = vm.run(&second).expect("run2");
+    let result = vm.run(&Arc::new(second)).expect("run2");
     let text = vm.lookup_str(result).expect("kept.s 应为字符串").to_string();
     assert_eq!(text, "hello");
 }
@@ -89,7 +91,7 @@ fn regexp_exec_strings_survive_runtime_gc() {
         "var text = 'a'.repeat(500) + 'b'.repeat(500); var m = /(a+)(b+)/.exec(text); \
          m[0] + '|' + m[1] + '|' + m[2]",
     );
-    let result = vm.run(&module).expect("run");
+    let result = vm.run(&Arc::new(module)).expect("run");
     let text = vm.lookup_str(result).expect("exec 结果应为字符串").to_string();
     let expected = format!("{}|{}|{}", "a".repeat(500) + &"b".repeat(500), "a".repeat(500), "b".repeat(500));
     assert_eq!(text, expected);
@@ -105,7 +107,7 @@ fn temporal_zoned_date_time_strings_survive_runtime_gc() {
         "var g = {}; for (var i = 0; i < 20; i++) { g['k' + i] = 'v'.repeat(64); } \
          var z = new Temporal.ZonedDateTime(0n, 'UTC'); z.timeZoneId + '|' + z.calendarId",
     );
-    let result = vm.run(&module).expect("run");
+    let result = vm.run(&Arc::new(module)).expect("run");
     let text = vm.lookup_str(result).expect("ZDT 槽应为字符串").to_string();
     assert_eq!(text, "UTC|iso8601");
     assert!(vm.session_gc_stats().total_collections > 0, "执行期应触发字符串 GC");
@@ -120,7 +122,7 @@ fn replace_replacer_args_survive_runtime_gc() {
         "var g = {}; for (var i = 0; i < 20; i++) { g['k' + i] = 'v'.repeat(64); } \
          'a-b-c'.replace(/(a)-(b)-(c)/g, function(m, p1, p2, p3, pos, s) { return p1 + p2 + p3; })",
     );
-    let result = vm.run(&module).expect("run");
+    let result = vm.run(&Arc::new(module)).expect("run");
     let text = vm.lookup_str(result).expect("replace 结果应为字符串").to_string();
     assert_eq!(text, "abc");
     assert!(vm.session_gc_stats().total_collections > 0, "执行期应触发字符串 GC");
@@ -141,7 +143,7 @@ fn map_callback_caller_reg_strings_survive_nested_dispatch() {
            return held; } \
          var out = middle('mid' + 'str'); out",
     );
-    let result = vm.run(&module).expect("run");
+    let result = vm.run(&Arc::new(module)).expect("run");
     let text = vm.lookup_str(result).expect("held 应为字符串").to_string();
     assert_eq!(text, "midstr");
     assert!(vm.session_gc_stats().total_collections > 0, "执行期应触发字符串 GC");
@@ -159,7 +161,7 @@ fn replace_replacer_caller_reg_strings_survive_nested_dispatch() {
            return held + '|' + out; } \
          var out = middle('repl' + 'acer'); out",
     );
-    let result = vm.run(&module).expect("run");
+    let result = vm.run(&Arc::new(module)).expect("run");
     let text = vm.lookup_str(result).expect("结果应为字符串").to_string();
     assert_eq!(text, "replacer|a[-]b[-]c");
     assert!(vm.session_gc_stats().total_collections > 0, "执行期应触发字符串 GC");
@@ -178,7 +180,7 @@ fn generator_next_loop_caller_reg_strings_survive_nested_dispatch() {
            return held + '|' + acc; } \
          var out = middle('gen' + 'str'); out",
     );
-    let result = vm.run(&module).expect("run");
+    let result = vm.run(&Arc::new(module)).expect("run");
     let text = vm.lookup_str(result).expect("结果应为字符串").to_string();
     assert_eq!(text, "genstr|10");
     assert!(vm.session_gc_stats().total_collections > 0, "执行期应触发字符串 GC");
@@ -198,7 +200,7 @@ fn nested_inline_callbacks_caller_reg_strings_survive_runtime_gc() {
            return held + '|' + r.join(','); } \
          var out = middle('nest' + 'ed'); out",
     );
-    let result = vm.run(&module).expect("run");
+    let result = vm.run(&Arc::new(module)).expect("run");
     let text = vm.lookup_str(result).expect("结果应为字符串").to_string();
     assert_eq!(text, "nested|31,32");
     assert!(vm.session_gc_stats().total_collections > 0, "执行期应触发字符串 GC");
@@ -210,14 +212,14 @@ fn nested_inline_callbacks_caller_reg_strings_survive_runtime_gc() {
 fn full_reset_clears_session_after_runtime_gc() {
     let mut vm = vm_with_threshold(4096);
     let first = compile("var s; for (var i = 0; i < 200000; i++) { s = 'a' + i; } s.length");
-    vm.run(&first).expect("run1");
+    vm.run(&Arc::new(first)).expect("run1");
     assert!(vm.session_gc_stats().total_collections > 0, "run1 应触发执行期字符串 GC");
 
     vm.full_reset();
 
     assert_eq!(vm.session_bytes_allocated(), 0, "full_reset 后 session 字节应为 0");
     let second = compile("'ok' + '!'");
-    let result = vm.run(&second).expect("run2");
+    let result = vm.run(&Arc::new(second)).expect("run2");
     let text = vm.lookup_str(result).expect("拼接结果应为字符串").to_string();
     assert_eq!(text, "ok!");
 }
@@ -233,13 +235,13 @@ fn reset_sweep_preserves_global_function_object() {
          for (var i = 0; i < 2000; i++) { var t = 'p' + i + 'q' + i; } \
          typeof globalThis.fn === 'function'",
     );
-    let result = vm.run(&first).expect("run1");
+    let result = vm.run(&Arc::new(first)).expect("run1");
     assert!(result.is_bool() && result.as_bool());
     assert!(vm.session_gc_stats().total_collections > 0, "低阈值应触发执行期收集");
     vm.reset();
 
     let second = compile("typeof globalThis.fn === 'function'");
-    let result = vm.run(&second).expect("run2");
+    let result = vm.run(&Arc::new(second)).expect("run2");
     assert!(result.is_bool() && result.as_bool());
 }
 
@@ -249,13 +251,13 @@ fn reset_sweep_preserves_global_function_object() {
 fn closure_cells_freed_by_full_reset_without_double_free() {
     let mut vm = vm_with_threshold(1);
     let first = compile("var x = 1; function f() { return x; } globalThis.f = f; f()");
-    let result = vm.run(&first).expect("run1");
+    let result = vm.run(&Arc::new(first)).expect("run1");
     assert_eq!(format!("{}", result), "1");
 
     vm.full_reset();
 
     let second = compile("'ok' + '!'");
-    let result = vm.run(&second).expect("run2");
+    let result = vm.run(&Arc::new(second)).expect("run2");
     let text = vm.lookup_str(result).expect("拼接结果应为字符串").to_string();
     assert_eq!(text, "ok!");
 }
@@ -274,12 +276,12 @@ fn dead_closure_upvalues_freed_by_sweep_without_double_free() {
          globalThis.dead = function() { return a + b + c; }; \
          globalThis.live = function() { return a + b + c; }; globalThis.live()",
     );
-    let result = vm.run(&first).expect("run1");
+    let result = vm.run(&Arc::new(first)).expect("run1");
     assert_eq!(format!("{}", result), "6");
 
     // run2：撤销死闭包的根引用（不可达）。
     let second = compile("globalThis.dead = undefined; 0");
-    vm.run(&second).expect("run2");
+    vm.run(&Arc::new(second)).expect("run2");
 
     // 完整收集：死闭包走死分支（释放 upvalue 列表），存活闭包走存活分支
     // （克隆与原件共享 Box，不在死分支释放）。
@@ -289,7 +291,7 @@ fn dead_closure_upvalues_freed_by_sweep_without_double_free() {
     // 跨 run 存活核（只读属性；跨 run 调用受 sub_module_index 缺口限制）：
     // sweep 后存活闭包克隆仍挂在 global 上。
     let third = compile("typeof globalThis.live === 'function'");
-    let result = vm.run(&third).expect("run3");
+    let result = vm.run(&Arc::new(third)).expect("run3");
     assert!(result.is_bool() && result.as_bool());
 
     // 收尾统一 upvalue 释放与死分支不双放（字段已置空、死对象已出表）。
@@ -300,7 +302,7 @@ fn dead_closure_upvalues_freed_by_sweep_without_double_free() {
         "var x = 10; var y = 20; var z = 30; \
                             globalThis.f = function() { return x + y + z; }; globalThis.f()",
     );
-    let result = vm.run(&fourth).expect("run4");
+    let result = vm.run(&Arc::new(fourth)).expect("run4");
     assert_eq!(format!("{}", result), "60");
 
     // 字节账目 A/B 差分样本：两条同构 arrow 仅 upvalue 数不同（3 vs 0），
@@ -310,8 +312,9 @@ fn dead_closure_upvalues_freed_by_sweep_without_double_free() {
     // 死分支不释放 upvalue 列表（泄漏）时差分为 0，本断言转红。
     let collect_freed = |src: &str| -> u64 {
         let mut v = vm_with_threshold(4096);
-        v.run(&compile(src)).expect("run create");
-        v.run(&compile("globalThis.arrow = undefined; 0")).expect("run unroot");
+        v.run(&Arc::new(compile(src))).expect("run create");
+        v.run(&Arc::new(compile("globalThis.arrow = undefined; 0")))
+            .expect("run unroot");
         v.collect_session_gc();
         let stats = v.session_gc_stats();
         assert!(stats.last_collection_objects_dead >= 1, "arrow 闭包应经 sweep 死分支");

@@ -6,6 +6,8 @@
 //!
 //! 计数断言基于单次 run 内 miss/hit 对比（run() 每次冷启动，IC 学习不跨 run）。
 
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
 use oxide_vm::vm::Vm;
@@ -16,7 +18,7 @@ fn run_once(source: &str) -> (String, u64, u64) {
     let program = oxide_parser::parse(&allocator, source).expect("parse");
     let module = Compiler::new().compile(&program).expect("compile");
     let mut vm = Vm::new();
-    let result = vm.run(&module).expect("run");
+    let result = vm.run(&Arc::new(module)).expect("run");
     // 字符串结果经 lookup_str 提取内容（JsValue Display 只打印 {string}）。
     let r = vm.lookup_str(result).unwrap_or_else(|| format!("{result}"));
     (r, vm.ic_hit_count(), vm.ic_miss_count())
@@ -184,7 +186,7 @@ fn member_write_counts_in_ic_hit_rate() {
     .expect("parse");
     let module = Compiler::new().compile(&program).expect("compile");
     let mut vm = Vm::new();
-    let result = vm.run(&module).expect("run");
+    let result = vm.run(&Arc::new(module)).expect("run");
     let r = vm.lookup_str(result).unwrap_or_else(|| format!("{result}"));
     assert_eq!(r, "1000");
     // 循环写侧 1000 命中 + 末尾 IC_GET 1 miss → 命中率 ~0.999（写侧计入后趋近真实）。

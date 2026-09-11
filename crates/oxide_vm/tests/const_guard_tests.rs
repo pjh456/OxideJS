@@ -4,6 +4,8 @@
 //! 声明路径带 b=1 时，checkpoint/寄存器复用残留的陈旧值会误抛 "Assignment to constant variable"。
 //! 寄存器分配复用寄存器后此问题必现——本测试锁死声明路径恒 b=0 的行为。
 
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
 use oxide_vm::vm::Vm;
@@ -19,7 +21,7 @@ fn eval(source: &str) -> String {
         Err(e) => return format!("compile error: {e}"),
     };
     let mut vm = Vm::new();
-    match vm.run(&module) {
+    match vm.run(&Arc::new(module)) {
         Ok(result) => format!("{result}"),
         Err(e) => format!("vm error: {e}"),
     }

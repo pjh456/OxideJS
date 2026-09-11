@@ -1,6 +1,8 @@
 //! `yield*` 委托语法运行时测试：委托数组/字符串/生成器，next/return/throw 转发，
 //! 委托完成值传递与空委托场景。
 
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
 use oxide_vm::vm::Vm;
@@ -16,7 +18,7 @@ fn eval(source: &str) -> String {
         Err(e) => return format!("compile error: {e}"),
     };
     let mut vm = Vm::new();
-    match vm.run(&module) {
+    match vm.run(&Arc::new(module)) {
         Ok(result) => {
             if result.is_string() {
                 vm.lookup_str(result).unwrap_or_default()

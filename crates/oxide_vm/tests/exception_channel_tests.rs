@@ -2,6 +2,8 @@
 //! 忽略路径（IteratorClose 的 return() 抛错被丢弃）不得把值残留进槽，unwind 进入
 //! finally/catch 接住异常后槽作废，否则后续 take 会误取残留值污染拒绝原因。
 
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
 use oxide_vm::promise::promise_settled_value;
@@ -19,7 +21,7 @@ fn eval(source: &str) -> String {
         Err(e) => return format!("compile error: {e}"),
     };
     let mut vm = Vm::new();
-    match vm.run(&module) {
+    match vm.run(&Arc::new(module)) {
         Ok(result) => format_value(&vm, result),
         Err(e) => format!("vm error: {e}"),
     }

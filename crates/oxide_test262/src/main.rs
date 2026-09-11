@@ -695,7 +695,7 @@ fn run_test_inner(
     };
 
     let mut vm = Vm::with_kernel_core(Arc::clone(kernel));
-    let run_result = vm.run(&module);
+    let run_result = vm.run(&Arc::new(module));
     let dur = start.elapsed().as_millis() as u64;
 
     if is_async {

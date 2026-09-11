@@ -3,6 +3,8 @@
 //!
 //! 手工 IR 是唯一可达路径——RegAlloc 未接入，真实 JS 编译产物不会含三指令。
 
+use std::sync::Arc;
+
 use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
@@ -15,7 +17,7 @@ fn run_ir(ir: IRFunction) -> String {
     // 手工 IR 不经 Compiler::compile，需手动扁平化子模块（create_closure 相对索引）。
     oxide_compiler::flatten::flatten_submodules(&mut module);
     let mut vm = Vm::new();
-    match vm.run(&module) {
+    match vm.run(&Arc::new(module)) {
         Ok(v) => format!("{v}"),
         Err(e) => format!("vm error: {e}"),
     }

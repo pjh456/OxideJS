@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use oxide_builtins::set::{set_add, set_clear, set_constructor as new_set, set_delete, set_has, set_size};
 use oxide_compiler::compiler::Compiler;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
@@ -9,7 +11,7 @@ fn eval(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
     let allocator = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
     let module = Compiler::new().compile(&program).map_err(|e| format!("Compile error: {}", e))?;
-    vm.run(&module)
+    vm.run(&Arc::new(module))
 }
 
 /// 分配一个原型指向 Set.prototype 的占位对象并写入 reg 0，作为构造器调用的 `this`。

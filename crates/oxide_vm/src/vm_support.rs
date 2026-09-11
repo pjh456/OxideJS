@@ -821,7 +821,7 @@ mod tests {
         let module = oxide_compiler::compiler::Compiler::new()
             .compile(&program)
             .expect("compile failed");
-        vm.run(&module).expect("vm run failed")
+        vm.run(&Arc::new(module)).expect("vm run failed")
     }
 
     /// 计数往返：两条构造路径（独立核/共享核）的登记与 Drop 注销恰好配对，
@@ -981,7 +981,9 @@ mod tests {
         let module = oxide_compiler::compiler::Compiler::new()
             .compile(&program)
             .expect("compile failed");
-        let err = vm.run(&module).expect_err("runaway allocation must hit the alloc cap");
+        let err = vm
+            .run(&Arc::new(module))
+            .expect_err("runaway allocation must hit the alloc cap");
         assert!(err.contains("memory limit"), "unexpected error: {err}");
         assert!(!err.contains("step limit"), "cap 应先于步数上限生效: {err}");
     }
@@ -1015,7 +1017,7 @@ mod tests {
         let module = oxide_compiler::compiler::Compiler::new()
             .compile(&program)
             .expect("compile failed");
-        let err = vm.run(&module).expect_err("reentry pump must hit the alloc cap");
+        let err = vm.run(&Arc::new(module)).expect_err("reentry pump must hit the alloc cap");
         assert!(err.contains("memory limit"), "unexpected error: {err}");
     }
 

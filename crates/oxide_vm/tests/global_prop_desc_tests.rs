@@ -2,6 +2,8 @@
 //! enumerable=false（不泄漏进 Object.keys(globalThis) / for-in），
 //! 全局 NaN/undefined/Infinity 三常量不可写不可枚举可配置。
 
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
 use oxide_vm::vm::Vm;
@@ -11,7 +13,7 @@ fn eval_truthy(source: &str) {
     let program = oxide_parser::parse(&allocator, source).expect("parse");
     let module = Compiler::new().compile(&program).expect("compile");
     let mut vm = Vm::new();
-    let result = vm.run(&module).expect("run");
+    let result = vm.run(&Arc::new(module)).expect("run");
     assert!(result.is_bool() && result.as_bool(), "expected true, got: {result:?}\nsource: {source}");
 }
 

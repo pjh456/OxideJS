@@ -16,7 +16,7 @@ fn eval(source: &str) -> String {
         Err(e) => return format!("compile error: {e}"),
     };
     let mut vm = Vm::new();
-    match vm.run(&module) {
+    match vm.run(&Arc::new(module)) {
         Ok(result) => format!("{result}"),
         Err(e) => format!("vm error: {e}"),
     }
@@ -33,7 +33,7 @@ fn eval_with_kernel(source: &str, kernel: Arc<KernelCore>) -> String {
         Err(e) => return format!("compile error: {e}"),
     };
     let mut vm = Vm::with_kernel_core(kernel);
-    match vm.run(&module) {
+    match vm.run(&Arc::new(module)) {
         Ok(result) => format!("{result}"),
         Err(e) => format!("vm error: {e}"),
     }
@@ -52,12 +52,12 @@ fn regression_rerun_clears_ic_cache() {
     let program = oxide_parser::parse(&allocator, source).expect("parse");
     let module = Compiler::new().compile(&program).expect("compile");
     let mut vm = Vm::new();
-    assert_eq!(format!("{}", vm.run(&module).unwrap()), "1");
+    assert_eq!(format!("{}", vm.run(&Arc::new(module)).unwrap()), "1");
 
     let source2 = "var o = {a: 2}; o.a";
     let program2 = oxide_parser::parse(&allocator, source2).expect("parse");
     let module2 = Compiler::new().compile(&program2).expect("compile");
-    vm.run(&module2).unwrap();
+    vm.run(&Arc::new(module2)).unwrap();
     assert_eq!(
         format!("{}", vm.rerun().unwrap()),
         "2",
@@ -188,7 +188,7 @@ fn eval_shallow(source: &str, depth: usize) -> String {
     let mut cfg = KernelConfig::minimal();
     cfg.max_call_depth = depth;
     let mut vm = Vm::with_kernel_core(KernelCore::new(cfg));
-    match vm.run(&module) {
+    match vm.run(&Arc::new(module)) {
         Ok(val) => {
             if val.is_string() {
                 vm.lookup_str(val).unwrap_or_default().to_string()

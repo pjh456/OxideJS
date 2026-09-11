@@ -1,6 +1,8 @@
 //! AsyncDisposableStack 内置对象测试：构造器/原型形状、use 读取顺序与入栈语义、
 //! disposeAsync 状态机（微任务序/错误链/防重入/reject 而非抛）、move、GC 交叉。
 
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_kernel::kernel::{KernelConfig, KernelCore};
 use oxide_parser::Allocator;
@@ -19,7 +21,7 @@ fn eval(source: &str) -> String {
         Err(e) => return format!("compile error: {e}"),
     };
     let mut vm = Vm::new();
-    match vm.run(&module) {
+    match vm.run(&Arc::new(module)) {
         Ok(result) => format_value(&vm, result),
         Err(e) => format!("vm error: {e}"),
     }
@@ -487,11 +489,11 @@ fn gc_runtime_collection_keeps_entries() {
     )
     .expect("parse");
     let module = Compiler::new().compile(&program).expect("compile");
-    vm.run(&module).expect("run1");
+    vm.run(&Arc::new(module)).expect("run1");
     let allocator = Allocator::default();
     let program2 = oxide_parser::parse(&allocator, "globalThis.log.length + ''").expect("parse");
     let module2 = Compiler::new().compile(&program2).expect("compile");
-    let result = vm.run(&module2).expect("run2");
+    let result = vm.run(&Arc::new(module2)).expect("run2");
     let text = vm.lookup_str(result).unwrap_or_default().to_string();
     assert_eq!(text, "200");
     assert!(vm.session_gc_stats().total_collections > 0, "低阈值应触发执行期 GC");
@@ -512,7 +514,7 @@ fn promote_then_reset_keeps_entries_alive() {
     )
     .expect("parse");
     let module = Compiler::new().compile(&program).expect("compile");
-    vm.run(&module).expect("run1");
+    vm.run(&Arc::new(module)).expect("run1");
     vm.reset();
     let allocator = Allocator::default();
     let program2 = oxide_parser::parse(
@@ -522,7 +524,7 @@ fn promote_then_reset_keeps_entries_alive() {
     )
     .expect("parse");
     let module2 = Compiler::new().compile(&program2).expect("compile");
-    let result = vm.run(&module2).expect("run2");
+    let result = vm.run(&Arc::new(module2)).expect("run2");
     let text = vm.lookup_str(result).unwrap_or_default().to_string();
     assert_eq!(text, "true|false");
 }
@@ -535,7 +537,7 @@ fn drop_accounts_capability_bytes() {
     let program = oxide_parser::parse(&allocator, "for (var i = 0; i < 500; i++) { new AsyncDisposableStack(); } 0")
         .expect("parse");
     let module = Compiler::new().compile(&program).expect("compile");
-    vm.run(&module).expect("run");
+    vm.run(&Arc::new(module)).expect("run");
     let before = vm.session_gc_stats().total_bytes_freed;
     vm.reset();
     let after = vm.session_gc_stats().total_bytes_freed;
@@ -551,7 +553,7 @@ fn full_reset_rebuilds_async_disposable_stack() {
     let allocator = Allocator::default();
     let program = oxide_parser::parse(&allocator, "new AsyncDisposableStack().disposeAsync(); 0").expect("parse");
     let module = Compiler::new().compile(&program).expect("compile");
-    vm.run(&module).expect("run1");
+    vm.run(&Arc::new(module)).expect("run1");
     vm.full_reset();
     let allocator = Allocator::default();
     let program2 = oxide_parser::parse(
@@ -566,7 +568,7 @@ fn full_reset_rebuilds_async_disposable_stack() {
     )
     .expect("parse");
     let module2 = Compiler::new().compile(&program2).expect("compile");
-    let result = vm.run(&module2).expect("run2");
+    let result = vm.run(&Arc::new(module2)).expect("run2");
     let text = match promise_settled_value(unsafe { &*result.as_js_object_ptr() }) {
         Some((true, v)) => vm.lookup_str(v).unwrap_or_default().to_string(),
         Some((false, v)) => format!("<rejected {}>", vm.lookup_str(v).unwrap_or_default()),

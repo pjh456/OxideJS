@@ -3,6 +3,8 @@
 //! 覆盖：读未声明抛 ReferenceError；typeof 未声明返回 "undefined"；
 //! sloppy 写后读正常；harness 全局 var 声明安全；内置标识符不误判。
 
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
@@ -12,7 +14,7 @@ fn eval(source: &str) -> Result<JsValue, String> {
     let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse: {:?}", e))?;
     let module = Compiler::new().compile(&program).map_err(|e| format!("Compile: {}", e))?;
     let mut vm = Vm::new();
-    vm.run(&module)
+    vm.run(&Arc::new(module))
 }
 
 /// 求值并取字符串结果内容（字符串值走 lookup_str，非字符串走 Display）。
@@ -21,7 +23,7 @@ fn eval_str(source: &str) -> Result<String, String> {
     let allocator = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse: {:?}", e))?;
     let module = Compiler::new().compile(&program).map_err(|e| format!("Compile: {}", e))?;
-    let result = vm.run(&module)?;
+    let result = vm.run(&Arc::new(module))?;
     Ok(vm.lookup_str(result).unwrap_or_default())
 }
 

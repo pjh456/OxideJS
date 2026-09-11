@@ -1,5 +1,7 @@
 //! 脚本顶层 var/function 声明落 globalThis 的运行时行为测试。
 
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
 use oxide_vm::vm::Vm;
@@ -9,7 +11,7 @@ fn eval_truthy(source: &str) {
     let program = oxide_parser::parse(&allocator, source).expect("parse");
     let module = Compiler::new().compile(&program).expect("compile");
     let mut vm = Vm::new();
-    let result = vm.run(&module).expect("run");
+    let result = vm.run(&Arc::new(module)).expect("run");
     assert!(result.is_bool() && result.as_bool(), "expected true, got: {result:?}\nsource: {source}");
 }
 
@@ -18,7 +20,7 @@ fn eval_string(source: &str) -> String {
     let program = oxide_parser::parse(&allocator, source).expect("parse");
     let module = Compiler::new().compile(&program).expect("compile");
     let mut vm = Vm::new();
-    let result = vm.run(&module).expect("run");
+    let result = vm.run(&Arc::new(module)).expect("run");
     vm.lookup_str(result).unwrap_or_default()
 }
 
@@ -31,9 +33,9 @@ fn compile(source: &str) -> oxide_bytecode::module::CompiledModule {
 /// 两阶段执行：phase1 → `reset()`（轻量重置，epoch 清空、session 保留）→ phase2。
 fn eval_two_phases(phase1: &str, phase2: &str) -> bool {
     let mut vm = Vm::new();
-    vm.run(&compile(phase1)).expect("run1");
+    vm.run(&Arc::new(compile(phase1))).expect("run1");
     vm.reset();
-    let result = vm.run(&compile(phase2)).expect("run2");
+    let result = vm.run(&Arc::new(compile(phase2))).expect("run2");
     result.is_bool() && result.as_bool()
 }
 

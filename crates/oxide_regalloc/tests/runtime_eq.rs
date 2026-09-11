@@ -3,6 +3,8 @@
 //! 同一 JS 源码走两条管线：parse → emit → dce（保守恒定）→（regalloc on/off）→ lower → run，
 //! 对比顶层执行结果。**不经 Compiler::compile**（测试层直调底层函数）。
 
+use std::sync::Arc;
+
 use oxide_bytecode::opcode::OpCode;
 use oxide_vm::vm::Vm;
 use oxide_vm::JsValue;
@@ -29,7 +31,7 @@ fn run_source(src: &str, regalloc: bool) -> Result<JsValue, String> {
     let mut module = module;
     oxide_compiler::flatten::flatten_submodules(&mut module);
     let mut vm = Vm::new();
-    vm.run(&module)
+    vm.run(&Arc::new(module))
 }
 
 /// 结果规约成可断言形态：`(是否 Ok, 字符串化结果或错误消息)`。

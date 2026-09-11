@@ -9,12 +9,13 @@ use oxide_types::value::JsValue;
 
 /// 按 `flat_id` 下标收集整棵子模块树为平表，供 `run()` 装载。
 ///
-/// 子模块节点以 `Arc` 与调用方模块树共享：只做 Arc::clone（O(1) 引用计数），
-/// 不再深拷贝 constants/upvalue_captures 等。顶层模块本身以浅拷贝包 Arc——
-/// 其自有 constants 仍逐 run 复制，但整棵子树零深拷贝。
-fn collect_flat_modules(module: &CompiledModule) -> Vec<Arc<CompiledModule>> {
+/// 顶层与子模块一律 `Arc` 共享：只做 Arc::clone（O(1) 引用计数），run 期
+/// 零模块拷贝。唯一可写面 = bytecode 缓冲，经 `bytecode_mut` 的 COW 写时
+/// 复制——dispatch 期平表与 `Vm.bytecode` 双持（refcount ≥ 2），写必落在
+/// 私有拷贝上，宿主侧共享缓冲永不被写。
+fn collect_flat_modules(module: &Arc<CompiledModule>) -> Vec<Arc<CompiledModule>> {
     let mut out: Vec<Option<Arc<CompiledModule>>> = Vec::new();
-    let top = Arc::new(module.clone());
+    let top = Arc::clone(module);
     place_flat(&top, &mut out);
     out.into_iter().map(|m| m.expect("flat_id slot must be filled")).collect()
 }
@@ -518,9 +519,10 @@ impl Vm {
 
     /// 加载并执行一个已编译模块，返回模块顶层执行结果或未捕获异常消息。
     ///
-    /// 内部初始化寄存器/bytecode/immutables 与 builtin 寄存器预绑定，然后进入
-    /// dispatch 主循环；执行完成或异常展开后返回。
-    pub fn run(&mut self, module: &CompiledModule) -> Result<JsValue, String> {
+    /// 模块以 `Arc` 与调用方共享（如 CodeForge 缓存条目）：平表装载只做
+    /// Arc::clone，run 期零模块拷贝。内部初始化寄存器/bytecode/immutables 与
+    /// builtin 寄存器预绑定，然后进入 dispatch 主循环；执行完成或异常展开后返回。
+    pub fn run(&mut self, module: &Arc<CompiledModule>) -> Result<JsValue, String> {
         vm_debug!("run: starting bytecode execution, {} instructions", module.bytecode.len());
         self.clear_execution_state();
         // 模板对象缓存按 run 清空：flat_id 每次 run 从 0 重新分配，跨 run 复用会

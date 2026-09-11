@@ -5,6 +5,8 @@
 //! on={object} vs off=42）。修复：graph.rs/rewrite.rs 对称 collect_own_escaped。
 //! 槽号 ≥ inherited_reg_start（param_layout.base）时触发，故用高压力变量推高槽号。
 
+use std::sync::Arc;
+
 use oxide_vm::vm::Vm;
 
 fn run_source(src: &str, regalloc: bool) -> (bool, String) {
@@ -33,7 +35,7 @@ fn run_source(src: &str, regalloc: bool) -> (bool, String) {
         Err(e) => return (false, format!("lower error: {e}")),
     };
     let mut vm = Vm::new();
-    match vm.run(&module) {
+    match vm.run(&Arc::new(module)) {
         Ok(v) => (true, v.to_string()),
         Err(e) => (false, e),
     }

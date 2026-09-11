@@ -287,7 +287,7 @@ pub fn run_mem_dirty_rebuild_leak(kernel: &Arc<KernelCore>) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        if let Err(e) = vm.run(&module) {
+        if let Err(e) = vm.run(&Arc::new(module)) {
             eprintln!("[dirty_rebuild] round {round} run failed: {e}");
             return ExitCode::FAILURE;
         }
@@ -581,7 +581,7 @@ pub fn run_mem_kernel_lifetime() -> ExitCode {
         Err(_) => return ExitCode::FAILURE,
     };
     let js_module = match Compiler::new().compile(&program) {
-        Ok(m) => m,
+        Ok(m) => Arc::new(m),
         Err(e) => {
             eprintln!("[kernel_lifetime] js phase compile failed: {e}");
             return ExitCode::FAILURE;

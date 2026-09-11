@@ -1,6 +1,8 @@
 //! eval 脚本 var/函数声明落全局对象的属性语义测试：configurable:true（区别于普通
 //! 脚本顶层的 false）、可 delete、跨 eval 轮次经全局对象可见。
 
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
@@ -10,7 +12,7 @@ fn eval(source: &str) -> Result<JsValue, String> {
     let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
     let module = Compiler::new().compile(&program).map_err(|e| format!("Compile error: {}", e))?;
     let mut vm = Vm::new();
-    vm.run(&module)
+    vm.run(&Arc::new(module))
 }
 
 fn eval_many(lines: &[&str]) -> Result<JsValue, String> {
@@ -30,7 +32,7 @@ fn eval_str(source: &str) -> String {
     let program = oxide_parser::parse(&allocator, source).expect("parse");
     let module = Compiler::new().compile(&program).expect("compile");
     let mut vm = Vm::new();
-    let result = vm.run(&module).expect("run");
+    let result = vm.run(&Arc::new(module)).expect("run");
     vm.lookup_str(result).unwrap_or_else(|| format!("{result}"))
 }
 

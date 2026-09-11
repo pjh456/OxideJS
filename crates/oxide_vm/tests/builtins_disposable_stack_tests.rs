@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use oxide_compiler::compiler::Compiler;
 use oxide_kernel::kernel::{KernelConfig, KernelCore};
 use oxide_vm::vm::Vm;
@@ -10,7 +12,7 @@ fn eval_in(vm: &mut Vm, source: &str) -> Result<oxide_types::value::JsValue, Str
     let allocator = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse: {:?}", e))?;
     let module = Compiler::new().compile(&program).map_err(|e| format!("Compile: {}", e))?;
-    vm.run(&module)
+    vm.run(&Arc::new(module))
 }
 
 /// 断言 eval 返回字符串值（session 串在 Vm 内解析）。
