@@ -27,6 +27,17 @@ fn epoch_reset_increments_id() {
     assert_eq!(epoch.current_id(), 2);
 }
 
+/// 换新 Bump 后旧地址空间不复用：reset 边界双 arena 保留锚恰 0
+/// （空 chunk 哨兵计 0），容量不跨 reset 保留。
+#[test]
+fn epoch_reset_frees_arena() {
+    let mut epoch = Epoch::new();
+    let _ptr = epoch.alloc(vec![0u8; 1 << 20]);
+    assert!(epoch.bump().allocated_bytes() > 0);
+    epoch.reset();
+    assert_eq!(epoch.bump().allocated_bytes(), 0);
+}
+
 #[test]
 fn persistent_new_and_deref() {
     let p = P::new(42i32);

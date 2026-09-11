@@ -343,7 +343,9 @@ impl Vm {
         self.teardown_session_heap_data();
         self.epoch.reset();
         self.gc_state.epoch_object_ptrs.clear();
-        self.gc_state.session_epoch.reset();
+        // 换新 Bump：旧 session arena 全量归还系统分配器（与 sweep 路径同构），
+        // 容量不跨 full_reset 保留。
+        self.gc_state.session_epoch = bumpalo::Bump::new();
         self.gc_state.session_bytes_allocated = 0;
         self.gc_state.session_bytes_peak = 0;
         self.gc_state.string_gc_watermark = self.kernel_core.config().session_gc_threshold;
@@ -1201,6 +1203,23 @@ mod tests {
         assert!(unsafe { *session_ptr } == 123);
     }
 
+    /// run 边界换新 Bump 后双 arena 保留锚恰 0：重源 run 冲高水位，
+    /// full_reset 后 epoch/session 两 arena 均空（容量不跨 reset 保留）。
+    #[test]
+    fn full_reset_zeroes_arena_retained() {
+        let mut vm = Vm::new();
+        run_source(
+            &mut vm,
+            "var t = 0; for (var i = 0; i < 20000; i++) { var o = { s: 'ab' + i, a: [i] }; t += o.s.length + o.a.length; } t",
+        );
+        assert!(vm.epoch.bump().allocated_bytes() > 0, "重源 run 应冲高 epoch arena 水位");
+
+        vm.full_reset();
+
+        assert_eq!(vm.epoch.bump().allocated_bytes(), 0);
+        assert_eq!(vm.gc_state.session_epoch.allocated_bytes(), 0);
+    }
+
     #[test]
     fn immutables_cache_filled_once_per_module() {
         let mut vm = Vm::new();
@@ -1318,12 +1337,12 @@ mod tests {
     }
 
     #[test]
-    fn session_epoch_reset_is_only_in_full_reset_state_clear() {
+    fn session_epoch_replacement_is_only_in_full_reset_state_clear() {
         let src = include_str!("vm_support.rs");
         let production = src.split("#[cfg(test)]").next().expect("production source");
-        assert_eq!(production.matches("self.gc_state.session_epoch.reset()").count(), 1);
+        assert_eq!(production.matches("self.gc_state.session_epoch = bumpalo::Bump::new()").count(), 1);
         assert!(production.contains("fn clear_full_reset_state(&mut self)"));
-        assert!(production.contains("self.gc_state.session_epoch.reset();"));
+        assert!(production.contains("self.gc_state.session_epoch = bumpalo::Bump::new();"));
     }
 
     #[test]

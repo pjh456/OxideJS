@@ -374,6 +374,68 @@ pub fn run_mem_closure_dead_leak(kernel: &Arc<KernelCore>) -> ExitCode {
     report_series("closure_dead_leak", "iter", &series)
 }
 
+/// 校准用例：重源单次 run 后 `full_reset()`，读双 arena 保留锚
+/// （`arena_retained_bytes`，reset 边界换新 Bump 后恰 0），再 50 轮轻源
+/// （每轮 `full_reset()`）采 VmRSS，度量 full_reset 归还路径的跨轮内存
+/// 增量（斜率 + 窗口总增量），期望走平。
+///
+/// # 注意事项
+/// 不走 VM 池：drop clean 路径与池内归还走同一 `full_reset`，池锁/condvar
+/// 噪音与本测面无关。重源瞬时对象全 epoch 分配、不逃逸 global；锚 == 0 为
+/// 确定性主门槛（in-engine，免分配器噪音），RSS 为次锚（进程级，仅判
+/// 峰后无新增量——归还 chunk 可能滞留分配器自由链不回 OS，不要求回落
+/// 峰前）。
+pub fn run_mem_pool_high_water(kernel: &Arc<KernelCore>) -> ExitCode {
+    const LIGHT_ROUNDS: usize = 50;
+
+    let heavy_js = "var t = 0; for (var i = 0; i < 200000; i++) { var o = { s: 'abcdefghij' + i, a: [i, i + 1, i + 2] }; t += o.s.length + o.a.length; } t";
+    let light_js = "1 + 1";
+    let compile_one = |js: &str| {
+        let allocator = Allocator::default();
+        let program = oxide_parser::parse(&allocator, js).expect("parse failed");
+        let hash = compiled_module_hash(&program);
+        kernel
+            .code_forge()
+            .get_or_insert_with(hash, || Compiler::new().compile(&program))
+            .expect("compile failed")
+    };
+    let heavy = compile_one(heavy_js);
+    let light = compile_one(light_js);
+
+    let mut vm = Vm::with_kernel_core(Arc::clone(kernel));
+    if let Err(e) = vm.run(&heavy) {
+        eprintln!("[pool_high_water] heavy run failed: {e}");
+        return ExitCode::FAILURE;
+    }
+    vm.full_reset();
+    let anchor = vm.arena_retained_bytes();
+    eprintln!("[pool_high_water] anchor after full_reset: {anchor} bytes (expect 0)");
+    if anchor != 0 {
+        return ExitCode::FAILURE;
+    }
+
+    let mut sampler = LeakSampler::new(20);
+    let mut series: Vec<(usize, f64)> = Vec::new();
+    for i in 0..LIGHT_ROUNDS {
+        if let Err(e) = vm.run(&light) {
+            eprintln!("[pool_high_water] round {i} run failed: {e}");
+            return ExitCode::FAILURE;
+        }
+        vm.full_reset();
+        if let Some(kb) = read_vmrss_kb() {
+            let v = kb as f64;
+            series.push((i, v));
+            if let Some(verdict) = sampler.add_sample(i, v) {
+                eprintln!(
+                    "[LEAK] pool_high_water rss_kb: slope={:.6} R²={:.4} over {} samples",
+                    verdict.slope, verdict.r2, 20
+                );
+            }
+        }
+    }
+    report_series("pool_high_water", "round", &series)
+}
+
 /// 全序列回归报告：打印首末 RSS、全序列斜率/R² 与窗口（末 20 样本）总
 /// 增量；斜率显著为正（R² > 0.9）返回失败，表示泄漏签名。
 fn report_series(case: &str, unit: &str, series: &[(usize, f64)]) -> ExitCode {

@@ -1,8 +1,9 @@
 //! 内存管理抽象：跨 epoch 持久存储与每次调用（agent call）内的 arena 分配。
 //!
 //! `P<T>` 是 `Arc` 的透明包装，持有者跨 `Epoch::reset()` 存活；
-//! `Epoch` 则是对 `bumpalo::Bump` 的封装，用于每次调用内的高频分配与
-//! O(1) 整体回收，并通过 epoch ID 辅助悬挂指针检测。
+//! `Epoch` 则是对 `bumpalo::Bump` 的封装，用于每次调用内的高频分配，
+//! `reset()` 换新 arena 整体回收（旧 arena 全量归还系统分配器，地址空间
+//! 不复用），并通过 epoch ID 辅助悬挂指针检测。
 
 use std::fmt;
 use std::ops::Deref;
@@ -67,7 +68,8 @@ impl<T: fmt::Display> fmt::Display for P<T> {
 }
 
 /// 包装 `bumpalo::Bump` 并携带 epoch ID 计数器用于悬挂指针检测。
-/// 所有 Agent 调用级对象分配于此；`reset()` 在每次调用结束时 O(1) 清空。
+/// 所有 Agent 调用级对象分配于此；`reset()` 在每次调用结束时换新 arena，
+/// 旧 arena 内存全量归还系统分配器。
 pub struct Epoch {
     bump: bumpalo::Bump,
     epoch_id: u64,
@@ -128,10 +130,15 @@ impl Epoch {
         }
     }
 
-    /// O(1) 批量释放。此前所有分配立即失效。
+    /// 换新空 `Bump` 整体回收：旧 arena 的全部 chunk 归还系统分配器，
+    /// 地址空间不复用，此前所有分配立即失效。
     /// 递增 epoch ID 以使过期指针失效（debug_assert 守卫）。
+    ///
+    /// # 注意事项
+    /// 调用点须保证该边界无存活旧 arena 指针（登记表已清、执行态已空）。
+    /// 换 Bump 使漏晋升的陈旧指针由静默别名新对象转为显式 UAF，属护栏加强。
     pub fn reset(&mut self) {
-        self.bump.reset();
+        self.bump = bumpalo::Bump::new();
         self.epoch_id += 1;
     }
 

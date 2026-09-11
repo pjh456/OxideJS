@@ -992,6 +992,16 @@ impl Vm {
         self.gc_state.session_bytes_peak
     }
 
+    /// 双 arena（epoch + session 对象）当前 chunk 已分配字节之和。
+    ///
+    /// # 注意事项
+    /// reset 边界读 = 换新 Bump 后空 arena 恰 0（空 chunk 哨兵计 0）；
+    /// run 中途读 = 当前 chunk 用量（非全 arena 口径——run 计量走
+    /// [`Self::run_alloc_bytes`]，勿据此断言）。
+    pub fn arena_retained_bytes(&self) -> usize {
+        self.epoch.bump().allocated_bytes() + self.gc_state.session_epoch.allocated_bytes()
+    }
+
     /// 本 run 累计分配字节：epoch arena + session 对象 arena + session 手工堆
     /// 账目（session 串 + session 对象及其属性向量 + GC 后补回的 BigInt）。
     /// 单次 run 内单调不减（执行期对象不回收、
