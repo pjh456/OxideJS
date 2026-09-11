@@ -298,8 +298,33 @@ fn dead_closure_upvalues_freed_by_sweep_without_double_free() {
     // 重置后引擎健康：重建新 3-upvalue 闭包，同 run 调用语义正确。
     let fourth = compile(
         "var x = 10; var y = 20; var z = 30; \
-                           globalThis.f = function() { return x + y + z; }; globalThis.f()",
+                            globalThis.f = function() { return x + y + z; }; globalThis.f()",
     );
     let result = vm.run(&fourth).expect("run4");
     assert_eq!(format!("{}", result), "60");
+
+    // 字节账目 A/B 差分样本：两条同构 arrow 仅 upvalue 数不同（3 vs 0），
+    // 各走独立 VM 的「创建 → 撤根 → 完整收集」。两次收集的字节账目差即死
+    // arrow 的 upvalue 列表 Box 字节数——对象本体、length/name 属性区、函数
+    // 名 session 串在 A/B 恒等，差分相消（各 1 个死对象 + 1 条死串）。
+    // 死分支不释放 upvalue 列表（泄漏）时差分为 0，本断言转红。
+    let collect_freed = |src: &str| -> u64 {
+        let mut v = vm_with_threshold(4096);
+        v.run(&compile(src)).expect("run create");
+        v.run(&compile("globalThis.arrow = undefined; 0")).expect("run unroot");
+        v.collect_session_gc();
+        let stats = v.session_gc_stats();
+        assert!(stats.last_collection_objects_dead >= 1, "arrow 闭包应经 sweep 死分支");
+        stats.last_collection_bytes_freed
+    };
+    let freed_with_captures =
+        collect_freed("var a = 1; var b = 2; var c = 3; globalThis.arrow = () => a + b + c; 0");
+    let freed_no_captures = collect_freed("globalThis.arrow = () => 7; 0");
+    let upvalue_box_min = (std::mem::size_of::<Vec<*mut oxide_types::object::Cell>>()
+        + 3 * std::mem::size_of::<*mut oxide_types::object::Cell>()) as u64;
+    assert!(
+        freed_with_captures >= freed_no_captures + upvalue_box_min,
+        "两次收集的字节账目差应为死闭包 upvalue 列表 Box（≥{upvalue_box_min} B），实际差 {}",
+        freed_with_captures - freed_no_captures
+    );
 }
