@@ -1950,6 +1950,12 @@ mod tests {
         assert_outcome(e, None, true, &TestOutcome::Fail("".into()));
     }
 
+    /// 分配上限常量与错误串单测的字面值机器耦合：改 cap 本钉必红。
+    #[test]
+    fn runner_alloc_cap_matches_error_string_tests() {
+        assert_eq!(build_runner_kernel().config.max_alloc_bytes, Some(512 * 1024 * 1024));
+    }
+
     /// 能力未实现形态保留 skip；`--no-skip` 下转 fail。
     #[test]
     fn unimplemented_shapes_stay_skipped() {
