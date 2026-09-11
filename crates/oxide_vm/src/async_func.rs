@@ -402,30 +402,41 @@ pub(crate) fn init_async_intrinsics(vm: &mut Vm) {
     let sh = vm.kernel_core.shape_forge().as_ref();
     let fn_proto_val = vm.session.builtin_world().fn_proto_val();
 
-    // %AsyncFunction% 构造器：proto = Function.prototype，调用抛错（动态创建未实现）。
-    let mut af_ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
-    af_ctor.set_function(true);
-    af_ctor.set_native_arg_count(1);
+    // %AsyncFunction% 占位构造器：proto = Function.prototype，调用抛错（动态
+    // 创建未实现）。选择性重建复用：前轮占位构造器按键迁移（prototype 槽在
+    // 下方 P 槽换入后重指新原型），不再每轮新建对象。
+    let af_ctor_label = sf.intern("AsyncFunctionCtor").0;
+    let af_reuse_key = oxide_kernel::builtin::FnWrapperKey::new(0, af_ctor_label, 0, 0);
     // SAFETY: async_function_stub 是 NativeFn 函数项。
-    af_ctor.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(async_function_stub as *const ()) }));
+    let af_stub_ptr = unsafe { NativeFnPtr::from_raw(async_function_stub as *const ()) };
+    let (af_ctor_ptr, af_ctor_is_new) = match vm.session.builtin_world().find_fn_wrapper(af_reuse_key, af_stub_ptr, 1) {
+        Some(ptr) => (ptr, false),
+        None => {
+            let mut af_ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
+            af_ctor.set_function(true);
+            af_ctor.set_native_arg_count(1);
+            af_ctor.set_native_fn(Some(af_stub_ptr));
+            let name_si = sf.intern("name").0;
+            let ctor_shape = sh.make_shape(af_ctor.shape_id(), name_si);
+            af_ctor.set_shape_id(ctor_shape);
+            let npos = af_ctor.push_prop(JsValue::perm_string(sf.string_ptr(sf.intern("AsyncFunction").0)));
+            af_ctor.set_data_meta(npos, PropAttributes::new(false, false, true));
+            let proto_si = sf.intern("prototype").0;
+            let ctor_shape2 = sh.make_shape(af_ctor.shape_id(), proto_si);
+            af_ctor.set_shape_id(ctor_shape2);
+            let af_ctor_ptr = Box::into_raw(af_ctor);
+            // 登记进 world 释放表（带复用键）：session 收尾统一释放构造器本体与属性区。
+            vm.session.builtin_world().track_fn_wrapper(af_ctor_ptr, af_reuse_key);
+            (af_ctor_ptr, true)
+        }
+    };
 
     // %AsyncFunction.prototype%：proto = Function.prototype，constructor = %AsyncFunction%。
     let mut af_proto = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
-    let name_si = sf.intern("name").0;
-    let ctor_shape = sh.make_shape(af_ctor.shape_id(), name_si);
-    af_ctor.set_shape_id(ctor_shape);
-    let npos = af_ctor.push_prop(JsValue::perm_string(sf.string_ptr(sf.intern("AsyncFunction").0)));
-    af_ctor.set_data_meta(npos, PropAttributes::new(false, false, true));
-    let proto_si = sf.intern("prototype").0;
-    let ctor_shape2 = sh.make_shape(af_ctor.shape_id(), proto_si);
-    af_ctor.set_shape_id(ctor_shape2);
     // af_proto.constructor = %AsyncFunction%（构造器登记进 world 释放表，与 builtin 方法 wrapper 同生命周期）。
     let ctor_si = sf.intern("constructor").0;
     let pshape = sh.make_shape(af_proto.shape_id(), ctor_si);
     af_proto.set_shape_id(pshape);
-    // 登记进释放表：session 收尾统一释放构造器本体与属性区。
-    let af_ctor_ptr = Box::into_raw(af_ctor);
-    vm.session.builtin_world().track_leaked_object(af_ctor_ptr);
     let cpos = af_proto.push_prop(JsValue::from_js_object(af_ctor_ptr));
     af_proto.set_data_meta(cpos, PropAttributes::new(false, false, true));
     // af_proto[Symbol.toStringTag] = "AsyncFunction"（数据属性，w/e/c = false/false/true）。
@@ -438,12 +449,18 @@ pub(crate) fn init_async_intrinsics(vm: &mut Vm) {
     // proto 本体只存在于 P 槽（Arc 副本，原 Box 随函数结束释放）：装入 P 槽后再把
     // 构造器 prototype 属性指向 P 槽实例，使其与动态异步函数使用的 [[Prototype]]
     // 同一对象，保证 `AsyncFunction.prototype === (async () => {}).__proto__`。
+    // 复用构造器 prototype 槽原位改指新 P 原型（旧原型已随 P 换出释放）。
     Vm::swap_intrinsic_proto(&mut vm.async_function_proto, *af_proto);
-    // SAFETY: af_ctor_ptr 为 Box 原分配（已登记释放表、生命周期覆盖 session），对象已建满、本 Vm 独占。
+    // SAFETY: af_ctor_ptr 为 Box 原分配（已登记释放表、生命周期覆盖 session），本 Vm 独占。
     unsafe {
         let ctor_mut = &mut *af_ctor_ptr;
-        let ppos = ctor_mut.push_prop(JsValue::from_js_object(vm.async_function_proto.as_mut_ptr()));
-        ctor_mut.set_data_meta(ppos, PropAttributes::new(false, false, false));
+        let proto_val = JsValue::from_js_object(vm.async_function_proto.as_ptr() as *mut JsObject);
+        if af_ctor_is_new {
+            let ppos = ctor_mut.push_prop(proto_val);
+            ctor_mut.set_data_meta(ppos, PropAttributes::new(false, false, false));
+        } else if let Some(pos) = sh.lookup_position(ctor_mut.shape_id(), sf.intern("prototype").0) {
+            ctor_mut.set_prop_at(pos, proto_val);
+        }
     }
 }
 

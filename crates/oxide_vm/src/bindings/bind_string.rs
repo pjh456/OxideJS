@@ -73,13 +73,18 @@ pub fn bind_string(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         0,
     );
 
+    // 全局 String 槽位既有槽原位更新（旧家族构造器指针不得滞留在属性 vec），
+    // 无槽时开新槽；描述符非枚举（规范 { writable:true, enumerable:false, configurable:true }）。
     let si_str = core.perm_interner().intern("String").0;
-    let str_shape = core.shape_forge().make_shape(global.shape_id(), si_str);
     let str_val = JsValue::from_js_object(session.builtin_world().string_constructor.as_ptr() as *mut JsObject);
-    global.set_shape_id(str_shape);
-    global.ensure_hash_props().push(str_val);
-    // 全局构造器槽位非枚举（规范 { writable:true, enumerable:false, configurable:true }）。
-    let pos = global.prop_vec_len().saturating_sub(1) as u32;
-    global.set_data_meta(pos, PropAttributes::new(true, false, true));
-    global.bump_generation();
+    if let Some(pos) = core.shape_forge().lookup_position(global.shape_id(), si_str) {
+        global.set_prop_at(pos, str_val);
+    } else {
+        let str_shape = core.shape_forge().make_shape(global.shape_id(), si_str);
+        global.set_shape_id(str_shape);
+        global.ensure_hash_props().push(str_val);
+        let pos = global.prop_vec_len().saturating_sub(1) as u32;
+        global.set_data_meta(pos, PropAttributes::new(true, false, true));
+        global.bump_generation();
+    }
 }

@@ -71,19 +71,26 @@ macro_rules! bind_constructor {
     }};
     ($core:expr, $global:expr, $name:literal, $ctor_ptr:expr, $ctor_fn:path, $nargs:literal, hash: $hash:literal) => {{
         let si = $core.perm_interner().intern($name).0;
-        let shape = $core.shape_forge().make_shape($global.shape_id(), si);
         let val = $crate::JsValue::from_js_object($ctor_ptr);
-        $global.set_shape_id(shape);
-        if $hash {
-            $global.ensure_hash_props().push(val);
-            $global.bump_generation();
+        if let Some(pos) = $core.shape_forge().lookup_position($global.shape_id(), si) {
+            // 既有槽（重建后保留的 global）：原位更新槽值，不追加新槽——旧家族
+            // 构造器指针不得滞留属性 vec，shape 链不得继续增长。
+            $global.set_prop_at(pos, val);
         } else {
-            $global.push_prop(val);
+            let shape = $core.shape_forge().make_shape($global.shape_id(), si);
+            $global.set_shape_id(shape);
+            if $hash {
+                $global.ensure_hash_props().push(val);
+            } else {
+                $global.push_prop(val);
+            }
+            // 全局构造器槽位：规范描述符 { writable:true, enumerable:false,
+            // configurable:true }，不设 meta 时默认全枚举会泄漏进
+            // Object.keys(globalThis) / for-in。
+            let global_pos = $global.prop_vec_len().saturating_sub(1) as u32;
+            $global.set_data_meta(global_pos, oxide_types::object::PropAttributes::new(true, false, true));
+            $global.bump_generation();
         }
-        // 全局构造器槽位：规范描述符 { writable:true, enumerable:false, configurable:true }，
-        // 不设 meta 时默认全枚举会泄漏进 Object.keys(globalThis) / for-in。
-        let global_pos = $global.prop_vec_len().saturating_sub(1) as u32;
-        $global.set_data_meta(global_pos, oxide_types::object::PropAttributes::new(true, false, true));
         let ctor = unsafe { &mut *$ctor_ptr };
         let ptr: *const () = ($ctor_fn as fn(&mut $crate::vm::Vm, &[u8]) -> oxide_runtime_api::NativeResult) as *const ();
         ctor.set_native_fn(Some(unsafe { oxide_types::object::NativeFnPtr::from_raw(ptr) }));
@@ -137,36 +144,48 @@ pub(crate) fn bind_accessor_getter(
     let shape_forge = core.shape_forge().as_ref();
     let string_forge = core.perm_interner().as_ref();
     let world = session.builtin_world();
-    let fn_proto_val = JsValue::from_js_object(world.function_proto.as_ptr() as *mut JsObject);
-
-    let getter_name = format!("get {name}");
-    let mut getter = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
-    getter.set_function(true);
-    // SAFETY: getter_fn 是转成 *const () 的 NativeFn 函数项指针。
-    getter.set_native_fn(Some(unsafe { oxide_types::object::NativeFnPtr::from_raw(getter_fn) }));
-    getter.set_native_arg_count(0);
-
-    let si_name = string_forge.intern("name").0;
-    let name_shape = shape_forge.make_shape(getter.shape_id(), si_name);
-    getter.set_shape_id(name_shape);
-    getter
-        .ensure_hash_props()
-        .push(JsValue::perm_string(string_forge.string_ptr(string_forge.intern(&getter_name).0)));
-    let name_pos = getter.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
-    getter.set_data_meta(name_pos, PropAttributes::new(false, false, true));
-
-    let si_length = string_forge.intern("length").0;
-    let length_shape = shape_forge.make_shape(getter.shape_id(), si_length);
-    getter.set_shape_id(length_shape);
-    getter.ensure_hash_props().push(JsValue::int(0));
-    let length_pos = getter.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
-    getter.set_data_meta(length_pos, PropAttributes::new(false, false, true));
-
-    let getter_ptr = Box::into_raw(getter);
-    world.track_leaked_object(getter_ptr);
-    let getter_val = JsValue::from_js_object(getter_ptr);
 
     let si = string_forge.intern(name).0;
+    let getter_name = format!("get {name}");
+    let si_label = string_forge.intern(&getter_name).0;
+    // SAFETY: getter_fn 是转成 *const () 的 NativeFn 函数项指针。
+    let getter_fn_ptr = unsafe { oxide_types::object::NativeFnPtr::from_raw(getter_fn) };
+    // 选择性重建复用：同家族同槽旧 getter 迁移到新 proto 的访问器槽（proto
+    // 槽已由重建收尾重指），不再新建对象。
+    let reuse_key =
+        oxide_kernel::builtin::FnWrapperKey::new(world.wrapper_family_of(proto as *const JsObject), 0, si, si_label);
+    let getter_ptr = match world.find_fn_wrapper(reuse_key, getter_fn_ptr, 0) {
+        Some(ptr) => ptr,
+        None => {
+            let fn_proto_val = JsValue::from_js_object(world.function_proto.as_ptr() as *mut JsObject);
+            let mut getter = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
+            getter.set_function(true);
+            getter.set_native_fn(Some(getter_fn_ptr));
+            getter.set_native_arg_count(0);
+
+            let si_name = string_forge.intern("name").0;
+            let name_shape = shape_forge.make_shape(getter.shape_id(), si_name);
+            getter.set_shape_id(name_shape);
+            getter
+                .ensure_hash_props()
+                .push(JsValue::perm_string(string_forge.string_ptr(si_label)));
+            let name_pos = getter.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+            getter.set_data_meta(name_pos, PropAttributes::new(false, false, true));
+
+            let si_length = string_forge.intern("length").0;
+            let length_shape = shape_forge.make_shape(getter.shape_id(), si_length);
+            getter.set_shape_id(length_shape);
+            getter.ensure_hash_props().push(JsValue::int(0));
+            let length_pos = getter.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+            getter.set_data_meta(length_pos, PropAttributes::new(false, false, true));
+
+            let getter_ptr = Box::into_raw(getter);
+            world.track_fn_wrapper(getter_ptr, reuse_key);
+            getter_ptr
+        }
+    };
+    let getter_val = JsValue::from_js_object(getter_ptr);
+
     let new_shape = shape_forge.make_shape(proto.shape_id(), si);
     proto.set_shape_id(new_shape);
     let pos = proto.push_prop(JsValue::undefined());
@@ -193,51 +212,50 @@ pub(crate) fn bind_accessor_getset(
     let shape_forge = core.shape_forge().as_ref();
     let string_forge = core.perm_interner().as_ref();
     let world = session.builtin_world();
-    let fn_proto_val = JsValue::from_js_object(world.function_proto.as_ptr() as *mut JsObject);
-
-    let mut getter = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
-    getter.set_function(true);
-    // SAFETY: getter_fn 是转成 *const () 的 NativeFn 函数项指针。
-    getter.set_native_fn(Some(unsafe { oxide_types::object::NativeFnPtr::from_raw(getter_fn) }));
-    getter.set_native_arg_count(0);
-    // 给函数对象开 name/length 槽位（描述符均 { writable:false, enumerable:false, configurable:true }）。
-    let si_name = string_forge.intern("name").0;
-    let name_shape = shape_forge.make_shape(getter.shape_id(), si_name);
-    getter.set_shape_id(name_shape);
-    getter
-        .ensure_hash_props()
-        .push(JsValue::perm_string(string_forge.string_ptr(string_forge.intern(getter_name).0)));
-    let name_pos = getter.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
-    getter.set_data_meta(name_pos, PropAttributes::new(false, false, true));
+    let family = world.wrapper_family_of(proto as *const JsObject);
     let si_length = string_forge.intern("length").0;
-    let length_shape = shape_forge.make_shape(getter.shape_id(), si_length);
-    getter.set_shape_id(length_shape);
-    getter.ensure_hash_props().push(JsValue::int(0));
-    let length_pos = getter.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
-    getter.set_data_meta(length_pos, PropAttributes::new(false, false, true));
-    let getter_ptr = Box::into_raw(getter);
-    world.track_leaked_object(getter_ptr);
-    let getter_val = JsValue::from_js_object(getter_ptr);
+    let si_name = string_forge.intern("name").0;
 
-    let mut setter = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
-    setter.set_function(true);
-    // SAFETY: setter_fn 是转成 *const () 的 NativeFn 函数项指针。
-    setter.set_native_fn(Some(unsafe { oxide_types::object::NativeFnPtr::from_raw(setter_fn) }));
-    setter.set_native_arg_count(1);
-    let name_shape = shape_forge.make_shape(setter.shape_id(), si_name);
-    setter.set_shape_id(name_shape);
-    setter
-        .ensure_hash_props()
-        .push(JsValue::perm_string(string_forge.string_ptr(string_forge.intern(setter_name).0)));
-    let name_pos = setter.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
-    setter.set_data_meta(name_pos, PropAttributes::new(false, false, true));
-    let length_shape = shape_forge.make_shape(setter.shape_id(), si_length);
-    setter.set_shape_id(length_shape);
-    setter.ensure_hash_props().push(JsValue::int(1));
-    let length_pos = setter.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
-    setter.set_data_meta(length_pos, PropAttributes::new(false, false, true));
-    let setter_ptr = Box::into_raw(setter);
-    world.track_leaked_object(setter_ptr);
+    // 选择性重建复用：同家族同槽旧 getter/setter 迁移到新 proto 的访问器槽
+    // （proto 槽已由重建收尾重指），不再新建对象。
+    let build = |si_label: u32,
+                 fn_ptr_native: oxide_types::object::NativeFnPtr,
+                 arg_count: u8,
+                 length_val: i32|
+     -> *mut JsObject {
+        let reuse_key = oxide_kernel::builtin::FnWrapperKey::new(family, 0, key, si_label);
+        if let Some(ptr) = world.find_fn_wrapper(reuse_key, fn_ptr_native, arg_count) {
+            return ptr;
+        }
+        let fn_proto_val = JsValue::from_js_object(world.function_proto.as_ptr() as *mut JsObject);
+        let mut func = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
+        func.set_function(true);
+        func.set_native_fn(Some(fn_ptr_native));
+        func.set_native_arg_count(arg_count);
+        // 给函数对象开 name/length 槽位（描述符均 { writable:false, enumerable:false, configurable:true }）。
+        let name_shape = shape_forge.make_shape(func.shape_id(), si_name);
+        func.set_shape_id(name_shape);
+        func.ensure_hash_props()
+            .push(JsValue::perm_string(string_forge.string_ptr(si_label)));
+        let name_pos = func.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+        func.set_data_meta(name_pos, PropAttributes::new(false, false, true));
+        let length_shape = shape_forge.make_shape(func.shape_id(), si_length);
+        func.set_shape_id(length_shape);
+        func.ensure_hash_props().push(JsValue::int(length_val));
+        let length_pos = func.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+        func.set_data_meta(length_pos, PropAttributes::new(false, false, true));
+        let func_ptr = Box::into_raw(func);
+        world.track_fn_wrapper(func_ptr, reuse_key);
+        func_ptr
+    };
+    // SAFETY: getter_fn / setter_fn 是转成 *const () 的 NativeFn 函数项指针。
+    let getter_fn_ptr = unsafe { oxide_types::object::NativeFnPtr::from_raw(getter_fn) };
+    let setter_fn_ptr = unsafe { oxide_types::object::NativeFnPtr::from_raw(setter_fn) };
+    let si_getter = string_forge.intern(getter_name).0;
+    let si_setter = string_forge.intern(setter_name).0;
+    let getter_ptr = build(si_getter, getter_fn_ptr, 0, 0);
+    let setter_ptr = build(si_setter, setter_fn_ptr, 1, 1);
+    let getter_val = JsValue::from_js_object(getter_ptr);
     let setter_val = JsValue::from_js_object(setter_ptr);
 
     // 访问器属性槽：enumerable=false、configurable=true（get/set 函数对象已持有）。
@@ -573,13 +591,20 @@ fn sync_iterator_function_prototype(core: &Arc<KernelCore>, session: &KernelSess
     iterator.set_prop_at(proto_pos, new_proto);
 }
 
+/// 在目标对象（global 或命名空间对象）上绑定一个具名槽：既有槽（选择性
+/// 重建后保留的目标）原位更新槽值，无槽时开新槽。内置全局值统一非枚举：
+/// 描述符 { writable:true, enumerable:false, configurable:true }，与构造器/
+/// 命名空间对象（Math/JSON/Reflect/Temporal 等）规范一致。
 pub(crate) fn bind_global_value(core: &Arc<KernelCore>, global: &mut JsObject, name: &str, value: JsValue) {
     let si = core.perm_interner().intern(name).0;
+    if let Some(pos) = core.shape_forge().lookup_position(global.shape_id(), si) {
+        // 原位更新：旧对象指针不得滞留在属性 vec，shape 链不得继续增长。
+        global.set_prop_at(pos, value);
+        return;
+    }
     let shape = core.shape_forge().make_shape(global.shape_id(), si);
     global.set_shape_id(shape);
     global.ensure_hash_props().push(value);
-    // 内置全局值统一非枚举：描述符 { writable:true, enumerable:false, configurable:true }，
-    // 与构造器/命名空间对象（Math/JSON/Reflect/Temporal 等）规范一致。
     let pos = global.prop_vec_len().saturating_sub(1) as u32;
     global.set_data_meta(pos, PropAttributes::new(true, false, true));
     global.bump_generation();
@@ -604,28 +629,46 @@ fn bind_error_subtype_global(
 
     // fallback 自建路径与 bind_error 的 Box 自建路径保持同一形态：[[Prototype]] 指向
     // Error 构造器（NativeError 构造器继承 Error 构造器），prototype/name 描述符按规范。
-    let error_ctor_ptr = session.builtin_world().error_constructor.as_ptr() as *mut JsObject;
-    let mut ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(error_ctor_ptr)));
-    ctor.set_function(true);
-    configure_native_constructor(&mut ctor, ctor_fn, arg_count);
-
+    // 家族重建后新原型无既有槽：按复用键查找前轮旧构造器迁移，避免每轮新建。
+    let world = session.builtin_world();
     let sf = core.perm_interner().as_ref();
     let sh = core.shape_forge().as_ref();
     let si_prototype = sf.intern("prototype").0;
-    let si_name = sf.intern("name").0;
     let name_si = sf.intern(name).0;
-    let ctor_shape1 = sh.make_shape(EMPTY_SHAPE_ID, si_prototype);
-    let ctor_shape2 = sh.make_shape(ctor_shape1, si_name);
-    ctor.set_shape_id(ctor_shape2);
-    ctor.ensure_hash_props()
-        .push(JsValue::from_js_object(proto.as_ptr() as *mut JsObject));
-    ctor.ensure_hash_props().push(JsValue::perm_string(sf.string_ptr(name_si)));
-    // prototype/name 描述符与 Box 自建路径一致：{f,f,f} / {f,f,t}。
-    ctor.set_data_meta(0u32, PropAttributes::new(false, false, false));
-    ctor.set_data_meta(1u32, PropAttributes::new(false, false, true));
+    // SAFETY: ctor_fn 是转成 *const () 的 NativeFn 函数项指针。
+    let ctor_fn_ptr = unsafe { oxide_types::object::NativeFnPtr::from_raw(ctor_fn) };
+    let reuse_key = oxide_kernel::builtin::FnWrapperKey::new(0, 0, name_si, name_si);
+    let ctor_ptr = match world.find_fn_wrapper(reuse_key, ctor_fn_ptr, arg_count) {
+        Some(ptr) => {
+            // 迁移内引用：prototype 槽改指新子类型原型（旧原型已被重建替换）。
+            let ctor = unsafe { &mut *ptr };
+            if let Some(pos) = sh.lookup_position(ctor.shape_id(), si_prototype) {
+                ctor.set_prop_at(pos, JsValue::from_js_object(proto.as_ptr() as *mut JsObject));
+            }
+            ptr
+        }
+        None => {
+            let error_ctor_ptr = world.error_constructor.as_ptr() as *mut JsObject;
+            let mut ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(error_ctor_ptr)));
+            ctor.set_function(true);
+            configure_native_constructor(&mut ctor, ctor_fn, arg_count);
 
-    let ctor_ptr = Box::into_raw(ctor);
-    session.builtin_world().track_leaked_object(ctor_ptr);
+            let si_name = sf.intern("name").0;
+            let ctor_shape1 = sh.make_shape(EMPTY_SHAPE_ID, si_prototype);
+            let ctor_shape2 = sh.make_shape(ctor_shape1, si_name);
+            ctor.set_shape_id(ctor_shape2);
+            ctor.ensure_hash_props()
+                .push(JsValue::from_js_object(proto.as_ptr() as *mut JsObject));
+            ctor.ensure_hash_props().push(JsValue::perm_string(sf.string_ptr(name_si)));
+            // prototype/name 描述符与 Box 自建路径一致：{f,f,f} / {f,f,t}。
+            ctor.set_data_meta(0u32, PropAttributes::new(false, false, false));
+            ctor.set_data_meta(1u32, PropAttributes::new(false, false, true));
+
+            let ctor_ptr = Box::into_raw(ctor);
+            world.track_fn_wrapper(ctor_ptr, reuse_key);
+            ctor_ptr
+        }
+    };
     bind_existing_global(core, global, name, JsValue::from_js_object(ctor_ptr));
 }
 

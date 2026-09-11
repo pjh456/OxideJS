@@ -231,8 +231,12 @@ pub fn run_mem_vm_creation_leak(kernel: &Arc<KernelCore>) -> ExitCode {
 /// 路径的每轮内存增量（斜率 + 窗口总增量）。
 ///
 /// # 注意事项
-/// 键名逐轮递增保证走新键写入路径（既有槽位写不 bump 世代、不脏家族）；
-/// 修复释放路径后期望走平，残留本体钉在页粒度噪声级。
+/// 键名逐轮递增保证走新键写入路径（既有槽位写不 bump 世代、不脏家族）。
+/// 跨轮继承锚点（登记表对象数 / global 属性槽数）采样自每轮 full_reset
+/// 后：wrapper 复用与槽位原位更新生效时两者应持平，增长即泄漏签名。
+/// RSS 残差模型（post-91.1 裁定）：object/function 家族脏重建每轮钉住 4
+/// 件本体（重指遗漏兜底，不进门）+ 逐轮唯一键在共享内核 shape/perm 缓存
+/// 的追加式增长（append-only 缓存，非 session 数据泄漏）。
 pub fn run_mem_dirty_rebuild_leak(kernel: &Arc<KernelCore>) -> ExitCode {
     const ROUNDS: usize = 3000;
     const SAMPLE_EVERY: usize = 10;
@@ -242,6 +246,10 @@ pub fn run_mem_dirty_rebuild_leak(kernel: &Arc<KernelCore>) -> ExitCode {
 
     let mut sampler = LeakSampler::new(20);
     let mut series: Vec<(usize, f64)> = Vec::new();
+    // 跨轮继承锚点（登记表对象数 / global 属性槽数）：wrapper 复用与槽位
+    // 原位更新生效时两者应跨轮持平，增长即泄漏的直接签名（无页粒度噪音）。
+    let mut first_anchor: Option<(usize, usize)> = None;
+    let mut last_anchor: (usize, usize) = (0, 0);
     for round in 0..ROUNDS {
         // 键名逐轮递增：新键写才 bump 原型世代，重建才有脏家族可换。
         let source = format!(
@@ -265,6 +273,12 @@ pub fn run_mem_dirty_rebuild_leak(kernel: &Arc<KernelCore>) -> ExitCode {
         }
         vm.full_reset();
         if round % SAMPLE_EVERY == 0 {
+            let registry = vm.session().builtin_world().leaked_object_count();
+            let global_slots = unsafe { (*vm.session().global_object().as_ptr()).prop_vec_len() };
+            if first_anchor.is_none() {
+                first_anchor = Some((registry, global_slots));
+            }
+            last_anchor = (registry, global_slots);
             if let Some(kb) = read_vmrss_kb() {
                 let v = kb as f64;
                 series.push((round, v));
@@ -276,6 +290,18 @@ pub fn run_mem_dirty_rebuild_leak(kernel: &Arc<KernelCore>) -> ExitCode {
                 }
             }
         }
+    }
+    if let Some((r0, g0)) = first_anchor {
+        let (r1, g1) = last_anchor;
+        eprintln!(
+            "[dirty_rebuild] anchors: registry {} -> {} ({:+}) global_slots {} -> {} ({:+})",
+            r0,
+            r1,
+            r1 as i64 - r0 as i64,
+            g0,
+            g1,
+            g1 as i64 - g0 as i64
+        );
     }
     report_series("dirty_rebuild", "round", &series)
 }

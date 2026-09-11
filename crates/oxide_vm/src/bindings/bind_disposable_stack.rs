@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_types::object::{JsObject, PropAttributes};
+use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
 use crate::bindings::{
@@ -109,35 +109,55 @@ pub fn bind_disposable_stack(core: &Arc<KernelCore>, session: &KernelSession, gl
     let ctor_val = if ctor_val.is_object() {
         ctor_val
     } else {
-        // Box 自建：[[Prototype]] 指向 Function.prototype，prototype/name 描述符按规范。
-        let function_proto = world.function_proto.as_ptr() as *mut JsObject;
-        let mut ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(function_proto)));
-        ctor.set_function(true);
-        configure_native_constructor(
-            &mut ctor,
-            oxide_builtins::disposable_stack::disposable_stack_constructor::<crate::vm::Vm> as *const (),
-            0,
-        );
         let sf = core.perm_interner().as_ref();
         let sh = core.shape_forge().as_ref();
-        let si_prototype = sf.intern("prototype").0;
-        let si_name = sf.intern("name").0;
-        let si_length = sf.intern("length").0;
-        let ctor_shape1 = sh.make_shape(EMPTY_SHAPE_ID, si_prototype);
-        let ctor_shape2 = sh.make_shape(ctor_shape1, si_name);
-        let ctor_shape3 = sh.make_shape(ctor_shape2, si_length);
-        ctor.set_shape_id(ctor_shape3);
-        ctor.ensure_hash_props()
-            .push(JsValue::from_js_object(world.disposable_stack_proto.as_ptr() as *mut JsObject));
-        ctor.ensure_hash_props()
-            .push(JsValue::perm_string(sf.string_ptr(sf.intern("DisposableStack").0)));
-        ctor.ensure_hash_props().push(JsValue::int(0));
-        ctor.set_data_meta(0u32, PropAttributes::new(false, false, false));
-        ctor.set_data_meta(1u32, PropAttributes::new(false, false, true));
-        ctor.set_data_meta(2u32, PropAttributes::new(false, false, true));
-        let ctor_ptr = Box::into_raw(ctor);
-        // 登记进 world 释放表：session 收尾统一释放构造器本体与属性区。
-        world.track_leaked_object(ctor_ptr);
+        let name_si = sf.intern("DisposableStack").0;
+        // 选择性重建复用：非 P 目标（家族 0）按键查找前轮旧构造器迁移，避免每轮
+        // 新建导致登记表无界累积；槽键取 global 槽名，该命名空间内全局唯一。
+        let ctor_fn = oxide_builtins::disposable_stack::disposable_stack_constructor::<crate::vm::Vm> as *const ();
+        // SAFETY: ctor_fn 是转成 *const () 的 NativeFn 函数项指针。
+        let ctor_fn_ptr = unsafe { NativeFnPtr::from_raw(ctor_fn) };
+        let reuse_key = oxide_kernel::builtin::FnWrapperKey::new(0, 0, name_si, name_si);
+        let ctor_ptr = match world.find_fn_wrapper(reuse_key, ctor_fn_ptr, 0) {
+            Some(ptr) => {
+                // 迁移内引用：prototype 槽改指新 DisposableStack.prototype
+                // （旧原型已被重建替换释放）。
+                let ctor = unsafe { &mut *ptr };
+                let si_prototype = sf.intern("prototype").0;
+                if let Some(pos) = sh.lookup_position(ctor.shape_id(), si_prototype) {
+                    ctor.set_prop_at(
+                        pos,
+                        JsValue::from_js_object(world.disposable_stack_proto.as_ptr() as *mut JsObject),
+                    );
+                }
+                ptr
+            }
+            None => {
+                // Box 自建：[[Prototype]] 指向 Function.prototype，prototype/name 描述符按规范。
+                let function_proto = world.function_proto.as_ptr() as *mut JsObject;
+                let mut ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(function_proto)));
+                ctor.set_function(true);
+                configure_native_constructor(&mut ctor, ctor_fn, 0);
+                let si_prototype = sf.intern("prototype").0;
+                let si_name = sf.intern("name").0;
+                let si_length = sf.intern("length").0;
+                let ctor_shape1 = sh.make_shape(EMPTY_SHAPE_ID, si_prototype);
+                let ctor_shape2 = sh.make_shape(ctor_shape1, si_name);
+                let ctor_shape3 = sh.make_shape(ctor_shape2, si_length);
+                ctor.set_shape_id(ctor_shape3);
+                ctor.ensure_hash_props()
+                    .push(JsValue::from_js_object(world.disposable_stack_proto.as_ptr() as *mut JsObject));
+                ctor.ensure_hash_props().push(JsValue::perm_string(sf.string_ptr(name_si)));
+                ctor.ensure_hash_props().push(JsValue::int(0));
+                ctor.set_data_meta(0u32, PropAttributes::new(false, false, false));
+                ctor.set_data_meta(1u32, PropAttributes::new(false, false, true));
+                ctor.set_data_meta(2u32, PropAttributes::new(false, false, true));
+                let ctor_ptr = Box::into_raw(ctor);
+                // 登记进 world 释放表（带复用键）：session 收尾统一释放构造器本体与属性区。
+                world.track_fn_wrapper(ctor_ptr, reuse_key);
+                ctor_ptr
+            }
+        };
         JsValue::from_js_object(ctor_ptr)
     };
 

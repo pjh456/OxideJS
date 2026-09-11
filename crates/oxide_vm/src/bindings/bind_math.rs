@@ -77,13 +77,18 @@ pub fn bind_math(core: &Arc<KernelCore>, session: &KernelSession, global: &mut J
         math.set_data_meta(pos, PropAttributes::new(false, false, false));
     }
 
+    // 全局 Math 槽位既有槽原位更新（旧对象指针不得滞留在属性 vec），无槽时
+    // 开新槽；描述符非枚举（规范全局命名空间对象属性均 enumerable:false）。
     let si_m = core.perm_interner().intern("Math").0;
-    let m_shape = core.shape_forge().make_shape(global.shape_id(), si_m);
     let m_val = JsValue::from_js_object(session.builtin_world().math_object.as_ptr() as *mut JsObject);
-    global.set_shape_id(m_shape);
-    global.ensure_hash_props().push(m_val);
-    // 全局 Math 槽位非枚举（规范全局命名空间对象属性均 enumerable:false）。
-    let pos = global.prop_vec_len().saturating_sub(1) as u32;
-    global.set_data_meta(pos, PropAttributes::new(true, false, true));
-    global.bump_generation();
+    if let Some(pos) = core.shape_forge().lookup_position(global.shape_id(), si_m) {
+        global.set_prop_at(pos, m_val);
+    } else {
+        let m_shape = core.shape_forge().make_shape(global.shape_id(), si_m);
+        global.set_shape_id(m_shape);
+        global.ensure_hash_props().push(m_val);
+        let pos = global.prop_vec_len().saturating_sub(1) as u32;
+        global.set_data_meta(pos, PropAttributes::new(true, false, true));
+        global.bump_generation();
+    }
 }

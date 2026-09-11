@@ -738,11 +738,14 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
 
     // %AsyncGeneratorPrototype%：proto = Object.prototype，方法 next/return/throw。
     let mut ag_proto = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, object_proto_val));
+    // 站点标签：与 Generator 原型的同名方法槽（next/return/throw）区分复用键。
+    let ag_label = sf.intern("AsyncGeneratorPrototype").0;
     oxide_kernel::bind_methods_static!(
         &mut ag_proto,
         sf,
         sh,
         world,
+        ag_label,
         ("next", async_generator_next as *const (), 1),
         ("return", async_generator_return as *const (), 1),
         ("throw", async_generator_throw as *const (), 1),
@@ -755,7 +758,7 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
     ag_proto.set_data_meta(tag_pos, PropAttributes::new(false, false, true));
     // @@asyncIterator：返回自身（异步生成器是异步可迭代对象，供 for-await-of 消费）。
     let aiter_key = oxide_types::private_key::make_well_known_symbol_key(8);
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method_key_static(
+    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method_key_labeled_static(
         &mut ag_proto,
         sh,
         sf,
@@ -764,30 +767,43 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
         unsafe { oxide_types::object::NativeFnPtr::from_raw(async_generator_symbol_async_iterator as *const ()) },
         0,
         world,
+        ag_label,
     );
     Vm::swap_intrinsic_proto(&mut vm.async_generator_proto, *ag_proto);
 
-    // %AsyncGeneratorFunction.prototype%：proto = Function.prototype，constructor = %AsyncGeneratorFunction%。
-    let mut agf_ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
-    agf_ctor.set_function(true);
-    agf_ctor.set_native_arg_count(1);
-    // %AsyncGeneratorFunction% 构造器：动态创建未实现，调用抛 TypeError。
-    agf_ctor.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(async_generator_function_stub as *const ()) }));
+    // %AsyncGeneratorFunction.prototype%：proto = Function.prototype，
+    // constructor = %AsyncGeneratorFunction%。占位构造器动态创建未实现，
+    // 调用抛 TypeError。选择性重建复用：前轮占位构造器按键迁移（prototype
+    // 槽在下方 P 槽换入后重指新原型），不再每轮新建对象。
+    let agf_ctor_label = sf.intern("AsyncGeneratorFunctionCtor").0;
+    let agf_reuse_key = oxide_kernel::builtin::FnWrapperKey::new(0, agf_ctor_label, 0, 0);
+    // SAFETY: async_generator_function_stub 是 NativeFn 函数项。
+    let agf_stub_ptr = unsafe { NativeFnPtr::from_raw(async_generator_function_stub as *const ()) };
+    let (agf_ctor_ptr, agf_ctor_is_new) = match world.find_fn_wrapper(agf_reuse_key, agf_stub_ptr, 1) {
+        Some(ptr) => (ptr, false),
+        None => {
+            let mut agf_ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
+            agf_ctor.set_function(true);
+            agf_ctor.set_native_arg_count(1);
+            agf_ctor.set_native_fn(Some(agf_stub_ptr));
+            // prototype/name 属性（构造器形状 [prototype, name]）。
+            let proto_si = sf.intern("prototype").0;
+            let ctor_shape = sh.make_shape(EMPTY_SHAPE_ID, proto_si);
+            agf_ctor.set_shape_id(ctor_shape);
+            let name_si = sf.intern("name").0;
+            let name_shape = sh.make_shape(agf_ctor.shape_id(), name_si);
+            agf_ctor.set_shape_id(name_shape);
+            let agf_ctor_ptr = Box::into_raw(agf_ctor);
+            // 登记进 world 释放表（带复用键）：session 收尾统一释放构造器本体与属性区。
+            world.track_fn_wrapper(agf_ctor_ptr, agf_reuse_key);
+            (agf_ctor_ptr, true)
+        }
+    };
     let mut agf_proto = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
-    // prototype/name 属性（构造器形状 [prototype, name]）。
-    let proto_si = sf.intern("prototype").0;
-    let ctor_shape = sh.make_shape(agf_ctor.shape_id(), proto_si);
-    agf_ctor.set_shape_id(ctor_shape);
-    let name_si = sf.intern("name").0;
-    let name_shape = sh.make_shape(agf_ctor.shape_id(), name_si);
-    agf_ctor.set_shape_id(name_shape);
     // agf_proto.constructor = %AsyncGeneratorFunction%（构造器登记进 world 释放表，与 builtin 方法 wrapper 同生命周期）。
     let ctor_si = sf.intern("constructor").0;
     let ctor2_shape = sh.make_shape(agf_proto.shape_id(), ctor_si);
     agf_proto.set_shape_id(ctor2_shape);
-    // 登记进释放表：session 收尾统一释放构造器本体与属性区。
-    let agf_ctor_ptr = Box::into_raw(agf_ctor);
-    world.track_leaked_object(agf_ctor_ptr);
     let cpos = agf_proto.push_prop(JsValue::from_js_object(agf_ctor_ptr));
     agf_proto.set_data_meta(cpos, PropAttributes::new(false, false, true));
     // agf_proto.prototype = %AsyncGeneratorPrototype%。
@@ -805,15 +821,29 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
 
     // proto 本体只存在于 P 槽（Arc 副本，原 Box 随函数结束释放）：装入 P 槽后再写
     // 构造器 prototype/name 属性（按模板序 prototype 在前），prototype 指向 P 槽实例，
-    // 使其与动态异步生成器函数使用的 [[Prototype]] 同一对象。
+    // 使其与动态异步生成器函数使用的 [[Prototype]] 同一对象。复用构造器槽位已填充，
+    // prototype 原位改指新 P 原型（旧原型已随 P 换出释放）。
     Vm::swap_intrinsic_proto(&mut vm.async_generator_function_proto, *agf_proto);
-    // SAFETY: agf_ctor_ptr 为 Box 原分配（已登记释放表、生命周期覆盖 session），对象已建满、本 Vm 独占。
+    // SAFETY: agf_ctor_ptr 为 Box 原分配（已登记释放表、生命周期覆盖 session），本 Vm 独占。
     unsafe {
         let ctor_mut = &mut *agf_ctor_ptr;
-        let ppos = ctor_mut.push_prop(JsValue::from_js_object(vm.async_generator_function_proto.as_mut_ptr()));
-        ctor_mut.set_data_meta(ppos, PropAttributes::new(false, false, false));
-        let npos = ctor_mut.push_prop(JsValue::perm_string(sf.string_ptr(sf.intern("AsyncGeneratorFunction").0)));
-        ctor_mut.set_data_meta(npos, PropAttributes::new(false, false, true));
+        let proto_val = JsValue::from_js_object(vm.async_generator_function_proto.as_ptr() as *mut JsObject);
+        let name_val = JsValue::perm_string(sf.string_ptr(sf.intern("AsyncGeneratorFunction").0));
+        if agf_ctor_is_new {
+            let ppos = ctor_mut.push_prop(proto_val);
+            ctor_mut.set_data_meta(ppos, PropAttributes::new(false, false, false));
+            let npos = ctor_mut.push_prop(name_val);
+            ctor_mut.set_data_meta(npos, PropAttributes::new(false, false, true));
+        } else {
+            let si_prototype = sf.intern("prototype").0;
+            if let Some(pos) = sh.lookup_position(ctor_mut.shape_id(), si_prototype) {
+                ctor_mut.set_prop_at(pos, proto_val);
+            }
+            let si_name = sf.intern("name").0;
+            if let Some(pos) = sh.lookup_position(ctor_mut.shape_id(), si_name) {
+                ctor_mut.set_prop_at(pos, name_val);
+            }
+        }
     }
 }
 

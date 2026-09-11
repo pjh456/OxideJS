@@ -39,6 +39,17 @@ macro_rules! bind_methods_static {
             );
         })*
     };
+    ($target:expr, $sf:expr, $sh:expr, $world:expr, $label:expr,
+     $(($name:literal, $func:expr, $nargs:expr)),* $(,)?) => {
+        $({
+            let _raw: *const () = $func as *const ();
+            // SAFETY: $func 是 NativeFn 函数项；强转并包装合法。
+            let _func_ptr = unsafe { oxide_types::object::NativeFnPtr::from_raw(_raw) };
+            let _ = $crate::builtin::BuiltinWorld::bind_method_labeled_static(
+                $target, $sh, $sf, $name, _func_ptr, $nargs, $world, $label,
+            );
+        })*
+    };
 }
 
 /// Object 静态方法与原型方法的 native 函数指针集合，由 builtin 绑定层填充后交给
@@ -302,7 +313,38 @@ pub struct BuiltinWorld {
     /// 这些对象本体在堆上、不属任何 arena，`session` 收尾时按表统一释放
     /// （属性区 + 本体）；选择性重建换 world 时本表整体并入新 world
     /// （`inherit_leaked_objects`），仍由 session 收尾统一释放，不悬垂、不双放。
-    leaked_objects: std::cell::RefCell<Vec<*mut JsObject>>,
+    ///
+    /// 可复用 native 函数 wrapper 带复用键（[`FnWrapperKey`]）：选择性重建
+    /// 重绑按键命中前轮旧 wrapper，迁移到重建 P 对象槽位，登记表跨轮不增长。
+    leaked_objects: std::cell::RefCell<Vec<LeakedSlot>>,
+}
+
+/// native 函数 wrapper 的复用键：（目标家族，目标站点标签，属性槽位键，wrapper 名）。
+///
+/// 家族目标是 [`BuiltinWorld::all_p_fields`] 枚举的稳定下标（重建跨轮不变，
+/// 1..=N），此时标签恒 0；非 P 目标（global 对象、Box 自建构造器、宿主对象、
+/// VM 内建原型）家族为 0，以绑定站点标签（站点名的 perm intern 键）区分
+/// 同名方法槽位——如 Generator/AsyncGenerator 原型同名的 next/return/throw。
+/// 选择性重建重绑按键查找前轮旧 wrapper 并迁移，避免每轮新建导致
+/// 登记表无界累积；同键重复登记意味着复用键设计缺陷（debug 断言守约）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct FnWrapperKey {
+    family: u16,
+    label: u32,
+    slot: u32,
+    name: u32,
+}
+
+impl FnWrapperKey {
+    pub const fn new(family: u16, label: u32, slot: u32, name: u32) -> Self {
+        Self { family, label, slot, name }
+    }
+}
+
+/// 登记表条目：对象指针 + 可选复用键（`None` = 不可复用对象）。
+struct LeakedSlot {
+    ptr: *mut JsObject,
+    key: Option<FnWrapperKey>,
 }
 
 fn intern_label(string_forge: &PermInterner, label: &str) -> u32 {
@@ -688,10 +730,65 @@ impl BuiltinWorld {
         JsValue::from_js_object(self.function_proto.as_ptr() as *mut JsObject)
     }
 
-    /// 登记一个绑定层经 `Box::into_raw` 持有的函数/宿主对象，供
-    /// [`Self::teardown_heap_data`] 在 session 收尾时统一释放。
+    /// 登记一个绑定层经 `Box::into_raw` 持有的函数/宿主对象（不可复用对象），
+    /// 供 [`Self::teardown_heap_data`] 在 session 收尾时统一释放；可复用
+    /// native 函数 wrapper 走 [`Self::track_fn_wrapper`]。
     pub fn track_leaked_object(&self, obj_ptr: *mut JsObject) {
-        self.leaked_objects.borrow_mut().push(obj_ptr);
+        self.leaked_objects.borrow_mut().push(LeakedSlot { ptr: obj_ptr, key: None });
+    }
+
+    /// 登记一个可复用 native 函数 wrapper（带复用键），随登记表在 session
+    /// 收尾统一释放。
+    ///
+    /// # 注意事项
+    /// 同键重复登记意味着复用键设计缺陷（同家族槽位对应两个不同 wrapper
+    /// 对象）——debug 断言立即失败。
+    pub fn track_fn_wrapper(&self, obj_ptr: *mut JsObject, key: FnWrapperKey) {
+        debug_assert!(
+            !self.leaked_objects.borrow().iter().any(|s| s.key == Some(key)),
+            "同键 native 函数 wrapper 重复登记"
+        );
+        self.leaked_objects
+            .borrow_mut()
+            .push(LeakedSlot { ptr: obj_ptr, key: Some(key) });
+    }
+
+    /// 查找复用键相同且 native 函数/参数个数匹配的既有 wrapper（选择性重建
+    /// 重绑的复用入口）。
+    ///
+    /// # 边界与前提
+    /// 登记表指针 session 存活期内有效（full_reset 安全点无并发读者）；
+    /// native 函数与参数个数一并校验，防绑定表漂移时误换旧实现。
+    pub fn find_fn_wrapper(
+        &self, key: FnWrapperKey, native_fn_ptr: NativeFnPtr, arg_count: u8,
+    ) -> Option<*mut JsObject> {
+        self.leaked_objects
+            .borrow()
+            .iter()
+            .find(|s| {
+                s.key == Some(key) && {
+                    // SAFETY: 登记表指针 session 存活期内有效。
+                    let obj = unsafe { &*s.ptr };
+                    obj.native_fn().map(|p| p.0) == Some(native_fn_ptr.0) && obj.native_arg_count() == arg_count
+                }
+            })
+            .map(|s| s.ptr)
+    }
+
+    /// wrapper 复用键的目标家族标签：目标对象是本 world 固定 P 字段时返回
+    /// 其枚举下标 + 1（`all_p_fields` 顺序跨重建轮不变），非 P 目标返回 0。
+    pub fn wrapper_family_of(&self, obj: *const JsObject) -> u16 {
+        for (i, p) in self.all_p_fields().iter().enumerate() {
+            if std::ptr::eq(p.as_ptr(), obj) {
+                return (i + 1) as u16;
+            }
+        }
+        0
+    }
+
+    /// 登记表对象数（泄漏校准的跨轮继承采样锚点）。
+    pub fn leaked_object_count(&self) -> usize {
+        self.leaked_objects.borrow().len()
     }
 
     /// 选择性重建时把旧 world 的登记表整体并入新 world（见
@@ -770,7 +867,8 @@ impl BuiltinWorld {
                 }
             }
         }
-        for &ptr in self.leaked_objects.borrow().iter() {
+        for slot in self.leaked_objects.borrow().iter() {
+            let ptr = slot.ptr;
             // SAFETY: 登记表指针 session 存活期内有效，重指安全点无并发读者。
             unsafe {
                 repoint(&mut *ptr);
@@ -788,8 +886,8 @@ impl BuiltinWorld {
                 );
             }
         }
-        for &ptr in self.leaked_objects.borrow().iter() {
-            let cur = unsafe { (*ptr).proto() };
+        for slot in self.leaked_objects.borrow().iter() {
+            let cur = unsafe { (*slot.ptr).proto() };
             debug_assert!(
                 !cur.is_object() || !remap.contains_key(&cur.as_js_object_ptr()),
                 "登记表 wrapper proto 槽不得残留被替换旧指针"
@@ -933,7 +1031,8 @@ impl BuiltinWorld {
     /// session 收尾统一释放；被替换家族的旧 P 字段属性区在重建收尾
     /// （`retire_replaced`）恰好释放一次，与本路径对象集不相交，不双放。
     pub fn teardown_heap_data(&self) {
-        for ptr in self.leaked_objects.borrow_mut().drain(..) {
+        for slot in self.leaked_objects.borrow_mut().drain(..) {
+            let ptr = slot.ptr;
             if ptr.is_null() {
                 continue;
             }
@@ -1962,46 +2061,103 @@ impl BuiltinWorld {
     /// 按指定属性键安装方法 wrapper（键不要求字符串 intern，well-known symbol 键用此路径）。
     ///
     /// `method_name` 只用于 wrapper 的 `name` 属性；`key` 是属性的实际存储键。
+    /// 目标站点标签取 0：P 目标由家族下标区分，非 P 目标须经
+    /// [`Self::bind_method_key_labeled_static`] 传站点标签。
     #[expect(clippy::too_many_arguments)]
     pub fn bind_method_key_static(
         proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &PermInterner, key: u32, method_name: &str,
         native_fn_ptr: NativeFnPtr, arg_count: u8, world: &BuiltinWorld,
     ) -> Result<(), String> {
-        let wrapper_proto_val = world.fn_proto_val();
-        let wrapper_proto_ptr = if wrapper_proto_val.is_object() {
-            wrapper_proto_val.as_js_object_ptr()
-        } else {
-            std::ptr::null_mut()
+        Self::bind_method_key_labeled_static(
+            proto,
+            shape_forge,
+            string_forge,
+            key,
+            method_name,
+            native_fn_ptr,
+            arg_count,
+            world,
+            0,
+        )
+    }
+
+    /// [`Self::bind_method_static`] 的站点标签版本：属性键由方法名 intern 得出，
+    /// 供非 P 目标（VM 内建原型 Box 对象）的静态绑定宏使用。
+    #[expect(clippy::too_many_arguments)]
+    pub fn bind_method_labeled_static(
+        proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &PermInterner, method_name: &str,
+        native_fn_ptr: NativeFnPtr, arg_count: u8, world: &BuiltinWorld, label: u32,
+    ) -> Result<(), String> {
+        let si = string_forge.intern(method_name).0;
+        Self::bind_method_key_labeled_static(
+            proto,
+            shape_forge,
+            string_forge,
+            si,
+            method_name,
+            native_fn_ptr,
+            arg_count,
+            world,
+            label,
+        )
+    }
+
+    /// 按指定属性键安装方法 wrapper，显式指定非 P 目标的绑定站点标签。
+    ///
+    /// 同一 session 内多个非 P 目标（VM 内建原型 Box 对象等）可绑定同名方法槽
+    /// （如 next/return/throw）：站点标签（站点名 perm intern 键）使复用键跨
+    /// 站点唯一，重绑时只迁移本站点的旧 wrapper。
+    #[expect(clippy::too_many_arguments)]
+    pub fn bind_method_key_labeled_static(
+        proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &PermInterner, key: u32, method_name: &str,
+        native_fn_ptr: NativeFnPtr, arg_count: u8, world: &BuiltinWorld, label: u32,
+    ) -> Result<(), String> {
+        let si = string_forge.intern(method_name).0;
+        // 选择性重建复用：同键前轮旧 wrapper 迁移到新 proto 槽位——其 proto 槽
+        // 已由重建收尾重指（或 Function 家族保留而不变），length/name 属性区
+        // 随对象保留，不再新建对象、登记表跨轮不增长。
+        let reuse_key = FnWrapperKey::new(world.wrapper_family_of(proto as *const JsObject), label, key, si);
+        let wrapper_ptr = match world.find_fn_wrapper(reuse_key, native_fn_ptr, arg_count) {
+            Some(ptr) => ptr,
+            None => {
+                let wrapper_proto_val = world.fn_proto_val();
+                let wrapper_proto_ptr = if wrapper_proto_val.is_object() {
+                    wrapper_proto_val.as_js_object_ptr()
+                } else {
+                    std::ptr::null_mut()
+                };
+                let mut wrapper = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+                if !wrapper_proto_ptr.is_null() {
+                    wrapper.set_proto(wrapper_proto_val).ok();
+                }
+                wrapper.set_function(true);
+                // NativeFnPtr 不变量由调用方维护（见 bind_method / bind_method_static
+                // 的调用方，均使用函数项表达式）。
+                wrapper.set_native_fn(Some(native_fn_ptr));
+                wrapper.set_native_arg_count(arg_count);
+                // 设置 .length (ES spec: Function.length = formal parameter count,
+                // {[[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true})
+                let si_length = string_forge.intern("length").0;
+                let length_shape = shape_forge.make_shape(wrapper.shape_id(), si_length);
+                wrapper.set_shape_id(length_shape);
+                wrapper.ensure_hash_props().push(JsValue::int(arg_count as i32));
+                let length_pos = wrapper.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+                wrapper.set_data_meta(length_pos, oxide_types::object::PropAttributes::new(false, false, true));
+                // 设置 .name ({[[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true})
+                let si_name = string_forge.intern("name").0;
+                let name_shape = shape_forge.make_shape(wrapper.shape_id(), si_name);
+                wrapper.set_shape_id(name_shape);
+                wrapper
+                    .ensure_hash_props()
+                    .push(JsValue::perm_string(string_forge.string_ptr(si)));
+                let name_pos = wrapper.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+                wrapper.set_data_meta(name_pos, oxide_types::object::PropAttributes::new(false, false, true));
+                // 登记进 world 释放表：session 收尾时统一释放 wrapper 的属性区与本体。
+                let wrapper_ptr = Box::into_raw(wrapper);
+                world.track_fn_wrapper(wrapper_ptr, reuse_key);
+                wrapper_ptr
+            }
         };
-        let mut wrapper = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
-        if !wrapper_proto_ptr.is_null() {
-            wrapper.set_proto(wrapper_proto_val).ok();
-        }
-        wrapper.set_function(true);
-        // NativeFnPtr 不变量由调用方维护（见 bind_method / bind_method_static
-        // 的调用方，均使用函数项表达式）。
-        wrapper.set_native_fn(Some(native_fn_ptr));
-        wrapper.set_native_arg_count(arg_count);
-        // 设置 .length (ES spec: Function.length = formal parameter count,
-        // {[[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true})
-        let si_length = string_forge.intern("length").0;
-        let length_shape = shape_forge.make_shape(wrapper.shape_id(), si_length);
-        wrapper.set_shape_id(length_shape);
-        wrapper.ensure_hash_props().push(JsValue::int(arg_count as i32));
-        let length_pos = wrapper.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
-        wrapper.set_data_meta(length_pos, oxide_types::object::PropAttributes::new(false, false, true));
-        // 设置 .name ({[[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true})
-        let si_name = string_forge.intern("name").0;
-        let name_shape = shape_forge.make_shape(wrapper.shape_id(), si_name);
-        wrapper.set_shape_id(name_shape);
-        wrapper
-            .ensure_hash_props()
-            .push(JsValue::perm_string(string_forge.string_ptr(string_forge.intern(method_name).0)));
-        let name_pos = wrapper.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
-        wrapper.set_data_meta(name_pos, oxide_types::object::PropAttributes::new(false, false, true));
-        // 登记进 world 释放表：session 收尾时统一释放 wrapper 的属性区与本体。
-        let wrapper_ptr = Box::into_raw(wrapper);
-        world.track_leaked_object(wrapper_ptr);
         let wrapper_val = JsValue::from_js_object(wrapper_ptr);
         let new_shape = shape_forge.make_shape(proto.shape_id(), key);
         proto.set_shape_id(new_shape);
@@ -2198,6 +2354,6 @@ mod tests {
         assert!(std::ptr::eq(unsafe { (*object_ctor).proto().as_js_object_ptr() }, new_fn_proto));
         assert!(std::ptr::eq(unsafe { (*wrapper).proto().as_js_object_ptr() }, new_fn_proto));
         // 登记表并入新 world：保留 wrapper 仍须由 session 收尾统一释放。
-        assert!(session.builtin_world.leaked_objects.borrow().contains(&wrapper));
+        assert!(session.builtin_world.leaked_objects.borrow().iter().any(|s| s.ptr == wrapper));
     }
 }

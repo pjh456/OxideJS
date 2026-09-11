@@ -827,6 +827,93 @@ mod tests {
         assert!(!vm.session.is_dirty_since_snapshot());
     }
 
+    /// P 原型上方法槽的 wrapper 对象原始指针（rebuild 跨轮复用验证用）。
+    fn method_wrapper_ptr(vm: &Vm, proto_ptr: *const JsObject, name: &str) -> *const JsObject {
+        let si = vm.kernel_core.perm_interner().intern(name).0;
+        // SAFETY: proto_ptr 是本 session 的 P 原型，安全点内无并发读者。
+        let proto = unsafe { &*proto_ptr };
+        let pos = vm
+            .kernel_core
+            .shape_forge()
+            .lookup_position(proto.shape_id(), si)
+            .unwrap_or_else(|| panic!("{name} 槽位应存在"));
+        let val = proto.get_prop_at(pos);
+        assert!(val.is_object(), "{name} 槽位应为 wrapper 对象: {val:?}");
+        val.as_js_object_ptr()
+    }
+
+    /// global 属性槽数（槽位原位更新跨轮不追加验证用）。
+    fn global_slot_count(vm: &Vm) -> usize {
+        let g = vm.session.global_object.as_ptr() as *mut JsObject;
+        // SAFETY: global 是本 session 对象，安全点内无并发读者。
+        unsafe { (*g).prop_vec_len() }
+    }
+
+    /// 选择性重建 wrapper 复用与 global 槽原位更新：每轮「原型脏写 + full_reset」
+    /// 后存活方法 wrapper 应为同一对象（同 raw 指针、同 shape），释放表计数与
+    /// global 属性槽数跨轮不增长，重建后方法行为正确。
+    #[test]
+    fn full_reset_rebuild_reuses_method_wrappers_across_rounds() {
+        let mut vm = Vm::new();
+        let _ = run_source(&mut vm, "0");
+        let push_before = method_wrapper_ptr(&vm, vm.session.builtin_world().array_proto.as_ptr(), "push");
+        let push_shape_before = unsafe { &*push_before }.shape_id();
+        let registry_before = vm.session.builtin_world().leaked_object_count();
+        let slots_before = global_slot_count(&vm);
+
+        for i in 0..3u32 {
+            // 新键写才 bump 原型世代；四家族逐轮全脏，function 家族重建同时
+            // 覆盖 wrapper proto 槽重指路径。
+            let source = format!(
+                "Object.prototype['w{i}'] = 1; Array.prototype['w{i}'] = 2; String.prototype['w{i}'] = 3; \
+                 Function.prototype['w{i}'] = 4; 0"
+            );
+            let _ = run_source(&mut vm, &source);
+            vm.full_reset();
+        }
+
+        let push_after = method_wrapper_ptr(&vm, vm.session.builtin_world().array_proto.as_ptr(), "push");
+        assert!(std::ptr::eq(push_before, push_after), "存活方法 wrapper 应复用（同 raw 指针）");
+        assert_eq!(push_shape_before, unsafe { &*push_after }.shape_id(), "wrapper shape 应稳定");
+        let registry_after = vm.session.builtin_world().leaked_object_count();
+        assert!(
+            registry_after <= registry_before,
+            "释放表计数跨轮不应增长: {registry_before} -> {registry_after}"
+        );
+        let slots_after = global_slot_count(&vm);
+        assert!(slots_after <= slots_before, "global 槽数跨轮不应增长: {slots_before} -> {slots_after}");
+        assert_eq!(run_source(&mut vm, "[1, 2].push(3)"), JsValue::int(3));
+        assert_eq!(run_source(&mut vm, "String.prototype.charCodeAt.call('A', 0)"), JsValue::int(65));
+    }
+
+    /// global 槽位原位更新锚点：错误/资源栈家族脏重建（子类型构造器经 Box 自建
+    /// 路径）多轮后 global 属性槽数不增长、Error 槽指向新构造器。
+    #[test]
+    fn full_reset_rebuild_keeps_global_slot_count_flat() {
+        let mut vm = Vm::new();
+        let _ = run_source(&mut vm, "0");
+        let slots_before = global_slot_count(&vm);
+
+        for i in 0..3u32 {
+            // 新键写脏错误家族（子类型原型重建触发构造器 Box 路径）与对象家族。
+            let source = format!(
+                "Error.prototype['e{i}'] = 1; TypeError.prototype['e{i}'] = 2; Object.prototype['e{i}'] = 3; 0"
+            );
+            let _ = run_source(&mut vm, &source);
+            vm.full_reset();
+        }
+
+        let slots_after = global_slot_count(&vm);
+        assert!(slots_after <= slots_before, "global 槽数跨轮不应增长: {slots_before} -> {slots_after}");
+        // Error 槽应指向本轮重建的构造器（非滞留旧指针）。
+        assert!(std::ptr::eq(
+            global_prop(&vm, "Error").as_js_object_ptr(),
+            vm.session.builtin_world().error_constructor.as_ptr() as *mut JsObject
+        ));
+        assert!(global_prop(&vm, "TypeError").is_object());
+        assert_eq!(run_source(&mut vm, "new TypeError('x') instanceof TypeError"), JsValue::bool(true));
+    }
+
     fn vm_with_low_threshold() -> Vm {
         let mut cfg = KernelConfig::minimal();
         cfg.set_session_gc_threshold(1);
