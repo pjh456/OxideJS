@@ -300,8 +300,8 @@ pub struct BuiltinWorld {
     /// 绑定层经 `Box::into_raw` 持有的函数/宿主对象登记表（方法 wrapper、
     /// 访问器、错误构造器、Reflect/Iterator、内建原型构造器、`$262` 宿主等）。
     /// 这些对象本体在堆上、不属任何 arena，`session` 收尾时按表统一释放
-    /// （属性区 + 本体）；选择性重建保留旧 world 时本表随旧 world 整体
-    /// 丢弃（泄漏口径与改造前一致，无悬垂风险）。
+    /// （属性区 + 本体）；选择性重建换 world 时本表整体并入新 world
+    /// （`inherit_leaked_objects`），仍由 session 收尾统一释放，不悬垂、不双放。
     leaked_objects: std::cell::RefCell<Vec<*mut JsObject>>,
 }
 
