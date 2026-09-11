@@ -24,9 +24,11 @@ use oxide_log::{Level, SUBSYSTEM_COUNT};
 pub struct KernelConfig {
     pub min_pool_size: usize,
     pub max_pool_size: Option<usize>,
-    /// perm interner advisory 重建阈值：唯一键数 `entry_count` 达到该值时，
-    /// 宿主应在安全边界（无存活 VM）整体重建 kernel；None = 无阈值（三个预设
-    /// 默认值，行为与无旋钮一致）。见 [`KernelCore::should_rebuild_perm`]。
+    /// perm interner advisory 重建阈值：唯一键数 `entry_count` **超过**该值时，
+    /// 宿主应在安全边界（无存活 VM）整体重建 kernel，并把
+    /// [`KernelCore::should_rebuild_perm`] 返回的建议上限写入新 kernel 配置；
+    /// None = 无阈值（三个预设默认值，行为与无旋钮一致）。
+    /// 见 [`KernelCore::should_rebuild_perm`]。
     pub perm_interner_max_entries: Option<u32>,
     pub max_steps: Option<u64>,
     /// 单次 run 的分配上限（epoch + session arena + session 堆账目字节）：
@@ -224,17 +226,20 @@ impl KernelCore {
         }
     }
 
-    /// 宿主是否应整体重建本 kernel（advisory 信号）。
+    /// 宿主是否应整体重建本 kernel，并返回重建后的建议上限（advisory 信号）。
     ///
-    /// perm interner 唯一键数达到配置的
-    /// [`KernelConfig::perm_interner_max_entries`] 阈值时返回 true。纯
-    /// advisory 契约：引擎不自动重建——重建须由宿主在"无存活 VM"边界驱动：
-    /// 归还全部 `VmGuard`（池排空）→ 旧 `Arc<KernelCore>` 归零整体释放
-    /// （PermInterner/ShapeForge/CodeForge/PropForge，含全部泄漏键文本与
-    /// 物化串）→ 新建 kernel + 新池/VM。存活 VM 的 `immutables_cache` 与
-    /// P 对象持有旧 kernel 的物化串裸指针与 shape id，VM 存活期间重建
-    /// 会使其悬垂。三个预设默认 None = 永不触发（有意裁定：CLI eval/run/
-    /// REPL/bench/test262 宿主均未接重建边界，None 保证零行为漂移）。
+    /// perm interner 唯一键数 `entry_count` **超过**配置的
+    /// [`KernelConfig::perm_interner_max_entries`] 阈值时返回
+    /// `Some(建议上限)`——建议上限 = 阈值取 2 的幂后加倍，宿主应在整体重建
+    /// 后把它写入新 kernel 的 `perm_interner_max_entries`（增长不立即再次
+    /// 触顶）；阈值未设或键数未超阈值时返回 `None`。纯 advisory 契约：引擎
+    /// 不自动重建——重建须由宿主在"无存活 VM"边界驱动：归还全部 `VmGuard`
+    /// （池排空）→ 旧 `Arc<KernelCore>` 归零整体释放（PermInterner/ShapeForge/
+    /// CodeForge/PropForge，含全部泄漏键文本与物化串）→ 新建 kernel + 新池/
+    /// VM。存活 VM 的 `immutables_cache` 与 P 对象持有旧 kernel 的物化串裸
+    /// 指针与 shape id，VM 存活期间重建会使其悬垂。三个预设默认 None = 永不
+    /// 触发（有意裁定：CLI eval/run/REPL/bench/test262 宿主均未接重建边界，
+    /// None 保证零行为漂移）。
     ///
     /// # 边界与前提
     /// - 仅在宿主边界（run 间 / 测试间 / 迭代间）调用，勿入 dispatch 热路径：
@@ -245,10 +250,9 @@ impl KernelCore {
     ///
     /// # 副作用
     /// 无：只读查询。
-    pub fn should_rebuild_perm(&self) -> bool {
-        self.config
-            .perm_interner_max_entries
-            .is_some_and(|n| self.perm_interner.entry_count() >= n)
+    pub fn should_rebuild_perm(&self) -> Option<u32> {
+        let cap = self.config.perm_interner_max_entries?;
+        (self.perm_interner.entry_count() > cap).then_some(cap.next_power_of_two().saturating_mul(2))
     }
 }
 
@@ -844,18 +848,21 @@ mod tests {
         for i in 0..10 {
             core.perm_interner().intern(&format!("key{i}"));
         }
-        assert!(!core.should_rebuild_perm());
+        assert_eq!(core.should_rebuild_perm(), None);
     }
 
     #[test]
-    fn should_rebuild_perm_threshold_reached() {
+    fn should_rebuild_perm_exceeds_threshold() {
         let mut config = KernelConfig::minimal();
         config.perm_interner_max_entries = Some(2);
         let core = KernelCore::new(config);
         core.perm_interner().intern("a");
-        assert!(!core.should_rebuild_perm());
         core.perm_interner().intern("b");
-        assert!(core.should_rebuild_perm());
+        // 恰在阈值不触发（超阈值，非达到）。
+        assert_eq!(core.should_rebuild_perm(), None);
+        core.perm_interner().intern("c");
+        // 建议上限 = 阈值取 2 的幂后加倍：2 -> 4。
+        assert_eq!(core.should_rebuild_perm(), Some(4));
     }
 
     #[test]
@@ -865,7 +872,7 @@ mod tests {
         let core = KernelCore::new(config);
         core.perm_interner().intern("a");
         core.perm_interner().intern("b");
-        assert!(!core.should_rebuild_perm());
+        assert_eq!(core.should_rebuild_perm(), None);
     }
 
     #[test]
