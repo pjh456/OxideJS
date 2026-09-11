@@ -16,12 +16,15 @@ fn hash64(s: &str) -> u64 {
 }
 
 /// 一条 intern 过的键。`data` 是泄漏的 `&'static str`——永久键从不释放
-/// （按设计 append-only），所以泄漏即存储模型，而非 bug。
+/// （按设计 append-only），所以泄漏即存储模型，而非 bug。键 id 与 64 位
+/// 哈希经 `DashMap` 的哈希键→候选 id 表寻址，条目自身不存哈希。
 #[derive(Clone, Copy)]
 struct PermEntry {
     data: &'static str,
-    hash: u64,
 }
+
+// 布局钉：条目仅泄漏指针 + 长度（16B）；布局漂移即编译失败。
+const _: () = assert!(std::mem::size_of::<PermEntry>() == 16);
 
 /// 所有 VM 共享的 append-only、永不移动、读无锁的键 interner。
 ///
@@ -81,7 +84,7 @@ impl PermInterner {
         }
         let id = entries.len() as u32;
         let leaked: &'static str = Box::leak(s.to_string().into_boxed_str());
-        entries.push(PermEntry { data: leaked, hash });
+        entries.push(PermEntry { data: leaked });
         let entry_count = entries.len();
         drop(entries);
         self.hash_map.entry(hash).or_default().push(id);
@@ -97,12 +100,6 @@ impl PermInterner {
     pub fn lookup(&self, id: u32) -> Option<&'static str> {
         let entries = self.entries.read().unwrap();
         entries.get(id as usize).map(|e| e.data)
-    }
-
-    /// 键 id 的完整 64 位哈希。
-    pub fn get_hash(&self, id: u32) -> Option<u64> {
-        let entries = self.entries.read().unwrap();
-        entries.get(id as usize).map(|e| e.hash)
     }
 
     /// 全部唯一 intern 键的数量。
