@@ -773,18 +773,15 @@ pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
     let proto_si = sf.intern("prototype").0;
     let ctor_shape = sh.make_shape(gf_ctor.shape_id(), proto_si);
     gf_ctor.set_shape_id(ctor_shape);
-    let ppos = gf_ctor.push_prop(JsValue::from_js_object(gf_proto.as_mut() as *mut JsObject));
-    gf_ctor.set_data_meta(ppos, oxide_types::object::PropAttributes::new(false, false, false));
     let name_si = sf.intern("name").0;
     let name_shape = sh.make_shape(gf_ctor.shape_id(), name_si);
     gf_ctor.set_shape_id(name_shape);
-    let npos = gf_ctor.push_prop(JsValue::perm_string(sf.string_ptr(sf.intern("GeneratorFunction").0)));
-    gf_ctor.set_data_meta(npos, oxide_types::object::PropAttributes::new(false, false, true));
     // gf_proto.constructor = gf_ctor（构造器对象泄漏持有，与 builtin 方法 wrapper 同生命周期）。
     let ctor_si = sf.intern("constructor").0;
     let ctor2_shape = sh.make_shape(gf_proto.shape_id(), ctor_si);
     gf_proto.set_shape_id(ctor2_shape);
-    let cpos = gf_proto.push_prop(JsValue::from_js_object(Box::into_raw(gf_ctor)));
+    let gf_ctor_ptr = Box::into_raw(gf_ctor);
+    let cpos = gf_proto.push_prop(JsValue::from_js_object(gf_ctor_ptr));
     gf_proto.set_data_meta(cpos, oxide_types::object::PropAttributes::new(false, false, true));
     // gf_proto.prototype = %GeneratorPrototype%（默认原型，default-proto 测试读取）。
     let proto2_si = sf.intern("prototype").0;
@@ -799,7 +796,18 @@ pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
     let tag2_pos = gf_proto.push_prop(JsValue::perm_string(sf.string_ptr(sf.intern("GeneratorFunction").0)));
     gf_proto.set_data_meta(tag2_pos, oxide_types::object::PropAttributes::new(false, false, true));
 
+    // proto 本体只存在于 P 槽（Arc 副本，原 Box 随函数结束释放）：装入 P 槽后再写
+    // 构造器 prototype/name 属性（按模板序 prototype 在前），prototype 指向 P 槽实例，
+    // 使其与动态生成器函数使用的 [[Prototype]] 同一对象。
     vm.generator_function_proto = P::new(*gf_proto);
+    // SAFETY: gf_ctor_ptr 为 Box 原分配（泄漏持有、生命周期覆盖 session），对象已建满、本 Vm 独占。
+    unsafe {
+        let ctor_mut = &mut *gf_ctor_ptr;
+        let ppos = ctor_mut.push_prop(JsValue::from_js_object(vm.generator_function_proto.as_mut_ptr()));
+        ctor_mut.set_data_meta(ppos, oxide_types::object::PropAttributes::new(false, false, false));
+        let npos = ctor_mut.push_prop(JsValue::perm_string(sf.string_ptr(sf.intern("GeneratorFunction").0)));
+        ctor_mut.set_data_meta(npos, oxide_types::object::PropAttributes::new(false, false, true));
+    }
 }
 
 /// `%GeneratorFunction%` 占位：动态生成器函数创建未实现，调用抛错。

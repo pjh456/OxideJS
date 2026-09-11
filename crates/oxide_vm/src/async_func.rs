@@ -420,13 +420,12 @@ pub(crate) fn init_async_intrinsics(vm: &mut Vm) {
     let proto_si = sf.intern("prototype").0;
     let ctor_shape2 = sh.make_shape(af_ctor.shape_id(), proto_si);
     af_ctor.set_shape_id(ctor_shape2);
-    let ppos = af_ctor.push_prop(JsValue::from_js_object(af_proto.as_mut() as *mut JsObject));
-    af_ctor.set_data_meta(ppos, PropAttributes::new(false, false, false));
     // af_proto.constructor = %AsyncFunction%（构造器对象泄漏持有，与 builtin 方法 wrapper 同生命周期）。
     let ctor_si = sf.intern("constructor").0;
     let pshape = sh.make_shape(af_proto.shape_id(), ctor_si);
     af_proto.set_shape_id(pshape);
-    let cpos = af_proto.push_prop(JsValue::from_js_object(Box::into_raw(af_ctor)));
+    let af_ctor_ptr = Box::into_raw(af_ctor);
+    let cpos = af_proto.push_prop(JsValue::from_js_object(af_ctor_ptr));
     af_proto.set_data_meta(cpos, PropAttributes::new(false, false, true));
     // af_proto[Symbol.toStringTag] = "AsyncFunction"（数据属性，w/e/c = false/false/true）。
     let tag_si = sf.intern("@@toStringTag").0;
@@ -435,7 +434,16 @@ pub(crate) fn init_async_intrinsics(vm: &mut Vm) {
     let tag_pos = af_proto.push_prop(JsValue::perm_string(sf.string_ptr(sf.intern("AsyncFunction").0)));
     af_proto.set_data_meta(tag_pos, PropAttributes::new(false, false, true));
 
+    // proto 本体只存在于 P 槽（Arc 副本，原 Box 随函数结束释放）：装入 P 槽后再把
+    // 构造器 prototype 属性指向 P 槽实例，使其与动态异步函数使用的 [[Prototype]]
+    // 同一对象，保证 `AsyncFunction.prototype === (async () => {}).__proto__`。
     vm.async_function_proto = P::new(*af_proto);
+    // SAFETY: af_ctor_ptr 为 Box 原分配（泄漏持有、生命周期覆盖 session），对象已建满、本 Vm 独占。
+    unsafe {
+        let ctor_mut = &mut *af_ctor_ptr;
+        let ppos = ctor_mut.push_prop(JsValue::from_js_object(vm.async_function_proto.as_mut_ptr()));
+        ctor_mut.set_data_meta(ppos, PropAttributes::new(false, false, false));
+    }
 }
 
 /// `%AsyncFunction%` 占位：动态异步函数创建未实现，调用抛错。

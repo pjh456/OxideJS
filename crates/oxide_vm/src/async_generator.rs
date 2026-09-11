@@ -778,18 +778,15 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
     let proto_si = sf.intern("prototype").0;
     let ctor_shape = sh.make_shape(agf_ctor.shape_id(), proto_si);
     agf_ctor.set_shape_id(ctor_shape);
-    let ppos = agf_ctor.push_prop(JsValue::from_js_object(agf_proto.as_mut() as *mut JsObject));
-    agf_ctor.set_data_meta(ppos, PropAttributes::new(false, false, false));
     let name_si = sf.intern("name").0;
     let name_shape = sh.make_shape(agf_ctor.shape_id(), name_si);
     agf_ctor.set_shape_id(name_shape);
-    let npos = agf_ctor.push_prop(JsValue::perm_string(sf.string_ptr(sf.intern("AsyncGeneratorFunction").0)));
-    agf_ctor.set_data_meta(npos, PropAttributes::new(false, false, true));
     // agf_proto.constructor = %AsyncGeneratorFunction%（构造器对象泄漏持有，与 builtin 方法 wrapper 同生命周期）。
     let ctor_si = sf.intern("constructor").0;
     let ctor2_shape = sh.make_shape(agf_proto.shape_id(), ctor_si);
     agf_proto.set_shape_id(ctor2_shape);
-    let cpos = agf_proto.push_prop(JsValue::from_js_object(Box::into_raw(agf_ctor)));
+    let agf_ctor_ptr = Box::into_raw(agf_ctor);
+    let cpos = agf_proto.push_prop(JsValue::from_js_object(agf_ctor_ptr));
     agf_proto.set_data_meta(cpos, PropAttributes::new(false, false, true));
     // agf_proto.prototype = %AsyncGeneratorPrototype%。
     let proto2_si = sf.intern("prototype").0;
@@ -804,7 +801,18 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
     let tag2_pos = agf_proto.push_prop(JsValue::perm_string(sf.string_ptr(sf.intern("AsyncGeneratorFunction").0)));
     agf_proto.set_data_meta(tag2_pos, PropAttributes::new(false, false, true));
 
+    // proto 本体只存在于 P 槽（Arc 副本，原 Box 随函数结束释放）：装入 P 槽后再写
+    // 构造器 prototype/name 属性（按模板序 prototype 在前），prototype 指向 P 槽实例，
+    // 使其与动态异步生成器函数使用的 [[Prototype]] 同一对象。
     vm.async_generator_function_proto = P::new(*agf_proto);
+    // SAFETY: agf_ctor_ptr 为 Box 原分配（泄漏持有、生命周期覆盖 session），对象已建满、本 Vm 独占。
+    unsafe {
+        let ctor_mut = &mut *agf_ctor_ptr;
+        let ppos = ctor_mut.push_prop(JsValue::from_js_object(vm.async_generator_function_proto.as_mut_ptr()));
+        ctor_mut.set_data_meta(ppos, PropAttributes::new(false, false, false));
+        let npos = ctor_mut.push_prop(JsValue::perm_string(sf.string_ptr(sf.intern("AsyncGeneratorFunction").0)));
+        ctor_mut.set_data_meta(npos, PropAttributes::new(false, false, true));
+    }
 }
 
 /// `%AsyncGeneratorFunction%` 占位：动态异步生成器函数创建未实现，调用抛错。
