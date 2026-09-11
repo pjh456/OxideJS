@@ -188,9 +188,28 @@ fn undeclared_read_then_destructuring_write_reaches_global() {
     assert!(r.is_bool() && r.as_bool(), "先读后解构写应穿透全局对象，实际 {:?}", r);
 }
 
+// ── for-in/for-of 左侧先读后写：全局槽由读侧登记，LHS 写同样须穿透全局对象 ──
+#[test]
+fn undeclared_read_then_for_in_write_reaches_global() {
+    let r = eval_many(&["globalThis.k = 0", "var seen = k", "for (k in { a: 1 }) {}", "globalThis.k === 'a'"]).unwrap();
+    assert!(r.is_bool() && r.as_bool(), "先读后 for-in 左侧写应穿透全局对象，实际 {:?}", r);
+}
+
+#[test]
+fn undeclared_read_then_for_of_write_reaches_global() {
+    let r = eval_many(&["globalThis.v = 0", "var seen = v", "for (v of [1, 2]) {}", "globalThis.v === 2"]).unwrap();
+    assert!(r.is_bool() && r.as_bool(), "先读后 for-of 左侧写应穿透全局对象，实际 {:?}", r);
+}
+
 // ── 严格模式：读侧已登记的全局槽同属未解析引用，后写抛 ReferenceError ──
 #[test]
 fn strict_undeclared_read_then_write_throws_reference() {
     let result = eval("'use strict'; globalThis.s = 0; var seen = s; s = 5");
     assert_err_contains(result, "s is not defined");
+}
+
+#[test]
+fn strict_undeclared_read_then_for_in_write_throws_reference() {
+    let result = eval("'use strict'; globalThis.k = 0; var seen = k; for (k in { a: 1 }) {}");
+    assert_err_contains(result, "k is not defined");
 }

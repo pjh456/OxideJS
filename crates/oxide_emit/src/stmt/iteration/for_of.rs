@@ -116,7 +116,7 @@ impl Emitter {
                         self.emit_throw_error("TypeError", "cannot assign to read-only property", ctx)?;
                     }
                 } else {
-                    let is_implicit = ctx.implicit_global_writes.contains(&var_reg);
+                    let is_implicit = ctx.is_implicit_global_reg(var_reg);
                     if is_implicit && ctx.is_strict {
                         // 严格模式未声明写：抛 ReferenceError，跳过寄存器写（值无关）。
                         self.emit_strict_undeclared_write(name, ctx)?;
