@@ -130,6 +130,11 @@ impl Vm {
     /// 函数目标豁免均直落 epoch 值）；Map/Set 等原生盒按键值直插 epoch 值。
     /// `rewrite_object_values` 覆盖元素/meta/属性/proto/captured_this/home_object/
     /// cell 值；克隆子树经 forwarding 去重，环与共享引用各克隆一次。
+    ///
+    /// # 注意事项
+    /// - 须在执行外的安全点调用（无在途 builtin 局部裸指针、dispatch 未重入）：
+    ///   本方法原地改写 session 对象的引用字段，执行期调用将使 builtin 局部
+    ///   裸指针失效（与 `collect_session_gc` 同前提）。
     pub fn promote_session_epoch_refs(&mut self) {
         let objects = std::mem::take(&mut self.gc_state.session_object_ptrs);
         if objects.is_empty() {
@@ -193,6 +198,9 @@ impl Vm {
     ///   账目计入克隆字节；根引用按转发表重写。
     ///
     /// # 注意事项
+    /// - 须在执行外的安全点调用（无在途 builtin 局部裸指针、dispatch 未重入）：
+    ///   本方法改写全部根寄存器槽，执行期调用将使 builtin 局部裸指针失效
+    ///   （与 `collect_session_gc` 同前提）。
     /// - 供 workload 后观测点（基准留存测量）使用：本方法之后存活集完全对
     ///   session 可见，后续完整 GC 的留存账目不再漏"仅驻留 epoch arena 的对象"。
     /// - 与 `promote_session_epoch_refs` 互补：本方法处理根直接持有的 epoch 对象，
