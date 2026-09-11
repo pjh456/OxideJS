@@ -700,6 +700,183 @@ impl BuiltinWorld {
         self.leaked_objects.borrow_mut().append(&mut from.leaked_objects.borrow_mut());
     }
 
+    /// 释放选择性重建中被替换家族的旧 P 对象属性区。
+    ///
+    /// # 边界与前提
+    /// - 仅覆盖脏标记命中的家族字段（含 `dirty.object` 连带的迭代器原型族、
+    ///   `dirty.stubs` 连带的 BigInt 对）；未替换字段由新 world 沿用同一 Arc，
+    ///   其属性区归 session 收尾（`teardown_heap_data`）释放，此处不碰。
+    /// - Function/Object 对除外：保留方法 wrapper（登记表对象）的原型链仍经
+    ///   裸指针指向旧 function_proto/object_proto，执行期属性查找可达其属性
+    ///   区——该 4 对象已由 `rebuild_with_dirty` 保活（本体与属性区同泄漏），
+    ///   此处不得释放。
+    /// - 须在旧 world 被替换前调用（full_reset 安全点无并发读者）；与登记表
+    ///   对象（wrapper）集不相交，不双放。
+    ///
+    /// # 副作用
+    /// 每个被替换 P 对象的属性区四区释放并置空（幂等，重入为 no-op）。
+    pub fn release_replaced_family_heaps(&self, dirty: &BuiltinDirtySet) {
+        let release = |p: &P<JsObject>| {
+            // SAFETY: p 是本 world 的 P 对象，属性区仅此一处释放并置空（幂等）；
+            // full_reset 安全点无并发读者。
+            unsafe {
+                (&mut *p.as_mut_ptr()).release_raw_heap();
+            }
+        };
+        if dirty.object {
+            // object 家族重建连带重建迭代器原型族（链于 Object.prototype 之下），
+            // 旧 9 对象一并被替换。
+            for p in [
+                &self.iterator_proto,
+                &self.array_iterator_proto,
+                &self.map_iterator_proto,
+                &self.set_iterator_proto,
+                &self.string_iterator_proto,
+                &self.regexp_string_iterator_proto,
+                &self.iterator_helper_proto,
+                &self.disposable_stack_proto,
+                &self.async_disposable_stack_proto,
+            ] {
+                release(p);
+            }
+        }
+        if dirty.array {
+            release(&self.array_proto);
+            release(&self.array_constructor);
+        }
+        if dirty.string {
+            release(&self.string_proto);
+            release(&self.string_constructor);
+        }
+        if dirty.number {
+            release(&self.number_proto);
+            release(&self.number_constructor);
+        }
+        if dirty.boolean {
+            release(&self.boolean_proto);
+            release(&self.boolean_constructor);
+        }
+        if dirty.error_family {
+            release(&self.error_proto);
+            release(&self.error_constructor);
+            release(&self.type_error_proto);
+            release(&self.reference_error_proto);
+            release(&self.range_error_proto);
+            release(&self.syntax_error_proto);
+            release(&self.uri_error_proto);
+            release(&self.eval_error_proto);
+            release(&self.suppressed_error_proto);
+        }
+        if dirty.symbol_family {
+            release(&self.symbol_proto);
+            release(&self.symbol_constructor);
+            release(&self.sym_match);
+            release(&self.sym_replace);
+            release(&self.sym_search);
+            release(&self.sym_split);
+            release(&self.sym_iterator);
+            release(&self.sym_to_primitive);
+            release(&self.sym_has_instance);
+            release(&self.sym_match_all);
+            release(&self.sym_async_iterator);
+            release(&self.sym_to_string_tag);
+            release(&self.sym_species);
+            release(&self.sym_async_dispose);
+            release(&self.sym_dispose);
+        }
+        if dirty.math {
+            release(&self.math_object);
+        }
+        if dirty.json {
+            release(&self.json_object);
+        }
+        if dirty.date {
+            release(&self.date_proto);
+            release(&self.date_constructor);
+        }
+        if dirty.set {
+            release(&self.set_proto);
+            release(&self.set_constructor);
+        }
+        if dirty.map {
+            release(&self.map_proto);
+            release(&self.map_constructor);
+        }
+        if dirty.regexp {
+            release(&self.regexp_proto);
+            release(&self.regexp_constructor);
+        }
+        if dirty.array_buffer {
+            release(&self.array_buffer_proto);
+            release(&self.array_buffer_constructor);
+        }
+        if dirty.data_view {
+            release(&self.data_view_proto);
+            release(&self.data_view_constructor);
+        }
+        if dirty.typed_array_family {
+            for p in [
+                &self.typed_array_proto,
+                &self.typed_array_constructor,
+                &self.int8array_constructor,
+                &self.int8array_proto,
+                &self.uint8array_constructor,
+                &self.uint8array_proto,
+                &self.uint8clampedarray_constructor,
+                &self.uint8clampedarray_proto,
+                &self.int16array_constructor,
+                &self.int16array_proto,
+                &self.uint16array_constructor,
+                &self.uint16array_proto,
+                &self.int32array_constructor,
+                &self.int32array_proto,
+                &self.uint32array_constructor,
+                &self.uint32array_proto,
+                &self.float32array_constructor,
+                &self.float32array_proto,
+                &self.float64array_constructor,
+                &self.float64array_proto,
+                &self.bigint64array_constructor,
+                &self.bigint64array_proto,
+                &self.biguint64array_constructor,
+                &self.biguint64array_proto,
+            ] {
+                release(p);
+            }
+        }
+        if dirty.temporal {
+            for p in [
+                &self.temporal_object,
+                &self.temporal_now_object,
+                &self.instant_constructor,
+                &self.instant_proto,
+                &self.plain_date_constructor,
+                &self.plain_date_proto,
+                &self.plain_time_constructor,
+                &self.plain_time_proto,
+                &self.duration_constructor,
+                &self.duration_proto,
+                &self.zoned_date_time_constructor,
+                &self.zoned_date_time_proto,
+                &self.plain_date_time_constructor,
+                &self.plain_date_time_proto,
+            ] {
+                release(p);
+            }
+        }
+        if dirty.stubs {
+            // stubs 家族重建连带重建 BigInt 对。
+            release(&self.bigint_proto);
+            release(&self.bigint_constructor);
+            for p in &self.stub_objects {
+                release(p);
+            }
+        }
+        if dirty.console {
+            release(&self.console_object);
+        }
+    }
+
     /// 释放本 world 拥有的全部手工堆数据。
     ///
     /// # 口径
@@ -711,8 +888,10 @@ impl BuiltinWorld {
     /// # 注意事项
     /// 仅由 session 收尾调用（`KernelSession` 的 `Drop` 与 session 替换前），
     /// 幂等：登记表按值取走，属性区释放后置空。选择性重建（dirty rebuild）
-    /// 不走本路径——旧 world 整体丢弃，登记表与属性区同泄漏（改造前口径），
-    /// 保留对象的引用不受影响，不引入悬垂。
+    /// 不走本路径：登记表整体并入新 world（`inherit_leaked_objects`），仍由
+    /// session 收尾统一释放；被替换家族的旧 P 字段属性区在重建点
+    /// （`release_replaced_family_heaps`）恰好释放一次，与本路径对象集不相交，
+    /// 不双放。
     pub fn teardown_heap_data(&self) {
         for ptr in self.leaked_objects.borrow_mut().drain(..) {
             if ptr.is_null() {
@@ -1142,6 +1321,10 @@ impl BuiltinWorld {
             std::mem::forget(current.object_proto.clone());
             std::mem::forget(current.object_constructor.clone());
         }
+        // 被替换家族的旧 P 字段属性区释放站：本体随旧 world Arc 归零释放，
+        // 属性区无 Drop 口径，须在此恰好释放一次（Function/Object 对除外，
+        // 见上方保活）。
+        current.release_replaced_family_heaps(dirty);
         let (object_proto, object_constructor) = if dirty.object {
             make_named_pair(string_forge, shape_forge, labels, "Object")
         } else {
@@ -2022,5 +2205,50 @@ mod tests {
         let proto_ctor = rebuilt.array_proto.get_prop_at(0).as_js_object_ptr();
         assert!(std::ptr::eq(ctor_proto, rebuilt.array_proto.as_ptr() as *mut JsObject));
         assert!(std::ptr::eq(proto_ctor, rebuilt.array_constructor.as_ptr() as *mut JsObject));
+    }
+
+    /// 选择性重建的释放面动态自测：被替换家族的旧属性区恰好释放一次（置空可断言），
+    /// 保活家族与未脏家族不释放，登记表并入新 world。
+    #[test]
+    fn selective_reset_releases_replaced_family_heap() {
+        use crate::kernel::{KernelConfig, KernelCore, KernelSession};
+        let core = KernelCore::new(KernelConfig::minimal());
+        let mut session = KernelSession::new(&core);
+        // 持有旧 world Arc：被替换对象本体在断言期仍可读（属性区指针可检查）。
+        let old_world = std::sync::Arc::clone(&session.builtin_world);
+        let array_proto = old_world.array_proto.as_ptr() as *mut JsObject;
+        let object_proto = old_world.object_proto.as_ptr() as *mut JsObject;
+        let fn_proto = old_world.function_proto.as_ptr() as *mut JsObject;
+
+        // 旧原型各造一个命名属性区（绑定后的驻留态），登记表放一个泄漏 wrapper。
+        let wrapper = Box::into_raw(Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())));
+        old_world.track_leaked_object(wrapper);
+        unsafe {
+            (&mut *array_proto).ensure_hash_props().push(JsValue::int(1));
+            (&mut *object_proto).ensure_hash_props().push(JsValue::int(2));
+            (&mut *fn_proto).ensure_hash_props().push(JsValue::int(3));
+        }
+
+        unsafe {
+            (&mut *array_proto).bump_generation();
+            (&mut *fn_proto).bump_generation();
+        }
+        let dirty = session.selective_reset(&core);
+        assert!(dirty.array);
+        assert!(dirty.function);
+
+        // 被替换家族（array）：属性区四区已释放置空。
+        let old_array = unsafe { &*array_proto };
+        assert!(old_array.hash_props_raw().is_null());
+        assert!(old_array.array_elements_raw().is_null());
+        assert!(old_array.array_elements_meta_raw().is_null());
+        assert!(old_array.prop_meta_raw().is_null());
+        // 保活家族（function）：本体与属性区均保活——保留 wrapper 原型链执行期可读。
+        assert!(!unsafe { &*fn_proto }.hash_props_raw().is_null());
+        // 未脏家族（object）：沿用同一对象，属性区不受影响。
+        assert!(!unsafe { &*object_proto }.hash_props_raw().is_null());
+        assert!(std::ptr::eq(object_proto, session.builtin_world.object_proto.as_ptr() as *mut JsObject));
+        // 登记表并入新 world：保留 wrapper 仍须由 session 收尾统一释放。
+        assert!(session.builtin_world.leaked_objects.borrow().contains(&wrapper));
     }
 }
