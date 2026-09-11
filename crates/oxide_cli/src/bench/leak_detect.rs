@@ -522,81 +522,141 @@ pub fn run_mem_object_churn_peak(kernel: &Arc<KernelCore>) -> ExitCode {
 }
 
 /// 校准用例：长寿命 kernel 寿命旋钮端到端 + PermInterner 增长斜率首测
-/// 基线。专用 kernel（重建阈值 Some(100_000)，不污染 bench 共享 kernel），
-/// K = 200_000 次唯一键 intern（每 4 次物化一次，模拟 `perm_string` =
-/// intern + 物化同式），每 20k 采 VmRSS；增长相斜率只记录不判定
-/// （append-only 增长，正斜率即预期签名，"斜率>0 即 fail" 契约不适用，
-/// 独立打印逻辑）；重建相验"无存活 VM"边界重建：阈值已达 →
-/// `should_rebuild_perm` true → drop 旧 kernel → 新 kernel 严格主锚
-/// `entry_count` 恰 0 + 旋钮 false。
+/// 基线。每复跑一轮：专用 kernel（重建阈值 `Some(200_000 / 2)`，不污染
+/// bench 共享 kernel）→ JS 固定段 8192 对象（计算键写入，仅 intern 不
+/// 物化）→ 191_704 个唯一 14 字节键 intern（每 4 次物化一次，模拟
+/// `perm_string` = intern + 物化同式，物化比例 ≈1/4；键长 14 字节贴合
+/// 生产字面量短串面）→ 11 采样点 [10k,15k,20k,30k,40k,60k,80k,100k,
+/// 131072,160k,200k] 采 VmRSS。增长相斜率只记录不判定（append-only
+/// 增长，正斜率即预期签名，"斜率>0 即 fail" 契约不适用，独立打印逻辑，
+/// 不进 `report_series`）；重建相验"无存活 VM"边界重建：键数超阈值 →
+/// `should_rebuild_perm` 返回 `Some(建议上限)`（阈值取 2 的幂后加倍）→
+/// drop 旧 kernel → 新 kernel 严格主锚 `entry_count` 恰 0 + 旋钮 `None`。
 ///
 /// # 注意事项
 /// 不传 bench 共享 kernel：20 万条目会改变后续 case 的 CodeForge/harness
-/// 面；本 case 全程无存活 VM（从不自建），drop 旧 Arc 即整体释放。
-/// 重建后 RSS 可能不回落至增长前之下（glibc 小对象 free 滞留分配器自由
-/// 链不回 OS），RSS 为次锚仅参考、不进 exit 判据。exit 0/1 仅由重建相
-/// 确定性断言驱动。
+/// 面；本 case 全程无存活 VM（JS 段 VM 出作用域即 drop），drop 旧 Arc 即
+/// 整体释放。重建后 RSS 可能不回落至增长前之下（glibc 小对象 free 滞留
+/// 分配器自由链不回 OS），RSS 为次锚仅参考、不进 exit 判据。exit 0/1
+/// 仅由重建相确定性断言驱动。
 pub fn run_mem_kernel_lifetime() -> ExitCode {
-    const TOTAL: u32 = 200_000;
-    const SAMPLE_EVERY: u32 = 20_000;
-    const REBUILD_THRESHOLD: u32 = 100_000;
+    const JS_OBJECTS: u32 = 8_192; // JS 固定段对象数（每对象一个唯一计算键）
+    const TOTAL_STRINGS: u32 = 191_704; // 增长循环唯一键数（与 JS 固定段键不相交）
+    const RERUNS: usize = 2;
+    const REBUILD_THRESHOLD: u32 = 200_000 / 2;
+    const TARGETS: [u32; 11] =
+        [10_000, 15_000, 20_000, 30_000, 40_000, 60_000, 80_000, 100_000, 131_072, 160_000, 200_000];
 
     let mut config = KernelConfig::minimal();
     config.perm_interner_max_entries = Some(REBUILD_THRESHOLD);
-    let kernel = KernelCore::new(config.clone());
-    let interner = kernel.perm_interner();
+    let expected_suggestion = REBUILD_THRESHOLD.next_power_of_two().saturating_mul(2);
 
-    // 增长相：唯一键 intern + 1/4 物化，RSS 序列采样。
-    let rss_pre = read_vmrss_kb();
-    let mut series: Vec<(usize, f64)> = Vec::new();
-    for i in 0..TOTAL {
-        let key = format!("kernel_lifetime_{i}");
-        let (id, _) = interner.intern(&key);
-        if i % 4 == 0 {
-            let _ = interner.string_ptr(id);
+    let js_source = format!(
+        "var arr = []; for (var i = 0; i < {JS_OBJECTS}; i++) {{ var o = {{}}; o['s_' + i] = i; arr.push(o); }} arr.length === {JS_OBJECTS}"
+    );
+    let allocator = Allocator::default();
+    let program = match oxide_parser::parse(&allocator, &js_source) {
+        Ok(p) => p,
+        Err(_) => return ExitCode::FAILURE,
+    };
+    let js_module = match Compiler::new().compile(&program) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("[kernel_lifetime] js phase compile failed: {e}");
+            return ExitCode::FAILURE;
         }
-        if i % SAMPLE_EVERY == 0 {
-            if let Some(kb) = read_vmrss_kb() {
-                series.push((i as usize, kb as f64));
+    };
+
+    let mut slopes: Vec<f64> = Vec::new();
+    for run in 0..RERUNS {
+        let kernel = KernelCore::new(config.clone());
+
+        // JS 固定段：建对象 + 计算键写入（仅 intern 不物化）。
+        let rss_pre = read_vmrss_kb().unwrap_or(0);
+        {
+            let mut vm = Vm::with_kernel_core(Arc::clone(&kernel));
+            let result = match vm.run(&js_module) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("[kernel_lifetime] run {run} js phase failed: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            if result != JsValue::bool(true) {
+                eprintln!("[kernel_lifetime] run {run} js phase result mismatch: {result:?}");
+                return ExitCode::FAILURE;
             }
         }
-    }
-    let rss_post = read_vmrss_kb();
-    if let Some(kb) = rss_post {
-        series.push((TOTAL as usize, kb as f64));
-    }
-    let entries = interner.entry_count();
-    let (slope, r2) = linreg(&series);
-    eprintln!(
-        "[kernel_lifetime] growth: samples={} rss_kb={}..{} entries={} slope={:.6} kB/entry (~{:.1} B/entry) R²={:.4} (append-only 预期签名，仅记录不判定)",
-        series.len(),
-        rss_pre.unwrap_or(0) as f64,
-        rss_post.unwrap_or(0) as f64,
-        entries,
-        slope,
-        slope * 1024.0,
-        r2
-    );
+        let baseline = kernel.perm_interner().entry_count();
 
-    // 重建相：旋钮端到端 + 严格主锚。
-    if entries != TOTAL || !kernel.should_rebuild_perm() {
+        // 增长相：唯一键 intern + 1/4 物化，11 采样点采 VmRSS。
+        let mut series: Vec<(usize, f64)> = Vec::new();
+        let mut next_target = 0usize;
+        for k in 0..TOTAL_STRINGS {
+            let key = format!("s_{k:012x}");
+            let (id, _) = kernel.perm_interner().intern(&key);
+            if k % 4 == 0 {
+                let _ = kernel.perm_interner().string_ptr(id);
+            }
+            let count = baseline + k + 1;
+            while next_target < TARGETS.len() && count >= TARGETS[next_target] {
+                if let Some(kb) = read_vmrss_kb() {
+                    series.push((count as usize, kb as f64));
+                }
+                next_target += 1;
+            }
+        }
+        // 尾部采样点（200k）可能未达：按最终唯一键数补采。
+        while next_target < TARGETS.len() {
+            if let Some(kb) = read_vmrss_kb() {
+                series.push((kernel.perm_interner().entry_count() as usize, kb as f64));
+            }
+            next_target += 1;
+        }
+        let entries = kernel.perm_interner().entry_count();
+        let rss_post = read_vmrss_kb().unwrap_or(0);
+        let (slope, r2) = linreg(&series);
+        slopes.push(slope);
         eprintln!(
-            "[kernel_lifetime] knob not armed: entries={} (expect {TOTAL}) should_rebuild={}",
-            entries,
-            kernel.should_rebuild_perm()
+            "[kernel_lifetime] run={run} threshold={REBUILD_THRESHOLD} pre={rss_pre} post={rss_post} samples={} entries={entries} slope={:.4} kB/entry (~{:.1} B/entry) R²={:.4} materialization≈1/4 (B143) [info: 探索期，不进 report_series 判据]",
+            series.len(),
+            slope,
+            slope * 1024.0,
+            r2
         );
-        return ExitCode::FAILURE;
+
+        // 确定性断言：增长相总量 + 旋钮端到端（Some = 建议上限）。
+        if entries != baseline + TOTAL_STRINGS {
+            eprintln!("[kernel_lifetime] run {run} growth mismatch: baseline={baseline} entries={entries}");
+            return ExitCode::FAILURE;
+        }
+        let knob = kernel.should_rebuild_perm();
+        if knob != Some(expected_suggestion) {
+            eprintln!("[kernel_lifetime] run {run} knob not armed: {knob:?} (expect Some({expected_suggestion}))");
+            return ExitCode::FAILURE;
+        }
+
+        // 重建相：drop 旧 Arc 整体释放，新 kernel 严格主锚。
+        drop(kernel);
+        let rebuilt = KernelCore::new(config.clone());
+        let rebuilt_entries = rebuilt.perm_interner().entry_count();
+        let rebuilt_knob = rebuilt.should_rebuild_perm();
+        eprintln!(
+            "[kernel_lifetime] rebuild run={run}: threshold={REBUILD_THRESHOLD} suggestion={expected_suggestion} entries {entries} -> {rebuilt_entries} knob Some({expected_suggestion}) -> {rebuilt_knob:?} rss_kb={:?}",
+            read_vmrss_kb()
+        );
+        if rebuilt_entries != 0 || rebuilt_knob.is_some() {
+            return ExitCode::FAILURE;
+        }
     }
-    drop(kernel);
-    let rebuilt = KernelCore::new(config);
-    let rebuilt_entries = rebuilt.perm_interner().entry_count();
-    eprintln!(
-        "[kernel_lifetime] rebuild: entries {entries} -> {rebuilt_entries} should_rebuild={} rss_kb={:?}",
-        rebuilt.should_rebuild_perm(),
-        read_vmrss_kb()
-    );
-    if rebuilt_entries != 0 || rebuilt.should_rebuild_perm() {
-        return ExitCode::FAILURE;
+
+    // 复跑一致性（仅记录不判定）：跨轮斜率差 >10% 先查 harness 污染
+    // （分配器归还 OS 延迟），再疑用例。
+    if slopes.len() == RERUNS {
+        eprintln!(
+            "[kernel_lifetime] rerun drift: {:.1}% (仅记录)",
+            (slopes[0] - slopes[1]).abs() / slopes[0].max(1e-9) * 100.0
+        );
     }
     ExitCode::SUCCESS
 }
