@@ -478,6 +478,11 @@ pub struct Vm {
     pub(crate) root_reg_limit: u8,
     pub(crate) active_reg_limit: u8,
     pub(crate) native_call_depth: usize,
+    /// JS 重入 hop 计数：native 体内（`native_call_depth > 0`）每次嵌套 dispatch
+    /// 进入计一跳。每 64 跳强制一次顶层分配上限采样——顶层 dispatch 冻结在 native
+    /// 体内时 `steps` 不推进、重入 dispatch 又太短到不了循环内采样点，分配上限
+    /// 否则结构性永不采样（小重入泵送盲区）。run 边界重置。
+    pub(crate) reentry_hops: u64,
     /// inline 同步调用（`call_bytecode_function_inline`，frames 为空）的实参区位置。
     /// frames 非空时 CREATE_ARGUMENTS 优先读当前帧的实参区；此字段只服务内联路径。
     pub(crate) inline_args_base: u32,
@@ -1587,6 +1592,25 @@ impl Vm {
         let max_steps = self.kernel_core.config.max_steps;
         let max_alloc_bytes = self.kernel_core.config.max_alloc_bytes;
         let mut steps: u64 = 0;
+        // 小重入泵送盲区：native 终端循环泵送短 JS 重入时，顶层 steps 不推进、
+        // 每次重入 dispatch 太短到不了循环内 64 指令采样点，分配上限结构性永不
+        // 采样。重入边界按 hop 计数，每 64 跳强制一次顶层轻采样兜底。
+        if self.native_call_depth > 0 {
+            self.reentry_hops += 1;
+            if self.reentry_hops & 0x3F == 0 {
+                if let Some(cap) = max_alloc_bytes {
+                    let used = self.run_alloc_bytes();
+                    if used > cap {
+                        vm_warn!(
+                            "dispatch: memory limit {cap} exceeded at reentry hop {} (used {used}) at pc={}",
+                            self.reentry_hops,
+                            self.pc
+                        );
+                        return Err(format!("VM memory limit {cap} exceeded (used {used}) at pc={}", self.pc));
+                    }
+                }
+            }
+        }
         loop {
             steps += 1;
             // 执行期 GC 安全点：仅在顶层 dispatch（native_call_depth == 0）

@@ -83,6 +83,7 @@ impl Vm {
             root_reg_limit: 0,
             active_reg_limit: 0,
             native_call_depth: 0,
+            reentry_hops: 0,
             inline_args_base: 0,
             inline_args_count: 0,
             accessor_frame_target_reg: None,
@@ -196,6 +197,7 @@ impl Vm {
             root_reg_limit: 0,
             active_reg_limit: 0,
             native_call_depth: 0,
+            reentry_hops: 0,
             inline_args_base: 0,
             inline_args_count: 0,
             accessor_frame_target_reg: None,
@@ -473,6 +475,8 @@ impl Vm {
         self.async_gen_dispatch = false;
         self.async_gen_suspended = false;
         self.native_call_depth = 0;
+        // 重入 hop 计数是执行期状态：分配上限按 run 起算，跨 run/reset 不保留。
+        self.reentry_hops = 0;
         // inline 窗口缓冲池内容为已废弃快照，跨 run/reset 不保留。
         self.inline_reg_pool = None;
         // 微任务队列是执行期状态：跨 run 不保留。
@@ -855,6 +859,28 @@ mod tests {
         let result = run_source(&mut vm, "var a = []; for (var i = 0; i < 10000; i++) { a.push(i); } a.length");
         assert!(result.is_int(), "expected int length, got {result:?}");
         assert_eq!(result.as_int(), 10000);
+    }
+
+    /// native 终端循环泵送小 JS 重入：每次重入 dispatch 远短于循环内 64 指令采样点，
+    /// 顶层 steps 不推进——重入边界每 64 hop 强制采样兜底，失控分配以 memory limit
+    /// 终止而非无限循环。
+    #[test]
+    fn reentry_pump_hits_alloc_cap() {
+        let mut cfg = KernelConfig::minimal();
+        cfg.max_alloc_bytes = Some(256 * 1024);
+        let mut vm = Vm::with_kernel_core(KernelCore::new(cfg));
+        // 永不 done 的生成器经鸭子对象交给 toArray：native 循环每步泵送两个短重入
+        // （闭包调用 + 生成器恢复）并新产一个结果对象，分配无界增长。
+        let source = "var g = (function* () { for (var i = 0; ; ++i) { yield i; } })(); \
+                      var obj = { next: function () { return g.next(); } }; \
+                      Iterator.from(obj).toArray();";
+        let allocator = oxide_parser::Allocator::default();
+        let program = oxide_parser::parse(&allocator, source).expect("parse failed");
+        let module = oxide_compiler::compiler::Compiler::new()
+            .compile(&program)
+            .expect("compile failed");
+        let err = vm.run(&module).expect_err("reentry pump must hit the alloc cap");
+        assert!(err.contains("memory limit"), "unexpected error: {err}");
     }
 
     /// 直接恢复生成器一步：等价 `it.next()`，但避免跨 run（sub_modules 重建会使
