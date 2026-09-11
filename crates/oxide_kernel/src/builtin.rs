@@ -1119,15 +1119,29 @@ impl BuiltinWorld {
     }
 
     /// 按脏标记选择性重建 builtin world：仅重建被污染的对象家族，未污染的保留原指针。
+    ///
+    /// # 注意事项
+    /// - Function/Object 家族脏时，旧 fn_proto/object_proto 对须先保活再重建：
+    ///   释放表统一持有的方法 wrapper 永久泄漏（`Box::into_raw`），其 proto 裸指针
+    ///   指向绑定时的 function_proto，旧 object_proto 又经其 proto/constructor 槽
+    ///   被二层引用——执行期原型链查找（如 `push.call` 沿 wrapper 原型链取 `call`）
+    ///   仍走这些对象，reset 清空执行状态不阻断该路径，旧对 Arc 归零即悬空。
+    ///   保活即泄漏（本体 + 属性区，每次 dirty rebuild 至多 4 个对象），与 wrapper
+    ///   永久泄漏同一约定。
     pub fn rebuild_with_dirty(
         current: &BuiltinWorld, string_forge: &PermInterner, shape_forge: &ShapeForge, dirty: &BuiltinDirtySet,
     ) -> BuiltinWorld {
         let labels = builtin_labels(string_forge);
 
-        // 被弃家族的旧 P 对象随旧 world Arc 归零释放；保留 wrapper 的 proto 字段
-        // 虽沿旧对象悬空，但 reset 后执行状态已清空、旧对象不在任何指针表，
-        // 无活引用可达；wrapper 本体经释放表在 session 收尾统一释放，
-        // 释放路径不读 proto 字段，悬空不触发。
+        // 保活：钉住旧 Function/Object 对的 Arc 计数使其永不归零——保留方法
+        // wrapper 的原型链（旧 fn_proto / 旧 object_proto）执行期仍被读取，
+        // 不得随旧 world 释放。
+        if dirty.function || dirty.object {
+            std::mem::forget(current.function_proto.clone());
+            std::mem::forget(current.function_constructor.clone());
+            std::mem::forget(current.object_proto.clone());
+            std::mem::forget(current.object_constructor.clone());
+        }
         let (object_proto, object_constructor) = if dirty.object {
             make_named_pair(string_forge, shape_forge, labels, "Object")
         } else {
