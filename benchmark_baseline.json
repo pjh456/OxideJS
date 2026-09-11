@@ -85,7 +85,7 @@
   },
   {
     "test_name": "array_index_set",
-    "wall_time_us": 9376,
+    "wall_time_us": 10224,
     "session_objects": 1,
     "session_bytes": 144,
     "epoch_objects": 1,
@@ -96,10 +96,10 @@
     "gc_collection_us": 0,
     "instruction_count": 1012038,
     "compile_time_us": 0,
-    "exec_time_us": 9376,
-    "ic_hit_rate": 0.7434508123056516,
-    "ic_hits": 69832,
-    "ic_misses": 24067,
+    "exec_time_us": 10223,
+    "ic_hit_rate": 0.999,
+    "ic_hits": 7492,
+    "ic_misses": 7,
     "peak_bytes": 8288,
     "retained_bytes": 8288,
     "retained_objects": 2
