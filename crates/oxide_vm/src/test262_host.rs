@@ -86,9 +86,9 @@ pub fn agent(vm: &mut Vm, _args: &[u8]) -> NativeResult {
 /// 3. `global` 数据属性指向当前 session global；`$262` 本体挂到 global。
 ///
 /// # 注意事项
-/// - 宿主对象经 `Box::into_raw` 持有，随 session 生命周期存活（与 Reflect/Iterator
-///   等全局对象同一约定）；每次调用新建对象，重复绑定会泄漏旧对象（全量初始化
-///   与 full_reset 频率低，可接受）。
+/// - 宿主对象登记进 world 释放表，session 收尾时统一释放（与 Reflect/Iterator
+///   等全局对象同一约定）；每次调用新建对象，同一 session 内重复绑定会泄漏旧对象
+///   （全量初始化与 full_reset 频率低，可接受）。
 pub fn bind_test262_host(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
     let object_proto = session.builtin_world().object_proto.as_ptr() as *mut JsObject;
     let mut host = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto));
@@ -106,5 +106,7 @@ pub fn bind_test262_host(core: &Arc<KernelCore>, session: &KernelSession, global
     );
     let global_this = JsValue::from_js_object(global as *mut JsObject);
     bind_global_value(core, &mut host, "global", global_this);
-    bind_global_value(core, global, "$262", JsValue::from_js_object(Box::into_raw(Box::new(host))));
+    let host_ptr = Box::into_raw(Box::new(host));
+    session.builtin_world().track_leaked_object(host_ptr);
+    bind_global_value(core, global, "$262", JsValue::from_js_object(host_ptr));
 }

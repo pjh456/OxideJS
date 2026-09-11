@@ -62,5 +62,8 @@ pub fn bind_reflect(core: &Arc<KernelCore>, session: &KernelSession, global: &mu
         ],
     );
 
-    bind_global_value(core, global, "Reflect", JsValue::from_js_object(Box::into_raw(reflect)));
+    let reflect_ptr = Box::into_raw(reflect);
+    // 登记进 world 释放表：session 收尾统一释放对象本体与属性区。
+    session.builtin_world().track_leaked_object(reflect_ptr);
+    bind_global_value(core, global, "Reflect", JsValue::from_js_object(reflect_ptr));
 }

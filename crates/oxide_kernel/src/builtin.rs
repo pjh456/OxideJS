@@ -28,14 +28,14 @@ macro_rules! bind_methods {
 
 #[macro_export]
 macro_rules! bind_methods_static {
-    ($target:expr, $sf:expr, $sh:expr, $wrapper_proto:expr,
+    ($target:expr, $sf:expr, $sh:expr, $world:expr,
      $(($name:literal, $func:expr, $nargs:expr)),* $(,)?) => {
         $({
             let _raw: *const () = $func as *const ();
             // SAFETY: $func 是 NativeFn 函数项；强转并包装合法。
             let _func_ptr = unsafe { oxide_types::object::NativeFnPtr::from_raw(_raw) };
             let _ = $crate::builtin::BuiltinWorld::bind_method_static(
-                $target, $sh, $sf, $name, _func_ptr, $nargs, $wrapper_proto,
+                $target, $sh, $sf, $name, _func_ptr, $nargs, $world,
             );
         })*
     };
@@ -297,6 +297,12 @@ pub struct BuiltinWorld {
     pub async_disposable_stack_proto: P<JsObject>,
     pub stub_objects: Vec<P<JsObject>>,
     pub console_object: P<JsObject>,
+    /// 绑定层经 `Box::into_raw` 持有的函数/宿主对象登记表（方法 wrapper、
+    /// 访问器、错误构造器、Reflect/Iterator、内建原型构造器、`$262` 宿主等）。
+    /// 这些对象本体在堆上、不属任何 arena，`session` 收尾时按表统一释放
+    /// （属性区 + 本体）；选择性重建保留旧 world 时本表随旧 world 整体
+    /// 丢弃（泄漏口径与改造前一致，无悬垂风险）。
+    leaked_objects: std::cell::RefCell<Vec<*mut JsObject>>,
 }
 
 fn intern_label(string_forge: &PermInterner, label: &str) -> u32 {
@@ -682,6 +688,160 @@ impl BuiltinWorld {
         JsValue::from_js_object(self.function_proto.as_ptr() as *mut JsObject)
     }
 
+    /// 登记一个绑定层经 `Box::into_raw` 持有的函数/宿主对象，供
+    /// [`Self::teardown_heap_data`] 在 session 收尾时统一释放。
+    pub fn track_leaked_object(&self, obj_ptr: *mut JsObject) {
+        self.leaked_objects.borrow_mut().push(obj_ptr);
+    }
+
+    /// 选择性重建时把旧 world 的登记表整体并入新 world（见
+    /// [`crate::kernel::KernelSession::selective_reset`]）。
+    pub fn inherit_leaked_objects(&self, from: &BuiltinWorld) {
+        self.leaked_objects.borrow_mut().append(&mut from.leaked_objects.borrow_mut());
+    }
+
+    /// 释放本 world 拥有的全部手工堆数据。
+    ///
+    /// # 口径
+    /// 1. `Box::into_raw` 持有的函数/宿主对象（登记表）：先释放其堆外属性区，
+    ///    再释放对象本体；
+    /// 2. 全部 P 对象字段（原型/构造器家族、迭代器原型族、stub 族、console）
+    ///    的堆外属性区——对象本体随 Arc 引用归零释放。
+    ///
+    /// # 注意事项
+    /// 仅由 session 收尾调用（`KernelSession` 的 `Drop` 与 session 替换前），
+    /// 幂等：登记表按值取走，属性区释放后置空。选择性重建（dirty rebuild）
+    /// 不走本路径——旧 world 整体丢弃，登记表与属性区同泄漏（改造前口径），
+    /// 保留对象的引用不受影响，不引入悬垂。
+    pub fn teardown_heap_data(&self) {
+        for ptr in self.leaked_objects.borrow_mut().drain(..) {
+            if ptr.is_null() {
+                continue;
+            }
+            // SAFETY: ptr 是绑定层 Box::into_raw 产物，session 存活期内有效，
+            // 此处恰好释放一次（登记表按值取走，重入时表已空）。
+            unsafe {
+                let obj = &mut *ptr;
+                obj.release_raw_heap();
+                drop(Box::from_raw(ptr));
+            }
+        }
+        // P 字段逐一枚举：新增字段须在此同步补一行，否则收尾时属性区永久泄漏。
+        for p in [
+            &self.object_proto,
+            &self.array_proto,
+            &self.function_proto,
+            &self.string_proto,
+            &self.number_proto,
+            &self.boolean_proto,
+            &self.error_proto,
+            &self.symbol_proto,
+            &self.object_constructor,
+            &self.array_constructor,
+            &self.function_constructor,
+            &self.string_constructor,
+            &self.number_constructor,
+            &self.boolean_constructor,
+            &self.error_constructor,
+            &self.symbol_constructor,
+            &self.type_error_proto,
+            &self.reference_error_proto,
+            &self.range_error_proto,
+            &self.syntax_error_proto,
+            &self.uri_error_proto,
+            &self.eval_error_proto,
+            &self.suppressed_error_proto,
+            &self.math_object,
+            &self.json_object,
+            &self.date_constructor,
+            &self.date_proto,
+            &self.set_constructor,
+            &self.set_proto,
+            &self.map_constructor,
+            &self.map_proto,
+            &self.regexp_constructor,
+            &self.regexp_proto,
+            &self.array_buffer_constructor,
+            &self.array_buffer_proto,
+            &self.data_view_constructor,
+            &self.data_view_proto,
+            &self.typed_array_proto,
+            &self.typed_array_constructor,
+            &self.int8array_constructor,
+            &self.int8array_proto,
+            &self.uint8array_constructor,
+            &self.uint8array_proto,
+            &self.uint8clampedarray_constructor,
+            &self.uint8clampedarray_proto,
+            &self.int16array_constructor,
+            &self.int16array_proto,
+            &self.uint16array_constructor,
+            &self.uint16array_proto,
+            &self.int32array_constructor,
+            &self.int32array_proto,
+            &self.uint32array_constructor,
+            &self.uint32array_proto,
+            &self.float32array_constructor,
+            &self.float32array_proto,
+            &self.float64array_constructor,
+            &self.float64array_proto,
+            &self.bigint64array_constructor,
+            &self.bigint64array_proto,
+            &self.biguint64array_constructor,
+            &self.biguint64array_proto,
+            &self.sym_match,
+            &self.sym_replace,
+            &self.sym_search,
+            &self.sym_split,
+            &self.sym_iterator,
+            &self.sym_to_primitive,
+            &self.sym_has_instance,
+            &self.sym_match_all,
+            &self.sym_async_iterator,
+            &self.sym_to_string_tag,
+            &self.sym_species,
+            &self.sym_async_dispose,
+            &self.sym_dispose,
+            &self.temporal_object,
+            &self.temporal_now_object,
+            &self.instant_constructor,
+            &self.instant_proto,
+            &self.plain_date_constructor,
+            &self.plain_date_proto,
+            &self.plain_time_constructor,
+            &self.plain_time_proto,
+            &self.duration_constructor,
+            &self.duration_proto,
+            &self.zoned_date_time_constructor,
+            &self.zoned_date_time_proto,
+            &self.plain_date_time_constructor,
+            &self.plain_date_time_proto,
+            &self.bigint_constructor,
+            &self.bigint_proto,
+            &self.iterator_proto,
+            &self.array_iterator_proto,
+            &self.map_iterator_proto,
+            &self.set_iterator_proto,
+            &self.string_iterator_proto,
+            &self.regexp_string_iterator_proto,
+            &self.iterator_helper_proto,
+            &self.disposable_stack_proto,
+            &self.async_disposable_stack_proto,
+            &self.console_object,
+        ] {
+            // SAFETY: p 是本 world 的 P 对象，属性区仅在此释放并置空（幂等）。
+            unsafe {
+                (&mut *p.as_mut_ptr()).release_raw_heap();
+            }
+        }
+        for p in &self.stub_objects {
+            // SAFETY: 同上，stub 对象归本 world 所有。
+            unsafe {
+                (&mut *p.as_mut_ptr()).release_raw_heap();
+            }
+        }
+    }
+
     /// 按 [`BuiltinId`] 取对应内置对象的指针引用。
     pub fn get_by_id(&self, id: BuiltinId) -> &P<JsObject> {
         match id {
@@ -951,6 +1111,7 @@ impl BuiltinWorld {
             async_disposable_stack_proto,
             stub_objects,
             console_object,
+            leaked_objects: std::cell::RefCell::new(Vec::new()),
         };
         wire_builtin_world_links(&world);
         kernel_info!("BuiltinWorld initialized");
@@ -963,18 +1124,10 @@ impl BuiltinWorld {
     ) -> BuiltinWorld {
         let labels = builtin_labels(string_forge);
 
-        // 方法 wrapper（Box::into_raw 永久泄漏）的 proto 持有旧 function_proto 裸指针，
-        // 旧 function_proto 又经 proto/constructor 引用旧 object 家族。function/object
-        // 重建时这 4 个对象若随 Arc 归零释放，保留 wrapper 会沿悬垂原型链
-        // use-after-free：泄漏保活旧家族对，与 wrapper 的永久泄漏同一约定
-        // （每次 dirty rebuild 至多泄漏 4 个对象，低频可接受）。
-        if dirty.function || dirty.object {
-            std::mem::forget(current.function_proto.clone());
-            std::mem::forget(current.function_constructor.clone());
-            std::mem::forget(current.object_proto.clone());
-            std::mem::forget(current.object_constructor.clone());
-        }
-
+        // 被弃家族的旧 P 对象随旧 world Arc 归零释放；保留 wrapper 的 proto 字段
+        // 虽沿旧对象悬空，但 reset 后执行状态已清空、旧对象不在任何指针表，
+        // 无活引用可达；wrapper 本体经释放表在 session 收尾统一释放，
+        // 释放路径不读 proto 字段，悬空不触发。
         let (object_proto, object_constructor) = if dirty.object {
             make_named_pair(string_forge, shape_forge, labels, "Object")
         } else {
@@ -1361,6 +1514,7 @@ impl BuiltinWorld {
             async_disposable_stack_proto,
             stub_objects,
             console_object,
+            leaked_objects: std::cell::RefCell::new(Vec::new()),
         };
         wire_builtin_world_links(&world);
         world
@@ -1487,7 +1641,7 @@ impl BuiltinWorld {
             "@@iterator",
             func_ptr,
             0,
-            self.fn_proto_val(),
+            self,
         );
         debug_assert!(shape_forge.lookup_position(proto.shape_id(), iterator_key).is_some());
     }
@@ -1629,12 +1783,11 @@ impl BuiltinWorld {
     ) {
         let proto_ptr = P::as_ptr(&self.function_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
-        let fp = self.fn_proto_val();
         bind_methods_static!(
             proto,
             string_forge,
             shape_forge,
-            fp,
+            self,
             ("call", methods.call, 1),
             ("apply", methods.apply, 2),
             ("bind", methods.bind, 1),
@@ -1650,7 +1803,7 @@ impl BuiltinWorld {
             "[Symbol.hasInstance]",
             unsafe { NativeFnPtr::from_raw(methods.has_instance) },
             1,
-            fp,
+            self,
         );
     }
 
@@ -1659,35 +1812,19 @@ impl BuiltinWorld {
         &self, proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &PermInterner, method_name: &str,
         native_fn_ptr: NativeFnPtr, arg_count: u8,
     ) -> Result<(), String> {
-        Self::bind_method_static(
-            proto,
-            shape_forge,
-            string_forge,
-            method_name,
-            native_fn_ptr,
-            arg_count,
-            self.fn_proto_val(),
-        )
+        Self::bind_method_static(proto, shape_forge, string_forge, method_name, native_fn_ptr, arg_count, self)
     }
 
     /// 构造并安装一个 native 方法 wrapper 函数对象（设置 `length`/`name` 属性与参数元数据）。
     ///
-    /// 无状态版本，不依赖 `BuiltinWorld` 实例，供静态绑定宏在初始化阶段直接调用。
+    /// 无状态版本，供静态绑定宏在初始化阶段直接调用；需要传入当前
+    /// `BuiltinWorld`：wrapper 的原型取自它，wrapper 本体登记进它的释放表。
     pub fn bind_method_static(
         proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &PermInterner, method_name: &str,
-        native_fn_ptr: NativeFnPtr, arg_count: u8, wrapper_proto: JsValue,
+        native_fn_ptr: NativeFnPtr, arg_count: u8, world: &BuiltinWorld,
     ) -> Result<(), String> {
         let si = string_forge.intern(method_name).0;
-        Self::bind_method_key_static(
-            proto,
-            shape_forge,
-            string_forge,
-            si,
-            method_name,
-            native_fn_ptr,
-            arg_count,
-            wrapper_proto,
-        )
+        Self::bind_method_key_static(proto, shape_forge, string_forge, si, method_name, native_fn_ptr, arg_count, world)
     }
 
     /// 按指定属性键安装方法 wrapper（键不要求字符串 intern，well-known symbol 键用此路径）。
@@ -1696,16 +1833,17 @@ impl BuiltinWorld {
     #[expect(clippy::too_many_arguments)]
     pub fn bind_method_key_static(
         proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &PermInterner, key: u32, method_name: &str,
-        native_fn_ptr: NativeFnPtr, arg_count: u8, wrapper_proto: JsValue,
+        native_fn_ptr: NativeFnPtr, arg_count: u8, world: &BuiltinWorld,
     ) -> Result<(), String> {
-        let wrapper_proto_ptr = if wrapper_proto.is_object() {
-            wrapper_proto.as_js_object_ptr()
+        let wrapper_proto_val = world.fn_proto_val();
+        let wrapper_proto_ptr = if wrapper_proto_val.is_object() {
+            wrapper_proto_val.as_js_object_ptr()
         } else {
             std::ptr::null_mut()
         };
         let mut wrapper = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         if !wrapper_proto_ptr.is_null() {
-            wrapper.set_proto(wrapper_proto).ok();
+            wrapper.set_proto(wrapper_proto_val).ok();
         }
         wrapper.set_function(true);
         // NativeFnPtr 不变量由调用方维护（见 bind_method / bind_method_static
@@ -1729,7 +1867,10 @@ impl BuiltinWorld {
             .push(JsValue::perm_string(string_forge.string_ptr(string_forge.intern(method_name).0)));
         let name_pos = wrapper.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
         wrapper.set_data_meta(name_pos, oxide_types::object::PropAttributes::new(false, false, true));
-        let wrapper_val = JsValue::from_js_object(Box::into_raw(wrapper));
+        // 登记进 world 释放表：session 收尾时统一释放 wrapper 的属性区与本体。
+        let wrapper_ptr = Box::into_raw(wrapper);
+        world.track_leaked_object(wrapper_ptr);
+        let wrapper_val = JsValue::from_js_object(wrapper_ptr);
         let new_shape = shape_forge.make_shape(proto.shape_id(), key);
         proto.set_shape_id(new_shape);
         proto.ensure_hash_props().push(wrapper_val);

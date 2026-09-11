@@ -34,5 +34,8 @@ pub fn bind_iterator(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         &[("from", oxide_builtins::iterator::iterator_from::<crate::vm::Vm> as *const (), 1)],
     );
 
-    bind_global_value(core, global, "Iterator", JsValue::from_js_object(Box::into_raw(iterator)));
+    let iterator_ptr = Box::into_raw(iterator);
+    // 登记进 world 释放表：session 收尾统一释放构造器本体与属性区。
+    session.builtin_world().track_leaked_object(iterator_ptr);
+    bind_global_value(core, global, "Iterator", JsValue::from_js_object(iterator_ptr));
 }

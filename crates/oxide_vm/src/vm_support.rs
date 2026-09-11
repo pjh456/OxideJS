@@ -21,6 +21,18 @@ impl Vm {
     /// 超过阈值后 O(n²) 拷贝成本超过节点开销，Cons 的 O(1) 链接才值得。
     pub(crate) const CONS_FLATTEN_BYTES: usize = 128;
 
+    /// 替换本 VM 独占的内建 P 对象：先恰好释放旧副本的属性区一次，
+    /// 再让旧 Arc 归零（旧副本无 Drop 口径兜底，full_reset 重初始化
+    /// 路径必须显式释放，否则逐测试累积）。
+    pub(crate) fn swap_intrinsic_proto(slot: &mut P<JsObject>, new_obj: JsObject) {
+        // SAFETY: 旧副本为本 VM 独占（其余引用均为本次替换前克隆），
+        // 属性区仅此一处释放并置空（幂等）。
+        unsafe {
+            (&mut *slot.as_mut_ptr()).release_raw_heap();
+        }
+        *slot = P::new(new_obj);
+    }
+
     /// 以最小配置创建独立 VM：新建 `KernelCore` + `KernelSession` 并初始化内置对象。
     pub fn new() -> Self {
         let core = KernelCore::new(KernelConfig::minimal());
@@ -339,13 +351,15 @@ impl Vm {
         self.active_reg_limit = 0;
     }
 
-    /// 释放全部 session 堆数据：epoch 对象堆数据 + session 对象堆数据 + session 串 +
-    /// BigInt box + upvalue cell box。
+    /// 释放全部 session 堆数据：epoch 对象堆数据 + session 对象堆数据 + upvalue
+    /// 列表 + session 串 + BigInt box + upvalue cell box。
     ///
     /// 供 `full_reset` 与 `Drop` 共用——对象本体（bumpalo arena / epoch bump）由调用方
     /// 重置，本函数只释放手工管理的 Box 指针（属性向量、各原生盒、串、BigInt、cell）。
     /// 原生盒在 GC 搬移/晋升时已深拷贝为单所有权，此处恰好释放一次。
     pub(crate) fn teardown_session_heap_data(&mut self) {
+        // upvalue 列表先于对象表清空释放：去重枚举依赖两份对象表尚存。
+        self.free_session_upvalues();
         self.free_epoch_object_heap_data();
         for ptr in self.gc_state.session_object_ptrs.drain(..) {
             crate::session_gc::SessionGc::drop_object_heap_data(ptr, true);
@@ -353,6 +367,64 @@ impl Vm {
         self.free_session_string_heap_data();
         self.free_session_bigint_heap_data();
         self.gc_state.free_cells();
+    }
+
+    /// 集中释放 upvalue 列表（`Box<Vec<*mut Cell>>`）：原件与晋升克隆经
+    /// `clone_for_session_epoch` 共享同一 Box 分配，逐对象路径释放会双放，
+    /// 只在此处按指针去重后统一释放。须在两份对象表清空之前调用
+    /// （枚举仍存对象完成去重），此时对象已死、Box 无其他读者。
+    fn free_session_upvalues(&mut self) {
+        let mut seen = std::collections::HashSet::new();
+        let ptrs = self
+            .gc_state
+            .epoch_object_ptrs
+            .iter()
+            .chain(self.gc_state.session_object_ptrs.iter());
+        for &ptr in ptrs {
+            if ptr.is_null() {
+                continue;
+            }
+            // SAFETY: ptr 来自 epoch/session 对象表登记，收尾时仍指向 arena 内合法对象。
+            let up = unsafe { (*ptr).upvalues };
+            if up.is_null() || !seen.insert(up) {
+                continue;
+            }
+            // SAFETY: up 由 set_upvalues 的 Box::into_raw 分配，去重保证恰好释放一次。
+            unsafe {
+                drop(Box::from_raw(up as *mut Vec<*mut oxide_types::object::Cell>));
+                (*ptr).upvalues = std::ptr::null_mut();
+            }
+        }
+    }
+
+    /// 释放 VM 内建原型 P 对象（生成器/Promise/异步族与 Object 原型）的堆外属性区。
+    ///
+    /// # 注意事项
+    /// 对象本体随 Arc 引用归零释放（字段 drop）；属性区须在此显式释放一次
+    /// （`JsObject` 无 Drop 口径）。仅释放本 VM 独占（强引用计数为 1）的副本：
+    /// `object_prototype` 与 session world 共享 Arc，session 存活期下一测试仍经
+    /// world 引用同一对象，其属性区归 session 收尾（`teardown_builtins`）释放。
+    pub(crate) fn teardown_intrinsic_protos(&mut self) {
+        for p in [
+            &self.object_prototype,
+            &self.generator_proto,
+            &self.generator_function_proto,
+            &self.promise_constructor,
+            &self.promise_proto,
+            &self.aggregate_error_constructor,
+            &self.aggregate_error_proto,
+            &self.async_function_proto,
+            &self.async_generator_proto,
+            &self.async_generator_function_proto,
+        ] {
+            if p.strong_count() != 1 {
+                continue;
+            }
+            // SAFETY: 独占副本的属性区仅此一处释放并置空（幂等）。
+            unsafe {
+                (&mut *p.as_mut_ptr()).release_raw_heap();
+            }
+        }
     }
 
     fn free_epoch_object_heap_data(&mut self) {
@@ -417,11 +489,47 @@ impl Vm {
         self.bytecode = Arc::default();
         self.immutables_cache.clear();
         self.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
+        self.free_epoch_dead_upvalues();
         self.free_epoch_object_heap_data();
         self.epoch.reset();
         self.gc_state.epoch_object_ptrs.clear();
         self.root_reg_limit = 0;
         self.active_reg_limit = 0;
+    }
+
+    /// 释放随本次 epoch 重置死亡的 epoch 对象的 upvalue 列表。
+    ///
+    /// 原件与晋升克隆共享同一 Box 分配：共享项归 session 克隆持有，
+    /// 留待收尾（`free_session_upvalues`）统一释放，此处只放独占项。
+    fn free_epoch_dead_upvalues(&mut self) {
+        let mut shared: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for &ptr in self.gc_state.session_object_ptrs.iter() {
+            if ptr.is_null() {
+                continue;
+            }
+            // SAFETY: session 对象表此刻未清空，指向 session arena 内合法对象。
+            let up = unsafe { (*ptr).upvalues } as usize;
+            if up != 0 {
+                shared.insert(up);
+            }
+        }
+        let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for &ptr in self.gc_state.epoch_object_ptrs.iter() {
+            if ptr.is_null() {
+                continue;
+            }
+            // SAFETY: epoch 对象表此刻未清空，指向 epoch arena 内合法对象。
+            let up = unsafe { (*ptr).upvalues } as usize;
+            if up == 0 || shared.contains(&up) || !seen.insert(up) {
+                continue;
+            }
+            // SAFETY: up 由 set_upvalues 的 Box::into_raw 分配，去重与共享集
+            // 保证本路径恰好释放一次。
+            unsafe {
+                drop(Box::from_raw(up as *mut Vec<*mut oxide_types::object::Cell>));
+                (*ptr).upvalues = std::ptr::null_mut();
+            }
+        }
     }
 
     /// 分配一个可被 session GC 回收的字符串 `JsValue`（session-heap 字符串）。
@@ -719,6 +827,34 @@ mod tests {
         let mut cfg = KernelConfig::minimal();
         cfg.set_session_gc_threshold(1);
         Vm::with_kernel_core(KernelCore::new(cfg))
+    }
+
+    /// 单 run 分配上限拦截失控分配：死循环持续 push 的 run 须在触达步数上限前
+    /// 以 memory limit 错误终止。
+    #[test]
+    fn run_alloc_cap_stops_runaway_allocation() {
+        let mut cfg = KernelConfig::minimal();
+        cfg.max_alloc_bytes = Some(256 * 1024);
+        let mut vm = Vm::with_kernel_core(KernelCore::new(cfg));
+        let allocator = oxide_parser::Allocator::default();
+        let program = oxide_parser::parse(&allocator, "var a = []; while (true) { a.push(1); }").expect("parse failed");
+        let module = oxide_compiler::compiler::Compiler::new()
+            .compile(&program)
+            .expect("compile failed");
+        let err = vm.run(&module).expect_err("runaway allocation must hit the alloc cap");
+        assert!(err.contains("memory limit"), "unexpected error: {err}");
+        assert!(!err.contains("step limit"), "cap 应先于步数上限生效: {err}");
+    }
+
+    /// 上限不误伤正常规模分配：同配置下 1 万元素数组构造正常完成。
+    #[test]
+    fn run_alloc_cap_allows_normal_allocation() {
+        let mut cfg = KernelConfig::minimal();
+        cfg.max_alloc_bytes = Some(4 * 1024 * 1024);
+        let mut vm = Vm::with_kernel_core(KernelCore::new(cfg));
+        let result = run_source(&mut vm, "var a = []; for (var i = 0; i < 10000; i++) { a.push(i); } a.length");
+        assert!(result.is_int(), "expected int length, got {result:?}");
+        assert_eq!(result.as_int(), 10000);
     }
 
     /// 直接恢复生成器一步：等价 `it.next()`，但避免跨 run（sub_modules 重建会使

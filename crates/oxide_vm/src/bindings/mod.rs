@@ -129,14 +129,15 @@ pub(crate) fn apply_binding_table(
 /// 2. 为属性名开 shape 槽位并写入访问器 meta。
 ///
 /// # 注意事项
-/// getter 函数对象经 `Box::into_raw` 持有，与 `bind_method` 的方法 wrapper 同一生命周期约定
-/// （内置对象在 session 生命周期内不被回收）。
+/// getter 函数对象登记进 world 释放表，与 `bind_method` 的方法 wrapper 同一生命周期约定
+/// （session 收尾时统一释放）。
 pub(crate) fn bind_accessor_getter(
     core: &Arc<KernelCore>, session: &KernelSession, proto: &mut JsObject, name: &str, getter_fn: *const (),
 ) {
     let shape_forge = core.shape_forge().as_ref();
     let string_forge = core.perm_interner().as_ref();
-    let fn_proto_val = JsValue::from_js_object(session.builtin_world().function_proto.as_ptr() as *mut JsObject);
+    let world = session.builtin_world();
+    let fn_proto_val = JsValue::from_js_object(world.function_proto.as_ptr() as *mut JsObject);
 
     let getter_name = format!("get {name}");
     let mut getter = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
@@ -161,7 +162,9 @@ pub(crate) fn bind_accessor_getter(
     let length_pos = getter.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
     getter.set_data_meta(length_pos, PropAttributes::new(false, false, true));
 
-    let getter_val = JsValue::from_js_object(Box::into_raw(getter));
+    let getter_ptr = Box::into_raw(getter);
+    world.track_leaked_object(getter_ptr);
+    let getter_val = JsValue::from_js_object(getter_ptr);
 
     let si = string_forge.intern(name).0;
     let new_shape = shape_forge.make_shape(proto.shape_id(), si);
@@ -180,8 +183,8 @@ pub(crate) fn bind_accessor_getter(
 /// 2. 为键开 shape 槽位并写入访问器 meta（enumerable=false, configurable=true）。
 ///
 /// # 注意事项
-/// getter/setter 函数对象经 `Box::into_raw` 持有，与 `bind_accessor_getter` 的
-/// 方法 wrapper 同一生命周期约定（内置对象在 session 生命周期内不被回收）。
+/// getter/setter 函数对象登记进 world 释放表，session 收尾时统一释放，
+/// 与 `bind_accessor_getter` 的 getter 及方法 wrapper 同一生命周期约定。
 #[expect(clippy::too_many_arguments)]
 pub(crate) fn bind_accessor_getset(
     core: &Arc<KernelCore>, session: &KernelSession, proto: &mut JsObject, key: u32, getter_name: &str,
@@ -189,7 +192,8 @@ pub(crate) fn bind_accessor_getset(
 ) {
     let shape_forge = core.shape_forge().as_ref();
     let string_forge = core.perm_interner().as_ref();
-    let fn_proto_val = JsValue::from_js_object(session.builtin_world().function_proto.as_ptr() as *mut JsObject);
+    let world = session.builtin_world();
+    let fn_proto_val = JsValue::from_js_object(world.function_proto.as_ptr() as *mut JsObject);
 
     let mut getter = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
     getter.set_function(true);
@@ -211,7 +215,9 @@ pub(crate) fn bind_accessor_getset(
     getter.ensure_hash_props().push(JsValue::int(0));
     let length_pos = getter.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
     getter.set_data_meta(length_pos, PropAttributes::new(false, false, true));
-    let getter_val = JsValue::from_js_object(Box::into_raw(getter));
+    let getter_ptr = Box::into_raw(getter);
+    world.track_leaked_object(getter_ptr);
+    let getter_val = JsValue::from_js_object(getter_ptr);
 
     let mut setter = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
     setter.set_function(true);
@@ -230,7 +236,9 @@ pub(crate) fn bind_accessor_getset(
     setter.ensure_hash_props().push(JsValue::int(1));
     let length_pos = setter.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
     setter.set_data_meta(length_pos, PropAttributes::new(false, false, true));
-    let setter_val = JsValue::from_js_object(Box::into_raw(setter));
+    let setter_ptr = Box::into_raw(setter);
+    world.track_leaked_object(setter_ptr);
+    let setter_val = JsValue::from_js_object(setter_ptr);
 
     // 访问器属性槽：enumerable=false、configurable=true（get/set 函数对象已持有）。
     let new_shape = shape_forge.make_shape(proto.shape_id(), key);
@@ -301,7 +309,7 @@ pub(crate) fn bind_well_known_method(
         method_name,
         fn_ptr,
         nargs,
-        world.fn_proto_val(),
+        world,
     );
 }
 
@@ -617,6 +625,7 @@ fn bind_error_subtype_global(
     ctor.set_data_meta(1u32, PropAttributes::new(false, false, true));
 
     let ctor_ptr = Box::into_raw(ctor);
+    session.builtin_world().track_leaked_object(ctor_ptr);
     bind_existing_global(core, global, name, JsValue::from_js_object(ctor_ptr));
 }
 
@@ -702,7 +711,9 @@ fn bind_reflect_global(core: &Arc<KernelCore>, session: &KernelSession, global: 
             ),
         ],
     );
-    bind_existing_global(core, global, "Reflect", JsValue::from_js_object(Box::into_raw(reflect)));
+    let reflect_ptr = Box::into_raw(reflect);
+    session.builtin_world().track_leaked_object(reflect_ptr);
+    bind_existing_global(core, global, "Reflect", JsValue::from_js_object(reflect_ptr));
 }
 
 fn bind_iterator_global(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
@@ -722,7 +733,9 @@ fn bind_iterator_global(core: &Arc<KernelCore>, session: &KernelSession, global:
         core,
         &[("from", oxide_builtins::iterator::iterator_from::<crate::vm::Vm> as *const (), 1)],
     );
-    bind_existing_global(core, global, "Iterator", JsValue::from_js_object(Box::into_raw(iterator)));
+    let iterator_ptr = Box::into_raw(iterator);
+    session.builtin_world().track_leaked_object(iterator_ptr);
+    bind_existing_global(core, global, "Iterator", JsValue::from_js_object(iterator_ptr));
     // 迭代器原型方法（%IteratorPrototype% 的 @@iterator 与各集合原型 next）由
     // `bind_iterator_protos` 在 object 家族重建时统一安装，这里不重复绑定，
     // 避免保留原型经 dirty reset 时属性槽膨胀。

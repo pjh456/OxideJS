@@ -11,7 +11,6 @@ use std::sync::Arc;
 use oxide_builtins::iterator::{is_callable, make_iter_result};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::{to_boolean, NativeResult};
-use oxide_types::mem::P;
 use oxide_types::object::{JsObject, NativeFnPtr};
 use oxide_types::value::JsValue;
 
@@ -728,6 +727,7 @@ pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
     let sf = vm.kernel_core.perm_interner().as_ref();
     let sh = vm.kernel_core.shape_forge().as_ref();
     let fn_proto_val = vm.session.builtin_world().fn_proto_val();
+    let world = vm.session.builtin_world();
     // %GeneratorPrototype%：proto = %IteratorPrototype%（生成器是迭代器，继承
     // @@iterator 与 Iterator helper 方法），方法 next/return/throw。
     let iterator_proto_val =
@@ -737,7 +737,7 @@ pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
         &mut gen_proto,
         sf,
         sh,
-        fn_proto_val,
+        world,
         ("next", generator_next as *const (), 1),
         ("return", generator_return as *const (), 1),
         ("throw", generator_throw as *const (), 1),
@@ -758,9 +758,9 @@ pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
         "@@iterator",
         unsafe { oxide_types::object::NativeFnPtr::from_raw(generator_symbol_iterator as *const ()) },
         0,
-        fn_proto_val,
+        world,
     );
-    vm.generator_proto = P::new(*gen_proto);
+    Vm::swap_intrinsic_proto(&mut vm.generator_proto, *gen_proto);
 
     // %GeneratorFunction.prototype%：proto = Function.prototype，constructor = %GeneratorFunction%。
     let mut gf_ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
@@ -776,11 +776,13 @@ pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
     let name_si = sf.intern("name").0;
     let name_shape = sh.make_shape(gf_ctor.shape_id(), name_si);
     gf_ctor.set_shape_id(name_shape);
-    // gf_proto.constructor = gf_ctor（构造器对象泄漏持有，与 builtin 方法 wrapper 同生命周期）。
+    // gf_proto.constructor = gf_ctor（构造器登记进 world 释放表，与 builtin 方法 wrapper 同生命周期）。
     let ctor_si = sf.intern("constructor").0;
     let ctor2_shape = sh.make_shape(gf_proto.shape_id(), ctor_si);
     gf_proto.set_shape_id(ctor2_shape);
+    // 登记进释放表：session 收尾统一释放构造器本体与属性区。
     let gf_ctor_ptr = Box::into_raw(gf_ctor);
+    world.track_leaked_object(gf_ctor_ptr);
     let cpos = gf_proto.push_prop(JsValue::from_js_object(gf_ctor_ptr));
     gf_proto.set_data_meta(cpos, oxide_types::object::PropAttributes::new(false, false, true));
     // gf_proto.prototype = %GeneratorPrototype%（默认原型，default-proto 测试读取）。
@@ -799,8 +801,8 @@ pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
     // proto 本体只存在于 P 槽（Arc 副本，原 Box 随函数结束释放）：装入 P 槽后再写
     // 构造器 prototype/name 属性（按模板序 prototype 在前），prototype 指向 P 槽实例，
     // 使其与动态生成器函数使用的 [[Prototype]] 同一对象。
-    vm.generator_function_proto = P::new(*gf_proto);
-    // SAFETY: gf_ctor_ptr 为 Box 原分配（泄漏持有、生命周期覆盖 session），对象已建满、本 Vm 独占。
+    Vm::swap_intrinsic_proto(&mut vm.generator_function_proto, *gf_proto);
+    // SAFETY: gf_ctor_ptr 为 Box 原分配（已登记释放表、生命周期覆盖 session），对象已建满、本 Vm 独占。
     unsafe {
         let ctor_mut = &mut *gf_ctor_ptr;
         let ppos = ctor_mut.push_prop(JsValue::from_js_object(vm.generator_function_proto.as_mut_ptr()));

@@ -16,7 +16,7 @@ use crate::string_forge::PermInterner;
 use oxide_log;
 use oxide_log::{Level, SUBSYSTEM_COUNT};
 
-/// kernel 运行配置：VM 池规模、步数/调用深度上限、session GC 阈值、
+/// kernel 运行配置：VM 池规模、步数/调用深度/单 run 分配上限、session GC 阈值、
 /// 日志级别与内置对象预热开关。由三个预设构造器（[`KernelConfig::minimal`] /
 /// [`KernelConfig::standard`] / [`KernelConfig::full`]）或默认值创建。
 #[derive(Clone)]
@@ -25,6 +25,10 @@ pub struct KernelConfig {
     pub max_pool_size: Option<usize>,
     pub max_dead_strings: Option<usize>,
     pub max_steps: Option<u64>,
+    /// 单次 run 的分配上限（epoch + session arena + session 堆账目字节）：
+    /// 超限的 run 以 `VM memory limit exceeded` 失败，防单测试 arena 高水位
+    /// 拖垮宿主内存。None 为无上限（CLI/嵌入默认；runner 按场景设置）。
+    pub max_alloc_bytes: Option<usize>,
     pub max_call_depth: usize,
     pub session_gc_threshold: usize,
     pub max_cached_modules: usize,
@@ -42,6 +46,7 @@ impl KernelConfig {
             max_pool_size: Some(8),
             max_dead_strings: Some(10_000),
             max_steps: None,
+            max_alloc_bytes: None,
             max_call_depth: 1024,
             session_gc_threshold: 33_554_432,
             max_cached_modules: 512,
@@ -59,6 +64,7 @@ impl KernelConfig {
             max_pool_size: Some(32),
             max_dead_strings: Some(10_000),
             max_steps: None,
+            max_alloc_bytes: None,
             max_call_depth: 1024,
             session_gc_threshold: 33_554_432,
             max_cached_modules: 512,
@@ -76,6 +82,7 @@ impl KernelConfig {
             max_pool_size: None,
             max_dead_strings: Some(5_000),
             max_steps: None,
+            max_alloc_bytes: None,
             max_call_depth: 1024,
             session_gc_threshold: 33_554_432,
             max_cached_modules: 512,
@@ -698,23 +705,50 @@ impl KernelSession {
         self.dirty_since_snapshot().any()
     }
 
+    /// 收尾释放 session 拥有的手工堆数据：builtin world（方法 wrapper 登记表 +
+    /// 全部 P 对象属性区）与 global 对象属性区。对象本体随 Arc 引用归零释放。
+    ///
+    /// # 注意事项
+    /// 幂等（登记表按值取走、属性区释放后置空），session 生命周期内可安全重入；
+    /// 仅应在 session 真正终止时调用——选择性重置换出的旧 world/global 不走本路径。
+    pub fn teardown_builtins(&mut self) {
+        self.builtin_world.teardown_heap_data();
+        // SAFETY: global 归本 session 所有，收尾时恰好释放其属性区一次。
+        let global = unsafe { &mut *(self.global_object.as_ptr() as *mut JsObject) };
+        global.release_raw_heap();
+    }
+
     /// 选择性重置：只重建被污染的对象（global 或相应 builtin 家族），并返回脏集合。
     ///
     /// 相比全量重建，可保留未污染的内置对象指针与世代，减少隔离成本。
     pub fn selective_reset(&mut self, core: &Arc<KernelCore>) -> BuiltinDirtySet {
         let dirty = self.dirty_since_snapshot();
         if dirty.global {
+            // 旧 global 的属性区在替换前释放，避免随旧引用永久泄漏。
+            let old_global = unsafe { &mut *(self.global_object.as_ptr() as *mut JsObject) };
+            old_global.release_raw_heap();
             self.global_object = Self::new_global_object(core);
         }
         if dirty.any_builtin_dirty() {
-            self.builtin_world = Arc::new(BuiltinWorld::rebuild_with_dirty(
-                &self.builtin_world,
+            let old_world = self.builtin_world.clone();
+            let new_world = BuiltinWorld::rebuild_with_dirty(
+                &old_world,
                 core.perm_interner.as_ref(),
                 core.shape_forge.as_ref(),
                 &dirty,
-            ));
+            );
+            // 旧 world 的登记表并入新 world：存活 wrapper（未污染家族别名）仍须在
+            // session 收尾统一释放；已弃 wrapper 随之恰好释放一次，不二次持有。
+            new_world.inherit_leaked_objects(&old_world);
+            self.builtin_world = Arc::new(new_world);
         }
         dirty
+    }
+}
+
+impl Drop for KernelSession {
+    fn drop(&mut self) {
+        self.teardown_builtins();
     }
 }
 

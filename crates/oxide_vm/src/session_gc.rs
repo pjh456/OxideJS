@@ -54,8 +54,9 @@ impl SessionGc {
         }
     }
 
-    /// 只读核算 session 对象的堆数据字节（属性/元素/meta Vec capacity + native 状态盒）。
-    /// 与 `drop_object_heap_data` 释放口径一致（capacity），不释放、不置空任何指针。
+    /// 只读核算 session 对象的堆数据字节（属性/元素/meta Vec capacity + upvalue 列表
+    /// capacity + native 状态盒）。与收尾释放口径一致（capacity）；upvalue 列表因原件与
+    /// 晋升克隆别名，释放走收尾集中去重而非逐对象路径。不释放、不置空任何指针。
     pub(crate) fn object_heap_data_bytes(obj: &JsObject) -> u64 {
         let mut bytes = 0u64;
 
@@ -86,6 +87,14 @@ impl SessionGc {
             unsafe {
                 bytes += size_of::<Vec<Option<PropMetaEntry>>>() as u64
                     + ((*meta_ptr).capacity() * size_of::<Option<PropMetaEntry>>()) as u64;
+            }
+        }
+
+        let upvalues_ptr = obj.upvalues as *const Vec<*mut oxide_types::object::Cell>;
+        if !upvalues_ptr.is_null() {
+            unsafe {
+                bytes += size_of::<Vec<*mut oxide_types::object::Cell>>() as u64
+                    + ((*upvalues_ptr).capacity() * size_of::<*mut oxide_types::object::Cell>()) as u64;
             }
         }
 

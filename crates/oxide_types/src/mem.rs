@@ -32,6 +32,12 @@ impl<T> P<T> {
     pub fn as_mut_ptr(&self) -> *mut T {
         self.as_ptr() as *mut T
     }
+
+    /// 当前强引用数。收尾路径据此区分「本 VM 独占」与「与 world 等共享」
+    /// 的 P 对象，避免对仍被其他引用方使用的对象做归属误判。
+    pub fn strong_count(&self) -> usize {
+        Arc::strong_count(&self.0)
+    }
 }
 
 impl<T> Clone for P<T> {

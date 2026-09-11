@@ -135,7 +135,10 @@ pub fn bind_disposable_stack(core: &Arc<KernelCore>, session: &KernelSession, gl
         ctor.set_data_meta(0u32, PropAttributes::new(false, false, false));
         ctor.set_data_meta(1u32, PropAttributes::new(false, false, true));
         ctor.set_data_meta(2u32, PropAttributes::new(false, false, true));
-        JsValue::from_js_object(Box::into_raw(ctor))
+        let ctor_ptr = Box::into_raw(ctor);
+        // 登记进 world 释放表：session 收尾统一释放构造器本体与属性区。
+        world.track_leaked_object(ctor_ptr);
+        JsValue::from_js_object(ctor_ptr)
     };
 
     write_proto_constructor(core, proto, ctor_val);

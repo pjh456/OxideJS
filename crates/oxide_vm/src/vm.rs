@@ -555,7 +555,8 @@ pub struct Vm {
 impl Drop for Vm {
     fn drop(&mut self) {
         // 直接 drop（test262 每测试新建即弃）不经 reset/full_reset 路径：
-        // 统一收尾释放全部 session 堆数据，防逐测试累积泄漏。
+        // 统一收尾释放全部 session 堆数据与内建原型属性区，防逐测试累积泄漏。
+        self.teardown_intrinsic_protos();
         self.teardown_session_heap_data();
     }
 }
@@ -972,6 +973,47 @@ impl Vm {
     /// 执行期 session 堆账目的峰值高水位（顶层指令边界采样，全量重置清零）。
     pub fn session_bytes_peak(&self) -> usize {
         self.gc_state.session_bytes_peak
+    }
+
+    /// 本 run 累计分配字节：epoch arena + session 对象 arena + session 手工堆
+    /// 账目（串/BigInt/cell/属性向量）。单次 run 内单调不减（执行期对象不回收、
+    /// 串 GC 只降手工堆账目而 arena 不减）；run 边界（reset）后重新起算，
+    /// 供单 run 分配上限判定。
+    ///
+    /// 注意：手工堆账目只在 promote/字符串分配点更新，执行期对象属性区
+    /// （元素/属性向量扩容）增长对其不可见——上限判定须配合
+    /// [`Self::run_alloc_bytes_full`] 的深采样层。
+    pub(crate) fn run_alloc_bytes(&self) -> usize {
+        self.epoch.bump().allocated_bytes()
+            + self.gc_state.session_epoch.allocated_bytes()
+            + self.gc_state.session_bytes_allocated
+    }
+
+    /// 本 run 累计分配字节的全量重算版：arena 计数器之外，逐一重算已登记对象
+    /// 的堆数据（属性/元素向量 + upvalue 列表 + native 状态盒）、session 串、
+    /// BigInt 与 upvalue cell 的容量。采样深度高于账目更新点，
+    /// 兜住属性区扩容这类账目盲区。
+    pub(crate) fn run_alloc_bytes_full(&self) -> u64 {
+        let mut bytes = self.run_alloc_bytes() as u64;
+        for &ptr in self
+            .gc_state
+            .epoch_object_ptrs
+            .iter()
+            .chain(self.gc_state.session_object_ptrs.iter())
+        {
+            if ptr.is_null() {
+                continue;
+            }
+            // SAFETY: ptr 来自对象表登记，dispatch 安全点处仍有效。
+            bytes += SessionGc::object_heap_data_bytes(unsafe { &*ptr });
+        }
+        for &ptr in &self.gc_state.session_string_ptrs {
+            // SAFETY: ptr 来自字符串表登记，收尾前始终有效。
+            bytes += (std::mem::size_of::<oxide_types::object::JsString>() + unsafe { (*ptr).len() }) as u64;
+        }
+        bytes += (self.gc_state.session_bigint_ptrs.borrow().len() * std::mem::size_of::<num_bigint::BigInt>()) as u64;
+        bytes += (self.gc_state.session_cell_ptrs.borrow().len() * std::mem::size_of::<Cell>()) as u64;
+        bytes
     }
 
     /// 无条件执行一次完整 session GC（mark + 移动式 sweep + 串/BigInt 清扫）。
@@ -1525,9 +1567,10 @@ impl Vm {
     }
 
     pub(crate) fn dispatch(&mut self) -> Result<JsValue, String> {
-        // config.max_steps 逐指令只读且循环内不变：提到循环外，免每次经 kernel_core
-        // Arc 指针追寻读取（热点内唯一的 config 访问）。
+        // config.max_steps / max_alloc_bytes 逐指令只读且循环内不变：提到循环外，
+        // 免每次经 kernel_core Arc 指针追寻读取（热点内仅有的 config 访问）。
         let max_steps = self.kernel_core.config.max_steps;
+        let max_alloc_bytes = self.kernel_core.config.max_alloc_bytes;
         let mut steps: u64 = 0;
         loop {
             steps += 1;
@@ -1552,6 +1595,21 @@ impl Vm {
                     vm_warn!("dispatch: step limit {} exceeded at pc={}", max_steps, self.pc);
                     self.profiling.set_instruction_count(steps);
                     return Err(format!("VM step limit exceeded at pc={}", self.pc));
+                }
+            }
+            // 单 run 分配上限：账目盲区（属性区扩容）靠两层采样兜住——轻层每
+            // 64 指令读三个计数器，深层每 2^18 指令全量重算（含逐对象属性区
+            // 重算）；超限 run 按步数超限同款处理（默认 skip / --no-skip 下
+            // fail），防单测试 arena 高水位拖垮宿主。
+            if let Some(cap) = max_alloc_bytes {
+                let deep = (steps & 0x3FFFF) == 0;
+                if deep || (steps & 0x3F) == 0 {
+                    let used = if deep { self.run_alloc_bytes_full() as usize } else { self.run_alloc_bytes() };
+                    if used > cap {
+                        vm_warn!("dispatch: memory limit {cap} exceeded (used {used}) at pc={}", self.pc);
+                        self.profiling.set_instruction_count(steps);
+                        return Err(format!("VM memory limit {cap} exceeded (used {used}) at pc={}", self.pc));
+                    }
                 }
             }
             if self.pc >= self.bytecode.len() {

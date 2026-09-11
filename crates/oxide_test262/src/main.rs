@@ -870,6 +870,7 @@ fn classify_vm_error(e: &str, neg: Option<&Negative>, no_skip: bool) -> TestOutc
         || e.contains("not supported")
         || e.contains("unsupported")
         || e.contains("step limit")
+        || e.contains("memory limit")
         || e.contains("NEW_EXPRESSION")
         || e.contains("GET_PROP_DYNAMIC on non-object")
         || e.contains("SET_PROP_DYNAMIC on non-object")
@@ -1467,6 +1468,11 @@ fn build_runner_kernel() -> Arc<KernelCore> {
     kernel_config.max_call_depth = 256;
     kernel_config.min_pool_size = 1;
     kernel_config.max_pool_size = Some(1);
+    // 单测试分配上限：死循环类测试触步数上限时持续分配，arena 高水位可达 GB
+    // 级；多 worker 并发下进程 RSS 包络被各 worker 当前高水位顶起，全量运行
+    // 必然 OOM。正规测试峰值 ≤132MB（Array 块 p100 实测），256MiB 留有余量
+    // 且把失控测试的驻留面封顶到上限本身。
+    kernel_config.max_alloc_bytes = Some(256 * 1024 * 1024);
     KernelCore::new(kernel_config)
 }
 
@@ -1509,6 +1515,8 @@ fn categorize_fail(msg: &str) -> (String, String) {
             ("vm: not yet implemented".into(), String::new())
         } else if reason.contains("step limit") {
             ("vm: step limit".into(), String::new())
+        } else if reason.contains("memory limit") {
+            ("vm: memory limit".into(), String::new())
         } else if reason.contains("not defined") {
             ("vm: not defined".into(), parse_undefined_ident(msg).unwrap_or("").to_string())
         } else if reason.contains("unsupported") {
@@ -1933,6 +1941,14 @@ mod tests {
         }
     }
 
+    /// 分配上限超限（与步数上限同款运行期限制）：默认 skip，`--no-skip` 下 fail。
+    #[test]
+    fn memory_limit_errors_skip_by_default() {
+        let e = "vm error: VM memory limit 268435456 exceeded (used 268436480) at pc=14";
+        assert_outcome(e, None, false, &TestOutcome::Skip("".into()));
+        assert_outcome(e, None, true, &TestOutcome::Fail("".into()));
+    }
+
     /// 能力未实现形态保留 skip；`--no-skip` 下转 fail。
     #[test]
     fn unimplemented_shapes_stay_skipped() {
@@ -2030,6 +2046,10 @@ mod tests {
             ("uncaught ReferenceError: foo is not defined", ("vm: not defined", "foo")),
             ("compile error: Identifier 'x' is not defined", ("compile: not defined", "x")),
             ("vm error: IC_GET_PROP on non-object", ("vm: IC_GET_PROP on non-object", "")),
+            (
+                "vm error: VM memory limit 268435456 exceeded (used 268436480) at pc=14",
+                ("vm: memory limit", ""),
+            ),
             ("vm error: TypeError: method called on incompatible receiver", ("vm: other", "")),
             ("engine panic: boom", ("engine panic", "")),
             (

@@ -18,7 +18,6 @@ use std::sync::Arc;
 use oxide_builtins::iterator::make_iter_result;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::NativeResult;
-use oxide_types::mem::P;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
@@ -734,6 +733,7 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
     let sf = vm.kernel_core.perm_interner().as_ref();
     let sh = vm.kernel_core.shape_forge().as_ref();
     let fn_proto_val = vm.session.builtin_world().fn_proto_val();
+    let world = vm.session.builtin_world();
     let object_proto_val = JsValue::from_js_object(vm.session.builtin_world().object_proto.as_ptr() as *mut JsObject);
 
     // %AsyncGeneratorPrototype%：proto = Object.prototype，方法 next/return/throw。
@@ -742,7 +742,7 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
         &mut ag_proto,
         sf,
         sh,
-        fn_proto_val,
+        world,
         ("next", async_generator_next as *const (), 1),
         ("return", async_generator_return as *const (), 1),
         ("throw", async_generator_throw as *const (), 1),
@@ -763,9 +763,9 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
         "@@asyncIterator",
         unsafe { oxide_types::object::NativeFnPtr::from_raw(async_generator_symbol_async_iterator as *const ()) },
         0,
-        fn_proto_val,
+        world,
     );
-    vm.async_generator_proto = P::new(*ag_proto);
+    Vm::swap_intrinsic_proto(&mut vm.async_generator_proto, *ag_proto);
 
     // %AsyncGeneratorFunction.prototype%：proto = Function.prototype，constructor = %AsyncGeneratorFunction%。
     let mut agf_ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
@@ -781,11 +781,13 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
     let name_si = sf.intern("name").0;
     let name_shape = sh.make_shape(agf_ctor.shape_id(), name_si);
     agf_ctor.set_shape_id(name_shape);
-    // agf_proto.constructor = %AsyncGeneratorFunction%（构造器对象泄漏持有，与 builtin 方法 wrapper 同生命周期）。
+    // agf_proto.constructor = %AsyncGeneratorFunction%（构造器登记进 world 释放表，与 builtin 方法 wrapper 同生命周期）。
     let ctor_si = sf.intern("constructor").0;
     let ctor2_shape = sh.make_shape(agf_proto.shape_id(), ctor_si);
     agf_proto.set_shape_id(ctor2_shape);
+    // 登记进释放表：session 收尾统一释放构造器本体与属性区。
     let agf_ctor_ptr = Box::into_raw(agf_ctor);
+    world.track_leaked_object(agf_ctor_ptr);
     let cpos = agf_proto.push_prop(JsValue::from_js_object(agf_ctor_ptr));
     agf_proto.set_data_meta(cpos, PropAttributes::new(false, false, true));
     // agf_proto.prototype = %AsyncGeneratorPrototype%。
@@ -804,8 +806,8 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
     // proto 本体只存在于 P 槽（Arc 副本，原 Box 随函数结束释放）：装入 P 槽后再写
     // 构造器 prototype/name 属性（按模板序 prototype 在前），prototype 指向 P 槽实例，
     // 使其与动态异步生成器函数使用的 [[Prototype]] 同一对象。
-    vm.async_generator_function_proto = P::new(*agf_proto);
-    // SAFETY: agf_ctor_ptr 为 Box 原分配（泄漏持有、生命周期覆盖 session），对象已建满、本 Vm 独占。
+    Vm::swap_intrinsic_proto(&mut vm.async_generator_function_proto, *agf_proto);
+    // SAFETY: agf_ctor_ptr 为 Box 原分配（已登记释放表、生命周期覆盖 session），对象已建满、本 Vm 独占。
     unsafe {
         let ctor_mut = &mut *agf_ctor_ptr;
         let ppos = ctor_mut.push_prop(JsValue::from_js_object(vm.async_generator_function_proto.as_mut_ptr()));

@@ -43,6 +43,8 @@ fn bind_error_subtype_constructor(
     ctor.set_data_meta(2u32, PropAttributes::new(false, false, true));
 
     let ctor_ptr = Box::into_raw(ctor);
+    // 登记进 world 释放表：session 收尾统一释放构造器本体与属性区。
+    session.builtin_world().track_leaked_object(ctor_ptr);
 
     let proto = unsafe { &mut *proto_ptr };
     let proto_ctor_shape = sh.make_shape(proto.shape_id(), sf.intern("constructor").0);

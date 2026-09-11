@@ -959,6 +959,34 @@ impl JsObject {
         self.prop_meta
     }
 
+    /// 释放四处堆外裸指针区（命名属性向量/元数据、数组元素区/元素元数据）并置空。
+    ///
+    /// 供 session 收尾调用：对象本体可能仍被 Arc 引用（此后属性区不再被读取），
+    /// 每区至多释放一次、重复调用为 no-op。upvalue 列表不在本函数口径内
+    /// （原件与晋升克隆间别名，须收尾时去重统一释放）。
+    pub fn release_raw_heap(&mut self) {
+        // SAFETY: 四个区各由 ensure_* 路径经 Box::into_raw 分配一次（或为空指针）；
+        // Box::from_raw 回收后即刻置空，杜绝二次释放。
+        unsafe {
+            if !self.array_elements.is_null() {
+                drop(Box::from_raw(self.array_elements as *mut Vec<JsValue>));
+                self.array_elements = std::ptr::null_mut();
+            }
+            if !self.array_elements_meta.is_null() {
+                drop(Box::from_raw(self.array_elements_meta as *mut Vec<Option<PropMetaEntry>>));
+                self.array_elements_meta = std::ptr::null_mut();
+            }
+            if !self.hash_props.is_null() {
+                drop(Box::from_raw(self.hash_props as *mut Vec<JsValue>));
+                self.hash_props = std::ptr::null_mut();
+            }
+            if !self.prop_meta.is_null() {
+                drop(Box::from_raw(self.prop_meta as *mut Vec<Option<PropMetaEntry>>));
+                self.prop_meta = std::ptr::null_mut();
+            }
+        }
+    }
+
     /// 原生 / 外来对象 payload 指针。
     pub fn native_data(&self) -> *mut u8 {
         self.native_data

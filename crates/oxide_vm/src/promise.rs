@@ -9,7 +9,6 @@
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::NativeResult;
-use oxide_types::mem::P;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::private_key::make_int_key;
 use oxide_types::value::JsValue;
@@ -705,6 +704,7 @@ impl Vm {
         let sf = self.kernel_core.perm_interner().as_ref();
         let sh = self.kernel_core.shape_forge().as_ref();
         let fn_proto_val = self.session.builtin_world().fn_proto_val();
+        let world = self.session.builtin_world();
         let object_proto_val =
             JsValue::from_js_object(self.session.builtin_world().object_proto.as_ptr() as *mut JsObject);
 
@@ -719,7 +719,7 @@ impl Vm {
             &mut proto,
             sf,
             sh,
-            fn_proto_val,
+            world,
             ("then", promise_then as *const (), 2),
             ("catch", promise_catch as *const (), 1),
             ("finally", promise_finally as *const (), 1),
@@ -757,7 +757,7 @@ impl Vm {
             &mut ctor,
             sf,
             sh,
-            fn_proto_val,
+            world,
             ("resolve", promise_static_resolve as *const (), 1),
             ("reject", promise_static_reject as *const (), 1),
             ("all", promise_static_all as *const (), 1),
@@ -768,8 +768,8 @@ impl Vm {
         );
 
         // 固定地址后互相接线：proto.constructor ↔ ctor.prototype。
-        self.promise_proto = P::new(*proto);
-        self.promise_constructor = P::new(*ctor);
+        Self::swap_intrinsic_proto(&mut self.promise_proto, *proto);
+        Self::swap_intrinsic_proto(&mut self.promise_constructor, *ctor);
         let proto_mut = unsafe { &mut *self.promise_proto.as_mut_ptr() };
         proto_mut.set_prop_at(0u32, JsValue::from_js_object(self.promise_constructor.as_ptr() as *mut JsObject));
         let ctor_mut = unsafe { &mut *self.promise_constructor.as_mut_ptr() };
@@ -1169,8 +1169,8 @@ impl Vm {
         ctor.set_data_meta(2u32, PropAttributes::new(false, false, false));
 
         // 固定地址后互相接线：proto.constructor ↔ ctor.prototype。
-        self.aggregate_error_proto = P::new(*proto);
-        self.aggregate_error_constructor = P::new(*ctor);
+        Self::swap_intrinsic_proto(&mut self.aggregate_error_proto, *proto);
+        Self::swap_intrinsic_proto(&mut self.aggregate_error_constructor, *ctor);
         let proto_mut = unsafe { &mut *self.aggregate_error_proto.as_mut_ptr() };
         proto_mut
             .set_prop_at(0u32, JsValue::from_js_object(self.aggregate_error_constructor.as_ptr() as *mut JsObject));
