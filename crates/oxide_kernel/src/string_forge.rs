@@ -31,7 +31,6 @@ const _: () = assert!(std::mem::size_of::<PermEntry>() == 16);
 
 /// 所有 VM 共享的 append-only、永不移动、读无锁的键 interner。
 ///
-/// 取代旧的引用计数 `StringForge`（及其有缺陷的 `maybe_sweep` 重编号路径）。
 /// 键（属性名、方法名）只 intern 一次，以 shape/IC 系统所依赖的稳定 `u32` id
 /// 寻址。运行时字符串*值*不再在此 intern——它们是堆上的 `JsString`
 /// 指针（见 `oxide_vm::Vm::new_string`）。
