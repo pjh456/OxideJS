@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use oxide_compiler::compiler::{compiled_module_hash, Compiler};
-use oxide_kernel::kernel::KernelCore;
+use oxide_kernel::kernel::{KernelConfig, KernelCore};
 use oxide_parser::Allocator;
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
@@ -518,6 +518,86 @@ pub fn run_mem_object_churn_peak(kernel: &Arc<KernelCore>) -> ExitCode {
         slope,
         r2
     );
+    ExitCode::SUCCESS
+}
+
+/// 校准用例：长寿命 kernel 寿命旋钮端到端 + PermInterner 增长斜率首测
+/// 基线。专用 kernel（重建阈值 Some(100_000)，不污染 bench 共享 kernel），
+/// K = 200_000 次唯一键 intern（每 4 次物化一次，模拟 `perm_string` =
+/// intern + 物化同式），每 20k 采 VmRSS；增长相斜率只记录不判定
+/// （append-only 增长，正斜率即预期签名，"斜率>0 即 fail" 契约不适用，
+/// 独立打印逻辑）；重建相验"无存活 VM"边界重建：阈值已达 →
+/// `should_rebuild_perm` true → drop 旧 kernel → 新 kernel 严格主锚
+/// `entry_count` 恰 0 + 旋钮 false。
+///
+/// # 注意事项
+/// 不传 bench 共享 kernel：20 万条目会改变后续 case 的 CodeForge/harness
+/// 面；本 case 全程无存活 VM（从不自建），drop 旧 Arc 即整体释放。
+/// 重建后 RSS 可能不回落至增长前之下（glibc 小对象 free 滞留分配器自由
+/// 链不回 OS），RSS 为次锚仅参考、不进 exit 判据。exit 0/1 仅由重建相
+/// 确定性断言驱动。
+pub fn run_mem_kernel_lifetime() -> ExitCode {
+    const TOTAL: u32 = 200_000;
+    const SAMPLE_EVERY: u32 = 20_000;
+    const REBUILD_THRESHOLD: u32 = 100_000;
+
+    let mut config = KernelConfig::minimal();
+    config.perm_interner_max_entries = Some(REBUILD_THRESHOLD);
+    let kernel = KernelCore::new(config.clone());
+    let interner = kernel.perm_interner();
+
+    // 增长相：唯一键 intern + 1/4 物化，RSS 序列采样。
+    let rss_pre = read_vmrss_kb();
+    let mut series: Vec<(usize, f64)> = Vec::new();
+    for i in 0..TOTAL {
+        let key = format!("kernel_lifetime_{i}");
+        let (id, _) = interner.intern(&key);
+        if i % 4 == 0 {
+            let _ = interner.string_ptr(id);
+        }
+        if i % SAMPLE_EVERY == 0 {
+            if let Some(kb) = read_vmrss_kb() {
+                series.push((i as usize, kb as f64));
+            }
+        }
+    }
+    let rss_post = read_vmrss_kb();
+    if let Some(kb) = rss_post {
+        series.push((TOTAL as usize, kb as f64));
+    }
+    let entries = interner.entry_count();
+    let (slope, r2) = linreg(&series);
+    eprintln!(
+        "[kernel_lifetime] growth: samples={} rss_kb={}..{} entries={} slope={:.6} kB/entry (~{:.1} B/entry) R²={:.4} (append-only 预期签名，仅记录不判定)",
+        series.len(),
+        rss_pre.unwrap_or(0) as f64,
+        rss_post.unwrap_or(0) as f64,
+        entries,
+        slope,
+        slope * 1024.0,
+        r2
+    );
+
+    // 重建相：旋钮端到端 + 严格主锚。
+    if entries != TOTAL || !kernel.should_rebuild_perm() {
+        eprintln!(
+            "[kernel_lifetime] knob not armed: entries={} (expect {TOTAL}) should_rebuild={}",
+            entries,
+            kernel.should_rebuild_perm()
+        );
+        return ExitCode::FAILURE;
+    }
+    drop(kernel);
+    let rebuilt = KernelCore::new(config);
+    let rebuilt_entries = rebuilt.perm_interner().entry_count();
+    eprintln!(
+        "[kernel_lifetime] rebuild: entries {entries} -> {rebuilt_entries} should_rebuild={} rss_kb={:?}",
+        rebuilt.should_rebuild_perm(),
+        read_vmrss_kb()
+    );
+    if rebuilt_entries != 0 || rebuilt.should_rebuild_perm() {
+        return ExitCode::FAILURE;
+    }
     ExitCode::SUCCESS
 }
 

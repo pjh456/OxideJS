@@ -43,6 +43,7 @@ pub fn run_benchmarks(config: BenchConfig, kernel: Arc<KernelCore>, pool: Arc<Vm
             Some("closure_dead_leak") => leak_detect::run_mem_closure_dead_leak(&kernel),
             Some("pool_high_water") => leak_detect::run_mem_pool_high_water(&kernel),
             Some("object_churn_peak") => leak_detect::run_mem_object_churn_peak(&kernel),
+            Some("kernel_lifetime") => leak_detect::run_mem_kernel_lifetime(),
             _ => leak_detect::run_leak_detect(&config, &kernel, &pool),
         },
         _ => {
