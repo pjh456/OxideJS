@@ -158,6 +158,13 @@ fn eval_do_while_continue() {
 }
 
 #[test]
+fn eval_do_while_continue_jumps_to_condition() {
+    // continue 直达条件位置：i 到 3 后 continue，条件 3<3 为假即退，结果 3；
+    // 若 continue 重入体首（跳过条件求值）会多跑一轮得 4。
+    assert_eq!(eval("var i = 0; do { i = i + 1; if (i == 3) continue; } while (i < 3); i"), "3");
+}
+
+#[test]
 fn eval_for_in_enumerates_keys() {
     assert_eq!(eval("var n=0; for (k in {a:1,b:2}) { n=n+1; } n"), "2");
 }
