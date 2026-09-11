@@ -1799,12 +1799,13 @@ fn run_tests() -> bool {
                             tests_since_kernel_reset += 1;
 
                             let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
-                            if done % 500 == 0 {
-                                kernel.sweep_runner_forges();
-                            }
                             if tests_since_kernel_reset >= kernel_batch {
+                                // 重建即全新 forge（结构性必清）：旧核连同其表整体丢弃，
+                                // 先 sweep 是对 doomed 核白做一次 O(50k) 清理。
                                 kernel = build_runner_kernel();
                                 tests_since_kernel_reset = 0;
+                            } else if done % 500 == 0 {
+                                kernel.sweep_runner_forges(); // 批内 50k 兜底（数据依赖）
                             }
                             if done % 500 == 0 || done == total {
                                 test262_info!("progress: {}/{} ({}%)", done, total, done * 100 / total);

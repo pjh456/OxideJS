@@ -209,15 +209,24 @@ impl KernelCore {
         self.config.max_cached_modules = cap;
     }
 
-    /// 在每次 runner（test262 等）边界清理瞬时 shape/prop 缓存，防止跨测试累积膨胀。
+    /// 批边界清理瞬时 shape/prop 缓存，防止跨测试累积膨胀。
     ///
-    /// 字符串 intern 表是 append-only，无需清理；仅当 shape 或 prop 表超过阈值时才执行
-    /// [`ShapeForge::clear_transient`] 与 [`PropForge::clear`]。
+    /// 瞬时 forge（非根 shape/transition/position + prop 模板）的 id 空间只在两类
+    /// 边界复位：（1）kernel 整体重建——新核构造即空（结构性必清；宿主义务 =
+    /// 重建前旧核无存活 VM，否则旧核连同其 forge 永久驻留）；（2）批内兜底 sweep
+    /// ——本函数，数据依赖：仅当 shape 或 prop 表超过 50k 阈值时才执行
+    /// [`ShapeForge::clear_transient`] 与 [`PropForge::clear`]（阈值是增长闸门，
+    /// 宿主的检查节奏只是采样点）。字符串 intern 表 append-only、CodeForge LRU
+    /// 自管理，均不碰。
+    ///
+    /// # 边界与前提
+    /// - 调用点须无存活 VM：对象头与 IC 词持 shape id，清空使 id 空间复位，跨复位
+    ///   存活的 VM 会因 id 复用碰撞静默错槽；引擎不自动重建也不自动守卫，该前提
+    ///   由宿主契约承担（runner 由循环结构满足：VM 每测试新建即弃，sweep 点在
+    ///   VM 作用域外）。
     pub fn sweep_runner_forges(&self) {
-        // 键 interner 是 append-only（无逐次清理）；只有瞬时 shape/prop 表
-        // 需要在 test262 每测试边界做上限约束。
-        // test262 每测试新建 VM/session。在该边界，此前测试产生的 JS 对象
-        // 不应保留任何瞬时 shape/模板。
+        // 键 interner 是 append-only（无逐次清理）；仅当瞬时 shape/prop 表超阈值
+        // 时清表（批内兜底），调用点无存活 VM 的前提见文档。
         if self.shape_forge.len() > 50_000 {
             self.shape_forge.clear_transient();
             self.prop_forge.clear();
