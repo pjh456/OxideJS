@@ -135,10 +135,16 @@ impl Emitter {
                     }
                     return Ok(());
                 }
+                let is_tier = self.is_global_tier_name(ctx, name);
                 let is_implicit = ctx.is_implicit_global_reg(var_reg);
                 if is_implicit && ctx.is_strict {
                     // 严格模式未声明写：抛 ReferenceError，跳过寄存器写（值无关）。
                     self.emit_strict_undeclared_write(name, ctx)?;
+                    return Ok(());
+                }
+                if is_tier {
+                    // 顶层已声明 var 解构赋值目标：值落全局对象属性（A 侧单一真值）。
+                    self.emit_tier_global_write(name, src_reg, ctx);
                     return Ok(());
                 }
                 ctx.inst(Inst::new(
@@ -337,10 +343,16 @@ impl Emitter {
                     }
                     return Ok(());
                 }
+                let is_tier = self.is_global_tier_name(ctx, name);
                 let is_implicit = ctx.is_implicit_global_reg(var_reg);
                 if is_implicit && ctx.is_strict {
                     // 严格模式未声明写：抛 ReferenceError，跳过寄存器写（值无关）。
                     self.emit_strict_undeclared_write(name, ctx)?;
+                    return Ok(());
+                }
+                if is_tier {
+                    // 顶层已声明 var 解构赋值目标：值落全局对象属性（A 侧单一真值）。
+                    self.emit_tier_global_write(name, src_reg, ctx);
                     return Ok(());
                 }
                 ctx.inst(Inst::new(
@@ -421,11 +433,17 @@ impl Emitter {
                         }
                         continue;
                     }
+                    let is_tier = self.is_global_tier_name(ctx, name);
                     let is_implicit = ctx.is_implicit_global_reg(var_reg);
                     if is_implicit && ctx.is_strict {
                         // 严格模式未声明写：抛 ReferenceError，跳过寄存器写（值无关）。
                         self.emit_strict_undeclared_write(name, ctx)?;
                         return Ok(());
+                    }
+                    if is_tier {
+                        // 顶层已声明 var 对象解构赋值：值落全局对象属性（A 侧单一真值）。
+                        self.emit_tier_global_write(name, prop_reg, ctx);
+                        continue;
                     }
                     ctx.inst(Inst::new(
                         OpCode::STORE_VAR,

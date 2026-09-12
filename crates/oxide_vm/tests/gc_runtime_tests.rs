@@ -270,11 +270,12 @@ fn closure_cells_freed_by_full_reset_without_double_free() {
 fn dead_closure_upvalues_freed_by_sweep_without_double_free() {
     let mut vm = vm_with_threshold(4096);
     // run1：两个 3-upvalue 闭包逃逸 global（成 session 对象），同 run 内调用
-    // 存活闭包确认 upvalue 语义完好。
+    // 存活闭包确认 upvalue 语义完好。捕获变量置于函数作用域：顶层 var 按全局
+    // 对象属性单一真值读取，不产生 cell 捕获。
     let first = compile(
-        "var a = 1; var b = 2; var c = 3; \
+        "(function(){var a = 1; var b = 2; var c = 3; \
          globalThis.dead = function() { return a + b + c; }; \
-         globalThis.live = function() { return a + b + c; }; globalThis.live()",
+         globalThis.live = function() { return a + b + c; }; return globalThis.live();})()",
     );
     let result = vm.run(&Arc::new(first)).expect("run1");
     assert_eq!(format!("{}", result), "6");
@@ -299,8 +300,8 @@ fn dead_closure_upvalues_freed_by_sweep_without_double_free() {
 
     // 重置后引擎健康：重建新 3-upvalue 闭包，同 run 调用语义正确。
     let fourth = compile(
-        "var x = 10; var y = 20; var z = 30; \
-                            globalThis.f = function() { return x + y + z; }; globalThis.f()",
+        "(function(){var x = 10; var y = 20; var z = 30; \
+         globalThis.f = function() { return x + y + z; }; return globalThis.f();})()",
     );
     let result = vm.run(&Arc::new(fourth)).expect("run4");
     assert_eq!(format!("{}", result), "60");
@@ -309,7 +310,8 @@ fn dead_closure_upvalues_freed_by_sweep_without_double_free() {
     // 各走独立 VM 的「创建 → 撤根 → 完整收集」。两次收集的字节账目差即死
     // arrow 的 upvalue 列表 Box 字节数——对象本体、length/name 属性区、函数
     // 名 session 串在 A/B 恒等，差分相消（各 1 个死对象 + 1 条死串）。
-    // 死分支不释放 upvalue 列表（泄漏）时差分为 0，本断言转红。
+    // 捕获变量置于函数作用域（顶层 var 按全局对象属性读取，不产生 cell
+    // 捕获）。死分支不释放 upvalue 列表（泄漏）时差分为 0，本断言转红。
     let collect_freed = |src: &str| -> u64 {
         let mut v = vm_with_threshold(4096);
         v.run(&Arc::new(compile(src))).expect("run create");
@@ -320,7 +322,10 @@ fn dead_closure_upvalues_freed_by_sweep_without_double_free() {
         assert!(stats.last_collection_objects_dead >= 1, "arrow 闭包应经 sweep 死分支");
         stats.last_collection_bytes_freed
     };
-    let freed_with_captures = collect_freed("var a = 1; var b = 2; var c = 3; globalThis.arrow = () => a + b + c; 0");
+    let freed_with_captures = collect_freed(
+        "(function(){var a = 1; var b = 2; var c = 3; \
+         globalThis.arrow = () => a + b + c; return 0;})()",
+    );
     let freed_no_captures = collect_freed("globalThis.arrow = () => 7; 0");
     let upvalue_box_min = (std::mem::size_of::<Vec<*mut oxide_types::object::Cell>>()
         + 3 * std::mem::size_of::<*mut oxide_types::object::Cell>()) as u64;

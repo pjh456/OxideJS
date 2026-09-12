@@ -243,3 +243,83 @@ fn map_box_value_survives_reset() {
         "var fill; for (var i = 0; i < 200; i++) { let t = {junk: i, pad: 'x'.repeat(32)}; fill = t; } globalThis.m.get(globalThis.key).v === 2",
     ));
 }
+
+/// 顶层 var 单一真值：裸读、globalThis 别名、GOPD 描述符三者见同一值——
+/// 声明后写点落全局对象属性，镜像寄存器不再参与读。
+#[test]
+fn top_level_var_read_write_single_source() {
+    eval_truthy("var x = 1; x = 2; globalThis.x === 2");
+    eval_truthy("var x = 1; x = 2; x === 2 && globalThis.x === 2");
+    eval_truthy("var x = 1; x = 2; Object.getOwnPropertyDescriptor(globalThis, 'x').value === 2 && x === 2");
+    // 属性被直写后裸读见新值：读走全局对象属性而非镜像槽。
+    eval_truthy("var v = 1; globalThis.v = 2; v === 2");
+    // 复合赋值旧值取属性值：属性被外部更新后 RMW 基址须跟随属性。
+    eval_truthy("var c = 5; globalThis.c = 100; c += 2; c === 102 && globalThis.c === 102");
+}
+
+/// 顶层 var 的 typeof 读全局对象属性：声明语句前 GDI 序言已建属性（值
+/// undefined）；声明后见真实值。
+#[test]
+fn top_level_var_typeof_reads_global_property() {
+    eval_truthy("(function(){ seen = (typeof t === 'undefined'); })(); var t; seen === true");
+    eval_truthy("var t2 = 's'; typeof t2 === 'string' && globalThis.t2 === 's'");
+}
+
+/// 顶层 var 自增/自减、复合/逻辑赋值：新值落全局对象属性。
+#[test]
+fn update_and_compound_assign_write_global_property() {
+    eval_truthy("var u = 3; ++u; u === 4 && globalThis.u === 4");
+    eval_truthy("var p = 3; p++; p === 4 && globalThis.p === 4");
+    eval_truthy("var c = 5; c += 2; c === 7 && globalThis.c === 7");
+    eval_truthy("var l = 0; l ||= 9; l === 9 && globalThis.l === 9");
+    eval_truthy("var n = 1; n &&= 0; n === 0 && globalThis.n === 0");
+}
+
+/// 顶层 var 作解构赋值目标：值落全局对象属性。
+#[test]
+fn destructuring_assign_writes_global_property() {
+    eval_truthy("var d1; ({d1} = {d1: 5}); d1 === 5 && globalThis.d1 === 5");
+    eval_truthy("var d2; [d2] = [7]; d2 === 7 && globalThis.d2 === 7");
+}
+
+/// 顶层 for-in 头的迭代值落全局对象属性：声明头与赋值头两形。
+#[test]
+fn for_in_head_writes_global_property() {
+    eval_truthy("for (var k in {a: 1}) {} k === 'a' && globalThis.k === 'a'");
+    eval_truthy("var k2; for (k2 in {a: 1, b: 2}) {} k2 === 'b' && globalThis.k2 === 'b'");
+}
+
+/// 嵌套函数局部同名遮蔽不穿透顶层绑定：遮蔽侧走局部槽，顶层属性不受影响；
+/// 无遮蔽时嵌套裸读/裸写直连全局对象属性（不经 cell）。
+#[test]
+fn nested_local_shadow_does_not_pierce_tier() {
+    eval_truthy("var s = 1; (function(){ var s = 2; return s; })() === 2 && s === 1 && globalThis.s === 1");
+    eval_truthy(
+        "var s2 = 1; (function(){ var s2 = 9; s2 = 10; return s2; })() === 10 && s2 === 1 && globalThis.s2 === 1",
+    );
+    eval_truthy("var n = 42; (function(){ return n; })() === 42");
+    // 严格嵌套函数 this=undefined：写点不依赖 this，经 session 全局对象落属性。
+    eval_truthy("\"use strict\"; var w = 1; (function(){ \"use strict\"; w = 5; })(); w === 5 && globalThis.w === 5");
+}
+
+/// 直接 eval：var 声明在全局对象建可配置属性；eval 内裸写穿透全局对象
+/// 属性，外层（顶层 var 名）读见同一值。
+#[test]
+fn direct_eval_var_and_write_visible_to_outer() {
+    eval_truthy("eval('var y = 5'); y === 5 && globalThis.y === 5");
+    eval_truthy("var q = 1; eval('q = 55'); q === 55 && globalThis.q === 55");
+    eval_truthy("eval('var ev = 1'); Object.getOwnPropertyDescriptor(globalThis, 'ev').configurable === true");
+    // 嵌套函数内直接 eval：写点经 session 解析全局对象（不依赖 this）。
+    eval_truthy("var z = 1; (function(){ \"use strict\"; eval('z = 77'); })(); z === 77 && globalThis.z === 77");
+}
+
+/// 既有属性与顶层 var 声明交互：序言 define-if-absent 零动作，声明值写
+/// 是描述符感知写——既有不可写属性保值不覆盖。既有属性须先于 GDI 存在，
+/// 分两阶段：阶段一建属性（该程序无 var，GDI 不触碰），阶段二声明。
+#[test]
+fn tier_declaration_respects_existing_property() {
+    assert!(eval_two_phases(
+        "Object.defineProperty(globalThis, 'rw', {value: 7, writable: false, configurable: true})",
+        "var rw = 99; rw === 7 && globalThis.rw === 7",
+    ));
+}

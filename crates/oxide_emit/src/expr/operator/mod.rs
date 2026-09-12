@@ -267,7 +267,10 @@ impl Emitter {
             let in_with_dynamic = !ctx.with_stack.is_empty() && !ctx.is_with_internal_binding(name);
             let captured =
                 ctx.current_upvalue_captures.iter().any(|u| u.name == name) || ctx.captured_bindings.contains_key(name);
-            if !in_with_dynamic && !captured && ctx.scopes.symbols.lookup_any_binding(name).is_none() {
+            // 顶层已声明 var：typeof 读全局对象属性（A 侧单一真值），缺失 → "undefined"
+            // （非抛，IsUnresolvableReference 语义）。未声明名同走此路（lookup 未命中）。
+            let is_tier = self.is_global_tier_name(ctx, name);
+            if !in_with_dynamic && !captured && (is_tier || ctx.scopes.symbols.lookup_any_binding(name).is_none()) {
                 let key_idx = ctx.add_constant(Constant::String(name.to_string()));
                 let r = ctx.alloc_reg();
                 ctx.inst(Inst::new(
@@ -632,15 +635,15 @@ impl Emitter {
                 ctx.inst(Inst::new(op, Operand::Reg(tmp_reg), Operand::Reg(result_reg), Operand::Reg(result_reg)));
                 return Ok(result_reg);
             }
+            let is_tier = self.is_global_tier_name(ctx, name);
             let is_implicit = ctx.is_implicit_global_reg(var_reg);
             if is_implicit && ctx.is_strict {
                 // 严格模式未声明更新写：值无关抛 ReferenceError。
                 return self.emit_strict_undeclared_write(name, ctx);
             }
-            // 未声明名槽是入口快照（读侧登记的槽从不被读刷新，同脚本后续写
-            // 可使其脱节）：RMW 前从全局对象属性取旧值，属性缺失按 undefined
-            // （sloppy 未解析引用 GetBaseValue 语义，不抛）。
-            if is_implicit {
+            // RMW 前从全局对象属性取旧值：tier 名（顶层已声明 var）与未声明名同，
+            // 属性缺失按 undefined（update 旧值角落，GetBaseValue 语义，不抛）。
+            if is_tier || is_implicit {
                 let key_idx = ctx.add_constant(Constant::String(name.to_string()));
                 ctx.inst(Inst::new(
                     OpCode::LOAD_GLOBAL_TYPEOF,
@@ -657,6 +660,10 @@ impl Emitter {
                 (UpdateOperator::Decrement, false) => OpCode::DEC_POST,
             };
             ctx.inst(Inst::new(op, Operand::Reg(var_reg), Operand::Reg(result_reg), Operand::Reg(result_reg)));
+            if is_tier {
+                // 顶层已声明 var 自增/自减：新值落全局对象属性（A 侧单一真值）。
+                self.emit_tier_global_write(name, var_reg, ctx);
+            }
             if is_implicit {
                 self.emit_implicit_global_write(name, var_reg, ctx);
             }

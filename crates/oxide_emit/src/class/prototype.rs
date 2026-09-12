@@ -11,7 +11,14 @@ impl Emitter {
         &self, ctor_reg: u32, proto_reg: u32, super_reg: Option<u32>, sub_idx: u16, ctx: &mut CompileCtx,
     ) -> Result<(), String> {
         ctx.inst(Inst::create_closure(Operand::Reg(ctor_reg), sub_idx));
-        ctx.inst(Inst::new(OpCode::NEW_OBJECT, Operand::Reg(proto_reg), Operand::None, Operand::None));
+        // 类原型 session 直分：实例 [[Prototype]] 与 Class.prototype 两侧须同一
+        // 对象，epoch 分配在逃逸写晋升时克隆出第二份分裂 identity。
+        ctx.inst(Inst::new(
+            OpCode::NEW_SESSION_OBJECT,
+            Operand::Reg(proto_reg),
+            Operand::None,
+            Operand::None,
+        ));
         if let Some(super_reg) = super_reg {
             let proto_key_idx = ctx.add_constant(Constant::String("prototype".to_string()));
             let parent_proto_key_reg = ctx.alloc_reg();

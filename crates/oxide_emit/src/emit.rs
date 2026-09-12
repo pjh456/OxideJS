@@ -207,6 +207,10 @@ pub struct CompileCtx {
     /// 捕获判断（MAKE_CELL / CELL_GET / CELL_SET）与子函数 upvalue cell_idx 统一查此映射，
     /// 消除符号表时序依赖与 cell 索引错位。
     pub(crate) captured_bindings: BTreeMap<String, u8>,
+    /// 顶层已声明 var 名（脚本全局 GDI 提升名）：裸读走全局对象属性（LOAD_GLOBAL）、
+    /// 裸写走描述符感知 A 侧写，单一真值不落镜像 cell。仅脚本顶层 emit_program 计算，
+    /// 逐层继承给嵌套函数（嵌套函数的局部同名遮蔽不属此集，由作用域索引判定）。
+    pub(crate) global_tier_names: HashSet<String>,
     /// 本函数从父函数捕获的 const 绑定名：子 ctx 不继承父函数作用域符号表，
     /// 捕获 const 信息随 upvalue 收集一并快照，供 const 写检查（编译期拦截）使用。
     pub(crate) upvalue_const_flags: HashSet<String>,
@@ -344,6 +348,7 @@ impl CompileCtx {
             current_upvalue_captures: Vec::new(),
             own_bindings: HashSet::new(),
             captured_bindings: BTreeMap::new(),
+            global_tier_names: HashSet::new(),
             upvalue_const_flags: HashSet::new(),
             implicit_global_reads: HashSet::new(),
             implicit_global_writes: HashSet::new(),
@@ -1140,6 +1145,9 @@ impl Emitter {
         // 一并继承——读侧登记的全局槽与写侧同属一个槽，写判定跨嵌套函数一致。
         ctx.implicit_global_writes = parent_ctx.implicit_global_writes.clone();
         ctx.implicit_global_reads = parent_ctx.implicit_global_reads.clone();
+        // 顶层已声明 var 名集随作用域继承：嵌套函数裸读/写顶层 var 直连全局对象
+        // （经继承的 scope-0 绑定 + 作用域索引判定，不被局部同名遮蔽误判）。
+        ctx.global_tier_names = parent_ctx.global_tier_names.clone();
         for (name, reg) in extra_bindings {
             ctx.scopes.symbols.scopes[0].bindings.insert(
                 (*name).to_string(),
@@ -1578,6 +1586,45 @@ impl Emitter {
         }
     }
 
+    /// 名字是否为顶层已声明 var（A 侧单一真值）：在顶层 var 名集内，且当前解析
+    /// 绑定落在全局作用域（scope 0）——嵌套函数内的局部同名遮蔽命中更高作用域，
+    /// 判定为局部而非顶层，走既有 cell/寄存器路径。
+    pub(crate) fn is_global_tier_name(&self, ctx: &CompileCtx, name: &str) -> bool {
+        ctx.global_tier_names.contains(name) && matches!(ctx.scopes.symbols.lookup_any_binding(name), Some((_, 0)))
+    }
+
+    /// 顶层已声明 var 的裸写落到全局对象属性（A 侧单一真值）：顶层普通脚本经
+    /// This=全局对象走 0x6F；顶层 eval 与嵌套函数 This≠全局对象，经 session 解析
+    /// 走 0x98（c:true，不升级既有 c:false 描述符，只更值）。
+    pub(crate) fn emit_tier_global_write(&self, name: &str, val_reg: u32, ctx: &mut CompileCtx) {
+        let idx = ctx.add_constant(Constant::String(name.to_string()));
+        if ctx.is_global_scope && !ctx.is_eval_script {
+            let key_reg = ctx.alloc_reg();
+            ctx.inst(Inst::load_const(Operand::Reg(key_reg), idx));
+            ctx.inst(Inst::define_global_prop(Operand::This, Operand::Reg(val_reg), Operand::Reg(key_reg)));
+        } else {
+            ctx.inst(Inst::define_global_prop_c(Operand::Reg(val_reg), idx));
+        }
+    }
+
+    /// GDI 序言：顶层 var 全局属性 define-if-absent。既有属性（数据或 accessor）
+    /// 零动作——CreateGlobalVarBinding 对既有数据描述符零修改（不更值）；缺失新建。
+    /// 顶层普通脚本经 This 走 0x99；eval 经 session 走 0x9A。
+    pub(crate) fn emit_global_prop_write_if_absent(&self, name: &str, val_reg: u32, ctx: &mut CompileCtx) {
+        let idx = ctx.add_constant(Constant::String(name.to_string()));
+        if ctx.is_eval_script {
+            ctx.inst(Inst::define_global_prop_c_if_absent(Operand::Reg(val_reg), idx));
+        } else {
+            let key_reg = ctx.alloc_reg();
+            ctx.inst(Inst::load_const(Operand::Reg(key_reg), idx));
+            ctx.inst(Inst::define_global_prop_if_absent(
+                Operand::This,
+                Operand::Reg(val_reg),
+                Operand::Reg(key_reg),
+            ));
+        }
+    }
+
     /// 把完整程序编译为顶层模块体的 IRFunction。
     ///
     /// 调用方为 `oxide_compiler::Compiler::compile`：本函数完成 emit 半程，
@@ -1610,7 +1657,12 @@ impl Emitter {
 
         // 闭包捕获分析（AST 级，emit 前确定）
         ctx.own_bindings = self.collect_own_binding_names(&[], &program.body);
+        // 顶层已声明 var 名（A 侧单一真值）：裸读走全局对象属性、裸写走描述符感知
+        // A 侧写，不落镜像 cell——从捕获集剔除，使嵌套函数经继承 scope-0 直连全局。
+        // 仅在此顶层调用点过滤：嵌套函数的局部同名遮蔽是独立绑定，其调用点不过滤。
+        ctx.global_tier_names = self.collect_var_binding_names(&program.body);
         ctx.captured_bindings = self.collect_captured_bindings(&program.body, &[], &ctx.own_bindings);
+        ctx.captured_bindings.retain(|n, _| !ctx.global_tier_names.contains(n));
 
         // 顶层 var 入口实例化：被捕获的 var 名统一 MAKE_CELL(undefined)，使 var
         // 声明语句执行前创建的闭包读取到 undefined（脚本 GlobalDeclarationInstantiation
@@ -1637,12 +1689,13 @@ impl Emitter {
         // 全局声明实例化序言：脚本求值前为顶层 var 名创建全局对象属性（值 undefined），
         // 使声明语句执行前的读取（typeof、反射、自引用）可经全局对象见绑定；同名
         // 函数声明的属性由首个 sub-pass 以函数值覆盖，声明语句保持值更新语义。
-        // builtin 名的全局属性运行期预存（session 绑定）：序言值写是单 opcode 值
-        // 混叠，直接写 undefined 会把现存值（NaN 等）抹掉，故以 builtin 镜像槽
-        // （run 起点预载全局属性值）作为写入值——CreateGlobalVarBinding 不更新
-        // 既有数据描述符（0x6F 不可写分支 no-op），值幂等保留；裸读走镜像、
-        // 反射见预存属性。
-        let gdi_var_names = self.collect_var_binding_names(&program.body);
+        // CreateGlobalVarBinding 对既有属性零动作：define-if-absent 只在属性缺失时
+        // 新建，可写/不可写/可配置既有属性（含值）一律保留。builtin 名的全局属性
+        // 运行期预存（session 绑定）：缺失分支写入值取 builtin 镜像槽（run 起点
+        // 预载全局属性值），既有属性零动作，值幂等保留。
+        // 复用顶层 var 名集（global_tier_names，与捕获集剔除同源）；克隆到本地
+        // 避免序言循环内 &mut ctx 与名集借用冲突。
+        let gdi_var_names = ctx.global_tier_names.clone();
         if !gdi_var_names.is_empty() {
             let undef_reg = self.emit_undefined(&mut ctx);
             for name in &gdi_var_names {
@@ -1652,7 +1705,7 @@ impl Emitter {
                 } else {
                     undef_reg
                 };
-                self.emit_global_prop_write(name, value_reg, &mut ctx);
+                self.emit_global_prop_write_if_absent(name, value_reg, &mut ctx);
             }
         }
 

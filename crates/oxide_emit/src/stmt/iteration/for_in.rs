@@ -71,6 +71,11 @@ impl Emitter {
                                     Operand::Reg(key_reg),
                                     Operand::None,
                                 ));
+                                // 顶层 for-in var 头：迭代值落全局对象属性（A 侧单一真值）。
+                                // builtin 名（writable 如 Math）保留既有全局属性值，不 clobber。
+                                if self.is_global_tier_name(ctx, name) && !CompileCtx::is_known_builtin(name) {
+                                    self.emit_tier_global_write(name, key_reg, ctx);
+                                }
                             }
                             ctx.init_var(name);
                         }
@@ -89,10 +94,15 @@ impl Emitter {
                         self.emit_throw_error("TypeError", "cannot assign to read-only property", ctx)?;
                     }
                 } else {
+                    let is_tier = self.is_global_tier_name(ctx, name);
                     let is_implicit = ctx.is_implicit_global_reg(var_reg);
                     if is_implicit && ctx.is_strict {
                         // 严格模式未声明写：抛 ReferenceError，跳过寄存器写（值无关）。
                         self.emit_strict_undeclared_write(name, ctx)?;
+                    } else if is_tier && !CompileCtx::is_known_builtin(name) {
+                        // 顶层 for-in 赋值头：迭代值落全局对象属性（A 侧单一真值）。
+                        // builtin 名保留既有全局属性值，不 clobber。
+                        self.emit_tier_global_write(name, key_reg, ctx);
                     } else {
                         ctx.inst(Inst::new(
                             OpCode::STORE_VAR,

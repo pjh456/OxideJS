@@ -546,6 +546,26 @@ define_opcodes! {
     DEFINE_GLOBAL_PROP_C = 0x98 => "DEFINE_GLOBAL_PROP_C",
         def = None, uses = [SlotSpec::Slot(Slot::A)],
         pure = false, jump = false, term = false, ic = false,
+    // 顶层 var 声明的全局属性 define-if-absent（GDI 序言）：rd=目标对象（顶层
+    // This=全局对象）、a=值、b=键。既有属性（数据或 accessor）零动作——
+    // CreateGlobalVarBinding 对既有数据描述符零修改（可写/不可写/配置位均不更新）；
+    // 缺失新建可写/可枚举/不可配置数据属性（脚本 var 的 c:false 描述符）。
+    DEFINE_GLOBAL_PROP_IF_ABSENT = 0x99 => "DEFINE_GLOBAL_PROP_IF_ABSENT",
+        def = None, uses = [SlotSpec::Slot(Slot::Rd), SlotSpec::Slot(Slot::A), SlotSpec::Slot(Slot::B)],
+        pure = false, jump = false, term = false, ic = false,
+    // eval 脚本顶层 var 声明的全局属性 define-if-absent：ext 字 = 键常量池下标
+    // （u16）、a 槽 = 值寄存器；全局对象由 session 解析（不依赖 this）。既有属性
+    // 零动作，缺失新建可写/可枚举/可配置（eval 传 deterministic=true）。
+    DEFINE_GLOBAL_PROP_C_IF_ABSENT = 0x9A => "DEFINE_GLOBAL_PROP_C_IF_ABSENT",
+        def = None, uses = [SlotSpec::Slot(Slot::A)],
+        pure = false, jump = false, term = false, ic = false,
+    // session 直分普通对象：寿命 session 级（session GC mark/sweep 回收），逃逸写
+    // 不触发晋升克隆。类原型等内建形对象要求与构造器 prototype 属性两侧 identity
+    // 一致——epoch 分配会在逃逸写晋升时克隆出第二份分裂 identity（同函数
+    // prototype 子对象的 session 分配同因）。
+    NEW_SESSION_OBJECT = 0x9B => "NEW_SESSION_OBJECT",
+        def = Some(SlotSpec::Slot(Slot::Rd)), uses = [],
+        pure = true, jump = false, term = false, ic = false,
 
     // ── 成员复合赋值：位/移位 (0x64-0x69) ──
     COMPOUND_MEMBER_BIT_AND = 0x64 => "COMPOUND_MEMBER_BIT_AND",

@@ -92,13 +92,15 @@ fn test_full_reset_clears_session_state() {
 
 /// NEW_OBJECT 字面量必须登记进 epoch 追踪表：`{}` 写入超内联容量的属性会分配
 /// hash_props 堆 Box，reset 时经追踪表统一释放；不登记则每个字面量泄漏一个 Box。
+/// 对象变量置于函数作用域：顶层 var 在声明写即逃逸 promote，后续属性写落
+/// session 克隆（其堆数据不属 epoch 源对象，reset 不释放）。
 #[test]
 fn new_object_literal_tracked_and_freed_on_reset() {
     let mut vm = Vm::new();
     let result = run_source(
         &mut vm,
-        "var o = {}; for (var i = 0; i < 40; i++) { o['k' + i] = i; } \
-         delete o.k7; o.k8",
+        "(function(){var o = {}; for (var i = 0; i < 40; i++) { o['k' + i] = i; } \
+         delete o.k7; return o.k8;})()",
     );
     assert_eq!(format!("{}", result), "8", "属性写入/删除后读取应正常");
     assert!(vm.epoch_object_count() > 0, "NEW_OBJECT 应登记 epoch 追踪表");

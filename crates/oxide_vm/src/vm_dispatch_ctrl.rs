@@ -365,6 +365,70 @@ impl Vm {
         }
     }
 
+    /// 顶层 var 声明的全局属性 define-if-absent：rd=全局对象，a=值，b=键。
+    ///
+    /// CreateGlobalVarBinding 对既有属性零动作：属性已存在（数据或 accessor）直接
+    /// 返回——可写/不可写/配置位与值均不更新。缺失新建可写/可枚举/不可配置数据
+    /// 属性；全局对象不可扩展时静默 no-op（GDI 面，基线同形）。
+    ///
+    /// # 边界与前提
+    /// - rd 非对象（非对象 this）时按 no-op 处理，不抛错。
+    pub(crate) fn dispatch_define_global_prop_if_absent(
+        &mut self, rd: usize, a: usize, b: usize,
+    ) -> Result<(), String> {
+        vm_trace!("DEFINE_GLOBAL_PROP_IF_ABSENT rd={} value={} key={}", rd, a, b);
+        let obj_val = self.regs[rd];
+        if !obj_val.is_object() {
+            return Ok(());
+        }
+        let prop_name_si = self.property_key_si(self.regs[b])?;
+        let value = self.regs[a];
+        let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
+        // 既有属性（数据或 accessor）：CreateGlobalVarBinding 零动作。
+        if self
+            .kernel_core
+            .shape_forge()
+            .lookup_position(obj.shape_id(), prop_name_si)
+            .is_some()
+        {
+            return Ok(());
+        }
+        // 缺失：新建可写/可枚举/不可配置；不可扩展静默（GDI 面，基线同形）。
+        let _ = self.define_data_property(obj, prop_name_si, value, PropAttributes::new(true, true, false));
+        Ok(())
+    }
+
+    /// eval 脚本顶层 var 声明的全局属性 define-if-absent：ext 字 = 键常量池下标
+    /// （u16），a 槽 = 值寄存器。全局对象由 session 解析（不依赖 this）。
+    ///
+    /// CreateGlobalVarBinding 对既有属性零动作：属性已存在直接返回。缺失新建
+    /// 可写/可枚举/可配置属性；全局对象不可扩展 → TypeError（两模式均抛）。
+    ///
+    /// # 边界与前提
+    /// - 键常量必须是字符串（emit 侧保证）；非字符串按错误返回。
+    pub(crate) fn dispatch_define_global_prop_c_if_absent(&mut self, a: usize, key_idx: u16) -> Result<(), String> {
+        let idx = key_idx as usize;
+        vm_trace!("DEFINE_GLOBAL_PROP_C_IF_ABSENT value={} idx={}", a, idx);
+        let key_val = self.immutables().get(idx).copied().unwrap_or(JsValue::undefined());
+        if !key_val.is_string() {
+            return Err(format!("DEFINE_GLOBAL_PROP_C_IF_ABSENT constant index {idx} is not a string key"));
+        }
+        let si = self.property_key_si(key_val)?;
+        let value = self.regs[a];
+        let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;
+        // SAFETY: 全局对象钉在 session 永久区，指针在 VM 生命周期内有效。
+        let obj = unsafe { &mut *global_ptr };
+        // 既有属性：CreateGlobalVarBinding 零动作。
+        if self.kernel_core.shape_forge().lookup_position(obj.shape_id(), si).is_some() {
+            return Ok(());
+        }
+        // 缺失：新建；唯一失败面是全局对象不可扩展（两模式均抛 TypeError）。
+        match self.define_data_property(obj, si, value, PropAttributes::new(true, true, true)) {
+            Ok(()) => Ok(()),
+            Err(msg) => self.raise_error_kind("TypeError", &msg),
+        }
+    }
+
     /// break 完成：`crossed`（rd 槽）为 emit 词法算出的逃出 finally 域数。
     /// 逐个穿越 finally 后跳转到目标；crossed 为 0 时直接跳转。
     /// ext 字携带逃出的迭代器层数：无 finally 穿越时立即关闭后跳转，有 finally

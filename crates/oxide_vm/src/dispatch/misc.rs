@@ -238,6 +238,27 @@ impl Vm {
         Ok(())
     }
 
+    /// 创建 session 直分的空普通对象（[[Prototype]] = Object.prototype）：与
+    /// `create_function_object` 的 prototype 子对象同策略——若按 epoch 分配，写入
+    /// 全局等逃逸根时晋升屏障会深克隆进 session，持有者（构造器 prototype 属性）
+    /// 与克隆体指针分裂、严格相等恒 false。
+    ///
+    /// # 副作用
+    /// - 登记 session 对象表并计入堆账目；回收由 session GC mark/sweep 承担。
+    pub(crate) fn dispatch_new_session_object(&mut self, rd: usize) -> Result<(), String> {
+        vm_trace!("NEW_SESSION_OBJECT rd={}", rd);
+        let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
+        let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr));
+        obj.set_session_epoch(true);
+        let obj_ptr = self.gc_state.session_epoch.alloc(obj) as *mut JsObject;
+        self.gc_state.session_object_ptrs.push(obj_ptr);
+        // 直 session 分配计入堆账目（与 promote 同式：对象头 + 对象堆数据）。
+        self.gc_state.session_bytes_allocated += std::mem::size_of::<JsObject>()
+            + crate::session_gc::SessionGc::object_heap_data_bytes(unsafe { &*obj_ptr }) as usize;
+        self.regs[rd] = JsValue::object(obj_ptr as *mut u8);
+        Ok(())
+    }
+
     /// 创建 arguments 对象：索引属性取当前帧（或 inline 同步调用）的完整实参，
     /// 附 length / callee 属性。第一版为 unmapped（非严格）语义，索引与形参不同步。
     ///

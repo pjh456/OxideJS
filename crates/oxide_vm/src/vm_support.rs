@@ -1068,9 +1068,10 @@ mod tests {
     #[test]
     fn generator_captured_upvalue_survives_sweep() {
         let mut vm = vm_with_low_threshold();
+        // x 函数作用域局部：被生成器 g 经 cell 捕获（顶层 var 直连全局属性不走 cell）。
         let _ = run_source(
             &mut vm,
-            "var x = 0; function* g(){ x++; yield x; x++; yield x; } globalThis.it = g(); globalThis.it.next(); 0",
+            "function outer() { var x = 0; function* g(){ x++; yield x; x++; yield x; } globalThis.it = g(); globalThis.it.next(); return 0; } outer(); 0",
         );
 
         vm.maybe_collect_session_gc();
@@ -1085,8 +1086,12 @@ mod tests {
     #[test]
     fn generator_promoted_clone_owns_independent_state_box() {
         let mut vm = Vm::new();
-        // `var it = g(); it.next(); it`：it 为 epoch 生成器对象（未逃逸不 promote）。
-        let it = run_source(&mut vm, "function* g(){ yield 1; yield 2; } var it = g(); it.next(); it");
+        // `(function(){ var it = g(); it.next(); return it; })()`：it 为函数局部（非顶层
+        // var，不经全局属性逃逸），保持 epoch 生成器对象（未 promote）。
+        let it = run_source(
+            &mut vm,
+            "function* g(){ yield 1; yield 2; } (function(){ var it = g(); it.next(); return it; })()",
+        );
         assert!(it.is_object());
         let epoch_ptr = it.as_js_object_ptr();
         let epoch_box = unsafe { (*epoch_ptr).native_data() };

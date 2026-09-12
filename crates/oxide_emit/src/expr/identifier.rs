@@ -45,9 +45,10 @@ impl Emitter {
             Err(err) => return Err(err),
         };
         let r = ctx.alloc_reg();
-        if ctx.implicit_global_reads.contains(&var_reg) {
-            // 未声明标识符读：运行期查 global object 属性存在性，缺失抛
-            // ReferenceError（sloppy 写先登记全局槽的读不在此集合，仍走 LOAD_VAR）。
+        // 顶层已声明 var 裸读与未声明标识符读同形：读全局对象属性（A 侧单一真值），
+        // 缺失抛 ReferenceError（unresolvable）。tier 名属性由 GDI 序言创建（仅删除后
+        // 缺失）；未声明名属性缺失即 unresolvable。已声明 var 不再落镜像 cell/槽。
+        if self.is_global_tier_name(ctx, name) || ctx.implicit_global_reads.contains(&var_reg) {
             let key_idx = ctx.add_constant(Constant::String(name.to_string()));
             ctx.inst(Inst::new(OpCode::LOAD_GLOBAL, Operand::Reg(r), Operand::Const(key_idx), Operand::None));
         } else {
@@ -109,6 +110,15 @@ impl Emitter {
                     Operand::Imm(cell_idx as u16),
                 ));
             }
+        } else if self.is_global_tier_name(ctx, name) {
+            // 顶层已声明 var：with 对象无该属性时回退读全局对象属性（A 侧单一真值）。
+            let key_idx = ctx.add_constant(Constant::String(name.to_string()));
+            ctx.inst(Inst::new(
+                OpCode::LOAD_GLOBAL,
+                Operand::Reg(result_reg),
+                Operand::Const(key_idx),
+                Operand::None,
+            ));
         } else if let Some(reg) = ctx.scopes.symbols.lookup_any(name) {
             ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg), Operand::Reg(reg), Operand::None));
         } else {
@@ -181,10 +191,16 @@ impl Emitter {
             }
             return;
         }
+        let is_tier = self.is_global_tier_name(ctx, name);
         let is_implicit = ctx.is_implicit_global_reg(var_reg);
         if is_implicit && ctx.is_strict {
             // 严格模式未声明写：发射 ReferenceError 抛错，跳过寄存器写（值无关）。
             let _ = self.emit_strict_undeclared_write(name, ctx);
+            return;
+        }
+        if is_tier {
+            // 顶层已声明 var 裸写：落全局对象属性（A 侧单一真值），不写镜像槽。
+            self.emit_tier_global_write(name, val_reg, ctx);
             return;
         }
         ctx.inst(Inst::new(

@@ -236,6 +236,25 @@ impl Inst {
         Self::with_ext(OpCode::DEFINE_GLOBAL_PROP_C, Operand::None, value, Operand::None, &[key_idx as u32])
     }
 
+    /// 顶层 var 声明的全局属性 define-if-absent：target 为全局对象，value/key 为寄存器。
+    /// 既有属性零动作；缺失新建可写/可枚举/不可配置（脚本 GDI 序言，CreateGlobalVarBinding
+    /// 对既有数据描述符零修改）。
+    pub fn define_global_prop_if_absent(target: Operand, value: Operand, key: Operand) -> Self {
+        Self::new(OpCode::DEFINE_GLOBAL_PROP_IF_ABSENT, target, value, key)
+    }
+
+    /// eval 脚本顶层 var 声明的全局属性 define-if-absent：ext = [key_idx]（键常量池
+    /// 下标），value 放 a 槽。既有属性零动作；缺失新建可写/可枚举/可配置。
+    pub fn define_global_prop_c_if_absent(value: Operand, key_idx: u16) -> Self {
+        Self::with_ext(
+            OpCode::DEFINE_GLOBAL_PROP_C_IF_ABSENT,
+            Operand::None,
+            value,
+            Operand::None,
+            &[key_idx as u32],
+        )
+    }
+
     /// 静态删除属性：obj 同时放 rd/a 槽，const_idx 为属性名常量下标。
     pub fn delete_prop_static(obj: Operand, const_idx: u32) -> Self {
         Self::with_ext(OpCode::DELETE_PROP_STATIC, obj, obj, Operand::None, &[const_idx])

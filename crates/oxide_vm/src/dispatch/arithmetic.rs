@@ -27,6 +27,26 @@ fn int_sub(a: i32, b: i32) -> JsValue {
     }
 }
 
+/// int 自增：结果落在 i32 范围则保 int，否则升 double（与 int_add 同族语义，
+/// 保持与 ADD 路径一致的 int 保持行为）。
+#[inline(always)]
+fn int_inc(a: i32) -> JsValue {
+    match a.checked_add(1) {
+        Some(v) => JsValue::int(v),
+        None => JsValue::float(a as f64 + 1.0),
+    }
+}
+
+/// int 自减：结果落在 i32 范围则保 int，否则升 double（与 int_sub 同族语义，
+/// 保持与 SUB 路径一致的 int 保持行为）。
+#[inline(always)]
+fn int_dec(a: i32) -> JsValue {
+    match a.checked_sub(1) {
+        Some(v) => JsValue::int(v),
+        None => JsValue::float(a as f64 - 1.0),
+    }
+}
+
 /// int+int 乘法：结果落在 i32 范围则保 int，否则升 double。
 #[inline(always)]
 fn int_mul(a: i32, b: i32) -> JsValue {
@@ -538,6 +558,12 @@ impl Vm {
             self.regs[a] = result;
             return Ok(());
         }
+        if self.regs[rd].is_int() {
+            let result = int_inc(self.regs[rd].as_int());
+            self.regs[rd] = result;
+            self.regs[a] = result;
+            return Ok(());
+        }
         let n = self.coerce_number_bounded(self.regs[rd])?;
         let result = JsValue::float(n + 1.0);
         self.regs[rd] = result;
@@ -552,6 +578,12 @@ impl Vm {
             let v = self.bigint_value(self.regs[rd]).clone();
             self.regs[a] = self.regs[rd];
             self.regs[rd] = self.new_bigint(v + 1);
+            return Ok(());
+        }
+        if self.regs[rd].is_int() {
+            let old = self.regs[rd];
+            self.regs[a] = old;
+            self.regs[rd] = int_inc(old.as_int());
             return Ok(());
         }
         let n = self.coerce_number_bounded(self.regs[rd])?;
@@ -570,6 +602,12 @@ impl Vm {
             self.regs[a] = result;
             return Ok(());
         }
+        if self.regs[rd].is_int() {
+            let result = int_dec(self.regs[rd].as_int());
+            self.regs[rd] = result;
+            self.regs[a] = result;
+            return Ok(());
+        }
         let n = self.coerce_number_bounded(self.regs[rd])?;
         let result = JsValue::float(n - 1.0);
         self.regs[rd] = result;
@@ -584,6 +622,12 @@ impl Vm {
             let v = self.bigint_value(self.regs[rd]).clone();
             self.regs[a] = self.regs[rd];
             self.regs[rd] = self.new_bigint(v - 1);
+            return Ok(());
+        }
+        if self.regs[rd].is_int() {
+            let old = self.regs[rd];
+            self.regs[a] = old;
+            self.regs[rd] = int_dec(old.as_int());
             return Ok(());
         }
         let n = self.coerce_number_bounded(self.regs[rd])?;

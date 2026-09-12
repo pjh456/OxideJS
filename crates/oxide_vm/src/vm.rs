@@ -2040,6 +2040,16 @@ impl Vm {
                     self.dispatch_define_global_prop_c(a, key_idx)?;
                 }
 
+                OpCode::DEFINE_GLOBAL_PROP_IF_ABSENT => {
+                    self.dispatch_define_global_prop_if_absent(rd, a, b)?;
+                }
+
+                OpCode::DEFINE_GLOBAL_PROP_C_IF_ABSENT => {
+                    let key_idx = self.bytecode[self.pc] as u16;
+                    self.pc += 1;
+                    self.dispatch_define_global_prop_c_if_absent(a, key_idx)?;
+                }
+
                 OpCode::DEFINE_PROP_ATTRS => {
                     let attrs = self.bytecode[self.pc] as u8;
                     self.pc += 1;
@@ -2076,6 +2086,10 @@ impl Vm {
 
                 OpCode::NEW_OBJECT => {
                     self.dispatch_new_object(rd, instr)?;
+                }
+
+                OpCode::NEW_SESSION_OBJECT => {
+                    self.dispatch_new_session_object(rd)?;
                 }
 
                 OpCode::CREATE_ARGUMENTS => {

@@ -1826,8 +1826,9 @@ mod tests {
     #[test]
     fn closure_cell_survives_object_sweep() {
         let mut vm = vm_with_threshold(1);
+        // counter 函数作用域局部：被 inc 经 cell 捕获（顶层 var 直连全局属性不走 cell）。
         vm.run(&Arc::new(compile(
-            "var counter = 0; function inc() { return ++counter; } globalThis.inc = inc; 0",
+            "function outer() { var counter = 0; function inc() { return ++counter; } globalThis.inc = inc; return 0; } outer(); 0",
         )))
         .expect("run1");
         assert!(!vm.gc_state.session_cell_ptrs.borrow().is_empty(), "run1 应分配 upvalue cell");
@@ -1880,15 +1881,20 @@ mod tests {
     #[test]
     fn cells_freed_by_full_reset_and_reallocatable() {
         let mut vm = Vm::new();
-        vm.run(&Arc::new(compile("var x = 1; function f() { return x; } globalThis.f = f; f()")))
-            .expect("run1");
+        // x/y 函数作用域局部：被 f/g 经 cell 捕获（顶层 var 直连全局属性不走 cell）。
+        vm.run(&Arc::new(compile(
+            "function outer() { var x = 1; function f() { return x; } globalThis.f = f; return f(); } outer()",
+        )))
+        .expect("run1");
         assert!(!vm.gc_state.session_cell_ptrs.borrow().is_empty());
 
         vm.full_reset();
         assert!(vm.gc_state.session_cell_ptrs.borrow().is_empty(), "full_reset 应释放全部 cell");
 
         let result = vm
-            .run(&Arc::new(compile("var y = 2; function g() { return y; } g()")))
+            .run(&Arc::new(compile(
+                "function outer() { var y = 2; function g() { return y; } return g(); } outer()",
+            )))
             .expect("run2");
         assert_eq!(format!("{result}"), "2", "重置后新 cell 应正常分配与读取");
     }

@@ -82,38 +82,6 @@ impl Emitter {
                     ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(target_reg), Operand::Reg(tmp), Operand::None));
                 }
                 ctx.init_var(bi.name.as_str());
-                // 脚本顶层 var：全局对象属性同步绑定当前值（首次声明即 undefined，
-                // 先前已写入则保留写入值，声明不是覆盖性赋值）。被捕获绑定的值
-                // 存在 cell 而非槽，从 cell 同步。builtin 名不同步：CreateGlobalVarBinding
-                // 不更新既有数据描述符，GDI 序言已以镜像值同步（幂等），未初始化
-                // 的槽/cell 是 undefined，再同步会把现存值（NaN 等）抹掉。
-                if ctx.is_global_scope
-                    && matches!(decl.kind, VariableDeclarationKind::Var)
-                    && !CompileCtx::is_known_builtin(bi.name.as_str())
-                {
-                    let src = if let Some(&cell_idx) = ctx.captured_bindings.get(bi.name.as_str()) {
-                        let r = ctx.alloc_reg();
-                        if let Some((binding, _)) = ctx.scopes.symbols.lookup_any_binding(bi.name.as_str()) {
-                            ctx.inst(Inst::new(
-                                OpCode::CELL_GET,
-                                Operand::Reg(r),
-                                Operand::Reg(binding.reg),
-                                Operand::Imm(cell_idx as u16),
-                            ));
-                        } else {
-                            ctx.inst(Inst::new(
-                                OpCode::CELL_GET,
-                                Operand::Reg(r),
-                                Operand::None,
-                                Operand::Imm(cell_idx as u16),
-                            ));
-                        }
-                        r
-                    } else {
-                        target_reg
-                    };
-                    self.emit_global_prop_write(bi.name.as_str(), src, ctx);
-                }
                 r = Some(var_reg);
             }
         }
