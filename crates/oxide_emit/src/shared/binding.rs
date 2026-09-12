@@ -108,7 +108,13 @@ impl Emitter {
         ctx.init_var(name);
         // 脚本顶层 var：同步写全局对象，使 globalThis.x 反射声明值。
         if ctx.is_global_scope && matches!(kind, VariableDeclarationKind::Var) {
-            self.emit_global_prop_write(name, src_reg, ctx);
+            if CompileCtx::is_known_builtin(name) {
+                // builtin 名保持 GDI 零动作写点（序言镜像值语义），不扩 strict 面。
+                self.emit_global_prop_write(name, src_reg, ctx);
+            } else {
+                // 用户名既有属性面：声明带初始化是 PutValue，0x98 带 strict 分派。
+                self.emit_global_put_write(name, src_reg, ctx);
+            }
         }
         // REPL 持久模式：let/const 也写全局对象属性，使跨轮次读取可见。
         if ctx.repl_persist && ctx.is_global_scope && !matches!(kind, VariableDeclarationKind::Var) {

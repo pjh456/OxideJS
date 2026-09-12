@@ -1586,6 +1586,20 @@ impl Emitter {
         }
     }
 
+    /// 顶层 var 声明带初始化的 A 侧同步：PutValue 语义——既有不可写数据属性
+    /// strict 抛 TypeError / sloppy 静默 no-op；可写照原描述符仅更值。脚本与
+    /// eval 均经 session 解析全局对象，不依赖顶层 this。
+    ///
+    /// # 边界与前提
+    /// - 仅顶层模块上下文调用；builtin 名不走本写点（保持 GDI 零动作写点）。
+    ///
+    /// # 副作用
+    /// - 更新全局对象数据属性，失败面抛 TypeError（strict 不可写）。
+    pub(crate) fn emit_global_put_write(&self, name: &str, val_reg: u32, ctx: &mut CompileCtx) {
+        let idx = ctx.add_constant(Constant::String(name.to_string()));
+        ctx.inst(Inst::define_global_prop_c(Operand::Reg(val_reg), idx));
+    }
+
     /// 名字是否为顶层已声明 var（A 侧单一真值）：在顶层 var 名集内，且当前解析
     /// 绑定落在全局作用域（scope 0）——嵌套函数内的局部同名遮蔽命中更高作用域，
     /// 判定为局部而非顶层，走既有 cell/寄存器路径。

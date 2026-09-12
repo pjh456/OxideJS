@@ -371,9 +371,12 @@ impl Vm {
     ///
     /// CreateGlobalVarBinding 对既有属性零动作：属性已存在（数据或 accessor）直接
     /// 返回——可写/不可写/配置位与值均不更新。缺失新建可写/可枚举/不可配置数据
-    /// 属性；全局对象不可扩展时静默 no-op（GDI 面，基线同形）。
+    /// 属性；全局对象不可扩展 → TypeError（两模式均抛，GDI CanDeclareGlobalVar
+    /// 面，同形 eval 变体）。
     ///
     /// # 边界与前提
+    /// - rd 槽固定为顶层 `this`：本形以所有脚本（含严格模式）顶层 this 即全局
+    ///   对象为成立前提。
     /// - rd 非对象（非对象 this）时按 no-op 处理，不抛错。
     pub(crate) fn dispatch_define_global_prop_if_absent(
         &mut self, rd: usize, a: usize, b: usize,
@@ -395,9 +398,12 @@ impl Vm {
         {
             return Ok(());
         }
-        // 缺失：新建可写/可枚举/不可配置；不可扩展静默（GDI 面，基线同形）。
-        let _ = self.define_data_property(obj, prop_name_si, value, PropAttributes::new(true, true, false));
-        Ok(())
+        // 缺失：新建可写/可枚举/不可配置；唯一失败面是全局对象不可扩展（两模式
+        // 均抛 TypeError，GDI CanDeclareGlobalVar 面，同形 eval 变体）。
+        match self.define_data_property(obj, prop_name_si, value, PropAttributes::new(true, true, false)) {
+            Ok(()) => Ok(()),
+            Err(msg) => self.raise_error_kind("TypeError", &msg),
+        }
     }
 
     /// eval 脚本顶层 var 声明的全局属性 define-if-absent：ext 字 = 键常量池下标

@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use oxide_compiler::compiler::Compiler;
 use oxide_parser::Allocator;
+use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
 
 fn eval_truthy(source: &str) {
@@ -37,6 +38,30 @@ fn eval_two_phases(phase1: &str, phase2: &str) -> bool {
     vm.reset();
     let result = vm.run(&Arc::new(compile(phase2))).expect("run2");
     result.is_bool() && result.as_bool()
+}
+
+/// 两阶段 run-Err 变体：phase2 返回运行结果，供未捕获异常（TypeError 等）断言。
+fn run_two_phases(phase1: &str, phase2: &str) -> Result<JsValue, String> {
+    let mut vm = Vm::new();
+    vm.run(&Arc::new(compile(phase1))).expect("run1");
+    vm.reset();
+    vm.run(&Arc::new(compile(phase2)))
+}
+
+/// 两阶段真值断言：phase2 须以 true 完成。
+fn assert_two_phases_truthy(phase1: &str, phase2: &str) {
+    match run_two_phases(phase1, phase2) {
+        Ok(v) => assert!(v.is_bool() && v.as_bool(), "expected true, got: {v:?}\nphase2: {phase2}"),
+        Err(e) => panic!("phase2 run failed: {e}\nphase2: {phase2}"),
+    }
+}
+
+/// 取 phase2 未捕获异常文本（phase2 正常完成时 panic）。
+fn phase2_err_text(phase1: &str, phase2: &str) -> String {
+    match run_two_phases(phase1, phase2) {
+        Err(e) => e,
+        Ok(v) => panic!("expected uncaught error, got: {v:?}\nphase2: {phase2}"),
+    }
 }
 
 #[test]
@@ -342,4 +367,140 @@ fn tier_declaration_respects_existing_property() {
         "Object.defineProperty(globalThis, 'rw', {value: 7, writable: false, configurable: true})",
         "var rw = 99; rw === 7 && globalThis.rw === 7",
     ));
+}
+
+// ── 声明带初始化的 A 侧写是 PutValue：strict 撞既有不可写用户属性抛 TypeError ──
+
+#[test]
+fn strict_var_init_on_nonwritable_user_property_throws() {
+    // strict 声明初始化撞既有不可写（可配置）用户属性抛 TypeError；
+    // 序言对既有属性零动作（抛点仅在声明处 PutValue）。
+    let err = phase2_err_text(
+        "Object.defineProperty(globalThis, 'u', {value: 1, writable: false, configurable: true})",
+        "'use strict'; var u = 5;",
+    );
+    assert!(err.contains("TypeError"), "应抛 TypeError，实际: {err}");
+    assert!(err.contains("read-only"), "消息应指明只读属性，实际: {err}");
+}
+
+#[test]
+fn strict_var_init_on_writable_user_property_updates_value() {
+    // 既有可写用户属性（strict）：PutValue 更新值不抛，裸读与反射一致。
+    assert_two_phases_truthy(
+        "Object.defineProperty(globalThis, 'u', {value: 1, writable: true, configurable: true})",
+        "'use strict'; var u = 5; u === 5 && globalThis.u === 5",
+    );
+}
+
+#[test]
+fn sloppy_var_init_on_writable_user_property_updates_value() {
+    // 同上（sloppy）：可写属性值更新。
+    assert_two_phases_truthy(
+        "Object.defineProperty(globalThis, 'u', {value: 1, writable: true, configurable: true})",
+        "var u = 5; u === 5 && globalThis.u === 5",
+    );
+}
+
+#[test]
+fn strict_var_init_on_nonconfigurable_nonwritable_user_property_throws() {
+    // c:false + w:false：序言零动作，声明 PutValue strict 抛 TypeError。
+    let err = phase2_err_text(
+        "Object.defineProperty(globalThis, 'u', {value: 1, writable: false, configurable: false})",
+        "'use strict'; var u = 5;",
+    );
+    assert!(err.contains("TypeError") && err.contains("read-only"), "实际: {err}");
+}
+
+#[test]
+fn sloppy_var_init_on_nonconfigurable_nonwritable_user_property_silent() {
+    // c:false + w:false（sloppy）：静默 no-op，值不覆盖。
+    assert_two_phases_truthy(
+        "Object.defineProperty(globalThis, 'u', {value: 1, writable: false, configurable: false})",
+        "var u = 5; u === 1 && globalThis.u === 1",
+    );
+}
+
+#[test]
+fn strict_var_no_init_on_nonwritable_user_property_no_throw() {
+    // 无初始化声明无 PutValue（防过抛守卫）：strict 不抛，既有值不动。
+    assert_two_phases_truthy(
+        "Object.defineProperty(globalThis, 'u', {value: 1, writable: false, configurable: true})",
+        "'use strict'; var u; u === 1 && globalThis.u === 1",
+    );
+}
+
+#[test]
+fn strict_for_of_var_head_on_nonwritable_user_property_throws() {
+    // for-of var 声明头与声明带 init 同走 PutValue 写点：strict 迭代值撞
+    // 不可写抛 TypeError；sloppy 静默 no-op。
+    let err = phase2_err_text(
+        "Object.defineProperty(globalThis, 'p', {value: 1, writable: false, configurable: true})",
+        "'use strict'; for (var p of [3]) {}",
+    );
+    assert!(err.contains("TypeError") && err.contains("read-only"), "实际: {err}");
+    assert_two_phases_truthy(
+        "Object.defineProperty(globalThis, 'p', {value: 1, writable: false, configurable: true})",
+        "for (var p of [3]) {} p === 1 && globalThis.p === 1",
+    );
+}
+
+#[test]
+fn strict_eval_var_init_on_nonwritable_user_property_throws() {
+    // eval 对照：eval 脚本声明处写点本就带 strict 分派，改前后同形。
+    let err = phase2_err_text(
+        "Object.defineProperty(globalThis, 'u', {value: 1, writable: false, configurable: true})",
+        "eval('\"use strict\"; var u = 5')",
+    );
+    assert!(err.contains("TypeError") && err.contains("read-only"), "实际: {err}");
+    assert_two_phases_truthy(
+        "Object.defineProperty(globalThis, 'u', {value: 1, writable: false, configurable: true})",
+        "eval('var u = 5'); globalThis.u === 1",
+    );
+}
+
+// ── GDI 序言缺失分支：全局不可扩展 → 两模式 TypeError（CanDeclareGlobalVar 面） ──
+
+#[test]
+fn nonextensible_global_strict_var_prologue_throws_before_body() {
+    // 序言期抛：体副作用不执行（touched 未写入）。
+    let mut vm = Vm::new();
+    vm.run(&Arc::new(compile("Object.preventExtensions(globalThis)")))
+        .expect("run1");
+    vm.reset();
+    let result = vm.run(&Arc::new(compile("'use strict'; var missing; touched = 1;")));
+    let err = match result {
+        Err(e) => e,
+        Ok(v) => panic!("应抛 TypeError，实际: {v:?}"),
+    };
+    assert!(err.contains("TypeError"), "应抛 TypeError，实际: {err}");
+    // 体未执行：隐式全局写点未触达，touched 未创建。
+    vm.reset();
+    let after = vm.run(&Arc::new(compile("typeof touched"))).expect("run3");
+    assert_eq!(vm.lookup_str(after).unwrap_or_default(), "undefined");
+}
+
+#[test]
+fn nonextensible_global_sloppy_var_prologue_throws() {
+    // var 臂无 strict 门：sloppy 同形抛 TypeError。
+    let err = phase2_err_text("Object.preventExtensions(globalThis)", "var missing;");
+    assert!(err.contains("TypeError"), "应抛 TypeError，实际: {err}");
+}
+
+#[test]
+fn nonextensible_global_eval_var_throws_both_modes() {
+    // eval 脚本序言不可扩展抛：sloppy/strict 两模式同抛（回归钉）。
+    let err_sloppy = phase2_err_text("Object.preventExtensions(globalThis)", "eval('var missing')");
+    assert!(err_sloppy.contains("TypeError"), "sloppy eval 应抛 TypeError，实际: {err_sloppy}");
+    let err_strict = phase2_err_text("Object.preventExtensions(globalThis)", "eval('\"use strict\"; var missing')");
+    assert!(err_strict.contains("TypeError"), "strict eval 应抛 TypeError，实际: {err_strict}");
+}
+
+#[test]
+fn nonextensible_global_var_existing_property_no_throw() {
+    // 既有属性不进缺失分支：零动作不抛（防过抛守卫）。
+    assert_two_phases_truthy(
+        "Object.defineProperty(globalThis, 'ex', {value: 1, writable: false, configurable: true}); \
+         Object.preventExtensions(globalThis); true",
+        "var ex; ex === 1 && globalThis.ex === 1",
+    );
 }

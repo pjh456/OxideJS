@@ -139,6 +139,15 @@ fn var_builtin_object_with_init() {
 }
 
 #[test]
+fn strict_var_builtin_object_with_init() {
+    // #10 同形（strict）：builtin 名保 GDI 写点，行为与模式无关。
+    run_truthy(
+        "'use strict'; var Math = 6; \
+         Object.getOwnPropertyDescriptor(globalThis, 'Math').value === 6",
+    );
+}
+
+#[test]
 fn eval_var_readonly_builtin() {
     // #11：eval var 路径（0x98 判 writable 而非 configurable）——sloppy no-op、
     // strict（eval 脚本内）TypeError，描述符不变。
