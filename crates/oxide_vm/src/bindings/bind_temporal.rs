@@ -957,6 +957,150 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         PropAttributes::new(false, false, true),
     );
 
+    // Temporal.PlainMonthDay：构造器、3 个分量 getter 与 toString/toJSON。
+    let plain_month_day_ctor_ptr = world.plain_month_day_constructor.as_ptr() as *mut JsObject;
+    let plain_month_day_ctor = unsafe { &mut *plain_month_day_ctor_ptr };
+    configure_native_constructor(
+        plain_month_day_ctor,
+        oxide_builtins::temporal::plain_month_day_constructor::<crate::vm::Vm> as *const (),
+        2,
+    );
+    let length_si = core.perm_interner().intern("length").0;
+    let length_shape = core.shape_forge().make_shape(plain_month_day_ctor.shape_id(), length_si);
+    plain_month_day_ctor.set_shape_id(length_shape);
+    plain_month_day_ctor.ensure_hash_props().push(JsValue::int(2));
+    let length_pos = plain_month_day_ctor
+        .hash_props_vec()
+        .map_or(0, |props| props.len() as u32)
+        .saturating_sub(1);
+    plain_month_day_ctor.set_data_meta(length_pos, PropAttributes::new(false, false, true));
+
+    let plain_month_day_proto_ptr = world.plain_month_day_proto.as_ptr() as *mut JsObject;
+    let plain_month_day_proto = unsafe { &mut *plain_month_day_proto_ptr };
+    for (name, getter) in [
+        ("day", oxide_builtins::temporal::plain_month_day_day::<crate::vm::Vm> as *const ()),
+        (
+            "monthCode",
+            oxide_builtins::temporal::plain_month_day_month_code::<crate::vm::Vm> as *const (),
+        ),
+        (
+            "calendarId",
+            oxide_builtins::temporal::plain_month_day_calendar_id::<crate::vm::Vm> as *const (),
+        ),
+    ] {
+        bind_accessor_getter(core, session, plain_month_day_proto, name, getter);
+    }
+    apply_binding_table(
+        world,
+        plain_month_day_proto,
+        core,
+        &[
+            (
+                "toString",
+                oxide_builtins::temporal::plain_month_day_to_string::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "toJSON",
+                oxide_builtins::temporal::plain_month_day_to_json::<crate::vm::Vm> as *const (),
+                0,
+            ),
+        ],
+    );
+    bind_well_known_data_property(
+        core,
+        plain_month_day_proto,
+        9,
+        JsValue::perm_string(
+            core.perm_interner()
+                .string_ptr(core.perm_interner().intern("Temporal.PlainMonthDay").0),
+        ),
+        PropAttributes::new(false, false, true),
+    );
+
+    // Temporal.PlainYearMonth：构造器、10 个 getter 与 toString/toJSON。
+    let plain_year_month_ctor_ptr = world.plain_year_month_constructor.as_ptr() as *mut JsObject;
+    let plain_year_month_ctor = unsafe { &mut *plain_year_month_ctor_ptr };
+    configure_native_constructor(
+        plain_year_month_ctor,
+        oxide_builtins::temporal::plain_year_month_constructor::<crate::vm::Vm> as *const (),
+        2,
+    );
+    let length_si = core.perm_interner().intern("length").0;
+    let length_shape = core.shape_forge().make_shape(plain_year_month_ctor.shape_id(), length_si);
+    plain_year_month_ctor.set_shape_id(length_shape);
+    plain_year_month_ctor.ensure_hash_props().push(JsValue::int(2));
+    let length_pos = plain_year_month_ctor
+        .hash_props_vec()
+        .map_or(0, |props| props.len() as u32)
+        .saturating_sub(1);
+    plain_year_month_ctor.set_data_meta(length_pos, PropAttributes::new(false, false, true));
+
+    let plain_year_month_proto_ptr = world.plain_year_month_proto.as_ptr() as *mut JsObject;
+    let plain_year_month_proto = unsafe { &mut *plain_year_month_proto_ptr };
+    for (name, getter) in [
+        ("year", oxide_builtins::temporal::plain_year_month_year::<crate::vm::Vm> as *const ()),
+        ("month", oxide_builtins::temporal::plain_year_month_month::<crate::vm::Vm> as *const ()),
+        (
+            "monthCode",
+            oxide_builtins::temporal::plain_year_month_month_code::<crate::vm::Vm> as *const (),
+        ),
+        (
+            "calendarId",
+            oxide_builtins::temporal::plain_year_month_calendar_id::<crate::vm::Vm> as *const (),
+        ),
+        (
+            "daysInMonth",
+            oxide_builtins::temporal::plain_year_month_days_in_month::<crate::vm::Vm> as *const (),
+        ),
+        (
+            "daysInYear",
+            oxide_builtins::temporal::plain_year_month_days_in_year::<crate::vm::Vm> as *const (),
+        ),
+        (
+            "monthsInYear",
+            oxide_builtins::temporal::plain_year_month_months_in_year::<crate::vm::Vm> as *const (),
+        ),
+        (
+            "inLeapYear",
+            oxide_builtins::temporal::plain_year_month_in_leap_year::<crate::vm::Vm> as *const (),
+        ),
+        ("era", oxide_builtins::temporal::plain_year_month_era::<crate::vm::Vm> as *const ()),
+        (
+            "eraYear",
+            oxide_builtins::temporal::plain_year_month_era_year::<crate::vm::Vm> as *const (),
+        ),
+    ] {
+        bind_accessor_getter(core, session, plain_year_month_proto, name, getter);
+    }
+    apply_binding_table(
+        world,
+        plain_year_month_proto,
+        core,
+        &[
+            (
+                "toString",
+                oxide_builtins::temporal::plain_year_month_to_string::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "toJSON",
+                oxide_builtins::temporal::plain_year_month_to_json::<crate::vm::Vm> as *const (),
+                0,
+            ),
+        ],
+    );
+    bind_well_known_data_property(
+        core,
+        plain_year_month_proto,
+        9,
+        JsValue::perm_string(
+            core.perm_interner()
+                .string_ptr(core.perm_interner().intern("Temporal.PlainYearMonth").0),
+        ),
+        PropAttributes::new(false, false, true),
+    );
+
     // 把子对象挂到 Temporal 命名空间对象上，再把 Temporal 挂到 global。
     bind_global_value(core, temporal, "Now", JsValue::from_js_object(now_ptr));
     bind_global_value(core, temporal, "Instant", JsValue::from_js_object(instant_ctor_ptr));
@@ -965,5 +1109,7 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
     bind_global_value(core, temporal, "PlainDateTime", JsValue::from_js_object(plain_date_time_ctor_ptr));
     bind_global_value(core, temporal, "Duration", JsValue::from_js_object(duration_ctor_ptr));
     bind_global_value(core, temporal, "ZonedDateTime", JsValue::from_js_object(zoned_date_time_ctor_ptr));
+    bind_global_value(core, temporal, "PlainMonthDay", JsValue::from_js_object(plain_month_day_ctor_ptr));
+    bind_global_value(core, temporal, "PlainYearMonth", JsValue::from_js_object(plain_year_month_ctor_ptr));
     bind_global_value(core, global, "Temporal", JsValue::from_js_object(temporal_ptr));
 }

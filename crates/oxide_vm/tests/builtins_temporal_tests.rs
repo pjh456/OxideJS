@@ -2604,3 +2604,196 @@ fn duration_total_relative_zdt() {
     .unwrap();
     assert_eq!(r.as_double(), 1.0);
 }
+
+// -- Temporal.PlainMonthDay / PlainYearMonth（E 批）--
+
+#[test]
+fn plain_month_day_ctor_basic_and_instanceof() {
+    let mut vm = Vm::new();
+    // 构造成功：instanceof / length / name / 槽值 / 参考年默认 1972 经 always 形回读。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const md = new Temporal.PlainMonthDay(5, 2);
+           return [
+             md instanceof Temporal.PlainMonthDay,
+             Temporal.PlainMonthDay.length,
+             Temporal.PlainMonthDay.name,
+             Temporal.PlainYearMonth.length,
+             md.monthCode,
+             md.day,
+             md.calendarId,
+             md.toString({calendarName: 'always'}),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|2|PlainMonthDay|2|M05|2|iso8601|1972-05-02[u-ca=iso8601]");
+}
+
+#[test]
+fn plain_month_day_ctor_rejects() {
+    let mut vm = Vm::new();
+    // BigInt/Symbol 分量 → TypeError；NaN/±Inf → RangeError；缺参 → RangeError；
+    // 非闰参考年 2/29 → RangeError，闰参考年 1972 合法；非 new 调用 → TypeError。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           return [
+             kind(() => new Temporal.PlainMonthDay(1n, 1)),
+             kind(() => new Temporal.PlainMonthDay(Symbol(), 1)),
+             kind(() => new Temporal.PlainMonthDay(NaN, 1)),
+             kind(() => new Temporal.PlainMonthDay(1, Infinity)),
+             kind(() => new Temporal.PlainMonthDay()),
+             kind(() => new Temporal.PlainMonthDay(2, 29, 'iso8601', 2023)),
+             new Temporal.PlainMonthDay(2, 29).day,
+             kind(() => Temporal.PlainMonthDay(1, 2)),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "TypeError|TypeError|RangeError|RangeError|RangeError|RangeError|29|TypeError"
+    );
+}
+
+#[test]
+fn plain_month_day_ctor_calendar_argument() {
+    let mut vm = Vm::new();
+    // 日历参数：{} → TypeError；函数对象按缺省 iso8601；大小写不敏感白名单；
+    // 未知字符串 → RangeError。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           return [
+             kind(() => new Temporal.PlainMonthDay(1, 1, {})),
+             new Temporal.PlainMonthDay(1, 1, () => 'iso8601').calendarId,
+             new Temporal.PlainMonthDay(1, 1, 'iSo8601').calendarId,
+             kind(() => new Temporal.PlainMonthDay(1, 1, 'local')),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "TypeError|iso8601|iso8601|RangeError");
+}
+
+#[test]
+fn plain_year_month_ctor_limits_and_ref_day() {
+    let mut vm = Vm::new();
+    // 年月边界：-271821-03 与 275760-10 越界抛 RangeError，相邻月合法；
+    // refISODay 缺省 1，须落在目标月长内；非 new 调用 → TypeError；
+    // NaN 分量（undefined/不可解析串）→ RangeError，null → 0。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           const ym = new Temporal.PlainYearMonth(-271821, 4, 'iso8601', 18);
+           return [
+             kind(() => new Temporal.PlainYearMonth(-271821, 3)),
+             kind(() => new Temporal.PlainYearMonth(275760, 10)),
+             new Temporal.PlainYearMonth(-271821, 4).monthCode,
+             new Temporal.PlainYearMonth(275760, 9).monthCode,
+             ym.toString({calendarName: 'always'}),
+             new Temporal.PlainYearMonth(2021, 2).toString({calendarName: 'always'}),
+             kind(() => new Temporal.PlainYearMonth(2021, 2, 'iso8601', 0)),
+             kind(() => new Temporal.PlainYearMonth(2021, 2, 'iso8601', 29)),
+             kind(() => new Temporal.PlainYearMonth(undefined, 11)),
+             kind(() => new Temporal.PlainYearMonth('invalid', 11)),
+             new Temporal.PlainYearMonth(null, 11).year,
+             kind(() => new Temporal.PlainMonthDay(undefined, 24)),
+             kind(() => Temporal.PlainYearMonth(1970, 1)),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "RangeError|RangeError|M04|M09|-271821-04-18[u-ca=iso8601]|2021-02-01[u-ca=iso8601]|RangeError|RangeError|RangeError|RangeError|0|RangeError|TypeError"
+    );
+}
+
+#[test]
+fn plain_year_month_getters() {
+    let mut vm = Vm::new();
+    // 槽值 getter + 日历直读 + ISO 日历无纪元（era/eraYear 恒 undefined）。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const ym = new Temporal.PlainYearMonth(-1, 8);
+           return [
+             ym.year, ym.month, ym.monthCode, ym.calendarId,
+             ym.daysInMonth, ym.daysInYear, ym.monthsInYear, ym.inLeapYear,
+             String(ym.era), String(ym.eraYear),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "-1|8|M08|iso8601|31|365|12|false|undefined|undefined");
+}
+
+#[test]
+fn plain_month_day_to_string_and_to_json() {
+    let mut vm = Vm::new();
+    // 默认/auto/never 同形；critical 带 ! 注解；toJSON = 默认形且忽略参数；
+    // 非法 calendarName → RangeError；options 非对象 → TypeError。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const md = new Temporal.PlainMonthDay(5, 2);
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           return [
+             md.toString(),
+             md.toString({calendarName: 'auto'}),
+             md.toString({calendarName: 'never'}),
+             md.toString({calendarName: 'critical'}),
+             md.toJSON(),
+             kind(() => md.toString({calendarName: 'ALWAYS'})),
+             kind(() => md.toString(1)),
+             md.toString({}),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "05-02|05-02|05-02|1972-05-02[!u-ca=iso8601]|05-02|RangeError|TypeError|05-02"
+    );
+}
+
+#[test]
+fn plain_year_month_to_string_year_format() {
+    let mut vm = Vm::new();
+    // 年份格式化：-1 → -000001（6 位带符号）；always 形补参考日。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const ym = new Temporal.PlainYearMonth(-1, 8);
+           return [ym.toString(), ym.toString({calendarName: 'always'}), ym.toJSON()].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "-000001-08|-000001-08-01[u-ca=iso8601]|-000001-08");
+}
+
+#[test]
+fn plain_month_day_and_year_month_branding() {
+    let mut vm = Vm::new();
+    // receiver 非实例 → TypeError（toString / getter 均校验品牌）。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           return [
+             kind(() => Temporal.PlainMonthDay.prototype.toString.call(1)),
+             kind(() => Temporal.PlainMonthDay.prototype.day.call({})),
+             kind(() => Temporal.PlainYearMonth.prototype.toString.call('x')),
+             kind(() => Temporal.PlainYearMonth.prototype.year.call(null)),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "TypeError|TypeError|TypeError|TypeError");
+}

@@ -285,6 +285,10 @@ pub struct BuiltinWorld {
     pub zoned_date_time_proto: P<JsObject>,
     pub plain_date_time_constructor: P<JsObject>,
     pub plain_date_time_proto: P<JsObject>,
+    pub plain_month_day_constructor: P<JsObject>,
+    pub plain_month_day_proto: P<JsObject>,
+    pub plain_year_month_constructor: P<JsObject>,
+    pub plain_year_month_proto: P<JsObject>,
     pub bigint_constructor: P<JsObject>,
     pub bigint_proto: P<JsObject>,
     /// `%IteratorPrototype%`：各集合迭代器原型的公共祖先，持有 `@@iterator`（返回自身）。
@@ -600,6 +604,8 @@ fn wire_builtin_world_links(world: &BuiltinWorld) {
     wire_ctor_proto(&world.duration_constructor, &world.duration_proto);
     wire_ctor_proto(&world.zoned_date_time_constructor, &world.zoned_date_time_proto);
     wire_ctor_proto(&world.plain_date_time_constructor, &world.plain_date_time_proto);
+    wire_ctor_proto(&world.plain_month_day_constructor, &world.plain_month_day_proto);
+    wire_ctor_proto(&world.plain_year_month_constructor, &world.plain_year_month_proto);
     wire_ctor_proto(&world.bigint_constructor, &world.bigint_proto);
 
     // 所有内置构造器的 [[Prototype]] 指向 %FunctionPrototype%（ECMA-262 §17：
@@ -627,12 +633,14 @@ fn wire_builtin_world_links(world: &BuiltinWorld) {
         &world.duration_constructor,
         &world.zoned_date_time_constructor,
         &world.plain_date_time_constructor,
+        &world.plain_month_day_constructor,
+        &world.plain_year_month_constructor,
     ] {
         set_proto_if_changed(ctor, fn_proto_val);
     }
 
     let obj_proto_val = JsValue::from_js_object(world.object_proto.as_ptr() as *mut JsObject);
-    let non_object_protos: [&P<JsObject>; 23] = [
+    let non_object_protos: [&P<JsObject>; 25] = [
         &world.array_proto,
         &world.function_proto,
         &world.string_proto,
@@ -653,6 +661,8 @@ fn wire_builtin_world_links(world: &BuiltinWorld) {
         &world.duration_proto,
         &world.zoned_date_time_proto,
         &world.plain_date_time_proto,
+        &world.plain_month_day_proto,
+        &world.plain_year_month_proto,
         &world.bigint_proto,
         &world.disposable_stack_proto,
         &world.async_disposable_stack_proto,
@@ -911,7 +921,7 @@ impl BuiltinWorld {
     /// session 收尾（`teardown_heap_data`）与选择性重建收尾（`retire_replaced`）
     /// 的 P 字段枚举唯一入口：`BuiltinWorld` 新增 P 字段须在此同步补一行，否则
     /// 收尾时该字段属性区永久泄漏、重建重指/释放漏掉该字段。
-    pub(crate) fn all_p_fields(&self) -> [&P<JsObject>; 100] {
+    pub(crate) fn all_p_fields(&self) -> [&P<JsObject>; 104] {
         [
             &self.object_proto,
             &self.array_proto,
@@ -1001,6 +1011,10 @@ impl BuiltinWorld {
             &self.zoned_date_time_proto,
             &self.plain_date_time_constructor,
             &self.plain_date_time_proto,
+            &self.plain_month_day_constructor,
+            &self.plain_month_day_proto,
+            &self.plain_year_month_constructor,
+            &self.plain_year_month_proto,
             &self.bigint_constructor,
             &self.bigint_proto,
             &self.iterator_proto,
@@ -1148,6 +1162,10 @@ impl BuiltinWorld {
             BuiltinId::ZonedDateTimeProto => &self.zoned_date_time_proto,
             BuiltinId::PlainDateTimeConstructor => &self.plain_date_time_constructor,
             BuiltinId::PlainDateTimeProto => &self.plain_date_time_proto,
+            BuiltinId::PlainMonthDayConstructor => &self.plain_month_day_constructor,
+            BuiltinId::PlainMonthDayProto => &self.plain_month_day_proto,
+            BuiltinId::PlainYearMonthConstructor => &self.plain_year_month_constructor,
+            BuiltinId::PlainYearMonthProto => &self.plain_year_month_proto,
             BuiltinId::BigIntConstructor => &self.bigint_constructor,
             BuiltinId::BigIntProto => &self.bigint_proto,
             BuiltinId::Console => &self.console_object,
@@ -1210,6 +1228,10 @@ impl BuiltinWorld {
             make_named_pair(string_forge, shape_forge, labels, "ZonedDateTime");
         let (plain_date_time_proto, plain_date_time_constructor) =
             make_named_pair(string_forge, shape_forge, labels, "PlainDateTime");
+        let (plain_month_day_proto, plain_month_day_constructor) =
+            make_named_pair(string_forge, shape_forge, labels, "PlainMonthDay");
+        let (plain_year_month_proto, plain_year_month_constructor) =
+            make_named_pair(string_forge, shape_forge, labels, "PlainYearMonth");
         let (bigint_proto, bigint_constructor) = make_named_pair(string_forge, shape_forge, labels, "BigInt");
         let stub_objects = Vec::new();
 
@@ -1314,6 +1336,10 @@ impl BuiltinWorld {
             zoned_date_time_proto,
             plain_date_time_constructor,
             plain_date_time_proto,
+            plain_month_day_constructor,
+            plain_month_day_proto,
+            plain_year_month_constructor,
+            plain_year_month_proto,
             bigint_constructor,
             bigint_proto,
             iterator_proto,
@@ -1548,6 +1574,10 @@ impl BuiltinWorld {
             zoned_date_time_constructor,
             plain_date_time_proto,
             plain_date_time_constructor,
+            plain_month_day_proto,
+            plain_month_day_constructor,
+            plain_year_month_proto,
+            plain_year_month_constructor,
         ) = if dirty.temporal {
             let (instant_proto, instant_constructor) = make_named_pair(string_forge, shape_forge, labels, "Instant");
             let (plain_date_proto, plain_date_constructor) =
@@ -1559,6 +1589,10 @@ impl BuiltinWorld {
                 make_named_pair(string_forge, shape_forge, labels, "ZonedDateTime");
             let (plain_date_time_proto, plain_date_time_constructor) =
                 make_named_pair(string_forge, shape_forge, labels, "PlainDateTime");
+            let (plain_month_day_proto, plain_month_day_constructor) =
+                make_named_pair(string_forge, shape_forge, labels, "PlainMonthDay");
+            let (plain_year_month_proto, plain_year_month_constructor) =
+                make_named_pair(string_forge, shape_forge, labels, "PlainYearMonth");
             (
                 P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
                 P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
@@ -1574,6 +1608,10 @@ impl BuiltinWorld {
                 zoned_date_time_constructor,
                 plain_date_time_proto,
                 plain_date_time_constructor,
+                plain_month_day_proto,
+                plain_month_day_constructor,
+                plain_year_month_proto,
+                plain_year_month_constructor,
             )
         } else {
             (
@@ -1591,6 +1629,10 @@ impl BuiltinWorld {
                 current.zoned_date_time_constructor.clone(),
                 current.plain_date_time_proto.clone(),
                 current.plain_date_time_constructor.clone(),
+                current.plain_month_day_proto.clone(),
+                current.plain_month_day_constructor.clone(),
+                current.plain_year_month_proto.clone(),
+                current.plain_year_month_constructor.clone(),
             )
         };
         let (bigint_proto, bigint_constructor) = if dirty.stubs {
@@ -1732,6 +1774,10 @@ impl BuiltinWorld {
             zoned_date_time_proto,
             plain_date_time_constructor,
             plain_date_time_proto,
+            plain_month_day_constructor,
+            plain_month_day_proto,
+            plain_year_month_constructor,
+            plain_year_month_proto,
             bigint_constructor,
             bigint_proto,
             iterator_proto,

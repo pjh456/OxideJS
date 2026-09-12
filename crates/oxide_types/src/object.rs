@@ -661,6 +661,10 @@ impl JsObject {
     pub const OBJ_TYPE_DISPOSABLE_STACK: u8 = 24;
     /// AsyncDisposableStack 对象（异步资源栈）：状态盒与同步栈同构，预留 type_tag。
     pub const OBJ_TYPE_ASYNC_DISPOSABLE_STACK: u8 = 25;
+    /// Temporal.PlainMonthDay 对象：月/日/参考年/日历 ID 存于 prop 0-3。
+    pub const OBJ_TYPE_PLAIN_MONTH_DAY: u8 = 26;
+    /// Temporal.PlainYearMonth 对象：年/月/参考日/日历 ID 存于 prop 0-3。
+    pub const OBJ_TYPE_PLAIN_YEAR_MONTH: u8 = 27;
     /// `is_session_epoch` 字段中的 session 标记位。
     pub const SESSION_EPOCH_BIT: u8 = 0x01;
     /// `is_session_epoch` 字段中的 GC 标记位。
@@ -763,6 +767,16 @@ impl JsObject {
     #[inline]
     pub fn is_plain_date_time_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_PLAIN_DATE_TIME
+    }
+    /// 是否 Temporal.PlainMonthDay 对象。
+    #[inline]
+    pub fn is_plain_month_day_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_PLAIN_MONTH_DAY
+    }
+    /// 是否 Temporal.PlainYearMonth 对象。
+    #[inline]
+    pub fn is_plain_year_month_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_PLAIN_YEAR_MONTH
     }
 
     #[inline]

@@ -7,10 +7,13 @@ use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
 // Temporal 命名空间的最小实现子集：Temporal.Now / Temporal.Instant /
-// Temporal.PlainDate / Temporal.PlainTime / Temporal.PlainDateTime / Temporal.ZonedDateTime。
+// Temporal.PlainDate / Temporal.PlainTime / Temporal.PlainDateTime /
+// Temporal.PlainMonthDay / Temporal.PlainYearMonth / Temporal.ZonedDateTime。
 // 内部数据按对象类型存入 prop 槽：
 // Instant 存纪元纳秒（BigInt，prop 0）、PlainDate 存年/月/日/日历 ID（prop 0-3）、
-// PlainTime 存午夜后纳秒（f64，prop 0）、PlainDateTime 存年/月/日/午夜后纳秒/日历 ID（prop 0-4），
+// PlainTime 存午夜后纳秒（f64，prop 0）、PlainDateTime 存年/月/日/午夜后纳秒/日历 ID（prop 0-4）、
+// PlainMonthDay 存月/日/参考年/日历 ID（prop 0-3）、
+// PlainYearMonth 存年/月/参考日/日历 ID（prop 0-3）、
 // ZonedDateTime 存纪元纳秒、时区 ID、日历 ID（prop 0-2）。
 // 日历 ID 未显式给定时统一取 "iso8601"。
 
@@ -2089,6 +2092,8 @@ fn reject_partial_object_with_calendar_or_time_zone<H: VmHost>(vm: &mut H, value
         || obj.is_plain_date_time_obj()
         || obj.is_plain_time_obj()
         || obj.is_zoned_date_time_obj()
+        || obj.is_plain_month_day_obj()
+        || obj.is_plain_year_month_obj()
     {
         return Err(crate::error::create_type_error(vm, "invalid argument"));
     }
@@ -5563,6 +5568,9 @@ fn temporal_calendar_id<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<
             if obj.is_zoned_date_time_obj() {
                 return Ok(Some(get_calendar_id(obj, 2)));
             }
+            if obj.is_plain_month_day_obj() || obj.is_plain_year_month_obj() {
+                return Ok(Some(get_calendar_id(obj, 3)));
+            }
         }
     }
     Err(crate::error::create_type_error(vm, "invalid calendar"))
@@ -7481,6 +7489,415 @@ pub fn plain_date_since<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         settings,
         true,
     )
+}
+
+// Temporal.PlainMonthDay / Temporal.PlainYearMonth 对象地基：
+// 数字分量转换、槽对象构造、构造器与 getter/toString/toJSON。
+
+/// Temporal 数字分量转换（number-only 路径）：先 ToPrimitive(Number)——对象经
+/// valueOf/toString 取值；Symbol/BigInt → TypeError；NaN/±Inf → RangeError
+/// （undefined 与不可解析串都归 NaN，由此统一抛 RangeError）；其余截断取整。
+fn temporal_number_component<H: VmHost>(vm: &mut H, value: JsValue) -> Result<f64, JsValue> {
+    let primitive = oxide_runtime_api::to_primitive(value, oxide_runtime_api::ToPrimitiveHint::Number, vm)
+        .map_err(|error| native_engine_error(vm, &error))?;
+    if primitive.is_symbol() || primitive.is_bigint() {
+        return Err(crate::error::create_type_error(vm, "invalid number"));
+    }
+    let number = to_number(primitive);
+    if number.is_infinite() || number.is_nan() {
+        return Err(crate::error::create_range_error(vm, "invalid number"));
+    }
+    Ok(number.trunc())
+}
+
+/// ISO 年-月是否落在 PlainYearMonth 可表示范围（ISOYearMonthWithinLimits）：
+/// 仅 -271821 年 3 月及以前、+275760 年 10 月及以后越界。
+fn iso_year_month_within_limits(year: i32, month: u32) -> bool {
+    !((year == -271821 && month < 4) || (year == 275760 && month > 9))
+}
+
+/// 构造 PlainMonthDay 实例对象（槽 0-3 = 月/日/参考年/日历 ID）。
+/// from/toPlainDate 等返回新对象的成员使用；构造器走 receiver 初始化路径。
+#[expect(dead_code)]
+fn make_plain_month_day<H: VmHost>(vm: &mut H, month: u32, day: u32, ref_year: i32, calendar: &str) -> NativeResult {
+    let proto = JsValue::from_js_object(vm.session().builtin_world().plain_month_day_proto.as_ptr() as *mut JsObject);
+    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
+    obj.type_tag = JsObject::OBJ_TYPE_PLAIN_MONTH_DAY;
+    obj.set_prop_at(0, JsValue::float(month as f64));
+    obj.set_prop_at(1, JsValue::float(day as f64));
+    obj.set_prop_at(2, JsValue::float(ref_year as f64));
+    obj.set_prop_at(3, vm.new_string(calendar));
+    NativeResult::Ok(JsValue::from_js_object(vm.alloc_object(obj)))
+}
+
+/// 构造 PlainYearMonth 实例对象（槽 0-3 = 年/月/参考日/日历 ID）。
+/// from/toPlainDate 等返回新对象的成员使用；构造器走 receiver 初始化路径。
+#[expect(dead_code)]
+fn make_plain_year_month<H: VmHost>(vm: &mut H, year: i32, month: u32, ref_day: u32, calendar: &str) -> NativeResult {
+    let proto = JsValue::from_js_object(vm.session().builtin_world().plain_year_month_proto.as_ptr() as *mut JsObject);
+    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
+    obj.type_tag = JsObject::OBJ_TYPE_PLAIN_YEAR_MONTH;
+    obj.set_prop_at(0, JsValue::float(year as f64));
+    obj.set_prop_at(1, JsValue::float(month as f64));
+    obj.set_prop_at(2, JsValue::float(ref_day as f64));
+    obj.set_prop_at(3, vm.new_string(calendar));
+    NativeResult::Ok(JsValue::from_js_object(vm.alloc_object(obj)))
+}
+
+fn ensure_plain_month_day<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<(), JsValue> {
+    if !obj.is_plain_month_day_obj() {
+        return Err(crate::error::create_type_error(vm, "called on incompatible receiver"));
+    }
+    Ok(())
+}
+
+fn ensure_plain_year_month<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<(), JsValue> {
+    if !obj.is_plain_year_month_obj() {
+        return Err(crate::error::create_type_error(vm, "called on incompatible receiver"));
+    }
+    Ok(())
+}
+
+/// 读 PlainMonthDay 的 月/日/参考年 三元组（槽 0-2），含 receiver 校验。
+fn plain_month_day_mdy<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<(f64, f64, f64), JsValue> {
+    let ptr = receiver_obj(vm, args)?;
+    let obj = unsafe { &*ptr };
+    ensure_plain_month_day(vm, obj)?;
+    Ok((get_double_prop(obj, 0), get_double_prop(obj, 1), get_double_prop(obj, 2)))
+}
+
+/// 读 PlainYearMonth 的 年/月/参考日 三元组（槽 0-2），含 receiver 校验。
+fn plain_year_month_ymd<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<(f64, f64, f64), JsValue> {
+    let ptr = receiver_obj(vm, args)?;
+    let obj = unsafe { &*ptr };
+    ensure_plain_year_month(vm, obj)?;
+    Ok((get_double_prop(obj, 0), get_double_prop(obj, 1), get_double_prop(obj, 2)))
+}
+
+/// 构造器日历参数解析（ToTemporalCalendarSlotValue，缺省 "iso8601"）：
+/// undefined → 缺省；字符串 → 严格白名单（非法 RangeError）；Temporal 日期实例 →
+/// 日历槽直读（不触发属性 getter）；函数对象 → 缺省（无日历行为）；
+/// 其他对象与原始值 → TypeError。
+fn temporal_constructor_calendar_id<H: VmHost>(vm: &mut H, value: JsValue) -> Result<String, JsValue> {
+    if value.is_undefined() {
+        return Ok("iso8601".to_string());
+    }
+    if value.is_string() {
+        return temporal_calendar_id_strict(vm, value)
+            .map(|calendar| calendar.unwrap_or_else(|| "iso8601".to_string()));
+    }
+    if value.is_object() {
+        let ptr = value.as_js_object_ptr();
+        if !ptr.is_null() {
+            let obj = unsafe { &*ptr };
+            if obj.is_function() {
+                return Ok("iso8601".to_string());
+            }
+            let slot = if obj.is_plain_date_obj() {
+                3
+            } else if obj.is_plain_date_time_obj() {
+                4
+            } else if obj.is_zoned_date_time_obj() {
+                2
+            } else if obj.is_plain_month_day_obj() || obj.is_plain_year_month_obj() {
+                3
+            } else {
+                return Err(crate::error::create_type_error(vm, "invalid calendar"));
+            };
+            return Ok(get_calendar_id(obj, slot));
+        }
+    }
+    Err(crate::error::create_type_error(vm, "invalid calendar"))
+}
+
+/// `Temporal.PlainMonthDay` 构造器：`new PlainMonthDay(month, day[, calendar[, referenceISOYear]])`。
+pub fn plain_month_day_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ctor_proto = vm.session().builtin_world().plain_month_day_proto.as_ptr();
+    if !is_ctor_call(vm, args, ctor_proto) {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Class constructor Temporal.PlainMonthDay cannot be invoked without 'new'",
+        ));
+    }
+    // 转换序：month → day → calendar → referenceISOYear（后两者有缺省值）。
+    let month = native_try!(temporal_number_component(
+        vm,
+        if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() },
+    ));
+    let day = native_try!(temporal_number_component(
+        vm,
+        if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() },
+    ));
+    let calendar_raw = if args.len() > 3 { vm.reg(args[3]) } else { JsValue::undefined() };
+    let calendar = native_try!(temporal_constructor_calendar_id(vm, calendar_raw));
+    let ref_year = if args.len() > 4 && !vm.reg(args[4]).is_undefined() {
+        native_try!(temporal_number_component(vm, vm.reg(args[4]))) as i32
+    } else {
+        1972
+    };
+    if !valid_iso_date(ref_year, month as u32, day as u32) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid ISO date"));
+    }
+    // 表示范围（ISODateWithinLimits）：-271821-04-19 … +275760-09-13。
+    let day_count = days_from_civil(i128::from(ref_year), i128::from(month as i32), i128::from(day as i32));
+    if !(-100_000_001..=100_000_000).contains(&day_count) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "ISO date is out of range"));
+    }
+    let calendar_value = vm.new_string(&calendar);
+    initialize_temporal_receiver(
+        vm,
+        args,
+        JsObject::OBJ_TYPE_PLAIN_MONTH_DAY,
+        [
+            JsValue::float(month),
+            JsValue::float(day),
+            JsValue::float(ref_year as f64),
+            calendar_value,
+        ],
+    )
+}
+
+/// `Temporal.PlainYearMonth` 构造器：`new PlainYearMonth(year, month[, calendar[, referenceISODay]])`。
+pub fn plain_year_month_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ctor_proto = vm.session().builtin_world().plain_year_month_proto.as_ptr();
+    if !is_ctor_call(vm, args, ctor_proto) {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Class constructor Temporal.PlainYearMonth cannot be invoked without 'new'",
+        ));
+    }
+    // 转换序：year → month → calendar → referenceISODay（后两者有缺省值）。
+    let year = native_try!(temporal_number_component(
+        vm,
+        if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() },
+    )) as i32;
+    let month = native_try!(temporal_number_component(
+        vm,
+        if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() },
+    ));
+    let calendar_raw = if args.len() > 3 { vm.reg(args[3]) } else { JsValue::undefined() };
+    let calendar = native_try!(temporal_constructor_calendar_id(vm, calendar_raw));
+    let ref_day = if args.len() > 4 && !vm.reg(args[4]).is_undefined() {
+        native_try!(temporal_number_component(vm, vm.reg(args[4])))
+    } else {
+        1.0
+    };
+    let month_i = month as i32;
+    if !(1..=12).contains(&month_i) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid ISO date"));
+    }
+    let ref_day_i = ref_day as i32;
+    if ref_day_i < 1 || ref_day_i > days_in_month_iso(year, month_i as u32) as i32 {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid ISO date"));
+    }
+    if !iso_year_month_within_limits(year, month_i as u32) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "ISO date is out of range"));
+    }
+    let calendar_value = vm.new_string(&calendar);
+    initialize_temporal_receiver(
+        vm,
+        args,
+        JsObject::OBJ_TYPE_PLAIN_YEAR_MONTH,
+        [
+            JsValue::float(year as f64),
+            JsValue::float(month),
+            JsValue::float(ref_day),
+            calendar_value,
+        ],
+    )
+}
+
+/// `Temporal.PlainMonthDay.prototype.day` getter（槽 1）。
+pub fn plain_month_day_day<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let (_, day, _) = native_try!(plain_month_day_mdy(vm, args));
+    NativeResult::Ok(JsValue::float(day))
+}
+
+/// `Temporal.PlainMonthDay.prototype.monthCode` getter：`M01`..`M12`。
+pub fn plain_month_day_month_code<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let (month, _, _) = native_try!(plain_month_day_mdy(vm, args));
+    NativeResult::Ok(vm.new_string(&format!("M{:02}", month as u32)))
+}
+
+/// `Temporal.PlainMonthDay.prototype.calendarId` getter：读日历槽（槽 3）。
+pub fn plain_month_day_calendar_id<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_month_day(vm, obj));
+    NativeResult::Ok(vm.new_string(&get_calendar_id(obj, 3)))
+}
+
+/// `Temporal.PlainYearMonth.prototype.year` getter（槽 0）。
+pub fn plain_year_month_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let (year, _, _) = native_try!(plain_year_month_ymd(vm, args));
+    NativeResult::Ok(JsValue::float(year))
+}
+
+/// `Temporal.PlainYearMonth.prototype.month` getter（槽 1）。
+pub fn plain_year_month_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let (_, month, _) = native_try!(plain_year_month_ymd(vm, args));
+    NativeResult::Ok(JsValue::float(month))
+}
+
+/// `Temporal.PlainYearMonth.prototype.monthCode` getter：`M01`..`M12`。
+pub fn plain_year_month_month_code<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let (_, month, _) = native_try!(plain_year_month_ymd(vm, args));
+    NativeResult::Ok(vm.new_string(&format!("M{:02}", month as u32)))
+}
+
+/// `Temporal.PlainYearMonth.prototype.calendarId` getter：读日历槽（槽 3）。
+pub fn plain_year_month_calendar_id<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_year_month(vm, obj));
+    NativeResult::Ok(vm.new_string(&get_calendar_id(obj, 3)))
+}
+
+/// `Temporal.PlainYearMonth.prototype.daysInMonth` getter：按年月的 ISO 月长。
+pub fn plain_year_month_days_in_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let (year, month, _) = native_try!(plain_year_month_ymd(vm, args));
+    NativeResult::Ok(JsValue::float(days_in_month_iso(year as i32, month as u32) as f64))
+}
+
+/// `Temporal.PlainYearMonth.prototype.daysInYear` getter：366（闰年）或 365。
+pub fn plain_year_month_days_in_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let (year, _, _) = native_try!(plain_year_month_ymd(vm, args));
+    NativeResult::Ok(JsValue::float(if is_leap_year_iso(year as i32) { 366.0 } else { 365.0 }))
+}
+
+/// `Temporal.PlainYearMonth.prototype.monthsInYear` getter：恒 12（ISO 日历）。
+pub fn plain_year_month_months_in_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let _ = native_try!(plain_year_month_ymd(vm, args));
+    NativeResult::Ok(JsValue::float(12.0))
+}
+
+/// `Temporal.PlainYearMonth.prototype.inLeapYear` getter。
+pub fn plain_year_month_in_leap_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let (year, _, _) = native_try!(plain_year_month_ymd(vm, args));
+    NativeResult::Ok(JsValue::bool(is_leap_year_iso(year as i32)))
+}
+
+/// `Temporal.PlainYearMonth.prototype.era` getter：ISO 日历无纪元，恒 undefined。
+pub fn plain_year_month_era<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let _ = native_try!(plain_year_month_ymd(vm, args));
+    NativeResult::Ok(JsValue::undefined())
+}
+
+/// `Temporal.PlainYearMonth.prototype.eraYear` getter：ISO 日历无纪元，恒 undefined。
+pub fn plain_year_month_era_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let _ = native_try!(plain_year_month_ymd(vm, args));
+    NativeResult::Ok(JsValue::undefined())
+}
+
+/// toString 的 calendarName 选项取值（auto/never 同默认形）。
+enum ShowCalendar {
+    Omitted,
+    Always,
+    Critical,
+}
+
+/// 读并校验 toString 的 calendarName 选项：options 非对象 → TypeError；
+/// 值非字符串先 ToPrimitive(String) 转换（Symbol → TypeError）；
+/// 仅 auto/always/never/critical 合法（大小写敏感），否则 RangeError。
+fn temporal_to_show_calendar<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<ShowCalendar, JsValue> {
+    let options = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    if options.is_undefined() {
+        return Ok(ShowCalendar::Omitted);
+    }
+    if !options.is_object() {
+        return Err(crate::error::create_type_error(vm, "options must be an object"));
+    }
+    let ptr = options.as_js_object_ptr();
+    if ptr.is_null() {
+        return Err(crate::error::create_type_error(vm, "options must be an object"));
+    }
+    let raw = temporal_option_value(vm, unsafe { &*ptr }, options, "calendarName")?;
+    if raw.is_undefined() {
+        return Ok(ShowCalendar::Omitted);
+    }
+    let value = temporal_option_string(vm, raw)?;
+    match value.as_str() {
+        "always" => Ok(ShowCalendar::Always),
+        "critical" => Ok(ShowCalendar::Critical),
+        "auto" | "never" => Ok(ShowCalendar::Omitted),
+        _ => Err(crate::error::create_range_error(vm, "invalid calendarName")),
+    }
+}
+
+/// PlainMonthDay 默认形串（`MM-DD`），含 receiver 校验，不读 options。
+fn plain_month_day_default_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_month_day(vm, obj));
+    let month = get_double_prop(obj, 0) as i32;
+    let day = get_double_prop(obj, 1) as i32;
+    NativeResult::Ok(vm.new_string_owned(format!("{month:02}-{day:02}")))
+}
+
+/// `Temporal.PlainMonthDay.prototype.toString([options])`：
+/// 默认 `MM-DD`；always/critical 补参考年与 `[u-ca=…]`/`[!u-ca=…]` 注解。
+pub fn plain_month_day_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_month_day(vm, obj));
+    let show = native_try!(temporal_to_show_calendar(vm, args));
+    if matches!(show, ShowCalendar::Omitted) {
+        return plain_month_day_default_string(vm, args);
+    }
+    let month = get_double_prop(obj, 0) as i32;
+    let day = get_double_prop(obj, 1) as i32;
+    let ref_year = get_double_prop(obj, 2) as i32;
+    let calendar = get_calendar_id(obj, 3);
+    let annotation = match show {
+        ShowCalendar::Always => format!("[u-ca={calendar}]"),
+        _ => format!("[!u-ca={calendar}]"),
+    };
+    NativeResult::Ok(
+        vm.new_string_owned(format!("{}-{month:02}-{day:02}{annotation}", format_iso_year(ref_year as i128))),
+    )
+}
+
+/// `Temporal.PlainMonthDay.prototype.toJSON()`：默认形串，忽略参数。
+pub fn plain_month_day_to_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_month_day_default_string(vm, args)
+}
+
+/// PlainYearMonth 默认形串（`±YYYY-MM`），含 receiver 校验，不读 options。
+fn plain_year_month_default_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_year_month(vm, obj));
+    let year = get_double_prop(obj, 0) as i32;
+    let month = get_double_prop(obj, 1) as i32;
+    NativeResult::Ok(vm.new_string_owned(format!("{}-{month:02}", format_iso_year(year as i128))))
+}
+
+/// `Temporal.PlainYearMonth.prototype.toString([options])`：
+/// 默认 `±YYYY-MM`；always/critical 补参考日与 `[u-ca=…]`/`[!u-ca=…]` 注解。
+pub fn plain_year_month_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_year_month(vm, obj));
+    let show = native_try!(temporal_to_show_calendar(vm, args));
+    if matches!(show, ShowCalendar::Omitted) {
+        return plain_year_month_default_string(vm, args);
+    }
+    let year = get_double_prop(obj, 0) as i32;
+    let month = get_double_prop(obj, 1) as i32;
+    let ref_day = get_double_prop(obj, 2) as i32;
+    let calendar = get_calendar_id(obj, 3);
+    let annotation = match show {
+        ShowCalendar::Always => format!("[u-ca={calendar}]"),
+        _ => format!("[!u-ca={calendar}]"),
+    };
+    NativeResult::Ok(
+        vm.new_string_owned(format!("{}-{month:02}-{ref_day:02}{annotation}", format_iso_year(year as i128))),
+    )
+}
+
+/// `Temporal.PlainYearMonth.prototype.toJSON()`：默认形串，忽略参数。
+pub fn plain_year_month_to_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_year_month_default_string(vm, args)
 }
 
 #[cfg(test)]
