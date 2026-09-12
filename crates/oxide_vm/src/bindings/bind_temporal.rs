@@ -1062,6 +1062,12 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         .map_or(0, |props| props.len() as u32)
         .saturating_sub(1);
     plain_year_month_ctor.set_data_meta(length_pos, PropAttributes::new(false, false, true));
+    apply_binding_table(
+        world,
+        plain_year_month_ctor,
+        core,
+        &[("from", oxide_builtins::temporal::plain_year_month_from::<crate::vm::Vm> as *const (), 1)],
+    );
 
     let plain_year_month_proto_ptr = world.plain_year_month_proto.as_ptr() as *mut JsObject;
     let plain_year_month_proto = unsafe { &mut *plain_year_month_proto_ptr };
