@@ -155,7 +155,8 @@ impl Emitter {
         self.predeclare_function_declarations(body, ctx);
         self.pre_register_builtin_references(body, ctx);
         self.predeclare_var_declarations(body, ctx);
-        self.predeclare_lexical_declarations(body, ctx);
+        // 模块 lexical 声明入模块环境（非全局对象），不做受限全局名检查。
+        let _ = self.predeclare_lexical_declarations(body, ctx, false);
 
         // 闭包捕获分析（import 绑定名纳入 own_bindings，供嵌套函数 cell 捕获）。
         ctx.own_bindings = self.collect_own_binding_names(&[], body);

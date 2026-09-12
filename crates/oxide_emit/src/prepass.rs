@@ -9,6 +9,22 @@ use oxide_parser::{
     BindingPattern, Declaration, ExportDefaultDeclarationKind, Expression, Statement, VariableDeclarationKind,
 };
 
+/// 脚本顶层 lexical 声明禁止使用的受限全局名：规范 HasRestrictedGlobalProperty
+/// 判定「全局对象不可配置自有属性名」，现规范全局对象该自有属性恰为三常量。
+/// 名基静态集（编译期不可查运行时描述符）；eval 与各 builtin 属性均可配置
+/// （合法遮蔽），不在此列。与 BUILTIN_GLOBALS 语义不同（后者是 put 写拦截名单），
+/// 不互相派生，交叠名由漂移守卫单测断言恒同步。
+pub(crate) const RESTRICTED_GLOBAL_LEXICAL_NAMES: &[&str] = &["undefined", "NaN", "Infinity"];
+
+/// 脚本顶层 lexical 声明撞受限全局名 → SyntaxError（声明实例化期拒绝，整程序
+/// 编译失败）。错误消息与既有重复声明错同形；非顶层或名不在受限集 → Ok。
+fn check_restricted_global_lexical(name: &str, global_lexical: bool) -> Result<(), String> {
+    if global_lexical && RESTRICTED_GLOBAL_LEXICAL_NAMES.contains(&name) {
+        return Err(format!("Identifier '{name}' has already been declared"));
+    }
+    Ok(())
+}
+
 impl Emitter {
     /// 在临时寄存器池之前分配 builtin 槽位。
     pub(crate) fn pre_register_builtin_references(&self, stmts: &[Statement], ctx: &mut CompileCtx) {
@@ -553,7 +569,13 @@ impl Emitter {
     ///   单语句 body 不接受 lexical 声明——lexical 属 Declaration、非 Statement
     ///   子产生式，parser 按语法错误直接拒绝，这些形状不会进入 emit）。
     /// - 跳过 for 头声明（循环作用域由 for 分支内联 declare）。
-    pub(crate) fn predeclare_lexical_declarations(&self, statements: &[Statement], ctx: &mut CompileCtx) {
+    /// - `global_lexical` 为 true 时（仅脚本顶层调用点传 `!is_eval_script`）：
+    ///   lexical 声明撞受限全局名报 SyntaxError（脚本声明实例化对全局对象受限
+    ///   自有属性名做检查，eval 代码声明实例化无此检查）；函数体/块/try/模块
+    ///   调用点传 false，lexical 声明是局部绑定不查。
+    pub(crate) fn predeclare_lexical_declarations(
+        &self, statements: &[Statement], ctx: &mut CompileCtx, global_lexical: bool,
+    ) -> Result<(), String> {
         for statement in statements {
             match statement {
                 Statement::VariableDeclaration(decl) => {
@@ -562,11 +584,12 @@ impl Emitter {
                     }
                     let is_const = matches!(decl.kind, VariableDeclarationKind::Const);
                     for d in &decl.declarations {
-                        self.predeclare_lexical_pattern(&d.id, is_const, ctx);
+                        self.predeclare_lexical_pattern(&d.id, is_const, ctx, global_lexical)?;
                     }
                 }
                 Statement::ClassDeclaration(cd) => {
                     if let Some(id) = &cd.id {
+                        check_restricted_global_lexical(id.name.as_str(), global_lexical)?;
                         let reg = ctx.alloc_reg();
                         let _ = ctx.declare_predeclared(id.name.as_str(), reg, VariableDeclarationKind::Const, true);
                     }
@@ -574,7 +597,7 @@ impl Emitter {
                 Statement::SwitchStatement(sw) => {
                     for case in &sw.cases {
                         for s in &case.consequent {
-                            self.predeclare_lexical_stmt(s, ctx);
+                            self.predeclare_lexical_stmt(s, ctx, global_lexical)?;
                         }
                     }
                 }
@@ -587,11 +610,12 @@ impl Emitter {
                                 }
                                 let is_const = matches!(vd.kind, VariableDeclarationKind::Const);
                                 for d in &vd.declarations {
-                                    self.predeclare_lexical_pattern(&d.id, is_const, ctx);
+                                    self.predeclare_lexical_pattern(&d.id, is_const, ctx, global_lexical)?;
                                 }
                             }
                             Declaration::ClassDeclaration(cd) => {
                                 if let Some(id) = &cd.id {
+                                    check_restricted_global_lexical(id.name.as_str(), global_lexical)?;
                                     let reg = ctx.alloc_reg();
                                     let _ = ctx.declare_predeclared(
                                         id.name.as_str(),
@@ -608,6 +632,7 @@ impl Emitter {
                 Statement::ExportDefaultDeclaration(exp) => match &exp.declaration {
                     ExportDefaultDeclarationKind::ClassDeclaration(cd) => {
                         if let Some(id) = &cd.id {
+                            check_restricted_global_lexical(id.name.as_str(), global_lexical)?;
                             let reg = ctx.alloc_reg();
                             let _ =
                                 ctx.declare_predeclared(id.name.as_str(), reg, VariableDeclarationKind::Const, true);
@@ -625,34 +650,42 @@ impl Emitter {
                 _ => {}
             }
         }
+        Ok(())
     }
 
     /// 预声明单个语句中的 lexical 声明（供 switch case 递归；`let`/`const`/`class` 分支）。
-    fn predeclare_lexical_stmt(&self, stmt: &Statement, ctx: &mut CompileCtx) {
+    fn predeclare_lexical_stmt(
+        &self, stmt: &Statement, ctx: &mut CompileCtx, global_lexical: bool,
+    ) -> Result<(), String> {
         match stmt {
             Statement::VariableDeclaration(decl) => {
                 if matches!(decl.kind, VariableDeclarationKind::Var) {
-                    return;
+                    return Ok(());
                 }
                 let is_const = matches!(decl.kind, VariableDeclarationKind::Const);
                 for d in &decl.declarations {
-                    self.predeclare_lexical_pattern(&d.id, is_const, ctx);
+                    self.predeclare_lexical_pattern(&d.id, is_const, ctx, global_lexical)?;
                 }
             }
             Statement::ClassDeclaration(cd) => {
                 if let Some(id) = &cd.id {
+                    check_restricted_global_lexical(id.name.as_str(), global_lexical)?;
                     let reg = ctx.alloc_reg();
                     let _ = ctx.declare_predeclared(id.name.as_str(), reg, VariableDeclarationKind::Const, true);
                 }
             }
             _ => {}
         }
+        Ok(())
     }
 
     /// 递归预声明绑定 pattern 内的全部标识符（含数组/对象/默认值解构）。
-    fn predeclare_lexical_pattern(&self, pattern: &BindingPattern, is_const: bool, ctx: &mut CompileCtx) {
+    fn predeclare_lexical_pattern(
+        &self, pattern: &BindingPattern, is_const: bool, ctx: &mut CompileCtx, global_lexical: bool,
+    ) -> Result<(), String> {
         match pattern {
             BindingPattern::BindingIdentifier(bi) => {
+                check_restricted_global_lexical(bi.name.as_str(), global_lexical)?;
                 let reg = ctx.alloc_reg();
                 let _ = ctx.declare_predeclared(
                     bi.name.as_str(),
@@ -667,23 +700,24 @@ impl Emitter {
             }
             BindingPattern::ArrayPattern(ap) => {
                 for e in ap.elements.iter().flatten() {
-                    self.predeclare_lexical_pattern(e, is_const, ctx);
+                    self.predeclare_lexical_pattern(e, is_const, ctx, global_lexical)?;
                 }
                 if let Some(rest) = &ap.rest {
-                    self.predeclare_lexical_pattern(&rest.argument, is_const, ctx);
+                    self.predeclare_lexical_pattern(&rest.argument, is_const, ctx, global_lexical)?;
                 }
             }
             BindingPattern::ObjectPattern(op) => {
                 for prop in &op.properties {
-                    self.predeclare_lexical_pattern(&prop.value, is_const, ctx);
+                    self.predeclare_lexical_pattern(&prop.value, is_const, ctx, global_lexical)?;
                 }
                 if let Some(rest) = &op.rest {
-                    self.predeclare_lexical_pattern(&rest.argument, is_const, ctx);
+                    self.predeclare_lexical_pattern(&rest.argument, is_const, ctx, global_lexical)?;
                 }
             }
             BindingPattern::AssignmentPattern(ap) => {
-                self.predeclare_lexical_pattern(&ap.left, is_const, ctx);
+                self.predeclare_lexical_pattern(&ap.left, is_const, ctx, global_lexical)?;
             }
         }
+        Ok(())
     }
 }

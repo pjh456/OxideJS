@@ -1190,8 +1190,9 @@ impl Emitter {
         self.predeclare_var_declarations(body_stmts, &mut ctx);
 
         // 预声明 body 级 `let`/`const`/`class`（未初始化 TDZ 占位），
-        // 使声明点前读取可编译为运行时 ReferenceError。
-        self.predeclare_lexical_declarations(body_stmts, &mut ctx);
+        // 使声明点前读取可编译为运行时 ReferenceError。函数体 lexical 声明是
+        // 局部绑定，不做受限全局名检查；重复声明错在 emit 期报。
+        let _ = self.predeclare_lexical_declarations(body_stmts, &mut ctx, false);
 
         // 生成器：body 起点标记——调用时参数初始化（emit_params_prologue）结束后挂起于此，
         // 参数副作用/异常在 `g()` 调用时刻生效，首次 next() 从这继续执行 body。
@@ -1666,8 +1667,12 @@ impl Emitter {
         // 预声明顶层 `var` 名，使首个 sub-pass 中提升的函数声明能解析外层 var。
         self.predeclare_var_declarations(&program.body, &mut ctx);
 
-        // 预声明顶层 `let`/`const`/`class`（未初始化 TDZ 占位）。
-        self.predeclare_lexical_declarations(&program.body, &mut ctx);
+        // 预声明顶层 `let`/`const`/`class`（未初始化 TDZ 占位）。受限全局名检查
+        // 仅对脚本代码启用：脚本声明实例化查全局对象受限自有属性名，eval 代码
+        // 声明实例化不查——门控随 is_eval_script 而非作用域标志（嵌套块内
+        // is_global_scope 仍为 true，不能作门控）。
+        let global_lexical = !ctx.is_eval_script;
+        self.predeclare_lexical_declarations(&program.body, &mut ctx, global_lexical)?;
 
         // 闭包捕获分析（AST 级，emit 前确定）
         ctx.own_bindings = self.collect_own_binding_names(&[], &program.body);
@@ -1765,5 +1770,20 @@ impl Emitter {
 impl Default for Emitter {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BUILTIN_GLOBALS;
+    use crate::prepass::RESTRICTED_GLOBAL_LEXICAL_NAMES;
+
+    /// 漂移守卫：受限全局名集与 put 写拦截名单交叠名恒同步（两名单语义独立、
+    /// 不互相派生，靠本断言防止改名/删名时单边漂移）。
+    #[test]
+    fn restricted_lexical_names_within_builtin_globals() {
+        for name in RESTRICTED_GLOBAL_LEXICAL_NAMES {
+            assert!(BUILTIN_GLOBALS.contains(name), "受限全局名缺失于 builtin 名单：{name}");
+        }
     }
 }

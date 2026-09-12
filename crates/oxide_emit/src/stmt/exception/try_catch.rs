@@ -32,7 +32,8 @@ impl Emitter {
         // try block 是独立块作用域：lexical 声明（let/const/class）限定于 try 内，
         // 与外层同名绑定互不干扰；块级预声明使声明点前读取编译为 TDZ 抛错。
         ctx.push_scope();
-        self.predeclare_lexical_declarations(&ts.block.body, ctx);
+        // try 块 lexical 声明是局部绑定：不做受限全局名检查（重复声明错在 emit 期报）。
+        let _ = self.predeclare_lexical_declarations(&ts.block.body, ctx, false);
         for s in &ts.block.body {
             if let Some(r) = self.emit_statement(s, ctx)? {
                 last_try_result = Some(r);
@@ -63,7 +64,8 @@ impl Emitter {
                 ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(src_reg), Operand::None, Operand::None));
                 self.emit_binding_pattern(&param.pattern, src_reg, VariableDeclarationKind::Let, false, false, ctx)?;
             }
-            self.predeclare_lexical_declarations(&catch.body.body, ctx);
+            // catch 块 lexical 声明同为局部绑定：不做受限全局名检查。
+            let _ = self.predeclare_lexical_declarations(&catch.body.body, ctx, false);
             let mut last_catch_result: Option<u32> = None;
             for s in &catch.body.body {
                 if let Some(r) = self.emit_statement(s, ctx)? {
@@ -88,7 +90,8 @@ impl Emitter {
             let mut last_finally_result: Option<u32> = None;
             // finally block 同为独立块作用域，lexical 声明互不泄漏。
             ctx.push_scope();
-            self.predeclare_lexical_declarations(&ts.finalizer.as_ref().unwrap().body, ctx);
+            // finally 块 lexical 声明同为局部绑定：不做受限全局名检查。
+            let _ = self.predeclare_lexical_declarations(&ts.finalizer.as_ref().unwrap().body, ctx, false);
             for s in &ts.finalizer.as_ref().unwrap().body {
                 if let Some(r) = self.emit_statement(s, ctx)? {
                     last_finally_result = Some(r);
