@@ -964,13 +964,62 @@ impl Vm {
         self.gc_state.session_gc = session_gc;
     }
 
-    /// 执行期完整 GC（对象+字符串）的 dispatch 安全点入口：按水位判定触发。
-    /// 仅在 native_call_depth == 0 的指令边界调用——此时无 builtin 局部裸指针，
-    /// 对象搬移安全。预留给 17.3b（对象侧执行期触发）安全点审计后使用。
-    #[allow(dead_code)]
-    pub(crate) fn maybe_collect_session_gc_at_dispatch(&mut self) {
+    /// 门控子句二：三型状态盒（生成器/异步函数/异步生成器）的
+    /// `suspended.for_in_iters` 是否非空。
+    ///
+    /// ForInIter body 分配于 epoch arena，收集换新 Bump 即时失效在表迭代器；
+    /// 挂起帧把迭代器搬入状态盒（`vm.iters` 不可见），故须逐状态盒扫描。
+    ///
+    /// # 边界与前提
+    /// - 扫描 epoch + session 两份对象表——挂起状态盒宿主对象可能尚未晋升；
+    /// - 挂起帧的 keys 经状态盒边收为 GC 根（被枚举对象不误释放），悬的是
+    ///   迭代器 body，故按指针扫 `for_in_iters`；
+    /// - 保守口径：死对象的状态盒同样计入（持挂起 for-in 的 run 放弃执行期
+    ///   收集），正确性优先于收益；
+    /// - 新增挂起态持有者须在此登记。
+    pub(crate) fn suspended_holds_for_in(&self) -> bool {
+        let holds = |&ptr: &*mut JsObject| {
+            if ptr.is_null() {
+                return false;
+            }
+            // SAFETY: 对象表登记的指针，arena 存活期内有效。
+            let obj = unsafe { &*ptr };
+            match obj.type_tag {
+                JsObject::OBJ_TYPE_GENERATOR => crate::generator::generator_holds_suspended_for_in(obj),
+                JsObject::OBJ_TYPE_ASYNC => crate::async_func::async_holds_suspended_for_in(obj),
+                JsObject::OBJ_TYPE_ASYNC_GENERATOR => {
+                    crate::async_generator::async_generator_holds_suspended_for_in(obj)
+                }
+                _ => false,
+            }
+        };
+        self.gc_state.epoch_object_ptrs.iter().any(holds) || self.gc_state.session_object_ptrs.iter().any(holds)
+    }
+
+    /// 执行期两档收集的 dispatch 安全点入口：仅在循环顶
+    /// （`native_call_depth == 0`，无 builtin 局部裸指针、dispatch 未重入）
+    /// 由触发块调用；先门控后收集。
+    ///
+    /// # 边界与前提
+    /// - 子句一（活跃 for-in，O(1)）未过：免费重试，不设锚；
+    /// - 子句二（状态盒扫描，O(对象数)）未过：重扫按包络增长一个阈值设锚，
+    ///   避免持挂起 for-in 的 run 每指令边界重扫；
+    /// - 门控过但无对象可回收时仍跑一轮（mark + 换新 Bump），水位同点抬高，
+    ///   触发间距由包络增量控制。
+    pub(crate) fn maybe_collect_in_run(&mut self) {
+        if !self.iters.for_in_iters.is_empty() {
+            return;
+        }
+        if self.gc_state.gc_gate_retry_alloc > self.run_alloc_bytes() {
+            return;
+        }
+        if self.suspended_holds_for_in() {
+            self.gc_state.gc_gate_retry_alloc =
+                self.run_alloc_bytes().saturating_add(self.gc_state.gc_threshold_cached);
+            return;
+        }
         let mut session_gc = std::mem::take(&mut self.gc_state.session_gc);
-        session_gc.maybe_collect_gc(self);
+        session_gc.collect_in_run(self);
         self.gc_state.session_gc = session_gc;
     }
 
@@ -1650,6 +1699,11 @@ impl Vm {
                 }
                 if bytes >= self.gc_state.string_gc_watermark {
                     self.maybe_collect_session_strings();
+                }
+                // 执行期两档收集：O(1) 包络超触发水位 → 门控（活跃/挂起 for-in）
+                // + epoch 晋升收集 + session 原地 sweep（边界契约见 maybe_collect_in_run）。
+                if alloc >= self.gc_state.gc_watermark {
+                    self.maybe_collect_in_run();
                 }
             }
             if let Some(max_steps) = max_steps {

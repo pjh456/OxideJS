@@ -118,6 +118,7 @@ impl Vm {
                 string_gc_watermark: gc_threshold,
                 gc_threshold_cached: gc_threshold,
                 gc_watermark: gc_threshold,
+                gc_gate_retry_alloc: 0,
                 forwarding: std::collections::HashMap::with_hasher(rustc_hash::FxBuildHasher),
             },
             symbols: SymbolState {
@@ -235,6 +236,7 @@ impl Vm {
                 string_gc_watermark: gc_threshold,
                 gc_threshold_cached: gc_threshold,
                 gc_watermark: gc_threshold,
+                gc_gate_retry_alloc: 0,
                 forwarding: std::collections::HashMap::with_hasher(rustc_hash::FxBuildHasher),
             },
             symbols: SymbolState {
@@ -356,6 +358,9 @@ impl Vm {
         self.gc_state.session_bytes_peak = 0;
         self.gc_state.run_alloc_peak = 0;
         self.gc_state.string_gc_watermark = self.kernel_core.config().session_gc_threshold;
+        // 两档收集水位与门控重扫锚同点复位（同式：阈值增量起算）。
+        self.gc_state.gc_watermark = self.gc_state.gc_threshold_cached;
+        self.gc_state.gc_gate_retry_alloc = 0;
         self.gc_state.session_gc = crate::session_gc::SessionGc::new();
         self.symbols.reset();
         self.root_reg_limit = 0;
@@ -508,6 +513,9 @@ impl Vm {
         self.gc_state.epoch_object_ptrs.clear();
         // 单 run 分配包络按 run 边界重起算（与 run_alloc_bytes 起算口径同源）。
         self.gc_state.run_alloc_peak = 0;
+        // 两档收集水位与包络同起算：旧 run 的存活包络不延续到新 run 的触发判定。
+        self.gc_state.gc_watermark = self.gc_state.gc_threshold_cached;
+        self.gc_state.gc_gate_retry_alloc = 0;
         self.root_reg_limit = 0;
         self.active_reg_limit = 0;
     }

@@ -141,53 +141,69 @@ impl Vm {
             return;
         }
         let mut forwarding = std::mem::take(&mut self.gc_state.forwarding);
-        for &ptr in &objects {
+        self.rewrite_session_epoch_refs(&objects, &mut forwarding);
+        forwarding.clear();
+        self.gc_state.forwarding = forwarding;
+        // 改写期新克隆已随晋升推入 gc_state 侧的表（此刻仅含克隆体），把取出的
+        // 旧对象按原相对序拼回同一表，表 = 克隆体 + 旧对象，各恰登记一次。
+        self.gc_state.session_object_ptrs.extend(objects);
+    }
+
+    /// 按调用方给定的转发表把对象列表的 epoch 子引用就地改写：未在上游晋升过的
+    /// epoch 子对象经转发表克隆进 session（递归去重共享与环），已是 session/
+    /// 非 epoch 的值原样保留。JS 边与 native 状态盒走同一改写闭包。
+    ///
+    /// # 注意事项
+    /// - 调用方持有转发表期间不得让其它晋升路径改动 `gc_state.forwarding`；
+    ///   晋升新克隆推入的对象表由调用方决定何时拼回。
+    /// - 死对象（不可达）的 epoch 子引用改写会把死对象一并克隆进 session——
+    ///   克隆体无根，下一轮收集按死对象出表，不泄漏也不悬垂。
+    pub(crate) fn rewrite_session_epoch_refs(
+        &mut self, objects: &[*mut JsObject], forwarding: &mut HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>,
+    ) {
+        for &ptr in objects {
             if ptr.is_null() {
                 continue;
             }
             // SAFETY: ptr 来自 session_epoch.alloc，arena 存活期内有效。
             unsafe {
                 let obj = &mut *ptr;
-                obj.rewrite_object_values(|value| self.promote_value_if_epoch_object(value, &mut forwarding));
+                obj.rewrite_object_values(|value| self.promote_value_if_epoch_object(value, forwarding));
                 if obj.is_map() {
-                    map::rewrite_map_native(obj, |value| self.promote_value_if_epoch_object(value, &mut forwarding));
+                    map::rewrite_map_native(obj, |value| self.promote_value_if_epoch_object(value, forwarding));
                 } else if obj.is_set() {
-                    set::rewrite_set_native(obj, |value| self.promote_value_if_epoch_object(value, &mut forwarding));
+                    set::rewrite_set_native(obj, |value| self.promote_value_if_epoch_object(value, forwarding));
                 } else if obj.is_disposable_stack_obj() || obj.is_async_disposable_stack_obj() {
                     disposable_stack::rewrite_dispose_native(obj, |value| {
-                        self.promote_value_if_epoch_object(value, &mut forwarding)
+                        self.promote_value_if_epoch_object(value, forwarding)
                     });
                 } else if obj.is_typed_array_obj() {
                     typed_array::rewrite_typed_array_native(obj, |value| {
-                        self.promote_value_if_epoch_object(value, &mut forwarding)
+                        self.promote_value_if_epoch_object(value, forwarding)
                     });
                 } else if obj.is_data_view_obj() {
                     data_view::rewrite_data_view_native(obj, |value| {
-                        self.promote_value_if_epoch_object(value, &mut forwarding)
+                        self.promote_value_if_epoch_object(value, forwarding)
                     });
                 } else if obj.is_generator_obj() {
                     crate::generator::rewrite_generator_native(obj, |value| {
-                        self.promote_value_if_epoch_object(value, &mut forwarding)
+                        self.promote_value_if_epoch_object(value, forwarding)
                     });
                 } else if obj.is_promise_obj() {
                     crate::promise::rewrite_promise_native(obj, |value| {
-                        self.promote_value_if_epoch_object(value, &mut forwarding)
+                        self.promote_value_if_epoch_object(value, forwarding)
                     });
                 } else if obj.is_async_obj() {
                     crate::async_func::rewrite_async_native(obj, |value| {
-                        self.promote_value_if_epoch_object(value, &mut forwarding)
+                        self.promote_value_if_epoch_object(value, forwarding)
                     });
                 } else if obj.is_async_generator_obj() {
                     crate::async_generator::rewrite_async_generator_native(obj, |value| {
-                        self.promote_value_if_epoch_object(value, &mut forwarding)
+                        self.promote_value_if_epoch_object(value, forwarding)
                     });
                 }
             }
         }
-        forwarding.clear();
-        self.gc_state.forwarding = forwarding;
-        // 晋升过程新克隆的对象已推入 gc_state 侧的表，拼回旧表保持原序在前。
-        self.gc_state.session_object_ptrs.extend(objects);
     }
 
     /// 把根直接持有的 epoch 对象（顶层 var 寄存器、挂起句柄等）晋升进 session，

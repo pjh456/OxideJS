@@ -864,9 +864,18 @@ fn async_gen_state_mut(obj: &JsObject) -> Option<&mut AsyncGeneratorState> {
         None
     } else {
         // SAFETY: native_data 在 create_async_generator_object 中由 Box::into_raw 分配，
-        // 生命周期与异步生成器对象一致；GC 只在 reset（无执行状态）时运行。
+        // 生命周期与异步生成器对象一致；GC 路径（mark 边收集、执行期门控扫描）只读状态盒。
         Some(unsafe { &mut *ptr })
     }
+}
+
+/// 异步生成器挂起帧是否持有 for-in 迭代器：执行期收集门控按指针扫描
+/// （ForInIter body 分配于 epoch arena，换新 Bump 即时失效在表迭代器）。
+pub(crate) fn async_generator_holds_suspended_for_in(obj: &JsObject) -> bool {
+    let Some(state) = async_gen_state_mut(obj) else {
+        return false;
+    };
+    !state.suspended.for_in_iters.is_empty()
 }
 
 /// 异步生成器状态内所有对象引用的扁平列表（GC mark 边）。

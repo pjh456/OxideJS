@@ -52,6 +52,16 @@ impl SessionGc {
             // session_epoch.alloc，在 arena 存活期间有效。
             unsafe { (*ptr).set_gc_mark(false) };
         }
+        // epoch 臂同清：mark 的 epoch 臂置位不随 session 清位消除，残留位会让
+        // 下一次 mark 的 DFS 短路、漏扫该对象此间新增的边。
+        for &ptr in &vm.gc_state.epoch_object_ptrs {
+            if ptr.is_null() {
+                continue;
+            }
+            // SAFETY: epoch_object_ptrs 中的指针只来自 alloc_object 的 epoch.alloc，
+            // 在 epoch 存活期间有效。
+            unsafe { (*ptr).set_gc_mark(false) };
+        }
     }
 
     /// 只读核算 session 对象的堆数据字节（属性/元素/meta Vec capacity + upvalue 列表
@@ -220,8 +230,15 @@ impl SessionGc {
     ) {
         if value.is_object() {
             let ptr = value.as_js_object_ptr();
+            // session 边与 epoch 边同栈：epoch 对象的 GC_MARK 位与 session 同字节
+            // 可置可读，晋升收集按"标记 ∩ epoch 表"取活集。
             if vm.is_session_ptr(ptr) {
                 stack.push(ptr);
+            } else if !ptr.is_null() {
+                // SAFETY: 执行核心产出的对象值，指针在 session 生命周期内有效。
+                if unsafe { (&*ptr).is_epoch() } {
+                    stack.push(ptr);
+                }
             }
         } else if value.is_string() {
             Self::mark_string_live(live_strings, value.as_string_ptr_mut());
@@ -397,9 +414,16 @@ impl SessionGc {
                 stack.push(ptr);
                 continue;
             }
-            // SAFETY: 对象根由 VM 自有的字段与 builtin 对象产生。
+            // SAFETY: 对象根由 VM 自有的字段与 builtin 对象产生，指针合法。
             unsafe {
                 let obj = &*ptr;
+                // epoch 根（顶层 var 寄存器等）自身入栈置位：晋升收集按标记位
+                // 判活，根不置位会被误判为死。
+                if obj.is_epoch() {
+                    stack.push(ptr);
+                    continue;
+                }
+                // P 对象根（builtin world / global）不回收，只扫边。
                 Self::scan_edges_for_mark(obj, vm, stack, live_strings, live_bigints);
             }
         }
@@ -727,18 +751,6 @@ impl SessionGc {
             && vm.gc_state.session_bytes_allocated >= vm.kernel_core().config().session_gc_threshold
     }
 
-    /// 执行期完整 GC 的触发判断：账目须超过水位（上次收集后的存活字节 +
-    /// 阈值增量）。与 `should_collect`（reset 路径用）不同，本方法走增量水位，
-    /// 防止存活对象超阈值时每指令重复触发无死对象可回收的白跑。
-    /// 预留给 17.3b（对象侧执行期触发）安全点审计后使用。
-    #[allow(dead_code)]
-    pub(crate) fn should_collect_gc(&self, vm: &Vm) -> bool {
-        (!vm.gc_state.session_object_ptrs.is_empty()
-            || !vm.gc_state.session_string_ptrs.is_empty()
-            || !vm.gc_state.session_bigint_ptrs.borrow().is_empty())
-            && vm.gc_state.session_bytes_allocated >= vm.gc_state.gc_watermark
-    }
-
     /// 执行期字符串回收的触发判断：账目须超过水位（上次收集后的存活字节 +
     /// 阈值增量）。完整收集（reset）仍用 [`Self::should_collect`] 的阈值直接比较，
     /// 保证死对象超阈值即被 reset 回收；执行期走增量水位，活串超阈值时不每指令
@@ -886,16 +898,216 @@ impl SessionGc {
         }
     }
 
-    /// 执行期完整 GC 入口：按水位判定，触发后抬高水位。
-    /// 预留给 17.3b（对象侧执行期触发）安全点审计后使用。
-    #[allow(dead_code)]
-    pub(crate) fn maybe_collect_gc(&mut self, vm: &mut Vm) {
-        if self.should_collect_gc(vm) {
-            self.collect(vm);
-            // 抬高下次触发水位：存活字节 + 阈值增量，避免活对象超阈值时每指令重复触发。
-            let threshold = vm.gc_state.gc_threshold_cached;
-            vm.gc_state.gc_watermark = vm.gc_state.session_bytes_allocated.saturating_add(threshold);
+    /// 执行期两档收集：epoch 晋升档 + session 原地非移动 sweep 档。
+    ///
+    /// 在 dispatch 安全点（循环顶 + `native_call_depth == 0`）回收单 run 分配
+    /// 包络内的死对象：
+    /// - epoch 晋升档：扩展 mark（epoch 臂跟随）定活集，活 epoch 对象晋升
+    ///   session（递归克隆 + forwarding 去重共享与环 + native 盒深拷），根与
+    ///   session 对象的 epoch 子引用按转发表改写，全部 epoch 旧堆区与独占
+    ///   upvalue 列表释放，epoch 换新 Bump；
+    /// - session 原地 sweep 档：死 session 对象原地释放（堆区 + upvalue 列表）
+    ///   并出表；存活对象不移动——地址不变、免 forwarding/rewrite，用户可观察
+    ///   identity 不分裂。
+    ///
+    /// # 边界与前提
+    /// - 调用方已完成门控（无活跃/挂起 for-in）：ForInIter body 分配于 epoch
+    ///   arena，换新 Bump 即时失效在表迭代器；
+    /// - 调用点为 dispatch 安全点（`native_call_depth == 0`），无在途 builtin
+    ///   局部裸指针、dispatch 未重入。
+    ///
+    /// # 副作用
+    /// - `epoch_object_ptrs` 清空、epoch Bump 换新（旧 arena 全量归还）；
+    /// - `session_object_ptrs` 仅剩存活，`session_bytes_allocated` 按存活重算
+    ///   （串/BigInt 归 strings-only 路径，本路径不动，仅对象口径变化）；
+    /// - `gc_watermark` = 当前分配包络 + 阈值增量；
+    /// - 累计/时长统计更新；mark 位全清（收集后无残留）。
+    pub(crate) fn collect_in_run(&mut self, vm: &mut Vm) {
+        let start = Instant::now();
+        vm_info!("[GC] in-run cycle #{} start", self.total_collections + 1);
+
+        // 清残留 mark 位（session + epoch）：防 mark DFS 因历史 true 短路漏标。
+        self.clear_all_marks(vm);
+
+        // 扩展 mark：epoch 臂跟随，活 epoch 集 = 被标记 ∩ epoch 表。
+        self.mark(vm);
+
+        // ── epoch 晋升档 ──
+
+        let mut forwarding = std::mem::take(&mut vm.gc_state.forwarding);
+        let epoch_ptrs = std::mem::take(&mut vm.gc_state.epoch_object_ptrs);
+
+        // 活 epoch 对象逐个晋升：递归克隆携带 native 盒，共享/环经 forwarding
+        // 去重；死对象留在 epoch arena，换新 Bump 前统一释放。
+        let mut live_epoch = 0u64;
+        for &ptr in &epoch_ptrs {
+            if ptr.is_null() {
+                continue;
+            }
+            // SAFETY: ptr 来自 epoch 对象表登记，arena 存活期内有效。
+            if unsafe { (*ptr).is_gc_marked() } {
+                vm.promote_object_inner(ptr, &mut forwarding);
+                live_epoch += 1;
+            }
         }
+
+        // 晋升克隆体自身即活：克隆不携带源对象标记位，而紧随其后的 session
+        // 原地 sweep 按标记位保活——不置位则克隆体在同一轮内被当作死对象
+        // 原地释放，而根已改写指向克隆体（悬垂）。此点转发表值集恰为本轮
+        // 晋升克隆体全集（session 原地改写路径的补晋升发生在其后、不入
+        // 本轮 sweep 集，无需置位）。
+        for &dst in forwarding.values() {
+            // SAFETY: dst 为本轮晋升克隆体，session arena 存活期内有效。
+            unsafe { (*dst).set_gc_mark(true) };
+        }
+
+        // 根持有的 epoch 对象（顶层 var 寄存器等）按转发表解析到克隆体。
+        rewrite_vm_roots(vm, &forwarding);
+
+        // session 对象可持有绕过写屏障的 epoch 子引用（函数 captured_this/
+        // home_object、native 盒直插）：按转发表就地晋升进 session（已晋升
+        // 对象的子引用解析到同一克隆，无二次克隆）。只改写存活对象：死对象的
+        // 子引用随对象原地释放（释放路径无后续解引用，不悬垂）。
+        let session_ptrs = std::mem::take(&mut vm.gc_state.session_object_ptrs);
+        let marked_session: Vec<*mut JsObject> = session_ptrs
+            .iter()
+            .copied()
+            .filter(|&ptr| !ptr.is_null() && unsafe { (*ptr).is_gc_marked() })
+            .collect();
+        vm.rewrite_session_epoch_refs(&marked_session, &mut forwarding);
+        forwarding.clear();
+        vm.gc_state.forwarding = forwarding;
+
+        // 全部 epoch 旧堆区释放：活对象的 vec/native 盒已被克隆深拷贝取代，
+        // 原件原地释放；死对象堆区随本体原地释放。
+        let epoch_freed = Self::free_epoch_object_heap_data(&epoch_ptrs, &session_ptrs);
+
+        // 换新 epoch Bump：旧 arena 全量归还，容量不保留。
+        vm.epoch.reset();
+
+        // ── session 原地非移动 sweep 档 ──
+
+        // 死 session 对象原地释放（堆区 + upvalue 列表）并出表；存活对象不动
+        // arena 槽位——地址不变，免 forwarding/rewrite。
+        let mut survivors = Vec::with_capacity(session_ptrs.len());
+        let mut dead_session = 0u64;
+        let mut session_freed = 0u64;
+        for &ptr in &session_ptrs {
+            if ptr.is_null() {
+                continue;
+            }
+            // SAFETY: ptr 来自 session 对象表登记，arena 存活期内有效。
+            if unsafe { (*ptr).is_gc_marked() } {
+                survivors.push(ptr);
+            } else {
+                session_freed += Self::drop_dead_session_object(ptr);
+                dead_session += 1;
+            }
+        }
+        let live_session = survivors.len() as u64;
+        vm.gc_state.session_object_ptrs = survivors;
+
+        // 恢复 mark 位不变量：收集后无残留（残留 true 使下一次 mark DFS 短路漏标）。
+        self.clear_all_marks(vm);
+
+        // 对象口径重算：存活对象 + 存活串 + BigInt（串/BigInt 本路径不动，
+        // 随公式整体重算保持与 strings-only 口径一致）。
+        let mut object_bytes: usize = 0;
+        for &ptr in &vm.gc_state.session_object_ptrs {
+            if ptr.is_null() {
+                continue;
+            }
+            // SAFETY: 存活对象在 session 表中，arena 存活期内有效。
+            let obj = unsafe { &*ptr };
+            object_bytes += size_of::<JsObject>() + Self::object_heap_data_bytes(obj) as usize;
+        }
+        let mut string_bytes: usize = 0;
+        for &ptr in &vm.gc_state.session_string_ptrs {
+            if ptr.is_null() {
+                continue;
+            }
+            // SAFETY: ptr 在字符串表登记，收尾前有效。
+            string_bytes += size_of::<JsString>() + unsafe { (*ptr).len() };
+        }
+        let bigint_bytes = vm.gc_state.session_bigint_ptrs.borrow().len() * size_of::<num_bigint::BigInt>();
+        vm.gc_state.session_bytes_allocated = object_bytes + string_bytes + bigint_bytes;
+
+        // 抬高下次触发水位：当前分配包络 + 阈值增量——存活包络超阈值时不每指令
+        // 重复触发无死对象可回收的白跑。
+        vm.gc_state.gc_watermark = vm.run_alloc_bytes().saturating_add(vm.gc_state.gc_threshold_cached);
+        vm.gc_state.gc_gate_retry_alloc = 0;
+
+        let live = live_epoch + live_session;
+        let dead = (epoch_ptrs.len() as u64 - live_epoch) + dead_session;
+        let freed_bytes = epoch_freed + session_freed;
+
+        let elapsed = start.elapsed();
+        self.total_collections += 1;
+        self.last_collection_duration_us = elapsed.as_micros() as u64;
+        self.max_collection_duration_us = self.max_collection_duration_us.max(self.last_collection_duration_us);
+        self.min_collection_duration_us = self.min_collection_duration_us.min(self.last_collection_duration_us);
+        self.total_bytes_freed = self.total_bytes_freed.saturating_add(freed_bytes);
+        self.total_objects_scanned += (epoch_ptrs.len() + session_ptrs.len()) as u64;
+        self.total_objects_live += live;
+        self.total_objects_dead += dead;
+        self.last_collection_objects_scanned = (epoch_ptrs.len() + session_ptrs.len()) as u64;
+        self.last_collection_objects_live = live;
+        self.last_collection_objects_dead = dead;
+        self.last_collection_bytes_freed = freed_bytes;
+
+        vm_info!(
+            "[GC] in-run cycle #{} end: {} scanned, {} live, {} dead, {:.1}ms, {} bytes freed",
+            self.total_collections,
+            self.last_collection_objects_scanned,
+            self.last_collection_objects_live,
+            self.last_collection_objects_dead,
+            elapsed.as_secs_f64() * 1000.0,
+            freed_bytes,
+        );
+    }
+
+    /// 释放全部 epoch 对象的旧堆区（四处属性/元素向量 + native 状态盒）与独占
+    /// upvalue 列表，返回释放字节数。
+    ///
+    /// 调用前提：活 epoch 对象已晋升 session——其 vec/native 盒被克隆深拷贝取代，
+    /// 原件在此恰好释放一次；死对象堆区随本体原地释放。upvalue 列表原件与晋升
+    /// 克隆共享同一 Box（`clone_for_session_epoch` 别名）：共享项由 session 对象
+    /// 持有、留待收尾统一释放，此处只放独占项，保证恰好一次。
+    fn free_epoch_object_heap_data(epoch_ptrs: &[*mut JsObject], session_ptrs: &[*mut JsObject]) -> u64 {
+        // 共享集：session 对象表（存活与待死同表）仍持有的 upvalue Box——
+        // 待死 session 对象的 Box 由本收集的原地 sweep 释放，交点恰好一处。
+        let mut shared: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for &ptr in session_ptrs {
+            if ptr.is_null() {
+                continue;
+            }
+            // SAFETY: ptr 来自 session 对象表登记，arena 存活期内有效。
+            let up = unsafe { (*ptr).upvalues } as usize;
+            if up != 0 {
+                shared.insert(up);
+            }
+        }
+
+        let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut freed = 0u64;
+        for &ptr in epoch_ptrs {
+            if ptr.is_null() {
+                continue;
+            }
+            // SAFETY: epoch 对象表未清空，指向 epoch arena 内合法对象。
+            unsafe {
+                freed += Self::drop_object_heap_data(ptr, false);
+                let up = (*ptr).upvalues as usize;
+                if up == 0 || shared.contains(&up) || !seen.insert(up) {
+                    continue;
+                }
+                // SAFETY: up 由 set_upvalues 的 Box::into_raw 分配，去重与共享集
+                // 保证本路径恰好释放一次。
+                drop(Box::from_raw(up as *mut Vec<*mut oxide_types::object::Cell>));
+                (*ptr).upvalues = std::ptr::null_mut();
+            }
+        }
+        freed
     }
 
     pub(crate) fn stats_summary(&self) -> String {
@@ -1949,5 +2161,172 @@ mod tests {
         // full_reset 清空全部 session 字符串（连带产物）：无泄漏、无 double-free。
         vm.full_reset();
         assert!(vm.gc_state.session_string_ptrs.is_empty());
+    }
+
+    // ── 执行期两档收集 ──────────────────────────────────────────────────────
+
+    /// 执行期收集有效性：死 epoch 对象随换新 Bump 回收、死 session 对象原地
+    /// 回收出表，活对象晋升 session 后值保持可读。
+    #[test]
+    fn in_run_collection_reclaims_dead_and_keeps_live() {
+        let mut vm = vm_with_threshold(65536);
+        vm.run(&Arc::new(compile("globalThis.keep = { a: 1 }; 0"))).expect("run1");
+        // churn：IIFE 局部数组 + 50 个未入根的函数（函数 session 直分配、
+        // 数组 epoch 分配），IIFE 返回后全部不可达。
+        vm.run(&Arc::new(compile(
+            "(function(){ var t = []; for (var i = 0; i < 50; i++) { t[i] = function() { return i; }; } })(); 0",
+        )))
+        .expect("run2");
+        // run 边界清空执行状态：寄存器文件中的陈旧值不再是执行根，churn 对象
+        // 自此真正不可达。
+        vm.run(&Arc::new(compile("0"))).expect("run3");
+
+        assert!(!vm.gc_state.epoch_object_ptrs.is_empty(), "churn 应留有 epoch 对象");
+        let session_before = vm.session_object_count();
+        assert!(session_before > 0, "churn 应产生 session 直分配函数");
+
+        vm.maybe_collect_in_run();
+
+        assert!(vm.session_gc_stats().total_collections >= 1, "执行期收集应跑一轮");
+        assert!(vm.gc_state.epoch_object_ptrs.is_empty(), "epoch 对象应全部晋升或回收");
+        assert!(vm.session_object_count() < session_before, "死 session 函数应被原地回收");
+
+        // 活对象晋升 session 后值可读。
+        let keep = global_prop_opt(&vm, "keep").expect("keep 应挂在 global");
+        assert!(keep.is_object());
+        let keep_ptr = keep.as_js_object_ptr();
+        assert!(unsafe { (*keep_ptr).is_session_epoch() }, "keep 晋升后应为 session 对象");
+        let a = vm.resolve_property(unsafe { &*keep_ptr }, vm.kernel_core().perm_interner().intern("a").0);
+        assert_eq!(a, Some(JsValue::int(1)));
+    }
+
+    /// for-in 门控双形钉住：活跃形（迭代器在 `vm.iters` 表内）与挂起形
+    /// （生成器在 for-in 内 yield，迭代器搬入状态盒）都须拦下执行期收集——
+    /// 换新 Bump 使 ForInIter body 即时失效；门控开后方可收集。
+    #[test]
+    fn active_and_suspended_for_in_block_in_run_collection() {
+        // 活跃形：迭代器直接压在 vm.iters，O(1) 子句即拦。
+        let mut vm = vm_with_threshold(65536);
+        let dead = plain_object(&mut vm);
+        vm.gc_state.epoch_object_ptrs.push(dead);
+        let iter = vm.epoch.alloc(crate::vm::ForInIter {
+            keys: bumpalo::collections::Vec::new_in(vm.epoch.bump()),
+            index: 0,
+        });
+        vm.iters.push_for_in(iter.cast::<crate::vm::ForInIter<'static>>());
+        let bump_before = vm.epoch.current_id();
+
+        vm.maybe_collect_in_run();
+        assert_eq!(vm.session_gc_stats().total_collections, 0, "活跃 for-in：门控关闭，不收集");
+        assert_eq!(vm.epoch.current_id(), bump_before, "门控关闭：epoch Bump 未换新");
+        assert!(vm.gc_state.epoch_object_ptrs.contains(&dead), "死对象仍在 epoch 表");
+
+        // 迭代器出表后同一调用点即应收集。
+        vm.iters.for_in_iters.pop();
+        vm.maybe_collect_in_run();
+        assert_eq!(vm.session_gc_stats().total_collections, 1, "门控开：应收集");
+        assert!(vm.epoch.current_id() > bump_before, "收集应换新 epoch Bump");
+        assert!(vm.gc_state.epoch_object_ptrs.is_empty(), "死 epoch 对象应随 Bump 回收");
+
+        // 挂起形（拦截）：生成器在 for-in 内 yield 后 run 结束，迭代器经
+        // 状态盒持有（vm.iters 已空）——收集点必须拦下，Bump 不得换新。
+        let mut vm = vm_with_threshold(65536);
+        let bump_before = vm.epoch.current_id();
+        vm.run(&Arc::new(compile(
+            "var o = { a: 1, b: 2 }; \
+             function* gen() { for (var k in o) { yield k; } return 'done'; } \
+             var g = gen(); globalThis.g = g; g.next(); 0",
+        )))
+        .expect("run1");
+        assert!(vm.iters.for_in_iters.is_empty(), "挂起时迭代器已搬入状态盒");
+        assert!(vm.suspended_holds_for_in(), "生成器状态盒应持挂起 for-in 迭代器");
+
+        vm.maybe_collect_in_run();
+        assert_eq!(vm.session_gc_stats().total_collections, 0, "挂起 for-in：门控关闭，不收集");
+        assert!(vm.epoch.current_id() == bump_before, "门控关闭：epoch Bump 未换新");
+        // 挂起生成器对象保持原址（未晋升、未释放）：状态盒与迭代器一体存活。
+        let gen_in_epoch = vm
+            .gc_state
+            .epoch_object_ptrs
+            .iter()
+            .any(|&p| !p.is_null() && unsafe { (*p).type_tag == JsObject::OBJ_TYPE_GENERATOR });
+        assert!(gen_in_epoch, "挂起生成器应仍在 epoch 表");
+
+        // 挂起形（放行）：同一 run 内续跑至 for-in 结束（迭代器释放），
+        // 阈值 1 使指令边界自动触发：挂起期门控关（Bump 不换新），完成后
+        // 门控开、执行期收集放行；yield 值跨收集保持正确。
+        let mut vm = vm_with_threshold(1);
+        vm.run(&Arc::new(compile(
+            "var o = { a: 1, b: 2 }; \
+             function* gen() { for (var k in o) { yield k; } return 'done'; } \
+             var g = gen(); globalThis.g = g; \
+             globalThis.v1 = g.next().value; globalThis.v2 = g.next().value; g.next(); 0",
+        )))
+        .expect("run2");
+        assert_eq!(vm.lookup_str(global_prop_opt(&vm, "v1").expect("v1")), Some("a".to_string()));
+        assert_eq!(vm.lookup_str(global_prop_opt(&vm, "v2").expect("v2")), Some("b".to_string()));
+        assert!(!vm.suspended_holds_for_in(), "for-in 结束后状态盒不应再持迭代器");
+        assert!(vm.session_gc_stats().total_collections >= 1, "完成后门控开：执行期收集应放行");
+
+        // 生成器对象跨收集仍为合法生成器（晋升 session 或保持 epoch 完好）。
+        let g = global_prop_opt(&vm, "g").expect("g 应挂在 global");
+        assert!(unsafe { (*g.as_js_object_ptr()).is_generator_obj() }, "收集后生成器对象应完好");
+    }
+
+    /// 非移动不变量：执行期收集的存活 session 对象地址不变（元素堆区亦不
+    /// 换盒）——用户可观察 identity 不分裂，免 forwarding/rewrite。
+    #[test]
+    fn in_run_collection_keeps_live_addresses_stable() {
+        let mut vm = vm_with_threshold(65536);
+        vm.run(&Arc::new(compile("globalThis.o = { a: [1, 2, 3], f: function() { return 1; } }; 0")))
+            .expect("run1");
+
+        // 第一轮执行期收集：o 及其 epoch 子引用晋升 session。
+        vm.maybe_collect_in_run();
+        let o = global_prop_opt(&vm, "o").expect("o 应挂在 global");
+        let o_ptr = o.as_js_object_ptr();
+        assert!(unsafe { (*o_ptr).is_session_epoch() }, "o 晋升后应为 session 对象");
+        let a_ptr = vm
+            .resolve_property(unsafe { &*o_ptr }, vm.kernel_core().perm_interner().intern("a").0)
+            .expect("o.a")
+            .as_js_object_ptr();
+        let f_ptr = vm
+            .resolve_property(unsafe { &*o_ptr }, vm.kernel_core().perm_interner().intern("f").0)
+            .expect("o.f")
+            .as_js_object_ptr();
+        let a_elems = unsafe { (*a_ptr).array_elements_raw() };
+
+        // 第二轮 churn + 收集：死对象回收，存活对象与堆区地址保持不变。
+        vm.run(&Arc::new(compile(
+            "(function(){ var t = []; for (var i = 0; i < 50; i++) { t[i] = { x: i }; } })(); 0",
+        )))
+        .expect("run2");
+        // run 边界清空执行状态：churn 局部（t 数组与 50 个对象）自此不可达。
+        vm.run(&Arc::new(compile("0"))).expect("run3");
+        vm.maybe_collect_in_run();
+        assert!(vm.session_gc_stats().total_collections >= 2, "两轮收集均应执行");
+
+        assert_eq!(global_prop_opt(&vm, "o").expect("o").as_js_object_ptr(), o_ptr, "存活对象地址不变");
+        assert_eq!(
+            vm.resolve_property(unsafe { &*o_ptr }, vm.kernel_core().perm_interner().intern("a").0)
+                .expect("o.a")
+                .as_js_object_ptr(),
+            a_ptr,
+            "数组对象地址不变"
+        );
+        assert_eq!(
+            vm.resolve_property(unsafe { &*o_ptr }, vm.kernel_core().perm_interner().intern("f").0)
+                .expect("o.f")
+                .as_js_object_ptr(),
+            f_ptr,
+            "函数对象地址不变"
+        );
+        assert_eq!(unsafe { (*a_ptr).array_elements_raw() }, a_elems, "元素堆区不换盒");
+        assert_eq!(
+            vm.resolve_property(unsafe { &*a_ptr }, vm.kernel_core().perm_interner().intern("1").0)
+                .unwrap_or(JsValue::int(-1)),
+            JsValue::int(2),
+            "元素值跨收集可读"
+        );
     }
 }

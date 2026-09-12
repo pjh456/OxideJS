@@ -49,14 +49,14 @@ pub(crate) struct GcState {
     /// 触发无死串可回收的白跑，且保证触发点恒在无 builtin 局部活值的边界。
     pub(crate) string_gc_watermark: usize,
     /// 缓存的 GC 阈值（从 config 读一次），热路径只做 usize 比较，免 Arc 解引用。
-    /// 预留给 17.3b（对象侧执行期触发）安全点审计后使用。
-    #[allow(dead_code)]
     pub(crate) gc_threshold_cached: usize,
-    /// 执行期完整 GC（对象+字符串）的触发水位：本次收集后的存活字节 + 阈值增量。
-    /// 仅当账目超过水位才在指令边界触发完整回收——存活对象超阈值时不每指令重复
-    /// 触发无死对象可回收的白跑。预留给 17.3b 安全点审计后使用。
-    #[allow(dead_code)]
+    /// 执行期两档收集（epoch 晋升 + session 原地 sweep）的触发水位：本次
+    /// 收集后的分配包络 + 阈值增量。仅当 `run_alloc_bytes` 超过水位才在指令
+    /// 边界触发——存活包络超阈值时不每指令重复触发无死对象可回收的白跑。
     pub(crate) gc_watermark: usize,
+    /// 门控未过（挂起态持有 for-in）后的重扫锚：包络再增长一个阈值才重扫
+    /// 三型状态盒（O(对象数) 扫描），避免持挂起 for-in 的 run 每指令边界重扫。
+    pub(crate) gc_gate_retry_alloc: usize,
     pub(crate) forwarding: HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>,
 }
 
