@@ -8399,9 +8399,8 @@ pub fn plain_month_day_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     {
         return NativeResult::Err(crate::error::create_type_error(vm, "no properties present"));
     }
-    let constrain = native_try!(temporal_overflow(vm, args));
     // monthCode 两段校验：语法（"M"+两位数字，可选 +"L"）先于 year 转换；
-    // 适配（闰月后缀、1..12 范围）与冲突检查在 year 转换之后。
+    // 适配（闰月后缀、1..12 范围）与冲突检查在 options 读取之后。
     let (month_code_num, leap_month) = match &month_code {
         Some(text) => {
             let b = text.as_bytes();
@@ -8417,6 +8416,7 @@ pub fn plain_month_day_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         }
         None => (None, false),
     };
+    // 部分字段先于 options 完整转换（RangeError/TypeError 先于 options 形态错误）。
     let year = match year_raw.is_undefined() {
         true => None,
         false => Some(native_try!(temporal_number_component(vm, year_raw)) as i32),
@@ -8425,6 +8425,21 @@ pub fn plain_month_day_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         true => None,
         false => Some(native_try!(temporal_number_component(vm, month_raw))),
     };
+    let day_f = match day_raw.is_undefined() {
+        true => None,
+        false => Some(native_try!(temporal_number_component(vm, day_raw))),
+    };
+    if let Some(f) = month_f {
+        if f < 1.0 {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid month"));
+        }
+    }
+    if let Some(f) = day_f {
+        if f < 1.0 {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid day"));
+        }
+    }
+    let constrain = native_try!(temporal_overflow(vm, args));
     if let Some(code) = month_code_num {
         if leap_month || !(1..=12).contains(&code) {
             return NativeResult::Err(crate::error::create_range_error(vm, "invalid monthCode"));
@@ -8458,15 +8473,8 @@ pub fn plain_month_day_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
             None => get_double_prop(obj, 0) as u32,
         }
     };
-    // 日：receiver 日（槽 1）为缺省；<1 恒 RangeError。
-    let day_f = if day_raw.is_undefined() {
-        get_double_prop(obj, 1)
-    } else {
-        native_try!(temporal_number_component(vm, day_raw))
-    };
-    if day_f < 1.0 {
-        return NativeResult::Err(crate::error::create_range_error(vm, "invalid day"));
-    }
+    // 日：receiver 日（槽 1）为缺省（partial 日已先行转换并过 <1 检查）。
+    let day_f = day_f.unwrap_or_else(|| get_double_prop(obj, 1));
     // overflow 应用：月长按 bag year（缺省 1972）判断；constrain 钳制，reject 抛错。
     let overflow_year = year.unwrap_or(1972);
     let days = days_in_month_iso(overflow_year, month) as i32;
