@@ -15,4 +15,6 @@ AGENTS.md
 
 # Build Artifacts
 target/
-test262-crash.logbenchmark/results/
+target-asan/
+test262-crash.log
+benchmark/results/
