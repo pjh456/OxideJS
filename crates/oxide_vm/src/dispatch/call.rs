@@ -105,11 +105,13 @@ impl Vm {
     pub(crate) fn dispatch_create_closure(&mut self, rd: usize, instr: u32) -> Result<(), String> {
         let sub_idx = opcode::imm16(instr) as u32;
         vm_trace!("CREATE_CLOSURE rd={} sub_idx={}", rd, sub_idx);
-        // 闭包按当前 run 的平表解析（CREATE_CLOSURE 只在本 run 装载的模块内发射）。
-        let table = self.current_table();
+        // 指令操作数是发射期 flat_id，口径为执行帧字节码所属代际的平表：跨 run
+        // 调用在当前代际上下文执行旧代字节码，须按执行帧的表代际解析，按当前
+        // 代际会悬空（表更短）或命中他代异模块（表足够长）。
+        let table = self.active_table();
         if sub_idx == 0 || (sub_idx as usize) >= table.modules.len() {
-            // 逃逸闭包（函数对象在定义模块之外被创建）时 sub_idx 相对定义模块，
-            // 超出当前平表上下文——按运行时错误处理而非索引越界 panic。
+            // sub_idx 超出执行帧代际平表：定义模块缺失或发射期编号错位——按
+            // 运行时错误处理而非索引越界 panic。
             return Err(format!(
                 "CREATE_CLOSURE: sub_module_index {} out of bounds (max {})",
                 sub_idx,
@@ -124,8 +126,11 @@ impl Vm {
         let upvalue_captures = sub.upvalue_captures.clone();
         let function_name = sub.function_name.clone();
         let function_length = sub.function_length;
+        // 新闭包盖执行帧代际：sub_idx 与 gen 同域，跨 run 调用时新闭包仍解析
+        // 回定义模块所在的原表。
         let result = self.create_function_object(
             sub_idx,
+            self.active_table_gen,
             is_arrow,
             is_class_constructor,
             is_derived_constructor,
@@ -507,10 +512,11 @@ impl Vm {
         } else if super_obj.sub_module_index() > 0 {
             let sub_idx = super_obj.sub_module_index() as usize;
             if self.callee_module(super_obj).is_none() {
+                // 上界取 super 目标自身代际平表长度（跨 run 调用时可异于当前代际）。
                 return Err(format!(
                     "SUPER_CALL: sub_module_index {} out of bounds (max {})",
                     sub_idx,
-                    self.current_table().modules.len()
+                    self.tables.get(&super_obj.table_gen()).map(|t| t.modules.len()).unwrap_or(0)
                 ));
             }
             // 收敛到统一压帧入口：this = derived_this（super() 把实例交予父构造器），

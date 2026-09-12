@@ -107,13 +107,19 @@ impl SuspendedFrame {
     }
 
     /// 恢复进 VM：写回各栈段、在途异常/完成，按 callee 记录的表代际重激活
-    /// immutables。
+    /// immutables，并把执行键维度（表代际 / flat_id）还原到被恢复模块。
     ///
     /// # 边界
     /// - `callee` 须为挂起函数对象值（状态盒 `callee` 槽）：代际按对象创建期
     ///   记录解析，存活函数对象按代际保活其表，跨 run 恢复命中同一张表。
     /// - callee 非对象（gen 0 哨兵）、代际表已被回收或下标越界返回 Err，
     ///   调用方须按各自路径回滚并报错（保持现有三处行为）。
+    ///
+    /// # 副作用
+    /// - `active_table_gen` / `active_flat_id` 还原为被恢复模块的 (代际,
+    ///   flat_id)：恢复体后续发射的标签模板须按本模块 (代际, flat_id) 命中
+    ///   模板缓存——不还原则同顶层连续恢复两代挂起体撞调用方侧同键，静默
+    ///   取回他侧模板对象。
     pub fn restore_into(&mut self, vm: &mut Vm, callee: JsValue) -> Result<(), String> {
         vm.regs = *self.regs;
         vm.pc = self.pc;
@@ -131,6 +137,9 @@ impl SuspendedFrame {
             Some(c) => vm.activate_immutables(gen, self.sub_idx as usize, &c),
             None => return Err("suspended state module table is no longer available".into()),
         }
+        // 模板缓存键维度随模块恢复：与 activate_immutables 同位还原。
+        vm.active_table_gen = gen;
+        vm.active_flat_id = self.sub_idx;
         vm.active_reg_limit = self.active_reg_limit;
         vm.root_reg_limit = self.root_reg_limit;
         vm.frames.clear();

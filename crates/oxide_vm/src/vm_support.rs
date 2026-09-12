@@ -689,15 +689,20 @@ impl Vm {
 
     /// 为 BytecodeFunc 常量创建函数 JsObject。
     /// 当 `is_arrow` 为 true 时，捕获当前 `this`（regs[254]），供调用时词法 this 绑定。
+    ///
+    /// # 边界与前提
+    /// - `gen` 为函数对象所属表代际：`sub_idx` 的口径与对象头的 `table_gen`
+    ///   盖写均以它为准（闭包创建传执行帧代际，动态构造传当前代际——动态扩表
+    ///   追加进当前代际平表）。
     pub(crate) fn create_function_object(
-        &mut self, sub_idx: u32, is_arrow: bool, is_class_constructor: bool, is_derived_constructor: bool,
+        &mut self, sub_idx: u32, gen: u32, is_arrow: bool, is_class_constructor: bool, is_derived_constructor: bool,
         needs_home_object: bool,
     ) -> JsValue {
         // 生成器函数对象：原型为 %GeneratorFunction.prototype%（constructor 链解析到
         // "GeneratorFunction"），且不像普通函数那样拥有 `prototype` 属性。
-        // 按当前代际平表解析：函数对象恒在本次 run 内创建（CREATE_CLOSURE /
-        // 动态构造），sub_idx 口径即当前代际表。
-        let table = self.current_table();
+        // 标志按函数对象所属代际平表解析：跨 run 调用时执行帧代际可异于当前代际，
+        // sub_idx 口径与 gen 同域。
+        let table = self.tables.get(&gen).expect("函数对象的代际表须在注册表中");
         let is_generator = table.modules.get(sub_idx as usize).map(|m| m.is_generator).unwrap_or(false);
         let is_async = table.modules.get(sub_idx as usize).map(|m| m.is_async).unwrap_or(false);
         // 异步生成器（`async function*`）函数对象：原型为 %AsyncGeneratorFunction.prototype%。
@@ -716,7 +721,7 @@ impl Vm {
         obj.set_sub_module_index(sub_idx);
         // 记录创建期表代际：调用点按 (table_gen, sub_module_index) 解析子模块
         // 平表，跨 run 换表后存活函数仍命中原表（注册表按代际保活）。
-        obj.set_table_gen(self.current_gen);
+        obj.set_table_gen(gen);
         obj.set_class_constructor(is_class_constructor);
         obj.set_derived_constructor(is_derived_constructor);
         let _ = needs_home_object;

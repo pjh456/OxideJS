@@ -278,6 +278,26 @@ fn dynamic_function_survives_reset_and_calls() {
     ));
 }
 
+/// 跨 run 嵌套闭包：run1 的 f 体内定义嵌套函数 g（f 帧内 CREATE_CLOSURE 按
+/// run1 代际平表发射 flat_id）；reset 后 run2 调用 f——嵌套闭包须按执行帧
+/// 代际解析 flat 表，返回闭包的 name/调用值须命中 f 模块的字节码。
+#[test]
+fn cross_run_call_nested_closure_resolves_frame_generation() {
+    // 当前代际平表长度 ≥ 旧代索引：按当前代际解析会静默命中他模块
+    // （错 name / 错字节码），值断言与 name 断言同时捕获。
+    assert!(eval_two_phases(
+        "function f(){ function g(){ return 41 + 1; } return g; } globalThis.f = f; 0",
+        "var filler_a = function(){}; var filler_b = function(){}; \
+         var h = globalThis.f(); h() === 42 && h.name === 'g'",
+    ));
+    // 当前代际平表更短（run2 脚本无顶层函数）：旧代索引越界，合法代码不得
+    // 转显式 Err。
+    assert!(eval_two_phases(
+        "function f(){ function g(){ return 41 + 1; } return g; } globalThis.f = f; 0",
+        "var h = globalThis.f(); h() === 42 && h.name === 'g'",
+    ));
+}
+
 /// Map 原生盒按键值直插不经写屏障：epoch 值跨 reset 由边界晋升克隆进
 /// session。run2 先分配新 epoch 对象覆写旧内存再读盒内值——未晋升则读到
 /// 覆写后的垃圾。

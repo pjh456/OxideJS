@@ -800,14 +800,21 @@ impl Vm {
         }
     }
 
-    /// 当前代际的子模块平表（动态扩表与测试注入的目标）。
-    pub(crate) fn current_table(&self) -> &TableGen {
-        self.tables.get(&self.current_gen).expect("当前代际表构造期已预登记")
-    }
-
-    /// 当前代际的子模块平表（可变）。
+    /// 当前代际的子模块平表（可变，动态扩表与测试注入的目标）。
     pub(crate) fn current_table_mut(&mut self) -> &mut TableGen {
         self.tables.get_mut(&self.current_gen).expect("当前代际表构造期已预登记")
+    }
+
+    /// 当前执行帧所属代际的子模块平表：按帧切换时记录的 `active_table_gen`
+    /// 解析（压帧 / inline 入口 / run 顶层 / 挂起恢复置位，弹帧还原），跨 run
+    /// 调用时可异于 `current_gen`——帧内指令操作数是帧字节码所属代际平表里的
+    /// flat_id，须按该代际解析。
+    ///
+    /// # 边界与前提
+    /// - 执行帧代际表恒在注册表中：顶层即当前代际（恒保留），帧 / inline 的
+    ///   代际由存活 callee 函数对象保活，挂起恢复已按 callee 对象验证在位。
+    pub(crate) fn active_table(&self) -> &TableGen {
+        self.tables.get(&self.active_table_gen).expect("执行帧的代际表须在注册表中")
     }
 
     /// 函数对象 `sub_module_index` 指向的子模块条目：按对象自身记录的表代际
@@ -2672,7 +2679,7 @@ impl Vm {
         // 平表变长后同步扩容常量缓存，否则激活新模块常量时越界 panic。
         table.immutables.resize(table.modules.len(), OnceLock::new());
 
-        let func_val = self.create_function_object(base, false, false, false, false);
+        let func_val = self.create_function_object(base, self.current_gen, false, false, false, false);
         let func_obj = unsafe { &mut *func_val.as_js_object_ptr() };
         let length_si = self.kernel_core.perm_interner().intern("length").0;
         let name_si = self.kernel_core.perm_interner().intern("name").0;
@@ -2719,7 +2726,7 @@ impl Vm {
         Arc::make_mut(&mut table.modules).extend(added);
         // 平表变长后同步扩容常量缓存，否则激活新模块常量时越界 panic。
         table.immutables.resize(table.modules.len(), OnceLock::new());
-        Ok(self.create_function_object(base, false, false, false, false))
+        Ok(self.create_function_object(base, self.current_gen, false, false, false, false))
     }
 }
 
@@ -2752,6 +2759,11 @@ fn rehome_subtree(module: &CompiledModule, base: u32, out: &mut Vec<Arc<Compiled
 
 #[cfg(test)]
 impl Vm {
+    /// 测试用：当前代际的子模块平表只读视图（消费点全在测试钉）。
+    pub(crate) fn current_table(&self) -> &TableGen {
+        self.tables.get(&self.current_gen).expect("当前代际表构造期已预登记")
+    }
+
     /// 测试用：整表替换当前代际的子模块平表并同步常量缓存槽位（绕过 run() 装载，
     /// 直接注入模块表后压帧/内联调用）。
     pub(crate) fn install_module_table_for_test(&mut self, modules: Arc<Vec<Arc<CompiledModule>>>) {
@@ -3205,7 +3217,7 @@ mod tests {
         vm.active_reg_limit = 254;
         vm.regs[253] = JsValue::int(42);
 
-        let callee = vm.create_function_object(1, false, false, false, false);
+        let callee = vm.create_function_object(1, vm.current_gen, false, false, false, false);
         let callee_obj = unsafe { &*callee.as_js_object_ptr() };
         let result = vm
             .call_bytecode_function_inline(callee, callee_obj, JsValue::undefined(), &[])
@@ -3229,7 +3241,7 @@ mod tests {
         vm.regs[253] = JsValue::int(7);
         vm.regs[254] = JsValue::int(8);
 
-        let inner_callee = vm.create_function_object(1, false, false, false, false);
+        let inner_callee = vm.create_function_object(1, vm.current_gen, false, false, false, false);
         let outer_native = native_function(&mut vm, native_nested_inline_254);
         let result = vm
             .call_function_sync(outer_native, JsValue::int(99), &[inner_callee])
@@ -3258,7 +3270,7 @@ mod tests {
         vm.regs[1] = JsValue::int(10);
         vm.regs[2] = JsValue::int(20);
 
-        let callee = vm.create_function_object(1, false, false, false, false);
+        let callee = vm.create_function_object(1, vm.current_gen, false, false, false, false);
         vm.push_bytecode_frame(
             callee,
             JsValue::undefined(),
@@ -3300,7 +3312,7 @@ mod tests {
         // 调用方实参区 regs[1..3)：arg0=10, arg1=20；regs[2] 同时是 callee 形参槽（param_base=2）
         vm.regs[1] = JsValue::int(10);
         vm.regs[2] = JsValue::int(20);
-        vm.regs[5] = vm.create_function_object(1, false, false, false, false);
+        vm.regs[5] = vm.create_function_object(1, vm.current_gen, false, false, false, false);
 
         vm.dispatch_new_expression(0, 5, 1).expect("NEW 压帧成功");
 

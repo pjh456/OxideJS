@@ -105,11 +105,12 @@ impl Vm {
             let sub = match self.callee_module(ctor_obj) {
                 Some(m) => m,
                 None => {
+                    // 上界取构造器自身代际平表长度（跨 run 调用时可异于当前代际）。
                     return Err(format!(
                         "NEW_EXPRESSION: sub_module_index {} out of bounds (max {})",
                         sub_idx,
-                        self.current_table().modules.len()
-                    ))
+                        self.tables.get(&ctor_obj.table_gen()).map(|t| t.modules.len()).unwrap_or(0)
+                    ));
                 }
             };
             // 生成器函数不是构造器：`new g()` 抛 TypeError。
