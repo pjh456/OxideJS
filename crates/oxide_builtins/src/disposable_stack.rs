@@ -533,7 +533,8 @@ pub fn get_capability_ptr(obj: &JsObject) -> *mut DisposeCapability {
     obj.native_data() as *mut DisposeCapability
 }
 
-/// 收集栈内作为对象引用的 value/method（GC 根边），供跨 epoch 遍历/重写时追踪。
+/// 收集栈内全部 value/method 边（GC mark 边）：对象/字符串/BigInt 均产出，
+/// 消费侧按值类型分发到对象栈与存活集。
 pub fn dispose_edges(obj: &JsObject) -> Vec<JsValue> {
     if !obj.is_disposable_stack_obj() && !obj.is_async_disposable_stack_obj() {
         return Vec::new();
@@ -544,14 +545,7 @@ pub fn dispose_edges(obj: &JsObject) -> Vec<JsValue> {
     }
     // SAFETY: native_data 持有 `alloc_capability` 写入的有效 Box 指针，本函数
     // 只在对象存活期间被 GC/绑定层调用。
-    unsafe {
-        (*ptr)
-            .entries
-            .iter()
-            .flat_map(|entry| [entry.value, entry.method])
-            .filter(|value: &JsValue| value.is_object())
-            .collect()
-    }
+    unsafe { (*ptr).entries.iter().flat_map(|entry| [entry.value, entry.method]).collect() }
 }
 
 /// 克隆状态盒到新对象，用 `rewrite` 改写其中的对象引用

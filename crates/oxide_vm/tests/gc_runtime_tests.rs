@@ -335,3 +335,189 @@ fn dead_closure_upvalues_freed_by_sweep_without_double_free() {
         freed_with_captures - freed_no_captures
     );
 }
+
+// ── 原生盒内字符串/BigInt 边存活（mark 边收集去对象预过滤） ─────────────────
+
+/// 盒持唯一引用 session 串（Promise 结算值）：churn 窗口内执行期收集
+/// 仅能经状态盒边闭合存活，结算交付后读回精确值。churn 串与盒串同长：
+/// 若 box 释放后其内存被同长分配复用，读回即错值。
+#[test]
+fn promise_result_string_survives_runtime_gc() {
+    let mut vm = vm_with_threshold(512);
+    let first = compile(
+        "(function(){ \
+         var s = 'prombox'.repeat(8); \
+         var p = Promise.resolve(s); \
+         p.then(function(v){ globalThis.got = v; }); \
+         globalThis.p = p; })(); \
+         for (var i = 0; i < 2000; i++) { var t = 'z'.repeat(56); } \
+         0",
+    );
+    vm.run(&Arc::new(first)).expect("run1");
+
+    let second = compile("globalThis.got");
+    let result = vm.run(&Arc::new(second)).expect("run2");
+    let text = vm.lookup_str(result).expect("got 应为字符串").to_string();
+
+    assert_eq!(text, "prombox".repeat(8));
+    assert!(vm.session_gc_stats().total_collections > 0, "churn 应触发执行期字符串 GC");
+}
+
+/// 盒持唯一引用 session BigInt（Promise 结算值，运行时乘积非常量池字面量）：
+/// 同窗口存活闭合经 live_bigints，结算交付后读回精确值。
+#[test]
+fn promise_result_bigint_survives_runtime_gc() {
+    let mut vm = vm_with_threshold(512);
+    let first = compile(
+        "(function(){ \
+         var b = 987654321n * 123456789n; \
+         var p = Promise.resolve(b); \
+         p.then(function(v){ globalThis.got = v; }); \
+         globalThis.p = p; })(); \
+         for (var i = 0; i < 2000; i++) { var t = 'churn' + i; } \
+         0",
+    );
+    vm.run(&Arc::new(first)).expect("run1");
+
+    let second = compile("globalThis.got");
+    let result = vm.run(&Arc::new(second)).expect("run2");
+
+    let expected = num_bigint::BigInt::from(987654321u64) * num_bigint::BigInt::from(123456789u64);
+    assert!(result.is_bigint(), "got 应为 BigInt");
+    assert_eq!(vm.bigint_value(result), &expected);
+    assert!(vm.session_gc_stats().total_collections > 0, "churn 应触发执行期 GC");
+}
+
+/// 挂起生成器帧寄存器持唯一引用 session BigInt：yield 挂起后仅状态盒
+/// 可达，churn 窗口收集闭合存活，恢复读回精确值。
+#[test]
+fn suspended_generator_bigint_survives_runtime_gc() {
+    let mut vm = vm_with_threshold(512);
+    let module = compile(
+        "(function(){ \
+         function* gen() { var b = 987654321n * 123456789n; yield 1; return b; } \
+         var g = gen(); g.next(); globalThis.g = g; })(); \
+         for (var i = 0; i < 2000; i++) { var t = 'churn' + i; } \
+         globalThis.g.next().value",
+    );
+    let result = vm.run(&Arc::new(module)).expect("run");
+
+    let expected = num_bigint::BigInt::from(987654321u64) * num_bigint::BigInt::from(123456789u64);
+    assert!(result.is_bigint(), "恢复返回值应为 BigInt");
+    assert_eq!(vm.bigint_value(result), &expected);
+    assert!(vm.session_gc_stats().total_collections > 0, "churn 应触发执行期 GC");
+}
+
+/// 挂起异步函数帧持唯一引用 session BigInt：await 挂起后仅状态盒可达，
+/// 微任务恢复结算后读回精确值。
+#[test]
+fn suspended_async_function_bigint_survives_runtime_gc() {
+    let mut vm = vm_with_threshold(512);
+    let first = compile(
+        "(function(){ \
+         async function f() { var b = 987654321n * 123456789n; await 0; return b; } \
+         var p = f(); \
+         p.then(function(v){ globalThis.got = v; }); \
+         globalThis.p = p; })(); \
+         for (var i = 0; i < 2000; i++) { var t = 'churn' + i; } \
+         0",
+    );
+    vm.run(&Arc::new(first)).expect("run1");
+
+    let second = compile("globalThis.got");
+    let result = vm.run(&Arc::new(second)).expect("run2");
+
+    let expected = num_bigint::BigInt::from(987654321u64) * num_bigint::BigInt::from(123456789u64);
+    assert!(result.is_bigint(), "got 应为 BigInt");
+    assert_eq!(vm.bigint_value(result), &expected);
+    assert!(vm.session_gc_stats().total_collections > 0, "churn 应触发执行期 GC");
+}
+
+/// 挂起异步生成器帧持唯一引用 session BigInt：首次 next 挂起后仅状态盒
+/// 可达，挂起期 churn 窗口的收集闭合存活，同 run 内恢复并交付精确值。
+#[test]
+fn suspended_async_generator_bigint_survives_runtime_gc() {
+    let mut vm = vm_with_threshold(512);
+    let first = compile(
+        "async function* gen() { var b = 987654321n * 123456789n; yield 1; return b; } \
+         async function run() { \
+           var it = gen(); globalThis.g = it; \
+           var p1 = it.next(); \
+           for (var i = 0; i < 2000; i++) { var t = 'churn' + i; } \
+           await p1; \
+           return (await it.next()).value; } \
+         run().then(function(v){ globalThis.got = v; })",
+    );
+    vm.run(&Arc::new(first)).expect("run1");
+
+    let second = compile("globalThis.got");
+    let result = vm.run(&Arc::new(second)).expect("run2");
+
+    let expected = num_bigint::BigInt::from(987654321u64) * num_bigint::BigInt::from(123456789u64);
+    assert!(result.is_bigint(), "got 应为 BigInt");
+    assert_eq!(vm.bigint_value(result), &expected);
+    assert!(vm.session_gc_stats().total_collections > 0, "churn 应触发执行期 GC");
+}
+
+/// 盒持唯一引用 session 串（Map 值）：churn 窗口内收集经盒边闭合存活，
+/// get 读回精确值。churn 串与盒串同长：若 box 释放后其内存被同长
+/// 分配复用，读回即错值。
+#[test]
+fn map_value_string_survives_runtime_gc() {
+    let mut vm = vm_with_threshold(512);
+    let module = compile(
+        "(function(){ \
+         var s = 'mapbox'.repeat(8); \
+         var m = new Map(); m.set('k', s); globalThis.m = m; })(); \
+         for (var i = 0; i < 2000; i++) { var t = 'z'.repeat(48); } \
+         globalThis.m.get('k')",
+    );
+    let result = vm.run(&Arc::new(module)).expect("run");
+    let text = vm.lookup_str(result).expect("map 值应为字符串").to_string();
+
+    assert_eq!(text, "mapbox".repeat(8));
+    assert!(vm.session_gc_stats().total_collections > 0, "churn 应触发执行期字符串 GC");
+}
+
+/// 盒持唯一引用 session 串（Set 元素）：churn 窗口内收集经盒边闭合存活，
+/// values 迭代读回精确值。churn 串与盒串同长：若 box 释放后其内存被
+/// 同长分配复用，读回即错值。
+#[test]
+fn set_value_string_survives_runtime_gc() {
+    let mut vm = vm_with_threshold(512);
+    let module = compile(
+        "(function(){ \
+         var s = 'setbox'.repeat(8); \
+         var st = new Set(); st.add(s); globalThis.st = st; })(); \
+         for (var i = 0; i < 2000; i++) { var t = 'z'.repeat(48); } \
+         globalThis.st.values().next().value",
+    );
+    let result = vm.run(&Arc::new(module)).expect("run");
+    let text = vm.lookup_str(result).expect("set 元素应为字符串").to_string();
+
+    assert_eq!(text, "setbox".repeat(8));
+    assert!(vm.session_gc_stats().total_collections > 0, "churn 应触发执行期字符串 GC");
+}
+
+/// 盒持唯一引用 session 串（DisposableStack adopt 值）：churn 窗口内收集
+/// 经条目边闭合存活，dispose 回调交付后读回精确值。churn 串与盒串同长：
+/// 若 box 释放后其内存被同长分配复用，读回即错值。
+#[test]
+fn disposable_stack_value_string_survives_runtime_gc() {
+    let mut vm = vm_with_threshold(512);
+    let module = compile(
+        "(function(){ \
+         var s = 'stackbox'.repeat(8); \
+         var st = new DisposableStack(); \
+         st.adopt(s, function(v){ globalThis.got = v; }); \
+         globalThis.st = st; })(); \
+         for (var i = 0; i < 2000; i++) { var t = 'z'.repeat(64); } \
+         globalThis.st.dispose(); \
+         globalThis.got",
+    );
+    let result = vm.run(&Arc::new(module)).expect("run");
+    let text = vm.lookup_str(result).expect("adopt 值应为字符串").to_string();
+
+    assert_eq!(text, "stackbox".repeat(8));
+    assert!(vm.session_gc_stats().total_collections > 0, "churn 应触发执行期字符串 GC");
+}

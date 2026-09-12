@@ -1811,30 +1811,26 @@ fn promise_state_mut(obj: &JsObject) -> Option<&mut PromiseState> {
     }
 }
 
-/// Promise 状态盒内所有对象引用（GC mark 边）。
+/// Promise 状态盒内全部值边（GC mark 边）：对象/字符串/BigInt 均产出，
+/// 消费侧按值类型分发到对象栈与存活集。
 pub(crate) fn promise_native_edges(obj: &JsObject) -> Vec<JsValue> {
     let Some(state) = promise_state_ref(obj) else {
         return Vec::new();
     };
     let mut edges = Vec::new();
-    let push = |v: JsValue, edges: &mut Vec<JsValue>| {
-        if v.is_object() {
-            edges.push(v);
-        }
-    };
-    push(state.result, &mut edges);
-    push(state.resolve_fn, &mut edges);
-    push(state.reject_fn, &mut edges);
+    edges.push(state.result);
+    edges.push(state.resolve_fn);
+    edges.push(state.reject_fn);
     // 结算链指针：克隆恒为 session 表成员，凭这条边在原件/旧克隆仍存活时被
     // 同轮置活，结算传导不会读到悬垂克隆。
     if !state.promoted_clone.is_null() {
         edges.push(JsValue::from_js_object(state.promoted_clone));
     }
     for r in &state.reactions {
-        push(r.promise, &mut edges);
-        push(r.resolve, &mut edges);
-        push(r.reject, &mut edges);
-        push(r.handler, &mut edges);
+        edges.push(r.promise);
+        edges.push(r.resolve);
+        edges.push(r.reject);
+        edges.push(r.handler);
     }
     edges
 }

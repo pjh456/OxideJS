@@ -1180,7 +1180,7 @@ mod tests {
 
     use super::*;
     use crate::vm::{CallFrame, FrameContinuation};
-    use oxide_builtins::{array_buffer, data_view, map, set, typed_array};
+    use oxide_builtins::{array_buffer, data_view, disposable_stack, map, set, typed_array};
     use oxide_runtime_api::NativeResult;
 
     fn plain_object(vm: &mut Vm) -> *mut JsObject {
@@ -1499,6 +1499,37 @@ mod tests {
         val
     }
 
+    /// 分配一个原型指向 DisposableStack.prototype 的占位对象并写入寄存器，
+    /// 作为构造器调用的 `this`。
+    fn dispose_stack_this(vm: &mut Vm, reg: u8) -> JsValue {
+        let proto = vm.session.builtin_world().disposable_stack_proto.as_ptr() as *mut JsObject;
+        let obj = vm.epoch.alloc(JsObject::new_empty(
+            oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
+            JsValue::from_js_object(proto),
+        ));
+        // 测试辅助函数绕过 alloc_object，需手动置位 EPOCH_BIT。
+        unsafe { (*obj).set_is_epoch(true) };
+        let val = JsValue::from_js_object(obj);
+        vm.regs[reg as usize] = val;
+        val
+    }
+
+    /// 置函数位标志的占位对象（通过 `is_callable` 判定），供 adopt 的
+    /// onDispose 槽使用；测试不调用它。
+    fn function_placeholder(vm: &mut Vm) -> JsValue {
+        let proto = vm.session.builtin_world().object_proto.as_ptr() as *mut JsObject;
+        let obj = vm.epoch.alloc(JsObject::new_empty(
+            oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
+            JsValue::from_js_object(proto),
+        ));
+        // 测试辅助函数绕过 alloc_object，需手动置位 EPOCH_BIT。
+        unsafe {
+            (*obj).set_is_epoch(true);
+            (*obj).set_function(true);
+        }
+        JsValue::from_js_object(obj)
+    }
+
     #[test]
     fn reset_maybe_collect_collects_after_threshold() {
         let mut vm = vm_with_low_threshold();
@@ -1622,6 +1653,92 @@ mod tests {
         assert_eq!(edges.len(), 1);
         assert!(vm.is_session_ptr(edges[0].as_js_object_ptr()));
         assert_eq!(vm.gc_state.session_object_ptrs.len(), 2);
+    }
+
+    /// 盒持唯一引用的 session 串与 BigInt 经 Map native 边进入存活集：
+    /// 清寄存器仅留 Map 根后完整收集，两值仍登记在 session 表。
+    #[test]
+    fn session_gc_traces_map_string_and_bigint_value() {
+        let mut vm = vm_with_low_threshold();
+        map_this(&mut vm, 3);
+        let map_value = native_ok(map::map_constructor(&mut vm, &[3]));
+        let str = vm.new_string("map-box-string");
+        let str_ptr = str.as_string_ptr_mut();
+        let bi = vm.new_bigint(num_bigint::BigInt::from(121932631112635269u128));
+        let bi_ptr = bi.as_bigint_ptr() as *mut num_bigint::BigInt;
+        vm.regs[0] = map_value;
+        vm.regs[1] = JsValue::int(1);
+        vm.regs[2] = str;
+        native_ok(map::map_set(&mut vm, &[0, 1, 2]));
+        vm.regs[1] = JsValue::int(2);
+        vm.regs[2] = bi;
+        native_ok(map::map_set(&mut vm, &[0, 1, 2]));
+
+        let map_session = vm.promote_object(map_value.as_js_object_ptr());
+        vm.regs.fill(JsValue::undefined());
+        vm.regs[0] = JsValue::from_js_object(map_session);
+        collect(&mut vm);
+
+        // 只断言表成员——sweep 已释放的指针解引用即 UB。
+        assert!(vm.gc_state.session_string_ptrs.contains(&str_ptr));
+        assert!(vm.gc_state.session_bigint_ptrs.borrow().contains(&bi_ptr));
+    }
+
+    /// 盒持唯一引用的 session 串与 BigInt 经 Set native 边进入存活集：
+    /// 清寄存器仅留 Set 根后完整收集，两值仍登记在 session 表。
+    #[test]
+    fn session_gc_traces_set_string_and_bigint_value() {
+        let mut vm = vm_with_low_threshold();
+        set_this(&mut vm, 2);
+        let set_value = native_ok(set::set_constructor(&mut vm, &[2]));
+        let str = vm.new_string("set-box-string");
+        let str_ptr = str.as_string_ptr_mut();
+        let bi = vm.new_bigint(num_bigint::BigInt::from(987654321987654321u128));
+        let bi_ptr = bi.as_bigint_ptr() as *mut num_bigint::BigInt;
+        vm.regs[0] = set_value;
+        vm.regs[1] = str;
+        native_ok(set::set_add(&mut vm, &[0, 1]));
+        vm.regs[1] = bi;
+        native_ok(set::set_add(&mut vm, &[0, 1]));
+
+        let set_session = vm.promote_object(set_value.as_js_object_ptr());
+        vm.regs.fill(JsValue::undefined());
+        vm.regs[0] = JsValue::from_js_object(set_session);
+        collect(&mut vm);
+
+        // 只断言表成员——sweep 已释放的指针解引用即 UB。
+        assert!(vm.gc_state.session_string_ptrs.contains(&str_ptr));
+        assert!(vm.gc_state.session_bigint_ptrs.borrow().contains(&bi_ptr));
+    }
+
+    /// 盒持唯一引用的 session 串与 BigInt 经资源栈条目边进入存活集：
+    /// adopt 入栈后清寄存器仅留栈根，完整收集后两值仍登记在 session 表。
+    #[test]
+    fn session_gc_traces_dispose_stack_string_and_bigint_value() {
+        let mut vm = vm_with_low_threshold();
+        dispose_stack_this(&mut vm, 3);
+        let stack_value = native_ok(disposable_stack::disposable_stack_constructor(&mut vm, &[3]));
+        let on_dispose = function_placeholder(&mut vm);
+
+        let str = vm.new_string("stack-box-string");
+        let str_ptr = str.as_string_ptr_mut();
+        let bi = vm.new_bigint(num_bigint::BigInt::from(4611686018427387904u128));
+        let bi_ptr = bi.as_bigint_ptr() as *mut num_bigint::BigInt;
+        vm.regs[0] = stack_value;
+        vm.regs[1] = str;
+        vm.regs[2] = on_dispose;
+        native_ok(disposable_stack::disposable_stack_adopt(&mut vm, &[0, 1, 2]));
+        vm.regs[1] = bi;
+        native_ok(disposable_stack::disposable_stack_adopt(&mut vm, &[0, 1, 2]));
+
+        let stack_session = vm.promote_object(stack_value.as_js_object_ptr());
+        vm.regs.fill(JsValue::undefined());
+        vm.regs[0] = JsValue::from_js_object(stack_session);
+        collect(&mut vm);
+
+        // 只断言表成员——sweep 已释放的指针解引用即 UB。
+        assert!(vm.gc_state.session_string_ptrs.contains(&str_ptr));
+        assert!(vm.gc_state.session_bigint_ptrs.borrow().contains(&bi_ptr));
     }
 
     #[test]

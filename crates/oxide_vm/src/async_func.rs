@@ -492,28 +492,20 @@ pub(crate) fn async_holds_suspended_for_in(obj: &JsObject) -> bool {
     !state.suspended.for_in_iters.is_empty()
 }
 
-/// 异步状态内所有对象引用的扁平列表（GC mark 边）。
+/// 异步状态内全部引用边的扁平列表（GC mark 边）：对象/字符串/BigInt 均产出，
+/// 消费侧按值类型分发到对象栈与存活集。
 pub(crate) fn async_native_edges(obj: &JsObject) -> Vec<JsValue> {
     let Some(state) = async_state_mut(obj) else {
         return Vec::new();
     };
     let mut edges = Vec::new();
-    let push = |v: JsValue, edges: &mut Vec<JsValue>| {
-        if v.is_object() {
-            edges.push(v);
-        }
-    };
-    push(state.callee, &mut edges);
-    edges.extend(state.args.iter().copied().filter(|v| v.is_object()));
-    push(state.result, &mut edges);
-    push(state.promise, &mut edges);
-    push(state.resolve, &mut edges);
-    push(state.reject, &mut edges);
-    state.suspended.for_each_value(|v| {
-        if v.is_object() {
-            edges.push(v);
-        }
-    });
+    edges.push(state.callee);
+    edges.extend(state.args.iter().copied());
+    edges.push(state.result);
+    edges.push(state.promise);
+    edges.push(state.resolve);
+    edges.push(state.reject);
+    state.suspended.for_each_value(|v| edges.push(v));
     edges
 }
 

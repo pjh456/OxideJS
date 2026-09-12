@@ -878,35 +878,27 @@ pub(crate) fn async_generator_holds_suspended_for_in(obj: &JsObject) -> bool {
     !state.suspended.for_in_iters.is_empty()
 }
 
-/// 异步生成器状态内所有对象引用的扁平列表（GC mark 边）。
+/// 异步生成器状态内全部引用边的扁平列表（GC mark 边）：对象/字符串/BigInt
+/// 均产出，消费侧按值类型分发到对象栈与存活集。
 pub(crate) fn async_generator_native_edges(obj: &JsObject) -> Vec<JsValue> {
     let Some(state) = async_gen_state_mut(obj) else {
         return Vec::new();
     };
     let mut edges = Vec::new();
-    let push = |v: JsValue, edges: &mut Vec<JsValue>| {
-        if v.is_object() {
-            edges.push(v);
-        }
-    };
-    push(state.callee, &mut edges);
-    edges.extend(state.args.iter().copied().filter(|v| v.is_object()));
-    push(state.result, &mut edges);
+    edges.push(state.callee);
+    edges.extend(state.args.iter().copied());
+    edges.push(state.result);
     for req in state.queue.iter() {
-        push(req.promise, &mut edges);
-        push(req.resolve, &mut edges);
-        push(req.reject, &mut edges);
+        edges.push(req.promise);
+        edges.push(req.resolve);
+        edges.push(req.reject);
     }
     if let Some(req) = &state.current {
-        push(req.promise, &mut edges);
-        push(req.resolve, &mut edges);
-        push(req.reject, &mut edges);
+        edges.push(req.promise);
+        edges.push(req.resolve);
+        edges.push(req.reject);
     }
-    state.suspended.for_each_value(|v| {
-        if v.is_object() {
-            edges.push(v);
-        }
-    });
+    state.suspended.for_each_value(|v| edges.push(v));
     edges
 }
 

@@ -68,7 +68,8 @@ fn alloc_map<H: VmHost>(vm: &mut H) -> *mut JsObject {
     vm.alloc_object(obj)
 }
 
-/// 收集 Map 中作为对象引用的键和值（GC 根边），供跨 epoch 遍历/重写时追踪。
+/// 收集 Map 内全部键值边（GC mark 边）：对象/字符串/BigInt 均产出，
+/// 消费侧按值类型分发到对象栈与存活集。
 pub fn map_native_edges(obj: &JsObject) -> Vec<JsValue> {
     if !obj.is_map() {
         return Vec::new();
@@ -77,13 +78,7 @@ pub fn map_native_edges(obj: &JsObject) -> Vec<JsValue> {
     if inner.is_null() {
         return Vec::new();
     }
-    unsafe {
-        (*inner)
-            .iter()
-            .flat_map(|(key, value)| [key.0, *value])
-            .filter(|value: &JsValue| value.is_object())
-            .collect()
-    }
+    unsafe { (*inner).iter().flat_map(|(key, value)| [key.0, *value]).collect() }
 }
 
 /// 克隆 Map 的 native 数据到新对象，用 `rewrite` 改写其中的对象引用

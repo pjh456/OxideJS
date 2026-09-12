@@ -110,7 +110,8 @@ fn alloc_set<H: VmHost>(vm: &mut H) -> *mut JsObject {
     vm.alloc_object(obj)
 }
 
-/// 收集 Set 中作为对象引用的元素（GC 根边），供跨 epoch 遍历/重写时追踪。
+/// 收集 Set 内全部元素边（GC mark 边）：对象/字符串/BigInt 均产出，
+/// 消费侧按值类型分发到对象栈与存活集。
 pub fn set_native_edges(obj: &JsObject) -> Vec<JsValue> {
     if !obj.is_set() {
         return Vec::new();
@@ -119,13 +120,7 @@ pub fn set_native_edges(obj: &JsObject) -> Vec<JsValue> {
     if inner.is_null() {
         return Vec::new();
     }
-    unsafe {
-        (*inner)
-            .iter()
-            .map(|key| key.0)
-            .filter(|value: &JsValue| value.is_object())
-            .collect()
-    }
+    unsafe { (*inner).iter().map(|key| key.0).collect() }
 }
 
 /// 克隆 Set 的 native 数据到新对象，用 `rewrite` 改写其中的对象引用。
