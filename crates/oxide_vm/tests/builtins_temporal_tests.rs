@@ -3489,3 +3489,82 @@ fn plain_year_month_to_plain_date_matrix() {
         "2002-01-22|TypeError|TypeError|TypeError|TypeError|2023-02-28|1998-06-30|2000-05-01|2000-05-01|-271821-04-19|RangeError|275760-09-13|RangeError|RangeError"
     );
 }
+
+#[test]
+fn plain_year_month_until_since_matrix() {
+    let mut vm = Vm::new();
+    // until/since：other 四分支（串/bag/PD/PYM 实例）；日历相等（RangeError）；
+    // 单位表仅 year/month（缺省 smallest month / largest year）；参考日三元全等
+    // 先于可表示性检查返回空 Duration；两端按日 1 的 day 级范围；nudge 舍入
+    // （跨单位进位、half 边界、窗口端点范围）；since 整体取反。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           const ym = (y, m) => new Temporal.PlainYearMonth(y, m);
+           const d = (x) => x.years + ',' + x.months;
+           return [
+             d(ym(2000, 5).until(ym(2001, 6))),
+             d(ym(2001, 6).until(ym(2000, 5))),
+             d(ym(2000, 5).until(ym(2001, 6), { largestUnit: 'months' })),
+             d(ym(2000, 5).until(ym(2001, 6), { largestUnit: 'years' })),
+             d(ym(2000, 5).until(ym(2001, 6), { largestUnit: 'auto' })),
+             d(ym(2000, 5).until(ym(2001, 6), { largestUnit: 'years', smallestUnit: 'months' })),
+             kind(() => ym(2000, 5).until(ym(2001, 6), { largestUnit: 'months', smallestUnit: 'years' })),
+             d(ym(1976, 11).until('1976-11-18T15:23:30.1+00:00')),
+             d(ym(2016, 12).since('2016-12-31T23:59:60')),
+             d(ym(-9999, 11).until('-009999-11')),
+             d(ym(1994, 11).until(ym(2013, 6))),
+             d(ym(1994, 11).until({ year: 2013, month: 6 })),
+             d(ym(1994, 11).until('2013-06')),
+             d(ym(1994, 11).until(Temporal.PlainDate.from('2013-06-15'))),
+             d(ym(2013, 6).since(ym(1994, 11))),
+             d(ym(2013, 6).since(ym(2013, 6))),
+             kind(() => ym(2019, 10).until(ym(1976, 11), null)),
+             d(ym(2019, 10).until(ym(1976, 11), {})),
+             d(ym(2019, 10).until(ym(1976, 11), () => {})),
+             kind(() => ym(2000, 5).until(1)),
+             kind(() => ym(2000, 5).until('')),
+             kind(() => ym(2000, 5).until({})),
+             kind(() => ym(2000, 5).until({ month: 6 })),
+             kind(() => ym(2000, 5).until({ year: 2000, month: Infinity })),
+             kind(() => ym(2000, 5).until({ year: 2000, month: 6, calendar: 'hebrew' })),
+             d(ym(2000, 5).until({ year: 2005, month: 6, calendar: 'iso8601' })),
+             kind(() => ym(2019, 1).until(ym(2021, 9), { largestUnit: 'weeks' })),
+             kind(() => ym(2019, 1).until(ym(2021, 9), { smallestUnit: 'days' })),
+             kind(() => ym(2019, 1).until(ym(2021, 9), { smallestUnit: 'hours' })),
+             kind(() => ym(2000, 5).until(ym(2001, 6), { largestUnit: 'bogus' })),
+             kind(() => ym(2000, 5).until(ym(2001, 6), { smallestUnit: 'bogus' })),
+             kind(() => ym(2000, 5).until(ym(2001, 6), { roundingMode: 'bogus' })),
+             kind(() => ym(2000, 5).until(ym(2001, 6), { roundingIncrement: NaN })),
+             kind(() => ym(2000, 5).until(ym(2001, 6), { roundingIncrement: 0 })),
+             kind(() => ym(2000, 5).until(ym(2001, 6), { roundingIncrement: 1e9 + 1 })),
+             ym(2000, 5).until(ym(2001, 6), { roundingIncrement: '1' }).years,
+             d(ym(1970, 1).since('-271821-05')),
+             kind(() => ym(1970, 1).since('-271821-04')),
+             kind(() => ym(1970, 1).since('+275760-10')),
+             d(ym(1970, 1).since('+275760-09')),
+             d(ym(-271821, 4).until(ym(-271821, 4))),
+             kind(() => ym(-271821, 4).until(ym(1970, 1))),
+             kind(() => ym(2019, 10).until('-000000-06')),
+             d(ym(2022, 1).until(ym(2023, 12), { largestUnit: 'years', smallestUnit: 'months', roundingIncrement: 3, roundingMode: 'expand' })),
+             d(ym(2012, 1).until(ym(2013, 1), { smallestUnit: 'months', largestUnit: 'years', roundingIncrement: 2, roundingMode: 'halfEven' })),
+             d(ym(2012, 1).until(ym(2011, 1), { smallestUnit: 'months', largestUnit: 'years', roundingIncrement: 2, roundingMode: 'halfEven' })),
+             d(ym(2018, 6).until(ym(2019, 12), { smallestUnit: 'years', roundingMode: 'trunc' })),
+             d(ym(2018, 6).until(ym(2019, 12), { smallestUnit: 'years', roundingMode: 'halfEven' })),
+             d(ym(2017, 6).until(ym(2019, 12), { smallestUnit: 'years', roundingMode: 'halfEven' })),
+             d(ym(2017, 6).until(ym(2019, 12), { smallestUnit: 'years', roundingMode: 'halfExpand' })),
+             d(ym(2019, 1).until(ym(2021, 9), { smallestUnit: 'years', roundingIncrement: 4, roundingMode: 'halfExpand' })),
+             d(ym(2019, 1).until(ym(2021, 9), { smallestUnit: 'months', roundingIncrement: 5 })),
+             d(ym(2019, 1).until(ym(2021, 9), { largestUnit: 'months', smallestUnit: 'months', roundingIncrement: 10 })),
+             kind(() => ym(1970, 1).until(ym(1971, 1), { roundingIncrement: 100000000 })),
+             d(ym(1970, 1).until(ym(1971, 1))),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "1,1|-1,-1|0,13|1,1|1,1|1,1|RangeError|0,0|0,0|0,0|18,7|18,7|18,7|18,7|18,7|0,0|TypeError|-42,-11|-42,-11|TypeError|RangeError|TypeError|TypeError|RangeError|RangeError|5,1|RangeError|RangeError|RangeError|RangeError|RangeError|RangeError|RangeError|RangeError|RangeError|1|273790,8|RangeError|RangeError|-273790,-8|0,0|RangeError|RangeError|2,0|1,0|-1,0|1,0|2,0|2,0|3,0|4,0|2,5|0,30|RangeError|1,0"
+    );
+}

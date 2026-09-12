@@ -2868,6 +2868,7 @@ fn zoned_date_time_difference<H: VmHost>(vm: &mut H, args: &[u8], since: bool) -
         time_ns_o,
         settings,
         since,
+        9,
     )
 }
 
@@ -4339,7 +4340,7 @@ pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         increment,
         mode,
     };
-    let result = match nudge_iso_difference(vm, rel, 0, end, target_time, settings, false) {
+    let result = match nudge_iso_difference(vm, rel, 0, end, target_time, settings, false, 9) {
         Ok(values) => values,
         Err(error) => return NativeResult::Err(error),
     };
@@ -4915,7 +4916,7 @@ fn plain_time_difference<H: VmHost>(vm: &mut H, args: &[u8], since: bool) -> Nat
         Ok(settings) => settings,
         Err(error) => return NativeResult::Err(error),
     };
-    difference_core(vm, (0, 0, 0), receiver_ns as i128, (0, 0, 0), other_ns as i128, settings, since)
+    difference_core(vm, (0, 0, 0), receiver_ns as i128, (0, 0, 0), other_ns as i128, settings, since, 9)
 }
 
 /// `Temporal.PlainTime.prototype.until(other, options)`。
@@ -6690,6 +6691,15 @@ fn plain_date_unit_index(value: &str) -> Option<usize> {
     }
 }
 
+/// PlainYearMonth 差值单位层级：仅 0=year 1=month（week/day 及时间单位均不合法）。
+fn plain_year_month_unit_index(value: &str) -> Option<usize> {
+    match value {
+        "year" | "years" => Some(0),
+        "month" | "months" => Some(1),
+        _ => None,
+    }
+}
+
 /// 解析差值选项（对齐 GetDifferenceSettings）：读取顺序 largestUnit →
 /// roundingIncrement → roundingMode → smallestUnit。date_only 时单位限定
 /// year/month/week/day，smallestUnit 缺省 "day"（含时间时缺省 "nanosecond"）。
@@ -6783,14 +6793,93 @@ fn parse_difference_settings<H: VmHost>(
     })
 }
 
+/// 解析 PlainYearMonth 差值选项（对齐 GetDifferenceSettings，unitGroup=date）：
+/// 单位表仅 year/month（week/day/时间单位不合法）；smallestUnit 缺省 "month"，
+/// largestUnit 缺省/auto 为 LargerOfTwo(year, smallest) = year。
+/// 读取顺序 largestUnit → roundingIncrement → roundingMode → smallestUnit（字典序）。
+fn parse_year_month_difference_settings<H: VmHost>(
+    vm: &mut H, options_value: JsValue,
+) -> Result<DifferenceSettings, JsValue> {
+    let default_smallest = "month";
+    let default_largest = 0usize; // year
+    let (largest_raw, increment_value, mode_value, smallest_raw) = if options_value.is_undefined() {
+        (None, 1.0, "trunc".to_string(), default_smallest.to_string())
+    } else {
+        if !options_value.is_object() {
+            return Err(crate::error::create_type_error(vm, "options must be an object"));
+        }
+        let options_ptr = options_value.as_js_object_ptr();
+        if options_ptr.is_null() {
+            return Err(crate::error::create_type_error(vm, "options must be an object"));
+        }
+        let options = unsafe { &*options_ptr };
+        let largest_raw = match temporal_option_value(vm, options, options_value, "largestUnit") {
+            Ok(raw) if raw.is_undefined() => None,
+            Ok(raw) => Some(temporal_option_string(vm, raw)?),
+            Err(error) => return Err(error),
+        };
+        let increment_raw = match temporal_option_value(vm, options, options_value, "roundingIncrement") {
+            Ok(raw) if raw.is_undefined() => 1.0,
+            Ok(raw) => temporal_option_number(vm, raw)?,
+            Err(error) => return Err(error),
+        };
+        let mode_raw = match temporal_option_value(vm, options, options_value, "roundingMode") {
+            Ok(raw) if raw.is_undefined() => "trunc".to_string(),
+            Ok(raw) => temporal_option_string(vm, raw)?,
+            Err(error) => return Err(error),
+        };
+        let smallest_raw = match temporal_option_value(vm, options, options_value, "smallestUnit") {
+            Ok(raw) if raw.is_undefined() => default_smallest.to_string(),
+            Ok(raw) => temporal_option_string(vm, raw)?,
+            Err(error) => return Err(error),
+        };
+        (largest_raw, increment_raw, mode_raw, smallest_raw)
+    };
+
+    let smallest_index = match plain_year_month_unit_index(&smallest_raw) {
+        Some(index) => index,
+        None => return Err(crate::error::create_range_error(vm, "invalid smallestUnit")),
+    };
+    // auto/缺省：LargerOfTwoTemporalUnits(year, smallestUnit)。更大单位取更小索引。
+    let largest_index = match largest_raw {
+        Some(value) if value == "auto" => smallest_index.min(default_largest),
+        Some(value) => match plain_year_month_unit_index(&value) {
+            Some(index) => index,
+            None => return Err(crate::error::create_range_error(vm, "invalid largestUnit")),
+        },
+        None => smallest_index.min(default_largest),
+    };
+    if largest_index > smallest_index {
+        return Err(crate::error::create_range_error(vm, "smallestUnit exceeds largestUnit"));
+    }
+    let Some(mode) = instant_rounding_mode(&mode_value) else {
+        return Err(crate::error::create_range_error(vm, "invalid roundingMode"));
+    };
+    if !increment_value.is_finite() {
+        return Err(crate::error::create_range_error(vm, "invalid roundingIncrement"));
+    }
+    let increment = increment_value.trunc();
+    if !(1.0..=1_000_000_000.0).contains(&increment) {
+        return Err(crate::error::create_range_error(vm, "invalid roundingIncrement"));
+    }
+    Ok(DifferenceSettings {
+        largest_index,
+        smallest_index,
+        increment: increment as i128,
+        mode,
+    })
+}
+
 /// 差值核心：internal = end - start，按设置取整；since 用 NegateRoundingMode
 /// 的舍入模式并在最后整体取反（不调换两端，调换会改变 0.5 边界所在的年长）。
+/// no_rounding = 单位索引空间中"最细单位"的索引：该单位且 increment=1 时
+/// 舍入为恒等变换，跳过 nudge（边界处避免窗口端点的无效范围抛错）。
 #[allow(clippy::too_many_arguments)]
 fn difference_core<H: VmHost>(
     vm: &mut H, start: (i128, i128, i128), start_time_ns: i128, end: (i128, i128, i128), end_time_ns: i128,
-    settings: DifferenceSettings, since: bool,
+    settings: DifferenceSettings, since: bool, no_rounding: usize,
 ) -> NativeResult {
-    let values = match nudge_iso_difference(vm, start, start_time_ns, end, end_time_ns, settings, since) {
+    let values = match nudge_iso_difference(vm, start, start_time_ns, end, end_time_ns, settings, since, no_rounding) {
         Ok(values) => values,
         Err(error) => return NativeResult::Err(error),
     };
@@ -6812,7 +6901,7 @@ fn difference_core<H: VmHost>(
 #[allow(clippy::too_many_arguments)]
 fn nudge_iso_difference<H: VmHost>(
     vm: &mut H, start: (i128, i128, i128), start_time_ns: i128, end: (i128, i128, i128), end_time_ns: i128,
-    settings: DifferenceSettings, since: bool,
+    settings: DifferenceSettings, since: bool, no_rounding: usize,
 ) -> Result<[f64; 10], JsValue> {
     let DifferenceSettings {
         largest_index,
@@ -6878,7 +6967,7 @@ fn nudge_iso_difference<H: VmHost>(
         }
     };
 
-    let mut values = if smallest_index == 9 && increment == 1 {
+    let mut values = if smallest_index == no_rounding && increment == 1 {
         // 不要求舍入：时间按最大单位拆回。
         let mut values = date_values;
         if largest_index >= 4 {
@@ -6990,6 +7079,7 @@ fn plain_date_time_difference<H: VmHost>(vm: &mut H, args: &[u8], since: bool) -
         ot as i128,
         settings,
         since,
+        9,
     )
 }
 
@@ -7475,6 +7565,7 @@ pub fn plain_date_until<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         0,
         settings,
         false,
+        9,
     )
 }
 
@@ -7502,6 +7593,7 @@ pub fn plain_date_since<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         0,
         settings,
         true,
+        9,
     )
 }
 
@@ -8977,6 +9069,63 @@ pub fn plain_year_month_to_plain_date<H: VmHost>(vm: &mut H, args: &[u8]) -> Nat
     }
     let calendar = get_calendar_id(obj, 3);
     make_plain_date(vm, year, month, day, &calendar)
+}
+
+/// `Temporal.PlainYearMonth.prototype.until(other[, options])`。
+pub fn plain_year_month_until<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_year_month_difference(vm, args, false)
+}
+
+/// `Temporal.PlainYearMonth.prototype.since(other[, options])`。
+pub fn plain_year_month_since<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_year_month_difference(vm, args, true)
+}
+
+/// until/since 差值核心（DifferenceTemporalPlainYearMonth）。
+///
+/// # 步骤
+/// 1. receiver branding（TypeError）。
+/// 2. other 经 ToTemporalYearMonth（串 / bag / PD / PYM 实例；day 不读）。
+/// 3. 日历相等（不等 RangeError；在 options 读取之前）。
+/// 4. options 对象 + 差值设置（单位表仅 year/month，smallestUnit 缺省 month，
+///    largestUnit 缺省/auto 为 year）。
+/// 5. (年, 月, 参考日) 三元全等 → 空 Duration（先于可表示性检查）。
+/// 6. 两端按日 1 查可表示性（ISODateWithinLimits，day 级）→ RangeError。
+/// 7. 既有差值机件（nudge 窗口端点同样带 day 级范围检查）；since 整体取反。
+///
+/// # 边界与副作用
+/// - 参考日只参与第 5 步的全等判断；差值本身恒按日 1 计算。
+/// - 第 2 步的字符串/袋路径为年月级范围检查（自 ToTemporalYearMonth），
+///   day 级补查在第 6 步，两步错误类相同（RangeError），仅抛错时点不同。
+fn plain_year_month_difference<H: VmHost>(vm: &mut H, args: &[u8], since: bool) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_year_month(vm, obj));
+    let other_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let (oy, om, od, ocal) = native_try!(year_month_like_parts(vm, other_val, true));
+    // 日历相等（ToTemporalYearMonth 之后、options 读取之前）。
+    if get_calendar_id(obj, 3) != ocal {
+        return NativeResult::Err(crate::error::create_range_error(vm, "calendars must be equal"));
+    }
+    let options_value = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let settings = match parse_year_month_difference_settings(vm, options_value) {
+        Ok(settings) => settings,
+        Err(error) => return NativeResult::Err(error),
+    };
+    // (年, 月, 参考日) 三元全等 → 空 Duration（先于可表示性检查）。
+    let ry = get_double_prop(obj, 0) as i128;
+    let rm = get_double_prop(obj, 1) as i128;
+    let rd = get_double_prop(obj, 2) as i128;
+    if compare_iso_date((ry, rm, rd), (i128::from(oy), i128::from(om), i128::from(od))) == 0 {
+        return make_duration(vm, [0.0; 10]);
+    }
+    // 两端按日 1 的可表示性检查（ISODateWithinLimits，day 级）。
+    if days_from_civil(ry, rm, 1).abs() > MAX_ISO_DAY
+        || days_from_civil(i128::from(oy), i128::from(om), 1).abs() > MAX_ISO_DAY
+    {
+        return NativeResult::Err(crate::error::create_range_error(vm, "date is out of range"));
+    }
+    difference_core(vm, (ry, rm, 1), 0, (i128::from(oy), i128::from(om), 1), 0, settings, since, 1)
 }
 
 /// `Temporal.PlainMonthDay.prototype.equals(other)`：比较 (月, 日, 参考年) 三元与日历标识；
