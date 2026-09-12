@@ -7219,10 +7219,24 @@ pub fn plain_date_day_of_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
 
 /// 计算给定年月的天数（含闰年）。
 fn days_in_month_iso(year: i32, month: u32) -> u32 {
-    NaiveDate::from_ymd_opt(year, month + 1, 1)
-        .and_then(|next| next.checked_sub_days(Days::new(1)))
-        .map(|d| d.day())
-        .unwrap_or(31)
+    if let Some(next) = NaiveDate::from_ymd_opt(year, month + 1, 1) {
+        if let Some(prev) = next.checked_sub_days(Days::new(1)) {
+            return prev.day();
+        }
+    }
+    // 年越 chrono 表示范围（PMD from 的 bag year 可任意 i32）：直接按 ISO 规则。
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        _ => {
+            // 闰年判定须用数学取模（负年），与 chrono 域内结果一致。
+            if year.rem_euclid(4) == 0 && (year.rem_euclid(100) != 0 || year.rem_euclid(400) == 0) {
+                29
+            } else {
+                28
+            }
+        }
+    }
 }
 
 /// `Temporal.PlainDate.prototype.daysInMonth` getter。
@@ -7518,7 +7532,6 @@ fn iso_year_month_within_limits(year: i32, month: u32) -> bool {
 
 /// 构造 PlainMonthDay 实例对象（槽 0-3 = 月/日/参考年/日历 ID）。
 /// from/toPlainDate 等返回新对象的成员使用；构造器走 receiver 初始化路径。
-#[expect(dead_code)]
 fn make_plain_month_day<H: VmHost>(vm: &mut H, month: u32, day: u32, ref_year: i32, calendar: &str) -> NativeResult {
     let proto = JsValue::from_js_object(vm.session().builtin_world().plain_month_day_proto.as_ptr() as *mut JsObject);
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
@@ -7920,6 +7933,471 @@ pub fn plain_year_month_to_locale_string<H: VmHost>(vm: &mut H, args: &[u8]) -> 
 /// `Temporal.PlainYearMonth.prototype.valueOf()`：Temporal 对象无值表示，恒 TypeError。
 pub fn plain_year_month_value_of<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     NativeResult::Err(crate::error::create_type_error(vm, "Temporal.PlainYearMonth has no valueOf"))
+}
+
+// ==================== PlainMonthDay.from ====================
+
+/// PlainMonthDay 串注解校验：与 validate_temporal_annotation_suffix 同构，
+/// 但 u-ca 值只接受 iso8601（大小写不敏感），其余内置日历 ID 拒绝。
+fn validate_month_day_annotation_suffix(mut suffix: &str) -> Result<(), String> {
+    let mut calendar_seen = false;
+    let mut saw_critical_calendar = false;
+    let mut time_zone_seen = false;
+    while !suffix.is_empty() {
+        if !suffix.starts_with('[') {
+            return Err("invalid annotation suffix".into());
+        }
+        let Some(end) = suffix.find(']') else {
+            return Err("unterminated annotation".into());
+        };
+        if end == 1 {
+            return Err("empty annotation".into());
+        }
+        let annotation = &suffix[1..end];
+        let (critical, body) = annotation.strip_prefix('!').map_or((false, annotation), |body| (true, body));
+        if let Some((key, value)) = body.split_once('=') {
+            if key.bytes().any(|byte| byte.is_ascii_uppercase()) {
+                return Err("annotation keys must be lowercase".into());
+            }
+            if key == "u-ca" {
+                if calendar_seen {
+                    if critical || saw_critical_calendar {
+                        return Err("invalid calendar annotation".into());
+                    }
+                } else if !value.eq_ignore_ascii_case("iso8601") {
+                    return Err("invalid calendar annotation".into());
+                } else {
+                    calendar_seen = true;
+                    saw_critical_calendar = critical;
+                }
+            } else if critical {
+                return Err("unknown critical annotation".into());
+            }
+        } else if time_zone_seen {
+            return Err("invalid time-zone annotation".into());
+        } else {
+            time_zone_seen = true;
+        }
+        suffix = &suffix[end + 1..];
+    }
+    Ok(())
+}
+
+/// PlainMonthDay 串的时间部分校验（值丢弃）：偏移剥离须恰好耗尽剩余文本；
+/// 接受 T/t/空格分隔、小时可缺分钟秒、秒可 60（leap second）、小数秒 ≤9 位；
+/// 禁止小数时/分、UTC 设计符在调用侧先行拒绝。
+fn validate_month_day_time_suffix(input: &str) -> Result<(), String> {
+    let time_end = input
+        .char_indices()
+        .find_map(|(index, ch)| matches!(ch, '+' | '-').then_some(index))
+        .unwrap_or(input.len());
+    if time_end < input.len() && !strip_iso_offset(&input[time_end..])?.is_empty() {
+        return Err("invalid ISO offset".into());
+    }
+    let time = &input[..time_end];
+    if time.is_empty() {
+        return Err("missing ISO time".into());
+    }
+    let (clock, fraction) = match time.find(['.', ',']) {
+        Some(index) => (&time[..index], Some(&time[index + 1..])),
+        None => (time, None),
+    };
+    let fields = if clock.contains(':') {
+        clock.split(':').collect::<Vec<_>>()
+    } else {
+        if clock.len() % 2 != 0 || clock.len() > 6 {
+            return Err("invalid ISO time".into());
+        }
+        clock
+            .as_bytes()
+            .chunks(2)
+            .map(std::str::from_utf8)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "invalid ISO time".to_string())?
+    };
+    if fields.is_empty() || fields.len() > 3 || fields.iter().any(|field| field.len() != 2) {
+        return Err("invalid ISO time".into());
+    }
+    if fraction.is_some() && fields.len() < 3 {
+        return Err("fractional hours and minutes are not valid".into());
+    }
+    let parse_field = |index: usize| -> Result<u32, String> {
+        fields
+            .get(index)
+            .map_or(Ok(0), |field| field.parse().map_err(|_| "invalid ISO time".to_string()))
+    };
+    let hour = parse_field(0)?;
+    let minute = parse_field(1)?;
+    let mut second = parse_field(2)?;
+    if second == 60 {
+        second = 59;
+    }
+    let subsecond = match fraction {
+        Some(digits) if !digits.is_empty() && digits.len() <= 9 && digits.bytes().all(|byte| byte.is_ascii_digit()) => {
+            let mut padded = digits.to_owned();
+            padded.extend(std::iter::repeat('0').take(9 - digits.len()));
+            padded.parse::<u32>().map_err(|_| "invalid ISO fraction".to_string())?
+        }
+        Some(_) => return Err("invalid ISO fraction".into()),
+        None => 0,
+    };
+    if !valid_plain_time(hour, minute, second, subsecond / 1_000_000, subsecond / 1_000 % 1_000, subsecond % 1_000) {
+        return Err("invalid ISO time".into());
+    }
+    Ok(())
+}
+
+/// "MM-DD" 或 "MMDD" 形态的月日解析。
+fn parse_month_day_md(input: &str) -> Result<(u32, u32), String> {
+    let bytes = input.as_bytes();
+    let (m_s, d_s) = if bytes.len() == 4 && bytes.iter().all(|b| b.is_ascii_digit()) {
+        (&input[..2], &input[2..])
+    } else if bytes.len() == 5
+        && bytes[2] == b'-'
+        && bytes[..2].iter().all(|b| b.is_ascii_digit())
+        && bytes[3..].iter().all(|b| b.is_ascii_digit())
+    {
+        (&input[..2], &input[3..])
+    } else {
+        return Err("invalid ISO month-day".into());
+    };
+    let month: u32 = m_s.parse().map_err(|_| "invalid ISO month".to_string())?;
+    let day: u32 = d_s.parse().map_err(|_| "invalid ISO day".to_string())?;
+    Ok((month, day))
+}
+
+/// PlainMonthDay 串的日期部分：MM-DD / MMDD / --MM-DD / --MMDD / 完整日期（扩展或紧凑）。
+/// 年份仅用于负零年拒绝（-000000 → 错），无范围检查；返回 (month, day)。
+fn parse_month_day_date_part(input: &str) -> Result<(u32, u32), String> {
+    if input.is_empty() {
+        return Err("invalid ISO date".into());
+    }
+    if let Some(rest) = input.strip_prefix("--") {
+        let (month, day) = parse_month_day_md(rest)?;
+        return finish_month_day_range(month, day);
+    }
+    let bytes = input.as_bytes();
+    let signed = matches!(bytes[0], b'-' | b'+');
+    let negative = bytes[0] == b'-';
+    let mut i = usize::from(signed);
+    let y_start = i;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    let digits = &input[y_start..i];
+    if i < bytes.len() && bytes[i] == b'-' {
+        // 扩展形：年份 + -MM-DD；无符号两位引导是 MM-DD 形态。
+        if digits.len() == 2 && !signed {
+            let (month, day) = parse_month_day_md(input)?;
+            return finish_month_day_range(month, day);
+        }
+        let expected = usize::from(signed) * 6 + 4 * (1 - usize::from(signed));
+        if digits.len() != expected {
+            return Err("invalid ISO year".into());
+        }
+        i += 1;
+        let month = read_iso2(input, &mut i, bytes)?;
+        if i >= bytes.len() || bytes[i] != b'-' {
+            return Err("invalid ISO date".into());
+        }
+        i += 1;
+        let day = read_iso2(input, &mut i, bytes)?;
+        if i != bytes.len() {
+            return Err("invalid trailing content".into());
+        }
+        if negative && digits == "000000" {
+            return Err("invalid ISO negative zero year".into());
+        }
+        return finish_month_day_range(month, day);
+    }
+    if i != bytes.len() {
+        return Err("invalid trailing content".into());
+    }
+    // 紧凑纯数字：4 位 = MMDD（无符号）；否则 (4-6 位年) + 4 位月日。
+    let len = digits.len();
+    if !(len == 4 && !signed || len == 10 && signed || (!signed && (8..=10).contains(&len))) {
+        return Err("invalid ISO date".into());
+    }
+    let tail = &input[y_start..];
+    let y_len = tail.len() - 4;
+    let (month, day) = parse_month_day_md(&tail[y_len..])?;
+    if y_len == 6 && negative && &tail[..6] == "000000" {
+        return Err("invalid ISO negative zero year".into());
+    }
+    finish_month_day_range(month, day)
+}
+
+/// 月日取值边界：月 1..=12、日 1..=31（串路径无参考年，不做月长检查）。
+fn finish_month_day_range(month: u32, day: u32) -> Result<(u32, u32), String> {
+    if month == 0 || month > 12 || day == 0 || day > 31 {
+        return Err("invalid ISO date".into());
+    }
+    Ok((month, day))
+}
+
+/// 解析 PlainMonthDay ISO 串（"MM-DD"/"MMDD"/"--MM-DD"/完整日期/完整 datetime）。
+/// 注解与时间部分按规则校验；参考年恒 1972（串中年份丢弃）。
+fn parse_month_day_string(input: &str) -> Result<(u32, u32), String> {
+    let trimmed = input.trim();
+    if trimmed.contains('\u{2212}') {
+        return Err("variant minus sign is not valid for PlainMonthDay".into());
+    }
+    let text = trimmed.to_owned();
+    let annotation_start = text.find('[').unwrap_or(text.len());
+    validate_month_day_annotation_suffix(&text[annotation_start..])?;
+    let text = &text[..annotation_start];
+    if text.contains('Z') || text.contains('z') {
+        return Err("UTC designator is not valid for PlainMonthDay".into());
+    }
+    let separator = text.find(['T', 't', ' ']);
+    let (date_part, time_part) = match separator {
+        Some(index) => (&text[..index], &text[index + 1..]),
+        None => (text, ""),
+    };
+    if !time_part.is_empty() {
+        validate_month_day_time_suffix(time_part)?;
+    }
+    parse_month_day_date_part(date_part)
+}
+
+/// bag 日历字符串是否合法：接受任何 PlainMonthDay 串形态，外加 "YYYY-MM" 年月形。
+fn is_valid_month_day_calendar_string(input: &str) -> bool {
+    let trimmed = input.trim();
+    if trimmed.contains('\u{2212}') {
+        return false;
+    }
+    let text = trimmed.to_owned();
+    let annotation_start = text.find('[').unwrap_or(text.len());
+    if validate_month_day_annotation_suffix(&text[annotation_start..]).is_err() {
+        return false;
+    }
+    let text = &text[..annotation_start];
+    if text.contains('Z') || text.contains('z') {
+        return false;
+    }
+    let separator = text.find(['T', 't', ' ']);
+    let (date_part, time_part) = match separator {
+        Some(index) => (&text[..index], &text[index + 1..]),
+        None => (text, ""),
+    };
+    if !time_part.is_empty() && validate_month_day_time_suffix(time_part).is_err() {
+        return false;
+    }
+    if parse_month_day_date_part(date_part).is_ok() {
+        return true;
+    }
+    // "YYYY-MM" 年月形（bag 日历独有宽形态）。
+    let bytes = date_part.as_bytes();
+    let (start, negative) = match bytes.first() {
+        Some(b'-') => (1usize, true),
+        Some(b'+') => (1usize, false),
+        _ => (0usize, false),
+    };
+    let mut i = start;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    let digits = &date_part[start..i];
+    let expected = if start > 0 { 6 } else { 4 };
+    if digits.len() != expected || i >= bytes.len() || bytes[i] != b'-' || date_part.len() != i + 3 {
+        return false;
+    }
+    let m_s = &date_part[i + 1..];
+    if !m_s.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let month: u32 = m_s.parse().unwrap_or(0);
+    if month == 0 || month > 12 {
+        return false;
+    }
+    !(negative && digits == "000000")
+}
+
+/// bag 日历解析：undefined → iso8601；字符串（iso8601 大小写不敏感 / 合法 ISO 串原样
+/// 保留为 ID）；PD/PDT/ZDT/PMD/PYM 实例 → 直读日历槽；其余对象与原始值 → TypeError。
+fn month_day_bag_calendar_id<H: VmHost>(vm: &mut H, value: JsValue) -> Result<String, JsValue> {
+    if value.is_undefined() {
+        return Ok("iso8601".to_string());
+    }
+    if value.is_string() {
+        let text = to_string(value);
+        if text.to_lowercase() == "iso8601" {
+            return Ok("iso8601".to_string());
+        }
+        if is_valid_month_day_calendar_string(&text) {
+            return Ok(text);
+        }
+        return Err(crate::error::create_range_error(vm, "invalid calendar"));
+    }
+    if value.is_object() {
+        let ptr = value.as_js_object_ptr();
+        if !ptr.is_null() {
+            let obj = unsafe { &*ptr };
+            let slot = if obj.is_plain_date_obj() {
+                Some(3)
+            } else if obj.is_plain_date_time_obj() {
+                Some(4)
+            } else if obj.is_zoned_date_time_obj() {
+                Some(2)
+            } else if obj.is_plain_month_day_obj() || obj.is_plain_year_month_obj() {
+                Some(3)
+            } else {
+                None
+            };
+            if let Some(slot) = slot {
+                return Ok(get_calendar_id(obj, slot));
+            }
+        }
+        return Err(crate::error::create_type_error(vm, "invalid calendar"));
+    }
+    Err(crate::error::create_type_error(vm, "invalid calendar"))
+}
+
+/// `Temporal.PlainMonthDay.from(item[, options])`：ISO 串 / PMD 实例 / PD 实例 / 字段对象。
+/// 参考年恒 1972（串中年份与 bag year 均不入结果，year 仅供 overflow 月长判断）；
+/// options.overflow 在全部字段 Get 之后读取。
+pub fn plain_month_day_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    if value.is_string() {
+        // 规范顺序：先解析（错误即抛，不触 options），再读 overflow（结果不受其影响）。
+        let (month, day) = native_try!(parse_month_day_string(&to_string(value))
+            .map_err(|_| crate::error::create_range_error(vm, "invalid ISO 8601 month-day string")));
+        native_try!(temporal_overflow(vm, args));
+        return make_plain_month_day(vm, month, day, 1972, "iso8601");
+    }
+    if !value.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "from() argument must be a string or an object"));
+    }
+    let ptr = value.as_js_object_ptr();
+    if ptr.is_null() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "from() argument must be a string or an object"));
+    }
+    let obj = unsafe { &*ptr };
+    // 实例快路径：槽直读，不触发属性。
+    if obj.is_plain_month_day_obj() {
+        // 实例复制：槽直读（refYear/日历保留），overflow 读取但结果不受其影响。
+        native_try!(temporal_overflow(vm, args));
+        let calendar = get_calendar_id(obj, 3);
+        return make_plain_month_day(
+            vm,
+            get_double_prop(obj, 0) as u32,
+            get_double_prop(obj, 1) as u32,
+            get_double_prop(obj, 2) as i32,
+            &calendar,
+        );
+    }
+    if obj.is_plain_date_obj() {
+        // PlainDate 实例：年月日槽直读，overflow 按其年应用，参考年 1972。
+        let constrain = native_try!(temporal_overflow(vm, args));
+        let year = get_double_prop(obj, 0) as i32;
+        let month = get_double_prop(obj, 1) as u32;
+        let mut day = get_double_prop(obj, 2) as u32;
+        let calendar = get_calendar_id(obj, 3);
+        if constrain {
+            day = day.min(days_in_month_iso(year, month));
+        }
+        return make_plain_month_day(vm, month, day, 1972, &calendar);
+    }
+    // 字段对象：Get 序 calendar → day → month → monthCode → year → era → eraYear，
+    // 各分量在 Get 处即转换（观测序钉死）。
+    let calendar_raw = native_try!(temporal_option_value(vm, obj, value, "calendar"));
+    let calendar = native_try!(month_day_bag_calendar_id(vm, calendar_raw));
+    let day_raw = native_try!(temporal_option_value(vm, obj, value, "day"));
+    let day_f = match day_raw.is_undefined() {
+        true => None,
+        false => Some(native_try!(temporal_number_component(vm, day_raw))),
+    };
+    let month_raw = native_try!(temporal_option_value(vm, obj, value, "month"));
+    let month_f = match month_raw.is_undefined() {
+        true => None,
+        false => Some(native_try!(temporal_number_component(vm, month_raw))),
+    };
+    let month_code_raw = native_try!(temporal_option_value(vm, obj, value, "monthCode"));
+    let month_code = match month_code_raw.is_undefined() {
+        true => None,
+        false => Some(native_try!(temporal_option_string(vm, month_code_raw))),
+    };
+    let year_raw = native_try!(temporal_option_value(vm, obj, value, "year"));
+    let year = match year_raw.is_undefined() {
+        true => None,
+        false => Some(native_try!(temporal_number_component(vm, year_raw)) as i32),
+    };
+    let era_raw = native_try!(temporal_option_value(vm, obj, value, "era"));
+    let era_year_raw = native_try!(temporal_option_value(vm, obj, value, "eraYear"));
+    let constrain = native_try!(temporal_overflow(vm, args));
+    // era 族：双现 → RangeError；恰一个 → 忽略（ISO 无纪元体系）。
+    if !era_raw.is_undefined() && !era_year_raw.is_undefined() {
+        return NativeResult::Err(crate::error::create_range_error(vm, "era and eraYear cannot both be present"));
+    }
+    // 月来源：双给 → RangeError；双缺 → TypeError（先于日存在性）。
+    if month_f.is_some() && month_code.is_some() {
+        return NativeResult::Err(crate::error::create_range_error(vm, "month and monthCode cannot both be present"));
+    }
+    if month_f.is_none() && month_code.is_none() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "month or monthCode is required"));
+    }
+    if day_f.is_none() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "day is required"));
+    }
+    // monthCode 两段校验：第一段语法（"M"+两位）先于第二段 ISO 适配。
+    let month_code_num = match &month_code {
+        Some(text) => {
+            let b = text.as_bytes();
+            if b.len() != 3 || b[0] != b'M' || !b[1].is_ascii_digit() || !b[2].is_ascii_digit() {
+                return NativeResult::Err(crate::error::create_range_error(vm, "invalid monthCode"));
+            }
+            Some(u32::from(b[1] - b'0') * 10 + u32::from(b[2] - b'0'))
+        }
+        None => None,
+    };
+    // 月定值：负值恒 RangeError；>12 时 constrain 钳 12、reject 抛错。
+    let month = match (month_f, month_code_num) {
+        (Some(f), Some(code)) => {
+            if f as u32 != code {
+                return NativeResult::Err(crate::error::create_range_error(vm, "month and monthCode conflict"));
+            }
+            code
+        }
+        (Some(f), None) => {
+            if f < 1.0 {
+                return NativeResult::Err(crate::error::create_range_error(vm, "invalid month"));
+            }
+            if f > 12.0 {
+                if constrain {
+                    12
+                } else {
+                    return NativeResult::Err(crate::error::create_range_error(vm, "invalid month"));
+                }
+            } else {
+                f as u32
+            }
+        }
+        (None, Some(code)) => {
+            if !(1..=12).contains(&code) {
+                return NativeResult::Err(crate::error::create_range_error(vm, "invalid monthCode"));
+            }
+            code
+        }
+        _ => unreachable!("month or monthCode is required checked above"),
+    };
+    let day_f = day_f.unwrap();
+    if day_f < 1.0 {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid day"));
+    }
+    // overflow 应用：月长按 year（bag 缺省 1972）判断；constrain 钳制，reject 抛错。
+    let overflow_year = year.unwrap_or(1972);
+    let days = days_in_month_iso(overflow_year, month) as i32;
+    let day_i = day_f as i32;
+    let day = if day_i > days {
+        if constrain {
+            days
+        } else {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid day"));
+        }
+    } else {
+        day_i
+    };
+    make_plain_month_day(vm, month, day as u32, 1972, &calendar)
 }
 
 #[cfg(test)]

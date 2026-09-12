@@ -2826,3 +2826,152 @@ fn plain_month_day_and_year_month_to_locale_string_value_of_to_string_tag() {
         "05-02|2021-02|TypeError|TypeError|TypeError|[object Temporal.PlainMonthDay]|[object Temporal.PlainYearMonth]"
     );
 }
+
+#[test]
+fn plain_month_day_from_string_matrix() {
+    let mut vm = Vm::new();
+    // 串形态矩阵：MM-DD / MMDD / --前缀 / 完整日期（年份丢弃，参考年恒 1972）/
+    // 完整 datetime（leap second 接受、小数时分拒、小数秒 ≤9 位）/ 注解规则。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const run = (s) => { try { const m = Temporal.PlainMonthDay.from(s); return m.monthCode + '-' + m.day; } catch (e) { return e.constructor.name; } };
+           return [
+             run('10-01'), run('1001'), run('--10-01'), run('--1001'),
+             run('1965-10-01'), run('+001976-10-01'), run('-999999-10-01'),
+             run('1976-10-01T15:23:30.1+00:00'), run('19761001T15:23:30.1+0000'),
+             run('2000-05-02T00+00:00'), run('1976-05-02 15:23'),
+             run('2016-12-31T23:59:60'),
+             run('1976-05-02T15:23[u-ca=iso8601]'),
+             run('11-18[u-ca=ISO8601][u-ca=discord]'),
+             Temporal.PlainMonthDay.from('2019-10-31').toString({calendarName: 'always'}),
+             run('11-18junk'), run('11-18[u-ca=gregory]'), run('11-18[U-CA=iso8601]'),
+             run('11-18[FOO=bar]'), run('11-18[!foo=bar]'),
+             run('-000000-08-24'), run('-000000-08-24T15:43:27'),
+             run('2019-10-01T09:00:00Z'), run('11-18Z'),
+             run('13-34'), run('2025-04-03T12.5'),
+             run('1970-01-01T00:00:00.1234567891'), run('2022-09-15+00:00'),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "M10-1|M10-1|M10-1|M10-1|M10-1|M10-1|M10-1|M10-1|M10-1|M05-2|M05-2|M12-31|M05-2|M11-18|1972-10-31[u-ca=iso8601]|RangeError|RangeError|RangeError|RangeError|RangeError|RangeError|RangeError|RangeError|RangeError|RangeError|RangeError|RangeError|RangeError"
+    );
+}
+
+#[test]
+fn plain_month_day_from_bag_matrix() {
+    let mut vm = Vm::new();
+    // bag 矩阵：字段序/必填/冲突、monthCode 两段校验、era 双现、year 仅 overflow、
+    // constrain/reject、自定义日历 ID（ISO 串原样保留）、错误类型。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           const run = (f, o) => { const m = Temporal.PlainMonthDay.from(f, o); return m.monthCode + '-' + m.day; };
+           const always = (f, o) => Temporal.PlainMonthDay.from(f, o).toString({calendarName: 'always'});
+           return [
+             run({month: 10, day: 1}), run({monthCode: 'M12', day: 31}),
+             always({year: 2021, month: 7, day: 3}),
+             run({month: 10, day: 1, days: 31}),
+             kind(() => Temporal.PlainMonthDay.from({})),
+             kind(() => Temporal.PlainMonthDay.from({day: 15})),
+             kind(() => Temporal.PlainMonthDay.from({month: 12})),
+             kind(() => Temporal.PlainMonthDay.from({monthCode: 'M12'})),
+             kind(() => Temporal.PlainMonthDay.from({monthCode: undefined, day: 15})),
+             kind(() => Temporal.PlainMonthDay.from({months: 12, day: 31})),
+             kind(() => Temporal.PlainMonthDay.from({month: 12, monthCode: 'M11', day: 17})),
+             kind(() => Temporal.PlainMonthDay.from({monthCode: 'M99L'})),
+             kind(() => Temporal.PlainMonthDay.from({day: 32})),
+             kind(() => Temporal.PlainMonthDay.from({monthCode: 'm01', day: 17})),
+             kind(() => Temporal.PlainMonthDay.from({monthCode: 'M00', day: 17})),
+             kind(() => Temporal.PlainMonthDay.from({monthCode: 'M13', day: 17})),
+             kind(() => Temporal.PlainMonthDay.from({monthCode: 'M05L', day: 17})),
+             kind(() => Temporal.PlainMonthDay.from({monthCode: 'M99L', day: 1})),
+             run({year: 2000, month: 5, day: 2, era: 'ce'}),
+             run({year: 2000, month: 5, day: 2, eraYear: 1}),
+             kind(() => Temporal.PlainMonthDay.from({year: 2000, month: 5, day: 2, era: 'ce', eraYear: 1})),
+             run({year: -999999, month: 1, day: 1}),
+             run({year: -999999, monthCode: 'M02', day: 29}),
+             run({year: -1000000, monthCode: 'M02', day: 29}),
+             kind(() => Temporal.PlainMonthDay.from({year: -999999, monthCode: 'M02', day: 29}, {overflow: 'reject'})),
+             run({monthCode: 'M02', day: 30}, {overflow: 'constrain'}),
+             run({month: 2, day: 31}),
+             run({year: 2000, month: 13, day: 34}, {overflow: 'constrain'}),
+             kind(() => Temporal.PlainMonthDay.from({year: 2000, month: 13, day: 34}, {overflow: 'reject'})),
+             kind(() => Temporal.PlainMonthDay.from({day: 1, month: -1})),
+             kind(() => Temporal.PlainMonthDay.from({month: 1, day: -1})),
+             kind(() => Temporal.PlainMonthDay.from({year: Infinity, month: 5, day: 2})),
+             kind(() => Temporal.PlainMonthDay.from({year: 2000, month: 5, day: 1n})),
+             kind(() => Temporal.PlainMonthDay.from(1)),
+             kind(() => Temporal.PlainMonthDay.from(1n)),
+             kind(() => Temporal.PlainMonthDay.from()),
+             Temporal.PlainMonthDay.from({monthCode: 'M11', day: 18, calendar: 'iso8601'}).calendarId,
+             Temporal.PlainMonthDay.from({monthCode: 'M11', day: 18, calendar: 'IsO8601'}).calendarId,
+             Temporal.PlainMonthDay.from({monthCode: 'M11', day: 18, calendar: '2020-01-01'}).calendarId,
+             Temporal.PlainMonthDay.from({monthCode: 'M11', day: 18, calendar: '2020-01'}).monthCode,
+             kind(() => Temporal.PlainMonthDay.from({monthCode: 'M11', day: 18, calendar: 'notacal'})),
+             kind(() => Temporal.PlainMonthDay.from({monthCode: 'M11', day: 18, calendar: ''})),
+             kind(() => Temporal.PlainMonthDay.from({monthCode: 'M11', day: 18, calendar: {}})),
+             kind(() => Temporal.PlainMonthDay.from({monthCode: 'M11', day: 18, calendar: new Temporal.Duration()})),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "M10-1|M12-31|1972-07-03[u-ca=iso8601]|M10-1|TypeError|TypeError|TypeError|TypeError|TypeError|TypeError|RangeError|TypeError|TypeError|RangeError|RangeError|RangeError|RangeError|RangeError|M05-2|M05-2|RangeError|M01-1|M02-28|M02-29|RangeError|M02-29|M02-29|M12-31|RangeError|RangeError|RangeError|RangeError|TypeError|TypeError|TypeError|TypeError|iso8601|iso8601|2020-01-01|M11|RangeError|RangeError|TypeError|TypeError"
+    );
+}
+
+#[test]
+fn plain_month_day_from_instances_and_options() {
+    let mut vm = Vm::new();
+    // 实例复制（refYear/日历保留、非同一对象）/ PD 实例 / options 形态与读取序
+    // （options.overflow 在所有字段 Get 之后；number 参数与坏串在读 options 前抛）。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           const orig = new Temporal.PlainMonthDay(5, 2, undefined, 2000);
+           const copy = Temporal.PlainMonthDay.from(orig);
+           let pdSeen = [];
+           let pd = Temporal.PlainDate.from('2019-10-01');
+           let pdCopy = Temporal.PlainMonthDay.from(pd);
+           let optsSeen = [];
+           const options = { get overflow() { optsSeen.push(1); return 'constrain'; } };
+           const a = Temporal.PlainMonthDay.from({month: 2, day: 3}, options);
+           let numSeen = [];
+           const numOptions = { get overflow() { numSeen.push(1); return 'constrain'; } };
+           kind(() => Temporal.PlainMonthDay.from(7, numOptions));
+           let strSeen = [];
+           const strOptions = { get overflow() { strSeen.push(1); return 'constrain'; } };
+           kind(() => Temporal.PlainMonthDay.from('13-34', strOptions));
+           return [
+             copy.monthCode + '-' + copy.day,
+             copy.toString({calendarName: 'always'}),
+             copy.calendarId === orig.calendarId,
+             copy !== orig,
+             Temporal.PlainMonthDay.from(orig, {overflow: 'reject'}).day,
+             pdCopy.monthCode + '-' + pdCopy.day + ':' + pdCopy.toString({calendarName: 'always'}),
+             a.monthCode + '-' + a.day + ':' + optsSeen.length,
+             numSeen.length + ':' + strSeen.length,
+             kind(() => Temporal.PlainMonthDay.from({month: 2, day: 3}, null)),
+             kind(() => Temporal.PlainMonthDay.from({month: 2, day: 3}, true)),
+             kind(() => Temporal.PlainMonthDay.from({month: 2, day: 3}, 1n)),
+             kind(() => Temporal.PlainMonthDay.from({month: 2, day: 3}, Symbol())),
+             kind(() => Temporal.PlainMonthDay.from({month: 2, day: 3}, {overflow: 'CONSTRAIN'})),
+             kind(() => Temporal.PlainMonthDay.from({month: 2, day: 3}, {overflow: 'reject\\0'})),
+             Temporal.PlainMonthDay.from({month: 2, day: 3}, () => {}).monthCode + '-' +
+               Temporal.PlainMonthDay.from('05-02', {overflow: 'reject'}).day,
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "M05-2|2000-05-02[u-ca=iso8601]|true|true|2|M10-1:1972-10-01[u-ca=iso8601]|M02-3:1|0:0|TypeError|TypeError|TypeError|TypeError|RangeError|RangeError|M02-2"
+    );
+}
