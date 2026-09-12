@@ -225,8 +225,8 @@ fn full_reset_clears_session_after_runtime_gc() {
 }
 
 /// 低阈值下 reset 触发完整对象 sweep（移动式搬移 + 重标）：写全局的函数对象
-/// 不被当死对象释放，run2 仍为可引用的函数值（跨 run 调用受独立的
-/// sub_module_index 缺口限制，不在此断言）。
+/// 不被当死对象释放，run2 直接调用该闭包——upvalue 读回创建期值，子模块按
+/// 创建期表代际解析。
 #[test]
 fn reset_sweep_preserves_global_function_object() {
     let mut vm = vm_with_threshold(1024);
@@ -240,7 +240,7 @@ fn reset_sweep_preserves_global_function_object() {
     assert!(vm.session_gc_stats().total_collections > 0, "低阈值应触发执行期收集");
     vm.reset();
 
-    let second = compile("typeof globalThis.fn === 'function'");
+    let second = compile("globalThis.fn() === 9");
     let result = vm.run(&Arc::new(second)).expect("run2");
     assert!(result.is_bool() && result.as_bool());
 }
@@ -289,9 +289,9 @@ fn dead_closure_upvalues_freed_by_sweep_without_double_free() {
     vm.collect_session_gc();
     assert!(vm.session_gc_stats().last_collection_objects_dead >= 1, "死闭包应经 sweep 死分支");
 
-    // 跨 run 存活核（只读属性；跨 run 调用受 sub_module_index 缺口限制）：
-    // sweep 后存活闭包克隆仍挂在 global 上。
-    let third = compile("typeof globalThis.live === 'function'");
+    // 跨 run 存活核：sweep 后存活闭包克隆仍挂在 global 上，直接调用读回
+    // upvalue 和（子模块按创建期表代际解析）。
+    let third = compile("globalThis.live() === 6");
     let result = vm.run(&Arc::new(third)).expect("run3");
     assert!(result.is_bool() && result.as_bool());
 
@@ -334,6 +334,24 @@ fn dead_closure_upvalues_freed_by_sweep_without_double_free() {
         "两次收集的字节账目差应为死闭包 upvalue 列表 Box（≥{upvalue_box_min} B），实际差 {}",
         freed_with_captures - freed_no_captures
     );
+}
+
+/// run 边界回收无引用的表代际：不产生存活函数对象的 run 不使注册表条目数
+/// 随 run 数单调增；每 run 逃逸的函数对象钉住其创建期代际，条目数相应增长。
+#[test]
+fn unreferenced_table_gens_do_not_grow_with_runs() {
+    let mut vm = Vm::new();
+    for _ in 0..12 {
+        vm.run(&Arc::new(compile("0"))).expect("run");
+    }
+    let baseline = vm.table_gen_count();
+    assert!(baseline <= 2, "无存活函数对象跨 run，注册表条目应有界（≤2），实际 {baseline}");
+    for i in 0..5 {
+        let src = format!("globalThis.keep{i} = function() {{ return {i}; }}; 0");
+        vm.run(&Arc::new(compile(&src))).expect("run");
+    }
+    let pinned = vm.table_gen_count();
+    assert!(pinned > baseline, "每 run 函数对象钉住创建期代际，条目数应增长，实际 {pinned}");
 }
 
 // ── 原生盒内字符串/BigInt 边存活（mark 边收集去对象预过滤） ─────────────────

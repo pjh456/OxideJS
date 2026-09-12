@@ -212,24 +212,44 @@ fn same_function_written_to_two_globals_is_identical() {
 }
 
 /// 跨 run（reset）契约：函数对象直落 session，其属性持有的 epoch 对象
-/// （prototype 槽）在 epoch 清空前被晋升，run2 经全局别名可读其属性。
-/// 不跨 run 调用存活函数：sub_module_index 指向上一执行期的子模块表，
-/// 跨执行调用是独立缺口（基线即失败，非本次修复范围）。
+/// （prototype 槽）在 epoch 清空前被晋升；子模块按创建期表代际解析，run2
+/// 直接调用存活函数并读其属性。
 #[test]
 fn global_function_survives_reset_with_promoted_property() {
     assert!(eval_two_phases(
         "var f = function(){}; globalThis.f = f; f.prototype = {}; f.prototype.q = 7; 0",
-        "typeof globalThis.f === 'function' && globalThis.f.prototype.q === 7",
+        "typeof globalThis.f === 'function' && globalThis.f() === undefined && globalThis.f.prototype.q === 7",
     ));
 }
 
 /// 类构造器跨 run：prototype 子对象（运行时 epoch 新建）经 reset 边界晋升，
-/// run2 经全局别名读到方法属性。
+/// run2 经全局别名读到方法属性并直接调用。
 #[test]
 fn class_prototype_link_survives_reset() {
     assert!(eval_two_phases(
         "var cc = class { m(){ return 3; } }; globalThis.cc = cc; 0",
-        "typeof globalThis.cc === 'function' && typeof globalThis.cc.prototype.m === 'function'",
+        "typeof globalThis.cc === 'function' && typeof globalThis.cc.prototype.m === 'function' && new globalThis.cc().m() === 3",
+    ));
+}
+
+/// 跨 run 调用值：run1 建的函数（含闭包捕获）与 prototype 子对象跨 reset
+/// 存活，run2 经全局别名调用——子模块按创建期代际解析，调用值与捕获值正确。
+#[test]
+fn cross_run_call_resolves_creation_generation() {
+    assert!(eval_two_phases(
+        "function make() { var v = 41; return function() { return v + 1; }; } \
+         globalThis.f = make(); globalThis.f.prototype = {}; globalThis.f.prototype.q = 7; 0",
+        "globalThis.f() === 42 && globalThis.f.prototype.q === 7",
+    ));
+}
+
+/// 动态函数跨 run 调用：run1 `new Function` 创建的函数对象属 run1 代际，
+/// run2 按自身代际解析执行，调用值正确。
+#[test]
+fn dynamic_function_survives_reset_and_calls() {
+    assert!(eval_two_phases(
+        "globalThis.d = new Function('a', 'return a * 2'); 0",
+        "globalThis.d(21) === 42",
     ));
 }
 

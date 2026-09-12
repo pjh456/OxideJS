@@ -102,19 +102,22 @@ impl Vm {
             }
         } else if ctor_obj.sub_module_index() > 0 {
             let sub_idx = ctor_obj.sub_module_index() as usize;
-            if sub_idx >= self.sub_modules.len() {
-                return Err(format!(
-                    "NEW_EXPRESSION: sub_module_index {} out of bounds (max {})",
-                    sub_idx,
-                    self.sub_modules.len()
-                ));
-            }
+            let sub = match self.callee_module(ctor_obj) {
+                Some(m) => m,
+                None => {
+                    return Err(format!(
+                        "NEW_EXPRESSION: sub_module_index {} out of bounds (max {})",
+                        sub_idx,
+                        self.current_table().modules.len()
+                    ))
+                }
+            };
             // 生成器函数不是构造器：`new g()` 抛 TypeError。
-            if self.sub_modules[sub_idx].is_generator {
+            if sub.is_generator {
                 return self.raise_type_error("g is not a constructor").map(|_| true);
             }
             // 异步函数不是构造器：`new f()` 抛 TypeError。
-            if self.sub_modules[sub_idx].is_async {
+            if sub.is_async {
                 return self.raise_type_error("g is not a constructor").map(|_| true);
             }
 
@@ -199,12 +202,9 @@ impl Vm {
         if target_obj.native_fn().is_some() && target_obj.type_tag != JsObject::OBJ_TYPE_CONSTRUCTOR {
             return self.raise_type_error("object is not a constructor").map(|_| true);
         }
-        let sub_idx = target_obj.sub_module_index() as usize;
-        if sub_idx > 0 && sub_idx < self.sub_modules.len() {
-            let sub = &self.sub_modules[sub_idx];
-            if sub.is_generator || sub.is_async {
-                return self.raise_type_error("object is not a constructor").map(|_| true);
-            }
+        // 按 target 自身记录的表代际解析：生成器/异步函数不是构造器。
+        if matches!(self.callee_module(target_obj), Some(sub) if sub.is_generator || sub.is_async) {
+            return self.raise_type_error("object is not a constructor").map(|_| true);
         }
 
         // 新对象原型取最内层 target 的 prototype（bound 包装自身无 prototype）。
@@ -235,7 +235,7 @@ impl Vm {
                     self.unwind().map(|_| true)
                 }
             }
-        } else if sub_idx > 0 {
+        } else if target_obj.sub_module_index() > 0 {
             // 字节码构造器：this = 新对象（派生 target 为 undefined，super() 装配），
             // new.target = 最内层 target。
             let this_value = if target_obj.is_derived_constructor() {
@@ -1043,7 +1043,9 @@ impl Vm {
         let site_no = self.bytecode[self.pc];
         self.pc += 1;
 
-        let key = (self.active_flat_id, site_no);
+        // 键含表代际：跨 run 调用的旧代模块与当前 run 模块 flat_id 重编号，
+        // 无代际维度会误命中他代同 (flat_id, site) 的模板对象。
+        let key = (self.active_table_gen, self.active_flat_id, site_no);
         if let Some(&cached) = self.template_objects.get(&key) {
             self.regs[rd] = cached;
             return Ok(());

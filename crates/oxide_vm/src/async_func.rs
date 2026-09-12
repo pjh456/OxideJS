@@ -8,8 +8,6 @@
 //! spill/save/try/cell 栈段搬运。`AWAIT` 经 `Vm::async_suspended` 信号让内嵌
 //! dispatch 返回，恢复方据此快照挂起状态。
 
-use std::sync::Arc;
-
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::{to_boolean, NativeResult};
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
@@ -197,10 +195,9 @@ impl Vm {
 
         {
             let state = unsafe { &mut *state_ptr };
-            let subs = Arc::clone(&self.sub_modules);
-            let restore_res = state.suspended.restore_into(self, &subs);
+            let restore_res = state.suspended.restore_into(self, state.callee);
             if restore_res.is_err() {
-                // 挂起状态跨 run：sub_modules 已重建，无法恢复（与生成器同限制）。
+                // callee 记录的表代际已被回收（跨 run 且无存活函数引用），无法恢复。
                 self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
                 self.native_call_depth -= 1;
                 self.restore_inline_state(saved);

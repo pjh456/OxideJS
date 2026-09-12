@@ -191,7 +191,7 @@ pub trait VmHost {
     fn promote_if_needed_for_write_ptr(&mut self, target_ptr: *mut JsObject, value: JsValue) -> JsValue;
     fn step_rng(&mut self);
     fn math_rng_value(&self) -> f64;
-    fn sub_module_function_name(&self, sub_idx: u16) -> String;
+    fn sub_module_function_name(&self, gen: u32, sub_idx: u16) -> String;
     /// 动态编译一个函数体（`Function` 构造器用）：把参数列表与函数体编译为可调用
     /// 函数对象。编译或解析失败返回 `Err`，由调用方转为 `SyntaxError`。
     fn create_dynamic_function(&mut self, params: &[String], body: &str) -> Result<JsValue, String>;

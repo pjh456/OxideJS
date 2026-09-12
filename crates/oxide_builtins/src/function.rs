@@ -336,7 +336,7 @@ pub fn function_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         .unwrap_or_else(|| {
             let sub_idx = func.sub_module_index();
             if sub_idx > 0 {
-                vm.sub_module_function_name((sub_idx - 1) as u16)
+                vm.sub_module_function_name(func.table_gen(), (sub_idx - 1) as u16)
             } else {
                 String::new()
             }

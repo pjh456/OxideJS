@@ -392,6 +392,24 @@ pub(crate) struct InlineSyncState {
     pub(crate) inline_args_count: u16,
     pub(crate) accessor_frame_target_reg: Option<u8>,
     pub(crate) active_flat_id: u32,
+    pub(crate) active_table_gen: u32,
+}
+
+/// 单代子模块平表：模块平表 + 每模块不可变常量缓存，注册进 `Vm::tables` 按代际管理。
+///
+/// 以 `Box` 承载（HashMap 扩容搬 Box 指针不搬被指物）：`active_immutables` 与
+/// `saved_immutables_stack` 是伸入 immutables 内部常量 Vec 的胖指针，表地址须
+/// 在其整个生命周期内稳定。动态扩表（`create_dynamic_function` /
+/// `create_dynamic_script`）对 modules 外层 Arc 做 `make_mut`：彼时该 Arc 的
+/// 强引用唯一持有者是本表（函数对象只持 u32 下标不持 Arc），原地扩展不分叉。
+pub(crate) struct TableGen {
+    /// 全局扁平模块表：下标 = 模块 `flat_id`（顶层 0，子模块 flatten 后全局唯一）。
+    /// 函数对象 `sub_module_index` 即该平表下标，逃逸函数也能自足解析。
+    pub(crate) modules: Arc<Vec<Arc<CompiledModule>>>,
+    /// 每次 run 转换一次的不可变常量缓存：下标 0 = 顶层模块，sub_idx = modules[sub_idx]。
+    /// 每个 `OnceLock` 保存该模块常量本次运行中只转换一次的 `JsValue` 结果。
+    /// 不可变常量是标量 + perm 字符串，只读，GC 根收集按表代际遍历。
+    pub(crate) immutables: Vec<OnceLock<Vec<JsValue>>>,
 }
 
 /// 基于寄存器的 JS 虚拟机：持有执行状态、寄存器文件、调用栈与 session 内存。
@@ -403,15 +421,11 @@ pub struct Vm {
     pub(crate) regs: [JsValue; 256],
     pub(crate) pc: usize,
     /// 当前活动字节码。以 `Arc<[Instr]>` 共享：函数调用经 `Arc::clone` 换帧（O(1)），
-    /// 不再逐帧深拷贝。与 sub_modules 源共享同一缓冲，IC 写回经 `bytecode_mut` 的
+    /// 不再逐帧深拷贝。与子模块平表源共享同一缓冲，IC 写回经 `bytecode_mut` 的
     /// `Arc::make_mut` 写时复制，保证独占后才改写（miss 时才深拷贝，频率低）。
     pub(crate) bytecode: Arc<[opcode::Instr]>,
-    /// 每次 run 转换一次的不可变常量缓存。下标 0 = 顶层模块，sub_idx+1 = sub_modules[sub_idx]。
-    /// 每个 `OnceLock` 保存该模块常量本次运行中只转换一次的 `JsValue` 结果，每次 `run()` 重建。
-    /// 不可变常量是标量 + perm 字符串，只读，不作为 GC 根。
-    pub(crate) immutables_cache: Vec<OnceLock<Vec<JsValue>>>,
-    /// 当前活动模块已转换不可变常量的只读视图（指向 immutables_cache 内部）。
-    /// 用胖 `*const`：缓存 Vec 归 VM 所有且本次运行稳定（OnceLock 只填一次）。
+    /// 当前活动模块已转换不可变常量的只读视图（指向当前表代际的 immutables 内部）。
+    /// 用胖 `*const`：常量 Vec 归表代际所有且 OnceLock 只填一次（堆分配地址稳定）。
     pub(crate) active_immutables: *const [JsValue],
     pub(crate) frames: SmallVec<[CallFrame; 16]>,
     pub(crate) kernel_core: Arc<KernelCore>,
@@ -444,11 +458,16 @@ pub struct Vm {
     /// 微任务队列（Promise reactions / thenable 委托），`run()` 末尾 FIFO drain。
     pub(crate) job_queue: VecDeque<crate::promise::Microtask>,
     pub math_rng_state: u64,
-    /// 全局扁平模块表：下标 = 模块 `flat_id`（顶层 0，子模块 flatten 后全局唯一）。
-    /// 闭包 `sub_module_index` 即 flat_id，逃逸闭包也能自足解析。
+    /// 子模块平表的表代际注册表：键 = 表代际（`current_gen` 为当前 run 正在
+    /// 装载的代际）。函数对象创建时记录自身所属代际（`JsObject::table_gen`），
+    /// 调用期按创建期代际解析平表——跨 run 换表后存活函数仍命中原表。
     /// 条目为 `Arc<CompiledModule>`，与调用方模块树共享：顶层条目即调用方模块
-    /// Arc 同一实例，`run()` 全程只做 Arc::clone，无深拷贝。
-    pub(crate) sub_modules: Arc<Vec<Arc<CompiledModule>>>,
+    /// Arc 同一实例，`run()` 全程只做 Arc::clone，无深拷贝。run 边界回收无
+    /// 存活函数对象引用的代际（`reclaim_unreferenced_tables`），内存有界于
+    /// 存活函数对象数，不随 run 数单调增。
+    pub(crate) tables: HashMap<u32, Box<TableGen>>,
+    /// 当前 run 正在装载的表代际（构造器预登记 gen 0 空表占位，run() 换表时 +1）。
+    pub(crate) current_gen: u32,
     /// 帧切换时暂存调用方字节码的 Arc 栈（与 `bytecode` 同共享语义）。
     pub(crate) saved_bytecode_stack: Vec<Arc<[opcode::Instr]>>,
     pub(crate) saved_immutables_stack: Vec<*const [JsValue]>,
@@ -558,15 +577,22 @@ pub struct Vm {
     /// 分组保存 inline cache 与指令计数器。
     pub(crate) profiling: ProfilingState,
     pub(crate) cell_stack: Vec<Vec<*mut Cell>>,
-    /// 标签模板对象缓存（GetTemplateObject）：键 = (模块 flat_id, site 序号)。
-    /// 同一编译树同 site 恒返回同一对象；每次 `run()` 清空（flat_id 复用防误命中）。
-    /// 值为 GC 根（for_each_value/rewrite_values 遍历）。
-    pub(crate) template_objects: HashMap<(u32, u32), JsValue>,
+    /// 标签模板对象缓存（GetTemplateObject）：键 = (表代际, 模块 flat_id, site 序号)。
+    /// 同一代际同 flat_id 同 site 恒返回同一对象；每次 `run()` 清空（缓存只留
+    /// 本次 run 的条目，规模有界）。键含代际维度后，跨 run 调用旧代模块的
+    /// flat_id 重编号不再误命中。值为 GC 根（for_each_value/rewrite_values 遍历）。
+    pub(crate) template_objects: HashMap<(u32, u32, u32), JsValue>,
     /// 当前活动字节码所属模块的 flat_id（顶层 0；帧切换时随 bytecode 换）。
     /// GET_TEMPLATE_OBJECT 据其区分不同编译树（eval 每次编译独立 site）。
     pub(crate) active_flat_id: u32,
+    /// 当前活动字节码所属子模块平表的表代际（帧切换时随 flat_id 同步换）。
+    /// 模板缓存键含该代际：跨 run 调用的旧代模块与当前 run 模块 flat_id
+    /// 重编号互不碰撞。
+    pub(crate) active_table_gen: u32,
     /// 帧切换时暂存调用方 flat_id 的栈（与 saved_bytecode_stack 同步 push/pop）。
     pub(crate) saved_flat_id_stack: Vec<u32>,
+    /// 帧切换时暂存调用方表代际的栈（与 saved_flat_id_stack 同步 push/pop）。
+    pub(crate) saved_table_gen_stack: Vec<u32>,
 }
 
 impl Drop for Vm {
@@ -763,25 +789,59 @@ impl Vm {
         if self.active_immutables.is_null() {
             &[]
         } else {
-            // SAFETY: active_immutables 指向 VM 拥有的 immutables_cache 内的 OnceLock<Vec<JsValue>>，
-            // Vec 只填充一次，本次运行期间不再重分配。
+            // SAFETY: active_immutables 指向某表代际 immutables 内 OnceLock 的常量
+            // Vec，Vec 只填充一次且堆地址稳定；所指代际表在注册表内存活（当前
+            // 代际恒在，旧代际由存活函数对象引用保活）。
             unsafe { &*self.active_immutables }
         }
     }
 
-    /// 激活模块 `cache_idx` 的不可变常量（0 = 顶层，sub_idx+1 = sub_modules[sub_idx]），
-    /// 只转换一次存入 `immutables_cache[cache_idx]`，并把 `active_immutables` 指向该 Vec。
+    /// 当前代际的子模块平表（动态扩表与测试注入的目标）。
+    pub(crate) fn current_table(&self) -> &TableGen {
+        self.tables.get(&self.current_gen).expect("当前代际表构造期已预登记")
+    }
+
+    /// 当前代际的子模块平表（可变）。
+    pub(crate) fn current_table_mut(&mut self) -> &mut TableGen {
+        self.tables.get_mut(&self.current_gen).expect("当前代际表构造期已预登记")
+    }
+
+    /// 函数对象 `sub_module_index` 指向的子模块条目：按对象自身记录的表代际
+    /// 解析平表后按下标定位。
+    ///
+    /// # 边界与前提
+    /// - 原生函数哨兵 `sub_module_index() == 0` 不经本方法（调用方先行分派）；
+    /// - 代际表已被回收或下标越界返回 None（调用方按各自越界口径报错）。
+    pub(crate) fn callee_module<'a>(&'a self, obj: &'a JsObject) -> Option<&'a CompiledModule> {
+        self.tables
+            .get(&obj.table_gen())
+            .and_then(|t| t.modules.get(obj.sub_module_index() as usize))
+            .map(|m| m.as_ref())
+    }
+
+    /// 子模块表注册表的当前代际条目总数（run 边界回收行为的测试钉）。
+    pub fn table_gen_count(&self) -> usize {
+        self.tables.len()
+    }
+
+    /// 激活代际 `gen` 平表中模块 `cache_idx` 的不可变常量，只转换一次存入该代际
+    /// `immutables[cache_idx]`，并把 `active_immutables` 指向该 Vec。
     /// `constants` 由调用方传入（它已持有 `&module.constants`）。
-    pub(crate) fn activate_immutables(&mut self, cache_idx: usize, constants: &[Constant]) {
-        // 用裸指针访问缓存槽，避免 get_or_init（借用 immutables_cache）与 &self 的
+    ///
+    /// # 边界与前提
+    /// - `gen` 的表须已在注册表中（当前代际由 run() 登记，旧代际由存活函数
+    ///   对象引用保活）；`cache_idx` 须小于该代际平表长度。
+    pub(crate) fn activate_immutables(&mut self, gen: u32, cache_idx: usize, constants: &[Constant]) {
+        // 用裸指针访问缓存槽，避免 get_or_init（借用表 immutables）与 &self 的
         // convert_immutables 闭包和随后对 active_immutables 的写入发生借用冲突。
-        // 成立前提：immutables_cache 归 VM 所有、只读、本次运行稳定。
-        let slot: *const OnceLock<Vec<JsValue>> = &self.immutables_cache[cache_idx];
+        // 成立前提：代际表归注册表所有、只读、Box 承载地址稳定。
+        let table = self.tables.get_mut(&gen).expect("激活的代际表须在注册表中");
+        let slot: *const OnceLock<Vec<JsValue>> = &table.immutables[cache_idx];
         let vec = unsafe { &*slot }.get_or_init(|| self.convert_immutables(constants));
         self.active_immutables = vec.as_slice() as *const [JsValue];
     }
 
-    /// 当前活动字节码的可变访问入口。bytecode 以 `Arc<[Instr]>` 与 sub_modules 源共享，
+    /// 当前活动字节码的可变访问入口。bytecode 以 `Arc<[Instr]>` 与代际表 modules 源共享，
     /// IC 写回经 `Arc::make_mut` 保证独占：独占时零拷贝原地写，共享时先深拷贝再写
     /// （IC miss 才触发，频率低）。所有写操作必须经此方法，防止共享缓冲被多实例污染。
     pub(crate) fn bytecode_mut(&mut self) -> &mut [opcode::Instr] {
@@ -796,12 +856,14 @@ impl Vm {
         for value in &self.regs {
             f(*value);
         }
-        // immutables 缓存含 session BigInt（new_bigint 分配），未入根则被 sweep 释放
-        // → 常量池加载时悬垂。perm 字符串无害（不在 session 集合中）。
-        for once_lock in &self.immutables_cache {
-            if let Some(immutable_vec) = once_lock.get() {
-                for &value in immutable_vec.iter() {
-                    f(value);
+        // 各代际 immutables 缓存含 session BigInt（new_bigint 分配），未入根则被
+        // sweep 释放 → 常量池加载时悬垂。perm 字符串无害（不在 session 集合中）。
+        for table in self.tables.values() {
+            for once_lock in &table.immutables {
+                if let Some(immutable_vec) = once_lock.get() {
+                    for &value in immutable_vec.iter() {
+                        f(value);
+                    }
                 }
             }
         }
@@ -1534,23 +1596,27 @@ impl Vm {
             return Err(self.error_message_text("TypeError", "CALL target is not callable"));
         }
         let sub_idx = obj.sub_module_index() as usize;
-        if sub_idx >= self.sub_modules.len() {
-            return Err(format!(
-                "CALL: sub_module_index {} out of bounds (max {})",
-                sub_idx,
-                self.sub_modules.len()
-            ));
+        let gen = obj.table_gen();
+        let table = match self.tables.get(&gen) {
+            Some(t) => t,
+            None => return Err(format!("CALL: module table gen {} not available", gen)),
+        };
+        if sub_idx >= table.modules.len() {
+            return Err(format!("CALL: sub_module_index {} out of bounds (max {})", sub_idx, table.modules.len()));
         }
         if self.frames.len() >= self.kernel_core.config.max_call_depth {
             return self.raise_error_kind("RangeError", "Maximum call stack size exceeded");
         }
 
-        let sub_bytecode = Arc::clone(&self.sub_modules[sub_idx].bytecode);
-        let sub_n_args = self.sub_modules[sub_idx].n_args as usize;
-        let sub_n_registers = self.sub_modules[sub_idx].n_registers;
-        let sub_param_base = self.sub_modules[sub_idx].param_base as usize;
-        let sub_is_arrow = self.sub_modules[sub_idx].is_arrow;
-        let sub_is_strict = self.sub_modules[sub_idx].is_strict;
+        // 被调模块取 Arc 克隆（与调用方共享同一编译产物）：后续 activate_immutables
+        // 等 &mut self 调用期间不持有对注册表的借用。
+        let sub = Arc::clone(&table.modules[sub_idx]);
+        let sub_bytecode = Arc::clone(&sub.bytecode);
+        let sub_n_args = sub.n_args as usize;
+        let sub_n_registers = sub.n_registers;
+        let sub_param_base = sub.param_base as usize;
+        let sub_is_arrow = sub.is_arrow;
+        let sub_is_strict = sub.is_strict;
         // 窗口 = min(调用方活动寄存器, 存活上界)；call_window=0 表示调用方全量
         // （运行时发起路径 / 未编码的旧模块）。恢复按窗口回拷，active_reg_limit
         // 仍还原为调用方真实值（caller_active_reg_limit）。
@@ -1598,11 +1664,14 @@ impl Vm {
 
         self.saved_bytecode_stack.push(std::mem::take(&mut self.bytecode));
         self.saved_immutables_stack.push(self.active_immutables);
-        // 记录调用方 flat_id，进入被调模块（标签模板 site 缓存按模块隔离）。
+        // 记录调用方 flat_id 与表代际，进入被调模块（标签模板 site 缓存按
+        // (代际, flat_id) 隔离）。
         self.saved_flat_id_stack.push(self.active_flat_id);
+        self.saved_table_gen_stack.push(self.active_table_gen);
         self.active_flat_id = sub_idx as u32;
+        self.active_table_gen = gen;
 
-        let function_name = self.sub_modules[sub_idx]
+        let function_name = sub
             .function_name
             .as_deref()
             .map(|name| self.kernel_core.perm_interner().intern(name).0)
@@ -1630,10 +1699,9 @@ impl Vm {
 
         self.pc = 0;
         self.bytecode = sub_bytecode;
-        let subs = Arc::clone(&self.sub_modules);
-        self.activate_immutables(sub_idx, &subs[sub_idx].constants);
-        self.cell_stack.push(Vec::with_capacity(subs[sub_idx].cells_needed as usize));
-        for (name, reg) in &self.sub_modules[sub_idx].builtin_reg_map.clone() {
+        self.activate_immutables(gen, sub_idx, &sub.constants);
+        self.cell_stack.push(Vec::with_capacity(sub.cells_needed as usize));
+        for (name, reg) in &sub.builtin_reg_map.clone() {
             let si = self.kernel_core.perm_interner().intern(name.as_str()).0;
             let global = self.session.global_object();
             if let Some(pos) = self.kernel_core.shape_forge().lookup_position(global.shape_id(), si) {
@@ -2527,9 +2595,10 @@ impl oxide_runtime_api::VmHost for Vm {
     fn math_rng_value(&self) -> f64 {
         self.math_rng_value()
     }
-    fn sub_module_function_name(&self, sub_idx: u16) -> String {
-        self.sub_modules
-            .get(sub_idx as usize)
+    fn sub_module_function_name(&self, gen: u32, sub_idx: u16) -> String {
+        self.tables
+            .get(&gen)
+            .and_then(|t| t.modules.get(sub_idx as usize))
             .and_then(|m| m.function_name.clone())
             .unwrap_or_default()
     }
@@ -2564,16 +2633,17 @@ impl Vm {
     /// 1. wrap 源码 `function anonymous(p...) { body }`，parse + compile。
     /// 2. 取 `sub_modules[0]`（匿名函数模块），把其子树 flat_id 重编号到平表末尾
     ///    并重写子树内每条 `CREATE_CLOSURE` 的 imm16。
-    /// 3. 同步 resize `immutables_cache`，建函数对象并设置 name/length。
+    /// 3. 同步扩容当前代际的常量缓存，建函数对象并设置 name/length。
     ///
     /// # 边界与前提
     /// - 编译或解析失败返回 `Err`（由 builtin 层转 SyntaxError）。
     /// - 追加的子树原 flat_id 自 1 连续（flatten 后 1=匿名体，2…=其嵌套函数）；
     ///   新 id = 平表长度 + (old - 1)。
-    /// - 动态函数只在本次 `run()` 内有效：下次 run 重建平表，跨 run 引用会越界。
+    /// - 动态函数在函数对象存活期间跨 run 有效：扩展落当前代际平表，存活函数
+    ///   对象按代际引用保活该表；full_reset 重建 session 后失效。
     ///
     /// # 副作用
-    /// - 修改 `self.sub_modules` 与 `self.immutables_cache`。
+    /// - 扩展当前代际平表（`tables[current_gen]`）与常量缓存。
     pub fn create_dynamic_function(&mut self, params: &[String], body: &str) -> Result<JsValue, String> {
         // wrap 源码：末尾换行防止 body 以行注释结尾吞掉右花括号。
         let params_str = params.join(", ");
@@ -2588,14 +2658,15 @@ impl Vm {
         // （ES 动态函数把非末位实参以逗号连接成参数串再解析）。
         let formal_count = anonymous.n_args as i32;
 
-        // 子树重编号 + 追加：base = 当前平表长度，DFS 前序压入，push 序即新 flat_id。
-        let base = self.sub_modules.len() as u32;
+        // 子树重编号 + 追加：base = 当前代际平表长度，DFS 前序压入，push 序即新
+        // flat_id。make_mut 彼时平表 Arc 强引用唯一持有者是本表，原地扩展不分叉。
+        let table = self.current_table_mut();
+        let base = table.modules.len() as u32;
         let mut added = Vec::new();
         rehome_subtree(&anonymous, base, &mut added);
-        Arc::make_mut(&mut self.sub_modules).extend(added);
+        Arc::make_mut(&mut table.modules).extend(added);
         // 平表变长后同步扩容常量缓存，否则激活新模块常量时越界 panic。
-        self.immutables_cache
-            .extend((0..self.sub_modules.len().saturating_sub(self.immutables_cache.len())).map(|_| OnceLock::new()));
+        table.immutables.resize(table.modules.len(), OnceLock::new());
 
         let func_val = self.create_function_object(base, false, false, false, false);
         let func_obj = unsafe { &mut *func_val.as_js_object_ptr() };
@@ -2618,15 +2689,15 @@ impl Vm {
     ///    Compiler 置 is_eval_script=true）。
     /// 2. 整棵模块树（根 flat_id=0 + 嵌套函数）追加进平表：`rehome_subtree(&module, base+1)`，
     ///    使根落 base、子函数 old→base+old，CREATE_CLOSURE imm16 同步重写。
-    /// 3. 扩容 immutables_cache，建函数对象（sub_module_index = base）返回。
+    /// 3. 扩容当前代际的常量缓存，建函数对象（sub_module_index = base）返回。
     ///
     /// # 边界与前提
     /// - 顶层 return 不报 SyntaxError（emit 无此检查，与 CLI 脚本路径一致）——已知偏差。
-    /// - 动态模块只在本次 run() 内有效（同 create_dynamic_function）。
+    /// - 动态模块在函数对象存活期间跨 run 有效（同 create_dynamic_function）。
     /// - 返回函数对象仅供内部同步调用，不设 name/length（用户不可见）。
     ///
     /// # 副作用
-    /// - 修改 `self.sub_modules` 与 `self.immutables_cache`。
+    /// - 扩展当前代际平表（`tables[current_gen]`）与常量缓存。
     pub fn create_dynamic_script(&mut self, code: &str) -> Result<JsValue, String> {
         let allocator = oxide_parser::Allocator::default();
         let program = oxide_parser::parse(&allocator, code)
@@ -2635,14 +2706,15 @@ impl Vm {
         let module = oxide_compiler::compiler::Compiler::new()
             .with_eval_script(true)
             .compile(&program)?;
-        let base = self.sub_modules.len() as u32;
+        // 根模块 flat_id=0 传 base+1，重编号后落 base（避开 sub_module_index()==0
+        // 守卫）。make_mut 彼时平表 Arc 强引用唯一持有者是本表，原地扩展不分叉。
+        let table = self.current_table_mut();
+        let base = table.modules.len() as u32;
         let mut added = Vec::new();
-        // 根模块 flat_id=0 传 base+1，重编号后落 base（避开 sub_module_index()==0 守卫）。
         rehome_subtree(&module, base + 1, &mut added);
-        Arc::make_mut(&mut self.sub_modules).extend(added);
+        Arc::make_mut(&mut table.modules).extend(added);
         // 平表变长后同步扩容常量缓存，否则激活新模块常量时越界 panic。
-        self.immutables_cache
-            .extend((0..self.sub_modules.len().saturating_sub(self.immutables_cache.len())).map(|_| OnceLock::new()));
+        table.immutables.resize(table.modules.len(), OnceLock::new());
         Ok(self.create_function_object(base, false, false, false, false))
     }
 }
@@ -2675,13 +2747,24 @@ fn rehome_subtree(module: &CompiledModule, base: u32, out: &mut Vec<Arc<Compiled
 }
 
 #[cfg(test)]
+impl Vm {
+    /// 测试用：整表替换当前代际的子模块平表并同步常量缓存槽位（绕过 run() 装载，
+    /// 直接注入模块表后压帧/内联调用）。
+    pub(crate) fn install_module_table_for_test(&mut self, modules: Arc<Vec<Arc<CompiledModule>>>) {
+        let table = self.current_table_mut();
+        table.modules = modules;
+        table.immutables.resize(table.modules.len(), OnceLock::new());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::{opcode, ForOfEntry, JsValue, TryHandler, Vm};
     use oxide_bytecode::module::CompiledModule;
     use oxide_runtime_api::{NativeResult, VmHost};
     use oxide_types::object::NativeFnPtr;
     use oxide_types::object::{JsObject, PropAttributes};
-    use std::sync::{Arc, OnceLock};
+    use std::sync::Arc;
 
     fn native_return_7(_vm: &mut Vm, _args: &[u8]) -> NativeResult {
         NativeResult::Ok(JsValue::int(7))
@@ -3111,9 +3194,10 @@ mod tests {
         // 且调用方 active_reg_limit = 254（regs[253] 为活动值）时，调用后
         // regs[253] 必须恢复为调用方值，不得被 callee 写值覆盖。
         let mut vm = Vm::new();
-        vm.sub_modules = Arc::new(vec![Arc::new(CompiledModule::new()), Arc::new(sub_module_254_with_r253_write())]);
-        vm.immutables_cache
-            .extend((0..vm.sub_modules.len().saturating_sub(vm.immutables_cache.len())).map(|_| OnceLock::new()));
+        vm.install_module_table_for_test(Arc::new(vec![
+            Arc::new(CompiledModule::new()),
+            Arc::new(sub_module_254_with_r253_write()),
+        ]));
         vm.active_reg_limit = 254;
         vm.regs[253] = JsValue::int(42);
 
@@ -3133,9 +3217,10 @@ mod tests {
         // 嵌套回归防线：native 回调体（receiver 落 regs[253]）内嵌 n_registers=254
         // 的 inline 字节码回调时，内层写 regs[253] 不得污染外层 receiver 槽。
         let mut vm = Vm::new();
-        vm.sub_modules = Arc::new(vec![Arc::new(CompiledModule::new()), Arc::new(sub_module_254_with_r253_write())]);
-        vm.immutables_cache
-            .extend((0..vm.sub_modules.len().saturating_sub(vm.immutables_cache.len())).map(|_| OnceLock::new()));
+        vm.install_module_table_for_test(Arc::new(vec![
+            Arc::new(CompiledModule::new()),
+            Arc::new(sub_module_254_with_r253_write()),
+        ]));
         vm.active_reg_limit = 254;
         vm.regs[253] = JsValue::int(7);
         vm.regs[254] = JsValue::int(8);
@@ -3163,9 +3248,7 @@ mod tests {
         callee_mod.param_base = 2;
         callee_mod.n_registers = 5;
         callee_mod.bytecode = Arc::from(vec![opcode::encode(opcode::OpCode::RETURN, 0, 0, 0)]);
-        vm.sub_modules = Arc::new(vec![Arc::new(CompiledModule::new()), Arc::new(callee_mod)]);
-        vm.immutables_cache
-            .extend((0..vm.sub_modules.len().saturating_sub(vm.immutables_cache.len())).map(|_| OnceLock::new()));
+        vm.install_module_table_for_test(Arc::new(vec![Arc::new(CompiledModule::new()), Arc::new(callee_mod)]));
         vm.active_reg_limit = 8;
         // 调用方实参区 regs[1..3)：arg0=10, arg1=20；regs[2] 同时是 callee 形参槽（param_base=2）
         vm.regs[1] = JsValue::int(10);
@@ -3205,9 +3288,7 @@ mod tests {
         ctor_mod.param_base = 2;
         ctor_mod.n_registers = 5;
         ctor_mod.bytecode = Arc::from(vec![opcode::encode(opcode::OpCode::RETURN, 0, 0, 0)]);
-        vm.sub_modules = Arc::new(vec![Arc::new(CompiledModule::new()), Arc::new(ctor_mod)]);
-        vm.immutables_cache
-            .extend((0..vm.sub_modules.len().saturating_sub(vm.immutables_cache.len())).map(|_| OnceLock::new()));
+        vm.install_module_table_for_test(Arc::new(vec![Arc::new(CompiledModule::new()), Arc::new(ctor_mod)]));
         vm.active_reg_limit = 8;
         // NEW_EXPRESSION 指令：ext 低 8 位 = 实参个数 2，高 8 位 = 窗口 0（全量）
         vm.bytecode = Arc::from(vec![opcode::encode(opcode::OpCode::NEW_EXPRESSION, 0, 0, 0), 2]);

@@ -7,7 +7,6 @@
 
 use std::sync::Arc;
 
-use oxide_bytecode::module::CompiledModule;
 use oxide_bytecode::opcode;
 use oxide_types::object::Cell;
 use oxide_types::value::JsValue;
@@ -20,7 +19,8 @@ pub(crate) struct SuspendedFrame {
     pub regs: Box<[JsValue; 256]>,
     pub pc: usize,
     pub bytecode: Arc<[opcode::Instr]>,
-    /// 模块 flat_id（恢复时经 sub_modules 重激活 immutables；跨 run 失效据此报错）。
+    /// 模块 flat_id（callee 表代际平表中的下标；恢复时按 callee 记录的代际
+    /// 解析平表并重激活 immutables）。
     pub sub_idx: u32,
     pub active_reg_limit: u8,
     pub root_reg_limit: u8,
@@ -106,20 +106,30 @@ impl SuspendedFrame {
         Ok(())
     }
 
-    /// 恢复进 VM：写回各栈段、在途异常/完成，按 sub_idx 重激活 immutables。
+    /// 恢复进 VM：写回各栈段、在途异常/完成，按 callee 记录的表代际重激活
+    /// immutables。
     ///
     /// # 边界
-    /// `sub_idx >= sub_modules.len()`（挂起状态跨 run）返回 Err，调用方须按各自
-    /// 路径回滚并报错（保持现有三处行为）。
-    pub fn restore_into(&mut self, vm: &mut Vm, sub_modules: &Arc<Vec<Arc<CompiledModule>>>) -> Result<(), String> {
+    /// - `callee` 须为挂起函数对象值（状态盒 `callee` 槽）：代际按对象创建期
+    ///   记录解析，存活函数对象按代际保活其表，跨 run 恢复命中同一张表。
+    /// - callee 非对象（gen 0 哨兵）、代际表已被回收或下标越界返回 Err，
+    ///   调用方须按各自路径回滚并报错（保持现有三处行为）。
+    pub fn restore_into(&mut self, vm: &mut Vm, callee: JsValue) -> Result<(), String> {
         vm.regs = *self.regs;
         vm.pc = self.pc;
         vm.bytecode = std::mem::take(&mut self.bytecode);
-        let subs = Arc::clone(sub_modules);
-        if (self.sub_idx as usize) < subs.len() {
-            vm.activate_immutables(self.sub_idx as usize, &subs[self.sub_idx as usize].constants);
+        let gen = if callee.is_object() {
+            // SAFETY: callee 为执行核心产出的函数对象值，session 生命周期内指针有效。
+            unsafe { (*callee.as_js_object_ptr()).table_gen() }
         } else {
-            return Err("suspended state across runs is no longer valid".into());
+            vm.current_gen
+        };
+        let table = vm.tables.get(&gen);
+        let module = table.and_then(|t| t.modules.get(self.sub_idx as usize));
+        let constants = module.map(|m| m.constants.clone());
+        match constants {
+            Some(c) => vm.activate_immutables(gen, self.sub_idx as usize, &c),
+            None => return Err("suspended state module table is no longer available".into()),
         }
         vm.active_reg_limit = self.active_reg_limit;
         vm.root_reg_limit = self.root_reg_limit;
@@ -463,12 +473,11 @@ mod tests {
             Some(Completion::Return { value, remaining_finally: 1, .. }) if value == JsValue::float(46.0)
         ));
 
-        // sub_modules 为空表：恢复应报"跨 run"错（保持现有三处行为）。
+        // gen 0 空表占位 + sub_idx = 0 越界：恢复应报错（保持现有三处行为）。
         let mut machine2 = vm();
-        let subs = std::sync::Arc::new(vec![]);
         let mut frame2 = SuspendedFrame::new_empty();
         frame2.sub_idx = 0;
-        let err = frame2.restore_into(&mut machine2, &subs);
+        let err = frame2.restore_into(&mut machine2, JsValue::undefined());
         assert!(err.is_err());
     }
 }

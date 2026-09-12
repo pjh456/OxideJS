@@ -6,7 +6,7 @@ use std::sync::Arc;
 use oxide_bytecode::module::Constant;
 
 use crate::bindings;
-use crate::vm::Vm;
+use crate::vm::{TableGen, Vm};
 use crate::vm_info;
 use crate::vm_state::{GcState, IterState, ProfilingState, SymbolState};
 use oxide_kernel::kernel::{KernelConfig, KernelCore, KernelSession};
@@ -48,7 +48,6 @@ impl Vm {
             regs: [JsValue::undefined(); 256],
             pc: 0,
             bytecode: Arc::default(),
-            immutables_cache: Vec::new(),
             active_immutables: std::ptr::slice_from_raw_parts(std::ptr::null(), 0),
             frames: smallvec::SmallVec::new(),
             kernel_core: core,
@@ -67,7 +66,16 @@ impl Vm {
             async_generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             job_queue: VecDeque::new(),
             math_rng_state: 0,
-            sub_modules: Arc::new(Vec::new()),
+            // gen 0 预登记空表占位：函数对象恒在 run 内创建（彼时 current_gen
+            // ≥ 1），gen 0 表只是首 run 前路径的占位，首 run 边界即被回收。
+            tables: std::collections::HashMap::from([(
+                0u32,
+                Box::new(TableGen {
+                    modules: Arc::new(Vec::new()),
+                    immutables: Vec::new(),
+                }),
+            )]),
+            current_gen: 0,
             saved_bytecode_stack: Vec::new(),
             saved_immutables_stack: Vec::new(),
             save_stack: Vec::new(),
@@ -138,7 +146,9 @@ impl Vm {
             cell_stack: Vec::new(),
             template_objects: std::collections::HashMap::new(),
             active_flat_id: 0,
+            active_table_gen: 0,
             saved_flat_id_stack: Vec::new(),
+            saved_table_gen_stack: Vec::new(),
         };
         vm.init_generator_intrinsics();
         vm.init_promise_intrinsics();
@@ -166,7 +176,6 @@ impl Vm {
             regs: [JsValue::undefined(); 256],
             pc: 0,
             bytecode: Arc::default(),
-            immutables_cache: Vec::new(),
             active_immutables: std::ptr::slice_from_raw_parts(std::ptr::null(), 0),
             frames: smallvec::SmallVec::new(),
             kernel_core: core,
@@ -185,7 +194,16 @@ impl Vm {
             async_generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             job_queue: VecDeque::new(),
             math_rng_state: 0,
-            sub_modules: Arc::new(Vec::new()),
+            // gen 0 预登记空表占位：函数对象恒在 run 内创建（彼时 current_gen
+            // ≥ 1），gen 0 表只是首 run 前路径的占位，首 run 边界即被回收。
+            tables: std::collections::HashMap::from([(
+                0u32,
+                Box::new(TableGen {
+                    modules: Arc::new(Vec::new()),
+                    immutables: Vec::new(),
+                }),
+            )]),
+            current_gen: 0,
             saved_bytecode_stack: Vec::new(),
             saved_immutables_stack: Vec::new(),
             save_stack: Vec::new(),
@@ -256,7 +274,9 @@ impl Vm {
             cell_stack: Vec::new(),
             template_objects: std::collections::HashMap::new(),
             active_flat_id: 0,
+            active_table_gen: 0,
             saved_flat_id_stack: Vec::new(),
+            saved_table_gen_stack: Vec::new(),
         };
         vm.init_generator_intrinsics();
         vm.init_promise_intrinsics();
@@ -344,9 +364,21 @@ impl Vm {
         // 必须随 session 一并清空。
         self.template_objects.clear();
         self.saved_flat_id_stack.clear();
+        self.saved_table_gen_stack.clear();
         self.active_flat_id = 0;
+        self.active_table_gen = 0;
         self.bytecode = Arc::default();
-        self.immutables_cache.clear();
+        // 注册表随 session 重建整体清空：session 对象（唯一按代际保活表者）全部
+        // 消失，残留表无引用源。回到构造期同态：gen 0 空表占位 + current_gen = 0。
+        self.tables.clear();
+        self.current_gen = 0;
+        self.tables.insert(
+            0,
+            Box::new(TableGen {
+                modules: Arc::new(Vec::new()),
+                immutables: Vec::new(),
+            }),
+        );
         self.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
         self.teardown_session_heap_data();
         self.epoch.reset();
@@ -508,7 +540,9 @@ impl Vm {
         // 重置前把 epoch 子引用原地克隆晋升进 session，避免悬垂指针。
         self.promote_session_epoch_refs();
         self.bytecode = Arc::default();
-        self.immutables_cache.clear();
+        // 表代际注册表不动：存活函数对象（含挂起帧 callee）按创建期代际仍须
+        // 命中原表，跨 run 调用与恢复靠它成立。active_immutables 指向的旧表
+        // 指针作废，下次 run 重装。
         self.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
         self.free_epoch_dead_upvalues();
         self.free_epoch_object_heap_data();
@@ -659,8 +693,11 @@ impl Vm {
     ) -> JsValue {
         // 生成器函数对象：原型为 %GeneratorFunction.prototype%（constructor 链解析到
         // "GeneratorFunction"），且不像普通函数那样拥有 `prototype` 属性。
-        let is_generator = self.sub_modules.get(sub_idx as usize).map(|m| m.is_generator).unwrap_or(false);
-        let is_async = self.sub_modules.get(sub_idx as usize).map(|m| m.is_async).unwrap_or(false);
+        // 按当前代际平表解析：函数对象恒在本次 run 内创建（CREATE_CLOSURE /
+        // 动态构造），sub_idx 口径即当前代际表。
+        let table = self.current_table();
+        let is_generator = table.modules.get(sub_idx as usize).map(|m| m.is_generator).unwrap_or(false);
+        let is_async = table.modules.get(sub_idx as usize).map(|m| m.is_async).unwrap_or(false);
         // 异步生成器（`async function*`）函数对象：原型为 %AsyncGeneratorFunction.prototype%。
         let is_async_generator = is_generator && is_async;
         let proto_val = if is_async_generator {
@@ -675,6 +712,9 @@ impl Vm {
         let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto_val);
         obj.set_function(true);
         obj.set_sub_module_index(sub_idx);
+        // 记录创建期表代际：调用点按 (table_gen, sub_module_index) 解析子模块
+        // 平表，跨 run 换表后存活函数仍命中原表（注册表按代际保活）。
+        obj.set_table_gen(self.current_gen);
         obj.set_class_constructor(is_class_constructor);
         obj.set_derived_constructor(is_derived_constructor);
         let _ = needs_home_object;
@@ -1032,8 +1072,8 @@ mod tests {
         assert!(err.contains("memory limit"), "unexpected error: {err}");
     }
 
-    /// 直接恢复生成器一步：等价 `it.next()`，但避免跨 run（sub_modules 重建会使
-    /// 挂起帧失效）——回归聚焦 GC 搬移后的状态盒有效性。
+    /// 直接恢复生成器一步：等价 `it.next()`——回归聚焦 GC 搬移后的状态盒
+    /// 有效性（同 run 内恢复，不经 run 边界换表）。
     fn resume_one_step(vm: &mut Vm, gen: JsValue) -> JsValue {
         match vm.resume_generator(gen, crate::generator::GeneratorResumeMode::Next(JsValue::undefined())) {
             Ok(crate::generator::GeneratorStep::Suspended { value }) => value,
@@ -1056,11 +1096,11 @@ mod tests {
         let _ = run_source(&mut vm, "function* g(){ yield 1; yield 2; } globalThis.it = g(); globalThis.it.next(); 0");
 
         // 直接触发完整收集（保留执行上下文）：存活生成器克隆进新 arena，
-        // 状态盒深拷贝为新 Box（reset 会清空模块表使恢复不可行，走收集入口等价验证）。
+        // 状态盒深拷贝为新 Box（走收集入口而非 run 边界：聚焦 GC 搬移本身）。
         vm.maybe_collect_session_gc();
         assert!(vm.session_gc_stats().total_collections > 0, "应触发对象收集");
 
-        // 从 global 取 sweep 重写后的生成器（sub_modules/immutables 未重建，可恢复）。
+        // 从 global 取 sweep 重写后的生成器（同 run，模块表未换发，可恢复）。
         let it = global_prop(&vm, "it");
         assert_eq!(resume_one_step(&mut vm, it), JsValue::int(2), "sweep 后应恢复第二次 yield");
     }
@@ -1317,8 +1357,7 @@ mod tests {
 
     /// 标签模板 cooked/raw 数组直 session 分配计入 session 堆账目：
     /// 含模板的 run 账目增量须超出同等函数对象口径（两数组各含对象头 + 元素区）。
-    /// 单 run 内完成（标签函数定义 + 模板调用）：跨 run 调用异模块函数受
-    /// sub_module_index 缺口限制，不在本钉面。
+    /// 单 run 内完成（标签函数定义 + 模板调用）：账目口径与函数对象钉同 run 对齐。
     #[test]
     fn tagged_template_object_counted_in_session_bytes() {
         let mut vm = Vm::new();
@@ -1337,14 +1376,14 @@ mod tests {
     }
 
     #[test]
-    fn immutables_cache_filled_once_per_module() {
+    fn immutables_filled_once_per_module() {
         let mut vm = Vm::new();
         // `f` 递归（同一子模块进入 4 次），其不可变常量经 OnceLock 只转换一次。
         let result = run_source(&mut vm, "function f(n){ if(n<=0){ return 'done'; } return f(n-1); } f(3)");
         assert!(result.is_string());
         assert_eq!(vm.lookup_str(result).as_deref(), Some("done"));
         // 缓存 = 顶层模块 + 1 个子模块（f）；子模块槽由这些调用初始化。
-        assert_eq!(vm.immutables_cache.len(), 2);
+        assert_eq!(vm.current_table().immutables.len(), 2);
         // 子模块常量改走 temp_immutables（避免缓存下标冲突）
     }
 

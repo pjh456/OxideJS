@@ -6,8 +6,6 @@
 //! 循环中继续执行到下一个 `YIELD` 或 `RETURN`。`YIELD` 通过
 //! `Vm::generator_suspended` 信号让内嵌 dispatch 返回，恢复方据此快照挂起状态。
 
-use std::sync::Arc;
-
 use oxide_builtins::iterator::{is_callable, make_iter_result};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::{to_boolean, NativeResult};
@@ -276,10 +274,9 @@ impl Vm {
             unsafe { (*state_ptr).phase = GeneratorPhase::Running };
         } else {
             let state = unsafe { &mut *state_ptr };
-            let subs = Arc::clone(&self.sub_modules);
-            let restore_res = state.suspended.restore_into(self, &subs);
+            let restore_res = state.suspended.restore_into(self, state.callee);
             if restore_res.is_err() {
-                // 挂起状态跨 run：sub_modules 已重建，无法恢复（与动态函数同限制）。
+                // 挂起状态引用的子模块表代际已回收：无法恢复。
                 self.restore_inline_state(saved);
                 self.native_call_depth -= 1;
                 return Err("generator suspended across runs is no longer valid".into());

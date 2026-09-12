@@ -33,10 +33,12 @@ impl Vm {
                         self.dispatch_native_call(obj, callee, this_reg, first_arg_reg, arg_count)?;
                         return Ok(true);
                     } else if obj.sub_module_index() > 0 {
-                        let sub_idx = obj.sub_module_index() as usize;
                         let this_value = self.regs[this_reg as usize];
-                        let is_generator = sub_idx < self.sub_modules.len() && self.sub_modules[sub_idx].is_generator;
-                        let is_async = sub_idx < self.sub_modules.len() && self.sub_modules[sub_idx].is_async;
+                        // 按函数对象自身记录的表代际解析（跨 run 调用旧代模块时
+                        // 当前 run 平表不指其下标）。
+                        let sub = self.callee_module(obj);
+                        let is_generator = sub.map(|m| m.is_generator).unwrap_or(false);
+                        let is_async = sub.map(|m| m.is_async).unwrap_or(false);
                         // 生成器/异步路径需把实参物化存进状态盒；普通字节码调用直接
                         // 引用寄存器连续区间，免临时堆 Vec（每次调用省 1 次分配）。
                         if is_generator || is_async {

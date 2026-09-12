@@ -105,16 +105,18 @@ impl Vm {
     pub(crate) fn dispatch_create_closure(&mut self, rd: usize, instr: u32) -> Result<(), String> {
         let sub_idx = opcode::imm16(instr) as u32;
         vm_trace!("CREATE_CLOSURE rd={} sub_idx={}", rd, sub_idx);
-        if sub_idx == 0 || (sub_idx as usize) >= self.sub_modules.len() {
+        // 闭包按当前 run 的平表解析（CREATE_CLOSURE 只在本 run 装载的模块内发射）。
+        let table = self.current_table();
+        if sub_idx == 0 || (sub_idx as usize) >= table.modules.len() {
             // 逃逸闭包（函数对象在定义模块之外被创建）时 sub_idx 相对定义模块，
-            // 超出当前 sub_modules 上下文——按运行时错误处理而非索引越界 panic。
+            // 超出当前平表上下文——按运行时错误处理而非索引越界 panic。
             return Err(format!(
                 "CREATE_CLOSURE: sub_module_index {} out of bounds (max {})",
                 sub_idx,
-                self.sub_modules.len()
+                table.modules.len()
             ));
         }
-        let sub = &self.sub_modules[sub_idx as usize];
+        let sub = &table.modules[sub_idx as usize];
         let is_arrow = sub.is_arrow;
         let is_class_constructor = sub.is_class_constructor;
         let is_derived_constructor = sub.is_derived_constructor;
@@ -504,11 +506,11 @@ impl Vm {
             }
         } else if super_obj.sub_module_index() > 0 {
             let sub_idx = super_obj.sub_module_index() as usize;
-            if sub_idx >= self.sub_modules.len() {
+            if self.callee_module(super_obj).is_none() {
                 return Err(format!(
                     "SUPER_CALL: sub_module_index {} out of bounds (max {})",
                     sub_idx,
-                    self.sub_modules.len()
+                    self.current_table().modules.len()
                 ));
             }
             // 收敛到统一压帧入口：this = derived_this（super() 把实例交予父构造器），
@@ -748,12 +750,11 @@ impl Vm {
                             }
                         }
                     } else if obj.sub_module_index() > 0 {
-                        let sub_idx = obj.sub_module_index() as usize;
+                        // 按函数对象自身记录的表代际解析：表缺失（已回收）时落
+                        // 普通压帧路径，由 push_bytecode_frame 按自身口径报错。
+                        let sub = self.callee_module(obj);
                         // 异步生成器函数调用返回异步生成器迭代器对象。
-                        if sub_idx < self.sub_modules.len()
-                            && self.sub_modules[sub_idx].is_generator
-                            && self.sub_modules[sub_idx].is_async
-                        {
+                        if matches!(sub, Some(m) if m.is_generator && m.is_async) {
                             let gen_pc = self.pc;
                             let gen = self.create_async_generator_object(callee, this_value, &args)?;
                             // 参数初始化抛错已就地展开（unwind 改写 pc 至 catch）：异常值已
@@ -765,7 +766,7 @@ impl Vm {
                             return Ok(false);
                         }
                         // 生成器函数调用返回迭代器对象，不执行函数体。
-                        if sub_idx < self.sub_modules.len() && self.sub_modules[sub_idx].is_generator {
+                        if matches!(sub, Some(m) if m.is_generator) {
                             let gen_pc = self.pc;
                             let gen = self.create_generator_object(callee, this_value, &args)?;
                             // 参数初始化抛错已就地展开时不得覆盖 catch 参数（同上）。
@@ -775,7 +776,7 @@ impl Vm {
                             return Ok(false);
                         }
                         // 异步函数调用返回 capability promise，立即同步执行 body 到首个 await。
-                        if sub_idx < self.sub_modules.len() && self.sub_modules[sub_idx].is_async {
+                        if matches!(sub, Some(m) if m.is_async) {
                             let promise = self.create_async_object(callee, this_value, &args)?;
                             self.regs[0] = promise;
                             return Ok(false);
@@ -880,16 +881,14 @@ impl Vm {
                 }
             }
         } else if ctor_obj.sub_module_index() > 0 {
+            // 按构造器自身记录的表代际解析。
+            let sub = self.callee_module(ctor_obj);
             // 生成器函数不是构造器：`new g()` 抛 TypeError。
-            if (ctor_obj.sub_module_index() as usize) < self.sub_modules.len()
-                && self.sub_modules[ctor_obj.sub_module_index() as usize].is_generator
-            {
+            if matches!(sub, Some(m) if m.is_generator) {
                 return self.raise_type_error("g is not a constructor").map(|_| true);
             }
             // 异步函数不是构造器：`new f()` 抛 TypeError。
-            if (ctor_obj.sub_module_index() as usize) < self.sub_modules.len()
-                && self.sub_modules[ctor_obj.sub_module_index() as usize].is_async
-            {
+            if matches!(sub, Some(m) if m.is_async) {
                 return self.raise_type_error("g is not a constructor").map(|_| true);
             }
             let this_value = if ctor_obj.is_derived_constructor() {

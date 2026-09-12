@@ -258,7 +258,7 @@ impl KernelCore {
     /// 不自动重建——重建须由宿主在"无存活 VM"边界驱动：归还全部 `VmGuard`
     /// （池排空）→ 旧 `Arc<KernelCore>` 归零整体释放（PermInterner/ShapeForge/
     /// CodeForge/PropForge，含全部泄漏键文本与物化串）→ 新建 kernel + 新池/
-    /// VM。存活 VM 的 `immutables_cache` 与 P 对象持有旧 kernel 的物化串裸
+    /// VM。存活 VM 的代际表注册表（`immutables`）与 P 对象持有旧 kernel 的物化串裸
     /// 指针与 shape id，VM 存活期间重建会使其悬垂。三个预设默认 None = 永不
     /// 触发（有意裁定：CLI eval/run/REPL/bench/test262 宿主均未接重建边界，
     /// None 保证零行为漂移）。

@@ -160,8 +160,6 @@ fn thenable_chain_after_already_resolved_noop() {
 #[test]
 fn subclass_then_derives_subclass_instance() {
     // 子类 then 派生：class P extends Promise {}，p.then 返回 P 实例（经子类构造器）。
-    // 单次 eval 完成断言：跨 eval 时旧 module 的 bytecode 函数对象随 sub_modules
-    // 替换失效（引擎既有局限），故不拆分执行。
     let mut vm = Vm::new();
     let result = eval(
         &mut vm,
@@ -174,7 +172,7 @@ fn subclass_then_derives_subclass_instance() {
 #[test]
 fn subclass_catch_finally_derive_subclass() {
     // catch/finally 经 this.then 调用，自动获得子类派生语义。
-    // 每次 eval 独立定义 P：跨 eval 复用旧 module 函数对象会随 sub_modules 替换失效。
+    // 每次 eval 独立定义 P，两条断言互不干扰。
     let mut vm = Vm::new();
     let result = eval(
         &mut vm,

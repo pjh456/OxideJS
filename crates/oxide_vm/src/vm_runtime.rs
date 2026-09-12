@@ -2,7 +2,7 @@ use std::sync::{Arc, OnceLock};
 
 use oxide_bytecode::module::CompiledModule;
 
-use crate::vm::{CallFrame, FrameArgs, FrameContinuation, InlineSyncState, Vm};
+use crate::vm::{CallFrame, FrameArgs, FrameContinuation, InlineSyncState, TableGen, Vm};
 use crate::{vm_debug, vm_info, vm_trace, vm_warn};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
@@ -134,6 +134,9 @@ macro_rules! inline_save_field {
     ($recv:ident, $window_regs:ident, active_flat_id, copy) => {
         $recv.active_flat_id
     };
+    ($recv:ident, $window_regs:ident, active_table_gen, copy) => {
+        $recv.active_table_gen
+    };
 }
 
 /// restore 方向的字段写回语句。`regs` 只回拷窗口并把缓冲归还池。
@@ -232,6 +235,9 @@ macro_rules! inline_restore_field {
     ($recv:ident, $saved:ident, active_flat_id, copy) => {
         $recv.active_flat_id = $saved.active_flat_id
     };
+    ($recv:ident, $saved:ident, active_table_gen, copy) => {
+        $recv.active_table_gen = $saved.active_table_gen
+    };
 }
 
 /// 内联同步调用可搬移执行核心字段的单一登记表。save/restore 双向由本宏展开；
@@ -274,6 +280,7 @@ macro_rules! inline_core_fields {
             (inline_args_count, copy),            // M
             (accessor_frame_target_reg, copy),    // M
             (active_flat_id, copy),               // M
+            (active_table_gen, copy),             // M
         )
     };
 }
@@ -367,17 +374,22 @@ impl Vm {
             return Err(self.error_message_text("TypeError", "accessor is not callable"));
         }
         let sub_idx = callee_obj.sub_module_index() as usize;
+        let gen = callee_obj.table_gen();
         vm_debug!(
             "call_bytecode_function_inline: sub_idx={}, args={}, depth={}",
             sub_idx,
             args.len(),
             self.frames.len()
         );
-        if sub_idx >= self.sub_modules.len() {
+        let table = match self.tables.get(&gen) {
+            Some(t) => t,
+            None => return Err(format!("accessor: module table gen {} not available", gen)),
+        };
+        if sub_idx >= table.modules.len() {
             return Err(format!(
                 "accessor sub_module_index {} out of bounds (max {})",
                 sub_idx,
-                self.sub_modules.len()
+                table.modules.len()
             ));
         }
         if self.frames.len() >= self.kernel_core.config.max_call_depth {
@@ -388,22 +400,22 @@ impl Vm {
             self.raise_error_kind("RangeError", "Maximum call stack size exceeded")?;
             return Ok(JsValue::undefined());
         }
+        // 被调模块取 Arc 克隆（与调用方共享同一编译产物）：后续 &mut self
+        // 调用期间不持有对注册表的借用。
+        let sub = Arc::clone(&table.modules[sub_idx]);
         // 异步生成器函数调用返回异步生成器迭代器对象，next/return/throw 返回 Promise。
-        if self.sub_modules[sub_idx].is_generator && self.sub_modules[sub_idx].is_async {
+        if sub.is_generator && sub.is_async {
             return self.create_async_generator_object(callee, receiver, args);
         }
         // 生成器函数调用返回迭代器对象，不执行函数体。
-        if self.sub_modules[sub_idx].is_generator {
+        if sub.is_generator {
             return self.create_generator_object(callee, receiver, args);
         }
         // 异步函数调用返回 capability promise，立即同步执行 body 到首个 await。
-        if self.sub_modules[sub_idx].is_async {
+        if sub.is_async {
             return self.create_async_object(callee, receiver, args);
         }
         self.native_call_depth += 1;
-
-        let subs = Arc::clone(&self.sub_modules);
-        let sub = &subs[sub_idx];
 
         vm_trace!("call_bytecode: saving state pc={} depth={}", self.pc, self.frames.len());
         // 窗口 = max(调用方活跃寄存器, callee 寄存器数)：restore 只回拷窗口，正好
@@ -418,8 +430,9 @@ impl Vm {
         }
         self.pc = 0;
         self.bytecode = Arc::clone(&sub.bytecode);
-        self.activate_immutables(sub_idx, &sub.constants);
+        self.activate_immutables(gen, sub_idx, &sub.constants);
         self.active_flat_id = sub_idx as u32;
+        self.active_table_gen = gen;
         self.active_reg_limit = sub.n_registers.max(1);
         self.root_reg_limit = self.active_reg_limit;
         self.cell_stack.push(Vec::with_capacity(sub.cells_needed as usize));
@@ -482,6 +495,9 @@ impl Vm {
         if let Some(saved_flat) = self.saved_flat_id_stack.pop() {
             self.active_flat_id = saved_flat;
         }
+        if let Some(saved_gen) = self.saved_table_gen_stack.pop() {
+            self.active_table_gen = saved_gen;
+        }
         vm_debug!(
             "restore_frame: return_addr={} bc_len={} saved_stack={} fn={:?}",
             frame.return_addr,
@@ -517,6 +533,34 @@ impl Vm {
         self.dispatch()
     }
 
+    /// run 边界回收无存活函数对象引用的子模块表代际：扫 session 对象表收
+    /// 存活函数对象引用的表代际集，注册表中其余代际 drop。表内存由此有界于
+    /// 存活函数对象数，不随 run 数单调增；存活函数按创建期代际仍命中原表。
+    ///
+    /// # 注意事项
+    /// - 须在换表注册新代际**之前**调用（此刻 current_gen 仍指上一 run 的表，
+    ///   新表未注册天然不被回收）。
+    /// - 执行外安全点调用（dispatch 未重入、无在途 builtin 局部裸指针），与
+    ///   `promote_session_epoch_refs` 同前提：session 对象表此刻全部有效。
+    pub(crate) fn reclaim_unreferenced_tables(&mut self) {
+        // 存活代际集：函数对象只经创建点直落 session 对象表登记（或晋升克隆
+        // 随行），扫全表即完备；native 函数哨兵 sub_module_index == 0 不计数。
+        let mut live_gens: Vec<u32> = Vec::new();
+        for &ptr in &self.gc_state.session_object_ptrs {
+            if ptr.is_null() {
+                continue;
+            }
+            // SAFETY: session 对象表此刻未清空，指针指向 session arena 内合法对象。
+            let obj = unsafe { &*ptr };
+            if obj.is_function() && obj.sub_module_index() != 0 {
+                live_gens.push(obj.table_gen());
+            }
+        }
+        // 当前代际恒保留（本 run 执行仍在用，即便尚无函数引用）。
+        live_gens.push(self.current_gen);
+        self.tables.retain(|gen, _| live_gens.contains(gen));
+    }
+
     /// 加载并执行一个已编译模块，返回模块顶层执行结果或未捕获异常消息。
     ///
     /// 模块以 `Arc` 与调用方共享（如 CodeForge 缓存条目）：平表装载只做
@@ -525,19 +569,34 @@ impl Vm {
     pub fn run(&mut self, module: &Arc<CompiledModule>) -> Result<JsValue, String> {
         vm_debug!("run: starting bytecode execution, {} instructions", module.bytecode.len());
         self.clear_execution_state();
-        // 模板对象缓存按 run 清空：flat_id 每次 run 从 0 重新分配，跨 run 复用会
-        // 让不同编译树的 site 误命中（缓存键 = (flat_id, site_no)）。
+        // 模板对象缓存按 run 清空：缓存只留本次 run 的条目，规模有界（键含代际
+        // 维度后跨 run 不再误命中，清空仅为规模约束）。
         self.template_objects.clear();
         self.saved_flat_id_stack.clear();
+        self.saved_table_gen_stack.clear();
         self.active_flat_id = 0;
         self.cell_stack.clear();
         self.cell_stack.push(Vec::new());
-        self.sub_modules = Arc::new(collect_flat_modules(module));
-        self.immutables_cache = (0..self.sub_modules.len()).map(|_| OnceLock::new()).collect();
+        // run 边界换表前先回收无存活函数对象引用的表代际（此刻 current_gen 仍
+        // 指上一 run 的表，存活代际集由 session 对象表扫描得出）。
+        self.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
+        self.reclaim_unreferenced_tables();
+        // 新表注册于 current_gen + 1：本 run 创建的函数对象记录该代际，跨 run
+        // 调用按创建期代际解析。
+        self.current_gen = self.current_gen.wrapping_add(1);
+        let modules = Arc::new(collect_flat_modules(module));
+        self.tables.insert(
+            self.current_gen,
+            Box::new(TableGen {
+                immutables: (0..modules.len()).map(|_| OnceLock::new()).collect(),
+                modules,
+            }),
+        );
+        self.active_table_gen = self.current_gen;
         // 顶层脚本严格模式：无帧且无 inline 时写路径的 strict/sloppy 判定来源。
         self.top_level_strict = module.is_strict;
         self.bytecode = Arc::clone(&module.bytecode);
-        self.activate_immutables(0, &module.constants);
+        self.activate_immutables(self.current_gen, 0, &module.constants);
         self.root_reg_limit = module.n_registers.max(1);
         self.active_reg_limit = self.root_reg_limit;
 
@@ -650,10 +709,10 @@ mod tests {
         let mut vm = Vm::new();
         let module = Arc::new(compile("var o = { a: 1 }; o.a + o.a"));
         vm.run(&module).expect("run1");
-        assert!(Arc::ptr_eq(&vm.sub_modules[0], &module), "顶层条目须与宿主 Arc 同一实例");
+        assert!(Arc::ptr_eq(&vm.current_table().modules[0], &module), "顶层条目须与宿主 Arc 同一实例");
         vm.full_reset();
         vm.run(&module).expect("run2");
-        assert!(Arc::ptr_eq(&vm.sub_modules[0], &module), "full_reset 后二次 run 仍共享");
+        assert!(Arc::ptr_eq(&vm.current_table().modules[0], &module), "full_reset 后二次 run 仍共享");
     }
 
     #[test]

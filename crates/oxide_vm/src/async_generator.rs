@@ -13,7 +13,6 @@
 //! 快照挂起状态；`YIELD` 复用 `Vm::generator_suspended` 信号。
 
 use std::collections::VecDeque;
-use std::sync::Arc;
 
 use oxide_builtins::iterator::make_iter_result;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
@@ -304,10 +303,9 @@ impl Vm {
 
         {
             let state = unsafe { &mut *state_ptr };
-            let subs = Arc::clone(&self.sub_modules);
-            let restore_res = state.suspended.restore_into(self, &subs);
+            let restore_res = state.suspended.restore_into(self, state.callee);
             if restore_res.is_err() {
-                // 挂起状态跨 run：sub_modules 已重建，无法恢复（与生成器同限制）。
+                // callee 记录的表代际已被回收（跨 run 且无存活函数引用），无法恢复。
                 self.async_gen_dispatch = prev_agd;
                 self.async_gen_context = prev_gen_ctx;
                 self.generator_dispatch = prev_gd;

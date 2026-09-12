@@ -509,7 +509,8 @@ impl PropIndex for i32 {
 ///   native_fn: Option\<NativeFnPtr\> (16 字节 — 裸 `*const ()` 无法利用 Option\<NonNull\>
 ///              优化；因 repr(Rust) 布局规则存为包装 8 字节指针的 Option，带 8 字节
 ///              判别式填充)
-///   sub_module_index: u32 (4 字节 + 4 填充，索引 CompiledModule.sub_modules)
+///   sub_module_index: u32 (4 字节，子模块平表下标，与 table_gen 配对解析)
+///   table_gen: u32 (4 字节，创建期所属子模块平表的表代际)
 ///   captured_this: JsValue (8 字节，箭头函数的词法 this)
 ///   home_object: JsValue (8 字节，\[\[HomeObject\]\]，供 super 查找)
 ///   upvalues: *mut u8 (8 字节，指向闭包的 Box<Vec<*mut Cell>>)
@@ -598,7 +599,9 @@ pub struct JsObject {
     array_len_override: u32,
     native_fn: Option<NativeFnPtr>,
     sub_module_index: u32,
-    _pad3: [u8; 4],
+    /// 子模块平表的表代际：函数对象创建时所属的平表由该代际唯一定位，
+    /// 调用期与 sub_module_index 配对解析（跨 run 换表后按创建期代际仍命中原表）。
+    table_gen: u32,
     captured_this: JsValue,
     home_object: JsValue,
     pub upvalues: *mut u8,
@@ -821,7 +824,7 @@ impl JsObject {
             array_len_override: 0,
             native_fn: None,
             sub_module_index: 0,
-            _pad3: [0; 4],
+            table_gen: 0,
             captured_this: JsValue::undefined(),
             home_object: JsValue::undefined(),
             upvalues: std::ptr::null_mut(),
@@ -847,7 +850,7 @@ impl JsObject {
             array_len_override: 0,
             native_fn: None,
             sub_module_index: 0,
-            _pad3: [0; 4],
+            table_gen: 0,
             captured_this: JsValue::undefined(),
             home_object: JsValue::undefined(),
             upvalues: std::ptr::null_mut(),
@@ -946,7 +949,7 @@ impl JsObject {
             array_len_override: self.array_len_override,
             native_fn: self.native_fn,
             sub_module_index: self.sub_module_index,
-            _pad3: self._pad3,
+            table_gen: self.table_gen,
             captured_this: self.captured_this,
             home_object: self.home_object,
             upvalues: self.upvalues,
@@ -1810,7 +1813,8 @@ impl JsObject {
         self.native_arg_count = n;
     }
 
-    /// 子模块下标（函数对象对应的 `CompiledModule` 索引）。
+    /// 子模块下标（函数对象对应的 `CompiledModule` 在创建期平表中的下标；
+    /// 0 = 原生函数哨兵）。
     pub fn sub_module_index(&self) -> u32 {
         self.sub_module_index
     }
@@ -1818,6 +1822,16 @@ impl JsObject {
     /// 设置子模块下标。
     pub fn set_sub_module_index(&mut self, idx: u32) {
         self.sub_module_index = idx;
+    }
+
+    /// 创建期所属子模块平表的表代际（与 sub_module_index 配对解析出唯一模块）。
+    pub fn table_gen(&self) -> u32 {
+        self.table_gen
+    }
+
+    /// 设置创建期表代际。
+    pub fn set_table_gen(&mut self, gen: u32) {
+        self.table_gen = gen;
     }
 
     /// 箭头函数标志（header bit 28）。

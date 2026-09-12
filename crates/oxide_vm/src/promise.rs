@@ -238,14 +238,19 @@ impl Vm {
     fn call_constructor_bytecode_inline(
         &mut self, ctor: JsValue, ctor_obj: &JsObject, args: &[JsValue],
     ) -> Result<JsValue, JsValue> {
-        let sub_idx = ctor_obj.sub_module_index() as usize;
-        if sub_idx == 0 || sub_idx >= self.sub_modules.len() {
+        // 按构造器自身记录的表代际解析：代际表缺失（已回收）或下标越界与
+        // 原生函数哨兵同口径报 TypeError。
+        let callee_module = match self.callee_module(ctor_obj) {
+            Some(m) => m,
+            None => {
+                return Err(oxide_builtins::error::create_type_error(self, "constructor is not a constructor"));
+            }
+        };
+        if callee_module.is_generator || callee_module.is_async {
             return Err(oxide_builtins::error::create_type_error(self, "constructor is not a constructor"));
         }
-        // 生成器/异步函数不是构造器。
-        if self.sub_modules[sub_idx].is_generator || self.sub_modules[sub_idx].is_async {
-            return Err(oxide_builtins::error::create_type_error(self, "constructor is not a constructor"));
-        }
+        // 先拷出寄存器数，释放对代际表的借用后再进入可变借用区。
+        let callee_reg_count = callee_module.n_registers;
         let new_obj_ptr = self.alloc_ctor_this(ctor_obj)?;
         let new_obj_val = JsValue::from_js_object(new_obj_ptr);
         // derived 构造器 super() 前 this 为 undefined，基类 this = 新对象。
@@ -254,7 +259,8 @@ impl Vm {
         } else {
             new_obj_val
         };
-        let window = self.active_reg_limit.max(self.sub_modules[sub_idx].n_registers).max(1) as usize;
+        // 入口已解析代际表：读 n_registers 定保存窗口。
+        let window = self.active_reg_limit.max(callee_reg_count).max(1) as usize;
         let saved = self.save_inline_state(window);
         let prev_construct = self.construct_dispatch;
         self.construct_dispatch = true;
