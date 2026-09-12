@@ -1149,6 +1149,12 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
                 oxide_builtins::temporal::plain_year_month_subtract::<crate::vm::Vm> as *const (),
                 1,
             ),
+            ("with", oxide_builtins::temporal::plain_year_month_with::<crate::vm::Vm> as *const (), 1),
+            (
+                "toPlainDate",
+                oxide_builtins::temporal::plain_year_month_to_plain_date::<crate::vm::Vm> as *const (),
+                1,
+            ),
         ],
     );
     bind_well_known_data_property(

@@ -3406,3 +3406,86 @@ fn plain_year_month_subtract_matrix() {
         "1994-11|2000-02|2018-09|+275760-08|+275759-09|-271821-05|RangeError|RangeError|RangeError|TypeError|RangeError|RangeError|TypeError|RangeError"
     );
 }
+
+#[test]
+fn plain_year_month_with_matrix() {
+    let mut vm = Vm::new();
+    // with：calendar/timeZone 键与实例拒绝；Get 序 month→monthCode→year；
+    // 字段转换先于 options；monthCode 两段校验；constrain 钳 month>12；
+    // 结果参考日恒 1；年月级范围检查。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           const ym = (s) => Temporal.PlainYearMonth.from(s);
+           return [
+             ym('2019-10').with({ year: 2020 }).toString(),
+             ym('2019-10').with({ month: 9 }).toString(),
+             ym('2019-10').with({ monthCode: 'M09' }).toString(),
+             kind(() => ym('2019-10').with({ month: 9, monthCode: 'M10' })),
+             ym('2019-10').with({ month: 1, years: 2020 }).toString(),
+             ym('2019-10').with({ month: 11, year: undefined }).toString(),
+             ym('2019-10').with({ month: 1.7 }).toString(),
+             ym('2000-05').with({ month: 13 }).month,
+             ym('2000-05').with({ month: 15 }, { overflow: undefined }).month,
+             kind(() => ym('2000-05').with({ month: 15 }, { overflow: 'reject' })),
+             kind(() => ym('2000-05').with({ month: 8 }, { overflow: 'CONSTRAIN' })),
+             kind(() => ym('2000-05').with({ month: 8 }, { overflow: 'balance' })),
+             kind(() => ym('2019-10').with({ month: -1 }, null)),
+             kind(() => ym('2019-10').with({ year: 2020 }, null)),
+             kind(() => ym('2019-10').with({})),
+             kind(() => ym('2019-10').with({ months: 12 })),
+             kind(() => ym('2019-10').with({ year: 2021, calendar: 'iso8601' })),
+             kind(() => ym('2019-10').with({ year: 2021, timeZone: 'UTC' })),
+             kind(() => ym('2019-10').with(42)),
+             kind(() => ym('2019-10').with(new Temporal.PlainDate(2019, 5, 17))),
+             kind(() => ym('2019-10').with({ month: Infinity })),
+             kind(() => ym('2019-10').with({ monthCode: 'M08L' })),
+             kind(() => ym('2019-10').with({ monthCode: 'M13' })),
+             new Temporal.PlainYearMonth(2019, 10, 'iso8601', 5).with({ month: 3 }).toString({ calendarName: 'always' }),
+             ym('2019-10').with({ year: 2020 }, () => {}).toString(),
+             ym('-271821-05').with({ month: 4 }).toString(),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "2020-10|2019-09|2019-09|RangeError|2019-01|2019-11|2019-01|12|12|RangeError|RangeError|RangeError|RangeError|TypeError|TypeError|TypeError|TypeError|TypeError|TypeError|TypeError|RangeError|RangeError|RangeError|2019-03-01[u-ca=iso8601]|2020-10|-271821-04"
+    );
+}
+
+#[test]
+fn plain_year_month_to_plain_date_matrix() {
+    let mut vm = Vm::new();
+    // toPlainDate：item 须对象且只读 day；options.overflow 绝不读取；
+    // constrain 钳 day 至 [1, 月长]；day 级范围检查（年月级合法仍可抛）。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           const ym = (s) => Temporal.PlainYearMonth.from(s);
+           return [
+             ym('2002-01').toPlainDate({ day: 22 }).toString(),
+             kind(() => ym('2002-01').toPlainDate({ something: 'nothing' })),
+             kind(() => ym('2002-01').toPlainDate(7)),
+             kind(() => ym('2002-01').toPlainDate(null)),
+             kind(() => ym('2002-01').toPlainDate({})),
+             ym('2023-02').toPlainDate({ day: 29 }).toString(),
+             ym('1998-06').toPlainDate({ day: 31 }).toString(),
+             ym('2000-05').toPlainDate({ day: 1.9 }).toString(),
+             ym('2000-05').toPlainDate({ day: 0 }).toString(),
+             ym('-271821-04').toPlainDate({ day: 19 }).toString(),
+             kind(() => ym('-271821-04').toPlainDate({ day: 18 })),
+             ym('+275760-09').toPlainDate({ day: 13 }).toString(),
+             kind(() => ym('+275760-09').toPlainDate({ day: 14 })),
+             kind(() => ym('2000-05').toPlainDate({ day: Infinity })),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "2002-01-22|TypeError|TypeError|TypeError|TypeError|2023-02-28|1998-06-30|2000-05-01|2000-05-01|-271821-04-19|RangeError|275760-09-13|RangeError|RangeError"
+    );
+}
