@@ -8772,6 +8772,71 @@ pub fn plain_year_month_equals<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     NativeResult::Ok(JsValue::bool(equal))
 }
 
+/// add/subtract 的 (年, 月) 可表示性检查，按日 = 1 计算（ISODateWithinLimits）。
+/// 与 ISOYearMonthWithinLimits 的差异仅在 -271821 年：该年 4 月 1 日早于最早
+/// 可表示的日期时间，故 4 月及以前越界（5 月起在界内）；+275760 年须 9 月及以前。
+fn iso_year_month_day1_within_limits(year: i64, month: i64) -> bool {
+    if !(-271_821_i64..=275_760_i64).contains(&year) {
+        return false;
+    }
+    !((year == -271_821 && month < 5) || (year == 275_760 && month > 9))
+}
+
+/// `Temporal.PlainYearMonth.prototype.add/subtract(durationLike [, options])` 核心。
+///
+/// # 步骤
+/// 1. receiver branding（TypeError）。
+/// 2. ToTemporalDuration（串 / bag / 实例；TypeError、RangeError 各自语义）。
+/// 3. 读 overflow（规范顺序先于后续算法校验；ISO 日历下取值不可观测，仅校验）。
+/// 4. weeks / days / 时间分量任一非零 → RangeError。
+/// 5. receiver (年, 月) 按日 1 检查可表示性 → RangeError。
+/// 6. 年、月分量折算绝对月数后相加再平衡（div/rem_euclid）。
+/// 7. 结果 (年, 月) 按日 1 检查可表示性 → RangeError。
+///
+/// # 边界与副作用
+/// - 结果参考日恒 1，日历标识取自 receiver 槽 3。
+/// - subtract 与 add 共用本函数，sign 参数取反时长分量。
+fn plain_year_month_apply_duration<H: VmHost>(vm: &mut H, args: &[u8], sign: i64) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_year_month(vm, obj));
+    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let values = match duration_like_values(vm, val) {
+        Ok(values) => values,
+        Err(error) => return NativeResult::Err(error),
+    };
+    let _overflow = native_try!(temporal_overflow(vm, args));
+    if values[2..].iter().any(|value| *value != 0.0) {
+        return NativeResult::Err(crate::error::create_range_error(
+            vm,
+            "year-month cannot add weeks, days, or time units",
+        ));
+    }
+    let year = get_double_prop(obj, 0) as i64;
+    let month = get_double_prop(obj, 1) as i64;
+    if !iso_year_month_day1_within_limits(year, month) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "year-month is out of range"));
+    }
+    let months = (values[0] as i64) * 12 + values[1] as i64;
+    let absolute = year * 12 + month - 1 + sign * months;
+    let result_year = absolute.div_euclid(12);
+    let result_month = absolute.rem_euclid(12) + 1;
+    if !iso_year_month_day1_within_limits(result_year, result_month) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "year-month is out of range"));
+    }
+    make_plain_year_month(vm, result_year as i32, result_month as u32, 1, &get_calendar_id(obj, 3))
+}
+
+/// `Temporal.PlainYearMonth.prototype.add(durationLike)`。
+pub fn plain_year_month_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_year_month_apply_duration(vm, args, 1)
+}
+
+/// `Temporal.PlainYearMonth.prototype.subtract(durationLike)`。
+pub fn plain_year_month_subtract<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_year_month_apply_duration(vm, args, -1)
+}
+
 /// `Temporal.PlainMonthDay.prototype.equals(other)`：比较 (月, 日, 参考年) 三元与日历标识；
 /// other 经 ToTemporalMonthDay（串 / 字段对象 / 实例）转换。
 pub fn plain_month_day_equals<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {

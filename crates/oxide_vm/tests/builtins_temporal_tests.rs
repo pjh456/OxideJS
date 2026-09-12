@@ -3324,3 +3324,85 @@ fn plain_year_month_equals_matrix() {
         "true|false|false|false|true|true|true|true|true|true|TypeError|TypeError|TypeError|RangeError|TypeError|RangeError|TypeError|true"
     );
 }
+
+#[test]
+fn plain_year_month_add_matrix() {
+    let mut vm = Vm::new();
+    // add：ToTemporalDuration（串/bag/实例）→ 读 overflow → weeks/days/时间分量
+    // 非零 RangeError；(年,月) 折绝对月数平衡；接收方与结果均按日 1 查可表示性
+    // （-271821-04 加零时长也 RangeError）；结果参考日恒 1。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           const ym = (s) => Temporal.PlainYearMonth.from(s);
+           return [
+             ym('2019-11').add({months: 2}).toString(),
+             ym('2019-11').add({years: 1}).toString(),
+             ym('2019-11').add({months: -2}).toString(),
+             ym('2000-05').add('P3M').toString(),
+             ym('1994-11').add(Temporal.Duration.from('P18Y7M')).toString(),
+             new Temporal.PlainYearMonth(2025, 8).add(new Temporal.Duration()).toString(),
+             ym('2019-11').add({years: 1, months: 2}).toString(),
+             ym('1970-01').add('-P273790Y8M').toString(),
+             ym('1970-01').add('P3285488M').toString(),
+             kind(() => ym('2019-11').add({days: 1})),
+             kind(() => ym('2019-11').add({hours: 1})),
+             kind(() => ym('2019-11').add(new Temporal.Duration(0, 0, 0, -1))),
+             kind(() => ym('2019-11').add({years: 1, months: -3})),
+             kind(() => ym('2019-11').add({year: 1})),
+             kind(() => ym('2019-11').add({})),
+             kind(() => ym('2019-11').add(7)),
+             kind(() => ym('2019-11').add('')),
+             kind(() => ym('2019-11').add({months: 1.5})),
+             kind(() => ym('2019-11').add({months: Infinity})),
+             kind(() => ym('2019-11').add('P4294967296M')),
+             kind(() => ym('+275760-09').add({months: 1})),
+             kind(() => ym('-271821-04').add(new Temporal.Duration())),
+             kind(() => ym('2019-11').add({months: 1}, null)),
+             ym('2023-05').add({months: 12}, {overflow: 'reject'}).toString(),
+             ym('2023-05').add({months: 12}, {overflow: 'constrain'}).toString(),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "2020-01|2020-11|2019-09|2000-08|2013-06|2025-08|2021-01|-271821-05|+275760-09|RangeError|RangeError|RangeError|RangeError|TypeError|TypeError|TypeError|RangeError|RangeError|RangeError|RangeError|RangeError|RangeError|TypeError|2024-05|2024-05"
+    );
+}
+
+#[test]
+fn plain_year_month_subtract_matrix() {
+    let mut vm = Vm::new();
+    // subtract 与 add 同核（sign 取反）；日历保留；低阶单位与非零时间分量
+    // RangeError；单数键 TypeError；接收方/结果按日 1 可表示性。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           const ym = (s) => Temporal.PlainYearMonth.from(s);
+           return [
+             ym('2013-06').subtract(Temporal.Duration.from('P18Y7M')).toString(),
+             ym('2000-05').subtract('P3M').toString(),
+             ym('2019-11').subtract({years: 1, months: 2}).toString(),
+             ym('+275760-09').subtract({months: 1}).toString(),
+             ym('+275760-09').subtract({years: 1}).toString(),
+             ym('1970-01').subtract('P273790Y8M').toString(),
+             kind(() => ym('2019-11').subtract({weeks: 1})),
+             kind(() => ym('2019-11').subtract({seconds: 1})),
+             kind(() => ym('2019-11').subtract({months: -1, years: 1})),
+             kind(() => ym('2019-11').subtract({month: 1})),
+             kind(() => ym('-271821-04').subtract({months: 1})),
+             kind(() => ym('-271821-04').subtract(new Temporal.Duration())),
+             kind(() => ym('2019-11').subtract({months: 1}, 1)),
+             kind(() => ym('2019-11').subtract('junk')),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "1994-11|2000-02|2018-09|+275760-08|+275759-09|-271821-05|RangeError|RangeError|RangeError|TypeError|RangeError|RangeError|TypeError|RangeError"
+    );
+}
