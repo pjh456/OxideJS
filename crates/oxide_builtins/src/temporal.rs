@@ -3850,7 +3850,7 @@ pub fn duration_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// 1. 最大单位取两侧最大的非零时间单位（days=3 最大，ns=9 最小）。
 /// 2. 分量在 i128 上按纳秒精确求和（f64 分量是精确整数，数学值不受 2^53 截断）。
 /// 3. 从总纳秒向下按同号截断分解，进位到最大单位为止。
-/// 4. 逐分量按纳秒刻度校验 2^53 秒上限。
+/// 4. 平衡后存储时间分量（含 days，𝔽 舍入）的纳秒加权和校验 2^53 秒上限。
 ///
 /// # 边界与前提
 /// - 任一侧含日历单位抛 RangeError（本批无 relativeTo 支持）。
@@ -3907,21 +3907,16 @@ fn add_duration_values<H: VmHost>(vm: &mut H, receiver: &[f64; 10], other: &[f64
         rem /= base;
         unit -= 1;
     }
-    // 范围校验：对 𝔽 舍入后的每个分量按其纳秒刻度检查是否达到 2^53 秒上限。
-    const MAX_TIME_NANOSECONDS: f64 = (1_i128 << 53) as f64 * 1_000_000_000.0;
-    const UNIT_SCALES: [f64; 7] = [
-        86_400_000_000_000.0,
-        3_600_000_000_000.0,
-        60_000_000_000.0,
-        1_000_000_000.0,
-        1_000_000.0,
-        1_000.0,
-        1.0,
-    ];
-    for (index, scale) in (3..10).zip(UNIT_SCALES) {
-        if values[index] != 0.0 && values[index].abs() * scale >= MAX_TIME_NANOSECONDS {
-            return Err(crate::error::create_range_error(vm, "duration time fields are out of range"));
-        }
+    // 范围校验：判据作用在存储分量（平衡后 𝔽 舍入结果）的纳秒加权和上，而非输入
+    // 精确和——内部槽位按 float64 可表示整数存储，转换可有损，舍入后分量可能越界；
+    // 加权和同时覆盖逐分量检查的盲区（总和落在 [2^53 s, 2^53 s + 86400 s) 而各分量
+    // 均低于上限的缝隙带）。
+    const MAX_TIME_NANOSECONDS: i128 = (1_i128 << 53) * 1_000_000_000;
+    let Some(stored_ns) = duration_time_nanoseconds(&values) else {
+        return Err(crate::error::create_range_error(vm, "invalid duration"));
+    };
+    if stored_ns.abs() >= MAX_TIME_NANOSECONDS {
+        return Err(crate::error::create_range_error(vm, "duration time fields are out of range"));
     }
     Ok(values)
 }

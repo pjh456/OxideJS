@@ -2522,6 +2522,30 @@ fn duration_subtract_equals_add_negated() {
 }
 
 #[test]
+fn duration_add_weighted_sum_range_boundary() {
+    let mut vm = Vm::new();
+    // 范围判据按平衡后时间分量加权和（spec IsValidDuration），非逐分量：
+    // days 和 104249991374 + 时间 27392 s 恰 = 2^53 s → RangeError（逐分量均低于上限）；
+    // 同输入减 1 s（总和 2^53 s − 1 s）→ 通过并平衡到 day/hour/minute/second。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const a = new Temporal.Duration(0, 0, 0, 52083464098, 3, 53, 20);
+           const b = {days: 52166527276, hours: 3, minutes: 43, seconds: 12};
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           return [
+             kind(() => a.add(b)),
+             kind(() => new Temporal.Duration(0, 0, 0, -52083464098, -3, -53, -20).subtract(b)),
+             kind(() => new Temporal.Duration(0, 0, 0, 52083464098, 3, 53, 19).add(b)),
+             new Temporal.Duration(0, 0, 0, 52083464098, 3, 53, 19).add(b).toString(),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "RangeError|RangeError|no|P104249991374DT7H36M31S");
+}
+
+#[test]
 fn duration_equals_compares_all_components() {
     let mut vm = Vm::new();
     let r = eval(
