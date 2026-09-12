@@ -46,6 +46,9 @@ pub(crate) struct PromiseState {
     /// resolve/reject 是否已被调用过（Resolve Promise Functions 的 alreadyResolved）。
     /// 首次调用后置位，后续任何 resolve/reject（含 thenable 委托期间）均 no-op。
     pub already_resolved: bool,
+    /// 原件 pending 时被晋升出的 session 克隆指针（原件结算时传导到克隆）；
+    /// 非 pending 原件恒为空指针。
+    pub promoted_clone: *mut JsObject,
 }
 
 /// 一条微任务（job）。
@@ -121,6 +124,7 @@ impl Vm {
             resolve_fn: JsValue::undefined(),
             reject_fn: JsValue::undefined(),
             already_resolved: false,
+            promoted_clone: std::ptr::null_mut(),
         });
         obj.set_native_data(Box::into_raw(state) as *mut u8);
         JsValue::from_js_object(ptr)
@@ -434,6 +438,13 @@ impl Vm {
                 reject: r.reject,
             });
         }
+        // 原件若已晋升出克隆，把结算传导到克隆：克隆上晋升后新挂的反应方随此触发
+        // （顶层 var 读克隆，原件反应已在本处直接触发，不重复传导）。
+        let clone_ptr = unsafe { (*state_ptr).promoted_clone };
+        if !clone_ptr.is_null() {
+            let clone = JsValue::from_js_object(clone_ptr);
+            let _ = self.fulfill_promise(clone, value);
+        }
         Ok(())
     }
 
@@ -458,6 +469,12 @@ impl Vm {
                 resolve: r.resolve,
                 reject: r.reject,
             });
+        }
+        // 原件若已晋升出克隆，把拒绝传导到克隆（同 fulfill：顶层 var 读克隆）。
+        let clone_ptr = unsafe { (*state_ptr).promoted_clone };
+        if !clone_ptr.is_null() {
+            let clone = JsValue::from_js_object(clone_ptr);
+            let _ = self.reject_promise(clone, reason);
         }
         Ok(())
     }
@@ -838,6 +855,7 @@ fn promise_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
         resolve_fn: resolve,
         reject_fn: reject,
         already_resolved: false,
+        promoted_clone: std::ptr::null_mut(),
     });
     obj.set_native_data(Box::into_raw(state) as *mut u8);
     let executor = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
@@ -1836,25 +1854,25 @@ pub(crate) fn clone_promise_native_with_rewrite(
     let Some(state) = promise_state_ref(old) else {
         return;
     };
+    let pending = state.state == PromiseStateKind::Pending;
     let cloned = PromiseState {
         state: state.state,
         result: rewrite(state.result),
-        reactions: state
-            .reactions
-            .iter()
-            .map(|r| PromiseReaction {
-                promise: rewrite(r.promise),
-                resolve: rewrite(r.resolve),
-                reject: rewrite(r.reject),
-                handler: rewrite(r.handler),
-                is_fulfill: r.is_fulfill,
-            })
-            .collect(),
+        // 不复制原件反应：原件结算时自带触发，克隆仅累积晋升后新挂的反应，避免双重触发。
+        reactions: Vec::new(),
         resolve_fn: rewrite(state.resolve_fn),
         reject_fn: rewrite(state.reject_fn),
         already_resolved: state.already_resolved,
+        promoted_clone: std::ptr::null_mut(),
     };
     new.set_native_data(Box::into_raw(Box::new(cloned)) as *mut u8);
+    // 原件 pending 时记下克隆指针：原件结算时把结果传导到克隆，克隆上晋升后新挂
+    // 的反应方随之触发（顶层 var 读侧引用克隆，原件随 epoch 释放，结算须在原件还活着时传导）。
+    if pending {
+        if let Some(src) = promise_state_mut(old) {
+            src.promoted_clone = new as *mut JsObject;
+        }
+    }
 }
 
 /// 只读核算 Promise 状态盒字节（不释放），供 GC 账目核算。
