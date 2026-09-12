@@ -474,6 +474,9 @@ impl Vm {
         self.cell_stack.clear();
         self.try_stack.clear();
         self.exception_value = None;
+        // 未捕获异常侧通道持原始 epoch 对象指针：执行期状态，跨 run/reset 不保留，
+        // 池回收后残留将悬垂。
+        self.last_uncaught_value = None;
         self.pending_exception = None;
         self.pending_error_kind = None;
         self.pending_completion = None;
@@ -1258,6 +1261,22 @@ mod tests {
         vm.reset();
 
         assert!(unsafe { *session_ptr } == 123);
+    }
+
+    /// 未捕获异常侧通道是执行期状态：原生错误后可能残留原值，reset/full_reset
+    /// 边界须随执行状态一并清空——否则其持有的 epoch 对象指针在池回收后悬垂
+    /// （后续原生错误经 raise_call_error 消费残留值即 UAF）。
+    #[test]
+    fn reset_drops_stale_uncaught_value() {
+        let mut vm = Vm::new();
+        let _ = run_source(&mut vm, "0");
+        vm.last_uncaught_value = Some(JsValue::float(42.0));
+        vm.reset();
+        assert!(vm.last_uncaught_value.is_none(), "reset 应清空未捕获异常侧通道");
+
+        vm.last_uncaught_value = Some(JsValue::float(42.0));
+        vm.full_reset();
+        assert!(vm.last_uncaught_value.is_none(), "full_reset 应清空未捕获异常侧通道");
     }
 
     /// run 边界换新 Bump 后双 arena 保留锚恰 0：重源 run 冲高水位，
