@@ -8160,74 +8160,17 @@ fn parse_month_day_string(input: &str) -> Result<(u32, u32), String> {
     parse_month_day_date_part(date_part)
 }
 
-/// bag 日历字符串是否合法：接受任何 PlainMonthDay 串形态，外加 "YYYY-MM" 年月形。
-fn is_valid_month_day_calendar_string(input: &str) -> bool {
-    let trimmed = input.trim();
-    if trimmed.contains('\u{2212}') {
-        return false;
-    }
-    let text = trimmed.to_owned();
-    let annotation_start = text.find('[').unwrap_or(text.len());
-    if validate_month_day_annotation_suffix(&text[annotation_start..]).is_err() {
-        return false;
-    }
-    let text = &text[..annotation_start];
-    if text.contains('Z') || text.contains('z') {
-        return false;
-    }
-    let separator = text.find(['T', 't', ' ']);
-    let (date_part, time_part) = match separator {
-        Some(index) => (&text[..index], &text[index + 1..]),
-        None => (text, ""),
-    };
-    if !time_part.is_empty() && validate_month_day_time_suffix(time_part).is_err() {
-        return false;
-    }
-    if parse_month_day_date_part(date_part).is_ok() {
-        return true;
-    }
-    // "YYYY-MM" 年月形（bag 日历独有宽形态）。
-    let bytes = date_part.as_bytes();
-    let (start, negative) = match bytes.first() {
-        Some(b'-') => (1usize, true),
-        Some(b'+') => (1usize, false),
-        _ => (0usize, false),
-    };
-    let mut i = start;
-    while i < bytes.len() && bytes[i].is_ascii_digit() {
-        i += 1;
-    }
-    let digits = &date_part[start..i];
-    let expected = if start > 0 { 6 } else { 4 };
-    if digits.len() != expected || i >= bytes.len() || bytes[i] != b'-' || date_part.len() != i + 3 {
-        return false;
-    }
-    let m_s = &date_part[i + 1..];
-    if !m_s.bytes().all(|b| b.is_ascii_digit()) {
-        return false;
-    }
-    let month: u32 = m_s.parse().unwrap_or(0);
-    if month == 0 || month > 12 {
-        return false;
-    }
-    !(negative && digits == "000000")
-}
-
-/// bag 日历解析：undefined → iso8601；字符串（iso8601 大小写不敏感 / 合法 ISO 串原样
-/// 保留为 ID）；PD/PDT/ZDT/PMD/PYM 实例 → 直读日历槽；其余对象与原始值 → TypeError。
+/// bag 日历解析：undefined → iso8601；字符串走宽松日历串解析（18-ID 白名单归一小写，
+/// 合法 ISO 日期-时间串归一 iso8601，含 YYYY-MM / MM-DD 部分日期）；
+/// PD/PDT/ZDT/PMD/PYM 实例 → 直读日历槽；其余对象与原始值 → TypeError。
 fn month_day_bag_calendar_id<H: VmHost>(vm: &mut H, value: JsValue) -> Result<String, JsValue> {
     if value.is_undefined() {
         return Ok("iso8601".to_string());
     }
     if value.is_string() {
         let text = to_string(value);
-        if text.to_lowercase() == "iso8601" {
-            return Ok("iso8601".to_string());
-        }
-        if is_valid_month_day_calendar_string(&text) {
-            return Ok(text);
-        }
-        return Err(crate::error::create_range_error(vm, "invalid calendar"));
+        return parse_temporal_calendar_string(&text)
+            .map_err(|_| crate::error::create_range_error(vm, "invalid calendar"));
     }
     if value.is_object() {
         let ptr = value.as_js_object_ptr();
@@ -8299,29 +8242,17 @@ pub fn plain_month_day_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         return make_plain_month_day(vm, month, day, 1972, &calendar);
     }
     // 字段对象：Get 序 calendar → day → month → monthCode → year → era → eraYear，
-    // 各分量在 Get 处即转换（观测序钉死）。
+    // 全部读原始值（不转换）；overflow 在全部 Get 之后读取。
     let calendar_raw = native_try!(temporal_option_value(vm, obj, value, "calendar"));
     let calendar = native_try!(month_day_bag_calendar_id(vm, calendar_raw));
     let day_raw = native_try!(temporal_option_value(vm, obj, value, "day"));
-    let day_f = match day_raw.is_undefined() {
-        true => None,
-        false => Some(native_try!(temporal_number_component(vm, day_raw))),
-    };
     let month_raw = native_try!(temporal_option_value(vm, obj, value, "month"));
-    let month_f = match month_raw.is_undefined() {
-        true => None,
-        false => Some(native_try!(temporal_number_component(vm, month_raw))),
-    };
     let month_code_raw = native_try!(temporal_option_value(vm, obj, value, "monthCode"));
     let month_code = match month_code_raw.is_undefined() {
         true => None,
         false => Some(native_try!(temporal_option_string(vm, month_code_raw))),
     };
     let year_raw = native_try!(temporal_option_value(vm, obj, value, "year"));
-    let year = match year_raw.is_undefined() {
-        true => None,
-        false => Some(native_try!(temporal_number_component(vm, year_raw)) as i32),
-    };
     let era_raw = native_try!(temporal_option_value(vm, obj, value, "era"));
     let era_year_raw = native_try!(temporal_option_value(vm, obj, value, "eraYear"));
     let constrain = native_try!(temporal_overflow(vm, args));
@@ -8330,57 +8261,72 @@ pub fn plain_month_day_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         return NativeResult::Err(crate::error::create_range_error(vm, "era and eraYear cannot both be present"));
     }
     // 月来源：双给 → RangeError；双缺 → TypeError（先于日存在性）。
-    if month_f.is_some() && month_code.is_some() {
+    if !month_raw.is_undefined() && month_code.is_some() {
         return NativeResult::Err(crate::error::create_range_error(vm, "month and monthCode cannot both be present"));
     }
-    if month_f.is_none() && month_code.is_none() {
+    if month_raw.is_undefined() && month_code.is_none() {
         return NativeResult::Err(crate::error::create_type_error(vm, "month or monthCode is required"));
     }
-    if day_f.is_none() {
+    if day_raw.is_undefined() {
         return NativeResult::Err(crate::error::create_type_error(vm, "day is required"));
     }
-    // monthCode 两段校验：第一段语法（"M"+两位）先于第二段 ISO 适配。
-    let month_code_num = match &month_code {
+    // monthCode 两段校验：第一段语法（"M"+两位数字，可选再 +"L"）先于一切数值转换；
+    // 第二段适配（闰月后缀、1..12 范围）在 year 转换之后。
+    let (month_code_num, leap_month) = match &month_code {
         Some(text) => {
             let b = text.as_bytes();
-            if b.len() != 3 || b[0] != b'M' || !b[1].is_ascii_digit() || !b[2].is_ascii_digit() {
+            let well_formed = b[0] == b'M'
+                && b.len() >= 3
+                && b[1].is_ascii_digit()
+                && b[2].is_ascii_digit()
+                && (b.len() == 3 || (b.len() == 4 && b[3] == b'L'));
+            if !well_formed {
                 return NativeResult::Err(crate::error::create_range_error(vm, "invalid monthCode"));
             }
-            Some(u32::from(b[1] - b'0') * 10 + u32::from(b[2] - b'0'))
+            (Some(u32::from(b[1] - b'0') * 10 + u32::from(b[2] - b'0')), b.len() == 4)
         }
-        None => None,
+        None => (None, false),
     };
-    // 月定值：负值恒 RangeError；>12 时 constrain 钳 12、reject 抛错。
-    let month = match (month_f, month_code_num) {
-        (Some(f), Some(code)) => {
+    // year 转换（TypeError/RangeError）在 monthCode 语法之后。
+    let year = match year_raw.is_undefined() {
+        true => None,
+        false => Some(native_try!(temporal_number_component(vm, year_raw)) as i32),
+    };
+    let month_f = match month_raw.is_undefined() {
+        true => None,
+        false => Some(native_try!(temporal_number_component(vm, month_raw))),
+    };
+    // monthCode 第二段适配：闰月后缀或月值越界 → RangeError。
+    if let Some(code) = month_code_num {
+        if leap_month || !(1..=12).contains(&code) {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid monthCode"));
+        }
+    }
+    // 月定值：monthCode 与数值 month 并存须一致（冲突 → RangeError）；
+    // 数值 month 负值恒 RangeError，>12 时 constrain 钳 12、reject 抛错。
+    let month = if let Some(code) = month_code_num {
+        if let Some(f) = month_f {
             if f as u32 != code {
                 return NativeResult::Err(crate::error::create_range_error(vm, "month and monthCode conflict"));
             }
-            code
         }
-        (Some(f), None) => {
-            if f < 1.0 {
+        code
+    } else {
+        let f = month_f.expect("month or monthCode is required checked above");
+        if f < 1.0 {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid month"));
+        }
+        if f > 12.0 {
+            if constrain {
+                12
+            } else {
                 return NativeResult::Err(crate::error::create_range_error(vm, "invalid month"));
             }
-            if f > 12.0 {
-                if constrain {
-                    12
-                } else {
-                    return NativeResult::Err(crate::error::create_range_error(vm, "invalid month"));
-                }
-            } else {
-                f as u32
-            }
+        } else {
+            f as u32
         }
-        (None, Some(code)) => {
-            if !(1..=12).contains(&code) {
-                return NativeResult::Err(crate::error::create_range_error(vm, "invalid monthCode"));
-            }
-            code
-        }
-        _ => unreachable!("month or monthCode is required checked above"),
     };
-    let day_f = day_f.unwrap();
+    let day_f = native_try!(temporal_number_component(vm, day_raw));
     if day_f < 1.0 {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid day"));
     }
@@ -8398,6 +8344,177 @@ pub fn plain_month_day_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         day_i
     };
     make_plain_month_day(vm, month, day as u32, 1972, &calendar)
+}
+
+/// `Temporal.PlainMonthDay.prototype.equals(other)`：比较 (月, 日, 参考年) 三元与日历标识；
+/// other 经 ToTemporalMonthDay（串 / 字段对象 / 实例）转换。
+pub fn plain_month_day_equals<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_month_day(vm, obj));
+    let other = match plain_month_day_from(vm, args) {
+        NativeResult::Ok(val) => val,
+        NativeResult::Err(err) => return NativeResult::Err(err),
+        NativeResult::TailCall { .. } => unreachable!("工厂路径不产生尾调用"),
+    };
+    let other_ptr = other.as_js_object_ptr();
+    if other_ptr.is_null() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "incompatible receiver"));
+    }
+    let o = unsafe { &*other_ptr };
+    let equal = get_double_prop(obj, 0) == get_double_prop(o, 0)
+        && get_double_prop(obj, 1) == get_double_prop(o, 1)
+        && get_double_prop(obj, 2) == get_double_prop(o, 2)
+        && get_calendar_id(obj, 3) == get_calendar_id(o, 3);
+    NativeResult::Ok(JsValue::bool(equal))
+}
+
+/// `Temporal.PlainMonthDay.prototype.with(monthDayLike[, options])`：覆盖 day/month/monthCode；
+/// year 只参与 overflow 月长判断；undefined 不覆盖；calendar/timeZone 键拒绝；
+/// 无识别字段 TypeError；overflow 读自 options（缺省 constrain）。
+/// 结果保留 receiver 日历，参考年恒 1972。
+pub fn plain_month_day_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_month_day(vm, obj));
+    let like = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    native_try!(reject_partial_object_with_calendar_or_time_zone(vm, like));
+    let lptr = like.as_js_object_ptr();
+    if lptr.is_null() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "invalid argument"));
+    }
+    let like_obj = unsafe { &*lptr };
+    // Get 序（字典序）：day → month → monthCode → year；无识别字段 → TypeError。
+    let day_raw = native_try!(temporal_option_value(vm, like_obj, like, "day"));
+    let month_raw = native_try!(temporal_option_value(vm, like_obj, like, "month"));
+    let month_code_raw = native_try!(temporal_option_value(vm, like_obj, like, "monthCode"));
+    let month_code = match month_code_raw.is_undefined() {
+        true => None,
+        false => Some(native_try!(temporal_option_string(vm, month_code_raw))),
+    };
+    let year_raw = native_try!(temporal_option_value(vm, like_obj, like, "year"));
+    if [day_raw, month_raw, month_code_raw, year_raw]
+        .iter()
+        .all(|raw| raw.is_undefined())
+    {
+        return NativeResult::Err(crate::error::create_type_error(vm, "no properties present"));
+    }
+    let constrain = native_try!(temporal_overflow(vm, args));
+    // monthCode 两段校验：语法（"M"+两位数字，可选 +"L"）先于 year 转换；
+    // 适配（闰月后缀、1..12 范围）与冲突检查在 year 转换之后。
+    let (month_code_num, leap_month) = match &month_code {
+        Some(text) => {
+            let b = text.as_bytes();
+            let well_formed = b[0] == b'M'
+                && b.len() >= 3
+                && b[1].is_ascii_digit()
+                && b[2].is_ascii_digit()
+                && (b.len() == 3 || (b.len() == 4 && b[3] == b'L'));
+            if !well_formed {
+                return NativeResult::Err(crate::error::create_range_error(vm, "invalid monthCode"));
+            }
+            (Some(u32::from(b[1] - b'0') * 10 + u32::from(b[2] - b'0')), b.len() == 4)
+        }
+        None => (None, false),
+    };
+    let year = match year_raw.is_undefined() {
+        true => None,
+        false => Some(native_try!(temporal_number_component(vm, year_raw)) as i32),
+    };
+    let month_f = match month_raw.is_undefined() {
+        true => None,
+        false => Some(native_try!(temporal_number_component(vm, month_raw))),
+    };
+    if let Some(code) = month_code_num {
+        if leap_month || !(1..=12).contains(&code) {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid monthCode"));
+        }
+    }
+    // 月定值：receiver 月（槽 0）为缺省；monthCode 与数值 month 并存须一致；
+    // 数值 month 负值恒 RangeError，>12 时 constrain 钳 12、reject 抛错。
+    let month = if let Some(code) = month_code_num {
+        if let Some(f) = month_f {
+            if f as u32 != code {
+                return NativeResult::Err(crate::error::create_range_error(vm, "month and monthCode conflict"));
+            }
+        }
+        code
+    } else {
+        match month_f {
+            Some(f) => {
+                if f < 1.0 {
+                    return NativeResult::Err(crate::error::create_range_error(vm, "invalid month"));
+                }
+                if f > 12.0 {
+                    if constrain {
+                        12
+                    } else {
+                        return NativeResult::Err(crate::error::create_range_error(vm, "invalid month"));
+                    }
+                } else {
+                    f as u32
+                }
+            }
+            None => get_double_prop(obj, 0) as u32,
+        }
+    };
+    // 日：receiver 日（槽 1）为缺省；<1 恒 RangeError。
+    let day_f = if day_raw.is_undefined() {
+        get_double_prop(obj, 1)
+    } else {
+        native_try!(temporal_number_component(vm, day_raw))
+    };
+    if day_f < 1.0 {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid day"));
+    }
+    // overflow 应用：月长按 bag year（缺省 1972）判断；constrain 钳制，reject 抛错。
+    let overflow_year = year.unwrap_or(1972);
+    let days = days_in_month_iso(overflow_year, month) as i32;
+    let day_i = day_f as i32;
+    let day = if day_i > days {
+        if constrain {
+            days
+        } else {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid day"));
+        }
+    } else {
+        day_i
+    };
+    let calendar = get_calendar_id(obj, 3);
+    make_plain_month_day(vm, month, day as u32, 1972, &calendar)
+}
+
+/// `Temporal.PlainMonthDay.prototype.toPlainDate(yearLike)`：yearLike 为 number 或 {year}；
+/// 只 Get item 的 year；overflow 恒 constrain 且不读 options；
+/// constrain 钳 day、day 级范围检查后产出 PlainDate（receiver 日历）。
+pub fn plain_month_day_to_plain_date<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_month_day(vm, obj));
+    let item = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    if !item.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "invalid argument"));
+    }
+    let iptr = item.as_js_object_ptr();
+    if iptr.is_null() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "invalid argument"));
+    }
+    let item_obj = unsafe { &*iptr };
+    let year_raw = native_try!(temporal_option_value(vm, item_obj, item, "year"));
+    if year_raw.is_undefined() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "year is required"));
+    }
+    let year = native_try!(temporal_number_component(vm, year_raw)) as i32;
+    let month = get_double_prop(obj, 0) as u32;
+    // constrain：day 钳到 (year, month) 月长。
+    let day = (get_double_prop(obj, 1) as u32).min(days_in_month_iso(year, month));
+    // day 级表示范围：-100_000_001..=100_000_000。
+    let day_count = days_from_civil(i128::from(year), i128::from(month), i128::from(day));
+    if !(-100_000_001..=100_000_000).contains(&day_count) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "date is out of range"));
+    }
+    let calendar = get_calendar_id(obj, 3);
+    make_plain_date(vm, year, month, day, &calendar)
 }
 
 #[cfg(test)]

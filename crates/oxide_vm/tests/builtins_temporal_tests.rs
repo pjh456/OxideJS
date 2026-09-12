@@ -2922,7 +2922,7 @@ fn plain_month_day_from_bag_matrix() {
     .unwrap();
     assert_eq!(
         str_val(&vm, r),
-        "M10-1|M12-31|1972-07-03[u-ca=iso8601]|M10-1|TypeError|TypeError|TypeError|TypeError|TypeError|TypeError|RangeError|TypeError|TypeError|RangeError|RangeError|RangeError|RangeError|RangeError|M05-2|M05-2|RangeError|M01-1|M02-28|M02-29|RangeError|M02-29|M02-29|M12-31|RangeError|RangeError|RangeError|RangeError|TypeError|TypeError|TypeError|TypeError|iso8601|iso8601|2020-01-01|M11|RangeError|RangeError|TypeError|TypeError"
+        "M10-1|M12-31|1972-07-03[u-ca=iso8601]|M10-1|TypeError|TypeError|TypeError|TypeError|TypeError|TypeError|RangeError|TypeError|TypeError|RangeError|RangeError|RangeError|RangeError|RangeError|M05-2|M05-2|RangeError|M01-1|M02-28|M02-29|RangeError|M02-29|M02-29|M12-31|RangeError|RangeError|RangeError|RangeError|TypeError|TypeError|TypeError|TypeError|iso8601|iso8601|iso8601|M11|RangeError|RangeError|TypeError|TypeError"
     );
 }
 
@@ -2973,5 +2973,114 @@ fn plain_month_day_from_instances_and_options() {
     assert_eq!(
         str_val(&vm, r),
         "M05-2|2000-05-02[u-ca=iso8601]|true|true|2|M10-1:1972-10-01[u-ca=iso8601]|M02-3:1|0:0|TypeError|TypeError|TypeError|TypeError|RangeError|RangeError|M02-2"
+    );
+}
+
+#[test]
+fn plain_month_day_equals_matrix() {
+    let mut vm = Vm::new();
+    // equals 比较 (月, 日, 参考年) 三元与日历；other 走 ToTemporalMonthDay
+    // （实例/串/bag/日历 ISO 串归一），坏参 TypeError/RangeError。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           const pmd = new Temporal.PlainMonthDay(5, 2);
+           return [
+             pmd.equals(new Temporal.PlainMonthDay(5, 2)),
+             pmd.equals(new Temporal.PlainMonthDay(5, 2, 'iso8601', 2000)),
+             pmd.equals(Temporal.PlainMonthDay.from('05-02')),
+             pmd.equals({monthCode: 'M05', day: 2}),
+             pmd.equals({month: 5, day: 2}),
+             pmd.equals({monthCode: 'M05', day: 2, calendar: '2020-01-01'}),
+             pmd.equals('05-02'),
+             pmd.equals('05-03'),
+             pmd.equals(new Temporal.PlainMonthDay(5, 3, 'iso8601', 1972)),
+             kind(() => pmd.equals()),
+             kind(() => pmd.equals(1)),
+             kind(() => pmd.equals(1n)),
+             kind(() => pmd.equals('junk')),
+             kind(() => pmd.equals({monthCode: 'M99', day: 2})),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "true|false|true|true|true|true|true|false|false|TypeError|TypeError|TypeError|RangeError|RangeError"
+    );
+}
+
+#[test]
+fn plain_month_day_with_matrix() {
+    let mut vm = Vm::new();
+    // with 覆盖 day/month/monthCode；year 仅供 overflow 月长；undefined 不覆盖；
+    // 空 bag/无识别字段/非对象/Temporal 实例/calendar/timeZone 键 TypeError；
+    // constrain 按 bag year（缺省 1972）钳日；结果参考年恒 1972、保留 receiver 日历。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           const md = Temporal.PlainMonthDay.from('01-22');
+           const f = (m) => m.monthCode + '-' + m.day;
+           const leap = new Temporal.PlainMonthDay(2, 29, 'iso8601', 1972);
+           const r2000 = new Temporal.PlainMonthDay(5, 2, 'iso8601', 2000);
+           return [
+             f(md.with({day: 22})), f(md.with({month: 12})), f(md.with({monthCode: 'M12'})),
+             f(md.with({month: 12, monthCode: 'M12'})), f(md.with({monthCode: 'M12', days: 1})),
+             f(md.with({year: 2000})), f(md.with({day: 1, monthCode: undefined})),
+             kind(() => md.with({month: 12, monthCode: 'M11'})),
+             kind(() => md.with({})), kind(() => md.with({months: 12})),
+             kind(() => md.with(7)), kind(() => md.with(Temporal.PlainMonthDay.from('05-02'))),
+             kind(() => md.with({day: 1, calendar: 'iso8601'})),
+             kind(() => md.with({day: 1, timeZone: 'UTC'})),
+             kind(() => md.with({day: Infinity})), kind(() => md.with({month: 13}, {overflow: 'reject'})),
+             f(leap.with({year: -999999})), f(leap.with({year: -1000000})),
+             kind(() => leap.with({year: -999999}, {overflow: 'reject'})),
+             r2000.with({day: 3}).toString({calendarName: 'always'}),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "M01-22|M12-22|M12-22|M12-22|M12-22|M01-22|M01-1|RangeError|TypeError|TypeError|TypeError|TypeError|TypeError|TypeError|RangeError|RangeError|M02-28|M02-29|RangeError|1972-05-03[u-ca=iso8601]"
+    );
+}
+
+#[test]
+fn plain_month_day_to_plain_date_matrix() {
+    let mut vm = Vm::new();
+    // toPlainDate：yearLike number | {year}（缺 year/非对象 TypeError）；
+    // options.overflow 绝不读取；constrain 钳日；day 级表示范围 ±100_000_00x。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           const md = Temporal.PlainMonthDay.from('01-22');
+           const leap = Temporal.PlainMonthDay.from('02-29');
+           return [
+             md.toPlainDate({year: 2002}).toString(),
+             kind(() => md.toPlainDate({something: 'nothing'})),
+             kind(() => md.toPlainDate(12)),
+             md.toPlainDate({year: 12}).toString(),
+             kind(() => md.toPlainDate({year: Infinity})),
+             leap.toPlainDate({year: 2020}).toString(),
+             leap.toPlainDate({year: 2023}).toString(),
+             leap.toPlainDate({year: 2020}, {get overflow() { throw new Error('nope'); }}).toString(),
+             Temporal.PlainMonthDay.from('04-19').toPlainDate({year: -271821}).toString(),
+             kind(() => Temporal.PlainMonthDay.from('01-01').toPlainDate({year: -271821})),
+             Temporal.PlainMonthDay.from('09-13').toPlainDate({year: 275760}).toString(),
+             kind(() => Temporal.PlainMonthDay.from('09-14').toPlainDate({year: 275760})),
+             md.toPlainDate({year: 2002}).calendarId,
+             kind(() => md.toPlainDate(2002)),
+             md.toPlainDate({year: '2002'}).toString(),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "2002-01-22|TypeError|TypeError|0012-01-22|RangeError|2020-02-29|2023-02-28|2020-02-29|-271821-04-19|RangeError|275760-09-13|RangeError|iso8601|TypeError|2002-01-22"
     );
 }
