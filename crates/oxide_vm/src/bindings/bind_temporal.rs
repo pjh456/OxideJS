@@ -1005,6 +1005,16 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
                 oxide_builtins::temporal::plain_month_day_to_json::<crate::vm::Vm> as *const (),
                 0,
             ),
+            (
+                "toLocaleString",
+                oxide_builtins::temporal::plain_month_day_to_locale_string::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "valueOf",
+                oxide_builtins::temporal::plain_month_day_value_of::<crate::vm::Vm> as *const (),
+                0,
+            ),
         ],
     );
     bind_well_known_data_property(
@@ -1086,6 +1096,16 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
             (
                 "toJSON",
                 oxide_builtins::temporal::plain_year_month_to_json::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "toLocaleString",
+                oxide_builtins::temporal::plain_year_month_to_locale_string::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "valueOf",
+                oxide_builtins::temporal::plain_year_month_value_of::<crate::vm::Vm> as *const (),
                 0,
             ),
         ],

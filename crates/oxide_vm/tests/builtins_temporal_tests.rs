@@ -2797,3 +2797,32 @@ fn plain_month_day_and_year_month_branding() {
     .unwrap();
     assert_eq!(str_val(&vm, r), "TypeError|TypeError|TypeError|TypeError");
 }
+
+#[test]
+fn plain_month_day_and_year_month_to_locale_string_value_of_to_string_tag() {
+    let mut vm = Vm::new();
+    // toLocaleString 忽略 locale/options，恒默认形串；valueOf 恒 TypeError
+    // （`<` 走 ToPrimitive→valueOf 同抛）；toStringTag 经 Object.prototype.toString 读回。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const pmd = new Temporal.PlainMonthDay(5, 2);
+           const pym = new Temporal.PlainYearMonth(2021, 2);
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           return [
+             pmd.toLocaleString('en-US', {calendar: 'iso8601'}),
+             pym.toLocaleString(),
+             kind(() => pmd.valueOf()),
+             kind(() => pym.valueOf()),
+             kind(() => pmd < pym),
+             Object.prototype.toString.call(pmd),
+             Object.prototype.toString.call(pym),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "05-02|2021-02|TypeError|TypeError|TypeError|[object Temporal.PlainMonthDay]|[object Temporal.PlainYearMonth]"
+    );
+}

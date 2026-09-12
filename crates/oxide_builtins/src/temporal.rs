@@ -7862,6 +7862,17 @@ pub fn plain_month_day_to_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     plain_month_day_default_string(vm, args)
 }
 
+/// `Temporal.PlainMonthDay.prototype.toLocaleString()`：locale/options 无引擎行为，
+/// 恒输出默认形串。
+pub fn plain_month_day_to_locale_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_month_day_default_string(vm, args)
+}
+
+/// `Temporal.PlainMonthDay.prototype.valueOf()`：Temporal 对象无值表示，恒 TypeError。
+pub fn plain_month_day_value_of<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
+    NativeResult::Err(crate::error::create_type_error(vm, "Temporal.PlainMonthDay has no valueOf"))
+}
+
 /// PlainYearMonth 默认形串（`±YYYY-MM`），含 receiver 校验，不读 options。
 fn plain_year_month_default_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ptr = native_try!(receiver_obj(vm, args));
@@ -7898,6 +7909,17 @@ pub fn plain_year_month_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeR
 /// `Temporal.PlainYearMonth.prototype.toJSON()`：默认形串，忽略参数。
 pub fn plain_year_month_to_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     plain_year_month_default_string(vm, args)
+}
+
+/// `Temporal.PlainYearMonth.prototype.toLocaleString()`：locale/options 无引擎行为，
+/// 恒输出默认形串。
+pub fn plain_year_month_to_locale_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_year_month_default_string(vm, args)
+}
+
+/// `Temporal.PlainYearMonth.prototype.valueOf()`：Temporal 对象无值表示，恒 TypeError。
+pub fn plain_year_month_value_of<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
+    NativeResult::Err(crate::error::create_type_error(vm, "Temporal.PlainYearMonth has no valueOf"))
 }
 
 #[cfg(test)]
