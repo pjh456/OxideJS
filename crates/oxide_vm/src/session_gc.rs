@@ -624,6 +624,11 @@ impl SessionGc {
                 crate::generator::rewrite_generator_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
             } else if obj.is_promise_obj() {
                 crate::promise::rewrite_promise_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
+                // 结算链指针是裸指针边（非 JsValue）：搬移换址后按转发表重定位，
+                // 旧克隆的结算传导仍指向后继克隆的新址。
+                crate::promise::repoint_promise_promoted_clone(obj, |ptr| {
+                    rewrite_forwarded_value(JsValue::from_js_object(ptr), &forwarding).as_js_object_ptr()
+                });
             } else if obj.is_async_obj() {
                 crate::async_func::rewrite_async_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
             } else if obj.is_async_generator_obj() {
@@ -2333,6 +2338,87 @@ mod tests {
                 .unwrap_or(JsValue::int(-1)),
             JsValue::int(2),
             "元素值跨收集可读"
+        );
+    }
+
+    // ── Promise 晋升结算传导（promise × promote × settle 组合） ──────────────
+
+    /// 结算矩阵钉：结算走原件（barrier 窗口，闭包仍指 epoch 原件）、消费者
+    /// 注册在晋升后的克隆上。
+    ///
+    /// 原件结算沿结算链传导到最新克隆，克隆侧（晋升后登记）的反应随之触发，
+    /// 回归保传导通路。
+    #[test]
+    fn promise_settle_via_original_propagates_to_clone_reaction() {
+        let mut vm = vm_with_threshold(65536);
+        vm.run(&Arc::new(compile(
+            "(function(){ \
+             var r; \
+             var p = new Promise(function(res){ r = res; }); \
+             globalThis.res = r; \
+             globalThis.p = p; \
+             globalThis.p.then(function(v){ globalThis.got = v; }); \
+             r(42); })(); 0",
+        )))
+        .expect("run1");
+
+        assert_eq!(
+            global_prop_opt(&vm, "got"),
+            Some(JsValue::int(42)),
+            "原件结算应传导到克隆并触发克隆侧消费者"
+        );
+    }
+
+    /// 结算矩阵钉：登记侧原件晋升前、结算走改写后的克隆引用（本洞主钉）。
+    ///
+    /// 单 run 内完成全拓扑：执行器把结算闭包写向 global 时逃逸写屏障连带晋升
+    /// 目标 promise（克隆一）；`.then` 登记在 epoch 原件上；原件再写向 global
+    /// 触发再晋升——反应迁入最新克隆、旧克隆接进结算链。IIFE 返回后的顶层
+    /// 指令边界触发执行期收集（阈值 1），原件随 epoch 释放；随后结算入口是
+    /// 克隆一（闭包目标槽在晋升时已改写到它），反应在最新克隆上——结算须沿
+    /// 链触达全部迁移反应，消费者（同 run 末微任务触发，字节码子模块表仍有效）
+    /// 方能落值。修复前克隆反应为空、原件已释放，反应静默永久丢失。
+    #[test]
+    fn promise_promote_migrates_pre_promote_reactions_to_clone() {
+        let mut vm = vm_with_threshold(1);
+        vm.run(&Arc::new(compile(
+            "(function(){ \
+             var p = new Promise(function(res){ globalThis.res = res; }); \
+             p.then(function(v){ globalThis.got = v; }); \
+             globalThis.p = p; })(); \
+             globalThis.res(42); 0",
+        )))
+        .expect("run1");
+
+        assert!(vm.session_gc_stats().total_collections >= 1, "执行期收集应已触发（原件随 epoch 释放）");
+        assert_eq!(
+            global_prop_opt(&vm, "got"),
+            Some(JsValue::int(42)),
+            "晋升前登记的消费者应在结算走克隆后被触发"
+        );
+    }
+
+    /// 结算矩阵钉：reject 变体——登记侧原件晋升前、拒绝走改写后的克隆引用。
+    ///
+    /// 与完成路径同拓扑（单 run、同 run 末微任务触发）：反应随晋升迁入，拒绝
+    /// 走克隆沿结算链传导，仅 reject 角色的反应以拒绝原因触发。
+    #[test]
+    fn promise_promote_migrates_reject_reactions_to_clone() {
+        let mut vm = vm_with_threshold(1);
+        vm.run(&Arc::new(compile(
+            "(function(){ \
+             var p = new Promise(function(_res, rej){ globalThis.rej = rej; }); \
+             p.then(undefined, function(e){ globalThis.got = e; }); \
+             globalThis.p = p; })(); \
+             globalThis.rej('boom'); 0",
+        )))
+        .expect("run1");
+
+        assert!(vm.session_gc_stats().total_collections >= 1, "执行期收集应已触发（原件随 epoch 释放）");
+        assert_eq!(
+            vm.lookup_str(global_prop_opt(&vm, "got").expect("got 应被设置")),
+            Some("boom".to_string()),
+            "晋升前登记的拒绝消费者应在拒绝走克隆后被触发"
         );
     }
 }

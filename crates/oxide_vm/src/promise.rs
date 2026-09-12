@@ -46,8 +46,11 @@ pub(crate) struct PromiseState {
     /// resolve/reject 是否已被调用过（Resolve Promise Functions 的 alreadyResolved）。
     /// 首次调用后置位，后续任何 resolve/reject（含 thenable 委托期间）均 no-op。
     pub already_resolved: bool,
-    /// 原件 pending 时被晋升出的 session 克隆指针（原件结算时传导到克隆）；
-    /// 非 pending 原件恒为空指针。
+    /// 结算传导链指针：非空时指向本 promise 晋升出的 session 克隆，原件结算时
+    /// 结果沿它传导到克隆；再晋升场景旧克隆的残留反应被取回归并进新克隆，
+    /// 指针更新为最新克隆。非 pending 原件恒为空指针。本指针在
+    /// `promise_native_edges` 登记为 mark 边：克隆恒为 session 表成员，凭这条
+    /// 边在原件仍存活时被同轮置活，结算不会读到悬垂克隆。
     pub promoted_clone: *mut JsObject,
 }
 
@@ -1822,6 +1825,11 @@ pub(crate) fn promise_native_edges(obj: &JsObject) -> Vec<JsValue> {
     push(state.result, &mut edges);
     push(state.resolve_fn, &mut edges);
     push(state.reject_fn, &mut edges);
+    // 结算链指针：克隆恒为 session 表成员，凭这条边在原件/旧克隆仍存活时被
+    // 同轮置活，结算传导不会读到悬垂克隆。
+    if !state.promoted_clone.is_null() {
+        edges.push(JsValue::from_js_object(state.promoted_clone));
+    }
     for r in &state.reactions {
         push(r.promise, &mut edges);
         push(r.resolve, &mut edges);
@@ -1832,6 +1840,10 @@ pub(crate) fn promise_native_edges(obj: &JsObject) -> Vec<JsValue> {
 }
 
 /// 用转发函数重写状态盒中的所有 JsValue（session GC 移动式清扫 / promote 用）。
+///
+/// 结算链指针是裸指针边、不在本函数改写面：晋升路径克隆新分配于 session
+/// arena（原件地址不变），同 arena 改写场景指针天然有效；搬移换址场景由
+/// 调用方在重写完成后经 `repoint_promise_promoted_clone` 按转发表重定位。
 pub(crate) fn rewrite_promise_native(obj: &JsObject, mut rewrite: impl FnMut(JsValue) -> JsValue) {
     let Some(state) = promise_state_mut(obj) else {
         return;
@@ -1848,30 +1860,115 @@ pub(crate) fn rewrite_promise_native(obj: &JsObject, mut rewrite: impl FnMut(JsV
 }
 
 /// 深拷贝状态盒到新对象（promote / sweep 用）：新对象持独立 Box，源盒可安全释放。
+///
+/// 源的反应**迁移**（非复制）进新对象：源盒随 epoch 释放，留在源上的反应会
+/// 永久丢失、原件侧消费者永不触发；每条反应的 JsValue 随状态盒其余字段同一
+/// pass 晋升/改写。结算链指针按原值保留（晋升场景由
+/// `migrate_settlement_to_newest_clone` 接链，搬移场景按转发表重定位）。
 pub(crate) fn clone_promise_native_with_rewrite(
     old: &JsObject, new: &mut JsObject, mut rewrite: impl FnMut(JsValue) -> JsValue,
 ) {
-    let Some(state) = promise_state_ref(old) else {
-        return;
+    // 先取全部 Copy 字段，避免与随后的可变 take 别名校验冲突。
+    let (state_kind, prev_clone, result, resolve_fn, reject_fn, already_resolved) = {
+        let Some(state) = promise_state_ref(old) else {
+            return;
+        };
+        (
+            state.state,
+            state.promoted_clone,
+            state.result,
+            state.resolve_fn,
+            state.reject_fn,
+            state.already_resolved,
+        )
     };
-    let pending = state.state == PromiseStateKind::Pending;
+
+    // 源反应迁入新对象：源盒随 epoch 释放，反应留源即永久丢失。
+    let mut reactions: Vec<PromiseReaction> = Vec::new();
+    if let Some(src) = promise_state_mut(old) {
+        for r in std::mem::take(&mut src.reactions) {
+            reactions.push(rewrite_reaction(r, &mut rewrite));
+        }
+    }
+
     let cloned = PromiseState {
-        state: state.state,
-        result: rewrite(state.result),
-        // 不复制原件反应：原件结算时自带触发，克隆仅累积晋升后新挂的反应，避免双重触发。
-        reactions: Vec::new(),
-        resolve_fn: rewrite(state.resolve_fn),
-        reject_fn: rewrite(state.reject_fn),
-        already_resolved: state.already_resolved,
-        promoted_clone: std::ptr::null_mut(),
+        state: state_kind,
+        result: rewrite(result),
+        reactions,
+        resolve_fn: rewrite(resolve_fn),
+        reject_fn: rewrite(reject_fn),
+        already_resolved,
+        // 结算链指针按原值保留（不改写源指针）：晋升后继步
+        // `migrate_settlement_to_newest_clone` 负责接链与更新源指针，
+        // 搬移后继步按转发表重定位。
+        promoted_clone: prev_clone,
     };
     new.set_native_data(Box::into_raw(Box::new(cloned)) as *mut u8);
-    // 原件 pending 时记下克隆指针：原件结算时把结果传导到克隆，克隆上晋升后新挂
-    // 的反应方随之触发（顶层 var 读侧引用克隆，原件随 epoch 释放，结算须在原件还活着时传导）。
-    if pending {
-        if let Some(src) = promise_state_mut(old) {
-            src.promoted_clone = new as *mut JsObject;
+}
+
+/// 晋升路径专属：新克隆取代前一克隆成为结算枢纽——前一克隆的残留反应取回归并
+/// 进新克隆，旧克隆的结算改链到新克隆，原件的传导指针指向新克隆。任一结算
+/// 入口（原件 / 旧克隆 / 新克隆）都沿链落到携全部反应的最新克隆，反应恰触发
+/// 一次。
+///
+/// # 边界与前提
+/// - 仅 epoch 原件晋升后调用（`promote_object_inner` 的 Promise 分支，紧随
+///   `clone_promise_native_with_rewrite`）；session 搬移（GC sweep）不改结算
+///   拓扑，不得调用。
+/// - 源非 pending 时无事可做直接返回（已结算原件不再传导）。
+pub(crate) fn migrate_settlement_to_newest_clone(
+    old: &JsObject, new: &mut JsObject, mut rewrite: impl FnMut(JsValue) -> JsValue,
+) {
+    // 链上的前克隆 = 源当前指向的克隆（克隆步只保留不改写源指针）。
+    let (pending, prev) = {
+        let Some(src) = promise_state_ref(old) else {
+            return;
+        };
+        (src.state == PromiseStateKind::Pending, src.promoted_clone)
+    };
+    if !pending {
+        return;
+    }
+    // 前克隆残留并入本克隆（旧克隆腾空，防双触发），并把它的结算改链到新克隆。
+    if !prev.is_null() {
+        // SAFETY: prev 是早前晋升产生的 session 克隆，session arena 存活期内有效。
+        if let Some(prev_state) = promise_state_mut(unsafe { &*prev }) {
+            if let Some(dst) = promise_state_mut(new) {
+                for r in std::mem::take(&mut prev_state.reactions) {
+                    dst.reactions.push(rewrite_reaction(r, &mut rewrite));
+                }
+            }
+            prev_state.promoted_clone = new as *mut JsObject;
         }
+    }
+    // 新克隆即最新：自身无后继，原件传导指针指向它。
+    if let Some(dst) = promise_state_mut(new) {
+        dst.promoted_clone = std::ptr::null_mut();
+    }
+    if let Some(src) = promise_state_mut(old) {
+        src.promoted_clone = new as *mut JsObject;
+    }
+}
+
+/// 按给定转发改写结算链指针（裸指针边、非 JsValue），session GC 搬移后调用。
+pub(crate) fn repoint_promise_promoted_clone(obj: &JsObject, forward: impl FnOnce(*mut JsObject) -> *mut JsObject) {
+    let Some(state) = promise_state_mut(obj) else {
+        return;
+    };
+    if !state.promoted_clone.is_null() {
+        state.promoted_clone = forward(state.promoted_clone);
+    }
+}
+
+/// 改写单条反应的四条 JsValue 引用（派生 promise 能力与处理器），源反应迁移
+/// 与再晋升合并共用。
+fn rewrite_reaction<F: FnMut(JsValue) -> JsValue>(r: PromiseReaction, rewrite: &mut F) -> PromiseReaction {
+    PromiseReaction {
+        promise: rewrite(r.promise),
+        resolve: rewrite(r.resolve),
+        reject: rewrite(r.reject),
+        handler: rewrite(r.handler),
+        is_fulfill: r.is_fulfill,
     }
 }
 

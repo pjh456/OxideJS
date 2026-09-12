@@ -78,8 +78,12 @@ impl Vm {
                 self.promote_value_if_epoch_object(value, forwarding)
             });
         } else if src_ref.is_promise_obj() {
-            // Promise 状态盒深拷贝到新对象：源盒随 epoch 释放，互不共享。
+            // Promise 状态盒深拷贝到新对象：源盒随 epoch 释放，互不共享；
+            // 反应迁入新克隆并接结算链（原件/旧克隆结算沿链传导到最新克隆）。
             crate::promise::clone_promise_native_with_rewrite(src_ref, dst_ref, |value| {
+                self.promote_value_if_epoch_object(value, forwarding)
+            });
+            crate::promise::migrate_settlement_to_newest_clone(src_ref, dst_ref, |value| {
                 self.promote_value_if_epoch_object(value, forwarding)
             });
         } else if src_ref.is_async_obj() {
