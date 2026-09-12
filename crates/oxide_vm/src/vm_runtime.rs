@@ -525,10 +525,16 @@ impl Vm {
     }
 
     /// 重新执行当前已加载的 bytecode：清空执行状态并重置 IC 缓存后再次 dispatch。
+    ///
+    /// # 注意事项
+    /// - 清空寄存器文件后按 run 初始状态恢复顶层 this（regs[254]）：不恢复则
+    ///   重执行中依赖 this 的顶层写（顶层 var 全局同步写）在 undefined 上
+    ///   静默 no-op，循环计数不推进。
     pub fn rerun(&mut self) -> Result<JsValue, String> {
         vm_info!("rerun: clearing IC caches");
         self.clear_execution_state();
         self.active_reg_limit = self.root_reg_limit;
+        self.regs[254] = self.top_level_this;
         crate::ic_helper::clear_ic_caches(self.bytecode_mut());
         self.dispatch()
     }
@@ -609,13 +615,16 @@ impl Vm {
         }
 
         // 顶层 this：脚本为全局对象（ECMA-262 全局执行上下文）；
-        // ES module 顶层环境 GetThisBinding 返回 undefined。
+        // ES module 顶层环境 GetThisBinding 返回 undefined。记录到
+        // top_level_this：rerun 清空寄存器文件后按此恢复顶层 this。
         let global = self.session.global_object();
-        self.regs[254] = if module.is_es_module {
+        let this_val = if module.is_es_module {
             JsValue::undefined()
         } else {
             JsValue::from_js_object(global.as_ptr() as *mut JsObject)
         };
+        self.top_level_this = this_val;
+        self.regs[254] = this_val;
 
         let result = self.dispatch();
         // 顶层执行结束后 drain 微任务队列：Promise reactions 与 thenable 委托在此执行。

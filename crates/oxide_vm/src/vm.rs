@@ -524,6 +524,10 @@ pub struct Vm {
     /// 本次 run 顶层脚本的严格模式标志（`module.is_strict`，run 时填充）：
     /// 无帧且无 inline（顶层脚本赋值）时写路径的 strict/sloppy 判定来源。
     pub(crate) top_level_strict: bool,
+    /// 顶层 this 值（run 初始化时记录：脚本 = 全局对象，ES module = undefined）。
+    /// rerun 清空寄存器文件后据此恢复 regs[254]——不恢复则重执行时依赖 this
+    /// 的顶层写（顶层 var 全局同步写）在非对象 this 上静默 no-op。
+    pub(crate) top_level_this: JsValue,
     /// inline 同步调用寄存器窗口缓冲池：`save_inline_state` 取出复用、
     /// `restore_inline_state` 归还。热回调循环内 save/restore 反复使用同一块
     /// 缓冲，只在嵌套（池已被外层取走）时新分配。
