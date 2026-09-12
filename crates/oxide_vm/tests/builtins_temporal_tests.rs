@@ -3247,3 +3247,80 @@ fn plain_year_month_from_instances_and_options() {
         "2000-5:2000-05-07[u-ca=iso8601]|true|2000|1976-11:1976-11-01[u-ca=iso8601]|2021-1:1|0:0:1|TypeError|TypeError|TypeError|TypeError|RangeError|RangeError|12|12|12"
     );
 }
+
+#[test]
+fn plain_year_month_compare_matrix() {
+    let mut vm = Vm::new();
+    // compare 比较 (年, 月, 参考日) 三元字典序（参考日参与）；两参均经
+    // ToTemporalYearMonth（串/bag/PD 实例/PYM 实例）；缺字段 TypeError；
+    // 子类实例走槽直读不触发 getter。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           const c = Temporal.PlainYearMonth.compare;
+           const ym = (y, m, rd) => new Temporal.PlainYearMonth(y, m, 'iso8601', rd);
+           class AvoidGetters extends Temporal.PlainYearMonth {
+             get year() { throw new Error('no'); }
+             get month() { throw new Error('no'); }
+           }
+           return [
+             c(ym(2000, 5, 1), ym(2000, 5, 1)),
+             c(ym(2000, 5, 1), ym(2000, 5, 2)),
+             c(ym(2000, 5, 2), ym(2000, 5, 1)),
+             c(ym(1999, 12, 1), ym(2000, 1, 1)),
+             c(ym(2000, 5, 1), ym(2000, 6, 1)),
+             c('1994-11', ym(1994, 11, 1)),
+             c({year: 1994, month: 11}, ym(1994, 11, 1)),
+             c(Temporal.PlainDate.from('1994-11-20'), ym(1994, 11, 1)),
+             c(ym(2013, 6, 1), {year: 2013, month: 6}),
+             kind(() => c({year: 1994}, ym(1994, 11, 1))),
+             kind(() => c(1, ym(1994, 11, 1))),
+             kind(() => c(ym(1994, 11, 1))),
+             c(new AvoidGetters(2000, 5), new AvoidGetters(2006, 3)),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "0|-1|1|-1|-1|0|0|0|0|TypeError|TypeError|TypeError|-1");
+}
+
+#[test]
+fn plain_year_month_equals_matrix() {
+    let mut vm = Vm::new();
+    // equals 比较 (年, 月, 参考日) 三元与日历；other 经 ToTemporalYearMonth
+    // （串/bag/PD/PYM 实例，day 不读）；receiver branding TypeError。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           const ym = (y, m, rd) => new Temporal.PlainYearMonth(y, m, 'iso8601', rd);
+           const a = ym(2000, 5, 1);
+           return [
+             a.equals(ym(2000, 5, 1)),
+             a.equals(ym(2000, 5, 2)),
+             a.equals(ym(2000, 6, 1)),
+             a.equals(ym(1999, 5, 1)),
+             a.equals('2000-05'),
+             a.equals('2000-05-15'),
+             a.equals({year: 2000, month: 5}),
+             a.equals({year: 2000, monthCode: 'M05'}),
+             a.equals({year: 2000, month: 5, day: 20}),
+             a.equals(Temporal.PlainDate.from('2000-05-15')),
+             kind(() => a.equals()),
+             kind(() => a.equals(1)),
+             kind(() => a.equals(1n)),
+             kind(() => a.equals('junk')),
+             kind(() => a.equals({year: 2000})),
+             kind(() => a.equals({year: 2000, month: Infinity})),
+             kind(() => Temporal.PlainYearMonth.prototype.equals.call({}, a)),
+             a.equals(a),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "true|false|false|false|true|true|true|true|true|true|TypeError|TypeError|TypeError|RangeError|TypeError|RangeError|TypeError|true"
+    );
+}

@@ -1066,7 +1066,14 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         world,
         plain_year_month_ctor,
         core,
-        &[("from", oxide_builtins::temporal::plain_year_month_from::<crate::vm::Vm> as *const (), 1)],
+        &[
+            ("from", oxide_builtins::temporal::plain_year_month_from::<crate::vm::Vm> as *const (), 1),
+            (
+                "compare",
+                oxide_builtins::temporal::plain_year_month_compare::<crate::vm::Vm> as *const (),
+                2,
+            ),
+        ],
     );
 
     let plain_year_month_proto_ptr = world.plain_year_month_proto.as_ptr() as *mut JsObject;
@@ -1130,6 +1137,11 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
                 "valueOf",
                 oxide_builtins::temporal::plain_year_month_value_of::<crate::vm::Vm> as *const (),
                 0,
+            ),
+            (
+                "equals",
+                oxide_builtins::temporal::plain_year_month_equals::<crate::vm::Vm> as *const (),
+                1,
             ),
         ],
     );
