@@ -2803,6 +2803,38 @@ fn plain_year_month_to_string_year_format() {
 }
 
 #[test]
+fn plain_month_day_and_year_month_to_string_non_iso_calendar() {
+    let mut vm = Vm::new();
+    // 非 iso8601 日历：auto/缺省形补参考年（PMD，默认 1972）/参考日（PYM，默认 1）
+    // 与 [u-ca=…] 注解；never 形仅分量无注解；toJSON/toLocaleString 走 auto 形。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const pmd = new Temporal.PlainMonthDay(5, 2, 'hebrew');
+           const pym = new Temporal.PlainYearMonth(2021, 2, 'hebrew');
+           return [
+             pmd.toString(),
+             pmd.toString({calendarName: 'never'}),
+             pmd.toString({calendarName: 'always'}),
+             pmd.toJSON(),
+             pmd.toLocaleString(),
+             pym.toString(),
+             pym.toString({calendarName: 'never'}),
+             pym.toJSON(),
+             pym.toLocaleString(),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "1972-05-02[u-ca=hebrew]|1972-05-02|1972-05-02[u-ca=hebrew]|1972-05-02[u-ca=hebrew]|\
+         1972-05-02[u-ca=hebrew]|2021-02-01[u-ca=hebrew]|2021-02-01|2021-02-01[u-ca=hebrew]|\
+         2021-02-01[u-ca=hebrew]"
+    );
+}
+
+#[test]
 fn plain_month_day_and_year_month_branding() {
     let mut vm = Vm::new();
     // receiver 非实例 → TypeError（toString / getter 均校验品牌）。

@@ -7891,11 +7891,24 @@ pub fn plain_year_month_era_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRe
     NativeResult::Ok(JsValue::undefined())
 }
 
-/// toString 的 calendarName 选项取值（auto/never 同默认形）。
+/// toString 的 calendarName 选项取值（缺省 = auto；auto 与 never 的差异仅在注解）。
 enum ShowCalendar {
-    Omitted,
+    Auto,
     Always,
     Critical,
+    Never,
+}
+
+/// ISO 串尾部日历注解（FormatCalendarAnnotation）：never 与 auto+iso8601 为空；
+/// critical 前置 `!`；其余为 `[u-ca=…]`。
+fn calendar_annotation(calendar: &str, show: ShowCalendar) -> String {
+    match (show, calendar) {
+        (ShowCalendar::Never, _) => String::new(),
+        (ShowCalendar::Auto, "iso8601") => String::new(),
+        (ShowCalendar::Always, _) => format!("[u-ca={calendar}]"),
+        (ShowCalendar::Critical, _) => format!("[!u-ca={calendar}]"),
+        (ShowCalendar::Auto, _) => format!("[u-ca={calendar}]"),
+    }
 }
 
 /// 读并校验 toString 的 calendarName 选项：options 非对象 → TypeError；
@@ -7904,7 +7917,7 @@ enum ShowCalendar {
 fn temporal_to_show_calendar<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<ShowCalendar, JsValue> {
     let options = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     if options.is_undefined() {
-        return Ok(ShowCalendar::Omitted);
+        return Ok(ShowCalendar::Auto);
     }
     if !options.is_object() {
         return Err(crate::error::create_type_error(vm, "options must be an object"));
@@ -7915,48 +7928,50 @@ fn temporal_to_show_calendar<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<ShowC
     }
     let raw = temporal_option_value(vm, unsafe { &*ptr }, options, "calendarName")?;
     if raw.is_undefined() {
-        return Ok(ShowCalendar::Omitted);
+        return Ok(ShowCalendar::Auto);
     }
     let value = temporal_option_string(vm, raw)?;
     match value.as_str() {
         "always" => Ok(ShowCalendar::Always),
         "critical" => Ok(ShowCalendar::Critical),
-        "auto" | "never" => Ok(ShowCalendar::Omitted),
+        "never" => Ok(ShowCalendar::Never),
+        "auto" => Ok(ShowCalendar::Auto),
         _ => Err(crate::error::create_range_error(vm, "invalid calendarName")),
     }
 }
 
-/// PlainMonthDay 默认形串（`MM-DD`），含 receiver 校验，不读 options。
+/// PlainMonthDay ISO 串：always/critical 或非 iso8601 日历补参考年与日历注解；
+/// iso8601 日历的 auto/never 形保持裸 `MM-DD`。
+fn plain_month_day_iso_string(obj: &JsObject, show: ShowCalendar) -> String {
+    let month = get_double_prop(obj, 0) as i32;
+    let day = get_double_prop(obj, 1) as i32;
+    let calendar = get_calendar_id(obj, 3);
+    let with_year = matches!(show, ShowCalendar::Always | ShowCalendar::Critical) || calendar != "iso8601";
+    if !with_year {
+        return format!("{month:02}-{day:02}");
+    }
+    let ref_year = get_double_prop(obj, 2) as i32;
+    let annotation = calendar_annotation(&calendar, show);
+    format!("{}-{month:02}-{day:02}{annotation}", format_iso_year(ref_year as i128))
+}
+
+/// PlainMonthDay 默认形串（auto 形），含 receiver 校验，不读 options。
 fn plain_month_day_default_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ptr = native_try!(receiver_obj(vm, args));
     let obj = unsafe { &*ptr };
     native_try!(ensure_plain_month_day(vm, obj));
-    let month = get_double_prop(obj, 0) as i32;
-    let day = get_double_prop(obj, 1) as i32;
-    NativeResult::Ok(vm.new_string_owned(format!("{month:02}-{day:02}")))
+    NativeResult::Ok(vm.new_string_owned(plain_month_day_iso_string(obj, ShowCalendar::Auto)))
 }
 
 /// `Temporal.PlainMonthDay.prototype.toString([options])`：
-/// 默认 `MM-DD`；always/critical 补参考年与 `[u-ca=…]`/`[!u-ca=…]` 注解。
+/// 默认 `MM-DD`；非 iso8601 日历补参考年与 `[u-ca=…]` 注解，
+/// always/critical 另按注解表补 `[u-ca=…]`/`[!u-ca=…]`。
 pub fn plain_month_day_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ptr = native_try!(receiver_obj(vm, args));
     let obj = unsafe { &*ptr };
     native_try!(ensure_plain_month_day(vm, obj));
     let show = native_try!(temporal_to_show_calendar(vm, args));
-    if matches!(show, ShowCalendar::Omitted) {
-        return plain_month_day_default_string(vm, args);
-    }
-    let month = get_double_prop(obj, 0) as i32;
-    let day = get_double_prop(obj, 1) as i32;
-    let ref_year = get_double_prop(obj, 2) as i32;
-    let calendar = get_calendar_id(obj, 3);
-    let annotation = match show {
-        ShowCalendar::Always => format!("[u-ca={calendar}]"),
-        _ => format!("[!u-ca={calendar}]"),
-    };
-    NativeResult::Ok(
-        vm.new_string_owned(format!("{}-{month:02}-{day:02}{annotation}", format_iso_year(ref_year as i128))),
-    )
+    NativeResult::Ok(vm.new_string_owned(plain_month_day_iso_string(obj, show)))
 }
 
 /// `Temporal.PlainMonthDay.prototype.toJSON()`：默认形串，忽略参数。
@@ -7975,37 +7990,38 @@ pub fn plain_month_day_value_of<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeRe
     NativeResult::Err(crate::error::create_type_error(vm, "Temporal.PlainMonthDay has no valueOf"))
 }
 
-/// PlainYearMonth 默认形串（`±YYYY-MM`），含 receiver 校验，不读 options。
+/// PlainYearMonth ISO 串：always/critical 或非 iso8601 日历补参考日与日历注解；
+/// iso8601 日历的 auto/never 形保持裸 `±YYYY-MM`。
+fn plain_year_month_iso_string(obj: &JsObject, show: ShowCalendar) -> String {
+    let year = get_double_prop(obj, 0) as i32;
+    let month = get_double_prop(obj, 1) as i32;
+    let calendar = get_calendar_id(obj, 3);
+    let with_day = matches!(show, ShowCalendar::Always | ShowCalendar::Critical) || calendar != "iso8601";
+    if !with_day {
+        return format!("{}-{month:02}", format_iso_year(year as i128));
+    }
+    let ref_day = get_double_prop(obj, 2) as i32;
+    let annotation = calendar_annotation(&calendar, show);
+    format!("{}-{month:02}-{ref_day:02}{annotation}", format_iso_year(year as i128))
+}
+
+/// PlainYearMonth 默认形串（auto 形），含 receiver 校验，不读 options。
 fn plain_year_month_default_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ptr = native_try!(receiver_obj(vm, args));
     let obj = unsafe { &*ptr };
     native_try!(ensure_plain_year_month(vm, obj));
-    let year = get_double_prop(obj, 0) as i32;
-    let month = get_double_prop(obj, 1) as i32;
-    NativeResult::Ok(vm.new_string_owned(format!("{}-{month:02}", format_iso_year(year as i128))))
+    NativeResult::Ok(vm.new_string_owned(plain_year_month_iso_string(obj, ShowCalendar::Auto)))
 }
 
 /// `Temporal.PlainYearMonth.prototype.toString([options])`：
-/// 默认 `±YYYY-MM`；always/critical 补参考日与 `[u-ca=…]`/`[!u-ca=…]` 注解。
+/// 默认 `±YYYY-MM`；非 iso8601 日历补参考日与 `[u-ca=…]` 注解，
+/// always/critical 另按注解表补 `[u-ca=…]`/`[!u-ca=…]`。
 pub fn plain_year_month_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ptr = native_try!(receiver_obj(vm, args));
     let obj = unsafe { &*ptr };
     native_try!(ensure_plain_year_month(vm, obj));
     let show = native_try!(temporal_to_show_calendar(vm, args));
-    if matches!(show, ShowCalendar::Omitted) {
-        return plain_year_month_default_string(vm, args);
-    }
-    let year = get_double_prop(obj, 0) as i32;
-    let month = get_double_prop(obj, 1) as i32;
-    let ref_day = get_double_prop(obj, 2) as i32;
-    let calendar = get_calendar_id(obj, 3);
-    let annotation = match show {
-        ShowCalendar::Always => format!("[u-ca={calendar}]"),
-        _ => format!("[!u-ca={calendar}]"),
-    };
-    NativeResult::Ok(
-        vm.new_string_owned(format!("{}-{month:02}-{ref_day:02}{annotation}", format_iso_year(year as i128))),
-    )
+    NativeResult::Ok(vm.new_string_owned(plain_year_month_iso_string(obj, show)))
 }
 
 /// `Temporal.PlainYearMonth.prototype.toJSON()`：默认形串，忽略参数。
