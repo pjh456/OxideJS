@@ -293,3 +293,59 @@ fn regexp_unicode_property_script_existing_values_unchanged() {
     let result = eval(&mut vm, "/\\p{Script=Adlam}/u.test('d')").unwrap();
     assert!(!result.as_bool(), "既有 Script 取值行为应保持不变");
 }
+
+// --- UTF-16 单元向匹配入口：gate 运行时化 + 惰性 units IR 回归钉 ---
+// 引擎构建已启用 regress 的 utf16 feature（纯加性 API）。字节字面量 pass 改为
+// 逐编译运行时 gate 后，str 路径编译与执行不变；单元向 IR 在首次
+// find_from_utf16 时惰性编译（关字节 pass）并缓存。以下钉直接走 regress API，
+// 不依赖 JS 侧单元视图接线（后续批次才落地）。
+
+fn units_of(text: &str) -> Vec<u16> {
+    text.encode_utf16().collect()
+}
+
+#[test]
+fn regexp_utf16_entry_surrogate_property() {
+    // 孤立 surrogate 单元命中 \p{General_Category=Surrogate}；普通字符不命中；
+    // 代理对（单码点）不命中。
+    let re = regress::Regex::with_flags(r"\p{General_Category=Surrogate}", "u").unwrap();
+    let m = re.find_from_utf16(&[0xD800], 0).next();
+    assert!(m.is_some(), "孤立 surrogate 单元应命中 GC=Surrogate");
+    assert_eq!(m.unwrap().range(), 0..1);
+    assert!(re.find_from_utf16(&[0x41], 0).next().is_none(), "A 不应命中");
+    assert!(
+        re.find_from_utf16(&[0xD834, 0xDE00], 0).next().is_none(),
+        "代理对是单码点，不应按两个孤立 surrogate 命中"
+    );
+}
+
+#[test]
+fn regexp_utf16_entry_surrogate_pair_equals_str_path() {
+    // U+1D11E = 代理对 [0xD834, 0xDE00]：单元路径按单码点匹配，与 str 路径等价。
+    let ch = char::from_u32(0x1D11E).unwrap();
+    let re = regress::Regex::with_flags(&ch.to_string(), "").unwrap();
+    let text: String = [ch, 'a', 'b', 'c'].iter().copied().collect();
+    let m_str = re.find(&text).expect("str 路径应命中");
+    assert_eq!(m_str.range(), 0..4, "str 路径命中 1 个码点（4 字节）");
+
+    let units = units_of(&text);
+    let m_u16 = re.find_from_utf16(&units, 0).next().expect("单元路径应命中");
+    assert_eq!(m_u16.range(), 0..2, "单元路径命中 1 个码点（2 个单元）");
+}
+
+#[test]
+fn regexp_utf16_entry_well_formed_equals_str_path() {
+    // well-formed 语料：单元路径与 str 路径匹配结果逐一相等（含非 ASCII）。
+    for (pattern, text) in [(r"\d+", "abc123x456"), (r"a[bc]d", "xabcdyabd"), (r"\w+\s+\w+", "héllo wörld")] {
+        let re = regress::Regex::new(pattern).unwrap();
+        let str_m = re.find(text).map(|m| m.as_str(text).to_string());
+        let units = units_of(text);
+        let u16_m = re.find_from_utf16(&units, 0).next().map(|m| {
+            units[m.range()]
+                .iter()
+                .flat_map(|&u| char::from_u32(u as u32).map(|c| c.to_string()))
+                .collect::<String>()
+        });
+        assert_eq!(str_m, u16_m, "pattern {pattern}");
+    }
+}

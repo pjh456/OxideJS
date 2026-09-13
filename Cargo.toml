@@ -51,7 +51,7 @@ fast-float = "0.2"
 ryu = "1"
 memchr = "2"
 regex = "1"
-regress = "0.11"
+regress = { version = "0.11", features = ["utf16"] }
 indexmap = "2"
 lru = "0.18"
 smallvec = { version = "1", features = ["union"] }
@@ -74,5 +74,8 @@ panic = "abort"
 # 上游 0.11.1 的 Unicode 表缺 Script/Script_Extensions 的 Unknown（Zzzz，未分配
 # 码点集）取值，规范合法模式 \p{Script=Unknown} 无法编译。vendor 补丁在 0.11.1
 # 上补齐该取值，其余行为与上游 0.11.1 逐位一致。
+# utf16 feature 启用单元向匹配入口（find_from_utf16/ucs2）：字节字面量优化已是
+# 逐编译运行时 gate，启用该 feature 不再劣化 str 路径（详见 fork 内 optimizer.rs
+# 的 optimize_with_byte_literals）。
 [patch.crates-io]
 regress = { path = "third_party/regress" }
