@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use oxide_builtins::boolean::{boolean_constructor, boolean_prototype_to_string, boolean_prototype_value_of};
 use oxide_compiler::compiler::Compiler;
+use oxide_runtime_api::VmHost;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
@@ -29,7 +30,8 @@ fn bool_ctor_call(vm: &mut Vm, arg: JsValue) -> JsValue {
 fn bool_ctor_new(vm: &mut Vm, arg: JsValue) -> JsValue {
     let proto_ptr = vm.session().builtin_world().boolean_proto.as_ptr() as *mut JsObject;
     let wrapper = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr));
-    let ptr = vm.epoch().alloc(wrapper);
+    // 统一入口分配：epoch 置位与对象表登记一步闭合，执行期晋升收集按表取活。
+    let ptr = vm.alloc_object(wrapper);
     let val = JsValue::from_js_object(ptr);
     vm.set_reg(0, val);
     vm.set_reg(1, arg);

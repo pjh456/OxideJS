@@ -3,6 +3,7 @@ use std::sync::Arc;
 use oxide_builtins::map::{map_clear, map_constructor as new_map, map_delete, map_get, map_has, map_set, map_size};
 use oxide_compiler::compiler::Compiler;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
+use oxide_runtime_api::VmHost;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
@@ -21,9 +22,8 @@ fn str_val(vm: &Vm, val: JsValue) -> String {
 /// 分配一个原型指向 Map.prototype 的占位对象并写入 reg 0，作为构造器调用的 `this`。
 fn map_this(vm: &mut Vm) -> JsValue {
     let proto = vm.session().builtin_world().map_proto.as_ptr() as *mut JsObject;
-    let obj = vm
-        .epoch()
-        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)));
+    // 统一入口分配：epoch 置位与对象表登记一步闭合，执行期晋升收集按表取活。
+    let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)));
     let val = JsValue::from_js_object(obj);
     vm.set_reg(0, val);
     val
