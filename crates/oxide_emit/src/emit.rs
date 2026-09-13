@@ -1660,6 +1660,26 @@ impl Emitter {
         ctx.is_eval_script = is_eval_script;
         // 脚本顶层严格模式由源码 "use strict" directive 决定（嵌套函数经父 ctx 继承）。
         ctx.is_strict = program.has_use_strict_directive();
+
+        // eval 代码顶层函数声明撞不可写全局内置（三常量的全局绑定在任何符合规范的
+        // 实现中均不可配置，声明实例化无法建立全局绑定）：规范在建立全局 var 绑定
+        // 之前抛 TypeError（step 8 的 abrupt 先于绑定实例化），故 throw 发为程序首
+        // 指令，其后预声明/序言/声明发射均不可达（寄存器保持良定义，运行期零开销）。
+        // 严格 eval 代码函数声明绑定 eval 自身 lexical 环境、不触全局、不抛，门禁
+        // 随 !is_strict 关闭，其写点抑制在声明发射处。
+        if ctx.is_eval_script && !ctx.is_strict {
+            for name in self.collect_top_level_function_names(&program.body) {
+                if NON_WRITABLE_GLOBAL_BUILTINS.contains(&name.as_str()) {
+                    let _ = self.emit_throw_error(
+                        "TypeError",
+                        &format!("Cannot declare function '{name}': global property is not configurable"),
+                        &mut ctx,
+                    )?;
+                    break;
+                }
+            }
+        }
+
         self.predeclare_function_declarations(&program.body, &mut ctx);
 
         // 预注册 builtin 引用（先于任何临时寄存器），builtin 槽不进入临时寄存器池。

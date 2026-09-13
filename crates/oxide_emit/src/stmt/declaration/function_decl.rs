@@ -70,7 +70,9 @@ impl Emitter {
         }
         // 脚本顶层（非块内）函数声明：同步写全局对象，使 globalThis 可反射函数名。
         // 块内函数声明是块级绑定，不得落全局对象（作用域隔离，块外不可见）。
-        if ctx.is_global_scope && ctx.scopes.symbols.scopes.len() == 1 {
+        // 严格 eval 代码函数声明绑定 eval 自身 lexical 环境、不落全局对象：抑制 A
+        // 侧写（局部绑定读面未暴露），同时避免不可写全局内置在 0x98 上误抛 strict。
+        if ctx.is_global_scope && ctx.scopes.symbols.scopes.len() == 1 && !(ctx.is_eval_script && ctx.is_strict) {
             self.emit_global_prop_write(&name, var_reg, ctx);
         }
         Ok(None)

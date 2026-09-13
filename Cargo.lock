@@ -1342,6 +1342,7 @@ dependencies = [
  "oxide_builtins",
  "oxide_bytecode",
  "oxide_compiler",
+ "oxide_emit",
  "oxide_ir",
  "oxide_kernel",
  "oxide_log",
